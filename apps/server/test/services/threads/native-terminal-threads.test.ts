@@ -167,9 +167,20 @@ describe("reopenNativeTerminalsAfterDaemonReconnect", () => {
 
       h.db
         .update(terminalSessions)
-        .set({ status: "exited", closeReason: "user" })
+        .set({ status: "exited", closeReason: "daemon-disconnect" })
         .where(eq(terminalSessions.id, closed.terminalId))
         .run();
+      await h.deps.terminalSessions.closeTerminal({
+        terminalId: closed.terminalId,
+        payload: { mode: "force", reason: "user" },
+      });
+      expect(
+        h.db
+          .select({ closeReason: terminalSessions.closeReason })
+          .from(terminalSessions)
+          .where(eq(terminalSessions.id, closed.terminalId))
+          .get()?.closeReason,
+      ).toBe("user");
       archiveThread(h.db, noopNotifier, archived.threadId);
 
       const reopening = reopenNativeTerminalsAfterDaemonReconnect(h.deps, {
