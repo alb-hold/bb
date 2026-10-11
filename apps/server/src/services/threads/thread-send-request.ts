@@ -1,5 +1,13 @@
-import { isStandaloneBuiltinClearCommand, type Thread } from "@bb/domain";
-import { getEnvironment, isNativeTerminalThread } from "@bb/db";
+import {
+  isStandaloneBuiltinClearCommand,
+  projectAttachmentPaths,
+  type Thread,
+} from "@bb/domain";
+import {
+  acquireProjectAttachmentOwnership,
+  getEnvironment,
+  isNativeTerminalThread,
+} from "@bb/db";
 import { ApiError } from "../../errors.js";
 import { resolvePromptAttachmentReferences } from "../projects/attachments.js";
 import {
@@ -31,17 +39,23 @@ export async function acceptThreadSendRequest(
       args.thread.environmentId === null
         ? null
         : (getEnvironment(deps.db, args.thread.environmentId)?.hostId ?? null);
+    const input = await resolvePromptAttachmentReferences({
+      db: deps.db,
+      dataDir: deps.config.dataDir,
+      input: args.payload.input,
+      projectId: args.thread.projectId,
+      hostId,
+    });
     const text = nativeTerminalPrompt(deps, {
       hostId,
-      input: await resolvePromptAttachmentReferences({
-        db: deps.db,
-        dataDir: deps.config.dataDir,
-        input: args.payload.input,
-        projectId: args.thread.projectId,
-        hostId,
-      }),
+      input,
       projectId: args.thread.projectId,
     });
+    acquireProjectAttachmentOwnership(
+      deps.db,
+      args.thread.id,
+      projectAttachmentPaths(input),
+    );
     if (text === null) {
       throw new ApiError(400, "invalid_request", "Message text is empty");
     }

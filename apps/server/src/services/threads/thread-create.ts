@@ -3,6 +3,7 @@ import { seedThreadSessionOptionSelections } from "./thread-session-options.js";
 import { assertEnvironmentPathAvailable } from "../environments/path-admission.js";
 import { randomUUID } from "node:crypto";
 import {
+  acquireProjectAttachmentOwnership,
   createNativeTerminalThread,
   isNativeTerminalThread,
   markThreadDeleted,
@@ -13,6 +14,7 @@ import {
 import {
   describeSessionOptionConflict,
   modelSessionOptionConflict,
+  projectAttachmentPaths,
   type ProjectExecutionDefaults,
   type Project,
   type SessionOptionSelections,
@@ -497,6 +499,11 @@ async function createPendingThreadAndAttemptFirstDispatch(
         initialPrompt: args.nativeTerminal.initialPrompt,
         model: args.request.model ?? null,
       });
+      acquireProjectAttachmentOwnership(
+        deps.db,
+        thread.id,
+        projectAttachmentPaths(args.request.input),
+      );
       beginNativeTerminalThreadProvisioning(deps, {
         environmentIntent: args.environmentIntent,
         thread,

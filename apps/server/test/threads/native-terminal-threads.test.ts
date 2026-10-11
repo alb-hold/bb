@@ -7,6 +7,7 @@ import {
   getTerminalSession,
   getThread,
   listEvents,
+  projectAttachmentThreads,
   threads,
   upsertProjectExecutionDefaults,
 } from "@bb/db";
@@ -494,6 +495,13 @@ describe("native terminal threads", () => {
     expect(spec.initialPrompt).toBe(
       `${storedAttachmentPath(fixture, attachmentPath)}\nDescribe this screenshot`,
     );
+    expect(
+      fixture.harness.db
+        .select()
+        .from(projectAttachmentThreads)
+        .all()
+        .map((owner) => owner.threadId),
+    ).toEqual([thread.id]);
   });
 
   it("starts a thread from an attachment alone", async () => {
