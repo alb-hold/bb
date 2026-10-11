@@ -2471,6 +2471,96 @@ describe("public terminal routes", () => {
     });
   });
 
+  it("keeps the PTY size with the device in use when another client attaches", async () => {
+    const fixture = await createTerminalRouteFixture();
+    harnesses.push(fixture.harness);
+    const stored = createTerminalSession(fixture.harness.db, {
+      cols: 80,
+      daemonSessionId: fixture.session.id,
+      environmentId: fixture.environment.id,
+      hostId: fixture.host.id,
+      initialCwd: "/tmp/terminal-workspace",
+      rows: 24,
+      status: "running",
+      threadId: fixture.thread.id,
+      title: "Terminal 1",
+    });
+    const terminals = fixture.harness.deps.terminalSessions;
+    const desktop = createFakeBrowserSocket();
+    const phone = createFakeBrowserSocket();
+    const sizes = () =>
+      readDaemonOperationMessages(fixture.socket).flatMap((message) =>
+        message.type === "terminal.resize"
+          ? [`${message.cols}x${message.rows}`]
+          : [],
+      );
+    const send = (
+      socket: FakeBrowserSocket,
+      message: Parameters<
+        typeof terminals.handleBrowserTerminalMessage
+      >[0]["message"],
+    ) =>
+      terminals.handleBrowserTerminalMessage({
+        terminalId: stored.id,
+        socket,
+        message,
+      });
+
+    const attach = async (socket: FakeBrowserSocket) => {
+      const before = readDaemonOperationMessages(fixture.socket).length;
+      terminals.attachBrowserTerminal({
+        outputAcks: false,
+        terminalId: stored.id,
+        socket,
+        sinceSeq: 0,
+      });
+      const request = await waitForDaemonMessage(fixture.socket, before);
+      if (request.type !== "terminal.attach") {
+        throw new Error(`Expected terminal.attach, received ${request.type}`);
+      }
+      terminals.handleDaemonTerminalMessage({
+        hostId: fixture.host.id,
+        sessionId: fixture.session.id,
+        message: {
+          type: "terminal.replay",
+          requestId: request.requestId,
+          terminalId: stored.id,
+          chunks: [],
+          replayStartSeq: 0,
+          nextSeq: 0,
+        },
+      });
+    };
+
+    await attach(desktop);
+    send(desktop, { type: "resize", cols: 160, rows: 48 });
+    expect(sizes()).toEqual(["160x48"]);
+
+    await attach(phone);
+    send(phone, { type: "resize", cols: 44, rows: 30 });
+    send(phone, { type: "resize", cols: 44, rows: 20 });
+    send(desktop, { type: "resize", cols: 150, rows: 48 });
+    expect(sizes()).toEqual(["160x48", "150x48"]);
+
+    send(phone, { type: "input", dataBase64: "YQ==" });
+    expect(sizes()).toEqual(["160x48", "150x48", "44x20"]);
+    const operations = readDaemonOperationMessages(fixture.socket).map(
+      (message) => message.type,
+    );
+    expect(operations.slice(-2)).toEqual(["terminal.resize", "terminal.input"]);
+    send(desktop, { type: "resize", cols: 160, rows: 48 });
+    expect(sizes()).toHaveLength(3);
+
+    send(desktop, { type: "resize", cols: 160, rows: 48, claim: true });
+    expect(sizes()).toEqual(["160x48", "150x48", "44x20", "160x48"]);
+    send(phone, { type: "resize", cols: 44, rows: 22 });
+    expect(sizes()).toHaveLength(4);
+
+    terminals.detachBrowserTerminal({ terminalId: stored.id, socket: desktop });
+    send(phone, { type: "resize", cols: 44, rows: 24 });
+    expect(sizes()).toEqual(["160x48", "150x48", "44x20", "160x48", "44x24"]);
+  });
+
   it("paces the daemon by the output an acknowledging browser has parsed", async () => {
     const fixture = await createTerminalRouteFixture();
     harnesses.push(fixture.harness);
@@ -2495,9 +2585,7 @@ describe("public terminal routes", () => {
           terminalId: stored.id,
           chunk: {
             seq,
-            dataBase64: Buffer.from(`line ${seq}\n`, "utf8").toString(
-              "base64",
-            ),
+            dataBase64: Buffer.from(`line ${seq}\n`, "utf8").toString("base64"),
           },
         },
       });

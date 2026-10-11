@@ -56,9 +56,10 @@ import {
   requestTerminalLinkOpen,
   type TerminalLinkTarget,
 } from "./terminal-links";
-
-const TERMINAL_SIZE_CLAIM_INTERVAL_MS = 1_000;
-const TERMINAL_SIZE_CLAIM_EVENTS = ["keydown", "paste", "pointerdown"] as const;
+import {
+  listenForTerminalSizeClaims,
+  type TerminalSizeClaims,
+} from "./terminal-size-claims";
 
 export const TERMINAL_FONT_FAMILY =
   '"JetBrainsMono Nerd Font Mono", "MesloLGS NF", "Symbols Nerd Font Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace';
@@ -915,28 +916,12 @@ export function ThreadTerminalView({
     let resizeObserver: ResizeObserver | null = null;
     let selectionChangeDisposable: { dispose: () => void } | null = null;
     let stopObservingFonts: (() => void) | null = null;
-    let lastSizeClaimAt = 0;
-    let sizeClaimElement: HTMLElement | null = null;
-    const claimTerminalSize = () => {
-      if (
-        sizeClaimElement === null ||
-        !hasVisibleTerminalSize({ containerElement: sizeClaimElement })
-      ) {
-        return;
-      }
-      lastSizeClaimAt = Date.now();
-      transport?.claimSize();
-    };
-    const claimTerminalSizeOnUserInput = () => {
-      if (Date.now() - lastSizeClaimAt > TERMINAL_SIZE_CLAIM_INTERVAL_MS) {
-        claimTerminalSize();
-      }
-    };
+    let sizeClaims: TerminalSizeClaims | null = null;
     const reportDocumentVisibility = () => {
       const visible = document.visibilityState === "visible";
       transport?.setVisible(visible);
-      if (visible && document.activeElement === terminal?.textarea) {
-        claimTerminalSize();
+      if (visible) {
+        sizeClaims?.claimIfFocused();
       }
     };
 
@@ -1146,13 +1131,11 @@ export function ThreadTerminalView({
       activeTransport.sendResize(activeTerminal.cols, activeTerminal.rows);
       reportDocumentVisibility();
       document.addEventListener("visibilitychange", reportDocumentVisibility);
-      sizeClaimElement = containerElement;
-      activeTerminal.textarea?.addEventListener("focus", claimTerminalSize);
-      for (const type of TERMINAL_SIZE_CLAIM_EVENTS) {
-        containerElement.addEventListener(type, claimTerminalSizeOnUserInput, {
-          capture: true,
-        });
-      }
+      sizeClaims = listenForTerminalSizeClaims({
+        claim: () => activeTransport.claimSize(),
+        element: containerElement,
+        textarea: activeTerminal.textarea,
+      });
       activeTransport.start();
       const sendTerminalInput = (dataBase64: string) =>
         activeTransport.sendInput(dataBase64);
@@ -1231,15 +1214,8 @@ export function ThreadTerminalView({
         "visibilitychange",
         reportDocumentVisibility,
       );
-      terminal?.textarea?.removeEventListener("focus", claimTerminalSize);
-      for (const type of TERMINAL_SIZE_CLAIM_EVENTS) {
-        sizeClaimElement?.removeEventListener(
-          type,
-          claimTerminalSizeOnUserInput,
-          { capture: true },
-        );
-      }
-      sizeClaimElement = null;
+      sizeClaims?.dispose();
+      sizeClaims = null;
       transport?.dispose();
       terminal?.dispose();
       terminalRef.current = null;

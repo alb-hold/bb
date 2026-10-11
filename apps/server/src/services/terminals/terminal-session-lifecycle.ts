@@ -1508,7 +1508,10 @@ export class TerminalSessionLifecycle {
       return;
     }
 
-    this.options.hub.claimTerminalResizeOwnership(current.id, args.socket);
+    this.options.hub.claimUnownedTerminalResizeOwnership(
+      current.id,
+      args.socket,
+    );
     const requestId = randomUUID();
     const pendingAttach: PendingTerminalAttachKey = {
       daemonSessionId: current.daemonSessionId,
@@ -1844,6 +1847,17 @@ export class TerminalSessionLifecycle {
     if (!current) {
       return;
     }
+    this.options.hub.claimTerminalResizeOwnership(current.id, args.socket);
+    const requested = this.options.hub.terminalRequestedSize(
+      current.id,
+      args.socket,
+    );
+    if (
+      requested !== null &&
+      (requested.cols !== current.cols || requested.rows !== current.rows)
+    ) {
+      this.resizeRunningBrowserTerminal(args, current, requested);
+    }
     const markedInput = updateTerminalById(this.options.db, current.id, {
       kind: "user-input",
     });
@@ -1878,24 +1892,46 @@ export class TerminalSessionLifecycle {
   }
 
   private resizeBrowserTerminal(args: HandleBrowserTerminalMessageArgs): void {
-    if (
-      args.message.type !== "resize" ||
-      !this.options.hub.isTerminalResizeOwner(args.terminalId, args.socket)
-    ) {
+    if (args.message.type !== "resize") {
+      return;
+    }
+    const size = { cols: args.message.cols, rows: args.message.rows };
+    this.options.hub.recordTerminalRequestedSize(
+      args.terminalId,
+      args.socket,
+      size,
+    );
+    if (args.message.claim === true) {
+      this.options.hub.claimTerminalResizeOwnership(
+        args.terminalId,
+        args.socket,
+      );
+    } else {
+      this.options.hub.claimUnownedTerminalResizeOwnership(
+        args.terminalId,
+        args.socket,
+      );
+    }
+    if (!this.options.hub.isTerminalResizeOwner(args.terminalId, args.socket)) {
       return;
     }
     const current = this.getRunningBrowserTerminal(args);
     if (!current) {
       return;
     }
-    if (
-      current.cols !== args.message.cols ||
-      current.rows !== args.message.rows
-    ) {
+    this.resizeRunningBrowserTerminal(args, current, size);
+  }
+
+  private resizeRunningBrowserTerminal(
+    args: HandleBrowserTerminalMessageArgs,
+    current: RunningBrowserTerminalSession,
+    size: { cols: number; rows: number },
+  ): void {
+    if (current.cols !== size.cols || current.rows !== size.rows) {
       const resized = updateTerminalById(this.options.db, current.id, {
-        cols: args.message.cols,
+        cols: size.cols,
         kind: "size",
-        rows: args.message.rows,
+        rows: size.rows,
       });
       if (resized) {
         const session = toTerminalSession(resized);
@@ -1911,8 +1947,8 @@ export class TerminalSessionLifecycle {
       {
         type: "terminal.resize",
         terminalId: current.id,
-        cols: args.message.cols,
-        rows: args.message.rows,
+        cols: size.cols,
+        rows: size.rows,
       },
     );
     if (!sent) {
