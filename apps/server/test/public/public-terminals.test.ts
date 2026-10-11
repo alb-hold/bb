@@ -2393,7 +2393,7 @@ describe("public terminal routes", () => {
     });
   });
 
-  it("restores resize ownership when a newer browser attach fails", async () => {
+  it("applies the remaining browser's size after a newer attach fails", async () => {
     const fixture = await createTerminalRouteFixture();
     harnesses.push(fixture.harness);
     const stored = createTerminalSession(fixture.harness.db, {
@@ -2545,6 +2545,7 @@ describe("public terminal routes", () => {
 
     send(desktop, { type: "input", dataBase64: "YQ==" });
     send(phone, { type: "input", dataBase64: "YQ==" });
+    send(desktop, { type: "resize", cols: 150, rows: 48, claim: true });
     expect(sizes()).toHaveLength(3);
 
     send(phone, { type: "visibility", visible: false });

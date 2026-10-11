@@ -243,16 +243,16 @@ export class TerminalWebSocketTransport {
     }
     this.lastPongAt = this.now();
     this.startHeartbeat(socket);
-    if (this.lastResize !== null) {
-      this.trySend(
-        socket,
-        JSON.stringify({ type: "resize", ...this.lastResize }),
-      );
-    }
     if (!this.visible) {
       this.trySend(
         socket,
         JSON.stringify({ type: "visibility", visible: false }),
+      );
+    }
+    if (this.lastResize !== null) {
+      this.trySend(
+        socket,
+        JSON.stringify({ type: "resize", ...this.lastResize }),
       );
     }
     this.flushInputs();

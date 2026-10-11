@@ -17,6 +17,7 @@ import { resolveMachineHostId, resolveMachineTargetOption } from "./machine.js";
 
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
+const TERMINAL_ATTACH_HEARTBEAT_MS = 15_000;
 const TERMINAL_WAIT_TIMEOUT_EXIT_CODE = 124;
 
 interface TerminalJsonOptions {
@@ -601,15 +602,18 @@ export async function attachTerminal(args: {
         type: "resize",
         cols: process.stdout.columns || DEFAULT_COLS,
         rows: process.stdout.rows || DEFAULT_ROWS,
-        claim: true,
       }),
     );
   };
+  let heartbeat: ReturnType<typeof setInterval> | null = null;
   await new Promise<void>((resolve, reject) => {
     socket.onopen = () => {
       process.stdin.setRawMode(true);
       process.stdin.resume();
       onResize();
+      heartbeat = setInterval(() => {
+        socket.send(JSON.stringify({ type: "ping" }));
+      }, TERMINAL_ATTACH_HEARTBEAT_MS);
     };
     socket.onerror = () => reject(new Error("Terminal websocket failed"));
     socket.onclose = () => resolve();
@@ -636,6 +640,7 @@ export async function attachTerminal(args: {
     process.stdin.on("data", onInput);
     process.stdout.on("resize", onResize);
   }).finally(() => {
+    if (heartbeat !== null) clearInterval(heartbeat);
     process.stdin.off("data", onInput);
     process.stdout.off("resize", onResize);
     process.stdin.setRawMode(previousRawMode);

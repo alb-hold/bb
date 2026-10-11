@@ -2293,6 +2293,10 @@ export class TerminalSessionLifecycle {
       pending.terminalId,
       pending.socket,
     );
+    this.applySharedTerminalSize({
+      socket: null,
+      terminalId: pending.terminalId,
+    });
     this.sendTerminalSocketError({
       socket: pending.socket,
       code:
