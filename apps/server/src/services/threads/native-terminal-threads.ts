@@ -53,7 +53,12 @@ type NativeTerminalViewDeps = Pick<
   "db" | "providerRegistry" | "terminalSessions"
 >;
 
-const pendingOpens = new Map<string, Promise<NativeTerminalThread>>();
+interface PendingNativeTerminalOpen {
+  promise: Promise<NativeTerminalThread>;
+  reattachOnly: boolean;
+}
+
+const pendingOpens = new Map<string, PendingNativeTerminalOpen>();
 const pendingSends = new Map<string, Promise<void>>();
 const NATIVE_TERMINAL_ECHO_POLL_MS = 100;
 const NATIVE_TERMINAL_ECHO_TIMEOUT_MS = 5000;
@@ -250,13 +255,14 @@ async function openNativeTerminalOnce(
   deps: NativeTerminalDeps,
   args: {
     reattachOnly: boolean;
+    replaceLiveTerminal: boolean;
     threadId: string;
     request: OpenNativeTerminalRequest;
   },
 ): Promise<NativeTerminalThread> {
   const record = requireNativeTerminalThreadRecord(deps, args.threadId);
   const existing = readRecordTerminal(deps, record);
-  if (terminalIsLive(existing)) {
+  if (!args.replaceLiveTerminal && terminalIsLive(existing)) {
     return toNativeTerminalThread(deps, record);
   }
   const thread = requirePublicThread(deps.db, args.threadId);
@@ -323,11 +329,32 @@ function openNativeTerminalDeduplicated(
   },
 ): Promise<NativeTerminalThread> {
   const pending = pendingOpens.get(args.threadId);
-  if (pending !== undefined) return pending;
-  const opening = openNativeTerminalOnce(deps, args).finally(() => {
-    pendingOpens.delete(args.threadId);
+  if (pending !== undefined && (args.reattachOnly || !pending.reattachOnly)) {
+    return pending.promise;
+  }
+  const opening: Promise<NativeTerminalThread> = (
+    pending === undefined
+      ? openNativeTerminalOnce(deps, { ...args, replaceLiveTerminal: false })
+      : pending.promise
+          .then(
+            () => undefined,
+            () => undefined,
+          )
+          .then(() =>
+            openNativeTerminalOnce(deps, {
+              ...args,
+              replaceLiveTerminal: true,
+            }),
+          )
+  ).finally(() => {
+    if (pendingOpens.get(args.threadId)?.promise === opening) {
+      pendingOpens.delete(args.threadId);
+    }
   });
-  pendingOpens.set(args.threadId, opening);
+  pendingOpens.set(args.threadId, {
+    promise: opening,
+    reattachOnly: args.reattachOnly,
+  });
   return opening;
 }
 

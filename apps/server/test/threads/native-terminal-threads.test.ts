@@ -826,6 +826,69 @@ describe("native terminal threads", () => {
     ).toBe(finishedOpen.terminalId);
   });
 
+  it("gives an explicit open its own launch when it overlaps a reconnect reopen", async () => {
+    const fixture = await createFixture();
+    const lost = await openRunningNativeThread(fixture, {
+      providerId: "claude-code",
+    });
+    fixture.harness.deps.terminalSessions.handleDaemonSessionClosed({
+      sessionId: fixture.sessionId,
+    });
+    const restarted = seedSession(fixture.harness.deps, fixture.hostId, {
+      instanceId: "instance-2",
+    });
+    const socket = createFakeDaemonSocket();
+    onDaemonSocketOpen(fixture.harness.deps, {
+      hostId: fixture.hostId,
+      sessionId: restarted.id,
+      socket,
+    });
+    const acknowledge = (open: TerminalOpenMessage) =>
+      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.hostId,
+        sessionId: restarted.id,
+        message: {
+          type: "terminal.opened",
+          requestId: open.requestId,
+          terminalId: open.terminalId,
+          shell: "/bin/zsh",
+          title: "zsh",
+          initialCwd: "/tmp/native-workspace",
+          cols: open.cols,
+          rows: open.rows,
+        },
+      });
+    const reattach = await waitForTerminalOpen(socket);
+    expect(
+      reattach.start.mode === "command" && reattach.start.command,
+    ).toContain("BB_NATIVE_TERMINAL_REATTACH=1");
+
+    const explicit = postJson(
+      fixture,
+      `/threads/${lost.thread.id}/native-terminal/open`,
+      {},
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    acknowledge(reattach);
+    const launch = await waitForTerminalOpen(socket, 1);
+    expect(launch.start.mode === "command" && launch.start.command).toContain(
+      `"$BB_CLI" thread native-run ${lost.thread.id}`,
+    );
+    expect(
+      launch.start.mode === "command" && launch.start.command,
+    ).not.toContain("BB_NATIVE_TERMINAL_REATTACH");
+    acknowledge(launch);
+
+    const opened = nativeTerminalThreadSchema.parse(
+      await readJson(await explicit),
+    );
+    expect(opened.terminal?.id).toBe(launch.terminalId);
+    expect(
+      getNativeTerminalThread(fixture.harness.db, lost.thread.id)
+        ?.terminalSessionId,
+    ).toBe(launch.terminalId);
+  });
+
   it("keeps the same native terminal when the same daemon reconnects", async () => {
     const fixture = await createFixture();
     const { open, thread } = await openRunningNativeThread(fixture, {
