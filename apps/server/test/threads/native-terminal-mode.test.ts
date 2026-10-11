@@ -16,6 +16,7 @@ import {
 } from "@bb/server-contract";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { applyLoggedThreadLifecycleEvent } from "../../src/services/threads/lifecycle-outcome.js";
+import { stopThreadForCurrentState } from "../../src/services/threads/thread-lifecycle.js";
 import { readJson } from "../helpers/json.js";
 import {
   seedEnvironment,
@@ -446,6 +447,39 @@ describe("native terminal activity", () => {
     expect(threadStatus(fixture, thread.id)).toBe("active");
     await reportActivity(fixture, thread.id, { state: "idle" });
     expect(threadStatus(fixture, thread.id)).toBe("idle");
+  });
+
+  it("lets a host-wide stop settle a working native thread like an idle agent", async () => {
+    const fixture = await createFixture();
+    const thread = seedChatThread(fixture, {
+      providerId: "claude-code",
+      providerThreadId: SESSION_ID,
+    });
+    await enterTerminal(fixture, thread.id);
+    await reportActivity(fixture, thread.id, { state: "working" });
+    const working = getThread(fixture.harness.db, thread.id)!;
+    expect(working.status).toBe("active");
+    const requests = countDaemonMessages(fixture, "host-rpc.request");
+
+    const stopping = stopThreadForCurrentState(
+      fixture.harness.deps,
+      working,
+      { id: fixture.environment.id, hostId: fixture.hostId },
+      { requireStopped: true },
+    );
+    for (let answered = requests; ; answered += 1) {
+      const settled = await Promise.race([
+        stopping.then(() => true),
+        waitForThreadStop(fixture, thread.id, answered).then((stop) => {
+          answerThreadStop(fixture, stop.requestId, "released");
+          return false;
+        }),
+      ]);
+      if (settled) break;
+    }
+    await stopping;
+    expect(threadStatus(fixture, thread.id)).toBe("idle");
+    expect(isNativeTerminalThread(fixture.harness.db, thread.id)).toBe(true);
   });
 
   it("refuses activity for a thread that is not in its terminal", async () => {
