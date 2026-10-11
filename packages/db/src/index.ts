@@ -28,6 +28,7 @@ export {
   getNativeTerminalThread,
   isNativeTerminalThread,
   listNativeTerminalThreadIds,
+  listNativeTerminalThreadsWithDisconnectedTerminal,
   recordNativeTerminalThreadSessionId,
   setNativeTerminalThreadTerminal,
   type NativeTerminalThreadRecord,

@@ -29,6 +29,10 @@ import {
   recordDaemonEnvironmentMetadataChange,
 } from "../internal/environment-changes.js";
 import { requestQueuedMessageDispatch } from "../services/threads/queued-message-dispatch.js";
+import {
+  listNativeTerminalThreadsAwaitingDaemon,
+  reopenNativeTerminalsAfterDaemonReconnect,
+} from "../services/threads/native-terminal-threads.js";
 import { runEventLoopWorkSync } from "../services/system/event-loop-work.js";
 import { parseSocketMessage } from "./decode-payload.js";
 import type { PluginService } from "../services/plugins/plugin-service.js";
@@ -109,7 +113,12 @@ export function onDaemonSocketOpen(
   deps.hub.registerDaemon(args.sessionId, args.hostId, args.socket);
   handleDaemonSocketOpened(deps, { hostId: args.hostId });
   deps.sharedPorts.pushCurrentSharedPortsForHost(args.hostId);
+  let nativeThreadIds: string[] = [];
   if (!isServerMoveSnapshotFenced(deps.db)) {
+    nativeThreadIds = listNativeTerminalThreadsAwaitingDaemon(
+      deps,
+      args.hostId,
+    );
     deps.terminalSessions.reconcileDisconnectedHostTerminals({
       daemonSessionId: args.sessionId,
       hostId: args.hostId,
@@ -118,6 +127,10 @@ export function onDaemonSocketOpen(
   if (isServerMoveFrozen(deps.db)) {
     return;
   }
+  reopenNativeTerminalsAfterDaemonReconnect(deps, {
+    hostId: args.hostId,
+    threadIds: nativeThreadIds,
+  });
   // A dispatch that arrived while this machine was away parked its row on a
   // `host-offline` wait with no schedule, so no sweep can see it — the
   // machine coming back is that wait's release signal, and this socket
