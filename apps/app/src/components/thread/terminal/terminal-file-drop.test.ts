@@ -40,7 +40,15 @@ describe("terminal file drop", () => {
   });
 
   it("copies each new non-empty xterm selection once", () => {
-    expect(getNewTerminalSelection(" word ", "")).toBe("word");
+    expect(getNewTerminalSelection("  code\nnext\n", "")).toBe(
+      "  code\nnext\n",
+    );
+    expect(getNewTerminalSelection("word", "word")).toBeNull();
+    expect(getNewTerminalSelection("  ", "word")).toBeNull();
+  });
+
+  it("deduplicates on raw selection text", () => {
+    expect(getNewTerminalSelection(" word ", "word")).toBe(" word ");
     expect(getNewTerminalSelection("word", "word")).toBeNull();
     expect(getNewTerminalSelection("  ", "word")).toBeNull();
   });

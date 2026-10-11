@@ -21,6 +21,5 @@ export function getNewTerminalSelection(
   text: string,
   previousText: string,
 ): string | null {
-  const selection = text.trim();
-  return selection.length > 0 && selection !== previousText ? selection : null;
+  return text.trim().length > 0 && text !== previousText ? text : null;
 }
