@@ -32,12 +32,17 @@ function pointerEvent(type: string, clientX = 0, clientY = 0): PointerEvent {
   }) as PointerEvent;
 }
 
-function dropEvent(files: FileList): DragEvent {
-  const event = new Event("drop", { bubbles: true, cancelable: true });
-  Object.defineProperty(event, "dataTransfer", {
-    value: { files, types: ["Files"] },
-  });
+function dragEvent(
+  type: string,
+  dataTransfer: { files?: FileList; types: string[] },
+): DragEvent {
+  const event = new Event(type, { bubbles: true, cancelable: true });
+  Object.defineProperty(event, "dataTransfer", { value: dataTransfer });
   return event as DragEvent;
+}
+
+function dropEvent(files: FileList): DragEvent {
+  return dragEvent("drop", { files, types: ["Files"] });
 }
 
 describe("terminal interactions in the DOM", () => {
@@ -108,6 +113,30 @@ describe("terminal interactions in the DOM", () => {
     expect(onSelection).toHaveBeenCalledWith("second");
     expect(copySelection).toHaveBeenCalledOnce();
     expect(copySelection).toHaveBeenCalledWith("second");
+  });
+
+  it("accepts a file drag over the terminal so the browser fires the drop", () => {
+    const terminal = document.createElement("div");
+    document.body.append(terminal);
+    const interactions = attachTerminalInteractions({
+      element: terminal,
+      getSelection: () => "",
+      onPointerDown: vi.fn(),
+      onPointerRelease: vi.fn(),
+      onPointerCancel: vi.fn(),
+      onSelection: vi.fn(),
+      copySelection: vi.fn(),
+      onFilesDrop: vi.fn(),
+    });
+    disposables.push(interactions.dispose);
+    const fileDrag = dragEvent("dragover", { types: ["Files"] });
+    const textDrag = dragEvent("dragover", { types: ["text/plain"] });
+
+    terminal.dispatchEvent(fileDrag);
+    terminal.dispatchEvent(textDrag);
+
+    expect(fileDrag.defaultPrevented).toBe(true);
+    expect(textDrag.defaultPrevented).toBe(false);
   });
 
   it("sends quoted paths from a running terminal file drop", () => {
