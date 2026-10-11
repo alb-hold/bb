@@ -374,6 +374,30 @@ export async function runNativeHolder(
   return await exited;
 }
 
+export type NativeHolderConnection =
+  | { kind: "attached"; socket: net.Socket }
+  | { kind: "ended" }
+  | { kind: "did-not-start" };
+
+export async function openNativeHolderConnection(args: {
+  socketPath: string;
+  reattachOnly: boolean;
+  startHolder(): void;
+  startTimeoutMs: number;
+}): Promise<NativeHolderConnection> {
+  const running = await connectNativeHolder(args.socketPath);
+  if (running !== null) return { kind: "attached", socket: running };
+  if (args.reattachOnly) return { kind: "ended" };
+  args.startHolder();
+  const started = await waitForNativeHolder(
+    args.socketPath,
+    args.startTimeoutMs,
+  );
+  return started === null
+    ? { kind: "did-not-start" }
+    : { kind: "attached", socket: started };
+}
+
 export async function connectNativeHolder(
   socketPath: string,
 ): Promise<net.Socket | null> {

@@ -11,6 +11,7 @@ import {
   encodeNativeHolderFrame,
   nativeHolderSocketPath,
   nativeTerminalClosedForGood,
+  openNativeHolderConnection,
   pipeNativeHolderClient,
   runNativeHolder,
   waitForNativeHolder,
@@ -240,6 +241,79 @@ describe("native terminal holder", () => {
     await expect(piped).resolves.toBe(3);
     await expect(held).resolves.toBe(3);
     expect(shown).toContain("got:hi");
+  });
+});
+
+describe("opening a native holder connection", () => {
+  it("starts nothing when a reattach finds the CLI already ended while bb was away", async () => {
+    const socketPath = socketIn();
+    const held = startHolder(socketPath, ECHO_LOOP);
+    const client = await attach(socketPath);
+    await client.waitFor(/started:/u);
+    client.type("\u0004");
+    await expect(held).resolves.toBe(7);
+    client.socket.destroy();
+
+    let starts = 0;
+    const connection = await openNativeHolderConnection({
+      socketPath,
+      reattachOnly: true,
+      startHolder: () => {
+        starts += 1;
+      },
+      startTimeoutMs: 1_000,
+    });
+    expect(connection.kind).toBe("ended");
+    expect(starts).toBe(0);
+  });
+
+  it("reattaches to a CLI that is still held", async () => {
+    const socketPath = socketIn();
+    const held = startHolder(socketPath, ECHO_LOOP);
+    const first = await attach(socketPath);
+    const pid = (await first.waitFor(/started:(\d+)/u))[1];
+    first.socket.destroy();
+
+    const connection = await openNativeHolderConnection({
+      socketPath,
+      reattachOnly: true,
+      startHolder: () => {
+        throw new Error("must not start a second holder");
+      },
+      startTimeoutMs: 1_000,
+    });
+    if (connection.kind !== "attached") throw new Error(connection.kind);
+    const second = new Client(connection.socket);
+    second.type("again\r");
+    await second.waitFor(new RegExp(`got:again:${pid}`, "u"));
+    second.type("\u0004");
+    await expect(held).resolves.toBe(7);
+  });
+
+  it("starts a holder for an ordinary open and reports one that never listens", async () => {
+    const socketPath = socketIn();
+    let held: Promise<number> | null = null;
+    const connection = await openNativeHolderConnection({
+      socketPath,
+      reattachOnly: false,
+      startHolder: () => {
+        held = startHolder(socketPath, ECHO_LOOP);
+      },
+      startTimeoutMs: 5_000,
+    });
+    if (connection.kind !== "attached") throw new Error(connection.kind);
+    const client = new Client(connection.socket);
+    await client.waitFor(/started:/u);
+    client.type("\u0004");
+    await expect(held).resolves.toBe(7);
+
+    const silent = await openNativeHolderConnection({
+      socketPath: socketIn(),
+      reattachOnly: false,
+      startHolder: () => undefined,
+      startTimeoutMs: 200,
+    });
+    expect(silent.kind).toBe("did-not-start");
   });
 });
 

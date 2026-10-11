@@ -780,8 +780,11 @@ describe("native terminal threads", () => {
     const reopen = await waitForTerminalOpen(socket);
     expect(reopen.threadId).toBe(lost.thread.id);
     expect(reopen.start.mode === "command" && reopen.start.command).toContain(
-      `"$BB_CLI" thread native-run ${lost.thread.id}`,
+      `BB_NATIVE_TERMINAL_REATTACH=1 exec "$BB_CLI" thread native-run ${lost.thread.id}`,
     );
+    expect(
+      lost.open.start.mode === "command" && lost.open.start.command,
+    ).not.toContain("BB_NATIVE_TERMINAL_REATTACH");
     fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.hostId,
       sessionId: restarted.id,

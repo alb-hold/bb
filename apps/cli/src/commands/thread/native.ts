@@ -12,12 +12,11 @@ import {
   resolveNativeHarnessLaunch,
 } from "../../native-harness.js";
 import {
-  connectNativeHolder,
   defaultNativeHolderSocketPath,
   nativeTerminalClosedForGood,
+  openNativeHolderConnection,
   pipeNativeHolderClient,
   runNativeHolder,
-  waitForNativeHolder,
 } from "../../native-holder.js";
 import { outputJson } from "../helpers.js";
 import { attachTerminal } from "../terminal.js";
@@ -105,18 +104,25 @@ async function runNativeHarness(
   threadId: string,
 ): Promise<number> {
   const socketPath = defaultNativeHolderSocketPath(baseUrl, threadId);
-  let socket = await connectNativeHolder(socketPath);
-  if (socket === null) {
-    spawnNativeHolder(threadId, socketPath);
-    socket = await waitForNativeHolder(socketPath, HOLDER_START_TIMEOUT_MS);
+  const connection = await openNativeHolderConnection({
+    socketPath,
+    reattachOnly: process.env.BB_NATIVE_TERMINAL_REATTACH === "1",
+    startHolder: () => spawnNativeHolder(threadId, socketPath),
+    startTimeoutMs: HOLDER_START_TIMEOUT_MS,
+  });
+  if (connection.kind === "ended") {
+    process.stdout.write(
+      "This thread's CLI ended while bb was disconnected from this machine. Open the terminal again to resume the session.\r\n",
+    );
+    return 0;
   }
-  if (socket === null) {
+  if (connection.kind === "did-not-start") {
     throw new CliExitError(
       `The native terminal holder did not start; see ${nativeHolderLogPath(socketPath)}`,
       1,
     );
   }
-  const attached = socket;
+  const attached = connection.socket;
   for (const signal of SWALLOWED_SIGNALS) process.on(signal, () => {});
   for (const signal of DETACHING_SIGNALS) {
     process.on(signal, () => {

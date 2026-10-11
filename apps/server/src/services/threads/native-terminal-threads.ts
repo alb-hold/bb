@@ -113,14 +113,18 @@ export function nativeTerminalInitialPrompt(
 
 export function nativeTerminalLaunchCommand(args: {
   executable: string;
+  reattachOnly: boolean;
   threadId: string;
 }): string {
   const executable = args.executable;
   const env = `BB_THREAD_ID=${args.threadId}`;
+  const wrapperEnv = args.reattachOnly
+    ? `${env} BB_NATIVE_TERMINAL_REATTACH=1`
+    : env;
   const wrapper = `"$BB_CLI" thread native-run ${args.threadId}`;
   return [
     `if [ -n "$BB_CLI" ] && ${wrapper} --probe >/dev/null 2>&1; then`,
-    `${env} exec ${wrapper};`,
+    `${wrapperEnv} exec ${wrapper};`,
     `else ${env} exec ${executable}; fi`,
   ].join(" ");
 }
@@ -244,7 +248,11 @@ function terminalIsLive(terminal: TerminalSession | null): boolean {
 
 async function openNativeTerminalOnce(
   deps: NativeTerminalDeps,
-  args: { threadId: string; request: OpenNativeTerminalRequest },
+  args: {
+    reattachOnly: boolean;
+    threadId: string;
+    request: OpenNativeTerminalRequest;
+  },
 ): Promise<NativeTerminalThread> {
   const record = requireNativeTerminalThreadRecord(deps, args.threadId);
   const existing = readRecordTerminal(deps, record);
@@ -283,6 +291,7 @@ async function openNativeTerminalOnce(
         mode: "command",
         command: nativeTerminalLaunchCommand({
           executable: provider.cli.executable,
+          reattachOnly: args.reattachOnly,
           threadId: thread.id,
         }),
       },
@@ -301,6 +310,17 @@ async function openNativeTerminalOnce(
 export function openNativeTerminal(
   deps: NativeTerminalDeps,
   args: { threadId: string; request: OpenNativeTerminalRequest },
+): Promise<NativeTerminalThread> {
+  return openNativeTerminalDeduplicated(deps, { ...args, reattachOnly: false });
+}
+
+function openNativeTerminalDeduplicated(
+  deps: NativeTerminalDeps,
+  args: {
+    reattachOnly: boolean;
+    threadId: string;
+    request: OpenNativeTerminalRequest;
+  },
 ): Promise<NativeTerminalThread> {
   const pending = pendingOpens.get(args.threadId);
   if (pending !== undefined) return pending;
@@ -338,7 +358,11 @@ export function reopenNativeTerminalsAfterDaemonReconnect(
   args: { hostId: string; threadIds: readonly string[] },
 ): void {
   for (const threadId of args.threadIds) {
-    openNativeTerminal(deps, { threadId, request: {} }).then(
+    openNativeTerminalDeduplicated(deps, {
+      reattachOnly: true,
+      threadId,
+      request: {},
+    }).then(
       (reopened) => {
         deps.logger.info(
           { hostId: args.hostId, terminalId: reopened.terminal?.id, threadId },
