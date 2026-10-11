@@ -58,6 +58,7 @@ import {
 } from "./terminal-links";
 
 const TERMINAL_SIZE_CLAIM_INTERVAL_MS = 1_000;
+const TERMINAL_SIZE_CLAIM_EVENTS = ["keydown", "paste", "pointerdown"] as const;
 
 export const TERMINAL_FONT_FAMILY =
   '"JetBrainsMono Nerd Font Mono", "MesloLGS NF", "Symbols Nerd Font Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace';
@@ -915,14 +916,28 @@ export function ThreadTerminalView({
     let selectionChangeDisposable: { dispose: () => void } | null = null;
     let stopObservingFonts: (() => void) | null = null;
     let lastSizeClaimAt = 0;
+    let sizeClaimElement: HTMLElement | null = null;
     const claimTerminalSize = () => {
+      if (
+        sizeClaimElement === null ||
+        !hasVisibleTerminalSize({ containerElement: sizeClaimElement })
+      ) {
+        return;
+      }
       lastSizeClaimAt = Date.now();
       transport?.claimSize();
+    };
+    const claimTerminalSizeOnUserInput = () => {
+      if (Date.now() - lastSizeClaimAt > TERMINAL_SIZE_CLAIM_INTERVAL_MS) {
+        claimTerminalSize();
+      }
     };
     const reportDocumentVisibility = () => {
       const visible = document.visibilityState === "visible";
       transport?.setVisible(visible);
-      if (visible) claimTerminalSize();
+      if (visible && document.activeElement === terminal?.textarea) {
+        claimTerminalSize();
+      }
     };
 
     async function mountTerminal(
@@ -1131,15 +1146,17 @@ export function ThreadTerminalView({
       activeTransport.sendResize(activeTerminal.cols, activeTerminal.rows);
       reportDocumentVisibility();
       document.addEventListener("visibilitychange", reportDocumentVisibility);
-      window.addEventListener("focus", claimTerminalSize);
+      sizeClaimElement = containerElement;
       activeTerminal.textarea?.addEventListener("focus", claimTerminalSize);
+      for (const type of TERMINAL_SIZE_CLAIM_EVENTS) {
+        containerElement.addEventListener(type, claimTerminalSizeOnUserInput, {
+          capture: true,
+        });
+      }
       activeTransport.start();
       const sendTerminalInput = (dataBase64: string) =>
         activeTransport.sendInput(dataBase64);
       activeTerminal.onData((data) => {
-        if (Date.now() - lastSizeClaimAt > TERMINAL_SIZE_CLAIM_INTERVAL_MS) {
-          claimTerminalSize();
-        }
         if (controlActiveRef.current) {
           data = applyTerminalControl(data);
           controlActiveRef.current = false;
@@ -1214,8 +1231,15 @@ export function ThreadTerminalView({
         "visibilitychange",
         reportDocumentVisibility,
       );
-      window.removeEventListener("focus", claimTerminalSize);
       terminal?.textarea?.removeEventListener("focus", claimTerminalSize);
+      for (const type of TERMINAL_SIZE_CLAIM_EVENTS) {
+        sizeClaimElement?.removeEventListener(
+          type,
+          claimTerminalSizeOnUserInput,
+          { capture: true },
+        );
+      }
+      sizeClaimElement = null;
       transport?.dispose();
       terminal?.dispose();
       terminalRef.current = null;
