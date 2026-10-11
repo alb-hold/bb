@@ -3,6 +3,7 @@ import {
   mkdirSync,
   mkdtempSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import os from "node:os";
@@ -12,7 +13,10 @@ import {
   type ProviderNativeTerminal,
 } from "@bb/domain";
 import { afterEach, describe, expect, it } from "vitest";
-import { NativeActivityReader } from "../native-activity-reader.js";
+import {
+  measureResumedTranscript,
+  NativeActivityReader,
+} from "../native-activity-reader.js";
 
 const CODEX_CLI: ProviderNativeTerminal = {
   executable: "codex",
@@ -131,15 +135,26 @@ function writeRollout(home: string, records: unknown[]): string {
 }
 
 describe("NativeActivityReader", () => {
-  it("reports a resumed turn written before the first poll, not the turns before launch", () => {
+  it("reports a resumed turn written before the first poll, not the turns before launch", async () => {
     const home = tempHome();
     const file = writeRollout(home, codexTurn("an earlier prompt"));
+    const sizeBeforeLaunch = statSync(file).size;
+    const baseline = await measureResumedTranscript(
+      CODEX_CLI,
+      { HOME: home },
+      SESSION_ID,
+    );
     const reader = new NativeActivityReader(CODEX_CLI, { HOME: home }, null, {
       kind: "resume",
       id: SESSION_ID,
+      ...baseline,
     });
     appendFileSync(file, jsonl(codexTurn("the resumed prompt")));
 
+    expect(baseline).toEqual({
+      transcriptFile: file,
+      offset: sizeBeforeLaunch,
+    });
     expect(reader.read()).toEqual([
       { state: "working", prompt: null },
       { state: "working", prompt: "the resumed prompt" },
@@ -148,40 +163,66 @@ describe("NativeActivityReader", () => {
     expect(reader.read()).toEqual([]);
   });
 
-  it("never reads a resumed transcript it could not measure at launch", () => {
+  it("retries a failed baseline measurement before launch and keeps the size it then measures", async () => {
     const home = tempHome();
+    const file = writeRollout(home, codexTurn("an earlier prompt"));
+    const sizeBeforeLaunch = statSync(file).size;
+    const measured: number[] = [];
+    const baseline = await measureResumedTranscript(
+      CODEX_CLI,
+      { HOME: home },
+      SESSION_ID,
+      {
+        delayMs: 0,
+        measure: (filePath) => {
+          measured.push(measured.length + 1);
+          return measured.length < 3 ? null : statSync(filePath).size;
+        },
+      },
+    );
     const reader = new NativeActivityReader(CODEX_CLI, { HOME: home }, null, {
       kind: "resume",
       id: SESSION_ID,
+      ...baseline,
     });
-    writeRollout(home, [
-      ...codexTurn("an earlier prompt"),
-      ...codexTurn("the resumed prompt"),
-    ]);
-
-    expect(reader.read()).toEqual([]);
-    expect(reader.finish()).toBeNull();
-  });
-
-  it("never reads a resumed transcript it found but could not measure at launch", () => {
-    const home = tempHome();
-    const file = writeRollout(home, codexTurn("an earlier prompt"));
-    const measured: string[] = [];
-    const reader = new NativeActivityReader(
-      CODEX_CLI,
-      { HOME: home },
-      null,
-      { kind: "resume", id: SESSION_ID },
-      (filePath) => {
-        measured.push(filePath);
-        return null;
-      },
-    );
     appendFileSync(file, jsonl(codexTurn("the resumed prompt")));
 
-    expect(measured).toEqual([file]);
-    expect(reader.read()).toEqual([]);
-    expect(reader.finish()).toBeNull();
+    expect(measured).toEqual([1, 2, 3]);
+    expect(baseline).toEqual({
+      transcriptFile: file,
+      offset: sizeBeforeLaunch,
+    });
+    expect(reader.read()).toEqual([
+      { state: "working", prompt: null },
+      { state: "working", prompt: "the resumed prompt" },
+      { state: "idle", prompt: null },
+    ]);
+  });
+
+  it("refuses to resume when no baseline can be measured before launch", async () => {
+    const home = tempHome();
+    writeRollout(home, codexTurn("an earlier prompt"));
+    let attempts = 0;
+
+    await expect(
+      measureResumedTranscript(CODEX_CLI, { HOME: home }, SESSION_ID, {
+        attempts: 4,
+        delayMs: 0,
+        measure: () => {
+          attempts += 1;
+          return null;
+        },
+      }),
+    ).rejects.toThrow(
+      `could not read the codex transcript of session ${SESSION_ID}`,
+    );
+    expect(attempts).toBe(4);
+    await expect(
+      measureResumedTranscript(CODEX_CLI, { HOME: tempHome() }, SESSION_ID, {
+        attempts: 2,
+        delayMs: 0,
+      }),
+    ).rejects.toThrow("so it did not resume it");
   });
 
   it("reads a started session's transcript that appears after launch from its first record", () => {

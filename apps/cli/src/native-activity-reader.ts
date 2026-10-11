@@ -10,13 +10,55 @@ import {
 import {
   findNativeSessionFile,
   type NativeHarnessEnv,
-  type NativeHarnessSession,
 } from "./native-harness.js";
+
+export type NativeActivityStart =
+  | { kind: "discover" }
+  | { kind: "start"; id: string }
+  | { kind: "resume"; id: string; transcriptFile: string; offset: number };
+
+export interface ResumedTranscriptBaseline {
+  transcriptFile: string;
+  offset: number;
+}
+
+export async function measureResumedTranscript(
+  cli: ProviderNativeTerminal,
+  env: NativeHarnessEnv,
+  sessionId: string,
+  options: {
+    attempts?: number;
+    delayMs?: number;
+    measure?: (filePath: string) => number | null;
+  } = {},
+): Promise<ResumedTranscriptBaseline> {
+  const attempts = options.attempts ?? 5;
+  const delayMs = options.delayMs ?? 200;
+  const measure = options.measure ?? fileSize;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    let transcriptFile: string | null;
+    try {
+      transcriptFile = findNativeSessionFile(cli, env, sessionId);
+    } catch {
+      transcriptFile = null;
+    }
+    const offset = transcriptFile === null ? null : measure(transcriptFile);
+    if (transcriptFile !== null && offset !== null) {
+      return { transcriptFile, offset };
+    }
+    if (attempt < attempts) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+  throw new Error(
+    `bb could not read the ${cli.executable} transcript of session ${sessionId}, so it did not resume it.`,
+  );
+}
 
 export class NativeActivityReader {
   private readonly tracker = new NativeActivityTracker();
   private readonly hookTail = new JsonlTail(0);
-  private readonly transcriptTail: JsonlTail | null;
+  private readonly transcriptTail: JsonlTail;
   private transcriptFile: string | null;
   private sessionId: string | null;
 
@@ -24,17 +66,16 @@ export class NativeActivityReader {
     private readonly cli: ProviderNativeTerminal,
     private readonly env: NativeHarnessEnv,
     private readonly eventsFile: string | null,
-    session: NativeHarnessSession,
-    measure: (filePath: string) => number | null = fileSize,
+    start: NativeActivityStart,
   ) {
-    this.sessionId = session.kind === "discover" ? null : session.id;
-    this.transcriptFile = this.findTranscript();
-    if (session.kind !== "resume") {
-      this.transcriptTail = new JsonlTail(0);
+    if (start.kind === "resume") {
+      this.sessionId = start.id;
+      this.transcriptFile = start.transcriptFile;
+      this.transcriptTail = new JsonlTail(start.offset);
     } else {
-      const baseline =
-        this.transcriptFile === null ? null : measure(this.transcriptFile);
-      this.transcriptTail = baseline === null ? null : new JsonlTail(baseline);
+      this.sessionId = start.kind === "start" ? start.id : null;
+      this.transcriptFile = this.findTranscript();
+      this.transcriptTail = new JsonlTail(0);
     }
   }
 
@@ -56,9 +97,7 @@ export class NativeActivityReader {
       }
     }
     const transcript = activity.transcript;
-    if (transcript === undefined || this.transcriptTail === null) {
-      return reports;
-    }
+    if (transcript === undefined) return reports;
     this.transcriptFile ??= this.findTranscript();
     if (this.transcriptFile === null) return reports;
     for (const record of this.transcriptTail.readRecords(this.transcriptFile)) {

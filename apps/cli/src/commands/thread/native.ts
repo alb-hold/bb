@@ -21,7 +21,10 @@ import {
   nativeActivityHookSettings,
   type NativeActivityReport,
 } from "../../native-activity.js";
-import { NativeActivityReader } from "../../native-activity-reader.js";
+import {
+  measureResumedTranscript,
+  NativeActivityReader,
+} from "../../native-activity-reader.js";
 import {
   findNativeSession,
   resolveNativeHarnessLaunch,
@@ -265,7 +268,16 @@ async function holdNativeHarness(
         spec.cli,
         process.env,
         file,
-        launch.session,
+        launch.session.kind === "resume"
+          ? {
+              ...launch.session,
+              ...(await measureResumedTranscript(
+                spec.cli,
+                process.env,
+                launch.session.id,
+              )),
+            }
+          : launch.session,
       );
       if (activity !== undefined) {
         activityTimers.push(
