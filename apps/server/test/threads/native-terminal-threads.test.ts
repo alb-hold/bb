@@ -2,7 +2,13 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { getNativeTerminalThread, getThread, listEvents } from "@bb/db";
+import {
+  getNativeTerminalThread,
+  getThread,
+  listEvents,
+  threads,
+  upsertProjectExecutionDefaults,
+} from "@bb/db";
 import {
   hostDaemonServerWsMessageSchema,
   type HostDaemonServerWsMessage,
@@ -16,6 +22,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { queueParentSystemMessage } from "../../src/services/threads/parent-system-messages.js";
 import { sendThreadMessage } from "../../src/services/threads/thread-send.js";
+import { resolvePendingThreadSessionOptions } from "../../src/services/threads/thread-session-options.js";
 import { readJson } from "../helpers/json.js";
 import { textInput } from "../helpers/prompt-input.js";
 import {
@@ -127,11 +134,12 @@ async function postJson(
 
 async function createNativeThread(
   fixture: Fixture,
-  args: { providerId: string; prompt?: string },
+  args: { providerId: string; prompt?: string; model?: string },
 ) {
   const response = await postJson(fixture, "/threads", {
     projectId: fixture.projectId,
     providerId: args.providerId,
+    ...(args.model === undefined ? {} : { model: args.model }),
     origin: "cli",
     input: args.prompt === undefined ? [] : textInput(args.prompt),
     environment: { type: "reuse", environmentId: fixture.environment.id },
@@ -594,6 +602,75 @@ describe("native terminal threads", () => {
       nativeTerminal: true,
     });
     expect(response.status).toBe(400);
+  });
+
+  it("rejects creation fields a native terminal thread cannot honor", async () => {
+    const fixture = await createFixture();
+    for (const [field, value] of [
+      ["sessionOptions", { daybreak: true }],
+      ["sendAt", Date.now() + 60_000],
+      ["sourceThreadId", "thread-source"],
+    ] as const) {
+      const response = await postJson(fixture, "/threads", {
+        projectId: fixture.projectId,
+        providerId: "claude-code",
+        origin: "cli",
+        input: [],
+        environment: { type: "reuse", environmentId: fixture.environment.id },
+        nativeTerminal: true,
+        [field]: value,
+      });
+      expect(response.status).toBe(400);
+      expect(JSON.stringify(await readJson(response))).toContain(
+        `${field} is not supported for native terminal threads`,
+      );
+    }
+    expect(
+      fixture.harness.db.select({ id: threads.id }).from(threads).all(),
+    ).toEqual([]);
+    expect(
+      daemonMessages(fixture.socket).some(
+        (message) => message.type === "terminal.open",
+      ),
+    ).toBe(false);
+  });
+
+  it("keeps the requested provider and model instead of project execution defaults", async () => {
+    const fixture = await createFixture();
+    upsertProjectExecutionDefaults(fixture.harness.db, {
+      projectId: fixture.projectId,
+      providerId: "codex",
+      model: "gpt-standard",
+      serviceTier: "default",
+      reasoningLevel: "low",
+      permissionMode: "full",
+    });
+
+    const unpinned = await createNativeThread(fixture, {
+      providerId: "claude-code",
+    });
+    const pinned = await createNativeThread(fixture, {
+      providerId: "claude-code",
+      model: "opus",
+    });
+
+    for (const [thread, model] of [
+      [unpinned, null],
+      [pinned, "opus"],
+    ] as const) {
+      expect(thread.providerId).toBe("claude-code");
+      const record = getNativeTerminalThread(fixture.harness.db, thread.id);
+      expect(record?.providerId).toBe("claude-code");
+      expect(record?.model).toBe(model);
+      expect(
+        resolvePendingThreadSessionOptions(fixture.harness.db, thread.id),
+      ).toEqual({});
+      const types = listEvents(fixture.harness.db, {
+        threadId: thread.id,
+      }).map((event) => event.type);
+      expect(types).not.toContain("thread/extensionState/updated");
+      expect(types).not.toContain("client/thread/start");
+    }
   });
 
   it("binds a discovered codex session to exactly one thread", async () => {

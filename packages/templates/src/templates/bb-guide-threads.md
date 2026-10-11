@@ -21,7 +21,8 @@ Spawning:
     --title <title>                Thread title
     --native                       Run the provider's own CLI in the thread's terminal instead of
                                    the chat view (providers that declare one, such as claude-code
-                                   and codex); --prompt becomes optional and is its first message
+                                   and codex); --prompt becomes optional and is its first message.
+                                   Cannot be combined with --option, --send-at or a fork
     --plugin-create-data <json>    Non-secret plugin creation configuration keyed by plugin ID.
                                    Applies before message admission. For Account Pooler:
                                    {"account-pool":{"provider":"claude","accountId":"<uuid>"}}

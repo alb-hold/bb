@@ -1696,7 +1696,7 @@ export function NewThreadComposer({
         reasoningLevel,
         permissionMode,
         ...(supportsServiceTier && serviceTier ? { serviceTier } : {}),
-        ...(Object.keys(sessionOptionSelections).length > 0
+        ...(!nativeTerminal && Object.keys(sessionOptionSelections).length > 0
           ? { sessionOptions: sessionOptionSelections }
           : {}),
         executionInputSources: resolveSubmittedExecutionSources(
@@ -2063,6 +2063,7 @@ export function NewThreadComposer({
               supported: supportsPermissionModeSelection,
             },
             sessionOptionsControl:
+              nativeTerminal ||
               placedSessionOptions.footer.length === 0 ? null : (
                 <SessionOptionsMenu
                   options={placedSessionOptions.footer}
@@ -2165,7 +2166,7 @@ export function NewThreadComposer({
               options: reasoningOptions,
               onChange: handleReasoningChange,
             },
-            ...(pickerSessionOptionSections.length === 0
+            ...(nativeTerminal || pickerSessionOptionSections.length === 0
               ? {}
               : {
                   agentOptions: {

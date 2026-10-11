@@ -421,7 +421,7 @@ export function registerSpawnCommand(
     .option("--send-at <when>", SEND_AT_HELP)
     .option(
       "--native",
-      "Run the provider's own CLI in the thread's terminal instead of the chat view (providers that declare one, such as claude-code and codex); --prompt becomes its first message",
+      "Run the provider's own CLI in the thread's terminal instead of the chat view (providers that declare one, such as claude-code and codex); --prompt becomes its first message. Cannot be combined with --option, --send-at or a fork",
     )
     .option("--origin-kind <kind>", "Thread origin: fork")
     .option("--source-thread <id>", "Source thread for a fork")

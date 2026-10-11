@@ -174,6 +174,7 @@ export const createThreadRequestSchema = z
     if (value.nativeTerminal === true) {
       for (const field of [
         "sendAt",
+        "sessionOptions",
         "sourceThreadId",
         "sourceSeqEnd",
         "pluginSubmission",
