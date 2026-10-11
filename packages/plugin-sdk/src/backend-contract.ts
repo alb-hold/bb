@@ -1670,9 +1670,20 @@ export interface PluginProviderDeclaration {
    *   day before) whose `header.match` fields equal the given strings, and
    *   binds the one whose `header.cwd` is the thread workspace and whose
    *   `header.startedAt` follows the launch. Later launches use `resumeArgs`.
+   * - `activity` (optional): how bb learns that the CLI is working on a turn,
+   *   so the thread shows as working, then as done, and gets a title from its
+   *   first prompt. `hooks` adds `args` (with `{settings}` replaced by a JSON
+   *   object of Claude Code style `hooks`) whose `working` and `idle` events
+   *   report the turn; `promptField` names the prompt in the `working` event's
+   *   input. `transcript` reads records the CLI appends to its session file
+   *   after launch: a record whose fields equal every `equals` value and
+   *   start with every `startsWith` value marks the turn `working` or `idle`,
+   *   and a `prompt` match takes the prompt from its `text` field. Field paths
+   *   are dotted and may index arrays (`message.content.0.text`). A CLI that
+   *   exits always reports idle.
    *
-   * `{sessionId}` is the only token in session argv. Argument lists hold at
-   * most 16 entries.
+   * `{sessionId}` is the only token in session argv, and `{settings}` the only
+   * token in `activity.hooks.args`. Argument lists hold at most 16 entries.
    */
   experimental_nativeTerminal?: ProviderNativeTerminal;
   /**
@@ -2124,7 +2135,9 @@ export interface PluginStatusApi {
 export type PluginBbSdk = Omit<BbSdk, "threads"> & {
   threads: Omit<
     BbSdk["threads"],
-    "getPluginMetadata" | "updatePluginMetadata" | "experimental_listPluginMetadata"
+    | "getPluginMetadata"
+    | "updatePluginMetadata"
+    | "experimental_listPluginMetadata"
   > & {
     getPluginMetadata(
       args: Omit<ThreadPluginMetadataArgs, "pluginId"> & { pluginId?: string },

@@ -14,6 +14,7 @@ import type { NativeTerminalLaunchSpec } from "@bb/server-contract";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   findNativeSession,
+  findNativeSessionFile,
   resolveNativeHarnessLaunch,
 } from "../native-harness.js";
 
@@ -192,6 +193,53 @@ describe("resolveNativeHarnessLaunch", () => {
       args: ["-c", 'model="gpt-6"', "resume", "abc-123"],
       discoverSession: false,
     });
+  });
+});
+
+describe("native session activity wiring", () => {
+  it("passes activity args after the model and before the session args", () => {
+    expect(
+      resolveNativeHarnessLaunch(
+        spec({ initialPrompt: "fix the build", model: "opus" }),
+        { HOME: tempHome() },
+        ["--settings", "{}"],
+      ).args,
+    ).toEqual([
+      "--model",
+      "opus",
+      "--settings",
+      "{}",
+      "--session-id",
+      "6f1c2a8e-7d1b-4a55-9f0e-1c2d3e4f5a6b",
+      "fix the build",
+    ]);
+  });
+
+  it("finds a resumed codex rollout from an earlier day by its header id", () => {
+    const home = tempHome();
+    const id = "019a1f3e-0000-7000-8000-000000000001";
+    const older = writeRollout({
+      home,
+      id,
+      cwd: "/work/a",
+      timestamp: new Date("2026-01-03T10:00:00Z"),
+    });
+    writeRollout({
+      home,
+      id: "019a1f3e-0000-7000-8000-000000000002",
+      cwd: "/work/a",
+      timestamp: new Date("2026-02-04T10:00:00Z"),
+    });
+    expect(findNativeSessionFile(DISCOVERED_CLI, { HOME: home }, id)).toBe(
+      older,
+    );
+    expect(
+      findNativeSessionFile(
+        DISCOVERED_CLI,
+        { HOME: home },
+        "019a1f3e-0000-7000-8000-000000000009",
+      ),
+    ).toBeNull();
   });
 });
 

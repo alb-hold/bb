@@ -317,11 +317,13 @@ import {
 import {
   openNativeTerminalRequestSchema,
   recordNativeSessionRequestSchema,
+  reportNativeTerminalActivityRequestSchema,
   switchNativeTerminalModeRequestSchema,
   type NativeTerminalLaunchSpec,
   type NativeTerminalThread,
   type OpenNativeTerminalRequest,
   type RecordNativeSessionRequest,
+  type ReportNativeTerminalActivityRequest,
   type SwitchNativeTerminalModeRequest,
 } from "./api/native-terminal-threads.js";
 import type {
@@ -1907,6 +1909,14 @@ export const publicApiRoutes = {
         recordNativeSessionRequestSchema,
       ),
       response: jsonResponse<NativeTerminalThread>(),
+    }),
+    reportActivity: defineRoute({
+      path: "/threads/:id/native-terminal/activity",
+      method: "post",
+      request: jsonRequest<PathId, ReportNativeTerminalActivityRequest>(
+        reportNativeTerminalActivityRequestSchema,
+      ),
+      response: jsonResponse<{ ok: true }>(),
     }),
   },
 

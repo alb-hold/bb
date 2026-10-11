@@ -78,6 +78,26 @@ export default function plugin(bb: BbPluginApi) {
         resumeArgs: ["--resume", "{sessionId}"],
         transcript: "projects/*/{sessionId}.jsonl",
       },
+      activity: {
+        hooks: {
+          args: ["--settings", "{settings}"],
+          working: ["UserPromptSubmit"],
+          idle: ["Stop"],
+          promptField: "prompt",
+        },
+        transcript: {
+          working: [],
+          idle: [
+            {
+              equals: { type: "user" },
+              startsWith: {
+                "message.content.0.text": "[Request interrupted by user",
+              },
+            },
+          ],
+          prompt: [],
+        },
+      },
     },
     maintenance: { health: true, usage: true, installation: true },
     capabilities: {

@@ -153,7 +153,13 @@ launch day and the day before), keeps those whose `header.match` fields equal
 the given strings, and binds the single one whose `header.cwd` is the thread
 workspace and whose `header.startedAt` follows the launch; later launches use
 `resumeArgs`. `*` matches within one path segment, and `{sessionId}` is the
-only token in session argv.
+only token in session argv. The optional `activity` block lets a native thread
+show Working, Done and a title: `hooks` names the CLI's hook events for a
+started and an ended turn, the field holding the prompt, and the argv that
+loads `{settings}` (bb fills in hooks that append each event to a private
+file); `transcript` lists record matches on the session file (`equals` field
+values, `startsWith` prefixes, dotted paths with numeric array indexes) for
+working, idle and prompt records.
 
 Rules:
 

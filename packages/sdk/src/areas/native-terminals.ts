@@ -1,4 +1,5 @@
 import type {
+  NativeTerminalActivityState,
   NativeTerminalLaunchSpec,
   NativeTerminalMode,
   NativeTerminalThread,
@@ -23,6 +24,11 @@ export interface NativeTerminalSwitchModeArgs extends NativeTerminalThreadArgs {
   mode: NativeTerminalMode;
 }
 
+export interface NativeTerminalReportActivityArgs extends NativeTerminalThreadArgs {
+  state: NativeTerminalActivityState;
+  prompt?: string;
+}
+
 export type NativeTerminalThreadResult = NativeTerminalThread;
 export type NativeTerminalLaunchResult = NativeTerminalLaunchSpec;
 
@@ -38,6 +44,7 @@ export interface NativeTerminalsArea {
   switchMode(
     args: NativeTerminalSwitchModeArgs,
   ): Promise<NativeTerminalThreadResult | null>;
+  reportActivity(args: NativeTerminalReportActivityArgs): Promise<{ ok: true }>;
 }
 
 export function createNativeTerminalsArea(
@@ -82,6 +89,20 @@ export function createNativeTerminalsArea(
           {
             param: { id: input.threadId },
             json: { mode: input.mode },
+          },
+          ...signalRequestArgs(input.signal),
+        ),
+      );
+    },
+    async reportActivity(input) {
+      return transport.readJson(
+        route().activity.$post(
+          {
+            param: { id: input.threadId },
+            json: {
+              state: input.state,
+              ...(input.prompt === undefined ? {} : { prompt: input.prompt }),
+            },
           },
           ...signalRequestArgs(input.signal),
         ),

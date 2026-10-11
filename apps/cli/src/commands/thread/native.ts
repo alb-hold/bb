@@ -1,17 +1,33 @@
 import { spawn } from "node:child_process";
+import { rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { Command } from "commander";
 import type { NativeTerminalThread } from "@bb/server-contract";
 import { action, CliExitError } from "../../action.js";
 import { createCliBbSdk } from "../../client.js";
 import { requireThreadIdOrSelf } from "../../context-env.js";
+import { fillNativeTerminalTemplate } from "@bb/domain";
+import {
+  classifyHookRecord,
+  classifyTranscriptRecord,
+  JsonlTail,
+  nativeActivityHookSettings,
+  NativeActivityTracker,
+  type NativeActivityReport,
+} from "../../native-activity.js";
 import {
   findNativeSession,
+  findNativeSessionFile,
   resolveNativeHarnessLaunch,
 } from "../../native-harness.js";
 import { outputJson } from "../helpers.js";
 import { attachTerminal } from "../terminal.js";
 
 const SESSION_DISCOVERY_INTERVAL_MS = 2_000;
+const ACTIVITY_POLL_INTERVAL_MS = 750;
+const ACTIVITY_HEARTBEAT_INTERVAL_MS = 30_000;
+const ACTIVITY_FLUSH_TIMEOUT_MS = 3_000;
 const FORWARDED_SIGNALS = ["SIGTERM", "SIGHUP"] as const;
 const SWALLOWED_SIGNALS = ["SIGINT", "SIGQUIT"] as const;
 
@@ -43,7 +59,26 @@ async function runNativeHarness(
 ): Promise<number> {
   const sdk = createCliBbSdk(baseUrl);
   const spec = await sdk.nativeTerminals.launch({ threadId });
-  const launch = resolveNativeHarnessLaunch(spec, process.env);
+  const activity = spec.cli.activity;
+  const hooks = activity?.hooks;
+  const eventsFile =
+    hooks === undefined
+      ? null
+      : path.join(
+          os.tmpdir(),
+          `bb-native-activity-${threadId}-${process.pid}.jsonl`,
+        );
+  if (eventsFile !== null) writeFileSync(eventsFile, "", { mode: 0o600 });
+  const activityArgs =
+    hooks === undefined || eventsFile === null
+      ? []
+      : hooks.args.map((arg) =>
+          fillNativeTerminalTemplate(arg, {
+            settings: nativeActivityHookSettings(hooks, eventsFile),
+          }),
+        );
+  const launch = resolveNativeHarnessLaunch(spec, process.env, activityArgs);
+  const resuming = !launch.discoverSession && spec.nativeSessionId !== null;
   const cwd = process.cwd();
   const launchedAtMs = Date.now();
   const child = spawn(launch.command, launch.args, {
@@ -58,6 +93,7 @@ async function runNativeHarness(
     });
   }
 
+  let sessionId = spec.nativeSessionId;
   let recorded = !launch.discoverSession;
   const discover = async (): Promise<void> => {
     if (recorded) return;
@@ -75,6 +111,7 @@ async function runNativeHarness(
     }
     if (match.kind !== "unique") return;
     recorded = true;
+    sessionId = match.sessionId;
     try {
       await sdk.nativeTerminals.recordSession({
         threadId,
@@ -90,6 +127,64 @@ async function runNativeHarness(
       }, SESSION_DISCOVERY_INTERVAL_MS)
     : null;
 
+  const tracker = new NativeActivityTracker();
+  const hookTail = new JsonlTail(false);
+  const transcriptTail = new JsonlTail(resuming);
+  let transcriptFile: string | null = null;
+  let reporting: Promise<void> = Promise.resolve();
+  const report = (next: NativeActivityReport | null): void => {
+    if (next === null) return;
+    reporting = reporting.then(() =>
+      sdk.nativeTerminals
+        .reportActivity({
+          threadId,
+          state: next.state,
+          ...(next.prompt === null ? {} : { prompt: next.prompt }),
+        })
+        .then(
+          () => undefined,
+          () => undefined,
+        ),
+    );
+  };
+  const readActivity = (): void => {
+    if (activity === undefined) return;
+    if (hooks !== undefined && eventsFile !== null) {
+      for (const record of hookTail.readRecords(eventsFile)) {
+        report(tracker.apply(classifyHookRecord(hooks, record)));
+      }
+    }
+    if (activity.transcript === undefined) return;
+    if (transcriptFile === null && sessionId !== null) {
+      try {
+        transcriptFile = findNativeSessionFile(
+          spec.cli,
+          process.env,
+          sessionId,
+        );
+      } catch {
+        transcriptFile = null;
+      }
+    }
+    if (transcriptFile === null) return;
+    for (const record of transcriptTail.readRecords(transcriptFile)) {
+      report(
+        tracker.apply(classifyTranscriptRecord(activity.transcript, record)),
+      );
+    }
+  };
+  const activityTimer =
+    activity === undefined
+      ? null
+      : setInterval(readActivity, ACTIVITY_POLL_INTERVAL_MS);
+  const heartbeatTimer =
+    activity === undefined
+      ? null
+      : setInterval(
+          () => report(tracker.heartbeat()),
+          ACTIVITY_HEARTBEAT_INTERVAL_MS,
+        );
+
   const exitCode = await new Promise<number>((resolve, reject) => {
     child.once("error", reject);
     child.once("exit", (code, signal) => {
@@ -97,7 +192,16 @@ async function runNativeHarness(
     });
   });
   if (timer !== null) clearInterval(timer);
+  if (activityTimer !== null) clearInterval(activityTimer);
+  if (heartbeatTimer !== null) clearInterval(heartbeatTimer);
   await discover();
+  readActivity();
+  report(tracker.finish());
+  await Promise.race([
+    reporting,
+    new Promise((resolve) => setTimeout(resolve, ACTIVITY_FLUSH_TIMEOUT_MS)),
+  ]);
+  if (eventsFile !== null) rmSync(eventsFile, { force: true });
   return exitCode;
 }
 

@@ -136,6 +136,14 @@ hostId, providerId, projectId, parentThreadId, groupBy })`.
   sent and tell fails with `native_terminal_input_ambiguous`; type it in the
   terminal or reword it. Read the screen with
   `bb terminal read <terminal-id>`.
+- A native thread shows `Working` while its CLI runs a turn and `Done` when
+  the turn ends, and the first prompt typed in the terminal titles an untitled
+  thread. The harness reads Claude Code's prompt and stop hooks and Codex's
+  rollout file, and re-reports a running turn every 30 seconds, so a daemon
+  reconnect that marked the turn failed shows it working again.
+  `bb thread stop <thread-id>` presses Esc in the native terminal instead of
+  stopping an agent, and fails with `native_terminal_not_running` when the
+  harness has exited.
 - A Codex native thread learns its session id from the rollout file Codex
   writes for the thread's workspace. Two native Codex threads started in the
   same workspace at the same moment stay unbound rather than guess; resume then
