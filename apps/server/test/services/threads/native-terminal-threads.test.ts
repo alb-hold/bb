@@ -14,7 +14,10 @@ import {
 } from "@bb/db";
 import { eq } from "drizzle-orm";
 import { createProviderRegistryService } from "../../../src/services/providers/provider-registry.js";
-import { reopenNativeTerminalsAfterDaemonReconnect } from "../../../src/services/threads/native-terminal-threads.js";
+import {
+  reopenNativeTerminalsAfterDaemonReconnect,
+  takeNativeTerminalLaunchSpec,
+} from "../../../src/services/threads/native-terminal-threads.js";
 import { createTestProviderRegistry } from "../../helpers/provider-registry.js";
 import {
   withTestHarness,
@@ -125,6 +128,9 @@ describe("reopenNativeTerminalsAfterDaemonReconnect", () => {
 
       expect(warn).not.toHaveBeenCalled();
       expect(createTerminal).toHaveBeenCalledOnce();
+      expect(
+        takeNativeTerminalLaunchSpec(h.deps, threadId).nativeSessionId,
+      ).toBe("session-existing-1");
       const start = createTerminal.mock.calls[0]?.[0].payload.start;
       if (start?.mode !== "command") {
         throw new Error("Expected a command terminal launch");
