@@ -501,8 +501,8 @@ describe("native terminal threads", () => {
     const cli = startFakeCli(
       fixture,
       open.terminalId,
-      () => "\u001b[2K> [Pasted text #2 +59 lines]",
-      "\u001b[1;1H> [Pasted text #1 +59 lines]\r\n\u001b[2K> ",
+      () => "\u001b[2;1H\u001b[2K> [Pasted text #2 +59 lines]",
+      "\u001b[1;1H> [Pasted text #1 +59 lines]",
     );
     const message = Array.from(
       { length: 60 },

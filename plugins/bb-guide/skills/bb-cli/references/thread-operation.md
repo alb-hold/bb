@@ -115,7 +115,7 @@ hostId, providerId, projectId, parentThreadId, groupBy })`.
   same session (`claude --resume <id>` or `codex resume <id>`). It prints the
   harness, the native session id, and the terminal; `--attach` attaches this
   terminal to it, and `--json` returns the record.
-- `bb thread tell <thread-id> --message "..."` pastes the text into the running
+- `bb thread tell <thread-id> "..."` pastes the text into the running
   native terminal and presses Enter. It fails with
   `native_terminal_not_running` when the harness is not running; reopen it with
   `bb thread native` first. bb presses Enter only once the CLI shows the text

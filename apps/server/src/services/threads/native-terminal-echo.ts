@@ -1,8 +1,14 @@
+const TERMINAL_TOKEN =
+  /\u001b\[([0-9;?<>=]*)([ -/]*)([@-~])|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[()][A-Za-z0-9]|\u001b([78DEMc=>])|([\s\S])/gu;
 const TERMINAL_CONTROL_SEQUENCE =
-  /\u001b\[[0-9;?<>=]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[()][A-Za-z0-9]|\u001b[=>78DEHM]/gu;
+  /\u001b\[[0-9;?<>=]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[()][A-Za-z0-9]|\u001b[=>78DEHMc]/gu;
+const ECHO_IGNORED_CHARACTER = /^[\s─-╿]$/u;
 const ECHO_IGNORED_CHARACTERS = /[\s─-╿]/gu;
 const ECHO_TAIL_LENGTH = 32;
+const ECHO_DRAWN_SHARE = 0.75;
 const PLACEHOLDER_DETAIL_LENGTH = 32;
+
+type EchoToken = string | null;
 
 export function normalizeTerminalEcho(value: string): string {
   return value
@@ -18,40 +24,204 @@ export function decodeTerminalOutputChunks(
   ).toString("utf8");
 }
 
-function textEchoMarker(text: string): string | null {
-  const normalized = normalizeTerminalEcho(text);
-  return normalized.length > 0 ? normalized.slice(-ECHO_TAIL_LENGTH) : null;
+function csiNumbers(params: string): number[] {
+  return params.length === 0
+    ? []
+    : params.split(";").map((part) => Number.parseInt(part, 10) || 0);
 }
 
-function placeholderEchoMarkers(
-  output: string,
-  pastePlaceholders: readonly string[],
-): string[] {
-  const markers: string[] = [];
-  for (const placeholder of pastePlaceholders) {
-    const prefix = normalizeTerminalEcho(placeholder);
-    if (prefix.length === 0) continue;
-    let index = output.indexOf(prefix);
-    while (index !== -1) {
-      const close = output.indexOf("]", index + prefix.length);
-      const end =
-        close !== -1 &&
-        close - index <= prefix.length + PLACEHOLDER_DETAIL_LENGTH
-          ? close + 1
-          : index + prefix.length;
-      markers.push(output.slice(index, end));
-      index = output.indexOf(prefix, index + prefix.length);
+function replayTerminalOutput(output: string): EchoToken[] {
+  const rows = new Map<number, Map<number, string>>();
+  let row = 0;
+  let column = 0;
+  let saved = { row: 0, column: 0 };
+  const rowCells = (index: number) => {
+    let cells = rows.get(index);
+    if (cells === undefined) {
+      cells = new Map();
+      rows.set(index, cells);
+    }
+    return cells;
+  };
+  const eraseRow = (index: number, keep: (cell: number) => boolean) => {
+    const cells = rows.get(index);
+    if (cells === undefined) return;
+    for (const cell of [...cells.keys()]) {
+      if (!keep(cell)) cells.delete(cell);
+    }
+  };
+  for (const match of output.matchAll(TERMINAL_TOKEN)) {
+    const [, params, intermediates, final, escape, character] = match;
+    if (final !== undefined) {
+      if (/^[?<>=]/u.test(params ?? "") || (intermediates ?? "") !== "") {
+        continue;
+      }
+      const numbers = csiNumbers(params ?? "");
+      const count = Math.max(1, numbers[0] ?? 1);
+      switch (final) {
+        case "H":
+        case "f":
+          row = Math.max(1, numbers[0] ?? 1) - 1;
+          column = Math.max(1, numbers[1] ?? 1) - 1;
+          break;
+        case "A":
+          row -= count;
+          break;
+        case "B":
+          row += count;
+          break;
+        case "C":
+          column += count;
+          break;
+        case "D":
+          column = Math.max(0, column - count);
+          break;
+        case "E":
+          row += count;
+          column = 0;
+          break;
+        case "F":
+          row -= count;
+          column = 0;
+          break;
+        case "G":
+          column = count - 1;
+          break;
+        case "d":
+          row = count - 1;
+          break;
+        case "K": {
+          const mode = numbers[0] ?? 0;
+          const from = column;
+          eraseRow(row, (cell) =>
+            mode === 0 ? cell < from : mode === 1 ? cell > from : false,
+          );
+          break;
+        }
+        case "J": {
+          const mode = numbers[0] ?? 0;
+          if (mode >= 2) {
+            rows.clear();
+            break;
+          }
+          const from = { row, column };
+          for (const index of [...rows.keys()]) {
+            if (mode === 0 ? index > from.row : index < from.row) {
+              rows.delete(index);
+            }
+          }
+          eraseRow(row, (cell) =>
+            mode === 0 ? cell < from.column : cell > from.column,
+          );
+          break;
+        }
+        default:
+          break;
+      }
+      continue;
+    }
+    if (escape !== undefined) {
+      if (escape === "7") saved = { row, column };
+      if (escape === "8") ({ row, column } = saved);
+      if (escape === "D") row += 1;
+      if (escape === "E") {
+        row += 1;
+        column = 0;
+      }
+      if (escape === "M") row -= 1;
+      if (escape === "c") rows.clear();
+      continue;
+    }
+    if (character === undefined) continue;
+    if (character === "\r") column = 0;
+    else if (character === "\n") row += 1;
+    else if (character === "\b") column = Math.max(0, column - 1);
+    else if (character === "\t") column = (Math.floor(column / 8) + 1) * 8;
+    else if (character.codePointAt(0)! >= 0x20 && character !== "\u007f") {
+      rowCells(row).set(column, character);
+      column += 1;
     }
   }
-  return markers;
+  const tokens: EchoToken[] = [];
+  for (const index of [...rows.keys()].sort((a, b) => a - b)) {
+    const cells = rows.get(index)!;
+    if (cells.size === 0) continue;
+    const last = Math.max(...cells.keys());
+    for (let cell = 0; cell <= last; cell += 1) {
+      const value = cells.get(cell);
+      if (value === undefined) tokens.push(null);
+      else if (!ECHO_IGNORED_CHARACTER.test(value)) tokens.push(value);
+    }
+  }
+  return tokens;
+}
+
+function echoNeedle(value: string): string[] {
+  return Array.from(normalizeTerminalEcho(value));
+}
+
+function looseMatchEnds(tokens: EchoToken[], needle: string[]): number[] {
+  const length = needle.length;
+  if (length === 0) return [];
+  const required = Math.ceil(length * ECHO_DRAWN_SHARE);
+  const ends: number[] = [];
+  let best = new Array<number>(length + 1).fill(-1);
+  for (const [position, token] of tokens.entries()) {
+    best[0] = Math.max(best[0]!, 0);
+    const next = new Array<number>(length + 1).fill(-1);
+    for (let matched = 0; matched < length; matched += 1) {
+      const drawn = best[matched]!;
+      if (drawn < 0) continue;
+      if (token === null) {
+        next[matched] = Math.max(next[matched]!, drawn);
+        next[matched + 1] = Math.max(next[matched + 1]!, drawn);
+      } else if (token === needle[matched]) {
+        next[matched + 1] = Math.max(next[matched + 1]!, drawn + 1);
+      }
+    }
+    if (next[length]! >= required) ends.push(position);
+    best = next;
+  }
+  return ends;
+}
+
+function placeholderDetails(
+  tokens: EchoToken[],
+  pastePlaceholders: readonly string[],
+): EchoToken[][] {
+  const details: EchoToken[][] = [];
+  for (const placeholder of pastePlaceholders) {
+    for (const end of looseMatchEnds(tokens, echoNeedle(placeholder))) {
+      const detail: EchoToken[] = [];
+      for (const token of tokens.slice(
+        end + 1,
+        end + 1 + PLACEHOLDER_DETAIL_LENGTH,
+      )) {
+        detail.push(token);
+        if (token === "]") break;
+      }
+      details.push(detail);
+    }
+  }
+  return details;
+}
+
+function sameDetail(left: EchoToken[], right: EchoToken[]): boolean {
+  return (
+    left.length === right.length &&
+    left.every(
+      (token, index) =>
+        token === null || right[index] === null || token === right[index],
+    )
+  );
 }
 
 export function terminalOutputAlreadyShowsText(args: {
   output: string;
   text: string;
 }): boolean {
-  const marker = textEchoMarker(args.text);
-  return marker !== null && normalizeTerminalEcho(args.output).includes(marker);
+  const needle = echoNeedle(args.text).slice(-ECHO_TAIL_LENGTH);
+  return looseMatchEnds(replayTerminalOutput(args.output), needle).length > 0;
 }
 
 export function terminalOutputShowsPaste(args: {
@@ -60,12 +230,14 @@ export function terminalOutputShowsPaste(args: {
   pastePlaceholders: readonly string[];
   text: string;
 }): boolean {
-  const seen = normalizeTerminalEcho(args.before);
-  const output = normalizeTerminalEcho(args.output);
-  const textMarker = textEchoMarker(args.text);
-  const markers = [
-    ...(textMarker !== null && output.includes(textMarker) ? [textMarker] : []),
-    ...placeholderEchoMarkers(output, args.pastePlaceholders),
-  ];
-  return markers.some((marker) => !seen.includes(marker));
+  const drawn = replayTerminalOutput(args.output);
+  const needle = echoNeedle(args.text).slice(-ECHO_TAIL_LENGTH);
+  if (looseMatchEnds(drawn, needle).length > 0) return true;
+  const stale = placeholderDetails(
+    replayTerminalOutput(args.before),
+    args.pastePlaceholders,
+  );
+  return placeholderDetails(drawn, args.pastePlaceholders).some(
+    (detail) => !stale.some((seen) => sameDetail(detail, seen)),
+  );
 }

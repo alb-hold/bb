@@ -30,13 +30,49 @@ describe("terminalOutputShowsPaste", () => {
     ).toBe(false);
   });
 
-  it("does not count text that was on screen before the paste", () => {
+  it("finds text a diff renderer drew around a cell it skipped", () => {
     expect(
       terminalOutputShowsPaste({
-        before: "› run the tests\r\n• Ran pnpm test",
-        output: "\u001b[H\u001b[2J› run the tests\r\n• Ran pnpm test",
+        before: "",
+        output:
+          "\r\u001b[1B\u276f\u00a0Use your AskUserQuestion tool now to ask me which colour I prefer, with exactly two options: Teal and Amber. Do not\u001b[K\r\u001b[1B  answer it your\u001b[18Gelf.\u001b[K\r\u001b[39C\u001b[3B\u001b[K\u001b[36;1H\u001b[33;22H",
+        pastePlaceholders: ["[Pasted text #"],
+        text: "Use your AskUserQuestion tool now to ask me which colour I prefer, with exactly two options: Teal and Amber. Do not answer it yourself.",
+      }),
+    ).toBe(true);
+  });
+
+  it("finds text drawn with absolute moves around cells it skipped", () => {
+    expect(
+      terminalOutputShowsPaste({
+        before: "",
+        output:
+          "\u001b[30;3HRe\u001b[30;6Hly with exa\u001b[30;18Htly the word R\u001b[30;33HGHT-PANE",
+        pastePlaceholders: ["[Pasted Content "],
+        text: "Reply with exactly the word RIGHT-PANE",
+      }),
+    ).toBe(true);
+  });
+
+  it("does not take the message's letters scattered among other text", () => {
+    expect(
+      terminalOutputShowsPaste({
+        before: "",
+        output:
+          "\u001b[3;1HReply? 1. Yes with care 2. No exactly then the word list RIGHT-PANE-X? Esc",
         pastePlaceholders: [],
-        text: "run the tests",
+        text: "Reply with exactly the word RIGHT-PANE",
+      }),
+    ).toBe(false);
+  });
+
+  it("does not take a mostly undrawn region for the message", () => {
+    expect(
+      terminalOutputShowsPaste({
+        before: "",
+        output: "\u001b[5;1HR\u001b[5;60HE",
+        pastePlaceholders: [],
+        text: "Reply with exactly the word RIGHT-PANE",
       }),
     ).toBe(false);
   });
