@@ -55,7 +55,7 @@ type NativeTerminalViewDeps = Pick<
 const pendingOpens = new Map<string, Promise<NativeTerminalThread>>();
 const pendingSends = new Map<string, Promise<void>>();
 const NATIVE_TERMINAL_ECHO_POLL_MS = 100;
-const NATIVE_TERMINAL_ECHO_TIMEOUT_MS = 3000;
+const NATIVE_TERMINAL_ECHO_TIMEOUT_MS = 5000;
 const NATIVE_TERMINAL_ECHO_CONTEXT_BYTES = 64 * 1024;
 
 export interface NativeTerminalProvider {
