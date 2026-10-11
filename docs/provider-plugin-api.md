@@ -138,7 +138,11 @@ CLI in a thread terminal instead of a provider turn. Declaring it sets
 `ProviderInfo.capabilities.supportsNativeTerminal`, which offers the native
 terminal option; core never names a provider for it. The declaration is data
 the bb CLI runs on the thread's host: the `executable`, `modelArgs` placed
-first when the thread has a model (`{model}`), the `sessionRoot` (an `env`
+first when the thread has a model (`{model}`), `pastePlaceholders` (what the
+CLI draws in its input box instead of a long paste; bb presses Enter after a
+sent message only once the CLI newly draws the text or one of these, and
+sends nothing when the text is already on screen, so a message can never
+confirm an open menu), the `sessionRoot` (an `env`
 override, else `home` under the host home), and how the session id is
 obtained. With `"assigned"`, bb picks a UUID, starts the CLI with
 `startArgs` and the first prompt, and relaunches with `resumeArgs` once the

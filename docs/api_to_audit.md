@@ -1009,8 +1009,11 @@ turn. It replaces the provider-id table the first native terminal
 implementation kept in core: the server, the bb CLI wrapper and the composer
 read the declaration, and `ProviderInfo.capabilities.supportsNativeTerminal`
 tells clients whether to offer the option. The declaration is data, not code:
-an executable, model argv, a session-file root (env override plus a
-home-relative default), and either an `assigned` session (bb picks a UUID;
+an executable, model argv, the placeholders the CLI draws instead of a long
+paste (the server presses Enter after a sent message only once the CLI newly
+draws the text or a placeholder, and sends nothing when the text is already on
+screen, so a message never confirms an open menu), a session-file root (env
+override plus a home-relative default), and either an `assigned` session (bb picks a UUID;
 start and resume argv plus a transcript pattern that proves the session
 exists) or a `discovered` session (the CLI picks its id; bb reads the first
 JSON line of the matching transcript files and binds the one started in the

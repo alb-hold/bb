@@ -1632,6 +1632,13 @@ export interface PluginProviderDeclaration {
    * - `executable`: a bare name resolved on the host `PATH`.
    * - `modelArgs`: argv placed first when the thread has a model; `{model}` is
    *   replaced. Empty when the CLI takes no model flag.
+   * - `pastePlaceholders`: text the CLI draws in its input box instead of a
+   *   long paste, such as `"[Pasted text #"`; empty when it always draws the
+   *   pasted text. A message sent to the thread is pasted, and bb presses
+   *   Enter only once the CLI newly draws the pasted text or one of these
+   *   placeholders. A menu or dialog draws neither, so a message can never
+   *   confirm it; the send fails instead. Text already on screen is never
+   *   sent, because its echo could not be told apart from a redraw.
    * - `sessionRoot`: where the CLI keeps its session files: the `env`
    *   variable when it is set on the host, else `home` under the host home.
    * - `session`, `"assigned"`: bb picks a UUID and starts the CLI with

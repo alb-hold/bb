@@ -186,6 +186,75 @@ async function openRunningNativeThread(
   return { open, thread };
 }
 
+type FakeCliScreen = (pasted: string) => string | null;
+
+interface FakeCli {
+  inputs(): string[];
+  stop(): void;
+}
+
+function startFakeCli(
+  fixture: Fixture,
+  terminalId: string,
+  screen: FakeCliScreen,
+  redraw: string | null = null,
+): FakeCli {
+  const output: { seq: number; dataBase64: string }[] = [];
+  let nextSeq = 7;
+  let handled = 0;
+  const draw = (text: string) => {
+    output.push({
+      seq: nextSeq,
+      dataBase64: Buffer.from(text, "utf8").toString("base64"),
+    });
+    nextSeq += 1;
+  };
+  if (redraw !== null) draw(redraw);
+  const timer = setInterval(() => {
+    const messages = daemonMessages(fixture.socket);
+    for (const message of messages.slice(handled)) {
+      if (message.type === "terminal.input") {
+        if (message.terminalId !== terminalId) continue;
+        const text = Buffer.from(message.dataBase64, "base64").toString("utf8");
+        const pasted = /^\u001b\[200~([\s\S]*)\u001b\[201~$/u.exec(text);
+        const drawn = pasted === null ? null : screen(pasted[1] ?? "");
+        if (drawn !== null) draw(drawn);
+      }
+      if (message.type === "terminal.attach") {
+        if (message.terminalId !== terminalId) continue;
+        if (redraw !== null) draw(redraw);
+        fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+          hostId: fixture.hostId,
+          sessionId: fixture.sessionId,
+          message: {
+            type: "terminal.replay",
+            requestId: message.requestId,
+            terminalId,
+            chunks: output.filter((chunk) => chunk.seq >= message.sinceSeq),
+            replayStartSeq: message.sinceSeq,
+            nextSeq,
+          },
+        });
+      }
+    }
+    handled = messages.length;
+  }, 5);
+  return {
+    inputs: () =>
+      daemonMessages(fixture.socket).flatMap((message) =>
+        message.type === "terminal.input" && message.terminalId === terminalId
+          ? [Buffer.from(message.dataBase64, "base64").toString("utf8")]
+          : [],
+      ),
+    stop: () => clearInterval(timer),
+  };
+}
+
+function composerScreen(pasted: string): string {
+  const words = pasted.split(" ");
+  return `\u001b[2K\u001b[1G\u203a ${words.join("\u001b[1C")}\u001b[0m`;
+}
+
 describe("native terminal threads", () => {
   it("runs the bb wrapper when BB_CLI supports it and the bare harness otherwise", async () => {
     const fixture = await createFixture();
@@ -291,38 +360,193 @@ describe("native terminal threads", () => {
     expect(second.nativeSessionId).toBe(first.nativeSessionId);
   });
 
-  it("delivers sent messages to the running terminal as a bracketed paste", async () => {
+  it("presses Enter only after the CLI draws the pasted message", async () => {
     const fixture = await createFixture();
     const { open, thread } = await openRunningNativeThread(fixture, {
       providerId: "codex",
     });
-    const response = await postJson(fixture, `/threads/${thread.id}/send`, {
-      input: textInput("run the tests"),
-      mode: "auto",
-    });
-    expect(response.status).toBe(200);
-    const inputs = daemonMessages(fixture.socket)
-      .filter((message) => message.type === "terminal.input")
-      .map((message) =>
-        message.type === "terminal.input"
-          ? {
-              terminalId: message.terminalId,
-              text: Buffer.from(message.dataBase64, "base64").toString("utf8"),
-            }
-          : null,
-      );
-    expect(inputs).toEqual([
-      {
-        terminalId: open.terminalId,
-        text: "\u001b[200~run the tests\u001b[201~",
-      },
-      { terminalId: open.terminalId, text: "\r" },
-    ]);
+    const cli = startFakeCli(fixture, open.terminalId, composerScreen);
+    try {
+      const response = await postJson(fixture, `/threads/${thread.id}/send`, {
+        input: textInput("run the tests"),
+        mode: "auto",
+      });
+      expect(response.status).toBe(200);
+      expect(cli.inputs()).toEqual([
+        "\u001b[200~run the tests\u001b[201~",
+        "\r",
+      ]);
+    } finally {
+      cli.stop();
+    }
     expect(
       listEvents(fixture.harness.db, { threadId: thread.id }).some(
         (event) => event.type === "client/turn/requested",
       ),
     ).toBe(false);
+  });
+
+  it("never presses Enter while a menu ignores the paste", async () => {
+    const fixture = await createFixture();
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+    });
+    const cli = startFakeCli(fixture, open.terminalId, () => null);
+    try {
+      const response = await postJson(fixture, `/threads/${thread.id}/send`, {
+        input: textInput("run the tests"),
+        mode: "auto",
+      });
+      expect(response.status).toBe(409);
+      expect(apiErrorSchema.parse(await readJson(response)).code).toBe(
+        "native_terminal_input_not_shown",
+      );
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(cli.inputs()).toEqual(["\u001b[200~run the tests\u001b[201~"]);
+    } finally {
+      cli.stop();
+    }
+  }, 10_000);
+
+  it("sends nothing when a redrawn menu already shows the reply", async () => {
+    const fixture = await createFixture();
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "claude-code",
+    });
+    const cli = startFakeCli(
+      fixture,
+      open.terminalId,
+      () => null,
+      "\u001b[3;1H\u001b[2K\u276f 1. Yes\r\n\u001b[2K  2. No, and tell Claude what to do differently",
+    );
+    try {
+      const response = await postJson(fixture, `/threads/${thread.id}/send`, {
+        input: textInput("1"),
+        mode: "auto",
+      });
+      expect(response.status).toBe(409);
+      expect(apiErrorSchema.parse(await readJson(response)).code).toBe(
+        "native_terminal_input_ambiguous",
+      );
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(cli.inputs()).toEqual([]);
+    } finally {
+      cli.stop();
+    }
+  });
+
+  it("sends nothing when the CLI redraws the same text from its history", async () => {
+    const fixture = await createFixture();
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+    });
+    const cli = startFakeCli(
+      fixture,
+      open.terminalId,
+      composerScreen,
+      "\u001b[H\u001b[2J\u203a run the tests\r\n\u2022 Ran pnpm test\r\n\u203a ",
+    );
+    try {
+      const response = await postJson(fixture, `/threads/${thread.id}/send`, {
+        input: textInput("run the tests"),
+        mode: "auto",
+      });
+      expect(response.status).toBe(409);
+      expect(apiErrorSchema.parse(await readJson(response)).code).toBe(
+        "native_terminal_input_ambiguous",
+      );
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(cli.inputs()).toEqual([]);
+    } finally {
+      cli.stop();
+    }
+  });
+
+  it("does not take a redrawn earlier placeholder for the echo", async () => {
+    const fixture = await createFixture();
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "claude-code",
+    });
+    const cli = startFakeCli(
+      fixture,
+      open.terminalId,
+      () => null,
+      "\u001b[1;1H> [Pasted text #1 +59 lines]\r\n\u276f 1. Yes\r\n  2. No",
+    );
+    const message = Array.from(
+      { length: 60 },
+      (_, index) => `line ${index} of a long message`,
+    ).join("\n");
+    try {
+      const response = await postJson(fixture, `/threads/${thread.id}/send`, {
+        input: textInput(message),
+        mode: "auto",
+      });
+      expect(response.status).toBe(409);
+      expect(apiErrorSchema.parse(await readJson(response)).code).toBe(
+        "native_terminal_input_not_shown",
+      );
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(cli.inputs()).toEqual([`\u001b[200~${message}\u001b[201~`]);
+    } finally {
+      cli.stop();
+    }
+  }, 10_000);
+
+  it("accepts the provider's placeholder for a long paste", async () => {
+    const fixture = await createFixture();
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "claude-code",
+    });
+    const cli = startFakeCli(
+      fixture,
+      open.terminalId,
+      () => "\u001b[2K> [Pasted text #2 +59 lines]",
+      "\u001b[1;1H> [Pasted text #1 +59 lines]\r\n\u001b[2K> ",
+    );
+    const message = Array.from(
+      { length: 60 },
+      (_, index) => `line ${index} of a long message`,
+    ).join("\n");
+    try {
+      const response = await postJson(fixture, `/threads/${thread.id}/send`, {
+        input: textInput(message),
+        mode: "auto",
+      });
+      expect(response.status).toBe(200);
+      expect(cli.inputs()).toEqual([`\u001b[200~${message}\u001b[201~`, "\r"]);
+    } finally {
+      cli.stop();
+    }
+  });
+
+  it("submits concurrent sends one at a time", async () => {
+    const fixture = await createFixture();
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+    });
+    const cli = startFakeCli(fixture, open.terminalId, composerScreen);
+    try {
+      const [first, second] = await Promise.all([
+        postJson(fixture, `/threads/${thread.id}/send`, {
+          input: textInput("first message"),
+          mode: "auto",
+        }),
+        postJson(fixture, `/threads/${thread.id}/send`, {
+          input: textInput("second message"),
+          mode: "auto",
+        }),
+      ]);
+      expect([first.status, second.status]).toEqual([200, 200]);
+      expect(cli.inputs()).toEqual([
+        "\u001b[200~first message\u001b[201~",
+        "\r",
+        "\u001b[200~second message\u001b[201~",
+        "\r",
+      ]);
+    } finally {
+      cli.stop();
+    }
   });
 
   it("refuses provider dispatch and forks for a native thread", async () => {

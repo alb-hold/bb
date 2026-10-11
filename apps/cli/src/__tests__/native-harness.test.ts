@@ -33,6 +33,7 @@ function tempHome(): string {
 const ASSIGNED_CLI: ProviderNativeTerminal = {
   executable: "claude",
   modelArgs: ["--model", "{model}"],
+  pastePlaceholders: [],
   sessionRoot: { env: "CLAUDE_CONFIG_DIR", home: ".claude" },
   session: {
     kind: "assigned",
@@ -45,6 +46,7 @@ const ASSIGNED_CLI: ProviderNativeTerminal = {
 const DISCOVERED_CLI: ProviderNativeTerminal = {
   executable: "codex",
   modelArgs: ["-c", 'model="{model}"'],
+  pastePlaceholders: [],
   sessionRoot: { env: "CODEX_HOME", home: ".codex" },
   session: {
     kind: "discovered",

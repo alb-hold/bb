@@ -23,6 +23,11 @@ import type { AppDeps } from "../../types.js";
 import { requirePublicThread } from "../lib/entity-lookup.js";
 import { resolvePluginProviderEnv } from "../plugins/plugin-agent-contributions.js";
 import { applyLoggedThreadLifecycleEventInTransaction } from "./lifecycle-outcome.js";
+import {
+  decodeTerminalOutputChunks,
+  terminalOutputAlreadyShowsText,
+  terminalOutputShowsPaste,
+} from "./native-terminal-echo.js";
 import { createClientTurnRequestId } from "./thread-events.js";
 import { scheduleThreadProvisioningAdvance } from "./thread-provisioning.js";
 import type { ThreadProvisioningDeps } from "./thread-provisioning-environment.js";
@@ -48,6 +53,10 @@ type NativeTerminalViewDeps = Pick<
 >;
 
 const pendingOpens = new Map<string, Promise<NativeTerminalThread>>();
+const pendingSends = new Map<string, Promise<void>>();
+const NATIVE_TERMINAL_ECHO_POLL_MS = 100;
+const NATIVE_TERMINAL_ECHO_TIMEOUT_MS = 3000;
+const NATIVE_TERMINAL_ECHO_CONTEXT_BYTES = 64 * 1024;
 
 export interface NativeTerminalProvider {
   displayName: string;
@@ -357,26 +366,91 @@ export function recordNativeTerminalSession(
   return getNativeTerminalThreadView(deps, args.threadId);
 }
 
-export async function sendNativeTerminalMessage(
+export function sendNativeTerminalMessage(
+  deps: NativeTerminalDeps,
+  args: { threadId: string; text: string },
+): Promise<TerminalSession> {
+  const previous = pendingSends.get(args.threadId) ?? Promise.resolve();
+  const sending = previous.then(() => deliverNativeTerminalMessage(deps, args));
+  const settled = sending.then(
+    () => undefined,
+    () => undefined,
+  );
+  pendingSends.set(args.threadId, settled);
+  void settled.then(() => {
+    if (pendingSends.get(args.threadId) === settled) {
+      pendingSends.delete(args.threadId);
+    }
+  });
+  return sending;
+}
+
+function nativeTerminalNotRunning(): ApiError {
+  return new ApiError(
+    409,
+    "native_terminal_not_running",
+    "The native session is not running; open it before sending a message",
+  );
+}
+
+async function deliverNativeTerminalMessage(
   deps: NativeTerminalDeps,
   args: { threadId: string; text: string },
 ): Promise<TerminalSession> {
   const view = getNativeTerminalThreadView(deps, args.threadId);
   if (view.terminal === null || view.terminal.status !== "running") {
+    throw nativeTerminalNotRunning();
+  }
+  const terminalId = view.terminal.id;
+  const provider = requireNativeTerminalProvider(deps, view.providerId);
+  const before = await deps.terminalSessions.readTerminalOutput({
+    terminalId,
+    query: { tailBytes: NATIVE_TERMINAL_ECHO_CONTEXT_BYTES },
+  });
+  if (before.status !== "running") throw nativeTerminalNotRunning();
+  const shown = decodeTerminalOutputChunks(before.chunks);
+  if (terminalOutputAlreadyShowsText({ output: shown, text: args.text })) {
     throw new ApiError(
       409,
-      "native_terminal_not_running",
-      "The native session is not running; open it before sending a message",
+      "native_terminal_input_ambiguous",
+      `${provider.displayName} already shows this text, so an echo of it could not be told apart from what is on screen, and nothing was sent. Type the message in the terminal, or reword it.`,
     );
   }
   const bracketed = `\u001b[200~${args.text}\u001b[201~`;
   deps.terminalSessions.sendTerminalInput({
-    terminalId: view.terminal.id,
+    terminalId,
     payload: { dataBase64: Buffer.from(bracketed, "utf8").toString("base64") },
   });
-  await new Promise((resolve) => setTimeout(resolve, 150));
+  const deadline = Date.now() + NATIVE_TERMINAL_ECHO_TIMEOUT_MS;
+  for (;;) {
+    await new Promise((resolve) =>
+      setTimeout(resolve, NATIVE_TERMINAL_ECHO_POLL_MS),
+    );
+    const after = await deps.terminalSessions.readTerminalOutput({
+      terminalId,
+      query: { sinceSeq: before.nextSeq },
+    });
+    if (after.status !== "running") throw nativeTerminalNotRunning();
+    if (
+      terminalOutputShowsPaste({
+        before: shown,
+        output: decodeTerminalOutputChunks(after.chunks),
+        pastePlaceholders: provider.cli.pastePlaceholders,
+        text: args.text,
+      })
+    ) {
+      break;
+    }
+    if (Date.now() >= deadline) {
+      throw new ApiError(
+        409,
+        "native_terminal_input_not_shown",
+        `${provider.displayName} did not show the message in its input box, so it was not submitted. A menu or dialog is probably open; answer it in the terminal, then send again. If the message is in the input box, press Enter there.`,
+      );
+    }
+  }
   return deps.terminalSessions.sendTerminalInput({
-    terminalId: view.terminal.id,
+    terminalId,
     payload: { dataBase64: Buffer.from("\r", "utf8").toString("base64") },
   });
 }

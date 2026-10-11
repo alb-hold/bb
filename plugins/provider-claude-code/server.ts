@@ -70,6 +70,7 @@ export default function plugin(bb: BbPluginApi) {
     experimental_nativeTerminal: {
       executable: "claude",
       modelArgs: ["--model", "{model}"],
+      pastePlaceholders: ["[Pasted text #"],
       sessionRoot: { env: "CLAUDE_CONFIG_DIR", home: ".claude" },
       session: {
         kind: "assigned",

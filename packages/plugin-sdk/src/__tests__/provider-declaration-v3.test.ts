@@ -471,6 +471,7 @@ describe("provider declaration fields renamed in SDK 0.4.16", () => {
     const assigned = {
       executable: "my-agent",
       modelArgs: ["--model", "{model}"],
+      pastePlaceholders: ["[Pasted text #"],
       sessionRoot: { env: "MY_AGENT_HOME", home: ".my-agent" },
       session: {
         kind: "assigned" as const,
@@ -520,6 +521,19 @@ describe("provider declaration fields renamed in SDK 0.4.16", () => {
           session: { ...assigned.session, transcript: "../{sessionId}.jsonl" },
         },
         /experimental_nativeTerminal\.session\.transcript must be a relative path/u,
+      ],
+      [
+        "a missing paste placeholder list",
+        {
+          ...assigned,
+          pastePlaceholders: undefined as unknown as string[],
+        },
+        /experimental_nativeTerminal\.pastePlaceholders/u,
+      ],
+      [
+        "a paste placeholder too short to tell apart from typed text",
+        { ...assigned, pastePlaceholders: ["[P"] },
+        /experimental_nativeTerminal\.pastePlaceholders\.0/u,
       ],
       [
         "an executable path instead of a name",

@@ -118,10 +118,14 @@ hostId, providerId, projectId, parentThreadId, groupBy })`.
 - `bb thread tell <thread-id> --message "..."` pastes the text into the running
   native terminal and presses Enter. It fails with
   `native_terminal_not_running` when the harness is not running; reopen it with
-  `bb thread native` first. The Enter goes to whatever the CLI shows: with a
-  menu open (an update, folder-trust or tool-permission prompt) it picks that
-  menu's default, so check the screen with `bb terminal read <terminal-id>`
-  before telling.
+  `bb thread native` first. bb presses Enter only once the CLI shows the text
+  in its input box; with a menu or dialog open (an update, folder-trust or
+  tool-permission prompt) nothing is submitted and tell fails with
+  `native_terminal_input_not_shown`. When the screen already shows the same
+  text (a short reply such as `1` or `y`, or a repeated message), nothing is
+  sent and tell fails with `native_terminal_input_ambiguous`; type it in the
+  terminal or reword it. Read the screen with
+  `bb terminal read <terminal-id>`.
 - A Codex native thread learns its session id from the rollout file Codex
   writes for the thread's workspace. Two native Codex threads started in the
   same workspace at the same moment stay unbound rather than guess; resume then

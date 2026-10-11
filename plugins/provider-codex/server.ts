@@ -81,6 +81,7 @@ export default function plugin(bb: BbPluginApi) {
     experimental_nativeTerminal: {
       executable: "codex",
       modelArgs: ["-c", 'model="{model}"'],
+      pastePlaceholders: ["[Pasted Content "],
       sessionRoot: { env: "CODEX_HOME", home: ".codex" },
       session: {
         kind: "discovered",
