@@ -314,6 +314,14 @@ import {
   type SpendRollupQuery,
   type SpendRollupResponse,
 } from "./api/spend.js";
+import {
+  openNativeTerminalRequestSchema,
+  recordNativeSessionRequestSchema,
+  type NativeTerminalLaunchSpec,
+  type NativeTerminalThread,
+  type OpenNativeTerminalRequest,
+  type RecordNativeSessionRequest,
+} from "./api/native-terminal-threads.js";
 import type {
   ThreadTabsWireResponse,
   UpdateThreadTabsRequest,
@@ -1858,6 +1866,37 @@ export const publicApiRoutes = {
         queuedMessageListQuerySchema,
       ),
       response: jsonResponse<ThreadQueuedMessageListResponse>(),
+    }),
+  },
+
+  nativeTerminalThreads: {
+    get: defineRoute({
+      path: "/threads/:id/native-terminal",
+      method: "get",
+      request: noRequest<PathId>(),
+      response: jsonResponse<NativeTerminalThread | null>(),
+    }),
+    open: defineRoute({
+      path: "/threads/:id/native-terminal/open",
+      method: "post",
+      request: jsonRequest<PathId, OpenNativeTerminalRequest>(
+        openNativeTerminalRequestSchema,
+      ),
+      response: jsonResponse<NativeTerminalThread>(),
+    }),
+    launch: defineRoute({
+      path: "/threads/:id/native-terminal/launch",
+      method: "post",
+      request: noRequest<PathId>(),
+      response: jsonResponse<NativeTerminalLaunchSpec>(),
+    }),
+    recordSession: defineRoute({
+      path: "/threads/:id/native-terminal/session",
+      method: "post",
+      request: jsonRequest<PathId, RecordNativeSessionRequest>(
+        recordNativeSessionRequestSchema,
+      ),
+      response: jsonResponse<NativeTerminalThread>(),
     }),
   },
 

@@ -268,6 +268,7 @@ function createProps(
   return {
     footer: <div data-testid="footer" />,
     header: <div data-testid="header" />,
+    nativeTerminalMain: null,
     isBoundedPane: false,
     isConversationCollapsed,
     isMetadataLoading,
@@ -337,11 +338,13 @@ function renderThreadDetail(
   hosted: boolean,
   isMetadataLoading = false,
   isConversationCollapsed = false,
+  nativeTerminalMain: ReactNode | null = null,
 ) {
   const content = (
     <CompactViewportOverrideProvider isCompactViewport={false}>
       <ThreadDetailSecondaryContent
         {...createProps(isMetadataLoading, isConversationCollapsed)}
+        nativeTerminalMain={nativeTerminalMain}
       />
     </CompactViewportOverrideProvider>
   );
@@ -446,6 +449,27 @@ describe("ThreadDetailSecondaryContent", () => {
     expect(panelGroup.contains(sidePanel)).toBe(true);
     expect(timelinePanel.contains(screen.getByTestId("footer"))).toBe(true);
     expect(sidePanel.textContent).toContain("No thread details available.");
+  });
+
+  it("replaces the timeline and composer with a native terminal thread's terminal", async () => {
+    renderThreadDetail(
+      false,
+      false,
+      false,
+      <div data-testid="native-terminal-main" />,
+    );
+
+    const timelinePanel = await screen.findByTestId(
+      "panel",
+      {},
+      { timeout: 5_000 },
+    );
+    expect(
+      timelinePanel.contains(screen.getByTestId("native-terminal-main")),
+    ).toBe(true);
+    expect(timelinePanel.contains(screen.getByTestId("header"))).toBe(true);
+    expect(screen.queryByTestId("footer")).toBeNull();
+    expect(timelinePaneRenders).not.toHaveBeenCalled();
   });
 
   it("keeps the thread metadata loading presentation in the panel", async () => {

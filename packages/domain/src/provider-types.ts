@@ -53,6 +53,7 @@ const providerCapabilitiesSchema = z.object({
   permissionModes: z.array(permissionModeSchema).min(1),
   modelCatalogScope: providerModelCatalogScopeSchema,
   reportsTokenUsage: z.boolean().optional(),
+  supportsNativeTerminal: z.boolean().optional(),
 });
 export type ProviderCapabilities = z.infer<typeof providerCapabilitiesSchema>;
 

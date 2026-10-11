@@ -13,6 +13,7 @@ import type {
   ProviderErrorInfo,
   ProviderNativeRootInput,
   ProviderNativeRootsInputLike,
+  ProviderNativeTerminal,
   ProviderRateLimitState,
   ReasoningLevel,
   ServiceTier,
@@ -1640,6 +1641,40 @@ export interface PluginProviderDeclaration {
    * project-scoped entries, which a global declaration cannot carry.
    */
   experimental_resolvesNativeRoots?: boolean;
+  /**
+   * The provider's own interactive CLI, for native terminal threads: a thread
+   * whose main surface is this CLI running in a thread terminal instead of a
+   * provider turn. Declaring it offers the native terminal option for this
+   * provider; core never names a provider to decide that. The declaration is
+   * data the bb CLI runs on the thread's host:
+   *
+   * - `executable`: a bare name resolved on the host `PATH`.
+   * - `modelArgs`: argv placed first when the thread has a model; `{model}` is
+   *   replaced. Empty when the CLI takes no model flag.
+   * - `pastePlaceholders`: text the CLI draws in its input box instead of a
+   *   long paste, such as `"[Pasted text #"`; empty when it always draws the
+   *   pasted text. A message sent to the thread is pasted, and bb presses
+   *   Enter only once the CLI newly draws the pasted text or one of these
+   *   placeholders. A menu or dialog draws neither, so a message can never
+   *   confirm it; the send fails instead. Text already on screen is never
+   *   sent, because its echo could not be told apart from a redraw.
+   * - `sessionRoot`: where the CLI keeps its session files: the `env`
+   *   variable when it is set on the host, else `home` under the host home.
+   * - `session`, `"assigned"`: bb picks a UUID and starts the CLI with
+   *   `startArgs`, then the first prompt. Once `transcript` (relative to the
+   *   session root, `*` matching within one path segment) names an existing
+   *   file, bb relaunches with `resumeArgs` instead.
+   * - `session`, `"discovered"`: the CLI picks its own id. bb starts it with
+   *   only the first prompt, then reads the first JSON line of each
+   *   `transcripts` file (`{yyyy}`, `{mm}`, `{dd}` cover the launch day and the
+   *   day before) whose `header.match` fields equal the given strings, and
+   *   binds the one whose `header.cwd` is the thread workspace and whose
+   *   `header.startedAt` follows the launch. Later launches use `resumeArgs`.
+   *
+   * `{sessionId}` is the only token in session argv. Argument lists hold at
+   * most 16 entries.
+   */
+  experimental_nativeTerminal?: ProviderNativeTerminal;
   /**
    * Derive this provider's opaque per-command options. Called synchronously
    * by the server for every session and turn command on a thread of this

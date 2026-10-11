@@ -107,6 +107,9 @@ const mocks = vi.hoisted(() => ({
   modelsLoading: false,
   permissionCeiling: undefined as "accept-edits" | "auto" | "full" | undefined,
   modelSessionOptions: undefined as ThreadSessionOption[] | undefined,
+  systemProviders: undefined as
+    | Array<{ id: string; capabilities: { supportsNativeTerminal: boolean } }>
+    | undefined,
 }));
 
 vi.mock("@/views/RootComposePanelCommandHandlers", () => ({
@@ -265,7 +268,7 @@ vi.mock("@/hooks/queries/host-queries", () => ({
 }));
 
 vi.mock("@/hooks/queries/system-queries", () => ({
-  useSystemProviders: () => ({ data: undefined }),
+  useSystemProviders: () => ({ data: mocks.systemProviders }),
   useSystemProviderStates: () => ({ data: undefined, isPending: false }),
   useKnownProviderModelCatalogScope: () => undefined,
   useHostProviderCliStatus: () => ({ data: undefined }),
@@ -693,6 +696,7 @@ describe("PluginNewThreadComposer seeding", () => {
     resetFixedPanelTabsStateForTest();
     mocks.closeTerminal.mockClear();
     mocks.modelSessionOptions = undefined;
+    mocks.systemProviders = undefined;
     mocks.promptBoxProps.length = 0;
     mocks.promptHistoryQueryOptions.length = 0;
     mocks.copyAttachments.mockReset();
@@ -1098,6 +1102,57 @@ describe("PluginNewThreadComposer seeding", () => {
       daybreak: true,
       mode: "plan",
     });
+  });
+
+  it("hides agent options for a native terminal thread and submits none", async () => {
+    mocks.modelSessionOptions = [
+      { type: "boolean", id: "daybreak", label: "Daybreak", value: false },
+      {
+        type: "select",
+        id: "mode",
+        label: "Mode",
+        category: "mode",
+        value: "agent",
+        values: [
+          { id: "agent", label: "Agent" },
+          { id: "plan", label: "Plan" },
+        ],
+      },
+    ];
+    mocks.systemProviders = [
+      { id: "codex", capabilities: { supportsNativeTerminal: true } },
+    ];
+    const submitted: NewThreadRequest[] = [];
+    render(
+      <MemoryRouter>
+        <PluginNewThreadComposer
+          draftKey="native-agent-options"
+          defaultProjectId="proj_1"
+          initialPrompt="hello"
+          onSubmit={(request) => {
+            submitted.push(request);
+          }}
+        />
+      </MemoryRouter>,
+    );
+    await waitFor(() => {
+      expect(latestPromptBoxProps().disabled).toBe(false);
+    });
+    await act(async () => {
+      latestPromptBoxProps().execution.agentOptions.onChange("daybreak", true);
+    });
+    await act(async () => {
+      latestPromptBoxProps().execution.nativeTerminal.onChange(true);
+    });
+
+    expect(latestPromptBoxProps().execution.nativeTerminal.enabled).toBe(true);
+    expect(latestPromptBoxProps().execution.agentOptions).toBeUndefined();
+    expect(latestPromptBoxProps().modeConfig.sessionOptionsControl).toBeNull();
+    await submit();
+
+    expect(submitted).toHaveLength(1);
+    expect(submitted[0]).toMatchObject({ nativeTerminal: true });
+    expect(submitted[0]).not.toHaveProperty("sessionOptions");
   });
 
   it("submits a draft populated after an empty composer unmounts", async () => {

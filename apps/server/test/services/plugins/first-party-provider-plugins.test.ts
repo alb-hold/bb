@@ -277,6 +277,7 @@ describe("first-party provider plugins", () => {
             supportsFork: true,
             supportsSessionRewind: true,
             modelCatalogScope: "host",
+            supportsNativeTerminal: true,
             reportsTokenUsage: true,
           },
           composerActions: [skills, explicitSkills, plan, goal],
@@ -299,6 +300,7 @@ describe("first-party provider plugins", () => {
             supportsFork: true,
             supportsSessionRewind: true,
             modelCatalogScope: "host",
+            supportsNativeTerminal: true,
             reportsTokenUsage: true,
           },
           composerActions: [skills, explicitSkills, plan],
@@ -318,6 +320,7 @@ describe("first-party provider plugins", () => {
             supportsFork: true,
             supportsSessionRewind: true,
             modelCatalogScope: "workspace",
+            supportsNativeTerminal: false,
           },
           composerActions: [skills, explicitSkills],
         });
@@ -336,6 +339,7 @@ describe("first-party provider plugins", () => {
             supportsFork: false,
             supportsSessionRewind: false,
             modelCatalogScope: "host",
+            supportsNativeTerminal: false,
           },
           composerActions: [skills, explicitSkills],
         });
