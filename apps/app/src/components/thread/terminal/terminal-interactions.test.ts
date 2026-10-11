@@ -83,6 +83,45 @@ describe("terminal interactions in the DOM", () => {
     expect(copySelection).toHaveBeenCalledWith("  indented line\n");
   });
 
+  it("copies the same text again on a new selection gesture but once per gesture", () => {
+    const terminal = document.createElement("div");
+    document.body.append(terminal);
+    const frames = createFrameQueue();
+    const copySelection = vi.fn();
+    let selection = "same line";
+    const interactions = attachTerminalInteractions({
+      element: terminal,
+      getSelection: () => selection,
+      onPointerDown: vi.fn(),
+      onPointerRelease: vi.fn(),
+      onPointerCancel: vi.fn(),
+      onSelection: vi.fn(),
+      copySelection,
+      onFilesDrop: vi.fn(),
+      requestFrame: frames.requestFrame,
+      cancelFrame: frames.cancelFrame,
+    });
+    disposables.push(interactions.dispose);
+
+    terminal.dispatchEvent(pointerEvent("pointerdown"));
+    terminal.dispatchEvent(pointerEvent("pointerup"));
+    frames.flush();
+    interactions.onSelectionChange();
+    frames.flush();
+    expect(copySelection).toHaveBeenCalledTimes(1);
+
+    terminal.dispatchEvent(pointerEvent("pointerdown"));
+    selection = "";
+    interactions.onSelectionChange();
+    selection = "same line";
+    interactions.onSelectionChange();
+    terminal.dispatchEvent(pointerEvent("pointerup"));
+    frames.flush();
+
+    expect(copySelection).toHaveBeenCalledTimes(2);
+    expect(copySelection).toHaveBeenLastCalledWith("same line");
+  });
+
   it("replaces a pending selection frame when xterm reports a newer selection", () => {
     const terminal = document.createElement("div");
     const frames = createFrameQueue();
