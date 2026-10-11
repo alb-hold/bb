@@ -804,6 +804,13 @@ describe("pooled provider retry integration", () => {
             events: {
               list: async () => [{ data: lastTurnRequest(harness, thread.id) }],
             },
+            get: async ({ threadId }: { threadId: string }) =>
+              requireThread(harness, threadId),
+          },
+          plugins: {
+            list: async () => ({
+              plugins: [{ id: "account-pool", enabled: true }],
+            }),
           },
         },
       });
