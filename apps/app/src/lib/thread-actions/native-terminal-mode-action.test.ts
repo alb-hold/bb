@@ -33,7 +33,7 @@ function target(
 function modeData(
   overrides: Partial<{
     providerId: string | null;
-    mode: "chat" | "terminal" | "terminalOnly";
+    mode: "chat" | "terminal" | "terminalOnly" | "unknown";
     switchMode: NativeTerminalModeData["switchMode"];
   }> = {},
 ): NativeTerminalModeData {
@@ -136,6 +136,12 @@ describe("Open in terminal / Back to chat", () => {
           "started in the terminal",
           target(),
           modeData({ mode: "terminalOnly" }),
+        ],
+        ["mode not loaded yet", target(), modeData({ mode: "unknown" })],
+        [
+          "mode not loaded, running",
+          target({ status: "active" }),
+          modeData({ mode: "unknown" }),
         ],
       ];
     for (const [, thread, data] of hidden) {
