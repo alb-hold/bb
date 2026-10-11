@@ -15,6 +15,7 @@ import {
   type ProviderNativeTerminal,
 } from "@bb/domain";
 import type {
+  NativeTerminalAgentTools,
   NativeTerminalLaunchSpec,
   NativeTerminalThread,
   OpenNativeTerminalRequest,
@@ -22,7 +23,11 @@ import type {
 } from "@bb/server-contract";
 import { ApiError } from "../../errors.js";
 import type { AppDeps } from "../../types.js";
-import { requirePublicThread } from "../lib/entity-lookup.js";
+import {
+  requirePublicThreadEnvironment,
+  requirePublicThread,
+  type ThreadEnvironmentLookupResult,
+} from "../lib/entity-lookup.js";
 import { resolvePluginProviderEnv } from "../plugins/plugin-agent-contributions.js";
 import { applyLoggedThreadLifecycleEventInTransaction } from "./lifecycle-outcome.js";
 import {
@@ -30,6 +35,8 @@ import {
   terminalOutputAlreadyShowsText,
   terminalOutputShowsPaste,
 } from "./native-terminal-echo.js";
+import { resolveThreadDynamicTools } from "./thread-runtime-config.js";
+import { UPDATE_ENVIRONMENT_DIRECTORY_TOOL_NAME } from "./thread-environment-directory.js";
 import { createClientTurnRequestId } from "./thread-events.js";
 import { scheduleThreadProvisioningAdvance } from "./thread-provisioning.js";
 import type { ThreadProvisioningDeps } from "./thread-provisioning-environment.js";
@@ -442,6 +449,51 @@ export function takeNativeTerminalLaunchSpec(
     nativeSessionId: record.nativeSessionId,
     initialPrompt: consumeNativeTerminalThreadInitialPrompt(deps.db, threadId),
     model: record.model,
+  };
+}
+
+export function requireLiveNativeTerminalToolThread(
+  deps: Pick<AppDeps, "db" | "terminalSessions">,
+  threadId: string,
+): ThreadEnvironmentLookupResult {
+  const record = requireNativeTerminalThreadRecord(deps, threadId);
+  const lookup = requirePublicThreadEnvironment(deps.db, threadId);
+  if (lookup.thread.archivedAt !== null) {
+    throw new ApiError(
+      409,
+      "native_terminal_not_live",
+      "This thread is archived",
+    );
+  }
+  const terminal = readRecordTerminal(deps, record);
+  if (terminal === null || terminal.status === "exited") {
+    throw new ApiError(
+      409,
+      "native_terminal_not_live",
+      "This thread's native terminal is not running",
+    );
+  }
+  return lookup;
+}
+
+export async function listNativeTerminalAgentTools(
+  deps: AppDeps,
+  threadId: string,
+): Promise<NativeTerminalAgentTools> {
+  const { environment, thread } = requireLiveNativeTerminalToolThread(
+    deps,
+    threadId,
+  );
+  const record = requireNativeTerminalThreadRecord(deps, threadId);
+  const tools = await resolveThreadDynamicTools(deps, {
+    environment,
+    model: record.model ?? "",
+    thread,
+  });
+  return {
+    tools: tools.filter(
+      (tool) => tool.name !== UPDATE_ENVIRONMENT_DIRECTORY_TOOL_NAME,
+    ),
   };
 }
 

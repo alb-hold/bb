@@ -7,7 +7,10 @@ import type { ToolCallResponse } from "@bb/domain";
 import type { Hono } from "hono";
 import type { AppDeps } from "../types.js";
 import { ApiError } from "../errors.js";
-import { requireThreadEnvironment } from "../services/lib/entity-lookup.js";
+import {
+  requireThreadEnvironment,
+  type ThreadEnvironmentLookupResult,
+} from "../services/lib/entity-lookup.js";
 import {
   findPluginAgentTool,
   invokePluginAgentTool,
@@ -49,6 +52,72 @@ function streamToolCallResponse(
   });
 }
 
+export interface RunAgentToolCallArgs extends ThreadEnvironmentLookupResult {
+  callId: string;
+  input: unknown;
+  requestSignal: AbortSignal;
+  tool: string;
+  turnId: string | null;
+}
+
+export function runAgentToolCall(
+  deps: AppDeps,
+  args: RunAgentToolCallArgs,
+): Response | Promise<Response> {
+  if (args.tool === UPDATE_ENVIRONMENT_DIRECTORY_TOOL_NAME) {
+    if (args.turnId === null) {
+      return Response.json(
+        unsupportedToolResponse(args.tool),
+      );
+    }
+    const turnId = args.turnId;
+    return handleUpdateEnvironmentDirectoryToolCall(deps, {
+      currentEnvironment: args.environment,
+      input: args.input,
+      thread: args.thread,
+      turnId,
+    }).then((response) => Response.json(response));
+  }
+
+  const pluginTool = findPluginAgentTool(args.tool);
+  if (pluginTool) {
+    const roundTrip = new AbortController();
+    const response = requirePluginToolCallRegistry().run({
+      pluginId: pluginTool.pluginId,
+      threadId: args.thread.id,
+      callId: args.callId,
+      toolName: args.tool,
+      roundTrip: AbortSignal.any([args.requestSignal, roundTrip.signal]),
+      invoke: (signal) =>
+        invokePluginAgentTool(pluginTool, {
+          input: args.input,
+          ctx: {
+            threadId: args.thread.id,
+            projectId: args.thread.projectId,
+            signal,
+          },
+        }),
+      onDetachedResult: (result) =>
+        deliverDetachedToolResult(deps, {
+          threadId: args.thread.id,
+          toolName: args.tool,
+          presentation: pluginTool.record.presentation,
+          response: result,
+        }),
+    });
+    return streamToolCallResponse(response, roundTrip);
+  }
+
+  return Response.json(unsupportedToolResponse(args.tool));
+}
+
+function unsupportedToolResponse(tool: string): ToolCallResponse {
+  return {
+    success: false,
+    contentItems: [{ type: "inputText", text: `Unsupported tool: ${tool}` }],
+  };
+}
+
 export function registerInternalToolCallRoutes(app: Hono, deps: AppDeps): void {
   const { post } = typedRoutes<HostDaemonInternalSchema>(app, {
     onValidationError: (msg) => new ApiError(400, "invalid_request", msg),
@@ -75,54 +144,14 @@ export function registerInternalToolCallRoutes(app: Hono, deps: AppDeps): void {
         );
       }
 
-      if (payload.tool === UPDATE_ENVIRONMENT_DIRECTORY_TOOL_NAME) {
-        return context.json(
-          await handleUpdateEnvironmentDirectoryToolCall(deps, {
-            currentEnvironment: environment,
-            input: payload.arguments,
-            thread,
-            turnId: payload.turnId,
-          }),
-        );
-      }
-
-      const pluginTool = findPluginAgentTool(payload.tool);
-      if (pluginTool) {
-        const roundTrip = new AbortController();
-        const response = requirePluginToolCallRegistry().run({
-          pluginId: pluginTool.pluginId,
-          threadId: thread.id,
-          callId: payload.callId,
-          toolName: payload.tool,
-          roundTrip: AbortSignal.any([
-            context.req.raw.signal,
-            roundTrip.signal,
-          ]),
-          invoke: (signal) =>
-            invokePluginAgentTool(pluginTool, {
-              input: payload.arguments,
-              ctx: {
-                threadId: thread.id,
-                projectId: thread.projectId,
-                signal,
-              },
-            }),
-          onDetachedResult: (result) =>
-            deliverDetachedToolResult(deps, {
-              threadId: thread.id,
-              toolName: payload.tool,
-              presentation: pluginTool.record.presentation,
-              response: result,
-            }),
-        });
-        return streamToolCallResponse(response, roundTrip);
-      }
-
-      return context.json({
-        success: false,
-        contentItems: [
-          { type: "inputText", text: `Unsupported tool: ${payload.tool}` },
-        ],
+      return runAgentToolCall(deps, {
+        callId: payload.callId,
+        environment,
+        input: payload.arguments,
+        requestSignal: context.req.raw.signal,
+        thread,
+        tool: payload.tool,
+        turnId: payload.turnId,
       });
     },
   );

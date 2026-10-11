@@ -315,10 +315,14 @@ import {
   type SpendRollupResponse,
 } from "./api/spend.js";
 import {
+  callNativeTerminalAgentToolRequestSchema,
   openNativeTerminalRequestSchema,
   recordNativeSessionRequestSchema,
   reportNativeTerminalActivityRequestSchema,
   switchNativeTerminalModeRequestSchema,
+  type CallNativeTerminalAgentToolRequest,
+  type NativeTerminalAgentToolResult,
+  type NativeTerminalAgentTools,
   type NativeTerminalLaunchSpec,
   type NativeTerminalThread,
   type OpenNativeTerminalRequest,
@@ -1893,6 +1897,23 @@ export const publicApiRoutes = {
       method: "post",
       request: noRequest<PathId>(),
       response: jsonResponse<NativeTerminalLaunchSpec>(),
+    }),
+    agentTools: defineRoute({
+      path: "/threads/:id/native-terminal/agent-tools",
+      method: "get",
+      request: noRequest<PathId>(),
+      response: jsonResponse<NativeTerminalAgentTools>(),
+    }),
+    callAgentTool: defineRoute({
+      path: "/threads/:id/native-terminal/agent-tools/:tool/call",
+      method: "post",
+      request: jsonRequest<
+        { param: { id: string; tool: string } },
+        CallNativeTerminalAgentToolRequest
+      >(
+        callNativeTerminalAgentToolRequestSchema,
+      ),
+      response: jsonResponse<NativeTerminalAgentToolResult>(),
     }),
     switchMode: defineRoute({
       path: "/threads/:id/native-terminal/mode",

@@ -1089,6 +1089,22 @@ dot segments. Core callers: `apps/server/src/services/threads/native-terminal-th
 toggle. First-party declarations: `provider-claude-code` (`assigned`) and
 `provider-codex` (`discovered`).
 
+`mcp` (optional) lists the argv the native CLI needs to load bb's tools: the
+wrapper fills `{commandJson}` and `{argsJson}` (JSON string and array literals,
+valid as JSON and as TOML values) with the command that starts the hidden
+`bb thread native-mcp <id>` stdio MCP server, which serves the same tools a chat
+turn on that thread receives (except `update_environment_directory`, which needs
+a turn) through `GET /threads/:id/native-terminal/agent-tools` and
+`POST /threads/:id/native-terminal/agent-tools/:tool/call`. The call path is
+the one `/internal/session/tool-call` uses. Both routes require a live native
+terminal (404 for a chat thread, 409 once the terminal exited or the thread is
+archived). Any local process that can reach the bb server can call these tools
+as that thread: the same exposure the `bb` CLI already has. First-party
+declarations: `provider-claude-code` (`--mcp-config` with inline JSON) and
+`provider-codex` (`-c mcp_servers.*`). Stabilization audit: decide whether the
+declaration should name the server rather than hard-code `bb-bridge`, and
+whether a third CLI needs a config file instead of argv.
+
 **Audit before stabilizing.** Confirm the two session strategies cover a
 third CLI without a new kind; decide whether the first-JSON-line header is
 the right discovery vocabulary or whether discovery belongs in the plugin's

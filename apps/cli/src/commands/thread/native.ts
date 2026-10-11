@@ -27,6 +27,7 @@ import {
 } from "../../native-activity-reader.js";
 import {
   findNativeSession,
+  nativeMcpArgs,
   resolveNativeHarnessLaunch,
 } from "../../native-harness.js";
 import {
@@ -36,6 +37,7 @@ import {
   pipeNativeHolderClient,
   runNativeHolder,
 } from "../../native-holder.js";
+import { runNativeMcpServer } from "../../native-mcp.js";
 import { outputJson } from "../helpers.js";
 import { attachTerminal } from "../terminal.js";
 
@@ -257,10 +259,25 @@ async function holdNativeHarness(
                 settings: nativeActivityHookSettings(hooks, file),
               }),
             );
+      const script = process.argv[1];
+      const mcpArgs =
+        script === undefined
+          ? []
+          : nativeMcpArgs(spec.cli, {
+              command: process.execPath,
+              args: [
+                ...process.execArgv,
+                script,
+                "thread",
+                "native-mcp",
+                threadId,
+              ],
+            });
       const launch = resolveNativeHarnessLaunch(
         spec,
         process.env,
         activityArgs,
+        mcpArgs,
       );
       discovery = { cli: spec.cli, launchedAtMs: Date.now() };
       recorded = launch.session.kind !== "discover";
@@ -418,6 +435,31 @@ export function registerNativeCommands(
           getUrl(),
           threadId,
           opts.reattach === true,
+        );
+      }),
+    );
+
+  parent
+    .command("native-mcp <threadId>", { hidden: true })
+    .description(
+      "Serve a native thread's bb tools to its provider CLI over stdio MCP (native-run passes this to the CLI)",
+    )
+    .action(
+      action(async (threadId: string) => {
+        const sdk = createCliBbSdk(getUrl());
+        await runNativeMcpServer(
+          {
+            listTools: async () => (await sdk.nativeTerminals.agentTools({ threadId })).tools,
+            callTool: (call) =>
+              sdk.nativeTerminals.callAgentTool({
+                threadId,
+                tool: call.tool,
+                callId: call.callId,
+                arguments: call.arguments,
+                signal: call.signal,
+              }),
+          },
+          { input: process.stdin, output: process.stdout },
         );
       }),
     );
