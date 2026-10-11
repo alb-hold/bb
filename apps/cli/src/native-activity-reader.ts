@@ -25,15 +25,16 @@ export class NativeActivityReader {
     private readonly env: NativeHarnessEnv,
     private readonly eventsFile: string | null,
     session: NativeHarnessSession,
+    measure: (filePath: string) => number | null = fileSize,
   ) {
     this.sessionId = session.kind === "discover" ? null : session.id;
     this.transcriptFile = this.findTranscript();
     if (session.kind !== "resume") {
       this.transcriptTail = new JsonlTail(0);
-    } else if (this.transcriptFile === null) {
-      this.transcriptTail = null;
     } else {
-      this.transcriptTail = new JsonlTail(fileSize(this.transcriptFile));
+      const baseline =
+        this.transcriptFile === null ? null : measure(this.transcriptFile);
+      this.transcriptTail = baseline === null ? null : new JsonlTail(baseline);
     }
   }
 

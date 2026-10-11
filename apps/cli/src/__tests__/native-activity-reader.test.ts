@@ -163,6 +163,27 @@ describe("NativeActivityReader", () => {
     expect(reader.finish()).toBeNull();
   });
 
+  it("never reads a resumed transcript it found but could not measure at launch", () => {
+    const home = tempHome();
+    const file = writeRollout(home, codexTurn("an earlier prompt"));
+    const measured: string[] = [];
+    const reader = new NativeActivityReader(
+      CODEX_CLI,
+      { HOME: home },
+      null,
+      { kind: "resume", id: SESSION_ID },
+      (filePath) => {
+        measured.push(filePath);
+        return null;
+      },
+    );
+    appendFileSync(file, jsonl(codexTurn("the resumed prompt")));
+
+    expect(measured).toEqual([file]);
+    expect(reader.read()).toEqual([]);
+    expect(reader.finish()).toBeNull();
+  });
+
   it("reads a started session's transcript that appears after launch from its first record", () => {
     const home = tempHome();
     const reader = new NativeActivityReader(CODEX_CLI, { HOME: home }, null, {

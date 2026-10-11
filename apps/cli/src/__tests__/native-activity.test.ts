@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import os from "node:os";
@@ -192,7 +193,7 @@ describe("native terminal activity", () => {
   it("reads only records appended after launch when resuming, across partial writes", () => {
     const file = path.join(tempDir(), "session.jsonl");
     writeFileSync(file, `${JSON.stringify({ old: true })}\n`);
-    const resumed = new JsonlTail(fileSize(file));
+    const resumed = new JsonlTail(statSync(file).size);
     const fresh = new JsonlTail(0);
     expect(fresh.readRecords(file)).toEqual([{ old: true }]);
 
@@ -201,7 +202,8 @@ describe("native terminal activity", () => {
     appendFileSync(file, `2}\nnot json\n`);
     expect(resumed.readRecords(file)).toEqual([{ n: 2 }]);
     expect(readFileSync(file, "utf8")).toContain("not json");
-    expect(fileSize(path.join(file, "missing"))).toBe(0);
+    expect(fileSize(file)).toBe(statSync(file).size);
+    expect(fileSize(path.join(file, "missing"))).toBeNull();
     expect(new JsonlTail(0).readRecords(path.join(file, "missing"))).toEqual(
       [],
     );
@@ -210,7 +212,7 @@ describe("native terminal activity", () => {
   it("keeps a resumed turn written before the first poll", () => {
     const file = path.join(tempDir(), "rollout.jsonl");
     writeFileSync(file, `${JSON.stringify({ old: true })}\n`);
-    const resumed = new JsonlTail(fileSize(file));
+    const resumed = new JsonlTail(statSync(file).size);
     appendFileSync(
       file,
       [

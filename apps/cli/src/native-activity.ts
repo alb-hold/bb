@@ -104,11 +104,11 @@ export function classifyTranscriptRecord(
   return { state: null, prompt: null };
 }
 
-export function fileSize(filePath: string): number {
+export function fileSize(filePath: string): number | null {
   try {
     return statSync(filePath).size;
   } catch {
-    return 0;
+    return null;
   }
 }
 
