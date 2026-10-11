@@ -137,8 +137,10 @@ own interactive CLI for native terminal threads, whose main surface is that
 CLI in a thread terminal instead of a provider turn. Declaring it sets
 `ProviderInfo.capabilities.supportsNativeTerminal`, which offers the native
 terminal option; core never names a provider for it. The declaration is data
-the bb CLI runs on the thread's host: the `executable`, `modelArgs` placed
-first when the thread has a model (`{model}`), `pastePlaceholders` (what the
+the bb CLI runs on the thread's host: the `executable`, `launchArgs` placed
+first on every launch (no tokens; Codex passes `--no-daemon` so its session
+lives in the terminal's own process and is free for chat once the CLI exits),
+`modelArgs` placed next when the thread has a model (`{model}`), `pastePlaceholders` (what the
 CLI draws in its input box instead of a long paste; bb presses Enter after a
 sent message only once the CLI newly draws the text or one of these, and
 sends nothing when the text is already on screen, so a message can never

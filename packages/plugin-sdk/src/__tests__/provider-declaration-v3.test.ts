@@ -470,6 +470,7 @@ describe("provider declaration fields renamed in SDK 0.4.16", () => {
   describe("experimental_nativeTerminal", () => {
     const assigned = {
       executable: "my-agent",
+      launchArgs: ["--no-daemon"],
       modelArgs: ["--model", "{model}"],
       pastePlaceholders: ["[Pasted text #"],
       sessionRoot: { env: "MY_AGENT_HOME", home: ".my-agent" },
@@ -501,6 +502,11 @@ describe("provider declaration fields renamed in SDK 0.4.16", () => {
     });
 
     it.each([
+      [
+        "a token in launch argv",
+        { ...assigned, launchArgs: ["--home", "{sessionId}"] },
+        /experimental_nativeTerminal\.launchArgs may only use no tokens, not \{sessionId\}/u,
+      ],
       [
         "an unknown argv token",
         { ...assigned, modelArgs: ["--model", "{models}"] },

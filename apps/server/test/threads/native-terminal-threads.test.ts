@@ -381,6 +381,24 @@ describe("native terminal threads", () => {
     expect(second.nativeSessionId).toBe(first.nativeSessionId);
   });
 
+  it("launches codex outside its shared background server so chat can take the session back", async () => {
+    const fixture = await createFixture();
+    const { thread } = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+    });
+    const spec = nativeTerminalLaunchSpecSchema.parse(
+      await readJson(
+        await postJson(
+          fixture,
+          `/threads/${thread.id}/native-terminal/launch`,
+          {},
+        ),
+      ),
+    );
+    expect(spec.cli.executable).toBe("codex");
+    expect(spec.cli.launchArgs).toEqual(["--no-daemon"]);
+  });
+
   it("presses Enter only after the CLI draws the pasted message", async () => {
     const fixture = await createFixture();
     const { open, thread } = await openRunningNativeThread(fixture, {

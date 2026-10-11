@@ -82,6 +82,7 @@ export default function plugin(bb: BbPluginApi) {
     composerActions: ["plan", "goal"],
     experimental_nativeTerminal: {
       executable: "codex",
+      launchArgs: ["--no-daemon"],
       modelArgs: ["-c", 'model="{model}"'],
       pastePlaceholders: ["[Pasted Content "],
       sessionRoot: { env: "CODEX_HOME", home: ".codex" },

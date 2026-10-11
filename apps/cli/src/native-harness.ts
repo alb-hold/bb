@@ -95,6 +95,7 @@ export function resolveNativeHarnessLaunch(
 ): NativeHarnessLaunch {
   const { cli } = spec;
   const model = [
+    ...cli.launchArgs,
     ...(spec.model === null ? [] : fill(cli.modelArgs, { model: spec.model })),
     ...activityArgs,
   ];

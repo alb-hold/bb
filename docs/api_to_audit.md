@@ -1082,7 +1082,7 @@ first new prompt through `sdk.nativeTerminals.reportActivity`; the server moves
 the thread between idle and active and titles an untitled thread from the
 prompt. Validated at registration by
 `providerNativeTerminalSchema` in `@bb/domain`: bare executable name, at most
-16 arguments per list, only the documented tokens, relative patterns without
+16 arguments per list, only the documented tokens (none in `launchArgs`), relative patterns without
 dot segments. Core callers: `apps/server/src/services/threads/native-terminal-threads.ts`
 (provider lookup, terminal command, launch spec), `apps/cli/src/native-harness.ts`
 (argv and session discovery) and the new-thread composer's native terminal
