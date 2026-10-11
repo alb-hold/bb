@@ -66,9 +66,7 @@ export function runAgentToolCall(
 ): Response | Promise<Response> {
   if (args.tool === UPDATE_ENVIRONMENT_DIRECTORY_TOOL_NAME) {
     if (args.turnId === null) {
-      return Response.json(
-        unsupportedToolResponse(args.tool),
-      );
+      return Response.json(unsupportedToolResponse(args.tool));
     }
     const turnId = args.turnId;
     return handleUpdateEnvironmentDirectoryToolCall(deps, {

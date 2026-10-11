@@ -1910,9 +1910,7 @@ export const publicApiRoutes = {
       request: jsonRequest<
         { param: { id: string; tool: string } },
         CallNativeTerminalAgentToolRequest
-      >(
-        callNativeTerminalAgentToolRequestSchema,
-      ),
+      >(callNativeTerminalAgentToolRequestSchema),
       response: jsonResponse<NativeTerminalAgentToolResult>(),
     }),
     switchMode: defineRoute({

@@ -163,6 +163,10 @@ async function runNativeHarness(
   });
 }
 
+interface NativeMcpOptions {
+  serverUrl?: string;
+}
+
 async function holdNativeHarness(
   baseUrl: string,
   threadId: string,
@@ -271,6 +275,8 @@ async function holdNativeHarness(
                 "thread",
                 "native-mcp",
                 threadId,
+                "--server-url",
+                baseUrl,
               ],
             });
       const launch = resolveNativeHarnessLaunch(
@@ -444,12 +450,17 @@ export function registerNativeCommands(
     .description(
       "Serve a native thread's bb tools to its provider CLI over stdio MCP (native-run passes this to the CLI)",
     )
+    .option(
+      "--server-url <url>",
+      "bb server to serve the tools from; the provider CLI starts this command without bb's environment",
+    )
     .action(
-      action(async (threadId: string) => {
-        const sdk = createCliBbSdk(getUrl());
+      action(async (threadId: string, opts: NativeMcpOptions) => {
+        const sdk = createCliBbSdk(opts.serverUrl ?? getUrl());
         await runNativeMcpServer(
           {
-            listTools: async () => (await sdk.nativeTerminals.agentTools({ threadId })).tools,
+            listTools: async () =>
+              (await sdk.nativeTerminals.agentTools({ threadId })).tools,
             callTool: (call) =>
               sdk.nativeTerminals.callAgentTool({
                 threadId,
