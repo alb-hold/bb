@@ -44,7 +44,10 @@ import {
   handleDaemonSocketClosed,
   handleHostSessionOpened,
 } from "../../src/internal/session-owner-side-effects.js";
-import { onDaemonSocketOpen } from "../../src/ws/daemon-protocol.js";
+import {
+  onDaemonSocketMessage,
+  onDaemonSocketOpen,
+} from "../../src/ws/daemon-protocol.js";
 
 interface FakeDaemonSocket {
   close(code?: number, reason?: string): void;
@@ -1510,6 +1513,56 @@ describe("public terminal routes", () => {
       type: "terminal.close",
       reason: "open-timeout",
     });
+  });
+
+  it("reads no database rows for output from a terminal no browser is watching", async () => {
+    const fixture = await createTerminalRouteFixture();
+    harnesses.push(fixture.harness);
+    const stored = createTerminalSession(fixture.harness.db, {
+      cols: 80,
+      daemonSessionId: fixture.session.id,
+      environmentId: fixture.environment.id,
+      hostId: fixture.host.id,
+      initialCwd: "/tmp/terminal-workspace",
+      rows: 24,
+      status: "running",
+      threadId: fixture.thread.id,
+      title: "Terminal 1",
+    });
+    const sqlite = fixture.harness.db.$client;
+    const prepare = sqlite.prepare.bind(sqlite);
+    const prepared = vi
+      .spyOn(sqlite, "prepare")
+      .mockImplementation((source: string) => prepare(source));
+    const sendOutput = (seq: number) =>
+      onDaemonSocketMessage(fixture.harness.deps, {
+        hostId: fixture.host.id,
+        raw: JSON.stringify({
+          type: "terminal.output",
+          terminalId: stored.id,
+          chunk: {
+            seq,
+            dataBase64: Buffer.from(`chunk-${seq}`).toString("base64"),
+          },
+        }),
+        sessionId: fixture.session.id,
+        socket: fixture.socket,
+      });
+
+    sendOutput(0);
+    sendOutput(1);
+    expect(prepared).not.toHaveBeenCalled();
+
+    const browserSocket = createFakeBrowserSocket();
+    fixture.harness.hub.registerTerminalClient(stored.id, browserSocket);
+    sendOutput(2);
+
+    expect(prepared).toHaveBeenCalled();
+    expect(
+      readBrowserMessages(browserSocket).flatMap((message) =>
+        message.type === "output" ? [message.chunk.seq] : [],
+      ),
+    ).toEqual([2]);
   });
 
   it("reattaches disconnected terminals when the same daemon instance reconnects and replays the output browsers missed", async () => {

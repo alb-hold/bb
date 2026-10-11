@@ -169,6 +169,13 @@ export function onDaemonSocketMessage(
     return;
   }
 
+  if (
+    message.type === "terminal.output" &&
+    !deps.hub.hasTerminalClients(message.terminalId)
+  ) {
+    return;
+  }
+
   try {
     runEventLoopWorkSync(`ws:daemon ${message.type}`, () => {
       const session = requireAuthorizedOpenSession(deps.db, {
