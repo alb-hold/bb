@@ -96,7 +96,7 @@ it("fetches all providers only in the selected source and keeps grouped accounts
   expect(slot.rpcCalls[0]?.input).toEqual({
     force: false,
     machineIds: null,
-    providerId: null,
+    providerIds: [],
     maxAgeMs: 60_000,
   });
   fireEvent.click(slot.getByLabelText("Reload usage data"));
@@ -187,7 +187,7 @@ it("shows pooled Claude accounts and host Codex in the default combined view", a
         const input = usageInput(call.input);
         return (
           input.machineIds?.includes("host") &&
-          input.providerId === "codex" &&
+          input.providerIds.includes("codex") &&
           input.force
         );
       }),
@@ -198,7 +198,7 @@ it("shows pooled Claude accounts and host Codex in the default combined view", a
       const input = usageInput(call.input);
       return (
         input.machineIds?.includes("source:pool") &&
-        input.providerId === "claude-code" &&
+        input.providerIds.includes("claude-code") &&
         input.force
       );
     }),
@@ -309,7 +309,7 @@ it("refreshes a distinct host Claude account and keeps pooled accounts", async (
       return (
         input.force &&
         input.machineIds?.includes("host") &&
-        input.providerId === "claude-code"
+        input.providerIds.includes("claude-code")
       );
     }),
   ).toBe(true);
@@ -365,7 +365,7 @@ it.each([
           return (
             input.force &&
             input.machineIds?.includes("source:pool") &&
-            input.providerId === "claude-code"
+            input.providerIds.includes("claude-code")
           );
         }),
       ).toBe(true),
@@ -376,7 +376,7 @@ it.each([
         return (
           input.force &&
           input.machineIds?.includes("host") &&
-          input.providerId === "claude-code"
+          input.providerIds.includes("claude-code")
         );
       }),
     ).toBe(false);
@@ -488,7 +488,7 @@ it("uses machine usage when the pool is disabled", async () => {
   await waitFor(() => expect(slot.rpcCalls).toHaveLength(2));
   expect(slot.rpcCalls[1]?.input).toMatchObject({
     machineIds: ["host"],
-    providerId: "codex",
+    providerIds: ["codex"],
   });
 });
 

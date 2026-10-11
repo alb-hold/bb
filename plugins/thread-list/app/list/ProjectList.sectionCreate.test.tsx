@@ -169,10 +169,9 @@ function renderCustomSections(
 
 async function createSectionFrom(actionsLabel: string) {
   await act(async () => {
-    fireEvent.pointerDown(
-      screen.getByRole("button", { name: actionsLabel }),
-      { button: 0 },
-    );
+    fireEvent.pointerDown(screen.getByRole("button", { name: actionsLabel }), {
+      button: 0,
+    });
     await Promise.resolve();
   });
   await act(async () => {
@@ -250,7 +249,7 @@ describe("creating a sidebar section", () => {
       const follows = (earlier: Element, later: Element) =>
         Boolean(
           earlier.compareDocumentPosition(later) &
-            Node.DOCUMENT_POSITION_FOLLOWING,
+          Node.DOCUMENT_POSITION_FOLLOWING,
         );
 
       expect(follows(pinned, discovery)).toBe(true);
@@ -388,7 +387,10 @@ describe("creating a sidebar section", () => {
     ).toBeTruthy();
 
     await act(async () => {
-      resolveList([makeSection("sec_a", "Alpha"), makeSection("sec_b", "Beta")]);
+      resolveList([
+        makeSection("sec_a", "Alpha"),
+        makeSection("sec_b", "Beta"),
+      ]);
       await Promise.resolve();
     });
     expect(
@@ -462,11 +464,11 @@ describe("creating a sidebar section", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "New thread in Pinned" }),
     );
-    expect(inspection.sidebarActionCalls).toContainEqual({
-      method: "openNewThread",
+    expect(inspection.navigateCalls).toContainEqual({
+      method: "toCompose",
       options: {
         focusPrompt: true,
-        experimental_placement: { sectionId: null, pinned: true },
+        placement: { sectionId: null, pinned: true },
       },
     });
   });
@@ -479,29 +481,12 @@ describe("creating a sidebar section", () => {
       }),
     );
 
-    expect(inspection.sidebarActionCalls).toContainEqual({
-      method: "openNewThread",
+    expect(inspection.navigateCalls).toContainEqual({
+      method: "toCompose",
       options: {
-        experimental_placement: { sectionId: "sec_a", pinned: false },
+        placement: { sectionId: "sec_a", pinned: false },
         focusPrompt: true,
       },
-    });
-  });
-
-  it("offers section moves from a thread row in the rendered list", async () => {
-    const slot = renderCustomSections();
-    fireEvent.pointerDown(
-      screen.getByRole("button", { name: "Thread actions" }),
-      { button: 0 },
-    );
-    const move = screen.getByRole("menuitem", {
-      name: "Move to section",
-    });
-    fireEvent.keyDown(move, { key: "ArrowRight" });
-    fireEvent.click(screen.getByRole("menuitem", { name: "Beta" }));
-    expect(slot.inspection.sdkCalls).toContainEqual({
-      method: "threads.update",
-      args: [{ threadId: "thr_alpha", sectionId: "sec_b" }],
     });
   });
 

@@ -136,6 +136,11 @@ describe("built-in sidebar section renderer", () => {
     );
 
     expect(screen.queryByText("Threads content")).toBeNull();
-    expect(screen.getAllByLabelText("Working")).not.toHaveLength(0);
+    expect(
+      Array.from(
+        document.querySelectorAll("[data-thread-status-glyph]"),
+        (glyph) => glyph.getAttribute("data-thread-status-glyph"),
+      ),
+    ).toEqual(["working"]);
   });
 });

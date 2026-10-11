@@ -19,6 +19,7 @@ import {
   createNewTabFixedPanelTab,
   createPluginPanelFixedPanelTab,
   createThreadStorageFilePreviewFixedPanelTab,
+  createAttachmentFilePreviewFixedPanelTab,
   createWorkspaceFilePreviewFixedPanelTab,
   type BrowserFixedPanelTab,
   type FixedPanelTab,
@@ -27,6 +28,7 @@ import {
   type NewTabFixedPanelTab,
   type PluginPanelFixedPanelTab,
   type ThreadStorageFilePreviewFixedPanelTab,
+  type AttachmentFilePreviewFixedPanelTab,
   type WorkspaceFilePreviewFixedPanelTab,
 } from "@/lib/fixed-panel-tabs-state";
 import { usePluginSlots } from "@/lib/plugin-slots";
@@ -131,6 +133,12 @@ export type OpenSecondaryPanelTabRequest =
       tab: ThreadStorageFileTabState;
       threadId?: string;
     }
+  | {
+      kind: "attachment-file-preview";
+      name: string;
+      path: string;
+      projectId: string;
+    }
   | { kind: "browser"; url: string }
   | { kind: "new-tab" };
 
@@ -145,6 +153,7 @@ type SecondaryPanelTab =
   | WorkspaceFilePreviewFixedPanelTab
   | HostFilePreviewFixedPanelTab
   | ThreadStorageFilePreviewFixedPanelTab
+  | AttachmentFilePreviewFixedPanelTab
   | BrowserFixedPanelTab
   | NewTabFixedPanelTab
   | PluginPanelFixedPanelTab;
@@ -165,6 +174,7 @@ function isReopenableSecondaryPanelTab(
     case "workspace-file-preview":
     case "host-file-preview":
     case "thread-storage-file-preview":
+    case "attachment-file-preview":
     case "browser":
     case "plugin-panel":
     case "new-tab":
@@ -234,6 +244,12 @@ function createTabForOpenRequest({
         isPinned: false,
         tab: request.tab,
         threadId: storageThreadId,
+      });
+    case "attachment-file-preview":
+      return createAttachmentFilePreviewFixedPanelTab({
+        name: request.name,
+        path: request.path,
+        projectId: request.projectId,
       });
     case "browser":
       return createBrowserFixedPanelTab({

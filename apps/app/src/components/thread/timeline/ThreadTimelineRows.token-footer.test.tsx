@@ -1,8 +1,10 @@
 // @vitest-environment jsdom
 
 import { render, screen } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { useState, type ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import liveCapture from "@/test/fixtures/thread-token-footer-live-capture.json";
@@ -12,6 +14,15 @@ import {
   turnRow,
 } from "@/test/fixtures/thread-timeline-rows";
 import { ThreadTimelineRows } from "./ThreadTimelineRows";
+
+function Providers({ children }: { children: ReactNode }) {
+  const [client] = useState(() => new QueryClient());
+  return (
+    <QueryClientProvider client={client}>
+      <MemoryRouter>{children}</MemoryRouter>
+    </QueryClientProvider>
+  );
+}
 
 const useThreadSpendSummary = vi.hoisted(() => vi.fn());
 
@@ -78,14 +89,14 @@ describe("ThreadTimelineRows token footer", () => {
     });
 
     const { container } = render(
-      <MemoryRouter>
+      <Providers>
         <ThreadTimelineRows
           threadId={row.threadId}
           timelineRows={[assistant]}
           threadRuntimeDisplayStatus="idle"
           workspaceRootPath={undefined}
         />
-      </MemoryRouter>,
+      </Providers>,
     );
 
     expect(
@@ -148,7 +159,7 @@ describe("ThreadTimelineRows token footer", () => {
     const turnId = `turn-${row.turnId}`;
 
     const { container } = render(
-      <MemoryRouter>
+      <Providers>
         <ThreadTimelineRows
           threadId={row.threadId}
           timelineRows={[
@@ -163,18 +174,21 @@ describe("ThreadTimelineRows token footer", () => {
           threadRuntimeDisplayStatus="idle"
           workspaceRootPath={undefined}
         />
-      </MemoryRouter>,
+      </Providers>,
     );
 
     const footer = container.querySelector("[data-thread-turn-tokens]");
-    expect(container.querySelectorAll("[data-thread-turn-tokens]")).toHaveLength(
-      1,
-    );
     expect(
-      footer?.closest("[data-timeline-row-id]")?.getAttribute("data-timeline-row-id"),
+      container.querySelectorAll("[data-thread-turn-tokens]"),
+    ).toHaveLength(1);
+    expect(
+      footer
+        ?.closest("[data-timeline-row-id]")
+        ?.getAttribute("data-timeline-row-id"),
     ).toBe(turnId);
-    expect(footer?.querySelector('[data-token-part="reasoning"]')?.textContent)
-      .toBe("reason 567");
+    expect(
+      footer?.querySelector('[data-token-part="reasoning"]')?.textContent,
+    ).toBe("reason 567");
   });
 
   it("omits the token footer when every per-turn usage field is unavailable", () => {
@@ -205,14 +219,14 @@ describe("ThreadTimelineRows token footer", () => {
     });
 
     const { container } = render(
-      <MemoryRouter>
+      <Providers>
         <ThreadTimelineRows
           threadId={row.threadId}
           timelineRows={[assistant]}
           threadRuntimeDisplayStatus="idle"
           workspaceRootPath={undefined}
         />
-      </MemoryRouter>,
+      </Providers>,
     );
 
     expect(container.querySelector("[data-thread-turn-tokens]")).toBeNull();
@@ -246,14 +260,14 @@ describe("ThreadTimelineRows token footer", () => {
     });
 
     const { container } = render(
-      <MemoryRouter>
+      <Providers>
         <ThreadTimelineRows
           threadId={row.threadId}
           timelineRows={[assistant]}
           threadRuntimeDisplayStatus="idle"
           workspaceRootPath={undefined}
         />
-      </MemoryRouter>,
+      </Providers>,
     );
 
     const footer = container.querySelector("[data-thread-turn-tokens]");
@@ -309,7 +323,7 @@ describe("ThreadTimelineRows token footer", () => {
     });
 
     const { container } = render(
-      <MemoryRouter>
+      <Providers>
         <div style={{ width: 720 }}>
           <ThreadTimelineRows
             threadId={row.threadId}
@@ -318,7 +332,7 @@ describe("ThreadTimelineRows token footer", () => {
             workspaceRootPath={undefined}
           />
         </div>
-      </MemoryRouter>,
+      </Providers>,
     );
 
     expect(
@@ -353,14 +367,14 @@ describe("ThreadTimelineRows token footer", () => {
     });
 
     const { rerender, container } = render(
-      <MemoryRouter>
+      <Providers>
         <ThreadTimelineRows
           threadId={row.threadId}
           timelineRows={[earlierAssistant, latestAssistant]}
           threadRuntimeDisplayStatus="idle"
           workspaceRootPath={undefined}
         />
-      </MemoryRouter>,
+      </Providers>,
     );
 
     expect(
@@ -374,14 +388,14 @@ describe("ThreadTimelineRows token footer", () => {
     ).toBe(row.id);
 
     rerender(
-      <MemoryRouter>
+      <Providers>
         <ThreadTimelineRows
           threadId={row.threadId}
           timelineRows={[earlierAssistant, latestAssistant]}
           threadRuntimeDisplayStatus="active"
           workspaceRootPath={undefined}
         />
-      </MemoryRouter>,
+      </Providers>,
     );
 
     expect(container.querySelector("[data-thread-turn-tokens]")).toBeNull();
@@ -411,14 +425,14 @@ describe("ThreadTimelineRows token footer", () => {
     });
 
     const { container } = render(
-      <MemoryRouter>
+      <Providers>
         <ThreadTimelineRows
           threadId={row.threadId}
           timelineRows={[completedAssistant, streamingAssistant]}
           threadRuntimeDisplayStatus="active"
           workspaceRootPath={undefined}
         />
-      </MemoryRouter>,
+      </Providers>,
     );
 
     expect(container.querySelector("[data-thread-turn-tokens]")).toBeNull();
@@ -427,14 +441,14 @@ describe("ThreadTimelineRows token footer", () => {
   it("excludes an active flat turn after a completed response and pending command", () => {
     const { firstTurn, rows } = flatRowsWithCapturedTurns("pending");
     const { container } = render(
-      <MemoryRouter>
+      <Providers>
         <ThreadTimelineRows
           threadId={firstTurn.threadId}
           timelineRows={rows}
           threadRuntimeDisplayStatus="active"
           workspaceRootPath={undefined}
         />
-      </MemoryRouter>,
+      </Providers>,
     );
 
     const summaries = container.querySelectorAll("[data-thread-turn-tokens]");
@@ -449,14 +463,14 @@ describe("ThreadTimelineRows token footer", () => {
   it("excludes the active flat turn between steps with no pending work", () => {
     const { firstTurn, rows } = flatRowsWithCapturedTurns("completed");
     const { container } = render(
-      <MemoryRouter>
+      <Providers>
         <ThreadTimelineRows
           threadId={firstTurn.threadId}
           timelineRows={rows}
           threadRuntimeDisplayStatus="active"
           workspaceRootPath={undefined}
         />
-      </MemoryRouter>,
+      </Providers>,
     );
 
     const summaries = container.querySelectorAll("[data-thread-turn-tokens]");
@@ -471,14 +485,14 @@ describe("ThreadTimelineRows token footer", () => {
   it("restores all flat turn footers when the thread returns to idle", () => {
     const { firstTurn, rows } = flatRowsWithCapturedTurns("completed");
     const { container, rerender } = render(
-      <MemoryRouter>
+      <Providers>
         <ThreadTimelineRows
           threadId={firstTurn.threadId}
           timelineRows={rows}
           threadRuntimeDisplayStatus="active"
           workspaceRootPath={undefined}
         />
-      </MemoryRouter>,
+      </Providers>,
     );
 
     expect(
@@ -486,14 +500,14 @@ describe("ThreadTimelineRows token footer", () => {
     ).toHaveLength(1);
 
     rerender(
-      <MemoryRouter>
+      <Providers>
         <ThreadTimelineRows
           threadId={firstTurn.threadId}
           timelineRows={rows}
           threadRuntimeDisplayStatus="idle"
           workspaceRootPath={undefined}
         />
-      </MemoryRouter>,
+      </Providers>,
     );
 
     expect(
@@ -520,14 +534,14 @@ describe("ThreadTimelineRows token footer", () => {
     );
 
     const { container } = render(
-      <MemoryRouter>
+      <Providers>
         <ThreadTimelineRows
           threadId={firstTurn.threadId}
           timelineRows={assistantRows}
           threadRuntimeDisplayStatus="idle"
           workspaceRootPath={undefined}
         />
-      </MemoryRouter>,
+      </Providers>,
     );
 
     expect(sample.spendSummary.historyComplete).toBe(false);
@@ -574,14 +588,14 @@ describe("ThreadTimelineRows token footer", () => {
       });
 
       const flat = render(
-        <MemoryRouter>
+        <Providers>
           <ThreadTimelineRows
             threadId={row.threadId}
             timelineRows={[assistant]}
             threadRuntimeDisplayStatus="idle"
             workspaceRootPath={undefined}
           />
-        </MemoryRouter>,
+        </Providers>,
       );
       expect(
         flat.container.querySelectorAll("[data-thread-turn-tokens]"),
@@ -589,7 +603,7 @@ describe("ThreadTimelineRows token footer", () => {
       flat.unmount();
 
       const grouped = render(
-        <MemoryRouter>
+        <Providers>
           <ThreadTimelineRows
             threadId={row.threadId}
             timelineRows={[
@@ -606,7 +620,7 @@ describe("ThreadTimelineRows token footer", () => {
             threadRuntimeDisplayStatus="idle"
             workspaceRootPath={undefined}
           />
-        </MemoryRouter>,
+        </Providers>,
       );
       expect(
         grouped.container.querySelectorAll("[data-thread-turn-tokens]"),
@@ -632,7 +646,7 @@ describe("ThreadTimelineRows token footer", () => {
       });
 
       const { container } = render(
-        <MemoryRouter>
+        <Providers>
           <ThreadTimelineRows
             threadId={row.threadId}
             timelineRows={[
@@ -649,7 +663,7 @@ describe("ThreadTimelineRows token footer", () => {
             threadRuntimeDisplayStatus="idle"
             workspaceRootPath={undefined}
           />
-        </MemoryRouter>,
+        </Providers>,
       );
 
       expect(
@@ -708,14 +722,14 @@ describe("ThreadTimelineRows token footer", () => {
     ];
 
     const { container, rerender } = render(
-      <MemoryRouter>
+      <Providers>
         <ThreadTimelineRows
           threadId={first.threadId}
           timelineRows={activeRows}
           threadRuntimeDisplayStatus="active"
           workspaceRootPath={undefined}
         />
-      </MemoryRouter>,
+      </Providers>,
     );
 
     const summaries = container.querySelectorAll("[data-thread-turn-tokens]");
@@ -740,14 +754,14 @@ describe("ThreadTimelineRows token footer", () => {
       status: "completed",
     });
     rerender(
-      <MemoryRouter>
+      <Providers>
         <ThreadTimelineRows
           threadId={first.threadId}
           timelineRows={idleRows}
           threadRuntimeDisplayStatus="idle"
           workspaceRootPath={undefined}
         />
-      </MemoryRouter>,
+      </Providers>,
     );
     expect(
       container.querySelectorAll("[data-thread-turn-tokens]"),
@@ -774,7 +788,7 @@ describe("ThreadTimelineRows token footer", () => {
   it("keeps partial active-turn spend hidden while waiting for its host", () => {
     const { firstTurn, rows } = flatRowsWithCapturedTurns("pending");
     const { container } = render(
-      <MemoryRouter>
+      <Providers>
         <ThreadTimelineRows
           threadId={firstTurn.threadId}
           threadIsActive={true}
@@ -782,7 +796,7 @@ describe("ThreadTimelineRows token footer", () => {
           threadRuntimeDisplayStatus="waiting-for-host"
           workspaceRootPath={undefined}
         />
-      </MemoryRouter>,
+      </Providers>,
     );
 
     const summaries = container.querySelectorAll("[data-thread-turn-tokens]");

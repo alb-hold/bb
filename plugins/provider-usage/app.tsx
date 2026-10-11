@@ -112,14 +112,14 @@ function refreshUsage({
   force,
   machineIds,
   maxAgeMs,
-  providerId = null,
+  providerIds,
   signal,
 }: {
   pluginId: string;
   force: boolean;
   machineIds: string[] | null;
   maxAgeMs: number;
-  providerId?: string | null;
+  providerIds: string[];
   signal?: AbortSignal;
 }): Promise<UsageSnapshot | null> {
   activeRefreshCount += 1;
@@ -131,7 +131,7 @@ function refreshUsage({
         {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ force, machineIds, maxAgeMs, providerId }),
+          body: JSON.stringify({ force, machineIds, maxAgeMs, providerIds }),
           signal:
             signal === undefined
               ? AbortSignal.timeout(60_000)
@@ -668,15 +668,13 @@ export function ProviderUsageStatusContent({
     if (activeMachineId === null || refreshProviderKey === "") return;
     const refresh = () => {
       if (document.visibilityState === "hidden") return;
-      for (const providerId of refreshProviderKey.split("\n")) {
-        void refreshUsage({
-          pluginId,
-          force: false,
-          machineIds: [activeMachineId],
-          providerId,
-          maxAgeMs: CARD_MAX_AGE_MS,
-        });
-      }
+      void refreshUsage({
+        pluginId,
+        force: false,
+        machineIds: [activeMachineId],
+        providerIds: refreshProviderKey.split("\n"),
+        maxAgeMs: CARD_MAX_AGE_MS,
+      });
     };
     refresh();
     const timer = window.setInterval(refresh, CARD_MAX_AGE_MS);
@@ -714,17 +712,13 @@ export function ProviderUsageStatusContent({
   );
 
   const reload = () => {
-    for (const providerId of refreshProviderIds.length === 0
-      ? [null]
-      : refreshProviderIds) {
-      void refreshUsage({
-        pluginId,
-        force: true,
-        machineIds: activeMachineId === null ? null : [activeMachineId],
-        maxAgeMs: 0,
-        providerId,
-      });
-    }
+    void refreshUsage({
+      pluginId,
+      force: true,
+      machineIds: activeMachineId === null ? null : [activeMachineId],
+      maxAgeMs: 0,
+      providerIds: refreshProviderIds,
+    });
   };
 
   const handleTabKeyDown = (
@@ -998,6 +992,7 @@ export default definePluginApp((app) => {
           force: false,
           machineIds,
           maxAgeMs,
+          providerIds: [],
           signal,
         });
         if (inventory === null || signal.aborted) return;
@@ -1019,7 +1014,7 @@ export default definePluginApp((app) => {
             force: false,
             machineIds: providerMachineIds,
             maxAgeMs,
-            providerId,
+            providerIds: [providerId],
             signal,
           });
         }

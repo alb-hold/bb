@@ -31,7 +31,7 @@ it("preserves a restarting host status while usage is temporarily unavailable", 
       host.harness.behavior.callRpc("getUsage", {
         force: false,
         machineIds: null,
-        providerId: null,
+        providerIds: [],
         maxAgeMs: 60_000,
       }),
     ).resolves.toEqual({
@@ -166,7 +166,7 @@ it("lists cheaply, fetches only an explicit source/provider, preserves per-accou
   const request = {
     force: false,
     machineIds: null,
-    providerId: null,
+    providerIds: [],
     maxAgeMs: 60_000,
   };
   try {
@@ -189,11 +189,11 @@ it("lists cheaply, fetches only an explicit source/provider, preserves per-accou
     ).toBe(false);
     await host.harness.behavior.callRpc("getUsage", {
       ...request,
-      providerId: "codex",
+      providerIds: ["codex"],
     });
     await host.harness.behavior.callRpc("getUsage", {
       ...request,
-      providerId: "claude-code",
+      providerIds: ["claude-code"],
     });
     expect(
       rpc.mock.calls
@@ -206,7 +206,7 @@ it("lists cheaply, fetches only an explicit source/provider, preserves per-accou
       ...request,
       force: true,
       machineIds: ["source:pool"],
-      providerId: "codex",
+      providerIds: ["codex"],
     };
     await host.harness.behavior.callRpc("getUsage", target);
     expect(
@@ -232,7 +232,7 @@ it("lists cheaply, fetches only an explicit source/provider, preserves per-accou
     expect(
       await host.harness.behavior.callRpc("getUsage", {
         ...target,
-        providerId: "codex",
+        providerIds: ["codex"],
         force: true,
       }),
     ).toMatchObject({
@@ -254,7 +254,7 @@ it("lists cheaply, fetches only an explicit source/provider, preserves per-accou
     rpc.mockClear();
     const partialRefresh = await host.harness.behavior.callRpc("getUsage", {
       ...target,
-      providerId: "codex",
+      providerIds: ["codex"],
       force: true,
     });
     expect(partialRefresh).toMatchObject({
@@ -283,7 +283,7 @@ it("lists cheaply, fetches only an explicit source/provider, preserves per-accou
     expect(
       await host.harness.behavior.callRpc("getUsage", {
         ...target,
-        providerId: "codex",
+        providerIds: ["codex"],
         force: true,
       }),
     ).toMatchObject({
@@ -298,7 +298,7 @@ it("lists cheaply, fetches only an explicit source/provider, preserves per-accou
     });
     await host.harness.behavior.callRpc("getUsage", {
       ...target,
-      providerId: "claude-code",
+      providerIds: ["claude-code"],
     });
     expect(
       rpc.mock.calls
@@ -361,7 +361,7 @@ it("keeps an unconfigured shared group without hosts or measurement requests", a
       host.harness.behavior.callRpc("getUsage", {
         force: false,
         machineIds: null,
-        providerId: null,
+        providerIds: [],
         maxAgeMs: 0,
       }),
     ).resolves.toEqual({
@@ -445,7 +445,7 @@ it("collapses known account observations per machine, preserves unknown identiti
     const snapshot = await harness.behavior.callRpc("getUsage", {
       force: false,
       machineIds: ["host"],
-      providerId: "codex",
+      providerIds: ["codex"],
       maxAgeMs: 0,
     });
     expect(snapshot).toMatchObject({

@@ -259,9 +259,9 @@ vi.mock("@/hooks/queries/thread-queries", () => ({
     isLoading: mocks.pendingInteractionsIsLoading,
     refetch: mocks.pendingInteractionsRefetch,
   }),
-  getLatestPendingInteraction: (
+  orderPendingInteractions: (
     interactions: readonly { createdAt: number }[] | undefined,
-  ) => (interactions && interactions.length > 0 ? interactions[0] : null),
+  ) => interactions ?? [],
   isPendingInteractionStateUnknown: (
     interactions: readonly { createdAt: number }[] | undefined,
     isFetching: boolean,
@@ -271,7 +271,7 @@ vi.mock("@/hooks/queries/thread-queries", () => ({
 vi.mock(
   "@/components/thread/pending-interactions/ThreadPendingInteractionBanner",
   () => ({
-    ThreadPendingInteractionBanner: ({ threadId }: { threadId: string }) => (
+    ThreadPendingInteractionBanners: ({ threadId }: { threadId: string }) => (
       <div data-testid="pending-interaction-banner">{threadId}</div>
     ),
   }),

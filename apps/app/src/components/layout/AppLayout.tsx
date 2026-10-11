@@ -50,7 +50,6 @@ import { stripProjectThreads } from "@/hooks/queries/project-queries";
 import { useSidebarNavigation } from "@/hooks/queries/sidebar-navigation-query";
 import {
   didThreadDetailBootstrapRefreshAfterMount,
-  getLatestPendingInteraction,
   useThread,
   useThreadDetailBootstrap,
   useThreadPendingInteractions,
@@ -63,6 +62,7 @@ import {
   COMPACT_SHELF_HIDDEN_FIXED_CHROME_CLASS,
   usePanelShelfState,
 } from "@/components/ui/secondary-panel-shelf-visibility";
+
 import { ProjectActionsMenu } from "@/components/project/ProjectActionsMenu";
 import { ProjectActionsProvider } from "@/components/project/ProjectActionsProvider";
 import {
@@ -70,7 +70,6 @@ import {
   PluginPanelHeaderCenter,
 } from "@/components/plugin/PluginPanelHeader";
 import { PluginAppOverlays } from "@/components/plugin/PluginAppOverlays";
-import { AppThreadSectionMoveProvider } from "@/components/thread/ThreadSectionMoveProvider";
 import { ThreadActionsProvider } from "@/components/thread/ThreadActionsProvider";
 import {
   usePluginNavPanelChrome,
@@ -92,6 +91,7 @@ import {
 } from "@/lib/bb-desktop";
 import { useDesktopWindowState } from "@/hooks/useDesktopWindowState";
 import { useDataDirectoryCommand } from "@/hooks/useDataDirectoryCommand";
+import { useWindowReloadCommand } from "@/hooks/useWindowReloadCommand";
 import { usePluginSafeModeCommands } from "@/hooks/usePluginSafeModeCommands";
 import { usePluginCachePruneCommand } from "@/hooks/usePluginCachePruneCommand";
 import { useServerDaemonLogsCommand } from "@/hooks/useServerDaemonLogsCommand";
@@ -112,7 +112,7 @@ import { dispatchBrowserViewBoundsSync } from "@/lib/browser-view-bounds-sync";
 import { useFaviconBadge } from "@/lib/favicon-color-preference";
 import { shouldShowFaviconAttentionDot } from "./faviconAttentionDot";
 import { AppLayoutSidebar } from "./AppLayoutSidebar";
-import { useNavigationRailExperiment } from "@/components/sidebar/navigationRailExperiment";
+import { WindowRightPanelToggle } from "./WindowRightPanelToggle";
 import { NAV_RAIL_COLLAPSED_SIDEBAR_WIDTH } from "@/components/sidebar/navRailWidth";
 import { SidebarHistoryNavigationControls } from "@/components/sidebar/SidebarHistoryNavigationControls";
 import {
@@ -192,7 +192,6 @@ const sidebarOpenAtom = atomWithStorage<boolean>(
 );
 
 interface SidebarStateBridgeProps {
-  navigationRail: boolean;
   framed: boolean;
   children: ReactNode;
 }
@@ -200,11 +199,7 @@ interface SidebarStateBridgeProps {
 type SidebarResizeMouseEvent = ReactMouseEvent<HTMLDivElement>;
 type SidebarOpenChangeHandler = (open: boolean) => void;
 
-function SidebarStateBridge({
-  navigationRail,
-  framed,
-  children,
-}: SidebarStateBridgeProps) {
+function SidebarStateBridge({ framed, children }: SidebarStateBridgeProps) {
   const [open, setOpen] = useAtom(sidebarOpenAtom);
   const sidebarWidth = useAtomValue(sidebarWidthAtom);
   const sidebarLiveWidth = useAtomValue(sidebarLiveWidthAtom);
@@ -222,9 +217,7 @@ function SidebarStateBridge({
   return (
     <SidebarProvider
       width={`${sidebarLiveWidth ?? sidebarWidth}px`}
-      collapsedRailWidth={
-        navigationRail ? NAV_RAIL_COLLAPSED_SIDEBAR_WIDTH : undefined
-      }
+      collapsedRailWidth={NAV_RAIL_COLLAPSED_SIDEBAR_WIDTH}
       framed={framed}
       data-testid="app-layout-root"
       open={open}
@@ -271,30 +264,32 @@ function SidebarTriggerOverlay({
         data-testid="app-window-title-bar"
         style={{ zIndex: APP_OVERLAY_LAYER.sidebarTrigger }}
         className={cn(
-          "fixed inset-x-0 top-0 gap-1",
-          CHROME_ROW_CLASS,
+          "fixed inset-x-0 top-0 pr-[calc(var(--bb-window-frame-lip)_+_var(--bb-panel-chrome-padding)_+_1px)]",
+          "flex h-(--bb-window-title-bar-height) items-center [--bb-macos-chrome-control-y:calc(26px_-_var(--bb-window-title-bar-height)/2)]",
           reserveMacosTrafficLights
             ? MACOS_TRAFFIC_LIGHT_RESERVE_PADDING_CLASS
             : BROWSER_SIDEBAR_TRIGGER_INSET_CLASS,
           MACOS_WINDOW_DRAG_CLASS,
         )}
       >
-        <SidebarHistoryNavigationControls
-          className={MACOS_CHROME_CONTROL_NO_DRAG_CLASS}
-        />
-        <div className="relative flex items-center">
-          <SidebarTrigger
-            className={MACOS_CHROME_CONTROL_NO_DRAG_CLASS}
-            {...triggerProps}
-          />
-          <AppCommandShortcutHint
-            shortcut={shortcut}
-            className={cn(
-              "absolute left-full ml-1",
-              MACOS_CHROME_CONTROL_AXIS_CLASS,
-            )}
-          />
+        <div
+          className={cn(
+            "flex items-center gap-(--bb-chrome-control-gap)",
+            MACOS_CHROME_CONTROL_NO_DRAG_CLASS,
+          )}
+        >
+          <SidebarHistoryNavigationControls />
+          <div className="relative flex items-center">
+            <SidebarTrigger {...triggerProps} />
+            <AppCommandShortcutHint
+              shortcut={shortcut}
+              className="absolute left-full ml-1"
+            />
+          </div>
         </div>
+        <WindowRightPanelToggle
+          className={cn("ml-auto", MACOS_CHROME_CONTROL_NO_DRAG_CLASS)}
+        />
       </div>
     );
   }
@@ -500,7 +495,6 @@ export function AppLayout({ children }: AppLayoutProps) {
   const navigate = useNavigate();
   const { appRoutePath, settingsRoutePath, toolsBackRoutePath } =
     useAppSettingsRouteMemory();
-  const navigationRail = useNavigationRailExperiment();
   const setRootComposeProjectId = useSetRootComposeProjectId();
   useEffect(
     () =>
@@ -545,6 +539,7 @@ export function AppLayout({ children }: AppLayoutProps) {
   });
   useServerDaemonLogsCommand();
   useDataDirectoryCommand();
+  useWindowReloadCommand();
   usePluginSafeModeCommands();
   usePluginCachePruneCommand();
   const archivedSectionId = isArchivedView
@@ -734,8 +729,7 @@ export function AppLayout({ children }: AppLayoutProps) {
     { enabled: isThreadView && Boolean(threadId) },
   );
   const currentThreadHasPendingInteraction =
-    getLatestPendingInteraction(currentThreadPendingInteractionsQuery.data) !==
-    null;
+    (currentThreadPendingInteractionsQuery.data?.length ?? 0) > 0;
   const faviconBadge = shouldShowFaviconAttentionDot({
     currentThreadHasPendingInteraction,
     currentThreadId: threadId,
@@ -839,92 +833,82 @@ export function AppLayout({ children }: AppLayoutProps) {
     <TooltipProvider delayDuration={300} disableHoverableContent>
       <ProjectActionsProvider>
         <ThreadTitleMentionResourcesProvider {...titleMentionResources}>
-          <AppThreadSectionMoveProvider
-            sections={sidebarNavigationQuery.data?.sections ?? []}
-          >
-            <ThreadActionsProvider>
-              <SidebarStateBridge
-                navigationRail={navigationRail}
-                framed={usesDesktopChrome && navigationRail}
-              >
-                {backToAppRoutePath !== null && !isSidebarResizing ? (
-                  <BackToAppCommandHandler routePath={backToAppRoutePath} />
-                ) : null}
-                <HistoryCommandHandlers />
-                <AppLayoutSidebar
-                  mode={
-                    isGlobalSettingsView
-                      ? "settings"
-                      : isPluginsWorkspace
-                        ? "plugins"
-                        : isSkillsWorkspace
-                          ? "skills"
-                          : "app"
+          <ThreadActionsProvider>
+            <SidebarStateBridge framed={usesDesktopChrome}>
+              {backToAppRoutePath !== null && !isSidebarResizing ? (
+                <BackToAppCommandHandler routePath={backToAppRoutePath} />
+              ) : null}
+              <HistoryCommandHandlers />
+              <AppLayoutSidebar
+                mode={
+                  isGlobalSettingsView
+                    ? "settings"
+                    : isPluginsWorkspace
+                      ? "plugins"
+                      : isSkillsWorkspace
+                        ? "skills"
+                        : "app"
+                }
+                onResizeMouseDown={handleResizeMouseDown}
+                isResizing={isSidebarResizing}
+                settingsRoutePath={settingsRoutePath}
+              />
+              <SidebarInset>
+                <div
+                  ref={setContentShell}
+                  data-testid="app-layout-content-shell"
+                  data-app-content-shell=""
+                  className="relative flex h-full min-h-0 min-w-0 w-full flex-col pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pb-[var(--bb-safe-area-bottom,env(safe-area-inset-bottom))] pl-[env(safe-area-inset-left)]"
+                >
+                  {showHeader ? (
+                    <AppHeader
+                      usesDesktopChrome={usesDesktopChrome}
+                      usesProjectChromeStyle={isRootView || isArchivedView}
+                      projectId={projectId}
+                      project={project}
+                      pluginPanel={pluginPanel}
+                      pluginPanelChrome={pluginPanelChrome}
+                      pluginPanelSubPath={pluginPanelSubPath}
+                      meta={meta}
+                    />
+                  ) : null}
+                  <main className="flex min-h-0 flex-1 flex-col p-4 md:p-5">
+                    {children}
+                  </main>
+                </div>
+              </SidebarInset>
+              <SidebarTriggerOverlay
+                reserveMacosTrafficLights={reserveMacosTrafficLights}
+                usesDesktopChrome={usesDesktopChrome}
+              />
+            </SidebarStateBridge>
+            <PluginAppOverlays />
+            <IframeDragGuardOverlay
+              active={isSidebarResizing}
+              cursor="col-resize"
+            />
+            <CommandPalette
+              threadId={threadId ?? null}
+              projectId={projectId ?? null}
+            />
+            <NotificationCenter />
+            {quickCreateProject.projectPathDialog.target === null ? null : (
+              <Suspense fallback={null}>
+                <ProjectPathDialog
+                  target={quickCreateProject.projectPathDialog.target}
+                  pending={quickCreateProject.isCreating}
+                  platform={quickCreateProject.platform}
+                  hostId={quickCreateProject.hostId}
+                  hostName={quickCreateProject.hostName}
+                  hosts={quickCreateProject.hosts}
+                  onOpenChange={
+                    quickCreateProject.projectPathDialog.onOpenChange
                   }
-                  navigationRail={navigationRail}
-                  onResizeMouseDown={handleResizeMouseDown}
-                  isResizing={isSidebarResizing}
-                  appRoutePath={appRoutePath}
-                  settingsRoutePath={settingsRoutePath}
-                  toolsBackRoutePath={toolsBackRoutePath}
+                  onSubmit={quickCreateProject.submitProjectPath}
                 />
-                <SidebarInset>
-                  <div
-                    ref={setContentShell}
-                    data-testid="app-layout-content-shell"
-                    data-app-content-shell=""
-                    className="relative flex h-full min-h-0 min-w-0 w-full flex-col pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pb-[var(--bb-safe-area-bottom,env(safe-area-inset-bottom))] pl-[env(safe-area-inset-left)]"
-                  >
-                    {showHeader ? (
-                      <AppHeader
-                        usesDesktopChrome={usesDesktopChrome}
-                        usesProjectChromeStyle={isRootView || isArchivedView}
-                        projectId={projectId}
-                        project={project}
-                        pluginPanel={pluginPanel}
-                        pluginPanelChrome={pluginPanelChrome}
-                        pluginPanelSubPath={pluginPanelSubPath}
-                        meta={meta}
-                      />
-                    ) : null}
-                    <main className="flex min-h-0 flex-1 flex-col p-4 md:p-5">
-                      {children}
-                    </main>
-                  </div>
-                </SidebarInset>
-                <SidebarTriggerOverlay
-                  reserveMacosTrafficLights={reserveMacosTrafficLights}
-                  usesDesktopChrome={usesDesktopChrome}
-                />
-              </SidebarStateBridge>
-              <PluginAppOverlays />
-              <IframeDragGuardOverlay
-                active={isSidebarResizing}
-                cursor="col-resize"
-              />
-              <CommandPalette
-                threadId={threadId ?? null}
-                projectId={projectId ?? null}
-              />
-              <NotificationCenter />
-              {quickCreateProject.projectPathDialog.target === null ? null : (
-                <Suspense fallback={null}>
-                  <ProjectPathDialog
-                    target={quickCreateProject.projectPathDialog.target}
-                    pending={quickCreateProject.isCreating}
-                    platform={quickCreateProject.platform}
-                    hostId={quickCreateProject.hostId}
-                    hostName={quickCreateProject.hostName}
-                    hosts={quickCreateProject.hosts}
-                    onOpenChange={
-                      quickCreateProject.projectPathDialog.onOpenChange
-                    }
-                    onSubmit={quickCreateProject.submitProjectPath}
-                  />
-                </Suspense>
-              )}
-            </ThreadActionsProvider>
-          </AppThreadSectionMoveProvider>
+              </Suspense>
+            )}
+          </ThreadActionsProvider>
         </ThreadTitleMentionResourcesProvider>
       </ProjectActionsProvider>
     </TooltipProvider>

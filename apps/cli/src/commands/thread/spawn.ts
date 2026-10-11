@@ -38,6 +38,7 @@ import {
   parseServiceTier,
   SERVICE_TIER_HELP,
 } from "./helpers.js";
+import { parseSpawnSessionOptions } from "./session-state.js";
 import { SEND_AT_HELP, parseSendAt } from "./send-time.js";
 
 const PROVIDER_HELP =
@@ -60,6 +61,7 @@ interface ThreadSpawnCommandOptions {
   title?: string;
   lifecycleOwnerThread?: string;
   serviceTier?: string;
+  option?: string[];
   permissionMode?: string;
   plan?: boolean;
   parentSelf?: boolean;
@@ -374,10 +376,15 @@ export function registerSpawnCommand(
     )
     .option(
       "--reasoning-level <level>",
-      "Reasoning level: low, medium, high, xhigh, max (provider-dependent)",
+      "Reasoning level id the model lists: low, medium, high, xhigh, max, or a provider-specific id",
     )
     .option("--title <title>", "Thread title")
     .option("--service-tier <tier>", SERVICE_TIER_HELP)
+    .option(
+      "--option <option=value>",
+      "Choose a value for an option the provider's model lists (see bb provider models); use true or false for an on/off option (repeatable)",
+      (value: string, previous: string[] = []) => [...previous, value],
+    )
     .option("--permission-mode <mode>", PERMISSION_MODE_HELP)
     .option("--plan", PLAN_HELP)
     .option(
@@ -550,6 +557,7 @@ export function registerSpawnCommand(
             });
         const reasoningLevel = parseReasoningLevel(opts.reasoningLevel);
         const serviceTier = parseServiceTier(opts.serviceTier);
+        const sessionOptions = parseSpawnSessionOptions(opts.option ?? []);
         const permissionMode = parsePermissionMode(opts.permissionMode);
         const visibility =
           opts.visibility === undefined
@@ -610,6 +618,9 @@ export function registerSpawnCommand(
             ...(reasoningLevel ? { reasoningLevel } : {}),
             ...(opts.title ? { title: opts.title } : {}),
             ...(serviceTier ? { serviceTier } : {}),
+            ...(Object.keys(sessionOptions).length > 0
+              ? { sessionOptions }
+              : {}),
             ...(permissionMode ? { permissionMode } : {}),
             ...(visibility ? { visibility } : {}),
             environment,

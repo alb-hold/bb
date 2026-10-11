@@ -107,10 +107,7 @@ it("serves the sidebar plugin frontends and sample conversation in current contr
   const bootstrap = sidebarBootstrapResponseSchema.parse(
     await bootstrapResponse.json(),
   );
-  expect(catalog.plugins.map((plugin) => plugin.id)).toEqual([
-    "navigation",
-    "thread-list",
-  ]);
+  expect(catalog.plugins.map((plugin) => plugin.id)).toEqual(["thread-list"]);
   const pluginAssetPaths = catalog.plugins.flatMap((plugin) => {
     const bundle = plugin.app.bundle;
     if (bundle === null) throw new Error("Missing sidebar frontend");
@@ -183,7 +180,7 @@ it("keeps unsupported API and mutation requests out of the SPA fallback", async 
 });
 
 it("isolates automatic sidebar preference writes by client and validates revisions and values", async () => {
-  const key = "sidebar.collapsedThreads";
+  const key = "sidebar.hiddenFooterItems";
   const firstClient = {
     "cf-connecting-ip": "192.0.2.1",
     "content-type": "application/json",

@@ -59,7 +59,7 @@ function scrollBodyContext(scrollElement: HTMLElement) {
     isAtBottom: true,
     scrollToBottom: () => {},
     scrollElementIntoView: () => {},
-    captureScrollAnchor: () => () => {},
+    captureScrollAnchor: () => {},
     holdContentPosition: () => {},
   };
 }

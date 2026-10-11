@@ -54,6 +54,13 @@ import { providerInputsControlRequired } from "@/components/pickers/environment-
 import { useMachineProviderInputs } from "@/components/pickers/machine-provider-inputs";
 import { formatModelLoadErrorText } from "@/components/pickers/model-load-error-message";
 import {
+  buildSessionOptionMenuSections,
+  declaredSessionOptionViews,
+  SessionOptionsMenu,
+  splitSessionOptionsByPlacement,
+  type SessionOptionChoices,
+} from "@/components/pickers/SessionOptionsMenu";
+import {
   NewThreadPromptBox,
   type NewThreadPromptBoxProps,
 } from "@/components/promptbox/NewThreadPromptBox";
@@ -177,6 +184,8 @@ interface NewThreadComposerSelectionState extends CommittedComposerState {
   changeServiceTier: (tier: ServiceTier | undefined) => void;
   changePermissionMode: (mode: PermissionMode) => void;
 }
+
+const NO_SESSION_OPTION_CHOICES: SessionOptionChoices = {};
 
 function readNewThreadComposerSelection(
   state: NewThreadComposerSelectionState,
@@ -909,8 +918,34 @@ export function NewThreadComposer({
     supportsPermissionModeSelection,
     supportsServiceTier,
     clearReuseEnvironment,
+    declaredSessionOptions,
+    sessionOptionSelections,
+    setSessionOption,
   } = creationOptions;
   const selectedThreadModel = activeModel?.model ?? selectedModel;
+  const placedSessionOptions = useMemo(
+    () =>
+      splitSessionOptionsByPlacement(
+        declaredSessionOptionViews(
+          declaredSessionOptions,
+          sessionOptionSelections,
+          activeModel?.sessionOptions ?? [],
+        ),
+      ),
+    [
+      activeModel?.sessionOptions,
+      declaredSessionOptions,
+      sessionOptionSelections,
+    ],
+  );
+  const pickerSessionOptionSections = useMemo(
+    () =>
+      buildSessionOptionMenuSections(
+        placedSessionOptions.picker,
+        NO_SESSION_OPTION_CHOICES,
+      ),
+    [placedSessionOptions.picker],
+  );
   const providerIds = useMemo(
     () => providerOptions.map((option) => option.value),
     [providerOptions],
@@ -1374,7 +1409,8 @@ export function NewThreadComposer({
   }, [uploadTargetKey]);
   const handleAttachFiles = useCallback(
     async (files: File[]) => {
-      if (!projectId || files.length === 0) return;
+      const added: PromptDraftAttachment[] = [];
+      if (!projectId || files.length === 0) return added;
       const capturedTarget = `${projectId}\0${promptDraft.storageKey}`;
       setAttachmentError(null);
       pendingUploadCountRef.current += 1;
@@ -1387,8 +1423,9 @@ export function NewThreadComposer({
               projectId,
               file: upload.file,
             });
-            if (currentUploadTargetRef.current !== capturedTarget) return;
+            if (currentUploadTargetRef.current !== capturedTarget) return added;
             promptDraft.addAttachment(uploaded);
+            added.push(uploaded);
           } catch (error) {
             if (currentUploadTargetRef.current === capturedTarget) {
               setAttachmentError(
@@ -1408,6 +1445,7 @@ export function NewThreadComposer({
         pendingUploadCountRef.current -= 1;
         setIsUploading(pendingUploadCountRef.current > 0);
       }
+      return added;
     },
     [
       projectId,
@@ -1645,6 +1683,9 @@ export function NewThreadComposer({
         reasoningLevel,
         permissionMode,
         ...(supportsServiceTier && serviceTier ? { serviceTier } : {}),
+        ...(Object.keys(sessionOptionSelections).length > 0
+          ? { sessionOptions: sessionOptionSelections }
+          : {}),
         executionInputSources: resolveSubmittedExecutionSources(
           submissionEnvironment,
           sources,
@@ -1693,6 +1734,7 @@ export function NewThreadComposer({
       selectedProviderId,
       selectedThreadModel,
       serviceTier,
+      sessionOptionSelections,
       supportsServiceTier,
     ],
   );
@@ -1972,7 +2014,7 @@ export function NewThreadComposer({
             pendingUploads,
             projectId,
             onAttachFiles: handleAttachFiles,
-            onRemove: promptDraft.removeAttachment,
+            onUpdate: promptDraft.updateAttachments,
             isAttaching: isUploading || isCopyingAttachments,
             error: attachmentError,
           }}
@@ -2006,6 +2048,14 @@ export function NewThreadComposer({
               onChange: handlePermissionChange,
               supported: supportsPermissionModeSelection,
             },
+            sessionOptionsControl:
+              placedSessionOptions.footer.length === 0 ? null : (
+                <SessionOptionsMenu
+                  options={placedSessionOptions.footer}
+                  choices={NO_SESSION_OPTION_CHOICES}
+                  onChange={setSessionOption}
+                />
+              ),
             environmentProviderInputsSlot,
             machineProviderInputsSlot: machineProviderInputs.control,
             banner:
@@ -2093,6 +2143,14 @@ export function NewThreadComposer({
               options: reasoningOptions,
               onChange: handleReasoningChange,
             },
+            ...(pickerSessionOptionSections.length === 0
+              ? {}
+              : {
+                  agentOptions: {
+                    sections: pickerSessionOptionSections,
+                    onChange: setSessionOption,
+                  },
+                }),
           }}
         />
       );
@@ -2165,6 +2223,9 @@ export function NewThreadComposer({
       providerHostId,
       textEffects,
       serviceTierOptions,
+      pickerSessionOptionSections,
+      placedSessionOptions.footer,
+      setSessionOption,
     ],
   );
 

@@ -323,11 +323,17 @@ function buildAddToChatAttachments(
       path,
       name: fileNameFromPath(path),
     })),
-    ...attachments.localFilePaths.map((path) => ({
-      type: "localFile" as const,
-      path,
-      name: fileNameFromPath(path),
-    })),
+    ...attachments.localFilePaths.map((path) => {
+      const detail = attachments.localFileDetails.find(
+        (file) => file.path === path,
+      );
+      return {
+        type: "localFile" as const,
+        path,
+        name: detail?.name ?? fileNameFromPath(path),
+        ...(detail?.sizeBytes == null ? {} : { sizeBytes: detail.sizeBytes }),
+      };
+    }),
   ];
 }
 
@@ -473,6 +479,7 @@ function UserConversationMessage({
             <ConversationAttachments
               align="end"
               filePaths={attachmentItems.filePaths}
+              fileDetails={attachmentItems.fileDetails}
               imageItems={attachmentItems.imageItems}
               onOpenLocalFileLink={onOpenLocalFileLink}
               projectId={projectId}
@@ -632,6 +639,7 @@ function AssistantConversationMessage({
       </SelectableMessageProse>
       <ConversationAttachments
         filePaths={attachmentItems.filePaths}
+        fileDetails={attachmentItems.fileDetails}
         imageItems={attachmentItems.imageItems}
         onOpenLocalFileLink={onOpenLocalFileLink}
         projectId={projectId}

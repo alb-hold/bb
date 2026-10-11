@@ -4,8 +4,8 @@ import type { Thread } from "@bb/domain";
 import { isThreadRead, type ThreadReadState } from "@bb/client-core";
 import {
   getDocumentVisibilityRevision,
-  isDocumentVisible,
   useDocumentVisibilityRevision,
+  useDocumentVisible,
 } from "@/lib/document-visibility";
 import { MARK_THREAD_UNREAD_MUTATION_KEY } from "./mutations/thread-state-mutations";
 
@@ -87,7 +87,7 @@ export function useThreadReadTracking({
   const unreadIdAtReadStartRef = useRef<Map<string, number>>(new Map());
   const previousSnapshotRef = useRef<ReadTrackingSnapshot | null>(null);
   const visibilityRevision = useDocumentVisibilityRevision();
-  const isVisible = isDocumentVisible();
+  const isVisible = useDocumentVisible();
   const queryClient = useQueryClient();
   const manualUnreadRequests = useMutationState({
     filters: { mutationKey: MARK_THREAD_UNREAD_MUTATION_KEY },

@@ -17,6 +17,7 @@ import {
   threadEventTurnStatusSchema,
   threadEventWarningCategorySchema,
   threadExecutionReportSchema,
+  threadUsageCostSchema,
   workflowProgressSnapshotSchema,
 } from "@bb/domain";
 import { z } from "zod";
@@ -326,6 +327,7 @@ export const threadDeltaSchema = z.discriminatedUnion("kind", [
     used: z.number().nullable(),
     size: z.number().nullable().optional(),
     estimated: z.boolean(),
+    cost: threadUsageCostSchema.optional(),
     attach: deltaAttachSchema,
     providerTurnId: providerTurnIdSchema.optional(),
   }),
@@ -348,7 +350,11 @@ export const threadDeltaSchema = z.discriminatedUnion("kind", [
     kind: z.literal("thread.identity"),
     providerThreadId: z.string().min(1),
   }),
-  z.object({ kind: z.literal("thread.name"), name: z.string().min(1) }),
+  z.object({
+    kind: z.literal("thread.name"),
+    name: z.string().min(1),
+    source: z.literal("agent").optional(),
+  }),
 
   z.object({
     kind: z.literal("extension.state"),

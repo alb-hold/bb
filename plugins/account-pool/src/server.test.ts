@@ -1,4 +1,8 @@
 import {
+  retryAvailabilityMethod,
+  type RetryAvailability,
+} from "./retry-contract.js";
+import {
   usageMeasurementSchema,
   usageResourceListSchema,
   usageListMethod,
@@ -84,12 +88,22 @@ function sdkStubs() {
         },
       ],
     },
-    system: {
-      providerStates: async () => ({ providers: [] }),
-    },
     threads: {
+      events: {
+        list: async () => [
+          {
+            data: {
+              requestId: "creq_aaaaaaaaaa",
+              execution: { model: "claude-opus-4-1" },
+            },
+          },
+        ],
+      },
       get: async ({ threadId }: { threadId: string }) =>
         makeThreadResponse({ id: threadId }),
+    },
+    system: {
+      providerStates: async () => ({ providers: [] }),
     },
     plugins: {
       list: async () => ({
@@ -4442,6 +4456,177 @@ describe("Account Pool plugin", () => {
       },
     );
 
+    it.each<{
+      label: string;
+      status: number;
+      headers: Record<string, string>;
+      expected: RetryAvailability;
+    }>([
+      { label: "ready", status: 200, headers: {}, expected: { kind: "ready" } },
+      {
+        label: "unknown reset",
+        status: 429,
+        headers: { "anthropic-ratelimit-unified-5h-status": "rejected" },
+        expected: { kind: "unavailable", reason: "reset-unknown" },
+      },
+      {
+        label: "authentication failure",
+        status: 401,
+        headers: {},
+        expected: { kind: "unavailable", reason: "authentication" },
+      },
+      {
+        label: "model-specific window",
+        status: 429,
+        headers: {
+          "anthropic-ratelimit-unified-7d_opus-status": "rejected",
+          "anthropic-ratelimit-unified-7d_opus-reset": "1800003600",
+        },
+        expected: { kind: "blocked", retryAt: 1_800_003_600_000 },
+      },
+    ])(
+      "reports retry availability for $label",
+      async ({ status, headers, expected }) => {
+        const fixture = await createFixture({
+          upstreamUrl: "https://upstream.example",
+          options: {
+            now: () => 1_800_000_000_000,
+            fetch: async () => Response.json({}, { status, headers }),
+          },
+        });
+        const response = await fixture.host.harness.behavior.fetchHttp(
+          "POST",
+          "/v1/messages",
+          {
+            headers: authHeaders(fixture.key),
+            body: JSON.stringify({ model: "claude-opus-4-1", messages: [] }),
+          },
+        );
+        await response.text();
+        const input = { threadId: "thread-one", requestId: "creq_aaaaaaaaaa" };
+        expect(
+          await fixture.host.harness.behavior.callRpc(
+            retryAvailabilityMethod,
+            input,
+          ),
+        ).toEqual(expected);
+        expect(
+          await fixture.host.harness.behavior.callRpc(retryAvailabilityMethod, {
+            ...input,
+            requestId: "another-request",
+          }),
+        ).toEqual({ kind: "unavailable", reason: "source-unavailable" });
+        await fixture.host.harness.behavior.callRpc("account.disable", {
+          id: fixture.account.id,
+        });
+        expect(
+          await fixture.host.harness.behavior.callRpc(
+            retryAvailabilityMethod,
+            input,
+          ),
+        ).toEqual({ kind: "unavailable", reason: "no-enabled-account" });
+        expect(
+          (
+            await fixture.host.harness.behavior.fetchHttp(
+              "GET",
+              "/retry-availability?provider=claude&family=opus",
+            )
+          ).status,
+        ).toBe(401);
+        const remote = await fixture.host.harness.behavior.fetchHttp(
+          "GET",
+          "/retry-availability?provider=claude&family=opus",
+          { headers: authHeaders(fixture.key) },
+        );
+        expect(await remote.json()).toEqual({
+          kind: "unavailable",
+          reason: "no-enabled-account",
+        });
+      },
+    );
+
+    it.each(["claude", "codex"] as const)(
+      "reports the earliest usable %s account after all of its limits reset",
+      async (provider) => {
+        const now = Date.now();
+        const fixture = await affinityFixture(
+          provider,
+          async (_input, init) => {
+            const headers = new Headers(init?.headers);
+            const first =
+              (headers.get("x-api-key") ??
+                headers.get("authorization")?.slice(7)) === "sk-first";
+            return Response.json(
+              {},
+              {
+                status: 429,
+                headers:
+                  provider === "claude"
+                    ? {
+                        "anthropic-ratelimit-unified-5h-status": "rejected",
+                        "anthropic-ratelimit-unified-5h-reset": String(
+                          (now + (first ? 60_000 : 120_000)) / 1000,
+                        ),
+                        "anthropic-ratelimit-unified-7d-status": "rejected",
+                        "anthropic-ratelimit-unified-7d-reset": String(
+                          (now + (first ? 180_000 : 240_000)) / 1000,
+                        ),
+                      }
+                    : {
+                        "x-codex-primary-used-percent": "100",
+                        "x-codex-primary-window-minutes": "300",
+                        "x-codex-primary-reset-after-seconds": first
+                          ? "60"
+                          : "120",
+                        "x-codex-secondary-used-percent": "100",
+                        "x-codex-secondary-window-minutes": "10080",
+                        "x-codex-secondary-reset-after-seconds": first
+                          ? "180"
+                          : "240",
+                      },
+              },
+            );
+          },
+          () => now,
+        );
+        const threadId = provider === "claude" ? "thread-one" : "thread-codex";
+        const response = await fixture.host.harness.behavior.fetchHttp(
+          "POST",
+          provider === "claude" ? "/v1/messages" : "/v1/responses",
+          {
+            headers: authHeaders(fixture.key),
+            body:
+              provider === "claude"
+                ? claudeBody("pooled-retry")
+                : JSON.stringify({ model: "gpt-5", input: [] }),
+          },
+        );
+        expect(response.status).toBe(429);
+        await response.text();
+        const input = { threadId, requestId: "creq_aaaaaaaaaa" };
+        expect(
+          await fixture.host.harness.behavior.callRpc(
+            retryAvailabilityMethod,
+            input,
+          ),
+        ).toEqual({ kind: "blocked", retryAt: now + 180_000 });
+        await fixture.host.harness.behavior.callRpc("bypass.set", {
+          threadId,
+          bypassed: true,
+        });
+        await fixture.host.harness.behavior.resolveProviderEnv(
+          provider === "claude" ? "claude-code" : "codex",
+          { threadId, projectId: "project-one", hostId: "host-one" },
+        );
+        expect(
+          await fixture.host.harness.behavior.callRpc(
+            retryAvailabilityMethod,
+            input,
+          ),
+        ).toEqual({ kind: "not-routed" });
+      },
+    );
+
     it.each(["claude", "codex"] as const)(
       "handles %s quota exhaustion and reset with session affinity",
       async (provider) => {
@@ -4530,7 +4715,11 @@ describe("Account Pool plugin", () => {
         const stillUnavailable = await send();
         expect(stillUnavailable.status).toBe(429);
         expect(stillUnavailable.headers.get("retry-after")).toBe("60");
-        await stillUnavailable.text();
+        const unavailableBody = await stillUnavailable.json();
+        expect(unavailableBody.error.message).toContain(
+          "2027-01-15T08:02:00.000Z",
+        );
+        expect(unavailableBody.error.message).toContain("60 seconds");
         expect(attempts).toHaveLength(7);
 
         now += 60_000;
@@ -8227,6 +8416,7 @@ it("publishes pooled usage without a display plugin and does not invent unobserv
       (entry) => entry.method,
     ),
   ).toEqual([
+    retryAvailabilityMethod,
     usageListMethod,
     usageFetchMethod,
     "bypass.get",
@@ -8466,6 +8656,36 @@ describe("Account Pool nested proxy", () => {
     });
     return host;
   }
+
+  it("reads retry availability from the parent and fails closed on an unsupported parent", async () => {
+    let supported = true;
+    const parent = await startUpstream((request, response) => {
+      expect(request.headers["x-bb-account-pool-token"]).toBe(PARENT_TOKEN);
+      response.setHeader("content-type", "application/json");
+      if (request.url === "/availability")
+        response.end(JSON.stringify({ claude: true, codex: true }));
+      else {
+        expect(request.url).toBe(
+          "/retry-availability?provider=claude&family=opus",
+        );
+        response.statusCode = supported ? 200 : 404;
+        response.end(
+          JSON.stringify({ kind: "blocked", retryAt: 1_800_003_600_000 }),
+        );
+      }
+    });
+    cleanups.push(parent.close);
+    const child = await createChild({ parentUrl: parent.url });
+    await resolveToken(child);
+    const input = { threadId: "thread-one", requestId: "creq_aaaaaaaaaa" };
+    expect(
+      await child.harness.behavior.callRpc(retryAvailabilityMethod, input),
+    ).toEqual({ kind: "blocked", retryAt: 1_800_003_600_000 });
+    supported = false;
+    expect(
+      await child.harness.behavior.callRpc(retryAvailabilityMethod, input),
+    ).toEqual({ kind: "unavailable", reason: "source-unavailable" });
+  });
 
   const PROVIDER_ENV = {
     claude: ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"],
@@ -10591,14 +10811,11 @@ describe("Account Pool credential scoping", () => {
       }
       return makeThreadResponse({ id: threadId });
     });
-    const resolving = host.harness.behavior.resolveProviderEnv(
-      "claude-code",
-      {
-        threadId: "thread-racing",
-        projectId: "project-one",
-        hostId: "host-one",
-      },
-    );
+    const resolving = host.harness.behavior.resolveProviderEnv("claude-code", {
+      threadId: "thread-racing",
+      projectId: "project-one",
+      hostId: "host-one",
+    });
     await lookupStarted.promise;
     await host.harness.behavior.emitThreadEvent("thread.archived", {
       thread: makeThreadResponse({ id: "thread-racing", archivedAt: 1_000 }),
@@ -10615,9 +10832,7 @@ describe("Account Pool credential scoping", () => {
     if (token === undefined || typeof token.value !== "string")
       throw new Error("Account Pool token was not resolved after unarchive.");
     expect(await statusOf(host, oldToken, "/v1/messages")).toBe(401);
-    expect(await statusOf(host, token.value, "/v1/messages")).toBe(
-      200,
-    );
+    expect(await statusOf(host, token.value, "/v1/messages")).toBe(200);
   });
 
   it("blanks the inherited routing for an archived thread on a nested server", async () => {

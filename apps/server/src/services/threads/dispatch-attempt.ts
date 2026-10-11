@@ -95,6 +95,7 @@ import {
 import { resolveDispatchAuthor } from "./dispatch-author.js";
 import type { TurnRequestRetryMarker } from "./thread-events.js";
 import { restoreInterruptedThreadStartupRequest } from "./thread-provisioning.js";
+import { markTurnTraceSpan } from "../system/turn-trace.js";
 
 export const pendingThreadStartContextSchema = z.object({
   environmentIntent: threadProvisionEnvironmentIntentSchema,
@@ -567,6 +568,7 @@ async function runDispatchAttempt(
       return { kind: "dispatched" };
     }
 
+    markTurnTraceSpan("dispatch.checkpoint.done");
     const environment = await requireThreadCommandEnvironment(deps, { thread });
     const sent = await sendThreadMessage(deps, {
       environment,
@@ -671,7 +673,10 @@ type ExecutionRequest = Parameters<typeof buildExecutionOptions>[1];
 // thread another thread spawned counts as a child too. Setting it on the
 // request keeps it inside the normal model validation.
 function withChildThreadModel<TRequest extends ExecutionRequest>(
-  deps: Pick<LoggedPendingInteractionWorkSessionDeps, "db" | "providerRegistry">,
+  deps: Pick<
+    LoggedPendingInteractionWorkSessionDeps,
+    "db" | "providerRegistry"
+  >,
   thread: Pick<Thread, "id" | "parentThreadId" | "providerId">,
   request: TRequest,
 ): TRequest {

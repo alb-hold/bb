@@ -1,8 +1,6 @@
 import { ThreadCreationPlacementScope } from "./ThreadCreationPlacement.js";
 import {
   createContext,
-  lazy,
-  Suspense,
   useCallback,
   useContext,
   useEffect,
@@ -18,7 +16,7 @@ import { getCollapsedChildActivity } from "../model/thread-activity.js";
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { ContextMenuItem } from "@/components/ui/context-menu";
 import { useIsCompactViewport } from "@/components/ui/hooks/use-compact-viewport";
-import { ActionMenuSeparator } from "../ui/action-menu-items.js";
+import { ActionMenuSeparator } from "@/components/ui/action-menu-items";
 import { SidebarContentElementContext } from "../ui/sidebar.js";
 import { reorderStoredOrder } from "../model/stored-order.js";
 import { sidebarHiddenGroupsAtom } from "../preferences/atoms.js";
@@ -29,19 +27,18 @@ import {
   SidebarOverflowItem,
   SidebarVisibilityActionContent,
   SidebarCustomizeActionContent,
-  type SidebarVisibilityItem,
 } from "./SidebarVisibilityControls.js";
+import {
+  SidebarVisibilityCustomize,
+  type SidebarVisibilityItem,
+} from "@/components/ui/sidebar-visibility-customize";
+import { SidebarTouchSensor } from "../dnd/sidebarTouchSensor.js";
 import {
   CustomizeRowActionsContext,
   ThreadRowActionsCustomizingContext,
   type ThreadRowActionsCustomizing,
 } from "./customizeRowActionsContext.js";
 import { useFinishRowActionsOnOutsideClick } from "./ThreadRowActionsCustomize.js";
-
-const LazySidebarVisibilityCustomize = lazy(async () => {
-  const module = await import("./SidebarVisibilityCustomize");
-  return { default: module.SidebarVisibilityCustomize };
-});
 
 export interface ThreadListVisibilityGroup extends SidebarVisibilityItem {
   id: SidebarSectionId;
@@ -195,33 +192,32 @@ export function ThreadListVisibility({
         >
           <div ref={container} tabIndex={-1} className="min-w-0 outline-none">
             {customizing === "list" ? (
-              <Suspense fallback={null}>
-                <LazySidebarVisibilityCustomize
-                  items={orderedGroups}
-                  visibleIds={orderedGroups
-                    .filter((group) => !hiddenIds.has(group.id))
-                    .map((group) => group.id)}
-                  onVisibleChange={setVisible}
-                  onReorder={(activeId, overId) => {
-                    const groupIds = orderedGroups.map((group) => group.id);
-                    const next = reorderStoredOrder({
-                      activeId,
-                      overId,
-                      order: groupIds,
-                      visibleIds: groupIds,
-                    });
-                    if (next) onOrderChange(next);
-                  }}
-                  onDone={() => {
-                    focusTarget.current = "more";
-                    setCustomizing(null);
-                  }}
-                  title="Customize list"
-                  listLabel={label}
-                  variant={compact ? "compact" : "card"}
-                  testIdPrefix="sidebar-thread-list"
-                />
-              </Suspense>
+              <SidebarVisibilityCustomize
+                items={orderedGroups}
+                touchSensor={SidebarTouchSensor}
+                visibleIds={orderedGroups
+                  .filter((group) => !hiddenIds.has(group.id))
+                  .map((group) => group.id)}
+                onVisibleChange={setVisible}
+                onReorder={(activeId, overId) => {
+                  const groupIds = orderedGroups.map((group) => group.id);
+                  const next = reorderStoredOrder({
+                    activeId,
+                    overId,
+                    order: groupIds,
+                    visibleIds: groupIds,
+                  });
+                  if (next) onOrderChange(next);
+                }}
+                onDone={() => {
+                  focusTarget.current = "more";
+                  setCustomizing(null);
+                }}
+                title="Customize list"
+                listLabel={label}
+                variant={compact ? "compact" : "card"}
+                testIdPrefix="sidebar-thread-list"
+              />
             ) : (
               children
             )}

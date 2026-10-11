@@ -1908,6 +1908,7 @@ export function createDeltaAssembler(
               delta.snapshot?.contextWindowTokens ?? delta.size ?? null,
             estimated: delta.snapshot?.estimated ?? delta.estimated,
             ...(delta.snapshot ? { snapshot: delta.snapshot } : {}),
+            ...(delta.cost ? { cost: delta.cost } : {}),
           },
         });
         return;
@@ -2091,6 +2092,7 @@ export function createDeltaAssembler(
           providerThreadId: "",
           scope: threadScope(),
           threadName: delta.name,
+          ...(delta.source === undefined ? {} : { source: delta.source }),
         });
         return;
       }
