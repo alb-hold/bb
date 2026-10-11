@@ -163,6 +163,55 @@ describe("NativeActivityReader", () => {
     expect(reader.read()).toEqual([]);
   });
 
+  it("keeps the first resumed turn when the transcript ended mid-record before launch", async () => {
+    const home = tempHome();
+    const file = writeRollout(home, codexTurn("an earlier prompt"));
+    appendFileSync(file, '{"type":"event_msg","payload":{"type":"task_');
+    const baseline = await measureResumedTranscript(
+      CODEX_CLI,
+      { HOME: home },
+      SESSION_ID,
+    );
+    const reader = new NativeActivityReader(CODEX_CLI, { HOME: home }, null, {
+      kind: "resume",
+      id: SESSION_ID,
+      ...baseline,
+    });
+    appendFileSync(file, jsonl(codexTurn("the resumed prompt")));
+
+    expect(reader.read()).toEqual([
+      { state: "working", prompt: null },
+      { state: "working", prompt: "the resumed prompt" },
+      { state: "idle", prompt: null },
+    ]);
+  });
+
+  it("drops the rest of a record begun before launch and keeps the resumed turn after it", async () => {
+    const home = tempHome();
+    const file = writeRollout(home, []);
+    appendFileSync(file, '{"type":"event_msg","payload":{"type":"task_');
+    const baseline = await measureResumedTranscript(
+      CODEX_CLI,
+      { HOME: home },
+      SESSION_ID,
+    );
+    const reader = new NativeActivityReader(CODEX_CLI, { HOME: home }, null, {
+      kind: "resume",
+      id: SESSION_ID,
+      ...baseline,
+    });
+    appendFileSync(
+      file,
+      `started"}}\n${jsonl(codexTurn("the resumed prompt"))}`,
+    );
+
+    expect(reader.read()).toEqual([
+      { state: "working", prompt: null },
+      { state: "working", prompt: "the resumed prompt" },
+      { state: "idle", prompt: null },
+    ]);
+  });
+
   it("retries a failed baseline measurement before launch and keeps the size it then measures", async () => {
     const home = tempHome();
     const file = writeRollout(home, codexTurn("an earlier prompt"));
