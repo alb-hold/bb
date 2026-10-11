@@ -108,6 +108,17 @@ function resolveAttachmentPath(
   );
 }
 
+export function storedProjectAttachmentPath(
+  dataDir: string,
+  projectId: string,
+  attachmentPath: string,
+): string {
+  return resolveAttachmentPath(
+    projectAttachmentDir(dataDir, projectId),
+    attachmentPath,
+  );
+}
+
 function missingAttachmentReferenceError(attachmentPath: string): ApiError {
   return new ApiError(
     400,
