@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { closeSync, mkdirSync, openSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, statSync, unlinkSync } from "node:fs";
 import path from "node:path";
 import { Command } from "commander";
 import { BbHttpError } from "@bb/sdk";
@@ -54,6 +54,15 @@ function describeNativeThread(view: NativeTerminalThread): string {
 
 function nativeHolderLogPath(socketPath: string): string {
   return socketPath.replace(/\.sock$/u, ".log");
+}
+
+function removeEmptyNativeHolderLog(socketPath: string): void {
+  const logPath = nativeHolderLogPath(socketPath);
+  try {
+    if (statSync(logPath).size === 0) unlinkSync(logPath);
+  } catch {
+    return;
+  }
 }
 
 function spawnNativeHolder(threadId: string, socketPath: string): void {
@@ -278,6 +287,7 @@ export function registerNativeCommands(
           threadId,
           opts.socket,
         );
+        removeEmptyNativeHolderLog(opts.socket);
         if (opts.json) console.log(JSON.stringify({ exitCode }));
         process.exitCode = exitCode;
       }),
