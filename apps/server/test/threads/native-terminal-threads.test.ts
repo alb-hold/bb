@@ -553,6 +553,39 @@ describe("native terminal threads", () => {
     expect(response.status).toBe(400);
   });
 
+  it("refuses another project's upload before any terminal thread is created", async () => {
+    const fixture = await createFixture();
+    seedPrimaryHost(fixture.harness.deps, fixture.hostId);
+    const { project: otherProject } = seedProjectWithSource(
+      fixture.harness.deps,
+      { hostId: fixture.hostId, path: "/tmp/native-other-project" },
+    );
+    const otherUpload = await storeAttachment(
+      fixture.harness.db,
+      fixture.harness.deps.config.dataDir,
+      otherProject.id,
+      new File(["png"], "theirs.png", { type: "image/png" }),
+    );
+    const threadsBefore = fixture.harness.db
+      .select()
+      .from(threads)
+      .all().length;
+    const response = await postNativeThread(fixture, {
+      providerId: "claude-code",
+      input: [
+        ...textInput("Describe this screenshot"),
+        { type: "localImage", path: otherUpload.path },
+      ],
+    });
+    expect(response.status).toBe(400);
+    expect(fixture.harness.db.select().from(threads).all()).toHaveLength(
+      threadsBefore,
+    );
+    expect(
+      fixture.harness.db.select().from(projectAttachmentThreads).all(),
+    ).toEqual([]);
+  });
+
   it("pastes an attachment path ahead of the message", async () => {
     const fixture = await createFixture();
     seedPrimaryHost(fixture.harness.deps, fixture.hostId);
