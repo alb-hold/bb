@@ -450,6 +450,16 @@ describe("native terminal threads", () => {
     );
     expect(spec.cli.executable).toBe("codex");
     expect(spec.cli.launchArgs).toEqual(["--no-daemon"]);
+    expect(spec.cli.activity?.transcript?.prompt).toContainEqual({
+      match: {
+        equals: {
+          type: "event_msg",
+          "payload.type": "item_completed",
+          "payload.item.type": "UserMessage",
+        },
+      },
+      text: "payload.item.content.0.text",
+    });
   });
 
   it("presses Enter only after the CLI draws the pasted message", async () => {
