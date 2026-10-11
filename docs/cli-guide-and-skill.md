@@ -37,12 +37,13 @@ Modal connection and machine commands are documented in [modal-sandboxes](../plu
 `--new-machine` or the machine provider owned by a composed
 `--environment-provider`; a composition rejects separate machine selectors.
 
-`bb thread spawn --native` and `bb thread native` cover native terminal
+`bb thread spawn --native` and `bb thread native` (with `--convert` and
+`--chat` to switch an existing chat thread) cover native terminal
 threads: the provider's own `claude` or `codex` TUI runs in a thread terminal,
 launched through the hidden `bb thread native-run <id>` wrapper that picks
 fresh launch or resume and reports Codex's session id. The SDK surface is
 `sdk.threads.spawn({ nativeTerminal: true })` plus `sdk.nativeTerminals`
-(`get`, `open`, `launch`, `recordSession`); the thread-creation and
+(`get`, `open`, `switchMode`, `launch`, `recordSession`); the thread-creation and
 thread-operation skill references and the threads guide chapter describe them.
 
 `bb thread list` adds a **Needs you** column for `Needs input`, `Working`,

@@ -1074,7 +1074,7 @@ exists) or a `discovered` session (the CLI picks its id; bb reads the first
 JSON line of the matching transcript files and binds the one started in the
 thread workspace after launch). Validated at registration by
 `providerNativeTerminalSchema` in `@bb/domain`: bare executable name, at most
-16 arguments per list, only the documented tokens, relative patterns without
+16 arguments per list, only the documented tokens (none in `launchArgs`), relative patterns without
 dot segments. Core callers: `apps/server/src/services/threads/native-terminal-threads.ts`
 (provider lookup, terminal command, launch spec), `apps/cli/src/native-harness.ts`
 (argv and session discovery) and the new-thread composer's native terminal

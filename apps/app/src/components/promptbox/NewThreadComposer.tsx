@@ -1,4 +1,7 @@
 import { createCoreComposerActions } from "@/lib/plugin-composer-handle";
+import { useAtom } from "jotai";
+import { atomWithStorage } from "jotai/utils";
+import { createJsonLocalStorage } from "@/lib/browser-storage";
 import { usePendingAttachmentUploads } from "./usePendingAttachmentUploads";
 import { useInitialPromptDraft } from "./mentions/initial-prompt-draft";
 import { ProviderRequirementBanner } from "./banner/ProviderRequirementBanner";
@@ -256,6 +259,15 @@ export interface NewThreadComposerState {
   setServiceTier: (value: ServiceTier | undefined) => void;
   renderPromptBox: (options: NewThreadComposerPromptOptions) => ReactNode;
 }
+
+const nativeTerminalPreferenceAtom = atomWithStorage<boolean>(
+  "bb.composer.nativeTerminal",
+  false,
+  createJsonLocalStorage<boolean>(
+    (value): value is boolean => typeof value === "boolean",
+  ),
+  { getOnInit: true },
+);
 
 export function resolveSubmittedExecutionSources(
   environment: NewThreadRequest["environment"],
@@ -1400,7 +1412,9 @@ export function NewThreadComposer({
   const [isUploading, setIsUploading] = useState(false);
   const [isCopyingAttachments, setIsCopyingAttachments] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [nativeTerminalRequested, setNativeTerminalRequested] = useState(false);
+  const [nativeTerminalRequested, setNativeTerminalRequested] = useAtom(
+    nativeTerminalPreferenceAtom,
+  );
   const pendingUploadCountRef = useRef(0);
   const isCopyingAttachmentsRef = useRef(false);
   const isSubmittingRef = useRef(false);

@@ -246,7 +246,7 @@ const archivedEntryMaps = new WeakMap<
   >
 >();
 
-function useThreadEntryMap(): ReadonlyMap<string, ThreadListEntry> {
+export function useThreadEntryMap(): ReadonlyMap<string, ThreadListEntry> {
   const { data } = useSidebarNavigation();
   const archived = useArchivedThreads({}, { enabled: false });
   return useMemo(() => {

@@ -1018,6 +1018,7 @@ describe("thread action registrations", () => {
     ).toEqual([
       "bb--core/split",
       "bb--core/splitVertical",
+      "bb--core/nativeTerminalMode",
       "bb--core/newThreadInEnvironment",
       "bb--core/copyLink",
       "bb--core/read",

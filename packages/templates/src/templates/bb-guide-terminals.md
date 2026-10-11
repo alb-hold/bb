@@ -52,6 +52,11 @@ runs:
   bb terminal restart <terminal-id>       Atomically replaces it with a shell; does not replay the original command
   bb terminal close <terminal-id> [--if-clean]
 
+  A terminal has one size. When several windows or devices show it, the one
+  you last typed, pasted or clicked in sets the size; opening or resizing
+  another view does not change it until you use that view. bb terminal attach
+  takes the size when it attaches and when its window resizes.
+
   bb terminal output <terminal-id>
     --since-seq <n>                       Read output chunks from a sequence
     --tail-bytes <n>                      Bound output to latest N bytes

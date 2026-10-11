@@ -56,6 +56,10 @@ import {
   requestTerminalLinkOpen,
   type TerminalLinkTarget,
 } from "./terminal-links";
+import {
+  listenForTerminalSizeClaims,
+  type TerminalSizeClaims,
+} from "./terminal-size-claims";
 
 export const TERMINAL_FONT_FAMILY =
   '"JetBrainsMono Nerd Font Mono", "MesloLGS NF", "Symbols Nerd Font Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace';
@@ -912,8 +916,13 @@ export function ThreadTerminalView({
     let resizeObserver: ResizeObserver | null = null;
     let selectionChangeDisposable: { dispose: () => void } | null = null;
     let stopObservingFonts: (() => void) | null = null;
+    let sizeClaims: TerminalSizeClaims | null = null;
     const reportDocumentVisibility = () => {
-      transport?.setVisible(document.visibilityState === "visible");
+      const visible = document.visibilityState === "visible";
+      transport?.setVisible(visible);
+      if (visible) {
+        sizeClaims?.claimIfFocused();
+      }
     };
 
     async function mountTerminal(
@@ -1122,6 +1131,11 @@ export function ThreadTerminalView({
       activeTransport.sendResize(activeTerminal.cols, activeTerminal.rows);
       reportDocumentVisibility();
       document.addEventListener("visibilitychange", reportDocumentVisibility);
+      sizeClaims = listenForTerminalSizeClaims({
+        claim: () => activeTransport.claimSize(),
+        element: containerElement,
+        textarea: activeTerminal.textarea,
+      });
       activeTransport.start();
       const sendTerminalInput = (dataBase64: string) =>
         activeTransport.sendInput(dataBase64);
@@ -1200,6 +1214,8 @@ export function ThreadTerminalView({
         "visibilitychange",
         reportDocumentVisibility,
       );
+      sizeClaims?.dispose();
+      sizeClaims = null;
       transport?.dispose();
       terminal?.dispose();
       terminalRef.current = null;

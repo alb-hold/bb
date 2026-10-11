@@ -138,6 +138,7 @@ export const providerNativeTerminalSchema = z
         /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u,
         "must be a bare executable name",
       ),
+    launchArgs: templateArgsSchema([]),
     modelArgs: templateArgsSchema(["model"]),
     pastePlaceholders: z.array(z.string().trim().min(4).max(64)).max(4),
     sessionRoot: providerNativeTerminalSessionRootSchema,

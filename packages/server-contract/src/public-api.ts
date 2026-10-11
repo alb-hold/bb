@@ -317,10 +317,12 @@ import {
 import {
   openNativeTerminalRequestSchema,
   recordNativeSessionRequestSchema,
+  switchNativeTerminalModeRequestSchema,
   type NativeTerminalLaunchSpec,
   type NativeTerminalThread,
   type OpenNativeTerminalRequest,
   type RecordNativeSessionRequest,
+  type SwitchNativeTerminalModeRequest,
 } from "./api/native-terminal-threads.js";
 import type {
   ThreadTabsWireResponse,
@@ -1889,6 +1891,14 @@ export const publicApiRoutes = {
       method: "post",
       request: noRequest<PathId>(),
       response: jsonResponse<NativeTerminalLaunchSpec>(),
+    }),
+    switchMode: defineRoute({
+      path: "/threads/:id/native-terminal/mode",
+      method: "post",
+      request: jsonRequest<PathId, SwitchNativeTerminalModeRequest>(
+        switchNativeTerminalModeRequestSchema,
+      ),
+      response: jsonResponse<NativeTerminalThread | null>(),
     }),
     recordSession: defineRoute({
       path: "/threads/:id/native-terminal/session",

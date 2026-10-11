@@ -1,5 +1,6 @@
 import type {
   NativeTerminalLaunchSpec,
+  NativeTerminalMode,
   NativeTerminalThread,
 } from "@bb/server-contract";
 import { signalRequestArgs, type CreateSdkAreaArgs } from "./common.js";
@@ -18,6 +19,10 @@ export interface NativeTerminalRecordSessionArgs extends NativeTerminalThreadArg
   nativeSessionId: string;
 }
 
+export interface NativeTerminalSwitchModeArgs extends NativeTerminalThreadArgs {
+  mode: NativeTerminalMode;
+}
+
 export type NativeTerminalThreadResult = NativeTerminalThread;
 export type NativeTerminalLaunchResult = NativeTerminalLaunchSpec;
 
@@ -30,6 +35,9 @@ export interface NativeTerminalsArea {
   recordSession(
     args: NativeTerminalRecordSessionArgs,
   ): Promise<NativeTerminalThreadResult>;
+  switchMode(
+    args: NativeTerminalSwitchModeArgs,
+  ): Promise<NativeTerminalThreadResult | null>;
 }
 
 export function createNativeTerminalsArea(
@@ -63,6 +71,17 @@ export function createNativeTerminalsArea(
               ...(input.cols !== undefined ? { cols: input.cols } : {}),
               ...(input.rows !== undefined ? { rows: input.rows } : {}),
             },
+          },
+          ...signalRequestArgs(input.signal),
+        ),
+      );
+    },
+    async switchMode(input) {
+      return transport.readJson(
+        route().mode.$post(
+          {
+            param: { id: input.threadId },
+            json: { mode: input.mode },
           },
           ...signalRequestArgs(input.signal),
         ),

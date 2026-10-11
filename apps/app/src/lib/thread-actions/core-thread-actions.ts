@@ -29,6 +29,10 @@ import { splitLayoutAtom } from "@/lib/split-layout/atoms";
 import { notifyPaneLimit } from "@/lib/split-layout/notifyPaneLimit";
 import { openThreadInSplit } from "@/lib/split-layout/openThreadInSplit";
 import { useRouteNavigate } from "@/components/ui/app-route-anchor";
+import {
+  nativeTerminalModeItem,
+  useNativeTerminalModeData,
+} from "./native-terminal-mode-action";
 
 function coreThreadAction<Data>(
   registration: PluginThreadActionRegistration<Data>,
@@ -74,7 +78,9 @@ function useSplitAvailability(): SplitAvailability {
   const routeNavigate = useRouteNavigate();
   const { threadId } = useRouteState();
   const panes =
-    layout !== null && countPanes(layout.root) > 1 ? listPanes(layout.root) : [];
+    layout !== null && countPanes(layout.root) > 1
+      ? listPanes(layout.root)
+      : [];
   const focusedPane = panes.find(
     (pane) => pane.paneId === layout?.focusedPaneId,
   );
@@ -254,6 +260,14 @@ export const CORE_THREAD_ACTIONS: readonly PluginThreadActionRegistration<unknow
                 if (side !== undefined) data.openInSplit(thread, side);
               },
             },
+    }),
+    coreThreadAction({
+      id: "nativeTerminalMode",
+      group: GROUPS.open,
+      title: "Open in terminal / Back to chat",
+      icon: "Terminal",
+      useData: useNativeTerminalModeData,
+      item: nativeTerminalModeItem,
     }),
     coreThreadAction({
       id: "newThreadInEnvironment",

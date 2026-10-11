@@ -45,6 +45,11 @@ interface HubSocket {
   send(data: string): void;
 }
 
+interface TerminalRequestedSize {
+  cols: number;
+  rows: number;
+}
+
 interface TerminalSocketSendQueue {
   bytes: number;
   payloads: string[];
@@ -273,6 +278,10 @@ export class NotificationHub implements DbNotifier {
     Set<string>
   >();
   private readonly terminalResizeOwnerById = new Map<string, HubSocket>();
+  private readonly terminalRequestedSizeById = new Map<
+    string,
+    Map<HubSocket, TerminalRequestedSize>
+  >();
   private readonly threadEventWaiters = new Map<
     string,
     Set<ThreadEventWaiter>
@@ -332,8 +341,50 @@ export class NotificationHub implements DbNotifier {
     this.terminalResizeOwnerById.set(terminalId, socket);
   }
 
+  claimUnownedTerminalResizeOwnership(
+    terminalId: string,
+    socket: HubSocket,
+  ): void {
+    if (!this.terminalResizeOwnerById.has(terminalId)) {
+      this.terminalResizeOwnerById.set(terminalId, socket);
+    }
+  }
+
   isTerminalResizeOwner(terminalId: string, socket: HubSocket): boolean {
     return this.terminalResizeOwnerById.get(terminalId) === socket;
+  }
+
+  recordTerminalRequestedSize(
+    terminalId: string,
+    socket: HubSocket,
+    size: TerminalRequestedSize,
+  ): void {
+    const sizes =
+      this.terminalRequestedSizeById.get(terminalId) ??
+      new Map<HubSocket, TerminalRequestedSize>();
+    sizes.set(socket, size);
+    this.terminalRequestedSizeById.set(terminalId, sizes);
+  }
+
+  terminalRequestedSize(
+    terminalId: string,
+    socket: HubSocket,
+  ): TerminalRequestedSize | null {
+    return this.terminalRequestedSizeById.get(terminalId)?.get(socket) ?? null;
+  }
+
+  private forgetTerminalRequestedSize(
+    terminalId: string,
+    socket: HubSocket,
+  ): void {
+    const sizes = this.terminalRequestedSizeById.get(terminalId);
+    if (!sizes) {
+      return;
+    }
+    sizes.delete(socket);
+    if (sizes.size === 0) {
+      this.terminalRequestedSizeById.delete(terminalId);
+    }
   }
 
   unregisterTerminalClient(terminalId: string, socket: HubSocket): void {
@@ -345,6 +396,7 @@ export class NotificationHub implements DbNotifier {
       }
     }
     this.releaseTerminalResizeOwnership(terminalId, socket, sockets);
+    this.forgetTerminalRequestedSize(terminalId, socket);
 
     const terminalIds = this.terminalIdsByClientSocket.get(socket);
     if (!terminalIds) {
@@ -373,6 +425,7 @@ export class NotificationHub implements DbNotifier {
         this.terminalClientSocketsById.delete(terminalId);
       }
       this.releaseTerminalResizeOwnership(terminalId, socket, sockets);
+      this.forgetTerminalRequestedSize(terminalId, socket);
     }
 
     this.terminalIdsByClientSocket.delete(socket);

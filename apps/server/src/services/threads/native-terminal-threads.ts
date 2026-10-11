@@ -2,6 +2,7 @@ import {
   consumeNativeTerminalThreadInitialPrompt,
   getEnvironment,
   getNativeTerminalThread,
+  getStoredProviderSession,
   listNativeTerminalThreadsWithDisconnectedTerminal,
   recordNativeTerminalThreadSessionId,
   setNativeTerminalThreadTerminal,
@@ -192,13 +193,13 @@ function requireNativeTerminalThreadRecord(
     throw new ApiError(
       404,
       "native_terminal_thread_not_found",
-      "Thread is not a native terminal thread",
+      "This thread runs in chat. Switch it to its terminal first with Open in terminal, or `bb thread native <id> --convert`",
     );
   }
   return record;
 }
 
-function readRecordTerminal(
+export function readRecordTerminal(
   deps: Pick<AppDeps, "terminalSessions">,
   record: NativeTerminalThreadRecord,
 ): TerminalSession | null {
@@ -213,8 +214,19 @@ function readRecordTerminal(
   }
 }
 
+function canReturnToChat(
+  deps: Pick<AppDeps, "db">,
+  record: NativeTerminalThreadRecord,
+): boolean {
+  const session = getStoredProviderSession(deps.db, record.threadId);
+  return (
+    session.kind === "owned" &&
+    session.providerThreadId === record.nativeSessionId
+  );
+}
+
 function toNativeTerminalThread(
-  deps: Pick<AppDeps, "providerRegistry" | "terminalSessions">,
+  deps: Pick<AppDeps, "db" | "providerRegistry" | "terminalSessions">,
   record: NativeTerminalThreadRecord,
   terminal: TerminalSession | null = readRecordTerminal(deps, record),
 ): NativeTerminalThread {
@@ -225,6 +237,7 @@ function toNativeTerminalThread(
       deps.providerRegistry.get(record.providerId)?.info.displayName ??
       record.providerId,
     nativeSessionId: record.nativeSessionId,
+    canReturnToChat: canReturnToChat(deps, record),
     terminal,
   };
 }
@@ -316,6 +329,12 @@ async function openNativeTerminalOnce(
     terminalSessionId: terminal.id,
   });
   return toNativeTerminalThread(deps, record, terminal);
+}
+
+export async function settlePendingNativeTerminalOpen(
+  threadId: string,
+): Promise<void> {
+  await pendingOpens.get(threadId)?.promise.catch(() => undefined);
 }
 
 export function openNativeTerminal(
