@@ -113,6 +113,16 @@ export default function plugin(bb: BbPluginApi) {
               },
               text: "payload.message",
             },
+            {
+              match: {
+                equals: {
+                  type: "event_msg",
+                  "payload.type": "item_completed",
+                  "payload.item.type": "UserMessage",
+                },
+              },
+              text: "payload.item.content.0.text",
+            },
           ],
         },
       },

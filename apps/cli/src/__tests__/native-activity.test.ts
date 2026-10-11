@@ -60,6 +60,16 @@ const CODEX_ACTIVITY: ProviderNativeTerminalActivity =
           },
           text: "payload.message",
         },
+        {
+          match: {
+            equals: {
+              type: "event_msg",
+              "payload.type": "item_completed",
+              "payload.item.type": "UserMessage",
+            },
+          },
+          text: "payload.item.content.0.text",
+        },
       ],
     },
   });
@@ -151,6 +161,18 @@ describe("native terminal activity", () => {
       [
         event("task_started"),
         event("user_message", { message: "  add a test  " }),
+        event("item_completed", {
+          item: {
+            type: "UserMessage",
+            content: [{ type: "text", text: "count to five" }],
+          },
+        }),
+        event("item_completed", {
+          item: {
+            type: "AgentMessage",
+            content: [{ type: "Text", text: "counted" }],
+          },
+        }),
         event("token_count"),
         event("turn_aborted"),
         event("task_complete"),
@@ -158,6 +180,8 @@ describe("native terminal activity", () => {
     ).toEqual([
       { state: "working", prompt: null },
       { state: "working", prompt: "add a test" },
+      { state: "working", prompt: "count to five" },
+      { state: null, prompt: null },
       { state: null, prompt: null },
       { state: "idle", prompt: null },
       { state: "idle", prompt: null },
