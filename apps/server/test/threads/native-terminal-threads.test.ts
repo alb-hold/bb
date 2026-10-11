@@ -23,6 +23,10 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { queueParentSystemMessage } from "../../src/services/threads/parent-system-messages.js";
 import { sendThreadMessage } from "../../src/services/threads/thread-send.js";
+import {
+  NATIVE_TERMINAL_ENDED_MESSAGE,
+  nativeTerminalLaunchCommand,
+} from "../../src/services/threads/native-terminal-threads.js";
 import { onDaemonSocketOpen } from "../../src/ws/daemon-protocol.js";
 import { resolvePendingThreadSessionOptions } from "../../src/services/threads/thread-session-options.js";
 import { readJson } from "../helpers/json.js";
@@ -306,6 +310,52 @@ describe("native terminal threads", () => {
       );
       expect(run(legacy)).toBe(`bare ${thread.id}`);
       expect(run(null)).toBe(`bare ${thread.id}`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("never starts the provider CLI from a reconnect reopen unless bb can reattach", () => {
+    const threadId = "thr_reattach";
+    const command = nativeTerminalLaunchCommand({
+      executable: "claude",
+      reattachOnly: true,
+      threadId,
+    });
+    const dir = mkdtempSync(path.join(os.tmpdir(), "bb-native-reattach-"));
+    try {
+      const script = (name: string, body: string): string => {
+        const file = path.join(dir, name);
+        writeFileSync(file, `#!/bin/sh\n${body}\n`);
+        chmodSync(file, 0o755);
+        return file;
+      };
+      script("claude", 'echo "bare $*"');
+      const holderAware = script(
+        "bb-new",
+        `case "$*" in "thread native-run ${threadId} --reattach --probe") exit 0;; *--probe*) exit 1;; esac\necho "wrapper $BB_THREAD_ID $*"`,
+      );
+      const beforeHolder = script(
+        "bb-before-holder",
+        `case "$*" in "thread native-run ${threadId} --probe") exit 0;; *--reattach*) echo "error: unknown option '--reattach'" >&2; exit 1;; esac\necho "relaunched $*"`,
+      );
+      const run = (bbCli: string | null): string =>
+        execFileSync("/bin/sh", ["-c", command], {
+          encoding: "utf8",
+          env: {
+            PATH: `${dir}:/usr/bin:/bin`,
+            ...(bbCli === null ? {} : { BB_CLI: bbCli }),
+          },
+        }).trim();
+
+      expect(run(holderAware)).toBe(
+        `wrapper ${threadId} thread native-run ${threadId} --reattach`,
+      );
+      for (const bbCli of [beforeHolder, null]) {
+        const output = run(bbCli);
+        expect(output).toBe(NATIVE_TERMINAL_ENDED_MESSAGE);
+        expect(output).not.toMatch(/bare|relaunched/u);
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -780,11 +830,11 @@ describe("native terminal threads", () => {
     const reopen = await waitForTerminalOpen(socket);
     expect(reopen.threadId).toBe(lost.thread.id);
     expect(reopen.start.mode === "command" && reopen.start.command).toContain(
-      `BB_NATIVE_TERMINAL_REATTACH=1 exec "$BB_CLI" thread native-run ${lost.thread.id}`,
+      `exec "$BB_CLI" thread native-run ${lost.thread.id} --reattach`,
     );
     expect(
       lost.open.start.mode === "command" && lost.open.start.command,
-    ).not.toContain("BB_NATIVE_TERMINAL_REATTACH");
+    ).not.toContain("--reattach");
     fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.hostId,
       sessionId: restarted.id,
@@ -861,7 +911,7 @@ describe("native terminal threads", () => {
     const reattach = await waitForTerminalOpen(socket);
     expect(
       reattach.start.mode === "command" && reattach.start.command,
-    ).toContain("BB_NATIVE_TERMINAL_REATTACH=1");
+    ).toContain("native-run " + lost.thread.id + " --reattach");
 
     const explicit = postJson(
       fixture,
@@ -876,7 +926,7 @@ describe("native terminal threads", () => {
     );
     expect(
       launch.start.mode === "command" && launch.start.command,
-    ).not.toContain("BB_NATIVE_TERMINAL_REATTACH");
+    ).not.toContain("--reattach");
     acknowledge(launch);
 
     const opened = nativeTerminalThreadSchema.parse(

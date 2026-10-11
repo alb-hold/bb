@@ -35,6 +35,7 @@ interface NativeOpenOptions {
 interface NativeRunOptions {
   json?: boolean;
   probe?: boolean;
+  reattach?: boolean;
 }
 
 interface NativeHoldOptions {
@@ -102,17 +103,18 @@ function spawnNativeHolder(threadId: string, socketPath: string): void {
 async function runNativeHarness(
   baseUrl: string,
   threadId: string,
+  reattachOnly: boolean,
 ): Promise<number> {
   const socketPath = defaultNativeHolderSocketPath(baseUrl, threadId);
   const connection = await openNativeHolderConnection({
     socketPath,
-    reattachOnly: process.env.BB_NATIVE_TERMINAL_REATTACH === "1",
+    reattachOnly,
     startHolder: () => spawnNativeHolder(threadId, socketPath),
     startTimeoutMs: HOLDER_START_TIMEOUT_MS,
   });
   if (connection.kind === "ended") {
     process.stdout.write(
-      "This thread's CLI ended while bb was disconnected from this machine. Open the terminal again to resume the session.\r\n",
+      "The CLI for this thread ended while bb was disconnected from this machine. Open the terminal again to resume the session.\r\n",
     );
     return 0;
   }
@@ -265,6 +267,10 @@ export function registerNativeCommands(
       "Run a native thread's provider CLI in this terminal (bb launches this inside the thread's terminal)",
     )
     .option("--probe", "Exit successfully without running anything")
+    .option(
+      "--reattach",
+      "Only attach to the thread's CLI if it is still running; never start it",
+    )
     .option("--json", "Print the probe result as JSON")
     .action(
       action(async (threadId: string, opts: NativeRunOptions) => {
@@ -272,7 +278,11 @@ export function registerNativeCommands(
           if (opts.json) console.log(JSON.stringify({ supported: true }));
           return;
         }
-        process.exitCode = await runNativeHarness(getUrl(), threadId);
+        process.exitCode = await runNativeHarness(
+          getUrl(),
+          threadId,
+          opts.reattach === true,
+        );
       }),
     );
 

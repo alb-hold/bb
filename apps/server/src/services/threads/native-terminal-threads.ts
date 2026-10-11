@@ -116,6 +116,9 @@ export function nativeTerminalInitialPrompt(
   return prompt.length === 0 ? null : prompt;
 }
 
+export const NATIVE_TERMINAL_ENDED_MESSAGE =
+  "The CLI for this thread ended while bb was disconnected from this machine. Open the terminal again to resume the session.";
+
 export function nativeTerminalLaunchCommand(args: {
   executable: string;
   reattachOnly: boolean;
@@ -123,14 +126,16 @@ export function nativeTerminalLaunchCommand(args: {
 }): string {
   const executable = args.executable;
   const env = `BB_THREAD_ID=${args.threadId}`;
-  const wrapperEnv = args.reattachOnly
-    ? `${env} BB_NATIVE_TERMINAL_REATTACH=1`
-    : env;
-  const wrapper = `"$BB_CLI" thread native-run ${args.threadId}`;
+  const wrapper = args.reattachOnly
+    ? `"$BB_CLI" thread native-run ${args.threadId} --reattach`
+    : `"$BB_CLI" thread native-run ${args.threadId}`;
+  const fallback = args.reattachOnly
+    ? `printf '%s\\r\\n' '${NATIVE_TERMINAL_ENDED_MESSAGE}';`
+    : `${env} exec ${executable};`;
   return [
     `if [ -n "$BB_CLI" ] && ${wrapper} --probe >/dev/null 2>&1; then`,
-    `${wrapperEnv} exec ${wrapper};`,
-    `else ${env} exec ${executable}; fi`,
+    `${env} exec ${wrapper};`,
+    `else ${fallback} fi`,
   ].join(" ");
 }
 
