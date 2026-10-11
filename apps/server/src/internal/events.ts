@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import { Buffer } from "node:buffer";
 import { and, desc, eq, gt, lt, sql } from "drizzle-orm";
 import {
@@ -32,6 +33,7 @@ import {
 import {
   getThreadEventScopeTurnId,
   maskResolvedProviderEnvironment,
+  THREAD_SESSION_OPTIONS_STATE_KIND,
   requireThreadEventScopeTurnId,
   systemThreadInterruptedEventDataSchema,
   type ChildThreadOutcome,
@@ -65,7 +67,12 @@ import {
   runtimeErrorLogFields,
 } from "../services/lib/error-log-fields.js";
 import { applyLoggedThreadLifecycleEvent } from "../services/threads/lifecycle-outcome.js";
+import { dropSettledThreadSessionOptionSelections } from "../services/threads/thread-session-options.js";
 import { applyTurnCompletedEvent } from "./turn-completed-events.js";
+import {
+  applyGeneratedThreadTitle,
+  sanitizeGeneratedTitle,
+} from "../services/threads/title-generation.js";
 import {
   getInactiveSessionLogFields,
   requireAuthenticatedDaemonSession,
@@ -76,6 +83,7 @@ import { validatePresentationIcons } from "./presentation-icons.js";
 import { listSharedWorkspaceActiveThreadIds } from "../services/threads/workspace-awareness.js";
 import { appendThreadEvent } from "../services/threads/thread-events.js";
 import { threadScope } from "@bb/domain";
+import { observeTurnTraceEventBatch } from "../services/system/turn-trace.js";
 
 interface ToStoredEventArgs {
   envelope: HostDaemonEventEnvelope;
@@ -470,6 +478,30 @@ async function applyEventEffects(
           event: { type: "run.started" },
           threadId: entry.threadId,
         });
+        continue;
+      }
+
+      if (event.type === "thread/name/updated") {
+        if (event.source === "agent") {
+          const title = sanitizeGeneratedTitle(event.threadName);
+          if (title !== null) {
+            applyGeneratedThreadTitle(deps, {
+              threadId: entry.threadId,
+              title,
+            });
+          }
+        }
+        continue;
+      }
+
+      if (event.type === "thread/extensionState/updated") {
+        if (event.kind === THREAD_SESSION_OPTIONS_STATE_KIND) {
+          dropSettledThreadSessionOptionSelections(deps, {
+            threadId: entry.threadId,
+            environmentId:
+              getThread(deps.db, entry.threadId)?.environmentId ?? null,
+          });
+        }
         continue;
       }
 
@@ -1167,6 +1199,7 @@ export function registerInternalEventRoutes(app: Hono, deps: AppDeps): void {
     "/session/events",
     hostDaemonEventBatchRequestSchema,
     async (context, payload) => {
+      const receivedAt = performance.now();
       let session: ReturnType<typeof requireAuthenticatedDaemonSession>;
       try {
         session = requireAuthenticatedDaemonSession({
@@ -1236,16 +1269,20 @@ export function registerInternalEventRoutes(app: Hono, deps: AppDeps): void {
           entries.map((entry) => entry.envelope),
         ),
       );
-      const labelledEntries = entries.map((entry, index) => {
-        const validated = validatedEnvelopes[index];
-        if (validated === undefined) {
-          throw new Error("Missing validated envelope for daemon event entry");
-        }
-        return {
-          ...entry,
-          envelope: validated,
-        };
-      }).map((entry) => preserveTerminalProvisioningStatus(deps, entry));
+      const labelledEntries = entries
+        .map((entry, index) => {
+          const validated = validatedEnvelopes[index];
+          if (validated === undefined) {
+            throw new Error(
+              "Missing validated envelope for daemon event entry",
+            );
+          }
+          return {
+            ...entry,
+            envelope: validated,
+          };
+        })
+        .map((entry) => preserveTerminalProvisioningStatus(deps, entry));
       const eventInputs = labelledEntries.map((entry) => {
         return toStoredEvent({
           envelope: entry.envelope,
@@ -1315,9 +1352,16 @@ export function registerInternalEventRoutes(app: Hono, deps: AppDeps): void {
           "Dropped orphan thread-state snapshot with no stored turn/started",
         );
       }
+      const committedAt = performance.now();
       notifyInsertedEventThreads(deps, {
         eventInputs,
         insertedInputIndexes: appendResult.insertedInputIndexes,
+      });
+      observeTurnTraceEventBatch({
+        committedAt,
+        events: postableEvents,
+        notifiedAt: performance.now(),
+        receivedAt,
       });
 
       const followUps = await applyEventEffects(

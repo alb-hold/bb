@@ -1,3 +1,9 @@
+import {
+  retryAvailabilityContract,
+  retryAvailabilityMethod,
+  type RetryAvailability,
+} from "./retry-contract.js";
+import { modelFamily } from "./quota.js";
 import { registerUsageSource } from "./usage-source.js";
 import {
   createUpstreamTransport,
@@ -10,12 +16,13 @@ import { registerPoolCli } from "./cli.js";
 import {
   accountPoolConfigSchema,
   accountPoolConfigSetInputSchema,
+  draftSelectionSchema,
+  modelFamilySchema,
   poolAvailabilitySchema,
   type AccountPoolConfigController,
   type PoolProvider,
   type PoolStatus,
 } from "./contracts.js";
-import { draftSelectionSchema } from "./contracts.js";
 import { ThreadTokenStore, type ThreadLookup } from "./thread-tokens.js";
 import {
   AVAILABILITY_PATH,
@@ -315,6 +322,42 @@ export function createAccountPoolPlugin(
         "Add and enable a Claude or Codex account with `bb pool account add`.",
       );
     }
+    const routedProviderSchema = z.enum(["claude", "codex"]);
+    const failedRequestSchema = z.object({
+      requestId: z.string(),
+      execution: z.object({ model: z.string() }),
+    });
+    const retryAvailability = async (input: {
+      threadId: string;
+      requestId: string;
+    }): Promise<RetryAvailability> => {
+      const provider = routedProviderSchema.safeParse(
+        await bb.storage.kv.get(`retry-route:${input.threadId}`),
+      );
+      if (!provider.success) return { kind: "not-routed" };
+      const events = await bb.sdk.threads.events.list({
+        threadId: input.threadId,
+        types: ["client/turn/requested"],
+        order: "desc",
+        limit: "1",
+      });
+      const request = failedRequestSchema.safeParse(events[0]?.data);
+      if (!request.success || request.data.requestId !== input.requestId)
+        return { kind: "unavailable", reason: "source-unavailable" };
+      return hub.retryAvailability(
+        provider.data,
+        modelFamily(request.data.execution.model),
+      );
+    };
+    bb.rpc.register(
+      retryAvailabilityContract,
+      { [retryAvailabilityMethod]: retryAvailability },
+      {
+        experimental_discoverable: true,
+        experimental_description:
+          "Account Pooler retry availability for routed failed turns.",
+      },
+    );
     registerUsageSource(bb, hub, (provider) =>
       operations.isRoutingEnabled(provider),
     );
@@ -421,7 +464,8 @@ export function createAccountPoolPlugin(
             : (options.threadSweepRetryMs ?? THREAD_SWEEP_RETRY_MS),
           signal,
         );
-        if (!signal.aborted) complete = await sweepThreadCredentialsOnce(signal);
+        if (!signal.aborted)
+          complete = await sweepThreadCredentialsOnce(signal);
       }
     };
     const checkArchived = async (
@@ -462,6 +506,7 @@ export function createAccountPoolPlugin(
             : await operations.isRoutingEnabled(provider));
         if (canRoute) {
           if (archive.status === "unknown") throw archive.error;
+          await bb.storage.kv.set(`retry-route:${context.threadId}`, provider);
           const hostToken = await hubTokens.forHost(context.hostId);
           const token = await threadTokens.forThread(
             {
@@ -482,6 +527,7 @@ export function createAccountPoolPlugin(
           }
           return [...(await serving(token)), ...markerEntries(nestedToken)];
         }
+        await bb.storage.kv.delete(`retry-route:${context.threadId}`);
         return unrouted();
       };
     const subscriptionCacheEntries = async (): Promise<PoolEnvEntry[]> =>
@@ -622,6 +668,26 @@ export function createAccountPoolPlugin(
             claude: await canServe("claude"),
             codex: await canServe("codex"),
           }),
+        );
+      },
+      { auth: "none" },
+    );
+    bb.http.route(
+      "GET",
+      "/retry-availability",
+      async (context) => {
+        const query = z
+          .object({ provider: routedProviderSchema, family: modelFamilySchema })
+          .safeParse(
+            Object.fromEntries(new URL(context.req.raw.url).searchParams),
+          );
+        const hostId = query.success
+          ? await hub.authenticateProvider(context.req.raw, query.data.provider)
+          : await hub.authenticateNested(context.req.raw);
+        if (hostId === null) return new Response(null, { status: 401 });
+        if (!query.success) return new Response(null, { status: 400 });
+        return Response.json(
+          await hub.retryAvailability(query.data.provider, query.data.family),
         );
       },
       { auth: "none" },

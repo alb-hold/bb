@@ -1,0 +1,21 @@
+{
+  "$schema": "https://ui.shadcn.com/schema/registry-item.json",
+  "name": "action-menu-items",
+  "type": "registry:ui",
+  "title": "action-menu-items",
+  "description": "BB ui \"action-menu-items\" — vendored from the BB app's own source (version-matched to this BB release).",
+  "registryDependencies": [
+    "@bb/context-menu",
+    "@bb/dropdown-menu",
+    "@bb/icon",
+    "@bb/utils"
+  ],
+  "files": [
+    {
+      "path": "registry/components/ui/action-menu-items.tsx",
+      "content": "import type { ReactNode } from \"react\";\nimport { Icon, type IconName } from \"./icon\";\nimport {\n  ContextMenuItem,\n  ContextMenuLabel,\n  ContextMenuSeparator,\n  ContextMenuSub,\n  ContextMenuSubContent,\n  ContextMenuSubTrigger,\n} from \"./context-menu\";\nimport {\n  DropdownMenuItem,\n  DropdownMenuLabel,\n  DropdownMenuSeparator,\n  DropdownMenuSub,\n  DropdownMenuSubContent,\n  DropdownMenuSubTrigger,\n} from \"./dropdown-menu\";\nimport { cn } from \"../../lib/utils\";\n\nexport type ActionMenuSurface = \"context\" | \"dropdown\";\n\ninterface ActionMenuItemProps {\n  children: ReactNode;\n  variant?: \"default\" | \"destructive\";\n  disabled?: boolean;\n  icon: IconName;\n  href?: string;\n  onSelect?: (event: Event) => void;\n  shortcut?: string;\n  surface: ActionMenuSurface;\n}\n\ninterface ActionMenuSeparatorProps {\n  surface: ActionMenuSurface;\n}\n\nexport function ActionMenuItem({\n  children,\n  variant,\n  disabled,\n  icon,\n  href,\n  onSelect,\n  shortcut,\n  surface,\n}: ActionMenuItemProps) {\n  const content = (\n    <>\n      <Icon name={icon} aria-hidden=\"true\" />\n      {children}\n      {shortcut === undefined ? null : (\n        <span className=\"ml-auto pl-3 text-subtle-foreground\">{shortcut}</span>\n      )}\n    </>\n  );\n  const body = href === undefined ? content : <a href={href}>{content}</a>;\n\n  if (surface === \"context\") {\n    return (\n      <ContextMenuItem\n        asChild={href !== undefined}\n        className={cn(\n          variant === \"destructive\" &&\n            \"text-destructive focus:bg-destructive/15 focus:text-destructive data-[last-hovered]:bg-destructive/15 data-[last-hovered]:text-destructive\",\n        )}\n        disabled={disabled}\n        onSelect={onSelect}\n      >\n        {body}\n      </ContextMenuItem>\n    );\n  }\n\n  return (\n    <DropdownMenuItem\n      asChild={href !== undefined}\n      variant={variant}\n      disabled={disabled}\n      onSelect={onSelect}\n    >\n      {body}\n    </DropdownMenuItem>\n  );\n}\n\nexport function ActionMenuSeparator({ surface }: ActionMenuSeparatorProps) {\n  return surface === \"context\" ? (\n    <ContextMenuSeparator />\n  ) : (\n    <DropdownMenuSeparator />\n  );\n}\n\ninterface ActionMenuSubProps {\n  children: ReactNode;\n  icon: IconName;\n  label: ReactNode;\n  surface: ActionMenuSurface;\n}\n\nexport function ActionMenuSub({\n  children,\n  icon,\n  label,\n  surface,\n}: ActionMenuSubProps) {\n  const trigger = (\n    <>\n      <Icon name={icon} aria-hidden=\"true\" />\n      {label}\n    </>\n  );\n\n  if (surface === \"context\") {\n    return (\n      <ContextMenuSub>\n        <ContextMenuSubTrigger>{trigger}</ContextMenuSubTrigger>\n        <ContextMenuSubContent>{children}</ContextMenuSubContent>\n      </ContextMenuSub>\n    );\n  }\n\n  return (\n    <DropdownMenuSub>\n      <DropdownMenuSubTrigger>{trigger}</DropdownMenuSubTrigger>\n      <DropdownMenuSubContent>{children}</DropdownMenuSubContent>\n    </DropdownMenuSub>\n  );\n}\n\ninterface ActionMenuNoticeProps {\n  children: ReactNode;\n  surface: ActionMenuSurface;\n}\n\nexport function ActionMenuNotice({ children, surface }: ActionMenuNoticeProps) {\n  const className = \"max-w-56 font-normal text-subtle-foreground text-wrap\";\n  return surface === \"context\" ? (\n    <ContextMenuLabel className={className}>{children}</ContextMenuLabel>\n  ) : (\n    <DropdownMenuLabel className={className}>{children}</DropdownMenuLabel>\n  );\n}\n",
+      "type": "registry:ui",
+      "target": "components/ui/action-menu-items.tsx"
+    }
+  ]
+}

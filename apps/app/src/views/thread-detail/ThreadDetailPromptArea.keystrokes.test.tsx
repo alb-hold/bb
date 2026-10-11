@@ -148,7 +148,7 @@ vi.mock("@/components/promptbox/banner/ThreadWorkflowCard", () => ({
 vi.mock(
   "@/components/thread/pending-interactions/ThreadPendingInteractionBanner",
   () => ({
-    ThreadPendingInteractionBanner: () => (
+    ThreadPendingInteractionBanners: () => (
       <div data-testid="pending-interaction" />
     ),
   }),
@@ -277,8 +277,9 @@ const queryMocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/hooks/queries/thread-queries", () => ({
-  getLatestPendingInteraction: (interactions: readonly PendingInteraction[]) =>
-    interactions.at(-1) ?? null,
+  orderPendingInteractions: (
+    interactions: readonly PendingInteraction[] | undefined,
+  ) => interactions ?? [],
   useThreadPromptHistory: () => ({ data: [] }),
   useThreadQueuedMessages: () => ({ data: queryMocks.queuedMessages }),
 }));
@@ -383,6 +384,8 @@ function buildPromptArea({
         canRestoreEnvironment={false}
         environmentGoneStatus={null}
         goal={null}
+        providerCommands={null}
+        sessionOptions={null}
         modelFallback={null}
         isEnvironmentActionPending={false}
         onChangedFileClick={vi.fn()}

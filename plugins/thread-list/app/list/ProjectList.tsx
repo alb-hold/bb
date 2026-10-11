@@ -21,7 +21,7 @@ import { toast } from "sonner";
 import type { SidebarThread } from "../model/sidebar-thread.js";
 import {
   experimental_useSidebarProjectActions,
-  experimental_useSidebarThreadActions,
+  useBbNavigate,
   useSdk,
 } from "@get-bb/plugin-sdk/app";
 import {
@@ -29,8 +29,8 @@ import {
   useSidebarRename,
   useSidebarRenameState,
 } from "../rows/SidebarInlineRename.js";
-import { AppThreadSectionMoveProvider } from "../rows/ThreadSectionMoveProvider.js";
-import { useDialogState } from "../ui/useDialogState.js";
+import { useDialogState } from "@/components/ui/use-dialog-state";
+import { ThreadRowNavigationProvider } from "../rows/threadRowNavigation.js";
 import {
   buildProjectThreadGroups,
   buildSectionThreadList,
@@ -49,7 +49,7 @@ import { ThreadSectionCreateDialog } from "./ThreadSectionCreateDialog.js";
 import {
   ConfirmDeleteDialog,
   ConfirmDeleteDialogContent,
-} from "../ui/ConfirmDeleteDialog.js";
+} from "@/components/ui/confirm-delete-dialog";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -372,26 +372,15 @@ function ProjectListNavigationLoadingRow({
 
 export function ProjectListShell({ children }: ProjectListShellProps) {
   return (
-    <SidebarContentElementProvider>
-      <div className="w-full min-w-0 overflow-x-clip">
-        <SidebarStickyStack data-sidebar-sticky-density="compact-actions">
-          <SidebarGroupContent>{children}</SidebarGroupContent>
-        </SidebarStickyStack>
-      </div>
-    </SidebarContentElementProvider>
-  );
-}
-
-function ProjectListSectionMoveScope({
-  children,
-  sections,
-}: ProjectListShellProps & {
-  sections: readonly SidebarSectionDefinition[];
-}) {
-  return (
-    <AppThreadSectionMoveProvider sections={sections}>
-      <ProjectListShell>{children}</ProjectListShell>
-    </AppThreadSectionMoveProvider>
+    <ThreadRowNavigationProvider>
+      <SidebarContentElementProvider>
+        <div className="w-full min-w-0 overflow-x-clip">
+          <SidebarStickyStack data-sidebar-sticky-density="compact-actions">
+            <SidebarGroupContent>{children}</SidebarGroupContent>
+          </SidebarStickyStack>
+        </div>
+      </SidebarContentElementProvider>
+    </ThreadRowNavigationProvider>
   );
 }
 
@@ -1349,7 +1338,7 @@ function ProjectListComponent({
   onProjectSelect,
 }: ProjectListProps) {
   const sdk = useSdk();
-  const sidebarActions = experimental_useSidebarThreadActions();
+  const navigate = useBbNavigate();
   const {
     status,
     sections: loadedSections,
@@ -1421,14 +1410,14 @@ function ProjectListComponent({
       pinned = false,
     ) => {
       onProjectSelect?.();
-      sidebarActions.openNewThread({
+      navigate.toCompose({
         ...(projectId !== null ? { projectId } : {}),
-        experimental_placement: { sectionId: sectionId ?? null, pinned },
+        placement: { sectionId: sectionId ?? null, pinned },
         ...(hostId ? { hostId } : {}),
         focusPrompt: true,
       });
     },
-    [onProjectSelect, sidebarActions],
+    [navigate, onProjectSelect],
   );
   const handleCreateProjectThread = useCallback(
     (projectId: string) => {
@@ -1848,7 +1837,7 @@ function ProjectListComponent({
         isCreatingSection: isCreateThreadSectionPending,
       }}
     >
-      <ProjectListSectionMoveScope sections={sections}>
+      <ProjectListShell>
         <SidebarDraftPresenceSync />
         <ActiveSidebarModeSections
           mode={organizationMode}
@@ -1948,7 +1937,7 @@ function ProjectListComponent({
             )}
           </>
         )}
-      </ProjectListSectionMoveScope>
+      </ProjectListShell>
       {sectionCreateDialog}
       {sectionDeleteDialogContent}
     </SidebarHeaderActionsProvider>

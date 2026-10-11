@@ -711,6 +711,7 @@ export const GeneratedConversationMessage = memo(
             <ConversationAttachments
               align="start"
               filePaths={attachmentItems.filePaths}
+              fileDetails={attachmentItems.fileDetails}
               imageItems={attachmentItems.imageItems}
               onOpenLocalFileLink={onOpenLocalFileLink}
               projectId={projectId}
@@ -725,6 +726,7 @@ export const GeneratedConversationMessage = memo(
       ),
       [
         attachmentItems.filePaths,
+        attachmentItems.fileDetails,
         attachmentItems.imageItems,
         linkRouting,
         messageText,

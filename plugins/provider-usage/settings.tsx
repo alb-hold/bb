@@ -195,20 +195,18 @@ function combinedUsageSelection(machines: UsageMachine[]): {
   });
   const host = machines.find((machine) => !isSource(machine));
   const hasPooledClaude = pooledClaude.length > 0;
-  const hostProviders = host?.providers.filter(
-    (provider) =>
-      provider.providerId !== "claude-code" ||
-      !hasPooledClaude ||
-      shouldKeepHostClaude(
-        provider,
-        pooledClaude.map(({ provider: pooled }) => pooled),
-      ),
-  ) ?? [];
+  const hostProviders =
+    host?.providers.filter(
+      (provider) =>
+        provider.providerId !== "claude-code" ||
+        !hasPooledClaude ||
+        shouldKeepHostClaude(
+          provider,
+          pooledClaude.map(({ provider: pooled }) => pooled),
+        ),
+    ) ?? [];
   const selectedProviders = hasPooledClaude
-    ? [
-        ...pooledClaude.map(({ provider }) => provider),
-        ...hostProviders,
-      ]
+    ? [...pooledClaude.map(({ provider }) => provider), ...hostProviders]
     : hostProviders;
   const targetsByMachine = new Map<UsageMachine, Set<string>>();
   const addTarget = (machine: UsageMachine, providerId: string) => {
@@ -288,7 +286,7 @@ function mergeUsageMachines(
   current: UsageMachine[],
   updated: UsageMachine[],
   machineId: string,
-  providerId: string,
+  providerIds: readonly string[],
 ): UsageMachine[] {
   const byId = new Map(current.map((machine) => [machine.id, machine]));
   const fresh = updated.find((machine) => machine.id === machineId);
@@ -298,10 +296,10 @@ function mergeUsageMachines(
       ...fresh,
       providers: [
         ...(previous?.providers.filter(
-          (provider) => provider.providerId !== providerId,
+          (provider) => !providerIds.includes(provider.providerId),
         ) ?? []),
-        ...fresh.providers.filter(
-          (provider) => provider.providerId === providerId,
+        ...fresh.providers.filter((provider) =>
+          providerIds.includes(provider.providerId),
         ),
       ],
     });
@@ -455,8 +453,7 @@ function UsageResourceGroup({
       {resources.map((resource) => {
         const usage = resource.usage ?? undefined;
         const pooledClaude =
-          resource.providerId === "claude-code" &&
-          resource.accountPool != null;
+          resource.providerId === "claude-code" && resource.accountPool != null;
         const accountEmail =
           usage?.status === "ok"
             ? (usage.accountEmail ??
@@ -585,7 +582,7 @@ export function UsageSettingsContent({
     <section className="@container/usage-settings space-y-3">
       <div
         className={cn(
-            machines.length > 1
+          machines.length > 1
             ? "flex min-w-0 flex-col gap-3 @min-[36rem]/usage-settings:flex-row @min-[36rem]/usage-settings:justify-between @min-[36rem]/usage-settings:gap-4 @min-[36rem]/usage-settings:items-start"
             : "flex min-w-0 flex-row items-start justify-between gap-4",
         )}
@@ -701,30 +698,30 @@ export function UsageSettings() {
         const inventory = await rpc.call("getUsage", {
           force: false,
           machineIds: null,
-          providerId: null,
+          providerIds: [],
           maxAgeMs: 60_000,
         });
         if (disposed) return;
         setMachines(inventory.machines);
         const targets = usageTargetsToRefresh(inventory.machines, selectedId)
           .filter(({ machine }) => machine.status === "connected")
-          .flatMap(({ machine, providerIds }) =>
-            providerIds
-              .filter((providerId) =>
-                machine.providers.some(
-                  (provider) =>
-                    provider.providerId === providerId &&
-                    provider.usage?.status !== "not_installed",
-                ),
-              )
-              .map((providerId) => ({ machine, providerId })),
-          );
+          .map(({ machine, providerIds }) => ({
+            machine,
+            providerIds: providerIds.filter((providerId) =>
+              machine.providers.some(
+                (provider) =>
+                  provider.providerId === providerId &&
+                  provider.usage?.status !== "not_installed",
+              ),
+            ),
+          }))
+          .filter(({ providerIds }) => providerIds.length > 0);
         const results = await Promise.allSettled(
-          targets.map(({ machine, providerId }) =>
+          targets.map(({ machine, providerIds }) =>
             rpc.call("getUsage", {
               force,
               machineIds: [machine.id],
-              providerId,
+              providerIds,
               maxAgeMs: 60_000,
             }),
           ),
@@ -745,7 +742,7 @@ export function UsageSettings() {
                 current,
                 result.value.machines,
                 target.machine.id,
-                target.providerId,
+                target.providerIds,
               ),
             );
           }

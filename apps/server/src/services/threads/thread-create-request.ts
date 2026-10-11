@@ -40,6 +40,7 @@ export interface ThreadCreateServiceRequestInput {
   providerId?: CreateThreadRequest["providerId"];
   reasoningLevel?: CreateThreadRequest["reasoningLevel"];
   serviceTier?: CreateThreadRequest["serviceTier"];
+  sessionOptions?: CreateThreadRequest["sessionOptions"];
   sourceSeqEnd?: CreateThreadRequest["sourceSeqEnd"];
   sourceThreadId?: string;
   spawnedByThreadId?: string;

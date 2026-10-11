@@ -48,6 +48,7 @@ export interface CodexThreadPermissionSettings {
 export type BbThreadStartParams = ThreadStartParams & {
   experimentalRawEvents?: boolean;
   dynamicTools?: DynamicToolSpec[];
+  daybreakEnabled?: boolean;
 };
 
 export type BbThreadForkParams = {
@@ -632,7 +633,9 @@ export function toCodexUserInput(input: PromptInput[]): CodexUserInput[] {
       case "localFile":
         return {
           type: "text",
-          text: `[Attached file: ${chunk.path}]`,
+          text: chunk.name
+            ? `[Attached file "${chunk.name}": ${chunk.path}]`
+            : `[Attached file: ${chunk.path}]`,
           text_elements: [],
         };
     }

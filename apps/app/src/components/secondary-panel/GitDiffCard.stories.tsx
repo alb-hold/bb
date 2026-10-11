@@ -697,6 +697,7 @@ function InteractiveDiffPanel({
         onSelectionChange={setSelection}
         isSelectorDisabled={false}
         stats={aggregateStats}
+        isStatsLoading={false}
         totalFilesCount={parsed.length}
         isTruncated={false}
         fileFilter={fileFilter}
@@ -720,7 +721,7 @@ function InteractiveDiffPanel({
                 presentation={presentation}
                 stickyHeader
               />
-          ))}
+            ))}
         </div>
       </div>
     </PanelStage>

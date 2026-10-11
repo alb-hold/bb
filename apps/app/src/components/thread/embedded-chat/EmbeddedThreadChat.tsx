@@ -41,7 +41,7 @@ import {
   useComposerHostSelection,
   type PluginComposerHost,
 } from "@/components/plugin/plugin-composer-host";
-import { ThreadPendingInteractionBanner } from "@/components/thread/pending-interactions/ThreadPendingInteractionBanner";
+import { ThreadPendingInteractionBanners } from "@/components/thread/pending-interactions/ThreadPendingInteractionBanner";
 import {
   LazyQueuedMessagesList,
   type QueuedMessageInlineEditor,
@@ -62,8 +62,8 @@ import {
 } from "@/components/thread/timeline";
 import { useThreadCreationOptions } from "@/hooks/useThreadCreationOptions";
 import {
-  getLatestPendingInteraction,
   isPendingInteractionStateUnknown,
+  orderPendingInteractions,
   useThread,
   useThreadPendingInteractions,
   useThreadQueuedMessages,
@@ -90,6 +90,10 @@ import {
   canSubmitFollowUpShortcut,
   shouldQueueFollowUpMessage,
 } from "@bb/client-core";
+import {
+  SHORT_LIVED_STATUS_DELAY_MS,
+  useSustainedFlag,
+} from "@/hooks/useSustainedFlag";
 import { useActiveComposerDraft } from "./useActiveComposerDraft";
 import { useComposerAttachmentUploads } from "./useComposerAttachmentUploads";
 import { useLatestRef } from "@/hooks/useLatestRef";
@@ -268,18 +272,18 @@ function EmbeddedThreadChatWithComposer({
   const createQueuedMessage = useCreateThreadQueuedMessage();
   const threadQuery = useThread(threadId);
   const pendingInteractionsQuery = useThreadPendingInteractions(threadId);
-  const activePendingInteraction = getLatestPendingInteraction(
+  const composerBlockingPendingInteractions = orderPendingInteractions(
     pendingInteractionsQuery.data,
-  );
+  ).filter((interaction) => interaction.payload.kind !== "plugin");
   const hasComposerBlockingPendingInteraction =
-    activePendingInteraction !== null &&
-    activePendingInteraction.payload.kind !== "plugin";
+    composerBlockingPendingInteractions.length > 0;
   const pendingInteractionsInitialLoading = isPendingInteractionStateUnknown(
     pendingInteractionsQuery.data,
     pendingInteractionsQuery.isFetching,
   );
   const pendingInteractionsUnavailable =
-    activePendingInteraction === null && pendingInteractionsQuery.isError;
+    (pendingInteractionsQuery.data?.length ?? 0) === 0 &&
+    pendingInteractionsQuery.isError;
   const pendingInteractionOccupiesComposer =
     hasComposerBlockingPendingInteraction ||
     pendingInteractionsInitialLoading ||
@@ -407,7 +411,7 @@ function EmbeddedThreadChatWithComposer({
     activeComposerDraft,
     activeComposerDraftInput,
     handleChangeMessage,
-    removeActiveComposerAttachment,
+    updateActiveComposerAttachments,
   } = useActiveComposerDraft({
     draftScope: composer.draftScope,
     inlineDraft: inlineEditingQueuedMessage?.draft ?? null,
@@ -934,9 +938,13 @@ function EmbeddedThreadChatWithComposer({
     queuedPluginComposerHost?.textEffectKey ?? null,
   );
 
+  const isProvisioningSustained = useSustainedFlag(
+    isProvisioning,
+    SHORT_LIVED_STATUS_DELAY_MS,
+  );
   const composerPlaceholder = isStopRequested
     ? "Stopping thread..."
-    : isProvisioning
+    : isProvisioningSustained
       ? "Provisioning thread..."
       : "Reply…";
 
@@ -1028,7 +1036,7 @@ function EmbeddedThreadChatWithComposer({
       pendingUploads: bottomPendingUploads,
       error: bottomAttachmentError,
       onAttachFiles: handleAttachBottomFiles,
-      onRemove: promptDraft.removeAttachment,
+      onUpdate: promptDraft.updateAttachments,
     }),
     [
       bottomAttachmentError,
@@ -1037,7 +1045,7 @@ function EmbeddedThreadChatWithComposer({
       isAttachingBottomFiles,
       bottomPendingUploads,
       projectId,
-      promptDraft.removeAttachment,
+      promptDraft.updateAttachments,
     ],
   );
   const inlineAttachmentsConfig = useMemo<AttachmentsConfig>(
@@ -1048,7 +1056,7 @@ function EmbeddedThreadChatWithComposer({
       pendingUploads: inlinePendingUploads,
       error: inlineAttachmentError,
       onAttachFiles: handleAttachInlineFiles,
-      onRemove: removeActiveComposerAttachment,
+      onUpdate: updateActiveComposerAttachments,
     }),
     [
       activeComposerDraft.attachments,
@@ -1057,7 +1065,7 @@ function EmbeddedThreadChatWithComposer({
       isAttachingInlineFiles,
       inlinePendingUploads,
       projectId,
-      removeActiveComposerAttachment,
+      updateActiveComposerAttachments,
     ],
   );
 
@@ -1075,7 +1083,7 @@ function EmbeddedThreadChatWithComposer({
         options: modelOptions,
         moreOptions: moreModelOptions,
         loadError: modelLoadError,
-        isLoading: isLoadingModels,
+        isLoading: isLoadingModels || isDefaultExecutionOptionsLoading,
         loadFailed: modelLoadFailed,
         onChange: setSelectedModel,
       },
@@ -1096,6 +1104,7 @@ function EmbeddedThreadChatWithComposer({
       activeModel,
       executionOptionsRouting,
       hasMultipleProviders,
+      isDefaultExecutionOptionsLoading,
       isLoadingModels,
       modelLoadFailed,
       modelLoadError,
@@ -1289,10 +1298,9 @@ function EmbeddedThreadChatWithComposer({
     />
   ) : pendingInteractionsInitialLoading ? (
     <PendingInteractionsQueryBanner state="loading" />
-  ) : activePendingInteraction !== null &&
-    activePendingInteraction.payload.kind !== "plugin" ? (
-    <ThreadPendingInteractionBanner
-      interaction={activePendingInteraction}
+  ) : hasComposerBlockingPendingInteraction ? (
+    <ThreadPendingInteractionBanners
+      interactions={composerBlockingPendingInteractions}
       threadId={threadId}
     />
   ) : null;

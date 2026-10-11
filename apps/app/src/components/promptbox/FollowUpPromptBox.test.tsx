@@ -261,7 +261,7 @@ function createFollowUpPromptBoxProps(
       isAttaching: false,
       error: null,
       onAttachFiles: vi.fn(),
-      onRemove: vi.fn(),
+      onUpdate: vi.fn(),
     },
     stack: null,
     composer: {
@@ -928,6 +928,7 @@ describe("FollowUpPromptBox", () => {
 
   it("starts as a single compact row on mobile without a collapse control", () => {
     mocks.isCompactViewport = true;
+    mocks.isPointerCoarse = true;
     const props = createFollowUpPromptBoxProps({ kind: "ready" });
     props.environmentSummary = <span>Local environment</span>;
     render(<FollowUpPromptBox {...props} />);
@@ -1129,6 +1130,7 @@ describe("FollowUpPromptBox", () => {
 
   it("does not move the mobile input before the first tap can focus it", () => {
     mocks.isCompactViewport = true;
+    mocks.isPointerCoarse = true;
     render(
       <FollowUpPromptBox
         {...createFollowUpPromptBoxProps({ kind: "ready" })}
@@ -1507,9 +1509,22 @@ describe("FollowUpPromptBox", () => {
     );
     const composer = document.querySelector("[data-follow-up-composer]");
     const input = screen.getByRole("textbox", { name: "Follow-up prompt" });
+    const outside = screen.getByRole("button", { name: "Outside composer" });
 
     expect(composer?.hasAttribute("data-follow-up-composer-expanded")).toBe(
-      false,
+      true,
+    );
+    expect(screen.getByTestId("prompt-box").dataset.heightAnimationKey).toBe(
+      "expanded",
+    );
+
+    act(() => input.focus());
+    fireEvent.pointerDown(outside);
+    act(() => outside.focus());
+    await waitFor(() =>
+      expect(composer?.hasAttribute("data-follow-up-composer-expanded")).toBe(
+        false,
+      ),
     );
     expect(screen.getByTestId("prompt-box").dataset.heightAnimationKey).toBe(
       "compact",
@@ -1522,19 +1537,19 @@ describe("FollowUpPromptBox", () => {
     expect(screen.getByTestId("prompt-box").dataset.heightAnimationKey).toBe(
       "expanded",
     );
+  });
 
-    fireEvent.pointerDown(
-      screen.getByRole("button", { name: "Outside composer" }),
+  it("stays compact on mount when a coarse pointer will not focus the editor", () => {
+    mocks.isPointerCoarse = true;
+    render(
+      <FollowUpPromptBox {...createFollowUpPromptBoxProps({ kind: "ready" })} />,
     );
-    act(() => screen.getByRole("button", { name: "Outside composer" }).focus());
-    await waitFor(() =>
-      expect(composer?.hasAttribute("data-follow-up-composer-expanded")).toBe(
-        false,
-      ),
-    );
-    expect(screen.getByTestId("prompt-box").dataset.heightAnimationKey).toBe(
-      "compact",
-    );
+
+    expect(
+      document
+        .querySelector("[data-follow-up-composer]")
+        ?.hasAttribute("data-follow-up-composer-expanded"),
+    ).toBe(false);
   });
 
   it("sets footer-visible for an expanded composer at a non-compact viewport", async () => {
@@ -1552,13 +1567,9 @@ describe("FollowUpPromptBox", () => {
 
     expect(
       composer?.hasAttribute("data-follow-up-composer-footer-visible"),
-    ).toBe(false);
-
-    act(() => input.focus());
-    expect(
-      composer?.hasAttribute("data-follow-up-composer-footer-visible"),
     ).toBe(true);
 
+    act(() => input.focus());
     fireEvent.pointerDown(
       screen.getByRole("button", { name: "Outside composer" }),
     );
@@ -1568,6 +1579,11 @@ describe("FollowUpPromptBox", () => {
         composer?.hasAttribute("data-follow-up-composer-footer-visible"),
       ).toBe(false),
     );
+
+    act(() => input.focus());
+    expect(
+      composer?.hasAttribute("data-follow-up-composer-footer-visible"),
+    ).toBe(true);
   });
 
   it("keeps the composer mounted across compact breakpoint changes", () => {
@@ -1583,6 +1599,7 @@ describe("FollowUpPromptBox", () => {
 
   it("uses the caller-specific compact placeholder", () => {
     mocks.isCompactViewport = true;
+    mocks.isPointerCoarse = true;
     const props = createFollowUpPromptBoxProps({
       kind: "queue-while-stopping",
     });

@@ -1,8 +1,10 @@
 import { prependOlderTimelineRows } from "@bb/client-core";
 import {
+  infiniteQueryOptions,
   useInfiniteQuery,
   useQuery,
   useQueryClient,
+  type InfiniteData,
   type NotifyOnChangeProps,
   type QueryClient,
 } from "@tanstack/react-query";
@@ -24,6 +26,7 @@ import type {
   ThreadStoragePathListResponse,
   ThreadTimelineResponse,
   ThreadSpendSummaryResponse,
+  TimelineRow,
   TimelineTurnSummaryDetailsResponse,
 } from "@bb/server-contract";
 import { useDebouncedValue } from "../useDebouncedValue";
@@ -86,6 +89,7 @@ import {
   threadSpendSummaryQueryKey,
   threadTimelineTurnSummaryDetailsQueryKey,
   threadsQueryKey,
+  type ThreadConversationOutlineRole,
   type ThreadTimelineTurnSummaryDetailsQueryIdentity,
 } from "./query-keys";
 import { ARCHIVED_THREADS_PAGE_SIZE } from "./archived-threads-page-size";
@@ -967,8 +971,12 @@ async function fetchThreadTimeline({
   const queryKey = threadTimelineQueryKey(threadId);
   const previous = queryClient.getQueryData<ThreadTimelineResponse>(queryKey);
   const segmentLimit = resolveThreadTimelineSegmentLimit();
-  const pageArgs =
-    segmentLimit === undefined ? {} : { segmentLimit: String(segmentLimit) };
+  const pageArgs = {
+    deferContent: "true" as const,
+    ...(segmentLimit === undefined
+      ? {}
+      : { segmentLimit: String(segmentLimit) }),
+  };
   const response = await sdk.threads.timeline({
     threadId,
     signal,
@@ -1029,16 +1037,17 @@ export function useThreadTimeline(
 
 export function useThreadConversationOutline(
   id: string,
+  role: ThreadConversationOutlineRole,
   options?: ThreadConversationOutlineQueryOptions,
 ) {
   const enabled = (options?.enabled ?? true) && Boolean(id);
   useThreadDetailRealtimeSubscription(id, { enabled });
 
   return useQuery<ThreadConversationOutlineResponse>({
-    queryKey: threadConversationOutlineQueryKey(id),
+    queryKey: threadConversationOutlineQueryKey(id, role),
     queryFn: async ({ signal }) => {
       const threadId = requireThreadId(id, "useThreadConversationOutline");
-      return sdk.threads.conversationOutline({ threadId, signal });
+      return sdk.threads.conversationOutline({ threadId, role, signal });
     },
     enabled,
     refetchOnMount: options?.refetchOnMount ?? true,
@@ -1048,14 +1057,33 @@ export function useThreadConversationOutline(
   });
 }
 
-export function useThreadTimelineTurnSummaryDetails(
+function mergeTimelineTurnSummaryDetailsPages(
+  data: InfiniteData<TimelineTurnSummaryDetailsResponse, string | undefined>,
+): TimelineRow[] {
+  const [latest, ...olderPages] = data.pages;
+  let rows = latest?.rows ?? [];
+  for (const older of olderPages) {
+    rows = prependOlderTimelineRows({
+      olderRows: older.rows,
+      loadedRows: rows,
+    });
+  }
+  return rows;
+}
+
+function threadTimelineTurnSummaryDetailsQueryOptions(
   identity: ThreadTimelineTurnSummaryDetailsQueryIdentity,
-  options?: ThreadTimelineTurnSummaryDetailsQueryOptions,
 ) {
-  return useQuery<TimelineTurnSummaryDetailsResponse>({
+  return infiniteQueryOptions<
+    TimelineTurnSummaryDetailsResponse,
+    Error,
+    TimelineRow[],
+    ReturnType<typeof threadTimelineTurnSummaryDetailsQueryKey>,
+    string | undefined
+  >({
     queryKey: threadTimelineTurnSummaryDetailsQueryKey(identity),
-    queryFn: async ({ signal }) => {
-      const input = {
+    queryFn: ({ pageParam, signal }) =>
+      sdk.threads.timelineTurnSummaryDetails({
         threadId: requireThreadId(
           identity.threadId,
           "useThreadTimelineTurnSummaryDetails",
@@ -1063,35 +1091,47 @@ export function useThreadTimelineTurnSummaryDetails(
         sourceSeqEnd: String(identity.sourceSeqEnd),
         sourceSeqStart: String(identity.sourceSeqStart),
         turnId: identity.turnId,
+        deferContent: "true",
+        ...(identity.itemId === null ? {} : { itemId: identity.itemId }),
+        ...(pageParam === undefined ? {} : { beforeCursor: pageParam }),
         signal,
-      };
-      const response = await sdk.threads.timelineTurnSummaryDetails(input);
-      let rows = response.rows;
-      let cursor = response.olderCursor;
-      while (cursor) {
-        const older = await sdk.threads.timelineTurnSummaryDetails({
-          ...input,
-          beforeCursor: cursor,
-        });
-        rows = prependOlderTimelineRows({
-          olderRows: older.rows,
-          loadedRows: rows,
-        });
-        cursor = older.olderCursor;
-      }
-      return { ...response, rows, olderCursor: null };
-    },
-    enabled:
-      (options?.enabled ?? true) &&
-      Boolean(identity.threadId) &&
-      Boolean(identity.turnId),
+      }),
+    initialPageParam: undefined,
+    getNextPageParam: (lastPage) => lastPage.olderCursor ?? undefined,
+    select: mergeTimelineTurnSummaryDetailsPages,
     meta: {
       errorMessage: "Failed to load turn summary details.",
       showErrorToast: false,
     },
+    staleTime: Infinity,
+    ...HEAVY_PAYLOAD_QUERY_POLICY,
+  });
+}
+
+export function prefetchThreadTimelineTurnSummaryDetails(
+  queryClient: QueryClient,
+  identity: ThreadTimelineTurnSummaryDetailsQueryIdentity,
+): void {
+  if (!identity.threadId || !identity.turnId) {
+    return;
+  }
+  void queryClient.prefetchInfiniteQuery(
+    threadTimelineTurnSummaryDetailsQueryOptions(identity),
+  );
+}
+
+export function useThreadTimelineTurnSummaryDetails(
+  identity: ThreadTimelineTurnSummaryDetailsQueryIdentity,
+  options?: ThreadTimelineTurnSummaryDetailsQueryOptions,
+) {
+  return useInfiniteQuery({
+    ...threadTimelineTurnSummaryDetailsQueryOptions(identity),
+    enabled:
+      (options?.enabled ?? true) &&
+      Boolean(identity.threadId) &&
+      Boolean(identity.turnId),
     refetchOnMount: options?.refetchOnMount ?? true,
     staleTime: options?.staleTime ?? Infinity,
-    ...HEAVY_PAYLOAD_QUERY_POLICY,
   });
 }
 
@@ -1110,18 +1150,17 @@ export function useThreadSpendSummary(threadId: string) {
   });
 }
 
-export function getLatestPendingInteraction(
-  interactions: readonly PendingInteraction[] | undefined,
-): PendingInteraction | null {
-  if (!interactions || interactions.length === 0) {
-    return null;
-  }
+const EMPTY_PENDING_INTERACTIONS: readonly PendingInteraction[] = [];
 
-  const [firstInteraction, ...restInteractions] = interactions;
-  return restInteractions.reduce<PendingInteraction>(
-    (latest, interaction) =>
-      interaction.createdAt > latest.createdAt ? interaction : latest,
-    firstInteraction,
+export function orderPendingInteractions(
+  interactions: readonly PendingInteraction[] | undefined,
+): readonly PendingInteraction[] {
+  if (!interactions || interactions.length === 0) {
+    return EMPTY_PENDING_INTERACTIONS;
+  }
+  return [...interactions].sort(
+    (left, right) =>
+      left.createdAt - right.createdAt || left.id.localeCompare(right.id),
   );
 }
 
@@ -1129,5 +1168,7 @@ export function isPendingInteractionStateUnknown(
   interactions: readonly PendingInteraction[] | undefined,
   isFetching: boolean,
 ): boolean {
-  return getLatestPendingInteraction(interactions) === null && isFetching;
+  return (
+    (interactions === undefined || interactions.length === 0) && isFetching
+  );
 }

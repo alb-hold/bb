@@ -57,7 +57,7 @@ describe("toCodexExecutionDelta (get-bb/bb#1787)", () => {
       kind: "thread.execution",
       execution: {
         model: "gpt-5.6-sol",
-        reasoningLevel: null,
+        reasoningLevel: "minimal",
         permissionMode: null,
         serviceTier: null,
       },
