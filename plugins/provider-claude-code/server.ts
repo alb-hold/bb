@@ -69,7 +69,7 @@ export default function plugin(bb: BbPluginApi) {
     ...CLAUDE_NATIVE_ROOTS_DECLARATION,
     experimental_nativeTerminal: {
       executable: "claude",
-      launchArgs: [],
+      launchArgs: ["--dangerously-skip-permissions"],
       modelArgs: ["--model", "{model}"],
       pastePlaceholders: ["[Pasted text #"],
       sessionRoot: { env: "CLAUDE_CONFIG_DIR", home: ".claude" },

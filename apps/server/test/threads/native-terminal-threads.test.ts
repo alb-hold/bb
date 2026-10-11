@@ -428,6 +428,7 @@ describe("native terminal threads", () => {
     );
     expect(first.initialPrompt).toBe("Fix the flaky test");
     expect(first.cli.executable).toBe("claude");
+    expect(first.cli.launchArgs).toEqual(["--dangerously-skip-permissions"]);
     expect(first.cli.session.kind).toBe("assigned");
     expect(first.nativeSessionId).not.toBeNull();
     expect(second.initialPrompt).toBeNull();
@@ -449,7 +450,10 @@ describe("native terminal threads", () => {
       ),
     );
     expect(spec.cli.executable).toBe("codex");
-    expect(spec.cli.launchArgs).toEqual(["--no-daemon"]);
+    expect(spec.cli.launchArgs).toEqual([
+      "--no-daemon",
+      "--dangerously-bypass-approvals-and-sandbox",
+    ]);
     expect(spec.cli.activity?.transcript?.prompt).toContainEqual({
       match: {
         equals: {
