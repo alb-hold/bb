@@ -1072,7 +1072,15 @@ override plus a home-relative default), and either an `assigned` session (bb pic
 start and resume argv plus a transcript pattern that proves the session
 exists) or a `discovered` session (the CLI picks its id; bb reads the first
 JSON line of the matching transcript files and binds the one started in the
-thread workspace after launch). Validated at registration by
+thread workspace after launch). An optional `activity` block tells the bb CLI
+how to see turns: `hooks` (extra argv carrying `{settings}`, the hook event
+names that mean working or idle, and the prompt field; the harness installs
+command hooks that append each event's JSON to a private file) and
+`transcript` (record matches on the session file: equal fields, string
+prefixes, and a prompt text field). The wrapper reports working, idle and the
+first new prompt through `sdk.nativeTerminals.reportActivity`; the server moves
+the thread between idle and active and titles an untitled thread from the
+prompt. Validated at registration by
 `providerNativeTerminalSchema` in `@bb/domain`: bare executable name, at most
 16 arguments per list, only the documented tokens (none in `launchArgs`), relative patterns without
 dot segments. Core callers: `apps/server/src/services/threads/native-terminal-threads.ts`
@@ -1088,7 +1096,9 @@ the right discovery vocabulary or whether discovery belongs in the plugin's
 decide whether injected instructions, skills and MCP configuration should
 reach a native CLI through this declaration; and check that a host-specific
 session root (a moved config directory) is the env override's job rather
-than the declaration's.
+than the declaration's. For `activity`, confirm that hook events plus
+transcript record matches describe a third CLI's turns, and decide whether a
+CLI that offers neither should report activity from screen state instead.
 
 ## `PluginProviderDeclaration.experimental_nativeCommandRoots`
 

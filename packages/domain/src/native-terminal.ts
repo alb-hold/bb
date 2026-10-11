@@ -71,6 +71,72 @@ const headerFieldPathSchema = z
     "must be a dotted field path",
   );
 
+const recordFieldPathSchema = z
+  .string()
+  .regex(
+    /^[A-Za-z_][A-Za-z0-9_]*(?:\.(?:[A-Za-z_][A-Za-z0-9_]*|[0-9]+))*$/u,
+    "must be a dotted field path",
+  );
+
+const providerNativeTerminalRecordMatchSchema = z
+  .object({
+    equals: z.record(recordFieldPathSchema, z.string().min(1).max(256)),
+    startsWith: z
+      .record(recordFieldPathSchema, z.string().min(1).max(256))
+      .optional(),
+  })
+  .strict();
+
+const hookEventNameSchema = z
+  .string()
+  .regex(/^[A-Za-z][A-Za-z0-9]{0,63}$/u, "must be a hook event name");
+
+export const providerNativeTerminalActivitySchema = z
+  .object({
+    hooks: z
+      .object({
+        args: templateArgsSchema(["settings"]),
+        working: z.array(hookEventNameSchema).min(1).max(8),
+        idle: z.array(hookEventNameSchema).min(1).max(8),
+        promptField: recordFieldPathSchema,
+      })
+      .strict()
+      .superRefine((hooks, context) => {
+        if (!requiresToken(hooks.args, "settings")) {
+          context.addIssue({
+            code: "custom",
+            path: ["args"],
+            message: "must pass {settings}",
+          });
+        }
+      })
+      .optional(),
+    transcript: z
+      .object({
+        working: z.array(providerNativeTerminalRecordMatchSchema).max(8),
+        idle: z.array(providerNativeTerminalRecordMatchSchema).max(8),
+        prompt: z
+          .array(
+            z
+              .object({
+                match: providerNativeTerminalRecordMatchSchema,
+                text: recordFieldPathSchema,
+              })
+              .strict(),
+          )
+          .max(8),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+export type ProviderNativeTerminalActivity = z.infer<
+  typeof providerNativeTerminalActivitySchema
+>;
+export type ProviderNativeTerminalRecordMatch = z.infer<
+  typeof providerNativeTerminalRecordMatchSchema
+>;
+
 export const providerNativeTerminalSessionRootSchema = z
   .object({
     env: environmentVariableNameSchema.nullable(),
@@ -146,6 +212,7 @@ export const providerNativeTerminalSchema = z
       providerNativeTerminalAssignedSessionSchema,
       providerNativeTerminalDiscoveredSessionSchema,
     ]),
+    activity: providerNativeTerminalActivitySchema.optional(),
   })
   .strict()
   .superRefine((spec, context) => {

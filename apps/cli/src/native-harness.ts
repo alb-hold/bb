@@ -6,15 +6,21 @@ import {
   type ProviderNativeTerminal,
 } from "@bb/domain";
 import type { NativeTerminalLaunchSpec } from "@bb/server-contract";
+import { readRecordField } from "./native-activity.js";
 
 const SESSION_HEADER_MAX_BYTES = 4 * 1024 * 1024;
 const SESSION_CLOCK_SKEW_MS = 5_000;
 const DAY_MS = 86_400_000;
 
+export type NativeHarnessSession =
+  | { kind: "start"; id: string }
+  | { kind: "resume"; id: string }
+  | { kind: "discover" };
+
 export interface NativeHarnessLaunch {
   command: string;
   args: string[];
-  discoverSession: boolean;
+  session: NativeHarnessSession;
 }
 
 export type NativeHarnessEnv = Readonly<Record<string, string | undefined>>;
@@ -90,11 +96,13 @@ function fill(
 export function resolveNativeHarnessLaunch(
   spec: NativeTerminalLaunchSpec,
   env: NativeHarnessEnv,
+  activityArgs: readonly string[] = [],
 ): NativeHarnessLaunch {
   const { cli } = spec;
   const model = [
     ...cli.launchArgs,
     ...(spec.model === null ? [] : fill(cli.modelArgs, { model: spec.model })),
+    ...activityArgs,
   ];
   const prompt = spec.initialPrompt === null ? [] : [spec.initialPrompt];
   const session = cli.session;
@@ -115,7 +123,10 @@ export function resolveNativeHarnessLaunch(
       args: transcriptExists
         ? [...model, ...fill(session.resumeArgs, tokens)]
         : [...model, ...fill(session.startArgs, tokens), ...prompt],
-      discoverSession: false,
+      session: {
+        kind: transcriptExists ? "resume" : "start",
+        id: spec.nativeSessionId,
+      },
     };
   }
   if (spec.nativeSessionId !== null) {
@@ -125,13 +136,13 @@ export function resolveNativeHarnessLaunch(
         ...model,
         ...fill(session.resumeArgs, { sessionId: spec.nativeSessionId }),
       ],
-      discoverSession: false,
+      session: { kind: "resume", id: spec.nativeSessionId },
     };
   }
   return {
     command: cli.executable,
     args: [...model, ...prompt],
-    discoverSession: true,
+    session: { kind: "discover" },
   };
 }
 
@@ -188,15 +199,6 @@ function readFirstLine(filePath: string): string | null {
   }
 }
 
-function readField(value: unknown, fieldPath: string): unknown {
-  let current = value;
-  for (const key of fieldPath.split(".")) {
-    if (typeof current !== "object" || current === null) return undefined;
-    current = (current as Record<string, unknown>)[key];
-  }
-  return current;
-}
-
 interface SessionHeader {
   id: string;
   cwd: string;
@@ -214,11 +216,11 @@ function parseSessionHeader(
     return null;
   }
   for (const [field, expected] of Object.entries(header.match)) {
-    if (readField(json, field) !== expected) return null;
+    if (readRecordField(json, field) !== expected) return null;
   }
-  const id = readField(json, header.id);
-  const cwd = readField(json, header.cwd);
-  const startedAt = readField(json, header.startedAt);
+  const id = readRecordField(json, header.id);
+  const cwd = readRecordField(json, header.cwd);
+  const startedAt = readRecordField(json, header.startedAt);
   if (typeof id !== "string" || id.length === 0) return null;
   if (typeof cwd !== "string" || cwd.length === 0) return null;
   if (typeof startedAt !== "string") return null;
@@ -229,6 +231,43 @@ function parseSessionHeader(
 
 function samePath(left: string, right: string): boolean {
   return path.resolve(left) === path.resolve(right);
+}
+
+export function findNativeSessionFile(
+  cli: ProviderNativeTerminal,
+  env: NativeHarnessEnv,
+  sessionId: string,
+): string | null {
+  const root = nativeSessionRoot(cli, env);
+  const session = cli.session;
+  if (session.kind === "assigned") {
+    return (
+      expandSessionFiles(
+        root,
+        fillNativeTerminalTemplate(session.transcript, { sessionId }),
+      )[0] ?? null
+    );
+  }
+  const files = expandSessionFiles(
+    root,
+    fillNativeTerminalTemplate(session.transcripts, {
+      yyyy: "*",
+      mm: "*",
+      dd: "*",
+    }),
+  ).sort(
+    (left, right) =>
+      Number(path.basename(right).includes(sessionId)) -
+      Number(path.basename(left).includes(sessionId)),
+  );
+  for (const filePath of files) {
+    const line = readFirstLine(filePath);
+    if (line === null) continue;
+    if (parseSessionHeader(line, session.header)?.id === sessionId) {
+      return filePath;
+    }
+  }
+  return null;
 }
 
 export type NativeSessionMatch =

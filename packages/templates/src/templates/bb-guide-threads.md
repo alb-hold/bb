@@ -314,6 +314,10 @@ Native terminal threads:
   native_terminal_input_ambiguous; type it in the terminal or reword it.
   Read the screen with bb terminal read <terminal-id>.
 
+  A native thread shows Working while its CLI runs a turn and Done when the
+  turn ends, and the first prompt typed in the terminal titles an untitled
+  thread. Stop on a native thread presses Esc in its terminal.
+
 Messaging:
 
   bb thread tell <id> <message>            Send a follow-up message

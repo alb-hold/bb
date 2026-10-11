@@ -1,4 +1,8 @@
-import { getNativeTerminalThread, isNativeTerminalThread } from "@bb/db";
+import {
+  getNativeTerminalThread,
+  getThread,
+  isNativeTerminalThread,
+} from "@bb/db";
 import {
   hostDaemonOnlineRpcResponseMessageSchema,
   hostDaemonServerWsMessageSchema,
@@ -11,6 +15,8 @@ import {
   threadResponseSchema,
 } from "@bb/server-contract";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { applyLoggedThreadLifecycleEvent } from "../../src/services/threads/lifecycle-outcome.js";
+import { stopThreadForCurrentState } from "../../src/services/threads/thread-lifecycle.js";
 import { readJson } from "../helpers/json.js";
 import {
   seedEnvironment,
@@ -423,5 +429,166 @@ describe("switching a chat thread to its native terminal", () => {
       "native_terminal_no_chat_session",
     );
     expect(isNativeTerminalThread(fixture.harness.db, thread.id)).toBe(true);
+  });
+});
+
+function reportActivity(
+  fixture: Fixture,
+  threadId: string,
+  body: { state: "working" | "idle"; prompt?: string },
+): Promise<Response> {
+  return postJson(
+    fixture,
+    `/threads/${threadId}/native-terminal/activity`,
+    body,
+  );
+}
+
+function threadStatus(fixture: Fixture, threadId: string) {
+  return getThread(fixture.harness.db, threadId)?.status;
+}
+
+describe("native terminal activity", () => {
+  it("shows a converted thread working while its CLI runs a turn, then done", async () => {
+    const fixture = await createFixture();
+    const thread = seedChatThread(fixture, {
+      providerId: "claude-code",
+      providerThreadId: SESSION_ID,
+    });
+    await enterTerminal(fixture, thread.id);
+    expect(threadStatus(fixture, thread.id)).toBe("idle");
+    const before = getThread(fixture.harness.db, thread.id)!.latestAttentionAt;
+
+    for (const _ of [1, 2]) {
+      const working = await reportActivity(fixture, thread.id, {
+        state: "working",
+      });
+      expect(working.status).toBe(200);
+      expect(threadStatus(fixture, thread.id)).toBe("active");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    for (const _ of [1, 2]) {
+      const idle = await reportActivity(fixture, thread.id, { state: "idle" });
+      expect(idle.status).toBe(200);
+      expect(threadStatus(fixture, thread.id)).toBe("idle");
+    }
+    expect(
+      getThread(fixture.harness.db, thread.id)!.latestAttentionAt,
+    ).toBeGreaterThan(before);
+  });
+
+  it("shows the turn working again after a daemon restart marked it failed", async () => {
+    const fixture = await createFixture();
+    const thread = seedChatThread(fixture, {
+      providerId: "claude-code",
+      providerThreadId: SESSION_ID,
+    });
+    await enterTerminal(fixture, thread.id);
+    await reportActivity(fixture, thread.id, { state: "working" });
+    applyLoggedThreadLifecycleEvent(fixture.harness.deps, {
+      event: { type: "run.failed" },
+      threadId: thread.id,
+    });
+    expect(threadStatus(fixture, thread.id)).toBe("error");
+
+    await reportActivity(fixture, thread.id, { state: "working" });
+    expect(threadStatus(fixture, thread.id)).toBe("active");
+    await reportActivity(fixture, thread.id, { state: "idle" });
+    expect(threadStatus(fixture, thread.id)).toBe("idle");
+  });
+
+  it("lets a host-wide stop settle a working native thread like an idle agent", async () => {
+    const fixture = await createFixture();
+    const thread = seedChatThread(fixture, {
+      providerId: "claude-code",
+      providerThreadId: SESSION_ID,
+    });
+    await enterTerminal(fixture, thread.id);
+    await reportActivity(fixture, thread.id, { state: "working" });
+    const working = getThread(fixture.harness.db, thread.id)!;
+    expect(working.status).toBe("active");
+    const requests = countDaemonMessages(fixture, "host-rpc.request");
+
+    const stopping = stopThreadForCurrentState(
+      fixture.harness.deps,
+      working,
+      { id: fixture.environment.id, hostId: fixture.hostId },
+      { requireStopped: true },
+    );
+    for (let answered = requests; ; answered += 1) {
+      const settled = await Promise.race([
+        stopping.then(() => true),
+        waitForThreadStop(fixture, thread.id, answered).then((stop) => {
+          answerThreadStop(fixture, stop.requestId, "released");
+          return false;
+        }),
+      ]);
+      if (settled) break;
+    }
+    await stopping;
+    expect(threadStatus(fixture, thread.id)).toBe("idle");
+    expect(isNativeTerminalThread(fixture.harness.db, thread.id)).toBe(true);
+  });
+
+  it("refuses activity for a thread that is not in its terminal", async () => {
+    const fixture = await createFixture();
+    const thread = seedChatThread(fixture, {
+      providerId: "claude-code",
+      providerThreadId: SESSION_ID,
+    });
+    const response = await reportActivity(fixture, thread.id, {
+      state: "working",
+    });
+    expect(response.status).toBe(404);
+    expect(await readApiErrorCode(response)).toBe(
+      "native_terminal_thread_not_found",
+    );
+    expect(threadStatus(fixture, thread.id)).toBe("idle");
+  });
+
+  it("stops a native turn by pressing Esc in the CLI, not by stopping an agent", async () => {
+    const fixture = await createFixture();
+    const thread = seedChatThread(fixture, {
+      providerId: "claude-code",
+      providerThreadId: SESSION_ID,
+    });
+    const { open } = await enterTerminal(fixture, thread.id);
+    await reportActivity(fixture, thread.id, { state: "working" });
+    const stops = countDaemonMessages(fixture, "host-rpc.request");
+
+    const stopped = await postJson(fixture, `/threads/${thread.id}/stop`, {});
+    expect(stopped.status).toBe(200);
+    const input = await waitForDaemonMessage(fixture, "terminal.input");
+    expect(input).toMatchObject({
+      terminalId: open.terminalId,
+      dataBase64: Buffer.from("\u001b").toString("base64"),
+    });
+    expect(countDaemonMessages(fixture, "host-rpc.request")).toBe(stops);
+  });
+
+  it("settles a working thread when it goes back to chat", async () => {
+    const fixture = await createFixture();
+    const thread = seedChatThread(fixture, {
+      providerId: "claude-code",
+      providerThreadId: SESSION_ID,
+    });
+    const { open } = await enterTerminal(fixture, thread.id);
+    await reportActivity(fixture, thread.id, { state: "working" });
+    expect(threadStatus(fixture, thread.id)).toBe("active");
+
+    const leaving = switchMode(fixture, thread.id, "chat");
+    await waitForDaemonMessage(fixture, "terminal.close");
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.hostId,
+      sessionId: fixture.sessionId,
+      message: {
+        type: "terminal.exited",
+        terminalId: open.terminalId,
+        exitCode: 0,
+        closeReason: "user",
+      },
+    });
+    expect((await leaving).status).toBe(200);
+    expect(threadStatus(fixture, thread.id)).toBe("idle");
   });
 });

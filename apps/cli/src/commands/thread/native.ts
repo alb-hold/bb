@@ -1,5 +1,14 @@
 import { spawn } from "node:child_process";
-import { closeSync, mkdirSync, openSync, statSync, unlinkSync } from "node:fs";
+import {
+  closeSync,
+  mkdirSync,
+  openSync,
+  rmSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { Command } from "commander";
 import { BbHttpError } from "@bb/sdk";
@@ -7,6 +16,15 @@ import type { NativeTerminalThread } from "@bb/server-contract";
 import { action, CliExitError } from "../../action.js";
 import { createCliBbSdk } from "../../client.js";
 import { requireThreadIdOrSelf } from "../../context-env.js";
+import { fillNativeTerminalTemplate } from "@bb/domain";
+import {
+  nativeActivityHookSettings,
+  type NativeActivityReport,
+} from "../../native-activity.js";
+import {
+  measureResumedTranscript,
+  NativeActivityReader,
+} from "../../native-activity-reader.js";
 import {
   findNativeSession,
   resolveNativeHarnessLaunch,
@@ -22,6 +40,9 @@ import { outputJson } from "../helpers.js";
 import { attachTerminal } from "../terminal.js";
 
 const SESSION_DISCOVERY_INTERVAL_MS = 2_000;
+const ACTIVITY_POLL_INTERVAL_MS = 750;
+const ACTIVITY_HEARTBEAT_INTERVAL_MS = 30_000;
+const ACTIVITY_FLUSH_TIMEOUT_MS = 3_000;
 const HOLDER_START_TIMEOUT_MS = 20_000;
 const DETACHING_SIGNALS = ["SIGTERM", "SIGHUP"] as const;
 const SWALLOWED_SIGNALS = ["SIGINT", "SIGQUIT"] as const;
@@ -172,6 +193,7 @@ async function holdNativeHarness(
     }
     if (match.kind !== "unique") return;
     recorded = true;
+    reader?.sessionDiscovered(match.sessionId);
     try {
       await sdk.nativeTerminals.recordSession({
         threadId,
@@ -180,6 +202,31 @@ async function holdNativeHarness(
     } catch {
       recorded = false;
     }
+  };
+  let reader: NativeActivityReader | null = null;
+  let eventsFile: string | null = null;
+  const activityTimers: NodeJS.Timeout[] = [];
+  let reporting: Promise<void> = Promise.resolve();
+  const report = (next: NativeActivityReport | null): void => {
+    if (next === null) return;
+    reporting = reporting.then(() =>
+      sdk.nativeTerminals
+        .reportActivity({
+          threadId,
+          state: next.state,
+          ...(next.prompt === null ? {} : { prompt: next.prompt }),
+        })
+        .then(
+          () => undefined,
+          () => undefined,
+        ),
+    );
+  };
+  const readActivity = (): void => {
+    for (const next of reader?.read() ?? []) report(next);
+  };
+  const finishActivity = (): void => {
+    report(reader?.finish() ?? null);
   };
   let pty: ReturnType<typeof nodePty.spawn> | null = null;
   process.on("SIGTERM", () => {
@@ -191,9 +238,56 @@ async function holdNativeHarness(
     env: process.env,
     prepare: async () => {
       const spec = await sdk.nativeTerminals.launch({ threadId });
-      const launch = resolveNativeHarnessLaunch(spec, process.env);
+      const activity = spec.cli.activity;
+      const hooks = activity?.hooks;
+      const file =
+        hooks === undefined
+          ? null
+          : path.join(
+              os.tmpdir(),
+              `bb-native-activity-${threadId}-${process.pid}.jsonl`,
+            );
+      if (file !== null) writeFileSync(file, "", { mode: 0o600 });
+      eventsFile = file;
+      const activityArgs =
+        hooks === undefined || file === null
+          ? []
+          : hooks.args.map((arg) =>
+              fillNativeTerminalTemplate(arg, {
+                settings: nativeActivityHookSettings(hooks, file),
+              }),
+            );
+      const launch = resolveNativeHarnessLaunch(
+        spec,
+        process.env,
+        activityArgs,
+      );
       discovery = { cli: spec.cli, launchedAtMs: Date.now() };
-      recorded = !launch.discoverSession;
+      recorded = launch.session.kind !== "discover";
+      reader = new NativeActivityReader(
+        spec.cli,
+        process.env,
+        file,
+        launch.session.kind === "resume"
+          ? {
+              ...launch.session,
+              ...(await measureResumedTranscript(
+                spec.cli,
+                process.env,
+                launch.session.id,
+              )),
+            }
+          : launch.session,
+      );
+      if (activity !== undefined) {
+        activityTimers.push(
+          setInterval(readActivity, ACTIVITY_POLL_INTERVAL_MS),
+          setInterval(
+            () => report(reader?.heartbeat() ?? null),
+            ACTIVITY_HEARTBEAT_INTERVAL_MS,
+          ),
+        );
+      }
       return { command: launch.command, args: launch.args };
     },
     spawnPty: (child, options) => {
@@ -218,7 +312,15 @@ async function holdNativeHarness(
       }
     },
   });
+  for (const timer of activityTimers) clearInterval(timer);
   await discover();
+  readActivity();
+  finishActivity();
+  await Promise.race([
+    reporting,
+    new Promise((resolve) => setTimeout(resolve, ACTIVITY_FLUSH_TIMEOUT_MS)),
+  ]);
+  if (eventsFile !== null) rmSync(eventsFile, { force: true });
   return exitCode;
 }
 

@@ -11,6 +11,7 @@ import {
   recordNativeTerminalSession,
   takeNativeTerminalLaunchSpec,
 } from "../services/threads/native-terminal-threads.js";
+import { recordNativeTerminalActivity } from "../services/threads/native-terminal-activity.js";
 import { switchNativeTerminalMode } from "../services/threads/native-terminal-mode.js";
 import type { AppDeps } from "../types.js";
 
@@ -48,6 +49,14 @@ export function registerNativeTerminalThreadRoutes(
       }),
     ),
   );
+
+  post(routes.reportActivity, (context, payload) => {
+    recordNativeTerminalActivity(deps, {
+      threadId: context.req.param("id"),
+      ...payload,
+    });
+    return context.json({ ok: true as const });
+  });
 
   post(routes.recordSession, (context, payload) =>
     context.json(

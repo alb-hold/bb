@@ -97,6 +97,35 @@ export default function plugin(bb: BbPluginApi) {
           startedAt: "payload.timestamp",
         },
       },
+      activity: {
+        transcript: {
+          working: [
+            { equals: { type: "event_msg", "payload.type": "task_started" } },
+          ],
+          idle: [
+            { equals: { type: "event_msg", "payload.type": "task_complete" } },
+            { equals: { type: "event_msg", "payload.type": "turn_aborted" } },
+          ],
+          prompt: [
+            {
+              match: {
+                equals: { type: "event_msg", "payload.type": "user_message" },
+              },
+              text: "payload.message",
+            },
+            {
+              match: {
+                equals: {
+                  type: "event_msg",
+                  "payload.type": "item_completed",
+                  "payload.item.type": "UserMessage",
+                },
+              },
+              text: "payload.item.content.0.text",
+            },
+          ],
+        },
+      },
     },
     deriveProviderOptions(context) {
       return {

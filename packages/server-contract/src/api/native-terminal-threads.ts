@@ -47,6 +47,21 @@ export type SwitchNativeTerminalModeRequest = z.infer<
   typeof switchNativeTerminalModeRequestSchema
 >;
 
+export const nativeTerminalActivityStateSchema = z.enum(["working", "idle"]);
+export type NativeTerminalActivityState = z.infer<
+  typeof nativeTerminalActivityStateSchema
+>;
+
+export const reportNativeTerminalActivityRequestSchema = z
+  .object({
+    state: nativeTerminalActivityStateSchema,
+    prompt: z.string().trim().min(1).max(4_000).optional(),
+  })
+  .strict();
+export type ReportNativeTerminalActivityRequest = z.infer<
+  typeof reportNativeTerminalActivityRequestSchema
+>;
+
 export const recordNativeSessionRequestSchema = z
   .object({
     nativeSessionId: z

@@ -4,6 +4,7 @@ import {
   getEnvironment,
   getQueuedThreadMessage,
   getThread,
+  isNativeTerminalThread,
   listActiveVisiblePinnedThreadRootsWithPendingInteractionState,
   pinThread,
   reorderPinnedThread,
@@ -67,6 +68,7 @@ import {
 } from "../../services/threads/thread-commands.js";
 import { getLastProviderThreadId } from "../../services/threads/thread-events.js";
 import { stopThreadForCurrentState } from "../../services/threads/thread-lifecycle.js";
+import { interruptNativeTerminalTurn } from "../../services/threads/native-terminal-activity.js";
 import {
   buildThreadStatusChangeMetadata,
   getThreadPromptBannerActivity,
@@ -407,6 +409,10 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
 
   post(routes.stop, async (context) => {
     const thread = requirePublicThread(deps.db, context.req.param("id"));
+    if (isNativeTerminalThread(deps.db, thread.id)) {
+      interruptNativeTerminalTurn(deps, thread.id);
+      return context.json({ ok: true });
+    }
     const environment = resolveThreadHostCommandEnvironment({
       db: deps.db,
       thread,
