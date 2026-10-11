@@ -104,11 +104,18 @@ export function classifyTranscriptRecord(
   return { state: null, prompt: null };
 }
 
+export function fileSize(filePath: string): number {
+  try {
+    return statSync(filePath).size;
+  } catch {
+    return 0;
+  }
+}
+
 export class JsonlTail {
-  private offset: number | null = null;
   private partial = "";
 
-  constructor(private readonly skipExisting: boolean) {}
+  constructor(private offset: number) {}
 
   readRecords(filePath: string): unknown[] {
     let size: number;
@@ -116,9 +123,6 @@ export class JsonlTail {
       size = statSync(filePath).size;
     } catch {
       return [];
-    }
-    if (this.offset === null) {
-      this.offset = this.skipExisting ? size : 0;
     }
     if (size < this.offset) {
       this.offset = 0;

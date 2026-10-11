@@ -16,6 +16,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   classifyHookRecord,
   classifyTranscriptRecord,
+  fileSize,
   JsonlTail,
   nativeActivityHookSettings,
   NativeActivityTracker,
@@ -107,7 +108,7 @@ describe("native terminal activity", () => {
       });
       expect(output.toString()).toBe("");
     }
-    const tail = new JsonlTail(false);
+    const tail = new JsonlTail(0);
     const signals = tail
       .readRecords(eventsFile)
       .map((record) => classifyHookRecord(hooks, record));
@@ -191,9 +192,8 @@ describe("native terminal activity", () => {
   it("reads only records appended after launch when resuming, across partial writes", () => {
     const file = path.join(tempDir(), "session.jsonl");
     writeFileSync(file, `${JSON.stringify({ old: true })}\n`);
-    const resumed = new JsonlTail(true);
-    const fresh = new JsonlTail(false);
-    expect(resumed.readRecords(file)).toEqual([]);
+    const resumed = new JsonlTail(fileSize(file));
+    const fresh = new JsonlTail(0);
     expect(fresh.readRecords(file)).toEqual([{ old: true }]);
 
     appendFileSync(file, `${JSON.stringify({ n: 1 })}\n{"n":`);
@@ -201,9 +201,34 @@ describe("native terminal activity", () => {
     appendFileSync(file, `2}\nnot json\n`);
     expect(resumed.readRecords(file)).toEqual([{ n: 2 }]);
     expect(readFileSync(file, "utf8")).toContain("not json");
-    expect(new JsonlTail(true).readRecords(path.join(file, "missing"))).toEqual(
+    expect(fileSize(path.join(file, "missing"))).toBe(0);
+    expect(new JsonlTail(0).readRecords(path.join(file, "missing"))).toEqual(
       [],
     );
+  });
+
+  it("keeps a resumed turn written before the first poll", () => {
+    const file = path.join(tempDir(), "rollout.jsonl");
+    writeFileSync(file, `${JSON.stringify({ old: true })}\n`);
+    const resumed = new JsonlTail(fileSize(file));
+    appendFileSync(
+      file,
+      [
+        { type: "event_msg", payload: { type: "task_started" } },
+        { type: "event_msg", payload: { type: "task_complete" } },
+      ]
+        .map((record) => `${JSON.stringify(record)}\n`)
+        .join(""),
+    );
+    const codex = CODEX_ACTIVITY.transcript!;
+    expect(
+      resumed
+        .readRecords(file)
+        .map((record) => classifyTranscriptRecord(codex, record)),
+    ).toEqual([
+      { state: "working", prompt: null },
+      { state: "idle", prompt: null },
+    ]);
   });
 
   it("reports each turn once, new prompts once, and idle on exit", () => {

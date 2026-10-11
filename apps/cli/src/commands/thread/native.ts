@@ -20,6 +20,7 @@ import { fillNativeTerminalTemplate } from "@bb/domain";
 import {
   classifyHookRecord,
   classifyTranscriptRecord,
+  fileSize,
   JsonlTail,
   nativeActivityHookSettings,
   NativeActivityTracker,
@@ -206,8 +207,8 @@ async function holdNativeHarness(
     }
   };
   const tracker = new NativeActivityTracker();
-  const hookTail = new JsonlTail(false);
-  let transcriptTail = new JsonlTail(false);
+  const hookTail = new JsonlTail(0);
+  let transcriptTail = new JsonlTail(0);
   let transcriptFile: string | null = null;
   let activityCli: Parameters<typeof findNativeSession>[0]["cli"] | null = null;
   let eventsFile: string | null = null;
@@ -293,9 +294,20 @@ async function holdNativeHarness(
       discovery = { cli: spec.cli, launchedAtMs: Date.now() };
       recorded = !launch.discoverSession;
       sessionId = spec.nativeSessionId;
-      transcriptTail = new JsonlTail(
-        !launch.discoverSession && spec.nativeSessionId !== null,
-      );
+      if (!launch.discoverSession && spec.nativeSessionId !== null) {
+        try {
+          transcriptFile = findNativeSessionFile(
+            spec.cli,
+            process.env,
+            spec.nativeSessionId,
+          );
+        } catch {
+          transcriptFile = null;
+        }
+        transcriptTail = new JsonlTail(
+          transcriptFile === null ? 0 : fileSize(transcriptFile),
+        );
+      }
       if (activity !== undefined) {
         activityCli = spec.cli;
         activityTimers.push(
