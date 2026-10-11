@@ -1,5 +1,8 @@
 import { spawn } from "node:child_process";
+import { closeSync, mkdirSync, openSync, statSync, unlinkSync } from "node:fs";
+import path from "node:path";
 import { Command } from "commander";
+import { BbHttpError } from "@bb/sdk";
 import type { NativeTerminalThread } from "@bb/server-contract";
 import { action, CliExitError } from "../../action.js";
 import { createCliBbSdk } from "../../client.js";
@@ -8,11 +11,19 @@ import {
   findNativeSession,
   resolveNativeHarnessLaunch,
 } from "../../native-harness.js";
+import {
+  defaultNativeHolderSocketPath,
+  nativeTerminalClosedForGood,
+  openNativeHolderConnection,
+  pipeNativeHolderClient,
+  runNativeHolder,
+} from "../../native-holder.js";
 import { outputJson } from "../helpers.js";
 import { attachTerminal } from "../terminal.js";
 
 const SESSION_DISCOVERY_INTERVAL_MS = 2_000;
-const FORWARDED_SIGNALS = ["SIGTERM", "SIGHUP"] as const;
+const HOLDER_START_TIMEOUT_MS = 20_000;
+const DETACHING_SIGNALS = ["SIGTERM", "SIGHUP"] as const;
 const SWALLOWED_SIGNALS = ["SIGINT", "SIGQUIT"] as const;
 
 interface NativeOpenOptions {
@@ -26,6 +37,12 @@ interface NativeOpenOptions {
 interface NativeRunOptions {
   json?: boolean;
   probe?: boolean;
+  reattach?: boolean;
+}
+
+interface NativeHoldOptions {
+  json?: boolean;
+  socket: string;
 }
 
 function describeNativeThread(view: NativeTerminalThread): string {
@@ -37,37 +54,117 @@ function describeNativeThread(view: NativeTerminalThread): string {
   return `${view.displayName} session ${session}, ${terminal}`;
 }
 
+function nativeHolderLogPath(socketPath: string): string {
+  return socketPath.replace(/\.sock$/u, ".log");
+}
+
+function removeEmptyNativeHolderLog(socketPath: string): void {
+  const logPath = nativeHolderLogPath(socketPath);
+  try {
+    if (statSync(logPath).size === 0) unlinkSync(logPath);
+  } catch {
+    return;
+  }
+}
+
+function spawnNativeHolder(threadId: string, socketPath: string): void {
+  mkdirSync(path.dirname(socketPath), { recursive: true, mode: 0o700 });
+  const log = openSync(nativeHolderLogPath(socketPath), "a", 0o600);
+  try {
+    const script = process.argv[1];
+    if (script === undefined) {
+      throw new CliExitError(
+        "Cannot locate the bb CLI to start the native terminal holder",
+        1,
+      );
+    }
+    const holder = spawn(
+      process.execPath,
+      [
+        ...process.execArgv,
+        script,
+        "thread",
+        "native-hold",
+        threadId,
+        "--socket",
+        socketPath,
+      ],
+      {
+        cwd: process.cwd(),
+        detached: true,
+        env: process.env,
+        stdio: ["ignore", "ignore", log],
+      },
+    );
+    holder.unref();
+  } finally {
+    closeSync(log);
+  }
+}
+
 async function runNativeHarness(
   baseUrl: string,
   threadId: string,
+  reattachOnly: boolean,
 ): Promise<number> {
-  const sdk = createCliBbSdk(baseUrl);
-  const spec = await sdk.nativeTerminals.launch({ threadId });
-  const launch = resolveNativeHarnessLaunch(spec, process.env);
-  const cwd = process.cwd();
-  const launchedAtMs = Date.now();
-  const child = spawn(launch.command, launch.args, {
-    cwd,
-    env: process.env,
-    stdio: "inherit",
+  const socketPath = defaultNativeHolderSocketPath(baseUrl, threadId);
+  const connection = await openNativeHolderConnection({
+    socketPath,
+    reattachOnly,
+    startHolder: () => spawnNativeHolder(threadId, socketPath),
+    startTimeoutMs: HOLDER_START_TIMEOUT_MS,
   });
+  if (connection.kind === "ended") {
+    process.stdout.write(
+      "The CLI for this thread ended while bb was disconnected from this machine. Open the terminal again to resume the session.\r\n",
+    );
+    return 0;
+  }
+  if (connection.kind === "did-not-start") {
+    throw new CliExitError(
+      `The native terminal holder did not start; see ${nativeHolderLogPath(socketPath)}`,
+      1,
+    );
+  }
+  const attached = connection.socket;
   for (const signal of SWALLOWED_SIGNALS) process.on(signal, () => {});
-  for (const signal of FORWARDED_SIGNALS) {
+  for (const signal of DETACHING_SIGNALS) {
     process.on(signal, () => {
-      child.kill(signal);
+      attached.destroy();
     });
   }
+  return await pipeNativeHolderClient(attached, {
+    input: process.stdin,
+    output: process.stdout,
+    fallbackSize: { cols: 120, rows: 40 },
+  });
+}
 
-  let recorded = !launch.discoverSession;
+async function holdNativeHarness(
+  baseUrl: string,
+  threadId: string,
+  socketPath: string,
+): Promise<number> {
+  for (const signal of ["SIGHUP", "SIGINT", "SIGQUIT"] as const) {
+    process.on(signal, () => {});
+  }
+  const sdk = createCliBbSdk(baseUrl);
+  const nodePty = await import("node-pty");
+  const cwd = process.cwd();
+  let discovery: {
+    cli: Parameters<typeof findNativeSession>[0]["cli"];
+    launchedAtMs: number;
+  } | null = null;
+  let recorded = true;
   const discover = async (): Promise<void> => {
-    if (recorded) return;
+    if (recorded || discovery === null) return;
     let match: ReturnType<typeof findNativeSession>;
     try {
       match = findNativeSession({
-        cli: spec.cli,
+        cli: discovery.cli,
         cwd,
         env: process.env,
-        launchedAtMs,
+        launchedAtMs: discovery.launchedAtMs,
         nowMs: Date.now(),
       });
     } catch {
@@ -84,19 +181,43 @@ async function runNativeHarness(
       recorded = false;
     }
   };
-  const timer = launch.discoverSession
-    ? setInterval(() => {
-        discover().catch(() => undefined);
-      }, SESSION_DISCOVERY_INTERVAL_MS)
-    : null;
-
-  const exitCode = await new Promise<number>((resolve, reject) => {
-    child.once("error", reject);
-    child.once("exit", (code, signal) => {
-      resolve(code ?? (signal === null ? 1 : 128));
-    });
+  let pty: ReturnType<typeof nodePty.spawn> | null = null;
+  process.on("SIGTERM", () => {
+    pty?.kill("SIGHUP");
   });
-  if (timer !== null) clearInterval(timer);
+  const exitCode = await runNativeHolder({
+    socketPath,
+    cwd,
+    env: process.env,
+    prepare: async () => {
+      const spec = await sdk.nativeTerminals.launch({ threadId });
+      const launch = resolveNativeHarnessLaunch(spec, process.env);
+      discovery = { cli: spec.cli, launchedAtMs: Date.now() };
+      recorded = !launch.discoverSession;
+      return { command: launch.command, args: launch.args };
+    },
+    spawnPty: (child, options) => {
+      pty = nodePty.spawn(child.command, child.args, {
+        name: process.env.TERM ?? "xterm-256color",
+        cols: options.cols,
+        rows: options.rows,
+        cwd: options.cwd,
+        env: options.env,
+      });
+      return pty;
+    },
+    tick: discover,
+    tickIntervalMs: SESSION_DISCOVERY_INTERVAL_MS,
+    terminalClosedForGood: async () => {
+      try {
+        return nativeTerminalClosedForGood(
+          await sdk.nativeTerminals.get({ threadId }),
+        );
+      } catch (error) {
+        return error instanceof BbHttpError && error.status === 404;
+      }
+    },
+  });
   await discover();
   return exitCode;
 }
@@ -180,6 +301,10 @@ export function registerNativeCommands(
       "Run a native thread's provider CLI in this terminal (bb launches this inside the thread's terminal)",
     )
     .option("--probe", "Exit successfully without running anything")
+    .option(
+      "--reattach",
+      "Only attach to the thread's CLI if it is still running; never start it",
+    )
     .option("--json", "Print the probe result as JSON")
     .action(
       action(async (threadId: string, opts: NativeRunOptions) => {
@@ -187,7 +312,34 @@ export function registerNativeCommands(
           if (opts.json) console.log(JSON.stringify({ supported: true }));
           return;
         }
-        process.exitCode = await runNativeHarness(getUrl(), threadId);
+        process.exitCode = await runNativeHarness(
+          getUrl(),
+          threadId,
+          opts.reattach === true,
+        );
+      }),
+    );
+
+  parent
+    .command("native-hold <threadId>", { hidden: true })
+    .description(
+      "Hold a native thread's provider CLI in a detached terminal that outlives the bb terminal and host daemon (native-run starts this)",
+    )
+    .requiredOption(
+      "--socket <path>",
+      "Unix socket the native terminal attaches through",
+    )
+    .option("--json", "Print the provider CLI's exit code as JSON when it ends")
+    .action(
+      action(async (threadId: string, opts: NativeHoldOptions) => {
+        const exitCode = await holdNativeHarness(
+          getUrl(),
+          threadId,
+          opts.socket,
+        );
+        removeEmptyNativeHolderLog(opts.socket);
+        if (opts.json) console.log(JSON.stringify({ exitCode }));
+        process.exitCode = exitCode;
       }),
     );
 }
