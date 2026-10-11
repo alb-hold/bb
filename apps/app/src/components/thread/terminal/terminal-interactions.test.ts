@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { formatTerminalFileDrop, resolveTerminalFileDropPaths } from "./terminal-file-drop";
+import { handleTerminalFileDrop } from "./terminal-file-drop";
 import { attachTerminalInteractions } from "./terminal-interactions";
 
 function createFrameQueue() {
@@ -114,6 +114,7 @@ describe("terminal interactions in the DOM", () => {
     const terminal = document.createElement("div");
     document.body.append(terminal);
     const sendInput = vi.fn();
+    const claimSize = vi.fn();
     const files = [new File([""], "first file.txt"), new File([""], "two.txt")];
     const fileList = Object.assign(files, { item: (index: number) => files[index] }) as unknown as FileList;
     const interactions = attachTerminalInteractions({
@@ -125,12 +126,13 @@ describe("terminal interactions in the DOM", () => {
       onSelection: vi.fn(),
       copySelection: vi.fn(),
       onFilesDrop: (droppedFiles) => {
-        const paths = resolveTerminalFileDropPaths(
-          Array.from(droppedFiles),
-          (file) => `/tmp/${file.name}`,
-        );
-        const input = formatTerminalFileDrop(paths);
-        if (input) sendInput(input);
+        handleTerminalFileDrop({
+          files: Array.from(droppedFiles),
+          getPathForFile: (file) => `/tmp/${file.name}`,
+          isRunning: true,
+          claimSize,
+          sendInput,
+        });
       },
     });
     disposables.push(interactions.dispose);
@@ -140,11 +142,13 @@ describe("terminal interactions in the DOM", () => {
 
     expect(event.defaultPrevented).toBe(true);
     expect(sendInput).toHaveBeenCalledWith("'/tmp/first file.txt' '/tmp/two.txt'");
+    expect(claimSize).toHaveBeenCalledOnce();
   });
 
   it("sends nothing for a browser drop without a desktop path bridge", () => {
     const terminal = document.createElement("div");
     const sendInput = vi.fn();
+    const claimSize = vi.fn();
     const fileList = Object.assign([new File([""], "browser.txt")], {
       item: (index: number) => index === 0 ? new File([""], "browser.txt") : null,
     }) as unknown as FileList;
@@ -157,12 +161,13 @@ describe("terminal interactions in the DOM", () => {
       onSelection: vi.fn(),
       copySelection: vi.fn(),
       onFilesDrop: (droppedFiles) => {
-        const paths = resolveTerminalFileDropPaths(
-          Array.from(droppedFiles),
-          undefined,
-        );
-        const input = formatTerminalFileDrop(paths);
-        if (input) sendInput(input);
+        handleTerminalFileDrop({
+          files: Array.from(droppedFiles),
+          getPathForFile: undefined,
+          isRunning: true,
+          claimSize,
+          sendInput,
+        });
       },
     });
     disposables.push(interactions.dispose);
@@ -170,5 +175,6 @@ describe("terminal interactions in the DOM", () => {
     terminal.dispatchEvent(dropEvent(fileList));
 
     expect(sendInput).not.toHaveBeenCalled();
+    expect(claimSize).not.toHaveBeenCalled();
   });
 });

@@ -59,10 +59,7 @@ import {
   listenForTerminalSizeClaims,
   type TerminalSizeClaims,
 } from "./terminal-size-claims";
-import {
-  formatTerminalFileDrop,
-  resolveTerminalFileDropPaths,
-} from "./terminal-file-drop";
+import { handleTerminalFileDrop } from "./terminal-file-drop";
 import { attachTerminalInteractions } from "./terminal-interactions";
 
 export const TERMINAL_FONT_FAMILY =
@@ -1145,19 +1142,19 @@ export function ThreadTerminalView({
         activeTransport.sendInput(dataBase64);
       handleFileDropRef.current = (files) => {
         const desktop = window.bbDesktop;
-        const paths = resolveTerminalFileDropPaths(
-          Array.from(files),
-          desktop?.getPathForFile,
-        );
-        const input = formatTerminalFileDrop(paths);
-        if (!input || sessionStatusRef.current !== "running") return;
-        activeTransport.claimSize();
-        forwardTerminalData({
-          data: input,
-          onInput: sendTerminalInput,
-          onUserInput: onUserInputRef.current,
-          replayWriteState,
-          sessionStatus: sessionStatusRef.current,
+        handleTerminalFileDrop({
+          files: Array.from(files),
+          getPathForFile: desktop?.getPathForFile,
+          isRunning: sessionStatusRef.current === "running",
+          claimSize: () => activeTransport.claimSize(),
+          sendInput: (input) =>
+            forwardTerminalData({
+              data: input,
+              onInput: sendTerminalInput,
+              onUserInput: onUserInputRef.current,
+              replayWriteState,
+              sessionStatus: sessionStatusRef.current,
+            }),
         });
       };
       terminalInteractions = attachTerminalInteractions({
