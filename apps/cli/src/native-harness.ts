@@ -94,9 +94,7 @@ export function resolveNativeHarnessLaunch(
   const { cli } = spec;
   const model = [
     ...cli.launchArgs,
-    ...(spec.model === null
-      ? []
-      : fill(cli.modelArgs, { model: spec.model })),
+    ...(spec.model === null ? [] : fill(cli.modelArgs, { model: spec.model })),
   ];
   const prompt = spec.initialPrompt === null ? [] : [spec.initialPrompt];
   const session = cli.session;
