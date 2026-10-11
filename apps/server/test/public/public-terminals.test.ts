@@ -815,7 +815,7 @@ describe("public terminal routes", () => {
       type: "terminal.attach",
       terminalId: stored.id,
       sinceSeq: 0,
-      tailBytes: 512 * 1024,
+      tailBytes: 4 * 1024 * 1024,
     });
     if (attachMessage.type !== "terminal.attach") {
       throw new Error(
@@ -1581,7 +1581,11 @@ describe("public terminal routes", () => {
     if (attach?.type !== "terminal.attach") {
       throw new Error("Expected a catch-up terminal.attach");
     }
-    expect(attach).toMatchObject({ terminalId: stored.id, sinceSeq: 1 });
+    expect(attach).toMatchObject({
+      terminalId: stored.id,
+      sinceSeq: 1,
+      tailBytes: 4 * 1024 * 1024,
+    });
     expect(
       readDaemonOperationMessages(replacementSocket).some(
         (message) => message.type === "terminal.close",
@@ -2666,7 +2670,7 @@ describe("public terminal routes", () => {
     expect(attachMessage).toMatchObject({
       terminalId: stored.id,
       sinceSeq: 0,
-      tailBytes: 512 * 1024,
+      tailBytes: 4 * 1024 * 1024,
     });
 
     const replayChunk = {

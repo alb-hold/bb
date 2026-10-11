@@ -65,7 +65,6 @@ const DEFAULT_TERMINAL_START: NonNullable<CreateTerminalRequest["start"]> = {
   mode: "shell",
 };
 const HOST_HOME_INITIAL_CWD = "~";
-const BROWSER_TERMINAL_REPLAY_MAX_BYTES = 512 * 1024;
 const TERMINAL_SCROLLBACK_MAX_BYTES = 4 * 1024 * 1024;
 const TERMINAL_EXIT_RETENTION_MINUTES = Math.round(
   HOST_DAEMON_TERMINAL_EXIT_RETENTION_MS / 60_000,
@@ -1530,7 +1529,7 @@ export class TerminalSessionLifecycle {
         requestId,
         terminalId: current.id,
         sinceSeq: args.sinceSeq,
-        tailBytes: BROWSER_TERMINAL_REPLAY_MAX_BYTES,
+        tailBytes: TERMINAL_SCROLLBACK_MAX_BYTES,
       },
     );
     if (!sent) {
@@ -2139,7 +2138,7 @@ export class TerminalSessionLifecycle {
         requestId,
         terminalId: args.terminalId,
         sinceSeq,
-        tailBytes: BROWSER_TERMINAL_REPLAY_MAX_BYTES,
+        tailBytes: TERMINAL_SCROLLBACK_MAX_BYTES,
       },
     );
     if (!sent) {
