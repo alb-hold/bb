@@ -824,24 +824,18 @@ export function ThreadTerminalView({
     [clearTerminalSelection, onSelectionAddToChat],
   );
 
-  const handleTerminalPointerDown = useCallback(
-    (event: PointerEvent) => {
-      pointerStartPointRef.current = anchorPointFromMouseEvent(event);
-    },
-    [],
-  );
+  const handleTerminalPointerDown = useCallback((event: PointerEvent) => {
+    pointerStartPointRef.current = anchorPointFromMouseEvent(event);
+  }, []);
 
-  const handleTerminalPointerRelease = useCallback(
-    (event: PointerEvent) => {
-      const anchor = selectionAnchorFromPointerRelease(
-        pointerStartPointRef.current,
-        { clientX: event.clientX, clientY: event.clientY },
-      );
-      lastPointerReleaseAnchorRef.current = anchor;
-      pointerStartPointRef.current = null;
-    },
-    [],
-  );
+  const handleTerminalPointerRelease = useCallback((event: PointerEvent) => {
+    const anchor = selectionAnchorFromPointerRelease(
+      pointerStartPointRef.current,
+      { clientX: event.clientX, clientY: event.clientY },
+    );
+    lastPointerReleaseAnchorRef.current = anchor;
+    pointerStartPointRef.current = null;
+  }, []);
 
   const handleTerminalPointerCancel = useCallback(() => {
     pointerStartPointRef.current = null;
@@ -912,8 +906,9 @@ export function ThreadTerminalView({
     };
     let resizeAnimationFrame: number | null = null;
     let connectionNoticeTimeout: ReturnType<typeof setTimeout> | null = null;
-    let terminalInteractions: ReturnType<typeof attachTerminalInteractions> | null =
-      null;
+    let terminalInteractions: ReturnType<
+      typeof attachTerminalInteractions
+    > | null = null;
     let resizeObserver: ResizeObserver | null = null;
     let selectionChangeDisposable: { dispose: () => void } | null = null;
     let stopObservingFonts: (() => void) | null = null;

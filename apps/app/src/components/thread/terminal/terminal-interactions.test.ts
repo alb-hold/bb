@@ -116,7 +116,9 @@ describe("terminal interactions in the DOM", () => {
     const sendInput = vi.fn();
     const claimSize = vi.fn();
     const files = [new File([""], "first file.txt"), new File([""], "two.txt")];
-    const fileList = Object.assign(files, { item: (index: number) => files[index] }) as unknown as FileList;
+    const fileList = Object.assign(files, {
+      item: (index: number) => files[index],
+    }) as unknown as FileList;
     const interactions = attachTerminalInteractions({
       element: terminal,
       getSelection: () => "",
@@ -141,7 +143,9 @@ describe("terminal interactions in the DOM", () => {
     terminal.dispatchEvent(event);
 
     expect(event.defaultPrevented).toBe(true);
-    expect(sendInput).toHaveBeenCalledWith("'/tmp/first file.txt' '/tmp/two.txt'");
+    expect(sendInput).toHaveBeenCalledWith(
+      "'/tmp/first file.txt' '/tmp/two.txt'",
+    );
     expect(claimSize).toHaveBeenCalledOnce();
   });
 
@@ -150,7 +154,8 @@ describe("terminal interactions in the DOM", () => {
     const sendInput = vi.fn();
     const claimSize = vi.fn();
     const fileList = Object.assign([new File([""], "browser.txt")], {
-      item: (index: number) => index === 0 ? new File([""], "browser.txt") : null,
+      item: (index: number) =>
+        index === 0 ? new File([""], "browser.txt") : null,
     }) as unknown as FileList;
     const interactions = attachTerminalInteractions({
       element: terminal,

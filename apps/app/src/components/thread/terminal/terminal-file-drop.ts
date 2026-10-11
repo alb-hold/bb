@@ -12,9 +12,7 @@ export function resolveTerminalFileDropPaths<T>(
   getPathForFile: ((file: T) => string) | undefined,
 ): string[] {
   if (getPathForFile === undefined) return [];
-  return files
-    .map(getPathForFile)
-    .filter((path) => path.length > 0);
+  return files.map(getPathForFile).filter((path) => path.length > 0);
 }
 
 export function handleTerminalFileDrop<T>({
