@@ -7,3 +7,7 @@ export const BB_DESKTOP_ZOOM_COMMAND_CHANNEL = "bb-desktop:zoom-command";
 export const BB_DESKTOP_SET_THEME_CHANNEL = "bb-desktop:set-theme";
 export const BB_DESKTOP_OPEN_EXTERNAL_URL_CHANNEL =
   "bb-desktop:open-external-url";
+export const BB_DESKTOP_OPEN_SIGN_IN_WINDOW_CHANNEL =
+  "bb-desktop:open-sign-in-window";
+export const BB_DESKTOP_CLOSE_SIGN_IN_WINDOW_CHANNEL =
+  "bb-desktop:close-sign-in-window";
