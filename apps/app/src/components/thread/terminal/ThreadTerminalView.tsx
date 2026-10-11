@@ -57,6 +57,8 @@ import {
   type TerminalLinkTarget,
 } from "./terminal-links";
 
+const TERMINAL_SIZE_CLAIM_INTERVAL_MS = 1_000;
+
 export const TERMINAL_FONT_FAMILY =
   '"JetBrainsMono Nerd Font Mono", "MesloLGS NF", "Symbols Nerd Font Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace';
 const TERMINAL_FONT_CSS_VARIABLE = "--font-terminal";
@@ -912,8 +914,15 @@ export function ThreadTerminalView({
     let resizeObserver: ResizeObserver | null = null;
     let selectionChangeDisposable: { dispose: () => void } | null = null;
     let stopObservingFonts: (() => void) | null = null;
+    let lastSizeClaimAt = 0;
+    const claimTerminalSize = () => {
+      lastSizeClaimAt = Date.now();
+      transport?.claimSize();
+    };
     const reportDocumentVisibility = () => {
-      transport?.setVisible(document.visibilityState === "visible");
+      const visible = document.visibilityState === "visible";
+      transport?.setVisible(visible);
+      if (visible) claimTerminalSize();
     };
 
     async function mountTerminal(
@@ -1122,10 +1131,15 @@ export function ThreadTerminalView({
       activeTransport.sendResize(activeTerminal.cols, activeTerminal.rows);
       reportDocumentVisibility();
       document.addEventListener("visibilitychange", reportDocumentVisibility);
+      window.addEventListener("focus", claimTerminalSize);
+      activeTerminal.textarea?.addEventListener("focus", claimTerminalSize);
       activeTransport.start();
       const sendTerminalInput = (dataBase64: string) =>
         activeTransport.sendInput(dataBase64);
       activeTerminal.onData((data) => {
+        if (Date.now() - lastSizeClaimAt > TERMINAL_SIZE_CLAIM_INTERVAL_MS) {
+          claimTerminalSize();
+        }
         if (controlActiveRef.current) {
           data = applyTerminalControl(data);
           controlActiveRef.current = false;
@@ -1200,6 +1214,8 @@ export function ThreadTerminalView({
         "visibilitychange",
         reportDocumentVisibility,
       );
+      window.removeEventListener("focus", claimTerminalSize);
+      terminal?.textarea?.removeEventListener("focus", claimTerminalSize);
       transport?.dispose();
       terminal?.dispose();
       terminalRef.current = null;

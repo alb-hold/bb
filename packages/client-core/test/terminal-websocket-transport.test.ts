@@ -368,4 +368,26 @@ describe("TerminalWebSocketTransport", () => {
     });
     harness.transport.dispose();
   });
+
+  it("resends this view's size on claim so the PTY follows the device in use", () => {
+    const harness = createHarness();
+    harness.transport.sendResize(160, 48);
+    harness.transport.start();
+    const socket = harness.sockets[0]!;
+    socket.open();
+    const resizes = () =>
+      socket.sent.filter((message) => message.includes('"resize"'));
+    expect(resizes()).toEqual([
+      JSON.stringify({ type: "resize", cols: 160, rows: 48 }),
+    ]);
+
+    harness.transport.sendResize(160, 48);
+    expect(resizes()).toHaveLength(1);
+    harness.transport.claimSize();
+    expect(resizes()).toEqual([
+      JSON.stringify({ type: "resize", cols: 160, rows: 48 }),
+      JSON.stringify({ type: "resize", cols: 160, rows: 48 }),
+    ]);
+    harness.transport.dispose();
+  });
 });
