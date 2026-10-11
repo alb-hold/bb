@@ -108,8 +108,6 @@ function machine(
 }
 
 const healthyPool = machine("source:account-pool", "Account Pooler", [
-  provider("alex-codex", "codex", measured("alex@example.com", 28, "Pro")),
-  provider("sam-codex", "codex", measured("sam@example.com", 86, "Team")),
   provider(
     "team-claude",
     "claude-code",
@@ -148,9 +146,6 @@ function twoWindows(
 }
 
 const mixedPool = machine("source:account-pool", "Account Pooler", [
-  provider("alex", "codex", twoWindows("alex@example.com", 12, 28, "Pro")),
-  provider("sam", "codex", twoWindows("sam@example.com", 64, 86, "Team")),
-  provider("ops", "codex", { status: "expired" }),
   provider(
     "team",
     "claude-code",
@@ -262,13 +257,6 @@ const liveMachines = [
     { status: "disconnected" },
   ),
   machine("source:account-pool", "Account Pooler", [
-    liveAccount("pool-codex-work", "codex", "work@example.com", liveCodexWork),
-    liveAccount(
-      "pool-codex-personal",
-      "codex",
-      "personal@example.com",
-      liveUsage("personal@example.com", "Pro", [["Weekly limit", 61, 48.3]]),
-    ),
     liveAccount(
       "pool-claude-personal",
       "claude-code",
