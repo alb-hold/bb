@@ -134,6 +134,25 @@ export function listNativeTerminalThreadIds(
   return new Set(rows.map((row) => row.threadId));
 }
 
+export function listNativeTerminalThreadsWithDisconnectedTerminal(
+  db: DbConnection,
+  hostId: string,
+): string[] {
+  const rows = db.$client
+    .prepare(
+      `SELECT n.thread_id AS threadId
+       FROM fork_native_terminal_threads n
+       JOIN terminal_sessions t ON t.id = n.terminal_session_id
+       JOIN threads th ON th.id = n.thread_id
+       WHERE t.host_id = ?
+         AND t.status = 'disconnected'
+         AND th.archived_at IS NULL
+         AND th.deleted_at IS NULL`,
+    )
+    .all(hostId) as { threadId: string }[];
+  return rows.map((row) => row.threadId);
+}
+
 export function setNativeTerminalThreadTerminal(
   db: DbConnection,
   args: { threadId: string; terminalSessionId: string },

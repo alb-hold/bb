@@ -3,6 +3,7 @@ import {
   getEnvironment,
   getNativeTerminalThread,
   getStoredProviderSession,
+  listNativeTerminalThreadsWithDisconnectedTerminal,
   recordNativeTerminalThreadSessionId,
   setNativeTerminalThreadTerminal,
   type NativeTerminalThreadRecord,
@@ -53,7 +54,12 @@ type NativeTerminalViewDeps = Pick<
   "db" | "providerRegistry" | "terminalSessions"
 >;
 
-const pendingOpens = new Map<string, Promise<NativeTerminalThread>>();
+interface PendingNativeTerminalOpen {
+  promise: Promise<NativeTerminalThread>;
+  reattachOnly: boolean;
+}
+
+const pendingOpens = new Map<string, PendingNativeTerminalOpen>();
 const pendingSends = new Map<string, Promise<void>>();
 const NATIVE_TERMINAL_ECHO_POLL_MS = 100;
 const NATIVE_TERMINAL_ECHO_TIMEOUT_MS = 5000;
@@ -111,17 +117,26 @@ export function nativeTerminalInitialPrompt(
   return prompt.length === 0 ? null : prompt;
 }
 
+export const NATIVE_TERMINAL_ENDED_MESSAGE =
+  "The CLI for this thread ended while bb was disconnected from this machine. Open the terminal again to resume the session.";
+
 export function nativeTerminalLaunchCommand(args: {
   executable: string;
+  reattachOnly: boolean;
   threadId: string;
 }): string {
   const executable = args.executable;
   const env = `BB_THREAD_ID=${args.threadId}`;
-  const wrapper = `"$BB_CLI" thread native-run ${args.threadId}`;
+  const wrapper = args.reattachOnly
+    ? `"$BB_CLI" thread native-run ${args.threadId} --reattach`
+    : `"$BB_CLI" thread native-run ${args.threadId}`;
+  const fallback = args.reattachOnly
+    ? `printf '%s\\r\\n' '${NATIVE_TERMINAL_ENDED_MESSAGE}';`
+    : `${env} exec ${executable};`;
   return [
     `if [ -n "$BB_CLI" ] && ${wrapper} --probe >/dev/null 2>&1; then`,
     `${env} exec ${wrapper};`,
-    `else ${env} exec ${executable}; fi`,
+    `else ${fallback} fi`,
   ].join(" ");
 }
 
@@ -256,11 +271,16 @@ function terminalIsLive(terminal: TerminalSession | null): boolean {
 
 async function openNativeTerminalOnce(
   deps: NativeTerminalDeps,
-  args: { threadId: string; request: OpenNativeTerminalRequest },
+  args: {
+    reattachOnly: boolean;
+    replaceLiveTerminal: boolean;
+    threadId: string;
+    request: OpenNativeTerminalRequest;
+  },
 ): Promise<NativeTerminalThread> {
   const record = requireNativeTerminalThreadRecord(deps, args.threadId);
   const existing = readRecordTerminal(deps, record);
-  if (terminalIsLive(existing)) {
+  if (!args.replaceLiveTerminal && terminalIsLive(existing)) {
     return toNativeTerminalThread(deps, record);
   }
   const thread = requirePublicThread(deps.db, args.threadId);
@@ -295,6 +315,7 @@ async function openNativeTerminalOnce(
         mode: "command",
         command: nativeTerminalLaunchCommand({
           executable: provider.cli.executable,
+          reattachOnly: args.reattachOnly,
           threadId: thread.id,
         }),
       },
@@ -313,19 +334,51 @@ async function openNativeTerminalOnce(
 export async function settlePendingNativeTerminalOpen(
   threadId: string,
 ): Promise<void> {
-  await pendingOpens.get(threadId)?.catch(() => undefined);
+  await pendingOpens.get(threadId)?.promise.catch(() => undefined);
 }
 
 export function openNativeTerminal(
   deps: NativeTerminalDeps,
   args: { threadId: string; request: OpenNativeTerminalRequest },
 ): Promise<NativeTerminalThread> {
+  return openNativeTerminalDeduplicated(deps, { ...args, reattachOnly: false });
+}
+
+function openNativeTerminalDeduplicated(
+  deps: NativeTerminalDeps,
+  args: {
+    reattachOnly: boolean;
+    threadId: string;
+    request: OpenNativeTerminalRequest;
+  },
+): Promise<NativeTerminalThread> {
   const pending = pendingOpens.get(args.threadId);
-  if (pending !== undefined) return pending;
-  const opening = openNativeTerminalOnce(deps, args).finally(() => {
-    pendingOpens.delete(args.threadId);
+  if (pending !== undefined && (args.reattachOnly || !pending.reattachOnly)) {
+    return pending.promise;
+  }
+  const opening: Promise<NativeTerminalThread> = (
+    pending === undefined
+      ? openNativeTerminalOnce(deps, { ...args, replaceLiveTerminal: false })
+      : pending.promise
+          .then(
+            () => undefined,
+            () => undefined,
+          )
+          .then(() =>
+            openNativeTerminalOnce(deps, {
+              ...args,
+              replaceLiveTerminal: true,
+            }),
+          )
+  ).finally(() => {
+    if (pendingOpens.get(args.threadId)?.promise === opening) {
+      pendingOpens.delete(args.threadId);
+    }
   });
-  pendingOpens.set(args.threadId, opening);
+  pendingOpens.set(args.threadId, {
+    promise: opening,
+    reattachOnly: args.reattachOnly,
+  });
   return opening;
 }
 
@@ -340,6 +393,39 @@ export async function openNativeTerminalAfterProvisioning(
     deps.logger.warn(
       { err: error, threadId },
       "Failed to open native terminal after provisioning",
+    );
+  }
+}
+
+export function listNativeTerminalThreadsAwaitingDaemon(
+  deps: Pick<AppDeps, "db">,
+  hostId: string,
+): string[] {
+  return listNativeTerminalThreadsWithDisconnectedTerminal(deps.db, hostId);
+}
+
+export function reopenNativeTerminalsAfterDaemonReconnect(
+  deps: NativeTerminalDeps,
+  args: { hostId: string; threadIds: readonly string[] },
+): void {
+  for (const threadId of args.threadIds) {
+    openNativeTerminalDeduplicated(deps, {
+      reattachOnly: true,
+      threadId,
+      request: {},
+    }).then(
+      (reopened) => {
+        deps.logger.info(
+          { hostId: args.hostId, terminalId: reopened.terminal?.id, threadId },
+          "Reopened native terminal after the host daemon reconnected",
+        );
+      },
+      (error: unknown) => {
+        deps.logger.warn(
+          { err: error, hostId: args.hostId, threadId },
+          "Failed to reopen native terminal after the host daemon reconnected",
+        );
+      },
     );
   }
 }
