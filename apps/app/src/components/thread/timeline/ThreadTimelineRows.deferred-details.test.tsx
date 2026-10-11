@@ -15,8 +15,14 @@ import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import { sdk } from "@/lib/sdk";
 import { ThreadTimelineRows } from "./ThreadTimelineRows";
 
-vi.mock("@/lib/sdk", () => ({
-  sdk: { threads: { timelineTurnSummaryDetails: vi.fn() } },
+vi.mock("@/lib/sdk", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/sdk")>()),
+  sdk: {
+    threads: {
+      timelineTurnSummaryDetails: vi.fn(),
+      spendSummary: vi.fn(() => new Promise<never>(() => {})),
+    },
+  },
 }));
 
 const timelineTurnSummaryDetails = vi.mocked(
