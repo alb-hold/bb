@@ -285,6 +285,9 @@ Native terminal threads:
 
   Tell on a native thread pastes the text into its running terminal and presses
   Enter; it fails with native_terminal_not_running when the harness has exited.
+  The Enter goes to whatever the CLI shows: if it has a menu open (an update,
+  folder-trust or tool-permission prompt), the Enter picks that menu's default.
+  Check the screen with bb terminal read <terminal-id> before telling.
 
 Messaging:
 
