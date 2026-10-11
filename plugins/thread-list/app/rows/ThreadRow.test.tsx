@@ -466,11 +466,11 @@ describe("ThreadRow", () => {
     const statusSlot = container.querySelector("[data-sidebar-status-slot]");
     expect(statusSlot?.classList.contains("whitespace-nowrap")).toBe(true);
     expect(
-      statusSlot?.parentElement?.parentElement?.getAttribute("style"),
-    ).toContain("min-width: 2.5rem");
+      statusSlot?.closest("[data-sidebar-thread-trailing]"),
+    ).not.toBeNull();
     expect(
-      statusSlot?.parentElement?.parentElement?.getAttribute("style"),
-    ).toContain("overflow: hidden");
+      statusSlot?.parentElement?.getAttribute("style") ?? "",
+    ).not.toContain("overflow: hidden");
   });
 
   it("updates only rows whose automation status or elapsed minute changed", async () => {
@@ -556,7 +556,7 @@ describe("ThreadRow", () => {
     }
   });
 
-  it("moves the PR chip into hover actions while a status uses the row slot", () => {
+  it("keeps the PR chip in the trailing row while status is visible", () => {
     renderThreadRow({
       thread: createThread({ isUnread: true }),
       sidebarPullRequest: createPullRequest("open"),
@@ -565,7 +565,53 @@ describe("ThreadRow", () => {
       name: /Pull request #10843/,
     });
 
-    expect(pullRequest.closest(".bb-sidebar-hover-actions")).not.toBeNull();
+    expect(pullRequest.closest(".bb-sidebar-hover-actions")).toBeNull();
+    expect(
+      pullRequest.closest("[data-sidebar-thread-trailing]"),
+    ).not.toBeNull();
+  });
+
+  it("keeps the PR badge and row actions in the row's trailing layout lane", () => {
+    const { container } = renderThreadRow({
+      sidebarPullRequest: createPullRequest("open"),
+    });
+    const trailing = container.querySelector<HTMLElement>(
+      "[data-sidebar-thread-trailing]",
+    );
+    const controls = container.querySelector<HTMLElement>(
+      "[data-sidebar-row-controls]",
+    );
+    const actionSlot = controls?.parentElement;
+    const pullRequest = screen.getByRole("link", {
+      name: /Pull request #10843/,
+    });
+
+    expect(trailing?.contains(pullRequest)).toBe(true);
+    expect(trailing?.contains(controls)).toBe(true);
+    expect(actionSlot?.classList.contains("absolute")).toBe(false);
+  });
+
+  it("keeps working status, PR badge, and actions in the trailing layout lane", () => {
+    const { container } = renderThreadRow({
+      thread: createThread({ status: "active", runtimeStatus: "active" }),
+      sidebarPullRequest: createPullRequest("open"),
+    });
+    const trailing = container.querySelector<HTMLElement>(
+      "[data-sidebar-thread-trailing]",
+    );
+    const status = screen.getByLabelText("Working");
+    const controls = container.querySelector<HTMLElement>(
+      "[data-sidebar-row-controls]",
+    );
+    const actionSlot = controls?.parentElement;
+    const pullRequest = screen.getByRole("link", {
+      name: /Pull request #10843/,
+    });
+
+    expect(trailing?.contains(status)).toBe(true);
+    expect(trailing?.contains(pullRequest)).toBe(true);
+    expect(trailing?.contains(controls)).toBe(true);
+    expect(actionSlot?.classList.contains("absolute")).toBe(false);
   });
 
   it.each([
@@ -764,7 +810,7 @@ describe("ThreadRow", () => {
     await waitFor(() => expect(restore.disabled).toBe(false));
   });
 
-  it("shows the configured row actions in order and reserves their width", async () => {
+  it("shows configured row actions in order in the trailing layout lane", async () => {
     getDefaultStore().set(preferenceValueAtom("rowActions"), [
       "bb--core/pin",
       "bb--core/copyLink",
@@ -780,9 +826,9 @@ describe("ThreadRow", () => {
     ).toEqual(["Pin", "Copy thread link", "Archive", "Thread actions"]);
     expect(
       document
-        .querySelector<HTMLElement>(".bb-sidebar-hover-actions-inset")
-        ?.style.getPropertyValue("--bb-sidebar-hover-actions-inset"),
-    ).toBe("calc(var(--spacing) * 37.5)");
+        .querySelector("[data-sidebar-thread-trailing]")
+        ?.contains(controls ?? null),
+    ).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "Pin" }));
     await waitFor(() =>
       expect(ran).toEqual([{ key: "bb--core/pin", threadId: "thr_test" }]),
@@ -804,9 +850,9 @@ describe("ThreadRow", () => {
     expect(screen.getByRole("button", { name: "Archive" })).toBeTruthy();
     expect(
       document
-        .querySelector<HTMLElement>(".bb-sidebar-hover-actions-inset")
-        ?.style.getPropertyValue("--bb-sidebar-hover-actions-inset"),
-    ).toBe("calc(var(--spacing) * 7.5)");
+        .querySelector("[data-sidebar-thread-trailing]")
+        ?.contains(document.querySelector("[data-sidebar-row-controls]")),
+    ).toBe(true);
   });
 
   it("shows only the actions menu when every row action is turned off", () => {
@@ -816,9 +862,9 @@ describe("ThreadRow", () => {
     expect(screen.getByRole("button", { name: "Thread actions" })).toBeTruthy();
     expect(
       document
-        .querySelector<HTMLElement>(".bb-sidebar-hover-actions-inset")
-        ?.style.getPropertyValue("--bb-sidebar-hover-actions-inset"),
-    ).toBe("calc(var(--spacing) * 15)");
+        .querySelector("[data-sidebar-thread-trailing]")
+        ?.contains(document.querySelector("[data-sidebar-row-controls]")),
+    ).toBe(true);
   });
 
   it.each([
@@ -831,11 +877,7 @@ describe("ThreadRow", () => {
       renderThreadRow({
         thread: createThread({ archivedAt: 1, isArchived: true }),
       });
-      expect(
-        document
-          .querySelector<HTMLElement>(".bb-sidebar-hover-actions-inset")
-          ?.style.getPropertyValue("--bb-sidebar-hover-actions-inset"),
-      ).toBe("calc(var(--spacing) * 7.5)");
+      expect(screen.getByRole("button", { name: "Unarchive" })).toBeTruthy();
     },
   );
 
@@ -1371,22 +1413,8 @@ describe("ThreadRow", () => {
       });
       const navigationTarget = link.parentElement;
       const titleWrapper = link.nextElementSibling;
-      expect(
-        titleContainer?.classList.contains("bb-sidebar-hover-actions-inset"),
-      ).toBe(true);
-      expect(
-        titleContainer?.classList.contains(
-          "pr-(--bb-sidebar-hover-actions-inset)",
-        ),
-      ).toBe(false);
-      expect(
-        titleContainer?.style.getPropertyValue(
-          "--bb-sidebar-hover-actions-inset",
-        ),
-      ).toBe("calc(var(--spacing) * 22.5)");
-      expect(
-        titleContainer?.classList.contains("[@media(hover:none)]:pr-0"),
-      ).toBe(true);
+      expect(titleContainer?.classList.contains("flex-1")).toBe(true);
+      expect(titleContainer?.classList.contains("min-w-0")).toBe(true);
       expect(navigationTarget?.classList.contains("flex-1")).toBe(true);
       expect(titleWrapper?.classList.contains("flex-1")).toBe(true);
       fireEvent.click(toggle);
