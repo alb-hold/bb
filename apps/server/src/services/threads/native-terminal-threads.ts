@@ -334,7 +334,7 @@ async function openNativeTerminalOnce(
 export async function settlePendingNativeTerminalOpen(
   threadId: string,
 ): Promise<void> {
-  await pendingOpens.get(threadId)?.catch(() => undefined);
+  await pendingOpens.get(threadId)?.promise.catch(() => undefined);
 }
 
 export function openNativeTerminal(

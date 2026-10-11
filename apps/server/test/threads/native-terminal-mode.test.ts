@@ -299,6 +299,54 @@ describe("switching a chat thread to its native terminal", () => {
     expect(reentered.view.nativeSessionId).toBe(SESSION_ID);
   });
 
+  it("waits for a reopen in flight before returning to chat", async () => {
+    const fixture = await createFixture();
+    const thread = seedChatThread(fixture, {
+      providerId: "claude-code",
+      providerThreadId: SESSION_ID,
+    });
+    const { open } = await enterTerminal(fixture, thread.id);
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.hostId,
+      sessionId: fixture.sessionId,
+      message: {
+        type: "terminal.exited",
+        terminalId: open.terminalId,
+        exitCode: 0,
+        closeReason: "process-exit",
+      },
+    });
+
+    const opens = countDaemonMessages(fixture, "terminal.open");
+    const reopening = postJson(
+      fixture,
+      `/threads/${thread.id}/native-terminal/open`,
+      {},
+    );
+    const reopen = await waitForDaemonMessage(fixture, "terminal.open", opens);
+    const leaving = switchMode(fixture, thread.id, "chat");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(countDaemonMessages(fixture, "terminal.close")).toBe(0);
+    acknowledgeOpen(fixture, reopen);
+    expect((await reopening).status).toBe(200);
+
+    const close = await waitForDaemonMessage(fixture, "terminal.close");
+    expect(close.terminalId).toBe(reopen.terminalId);
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.hostId,
+      sessionId: fixture.sessionId,
+      message: {
+        type: "terminal.exited",
+        terminalId: reopen.terminalId,
+        exitCode: 0,
+        closeReason: "user",
+      },
+    });
+    const left = await leaving;
+    expect(left.status).toBe(200);
+    expect(getNativeTerminalThread(fixture.harness.db, thread.id)).toBeNull();
+  });
+
   it("keeps the thread in chat when the agent cannot be stopped", async () => {
     const fixture = await createFixture();
     const thread = seedChatThread(fixture, {
