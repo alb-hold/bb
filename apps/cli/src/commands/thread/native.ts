@@ -18,17 +18,12 @@ import { createCliBbSdk } from "../../client.js";
 import { requireThreadIdOrSelf } from "../../context-env.js";
 import { fillNativeTerminalTemplate } from "@bb/domain";
 import {
-  classifyHookRecord,
-  classifyTranscriptRecord,
-  fileSize,
-  JsonlTail,
   nativeActivityHookSettings,
-  NativeActivityTracker,
   type NativeActivityReport,
 } from "../../native-activity.js";
+import { NativeActivityReader } from "../../native-activity-reader.js";
 import {
   findNativeSession,
-  findNativeSessionFile,
   resolveNativeHarnessLaunch,
 } from "../../native-harness.js";
 import {
@@ -179,7 +174,6 @@ async function holdNativeHarness(
     launchedAtMs: number;
   } | null = null;
   let recorded = true;
-  let sessionId: string | null = null;
   const discover = async (): Promise<void> => {
     if (recorded || discovery === null) return;
     let match: ReturnType<typeof findNativeSession>;
@@ -196,7 +190,7 @@ async function holdNativeHarness(
     }
     if (match.kind !== "unique") return;
     recorded = true;
-    sessionId = match.sessionId;
+    reader?.sessionDiscovered(match.sessionId);
     try {
       await sdk.nativeTerminals.recordSession({
         threadId,
@@ -206,11 +200,7 @@ async function holdNativeHarness(
       recorded = false;
     }
   };
-  const tracker = new NativeActivityTracker();
-  const hookTail = new JsonlTail(0);
-  let transcriptTail = new JsonlTail(0);
-  let transcriptFile: string | null = null;
-  let activityCli: Parameters<typeof findNativeSession>[0]["cli"] | null = null;
+  let reader: NativeActivityReader | null = null;
   let eventsFile: string | null = null;
   const activityTimers: NodeJS.Timeout[] = [];
   let reporting: Promise<void> = Promise.resolve();
@@ -230,32 +220,10 @@ async function holdNativeHarness(
     );
   };
   const readActivity = (): void => {
-    const activity = activityCli?.activity;
-    if (activityCli === null || activity === undefined) return;
-    const hooks = activity.hooks;
-    if (hooks !== undefined && eventsFile !== null) {
-      for (const record of hookTail.readRecords(eventsFile)) {
-        report(tracker.apply(classifyHookRecord(hooks, record)));
-      }
-    }
-    if (activity.transcript === undefined) return;
-    if (transcriptFile === null && sessionId !== null) {
-      try {
-        transcriptFile = findNativeSessionFile(
-          activityCli,
-          process.env,
-          sessionId,
-        );
-      } catch {
-        transcriptFile = null;
-      }
-    }
-    if (transcriptFile === null) return;
-    for (const record of transcriptTail.readRecords(transcriptFile)) {
-      report(
-        tracker.apply(classifyTranscriptRecord(activity.transcript, record)),
-      );
-    }
+    for (const next of reader?.read() ?? []) report(next);
+  };
+  const finishActivity = (): void => {
+    report(reader?.finish() ?? null);
   };
   let pty: ReturnType<typeof nodePty.spawn> | null = null;
   process.on("SIGTERM", () => {
@@ -293,27 +261,17 @@ async function holdNativeHarness(
       );
       discovery = { cli: spec.cli, launchedAtMs: Date.now() };
       recorded = !launch.discoverSession;
-      sessionId = spec.nativeSessionId;
-      if (!launch.discoverSession && spec.nativeSessionId !== null) {
-        try {
-          transcriptFile = findNativeSessionFile(
-            spec.cli,
-            process.env,
-            spec.nativeSessionId,
-          );
-        } catch {
-          transcriptFile = null;
-        }
-        transcriptTail = new JsonlTail(
-          transcriptFile === null ? 0 : fileSize(transcriptFile),
-        );
-      }
+      reader = new NativeActivityReader(
+        spec.cli,
+        process.env,
+        file,
+        spec.nativeSessionId,
+      );
       if (activity !== undefined) {
-        activityCli = spec.cli;
         activityTimers.push(
           setInterval(readActivity, ACTIVITY_POLL_INTERVAL_MS),
           setInterval(
-            () => report(tracker.heartbeat()),
+            () => report(reader?.heartbeat() ?? null),
             ACTIVITY_HEARTBEAT_INTERVAL_MS,
           ),
         );
@@ -345,7 +303,7 @@ async function holdNativeHarness(
   for (const timer of activityTimers) clearInterval(timer);
   await discover();
   readActivity();
-  report(tracker.finish());
+  finishActivity();
   await Promise.race([
     reporting,
     new Promise((resolve) => setTimeout(resolve, ACTIVITY_FLUSH_TIMEOUT_MS)),
