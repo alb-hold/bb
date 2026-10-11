@@ -1,0 +1,180 @@
+import { describe, expect, it, vi } from "vitest";
+import {
+  archiveThread,
+  createEnvironment,
+  createNativeTerminalThread,
+  createProject,
+  createTerminalSession,
+  createThread,
+  listNativeTerminalThreadsWithDisconnectedTerminal,
+  noopNotifier,
+  setNativeTerminalThreadTerminal,
+  terminalSessions,
+  upsertHost,
+} from "@bb/db";
+import { eq } from "drizzle-orm";
+import { createProviderRegistryService } from "../../../src/services/providers/provider-registry.js";
+import { reopenNativeTerminalsAfterDaemonReconnect } from "../../../src/services/threads/native-terminal-threads.js";
+import { createTestProviderRegistry } from "../../helpers/provider-registry.js";
+import {
+  withTestHarness,
+  type TestAppHarness,
+} from "../../helpers/test-app.js";
+
+async function createDisconnectedNativeThread(
+  harness: TestAppHarness,
+  index: number,
+  hostId: string,
+): Promise<{ threadId: string; terminalId: string }> {
+  const { project } = createProject(harness.db, noopNotifier, {
+    name: `Native Terminal Project ${index}`,
+    source: {
+      type: "local_path",
+      hostId,
+      path: `/tmp/native-terminal-${index}`,
+    },
+  });
+  const environment = createEnvironment(harness.db, noopNotifier, {
+    providerOwnsPath: false,
+    hostId,
+    projectId: project.id,
+    path: `/tmp/native-terminal-${index}/env`,
+    status: "ready",
+  });
+  const thread = createThread(harness.db, noopNotifier, {
+    projectId: project.id,
+    environmentId: environment.id,
+    providerId: "codex",
+  });
+  createNativeTerminalThread(harness.db, {
+    threadId: thread.id,
+    providerId: "codex",
+    nativeSessionId: `session-existing-${index}`,
+    initialPrompt: null,
+    model: null,
+  });
+  const terminal = createTerminalSession(harness.db, {
+    threadId: thread.id,
+    environmentId: environment.id,
+    hostId,
+    daemonSessionId: null,
+    title: "Codex",
+    initialCwd: "/tmp",
+    cols: 120,
+    rows: 36,
+    status: "disconnected",
+  });
+  setNativeTerminalThreadTerminal(harness.db, {
+    threadId: thread.id,
+    terminalSessionId: terminal.id,
+  });
+  return { threadId: thread.id, terminalId: terminal.id };
+}
+
+describe("reopenNativeTerminalsAfterDaemonReconnect", () => {
+  it("waits for a provider that registers after daemon reconnect", async () => {
+    await withTestHarness({ seedFirstPartyProviders: false }, async (h) => {
+      const host = upsertHost(h.db, noopNotifier, {
+        id: "host-native-reconnect",
+        name: "Native Terminal Host",
+      });
+      const { threadId } = await createDisconnectedNativeThread(h, 1, host.id);
+      expect(
+        listNativeTerminalThreadsWithDisconnectedTerminal(h.db, host.id),
+      ).toContain(threadId);
+      h.db
+        .update(terminalSessions)
+        .set({ status: "exited", closeReason: "daemon-disconnect" })
+        .where(eq(terminalSessions.threadId, threadId))
+        .run();
+      const sourceRegistry = await createTestProviderRegistry();
+      const registration = sourceRegistry.get("codex");
+      if (registration === null)
+        throw new Error("Codex provider is not seeded");
+      const providerRegistry = createProviderRegistryService({
+        deferRegistrationsSettled: true,
+      });
+      h.deps.providerRegistry = providerRegistry;
+      const warn = vi.spyOn(h.deps.logger, "warn");
+      const createTerminal = vi
+        .spyOn(h.deps.terminalSessions, "createTerminal")
+        .mockImplementation(async () => {
+          const terminal = createTerminalSession(h.db, {
+            threadId,
+            environmentId: null,
+            hostId: host.id,
+            daemonSessionId: null,
+            title: "Codex",
+            initialCwd: "/tmp",
+            cols: 120,
+            rows: 36,
+            status: "running",
+          });
+          return terminal;
+        });
+
+      const reopening = reopenNativeTerminalsAfterDaemonReconnect(h.deps, {
+        hostId: host.id,
+        threadIds: [threadId],
+      });
+      await Promise.resolve();
+      expect(createTerminal).not.toHaveBeenCalled();
+
+      providerRegistry.register(registration);
+      await reopening;
+
+      expect(warn).not.toHaveBeenCalled();
+      expect(createTerminal).toHaveBeenCalledOnce();
+      const start = createTerminal.mock.calls[0]?.[0].payload.start;
+      if (start?.mode !== "command") {
+        throw new Error("Expected a command terminal launch");
+      }
+      expect(start.command).toContain("--reattach");
+      expect(start.command).toContain("native-run");
+    });
+  });
+
+  it("does not reopen a terminal closed or archived while provider registration is pending", async () => {
+    await withTestHarness({ seedFirstPartyProviders: false }, async (h) => {
+      const host = upsertHost(h.db, noopNotifier, {
+        id: "host-native-closed",
+        name: "Native Terminal Host",
+      });
+      const closed = await createDisconnectedNativeThread(h, 2, host.id);
+      const archived = await createDisconnectedNativeThread(h, 3, host.id);
+      const sourceRegistry = await createTestProviderRegistry();
+      const registration = sourceRegistry.get("codex");
+      if (registration === null)
+        throw new Error("Codex provider is not seeded");
+      const providerRegistry = createProviderRegistryService({
+        deferRegistrationsSettled: true,
+      });
+      h.deps.providerRegistry = providerRegistry;
+      const createTerminal = vi.spyOn(
+        h.deps.terminalSessions,
+        "createTerminal",
+      );
+      const reconnectCandidates = [closed.threadId, archived.threadId];
+      expect(
+        listNativeTerminalThreadsWithDisconnectedTerminal(h.db, host.id),
+      ).toEqual(reconnectCandidates);
+
+      h.db
+        .update(terminalSessions)
+        .set({ status: "exited", closeReason: "user" })
+        .where(eq(terminalSessions.id, closed.terminalId))
+        .run();
+      archiveThread(h.db, noopNotifier, archived.threadId);
+
+      const reopening = reopenNativeTerminalsAfterDaemonReconnect(h.deps, {
+        hostId: host.id,
+        threadIds: reconnectCandidates,
+      });
+      await Promise.resolve();
+      providerRegistry.register(registration);
+      await reopening;
+
+      expect(createTerminal).not.toHaveBeenCalled();
+    });
+  });
+});
