@@ -52,6 +52,10 @@ import {
 } from "./usage-feedback.js";
 
 import { UsageSettings } from "./settings.js";
+import {
+  combinedUsageMachine,
+  usageTargetsToRefresh,
+} from "./combined-usage.js";
 
 export interface UsageStoreSnapshot {
   data: UsageSnapshot | null;
@@ -559,10 +563,23 @@ export function ProviderUsageStatusContent({
   const [requestedProviderIds, setRequestedProviderIds] = useState(
     lastProviderIdByMachine,
   );
-  const activeMachine = selectUsageMachine(
+  const selectedMachine = selectUsageMachine(
     machines,
     requestedMachineId,
     threadMachineId,
+  );
+  const usesCombinedSource =
+    selectedMachine?.id.startsWith("source:") === true &&
+    selectedMachine.providers.some(
+      (provider) => provider.providerId === "claude-code",
+    );
+  const activeMachine = useMemo(
+    () =>
+      usesCombinedSource
+        ? (combinedUsageMachine(machines, selectedMachine.displayName) ??
+          selectedMachine)
+        : selectedMachine,
+    [machines, selectedMachine, usesCombinedSource],
   );
   const providers = useMemo(() => {
     const groups = new Map<
@@ -655,13 +672,32 @@ export function ProviderUsageStatusContent({
             : null;
   const panelId = useId();
   const activeMachineId = activeMachine?.id ?? null;
+  const combinedRefreshTargets = useMemo(
+    () => usageTargetsToRefresh(machines, "combined"),
+    [machines],
+  );
   const activeProviderId = activeProvider?.id ?? null;
   const refreshProviderIds = isAllTab
     ? providers.map((provider) => provider.id)
     : activeProviderId === null
       ? []
       : [activeProviderId];
+  const refreshTargets = usesCombinedSource
+    ? combinedRefreshTargets
+        .map((target) => ({
+          ...target,
+          providerIds: target.providerIds.filter((id) =>
+            refreshProviderIds.includes(id),
+          ),
+        }))
+        .filter(({ providerIds }) => providerIds.length > 0)
+    : activeMachine === null || refreshProviderIds.length === 0
+      ? []
+      : [{ machine: activeMachine, providerIds: refreshProviderIds }];
   const refreshProviderKey = refreshProviderIds.join("\n");
+  const refreshTargetKey = JSON.stringify(
+    refreshTargets.map(({ machine, providerIds }) => [machine.id, providerIds]),
+  );
 
   useEffect(() => {
     if (!refreshEnabled) return;
@@ -671,8 +707,10 @@ export function ProviderUsageStatusContent({
       void refreshUsage({
         pluginId,
         force: false,
-        machineIds: [activeMachineId],
-        providerIds: refreshProviderKey.split("\n"),
+        machineIds: refreshTargets.map(({ machine }) => machine.id),
+        providerIds: [
+          ...new Set(refreshTargets.flatMap(({ providerIds }) => providerIds)),
+        ],
         maxAgeMs: CARD_MAX_AGE_MS,
       });
     };
@@ -683,7 +721,13 @@ export function ProviderUsageStatusContent({
       window.clearInterval(timer);
       window.removeEventListener("focus", refresh);
     };
-  }, [activeMachineId, pluginId, refreshProviderKey, refreshEnabled]);
+  }, [
+    activeMachineId,
+    pluginId,
+    refreshProviderKey,
+    refreshTargetKey,
+    refreshEnabled,
+  ]);
 
   const selectMachine = useCallback(
     (machineId: string) => {
@@ -712,12 +756,24 @@ export function ProviderUsageStatusContent({
   );
 
   const reload = () => {
+    if (activeMachineId === null || refreshProviderIds.length === 0) {
+      void refreshUsage({
+        pluginId,
+        force: true,
+        machineIds: activeMachineId === null ? null : [activeMachineId],
+        maxAgeMs: 0,
+        providerIds: refreshProviderIds,
+      });
+      return;
+    }
     void refreshUsage({
       pluginId,
       force: true,
-      machineIds: activeMachineId === null ? null : [activeMachineId],
+      machineIds: refreshTargets.map(({ machine }) => machine.id),
       maxAgeMs: 0,
-      providerIds: refreshProviderIds,
+      providerIds: [
+        ...new Set(refreshTargets.flatMap(({ providerIds }) => providerIds)),
+      ],
     });
   };
 

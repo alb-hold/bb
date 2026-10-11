@@ -20,9 +20,10 @@ Claude subscriptions published by Account Pooler and non-Claude providers
 published by the primary host. Its Usage source picker keeps each source view
 available. If Account Pooler is missing or has no Claude accounts, the combined
 view falls back to all providers published by the host. The compact sidebar card
-remains scoped to one selected source or machine, so its tabs and quota badges
-continue to describe that location. Both surfaces share the plugin’s aggregation
-and cache. Neither display is required for source plugins to publish their usage.
+uses the same combined view and cache when Account Pooler is selected, showing
+pooled Claude subscriptions alongside non-Claude providers from the primary host.
+An explicit machine selection continues to show that machine’s local usage.
+Neither display is required for source plugins to publish their usage.
 
 Use `bb plugin rpc list --method provider-usage.v1.listResources --json` to find sources
 and `bb plugin rpc inspect <plugin-id> provider-usage.v1.listResources --json`
