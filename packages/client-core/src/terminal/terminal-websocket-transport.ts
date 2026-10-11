@@ -227,7 +227,7 @@ export class TerminalWebSocketTransport {
     }
     this.trySend(
       socket,
-      JSON.stringify({ type: "resize", ...this.lastResize }),
+      JSON.stringify({ type: "resize", ...this.lastResize, claim: true }),
     );
   }
 
