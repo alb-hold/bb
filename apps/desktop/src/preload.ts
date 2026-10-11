@@ -2,7 +2,7 @@ import {
   bbDesktopServerChoicesSchema,
   type BbDesktopServerChoice,
 } from "@bb/desktop-contract";
-import { contextBridge, ipcRenderer, webFrame } from "electron";
+import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
 import { appCommandIdSchema, type AppCommandId } from "@bb/domain";
 import {
   desktopBrowserImportOutcomeSchema,
@@ -497,6 +497,9 @@ const bbDesktopApi: BbDesktopApi = {
   },
   async writeClipboard(content: BbDesktopClipboardContent): Promise<void> {
     await ipcRenderer.invoke(BB_DESKTOP_WRITE_CLIPBOARD_CHANNEL, content);
+  },
+  getPathForFile(file: File): string {
+    return webUtils.getPathForFile(file);
   },
 };
 

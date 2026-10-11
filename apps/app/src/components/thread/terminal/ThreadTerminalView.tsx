@@ -3,7 +3,6 @@ import {
   useEffect,
   useRef,
   useState,
-  type PointerEvent as ReactPointerEvent,
   type TouchEvent as ReactTouchEvent,
 } from "react";
 import "@xterm/xterm/css/xterm.css";
@@ -60,6 +59,8 @@ import {
   listenForTerminalSizeClaims,
   type TerminalSizeClaims,
 } from "./terminal-size-claims";
+import { handleTerminalFileDrop } from "./terminal-file-drop";
+import { attachTerminalInteractions } from "./terminal-interactions";
 
 export const TERMINAL_FONT_FAMILY =
   '"JetBrainsMono Nerd Font Mono", "MesloLGS NF", "Symbols Nerd Font Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace';
@@ -690,10 +691,10 @@ export function ThreadTerminalView({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<XTermTerminal | null>(null);
   const hoveredTerminalLinkRef = useRef<TerminalLinkTarget | null>(null);
-  const pointerIsDownRef = useRef(false);
   const pointerStartPointRef = useRef<SelectionAnchorPoint | null>(null);
   const touchFocusGestureRef = useRef<TerminalTouchFocusGesture | null>(null);
   const lastPointerReleaseAnchorRef = useRef<SelectionAnchor | null>(null);
+  const handleFileDropRef = useRef<((files: FileList) => void) | null>(null);
   const onSessionChangeRef = useRef<
     ((session: TerminalSession) => void) | undefined
   >(onSessionChange);
@@ -731,23 +732,31 @@ export function ThreadTerminalView({
   onUserInputRef.current = onUserInput;
 
   const reportTerminalSelection = useCallback(
-    (anchor: SelectionAnchor | null) => {
+    (anchor: SelectionAnchor | null, selectionText?: string) => {
       const terminal = terminalRef.current;
       const container = containerRef.current;
       if (!terminal || !container) {
         setActiveSelection(null);
         return;
       }
+      const text = selectionText ?? terminal.getSelection();
       setActiveSelection(
         buildTerminalSelection({
           anchor,
           containerElement: container,
-          text: terminal.getSelection(),
+          text,
         }),
       );
     },
     [],
   );
+
+  const copyTerminalSelection = useCallback((text: string) => {
+    void copyToClipboardWithToast(text, {
+      successMessage: null,
+      errorMessage: null,
+    });
+  }, []);
 
   const clearTerminalSelection = useCallback(() => {
     terminalRef.current?.clearSelection();
@@ -815,37 +824,22 @@ export function ThreadTerminalView({
     [clearTerminalSelection, onSelectionAddToChat],
   );
 
-  const handleTerminalPointerDown = useCallback(
-    (event: ReactPointerEvent<HTMLDivElement>) => {
-      pointerIsDownRef.current = true;
-      pointerStartPointRef.current = anchorPointFromMouseEvent(event);
-    },
-    [],
-  );
+  const handleTerminalPointerDown = useCallback((event: PointerEvent) => {
+    pointerStartPointRef.current = anchorPointFromMouseEvent(event);
+  }, []);
 
-  const handleTerminalPointerRelease = useCallback(
-    (event: ReactPointerEvent<HTMLDivElement>) => {
-      const anchor = selectionAnchorFromPointerRelease(
-        pointerStartPointRef.current,
-        { clientX: event.clientX, clientY: event.clientY },
-      );
-      lastPointerReleaseAnchorRef.current = anchor;
-      pointerIsDownRef.current = false;
-      pointerStartPointRef.current = null;
-      window.requestAnimationFrame(() => {
-        reportTerminalSelection(anchor);
-      });
-    },
-    [reportTerminalSelection],
-  );
+  const handleTerminalPointerRelease = useCallback((event: PointerEvent) => {
+    const anchor = selectionAnchorFromPointerRelease(
+      pointerStartPointRef.current,
+      { clientX: event.clientX, clientY: event.clientY },
+    );
+    lastPointerReleaseAnchorRef.current = anchor;
+    pointerStartPointRef.current = null;
+  }, []);
 
   const handleTerminalPointerCancel = useCallback(() => {
-    pointerIsDownRef.current = false;
     pointerStartPointRef.current = null;
-    window.requestAnimationFrame(() => {
-      reportTerminalSelection(lastPointerReleaseAnchorRef.current);
-    });
-  }, [reportTerminalSelection]);
+  }, []);
 
   const handleTerminalTouchStart = useCallback(
     (event: ReactTouchEvent<HTMLDivElement>) => {
@@ -912,7 +906,9 @@ export function ThreadTerminalView({
     };
     let resizeAnimationFrame: number | null = null;
     let connectionNoticeTimeout: ReturnType<typeof setTimeout> | null = null;
-    let selectionAnimationFrame: number | null = null;
+    let terminalInteractions: ReturnType<
+      typeof attachTerminalInteractions
+    > | null = null;
     let resizeObserver: ResizeObserver | null = null;
     let selectionChangeDisposable: { dispose: () => void } | null = null;
     let stopObservingFonts: (() => void) | null = null;
@@ -1139,6 +1135,34 @@ export function ThreadTerminalView({
       activeTransport.start();
       const sendTerminalInput = (dataBase64: string) =>
         activeTransport.sendInput(dataBase64);
+      handleFileDropRef.current = (files) => {
+        const desktop = window.bbDesktop;
+        handleTerminalFileDrop({
+          files: Array.from(files),
+          getPathForFile: desktop?.getPathForFile,
+          isRunning: sessionStatusRef.current === "running",
+          claimSize: () => activeTransport.claimSize(),
+          sendInput: (input) =>
+            forwardTerminalData({
+              data: input,
+              onInput: sendTerminalInput,
+              onUserInput: onUserInputRef.current,
+              replayWriteState,
+              sessionStatus: sessionStatusRef.current,
+            }),
+        });
+      };
+      terminalInteractions = attachTerminalInteractions({
+        element: containerElement.parentElement ?? containerElement,
+        getSelection: () => activeTerminal.getSelection(),
+        onPointerDown: handleTerminalPointerDown,
+        onPointerRelease: handleTerminalPointerRelease,
+        onPointerCancel: handleTerminalPointerCancel,
+        onSelection: (text) =>
+          reportTerminalSelection(lastPointerReleaseAnchorRef.current, text),
+        copySelection: copyTerminalSelection,
+        onFilesDrop: (files) => handleFileDropRef.current?.(files),
+      });
       activeTerminal.onData((data) => {
         if (controlActiveRef.current) {
           data = applyTerminalControl(data);
@@ -1163,17 +1187,8 @@ export function ThreadTerminalView({
         }
         onTitleChangeRef.current?.(title);
       });
-      const scheduleSelectionReport = () => {
-        if (pointerIsDownRef.current || selectionAnimationFrame !== null) {
-          return;
-        }
-        selectionAnimationFrame = window.requestAnimationFrame(() => {
-          selectionAnimationFrame = null;
-          reportTerminalSelection(lastPointerReleaseAnchorRef.current);
-        });
-      };
       selectionChangeDisposable = activeTerminal.onSelectionChange(
-        scheduleSelectionReport,
+        terminalInteractions.onSelectionChange,
       );
 
       resizeObserver = new ResizeObserver((entries) => {
@@ -1201,15 +1216,14 @@ export function ThreadTerminalView({
       if (resizeAnimationFrame !== null) {
         window.cancelAnimationFrame(resizeAnimationFrame);
       }
-      if (selectionAnimationFrame !== null) {
-        window.cancelAnimationFrame(selectionAnimationFrame);
-      }
       if (connectionNoticeTimeout !== null) {
         clearTimeout(connectionNoticeTimeout);
       }
       setConnectionNotice(null);
       resizeObserver?.disconnect();
       selectionChangeDisposable?.dispose();
+      terminalInteractions?.dispose();
+      handleFileDropRef.current = null;
       document.removeEventListener(
         "visibilitychange",
         reportDocumentVisibility,
@@ -1223,6 +1237,10 @@ export function ThreadTerminalView({
     };
   }, [
     reportTerminalSelection,
+    copyTerminalSelection,
+    handleTerminalPointerDown,
+    handleTerminalPointerRelease,
+    handleTerminalPointerCancel,
     requestOpenTerminalLink,
     session.id,
     session.threadId,
@@ -1290,9 +1308,6 @@ export function ThreadTerminalView({
           <div
             className="relative min-h-0 w-full flex-1 overflow-hidden bg-sidebar p-2"
             onContextMenuCapture={captureTerminalContextMenu}
-            onPointerDown={handleTerminalPointerDown}
-            onPointerUp={handleTerminalPointerRelease}
-            onPointerCancel={handleTerminalPointerCancel}
             onTouchStart={handleTerminalTouchStart}
             onTouchMove={handleTerminalTouchMove}
             onTouchEnd={handleTerminalTouchEnd}
