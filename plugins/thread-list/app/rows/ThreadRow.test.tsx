@@ -587,6 +587,9 @@ describe("ThreadRow", () => {
     });
 
     expect(trailing?.contains(pullRequest)).toBe(true);
+    expect(
+      pullRequest.hasAttribute("data-sidebar-row-trailing-secondary"),
+    ).toBe(true);
     expect(trailing?.contains(controls)).toBe(true);
     expect(actionSlot?.classList.contains("absolute")).toBe(false);
   });
@@ -609,6 +612,12 @@ describe("ThreadRow", () => {
     });
 
     expect(trailing?.contains(status)).toBe(true);
+    expect(
+      status.closest("[data-sidebar-row-trailing-secondary]"),
+    ).not.toBeNull();
+    expect(
+      pullRequest.hasAttribute("data-sidebar-row-trailing-secondary"),
+    ).toBe(true);
     expect(trailing?.contains(pullRequest)).toBe(true);
     expect(trailing?.contains(controls)).toBe(true);
     expect(actionSlot?.classList.contains("absolute")).toBe(false);

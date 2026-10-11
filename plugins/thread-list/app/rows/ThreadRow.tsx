@@ -72,7 +72,6 @@ import { AppCommandShortcutPill } from "../ui/AppCommandShortcutPill.js";
 import { SidebarStickyTier } from "../ui/sidebar.js";
 import {
   SIDEBAR_HOVER_ACTIONS_CLASS,
-  SIDEBAR_HOVER_ACTIONS_FADE_CLASS,
   SIDEBAR_HOVER_ACTIONS_MOBILE_ALWAYS_VALUE,
   SIDEBAR_HOVER_ACTIONS_ROW_CLASS,
 } from "@/components/ui/sidebar-hover-actions";
@@ -429,6 +428,7 @@ function SidebarThreadPullRequestChip({ threadId }: { threadId: string }) {
       <TooltipTrigger asChild>
         <UrlLink
           data-sidebar-thread-pull-request=""
+          data-sidebar-row-trailing-secondary=""
           href={pullRequest.url}
           aria-label={accessibleLabel}
           onClick={(event) => event.stopPropagation()}
@@ -855,9 +855,9 @@ function ThreadRowComponent({
         <SidebarThreadPullRequestChip threadId={thread.id} />
         {!shortcut && hasVisibleStatus ? (
           <span
+            data-sidebar-row-trailing-secondary=""
             data-sidebar-hover-actions-open={isActionsOpen ? "true" : undefined}
             className={cn(
-              SIDEBAR_HOVER_ACTIONS_FADE_CLASS,
               "relative flex shrink-0 items-center justify-center",
               COARSE_POINTER_ROW_ACTION_SIZE_CLASS,
             )}

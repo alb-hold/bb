@@ -374,6 +374,20 @@ describe("theme.css sidebar width registration", () => {
   });
 });
 
+describe("thread row trailing space", () => {
+  it("hides secondary status and PR content while actions claim the trailing lane", () => {
+    expect(css).toMatch(
+      /\.bb-sidebar-hover-actions-row:is\(:hover, :has\(:focus-visible\)\)[\s\S]*?\[data-sidebar-row-trailing-secondary\]/,
+    );
+    expect(css).toContain(
+      '.bb-sidebar-hover-actions[data-sidebar-hover-actions-mobile="always"]',
+    );
+    expect(css).toMatch(
+      /\[data-sidebar-row-trailing-secondary\]\s*\)\s*\{\s*display: none !important;/,
+    );
+  });
+});
+
 describe("theme.css shimmer and scroll-anchor paint scope", () => {
   function ruleBody(selector: string, source = css): string {
     const at = source.indexOf(`${selector} {`);
