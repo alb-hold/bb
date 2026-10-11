@@ -32,6 +32,7 @@ function tempHome(): string {
 
 const ASSIGNED_CLI: ProviderNativeTerminal = {
   executable: "claude",
+  launchArgs: [],
   modelArgs: ["--model", "{model}"],
   pastePlaceholders: [],
   sessionRoot: { env: "CLAUDE_CONFIG_DIR", home: ".claude" },
@@ -45,6 +46,7 @@ const ASSIGNED_CLI: ProviderNativeTerminal = {
 
 const DISCOVERED_CLI: ProviderNativeTerminal = {
   executable: "codex",
+  launchArgs: ["--no-daemon"],
   modelArgs: ["-c", 'model="{model}"'],
   pastePlaceholders: [],
   sessionRoot: { env: "CODEX_HOME", home: ".codex" },
@@ -146,6 +148,23 @@ describe("resolveNativeHarnessLaunch", () => {
     ]);
   });
 
+  it("puts launch argv before the model and session argv of an assigned session", () => {
+    const cli = { ...ASSIGNED_CLI, launchArgs: ["--quiet"] };
+    expect(
+      resolveNativeHarnessLaunch(
+        spec({ cli, model: "opus", initialPrompt: "hi" }),
+        { HOME: tempHome() },
+      ).args,
+    ).toEqual([
+      "--quiet",
+      "--model",
+      "opus",
+      "--session-id",
+      "6f1c2a8e-7d1b-4a55-9f0e-1c2d3e4f5a6b",
+      "hi",
+    ]);
+  });
+
   it("honours CLAUDE_CONFIG_DIR when looking for the transcript", () => {
     const home = tempHome();
     const config = path.join(home, "pooled-claude");
@@ -167,7 +186,7 @@ describe("resolveNativeHarnessLaunch", () => {
     ).toBe("--resume");
   });
 
-  it("launches codex fresh and asks for session discovery until an id is known", () => {
+  it("launches codex fresh and asks for session discovery until an id is known, launch argv first", () => {
     expect(
       resolveNativeHarnessLaunch(
         spec({
@@ -177,7 +196,11 @@ describe("resolveNativeHarnessLaunch", () => {
         }),
         { HOME: tempHome() },
       ),
-    ).toEqual({ command: "codex", args: ["go"], discoverSession: true });
+    ).toEqual({
+      command: "codex",
+      args: ["--no-daemon", "go"],
+      discoverSession: true,
+    });
     expect(
       resolveNativeHarnessLaunch(
         spec({
@@ -189,7 +212,7 @@ describe("resolveNativeHarnessLaunch", () => {
       ),
     ).toEqual({
       command: "codex",
-      args: ["-c", 'model="gpt-6"', "resume", "abc-123"],
+      args: ["--no-daemon", "-c", 'model="gpt-6"', "resume", "abc-123"],
       discoverSession: false,
     });
   });
