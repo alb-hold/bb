@@ -12,10 +12,15 @@ const SESSION_HEADER_MAX_BYTES = 4 * 1024 * 1024;
 const SESSION_CLOCK_SKEW_MS = 5_000;
 const DAY_MS = 86_400_000;
 
+export type NativeHarnessSession =
+  | { kind: "start"; id: string }
+  | { kind: "resume"; id: string }
+  | { kind: "discover" };
+
 export interface NativeHarnessLaunch {
   command: string;
   args: string[];
-  discoverSession: boolean;
+  session: NativeHarnessSession;
 }
 
 export type NativeHarnessEnv = Readonly<Record<string, string | undefined>>;
@@ -118,7 +123,10 @@ export function resolveNativeHarnessLaunch(
       args: transcriptExists
         ? [...model, ...fill(session.resumeArgs, tokens)]
         : [...model, ...fill(session.startArgs, tokens), ...prompt],
-      discoverSession: false,
+      session: {
+        kind: transcriptExists ? "resume" : "start",
+        id: spec.nativeSessionId,
+      },
     };
   }
   if (spec.nativeSessionId !== null) {
@@ -128,13 +136,13 @@ export function resolveNativeHarnessLaunch(
         ...model,
         ...fill(session.resumeArgs, { sessionId: spec.nativeSessionId }),
       ],
-      discoverSession: false,
+      session: { kind: "resume", id: spec.nativeSessionId },
     };
   }
   return {
     command: cli.executable,
     args: [...model, ...prompt],
-    discoverSession: true,
+    session: { kind: "discover" },
   };
 }
 

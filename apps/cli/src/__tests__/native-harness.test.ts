@@ -131,7 +131,10 @@ describe("resolveNativeHarnessLaunch", () => {
         "6f1c2a8e-7d1b-4a55-9f0e-1c2d3e4f5a6b",
         "fix the build",
       ],
-      discoverSession: false,
+      session: {
+        kind: "start",
+        id: "6f1c2a8e-7d1b-4a55-9f0e-1c2d3e4f5a6b",
+      },
     });
   });
 
@@ -143,10 +146,11 @@ describe("resolveNativeHarnessLaunch", () => {
       path.join(project, "6f1c2a8e-7d1b-4a55-9f0e-1c2d3e4f5a6b.jsonl"),
       "{}\n",
     );
-    expect(resolveNativeHarnessLaunch(spec({}), { HOME: home }).args).toEqual([
-      "--resume",
-      "6f1c2a8e-7d1b-4a55-9f0e-1c2d3e4f5a6b",
-    ]);
+    expect(resolveNativeHarnessLaunch(spec({}), { HOME: home })).toEqual({
+      command: "claude",
+      args: ["--resume", "6f1c2a8e-7d1b-4a55-9f0e-1c2d3e4f5a6b"],
+      session: { kind: "resume", id: "6f1c2a8e-7d1b-4a55-9f0e-1c2d3e4f5a6b" },
+    });
   });
 
   it("puts launch argv before the model and session argv of an assigned session", () => {
@@ -200,7 +204,7 @@ describe("resolveNativeHarnessLaunch", () => {
     ).toEqual({
       command: "codex",
       args: ["--no-daemon", "go"],
-      discoverSession: true,
+      session: { kind: "discover" },
     });
     expect(
       resolveNativeHarnessLaunch(
@@ -214,7 +218,7 @@ describe("resolveNativeHarnessLaunch", () => {
     ).toEqual({
       command: "codex",
       args: ["--no-daemon", "-c", 'model="gpt-6"', "resume", "abc-123"],
-      discoverSession: false,
+      session: { kind: "resume", id: "abc-123" },
     });
   });
 });

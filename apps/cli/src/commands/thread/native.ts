@@ -260,12 +260,12 @@ async function holdNativeHarness(
         activityArgs,
       );
       discovery = { cli: spec.cli, launchedAtMs: Date.now() };
-      recorded = !launch.discoverSession;
+      recorded = launch.session.kind !== "discover";
       reader = new NativeActivityReader(
         spec.cli,
         process.env,
         file,
-        spec.nativeSessionId,
+        launch.session,
       );
       if (activity !== undefined) {
         activityTimers.push(

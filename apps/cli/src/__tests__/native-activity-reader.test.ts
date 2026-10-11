@@ -134,12 +134,10 @@ describe("NativeActivityReader", () => {
   it("reports a resumed turn written before the first poll, not the turns before launch", () => {
     const home = tempHome();
     const file = writeRollout(home, codexTurn("an earlier prompt"));
-    const reader = new NativeActivityReader(
-      CODEX_CLI,
-      { HOME: home },
-      null,
-      SESSION_ID,
-    );
+    const reader = new NativeActivityReader(CODEX_CLI, { HOME: home }, null, {
+      kind: "resume",
+      id: SESSION_ID,
+    });
     appendFileSync(file, jsonl(codexTurn("the resumed prompt")));
 
     expect(reader.read()).toEqual([
@@ -150,14 +148,41 @@ describe("NativeActivityReader", () => {
     expect(reader.read()).toEqual([]);
   });
 
+  it("never reads a resumed transcript it could not measure at launch", () => {
+    const home = tempHome();
+    const reader = new NativeActivityReader(CODEX_CLI, { HOME: home }, null, {
+      kind: "resume",
+      id: SESSION_ID,
+    });
+    writeRollout(home, [
+      ...codexTurn("an earlier prompt"),
+      ...codexTurn("the resumed prompt"),
+    ]);
+
+    expect(reader.read()).toEqual([]);
+    expect(reader.finish()).toBeNull();
+  });
+
+  it("reads a started session's transcript that appears after launch from its first record", () => {
+    const home = tempHome();
+    const reader = new NativeActivityReader(CODEX_CLI, { HOME: home }, null, {
+      kind: "start",
+      id: SESSION_ID,
+    });
+    writeRollout(home, codexTurn("the first prompt"));
+
+    expect(reader.read()).toEqual([
+      { state: "working", prompt: null },
+      { state: "working", prompt: "the first prompt" },
+      { state: "idle", prompt: null },
+    ]);
+  });
+
   it("reads a session discovered after launch from its first record", () => {
     const home = tempHome();
-    const reader = new NativeActivityReader(
-      CODEX_CLI,
-      { HOME: home },
-      null,
-      null,
-    );
+    const reader = new NativeActivityReader(CODEX_CLI, { HOME: home }, null, {
+      kind: "discover",
+    });
     writeRollout(home, codexTurn("the first prompt").slice(0, 2));
     expect(reader.read()).toEqual([]);
 
@@ -179,7 +204,7 @@ describe("NativeActivityReader", () => {
       CLAUDE_CLI,
       { HOME: home },
       events,
-      SESSION_ID,
+      { kind: "start", id: SESSION_ID },
     );
     appendFileSync(
       events,
