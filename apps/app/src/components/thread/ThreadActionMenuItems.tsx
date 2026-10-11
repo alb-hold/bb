@@ -113,6 +113,7 @@ function ThreadActionChoiceRows({
       aria-current={choice.selected ? "true" : undefined}
       className="flex items-center justify-between gap-3"
       disabled={choice.disabled}
+      onKeyDown={filter.onChoiceKeyDown}
       onSelect={() => {
         void entry.action.run(choice.id);
       }}
@@ -135,6 +136,7 @@ function ThreadActionChoiceRows({
         onChange={filter.setQuery}
         matchCount={filter.visible.length}
         surface={surface}
+        inputRef={filter.inputRef}
       />
       {rows}
     </>

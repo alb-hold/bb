@@ -128,6 +128,7 @@ function ThreadQuickActionChoices({
             onChange={filter.setQuery}
             matchCount={filter.visible.length}
             surface="dropdown"
+            inputRef={filter.inputRef}
           />
         ) : null}
         {filter.visible.map((choice) => (
@@ -136,6 +137,7 @@ function ThreadQuickActionChoices({
             aria-current={choice.selected ? "true" : undefined}
             className="flex items-center justify-between gap-3"
             disabled={choice.disabled}
+            onKeyDown={filter.onChoiceKeyDown}
             onSelect={() => {
               void action.run(choice.id);
             }}

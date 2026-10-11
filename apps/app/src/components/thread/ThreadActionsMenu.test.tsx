@@ -732,6 +732,60 @@ describe.each(SURFACES)("thread actions on the $name", (surface) => {
     expect(screen.queryByRole("menuitem", { name: /^Project / })).toBeNull();
   });
 
+  it("opens the project filter focused so typing filters at once", async () => {
+    renderSurface(surface, { thread: baseThread }, { projects: MANY_PROJECTS });
+    await surface.open();
+    await openChoices(surface, "Move to project");
+    const filter = await screen.findByRole("textbox", {
+      name: "Filter Move to project",
+    });
+    await waitFor(() => expect(document.activeElement).toBe(filter));
+  });
+
+  (surface.compact ? it.skip : it)(
+    "sends a letter typed on a project row into the filter",
+    async () => {
+      renderSurface(
+        surface,
+        { thread: baseThread },
+        { projects: MANY_PROJECTS },
+      );
+      await surface.open();
+      await openChoices(surface, "Move to project");
+      const row = await screen.findByRole("menuitem", { name: "Project 25" });
+      row.focus();
+      fireEvent.keyDown(row, { key: "5" });
+      const filter = screen.getByRole<HTMLInputElement>("textbox", {
+        name: "Filter Move to project",
+      });
+      expect(filter.value).toBe("5");
+      expect(document.activeElement).toBe(filter);
+      expect(screen.queryByRole("menuitem", { name: "Project 2" })).toBeNull();
+      expect(screen.getByRole("menuitem", { name: "Project 25" })).toBeTruthy();
+    },
+  );
+
+  (surface.compact ? it.skip : it)(
+    "moves from the filter to the first match with the down arrow",
+    async () => {
+      renderSurface(
+        surface,
+        { thread: baseThread },
+        { projects: MANY_PROJECTS },
+      );
+      await surface.open();
+      await openChoices(surface, "Move to project");
+      const filter = await screen.findByRole("textbox", {
+        name: "Filter Move to project",
+      });
+      fireEvent.change(filter, { target: { value: "project 2" } });
+      fireEvent.keyDown(filter, { key: "ArrowDown" });
+      expect(document.activeElement).toBe(
+        screen.getByRole("menuitem", { name: "Project 2" }),
+      );
+    },
+  );
+
   it("lists a short project list without a filter", async () => {
     renderSurface(surface, { thread: baseThread });
     await surface.open();

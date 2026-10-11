@@ -1,6 +1,16 @@
-import { useMemo, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type ReactNode,
+  type RefObject,
+} from "react";
 import { Icon, type IconName } from "./icon";
 import { Input } from "./input";
+import { usePointerCoarse } from "./hooks/use-pointer-coarse";
 import {
   ContextMenuItem,
   ContextMenuLabel,
@@ -148,10 +158,38 @@ export const ACTION_MENU_CHOICE_FILTER_MIN_ITEMS = 8;
 
 const ACTION_MENU_CHOICE_FILTER_PASSTHROUGH_KEYS = new Set(["Escape", "Tab"]);
 
+function isFilterCharacter(event: KeyboardEvent<HTMLElement>): boolean {
+  return (
+    event.key.length === 1 &&
+    event.key !== " " &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    !event.altKey
+  );
+}
+
+function focusFirstChoiceAfter(input: HTMLElement): boolean {
+  const menu = input.closest('[role="menu"]');
+  if (menu === null) return false;
+  const choices = menu.querySelectorAll<HTMLElement>(
+    '[role="menuitem"]:not([data-disabled])',
+  );
+  for (const choice of choices) {
+    if (
+      input.compareDocumentPosition(choice) & Node.DOCUMENT_POSITION_FOLLOWING
+    ) {
+      choice.focus();
+      return true;
+    }
+  }
+  return false;
+}
+
 export function useActionMenuChoiceFilter<Choice extends { label: string }>(
   items: readonly Choice[],
 ) {
   const [query, setQuery] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
   const enabled = items.length >= ACTION_MENU_CHOICE_FILTER_MIN_ITEMS;
   const visible = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
@@ -160,7 +198,17 @@ export function useActionMenuChoiceFilter<Choice extends { label: string }>(
       item.label.toLocaleLowerCase().includes(normalized),
     );
   }, [enabled, items, query]);
-  return { enabled, query, setQuery, visible };
+  const onChoiceKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLElement>) => {
+      if (!enabled || !isFilterCharacter(event)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setQuery((current) => current + event.key);
+      inputRef.current?.focus();
+    },
+    [enabled],
+  );
+  return { enabled, query, setQuery, visible, inputRef, onChoiceKeyDown };
 }
 
 interface ActionMenuChoiceFilterProps {
@@ -169,6 +217,7 @@ interface ActionMenuChoiceFilterProps {
   onChange: (value: string) => void;
   matchCount: number;
   surface: ActionMenuSurface;
+  inputRef: RefObject<HTMLInputElement | null>;
 }
 
 export function ActionMenuChoiceFilter({
@@ -177,17 +226,30 @@ export function ActionMenuChoiceFilter({
   onChange,
   matchCount,
   surface,
+  inputRef,
 }: ActionMenuChoiceFilterProps) {
+  const isPointerCoarse = usePointerCoarse();
+  useEffect(() => {
+    if (isPointerCoarse) return;
+    inputRef.current?.focus({ preventScroll: true });
+  }, [inputRef, isPointerCoarse]);
   return (
     <>
       <div className="p-1">
         <Input
+          ref={inputRef}
           aria-label={label}
           placeholder="Filter"
           value={value}
           className="h-7"
           onChange={(event) => onChange(event.target.value)}
           onKeyDown={(event) => {
+            if (
+              event.key === "ArrowDown" &&
+              focusFirstChoiceAfter(event.currentTarget)
+            ) {
+              event.preventDefault();
+            }
             if (!ACTION_MENU_CHOICE_FILTER_PASSTHROUGH_KEYS.has(event.key)) {
               event.stopPropagation();
             }
