@@ -1,8 +1,10 @@
+import { spawn as spawnProcess } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import type net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
+import { pathToFileURL } from "node:url";
 import { spawn as spawnPty } from "node-pty";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -314,6 +316,58 @@ describe("opening a native holder connection", () => {
       startTimeoutMs: 200,
     });
     expect(silent.kind).toBe("did-not-start");
+  });
+});
+
+describe("native holder signals", () => {
+  it("survives the termination signals a bb quit or a process manager sends, so its CLI keeps running", async () => {
+    const holderModule = pathToFileURL(
+      path.join(import.meta.dirname, "..", "native-holder.ts"),
+    ).href;
+    const child = spawnProcess(
+      process.execPath,
+      [
+        "--experimental-strip-types",
+        "--no-warnings",
+        "--input-type=module",
+        "-e",
+        `const { ignoreNativeHolderSignals } = await import(${JSON.stringify(holderModule)});
+ignoreNativeHolderSignals(process);
+process.stdout.write("ready\\n");
+setInterval(() => {}, 1000);`,
+      ],
+      { stdio: ["ignore", "pipe", "inherit"] },
+    );
+    try {
+      await new Promise<void>((resolve, reject) => {
+        child.stdout.on("data", (chunk: Buffer) => {
+          if (chunk.toString().includes("ready")) resolve();
+        });
+        child.once("exit", (code, signal) =>
+          reject(new Error(`holder exited early: ${code} ${signal}`)),
+        );
+      });
+      for (const signal of [
+        "SIGTERM",
+        "SIGHUP",
+        "SIGINT",
+        "SIGQUIT",
+      ] as const) {
+        child.kill(signal);
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        expect({
+          signal,
+          exitCode: child.exitCode,
+          signalCode: child.signalCode,
+        }).toEqual({
+          signal,
+          exitCode: null,
+          signalCode: null,
+        });
+      }
+    } finally {
+      child.kill("SIGKILL");
+    }
   });
 });
 
