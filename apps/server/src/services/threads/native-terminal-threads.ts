@@ -133,6 +133,14 @@ export function nativeTerminalPrompt(
   deps: Pick<AppDeps, "config">,
   args: NativeTerminalPromptArgs,
 ): string | null {
+  const prompt = nativeTerminalPromptParts(deps, args).join("\n");
+  return prompt.length === 0 ? null : prompt;
+}
+
+export function nativeTerminalPromptParts(
+  deps: Pick<AppDeps, "config">,
+  args: NativeTerminalPromptArgs,
+): string[] {
   const attachments: string[] = [];
   const parts: string[] = [];
   for (const entry of args.input) {
@@ -151,10 +159,7 @@ export function nativeTerminalPrompt(
     );
   }
   const text = parts.join("\n\n").trim();
-  const prompt = [...attachments, ...(text.length === 0 ? [] : [text])].join(
-    "\n",
-  );
-  return prompt.length === 0 ? null : prompt;
+  return [...attachments, ...(text.length === 0 ? [] : [text])];
 }
 
 export const NATIVE_TERMINAL_ENDED_MESSAGE =
@@ -513,7 +518,7 @@ export function recordNativeTerminalSession(
 
 export function sendNativeTerminalMessage(
   deps: NativeTerminalDeps,
-  args: { threadId: string; text: string },
+  args: { threadId: string; pastes: readonly string[] },
 ): Promise<TerminalSession> {
   const previous = pendingSends.get(args.threadId) ?? Promise.resolve();
   const sending = previous.then(() => deliverNativeTerminalMessage(deps, args));
@@ -540,7 +545,7 @@ function nativeTerminalNotRunning(): ApiError {
 
 async function deliverNativeTerminalMessage(
   deps: NativeTerminalDeps,
-  args: { threadId: string; text: string },
+  args: { threadId: string; pastes: readonly string[] },
 ): Promise<TerminalSession> {
   const view = getNativeTerminalThreadView(deps, args.threadId);
   if (view.terminal === null || view.terminal.status !== "running") {
@@ -548,6 +553,30 @@ async function deliverNativeTerminalMessage(
   }
   const terminalId = view.terminal.id;
   const provider = requireNativeTerminalProvider(deps, view.providerId);
+  for (const text of args.pastes) {
+    await pasteIntoNativeTerminal(deps, {
+      provider,
+      screenRows: view.terminal.rows,
+      terminalId,
+      text,
+    });
+  }
+  return deps.terminalSessions.sendTerminalInput({
+    terminalId,
+    payload: { dataBase64: Buffer.from("\r", "utf8").toString("base64") },
+  });
+}
+
+async function pasteIntoNativeTerminal(
+  deps: NativeTerminalDeps,
+  args: {
+    provider: NativeTerminalProvider;
+    screenRows: number;
+    terminalId: string;
+    text: string;
+  },
+): Promise<void> {
+  const { provider, terminalId } = args;
   const before = await deps.terminalSessions.readTerminalOutput({
     terminalId,
     query: { tailBytes: NATIVE_TERMINAL_ECHO_CONTEXT_BYTES },
@@ -557,7 +586,7 @@ async function deliverNativeTerminalMessage(
   if (
     terminalScreenAlreadyShowsText({
       output: shown,
-      screenRows: view.terminal.rows,
+      screenRows: args.screenRows,
       text: args.text,
     })
   ) {
@@ -596,7 +625,7 @@ async function deliverNativeTerminalMessage(
         text: args.text,
       })
     ) {
-      break;
+      return;
     }
     if (Date.now() >= deadline) {
       throw new ApiError(
@@ -606,8 +635,4 @@ async function deliverNativeTerminalMessage(
       );
     }
   }
-  return deps.terminalSessions.sendTerminalInput({
-    terminalId,
-    payload: { dataBase64: Buffer.from("\r", "utf8").toString("base64") },
-  });
 }
