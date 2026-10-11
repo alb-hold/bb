@@ -6,6 +6,7 @@ import { cleanup, renderHook, waitFor } from "@testing-library/react";
 import type { NativeTerminalThread } from "@bb/server-contract";
 import type { BbNavigate, PluginThreadActionTarget } from "@get-bb/plugin-sdk";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { nativeTerminalThreadQueryKey } from "@/hooks/queries/query-keys";
 import {
   nativeTerminalModeItem,
   useNativeTerminalModeData,
@@ -142,5 +143,41 @@ describe("thread menu mode for threads the app has not loaded", () => {
         thr_unknown: null,
       }),
     );
+  });
+
+  it("offers no switch once a refetch of a known mode fails", async () => {
+    providerOf.set("thr_terminal", "claude-code");
+    let fail = false;
+    get.mockImplementation(async ({ threadId }) => {
+      if (fail) throw new Error("network");
+      return view(threadId, true);
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+    const { result } = renderHook(
+      () => useNativeTerminalModeData({ threadIds: ["thr_terminal"] }),
+      { wrapper },
+    );
+    const label = () =>
+      nativeTerminalModeItem({
+        thread: target("thr_terminal"),
+        data: result.current,
+        navigate: {} as BbNavigate,
+        sdk: {} as never,
+      })?.label ?? null;
+    await waitFor(() => expect(label()).toBe("Back to chat"));
+
+    fail = true;
+    await queryClient.refetchQueries({
+      queryKey: nativeTerminalThreadQueryKey("thr_terminal"),
+    });
+    await waitFor(() => expect(label()).toBeNull());
+    expect(
+      queryClient.getQueryData(nativeTerminalThreadQueryKey("thr_terminal")),
+    ).toMatchObject({ canReturnToChat: true });
   });
 });

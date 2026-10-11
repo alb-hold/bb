@@ -58,8 +58,10 @@ export function useNativeTerminalModeData({
       };
     }),
     combine: (results) =>
-      results.map(
-        (result) => result.data as NativeTerminalThread | null | undefined,
+      results.map((result) =>
+        result.status === "success"
+          ? (result.data as NativeTerminalThread | null)
+          : undefined,
       ),
   });
   const terminalThreadsKey = threadIds
