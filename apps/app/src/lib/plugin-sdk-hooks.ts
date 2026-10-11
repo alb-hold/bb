@@ -428,6 +428,9 @@ export function useBbNavigate(): BbNavigate {
     (url) => appNavigation.openUrl({ url }),
     [appNavigation],
   );
+  const experimental_openSignInWindow = useCallback<
+    BbNavigate["experimental_openSignInWindow"]
+  >((options) => appNavigation.openSignInWindow(options), [appNavigation]);
   const experimental_openFilePreview = useCallback<
     BbNavigate["experimental_openFilePreview"]
   >(
@@ -471,6 +474,7 @@ export function useBbNavigate(): BbNavigate {
       openThreadPanel,
       experimental_openFileExternally,
       experimental_openFilePreview,
+      experimental_openSignInWindow,
       experimental_openTerminal,
       openUrl,
     }),
@@ -482,6 +486,7 @@ export function useBbNavigate(): BbNavigate {
       openThreadPanel,
       experimental_openFileExternally,
       experimental_openFilePreview,
+      experimental_openSignInWindow,
       experimental_openTerminal,
       openUrl,
     ],

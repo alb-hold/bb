@@ -200,13 +200,17 @@ import {
   type DesktopAutoUpdateLogger,
   type DesktopAutoUpdateService,
 } from "./desktop-auto-update.js";
+import { createElectronSignInWindow } from "./desktop-sign-in-electron.js";
+import { DesktopSignInWindowController } from "./desktop-sign-in-window.js";
 import { mergeDesktopUpdateInfo } from "./desktop-update-info.js";
 import {
   BB_DESKTOP_CHECK_FOR_UPDATES_CHANNEL,
   BB_DESKTOP_GET_INFO_CHANNEL,
   BB_DESKTOP_INFO_CHANGED_CHANNEL,
   BB_DESKTOP_INSTALL_UPDATE_CHANNEL,
+  BB_DESKTOP_CLOSE_SIGN_IN_WINDOW_CHANNEL,
   BB_DESKTOP_OPEN_EXTERNAL_URL_CHANNEL,
+  BB_DESKTOP_OPEN_SIGN_IN_WINDOW_CHANNEL,
   BB_DESKTOP_SET_THEME_CHANNEL,
   BB_DESKTOP_ZOOM_COMMAND_CHANNEL,
 } from "./desktop-update-ipc.js";
@@ -246,6 +250,7 @@ import {
 import { createDesktopBrowserBrokerClient } from "./desktop-browser-broker-client.js";
 import {
   bbDesktopBrowserTabRefSchema,
+  bbDesktopSignInWindowRequestSchema,
   bbDesktopZoomCommandSchema,
   bbDesktopWindowFindRequestSchema,
   type BbDesktopZoomCommand,
@@ -383,6 +388,11 @@ const logViewerCopyRequestSchema = z
 let desktopWindowFactory: DesktopWindowFactory | null = null;
 let desktopBrowserViewManager: DesktopBrowserViewManager | null = null;
 let desktopFindViewManager: DesktopFindViewManager | null = null;
+const signInOwners = new Set<number>();
+const signInWindows = new DesktopSignInWindowController<BrowserWindow | null>({
+  createWindow: (partition, parent) =>
+    createElectronSignInWindow(partition, parent),
+});
 let desktopBrowserBroker: DesktopBrowserBroker | null = null;
 let desktopBrowserBrokerClient: ReturnType<
   typeof createDesktopBrowserBrokerClient
@@ -2338,6 +2348,40 @@ function registerDesktopUpdateIpc(): void {
     }
     if (payload === false) {
       resolveApplicationWindow(event.sender)?.close();
+    }
+  });
+  ipcMain.handle(
+    BB_DESKTOP_OPEN_SIGN_IN_WINDOW_CHANNEL,
+    (event, payload: unknown) => {
+      const parsed = bbDesktopSignInWindowRequestSchema.safeParse(payload);
+      if (
+        !parsed.success ||
+        !applicationWindowWebContentsIds.has(event.sender.id)
+      ) {
+        throw new Error("Invalid sign-in window request.");
+      }
+      const owner = event.sender;
+      signInWindows.closeOwnedBy(owner.id);
+      if (!signInOwners.has(owner.id)) {
+        signInOwners.add(owner.id);
+        owner.once("destroyed", () => {
+          signInOwners.delete(owner.id);
+          signInWindows.closeOwnedBy(owner.id);
+        });
+      }
+      return signInWindows.open({
+        owner: owner.id,
+        request: parsed.data,
+        parent: resolveApplicationWindow(owner),
+      });
+    },
+  );
+  ipcMain.on(BB_DESKTOP_CLOSE_SIGN_IN_WINDOW_CHANNEL, (event, id: unknown) => {
+    if (
+      typeof id === "string" &&
+      applicationWindowWebContentsIds.has(event.sender.id)
+    ) {
+      signInWindows.close(id, event.sender.id);
     }
   });
   ipcMain.on(

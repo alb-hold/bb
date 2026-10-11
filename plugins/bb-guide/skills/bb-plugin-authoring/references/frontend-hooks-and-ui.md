@@ -45,6 +45,7 @@ Hooks:
 { subPath?, replace? }?), toCompose({ initialPrompt?, focusPrompt? }?),
 openThreadPanel({ actionId, title?, params? }), openUrl(url),
 experimental_openFilePreview(options), experimental_openFileExternally(options),
+experimental_openSignInWindow({ url, redirectUrlPrefix? }),
 experimental_openTerminal({ terminalId }) }`.
   `toCompose` opens the root compose screen; pass `initialPrompt` to seed the
   composer draft and `focusPrompt: true` to focus it. The panel
