@@ -1,0 +1,26 @@
+export function quoteTerminalPath(path: string): string {
+  return `'${path.replaceAll("'", "'\\''")}'`;
+}
+
+export function formatTerminalFileDrop(paths: readonly string[]): string {
+  const validPaths = paths.filter((path) => path.length > 0);
+  return validPaths.map(quoteTerminalPath).join(" ");
+}
+
+export function resolveTerminalFileDropPaths<T>(
+  files: readonly T[],
+  getPathForFile: ((file: T) => string) | undefined,
+): string[] {
+  if (getPathForFile === undefined) return [];
+  return files
+    .map(getPathForFile)
+    .filter((path) => path.length > 0);
+}
+
+export function getNewTerminalSelection(
+  text: string,
+  previousText: string,
+): string | null {
+  const selection = text.trim();
+  return selection.length > 0 && selection !== previousText ? selection : null;
+}

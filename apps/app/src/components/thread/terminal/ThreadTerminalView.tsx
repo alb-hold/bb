@@ -60,6 +60,11 @@ import {
   listenForTerminalSizeClaims,
   type TerminalSizeClaims,
 } from "./terminal-size-claims";
+import {
+  formatTerminalFileDrop,
+  getNewTerminalSelection,
+  resolveTerminalFileDropPaths,
+} from "./terminal-file-drop";
 
 export const TERMINAL_FONT_FAMILY =
   '"JetBrainsMono Nerd Font Mono", "MesloLGS NF", "Symbols Nerd Font Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace';
@@ -694,6 +699,8 @@ export function ThreadTerminalView({
   const pointerStartPointRef = useRef<SelectionAnchorPoint | null>(null);
   const touchFocusGestureRef = useRef<TerminalTouchFocusGesture | null>(null);
   const lastPointerReleaseAnchorRef = useRef<SelectionAnchor | null>(null);
+  const lastCopiedSelectionRef = useRef("");
+  const handleFileDropRef = useRef<((files: FileList) => void) | null>(null);
   const onSessionChangeRef = useRef<
     ((session: TerminalSession) => void) | undefined
   >(onSessionChange);
@@ -745,6 +752,19 @@ export function ThreadTerminalView({
           text: terminal.getSelection(),
         }),
       );
+      const nextCopy = getNewTerminalSelection(
+        terminal.getSelection(),
+        lastCopiedSelectionRef.current,
+      );
+      if (nextCopy !== null) {
+        lastCopiedSelectionRef.current = nextCopy;
+        void copyToClipboardWithToast(nextCopy, {
+          successMessage: null,
+          errorMessage: null,
+        });
+      } else if (terminal.getSelection().trim().length === 0) {
+        lastCopiedSelectionRef.current = "";
+      }
     },
     [],
   );
@@ -913,6 +933,7 @@ export function ThreadTerminalView({
     let resizeAnimationFrame: number | null = null;
     let connectionNoticeTimeout: ReturnType<typeof setTimeout> | null = null;
     let selectionAnimationFrame: number | null = null;
+    let handleWindowPointerRelease: ((event: PointerEvent) => void) | null = null;
     let resizeObserver: ResizeObserver | null = null;
     let selectionChangeDisposable: { dispose: () => void } | null = null;
     let stopObservingFonts: (() => void) | null = null;
@@ -1139,6 +1160,35 @@ export function ThreadTerminalView({
       activeTransport.start();
       const sendTerminalInput = (dataBase64: string) =>
         activeTransport.sendInput(dataBase64);
+      handleWindowPointerRelease = (event: PointerEvent) => {
+        if (!pointerIsDownRef.current) return;
+        const anchor = selectionAnchorFromPointerRelease(
+          pointerStartPointRef.current,
+          { clientX: event.clientX, clientY: event.clientY },
+        );
+        lastPointerReleaseAnchorRef.current = anchor;
+        pointerIsDownRef.current = false;
+        pointerStartPointRef.current = null;
+        window.requestAnimationFrame(() => reportTerminalSelection(anchor));
+      };
+      window.addEventListener("pointerup", handleWindowPointerRelease);
+      handleFileDropRef.current = (files) => {
+        const desktop = window.bbDesktop;
+        const paths = resolveTerminalFileDropPaths(
+          Array.from(files),
+          desktop?.getPathForFile,
+        );
+        const input = formatTerminalFileDrop(paths);
+        if (!input || sessionStatusRef.current !== "running") return;
+        activeTransport.claimSize();
+        forwardTerminalData({
+          data: input,
+          onInput: sendTerminalInput,
+          onUserInput: onUserInputRef.current,
+          replayWriteState,
+          sessionStatus: sessionStatusRef.current,
+        });
+      };
       activeTerminal.onData((data) => {
         if (controlActiveRef.current) {
           data = applyTerminalControl(data);
@@ -1164,8 +1214,11 @@ export function ThreadTerminalView({
         onTitleChangeRef.current?.(title);
       });
       const scheduleSelectionReport = () => {
-        if (pointerIsDownRef.current || selectionAnimationFrame !== null) {
+        if (pointerIsDownRef.current) {
           return;
+        }
+        if (selectionAnimationFrame !== null) {
+          window.cancelAnimationFrame(selectionAnimationFrame);
         }
         selectionAnimationFrame = window.requestAnimationFrame(() => {
           selectionAnimationFrame = null;
@@ -1210,10 +1263,14 @@ export function ThreadTerminalView({
       setConnectionNotice(null);
       resizeObserver?.disconnect();
       selectionChangeDisposable?.dispose();
+      handleFileDropRef.current = null;
       document.removeEventListener(
         "visibilitychange",
         reportDocumentVisibility,
       );
+      if (handleWindowPointerRelease !== null) {
+        window.removeEventListener("pointerup", handleWindowPointerRelease);
+      }
       sizeClaims?.dispose();
       sizeClaims = null;
       transport?.dispose();
@@ -1297,6 +1354,16 @@ export function ThreadTerminalView({
             onTouchMove={handleTerminalTouchMove}
             onTouchEnd={handleTerminalTouchEnd}
             onTouchCancel={handleTerminalTouchCancel}
+            onDragOver={(event) => {
+              if (event.dataTransfer?.types.includes("Files")) {
+                event.preventDefault();
+              }
+            }}
+            onDrop={(event) => {
+              if (!event.dataTransfer?.files.length) return;
+              event.preventDefault();
+              handleFileDropRef.current?.(event.dataTransfer.files);
+            }}
           >
             <div
               ref={containerRef}

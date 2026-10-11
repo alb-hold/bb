@@ -96,4 +96,5 @@ export interface BbDesktopApi extends BbDesktopInfo {
   ): void;
   setTheme(theme: BbDesktopTheme): void;
   writeClipboard?(content: BbDesktopClipboardContent): Promise<void>;
+  getPathForFile?(file: File): string;
 }
