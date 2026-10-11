@@ -253,6 +253,7 @@ describe("switching a chat thread to its native terminal", () => {
       threadId: thread.id,
       providerId: "claude-code",
       nativeSessionId: SESSION_ID,
+      canReturnToChat: true,
     });
     expect(view.terminal?.id).toBe(open.terminalId);
     const launch = nativeTerminalLaunchSpecSchema.parse(
@@ -360,6 +361,14 @@ describe("switching a chat thread to its native terminal", () => {
     });
     expect(created.status).toBe(201);
     const thread = threadResponseSchema.parse(await readJson(created));
+    const view = nativeTerminalThreadSchema.parse(
+      await readJson(
+        await fixture.harness.app.request(
+          `/api/v1/threads/${thread.id}/native-terminal`,
+        ),
+      ),
+    );
+    expect(view.canReturnToChat).toBe(false);
     const chat = await switchMode(fixture, thread.id, "chat");
     expect(chat.status).toBe(409);
     expect(await readApiErrorCode(chat)).toBe(

@@ -23,7 +23,7 @@ import { sdk } from "@/lib/sdk";
 export interface NativeTerminalModeData {
   providerIdOf: (threadId: string) => string | null;
   isNativeProvider: (providerId: string) => boolean;
-  isInTerminal: (threadId: string) => boolean;
+  modeOf: (threadId: string) => "chat" | "terminal" | "terminalOnly";
   switchMode: (threadId: string, mode: NativeTerminalMode) => Promise<void>;
 }
 
@@ -44,16 +44,29 @@ export function useNativeTerminalModeData({
         (result) => result.data as NativeTerminalThread | null | undefined,
       ),
   });
-  const terminalThreadIdsKey = threadIds
-    .filter((_, index) => (views[index] ?? null) !== null)
+  const terminalThreadsKey = threadIds
+    .flatMap((threadId, index) => {
+      const view = views[index] ?? null;
+      return view === null
+        ? []
+        : [`${threadId}:${view.canReturnToChat ? "terminal" : "terminalOnly"}`];
+    })
     .join("\n");
   const nativeProvidersKey = (providers ?? [])
     .filter((provider) => provider.capabilities.supportsNativeTerminal === true)
     .map((provider) => provider.id)
     .join("\n");
   return useMemo(() => {
-    const terminalThreadIds = new Set(
-      terminalThreadIdsKey === "" ? [] : terminalThreadIdsKey.split("\n"),
+    const terminalModes = new Map(
+      (terminalThreadsKey === "" ? [] : terminalThreadsKey.split("\n")).map(
+        (entry) => {
+          const separator = entry.lastIndexOf(":");
+          return [
+            entry.slice(0, separator),
+            entry.slice(separator + 1) as "terminal" | "terminalOnly",
+          ] as const;
+        },
+      ),
     );
     const nativeProviders = new Set(
       nativeProvidersKey === "" ? [] : nativeProvidersKey.split("\n"),
@@ -63,13 +76,13 @@ export function useNativeTerminalModeData({
         (entries.get(threadId) ?? lookupCachedThread(queryClient, threadId))
           ?.providerId ?? null,
       isNativeProvider: (providerId) => nativeProviders.has(providerId),
-      isInTerminal: (threadId) => terminalThreadIds.has(threadId),
+      modeOf: (threadId) => terminalModes.get(threadId) ?? "chat",
       switchMode: async (threadId, mode) => {
         const view = await sdk.nativeTerminals.switchMode({ threadId, mode });
         await applyNativeTerminalModeSwitch({ queryClient, threadId, view });
       },
     };
-  }, [entries, nativeProvidersKey, queryClient, terminalThreadIdsKey]);
+  }, [entries, nativeProvidersKey, queryClient, terminalThreadsKey]);
 }
 
 export function nativeTerminalModeItem({
@@ -78,7 +91,9 @@ export function nativeTerminalModeItem({
   navigate,
 }: PluginThreadActionItemInput<NativeTerminalModeData>): PluginThreadAction | null {
   if (thread.archivedAt !== null) return null;
-  if (data.isInTerminal(thread.id)) {
+  const mode = data.modeOf(thread.id);
+  if (mode === "terminalOnly") return null;
+  if (mode === "terminal") {
     return {
       label: "Back to chat",
       icon: "MessageSquare",

@@ -71,6 +71,7 @@ describe("native terminal view cache", () => {
       providerId: "claude-code",
       displayName: "Claude Code",
       nativeSessionId: "session-a",
+      canReturnToChat: true,
       terminal: makeTerminalSession({ id: "term_a", threadId: "thr_a" }),
     };
     applyNativeTerminalThreadView({ queryClient, view });
@@ -90,6 +91,7 @@ describe("native terminal view cache", () => {
       providerId: "claude-code",
       displayName: "Claude Code",
       nativeSessionId: "session-a",
+      canReturnToChat: true,
       terminal: null,
     };
     queryClient.setQueryData(key, stale);

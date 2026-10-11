@@ -33,7 +33,7 @@ function target(
 function modeData(
   overrides: Partial<{
     providerId: string | null;
-    inTerminal: boolean;
+    mode: "chat" | "terminal" | "terminalOnly";
     switchMode: NativeTerminalModeData["switchMode"];
   }> = {},
 ): NativeTerminalModeData {
@@ -42,7 +42,7 @@ function modeData(
   return {
     providerIdOf: () => providerId,
     isNativeProvider: (id) => id === "claude-code" || id === "codex",
-    isInTerminal: () => overrides.inTerminal ?? false,
+    modeOf: () => overrides.mode ?? "chat",
     switchMode: overrides.switchMode ?? vi.fn(async () => undefined),
   };
 }
@@ -103,7 +103,7 @@ describe("Open in terminal / Back to chat", () => {
     const switchMode = vi.fn(async () => undefined);
     const { item, navigate } = itemFor(
       target(),
-      modeData({ inTerminal: true, switchMode }),
+      modeData({ mode: "terminal", switchMode }),
     );
     expect(item).toMatchObject({
       label: "Back to chat",
@@ -122,7 +122,7 @@ describe("Open in terminal / Back to chat", () => {
         [
           "archived in terminal",
           target({ archivedAt: 1 }),
-          modeData({ inTerminal: true }),
+          modeData({ mode: "terminal" }),
         ],
         [
           "no terminal CLI",
@@ -132,6 +132,11 @@ describe("Open in terminal / Back to chat", () => {
         ["provider unknown", target(), modeData({ providerId: null })],
         ["no workspace", target({ environment: null }), modeData()],
         ["no session yet", target({ status: "pending" }), modeData()],
+        [
+          "started in the terminal",
+          target(),
+          modeData({ mode: "terminalOnly" }),
+        ],
       ];
     for (const [, thread, data] of hidden) {
       expect(itemFor(thread, data).item).toBeNull();

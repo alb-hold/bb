@@ -2,6 +2,7 @@ import {
   consumeNativeTerminalThreadInitialPrompt,
   getEnvironment,
   getNativeTerminalThread,
+  getStoredProviderSession,
   recordNativeTerminalThreadSessionId,
   setNativeTerminalThreadTerminal,
   type NativeTerminalThreadRecord,
@@ -198,8 +199,19 @@ export function readRecordTerminal(
   }
 }
 
+function canReturnToChat(
+  deps: Pick<AppDeps, "db">,
+  record: NativeTerminalThreadRecord,
+): boolean {
+  const session = getStoredProviderSession(deps.db, record.threadId);
+  return (
+    session.kind === "owned" &&
+    session.providerThreadId === record.nativeSessionId
+  );
+}
+
 function toNativeTerminalThread(
-  deps: Pick<AppDeps, "providerRegistry" | "terminalSessions">,
+  deps: Pick<AppDeps, "db" | "providerRegistry" | "terminalSessions">,
   record: NativeTerminalThreadRecord,
   terminal: TerminalSession | null = readRecordTerminal(deps, record),
 ): NativeTerminalThread {
@@ -210,6 +222,7 @@ function toNativeTerminalThread(
       deps.providerRegistry.get(record.providerId)?.info.displayName ??
       record.providerId,
     nativeSessionId: record.nativeSessionId,
+    canReturnToChat: canReturnToChat(deps, record),
     terminal,
   };
 }

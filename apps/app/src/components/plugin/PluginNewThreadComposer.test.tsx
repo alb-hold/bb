@@ -1153,6 +1153,49 @@ describe("PluginNewThreadComposer seeding", () => {
     expect(submitted).toHaveLength(1);
     expect(submitted[0]).toMatchObject({ nativeTerminal: true });
     expect(submitted[0]).not.toHaveProperty("sessionOptions");
+    await act(async () => {
+      latestPromptBoxProps().execution.nativeTerminal.onChange(false);
+    });
+  });
+
+  it("opens the next composer with the native terminal choice it was left on", async () => {
+    mocks.systemProviders = [
+      { id: "codex", capabilities: { supportsNativeTerminal: true } },
+    ];
+    const renderNativeComposer = () =>
+      render(
+        <MemoryRouter>
+          <PluginNewThreadComposer
+            draftKey="native-terminal-preference"
+            defaultProjectId="proj_1"
+            onSubmit={() => undefined}
+          />
+        </MemoryRouter>,
+      );
+    const first = renderNativeComposer();
+    await waitFor(() => {
+      expect(latestPromptBoxProps().execution.nativeTerminal.enabled).toBe(
+        false,
+      );
+    });
+    await act(async () => {
+      latestPromptBoxProps().execution.nativeTerminal.onChange(true);
+    });
+    first.unmount();
+
+    const second = renderNativeComposer();
+    await waitFor(() => {
+      expect(latestPromptBoxProps().execution.nativeTerminal.enabled).toBe(
+        true,
+      );
+    });
+    expect(window.localStorage.getItem("bb.composer.nativeTerminal")).toBe(
+      "true",
+    );
+    await act(async () => {
+      latestPromptBoxProps().execution.nativeTerminal.onChange(false);
+    });
+    second.unmount();
   });
 
   it("submits a draft populated after an empty composer unmounts", async () => {

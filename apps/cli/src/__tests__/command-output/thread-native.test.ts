@@ -14,6 +14,7 @@ const VIEW: NativeTerminalThread = {
   providerId: "claude-code",
   displayName: "Claude Code",
   nativeSessionId: "2e624c50-68af-4689-9410-06caa371eb8a",
+  canReturnToChat: true,
   terminal: {
     id: "term_native",
     threadId: "thr_chat",
