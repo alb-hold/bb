@@ -1649,6 +1649,9 @@ export interface PluginProviderDeclaration {
    * data the bb CLI runs on the thread's host:
    *
    * - `executable`: a bare name resolved on the host `PATH`.
+   * - `launchArgs`: argv placed first on every launch, before the model and
+   *   session argv; no tokens. Codex passes `--no-daemon`, so its session
+   *   lives in the terminal's own process and is free once the CLI exits.
    * - `modelArgs`: argv placed first when the thread has a model; `{model}` is
    *   replaced. Empty when the CLI takes no model flag.
    * - `pastePlaceholders`: text the CLI draws in its input box instead of a
