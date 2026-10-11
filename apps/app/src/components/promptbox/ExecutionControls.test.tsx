@@ -1,6 +1,12 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from "@testing-library/react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import {
@@ -53,16 +59,21 @@ afterEach(() => {
 });
 
 describe("ExecutionControls", () => {
-  it("toggles native terminal mode only where the composer offers it", () => {
+  it("shows whether the thread runs in chat or its terminal and switches between them", () => {
     const onChange = vi.fn();
     const { rerender } = renderExecutionControls({
       ...makeExecutionControlsProps(),
       nativeTerminal: { enabled: false, onChange },
     });
 
-    const toggle = screen.getByRole("button", { name: "Native terminal" });
-    expect(toggle.getAttribute("aria-pressed")).toBe("false");
-    fireEvent.click(toggle);
+    const group = screen.getByRole("radiogroup", { name: "Run this thread in" });
+    const chat = within(group).getByRole("radio", { name: "Chat" });
+    const terminal = within(group).getByRole("radio", { name: "Terminal" });
+    expect(chat.getAttribute("aria-checked")).toBe("true");
+    expect(terminal.getAttribute("aria-checked")).toBe("false");
+    fireEvent.click(chat);
+    expect(onChange).not.toHaveBeenCalled();
+    fireEvent.click(terminal);
     expect(onChange).toHaveBeenCalledWith(true);
 
     rerender(
@@ -71,14 +82,19 @@ describe("ExecutionControls", () => {
         nativeTerminal={{ enabled: true, onChange }}
       />,
     );
-    const enabled = screen.getByRole("button", { name: "Native terminal: on" });
-    expect(enabled.getAttribute("aria-pressed")).toBe("true");
-    fireEvent.click(enabled);
+    expect(
+      screen
+        .getByRole("radio", { name: "Terminal" })
+        .getAttribute("aria-checked"),
+    ).toBe("true");
+    fireEvent.click(screen.getByRole("radio", { name: "Terminal" }));
+    expect(onChange).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("radio", { name: "Chat" }));
     expect(onChange).toHaveBeenLastCalledWith(false);
 
     rerender(<ExecutionControls {...makeExecutionControlsProps()} />);
     expect(
-      screen.queryByRole("button", { name: /Native terminal/u }),
+      screen.queryByRole("radiogroup", { name: "Run this thread in" }),
     ).toBeNull();
   });
 

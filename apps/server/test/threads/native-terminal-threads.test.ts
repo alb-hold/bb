@@ -134,12 +134,25 @@ async function postJson(
 
 async function createNativeThread(
   fixture: Fixture,
-  args: { providerId: string; prompt?: string; model?: string },
+  args: {
+    providerId: string;
+    prompt?: string;
+    model?: string;
+    modelSource?: "explicit" | "client-preference";
+  },
 ) {
   const response = await postJson(fixture, "/threads", {
     projectId: fixture.projectId,
     providerId: args.providerId,
     ...(args.model === undefined ? {} : { model: args.model }),
+    ...(args.modelSource === undefined
+      ? {}
+      : {
+          executionInputSources: {
+            providerId: "explicit",
+            model: args.modelSource,
+          },
+        }),
     origin: "cli",
     input: args.prompt === undefined ? [] : textInput(args.prompt),
     environment: { type: "reuse", environmentId: fixture.environment.id },
@@ -653,10 +666,16 @@ describe("native terminal threads", () => {
       providerId: "claude-code",
       model: "opus",
     });
+    const remembered = await createNativeThread(fixture, {
+      providerId: "claude-code",
+      model: "claude-opus-5-5[1m]",
+      modelSource: "client-preference",
+    });
 
     for (const [thread, model] of [
       [unpinned, null],
       [pinned, "opus"],
+      [remembered, "claude-opus-5-5[1m]"],
     ] as const) {
       expect(thread.providerId).toBe("claude-code");
       const record = getNativeTerminalThread(fixture.harness.db, thread.id);

@@ -1,11 +1,8 @@
 import { memo } from "react";
 import { cn } from "@bb/shared-ui/lib/utils";
 import { LIST_HOVER_TRANSITION } from "@bb/shared-ui/motion";
-import {
-  OPTION_BASE_CLASS_NAME,
-  OPTION_INTERACTIVE_CLASS_NAME,
-  OPTION_MUTED_CLASS_NAME,
-} from "@bb/shared-ui/option-display";
+import { Icon } from "@bb/shared-ui/icon";
+import { ToggleGroup, ToggleGroupItem } from "@bb/shared-ui/toggle-group";
 import type {
   PermissionMode,
   ProviderOptionDescriptor,
@@ -62,6 +59,22 @@ interface ExecutionReasoningConfig {
   options: readonly PickerOption<ReasoningLevel>[];
   onChange: (value: ReasoningLevel) => void;
 }
+
+const NATIVE_TERMINAL_CHOICES = [
+  {
+    value: "chat",
+    label: "Chat",
+    icon: "MessageSquare",
+    title: "bb runs the agent and shows its turns in the chat view",
+  },
+  {
+    value: "terminal",
+    label: "Terminal",
+    icon: "Terminal",
+    title:
+      "Run the provider's own claude or codex TUI in this thread's terminal",
+  },
+] as const;
 
 export interface ExecutionPermissionConfig {
   value?: PermissionMode;
@@ -156,25 +169,35 @@ export const ExecutionControls = memo(function ExecutionControls({
         />
       ) : null}
       {nativeTerminal === undefined ? null : (
-        <button
-          type="button"
-          aria-pressed={nativeTerminal.enabled}
+        <ToggleGroup
+          type="single"
+          aria-label="Run this thread in"
           data-native-terminal-toggle=""
-          disabled={disabled}
-          title="Run the provider's own claude or codex TUI in this thread's terminal instead of the chat view"
-          onClick={() => {
-            nativeTerminal.onChange(!nativeTerminal.enabled);
+          value={nativeTerminal.enabled ? "terminal" : "chat"}
+          onValueChange={(value) => {
+            if (value === "terminal" || value === "chat") {
+              nativeTerminal.onChange(value === "terminal");
+            }
           }}
-          className={cn(
-            OPTION_BASE_CLASS_NAME,
-            OPTION_INTERACTIVE_CLASS_NAME,
-            LIST_HOVER_TRANSITION,
-            !nativeTerminal.enabled && OPTION_MUTED_CLASS_NAME,
-            "font-normal",
-          )}
+          disabled={disabled}
+          className="h-7 shrink-0 gap-0.5 rounded-md border border-border p-0.5 max-md:pointer-coarse:h-10"
         >
-          {nativeTerminal.enabled ? "Native terminal: on" : "Native terminal"}
-        </button>
+          {NATIVE_TERMINAL_CHOICES.map((choice) => (
+            <ToggleGroupItem
+              key={choice.value}
+              value={choice.value}
+              title={choice.title}
+              className={cn(
+                "h-6 min-w-0 gap-1 whitespace-nowrap rounded-sm px-1.5 text-xs font-normal text-muted-foreground shadow-none hover:bg-state-hover hover:text-foreground data-[state=on]:bg-state-active data-[state=on]:text-foreground data-[state=on]:hover:bg-state-active",
+                "max-md:pointer-coarse:h-9 max-md:pointer-coarse:text-sm",
+                LIST_HOVER_TRANSITION,
+              )}
+            >
+              <Icon name={choice.icon} className="size-3.5" />
+              {choice.label}
+            </ToggleGroupItem>
+          ))}
+        </ToggleGroup>
       )}
     </>
   );

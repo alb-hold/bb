@@ -495,10 +495,7 @@ async function createPendingThreadAndAttemptFirstDispatch(
             ? randomUUID()
             : null,
         initialPrompt: args.nativeTerminal.initialPrompt,
-        model:
-          args.request.executionInputSources?.model === "client-preference"
-            ? null
-            : (args.request.model ?? null),
+        model: args.request.model ?? null,
       });
       beginNativeTerminalThreadProvisioning(deps, {
         environmentIntent: args.environmentIntent,
