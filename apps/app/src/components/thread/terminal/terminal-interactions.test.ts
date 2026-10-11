@@ -122,6 +122,38 @@ describe("terminal interactions in the DOM", () => {
     expect(copySelection).toHaveBeenLastCalledWith("same line");
   });
 
+  it("drops a selection frame queued before a new gesture and copies only the final selection", () => {
+    const terminal = document.createElement("div");
+    document.body.append(terminal);
+    const frames = createFrameQueue();
+    const copySelection = vi.fn();
+    const onSelection = vi.fn();
+    let selection = "transient";
+    const interactions = attachTerminalInteractions({
+      element: terminal,
+      getSelection: () => selection,
+      onPointerDown: vi.fn(),
+      onPointerRelease: vi.fn(),
+      onPointerCancel: vi.fn(),
+      onSelection,
+      copySelection,
+      onFilesDrop: vi.fn(),
+      requestFrame: frames.requestFrame,
+      cancelFrame: frames.cancelFrame,
+    });
+    disposables.push(interactions.dispose);
+
+    interactions.onSelectionChange();
+    terminal.dispatchEvent(pointerEvent("pointerdown"));
+    frames.flush();
+    selection = "final text";
+    terminal.dispatchEvent(pointerEvent("pointerup"));
+    frames.flush();
+
+    expect(onSelection.mock.calls).toEqual([["final text"]]);
+    expect(copySelection.mock.calls).toEqual([["final text"]]);
+  });
+
   it("replaces a pending selection frame when xterm reports a newer selection", () => {
     const terminal = document.createElement("div");
     const frames = createFrameQueue();

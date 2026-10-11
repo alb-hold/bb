@@ -53,6 +53,10 @@ export function attachTerminalInteractions({
   const handlePointerDown = (event: PointerEvent) => {
     pointerIsDown = true;
     lastCopiedSelection = "";
+    if (pendingFrame !== null) {
+      cancelFrame(pendingFrame);
+      pendingFrame = null;
+    }
     onPointerDown(event);
   };
   const handlePointerUp = (event: PointerEvent) => {
