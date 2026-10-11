@@ -139,7 +139,9 @@ CLI in a thread terminal instead of a provider turn. Declaring it sets
 terminal option; core never names a provider for it. The declaration is data
 the bb CLI runs on the thread's host: the `executable`, `launchArgs` placed
 first on every launch (no tokens; Codex passes `--no-daemon` so its session
-lives in the terminal's own process and is free for chat once the CLI exits),
+lives in the terminal's own process and is free for chat once the CLI exits,
+and both Claude Code and Codex pass their permission-bypass flag so a native
+thread runs unattended like a chat thread in full access),
 `modelArgs` placed next when the thread has a model (`{model}`), `pastePlaceholders` (what the
 CLI draws in its input box instead of a long paste; bb presses Enter after a
 sent message only once the CLI newly draws the text or one of these, and
