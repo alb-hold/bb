@@ -38,6 +38,13 @@ const DEFAULT_MAX_EXITED_SCROLLBACK_BYTES = 16 * 1024 * 1024;
 const PRIMARY_DEVICE_ATTRIBUTES_QUERY_PATTERN = /\u001b\[(?:0)?c/g;
 const PRIMARY_DEVICE_ATTRIBUTES_RESPONSE = "\u001b[?1;2c";
 const MAX_PRIMARY_DEVICE_ATTRIBUTES_REPLIES_PER_CHUNK = 8;
+const INITIAL_TERMINAL_REPLAY_PARSER_STATE: TerminalReplayParserState = {
+  alternateScreen: false,
+  controlString: null,
+  csiParameters: "",
+  escape: "none",
+  utf8Remaining: 0,
+};
 const NODE_PTY_NATIVE_DIRS: readonly string[] = [
   path.join("build", "Release"),
   path.join("build", "Debug"),
@@ -111,6 +118,15 @@ interface ScrollbackEntry {
     HostDaemonDaemonWsMessage,
     { type: "terminal.output" }
   >["chunk"];
+  parserStateBefore: TerminalReplayParserState;
+}
+
+interface TerminalReplayParserState {
+  alternateScreen: boolean;
+  controlString: "osc" | "string" | null;
+  csiParameters: string;
+  escape: "none" | "escape" | "intermediate" | "csi";
+  utf8Remaining: number;
 }
 
 interface ExitedTerminalSession {
@@ -148,6 +164,7 @@ interface TerminalSession {
   pendingPrimaryDeviceAttributesQuery: PendingPrimaryDeviceAttributesQuery;
   pty: TerminalPtyProcess;
   rows: number;
+  scrollbackParserState: TerminalReplayParserState;
   scrollback: ScrollbackEntry[];
   scrollbackBytes: number;
   terminalId: string;
@@ -494,6 +511,164 @@ function consumePrimaryDeviceAttributesQueries(
   };
 }
 
+function advanceTerminalReplayParserState(
+  bytes: Buffer,
+  previousState: TerminalReplayParserState,
+): TerminalReplayParserState {
+  const state = { ...previousState };
+  for (const byte of bytes) {
+    advanceTerminalReplayParserByte(state, byte);
+  }
+  return state;
+}
+
+function findTerminalReplaySafePosition(
+  entries: readonly ScrollbackEntry[],
+): { alternateScreen: boolean; chunkIndex: number; offset: number } | null {
+  const firstEntry = entries[0];
+  if (!firstEntry) {
+    return null;
+  }
+  const state = { ...firstEntry.parserStateBefore };
+  if (isTerminalReplaySafeBoundary(state)) {
+    return {
+      alternateScreen: state.alternateScreen,
+      chunkIndex: 0,
+      offset: 0,
+    };
+  }
+  for (let chunkIndex = 0; chunkIndex < entries.length; chunkIndex += 1) {
+    const entry = entries[chunkIndex];
+    if (!entry) {
+      continue;
+    }
+    const bytes = Buffer.from(entry.chunk.dataBase64, "base64");
+    for (let offset = 0; offset < bytes.byteLength; offset += 1) {
+      advanceTerminalReplayParserByte(state, bytes[offset] ?? 0);
+      if (isTerminalReplaySafeBoundary(state)) {
+        return {
+          alternateScreen: state.alternateScreen,
+          chunkIndex,
+          offset: offset + 1,
+        };
+      }
+    }
+  }
+  return null;
+}
+
+function isTerminalReplaySafeBoundary(
+  state: TerminalReplayParserState,
+): boolean {
+  return (
+    state.controlString === null &&
+    state.escape === "none" &&
+    state.utf8Remaining === 0
+  );
+}
+
+function advanceTerminalReplayParserByte(
+  state: TerminalReplayParserState,
+  byte: number,
+): void {
+  if (byte === 0x18 || byte === 0x1a) {
+    state.controlString = null;
+    state.csiParameters = "";
+    state.escape = "none";
+    state.utf8Remaining = 0;
+    return;
+  }
+  if (state.utf8Remaining > 0) {
+    if (byte >= 0x80 && byte <= 0xbf) {
+      state.utf8Remaining -= 1;
+      return;
+    }
+    state.utf8Remaining = 0;
+  }
+  if (state.controlString !== null) {
+    if (byte === 0x9c || (state.escape === "escape" && byte === 0x5c)) {
+      state.controlString = null;
+      state.escape = "none";
+    } else {
+      state.escape =
+        state.controlString === "osc" && byte === 0x07
+          ? "none"
+          : byte === 0x1b
+            ? "escape"
+            : "none";
+      if (state.controlString === "osc" && byte === 0x07) {
+        state.controlString = null;
+      }
+    }
+    return;
+  }
+  if (state.escape === "csi") {
+    if (byte === 0x1b) {
+      state.escape = "escape";
+      state.csiParameters = "";
+    } else if (byte >= 0x40 && byte <= 0x7e) {
+      if (
+        (byte === 0x68 || byte === 0x6c) &&
+        /^\?(?:47|1047|1049)(?:;|$)/u.test(state.csiParameters)
+      ) {
+        state.alternateScreen = byte === 0x68;
+      }
+      state.escape = "none";
+      state.csiParameters = "";
+    } else if (byte >= 0x20 && byte <= 0x3f) {
+      state.csiParameters += String.fromCharCode(byte);
+    }
+    return;
+  }
+  if (state.escape === "intermediate") {
+    if (byte === 0x1b) {
+      state.escape = "escape";
+    } else if (byte < 0x20 || byte > 0x2f) {
+      state.escape = "none";
+    }
+    return;
+  }
+  if (state.escape === "escape") {
+    if (byte === 0x1b) {
+      state.escape = "escape";
+    } else if (byte === 0x5b) {
+      state.escape = "csi";
+      state.csiParameters = "";
+    } else if (byte === 0x5d) {
+      state.controlString = "osc";
+      state.escape = "none";
+    } else if (
+      byte === 0x50 ||
+      byte === 0x58 ||
+      byte === 0x5e ||
+      byte === 0x5f
+    ) {
+      state.controlString = "string";
+      state.escape = "none";
+    } else if (byte >= 0x20 && byte <= 0x2f) {
+      state.escape = "intermediate";
+    } else {
+      state.escape = "none";
+    }
+    return;
+  }
+  if (byte === 0x1b) {
+    state.escape = "escape";
+  } else if (byte === 0x9b) {
+    state.escape = "csi";
+  } else if (byte === 0x9d) {
+    state.controlString = "osc";
+  } else if (byte === 0x90 || byte === 0x98 || byte === 0x9e || byte === 0x9f) {
+    state.controlString = "string";
+  } else if (byte >= 0xc2 && byte <= 0xdf) {
+    state.utf8Remaining = 1;
+  } else if (byte >= 0xe0 && byte <= 0xef) {
+    state.utf8Remaining = 2;
+  } else if (byte >= 0xf0 && byte <= 0xf4) {
+    state.utf8Remaining = 3;
+  }
+}
+
 export class TerminalManager {
   private readonly closeGracePeriodMs: number;
   private readonly exitedRetentionMs: number;
@@ -637,6 +812,7 @@ export class TerminalManager {
         pendingPrimaryDeviceAttributesQuery: "",
         pty,
         rows: message.rows,
+        scrollbackParserState: { ...INITIAL_TERMINAL_REPLAY_PARSER_STATE },
         scrollback: [],
         scrollbackBytes: 0,
         terminalId: message.terminalId,
@@ -764,7 +940,39 @@ export class TerminalManager {
         replayBytes -= removed.byteLength;
       }
     }
-    const chunks = replayEntries.map((entry) => entry.chunk);
+    const safePosition = findTerminalReplaySafePosition(replayEntries);
+    const chunks = safePosition
+      ? replayEntries.slice(safePosition.chunkIndex).map((entry) => entry.chunk)
+      : [];
+    if (safePosition && safePosition.offset > 0) {
+      const firstEntry = replayEntries[safePosition.chunkIndex];
+      if (firstEntry) {
+        const safeBytes = Buffer.from(
+          firstEntry.chunk.dataBase64,
+          "base64",
+        ).subarray(safePosition.offset);
+        if (safeBytes.byteLength === 0) {
+          chunks.shift();
+        } else {
+          chunks[0] = {
+            ...firstEntry.chunk,
+            dataBase64: safeBytes.toString("base64"),
+          };
+        }
+      }
+    }
+    if (safePosition?.alternateScreen && chunks.length > 0) {
+      const firstChunk = chunks[0];
+      if (firstChunk) {
+        chunks[0] = {
+          ...firstChunk,
+          dataBase64: Buffer.concat([
+            Buffer.from("\u001b[?1049h", "utf8"),
+            Buffer.from(firstChunk.dataBase64, "base64"),
+          ]).toString("base64"),
+        };
+      }
+    }
     this.options.sendMessage({
       type: "terminal.replay",
       requestId: args.message.requestId,
@@ -969,10 +1177,16 @@ export class TerminalManager {
         seq: session.nextSeq,
         dataBase64: dataBuffer.toString("base64"),
       };
+      const parserStateBefore = { ...session.scrollbackParserState };
+      session.scrollbackParserState = advanceTerminalReplayParserState(
+        dataBuffer,
+        session.scrollbackParserState,
+      );
       session.nextSeq += 1;
       const entry: ScrollbackEntry = {
         byteLength: dataBuffer.byteLength,
         chunk,
+        parserStateBefore,
       };
       session.scrollback.push(entry);
       session.scrollbackBytes += entry.byteLength;
@@ -1057,7 +1271,10 @@ export class TerminalManager {
     }, PAUSED_PROCESS_EXIT_POLL_MS);
   }
 
-  private resumeOutput(session: TerminalSession, flow: TerminalOutputFlow): void {
+  private resumeOutput(
+    session: TerminalSession,
+    flow: TerminalOutputFlow,
+  ): void {
     if (flow.pausedExitPoll === null) {
       return;
     }

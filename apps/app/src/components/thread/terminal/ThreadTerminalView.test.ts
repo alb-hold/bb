@@ -1,4 +1,8 @@
 import { TERMINAL_DATA_MAX_BYTES } from "@bb/domain";
+import type {
+  TerminalServerMessage,
+  TerminalSession,
+} from "@bb/server-contract";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { Terminal } from "@xterm/xterm";
 import { describe, expect, it, vi } from "vitest";
@@ -8,6 +12,7 @@ import {
   applyTerminalFontFamily,
   captureTerminalContextMenuState,
   encodeTerminalInputChunks,
+  handleTerminalServerMessage,
   forceTerminalFontMeasurement,
   focusTerminalFromTouchRelease,
   forwardTerminalData,
@@ -336,6 +341,146 @@ describe("terminal output encoding", () => {
       "\u001b[1;1R",
     );
     expect(replayWriteState.suppressedWriteCount).toBe(0);
+    terminal.dispose();
+  });
+
+  it("requests a repaint only after the final replay chunk has parsed", async () => {
+    const terminal = new Terminal({ cols: 80, rows: 24 });
+    const replayWriteState = { suppressedWriteCount: 0 };
+    const replayState = { nextSeq: null as number | null };
+    const acknowledgeOutput = vi.fn();
+    const session = {
+      id: "term_1",
+      threadId: "thr_1",
+      environmentId: "env_1",
+      hostId: "host_1",
+      title: "Terminal",
+      initialCwd: "/workspace",
+      cols: 80,
+      rows: 24,
+      status: "running",
+      exitCode: null,
+      closeReason: null,
+      createdAt: 1,
+      updatedAt: 1,
+      lastUserInputAt: null,
+    } satisfies TerminalSession;
+    const attachedMessage = {
+      type: "attached",
+      session,
+      replayStartSeq: 7,
+      nextSeq: 9,
+    } satisfies TerminalServerMessage;
+    const replayMessage = {
+      type: "output",
+      chunk: {
+        seq: 8,
+        dataBase64: Buffer.from("prompt", "utf8").toString("base64"),
+      },
+    } satisfies TerminalServerMessage;
+    const onReplayComplete = vi.fn(() => {
+      expect(
+        terminal.buffer.active.getLine(0)?.translateToString().trimEnd(),
+      ).toBe("prompt");
+    });
+    const handleMessage = (message: TerminalServerMessage) =>
+      handleTerminalServerMessage({
+        acknowledgeOutput,
+        message,
+        onReplayComplete,
+        replayNextSeq: replayState.nextSeq,
+        replayWriteState,
+        setReplayNextSeq: (nextSeq) => {
+          replayState.nextSeq = nextSeq;
+        },
+        terminal,
+      });
+
+    handleMessage(attachedMessage);
+    expect(onReplayComplete).not.toHaveBeenCalled();
+    handleMessage(replayMessage);
+    await new Promise<void>((resolve) => terminal.write("", resolve));
+
+    expect(onReplayComplete).toHaveBeenCalledOnce();
+    expect(acknowledgeOutput).toHaveBeenCalledWith(9);
+    expect(replayState.nextSeq).toBeNull();
+    terminal.dispose();
+  });
+
+  it("restores a synthetic TUI after a mid-stream alternate-screen replay", async () => {
+    const terminal = new Terminal({ cols: 80, rows: 24 });
+    const replayWriteState = { suppressedWriteCount: 0 };
+    const replayState = { nextSeq: null as number | null };
+    const session = {
+      id: "term_1",
+      threadId: "thr_1",
+      environmentId: "env_1",
+      hostId: "host_1",
+      title: "Terminal",
+      initialCwd: "/workspace",
+      cols: 80,
+      rows: 24,
+      status: "running",
+      exitCode: null,
+      closeReason: null,
+      createdAt: 1,
+      updatedAt: 1,
+      lastUserInputAt: null,
+    } satisfies TerminalSession;
+    let resolveRepaint = (): void => {};
+    const repaint = new Promise<void>((resolve) => {
+      resolveRepaint = resolve;
+    });
+    const fullScreen =
+      "\u001b[2J\u001b[HClaude Code v2.1.296\u001b[12;1H[ Prompt ]\u001b[13;1H❯ run terminal reattach tests\u001b[23;1HOpus 5.5 · branch · ctx 4M\u001b[24;1HStatus · connected · footer\u001b[13;3H";
+    const requestRepaint = vi.fn(() => {
+      terminal.write(fullScreen, resolveRepaint);
+    });
+    const acknowledgeOutput = vi.fn();
+    const handleMessage = (message: TerminalServerMessage) =>
+      handleTerminalServerMessage({
+        acknowledgeOutput,
+        message,
+        onReplayComplete: requestRepaint,
+        replayNextSeq: replayState.nextSeq,
+        replayWriteState,
+        setReplayNextSeq: (nextSeq) => {
+          replayState.nextSeq = nextSeq;
+        },
+        terminal,
+      });
+
+    handleMessage({
+      type: "attached",
+      session,
+      replayStartSeq: 41,
+      nextSeq: 42,
+    });
+    handleMessage({
+      type: "output",
+      chunk: {
+        seq: 41,
+        dataBase64: Buffer.from(
+          "\u001b[?1049hmid-stream-tail",
+          "utf8",
+        ).toString("base64"),
+      },
+    });
+    await repaint;
+
+    const lines = Array.from({ length: 24 }, (_, index) =>
+      terminal.buffer.active.getLine(index)?.translateToString().trimEnd(),
+    );
+    expect(requestRepaint).toHaveBeenCalledOnce();
+    expect(terminal.buffer.active.type).toBe("alternate");
+    expect(lines[0]).toContain("Claude Code v2.1.296");
+    expect(lines[11]).toContain("[ Prompt ]");
+    expect(lines[12]).toContain("❯ run terminal reattach tests");
+    expect(lines[22]).toContain("Opus 5.5 · branch · ctx 4M");
+    expect(lines[23]).toContain("Status · connected · footer");
+    expect(terminal.buffer.active.cursorX).toBe(2);
+    expect(terminal.buffer.active.cursorY).toBe(12);
+    expect(acknowledgeOutput).toHaveBeenCalledWith(42);
     terminal.dispose();
   });
 

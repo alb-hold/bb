@@ -216,6 +216,36 @@ export class TerminalWebSocketTransport {
     );
   }
 
+  requestRepaint(): void {
+    const lastResize = this.lastResize;
+    const socket = this.socket;
+    if (
+      lastResize === null ||
+      socket === null ||
+      socket.readyState !== SOCKET_OPEN
+    ) {
+      return;
+    }
+    const nudgedCols =
+      lastResize.cols < 500 ? lastResize.cols + 1 : lastResize.cols - 1;
+    this.trySend(
+      socket,
+      JSON.stringify({
+        type: "resize",
+        cols: nudgedCols,
+        rows: lastResize.rows,
+      }),
+    );
+    this.trySend(
+      socket,
+      JSON.stringify({
+        type: "resize",
+        cols: lastResize.cols,
+        rows: lastResize.rows,
+      }),
+    );
+  }
+
   claimSize(): void {
     const socket = this.socket;
     if (

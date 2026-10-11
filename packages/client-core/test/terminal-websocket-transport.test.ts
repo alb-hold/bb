@@ -392,4 +392,38 @@ describe("TerminalWebSocketTransport", () => {
     ]);
     harness.transport.dispose();
   });
+
+  it("nudges and restores the PTY size without changing the remembered viewport", () => {
+    const harness = createHarness();
+    harness.transport.sendResize(100, 30);
+    harness.transport.start();
+    const socket = harness.sockets[0]!;
+    socket.open();
+
+    harness.transport.requestRepaint();
+    harness.transport.sendResize(100, 30);
+
+    expect(socket.sent).toEqual([
+      JSON.stringify({ type: "resize", cols: 100, rows: 30 }),
+      JSON.stringify({ type: "resize", cols: 101, rows: 30 }),
+      JSON.stringify({ type: "resize", cols: 100, rows: 30 }),
+    ]);
+    harness.transport.dispose();
+  });
+
+  it("nudges left at the maximum supported terminal width", () => {
+    const harness = createHarness();
+    harness.transport.sendResize(500, 30);
+    harness.transport.start();
+    const socket = harness.sockets[0]!;
+    socket.open();
+
+    harness.transport.requestRepaint();
+
+    expect(socket.sent.slice(1)).toEqual([
+      JSON.stringify({ type: "resize", cols: 499, rows: 30 }),
+      JSON.stringify({ type: "resize", cols: 500, rows: 30 }),
+    ]);
+    harness.transport.dispose();
+  });
 });

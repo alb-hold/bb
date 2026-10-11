@@ -1496,6 +1496,92 @@ describe("TerminalManager", () => {
     });
   });
 
+  it("starts replay after a CSI sequence that crosses the tail boundary", async () => {
+    const harness = createHarness();
+    const pty = await openTerminal(harness);
+
+    pty.emitData(`${"x".repeat(64 * 1024 - 2)}\u001b[`);
+    pty.emitData("31mOK");
+    await harness.manager.handleMessage({
+      type: "terminal.attach",
+      requestId: "attach-csi-tail",
+      terminalId: "term-1",
+      sinceSeq: 0,
+      tailBytes: 1,
+    });
+
+    const replay = harness.messages.find(
+      (message) => message.type === "terminal.replay",
+    );
+    expect(replay).toMatchObject({
+      chunks: [
+        {
+          seq: 1,
+          dataBase64: Buffer.from("OK", "utf8").toString("base64"),
+        },
+      ],
+      replayStartSeq: 1,
+    });
+  });
+
+  it("starts replay after a UTF-8 code point that crosses the tail boundary", async () => {
+    const harness = createHarness();
+    const pty = await openTerminal(harness);
+
+    pty.emitData(`${"x".repeat(64 * 1024 - 2)}💙`);
+    pty.emitData("tail");
+    await harness.manager.handleMessage({
+      type: "terminal.attach",
+      requestId: "attach-utf8-tail",
+      terminalId: "term-1",
+      sinceSeq: 0,
+      tailBytes: 6,
+    });
+
+    const replay = harness.messages.find(
+      (message) => message.type === "terminal.replay",
+    );
+    expect(replay).toMatchObject({
+      chunks: [
+        {
+          seq: 2,
+          dataBase64: Buffer.from("tail", "utf8").toString("base64"),
+        },
+      ],
+      replayStartSeq: 2,
+    });
+  });
+
+  it("restores alternate-screen mode when replay starts after its enter sequence", async () => {
+    const harness = createHarness();
+    const pty = await openTerminal(harness);
+
+    pty.emitData(`\u001b[?1049h${"x".repeat(64 * 1024 - 8)}`);
+    pty.emitData("tail");
+    await harness.manager.handleMessage({
+      type: "terminal.attach",
+      requestId: "attach-alternate-screen-tail",
+      terminalId: "term-1",
+      sinceSeq: 0,
+      tailBytes: 4,
+    });
+
+    const replay = harness.messages.find(
+      (message) => message.type === "terminal.replay",
+    );
+    expect(replay).toMatchObject({
+      chunks: [
+        {
+          seq: 1,
+          dataBase64: Buffer.from("\u001b[?1049htail", "utf8").toString(
+            "base64",
+          ),
+        },
+      ],
+      replayStartSeq: 1,
+    });
+  });
+
   it("writes input and resizes the active PTY", async () => {
     const harness = createHarness();
     const pty = await openTerminal(harness);
