@@ -2471,7 +2471,7 @@ describe("public terminal routes", () => {
     });
   });
 
-  it("keeps the PTY size with the device in use when another client attaches", async () => {
+  it("sizes the PTY to the smallest visible device so every screen renders it", async () => {
     const fixture = await createTerminalRouteFixture();
     harnesses.push(fixture.harness);
     const stored = createTerminalSession(fixture.harness.db, {
@@ -2538,27 +2538,34 @@ describe("public terminal routes", () => {
 
     await attach(phone);
     send(phone, { type: "resize", cols: 44, rows: 30 });
+    expect(sizes()).toEqual(["160x48", "44x30"]);
     send(phone, { type: "resize", cols: 44, rows: 20 });
     send(desktop, { type: "resize", cols: 150, rows: 48 });
-    expect(sizes()).toEqual(["160x48", "150x48"]);
+    expect(sizes()).toEqual(["160x48", "44x30", "44x20"]);
 
+    send(desktop, { type: "input", dataBase64: "YQ==" });
     send(phone, { type: "input", dataBase64: "YQ==" });
-    expect(sizes()).toEqual(["160x48", "150x48", "44x20"]);
-    const operations = readDaemonOperationMessages(fixture.socket).map(
-      (message) => message.type,
-    );
-    expect(operations.slice(-2)).toEqual(["terminal.resize", "terminal.input"]);
-    send(desktop, { type: "resize", cols: 160, rows: 48 });
     expect(sizes()).toHaveLength(3);
 
-    send(desktop, { type: "resize", cols: 160, rows: 48, claim: true });
-    expect(sizes()).toEqual(["160x48", "150x48", "44x20", "160x48"]);
-    send(phone, { type: "resize", cols: 44, rows: 22 });
-    expect(sizes()).toHaveLength(4);
+    send(phone, { type: "visibility", visible: false });
+    expect(sizes()).toEqual(["160x48", "44x30", "44x20", "150x48"]);
+    send(phone, { type: "visibility", visible: true });
+    expect(sizes()).toEqual(["160x48", "44x30", "44x20", "150x48", "44x20"]);
 
-    terminals.detachBrowserTerminal({ terminalId: stored.id, socket: desktop });
-    send(phone, { type: "resize", cols: 44, rows: 24 });
-    expect(sizes()).toEqual(["160x48", "150x48", "44x20", "160x48", "44x24"]);
+    terminals.detachBrowserTerminal({ terminalId: stored.id, socket: phone });
+    expect(sizes()).toEqual([
+      "160x48",
+      "44x30",
+      "44x20",
+      "150x48",
+      "44x20",
+      "150x48",
+    ]);
+    expect(
+      fixture.harness.deps.terminalSessions.getTerminal({
+        terminalId: stored.id,
+      }),
+    ).toMatchObject({ cols: 150, rows: 48 });
   });
 
   it("paces the daemon by the output an acknowledging browser has parsed", async () => {

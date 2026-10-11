@@ -56,9 +56,9 @@ import {
   type TerminalLinkTarget,
 } from "./terminal-links";
 import {
-  listenForTerminalSizeClaims,
-  type TerminalSizeClaims,
-} from "./terminal-size-claims";
+  terminalDisplaySize,
+  type TerminalGridSize,
+} from "./terminal-shared-size";
 import { handleTerminalFileDrop } from "./terminal-file-drop";
 import { attachTerminalInteractions } from "./terminal-interactions";
 
@@ -915,13 +915,14 @@ export function ThreadTerminalView({
     let resizeObserver: ResizeObserver | null = null;
     let selectionChangeDisposable: { dispose: () => void } | null = null;
     let stopObservingFonts: (() => void) | null = null;
-    let sizeClaims: TerminalSizeClaims | null = null;
+    let sharedSize: TerminalGridSize | null = null;
+    let containerHasSize = hasVisibleTerminalSize({
+      containerElement: container,
+    });
     const reportDocumentVisibility = () => {
-      const visible = document.visibilityState === "visible";
-      transport?.setVisible(visible);
-      if (visible) {
-        sizeClaims?.claimIfFocused();
-      }
+      transport?.setVisible(
+        document.visibilityState === "visible" && containerHasSize,
+      );
     };
 
     async function mountTerminal(
@@ -1008,8 +1009,19 @@ export function ThreadTerminalView({
         if (!hasVisibleTerminalSize({ containerElement })) {
           return;
         }
-        fitAddon.fit();
-        transport?.sendResize(terminal.cols, terminal.rows);
+        const fitted = fitAddon.proposeDimensions();
+        if (
+          fitted === undefined ||
+          !Number.isFinite(fitted.cols) ||
+          !Number.isFinite(fitted.rows)
+        ) {
+          return;
+        }
+        const display = terminalDisplaySize(fitted, sharedSize);
+        if (terminal.cols !== display.cols || terminal.rows !== display.rows) {
+          terminal.resize(display.cols, display.rows);
+        }
+        transport?.sendResize(fitted.cols, fitted.rows);
       };
       const scheduleFit: TerminalFitScheduler = () => {
         if (resizeAnimationFrame !== null) {
@@ -1102,6 +1114,16 @@ export function ThreadTerminalView({
           });
         },
         onMessage: (message) => {
+          if (
+            message.type === "attached" ||
+            message.type === "session-updated"
+          ) {
+            const { cols, rows } = message.session;
+            if (sharedSize?.cols !== cols || sharedSize.rows !== rows) {
+              sharedSize = { cols, rows };
+              scheduleFit();
+            }
+          }
           handleTerminalServerMessage({
             acknowledgeOutput: (nextSeq) =>
               activeTransport.acknowledgeOutput(nextSeq),
@@ -1127,14 +1149,9 @@ export function ThreadTerminalView({
         url: buildTerminalWebSocketUrl({ terminalId: session.id }),
       });
       transport = activeTransport;
-      activeTransport.sendResize(activeTerminal.cols, activeTerminal.rows);
+      fitTerminal();
       reportDocumentVisibility();
       document.addEventListener("visibilitychange", reportDocumentVisibility);
-      sizeClaims = listenForTerminalSizeClaims({
-        claim: () => activeTransport.claimSize(),
-        element: containerElement,
-        textarea: activeTerminal.textarea,
-      });
       activeTransport.start();
       const sendTerminalInput = (dataBase64: string) =>
         activeTransport.sendInput(dataBase64);
@@ -1144,7 +1161,6 @@ export function ThreadTerminalView({
           files: Array.from(files),
           getPathForFile: desktop?.getPathForFile,
           isRunning: sessionStatusRef.current === "running",
-          claimSize: () => activeTransport.claimSize(),
           sendInput: (input) =>
             forwardTerminalData({
               data: input,
@@ -1195,7 +1211,12 @@ export function ThreadTerminalView({
       );
 
       resizeObserver = new ResizeObserver((entries) => {
-        if (!hasVisibleTerminalSize({ containerElement, entries })) {
+        const hasSize = hasVisibleTerminalSize({ containerElement, entries });
+        if (hasSize !== containerHasSize) {
+          containerHasSize = hasSize;
+          reportDocumentVisibility();
+        }
+        if (!hasSize) {
           return;
         }
         scheduleFit();
@@ -1231,8 +1252,6 @@ export function ThreadTerminalView({
         "visibilitychange",
         reportDocumentVisibility,
       );
-      sizeClaims?.dispose();
-      sizeClaims = null;
       transport?.dispose();
       terminal?.dispose();
       terminalRef.current = null;

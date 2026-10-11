@@ -207,7 +207,6 @@ export const terminalClientMessageSchema = z.discriminatedUnion("type", [
       type: z.literal("resize"),
       cols: terminalColsSchema,
       rows: terminalRowsSchema,
-      claim: z.literal(true).optional(),
     })
     .strict(),
   z

@@ -45,10 +45,18 @@ interface HubSocket {
   send(data: string): void;
 }
 
-interface TerminalRequestedSize {
+interface TerminalSize {
   cols: number;
   rows: number;
 }
+
+interface TerminalClientState {
+  lastSeenAt: number;
+  size: TerminalSize | null;
+  visible: boolean;
+}
+
+export const TERMINAL_CLIENT_STALE_MS = 45_000;
 
 interface TerminalSocketSendQueue {
   bytes: number;
@@ -277,10 +285,9 @@ export class NotificationHub implements DbNotifier {
     HubSocket,
     Set<string>
   >();
-  private readonly terminalResizeOwnerById = new Map<string, HubSocket>();
-  private readonly terminalRequestedSizeById = new Map<
+  private readonly terminalClientStateById = new Map<
     string,
-    Map<HubSocket, TerminalRequestedSize>
+    Map<HubSocket, TerminalClientState>
   >();
   private readonly threadEventWaiters = new Map<
     string,
@@ -337,53 +344,92 @@ export class NotificationHub implements DbNotifier {
     this.terminalIdsByClientSocket.set(socket, terminalIds);
   }
 
-  claimTerminalResizeOwnership(terminalId: string, socket: HubSocket): void {
-    this.terminalResizeOwnerById.set(terminalId, socket);
-  }
-
-  claimUnownedTerminalResizeOwnership(
+  recordTerminalClientSize(
     terminalId: string,
     socket: HubSocket,
+    size: TerminalSize,
+    now: number,
   ): void {
-    if (!this.terminalResizeOwnerById.has(terminalId)) {
-      this.terminalResizeOwnerById.set(terminalId, socket);
+    const state = this.terminalClientState(terminalId, socket, now);
+    state.size = size;
+    state.lastSeenAt = now;
+  }
+
+  recordTerminalClientVisibility(
+    terminalId: string,
+    socket: HubSocket,
+    visible: boolean,
+    now: number,
+  ): void {
+    const state = this.terminalClientState(terminalId, socket, now);
+    state.visible = visible;
+    state.lastSeenAt = now;
+  }
+
+  recordTerminalClientSeen(
+    terminalId: string,
+    socket: HubSocket,
+    now: number,
+  ): void {
+    this.terminalClientState(terminalId, socket, now).lastSeenAt = now;
+  }
+
+  terminalSharedSize(terminalId: string, now: number): TerminalSize | null {
+    let shared: TerminalSize | null = null;
+    for (const state of this.terminalClientStateById
+      .get(terminalId)
+      ?.values() ?? []) {
+      if (
+        state.size === null ||
+        !state.visible ||
+        now - state.lastSeenAt > TERMINAL_CLIENT_STALE_MS
+      ) {
+        continue;
+      }
+      shared =
+        shared === null
+          ? { ...state.size }
+          : {
+              cols: Math.min(shared.cols, state.size.cols),
+              rows: Math.min(shared.rows, state.size.rows),
+            };
     }
+    return shared;
   }
 
-  isTerminalResizeOwner(terminalId: string, socket: HubSocket): boolean {
-    return this.terminalResizeOwnerById.get(terminalId) === socket;
-  }
-
-  recordTerminalRequestedSize(
+  private terminalClientState(
     terminalId: string,
     socket: HubSocket,
-    size: TerminalRequestedSize,
+    now: number,
+  ): TerminalClientState {
+    const states =
+      this.terminalClientStateById.get(terminalId) ??
+      new Map<HubSocket, TerminalClientState>();
+    this.terminalClientStateById.set(terminalId, states);
+    const existing = states.get(socket);
+    if (existing) {
+      return existing;
+    }
+    const created: TerminalClientState = {
+      lastSeenAt: now,
+      size: null,
+      visible: true,
+    };
+    states.set(socket, created);
+    return created;
+  }
+
+  private forgetTerminalClientState(
+    terminalId: string,
+    socket: HubSocket,
   ): void {
-    const sizes =
-      this.terminalRequestedSizeById.get(terminalId) ??
-      new Map<HubSocket, TerminalRequestedSize>();
-    sizes.set(socket, size);
-    this.terminalRequestedSizeById.set(terminalId, sizes);
-  }
-
-  terminalRequestedSize(
-    terminalId: string,
-    socket: HubSocket,
-  ): TerminalRequestedSize | null {
-    return this.terminalRequestedSizeById.get(terminalId)?.get(socket) ?? null;
-  }
-
-  private forgetTerminalRequestedSize(
-    terminalId: string,
-    socket: HubSocket,
-  ): void {
-    const sizes = this.terminalRequestedSizeById.get(terminalId);
-    if (!sizes) {
+    const states = this.terminalClientStateById.get(terminalId);
+    if (!states) {
       return;
     }
-    sizes.delete(socket);
-    if (sizes.size === 0) {
-      this.terminalRequestedSizeById.delete(terminalId);
+    states.delete(socket);
+    if (states.size === 0) {
+      this.terminalClientStateById.delete(terminalId);
     }
   }
 
@@ -395,8 +441,7 @@ export class NotificationHub implements DbNotifier {
         this.terminalClientSocketsById.delete(terminalId);
       }
     }
-    this.releaseTerminalResizeOwnership(terminalId, socket, sockets);
-    this.forgetTerminalRequestedSize(terminalId, socket);
+    this.forgetTerminalClientState(terminalId, socket);
 
     const terminalIds = this.terminalIdsByClientSocket.get(socket);
     if (!terminalIds) {
@@ -424,31 +469,11 @@ export class NotificationHub implements DbNotifier {
       if (sockets.size === 0) {
         this.terminalClientSocketsById.delete(terminalId);
       }
-      this.releaseTerminalResizeOwnership(terminalId, socket, sockets);
-      this.forgetTerminalRequestedSize(terminalId, socket);
+      this.forgetTerminalClientState(terminalId, socket);
     }
 
     this.terminalIdsByClientSocket.delete(socket);
     this.clearTerminalSocketSendQueue(socket);
-  }
-
-  private releaseTerminalResizeOwnership(
-    terminalId: string,
-    socket: HubSocket,
-    sockets: Set<HubSocket> | undefined,
-  ): void {
-    if (this.terminalResizeOwnerById.get(terminalId) !== socket) {
-      return;
-    }
-    let replacement: HubSocket | undefined;
-    for (const candidate of sockets ?? []) {
-      replacement = candidate;
-    }
-    if (replacement === undefined) {
-      this.terminalResizeOwnerById.delete(terminalId);
-    } else {
-      this.terminalResizeOwnerById.set(terminalId, replacement);
-    }
   }
 
   sendTerminalSocketMessage(
