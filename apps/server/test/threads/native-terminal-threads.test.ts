@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   getNativeTerminalThread,
+  getTerminalSession,
   getThread,
   listEvents,
   threads,
@@ -22,6 +23,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { queueParentSystemMessage } from "../../src/services/threads/parent-system-messages.js";
 import { sendThreadMessage } from "../../src/services/threads/thread-send.js";
+import { onDaemonSocketOpen } from "../../src/ws/daemon-protocol.js";
 import { resolvePendingThreadSessionOptions } from "../../src/services/threads/thread-session-options.js";
 import { readJson } from "../helpers/json.js";
 import { textInput } from "../helpers/prompt-input.js";
@@ -29,6 +31,7 @@ import {
   seedEnvironment,
   seedHostSession,
   seedProjectWithSource,
+  seedSession,
 } from "../helpers/seed.js";
 import {
   createTestAppHarness,
@@ -737,5 +740,118 @@ describe("native terminal threads", () => {
     );
     expect(reopened.terminal?.id).toBe(reopen.terminalId);
     expect(reopened.terminal?.id).not.toBe(open.terminalId);
+  });
+
+  it("reopens native terminals the host daemon lost when it restarts and leaves the rest alone", async () => {
+    const fixture = await createFixture();
+    const lost = await openRunningNativeThread(fixture, {
+      providerId: "claude-code",
+    });
+    const finished = await createNativeThread(fixture, {
+      providerId: "claude-code",
+    });
+    const finishedOpen = await waitForTerminalOpen(fixture.socket, 1);
+    acknowledgeOpen(fixture, finishedOpen);
+    await waitForThreadStatus(fixture, finished.id, "idle");
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.hostId,
+      sessionId: fixture.sessionId,
+      message: {
+        type: "terminal.exited",
+        terminalId: finishedOpen.terminalId,
+        exitCode: 0,
+        closeReason: "process-exit",
+      },
+    });
+
+    fixture.harness.deps.terminalSessions.handleDaemonSessionClosed({
+      sessionId: fixture.sessionId,
+    });
+    const restarted = seedSession(fixture.harness.deps, fixture.hostId, {
+      instanceId: "instance-2",
+    });
+    const socket = createFakeDaemonSocket();
+    onDaemonSocketOpen(fixture.harness.deps, {
+      hostId: fixture.hostId,
+      sessionId: restarted.id,
+      socket,
+    });
+
+    const reopen = await waitForTerminalOpen(socket);
+    expect(reopen.threadId).toBe(lost.thread.id);
+    expect(reopen.start.mode === "command" && reopen.start.command).toContain(
+      `"$BB_CLI" thread native-run ${lost.thread.id}`,
+    );
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.hostId,
+      sessionId: restarted.id,
+      message: {
+        type: "terminal.opened",
+        requestId: reopen.requestId,
+        terminalId: reopen.terminalId,
+        shell: "/bin/zsh",
+        title: "zsh",
+        initialCwd: "/tmp/native-workspace",
+        cols: reopen.cols,
+        rows: reopen.rows,
+      },
+    });
+    await expect
+      .poll(
+        () =>
+          getNativeTerminalThread(fixture.harness.db, lost.thread.id)
+            ?.terminalSessionId,
+      )
+      .toBe(reopen.terminalId);
+    expect(
+      getTerminalSession(fixture.harness.db, {
+        kind: "terminal",
+        terminalId: lost.open.terminalId,
+      }),
+    ).toMatchObject({
+      closeReason: "daemon-disconnect",
+      status: "exited",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const opens = daemonMessages(socket).filter(
+      (message) => message.type === "terminal.open",
+    );
+    expect(opens).toHaveLength(1);
+    expect(
+      getNativeTerminalThread(fixture.harness.db, finished.id)
+        ?.terminalSessionId,
+    ).toBe(finishedOpen.terminalId);
+  });
+
+  it("keeps the same native terminal when the same daemon reconnects", async () => {
+    const fixture = await createFixture();
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "claude-code",
+    });
+    fixture.harness.deps.terminalSessions.handleDaemonSessionClosed({
+      sessionId: fixture.sessionId,
+    });
+    const reconnected = seedSession(fixture.harness.deps, fixture.hostId);
+    const socket = createFakeDaemonSocket();
+    onDaemonSocketOpen(fixture.harness.deps, {
+      hostId: fixture.hostId,
+      sessionId: reconnected.id,
+      socket,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(
+      daemonMessages(socket).filter(
+        (message) => message.type === "terminal.open",
+      ),
+    ).toEqual([]);
+    expect(
+      getNativeTerminalThread(fixture.harness.db, thread.id)?.terminalSessionId,
+    ).toBe(open.terminalId);
+    expect(
+      getTerminalSession(fixture.harness.db, {
+        kind: "terminal",
+        terminalId: open.terminalId,
+      })?.status,
+    ).toBe("running");
   });
 });

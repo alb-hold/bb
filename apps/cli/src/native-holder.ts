@@ -1,0 +1,464 @@
+import { createHash } from "node:crypto";
+import { chmodSync, mkdirSync, unlinkSync } from "node:fs";
+import net from "node:net";
+import os from "node:os";
+import path from "node:path";
+import { StringDecoder } from "node:string_decoder";
+
+export const NATIVE_HOLDER_REAP_AFTER_MS = 15 * 60_000;
+const NATIVE_HOLDER_FIRST_CLIENT_TIMEOUT_MS = 20_000;
+const NATIVE_HOLDER_REAP_CHECK_MS = 30_000;
+const UNIX_SOCKET_PATH_MAX_BYTES = 100;
+
+export const NativeHolderFrame = {
+  input: 1,
+  resize: 2,
+  output: 17,
+  exit: 18,
+} as const;
+
+export interface NativeHolderMessage {
+  type: number;
+  payload: Buffer;
+}
+
+export function encodeNativeHolderFrame(type: number, payload: Buffer): Buffer {
+  const header = Buffer.alloc(5);
+  header.writeUInt8(type, 0);
+  header.writeUInt32BE(payload.length, 1);
+  return Buffer.concat([header, payload]);
+}
+
+export class NativeHolderFrameDecoder {
+  private buffered: Buffer = Buffer.alloc(0);
+
+  push(chunk: Buffer): NativeHolderMessage[] {
+    this.buffered =
+      this.buffered.length === 0
+        ? chunk
+        : Buffer.concat([this.buffered, chunk]);
+    const messages: NativeHolderMessage[] = [];
+    while (this.buffered.length >= 5) {
+      const length = this.buffered.readUInt32BE(1);
+      if (this.buffered.length < 5 + length) break;
+      messages.push({
+        type: this.buffered.readUInt8(0),
+        payload: Buffer.from(this.buffered.subarray(5, 5 + length)),
+      });
+      this.buffered = this.buffered.subarray(5 + length);
+    }
+    return messages;
+  }
+}
+
+export interface TerminalSize {
+  cols: number;
+  rows: number;
+}
+
+function parseSize(payload: Buffer): TerminalSize | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(payload.toString("utf8"));
+  } catch {
+    return null;
+  }
+  if (typeof value !== "object" || value === null) return null;
+  const { cols, rows } = value as Record<string, unknown>;
+  if (typeof cols !== "number" || typeof rows !== "number") return null;
+  if (!Number.isInteger(cols) || !Number.isInteger(rows)) return null;
+  if (cols < 1 || rows < 1) return null;
+  return { cols, rows };
+}
+
+function parseExitCode(payload: Buffer): number {
+  try {
+    const value: unknown = JSON.parse(payload.toString("utf8"));
+    if (typeof value === "object" && value !== null) {
+      const code = (value as Record<string, unknown>).code;
+      if (typeof code === "number" && Number.isInteger(code)) return code;
+    }
+  } catch {
+    return 1;
+  }
+  return 1;
+}
+
+export function nativeHolderSocketPath(args: {
+  baseUrl: string;
+  home: string;
+  threadId: string;
+  tmpDir: string;
+}): string {
+  const scope = createHash("sha256")
+    .update(args.baseUrl)
+    .digest("hex")
+    .slice(0, 8);
+  const name = `${args.threadId}-${scope}.sock`;
+  const inHome = path.join(args.home, ".bb", "native-terminals", name);
+  if (Buffer.byteLength(inHome) <= UNIX_SOCKET_PATH_MAX_BYTES) return inHome;
+  return path.join(args.tmpDir, "bb-native-terminals", name);
+}
+
+export function defaultNativeHolderSocketPath(
+  baseUrl: string,
+  threadId: string,
+): string {
+  return nativeHolderSocketPath({
+    baseUrl,
+    home: os.homedir(),
+    threadId,
+    tmpDir: os.tmpdir(),
+  });
+}
+
+export interface NativeHolderPty {
+  readonly pid: number;
+  onData(listener: (data: string) => void): void;
+  onExit(
+    listener: (event: { exitCode: number; signal?: number }) => void,
+  ): void;
+  write(data: string): void;
+  resize(cols: number, rows: number): void;
+  kill(signal?: string): void;
+}
+
+export interface NativeHolderProcess {
+  command: string;
+  args: string[];
+}
+
+export interface RunNativeHolderOptions {
+  socketPath: string;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  reapAfterMs?: number;
+  firstClientTimeoutMs?: number;
+  prepare(): Promise<NativeHolderProcess>;
+  spawnPty(
+    process: NativeHolderProcess,
+    options: {
+      cols: number;
+      rows: number;
+      cwd: string;
+      env: NodeJS.ProcessEnv;
+    },
+  ): NativeHolderPty;
+  tick?(): Promise<void>;
+  tickIntervalMs?: number;
+  terminalClosedForGood?(): Promise<boolean>;
+  detachedCheckIntervalMs?: number;
+}
+
+const TERMINAL_CLOSES_THAT_STOP_THE_CLI = new Set([
+  "user",
+  "thread-archived",
+  "thread-deleted",
+  "environment-destroyed",
+]);
+
+export function nativeTerminalClosedForGood(
+  view: {
+    terminal: { status: string; closeReason: string | null } | null;
+  } | null,
+): boolean {
+  if (view === null) return true;
+  const terminal = view.terminal;
+  if (terminal === null || terminal.status !== "exited") return false;
+  return (
+    terminal.closeReason !== null &&
+    TERMINAL_CLOSES_THAT_STOP_THE_CLI.has(terminal.closeReason)
+  );
+}
+
+function removeSocketFile(socketPath: string): void {
+  try {
+    unlinkSync(socketPath);
+  } catch {
+    return;
+  }
+}
+
+function writeFrame(
+  socket: net.Socket | null,
+  type: number,
+  payload: Buffer,
+): void {
+  if (socket === null || socket.destroyed) return;
+  socket.write(encodeNativeHolderFrame(type, payload));
+}
+
+export async function runNativeHolder(
+  options: RunNativeHolderOptions,
+): Promise<number> {
+  mkdirSync(path.dirname(options.socketPath), { recursive: true, mode: 0o700 });
+  const reapAfterMs = options.reapAfterMs ?? NATIVE_HOLDER_REAP_AFTER_MS;
+  let client: net.Socket | null = null;
+  let detachedSince = Date.now();
+  let pty: NativeHolderPty | null = null;
+  let pendingSize: TerminalSize | null = null;
+  let pendingInput = "";
+  let redrawOnResize = false;
+  let starting = false;
+  let finished = false;
+  let resolveExit: (code: number) => void = () => undefined;
+  const exited = new Promise<number>((resolve) => {
+    resolveExit = resolve;
+  });
+  const timers: NodeJS.Timeout[] = [];
+
+  const server = net.createServer();
+  const finish = (code: number): void => {
+    if (finished) return;
+    finished = true;
+    for (const timer of timers) clearInterval(timer);
+    writeFrame(
+      client,
+      NativeHolderFrame.exit,
+      Buffer.from(JSON.stringify({ code })),
+    );
+    client?.end();
+    server.close();
+    removeSocketFile(options.socketPath);
+    resolveExit(code);
+  };
+
+  const applySize = (next: TerminalSize): void => {
+    if (pty === null) {
+      pendingSize = next;
+      return;
+    }
+    if (redrawOnResize) {
+      redrawOnResize = false;
+      pty.resize(next.cols, next.rows > 1 ? next.rows - 1 : next.rows + 1);
+    }
+    pty.resize(next.cols, next.rows);
+  };
+
+  const start = async (): Promise<void> => {
+    if (starting) return;
+    starting = true;
+    let child: NativeHolderProcess;
+    try {
+      child = await options.prepare();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      writeFrame(
+        client,
+        NativeHolderFrame.output,
+        Buffer.from(`${message}\r\n`),
+      );
+      finish(1);
+      return;
+    }
+    const initial = pendingSize ?? { cols: 120, rows: 40 };
+    try {
+      pty = options.spawnPty(child, {
+        cols: initial.cols,
+        rows: initial.rows,
+        cwd: options.cwd,
+        env: options.env,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      writeFrame(
+        client,
+        NativeHolderFrame.output,
+        Buffer.from(`${message}\r\n`),
+      );
+      finish(1);
+      return;
+    }
+    pendingSize = null;
+    if (pendingInput.length > 0) {
+      pty.write(pendingInput);
+      pendingInput = "";
+    }
+    pty.onData((data) => {
+      writeFrame(client, NativeHolderFrame.output, Buffer.from(data, "utf8"));
+    });
+    pty.onExit(({ exitCode, signal }) => {
+      finish(
+        Number.isInteger(exitCode) && exitCode >= 0
+          ? exitCode
+          : 128 + (signal ?? 0),
+      );
+    });
+  };
+
+  server.on("connection", (socket) => {
+    if (finished) {
+      socket.destroy();
+      return;
+    }
+    client?.destroy();
+    client = socket;
+    redrawOnResize = pty !== null;
+    const decoder = new NativeHolderFrameDecoder();
+    const text = new StringDecoder("utf8");
+    socket.on("data", (chunk: Buffer) => {
+      for (const message of decoder.push(chunk)) {
+        if (message.type === NativeHolderFrame.input) {
+          const input = text.write(message.payload);
+          if (input.length === 0) continue;
+          if (pty === null) pendingInput += input;
+          else pty.write(input);
+        } else if (message.type === NativeHolderFrame.resize) {
+          const next = parseSize(message.payload);
+          if (next !== null) applySize(next);
+          if (pty === null) void start();
+        }
+      }
+    });
+    const detach = (): void => {
+      if (client !== socket) return;
+      client = null;
+      detachedSince = Date.now();
+    };
+    socket.on("close", detach);
+    socket.on("error", detach);
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(options.socketPath, () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+  chmodSync(options.socketPath, 0o600);
+
+  const firstClientTimeoutMs =
+    options.firstClientTimeoutMs ?? NATIVE_HOLDER_FIRST_CLIENT_TIMEOUT_MS;
+  const firstClient = setTimeout(() => {
+    if (pty === null && !starting) finish(1);
+  }, firstClientTimeoutMs);
+  timers.push(firstClient);
+
+  timers.push(
+    setInterval(
+      () => {
+        if (pty === null || client !== null) return;
+        if (Date.now() - detachedSince >= reapAfterMs) pty.kill("SIGHUP");
+      },
+      Math.min(NATIVE_HOLDER_REAP_CHECK_MS, reapAfterMs),
+    ),
+  );
+  if (options.terminalClosedForGood !== undefined) {
+    const closedForGood = options.terminalClosedForGood;
+    let checking = false;
+    timers.push(
+      setInterval(() => {
+        if (pty === null || client !== null || checking) return;
+        checking = true;
+        closedForGood()
+          .then((closed) => {
+            if (closed && client === null) pty?.kill("SIGHUP");
+          })
+          .catch(() => undefined)
+          .finally(() => {
+            checking = false;
+          });
+      }, options.detachedCheckIntervalMs ?? 2_000),
+    );
+  }
+  if (options.tick !== undefined) {
+    const tick = options.tick;
+    timers.push(
+      setInterval(() => {
+        if (pty !== null) tick().catch(() => undefined);
+      }, options.tickIntervalMs ?? 2_000),
+    );
+  }
+
+  return await exited;
+}
+
+export async function connectNativeHolder(
+  socketPath: string,
+): Promise<net.Socket | null> {
+  return await new Promise((resolve) => {
+    const socket = net.createConnection(socketPath);
+    socket.once("connect", () => resolve(socket));
+    socket.once("error", (error: NodeJS.ErrnoException) => {
+      socket.destroy();
+      if (error.code === "ECONNREFUSED") removeSocketFile(socketPath);
+      resolve(null);
+    });
+  });
+}
+
+export async function waitForNativeHolder(
+  socketPath: string,
+  timeoutMs: number,
+): Promise<net.Socket | null> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const socket = await connectNativeHolder(socketPath);
+    if (socket !== null) return socket;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return null;
+}
+
+export interface NativeHolderClientIo {
+  input: NodeJS.ReadableStream & {
+    setRawMode?: (mode: boolean) => unknown;
+    isTTY?: boolean;
+  };
+  output: NodeJS.WritableStream & {
+    columns?: number;
+    rows?: number;
+    on(event: "resize", listener: () => void): unknown;
+  };
+  fallbackSize: TerminalSize;
+}
+
+export async function pipeNativeHolderClient(
+  socket: net.Socket,
+  io: NativeHolderClientIo,
+): Promise<number> {
+  const raw =
+    io.input.isTTY === true && typeof io.input.setRawMode === "function";
+  if (raw) io.input.setRawMode?.(true);
+  const sendSize = (): void => {
+    const cols = io.output.columns ?? io.fallbackSize.cols;
+    const rows = io.output.rows ?? io.fallbackSize.rows;
+    socket.write(
+      encodeNativeHolderFrame(
+        NativeHolderFrame.resize,
+        Buffer.from(JSON.stringify({ cols, rows })),
+      ),
+    );
+  };
+  const onInput = (chunk: Buffer | string): void => {
+    const payload =
+      typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk;
+    socket.write(encodeNativeHolderFrame(NativeHolderFrame.input, payload));
+  };
+  io.output.on("resize", sendSize);
+  io.input.on("data", onInput);
+  io.input.resume();
+  sendSize();
+  const decoder = new NativeHolderFrameDecoder();
+  try {
+    return await new Promise<number>((resolve) => {
+      let code: number | null = null;
+      socket.on("data", (chunk: Buffer) => {
+        for (const message of decoder.push(chunk)) {
+          if (message.type === NativeHolderFrame.output) {
+            io.output.write(message.payload);
+          } else if (message.type === NativeHolderFrame.exit) {
+            code = parseExitCode(message.payload);
+          }
+        }
+      });
+      socket.on("close", () => resolve(code ?? 1));
+      socket.on("error", () => undefined);
+    });
+  } finally {
+    io.input.off("data", onInput);
+    io.input.pause();
+    if (raw) io.input.setRawMode?.(false);
+  }
+}

@@ -2,6 +2,7 @@ import {
   consumeNativeTerminalThreadInitialPrompt,
   getEnvironment,
   getNativeTerminalThread,
+  listNativeTerminalThreadsWithDisconnectedTerminal,
   recordNativeTerminalThreadSessionId,
   setNativeTerminalThreadTerminal,
   type NativeTerminalThreadRecord,
@@ -321,6 +322,35 @@ export async function openNativeTerminalAfterProvisioning(
     deps.logger.warn(
       { err: error, threadId },
       "Failed to open native terminal after provisioning",
+    );
+  }
+}
+
+export function listNativeTerminalThreadsAwaitingDaemon(
+  deps: Pick<AppDeps, "db">,
+  hostId: string,
+): string[] {
+  return listNativeTerminalThreadsWithDisconnectedTerminal(deps.db, hostId);
+}
+
+export function reopenNativeTerminalsAfterDaemonReconnect(
+  deps: NativeTerminalDeps,
+  args: { hostId: string; threadIds: readonly string[] },
+): void {
+  for (const threadId of args.threadIds) {
+    openNativeTerminal(deps, { threadId, request: {} }).then(
+      (reopened) => {
+        deps.logger.info(
+          { hostId: args.hostId, terminalId: reopened.terminal?.id, threadId },
+          "Reopened native terminal after the host daemon reconnected",
+        );
+      },
+      (error: unknown) => {
+        deps.logger.warn(
+          { err: error, hostId: args.hostId, threadId },
+          "Failed to reopen native terminal after the host daemon reconnected",
+        );
+      },
     );
   }
 }
