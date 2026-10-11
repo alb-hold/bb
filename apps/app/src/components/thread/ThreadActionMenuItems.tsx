@@ -4,6 +4,7 @@ import type {
   PluginThreadActionTarget,
 } from "@get-bb/plugin-sdk";
 import { Fragment } from "react";
+import type { KeyboardCommandId } from "@bb/domain";
 import {
   ContextMenuItem,
   ContextMenuSub,
@@ -20,9 +21,12 @@ import {
 } from "@bb/shared-ui/dropdown-menu";
 import { Icon } from "@bb/shared-ui/icon";
 import {
+  ActionMenuChoiceFilter,
   ActionMenuItem,
   ActionMenuSeparator,
+  useActionMenuChoiceFilter,
 } from "@bb/shared-ui/action-menu-items";
+import { useAppCommandShortcuts } from "@/components/commands/AppCommandProvider";
 import {
   bindThreadAction,
   useDefaultRequestRename,
@@ -36,6 +40,21 @@ export interface ThreadActionMenuEntry {
   group: string;
   action: PluginBoundThreadAction;
 }
+
+const CORE_ACTION_SHORTCUT_COMMANDS: ReadonlyMap<string, KeyboardCommandId> =
+  new Map([["bb--core/split", "thread.openBeside"]]);
+
+const SHORTCUT_COMMANDS = [...CORE_ACTION_SHORTCUT_COMMANDS.values()];
+
+function useCoreActionShortcutLabel(): (key: string) => string | undefined {
+  const shortcuts = useAppCommandShortcuts(SHORTCUT_COMMANDS);
+  return (key) => {
+    const command = CORE_ACTION_SHORTCUT_COMMANDS.get(key);
+    return command === undefined ? undefined : shortcuts.get(command)?.label;
+  };
+}
+
+const NO_CHOICES: NonNullable<PluginBoundThreadAction["choices"]>["items"] = [];
 
 const CHOICES_CONTENT_CLASS =
   "max-h-[min(24rem,calc(100vh-2rem))] min-w-44 overflow-y-auto";
@@ -85,9 +104,10 @@ function ThreadActionChoiceRows({
   surface: ThreadActionMenuSurface;
 }) {
   const choices = entry.action.choices;
+  const filter = useActionMenuChoiceFilter(choices?.items ?? NO_CHOICES);
   if (choices === undefined) return null;
   const Item = surface === "context" ? ContextMenuItem : DropdownMenuItem;
-  return choices.items.map((choice) => (
+  const rows = filter.visible.map((choice) => (
     <Item
       key={choice.id}
       aria-current={choice.selected ? "true" : undefined}
@@ -106,6 +126,19 @@ function ThreadActionChoiceRows({
       ) : null}
     </Item>
   ));
+  if (!filter.enabled) return rows;
+  return (
+    <>
+      <ActionMenuChoiceFilter
+        label={`Filter ${choices.heading ?? entry.action.label}`}
+        value={filter.query}
+        onChange={filter.setQuery}
+        matchCount={filter.visible.length}
+        surface={surface}
+      />
+      {rows}
+    </>
+  );
 }
 
 function ThreadActionChoicesHint({
@@ -143,11 +176,13 @@ function ThreadActionMenuRow({
   entry,
   surface,
   isDrawer,
+  shortcut,
   onOpenDrawerStep,
 }: {
   entry: ThreadActionMenuEntry;
   surface: ThreadActionMenuSurface;
   isDrawer: boolean;
+  shortcut: string | undefined;
   onOpenDrawerStep: (key: string) => void;
 }) {
   const { action } = entry;
@@ -158,6 +193,7 @@ function ThreadActionMenuRow({
         icon={action.icon}
         variant={action.variant}
         disabled={action.disabled}
+        shortcut={isDrawer || action.disabled ? undefined : shortcut}
         onSelect={() => {
           void action.run();
         }}
@@ -245,6 +281,7 @@ export function ThreadActionMenuRows({
   drawerStep: string | null;
   onDrawerStepChange: (key: string | null) => void;
 }) {
+  const shortcutLabel = useCoreActionShortcutLabel();
   const stepEntry =
     isDrawer && drawerStep !== null
       ? groups.flat().find((entry) => entry.key === drawerStep)
@@ -268,6 +305,7 @@ export function ThreadActionMenuRows({
           entry={entry}
           surface={surface}
           isDrawer={isDrawer}
+          shortcut={shortcutLabel(entry.key)}
           onOpenDrawerStep={onDrawerStepChange}
         />
       ))}

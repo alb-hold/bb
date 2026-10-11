@@ -1,5 +1,6 @@
-import type { ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { Icon, type IconName } from "./icon";
+import { Input } from "./input";
 import {
   ContextMenuItem,
   ContextMenuLabel,
@@ -140,5 +141,62 @@ export function ActionMenuNotice({ children, surface }: ActionMenuNoticeProps) {
     <ContextMenuLabel className={className}>{children}</ContextMenuLabel>
   ) : (
     <DropdownMenuLabel className={className}>{children}</DropdownMenuLabel>
+  );
+}
+
+export const ACTION_MENU_CHOICE_FILTER_MIN_ITEMS = 8;
+
+const ACTION_MENU_CHOICE_FILTER_PASSTHROUGH_KEYS = new Set(["Escape", "Tab"]);
+
+export function useActionMenuChoiceFilter<Choice extends { label: string }>(
+  items: readonly Choice[],
+) {
+  const [query, setQuery] = useState("");
+  const enabled = items.length >= ACTION_MENU_CHOICE_FILTER_MIN_ITEMS;
+  const visible = useMemo(() => {
+    const normalized = query.trim().toLocaleLowerCase();
+    if (!enabled || normalized === "") return items;
+    return items.filter((item) =>
+      item.label.toLocaleLowerCase().includes(normalized),
+    );
+  }, [enabled, items, query]);
+  return { enabled, query, setQuery, visible };
+}
+
+interface ActionMenuChoiceFilterProps {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  matchCount: number;
+  surface: ActionMenuSurface;
+}
+
+export function ActionMenuChoiceFilter({
+  label,
+  value,
+  onChange,
+  matchCount,
+  surface,
+}: ActionMenuChoiceFilterProps) {
+  return (
+    <>
+      <div className="p-1">
+        <Input
+          aria-label={label}
+          placeholder="Filter"
+          value={value}
+          className="h-7"
+          onChange={(event) => onChange(event.target.value)}
+          onKeyDown={(event) => {
+            if (!ACTION_MENU_CHOICE_FILTER_PASSTHROUGH_KEYS.has(event.key)) {
+              event.stopPropagation();
+            }
+          }}
+        />
+      </div>
+      {matchCount === 0 ? (
+        <ActionMenuNotice surface={surface}>No matches</ActionMenuNotice>
+      ) : null}
+    </>
   );
 }

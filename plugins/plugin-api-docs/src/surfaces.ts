@@ -194,7 +194,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
           "Add an action to every thread menu and the sidebar row's quick actions. With this, a plugin can:",
         bullets: [
           "Appear in the header menu, the row menu, the right-click menu, and the long-press drawer",
-          "Offer a list of choices that bb renders as a submenu, a drawer step, or a popover",
+          "Offer choices as a submenu, drawer step, or popover; lists of 8 or more get a filter",
           "Read app-wide data once and derive each thread's entry from it",
           "Render bb's own thread menus in a replacement thread list",
         ],

@@ -73,12 +73,23 @@ vi.mock("@/lib/sdk", () => ({ sdk: { threads: sdkThreads } }));
 vi.mock("@/lib/clipboard", () => ({ copyToClipboardWithToast }));
 vi.mock("@/lib/split-layout/openThreadInSplit", async (importOriginal) => {
   const actual =
-    await importOriginal<typeof import("@/lib/split-layout/openThreadInSplit")>();
+    await importOriginal<
+      typeof import("@/lib/split-layout/openThreadInSplit")
+    >();
   openThreadInSplit.mockImplementation(actual.openThreadInSplit);
   return { ...actual, openThreadInSplit };
 });
 vi.mock("./ThreadActionsProvider", () => ({
   useThreadActions: () => hostActions,
+}));
+const appCommandShortcuts = vi.hoisted(() => ({
+  current: new Map<string, { label: string }>(),
+}));
+vi.mock("@/components/commands/AppCommandProvider", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("@/components/commands/AppCommandProvider")
+  >()),
+  useAppCommandShortcuts: () => appCommandShortcuts.current,
 }));
 
 const moveRun = vi.fn();
@@ -251,7 +262,11 @@ function twoPaneLayout(focusedPaneId: string): SplitLayout {
         {
           type: "pane",
           paneId: "pane_other",
-          content: { kind: "thread", projectId: "proj_a", threadId: "thr_other" },
+          content: {
+            kind: "thread",
+            projectId: "proj_a",
+            threadId: "thr_other",
+          },
         },
         {
           type: "pane",
@@ -273,7 +288,21 @@ interface HostState {
   layout?: SplitLayout | null;
   cached?: boolean;
   threadActions?: readonly PluginThreadActionRegistration[];
+  projects?: readonly { id: string; name: string }[];
 }
+
+const DEFAULT_PROJECTS = [
+  { id: "proj_a", name: "Alpha" },
+  { id: "proj_b", name: "Beta" },
+];
+
+const MANY_PROJECTS = [
+  { id: "proj_a", name: "Alpha" },
+  ...Array.from({ length: 30 }, (_, index) => ({
+    id: `proj_${index}`,
+    name: `Project ${index}`,
+  })),
+];
 
 function renderSurface(
   surface: Surface,
@@ -283,6 +312,7 @@ function renderSurface(
     layout = null,
     cached = true,
     threadActions = [],
+    projects = DEFAULT_PROJECTS,
   }: HostState = {},
 ) {
   const queryClient = new QueryClient();
@@ -294,18 +324,9 @@ function renderSurface(
   queryClient.setQueryData(
     sidebarNavigationQueryKey(),
     makeSidebarBootstrapResponse({
-      projects: [
-        makeProjectWithThreadsResponse({
-          id: "proj_a",
-          name: "Alpha",
-          threads: [],
-        }),
-        makeProjectWithThreadsResponse({
-          id: "proj_b",
-          name: "Beta",
-          threads: [],
-        }),
-      ],
+      projects: projects.map((project) =>
+        makeProjectWithThreadsResponse({ ...project, threads: [] }),
+      ),
     }),
   );
   setPluginSlotRegistrations(
@@ -358,14 +379,19 @@ async function menuRows(): Promise<string[]> {
     );
 }
 
-async function choose(surface: Surface, actionLabel: string, choice: string) {
+async function openChoices(surface: Surface, actionLabel: string) {
   const trigger = await screen.findByRole("menuitem", { name: actionLabel });
   if (surface.compact) fireEvent.click(trigger);
   else fireEvent.keyDown(trigger, { key: "ArrowRight" });
+}
+
+async function choose(surface: Surface, actionLabel: string, choice: string) {
+  await openChoices(surface, actionLabel);
   fireEvent.click(await screen.findByRole("menuitem", { name: choice }));
 }
 
 afterEach(() => {
+  appCommandShortcuts.current = new Map();
   cleanup();
   window.localStorage.clear();
   window.sessionStorage.clear();
@@ -579,7 +605,11 @@ describe.each(SURFACES)("thread actions on the $name", (surface) => {
   ])(
     "lists the items for $state",
     async ({ thread, route, layout, desktop, compact }) => {
-      renderSurface(surface, { thread, inline: [CUSTOMIZE] }, { route, layout });
+      renderSurface(
+        surface,
+        { thread, inline: [CUSTOMIZE] },
+        { route, layout },
+      );
       await surface.open();
       expect(await menuRows()).toEqual(surface.compact ? compact : desktop);
     },
@@ -663,6 +693,53 @@ describe.each(SURFACES)("thread actions on the $name", (surface) => {
     );
   });
 
+  it("filters a long project list and moves the thread to the match", async () => {
+    sdkThreads.update.mockResolvedValue({
+      ...baseThread,
+      projectId: "proj_25",
+    });
+    renderSurface(surface, { thread: baseThread }, { projects: MANY_PROJECTS });
+    await surface.open();
+    await openChoices(surface, "Move to project");
+    const filter = await screen.findByRole("textbox", {
+      name: "Filter Move to project",
+    });
+    filter.focus();
+    fireEvent.keyDown(filter, { key: "P" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(document.activeElement).toBe(filter);
+    fireEvent.change(filter, { target: { value: "project 25" } });
+    expect(screen.queryByRole("menuitem", { name: "Project 2" })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: "Alpha" })).toBeNull();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Project 25" }));
+    await waitFor(() =>
+      expect(sdkThreads.update).toHaveBeenCalledWith({
+        threadId: baseThread.id,
+        projectId: "proj_25",
+      }),
+    );
+  });
+
+  it("says when no project matches the filter", async () => {
+    renderSurface(surface, { thread: baseThread }, { projects: MANY_PROJECTS });
+    await surface.open();
+    await openChoices(surface, "Move to project");
+    fireEvent.change(
+      await screen.findByRole("textbox", { name: "Filter Move to project" }),
+      { target: { value: "zzz" } },
+    );
+    expect(await screen.findByText("No matches")).toBeTruthy();
+    expect(screen.queryByRole("menuitem", { name: /^Project / })).toBeNull();
+  });
+
+  it("lists a short project list without a filter", async () => {
+    renderSurface(surface, { thread: baseThread });
+    await surface.open();
+    await openChoices(surface, "Move to project");
+    expect(await screen.findByRole("menuitem", { name: "Beta" })).toBeTruthy();
+    expect(screen.queryByRole("textbox")).toBeNull();
+  });
+
   (surface.compact ? it.skip : it).each([
     { action: "Open beside", choice: null, side: "right" },
     { action: "Open above or below", choice: "Open above", side: "top" },
@@ -682,6 +759,25 @@ describe.each(SURFACES)("thread actions on the $name", (surface) => {
           expect.objectContaining({ threadId: baseThread.id, side }),
         ),
       );
+    },
+  );
+
+  (surface.compact ? it.skip : it)(
+    "shows the Open beside keyboard shortcut",
+    async () => {
+      appCommandShortcuts.current = new Map([
+        ["thread.openBeside", { label: "\u21e7\u2318B" }],
+      ]);
+      renderSurface(surface, { thread: baseThread });
+      await surface.open();
+      const open = await screen.findByRole("menuitem", {
+        name: /^Open beside/,
+      });
+      expect(open.textContent).toContain("\u21e7\u2318B");
+      expect(
+        (await screen.findByRole("menuitem", { name: /^Open above or below/ }))
+          .textContent,
+      ).not.toContain("\u21e7\u2318B");
     },
   );
 

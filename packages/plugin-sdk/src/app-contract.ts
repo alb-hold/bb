@@ -1452,7 +1452,8 @@ export interface PluginThreadActionChoice {
 /**
  * A choice list instead of a direct action: a submenu in desktop menus, a step
  * with Back in the compact drawer, and a popover from a row's quick-action
- * button. `run` receives the picked choice's `id` as `value`.
+ * button. `run` receives the picked choice's `id` as `value`. Lists of 8 or
+ * more items show a filter field that matches item labels.
  */
 export interface PluginThreadActionChoices {
   /**

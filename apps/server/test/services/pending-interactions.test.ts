@@ -1996,6 +1996,78 @@ describe("pending interaction lifecycle", () => {
     });
   });
 
+  it("revives a restart-interrupted provider request beside another open card instead of duplicating it", async () => {
+    await withTestHarness(async (harness) => {
+      const thread = seedPluginInteractionThread(harness.deps, "revive");
+      const lifecycle = harness.deps.pendingInteractions;
+      const approvalPayload = createCommandApprovalPayload({
+        itemId: "item-revive",
+        reason: "Needs approval",
+        command: "git push",
+        cwd: "/tmp/project",
+      });
+      const first = registerPendingInteraction(harness.deps, lifecycle, {
+        threadId: thread.id,
+        turnId: "turn-revive",
+        providerId: "codex",
+        providerThreadId: "provider-thread-revive",
+        providerRequestId: "request-before-restart",
+        payload: approvalPayload,
+      });
+      if (first.outcome === "rejected") {
+        throw new Error(`Expected the approval to open: ${first.reason}`);
+      }
+      const question = lifecycle.registerPendingInteraction({
+        interaction: {
+          threadId: thread.id,
+          turnId: "turn-revive",
+          providerId: "codex",
+          providerThreadId: "provider-thread-revive",
+          providerRequestId: "request-question",
+          payload: createUserQuestionPayload(),
+        },
+      });
+      expect(question.outcome).toBe("created");
+
+      harness.db
+        .update(pendingInteractionTable)
+        .set({
+          status: "interrupted",
+          statusReason:
+            "Host daemon restarted while awaiting user interaction; retry the thread to continue",
+        })
+        .where(eq(pendingInteractionTable.id, first.interaction.id))
+        .run();
+
+      const reemitted = lifecycle.registerPendingInteraction({
+        interaction: {
+          threadId: thread.id,
+          turnId: "turn-revive",
+          providerId: "codex",
+          providerThreadId: "provider-thread-revive",
+          providerRequestId: "request-after-restart",
+          payload: approvalPayload,
+        },
+      });
+
+      expect(reemitted).toMatchObject({
+        outcome: "existing",
+        interaction: { id: first.interaction.id, status: "pending" },
+      });
+      expect(
+        lifecycle
+          .listPendingThreadInteractions(thread.id)
+          .map((interaction) => interaction.id)
+          .sort(),
+      ).toEqual(
+        [
+          first.interaction.id,
+          question.outcome === "rejected" ? "" : question.interaction.id,
+        ].sort(),
+      );
+    });
+  });
+
   it("rejects command approvals with no available decisions", async () => {
     await withTestHarness(async (harness) => {
       const { host } = seedHostSession(harness.deps, {

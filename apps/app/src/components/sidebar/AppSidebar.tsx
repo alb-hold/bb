@@ -224,7 +224,7 @@ export function AppSidebar({
       </SidebarContent>
       <div
         className={cn(
-          "relative flex flex-col gap-2",
+          "relative flex max-h-[calc(100%_-_var(--bb-app-chrome-row-height))] min-h-0 shrink-0 flex-col gap-2",
           (isFooterCustomizing || pluginSidebarFooter.activeItem !== null) &&
             "px-2 pt-2",
         )}

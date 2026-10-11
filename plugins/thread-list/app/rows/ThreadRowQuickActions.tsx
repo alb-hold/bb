@@ -12,6 +12,10 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Icon } from "@/components/ui/icon";
+import {
+  ActionMenuChoiceFilter,
+  useActionMenuChoiceFilter,
+} from "@/components/ui/action-menu-items";
 import { Button } from "@/components/ui/button";
 import {
   Tooltip,
@@ -59,6 +63,10 @@ function ThreadQuickActionButton({
   );
 }
 
+const NO_CHOICES: NonNullable<
+  PluginThreadActionEntry["action"]["choices"]
+>["items"] = [];
+
 function ThreadQuickActionChoices({
   entry,
   className,
@@ -70,6 +78,7 @@ function ThreadQuickActionChoices({
 }) {
   const { action } = entry;
   const choices = action.choices;
+  const filter = useActionMenuChoiceFilter(choices?.items ?? NO_CHOICES);
   if (choices === undefined) return null;
   return (
     <DropdownMenu onOpenChange={onOpenChange}>
@@ -112,7 +121,16 @@ function ThreadQuickActionChoices({
         className="max-h-[min(24rem,calc(100vh-2rem))] min-w-44 overflow-y-auto"
       >
         <DropdownMenuLabel>{choices.heading ?? action.label}</DropdownMenuLabel>
-        {choices.items.map((choice) => (
+        {filter.enabled ? (
+          <ActionMenuChoiceFilter
+            label={`Filter ${choices.heading ?? action.label}`}
+            value={filter.query}
+            onChange={filter.setQuery}
+            matchCount={filter.visible.length}
+            surface="dropdown"
+          />
+        ) : null}
+        {filter.visible.map((choice) => (
           <DropdownMenuItem
             key={choice.id}
             aria-current={choice.selected ? "true" : undefined}
