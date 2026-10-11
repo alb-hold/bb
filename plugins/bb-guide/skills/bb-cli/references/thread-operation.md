@@ -115,6 +115,16 @@ hostId, providerId, projectId, parentThreadId, groupBy })`.
   same session (`claude --resume <id>` or `codex resume <id>`). It prints the
   harness, the native session id, and the terminal; `--attach` attaches this
   terminal to it, and `--json` returns the record.
+- `bb thread native <thread-id> --convert` moves an existing claude-code or
+  codex chat thread to its terminal: it stops the running turn, releases bb's
+  agent, and resumes the same session in `claude` or `codex`. `--chat` moves
+  it back: it closes the terminal and bb continues that session on the next
+  message. A thread is in one mode at a time, and turns taken in the terminal
+  do not appear in the thread timeline. `--convert` fails with
+  `native_terminal_unsupported` (Cursor, Elyra) or `native_terminal_no_session`
+  (no provider session yet); `--chat` fails with
+  `native_terminal_no_chat_session` for a thread started with `--native`. The
+  thread menu's **Open in terminal** and **Back to chat** do the same.
 - `bb thread tell <thread-id> "..."` pastes the text into the running
   native terminal and presses Enter. It fails with
   `native_terminal_not_running` when the harness is not running; reopen it with

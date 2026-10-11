@@ -36,6 +36,16 @@ export type NativeTerminalLaunchSpec = z.infer<
   typeof nativeTerminalLaunchSpecSchema
 >;
 
+export const nativeTerminalModeSchema = z.enum(["terminal", "chat"]);
+export type NativeTerminalMode = z.infer<typeof nativeTerminalModeSchema>;
+
+export const switchNativeTerminalModeRequestSchema = z
+  .object({ mode: nativeTerminalModeSchema })
+  .strict();
+export type SwitchNativeTerminalModeRequest = z.infer<
+  typeof switchNativeTerminalModeRequestSchema
+>;
+
 export const recordNativeSessionRequestSchema = z
   .object({
     nativeSessionId: z

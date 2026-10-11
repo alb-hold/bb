@@ -23,6 +23,8 @@ export {
 export {
   consumeNativeTerminalThreadInitialPrompt,
   createNativeTerminalThread,
+  deleteNativeTerminalThread,
+  findNativeTerminalThreadBySession,
   getNativeTerminalThread,
   isNativeTerminalThread,
   listNativeTerminalThreadIds,

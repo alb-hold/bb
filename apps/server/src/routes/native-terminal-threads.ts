@@ -11,6 +11,7 @@ import {
   recordNativeTerminalSession,
   takeNativeTerminalLaunchSpec,
 } from "../services/threads/native-terminal-threads.js";
+import { switchNativeTerminalMode } from "../services/threads/native-terminal-mode.js";
 import type { AppDeps } from "../types.js";
 
 export function registerNativeTerminalThreadRoutes(
@@ -37,6 +38,15 @@ export function registerNativeTerminalThreadRoutes(
 
   post(routes.launch, (context) =>
     context.json(takeNativeTerminalLaunchSpec(deps, context.req.param("id"))),
+  );
+
+  post(routes.switchMode, async (context, payload) =>
+    context.json(
+      await switchNativeTerminalMode(deps, {
+        threadId: context.req.param("id"),
+        mode: payload.mode,
+      }),
+    ),
   );
 
   post(routes.recordSession, (context, payload) =>

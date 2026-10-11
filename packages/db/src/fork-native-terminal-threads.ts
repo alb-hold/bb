@@ -83,6 +83,30 @@ export function getNativeTerminalThread(
   return row ?? null;
 }
 
+export function findNativeTerminalThreadBySession(
+  db: DbConnection,
+  args: { providerId: string; nativeSessionId: string },
+): NativeTerminalThreadRecord | null {
+  const row = db.$client
+    .prepare(
+      `SELECT ${SELECT_COLUMNS} FROM fork_native_terminal_threads
+       WHERE provider_id = ? AND native_session_id = ?`,
+    )
+    .get(args.providerId, args.nativeSessionId) as
+    | NativeTerminalThreadRecord
+    | undefined;
+  return row ?? null;
+}
+
+export function deleteNativeTerminalThread(
+  db: DbConnection,
+  threadId: string,
+): void {
+  db.$client
+    .prepare(`DELETE FROM fork_native_terminal_threads WHERE thread_id = ?`)
+    .run(threadId);
+}
+
 export function isNativeTerminalThread(
   db: DbConnection,
   threadId: string,

@@ -17,6 +17,8 @@ const SWALLOWED_SIGNALS = ["SIGINT", "SIGQUIT"] as const;
 
 interface NativeOpenOptions {
   attach?: boolean;
+  chat?: boolean;
+  convert?: boolean;
   json?: boolean;
   self?: boolean;
 }
@@ -106,9 +108,17 @@ export function registerNativeCommands(
   parent
     .command("native [threadId]")
     .description(
-      "Open the native terminal of a thread created with `bb thread spawn --native`, resuming its native CLI session when it has exited",
+      "Open a thread's native terminal, resuming its provider CLI session when it has exited. --convert moves a claude-code or codex chat thread to its terminal on the same session; --chat moves it back",
     )
     .option("--self", "Target the current thread (BB_THREAD_ID)")
+    .option(
+      "--convert",
+      "Move a chat thread to its native terminal: stops its running turn and resumes the same session in claude or codex",
+    )
+    .option(
+      "--chat",
+      "Move a converted thread back to chat: closes its terminal and lets bb continue the same session",
+    )
     .option("--attach", "Attach this terminal to the native session")
     .option("--json", "Print machine-readable JSON output")
     .action(
@@ -117,13 +127,37 @@ export function registerNativeCommands(
           const threadId = requireThreadIdOrSelf(threadIdArg, {
             self: opts.self === true,
           });
+          if (opts.chat && (opts.convert || opts.attach)) {
+            throw new CliExitError(
+              "--chat cannot be combined with --convert or --attach",
+              1,
+            );
+          }
+          const sdk = createCliBbSdk(getUrl());
+          if (opts.chat) {
+            const result = await sdk.nativeTerminals.switchMode({
+              threadId,
+              mode: "chat",
+            });
+            if (outputJson(opts, result)) return;
+            console.log(`Thread ${threadId} is back in chat`);
+            return;
+          }
           const columns = process.stdout.columns;
           const rows = process.stdout.rows;
-          const view = await createCliBbSdk(getUrl()).nativeTerminals.open({
-            threadId,
-            ...(columns ? { cols: columns } : {}),
-            ...(rows ? { rows } : {}),
-          });
+          const view = opts.convert
+            ? await sdk.nativeTerminals.switchMode({
+                threadId,
+                mode: "terminal",
+              })
+            : await sdk.nativeTerminals.open({
+                threadId,
+                ...(columns ? { cols: columns } : {}),
+                ...(rows ? { rows } : {}),
+              });
+          if (view === null) {
+            throw new CliExitError("The native terminal did not open", 1);
+          }
           if (outputJson(opts, view)) return;
           if (opts.attach) {
             if (view.terminal === null) {

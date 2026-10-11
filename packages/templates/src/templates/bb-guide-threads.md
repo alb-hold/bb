@@ -290,6 +290,19 @@ Native terminal threads:
 
   bb thread native [id] [--attach]         Open a --native thread's provider CLI terminal,
                                            resuming the same session when it has exited
+  bb thread native [id] --convert          Move a claude-code or codex chat thread to its
+                                           terminal: stops its running turn, then resumes
+                                           the same session in claude or codex
+  bb thread native [id] --chat             Move a converted thread back to chat: closes
+                                           its terminal; bb continues the same session
+
+  A thread is in one mode at a time. While it is in its terminal, chat sends
+  paste into the terminal and bb starts no turns. Turns taken in the terminal
+  stay in the provider's session but do not appear in the thread timeline.
+  --convert fails with native_terminal_unsupported for providers without a
+  terminal CLI (Cursor, Elyra) and native_terminal_no_session for a thread that
+  has no provider session yet; --chat fails with native_terminal_no_chat_session
+  for a thread started with --native.
 
   Tell on a native thread pastes the text into its running terminal and presses
   Enter; it fails with native_terminal_not_running when the harness has exited.

@@ -177,13 +177,13 @@ function requireNativeTerminalThreadRecord(
     throw new ApiError(
       404,
       "native_terminal_thread_not_found",
-      "Thread is not a native terminal thread",
+      "This thread runs in chat. Switch it to its terminal first with Open in terminal, or `bb thread native <id> --convert`",
     );
   }
   return record;
 }
 
-function readRecordTerminal(
+export function readRecordTerminal(
   deps: Pick<AppDeps, "terminalSessions">,
   record: NativeTerminalThreadRecord,
 ): TerminalSession | null {
@@ -295,6 +295,12 @@ async function openNativeTerminalOnce(
     terminalSessionId: terminal.id,
   });
   return toNativeTerminalThread(deps, record, terminal);
+}
+
+export async function settlePendingNativeTerminalOpen(
+  threadId: string,
+): Promise<void> {
+  await pendingOpens.get(threadId)?.catch(() => undefined);
 }
 
 export function openNativeTerminal(
