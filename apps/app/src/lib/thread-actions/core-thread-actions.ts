@@ -2,7 +2,7 @@ import { useLayoutEffect, useMemo, useRef } from "react";
 import { useAtomValue, useStore } from "jotai";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { toast } from "sonner";
+import { appToast } from "@/components/ui/app-toast";
 import {
   experimental_THREAD_ACTION_GROUPS as GROUPS,
   type PluginThreadActionRegistration,
@@ -384,7 +384,7 @@ export const CORE_THREAD_ACTIONS: readonly PluginThreadActionRegistration<unknow
                 threadId: thread.id,
                 projectId: value,
               });
-              toast.success("Thread moved to project");
+              appToast.success("Thread moved to project");
               if (data.viewedThreadId === thread.id) {
                 data.showMovedThread(thread.id, value);
               }
