@@ -71,7 +71,7 @@ export default function plugin(bb: BbPluginApi) {
       executable: "claude",
       launchArgs: ["--dangerously-skip-permissions"],
       modelArgs: ["--model", "{model}"],
-      pastePlaceholders: ["[Pasted text #"],
+      pastePlaceholders: ["[Pasted text #", "[Image #"],
       sessionRoot: { env: "CLAUDE_CONFIG_DIR", home: ".claude" },
       session: {
         kind: "assigned",

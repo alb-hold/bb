@@ -7,9 +7,11 @@ import {
   getTerminalSession,
   getThread,
   listEvents,
+  projectAttachmentThreads,
   threads,
   upsertProjectExecutionDefaults,
 } from "@bb/db";
+import type { PromptInput } from "@bb/domain";
 import {
   hostDaemonServerWsMessageSchema,
   type HostDaemonServerWsMessage,
@@ -29,11 +31,13 @@ import {
 } from "../../src/services/threads/native-terminal-threads.js";
 import { onDaemonSocketOpen } from "../../src/ws/daemon-protocol.js";
 import { resolvePendingThreadSessionOptions } from "../../src/services/threads/thread-session-options.js";
+import { storeAttachment } from "../../src/services/projects/attachments.js";
 import { readJson } from "../helpers/json.js";
 import { textInput } from "../helpers/prompt-input.js";
 import {
   seedEnvironment,
   seedHostSession,
+  seedPrimaryHost,
   seedProjectWithSource,
   seedSession,
 } from "../helpers/seed.js";
@@ -144,11 +148,46 @@ async function createNativeThread(
   args: {
     providerId: string;
     prompt?: string;
+    input?: PromptInput[];
     model?: string;
     modelSource?: "explicit" | "client-preference";
   },
 ) {
-  const response = await postJson(fixture, "/threads", {
+  const response = await postNativeThread(fixture, args);
+  expect(response.status).toBe(201);
+  return threadResponseSchema.parse(await readJson(response));
+}
+
+async function storeImageAttachment(fixture: Fixture): Promise<string> {
+  const attachment = await storeAttachment(
+    fixture.harness.db,
+    fixture.harness.deps.config.dataDir,
+    fixture.projectId,
+    new File(["png"], "shot.png", { type: "image/png" }),
+  );
+  return attachment.path;
+}
+
+function storedAttachmentPath(fixture: Fixture, attachmentPath: string) {
+  return path.join(
+    fixture.harness.deps.config.dataDir,
+    "attachments",
+    fixture.projectId,
+    attachmentPath,
+  );
+}
+
+async function postNativeThread(
+  fixture: Fixture,
+  args: {
+    providerId: string;
+    prompt?: string;
+    input?: PromptInput[];
+    model?: string;
+    modelSource?: "explicit" | "client-preference";
+  },
+): Promise<Response> {
+  return postJson(fixture, "/threads", {
     projectId: fixture.projectId,
     providerId: args.providerId,
     ...(args.model === undefined ? {} : { model: args.model }),
@@ -161,12 +200,11 @@ async function createNativeThread(
           },
         }),
     origin: "cli",
-    input: args.prompt === undefined ? [] : textInput(args.prompt),
+    input:
+      args.input ?? (args.prompt === undefined ? [] : textInput(args.prompt)),
     environment: { type: "reuse", environmentId: fixture.environment.id },
     nativeTerminal: true,
   });
-  expect(response.status).toBe(201);
-  return threadResponseSchema.parse(await readJson(response));
 }
 
 function acknowledgeOpen(fixture: Fixture, open: TerminalOpenMessage): void {
@@ -200,7 +238,7 @@ async function waitForThreadStatus(
 
 async function openRunningNativeThread(
   fixture: Fixture,
-  args: { providerId: string; prompt?: string },
+  args: { providerId: string; prompt?: string; input?: PromptInput[] },
 ) {
   const thread = await createNativeThread(fixture, args);
   const open = await waitForTerminalOpen(fixture.socket);
@@ -278,6 +316,10 @@ function startFakeCli(
   };
 }
 
+function scrolledPastScreen(line: string): string {
+  return `${line}\r\n${"• Ran a step\r\n".repeat(120)}› `;
+}
+
 function composerScreen(pasted: string): string {
   const words = pasted.split(" ");
   return `\u001b[2K\u001b[1G\u203a ${words.join("\u001b[1C")}\u001b[0m`;
@@ -321,8 +363,44 @@ describe("native terminal threads", () => {
       expect(run(supporting)).toBe(
         `wrapper ${thread.id} thread native-run ${thread.id}`,
       );
-      expect(run(legacy)).toBe(`bare ${thread.id}`);
-      expect(run(null)).toBe(`bare ${thread.id}`);
+      expect(run(legacy)).toBe(
+        `bare ${thread.id} --dangerously-skip-permissions`,
+      );
+      expect(run(null)).toBe(
+        `bare ${thread.id} --dangerously-skip-permissions`,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("passes each launch argument intact to the bare harness fallback", () => {
+    const command = nativeTerminalLaunchCommand({
+      executable: "codex",
+      launchArgs: [
+        "--no-daemon",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "it's $HOME",
+      ],
+      reattachOnly: false,
+      threadId: "thr_fallback",
+    });
+    const dir = mkdtempSync(path.join(os.tmpdir(), "bb-native-fallback-"));
+    try {
+      const file = path.join(dir, "codex");
+      writeFileSync(file, '#!/bin/sh\nprintf "%s\\n" "$@"\n');
+      chmodSync(file, 0o755);
+      expect(
+        execFileSync("/bin/sh", ["-c", command], {
+          encoding: "utf8",
+          env: { PATH: `${dir}:/usr/bin:/bin` },
+        }).split("\n"),
+      ).toEqual([
+        "--no-daemon",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "it's $HOME",
+        "",
+      ]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -332,6 +410,7 @@ describe("native terminal threads", () => {
     const threadId = "thr_reattach";
     const command = nativeTerminalLaunchCommand({
       executable: "claude",
+      launchArgs: ["--dangerously-skip-permissions"],
       reattachOnly: true,
       threadId,
     });
@@ -434,6 +513,199 @@ describe("native terminal threads", () => {
     expect(second.initialPrompt).toBeNull();
     expect(second.nativeSessionId).toBe(first.nativeSessionId);
   });
+
+  it("hands an uploaded attachment to the first launch as a file path", async () => {
+    const fixture = await createFixture();
+    seedPrimaryHost(fixture.harness.deps, fixture.hostId);
+    const attachmentPath = await storeImageAttachment(fixture);
+    const { thread } = await openRunningNativeThread(fixture, {
+      providerId: "claude-code",
+      input: [
+        ...textInput("Describe this screenshot"),
+        { type: "localImage", path: attachmentPath },
+      ],
+    });
+    const spec = nativeTerminalLaunchSpecSchema.parse(
+      await readJson(
+        await postJson(
+          fixture,
+          `/threads/${thread.id}/native-terminal/launch`,
+          {},
+        ),
+      ),
+    );
+    expect(spec.initialPrompt).toBe(
+      `${storedAttachmentPath(fixture, attachmentPath)}\nDescribe this screenshot`,
+    );
+    expect(
+      fixture.harness.db
+        .select()
+        .from(projectAttachmentThreads)
+        .all()
+        .map((owner) => owner.threadId),
+    ).toEqual([thread.id]);
+  });
+
+  it("starts a thread from an attachment alone", async () => {
+    const fixture = await createFixture();
+    seedPrimaryHost(fixture.harness.deps, fixture.hostId);
+    const attachmentPath = await storeImageAttachment(fixture);
+    const { thread } = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+      input: [{ type: "localImage", path: attachmentPath }],
+    });
+    const spec = nativeTerminalLaunchSpecSchema.parse(
+      await readJson(
+        await postJson(
+          fixture,
+          `/threads/${thread.id}/native-terminal/launch`,
+          {},
+        ),
+      ),
+    );
+    expect(spec.initialPrompt).toBe(
+      storedAttachmentPath(fixture, attachmentPath),
+    );
+  });
+
+  it("refuses an uploaded attachment for a thread on another machine", async () => {
+    const fixture = await createFixture();
+    seedPrimaryHost(fixture.harness.deps, "another-host");
+    const attachmentPath = await storeImageAttachment(fixture);
+    const response = await postNativeThread(fixture, {
+      providerId: "claude-code",
+      input: [
+        ...textInput("Describe this screenshot"),
+        { type: "localImage", path: attachmentPath },
+      ],
+    });
+    expect(response.status).toBe(400);
+    expect(apiErrorSchema.parse(await readJson(response)).message).toContain(
+      "runs on another machine",
+    );
+  });
+
+  it("refuses an attachment that was never uploaded", async () => {
+    const fixture = await createFixture();
+    seedPrimaryHost(fixture.harness.deps, fixture.hostId);
+    const response = await postNativeThread(fixture, {
+      providerId: "claude-code",
+      input: [{ type: "localImage", path: "missing.png" }],
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it("refuses another project's upload before any terminal thread is created", async () => {
+    const fixture = await createFixture();
+    seedPrimaryHost(fixture.harness.deps, fixture.hostId);
+    const { project: otherProject } = seedProjectWithSource(
+      fixture.harness.deps,
+      { hostId: fixture.hostId, path: "/tmp/native-other-project" },
+    );
+    const otherUpload = await storeAttachment(
+      fixture.harness.db,
+      fixture.harness.deps.config.dataDir,
+      otherProject.id,
+      new File(["png"], "theirs.png", { type: "image/png" }),
+    );
+    const threadsBefore = fixture.harness.db
+      .select()
+      .from(threads)
+      .all().length;
+    const response = await postNativeThread(fixture, {
+      providerId: "claude-code",
+      input: [
+        ...textInput("Describe this screenshot"),
+        { type: "localImage", path: otherUpload.path },
+      ],
+    });
+    expect(response.status).toBe(400);
+    expect(fixture.harness.db.select().from(threads).all()).toHaveLength(
+      threadsBefore,
+    );
+    expect(
+      fixture.harness.db.select().from(projectAttachmentThreads).all(),
+    ).toEqual([]);
+  });
+
+  it("pastes an attachment path ahead of the message", async () => {
+    const fixture = await createFixture();
+    seedPrimaryHost(fixture.harness.deps, fixture.hostId);
+    const attachmentPath = await storeImageAttachment(fixture);
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+    });
+    const cli = startFakeCli(fixture, open.terminalId, composerScreen);
+    try {
+      const response = await postJson(fixture, `/threads/${thread.id}/send`, {
+        input: [
+          ...textInput("run the tests"),
+          { type: "localImage", path: attachmentPath },
+        ],
+        mode: "auto",
+      });
+      expect(response.status).toBe(200);
+      expect(cli.inputs()).toEqual([
+        `\u001b[200~${storedAttachmentPath(fixture, attachmentPath)}\nrun the tests\u001b[201~`,
+        "\r",
+      ]);
+    } finally {
+      cli.stop();
+    }
+  });
+
+  it("presses Enter when Claude Code draws a pasted image as a chip", async () => {
+    const fixture = await createFixture();
+    seedPrimaryHost(fixture.harness.deps, fixture.hostId);
+    const attachmentPath = await storeImageAttachment(fixture);
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "claude-code",
+    });
+    const cli = startFakeCli(
+      fixture,
+      open.terminalId,
+      () => "\u001b[2;1H\u001b[2K❯ [Image #2]",
+      "\u001b[1;1H❯ [Image #1] an earlier screenshot",
+    );
+    try {
+      const response = await postJson(fixture, `/threads/${thread.id}/send`, {
+        input: [{ type: "localImage", path: attachmentPath }],
+        mode: "auto",
+      });
+      expect(response.status).toBe(200);
+      expect(cli.inputs()).toEqual([
+        `\u001b[200~${storedAttachmentPath(fixture, attachmentPath)}\u001b[201~`,
+        "\r",
+      ]);
+    } finally {
+      cli.stop();
+    }
+  });
+
+  it("never presses Enter when only an earlier image chip is redrawn", async () => {
+    const fixture = await createFixture();
+    seedPrimaryHost(fixture.harness.deps, fixture.hostId);
+    const attachmentPath = await storeImageAttachment(fixture);
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "claude-code",
+    });
+    const earlier = "\u001b[1;1H❯ [Image #1] an earlier screenshot";
+    const cli = startFakeCli(fixture, open.terminalId, () => earlier, earlier);
+    try {
+      const response = await postJson(fixture, `/threads/${thread.id}/send`, {
+        input: [{ type: "localImage", path: attachmentPath }],
+        mode: "auto",
+      });
+      expect(response.status).toBe(409);
+      expect(apiErrorSchema.parse(await readJson(response)).code).toBe(
+        "native_terminal_input_not_shown",
+      );
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(cli.inputs()).toHaveLength(1);
+    } finally {
+      cli.stop();
+    }
+  }, 10_000);
 
   it("launches codex outside its shared background server so chat can take the session back", async () => {
     const fixture = await createFixture();
@@ -540,6 +812,66 @@ describe("native terminal threads", () => {
       cli.stop();
     }
   });
+
+  it("sends a short reply that only older output shows", async () => {
+    const fixture = await createFixture();
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+    });
+    const cli = startFakeCli(
+      fixture,
+      open.terminalId,
+      composerScreen,
+      scrolledPastScreen("• Everything is ok now"),
+    );
+    try {
+      const response = await postJson(fixture, `/threads/${thread.id}/send`, {
+        input: textInput("ok"),
+        mode: "auto",
+      });
+      expect(response.status).toBe(200);
+      expect(cli.inputs()).toEqual(["\u001b[200~ok\u001b[201~", "\r"]);
+    } finally {
+      cli.stop();
+    }
+  });
+
+  it.each([
+    ["the whole screen", "\u001b[2J", ""],
+    ["below the cursor", "\u001b[J", "\r\n\u276f 1. ok\r\n  2. No"],
+    ["below the cursor, explicit", "\u001b[0J", "\r\n\u276f 1. ok\r\n  2. No"],
+    ["above the cursor", "\u001b[1J", "\r\n\u276f 1. ok\r\n  2. No"],
+  ])(
+    "never presses Enter when the CLI erases %s and reprints older output",
+    async (_name, erase, menu) => {
+      const fixture = await createFixture();
+      const { open, thread } = await openRunningNativeThread(fixture, {
+        providerId: "codex",
+      });
+      const history = scrolledPastScreen("• Everything is ok now");
+      const cli = startFakeCli(
+        fixture,
+        open.terminalId,
+        () => `\u001b[H${erase}${history}${menu}`,
+        history,
+      );
+      try {
+        const response = await postJson(fixture, `/threads/${thread.id}/send`, {
+          input: textInput("ok"),
+          mode: "auto",
+        });
+        expect(response.status).toBe(409);
+        expect(apiErrorSchema.parse(await readJson(response)).code).toBe(
+          "native_terminal_input_not_shown",
+        );
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        expect(cli.inputs()).toEqual(["\u001b[200~ok\u001b[201~"]);
+      } finally {
+        cli.stop();
+      }
+    },
+    10_000,
+  );
 
   it("sends nothing when the CLI redraws the same text from its history", async () => {
     const fixture = await createFixture();

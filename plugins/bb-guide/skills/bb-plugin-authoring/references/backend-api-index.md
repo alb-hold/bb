@@ -57,6 +57,9 @@ Read the installed declarations for exact current signatures.
 - `ExperimentalHostWatchSubscription`
 - `ExperimentalHostWorkerLease`
 - `ExperimentalLiveFileTarget`
+- `ExperimentalSignInWindow`
+- `ExperimentalSignInWindowOptions`
+- `ExperimentalSignInWindowResult`
 - `ExperimentalOpenFixedTabOptions`
 - `ExperimentalPermissionModePickerProps`
 - `ExperimentalPluginFixedTabReference`

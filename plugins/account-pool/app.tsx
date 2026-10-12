@@ -26,6 +26,7 @@ import { CSS } from "@dnd-kit/utilities";
 import {
   definePluginApp,
   experimental_copyToClipboard,
+  type ExperimentalSignInWindow,
   useBbNavigate,
   useRealtime,
   useRpc,
@@ -75,6 +76,7 @@ import type {
 import type { OAuthLoginStart } from "./src/oauth-login.js";
 import type { CodexDeviceLoginStart } from "./src/codex-device-login.js";
 import {
+  CLAUDE_OAUTH_REDIRECT_URI,
   DEFAULT_ACCOUNT_POOL_CONFIG,
   modelFamilySchema,
   statusSchema,
@@ -1111,6 +1113,7 @@ function AccountPoolSettings() {
     null,
   );
   const [loginDone, setLoginDone] = useState<string | null>(null);
+  const [cleanWindow, setCleanWindow] = useState(false);
   const [pastedCode, setPastedCode] = useState("");
   const [accountLabel, setAccountLabel] = useState("");
   const [nextAccountId, setNextAccountId] = useState<string | null | undefined>(
@@ -1121,6 +1124,7 @@ function AccountPoolSettings() {
   const [priority, setPriority] = useState("100");
   const [countdown, setCountdown] = useState(0);
   const mounted = useRef(true);
+  const signInWindow = useRef<ExperimentalSignInWindow | null>(null);
   const threshold =
     config?.switchThreshold ?? DEFAULT_ACCOUNT_POOL_CONFIG.switchThreshold;
   const applyConfig = useCallback((next: AccountPoolConfig) => {
@@ -1171,6 +1175,8 @@ function AccountPoolSettings() {
     void refreshLocalLogins();
     return () => {
       mounted.current = false;
+      signInWindow.current?.close();
+      signInWindow.current = null;
     };
   }, [refresh, refreshConfig, refreshLocalLogins]);
   useRealtime(ACCOUNT_POOL_ACCOUNTS_CHANGED, () => {
@@ -1202,6 +1208,8 @@ function AccountPoolSettings() {
         });
         if (cancelled) return;
         if (result.status === "complete") {
+          signInWindow.current?.close();
+          signInWindow.current = null;
           setLoginDone(result.account.label);
           setCodexStep(null);
           await refresh();
@@ -1234,6 +1242,19 @@ function AccountPoolSettings() {
     dialog === null || dialog.kind === "api-key" || dialog.accountId === null
       ? null
       : (accounts.find((account) => account.id === dialog.accountId) ?? null);
+  const latestLogin = useRef({ target: selectedAccount, label: accountLabel });
+  latestLogin.current = { target: selectedAccount, label: accountLabel };
+  function openAuthorizationUrl(url: string): boolean {
+    if (dialog?.kind === "claude-login" && loginStep !== null) {
+      const { sessionId } = loginStep;
+      return openAuthorization({
+        url,
+        redirectUrlPrefix: CLAUDE_OAUTH_REDIRECT_URI,
+        onRedirect: (redirectUrl) => completeClaude(sessionId, redirectUrl),
+      });
+    }
+    return openAuthorization({ url });
+  }
   async function run(key: string, action: () => Promise<void>): Promise<void> {
     if (pending.size > 0) return;
     markPending(key, null);
@@ -1333,6 +1354,12 @@ function AccountPoolSettings() {
       setLoginStep(started);
       setPastedCode("");
       setAccountLabel("");
+      openAuthorization({
+        url: started.authorizeUrl,
+        redirectUrlPrefix: CLAUDE_OAUTH_REDIRECT_URI,
+        onRedirect: (redirectUrl) =>
+          completeClaude(started.sessionId, redirectUrl),
+      });
     });
   }
   async function startCodex(
@@ -1343,12 +1370,59 @@ function AccountPoolSettings() {
     setCodexStep(null);
     await run("codex-login", async () => {
       setAccountLabel("");
-      setCodexStep(
-        await rpc.call(
-          "codexLogin.start",
-          target === null ? null : { accountId: target.id },
-        ),
+      const started = await rpc.call(
+        "codexLogin.start",
+        target === null ? null : { accountId: target.id },
       );
+      setCodexStep(started);
+      openAuthorization({ url: started.verificationUri });
+    });
+  }
+  function closeSignInWindow(): void {
+    const open = signInWindow.current;
+    signInWindow.current = null;
+    open?.close();
+  }
+  function openAuthorization(args: {
+    url: string;
+    redirectUrlPrefix?: string;
+    onRedirect?: (redirectUrl: string) => void;
+  }): boolean {
+    closeSignInWindow();
+    const opened = navigate.experimental_openSignInWindow({
+      url: args.url,
+      ...(args.redirectUrlPrefix === undefined
+        ? {}
+        : { redirectUrlPrefix: args.redirectUrlPrefix }),
+    });
+    setCleanWindow(opened !== null);
+    if (opened === null) return navigate.openUrl(args.url);
+    signInWindow.current = opened;
+    void opened.result.then((result) => {
+      if (signInWindow.current === opened) signInWindow.current = null;
+      if (result.reason === "redirect") args.onRedirect?.(result.redirectUrl);
+    });
+    return true;
+  }
+  function completeClaude(sessionId: string, pasted: string): void {
+    const { target, label } = latestLogin.current;
+    void run("complete-claude", async () => {
+      const added = await rpc
+        .call("login.complete", {
+          sessionId,
+          pasted,
+          ...(target !== null || label.trim() === ""
+            ? {}
+            : { label: label.trim() }),
+        })
+        .catch((completeError: unknown) => {
+          setLoginStep(null);
+          throw completeError;
+        });
+      closeSignInWindow();
+      setPastedCode("");
+      setLoginDone(added.label);
+      setLoginStep(null);
     });
   }
   async function chooseAdd(
@@ -1449,6 +1523,7 @@ function AccountPoolSettings() {
     }
   }
   function closeDialog(): void {
+    closeSignInWindow();
     if (dialog?.kind === "codex-login" && codexStep !== null)
       void rpc.call("codexLogin.cancel", { sessionId: codexStep.sessionId });
     setDialog(null);
@@ -2035,30 +2110,15 @@ function AccountPoolSettings() {
             countdown={0}
             error={error}
             close={closeDialog}
-            openUrl={navigate.openUrl}
+            openUrl={openAuthorizationUrl}
+            cleanWindow={cleanWindow}
             setPastedCode={setPastedCode}
             accountLabel={accountLabel}
             setAccountLabel={setAccountLabel}
-            complete={() =>
-              void run("complete-claude", async () => {
-                if (loginStep === null) return;
-                const added = await rpc
-                  .call("login.complete", {
-                    sessionId: loginStep.sessionId,
-                    pasted: pastedCode,
-                    ...(selectedAccount !== null || accountLabel.trim() === ""
-                      ? {}
-                      : { label: accountLabel.trim() }),
-                  })
-                  .catch((completeError: unknown) => {
-                    setLoginStep(null);
-                    throw completeError;
-                  });
-                setPastedCode("");
-                setLoginDone(added.label);
-                setLoginStep(null);
-              })
-            }
+            complete={() => {
+              if (loginStep !== null)
+                completeClaude(loginStep.sessionId, pastedCode);
+            }}
             restart={() => void startClaude(selectedAccount)}
           />
         ) : null}
@@ -2074,7 +2134,8 @@ function AccountPoolSettings() {
             countdown={countdown}
             error={error}
             close={closeDialog}
-            openUrl={navigate.openUrl}
+            openUrl={openAuthorizationUrl}
+            cleanWindow={cleanWindow}
             setPastedCode={() => {}}
             accountLabel={accountLabel}
             setAccountLabel={setAccountLabel}
@@ -2251,6 +2312,7 @@ function LoginDialog({
   error,
   close,
   openUrl,
+  cleanWindow,
   setPastedCode,
   accountLabel,
   setAccountLabel,
@@ -2268,6 +2330,7 @@ function LoginDialog({
   error: string | null;
   close: () => void;
   openUrl: (url: string) => boolean;
+  cleanWindow: boolean;
   setPastedCode: (value: string) => void;
   accountLabel: string;
   setAccountLabel: (value: string) => void;
@@ -2351,8 +2414,12 @@ function LoginDialog({
           )}
           <p className="text-sm text-muted-foreground">
             {provider === "claude"
-              ? "Sign in at claude.ai, then paste the code from the final page."
-              : "Open the verification page, sign in to ChatGPT, and enter this code."}
+              ? cleanWindow
+                ? "Sign in to the account you want to add in the window that opened. bb finishes the login when you authorize; if it does not, paste the code from the final page."
+                : "Sign in at claude.ai, then paste the code from the final page."
+              : cleanWindow
+                ? "Sign in to ChatGPT in the window that opened and enter this code."
+                : "Open the verification page, sign in to ChatGPT, and enter this code."}
           </p>
           {codexStep === null ? null : (
             <UserCodeBlock userCode={codexStep.userCode} />
@@ -2367,7 +2434,9 @@ function LoginDialog({
                 onChange={(event) => setAccountLabel(event.target.value)}
               />
               <p className="text-xs text-muted-foreground">
-                Use a private window or sign in to the account you want to add.
+                {cleanWindow
+                  ? "The window starts signed out, so your browser's accounts are not used."
+                  : "Use a private window or sign in to the account you want to add."}
               </p>
             </>
           ) : (

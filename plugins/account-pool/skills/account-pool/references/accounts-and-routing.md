@@ -58,6 +58,10 @@ flags, and stray arguments are rejected with the nearest suggestion rather than
 ignored, and a failing invocation that carries `--json` also prints
 `{"ok":false,"error":{"code","message","hint"}}` on stdout.
 
+The desktop app's Sign in buttons open the same URLs in a clean in-app window with an empty,
+non-persistent session, so the browser's own claude.ai or ChatGPT account is never reused, and
+finish the Claude login from the redirect; the CLI has no window, so it prints the URL.
+
 Claude `--login` starts a PKCE session, prints a browser URL and session ID,
 then exits. Pipe the manual callback code to `account login-complete` with that
 session ID within ten minutes. Its command hint uses the absolute path of the

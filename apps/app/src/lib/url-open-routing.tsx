@@ -13,6 +13,7 @@ import {
   useOpenLinksInAppBrowserPreference,
 } from "@/lib/in-app-browser-link-preference";
 import { AppNavigationHostProvider } from "@/lib/app-navigation-host";
+import { openSignInWindow } from "@/lib/sign-in-window";
 
 type OpenInAppBrowserUrl = (url: string) => void;
 
@@ -55,7 +56,10 @@ export function UrlOpenRoutingProvider({
 export function AppNavigationUrlHost({ children }: { children: ReactNode }) {
   const openUrl = useOpenUrlByPreference();
   const capabilities = useMemo(
-    () => ({ openUrl: ({ url }: { url: string }) => openUrl(url) }),
+    () => ({
+      openUrl: ({ url }: { url: string }) => openUrl(url),
+      openSignInWindow,
+    }),
     [openUrl],
   );
   return (

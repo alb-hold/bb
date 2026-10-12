@@ -408,7 +408,7 @@ async function resolveDefaultTerminalShell(): Promise<string> {
 }
 
 function buildTerminalEnv(args: BuildTerminalEnvArgs): NodeJS.ProcessEnv {
-  return {
+  const env: NodeJS.ProcessEnv = {
     ...sanitizeInheritedChildProcessEnv({ env: process.env }),
     ...args.shellEnv,
     BB_TERMINAL_SESSION_ID: args.terminalId,
@@ -418,6 +418,8 @@ function buildTerminalEnv(args: BuildTerminalEnvArgs): NodeJS.ProcessEnv {
     PROMPT_EOL_MARK: "",
     TERM: "xterm-256color",
   };
+  delete env.ELECTRON_RUN_AS_NODE;
+  return env;
 }
 
 function terminalTitleFromCommand(command: string): string {
@@ -1057,7 +1059,10 @@ export class TerminalManager {
     }, PAUSED_PROCESS_EXIT_POLL_MS);
   }
 
-  private resumeOutput(session: TerminalSession, flow: TerminalOutputFlow): void {
+  private resumeOutput(
+    session: TerminalSession,
+    flow: TerminalOutputFlow,
+  ): void {
     if (flow.pausedExitPoll === null) {
       return;
     }

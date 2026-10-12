@@ -33,6 +33,7 @@ import {
   defaultNativeHolderSocketPath,
   nativeTerminalClosedForGood,
   openNativeHolderConnection,
+  ignoreNativeHolderSignals,
   pipeNativeHolderClient,
   runNativeHolder,
 } from "../../native-holder.js";
@@ -166,9 +167,7 @@ async function holdNativeHarness(
   threadId: string,
   socketPath: string,
 ): Promise<number> {
-  for (const signal of ["SIGHUP", "SIGINT", "SIGQUIT"] as const) {
-    process.on(signal, () => {});
-  }
+  ignoreNativeHolderSignals(process);
   const sdk = createCliBbSdk(baseUrl);
   const nodePty = await import("node-pty");
   const cwd = process.cwd();
@@ -229,9 +228,6 @@ async function holdNativeHarness(
     report(reader?.finish() ?? null);
   };
   let pty: ReturnType<typeof nodePty.spawn> | null = null;
-  process.on("SIGTERM", () => {
-    pty?.kill("SIGHUP");
-  });
   const exitCode = await runNativeHolder({
     socketPath,
     cwd,

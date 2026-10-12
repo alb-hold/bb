@@ -270,6 +270,9 @@ Read the installed SDK declarations for the exact current signatures.
 - `ExperimentalFileLocation`
 - `ExperimentalFileOpenOptions`
 - `ExperimentalFileLinkProps`
+- `ExperimentalSignInWindow`
+- `ExperimentalSignInWindowOptions`
+- `ExperimentalSignInWindowResult`
 - `ExperimentalAppPanelSurface`
 - `ExperimentalFixedTabTargetState`
 - `ExperimentalOpenFixedTabOptions`

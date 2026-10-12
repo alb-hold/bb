@@ -100,6 +100,7 @@ export interface ProviderRegistryService {
     },
   ): { dispose(): void };
   whenProviderRegistered(providerId: string): Promise<void>;
+  onProviderRegistered(providerId: string, callback: () => void): () => void;
   whenRegistrationsSettled(): Promise<void>;
   markRegistrationsSettled(): void;
 }
@@ -124,6 +125,7 @@ export function createProviderRegistryService(
     { installRank: ProviderInstallRank | null; sequence: number }
   >();
   const providerRegistrationWaiters = new Map<string, Set<() => void>>();
+  const providerRegistrationListeners = new Map<string, Set<() => void>>();
   let registrationRevision = 0;
   const installedByHostId = new Map<
     string,
@@ -187,9 +189,14 @@ export function createProviderRegistryService(
 
   function releaseProviderRegistrationWaiters(providerId: string): void {
     const waiters = providerRegistrationWaiters.get(providerId);
-    if (waiters === undefined) return;
-    providerRegistrationWaiters.delete(providerId);
-    for (const resolve of waiters) resolve();
+    if (waiters !== undefined) {
+      providerRegistrationWaiters.delete(providerId);
+      for (const resolve of waiters) resolve();
+    }
+    const listeners = providerRegistrationListeners.get(providerId);
+    if (listeners === undefined) return;
+    providerRegistrationListeners.delete(providerId);
+    for (const listener of listeners) listener();
   }
 
   function releaseAllProviderRegistrationWaiters(): void {
@@ -437,6 +444,24 @@ export function createProviderRegistryService(
           providerRegistrationWaiters.delete(providerId);
         }
       }
+    },
+
+    onProviderRegistered(providerId, callback) {
+      if (pluginRegistrations.has(providerId)) {
+        callback();
+        return () => undefined;
+      }
+      const listeners =
+        providerRegistrationListeners.get(providerId) ?? new Set();
+      listeners.add(callback);
+      providerRegistrationListeners.set(providerId, listeners);
+      return () => {
+        const currentListeners = providerRegistrationListeners.get(providerId);
+        currentListeners?.delete(callback);
+        if (currentListeners?.size === 0) {
+          providerRegistrationListeners.delete(providerId);
+        }
+      };
     },
 
     async whenRegistrationsSettled() {

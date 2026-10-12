@@ -3,7 +3,7 @@ Route Claude Code and Codex conversations across subscriptions with a local pool
 ## What you get
 
 - Choose a subscription in the model menu with per-account usage. **Automatic** enables failover; an explicit choice never silently switches. CLI: `bb pool select <thread-id> <claude|codex> [<account-id>|automatic]`.
-- A pool of Claude and Codex accounts, added by importing the login already on the machine, signing in through the browser, or pasting an Anthropic API key.
+- A pool of Claude and Codex accounts, added by importing the login already on the machine, signing in through a clean in-app window (desktop; other clients open the browser), or pasting an Anthropic API key.
 - Automatic sends new Claude conversations to the subscription with the most headroom and Codex conversations in priority order. A conversation keeps its account until it becomes unavailable.
 - Drag handles, or Space and the arrow keys, set each provider's order; `bb pool account reorder <claude|codex> <id>...` does the same.
 - Subscriptions in settings: switch each on or off, rename it in place, see its plan and state, sign an expired one in again, or remove it after confirming. Records of one login count once. On this Mac lists local logins not yet pooled.

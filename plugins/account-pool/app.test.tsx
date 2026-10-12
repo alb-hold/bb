@@ -2240,3 +2240,185 @@ describe("Account Pool settings", () => {
     },
   );
 });
+
+describe("Account Pool clean sign-in window", () => {
+  const CLAUDE_SESSION = "22222222-2222-4222-8222-222222222222";
+  const CALLBACK =
+    "https://console.anthropic.com/oauth/code/callback?code=one-time&state=s";
+
+  function fakeWindow() {
+    let settle: (result: SignInResult) => void = () => {};
+    const result = new Promise<SignInResult>((resolve) => {
+      settle = resolve;
+    });
+    const close = vi.fn(() => settle({ reason: "closed" }));
+    return { handle: { close, result }, settle, close };
+  }
+
+  type SignInResult =
+    | { reason: "closed" }
+    | { reason: "redirect"; redirectUrl: string };
+
+  function renderClean(
+    rpc: Record<string, () => object | null | Promise<object | null>>,
+    openSignInWindow: (options: {
+      url: string;
+      redirectUrlPrefix?: string;
+    }) => ReturnType<typeof fakeWindow>["handle"] | null,
+    openUrl = vi.fn(() => true),
+  ) {
+    const slot = renderSlot(
+      app.settingsSections[0]!,
+      {},
+      {
+        rpc: {
+          "status.get": () => status([]),
+          "config.get": () => config(),
+          ...rpc,
+        },
+        openUrl,
+        openSignInWindow,
+      },
+    );
+    return { slot, openUrl };
+  }
+
+  async function startClaude(slot: ReturnType<typeof render>) {
+    const add = await slot.findByRole("button", { name: "Add subscription" });
+    fireEvent.pointerDown(add);
+    fireEvent.click(
+      await slot.findByText("Sign in to Claude", { selector: "span.block" }),
+    );
+  }
+
+  it("opens Claude sign-in in the clean window and completes from the redirect", async () => {
+    const win = fakeWindow();
+    const open = vi.fn(() => win.handle);
+    const { slot, openUrl } = renderClean(
+      {
+        "login.start": () => ({
+          sessionId: CLAUDE_SESSION,
+          authorizeUrl: "https://claude.ai/oauth/authorize?state=s",
+        }),
+        "login.complete": () => account({ label: "Second Claude" }),
+      },
+      open,
+    );
+    await startClaude(slot);
+    await waitFor(() => expect(open).toHaveBeenCalledTimes(1));
+    expect(open).toHaveBeenCalledWith({
+      url: "https://claude.ai/oauth/authorize?state=s",
+      redirectUrlPrefix: "https://console.anthropic.com/oauth/code/callback",
+    });
+    expect(openUrl).not.toHaveBeenCalled();
+    expect(slot.getByText(/The window starts signed out/i)).toBeTruthy();
+
+    win.settle({ reason: "redirect", redirectUrl: CALLBACK });
+    await waitFor(() =>
+      expect(slot.rpcCalls).toContainEqual({
+        method: "login.complete",
+        input: { sessionId: CLAUDE_SESSION, pasted: CALLBACK },
+      }),
+    );
+    expect(await slot.findByText("Connected Second Claude")).toBeTruthy();
+  });
+
+  it("keeps manual code paste working when the window is closed without a redirect", async () => {
+    const win = fakeWindow();
+    const { slot } = renderClean(
+      {
+        "login.start": () => ({
+          sessionId: CLAUDE_SESSION,
+          authorizeUrl: "https://claude.ai/oauth/authorize",
+        }),
+        "login.complete": () => account({ label: "Pasted" }),
+      },
+      () => win.handle,
+    );
+    await startClaude(slot);
+    const code = await slot.findByLabelText("Claude authorization code");
+    win.settle({ reason: "closed" });
+    fireEvent.change(code, { target: { value: "code#state" } });
+    fireEvent.click(await slot.findByRole("button", { name: "Complete" }));
+    await waitFor(() =>
+      expect(slot.rpcCalls).toContainEqual({
+        method: "login.complete",
+        input: { sessionId: CLAUDE_SESSION, pasted: "code#state" },
+      }),
+    );
+  });
+
+  it("closes the clean window when the dialog is dismissed", async () => {
+    const win = fakeWindow();
+    const { slot } = renderClean(
+      {
+        "login.start": () => ({
+          sessionId: CLAUDE_SESSION,
+          authorizeUrl: "https://claude.ai/oauth/authorize",
+        }),
+      },
+      () => win.handle,
+    );
+    await startClaude(slot);
+    await slot.findByLabelText("Claude authorization code");
+    fireEvent.click(slot.getByRole("button", { name: "Close" }));
+    expect(win.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens the Codex device page in the clean window and closes it when sign-in completes", async () => {
+    const win = fakeWindow();
+    const open = vi.fn(() => win.handle);
+    let polls = 0;
+    const { slot } = renderClean(
+      {
+        "codexLogin.start": () => ({
+          sessionId: "33333333-3333-4333-8333-333333333333",
+          verificationUri: "https://auth.openai.com/codex/device",
+          userCode: "ABCD-1234",
+          expiresAt: Date.now() + 600_000,
+          intervalMs: 20,
+        }),
+        "codexLogin.poll": () => {
+          polls += 1;
+          return polls < 2
+            ? { status: "pending" }
+            : { status: "complete", account: account({ label: "Codex Two" }) };
+        },
+      },
+      open,
+    );
+    const add = await slot.findByRole("button", { name: "Add subscription" });
+    fireEvent.pointerDown(add);
+    fireEvent.click(
+      await slot.findByText("Sign in to Codex", { selector: "span.block" }),
+    );
+    await waitFor(() =>
+      expect(open).toHaveBeenCalledWith({
+        url: "https://auth.openai.com/codex/device",
+      }),
+    );
+    await waitFor(() => expect(win.close).toHaveBeenCalledTimes(1));
+    expect(await slot.findByText("Connected Codex Two")).toBeTruthy();
+  });
+
+  it("falls back to the browser with the private-window hint when no clean window exists", async () => {
+    const { slot, openUrl } = renderClean(
+      {
+        "login.start": () => ({
+          sessionId: CLAUDE_SESSION,
+          authorizeUrl: "https://claude.ai/oauth/authorize?state=s",
+        }),
+      },
+      () => null,
+    );
+    await startClaude(slot);
+    await waitFor(() =>
+      expect(openUrl).toHaveBeenCalledWith(
+        "https://claude.ai/oauth/authorize?state=s",
+      ),
+    );
+    expect(
+      slot.getByText(/private window or sign in to the account you want/i),
+    ).toBeTruthy();
+  });
+});
