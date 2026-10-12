@@ -657,13 +657,141 @@ describe("native terminal threads", () => {
       });
       expect(response.status).toBe(200);
       expect(cli.inputs()).toEqual([
-        `\u001b[200~${storedAttachmentPath(fixture, attachmentPath)}\nrun the tests\u001b[201~`,
+        `\u001b[200~${storedAttachmentPath(fixture, attachmentPath)}\u001b[201~`,
+        "\u001b[200~run the tests\u001b[201~",
         "\r",
       ]);
     } finally {
       cli.stop();
     }
   });
+
+  it("pastes an image on its own so Codex attaches it before the message", async () => {
+    const fixture = await createFixture();
+    seedPrimaryHost(fixture.harness.deps, fixture.hostId);
+    const attachmentPath = await storeImageAttachment(fixture);
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+    });
+    const cli = startFakeCli(fixture, open.terminalId, (pasted) =>
+      pasted.endsWith(".png")
+        ? "\u001b[2;1H\u001b[2K\u203a [Image #1]"
+        : `\u001b[2;1H\u001b[2K\u203a [Image #1] ${pasted}`,
+    );
+    try {
+      const response = await postJson(fixture, `/threads/${thread.id}/send`, {
+        input: [
+          ...textInput("run the tests"),
+          { type: "localImage", path: attachmentPath },
+        ],
+        mode: "auto",
+      });
+      expect(response.status).toBe(200);
+      expect(cli.inputs()).toEqual([
+        `\u001b[200~${storedAttachmentPath(fixture, attachmentPath)}\u001b[201~`,
+        "\u001b[200~run the tests\u001b[201~",
+        "\r",
+      ]);
+    } finally {
+      cli.stop();
+    }
+  });
+
+  it("sends Claude Code an image and a message as two pastes and one Enter", async () => {
+    const fixture = await createFixture();
+    seedPrimaryHost(fixture.harness.deps, fixture.hostId);
+    const attachmentPath = await storeImageAttachment(fixture);
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "claude-code",
+    });
+    const cli = startFakeCli(fixture, open.terminalId, (pasted) =>
+      pasted.endsWith(".png")
+        ? "\u001b[2;1H\u001b[2K\u276f [Image #1]"
+        : `\u001b[2;1H\u001b[2K\u276f [Image #1] ${pasted}`,
+    );
+    try {
+      const response = await postJson(fixture, `/threads/${thread.id}/send`, {
+        input: [
+          ...textInput("run the tests"),
+          { type: "localImage", path: attachmentPath },
+        ],
+        mode: "auto",
+      });
+      expect(response.status).toBe(200);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(cli.inputs()).toEqual([
+        `\u001b[200~${storedAttachmentPath(fixture, attachmentPath)}\u001b[201~`,
+        "\u001b[200~run the tests\u001b[201~",
+        "\r",
+      ]);
+    } finally {
+      cli.stop();
+    }
+  });
+
+  it.each(["claude-code", "codex"])(
+    "never presses Enter when %s shows the attachment but not the message",
+    async (providerId) => {
+      const fixture = await createFixture();
+      seedPrimaryHost(fixture.harness.deps, fixture.hostId);
+      const attachmentPath = await storeImageAttachment(fixture);
+      const { open, thread } = await openRunningNativeThread(fixture, {
+        providerId,
+      });
+      const cli = startFakeCli(fixture, open.terminalId, (pasted) =>
+        pasted.endsWith(".png")
+          ? "\u001b[2;1H\u001b[2K\u276f [Image #1]"
+          : null,
+      );
+      try {
+        const response = await postJson(fixture, `/threads/${thread.id}/send`, {
+          input: [
+            ...textInput("run the tests"),
+            { type: "localImage", path: attachmentPath },
+          ],
+          mode: "auto",
+        });
+        expect(response.status).toBe(409);
+        expect(apiErrorSchema.parse(await readJson(response)).code).toBe(
+          "native_terminal_input_not_shown",
+        );
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        expect(cli.inputs()).toEqual([
+          `\u001b[200~${storedAttachmentPath(fixture, attachmentPath)}\u001b[201~`,
+          "\u001b[200~run the tests\u001b[201~",
+        ]);
+      } finally {
+        cli.stop();
+      }
+    },
+    10_000,
+  );
+
+  it("stops before the message when the CLI never shows the attachment", async () => {
+    const fixture = await createFixture();
+    seedPrimaryHost(fixture.harness.deps, fixture.hostId);
+    const attachmentPath = await storeImageAttachment(fixture);
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+    });
+    const cli = startFakeCli(fixture, open.terminalId, () => null);
+    try {
+      const response = await postJson(fixture, `/threads/${thread.id}/send`, {
+        input: [
+          ...textInput("run the tests"),
+          { type: "localImage", path: attachmentPath },
+        ],
+        mode: "auto",
+      });
+      expect(response.status).toBe(409);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(cli.inputs()).toEqual([
+        `\u001b[200~${storedAttachmentPath(fixture, attachmentPath)}\u001b[201~`,
+      ]);
+    } finally {
+      cli.stop();
+    }
+  }, 10_000);
 
   it("presses Enter when Claude Code draws a pasted image as a chip", async () => {
     const fixture = await createFixture();
