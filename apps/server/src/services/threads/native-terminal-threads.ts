@@ -3,11 +3,11 @@ import {
   getEnvironment,
   getNativeTerminalThread,
   getStoredProviderSession,
+  getThread,
   listNativeTerminalThreadsWithDisconnectedTerminal,
   recordNativeTerminalThreadSessionId,
   setNativeTerminalThreadTerminal,
   type NativeTerminalThreadRecord,
-  type getThread,
 } from "@bb/db";
 import {
   isActiveTerminalSessionStatus,
@@ -318,7 +318,11 @@ async function openNativeTerminalOnce(
 ): Promise<NativeTerminalThread> {
   const record = requireNativeTerminalThreadRecord(deps, args.threadId);
   const existing = readRecordTerminal(deps, record);
-  if (!args.replaceLiveTerminal && terminalIsLive(existing)) {
+  if (
+    !args.replaceLiveTerminal &&
+    terminalIsLive(existing) &&
+    !(args.reattachOnly && existing?.status === "disconnected")
+  ) {
     return toNativeTerminalThread(deps, record);
   }
   const thread = requirePublicThread(deps.db, args.threadId);
@@ -345,6 +349,28 @@ async function openNativeTerminalOnce(
             hostId: environment.hostId,
           },
         });
+  if (args.reattachOnly) {
+    const currentThread = getThread(deps.db, args.threadId);
+    const currentRecord = getNativeTerminalThread(deps.db, args.threadId);
+    const currentTerminal =
+      currentRecord === null ? null : readRecordTerminal(deps, currentRecord);
+    if (
+      currentThread === null ||
+      currentThread.archivedAt !== null ||
+      currentThread.deletedAt !== null ||
+      (currentTerminal?.status !== "disconnected" &&
+        !(
+          currentTerminal?.status === "exited" &&
+          currentTerminal.closeReason === "daemon-disconnect"
+        ))
+    ) {
+      throw new ApiError(
+        409,
+        "native_terminal_reconnect_stale",
+        "The native terminal is no longer eligible for reconnect",
+      );
+    }
+  }
   const terminal = await deps.terminalSessions.createTerminal({
     payload: {
       cols: args.request.cols ?? NATIVE_TERMINAL_DEFAULT_COLS,
@@ -445,27 +471,59 @@ export function listNativeTerminalThreadsAwaitingDaemon(
 export function reopenNativeTerminalsAfterDaemonReconnect(
   deps: NativeTerminalDeps,
   args: { hostId: string; threadIds: readonly string[] },
-): void {
-  for (const threadId of args.threadIds) {
-    openNativeTerminalDeduplicated(deps, {
-      reattachOnly: true,
-      threadId,
-      request: {},
-    }).then(
-      (reopened) => {
+): Promise<void> {
+  return Promise.all(
+    args.threadIds.map(async (threadId) => {
+      try {
+        const record = getNativeTerminalThread(deps.db, threadId);
+        if (record === null) return;
+        await deps.providerRegistry.whenProviderRegistered(record.providerId);
+        if (deps.providerRegistry.get(record.providerId) === null) {
+          await new Promise<void>((resolve) => {
+            const unsubscribe = deps.providerRegistry.onProviderRegistered(
+              record.providerId,
+              () => {
+                unsubscribe();
+                resolve();
+              },
+            );
+          });
+        }
+        const thread = getThread(deps.db, threadId);
+        const currentRecord = getNativeTerminalThread(deps.db, threadId);
+        const currentTerminal =
+          currentRecord === null
+            ? null
+            : readRecordTerminal(deps, currentRecord);
+        if (
+          thread === null ||
+          thread.archivedAt !== null ||
+          thread.deletedAt !== null ||
+          (currentTerminal?.status !== "disconnected" &&
+            !(
+              currentTerminal?.status === "exited" &&
+              currentTerminal.closeReason === "daemon-disconnect"
+            ))
+        ) {
+          return;
+        }
+        const reopened = await openNativeTerminalDeduplicated(deps, {
+          reattachOnly: true,
+          threadId,
+          request: {},
+        });
         deps.logger.info(
           { hostId: args.hostId, terminalId: reopened.terminal?.id, threadId },
           "Reopened native terminal after the host daemon reconnected",
         );
-      },
-      (error: unknown) => {
+      } catch (error: unknown) {
         deps.logger.warn(
           { err: error, hostId: args.hostId, threadId },
           "Failed to reopen native terminal after the host daemon reconnected",
         );
-      },
-    );
-  }
+      }
+    }),
+  ).then(() => undefined);
 }
 
 export function takeNativeTerminalLaunchSpec(
