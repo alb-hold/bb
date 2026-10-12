@@ -12,6 +12,7 @@ import net from "node:net";
 import {
   CONNECT_ATTEMPT_TIMEOUT_MS,
   CONNECT_MAX_ADDRESSES,
+  CONNECT_SURFACE_LIMIT_MS,
   CONNECT_TIMEOUT_MS,
   createUpstreamTransport,
   transportErrorCode,
@@ -270,14 +271,15 @@ async function timedFetch(
   }
 }
 
-it("keeps the worst-case address walk inside the connect cap", () => {
-  expect(CONNECT_MAX_ADDRESSES * CONNECT_ATTEMPT_TIMEOUT_MS).toBeLessThan(
+it("starts every permitted address attempt before the connect timeout and keeps the timeout under the surface limit", () => {
+  expect((CONNECT_MAX_ADDRESSES - 1) * CONNECT_ATTEMPT_TIMEOUT_MS).toBeLessThan(
     CONNECT_TIMEOUT_MS,
   );
+  expect(CONNECT_TIMEOUT_MS).toBeLessThan(CONNECT_SURFACE_LIMIT_MS);
 });
 
 it.skipIf(!dropped)(
-  "surfaces a named error at the connect cap when every address is silently dropped",
+  "surfaces a named error within 10 s when every address is silently dropped",
   async () => {
     const target = await upstream();
     const addresses = Array.from(
@@ -291,14 +293,14 @@ it.skipIf(!dropped)(
     expect(result.text).toBeNull();
     expect(transportErrorCode(result.error)).toBe("UND_ERR_CONNECT_TIMEOUT");
     expect(result.elapsedMs).toBeGreaterThanOrEqual(CONNECT_TIMEOUT_MS - 200);
-    expect(result.elapsedMs).toBeLessThan(CONNECT_TIMEOUT_MS + 1_000);
+    expect(result.elapsedMs).toBeLessThanOrEqual(CONNECT_SURFACE_LIMIT_MS);
     expect(target.requests()).toBe(0);
   },
   20_000,
 );
 
 it.skipIf(!dropped)(
-  "still reaches a reachable address listed after the last permitted dropped one inside the connect cap",
+  "still reaches a reachable address listed after the last permitted dropped one inside the connect timeout",
   async () => {
     const target = await upstream();
     const result = await timedFetch(

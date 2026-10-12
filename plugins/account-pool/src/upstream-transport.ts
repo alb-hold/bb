@@ -2,7 +2,8 @@ import { lookup as dnsLookup } from "node:dns";
 import type { LookupFunction } from "node:net";
 import { EnvHttpProxyAgent } from "undici";
 
-export const CONNECT_TIMEOUT_MS = 10_000;
+export const CONNECT_TIMEOUT_MS = 9_000;
+export const CONNECT_SURFACE_LIMIT_MS = 10_000;
 export const CONNECT_MAX_ADDRESSES = 4;
 export const CONNECT_ATTEMPT_TIMEOUT_MS = 2_400;
 
