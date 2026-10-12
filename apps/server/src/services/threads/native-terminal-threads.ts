@@ -531,7 +531,13 @@ export function reopenNativeTerminalsAfterDaemonReconnect(
 ): Promise<void> {
   return Promise.all(
     args.threadIds.map(async (threadId) => {
+      const waitingOnTerminalId =
+        getNativeTerminalThread(deps.db, threadId)?.terminalSessionId ?? null;
+      const stillWaiting = () =>
+        getNativeTerminalThread(deps.db, threadId)?.terminalSessionId ===
+        waitingOnTerminalId;
       const deadline = setTimeout(() => {
+        if (!stillWaiting()) return;
         interruptThreadWhoseHolderIsGone(deps, {
           hostId: args.hostId,
           threadId,
@@ -592,10 +598,12 @@ export function reopenNativeTerminalsAfterDaemonReconnect(
           { err: error, hostId: args.hostId, threadId },
           "Failed to reopen native terminal after the host daemon reconnected",
         );
-        interruptThreadWhoseHolderIsGone(deps, {
-          hostId: args.hostId,
-          threadId,
-        });
+        if (stillWaiting()) {
+          interruptThreadWhoseHolderIsGone(deps, {
+            hostId: args.hostId,
+            threadId,
+          });
+        }
       } finally {
         clearTimeout(deadline);
       }

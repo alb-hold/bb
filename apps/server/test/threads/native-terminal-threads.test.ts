@@ -1532,6 +1532,77 @@ describe("native terminal threads", () => {
     }
   }, 60_000);
 
+  it("does not let a stale reattach deadline interrupt a thread an overlapping explicit open already recovered", async () => {
+    const sourceRegistry = await createTestProviderRegistry();
+    let restoreTimers = false;
+    try {
+      const { fixture, running, sessionId, socket } =
+        await restartDaemonWithRunningNativeThread("instance-restarted", {
+          beforeRestart: () => {
+            vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+            restoreTimers = true;
+          },
+          deferProviders: true,
+        });
+      const reconnectRegistry = fixture.harness.deps.providerRegistry;
+      let explicitPhase = true;
+      fixture.harness.deps.providerRegistry = {
+        ...sourceRegistry,
+        get: (providerId: string) =>
+          explicitPhase ? sourceRegistry.get(providerId) : null,
+        onProviderRegistered: reconnectRegistry.onProviderRegistered,
+        whenProviderRegistered: reconnectRegistry.whenProviderRegistered,
+      };
+      const explicitOpen = postJson(
+        fixture,
+        `/threads/${running.thread.id}/native-terminal/open`,
+        {},
+      );
+      let explicit: TerminalOpenMessage | undefined;
+      for (
+        let attempt = 0;
+        attempt < 200 && explicit === undefined;
+        attempt++
+      ) {
+        await vi.advanceTimersByTimeAsync(10);
+        explicit = daemonMessages(socket).find(
+          (message): message is TerminalOpenMessage =>
+            message.type === "terminal.open",
+        );
+      }
+      if (explicit === undefined) throw new Error("explicit open never sent");
+      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.hostId,
+        sessionId,
+        message: {
+          type: "terminal.opened",
+          requestId: explicit.requestId,
+          terminalId: explicit.terminalId,
+          shell: "/bin/zsh",
+          title: "zsh",
+          initialCwd: "/tmp/native-workspace",
+          cols: explicit.cols,
+          rows: explicit.rows,
+        },
+      });
+      await vi.advanceTimersByTimeAsync(10);
+      expect((await explicitOpen).status).toBe(200);
+      expect(
+        getNativeTerminalThread(fixture.harness.db, running.thread.id)
+          ?.terminalSessionId,
+      ).toBe(explicit.terminalId);
+
+      explicitPhase = false;
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(getThread(fixture.harness.db, running.thread.id)?.status).toBe(
+        "active",
+      );
+      expect(interruptionReasons(fixture, running.thread.id)).toEqual([]);
+    } finally {
+      if (restoreTimers) vi.useRealTimers();
+    }
+  }, 60_000);
+
   it("gives an explicit open its own launch when it overlaps a reconnect reopen", async () => {
     const fixture = await createFixture();
     const lost = await openRunningNativeThread(fixture, {
