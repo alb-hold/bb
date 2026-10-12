@@ -644,11 +644,6 @@ describe("native terminal questions", () => {
     expect(await readJson(listed)).toHaveLength(1);
 
     await reportActivity(fixture, thread.id, { state: "working" });
-    expect(openInteractions(fixture, thread.id)).toHaveLength(1);
-    await reportActivity(fixture, thread.id, {
-      state: "working",
-      prompt: "yes, merge",
-    });
     expect(openInteractions(fixture, thread.id)).toHaveLength(0);
     expect(threadStatus(fixture, thread.id)).toBe("active");
   });
@@ -721,7 +716,10 @@ describe("native terminal questions", () => {
     const response = await postJson(
       fixture,
       `/threads/${thread.id}/interactions/${interaction!.id}/resolve`,
-      { kind: "user_question", answers: [] },
+      {
+        kind: "user_answer",
+        answers: { "native:q": { selected: [], freeText: "yes" } },
+      },
     );
     expect(response.status).toBe(409);
     expect(await readApiErrorCode(response)).toBe("native_terminal_interaction");
@@ -734,6 +732,8 @@ describe("native terminal questions", () => {
       state: "waiting",
       questions: [{ id: "q", prompt: "Q?" }],
     });
+    const leaving = switchMode(fixture, thread.id, "chat");
+    await waitForDaemonMessage(fixture, "terminal.close");
     fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.hostId,
       sessionId: fixture.sessionId,
@@ -741,10 +741,10 @@ describe("native terminal questions", () => {
         type: "terminal.exited",
         terminalId: open.terminalId,
         exitCode: 0,
-        closeReason: "process-exit",
+        closeReason: "user",
       },
     });
-    const left = await switchMode(fixture, thread.id, "chat");
+    const left = await leaving;
     expect(left.status).toBe(200);
     expect(openInteractions(fixture, thread.id)).toHaveLength(0);
   });

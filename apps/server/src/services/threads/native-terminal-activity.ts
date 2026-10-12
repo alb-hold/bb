@@ -1,5 +1,9 @@
 import { getNativeTerminalThread, getThread } from "@bb/db";
-import { isPluginPendingInteraction, type Thread } from "@bb/domain";
+import {
+  isNativeTerminalQuestion,
+  NATIVE_TERMINAL_QUESTION_REQUEST_PREFIX,
+  type Thread,
+} from "@bb/domain";
 import type {
   NativeTerminalOpenQuestion,
   ReportNativeTerminalActivityRequest,
@@ -33,7 +37,7 @@ function requireNativeRecord(deps: Pick<AppDeps, "db">, threadId: string) {
   return record;
 }
 
-export const NATIVE_QUESTION_REQUEST_PREFIX = "native:";
+const NATIVE_QUESTION_REQUEST_PREFIX = NATIVE_TERMINAL_QUESTION_REQUEST_PREFIX;
 const NATIVE_QUESTION_TURN_ID = "native-terminal-turn";
 const NATIVE_QUESTION_ANSWERED_REASON = "native-terminal-question-answered";
 
@@ -72,8 +76,7 @@ export function interruptNativeTerminalQuestions(
     threadId,
   )) {
     if (
-      isPluginPendingInteraction(interaction) ||
-      !interaction.providerRequestId.startsWith(NATIVE_QUESTION_REQUEST_PREFIX) ||
+      !isNativeTerminalQuestion(interaction) ||
       keep.has(interaction.providerRequestId)
     ) {
       continue;

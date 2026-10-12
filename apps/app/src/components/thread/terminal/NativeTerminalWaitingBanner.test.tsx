@@ -23,6 +23,7 @@ function question(
     statusReason: null,
     createdAt: 1,
     resolvedAt: null,
+    resolution: null,
     providerId: "claude-code",
     providerThreadId: "session",
     providerRequestId: `native:${id}`,
