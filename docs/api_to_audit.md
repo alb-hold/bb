@@ -1115,7 +1115,7 @@ late flushing, blocked-Stop continuation and providers without ordering fields.
 The reader
 keeps polling after pending and idle records. Claude's Stop is provisional;
 its Stop-hook feedback means working and its transcript outcome means idle.
-The declaration wire fields require host daemon protocol 235.
+The declaration wire fields require host daemon protocol 237.
 The wrapper reports working, idle and the
 first new prompt through `sdk.nativeTerminals.reportActivity`; the server moves
 the thread between idle and active and titles an untitled thread from the

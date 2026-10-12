@@ -195,7 +195,7 @@ not the transcript prefix length. Claude declares the timestamp field.
 Identity state is bounded to 4,096 records
 and 128 turns; completion anchors and continuation ancestry remain available.
 Claude uses Stop-hook feedback for continuation and the Stop outcome or turn
-duration for completion. These fields require host daemon protocol 235.
+duration for completion. These fields require host daemon protocol 237.
 
 Rules:
 
