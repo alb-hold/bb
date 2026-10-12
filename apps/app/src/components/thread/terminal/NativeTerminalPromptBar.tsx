@@ -45,6 +45,18 @@ function attachmentPromptInput(
   };
 }
 
+function pastedFiles(
+  clipboard: Pick<DataTransfer, "files" | "items">,
+): File[] {
+  const files = Array.from(clipboard.files ?? []);
+  if (files.length > 0) return files;
+  return Array.from(clipboard.items ?? []).flatMap((item) => {
+    if (item.kind !== "file") return [];
+    const file = item.getAsFile();
+    return file === null ? [] : [file];
+  });
+}
+
 export function NativeTerminalPromptBar({
   projectId,
   providerLabel,
@@ -126,7 +138,7 @@ export function NativeTerminalPromptBar({
   };
 
   const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
-    const files = Array.from(event.clipboardData.files);
+    const files = pastedFiles(event.clipboardData);
     if (files.length === 0) return;
     event.preventDefault();
     attachFiles(files);

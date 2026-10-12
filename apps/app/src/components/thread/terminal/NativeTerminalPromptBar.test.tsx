@@ -179,6 +179,26 @@ describe("NativeTerminalPromptBar", () => {
     expect(send).not.toHaveBeenCalled();
   });
 
+  it("attaches an image delivered only through clipboard items", async () => {
+    const { input } = renderBar();
+    const image = new File(["webkit"], "image.png", { type: "image/png" });
+    fireEvent.paste(input, {
+      clipboardData: {
+        files: [],
+        items: [
+          { kind: "string", type: "text/plain", getAsFile: () => null },
+          { kind: "file", type: "image/png", getAsFile: () => image },
+        ],
+        getData: () => "",
+      },
+    });
+
+    await screen.findByText("image.png");
+    expect(upload).toHaveBeenCalledWith(
+      expect.objectContaining({ clientFile: image, projectId: "proj-n" }),
+    );
+  });
+
   it("keeps an image and text added while a send is in flight", async () => {
     let resolveSend: (() => void) | undefined;
     send.mockImplementationOnce(
