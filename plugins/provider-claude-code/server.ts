@@ -82,7 +82,7 @@ export default function plugin(bb: BbPluginApi) {
       activity: {
         hooks: {
           args: ["--settings", "{settings}"],
-          working: ["UserPromptSubmit"],
+          working: ["UserPromptSubmit", "PreToolUse"],
           idle: ["Stop"],
           promptField: "prompt",
         },

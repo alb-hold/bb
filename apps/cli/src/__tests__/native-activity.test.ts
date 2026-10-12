@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import {
   appendFileSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -27,7 +28,7 @@ const CLAUDE_ACTIVITY: ProviderNativeTerminalActivity =
   providerNativeTerminalActivitySchema.parse({
     hooks: {
       args: ["--settings", "{settings}"],
-      working: ["UserPromptSubmit"],
+      working: ["UserPromptSubmit", "PreToolUse"],
       idle: ["Stop"],
       promptField: "prompt",
     },
@@ -95,7 +96,14 @@ describe("native terminal activity", () => {
     const hooks = CLAUDE_ACTIVITY.hooks!;
     const eventsFile = path.join(tempDir(), "it's events.jsonl");
     const settings = JSON.parse(nativeActivityHookSettings(hooks, eventsFile));
+    const home = tempDir();
+    mkdirSync(path.join(home, ".claude"));
+    const userSettings = path.join(home, ".claude", "settings.json");
+    const existing =
+      '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"user-stop-hook"}]}]}}';
+    writeFileSync(userSettings, existing);
     expect(Object.keys(settings.hooks).sort()).toEqual([
+      "PreToolUse",
       "Stop",
       "UserPromptSubmit",
     ]);
@@ -103,18 +111,24 @@ describe("native terminal activity", () => {
     for (const record of [
       { hook_event_name: "UserPromptSubmit", prompt: "fix the build" },
       { hook_event_name: "Stop" },
+      { hook_event_name: "PreToolUse" },
+      { hook_event_name: "Stop", stop_hook_active: true },
     ]) {
       const output = execFileSync("/bin/sh", ["-c", command], {
+        env: { ...process.env, HOME: home },
         input: JSON.stringify(record),
       });
       expect(output.toString()).toBe("");
     }
+    expect(readFileSync(userSettings, "utf8")).toBe(existing);
     const tail = new JsonlTail(0);
     const signals = tail
       .readRecords(eventsFile)
       .map((record) => classifyHookRecord(hooks, record));
     expect(signals).toEqual([
       { state: "working", prompt: "fix the build" },
+      { state: "idle", prompt: null },
+      { state: "working", prompt: null },
       { state: "idle", prompt: null },
     ]);
   });

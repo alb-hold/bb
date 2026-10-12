@@ -74,7 +74,7 @@ const CLAUDE_CLI: ProviderNativeTerminal = {
   activity: providerNativeTerminalActivitySchema.parse({
     hooks: {
       args: ["--settings", "{settings}"],
-      working: ["UserPromptSubmit"],
+      working: ["UserPromptSubmit", "PreToolUse"],
       idle: ["Stop"],
       promptField: "prompt",
     },
@@ -329,5 +329,21 @@ describe("NativeActivityReader", () => {
       { state: "working", prompt: "fix the build" },
       { state: "idle", prompt: null },
     ]);
+    appendFileSync(events, jsonl([{ hook_event_name: "PreToolUse" }]));
+    expect(reader.read()).toEqual([{ state: "working", prompt: null }]);
+    appendFileSync(
+      events,
+      jsonl(
+        Array.from({ length: 100 }, () => ({ hook_event_name: "PreToolUse" })),
+      ),
+    );
+    expect(reader.read()).toEqual([]);
+    appendFileSync(
+      events,
+      jsonl([{ hook_event_name: "Stop", stop_hook_active: true }]),
+    );
+    expect(reader.read()).toEqual([{ state: "idle", prompt: null }]);
+    expect(reader.read()).toEqual([]);
+    expect(reader.heartbeat()).toBeNull();
   });
 });

@@ -33,6 +33,14 @@ function providerOptions(
 }
 
 describe("the Claude Code provider settings", () => {
+  it("recovers native activity before tools after a blocked Stop without transcript working signals", () => {
+    const { declaration } = loadClaudeCodePlugin();
+    const activity = declaration.experimental_nativeTerminal!.activity!;
+    expect(activity.hooks!.working).toContain("PreToolUse");
+    expect(activity.hooks!.idle).toEqual(["Stop"]);
+    expect(activity.transcript!.working).toEqual([]);
+  });
+
   it.each(["chromeEnabled", "disable1MContext"])(
     "keeps %s off by default and derives an explicit opt-in",
     (key) => {

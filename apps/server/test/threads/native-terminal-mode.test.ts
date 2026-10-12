@@ -1,7 +1,9 @@
 import {
+  createConnection,
   getNativeTerminalThread,
   getThread,
   isNativeTerminalThread,
+  type DbConnection,
 } from "@bb/db";
 import {
   hostDaemonOnlineRpcResponseMessageSchema,
@@ -17,6 +19,11 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { applyLoggedThreadLifecycleEvent } from "../../src/services/threads/lifecycle-outcome.js";
 import { stopThreadForCurrentState } from "../../src/services/threads/thread-lifecycle.js";
+import { recordNativeTerminalActivity } from "../../src/services/threads/native-terminal-activity.js";
+import {
+  classifyHookRecord,
+  classifyTranscriptRecord,
+} from "../../../cli/src/native-activity.js";
 import { readJson } from "../helpers/json.js";
 import {
   seedEnvironment,
@@ -27,6 +34,7 @@ import {
 } from "../helpers/seed.js";
 import {
   createTestAppHarness,
+  createTestDb,
   type TestAppHarness,
 } from "../helpers/test-app.js";
 
@@ -57,8 +65,8 @@ afterEach(async () => {
   for (const harness of harnesses.splice(0)) await harness.cleanup();
 });
 
-async function createFixture(): Promise<Fixture> {
-  const harness = await createTestAppHarness();
+async function createFixture(db?: DbConnection): Promise<Fixture> {
+  const harness = await createTestAppHarness({ db });
   harnesses.push(harness);
   const seeded = seedHostSession(harness.deps, { id: "native-mode-host" });
   const { project } = seedProjectWithSource(harness.deps, {
@@ -449,6 +457,141 @@ function threadStatus(fixture: Fixture, threadId: string) {
 }
 
 describe("native terminal activity", () => {
+  it("recovers working after a blocked Claude Stop and before the next tool", async () => {
+    const fixture = await createFixture();
+    const thread = seedChatThread(fixture, {
+      providerId: "claude-code",
+      providerThreadId: SESSION_ID,
+    });
+    await enterTerminal(fixture, thread.id);
+    const hooks =
+      fixture.harness.deps.providerRegistry.get("claude-code")!.nativeTerminal!
+        .activity!.hooks!;
+    for (const [hook_event_name, expected] of [
+      ["UserPromptSubmit", "active"],
+      ["Stop", "idle"],
+      ["PreToolUse", "active"],
+    ] as const) {
+      const signal = classifyHookRecord(hooks, { hook_event_name });
+      if (signal.state !== null) {
+        await reportActivity(fixture, thread.id, { state: signal.state });
+      }
+      expect(threadStatus(fixture, thread.id)).toBe(expected);
+    }
+  });
+
+  it.each([false, true])(
+    "settles the real Claude Stop after continuation (stop_hook_active=%s)",
+    async (stop_hook_active) => {
+      const fixture = await createFixture();
+      const thread = seedChatThread(fixture, {
+        providerId: "claude-code",
+        providerThreadId: SESSION_ID,
+      });
+      await enterTerminal(fixture, thread.id);
+      const hooks =
+        fixture.harness.deps.providerRegistry.get("claude-code")!
+          .nativeTerminal!.activity!.hooks!;
+      for (const hook_event_name of [
+        "UserPromptSubmit",
+        "Stop",
+        "PreToolUse",
+      ]) {
+        const signal = classifyHookRecord(hooks, { hook_event_name });
+        if (signal.state !== null) {
+          await reportActivity(fixture, thread.id, { state: signal.state });
+        }
+      }
+      expect(threadStatus(fixture, thread.id)).toBe("active");
+      const signal = classifyHookRecord(hooks, {
+        hook_event_name: "Stop",
+        stop_hook_active,
+      });
+      expect(signal.state).toBe("idle");
+      await reportActivity(fixture, thread.id, { state: "idle" });
+      expect(threadStatus(fixture, thread.id)).toBe("idle");
+    },
+  );
+
+  it("does no database work, event append or broadcast for repeated working signals", async () => {
+    const queries = vi.fn();
+    const template = createTestDb();
+    const db = createConnection(template.$client.serialize(), {
+      slowQueryLogger: { info: queries },
+      slowQueryThresholdMs: 0,
+    });
+    template.$client.close();
+    const fixture = await createFixture(db);
+    const thread = seedChatThread(fixture, {
+      providerId: "claude-code",
+      providerThreadId: SESSION_ID,
+    });
+    await enterTerminal(fixture, thread.id);
+    recordNativeTerminalActivity(fixture.harness.deps, {
+      threadId: thread.id,
+      state: "working",
+    });
+    const changes = fixture.harness.db.$client
+      .prepare("SELECT total_changes()")
+      .pluck();
+    const before = changes.get();
+    queries.mockClear();
+    const notify = vi.spyOn(fixture.harness.hub, "notifyThread");
+    try {
+      for (let i = 0; i < 100; i += 1) {
+        recordNativeTerminalActivity(fixture.harness.deps, {
+          threadId: thread.id,
+          state: "working",
+        });
+      }
+      expect(queries).not.toHaveBeenCalled();
+      expect(changes.get()).toBe(before);
+      expect(notify).not.toHaveBeenCalled();
+    } finally {
+      notify.mockRestore();
+    }
+    await reportActivity(fixture, thread.id, { state: "idle" });
+    await reportActivity(fixture, thread.id, { state: "working" });
+    expect(threadStatus(fixture, thread.id)).toBe("active");
+  });
+
+  it("keeps Codex tool and assistant entries working until task_complete, then handles another task and abort", async () => {
+    const fixture = await createFixture();
+    const thread = seedChatThread(fixture, {
+      providerId: "codex",
+      providerThreadId: SESSION_ID,
+    });
+    await enterTerminal(fixture, thread.id);
+    const transcript =
+      fixture.harness.deps.providerRegistry.get("codex")!.nativeTerminal!
+        .activity!.transcript!;
+    for (const [record, expected] of [
+      [{ type: "event_msg", payload: { type: "task_started" } }, "active"],
+      [
+        {
+          type: "event_msg",
+          payload: { type: "agent_message", message: "done" },
+        },
+        "active",
+      ],
+      [
+        {
+          type: "response_item",
+          payload: { type: "function_call", name: "exec_command" },
+        },
+        "active",
+      ],
+      [{ type: "event_msg", payload: { type: "task_complete" } }, "idle"],
+      [{ type: "event_msg", payload: { type: "task_started" } }, "active"],
+      [{ type: "event_msg", payload: { type: "turn_aborted" } }, "idle"],
+    ] as const) {
+      const signal = classifyTranscriptRecord(transcript, record);
+      if (signal.state !== null)
+        await reportActivity(fixture, thread.id, { state: signal.state });
+      expect(threadStatus(fixture, thread.id)).toBe(expected);
+    }
+  });
+
   it("shows a converted thread working while its CLI runs a turn, then done", async () => {
     const fixture = await createFixture();
     const thread = seedChatThread(fixture, {
@@ -589,6 +732,10 @@ describe("native terminal activity", () => {
       },
     });
     expect((await leaving).status).toBe(200);
+    expect(threadStatus(fixture, thread.id)).toBe("idle");
+    expect(
+      (await reportActivity(fixture, thread.id, { state: "working" })).status,
+    ).toBe(404);
     expect(threadStatus(fixture, thread.id)).toBe("idle");
   });
 });
