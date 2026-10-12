@@ -78,3 +78,69 @@ describe("DaemonDataSockets.unrouteTerminal", () => {
     );
   });
 });
+
+function createFaultyFixture(options: {
+  directOutput?: () => void;
+  sendOk: { value: boolean };
+}) {
+  const sent: TerminalDataPlaneMainMessage[] = [];
+  const sockets = new DaemonDataSockets({
+    capabilities: { forget: vi.fn(), negotiate: vi.fn() },
+    logger: { info: vi.fn(), warn: vi.fn() },
+    newRequestId: () => "request_1",
+    retryDelaysMs: [],
+    rpc: { request: vi.fn() },
+    setSessionDirectOutput: options.directOutput ?? vi.fn(),
+    tickets: new TerminalDataTicketStore(),
+    transport: {
+      isReady: false,
+      pendingIpcBytes: 0,
+      send: (message) => {
+        sent.push(message);
+        return options.sendOk.value;
+      },
+    },
+  });
+  sockets.handleSessionChange({
+    kind: "opened",
+    hostId: "host_1",
+    sessionId: "session_1",
+  });
+  sockets.handleChildMessage({
+    v: V,
+    type: "daemon.attached",
+    daemonSessionId: "session_1",
+  });
+  return { sent, sockets };
+}
+
+describe("DaemonDataSockets failure ordering", () => {
+  it("does not record a route the helper never received", () => {
+    const sendOk = { value: false };
+    const { sockets } = createFaultyFixture({ sendOk });
+    expect(
+      sockets.routeTerminal({ daemonSessionId: "session_1", terminalId: "term_a" }),
+    ).toBe(false);
+    expect(sockets.isRouted("term_a")).toBe(false);
+    sendOk.value = true;
+    expect(
+      sockets.routeTerminal({ daemonSessionId: "session_1", terminalId: "term_a" }),
+    ).toBe(true);
+    expect(sockets.isRouted("term_a")).toBe(true);
+  });
+
+  it("stays detached and tells the helper to drop the socket when direct output cannot be switched on", () => {
+    const { sent, sockets } = createFaultyFixture({
+      directOutput: () => {
+        throw new Error("switch failed");
+      },
+      sendOk: { value: true },
+    });
+    expect(sockets.isAttached("session_1")).toBe(false);
+    expect(sent).toContainEqual({
+      v: V,
+      type: "daemon.detach",
+      daemonSessionId: "session_1",
+    });
+  });
+});
