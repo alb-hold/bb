@@ -4,6 +4,7 @@ import { registerUsageSource } from "./src/usage-source.js";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { codexExtensionKinds } from "./src/extension-kinds.js";
 import { CODEX_NATIVE_ROOTS_DECLARATION } from "./src/native-roots.js";
+import { CODEX_POOL_LAUNCH_ENV_ARGS } from "./src/pool-launch.js";
 
 export default function plugin(bb: BbPluginApi) {
   registerUsageSource(bb);
@@ -84,6 +85,7 @@ export default function plugin(bb: BbPluginApi) {
       executable: "codex",
       launchArgs: ["--no-daemon", "--dangerously-bypass-approvals-and-sandbox"],
       modelArgs: ["-c", 'model="{model}"'],
+      experimental_launchEnvArgs: CODEX_POOL_LAUNCH_ENV_ARGS,
       pastePlaceholders: ["[Pasted Content "],
       sessionRoot: { env: "CODEX_HOME", home: ".codex" },
       session: {

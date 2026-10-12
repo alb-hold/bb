@@ -4695,6 +4695,9 @@ importers:
 
   plugins/provider-codex:
     dependencies:
+      '@bb/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
       '@bb/shared-ui':
         specifier: workspace:*
         version: link:../../packages/shared-ui

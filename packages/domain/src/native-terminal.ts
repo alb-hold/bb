@@ -206,6 +206,26 @@ export const providerNativeTerminalSchema = z
       ),
     launchArgs: templateArgsSchema([]),
     modelArgs: templateArgsSchema(["model"]),
+    experimental_launchEnvArgs: z
+      .object({
+        required: z
+          .array(environmentVariableNameSchema)
+          .min(1)
+          .max(PROVIDER_NATIVE_TERMINAL_MAX_ARGS),
+        args: z
+          .array(
+            z.union([
+              z.string().min(1).max(256),
+              z.object({
+                env: environmentVariableNameSchema,
+                prefix: z.string().max(256),
+              }).strict(),
+            ]),
+          )
+          .max(PROVIDER_NATIVE_TERMINAL_MAX_ARGS),
+      })
+      .strict()
+      .optional(),
     pastePlaceholders: z.array(z.string().trim().min(4).max(64)).max(4),
     sessionRoot: providerNativeTerminalSessionRootSchema,
     session: z.discriminatedUnion("kind", [
@@ -227,6 +247,22 @@ export const providerNativeTerminalSchema = z
 export type ProviderNativeTerminal = z.infer<
   typeof providerNativeTerminalSchema
 >;
+
+export function nativeTerminalEnvArgs(
+  declaration: ProviderNativeTerminal["experimental_launchEnvArgs"],
+  env: Readonly<Record<string, string | undefined>>,
+): string[] {
+  if (
+    declaration === undefined ||
+    declaration.required.some((name) => !env[name]) ||
+    declaration.args.some((arg) => typeof arg !== "string" && !env[arg.env])
+  ) return [];
+  return declaration.args.map((arg) =>
+    typeof arg === "string"
+      ? arg
+      : `${arg.prefix}${JSON.stringify(env[arg.env])}`,
+  );
+}
 
 export function fillNativeTerminalTemplate(
   value: string,

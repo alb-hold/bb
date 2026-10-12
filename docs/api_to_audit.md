@@ -4245,3 +4245,23 @@ Stabilize after deciding whether depth, recency window, and limit should be call
 **Core callers.** The Account Pooler sign-in for Claude (OAuth with an automatic code capture) and Codex (device code) uses it. It goes through the same `AppNavigationHost` capability as `openUrl`, backed by one `openSignInWindow` helper that talks to the desktop shell's `bbDesktop.openSignInWindow`/`closeSignInWindow`, covered by the shell controller tests, the helper tests, and the SDK harness. The `bb` CLI keeps printing the authorization URL because a CLI has no window to host; the SDK surface for the same login is `pool` RPC `login.start`/`login.complete`.
 
 Stabilize after exercising it on Windows and Linux shells, deciding whether other plugins need a per-call partition name or cookie seed, and confirming the redirect prefix match is strict enough for providers whose callback pages include fragments.
+
+## `experimental_nativeTerminal.experimental_launchEnvArgs`
+
+**What it does.** A provider may declare required environment names and a list
+of literal arguments or `{ env, prefix }` arguments. The native CLI wrapper
+checks every required value and appends the declared arguments, JSON encoding
+each substituted value after its prefix. Missing values contribute no arguments.
+Secrets should be referenced by environment name in literal arguments, never
+substituted. Providers without this optional member retain their launch behavior.
+
+**Core callers.** `resolveNativeHarnessLaunch` consumes the provider's declaration
+through `nativeTerminalEnvArgs`. The Codex bridge uses the same translator and
+`CODEX_POOL_LAUNCH_ENV_ARGS` declaration. Provider validation accepts the member
+before the server sends the native launch specification to the CLI.
+
+**Audit before stabilizing.** Confirm JSON encoding meets provider configuration
+formats, enforce bounded argument counts and lengths, exercise third-party
+providers and missing environment values, and verify compatibility of the native
+launch specification across CLI and daemon versions. Stabilization includes
+renaming the member and deleting this audit entry.

@@ -11,6 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import type { ProviderNativeTerminal } from "@bb/domain";
 import type { NativeTerminalLaunchSpec } from "@bb/server-contract";
+import { CODEX_POOL_LAUNCH_ENV_ARGS } from "bb-plugin-provider-codex/pool-launch";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   findNativeSession,
@@ -49,6 +50,7 @@ const DISCOVERED_CLI: ProviderNativeTerminal = {
   executable: "codex",
   launchArgs: ["--no-daemon"],
   modelArgs: ["-c", 'model="{model}"'],
+  experimental_launchEnvArgs: CODEX_POOL_LAUNCH_ENV_ARGS,
   pastePlaceholders: [],
   sessionRoot: { env: "CODEX_HOME", home: ".codex" },
   session: {
@@ -115,6 +117,17 @@ function writeRollout(args: {
 }
 
 describe("resolveNativeHarnessLaunch", () => {
+  it("uses a provider's declared environment arguments for any executable", () => {
+    const launch = resolveNativeHarnessLaunch(spec({
+      cli: { ...DISCOVERED_CLI, executable: "custom-cli", experimental_launchEnvArgs: {
+        required: ["CUSTOM_BASE", "CUSTOM_TOKEN"],
+        args: ["--config", { env: "CUSTOM_BASE", prefix: "base_url=" }, "token_env=CUSTOM_TOKEN"],
+      } }, nativeSessionId: null,
+    }), { CUSTOM_BASE: 'http://127.0.0.1/a"b', CUSTOM_TOKEN: "private-test-token" });
+    expect(launch.args).toEqual(["--no-daemon", "--config", 'base_url="http://127.0.0.1/a\\"b"', "token_env=CUSTOM_TOKEN"]);
+    expect(launch.args.join(" ")).not.toContain("private-test-token");
+  });
+
   it.each([null, "abc-123"])(
     "routes a pooled Codex launch and resume %s without putting the token in argv",
     (nativeSessionId) => {
