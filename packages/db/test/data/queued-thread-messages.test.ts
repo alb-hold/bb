@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { threadScope, type PromptInput } from "@bb/domain";
+import { eq } from "drizzle-orm";
+import { threadScope, turnScope, type PromptInput } from "@bb/domain";
 import { noopNotifier } from "../../src/notifier.js";
 import { insertEvents } from "../../src/data/events.js";
 import {
@@ -21,9 +22,11 @@ import {
   setQueuedThreadMessageGroupBoundary,
   updateQueuedThreadMessage,
 } from "../../src/data/queued-thread-messages.js";
+import { createEnvironment } from "../../src/data/environments.js";
 import { createProject } from "../../src/data/projects.js";
-import { createThread } from "../../src/data/threads.js";
+import { archiveThread, createThread } from "../../src/data/threads.js";
 import { upsertHost } from "../../src/data/hosts.js";
+import { environments, queuedThreadMessages } from "../../src/schema.js";
 import { createMigratedConnection } from "../helpers/migrated-connection.js";
 
 function textInput(text: string): PromptInput[] {
@@ -75,7 +78,236 @@ function setup() {
   return { db, project, thread };
 }
 
+const PAUSE_LOOKUP_ON_QUEUED_MESSAGE =
+  '"queue_pause_interruption"."thread_id" = "queued_thread_messages"."thread_id"';
+const PAUSE_LOOKUP_ON_THREAD =
+  '"queue_pause_interruption"."thread_id" = "threads"."id"';
+const QUEUED_MESSAGES_FIRST_JOIN =
+  'from "queued_thread_messages" cross join "threads" left join';
+const PLANNER_ORDERED_JOIN =
+  'from "queued_thread_messages" inner join "threads" left join';
+
+function captureIdleQueuedThreadQuery(
+  db: ReturnType<typeof createMigratedConnection>,
+) {
+  const captured: { params: unknown[]; sql: string }[] = [];
+  const raw = db.$client;
+  const originalPrepare = raw.prepare.bind(raw);
+  Object.defineProperty(raw, "prepare", {
+    configurable: true,
+    writable: true,
+    value: (source: string) => {
+      const statement = originalPrepare(source);
+      const originalAll = statement.all.bind(statement);
+      statement.all = (...params: unknown[]) => {
+        captured.push({ params, sql: source });
+        return originalAll(...params);
+      };
+      return statement;
+    },
+  });
+  try {
+    const rows = listIdleThreadsWithQueuedMessages(db);
+    const query = captured.find((entry) =>
+      entry.sql.includes("queue_pause_interruption"),
+    );
+    if (!query) {
+      throw new Error("Expected the idle queued-message thread SQL");
+    }
+    return { query, rows };
+  } finally {
+    Object.defineProperty(raw, "prepare", {
+      configurable: true,
+      writable: true,
+      value: originalPrepare,
+    });
+  }
+}
+
 describe("queued thread messages", () => {
+  it("returns the same threads as the thread-correlated pause lookup it replaced", () => {
+    const { db, project } = setup();
+    const idleThread = () =>
+      createThread(db, noopNotifier, {
+        projectId: project.id,
+        providerId: "codex",
+        status: "idle",
+      }).id;
+    const manualStop = (threadId: string, sequence: number) => ({
+      threadId,
+      sequence,
+      type: "system/thread/interrupted" as const,
+      scope: threadScope(),
+      itemId: null,
+      itemKind: null,
+      parentToolCallId: null,
+      data: JSON.stringify({ reason: "manual-stop" }),
+    });
+
+    const severalQueued = idleThread();
+    queueTurnEndMessage(db, severalQueued, defaultInput);
+    queueTurnEndMessage(db, severalQueued, altInput);
+    queueTurnEndMessage(db, severalQueued, defaultInput);
+
+    const archived = idleThread();
+    queueTurnEndMessage(db, archived, defaultInput);
+    archiveThread(db, noopNotifier, archived);
+
+    const active = createThread(db, noopNotifier, {
+      projectId: project.id,
+      providerId: "codex",
+      status: "active",
+    }).id;
+    queueTurnEndMessage(db, active, defaultInput);
+
+    const paused = idleThread();
+    queueTurnEndMessage(db, paused, defaultInput);
+    queueTurnEndMessage(db, paused, altInput);
+    insertEvents(db, noopNotifier, [manualStop(paused, 1)]);
+
+    const pauseCleared = idleThread();
+    queueTurnEndMessage(db, pauseCleared, defaultInput);
+    insertEvents(db, noopNotifier, [
+      manualStop(pauseCleared, 1),
+      {
+        threadId: pauseCleared,
+        sequence: 2,
+        type: "client/turn/requested",
+        scope: threadScope(),
+        itemId: null,
+        itemKind: null,
+        parentToolCallId: null,
+        data: JSON.stringify({
+          initiator: "user",
+          input: defaultInput,
+          target: { kind: "new-turn" },
+        }),
+      },
+      {
+        threadId: pauseCleared,
+        sequence: 3,
+        type: "turn/started",
+        scope: turnScope("turn-after-stop"),
+        itemId: null,
+        itemKind: null,
+        parentToolCallId: null,
+        data: JSON.stringify({ providerThreadId: "provider-after-stop" }),
+      },
+    ]);
+
+    const stoppedAgain = idleThread();
+    queueTurnEndMessage(db, stoppedAgain, defaultInput);
+    insertEvents(db, noopNotifier, [
+      manualStop(stoppedAgain, 1),
+      {
+        ...manualStop(stoppedAgain, 2),
+        data: JSON.stringify({ reason: "host-disconnected" }),
+      },
+    ]);
+
+    const pausedWithoutQueue = idleThread();
+    insertEvents(db, noopNotifier, [manualStop(pausedWithoutQueue, 1)]);
+    idleThread();
+
+    const queueOn = (threadId: string) =>
+      queueTurnEndMessage(db, threadId, defaultInput).id;
+    const setQueuedRow = (
+      id: string,
+      values: Partial<typeof queuedThreadMessages.$inferInsert>,
+    ) =>
+      db
+        .update(queuedThreadMessages)
+        .set(values)
+        .where(eq(queuedThreadMessages.id, id))
+        .run();
+    const idleThreadWaitingOn = (kind: string) => {
+      const threadId = idleThread();
+      setQueuedRow(queueOn(threadId), { waitingOn: JSON.stringify({ kind }) });
+      return threadId;
+    };
+
+    const onlyClaimed = idleThread();
+    setQueuedRow(queueOn(onlyClaimed), { claimedAt: 1, claimToken: "claim" });
+
+    const claimedAndFree = idleThread();
+    setQueuedRow(queueOn(claimedAndFree), {
+      claimedAt: 1,
+      claimToken: "other-claim",
+    });
+    queueOn(claimedAndFree);
+
+    const onlyFailed = idleThread();
+    setQueuedRow(queueOn(onlyFailed), { failureReason: "provider rejected" });
+
+    const failedAndFree = idleThread();
+    setQueuedRow(queueOn(failedAndFree), { failureReason: "provider rejected" });
+    queueOn(failedAndFree);
+
+    const waitingOnTurnStart = idleThreadWaitingOn("turn-starting");
+    const waitingOnStop = idleThreadWaitingOn("stopping");
+    idleThreadWaitingOn("time");
+    idleThreadWaitingOn("plugin");
+    idleThreadWaitingOn("provisioning");
+    idleThreadWaitingOn("host-offline");
+
+    const pausedWaitingOnStop = idleThreadWaitingOn("stopping");
+    insertEvents(db, noopNotifier, [manualStop(pausedWaitingOnStop, 1)]);
+
+    const host = upsertHost(db, noopNotifier, { name: "environment-host" });
+    const threadInEnvironment = (path: string) => {
+      const environment = createEnvironment(db, noopNotifier, {
+        projectId: project.id,
+        hostId: host.id,
+        path,
+        status: "ready",
+        providerOwnsPath: false,
+      });
+      const threadId = createThread(db, noopNotifier, {
+        projectId: project.id,
+        environmentId: environment.id,
+        providerId: "codex",
+        status: "idle",
+      }).id;
+      queueOn(threadId);
+      return { environmentId: environment.id, threadId };
+    };
+    const inReadyEnvironment = threadInEnvironment("/tmp/ready-environment");
+    const inDestroyedEnvironment = threadInEnvironment(
+      "/tmp/destroyed-environment",
+    );
+    db.update(environments)
+      .set({ status: "destroyed" })
+      .where(eq(environments.id, inDestroyedEnvironment.environmentId))
+      .run();
+
+    const { query, rows } = captureIdleQueuedThreadQuery(db);
+    expect(query.sql).toContain(PAUSE_LOOKUP_ON_QUEUED_MESSAGE);
+    expect(query.sql).toContain(QUEUED_MESSAGES_FIRST_JOIN);
+    const replacedSql = query.sql
+      .replace(PAUSE_LOOKUP_ON_QUEUED_MESSAGE, PAUSE_LOOKUP_ON_THREAD)
+      .replace(QUEUED_MESSAGES_FIRST_JOIN, PLANNER_ORDERED_JOIN);
+    expect(replacedSql).toContain(PAUSE_LOOKUP_ON_THREAD);
+    expect(replacedSql).toContain(PLANNER_ORDERED_JOIN);
+    const run = (sql: string) =>
+      db.$client.prepare<unknown[], unknown[]>(sql).raw().all(...query.params);
+
+    expect(run(query.sql)).toEqual(run(replacedSql));
+    expect(rows.map((row) => row.threadId).sort()).toEqual(
+      [
+        severalQueued,
+        pauseCleared,
+        stoppedAgain,
+        claimedAndFree,
+        failedAndFree,
+        waitingOnTurnStart,
+        waitingOnStop,
+        pausedWaitingOnStop,
+        inReadyEnvironment.threadId,
+      ].sort(),
+    );
+    expect(run(query.sql)).toHaveLength(9);
+  });
+
   it("lists an idle thread waiting for its turn to start", () => {
     const { db, project } = setup();
     const thread = createThread(db, noopNotifier, {
@@ -99,6 +331,54 @@ describe("queued thread messages", () => {
     expect(
       listIdleThreadsWithQueuedMessages(db).map((row) => row.threadId),
     ).toContain(thread.id);
+  });
+
+  it("reads queued messages first and checks the manual-stop pause only for their threads", () => {
+    const { db, project } = setup();
+    const threadIds = Array.from(
+      { length: 40 },
+      () =>
+        createThread(db, noopNotifier, {
+          projectId: project.id,
+          providerId: "codex",
+          status: "idle",
+        }).id,
+    );
+    const queuedThreadId = threadIds[0];
+    if (queuedThreadId === undefined) {
+      throw new Error("Expected a thread to queue a message on");
+    }
+    queueTurnEndMessage(db, queuedThreadId, defaultInput);
+
+    const { query, rows } = captureIdleQueuedThreadQuery(db);
+    expect(rows.map((row) => row.threadId)).toEqual([queuedThreadId]);
+    const raw = db.$client;
+    expect(query.sql).toContain(
+      '"queue_pause_interruption"."thread_id" = "queued_thread_messages"."thread_id"',
+    );
+    const planDetails = raw
+      .prepare<unknown[], { detail: string }>(
+        `EXPLAIN QUERY PLAN ${query.sql}`,
+      )
+      .all(...query.params)
+      .map((row) => row.detail);
+    const queuedMessagesStep = planDetails.findIndex((detail) =>
+      /^(SEARCH|SCAN) queued_thread_messages\b/u.test(detail),
+    );
+    const pauseLookupStep = planDetails.findIndex((detail) =>
+      detail.includes("queue_pause_interruption"),
+    );
+    expect(queuedMessagesStep).toBe(0);
+    expect(pauseLookupStep).toBeGreaterThan(queuedMessagesStep);
+    raw.exec("ANALYZE");
+    expect(
+      raw
+        .prepare<unknown[], { detail: string }>(
+          `EXPLAIN QUERY PLAN ${query.sql}`,
+        )
+        .all(...query.params)
+        .map((row) => row.detail)[0],
+    ).toMatch(/^(SEARCH|SCAN) queued_thread_messages\b/u);
   });
 
   it("updates queued message content without changing its identity or position", () => {

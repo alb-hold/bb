@@ -84,7 +84,7 @@ export default function plugin(bb: BbPluginApi) {
       executable: "codex",
       launchArgs: ["--no-daemon", "--dangerously-bypass-approvals-and-sandbox"],
       modelArgs: ["-c", 'model="{model}"'],
-      pastePlaceholders: ["[Pasted Content "],
+      pastePlaceholders: ["[Pasted Content ", "[Image #"],
       sessionRoot: { env: "CODEX_HOME", home: ".codex" },
       session: {
         kind: "discovered",
