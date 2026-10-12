@@ -66,8 +66,11 @@ import { createEventId } from "../ids.js";
 import { COMPLETED_EVENT_OUTPUT_TRUNCATION_THRESHOLD_CHARS } from "../retained-event-output.js";
 import { truncatedEventDataColumn } from "./event-output-truncation.js";
 import {
+  bumpBackgroundTaskAppendGeneration,
   bumpThreadEventRewriteGeneration,
+  getBackgroundTaskAppendGeneration,
   getDatabaseDataVersion,
+  getThreadEventOwnershipEpoch,
   getThreadEventRewriteGeneration,
 } from "./event-rewrite-generation.js";
 import { deriveStoredEventItemFieldsFromSource } from "../stored-event-item-fields.js";
@@ -2411,22 +2414,20 @@ interface ActiveBackgroundTaskCountCacheEntry {
 interface ActiveBackgroundTaskCountCache {
   dataVersion: number;
   entries: Map<string, ActiveBackgroundTaskCountCacheEntry>;
+  ownershipEpoch: number;
 }
 
-const backgroundTaskAppendGenerationsByThreadId = new Map<string, number>();
+export const ACTIVE_BACKGROUND_TASK_COUNT_CACHE_LIMIT = 50_000;
 const activeBackgroundTaskCountCachesByClient = new WeakMap<
   object,
   ActiveBackgroundTaskCountCache
 >();
 
-function getBackgroundTaskAppendGeneration(threadId: string): number {
-  return backgroundTaskAppendGenerationsByThreadId.get(threadId) ?? 0;
-}
-
-function bumpBackgroundTaskAppendGeneration(threadId: string): void {
-  backgroundTaskAppendGenerationsByThreadId.set(
-    threadId,
-    getBackgroundTaskAppendGeneration(threadId) + 1,
+export function getActiveBackgroundTaskCountCacheSize(
+  db: DbConnection,
+): number {
+  return (
+    activeBackgroundTaskCountCachesByClient.get(db.$client)?.entries.size ?? 0
   );
 }
 
@@ -2437,13 +2438,19 @@ function resolveActiveBackgroundTaskCountCache(
     return null;
   }
   const dataVersion = getDatabaseDataVersion(db);
+  const ownershipEpoch = getThreadEventOwnershipEpoch();
   const cached = activeBackgroundTaskCountCachesByClient.get(db.$client);
-  if (cached && cached.dataVersion === dataVersion) {
+  if (
+    cached &&
+    cached.dataVersion === dataVersion &&
+    cached.ownershipEpoch === ownershipEpoch
+  ) {
     return cached;
   }
   const cache: ActiveBackgroundTaskCountCache = {
     dataVersion,
     entries: new Map(),
+    ownershipEpoch,
   };
   activeBackgroundTaskCountCachesByClient.set(db.$client, cache);
   return cache;
@@ -2472,21 +2479,32 @@ export function listActiveBackgroundTaskCountsByThreadIds(
     }
   }
   if (staleThreadIds.length > 0) {
+    if (
+      cache.entries.size + staleThreadIds.length >
+      ACTIVE_BACKGROUND_TASK_COUNT_CACHE_LIMIT
+    ) {
+      cache.entries.clear();
+    }
     const queriedRowsByThreadId = new Map(
       queryActiveBackgroundTaskCountsByThreadIds(db, {
         threadIds: staleThreadIds,
       }).map((row) => [row.threadId, row]),
     );
+    const rememberQueriedRows =
+      staleThreadIds.length <= ACTIVE_BACKGROUND_TASK_COUNT_CACHE_LIMIT;
     for (const threadId of staleThreadIds) {
       const row = queriedRowsByThreadId.get(threadId) ?? null;
+      if (row !== null) {
+        rows.push({ ...row });
+      }
+      if (!rememberQueriedRows) {
+        continue;
+      }
       cache.entries.set(threadId, {
         appendGeneration: getBackgroundTaskAppendGeneration(threadId),
         rewriteGeneration: getThreadEventRewriteGeneration(threadId),
         row,
       });
-      if (row !== null) {
-        rows.push({ ...row });
-      }
     }
   }
   return rows.sort((left, right) =>
