@@ -12,6 +12,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { experimental_nativeTerminalEnvArgs } from "../host.js";
 
+vi.mock("node:os", async (importOriginal) => {
+  const original = await importOriginal<typeof import("node:os")>();
+  return { ...original, default: { ...original.default } };
+});
+
 const declaration = {
   required: ["ROUTED"],
   args: ["provider=pooled"],
