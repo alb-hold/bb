@@ -35,6 +35,7 @@ import { applyLoggedThreadLifecycleEvent } from "../../src/services/threads/life
 import { internalAuthHeaders } from "../helpers/commands.js";
 import { createProviderRegistryService } from "../../src/services/providers/provider-registry.js";
 import { createTestProviderRegistry } from "../helpers/provider-registry.js";
+import { recordNativeTerminalActivity } from "../../src/services/threads/native-terminal-activity.js";
 import { onDaemonSocketOpen } from "../../src/ws/daemon-protocol.js";
 import { resolvePendingThreadSessionOptions } from "../../src/services/threads/thread-session-options.js";
 import { storeAttachment } from "../../src/services/projects/attachments.js";
@@ -1267,7 +1268,7 @@ describe("native terminal threads", () => {
 
   async function restartDaemonWithRunningNativeThread(
     instanceId: string,
-    options: { deferProviders?: boolean } = {},
+    options: { beforeRestart?: () => void; deferProviders?: boolean } = {},
   ) {
     const fixture = await createFixture();
     const running = await openRunningNativeThread(fixture, {
@@ -1280,6 +1281,7 @@ describe("native terminal threads", () => {
     expect(getThread(fixture.harness.db, running.thread.id)?.status).toBe(
       "active",
     );
+    options.beforeRestart?.();
     handleDaemonSocketClosed(fixture.harness.deps, {
       sessionId: fixture.sessionId,
     });
@@ -1458,6 +1460,76 @@ describe("native terminal threads", () => {
       getNativeTerminalThread(fixture.harness.db, running.thread.id)
         ?.nativeSessionId,
     ).toBe(nativeSessionBefore);
+  }, 60_000);
+
+  it("interrupts a running native thread once when the provider never registers before the reattach deadline, and lets a later reattach resume it", async () => {
+    const sourceRegistry = await createTestProviderRegistry();
+    const registration = sourceRegistry.get("claude-code");
+    if (registration === null) throw new Error("claude-code is not seeded");
+    let restoreTimers = false;
+    try {
+      const { fixture, lateProviders, running, sessionId, socket } =
+        await restartDaemonWithRunningNativeThread("instance-restarted", {
+          beforeRestart: () => {
+            vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+            restoreTimers = true;
+          },
+          deferProviders: true,
+        });
+      await vi.advanceTimersByTimeAsync(44_000);
+      expect(getThread(fixture.harness.db, running.thread.id)?.status).toBe(
+        "active",
+      );
+      expect(interruptionReasons(fixture, running.thread.id)).toEqual([]);
+
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(getThread(fixture.harness.db, running.thread.id)?.status).not.toBe(
+        "active",
+      );
+      expect(interruptionReasons(fixture, running.thread.id)).toEqual([
+        "host-daemon-restarted",
+      ]);
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(interruptionReasons(fixture, running.thread.id)).toEqual([
+        "host-daemon-restarted",
+      ]);
+
+      vi.useRealTimers();
+      restoreTimers = false;
+      lateProviders?.register(registration);
+      const reopen = await waitForTerminalOpen(socket);
+      expect(reopen.threadId).toBe(running.thread.id);
+      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.hostId,
+        sessionId,
+        message: {
+          type: "terminal.opened",
+          requestId: reopen.requestId,
+          terminalId: reopen.terminalId,
+          shell: "/bin/zsh",
+          title: "zsh",
+          initialCwd: "/tmp/native-workspace",
+          cols: reopen.cols,
+          rows: reopen.rows,
+        },
+      });
+      await expect
+        .poll(
+          () =>
+            getNativeTerminalThread(fixture.harness.db, running.thread.id)
+              ?.terminalSessionId,
+        )
+        .toBe(reopen.terminalId);
+      recordNativeTerminalActivity(fixture.harness.deps, {
+        threadId: running.thread.id,
+        state: "working",
+      });
+      expect(getThread(fixture.harness.db, running.thread.id)?.status).toBe(
+        "active",
+      );
+    } finally {
+      if (restoreTimers) vi.useRealTimers();
+    }
   }, 60_000);
 
   it("gives an explicit open its own launch when it overlaps a reconnect reopen", async () => {

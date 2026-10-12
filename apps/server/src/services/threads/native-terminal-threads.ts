@@ -75,6 +75,7 @@ const pendingOpens = new Map<string, PendingNativeTerminalOpen>();
 const pendingSends = new Map<string, Promise<void>>();
 const NATIVE_REATTACH_POLL_MS = 250;
 const NATIVE_REATTACH_SETTLE_MS = 15_000;
+const NATIVE_REATTACH_DEADLINE_MS = 45_000;
 const NATIVE_TERMINAL_ECHO_POLL_MS = 100;
 const NATIVE_TERMINAL_ECHO_TIMEOUT_MS = 5000;
 const NATIVE_TERMINAL_ECHO_CONTEXT_BYTES = 64 * 1024;
@@ -530,6 +531,13 @@ export function reopenNativeTerminalsAfterDaemonReconnect(
 ): Promise<void> {
   return Promise.all(
     args.threadIds.map(async (threadId) => {
+      const deadline = setTimeout(() => {
+        interruptThreadWhoseHolderIsGone(deps, {
+          hostId: args.hostId,
+          threadId,
+        });
+      }, NATIVE_REATTACH_DEADLINE_MS);
+      deadline.unref();
       try {
         const record = getNativeTerminalThread(deps.db, threadId);
         if (record === null) return;
@@ -588,6 +596,8 @@ export function reopenNativeTerminalsAfterDaemonReconnect(
           hostId: args.hostId,
           threadId,
         });
+      } finally {
+        clearTimeout(deadline);
       }
     }),
   ).then(() => undefined);
