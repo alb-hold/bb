@@ -236,6 +236,7 @@ export const terminalDataPlaneChildMessageSchema = z.discriminatedUnion(
       .object({
         v: versionSchema,
         type: z.literal("terminal.input"),
+        attachId: idSchema,
         terminalId: idSchema,
         dataBase64: z.string(),
       })

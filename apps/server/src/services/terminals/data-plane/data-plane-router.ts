@@ -72,6 +72,7 @@ export class TerminalDataPlaneRouter implements ChildTerminalSocketSink {
   constructor(
     private readonly transport: DataPlaneTransport,
     private readonly lifecycle: DataPlaneLifecyclePort,
+    private readonly onTerminalExited: (terminalId: string) => void,
   ) {}
 
   get isAvailable(): boolean {
@@ -210,7 +211,7 @@ export class TerminalDataPlaneRouter implements ChildTerminalSocketSink {
         );
         return;
       case "terminal.input":
-        this.handleInput(message.terminalId, message.dataBase64);
+        this.handleInput(message.attachId, message.terminalId, message.dataBase64);
         return;
       case "terminal.input-activity":
         this.lifecycle.recordInputActivity(message.terminalId);
@@ -271,6 +272,9 @@ export class TerminalDataPlaneRouter implements ChildTerminalSocketSink {
     message: ChildTerminalBroadcastMessage,
     bytes: number,
   ): void {
+    if (message.type === "exited") {
+      this.onTerminalExited(terminalId);
+    }
     const key = `${terminalId}\u0000${JSON.stringify(message)}`;
     if (this.lastBroadcastKey === key) {
       return;
@@ -367,19 +371,21 @@ export class TerminalDataPlaneRouter implements ChildTerminalSocketSink {
     });
   }
 
-  private handleInput(terminalId: string, dataBase64: string): void {
-    const attachId = this.attachIdsByTerminalId.get(terminalId)?.values().next()
-      .value;
-    if (attachId === undefined) {
-      return;
-    }
-    this.withSocket(attachId, (socket) =>
+  private handleInput(
+    attachId: string,
+    terminalId: string,
+    dataBase64: string,
+  ): void {
+    this.withSocket(attachId, (socket) => {
+      if (socket.terminalId !== terminalId) {
+        return;
+      }
       this.lifecycle.handleMessage({
         message: { type: "input", dataBase64 },
         socket,
         terminalId,
-      }),
-    );
+      });
+    });
   }
 
   private withSocket(
