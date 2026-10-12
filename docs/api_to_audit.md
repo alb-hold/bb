@@ -1084,9 +1084,14 @@ Optional `hooks.pending` records provisional events without ending a turn;
 records cannot reactivate a finished turn. A new working record descended
 from its completion record can start a background continuation. The reader
 also accepts an optional identity `timestamp` field path for ISO timestamps.
-When declared, missing or invalid timestamps are ignored and records at or
-before the evicted-history timestamp cutoff cannot affect activity. This
-protects replayed UUIDs after their recent-ID entries have been pruned. Claude
+Providers declaring it must give new records chronological timestamps;
+delayed records may retain older timestamps.
+When declared, missing or invalid timestamps are ignored and records strictly
+before the evicted-history timestamp cutoff cannot affect activity. At the
+cutoff timestamp, new UUIDs remain valid and evicted UUIDs are ignored. A
+bounded set retains at most 4,096 evicted UUIDs at that timestamp; after an
+overflow, the processed transcript prefix supplies exact duplicate detection.
+This protects replays after both recent-ID and cutoff-ID eviction. Claude
 declares it. Retained history is bounded to 4,096 records and 128 turns, while
 completion anchors and compacted continuation ancestry remain available.
 Stabilization must cover replay after eviction, timestamp ties, bounded memory,

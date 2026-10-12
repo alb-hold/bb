@@ -277,11 +277,13 @@ function retainedIdentitySizes(reader: NativeActivityReader) {
   const recordParents: unknown = Reflect.get(reader, "recordParents");
   const knownTurns: unknown = Reflect.get(reader, "knownTurns");
   const completedTurns: unknown = Reflect.get(reader, "completedTurns");
+  const evictedCutoffIds: unknown = Reflect.get(reader, "evictedCutoffIds");
   if (
     !(recordTurns instanceof Map) ||
     !(recordParents instanceof Map) ||
     !(knownTurns instanceof Set) ||
-    !(completedTurns instanceof Map)
+    !(completedTurns instanceof Map) ||
+    !(evictedCutoffIds instanceof Set)
   ) {
     throw new Error("Native reader identity state unavailable");
   }
@@ -290,10 +292,167 @@ function retainedIdentitySizes(reader: NativeActivityReader) {
     recordParents: recordParents.size,
     knownTurns: knownTurns.size,
     completedTurns: completedTurns.size,
+    evictedCutoffIds: evictedCutoffIds.size,
   };
 }
 
 describe("NativeActivityReader", () => {
+  it("starts an assistant-only cutoff-timestamp continuation after a blocked Stop and eviction", () => {
+    const fixture = claudeFixture();
+    finalClaudeStop(fixture);
+    const timestamp = "2026-10-11T10:00:01.000Z";
+    fixture.append(
+      Array.from({ length: 5000 }, (_, index) => ({
+        type: "progress",
+        uuid: `idle-cutoff-progress-${index}`,
+        parentUuid: "end-1",
+        timestamp,
+      })),
+    );
+    expect(fixture.reader.read()).toEqual([]);
+    expect(fixture.reader.heartbeat()).toBeNull();
+    fixture.hook([
+      { hook_event_name: "Stop", prompt_id: "turn-1", stop_hook_active: false },
+    ]);
+    fixture.append([
+      {
+        type: "assistant",
+        isSidechain: false,
+        uuid: "idle-cutoff-continuation",
+        parentUuid: "end-1",
+        timestamp,
+        message: { content: [{ type: "text", text: "two more sentences" }] },
+      },
+    ]);
+    expect(fixture.reader.read()).toEqual([{ state: "working", prompt: null }]);
+    expect(fixture.reader.heartbeat()).toEqual({
+      state: "working",
+      prompt: null,
+    });
+    fixture.append([
+      {
+        type: "system",
+        subtype: "stop_hook_summary",
+        isSidechain: false,
+        hasOutput: false,
+        uuid: "idle-cutoff-end",
+        parentUuid: "idle-cutoff-continuation",
+        timestamp,
+      },
+    ]);
+    expect(fixture.reader.read()).toEqual([{ state: "idle", prompt: null }]);
+    expect(fixture.reader.heartbeat()).toBeNull();
+  });
+
+  it.each([5000, 8300])(
+    "accepts unique cutoff-timestamp completion and continuation after %i records while rejecting evicted replays",
+    (count) => {
+      const fixture = claudeFixture();
+      const timestamp = "2026-10-11T10:00:01.000Z";
+      const evicted = {
+        type: "system",
+        subtype: "stop_hook_summary",
+        isSidechain: false,
+        hasOutput: false,
+        uuid: "cutoff-evicted-end",
+        promptId: "turn-1",
+        parentUuid: "answer-1",
+        timestamp,
+      };
+      fixture.append([
+        evicted,
+        {
+          type: "assistant",
+          isSidechain: false,
+          uuid: "cutoff-anchor",
+          parentUuid: evicted.uuid,
+          timestamp,
+          message: { content: [{ type: "text", text: "continuation" }] },
+        },
+      ]);
+      expect(fixture.reader.read()).toEqual([
+        { state: "idle", prompt: null },
+        { state: "working", prompt: null },
+      ]);
+      fixture.append(
+        Array.from({ length: count }, (_, index) => ({
+          type: "progress",
+          uuid: `cutoff-progress-${index}`,
+          parentUuid: "cutoff-anchor",
+          timestamp,
+        })),
+      );
+      expect(fixture.reader.read()).toEqual([]);
+      const retained: unknown = Reflect.get(fixture.reader, "recordTurns");
+      if (!(retained instanceof Map))
+        throw new Error("Native reader identity state unavailable");
+      expect(retained.has(evicted.uuid)).toBe(false);
+      fixture.append([evicted]);
+      expect(fixture.reader.read()).toEqual([]);
+      expect(fixture.reader.heartbeat()).toEqual({
+        state: "working",
+        prompt: null,
+      });
+      fixture.append([
+        {
+          ...evicted,
+          uuid: "cutoff-unique-end",
+          parentUuid: "cutoff-anchor",
+        },
+      ]);
+      expect(fixture.reader.read()).toEqual([{ state: "idle", prompt: null }]);
+      expect(fixture.reader.heartbeat()).toBeNull();
+      fixture.hook([
+        {
+          hook_event_name: "Stop",
+          prompt_id: "turn-1",
+          stop_hook_active: false,
+        },
+      ]);
+      fixture.append([
+        {
+          type: "assistant",
+          isSidechain: false,
+          uuid: "cutoff-unique-continuation",
+          parentUuid: "cutoff-unique-end",
+          timestamp,
+          message: { content: [{ type: "text", text: "two more sentences" }] },
+        },
+      ]);
+      expect(fixture.reader.read()).toEqual([
+        { state: "working", prompt: null },
+      ]);
+      fixture.append([evicted]);
+      expect(fixture.reader.read()).toEqual([]);
+      expect(fixture.reader.heartbeat()).toEqual({
+        state: "working",
+        prompt: null,
+      });
+      fixture.append([
+        {
+          ...evicted,
+          uuid: "cutoff-final-end",
+          parentUuid: "cutoff-unique-continuation",
+        },
+      ]);
+      expect(fixture.reader.read()).toEqual([{ state: "idle", prompt: null }]);
+      expect(fixture.reader.heartbeat()).toBeNull();
+      const sizes = retainedIdentitySizes(fixture.reader);
+      expect(sizes.recordTurns).toBeLessThanOrEqual(4096);
+      expect(sizes.recordParents).toBeLessThanOrEqual(4096);
+      expect(sizes.knownTurns).toBeLessThanOrEqual(128);
+      expect(sizes.completedTurns).toBeLessThanOrEqual(128);
+      const cutoffIds: unknown = Reflect.get(
+        fixture.reader,
+        "evictedCutoffIds",
+      );
+      if (!(cutoffIds instanceof Set))
+        throw new Error("Native reader cutoff identity state unavailable");
+      expect(cutoffIds.size).toBeLessThanOrEqual(4096);
+      expect(cutoffIds.has(evicted.uuid)).toBe(count === 5000);
+    },
+  );
+
   it("accepts distinct records sharing a timestamp and ignores unordered records", () => {
     const fixture = claudeFixture();
     fixture.append([
@@ -604,6 +763,7 @@ describe("NativeActivityReader", () => {
     expect(maxima.recordParents, evidence).toBeLessThanOrEqual(4096);
     expect(maxima.knownTurns, evidence).toBeLessThanOrEqual(128);
     expect(maxima.completedTurns, evidence).toBeLessThanOrEqual(128);
+    expect(maxima.evictedCutoffIds, evidence).toBeLessThanOrEqual(4096);
     fixture.hook([
       {
         hook_event_name: "UserPromptSubmit",

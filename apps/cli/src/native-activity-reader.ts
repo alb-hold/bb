@@ -16,6 +16,7 @@ import {
 
 const MAX_RETAINED_RECORDS = 4096;
 const MAX_RETAINED_TURNS = 128;
+const MAX_EVICTED_CUTOFF_IDS = 4096;
 
 export type NativeActivityStart =
   | { kind: "discover" }
@@ -69,11 +70,16 @@ export class NativeActivityReader {
   private currentTurn: string | null = null;
   private workingRecord: string | null = null;
   private evictedThroughTimestamp: number | null = null;
+  private evictedThroughPosition = 0;
+  private transcriptPosition = 0;
+  private readonly transcriptStartOffset: number;
+  private cutoffIdsOverflowed = false;
+  private readonly evictedCutoffIds = new Set<string>();
   private readonly knownTurns = new Set<string>();
   private readonly recordTurns = new Map<string, string | null>();
   private readonly recordParents = new Map<
     string,
-    { parent: string | null; timestamp: number | null }
+    { parent: string | null; timestamp: number | null; position: number }
   >();
   private readonly completedTurns = new Map<string, string>();
 
@@ -83,6 +89,7 @@ export class NativeActivityReader {
     private readonly eventsFile: string | null,
     start: NativeActivityStart,
   ) {
+    this.transcriptStartOffset = start.kind === "resume" ? start.offset : 0;
     if (start.kind === "resume") {
       this.sessionId = start.id;
       this.transcriptFile = start.transcriptFile;
@@ -161,6 +168,7 @@ export class NativeActivityReader {
   ): NativeActivitySignal {
     const identity = this.cli.activity?.transcript?.identity;
     if (identity === undefined) return signal;
+    this.transcriptPosition += 1;
     const ignored = { state: null, prompt: null };
     const id = this.stringField(record, identity.recordId);
     if (id === null || this.recordTurns.has(id)) return ignored;
@@ -172,7 +180,10 @@ export class NativeActivityReader {
       if (
         !Number.isFinite(timestamp) ||
         (this.evictedThroughTimestamp !== null &&
-          timestamp <= this.evictedThroughTimestamp)
+          (timestamp < this.evictedThroughTimestamp ||
+            (timestamp === this.evictedThroughTimestamp &&
+              (this.evictedCutoffIds.has(id) ||
+                (this.cutoffIdsOverflowed && this.wasEvictedAtCutoff(id))))))
       ) {
         return ignored;
       }
@@ -189,7 +200,11 @@ export class NativeActivityReader {
         ? completed
         : parent;
     this.recordTurns.set(id, turn);
-    this.recordParents.set(id, { parent: retainedParent, timestamp });
+    this.recordParents.set(id, {
+      parent: retainedParent,
+      timestamp,
+      position: this.transcriptPosition,
+    });
     this.pruneRecords();
     if (turn === null || signal.state === null) return ignored;
     if (this.currentTurn !== turn) {
@@ -234,17 +249,51 @@ export class NativeActivityReader {
       ) {
         continue;
       }
-      const timestamp = this.recordParents.get(id)?.timestamp;
-      if (timestamp !== undefined && timestamp !== null) {
-        this.evictedThroughTimestamp = Math.max(
-          this.evictedThroughTimestamp ?? timestamp,
-          timestamp,
-        );
+      const record = this.recordParents.get(id);
+      if (record !== undefined && record.timestamp !== null) {
+        if (
+          this.evictedThroughTimestamp === null ||
+          record.timestamp > this.evictedThroughTimestamp
+        ) {
+          this.evictedThroughTimestamp = record.timestamp;
+          this.evictedThroughPosition = record.position;
+          this.evictedCutoffIds.clear();
+          this.cutoffIdsOverflowed = false;
+        }
+        if (record.timestamp === this.evictedThroughTimestamp) {
+          this.evictedThroughPosition = Math.max(
+            this.evictedThroughPosition,
+            record.position,
+          );
+          this.evictedCutoffIds.add(id);
+          if (this.evictedCutoffIds.size > MAX_EVICTED_CUTOFF_IDS) {
+            const expired = this.evictedCutoffIds.values().next().value;
+            if (expired !== undefined) this.evictedCutoffIds.delete(expired);
+            this.cutoffIdsOverflowed = true;
+          }
+        }
       }
       this.recordTurns.delete(id);
       this.recordParents.delete(id);
       break;
     }
+  }
+
+  private wasEvictedAtCutoff(id: string): boolean {
+    const identity = this.cli.activity?.transcript?.identity;
+    if (this.transcriptFile === null || identity === undefined) return false;
+    const tail = new JsonlTail(this.transcriptStartOffset);
+    let position = 0;
+    while (position < this.evictedThroughPosition) {
+      const records = tail.readRecords(this.transcriptFile);
+      if (records.length === 0) return false;
+      for (const record of records) {
+        position += 1;
+        if (position > this.evictedThroughPosition) return false;
+        if (this.stringField(record, identity.recordId) === id) return true;
+      }
+    }
+    return false;
   }
 
   private descendsFrom(id: string, ancestor: string): boolean {
