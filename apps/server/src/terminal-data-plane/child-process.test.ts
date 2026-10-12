@@ -317,7 +317,9 @@ describe("terminal data plane child process", () => {
         server.close();
       });
       const client = connect((server.address() as AddressInfo).port, "127.0.0.1");
-      cleanups.push(() => client.destroy());
+      cleanups.push(() => {
+        client.destroy();
+      });
       const closed = new Promise<void>((resolve) => {
         client.once("close", () => resolve());
       });

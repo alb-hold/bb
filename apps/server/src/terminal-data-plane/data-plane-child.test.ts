@@ -675,9 +675,10 @@ describe("terminal data plane child", () => {
 
     expect(socket.closes).toEqual([{ code: 1013, reason: "input-backlog" }]);
     expect(other.closes).toEqual([]);
-    const relayed = harness
-      .ofType("terminal.input")
-      .reduce((total, message) => total + message.dataBase64.length, 0);
+    const relayed = ofType(harness, "terminal.input").reduce(
+      (total, message) => total + message.dataBase64.length,
+      0,
+    );
     expect(relayed).toBeLessThanOrEqual(TERMINAL_DATA_PLANE_CHILD_PENDING_IPC_BYTES);
 
     harness.releaseSends();
