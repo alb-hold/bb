@@ -1002,6 +1002,19 @@ function nativeTerminalNotRunning(): ApiError {
   );
 }
 
+function nativeTerminalInputAmbiguous(
+  provider: NativeTerminalProvider,
+  pastedBefore: number,
+): ApiError {
+  return new ApiError(
+    409,
+    "native_terminal_input_ambiguous",
+    pastedBefore === 0
+      ? `${provider.displayName} already shows this text, so an echo of it could not be told apart from what is on screen, and nothing was sent. Type the message in the terminal, or reword it.`
+      : `${provider.displayName} began showing this text while the message was being pasted, so an echo of it could not be told apart from what is on screen, and the message was not submitted. What was pasted before it is still in the input box: clear the input box in the terminal, then send again.`,
+  );
+}
+
 async function deliverNativeTerminalMessage(
   deps: NativeTerminalDeps,
   args: { threadId: string; pastes: readonly string[] },
@@ -1012,8 +1025,26 @@ async function deliverNativeTerminalMessage(
   }
   const terminalId = view.terminal.id;
   const provider = requireNativeTerminalProvider(deps, view.providerId);
+  const before = await deps.terminalSessions.readTerminalOutput({
+    terminalId,
+    query: { tailBytes: NATIVE_TERMINAL_ECHO_CONTEXT_BYTES },
+  });
+  if (before.status !== "running") throw nativeTerminalNotRunning();
+  const shown = decodeTerminalOutputChunks(before.chunks);
   for (const text of args.pastes) {
+    if (
+      terminalScreenAlreadyShowsText({
+        output: shown,
+        screenRows: view.terminal.rows,
+        text,
+      })
+    ) {
+      throw nativeTerminalInputAmbiguous(provider, 0);
+    }
+  }
+  for (const [pastedBefore, text] of args.pastes.entries()) {
     await pasteIntoNativeTerminal(deps, {
+      pastedBefore,
       provider,
       screenRows: view.terminal.rows,
       terminalId,
@@ -1029,6 +1060,7 @@ async function deliverNativeTerminalMessage(
 async function pasteIntoNativeTerminal(
   deps: NativeTerminalDeps,
   args: {
+    pastedBefore: number;
     provider: NativeTerminalProvider;
     screenRows: number;
     terminalId: string;
@@ -1049,11 +1081,7 @@ async function pasteIntoNativeTerminal(
       text: args.text,
     })
   ) {
-    throw new ApiError(
-      409,
-      "native_terminal_input_ambiguous",
-      `${provider.displayName} already shows this text, so an echo of it could not be told apart from what is on screen, and nothing was sent. Type the message in the terminal, or reword it.`,
-    );
+    throw nativeTerminalInputAmbiguous(provider, args.pastedBefore);
   }
   const showsPaste = terminalOutputAlreadyShowsText({
     output: shown,
