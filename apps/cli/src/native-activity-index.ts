@@ -11,7 +11,16 @@ export class EvictedRecordIndex {
   private offsets = new Float64Array(8192);
   private lengths = new Uint32Array(8192);
 
-  constructor(private readonly recordIdField: string) {}
+  private unconfirmed = 0;
+
+  constructor(
+    private readonly recordIdField: string,
+    private readonly onUnconfirmed?: (total: number) => void,
+  ) {}
+
+  get unconfirmedReads(): number {
+    return this.unconfirmed;
+  }
 
   get byteLength(): number {
     return (
@@ -80,13 +89,27 @@ export class EvictedRecordIndex {
         buffer.length,
         this.offsets[slot],
       );
-      if (read !== buffer.length) return true;
+      if (read !== buffer.length) return this.unconfirm();
       const record: unknown = JSON.parse(buffer.toString("utf8"));
       return readRecordField(record, this.recordIdField) === id;
     } catch {
-      return true;
+      return this.unconfirm();
     } finally {
       if (descriptor !== null) closeSync(descriptor);
     }
   }
+
+  private unconfirm(): false {
+    this.unconfirmed += 1;
+    if (this.onUnconfirmed !== undefined && isPowerOfTen(this.unconfirmed)) {
+      this.onUnconfirmed(this.unconfirmed);
+    }
+    return false;
+  }
+}
+
+function isPowerOfTen(value: number): boolean {
+  let rest = value;
+  while (rest >= 10 && rest % 10 === 0) rest /= 10;
+  return rest === 1;
 }

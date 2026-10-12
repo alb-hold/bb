@@ -1,4 +1,10 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  truncateSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -63,5 +69,47 @@ describe("evicted native transcript identity index", () => {
     expect(index.has(ids[0], file)).toBe(true);
     expect(index.has(ids[count - 1], file)).toBe(true);
     expect(confirmations).toBe(2);
+  });
+
+  describe.each([
+    ["unreadable", true, (file: string) => rmSync(file)],
+    ["short", true, (file: string) => truncateSync(file, 5)],
+    [
+      "unparseable",
+      true,
+      (file: string) => writeFileSync(file, "x".repeat(200)),
+    ],
+    [
+      "changed",
+      false,
+      (file: string) => {
+        const length = Buffer.byteLength(
+          JSON.stringify({ uuid: "stored", message: "Unicode: \u{1f642}" }),
+        );
+        const line = JSON.stringify({ uuid: "other", pad: "" });
+        writeFileSync(
+          file,
+          `${JSON.stringify({ uuid: "other", pad: "p".repeat(length - Buffer.byteLength(line)) })}\n`,
+        );
+      },
+    ],
+  ])("with a colliding stored line that is %s", (_, counted, damage) => {
+    it("keeps the fresh UUID eligible and reports unconfirmed reads at each power of ten", () => {
+      const { file, lines } = transcript(["stored"]);
+      const logged: number[] = [];
+      const index = new EvictedRecordIndex("uuid", (total) =>
+        logged.push(total),
+      );
+      Reflect.set(index, "hash", () => 7n);
+      index.add("stored", lines[0].location);
+      expect(index.has("stored", file)).toBe(true);
+      expect(index.unconfirmedReads).toBe(0);
+      damage(file);
+      expect(index.has("fresh", file)).toBe(false);
+      expect(index.has("stored", file)).toBe(false);
+      expect(index.unconfirmedReads).toBe(counted ? 2 : 0);
+      for (let call = 0; call < 20; call += 1) index.has("fresh", file);
+      expect(logged).toEqual(counted ? [1, 10] : []);
+    });
   });
 });

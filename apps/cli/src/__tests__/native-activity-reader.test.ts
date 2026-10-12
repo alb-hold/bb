@@ -1,10 +1,13 @@
 import {
   appendFileSync,
+  closeSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   rmSync,
   statSync,
   writeFileSync,
+  writeSync,
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -14,6 +17,7 @@ import {
 } from "@bb/domain";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { JsonlTail } from "../native-activity.js";
+import { EvictedRecordIndex } from "../native-activity-index.js";
 import {
   measureResumedTranscript,
   NativeActivityReader,
@@ -167,7 +171,10 @@ function writeRollout(home: string, records: unknown[]): string {
   return file;
 }
 
-function claudeFixture(extraWorking: boolean = false) {
+function claudeFixture(
+  extraWorking: boolean = false,
+  onUnconfirmed?: (total: number) => void,
+) {
   const host = createFakePluginHost({ pluginId: "provider-claude-code" });
   claudeCodePlugin(host.bb);
   const declaration = host.harness.registrations.providerRegistrations.find(
@@ -243,13 +250,20 @@ function claudeFixture(extraWorking: boolean = false) {
       },
     ]),
   );
-  const reader = new NativeActivityReader(native, { HOME: home }, events, {
-    kind: "start",
-    id: SESSION_ID,
-  });
+  const reader = new NativeActivityReader(
+    native,
+    { HOME: home },
+    events,
+    {
+      kind: "start",
+      id: SESSION_ID,
+    },
+    onUnconfirmed,
+  );
   expect(reader.read()).toEqual([{ state: "working", prompt: "first prompt" }]);
   return {
     reader,
+    transcript,
     hook: (records: unknown[]) => appendFileSync(events, jsonl(records)),
     append: (records: unknown[]) =>
       appendFileSync(transcript, jsonl(stamped(records))),
@@ -299,6 +313,45 @@ function retainedIdentitySizes(reader: NativeActivityReader) {
 }
 
 describe("NativeActivityReader", () => {
+  it("treats an evicted identity whose stored line was rewritten as unconfirmed, counts it and logs it", () => {
+    const counts: number[] = [];
+    const fixture = claudeFixture(false, (total) => counts.push(total));
+    fixture.append(
+      Array.from({ length: 9500 }, (_, index) => ({
+        type: "progress",
+        uuid: `rewritten-progress-${index}`,
+        parentUuid: "answer-1",
+      })),
+    );
+    expect(fixture.reader.read()).toEqual([]);
+    const index: unknown = Reflect.get(fixture.reader, "evictedRecords");
+    if (!(index instanceof EvictedRecordIndex))
+      throw new Error("Evicted index unavailable");
+    const handle = openSync(fixture.transcript, "r+");
+    writeSync(handle, Buffer.from("x".repeat(40)), 0, 40, 0);
+    closeSync(handle);
+    fixture.append([
+      {
+        type: "user",
+        uuid: "user-1",
+        promptId: "turn-9",
+        parentUuid: null,
+        origin: { kind: "human" },
+        message: { content: "rewritten" },
+      },
+    ]);
+    fixture.hook([
+      {
+        hook_event_name: "UserPromptSubmit",
+        prompt_id: "turn-9",
+        prompt: "rewritten",
+      },
+    ]);
+    fixture.reader.read();
+    expect(index.unconfirmedReads).toBe(1);
+    expect(counts).toEqual([1]);
+  });
+
   it("keeps fresh records free of prefix reads after eviction filter saturation", () => {
     const fixture = claudeFixture();
     fixture.append(
@@ -309,14 +362,10 @@ describe("NativeActivityReader", () => {
       })),
     );
     expect(fixture.reader.read()).toEqual([]);
-    const filter: unknown = Reflect.get(fixture.reader, "evictedRecords");
-    if (typeof filter !== "object" || filter === null)
-      throw new Error("Evicted filter unavailable");
-    const bits: unknown = Reflect.get(filter, "bits");
-    if (bits instanceof Uint8Array) {
-      expect(bits.byteLength).toBe(4 * 1024 * 1024);
-      bits.fill(255);
-    }
+    const index: unknown = Reflect.get(fixture.reader, "evictedRecords");
+    if (!(index instanceof EvictedRecordIndex))
+      throw new Error("Evicted index unavailable");
+    expect(index.byteLength).toBeGreaterThan(0);
     const reads = vi.spyOn(JsonlTail.prototype, "readRecords");
     const hookTail = Reflect.get(fixture.reader, "hookTail");
     const transcriptTail = Reflect.get(fixture.reader, "transcriptTail");

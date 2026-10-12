@@ -86,6 +86,7 @@ export class NativeActivityReader {
     private readonly env: NativeHarnessEnv,
     private readonly eventsFile: string | null,
     start: NativeActivityStart,
+    private readonly onUnconfirmedIdentity?: (total: number) => void,
   ) {
     if (start.kind === "resume") {
       this.sessionId = start.id;
@@ -247,7 +248,10 @@ export class NativeActivityReader {
       if (record !== undefined) {
         const identity = this.cli.activity?.transcript?.identity;
         if (identity !== undefined) {
-          this.evictedRecords ??= new EvictedRecordIndex(identity.recordId);
+          this.evictedRecords ??= new EvictedRecordIndex(
+            identity.recordId,
+            this.onUnconfirmedIdentity,
+          );
           this.evictedRecords.add(id, record.location);
         }
         this.recentEvictedIds.add(id);
