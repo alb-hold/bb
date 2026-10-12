@@ -12,7 +12,9 @@ import type { HubTokenStore } from "./store.js";
 
 const THREAD_ROUTE_PREFIX = "scoped-route-";
 const LEGACY_THREAD_ROUTE_PREFIX = "thread-route-";
+const PROCESS_THREAD_ROUTE_PREFIX = "scoped-process-route-";
 const NESTED_ROUTE_PREFIX = "scoped-nested-route-";
+const PROCESS_NESTED_ROUTE_PREFIX = "scoped-process-nested-route-";
 const LEGACY_NESTED_ROUTE_PREFIX = "nested-route-";
 const ARCHIVED_THREAD_PREFIX = "archived-thread-";
 const ARCHIVE_FALLBACK_PREFIX = "archive-revocation-";
@@ -168,8 +170,12 @@ export class ThreadTokenStore {
     if (name.startsWith(ARCHIVED_THREAD_PREFIX)) return;
     if (
       name.startsWith(THREAD_ROUTE_PREFIX) ||
+      name.startsWith(PROCESS_THREAD_ROUTE_PREFIX) ||
       name.startsWith(LEGACY_THREAD_ROUTE_PREFIX)
     ) {
+      const processKey = name.startsWith(PROCESS_THREAD_ROUTE_PREFIX)
+        ? "process:"
+        : "";
       const record = await this.readCredential(file, readableRouteSchema);
       const archived =
         record === null ? false : await this.isArchived(record.threadId);
@@ -185,13 +191,20 @@ export class ThreadTokenStore {
         this.fileEpoch(name) === this.archiveEpoch(record.threadId) &&
         (await this.isLive(record, enrolled))
       ) {
-        this.routes.set(this.key(record, record.hostTokenDigest), record);
+        this.routes.set(
+          `${processKey}${this.key(record, record.hostTokenDigest)}`,
+          record,
+        );
         this.tokenIndex.set(record.tokenDigest, record);
       } else await fs.rm(file, { force: true });
     } else if (
       name.startsWith(NESTED_ROUTE_PREFIX) ||
+      name.startsWith(PROCESS_NESTED_ROUTE_PREFIX) ||
       name.startsWith(LEGACY_NESTED_ROUTE_PREFIX)
     ) {
+      const processKey = name.startsWith(PROCESS_NESTED_ROUTE_PREFIX)
+        ? "process:"
+        : "";
       const record = await this.readCredential(file, readableNestedRouteSchema);
       const archived =
         record === null ? false : await this.isArchived(record.threadId);
@@ -208,7 +221,7 @@ export class ThreadTokenStore {
         (await this.isLive(record, enrolled))
       ) {
         this.nestedRoutes.set(
-          this.nestedKey(record, record.hostTokenDigest),
+          `${processKey}${this.nestedKey(record, record.hostTokenDigest)}`,
           record,
         );
         this.nestedTokenIndex.set(record.tokenDigest, record);
@@ -239,8 +252,7 @@ export class ThreadTokenStore {
         token,
         tokenDigest: digest(token),
       };
-      if (lifetime === "durable")
-        await this.persistCredential(this.file(record), record);
+      await this.persistCredential(this.file(record, lifetime), record);
       this.routes.set(key, record);
       this.tokenIndex.set(record.tokenDigest, record);
       await this.reclaimDead(record);
@@ -272,8 +284,7 @@ export class ThreadTokenStore {
         token,
         tokenDigest: digest(token),
       };
-      if (lifetime === "durable")
-        await this.persistCredential(this.nestedFile(record), record);
+      await this.persistCredential(this.nestedFile(record, lifetime), record);
       this.nestedRoutes.set(key, record);
       this.nestedTokenIndex.set(record.tokenDigest, record);
       await this.reclaimDead(record);
@@ -655,8 +666,10 @@ export class ThreadTokenStore {
     for (const name of names) {
       if (
         !name.startsWith(THREAD_ROUTE_PREFIX) &&
+        !name.startsWith(PROCESS_THREAD_ROUTE_PREFIX) &&
         !name.startsWith(LEGACY_THREAD_ROUTE_PREFIX) &&
         !name.startsWith(NESTED_ROUTE_PREFIX) &&
+        !name.startsWith(PROCESS_NESTED_ROUTE_PREFIX) &&
         !name.startsWith(LEGACY_NESTED_ROUTE_PREFIX)
       )
         continue;
@@ -671,8 +684,10 @@ export class ThreadTokenStore {
     for (const name of names) {
       if (
         !name.startsWith(THREAD_ROUTE_PREFIX) &&
+        !name.startsWith(PROCESS_THREAD_ROUTE_PREFIX) &&
         !name.startsWith(LEGACY_THREAD_ROUTE_PREFIX) &&
         !name.startsWith(NESTED_ROUTE_PREFIX) &&
+        !name.startsWith(PROCESS_NESTED_ROUTE_PREFIX) &&
         !name.startsWith(LEGACY_NESTED_ROUTE_PREFIX)
       )
         continue;
@@ -688,6 +703,9 @@ export class ThreadTokenStore {
   ): Promise<void> {
     await Promise.all([
       this.removeCredentialFile(this.nestedFileAtEpoch(route, epoch)),
+      this.removeCredentialFile(
+        this.nestedFileAtEpoch(route, epoch, "process"),
+      ),
       this.removeCredentialFile(this.legacyNestedFile(route)),
     ]);
   }
@@ -705,17 +723,25 @@ export class ThreadTokenStore {
     return `${route.hostId}-${route.provider}-${route.threadId}-${route.accountId ?? "automatic"}-${hostTokenDigest}`;
   }
 
-  private file(route: ThreadRoute & { hostTokenDigest: string }): string {
-    return this.fileAtEpoch(route, this.archiveEpoch(route.threadId));
+  private file(
+    route: ThreadRoute & { hostTokenDigest: string },
+    lifetime: "durable" | "process",
+  ): string {
+    return this.fileAtEpoch(route, this.archiveEpoch(route.threadId), lifetime);
   }
 
   private fileAtEpoch(
     route: ThreadRoute & { hostTokenDigest: string },
     epoch: number,
+    lifetime: "durable" | "process" = "durable",
   ): string {
+    const prefix =
+      lifetime === "process"
+        ? PROCESS_THREAD_ROUTE_PREFIX
+        : THREAD_ROUTE_PREFIX;
     return path.join(
       this.directory,
-      `${THREAD_ROUTE_PREFIX}${this.key(route, route.hostTokenDigest)}-v${epoch}.json`,
+      `${prefix}${this.key(route, route.hostTokenDigest)}-v${epoch}.json`,
     );
   }
 
@@ -725,6 +751,7 @@ export class ThreadTokenStore {
   ): Promise<void> {
     await Promise.all([
       this.removeCredentialFile(this.fileAtEpoch(route, epoch)),
+      this.removeCredentialFile(this.fileAtEpoch(route, epoch, "process")),
       this.removeCredentialFile(this.legacyFile(route)),
     ]);
   }
@@ -817,17 +844,29 @@ export class ThreadTokenStore {
     return `${route.hostId}-${route.threadId}-${hostTokenDigest}`;
   }
 
-  private nestedFile(route: NestedRoute & { hostTokenDigest: string }): string {
-    return this.nestedFileAtEpoch(route, this.archiveEpoch(route.threadId));
+  private nestedFile(
+    route: NestedRoute & { hostTokenDigest: string },
+    lifetime: "durable" | "process",
+  ): string {
+    return this.nestedFileAtEpoch(
+      route,
+      this.archiveEpoch(route.threadId),
+      lifetime,
+    );
   }
 
   private nestedFileAtEpoch(
     route: NestedRoute & { hostTokenDigest: string },
     epoch: number,
+    lifetime: "durable" | "process" = "durable",
   ): string {
+    const prefix =
+      lifetime === "process"
+        ? PROCESS_NESTED_ROUTE_PREFIX
+        : NESTED_ROUTE_PREFIX;
     return path.join(
       this.directory,
-      `${NESTED_ROUTE_PREFIX}${this.nestedKey(route, route.hostTokenDigest)}-v${epoch}.json`,
+      `${prefix}${this.nestedKey(route, route.hostTokenDigest)}-v${epoch}.json`,
     );
   }
 

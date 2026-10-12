@@ -40,14 +40,32 @@ async function fixture() {
   };
 }
 
-it("keeps process credentials scoped, revocable, and absent after a restart", async () => {
-  const { directory, hosts, threads, route, hostToken } = await fixture();
-  const token = await threads.forThread(route, hostToken, "process");
-  const nested = await threads.forNested(
-    { hostId: route.hostId, threadId: route.threadId },
-    hostToken,
+async function processFixture() {
+  const context = await fixture();
+  const token = await context.threads.forThread(
+    context.route,
+    context.hostToken,
     "process",
   );
+  const nested = await context.threads.forNested(
+    { hostId: context.route.hostId, threadId: context.route.threadId },
+    context.hostToken,
+    "process",
+  );
+  const restart = async () => {
+    const restarted = new ThreadTokenStore(context.directory, context.hosts);
+    await restarted.initialize([context.route.hostId]);
+    return restarted;
+  };
+  const processFiles = async () =>
+    (await fs.readdir(context.directory)).filter((name) =>
+      name.startsWith("scoped-process-"),
+    );
+  return { ...context, token, nested, restart, processFiles };
+}
+
+it("keeps process credentials scoped and revocable", async () => {
+  const { threads, route, hostToken, token, nested } = await processFixture();
   expect((await threads.forThread(route, hostToken, "process")) === token).toBe(
     true,
   );
@@ -57,15 +75,71 @@ it("keeps process credentials scoped, revocable, and absent after a restart", as
     hostId: route.hostId,
     threadId: route.threadId,
   });
-  const restarted = new ThreadTokenStore(directory, hosts);
-  await restarted.initialize([route.hostId]);
-  expect(await restarted.authenticate(token)).toBeNull();
-  expect(await restarted.authenticateNested(nested)).toBeNull();
   await threads.removeThread(route.threadId);
   expect(await threads.authenticate(token)).toBeNull();
   expect(await threads.authenticateNested(nested)).toBeNull();
   await expect(threads.forThread(route, hostToken, "process")).rejects.toThrow(
     "archived thread",
+  );
+});
+
+it("lets a process credential survive a server restart as a digest-only record", async () => {
+  const { directory, route, token, nested, restart, processFiles } =
+    await processFixture();
+  expect(await processFiles()).toHaveLength(2);
+  for (const name of await fs.readdir(directory)) {
+    const text = await fs.readFile(path.join(directory, name), "utf8");
+    expect(text.includes(token)).toBe(false);
+    expect(text.includes(nested)).toBe(false);
+  }
+  const restarted = await restart();
+  expect(await restarted.authenticate(token, "claude")).toEqual(route);
+  expect(restarted.isProcessCredential(token)).toBe(true);
+  expect(await restarted.authenticateNested(nested)).toEqual({
+    hostId: route.hostId,
+    threadId: route.threadId,
+  });
+});
+
+it("revokes a surviving process credential on archive, sweep and relaunch", async () => {
+  const { route, hostToken, token, nested, restart, processFiles } =
+    await processFixture();
+  expect(await processFiles()).toHaveLength(2);
+  const archived = await restart();
+  await archived.removeThread(route.threadId);
+  expect(await archived.authenticate(token)).toBeNull();
+  expect(await archived.authenticateNested(nested)).toBeNull();
+  expect(await processFiles()).toEqual([]);
+  expect(await (await restart()).authenticate(token)).toBeNull();
+});
+
+it("removes a surviving process credential when the sweep finds the thread gone", async () => {
+  const { route, token, restart, processFiles } = await processFixture();
+  const swept = await restart();
+  expect(await swept.sweepThreads(async () => "gone")).toEqual({
+    checked: 1,
+    revoked: 1,
+    failed: 0,
+  });
+  expect(await swept.authenticate(token)).toBeNull();
+  expect(await processFiles()).toEqual([]);
+  expect(await (await restart()).authenticate(token)).toBeNull();
+  expect(route.threadId).toBe("thr_one");
+});
+
+it("replaces a surviving process credential when the thread is relaunched after a restart", async () => {
+  const { route, hostToken, token, restart, processFiles } =
+    await processFixture();
+  const restarted = await restart();
+  const relaunched = await restarted.forThread(route, hostToken, "process");
+  expect(relaunched === token).toBe(false);
+  expect(await restarted.authenticate(token)).toBeNull();
+  expect(await restarted.authenticate(relaunched, "claude")).toEqual(route);
+  expect(
+    (await processFiles()).filter((name) => !name.includes("nested")),
+  ).toHaveLength(1);
+  expect(await (await restart()).authenticate(relaunched, "claude")).toEqual(
+    route,
   );
 });
 

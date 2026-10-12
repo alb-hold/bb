@@ -391,6 +391,49 @@ describe("Explicit subscription routing", () => {
     expect(seen).toEqual(["sk-second", "sk-first", "sk-first"]);
   });
 
+  it("keeps a native CLI's pool credential working after the server restarts", async () => {
+    const { fixture, key, seen } = await twoSubscriptions(undefined, "native");
+    const send = async (host: typeof fixture.host) => {
+      const response = await host.harness.behavior.fetchHttp(
+        "POST",
+        "/v1/messages",
+        {
+          method: "POST",
+          headers: authHeaders(key),
+          body: JSON.stringify({
+            model: "claude-opus-4-1",
+            messages: [],
+            max_tokens: 1,
+          }),
+        },
+      );
+      await response.text();
+      return response.status;
+    };
+    expect(await send(fixture.host)).toBe(200);
+    const restarted = await fixture.host.harness.lifecycle.reload(
+      createAccountPoolPlugin({
+        now: () => 1_800_000_000_000,
+        usageUrl: EMPTY_USAGE_URL,
+        codexUsageUrl: EMPTY_USAGE_URL,
+      }),
+    );
+    const service = restarted.harness.behavior.runService("hub");
+    cleanups.push(async () => {
+      service.controller.abort();
+      await service.done;
+      await restarted.harness.lifecycle.dispose();
+    });
+    await vi.waitFor(async () => {
+      const status = statusSchema.parse(
+        await restarted.harness.behavior.callRpc("status.get", null),
+      );
+      expect(status.accepting).toBe(true);
+    });
+    expect(await send(restarted)).toBe(200);
+    expect(seen).toEqual(["sk-second", "sk-second"]);
+  });
+
   it("keeps native pool credentials out of persisted files while bridge credentials remain durable", async () => {
     const { fixture, request } = await twoSubscriptions();
     const entries = await fixture.host.harness.behavior.resolveProviderEnv(
