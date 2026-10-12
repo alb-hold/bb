@@ -7419,6 +7419,239 @@ describe("Account Pool plugin", () => {
         reason: "most headroom",
       });
     });
+
+    describe("conversation continuity across accounts", () => {
+      const CONVERSATION = {
+        model: "claude-opus-4-1",
+        metadata: { user_id: JSON.stringify({ session_id: "session-cont" }) },
+        messages: [
+          { role: "user", content: "first question" },
+          { role: "assistant", content: "first answer" },
+          { role: "user", content: "follow-up" },
+        ],
+      };
+
+      async function recordingPool(): Promise<{
+        fixture: Fixture;
+        second: AccountSummary;
+        received: Array<{ key: string; body: unknown }>;
+        send: (threadId: string, token?: string) => Promise<string>;
+      }> {
+        const received: Array<{ key: string; body: unknown }> = [];
+        const upstream = await startUpstream(async (request, response) => {
+          const raw = await readRequestBody(request);
+          received.push({
+            key: String(request.headers["x-api-key"]),
+            body: JSON.parse(raw.toString("utf8")),
+          });
+          response.writeHead(200, { "content-type": "application/json" });
+          response.end("{}");
+        });
+        cleanups.push(upstream.close);
+        const fixture = await createFixture({
+          upstreamUrl: upstream.url,
+          apiKey: "sk-first",
+          options: { now: () => now },
+        });
+        const second = await addApiAccount(fixture, "sk-second", 200);
+        return {
+          fixture,
+          second,
+          received,
+          async send(threadId, presented) {
+            const token =
+              presented ??
+              (await resolveToken(fixture.host, "host-one", threadId));
+            const response = await fixture.host.harness.behavior.fetchHttp(
+              "POST",
+              "/v1/messages",
+              {
+                headers: authHeaders(token),
+                body: JSON.stringify(CONVERSATION),
+              },
+            );
+            expect(response.status).toBe(200);
+            await response.text();
+            return token;
+          },
+        };
+      }
+
+      it("carries the same history and session to the newly selected account while the running turn keeps its own", async () => {
+        const pool = await recordingPool();
+        pool.fixture.host.harness.sdk.stub(
+          "threads.get",
+          async ({ threadId }) =>
+            makeThreadResponse({
+              id: threadId,
+              providerId: "claude-code",
+              status: "idle",
+            }),
+        );
+        pool.fixture.host.harness.sdk.stub(
+          "threads.queuedMessages.list",
+          async () => [],
+        );
+        const firstToken = await pool.send("thr_contselect");
+        await pool.fixture.host.harness.behavior.callRpc(
+          "routing.selection.set",
+          {
+            threadId: "thr_contselect",
+            provider: "claude",
+            accountId: pool.second.id,
+          },
+        );
+        const secondToken = await pool.send("thr_contselect");
+        await pool.send("thr_contselect", firstToken);
+
+        expect(secondToken).not.toBe(firstToken);
+        expect(pool.received.map(({ key }) => key)).toEqual([
+          "sk-first",
+          "sk-second",
+          "sk-first",
+        ]);
+        for (const request of pool.received) {
+          expect(request.body).toEqual(CONVERSATION);
+        }
+      });
+
+      it("keeps the session and full history when Automatic moves a conversation off an account that crossed its limit", async () => {
+        const pool = await recordingPool();
+        await pool.send("thr_cont_auto");
+        setQuota(pool.fixture, pool.fixture.account.id, {
+          sevenDayUtilization: 1,
+          sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+        });
+        setQuota(pool.fixture, pool.second.id, {
+          sevenDayUtilization: 0.1,
+          sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+        });
+        await pool.send("thr_cont_auto");
+
+        expect(pool.received.map(({ key }) => key)).toEqual([
+          "sk-first",
+          "sk-second",
+        ]);
+        for (const request of pool.received) {
+          expect(request.body).toEqual(CONVERSATION);
+        }
+      });
+
+      it("makes a newly added account eligible for the next new conversation without a reload", async () => {
+        const pool = await recordingPool();
+        setQuota(pool.fixture, pool.fixture.account.id, {
+          sevenDayUtilization: 0.9,
+          sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+        });
+        setQuota(pool.fixture, pool.second.id, {
+          sevenDayUtilization: 0.95,
+          sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+        });
+        await pool.send("thr_before_add");
+        const added = await addApiAccount(pool.fixture, "sk-new", 300);
+        setQuota(pool.fixture, added.id, {
+          sevenDayUtilization: 0.05,
+          sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+        });
+        await pool.send("thr_after_add");
+
+        expect(pool.received.map(({ key }) => key)).toEqual([
+          "sk-first",
+          "sk-new",
+        ]);
+      });
+    });
+
+    it("routes Automatic conversations from stored usage without probing the provider per request", async () => {
+      const usageCalls = new Map<string, number>();
+      const served: Array<string | undefined> = [];
+      const upstream = await startUpstream(async (request, response) => {
+        if (request.url === "/usage") {
+          const authorization = String(request.headers.authorization);
+          usageCalls.set(
+            authorization,
+            (usageCalls.get(authorization) ?? 0) + 1,
+          );
+          response.writeHead(200, { "content-type": "application/json" });
+          response.end(
+            JSON.stringify({
+              five_hour: { utilization: 5, resets_at: "4102444800" },
+              seven_day: {
+                utilization: authorization === "Bearer oauth-heavy" ? 90 : 10,
+                resets_at: "4102448400",
+              },
+            }),
+          );
+          return;
+        }
+        if (request.url === "/profile") {
+          response.writeHead(200, { "content-type": "application/json" });
+          response.end(
+            JSON.stringify({
+              account: { uuid: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+            }),
+          );
+          return;
+        }
+        served.push(request.headers.authorization);
+        await readRequestBody(request);
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end("{}");
+      });
+      cleanups.push(upstream.close);
+      const imports = [
+        importedCredentials({ accessToken: "oauth-heavy", accountUuid: null }),
+        importedCredentials({
+          accessToken: "oauth-light",
+          accountUuid: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        }),
+      ];
+      let importIndex = 0;
+      const fixture = await createFixture({
+        upstreamUrl: upstream.url,
+        source: "import",
+        options: {
+          usageUrl: `${upstream.url}/usage`,
+          oauthProfileUrl: `${upstream.url}/profile`,
+          importCredentials: async () => {
+            const imported = imports[importIndex];
+            importIndex += 1;
+            if (imported === undefined) throw new Error("No import fixture.");
+            return imported;
+          },
+        },
+      });
+      await fixture.host.harness.behavior.callRpc("account.add", {
+        provider: "claude",
+        source: { kind: "import" },
+        label: "light",
+        priority: 100,
+      });
+      const probesAfterSetup = new Map(usageCalls);
+      expect(probesAfterSetup.get("Bearer oauth-heavy")).toBe(1);
+      expect(probesAfterSetup.get("Bearer oauth-light")).toBe(1);
+
+      for (const threadId of ["thr_stored_a", "thr_stored_b", "thr_stored_c"]) {
+        const token = await resolveToken(fixture.host, "host-one", threadId);
+        const response = await fixture.host.harness.behavior.fetchHttp(
+          "POST",
+          "/v1/messages",
+          {
+            headers: authHeaders(token),
+            body: JSON.stringify({ model: "claude-opus-4-1" }),
+          },
+        );
+        expect(response.status).toBe(200);
+        await response.text();
+      }
+
+      expect(served).toEqual([
+        "Bearer oauth-light",
+        "Bearer oauth-light",
+        "Bearer oauth-light",
+      ]);
+      expect(usageCalls).toEqual(probesAfterSetup);
+    });
   });
 });
 
