@@ -46,6 +46,7 @@ import {
   handleHostSessionOpened,
 } from "../../src/internal/session-owner-side-effects.js";
 import {
+  onDaemonSocketClose,
   onDaemonSocketMessage,
   onDaemonSocketOpen,
 } from "../../src/ws/daemon-protocol.js";
@@ -1657,7 +1658,7 @@ describe("public terminal routes", () => {
     ).toEqual([2]);
   });
 
-  it("closes the socket of a closed daemon session that sends output for an unwatched terminal and stops refreshing its liveness", async () => {
+  it("evicts a closed daemon session from the hub when it sends output for an unwatched terminal", async () => {
     const fixture = await createTerminalRouteFixture();
     harnesses.push(fixture.harness);
     const stored = createTerminalSession(fixture.harness.db, {
@@ -1671,6 +1672,20 @@ describe("public terminal routes", () => {
       threadId: fixture.thread.id,
       title: "Terminal 1",
     });
+    const closeRequests: [number | undefined, string | undefined][] = [];
+    const evictingSocket: FakeDaemonSocket = {
+      close: vi.fn((code?: number, reason?: string) => {
+        closeRequests.push([code, reason]);
+        onDaemonSocketClose(fixture.harness.deps, fixture.session.id);
+      }),
+      send: vi.fn(),
+      sentMessages: [],
+    };
+    fixture.harness.hub.registerDaemon(
+      fixture.session.id,
+      fixture.host.id,
+      evictingSocket,
+    );
     closeSession(
       fixture.harness.deps.db,
       fixture.harness.deps.hub,
@@ -1696,13 +1711,20 @@ describe("public terminal routes", () => {
         chunk: { seq: 0, dataBase64: Buffer.from("late").toString("base64") },
       }),
       sessionId: fixture.session.id,
-      socket: fixture.socket,
+      socket: evictingSocket,
     });
 
-    expect(fixture.socket.close).toHaveBeenCalledWith(1008, "inactive-session");
-    expect(fixture.harness.hub.takeSilentDaemonSessionIds(1)).toEqual([
-      fixture.session.id,
-    ]);
+    expect(closeRequests).toEqual([[1008, "inactive-session"]]);
+    expect(fixture.harness.hub.hasDaemonForHost(fixture.host.id)).toBe(false);
+    expect(
+      fixture.harness.hub.sendDaemonSessionMessage(fixture.session.id, {
+        type: "heartbeat-ack",
+      }),
+    ).toBe(false);
+    expect(evictingSocket.sentMessages).toEqual([]);
+    expect(fixture.harness.hub.takeSilentDaemonSessionIds(1)).toEqual([]);
+    expect(fixture.harness.hub.takeSilentDaemonSessionIds(1)).toEqual([]);
+    expect(fixture.harness.hub.hasDaemonForHost(fixture.host.id)).toBe(false);
     for (const source of preparedSources) {
       expect(source).not.toMatch(/\bterminal_sessions\b/u);
     }
