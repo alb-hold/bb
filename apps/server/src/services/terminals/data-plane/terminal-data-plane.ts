@@ -133,9 +133,16 @@ export function startTerminalDataPlane(
     },
   });
   supervisor.start();
-  const unsubscribe = options.daemons.subscribe((change) =>
-    dataSockets.handleSessionChange(change),
-  );
+  const unsubscribe = options.daemons.subscribe((change) => {
+    try {
+      dataSockets.handleSessionChange(change);
+    } catch (error) {
+      options.logger.warn(
+        { err: error, sessionId: change.sessionId },
+        "Terminal data plane could not follow a daemon session change",
+      );
+    }
+  });
   return {
     get attachedSocketCount() {
       return router.attachedSocketCount;

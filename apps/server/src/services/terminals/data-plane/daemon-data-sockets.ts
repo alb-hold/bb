@@ -116,13 +116,13 @@ export class DaemonDataSockets {
       routedTerminalIds: new Set(),
     });
     if (this.options.transport.isReady) {
-      void this.negotiate(change.sessionId);
+      this.startNegotiation(change.sessionId);
     }
   }
 
   handleChildReady(): void {
     for (const daemonSessionId of this.sessions.keys()) {
-      void this.negotiate(daemonSessionId);
+      this.startNegotiation(daemonSessionId);
     }
   }
 
@@ -233,9 +233,18 @@ export class DaemonDataSockets {
     entry.attempts += 1;
     entry.retryTimer = setTimeout(() => {
       entry.retryTimer = null;
-      void this.negotiate(daemonSessionId);
+      this.startNegotiation(daemonSessionId);
     }, delay);
     entry.retryTimer.unref();
+  }
+
+  private startNegotiation(daemonSessionId: string): void {
+    this.negotiate(daemonSessionId).catch((error: unknown) => {
+      this.options.logger.warn(
+        { daemonSessionId, err: error },
+        "Terminal data socket negotiation failed; terminals stay on the server connection",
+      );
+    });
   }
 
   private async negotiate(daemonSessionId: string): Promise<void> {
