@@ -43,22 +43,48 @@ function setupVisibility(
     "IntersectionObserver",
     intersectionSupported
       ? class {
-          constructor(callback: IntersectionObserverCallback) {
-            intersect = (visible: boolean, bounds?: DOMRect) =>
+          constructor(
+            callback: IntersectionObserverCallback,
+            options?: IntersectionObserverInit,
+          ) {
+            const thresholds = Array.isArray(options?.threshold)
+              ? options.threshold
+              : [options?.threshold ?? 0];
+            let previousThresholdIndex = -1;
+            let previousIntersecting: boolean | undefined;
+            intersect = (visible: boolean, bounds?: DOMRect) => {
+              const intersectionRect = visible
+                ? (bounds ?? box)
+                : new DOMRect();
+              const ratio =
+                (intersectionRect.width * intersectionRect.height) /
+                (box.width * box.height);
+              const thresholdIndex = thresholds.findIndex(
+                (threshold) => threshold > ratio,
+              );
+              if (
+                thresholdIndex === previousThresholdIndex &&
+                visible === previousIntersecting
+              ) {
+                return;
+              }
+              previousThresholdIndex = thresholdIndex;
+              previousIntersecting = visible;
               callback(
                 [
                   {
                     target: root,
                     isIntersecting: visible,
                     boundingClientRect: box,
-                    intersectionRect: visible ? (bounds ?? box) : new DOMRect(),
-                    intersectionRatio: visible && bounds === undefined ? 1 : 0,
+                    intersectionRect,
+                    intersectionRatio: ratio,
                     rootBounds: null,
                     time: 0,
                   },
                 ],
                 this as unknown as IntersectionObserver,
               );
+            };
           }
           observe() {}
           disconnect = disconnectIntersection;

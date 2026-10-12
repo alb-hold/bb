@@ -268,16 +268,19 @@ export function observeTerminalWebglVisibility({
   const resizeObserver = new ResizeObserver(sync);
   const intersectionObserver = !supportsIntersectionObserver
     ? null
-    : new IntersectionObserver((entries) => {
-        const entry = entries.find((entry) => entry.target === root);
-        if (entry !== undefined) {
-          intersects =
-            entry.isIntersecting &&
-            entry.intersectionRect.width > 0 &&
-            entry.intersectionRect.height > 0;
-        }
-        sync();
-      });
+    : new IntersectionObserver(
+        (entries) => {
+          const entry = entries.find((entry) => entry.target === root);
+          if (entry !== undefined) {
+            intersects =
+              entry.isIntersecting &&
+              entry.intersectionRect.width > 0 &&
+              entry.intersectionRect.height > 0;
+          }
+          sync();
+        },
+        { threshold: [0, Number.EPSILON] },
+      );
   resizeObserver.observe(root);
   intersectionObserver?.observe(root);
   if (intersectionObserver === null) {
