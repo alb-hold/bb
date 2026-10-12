@@ -525,7 +525,7 @@ export function requireNativeTerminalToolCredential(
   deps: Pick<AppDeps, "db" | "terminalSessions">,
   args: { authorization: string | undefined; threadId: string },
 ): void {
-  const record = requireNativeTerminalThreadRecord(deps, args.threadId);
+  const record = getNativeTerminalThread(deps.db, args.threadId);
   const match = /^Bearer ([A-Za-z0-9_-]+)$/u.exec(args.authorization ?? "");
   const stored = getNativeTerminalToolCredential(deps.db, args.threadId);
   const supplied = hashToolCredential(match?.[1] ?? "");
@@ -533,6 +533,7 @@ export function requireNativeTerminalToolCredential(
   const valid =
     match !== null &&
     stored !== null &&
+    record !== null &&
     expected.length === supplied.length &&
     timingSafeEqual(expected, supplied) &&
     stored.terminalSessionId === record.terminalSessionId;
@@ -576,8 +577,8 @@ export async function resolveNativeTerminalAgentTools(
   ThreadEnvironmentLookupResult & { tools: NativeTerminalAgentTools["tools"] }
 > {
   const { threadId } = args;
-  const lookup = requireLiveNativeTerminalToolThread(deps, threadId);
   requireNativeTerminalToolCredential(deps, args);
+  const lookup = requireLiveNativeTerminalToolThread(deps, threadId);
   const record = requireNativeTerminalThreadRecord(deps, threadId);
   const tools = await resolveThreadDynamicTools(deps, {
     environment: lookup.environment,

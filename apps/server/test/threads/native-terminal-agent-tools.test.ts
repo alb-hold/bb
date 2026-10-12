@@ -469,100 +469,113 @@ describe("native terminal agent tools", () => {
     ).toBe(200);
   });
 
-  it("rejects the credential once its terminal exited", async () => {
+  it("answers every unauthenticated caller with the same 401 whatever the thread's state", async () => {
     const fixture = await createFixture();
-    const threadId = await createNativeThread(fixture);
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
-      hostId: fixture.hostId,
-      sessionId: fixture.sessionId,
-      message: {
-        type: "terminal.exited",
-        terminalId: fixture.terminalOpens[0]?.terminalId ?? "",
-        exitCode: 0,
-        closeReason: "process-exit",
-      },
-    });
-    const response = await fixture.harness.app.request(
-      `/api/v1/threads/${threadId}/native-terminal/agent-tools/echo_context/call`,
-      {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          ...authHeaders(fixture, threadId),
-        },
-        body: JSON.stringify({ callId: "c", arguments: {} }),
-      },
-    );
-    expect([401, 409]).toContain(response.status);
-  });
-
-  it("answers 404 for a chat thread", async () => {
-    const fixture = await createFixture();
+    const live = await createNativeThread(fixture);
+    const archived = await createNativeThread(fixture);
+    const exited = await createNativeThread(fixture);
+    const foreign = await createNativeThread(fixture);
     const chat = seedThread(fixture.harness.deps, {
       projectId: fixture.projectId,
       environmentId: fixture.environmentId,
       status: "idle",
     });
-    const list = await fixture.harness.app.request(
-      `/api/v1/threads/${chat.id}/native-terminal/agent-tools`,
-    );
-    expect(list.status).toBe(404);
-    const call = await fixture.harness.app.request(
-      `/api/v1/threads/${chat.id}/native-terminal/agent-tools/echo_context/call`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ callId: "c", arguments: {} }),
-      },
-    );
-    expect(call.status).toBe(404);
-  });
-
-  it("answers 409 once the terminal exited or the thread is archived", async () => {
-    const fixture = await createFixture();
-    const threadId = await createNativeThread(fixture);
-    const call = () =>
-      fixture.harness.app.request(
-        `/api/v1/threads/${threadId}/native-terminal/agent-tools/echo_context/call`,
-        {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            ...authHeaders(fixture, threadId),
-          },
-          body: JSON.stringify({ callId: "c", arguments: {} }),
-        },
-      );
-    expect((await call()).status).toBe(200);
     fixture.harness.db
       .update(threads)
       .set({ archivedAt: Date.now() })
-      .where(eq(threads.id, threadId))
-      .run();
-    expect((await call()).status).toBe(409);
-    fixture.harness.db
-      .update(threads)
-      .set({ archivedAt: null })
-      .where(eq(threads.id, threadId))
+      .where(eq(threads.id, archived))
       .run();
     fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.hostId,
       sessionId: fixture.sessionId,
       message: {
         type: "terminal.exited",
-        terminalId: fixture.terminalOpens[0]?.terminalId ?? "",
+        terminalId:
+          fixture.terminalOpens.find(
+            (open) => open.credential === fixture.credentials.get(exited),
+          )?.terminalId ?? "",
         exitCode: 0,
         closeReason: "process-exit",
       },
     });
-    const exited = await call();
-    expect(exited.status).toBe(409);
+    const invocations = () =>
+      (globalThis as { __nativeToolCalls?: number }).__nativeToolCalls ?? 0;
+    const before = invocations();
+    const targets: Record<string, string> = {
+      "missing thread": "thr_doesnotexist",
+      "chat thread": chat.id,
+      "archived native": archived,
+      "exited native": exited,
+      "live native": live,
+    };
+    const credentials: Record<string, Record<string, string>> = {
+      "no credential": {},
+      "wrong credential": { authorization: "Bearer not-the-credential" },
+      "foreign credential": {
+        authorization: `Bearer ${fixture.credentials.get(foreign) ?? ""}`,
+      },
+    };
+    for (const [targetName, id] of Object.entries(targets)) {
+      for (const [credentialName, headers] of Object.entries(credentials)) {
+        const base = `/api/v1/threads/${id}/native-terminal/agent-tools`;
+        const get = await fixture.harness.app.request(base, { headers });
+        expect(get.status, `GET ${targetName} ${credentialName}`).toBe(401);
+        const post = await fixture.harness.app.request(
+          `${base}/echo_context/call`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json", ...headers },
+            body: JSON.stringify({ callId: "c", arguments: {} }),
+          },
+        );
+        expect(post.status, `POST ${targetName} ${credentialName}`).toBe(401);
+        expect(await readJson(post)).toEqual({
+          code: "native_terminal_credential_invalid",
+          message:
+            "A valid credential for this thread's running native terminal is required",
+        });
+      }
+    }
+    expect(invocations()).toBe(before);
+
+    const validRows: [string, string, number][] = [
+      ["live native", live, 200],
+      ["archived native", archived, 409],
+      ["exited native", exited, 409],
+    ];
+    for (const [name, id, status] of validRows) {
+      const base = `/api/v1/threads/${id}/native-terminal/agent-tools`;
+      const headers = authHeaders(fixture, id);
+      expect(
+        (await fixture.harness.app.request(base, { headers })).status,
+        `GET valid ${name}`,
+      ).toBe(status);
+      expect(
+        (
+          await fixture.harness.app.request(`${base}/echo_context/call`, {
+            method: "POST",
+            headers: { "content-type": "application/json", ...headers },
+            body: JSON.stringify({ callId: "c", arguments: {} }),
+          })
+        ).status,
+        `POST valid ${name}`,
+      ).toBe(status);
+    }
     expect(
-      await fixture.harness.app.request(
-        `/api/v1/threads/${threadId}/native-terminal/agent-tools`,
-        { headers: authHeaders(fixture, threadId) },
-      ),
-    ).toHaveProperty("status", 409);
+      (
+        await fixture.harness.app.request(
+          `/api/v1/threads/${live}/native-terminal/agent-tools/unselected_tool/call`,
+          {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              ...authHeaders(fixture, live),
+            },
+            body: JSON.stringify({ callId: "c", arguments: {} }),
+          },
+        )
+      ).status,
+    ).toBe(404);
   });
 
   it("applies the public API origin guard to both routes", async () => {
