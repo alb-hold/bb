@@ -1,12 +1,12 @@
 import { spawn as spawnProcess } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import http from "node:http";
 import type net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 import { pathToFileURL } from "node:url";
 import { spawn as spawnPty } from "node-pty";
-import { BbHttpError } from "@bb/sdk";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   NativeHolderFrame,
@@ -20,7 +20,11 @@ import {
   waitForNativeHolder,
   type NativeHolderProcess,
 } from "../native-holder.js";
-import { checkNativeTerminalClosedForGood } from "../native-closed-for-good.js";
+import { createCliBbSdk } from "../client.js";
+import {
+  NativeBbUnreachableError,
+  checkNativeTerminalClosedForGood,
+} from "../native-closed-for-good.js";
 
 const tempDirs: string[] = [];
 
@@ -186,27 +190,6 @@ describe("native terminal holder", () => {
     await second.waitFor(new RegExp(`got:back:${pid}`, "u"));
     second.type("\u0004");
     await expect(held).resolves.toBe(7);
-  });
-
-  it("still reaps a detached CLI when bb answers with errors", async () => {
-    const socketPath = socketIn();
-    const held = startHolder(socketPath, ECHO_LOOP, 300, () =>
-      checkNativeTerminalClosedForGood(() =>
-        Promise.reject(
-          new BbHttpError({
-            body: null,
-            code: null,
-            message: "x",
-            status: 500,
-          }),
-        ),
-      ),
-    );
-    const client = await attach(socketPath);
-    await client.waitFor(/started:/u);
-    client.socket.destroy();
-    const code = await held;
-    expect(code).not.toBe(7);
   });
 
   it("never reaps the CLI while bb is unreachable, and reaps it once bb answers and nothing reattaches", async () => {
@@ -445,28 +428,79 @@ describe("native terminal closed for good", () => {
 });
 
 describe("checking whether bb closed a native terminal for good", () => {
-  const httpError = (status: number) =>
-    new BbHttpError({ body: null, code: null, message: "x", status });
+  const servers: http.Server[] = [];
+  afterEach(async () => {
+    await Promise.all(
+      servers
+        .splice(0)
+        .map((server) => new Promise((resolve) => server.close(resolve))),
+    );
+  });
+
+  async function bbAnswering(status: number, body: string): Promise<string> {
+    const server = http.createServer((_request, response) => {
+      response.writeHead(status, { "content-type": "application/json" });
+      response.end(body);
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve),
+    );
+    const address = server.address();
+    if (address === null || typeof address === "string") {
+      throw new Error("server has no port");
+    }
+    return `http://127.0.0.1:${address.port}`;
+  }
+
+  async function closedPort(): Promise<string> {
+    const url = await bbAnswering(200, "{}");
+    const server = servers.pop();
+    await new Promise((resolve) => server?.close(resolve));
+    return url;
+  }
+
+  const check = (baseUrl: string) =>
+    checkNativeTerminalClosedForGood(() =>
+      createCliBbSdk(baseUrl).nativeTerminals.get({ threadId: "thr_x" }),
+    );
 
   it("treats a missing thread as closed for good", async () => {
     await expect(
-      checkNativeTerminalClosedForGood(() => Promise.reject(httpError(404))),
+      check(
+        await bbAnswering(404, '{"error":{"code":"not_found","message":"x"}}'),
+      ),
     ).resolves.toBe(true);
   });
 
-  it("counts a server error as bb reachable and the terminal not closed", async () => {
+  it("counts a server error as bb answering and the terminal not closed", async () => {
     await expect(
-      checkNativeTerminalClosedForGood(() => Promise.reject(httpError(500))),
+      check(
+        await bbAnswering(500, '{"error":{"code":"internal","message":"x"}}'),
+      ),
     ).resolves.toBe(false);
   });
 
-  it("reports bb unreachable when the request never gets an answer", async () => {
-    const refused = new Error(
-      "Cannot connect to BB server. Ensure it is running and BB_SERVER_URL is correct.",
+  it("counts a response bb sent but the CLI could not read as bb answering", async () => {
+    await expect(check(await bbAnswering(200, "not json"))).resolves.toBe(
+      false,
     );
-    await expect(
-      checkNativeTerminalClosedForGood(() => Promise.reject(refused)),
-    ).rejects.toBe(refused);
+  });
+
+  it("reports bb unreachable only when the request never gets an answer", async () => {
+    await expect(check(await closedPort())).rejects.toBeInstanceOf(
+      NativeBbUnreachableError,
+    );
+  });
+
+  it("still reaps a detached CLI when bb keeps answering with unreadable responses", async () => {
+    const baseUrl = await bbAnswering(200, "not json");
+    const socketPath = socketIn();
+    const held = startHolder(socketPath, ECHO_LOOP, 300, () => check(baseUrl));
+    const client = await attach(socketPath);
+    await client.waitFor(/started:/u);
+    client.socket.destroy();
+    expect(await held).not.toBe(7);
   });
 });
 
