@@ -513,6 +513,63 @@ describe("provider declaration fields renamed in SDK 0.4.16", () => {
       ).not.toHaveProperty("experimental_nativeTerminal");
     });
 
+    it("accepts provisional hooks and transcript identity with boolean outcomes", () => {
+      const activity = {
+        hooks: {
+          args: ["--settings", "{settings}"],
+          working: ["UserPromptSubmit"],
+          idle: [],
+          pending: ["Stop"],
+          promptField: "prompt",
+          turnId: "prompt_id",
+        },
+        transcript: {
+          identity: {
+            recordId: "uuid",
+            parentId: "parentUuid",
+            turnId: "promptId",
+            timestamp: "timestamp",
+          },
+          working: [{ equals: { type: "assistant", isSidechain: false } }],
+          idle: [{ equals: { type: "system", hasOutput: false } }],
+          prompt: [],
+        },
+      };
+      const normalized = validatePluginProviderDeclaration(
+        declaration({ experimental_nativeTerminal: { ...assigned, activity } }),
+      );
+      expect(normalized.experimental_nativeTerminal?.activity).toEqual(
+        activity,
+      );
+      for (const identity of [
+        { recordId: "uuid", parentId: "..parent", turnId: "promptId" },
+        {
+          recordId: "uuid",
+          parentId: "parentUuid",
+          turnId: "promptId",
+          timestamp: "..time",
+        },
+        {
+          recordId: "uuid",
+          parentId: "parentUuid",
+          turnId: undefined as unknown as string,
+        },
+      ]) {
+        expect(() =>
+          validatePluginProviderDeclaration({
+            ...declaration(),
+            experimental_nativeTerminal: {
+              ...assigned,
+              activity: {
+                ...activity,
+                transcript: { ...activity.transcript, identity },
+              },
+            },
+          }),
+        ).toThrow(/activity\.transcript\.identity/u);
+      }
+    });
+
     it.each([
       [
         "a token in launch argv",

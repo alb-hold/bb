@@ -43,7 +43,9 @@ export function nativeActivityHookSettings(
 ): string {
   const file = shellQuote(eventsFile);
   const command = `{ cat; echo; } >> ${file} 2>/dev/null; exit 0`;
-  const entries = [...new Set([...hooks.working, ...hooks.idle])].map(
+  const entries = [
+    ...new Set([...hooks.working, ...hooks.idle, ...(hooks.pending ?? [])]),
+  ].map(
     (event) => [event, [{ hooks: [{ type: "command", command }] }]] as const,
   );
   return JSON.stringify({ hooks: Object.fromEntries(entries) });
@@ -112,12 +114,20 @@ export function fileSize(filePath: string): number | null {
   }
 }
 
+export interface JsonlRecordLocation {
+  offset: number;
+  length: number;
+}
+
 export class JsonlTail {
-  private partial = "";
+  private partial: Buffer = Buffer.alloc(0);
 
   constructor(private offset: number) {}
 
-  readRecords(filePath: string): unknown[] {
+  readRecords(
+    filePath: string,
+    accept?: (record: unknown, location: JsonlRecordLocation) => void,
+  ): unknown[] {
     let size: number;
     try {
       size = statSync(filePath).size;
@@ -126,7 +136,7 @@ export class JsonlTail {
     }
     if (size < this.offset) {
       this.offset = 0;
-      this.partial = "";
+      this.partial = Buffer.alloc(0);
     }
     if (size === this.offset) return [];
     const length = Math.min(size - this.offset, MAX_READ_BYTES);
@@ -141,20 +151,30 @@ export class JsonlTail {
     } finally {
       if (descriptor !== null) closeSync(descriptor);
     }
+    const startOffset = this.offset - this.partial.length;
     this.offset += read;
-    const lines = (
-      this.partial + buffer.subarray(0, read).toString("utf8")
-    ).split("\n");
-    this.partial = lines.pop() ?? "";
+    const contents =
+      this.partial.length === 0
+        ? buffer.subarray(0, read)
+        : Buffer.concat([this.partial, buffer.subarray(0, read)]);
     const records: unknown[] = [];
-    for (const line of lines) {
+    let start = 0;
+    let end: number;
+    while ((end = contents.indexOf(10, start)) !== -1) {
+      const line = contents.subarray(start, end).toString("utf8");
+      const location = { offset: startOffset + start, length: end - start };
+      start = end + 1;
       if (line.trim().length === 0) continue;
+      let record: unknown;
       try {
-        records.push(JSON.parse(line));
+        record = JSON.parse(line);
       } catch {
         continue;
       }
+      if (accept === undefined) records.push(record);
+      else accept(record, location);
     }
+    this.partial = Buffer.from(contents.subarray(start));
     return records;
   }
 }
