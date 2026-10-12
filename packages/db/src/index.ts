@@ -21,7 +21,7 @@ export {
   recordThreadSpawner,
 } from "./fork-thread-spawners.js";
 export {
-  consumeNativeTerminalThreadInitialPrompt,
+  consumeNativeTerminalThreadLaunchInput,
   createNativeTerminalThread,
   deleteNativeTerminalThread,
   findNativeTerminalThreadBySession,

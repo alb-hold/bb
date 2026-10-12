@@ -26,11 +26,19 @@ export type OpenNativeTerminalRequest = z.infer<
   typeof openNativeTerminalRequestSchema
 >;
 
+export const nativeTerminalLaunchQuerySchema = z.object({
+  images: z.literal("argv").optional(),
+});
+export type NativeTerminalLaunchQuery = z.infer<
+  typeof nativeTerminalLaunchQuerySchema
+>;
+
 export const nativeTerminalLaunchSpecSchema = z.object({
   threadId: z.string().min(1),
   cli: providerNativeTerminalSchema,
   nativeSessionId: z.string().min(1).nullable(),
   initialPrompt: z.string().min(1).nullable(),
+  initialImages: z.array(z.string().min(1)).optional(),
   model: z.string().min(1).nullable(),
 });
 export type NativeTerminalLaunchSpec = z.infer<

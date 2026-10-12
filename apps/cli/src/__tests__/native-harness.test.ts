@@ -36,6 +36,7 @@ const ASSIGNED_CLI: ProviderNativeTerminal = {
   executable: "claude",
   launchArgs: [],
   modelArgs: ["--model", "{model}"],
+  imageArgs: [],
   pastePlaceholders: [],
   sessionRoot: { env: "CLAUDE_CONFIG_DIR", home: ".claude" },
   session: {
@@ -51,6 +52,7 @@ const DISCOVERED_CLI: ProviderNativeTerminal = {
   launchArgs: ["--no-daemon"],
   modelArgs: ["-c", 'model="{model}"'],
   experimental_launchEnvArgs: CODEX_POOL_LAUNCH_ENV_ARGS,
+  imageArgs: ["--image", "{image}"],
   pastePlaceholders: [],
   sessionRoot: { env: "CODEX_HOME", home: ".codex" },
   session: {
@@ -74,6 +76,7 @@ function spec(
     cli: ASSIGNED_CLI,
     nativeSessionId: "6f1c2a8e-7d1b-4a55-9f0e-1c2d3e4f5a6b",
     initialPrompt: null,
+    initialImages: [],
     model: null,
     ...overrides,
   };
@@ -214,6 +217,66 @@ describe("resolveNativeHarnessLaunch", () => {
       args: ["--resume", "6f1c2a8e-7d1b-4a55-9f0e-1c2d3e4f5a6b"],
       session: { kind: "resume", id: "6f1c2a8e-7d1b-4a55-9f0e-1c2d3e4f5a6b" },
     });
+  });
+
+  it("attaches launch images after the first prompt of a new session only", () => {
+    expect(
+      resolveNativeHarnessLaunch(
+        spec({
+          cli: DISCOVERED_CLI,
+          nativeSessionId: null,
+          initialPrompt: "What is this?",
+          initialImages: ["/tmp/a.png", "/tmp/b.png"],
+        }),
+        { HOME: tempHome() },
+      ).args.slice(-5),
+    ).toEqual([
+      "What is this?",
+      "--image",
+      "/tmp/a.png",
+      "--image",
+      "/tmp/b.png",
+    ]);
+    expect(
+      resolveNativeHarnessLaunch(
+        spec({
+          cli: DISCOVERED_CLI,
+          nativeSessionId: "019a0000-0000-7000-8000-000000000000",
+          initialImages: ["/tmp/a.png"],
+        }),
+        { HOME: tempHome() },
+      ).args,
+    ).not.toContain("--image");
+  });
+
+  it("passes an image path with spaces and shell characters as one argument", () => {
+    const image = "/tmp/my shots/it's $HOME; rm -rf `x` & (1) \"a\".png";
+    const args = resolveNativeHarnessLaunch(
+      spec({
+        cli: DISCOVERED_CLI,
+        nativeSessionId: null,
+        initialPrompt: "What is this?",
+        initialImages: [image],
+      }),
+      { HOME: tempHome() },
+    ).args;
+    expect(args.slice(-3)).toEqual(["What is this?", "--image", image]);
+  });
+
+  it("launches without image argv when an older server sends neither images nor image argv", () => {
+    const cli = { ...DISCOVERED_CLI };
+    delete cli.imageArgs;
+    const older = spec({
+      cli,
+      nativeSessionId: null,
+      initialPrompt: "/tmp/a.png\nWhat is this?",
+    });
+    delete older.initialImages;
+    const args = resolveNativeHarnessLaunch(older, {
+      HOME: tempHome(),
+    }).args;
+    expect(args.at(-1)).toBe("/tmp/a.png\nWhat is this?");
+    expect(args).not.toContain("--image");
   });
 
   it("puts launch argv before the model and session argv of an assigned session", () => {

@@ -315,10 +315,12 @@ import {
   type SpendRollupResponse,
 } from "./api/spend.js";
 import {
+  nativeTerminalLaunchQuerySchema,
   openNativeTerminalRequestSchema,
   recordNativeSessionRequestSchema,
   reportNativeTerminalActivityRequestSchema,
   switchNativeTerminalModeRequestSchema,
+  type NativeTerminalLaunchQuery,
   type NativeTerminalLaunchSpec,
   type NativeTerminalThread,
   type OpenNativeTerminalRequest,
@@ -1891,7 +1893,9 @@ export const publicApiRoutes = {
     launch: defineRoute({
       path: "/threads/:id/native-terminal/launch",
       method: "post",
-      request: noRequest<PathId>(),
+      request: optionalQueryRequest<PathId, NativeTerminalLaunchQuery>(
+        nativeTerminalLaunchQuerySchema,
+      ),
       response: jsonResponse<NativeTerminalLaunchSpec>(),
     }),
     switchMode: defineRoute({

@@ -19,6 +19,7 @@ function seedNativeAndChatThreads(harness: TestAppHarness) {
     providerId: "codex",
     nativeSessionId: null,
     initialPrompt: null,
+    initialImages: [],
     model: null,
   });
   return { chat, host, native };
