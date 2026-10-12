@@ -556,6 +556,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
           "experimental_McpElicitationResult",
           "experimental_McpElicitationValue",
           "experimental_spawnPortableProcess",
+          "experimental_nativeTerminalEnvArgs",
           "experimental_killPortableProcess",
           "PluginProviders",
         ],

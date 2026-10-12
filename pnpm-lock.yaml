@@ -535,9 +535,9 @@ importers:
       '@bb/thread-view':
         specifier: workspace:*
         version: link:../../packages/thread-view
-      bb-plugin-provider-codex:
+      '@get-bb/plugin-sdk':
         specifier: workspace:*
-        version: link:../../plugins/provider-codex
+        version: link:../../packages/plugin-sdk
       cli-table3:
         specifier: ^0.6.5
         version: 0.6.5
@@ -572,6 +572,9 @@ importers:
       '@types/node':
         specifier: ^22.0.0
         version: 22.19.10
+      bb-plugin-provider-codex:
+        specifier: workspace:*
+        version: link:../../plugins/provider-codex
       esbuild:
         specifier: ^0.28.0
         version: 0.28.1
@@ -4695,9 +4698,6 @@ importers:
 
   plugins/provider-codex:
     dependencies:
-      '@bb/domain':
-        specifier: workspace:*
-        version: link:../../packages/domain
       '@bb/shared-ui':
         specifier: workspace:*
         version: link:../../packages/shared-ui

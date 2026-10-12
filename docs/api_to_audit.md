@@ -4256,7 +4256,7 @@ Secrets should be referenced by environment name in literal arguments, never
 substituted. Providers without this optional member retain their launch behavior.
 
 **Core callers.** `resolveNativeHarnessLaunch` consumes the provider's declaration
-through `nativeTerminalEnvArgs`. The Codex bridge uses the same translator and
+through `experimental_nativeTerminalEnvArgs` from `@get-bb/plugin-sdk/host`. The Codex bridge uses the same translator and
 `CODEX_POOL_LAUNCH_ENV_ARGS` declaration. Provider validation accepts the member
 before the server sends the native launch specification to the CLI.
 
@@ -4265,3 +4265,19 @@ formats, enforce bounded argument counts and lengths, exercise third-party
 providers and missing environment values, and verify compatibility of the native
 launch specification across CLI and daemon versions. Stabilization includes
 renaming the member and deleting this audit entry.
+
+## `experimental_nativeTerminalEnvArgs`
+
+**What it does.** The pure host SDK function translates a provider's
+`experimental_launchEnvArgs` declaration and supplied environment into arguments,
+returning an empty list when any required or substituted value is absent.
+Substitutions use JSON string encoding; secrets remain referenced by name in
+literal arguments. The implementation is shared with the domain contract.
+
+**Core callers.** The native CLI harness and the Codex chat bridge both use this
+public SDK function. The Codex plugin owns their single argument declaration.
+
+**Audit before stabilizing.** Confirm supported provider formats and argument
+bounds, validate third-party declarations, and retain missing-value and
+secret-free argument coverage for every caller. Rename the function and remove
+this entry after the declaration and function stabilize together.

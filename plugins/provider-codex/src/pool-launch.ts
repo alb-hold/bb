@@ -1,10 +1,10 @@
-import { nativeTerminalEnvArgs, type ProviderNativeTerminal } from "@bb/domain";
+import { experimental_nativeTerminalEnvArgs } from "@get-bb/plugin-sdk/host";
 
 export const CODEX_POOL_BASE_URL_ENV = "CODEX_OPENAI_BASE_URL";
 export const CODEX_POOL_AUTH_TOKEN_ENV = "CODEX_POOL_AUTH_TOKEN";
 
 export const CODEX_POOL_LAUNCH_ENV_ARGS: NonNullable<
-  ProviderNativeTerminal["experimental_launchEnvArgs"]
+  Parameters<typeof experimental_nativeTerminalEnvArgs>[0]
 > = {
   required: [CODEX_POOL_BASE_URL_ENV, CODEX_POOL_AUTH_TOKEN_ENV],
   args: [
@@ -33,5 +33,5 @@ export const CODEX_POOL_LAUNCH_ENV_ARGS: NonNullable<
 export function codexPoolLaunchArgs(
   env: Readonly<Record<string, string | undefined>>,
 ): string[] {
-  return nativeTerminalEnvArgs(CODEX_POOL_LAUNCH_ENV_ARGS, env);
+  return experimental_nativeTerminalEnvArgs(CODEX_POOL_LAUNCH_ENV_ARGS, env);
 }
