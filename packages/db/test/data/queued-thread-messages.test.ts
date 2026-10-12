@@ -154,6 +154,9 @@ describe("queued thread messages", () => {
     if (!query) {
       throw new Error("Expected the idle queued-message thread SQL");
     }
+    expect(query.sql).toContain(
+      '"queue_pause_interruption"."thread_id" = "queued_thread_messages"."thread_id"',
+    );
     const planDetails = raw
       .prepare<unknown[], { detail: string }>(
         `EXPLAIN QUERY PLAN ${query.sql}`,
