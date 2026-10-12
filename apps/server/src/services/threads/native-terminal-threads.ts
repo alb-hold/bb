@@ -476,25 +476,51 @@ export function requireLiveNativeTerminalToolThread(
   return lookup;
 }
 
-export async function listNativeTerminalAgentTools(
+export async function resolveNativeTerminalAgentTools(
   deps: AppDeps,
   threadId: string,
-): Promise<NativeTerminalAgentTools> {
-  const { environment, thread } = requireLiveNativeTerminalToolThread(
-    deps,
-    threadId,
-  );
+): Promise<
+  ThreadEnvironmentLookupResult & { tools: NativeTerminalAgentTools["tools"] }
+> {
+  const lookup = requireLiveNativeTerminalToolThread(deps, threadId);
   const record = requireNativeTerminalThreadRecord(deps, threadId);
   const tools = await resolveThreadDynamicTools(deps, {
-    environment,
+    environment: lookup.environment,
     model: record.model ?? "",
-    thread,
+    thread: lookup.thread,
   });
   return {
+    ...lookup,
     tools: tools.filter(
       (tool) => tool.name !== UPDATE_ENVIRONMENT_DIRECTORY_TOOL_NAME,
     ),
   };
+}
+
+export async function listNativeTerminalAgentTools(
+  deps: AppDeps,
+  threadId: string,
+): Promise<NativeTerminalAgentTools> {
+  const { tools } = await resolveNativeTerminalAgentTools(deps, threadId);
+  return { tools };
+}
+
+export async function requireNativeTerminalAgentToolCall(
+  deps: AppDeps,
+  args: { threadId: string; tool: string },
+): Promise<ThreadEnvironmentLookupResult> {
+  const { environment, thread, tools } = await resolveNativeTerminalAgentTools(
+    deps,
+    args.threadId,
+  );
+  if (!tools.some((tool) => tool.name === args.tool)) {
+    throw new ApiError(
+      404,
+      "native_terminal_tool_not_found",
+      `Tool ${args.tool} is not available to this thread`,
+    );
+  }
+  return { environment, thread };
 }
 
 export function recordNativeTerminalSession(

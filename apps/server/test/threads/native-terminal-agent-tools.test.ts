@@ -60,6 +60,12 @@ const PLUGIN_SOURCE = `
         " project=" + ctx.projectId +
         " params=" + JSON.stringify(params),
     });
+    bb.agents.registerTool({
+      name: "unselected_tool",
+      description: "Registered but never selected",
+      parameters: { type: "object" },
+      execute: () => "must not run",
+    });
     bb.agents.configure(() => ({ tools: ["echo_context"], skills: [] }));
   }
 `;
@@ -226,7 +232,7 @@ describe("native terminal agent tools", () => {
     const threadId = await createNativeThread(fixture);
     const table: { args: unknown; tool: string }[] = [
       { tool: "echo_context", args: { foo: 1 } },
-      { tool: "never_registered", args: {} },
+      { tool: "echo_context", args: {} },
     ];
     for (const row of table) {
       const native = await callTool(
@@ -304,6 +310,25 @@ describe("native terminal agent tools", () => {
         .filter((name) => name !== UPDATE_ENVIRONMENT_DIRECTORY_TOOL_NAME),
     );
     expect(listed.tools.map((tool) => tool.name)).toContain("echo_context");
+  });
+
+  it("rejects a tool outside the thread's resolved list without invoking it", async () => {
+    const fixture = await createFixture();
+    const threadId = await createNativeThread(fixture);
+    for (const tool of [
+      "unselected_tool",
+      UPDATE_ENVIRONMENT_DIRECTORY_TOOL_NAME,
+    ]) {
+      const response = await fixture.harness.app.request(
+        `/api/v1/threads/${threadId}/native-terminal/agent-tools/${tool}/call`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ callId: "c", arguments: {} }),
+        },
+      );
+      expect(response.status).toBe(404);
+    }
   });
 
   it("answers 404 for a chat thread", async () => {

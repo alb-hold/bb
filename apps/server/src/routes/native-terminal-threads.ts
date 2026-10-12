@@ -9,7 +9,7 @@ import { runAgentToolCall } from "../internal/tool-calls.js";
 import {
   findNativeTerminalThreadView,
   listNativeTerminalAgentTools,
-  requireLiveNativeTerminalToolThread,
+  requireNativeTerminalAgentToolCall,
   openNativeTerminal,
   recordNativeTerminalSession,
   takeNativeTerminalLaunchSpec,
@@ -50,10 +50,10 @@ export function registerNativeTerminalThreadRoutes(
     ),
   );
 
-  post(routes.callAgentTool, (context, payload) => {
-    const { environment, thread } = requireLiveNativeTerminalToolThread(
+  post(routes.callAgentTool, async (context, payload) => {
+    const { environment, thread } = await requireNativeTerminalAgentToolCall(
       deps,
-      context.req.param("id"),
+      { threadId: context.req.param("id"), tool: context.req.param("tool") },
     );
     return runAgentToolCall(deps, {
       callId: payload.callId,
