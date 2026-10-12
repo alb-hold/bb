@@ -799,33 +799,42 @@ describe("native terminal threads", () => {
     }
   });
 
-  it("never presses Enter when the CLI only reprints older output", async () => {
-    const fixture = await createFixture();
-    const { open, thread } = await openRunningNativeThread(fixture, {
-      providerId: "codex",
-    });
-    const history = scrolledPastScreen("• Everything is ok now");
-    const cli = startFakeCli(
-      fixture,
-      open.terminalId,
-      () => `\u001b[H\u001b[2J${history}`,
-      history,
-    );
-    try {
-      const response = await postJson(fixture, `/threads/${thread.id}/send`, {
-        input: textInput("ok"),
-        mode: "auto",
+  it.each([
+    ["the whole screen", "\u001b[2J", ""],
+    ["below the cursor", "\u001b[J", "\r\n\u276f 1. ok\r\n  2. No"],
+    ["below the cursor, explicit", "\u001b[0J", "\r\n\u276f 1. ok\r\n  2. No"],
+    ["above the cursor", "\u001b[1J", "\r\n\u276f 1. ok\r\n  2. No"],
+  ])(
+    "never presses Enter when the CLI erases %s and reprints older output",
+    async (_name, erase, menu) => {
+      const fixture = await createFixture();
+      const { open, thread } = await openRunningNativeThread(fixture, {
+        providerId: "codex",
       });
-      expect(response.status).toBe(409);
-      expect(apiErrorSchema.parse(await readJson(response)).code).toBe(
-        "native_terminal_input_not_shown",
+      const history = scrolledPastScreen("• Everything is ok now");
+      const cli = startFakeCli(
+        fixture,
+        open.terminalId,
+        () => `\u001b[H${erase}${history}${menu}`,
+        history,
       );
-      await new Promise((resolve) => setTimeout(resolve, 200));
-      expect(cli.inputs()).toEqual(["\u001b[200~ok\u001b[201~"]);
-    } finally {
-      cli.stop();
-    }
-  }, 10_000);
+      try {
+        const response = await postJson(fixture, `/threads/${thread.id}/send`, {
+          input: textInput("ok"),
+          mode: "auto",
+        });
+        expect(response.status).toBe(409);
+        expect(apiErrorSchema.parse(await readJson(response)).code).toBe(
+          "native_terminal_input_not_shown",
+        );
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        expect(cli.inputs()).toEqual(["\u001b[200~ok\u001b[201~"]);
+      } finally {
+        cli.stop();
+      }
+    },
+    10_000,
+  );
 
   it("sends nothing when the CLI redraws the same text from its history", async () => {
     const fixture = await createFixture();
