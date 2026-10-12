@@ -1,5 +1,5 @@
 import {
-  consumeNativeTerminalThreadInitialPrompt,
+  consumeNativeTerminalThreadLaunchInput,
   getEnvironment,
   getNativeTerminalThread,
   getStoredProviderSession,
@@ -129,12 +129,27 @@ function nativeTerminalAttachmentPath(
   );
 }
 
-export function nativeTerminalPrompt(
+export function nativeTerminalLaunchInput(
   deps: Pick<AppDeps, "config">,
-  args: NativeTerminalPromptArgs,
-): string | null {
-  const prompt = nativeTerminalPromptParts(deps, args).join("\n");
-  return prompt.length === 0 ? null : prompt;
+  args: NativeTerminalPromptArgs & { provider: NativeTerminalProvider },
+): { initialPrompt: string | null; initialImages: string[] } {
+  const launchesImages = args.provider.cli.imageArgs.length > 0;
+  const initialImages = launchesImages
+    ? nativeTerminalPromptParts(deps, {
+        ...args,
+        input: args.input.filter((entry) => entry.type === "localImage"),
+      })
+    : [];
+  const prompt = nativeTerminalPromptParts(deps, {
+    ...args,
+    input: launchesImages
+      ? args.input.filter((entry) => entry.type !== "localImage")
+      : args.input,
+  }).join("\n");
+  return {
+    initialPrompt: prompt.length === 0 ? null : prompt,
+    initialImages,
+  };
 }
 
 export function nativeTerminalPromptParts(
@@ -485,7 +500,7 @@ export function takeNativeTerminalLaunchSpec(
     threadId: record.threadId,
     cli: provider.cli,
     nativeSessionId: record.nativeSessionId,
-    initialPrompt: consumeNativeTerminalThreadInitialPrompt(deps.db, threadId),
+    ...consumeNativeTerminalThreadLaunchInput(deps.db, threadId),
     model: record.model,
   };
 }

@@ -31,6 +31,7 @@ export const nativeTerminalLaunchSpecSchema = z.object({
   cli: providerNativeTerminalSchema,
   nativeSessionId: z.string().min(1).nullable(),
   initialPrompt: z.string().min(1).nullable(),
+  initialImages: z.array(z.string().min(1)),
   model: z.string().min(1).nullable(),
 });
 export type NativeTerminalLaunchSpec = z.infer<

@@ -472,6 +472,7 @@ describe("provider declaration fields renamed in SDK 0.4.16", () => {
       executable: "my-agent",
       launchArgs: ["--no-daemon"],
       modelArgs: ["--model", "{model}"],
+      imageArgs: [],
       pastePlaceholders: ["[Pasted text #"],
       sessionRoot: { env: "MY_AGENT_HOME", home: ".my-agent" },
       session: {
@@ -511,6 +512,11 @@ describe("provider declaration fields renamed in SDK 0.4.16", () => {
         "an unknown argv token",
         { ...assigned, modelArgs: ["--model", "{models}"] },
         /experimental_nativeTerminal\.modelArgs may only use \{model\}/u,
+      ],
+      [
+        "image argv without the image",
+        { ...assigned, imageArgs: ["--image"] },
+        /experimental_nativeTerminal\.imageArgs must pass \{image\} when not empty/u,
       ],
       [
         "resume argv without the session id",

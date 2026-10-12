@@ -22,6 +22,7 @@ const CODEX_CLI: ProviderNativeTerminal = {
   executable: "codex",
   launchArgs: ["--no-daemon"],
   modelArgs: ["-c", 'model="{model}"'],
+  imageArgs: ["--image", "{image}"],
   pastePlaceholders: [],
   sessionRoot: { env: "CODEX_HOME", home: ".codex" },
   session: {
@@ -63,6 +64,7 @@ const CLAUDE_CLI: ProviderNativeTerminal = {
   executable: "claude",
   launchArgs: [],
   modelArgs: ["--model", "{model}"],
+  imageArgs: [],
   pastePlaceholders: [],
   sessionRoot: { env: "CLAUDE_CONFIG_DIR", home: ".claude" },
   session: {
