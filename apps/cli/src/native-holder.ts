@@ -9,8 +9,6 @@ import {
   mkdtempSync,
   openSync,
   rmSync,
-  statSync,
-  truncateSync,
   unlinkSync,
   writeSync,
 } from "node:fs";
