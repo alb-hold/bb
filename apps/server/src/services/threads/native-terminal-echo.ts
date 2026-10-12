@@ -3,7 +3,7 @@ const TERMINAL_TOKEN =
 const TERMINAL_CONTROL_SEQUENCE =
   /\u001b\[[0-9;?<>=]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[()][A-Za-z0-9]|\u001b[=>78DEHMc]/gu;
 const TERMINAL_SCREEN_RESET =
-  /\u001b\[[23]J|\u001bc|\u001b\[\?(?:47|1047|1049)[hl]/u;
+  /\u001b\[[0-3]?J|\u001bc|\u001b\[\?(?:47|1047|1049)[hl]/u;
 const ECHO_IGNORED_CHARACTER = /^[\s─-╿]$/u;
 const ECHO_IGNORED_CHARACTERS = /[\s─-╿]/gu;
 const ECHO_TAIL_LENGTH = 32;

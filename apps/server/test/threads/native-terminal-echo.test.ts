@@ -215,6 +215,26 @@ describe("terminalOutputShowsPasteAgain", () => {
     ).toBe(false);
   });
 
+  it.each([
+    ["erase below the cursor", "\u001b[J"],
+    ["erase below the cursor, explicit", "\u001b[0J"],
+    ["erase above the cursor", "\u001b[1J"],
+    ["erase the screen", "\u001b[2J"],
+    ["erase the screen and scrollback", "\u001b[3J"],
+  ])(
+    "does not trust a menu redrawn after %s that repeats the older reply",
+    (_name, erase) => {
+      expect(
+        terminalOutputShowsPasteAgain({
+          before,
+          output: `\u001b[1;1H${erase}• Everything is ok now\r\n❯ 1. ok\r\n  2. No`,
+          pastePlaceholders: [],
+          text: "ok",
+        }),
+      ).toBe(false);
+    },
+  );
+
   it("does not take a menu that redraws without the reply", () => {
     expect(
       terminalOutputShowsPasteAgain({
