@@ -536,7 +536,7 @@ describe("loadTerminalWebglRenderer", () => {
     };
     const terminal = { loadAddon: vi.fn() };
 
-    expect(loadTerminalWebglRenderer(terminal, () => addon)).toBe(true);
+    expect(loadTerminalWebglRenderer(terminal, () => addon).renderer).toBe("webgl");
     expect(terminal.loadAddon).toHaveBeenCalledWith(addon);
 
     onContextLoss();
@@ -556,7 +556,7 @@ describe("loadTerminalWebglRenderer", () => {
       }),
     };
 
-    expect(loadTerminalWebglRenderer(terminal, () => addon)).toBe(false);
+    expect(loadTerminalWebglRenderer(terminal, () => addon).renderer).toBe("dom");
     expect(addon.dispose).toHaveBeenCalledOnce();
   });
 });

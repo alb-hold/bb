@@ -7,8 +7,6 @@ import {
 } from "react";
 import "@xterm/xterm/css/xterm.css";
 import type {
-  IDisposable,
-  ITerminalAddon,
   ITheme,
   Terminal as XTermTerminal,
 } from "@xterm/xterm";
@@ -62,6 +60,8 @@ import {
 import { handleTerminalFileDrop } from "./terminal-file-drop";
 import { dropMouseReportsWithoutPosition } from "./terminal-mouse-reports";
 import { attachTerminalInteractions } from "./terminal-interactions";
+import { loadOptionalTerminalWebglAddon, loadTerminalWebglRenderer } from "./terminal-webgl-renderer";
+export { loadOptionalTerminalWebglAddon, loadTerminalWebglRenderer } from "./terminal-webgl-renderer";
 
 export const TERMINAL_FONT_FAMILY =
   '"JetBrainsMono Nerd Font Mono", "MesloLGS NF", "Symbols Nerd Font Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace';
@@ -93,47 +93,6 @@ export function shouldFocusTerminalAfterAsyncMount({
     return false;
   }
   return hasExplicitFocusRequest || !currentFocusIsAvailable;
-}
-
-interface WebglRendererAddon extends ITerminalAddon {
-  onContextLoss: (listener: () => void) => IDisposable;
-}
-
-type TerminalAddonLoader = Pick<XTermTerminal, "loadAddon">;
-interface TerminalWebglAddonModule {
-  WebglAddon: new () => WebglRendererAddon;
-}
-type TerminalWebglAddonImporter = () => Promise<TerminalWebglAddonModule>;
-
-export async function loadOptionalTerminalWebglAddon(
-  importAddon: TerminalWebglAddonImporter,
-): Promise<TerminalWebglAddonModule | null> {
-  try {
-    return await importAddon();
-  } catch {
-    return null;
-  }
-}
-
-export function loadTerminalWebglRenderer(
-  terminal: TerminalAddonLoader,
-  createAddon: () => WebglRendererAddon,
-): boolean {
-  let addon: WebglRendererAddon | null = null;
-  let contextLossDisposable: IDisposable | null = null;
-  try {
-    addon = createAddon();
-    contextLossDisposable = addon.onContextLoss(() => {
-      contextLossDisposable?.dispose();
-      addon?.dispose();
-    });
-    terminal.loadAddon(addon);
-    return true;
-  } catch {
-    contextLossDisposable?.dispose();
-    addon?.dispose();
-    return false;
-  }
 }
 
 interface TerminalTouchPoint extends SelectionAnchorPoint {
@@ -999,6 +958,7 @@ export function ThreadTerminalView({
         loadTerminalWebglRenderer(
           terminal,
           () => new webglAddonModule.WebglAddon(),
+          { root: containerElement },
         );
       }
       terminal.open(containerElement);
@@ -1342,6 +1302,8 @@ export function ThreadTerminalView({
           >
             <div
               ref={containerRef}
+              data-terminal-renderer="dom"
+              data-terminal-context-loss-count="0"
               className="h-full min-h-0 w-full overflow-hidden"
             />
             {connectionNoticeText !== null ? (
