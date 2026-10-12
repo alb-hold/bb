@@ -15,6 +15,7 @@ const LEGACY_THREAD_ROUTE_PREFIX = "thread-route-";
 const PROCESS_THREAD_ROUTE_PREFIX = "scoped-process-route-";
 const NESTED_ROUTE_PREFIX = "scoped-nested-route-";
 const PROCESS_NESTED_ROUTE_PREFIX = "scoped-process-nested-route-";
+export const PROCESS_CREDENTIAL_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 const LEGACY_NESTED_ROUTE_PREFIX = "nested-route-";
 const ARCHIVED_THREAD_PREFIX = "archived-thread-";
 const ARCHIVE_FALLBACK_PREFIX = "archive-revocation-";
@@ -55,11 +56,13 @@ const routeSchema = legacyRouteSchema.omit({ token: true }).extend({
   token: tokenSchema.optional(),
   tokenDigest: digestSchema,
   lifetime: z.literal("process").optional(),
+  expiresAt: z.number().int().positive().optional(),
 });
 const nestedRouteSchema = legacyNestedRouteSchema.omit({ token: true }).extend({
   token: tokenSchema.optional(),
   tokenDigest: digestSchema,
   lifetime: z.literal("process").optional(),
+  expiresAt: z.number().int().positive().optional(),
 });
 const readableRouteSchema = z.union([
   routeSchema,
@@ -124,6 +127,7 @@ export class ThreadTokenStore {
   constructor(
     private readonly directory: string,
     private readonly hosts: HubTokenStore,
+    private readonly now: () => number = Date.now,
   ) {}
 
   async initialize(hostIds: readonly string[]): Promise<void> {
@@ -196,6 +200,7 @@ export class ThreadTokenStore {
       if (
         record !== null &&
         !archived &&
+        !this.expired(record) &&
         this.fileEpoch(name) === this.archiveEpoch(record.threadId) &&
         (await this.isLive(record, enrolled))
       ) {
@@ -231,6 +236,7 @@ export class ThreadTokenStore {
       if (
         record !== null &&
         !archived &&
+        !this.expired(record) &&
         this.fileEpoch(name) === this.archiveEpoch(record.threadId) &&
         (await this.isLive(record, enrolled))
       ) {
@@ -252,9 +258,14 @@ export class ThreadTokenStore {
     return this.serialize(async () => {
       if (await this.isArchived(parsed.threadId))
         throw new Error("Cannot mint a credential for an archived thread.");
-      const key = `${lifetime === "process" ? "process:" : ""}${this.key(parsed, hostTokenDigest)}`;
+      const key = this.routeMapKey({
+        ...parsed,
+        hostTokenDigest,
+        ...(lifetime === "process" ? { lifetime } : {}),
+      });
       const existing = this.routes.get(key);
-      if (existing?.token !== undefined) return existing.token;
+      if (existing?.token !== undefined && !this.expired(existing))
+        return existing.token;
       if (existing !== undefined) this.tokenIndex.delete(existing.tokenDigest);
       const token = randomBytes(32).toString("base64url");
       const record = {
@@ -262,7 +273,12 @@ export class ThreadTokenStore {
         hostTokenDigest,
         token,
         tokenDigest: digest(token),
-        ...(lifetime === "process" ? { lifetime } : {}),
+        ...(lifetime === "process"
+          ? {
+              lifetime,
+              expiresAt: this.now() + PROCESS_CREDENTIAL_MAX_AGE_MS,
+            }
+          : {}),
       };
       await this.persistCredential(this.file(record), record);
       this.routes.set(key, record);
@@ -284,9 +300,14 @@ export class ThreadTokenStore {
     return this.serialize(async () => {
       if (await this.isArchived(parsed.threadId))
         throw new Error("Cannot mint a credential for an archived thread.");
-      const key = `${lifetime === "process" ? "process:" : ""}${this.nestedKey(parsed, hostTokenDigest)}`;
+      const key = this.nestedMapKey({
+        ...parsed,
+        hostTokenDigest,
+        ...(lifetime === "process" ? { lifetime } : {}),
+      });
       const existing = this.nestedRoutes.get(key);
-      if (existing?.token !== undefined) return existing.token;
+      if (existing?.token !== undefined && !this.expired(existing))
+        return existing.token;
       if (existing !== undefined)
         this.nestedTokenIndex.delete(existing.tokenDigest);
       const token = randomBytes(32).toString("base64url");
@@ -295,7 +316,12 @@ export class ThreadTokenStore {
         hostTokenDigest,
         token,
         tokenDigest: digest(token),
-        ...(lifetime === "process" ? { lifetime } : {}),
+        ...(lifetime === "process"
+          ? {
+              lifetime,
+              expiresAt: this.now() + PROCESS_CREDENTIAL_MAX_AGE_MS,
+            }
+          : {}),
       };
       await this.persistCredential(this.nestedFile(record), record);
       this.nestedRoutes.set(key, record);
@@ -310,7 +336,7 @@ export class ThreadTokenStore {
     provider?: ThreadRoute["provider"],
   ): Promise<ThreadRoute | null> {
     const record = lookup(this.tokenIndex, token);
-    if (record === null) return null;
+    if (record === null || this.expired(record)) return null;
     if (await this.isArchived(record.threadId)) return null;
     if (provider !== undefined && provider !== record.provider) return null;
     if (
@@ -332,6 +358,7 @@ export class ThreadTokenStore {
     const record = lookup(this.tokenIndex, token);
     return (
       record !== null &&
+      !this.expired(record) &&
       this.routes.get(`process:${this.key(record, record.hostTokenDigest)}`) ===
         record
     );
@@ -339,7 +366,7 @@ export class ThreadTokenStore {
 
   async authenticateNested(token: string | null): Promise<NestedRoute | null> {
     const record = lookup(this.nestedTokenIndex, token);
-    if (record === null) return null;
+    if (record === null || this.expired(record)) return null;
     if (await this.isArchived(record.threadId)) return null;
     if (
       !(await this.hosts.authenticateGeneration(
@@ -749,6 +776,10 @@ export class ThreadTokenStore {
       this.directory,
       `${prefix}${this.key(route, route.hostTokenDigest)}-v${epoch}.json`,
     );
+  }
+
+  private expired(record: { expiresAt?: number }): boolean {
+    return record.expiresAt !== undefined && record.expiresAt <= this.now();
   }
 
   private routeMapKey(
