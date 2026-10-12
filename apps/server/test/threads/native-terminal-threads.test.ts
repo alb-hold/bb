@@ -2268,7 +2268,7 @@ describe("native terminal threads", () => {
           },
           deferProviders: true,
         });
-      const reopening = reopenNativeTerminalsAfterDaemonReconnect(
+      void reopenNativeTerminalsAfterDaemonReconnect(
         fixture.harness.deps,
         { hostId: fixture.hostId, threadIds: [running.thread.id] },
         () => now,
