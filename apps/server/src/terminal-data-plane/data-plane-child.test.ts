@@ -832,9 +832,8 @@ describe("terminal data plane child", () => {
     ).toEqual(["a2", "a1"]);
   });
 
-  it("reports a dropped data socket and falls back to main for input", async () => {
+  it("sends input and acks through main while the routed data socket is missing", async () => {
     const harness = createHarness();
-    const daemon = await attachDaemon(harness, "session_1");
     main(harness, {
       v,
       type: "terminal.route",
@@ -842,19 +841,53 @@ describe("terminal data plane child", () => {
       daemonSessionId: "session_1",
       mode: "data-socket",
     });
-    const browser = await attachLive(harness, { attachId: "a1", terminalId: "term_a" });
+    const browser = await attachLive(harness, {
+      attachId: "a1",
+      terminalId: "term_a",
+      outputAcks: true,
+    });
+
+    main(harness, { v, type: "terminal.output", terminalId: "term_a", chunk: chunk(0) });
+    browser.receive({ type: "input", dataBase64: base64("before") });
+    browser.receive({ type: "ack", nextSeq: 1 });
+
+    expect(browser.outputSeqs()).toEqual([0]);
+    expect(ofType(harness, "terminal.input")).toMatchObject([
+      { terminalId: "term_a", dataBase64: base64("before") },
+    ]);
+    expect(ofType(harness, "terminal.ack")).toEqual([
+      { v, type: "terminal.ack", attachId: "a1", terminalId: "term_a", nextSeq: 1 },
+    ]);
+
+    const daemon = await attachDaemon(harness, "session_1");
     expect(ofType(harness, "daemon.attached")).toEqual([
       { v, type: "daemon.attached", daemonSessionId: "session_1" },
     ]);
+    daemon.receive({ type: "terminal.output", terminalId: "term_a", chunk: chunk(1) });
+    browser.receive({ type: "input", dataBase64: base64("during") });
+    browser.receive({ type: "ack", nextSeq: 2 });
+
+    expect(browser.outputSeqs()).toEqual([0, 1]);
+    expect(daemon.frames()).toEqual([
+      { type: "terminal.flow-control", terminalId: "term_a", enabled: true },
+      { type: "terminal.input", terminalId: "term_a", dataBase64: base64("during") },
+      { type: "terminal.ack", terminalId: "term_a", nextSeq: 2 },
+    ]);
+    expect(ofType(harness, "terminal.ack")).toHaveLength(1);
 
     daemon.emitClose();
-    browser.receive({ type: "input", dataBase64: base64("x") });
+    browser.receive({ type: "input", dataBase64: base64("after") });
+    browser.receive({ type: "ack", nextSeq: 2 });
 
     expect(ofType(harness, "daemon.detached")).toEqual([
       { v, type: "daemon.detached", daemonSessionId: "session_1" },
     ]);
     expect(harness.child.daemonSocketCount).toBe(0);
-    expect(ofType(harness, "terminal.input")).toMatchObject([{ terminalId: "term_a" }]);
+    expect(ofType(harness, "terminal.input").map((message) => message.dataBase64)).toEqual([
+      base64("before"),
+      base64("after"),
+    ]);
+    expect(ofType(harness, "terminal.ack")).toHaveLength(2);
   });
 
   it("drops a session's routes and closes its data socket on daemon.detach", async () => {
