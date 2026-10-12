@@ -657,6 +657,19 @@ const onlineRpcHandlers: OnlineRpcHandlerMap = {
   "host.read_file_chunk": readHostFileChunk,
   "host.read_file_relative": readHostRelativeFile,
   "host.write_file": writeHostFile,
+  "terminal-data-plane.probe": async (_command, options) => ({
+    dataSocket: options.terminalDataSocket !== undefined,
+    ipcVersion: 1,
+  }),
+  "terminal-data-plane.connect": async (command, options) => ({
+    connected:
+      options.terminalDataSocket === undefined
+        ? false
+        : await options.terminalDataSocket.connect({
+            ticket: command.ticket,
+            url: command.url,
+          }),
+  }),
   "provider.list_models": (command, options) =>
     withResolvedBridgeLaunch(command, options, (args) =>
       options.listModels(args),
