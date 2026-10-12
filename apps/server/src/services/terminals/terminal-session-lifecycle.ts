@@ -1148,9 +1148,12 @@ export class TerminalSessionLifecycle {
       );
     }
 
-    const markedInput = updateTerminalById(this.options.db, current.id, {
-      kind: "user-input",
-    });
+    const markedInput =
+      current.lastUserInputAt === null
+        ? updateTerminalById(this.options.db, current.id, {
+            kind: "user-input",
+          })
+        : null;
     const session = markedInput ?? current;
     if (markedInput) {
       this.notifyTerminalSessionChanged(markedInput);
@@ -1878,9 +1881,12 @@ export class TerminalSessionLifecycle {
       Date.now(),
     );
     this.applySharedTerminalSize(args);
-    const markedInput = updateTerminalById(this.options.db, current.id, {
-      kind: "user-input",
-    });
+    const markedInput =
+      current.lastUserInputAt === null
+        ? updateTerminalById(this.options.db, current.id, {
+            kind: "user-input",
+          })
+        : null;
     if (markedInput) {
       const session = toTerminalSession(markedInput);
       this.notifyTerminalSessionChanged(markedInput);
