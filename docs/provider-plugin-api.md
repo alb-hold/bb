@@ -179,12 +179,13 @@ only new working records descended from the final record can reopen a
 completed turn. The reader keeps polling after pending events and completion.
 An optional identity `timestamp` names an ISO timestamp field. Providers that
 declare it must timestamp identifiable records; missing or invalid values are
-ignored. New records must have chronological timestamps; delayed records may
-retain older timestamps. Once record history is evicted, records strictly
-before its timestamp cutoff cannot change activity. At the cutoff timestamp, new UUIDs remain valid
-and evicted UUIDs are ignored. The reader retains at most 4,096 evicted UUIDs
-at that timestamp; if that set overflows, it checks the already processed
-transcript prefix rather than forgetting older replays. Claude declares this
+ignored. Fresh records may arrive with older timestamps. Once record history
+is evicted, older timestamps trigger an exact UUID lookup in the already
+processed transcript prefix; only previously seen UUIDs are ignored. The
+prefix ends at the highest evicted append position, regardless of timestamp.
+At the cutoff timestamp, new UUIDs remain valid and evicted UUIDs are ignored.
+The reader retains at most 4,096 evicted UUIDs at that timestamp; if that set
+overflows, it uses the same transcript-prefix lookup. Claude declares this
 field. Identity state is bounded to 4,096 records
 and 128 turns; completion anchors and continuation ancestry remain available.
 Claude uses Stop-hook feedback for continuation and the Stop outcome or turn

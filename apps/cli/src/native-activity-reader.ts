@@ -180,10 +180,12 @@ export class NativeActivityReader {
       if (
         !Number.isFinite(timestamp) ||
         (this.evictedThroughTimestamp !== null &&
-          (timestamp < this.evictedThroughTimestamp ||
+          ((timestamp < this.evictedThroughTimestamp &&
+            this.wasEvictedInTranscript(id)) ||
             (timestamp === this.evictedThroughTimestamp &&
               (this.evictedCutoffIds.has(id) ||
-                (this.cutoffIdsOverflowed && this.wasEvictedAtCutoff(id))))))
+                (this.cutoffIdsOverflowed &&
+                  this.wasEvictedInTranscript(id))))))
       ) {
         return ignored;
       }
@@ -251,20 +253,19 @@ export class NativeActivityReader {
       }
       const record = this.recordParents.get(id);
       if (record !== undefined && record.timestamp !== null) {
+        this.evictedThroughPosition = Math.max(
+          this.evictedThroughPosition,
+          record.position,
+        );
         if (
           this.evictedThroughTimestamp === null ||
           record.timestamp > this.evictedThroughTimestamp
         ) {
           this.evictedThroughTimestamp = record.timestamp;
-          this.evictedThroughPosition = record.position;
           this.evictedCutoffIds.clear();
           this.cutoffIdsOverflowed = false;
         }
         if (record.timestamp === this.evictedThroughTimestamp) {
-          this.evictedThroughPosition = Math.max(
-            this.evictedThroughPosition,
-            record.position,
-          );
           this.evictedCutoffIds.add(id);
           if (this.evictedCutoffIds.size > MAX_EVICTED_CUTOFF_IDS) {
             const expired = this.evictedCutoffIds.values().next().value;
@@ -279,7 +280,7 @@ export class NativeActivityReader {
     }
   }
 
-  private wasEvictedAtCutoff(id: string): boolean {
+  private wasEvictedInTranscript(id: string): boolean {
     const identity = this.cli.activity?.transcript?.identity;
     if (this.transcriptFile === null || identity === undefined) return false;
     const tail = new JsonlTail(this.transcriptStartOffset);

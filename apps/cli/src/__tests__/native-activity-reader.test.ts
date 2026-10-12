@@ -297,6 +297,90 @@ function retainedIdentitySizes(reader: NativeActivityReader) {
 }
 
 describe("NativeActivityReader", () => {
+  it("accepts fresh older-timestamp ancestry after eviction while ignoring its later replay", () => {
+    const fixture = claudeFixture();
+    finalClaudeStop(fixture);
+    fixture.append(
+      Array.from({ length: 5000 }, (_, index) => ({
+        type: "progress",
+        uuid: `older-time-progress-${index}`,
+        parentUuid: "end-1",
+        timestamp: "2026-10-12T10:27:50.475Z",
+      })),
+    );
+    expect(fixture.reader.read()).toEqual([]);
+    fixture.hook([
+      { hook_event_name: "Stop", prompt_id: "turn-1", stop_hook_active: false },
+    ]);
+    fixture.append([
+      {
+        type: "attachment",
+        uuid: "older-time-attachment",
+        parentUuid: "end-1",
+        timestamp: "2026-10-12T10:27:50.474Z",
+      },
+      {
+        type: "assistant",
+        isSidechain: false,
+        uuid: "older-time-continuation",
+        parentUuid: "older-time-attachment",
+        timestamp: "2026-10-12T10:27:51.666Z",
+        message: { content: [{ type: "text", text: "continue in text" }] },
+      },
+    ]);
+    expect(fixture.reader.read()).toEqual([{ state: "working", prompt: null }]);
+    const completion = {
+      type: "system",
+      subtype: "stop_hook_summary",
+      isSidechain: false,
+      hasOutput: false,
+      uuid: "older-time-end",
+      parentUuid: "older-time-continuation",
+      timestamp: "2026-10-12T10:27:50.473Z",
+    };
+    fixture.append([completion]);
+    expect(fixture.reader.read()).toEqual([{ state: "idle", prompt: null }]);
+    fixture.append([
+      {
+        type: "assistant",
+        isSidechain: false,
+        uuid: "older-time-later-continuation",
+        parentUuid: completion.uuid,
+        timestamp: "2026-10-12T10:27:51.667Z",
+        message: { content: [{ type: "text", text: "continue once more" }] },
+      },
+    ]);
+    expect(fixture.reader.read()).toEqual([{ state: "working", prompt: null }]);
+    fixture.append(
+      Array.from({ length: 5000 }, (_, index) => ({
+        type: "progress",
+        uuid: `older-time-later-progress-${index}`,
+        parentUuid: "older-time-later-continuation",
+        timestamp: "2026-10-12T10:27:52.000Z",
+      })),
+    );
+    expect(fixture.reader.read()).toEqual([]);
+    const retained: unknown = Reflect.get(fixture.reader, "recordTurns");
+    if (!(retained instanceof Map)) throw new Error("Identity state unavailable");
+    expect(retained.has(completion.uuid)).toBe(false);
+    fixture.append([completion]);
+    expect(fixture.reader.read()).toEqual([]);
+    expect(fixture.reader.heartbeat()).toEqual({ state: "working", prompt: null });
+    fixture.append([
+      {
+        ...completion,
+        uuid: "older-time-final-end",
+        parentUuid: "older-time-later-continuation",
+      },
+    ]);
+    expect(fixture.reader.read()).toEqual([{ state: "idle", prompt: null }]);
+    const sizes = retainedIdentitySizes(fixture.reader);
+    expect(sizes.recordTurns).toBeLessThanOrEqual(4096);
+    expect(sizes.recordParents).toBeLessThanOrEqual(4096);
+    expect(sizes.knownTurns).toBeLessThanOrEqual(128);
+    expect(sizes.evictedCutoffIds).toBeLessThanOrEqual(4096);
+  });
+
   it("starts an assistant-only cutoff-timestamp continuation after a blocked Stop and eviction", () => {
     const fixture = claudeFixture();
     finalClaudeStop(fixture);
