@@ -316,6 +316,10 @@ function startFakeCli(
   };
 }
 
+function scrolledPastScreen(line: string): string {
+  return `${line}\r\n${"• Ran a step\r\n".repeat(120)}› `;
+}
+
 function composerScreen(pasted: string): string {
   const words = pasted.split(" ");
   return `\u001b[2K\u001b[1G\u203a ${words.join("\u001b[1C")}\u001b[0m`;
@@ -808,6 +812,66 @@ describe("native terminal threads", () => {
       cli.stop();
     }
   });
+
+  it("sends a short reply that only older output shows", async () => {
+    const fixture = await createFixture();
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+    });
+    const cli = startFakeCli(
+      fixture,
+      open.terminalId,
+      composerScreen,
+      scrolledPastScreen("• Everything is ok now"),
+    );
+    try {
+      const response = await postJson(fixture, `/threads/${thread.id}/send`, {
+        input: textInput("ok"),
+        mode: "auto",
+      });
+      expect(response.status).toBe(200);
+      expect(cli.inputs()).toEqual(["\u001b[200~ok\u001b[201~", "\r"]);
+    } finally {
+      cli.stop();
+    }
+  });
+
+  it.each([
+    ["the whole screen", "\u001b[2J", ""],
+    ["below the cursor", "\u001b[J", "\r\n\u276f 1. ok\r\n  2. No"],
+    ["below the cursor, explicit", "\u001b[0J", "\r\n\u276f 1. ok\r\n  2. No"],
+    ["above the cursor", "\u001b[1J", "\r\n\u276f 1. ok\r\n  2. No"],
+  ])(
+    "never presses Enter when the CLI erases %s and reprints older output",
+    async (_name, erase, menu) => {
+      const fixture = await createFixture();
+      const { open, thread } = await openRunningNativeThread(fixture, {
+        providerId: "codex",
+      });
+      const history = scrolledPastScreen("• Everything is ok now");
+      const cli = startFakeCli(
+        fixture,
+        open.terminalId,
+        () => `\u001b[H${erase}${history}${menu}`,
+        history,
+      );
+      try {
+        const response = await postJson(fixture, `/threads/${thread.id}/send`, {
+          input: textInput("ok"),
+          mode: "auto",
+        });
+        expect(response.status).toBe(409);
+        expect(apiErrorSchema.parse(await readJson(response)).code).toBe(
+          "native_terminal_input_not_shown",
+        );
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        expect(cli.inputs()).toEqual(["\u001b[200~ok\u001b[201~"]);
+      } finally {
+        cli.stop();
+      }
+    },
+    10_000,
+  );
 
   it("sends nothing when the CLI redraws the same text from its history", async () => {
     const fixture = await createFixture();
