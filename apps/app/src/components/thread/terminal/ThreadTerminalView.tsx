@@ -6,10 +6,7 @@ import {
   type TouchEvent as ReactTouchEvent,
 } from "react";
 import "@xterm/xterm/css/xterm.css";
-import type {
-  ITheme,
-  Terminal as XTermTerminal,
-} from "@xterm/xterm";
+import type { ITheme, Terminal as XTermTerminal } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
 import {
   ContextMenu,
@@ -60,8 +57,15 @@ import {
 import { handleTerminalFileDrop } from "./terminal-file-drop";
 import { dropMouseReportsWithoutPosition } from "./terminal-mouse-reports";
 import { attachTerminalInteractions } from "./terminal-interactions";
-import { loadOptionalTerminalWebglAddon, loadTerminalWebglRenderer } from "./terminal-webgl-renderer";
-export { loadOptionalTerminalWebglAddon, loadTerminalWebglRenderer } from "./terminal-webgl-renderer";
+import {
+  loadOptionalTerminalWebglAddon,
+  loadTerminalWebglRenderer,
+  observeTerminalWebglVisibility,
+} from "./terminal-webgl-renderer";
+export {
+  loadOptionalTerminalWebglAddon,
+  loadTerminalWebglRenderer,
+} from "./terminal-webgl-renderer";
 
 export const TERMINAL_FONT_FAMILY =
   '"JetBrainsMono Nerd Font Mono", "MesloLGS NF", "Symbols Nerd Font Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace';
@@ -656,6 +660,9 @@ export function ThreadTerminalView({
       selectionText: "",
     });
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const webglVisibilityRef = useRef<ReturnType<
+    typeof observeTerminalWebglVisibility
+  > | null>(null);
   const terminalRef = useRef<XTermTerminal | null>(null);
   const hoveredTerminalLinkRef = useRef<TerminalLinkTarget | null>(null);
   const pointerStartPointRef = useRef<SelectionAnchorPoint | null>(null);
@@ -866,6 +873,8 @@ export function ThreadTerminalView({
     let disposed = false;
     let transport: TerminalWebSocketTransport | null = null;
     let terminal: XTermTerminal | null = null;
+    let webglRenderer: ReturnType<typeof loadTerminalWebglRenderer> | null =
+      null;
     let fitAddon: FitAddon | null = null;
     let replayNextSeq: number | null = null;
     const replayWriteState: TerminalReplayWriteState = {
@@ -954,14 +963,19 @@ export function ThreadTerminalView({
           },
         ),
       );
+      terminal.open(containerElement);
       if (webglAddonModule !== null) {
-        loadTerminalWebglRenderer(
+        webglRenderer = loadTerminalWebglRenderer(
           terminal,
           () => new webglAddonModule.WebglAddon(),
-          { root: containerElement },
+          { root: containerElement, visible: false },
         );
+        webglVisibilityRef.current = observeTerminalWebglVisibility({
+          root: containerElement,
+          renderer: webglRenderer,
+          isPanelOpen: () => isPanelOpenRef.current,
+        });
       }
-      terminal.open(containerElement);
       writeTerminalSessionStatusNotice({
         lastNotice: lastStatusNoticeRef,
         session: sessionRef.current,
@@ -1218,6 +1232,9 @@ export function ThreadTerminalView({
         reportDocumentVisibility,
       );
       transport?.dispose();
+      webglVisibilityRef.current?.dispose();
+      webglVisibilityRef.current = null;
+      webglRenderer?.dispose();
       terminal?.dispose();
       terminalRef.current = null;
       scheduleFitRef.current = null;
@@ -1277,6 +1294,10 @@ export function ThreadTerminalView({
         : connectionNotice === "reconnected"
           ? "Reconnected"
           : null;
+  useEffect(() => {
+    webglVisibilityRef.current?.sync();
+  }, [isPanelOpen]);
+
   const contextMenuLink = contextMenuState.link;
   const contextMenuSelectionText = contextMenuState.selectionText;
   const hasTerminalContextMenuTarget =
