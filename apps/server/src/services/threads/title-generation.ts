@@ -14,6 +14,7 @@ import {
 } from "@bb/text-utils";
 import type { AppDeps, LoggedWorkSessionDeps } from "../../types.js";
 import { runTextAiTask } from "../ai/ai-tasks.js";
+import { runtimeErrorLogFields } from "../lib/error-log-fields.js";
 
 const MIN_TITLE_GENERATION_WORDS = 5;
 const MAX_GENERATED_TITLE_WIDTH = 48;
@@ -37,6 +38,7 @@ interface GeneratedThreadMetadata {
 }
 
 type ThreadMetadataGenerationOutcomeReason =
+  | "already-titled"
   | "empty-input"
   | "failed"
   | "inference-unavailable"
@@ -48,6 +50,13 @@ export interface ThreadMetadataGenerationOutcome {
   metadata: GeneratedThreadMetadata | null;
   reason?: ThreadMetadataGenerationOutcomeReason;
 }
+
+interface AppliedThreadTitleOutcome {
+  outcome: ThreadMetadataGenerationOutcome;
+  titleApplied: boolean;
+}
+
+const titlesInFlight = new Map<string, Promise<AppliedThreadTitleOutcome>>();
 
 function cleanPromptText(input: PromptInput[]): string {
   return input
@@ -250,4 +259,44 @@ export function applyGeneratedThreadTitle(
   });
 
   return true;
+}
+
+export function generateAndApplyThreadTitle(
+  deps: LoggedWorkSessionDeps,
+  args: ThreadMetadataGenerationArgs,
+): Promise<AppliedThreadTitleOutcome> {
+  if (getThread(deps.db, args.threadId)?.title != null) {
+    return Promise.resolve({
+      outcome: { durationMs: 0, metadata: null, reason: "already-titled" },
+      titleApplied: false,
+    });
+  }
+  const pending = titlesInFlight.get(args.threadId);
+  if (pending !== undefined) return pending;
+  const generating = generateThreadMetadataWithOutcome(deps, args)
+    .then((outcome) => {
+      let titleApplied = false;
+      if (outcome.metadata?.title) {
+        try {
+          titleApplied = applyGeneratedThreadTitle(deps, {
+            threadId: args.threadId,
+            title: outcome.metadata.title,
+          });
+        } catch (error) {
+          deps.logger.warn(
+            {
+              threadId: args.threadId,
+              ...runtimeErrorLogFields(deps.config, error),
+            },
+            "Failed to apply generated thread title",
+          );
+        }
+      }
+      return { outcome, titleApplied };
+    })
+    .finally(() => {
+      titlesInFlight.delete(args.threadId);
+    });
+  titlesInFlight.set(args.threadId, generating);
+  return generating;
 }

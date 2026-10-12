@@ -189,7 +189,7 @@ export const terminalDataPlaneChildMessageSchema = z.discriminatedUnion(
         type: z.literal("browser.detached"),
         attachId: idSchema,
         terminalId: idSchema,
-        nextSeq: seqSchema.nullable(),
+        lastAckedSeq: seqSchema.nullable(),
       })
       .strict(),
     z
@@ -273,3 +273,81 @@ export const terminalDataPlaneChildMessageSchema = z.discriminatedUnion(
 export type TerminalDataPlaneChildMessage = z.infer<
   typeof terminalDataPlaneChildMessageSchema
 >;
+
+export type TerminalDataPlaneIpcDirection = "main-to-child" | "child-to-main";
+export type TerminalDataPlaneIpcRejection =
+  | "malformed"
+  | "unsupported-version"
+  | "wrong-direction";
+
+export class TerminalDataPlaneIpcError extends Error {
+  readonly direction: TerminalDataPlaneIpcDirection;
+  readonly rejection: TerminalDataPlaneIpcRejection;
+
+  constructor(
+    direction: TerminalDataPlaneIpcDirection,
+    rejection: TerminalDataPlaneIpcRejection,
+    detail: string,
+  ) {
+    super(`Rejected ${direction} terminal data plane message: ${detail}`);
+    this.name = "TerminalDataPlaneIpcError";
+    this.direction = direction;
+    this.rejection = rejection;
+  }
+}
+
+const versionEnvelopeSchema = z.object({ v: z.unknown() }).passthrough();
+
+function rejectTerminalDataPlaneMessage(
+  direction: TerminalDataPlaneIpcDirection,
+  raw: unknown,
+  acceptedInOtherDirection: boolean,
+  detail: string,
+): never {
+  const envelope = versionEnvelopeSchema.safeParse(raw);
+  if (envelope.success && envelope.data.v !== TERMINAL_DATA_PLANE_IPC_VERSION) {
+    throw new TerminalDataPlaneIpcError(
+      direction,
+      "unsupported-version",
+      `version ${String(envelope.data.v)} is not ${TERMINAL_DATA_PLANE_IPC_VERSION}`,
+    );
+  }
+  if (acceptedInOtherDirection) {
+    throw new TerminalDataPlaneIpcError(
+      direction,
+      "wrong-direction",
+      "the message belongs to the other direction",
+    );
+  }
+  throw new TerminalDataPlaneIpcError(direction, "malformed", detail);
+}
+
+export function parseTerminalDataPlaneMainToChildMessage(
+  raw: unknown,
+): TerminalDataPlaneMainMessage {
+  const parsed = terminalDataPlaneMainMessageSchema.safeParse(raw);
+  if (parsed.success) {
+    return parsed.data;
+  }
+  return rejectTerminalDataPlaneMessage(
+    "main-to-child",
+    raw,
+    terminalDataPlaneChildMessageSchema.safeParse(raw).success,
+    parsed.error.message,
+  );
+}
+
+export function parseTerminalDataPlaneChildToMainMessage(
+  raw: unknown,
+): TerminalDataPlaneChildMessage {
+  const parsed = terminalDataPlaneChildMessageSchema.safeParse(raw);
+  if (parsed.success) {
+    return parsed.data;
+  }
+  return rejectTerminalDataPlaneMessage(
+    "child-to-main",
+    raw,
+    terminalDataPlaneMainMessageSchema.safeParse(raw).success,
+    parsed.error.message,
+  );
+}
