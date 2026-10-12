@@ -1,7 +1,18 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveAppServerLaunch } from "./bridge.js";
 
-afterEach(() => vi.unstubAllEnvs());
+let configHome: string;
+beforeEach(() => {
+  configHome = mkdtempSync(path.join(os.tmpdir(), "bb-codex-launch-"));
+  vi.stubEnv("CODEX_HOME", configHome);
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+  rmSync(configHome, { recursive: true, force: true });
+});
 
 describe("Codex Account Pool launch", () => {
   it("adds an in-memory base URL and environment-backed hub header", () => {
@@ -19,6 +30,10 @@ describe("Codex Account Pool launch", () => {
     expect(launch.args).toContain(
       "model_providers.bb-account-pool.supports_websockets=false",
     );
+    expect(launch.args).toContain(
+      'shell_environment_policy.filters={"CODEX_*POOL*"="exclude","BB_ACCOUNT_POOL_*"="exclude","CODEX_OPENAI_BASE_URL"="exclude"}',
+    );
+
     expect(JSON.stringify(launch.args)).not.toContain("secret-machine-token");
   });
 

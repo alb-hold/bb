@@ -11,6 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import type { ProviderNativeTerminal } from "@bb/domain";
 import type { NativeTerminalLaunchSpec } from "@bb/server-contract";
+import { CODEX_POOL_LAUNCH_ENV_ARGS } from "bb-plugin-provider-codex/pool-launch";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   findNativeSession,
@@ -50,6 +51,7 @@ const DISCOVERED_CLI: ProviderNativeTerminal = {
   executable: "codex",
   launchArgs: ["--no-daemon"],
   modelArgs: ["-c", 'model="{model}"'],
+  experimental_launchEnvArgs: CODEX_POOL_LAUNCH_ENV_ARGS,
   imageArgs: ["--image", "{image}"],
   pastePlaceholders: [],
   sessionRoot: { env: "CODEX_HOME", home: ".codex" },
@@ -118,6 +120,91 @@ function writeRollout(args: {
 }
 
 describe("resolveNativeHarnessLaunch", () => {
+  it("uses a provider's declared environment arguments for any executable", () => {
+    const launch = resolveNativeHarnessLaunch(
+      spec({
+        cli: {
+          ...DISCOVERED_CLI,
+          executable: "custom-cli",
+          experimental_launchEnvArgs: {
+            required: ["CUSTOM_BASE", "CUSTOM_TOKEN"],
+            args: [
+              "--config",
+              { env: "CUSTOM_BASE", prefix: "base_url=" },
+              "token_env=CUSTOM_TOKEN",
+            ],
+          },
+        },
+        nativeSessionId: null,
+      }),
+      {
+        CUSTOM_BASE: 'http://127.0.0.1/a"b',
+        CUSTOM_TOKEN: "private-test-token",
+      },
+    );
+    expect(launch.args).toEqual([
+      "--no-daemon",
+      "--config",
+      'base_url="http://127.0.0.1/a\\"b"',
+      "token_env=CUSTOM_TOKEN",
+    ]);
+    expect(launch.args.join(" ")).not.toContain("private-test-token");
+  });
+
+  it.each([null, "abc-123"])(
+    "routes a pooled Codex launch and resume %s without putting the token in argv",
+    (nativeSessionId) => {
+      const launch = resolveNativeHarnessLaunch(
+        spec({ cli: DISCOVERED_CLI, nativeSessionId }),
+        {
+          HOME: tempHome(),
+          CODEX_OPENAI_BASE_URL: "http://127.0.0.1:4000/pool/v1",
+          CODEX_POOL_AUTH_TOKEN: "test-pool-token",
+        },
+      );
+      expect(launch.args).toContain('model_provider="bb-account-pool"');
+      expect(launch.args).toContain(
+        'model_providers.bb-account-pool.base_url="http://127.0.0.1:4000/pool/v1"',
+      );
+      expect(launch.args).toContain(
+        'model_providers.bb-account-pool.env_http_headers.x-bb-account-pool-token="CODEX_POOL_AUTH_TOKEN"',
+      );
+      expect(launch.args).toContain(
+        'shell_environment_policy.filters={"CODEX_*POOL*"="exclude","BB_ACCOUNT_POOL_*"="exclude","CODEX_OPENAI_BASE_URL"="exclude"}',
+      );
+
+      expect(launch.args.join(" ")).not.toContain("test-pool-token");
+    },
+  );
+
+  it.each([
+    {},
+    { CODEX_OPENAI_BASE_URL: "http://127.0.0.1:4000/pool/v1" },
+    { CODEX_POOL_AUTH_TOKEN: "test-pool-token" },
+    { CODEX_OPENAI_BASE_URL: "", CODEX_POOL_AUTH_TOKEN: "test-pool-token" },
+  ])("leaves an unrouted Codex launch alone with %j", (env) => {
+    expect(
+      resolveNativeHarnessLaunch(
+        spec({ cli: DISCOVERED_CLI, nativeSessionId: null }),
+        env,
+      ).args,
+    ).toEqual(["--no-daemon"]);
+  });
+
+  it("leaves Claude's environment-based routing unchanged", () => {
+    const launch = resolveNativeHarnessLaunch(spec({}), {
+      HOME: tempHome(),
+      ANTHROPIC_BASE_URL: "http://127.0.0.1:4000/pool",
+      ANTHROPIC_AUTH_TOKEN: "test-claude-token",
+      CODEX_OPENAI_BASE_URL: "http://127.0.0.1:4000/pool/v1",
+      CODEX_POOL_AUTH_TOKEN: "test-pool-token",
+    });
+    expect(launch.args).toEqual([
+      "--session-id",
+      "6f1c2a8e-7d1b-4a55-9f0e-1c2d3e4f5a6b",
+    ]);
+  });
+
   it("starts a fresh claude session with the preassigned id and first prompt", () => {
     const home = tempHome();
     expect(
@@ -187,7 +274,7 @@ describe("resolveNativeHarnessLaunch", () => {
   });
 
   it("passes an image path with spaces and shell characters as one argument", () => {
-    const image = "/tmp/my shots/it's $HOME; rm -rf `x` & (1) \"a\".png";
+    const image = '/tmp/my shots/it\'s $HOME; rm -rf `x` & (1) "a".png';
     const args = resolveNativeHarnessLaunch(
       spec({
         cli: DISCOVERED_CLI,
