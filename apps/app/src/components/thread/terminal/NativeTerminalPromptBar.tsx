@@ -66,8 +66,7 @@ export function NativeTerminalPromptBar({
     pendingUploads === 0 &&
     !send.isPending;
 
-  const attachFiles = async (files: readonly File[]) => {
-    if (files.length === 0) return;
+  const uploadFiles = async (files: readonly File[]) => {
     setAttachError(null);
     setPendingUploads((count) => count + files.length);
     const failed: string[] = [];
@@ -84,6 +83,13 @@ export function NativeTerminalPromptBar({
     if (failed.length > 0) {
       setAttachError(`Failed to attach ${failed.join(", ")}`);
     }
+  };
+
+  const attachFiles = (files: readonly File[]) => {
+    if (files.length === 0) return;
+    uploadFiles(files).catch(() => {
+      setAttachError("Failed to attach the selected files");
+    });
   };
 
   const submit = (event?: FormEvent<HTMLFormElement>) => {
@@ -118,7 +124,7 @@ export function NativeTerminalPromptBar({
     const files = Array.from(event.clipboardData.files);
     if (files.length === 0) return;
     event.preventDefault();
-    void attachFiles(files);
+    attachFiles(files);
   };
 
   return (
@@ -171,7 +177,7 @@ export function NativeTerminalPromptBar({
           onChange={(event) => {
             const files = Array.from(event.target.files ?? []);
             event.target.value = "";
-            void attachFiles(files);
+            attachFiles(files);
           }}
         />
         <Button
