@@ -866,9 +866,10 @@ function ThreadRowComponent({
       >
         <span
           data-sidebar-thread-trailing-badges=""
+          data-sidebar-hover-actions-open={isActionsOpen ? "true" : undefined}
           className={cn(
             SIDEBAR_HOVER_ACTIONS_FADE_CLASS,
-            "flex min-w-0 shrink-0 items-center gap-0.5",
+            "flex min-w-0 shrink-0 items-center gap-0.5 [@media(hover:none)]:opacity-100!",
           )}
         >
           <SidebarThreadPullRequestChip threadId={thread.id} />

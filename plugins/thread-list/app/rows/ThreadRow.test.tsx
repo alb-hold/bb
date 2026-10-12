@@ -637,6 +637,23 @@ describe("ThreadRow", () => {
     ).not.toBe("");
   });
 
+  it("fades the trailing badges while the actions menu is open so they never draw under the actions", async () => {
+    const { container } = renderThreadRow({
+      sidebarPullRequest: createPullRequest("open"),
+    });
+    const badges = container.querySelector<HTMLElement>(
+      "[data-sidebar-thread-trailing-badges]",
+    )!;
+    expect(badges.hasAttribute("data-sidebar-hover-actions-open")).toBe(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "Thread actions" }));
+    await screen.findByRole("menuitem", { name: "Rename" });
+
+    expect(badges.getAttribute("data-sidebar-hover-actions-open")).toBe("true");
+    expect(badges.className).toContain("bb-sidebar-hover-actions-fade");
+    expect(badges.className).toContain("[@media(hover:none)]:opacity-100!");
+  });
+
   it("keeps working status, PR badge, and actions in the trailing layout lane", () => {
     const { container } = renderThreadRow({
       thread: createThread({ status: "active", runtimeStatus: "active" }),
