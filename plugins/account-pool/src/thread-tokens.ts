@@ -277,11 +277,7 @@ export class ThreadTokenStore {
         token,
         tokenDigest: digest(token),
         ...(lifetime === "process"
-          ? {
-              lifetime,
-              issuedAt: this.now(),
-              expiresAt: this.now() + PROCESS_CREDENTIAL_MAX_AGE_MS,
-            }
+          ? { lifetime, ...this.processLifetime() }
           : {}),
       };
       await this.persistCredential(this.file(record), record);
@@ -321,11 +317,7 @@ export class ThreadTokenStore {
         token,
         tokenDigest: digest(token),
         ...(lifetime === "process"
-          ? {
-              lifetime,
-              issuedAt: this.now(),
-              expiresAt: this.now() + PROCESS_CREDENTIAL_MAX_AGE_MS,
-            }
+          ? { lifetime, ...this.processLifetime() }
           : {}),
       };
       await this.persistCredential(this.nestedFile(record), record);
@@ -783,6 +775,27 @@ export class ThreadTokenStore {
     );
   }
 
+  private processLifetime(): {
+    issuedAt: number;
+    expiresAt: number;
+  } {
+    const issuedAt = this.now();
+    return { issuedAt, expiresAt: issuedAt + PROCESS_CREDENTIAL_MAX_AGE_MS };
+  }
+
+  private lifetimeSound(record: {
+    expiresAt?: number;
+    issuedAt?: number;
+  }): boolean {
+    const { issuedAt, expiresAt } = record;
+    return (
+      issuedAt !== undefined &&
+      expiresAt !== undefined &&
+      expiresAt > issuedAt &&
+      expiresAt - issuedAt <= PROCESS_CREDENTIAL_MAX_AGE_MS
+    );
+  }
+
   private expired(record: {
     lifetime?: "process";
     expiresAt?: number;
@@ -790,9 +803,8 @@ export class ThreadTokenStore {
   }): boolean {
     if (record.lifetime !== "process") return false;
     return (
-      record.issuedAt === undefined ||
-      record.expiresAt === undefined ||
-      record.expiresAt <= this.now()
+      !this.lifetimeSound(record) ||
+      (record.expiresAt ?? 0) <= this.now()
     );
   }
 
@@ -802,13 +814,9 @@ export class ThreadTokenStore {
     issuedAt?: number;
   }): boolean {
     if (record.lifetime !== "process") return true;
-    const { issuedAt, expiresAt } = record;
     return (
-      issuedAt !== undefined &&
-      expiresAt !== undefined &&
-      issuedAt <= this.now() + PROCESS_CREDENTIAL_CLOCK_SKEW_MS &&
-      expiresAt > issuedAt &&
-      expiresAt - issuedAt <= PROCESS_CREDENTIAL_MAX_AGE_MS &&
+      record.issuedAt !== undefined &&
+      record.issuedAt <= this.now() + PROCESS_CREDENTIAL_CLOCK_SKEW_MS &&
       !this.expired(record)
     );
   }

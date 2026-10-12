@@ -424,6 +424,57 @@ it("accepts a record minted at the clock skew allowance and one of exactly mint 
   expect(await skewed.authenticate(token)).toEqual(route);
 });
 
+it("derives expiry from a single clock read and refuses the token at mint plus the maximum before and after restore", async () => {
+  const { directory, hosts, route, hostToken } = await fixture();
+  let clock = 40_000_000;
+  let step = 1;
+  const now = () => {
+    const value = clock;
+    clock += step;
+    return value;
+  };
+  const minting = new ThreadTokenStore(directory, hosts, now);
+  await minting.initialize([route.hostId]);
+  const nestedRoute = { hostId: route.hostId, threadId: route.threadId };
+  const token = await minting.forThread(route, hostToken, "process");
+  const nested = await minting.forNested(nestedRoute, hostToken, "process");
+  const issued: Record<string, number> = {};
+  for (const name of await fs.readdir(directory)) {
+    if (!name.startsWith("scoped-process-")) continue;
+    const stored = z
+      .record(z.string(), z.unknown())
+      .parse(JSON.parse(await fs.readFile(path.join(directory, name), "utf8")));
+    const issuedAt = z.number().parse(stored.issuedAt);
+    expect(z.number().parse(stored.expiresAt) - issuedAt).toBe(
+      PROCESS_CREDENTIAL_MAX_AGE_MS,
+    );
+    issued[name.startsWith("scoped-process-nested-") ? "nested" : "route"] =
+      issuedAt;
+  }
+  const routeIssued = z.number().parse(issued.route);
+  const nestedIssued = z.number().parse(issued.nested);
+  step = 0;
+  const check = async (
+    store: ThreadTokenStore,
+    offset: number,
+    accepted: boolean,
+  ) => {
+    clock = routeIssued + offset;
+    expect(await store.authenticate(token)).toEqual(accepted ? route : null);
+    clock = nestedIssued + offset;
+    expect(await store.authenticateNested(nested)).toEqual(
+      accepted ? nestedRoute : null,
+    );
+  };
+  await check(minting, PROCESS_CREDENTIAL_MAX_AGE_MS - 1, true);
+  await check(minting, PROCESS_CREDENTIAL_MAX_AGE_MS, false);
+  clock = routeIssued;
+  const restored = new ThreadTokenStore(directory, hosts, now);
+  await restored.initialize([route.hostId]);
+  await check(restored, PROCESS_CREDENTIAL_MAX_AGE_MS - 1, true);
+  await check(restored, PROCESS_CREDENTIAL_MAX_AGE_MS, false);
+});
+
 it("scrubs existing raw provider and nested tokens to hashes without losing authentication", async () => {
   const { directory, hosts, threads, route, hostToken } = await fixture();
   const tokens = [
