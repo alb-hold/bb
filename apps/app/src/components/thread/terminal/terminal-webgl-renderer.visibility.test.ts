@@ -139,6 +139,19 @@ function setupVisibility(
 }
 
 describe("terminal visibility signals", () => {
+  it("releases and reacquires contexts across an arbitrarily small visible sliver", () => {
+    const state = setupVisibility();
+    const sliver = new DOMRect(10, 10, 1e-11, 1e-11);
+    state.intersect(true, sliver);
+    expect(state.root.dataset.terminalRenderer).toBe("webgl");
+    state.intersect(true, new DOMRect(10, 10, 0, 0));
+    expect(state.root.dataset.terminalRenderer).toBe("dom");
+    state.intersect(true, sliver);
+    expect(state.root.dataset.terminalRenderer).toBe("webgl");
+    state.observer.dispose();
+    state.renderer.dispose();
+  });
+
   it("waits for a visible-area observation before allocating a context", () => {
     const state = setupVisibility(true, false);
     expect(state.root.dataset.terminalRenderer).toBe("dom");

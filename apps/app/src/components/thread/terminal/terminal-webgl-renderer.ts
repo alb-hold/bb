@@ -279,7 +279,7 @@ export function observeTerminalWebglVisibility({
           }
           sync();
         },
-        { threshold: [0, Number.EPSILON] },
+        { threshold: [0, Number.MIN_VALUE] },
       );
   resizeObserver.observe(root);
   intersectionObserver?.observe(root);
