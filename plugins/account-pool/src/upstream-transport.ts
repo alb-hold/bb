@@ -1,7 +1,35 @@
+import { lookup as dnsLookup } from "node:dns";
+import type { LookupFunction } from "node:net";
 import { EnvHttpProxyAgent } from "undici";
 
-export function createUpstreamTransport() {
-  const dispatcher = new EnvHttpProxyAgent({ allowH2: false });
+export const CONNECT_TIMEOUT_MS = 9_000;
+export const CONNECT_SURFACE_LIMIT_MS = 10_000;
+export const CONNECT_MAX_ADDRESSES = 4;
+export const CONNECT_ATTEMPT_TIMEOUT_MS = 2_400;
+
+export function createUpstreamTransport(
+  connect: { lookup?: LookupFunction } = {},
+) {
+  const resolve = connect.lookup ?? dnsLookup;
+  const lookup: LookupFunction = (hostname, options, done) => {
+    resolve(hostname, options, (error, address, family) => {
+      done(
+        error,
+        Array.isArray(address)
+          ? address.slice(0, CONNECT_MAX_ADDRESSES)
+          : address,
+        family,
+      );
+    });
+  };
+  const dispatcher = new EnvHttpProxyAgent({
+    allowH2: false,
+    connect: {
+      timeout: CONNECT_TIMEOUT_MS,
+      autoSelectFamilyAttemptTimeout: CONNECT_ATTEMPT_TIMEOUT_MS,
+      lookup,
+    },
+  });
   const upstreamFetch: typeof fetch = (input, init) => {
     const options = { ...init, dispatcher };
     return fetch(input, options);
@@ -36,9 +64,21 @@ export function transportErrorCode(error: unknown): string {
       typeof cause.code === "string" &&
       TRANSPORT_CODES.has(cause.code)
     ) {
-      return cause.code;
+      return withMemberCodes(cause, cause.code);
     }
     cause = cause.cause;
   }
   return "unclassified transport error";
+}
+
+function withMemberCodes(error: Error, code: string): string {
+  if (!("errors" in error) || !Array.isArray(error.errors)) return code;
+  const members = error.errors.flatMap((member: unknown) =>
+    member instanceof Error &&
+    "code" in member &&
+    typeof member.code === "string"
+      ? [member.code]
+      : [],
+  );
+  return members.length === 0 ? code : `${code} [${members.join(", ")}]`;
 }
