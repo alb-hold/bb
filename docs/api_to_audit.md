@@ -1108,14 +1108,15 @@ thread and terminal and compares with `timingSafeEqual`. A missing, wrong,
 other-thread or replaced (the terminal was opened again) credential is rejected
 (401, or 409 when the terminal is no longer live) before any tool is resolved
 or invoked. `bb thread native-run` takes the variable out of its environment
-(so neither the holder nor the provider CLI inherits it) and writes it
-atomically to a mode 0600 file in a 0700 directory beside the holder socket
-(`<thread>-<scope>.tools/credential`); the hidden `bb thread native-mcp` reads
-that file on every request, so a reopened terminal rotates the secret without
-restarting the CLI, and the holder deletes the directory when it exits. The
-secret is never in argv or logs. Same-OS-user processes that can read that file
-are trusted, since they can already read the bb data directory; other users,
-remote API callers and local processes without the file cannot use the routes.
+(so neither the holder nor the provider CLI inherits it) and sends it over the
+holder's 0600 unix socket, which keeps it in memory only; the hidden `bb thread
+native-mcp` reads it from the holder's 0600 credential socket on every request,
+so a reopened terminal rotates the secret without restarting the CLI. Both
+providers use this one path: neither CLI's MCP launch offers a way to hand a
+secret to the server that avoids argv or the CLI's own environment. The
+secret is never in argv, logs or on disk. Same-OS-user processes that can
+connect to the holder sockets are trusted, since they can already read that
+user's bb data; other users and remote API callers cannot use the routes.
 First-party
 declarations: `provider-claude-code` (`--mcp-config` with inline JSON) and
 `provider-codex` (`-c mcp_servers.*`). Stabilization audit: decide whether the
