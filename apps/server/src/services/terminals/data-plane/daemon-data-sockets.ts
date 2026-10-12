@@ -270,11 +270,11 @@ export class DaemonDataSockets {
       daemonSessionId,
       hostId: entry.hostId,
     });
-    if (
-      !isCurrent() ||
-      mode !== "data-socket" ||
-      !this.options.transport.isReady
-    ) {
+    if (!isCurrent() || !this.options.transport.isReady) {
+      return;
+    }
+    if (mode !== "data-socket") {
+      this.scheduleRetry(daemonSessionId, entry);
       return;
     }
     const ticket = this.options.tickets.issue({

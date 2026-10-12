@@ -59,7 +59,7 @@ async function until(check: () => boolean, what: string): Promise<void> {
   }
 }
 
-type DaemonMode = "capable" | "legacy" | "manual";
+type DaemonMode = "capable" | "flaky" | "manual" | "refusing";
 
 interface DataSocketDial {
   socket: WebSocket | null;
@@ -164,8 +164,11 @@ async function createFixture(mode: DaemonMode = "capable"): Promise<Fixture> {
         hostId === "host_1" ? currentSessionId.value : null,
       request: async ({ message }) => {
         commands.push(message.command.type);
-        if (mode === "legacy") {
+        if (mode === "refusing") {
           return rpcAnswer(message, null);
+        }
+        if (mode === "flaky" && commands.length === 1) {
+          throw new Error("probe timed out");
         }
         if (message.command.type === "terminal-data-plane.probe") {
           return rpcAnswer(message, {
@@ -407,17 +410,43 @@ describe("terminal data plane", () => {
   );
 
   it(
-    "leaves every terminal on the server for a daemon that does not know the data socket",
+    "attaches after a probe that got no answer",
     async () => {
-      const fixture = await createFixture("legacy");
+      const fixture = await createFixture("flaky");
       await until(() => fixture.plane.state === "ready", "the child");
       fixture.openSession();
-      await until(() => fixture.commands.length === 1, "the probe");
+      await until(
+        () => fixture.plane.isSessionAttached("session_1"),
+        "the daemon data socket",
+      );
+
+      expect(fixture.commands).toEqual([
+        "terminal-data-plane.probe",
+        "terminal-data-plane.probe",
+        "terminal-data-plane.connect",
+      ]);
+      const client = connectClient(fixture.port, "/ws/terminals/term_1?sinceSeq=0");
+      await until(() => client.frames.length >= 2, "the replay");
+      expect(fixture.fallbackUpgrades).toEqual([]);
+    },
+    120_000,
+  );
+
+  it(
+    "leaves every terminal on the server for a daemon that refuses the probe, and stops asking",
+    async () => {
+      const fixture = await createFixture("refusing");
+      await until(() => fixture.plane.state === "ready", "the child");
+      fixture.openSession();
+      await until(() => fixture.commands.length === 9, "the last probe");
+      await new Promise((resolve) => setTimeout(resolve, 300));
 
       const client = connectClient(fixture.port, "/ws/terminals/term_1?sinceSeq=0");
       await until(() => client.closed(), "the in-process path");
 
-      expect(fixture.commands).toEqual(["terminal-data-plane.probe"]);
+      expect(fixture.commands).toEqual(
+        Array.from({ length: 9 }, () => "terminal-data-plane.probe"),
+      );
       expect(fixture.tickets).toEqual([]);
       expect(fixture.plane.isSessionAttached("session_1")).toBe(false);
       expect(fixture.directOutput).toEqual([]);

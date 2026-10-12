@@ -114,12 +114,16 @@ go through the server connection.
 The server log says which path a host is on: `Terminal data socket attached`
 and `Terminal data socket detached`, each with `hostId` and `daemonSessionId`.
 The daemon log has matching `Terminal data socket attached` lines. A host stays
-on the server connection when its daemon predates the data socket (the probe
-command is answered with `invalid_command`), when the helper is down, or after
-the data socket failed to open six times in a row. Every switch between the
-two paths closes that host's browser terminal sockets with code 1013 and reason
-`terminal-output-path-changed`; the client reconnects and replays from its last
-sequence number, so no output is lost or repeated.
+on the server connection while its daemon does not answer the probe command,
+while the helper is down, or after the data socket failed to open six times in
+a row. Every switch between the two paths closes that host's browser terminal
+sockets with code 1013 and reason `terminal-output-path-changed`; the client
+reconnects and asks the daemon to replay from its last sequence number.
+
+The probe and connect commands are new host RPC commands. A daemon that does
+not know a command type closes its server connection, so they ship with a
+`HOST_DAEMON_PROTOCOL_VERSION` bump and the server never sends them to an older
+daemon.
 
 The data socket is admitted only with a single-use ticket (15 seconds, bound to
 the host and its daemon session, sent over the already authenticated server
