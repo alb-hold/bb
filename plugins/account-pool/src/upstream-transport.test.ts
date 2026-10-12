@@ -5,9 +5,15 @@ import { promisify } from "node:util";
 import http from "node:http";
 import http2 from "node:http2";
 import { once } from "node:events";
+import type { LookupFunction } from "node:net";
 import type { Dispatcher } from "undici";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import net from "node:net";
 import {
+  CONNECT_ATTEMPT_TIMEOUT_MS,
+  CONNECT_MAX_ADDRESSES,
+  CONNECT_SURFACE_LIMIT_MS,
+  CONNECT_TIMEOUT_MS,
   createUpstreamTransport,
   transportErrorCode,
 } from "./upstream-transport.js";
@@ -188,3 +194,162 @@ it("does not expose arbitrary error messages or unrecognized codes", () => {
   error.cause = error;
   expect(transportErrorCode(error)).toBe("unclassified transport error");
 });
+
+const stallingDualStackLookup: LookupFunction = (_hostname, _options, done) => {
+  done(null, [
+    { address: "127.0.0.1", family: 4 },
+    { address: "::1", family: 6 },
+  ]);
+  const until = Date.now() + 600;
+  while (Date.now() < until) {}
+};
+
+it("connects when the event loop stalls longer than Node's default 250ms address-attempt window", async () => {
+  const target = await upstream();
+  const transport = createUpstreamTransport({
+    lookup: stallingDualStackLookup,
+  });
+  cleanups.push(transport.destroy);
+  const response = await transport.fetch(
+    target.url.replace("127.0.0.1", "upstream.test"),
+  );
+  expect(await response.text()).toBe("OK");
+  expect(target.requests()).toBe(1);
+});
+
+it("names the member errors of an aggregate connect failure", () => {
+  const aggregate = Object.assign(new AggregateError([], "connect failed"), {
+    code: "ETIMEDOUT",
+    errors: [
+      Object.assign(new Error("a"), { code: "ETIMEDOUT" }),
+      Object.assign(new Error("b"), { code: "EHOSTUNREACH" }),
+      new Error("no code"),
+    ],
+  });
+  expect(
+    transportErrorCode(new TypeError("fetch failed", { cause: aggregate })),
+  ).toBe("ETIMEDOUT [ETIMEDOUT, EHOSTUNREACH]");
+});
+
+const droppedAddress = (index: number) => ({
+  address: `192.0.2.${index + 1}`,
+  family: 4,
+});
+
+async function addressesAreSilentlyDropped(): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = net.connect({
+      host: droppedAddress(0).address,
+      port: 9,
+      autoSelectFamily: false,
+    });
+    socket.setTimeout(500);
+    socket.on("connect", () => resolve(false));
+    socket.on("error", () => resolve(false));
+    socket.on("timeout", () => resolve(true));
+  });
+}
+
+const dropped = await addressesAreSilentlyDropped();
+
+async function timedFetch(
+  url: string,
+  lookup: LookupFunction,
+): Promise<{ elapsedMs: number; text: string | null; error: unknown }> {
+  const transport = createUpstreamTransport({ lookup });
+  cleanups.push(transport.destroy);
+  const started = performance.now();
+  try {
+    const response = await transport.fetch(url);
+    return {
+      elapsedMs: performance.now() - started,
+      text: await response.text(),
+      error: null,
+    };
+  } catch (error) {
+    return { elapsedMs: performance.now() - started, text: null, error };
+  }
+}
+
+it("starts every permitted address attempt before the connect timeout and keeps the timeout under the surface limit", () => {
+  expect((CONNECT_MAX_ADDRESSES - 1) * CONNECT_ATTEMPT_TIMEOUT_MS).toBeLessThan(
+    CONNECT_TIMEOUT_MS,
+  );
+  expect(CONNECT_TIMEOUT_MS).toBeLessThan(CONNECT_SURFACE_LIMIT_MS);
+});
+
+it.skipIf(!dropped)(
+  "surfaces a named error within 10 s when every address is silently dropped",
+  async () => {
+    const target = await upstream();
+    const addresses = Array.from(
+      { length: CONNECT_MAX_ADDRESSES + 2 },
+      (_, index) => droppedAddress(index),
+    );
+    const result = await timedFetch(
+      target.url.replace("127.0.0.1", "upstream.test"),
+      (_hostname, _options, done) => done(null, addresses),
+    );
+    expect(result.text).toBeNull();
+    expect(transportErrorCode(result.error)).toBe("UND_ERR_CONNECT_TIMEOUT");
+    expect(result.elapsedMs).toBeGreaterThanOrEqual(CONNECT_TIMEOUT_MS - 200);
+    expect(result.elapsedMs).toBeLessThanOrEqual(CONNECT_SURFACE_LIMIT_MS);
+    expect(target.requests()).toBe(0);
+  },
+  20_000,
+);
+
+it.skipIf(!dropped)(
+  "still reaches a reachable address listed after the last permitted dropped one inside the connect timeout",
+  async () => {
+    const target = await upstream();
+    const result = await timedFetch(
+      target.url.replace("127.0.0.1", "upstream.test"),
+      (_hostname, _options, done) =>
+        done(null, [
+          ...Array.from({ length: CONNECT_MAX_ADDRESSES - 1 }, (_, index) =>
+            droppedAddress(index),
+          ),
+          { address: "127.0.0.1", family: 4 },
+          ...Array.from({ length: 3 }, (_, index) =>
+            droppedAddress(index + 10),
+          ),
+        ]),
+    );
+    expect(result.text).toBe("OK");
+    expect(result.elapsedMs).toBeLessThan(CONNECT_TIMEOUT_MS);
+  },
+  20_000,
+);
+
+it.skipIf(!dropped)(
+  "falls through a silently dropped first address to a reachable second one within one attempt window",
+  async () => {
+    const target = await upstream();
+    const result = await timedFetch(
+      target.url.replace("127.0.0.1", "upstream.test"),
+      (_hostname, _options, done) =>
+        done(null, [droppedAddress(0), { address: "127.0.0.1", family: 4 }]),
+    );
+    expect(result.text).toBe("OK");
+    expect(result.elapsedMs).toBeGreaterThanOrEqual(
+      CONNECT_ATTEMPT_TIMEOUT_MS - 200,
+    );
+    expect(result.elapsedMs).toBeLessThan(CONNECT_ATTEMPT_TIMEOUT_MS + 1_000);
+  },
+  20_000,
+);
+
+it("connects through IPv4 without waiting a window when the IPv6 address is unusable", async () => {
+  const target = await upstream();
+  const result = await timedFetch(
+    target.url.replace("127.0.0.1", "upstream.test"),
+    (_hostname, _options, done) =>
+      done(null, [
+        { address: "2001:db8::1", family: 6 },
+        { address: "127.0.0.1", family: 4 },
+      ]),
+  );
+  expect(result.text).toBe("OK");
+  expect(result.elapsedMs).toBeLessThan(CONNECT_ATTEMPT_TIMEOUT_MS + 1_000);
+}, 20_000);
