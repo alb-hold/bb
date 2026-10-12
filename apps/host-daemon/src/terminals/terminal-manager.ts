@@ -38,6 +38,7 @@ const DEFAULT_MAX_EXITED_SCROLLBACK_BYTES = 16 * 1024 * 1024;
 const PRIMARY_DEVICE_ATTRIBUTES_QUERY_PATTERN = /\u001b\[(?:0)?c/g;
 const PRIMARY_DEVICE_ATTRIBUTES_RESPONSE = "\u001b[?1;2c";
 const MAX_PRIMARY_DEVICE_ATTRIBUTES_REPLIES_PER_CHUNK = 8;
+const MAX_TERMINAL_REPLAY_CSI_PARAMETER_BYTES = 1024;
 const INITIAL_TERMINAL_REPLAY_PARSER_STATE: TerminalReplayParserState = {
   alternateScreen: false,
   controlString: null,
@@ -125,7 +126,7 @@ interface TerminalReplayParserState {
   alternateScreen: boolean;
   controlString: "osc" | "string" | null;
   csiParameters: string;
-  escape: "none" | "escape" | "intermediate" | "csi";
+  escape: "none" | "escape" | "intermediate" | "csi" | "csi-ignore";
   utf8Remaining: number;
 }
 
@@ -604,12 +605,13 @@ function advanceTerminalReplayParserByte(
     }
     return;
   }
-  if (state.escape === "csi") {
+  if (state.escape === "csi" || state.escape === "csi-ignore") {
     if (byte === 0x1b) {
       state.escape = "escape";
       state.csiParameters = "";
     } else if (byte >= 0x40 && byte <= 0x7e) {
       if (
+        state.escape === "csi" &&
         (byte === 0x68 || byte === 0x6c) &&
         /^\?(?:47|1047|1049)(?:;|$)/u.test(state.csiParameters)
       ) {
@@ -617,8 +619,15 @@ function advanceTerminalReplayParserByte(
       }
       state.escape = "none";
       state.csiParameters = "";
-    } else if (byte >= 0x20 && byte <= 0x3f) {
-      state.csiParameters += String.fromCharCode(byte);
+    } else if (state.escape === "csi" && byte >= 0x20 && byte <= 0x3f) {
+      if (
+        state.csiParameters.length < MAX_TERMINAL_REPLAY_CSI_PARAMETER_BYTES
+      ) {
+        state.csiParameters += String.fromCharCode(byte);
+      } else {
+        state.csiParameters = "";
+        state.escape = "csi-ignore";
+      }
     }
     return;
   }

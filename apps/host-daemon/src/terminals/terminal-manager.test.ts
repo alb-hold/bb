@@ -1562,6 +1562,97 @@ describe("TerminalManager", () => {
     });
   });
 
+  it.each([
+    ["semicolons", ";", "h"],
+    ["digits", "9", "h"],
+    ["intermediates", " ", "h"],
+    ["semicolons interrupted by ESC", ";", "\u001b[0m"],
+    ["digits interrupted by ESC", "9", "\u001b[0m"],
+    ["intermediates interrupted by ESC", " ", "\u001b[0m"],
+  ])(
+    "bounds unfinished CSI %s and recovers for later replay",
+    async (_name, byte, recovery) => {
+      const harness = createHarness();
+      const pty = await openTerminal(harness);
+
+      pty.emitData(`\u001b[?1049;${byte.repeat(1_000_000)}`);
+      await harness.manager.handleMessage({
+        type: "terminal.attach",
+        requestId: "attach-unfinished-csi",
+        terminalId: "term-1",
+        sinceSeq: 0,
+        tailBytes: 1,
+      });
+
+      const session = harness.manager["sessions"].get("term-1");
+      expect(session).toBeDefined();
+      expect(
+        session?.scrollbackParserState.csiParameters.length,
+      ).toBeLessThanOrEqual(1024);
+      for (const entry of session?.scrollback ?? []) {
+        expect(
+          entry.parserStateBefore.csiParameters.length,
+        ).toBeLessThanOrEqual(1024);
+      }
+      expect(harness.messages).toContainEqual(
+        expect.objectContaining({
+          type: "terminal.replay",
+          requestId: "attach-unfinished-csi",
+          chunks: [],
+        }),
+      );
+
+      pty.emitData(recovery);
+      await harness.manager.handleMessage({
+        type: "terminal.attach",
+        requestId: "attach-recovered-csi",
+        terminalId: "term-1",
+        sinceSeq: 0,
+        tailBytes: 1,
+      });
+      expect(harness.messages).toContainEqual(
+        expect.objectContaining({
+          type: "terminal.replay",
+          requestId: "attach-recovered-csi",
+          chunks: [],
+        }),
+      );
+
+      pty.emitData("\u001b[?1049h");
+      await harness.manager.handleMessage({
+        type: "terminal.attach",
+        requestId: "flush-normal-csi",
+        terminalId: "term-1",
+        sinceSeq: 0,
+      });
+      pty.emitData("OK");
+      await harness.manager.handleMessage({
+        type: "terminal.attach",
+        requestId: "attach-normal-csi-tail",
+        terminalId: "term-1",
+        sinceSeq: 0,
+        tailBytes: 2,
+      });
+      expect(harness.messages).toContainEqual(
+        expect.objectContaining({
+          type: "terminal.replay",
+          requestId: "attach-normal-csi-tail",
+          chunks: [
+            expect.objectContaining({
+              dataBase64: Buffer.from("\u001b[?1049hOK", "utf8").toString(
+                "base64",
+              ),
+            }),
+          ],
+        }),
+      );
+      await harness.manager.handleMessage({
+        type: "terminal.close",
+        terminalId: "term-1",
+      });
+    },
+  );
+
   it("restores alternate-screen mode when replay starts after its enter sequence", async () => {
     const harness = createHarness();
     const pty = await openTerminal(harness);
