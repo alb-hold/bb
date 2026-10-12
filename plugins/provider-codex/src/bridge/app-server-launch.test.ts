@@ -20,10 +20,10 @@ describe("Codex Account Pool launch", () => {
       "model_providers.bb-account-pool.supports_websockets=false",
     );
     expect(launch.args).toContain(
-      'shell_environment_policy.filters."CODEX_*POOL*"="exclude"',
+      'shell_environment_policy.filters.CODEX_*POOL*="exclude"',
     );
     expect(launch.args).toContain(
-      'shell_environment_policy.filters."BB_ACCOUNT_POOL_*"="exclude"',
+      'shell_environment_policy.filters.BB_ACCOUNT_POOL_*="exclude"',
     );
     expect(JSON.stringify(launch.args)).not.toContain("secret-machine-token");
   });

@@ -170,10 +170,10 @@ describe("resolveNativeHarnessLaunch", () => {
         'model_providers.bb-account-pool.env_http_headers.x-bb-account-pool-token="CODEX_POOL_AUTH_TOKEN"',
       );
       expect(launch.args).toContain(
-        'shell_environment_policy.filters."CODEX_*POOL*"="exclude"',
+        'shell_environment_policy.filters.CODEX_*POOL*="exclude"',
       );
       expect(launch.args).toContain(
-        'shell_environment_policy.filters."BB_ACCOUNT_POOL_*"="exclude"',
+        'shell_environment_policy.filters.BB_ACCOUNT_POOL_*="exclude"',
       );
       expect(launch.args.join(" ")).not.toContain("test-pool-token");
     },
