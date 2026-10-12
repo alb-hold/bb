@@ -11,7 +11,7 @@ const DEFAULT_DRAIN_POLL_MS = 10;
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 15_000;
 const DEFAULT_HEARTBEAT_TIMEOUT_MS = 45_000;
 const REPAINT_RESTORE_DELAY_MS = 50;
-const ATTACH_RESIZE_SETTLE_CAP_MS = 1_500;
+const ATTACH_RESIZE_SETTLE_CEILING_MS = 5_000;
 const DEFAULT_RECONNECT_DELAYS_MS = [100, 250, 500, 1_000, 2_000] as const;
 
 export type TerminalSocketConnectionState =
@@ -352,7 +352,7 @@ export class TerminalWebSocketTransport {
     }
     this.settleTimeout = setTimeout(
       () => this.flushSettledResize(),
-      ATTACH_RESIZE_SETTLE_CAP_MS,
+      ATTACH_RESIZE_SETTLE_CEILING_MS,
     );
   }
 

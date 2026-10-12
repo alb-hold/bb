@@ -408,14 +408,28 @@ describe("TerminalWebSocketTransport", () => {
       return { harness, resizes, socket };
     }
 
-    it.each([100, 800])(
+    it("sends once at the hard ceiling when the view never reports a settled layout", () => {
+      const { harness, resizes } = openUnsettled(128, 43);
+
+      vi.advanceTimersByTime(3000);
+      harness.transport.sendResize(132, 43);
+      vi.advanceTimersByTime(1999);
+      expect(resizes()).toEqual([]);
+      vi.advanceTimersByTime(1);
+      expect(resizes()).toEqual([{ type: "resize", cols: 132, rows: 43 }]);
+      vi.advanceTimersByTime(10_000);
+      expect(resizes()).toHaveLength(1);
+      harness.transport.dispose();
+    });
+
+    it.each([100, 800, 2000])(
       "sends one resize with the final size when layout settles at %i ms",
       (settleAtMs) => {
         const { harness, resizes } = openUnsettled(128, 43);
 
         vi.advanceTimersByTime(settleAtMs);
         harness.transport.sendResize(132, 43);
-        vi.advanceTimersByTime(3000);
+        vi.advanceTimersByTime(10_000);
 
         expect(resizes()).toEqual([{ type: "resize", cols: 132, rows: 43 }]);
         harness.transport.dispose();

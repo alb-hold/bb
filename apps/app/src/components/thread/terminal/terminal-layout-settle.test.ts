@@ -84,7 +84,7 @@ describe("watchTerminalLayoutSettled", () => {
     expect(onSettled).not.toHaveBeenCalled();
   });
 
-  it.each([100, 800])(
+  it.each([100, 800, 2000])(
     "sends exactly one resize with the final size when the container settles at %i ms",
     (settleAtMs) => {
       vi.useFakeTimers();
@@ -121,10 +121,45 @@ describe("watchTerminalLayoutSettled", () => {
         },
       });
 
-      vi.advanceTimersByTime(settleAtMs + 3000);
+      vi.advanceTimersByTime(settleAtMs + 10_000);
 
       expect(socket.resizeCols).toEqual([132]);
       transport.dispose();
     },
   );
+
+  it("sends exactly once at the hard ceiling when the container never lays out", () => {
+    vi.useFakeTimers();
+    const socket = new SentSocket();
+    const transport = new TerminalWebSocketTransport({
+      createSocket: () => socket,
+      onMessage: () => undefined,
+      shouldReconnect: () => false,
+      url: "ws://example.test/ws/terminals/term_1",
+    });
+    let containerCols = 128;
+    const fit = () => transport.sendResize(containerCols, 43);
+    fit();
+    transport.start();
+    socket.onopen?.(new Event("open"));
+    watchTerminalLayoutSettled({
+      ...frameScheduler(),
+      measure: () => null,
+      onSettled: () => {
+        fit();
+        transport.markLayoutSettled();
+      },
+    });
+
+    vi.advanceTimersByTime(3000);
+    containerCols = 132;
+    fit();
+    vi.advanceTimersByTime(1900);
+    expect(socket.resizeCols).toEqual([]);
+    vi.advanceTimersByTime(200);
+    expect(socket.resizeCols).toEqual([132]);
+    vi.advanceTimersByTime(20_000);
+    expect(socket.resizeCols).toEqual([132]);
+    transport.dispose();
+  });
 });
