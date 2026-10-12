@@ -174,7 +174,7 @@ describe("replay repaint nudge", () => {
     pty.draw();
     transport.requestRepaint();
     let applied = 0;
-    for (let step = 0; step < 4; step += 1) {
+    for (let step = 0; step < 10; step += 1) {
       await new Promise((resolve) => setTimeout(resolve, 70));
       for (const resize of socket.resizes.slice(applied)) {
         pty.resize(resize.cols, resize.rows);

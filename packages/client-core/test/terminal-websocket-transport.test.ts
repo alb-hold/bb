@@ -370,11 +370,13 @@ describe("TerminalWebSocketTransport", () => {
   });
 
   it("sends each distinct terminal size once", () => {
+    vi.useFakeTimers();
     const harness = createHarness();
     harness.transport.sendResize(160, 48);
     harness.transport.start();
     const socket = harness.sockets[0]!;
     socket.open();
+    vi.advanceTimersByTime(250);
     const resizes = () =>
       socket.sent.filter((message) => message.includes('"resize"'));
     expect(resizes()).toEqual([
@@ -391,6 +393,67 @@ describe("TerminalWebSocketTransport", () => {
     harness.transport.dispose();
   });
 
+  describe("attach resize settling", () => {
+    function openUnsettled(cols: number, rows: number) {
+      vi.useFakeTimers();
+      const harness = createHarness();
+      harness.transport.sendResize(cols, rows);
+      harness.transport.start();
+      const socket = harness.sockets[0]!;
+      socket.open();
+      const resizes = () =>
+        socket.sent.filter((message) => message.includes('"resize"'));
+      return { harness, resizes, socket };
+    }
+
+    it("sends only the settled size when the first fit is stale", () => {
+      const { harness, resizes } = openUnsettled(128, 43);
+
+      expect(resizes()).toEqual([]);
+      vi.advanceTimersByTime(40);
+      harness.transport.sendResize(132, 43);
+      vi.advanceTimersByTime(500);
+
+      expect(resizes()).toEqual([
+        JSON.stringify({ type: "resize", cols: 132, rows: 43 }),
+      ]);
+      harness.transport.dispose();
+    });
+
+    it("sends the nudge after the settled size when repaint is requested while settling", () => {
+      const { harness, resizes } = openUnsettled(132, 43);
+
+      harness.transport.requestRepaint();
+      vi.advanceTimersByTime(100);
+      expect(resizes()).toEqual([]);
+      vi.advanceTimersByTime(1000);
+
+      expect(resizes()).toEqual([
+        JSON.stringify({ type: "resize", cols: 132, rows: 43 }),
+        JSON.stringify({ type: "resize", cols: 131, rows: 43 }),
+        JSON.stringify({ type: "resize", cols: 132, rows: 43 }),
+      ]);
+      harness.transport.dispose();
+    });
+
+    it("drops the settled size when the socket closes before it flushes", () => {
+      const { harness, resizes, socket } = openUnsettled(128, 43);
+
+      vi.advanceTimersByTime(100);
+      socket.close();
+      vi.advanceTimersByTime(1000);
+
+      expect(resizes()).toEqual([]);
+      const next = harness.sockets[1]!;
+      next.open();
+      vi.advanceTimersByTime(500);
+      expect(
+        next.sent.filter((message) => message.includes('"resize"')),
+      ).toEqual([JSON.stringify({ type: "resize", cols: 128, rows: 43 })]);
+      harness.transport.dispose();
+    });
+  });
+
   describe("requestRepaint", () => {
     function openHarness(cols: number, rows: number) {
       vi.useFakeTimers();
@@ -399,6 +462,7 @@ describe("TerminalWebSocketTransport", () => {
       harness.transport.start();
       const socket = harness.sockets[0]!;
       socket.open();
+      vi.advanceTimersByTime(250);
       return { harness, socket };
     }
 

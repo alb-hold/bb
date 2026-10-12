@@ -11,6 +11,7 @@ const DEFAULT_DRAIN_POLL_MS = 10;
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 15_000;
 const DEFAULT_HEARTBEAT_TIMEOUT_MS = 45_000;
 const REPAINT_RESTORE_DELAY_MS = 50;
+const ATTACH_RESIZE_SETTLE_MS = 250;
 const DEFAULT_RECONNECT_DELAYS_MS = [100, 250, 500, 1_000, 2_000] as const;
 
 export type TerminalSocketConnectionState =
@@ -88,7 +89,9 @@ export class TerminalWebSocketTransport {
   private readonly pendingInputs: PendingTerminalInput[] = [];
   private reconnectAttempt = 0;
   private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
+  private repaintRequestedWhileSettling = false;
   private repaintTimeout: ReturnType<typeof setTimeout> | null = null;
+  private settleTimeout: ReturnType<typeof setTimeout> | null = null;
   private socket: TerminalBrowserSocket | null = null;
   private terminalEnded = false;
   private visible = true;
@@ -124,6 +127,7 @@ export class TerminalWebSocketTransport {
     this.clearReconnectTimeout();
     this.clearDrainTimeout();
     this.clearRepaintTimeout();
+    this.clearSettleTimeout();
     this.stopHeartbeat();
     const socket = this.socket;
     this.socket = null;
@@ -206,7 +210,11 @@ export class TerminalWebSocketTransport {
     }
     this.lastResize = { cols, rows };
     const socket = this.socket;
-    if (socket === null || socket.readyState !== SOCKET_OPEN) {
+    if (
+      this.settleTimeout !== null ||
+      socket === null ||
+      socket.readyState !== SOCKET_OPEN
+    ) {
       return;
     }
     this.trySend(
@@ -220,6 +228,10 @@ export class TerminalWebSocketTransport {
   }
 
   requestRepaint(): void {
+    if (this.settleTimeout !== null) {
+      this.repaintRequestedWhileSettling = true;
+      return;
+    }
     const lastResize = this.lastResize;
     const socket = this.socket;
     if (
@@ -305,13 +317,41 @@ export class TerminalWebSocketTransport {
         JSON.stringify({ type: "visibility", visible: false }),
       );
     }
-    if (this.lastResize !== null) {
-      this.trySend(
-        socket,
-        JSON.stringify({ type: "resize", ...this.lastResize }),
-      );
-    }
+    this.beginResizeSettle(socket);
     this.flushInputs();
+  }
+
+  private beginResizeSettle(socket: TerminalBrowserSocket): void {
+    this.clearSettleTimeout();
+    if (this.lastResize === null) {
+      return;
+    }
+    this.settleTimeout = setTimeout(() => {
+      this.settleTimeout = null;
+      const settled = this.lastResize;
+      if (
+        this.disposed ||
+        this.socket !== socket ||
+        socket.readyState !== SOCKET_OPEN ||
+        settled === null
+      ) {
+        this.repaintRequestedWhileSettling = false;
+        return;
+      }
+      this.trySend(socket, JSON.stringify({ type: "resize", ...settled }));
+      if (this.repaintRequestedWhileSettling) {
+        this.repaintRequestedWhileSettling = false;
+        this.requestRepaint();
+      }
+    }, ATTACH_RESIZE_SETTLE_MS);
+  }
+
+  private clearSettleTimeout(): void {
+    if (this.settleTimeout !== null) {
+      clearTimeout(this.settleTimeout);
+      this.settleTimeout = null;
+    }
+    this.repaintRequestedWhileSettling = false;
   }
 
   private handleMessage(socket: TerminalBrowserSocket, raw: unknown): void {
@@ -380,6 +420,7 @@ export class TerminalWebSocketTransport {
     this.stopHeartbeat();
     this.clearDrainTimeout();
     this.clearRepaintTimeout();
+    this.clearSettleTimeout();
     if (
       this.disposed ||
       this.terminalEnded ||
