@@ -90,7 +90,7 @@ export default function plugin(bb: BbPluginApi) {
         "-c",
         "mcp_servers.bb-bridge.args={argsJson}",
       ],
-      pastePlaceholders: ["[Pasted Content "],
+      pastePlaceholders: ["[Pasted Content ", "[Image #"],
       sessionRoot: { env: "CODEX_HOME", home: ".codex" },
       session: {
         kind: "discovered",
