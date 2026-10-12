@@ -774,9 +774,40 @@ describe("terminal data plane child", () => {
     harness.child.shutdown();
   });
 
-  it("sends input through main when the browser was bound to another daemon session", async () => {
+  it("never joins a browser to a data socket of a session main did not bind it to", async () => {
     const harness = createHarness();
-    const daemon = await attachDaemon(harness, "session_2");
+    const first = await attachDaemon(harness, "session_1");
+    const second = await attachDaemon(harness, "session_2");
+    main(harness, {
+      v,
+      type: "terminal.route",
+      terminalId: "term_a",
+      daemonSessionId: "session_1",
+      mode: "data-socket",
+    });
+    const bound = await attachLive(harness, {
+      attachId: "a1",
+      terminalId: "term_a",
+      daemonSessionId: "session_1",
+    });
+    const stale = await attachBrowser(harness, {
+      attachId: "a2",
+      terminalId: "term_a",
+      daemonSessionId: "session_0",
+    });
+
+    stale.receive({ type: "input", dataBase64: base64("early") });
+    replay(harness, { attachId: "a2", terminalId: "term_a", nextSeq: 0 });
+
+    expect(first.frames()).toEqual([]);
+    expect(ofType(harness, "terminal.input")).toMatchObject([
+      { terminalId: "term_a", dataBase64: base64("early") },
+    ]);
+    expect(stale.sent).toEqual([]);
+    expect(stale.closes).toEqual([
+      { code: 1013, reason: "daemon-session-changed" },
+    ]);
+
     main(harness, {
       v,
       type: "terminal.route",
@@ -784,16 +815,21 @@ describe("terminal data plane child", () => {
       daemonSessionId: "session_2",
       mode: "data-socket",
     });
-    const browser = await attachLive(harness, {
-      attachId: "a1",
+    second.receive({
+      type: "terminal.output",
       terminalId: "term_a",
-      daemonSessionId: "session_1",
+      chunk: chunk(0, "from-session-2"),
     });
+    bound.receive({ type: "input", dataBase64: base64("late") });
 
-    browser.receive({ type: "input", dataBase64: base64("x") });
-
-    expect(daemon.frames()).toEqual([]);
-    expect(ofType(harness, "terminal.input")).toMatchObject([{ terminalId: "term_a" }]);
+    expect(bound.closes).toEqual([
+      { code: 1013, reason: "daemon-session-changed" },
+    ]);
+    expect(bound.outputSeqs()).toEqual([]);
+    expect(second.frames()).toEqual([]);
+    expect(
+      ofType(harness, "browser.detached").map((message) => message.attachId),
+    ).toEqual(["a2", "a1"]);
   });
 
   it("reports a dropped data socket and falls back to main for input", async () => {

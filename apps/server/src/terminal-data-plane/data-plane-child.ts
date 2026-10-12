@@ -231,13 +231,14 @@ export class TerminalDataPlaneChild {
           daemonSessionId: message.daemonSessionId,
           mode: message.mode,
         });
+        this.closeAttachesBoundElsewhere(message.terminalId);
         this.syncTerminalFlowClients(message.terminalId);
         return;
       case "terminal.unroute":
         this.unrouteTerminal(message.terminalId);
         return;
       case "terminal.output":
-        this.deliverOutput(message.terminalId, message.chunk);
+        this.deliverOutput(message.terminalId, message.chunk, null);
         return;
       case "terminal.resync":
         this.closeTerminalSockets(
@@ -525,6 +526,14 @@ export class TerminalDataPlaneChild {
     ) {
       return;
     }
+    if (this.isBoundElsewhere(attach)) {
+      this.closeAttach(
+        attach,
+        TERMINAL_DATA_PLANE_OVERLOAD_CLOSE_CODE,
+        "daemon-session-changed",
+      );
+      return;
+    }
     if (!attach.attachedFrameSent) {
       attach.attachedFrameSent = true;
       this.write(
@@ -583,14 +592,44 @@ export class TerminalDataPlaneChild {
     }
   }
 
-  private deliverOutput(terminalId: string, chunk: TerminalOutputChunk): void {
+  private deliverOutput(
+    terminalId: string,
+    chunk: TerminalOutputChunk,
+    dataSocketSessionId: string | null,
+  ): void {
     const attaches = this.attachesByTerminalId.get(terminalId);
     if (attaches === undefined) {
       return;
     }
     const frame = JSON.stringify({ type: "output", chunk });
     for (const attach of [...attaches]) {
-      this.deliver(attach, chunk, frame);
+      if (
+        dataSocketSessionId === null ||
+        attach.daemonSessionId === dataSocketSessionId
+      ) {
+        this.deliver(attach, chunk, frame);
+      }
+    }
+  }
+
+  private isBoundElsewhere(attach: BrowserAttach): boolean {
+    const route = this.routes.get(attach.terminalId);
+    return (
+      route !== undefined &&
+      route.mode === "data-socket" &&
+      route.daemonSessionId !== attach.daemonSessionId
+    );
+  }
+
+  private closeAttachesBoundElsewhere(terminalId: string): void {
+    for (const attach of [...(this.attachesByTerminalId.get(terminalId) ?? [])]) {
+      if (attach.socket !== null && this.isBoundElsewhere(attach)) {
+        this.closeAttach(
+          attach,
+          TERMINAL_DATA_PLANE_OVERLOAD_CLOSE_CODE,
+          "daemon-session-changed",
+        );
+      }
     }
   }
 
@@ -799,7 +838,7 @@ export class TerminalDataPlaneChild {
       daemonSessionId,
       message.chunk.seq,
     );
-    this.deliverOutput(message.terminalId, message.chunk);
+    this.deliverOutput(message.terminalId, message.chunk, daemonSessionId);
   }
 
   private handleDaemonClosed(
