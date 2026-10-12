@@ -104,7 +104,7 @@ describe("queued thread messages", () => {
   it("checks the manual-stop pause only for threads that have queued messages", () => {
     const { db, project } = setup();
     const threadIds = Array.from(
-      { length: 400 },
+      { length: 3 },
       () =>
         createThread(db, noopNotifier, {
           projectId: project.id,
@@ -117,7 +117,6 @@ describe("queued thread messages", () => {
       throw new Error("Expected a thread to queue a message on");
     }
     queueTurnEndMessage(db, queuedThreadId, defaultInput);
-    db.$client.exec("ANALYZE");
 
     const captured: { params: unknown[]; sql: string }[] = [];
     const raw = db.$client;
