@@ -515,6 +515,20 @@ export function reopenErrorProvesHolderGone(error: unknown): boolean {
   return false;
 }
 
+const TRANSIENT_REOPEN_ERROR_CODES: ReadonlySet<string> = new Set([
+  "host_disconnected",
+  "server_moving",
+  "terminal_open_timeout",
+]);
+
+function reopenErrorIsTransient(error: unknown): boolean {
+  return (
+    error instanceof ApiError &&
+    !reopenErrorProvesHolderGone(error) &&
+    (error.status >= 500 || TRANSIENT_REOPEN_ERROR_CODES.has(error.body.code))
+  );
+}
+
 function interruptThreadWhoseHolderIsGone(
   deps: NativeTerminalReopenDeps,
   args: { hostId: string; threadId: string },
@@ -622,11 +636,7 @@ export function reopenNativeTerminalsAfterDaemonReconnect(
             });
             break;
           } catch (error: unknown) {
-            if (
-              reopenErrorProvesHolderGone(error) ||
-              expired ||
-              !stillWaiting()
-            ) {
+            if (!reopenErrorIsTransient(error) || expired || !stillWaiting()) {
               throw error;
             }
             deps.logger.warn(
