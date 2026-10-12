@@ -45,7 +45,10 @@ export interface TerminalDataPlaneOptions {
   dataSocketRetryDelaysMs?: readonly number[];
   guard: BrowserRequestGuardDeps;
   lifecycle: DataPlaneLifecyclePort;
-  logger: DataPlaneSupervisorLogger & DaemonCapabilityLogger;
+  logger: DataPlaneSupervisorLogger &
+    DaemonCapabilityLogger & {
+      info(fields: Record<string, unknown>, message: string): void;
+    };
   resolveTerminal(terminalId: string): TerminalUpgradeTarget | null;
   server: Server;
   spawn: DataPlaneSpawn;

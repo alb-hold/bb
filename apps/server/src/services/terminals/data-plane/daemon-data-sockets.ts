@@ -31,6 +31,7 @@ export interface DaemonDataSocketsOptions {
   capabilities: Pick<DaemonDataPlaneCapabilities, "forget" | "negotiate">;
   connectTimeoutMs?: number;
   logger: {
+    info(fields: Record<string, unknown>, message: string): void;
     warn(fields: Record<string, unknown>, message: string): void;
   };
   newRequestId: () => string;
@@ -150,6 +151,10 @@ export class DaemonDataSockets {
       }
       entry.attachedAt = this.now();
       this.clearRetry(entry);
+      this.options.logger.info(
+        { daemonSessionId: message.daemonSessionId, hostId: entry.hostId },
+        "Terminal data socket attached; this host's terminals bypass the server's main thread",
+      );
       this.options.setSessionDirectOutput({
         daemonSessionId: message.daemonSessionId,
         enabled: true,
@@ -169,6 +174,10 @@ export class DaemonDataSockets {
     ) {
       entry.attempts = 0;
     }
+    this.options.logger.info(
+      { daemonSessionId: message.daemonSessionId, hostId: entry.hostId },
+      "Terminal data socket detached; this host's terminals use the server connection",
+    );
     this.unrouteSession(entry);
     this.markDetached(message.daemonSessionId, entry);
     this.scheduleRetry(message.daemonSessionId, entry);

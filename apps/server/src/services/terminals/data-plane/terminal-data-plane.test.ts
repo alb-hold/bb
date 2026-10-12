@@ -266,6 +266,7 @@ async function createFixture(mode: DaemonMode = "capable"): Promise<Fixture> {
     logger: {
       debug: () => undefined,
       error: () => undefined,
+      info: () => undefined,
       warn: () => undefined,
     },
     resolveTerminal: (terminalId) =>
