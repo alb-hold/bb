@@ -112,6 +112,40 @@ describe("terminalOutputShowsPaste", () => {
     ).toBe(false);
   });
 
+  it("accepts a placeholder with the same label as an earlier one when it is drawn in a new place", () => {
+    expect(
+      terminalOutputShowsPaste({
+        before: "\u001b[2;1H\u203a [Image #1] What colour?\r\n\u2022 Green",
+        output: "\u001b[6;1H\u001b[2K\u203a [Image #1]",
+        pastePlaceholders: ["[Pasted Content ", "[Image #"],
+        text: "/data/attachments/second.png",
+      }),
+    ).toBe(true);
+  });
+
+  it("does not count an earlier placeholder with the same label drawn again in place", () => {
+    expect(
+      terminalOutputShowsPaste({
+        before: "\u001b[2;1H\u203a [Image #1] What colour?\r\n\u2022 Green",
+        output: "\u001b[2;1H\u001b[2K\u203a [Image #1] What colour?",
+        pastePlaceholders: ["[Pasted Content ", "[Image #"],
+        text: "/data/attachments/second.png",
+      }),
+    ).toBe(false);
+  });
+
+  it("does not count an earlier placeholder reprinted after the screen was cleared", () => {
+    expect(
+      terminalOutputShowsPaste({
+        before: "\u001b[2;1H\u203a [Image #1] What colour?\r\n\u2022 Green",
+        output:
+          "\u001b[2J\u001b[4;1H\u203a [Image #1] What colour?\r\n\u2022 Green\r\n\u276f 1. Yes",
+        pastePlaceholders: ["[Pasted Content ", "[Image #"],
+        text: "/data/attachments/second.png",
+      }),
+    ).toBe(false);
+  });
+
   it("does not take a placeholder from another CLI", () => {
     expect(
       terminalOutputShowsPaste({
