@@ -3,6 +3,8 @@ import {
   decodeTerminalOutputChunks,
   terminalOutputAlreadyShowsText,
   terminalOutputShowsPaste,
+  terminalOutputShowsPasteAgain,
+  terminalScreenAlreadyShowsText,
 } from "../../src/services/threads/native-terminal-echo.js";
 
 describe("terminalOutputShowsPaste", () => {
@@ -148,6 +150,98 @@ describe("terminalOutputAlreadyShowsText", () => {
       terminalOutputAlreadyShowsText({
         output: "› 1. Update now\r\n  2. Skip",
         text: "run the tests",
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("terminalScreenAlreadyShowsText", () => {
+  const scrolled = `• Everything is ok now\r\n${"• Ran a step\r\n".repeat(60)}› `;
+
+  it("passes a short reply that only scrolled-away output shows", () => {
+    expect(
+      terminalScreenAlreadyShowsText({
+        output: scrolled,
+        screenRows: 36,
+        text: "ok",
+      }),
+    ).toBe(false);
+  });
+
+  it("flags a short reply a menu on the visible screen draws", () => {
+    expect(
+      terminalScreenAlreadyShowsText({
+        output: `${scrolled}\r\n❯ 1. Yes\r\n  2. No`,
+        screenRows: 36,
+        text: "1",
+      }),
+    ).toBe(true);
+  });
+});
+
+describe("terminalOutputShowsPasteAgain", () => {
+  const before = `• Everything is ok now\r\n${"• Ran a step\r\n".repeat(60)}› `;
+
+  it("accepts a new drawing of text that older output already shows", () => {
+    expect(
+      terminalOutputShowsPasteAgain({
+        before,
+        output: "\u001b[2K\u001b[1G› ok",
+        pastePlaceholders: [],
+        text: "ok",
+      }),
+    ).toBe(true);
+  });
+
+  it("does not count the older line drawn again in place", () => {
+    expect(
+      terminalOutputShowsPasteAgain({
+        before,
+        output: "\u001b[61A\u001b[1G• Everything is ok now\u001b[61B",
+        pastePlaceholders: [],
+        text: "ok",
+      }),
+    ).toBe(false);
+  });
+
+  it("does not trust a screen that was cleared and reprinted", () => {
+    expect(
+      terminalOutputShowsPasteAgain({
+        before,
+        output: `\u001b[H\u001b[2J• Everything is ok now\r\n• It is ok again\r\n› ok`,
+        pastePlaceholders: [],
+        text: "ok",
+      }),
+    ).toBe(false);
+  });
+
+  it.each([
+    ["erase below the cursor", "\u001b[J"],
+    ["erase below the cursor, explicit", "\u001b[0J"],
+    ["erase above the cursor", "\u001b[1J"],
+    ["erase the screen", "\u001b[2J"],
+    ["erase the screen and scrollback", "\u001b[3J"],
+  ])(
+    "does not trust a menu redrawn after %s that repeats the older reply",
+    (_name, erase) => {
+      expect(
+        terminalOutputShowsPasteAgain({
+          before,
+          output: `\u001b[1;1H${erase}• Everything is ok now\r\n❯ 1. ok\r\n  2. No`,
+          pastePlaceholders: [],
+          text: "ok",
+        }),
+      ).toBe(false);
+    },
+  );
+
+  it("does not take a menu that redraws without the reply", () => {
+    expect(
+      terminalOutputShowsPasteAgain({
+        before,
+        output: "\r\n❯ 1. Yes\r\n  2. No",
+        pastePlaceholders: [],
+        text: "ok",
       }),
     ).toBe(false);
   });

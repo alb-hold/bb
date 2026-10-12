@@ -3396,6 +3396,28 @@ export type ExperimentalFileLocation =
   | { kind: "range"; startLine: number; endLine: number };
 
 /** Options shared by BB's preview and preferred-external file intents. */
+export interface ExperimentalSignInWindowOptions {
+  /** The http(s) page to load, such as a provider's authorization URL. */
+  url: string;
+  /**
+   * An http(s) URL prefix. When the window is about to navigate to a URL
+   * starting with it, the navigation is blocked, the window closes, and the
+   * full URL resolves `result` as a `redirect`. Only this caller receives it.
+   */
+  redirectUrlPrefix?: string;
+}
+
+export type ExperimentalSignInWindowResult =
+  | { reason: "closed" }
+  | { reason: "redirect"; redirectUrl: string };
+
+export interface ExperimentalSignInWindow {
+  /** Close the window; `result` resolves `closed`. No-op once settled. */
+  close(): void;
+  /** Settles once: the user or `close()` closed the window, or it redirected. */
+  result: Promise<ExperimentalSignInWindowResult>;
+}
+
 export interface ExperimentalFileOpenOptions {
   target: ExperimentalLiveFileTarget;
   location: ExperimentalFileLocation | null;
@@ -3500,6 +3522,17 @@ export interface BbNavigate {
    * docs/api_to_audit.md.
    */
   openUrl(url: string): boolean;
+  /**
+   * Open `url` in a clean sign-in window: an app-owned window with its own
+   * empty, non-persistent session, so no cookies, logins or storage from the
+   * user's browser or other BB windows apply, and each call starts fresh.
+   * Returns null when this client cannot host one (web and remote clients);
+   * fall back to `openUrl` with instructions. Experimental: see
+   * docs/api_to_audit.md.
+   */
+  experimental_openSignInWindow(
+    options: ExperimentalSignInWindowOptions,
+  ): ExperimentalSignInWindow | null;
   /** Open a live file in this surface's shared BB preview panel. */
   experimental_openFilePreview(options: ExperimentalFileOpenOptions): boolean;
   /** Open a live file in this client's preferred external file target. */

@@ -2,6 +2,8 @@ const TERMINAL_TOKEN =
   /\u001b\[([0-9;?<>=]*)([ -/]*)([@-~])|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[()][A-Za-z0-9]|\u001b([78DEMc=>])|([\s\S])/gu;
 const TERMINAL_CONTROL_SEQUENCE =
   /\u001b\[[0-9;?<>=]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[()][A-Za-z0-9]|\u001b[=>78DEHMc]/gu;
+const TERMINAL_SCREEN_RESET =
+  /\u001b\[[0-3]?J|\u001bc|\u001b\[\?(?:47|1047|1049)[hl]/u;
 const ECHO_IGNORED_CHARACTER = /^[\s─-╿]$/u;
 const ECHO_IGNORED_CHARACTERS = /[\s─-╿]/gu;
 const ECHO_TAIL_LENGTH = 32;
@@ -30,7 +32,12 @@ function csiNumbers(params: string): number[] {
     : params.split(";").map((part) => Number.parseInt(part, 10) || 0);
 }
 
-function replayTerminalOutput(output: string): EchoToken[] {
+interface ReplayedRow {
+  index: number;
+  tokens: EchoToken[];
+}
+
+function replayTerminalRows(output: string): ReplayedRow[] {
   const rows = new Map<number, Map<number, string>>();
   let row = 0;
   let column = 0;
@@ -142,18 +149,44 @@ function replayTerminalOutput(output: string): EchoToken[] {
       column += 1;
     }
   }
-  const tokens: EchoToken[] = [];
+  const replayed: ReplayedRow[] = [];
   for (const index of [...rows.keys()].sort((a, b) => a - b)) {
     const cells = rows.get(index)!;
     if (cells.size === 0) continue;
+    const tokens: EchoToken[] = [];
     const last = Math.max(...cells.keys());
     for (let cell = 0; cell <= last; cell += 1) {
       const value = cells.get(cell);
       if (value === undefined) tokens.push(null);
       else if (!ECHO_IGNORED_CHARACTER.test(value)) tokens.push(value);
     }
+    replayed.push({ index, tokens });
   }
-  return tokens;
+  return replayed;
+}
+
+function replayTerminalOutput(output: string): EchoToken[] {
+  return replayTerminalRows(output).flatMap((row) => row.tokens);
+}
+
+function replayTerminalScreen(output: string, screenRows: number): EchoToken[] {
+  const rows = replayTerminalRows(output);
+  const bottom = rows.at(-1)?.index;
+  if (bottom === undefined) return [];
+  return rows
+    .filter((row) => row.index > bottom - screenRows)
+    .flatMap((row) => row.tokens);
+}
+
+function occurrenceCount(tokens: EchoToken[], needle: string[]): number {
+  let count = 0;
+  let counted = Number.NEGATIVE_INFINITY;
+  for (const end of looseMatchEnds(tokens, needle)) {
+    if (end - counted < needle.length) continue;
+    count += 1;
+    counted = end;
+  }
+  return count;
 }
 
 function echoNeedle(value: string): string[] {
@@ -222,6 +255,36 @@ export function terminalOutputAlreadyShowsText(args: {
 }): boolean {
   const needle = echoNeedle(args.text).slice(-ECHO_TAIL_LENGTH);
   return looseMatchEnds(replayTerminalOutput(args.output), needle).length > 0;
+}
+
+export function terminalScreenAlreadyShowsText(args: {
+  output: string;
+  screenRows: number;
+  text: string;
+}): boolean {
+  const needle = echoNeedle(args.text).slice(-ECHO_TAIL_LENGTH);
+  return (
+    looseMatchEnds(replayTerminalScreen(args.output, args.screenRows), needle)
+      .length > 0
+  );
+}
+
+export function terminalOutputShowsPasteAgain(args: {
+  before: string;
+  output: string;
+  pastePlaceholders: readonly string[];
+  text: string;
+}): boolean {
+  if (TERMINAL_SCREEN_RESET.test(args.output)) return false;
+  if (!terminalOutputShowsPaste(args)) return false;
+  const needle = echoNeedle(args.text).slice(-ECHO_TAIL_LENGTH);
+  if (looseMatchEnds(replayTerminalOutput(args.output), needle).length === 0) {
+    return true;
+  }
+  return (
+    occurrenceCount(replayTerminalOutput(args.before + args.output), needle) >
+    occurrenceCount(replayTerminalOutput(args.before), needle)
+  );
 }
 
 export function terminalOutputShowsPaste(args: {

@@ -157,6 +157,25 @@ const TERMINAL_CLOSES_THAT_STOP_THE_CLI = new Set([
   "environment-destroyed",
 ]);
 
+const NATIVE_HOLDER_IGNORED_SIGNALS = [
+  "SIGHUP",
+  "SIGINT",
+  "SIGQUIT",
+  "SIGTERM",
+] as const;
+
+export function ignoreNativeHolderSignals(target: NodeJS.Process): () => void {
+  const ignore = (): void => {};
+  for (const signal of NATIVE_HOLDER_IGNORED_SIGNALS) {
+    target.on(signal, ignore);
+  }
+  return () => {
+    for (const signal of NATIVE_HOLDER_IGNORED_SIGNALS) {
+      target.off(signal, ignore);
+    }
+  };
+}
+
 export function nativeTerminalClosedForGood(
   view: {
     terminal: { status: string; closeReason: string | null } | null;
@@ -355,7 +374,9 @@ export async function runNativeHolder(
           .then((closed) => {
             if (closed && client === null) pty?.kill("SIGHUP");
           })
-          .catch(() => undefined)
+          .catch(() => {
+            if (client === null) detachedSince = Date.now();
+          })
           .finally(() => {
             checking = false;
           });

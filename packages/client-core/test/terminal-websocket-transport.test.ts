@@ -369,7 +369,7 @@ describe("TerminalWebSocketTransport", () => {
     harness.transport.dispose();
   });
 
-  it("claims the PTY size only on request, sending plain sizes otherwise", () => {
+  it("sends each distinct terminal size once", () => {
     const harness = createHarness();
     harness.transport.sendResize(160, 48);
     harness.transport.start();
@@ -383,47 +383,116 @@ describe("TerminalWebSocketTransport", () => {
 
     harness.transport.sendResize(160, 48);
     expect(resizes()).toHaveLength(1);
-    harness.transport.claimSize();
     harness.transport.sendResize(120, 40);
     expect(resizes()).toEqual([
       JSON.stringify({ type: "resize", cols: 160, rows: 48 }),
-      JSON.stringify({ type: "resize", cols: 160, rows: 48, claim: true }),
       JSON.stringify({ type: "resize", cols: 120, rows: 40 }),
     ]);
     harness.transport.dispose();
   });
 
-  it("nudges and restores the PTY size without changing the remembered viewport", () => {
-    const harness = createHarness();
-    harness.transport.sendResize(100, 30);
-    harness.transport.start();
-    const socket = harness.sockets[0]!;
-    socket.open();
+  describe("requestRepaint", () => {
+    function openHarness(cols: number, rows: number) {
+      vi.useFakeTimers();
+      const harness = createHarness();
+      harness.transport.sendResize(cols, rows);
+      harness.transport.start();
+      const socket = harness.sockets[0]!;
+      socket.open();
+      return { harness, socket };
+    }
 
-    harness.transport.requestRepaint();
-    harness.transport.sendResize(100, 30);
+    it("sends the nudge now and restores the size only after a gap", () => {
+      const { harness, socket } = openHarness(100, 30);
 
-    expect(socket.sent).toEqual([
-      JSON.stringify({ type: "resize", cols: 100, rows: 30 }),
-      JSON.stringify({ type: "resize", cols: 101, rows: 30 }),
-      JSON.stringify({ type: "resize", cols: 100, rows: 30 }),
-    ]);
-    harness.transport.dispose();
-  });
+      harness.transport.requestRepaint();
 
-  it("nudges left at the maximum supported terminal width", () => {
-    const harness = createHarness();
-    harness.transport.sendResize(500, 30);
-    harness.transport.start();
-    const socket = harness.sockets[0]!;
-    socket.open();
+      expect(socket.sent).toEqual([
+        JSON.stringify({ type: "resize", cols: 100, rows: 30 }),
+        JSON.stringify({ type: "resize", cols: 101, rows: 30 }),
+      ]);
+      vi.advanceTimersByTime(49);
+      expect(socket.sent).toHaveLength(2);
+      vi.advanceTimersByTime(1);
+      expect(socket.sent.slice(2)).toEqual([
+        JSON.stringify({ type: "resize", cols: 100, rows: 30 }),
+      ]);
+      harness.transport.sendResize(100, 30);
+      expect(socket.sent).toHaveLength(3);
+      harness.transport.dispose();
+    });
 
-    harness.transport.requestRepaint();
+    it("nudges left at the maximum supported terminal width", () => {
+      const { harness, socket } = openHarness(500, 30);
 
-    expect(socket.sent.slice(1)).toEqual([
-      JSON.stringify({ type: "resize", cols: 499, rows: 30 }),
-      JSON.stringify({ type: "resize", cols: 500, rows: 30 }),
-    ]);
-    harness.transport.dispose();
+      harness.transport.requestRepaint();
+      vi.advanceTimersByTime(50);
+
+      expect(socket.sent.slice(1)).toEqual([
+        JSON.stringify({ type: "resize", cols: 499, rows: 30 }),
+        JSON.stringify({ type: "resize", cols: 500, rows: 30 }),
+      ]);
+      harness.transport.dispose();
+    });
+
+    it("does not restore after dispose", () => {
+      const { harness, socket } = openHarness(100, 30);
+
+      harness.transport.requestRepaint();
+      harness.transport.dispose();
+      vi.advanceTimersByTime(500);
+
+      expect(socket.sent).toEqual([
+        JSON.stringify({ type: "resize", cols: 100, rows: 30 }),
+        JSON.stringify({ type: "resize", cols: 101, rows: 30 }),
+      ]);
+    });
+
+    it("does not restore on the old socket after it closes and a new attach opens", () => {
+      const { harness, socket } = openHarness(100, 30);
+
+      harness.transport.requestRepaint();
+      socket.close();
+      vi.advanceTimersByTime(100);
+      const next = harness.sockets[1]!;
+      next.open();
+      vi.advanceTimersByTime(500);
+
+      expect(socket.sent).toHaveLength(2);
+      expect(next.sent).toEqual([
+        JSON.stringify({ type: "resize", cols: 100, rows: 30 }),
+      ]);
+      harness.transport.dispose();
+    });
+
+    it("drops the restore when a real resize arrives during the gap", () => {
+      const { harness, socket } = openHarness(100, 30);
+
+      harness.transport.requestRepaint();
+      vi.advanceTimersByTime(20);
+      harness.transport.sendResize(120, 40);
+      vi.advanceTimersByTime(500);
+
+      expect(socket.sent.slice(2)).toEqual([
+        JSON.stringify({ type: "resize", cols: 120, rows: 40 }),
+      ]);
+      harness.transport.dispose();
+    });
+
+    it("collapses repeated requests into a single restore", () => {
+      const { harness, socket } = openHarness(100, 30);
+
+      harness.transport.requestRepaint();
+      vi.advanceTimersByTime(30);
+      harness.transport.requestRepaint();
+      vi.advanceTimersByTime(500);
+
+      expect(socket.sent.slice(1)).toEqual([
+        JSON.stringify({ type: "resize", cols: 101, rows: 30 }),
+        JSON.stringify({ type: "resize", cols: 101, rows: 30 }),
+        JSON.stringify({ type: "resize", cols: 100, rows: 30 }),
+      ]);
+      harness.transport.dispose();
+    });
   });
 });

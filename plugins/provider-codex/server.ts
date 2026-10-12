@@ -82,9 +82,9 @@ export default function plugin(bb: BbPluginApi) {
     composerActions: ["plan", "goal"],
     experimental_nativeTerminal: {
       executable: "codex",
-      launchArgs: ["--no-daemon"],
+      launchArgs: ["--no-daemon", "--dangerously-bypass-approvals-and-sandbox"],
       modelArgs: ["-c", 'model="{model}"'],
-      pastePlaceholders: ["[Pasted Content "],
+      pastePlaceholders: ["[Pasted Content ", "[Image #"],
       sessionRoot: { env: "CODEX_HOME", home: ".codex" },
       session: {
         kind: "discovered",

@@ -1,8 +1,11 @@
+import { spawn as spawnProcess } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import http from "node:http";
 import type net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
+import { pathToFileURL } from "node:url";
 import { spawn as spawnPty } from "node-pty";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -17,6 +20,10 @@ import {
   waitForNativeHolder,
   type NativeHolderProcess,
 } from "../native-holder.js";
+import {
+  NativeBbUnreachableError,
+  checkNativeTerminalClosedForGood,
+} from "../native-closed-for-good.js";
 
 const tempDirs: string[] = [];
 
@@ -184,6 +191,26 @@ describe("native terminal holder", () => {
     await expect(held).resolves.toBe(7);
   });
 
+  it("never reaps the CLI while bb is unreachable, and reaps it once bb answers and nothing reattaches", async () => {
+    const socketPath = socketIn();
+    let reachable = false;
+    const held = startHolder(socketPath, ECHO_LOOP, 300, async () => {
+      if (!reachable) throw new Error("fetch failed");
+      return false;
+    });
+    const first = await attach(socketPath);
+    const pid = (await first.waitFor(/started:(\d+)/u))[1];
+    first.socket.destroy();
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    const second = await attach(socketPath);
+    second.type("after outage\r");
+    await second.waitFor(new RegExp(`got:after outage:${pid}`, "u"));
+    reachable = true;
+    second.socket.destroy();
+    const code = await held;
+    expect(code).not.toBe(7);
+  });
+
   it("gives up when no terminal ever attaches", async () => {
     const socketPath = socketIn();
     const code = await runNativeHolder({
@@ -317,6 +344,58 @@ describe("opening a native holder connection", () => {
   });
 });
 
+describe("native holder signals", () => {
+  it("survives the termination signals a bb quit or a process manager sends, so its CLI keeps running", async () => {
+    const holderModule = pathToFileURL(
+      path.join(import.meta.dirname, "..", "native-holder.ts"),
+    ).href;
+    const child = spawnProcess(
+      process.execPath,
+      [
+        "--experimental-strip-types",
+        "--no-warnings",
+        "--input-type=module",
+        "-e",
+        `const { ignoreNativeHolderSignals } = await import(${JSON.stringify(holderModule)});
+ignoreNativeHolderSignals(process);
+process.stdout.write("ready\\n");
+setInterval(() => {}, 1000);`,
+      ],
+      { stdio: ["ignore", "pipe", "inherit"] },
+    );
+    try {
+      await new Promise<void>((resolve, reject) => {
+        child.stdout.on("data", (chunk: Buffer) => {
+          if (chunk.toString().includes("ready")) resolve();
+        });
+        child.once("exit", (code, signal) =>
+          reject(new Error(`holder exited early: ${code} ${signal}`)),
+        );
+      });
+      for (const signal of [
+        "SIGTERM",
+        "SIGHUP",
+        "SIGINT",
+        "SIGQUIT",
+      ] as const) {
+        child.kill(signal);
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        expect({
+          signal,
+          exitCode: child.exitCode,
+          signalCode: child.signalCode,
+        }).toEqual({
+          signal,
+          exitCode: null,
+          signalCode: null,
+        });
+      }
+    } finally {
+      child.kill("SIGKILL");
+    }
+  });
+});
+
 describe("native terminal closed for good", () => {
   const exited = (closeReason: string | null) => ({
     terminal: { status: "exited", closeReason },
@@ -345,6 +424,131 @@ describe("native terminal closed for good", () => {
   ] as const)("when %s", (_name, view, closed) => {
     expect(nativeTerminalClosedForGood(view)).toBe(closed);
   });
+});
+
+describe("checking whether bb closed a native terminal for good", () => {
+  const servers: http.Server[] = [];
+  afterEach(async () => {
+    await Promise.all(
+      servers.splice(0).map((server) => {
+        server.closeAllConnections();
+        return new Promise((resolve) => server.close(resolve));
+      }),
+    );
+  });
+
+  async function bb(
+    handler: (response: http.ServerResponse) => void,
+  ): Promise<string> {
+    const server = http.createServer((_request, response) => handler(response));
+    servers.push(server);
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve),
+    );
+    const address = server.address();
+    if (address === null || typeof address === "string") {
+      throw new Error("server has no port");
+    }
+    return `http://127.0.0.1:${address.port}`;
+  }
+
+  const answering = (status: number, body: string) =>
+    bb((response) => {
+      response.writeHead(status, { "content-type": "application/json" });
+      response.end(body);
+    });
+  const stallingAfterHeaders = () =>
+    bb((response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.write("{");
+    });
+  const hungBeforeHeaders = () => bb(() => undefined);
+
+  async function closedPort(): Promise<string> {
+    const url = await answering(200, "{}");
+    const server = servers.pop();
+    await new Promise((resolve) => server?.close(resolve));
+    return url;
+  }
+
+  const check = (baseUrl: string) =>
+    checkNativeTerminalClosedForGood({
+      baseUrl,
+      threadId: "thr_x",
+      timeoutMs: 200,
+    });
+
+  it("treats a missing thread as closed for good", async () => {
+    await expect(
+      check(
+        await answering(404, '{"error":{"code":"not_found","message":"x"}}'),
+      ),
+    ).resolves.toBe(true);
+  });
+
+  it("counts a server error as bb answering and the terminal not closed", async () => {
+    await expect(
+      check(
+        await answering(500, '{"error":{"code":"internal","message":"x"}}'),
+      ),
+    ).resolves.toBe(false);
+  });
+
+  it("counts a response the CLI could not read as bb answering", async () => {
+    await expect(check(await answering(200, "not json"))).resolves.toBe(false);
+  });
+
+  it("counts a response whose body stalls past the timeout as bb answering", async () => {
+    await expect(check(await stallingAfterHeaders())).resolves.toBe(false);
+  });
+
+  it.each([
+    ["the connection is refused", closedPort],
+    ["bb accepts the connection but never sends headers", hungBeforeHeaders],
+  ] as const)("reports bb unreachable when %s", async (_name, start) => {
+    await expect(check(await start())).rejects.toBeInstanceOf(
+      NativeBbUnreachableError,
+    );
+  });
+
+  it("keeps a detached CLI while bb never sends headers, and reaps it once bb answers", async () => {
+    let hung = true;
+    const baseUrl = await bb((response) => {
+      if (hung) return;
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end('{"terminal":{"status":"running","closeReason":null}}');
+    });
+    const socketPath = socketIn();
+    const held = startHolder(socketPath, ECHO_LOOP, 300, () => check(baseUrl));
+    const first = await attach(socketPath);
+    const pid = (await first.waitFor(/started:(\d+)/u))[1];
+    first.socket.destroy();
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    const second = await attach(socketPath);
+    second.type("still held\r");
+    await second.waitFor(new RegExp(`got:still held:${pid}`, "u"));
+    hung = false;
+    second.socket.destroy();
+    expect(await held).not.toBe(7);
+  });
+
+  it.each([
+    ["answering with unreadable responses", () => answering(200, "not json")],
+    ["stalling after headers", stallingAfterHeaders],
+  ] as const)(
+    "still reaps a detached CLI while bb keeps %s",
+    async (_name, start) => {
+      const baseUrl = await start();
+      const socketPath = socketIn();
+      const held = startHolder(socketPath, ECHO_LOOP, 300, () =>
+        check(baseUrl),
+      );
+      const client = await attach(socketPath);
+      await client.waitFor(/started:/u);
+      client.socket.destroy();
+      expect(await held).not.toBe(7);
+    },
+  );
 });
 
 describe("native holder frames", () => {

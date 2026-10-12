@@ -37,6 +37,30 @@ export type BbDesktopWindowState = z.infer<typeof bbDesktopWindowStateSchema>;
 export const bbDesktopThemeSchema = z.enum(["system", "light", "dark"]);
 export type BbDesktopTheme = z.infer<typeof bbDesktopThemeSchema>;
 
+export const bbDesktopSignInWindowRequestSchema = z
+  .object({
+    id: z.string().min(1).max(128),
+    url: z.string().min(1).max(8192),
+    redirectUrlPrefix: z.string().min(1).max(2048).optional(),
+  })
+  .strict();
+export type BbDesktopSignInWindowRequest = z.infer<
+  typeof bbDesktopSignInWindowRequestSchema
+>;
+
+export const bbDesktopSignInWindowResultSchema = z.discriminatedUnion(
+  "reason",
+  [
+    z.object({ reason: z.literal("closed") }).strict(),
+    z
+      .object({ reason: z.literal("redirect"), redirectUrl: z.string().min(1) })
+      .strict(),
+  ],
+);
+export type BbDesktopSignInWindowResult = z.infer<
+  typeof bbDesktopSignInWindowResultSchema
+>;
+
 export const bbDesktopClipboardContentSchema = z
   .object({
     text: z.string(),
@@ -88,6 +112,10 @@ export interface BbDesktopApi extends BbDesktopInfo {
   openWindowFind?(request: BbDesktopWindowFindRequest): void;
   openDataDirectory?(): Promise<void>;
   openExternalUrl(url: string): void;
+  openSignInWindow?(
+    request: BbDesktopSignInWindowRequest,
+  ): Promise<BbDesktopSignInWindowResult>;
+  closeSignInWindow?(id: string): void;
   openServerDaemonLogs?(): Promise<void>;
   reloadWindow?(): void;
   setSplitNavigationEnabled?(

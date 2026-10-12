@@ -52,6 +52,10 @@ import {
 } from "./usage-feedback.js";
 
 import { UsageSettings } from "./settings.js";
+import {
+  combinedUsageMachine,
+  usageTargetsToRefresh,
+} from "./combined-usage.js";
 
 export interface UsageStoreSnapshot {
   data: UsageSnapshot | null;
@@ -60,6 +64,7 @@ export interface UsageStoreSnapshot {
 }
 
 const ALL_PROVIDERS_TAB_ID = "all";
+const EMPTY_USAGE_MACHINES: UsageMachine[] = [];
 const CARD_MAX_AGE_MS = 2 * 60_000;
 const FOCUS_MAX_AGE_MS = 5 * 60_000;
 const SAFETY_REFRESH_INTERVAL_MS = 30 * 60_000;
@@ -105,6 +110,12 @@ function rpcErrorMessage(body: unknown): string | null {
   if (typeof error !== "object" || error === null) return null;
   const message = Reflect.get(error, "message");
   return typeof message === "string" ? message : null;
+}
+
+function parseStringList(value: string): string[] {
+  const parsed: unknown = JSON.parse(value);
+  if (!Array.isArray(parsed)) return [];
+  return parsed.filter((entry): entry is string => typeof entry === "string");
 }
 
 function refreshUsage({
@@ -552,17 +563,30 @@ export function ProviderUsageStatusContent({
     );
     return () => window.clearInterval(timer);
   }, []);
-  const machines = snapshot.data?.machines ?? [];
+  const machines = snapshot.data?.machines ?? EMPTY_USAGE_MACHINES;
   const [requestedMachineId, setRequestedMachineId] = useState<string | null>(
     () => readSelectedMachine(machineSelectionStorageKey),
   );
   const [requestedProviderIds, setRequestedProviderIds] = useState(
     lastProviderIdByMachine,
   );
-  const activeMachine = selectUsageMachine(
+  const selectedMachine = selectUsageMachine(
     machines,
     requestedMachineId,
     threadMachineId,
+  );
+  const usesCombinedSource =
+    selectedMachine?.id.startsWith("source:") === true &&
+    selectedMachine.providers.some(
+      (provider) => provider.providerId === "claude-code",
+    );
+  const activeMachine = useMemo(
+    () =>
+      usesCombinedSource
+        ? (combinedUsageMachine(machines, selectedMachine.displayName) ??
+          selectedMachine)
+        : selectedMachine,
+    [machines, selectedMachine, usesCombinedSource],
   );
   const providers = useMemo(() => {
     const groups = new Map<
@@ -655,13 +679,40 @@ export function ProviderUsageStatusContent({
             : null;
   const panelId = useId();
   const activeMachineId = activeMachine?.id ?? null;
+  const combinedRefreshTargets = usageTargetsToRefresh(machines, "combined");
   const activeProviderId = activeProvider?.id ?? null;
   const refreshProviderIds = isAllTab
     ? providers.map((provider) => provider.id)
     : activeProviderId === null
       ? []
       : [activeProviderId];
+  const refreshTargets = usesCombinedSource
+    ? combinedRefreshTargets
+        .map((target) => ({
+          ...target,
+          providerIds: target.providerIds.filter((id) =>
+            refreshProviderIds.includes(id),
+          ),
+        }))
+        .filter(({ providerIds }) => providerIds.length > 0)
+    : activeMachine === null || refreshProviderIds.length === 0
+      ? []
+      : [{ machine: activeMachine, providerIds: refreshProviderIds }];
   const refreshProviderKey = refreshProviderIds.join("\n");
+  const refreshMachineIdsKey = JSON.stringify(
+    refreshTargets.map(({ machine }) => machine.id),
+  );
+  const refreshMachineIds = useMemo(
+    () => parseStringList(refreshMachineIdsKey),
+    [refreshMachineIdsKey],
+  );
+  const refreshTargetProviderIdsKey = JSON.stringify([
+    ...new Set(refreshTargets.flatMap(({ providerIds }) => providerIds)),
+  ]);
+  const refreshTargetProviderIds = useMemo(
+    () => parseStringList(refreshTargetProviderIdsKey),
+    [refreshTargetProviderIdsKey],
+  );
 
   useEffect(() => {
     if (!refreshEnabled) return;
@@ -671,8 +722,8 @@ export function ProviderUsageStatusContent({
       void refreshUsage({
         pluginId,
         force: false,
-        machineIds: [activeMachineId],
-        providerIds: refreshProviderKey.split("\n"),
+        machineIds: refreshMachineIds,
+        providerIds: refreshTargetProviderIds,
         maxAgeMs: CARD_MAX_AGE_MS,
       });
     };
@@ -683,7 +734,14 @@ export function ProviderUsageStatusContent({
       window.clearInterval(timer);
       window.removeEventListener("focus", refresh);
     };
-  }, [activeMachineId, pluginId, refreshProviderKey, refreshEnabled]);
+  }, [
+    activeMachineId,
+    pluginId,
+    refreshProviderKey,
+    refreshMachineIds,
+    refreshTargetProviderIds,
+    refreshEnabled,
+  ]);
 
   const selectMachine = useCallback(
     (machineId: string) => {
@@ -712,12 +770,22 @@ export function ProviderUsageStatusContent({
   );
 
   const reload = () => {
+    if (activeMachineId === null || refreshProviderIds.length === 0) {
+      void refreshUsage({
+        pluginId,
+        force: true,
+        machineIds: activeMachineId === null ? null : [activeMachineId],
+        maxAgeMs: 0,
+        providerIds: refreshProviderIds,
+      });
+      return;
+    }
     void refreshUsage({
       pluginId,
       force: true,
-      machineIds: activeMachineId === null ? null : [activeMachineId],
+      machineIds: refreshMachineIds,
       maxAgeMs: 0,
-      providerIds: refreshProviderIds,
+      providerIds: refreshTargetProviderIds,
     });
   };
 

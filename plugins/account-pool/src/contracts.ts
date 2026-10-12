@@ -1,5 +1,8 @@
 import { z } from "zod";
 
+export const CLAUDE_OAUTH_REDIRECT_URI =
+  "https://console.anthropic.com/oauth/code/callback";
+
 export const DEFAULT_ACCOUNT_POOL_CONFIG = {
   anthropicUpstreamBaseUrl: "https://api.anthropic.com",
   codexUpstreamBaseUrl: "https://chatgpt.com/backend-api/codex",

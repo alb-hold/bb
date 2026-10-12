@@ -11,7 +11,6 @@ import {
 import os from "node:os";
 import path from "node:path";
 import { Command } from "commander";
-import { BbHttpError } from "@bb/sdk";
 import type { NativeTerminalThread } from "@bb/server-contract";
 import { action, CliExitError } from "../../action.js";
 import { createCliBbSdk } from "../../client.js";
@@ -31,11 +30,12 @@ import {
 } from "../../native-harness.js";
 import {
   defaultNativeHolderSocketPath,
-  nativeTerminalClosedForGood,
   openNativeHolderConnection,
+  ignoreNativeHolderSignals,
   pipeNativeHolderClient,
   runNativeHolder,
 } from "../../native-holder.js";
+import { checkNativeTerminalClosedForGood } from "../../native-closed-for-good.js";
 import { outputJson } from "../helpers.js";
 import { attachTerminal } from "../terminal.js";
 
@@ -166,9 +166,7 @@ async function holdNativeHarness(
   threadId: string,
   socketPath: string,
 ): Promise<number> {
-  for (const signal of ["SIGHUP", "SIGINT", "SIGQUIT"] as const) {
-    process.on(signal, () => {});
-  }
+  ignoreNativeHolderSignals(process);
   const sdk = createCliBbSdk(baseUrl);
   const nodePty = await import("node-pty");
   const cwd = process.cwd();
@@ -229,9 +227,6 @@ async function holdNativeHarness(
     report(reader?.finish() ?? null);
   };
   let pty: ReturnType<typeof nodePty.spawn> | null = null;
-  process.on("SIGTERM", () => {
-    pty?.kill("SIGHUP");
-  });
   const exitCode = await runNativeHolder({
     socketPath,
     cwd,
@@ -302,15 +297,8 @@ async function holdNativeHarness(
     },
     tick: discover,
     tickIntervalMs: SESSION_DISCOVERY_INTERVAL_MS,
-    terminalClosedForGood: async () => {
-      try {
-        return nativeTerminalClosedForGood(
-          await sdk.nativeTerminals.get({ threadId }),
-        );
-      } catch (error) {
-        return error instanceof BbHttpError && error.status === 404;
-      }
-    },
+    terminalClosedForGood: () =>
+      checkNativeTerminalClosedForGood({ baseUrl, threadId }),
   });
   for (const timer of activityTimers) clearInterval(timer);
   await discover();
