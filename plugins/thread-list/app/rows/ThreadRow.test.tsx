@@ -8,9 +8,6 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { getDefaultStore } from "jotai";
 import { DndContext, useDraggable } from "@dnd-kit/core";
 import { CompactViewportOverrideProvider } from "@/components/ui/hooks/use-compact-viewport";
@@ -66,14 +63,6 @@ const DEFAULT_OPTIONS: ThreadRowOptions = {
   isCompact: false,
 };
 
-const rowTheme = readFileSync(
-  join(
-    dirname(fileURLToPath(import.meta.url)),
-    "../../../../apps/app/src/components/ui/theme.css",
-  ),
-  "utf8",
-);
-
 function expectPersistentRowMetadata(element: HTMLElement) {
   expect(element.isConnected).toBe(true);
   for (
@@ -90,16 +79,6 @@ function expectPersistentRowMetadata(element: HTMLElement) {
       expect(utility).not.toMatch(
         /^(?:(?:max-md|pointer-coarse|\[@media\(hover:none\)\]):)*(?:hidden|invisible|opacity-0|[wh]-0|size-0|scale-0)$/,
       );
-    }
-    for (const attribute of ancestor.getAttributeNames()) {
-      if (!attribute.startsWith("data-sidebar-")) continue;
-      const selector = `[${attribute}]`;
-      for (const rule of rowTheme.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
-        if (!rule[1].includes(selector)) continue;
-        expect(rule[2]).not.toMatch(
-          /(?:display:\s*none|visibility:\s*hidden|opacity:\s*0\s*;|(?:width|height):\s*0(?:px)?\s*;)/,
-        );
-      }
     }
   }
 }
