@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, unlinkSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, unlinkSync } from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -13,6 +13,7 @@ const UNIX_SOCKET_PATH_MAX_BYTES = 100;
 export const NativeHolderFrame = {
   input: 1,
   resize: 2,
+  credential: 3,
   output: 17,
   exit: 18,
 } as const;
@@ -112,6 +113,15 @@ export function defaultNativeHolderSocketPath(
   });
 }
 
+function listenPrivately(server: net.Server, socketPath: string): void {
+  const previous = process.umask(0o177);
+  try {
+    server.listen(socketPath);
+  } finally {
+    process.umask(previous);
+  }
+}
+
 export interface NativeHolderPty {
   readonly pid: number;
   onData(listener: (data: string) => void): void;
@@ -134,7 +144,11 @@ export interface RunNativeHolderOptions {
   env: NodeJS.ProcessEnv;
   reapAfterMs?: number;
   firstClientTimeoutMs?: number;
-  prepare(): Promise<NativeHolderProcess>;
+  credentialRoot?: string;
+  prepare(context: {
+    credential: string | null;
+    credentialSocket: string;
+  }): Promise<NativeHolderProcess>;
   spawnPty(
     process: NativeHolderProcess,
     options: {
@@ -218,6 +232,7 @@ export async function runNativeHolder(
   let pendingSize: TerminalSize | null = null;
   let pendingInput = "";
   let redrawOnResize = false;
+  let credential: string | null = null;
   let starting = false;
   let finished = false;
   let resolveExit: (code: number) => void = () => undefined;
@@ -227,6 +242,15 @@ export async function runNativeHolder(
   const timers: NodeJS.Timeout[] = [];
 
   const server = net.createServer();
+  const credentialDir = mkdtempSync(
+    path.join(options.credentialRoot ?? os.tmpdir(), "bb-nc-"),
+  );
+  chmodSync(credentialDir, 0o700);
+  const credentialSocketPath = path.join(credentialDir, "s");
+  const credentialServer = net.createServer((socket) => {
+    socket.on("error", () => undefined);
+    socket.end(credential ?? "");
+  });
   const finish = (code: number): void => {
     if (finished) return;
     finished = true;
@@ -239,6 +263,9 @@ export async function runNativeHolder(
     client?.end();
     server.close();
     removeSocketFile(options.socketPath);
+    credential = null;
+    credentialServer.close();
+    rmSync(credentialDir, { recursive: true, force: true });
     resolveExit(code);
   };
 
@@ -259,7 +286,10 @@ export async function runNativeHolder(
     starting = true;
     let child: NativeHolderProcess;
     try {
-      child = await options.prepare();
+      child = await options.prepare({
+        credential,
+        credentialSocket: credentialSocketPath,
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       writeFrame(
@@ -322,6 +352,9 @@ export async function runNativeHolder(
           if (input.length === 0) continue;
           if (pty === null) pendingInput += input;
           else pty.write(input);
+        } else if (message.type === NativeHolderFrame.credential) {
+          const next = message.payload.toString("utf8");
+          if (next.length > 0) credential = next;
         } else if (message.type === NativeHolderFrame.resize) {
           const next = parseSize(message.payload);
           if (next !== null) applySize(next);
@@ -338,14 +371,30 @@ export async function runNativeHolder(
     socket.on("error", detach);
   });
 
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(options.socketPath, () => {
-      server.off("error", reject);
-      resolve();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      credentialServer.once("error", reject);
+      credentialServer.once("listening", () => {
+        credentialServer.off("error", reject);
+        resolve();
+      });
+      listenPrivately(credentialServer, credentialSocketPath);
     });
-  });
-  chmodSync(options.socketPath, 0o600);
+    chmodSync(credentialSocketPath, 0o600);
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.once("listening", () => {
+        server.off("error", reject);
+        resolve();
+      });
+      listenPrivately(server, options.socketPath);
+    });
+    chmodSync(options.socketPath, 0o600);
+  } catch (error) {
+    credentialServer.close();
+    rmSync(credentialDir, { recursive: true, force: true });
+    throw error;
+  }
 
   const firstClientTimeoutMs =
     options.firstClientTimeoutMs ?? NATIVE_HOLDER_FIRST_CLIENT_TIMEOUT_MS;
@@ -390,7 +439,13 @@ export async function runNativeHolder(
     );
   }
 
-  return await exited;
+  try {
+    return await exited;
+  } finally {
+    credential = null;
+    credentialServer.close();
+    rmSync(credentialDir, { recursive: true, force: true });
+  }
 }
 
 export type NativeHolderConnection =
@@ -455,6 +510,7 @@ export interface NativeHolderClientIo {
     on(event: "resize", listener: () => void): unknown;
   };
   fallbackSize: TerminalSize;
+  credential?: string | null;
 }
 
 export async function pipeNativeHolderClient(
@@ -479,6 +535,14 @@ export async function pipeNativeHolderClient(
       typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk;
     socket.write(encodeNativeHolderFrame(NativeHolderFrame.input, payload));
   };
+  if (io.credential !== undefined && io.credential !== null) {
+    socket.write(
+      encodeNativeHolderFrame(
+        NativeHolderFrame.credential,
+        Buffer.from(io.credential, "utf8"),
+      ),
+    );
+  }
   io.output.on("resize", sendSize);
   io.input.on("data", onInput);
   io.input.resume();

@@ -84,6 +84,12 @@ export default function plugin(bb: BbPluginApi) {
       executable: "codex",
       launchArgs: ["--no-daemon", "--dangerously-bypass-approvals-and-sandbox"],
       modelArgs: ["-c", 'model="{model}"'],
+      mcp: [
+        "-c",
+        "mcp_servers.bb-bridge.command={commandJson}",
+        "-c",
+        "mcp_servers.bb-bridge.args={argsJson}",
+      ],
       pastePlaceholders: ["[Pasted Content "],
       sessionRoot: { env: "CODEX_HOME", home: ".codex" },
       session: {

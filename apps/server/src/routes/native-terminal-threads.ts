@@ -5,8 +5,11 @@ import {
 } from "@bb/server-contract";
 import type { Hono } from "hono";
 import { ApiError } from "../errors.js";
+import { runAgentToolCall } from "../internal/tool-calls.js";
 import {
   findNativeTerminalThreadView,
+  listNativeTerminalAgentTools,
+  requireNativeTerminalAgentToolCall,
   openNativeTerminal,
   recordNativeTerminalSession,
   takeNativeTerminalLaunchSpec,
@@ -40,6 +43,35 @@ export function registerNativeTerminalThreadRoutes(
   post(routes.launch, (context) =>
     context.json(takeNativeTerminalLaunchSpec(deps, context.req.param("id"))),
   );
+
+  get(routes.agentTools, async (context) =>
+    context.json(
+      await listNativeTerminalAgentTools(deps, {
+        authorization: context.req.header("authorization"),
+        threadId: context.req.param("id"),
+      }),
+    ),
+  );
+
+  post(routes.callAgentTool, async (context, payload) => {
+    const { environment, thread } = await requireNativeTerminalAgentToolCall(
+      deps,
+      {
+        authorization: context.req.header("authorization"),
+        threadId: context.req.param("id"),
+        tool: context.req.param("tool"),
+      },
+    );
+    return runAgentToolCall(deps, {
+      callId: payload.callId,
+      environment,
+      input: payload.arguments,
+      requestSignal: context.req.raw.signal,
+      thread,
+      tool: context.req.param("tool"),
+      turnId: null,
+    });
+  });
 
   post(routes.switchMode, async (context, payload) =>
     context.json(

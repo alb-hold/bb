@@ -71,6 +71,10 @@ export default function plugin(bb: BbPluginApi) {
       executable: "claude",
       launchArgs: ["--dangerously-skip-permissions"],
       modelArgs: ["--model", "{model}"],
+      mcp: [
+        "--mcp-config",
+        '{"mcpServers":{"bb-bridge":{"command":{commandJson},"args":{argsJson}}}}',
+      ],
       pastePlaceholders: ["[Pasted text #", "[Image #"],
       sessionRoot: { env: "CLAUDE_CONFIG_DIR", home: ".claude" },
       session: {

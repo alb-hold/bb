@@ -14,7 +14,12 @@ import { Command } from "commander";
 import { BbHttpError } from "@bb/sdk";
 import type { NativeTerminalThread } from "@bb/server-contract";
 import { action, CliExitError } from "../../action.js";
-import { createCliBbSdk } from "../../client.js";
+import { cliFetch, createCliBbSdk } from "../../client.js";
+import { createNodeBbSdk } from "@bb/sdk/node";
+import {
+  takeNativeToolCredentialFromEnv,
+  withSocketCredential,
+} from "../../native-tool-credential.js";
 import { requireThreadIdOrSelf } from "../../context-env.js";
 import { fillNativeTerminalTemplate } from "@bb/domain";
 import {
@@ -27,6 +32,7 @@ import {
 } from "../../native-activity-reader.js";
 import {
   findNativeSession,
+  nativeMcpArgs,
   resolveNativeHarnessLaunch,
 } from "../../native-harness.js";
 import {
@@ -37,6 +43,7 @@ import {
   pipeNativeHolderClient,
   runNativeHolder,
 } from "../../native-holder.js";
+import { runNativeMcpServer } from "../../native-mcp.js";
 import { outputJson } from "../helpers.js";
 import { attachTerminal } from "../terminal.js";
 
@@ -130,6 +137,7 @@ async function runNativeHarness(
   reattachOnly: boolean,
 ): Promise<number> {
   const socketPath = defaultNativeHolderSocketPath(baseUrl, threadId);
+  const credential = takeNativeToolCredentialFromEnv(process.env);
   const connection = await openNativeHolderConnection({
     socketPath,
     reattachOnly,
@@ -159,7 +167,13 @@ async function runNativeHarness(
     input: process.stdin,
     output: process.stdout,
     fallbackSize: { cols: 120, rows: 40 },
+    credential,
   });
+}
+
+interface NativeMcpOptions {
+  credentialSocket: string;
+  serverUrl?: string;
 }
 
 async function holdNativeHarness(
@@ -232,7 +246,7 @@ async function holdNativeHarness(
     socketPath,
     cwd,
     env: process.env,
-    prepare: async () => {
+    prepare: async ({ credential, credentialSocket }) => {
       const spec = await sdk.nativeTerminals.launch({ threadId });
       const activity = spec.cli.activity;
       const hooks = activity?.hooks;
@@ -253,10 +267,29 @@ async function holdNativeHarness(
                 settings: nativeActivityHookSettings(hooks, file),
               }),
             );
+      const script = process.argv[1];
+      const mcpArgs =
+        script === undefined || credential === null
+          ? []
+          : nativeMcpArgs(spec.cli, {
+              command: process.execPath,
+              args: [
+                ...process.execArgv,
+                script,
+                "thread",
+                "native-mcp",
+                threadId,
+                "--server-url",
+                baseUrl,
+                "--credential-socket",
+                credentialSocket,
+              ],
+            });
       const launch = resolveNativeHarnessLaunch(
         spec,
         process.env,
         activityArgs,
+        mcpArgs,
       );
       discovery = { cli: spec.cli, launchedAtMs: Date.now() };
       recorded = launch.session.kind !== "discover";
@@ -414,6 +447,43 @@ export function registerNativeCommands(
           getUrl(),
           threadId,
           opts.reattach === true,
+        );
+      }),
+    );
+
+  parent
+    .command("native-mcp <threadId>", { hidden: true })
+    .description(
+      "Serve a native thread's bb tools to its provider CLI over stdio MCP (native-run passes this to the CLI)",
+    )
+    .option(
+      "--server-url <url>",
+      "bb server to serve the tools from; the provider CLI starts this command without bb's environment",
+    )
+    .requiredOption(
+      "--credential-socket <path>",
+      "Unix socket (mode 0600) on which the native terminal holder serves the terminal's tool credential",
+    )
+    .action(
+      action(async (threadId: string, opts: NativeMcpOptions) => {
+        const sdk = createNodeBbSdk({
+          baseUrl: opts.serverUrl ?? getUrl(),
+          fetch: withSocketCredential(cliFetch, opts.credentialSocket),
+        });
+        await runNativeMcpServer(
+          {
+            listTools: async () =>
+              (await sdk.nativeTerminals.agentTools({ threadId })).tools,
+            callTool: (call) =>
+              sdk.nativeTerminals.callAgentTool({
+                threadId,
+                tool: call.tool,
+                callId: call.callId,
+                arguments: call.arguments,
+                signal: call.signal,
+              }),
+          },
+          { input: process.stdin, output: process.stdout },
         );
       }),
     );
