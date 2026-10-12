@@ -6,6 +6,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { HubTokenStore } from "./store.js";
 import {
+  PROCESS_CREDENTIAL_CLOCK_SKEW_MS,
   PROCESS_CREDENTIAL_MAX_AGE_MS,
   ThreadTokenStore,
   type ThreadLookup,
@@ -205,11 +206,19 @@ it("stores a process credential as an owner-only record with digests, an expiry 
       "expiresAt",
       "hostId",
       "hostTokenDigest",
+      "issuedAt",
       "provider",
       "threadId",
       "tokenDigest",
     ],
-    ["expiresAt", "hostId", "hostTokenDigest", "threadId", "tokenDigest"],
+    [
+      "expiresAt",
+      "hostId",
+      "hostTokenDigest",
+      "issuedAt",
+      "threadId",
+      "tokenDigest",
+    ],
   ]);
 });
 
@@ -299,6 +308,120 @@ it("accepts a restored process record whose expiry is exactly mint plus the maxi
   const restored = new ThreadTokenStore(directory, hosts, () => clock);
   await restored.initialize([route.hostId]);
   expect(await restored.authenticate(token)).toEqual(route);
+});
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+it.each([
+  [
+    "an overlong lifetime of mint plus 40 days, restored on day 10",
+    (stored: Record<string, unknown>, issuedAt: number) => {
+      stored.expiresAt = issuedAt + 40 * DAY_MS;
+    },
+    10 * DAY_MS,
+  ],
+  [
+    "a missing issuedAt",
+    (stored: Record<string, unknown>) => {
+      delete stored.issuedAt;
+    },
+    DAY_MS,
+  ],
+  [
+    "an issuedAt in the future beyond the clock skew allowance",
+    (stored: Record<string, unknown>, issuedAt: number) => {
+      stored.issuedAt = issuedAt + 2 * DAY_MS;
+      stored.expiresAt = issuedAt + 2 * DAY_MS + 1000;
+    },
+    DAY_MS,
+  ],
+  [
+    "an issuedAt one millisecond beyond the clock skew allowance",
+    (stored: Record<string, unknown>, issuedAt: number) => {
+      stored.issuedAt = issuedAt + DAY_MS + 60_001;
+      stored.expiresAt = issuedAt + DAY_MS + 60_001 + 1000;
+    },
+    DAY_MS,
+  ],
+  [
+    "an expiresAt equal to issuedAt",
+    (stored: Record<string, unknown>) => {
+      stored.expiresAt = stored.issuedAt;
+    },
+    0,
+  ],
+  [
+    "an expiresAt before issuedAt",
+    (stored: Record<string, unknown>, issuedAt: number) => {
+      stored.expiresAt = issuedAt - 1;
+    },
+    0,
+  ],
+])(
+  "discards a restored process record with %s and removes its file",
+  async (_label, mutate, advance) => {
+    const { directory, hosts, route, hostToken } = await fixture();
+    const issuedAt = 20_000_000;
+    let clock = issuedAt;
+    const minting = new ThreadTokenStore(directory, hosts, () => clock);
+    await minting.initialize([route.hostId]);
+    const token = await minting.forThread(route, hostToken, "process");
+    const nested = await minting.forNested(
+      { hostId: route.hostId, threadId: route.threadId },
+      hostToken,
+      "process",
+    );
+    for (const name of await fs.readdir(directory)) {
+      if (!name.startsWith("scoped-process-")) continue;
+      const file = path.join(directory, name);
+      const stored = z
+        .record(z.string(), z.unknown())
+        .parse(JSON.parse(await fs.readFile(file, "utf8")));
+      mutate(stored, issuedAt);
+      await fs.writeFile(file, JSON.stringify(stored));
+    }
+    clock += advance;
+    const restored = new ThreadTokenStore(directory, hosts, () => clock);
+    await restored.initialize([route.hostId]);
+    expect(await restored.authenticate(token)).toBeNull();
+    expect(await restored.authenticateNested(nested)).toBeNull();
+    expect(restored.isProcessCredential(token)).toBe(false);
+    expect(
+      (await fs.readdir(directory)).filter((name) =>
+        name.startsWith("scoped-process-"),
+      ),
+    ).toEqual([]);
+  },
+);
+
+it("accepts a record minted at the clock skew allowance and one of exactly mint plus 30 days restored on day 29", async () => {
+  const { directory, hosts, route, hostToken } = await fixture();
+  const issuedAt = 30_000_000;
+  let clock = issuedAt;
+  const minting = new ThreadTokenStore(directory, hosts, () => clock);
+  await minting.initialize([route.hostId]);
+  const token = await minting.forThread(route, hostToken, "process");
+  for (const name of await fs.readdir(directory)) {
+    if (!name.startsWith("scoped-process-")) continue;
+    const stored = z
+      .record(z.string(), z.unknown())
+      .parse(JSON.parse(await fs.readFile(path.join(directory, name), "utf8")));
+    expect(stored.issuedAt).toBe(issuedAt);
+    expect(stored.expiresAt).toBe(issuedAt + PROCESS_CREDENTIAL_MAX_AGE_MS);
+  }
+  clock += 29 * DAY_MS;
+  const restored = new ThreadTokenStore(directory, hosts, () => clock);
+  await restored.initialize([route.hostId]);
+  expect(await restored.authenticate(token)).toEqual(route);
+  clock = issuedAt + PROCESS_CREDENTIAL_MAX_AGE_MS;
+  expect(await restored.authenticate(token)).toBeNull();
+  const skewed = new ThreadTokenStore(
+    directory,
+    hosts,
+    () => issuedAt - PROCESS_CREDENTIAL_CLOCK_SKEW_MS,
+  );
+  await skewed.initialize([route.hostId]);
+  expect(await skewed.authenticate(token)).toEqual(route);
 });
 
 it("scrubs existing raw provider and nested tokens to hashes without losing authentication", async () => {

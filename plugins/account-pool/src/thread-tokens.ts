@@ -16,6 +16,7 @@ const PROCESS_THREAD_ROUTE_PREFIX = "scoped-process-route-";
 const NESTED_ROUTE_PREFIX = "scoped-nested-route-";
 const PROCESS_NESTED_ROUTE_PREFIX = "scoped-process-nested-route-";
 export const PROCESS_CREDENTIAL_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+export const PROCESS_CREDENTIAL_CLOCK_SKEW_MS = 60 * 1000;
 const LEGACY_NESTED_ROUTE_PREFIX = "nested-route-";
 const ARCHIVED_THREAD_PREFIX = "archived-thread-";
 const ARCHIVE_FALLBACK_PREFIX = "archive-revocation-";
@@ -57,12 +58,14 @@ const routeSchema = legacyRouteSchema.omit({ token: true }).extend({
   tokenDigest: digestSchema,
   lifetime: z.literal("process").optional(),
   expiresAt: z.number().int().positive().optional(),
+  issuedAt: z.number().int().positive().optional(),
 });
 const nestedRouteSchema = legacyNestedRouteSchema.omit({ token: true }).extend({
   token: tokenSchema.optional(),
   tokenDigest: digestSchema,
   lifetime: z.literal("process").optional(),
   expiresAt: z.number().int().positive().optional(),
+  issuedAt: z.number().int().positive().optional(),
 });
 const readableRouteSchema = z.union([
   routeSchema,
@@ -276,6 +279,7 @@ export class ThreadTokenStore {
         ...(lifetime === "process"
           ? {
               lifetime,
+              issuedAt: this.now(),
               expiresAt: this.now() + PROCESS_CREDENTIAL_MAX_AGE_MS,
             }
           : {}),
@@ -319,6 +323,7 @@ export class ThreadTokenStore {
         ...(lifetime === "process"
           ? {
               lifetime,
+              issuedAt: this.now(),
               expiresAt: this.now() + PROCESS_CREDENTIAL_MAX_AGE_MS,
             }
           : {}),
@@ -781,20 +786,30 @@ export class ThreadTokenStore {
   private expired(record: {
     lifetime?: "process";
     expiresAt?: number;
+    issuedAt?: number;
   }): boolean {
     if (record.lifetime !== "process") return false;
-    return record.expiresAt === undefined || record.expiresAt <= this.now();
+    return (
+      record.issuedAt === undefined ||
+      record.expiresAt === undefined ||
+      record.expiresAt <= this.now()
+    );
   }
 
   private restorable(record: {
     lifetime?: "process";
     expiresAt?: number;
+    issuedAt?: number;
   }): boolean {
     if (record.lifetime !== "process") return true;
+    const { issuedAt, expiresAt } = record;
     return (
-      record.expiresAt !== undefined &&
-      !this.expired(record) &&
-      record.expiresAt <= this.now() + PROCESS_CREDENTIAL_MAX_AGE_MS
+      issuedAt !== undefined &&
+      expiresAt !== undefined &&
+      issuedAt <= this.now() + PROCESS_CREDENTIAL_CLOCK_SKEW_MS &&
+      expiresAt > issuedAt &&
+      expiresAt - issuedAt <= PROCESS_CREDENTIAL_MAX_AGE_MS &&
+      !this.expired(record)
     );
   }
 
