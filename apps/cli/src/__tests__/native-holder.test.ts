@@ -20,6 +20,7 @@ import {
   waitForNativeHolder,
   type NativeHolderProcess,
 } from "../native-holder.js";
+import { createNodeBbSdk } from "@bb/sdk/node";
 import { createCliBbSdk } from "../client.js";
 import {
   NativeBbUnreachableError,
@@ -431,9 +432,10 @@ describe("checking whether bb closed a native terminal for good", () => {
   const servers: http.Server[] = [];
   afterEach(async () => {
     await Promise.all(
-      servers
-        .splice(0)
-        .map((server) => new Promise((resolve) => server.close(resolve))),
+      servers.splice(0).map((server) => {
+        server.closeAllConnections();
+        return new Promise((resolve) => server.close(resolve));
+      }),
     );
   });
 
@@ -485,6 +487,48 @@ describe("checking whether bb closed a native terminal for good", () => {
     await expect(check(await bbAnswering(200, "not json"))).resolves.toBe(
       false,
     );
+  });
+
+  async function bbStallingAfterHeaders(): Promise<string> {
+    const server = http.createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.write("{");
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve),
+    );
+    const address = server.address();
+    if (address === null || typeof address === "string") {
+      throw new Error("server has no port");
+    }
+    return `http://127.0.0.1:${address.port}`;
+  }
+
+  const checkWithin = (baseUrl: string, timeoutMs: number) =>
+    checkNativeTerminalClosedForGood(() =>
+      createNodeBbSdk({ baseUrl, timeoutMs }).nativeTerminals.get({
+        threadId: "thr_x",
+      }),
+    );
+
+  it("counts a response whose body stalls past the timeout as bb answering", async () => {
+    const baseUrl = await bbStallingAfterHeaders();
+    await expect(checkWithin(baseUrl, 200)).resolves.toBe(false);
+    servers.at(-1)?.closeAllConnections();
+  });
+
+  it("still reaps a detached CLI while bb's responses keep stalling", async () => {
+    const baseUrl = await bbStallingAfterHeaders();
+    const socketPath = socketIn();
+    const held = startHolder(socketPath, ECHO_LOOP, 300, () =>
+      checkWithin(baseUrl, 100),
+    );
+    const client = await attach(socketPath);
+    await client.waitFor(/started:/u);
+    client.socket.destroy();
+    expect(await held).not.toBe(7);
+    servers.at(-1)?.closeAllConnections();
   });
 
   it("reports bb unreachable only when the request never gets an answer", async () => {

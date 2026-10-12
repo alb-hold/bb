@@ -1,4 +1,4 @@
-import { BbHttpError, BbRequestTimeoutError } from "@bb/sdk";
+import { BbHttpError } from "@bb/sdk";
 import { nativeTerminalClosedForGood } from "./native-holder.js";
 
 export class NativeBbUnreachableError extends Error {
@@ -9,7 +9,6 @@ export class NativeBbUnreachableError extends Error {
 }
 
 function neverAnswered(error: unknown): boolean {
-  if (error instanceof BbRequestTimeoutError) return true;
   if (error instanceof TypeError && error.message === "fetch failed") {
     return true;
   }
