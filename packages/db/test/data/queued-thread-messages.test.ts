@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { threadScope, type PromptInput } from "@bb/domain";
+import { threadScope, turnScope, type PromptInput } from "@bb/domain";
 import { noopNotifier } from "../../src/notifier.js";
 import { insertEvents } from "../../src/data/events.js";
 import {
@@ -22,7 +22,7 @@ import {
   updateQueuedThreadMessage,
 } from "../../src/data/queued-thread-messages.js";
 import { createProject } from "../../src/data/projects.js";
-import { createThread } from "../../src/data/threads.js";
+import { archiveThread, createThread } from "../../src/data/threads.js";
 import { upsertHost } from "../../src/data/hosts.js";
 import { createMigratedConnection } from "../helpers/migrated-connection.js";
 
@@ -75,7 +75,150 @@ function setup() {
   return { db, project, thread };
 }
 
+const PAUSE_LOOKUP_ON_QUEUED_MESSAGE =
+  '"queue_pause_interruption"."thread_id" = "queued_thread_messages"."thread_id"';
+const PAUSE_LOOKUP_ON_THREAD =
+  '"queue_pause_interruption"."thread_id" = "threads"."id"';
+
+function captureIdleQueuedThreadQuery(
+  db: ReturnType<typeof createMigratedConnection>,
+) {
+  const captured: { params: unknown[]; sql: string }[] = [];
+  const raw = db.$client;
+  const originalPrepare = raw.prepare.bind(raw);
+  Object.defineProperty(raw, "prepare", {
+    configurable: true,
+    writable: true,
+    value: (source: string) => {
+      const statement = originalPrepare(source);
+      const originalAll = statement.all.bind(statement);
+      statement.all = (...params: unknown[]) => {
+        captured.push({ params, sql: source });
+        return originalAll(...params);
+      };
+      return statement;
+    },
+  });
+  try {
+    const rows = listIdleThreadsWithQueuedMessages(db);
+    const query = captured.find((entry) =>
+      entry.sql.includes("queue_pause_interruption"),
+    );
+    if (!query) {
+      throw new Error("Expected the idle queued-message thread SQL");
+    }
+    return { query, rows };
+  } finally {
+    Object.defineProperty(raw, "prepare", {
+      configurable: true,
+      writable: true,
+      value: originalPrepare,
+    });
+  }
+}
+
 describe("queued thread messages", () => {
+  it("returns the same threads as the thread-correlated pause lookup it replaced", () => {
+    const { db, project } = setup();
+    const idleThread = () =>
+      createThread(db, noopNotifier, {
+        projectId: project.id,
+        providerId: "codex",
+        status: "idle",
+      }).id;
+    const manualStop = (threadId: string, sequence: number) => ({
+      threadId,
+      sequence,
+      type: "system/thread/interrupted" as const,
+      scope: threadScope(),
+      itemId: null,
+      itemKind: null,
+      parentToolCallId: null,
+      data: JSON.stringify({ reason: "manual-stop" }),
+    });
+
+    const severalQueued = idleThread();
+    queueTurnEndMessage(db, severalQueued, defaultInput);
+    queueTurnEndMessage(db, severalQueued, altInput);
+    queueTurnEndMessage(db, severalQueued, defaultInput);
+
+    const archived = idleThread();
+    queueTurnEndMessage(db, archived, defaultInput);
+    archiveThread(db, noopNotifier, archived);
+
+    const active = createThread(db, noopNotifier, {
+      projectId: project.id,
+      providerId: "codex",
+      status: "active",
+    }).id;
+    queueTurnEndMessage(db, active, defaultInput);
+
+    const paused = idleThread();
+    queueTurnEndMessage(db, paused, defaultInput);
+    queueTurnEndMessage(db, paused, altInput);
+    insertEvents(db, noopNotifier, [manualStop(paused, 1)]);
+
+    const pauseCleared = idleThread();
+    queueTurnEndMessage(db, pauseCleared, defaultInput);
+    insertEvents(db, noopNotifier, [
+      manualStop(pauseCleared, 1),
+      {
+        threadId: pauseCleared,
+        sequence: 2,
+        type: "client/turn/requested",
+        scope: threadScope(),
+        itemId: null,
+        itemKind: null,
+        parentToolCallId: null,
+        data: JSON.stringify({
+          initiator: "user",
+          input: defaultInput,
+          target: { kind: "new-turn" },
+        }),
+      },
+      {
+        threadId: pauseCleared,
+        sequence: 3,
+        type: "turn/started",
+        scope: turnScope("turn-after-stop"),
+        itemId: null,
+        itemKind: null,
+        parentToolCallId: null,
+        data: JSON.stringify({ providerThreadId: "provider-after-stop" }),
+      },
+    ]);
+
+    const stoppedAgain = idleThread();
+    queueTurnEndMessage(db, stoppedAgain, defaultInput);
+    insertEvents(db, noopNotifier, [
+      manualStop(stoppedAgain, 1),
+      {
+        ...manualStop(stoppedAgain, 2),
+        data: JSON.stringify({ reason: "host-disconnected" }),
+      },
+    ]);
+
+    const pausedWithoutQueue = idleThread();
+    insertEvents(db, noopNotifier, [manualStop(pausedWithoutQueue, 1)]);
+    idleThread();
+
+    const { query, rows } = captureIdleQueuedThreadQuery(db);
+    expect(query.sql).toContain(PAUSE_LOOKUP_ON_QUEUED_MESSAGE);
+    const replacedSql = query.sql.replace(
+      PAUSE_LOOKUP_ON_QUEUED_MESSAGE,
+      PAUSE_LOOKUP_ON_THREAD,
+    );
+    expect(replacedSql).not.toBe(query.sql);
+    const run = (sql: string) =>
+      db.$client.prepare<unknown[], unknown[]>(sql).raw().all(...query.params);
+
+    expect(run(query.sql)).toEqual(run(replacedSql));
+    expect(rows.map((row) => row.threadId).sort()).toEqual(
+      [severalQueued, pauseCleared, stoppedAgain].sort(),
+    );
+    expect(run(query.sql)).toHaveLength(3);
+  });
+
   it("lists an idle thread waiting for its turn to start", () => {
     const { db, project } = setup();
     const thread = createThread(db, noopNotifier, {
@@ -118,42 +261,9 @@ describe("queued thread messages", () => {
     }
     queueTurnEndMessage(db, queuedThreadId, defaultInput);
 
-    const captured: { params: unknown[]; sql: string }[] = [];
+    const { query, rows } = captureIdleQueuedThreadQuery(db);
+    expect(rows.map((row) => row.threadId)).toEqual([queuedThreadId]);
     const raw = db.$client;
-    const originalPrepare = raw.prepare.bind(raw);
-    Object.defineProperty(raw, "prepare", {
-      configurable: true,
-      writable: true,
-      value: (source: string) => {
-        const statement = originalPrepare(source);
-        const originalAll = statement.all.bind(statement);
-        statement.all = (...params: unknown[]) => {
-          captured.push({ params, sql: source });
-          return originalAll(...params);
-        };
-        return statement;
-      },
-    });
-    let listedThreadIds: string[];
-    try {
-      listedThreadIds = listIdleThreadsWithQueuedMessages(db).map(
-        (row) => row.threadId,
-      );
-    } finally {
-      Object.defineProperty(raw, "prepare", {
-        configurable: true,
-        writable: true,
-        value: originalPrepare,
-      });
-    }
-    expect(listedThreadIds).toEqual([queuedThreadId]);
-
-    const query = captured.find((entry) =>
-      entry.sql.includes("queue_pause_interruption"),
-    );
-    if (!query) {
-      throw new Error("Expected the idle queued-message thread SQL");
-    }
     expect(query.sql).toContain(
       '"queue_pause_interruption"."thread_id" = "queued_thread_messages"."thread_id"',
     );
