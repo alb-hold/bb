@@ -5,6 +5,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   hasRunningLayoutAnimation,
+  observeLayoutSignals,
   watchTerminalLayoutSettled,
 } from "./terminal-layout-settle";
 
@@ -267,5 +268,126 @@ describe("hasRunningLayoutAnimation", () => {
 
     expect(hasRunningLayoutAnimation(container)).toBe(false);
     expect(hasRunningLayoutAnimation(unsupported)).toBe(false);
+  });
+});
+
+describe("watcher with layout signals after two stable frames", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function setup() {
+    vi.useFakeTimers();
+    const socket = new SentSocket();
+    const transport = new TerminalWebSocketTransport({
+      createSocket: () => socket,
+      onMessage: () => undefined,
+      shouldReconnect: () => false,
+      url: "ws://example.test/ws/terminals/term_1",
+    });
+    const doc = new EventTarget();
+    const fontSet = new EventTarget();
+    const state = { cols: 128, animating: false, fontsLoading: false };
+    const fit = () => transport.sendResize(state.cols, 43);
+    fit();
+    transport.start();
+    socket.onopen?.(new Event("open"));
+    watchTerminalLayoutSettled({
+      ...frameScheduler(),
+      measure: () =>
+        state.animating || state.fontsLoading
+          ? null
+          : `800x600:${state.cols}x43`,
+      onSettled: () => {
+        fit();
+        transport.markLayoutSettled();
+      },
+      ready: Promise.resolve(),
+      subscribe: (onSignal) =>
+        observeLayoutSignals({
+          affectsContainer: (target) => target === doc,
+          document: doc,
+          fontSet,
+          onSignal,
+        }),
+    });
+    return { doc, fit, fontSet, socket, state, transport };
+  }
+
+  it("sends exactly one resize at the final size when a transition starts after two stable frames", async () => {
+    const { doc, fit, socket, state, transport } = setup();
+
+    await vi.advanceTimersByTimeAsync(FRAME_MS * 3);
+    doc.dispatchEvent(new Event("transitionrun"));
+    state.animating = true;
+    await vi.advanceTimersByTimeAsync(400);
+    state.cols = 132;
+    state.animating = false;
+    fit();
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(socket.resizeCols).toEqual([132]);
+    transport.dispose();
+  });
+
+  it("sends exactly one resize at the final size when a font load starts after fonts.ready resolved", async () => {
+    const { fit, fontSet, socket, state, transport } = setup();
+
+    await vi.advanceTimersByTimeAsync(FRAME_MS * 3);
+    state.fontsLoading = true;
+    fontSet.dispatchEvent(new Event("loading"));
+    await vi.advanceTimersByTimeAsync(300);
+    state.cols = 132;
+    state.fontsLoading = false;
+    fit();
+    fontSet.dispatchEvent(new Event("loadingdone"));
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(socket.resizeCols).toEqual([132]);
+    transport.dispose();
+  });
+
+  it("ignores transitions that do not involve the terminal container", async () => {
+    const { socket, transport } = setup();
+    const other = new EventTarget();
+
+    await vi.advanceTimersByTimeAsync(FRAME_MS);
+    other.dispatchEvent(new Event("transitionrun"));
+    await vi.advanceTimersByTimeAsync(FRAME_MS * 12);
+
+    expect(socket.resizeCols).toEqual([128]);
+    transport.dispose();
+  });
+
+  it("sends a second resize at the final size for a move with no signal after the grace window", async () => {
+    const { fit, socket, state, transport } = setup();
+
+    await vi.advanceTimersByTimeAsync(2000);
+    state.cols = 132;
+    fit();
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(socket.resizeCols).toEqual([128, 132]);
+    transport.dispose();
+  });
+
+  it("unsubscribes from signals once settled", () => {
+    const doc = new EventTarget();
+    const added: string[] = [];
+    const removed: string[] = [];
+    const spy = {
+      addEventListener: (type: string) => added.push(type),
+      removeEventListener: (type: string) => removed.push(type),
+    } as unknown as EventTarget;
+    const stop = observeLayoutSignals({
+      affectsContainer: () => true,
+      document: spy,
+      fontSet: doc,
+      onSignal: () => undefined,
+    });
+    stop();
+
+    expect(added.sort()).toEqual(["transitionrun", "transitionstart"]);
+    expect(removed.sort()).toEqual(["transitionrun", "transitionstart"]);
   });
 });

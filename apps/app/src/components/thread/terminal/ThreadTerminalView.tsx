@@ -41,6 +41,7 @@ import { buildTerminalWebSocketUrl } from "./terminal-websocket-url";
 import { TerminalWebSocketTransport } from "@bb/client-core";
 import {
   hasRunningLayoutAnimation,
+  observeLayoutSignals,
   watchTerminalLayoutSettled,
 } from "./terminal-layout-settle";
 import { TerminalLinkOpenDialog } from "./TerminalLinkOpenDialog";
@@ -1165,7 +1166,8 @@ export function ThreadTerminalView({
           if (
             rect.width <= 0 ||
             rect.height <= 0 ||
-            hasRunningLayoutAnimation(containerElement)
+            hasRunningLayoutAnimation(containerElement) ||
+            document.fonts?.status === "loading"
           ) {
             return null;
           }
@@ -1180,6 +1182,14 @@ export function ThreadTerminalView({
           activeTransport.markLayoutSettled();
         },
         ready: document.fonts?.ready,
+        subscribe: (onSignal) =>
+          observeLayoutSignals({
+            affectsContainer: (target) =>
+              target instanceof Node && target.contains(containerElement),
+            document,
+            fontSet: document.fonts,
+            onSignal,
+          }),
         requestFrame: (callback) => window.requestAnimationFrame(callback),
       });
       const sendTerminalInput = (dataBase64: string) =>
