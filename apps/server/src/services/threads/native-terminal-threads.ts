@@ -624,6 +624,7 @@ function watchReattachedTerminal(
 export function reopenNativeTerminalsAfterDaemonReconnect(
   deps: NativeTerminalReopenDeps,
   args: { hostId: string; threadIds: readonly string[] },
+  monotonicNowMs: () => number = () => performance.now(),
 ): Promise<void> {
   return Promise.all(
     args.threadIds.map(async (threadId) => {
@@ -638,15 +639,29 @@ export function reopenNativeTerminalsAfterDaemonReconnect(
           terminal === null || !isActiveTerminalSessionStatus(terminal.status)
         );
       };
+      const deadlineAt = monotonicNowMs() + NATIVE_REATTACH_DEADLINE_MS;
       let expired = false;
+      let interrupted = false;
       let leaveToDeadline = false;
-      const deadline = setTimeout(() => {
-        expired = true;
-        if (!stillWaiting()) return;
+      const pastDeadline = () => expired || monotonicNowMs() >= deadlineAt;
+      const interruptOnce = () => {
+        if (interrupted) return;
+        interrupted = true;
         interruptThreadWhoseHolderIsGone(deps, {
           hostId: args.hostId,
           threadId,
         });
+      };
+      const shouldStop = () => {
+        if (pastDeadline()) {
+          if (stillWaiting()) interruptOnce();
+          return true;
+        }
+        return !stillWaiting();
+      };
+      const deadline = setTimeout(() => {
+        expired = true;
+        if (stillWaiting()) interruptOnce();
       }, NATIVE_REATTACH_DEADLINE_MS);
       deadline.unref();
       try {
@@ -682,10 +697,10 @@ export function reopenNativeTerminalsAfterDaemonReconnect(
         ) {
           return;
         }
-        if (expired) return;
+        if (shouldStop()) return;
         let reopened: NativeTerminalThread;
         for (;;) {
-          if (expired || !stillWaiting()) return;
+          if (shouldStop()) return;
           try {
             reopened = await openNativeTerminalDeduplicated(deps, {
               reattachOnly: true,
@@ -701,7 +716,7 @@ export function reopenNativeTerminalsAfterDaemonReconnect(
                 threadId,
               }) ||
               reopenErrorMeansNoLongerWanted(error) ||
-              expired ||
+              pastDeadline() ||
               !stillWaiting()
             ) {
               throw error;
@@ -715,7 +730,7 @@ export function reopenNativeTerminalsAfterDaemonReconnect(
             });
           }
         }
-        if (expired) {
+        if (pastDeadline()) {
           deps.logger.info(
             {
               hostId: args.hostId,
@@ -725,6 +740,12 @@ export function reopenNativeTerminalsAfterDaemonReconnect(
             "Discarding a native terminal reattach that finished after its deadline",
           );
           if (reopened.terminal !== null) {
+            if (
+              getNativeTerminalThread(deps.db, threadId)?.terminalSessionId ===
+              reopened.terminal.id
+            ) {
+              interruptOnce();
+            }
             await deps.terminalSessions
               .closeTerminal({
                 terminalId: reopened.terminal.id,
@@ -762,12 +783,13 @@ export function reopenNativeTerminalsAfterDaemonReconnect(
             threadId,
           })
         ) {
-          leaveToDeadline = true;
+          if (pastDeadline()) {
+            if (stillWaiting()) interruptOnce();
+          } else {
+            leaveToDeadline = true;
+          }
         } else if (stillWaiting()) {
-          interruptThreadWhoseHolderIsGone(deps, {
-            hostId: args.hostId,
-            threadId,
-          });
+          interruptOnce();
         }
       } finally {
         if (!leaveToDeadline) clearTimeout(deadline);

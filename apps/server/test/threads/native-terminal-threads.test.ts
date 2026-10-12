@@ -2187,6 +2187,147 @@ describe("native terminal threads", () => {
     }
   }, 60_000);
 
+  it("discards a reattach that resolves past the monotonic deadline before the deadline timer runs, and interrupts exactly once", async () => {
+    const sourceRegistry = await createTestProviderRegistry();
+    const registration = sourceRegistry.get("claude-code");
+    if (registration === null) throw new Error("claude-code is not seeded");
+    let now = 0;
+    try {
+      const { fixture, lateProviders, running, sessionId, socket } =
+        await restartDaemonWithRunningNativeThread("instance-restarted", {
+          beforeRestart: () => {
+            vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+          },
+          deferProviders: true,
+        });
+      const reopening = reopenNativeTerminalsAfterDaemonReconnect(
+        fixture.harness.deps,
+        { hostId: fixture.hostId, threadIds: [running.thread.id] },
+        () => now,
+      );
+      lateProviders?.register(registration);
+      let opening: TerminalOpenMessage | undefined;
+      for (let step = 0; step < 400 && opening === undefined; step += 1) {
+        await vi.advanceTimersByTimeAsync(5);
+        opening = daemonMessages(socket).find(
+          (message): message is TerminalOpenMessage =>
+            message.type === "terminal.open",
+        );
+      }
+      if (opening === undefined) throw new Error("reattach never opened");
+      now = 45_001;
+      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.hostId,
+        sessionId,
+        message: {
+          type: "terminal.opened",
+          requestId: opening.requestId,
+          terminalId: opening.terminalId,
+          shell: "/bin/zsh",
+          title: "zsh",
+          initialCwd: "/tmp/native-workspace",
+          cols: opening.cols,
+          rows: opening.rows,
+        },
+      });
+      for (let step = 0; step < 40; step += 1) {
+        await vi.advanceTimersByTimeAsync(50);
+        if (
+          daemonMessages(socket).some(
+            (message) =>
+              message.type === "terminal.close" &&
+              message.terminalId === opening.terminalId,
+          )
+        ) {
+          break;
+        }
+      }
+
+      expect(
+        daemonMessages(socket).some(
+          (message) =>
+            message.type === "terminal.close" &&
+            message.terminalId === opening.terminalId,
+        ),
+      ).toBe(true);
+      expect(interruptionReasons(fixture, running.thread.id)).toEqual([
+        "host-daemon-restarted",
+      ]);
+      expect(getThread(fixture.harness.db, running.thread.id)?.status).not.toBe(
+        "active",
+      );
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(interruptionReasons(fixture, running.thread.id)).toEqual([
+        "host-daemon-restarted",
+      ]);
+      expect(
+        daemonMessages(socket).filter(
+          (message) => message.type === "terminal.open",
+        ),
+      ).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 60_000);
+
+  it("never starts an attempt once the monotonic clock has reached the deadline, even though the deadline timer has not fired", async () => {
+    const sourceRegistry = await createTestProviderRegistry();
+    const registration = sourceRegistry.get("claude-code");
+    if (registration === null) throw new Error("claude-code is not seeded");
+    let now = 0;
+    let attempts = 0;
+    try {
+      const { fixture, lateProviders, running, socket } =
+        await restartDaemonWithRunningNativeThread("instance-restarted", {
+          beforeRestart: () => {
+            vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+          },
+          deferProviders: true,
+        });
+      vi.spyOn(
+        fixture.harness.deps.terminalSessions,
+        "createTerminal",
+      ).mockImplementation(async () => {
+        attempts += 1;
+        now = 45_000;
+        throw new ApiError(502, "host_disconnected", "Host is gone");
+      });
+      const reopening = reopenNativeTerminalsAfterDaemonReconnect(
+        fixture.harness.deps,
+        { hostId: fixture.hostId, threadIds: [running.thread.id] },
+        () => now,
+      );
+      lateProviders?.register(registration);
+      let finished = false;
+      void reopening.then(() => {
+        finished = true;
+      });
+      for (let step = 0; step < 100 && !finished; step += 1) {
+        await vi.advanceTimersByTimeAsync(100);
+      }
+      expect(finished).toBe(true);
+
+      expect(attempts).toBe(1);
+      expect(interruptionReasons(fixture, running.thread.id)).toEqual([
+        "host-daemon-restarted",
+      ]);
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(attempts).toBe(1);
+      expect(interruptionReasons(fixture, running.thread.id)).toEqual([
+        "host-daemon-restarted",
+      ]);
+      expect(
+        daemonMessages(socket).filter(
+          (message) => message.type === "terminal.open",
+        ),
+      ).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 60_000);
+
   it("retries a cancelled reattach open that did not come from the terminal exiting and interrupts only at the deadline", async () => {
     const { fixture, running, attempts } = await restartWithFailingReattach(
       () => new ApiError(409, "terminal_open_cancelled", "Cancelled"),
