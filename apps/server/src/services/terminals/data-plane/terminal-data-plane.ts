@@ -25,6 +25,7 @@ import {
 } from "./daemon-data-sockets.js";
 import {
   TerminalDataPlaneRouter,
+  type DataPlaneAttachArgs,
   type DataPlaneLifecyclePort,
 } from "./data-plane-router.js";
 import { TerminalDataTicketStore } from "./terminal-data-ticket-store.js";
@@ -58,6 +59,7 @@ export interface TerminalDataPlane {
   readonly attachedSocketCount: number;
   readonly state: DataPlaneState;
   isSessionAttached(daemonSessionId: string): boolean;
+  isTerminalRouted(terminalId: string): boolean;
   stop(): void;
 }
 
@@ -97,6 +99,27 @@ export function createTerminalDataPlaneSpawn(): DataPlaneSpawn {
       execArgv: process.execArgv,
       stdio: ["ignore", "inherit", "inherit", "ipc"],
     });
+}
+
+export function attachBrowserOnDataSocket(
+  deps: {
+    dataSockets: Pick<DaemonDataSockets, "routeTerminal" | "unrouteTerminal">;
+    router: Pick<TerminalDataPlaneRouter, "attachBrowser" | "hasAttachInFlight">;
+  },
+  args: DataPlaneAttachArgs,
+): string | null {
+  if (!deps.dataSockets.routeTerminal(args)) {
+    return null;
+  }
+  let attachId: string | null = null;
+  try {
+    attachId = deps.router.attachBrowser(args);
+  } finally {
+    if (attachId === null && !deps.router.hasAttachInFlight(args.terminalId)) {
+      deps.dataSockets.unrouteTerminal(args.terminalId);
+    }
+  }
+  return attachId;
 }
 
 export function startTerminalDataPlane(
@@ -139,8 +162,7 @@ export function startTerminalDataPlane(
     transport: supervisor,
   });
   installTerminalUpgradeHandoff(options.server, {
-    attach: (args) =>
-      dataSockets.routeTerminal(args) ? router.attachBrowser(args) : null,
+    attach: (args) => attachBrowserOnDataSocket({ dataSockets, router }, args),
     guard: options.guard,
     handleDataSocketUpgrade: (request, socket, head) =>
       handleTerminalDataSocketUpgrade(
@@ -183,6 +205,7 @@ export function startTerminalDataPlane(
     },
     isSessionAttached: (daemonSessionId) =>
       dataSockets.isAttached(daemonSessionId),
+    isTerminalRouted: (terminalId) => dataSockets.isRouted(terminalId),
     stop: () => {
       unsubscribe();
       dataSockets.stop();

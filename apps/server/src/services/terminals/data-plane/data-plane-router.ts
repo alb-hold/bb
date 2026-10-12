@@ -133,6 +133,18 @@ export class TerminalDataPlaneRouter implements ChildTerminalSocketSink {
     this.transport.send({ v: V, type: "terminal.unroute", terminalId });
   }
 
+  hasAttachInFlight(terminalId: string): boolean {
+    if (this.hasBrowsers(terminalId)) {
+      return true;
+    }
+    for (const pending of this.pending.values()) {
+      if (pending.terminalId === terminalId) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   hasBrowsers(terminalId: string): boolean {
     return (this.attachIdsByTerminalId.get(terminalId)?.size ?? 0) > 0;
   }
