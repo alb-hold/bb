@@ -1618,12 +1618,33 @@ describe("TerminalManager", () => {
         }),
       );
 
+      pty.emitData("PRIMARY");
+      await harness.manager.handleMessage({
+        type: "terminal.attach",
+        requestId: "attach-primary-screen-tail",
+        terminalId: "term-1",
+        sinceSeq: 0,
+        tailBytes: 7,
+      });
+      expect(harness.messages).toContainEqual(
+        expect.objectContaining({
+          type: "terminal.replay",
+          requestId: "attach-primary-screen-tail",
+          chunks: [
+            expect.objectContaining({
+              dataBase64: Buffer.from("PRIMARY", "utf8").toString("base64"),
+            }),
+          ],
+        }),
+      );
+
       pty.emitData("\u001b[?1049h");
       await harness.manager.handleMessage({
         type: "terminal.attach",
         requestId: "flush-normal-csi",
         terminalId: "term-1",
         sinceSeq: 0,
+        tailBytes: 64 * 1024,
       });
       pty.emitData("OK");
       await harness.manager.handleMessage({
@@ -1649,6 +1670,56 @@ describe("TerminalManager", () => {
       await harness.manager.handleMessage({
         type: "terminal.close",
         terminalId: "term-1",
+        reason: "user",
+      });
+    },
+  );
+
+  it.each([1024, 1025])(
+    "respects the CSI parameter byte boundary at %s bytes",
+    async (length) => {
+      const harness = createHarness();
+      const pty = await openTerminal(harness);
+
+      pty.emitData(`\u001b[?1049;${";".repeat(length - 6)}`);
+      await harness.manager.handleMessage({
+        type: "terminal.attach",
+        requestId: "attach-csi-limit",
+        terminalId: "term-1",
+        sinceSeq: 0,
+        tailBytes: 1,
+      });
+      expect(
+        harness.manager["sessions"].get("term-1")?.scrollbackParserState
+          .csiParameters.length,
+      ).toBe(length === 1024 ? 1024 : 0);
+
+      pty.emitData("hPRIMARY");
+      await harness.manager.handleMessage({
+        type: "terminal.attach",
+        requestId: "attach-csi-limit-recovered",
+        terminalId: "term-1",
+        sinceSeq: 0,
+        tailBytes: 1,
+      });
+      expect(harness.messages).toContainEqual(
+        expect.objectContaining({
+          type: "terminal.replay",
+          requestId: "attach-csi-limit-recovered",
+          chunks: [
+            expect.objectContaining({
+              dataBase64: Buffer.from(
+                length === 1024 ? "\u001b[?1049hPRIMARY" : "PRIMARY",
+                "utf8",
+              ).toString("base64"),
+            }),
+          ],
+        }),
+      );
+      await harness.manager.handleMessage({
+        type: "terminal.close",
+        terminalId: "term-1",
+        reason: "user",
       });
     },
   );
