@@ -3345,12 +3345,16 @@ describe("public terminal routes", () => {
     }
 
     it("closes the browsers the server holds when a daemon session starts sending output directly, and releases their pacing", async () => {
-      const { attach, fixture, stored, terminalSessions } =
+      const { attach, fixture, sendOutput, stored, terminalSessions } =
         await createRunningTerminal();
       const browserSocket = createFakeBrowserSocket();
       await attach(browserSocket, { nextSeq: 0, outputAcks: true });
+      sendOutput(0);
+      sendOutput(1);
       expect(readBrowserMessages(browserSocket)).toEqual([
         expect.objectContaining({ type: "attached", nextSeq: 0 }),
+        expect.objectContaining({ type: "output" }),
+        expect.objectContaining({ type: "output" }),
       ]);
 
       terminalSessions.setDaemonSessionDirectOutput({
@@ -3367,7 +3371,11 @@ describe("public terminal routes", () => {
         1013,
         "terminal-output-path-changed",
       );
-      expect(readDaemonOperationMessages(fixture.socket).slice(1)).toEqual([
+      expect(
+        readDaemonOperationMessages(fixture.socket).filter(
+          (message) => message.type === "terminal.flow-control",
+        ),
+      ).toEqual([
         { type: "terminal.flow-control", terminalId: stored.id, enabled: true },
         { type: "terminal.flow-control", terminalId: stored.id, enabled: false },
       ]);

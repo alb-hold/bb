@@ -6,7 +6,7 @@ import {
   type HostDaemonDaemonWsMessage,
   type HostDaemonServerWsMessage,
 } from "@bb/host-daemon-contract";
-import WebSocket from "ws";
+import { WebSocket } from "ws";
 import type { TerminalDataSocketPort } from "../command-dispatch-support.js";
 import type { HostDaemonLogger } from "../logger.js";
 import { decodeWebSocketMessageData } from "../server-connection-support.js";
