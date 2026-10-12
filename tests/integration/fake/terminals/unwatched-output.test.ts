@@ -204,6 +204,13 @@ async function observePlateau(
 describe.sequential("terminal output nobody is watching", () => {
   it("keeps the real daemon's output and replays it exactly through detach and reattach", () =>
     withHarness(async (harness) => {
+      const daemonTerminalMessages: string[] = [];
+      const manager = harness.daemonApp.terminalManager;
+      const handleMessage = manager.handleMessage.bind(manager);
+      vi.spyOn(manager, "handleMessage").mockImplementation((message) => {
+        daemonTerminalMessages.push(message.type);
+        return handleMessage(message);
+      });
       const script = [
         "sleep 3",
         "seq 1 5000",
@@ -216,6 +223,10 @@ describe.sequential("terminal output nobody is watching", () => {
         "done",
       ].join("\n");
       const terminalId = await createTerminal(harness, script);
+      expect(daemonTerminalMessages).toContain("terminal.open");
+      console.info(
+        `REAL_HOST_DAEMON hostId=${harness.hostId} terminalManager=${manager.constructor.name} nodePid=${process.pid} terminal=${terminalId} openReceivedByDaemon=${daemonTerminalMessages.includes("terminal.open")}`,
+      );
 
       await pause(500);
       const startedSession = await readSession(harness, terminalId);
