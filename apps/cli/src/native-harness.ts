@@ -106,7 +106,9 @@ export function resolveNativeHarnessLaunch(
   ];
   const prompt = [
     ...(spec.initialPrompt === null ? [] : [spec.initialPrompt]),
-    ...spec.initialImages.flatMap((image) => fill(cli.imageArgs, { image })),
+    ...(spec.initialImages ?? []).flatMap((image) =>
+      fill(cli.imageArgs ?? [], { image }),
+    ),
   ];
   const session = cli.session;
   if (session.kind === "assigned") {

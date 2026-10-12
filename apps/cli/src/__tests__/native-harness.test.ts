@@ -186,6 +186,36 @@ describe("resolveNativeHarnessLaunch", () => {
     ).not.toContain("--image");
   });
 
+  it("passes an image path with spaces and shell characters as one argument", () => {
+    const image = "/tmp/my shots/it's $HOME; rm -rf `x` & (1) \"a\".png";
+    const args = resolveNativeHarnessLaunch(
+      spec({
+        cli: DISCOVERED_CLI,
+        nativeSessionId: null,
+        initialPrompt: "What is this?",
+        initialImages: [image],
+      }),
+      { HOME: tempHome() },
+    ).args;
+    expect(args.slice(-3)).toEqual(["What is this?", "--image", image]);
+  });
+
+  it("launches without image argv when an older server sends neither images nor image argv", () => {
+    const cli = { ...DISCOVERED_CLI };
+    delete cli.imageArgs;
+    const older = spec({
+      cli,
+      nativeSessionId: null,
+      initialPrompt: "/tmp/a.png\nWhat is this?",
+    });
+    delete older.initialImages;
+    const args = resolveNativeHarnessLaunch(older, {
+      HOME: tempHome(),
+    }).args;
+    expect(args.at(-1)).toBe("/tmp/a.png\nWhat is this?");
+    expect(args).not.toContain("--image");
+  });
+
   it("puts launch argv before the model and session argv of an assigned session", () => {
     const cli = { ...ASSIGNED_CLI, launchArgs: ["--quiet"] };
     expect(

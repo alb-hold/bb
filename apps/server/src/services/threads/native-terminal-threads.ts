@@ -133,7 +133,7 @@ export function nativeTerminalLaunchInput(
   deps: Pick<AppDeps, "config">,
   args: NativeTerminalPromptArgs & { provider: NativeTerminalProvider },
 ): { initialPrompt: string | null; initialImages: string[] } {
-  const launchesImages = args.provider.cli.imageArgs.length > 0;
+  const launchesImages = (args.provider.cli.imageArgs ?? []).length > 0;
   const initialImages = launchesImages
     ? nativeTerminalPromptParts(deps, {
         ...args,
@@ -556,17 +556,35 @@ export function reopenNativeTerminalsAfterDaemonReconnect(
   ).then(() => undefined);
 }
 
+function launchInputWithImagesInPrompt(input: {
+  initialPrompt: string | null;
+  initialImages: string[];
+}): { initialPrompt: string | null; initialImages: string[] } {
+  const parts = [
+    ...input.initialImages,
+    ...(input.initialPrompt === null ? [] : [input.initialPrompt]),
+  ];
+  return {
+    initialPrompt: parts.length === 0 ? null : parts.join("\n"),
+    initialImages: [],
+  };
+}
+
 export function takeNativeTerminalLaunchSpec(
   deps: Pick<AppDeps, "db" | "providerRegistry">,
-  threadId: string,
+  args: { imagesAsArgv: boolean; threadId: string },
 ): NativeTerminalLaunchSpec {
-  const record = requireNativeTerminalThreadRecord(deps, threadId);
+  const record = requireNativeTerminalThreadRecord(deps, args.threadId);
   const provider = requireNativeTerminalProvider(deps, record.providerId);
+  const input = consumeNativeTerminalThreadLaunchInput(
+    deps.db,
+    args.threadId,
+  );
   return {
     threadId: record.threadId,
     cli: provider.cli,
     nativeSessionId: record.nativeSessionId,
-    ...consumeNativeTerminalThreadLaunchInput(deps.db, threadId),
+    ...(args.imagesAsArgv ? input : launchInputWithImagesInPrompt(input)),
     model: record.model,
   };
 }

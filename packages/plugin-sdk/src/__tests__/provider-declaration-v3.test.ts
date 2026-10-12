@@ -483,6 +483,17 @@ describe("provider declaration fields renamed in SDK 0.4.16", () => {
       },
     };
 
+    it("is accepted without imageArgs, as a plugin written before it declares", () => {
+      const older: Omit<typeof assigned, "imageArgs"> & {
+        imageArgs?: string[];
+      } = { ...assigned };
+      delete older.imageArgs;
+      const normalized = validatePluginProviderDeclaration(
+        declaration({ experimental_nativeTerminal: older }),
+      );
+      expect(normalized.experimental_nativeTerminal).toEqual(older);
+    });
+
     it("is accepted, carried through and frozen", () => {
       const normalized = validatePluginProviderDeclaration(
         declaration({ experimental_nativeTerminal: assigned }),

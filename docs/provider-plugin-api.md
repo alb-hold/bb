@@ -144,7 +144,8 @@ and both Claude Code and Codex pass their permission-bypass flag so a native
 thread runs unattended like a chat thread in full access),
 `modelArgs` placed next when the thread has a model (`{model}`), `imageArgs` added once per image
 attached at creation, after the first prompt of a new session (`{image}` is the image's path on the
-host; empty when the CLI attaches an image from a path in its prompt), `pastePlaceholders` (what the
+host; optional, and empty or absent when the CLI attaches an image from a path in its prompt; a bb
+CLI that does not ask for launch images still gets the paths in the prompt), `pastePlaceholders` (what the
 CLI draws in its input box instead of a long paste; bb presses Enter after a
 sent message only once the CLI newly draws the text or one of these, and
 sends nothing when the text is already on screen, so a message can never
