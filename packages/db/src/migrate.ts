@@ -4,6 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { DbConnection } from "./connection.js";
+import { bumpThreadEventOwnershipEpoch } from "./data/event-rewrite-generation.js";
 import { ensureItemCompletionLookupIndex } from "./fork-item-completion-index.js";
 import { ensureThreadSpawnersTable } from "./fork-thread-spawners.js";
 import { ensureNativeTerminalThreadsTable } from "./fork-native-terminal-threads.js";
@@ -1615,6 +1616,7 @@ export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
     seedKeepAwakePluginConfiguration(db);
   } finally {
     sqlite.pragma("foreign_keys = ON");
+    bumpThreadEventOwnershipEpoch();
   }
 
   warnAboutFutureAppliedMigrations(db, options);

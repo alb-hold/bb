@@ -1,8 +1,10 @@
 import { z } from "zod";
 import {
+  dynamicToolSchema,
   providerNativeTerminalSchema,
   terminalColsSchema,
   terminalRowsSchema,
+  toolCallResponseSchema,
 } from "@bb/domain";
 import { terminalSessionSchema } from "./terminals.js";
 
@@ -79,4 +81,24 @@ export const recordNativeSessionRequestSchema = z
   .strict();
 export type RecordNativeSessionRequest = z.infer<
   typeof recordNativeSessionRequestSchema
+>;
+
+export const nativeTerminalAgentToolsSchema = z.object({
+  tools: z.array(dynamicToolSchema),
+});
+export type NativeTerminalAgentTools = z.infer<
+  typeof nativeTerminalAgentToolsSchema
+>;
+
+export const callNativeTerminalAgentToolRequestSchema = z
+  .object({
+    callId: z.string().min(1),
+    arguments: z.record(z.string(), z.unknown()).default({}),
+  })
+  .strict();
+export type CallNativeTerminalAgentToolRequest = z.input<
+  typeof callNativeTerminalAgentToolRequestSchema
+>;
+export type NativeTerminalAgentToolResult = z.infer<
+  typeof toolCallResponseSchema
 >;

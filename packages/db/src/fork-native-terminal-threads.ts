@@ -30,6 +30,12 @@ export function ensureNativeTerminalThreadsTable(db: DbConnection): void {
     CREATE UNIQUE INDEX IF NOT EXISTS fork_native_terminal_threads_session_idx
       ON fork_native_terminal_threads (provider_id, native_session_id)
       WHERE native_session_id IS NOT NULL;
+    CREATE TABLE IF NOT EXISTS fork_native_terminal_tool_credentials (
+      thread_id TEXT PRIMARY KEY NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+      terminal_session_id TEXT NOT NULL,
+      credential_hash TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
   `);
   const columns = db.$client
     .prepare(`PRAGMA table_info(fork_native_terminal_threads)`)
@@ -268,4 +274,57 @@ export function recordNativeTerminalThreadSessionId(
       .run(args.nativeSessionId, Date.now(), args.threadId);
     return { kind: "recorded" };
   })();
+}
+
+export interface NativeTerminalToolCredentialRecord {
+  threadId: string;
+  terminalSessionId: string;
+  credentialHash: string;
+}
+
+export function setNativeTerminalToolCredential(
+  db: DbConnection,
+  args: NativeTerminalToolCredentialRecord,
+): void {
+  db.$client
+    .prepare(
+      `INSERT INTO fork_native_terminal_tool_credentials
+         (thread_id, terminal_session_id, credential_hash, created_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(thread_id) DO UPDATE SET
+         terminal_session_id = excluded.terminal_session_id,
+         credential_hash = excluded.credential_hash,
+         created_at = excluded.created_at`,
+    )
+    .run(
+      args.threadId,
+      args.terminalSessionId,
+      args.credentialHash,
+      Date.now(),
+    );
+}
+
+export function getNativeTerminalToolCredential(
+  db: DbConnection,
+  threadId: string,
+): NativeTerminalToolCredentialRecord | null {
+  const row = db.$client
+    .prepare(
+      `SELECT thread_id AS threadId, terminal_session_id AS terminalSessionId,
+         credential_hash AS credentialHash
+       FROM fork_native_terminal_tool_credentials WHERE thread_id = ?`,
+    )
+    .get(threadId) as NativeTerminalToolCredentialRecord | undefined;
+  return row ?? null;
+}
+
+export function deleteNativeTerminalToolCredential(
+  db: DbConnection,
+  threadId: string,
+): void {
+  db.$client
+    .prepare(
+      `DELETE FROM fork_native_terminal_tool_credentials WHERE thread_id = ?`,
+    )
+    .run(threadId);
 }
