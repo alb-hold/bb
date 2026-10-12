@@ -329,6 +329,7 @@ function ThreadTrailingIndicator({
         statusText === null && SIDEBAR_ROW_GLYPH_SLOT_CLASS,
         statusText === null && SIDEBAR_STATUS_GLYPH_BOX_CLASS,
       )}
+      role={statusText === null ? undefined : "img"}
       aria-label={statusText ?? undefined}
     >
       <ThreadStatusGlyph

@@ -676,6 +676,7 @@ describe("ThreadRow", () => {
         ).not.toBeNull();
       }
       const status = screen.getByLabelText(statusLabel);
+      expect(screen.getByRole("img", { name: statusLabel })).toBe(status);
       expectPersistentRowMetadata(status);
       expectPersistentRowMetadata(
         screen.getByRole("link", { name: /Pull request #10843/ }),
