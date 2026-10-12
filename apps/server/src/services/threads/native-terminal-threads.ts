@@ -440,6 +440,17 @@ export function reopenNativeTerminalsAfterDaemonReconnect(
         const record = getNativeTerminalThread(deps.db, threadId);
         if (record === null) return;
         await deps.providerRegistry.whenProviderRegistered(record.providerId);
+        if (deps.providerRegistry.get(record.providerId) === null) {
+          await new Promise<void>((resolve) => {
+            const unsubscribe = deps.providerRegistry.onProviderRegistered(
+              record.providerId,
+              () => {
+                unsubscribe();
+                resolve();
+              },
+            );
+          });
+        }
         const thread = getThread(deps.db, threadId);
         const currentRecord = getNativeTerminalThread(deps.db, threadId);
         const currentTerminal =

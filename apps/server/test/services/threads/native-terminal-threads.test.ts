@@ -75,7 +75,7 @@ async function createDisconnectedNativeThread(
 }
 
 describe("reopenNativeTerminalsAfterDaemonReconnect", () => {
-  it("waits for a provider that registers after daemon reconnect", async () => {
+  it("reopens with the same CLI session when the provider registers after the settle timeout", async () => {
     await withTestHarness({ seedFirstPartyProviders: false }, async (h) => {
       const host = upsertHost(h.db, noopNotifier, {
         id: "host-native-reconnect",
@@ -120,7 +120,7 @@ describe("reopenNativeTerminalsAfterDaemonReconnect", () => {
         hostId: host.id,
         threadIds: [threadId],
       });
-      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 30_100));
       expect(createTerminal).not.toHaveBeenCalled();
 
       providerRegistry.register(registration);
@@ -137,6 +137,70 @@ describe("reopenNativeTerminalsAfterDaemonReconnect", () => {
       }
       expect(start.command).toContain("--reattach");
       expect(start.command).toContain("native-run");
+    });
+  }, 45_000);
+
+  it("rejects a stale reconnect immediately before terminal creation", async () => {
+    await withTestHarness({ seedFirstPartyProviders: false }, async (h) => {
+      const host = upsertHost(h.db, noopNotifier, {
+        id: "host-native-stale",
+        name: "Native Terminal Host",
+      });
+      const { threadId } = await createDisconnectedNativeThread(h, 4, host.id);
+      h.db
+        .update(terminalSessions)
+        .set({ status: "exited", closeReason: "daemon-disconnect" })
+        .where(eq(terminalSessions.threadId, threadId))
+        .run();
+      const sourceRegistry = await createTestProviderRegistry();
+      const registration = sourceRegistry.get("codex");
+      if (registration === null)
+        throw new Error("Codex provider is not seeded");
+      const providerRegistry = createProviderRegistryService();
+      providerRegistry.register(registration);
+      h.deps.providerRegistry = providerRegistry;
+      let releaseProviderEnv!: (value: { entries: [] }) => void;
+      let providerEnvStarted!: () => void;
+      const providerEnvReady = new Promise<void>((resolve) => {
+        providerEnvStarted = resolve;
+      });
+      const providerEnv = new Promise<{ entries: [] }>((resolve) => {
+        releaseProviderEnv = resolve;
+      });
+      vi.spyOn(h.pluginService, "resolveProviderEnv").mockImplementation(
+        async () => {
+          providerEnvStarted();
+          return providerEnv;
+        },
+      );
+      const createTerminal = vi.spyOn(
+        h.deps.terminalSessions,
+        "createTerminal",
+      );
+      const warn = vi.spyOn(h.deps.logger, "warn");
+
+      const reopening = reopenNativeTerminalsAfterDaemonReconnect(h.deps, {
+        hostId: host.id,
+        threadIds: [threadId],
+      });
+      await providerEnvReady;
+      archiveThread(h.db, noopNotifier, threadId);
+      releaseProviderEnv({ entries: [] });
+      await reopening;
+
+      expect(createTerminal).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          threadId,
+          err: expect.objectContaining({
+            status: 409,
+            body: expect.objectContaining({
+              code: "native_terminal_reconnect_stale",
+            }),
+          }),
+        }),
+        "Failed to reopen native terminal after the host daemon reconnected",
+      );
     });
   });
 
