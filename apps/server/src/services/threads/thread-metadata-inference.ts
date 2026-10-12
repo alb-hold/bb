@@ -2,11 +2,9 @@ import type { PromptInput, ProvisioningTranscriptEntry } from "@bb/domain";
 import type { LoggedWorkSessionDeps } from "../../types.js";
 import { appendThreadProvisioningEvent } from "./thread-events.js";
 import {
-  applyGeneratedThreadTitle,
-  generateThreadMetadataWithOutcome,
+  generateAndApplyThreadTitle,
   type ThreadMetadataGenerationOutcome,
 } from "./title-generation.js";
-import { runtimeErrorLogFields } from "../lib/error-log-fields.js";
 
 interface ThreadMetadataInferenceArgs {
   input: PromptInput[];
@@ -67,7 +65,7 @@ export async function inferThreadMetadata(
     });
   }
 
-  const outcome = await generateThreadMetadataWithOutcome(deps, {
+  const { outcome, titleApplied } = await generateAndApplyThreadTitle(deps, {
     input: args.input,
     threadId: args.threadId,
   });
@@ -80,24 +78,6 @@ export async function inferThreadMetadata(
       status: "active",
       entries: [metadataCompletedEntry({ outcome, startedAt })],
     });
-  }
-
-  let titleApplied = false;
-  if (outcome.metadata?.title) {
-    try {
-      titleApplied = applyGeneratedThreadTitle(deps, {
-        threadId: args.threadId,
-        title: outcome.metadata.title,
-      });
-    } catch (error) {
-      deps.logger.warn(
-        {
-          threadId: args.threadId,
-          ...runtimeErrorLogFields(deps.config, error),
-        },
-        "Failed to apply generated thread title",
-      );
-    }
   }
 
   return {

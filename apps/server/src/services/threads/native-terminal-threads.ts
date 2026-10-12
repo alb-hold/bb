@@ -1,5 +1,5 @@
 import {
-  consumeNativeTerminalThreadInitialPrompt,
+  consumeNativeTerminalThreadLaunchInput,
   getEnvironment,
   getNativeTerminalThread,
   getStoredProviderSession,
@@ -129,10 +129,33 @@ function nativeTerminalAttachmentPath(
   );
 }
 
-export function nativeTerminalPrompt(
+export function nativeTerminalLaunchInput(
+  deps: Pick<AppDeps, "config">,
+  args: NativeTerminalPromptArgs & { provider: NativeTerminalProvider },
+): { initialPrompt: string | null; initialImages: string[] } {
+  const launchesImages = (args.provider.cli.imageArgs ?? []).length > 0;
+  const initialImages = launchesImages
+    ? nativeTerminalPromptParts(deps, {
+        ...args,
+        input: args.input.filter((entry) => entry.type === "localImage"),
+      })
+    : [];
+  const prompt = nativeTerminalPromptParts(deps, {
+    ...args,
+    input: launchesImages
+      ? args.input.filter((entry) => entry.type !== "localImage")
+      : args.input,
+  }).join("\n");
+  return {
+    initialPrompt: prompt.length === 0 ? null : prompt,
+    initialImages,
+  };
+}
+
+export function nativeTerminalPromptParts(
   deps: Pick<AppDeps, "config">,
   args: NativeTerminalPromptArgs,
-): string | null {
+): string[] {
   const attachments: string[] = [];
   const parts: string[] = [];
   for (const entry of args.input) {
@@ -151,10 +174,7 @@ export function nativeTerminalPrompt(
     );
   }
   const text = parts.join("\n\n").trim();
-  const prompt = [...attachments, ...(text.length === 0 ? [] : [text])].join(
-    "\n",
-  );
-  return prompt.length === 0 ? null : prompt;
+  return [...attachments, ...(text.length === 0 ? [] : [text])];
 }
 
 export const NATIVE_TERMINAL_ENDED_MESSAGE =
@@ -191,6 +211,7 @@ export function beginNativeTerminalThreadProvisioning(
   deps: ThreadProvisioningDeps & Pick<AppDeps, "config" | "logger">,
   args: {
     environmentIntent: ThreadProvisionEnvironmentIntent;
+    input: PromptInput[];
     thread: ThreadRow;
     titleProvided: boolean;
   },
@@ -211,7 +232,7 @@ export function beginNativeTerminalThreadProvisioning(
           environmentIntent: args.environmentIntent,
           execution: null,
           fork: null,
-          input: [],
+          input: args.input,
           seedWithoutRun: true,
           titleProvided: args.titleProvided,
         }),
@@ -536,17 +557,35 @@ export function reopenNativeTerminalsAfterDaemonReconnect(
   ).then(() => undefined);
 }
 
+function launchInputWithImagesInPrompt(input: {
+  initialPrompt: string | null;
+  initialImages: string[];
+}): { initialPrompt: string | null; initialImages: string[] } {
+  const parts = [
+    ...input.initialImages,
+    ...(input.initialPrompt === null ? [] : [input.initialPrompt]),
+  ];
+  return {
+    initialPrompt: parts.length === 0 ? null : parts.join("\n"),
+    initialImages: [],
+  };
+}
+
 export function takeNativeTerminalLaunchSpec(
   deps: Pick<AppDeps, "db" | "providerRegistry">,
-  threadId: string,
+  args: { imagesAsArgv: boolean; threadId: string },
 ): NativeTerminalLaunchSpec {
-  const record = requireNativeTerminalThreadRecord(deps, threadId);
+  const record = requireNativeTerminalThreadRecord(deps, args.threadId);
   const provider = requireNativeTerminalProvider(deps, record.providerId);
+  const input = consumeNativeTerminalThreadLaunchInput(
+    deps.db,
+    args.threadId,
+  );
   return {
     threadId: record.threadId,
     cli: provider.cli,
     nativeSessionId: record.nativeSessionId,
-    initialPrompt: consumeNativeTerminalThreadInitialPrompt(deps.db, threadId),
+    ...(args.imagesAsArgv ? input : launchInputWithImagesInPrompt(input)),
     model: record.model,
   };
 }
@@ -579,7 +618,7 @@ export function recordNativeTerminalSession(
 
 export function sendNativeTerminalMessage(
   deps: NativeTerminalDeps,
-  args: { threadId: string; text: string },
+  args: { threadId: string; pastes: readonly string[] },
 ): Promise<TerminalSession> {
   const previous = pendingSends.get(args.threadId) ?? Promise.resolve();
   const sending = previous.then(() => deliverNativeTerminalMessage(deps, args));
@@ -606,7 +645,7 @@ function nativeTerminalNotRunning(): ApiError {
 
 async function deliverNativeTerminalMessage(
   deps: NativeTerminalDeps,
-  args: { threadId: string; text: string },
+  args: { threadId: string; pastes: readonly string[] },
 ): Promise<TerminalSession> {
   const view = getNativeTerminalThreadView(deps, args.threadId);
   if (view.terminal === null || view.terminal.status !== "running") {
@@ -614,6 +653,30 @@ async function deliverNativeTerminalMessage(
   }
   const terminalId = view.terminal.id;
   const provider = requireNativeTerminalProvider(deps, view.providerId);
+  for (const text of args.pastes) {
+    await pasteIntoNativeTerminal(deps, {
+      provider,
+      screenRows: view.terminal.rows,
+      terminalId,
+      text,
+    });
+  }
+  return deps.terminalSessions.sendTerminalInput({
+    terminalId,
+    payload: { dataBase64: Buffer.from("\r", "utf8").toString("base64") },
+  });
+}
+
+async function pasteIntoNativeTerminal(
+  deps: NativeTerminalDeps,
+  args: {
+    provider: NativeTerminalProvider;
+    screenRows: number;
+    terminalId: string;
+    text: string;
+  },
+): Promise<void> {
+  const { provider, terminalId } = args;
   const before = await deps.terminalSessions.readTerminalOutput({
     terminalId,
     query: { tailBytes: NATIVE_TERMINAL_ECHO_CONTEXT_BYTES },
@@ -623,7 +686,7 @@ async function deliverNativeTerminalMessage(
   if (
     terminalScreenAlreadyShowsText({
       output: shown,
-      screenRows: view.terminal.rows,
+      screenRows: args.screenRows,
       text: args.text,
     })
   ) {
@@ -662,7 +725,7 @@ async function deliverNativeTerminalMessage(
         text: args.text,
       })
     ) {
-      break;
+      return;
     }
     if (Date.now() >= deadline) {
       throw new ApiError(
@@ -672,8 +735,4 @@ async function deliverNativeTerminalMessage(
       );
     }
   }
-  return deps.terminalSessions.sendTerminalInput({
-    terminalId,
-    payload: { dataBase64: Buffer.from("\r", "utf8").toString("base64") },
-  });
 }
