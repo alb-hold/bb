@@ -11,6 +11,7 @@ const DEFAULT_DRAIN_POLL_MS = 10;
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 15_000;
 const DEFAULT_HEARTBEAT_TIMEOUT_MS = 45_000;
 const REPAINT_RESTORE_DELAY_MS = 50;
+const ATTACH_RESIZE_SETTLE_CEILING_MS = 5_000;
 const DEFAULT_RECONNECT_DELAYS_MS = [100, 250, 500, 1_000, 2_000] as const;
 
 export type TerminalSocketConnectionState =
@@ -33,6 +34,19 @@ export interface TerminalBrowserSocket {
 export type CreateTerminalBrowserSocket = (
   url: string,
 ) => TerminalBrowserSocket;
+
+function repaintNudgeSize(size: {
+  cols: number;
+  rows: number;
+}): { cols: number; rows: number } | null {
+  if (size.cols > 1) {
+    return { cols: size.cols - 1, rows: size.rows };
+  }
+  if (size.rows > 1) {
+    return { cols: size.cols, rows: size.rows - 1 };
+  }
+  return null;
+}
 
 function socketBufferedAmount(socket: TerminalBrowserSocket): number {
   return socket.bufferedAmount ?? 0;
@@ -88,7 +102,10 @@ export class TerminalWebSocketTransport {
   private readonly pendingInputs: PendingTerminalInput[] = [];
   private reconnectAttempt = 0;
   private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
+  private layoutSettled = false;
+  private repaintRequestedWhileSettling = false;
   private repaintTimeout: ReturnType<typeof setTimeout> | null = null;
+  private settleTimeout: ReturnType<typeof setTimeout> | null = null;
   private socket: TerminalBrowserSocket | null = null;
   private terminalEnded = false;
   private visible = true;
@@ -124,6 +141,7 @@ export class TerminalWebSocketTransport {
     this.clearReconnectTimeout();
     this.clearDrainTimeout();
     this.clearRepaintTimeout();
+    this.clearSettleTimeout();
     this.stopHeartbeat();
     const socket = this.socket;
     this.socket = null;
@@ -205,8 +223,13 @@ export class TerminalWebSocketTransport {
       return;
     }
     this.lastResize = { cols, rows };
+    this.clearRepaintTimeout();
     const socket = this.socket;
-    if (socket === null || socket.readyState !== SOCKET_OPEN) {
+    if (
+      this.settleTimeout !== null ||
+      socket === null ||
+      socket.readyState !== SOCKET_OPEN
+    ) {
       return;
     }
     this.trySend(
@@ -220,10 +243,13 @@ export class TerminalWebSocketTransport {
   }
 
   requestRepaint(): void {
-    const lastResize = this.lastResize;
+    if (this.settleTimeout !== null) {
+      this.repaintRequestedWhileSettling = true;
+      return;
+    }
     const socket = this.socket;
     if (
-      lastResize === null ||
+      this.lastResize === null ||
       socket === null ||
       socket.readyState !== SOCKET_OPEN
     ) {
@@ -232,31 +258,27 @@ export class TerminalWebSocketTransport {
     this.clearRepaintTimeout();
     this.repaintTimeout = setTimeout(() => {
       this.repaintTimeout = null;
+      const current = this.lastResize;
       if (
         this.disposed ||
         this.socket !== socket ||
         socket.readyState !== SOCKET_OPEN ||
-        this.lastResize !== lastResize
+        current === null
       ) {
         return;
       }
-      const nudgedCols =
-        lastResize.cols < 500 ? lastResize.cols + 1 : lastResize.cols - 1;
-      this.trySend(
-        socket,
-        JSON.stringify({
-          type: "resize",
-          cols: nudgedCols,
-          rows: lastResize.rows,
-        }),
-      );
+      const nudgeSize = repaintNudgeSize(current);
+      if (nudgeSize === null) {
+        return;
+      }
+      this.trySend(socket, JSON.stringify({ type: "resize", ...nudgeSize }));
       this.repaintTimeout = setTimeout(() => {
         this.repaintTimeout = null;
         if (
           this.disposed ||
           this.socket !== socket ||
           socket.readyState !== SOCKET_OPEN ||
-          this.lastResize !== lastResize
+          this.lastResize !== current
         ) {
           return;
         }
@@ -264,8 +286,8 @@ export class TerminalWebSocketTransport {
           socket,
           JSON.stringify({
             type: "resize",
-            cols: lastResize.cols,
-            rows: lastResize.rows,
+            cols: current.cols,
+            rows: current.rows,
           }),
         );
       }, REPAINT_RESTORE_DELAY_MS);
@@ -305,13 +327,64 @@ export class TerminalWebSocketTransport {
         JSON.stringify({ type: "visibility", visible: false }),
       );
     }
-    if (this.lastResize !== null) {
+    this.beginResizeSettle(socket);
+    this.flushInputs();
+  }
+
+  markLayoutSettled(): void {
+    this.layoutSettled = true;
+    if (this.settleTimeout !== null) {
+      this.flushSettledResize();
+    }
+  }
+
+  private beginResizeSettle(socket: TerminalBrowserSocket): void {
+    this.clearSettleTimeout();
+    if (this.lastResize === null) {
+      return;
+    }
+    if (this.layoutSettled) {
       this.trySend(
         socket,
         JSON.stringify({ type: "resize", ...this.lastResize }),
       );
+      return;
     }
-    this.flushInputs();
+    this.settleTimeout = setTimeout(
+      () => this.flushSettledResize(),
+      ATTACH_RESIZE_SETTLE_CEILING_MS,
+    );
+  }
+
+  private flushSettledResize(): void {
+    if (this.settleTimeout !== null) {
+      clearTimeout(this.settleTimeout);
+      this.settleTimeout = null;
+    }
+    const socket = this.socket;
+    const settled = this.lastResize;
+    const repaintRequested = this.repaintRequestedWhileSettling;
+    this.repaintRequestedWhileSettling = false;
+    if (
+      this.disposed ||
+      socket === null ||
+      socket.readyState !== SOCKET_OPEN ||
+      settled === null
+    ) {
+      return;
+    }
+    this.trySend(socket, JSON.stringify({ type: "resize", ...settled }));
+    if (repaintRequested) {
+      this.requestRepaint();
+    }
+  }
+
+  private clearSettleTimeout(): void {
+    if (this.settleTimeout !== null) {
+      clearTimeout(this.settleTimeout);
+      this.settleTimeout = null;
+    }
+    this.repaintRequestedWhileSettling = false;
   }
 
   private handleMessage(socket: TerminalBrowserSocket, raw: unknown): void {
@@ -380,6 +453,7 @@ export class TerminalWebSocketTransport {
     this.stopHeartbeat();
     this.clearDrainTimeout();
     this.clearRepaintTimeout();
+    this.clearSettleTimeout();
     if (
       this.disposed ||
       this.terminalEnded ||
