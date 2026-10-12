@@ -132,11 +132,78 @@ const EVENT_OWNER_DELETES: Record<string, InventoriedWrite> = {
 const NORMALIZED_MIGRATION_EVENT_ROW_WRITE_PATTERN =
   /\b(?:INTO|UPDATE(?: OR \w+)?|DELETE FROM) events\b(?!\.)/iu;
 
+const SQL_IDENTIFIER_QUOTES: Record<string, string> = {
+  '"': '"',
+  "`": "`",
+  "[": "]",
+};
+
+function readSqlStringLiteralEnd(text: string, start: number): number {
+  let index = start + 1;
+  while (index < text.length) {
+    if (text[index] === "'") {
+      if (text[index + 1] !== "'") {
+        return index + 1;
+      }
+      index += 2;
+    } else {
+      index += 1;
+    }
+  }
+  return text.length;
+}
+
+function readSqlQuotedIdentifier(
+  text: string,
+  start: number,
+  close: string,
+): { end: number; identifier: string } {
+  let identifier = "";
+  let index = start + 1;
+  while (index < text.length) {
+    const character = text[index] ?? "";
+    if (character === close) {
+      if (close === "]" || text[index + 1] !== close) {
+        return { end: index + 1, identifier };
+      }
+      identifier += close;
+      index += 2;
+    } else {
+      identifier += character;
+      index += 1;
+    }
+  }
+  return { end: text.length, identifier };
+}
+
 function normalizeMigrationSql(text: string): string {
-  return text
-    .replace(/\/\*[\s\S]*?\*\//gu, " ")
-    .replace(/--[^\n]*/gu, " ")
-    .replace(/["`[\]]/gu, "")
+  let normalized = "";
+  let index = 0;
+  while (index < text.length) {
+    const character = text[index] ?? "";
+    const pair = text.slice(index, index + 2);
+    const identifierClose = SQL_IDENTIFIER_QUOTES[character];
+    if (pair === "--") {
+      const lineEnd = text.indexOf("\n", index);
+      index = lineEnd === -1 ? text.length : lineEnd;
+      normalized += " ";
+    } else if (pair === "/*") {
+      const commentEnd = text.indexOf("*/", index + 2);
+      index = commentEnd === -1 ? text.length : commentEnd + 2;
+      normalized += " ";
+    } else if (character === "'") {
+      index = readSqlStringLiteralEnd(text, index);
+      normalized += " '' ";
+    } else if (identifierClose !== undefined) {
+      const quoted = readSqlQuotedIdentifier(text, index, identifierClose);
+      index = quoted.end;
+      normalized += ` ${quoted.identifier} `;
+    } else {
+      normalized += character;
+      index += 1;
+    }
+  }
+  return normalized
     .replace(/\b(?:main|temp)\s*\.\s*/giu, "")
     .replace(/\s+/gu, " ");
 }
@@ -172,6 +239,14 @@ const EVENT_ROW_WRITING_MIGRATION_FORMS = [
   "DELETE FROM [events] WHERE id = 'evt';",
   "delete\nfrom\n\"events\" where id = 'evt';",
   "CREATE TRIGGER rewrite AFTER INSERT ON threads BEGIN UPDATE events SET data = '{}'; END;",
+  "INSERT INTO notes (body) VALUES ('-- literal'); UPDATE events SET data = '{}';",
+  "INSERT INTO notes (body) VALUES ('/* open'); UPDATE events SET data = '{}'; SELECT '*/';",
+  "INSERT INTO notes (body) VALUES ('it''s -- still a string'); DELETE FROM events;",
+  'UPDATE "odd -- name" SET body = 1; UPDATE events SET data = \'{}\';',
+  "UPDATE [odd /* name] SET body = 1; UPDATE events SET data = '{}'; SELECT '*/';",
+  'UPDATE"events"SET data = \'{}\';',
+  "UPDATE/**/events SET data = '{}';",
+  "INSERT INTO`events`(id) VALUES ('evt');",
 ];
 const MIGRATION_FORMS_LEAVING_EVENT_ROWS_ALONE = [
   "SELECT id FROM events;",
@@ -181,6 +256,10 @@ const MIGRATION_FORMS_LEAVING_EVENT_ROWS_ALONE = [
   "INSERT INTO events_archive (id) SELECT id FROM events;",
   "DELETE FROM thread_events WHERE id = 'evt';",
   "CREATE INDEX events_thread_idx ON events (thread_id);",
+  "INSERT INTO notes (body) VALUES ('UPDATE events SET data = 1');",
+  "SELECT 'DELETE FROM events' AS note; -- INSERT INTO events",
+  "INSERT INTO notes (body) VALUES ('quote '' then UPDATE events SET data = 1');",
+  'SELECT 1 AS "x" /* UPDATE events */;',
 ];
 const MIGRATIONS_WRITING_EVENT_ROWS = [
   "0015_good_lila_cheney.sql",
