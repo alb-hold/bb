@@ -53,6 +53,7 @@ import {
   onTerminalSocketMessage,
   onTerminalSocketOpen,
 } from "../../src/ws/terminal-protocol.js";
+import { TERMINAL_CLIENT_STALE_MS } from "../../src/ws/hub.js";
 
 interface FakeDaemonSocket {
   close(code?: number, reason?: string): void;
@@ -2603,7 +2604,7 @@ describe("public terminal routes", () => {
     });
   });
 
-  it("restores resize ownership when a newer browser attach fails", async () => {
+  it("applies the remaining browser's size after a newer attach fails", async () => {
     const fixture = await createTerminalRouteFixture();
     harnesses.push(fixture.harness);
     const stored = createTerminalSession(fixture.harness.db, {
@@ -2681,7 +2682,7 @@ describe("public terminal routes", () => {
     });
   });
 
-  it("keeps the PTY size with the device in use when another client attaches", async () => {
+  it("sizes the PTY to the smallest visible device so every screen renders it", async () => {
     const fixture = await createTerminalRouteFixture();
     harnesses.push(fixture.harness);
     const stored = createTerminalSession(fixture.harness.db, {
@@ -2748,27 +2749,80 @@ describe("public terminal routes", () => {
 
     await attach(phone);
     send(phone, { type: "resize", cols: 44, rows: 30 });
+    expect(sizes()).toEqual(["160x48", "44x30"]);
     send(phone, { type: "resize", cols: 44, rows: 20 });
     send(desktop, { type: "resize", cols: 150, rows: 48 });
-    expect(sizes()).toEqual(["160x48", "150x48"]);
+    expect(sizes()).toEqual(["160x48", "44x30", "44x20"]);
 
+    send(desktop, { type: "input", dataBase64: "YQ==" });
     send(phone, { type: "input", dataBase64: "YQ==" });
-    expect(sizes()).toEqual(["160x48", "150x48", "44x20"]);
-    const operations = readDaemonOperationMessages(fixture.socket).map(
-      (message) => message.type,
-    );
-    expect(operations.slice(-2)).toEqual(["terminal.resize", "terminal.input"]);
-    send(desktop, { type: "resize", cols: 160, rows: 48 });
+    send(desktop, { type: "resize", cols: 150, rows: 48, claim: true });
     expect(sizes()).toHaveLength(3);
 
-    send(desktop, { type: "resize", cols: 160, rows: 48, claim: true });
-    expect(sizes()).toEqual(["160x48", "150x48", "44x20", "160x48"]);
-    send(phone, { type: "resize", cols: 44, rows: 22 });
-    expect(sizes()).toHaveLength(4);
+    send(phone, { type: "visibility", visible: false });
+    expect(sizes()).toEqual(["160x48", "44x30", "44x20", "150x48"]);
+    send(phone, { type: "visibility", visible: true });
+    expect(sizes()).toEqual(["160x48", "44x30", "44x20", "150x48", "44x20"]);
+    send(desktop, { type: "ping" });
+    send(desktop, { type: "resize", cols: 170, rows: 50 });
+    send(desktop, { type: "resize", cols: 150, rows: 48 });
+    send(phone, { type: "ping" });
+    expect(sizes()).toHaveLength(5);
+    expect(
+      fixture.harness.deps.terminalSessions.getTerminal({
+        terminalId: stored.id,
+      }),
+    ).toMatchObject({ cols: 44, rows: 20 });
 
-    terminals.detachBrowserTerminal({ terminalId: stored.id, socket: desktop });
-    send(phone, { type: "resize", cols: 44, rows: 24 });
-    expect(sizes()).toEqual(["160x48", "150x48", "44x20", "160x48", "44x24"]);
+    terminals.detachBrowserTerminal({ terminalId: stored.id, socket: phone });
+    expect(sizes()).toEqual([
+      "160x48",
+      "44x30",
+      "44x20",
+      "150x48",
+      "44x20",
+      "150x48",
+    ]);
+    expect(
+      fixture.harness.deps.terminalSessions.getTerminal({
+        terminalId: stored.id,
+      }),
+    ).toMatchObject({ cols: 150, rows: 48 });
+
+    const legacyCli = createFakeBrowserSocket();
+    await attach(legacyCli);
+    send(legacyCli, { type: "resize", cols: 80, rows: 24, claim: true });
+    expect(sizes().at(-1)).toBe("80x24");
+    const resizesBeforeIdle = sizes().length;
+
+    const startedAt = Date.now();
+    const clock = vi
+      .spyOn(Date, "now")
+      .mockReturnValue(startedAt + TERMINAL_CLIENT_STALE_MS * 3);
+    try {
+      terminals.handleDaemonTerminalMessage({
+        hostId: fixture.host.id,
+        sessionId: fixture.session.id,
+        message: {
+          type: "terminal.output",
+          terminalId: stored.id,
+          chunk: {
+            seq: 0,
+            dataBase64: Buffer.from("still working\n").toString("base64"),
+          },
+        },
+      });
+      send(desktop, { type: "ping" });
+      send(desktop, { type: "resize", cols: 151, rows: 48 });
+      expect(sizes()).toHaveLength(resizesBeforeIdle);
+      expect(
+        fixture.harness.deps.terminalSessions.getTerminal({
+          terminalId: stored.id,
+        }),
+      ).toMatchObject({ cols: 80, rows: 24 });
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it("paces the daemon by the output an acknowledging browser has parsed", async () => {

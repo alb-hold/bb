@@ -19,20 +19,17 @@ export function handleTerminalFileDrop<T>({
   files,
   getPathForFile,
   isRunning,
-  claimSize,
   sendInput,
 }: {
   files: readonly T[];
   getPathForFile: ((file: T) => string) | undefined;
   isRunning: boolean;
-  claimSize: () => void;
   sendInput: (input: string) => void;
 }): boolean {
   const input = formatTerminalFileDrop(
     resolveTerminalFileDropPaths(files, getPathForFile),
   );
   if (!input || !isRunning) return false;
-  claimSize();
   sendInput(input);
   return true;
 }
