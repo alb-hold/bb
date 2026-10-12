@@ -703,11 +703,23 @@ export class TerminalDataPlaneChild {
     ) {
       const daemon = this.daemonSockets.get(route.daemonSessionId);
       if (daemon !== undefined) {
-        this.writeDaemon(
-          route.daemonSessionId,
-          daemon,
-          JSON.stringify({ type: "terminal.input", terminalId, dataBase64 }),
-        );
+        const frame = JSON.stringify({
+          type: "terminal.input",
+          terminalId,
+          dataBase64,
+        });
+        if (
+          daemon.bufferedAmount + frame.length >
+          TERMINAL_DATA_PLANE_CHILD_PENDING_IPC_BYTES
+        ) {
+          this.closeTerminalSockets(
+            terminalId,
+            TERMINAL_DATA_PLANE_OVERLOAD_CLOSE_CODE,
+            "input-backlog",
+          );
+          return;
+        }
+        this.writeDaemon(route.daemonSessionId, daemon, frame);
         return;
       }
     }
@@ -943,6 +955,11 @@ export class TerminalDataPlaneChild {
     socket: TerminalDataPlaneSocket,
     frame: string,
   ): void {
+    if (socket.bufferedAmount > TERMINAL_DATA_PLANE_RELAY_HARD_CAP_BYTES) {
+      socket.terminate();
+      this.handleDaemonClosed(daemonSessionId, socket);
+      return;
+    }
     try {
       socket.send(frame);
     } catch {

@@ -722,6 +722,82 @@ describe("terminal data plane child", () => {
     });
   });
 
+  it("closes the terminal's sockets when input waiting for a stalled data socket passes the cap", async () => {
+    const harness = createHarness();
+    const daemon = await attachDaemon(harness, "session_1");
+    for (const terminalId of ["term_a", "term_b"]) {
+      main(harness, {
+        v,
+        type: "terminal.route",
+        terminalId,
+        daemonSessionId: "session_1",
+        mode: "data-socket",
+      });
+    }
+    const socket = await attachLive(harness, {
+      attachId: "a1",
+      terminalId: "term_a",
+      daemonSessionId: "session_1",
+    });
+    const other = await attachLive(harness, {
+      attachId: "b1",
+      terminalId: "term_b",
+      daemonSessionId: "session_1",
+    });
+    const queued = () =>
+      daemon.sent.reduce((total, frame) => total + frame.length, 0);
+    const block = Buffer.alloc(48 * 1024, 0x61).toString("base64");
+    const blocks = Math.ceil(TERMINAL_DATA_PLANE_CHILD_PENDING_IPC_BYTES / block.length) + 5;
+
+    for (let index = 0; index < blocks; index += 1) {
+      socket.receive({ type: "input", dataBase64: block });
+      daemon.bufferedAmount = queued();
+    }
+
+    expect(socket.closes).toEqual([{ code: 1013, reason: "input-backlog" }]);
+    expect(other.closes).toEqual([]);
+    expect(queued()).toBeLessThanOrEqual(TERMINAL_DATA_PLANE_CHILD_PENDING_IPC_BYTES);
+    expect(ofType(harness, "terminal.input")).toEqual([]);
+    expect(daemon.terminated).toBe(false);
+
+    daemon.bufferedAmount = 0;
+    other.receive({ type: "input", dataBase64: base64("still-works") });
+    expect(daemon.frames().at(-1)).toEqual({
+      type: "terminal.input",
+      terminalId: "term_b",
+      dataBase64: base64("still-works"),
+    });
+  });
+
+  it("drops a data socket whose send backlog passes the hard cap", async () => {
+    const harness = createHarness();
+    const daemon = await attachDaemon(harness, "session_1");
+    main(harness, {
+      v,
+      type: "terminal.route",
+      terminalId: "term_a",
+      daemonSessionId: "session_1",
+      mode: "data-socket",
+    });
+    const browser = await attachLive(harness, {
+      attachId: "a1",
+      terminalId: "term_a",
+      outputAcks: true,
+    });
+    daemon.receive({ type: "terminal.output", terminalId: "term_a", chunk: chunk(0) });
+    const written = daemon.sent.length;
+    daemon.bufferedAmount = TERMINAL_DATA_PLANE_RELAY_HARD_CAP_BYTES + 1;
+
+    browser.receive({ type: "ack", nextSeq: 1 });
+    browser.receive({ type: "ack", nextSeq: 1 });
+
+    expect(daemon.sent.length).toBe(written);
+    expect(daemon.terminated).toBe(true);
+    expect(ofType(harness, "daemon.detached")).toEqual([
+      { v, type: "daemon.detached", daemonSessionId: "session_1" },
+    ]);
+  });
+
   it("carries a data-socket terminal without sending its bytes through main", async () => {
     const harness = createHarness();
     const daemon = await attachDaemon(harness, "session_1");
