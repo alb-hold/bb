@@ -138,6 +138,33 @@ describe("bb app process", () => {
     expect(env.ELECTRON_RUN_AS_NODE).toBeUndefined();
   });
 
+  it("keeps a launching agent session's markers out of the runtime", () => {
+    const env = createBbAppProcessEnv({
+      env: {
+        ANTHROPIC_API_KEY: "kept",
+        CLAUDECODE: "1",
+        CLAUDE_CODE_CHILD_SESSION: "1",
+        CLAUDE_CODE_ENTRYPOINT: "cli",
+        CLAUDE_CODE_EXECPATH: "/usr/local/bin/claude",
+        CLAUDE_CODE_MESSAGING_SOCKET: "/tmp/agent.sock",
+        CLAUDE_CODE_MESSAGING_TOKEN: "agent-token",
+        CLAUDE_CODE_SESSION_ATTENDED: "1",
+        CLAUDE_CODE_SESSION_ID: "outer-session",
+        CLAUDE_CODE_USE_BEDROCK: "1",
+        CLAUDE_PID: "4242",
+        PATH: "/bin",
+      },
+      runtimeMode: "electron-node",
+    });
+
+    expect(env).toEqual({
+      ANTHROPIC_API_KEY: "kept",
+      CLAUDE_CODE_USE_BEDROCK: "1",
+      ELECTRON_RUN_AS_NODE: "1",
+      PATH: "/bin",
+    });
+  });
+
   it("uses Electron node mode for packaged runtimes", () => {
     const runtime = resolveBbAppProcessRuntime({
       env: {},
