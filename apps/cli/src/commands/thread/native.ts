@@ -298,9 +298,7 @@ async function holdNativeHarness(
     tick: discover,
     tickIntervalMs: SESSION_DISCOVERY_INTERVAL_MS,
     terminalClosedForGood: () =>
-      checkNativeTerminalClosedForGood(() =>
-        sdk.nativeTerminals.get({ threadId }),
-      ),
+      checkNativeTerminalClosedForGood({ baseUrl, threadId }),
   });
   for (const timer of activityTimers) clearInterval(timer);
   await discover();

@@ -1,5 +1,9 @@
 import { BbHttpError } from "@bb/sdk";
+import { createNodeBbSdk } from "@bb/sdk/node";
+import { cliFetch } from "./client.js";
 import { nativeTerminalClosedForGood } from "./native-holder.js";
+
+const NATIVE_CLOSED_CHECK_TIMEOUT_MS = 10_000;
 
 export class NativeBbUnreachableError extends Error {
   constructor(cause: unknown) {
@@ -8,24 +12,31 @@ export class NativeBbUnreachableError extends Error {
   }
 }
 
-function neverAnswered(error: unknown): boolean {
-  if (error instanceof TypeError && error.message === "fetch failed") {
-    return true;
-  }
-  return (
-    error instanceof Error &&
-    error.message.startsWith("Cannot connect to BB server.")
-  );
-}
-
-export async function checkNativeTerminalClosedForGood(
-  load: () => Promise<Parameters<typeof nativeTerminalClosedForGood>[0]>,
-): Promise<boolean> {
+export async function checkNativeTerminalClosedForGood(args: {
+  baseUrl: string;
+  threadId: string;
+  timeoutMs?: number;
+}): Promise<boolean> {
+  let answered = false;
+  const timeoutMs = args.timeoutMs ?? NATIVE_CLOSED_CHECK_TIMEOUT_MS;
+  const sdk = createNodeBbSdk({
+    baseUrl: args.baseUrl,
+    fetch: async (input, init) => {
+      const response = await cliFetch(input, {
+        ...init,
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      answered = true;
+      return response;
+    },
+  });
   try {
-    return nativeTerminalClosedForGood(await load());
+    return nativeTerminalClosedForGood(
+      await sdk.nativeTerminals.get({ threadId: args.threadId }),
+    );
   } catch (error) {
     if (error instanceof BbHttpError) return error.status === 404;
-    if (neverAnswered(error)) throw new NativeBbUnreachableError(error);
-    return false;
+    if (answered) return false;
+    throw new NativeBbUnreachableError(error);
   }
 }

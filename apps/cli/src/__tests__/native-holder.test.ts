@@ -20,8 +20,6 @@ import {
   waitForNativeHolder,
   type NativeHolderProcess,
 } from "../native-holder.js";
-import { createNodeBbSdk } from "@bb/sdk/node";
-import { createCliBbSdk } from "../client.js";
 import {
   NativeBbUnreachableError,
   checkNativeTerminalClosedForGood,
@@ -439,11 +437,10 @@ describe("checking whether bb closed a native terminal for good", () => {
     );
   });
 
-  async function bbAnswering(status: number, body: string): Promise<string> {
-    const server = http.createServer((_request, response) => {
-      response.writeHead(status, { "content-type": "application/json" });
-      response.end(body);
-    });
+  async function bb(
+    handler: (response: http.ServerResponse) => void,
+  ): Promise<string> {
+    const server = http.createServer((_request, response) => handler(response));
     servers.push(server);
     await new Promise<void>((resolve) =>
       server.listen(0, "127.0.0.1", resolve),
@@ -455,22 +452,36 @@ describe("checking whether bb closed a native terminal for good", () => {
     return `http://127.0.0.1:${address.port}`;
   }
 
+  const answering = (status: number, body: string) =>
+    bb((response) => {
+      response.writeHead(status, { "content-type": "application/json" });
+      response.end(body);
+    });
+  const stallingAfterHeaders = () =>
+    bb((response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.write("{");
+    });
+  const hungBeforeHeaders = () => bb(() => undefined);
+
   async function closedPort(): Promise<string> {
-    const url = await bbAnswering(200, "{}");
+    const url = await answering(200, "{}");
     const server = servers.pop();
     await new Promise((resolve) => server?.close(resolve));
     return url;
   }
 
   const check = (baseUrl: string) =>
-    checkNativeTerminalClosedForGood(() =>
-      createCliBbSdk(baseUrl).nativeTerminals.get({ threadId: "thr_x" }),
-    );
+    checkNativeTerminalClosedForGood({
+      baseUrl,
+      threadId: "thr_x",
+      timeoutMs: 200,
+    });
 
   it("treats a missing thread as closed for good", async () => {
     await expect(
       check(
-        await bbAnswering(404, '{"error":{"code":"not_found","message":"x"}}'),
+        await answering(404, '{"error":{"code":"not_found","message":"x"}}'),
       ),
     ).resolves.toBe(true);
   });
@@ -478,74 +489,66 @@ describe("checking whether bb closed a native terminal for good", () => {
   it("counts a server error as bb answering and the terminal not closed", async () => {
     await expect(
       check(
-        await bbAnswering(500, '{"error":{"code":"internal","message":"x"}}'),
+        await answering(500, '{"error":{"code":"internal","message":"x"}}'),
       ),
     ).resolves.toBe(false);
   });
 
-  it("counts a response bb sent but the CLI could not read as bb answering", async () => {
-    await expect(check(await bbAnswering(200, "not json"))).resolves.toBe(
-      false,
-    );
+  it("counts a response the CLI could not read as bb answering", async () => {
+    await expect(check(await answering(200, "not json"))).resolves.toBe(false);
   });
-
-  async function bbStallingAfterHeaders(): Promise<string> {
-    const server = http.createServer((_request, response) => {
-      response.writeHead(200, { "content-type": "application/json" });
-      response.write("{");
-    });
-    servers.push(server);
-    await new Promise<void>((resolve) =>
-      server.listen(0, "127.0.0.1", resolve),
-    );
-    const address = server.address();
-    if (address === null || typeof address === "string") {
-      throw new Error("server has no port");
-    }
-    return `http://127.0.0.1:${address.port}`;
-  }
-
-  const checkWithin = (baseUrl: string, timeoutMs: number) =>
-    checkNativeTerminalClosedForGood(() =>
-      createNodeBbSdk({ baseUrl, timeoutMs }).nativeTerminals.get({
-        threadId: "thr_x",
-      }),
-    );
 
   it("counts a response whose body stalls past the timeout as bb answering", async () => {
-    const baseUrl = await bbStallingAfterHeaders();
-    await expect(checkWithin(baseUrl, 200)).resolves.toBe(false);
-    servers.at(-1)?.closeAllConnections();
+    await expect(check(await stallingAfterHeaders())).resolves.toBe(false);
   });
 
-  it("still reaps a detached CLI while bb's responses keep stalling", async () => {
-    const baseUrl = await bbStallingAfterHeaders();
-    const socketPath = socketIn();
-    const held = startHolder(socketPath, ECHO_LOOP, 300, () =>
-      checkWithin(baseUrl, 100),
-    );
-    const client = await attach(socketPath);
-    await client.waitFor(/started:/u);
-    client.socket.destroy();
-    expect(await held).not.toBe(7);
-    servers.at(-1)?.closeAllConnections();
-  });
-
-  it("reports bb unreachable only when the request never gets an answer", async () => {
-    await expect(check(await closedPort())).rejects.toBeInstanceOf(
+  it.each([
+    ["the connection is refused", closedPort],
+    ["bb accepts the connection but never sends headers", hungBeforeHeaders],
+  ] as const)("reports bb unreachable when %s", async (_name, start) => {
+    await expect(check(await start())).rejects.toBeInstanceOf(
       NativeBbUnreachableError,
     );
   });
 
-  it("still reaps a detached CLI when bb keeps answering with unreadable responses", async () => {
-    const baseUrl = await bbAnswering(200, "not json");
+  it("keeps a detached CLI while bb never sends headers, and reaps it once bb answers", async () => {
+    let hung = true;
+    const baseUrl = await bb((response) => {
+      if (hung) return;
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end('{"terminal":{"status":"running","closeReason":null}}');
+    });
     const socketPath = socketIn();
     const held = startHolder(socketPath, ECHO_LOOP, 300, () => check(baseUrl));
-    const client = await attach(socketPath);
-    await client.waitFor(/started:/u);
-    client.socket.destroy();
+    const first = await attach(socketPath);
+    const pid = (await first.waitFor(/started:(\d+)/u))[1];
+    first.socket.destroy();
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    const second = await attach(socketPath);
+    second.type("still held\r");
+    await second.waitFor(new RegExp(`got:still held:${pid}`, "u"));
+    hung = false;
+    second.socket.destroy();
     expect(await held).not.toBe(7);
   });
+
+  it.each([
+    ["answering with unreadable responses", () => answering(200, "not json")],
+    ["stalling after headers", stallingAfterHeaders],
+  ] as const)(
+    "still reaps a detached CLI while bb keeps %s",
+    async (_name, start) => {
+      const baseUrl = await start();
+      const socketPath = socketIn();
+      const held = startHolder(socketPath, ECHO_LOOP, 300, () =>
+        check(baseUrl),
+      );
+      const client = await attach(socketPath);
+      await client.waitFor(/started:/u);
+      client.socket.destroy();
+      expect(await held).not.toBe(7);
+    },
+  );
 });
 
 describe("native holder frames", () => {
