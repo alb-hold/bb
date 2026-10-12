@@ -315,10 +315,6 @@ const MIGRATION_RUNNER_MUTATIONS: MigrationRunnerMutation[] = [
     to: "async function applyReorderedCleanupMigrations(",
   },
 ];
-const MIGRATION_INVALIDATION: SourceRequirement = {
-  file: "packages/db/src/migrate.ts",
-  text: 'sqlite.pragma("foreign_keys = ON");\n    bumpThreadEventOwnershipEpoch();',
-};
 
 const PRUNING_ONLY_WRITERS = [
   "advanceLiveEventPruning",
