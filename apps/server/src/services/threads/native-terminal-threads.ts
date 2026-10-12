@@ -73,6 +73,17 @@ interface PendingNativeTerminalOpen {
 
 const pendingOpens = new Map<string, PendingNativeTerminalOpen>();
 const pendingSends = new Map<string, Promise<void>>();
+const reattachEpochs = new Map<string, number>();
+
+function currentReattachEpoch(threadId: string): number {
+  return reattachEpochs.get(threadId) ?? 0;
+}
+
+function bumpReattachEpoch(threadId: string): number {
+  const next = currentReattachEpoch(threadId) + 1;
+  reattachEpochs.set(threadId, next);
+  return next;
+}
 const NATIVE_REATTACH_POLL_MS = 250;
 const NATIVE_REATTACH_SETTLE_MS = 15_000;
 const NATIVE_REATTACH_DEADLINE_MS = 45_000;
@@ -342,6 +353,7 @@ async function openNativeTerminalOnce(
     terminalIsLive(existing) &&
     !(args.reattachOnly && existing?.status === "disconnected")
   ) {
+    bumpReattachEpoch(args.threadId);
     return toNativeTerminalThread(deps, record);
   }
   const thread = requirePublicThread(deps.db, args.threadId);
@@ -412,6 +424,7 @@ async function openNativeTerminalOnce(
     threadId: thread.id,
     terminalSessionId: terminal.id,
   });
+  bumpReattachEpoch(thread.id);
   return toNativeTerminalThread(deps, record, terminal);
 }
 
@@ -531,11 +544,16 @@ export function reopenNativeTerminalsAfterDaemonReconnect(
 ): Promise<void> {
   return Promise.all(
     args.threadIds.map(async (threadId) => {
-      const waitingOnTerminalId =
-        getNativeTerminalThread(deps.db, threadId)?.terminalSessionId ?? null;
-      const stillWaiting = () =>
-        getNativeTerminalThread(deps.db, threadId)?.terminalSessionId ===
-        waitingOnTerminalId;
+      const attempt = bumpReattachEpoch(threadId);
+      const stillWaiting = () => {
+        if (currentReattachEpoch(threadId) !== attempt) return false;
+        const current = getNativeTerminalThread(deps.db, threadId);
+        if (current === null) return false;
+        const terminal = readRecordTerminal(deps, current);
+        return (
+          terminal === null || !isActiveTerminalSessionStatus(terminal.status)
+        );
+      };
       const deadline = setTimeout(() => {
         if (!stillWaiting()) return;
         interruptThreadWhoseHolderIsGone(deps, {

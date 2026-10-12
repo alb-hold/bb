@@ -8,9 +8,11 @@ import {
   getThread,
   listEvents,
   projectAttachmentThreads,
+  terminalSessions,
   threads,
   upsertProjectExecutionDefaults,
 } from "@bb/db";
+import { eq } from "drizzle-orm";
 import type { PromptInput } from "@bb/domain";
 import {
   HOST_DAEMON_PROTOCOL_VERSION,
@@ -1591,6 +1593,63 @@ describe("native terminal threads", () => {
         getNativeTerminalThread(fixture.harness.db, running.thread.id)
           ?.terminalSessionId,
       ).toBe(explicit.terminalId);
+
+      explicitPhase = false;
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(getThread(fixture.harness.db, running.thread.id)?.status).toBe(
+        "active",
+      );
+      expect(interruptionReasons(fixture, running.thread.id)).toEqual([]);
+    } finally {
+      if (restoreTimers) vi.useRealTimers();
+    }
+  }, 60_000);
+
+  it("does not let a stale reattach deadline interrupt a thread a newer open recovered on the same terminal id", async () => {
+    const sourceRegistry = await createTestProviderRegistry();
+    let restoreTimers = false;
+    try {
+      const { fixture, running } = await restartDaemonWithRunningNativeThread(
+        "instance-restarted",
+        {
+          beforeRestart: () => {
+            vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+            restoreTimers = true;
+          },
+          deferProviders: true,
+        },
+      );
+      const reconnectRegistry = fixture.harness.deps.providerRegistry;
+      let explicitPhase = true;
+      fixture.harness.deps.providerRegistry = {
+        ...sourceRegistry,
+        get: (providerId: string) =>
+          explicitPhase ? sourceRegistry.get(providerId) : null,
+        onProviderRegistered: reconnectRegistry.onProviderRegistered,
+        whenProviderRegistered: reconnectRegistry.whenProviderRegistered,
+      };
+      const terminalId = getNativeTerminalThread(
+        fixture.harness.db,
+        running.thread.id,
+      )?.terminalSessionId;
+      if (terminalId === null || terminalId === undefined) {
+        throw new Error("native thread has no terminal");
+      }
+      fixture.harness.db
+        .update(terminalSessions)
+        .set({ status: "running", closeReason: null })
+        .where(eq(terminalSessions.id, terminalId))
+        .run();
+      const reopened = await postJson(
+        fixture,
+        `/threads/${running.thread.id}/native-terminal/open`,
+        {},
+      );
+      expect(reopened.status).toBe(200);
+      expect(
+        getNativeTerminalThread(fixture.harness.db, running.thread.id)
+          ?.terminalSessionId,
+      ).toBe(terminalId);
 
       explicitPhase = false;
       await vi.advanceTimersByTimeAsync(60_000);
