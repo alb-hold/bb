@@ -298,6 +298,7 @@ describe("switching a chat thread to its native terminal", () => {
     expect(launch).toMatchObject({
       nativeSessionId: SESSION_ID,
       initialPrompt: null,
+      initialImages: [],
     });
 
     const again = await switchMode(fixture, thread.id, "terminal");
