@@ -118,6 +118,20 @@ const EVENT_OWNER_DELETES: Record<string, InventoriedWrite> = {
   },
 };
 
+const MIGRATION_EVENT_ROW_WRITE_PATTERN =
+  /\b(?:INTO|UPDATE|DELETE\s+FROM)\s+[`"]?events[`"]?(?![\w.])/iu;
+const MIGRATIONS_WRITING_EVENT_ROWS = [
+  "0015_good_lila_cheney.sql",
+  "0019_pending_interactions_schema_honesty.sql",
+  "0031_mysterious_zaran.sql",
+  "0032_restore_event_large_values.sql",
+  "0103_wandering_mongoose.sql",
+];
+const MIGRATION_INVALIDATION: SourceRequirement = {
+  file: "packages/db/src/migrate.ts",
+  text: 'sqlite.pragma("foreign_keys = ON");\n    bumpThreadEventOwnershipEpoch();',
+};
+
 const PRUNING_ONLY_WRITERS = [
   "advanceLiveEventPruning",
   "pruneRateLimitSnapshotWindow",
@@ -211,6 +225,25 @@ describe("writes that can change remembered background-task counts", () => {
       );
 
     expect(missing).toEqual([]);
+  });
+
+  it("forgets remembered counts after every migration run and lists the migrations that write event rows", () => {
+    const migrationsDirectory = join(repoRoot, "packages", "db", "drizzle");
+    const writers = readdirSync(migrationsDirectory)
+      .filter((name) => name.endsWith(".sql"))
+      .filter((name) =>
+        MIGRATION_EVENT_ROW_WRITE_PATTERN.test(
+          readFileSync(join(migrationsDirectory, name), "utf8"),
+        ),
+      )
+      .sort();
+
+    expect(writers).toEqual(MIGRATIONS_WRITING_EVENT_ROWS);
+    expect(
+      sources.get(MIGRATION_INVALIDATION.file)?.includes(
+        MIGRATION_INVALIDATION.text,
+      ),
+    ).toBe(true);
   });
 
   it("reaches the pruning deletes only through the pruning pass that invalidates", () => {

@@ -87,6 +87,7 @@ import type {
   DbQueryConnection,
 } from "../../src/connection.js";
 import { createMigratedConnection } from "../helpers/migrated-connection.js";
+import { migrate } from "../../src/migrate.js";
 
 function setup() {
   const db = createMigratedConnection();
@@ -4680,6 +4681,28 @@ describe("events", () => {
         }),
       ).toEqual(freshCounts(db, [thread.id]));
       expect(commandCount(db, thread.id)).toBe(1);
+    });
+
+    it("re-reads events after migrations run on a connection that already remembered counts", () => {
+      const { db, thread } = setup();
+      insertEvents(db, noopNotifier, [
+        backgroundTaskEvent(thread.id, 1, "item/started"),
+      ]);
+      expect(commandCount(db, thread.id)).toBe(1);
+      db.$client
+        .prepare(
+          "UPDATE events SET data = json_set(data, '$.item.status', 'completed') WHERE thread_id = ?",
+        )
+        .run(thread.id);
+
+      migrate(db);
+
+      expect(
+        listActiveBackgroundTaskCountsByThreadIds(db, {
+          threadIds: [thread.id],
+        }),
+      ).toEqual(freshCounts(db, [thread.id]));
+      expect(commandCount(db, thread.id)).toBe(0);
     });
 
     it("matches a fresh read after a thread is archived", () => {
