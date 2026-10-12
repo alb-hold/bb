@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { eq } from "drizzle-orm";
 import { threadScope, turnScope, type PromptInput } from "@bb/domain";
 import { noopNotifier } from "../../src/notifier.js";
 import { insertEvents } from "../../src/data/events.js";
@@ -21,9 +22,11 @@ import {
   setQueuedThreadMessageGroupBoundary,
   updateQueuedThreadMessage,
 } from "../../src/data/queued-thread-messages.js";
+import { createEnvironment } from "../../src/data/environments.js";
 import { createProject } from "../../src/data/projects.js";
 import { archiveThread, createThread } from "../../src/data/threads.js";
 import { upsertHost } from "../../src/data/hosts.js";
+import { environments, queuedThreadMessages } from "../../src/schema.js";
 import { createMigratedConnection } from "../helpers/migrated-connection.js";
 
 function textInput(text: string): PromptInput[] {
@@ -206,6 +209,77 @@ describe("queued thread messages", () => {
     insertEvents(db, noopNotifier, [manualStop(pausedWithoutQueue, 1)]);
     idleThread();
 
+    const queueOn = (threadId: string) =>
+      queueTurnEndMessage(db, threadId, defaultInput).id;
+    const setQueuedRow = (
+      id: string,
+      values: Partial<typeof queuedThreadMessages.$inferInsert>,
+    ) =>
+      db
+        .update(queuedThreadMessages)
+        .set(values)
+        .where(eq(queuedThreadMessages.id, id))
+        .run();
+    const idleThreadWaitingOn = (kind: string) => {
+      const threadId = idleThread();
+      setQueuedRow(queueOn(threadId), { waitingOn: JSON.stringify({ kind }) });
+      return threadId;
+    };
+
+    const onlyClaimed = idleThread();
+    setQueuedRow(queueOn(onlyClaimed), { claimedAt: 1, claimToken: "claim" });
+
+    const claimedAndFree = idleThread();
+    setQueuedRow(queueOn(claimedAndFree), {
+      claimedAt: 1,
+      claimToken: "other-claim",
+    });
+    queueOn(claimedAndFree);
+
+    const onlyFailed = idleThread();
+    setQueuedRow(queueOn(onlyFailed), { failureReason: "provider rejected" });
+
+    const failedAndFree = idleThread();
+    setQueuedRow(queueOn(failedAndFree), { failureReason: "provider rejected" });
+    queueOn(failedAndFree);
+
+    const waitingOnTurnStart = idleThreadWaitingOn("turn-starting");
+    const waitingOnStop = idleThreadWaitingOn("stopping");
+    idleThreadWaitingOn("time");
+    idleThreadWaitingOn("plugin");
+    idleThreadWaitingOn("provisioning");
+    idleThreadWaitingOn("host-offline");
+
+    const pausedWaitingOnStop = idleThreadWaitingOn("stopping");
+    insertEvents(db, noopNotifier, [manualStop(pausedWaitingOnStop, 1)]);
+
+    const host = upsertHost(db, noopNotifier, { name: "environment-host" });
+    const threadInEnvironment = (path: string) => {
+      const environment = createEnvironment(db, noopNotifier, {
+        projectId: project.id,
+        hostId: host.id,
+        path,
+        status: "ready",
+        providerOwnsPath: false,
+      });
+      const threadId = createThread(db, noopNotifier, {
+        projectId: project.id,
+        environmentId: environment.id,
+        providerId: "codex",
+        status: "idle",
+      }).id;
+      queueOn(threadId);
+      return { environmentId: environment.id, threadId };
+    };
+    const inReadyEnvironment = threadInEnvironment("/tmp/ready-environment");
+    const inDestroyedEnvironment = threadInEnvironment(
+      "/tmp/destroyed-environment",
+    );
+    db.update(environments)
+      .set({ status: "destroyed" })
+      .where(eq(environments.id, inDestroyedEnvironment.environmentId))
+      .run();
+
     const { query, rows } = captureIdleQueuedThreadQuery(db);
     expect(query.sql).toContain(PAUSE_LOOKUP_ON_QUEUED_MESSAGE);
     expect(query.sql).toContain(QUEUED_MESSAGES_FIRST_JOIN);
@@ -219,9 +293,19 @@ describe("queued thread messages", () => {
 
     expect(run(query.sql)).toEqual(run(replacedSql));
     expect(rows.map((row) => row.threadId).sort()).toEqual(
-      [severalQueued, pauseCleared, stoppedAgain].sort(),
+      [
+        severalQueued,
+        pauseCleared,
+        stoppedAgain,
+        claimedAndFree,
+        failedAndFree,
+        waitingOnTurnStart,
+        waitingOnStop,
+        pausedWaitingOnStop,
+        inReadyEnvironment.threadId,
+      ].sort(),
     );
-    expect(run(query.sql)).toHaveLength(3);
+    expect(run(query.sql)).toHaveLength(9);
   });
 
   it("lists an idle thread waiting for its turn to start", () => {
