@@ -1,7 +1,8 @@
 import type { Socket } from "node:net";
 import {
   TERMINAL_DATA_PLANE_IPC_VERSION,
-  terminalDataPlaneChildMessageSchema,
+  parseTerminalDataPlaneChildToMainMessage,
+  TerminalDataPlaneIpcError,
   type TerminalDataPlaneChildMessage,
   type TerminalDataPlaneMainMessage,
 } from "../../../terminal-data-plane/ipc-contract.js";
@@ -158,21 +159,26 @@ export class DataPlaneChildSupervisor {
     if (child !== this.child) {
       return;
     }
-    const parsed = terminalDataPlaneChildMessageSchema.safeParse(raw);
-    if (!parsed.success) {
+    let message: TerminalDataPlaneChildMessage;
+    try {
+      message = parseTerminalDataPlaneChildToMainMessage(raw);
+    } catch (error) {
+      if (!(error instanceof TerminalDataPlaneIpcError)) {
+        throw error;
+      }
       this.options.logger.warn(
-        { issues: parsed.error.issues.length },
+        { err: error, rejection: error.rejection },
         "Terminal data plane child sent an invalid message",
       );
       return;
     }
-    if (parsed.data.type === "ready") {
+    if (message.type === "ready") {
       this.currentState = "ready";
       this.readySince = this.now();
       this.options.onReady();
       return;
     }
-    this.options.onMessage(parsed.data);
+    this.options.onMessage(message);
   }
 
   private handleGone(child: DataPlaneChildProcess): void {

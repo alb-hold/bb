@@ -226,7 +226,7 @@ describe("TerminalDataPlaneRouter", () => {
       type: "browser.detached",
       attachId,
       terminalId: "term_1",
-      nextSeq: 2,
+      lastAckedSeq: null,
     });
     expect(fixture.lifecycle.detach).toHaveBeenCalledWith({
       socket: fixture.attached[0],
