@@ -1,6 +1,8 @@
-import { Socket } from "node:net";
+import { once } from "node:events";
+import { Socket, type AddressInfo } from "node:net";
 import type { TerminalSession } from "@bb/server-contract";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import WebSocket, { WebSocketServer } from "ws";
 import {
   TerminalDataPlaneChild,
   type TerminalDataPlaneSocket,
@@ -11,6 +13,7 @@ import {
   TERMINAL_DATA_PLANE_IPC_VERSION,
   TERMINAL_DATA_PLANE_PENDING_REPLAY_BUFFER_BYTES,
   TERMINAL_DATA_PLANE_RELAY_HARD_CAP_BYTES,
+  TERMINAL_DATA_PLANE_SOCKET_FRAME_OVERHEAD_BYTES,
   TERMINAL_DATA_PLANE_STATS_INTERVAL_MS,
   type TerminalDataPlaneChildMessage,
   type TerminalDataPlaneMainMessage,
@@ -103,12 +106,54 @@ class FakeSocket implements TerminalDataPlaneSocket {
   }
 }
 
+class RecordingSocket implements TerminalDataPlaneSocket {
+  peakBufferedAmount = 0;
+  sends = 0;
+  terminated = false;
+
+  constructor(private readonly socket: WebSocket) {}
+
+  get bufferedAmount(): number {
+    return this.socket.bufferedAmount;
+  }
+
+  on(event: "close", listener: () => void): unknown;
+  on(event: "error", listener: (error: Error) => void): unknown;
+  on(event: "message", listener: (data: unknown) => void): unknown;
+  on(
+    event: "close" | "error" | "message",
+    listener: (() => void) | ((error: Error) => void) | ((data: unknown) => void),
+  ): unknown {
+    this.socket.on(event, listener as (...args: unknown[]) => void);
+    return this;
+  }
+
+  close(code?: number, reason?: string): void {
+    this.socket.close(code, reason);
+  }
+
+  send(data: string): void {
+    this.sends += 1;
+    this.socket.send(data);
+    this.peakBufferedAmount = Math.max(
+      this.peakBufferedAmount,
+      this.socket.bufferedAmount,
+    );
+  }
+
+  terminate(): void {
+    this.terminated = true;
+    this.socket.terminate();
+  }
+}
+
 interface Harness {
   child: TerminalDataPlaneChild;
   clock: { now: number };
   exits: number;
   failNextUpgrade: boolean;
   holdSends: boolean;
+  nextUpgrade: TerminalDataPlaneSocket | null;
   releaseSends(): void;
   sockets: FakeSocket[];
   toMain: TerminalDataPlaneChildMessage[];
@@ -123,6 +168,7 @@ function createHarness(): Harness {
     exits: 0,
     failNextUpgrade: false,
     holdSends: false,
+    nextUpgrade: null,
     releaseSends: () => {
       for (const done of held.splice(0)) {
         done();
@@ -149,6 +195,11 @@ function createHarness(): Harness {
       if (state.failNextUpgrade) {
         state.failNextUpgrade = false;
         return Promise.reject(new Error("handshake refused"));
+      }
+      if (state.nextUpgrade !== null) {
+        const next = state.nextUpgrade;
+        state.nextUpgrade = null;
+        return Promise.resolve(next);
       }
       const socket = new FakeSocket();
       state.sockets.push(socket);
@@ -720,6 +771,243 @@ describe("terminal data plane child", () => {
       terminalId: "term_b",
       dataBase64: base64("still-works"),
     });
+  });
+
+  it("closes the terminal's sockets when input waiting for a stalled data socket passes the cap", async () => {
+    const harness = createHarness();
+    const daemon = await attachDaemon(harness, "session_1");
+    for (const terminalId of ["term_a", "term_b"]) {
+      main(harness, {
+        v,
+        type: "terminal.route",
+        terminalId,
+        daemonSessionId: "session_1",
+        mode: "data-socket",
+      });
+    }
+    const socket = await attachLive(harness, {
+      attachId: "a1",
+      terminalId: "term_a",
+      daemonSessionId: "session_1",
+    });
+    const other = await attachLive(harness, {
+      attachId: "b1",
+      terminalId: "term_b",
+      daemonSessionId: "session_1",
+    });
+    const queued = () =>
+      daemon.sent.reduce((total, frame) => total + Buffer.byteLength(frame), 0);
+    const block = Buffer.alloc(48 * 1024, 0x61).toString("base64");
+    const blocks = Math.ceil(TERMINAL_DATA_PLANE_CHILD_PENDING_IPC_BYTES / block.length) + 5;
+
+    for (let index = 0; index < blocks; index += 1) {
+      socket.receive({ type: "input", dataBase64: block });
+      daemon.bufferedAmount = queued();
+    }
+
+    expect(socket.closes).toEqual([{ code: 1013, reason: "input-backlog" }]);
+    expect(other.closes).toEqual([]);
+    expect(queued()).toBeLessThanOrEqual(TERMINAL_DATA_PLANE_CHILD_PENDING_IPC_BYTES);
+    expect(ofType(harness, "terminal.input")).toEqual([]);
+    expect(daemon.terminated).toBe(false);
+
+    daemon.bufferedAmount = 0;
+    other.receive({ type: "input", dataBase64: base64("still-works") });
+    expect(daemon.frames().at(-1)).toEqual({
+      type: "terminal.input",
+      terminalId: "term_b",
+      dataBase64: base64("still-works"),
+    });
+  });
+
+  it("writes to a data socket only while the frame fits under the hard cap", async () => {
+    const harness = createHarness();
+    const daemon = await attachDaemon(harness, "session_1");
+    main(harness, {
+      v,
+      type: "terminal.route",
+      terminalId: "term_a",
+      daemonSessionId: "session_1",
+      mode: "data-socket",
+    });
+    const browser = await attachLive(harness, {
+      attachId: "a1",
+      terminalId: "term_a",
+      outputAcks: true,
+    });
+    for (const seq of [0, 1, 2, 3]) {
+      daemon.receive({ type: "terminal.output", terminalId: "term_a", chunk: chunk(seq) });
+    }
+    const ack = (nextSeq: number) =>
+      JSON.stringify({ type: "terminal.ack", terminalId: "term_a", nextSeq });
+
+    daemon.bufferedAmount =
+      TERMINAL_DATA_PLANE_RELAY_HARD_CAP_BYTES -
+      Buffer.byteLength(ack(2)) -
+      TERMINAL_DATA_PLANE_SOCKET_FRAME_OVERHEAD_BYTES;
+    browser.receive({ type: "ack", nextSeq: 2 });
+
+    expect(daemon.sent.at(-1)).toBe(ack(2));
+    expect(daemon.terminated).toBe(false);
+    const written = daemon.sent.length;
+
+    daemon.bufferedAmount =
+      TERMINAL_DATA_PLANE_RELAY_HARD_CAP_BYTES -
+      Buffer.byteLength(ack(3)) -
+      TERMINAL_DATA_PLANE_SOCKET_FRAME_OVERHEAD_BYTES +
+      1;
+    browser.receive({ type: "ack", nextSeq: 3 });
+    browser.receive({ type: "ack", nextSeq: 4 });
+
+    expect(daemon.sent.length).toBe(written);
+    expect(daemon.terminated).toBe(true);
+    expect(ofType(harness, "daemon.detached")).toEqual([
+      { v, type: "daemon.detached", daemonSessionId: "session_1" },
+    ]);
+  });
+
+  it("writes nothing to a data socket whose send backlog is at the hard cap", async () => {
+    const harness = createHarness();
+    const daemon = await attachDaemon(harness, "session_1");
+    main(harness, {
+      v,
+      type: "terminal.route",
+      terminalId: "term_a",
+      daemonSessionId: "session_1",
+      mode: "data-socket",
+    });
+    const browser = await attachLive(harness, {
+      attachId: "a1",
+      terminalId: "term_a",
+      outputAcks: true,
+    });
+    for (const seq of [0, 1, 2]) {
+      daemon.receive({ type: "terminal.output", terminalId: "term_a", chunk: chunk(seq) });
+    }
+    const written = daemon.sent.length;
+    daemon.bufferedAmount = TERMINAL_DATA_PLANE_RELAY_HARD_CAP_BYTES;
+
+    browser.receive({ type: "ack", nextSeq: 2 });
+
+    expect(daemon.sent.length).toBe(written);
+    expect(daemon.terminated).toBe(true);
+    expect(ofType(harness, "daemon.detached")).toEqual([
+      { v, type: "daemon.detached", daemonSessionId: "session_1" },
+    ]);
+  });
+
+  it("keeps a stalled ws data socket within the input cap and the hard cap", async () => {
+    const server = new WebSocketServer({
+      host: "127.0.0.1",
+      port: 0,
+      perMessageDeflate: false,
+    });
+    await once(server, "listening");
+    const { port } = server.address() as AddressInfo;
+    const client = new WebSocket(`ws://127.0.0.1:${port}`, {
+      perMessageDeflate: false,
+    });
+    const opened = once(client, "open");
+    const [real] = (await once(server, "connection")) as [WebSocket];
+    await opened;
+    try {
+      const harness = createHarness();
+      const daemon = new RecordingSocket(real);
+      harness.nextUpgrade = daemon;
+      harness.child.handleMainMessage(
+        {
+          v,
+          type: "daemon.attach",
+          daemonSessionId: "session_1",
+          request: { url: "/internal/terminal-data", headers: [], headBase64: "" },
+        },
+        new Socket(),
+      );
+      await settle();
+      for (const terminalId of ["term_a", "term_b"]) {
+        main(harness, {
+          v,
+          type: "terminal.route",
+          terminalId,
+          daemonSessionId: "session_1",
+          mode: "data-socket",
+        });
+      }
+      const typing = await attachLive(harness, { attachId: "a1", terminalId: "term_a" });
+      const reader = await attachLive(harness, {
+        attachId: "b1",
+        terminalId: "term_b",
+        outputAcks: true,
+      });
+      for (const seq of [0, 1, 2, 3]) {
+        client.send(
+          JSON.stringify({ type: "terminal.output", terminalId: "term_b", chunk: chunk(seq) }),
+        );
+      }
+      await vi.waitFor(() => {
+        expect(reader.outputSeqs()).toEqual([0, 1, 2, 3]);
+        expect(real.bufferedAmount).toBe(0);
+      });
+
+      const block = Buffer.alloc(48 * 1024, 0x61).toString("base64");
+      for (let index = 0; index < 2048 && typing.closes.length === 0; index += 1) {
+        typing.receive({ type: "input", dataBase64: block });
+      }
+
+      expect(typing.closes).toEqual([{ code: 1013, reason: "input-backlog" }]);
+      expect(reader.closes).toEqual([]);
+      expect(daemon.peakBufferedAmount).toBeLessThanOrEqual(
+        TERMINAL_DATA_PLANE_CHILD_PENDING_IPC_BYTES,
+      );
+      expect(daemon.peakBufferedAmount).toBeGreaterThan(
+        TERMINAL_DATA_PLANE_CHILD_PENDING_IPC_BYTES - 2 * block.length,
+      );
+      expect(ofType(harness, "terminal.input")).toEqual([]);
+
+      const ack = (nextSeq: number) =>
+        JSON.stringify({ type: "terminal.ack", terminalId: "term_b", nextSeq });
+      const ackBudget =
+        Buffer.byteLength(ack(2)) + TERMINAL_DATA_PLANE_SOCKET_FRAME_OVERHEAD_BYTES;
+      const largeFrameHeaderBytes = 10;
+      real.send(
+        Buffer.alloc(
+          TERMINAL_DATA_PLANE_RELAY_HARD_CAP_BYTES -
+            real.bufferedAmount -
+            ackBudget -
+            largeFrameHeaderBytes,
+        ),
+      );
+      expect(real.bufferedAmount).toBe(
+        TERMINAL_DATA_PLANE_RELAY_HARD_CAP_BYTES - ackBudget,
+      );
+      const sends = daemon.sends;
+
+      reader.receive({ type: "ack", nextSeq: 2 });
+
+      expect(daemon.sends).toBe(sends + 1);
+      expect(real.bufferedAmount).toBeGreaterThan(
+        TERMINAL_DATA_PLANE_RELAY_HARD_CAP_BYTES - ackBudget,
+      );
+      expect(real.bufferedAmount).toBeLessThanOrEqual(
+        TERMINAL_DATA_PLANE_RELAY_HARD_CAP_BYTES,
+      );
+
+      reader.receive({ type: "ack", nextSeq: 3 });
+      reader.receive({ type: "ack", nextSeq: 4 });
+
+      expect(daemon.sends).toBe(sends + 1);
+      expect(daemon.peakBufferedAmount).toBeLessThanOrEqual(
+        TERMINAL_DATA_PLANE_RELAY_HARD_CAP_BYTES,
+      );
+      expect(daemon.terminated).toBe(true);
+      expect(ofType(harness, "daemon.detached")).toEqual([
+        { v, type: "daemon.detached", daemonSessionId: "session_1" },
+      ]);
+    } finally {
+      client.terminate();
+      real.terminate();
+      await new Promise((resolve) => server.close(resolve));
+    }
   });
 
   it("carries a data-socket terminal without sending its bytes through main", async () => {

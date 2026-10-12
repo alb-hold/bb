@@ -20,6 +20,7 @@ import {
   TERMINAL_DATA_PLANE_OVERLOAD_CLOSE_CODE,
   TERMINAL_DATA_PLANE_PENDING_REPLAY_BUFFER_BYTES,
   TERMINAL_DATA_PLANE_RELAY_HARD_CAP_BYTES,
+  TERMINAL_DATA_PLANE_SOCKET_FRAME_OVERHEAD_BYTES,
   TERMINAL_DATA_PLANE_STATS_INTERVAL_MS,
   TerminalDataPlaneIpcError,
   parseTerminalDataPlaneMainToChildMessage,
@@ -39,6 +40,17 @@ export interface TerminalDataPlaneSocket {
   on(event: "message", listener: (data: unknown) => void): unknown;
   send(data: string): void;
   terminate(): void;
+}
+
+function queuedBytesAfter(
+  socket: TerminalDataPlaneSocket,
+  frame: string,
+): number {
+  return (
+    socket.bufferedAmount +
+    Buffer.byteLength(frame) +
+    TERMINAL_DATA_PLANE_SOCKET_FRAME_OVERHEAD_BYTES
+  );
 }
 
 export type TerminalDataPlaneSocketUpgrade = (
@@ -703,11 +715,23 @@ export class TerminalDataPlaneChild {
     ) {
       const daemon = this.daemonSockets.get(route.daemonSessionId);
       if (daemon !== undefined) {
-        this.writeDaemon(
-          route.daemonSessionId,
-          daemon,
-          JSON.stringify({ type: "terminal.input", terminalId, dataBase64 }),
-        );
+        const frame = JSON.stringify({
+          type: "terminal.input",
+          terminalId,
+          dataBase64,
+        });
+        if (
+          queuedBytesAfter(daemon, frame) >
+          TERMINAL_DATA_PLANE_CHILD_PENDING_IPC_BYTES
+        ) {
+          this.closeTerminalSockets(
+            terminalId,
+            TERMINAL_DATA_PLANE_OVERLOAD_CLOSE_CODE,
+            "input-backlog",
+          );
+          return;
+        }
+        this.writeDaemon(route.daemonSessionId, daemon, frame);
         return;
       }
     }
@@ -943,6 +967,13 @@ export class TerminalDataPlaneChild {
     socket: TerminalDataPlaneSocket,
     frame: string,
   ): void {
+    if (
+      queuedBytesAfter(socket, frame) > TERMINAL_DATA_PLANE_RELAY_HARD_CAP_BYTES
+    ) {
+      socket.terminate();
+      this.handleDaemonClosed(daemonSessionId, socket);
+      return;
+    }
     try {
       socket.send(frame);
     } catch {
