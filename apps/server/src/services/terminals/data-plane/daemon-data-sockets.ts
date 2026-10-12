@@ -70,14 +70,26 @@ export class DaemonDataSockets {
     if (entry === undefined || entry.attachedAt === null) {
       return false;
     }
-    entry.routedTerminalIds.add(args.terminalId);
-    return this.options.transport.send({
+    const sent = this.options.transport.send({
       v: V,
       type: "terminal.route",
       terminalId: args.terminalId,
       daemonSessionId: args.daemonSessionId,
       mode: "data-socket",
     });
+    if (sent) {
+      entry.routedTerminalIds.add(args.terminalId);
+    }
+    return sent;
+  }
+
+  isRouted(terminalId: string): boolean {
+    for (const entry of this.sessions.values()) {
+      if (entry.routedTerminalIds.has(terminalId)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   unrouteTerminal(terminalId: string): void {
@@ -159,14 +171,29 @@ export class DaemonDataSockets {
       }
       entry.attachedAt = this.now();
       this.clearRetry(entry);
+      try {
+        this.options.setSessionDirectOutput({
+          daemonSessionId: message.daemonSessionId,
+          enabled: true,
+        });
+      } catch (error) {
+        entry.attachedAt = null;
+        this.options.transport.send({
+          v: V,
+          type: "daemon.detach",
+          daemonSessionId: message.daemonSessionId,
+        });
+        this.options.logger.warn(
+          { daemonSessionId: message.daemonSessionId, err: error },
+          "Terminal data socket could not switch the session to direct output; terminals stay on the server connection",
+        );
+        this.scheduleRetry(message.daemonSessionId, entry);
+        return;
+      }
       this.options.logger.info(
         { daemonSessionId: message.daemonSessionId, hostId: entry.hostId },
         "Terminal data socket attached; this host's terminals bypass the server's main thread",
       );
-      this.options.setSessionDirectOutput({
-        daemonSessionId: message.daemonSessionId,
-        enabled: true,
-      });
       return;
     }
     if (message.type !== "daemon.detached") {
