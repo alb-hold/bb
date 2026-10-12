@@ -18,6 +18,7 @@ class SentSocket implements TerminalBrowserSocket {
   onopen: ((event: Event) => void) | null = null;
   readyState = 1;
   readonly resizeCols: number[] = [];
+  readonly resizes: { cols: number; rows: number }[] = [];
 
   close(): void {
     this.readyState = 3;
@@ -34,6 +35,9 @@ class SentSocket implements TerminalBrowserSocket {
       typeof parsed.cols === "number"
     ) {
       this.resizeCols.push(parsed.cols);
+      if ("rows" in parsed && typeof parsed.rows === "number") {
+        this.resizes.push({ cols: parsed.cols, rows: parsed.rows });
+      }
     }
   }
 }
@@ -390,4 +394,99 @@ describe("watcher with layout signals after two stable frames", () => {
     expect(added.sort()).toEqual(["transitionrun", "transitionstart"]);
     expect(removed.sort()).toEqual(["transitionrun", "transitionstart"]);
   });
+});
+
+describe("a signal still active at the 5 s ceiling", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function setup(signal: "transition" | "font") {
+    vi.useFakeTimers();
+    const socket = new SentSocket();
+    const transport = new TerminalWebSocketTransport({
+      createSocket: () => socket,
+      onMessage: () => undefined,
+      shouldReconnect: () => false,
+      url: "ws://example.test/ws/terminals/term_1",
+    });
+    const doc = new EventTarget();
+    const fontSet = new EventTarget();
+    const state = { cols: 128, blocked: true };
+    const fit = () => transport.sendResize(state.cols, 43);
+    fit();
+    transport.start();
+    socket.onopen?.(new Event("open"));
+    watchTerminalLayoutSettled({
+      ...frameScheduler(),
+      measure: () => (state.blocked ? null : `800x600:${state.cols}x43`),
+      onSettled: () => {
+        fit();
+        transport.markLayoutSettled();
+      },
+      ready: Promise.resolve(),
+      subscribe: (onSignal) =>
+        observeLayoutSignals({
+          affectsContainer: (target) => target === doc,
+          document: doc,
+          fontSet,
+          onSignal,
+        }),
+    });
+    if (signal === "transition") {
+      doc.dispatchEvent(new Event("transitionrun"));
+    } else {
+      fontSet.dispatchEvent(new Event("loading"));
+    }
+    const finish = () => {
+      state.cols = 132;
+      state.blocked = false;
+      fit();
+      if (signal === "font") {
+        fontSet.dispatchEvent(new Event("loadingdone"));
+      }
+    };
+    return { finish, socket, transport };
+  }
+
+  it.each(["transition", "font"] as const)(
+    "sends the then-current size once at the ceiling and one more resize to the final size when a %s ends after it",
+    async (signal) => {
+      const { finish, socket, transport } = setup(signal);
+
+      await vi.advanceTimersByTimeAsync(4999);
+      expect(socket.resizes).toEqual([]);
+      await vi.advanceTimersByTimeAsync(6001 - 4999);
+      expect(socket.resizes).toEqual([{ cols: 128, rows: 43 }]);
+      finish();
+      await vi.advanceTimersByTimeAsync(20_000);
+
+      expect(socket.resizes).toEqual([
+        { cols: 128, rows: 43 },
+        { cols: 132, rows: 43 },
+      ]);
+      transport.dispose();
+    },
+  );
+
+  it.each(["transition", "font"] as const)(
+    "never sends a nudge wider than the grid at send time and leaves no stale nudge when a %s ends after the ceiling",
+    async (signal) => {
+      const { finish, socket, transport } = setup(signal);
+
+      transport.requestRepaint();
+      await vi.advanceTimersByTimeAsync(6000);
+      finish();
+      await vi.advanceTimersByTimeAsync(20_000);
+
+      const sent = socket.resizes;
+      expect(sent[0]).toEqual({ cols: 128, rows: 43 });
+      expect(sent[sent.length - 1]).toEqual({ cols: 132, rows: 43 });
+      expect(sent.slice(0, -1).every((size) => size.cols <= 128)).toBe(true);
+      expect(sent.filter((size) => size.cols > 128)).toEqual([
+        { cols: 132, rows: 43 },
+      ]);
+      transport.dispose();
+    },
+  );
 });
