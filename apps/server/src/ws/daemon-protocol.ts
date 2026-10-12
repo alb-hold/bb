@@ -159,7 +159,6 @@ export function onDaemonSocketMessage(
   plugins?: Pick<PluginService, "handleHostSignal" | "handleHostWorkerExit">,
   serverMove?: Pick<ServerMoveCoordinator, "handleProgress">,
 ): void {
-  deps.hub.recordDaemonActivity(args.sessionId);
   const message = parseSocketMessage(
     args.socket,
     args.raw,
@@ -169,19 +168,24 @@ export function onDaemonSocketMessage(
     return;
   }
 
-  if (
-    message.type === "terminal.output" &&
-    !deps.hub.hasTerminalClients(message.terminalId)
-  ) {
-    return;
-  }
-
   try {
+    if (
+      message.type === "terminal.output" &&
+      !deps.hub.hasTerminalClients(message.terminalId)
+    ) {
+      requireAuthorizedOpenSession(deps.db, {
+        hostId: args.hostId,
+        sessionId: args.sessionId,
+      });
+      deps.hub.recordDaemonActivity(args.sessionId);
+      return;
+    }
     runEventLoopWorkSync(`ws:daemon ${message.type}`, () => {
       const session = requireAuthorizedOpenSession(deps.db, {
         hostId: args.hostId,
         sessionId: args.sessionId,
       });
+      deps.hub.recordDaemonActivity(args.sessionId);
       const now = Date.now();
       if (
         message.type === "heartbeat" ||

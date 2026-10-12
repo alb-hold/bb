@@ -1,6 +1,7 @@
 import { replaceMachineEnvironment } from "../../src/services/machines/environment-settings.js";
 import * as gitCredentials from "../../src/services/machines/git-credentials.js";
 import {
+  closeSession,
   createTerminalSession,
   getAppSettings,
   getTerminalSession,
@@ -1595,7 +1596,7 @@ describe("public terminal routes", () => {
     });
   });
 
-  it("reads no database rows for output from a terminal no browser is watching", async () => {
+  it("reads only the daemon session row for output from a terminal no browser is watching", async () => {
     const fixture = await createTerminalRouteFixture();
     harnesses.push(fixture.harness);
     const stored = createTerminalSession(fixture.harness.db, {
@@ -1611,9 +1612,13 @@ describe("public terminal routes", () => {
     });
     const sqlite = fixture.harness.db.$client;
     const prepare = sqlite.prepare.bind(sqlite);
+    const preparedSources: string[] = [];
     const prepared = vi
       .spyOn(sqlite, "prepare")
-      .mockImplementation((source: string) => prepare(source));
+      .mockImplementation((source: string) => {
+        preparedSources.push(source);
+        return prepare(source);
+      });
     const sendOutput = (seq: number) =>
       onDaemonSocketMessage(fixture.harness.deps, {
         hostId: fixture.host.id,
@@ -1631,7 +1636,14 @@ describe("public terminal routes", () => {
 
     sendOutput(0);
     sendOutput(1);
-    expect(prepared).not.toHaveBeenCalled();
+    expect(preparedSources).toHaveLength(2);
+    for (const source of preparedSources) {
+      expect(source).toMatch(/^\s*select\b/iu);
+      expect(source).toMatch(/\bhost_daemon_sessions\b/u);
+      expect(source).not.toMatch(/\bterminal_sessions\b/u);
+    }
+    expect(fixture.socket.close).not.toHaveBeenCalled();
+    preparedSources.length = 0;
 
     const browserSocket = createFakeBrowserSocket();
     fixture.harness.hub.registerTerminalClient(stored.id, browserSocket);
@@ -1643,6 +1655,63 @@ describe("public terminal routes", () => {
         message.type === "output" ? [message.chunk.seq] : [],
       ),
     ).toEqual([2]);
+  });
+
+  it("closes the socket of a closed daemon session that sends output for an unwatched terminal and stops refreshing its liveness", async () => {
+    const fixture = await createTerminalRouteFixture();
+    harnesses.push(fixture.harness);
+    const stored = createTerminalSession(fixture.harness.db, {
+      cols: 80,
+      daemonSessionId: fixture.session.id,
+      environmentId: fixture.environment.id,
+      hostId: fixture.host.id,
+      initialCwd: "/tmp/terminal-workspace",
+      rows: 24,
+      status: "running",
+      threadId: fixture.thread.id,
+      title: "Terminal 1",
+    });
+    closeSession(
+      fixture.harness.deps.db,
+      fixture.harness.deps.hub,
+      fixture.session.id,
+      "daemon-disconnect",
+    );
+    expect(fixture.harness.hub.hasDaemonForHost(fixture.host.id)).toBe(true);
+    expect(fixture.harness.hub.hasTerminalClients(stored.id)).toBe(false);
+    fixture.harness.hub.takeSilentDaemonSessionIds(1);
+
+    const sqlite = fixture.harness.db.$client;
+    const prepare = sqlite.prepare.bind(sqlite);
+    const preparedSources: string[] = [];
+    vi.spyOn(sqlite, "prepare").mockImplementation((source: string) => {
+      preparedSources.push(source);
+      return prepare(source);
+    });
+    onDaemonSocketMessage(fixture.harness.deps, {
+      hostId: fixture.host.id,
+      raw: JSON.stringify({
+        type: "terminal.output",
+        terminalId: stored.id,
+        chunk: { seq: 0, dataBase64: Buffer.from("late").toString("base64") },
+      }),
+      sessionId: fixture.session.id,
+      socket: fixture.socket,
+    });
+
+    expect(fixture.socket.close).toHaveBeenCalledWith(1008, "inactive-session");
+    expect(fixture.harness.hub.takeSilentDaemonSessionIds(1)).toEqual([
+      fixture.session.id,
+    ]);
+    for (const source of preparedSources) {
+      expect(source).not.toMatch(/\bterminal_sessions\b/u);
+    }
+    expect(
+      getTerminalSession(fixture.harness.db, {
+        kind: "terminal",
+        terminalId: stored.id,
+      })?.status,
+    ).toBe("running");
   });
 
   it("replays output produced while nobody watched and resumes live output and acks after the last browser detaches and reattaches", async () => {
