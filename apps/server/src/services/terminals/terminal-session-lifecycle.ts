@@ -1047,6 +1047,18 @@ export class TerminalSessionLifecycle {
   ): Promise<TerminalSession> {
     const current = args.current;
     if (current.status === "exited") {
+      if (
+        current.closeReason === "daemon-disconnect" &&
+        args.payload.reason === "user"
+      ) {
+        return toTerminalSession(
+          updateTerminalById(this.options.db, current.id, {
+            closeReason: "user",
+            exitCode: current.exitCode,
+            kind: "exit",
+          }) ?? current,
+        );
+      }
       return toTerminalSession(current);
     }
     if (args.payload.mode === "if-clean" && current.lastUserInputAt !== null) {

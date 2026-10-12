@@ -25,6 +25,7 @@ import {
   getHost,
   getLatestThreadInterruptedReason,
   getThread,
+  listNativeTerminalThreadIds,
   listThreadIdsStoppedSinceLastTurnStart,
   listThreadIdsWithLatestHostDaemonRestartInterruption,
   listThreadTurnInterruptionEventStates,
@@ -2178,9 +2179,17 @@ export async function reconcileDaemonReportedThreads(
     )
     .all();
 
+  const survivingNativeThreadIds = args.sameDaemonInstance
+    ? listNativeTerminalThreadIds(
+        deps.db,
+        activeButMissing.map((thread) => thread.id),
+      )
+    : new Set<string>();
+
   interruptActiveThreads(deps, {
     threads: activeButMissing
       .filter((thread) => args.exceptThreadIds?.has(thread.id) !== true)
+      .filter((thread) => !survivingNativeThreadIds.has(thread.id))
       .map((thread) => ({
         environmentId: thread.environmentId,
         threadId: thread.id,
