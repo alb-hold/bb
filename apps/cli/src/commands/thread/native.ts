@@ -11,7 +11,6 @@ import {
 import os from "node:os";
 import path from "node:path";
 import { Command } from "commander";
-import { BbHttpError } from "@bb/sdk";
 import type { NativeTerminalThread } from "@bb/server-contract";
 import { action, CliExitError } from "../../action.js";
 import { cliFetch, createCliBbSdk } from "../../client.js";
@@ -37,13 +36,13 @@ import {
 } from "../../native-harness.js";
 import {
   defaultNativeHolderSocketPath,
-  nativeTerminalClosedForGood,
   openNativeHolderConnection,
   ignoreNativeHolderSignals,
   pipeNativeHolderClient,
   runNativeHolder,
 } from "../../native-holder.js";
 import { runNativeMcpServer } from "../../native-mcp.js";
+import { checkNativeTerminalClosedForGood } from "../../native-closed-for-good.js";
 import { outputJson } from "../helpers.js";
 import { attachTerminal } from "../terminal.js";
 
@@ -331,15 +330,8 @@ async function holdNativeHarness(
     },
     tick: discover,
     tickIntervalMs: SESSION_DISCOVERY_INTERVAL_MS,
-    terminalClosedForGood: async () => {
-      try {
-        return nativeTerminalClosedForGood(
-          await sdk.nativeTerminals.get({ threadId }),
-        );
-      } catch (error) {
-        return error instanceof BbHttpError && error.status === 404;
-      }
-    },
+    terminalClosedForGood: () =>
+      checkNativeTerminalClosedForGood({ baseUrl, threadId }),
   });
   for (const timer of activityTimers) clearInterval(timer);
   await discover();
