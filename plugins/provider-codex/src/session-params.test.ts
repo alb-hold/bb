@@ -582,6 +582,27 @@ describe("buildCodexConfig", () => {
     });
   });
 
+  it("keeps pool credentials and endpoints out of model shell settings", () => {
+    const config = configFor({
+      ...FULL_OPTIONS,
+      envVars: {
+        CODEX_POOL_AUTH_TOKEN: "private-pool-token",
+        CODEX_OPENAI_BASE_URL: "http://127.0.0.1/pool",
+        BB_ACCOUNT_POOL_PARENT_TOKEN: "private-parent-token",
+        BB_ACCOUNT_POOL_PARENT_URL: "http://127.0.0.1/parent",
+        TEST_VAR: "preserved",
+      },
+    });
+    expect(config).toMatchObject({
+      "shell_environment_policy.set.TEST_VAR": "preserved",
+    });
+    expect(Object.keys(config ?? {}).some((key) => /POOL/iu.test(key))).toBe(
+      false,
+    );
+    expect(JSON.stringify(config)).not.toContain("private-pool-token");
+    expect(JSON.stringify(config)).not.toContain("private-parent-token");
+  });
+
   it("maps the reasoning level onto model_reasoning_effort", () => {
     expect(
       configFor({ ...FULL_OPTIONS, reasoningLevel: "high" }),

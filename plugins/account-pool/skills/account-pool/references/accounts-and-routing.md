@@ -67,6 +67,32 @@ flags, and stray arguments are rejected with the nearest suggestion rather than
 ignored, and a failing invocation that carries `--json` also prints
 `{"ok":false,"error":{"code","message","hint"}}` on stdout.
 
+### One-time cleanup after upgrading
+
+1. Delete Codex shell snapshots containing the pool credential variable names. The command prints only the matching file count. Run it for each affected `CODEX_HOME`, replacing the default directory below when needed:
+
+   ```sh
+   python3 - <<'PY'
+   from pathlib import Path
+   snapshots = Path.home() / ".codex" / "shell_snapshots"
+   names = (b"CODEX_POOL_AUTH_TOKEN", b"BB_ACCOUNT_POOL_PARENT_TOKEN")
+   files = [file for file in snapshots.glob("*.sh") if any(name in file.read_bytes() for name in names)]
+   print(len(files))
+   for file in files:
+       file.unlink()
+   PY
+   ```
+
+2. Rotate the existing pool token for every affected host:
+
+   ```sh
+   bb pool token rotate --machine <id-or-name>
+   ```
+
+   Rotation keeps the existing ten-minute grace. Reopen long-lived native terminals after rotation so they receive the new credential. The upgrade does not delete the user's snapshots or rotate host tokens automatically.
+
+Pooled Codex native terminals and chat bridges exclude pool variables from model-run shell environments and their shell snapshots. Codex itself retains the credential in memory to authenticate pool requests.
+
 The desktop app's Sign in buttons open the same URLs in a clean in-app window with an empty,
 non-persistent session, so the browser's own claude.ai or ChatGPT account is never reused, and
 finish the Claude login from the redirect; the CLI has no window, so it prints the URL.

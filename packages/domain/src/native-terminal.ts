@@ -216,13 +216,15 @@ export const providerNativeTerminalSchema = z
           .array(
             z.union([
               z.string().min(1).max(256),
-              z.object({
-                env: environmentVariableNameSchema,
-                prefix: z.string().max(256),
-              }).strict(),
+              z
+                .object({
+                  env: environmentVariableNameSchema,
+                  prefix: z.string().max(256),
+                })
+                .strict(),
             ]),
           )
-          .max(PROVIDER_NATIVE_TERMINAL_MAX_ARGS),
+          .max(32),
       })
       .strict()
       .optional(),
@@ -268,7 +270,8 @@ export function nativeTerminalEnvArgs(
     declaration === undefined ||
     declaration.required.some((name) => !env[name]) ||
     declaration.args.some((arg) => typeof arg !== "string" && !env[arg.env])
-  ) return [];
+  )
+    return [];
   return declaration.args.map((arg) =>
     typeof arg === "string"
       ? arg

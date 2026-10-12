@@ -3,6 +3,13 @@ import { experimental_nativeTerminalEnvArgs } from "@get-bb/plugin-sdk/host";
 export const CODEX_POOL_BASE_URL_ENV = "CODEX_OPENAI_BASE_URL";
 export const CODEX_POOL_AUTH_TOKEN_ENV = "CODEX_POOL_AUTH_TOKEN";
 
+export function isCodexPoolEnvironmentVariable(name: string): boolean {
+  return (
+    name.toUpperCase() === CODEX_POOL_BASE_URL_ENV ||
+    /^(?:CODEX_.*POOL.*|BB_ACCOUNT_POOL_.*)$/iu.test(name)
+  );
+}
+
 export const CODEX_POOL_LAUNCH_ENV_ARGS: NonNullable<
   Parameters<typeof experimental_nativeTerminalEnvArgs>[0]
 > = {
@@ -27,6 +34,12 @@ export const CODEX_POOL_LAUNCH_ENV_ARGS: NonNullable<
     "model_providers.bb-account-pool.supports_websockets=false",
     "-c",
     `model_providers.bb-account-pool.env_http_headers.x-bb-account-pool-token="${CODEX_POOL_AUTH_TOKEN_ENV}"`,
+    "-c",
+    'shell_environment_policy.filters."CODEX_*POOL*"="exclude"',
+    "-c",
+    'shell_environment_policy.filters."BB_ACCOUNT_POOL_*"="exclude"',
+    "-c",
+    'shell_environment_policy.filters.CODEX_OPENAI_BASE_URL="exclude"',
   ],
 };
 
