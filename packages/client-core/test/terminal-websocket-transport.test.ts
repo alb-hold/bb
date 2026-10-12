@@ -370,11 +370,13 @@ describe("TerminalWebSocketTransport", () => {
   });
 
   it("sends each distinct terminal size once", () => {
+    vi.useFakeTimers();
     const harness = createHarness();
     harness.transport.sendResize(160, 48);
     harness.transport.start();
     const socket = harness.sockets[0]!;
     socket.open();
+    harness.transport.markLayoutSettled();
     const resizes = () =>
       socket.sent.filter((message) => message.includes('"resize"'));
     expect(resizes()).toEqual([
@@ -391,6 +393,104 @@ describe("TerminalWebSocketTransport", () => {
     harness.transport.dispose();
   });
 
+  describe("attach resize settling", () => {
+    function openUnsettled(cols: number, rows: number) {
+      vi.useFakeTimers();
+      const harness = createHarness();
+      harness.transport.sendResize(cols, rows);
+      harness.transport.start();
+      const socket = harness.sockets[0]!;
+      socket.open();
+      const resizes = () =>
+        socket.sent
+          .filter((message) => message.includes('"resize"'))
+          .map((message) => JSON.parse(message) as { cols: number });
+      return { harness, resizes, socket };
+    }
+
+    it("sends once at the hard ceiling when the view never reports a settled layout", () => {
+      const { harness, resizes } = openUnsettled(128, 43);
+
+      vi.advanceTimersByTime(3000);
+      harness.transport.sendResize(132, 43);
+      vi.advanceTimersByTime(1999);
+      expect(resizes()).toEqual([]);
+      vi.advanceTimersByTime(1);
+      expect(resizes()).toEqual([{ type: "resize", cols: 132, rows: 43 }]);
+      vi.advanceTimersByTime(10_000);
+      expect(resizes()).toHaveLength(1);
+      harness.transport.dispose();
+    });
+
+    it.each([100, 800, 2000])(
+      "sends one resize with the final size when layout settles at %i ms",
+      (settleAtMs) => {
+        const { harness, resizes } = openUnsettled(128, 43);
+
+        vi.advanceTimersByTime(settleAtMs);
+        harness.transport.sendResize(132, 43);
+        vi.advanceTimersByTime(10_000);
+
+        expect(resizes()).toEqual([{ type: "resize", cols: 132, rows: 43 }]);
+        harness.transport.dispose();
+      },
+    );
+
+    it("flushes at once when the view reports a settled layout", () => {
+      const { harness, resizes } = openUnsettled(128, 43);
+
+      vi.advanceTimersByTime(60);
+      harness.transport.sendResize(132, 43);
+      expect(resizes()).toEqual([]);
+      harness.transport.markLayoutSettled();
+
+      expect(resizes()).toEqual([{ type: "resize", cols: 132, rows: 43 }]);
+      vi.advanceTimersByTime(3000);
+      expect(resizes()).toHaveLength(1);
+      harness.transport.dispose();
+    });
+
+    it("sends the nudge after the settled size when repaint is requested while settling", () => {
+      const { harness, resizes } = openUnsettled(132, 43);
+
+      harness.transport.requestRepaint();
+      vi.advanceTimersByTime(100);
+      expect(resizes()).toEqual([]);
+      harness.transport.markLayoutSettled();
+      vi.advanceTimersByTime(1000);
+
+      expect(resizes().map((resize) => resize.cols)).toEqual([132, 131, 132]);
+      harness.transport.dispose();
+    });
+
+    it("sends the attach size at once on a reconnect after the layout settled", () => {
+      const { harness, resizes, socket } = openUnsettled(132, 43);
+
+      harness.transport.markLayoutSettled();
+      socket.close();
+      vi.advanceTimersByTime(100);
+      const next = harness.sockets[1]!;
+      next.open();
+
+      expect(
+        next.sent.filter((message) => message.includes('"resize"')),
+      ).toEqual([JSON.stringify({ type: "resize", cols: 132, rows: 43 })]);
+      expect(resizes()).toHaveLength(1);
+      harness.transport.dispose();
+    });
+
+    it("drops the held size when the socket closes before it flushes", () => {
+      const { harness, resizes, socket } = openUnsettled(128, 43);
+
+      vi.advanceTimersByTime(100);
+      socket.close();
+      vi.advanceTimersByTime(3000);
+
+      expect(resizes()).toEqual([]);
+      harness.transport.dispose();
+    });
+  });
+
   describe("requestRepaint", () => {
     function openHarness(cols: number, rows: number) {
       vi.useFakeTimers();
@@ -399,6 +499,7 @@ describe("TerminalWebSocketTransport", () => {
       harness.transport.start();
       const socket = harness.sockets[0]!;
       socket.open();
+      harness.transport.markLayoutSettled();
       return { harness, socket };
     }
 
@@ -415,7 +516,7 @@ describe("TerminalWebSocketTransport", () => {
       expect(socket.sent).toEqual([
         JSON.stringify({ type: "resize", cols: 100, rows: 30 }),
         JSON.stringify({ type: "ack", nextSeq: 42 }),
-        JSON.stringify({ type: "resize", cols: 101, rows: 30 }),
+        JSON.stringify({ type: "resize", cols: 99, rows: 30 }),
       ]);
       vi.advanceTimersByTime(49);
       expect(socket.sent).toHaveLength(3);
@@ -428,17 +529,139 @@ describe("TerminalWebSocketTransport", () => {
       harness.transport.dispose();
     });
 
-    it("nudges left at the maximum supported terminal width", () => {
-      const { harness, socket } = openHarness(500, 30);
+    it("nudges rows instead of columns when the terminal is a single column wide", () => {
+      const { harness, socket } = openHarness(1, 30);
 
       harness.transport.requestRepaint();
       vi.advanceTimersByTime(50);
 
       expect(socket.sent.slice(1)).toEqual([
-        JSON.stringify({ type: "resize", cols: 499, rows: 30 }),
-        JSON.stringify({ type: "resize", cols: 500, rows: 30 }),
+        JSON.stringify({ type: "resize", cols: 1, rows: 29 }),
+        JSON.stringify({ type: "resize", cols: 1, rows: 30 }),
       ]);
       harness.transport.dispose();
+    });
+
+    it("skips the nudge when the terminal is one column by one row", () => {
+      const { harness, socket } = openHarness(1, 1);
+
+      harness.transport.requestRepaint();
+      vi.advanceTimersByTime(500);
+
+      expect(socket.sent).toEqual([
+        JSON.stringify({ type: "resize", cols: 1, rows: 1 }),
+      ]);
+      harness.transport.dispose();
+    });
+
+    it.each([
+      [100, 30],
+      [1, 30],
+      [100, 1],
+      [2, 2],
+      [1, 1],
+    ])(
+      "never sends a resize larger than the current %i x %i grid while nudging",
+      (cols, rows) => {
+        const { harness, socket } = openHarness(cols, rows);
+
+        harness.transport.requestRepaint();
+        vi.advanceTimersByTime(500);
+
+        const sizes = socket.sent
+          .filter((message) => message.includes('"resize"'))
+          .map((message) => JSON.parse(message) as { cols: number; rows: number });
+        expect(sizes.length).toBeGreaterThan(0);
+        for (const size of sizes) {
+          expect(size.cols).toBeLessThanOrEqual(cols);
+          expect(size.rows).toBeLessThanOrEqual(rows);
+        }
+        expect(sizes.at(-1)).toEqual({ type: "resize", cols, rows });
+        harness.transport.dispose();
+      },
+    );
+
+    describe("a grid change while a nudge is pending", () => {
+      function sentSizes(socket: { sent: string[] }) {
+        return socket.sent
+          .filter((message) => message.includes('"resize"'))
+          .map(
+            (message) => JSON.parse(message) as { cols: number; rows: number },
+          );
+      }
+
+      function expectNoSizeAbove(
+        sizes: { cols: number; rows: number }[],
+        grids: { cols: number; rows: number }[],
+      ) {
+        expect(sizes).toHaveLength(grids.length);
+        sizes.forEach((size, index) => {
+          expect(size.cols).toBeLessThanOrEqual(grids[index]!.cols);
+          expect(size.rows).toBeLessThanOrEqual(grids[index]!.rows);
+        });
+      }
+
+      it("sends nothing larger than the grid when it shrinks to 1x1 before the nudge fires", () => {
+        const { harness, socket } = openHarness(2, 2);
+
+        harness.transport.requestRepaint();
+        harness.transport.sendResize(1, 1);
+        vi.advanceTimersByTime(500);
+
+        const sizes = sentSizes(socket);
+        expectNoSizeAbove(sizes, [
+          { cols: 2, rows: 2 },
+          { cols: 1, rows: 1 },
+        ]);
+        expect(sizes.at(-1)).toMatchObject({ cols: 1, rows: 1 });
+        harness.transport.dispose();
+      });
+
+      it("restores to the latest size when the grid shrinks during the nudge gap", () => {
+        const { harness, socket } = openHarness(2, 2);
+
+        harness.transport.requestRepaint();
+        vi.advanceTimersByTime(20);
+        harness.transport.sendResize(1, 1);
+        vi.advanceTimersByTime(500);
+
+        const sizes = sentSizes(socket);
+        expectNoSizeAbove(sizes, [
+          { cols: 2, rows: 2 },
+          { cols: 2, rows: 2 },
+          { cols: 1, rows: 1 },
+        ]);
+        expect(sizes.at(-1)).toMatchObject({ cols: 1, rows: 1 });
+        harness.transport.dispose();
+      });
+
+      it("ends at the grown size when the grid grows from 1x1 to 100x30 before the nudge fires", () => {
+        const { harness, socket } = openHarness(1, 1);
+
+        harness.transport.requestRepaint();
+        harness.transport.sendResize(100, 30);
+        vi.advanceTimersByTime(500);
+
+        const sizes = sentSizes(socket);
+        expect(sizes.at(-1)).toMatchObject({ cols: 100, rows: 30 });
+        expect(sizes.map((size) => `${size.cols}x${size.rows}`)).toEqual([
+          "1x1",
+          "100x30",
+        ]);
+        harness.transport.dispose();
+      });
+
+      it("ends at the grown size when the grid grows during the nudge gap", () => {
+        const { harness, socket } = openHarness(1, 30);
+
+        harness.transport.requestRepaint();
+        vi.advanceTimersByTime(20);
+        harness.transport.sendResize(100, 30);
+        vi.advanceTimersByTime(500);
+
+        expect(sentSizes(socket).at(-1)).toMatchObject({ cols: 100, rows: 30 });
+        harness.transport.dispose();
+      });
     });
 
     it("does not restore after dispose", () => {
@@ -451,7 +674,7 @@ describe("TerminalWebSocketTransport", () => {
 
       expect(socket.sent).toEqual([
         JSON.stringify({ type: "resize", cols: 100, rows: 30 }),
-        JSON.stringify({ type: "resize", cols: 101, rows: 30 }),
+        JSON.stringify({ type: "resize", cols: 99, rows: 30 }),
       ]);
     });
 
@@ -539,8 +762,8 @@ describe("TerminalWebSocketTransport", () => {
       vi.advanceTimersByTime(500);
 
       expect(socket.sent.slice(1)).toEqual([
-        JSON.stringify({ type: "resize", cols: 101, rows: 30 }),
-        JSON.stringify({ type: "resize", cols: 101, rows: 30 }),
+        JSON.stringify({ type: "resize", cols: 99, rows: 30 }),
+        JSON.stringify({ type: "resize", cols: 99, rows: 30 }),
         JSON.stringify({ type: "resize", cols: 100, rows: 30 }),
       ]);
       harness.transport.dispose();
