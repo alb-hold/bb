@@ -80,6 +80,14 @@ export class DaemonDataSockets {
     });
   }
 
+  unrouteTerminal(terminalId: string): void {
+    for (const entry of this.sessions.values()) {
+      if (entry.routedTerminalIds.delete(terminalId)) {
+        this.options.transport.send({ v: V, type: "terminal.unroute", terminalId });
+      }
+    }
+  }
+
   attachSocket(args: {
     daemonSessionId: string;
     request: TerminalDataPlaneHandoffRequest;

@@ -115,7 +115,11 @@ export function startTerminalDataPlane(
     onReady: () => dataSockets.handleChildReady(),
     spawn: options.spawn,
   });
-  const router = new TerminalDataPlaneRouter(supervisor, options.lifecycle);
+  const router = new TerminalDataPlaneRouter(
+    supervisor,
+    options.lifecycle,
+    (terminalId) => dataSockets.unrouteTerminal(terminalId),
+  );
   const tickets = new TerminalDataTicketStore();
   const rpc = { request: options.daemons.request };
   const dataSockets = new DaemonDataSockets({
