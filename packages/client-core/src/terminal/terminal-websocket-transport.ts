@@ -35,6 +35,19 @@ export type CreateTerminalBrowserSocket = (
   url: string,
 ) => TerminalBrowserSocket;
 
+function repaintNudgeSize(size: {
+  cols: number;
+  rows: number;
+}): { cols: number; rows: number } | null {
+  if (size.cols > 1) {
+    return { cols: size.cols - 1, rows: size.rows };
+  }
+  if (size.rows > 1) {
+    return { cols: size.cols, rows: size.rows - 1 };
+  }
+  return null;
+}
+
 function socketBufferedAmount(socket: TerminalBrowserSocket): number {
   return socket.bufferedAmount ?? 0;
 }
@@ -242,6 +255,10 @@ export class TerminalWebSocketTransport {
     ) {
       return;
     }
+    const nudgeSize = repaintNudgeSize(lastResize);
+    if (nudgeSize === null) {
+      return;
+    }
     this.clearRepaintTimeout();
     this.repaintTimeout = setTimeout(() => {
       this.repaintTimeout = null;
@@ -253,15 +270,9 @@ export class TerminalWebSocketTransport {
       ) {
         return;
       }
-      const nudgedCols =
-        lastResize.cols > 1 ? lastResize.cols - 1 : lastResize.cols + 1;
       this.trySend(
         socket,
-        JSON.stringify({
-          type: "resize",
-          cols: nudgedCols,
-          rows: lastResize.rows,
-        }),
+        JSON.stringify({ type: "resize", ...nudgeSize }),
       );
       this.repaintTimeout = setTimeout(() => {
         this.repaintTimeout = null;

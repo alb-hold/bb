@@ -515,18 +515,57 @@ describe("TerminalWebSocketTransport", () => {
       harness.transport.dispose();
     });
 
-    it("nudges right only when the terminal is a single column wide", () => {
+    it("nudges rows instead of columns when the terminal is a single column wide", () => {
       const { harness, socket } = openHarness(1, 30);
 
       harness.transport.requestRepaint();
       vi.advanceTimersByTime(50);
 
       expect(socket.sent.slice(1)).toEqual([
-        JSON.stringify({ type: "resize", cols: 2, rows: 30 }),
+        JSON.stringify({ type: "resize", cols: 1, rows: 29 }),
         JSON.stringify({ type: "resize", cols: 1, rows: 30 }),
       ]);
       harness.transport.dispose();
     });
+
+    it("skips the nudge when the terminal is one column by one row", () => {
+      const { harness, socket } = openHarness(1, 1);
+
+      harness.transport.requestRepaint();
+      vi.advanceTimersByTime(500);
+
+      expect(socket.sent).toEqual([
+        JSON.stringify({ type: "resize", cols: 1, rows: 1 }),
+      ]);
+      harness.transport.dispose();
+    });
+
+    it.each([
+      [100, 30],
+      [1, 30],
+      [100, 1],
+      [2, 2],
+      [1, 1],
+    ])(
+      "never sends a resize larger than the current %i x %i grid while nudging",
+      (cols, rows) => {
+        const { harness, socket } = openHarness(cols, rows);
+
+        harness.transport.requestRepaint();
+        vi.advanceTimersByTime(500);
+
+        const sizes = socket.sent
+          .filter((message) => message.includes('"resize"'))
+          .map((message) => JSON.parse(message) as { cols: number; rows: number });
+        expect(sizes.length).toBeGreaterThan(0);
+        for (const size of sizes) {
+          expect(size.cols).toBeLessThanOrEqual(cols);
+          expect(size.rows).toBeLessThanOrEqual(rows);
+        }
+        expect(sizes.at(-1)).toEqual({ type: "resize", cols, rows });
+        harness.transport.dispose();
+      },
+    );
 
     it("does not restore after dispose", () => {
       const { harness, socket } = openHarness(100, 30);
