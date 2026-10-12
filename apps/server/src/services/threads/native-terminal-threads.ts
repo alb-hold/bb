@@ -158,12 +158,19 @@ export function nativeTerminalPrompt(
 export const NATIVE_TERMINAL_ENDED_MESSAGE =
   "The CLI for this thread ended while bb was disconnected from this machine. Open the terminal again to resume the session.";
 
+function shellWord(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
 export function nativeTerminalLaunchCommand(args: {
   executable: string;
+  launchArgs: readonly string[];
   reattachOnly: boolean;
   threadId: string;
 }): string {
-  const executable = args.executable;
+  const executable = [args.executable, ...args.launchArgs.map(shellWord)].join(
+    " ",
+  );
   const env = `BB_THREAD_ID=${args.threadId}`;
   const wrapper = args.reattachOnly
     ? `"$BB_CLI" thread native-run ${args.threadId} --reattach`
@@ -379,6 +386,7 @@ async function openNativeTerminalOnce(
         mode: "command",
         command: nativeTerminalLaunchCommand({
           executable: provider.cli.executable,
+          launchArgs: provider.cli.launchArgs,
           reattachOnly: args.reattachOnly,
           threadId: thread.id,
         }),
