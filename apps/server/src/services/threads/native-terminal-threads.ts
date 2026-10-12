@@ -1,6 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import {
-  consumeNativeTerminalThreadInitialPrompt,
+  consumeNativeTerminalThreadLaunchInput,
   getNativeTerminalToolCredential,
   setNativeTerminalToolCredential,
   getEnvironment,
@@ -139,12 +139,27 @@ function nativeTerminalAttachmentPath(
   );
 }
 
-export function nativeTerminalPrompt(
+export function nativeTerminalLaunchInput(
   deps: Pick<AppDeps, "config">,
-  args: NativeTerminalPromptArgs,
-): string | null {
-  const prompt = nativeTerminalPromptParts(deps, args).join("\n");
-  return prompt.length === 0 ? null : prompt;
+  args: NativeTerminalPromptArgs & { provider: NativeTerminalProvider },
+): { initialPrompt: string | null; initialImages: string[] } {
+  const launchesImages = (args.provider.cli.imageArgs ?? []).length > 0;
+  const initialImages = launchesImages
+    ? nativeTerminalPromptParts(deps, {
+        ...args,
+        input: args.input.filter((entry) => entry.type === "localImage"),
+      })
+    : [];
+  const prompt = nativeTerminalPromptParts(deps, {
+    ...args,
+    input: launchesImages
+      ? args.input.filter((entry) => entry.type !== "localImage")
+      : args.input,
+  }).join("\n");
+  return {
+    initialPrompt: prompt.length === 0 ? null : prompt,
+    initialImages,
+  };
 }
 
 export function nativeTerminalPromptParts(
@@ -558,17 +573,32 @@ export function reopenNativeTerminalsAfterDaemonReconnect(
   ).then(() => undefined);
 }
 
+function launchInputWithImagesInPrompt(input: {
+  initialPrompt: string | null;
+  initialImages: string[];
+}): { initialPrompt: string | null; initialImages: string[] } {
+  const parts = [
+    ...input.initialImages,
+    ...(input.initialPrompt === null ? [] : [input.initialPrompt]),
+  ];
+  return {
+    initialPrompt: parts.length === 0 ? null : parts.join("\n"),
+    initialImages: [],
+  };
+}
+
 export function takeNativeTerminalLaunchSpec(
   deps: Pick<AppDeps, "db" | "providerRegistry">,
-  threadId: string,
+  args: { imagesAsArgv: boolean; threadId: string },
 ): NativeTerminalLaunchSpec {
-  const record = requireNativeTerminalThreadRecord(deps, threadId);
+  const record = requireNativeTerminalThreadRecord(deps, args.threadId);
   const provider = requireNativeTerminalProvider(deps, record.providerId);
+  const input = consumeNativeTerminalThreadLaunchInput(deps.db, args.threadId);
   return {
     threadId: record.threadId,
     cli: provider.cli,
     nativeSessionId: record.nativeSessionId,
-    initialPrompt: consumeNativeTerminalThreadInitialPrompt(deps.db, threadId),
+    ...(args.imagesAsArgv ? input : launchInputWithImagesInPrompt(input)),
     model: record.model,
   };
 }

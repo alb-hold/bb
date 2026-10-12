@@ -115,6 +115,7 @@ async function enterTerminalMode(
     providerId: thread.providerId,
     nativeSessionId,
     initialPrompt: null,
+    initialImages: [],
     model: null,
   });
   try {

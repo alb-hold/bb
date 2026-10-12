@@ -316,6 +316,7 @@ import {
 } from "./api/spend.js";
 import {
   callNativeTerminalAgentToolRequestSchema,
+  nativeTerminalLaunchQuerySchema,
   openNativeTerminalRequestSchema,
   recordNativeSessionRequestSchema,
   reportNativeTerminalActivityRequestSchema,
@@ -323,6 +324,7 @@ import {
   type CallNativeTerminalAgentToolRequest,
   type NativeTerminalAgentToolResult,
   type NativeTerminalAgentTools,
+  type NativeTerminalLaunchQuery,
   type NativeTerminalLaunchSpec,
   type NativeTerminalThread,
   type OpenNativeTerminalRequest,
@@ -1895,7 +1897,9 @@ export const publicApiRoutes = {
     launch: defineRoute({
       path: "/threads/:id/native-terminal/launch",
       method: "post",
-      request: noRequest<PathId>(),
+      request: optionalQueryRequest<PathId, NativeTerminalLaunchQuery>(
+        nativeTerminalLaunchQuerySchema,
+      ),
       response: jsonResponse<NativeTerminalLaunchSpec>(),
     }),
     agentTools: defineRoute({

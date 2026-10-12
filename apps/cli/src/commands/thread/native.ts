@@ -246,7 +246,10 @@ async function holdNativeHarness(
     cwd,
     env: process.env,
     prepare: async ({ credential, credentialSocket }) => {
-      const spec = await sdk.nativeTerminals.launch({ threadId });
+      const spec = await sdk.nativeTerminals.launch({
+        imagesAsArgv: true,
+        threadId,
+      });
       const activity = spec.cli.activity;
       const hooks = activity?.hooks;
       const file =
