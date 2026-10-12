@@ -2284,6 +2284,45 @@ describe("TerminalManager", () => {
     });
   });
 
+  it("replays output verbatim when it continues the caller's stream", async () => {
+    const harness = createHarness();
+    const pty = await openTerminal(harness);
+    const flush = async (requestId: string, sinceSeq: number) => {
+      await harness.manager.handleMessage({
+        type: "terminal.attach",
+        requestId,
+        terminalId: "term-1",
+        sinceSeq,
+        tailBytes: 64 * 1024,
+      });
+    };
+
+    pty.emitData("\u001b[?1049hfirst");
+    await flush("flush-enter", 0);
+    pty.emitData("\u001b[38;");
+    await flush("flush-split-sequence", 1);
+    pty.emitData("5;1mchip");
+    await flush("read-since-2", 2);
+    await flush("read-since-1", 1);
+
+    expect(harness.messages).toContainEqual(
+      expect.objectContaining({
+        type: "terminal.replay",
+        requestId: "read-since-2",
+        chunks: [textChunk("5;1mchip", 2)],
+        replayStartSeq: 2,
+      }),
+    );
+    expect(harness.messages).toContainEqual(
+      expect.objectContaining({
+        type: "terminal.replay",
+        requestId: "read-since-1",
+        chunks: [textChunk("\u001b[38;", 1), textChunk("5;1mchip", 2)],
+        replayStartSeq: 1,
+      }),
+    );
+  });
+
   it("writes input and resizes the active PTY", async () => {
     const harness = createHarness();
     const pty = await openTerminal(harness);
