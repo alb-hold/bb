@@ -186,6 +186,26 @@ describe("native terminal holder", () => {
     await expect(held).resolves.toBe(7);
   });
 
+  it("never reaps the CLI while bb is unreachable, and reaps it once bb answers and nothing reattaches", async () => {
+    const socketPath = socketIn();
+    let reachable = false;
+    const held = startHolder(socketPath, ECHO_LOOP, 300, async () => {
+      if (!reachable) throw new Error("fetch failed");
+      return false;
+    });
+    const first = await attach(socketPath);
+    const pid = (await first.waitFor(/started:(\d+)/u))[1];
+    first.socket.destroy();
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    const second = await attach(socketPath);
+    second.type("after outage\r");
+    await second.waitFor(new RegExp(`got:after outage:${pid}`, "u"));
+    reachable = true;
+    second.socket.destroy();
+    const code = await held;
+    expect(code).not.toBe(7);
+  });
+
   it("gives up when no terminal ever attaches", async () => {
     const socketPath = socketIn();
     const code = await runNativeHolder({

@@ -304,7 +304,8 @@ async function holdNativeHarness(
           await sdk.nativeTerminals.get({ threadId }),
         );
       } catch (error) {
-        return error instanceof BbHttpError && error.status === 404;
+        if (error instanceof BbHttpError && error.status === 404) return true;
+        throw error;
       }
     },
   });
