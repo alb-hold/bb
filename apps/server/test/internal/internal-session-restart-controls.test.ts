@@ -55,6 +55,7 @@ describe("a real daemon restart", () => {
         providerId: "codex",
         nativeSessionId: "native-session-1",
         initialPrompt: null,
+        initialImages: [],
         model: null,
       });
       const terminal = createTerminalSession(harness.db, {
