@@ -206,6 +206,7 @@ export const providerNativeTerminalSchema = z
       ),
     launchArgs: templateArgsSchema([]),
     modelArgs: templateArgsSchema(["model"]),
+    imageArgs: templateArgsSchema(["image"]).optional(),
     pastePlaceholders: z.array(z.string().trim().min(4).max(64)).max(4),
     sessionRoot: providerNativeTerminalSessionRootSchema,
     session: z.discriminatedUnion("kind", [
@@ -221,6 +222,17 @@ export const providerNativeTerminalSchema = z
         code: "custom",
         path: ["modelArgs"],
         message: "must pass {model} when not empty",
+      });
+    }
+    if (
+      spec.imageArgs !== undefined &&
+      spec.imageArgs.length > 0 &&
+      !requiresToken(spec.imageArgs, "image")
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["imageArgs"],
+        message: "must pass {image} when not empty",
       });
     }
   });
