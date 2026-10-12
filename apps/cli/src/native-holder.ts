@@ -1,13 +1,18 @@
 import { createHash } from "node:crypto";
 import {
-  appendFileSync,
   chmodSync,
+  closeSync,
+  fchmodSync,
+  fstatSync,
+  ftruncateSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   rmSync,
   statSync,
   truncateSync,
   unlinkSync,
+  writeSync,
 } from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -28,21 +33,40 @@ export function logNativeHolderEvent(
   const logPath = socketPath.endsWith(".sock")
     ? socketPath.replace(/\.sock$/u, ".log")
     : `${socketPath}.log`;
+  const safeFields = Object.fromEntries(
+    Object.entries(fields).map(([key, value]) => [
+      key,
+      typeof value === "string" ? value.slice(0, 200) : value,
+    ]),
+  );
   const line = `${JSON.stringify({
     time: new Date().toISOString(),
-    event,
-    ...fields,
+    event: event.slice(0, 200),
+    ...safeFields,
   })}\n`;
   try {
+    const lineBytes = Buffer.byteLength(line);
+    const fd = openSync(logPath, "a", 0o600);
     try {
+      fchmodSync(fd, 0o600);
+      const existingSize = fstatSync(fd).size;
       if (
-        statSync(logPath).size + Buffer.byteLength(line) >
-        NATIVE_HOLDER_LOG_MAX_BYTES
+        existingSize > NATIVE_HOLDER_LOG_MAX_BYTES ||
+        (lineBytes <= NATIVE_HOLDER_LOG_MAX_BYTES &&
+          existingSize + lineBytes > NATIVE_HOLDER_LOG_MAX_BYTES)
       ) {
-        truncateSync(logPath, 0);
+        ftruncateSync(fd, 0);
       }
-    } catch {}
-    appendFileSync(logPath, line, { mode: 0o600 });
+      if (lineBytes <= NATIVE_HOLDER_LOG_MAX_BYTES) {
+        const record = Buffer.from(line);
+        let offset = 0;
+        while (offset < record.length) {
+          offset += writeSync(fd, record, offset, record.length - offset);
+        }
+      }
+    } finally {
+      closeSync(fd);
+    }
   } catch {
     return;
   }

@@ -1,6 +1,14 @@
 import { spawn as spawnProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import http from "node:http";
 import type net from "node:net";
 import os from "node:os";
@@ -40,6 +48,24 @@ function socketIn(): string {
   const dir = mkdtempSync(path.join(os.tmpdir(), "bb-holder-"));
   tempDirs.push(dir);
   return path.join(dir, "thread.sock");
+}
+
+function writeHolderTestEvent(
+  socketPath: string,
+  event: string,
+  fields: Record<string, number | string | null>,
+): void {
+  const logEvent = (
+    nativeHolder as unknown as {
+      logNativeHolderEvent?: (
+        socketPath: string,
+        event: string,
+        fields: Record<string, number | string | null>,
+      ) => void;
+    }
+  ).logNativeHolderEvent;
+  expect(logEvent).toBeTypeOf("function");
+  logEvent?.(socketPath, event, fields);
 }
 
 function startHolder(
@@ -125,6 +151,57 @@ const ECHO_LOOP: NativeHolderProcess = {
 };
 
 describe("native terminal holder", () => {
+  it("keeps the log at the size cap when rotating near the boundary", () => {
+    const socketPath = socketIn();
+    const logPath = socketPath.replace(/\.sock$/u, ".log");
+    const maxBytes = 256 * 1024;
+    writeFileSync(logPath, Buffer.alloc(maxBytes - 4, 0x78));
+
+    writeHolderTestEvent(socketPath, "boundary", { value: "kept" });
+
+    expect(statSync(logPath).size).toBeLessThanOrEqual(maxBytes);
+    expect(readFileSync(logPath, "utf8")).toContain('"event":"boundary"');
+  });
+
+  it("truncates oversized exception names before writing the record", () => {
+    const socketPath = socketIn();
+    const logPath = socketPath.replace(/\.sock$/u, ".log");
+
+    writeHolderTestEvent(socketPath, "uncaught-exception", {
+      name: "E".repeat(1_024),
+    });
+
+    const [line] = readFileSync(logPath, "utf8").trim().split("\n");
+    const record = JSON.parse(line ?? "{}") as Record<string, unknown>;
+    expect(record.name).toBe("E".repeat(200));
+    expect(statSync(logPath).size).toBeLessThanOrEqual(256 * 1024);
+  });
+
+  it("drops a serialized event that is larger than the log cap", () => {
+    const socketPath = socketIn();
+    const logPath = socketPath.replace(/\.sock$/u, ".log");
+    const fields: Record<string, number> = {};
+    for (let index = 0; index < 30_000; index += 1) {
+      fields[`field${index}`] = index;
+    }
+
+    writeHolderTestEvent(socketPath, "oversized-record", fields);
+
+    expect(statSync(logPath).size).toBeLessThanOrEqual(256 * 1024);
+    expect(readFileSync(logPath, "utf8")).toBe("");
+  });
+
+  it("sets an existing holder log to mode 0600 before appending", () => {
+    const socketPath = socketIn();
+    const logPath = socketPath.replace(/\.sock$/u, ".log");
+    writeFileSync(logPath, "existing\n", { mode: 0o644 });
+    chmodSync(logPath, 0o644);
+
+    writeHolderTestEvent(socketPath, "permission-check", { value: 1 });
+
+    expect(statSync(logPath).mode & 0o777).toBe(0o600);
+  });
+
   it("writes an adjacent log when the socket path has no suffix", () => {
     const socketPath = path.join(path.dirname(socketIn()), "holder");
     const logEvent = (
