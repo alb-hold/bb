@@ -139,14 +139,28 @@ function setupVisibility(
 }
 
 describe("terminal visibility signals", () => {
-  it("releases and reacquires contexts across an arbitrarily small visible sliver", () => {
+  it("releases and reacquires sub-threshold visible slivers on scroll", () => {
     const state = setupVisibility();
+    const parent = document.createElement("div");
+    parent.style.overflow = "hidden";
+    document.body.append(parent);
+    parent.append(state.root);
     const sliver = new DOMRect(10, 10, 1e-11, 1e-11);
+    let parentBox = sliver;
+    vi.spyOn(parent, "getBoundingClientRect").mockImplementation(
+      () => parentBox,
+    );
+    vi.spyOn(parent, "clientWidth", "get").mockReturnValue(sliver.width);
+    vi.spyOn(parent, "clientHeight", "get").mockReturnValue(sliver.height);
     state.intersect(true, sliver);
     expect(state.root.dataset.terminalRenderer).toBe("webgl");
+    parentBox = new DOMRect(310, 210, sliver.width, sliver.height);
     state.intersect(true, new DOMRect(10, 10, 0, 0));
+    window.dispatchEvent(new Event("scroll"));
     expect(state.root.dataset.terminalRenderer).toBe("dom");
+    parentBox = sliver;
     state.intersect(true, sliver);
+    window.dispatchEvent(new Event("scroll"));
     expect(state.root.dataset.terminalRenderer).toBe("webgl");
     state.observer.dispose();
     state.renderer.dispose();

@@ -242,6 +242,7 @@ export function observeTerminalWebglVisibility({
   let disposed = false;
   const supportsIntersectionObserver =
     typeof IntersectionObserver !== "undefined";
+  let hasObserved = !supportsIntersectionObserver;
   let intersects = !supportsIntersectionObserver;
   const sync = () => {
     if (disposed) {
@@ -259,19 +260,29 @@ export function observeTerminalWebglVisibility({
         box.right > 0 &&
         box.top < (window?.innerHeight ?? 0) &&
         box.left < (window?.innerWidth ?? 0) &&
-        (supportsIntersectionObserver ||
-          intersectsClippingAncestors(root, box, window)) &&
+        intersectsClippingAncestors(root, box, window) &&
         style?.visibility !== "hidden" &&
         style?.visibility !== "collapse",
     );
   };
-  const resizeObserver = new ResizeObserver(sync);
+  const syncGeometry = () => {
+    if (hasObserved) {
+      intersects = intersectsClippingAncestors(
+        root,
+        root.getBoundingClientRect(),
+        window,
+      );
+    }
+    sync();
+  };
+  const resizeObserver = new ResizeObserver(syncGeometry);
   const intersectionObserver = !supportsIntersectionObserver
     ? null
     : new IntersectionObserver(
         (entries) => {
           const entry = entries.find((entry) => entry.target === root);
           if (entry !== undefined) {
+            hasObserved = true;
             intersects =
               entry.isIntersecting &&
               entry.intersectionRect.width > 0 &&
@@ -279,21 +290,22 @@ export function observeTerminalWebglVisibility({
           }
           sync();
         },
-        { threshold: [0, Number.MIN_VALUE] },
+        { threshold: [0, Number.EPSILON] },
       );
   resizeObserver.observe(root);
   intersectionObserver?.observe(root);
-  if (intersectionObserver === null) {
-    for (
-      let parent = root.parentElement;
-      parent !== null;
-      parent = parent.parentElement
-    ) {
-      resizeObserver.observe(parent);
-    }
-    window?.addEventListener("scroll", sync, { capture: true, passive: true });
-    window?.addEventListener("resize", sync);
+  for (
+    let parent = root.parentElement;
+    parent !== null;
+    parent = parent.parentElement
+  ) {
+    resizeObserver.observe(parent);
   }
+  window?.addEventListener("scroll", syncGeometry, {
+    capture: true,
+    passive: true,
+  });
+  window?.addEventListener("resize", syncGeometry);
   document.addEventListener("visibilitychange", sync);
   sync();
   return {
@@ -302,10 +314,8 @@ export function observeTerminalWebglVisibility({
       disposed = true;
       resizeObserver.disconnect();
       intersectionObserver?.disconnect();
-      if (intersectionObserver === null) {
-        window?.removeEventListener("scroll", sync, true);
-        window?.removeEventListener("resize", sync);
-      }
+      window?.removeEventListener("scroll", syncGeometry, true);
+      window?.removeEventListener("resize", syncGeometry);
       document.removeEventListener("visibilitychange", sync);
     },
   };
