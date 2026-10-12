@@ -8,7 +8,7 @@ import {
   type ThreadChangeKind,
 } from "@bb/domain";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { NotificationHub } from "../../src/ws/hub.js";
+import { NotificationHub, TERMINAL_CLIENT_STALE_MS } from "../../src/ws/hub.js";
 import { createMockHubSocket } from "../helpers/mock-hub-socket.js";
 import { TRANSPORT_TEST_BRIDGE_LAUNCH } from "../helpers/provider-registry.js";
 
@@ -104,21 +104,88 @@ describe("NotificationHub", () => {
     ]);
   });
 
-  it("gives terminal resize ownership to the latest client and restores it on detach", () => {
+  it("sizes a shared terminal to the smallest visible, live client", () => {
     const hub = new NotificationHub();
-    const first = createMockHubSocket();
-    const second = createMockHubSocket();
+    const desktop = createMockHubSocket();
+    const phone = createMockHubSocket();
+    const now = 1_000_000;
 
-    hub.registerTerminalClient("term-1", first);
-    hub.claimTerminalResizeOwnership("term-1", first);
-    hub.registerTerminalClient("term-1", second);
-    hub.claimTerminalResizeOwnership("term-1", second);
+    hub.registerTerminalClient("term-1", desktop);
+    hub.registerTerminalClient("term-1", phone);
+    expect(hub.terminalSharedSize("term-1", now)).toBeNull();
 
-    expect(hub.isTerminalResizeOwner("term-1", first)).toBe(false);
-    expect(hub.isTerminalResizeOwner("term-1", second)).toBe(true);
+    hub.recordTerminalClientSize(
+      "term-1",
+      desktop,
+      { cols: 160, rows: 48 },
+      now,
+    );
+    hub.recordTerminalClientSize("term-1", phone, { cols: 44, rows: 60 }, now);
+    expect(hub.terminalSharedSize("term-1", now)).toEqual({
+      cols: 44,
+      rows: 48,
+    });
 
-    hub.unregisterTerminalClient("term-1", second);
-    expect(hub.isTerminalResizeOwner("term-1", first)).toBe(true);
+    hub.recordTerminalClientVisibility("term-1", phone, false, now);
+    expect(hub.terminalSharedSize("term-1", now)).toEqual({
+      cols: 160,
+      rows: 48,
+    });
+    hub.recordTerminalClientVisibility("term-1", phone, true, now);
+
+    hub.recordTerminalClientHeartbeat("term-1", desktop, now);
+    hub.recordTerminalClientHeartbeat("term-1", phone, now);
+    const later = now + TERMINAL_CLIENT_STALE_MS + 1;
+    hub.recordTerminalClientHeartbeat("term-1", desktop, later);
+    expect(hub.terminalSharedSize("term-1", later)).toEqual({
+      cols: 160,
+      rows: 48,
+    });
+
+    hub.recordTerminalClientHeartbeat("term-1", phone, later);
+    hub.unregisterTerminalClient("term-1", desktop);
+    expect(hub.terminalSharedSize("term-1", later)).toEqual({
+      cols: 44,
+      rows: 60,
+    });
+
+    hub.recordTerminalClientVisibility("term-1", phone, false, later);
+    expect(hub.terminalSharedSize("term-1", later)).toBeNull();
+  });
+
+  it("keeps a client that never sends heartbeats in the shared size while attached", () => {
+    const hub = new NotificationHub();
+    const browser = createMockHubSocket();
+    const legacyCli = createMockHubSocket();
+    const now = 1_000_000;
+
+    hub.registerTerminalClient("term-1", browser);
+    hub.registerTerminalClient("term-1", legacyCli);
+    hub.recordTerminalClientSize(
+      "term-1",
+      browser,
+      { cols: 200, rows: 50 },
+      now,
+    );
+    hub.recordTerminalClientSize(
+      "term-1",
+      legacyCli,
+      { cols: 80, rows: 24 },
+      now,
+    );
+
+    const muchLater = now + 10 * TERMINAL_CLIENT_STALE_MS;
+    hub.recordTerminalClientHeartbeat("term-1", browser, muchLater);
+    expect(hub.terminalSharedSize("term-1", muchLater)).toEqual({
+      cols: 80,
+      rows: 24,
+    });
+
+    hub.unregisterTerminalClient("term-1", legacyCli);
+    expect(hub.terminalSharedSize("term-1", muchLater)).toEqual({
+      cols: 200,
+      rows: 50,
+    });
   });
 
   it("queues terminal output while a browser socket is above high water", () => {

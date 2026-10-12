@@ -1148,9 +1148,12 @@ export class TerminalSessionLifecycle {
       );
     }
 
-    const markedInput = updateTerminalById(this.options.db, current.id, {
-      kind: "user-input",
-    });
+    const markedInput =
+      current.lastUserInputAt === null
+        ? updateTerminalById(this.options.db, current.id, {
+            kind: "user-input",
+          })
+        : null;
     const session = markedInput ?? current;
     if (markedInput) {
       this.notifyTerminalSessionChanged(markedInput);
@@ -1520,10 +1523,6 @@ export class TerminalSessionLifecycle {
       return;
     }
 
-    this.options.hub.claimUnownedTerminalResizeOwnership(
-      current.id,
-      args.socket,
-    );
     const requestId = randomUUID();
     const pendingAttach: PendingTerminalAttachKey = {
       daemonSessionId: current.daemonSessionId,
@@ -1589,6 +1588,10 @@ export class TerminalSessionLifecycle {
         pending.socket === args.socket,
       TERMINAL_ATTACH_CANCELLED,
     );
+    this.applySharedTerminalSize({
+      socket: null,
+      terminalId: args.terminalId,
+    });
   }
 
   handleBrowserTerminalMessage(args: HandleBrowserTerminalMessageArgs): void {
@@ -1597,6 +1600,12 @@ export class TerminalSessionLifecycle {
         this.options.hub.sendTerminalSocketMessage(args.socket, {
           type: "pong",
         });
+        this.options.hub.recordTerminalClientHeartbeat(
+          args.terminalId,
+          args.socket,
+          Date.now(),
+        );
+        this.applySharedTerminalSize(args);
         return;
       case "input":
         this.forwardBrowserTerminalInput(args);
@@ -1620,6 +1629,13 @@ export class TerminalSessionLifecycle {
           args.socket,
           args.message.visible,
         );
+        this.options.hub.recordTerminalClientVisibility(
+          args.terminalId,
+          args.socket,
+          args.message.visible,
+          Date.now(),
+        );
+        this.applySharedTerminalSize(args);
         return;
     }
   }
@@ -1859,20 +1875,18 @@ export class TerminalSessionLifecycle {
     if (!current) {
       return;
     }
-    this.options.hub.claimTerminalResizeOwnership(current.id, args.socket);
-    const requested = this.options.hub.terminalRequestedSize(
+    this.options.hub.recordTerminalClientSeen(
       current.id,
       args.socket,
+      Date.now(),
     );
-    if (
-      requested !== null &&
-      (requested.cols !== current.cols || requested.rows !== current.rows)
-    ) {
-      this.resizeRunningBrowserTerminal(args, current, requested);
-    }
-    const markedInput = updateTerminalById(this.options.db, current.id, {
-      kind: "user-input",
-    });
+    this.applySharedTerminalSize(args);
+    const markedInput =
+      current.lastUserInputAt === null
+        ? updateTerminalById(this.options.db, current.id, {
+            kind: "user-input",
+          })
+        : null;
     if (markedInput) {
       const session = toTerminalSession(markedInput);
       this.notifyTerminalSessionChanged(markedInput);
@@ -1907,35 +1921,39 @@ export class TerminalSessionLifecycle {
     if (args.message.type !== "resize") {
       return;
     }
-    const size = { cols: args.message.cols, rows: args.message.rows };
-    this.options.hub.recordTerminalRequestedSize(
+    this.options.hub.recordTerminalClientSize(
       args.terminalId,
       args.socket,
-      size,
+      { cols: args.message.cols, rows: args.message.rows },
+      Date.now(),
     );
-    if (args.message.claim === true) {
-      this.options.hub.claimTerminalResizeOwnership(
-        args.terminalId,
-        args.socket,
-      );
-    } else {
-      this.options.hub.claimUnownedTerminalResizeOwnership(
-        args.terminalId,
-        args.socket,
-      );
-    }
-    if (!this.options.hub.isTerminalResizeOwner(args.terminalId, args.socket)) {
+    this.applySharedTerminalSize(args);
+  }
+
+  private applySharedTerminalSize(args: {
+    socket: TerminalClientSocket | null;
+    terminalId: string;
+  }): void {
+    const size = this.options.hub.terminalSharedSize(
+      args.terminalId,
+      Date.now(),
+    );
+    if (size === null) {
       return;
     }
-    const current = this.getRunningBrowserTerminal(args);
-    if (!current) {
+    const current = getTerminalById(this.options.db, args.terminalId);
+    if (
+      !current ||
+      !isRunningBrowserTerminalSession(current) ||
+      (current.cols === size.cols && current.rows === size.rows)
+    ) {
       return;
     }
-    this.resizeRunningBrowserTerminal(args, current, size);
+    this.resizeRunningBrowserTerminal(args.socket, current, size);
   }
 
   private resizeRunningBrowserTerminal(
-    args: HandleBrowserTerminalMessageArgs,
+    socket: TerminalClientSocket | null,
     current: RunningBrowserTerminalSession,
     size: { cols: number; rows: number },
   ): void {
@@ -1964,11 +1982,13 @@ export class TerminalSessionLifecycle {
       },
     );
     if (!sent) {
-      this.sendTerminalSocketError({
-        socket: args.socket,
-        code: "host_disconnected",
-        message: "Host is not connected",
-      });
+      if (socket !== null) {
+        this.sendTerminalSocketError({
+          socket,
+          code: "host_disconnected",
+          message: "Host is not connected",
+        });
+      }
       this.disconnectDaemonSessionTerminals({
         daemonSessionId: current.daemonSessionId,
       });
@@ -2279,6 +2299,10 @@ export class TerminalSessionLifecycle {
       pending.terminalId,
       pending.socket,
     );
+    this.applySharedTerminalSize({
+      socket: null,
+      terminalId: pending.terminalId,
+    });
     this.sendTerminalSocketError({
       socket: pending.socket,
       code:

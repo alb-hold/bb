@@ -214,7 +214,6 @@ describe("terminal interactions in the DOM", () => {
     const terminal = document.createElement("div");
     document.body.append(terminal);
     const sendInput = vi.fn();
-    const claimSize = vi.fn();
     const files = [new File([""], "first file.txt"), new File([""], "two.txt")];
     const fileList = Object.assign(files, {
       item: (index: number) => files[index],
@@ -232,7 +231,6 @@ describe("terminal interactions in the DOM", () => {
           files: Array.from(droppedFiles),
           getPathForFile: (file) => `/tmp/${file.name}`,
           isRunning: true,
-          claimSize,
           sendInput,
         });
       },
@@ -246,13 +244,11 @@ describe("terminal interactions in the DOM", () => {
     expect(sendInput).toHaveBeenCalledWith(
       "'/tmp/first file.txt' '/tmp/two.txt'",
     );
-    expect(claimSize).toHaveBeenCalledOnce();
   });
 
   it("sends nothing for a browser drop without a desktop path bridge", () => {
     const terminal = document.createElement("div");
     const sendInput = vi.fn();
-    const claimSize = vi.fn();
     const fileList = Object.assign([new File([""], "browser.txt")], {
       item: (index: number) =>
         index === 0 ? new File([""], "browser.txt") : null,
@@ -270,7 +266,6 @@ describe("terminal interactions in the DOM", () => {
           files: Array.from(droppedFiles),
           getPathForFile: undefined,
           isRunning: true,
-          claimSize,
           sendInput,
         });
       },
@@ -280,6 +275,5 @@ describe("terminal interactions in the DOM", () => {
     terminal.dispatchEvent(dropEvent(fileList));
 
     expect(sendInput).not.toHaveBeenCalled();
-    expect(claimSize).not.toHaveBeenCalled();
   });
 });
