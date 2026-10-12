@@ -65,7 +65,11 @@ import {
 import { createEventId } from "../ids.js";
 import { COMPLETED_EVENT_OUTPUT_TRUNCATION_THRESHOLD_CHARS } from "../retained-event-output.js";
 import { truncatedEventDataColumn } from "./event-output-truncation.js";
-import { bumpThreadEventRewriteGeneration } from "./event-rewrite-generation.js";
+import {
+  bumpThreadEventRewriteGeneration,
+  getDatabaseDataVersion,
+  getThreadEventRewriteGeneration,
+} from "./event-rewrite-generation.js";
 import { deriveStoredEventItemFieldsFromSource } from "../stored-event-item-fields.js";
 import {
   upsertThreadSearchSegments,
@@ -427,6 +431,9 @@ function insertStoredEventRow(
       inserted: false,
       retainedOutputBytes: 0,
     };
+  }
+  if (args.itemKind === "backgroundTask") {
+    bumpBackgroundTaskAppendGeneration(args.threadId);
   }
   if (args.type === "client/turn/requested") {
     acquireProjectAttachmentOwnership(
@@ -2395,7 +2402,103 @@ export function listLatestOpenBackgroundTaskStateRowsForThread(
   `);
 }
 
+interface ActiveBackgroundTaskCountCacheEntry {
+  appendGeneration: number;
+  rewriteGeneration: number;
+  row: ActiveBackgroundTaskCountRow | null;
+}
+
+interface ActiveBackgroundTaskCountCache {
+  dataVersion: number;
+  entries: Map<string, ActiveBackgroundTaskCountCacheEntry>;
+}
+
+const backgroundTaskAppendGenerationsByThreadId = new Map<string, number>();
+const activeBackgroundTaskCountCachesByClient = new WeakMap<
+  object,
+  ActiveBackgroundTaskCountCache
+>();
+
+function getBackgroundTaskAppendGeneration(threadId: string): number {
+  return backgroundTaskAppendGenerationsByThreadId.get(threadId) ?? 0;
+}
+
+function bumpBackgroundTaskAppendGeneration(threadId: string): void {
+  backgroundTaskAppendGenerationsByThreadId.set(
+    threadId,
+    getBackgroundTaskAppendGeneration(threadId) + 1,
+  );
+}
+
+function resolveActiveBackgroundTaskCountCache(
+  db: DbQueryConnection,
+): ActiveBackgroundTaskCountCache | null {
+  if (!("$client" in db) || db.$client.inTransaction) {
+    return null;
+  }
+  const dataVersion = getDatabaseDataVersion(db);
+  const cached = activeBackgroundTaskCountCachesByClient.get(db.$client);
+  if (cached && cached.dataVersion === dataVersion) {
+    return cached;
+  }
+  const cache: ActiveBackgroundTaskCountCache = {
+    dataVersion,
+    entries: new Map(),
+  };
+  activeBackgroundTaskCountCachesByClient.set(db.$client, cache);
+  return cache;
+}
+
 export function listActiveBackgroundTaskCountsByThreadIds(
+  db: DbQueryConnection,
+  args: ListActiveBackgroundTaskCountsByThreadIdsArgs,
+): ActiveBackgroundTaskCountRow[] {
+  const cache = resolveActiveBackgroundTaskCountCache(db);
+  if (cache === null) {
+    return queryActiveBackgroundTaskCountsByThreadIds(db, args);
+  }
+  const rows: ActiveBackgroundTaskCountRow[] = [];
+  const staleThreadIds: string[] = [];
+  for (const threadId of new Set(args.threadIds)) {
+    const entry = cache.entries.get(threadId);
+    if (
+      entry === undefined ||
+      entry.appendGeneration !== getBackgroundTaskAppendGeneration(threadId) ||
+      entry.rewriteGeneration !== getThreadEventRewriteGeneration(threadId)
+    ) {
+      staleThreadIds.push(threadId);
+    } else if (entry.row !== null) {
+      rows.push({ ...entry.row });
+    }
+  }
+  if (staleThreadIds.length > 0) {
+    const queriedRowsByThreadId = new Map(
+      queryActiveBackgroundTaskCountsByThreadIds(db, {
+        threadIds: staleThreadIds,
+      }).map((row) => [row.threadId, row]),
+    );
+    for (const threadId of staleThreadIds) {
+      const row = queriedRowsByThreadId.get(threadId) ?? null;
+      cache.entries.set(threadId, {
+        appendGeneration: getBackgroundTaskAppendGeneration(threadId),
+        rewriteGeneration: getThreadEventRewriteGeneration(threadId),
+        row,
+      });
+      if (row !== null) {
+        rows.push({ ...row });
+      }
+    }
+  }
+  return rows.sort((left, right) =>
+    left.threadId < right.threadId
+      ? -1
+      : left.threadId > right.threadId
+        ? 1
+        : 0,
+  );
+}
+
+function queryActiveBackgroundTaskCountsByThreadIds(
   db: DbQueryConnection,
   args: ListActiveBackgroundTaskCountsByThreadIdsArgs,
 ): ActiveBackgroundTaskCountRow[] {

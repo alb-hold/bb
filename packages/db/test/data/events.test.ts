@@ -51,6 +51,7 @@ import {
   listStoredTurnRejectedRowsByClientRequestIds,
   listStoredTurnCompletedKeys,
   MissingStoredTurnStartedError,
+  deleteThreadEventSuffixInTransaction,
   listActiveBackgroundTaskCountsByThreadIds,
   listLatestBackgroundTaskStateRowsByItemIds,
   listOpenBackgroundTaskItemRowsForHost,
@@ -73,7 +74,10 @@ import type {
   InsertEventInput,
 } from "../../src/data/events.js";
 import { upsertHost } from "../../src/data/hosts.js";
-import type { DbConnection } from "../../src/connection.js";
+import type {
+  DbConnection,
+  DbQueryConnection,
+} from "../../src/connection.js";
 import { createMigratedConnection } from "../helpers/migrated-connection.js";
 
 function setup() {
@@ -4434,6 +4438,171 @@ describe("events", () => {
     });
 
     expect(chunkedRows).toEqual(unchunkedRows);
+  });
+
+  describe("active background-task count reuse", () => {
+    const backgroundTaskEvent = (
+      threadId: string,
+      sequence: number,
+      type: "item/started" | "item/backgroundTask/completed",
+    ) => ({
+      threadId,
+      sequence,
+      scope: turnScope("turn-1"),
+      type,
+      itemId: "task:command",
+      itemKind: "backgroundTask" as const,
+      parentToolCallId: null,
+      data: JSON.stringify({
+        item: {
+          id: "task:command",
+          type: "backgroundTask",
+          taskType: LOCAL_BASH_TASK_TYPE,
+          description: "fixture background task",
+          status: type === "item/started" ? "pending" : "completed",
+          taskStatus: type === "item/started" ? "running" : "completed",
+          skipTranscript: false,
+        },
+      }),
+    });
+    const countQueriesDuring = (db: DbConnection, run: () => void): number => {
+      let count = 0;
+      const raw = db.$client;
+      const originalPrepare = raw.prepare.bind(raw);
+      Object.defineProperty(raw, "prepare", {
+        configurable: true,
+        writable: true,
+        value: (source: string) => {
+          if (source.includes("latest_background_task_state")) {
+            count += 1;
+          }
+          return originalPrepare(source);
+        },
+      });
+      try {
+        run();
+      } finally {
+        Object.defineProperty(raw, "prepare", {
+          configurable: true,
+          writable: true,
+          value: originalPrepare,
+        });
+      }
+      return count;
+    };
+    const commandCount = (db: DbQueryConnection, threadId: string): number =>
+      listActiveBackgroundTaskCountsByThreadIds(db, { threadIds: [threadId] })[0]
+        ?.activeBackgroundCommandCount ?? 0;
+
+    it("reads events once per thread until a background task event is appended", () => {
+      const { db, project, thread } = setup();
+      const idleThread = createThread(db, noopNotifier, {
+        projectId: project.id,
+        providerId: "codex",
+      });
+      insertEvents(db, noopNotifier, [
+        backgroundTaskEvent(thread.id, 1, "item/started"),
+      ]);
+      const threadIds = [thread.id, idleThread.id];
+
+      const first = listActiveBackgroundTaskCountsByThreadIds(db, {
+        threadIds,
+      });
+      expect(first.map((row) => row.threadId)).toEqual([thread.id]);
+      expect(first[0]?.activeBackgroundCommandCount).toBe(1);
+
+      expect(
+        countQueriesDuring(db, () => {
+          expect(
+            listActiveBackgroundTaskCountsByThreadIds(db, { threadIds }),
+          ).toEqual(first);
+        }),
+      ).toBe(0);
+
+      insertEvents(db, noopNotifier, [
+        {
+          threadId: idleThread.id,
+          sequence: 1,
+          scope: turnScope("turn-2"),
+          type: "turn/started",
+          itemId: null,
+          itemKind: null,
+          parentToolCallId: null,
+          data: JSON.stringify({}),
+        },
+      ]);
+      expect(
+        countQueriesDuring(db, () => {
+          expect(
+            listActiveBackgroundTaskCountsByThreadIds(db, { threadIds }),
+          ).toEqual(first);
+        }),
+      ).toBe(0);
+
+      insertEvents(db, noopNotifier, [
+        backgroundTaskEvent(thread.id, 2, "item/backgroundTask/completed"),
+      ]);
+      expect(
+        countQueriesDuring(db, () => {
+          expect(
+            listActiveBackgroundTaskCountsByThreadIds(db, { threadIds }),
+          ).toEqual([]);
+        }),
+      ).toBe(1);
+    });
+
+    it("does not let a caller change the remembered counts", () => {
+      const { db, thread } = setup();
+      insertEvents(db, noopNotifier, [
+        backgroundTaskEvent(thread.id, 1, "item/started"),
+      ]);
+
+      const [row] = listActiveBackgroundTaskCountsByThreadIds(db, {
+        threadIds: [thread.id],
+      });
+      if (!row) {
+        throw new Error("Expected an active background-task count row");
+      }
+      row.activeBackgroundCommandCount = 99;
+
+      expect(commandCount(db, thread.id)).toBe(1);
+    });
+
+    it("re-reads events after a thread's events are deleted", () => {
+      const { db, thread } = setup();
+      insertEvents(db, noopNotifier, [
+        backgroundTaskEvent(thread.id, 1, "item/started"),
+      ]);
+      expect(commandCount(db, thread.id)).toBe(1);
+
+      db.transaction((tx) => {
+        deleteThreadEventSuffixInTransaction(tx, {
+          cutoffSequence: 1,
+          oldMaxSequence: 1,
+          threadId: thread.id,
+        });
+      });
+
+      expect(commandCount(db, thread.id)).toBe(0);
+    });
+
+    it("keeps counts read inside a rolled-back transaction out of later reads", () => {
+      const { db, thread } = setup();
+      expect(commandCount(db, thread.id)).toBe(0);
+
+      expect(() =>
+        db.transaction((tx) => {
+          insertEvents(db, noopNotifier, [
+            backgroundTaskEvent(thread.id, 1, "item/started"),
+          ]);
+          expect(commandCount(db, thread.id)).toBe(1);
+          expect(commandCount(tx, thread.id)).toBe(1);
+          throw new Error("roll back");
+        }),
+      ).toThrow("roll back");
+
+      expect(commandCount(db, thread.id)).toBe(0);
+    });
   });
 
   it("lists the latest lifecycle row per open backgroundTask item on a host", () => {
