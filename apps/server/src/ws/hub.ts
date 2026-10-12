@@ -51,6 +51,7 @@ interface TerminalSize {
 }
 
 interface TerminalClientState {
+  heartbeats: boolean;
   lastSeenAt: number;
   size: TerminalSize | null;
   visible: boolean;
@@ -374,6 +375,16 @@ export class NotificationHub implements DbNotifier {
     this.terminalClientState(terminalId, socket, now).lastSeenAt = now;
   }
 
+  recordTerminalClientHeartbeat(
+    terminalId: string,
+    socket: HubSocket,
+    now: number,
+  ): void {
+    const state = this.terminalClientState(terminalId, socket, now);
+    state.heartbeats = true;
+    state.lastSeenAt = now;
+  }
+
   terminalSharedSize(terminalId: string, now: number): TerminalSize | null {
     let shared: TerminalSize | null = null;
     for (const state of this.terminalClientStateById
@@ -382,7 +393,7 @@ export class NotificationHub implements DbNotifier {
       if (
         state.size === null ||
         !state.visible ||
-        now - state.lastSeenAt > TERMINAL_CLIENT_STALE_MS
+        (state.heartbeats && now - state.lastSeenAt > TERMINAL_CLIENT_STALE_MS)
       ) {
         continue;
       }
@@ -411,6 +422,7 @@ export class NotificationHub implements DbNotifier {
       return existing;
     }
     const created: TerminalClientState = {
+      heartbeats: false,
       lastSeenAt: now,
       size: null,
       visible: true,

@@ -45,6 +45,7 @@ import {
   handleHostSessionOpened,
 } from "../../src/internal/session-owner-side-effects.js";
 import { onDaemonSocketOpen } from "../../src/ws/daemon-protocol.js";
+import { TERMINAL_CLIENT_STALE_MS } from "../../src/ws/hub.js";
 
 interface FakeDaemonSocket {
   close(code?: number, reason?: string): void;
@@ -2567,6 +2568,41 @@ describe("public terminal routes", () => {
         terminalId: stored.id,
       }),
     ).toMatchObject({ cols: 150, rows: 48 });
+
+    const legacyCli = createFakeBrowserSocket();
+    await attach(legacyCli);
+    send(legacyCli, { type: "resize", cols: 80, rows: 24, claim: true });
+    expect(sizes().at(-1)).toBe("80x24");
+    const resizesBeforeIdle = sizes().length;
+
+    const startedAt = Date.now();
+    const clock = vi
+      .spyOn(Date, "now")
+      .mockReturnValue(startedAt + TERMINAL_CLIENT_STALE_MS * 3);
+    try {
+      terminals.handleDaemonTerminalMessage({
+        hostId: fixture.host.id,
+        sessionId: fixture.session.id,
+        message: {
+          type: "terminal.output",
+          terminalId: stored.id,
+          chunk: {
+            seq: 0,
+            dataBase64: Buffer.from("still working\n").toString("base64"),
+          },
+        },
+      });
+      send(desktop, { type: "ping" });
+      send(desktop, { type: "resize", cols: 151, rows: 48 });
+      expect(sizes()).toHaveLength(resizesBeforeIdle);
+      expect(
+        fixture.harness.deps.terminalSessions.getTerminal({
+          terminalId: stored.id,
+        }),
+      ).toMatchObject({ cols: 80, rows: 24 });
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it("paces the daemon by the output an acknowledging browser has parsed", async () => {

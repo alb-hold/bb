@@ -1597,7 +1597,7 @@ export class TerminalSessionLifecycle {
         this.options.hub.sendTerminalSocketMessage(args.socket, {
           type: "pong",
         });
-        this.options.hub.recordTerminalClientSeen(
+        this.options.hub.recordTerminalClientHeartbeat(
           args.terminalId,
           args.socket,
           Date.now(),
