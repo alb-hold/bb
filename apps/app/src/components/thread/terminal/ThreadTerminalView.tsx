@@ -405,10 +405,11 @@ type TerminalSessionStatusNoticeRef = {
 interface HandleTerminalServerMessageArgs {
   acknowledgeOutput: (nextSeq: number) => void;
   message: TerminalServerMessage;
+  onReplayComplete: () => void;
   onSessionChange?: (session: TerminalSession) => void;
   replayNextSeq: number | null;
   replayWriteState: TerminalReplayWriteState;
-  setReplayNextSeq: (nextSeq: number) => void;
+  setReplayNextSeq: (nextSeq: number | null) => void;
   terminal: XTermTerminal;
 }
 
@@ -575,9 +576,10 @@ export function writeTerminalOutput({
   });
 }
 
-function handleTerminalServerMessage({
+export function handleTerminalServerMessage({
   acknowledgeOutput,
   message,
+  onReplayComplete,
   onSessionChange,
   replayNextSeq,
   replayWriteState,
@@ -588,6 +590,10 @@ function handleTerminalServerMessage({
     case "attached":
       onSessionChange?.(message.session);
       setReplayNextSeq(message.nextSeq);
+      if (message.replayStartSeq === message.nextSeq) {
+        setReplayNextSeq(null);
+        onReplayComplete();
+      }
       return;
     case "pong":
       return;
@@ -599,7 +605,17 @@ function handleTerminalServerMessage({
       writeTerminalOutput({
         data: decodeBase64Bytes(message.chunk.dataBase64),
         isReplay: replayNextSeq !== null && message.chunk.seq < replayNextSeq,
-        onParsed: () => acknowledgeOutput(nextSeq),
+        onParsed: () => {
+          acknowledgeOutput(nextSeq);
+          if (
+            replayNextSeq !== null &&
+            message.chunk.seq < replayNextSeq &&
+            nextSeq === replayNextSeq
+          ) {
+            setReplayNextSeq(null);
+            onReplayComplete();
+          }
+        },
         replayWriteState,
         terminal,
       });
@@ -1107,6 +1123,11 @@ export function ThreadTerminalView({
             acknowledgeOutput: (nextSeq) =>
               activeTransport.acknowledgeOutput(nextSeq),
             message,
+            onReplayComplete: () => {
+              if (!disposed && sessionStatusRef.current === "running") {
+                activeTransport.requestRepaint();
+              }
+            },
             onSessionChange: onSessionChangeRef.current,
             replayNextSeq,
             replayWriteState,

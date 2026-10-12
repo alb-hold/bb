@@ -1254,6 +1254,7 @@ describe("TerminalManager", () => {
       requestId: "attach-before-expiry",
       terminalId: "term-1",
     });
+    expect(harness.manager["retainedReplayParserStateBytes"]).toBe(0);
     await vi.advanceTimersByTimeAsync(1_000);
     await attachTerminal(harness, {
       requestId: "attach-after-expiry",
@@ -1275,6 +1276,7 @@ describe("TerminalManager", () => {
       }),
     );
     expect(vi.getTimerCount()).toBe(0);
+    expect(harness.manager["retainedReplayParserStateBytes"]).toBe(0);
   });
 
   it("evicts the oldest retained terminal past the retained terminal cap", async () => {
@@ -1313,6 +1315,9 @@ describe("TerminalManager", () => {
       replayStartSeq: 0,
       nextSeq: 1,
     });
+    expect(harness.manager["retainedReplayParserStateBytes"]).toBe(0);
+    harness.manager.dispose();
+    expect(harness.manager["retainedReplayParserStateBytes"]).toBe(0);
   });
 
   it("evicts the oldest retained terminal past the retained byte cap", async () => {
@@ -1362,6 +1367,9 @@ describe("TerminalManager", () => {
       replayStartSeq: 0,
       nextSeq: 1,
     });
+    expect(harness.manager["retainedReplayParserStateBytes"]).toBe(0);
+    harness.manager.dispose();
+    expect(harness.manager["retainedReplayParserStateBytes"]).toBe(0);
   });
 
   it("clears retained scrollback and its timers on dispose", async () => {
@@ -1503,6 +1511,776 @@ describe("TerminalManager", () => {
       ],
       replayStartSeq: 1,
       nextSeq: 2,
+    });
+  });
+
+  it("starts replay after a CSI sequence that crosses the tail boundary", async () => {
+    const harness = createHarness();
+    const pty = await openTerminal(harness);
+
+    pty.emitData(`${"x".repeat(64 * 1024 - 2)}\u001b[`);
+    pty.emitData("31mOK");
+    await harness.manager.handleMessage({
+      type: "terminal.attach",
+      requestId: "attach-csi-tail",
+      terminalId: "term-1",
+      sinceSeq: 0,
+      tailBytes: 1,
+    });
+
+    const replay = harness.messages.find(
+      (message) => message.type === "terminal.replay",
+    );
+    expect(replay).toMatchObject({
+      chunks: [
+        {
+          seq: 1,
+          dataBase64: Buffer.from("OK", "utf8").toString("base64"),
+        },
+      ],
+      replayStartSeq: 1,
+    });
+  });
+
+  it("starts replay after a UTF-8 code point that crosses the tail boundary", async () => {
+    const harness = createHarness();
+    const pty = await openTerminal(harness);
+
+    pty.emitData(`${"x".repeat(64 * 1024 - 2)}💙`);
+    pty.emitData("tail");
+    await harness.manager.handleMessage({
+      type: "terminal.attach",
+      requestId: "attach-utf8-tail",
+      terminalId: "term-1",
+      sinceSeq: 0,
+      tailBytes: 6,
+    });
+
+    const replay = harness.messages.find(
+      (message) => message.type === "terminal.replay",
+    );
+    expect(replay).toMatchObject({
+      chunks: [
+        {
+          seq: 2,
+          dataBase64: Buffer.from("tail", "utf8").toString("base64"),
+        },
+      ],
+      replayStartSeq: 2,
+    });
+  });
+
+  it.each([
+    ["semicolons", ";", "h"],
+    ["digits", "9", "h"],
+    ["intermediates", " ", "h"],
+    ["semicolons interrupted by ESC", ";", "\u001b[0m"],
+    ["digits interrupted by ESC", "9", "\u001b[0m"],
+    ["intermediates interrupted by ESC", " ", "\u001b[0m"],
+  ])(
+    "bounds unfinished CSI %s and recovers for later replay",
+    async (_name, byte, recovery) => {
+      const harness = createHarness();
+      const pty = await openTerminal(harness);
+
+      pty.emitData(`\u001b[?1049;${byte.repeat(1_000_000)}`);
+      await harness.manager.handleMessage({
+        type: "terminal.attach",
+        requestId: "attach-unfinished-csi",
+        terminalId: "term-1",
+        sinceSeq: 0,
+        tailBytes: 1,
+      });
+
+      const session = harness.manager["sessions"].get("term-1");
+      expect(session).toBeDefined();
+      expect(
+        session?.scrollbackParserState.csiParameters.length,
+      ).toBeLessThanOrEqual(1024);
+      for (const entry of session?.scrollback ?? []) {
+        expect(
+          entry.parserStateBefore.csiParameters.length,
+        ).toBeLessThanOrEqual(1024);
+      }
+      expect(harness.messages).toContainEqual(
+        expect.objectContaining({
+          type: "terminal.replay",
+          requestId: "attach-unfinished-csi",
+          chunks: [],
+        }),
+      );
+
+      pty.emitData(recovery);
+      await harness.manager.handleMessage({
+        type: "terminal.attach",
+        requestId: "attach-recovered-csi",
+        terminalId: "term-1",
+        sinceSeq: 0,
+        tailBytes: 1,
+      });
+      expect(harness.messages).toContainEqual(
+        expect.objectContaining({
+          type: "terminal.replay",
+          requestId: "attach-recovered-csi",
+          chunks: [],
+        }),
+      );
+
+      pty.emitData("PRIMARY");
+      await harness.manager.handleMessage({
+        type: "terminal.attach",
+        requestId: "attach-primary-screen-tail",
+        terminalId: "term-1",
+        sinceSeq: 0,
+        tailBytes: 7,
+      });
+      expect(harness.messages).toContainEqual(
+        expect.objectContaining({
+          type: "terminal.replay",
+          requestId: "attach-primary-screen-tail",
+          chunks: [
+            expect.objectContaining({
+              dataBase64: Buffer.from("PRIMARY", "utf8").toString("base64"),
+            }),
+          ],
+        }),
+      );
+
+      pty.emitData("\u001b[?1049h");
+      await harness.manager.handleMessage({
+        type: "terminal.attach",
+        requestId: "flush-normal-csi",
+        terminalId: "term-1",
+        sinceSeq: 0,
+        tailBytes: 64 * 1024,
+      });
+      pty.emitData("OK");
+      await harness.manager.handleMessage({
+        type: "terminal.attach",
+        requestId: "attach-normal-csi-tail",
+        terminalId: "term-1",
+        sinceSeq: 0,
+        tailBytes: 2,
+      });
+      expect(harness.messages).toContainEqual(
+        expect.objectContaining({
+          type: "terminal.replay",
+          requestId: "attach-normal-csi-tail",
+          chunks: [
+            expect.objectContaining({
+              dataBase64: Buffer.from("\u001b[?1049hOK", "utf8").toString(
+                "base64",
+              ),
+            }),
+          ],
+        }),
+      );
+      await harness.manager.handleMessage({
+        type: "terminal.close",
+        terminalId: "term-1",
+        reason: "user",
+      });
+    },
+  );
+
+  it.each([256, 512])(
+    "bounds retained CSI snapshots across 12000 separate %s-byte output chunks",
+    async (chunkBytes) => {
+      const harness = createHarness();
+      const pty = await openTerminal(harness);
+      vi.useFakeTimers({
+        toFake: [
+          "setTimeout",
+          "clearTimeout",
+          "setImmediate",
+          "clearImmediate",
+          "performance",
+        ],
+      });
+      const session = harness.manager["sessions"].get("term-1");
+      if (!session) {
+        throw new Error("Terminal session did not open");
+      }
+      const capturedLengths = new Set<number>();
+      let maxRetainedChunks = 0;
+      let maxRetainedBytes = 0;
+      for (let index = 0; index < 12_000; index += 1) {
+        pty.emitData(
+          `${index === 0 ? "\u001b[" : ""}${";".repeat(chunkBytes)}`,
+        );
+        vi.advanceTimersByTime(4);
+        const entry = session.scrollback.at(-1);
+        expect(entry?.chunk.seq).toBe(index);
+        const length = entry?.parserStateBefore.csiParameters.length ?? -1;
+        expect(length).toBeGreaterThanOrEqual(0);
+        expect(length).toBeLessThanOrEqual(1024);
+        capturedLengths.add(length);
+        maxRetainedChunks = Math.max(
+          maxRetainedChunks,
+          session.scrollback.length,
+        );
+        maxRetainedBytes = Math.max(maxRetainedBytes, session.scrollbackBytes);
+      }
+      expect(capturedLengths.has(chunkBytes)).toBe(true);
+      expect(capturedLengths.has(1024)).toBe(true);
+      const retainedChunks = Math.min(10_000, (4 * 1024 * 1024) / chunkBytes);
+      expect(maxRetainedChunks).toBe(retainedChunks);
+      expect(maxRetainedBytes).toBeLessThanOrEqual(4 * 1024 * 1024);
+      expect(session.scrollback).toHaveLength(retainedChunks);
+      expect(session.scrollbackBytes).toBe(retainedChunks * chunkBytes);
+      expect(session.scrollback[0]?.chunk.seq).toBe(12_000 - retainedChunks);
+      expect(
+        session.scrollback.every(
+          (entry) => entry.parserStateBefore.escape === "csi-ignore",
+        ),
+      ).toBe(true);
+      expect(
+        session.scrollback.reduce(
+          (total, entry) =>
+            total + entry.parserStateBefore.csiParameters.length,
+          0,
+        ),
+      ).toBe(0);
+      await harness.manager.handleMessage({
+        type: "terminal.attach",
+        requestId: "attach-pruned-csi",
+        terminalId: "term-1",
+        sinceSeq: 0,
+        tailBytes: 4 * 1024 * 1024,
+      });
+      expect(harness.messages).toContainEqual(
+        expect.objectContaining({
+          type: "terminal.replay",
+          requestId: "attach-pruned-csi",
+          chunks: [],
+        }),
+      );
+      pty.emitData("mOK");
+      vi.advanceTimersByTime(4);
+      await harness.manager.handleMessage({
+        type: "terminal.attach",
+        requestId: "attach-pruned-csi-recovered",
+        terminalId: "term-1",
+        sinceSeq: 0,
+        tailBytes: 4 * 1024 * 1024,
+      });
+      expect(harness.messages).toContainEqual(
+        expect.objectContaining({
+          type: "terminal.replay",
+          requestId: "attach-pruned-csi-recovered",
+          chunks: [
+            expect.objectContaining({
+              dataBase64: Buffer.from("OK").toString("base64"),
+            }),
+          ],
+        }),
+      );
+      pty.emitExit(0);
+      const exited = harness.manager["exitedSessions"].get("term-1");
+      expect(exited?.scrollback).toHaveLength(retainedChunks);
+      expect(exited?.scrollbackBytes).toBeLessThanOrEqual(4 * 1024 * 1024);
+      harness.manager.dispose();
+    },
+  );
+
+  it.each(["held", "growing"] as const)(
+    "bounds aggregate snapshot storage with %s CSI parameters in tiny output chunks",
+    async (mode) => {
+      const harness = createHarness();
+      const pty = await openTerminal(harness);
+      vi.useFakeTimers({
+        toFake: [
+          "setTimeout",
+          "clearTimeout",
+          "setImmediate",
+          "clearImmediate",
+          "performance",
+        ],
+      });
+      const session = harness.manager["sessions"].get("term-1");
+      if (!session) {
+        throw new Error("Terminal session did not open");
+      }
+      pty.emitData(`\u001b[${mode === "held" ? ";".repeat(1024) : ";"}`);
+      vi.advanceTimersByTime(4);
+      for (let index = 0; index < 12_000; index += 1) {
+        const position = index % 1025;
+        pty.emitData(
+          mode === "held"
+            ? "\u0000"
+            : position === 0
+              ? "m\u001b[;"
+              : position === 1024
+                ? "m"
+                : String(Math.floor(index / 1025) % 10),
+        );
+        vi.advanceTimersByTime(4);
+        expect(session.scrollback.at(-1)?.chunk.seq).toBe(index + 1);
+      }
+      expect(session.scrollback.length).toBeLessThanOrEqual(10_000);
+      expect(
+        session.scrollback.every(
+          (entry) => entry.parserStateBefore.csiParameters.length <= 1024,
+        ),
+      ).toBe(true);
+      const snapshotBytes = session.scrollback.reduce(
+        (total, entry) => total + entry.parserStateBefore.csiParameters.length,
+        0,
+      );
+      const chargedEntries = session.scrollback.filter(
+        (entry) => entry.parserStateBefore.csiParameters.length > 0,
+      ).length;
+      expect(64 * chargedEntries + 2 * snapshotBytes).toBeLessThanOrEqual(
+        4 * 1024 * 1024,
+      );
+      if (mode === "held") {
+        expect(session.scrollback).toHaveLength(1985);
+        expect(snapshotBytes).toBe(1985 * 1024);
+        expect(session.scrollbackBytes).toBe(1985);
+      } else {
+        expect(
+          new Set(
+            session.scrollback.map(
+              (entry) => entry.parserStateBefore.csiParameters,
+            ),
+          ).size,
+        ).toBeGreaterThan(1024);
+        expect(snapshotBytes).toBeGreaterThan(1024 * 1024);
+        expect(session.scrollbackBytes).toBeLessThan(11_000);
+      }
+      await harness.manager.handleMessage({
+        type: "terminal.attach",
+        requestId: "attach-held-csi",
+        terminalId: "term-1",
+        sinceSeq: 0,
+        tailBytes: 1,
+      });
+      expect(harness.messages).toContainEqual(
+        expect.objectContaining({
+          type: "terminal.replay",
+          requestId: "attach-held-csi",
+          chunks: [],
+        }),
+      );
+      pty.emitData("mOK");
+      vi.advanceTimersByTime(4);
+      await harness.manager.handleMessage({
+        type: "terminal.attach",
+        requestId: "attach-held-csi-recovered",
+        terminalId: "term-1",
+        sinceSeq: 0,
+        tailBytes: mode === "held" ? 100_000 : 1,
+      });
+      expect(harness.messages).toContainEqual(
+        expect.objectContaining({
+          type: "terminal.replay",
+          requestId: "attach-held-csi-recovered",
+          chunks: [
+            expect.objectContaining({
+              dataBase64: Buffer.from("OK").toString("base64"),
+            }),
+          ],
+        }),
+      );
+      pty.emitExit(0);
+      const exited = harness.manager["exitedSessions"].get("term-1");
+      expect(exited?.scrollback).toHaveLength(session.scrollback.length);
+      expect(exited?.scrollbackBytes).toBe(session.scrollbackBytes);
+      harness.manager.dispose();
+    },
+  );
+
+  it("bounds replay snapshots across many active and exited terminals and evicts exited history first", async () => {
+    const harness = createHarness();
+    const exitedPty = await openTerminalWithId(harness, "term-exited");
+    vi.useFakeTimers({
+      toFake: [
+        "setTimeout",
+        "clearTimeout",
+        "setImmediate",
+        "clearImmediate",
+        "performance",
+      ],
+    });
+    const budget = 4 * 1024 * 1024;
+    const measuredCharge = () =>
+      [
+        ...harness.manager["sessions"].values(),
+        ...harness.manager["exitedSessions"].values(),
+      ].reduce(
+        (total, session) =>
+          total +
+          session.scrollback.reduce(
+            (sum, entry) =>
+              sum +
+              (entry.parserStateBefore.csiParameters.length === 0
+                ? 0
+                : 64 + 2 * entry.parserStateBefore.csiParameters.length),
+            0,
+          ),
+        0,
+      );
+    const assertBudget = () => {
+      const measured = measuredCharge();
+      expect(measured).toBeLessThanOrEqual(budget);
+      expect(harness.manager["retainedReplayParserStateBytes"]).toBe(measured);
+    };
+    exitedPty.emitData(`\u001b[${";".repeat(1024)}`);
+    vi.advanceTimersByTime(4);
+    for (let index = 0; index < 2000; index += 1) {
+      exitedPty.emitData("\u0000");
+      vi.advanceTimersByTime(4);
+    }
+    assertBudget();
+    exitedPty.emitExit(0);
+    await attachTerminal(harness, {
+      requestId: "attach-before-budget-eviction",
+      terminalId: "term-exited",
+    });
+    assertBudget();
+    expect(harness.manager["exitedSessions"].has("term-exited")).toBe(true);
+    const quietPty = await openTerminalWithId(harness, "term-quiet");
+    quietPty.emitData("\u001b[?1049hQUIET");
+    vi.advanceTimersByTime(4);
+    const active = [];
+    for (let terminal = 0; terminal < 10; terminal += 1) {
+      const terminalId = `term-busy-${terminal}`;
+      const pty = await openTerminalWithId(harness, terminalId);
+      active.push({ pty, terminalId });
+      pty.emitData(
+        `${terminal === 0 ? "\u001b[?1049h" : ""}\u001b[${";".repeat(1024)}`,
+      );
+      vi.advanceTimersByTime(4);
+      const session = harness.manager["sessions"].get(terminalId);
+      if (!session) {
+        throw new Error("Terminal session did not open");
+      }
+      for (let index = 0; index < 12_000; index += 1) {
+        pty.emitData("\u0000");
+        vi.advanceTimersByTime(4);
+        expect(session.scrollback.at(-1)?.chunk.seq).toBe(index + 1);
+        expect(
+          harness.manager["retainedReplayParserStateBytes"],
+        ).toBeLessThanOrEqual(budget);
+        if (index % 256 === 0) {
+          assertBudget();
+        }
+        if (terminal === 0 && index === 200) {
+          expect(harness.manager["exitedSessions"].has("term-exited")).toBe(
+            false,
+          );
+          await attachTerminal(harness, {
+            requestId: "attach-quiet-before-active-eviction",
+            terminalId: "term-quiet",
+          });
+          expect(harness.messages).toContainEqual(
+            expect.objectContaining({
+              type: "terminal.replay",
+              requestId: "attach-quiet-before-active-eviction",
+              chunks: [textChunk("\u001b[?1049hQUIET", 0)],
+            }),
+          );
+        }
+        harness.messages.length = 0;
+      }
+      assertBudget();
+      expect(session.scrollback.length).toBeLessThanOrEqual(1985);
+      expect(session.scrollbackParserState.csiParameters).toHaveLength(1024);
+    }
+    const quietSession = harness.manager["sessions"].get("term-quiet");
+    expect(quietSession?.scrollback).toHaveLength(1);
+    quietPty.emitData("QUIET-RECOVERED");
+    vi.advanceTimersByTime(4);
+    await attachTerminal(harness, {
+      requestId: "attach-quiet-after-active-eviction",
+      terminalId: "term-quiet",
+    });
+    expect(harness.messages).toContainEqual(
+      expect.objectContaining({
+        type: "terminal.replay",
+        requestId: "attach-quiet-after-active-eviction",
+        chunks: [
+          textChunk("\u001b[?1049hQUIET", 0),
+          textChunk("QUIET-RECOVERED", 1),
+        ],
+      }),
+    );
+    for (const { pty, terminalId } of active) {
+      const marker = `RECOVERED-${terminalId}`;
+      pty.emitData(`m${marker}`);
+      vi.advanceTimersByTime(4);
+      await attachTerminal(harness, { requestId: terminalId, terminalId });
+      expect(harness.messages).toContainEqual(
+        expect.objectContaining({
+          type: "terminal.replay",
+          requestId: terminalId,
+          chunks: [
+            textChunk(
+              `${terminalId === "term-busy-0" ? "\u001b[?1049h" : ""}${marker}`,
+              12_001,
+            ),
+          ],
+        }),
+      );
+      assertBudget();
+    }
+    await harness.manager.shutdownAll();
+    assertBudget();
+    harness.manager.dispose();
+    expect(harness.manager["retainedReplayParserStateBytes"]).toBe(0);
+    expect(measuredCharge()).toBe(0);
+  });
+
+  it.each([{ maxExitedTerminals: 0 }, { exitedRetentionMs: 0 }])(
+    "releases replay snapshot charges when exited retention is disabled: %j",
+    async (options) => {
+      const harness = createHarnessWithOptions({
+        ...options,
+        onSendMessage: () => undefined,
+        resolveShell: async () => "/bin/zsh",
+      });
+      const pty = await openTerminal(harness);
+      pty.emitData(`\u001b[${";".repeat(1024)}`);
+      await attachTerminal(harness, {
+        requestId: "attach-active",
+        terminalId: "term-1",
+      });
+      pty.emitData("\u0000");
+      await attachTerminal(harness, {
+        requestId: "attach-charged",
+        terminalId: "term-1",
+      });
+      expect(harness.manager["retainedReplayParserStateBytes"]).toBe(2112);
+      await harness.manager.shutdownAll();
+      expect(harness.manager["exitedSessions"].size).toBe(0);
+      expect(harness.manager["retainedReplayParserStateBytes"]).toBe(0);
+      harness.manager.dispose();
+      expect(harness.manager["retainedReplayParserStateBytes"]).toBe(0);
+    },
+  );
+
+  it("releases old exited snapshot charges when a terminal ID is reused and on dispose", async () => {
+    const harness = createHarness();
+    const first = await openTerminal(harness);
+    first.emitData(`\u001b[${";".repeat(1024)}`);
+    await attachTerminal(harness, {
+      requestId: "attach-first",
+      terminalId: "term-1",
+    });
+    first.emitData("\u0000");
+    first.emitExit(0);
+    await attachTerminal(harness, {
+      requestId: "attach-exited",
+      terminalId: "term-1",
+    });
+    expect(harness.manager["retainedReplayParserStateBytes"]).toBe(2112);
+    const second = await openTerminalWithId(harness, "term-1");
+    second.emitData("SECOND");
+    second.emitExit(0);
+    await attachTerminal(harness, {
+      requestId: "attach-replaced",
+      terminalId: "term-1",
+    });
+    expect(harness.manager["retainedReplayParserStateBytes"]).toBe(0);
+    const live = await openTerminalWithId(harness, "term-live");
+    live.emitData("\u001b[;");
+    await attachTerminal(harness, {
+      requestId: "attach-live",
+      terminalId: "term-live",
+    });
+    live.emitData("\u0000");
+    await attachTerminal(harness, {
+      requestId: "attach-live-charged",
+      terminalId: "term-live",
+    });
+    expect(harness.manager["retainedReplayParserStateBytes"]).toBe(66);
+    harness.manager.dispose();
+    expect(harness.manager["retainedReplayParserStateBytes"]).toBe(0);
+    expect(
+      harness.manager["sessions"].get("term-live")?.scrollback,
+    ).toHaveLength(0);
+    await harness.manager.shutdownAll();
+    harness.manager.dispose();
+    expect(harness.manager["retainedReplayParserStateBytes"]).toBe(0);
+  });
+
+  it("shares empty CSI snapshots so many benign terminals preserve their replay history", async () => {
+    const harness = createHarness();
+    vi.useFakeTimers({
+      toFake: [
+        "setTimeout",
+        "clearTimeout",
+        "setImmediate",
+        "clearImmediate",
+        "performance",
+      ],
+    });
+    const snapshots = new Set();
+    for (let terminal = 0; terminal < 8; terminal += 1) {
+      const terminalId = `term-benign-${terminal}`;
+      const pty = await openTerminalWithId(harness, terminalId);
+      for (let index = 0; index < 10_000; index += 1) {
+        pty.emitData("BENIGN\n");
+        vi.advanceTimersByTime(4);
+        harness.messages.length = 0;
+      }
+    }
+    for (const session of harness.manager["sessions"].values()) {
+      expect(session.scrollback).toHaveLength(10_000);
+      expect(session.scrollbackBytes).toBe(70_000);
+      for (const entry of session.scrollback) {
+        expect(Object.isFrozen(entry.parserStateBefore)).toBe(true);
+        snapshots.add(entry.parserStateBefore);
+      }
+      await attachTerminal(harness, {
+        requestId: session.terminalId,
+        terminalId: session.terminalId,
+      });
+      const replay = harness.messages.find(
+        (message) =>
+          message.type === "terminal.replay" &&
+          message.requestId === session.terminalId,
+      );
+      if (!replay || replay.type !== "terminal.replay") {
+        throw new Error("Terminal replay was not sent");
+      }
+      expect(replay.chunks).toHaveLength(10_000);
+      expect(replay.chunks[0]).toEqual(textChunk("BENIGN\n", 0));
+      expect(replay.chunks.at(-1)).toEqual(textChunk("BENIGN\n", 9999));
+      harness.messages.length = 0;
+    }
+    expect(snapshots.size).toBe(1);
+    expect(harness.manager["retainedReplayParserStateBytes"]).toBe(0);
+    await harness.manager.shutdownAll();
+    harness.manager.dispose();
+  });
+
+  it.each([
+    { maxExitedTerminals: 1 },
+    { maxExitedScrollbackBytes: 8 },
+    { exitedRetentionMs: 100 },
+  ])(
+    "releases charged exited snapshots through retention limits: %j",
+    async (options) => {
+      const harness = createHarnessWithOptions({
+        ...options,
+        onSendMessage: () => undefined,
+        resolveShell: async () => "/bin/zsh",
+      });
+      vi.useFakeTimers({
+        toFake: [
+          "setTimeout",
+          "clearTimeout",
+          "setImmediate",
+          "clearImmediate",
+          "performance",
+        ],
+      });
+      const pty = await openTerminal(harness);
+      pty.emitData("\u001b[;");
+      vi.advanceTimersByTime(4);
+      pty.emitData("\u0000");
+      vi.advanceTimersByTime(4);
+      pty.emitExit(0);
+      await attachTerminal(harness, {
+        requestId: "attach-charged-exited",
+        terminalId: "term-1",
+      });
+      expect(harness.manager["retainedReplayParserStateBytes"]).toBe(66);
+      if ("exitedRetentionMs" in options) {
+        await vi.advanceTimersByTimeAsync(100);
+      } else {
+        const second = await openTerminalWithId(harness, "term-second");
+        second.emitData("SECOND");
+        second.emitExit(0);
+        await attachTerminal(harness, {
+          requestId: "attach-second",
+          terminalId: "term-second",
+        });
+      }
+      expect(harness.manager["exitedSessions"].has("term-1")).toBe(false);
+      expect(harness.manager["retainedReplayParserStateBytes"]).toBe(0);
+      harness.manager.dispose();
+      expect(harness.manager["exitedSessions"].size).toBe(0);
+    },
+  );
+
+  it.each([1024, 1025])(
+    "respects the CSI parameter byte boundary at %s bytes",
+    async (length) => {
+      const harness = createHarness();
+      const pty = await openTerminal(harness);
+
+      pty.emitData(`\u001b[?1049;${";".repeat(length - 6)}`);
+      await harness.manager.handleMessage({
+        type: "terminal.attach",
+        requestId: "attach-csi-limit",
+        terminalId: "term-1",
+        sinceSeq: 0,
+        tailBytes: 1,
+      });
+      expect(
+        harness.manager["sessions"].get("term-1")?.scrollbackParserState
+          .csiParameters.length,
+      ).toBe(length === 1024 ? 1024 : 0);
+
+      pty.emitData("hPRIMARY");
+      await harness.manager.handleMessage({
+        type: "terminal.attach",
+        requestId: "attach-csi-limit-recovered",
+        terminalId: "term-1",
+        sinceSeq: 0,
+        tailBytes: 1,
+      });
+      expect(harness.messages).toContainEqual(
+        expect.objectContaining({
+          type: "terminal.replay",
+          requestId: "attach-csi-limit-recovered",
+          chunks: [
+            expect.objectContaining({
+              dataBase64: Buffer.from(
+                length === 1024 ? "\u001b[?1049hPRIMARY" : "PRIMARY",
+                "utf8",
+              ).toString("base64"),
+            }),
+          ],
+        }),
+      );
+      await harness.manager.handleMessage({
+        type: "terminal.close",
+        terminalId: "term-1",
+        reason: "user",
+      });
+    },
+  );
+
+  it("restores alternate-screen mode when replay starts after its enter sequence", async () => {
+    const harness = createHarness();
+    const pty = await openTerminal(harness);
+
+    pty.emitData(`\u001b[?1049h${"x".repeat(64 * 1024 - 8)}`);
+    pty.emitData("tail");
+    await harness.manager.handleMessage({
+      type: "terminal.attach",
+      requestId: "attach-alternate-screen-tail",
+      terminalId: "term-1",
+      sinceSeq: 0,
+      tailBytes: 4,
+    });
+
+    const replay = harness.messages.find(
+      (message) => message.type === "terminal.replay",
+    );
+    expect(replay).toMatchObject({
+      chunks: [
+        {
+          seq: 1,
+          dataBase64: Buffer.from("\u001b[?1049htail", "utf8").toString(
+            "base64",
+          ),
+        },
+      ],
+      replayStartSeq: 1,
     });
   });
 
