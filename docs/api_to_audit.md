@@ -1096,14 +1096,15 @@ from its completion record can start a background continuation. The reader
 also accepts an optional identity `timestamp` field path for ISO timestamps.
 Providers declaring it must timestamp identifiable records; fresh records
 may arrive out of timestamp order. Missing or invalid timestamps are ignored.
-Older timestamps trigger exact UUID lookup in the already processed transcript
-prefix, ending at the highest evicted append position; fresh UUIDs remain valid.
-Only previously seen UUIDs are ignored. At the cutoff timestamp, new UUIDs
-remain valid and evicted UUIDs are ignored. A
-bounded set retains at most 4,096 evicted UUIDs at that timestamp; after an
-overflow, the processed transcript prefix supplies exact duplicate detection.
-This protects replays after both recent-ID and cutoff-ID eviction. Claude
-declares it. Retained history is bounded to 4,096 records and 128 turns, while
+UUID identity decides replay detection independently of replay timestamps or
+ancestry. A bounded set holds 4,096 recently evicted UUIDs; a lazily allocated
+4 MiB Bloom filter retains four SHA-256-derived bits for every evicted UUID.
+Negative matches avoid transcript reads. Positive matches require exact UUID
+lookup in the processed transcript prefix, ending at the highest evicted append
+position. A filter false positive never rejects a fresh UUID. Saturation can
+increase lookup cost but cannot forget an evicted identity or grow filter memory.
+Claude declares the timestamp field. Retained history is bounded to 4,096
+records and 128 turns, while
 completion anchors and compacted continuation ancestry remain available.
 Stabilization must cover replay after eviction, timestamp ties, bounded memory,
 late flushing, blocked-Stop continuation and providers without ordering fields.

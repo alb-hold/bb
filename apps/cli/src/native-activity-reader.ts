@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { ProviderNativeTerminal } from "@bb/domain";
 import {
   classifyHookRecord,
@@ -16,7 +17,30 @@ import {
 
 const MAX_RETAINED_RECORDS = 4096;
 const MAX_RETAINED_TURNS = 128;
-const MAX_EVICTED_CUTOFF_IDS = 4096;
+const MAX_RECENT_EVICTED_IDS = 4096;
+const EVICTED_FILTER_BYTES = 4 * 1024 * 1024;
+const EVICTED_FILTER_MASK = EVICTED_FILTER_BYTES * 8 - 1;
+
+class EvictedRecordFilter {
+  private readonly bits = new Uint8Array(EVICTED_FILTER_BYTES);
+
+  add(id: string): void {
+    const hash = createHash("sha256").update(id).digest();
+    for (let index = 0; index < 4; index += 1) {
+      const bit = hash.readUInt32LE(index * 4) & EVICTED_FILTER_MASK;
+      this.bits[bit >>> 3] |= 1 << (bit & 7);
+    }
+  }
+
+  mayContain(id: string): boolean {
+    const hash = createHash("sha256").update(id).digest();
+    for (let index = 0; index < 4; index += 1) {
+      const bit = hash.readUInt32LE(index * 4) & EVICTED_FILTER_MASK;
+      if ((this.bits[bit >>> 3] & (1 << (bit & 7))) === 0) return false;
+    }
+    return true;
+  }
+}
 
 export type NativeActivityStart =
   | { kind: "discover" }
@@ -69,17 +93,16 @@ export class NativeActivityReader {
   private sessionId: string | null;
   private currentTurn: string | null = null;
   private workingRecord: string | null = null;
-  private evictedThroughTimestamp: number | null = null;
   private evictedThroughPosition = 0;
   private transcriptPosition = 0;
   private readonly transcriptStartOffset: number;
-  private cutoffIdsOverflowed = false;
-  private readonly evictedCutoffIds = new Set<string>();
+  private evictedRecords: EvictedRecordFilter | null = null;
+  private readonly recentEvictedIds = new Set<string>();
   private readonly knownTurns = new Set<string>();
   private readonly recordTurns = new Map<string, string | null>();
   private readonly recordParents = new Map<
     string,
-    { parent: string | null; timestamp: number | null; position: number }
+    { parent: string | null; position: number }
   >();
   private readonly completedTurns = new Map<string, string>();
 
@@ -172,23 +195,16 @@ export class NativeActivityReader {
     const ignored = { state: null, prompt: null };
     const id = this.stringField(record, identity.recordId);
     if (id === null || this.recordTurns.has(id)) return ignored;
-    let timestamp: number | null = null;
     if (identity.timestamp !== undefined) {
       const value = this.stringField(record, identity.timestamp);
-      if (value === null) return ignored;
-      timestamp = Date.parse(value);
-      if (
-        !Number.isFinite(timestamp) ||
-        (this.evictedThroughTimestamp !== null &&
-          ((timestamp < this.evictedThroughTimestamp &&
-            this.wasEvictedInTranscript(id)) ||
-            (timestamp === this.evictedThroughTimestamp &&
-              (this.evictedCutoffIds.has(id) ||
-                (this.cutoffIdsOverflowed &&
-                  this.wasEvictedInTranscript(id))))))
-      ) {
-        return ignored;
-      }
+      if (value === null || !Number.isFinite(Date.parse(value))) return ignored;
+    }
+    if (
+      this.recentEvictedIds.has(id) ||
+      (this.evictedRecords?.mayContain(id) === true &&
+        this.wasEvictedInTranscript(id))
+    ) {
+      return ignored;
     }
     const parent = this.stringField(record, identity.parentId);
     const turn =
@@ -204,7 +220,6 @@ export class NativeActivityReader {
     this.recordTurns.set(id, turn);
     this.recordParents.set(id, {
       parent: retainedParent,
-      timestamp,
       position: this.transcriptPosition,
     });
     this.pruneRecords();
@@ -252,26 +267,17 @@ export class NativeActivityReader {
         continue;
       }
       const record = this.recordParents.get(id);
-      if (record !== undefined && record.timestamp !== null) {
+      if (record !== undefined) {
         this.evictedThroughPosition = Math.max(
           this.evictedThroughPosition,
           record.position,
         );
-        if (
-          this.evictedThroughTimestamp === null ||
-          record.timestamp > this.evictedThroughTimestamp
-        ) {
-          this.evictedThroughTimestamp = record.timestamp;
-          this.evictedCutoffIds.clear();
-          this.cutoffIdsOverflowed = false;
-        }
-        if (record.timestamp === this.evictedThroughTimestamp) {
-          this.evictedCutoffIds.add(id);
-          if (this.evictedCutoffIds.size > MAX_EVICTED_CUTOFF_IDS) {
-            const expired = this.evictedCutoffIds.values().next().value;
-            if (expired !== undefined) this.evictedCutoffIds.delete(expired);
-            this.cutoffIdsOverflowed = true;
-          }
+        this.evictedRecords ??= new EvictedRecordFilter();
+        this.evictedRecords.add(id);
+        this.recentEvictedIds.add(id);
+        if (this.recentEvictedIds.size > MAX_RECENT_EVICTED_IDS) {
+          const expired = this.recentEvictedIds.values().next().value;
+          if (expired !== undefined) this.recentEvictedIds.delete(expired);
         }
       }
       this.recordTurns.delete(id);

@@ -277,13 +277,13 @@ function retainedIdentitySizes(reader: NativeActivityReader) {
   const recordParents: unknown = Reflect.get(reader, "recordParents");
   const knownTurns: unknown = Reflect.get(reader, "knownTurns");
   const completedTurns: unknown = Reflect.get(reader, "completedTurns");
-  const evictedCutoffIds: unknown = Reflect.get(reader, "evictedCutoffIds");
+  const recentEvictedIds: unknown = Reflect.get(reader, "recentEvictedIds");
   if (
     !(recordTurns instanceof Map) ||
     !(recordParents instanceof Map) ||
     !(knownTurns instanceof Set) ||
     !(completedTurns instanceof Map) ||
-    !(evictedCutoffIds instanceof Set)
+    !(recentEvictedIds instanceof Set)
   ) {
     throw new Error("Native reader identity state unavailable");
   }
@@ -292,11 +292,220 @@ function retainedIdentitySizes(reader: NativeActivityReader) {
     recordParents: recordParents.size,
     knownTurns: knownTurns.size,
     completedTurns: completedTurns.size,
-    evictedCutoffIds: evictedCutoffIds.size,
+    recentEvictedIds: recentEvictedIds.size,
   };
 }
 
 describe("NativeActivityReader", () => {
+  it("confirms filter matches against transcript identity without rejecting fresh records", () => {
+    const fixture = claudeFixture();
+    fixture.append(
+      Array.from({ length: 9000 }, (_, index) => ({
+        type: "progress",
+        uuid: `filter-progress-${index}`,
+        parentUuid: "answer-1",
+      })),
+    );
+    expect(fixture.reader.read()).toEqual([]);
+    const filter: unknown = Reflect.get(fixture.reader, "evictedRecords");
+    if (typeof filter !== "object" || filter === null)
+      throw new Error("Evicted filter unavailable");
+    const bits: unknown = Reflect.get(filter, "bits");
+    if (!(bits instanceof Uint8Array))
+      throw new Error("Filter bits unavailable");
+    expect(bits.byteLength).toBe(4 * 1024 * 1024);
+    bits.fill(255);
+    fixture.append([
+      {
+        type: "system",
+        subtype: "stop_hook_summary",
+        isSidechain: false,
+        hasOutput: false,
+        uuid: "filter-fresh-end",
+        parentUuid: "answer-1",
+      },
+    ]);
+    expect(fixture.reader.read()).toEqual([{ state: "idle", prompt: null }]);
+    fixture.append([
+      {
+        type: "assistant",
+        isSidechain: false,
+        uuid: "filter-fresh-answer",
+        parentUuid: "filter-fresh-end",
+        message: { content: [{ type: "text", text: "continue" }] },
+      },
+    ]);
+    expect(fixture.reader.read()).toEqual([{ state: "working", prompt: null }]);
+    fixture.append([
+      {
+        type: "user",
+        uuid: "user-1",
+        promptId: "turn-1",
+        parentUuid: null,
+        origin: { kind: "human" },
+        message: { content: "replayed old prompt" },
+        timestamp: "2099-01-01T00:00:00.000Z",
+      },
+    ]);
+    expect(fixture.reader.read()).toEqual([]);
+    expect(fixture.reader.heartbeat()).toEqual({
+      state: "working",
+      prompt: null,
+    });
+    fixture.append([
+      {
+        type: "system",
+        subtype: "stop_hook_summary",
+        isSidechain: false,
+        hasOutput: false,
+        uuid: "filter-final-end",
+        parentUuid: "filter-fresh-answer",
+      },
+    ]);
+    expect(fixture.reader.read()).toEqual([{ state: "idle", prompt: null }]);
+    fixture.hook([
+      {
+        hook_event_name: "UserPromptSubmit",
+        prompt_id: "turn-2",
+        prompt: "next prompt",
+      },
+    ]);
+    expect(fixture.reader.read()).toEqual([
+      { state: "working", prompt: "next prompt" },
+    ]);
+    expect(
+      retainedIdentitySizes(fixture.reader).recentEvictedIds,
+    ).toBeLessThanOrEqual(4096);
+  });
+
+  it.each(
+    ["completion", "assistant"].flatMap((kind) =>
+      ["2026-10-11T10:00:02.000Z", "2026-10-11T10:00:03.000Z"].map(
+        (timestamp) => ({ kind, timestamp }),
+      ),
+    ),
+  )(
+    "ignores evicted $kind UUIDs replayed with advanced timestamp $timestamp",
+    ({ kind, timestamp }) => {
+      const fixture = claudeFixture();
+      const completion = {
+        type: "system",
+        subtype: "stop_hook_summary",
+        isSidechain: false,
+        hasOutput: false,
+        uuid: "advanced-replay-end",
+        promptId: "turn-1",
+        parentUuid: "answer-1",
+        timestamp: "2026-10-11T10:00:01.000Z",
+      };
+      const assistant = {
+        type: "assistant",
+        isSidechain: false,
+        uuid: "advanced-replay-answer",
+        promptId: "turn-1",
+        parentUuid: completion.uuid,
+        timestamp: completion.timestamp,
+        message: { content: [{ type: "text", text: "continue" }] },
+      };
+      fixture.append([
+        completion,
+        assistant,
+        {
+          ...assistant,
+          uuid: "advanced-replay-anchor",
+          parentUuid: assistant.uuid,
+        },
+      ]);
+      expect(fixture.reader.read()).toEqual([
+        { state: "idle", prompt: null },
+        { state: "working", prompt: null },
+      ]);
+      fixture.append(
+        Array.from({ length: 9500 }, (_, index) => ({
+          type: "progress",
+          uuid: `advanced-replay-progress-${index}`,
+          parentUuid: "advanced-replay-anchor",
+          timestamp: "2026-10-11T10:00:02.000Z",
+        })),
+      );
+      expect(fixture.reader.read()).toEqual([]);
+      const retained: unknown = Reflect.get(fixture.reader, "recordTurns");
+      if (!(retained instanceof Map))
+        throw new Error("Identity state unavailable");
+      expect(retained.has(completion.uuid)).toBe(false);
+      expect(retained.has(assistant.uuid)).toBe(false);
+      if (kind === "completion") {
+        fixture.append([{ ...completion, timestamp }]);
+        expect(fixture.reader.read()).toEqual([]);
+        expect(fixture.reader.heartbeat()).toEqual({
+          state: "working",
+          prompt: null,
+        });
+      }
+      fixture.append([
+        {
+          ...completion,
+          uuid: "advanced-fresh-end",
+          parentUuid: "advanced-replay-anchor",
+          timestamp,
+        },
+      ]);
+      expect(fixture.reader.read()).toEqual([{ state: "idle", prompt: null }]);
+      if (kind === "assistant") {
+        fixture.append([
+          { ...assistant, parentUuid: "advanced-fresh-end", timestamp },
+        ]);
+        expect(fixture.reader.read()).toEqual([]);
+        expect(fixture.reader.heartbeat()).toBeNull();
+      }
+      fixture.hook([
+        {
+          hook_event_name: "Stop",
+          prompt_id: "turn-1",
+          stop_hook_active: false,
+        },
+      ]);
+      fixture.append([
+        {
+          ...assistant,
+          uuid: "advanced-fresh-continuation",
+          parentUuid: "advanced-fresh-end",
+          timestamp,
+        },
+      ]);
+      expect(fixture.reader.read()).toEqual([
+        { state: "working", prompt: null },
+      ]);
+      fixture.append([
+        {
+          ...completion,
+          uuid: "advanced-final-end",
+          parentUuid: "advanced-fresh-continuation",
+          timestamp,
+        },
+      ]);
+      expect(fixture.reader.read()).toEqual([{ state: "idle", prompt: null }]);
+      fixture.hook([
+        {
+          hook_event_name: "UserPromptSubmit",
+          prompt_id: "turn-2",
+          prompt: "new prompt",
+        },
+      ]);
+      expect(fixture.reader.read()).toEqual([
+        { state: "working", prompt: "new prompt" },
+      ]);
+      const recent: unknown = Reflect.get(fixture.reader, "recentEvictedIds");
+      if (!(recent instanceof Set)) throw new Error("Recent identities unavailable");
+      expect(recent.has(completion.uuid)).toBe(false);
+      expect(recent.has(assistant.uuid)).toBe(false);
+      const sizes = retainedIdentitySizes(fixture.reader);
+      expect(sizes.recordTurns).toBeLessThanOrEqual(4096);
+      expect(sizes.recordParents).toBeLessThanOrEqual(4096);
+      expect(sizes.knownTurns).toBeLessThanOrEqual(128);
+    },
+  );
+
   it("accepts fresh older-timestamp ancestry after eviction while ignoring its later replay", () => {
     const fixture = claudeFixture();
     finalClaudeStop(fixture);
@@ -361,11 +570,15 @@ describe("NativeActivityReader", () => {
     );
     expect(fixture.reader.read()).toEqual([]);
     const retained: unknown = Reflect.get(fixture.reader, "recordTurns");
-    if (!(retained instanceof Map)) throw new Error("Identity state unavailable");
+    if (!(retained instanceof Map))
+      throw new Error("Identity state unavailable");
     expect(retained.has(completion.uuid)).toBe(false);
     fixture.append([completion]);
     expect(fixture.reader.read()).toEqual([]);
-    expect(fixture.reader.heartbeat()).toEqual({ state: "working", prompt: null });
+    expect(fixture.reader.heartbeat()).toEqual({
+      state: "working",
+      prompt: null,
+    });
     fixture.append([
       {
         ...completion,
@@ -378,7 +591,7 @@ describe("NativeActivityReader", () => {
     expect(sizes.recordTurns).toBeLessThanOrEqual(4096);
     expect(sizes.recordParents).toBeLessThanOrEqual(4096);
     expect(sizes.knownTurns).toBeLessThanOrEqual(128);
-    expect(sizes.evictedCutoffIds).toBeLessThanOrEqual(4096);
+    expect(sizes.recentEvictedIds).toBeLessThanOrEqual(4096);
   });
 
   it("starts an assistant-only cutoff-timestamp continuation after a blocked Stop and eviction", () => {
@@ -526,14 +739,14 @@ describe("NativeActivityReader", () => {
       expect(sizes.recordParents).toBeLessThanOrEqual(4096);
       expect(sizes.knownTurns).toBeLessThanOrEqual(128);
       expect(sizes.completedTurns).toBeLessThanOrEqual(128);
-      const cutoffIds: unknown = Reflect.get(
+      const recentIds: unknown = Reflect.get(
         fixture.reader,
-        "evictedCutoffIds",
+        "recentEvictedIds",
       );
-      if (!(cutoffIds instanceof Set))
+      if (!(recentIds instanceof Set))
         throw new Error("Native reader cutoff identity state unavailable");
-      expect(cutoffIds.size).toBeLessThanOrEqual(4096);
-      expect(cutoffIds.has(evicted.uuid)).toBe(count === 5000);
+      expect(recentIds.size).toBeLessThanOrEqual(4096);
+      expect(recentIds.has(evicted.uuid)).toBe(count === 5000);
     },
   );
 
@@ -847,7 +1060,7 @@ describe("NativeActivityReader", () => {
     expect(maxima.recordParents, evidence).toBeLessThanOrEqual(4096);
     expect(maxima.knownTurns, evidence).toBeLessThanOrEqual(128);
     expect(maxima.completedTurns, evidence).toBeLessThanOrEqual(128);
-    expect(maxima.evictedCutoffIds, evidence).toBeLessThanOrEqual(4096);
+    expect(maxima.recentEvictedIds, evidence).toBeLessThanOrEqual(4096);
     fixture.hook([
       {
         hook_event_name: "UserPromptSubmit",
