@@ -1,8 +1,10 @@
 import { z } from "zod";
 import {
+  dynamicToolSchema,
   providerNativeTerminalSchema,
   terminalColsSchema,
   terminalRowsSchema,
+  toolCallResponseSchema,
 } from "@bb/domain";
 import { terminalSessionSchema } from "./terminals.js";
 
@@ -26,11 +28,19 @@ export type OpenNativeTerminalRequest = z.infer<
   typeof openNativeTerminalRequestSchema
 >;
 
+export const nativeTerminalLaunchQuerySchema = z.object({
+  images: z.literal("argv").optional(),
+});
+export type NativeTerminalLaunchQuery = z.infer<
+  typeof nativeTerminalLaunchQuerySchema
+>;
+
 export const nativeTerminalLaunchSpecSchema = z.object({
   threadId: z.string().min(1),
   cli: providerNativeTerminalSchema,
   nativeSessionId: z.string().min(1).nullable(),
   initialPrompt: z.string().min(1).nullable(),
+  initialImages: z.array(z.string().min(1)).optional(),
   model: z.string().min(1).nullable(),
 });
 export type NativeTerminalLaunchSpec = z.infer<
@@ -71,4 +81,24 @@ export const recordNativeSessionRequestSchema = z
   .strict();
 export type RecordNativeSessionRequest = z.infer<
   typeof recordNativeSessionRequestSchema
+>;
+
+export const nativeTerminalAgentToolsSchema = z.object({
+  tools: z.array(dynamicToolSchema),
+});
+export type NativeTerminalAgentTools = z.infer<
+  typeof nativeTerminalAgentToolsSchema
+>;
+
+export const callNativeTerminalAgentToolRequestSchema = z
+  .object({
+    callId: z.string().min(1),
+    arguments: z.record(z.string(), z.unknown()).default({}),
+  })
+  .strict();
+export type CallNativeTerminalAgentToolRequest = z.input<
+  typeof callNativeTerminalAgentToolRequestSchema
+>;
+export type NativeTerminalAgentToolResult = z.infer<
+  typeof toolCallResponseSchema
 >;

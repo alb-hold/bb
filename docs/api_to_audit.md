@@ -210,6 +210,16 @@ values masked. The resolver
 receives `ExperimentalPluginProviderEnvContext` and returns
 `ExperimentalPluginProviderEnvEntry` values.
 
+The optional `ExperimentalPluginProviderEnvContext.experimental_runtimeKind`
+is `"native"` when core opens a native terminal through this same resolver.
+Omission preserves session and chat-turn behavior. Account Pooler uses it to
+keep native provider and nested-pool tokens in memory. Durable bridge records
+contain only hashes; startup converts older raw scoped records atomically. Core's native launch
+and the chat bridge both use `resolvePluginProviderEnv`; no alternate resolver
+exists. Stabilization requires auditing credential lifetime and restart
+behavior, verifying contributors that ignore the context, and keeping every
+core native launch on this path.
+
 **Audit before stabilizing.**
 
 1. Confirm one resolver per provider is sufficient when plugins need multiple
@@ -1064,7 +1074,7 @@ turn. It replaces the provider-id table the first native terminal
 implementation kept in core: the server, the bb CLI wrapper and the composer
 read the declaration, and `ProviderInfo.capabilities.supportsNativeTerminal`
 tells clients whether to offer the option. The declaration is data, not code:
-an executable, model argv, the placeholders the CLI draws instead of a long
+an executable, model argv, image argv for images attached at creation, the placeholders the CLI draws instead of a long
 paste (the server presses Enter after a sent message only once the CLI newly
 draws the text or a placeholder, and sends nothing when the text is already on
 screen, so a message never confirms an open menu), a session-file root (env
@@ -1088,6 +1098,40 @@ dot segments. Core callers: `apps/server/src/services/threads/native-terminal-th
 (argv and session discovery) and the new-thread composer's native terminal
 toggle. First-party declarations: `provider-claude-code` (`assigned`) and
 `provider-codex` (`discovered`).
+
+`mcp` (optional) lists the argv the native CLI needs to load bb's tools: the
+wrapper fills `{commandJson}` and `{argsJson}` (JSON string and array literals,
+valid as JSON and as TOML values) with the command that starts the hidden
+`bb thread native-mcp <id>` stdio MCP server, which serves the same tools a chat
+turn on that thread receives (except `update_environment_directory`, which needs
+a turn) through `GET /threads/:id/native-terminal/agent-tools` and
+`POST /threads/:id/native-terminal/agent-tools/:tool/call`. The call path is
+the one `/internal/session/tool-call` uses. Both routes require a live native
+terminal (404 for a chat thread, 409 once the terminal exited or the thread is
+archived). Both routes also require `Authorization: Bearer <credential>`. The
+server mints 32 random bytes each time it opens a native terminal and sends them
+only to the daemon, in that terminal's `terminal.open` `contributedEnv`
+(`BB_NATIVE_TOOL_CREDENTIAL`, an existing authenticated field, so no wire
+change); no `/api/v1` response contains the secret, and the public launch spec
+neither returns nor rotates it. The server keeps the SHA-256 hash bound to the
+thread and terminal and compares with `timingSafeEqual`. A missing, wrong,
+other-thread or replaced (the terminal was opened again) credential is rejected
+(401, or 409 when the terminal is no longer live) before any tool is resolved
+or invoked. `bb thread native-run` takes the variable out of its environment
+(so neither the holder nor the provider CLI inherits it) and sends it over the
+holder's 0600 unix socket, which keeps it in memory only; the hidden `bb thread
+native-mcp` reads it from the holder's 0600 credential socket on every request,
+so a reopened terminal rotates the secret without restarting the CLI. Both
+providers use this one path: neither CLI's MCP launch offers a way to hand a
+secret to the server that avoids argv or the CLI's own environment. The
+secret is never in argv, logs or on disk. Same-OS-user processes that can
+connect to the holder sockets are trusted, since they can already read that
+user's bb data; other users and remote API callers cannot use the routes.
+First-party
+declarations: `provider-claude-code` (`--mcp-config` with inline JSON) and
+`provider-codex` (`-c mcp_servers.*`). Stabilization audit: decide whether the
+declaration should name the server rather than hard-code `bb-bridge`, and
+whether a third CLI needs a config file instead of argv.
 
 **Audit before stabilizing.** Confirm the two session strategies cover a
 third CLI without a new kind; decide whether the first-JSON-line header is
@@ -4245,3 +4289,72 @@ Stabilize after deciding whether depth, recency window, and limit should be call
 **Core callers.** The Account Pooler sign-in for Claude (OAuth with an automatic code capture) and Codex (device code) uses it. It goes through the same `AppNavigationHost` capability as `openUrl`, backed by one `openSignInWindow` helper that talks to the desktop shell's `bbDesktop.openSignInWindow`/`closeSignInWindow`, covered by the shell controller tests, the helper tests, and the SDK harness. The `bb` CLI keeps printing the authorization URL because a CLI has no window to host; the SDK surface for the same login is `pool` RPC `login.start`/`login.complete`.
 
 Stabilize after exercising it on Windows and Linux shells, deciding whether other plugins need a per-call partition name or cookie seed, and confirming the redirect prefix match is strict enough for providers whose callback pages include fragments.
+
+## `experimental_nativeTerminal.experimental_launchEnvArgs`
+
+**What it does.** A provider may declare required environment names and a list
+of literal arguments or `{ env, prefix }` arguments. The native CLI wrapper
+checks every required value and appends the declared arguments, JSON encoding
+each substituted value after its prefix. Missing values contribute no arguments.
+Secrets should be referenced by environment name in literal arguments, never
+substituted. Providers without this optional member retain their launch behavior.
+
+**Core callers.** `resolveNativeHarnessLaunch` consumes the provider's declaration
+through `experimental_nativeTerminalEnvArgs` from `@get-bb/plugin-sdk/host`. The Codex bridge uses the same translator and
+`CODEX_POOL_LAUNCH_ENV_ARGS` declaration. Provider validation accepts the member
+before the server sends the native launch specification to the CLI.
+
+**Audit before stabilizing.** Confirm JSON encoding meets provider configuration
+formats, enforce bounded argument counts and lengths, exercise third-party
+providers and missing environment values, and verify compatibility of the native
+launch specification across CLI and daemon versions. Stabilization includes
+renaming the member and deleting this audit entry.
+
+## `experimental_nativeTerminalEnvArgs`
+
+**What it does.** The host SDK function translates a provider's
+`experimental_launchEnvArgs` declaration and supplied environment into arguments,
+returning an empty list when any required or substituted value is absent.
+Substitutions use JSON string encoding; secrets remain referenced by name in
+literal arguments. Argument formatting is shared with the domain contract.
+An optional filter recipe reads host-local configuration against the supplied
+launch workspace before producing provider arguments.
+
+**Core callers.** The native CLI harness and the Codex chat bridge both use this
+public SDK function. The Codex plugin owns their single argument declaration.
+
+**Audit before stabilizing.** Confirm supported provider formats and argument
+bounds, validate third-party declarations, and retain missing-value and
+secret-free argument coverage for every caller. Rename the function and remove
+this entry after the declaration and function stabilize together.
+
+## `experimental_nativeTerminal.experimental_launchEnvArgs.experimental_filterConfig`
+
+**What it does.** A provider declares a configuration root, relative TOML file,
+policy setting, argument flag and environment exclusion patterns. The host SDK
+reads only the named policy from a bounded, read-only user file. It translates
+legacy `exclude` and `include_only` patterns into a canonical filter table while
+preserving the allowlist and adding the provider's exclusions. Invalid syntax,
+mixed representations, conflicting patterns, legacy profile selection or a `set`
+entry that restores an excluded variable refuses pooled launches. Missing routing
+environment values skip both arguments and filesystem access.
+
+Declared system files and launch-workspace ancestor files containing the policy
+also refuse pooled launches, avoiding a second implementation of provider trust
+and configuration merge rules. Declared platform-specific presence files are
+checked with stat only; unsupported platforms refuse pooled launches. Errors
+name the file, setting and remedy without disclosing configuration values. Codex
+declares its Unix system and managed files, ancestor `.codex/config.toml` files,
+macOS managed-preference plist paths, and unsupported Windows pooled launches.
+
+**Core callers.** The native CLI harness passes its launch workspace to
+`experimental_nativeTerminalEnvArgs`; the Codex bridge passes its thread workspace
+through the same host SDK function and the same provider declaration. Neither
+caller implements provider-specific policy translation or reads user settings.
+
+**Audit before stabilizing.** Confirm pinned-provider merge and glob semantics,
+cover include/exclude equivalence and failure paths on supported hosts, and decide
+whether other policy layers should be supported rather than refused. Retain
+read-only, absent-config, malformed-config, missing-route and secret-free launch
+coverage for native and bridge callers. Rename the member and remove this entry
+after its declaration and host translator stabilize together.

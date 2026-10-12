@@ -30,7 +30,21 @@ export function ensureNativeTerminalThreadsTable(db: DbConnection): void {
     CREATE UNIQUE INDEX IF NOT EXISTS fork_native_terminal_threads_session_idx
       ON fork_native_terminal_threads (provider_id, native_session_id)
       WHERE native_session_id IS NOT NULL;
+    CREATE TABLE IF NOT EXISTS fork_native_terminal_tool_credentials (
+      thread_id TEXT PRIMARY KEY NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+      terminal_session_id TEXT NOT NULL,
+      credential_hash TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
   `);
+  const columns = db.$client
+    .prepare(`PRAGMA table_info(fork_native_terminal_threads)`)
+    .all() as Array<{ name: string }>;
+  if (!columns.some((column) => column.name === "initial_images")) {
+    db.$client.exec(
+      `ALTER TABLE fork_native_terminal_threads ADD COLUMN initial_images TEXT`,
+    );
+  }
 }
 
 export function createNativeTerminalThread(
@@ -40,6 +54,7 @@ export function createNativeTerminalThread(
     providerId: string;
     nativeSessionId: string | null;
     initialPrompt: string | null;
+    initialImages: readonly string[];
     model: string | null;
   },
 ): NativeTerminalThreadRecord {
@@ -47,14 +62,17 @@ export function createNativeTerminalThread(
   db.$client
     .prepare(
       `INSERT INTO fork_native_terminal_threads
-         (thread_id, provider_id, native_session_id, terminal_session_id, initial_prompt, model, created_at, updated_at)
-       VALUES (?, ?, ?, NULL, ?, ?, ?, ?)`,
+         (thread_id, provider_id, native_session_id, terminal_session_id, initial_prompt, initial_images, model, created_at, updated_at)
+       VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?)`,
     )
     .run(
       args.threadId,
       args.providerId,
       args.nativeSessionId,
       args.initialPrompt,
+      args.initialImages.length === 0
+        ? null
+        : JSON.stringify(args.initialImages),
       args.model,
       now,
       now,
@@ -164,23 +182,51 @@ export function setNativeTerminalThreadTerminal(
     .run(args.terminalSessionId, Date.now(), args.threadId);
 }
 
-export function consumeNativeTerminalThreadInitialPrompt(
+export interface NativeTerminalThreadLaunchInput {
+  initialPrompt: string | null;
+  initialImages: string[];
+}
+
+function parseStoredInitialImages(stored: string): string[] {
+  const parsed: unknown = JSON.parse(stored);
+  if (!Array.isArray(parsed)) return [];
+  return parsed.filter(
+    (entry): entry is string => typeof entry === "string" && entry.length > 0,
+  );
+}
+
+export function consumeNativeTerminalThreadLaunchInput(
   db: DbConnection,
   threadId: string,
-): string | null {
+): NativeTerminalThreadLaunchInput {
   return db.$client.transaction(() => {
     const row = db.$client
       .prepare(
-        `SELECT initial_prompt AS initialPrompt FROM fork_native_terminal_threads WHERE thread_id = ?`,
+        `SELECT initial_prompt AS initialPrompt, initial_images AS initialImages
+         FROM fork_native_terminal_threads WHERE thread_id = ?`,
       )
-      .get(threadId) as { initialPrompt: string | null } | undefined;
-    if (row === undefined || row.initialPrompt === null) return null;
+      .get(threadId) as
+      | { initialPrompt: string | null; initialImages: string | null }
+      | undefined;
+    if (
+      row === undefined ||
+      (row.initialPrompt === null && row.initialImages === null)
+    ) {
+      return { initialPrompt: null, initialImages: [] };
+    }
     db.$client
       .prepare(
-        `UPDATE fork_native_terminal_threads SET initial_prompt = NULL, updated_at = ? WHERE thread_id = ?`,
+        `UPDATE fork_native_terminal_threads
+         SET initial_prompt = NULL, initial_images = NULL, updated_at = ? WHERE thread_id = ?`,
       )
       .run(Date.now(), threadId);
-    return row.initialPrompt;
+    return {
+      initialPrompt: row.initialPrompt,
+      initialImages:
+        row.initialImages === null
+          ? []
+          : parseStoredInitialImages(row.initialImages),
+    };
   })();
 }
 
@@ -228,4 +274,57 @@ export function recordNativeTerminalThreadSessionId(
       .run(args.nativeSessionId, Date.now(), args.threadId);
     return { kind: "recorded" };
   })();
+}
+
+export interface NativeTerminalToolCredentialRecord {
+  threadId: string;
+  terminalSessionId: string;
+  credentialHash: string;
+}
+
+export function setNativeTerminalToolCredential(
+  db: DbConnection,
+  args: NativeTerminalToolCredentialRecord,
+): void {
+  db.$client
+    .prepare(
+      `INSERT INTO fork_native_terminal_tool_credentials
+         (thread_id, terminal_session_id, credential_hash, created_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(thread_id) DO UPDATE SET
+         terminal_session_id = excluded.terminal_session_id,
+         credential_hash = excluded.credential_hash,
+         created_at = excluded.created_at`,
+    )
+    .run(
+      args.threadId,
+      args.terminalSessionId,
+      args.credentialHash,
+      Date.now(),
+    );
+}
+
+export function getNativeTerminalToolCredential(
+  db: DbConnection,
+  threadId: string,
+): NativeTerminalToolCredentialRecord | null {
+  const row = db.$client
+    .prepare(
+      `SELECT thread_id AS threadId, terminal_session_id AS terminalSessionId,
+         credential_hash AS credentialHash
+       FROM fork_native_terminal_tool_credentials WHERE thread_id = ?`,
+    )
+    .get(threadId) as NativeTerminalToolCredentialRecord | undefined;
+  return row ?? null;
+}
+
+export function deleteNativeTerminalToolCredential(
+  db: DbConnection,
+  threadId: string,
+): void {
+  db.$client
+    .prepare(
+      `DELETE FROM fork_native_terminal_tool_credentials WHERE thread_id = ?`,
+    )
+    .run(threadId);
 }

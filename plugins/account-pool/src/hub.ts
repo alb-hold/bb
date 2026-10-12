@@ -213,10 +213,23 @@ export class AccountPoolHub {
 
   private async authenticateRoute(request: Request, provider: PoolProvider) {
     const token = presentedToken(request);
-    const threadRoute = await this.options.threadTokens.authenticate(
+    const authenticated = await this.options.threadTokens.authenticate(
       token,
       provider,
     );
+    const threadRoute =
+      authenticated === null ||
+      !this.options.threadTokens.isProcessCredential(token) ||
+      this.options.routing === null ||
+      this.options.getParentRoute() !== null
+        ? authenticated
+        : {
+            ...authenticated,
+            accountId: await this.options.routing.selectedAccount(
+              authenticated.threadId,
+              provider,
+            ),
+          };
     const hostId =
       threadRoute?.hostId ??
       (await this.options.threadTokens.authenticateNested(token))?.hostId ??

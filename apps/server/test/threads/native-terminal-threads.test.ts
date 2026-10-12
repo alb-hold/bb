@@ -8,11 +8,14 @@ import {
   getThread,
   listEvents,
   projectAttachmentThreads,
+  terminalSessions,
   threads,
   upsertProjectExecutionDefaults,
 } from "@bb/db";
+import { eq } from "drizzle-orm";
 import type { PromptInput } from "@bb/domain";
 import {
+  HOST_DAEMON_PROTOCOL_VERSION,
   hostDaemonServerWsMessageSchema,
   type HostDaemonServerWsMessage,
 } from "@bb/host-daemon-contract";
@@ -28,7 +31,15 @@ import { sendThreadMessage } from "../../src/services/threads/thread-send.js";
 import {
   NATIVE_TERMINAL_ENDED_MESSAGE,
   nativeTerminalLaunchCommand,
+  reopenNativeTerminalsAfterDaemonReconnect,
 } from "../../src/services/threads/native-terminal-threads.js";
+import { handleDaemonSocketClosed } from "../../src/internal/session-owner-side-effects.js";
+import { applyLoggedThreadLifecycleEvent } from "../../src/services/threads/lifecycle-outcome.js";
+import { internalAuthHeaders } from "../helpers/commands.js";
+import { createProviderRegistryService } from "../../src/services/providers/provider-registry.js";
+import { createTestProviderRegistry } from "../helpers/provider-registry.js";
+import { recordNativeTerminalActivity } from "../../src/services/threads/native-terminal-activity.js";
+import { ApiError } from "../../src/errors.js";
 import { onDaemonSocketOpen } from "../../src/ws/daemon-protocol.js";
 import { resolvePendingThreadSessionOptions } from "../../src/services/threads/thread-session-options.js";
 import { storeAttachment } from "../../src/services/projects/attachments.js";
@@ -558,14 +569,81 @@ describe("native terminal threads", () => {
       await readJson(
         await postJson(
           fixture,
-          `/threads/${thread.id}/native-terminal/launch`,
+          `/threads/${thread.id}/native-terminal/launch?images=argv`,
           {},
         ),
       ),
     );
-    expect(spec.initialPrompt).toBe(
+    expect(spec.initialPrompt).toBeNull();
+    expect(spec.initialImages).toEqual([
       storedAttachmentPath(fixture, attachmentPath),
+    ]);
+  });
+
+  it("hands Codex an image as a launch image instead of a path in the prompt", async () => {
+    const fixture = await createFixture();
+    seedPrimaryHost(fixture.harness.deps, fixture.hostId);
+    const attachmentPath = await storeImageAttachment(fixture);
+    const { thread } = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+      input: [
+        ...textInput("Describe this screenshot"),
+        { type: "localImage", path: attachmentPath },
+        { type: "localFile", path: "/tmp/notes.txt" },
+      ],
+    });
+    const launch = async () =>
+      nativeTerminalLaunchSpecSchema.parse(
+        await readJson(
+          await postJson(
+            fixture,
+            `/threads/${thread.id}/native-terminal/launch?images=argv`,
+            {},
+          ),
+        ),
+      );
+    const first = await launch();
+    expect(first.initialImages).toEqual([
+      storedAttachmentPath(fixture, attachmentPath),
+    ]);
+    expect(first.initialPrompt).toBe(
+      "/tmp/notes.txt\nDescribe this screenshot",
     );
+    const second = await launch();
+    expect(second.initialImages).toEqual([]);
+    expect(second.initialPrompt).toBeNull();
+  });
+
+  it("keeps a Codex image as a path in the prompt for a bb CLI that does not ask for launch images", async () => {
+    const fixture = await createFixture();
+    seedPrimaryHost(fixture.harness.deps, fixture.hostId);
+    const attachmentPath = await storeImageAttachment(fixture);
+    const { thread } = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+      input: [
+        ...textInput("Describe this screenshot"),
+        { type: "localImage", path: attachmentPath },
+        { type: "localFile", path: "/tmp/notes.txt" },
+      ],
+    });
+    const launch = async () =>
+      nativeTerminalLaunchSpecSchema.parse(
+        await readJson(
+          await postJson(
+            fixture,
+            `/threads/${thread.id}/native-terminal/launch`,
+            {},
+          ),
+        ),
+      );
+    const first = await launch();
+    expect(first.initialImages).toEqual([]);
+    expect(first.initialPrompt).toBe(
+      `${storedAttachmentPath(fixture, attachmentPath)}\n/tmp/notes.txt\nDescribe this screenshot`,
+    );
+    const second = await launch();
+    expect(second.initialImages).toEqual([]);
+    expect(second.initialPrompt).toBeNull();
   });
 
   it("refuses an uploaded attachment for a thread on another machine", async () => {
@@ -646,13 +724,209 @@ describe("native terminal threads", () => {
       });
       expect(response.status).toBe(200);
       expect(cli.inputs()).toEqual([
-        `\u001b[200~${storedAttachmentPath(fixture, attachmentPath)}\nrun the tests\u001b[201~`,
+        `\u001b[200~${storedAttachmentPath(fixture, attachmentPath)}\u001b[201~`,
+        "\u001b[200~run the tests\u001b[201~",
         "\r",
       ]);
     } finally {
       cli.stop();
     }
   });
+
+  it("pastes an image on its own so Codex attaches it before the message", async () => {
+    const fixture = await createFixture();
+    seedPrimaryHost(fixture.harness.deps, fixture.hostId);
+    const attachmentPath = await storeImageAttachment(fixture);
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+    });
+    const cli = startFakeCli(fixture, open.terminalId, (pasted) =>
+      pasted.endsWith(".png")
+        ? "\u001b[2;1H\u001b[2K\u203a [Image #1]"
+        : `\u001b[2;1H\u001b[2K\u203a [Image #1] ${pasted}`,
+    );
+    try {
+      const response = await postJson(fixture, `/threads/${thread.id}/send`, {
+        input: [
+          ...textInput("run the tests"),
+          { type: "localImage", path: attachmentPath },
+        ],
+        mode: "auto",
+      });
+      expect(response.status).toBe(200);
+      expect(cli.inputs()).toEqual([
+        `\u001b[200~${storedAttachmentPath(fixture, attachmentPath)}\u001b[201~`,
+        "\u001b[200~run the tests\u001b[201~",
+        "\r",
+      ]);
+    } finally {
+      cli.stop();
+    }
+  });
+
+  it("sends Codex a second image while an earlier image with the same label is still shown", async () => {
+    const fixture = await createFixture();
+    seedPrimaryHost(fixture.harness.deps, fixture.hostId);
+    const attachmentPath = await storeImageAttachment(fixture);
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+    });
+    const cli = startFakeCli(
+      fixture,
+      open.terminalId,
+      (pasted) =>
+        pasted.endsWith(".png")
+          ? "\u001b[6;1H\u001b[2K\u203a [Image #1]"
+          : `\u001b[6;1H\u001b[2K\u203a [Image #1] ${pasted}`,
+      "\u001b[2;1H\u203a [Image #1] What colour is this?\r\n\u2022 Green",
+    );
+    try {
+      const response = await postJson(fixture, `/threads/${thread.id}/send`, {
+        input: [
+          ...textInput("run the tests"),
+          { type: "localImage", path: attachmentPath },
+        ],
+        mode: "auto",
+      });
+      expect(response.status).toBe(200);
+      expect(cli.inputs()).toEqual([
+        `\u001b[200~${storedAttachmentPath(fixture, attachmentPath)}\u001b[201~`,
+        "\u001b[200~run the tests\u001b[201~",
+        "\r",
+      ]);
+    } finally {
+      cli.stop();
+    }
+  });
+
+  it("stops before the message when Codex only redraws an earlier image with the same label", async () => {
+    const fixture = await createFixture();
+    seedPrimaryHost(fixture.harness.deps, fixture.hostId);
+    const attachmentPath = await storeImageAttachment(fixture);
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+    });
+    const cli = startFakeCli(
+      fixture,
+      open.terminalId,
+      () => "\u001b[2;1H\u001b[2K\u203a [Image #1] What colour is this?",
+      "\u001b[2;1H\u203a [Image #1] What colour is this?\r\n\u2022 Green",
+    );
+    try {
+      const response = await postJson(fixture, `/threads/${thread.id}/send`, {
+        input: [
+          ...textInput("run the tests"),
+          { type: "localImage", path: attachmentPath },
+        ],
+        mode: "auto",
+      });
+      expect(response.status).toBe(409);
+      expect(apiErrorSchema.parse(await readJson(response)).code).toBe(
+        "native_terminal_input_not_shown",
+      );
+      expect(cli.inputs()).toEqual([
+        `\u001b[200~${storedAttachmentPath(fixture, attachmentPath)}\u001b[201~`,
+      ]);
+    } finally {
+      cli.stop();
+    }
+  }, 10_000);
+
+  it("sends Claude Code an image and a message as two pastes and one Enter", async () => {
+    const fixture = await createFixture();
+    seedPrimaryHost(fixture.harness.deps, fixture.hostId);
+    const attachmentPath = await storeImageAttachment(fixture);
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "claude-code",
+    });
+    const cli = startFakeCli(fixture, open.terminalId, (pasted) =>
+      pasted.endsWith(".png")
+        ? "\u001b[2;1H\u001b[2K\u276f [Image #1]"
+        : `\u001b[2;1H\u001b[2K\u276f [Image #1] ${pasted}`,
+    );
+    try {
+      const response = await postJson(fixture, `/threads/${thread.id}/send`, {
+        input: [
+          ...textInput("run the tests"),
+          { type: "localImage", path: attachmentPath },
+        ],
+        mode: "auto",
+      });
+      expect(response.status).toBe(200);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(cli.inputs()).toEqual([
+        `\u001b[200~${storedAttachmentPath(fixture, attachmentPath)}\u001b[201~`,
+        "\u001b[200~run the tests\u001b[201~",
+        "\r",
+      ]);
+    } finally {
+      cli.stop();
+    }
+  });
+
+  it.each(["claude-code", "codex"])(
+    "never presses Enter when %s shows the attachment but not the message",
+    async (providerId) => {
+      const fixture = await createFixture();
+      seedPrimaryHost(fixture.harness.deps, fixture.hostId);
+      const attachmentPath = await storeImageAttachment(fixture);
+      const { open, thread } = await openRunningNativeThread(fixture, {
+        providerId,
+      });
+      const cli = startFakeCli(fixture, open.terminalId, (pasted) =>
+        pasted.endsWith(".png")
+          ? "\u001b[2;1H\u001b[2K\u276f [Image #1]"
+          : null,
+      );
+      try {
+        const response = await postJson(fixture, `/threads/${thread.id}/send`, {
+          input: [
+            ...textInput("run the tests"),
+            { type: "localImage", path: attachmentPath },
+          ],
+          mode: "auto",
+        });
+        expect(response.status).toBe(409);
+        expect(apiErrorSchema.parse(await readJson(response)).code).toBe(
+          "native_terminal_input_not_shown",
+        );
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        expect(cli.inputs()).toEqual([
+          `\u001b[200~${storedAttachmentPath(fixture, attachmentPath)}\u001b[201~`,
+          "\u001b[200~run the tests\u001b[201~",
+        ]);
+      } finally {
+        cli.stop();
+      }
+    },
+    10_000,
+  );
+
+  it("stops before the message when the CLI never shows the attachment", async () => {
+    const fixture = await createFixture();
+    seedPrimaryHost(fixture.harness.deps, fixture.hostId);
+    const attachmentPath = await storeImageAttachment(fixture);
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+    });
+    const cli = startFakeCli(fixture, open.terminalId, () => null);
+    try {
+      const response = await postJson(fixture, `/threads/${thread.id}/send`, {
+        input: [
+          ...textInput("run the tests"),
+          { type: "localImage", path: attachmentPath },
+        ],
+        mode: "auto",
+      });
+      expect(response.status).toBe(409);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(cli.inputs()).toEqual([
+        `\u001b[200~${storedAttachmentPath(fixture, attachmentPath)}\u001b[201~`,
+      ]);
+    } finally {
+      cli.stop();
+    }
+  }, 10_000);
 
   it("presses Enter when Claude Code draws a pasted image as a chip", async () => {
     const fixture = await createFixture();
@@ -785,6 +1059,76 @@ describe("native terminal threads", () => {
       cli.stop();
     }
   }, 10_000);
+
+  it.each(["claude-code", "codex"])(
+    "pastes no attachment for %s when the screen already shows the message",
+    async (providerId) => {
+      const fixture = await createFixture();
+      seedPrimaryHost(fixture.harness.deps, fixture.hostId);
+      const attachmentPath = await storeImageAttachment(fixture);
+      const { open, thread } = await openRunningNativeThread(fixture, {
+        providerId,
+      });
+      const cli = startFakeCli(
+        fixture,
+        open.terminalId,
+        () => "\u001b[6;1H\u001b[2K\u203a [Image #1]",
+        "\u001b[2;1H\u203a [Image #1] What colour is this picture?\r\n\u2022 Green",
+      );
+      try {
+        const response = await postJson(fixture, `/threads/${thread.id}/send`, {
+          input: [
+            ...textInput("What colour is this picture?"),
+            { type: "localImage", path: attachmentPath },
+          ],
+          mode: "auto",
+        });
+        expect(response.status).toBe(409);
+        expect(apiErrorSchema.parse(await readJson(response)).code).toBe(
+          "native_terminal_input_ambiguous",
+        );
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        expect(cli.inputs()).toEqual([]);
+      } finally {
+        cli.stop();
+      }
+    },
+  );
+
+  it("says the attachment is still in the input box when the message appears on screen after it was pasted", async () => {
+    const fixture = await createFixture();
+    seedPrimaryHost(fixture.harness.deps, fixture.hostId);
+    const attachmentPath = await storeImageAttachment(fixture);
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+    });
+    const cli = startFakeCli(
+      fixture,
+      open.terminalId,
+      () =>
+        "\u001b[2;1H\u2022 You could say: run the tests\u001b[6;1H\u001b[2K\u203a [Image #1]",
+    );
+    try {
+      const response = await postJson(fixture, `/threads/${thread.id}/send`, {
+        input: [
+          ...textInput("run the tests"),
+          { type: "localImage", path: attachmentPath },
+        ],
+        mode: "auto",
+      });
+      expect(response.status).toBe(409);
+      const error = apiErrorSchema.parse(await readJson(response));
+      expect(error.code).toBe("native_terminal_input_ambiguous");
+      expect(error.message).toContain("still in the input box");
+      expect(error.message).not.toContain("nothing was sent");
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(cli.inputs()).toEqual([
+        `\u001b[200~${storedAttachmentPath(fixture, attachmentPath)}\u001b[201~`,
+      ]);
+    } finally {
+      cli.stop();
+    }
+  });
 
   it("sends nothing when a redrawn menu already shows the reply", async () => {
     const fixture = await createFixture();
@@ -1258,6 +1602,915 @@ describe("native terminal threads", () => {
         ?.terminalSessionId,
     ).toBe(finishedOpen.terminalId);
   });
+
+  async function restartDaemonWithRunningNativeThread(
+    instanceId: string,
+    options: {
+      beforeRestart?: (fixture: Fixture) => void;
+      deferProviders?: boolean;
+    } = {},
+  ) {
+    const fixture = await createFixture();
+    const running = await openRunningNativeThread(fixture, {
+      providerId: "claude-code",
+    });
+    applyLoggedThreadLifecycleEvent(fixture.harness.deps, {
+      event: { type: "run.started" },
+      threadId: running.thread.id,
+    });
+    expect(getThread(fixture.harness.db, running.thread.id)?.status).toBe(
+      "active",
+    );
+    options.beforeRestart?.(fixture);
+    handleDaemonSocketClosed(fixture.harness.deps, {
+      sessionId: fixture.sessionId,
+    });
+    const lateProviders = options.deferProviders
+      ? createProviderRegistryService({ deferRegistrationsSettled: true })
+      : null;
+    if (lateProviders !== null) {
+      fixture.harness.deps.providerRegistry = lateProviders;
+    }
+    const opened = await fixture.harness.app.request("/internal/session/open", {
+      method: "POST",
+      headers: internalAuthHeaders(fixture.harness, {
+        hostId: fixture.hostId,
+      }),
+      body: JSON.stringify({
+        hostId: fixture.hostId,
+        instanceId,
+        hostName: "Test Host",
+        hasMachineCredential: false,
+        platform: "darwin",
+        dataDir: "/tmp/host-daemon-restart",
+        localApiPort: null,
+        protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
+        activeThreads: [],
+        undeliveredEventThreadIds: [],
+      }),
+    });
+    expect(opened.status).toBe(201);
+    const { sessionId } = (await readJson(opened)) as { sessionId: string };
+    const socket = createFakeDaemonSocket();
+    onDaemonSocketOpen(fixture.harness.deps, {
+      hostId: fixture.hostId,
+      sessionId,
+      socket,
+    });
+    return { fixture, lateProviders, running, sessionId, socket };
+  }
+
+  function interruptionReasons(fixture: Fixture, threadId: string): string[] {
+    return listEvents(fixture.harness.db, { threadId })
+      .filter((row) => row.type === "system/thread/interrupted")
+      .map((row) => (JSON.parse(row.data) as { reason: string }).reason);
+  }
+
+  it("keeps a running native thread active across a real daemon restart when its holder survives and the reattach lands", async () => {
+    const { fixture, running, sessionId, socket } =
+      await restartDaemonWithRunningNativeThread("instance-restarted");
+    const reopen = await waitForTerminalOpen(socket);
+    expect(reopen.threadId).toBe(running.thread.id);
+    expect(reopen.start.mode === "command" && reopen.start.command).toContain(
+      "--reattach",
+    );
+    expect(interruptionReasons(fixture, running.thread.id)).toEqual([]);
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.hostId,
+      sessionId,
+      message: {
+        type: "terminal.opened",
+        requestId: reopen.requestId,
+        terminalId: reopen.terminalId,
+        shell: "/bin/zsh",
+        title: "zsh",
+        initialCwd: "/tmp/native-workspace",
+        cols: reopen.cols,
+        rows: reopen.rows,
+      },
+    });
+    await expect
+      .poll(
+        () =>
+          getNativeTerminalThread(fixture.harness.db, running.thread.id)
+            ?.terminalSessionId,
+      )
+      .toBe(reopen.terminalId);
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    expect(getThread(fixture.harness.db, running.thread.id)?.status).toBe(
+      "active",
+    );
+    expect(interruptionReasons(fixture, running.thread.id)).toEqual([]);
+  });
+
+  it("interrupts a running native thread after a real daemon restart when the reattach finds the holder gone", async () => {
+    const { fixture, running, sessionId, socket } =
+      await restartDaemonWithRunningNativeThread("instance-restarted");
+    const reopen = await waitForTerminalOpen(socket);
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.hostId,
+      sessionId,
+      message: {
+        type: "terminal.opened",
+        requestId: reopen.requestId,
+        terminalId: reopen.terminalId,
+        shell: "/bin/zsh",
+        title: "zsh",
+        initialCwd: "/tmp/native-workspace",
+        cols: reopen.cols,
+        rows: reopen.rows,
+      },
+    });
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.hostId,
+      sessionId,
+      message: {
+        type: "terminal.exited",
+        terminalId: reopen.terminalId,
+        exitCode: 0,
+        closeReason: "process-exit",
+      },
+    });
+    await expect
+      .poll(() => interruptionReasons(fixture, running.thread.id), {
+        timeout: 5000,
+      })
+      .toEqual(["host-daemon-restarted"]);
+    expect(getThread(fixture.harness.db, running.thread.id)?.status).not.toBe(
+      "active",
+    );
+  });
+
+  it("keeps a running native thread active and reattaches the same CLI session when its provider registers after the settle timeout", async () => {
+    const sourceRegistry = await createTestProviderRegistry();
+    const registration = sourceRegistry.get("claude-code");
+    if (registration === null) throw new Error("claude-code is not seeded");
+    const { fixture, lateProviders, running, sessionId, socket } =
+      await restartDaemonWithRunningNativeThread("instance-restarted", {
+        deferProviders: true,
+      });
+    const nativeSessionBefore = getNativeTerminalThread(
+      fixture.harness.db,
+      running.thread.id,
+    )?.nativeSessionId;
+    await new Promise((resolve) => setTimeout(resolve, 30_500));
+    expect(
+      daemonMessages(socket).filter(
+        (message) => message.type === "terminal.open",
+      ),
+    ).toHaveLength(0);
+    expect(getThread(fixture.harness.db, running.thread.id)?.status).toBe(
+      "active",
+    );
+    expect(interruptionReasons(fixture, running.thread.id)).toEqual([]);
+
+    lateProviders?.register(registration);
+    const reopen = await waitForTerminalOpen(socket);
+    expect(reopen.threadId).toBe(running.thread.id);
+    expect(reopen.start.mode === "command" && reopen.start.command).toContain(
+      `native-run ${running.thread.id} --reattach`,
+    );
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.hostId,
+      sessionId,
+      message: {
+        type: "terminal.opened",
+        requestId: reopen.requestId,
+        terminalId: reopen.terminalId,
+        shell: "/bin/zsh",
+        title: "zsh",
+        initialCwd: "/tmp/native-workspace",
+        cols: reopen.cols,
+        rows: reopen.rows,
+      },
+    });
+    await expect
+      .poll(
+        () =>
+          getNativeTerminalThread(fixture.harness.db, running.thread.id)
+            ?.terminalSessionId,
+      )
+      .toBe(reopen.terminalId);
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    expect(getThread(fixture.harness.db, running.thread.id)?.status).toBe(
+      "active",
+    );
+    expect(interruptionReasons(fixture, running.thread.id)).toEqual([]);
+    expect(
+      getNativeTerminalThread(fixture.harness.db, running.thread.id)
+        ?.nativeSessionId,
+    ).toBe(nativeSessionBefore);
+  }, 60_000);
+
+  it("interrupts a running native thread once when the provider never registers before the reattach deadline, and lets a new reconnect resume it", async () => {
+    const sourceRegistry = await createTestProviderRegistry();
+    const registration = sourceRegistry.get("claude-code");
+    if (registration === null) throw new Error("claude-code is not seeded");
+    let restoreTimers = false;
+    try {
+      const { fixture, lateProviders, running, sessionId, socket } =
+        await restartDaemonWithRunningNativeThread("instance-restarted", {
+          beforeRestart: () => {
+            vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+            restoreTimers = true;
+          },
+          deferProviders: true,
+        });
+      await vi.advanceTimersByTimeAsync(44_000);
+      expect(getThread(fixture.harness.db, running.thread.id)?.status).toBe(
+        "active",
+      );
+      expect(interruptionReasons(fixture, running.thread.id)).toEqual([]);
+
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(getThread(fixture.harness.db, running.thread.id)?.status).not.toBe(
+        "active",
+      );
+      expect(interruptionReasons(fixture, running.thread.id)).toEqual([
+        "host-daemon-restarted",
+      ]);
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(interruptionReasons(fixture, running.thread.id)).toEqual([
+        "host-daemon-restarted",
+      ]);
+
+      vi.useRealTimers();
+      restoreTimers = false;
+      lateProviders?.register(registration);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(
+        daemonMessages(socket).filter(
+          (message) => message.type === "terminal.open",
+        ),
+      ).toHaveLength(0);
+      void reopenNativeTerminalsAfterDaemonReconnect(fixture.harness.deps, {
+        hostId: fixture.hostId,
+        threadIds: [running.thread.id],
+      });
+      const reopen = await waitForTerminalOpen(socket);
+      expect(reopen.threadId).toBe(running.thread.id);
+      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.hostId,
+        sessionId,
+        message: {
+          type: "terminal.opened",
+          requestId: reopen.requestId,
+          terminalId: reopen.terminalId,
+          shell: "/bin/zsh",
+          title: "zsh",
+          initialCwd: "/tmp/native-workspace",
+          cols: reopen.cols,
+          rows: reopen.rows,
+        },
+      });
+      await expect
+        .poll(
+          () =>
+            getNativeTerminalThread(fixture.harness.db, running.thread.id)
+              ?.terminalSessionId,
+        )
+        .toBe(reopen.terminalId);
+      recordNativeTerminalActivity(fixture.harness.deps, {
+        threadId: running.thread.id,
+        state: "working",
+      });
+      expect(getThread(fixture.harness.db, running.thread.id)?.status).toBe(
+        "active",
+      );
+    } finally {
+      if (restoreTimers) vi.useRealTimers();
+    }
+  }, 60_000);
+
+  it("does not let a stale reattach deadline interrupt a thread an overlapping explicit open already recovered", async () => {
+    const sourceRegistry = await createTestProviderRegistry();
+    let restoreTimers = false;
+    try {
+      const { fixture, running, sessionId, socket } =
+        await restartDaemonWithRunningNativeThread("instance-restarted", {
+          beforeRestart: () => {
+            vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+            restoreTimers = true;
+          },
+          deferProviders: true,
+        });
+      const reconnectRegistry = fixture.harness.deps.providerRegistry;
+      let explicitPhase = true;
+      fixture.harness.deps.providerRegistry = {
+        ...sourceRegistry,
+        get: (providerId: string) =>
+          explicitPhase ? sourceRegistry.get(providerId) : null,
+        onProviderRegistered: reconnectRegistry.onProviderRegistered,
+        whenProviderRegistered: reconnectRegistry.whenProviderRegistered,
+      };
+      const explicitOpen = postJson(
+        fixture,
+        `/threads/${running.thread.id}/native-terminal/open`,
+        {},
+      );
+      let explicit: TerminalOpenMessage | undefined;
+      for (
+        let attempt = 0;
+        attempt < 200 && explicit === undefined;
+        attempt++
+      ) {
+        await vi.advanceTimersByTimeAsync(10);
+        explicit = daemonMessages(socket).find(
+          (message): message is TerminalOpenMessage =>
+            message.type === "terminal.open",
+        );
+      }
+      if (explicit === undefined) throw new Error("explicit open never sent");
+      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.hostId,
+        sessionId,
+        message: {
+          type: "terminal.opened",
+          requestId: explicit.requestId,
+          terminalId: explicit.terminalId,
+          shell: "/bin/zsh",
+          title: "zsh",
+          initialCwd: "/tmp/native-workspace",
+          cols: explicit.cols,
+          rows: explicit.rows,
+        },
+      });
+      await vi.advanceTimersByTimeAsync(10);
+      expect((await explicitOpen).status).toBe(200);
+      expect(
+        getNativeTerminalThread(fixture.harness.db, running.thread.id)
+          ?.terminalSessionId,
+      ).toBe(explicit.terminalId);
+
+      explicitPhase = false;
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(getThread(fixture.harness.db, running.thread.id)?.status).toBe(
+        "active",
+      );
+      expect(interruptionReasons(fixture, running.thread.id)).toEqual([]);
+    } finally {
+      if (restoreTimers) vi.useRealTimers();
+    }
+  }, 60_000);
+
+  it("does not let a stale reattach deadline interrupt a thread a newer open recovered on the same terminal id", async () => {
+    const sourceRegistry = await createTestProviderRegistry();
+    let restoreTimers = false;
+    try {
+      const { fixture, running } = await restartDaemonWithRunningNativeThread(
+        "instance-restarted",
+        {
+          beforeRestart: () => {
+            vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+            restoreTimers = true;
+          },
+          deferProviders: true,
+        },
+      );
+      const reconnectRegistry = fixture.harness.deps.providerRegistry;
+      let explicitPhase = true;
+      fixture.harness.deps.providerRegistry = {
+        ...sourceRegistry,
+        get: (providerId: string) =>
+          explicitPhase ? sourceRegistry.get(providerId) : null,
+        onProviderRegistered: reconnectRegistry.onProviderRegistered,
+        whenProviderRegistered: reconnectRegistry.whenProviderRegistered,
+      };
+      const terminalId = getNativeTerminalThread(
+        fixture.harness.db,
+        running.thread.id,
+      )?.terminalSessionId;
+      if (terminalId === null || terminalId === undefined) {
+        throw new Error("native thread has no terminal");
+      }
+      fixture.harness.db
+        .update(terminalSessions)
+        .set({ status: "running", closeReason: null })
+        .where(eq(terminalSessions.id, terminalId))
+        .run();
+      const reopened = await postJson(
+        fixture,
+        `/threads/${running.thread.id}/native-terminal/open`,
+        {},
+      );
+      expect(reopened.status).toBe(200);
+      expect(
+        getNativeTerminalThread(fixture.harness.db, running.thread.id)
+          ?.terminalSessionId,
+      ).toBe(terminalId);
+
+      explicitPhase = false;
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(getThread(fixture.harness.db, running.thread.id)?.status).toBe(
+        "active",
+      );
+      expect(interruptionReasons(fixture, running.thread.id)).toEqual([]);
+    } finally {
+      if (restoreTimers) vi.useRealTimers();
+    }
+  }, 60_000);
+
+  async function restartWithFailingReattach(
+    failure: (attempt: number) => Error | null,
+  ) {
+    let attempts = 0;
+    const restart = await restartDaemonWithRunningNativeThread(
+      "instance-restarted",
+      {
+        beforeRestart: (fixture) => {
+          vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+          const terminals = fixture.harness.deps.terminalSessions;
+          const createTerminal = terminals.createTerminal.bind(terminals);
+          vi.spyOn(terminals, "createTerminal").mockImplementation(
+            async (createArgs) => {
+              attempts += 1;
+              const error = failure(attempts);
+              if (error !== null) throw error;
+              return createTerminal(createArgs);
+            },
+          );
+        },
+      },
+    );
+    return { ...restart, attempts: () => attempts };
+  }
+
+  it("keeps a running native thread active when a transient reattach failure is followed by a successful retry", async () => {
+    const { fixture, running, sessionId, socket, attempts } =
+      await restartWithFailingReattach((attempt) =>
+        attempt === 1
+          ? new ApiError(502, "host_disconnected", "Host is not connected")
+          : null,
+      );
+    try {
+      let reopen: TerminalOpenMessage | undefined;
+      for (let step = 0; step < 400 && reopen === undefined; step += 1) {
+        await vi.advanceTimersByTimeAsync(50);
+        reopen = daemonMessages(socket).find(
+          (message): message is TerminalOpenMessage =>
+            message.type === "terminal.open",
+        );
+      }
+      if (reopen === undefined) throw new Error("retry never reopened");
+      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.hostId,
+        sessionId,
+        message: {
+          type: "terminal.opened",
+          requestId: reopen.requestId,
+          terminalId: reopen.terminalId,
+          shell: "/bin/zsh",
+          title: "zsh",
+          initialCwd: "/tmp/native-workspace",
+          cols: reopen.cols,
+          rows: reopen.rows,
+        },
+      });
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(attempts()).toBe(2);
+      expect(getThread(fixture.harness.db, running.thread.id)?.status).toBe(
+        "active",
+      );
+      expect(interruptionReasons(fixture, running.thread.id)).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 60_000);
+
+  it("interrupts a running native thread exactly once at the deadline when every reattach attempt fails transiently", async () => {
+    const { fixture, running, attempts } = await restartWithFailingReattach(
+      () => new ApiError(502, "host_disconnected", "Host is not connected"),
+    );
+    try {
+      await vi.advanceTimersByTimeAsync(44_000);
+      expect(getThread(fixture.harness.db, running.thread.id)?.status).toBe(
+        "active",
+      );
+      expect(interruptionReasons(fixture, running.thread.id)).toEqual([]);
+      expect(attempts()).toBeGreaterThan(1);
+
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(interruptionReasons(fixture, running.thread.id)).toEqual([
+        "host-daemon-restarted",
+      ]);
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(interruptionReasons(fixture, running.thread.id)).toEqual([
+        "host-daemon-restarted",
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 60_000);
+
+  it("interrupts a running native thread at once when the reattached terminal exits before its open completes", async () => {
+    const { fixture, running, sessionId, socket } =
+      await restartWithFailingReattach(() => null);
+    try {
+      let reopen: TerminalOpenMessage | undefined;
+      for (let step = 0; step < 400 && reopen === undefined; step += 1) {
+        await vi.advanceTimersByTimeAsync(50);
+        reopen = daemonMessages(socket).find(
+          (message): message is TerminalOpenMessage =>
+            message.type === "terminal.open",
+        );
+      }
+      if (reopen === undefined) throw new Error("reattach never opened");
+      const terminals = fixture.harness.deps.terminalSessions;
+      terminals.handleDaemonTerminalMessage({
+        hostId: fixture.hostId,
+        sessionId,
+        message: {
+          type: "terminal.opened",
+          requestId: reopen.requestId,
+          terminalId: reopen.terminalId,
+          shell: "/bin/zsh",
+          title: "zsh",
+          initialCwd: "/tmp/native-workspace",
+          cols: reopen.cols,
+          rows: reopen.rows,
+        },
+      });
+      terminals.handleDaemonTerminalMessage({
+        hostId: fixture.hostId,
+        sessionId,
+        message: {
+          type: "terminal.exited",
+          terminalId: reopen.terminalId,
+          exitCode: 0,
+          closeReason: "process-exit",
+        },
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(interruptionReasons(fixture, running.thread.id)).toEqual([
+        "host-daemon-restarted",
+      ]);
+      expect(
+        daemonMessages(socket).filter(
+          (message) => message.type === "terminal.open",
+        ),
+      ).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(interruptionReasons(fixture, running.thread.id)).toEqual([
+        "host-daemon-restarted",
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 60_000);
+
+  it("does not interrupt a reattached native thread whose terminal is closed for a reason other than the process exiting", async () => {
+    const { fixture, running, sessionId, socket } =
+      await restartWithFailingReattach(() => null);
+    try {
+      let reopen: TerminalOpenMessage | undefined;
+      for (let step = 0; step < 400 && reopen === undefined; step += 1) {
+        await vi.advanceTimersByTimeAsync(50);
+        reopen = daemonMessages(socket).find(
+          (message): message is TerminalOpenMessage =>
+            message.type === "terminal.open",
+        );
+      }
+      if (reopen === undefined) throw new Error("reattach never opened");
+      const terminals = fixture.harness.deps.terminalSessions;
+      terminals.handleDaemonTerminalMessage({
+        hostId: fixture.hostId,
+        sessionId,
+        message: {
+          type: "terminal.opened",
+          requestId: reopen.requestId,
+          terminalId: reopen.terminalId,
+          shell: "/bin/zsh",
+          title: "zsh",
+          initialCwd: "/tmp/native-workspace",
+          cols: reopen.cols,
+          rows: reopen.rows,
+        },
+      });
+      await vi.advanceTimersByTimeAsync(100);
+      terminals.handleDaemonTerminalMessage({
+        hostId: fixture.hostId,
+        sessionId,
+        message: {
+          type: "terminal.exited",
+          terminalId: reopen.terminalId,
+          exitCode: null,
+          closeReason: "user",
+        },
+      });
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(getThread(fixture.harness.db, running.thread.id)?.status).toBe(
+        "active",
+      );
+      expect(interruptionReasons(fixture, running.thread.id)).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 60_000);
+
+  it.each([
+    [
+      "an unlisted 4xx ApiError",
+      () => new ApiError(400, "invalid_request", "Bad"),
+    ],
+    ["an ordinary Error", () => new Error("boom")],
+  ])(
+    "retries %s until the deadline and then interrupts exactly once",
+    async (_name, makeError) => {
+      const { fixture, running, attempts } =
+        await restartWithFailingReattach(makeError);
+      try {
+        await vi.advanceTimersByTimeAsync(44_000);
+        expect(getThread(fixture.harness.db, running.thread.id)?.status).toBe(
+          "active",
+        );
+        expect(interruptionReasons(fixture, running.thread.id)).toEqual([]);
+        expect(attempts()).toBeGreaterThan(5);
+
+        await vi.advanceTimersByTimeAsync(2_000);
+        expect(interruptionReasons(fixture, running.thread.id)).toEqual([
+          "host-daemon-restarted",
+        ]);
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(interruptionReasons(fixture, running.thread.id)).toEqual([
+          "host-daemon-restarted",
+        ]);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+    60_000,
+  );
+
+  it("does not start another reattach after the deadline and discards one that resolves late", async () => {
+    let releaseHeld: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      releaseHeld = resolve;
+    });
+    let attempts = 0;
+    const { fixture, running, sessionId, socket } =
+      await restartDaemonWithRunningNativeThread("instance-restarted", {
+        beforeRestart: (beforeFixture) => {
+          vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+          const terminals = beforeFixture.harness.deps.terminalSessions;
+          const createTerminal = terminals.createTerminal.bind(terminals);
+          vi.spyOn(terminals, "createTerminal").mockImplementation(
+            async (createArgs) => {
+              attempts += 1;
+              if (attempts < 23) {
+                throw new ApiError(502, "host_disconnected", "Host is gone");
+              }
+              await held;
+              return createTerminal(createArgs);
+            },
+          );
+        },
+      });
+    try {
+      await vi.advanceTimersByTimeAsync(44_500);
+      expect(attempts).toBe(23);
+      expect(interruptionReasons(fixture, running.thread.id)).toEqual([]);
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(interruptionReasons(fixture, running.thread.id)).toEqual([
+        "host-daemon-restarted",
+      ]);
+
+      releaseHeld();
+      let late: TerminalOpenMessage | undefined;
+      for (let step = 0; step < 400 && late === undefined; step += 1) {
+        await vi.advanceTimersByTimeAsync(50);
+        late = daemonMessages(socket).find(
+          (message): message is TerminalOpenMessage =>
+            message.type === "terminal.open",
+        );
+      }
+      if (late === undefined) throw new Error("held attempt never opened");
+      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.hostId,
+        sessionId,
+        message: {
+          type: "terminal.opened",
+          requestId: late.requestId,
+          terminalId: late.terminalId,
+          shell: "/bin/zsh",
+          title: "zsh",
+          initialCwd: "/tmp/native-workspace",
+          cols: late.cols,
+          rows: late.rows,
+        },
+      });
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      expect(attempts).toBe(23);
+      expect(
+        daemonMessages(socket).filter(
+          (message) => message.type === "terminal.open",
+        ),
+      ).toHaveLength(1);
+      expect(
+        daemonMessages(socket).some(
+          (message) =>
+            message.type === "terminal.close" &&
+            message.terminalId === late.terminalId,
+        ),
+      ).toBe(true);
+      expect(interruptionReasons(fixture, running.thread.id)).toEqual([
+        "host-daemon-restarted",
+      ]);
+      expect(getThread(fixture.harness.db, running.thread.id)?.status).not.toBe(
+        "active",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 60_000);
+
+  it("discards a reattach that resolves past the monotonic deadline before the deadline timer runs, and interrupts exactly once", async () => {
+    const sourceRegistry = await createTestProviderRegistry();
+    const registration = sourceRegistry.get("claude-code");
+    if (registration === null) throw new Error("claude-code is not seeded");
+    let now = 0;
+    try {
+      const { fixture, lateProviders, running, sessionId, socket } =
+        await restartDaemonWithRunningNativeThread("instance-restarted", {
+          beforeRestart: () => {
+            vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+          },
+          deferProviders: true,
+        });
+      void reopenNativeTerminalsAfterDaemonReconnect(
+        fixture.harness.deps,
+        { hostId: fixture.hostId, threadIds: [running.thread.id] },
+        () => now,
+      );
+      lateProviders?.register(registration);
+      let opening: TerminalOpenMessage | undefined;
+      for (let step = 0; step < 400 && opening === undefined; step += 1) {
+        await vi.advanceTimersByTimeAsync(5);
+        opening = daemonMessages(socket).find(
+          (message): message is TerminalOpenMessage =>
+            message.type === "terminal.open",
+        );
+      }
+      if (opening === undefined) throw new Error("reattach never opened");
+      now = 45_001;
+      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.hostId,
+        sessionId,
+        message: {
+          type: "terminal.opened",
+          requestId: opening.requestId,
+          terminalId: opening.terminalId,
+          shell: "/bin/zsh",
+          title: "zsh",
+          initialCwd: "/tmp/native-workspace",
+          cols: opening.cols,
+          rows: opening.rows,
+        },
+      });
+      for (let step = 0; step < 40; step += 1) {
+        await vi.advanceTimersByTimeAsync(50);
+        if (
+          daemonMessages(socket).some(
+            (message) =>
+              message.type === "terminal.close" &&
+              message.terminalId === opening.terminalId,
+          )
+        ) {
+          break;
+        }
+      }
+
+      expect(
+        daemonMessages(socket).some(
+          (message) =>
+            message.type === "terminal.close" &&
+            message.terminalId === opening.terminalId,
+        ),
+      ).toBe(true);
+      expect(interruptionReasons(fixture, running.thread.id)).toEqual([
+        "host-daemon-restarted",
+      ]);
+      expect(getThread(fixture.harness.db, running.thread.id)?.status).not.toBe(
+        "active",
+      );
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(interruptionReasons(fixture, running.thread.id)).toEqual([
+        "host-daemon-restarted",
+      ]);
+      expect(
+        daemonMessages(socket).filter(
+          (message) => message.type === "terminal.open",
+        ),
+      ).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 60_000);
+
+  it("never starts an attempt once the monotonic clock has reached the deadline, even though the deadline timer has not fired", async () => {
+    const sourceRegistry = await createTestProviderRegistry();
+    const registration = sourceRegistry.get("claude-code");
+    if (registration === null) throw new Error("claude-code is not seeded");
+    let now = 0;
+    let attempts = 0;
+    try {
+      const { fixture, lateProviders, running, socket } =
+        await restartDaemonWithRunningNativeThread("instance-restarted", {
+          beforeRestart: () => {
+            vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+          },
+          deferProviders: true,
+        });
+      vi.spyOn(
+        fixture.harness.deps.terminalSessions,
+        "createTerminal",
+      ).mockImplementation(async () => {
+        attempts += 1;
+        now = 45_000;
+        throw new ApiError(502, "host_disconnected", "Host is gone");
+      });
+      const reopening = reopenNativeTerminalsAfterDaemonReconnect(
+        fixture.harness.deps,
+        { hostId: fixture.hostId, threadIds: [running.thread.id] },
+        () => now,
+      );
+      lateProviders?.register(registration);
+      let finished = false;
+      void reopening.then(() => {
+        finished = true;
+      });
+      for (let step = 0; step < 100 && !finished; step += 1) {
+        await vi.advanceTimersByTimeAsync(100);
+      }
+      expect(finished).toBe(true);
+
+      expect(attempts).toBe(1);
+      expect(interruptionReasons(fixture, running.thread.id)).toEqual([
+        "host-daemon-restarted",
+      ]);
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(attempts).toBe(1);
+      expect(interruptionReasons(fixture, running.thread.id)).toEqual([
+        "host-daemon-restarted",
+      ]);
+      expect(
+        daemonMessages(socket).filter(
+          (message) => message.type === "terminal.open",
+        ),
+      ).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 60_000);
+
+  it("retries a cancelled reattach open that did not come from the terminal exiting and interrupts only at the deadline", async () => {
+    const { fixture, running, attempts } = await restartWithFailingReattach(
+      () => new ApiError(409, "terminal_open_cancelled", "Cancelled"),
+    );
+    try {
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(getThread(fixture.harness.db, running.thread.id)?.status).toBe(
+        "active",
+      );
+      expect(interruptionReasons(fixture, running.thread.id)).toEqual([]);
+      expect(attempts()).toBeGreaterThan(2);
+
+      await vi.advanceTimersByTimeAsync(27_000);
+      expect(interruptionReasons(fixture, running.thread.id)).toEqual([
+        "host-daemon-restarted",
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 60_000);
+
+  it.each(["ENOENT", "ECONNREFUSED"])(
+    "treats a %s failure of the reattach open as transient and interrupts only at the deadline",
+    async (code) => {
+      const { fixture, running, attempts } = await restartWithFailingReattach(
+        () => Object.assign(new Error(`connect ${code}`), { code }),
+      );
+      try {
+        await vi.advanceTimersByTimeAsync(44_000);
+        expect(getThread(fixture.harness.db, running.thread.id)?.status).toBe(
+          "active",
+        );
+        expect(interruptionReasons(fixture, running.thread.id)).toEqual([]);
+        expect(attempts()).toBeGreaterThan(1);
+
+        await vi.advanceTimersByTimeAsync(2_000);
+        expect(interruptionReasons(fixture, running.thread.id)).toEqual([
+          "host-daemon-restarted",
+        ]);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+    60_000,
+  );
 
   it("gives an explicit open its own launch when it overlaps a reconnect reopen", async () => {
     const fixture = await createFixture();

@@ -206,6 +206,51 @@ export const providerNativeTerminalSchema = z
       ),
     launchArgs: templateArgsSchema([]),
     modelArgs: templateArgsSchema(["model"]),
+    experimental_launchEnvArgs: z
+      .object({
+        required: z
+          .array(environmentVariableNameSchema)
+          .min(1)
+          .max(PROVIDER_NATIVE_TERMINAL_MAX_ARGS),
+        args: z
+          .array(
+            z.union([
+              z.string().min(1).max(256),
+              z
+                .object({
+                  env: environmentVariableNameSchema,
+                  prefix: z.string().max(256),
+                })
+                .strict(),
+            ]),
+          )
+          .max(32),
+        experimental_filterConfig: z
+          .object({
+            root: providerNativeTerminalSessionRootSchema,
+            file: relativePatternSchema([]),
+            setting: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/u),
+            flag: z.string().min(1).max(64),
+            exclude: z.array(z.string().min(1).max(256)).min(1).max(16),
+            policyFiles: z.array(z.string().min(1).max(512)).max(16).optional(),
+            ancestorFile: relativePatternSchema([]).optional(),
+            presenceFiles: z
+              .partialRecord(
+                z.enum(["darwin", "linux", "win32"]),
+                z.array(z.string().min(1).max(512)).max(16),
+              )
+              .optional(),
+            unsupportedPlatforms: z
+              .array(z.enum(["darwin", "linux", "win32"]))
+              .max(3)
+              .optional(),
+          })
+          .strict()
+          .optional(),
+      })
+      .strict()
+      .optional(),
+    imageArgs: templateArgsSchema(["image"]).optional(),
     pastePlaceholders: z.array(z.string().trim().min(4).max(64)).max(4),
     sessionRoot: providerNativeTerminalSessionRootSchema,
     session: z.discriminatedUnion("kind", [
@@ -213,9 +258,21 @@ export const providerNativeTerminalSchema = z
       providerNativeTerminalDiscoveredSessionSchema,
     ]),
     activity: providerNativeTerminalActivitySchema.optional(),
+    mcp: templateArgsSchema(["commandJson", "argsJson"]).optional(),
   })
   .strict()
   .superRefine((spec, context) => {
+    if (
+      spec.mcp !== undefined &&
+      (!requiresToken(spec.mcp, "commandJson") ||
+        !requiresToken(spec.mcp, "argsJson"))
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["mcp"],
+        message: "must pass {commandJson} and {argsJson}",
+      });
+    }
     if (spec.modelArgs.length > 0 && !requiresToken(spec.modelArgs, "model")) {
       context.addIssue({
         code: "custom",
@@ -223,10 +280,38 @@ export const providerNativeTerminalSchema = z
         message: "must pass {model} when not empty",
       });
     }
+    if (
+      spec.imageArgs !== undefined &&
+      spec.imageArgs.length > 0 &&
+      !requiresToken(spec.imageArgs, "image")
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["imageArgs"],
+        message: "must pass {image} when not empty",
+      });
+    }
   });
 export type ProviderNativeTerminal = z.infer<
   typeof providerNativeTerminalSchema
 >;
+
+export function nativeTerminalEnvArgs(
+  declaration: ProviderNativeTerminal["experimental_launchEnvArgs"],
+  env: Readonly<Record<string, string | undefined>>,
+): string[] {
+  if (
+    declaration === undefined ||
+    declaration.required.some((name) => !env[name]) ||
+    declaration.args.some((arg) => typeof arg !== "string" && !env[arg.env])
+  )
+    return [];
+  return declaration.args.map((arg) =>
+    typeof arg === "string"
+      ? arg
+      : `${arg.prefix}${JSON.stringify(env[arg.env])}`,
+  );
+}
 
 export function fillNativeTerminalTemplate(
   value: string,

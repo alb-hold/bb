@@ -21,7 +21,7 @@ export {
   recordThreadSpawner,
 } from "./fork-thread-spawners.js";
 export {
-  consumeNativeTerminalThreadInitialPrompt,
+  consumeNativeTerminalThreadLaunchInput,
   createNativeTerminalThread,
   deleteNativeTerminalThread,
   findNativeTerminalThreadBySession,
@@ -33,6 +33,10 @@ export {
   setNativeTerminalThreadTerminal,
   type NativeTerminalThreadRecord,
   type RecordNativeSessionIdResult,
+  setNativeTerminalToolCredential,
+  getNativeTerminalToolCredential,
+  deleteNativeTerminalToolCredential,
+  type NativeTerminalToolCredentialRecord,
 } from "./fork-native-terminal-threads.js";
 export {
   isSqliteForeignKeyConstraint,

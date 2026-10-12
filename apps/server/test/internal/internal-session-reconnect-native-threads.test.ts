@@ -25,6 +25,7 @@ function seedThreads(harness: TestAppHarness) {
     providerId: "codex",
     nativeSessionId: null,
     initialPrompt: null,
+    initialImages: [],
     model: null,
   });
   return {

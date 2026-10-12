@@ -26,6 +26,7 @@
     "@bb/templates": "workspace:*",
     "@bb/text-utils": "workspace:*",
     "@bb/thread-view": "workspace:*",
+    "@get-bb/plugin-sdk": "workspace:*",
     "cli-table3": "^0.6.5",
     "commander": "^13.0.0",
     "mime-types": "^3.0.2",
@@ -34,6 +35,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "bb-plugin-provider-codex": "workspace:*",
     "@bb/tsconfig": "workspace:*",
     "@tailwindcss/node": "^4.3.0",
     "@tailwindcss/oxide": "^4.3.0",

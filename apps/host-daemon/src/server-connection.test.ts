@@ -529,6 +529,42 @@ describe("ServerConnection", () => {
     }
   });
 
+  it("never logs a native tool credential from an invalid terminal.open frame", async () => {
+    const secret = "native-credential-value-1234567890";
+    const { connection, logger, webSocket } = createConnectionFixture({});
+    try {
+      await connection.start();
+      const socket = webSocket.sockets[0];
+      if (!socket) {
+        throw new Error("Expected test socket");
+      }
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: "terminal.open",
+          contributedEnv: [
+            {
+              name: "BB_NATIVE_TOOL_CREDENTIAL",
+              value: secret,
+              source: { plugin: "claude-code" },
+              reason: "r",
+            },
+          ],
+          terminalId: 7,
+        }),
+      });
+      const logged = JSON.stringify([
+        ...logger.error.mock.calls,
+        ...logger.warn.mock.calls,
+        ...logger.info.mock.calls,
+        ...logger.debug.mock.calls,
+      ]);
+      expect(logged).toContain("Invalid server websocket message");
+      expect(logged).not.toContain(secret);
+    } finally {
+      await connection.shutdown();
+    }
+  });
+
   it("grants a fresh acknowledgement lease after a shorter heartbeat delay", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);

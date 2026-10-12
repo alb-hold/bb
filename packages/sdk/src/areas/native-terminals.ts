@@ -1,5 +1,7 @@
 import type {
   NativeTerminalActivityState,
+  NativeTerminalAgentToolResult,
+  NativeTerminalAgentTools,
   NativeTerminalLaunchSpec,
   NativeTerminalMode,
   NativeTerminalThread,
@@ -9,6 +11,10 @@ import { signalRequestArgs, type CreateSdkAreaArgs } from "./common.js";
 export interface NativeTerminalThreadArgs {
   signal?: AbortSignal;
   threadId: string;
+}
+
+export interface NativeTerminalLaunchArgs extends NativeTerminalThreadArgs {
+  imagesAsArgv?: boolean;
 }
 
 export interface NativeTerminalOpenArgs extends NativeTerminalThreadArgs {
@@ -29,6 +35,12 @@ export interface NativeTerminalReportActivityArgs extends NativeTerminalThreadAr
   prompt?: string;
 }
 
+export interface NativeTerminalCallAgentToolArgs extends NativeTerminalThreadArgs {
+  arguments: Record<string, unknown>;
+  callId: string;
+  tool: string;
+}
+
 export type NativeTerminalThreadResult = NativeTerminalThread;
 export type NativeTerminalLaunchResult = NativeTerminalLaunchSpec;
 
@@ -36,7 +48,11 @@ export interface NativeTerminalsArea {
   get(
     args: NativeTerminalThreadArgs,
   ): Promise<NativeTerminalThreadResult | null>;
-  launch(args: NativeTerminalThreadArgs): Promise<NativeTerminalLaunchResult>;
+  launch(args: NativeTerminalLaunchArgs): Promise<NativeTerminalLaunchResult>;
+  agentTools(args: NativeTerminalThreadArgs): Promise<NativeTerminalAgentTools>;
+  callAgentTool(
+    args: NativeTerminalCallAgentToolArgs,
+  ): Promise<NativeTerminalAgentToolResult>;
   open(args: NativeTerminalOpenArgs): Promise<NativeTerminalThreadResult>;
   recordSession(
     args: NativeTerminalRecordSessionArgs,
@@ -64,7 +80,29 @@ export function createNativeTerminalsArea(
     async launch(input) {
       return transport.readJson(
         route().launch.$post(
+          {
+            param: { id: input.threadId },
+            query: input.imagesAsArgv === true ? { images: "argv" } : {},
+          },
+          ...signalRequestArgs(input.signal),
+        ),
+      );
+    },
+    async agentTools(input) {
+      return transport.readJson(
+        route()["agent-tools"].$get(
           { param: { id: input.threadId } },
+          ...signalRequestArgs(input.signal),
+        ),
+      );
+    },
+    async callAgentTool(input) {
+      return transport.readJson(
+        route()["agent-tools"][":tool"].call.$post(
+          {
+            param: { id: input.threadId, tool: input.tool },
+            json: { callId: input.callId, arguments: input.arguments },
+          },
           ...signalRequestArgs(input.signal),
         ),
       );

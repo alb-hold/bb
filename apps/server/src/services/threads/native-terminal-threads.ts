@@ -1,8 +1,12 @@
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import {
-  consumeNativeTerminalThreadInitialPrompt,
+  consumeNativeTerminalThreadLaunchInput,
+  getNativeTerminalToolCredential,
+  setNativeTerminalToolCredential,
   getEnvironment,
   getNativeTerminalThread,
   getStoredProviderSession,
+  listTerminalSessions,
   getThread,
   listNativeTerminalThreadsWithDisconnectedTerminal,
   recordNativeTerminalThreadSessionId,
@@ -16,16 +20,24 @@ import {
   type ProviderNativeTerminal,
 } from "@bb/domain";
 import type {
+  NativeTerminalAgentTools,
   NativeTerminalLaunchSpec,
   NativeTerminalThread,
   OpenNativeTerminalRequest,
   TerminalSession,
 } from "@bb/server-contract";
 import { ApiError } from "../../errors.js";
-import type { AppDeps } from "../../types.js";
+import type {
+  AppDeps,
+  LoggedPendingInteractionWorkSessionDeps,
+} from "../../types.js";
 import { isServerMachineHost } from "../hosts/primary-host.js";
 import { storedProjectAttachmentPath } from "../projects/attachments.js";
-import { requirePublicThread } from "../lib/entity-lookup.js";
+import {
+  requirePublicThreadEnvironment,
+  requirePublicThread,
+  type ThreadEnvironmentLookupResult,
+} from "../lib/entity-lookup.js";
 import { resolvePluginProviderEnv } from "../plugins/plugin-agent-contributions.js";
 import { applyLoggedThreadLifecycleEventInTransaction } from "./lifecycle-outcome.js";
 import {
@@ -35,7 +47,10 @@ import {
   terminalOutputShowsPasteAgain,
   terminalScreenAlreadyShowsText,
 } from "./native-terminal-echo.js";
+import { resolveThreadDynamicTools } from "./thread-runtime-config.js";
+import { UPDATE_ENVIRONMENT_DIRECTORY_TOOL_NAME } from "./thread-environment-directory.js";
 import { createClientTurnRequestId } from "./thread-events.js";
+import { interruptActiveThreadsForHost } from "./thread-lifecycle.js";
 import { scheduleThreadProvisioningAdvance } from "./thread-provisioning.js";
 import type { ThreadProvisioningDeps } from "./thread-provisioning-environment.js";
 import {
@@ -54,6 +69,9 @@ type NativeTerminalDeps = Pick<
   "config" | "db" | "logger" | "providerRegistry" | "terminalSessions"
 >;
 
+type NativeTerminalReopenDeps = NativeTerminalDeps &
+  LoggedPendingInteractionWorkSessionDeps;
+
 type NativeTerminalViewDeps = Pick<
   AppDeps,
   "db" | "providerRegistry" | "terminalSessions"
@@ -66,6 +84,21 @@ interface PendingNativeTerminalOpen {
 
 const pendingOpens = new Map<string, PendingNativeTerminalOpen>();
 const pendingSends = new Map<string, Promise<void>>();
+const reattachEpochs = new Map<string, number>();
+
+function currentReattachEpoch(threadId: string): number {
+  return reattachEpochs.get(threadId) ?? 0;
+}
+
+function bumpReattachEpoch(threadId: string): number {
+  const next = currentReattachEpoch(threadId) + 1;
+  reattachEpochs.set(threadId, next);
+  return next;
+}
+const NATIVE_REATTACH_POLL_MS = 250;
+const NATIVE_REATTACH_SETTLE_MS = 15_000;
+const NATIVE_REATTACH_DEADLINE_MS = 45_000;
+const NATIVE_REATTACH_RETRY_MS = 2_000;
 const NATIVE_TERMINAL_ECHO_POLL_MS = 100;
 const NATIVE_TERMINAL_ECHO_TIMEOUT_MS = 5000;
 const NATIVE_TERMINAL_ECHO_CONTEXT_BYTES = 64 * 1024;
@@ -129,10 +162,33 @@ function nativeTerminalAttachmentPath(
   );
 }
 
-export function nativeTerminalPrompt(
+export function nativeTerminalLaunchInput(
+  deps: Pick<AppDeps, "config">,
+  args: NativeTerminalPromptArgs & { provider: NativeTerminalProvider },
+): { initialPrompt: string | null; initialImages: string[] } {
+  const launchesImages = (args.provider.cli.imageArgs ?? []).length > 0;
+  const initialImages = launchesImages
+    ? nativeTerminalPromptParts(deps, {
+        ...args,
+        input: args.input.filter((entry) => entry.type === "localImage"),
+      })
+    : [];
+  const prompt = nativeTerminalPromptParts(deps, {
+    ...args,
+    input: launchesImages
+      ? args.input.filter((entry) => entry.type !== "localImage")
+      : args.input,
+  }).join("\n");
+  return {
+    initialPrompt: prompt.length === 0 ? null : prompt,
+    initialImages,
+  };
+}
+
+export function nativeTerminalPromptParts(
   deps: Pick<AppDeps, "config">,
   args: NativeTerminalPromptArgs,
-): string | null {
+): string[] {
   const attachments: string[] = [];
   const parts: string[] = [];
   for (const entry of args.input) {
@@ -151,10 +207,7 @@ export function nativeTerminalPrompt(
     );
   }
   const text = parts.join("\n\n").trim();
-  const prompt = [...attachments, ...(text.length === 0 ? [] : [text])].join(
-    "\n",
-  );
-  return prompt.length === 0 ? null : prompt;
+  return [...attachments, ...(text.length === 0 ? [] : [text])];
 }
 
 export const NATIVE_TERMINAL_ENDED_MESSAGE =
@@ -179,7 +232,7 @@ export function nativeTerminalLaunchCommand(args: {
     : `"$BB_CLI" thread native-run ${args.threadId}`;
   const fallback = args.reattachOnly
     ? `printf '%s\\r\\n' '${NATIVE_TERMINAL_ENDED_MESSAGE}';`
-    : `${env} exec ${executable};`;
+    : `unset ${NATIVE_TOOL_CREDENTIAL_ENV}; ${env} exec ${executable};`;
   return [
     `if [ -n "$BB_CLI" ] && ${wrapper} --probe >/dev/null 2>&1; then`,
     `${env} exec ${wrapper};`,
@@ -333,6 +386,7 @@ async function openNativeTerminalOnce(
     terminalIsLive(existing) &&
     !(args.reattachOnly && existing?.status === "disconnected")
   ) {
+    bumpReattachEpoch(args.threadId);
     return toNativeTerminalThread(deps, record);
   }
   const thread = requirePublicThread(deps.db, args.threadId);
@@ -357,6 +411,7 @@ async function openNativeTerminalOnce(
             threadId: thread.id,
             projectId: thread.projectId,
             hostId: environment.hostId,
+            experimental_runtimeKind: "native",
           },
         });
   if (args.reattachOnly) {
@@ -381,6 +436,7 @@ async function openNativeTerminalOnce(
       );
     }
   }
+  const credential = issueNativeTerminalToolCredential(record.providerId);
   const terminal = await deps.terminalSessions.createTerminal({
     payload: {
       cols: args.request.cols ?? NATIVE_TERMINAL_DEFAULT_COLS,
@@ -397,12 +453,18 @@ async function openNativeTerminalOnce(
       target: { kind: "thread", threadId: thread.id },
       title: provider.displayName,
     },
-    extraContributedEnv: providerEnv,
+    extraContributedEnv: [...providerEnv, credential.env],
+  });
+  setNativeTerminalToolCredential(deps.db, {
+    threadId: thread.id,
+    terminalSessionId: terminal.id,
+    credentialHash: credential.hash,
   });
   setNativeTerminalThreadTerminal(deps.db, {
     threadId: thread.id,
     terminalSessionId: terminal.id,
   });
+  bumpReattachEpoch(thread.id);
   return toNativeTerminalThread(deps, record, terminal);
 }
 
@@ -479,12 +541,130 @@ export function listNativeTerminalThreadsAwaitingDaemon(
   return listNativeTerminalThreadsWithDisconnectedTerminal(deps.db, hostId);
 }
 
+function reattachTerminalExitedOnItsOwn(
+  deps: Pick<AppDeps, "db">,
+  args: { since: number; threadId: string },
+): boolean {
+  const newest = listTerminalSessions(deps.db, {
+    scope: { kind: "thread", threadId: args.threadId },
+    visible: false,
+  })
+    .filter((terminal) => terminal.createdAt >= args.since)
+    .at(-1);
+  return (
+    newest !== undefined &&
+    newest.status === "exited" &&
+    newest.closeReason === "process-exit"
+  );
+}
+
+export function reopenErrorProvesHolderGone(
+  deps: Pick<AppDeps, "db">,
+  args: { error: unknown; since: number; threadId: string },
+): boolean {
+  return (
+    args.error instanceof ApiError &&
+    args.error.body.code === "terminal_open_cancelled" &&
+    reattachTerminalExitedOnItsOwn(deps, args)
+  );
+}
+
+const REOPEN_NO_LONGER_WANTED_ERROR_CODES: ReadonlySet<string> = new Set([
+  "native_terminal_reconnect_stale",
+  "native_terminal_thread_not_found",
+  "thread_archived",
+  "thread_not_found",
+]);
+
+function reopenErrorMeansNoLongerWanted(error: unknown): boolean {
+  return (
+    error instanceof ApiError &&
+    REOPEN_NO_LONGER_WANTED_ERROR_CODES.has(error.body.code)
+  );
+}
+
+function interruptThreadWhoseHolderIsGone(
+  deps: NativeTerminalReopenDeps,
+  args: { hostId: string; threadId: string },
+): void {
+  deps.logger.info(
+    { hostId: args.hostId, threadId: args.threadId },
+    "Interrupting a native terminal thread whose CLI could not be reattached",
+  );
+  interruptActiveThreadsForHost(deps, {
+    hostId: args.hostId,
+    includeStopping: false,
+    onlyThreadIds: new Set([args.threadId]),
+    reason: "host-daemon-restarted",
+  });
+}
+
+function watchReattachedTerminal(
+  deps: NativeTerminalReopenDeps,
+  args: { hostId: string; terminalId: string; threadId: string },
+): void {
+  const deadline = Date.now() + NATIVE_REATTACH_SETTLE_MS;
+  const check = () => {
+    const record = getNativeTerminalThread(deps.db, args.threadId);
+    if (record === null || record.terminalSessionId !== args.terminalId) {
+      return;
+    }
+    const terminal = readRecordTerminal(deps, record);
+    if (terminal !== null && terminal.status === "exited") {
+      if (terminal.closeReason === "process-exit") {
+        interruptThreadWhoseHolderIsGone(deps, args);
+      }
+      return;
+    }
+    if (Date.now() >= deadline) return;
+    setTimeout(check, NATIVE_REATTACH_POLL_MS).unref();
+  };
+  setTimeout(check, NATIVE_REATTACH_POLL_MS).unref();
+}
+
 export function reopenNativeTerminalsAfterDaemonReconnect(
-  deps: NativeTerminalDeps,
+  deps: NativeTerminalReopenDeps,
   args: { hostId: string; threadIds: readonly string[] },
+  monotonicNowMs: () => number = () => performance.now(),
 ): Promise<void> {
   return Promise.all(
     args.threadIds.map(async (threadId) => {
+      const attempt = bumpReattachEpoch(threadId);
+      const startedAt = Date.now();
+      const stillWaiting = () => {
+        if (currentReattachEpoch(threadId) !== attempt) return false;
+        const current = getNativeTerminalThread(deps.db, threadId);
+        if (current === null) return false;
+        const terminal = readRecordTerminal(deps, current);
+        return (
+          terminal === null || !isActiveTerminalSessionStatus(terminal.status)
+        );
+      };
+      const deadlineAt = monotonicNowMs() + NATIVE_REATTACH_DEADLINE_MS;
+      let expired = false;
+      let interrupted = false;
+      let leaveToDeadline = false;
+      const pastDeadline = () => expired || monotonicNowMs() >= deadlineAt;
+      const interruptOnce = () => {
+        if (interrupted) return;
+        interrupted = true;
+        interruptThreadWhoseHolderIsGone(deps, {
+          hostId: args.hostId,
+          threadId,
+        });
+      };
+      const shouldStop = () => {
+        if (pastDeadline()) {
+          if (stillWaiting()) interruptOnce();
+          return true;
+        }
+        return !stillWaiting();
+      };
+      const deadline = setTimeout(() => {
+        expired = true;
+        if (stillWaiting()) interruptOnce();
+      }, NATIVE_REATTACH_DEADLINE_MS);
+      deadline.unref();
       try {
         const record = getNativeTerminalThread(deps.db, threadId);
         if (record === null) return;
@@ -518,38 +698,255 @@ export function reopenNativeTerminalsAfterDaemonReconnect(
         ) {
           return;
         }
-        const reopened = await openNativeTerminalDeduplicated(deps, {
-          reattachOnly: true,
-          threadId,
-          request: {},
-        });
+        if (shouldStop()) return;
+        let reopened: NativeTerminalThread;
+        for (;;) {
+          if (shouldStop()) return;
+          try {
+            reopened = await openNativeTerminalDeduplicated(deps, {
+              reattachOnly: true,
+              threadId,
+              request: {},
+            });
+            break;
+          } catch (error: unknown) {
+            if (
+              reopenErrorProvesHolderGone(deps, {
+                error,
+                since: startedAt,
+                threadId,
+              }) ||
+              reopenErrorMeansNoLongerWanted(error) ||
+              pastDeadline() ||
+              !stillWaiting()
+            ) {
+              throw error;
+            }
+            deps.logger.warn(
+              { err: error, hostId: args.hostId, threadId },
+              "Retrying the native terminal reattach after a transient failure",
+            );
+            await new Promise<void>((resolve) => {
+              setTimeout(resolve, NATIVE_REATTACH_RETRY_MS).unref();
+            });
+          }
+        }
+        if (pastDeadline()) {
+          deps.logger.info(
+            {
+              hostId: args.hostId,
+              terminalId: reopened.terminal?.id,
+              threadId,
+            },
+            "Discarding a native terminal reattach that finished after its deadline",
+          );
+          if (reopened.terminal !== null) {
+            if (
+              getNativeTerminalThread(deps.db, threadId)?.terminalSessionId ===
+              reopened.terminal.id
+            ) {
+              interruptOnce();
+            }
+            await deps.terminalSessions
+              .closeTerminal({
+                terminalId: reopened.terminal.id,
+                payload: { mode: "force", reason: "user" },
+              })
+              .catch((error: unknown) => {
+                deps.logger.warn(
+                  { err: error, hostId: args.hostId, threadId },
+                  "Failed to close a late native terminal reattach",
+                );
+              });
+          }
+          return;
+        }
         deps.logger.info(
           { hostId: args.hostId, terminalId: reopened.terminal?.id, threadId },
           "Reopened native terminal after the host daemon reconnected",
         );
+        if (reopened.terminal !== null) {
+          watchReattachedTerminal(deps, {
+            hostId: args.hostId,
+            terminalId: reopened.terminal.id,
+            threadId,
+          });
+        }
       } catch (error: unknown) {
         deps.logger.warn(
           { err: error, hostId: args.hostId, threadId },
           "Failed to reopen native terminal after the host daemon reconnected",
         );
+        if (
+          !reopenErrorProvesHolderGone(deps, {
+            error,
+            since: startedAt,
+            threadId,
+          })
+        ) {
+          if (pastDeadline()) {
+            if (stillWaiting()) interruptOnce();
+          } else {
+            leaveToDeadline = true;
+          }
+        } else if (stillWaiting()) {
+          interruptOnce();
+        }
+      } finally {
+        if (!leaveToDeadline) clearTimeout(deadline);
       }
     }),
   ).then(() => undefined);
 }
 
+function launchInputWithImagesInPrompt(input: {
+  initialPrompt: string | null;
+  initialImages: string[];
+}): { initialPrompt: string | null; initialImages: string[] } {
+  const parts = [
+    ...input.initialImages,
+    ...(input.initialPrompt === null ? [] : [input.initialPrompt]),
+  ];
+  return {
+    initialPrompt: parts.length === 0 ? null : parts.join("\n"),
+    initialImages: [],
+  };
+}
+
 export function takeNativeTerminalLaunchSpec(
   deps: Pick<AppDeps, "db" | "providerRegistry">,
-  threadId: string,
+  args: { imagesAsArgv: boolean; threadId: string },
 ): NativeTerminalLaunchSpec {
-  const record = requireNativeTerminalThreadRecord(deps, threadId);
+  const record = requireNativeTerminalThreadRecord(deps, args.threadId);
   const provider = requireNativeTerminalProvider(deps, record.providerId);
+  const input = consumeNativeTerminalThreadLaunchInput(deps.db, args.threadId);
   return {
     threadId: record.threadId,
     cli: provider.cli,
     nativeSessionId: record.nativeSessionId,
-    initialPrompt: consumeNativeTerminalThreadInitialPrompt(deps.db, threadId),
+    ...(args.imagesAsArgv ? input : launchInputWithImagesInPrompt(input)),
     model: record.model,
   };
+}
+
+const TOOL_CREDENTIAL_BYTES = 32;
+
+function hashToolCredential(credential: string): Buffer {
+  return createHash("sha256").update(credential).digest();
+}
+
+export const NATIVE_TOOL_CREDENTIAL_ENV = "BB_NATIVE_TOOL_CREDENTIAL";
+
+function issueNativeTerminalToolCredential(providerId: string) {
+  const secret = randomBytes(TOOL_CREDENTIAL_BYTES).toString("base64url");
+  return {
+    secret,
+    hash: hashToolCredential(secret).toString("hex"),
+    env: {
+      name: NATIVE_TOOL_CREDENTIAL_ENV,
+      value: secret,
+      source: { plugin: providerId },
+      reason: "Credential for this native terminal's bb tools",
+    },
+  };
+}
+
+export function requireNativeTerminalToolCredential(
+  deps: Pick<AppDeps, "db" | "terminalSessions">,
+  args: { authorization: string | undefined; threadId: string },
+): void {
+  const record = getNativeTerminalThread(deps.db, args.threadId);
+  const match = /^Bearer ([A-Za-z0-9_-]+)$/u.exec(args.authorization ?? "");
+  const stored = getNativeTerminalToolCredential(deps.db, args.threadId);
+  const supplied = hashToolCredential(match?.[1] ?? "");
+  const expected = Buffer.from(stored?.credentialHash ?? "", "hex");
+  const valid =
+    match !== null &&
+    stored !== null &&
+    record !== null &&
+    expected.length === supplied.length &&
+    timingSafeEqual(expected, supplied) &&
+    stored.terminalSessionId === record.terminalSessionId;
+  if (!valid) {
+    throw new ApiError(
+      401,
+      "native_terminal_credential_invalid",
+      "A valid credential for this thread's running native terminal is required",
+    );
+  }
+}
+
+export function requireLiveNativeTerminalToolThread(
+  deps: Pick<AppDeps, "db" | "terminalSessions">,
+  threadId: string,
+): ThreadEnvironmentLookupResult {
+  const record = requireNativeTerminalThreadRecord(deps, threadId);
+  const lookup = requirePublicThreadEnvironment(deps.db, threadId);
+  if (lookup.thread.archivedAt !== null) {
+    throw new ApiError(
+      409,
+      "native_terminal_not_live",
+      "This thread is archived",
+    );
+  }
+  const terminal = readRecordTerminal(deps, record);
+  if (terminal === null || terminal.status === "exited") {
+    throw new ApiError(
+      409,
+      "native_terminal_not_live",
+      "This thread's native terminal is not running",
+    );
+  }
+  return lookup;
+}
+
+export async function resolveNativeTerminalAgentTools(
+  deps: AppDeps,
+  args: { authorization: string | undefined; threadId: string },
+): Promise<
+  ThreadEnvironmentLookupResult & { tools: NativeTerminalAgentTools["tools"] }
+> {
+  const { threadId } = args;
+  requireNativeTerminalToolCredential(deps, args);
+  const lookup = requireLiveNativeTerminalToolThread(deps, threadId);
+  const record = requireNativeTerminalThreadRecord(deps, threadId);
+  const tools = await resolveThreadDynamicTools(deps, {
+    environment: lookup.environment,
+    model: record.model ?? "",
+    thread: lookup.thread,
+  });
+  return {
+    ...lookup,
+    tools: tools.filter(
+      (tool) => tool.name !== UPDATE_ENVIRONMENT_DIRECTORY_TOOL_NAME,
+    ),
+  };
+}
+
+export async function listNativeTerminalAgentTools(
+  deps: AppDeps,
+  args: { authorization: string | undefined; threadId: string },
+): Promise<NativeTerminalAgentTools> {
+  const { tools } = await resolveNativeTerminalAgentTools(deps, args);
+  return { tools };
+}
+
+export async function requireNativeTerminalAgentToolCall(
+  deps: AppDeps,
+  args: { authorization: string | undefined; threadId: string; tool: string },
+): Promise<ThreadEnvironmentLookupResult> {
+  const { environment, thread, tools } = await resolveNativeTerminalAgentTools(
+    deps,
+    args,
+  );
+  if (!tools.some((tool) => tool.name === args.tool)) {
+    throw new ApiError(
+      404,
+      "native_terminal_tool_not_found",
+      `Tool ${args.tool} is not available to this thread`,
+    );
+  }
+  return { environment, thread };
 }
 
 export function recordNativeTerminalSession(
@@ -580,7 +977,7 @@ export function recordNativeTerminalSession(
 
 export function sendNativeTerminalMessage(
   deps: NativeTerminalDeps,
-  args: { threadId: string; text: string },
+  args: { threadId: string; pastes: readonly string[] },
 ): Promise<TerminalSession> {
   const previous = pendingSends.get(args.threadId) ?? Promise.resolve();
   const sending = previous.then(() => deliverNativeTerminalMessage(deps, args));
@@ -605,9 +1002,22 @@ function nativeTerminalNotRunning(): ApiError {
   );
 }
 
+function nativeTerminalInputAmbiguous(
+  provider: NativeTerminalProvider,
+  pastedBefore: number,
+): ApiError {
+  return new ApiError(
+    409,
+    "native_terminal_input_ambiguous",
+    pastedBefore === 0
+      ? `${provider.displayName} already shows this text, so an echo of it could not be told apart from what is on screen, and nothing was sent. Type the message in the terminal, or reword it.`
+      : `${provider.displayName} began showing this text while the message was being pasted, so an echo of it could not be told apart from what is on screen, and the message was not submitted. What was pasted before it is still in the input box: clear the input box in the terminal, then send again.`,
+  );
+}
+
 async function deliverNativeTerminalMessage(
   deps: NativeTerminalDeps,
-  args: { threadId: string; text: string },
+  args: { threadId: string; pastes: readonly string[] },
 ): Promise<TerminalSession> {
   const view = getNativeTerminalThreadView(deps, args.threadId);
   if (view.terminal === null || view.terminal.status !== "running") {
@@ -621,18 +1031,57 @@ async function deliverNativeTerminalMessage(
   });
   if (before.status !== "running") throw nativeTerminalNotRunning();
   const shown = decodeTerminalOutputChunks(before.chunks);
+  for (const text of args.pastes) {
+    if (
+      terminalScreenAlreadyShowsText({
+        output: shown,
+        screenRows: view.terminal.rows,
+        text,
+      })
+    ) {
+      throw nativeTerminalInputAmbiguous(provider, 0);
+    }
+  }
+  for (const [pastedBefore, text] of args.pastes.entries()) {
+    await pasteIntoNativeTerminal(deps, {
+      pastedBefore,
+      provider,
+      screenRows: view.terminal.rows,
+      terminalId,
+      text,
+    });
+  }
+  return deps.terminalSessions.sendTerminalInput({
+    terminalId,
+    payload: { dataBase64: Buffer.from("\r", "utf8").toString("base64") },
+  });
+}
+
+async function pasteIntoNativeTerminal(
+  deps: NativeTerminalDeps,
+  args: {
+    pastedBefore: number;
+    provider: NativeTerminalProvider;
+    screenRows: number;
+    terminalId: string;
+    text: string;
+  },
+): Promise<void> {
+  const { provider, terminalId } = args;
+  const before = await deps.terminalSessions.readTerminalOutput({
+    terminalId,
+    query: { tailBytes: NATIVE_TERMINAL_ECHO_CONTEXT_BYTES },
+  });
+  if (before.status !== "running") throw nativeTerminalNotRunning();
+  const shown = decodeTerminalOutputChunks(before.chunks);
   if (
     terminalScreenAlreadyShowsText({
       output: shown,
-      screenRows: view.terminal.rows,
+      screenRows: args.screenRows,
       text: args.text,
     })
   ) {
-    throw new ApiError(
-      409,
-      "native_terminal_input_ambiguous",
-      `${provider.displayName} already shows this text, so an echo of it could not be told apart from what is on screen, and nothing was sent. Type the message in the terminal, or reword it.`,
-    );
+    throw nativeTerminalInputAmbiguous(provider, args.pastedBefore);
   }
   const showsPaste = terminalOutputAlreadyShowsText({
     output: shown,
@@ -663,7 +1112,7 @@ async function deliverNativeTerminalMessage(
         text: args.text,
       })
     ) {
-      break;
+      return;
     }
     if (Date.now() >= deadline) {
       throw new ApiError(
@@ -673,8 +1122,4 @@ async function deliverNativeTerminalMessage(
       );
     }
   }
-  return deps.terminalSessions.sendTerminalInput({
-    terminalId,
-    payload: { dataBase64: Buffer.from("\r", "utf8").toString("base64") },
-  });
 }

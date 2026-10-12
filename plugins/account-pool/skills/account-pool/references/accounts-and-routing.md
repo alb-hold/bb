@@ -11,9 +11,19 @@ field with `threads.spawn`, or pass that JSON to `bb thread spawn --plugin-creat
 This persists the pin before Fleet's initial admission check. The same draft
 data works for ordinary Enter/button sends and programmatic composer submissions.
 No entry means Automatic. Choices require a local pool; choose Automatic when
-proxying a parent pool. Conversation credentials carry the current account choice;
-active turns keep their choice. Machine token rotation also revokes derived
-conversation credentials after the existing ten-minute grace period.
+proxying a parent pool. For native terminals, the hub resolves the conversation's
+current account choice at the start of each request. A retained bridge credential
+keeps the account chosen when it was issued; a new bridge turn's credential uses
+the current selection. A request already in flight keeps its choice. Native Codex launches use the same
+environment-backed provider configuration as chat turns; no token is passed in
+command arguments. Native launch credentials live only in the server process. Existing scoped
+credential files are converted to SHA-256 digests at startup; bridge credentials
+remain reusable for authentication across restarts through these digests. Older
+builds discard digest-only records and reissue a token on the next chat turn or
+thread start. Reopen a native terminal after downgrading.
+Reopen the terminal after a server restart to obtain a new credential. Machine
+token rotation also revokes derived conversation credentials after the existing
+ten-minute grace period; reopen the terminal after that grace expires.
 
 The builtin Account Pooler plugin is disabled by default. Enable it, add Claude
 or Codex credentials, and inspect its proxy routes and account quota with:
@@ -58,6 +68,43 @@ flags, and stray arguments are rejected with the nearest suggestion rather than
 ignored, and a failing invocation that carries `--json` also prints
 `{"ok":false,"error":{"code","message","hint"}}` on stdout.
 
+### One-time cleanup after upgrading
+
+1. Delete Codex shell snapshots containing the pool credential variable names. The command prints only the matching file count. Run it for each affected `CODEX_HOME`, replacing the default directory below when needed:
+
+   ```sh
+   python3 - <<'PY'
+   from pathlib import Path
+   snapshots = Path.home() / ".codex" / "shell_snapshots"
+   names = (b"CODEX_POOL_AUTH_TOKEN", b"BB_ACCOUNT_POOL_PARENT_TOKEN")
+   files = [file for file in snapshots.glob("*.sh") if any(name in file.read_bytes() for name in names)]
+   print(len(files))
+   for file in files:
+       file.unlink()
+   PY
+   ```
+
+2. Rotate the existing pool token for every affected host:
+
+   ```sh
+   bb pool token rotate --machine <id-or-name>
+   ```
+
+   Rotation keeps the existing ten-minute grace. Reopen long-lived native terminals after rotation so they receive the new credential. The upgrade does not delete the user's snapshots or rotate host tokens automatically.
+
+Pooled Codex native terminals and chat bridges exclude pool variables from model-run shell environments and their shell snapshots. Codex itself retains the credential in memory to authenticate pool requests.
+
+The host reads `CODEX_HOME/config.toml` (default `~/.codex/config.toml`) without
+changing it. Existing `shell_environment_policy.exclude`, `include_only`, and
+canonical filters keep their restrictions. Invalid or conflicting policy shapes,
+legacy top-level `profile`, or `set` entries that restore pool variables refuse a
+pooled launch. Move a policy from `/etc/codex/config.toml`,
+`/etc/codex/managed_config.toml`, or an ancestor `.codex/config.toml` to the user
+file before using pooled launches. A present macOS managed-preference plist for
+`com.openai.codex` also refuses pooled launches without reading its contents;
+remove the managed source through its administrator. Errors name the file and
+setting. Windows pooled launches are unsupported. Unpooled launches are unchanged.
+
 The desktop app's Sign in buttons open the same URLs in a clean in-app window with an empty,
 non-persistent session, so the browser's own claude.ai or ChatGPT account is never reused, and
 finish the Claude login from the redirect; the CLI has no window, so it prints the URL.
@@ -76,7 +123,7 @@ enabled account whose secret file remains readable and valid, matching Claude
 Code or Codex sessions receive the pool route and a secret token scoped to
 their thread. The machine token itself is never handed to an agent.
 Codex receives `CODEX_OPENAI_BASE_URL` and the secret
-`CODEX_POOL_AUTH_TOKEN`; bb applies them as in-memory app-server config.
+`CODEX_POOL_AUTH_TOKEN`; bb applies them as in-memory app-server and native CLI config.
 Codex image generation and editing use the same authenticated pool route.
 Tokens are never printed. `status` prunes tokens for unenrolled machines and
 shows token timestamps plus recently routed threads whose machines need a

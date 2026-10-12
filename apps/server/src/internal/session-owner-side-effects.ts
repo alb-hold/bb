@@ -6,6 +6,7 @@ import {
   hostDaemonSessions,
   listActiveHostThreads,
   listHostThreadIds,
+  listNativeTerminalThreadsWithDisconnectedTerminal,
   listPendingDetachedThreads,
   type HostDaemonSessionRow,
 } from "@bb/db";
@@ -82,6 +83,10 @@ export async function handleHostSessionOpened(
     "Session opened",
   );
   const adopted = classifyAdoptedThreads(deps, args);
+  const reattaching = new Set(
+    listNativeTerminalThreadsWithDisconnectedTerminal(deps.db, args.hostId),
+  );
+  const survivors = new Set([...adopted.excepted, ...reattaching]);
 
   const sameDaemonInstance =
     args.previousSession?.instanceId === args.openedSession.instanceId;
@@ -108,13 +113,13 @@ export async function handleHostSessionOpened(
         reason: DAEMON_RESTARTED_PENDING_INTERACTION_REASON,
       });
       interruptActiveThreadsForHost(deps, {
-        exceptThreadIds: adopted.excepted,
+        exceptThreadIds: survivors,
         includeStopping: false,
         hostId: args.hostId,
         reason: "host-daemon-restarted",
       });
       settleDanglingBackgroundTasks(deps, {
-        exceptThreadIds: adopted.excepted,
+        exceptThreadIds: survivors,
         hostId: args.hostId,
       });
     }
@@ -132,7 +137,7 @@ export async function handleHostSessionOpened(
         ...adopted.running,
       ]),
     ],
-    exceptThreadIds: adopted.excepted,
+    exceptThreadIds: survivors,
     hostId: args.hostId,
     sameDaemonInstance,
     undeliveredEventThreadIds: args.undeliveredEventThreadIds,
@@ -216,7 +221,10 @@ function handleDaemonSessionLost(
   );
 }
 
-function detachedThreadIdsAt(deps: LoggedPendingInteractionWorkSessionDeps, hostId: string): Set<string> {
+function detachedThreadIdsAt(
+  deps: LoggedPendingInteractionWorkSessionDeps,
+  hostId: string,
+): Set<string> {
   return new Set(
     listPendingDetachedThreads(deps.db, {
       hostId,
