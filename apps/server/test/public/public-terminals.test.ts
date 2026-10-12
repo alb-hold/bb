@@ -48,6 +48,11 @@ import {
   onDaemonSocketMessage,
   onDaemonSocketOpen,
 } from "../../src/ws/daemon-protocol.js";
+import {
+  onTerminalSocketClose,
+  onTerminalSocketMessage,
+  onTerminalSocketOpen,
+} from "../../src/ws/terminal-protocol.js";
 
 interface FakeDaemonSocket {
   close(code?: number, reason?: string): void;
@@ -1563,6 +1568,158 @@ describe("public terminal routes", () => {
         message.type === "output" ? [message.chunk.seq] : [],
       ),
     ).toEqual([2]);
+  });
+
+  it("replays output produced while nobody watched and resumes live output and acks after the last browser detaches and reattaches", async () => {
+    const fixture = await createTerminalRouteFixture();
+    harnesses.push(fixture.harness);
+    const stored = createTerminalSession(fixture.harness.db, {
+      cols: 80,
+      daemonSessionId: fixture.session.id,
+      environmentId: fixture.environment.id,
+      hostId: fixture.host.id,
+      initialCwd: "/tmp/terminal-workspace",
+      rows: 24,
+      status: "running",
+      threadId: fixture.thread.id,
+      title: "Terminal 1",
+    });
+    const scrollback: { seq: number; dataBase64: string }[] = [];
+    const daemonProduces = (text: string) => {
+      const chunk = {
+        seq: scrollback.length,
+        dataBase64: Buffer.from(text).toString("base64"),
+      };
+      scrollback.push(chunk);
+      onDaemonSocketMessage(fixture.harness.deps, {
+        hostId: fixture.host.id,
+        raw: JSON.stringify({
+          type: "terminal.output",
+          terminalId: stored.id,
+          chunk,
+        }),
+        sessionId: fixture.session.id,
+        socket: fixture.socket,
+      });
+    };
+    let answeredAttaches = 0;
+    const daemonAnswersAttach = () => {
+      const attaches = readDaemonOperationMessages(fixture.socket).filter(
+        (message) => message.type === "terminal.attach",
+      );
+      const attach = attaches[answeredAttaches];
+      if (attach?.type !== "terminal.attach") {
+        throw new Error("Expected a terminal.attach request");
+      }
+      answeredAttaches += 1;
+      const chunks = scrollback.filter((chunk) => chunk.seq >= attach.sinceSeq);
+      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.host.id,
+        sessionId: fixture.session.id,
+        message: {
+          type: "terminal.replay",
+          requestId: attach.requestId,
+          terminalId: stored.id,
+          chunks,
+          replayStartSeq: chunks[0]?.seq ?? scrollback.length,
+          nextSeq: scrollback.length,
+        },
+      });
+    };
+    const outputSeqs = (socket: FakeBrowserSocket) =>
+      readBrowserMessages(socket).flatMap((message) =>
+        message.type === "output" ? [message.chunk.seq] : [],
+      );
+    const flowMessages = () =>
+      readDaemonOperationMessages(fixture.socket).filter(
+        (message) =>
+          message.type === "terminal.flow-control" ||
+          message.type === "terminal.ack",
+      );
+    const ack = (socket: FakeBrowserSocket, nextSeq: number) =>
+      onTerminalSocketMessage(fixture.harness.deps, {
+        raw: JSON.stringify({ type: "ack", nextSeq }),
+        socket,
+        terminalId: stored.id,
+      });
+
+    daemonProduces("unwatched-0");
+    daemonProduces("unwatched-1");
+    expect(flowMessages()).toEqual([]);
+
+    const first = createFakeBrowserSocket();
+    onTerminalSocketOpen(fixture.harness.deps, {
+      outputAcks: true,
+      sinceSeq: 0,
+      socket: first,
+      terminalId: stored.id,
+    });
+    daemonAnswersAttach();
+    expect(readBrowserMessages(first)[0]).toMatchObject({
+      type: "attached",
+      replayStartSeq: 0,
+      nextSeq: 2,
+    });
+    expect(outputSeqs(first)).toEqual([0, 1]);
+
+    daemonProduces("live-2");
+    daemonProduces("live-3");
+    expect(outputSeqs(first)).toEqual([0, 1, 2, 3]);
+    ack(first, 4);
+    expect(flowMessages()).toEqual([
+      { type: "terminal.flow-control", terminalId: stored.id, enabled: true },
+      { type: "terminal.ack", terminalId: stored.id, nextSeq: 4 },
+    ]);
+
+    onTerminalSocketClose(fixture.harness.deps, {
+      socket: first,
+      terminalId: stored.id,
+    });
+    expect(flowMessages().at(-1)).toEqual({
+      type: "terminal.flow-control",
+      terminalId: stored.id,
+      enabled: false,
+    });
+    expect(fixture.harness.hub.hasTerminalClients(stored.id)).toBe(false);
+
+    const flowCountAfterDetach = flowMessages().length;
+    daemonProduces("unwatched-4");
+    daemonProduces("unwatched-5");
+    expect(flowMessages()).toHaveLength(flowCountAfterDetach);
+
+    const second = createFakeBrowserSocket();
+    onTerminalSocketOpen(fixture.harness.deps, {
+      outputAcks: true,
+      sinceSeq: 4,
+      socket: second,
+      terminalId: stored.id,
+    });
+    daemonAnswersAttach();
+    expect(readBrowserMessages(second)[0]).toMatchObject({
+      type: "attached",
+      replayStartSeq: 4,
+      nextSeq: 6,
+    });
+    expect(outputSeqs(second)).toEqual([4, 5]);
+
+    daemonProduces("live-6");
+    daemonProduces("live-7");
+    expect(outputSeqs(second)).toEqual([4, 5, 6, 7]);
+    ack(second, 8);
+    expect(flowMessages().slice(flowCountAfterDetach)).toEqual([
+      { type: "terminal.flow-control", terminalId: stored.id, enabled: true },
+      { type: "terminal.ack", terminalId: stored.id, nextSeq: 8 },
+    ]);
+
+    onTerminalSocketClose(fixture.harness.deps, {
+      socket: second,
+      terminalId: stored.id,
+    });
+    expect(flowMessages().at(-1)).toEqual({
+      type: "terminal.flow-control",
+      terminalId: stored.id,
+      enabled: false,
+    });
   });
 
   it("reattaches disconnected terminals when the same daemon instance reconnects and replays the output browsers missed", async () => {
