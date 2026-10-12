@@ -1,15 +1,26 @@
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import {
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
 
-const EVENTS_TABLE = String.raw`(?:\$\{events\}|"?events"?)(?![\w.])`;
+const EVENTS_TABLE = String.raw`(?:(?:main|temp)\s*\.\s*)?(?:\$\{events\}|["\[]?events["\]]?)(?![\w.])`;
 const EVENT_ROW_WRITE_PATTERNS = [
   /\.(?:insert|update|delete)\(\s*events\s*\)/gu,
   new RegExp(String.raw`\bINTO\s+${EVENTS_TABLE}`, "giu"),
-  new RegExp(String.raw`\bUPDATE\s+${EVENTS_TABLE}`, "giu"),
+  new RegExp(
+    String.raw`\bUPDATE\s+(?:OR\s+\w+\s+)?${EVENTS_TABLE}`,
+    "giu",
+  ),
   new RegExp(String.raw`\bDELETE\s+FROM\s+${EVENTS_TABLE}`, "giu"),
 ];
 const EVENT_OWNER_DELETE_PATTERNS = [
@@ -118,8 +129,59 @@ const EVENT_OWNER_DELETES: Record<string, InventoriedWrite> = {
   },
 };
 
-const MIGRATION_EVENT_ROW_WRITE_PATTERN =
-  /\b(?:INTO|UPDATE|DELETE\s+FROM)\s+[`"]?events[`"]?(?![\w.])/iu;
+const NORMALIZED_MIGRATION_EVENT_ROW_WRITE_PATTERN =
+  /\b(?:INTO|UPDATE(?: OR \w+)?|DELETE FROM) events\b(?!\.)/iu;
+
+function normalizeMigrationSql(text: string): string {
+  return text
+    .replace(/\/\*[\s\S]*?\*\//gu, " ")
+    .replace(/--[^\n]*/gu, " ")
+    .replace(/["`[\]]/gu, "")
+    .replace(/\b(?:main|temp)\s*\.\s*/giu, "")
+    .replace(/\s+/gu, " ");
+}
+
+function listMigrationsWritingEventRows(directory: string): string[] {
+  return readdirSync(directory)
+    .filter((name) => name.endsWith(".sql"))
+    .filter((name) =>
+      NORMALIZED_MIGRATION_EVENT_ROW_WRITE_PATTERN.test(
+        normalizeMigrationSql(readFileSync(join(directory, name), "utf8")),
+      ),
+    )
+    .sort();
+}
+
+const EVENT_ROW_WRITING_MIGRATION_FORMS = [
+  "UPDATE events SET data = '{}';",
+  'UPDATE "events" SET data = \'{}\';',
+  "UPDATE `events` SET data = '{}';",
+  "UPDATE [events] SET data = '{}';",
+  "UPDATE main.events SET data = '{}';",
+  'UPDATE "main"."events" SET data = \'{}\';',
+  "UPDATE OR IGNORE events SET data = '{}';",
+  "update events set data = '{}';",
+  "UPDATE\n  events\nSET data = '{}';",
+  "UPDATE /* rewrite */ events SET data = '{}';",
+  "INSERT INTO events (id) VALUES ('evt');",
+  "INSERT INTO [events] (id) VALUES ('evt');",
+  "INSERT OR REPLACE INTO `events` (id) VALUES ('evt');",
+  "INSERT OR IGNORE INTO main.[events] (id) VALUES ('evt');",
+  "REPLACE INTO events (id) VALUES ('evt');",
+  "DELETE FROM events WHERE id = 'evt';",
+  "DELETE FROM [events] WHERE id = 'evt';",
+  "delete\nfrom\n\"events\" where id = 'evt';",
+  "CREATE TRIGGER rewrite AFTER INSERT ON threads BEGIN UPDATE events SET data = '{}'; END;",
+];
+const MIGRATION_FORMS_LEAVING_EVENT_ROWS_ALONE = [
+  "SELECT id FROM events;",
+  "-- UPDATE events SET data = '{}';\nSELECT 1;",
+  "/* DELETE FROM events */ SELECT 1;",
+  "UPDATE event_outputs SET data = '{}';",
+  "INSERT INTO events_archive (id) SELECT id FROM events;",
+  "DELETE FROM thread_events WHERE id = 'evt';",
+  "CREATE INDEX events_thread_idx ON events (thread_id);",
+];
 const MIGRATIONS_WRITING_EVENT_ROWS = [
   "0015_good_lila_cheney.sql",
   "0019_pending_interactions_schema_honesty.sql",
@@ -228,22 +290,38 @@ describe("writes that can change remembered background-task counts", () => {
   });
 
   it("forgets remembered counts after every migration run and lists the migrations that write event rows", () => {
-    const migrationsDirectory = join(repoRoot, "packages", "db", "drizzle");
-    const writers = readdirSync(migrationsDirectory)
-      .filter((name) => name.endsWith(".sql"))
-      .filter((name) =>
-        MIGRATION_EVENT_ROW_WRITE_PATTERN.test(
-          readFileSync(join(migrationsDirectory, name), "utf8"),
-        ),
-      )
-      .sort();
-
-    expect(writers).toEqual(MIGRATIONS_WRITING_EVENT_ROWS);
+    expect(
+      listMigrationsWritingEventRows(join(repoRoot, "packages", "db", "drizzle")),
+    ).toEqual(MIGRATIONS_WRITING_EVENT_ROWS);
     expect(
       sources.get(MIGRATION_INVALIDATION.file)?.includes(
         MIGRATION_INVALIDATION.text,
       ),
     ).toBe(true);
+  });
+
+  it("reports a migration that writes event rows in any SQLite spelling, so it fails the list until added", () => {
+    const directory = mkdtempSync(join(tmpdir(), "bb-events-write-inventory-"));
+    try {
+      const writers = EVENT_ROW_WRITING_MIGRATION_FORMS.map((sql, index) => {
+        const name = `${String(index).padStart(4, "0")}_writes_events.sql`;
+        writeFileSync(join(directory, name), sql);
+        return name;
+      });
+      MIGRATION_FORMS_LEAVING_EVENT_ROWS_ALONE.forEach((sql, index) => {
+        writeFileSync(
+          join(directory, `${String(index + 5000)}_leaves_events.sql`),
+          sql,
+        );
+      });
+
+      expect(listMigrationsWritingEventRows(directory)).toEqual(writers);
+      expect(listMigrationsWritingEventRows(directory)).not.toEqual(
+        MIGRATIONS_WRITING_EVENT_ROWS,
+      );
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
   });
 
   it("reaches the pruning deletes only through the pruning pass that invalidates", () => {
