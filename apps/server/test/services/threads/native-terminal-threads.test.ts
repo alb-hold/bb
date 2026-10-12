@@ -54,6 +54,7 @@ async function createDisconnectedNativeThread(
     providerId: "codex",
     nativeSessionId: `session-existing-${index}`,
     initialPrompt: null,
+    initialImages: [],
     model: null,
   });
   const terminal = createTerminalSession(harness.db, {
@@ -129,7 +130,8 @@ describe("reopenNativeTerminalsAfterDaemonReconnect", () => {
       expect(warn).not.toHaveBeenCalled();
       expect(createTerminal).toHaveBeenCalledOnce();
       expect(
-        takeNativeTerminalLaunchSpec(h.deps, threadId).nativeSessionId,
+        takeNativeTerminalLaunchSpec(h.deps, { imagesAsArgv: true, threadId })
+          .nativeSessionId,
       ).toBe("session-existing-1");
       const start = createTerminal.mock.calls[0]?.[0].payload.start;
       if (start?.mode !== "command") {
