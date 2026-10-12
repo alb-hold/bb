@@ -5,13 +5,19 @@ import { withHarness, type IntegrationHarness } from "../../helpers/harness.js";
 
 const SETTLE_MS = 2_500;
 const WAIT_MS = 30_000;
+const FLOW_PAUSE_BYTES = 1024 * 1024;
+const FLOW_OVERSHOOT_BYTES = 512 * 1024;
+const REPLAY_TAIL_BYTES = 512 * 1024;
+const MAX_CHUNK_BYTES = 64 * 1024;
 
 type OutputChunk = Extract<TerminalServerMessage, { type: "output" }>["chunk"];
 
 interface BrowserTerminal {
   attached: Extract<TerminalServerMessage, { type: "attached" }>;
-  close(): void;
+  autoAck(enabled: boolean): void;
+  bytes(): number;
   chunks: OutputChunk[];
+  close(): void;
   send(message: object): void;
   text(): string;
   waitFor(predicate: (text: string) => boolean): Promise<void>;
@@ -74,6 +80,8 @@ async function attachBrowser(
   const url = `${harness.serverUrl.replace(/^http/u, "ws")}/ws/terminals/${terminalId}?outputAcks=1&sinceSeq=${sinceSeq}`;
   const socket = new WebSocket(url);
   const chunks: OutputChunk[] = [];
+  let byteCount = 0;
+  let acking = false;
   const text = () =>
     Buffer.concat(
       chunks.map((chunk) => Buffer.from(chunk.dataBase64, "base64")),
@@ -87,6 +95,12 @@ async function attachBrowser(
       attached = message;
     } else if (message.type === "output") {
       chunks.push(message.chunk);
+      byteCount += Buffer.from(message.chunk.dataBase64, "base64").length;
+      if (acking) {
+        socket.send(
+          JSON.stringify({ type: "ack", nextSeq: message.chunk.seq + 1 }),
+        );
+      }
     }
   });
   await new Promise<void>((resolve, reject) => {
@@ -101,6 +115,10 @@ async function attachBrowser(
   }
   return {
     attached,
+    autoAck: (enabled) => {
+      acking = enabled;
+    },
+    bytes: () => byteCount,
     chunks,
     close: () => socket.close(),
     send: (message) => socket.send(JSON.stringify(message)),
@@ -114,7 +132,7 @@ async function attachBrowser(
             replayStartSeq: attached?.replayStartSeq,
             nextSeq: attached?.nextSeq,
             status: attached?.session.status,
-          })} chunks=${chunks.length} tail=${JSON.stringify(text().slice(-300))}`,
+          })} chunks=${chunks.length} bytes=${byteCount} tail=${JSON.stringify(text().slice(-300))}`,
       ),
   };
 }
@@ -155,6 +173,34 @@ function inputBase64(text: string): string {
   return Buffer.from(text, "utf8").toString("base64");
 }
 
+async function observePlateau(
+  terminal: BrowserTerminal,
+  baselineBytes: number,
+): Promise<number> {
+  let previous = -1;
+  let stableSamples = 0;
+  const deadline = Date.now() + WAIT_MS;
+  while (Date.now() < deadline) {
+    await pause(150);
+    const current = terminal.bytes();
+    stableSamples =
+      current === previous && current > baselineBytes ? stableSamples + 1 : 0;
+    previous = current;
+    if (stableSamples >= 3) {
+      break;
+    }
+  }
+  const plateau = terminal.bytes();
+  await pause(600);
+  expect(terminal.bytes(), "delivery must stay stalled while unacked").toBe(
+    plateau,
+  );
+  const delivered = plateau - baselineBytes;
+  expect(delivered).toBeGreaterThanOrEqual(FLOW_PAUSE_BYTES * 0.9);
+  expect(delivered).toBeLessThanOrEqual(FLOW_PAUSE_BYTES + FLOW_OVERSHOOT_BYTES);
+  return plateau;
+}
+
 describe.sequential("terminal output nobody is watching", () => {
   it("keeps the real daemon's output and replays it exactly through detach and reattach", () =>
     withHarness(async (harness) => {
@@ -165,7 +211,8 @@ describe.sequential("terminal output nobody is watching", () => {
         "while read line; do",
         '  echo "got:$line"',
         '  if [ "$line" = flood ]; then seq 6001 300000; echo FLOOD_DONE; fi',
-        '  if [ "$line" = more ]; then seq 400001 405000; echo MORE_DONE; fi',
+        '  if [ "$line" = flood2 ]; then seq 500001 800000; echo FLOOD2_DONE; fi',
+        '  if [ "$line" = more ]; then seq 900001 905000; echo MORE_DONE; fi',
         "done",
       ].join("\n");
       const terminalId = await createTerminal(harness, script);
@@ -188,49 +235,89 @@ describe.sequential("terminal output nobody is watching", () => {
 
       first.send({ type: "input", dataBase64: inputBase64("ping\n") });
       await first.waitFor((text) => text.includes("got:ping"));
-      const lastBeforeFlood = first.chunks[first.chunks.length - 1];
-      expect(lastBeforeFlood).toBeDefined();
-      first.send({ type: "ack", nextSeq: (lastBeforeFlood?.seq ?? 0) + 1 });
+      first.send({
+        type: "ack",
+        nextSeq: (first.chunks[first.chunks.length - 1]?.seq ?? 0) + 1,
+      });
 
+      const bytesBeforeFlood = first.bytes();
       first.send({ type: "input", dataBase64: inputBase64("flood\n") });
       await first.waitFor((text) => text.includes("got:flood"));
-      await pause(SETTLE_MS);
+      const plateau = await observePlateau(first, bytesBeforeFlood);
       expect(first.text()).not.toContain("FLOOD_DONE");
+
+      first.autoAck(true);
+      first.send({
+        type: "ack",
+        nextSeq: (first.chunks[first.chunks.length - 1]?.seq ?? 0) + 1,
+      });
+      await waitUntil(
+        "delivery to resume right after the ack",
+        () => first.bytes() > plateau,
+      );
+      await first.waitFor((text) => text.includes("FLOOD_DONE"));
+      assertContiguous(first.chunks, 0);
+      expect(first.text()).toContain(`${numbers(6001, 300000)}FLOOD_DONE`);
+
+      const bytesBeforeFlood2 = first.bytes();
+      first.autoAck(false);
+      first.send({ type: "input", dataBase64: inputBase64("flood2\n") });
+      await first.waitFor((text) => text.includes("got:flood2"));
+      await observePlateau(first, bytesBeforeFlood2);
+      expect(first.text()).not.toContain("FLOOD2_DONE");
+
       first.close();
       await pause(500);
-      const lastSeenBeforeDetach = first.chunks[first.chunks.length - 1]?.seq ?? 0;
+      const lastSeenBeforeDetach =
+        first.chunks[first.chunks.length - 1]?.seq ?? 0;
 
       const afterDetach = countTerminalSessionsSelects(harness);
-      await pause(SETTLE_MS);
+      await pause(SETTLE_MS + 2_000);
       const selectsAfterDetach = afterDetach.count();
       afterDetach.stop();
       expect(selectsAfterDetach).toBe(0);
 
-      const second = await attachBrowser(
-        harness,
-        terminalId,
-        lastSeenBeforeDetach + 1,
+      const cursor = lastSeenBeforeDetach + 1;
+      const second = await attachBrowser(harness, terminalId, cursor);
+      const { replayStartSeq, nextSeq } = second.attached;
+      expect(replayStartSeq).toBeGreaterThanOrEqual(cursor);
+      const replayChunkCount = nextSeq - replayStartSeq;
+      await waitUntil(
+        "the replayed chunks",
+        () => second.chunks.length >= replayChunkCount,
       );
-      expect(second.attached.replayStartSeq).toBeGreaterThanOrEqual(
-        lastSeenBeforeDetach + 1,
-      );
-      await second.waitFor((text) => text.includes("FLOOD_DONE"));
-      assertContiguous(second.chunks, second.attached.replayStartSeq);
-      const expectedFlood = `${numbers(6001, 300000)}FLOOD_DONE\r\n`;
-      expect(expectedFlood.endsWith(second.text())).toBe(true);
+      assertContiguous(second.chunks, replayStartSeq);
+      const replayBytes = second.chunks
+        .slice(0, replayChunkCount)
+        .reduce(
+          (total, chunk) =>
+            total + Buffer.from(chunk.dataBase64, "base64").length,
+          0,
+        );
+      if (replayStartSeq === cursor) {
+        expect(replayBytes).toBeLessThanOrEqual(
+          REPLAY_TAIL_BYTES + MAX_CHUNK_BYTES,
+        );
+      } else {
+        expect(replayBytes).toBeGreaterThanOrEqual(
+          REPLAY_TAIL_BYTES - MAX_CHUNK_BYTES,
+        );
+        expect(replayBytes).toBeLessThanOrEqual(
+          REPLAY_TAIL_BYTES + MAX_CHUNK_BYTES,
+        );
+      }
+      await second.waitFor((text) => text.includes("FLOOD2_DONE"));
+      assertContiguous(second.chunks, replayStartSeq);
+      const expectedFlood2 = `${numbers(500001, 800000)}FLOOD2_DONE\r\n`;
+      expect(expectedFlood2.endsWith(second.text())).toBe(true);
 
-      const replayedChunkCount = second.chunks.length;
+      second.autoAck(true);
       second.send({ type: "input", dataBase64: inputBase64("more\n") });
       await second.waitFor((text) => text.includes("MORE_DONE"));
-      assertContiguous(second.chunks, second.attached.replayStartSeq);
-      expect(second.chunks.length).toBeGreaterThan(replayedChunkCount);
-      expect(second.text().endsWith(`${numbers(400001, 405000)}MORE_DONE\r\n`)).toBe(
-        true,
-      );
-      second.send({
-        type: "ack",
-        nextSeq: (second.chunks[second.chunks.length - 1]?.seq ?? 0) + 1,
-      });
+      assertContiguous(second.chunks, replayStartSeq);
+      expect(
+        second.text().endsWith(`${numbers(900001, 905000)}MORE_DONE\r\n`),
+      ).toBe(true);
       second.close();
     }));
 });
