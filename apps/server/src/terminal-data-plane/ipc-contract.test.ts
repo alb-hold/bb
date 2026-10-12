@@ -91,11 +91,30 @@ describe("terminal data plane IPC contract", () => {
     expect(send({ type: "pong" })).toBe(false);
   });
 
+  it("binds relayed terminal input to the attach that received it", () => {
+    const input = {
+      v,
+      type: "terminal.input",
+      terminalId: "term_1",
+      dataBase64: "YQ==",
+    };
+    expect(terminalDataPlaneChildMessageSchema.safeParse(input).success).toBe(
+      false,
+    );
+    expect(
+      terminalDataPlaneChildMessageSchema.safeParse({
+        ...input,
+        attachId: "attach_1",
+      }).success,
+    ).toBe(true);
+  });
+
   it("rejects fields outside the contract", () => {
     expect(
       terminalDataPlaneChildMessageSchema.safeParse({
         v,
         type: "terminal.input",
+        attachId: "attach_1",
         terminalId: "term_1",
         dataBase64: "YQ==",
         daemonSessionId: "session_chosen_by_child",
