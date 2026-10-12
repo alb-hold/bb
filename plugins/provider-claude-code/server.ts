@@ -69,13 +69,13 @@ export default function plugin(bb: BbPluginApi) {
     ...CLAUDE_NATIVE_ROOTS_DECLARATION,
     experimental_nativeTerminal: {
       executable: "claude",
-      launchArgs: [],
+      launchArgs: ["--dangerously-skip-permissions"],
       modelArgs: ["--model", "{model}"],
       mcp: [
         "--mcp-config",
         '{"mcpServers":{"bb-bridge":{"command":{commandJson},"args":{argsJson}}}}',
       ],
-      pastePlaceholders: ["[Pasted text #"],
+      pastePlaceholders: ["[Pasted text #", "[Image #"],
       sessionRoot: { env: "CLAUDE_CONFIG_DIR", home: ".claude" },
       session: {
         kind: "assigned",

@@ -88,6 +88,8 @@ import {
   type UrlLinkProps,
   type ExperimentalFileLinkProps,
   type ExperimentalFileOpenOptions,
+  type ExperimentalSignInWindow,
+  type ExperimentalSignInWindowOptions,
   type ExperimentalAppPanel,
   type ExperimentalFixedTabTargetState,
   type ExperimentalOpenFixedTabOptions,
@@ -193,6 +195,10 @@ export type NavigateCall =
       options: Parameters<BbNavigate["openThreadPanel"]>[0];
     }
   | { method: "openUrl"; url: string }
+  | {
+      method: "experimental_openSignInWindow";
+      options: ExperimentalSignInWindowOptions;
+    }
   | {
       method: "experimental_openFilePreview";
       options: ExperimentalFileOpenOptions;
@@ -1828,6 +1834,10 @@ export interface RenderSlotOptions<
   ) => boolean;
   /** Host acceptance for URL intents from the hook or `UrlLink`. */
   openUrl?: (url: string) => boolean;
+  /** Host sign-in window for `useBbNavigate().experimental_openSignInWindow`. */
+  openSignInWindow?: (
+    options: ExperimentalSignInWindowOptions,
+  ) => ExperimentalSignInWindow | null;
   /** Host acceptance for preview intents from the hook or file link. */
   openFilePreview?: (options: ExperimentalFileOpenOptions) => boolean;
   /** Host acceptance for preferred-external file intents. */
@@ -2187,6 +2197,13 @@ export function renderSlot<
     openUrl(url) {
       navigateCalls.push({ method: "openUrl", url });
       return options.openUrl?.(url) ?? false;
+    },
+    experimental_openSignInWindow(signInOptions) {
+      navigateCalls.push({
+        method: "experimental_openSignInWindow",
+        options: signInOptions,
+      });
+      return options.openSignInWindow?.(signInOptions) ?? null;
     },
     experimental_openFilePreview(fileOptions) {
       navigateCalls.push({

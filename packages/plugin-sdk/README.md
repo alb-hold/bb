@@ -49,6 +49,15 @@ the current host accepted the intent. Targets never infer an ambient workspace.
 The frontend harness records both methods and accepts `openFilePreview` and
 `openFileExternally` behavior options.
 
+For sign-in flows that must not reuse the user's browser accounts, call
+`useBbNavigate().experimental_openSignInWindow({ url, redirectUrlPrefix? })`.
+In the desktop app it opens an app-owned window with a fresh, non-persistent
+session and returns `{ close(), result }`; `result` settles with `closed` or,
+when the window is about to navigate to a URL starting with
+`redirectUrlPrefix`, `redirect` with that URL (the navigation is blocked and the
+window closes). Web and remote clients return `null`; fall back to `openUrl`.
+The harness records the call and accepts an `openSignInWindow` behavior option.
+
 To show a terminal beside your UI, create it with `useSdk().terminals.create`
 in the thread, environment, or host directory you want, then call
 `useBbNavigate().experimental_openTerminal({ terminalId })`. It resolves

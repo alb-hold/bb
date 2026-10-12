@@ -11,6 +11,7 @@ import {
 } from "@bb/db";
 import {
   isActiveTerminalSessionStatus,
+  pathLooksRuntimeReadable,
   type PromptInput,
   type ProviderNativeTerminal,
 } from "@bb/domain";
@@ -23,6 +24,8 @@ import type {
 } from "@bb/server-contract";
 import { ApiError } from "../../errors.js";
 import type { AppDeps } from "../../types.js";
+import { isServerMachineHost } from "../hosts/primary-host.js";
+import { storedProjectAttachmentPath } from "../projects/attachments.js";
 import {
   requirePublicThreadEnvironment,
   requirePublicThread,
@@ -106,21 +109,56 @@ export function requireNativeTerminalProvider(
   return provider;
 }
 
-export function nativeTerminalInitialPrompt(
-  input: readonly PromptInput[],
-): string | null {
-  const parts: string[] = [];
-  for (const entry of input) {
-    if (entry.type !== "text") {
-      throw new ApiError(
-        400,
-        "invalid_request",
-        "Native terminal threads accept text prompts only",
-      );
-    }
-    parts.push(entry.text);
+interface NativeTerminalPromptArgs {
+  hostId: string | null;
+  input: readonly PromptInput[];
+  projectId: string;
+}
+
+function nativeTerminalAttachmentPath(
+  deps: Pick<AppDeps, "config">,
+  args: Omit<NativeTerminalPromptArgs, "input"> & { path: string },
+): string {
+  if (pathLooksRuntimeReadable(args.path)) return args.path;
+  if (args.hostId === null || !isServerMachineHost(deps, args.hostId)) {
+    throw new ApiError(
+      400,
+      "invalid_request",
+      "This terminal thread runs on another machine, where an uploaded attachment is not available. Put the file on that machine and send its path",
+    );
   }
-  const prompt = parts.join("\n\n").trim();
+  return storedProjectAttachmentPath(
+    deps.config.dataDir,
+    args.projectId,
+    args.path,
+  );
+}
+
+export function nativeTerminalPrompt(
+  deps: Pick<AppDeps, "config">,
+  args: NativeTerminalPromptArgs,
+): string | null {
+  const attachments: string[] = [];
+  const parts: string[] = [];
+  for (const entry of args.input) {
+    if (entry.type === "text") {
+      parts.push(entry.text);
+      continue;
+    }
+    attachments.push(
+      entry.type === "image"
+        ? entry.url
+        : nativeTerminalAttachmentPath(deps, {
+            hostId: args.hostId,
+            path: entry.path,
+            projectId: args.projectId,
+          }),
+    );
+  }
+  const text = parts.join("\n\n").trim();
+  const prompt = [...attachments, ...(text.length === 0 ? [] : [text])].join(
+    "\n",
+  );
   return prompt.length === 0 ? null : prompt;
 }
 

@@ -1620,6 +1620,48 @@ describe("renderSlot", () => {
     ]);
   });
 
+  it("records sign-in window intents and returns null when the host has none", () => {
+    function SignInProbe() {
+      const navigate = useBbNavigate();
+      return (
+        <button
+          type="button"
+          onClick={() =>
+            navigate.experimental_openSignInWindow({
+              url: "https://example.com/authorize",
+              redirectUrlPrefix: "https://example.com/callback",
+            })
+          }
+        >
+          Sign in
+        </button>
+      );
+    }
+    const handle = {
+      close: () => {},
+      result: Promise.resolve({ reason: "closed" as const }),
+    };
+    const hosted = renderSlot(
+      { component: SignInProbe },
+      {},
+      { openSignInWindow: () => handle },
+    );
+    fireEvent.click(hosted.getByRole("button", { name: "Sign in" }));
+    expect(hosted.inspection.navigateCalls).toEqual([
+      {
+        method: "experimental_openSignInWindow",
+        options: {
+          url: "https://example.com/authorize",
+          redirectUrlPrefix: "https://example.com/callback",
+        },
+      },
+    ]);
+    hosted.unmount();
+    const unhosted = renderSlot({ component: SignInProbe }, {});
+    fireEvent.click(unhosted.getByRole("button", { name: "Sign in" }));
+    expect(unhosted.inspection.navigateCalls).toHaveLength(1);
+  });
+
   it("records fixed-tab opens and retains target state until the owner clears it", () => {
     const slot = renderSlot(
       { component: FixedTabProbe },

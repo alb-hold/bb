@@ -3,6 +3,7 @@ import { seedThreadSessionOptionSelections } from "./thread-session-options.js";
 import { assertEnvironmentPathAvailable } from "../environments/path-admission.js";
 import { randomUUID } from "node:crypto";
 import {
+  acquireProjectAttachmentOwnership,
   createNativeTerminalThread,
   isNativeTerminalThread,
   markThreadDeleted,
@@ -13,6 +14,7 @@ import {
 import {
   describeSessionOptionConflict,
   modelSessionOptionConflict,
+  projectAttachmentPaths,
   type ProjectExecutionDefaults,
   type Project,
   type SessionOptionSelections,
@@ -75,7 +77,7 @@ import { deriveForkTitle, deriveTitleFallback } from "./title-generation.js";
 import type { ThreadProvisionEnvironmentIntent } from "./thread-startup-store.js";
 import {
   beginNativeTerminalThreadProvisioning,
-  nativeTerminalInitialPrompt,
+  nativeTerminalPrompt,
   requireNativeTerminalProvider,
   type NativeTerminalProvider,
 } from "./native-terminal-threads.js";
@@ -497,6 +499,11 @@ async function createPendingThreadAndAttemptFirstDispatch(
         initialPrompt: args.nativeTerminal.initialPrompt,
         model: args.request.model ?? null,
       });
+      acquireProjectAttachmentOwnership(
+        deps.db,
+        thread.id,
+        projectAttachmentPaths(args.request.input),
+      );
       beginNativeTerminalThreadProvisioning(deps, {
         environmentIntent: args.environmentIntent,
         thread,
@@ -867,12 +874,9 @@ export async function createThreadFromRequest(
           selections: request.sessionOptions ?? {},
         });
 
-  const nativeTerminal: NativeTerminalCreate | null =
+  const nativeTerminalProvider =
     request.nativeTerminal === true
-      ? {
-          provider: requireNativeTerminalProvider(deps, request.providerId),
-          initialPrompt: nativeTerminalInitialPrompt(request.input),
-        }
+      ? requireNativeTerminalProvider(deps, request.providerId)
       : null;
 
   const { environmentId, environmentIntent } =
@@ -893,6 +897,17 @@ export async function createThreadFromRequest(
     projectId: request.projectId,
     hostId: hostIdForEnvironmentIntent(deps, environmentIntent),
   });
+  const nativeTerminal: NativeTerminalCreate | null =
+    nativeTerminalProvider === null
+      ? null
+      : {
+          provider: nativeTerminalProvider,
+          initialPrompt: nativeTerminalPrompt(deps, {
+            hostId: hostIdForEnvironmentIntent(deps, environmentIntent),
+            input: request.input,
+            projectId: request.projectId,
+          }),
+        };
 
   const fork = resolveForkPoint(deps, {
     originKind: request.originKind ?? null,

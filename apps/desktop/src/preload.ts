@@ -1,5 +1,6 @@
 import {
   bbDesktopServerChoicesSchema,
+  bbDesktopSignInWindowResultSchema,
   type BbDesktopServerChoice,
 } from "@bb/desktop-contract";
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
@@ -54,7 +55,9 @@ import {
   BB_DESKTOP_GET_INFO_CHANNEL,
   BB_DESKTOP_INFO_CHANGED_CHANNEL,
   BB_DESKTOP_INSTALL_UPDATE_CHANNEL,
+  BB_DESKTOP_CLOSE_SIGN_IN_WINDOW_CHANNEL,
   BB_DESKTOP_OPEN_EXTERNAL_URL_CHANNEL,
+  BB_DESKTOP_OPEN_SIGN_IN_WINDOW_CHANNEL,
   BB_DESKTOP_SET_THEME_CHANNEL,
   BB_DESKTOP_ZOOM_COMMAND_CHANNEL,
 } from "./desktop-update-ipc.js";
@@ -475,6 +478,16 @@ const bbDesktopApi: BbDesktopApi = {
   },
   openExternalUrl(url: string): void {
     ipcRenderer.send(BB_DESKTOP_OPEN_EXTERNAL_URL_CHANNEL, url);
+  },
+  async openSignInWindow(request) {
+    const result: unknown = await ipcRenderer.invoke(
+      BB_DESKTOP_OPEN_SIGN_IN_WINDOW_CHANNEL,
+      request,
+    );
+    return bbDesktopSignInWindowResultSchema.parse(result);
+  },
+  closeSignInWindow(id: string): void {
+    ipcRenderer.send(BB_DESKTOP_CLOSE_SIGN_IN_WINDOW_CHANNEL, id);
   },
   async openServerDaemonLogs(): Promise<void> {
     await ipcRenderer.invoke(BB_DESKTOP_OPEN_SERVER_DAEMON_LOGS_CHANNEL);

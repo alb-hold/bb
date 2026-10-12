@@ -221,6 +221,43 @@ describe("resolveNativeHarnessLaunch", () => {
       session: { kind: "resume", id: "abc-123" },
     });
   });
+
+  it("keeps the permission-bypass launch argv on fresh starts and resumes", () => {
+    const claude = {
+      ...ASSIGNED_CLI,
+      launchArgs: ["--dangerously-skip-permissions"],
+    };
+    const home = tempHome();
+    const fresh = resolveNativeHarnessLaunch(
+      spec({ cli: claude, initialPrompt: "go" }),
+      { HOME: home },
+    );
+    expect(fresh.session.kind).toBe("start");
+    expect(fresh.args[0]).toBe("--dangerously-skip-permissions");
+    const project = path.join(home, ".claude", "projects", "p");
+    mkdirSync(project, { recursive: true });
+    writeFileSync(
+      path.join(project, "6f1c2a8e-7d1b-4a55-9f0e-1c2d3e4f5a6b.jsonl"),
+      "{}\n",
+    );
+    const resumed = resolveNativeHarnessLaunch(spec({ cli: claude }), {
+      HOME: home,
+    });
+    expect(resumed.session.kind).toBe("resume");
+    expect(resumed.args[0]).toBe("--dangerously-skip-permissions");
+
+    const codex = {
+      ...DISCOVERED_CLI,
+      launchArgs: ["--no-daemon", "--dangerously-bypass-approvals-and-sandbox"],
+    };
+    for (const nativeSessionId of [null, "abc-123"]) {
+      expect(
+        resolveNativeHarnessLaunch(spec({ cli: codex, nativeSessionId }), {
+          HOME: tempHome(),
+        }).args.slice(0, 2),
+      ).toEqual(["--no-daemon", "--dangerously-bypass-approvals-and-sandbox"]);
+    }
+  });
 });
 
 describe("native session activity wiring", () => {
