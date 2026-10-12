@@ -7,7 +7,7 @@ const SETTLE_MS = 2_500;
 const WAIT_MS = 30_000;
 const FLOW_PAUSE_BYTES = 1024 * 1024;
 const FLOW_OVERSHOOT_BYTES = 512 * 1024;
-const REPLAY_TAIL_BYTES = 512 * 1024;
+const REPLAY_TAIL_BYTES = 4 * 1024 * 1024;
 const MAX_CHUNK_BYTES = 64 * 1024;
 
 type OutputChunk = Extract<TerminalServerMessage, { type: "output" }>["chunk"];
