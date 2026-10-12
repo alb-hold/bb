@@ -8,15 +8,10 @@ import type {
 import { requirePublicThread } from "../lib/entity-lookup.js";
 import { applyLoggedThreadLifecycleEvent } from "./lifecycle-outcome.js";
 import { readRecordTerminal } from "./native-terminal-threads.js";
-import {
-  applyGeneratedThreadTitle,
-  generateThreadMetadataWithOutcome,
-} from "./title-generation.js";
+import { generateAndApplyThreadTitle } from "./title-generation.js";
 
 type NativeTerminalActivityDeps = LoggedPendingInteractionWorkSessionDeps &
   Pick<AppDeps, "db" | "hub" | "logger" | "terminalSessions">;
-
-const titlesInFlight = new Set<string>();
 
 function requireNativeRecord(deps: Pick<AppDeps, "db">, threadId: string) {
   const record = getNativeTerminalThread(deps.db, threadId);
@@ -67,26 +62,15 @@ function titleNativeThreadFromPrompt(
   threadId: string,
   prompt: string,
 ): void {
-  if (getThread(deps.db, threadId)?.title != null) return;
-  if (titlesInFlight.has(threadId)) return;
-  titlesInFlight.add(threadId);
-  void generateThreadMetadataWithOutcome(deps, {
+  void generateAndApplyThreadTitle(deps, {
     input: [{ type: "text", text: prompt, mentions: [] }],
     threadId,
-  })
-    .then((outcome) => {
-      const title = outcome.metadata?.title;
-      if (title) applyGeneratedThreadTitle(deps, { threadId, title });
-    })
-    .catch((error: unknown) => {
-      deps.logger.warn(
-        { err: error, threadId },
-        "Native terminal thread title generation failed",
-      );
-    })
-    .finally(() => {
-      titlesInFlight.delete(threadId);
-    });
+  }).catch((error: unknown) => {
+    deps.logger.warn(
+      { err: error, threadId },
+      "Native terminal thread title generation failed",
+    );
+  });
 }
 
 export function interruptNativeTerminalTurn(
