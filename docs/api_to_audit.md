@@ -213,7 +213,8 @@ receives `ExperimentalPluginProviderEnvContext` and returns
 The optional `ExperimentalPluginProviderEnvContext.experimental_runtimeKind`
 is `"native"` when core opens a native terminal through this same resolver.
 Omission preserves session and chat-turn behavior. Account Pooler uses it to
-keep native provider and nested-pool tokens in memory. Core's native launch
+keep native provider and nested-pool tokens in memory. Durable bridge records
+contain only hashes; startup converts older raw scoped records atomically. Core's native launch
 and the chat bridge both use `resolvePluginProviderEnv`; no alternate resolver
 exists. Stabilization requires auditing credential lifetime and restart
 behavior, verifying contributors that ignore the context, and keeping every

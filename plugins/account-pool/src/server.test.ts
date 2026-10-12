@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   retryAvailabilityMethod,
   type RetryAvailability,
@@ -378,7 +379,12 @@ describe("Explicit subscription routing", () => {
       ),
     ).toBe(false);
     const bridge = await resolveToken(fixture.host);
-    expect(persisted.some((content) => content.includes(bridge))).toBe(true);
+    expect(persisted.some((content) => content.includes(bridge))).toBe(false);
+    expect(
+      persisted.some((content) =>
+        content.includes(createHash("sha256").update(bridge).digest("hex")),
+      ),
+    ).toBe(true);
   });
 
   it("keeps an in-flight request on its selected account when an idle selection changes", async () => {

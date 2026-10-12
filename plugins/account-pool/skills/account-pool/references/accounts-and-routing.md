@@ -15,7 +15,11 @@ proxying a parent pool. The hub resolves the conversation's current account choi
 at the start of each request, including requests from a running native terminal.
 A request already in flight keeps its choice. Native Codex launches use the same
 environment-backed provider configuration as chat turns; no token is passed in
-command arguments. Native launch credentials live only in the server process.
+command arguments. Native launch credentials live only in the server process. Existing scoped
+credential files are converted to SHA-256 digests at startup; bridge credentials
+remain reusable for authentication across restarts through these digests. Older
+builds discard digest-only records and reissue a token on the next chat turn or
+thread start. Reopen a native terminal after downgrading.
 Reopen the terminal after a server restart to obtain a new credential. Machine
 token rotation also revokes derived conversation credentials after the existing
 ten-minute grace period; reopen the terminal after that grace expires.
