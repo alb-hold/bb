@@ -1675,6 +1675,207 @@ describe("TerminalManager", () => {
     },
   );
 
+  it.each([256, 512])(
+    "bounds retained CSI snapshots across 12000 separate %s-byte output chunks",
+    async (chunkBytes) => {
+      const harness = createHarness();
+      const pty = await openTerminal(harness);
+      vi.useFakeTimers({
+        toFake: [
+          "setTimeout",
+          "clearTimeout",
+          "setImmediate",
+          "clearImmediate",
+          "performance",
+        ],
+      });
+      const session = harness.manager["sessions"].get("term-1");
+      if (!session) {
+        throw new Error("Terminal session did not open");
+      }
+      const capturedLengths = new Set<number>();
+      let maxRetainedChunks = 0;
+      let maxRetainedBytes = 0;
+      for (let index = 0; index < 12_000; index += 1) {
+        pty.emitData(
+          `${index === 0 ? "\u001b[" : ""}${";".repeat(chunkBytes)}`,
+        );
+        vi.advanceTimersByTime(4);
+        const entry = session.scrollback.at(-1);
+        expect(entry?.chunk.seq).toBe(index);
+        const length = entry?.parserStateBefore.csiParameters.length ?? -1;
+        expect(length).toBeGreaterThanOrEqual(0);
+        expect(length).toBeLessThanOrEqual(1024);
+        capturedLengths.add(length);
+        maxRetainedChunks = Math.max(
+          maxRetainedChunks,
+          session.scrollback.length,
+        );
+        maxRetainedBytes = Math.max(maxRetainedBytes, session.scrollbackBytes);
+      }
+      expect(capturedLengths.has(chunkBytes)).toBe(true);
+      expect(capturedLengths.has(1024)).toBe(true);
+      const retainedChunks = Math.min(10_000, (4 * 1024 * 1024) / chunkBytes);
+      expect(maxRetainedChunks).toBe(retainedChunks);
+      expect(maxRetainedBytes).toBeLessThanOrEqual(4 * 1024 * 1024);
+      expect(session.scrollback).toHaveLength(retainedChunks);
+      expect(session.scrollbackBytes).toBe(retainedChunks * chunkBytes);
+      expect(session.scrollback[0]?.chunk.seq).toBe(12_000 - retainedChunks);
+      expect(
+        session.scrollback.every(
+          (entry) => entry.parserStateBefore.escape === "csi-ignore",
+        ),
+      ).toBe(true);
+      expect(
+        session.scrollback.reduce(
+          (total, entry) =>
+            total + entry.parserStateBefore.csiParameters.length,
+          0,
+        ),
+      ).toBe(0);
+      await harness.manager.handleMessage({
+        type: "terminal.attach",
+        requestId: "attach-pruned-csi",
+        terminalId: "term-1",
+        sinceSeq: 0,
+        tailBytes: 4 * 1024 * 1024,
+      });
+      expect(harness.messages).toContainEqual(
+        expect.objectContaining({
+          type: "terminal.replay",
+          requestId: "attach-pruned-csi",
+          chunks: [],
+        }),
+      );
+      pty.emitData("mOK");
+      vi.advanceTimersByTime(4);
+      await harness.manager.handleMessage({
+        type: "terminal.attach",
+        requestId: "attach-pruned-csi-recovered",
+        terminalId: "term-1",
+        sinceSeq: 0,
+        tailBytes: 4 * 1024 * 1024,
+      });
+      expect(harness.messages).toContainEqual(
+        expect.objectContaining({
+          type: "terminal.replay",
+          requestId: "attach-pruned-csi-recovered",
+          chunks: [
+            expect.objectContaining({
+              dataBase64: Buffer.from("OK").toString("base64"),
+            }),
+          ],
+        }),
+      );
+      pty.emitExit(0);
+      const exited = harness.manager["exitedSessions"].get("term-1");
+      expect(exited?.scrollback).toHaveLength(retainedChunks);
+      expect(exited?.scrollbackBytes).toBeLessThanOrEqual(4 * 1024 * 1024);
+      harness.manager.dispose();
+    },
+  );
+
+  it.each(["held", "growing"] as const)(
+    "bounds aggregate snapshot storage with %s CSI parameters in tiny output chunks",
+    async (mode) => {
+      const harness = createHarness();
+      const pty = await openTerminal(harness);
+      vi.useFakeTimers({
+        toFake: [
+          "setTimeout",
+          "clearTimeout",
+          "setImmediate",
+          "clearImmediate",
+          "performance",
+        ],
+      });
+      const session = harness.manager["sessions"].get("term-1");
+      if (!session) {
+        throw new Error("Terminal session did not open");
+      }
+      pty.emitData(`\u001b[${mode === "held" ? ";".repeat(1024) : ";"}`);
+      vi.advanceTimersByTime(4);
+      for (let index = 0; index < 12_000; index += 1) {
+        const position = index % 1025;
+        pty.emitData(
+          mode === "held"
+            ? "\u0000"
+            : position === 0
+              ? "m\u001b[;"
+              : position === 1024
+                ? "m"
+                : String(Math.floor(index / 1025) % 10),
+        );
+        vi.advanceTimersByTime(4);
+        expect(session.scrollback.at(-1)?.chunk.seq).toBe(index + 1);
+      }
+      expect(session.scrollback).toHaveLength(10_000);
+      expect(
+        session.scrollback.every(
+          (entry) => entry.parserStateBefore.csiParameters.length <= 1024,
+        ),
+      ).toBe(true);
+      const snapshotBytes = session.scrollback.reduce(
+        (total, entry) => total + entry.parserStateBefore.csiParameters.length,
+        0,
+      );
+      expect(snapshotBytes).toBeLessThanOrEqual(10_240_000);
+      if (mode === "held") {
+        expect(snapshotBytes).toBe(10_240_000);
+        expect(session.scrollbackBytes).toBe(10_000);
+      } else {
+        expect(
+          new Set(
+            session.scrollback.map(
+              (entry) => entry.parserStateBefore.csiParameters,
+            ),
+          ).size,
+        ).toBeGreaterThan(9000);
+        expect(snapshotBytes).toBeGreaterThan(4 * 1024 * 1024);
+        expect(session.scrollbackBytes).toBeLessThan(11_000);
+      }
+      await harness.manager.handleMessage({
+        type: "terminal.attach",
+        requestId: "attach-held-csi",
+        terminalId: "term-1",
+        sinceSeq: 0,
+        tailBytes: 1,
+      });
+      expect(harness.messages).toContainEqual(
+        expect.objectContaining({
+          type: "terminal.replay",
+          requestId: "attach-held-csi",
+          chunks: [],
+        }),
+      );
+      pty.emitData("mOK");
+      vi.advanceTimersByTime(4);
+      await harness.manager.handleMessage({
+        type: "terminal.attach",
+        requestId: "attach-held-csi-recovered",
+        terminalId: "term-1",
+        sinceSeq: 0,
+        tailBytes: mode === "held" ? 100_000 : 1,
+      });
+      expect(harness.messages).toContainEqual(
+        expect.objectContaining({
+          type: "terminal.replay",
+          requestId: "attach-held-csi-recovered",
+          chunks: [
+            expect.objectContaining({
+              dataBase64: Buffer.from("OK").toString("base64"),
+            }),
+          ],
+        }),
+      );
+      pty.emitExit(0);
+      const exited = harness.manager["exitedSessions"].get("term-1");
+      expect(exited?.scrollback).toHaveLength(10_000);
+      expect(exited?.scrollbackBytes).toBe(session.scrollbackBytes);
+      harness.manager.dispose();
+    },
+  );
+
   it.each([1024, 1025])(
     "respects the CSI parameter byte boundary at %s bytes",
     async (length) => {
