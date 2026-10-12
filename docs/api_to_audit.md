@@ -113,6 +113,7 @@ when no other source-project thread uses it; shared worktrees are refused.
 Before stabilization, audit cross-project parent and child operations, managed
 environment lifecycle and cleanup, thread-list cache refresh in both projects,
 and moving threads between projects with identical project names.
+
 ## Queued message edit holds
 
 `bb.sdk.threads.queuedMessages.experimental_holdForEdit({ threadId, queuedMessageId })` (`POST /threads/:id/queued-messages/:queuedMessageId/edit-hold`) holds a queued message while someone edits it and returns `{ leaseMs }`. While the hold is live, no automatic dispatch (idle drain, schedule, plugin recheck, host reconnect, failed-retry) claims the row, and the idle drain also leaves the drainable rows behind it queued, so the edited message still goes first. Rows behind a held row that wait on something else (a schedule, a plugin) are not held back. Explicit send-now still claims a held row. Calling it again renews the lease; a hold that is not renewed within `leaseMs` lapses and the periodic sweep dispatches the row. It responds 409 once a dispatch has claimed the row and 404 for a missing row. Holding never changes `updatedAt`, so `expectedUpdatedAt` from before the hold stays valid for the save. A successful `queuedMessages.update` clears the hold in the same write. `experimental_releaseEditHold` (`DELETE` on the same path) cancels without saving and is a no-op for an unheld row; releasing or saving a held row immediately re-attempts its dispatch. The app's inline queued-message editor takes the hold when it opens, renews it every quarter lease, and releases it on close. Holds are not owned: any client may renew or release one.
@@ -1822,12 +1823,12 @@ batches. Confirm the platform coverage (Linux
 `/proc`, macOS `lsof`) and whether the grace should be per call.
 
 0b. **Process identity.** `experimental_readProcessIdentity(pid)` from
-   `@get-bb/plugin-sdk/host` returns `{ command, startedAt }` (`ps` on POSIX,
-   CIM on Windows) or null. bb's launcher uses the same probe to confirm a
-   recorded PID before stopping it. Storage & retention checks a development
-   instance's recorded launcher entry path and start time before signalling
-   it, so a reused PID is never killed. Confirm start-time precision per
-   platform and whether a combined verified-stop helper should replace it.
+`@get-bb/plugin-sdk/host` returns `{ command, startedAt }` (`ps` on POSIX,
+CIM on Windows) or null. bb's launcher uses the same probe to confirm a
+recorded PID before stopping it. Storage & retention checks a development
+instance's recorded launcher entry path and start time before signalling
+it, so a reused PID is never killed. Confirm start-time precision per
+platform and whether a combined verified-stop helper should replace it.
 
 0. **Call timeout.** `ExperimentalHostCallOptions.timeoutMs` (default 30s,
    capped at 30 minutes) lets a plugin run a long host call — a setup

@@ -496,7 +496,8 @@ describe("NativeActivityReader", () => {
         { state: "working", prompt: "new prompt" },
       ]);
       const recent: unknown = Reflect.get(fixture.reader, "recentEvictedIds");
-      if (!(recent instanceof Set)) throw new Error("Recent identities unavailable");
+      if (!(recent instanceof Set))
+        throw new Error("Recent identities unavailable");
       expect(recent.has(completion.uuid)).toBe(false);
       expect(recent.has(assistant.uuid)).toBe(false);
       const sizes = retainedIdentitySizes(fixture.reader);
