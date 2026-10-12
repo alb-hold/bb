@@ -2553,6 +2553,16 @@ describe("public terminal routes", () => {
     expect(sizes()).toEqual(["160x48", "44x30", "44x20", "150x48"]);
     send(phone, { type: "visibility", visible: true });
     expect(sizes()).toEqual(["160x48", "44x30", "44x20", "150x48", "44x20"]);
+    send(desktop, { type: "ping" });
+    send(desktop, { type: "resize", cols: 170, rows: 50 });
+    send(desktop, { type: "resize", cols: 150, rows: 48 });
+    send(phone, { type: "ping" });
+    expect(sizes()).toHaveLength(5);
+    expect(
+      fixture.harness.deps.terminalSessions.getTerminal({
+        terminalId: stored.id,
+      }),
+    ).toMatchObject({ cols: 44, rows: 20 });
 
     terminals.detachBrowserTerminal({ terminalId: stored.id, socket: phone });
     expect(sizes()).toEqual([
