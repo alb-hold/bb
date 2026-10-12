@@ -42,11 +42,16 @@ export type CommandOf<TType extends DispatchCommand["type"]> = Extract<
   { type: TType }
 >;
 
+export interface TerminalDataSocketPort {
+  connect(args: { ticket: string; url: string }): Promise<boolean>;
+}
+
 export interface CommandDispatchOptions {
   emitEnvironmentHookProgress?: (
     message: EnvironmentHookProgressMessage,
   ) => void;
   desktopBrowserBroker?: DesktopBrowserBroker;
+  terminalDataSocket?: TerminalDataSocketPort;
   dataDir: string;
   logger: Pick<HostDaemonLogger, "debug" | "warn">;
   fetchProjectAttachment: FetchProjectAttachment;
