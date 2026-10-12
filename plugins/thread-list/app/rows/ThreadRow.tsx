@@ -72,6 +72,8 @@ import { AppCommandShortcutPill } from "../ui/AppCommandShortcutPill.js";
 import { SidebarStickyTier } from "../ui/sidebar.js";
 import {
   SIDEBAR_HOVER_ACTIONS_CLASS,
+  SIDEBAR_HOVER_ACTIONS_FADE_CLASS,
+  SIDEBAR_HOVER_ACTIONS_INSET_CLASS,
   SIDEBAR_HOVER_ACTIONS_MOBILE_ALWAYS_VALUE,
   SIDEBAR_HOVER_ACTIONS_ROW_CLASS,
 } from "@/components/ui/sidebar-hover-actions";
@@ -193,6 +195,15 @@ export const REORDER_PLACEMENT_CLASS: Record<SidebarReorderPlacement, string> =
     after:
       "after:pointer-events-none after:absolute after:inset-x-1 after:-bottom-px after:h-0.5 after:rounded-full after:bg-sidebar-ring after:content-['']",
   };
+
+const HOVER_CAPABLE_ACTIONS_OVERLAY_CLASS =
+  "[@media(hover:hover)]:absolute [@media(hover:hover)]:inset-y-0 [@media(hover:hover)]:right-1 [@media(hover:hover)]:z-30";
+
+function getHoverActionsInsetStyle(actionCount: number): CSSProperties {
+  return {
+    "--bb-sidebar-hover-actions-inset": `calc(var(--spacing) * ${7.5 * actionCount})`,
+  } as CSSProperties;
+}
 
 function getThreadRowStyle(depth: number): CSSProperties {
   return {
@@ -722,7 +733,11 @@ function ThreadRowComponent({
           hasVisibleStatus && "gap-1",
           !isActionsOpen &&
             "group-data-[sidebar-touch-armed=true]/thread-row:hidden",
+          !isEditing &&
+            !isCustomizingActions &&
+            SIDEBAR_HOVER_ACTIONS_INSET_CLASS,
         )}
+        style={getHoverActionsInsetStyle(quickActions.length + 1)}
       >
         <a
           ref={rowLinkRef}
@@ -849,51 +864,59 @@ function ThreadRowComponent({
           (isEditing || isCustomizingActions) && "hidden",
         )}
       >
-        <SidebarThreadPullRequestChip threadId={thread.id} />
-        {hasVisibleStatus ? (
-          <span
-            className={cn(
-              "relative flex shrink-0 items-center justify-center",
-              hasFixedStatusSlot
-                ? "min-w-4"
-                : COARSE_POINTER_ROW_ACTION_SIZE_CLASS,
-            )}
-          >
-            {miniMap ? (
-              <span
-                data-sidebar-thread-trailing-indicator=""
-                className={cn(
-                  SIDEBAR_ROW_GLYPH_SLOT_CLASS,
-                  SIDEBAR_STATUS_GLYPH_BOX_CLASS,
-                )}
-              >
-                <SplitPaneMiniMap
-                  slots={miniMap}
-                  label={splitIndicatorLabel}
-                  isWorking={splitIndicatorIsWorking}
+        <span
+          data-sidebar-thread-trailing-badges=""
+          className={cn(
+            SIDEBAR_HOVER_ACTIONS_FADE_CLASS,
+            "flex min-w-0 shrink-0 items-center gap-0.5",
+          )}
+        >
+          <SidebarThreadPullRequestChip threadId={thread.id} />
+          {hasVisibleStatus ? (
+            <span
+              className={cn(
+                "relative flex shrink-0 items-center justify-center",
+                hasFixedStatusSlot
+                  ? "min-w-4"
+                  : COARSE_POINTER_ROW_ACTION_SIZE_CLASS,
+              )}
+            >
+              {miniMap ? (
+                <span
+                  data-sidebar-thread-trailing-indicator=""
+                  className={cn(
+                    SIDEBAR_ROW_GLYPH_SLOT_CLASS,
+                    SIDEBAR_STATUS_GLYPH_BOX_CLASS,
+                  )}
+                >
+                  <SplitPaneMiniMap
+                    slots={miniMap}
+                    label={splitIndicatorLabel}
+                    isWorking={splitIndicatorIsWorking}
+                  />
+                </span>
+              ) : (
+                <ThreadTrailingIndicator
+                  state={trailingIndicatorState}
+                  automationStartedAt={automationStartedAt}
+                  elapsedMinutes={elapsedMinutes}
+                  hideIdleDraftLabel={
+                    !hasHiddenChildren && trailingIndicatorKind === "draft"
+                  }
+                  rowStatus={pluginThreadRowStatus}
                 />
-              </span>
-            ) : (
-              <ThreadTrailingIndicator
-                state={trailingIndicatorState}
-                automationStartedAt={automationStartedAt}
-                elapsedMinutes={elapsedMinutes}
-                hideIdleDraftLabel={
-                  !hasHiddenChildren && trailingIndicatorKind === "draft"
-                }
-                rowStatus={pluginThreadRowStatus}
-              />
-            )}
-          </span>
-        ) : null}
-        {shortcut ? (
-          <span
-            data-sidebar-shortcut-secondary={hasVisibleStatus ? "" : undefined}
-            className="shrink-0"
-          >
-            <AppCommandShortcutPill shortcut={shortcut} />
-          </span>
-        ) : null}
+              )}
+            </span>
+          ) : null}
+          {shortcut ? (
+            <span
+              data-sidebar-shortcut-secondary={hasVisibleStatus ? "" : undefined}
+              className="shrink-0"
+            >
+              <AppCommandShortcutPill shortcut={shortcut} />
+            </span>
+          ) : null}
+        </span>
         {thread.archivedAt !== null ? (
           <span className="flex shrink-0 items-center gap-1 [@media(hover:none)]:hidden">
             <div
@@ -937,6 +960,7 @@ function ThreadRowComponent({
             className={cn(
               SIDEBAR_HOVER_ACTIONS_CLASS,
               "flex shrink-0 items-center justify-end gap-1",
+              HOVER_CAPABLE_ACTIONS_OVERLAY_CLASS,
               isEditing && "invisible pointer-events-none",
             )}
           >
