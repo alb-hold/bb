@@ -95,8 +95,10 @@ export function NativeTerminalPromptBar({
   const submit = (event?: FormEvent<HTMLFormElement>) => {
     event?.preventDefault();
     if (!canSend) return;
+    const sentAttachments = attachments;
+    const sentText = text;
     const input: PromptInput[] = [
-      ...attachments.map(attachmentPromptInput),
+      ...sentAttachments.map(attachmentPromptInput),
       ...(message.length === 0
         ? []
         : [{ type: "text" as const, text: message, mentions: [] }]),
@@ -105,9 +107,12 @@ export function NativeTerminalPromptBar({
       { input, threadId },
       {
         onSuccess: () => {
-          setText("");
-          setAttachments([]);
-          setAttachError(null);
+          setText((current) => (current === sentText ? "" : current));
+          setAttachments((current) =>
+            current.filter(
+              (attachment) => !sentAttachments.includes(attachment),
+            ),
+          );
         },
       },
     );

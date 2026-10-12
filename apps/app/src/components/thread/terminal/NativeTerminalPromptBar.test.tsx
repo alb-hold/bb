@@ -178,4 +178,35 @@ describe("NativeTerminalPromptBar", () => {
     expect(sendButton).toHaveProperty("disabled", false);
     expect(send).not.toHaveBeenCalled();
   });
+
+  it("keeps an image and text added while a send is in flight", async () => {
+    let resolveSend: (() => void) | undefined;
+    send.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveSend = resolve;
+        }),
+    );
+    const { input, sendButton } = renderBar();
+    pasteFiles(input, [new File(["a"], "first.png", { type: "image/png" })]);
+    await screen.findByText("first.png");
+    fireEvent.change(input, { target: { value: "look at this" } });
+    fireEvent.click(sendButton);
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+
+    pasteFiles(input, [new File(["b"], "second.png", { type: "image/png" })]);
+    await screen.findByText("second.png");
+    fireEvent.change(input, { target: { value: "and this one" } });
+    resolveSend?.();
+
+    await waitFor(() => expect(screen.queryByText("first.png")).toBeNull());
+    expect(screen.getByText("second.png")).toBeTruthy();
+    expect(input.value).toBe("and this one");
+    expect(send.mock.calls[0]?.[0]).toMatchObject({
+      input: [
+        { type: "localImage", path: "stored-first.png" },
+        { type: "text", text: "look at this" },
+      ],
+    });
+  });
 });
