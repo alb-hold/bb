@@ -216,21 +216,6 @@ export class TerminalWebSocketTransport {
     );
   }
 
-  claimSize(): void {
-    const socket = this.socket;
-    if (
-      this.lastResize === null ||
-      socket === null ||
-      socket.readyState !== SOCKET_OPEN
-    ) {
-      return;
-    }
-    this.trySend(
-      socket,
-      JSON.stringify({ type: "resize", ...this.lastResize, claim: true }),
-    );
-  }
-
   private connect(state: "connecting" | "reconnecting"): void {
     if (this.disposed || this.terminalEnded) {
       return;
@@ -258,16 +243,16 @@ export class TerminalWebSocketTransport {
     }
     this.lastPongAt = this.now();
     this.startHeartbeat(socket);
-    if (this.lastResize !== null) {
-      this.trySend(
-        socket,
-        JSON.stringify({ type: "resize", ...this.lastResize }),
-      );
-    }
     if (!this.visible) {
       this.trySend(
         socket,
         JSON.stringify({ type: "visibility", visible: false }),
+      );
+    }
+    if (this.lastResize !== null) {
+      this.trySend(
+        socket,
+        JSON.stringify({ type: "resize", ...this.lastResize }),
       );
     }
     this.flushInputs();

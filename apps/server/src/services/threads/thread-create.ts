@@ -425,24 +425,6 @@ function requireLiveSourceThread(
   return sourceThread;
 }
 
-/**
- * Creates the thread row and hands its first message to the dispatch
- * checkpoint.
- *
- * This is the whole of thread creation's dispatch story now, and it replaced a
- * pair of near-identical functions — one that provisioned immediately and one
- * that queued the first turn — whose only real difference was
- * whether anything was allowed to run yet. That is a question the checkpoint
- * answers, so asking it here as well meant two code paths that had to be kept
- * in agreement about forks, execution defaults, telemetry and cleanup.
- *
- * The row inserts `pending`: created, with its provider resolved, and nothing
- * provisioned. Creation itself is unhooked — it is a cheap row — and admission
- * happens at the first message's attempt. A cleared attempt moves the thread
- * to `starting` and provisions with the message riding along; a queued one
- * leaves the thread exactly where it is, with the start context recorded so a
- * later drain (or a later server) can start it.
- */
 async function createPendingThreadAndAttemptFirstDispatch(
   deps: ThreadCreateDeps,
   args: CreateProvisioningThreadArgs & {
@@ -508,6 +490,7 @@ async function createPendingThreadAndAttemptFirstDispatch(
       );
       beginNativeTerminalThreadProvisioning(deps, {
         environmentIntent: args.environmentIntent,
+        input: args.request.input,
         thread,
         titleProvided: Boolean(args.request.title),
       });
