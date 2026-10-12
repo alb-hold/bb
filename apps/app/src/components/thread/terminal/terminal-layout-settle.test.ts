@@ -469,6 +469,44 @@ describe("a signal still active at the 5 s ceiling", () => {
     },
   );
 
+  it.each(
+    (["transition", "font"] as const).flatMap((signal) =>
+      [4840, 4900, 4990].map((endsAtMs) => [signal, endsAtMs] as const),
+    ),
+  )(
+    "sends exactly one resize with the final size and no later nudge or restore when a %s ends at %i ms, inside the grace window that crosses the ceiling",
+    async (signal, endsAtMs) => {
+      const { finish, socket, transport } = setup(signal);
+
+      await vi.advanceTimersByTimeAsync(endsAtMs);
+      expect(socket.resizes).toEqual([]);
+      finish();
+      await vi.advanceTimersByTimeAsync(20_000);
+
+      expect(socket.resizes).toEqual([{ cols: 132, rows: 43 }]);
+      transport.dispose();
+    },
+  );
+
+  it.each(["transition", "font"] as const)(
+    "sends one resize with the final size and no nudge wider than the grid when a repaint was requested and a %s ends at 4900 ms",
+    async (signal) => {
+      const { finish, socket, transport } = setup(signal);
+
+      transport.requestRepaint();
+      await vi.advanceTimersByTimeAsync(4900);
+      finish();
+      await vi.advanceTimersByTimeAsync(20_000);
+
+      const sent = socket.resizes;
+      expect(sent[0]).toEqual({ cols: 132, rows: 43 });
+      expect(sent.filter((size) => size.cols > 132)).toEqual([]);
+      expect(sent[sent.length - 1]).toEqual({ cols: 132, rows: 43 });
+      expect(sent.slice(1, -1).every((size) => size.cols < 132)).toBe(true);
+      transport.dispose();
+    },
+  );
+
   it.each(["transition", "font"] as const)(
     "never sends a nudge wider than the grid at send time and leaves no stale nudge when a %s ends after the ceiling",
     async (signal) => {
