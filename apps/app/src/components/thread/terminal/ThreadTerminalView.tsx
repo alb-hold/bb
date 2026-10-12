@@ -60,6 +60,7 @@ import {
   type TerminalGridSize,
 } from "./terminal-shared-size";
 import { handleTerminalFileDrop } from "./terminal-file-drop";
+import { dropMouseReportsWithoutPosition } from "./terminal-mouse-reports";
 import { attachTerminalInteractions } from "./terminal-interactions";
 
 export const TERMINAL_FONT_FAMILY =
@@ -489,8 +490,12 @@ export function forwardTerminalData({
   ) {
     return;
   }
+  const input = dropMouseReportsWithoutPosition(data);
+  if (input.length === 0) {
+    return;
+  }
 
-  for (const dataBase64 of encodeTerminalInputChunks(data)) {
+  for (const dataBase64 of encodeTerminalInputChunks(input)) {
     onInput(dataBase64);
   }
   onUserInput?.();
