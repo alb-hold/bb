@@ -51,6 +51,9 @@ import {
   listStoredTurnRejectedRowsByClientRequestIds,
   listStoredTurnCompletedKeys,
   MissingStoredTurnStartedError,
+  ACTIVE_BACKGROUND_TASK_COUNT_CACHE_LIMIT,
+  deleteThreadEventSuffixInTransaction,
+  getActiveBackgroundTaskCountCacheSize,
   listActiveBackgroundTaskCountsByThreadIds,
   listLatestBackgroundTaskStateRowsByItemIds,
   listOpenBackgroundTaskItemRowsForHost,
@@ -63,9 +66,15 @@ import {
   type ThreadPruningPolicy,
 } from "../../src/data/thread-pruning.js";
 import { createEnvironment } from "../../src/data/environments.js";
-import { createProject } from "../../src/data/projects.js";
+import { createProject, deleteProject } from "../../src/data/projects.js";
 import {
+  bumpBackgroundTaskAppendGeneration,
+  getBackgroundTaskAppendGenerationCount,
+} from "../../src/data/event-rewrite-generation.js";
+import {
+  archiveThread,
   createThread,
+  deleteThread,
   searchThreadsWithPendingInteractionState,
 } from "../../src/data/threads.js";
 import type {
@@ -73,8 +82,12 @@ import type {
   InsertEventInput,
 } from "../../src/data/events.js";
 import { upsertHost } from "../../src/data/hosts.js";
-import type { DbConnection } from "../../src/connection.js";
+import type {
+  DbConnection,
+  DbQueryConnection,
+} from "../../src/connection.js";
 import { createMigratedConnection } from "../helpers/migrated-connection.js";
+import { migrate } from "../../src/migrate.js";
 
 function setup() {
   const db = createMigratedConnection();
@@ -4429,11 +4442,321 @@ describe("events", () => {
       { length: 32_751 },
       (_, index) => `thr_missing_${index}`,
     );
-    const chunkedRows = listActiveBackgroundTaskCountsByThreadIds(db, {
-      threadIds: [thread.id, ...missingThreadIds, otherThread.id],
+    const chunkedRows = db.transaction((tx) =>
+      listActiveBackgroundTaskCountsByThreadIds(tx, {
+        threadIds: [thread.id, ...missingThreadIds, otherThread.id],
+      }),
+    );
+
+    expect(unchunkedRows.map((row) => row.threadId).sort()).toEqual(
+      [thread.id, otherThread.id].sort(),
+    );
+    expect(chunkedRows).toEqual(unchunkedRows);
+  });
+
+  describe("active background-task count reuse", () => {
+    const backgroundTaskEvent = (
+      threadId: string,
+      sequence: number,
+      type: "item/started" | "item/backgroundTask/completed",
+    ) => ({
+      threadId,
+      sequence,
+      scope: turnScope("turn-1"),
+      type,
+      itemId: "task:command",
+      itemKind: "backgroundTask" as const,
+      parentToolCallId: null,
+      data: JSON.stringify({
+        item: {
+          id: "task:command",
+          type: "backgroundTask",
+          taskType: LOCAL_BASH_TASK_TYPE,
+          description: "fixture background task",
+          status: type === "item/started" ? "pending" : "completed",
+          taskStatus: type === "item/started" ? "running" : "completed",
+          skipTranscript: false,
+        },
+      }),
+    });
+    const countQueriesDuring = (db: DbConnection, run: () => void): number => {
+      let count = 0;
+      const raw = db.$client;
+      const originalPrepare = raw.prepare.bind(raw);
+      Object.defineProperty(raw, "prepare", {
+        configurable: true,
+        writable: true,
+        value: (source: string) => {
+          if (source.includes("latest_background_task_state")) {
+            count += 1;
+          }
+          return originalPrepare(source);
+        },
+      });
+      try {
+        run();
+      } finally {
+        Object.defineProperty(raw, "prepare", {
+          configurable: true,
+          writable: true,
+          value: originalPrepare,
+        });
+      }
+      return count;
+    };
+    const commandCount = (db: DbQueryConnection, threadId: string): number =>
+      listActiveBackgroundTaskCountsByThreadIds(db, { threadIds: [threadId] })[0]
+        ?.activeBackgroundCommandCount ?? 0;
+
+    it("reads events once per thread until a background task event is appended", () => {
+      const { db, project, thread } = setup();
+      const idleThread = createThread(db, noopNotifier, {
+        projectId: project.id,
+        providerId: "codex",
+      });
+      insertEvents(db, noopNotifier, [
+        backgroundTaskEvent(thread.id, 1, "item/started"),
+      ]);
+      const threadIds = [thread.id, idleThread.id];
+
+      const first = listActiveBackgroundTaskCountsByThreadIds(db, {
+        threadIds,
+      });
+      expect(first.map((row) => row.threadId)).toEqual([thread.id]);
+      expect(first[0]?.activeBackgroundCommandCount).toBe(1);
+
+      expect(
+        countQueriesDuring(db, () => {
+          expect(
+            listActiveBackgroundTaskCountsByThreadIds(db, { threadIds }),
+          ).toEqual(first);
+        }),
+      ).toBe(0);
+
+      insertEvents(db, noopNotifier, [
+        {
+          threadId: idleThread.id,
+          sequence: 1,
+          scope: turnScope("turn-2"),
+          type: "turn/started",
+          itemId: null,
+          itemKind: null,
+          parentToolCallId: null,
+          data: JSON.stringify({}),
+        },
+      ]);
+      expect(
+        countQueriesDuring(db, () => {
+          expect(
+            listActiveBackgroundTaskCountsByThreadIds(db, { threadIds }),
+          ).toEqual(first);
+        }),
+      ).toBe(0);
+
+      insertEvents(db, noopNotifier, [
+        backgroundTaskEvent(thread.id, 2, "item/backgroundTask/completed"),
+      ]);
+      expect(
+        countQueriesDuring(db, () => {
+          expect(
+            listActiveBackgroundTaskCountsByThreadIds(db, { threadIds }),
+          ).toEqual([]);
+        }),
+      ).toBe(1);
     });
 
-    expect(chunkedRows).toEqual(unchunkedRows);
+    it("does not let a caller change the remembered counts", () => {
+      const { db, thread } = setup();
+      insertEvents(db, noopNotifier, [
+        backgroundTaskEvent(thread.id, 1, "item/started"),
+      ]);
+
+      const [row] = listActiveBackgroundTaskCountsByThreadIds(db, {
+        threadIds: [thread.id],
+      });
+      if (!row) {
+        throw new Error("Expected an active background-task count row");
+      }
+      row.activeBackgroundCommandCount = 99;
+
+      expect(commandCount(db, thread.id)).toBe(1);
+    });
+
+    it("re-reads events after a thread's events are deleted", () => {
+      const { db, thread } = setup();
+      insertEvents(db, noopNotifier, [
+        backgroundTaskEvent(thread.id, 1, "item/started"),
+      ]);
+      expect(commandCount(db, thread.id)).toBe(1);
+
+      db.transaction((tx) => {
+        deleteThreadEventSuffixInTransaction(tx, {
+          cutoffSequence: 1,
+          oldMaxSequence: 1,
+          threadId: thread.id,
+        });
+      });
+
+      expect(commandCount(db, thread.id)).toBe(0);
+    });
+
+    it("keeps counts read inside a rolled-back transaction out of later reads", () => {
+      const { db, thread } = setup();
+      expect(commandCount(db, thread.id)).toBe(0);
+
+      expect(() =>
+        db.transaction((tx) => {
+          insertEvents(db, noopNotifier, [
+            backgroundTaskEvent(thread.id, 1, "item/started"),
+          ]);
+          expect(commandCount(db, thread.id)).toBe(1);
+          expect(commandCount(tx, thread.id)).toBe(1);
+          throw new Error("roll back");
+        }),
+      ).toThrow("roll back");
+
+      expect(commandCount(db, thread.id)).toBe(0);
+    });
+
+    const freshCounts = (db: DbConnection, threadIds: string[]) =>
+      db.transaction((tx) =>
+        listActiveBackgroundTaskCountsByThreadIds(tx, { threadIds }),
+      );
+
+    it("returns no row for a thread deleted on the same connection", () => {
+      const { db, thread } = setup();
+      insertEvents(db, noopNotifier, [
+        backgroundTaskEvent(thread.id, 1, "item/started"),
+      ]);
+      expect(commandCount(db, thread.id)).toBe(1);
+
+      expect(deleteThread(db, noopNotifier, thread.id)).toBe(true);
+
+      expect(
+        listActiveBackgroundTaskCountsByThreadIds(db, {
+          threadIds: [thread.id],
+        }),
+      ).toEqual([]);
+    });
+
+    it("returns no row for a thread removed with its project", () => {
+      const { db, project, thread } = setup();
+      insertEvents(db, noopNotifier, [
+        backgroundTaskEvent(thread.id, 1, "item/started"),
+      ]);
+      expect(commandCount(db, thread.id)).toBe(1);
+
+      expect(deleteProject(db, noopNotifier, project.id)).toBe(true);
+
+      expect(
+        listActiveBackgroundTaskCountsByThreadIds(db, {
+          threadIds: [thread.id],
+        }),
+      ).toEqual([]);
+    });
+
+    it("matches a fresh read after pruning removes background-task rows", () => {
+      const { db, thread } = setup();
+      const progress = {
+        ...backgroundTaskEvent(thread.id, 2, "item/started"),
+        type: "item/backgroundTask/progress" as const,
+      };
+      insertEvents(db, noopNotifier, [
+        backgroundTaskEvent(thread.id, 1, "item/started"),
+        progress,
+        { ...progress, sequence: 3 },
+        backgroundTaskEvent(thread.id, 4, "item/backgroundTask/completed"),
+        {
+          ...backgroundTaskEvent(thread.id, 5, "item/started"),
+          itemId: "task:still-running",
+        },
+      ]);
+      expect(commandCount(db, thread.id)).toBe(1);
+
+      expect(pruneThreadEvents(db, "resolved-items")).toBeGreaterThan(0);
+
+      expect(
+        listActiveBackgroundTaskCountsByThreadIds(db, {
+          threadIds: [thread.id],
+        }),
+      ).toEqual(freshCounts(db, [thread.id]));
+      expect(commandCount(db, thread.id)).toBe(1);
+    });
+
+    it("re-reads events after migrations run on a connection that already remembered counts", () => {
+      const { db, thread } = setup();
+      insertEvents(db, noopNotifier, [
+        backgroundTaskEvent(thread.id, 1, "item/started"),
+      ]);
+      expect(commandCount(db, thread.id)).toBe(1);
+      db.$client
+        .prepare(
+          "UPDATE events SET data = json_set(data, '$.item.status', 'completed') WHERE thread_id = ?",
+        )
+        .run(thread.id);
+
+      migrate(db);
+
+      expect(
+        listActiveBackgroundTaskCountsByThreadIds(db, {
+          threadIds: [thread.id],
+        }),
+      ).toEqual(freshCounts(db, [thread.id]));
+      expect(commandCount(db, thread.id)).toBe(0);
+    });
+
+    it("matches a fresh read after a thread is archived", () => {
+      const { db, thread } = setup();
+      insertEvents(db, noopNotifier, [
+        backgroundTaskEvent(thread.id, 1, "item/started"),
+      ]);
+      expect(commandCount(db, thread.id)).toBe(1);
+
+      archiveThread(db, noopNotifier, thread.id);
+
+      expect(
+        listActiveBackgroundTaskCountsByThreadIds(db, {
+          threadIds: [thread.id],
+        }),
+      ).toEqual(freshCounts(db, [thread.id]));
+    });
+
+    it("keeps remembered counts and append generations bounded", () => {
+      const { db, thread } = setup();
+      insertEvents(db, noopNotifier, [
+        backgroundTaskEvent(thread.id, 1, "item/started"),
+      ]);
+      const batches = 3;
+      for (let batch = 0; batch < batches; batch += 1) {
+        listActiveBackgroundTaskCountsByThreadIds(db, {
+          threadIds: Array.from(
+            { length: ACTIVE_BACKGROUND_TASK_COUNT_CACHE_LIMIT / 2 + 1 },
+            (_, index) => `thr_unknown_${batch}_${index}`,
+          ),
+        });
+        expect(getActiveBackgroundTaskCountCacheSize(db)).toBeLessThanOrEqual(
+          ACTIVE_BACKGROUND_TASK_COUNT_CACHE_LIMIT,
+        );
+      }
+      listActiveBackgroundTaskCountsByThreadIds(db, {
+        threadIds: Array.from(
+          { length: ACTIVE_BACKGROUND_TASK_COUNT_CACHE_LIMIT + 1 },
+          (_, index) => `thr_oversized_${index}`,
+        ),
+      });
+      expect(getActiveBackgroundTaskCountCacheSize(db)).toBeLessThanOrEqual(
+        ACTIVE_BACKGROUND_TASK_COUNT_CACHE_LIMIT,
+      );
+      expect(commandCount(db, thread.id)).toBe(1);
+
+      for (let index = 0; index < 50_010; index += 1) {
+        bumpBackgroundTaskAppendGeneration(`thr_generation_${index}`);
+      }
+      expect(getBackgroundTaskAppendGenerationCount()).toBeLessThanOrEqual(
+        50_000,
+      );
+      expect(commandCount(db, thread.id)).toBe(1);
+    });
   });
 
   it("lists the latest lifecycle row per open backgroundTask item on a host", () => {
