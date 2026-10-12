@@ -374,7 +374,9 @@ export async function runNativeHolder(
           .then((closed) => {
             if (closed && client === null) pty?.kill("SIGHUP");
           })
-          .catch(() => undefined)
+          .catch(() => {
+            if (client === null) detachedSince = Date.now();
+          })
           .finally(() => {
             checking = false;
           });

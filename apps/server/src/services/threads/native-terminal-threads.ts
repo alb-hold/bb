@@ -213,6 +213,7 @@ export function beginNativeTerminalThreadProvisioning(
   deps: ThreadProvisioningDeps & Pick<AppDeps, "config" | "logger">,
   args: {
     environmentIntent: ThreadProvisionEnvironmentIntent;
+    input: PromptInput[];
     thread: ThreadRow;
     titleProvided: boolean;
   },
@@ -233,7 +234,7 @@ export function beginNativeTerminalThreadProvisioning(
           environmentIntent: args.environmentIntent,
           execution: null,
           fork: null,
-          input: [],
+          input: args.input,
           seedWithoutRun: true,
           titleProvided: args.titleProvided,
         }),
