@@ -86,6 +86,12 @@ export default function plugin(bb: BbPluginApi) {
       launchArgs: ["--no-daemon", "--dangerously-bypass-approvals-and-sandbox"],
       modelArgs: ["-c", 'model="{model}"'],
       experimental_launchEnvArgs: CODEX_POOL_LAUNCH_ENV_ARGS,
+      mcp: [
+        "-c",
+        "mcp_servers.bb-bridge.command={commandJson}",
+        "-c",
+        "mcp_servers.bb-bridge.args={argsJson}",
+      ],
       imageArgs: ["--image", "{image}"],
       pastePlaceholders: ["[Pasted Content ", "[Image #"],
       sessionRoot: { env: "CODEX_HOME", home: ".codex" },

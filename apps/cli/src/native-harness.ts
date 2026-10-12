@@ -94,10 +94,27 @@ function fill(
   return values.map((value) => fillNativeTerminalTemplate(value, tokens));
 }
 
+export interface NativeMcpCommand {
+  args: readonly string[];
+  command: string;
+}
+
+export function nativeMcpArgs(
+  cli: ProviderNativeTerminal,
+  server: NativeMcpCommand,
+): string[] {
+  if (cli.mcp === undefined) return [];
+  return fill(cli.mcp, {
+    commandJson: JSON.stringify(server.command),
+    argsJson: JSON.stringify(server.args),
+  });
+}
+
 export function resolveNativeHarnessLaunch(
   spec: NativeTerminalLaunchSpec,
   env: NativeHarnessEnv,
   activityArgs: readonly string[] = [],
+  mcpArgs: readonly string[] = [],
   cwd: string = process.cwd(),
 ): NativeHarnessLaunch {
   const { cli } = spec;
@@ -110,6 +127,7 @@ export function resolveNativeHarnessLaunch(
     ),
     ...(spec.model === null ? [] : fill(cli.modelArgs, { model: spec.model })),
     ...activityArgs,
+    ...mcpArgs,
   ];
   const prompt = [
     ...(spec.initialPrompt === null ? [] : [spec.initialPrompt]),

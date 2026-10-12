@@ -1,5 +1,8 @@
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import {
   consumeNativeTerminalThreadLaunchInput,
+  getNativeTerminalToolCredential,
+  setNativeTerminalToolCredential,
   getEnvironment,
   getNativeTerminalThread,
   getStoredProviderSession,
@@ -16,6 +19,7 @@ import {
   type ProviderNativeTerminal,
 } from "@bb/domain";
 import type {
+  NativeTerminalAgentTools,
   NativeTerminalLaunchSpec,
   NativeTerminalThread,
   OpenNativeTerminalRequest,
@@ -25,7 +29,11 @@ import { ApiError } from "../../errors.js";
 import type { AppDeps } from "../../types.js";
 import { isServerMachineHost } from "../hosts/primary-host.js";
 import { storedProjectAttachmentPath } from "../projects/attachments.js";
-import { requirePublicThread } from "../lib/entity-lookup.js";
+import {
+  requirePublicThreadEnvironment,
+  requirePublicThread,
+  type ThreadEnvironmentLookupResult,
+} from "../lib/entity-lookup.js";
 import { resolvePluginProviderEnv } from "../plugins/plugin-agent-contributions.js";
 import { applyLoggedThreadLifecycleEventInTransaction } from "./lifecycle-outcome.js";
 import {
@@ -35,6 +43,8 @@ import {
   terminalOutputShowsPasteAgain,
   terminalScreenAlreadyShowsText,
 } from "./native-terminal-echo.js";
+import { resolveThreadDynamicTools } from "./thread-runtime-config.js";
+import { UPDATE_ENVIRONMENT_DIRECTORY_TOOL_NAME } from "./thread-environment-directory.js";
 import { createClientTurnRequestId } from "./thread-events.js";
 import { scheduleThreadProvisioningAdvance } from "./thread-provisioning.js";
 import type { ThreadProvisioningDeps } from "./thread-provisioning-environment.js";
@@ -199,7 +209,7 @@ export function nativeTerminalLaunchCommand(args: {
     : `"$BB_CLI" thread native-run ${args.threadId}`;
   const fallback = args.reattachOnly
     ? `printf '%s\\r\\n' '${NATIVE_TERMINAL_ENDED_MESSAGE}';`
-    : `${env} exec ${executable};`;
+    : `unset ${NATIVE_TOOL_CREDENTIAL_ENV}; ${env} exec ${executable};`;
   return [
     `if [ -n "$BB_CLI" ] && ${wrapper} --probe >/dev/null 2>&1; then`,
     `${env} exec ${wrapper};`,
@@ -402,6 +412,7 @@ async function openNativeTerminalOnce(
       );
     }
   }
+  const credential = issueNativeTerminalToolCredential(record.providerId);
   const terminal = await deps.terminalSessions.createTerminal({
     payload: {
       cols: args.request.cols ?? NATIVE_TERMINAL_DEFAULT_COLS,
@@ -418,7 +429,12 @@ async function openNativeTerminalOnce(
       target: { kind: "thread", threadId: thread.id },
       title: provider.displayName,
     },
-    extraContributedEnv: providerEnv,
+    extraContributedEnv: [...providerEnv, credential.env],
+  });
+  setNativeTerminalToolCredential(deps.db, {
+    threadId: thread.id,
+    terminalSessionId: terminal.id,
+    credentialHash: credential.hash,
   });
   setNativeTerminalThreadTerminal(deps.db, {
     threadId: thread.id,
@@ -578,10 +594,7 @@ export function takeNativeTerminalLaunchSpec(
 ): NativeTerminalLaunchSpec {
   const record = requireNativeTerminalThreadRecord(deps, args.threadId);
   const provider = requireNativeTerminalProvider(deps, record.providerId);
-  const input = consumeNativeTerminalThreadLaunchInput(
-    deps.db,
-    args.threadId,
-  );
+  const input = consumeNativeTerminalThreadLaunchInput(deps.db, args.threadId);
   return {
     threadId: record.threadId,
     cli: provider.cli,
@@ -589,6 +602,126 @@ export function takeNativeTerminalLaunchSpec(
     ...(args.imagesAsArgv ? input : launchInputWithImagesInPrompt(input)),
     model: record.model,
   };
+}
+
+const TOOL_CREDENTIAL_BYTES = 32;
+
+function hashToolCredential(credential: string): Buffer {
+  return createHash("sha256").update(credential).digest();
+}
+
+export const NATIVE_TOOL_CREDENTIAL_ENV = "BB_NATIVE_TOOL_CREDENTIAL";
+
+function issueNativeTerminalToolCredential(providerId: string) {
+  const secret = randomBytes(TOOL_CREDENTIAL_BYTES).toString("base64url");
+  return {
+    secret,
+    hash: hashToolCredential(secret).toString("hex"),
+    env: {
+      name: NATIVE_TOOL_CREDENTIAL_ENV,
+      value: secret,
+      source: { plugin: providerId },
+      reason: "Credential for this native terminal's bb tools",
+    },
+  };
+}
+
+export function requireNativeTerminalToolCredential(
+  deps: Pick<AppDeps, "db" | "terminalSessions">,
+  args: { authorization: string | undefined; threadId: string },
+): void {
+  const record = getNativeTerminalThread(deps.db, args.threadId);
+  const match = /^Bearer ([A-Za-z0-9_-]+)$/u.exec(args.authorization ?? "");
+  const stored = getNativeTerminalToolCredential(deps.db, args.threadId);
+  const supplied = hashToolCredential(match?.[1] ?? "");
+  const expected = Buffer.from(stored?.credentialHash ?? "", "hex");
+  const valid =
+    match !== null &&
+    stored !== null &&
+    record !== null &&
+    expected.length === supplied.length &&
+    timingSafeEqual(expected, supplied) &&
+    stored.terminalSessionId === record.terminalSessionId;
+  if (!valid) {
+    throw new ApiError(
+      401,
+      "native_terminal_credential_invalid",
+      "A valid credential for this thread's running native terminal is required",
+    );
+  }
+}
+
+export function requireLiveNativeTerminalToolThread(
+  deps: Pick<AppDeps, "db" | "terminalSessions">,
+  threadId: string,
+): ThreadEnvironmentLookupResult {
+  const record = requireNativeTerminalThreadRecord(deps, threadId);
+  const lookup = requirePublicThreadEnvironment(deps.db, threadId);
+  if (lookup.thread.archivedAt !== null) {
+    throw new ApiError(
+      409,
+      "native_terminal_not_live",
+      "This thread is archived",
+    );
+  }
+  const terminal = readRecordTerminal(deps, record);
+  if (terminal === null || terminal.status === "exited") {
+    throw new ApiError(
+      409,
+      "native_terminal_not_live",
+      "This thread's native terminal is not running",
+    );
+  }
+  return lookup;
+}
+
+export async function resolveNativeTerminalAgentTools(
+  deps: AppDeps,
+  args: { authorization: string | undefined; threadId: string },
+): Promise<
+  ThreadEnvironmentLookupResult & { tools: NativeTerminalAgentTools["tools"] }
+> {
+  const { threadId } = args;
+  requireNativeTerminalToolCredential(deps, args);
+  const lookup = requireLiveNativeTerminalToolThread(deps, threadId);
+  const record = requireNativeTerminalThreadRecord(deps, threadId);
+  const tools = await resolveThreadDynamicTools(deps, {
+    environment: lookup.environment,
+    model: record.model ?? "",
+    thread: lookup.thread,
+  });
+  return {
+    ...lookup,
+    tools: tools.filter(
+      (tool) => tool.name !== UPDATE_ENVIRONMENT_DIRECTORY_TOOL_NAME,
+    ),
+  };
+}
+
+export async function listNativeTerminalAgentTools(
+  deps: AppDeps,
+  args: { authorization: string | undefined; threadId: string },
+): Promise<NativeTerminalAgentTools> {
+  const { tools } = await resolveNativeTerminalAgentTools(deps, args);
+  return { tools };
+}
+
+export async function requireNativeTerminalAgentToolCall(
+  deps: AppDeps,
+  args: { authorization: string | undefined; threadId: string; tool: string },
+): Promise<ThreadEnvironmentLookupResult> {
+  const { environment, thread, tools } = await resolveNativeTerminalAgentTools(
+    deps,
+    args,
+  );
+  if (!tools.some((tool) => tool.name === args.tool)) {
+    throw new ApiError(
+      404,
+      "native_terminal_tool_not_found",
+      `Tool ${args.tool} is not available to this thread`,
+    );
+  }
+  return { environment, thread };
 }
 
 export function recordNativeTerminalSession(

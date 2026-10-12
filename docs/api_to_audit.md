@@ -1099,6 +1099,40 @@ dot segments. Core callers: `apps/server/src/services/threads/native-terminal-th
 toggle. First-party declarations: `provider-claude-code` (`assigned`) and
 `provider-codex` (`discovered`).
 
+`mcp` (optional) lists the argv the native CLI needs to load bb's tools: the
+wrapper fills `{commandJson}` and `{argsJson}` (JSON string and array literals,
+valid as JSON and as TOML values) with the command that starts the hidden
+`bb thread native-mcp <id>` stdio MCP server, which serves the same tools a chat
+turn on that thread receives (except `update_environment_directory`, which needs
+a turn) through `GET /threads/:id/native-terminal/agent-tools` and
+`POST /threads/:id/native-terminal/agent-tools/:tool/call`. The call path is
+the one `/internal/session/tool-call` uses. Both routes require a live native
+terminal (404 for a chat thread, 409 once the terminal exited or the thread is
+archived). Both routes also require `Authorization: Bearer <credential>`. The
+server mints 32 random bytes each time it opens a native terminal and sends them
+only to the daemon, in that terminal's `terminal.open` `contributedEnv`
+(`BB_NATIVE_TOOL_CREDENTIAL`, an existing authenticated field, so no wire
+change); no `/api/v1` response contains the secret, and the public launch spec
+neither returns nor rotates it. The server keeps the SHA-256 hash bound to the
+thread and terminal and compares with `timingSafeEqual`. A missing, wrong,
+other-thread or replaced (the terminal was opened again) credential is rejected
+(401, or 409 when the terminal is no longer live) before any tool is resolved
+or invoked. `bb thread native-run` takes the variable out of its environment
+(so neither the holder nor the provider CLI inherits it) and sends it over the
+holder's 0600 unix socket, which keeps it in memory only; the hidden `bb thread
+native-mcp` reads it from the holder's 0600 credential socket on every request,
+so a reopened terminal rotates the secret without restarting the CLI. Both
+providers use this one path: neither CLI's MCP launch offers a way to hand a
+secret to the server that avoids argv or the CLI's own environment. The
+secret is never in argv, logs or on disk. Same-OS-user processes that can
+connect to the holder sockets are trusted, since they can already read that
+user's bb data; other users and remote API callers cannot use the routes.
+First-party
+declarations: `provider-claude-code` (`--mcp-config` with inline JSON) and
+`provider-codex` (`-c mcp_servers.*`). Stabilization audit: decide whether the
+declaration should name the server rather than hard-code `bb-bridge`, and
+whether a third CLI needs a config file instead of argv.
+
 **Audit before stabilizing.** Confirm the two session strategies cover a
 third CLI without a new kind; decide whether the first-JSON-line header is
 the right discovery vocabulary or whether discovery belongs in the plugin's

@@ -46,6 +46,7 @@ import {
 } from "../schema.js";
 import { createThreadId } from "../ids.js";
 import { NON_TERMINAL_SESSION_STATUSES } from "./terminal-sessions.js";
+import { bumpThreadEventOwnershipEpoch } from "./event-rewrite-generation.js";
 import { createOrderKeyBetween } from "./order-keys.js";
 import { insertThreadPluginMetadata } from "./thread-plugin-metadata.js";
 
@@ -1982,6 +1983,7 @@ export function deleteThread(
   )
     return false;
   db.delete(threads).where(eq(threads.id, id)).run();
+  bumpThreadEventOwnershipEpoch();
   notifier.notifyThread(id, ["thread-deleted"], {
     projectId: existing.projectId,
   });

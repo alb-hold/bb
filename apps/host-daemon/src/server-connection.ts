@@ -167,12 +167,15 @@ function isTerminalDaemonLifecycleMessage(
   }
 }
 
+import { redactWirePayload } from "./redact-wire-payload.js";
+
 function summarizeServerMessagePayload(
   data: unknown,
 ): ServerMessagePayloadSummary {
-  const text = decodeWebSocketMessageData(data);
+  const raw = decodeWebSocketMessageData(data);
+  const text = redactWirePayload(raw);
   return {
-    payloadLength: text.length,
+    payloadLength: raw.length,
     payloadPreview: sliceUtf16Head(text, SERVER_MESSAGE_PAYLOAD_PREVIEW_CHARS),
     payloadTruncated: text.length > SERVER_MESSAGE_PAYLOAD_PREVIEW_CHARS,
   };
