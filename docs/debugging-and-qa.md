@@ -100,6 +100,35 @@ to authentication rows outside the machine-auth service are observed when the
 cache expires; QA that changes a warmed key's database fields must account for
 that window. Expiry known when caching is enforced on every hit.
 
+## Terminal Data Plane
+
+Terminal keystrokes and output normally cross the server's main thread, so they
+wait behind whatever else that thread is doing. For a host whose daemon supports
+it, the server starts one helper process (`terminal-data-plane-child`), and the
+daemon opens a second WebSocket to `/internal/terminal-data` that the server
+hands to that helper. Browser terminal sockets for that host are handed to the
+helper too, and bytes then flow browser, helper, daemon without touching the
+main thread. Opening, attaching (replay), resizing and closing a terminal still
+go through the server connection.
+
+The server log says which path a host is on: `Terminal data socket attached`
+and `Terminal data socket detached`, each with `hostId` and `daemonSessionId`.
+The daemon log has matching `Terminal data socket attached` lines. A host stays
+on the server connection while its daemon does not answer the probe command,
+while the helper is down, or after the data socket failed to open six times in
+a row. Every switch between the two paths closes that host's browser terminal
+sockets with code 1013 and reason `terminal-output-path-changed`; the client
+reconnects and asks the daemon to replay from its last sequence number.
+
+The probe and connect commands are new host RPC commands. A daemon that does
+not know a command type closes its server connection, so they ship with a
+`HOST_DAEMON_PROTOCOL_VERSION` bump and the server never sends them to an older
+daemon.
+
+The data socket is admitted only with a single-use ticket (15 seconds, bound to
+the host and its daemon session, sent over the already authenticated server
+connection) plus the daemon's host key, and never with an `Origin` header.
+
 ## Slow Database Operations
 
 The server logs `Slow DB query` when a prepared statement, `exec` batch, or
