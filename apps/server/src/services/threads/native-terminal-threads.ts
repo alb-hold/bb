@@ -532,29 +532,17 @@ export function reopenErrorProvesHolderGone(
   );
 }
 
-const TRANSIENT_REOPEN_ERROR_CODES: ReadonlySet<string> = new Set([
-  "host_disconnected",
-  "server_moving",
-  "terminal_open_cancelled",
-  "terminal_open_timeout",
+const REOPEN_NO_LONGER_WANTED_ERROR_CODES: ReadonlySet<string> = new Set([
+  "native_terminal_reconnect_stale",
+  "native_terminal_thread_not_found",
+  "thread_archived",
+  "thread_not_found",
 ]);
 
-const TRANSIENT_REOPEN_NODE_ERROR_CODES: ReadonlySet<string> = new Set([
-  "ECONNREFUSED",
-  "ENOENT",
-]);
-
-function reopenErrorIsTransient(error: unknown): boolean {
-  if (error instanceof ApiError) {
-    return (
-      error.status >= 500 || TRANSIENT_REOPEN_ERROR_CODES.has(error.body.code)
-    );
-  }
+function reopenErrorMeansNoLongerWanted(error: unknown): boolean {
   return (
-    error instanceof Error &&
-    "code" in error &&
-    typeof error.code === "string" &&
-    TRANSIENT_REOPEN_NODE_ERROR_CODES.has(error.code)
+    error instanceof ApiError &&
+    REOPEN_NO_LONGER_WANTED_ERROR_CODES.has(error.body.code)
   );
 }
 
@@ -586,7 +574,9 @@ function watchReattachedTerminal(
     }
     const terminal = readRecordTerminal(deps, record);
     if (terminal !== null && terminal.status === "exited") {
-      interruptThreadWhoseHolderIsGone(deps, args);
+      if (terminal.closeReason === "process-exit") {
+        interruptThreadWhoseHolderIsGone(deps, args);
+      }
       return;
     }
     if (Date.now() >= deadline) return;
@@ -672,7 +662,7 @@ export function reopenNativeTerminalsAfterDaemonReconnect(
                 since: startedAt,
                 threadId,
               }) ||
-              !reopenErrorIsTransient(error) ||
+              reopenErrorMeansNoLongerWanted(error) ||
               expired ||
               !stillWaiting()
             ) {
