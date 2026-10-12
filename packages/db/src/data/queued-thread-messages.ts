@@ -911,11 +911,11 @@ export function listIdleThreadsWithQueuedMessages(
       threadId: threads.id,
       oldestQueuedMessageCreatedAt: min(queuedThreadMessages.createdAt),
     })
-    .from(queuedThreadMessages)
-    .innerJoin(threads, eq(threads.id, queuedThreadMessages.threadId))
+    .from(sql`${queuedThreadMessages} cross join ${threads}`)
     .leftJoin(environments, eq(environments.id, threads.environmentId))
     .where(
       and(
+        eq(threads.id, queuedThreadMessages.threadId),
         inArray(threads.status, ["idle", "pending"]),
         isNull(threads.archivedAt),
         isNull(threads.deletedAt),

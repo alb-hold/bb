@@ -79,6 +79,10 @@ const PAUSE_LOOKUP_ON_QUEUED_MESSAGE =
   '"queue_pause_interruption"."thread_id" = "queued_thread_messages"."thread_id"';
 const PAUSE_LOOKUP_ON_THREAD =
   '"queue_pause_interruption"."thread_id" = "threads"."id"';
+const QUEUED_MESSAGES_FIRST_JOIN =
+  'from "queued_thread_messages" cross join "threads" left join';
+const PLANNER_ORDERED_JOIN =
+  'from "queued_thread_messages" inner join "threads" left join';
 
 function captureIdleQueuedThreadQuery(
   db: ReturnType<typeof createMigratedConnection>,
@@ -204,11 +208,12 @@ describe("queued thread messages", () => {
 
     const { query, rows } = captureIdleQueuedThreadQuery(db);
     expect(query.sql).toContain(PAUSE_LOOKUP_ON_QUEUED_MESSAGE);
-    const replacedSql = query.sql.replace(
-      PAUSE_LOOKUP_ON_QUEUED_MESSAGE,
-      PAUSE_LOOKUP_ON_THREAD,
-    );
-    expect(replacedSql).not.toBe(query.sql);
+    expect(query.sql).toContain(QUEUED_MESSAGES_FIRST_JOIN);
+    const replacedSql = query.sql
+      .replace(PAUSE_LOOKUP_ON_QUEUED_MESSAGE, PAUSE_LOOKUP_ON_THREAD)
+      .replace(QUEUED_MESSAGES_FIRST_JOIN, PLANNER_ORDERED_JOIN);
+    expect(replacedSql).toContain(PAUSE_LOOKUP_ON_THREAD);
+    expect(replacedSql).toContain(PLANNER_ORDERED_JOIN);
     const run = (sql: string) =>
       db.$client.prepare<unknown[], unknown[]>(sql).raw().all(...query.params);
 
@@ -244,10 +249,10 @@ describe("queued thread messages", () => {
     ).toContain(thread.id);
   });
 
-  it("checks the manual-stop pause only for threads that have queued messages", () => {
+  it("reads queued messages first and checks the manual-stop pause only for their threads", () => {
     const { db, project } = setup();
     const threadIds = Array.from(
-      { length: 3 },
+      { length: 40 },
       () =>
         createThread(db, noopNotifier, {
           projectId: project.id,
@@ -279,8 +284,17 @@ describe("queued thread messages", () => {
     const pauseLookupStep = planDetails.findIndex((detail) =>
       detail.includes("queue_pause_interruption"),
     );
-    expect(queuedMessagesStep).toBeGreaterThanOrEqual(0);
+    expect(queuedMessagesStep).toBe(0);
     expect(pauseLookupStep).toBeGreaterThan(queuedMessagesStep);
+    raw.exec("ANALYZE");
+    expect(
+      raw
+        .prepare<unknown[], { detail: string }>(
+          `EXPLAIN QUERY PLAN ${query.sql}`,
+        )
+        .all(...query.params)
+        .map((row) => row.detail)[0],
+    ).toMatch(/^(SEARCH|SCAN) queued_thread_messages\b/u);
   });
 
   it("updates queued message content without changing its identity or position", () => {
