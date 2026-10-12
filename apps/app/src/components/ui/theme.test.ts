@@ -375,15 +375,16 @@ describe("theme.css sidebar width registration", () => {
 });
 
 describe("thread row trailing space", () => {
-  it("hides secondary status and PR content while actions claim the trailing lane", () => {
+  it("reveals actions on pointer hover and keyboard focus without hiding metadata", () => {
     expect(css).toMatch(
-      /\.bb-sidebar-hover-actions-row:is\(:hover, :has\(:focus-visible\)\)[\s\S]*?\[data-sidebar-row-trailing-secondary\]/,
+      /\.bb-sidebar-hover-actions-row:is\(:hover, :has\(:focus-visible\)\)\s+\.bb-sidebar-hover-actions,[^{]+\{\s*pointer-events: auto;\s*opacity: 1;/,
     );
-    expect(css).toContain(
-      '.bb-sidebar-hover-actions[data-sidebar-hover-actions-mobile="always"]',
-    );
+    expect(css).not.toContain("[data-sidebar-row-trailing-secondary]");
+  });
+
+  it("keeps mobile actions available without hiding metadata", () => {
     expect(css).toMatch(
-      /\[data-sidebar-row-trailing-secondary\]\s*\)\s*\{\s*display: none !important;/,
+      /\.bb-sidebar-hover-actions\[data-sidebar-hover-actions-mobile="always"\]\s*\{\s*pointer-events: auto;\s*opacity: 1;/,
     );
   });
 });

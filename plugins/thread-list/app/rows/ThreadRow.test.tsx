@@ -8,6 +8,9 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { getDefaultStore } from "jotai";
 import { DndContext, useDraggable } from "@dnd-kit/core";
 import { CompactViewportOverrideProvider } from "@/components/ui/hooks/use-compact-viewport";
@@ -62,6 +65,44 @@ const DEFAULT_OPTIONS: ThreadRowOptions = {
   depth: 1,
   isCompact: false,
 };
+
+const rowTheme = readFileSync(
+  join(
+    dirname(fileURLToPath(import.meta.url)),
+    "../../../../apps/app/src/components/ui/theme.css",
+  ),
+  "utf8",
+);
+
+function expectPersistentRowMetadata(element: HTMLElement) {
+  expect(element.isConnected).toBe(true);
+  for (
+    let ancestor: HTMLElement | null = element;
+    ancestor !== null;
+    ancestor = ancestor.parentElement
+  ) {
+    const style = getComputedStyle(ancestor);
+    expect(style.display).not.toBe("none");
+    expect(style.visibility).not.toBe("hidden");
+    expect(style.opacity).not.toBe("0");
+    expect(ancestor.hidden).toBe(false);
+    for (const utility of ancestor.classList) {
+      expect(utility).not.toMatch(
+        /^(?:(?:max-md|pointer-coarse|\[@media\(hover:none\)\]):)*(?:hidden|invisible|opacity-0|[wh]-0|size-0|scale-0)$/,
+      );
+    }
+    for (const attribute of ancestor.getAttributeNames()) {
+      if (!attribute.startsWith("data-sidebar-")) continue;
+      const selector = `[${attribute}]`;
+      for (const rule of rowTheme.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+        if (!rule[1].includes(selector)) continue;
+        expect(rule[2]).not.toMatch(
+          /(?:display:\s*none|visibility:\s*hidden|opacity:\s*0\s*;|(?:width|height):\s*0(?:px)?\s*;)/,
+        );
+      }
+    }
+  }
+}
 
 function createThread(
   overrides: Partial<PluginSidebarThread> = {},
@@ -587,9 +628,7 @@ describe("ThreadRow", () => {
     });
 
     expect(trailing?.contains(pullRequest)).toBe(true);
-    expect(
-      pullRequest.hasAttribute("data-sidebar-row-trailing-secondary"),
-    ).toBe(true);
+    expectPersistentRowMetadata(pullRequest);
     expect(trailing?.contains(controls)).toBe(true);
     expect(actionSlot?.classList.contains("absolute")).toBe(false);
   });
@@ -612,16 +651,82 @@ describe("ThreadRow", () => {
     });
 
     expect(trailing?.contains(status)).toBe(true);
-    expect(
-      status.closest("[data-sidebar-row-trailing-secondary]"),
-    ).not.toBeNull();
-    expect(
-      pullRequest.hasAttribute("data-sidebar-row-trailing-secondary"),
-    ).toBe(true);
+    expectPersistentRowMetadata(status);
+    expectPersistentRowMetadata(pullRequest);
     expect(trailing?.contains(pullRequest)).toBe(true);
     expect(trailing?.contains(controls)).toBe(true);
     expect(actionSlot?.classList.contains("absolute")).toBe(false);
   });
+
+  it.each(
+    [false, true].flatMap((isCompactViewport) =>
+      (["Working", "Done"] as const).flatMap((statusLabel) =>
+        (["resting", "hover", "focus", "menu-open"] as const).map(
+          (state) => ({ isCompactViewport, statusLabel, state }),
+        ),
+      ),
+    ),
+  )(
+    "keeps $statusLabel and the PR visible in $state (mobile=$isCompactViewport)",
+    async ({ isCompactViewport, statusLabel, state }) => {
+      const { container } = renderThreadRow({
+        thread: createThread(
+          statusLabel === "Working"
+            ? { status: "active", runtimeStatus: "active" }
+            : { isUnread: true },
+        ),
+        isCompactViewport,
+        sidebarPullRequest: createPullRequest("open"),
+      });
+      const row = container.querySelector<HTMLElement>(
+        "[data-sidebar-rename-row]",
+      )!;
+      const archive = screen.getByRole("button", { name: "Archive" });
+      const menu = screen.getByRole("button", { name: "Thread actions" });
+      if (state === "hover") {
+        fireEvent.pointerEnter(row, { pointerType: "mouse" });
+        fireEvent.mouseOver(row);
+      } else if (state === "focus") {
+        act(() => archive.focus());
+        expect(document.activeElement).toBe(archive);
+      } else if (state === "menu-open") {
+        fireEvent.click(menu);
+        await screen.findByRole("menuitem", { name: "Rename" });
+        expect(
+          menu.closest('[data-sidebar-hover-actions-open="true"]'),
+        ).not.toBeNull();
+      }
+      const status = screen.getByLabelText(statusLabel);
+      expectPersistentRowMetadata(status);
+      expectPersistentRowMetadata(
+        screen.getByRole("link", { name: /Pull request #10843/ }),
+      );
+      const glyph = status.querySelector<HTMLElement>(
+        "[data-thread-status-glyph]",
+      )!;
+      expect(glyph.getAttribute("data-thread-status-glyph")).toBe(
+        statusLabel === "Working" ? "working" : "done-unread",
+      );
+      expectPersistentRowMetadata(glyph);
+      expect(status.classList.contains("shrink-0")).toBe(true);
+      expect(row.querySelector(".bb-thread-title")?.classList).toContain(
+        "flex-1",
+      );
+      expect(row.querySelector(".bb-thread-title")?.classList).toContain(
+        "truncate",
+      );
+      expect(archive.closest(".bb-sidebar-hover-actions")?.classList).not.toContain(
+        "absolute",
+      );
+      if (isCompactViewport) {
+        expect(
+          menu.closest("[data-sidebar-hover-actions-mobile]")?.getAttribute(
+            "data-sidebar-hover-actions-mobile",
+          ),
+        ).toBe("always");
+      }
+    },
+  );
 
   it.each([
     ["open", "text-success-foreground"],

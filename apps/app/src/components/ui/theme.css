@@ -332,19 +332,11 @@
     color: color-mix(in oklch, var(--success) 80%, var(--ink));
   }
 
-  :where(.bb-sidebar-hover-actions-row [data-sidebar-status-compact]) {
-    display: inline;
-  }
-
   :where(.bb-sidebar-hover-actions-row [data-sidebar-status-full]) {
     display: none;
   }
 
   @container sidebar-thread-row (min-width: 24rem) {
-    :where(.bb-sidebar-hover-actions-row [data-sidebar-status-compact]) {
-      display: none;
-    }
-
     :where(.bb-sidebar-hover-actions-row [data-sidebar-status-full]) {
       display: inline;
     }
@@ -970,28 +962,6 @@ body.sidebar-resizing [data-sidebar="panel"] {
 }
 
 @layer utilities {
-  :where(
-    .bb-sidebar-hover-actions-row:is(:hover, :has(:focus-visible))
-      [data-sidebar-row-trailing-secondary],
-    .bb-sidebar-hover-actions-row:has(
-        .bb-sidebar-hover-actions[data-sidebar-hover-actions-open="true"]
-      )
-      [data-sidebar-row-trailing-secondary]
-  ) {
-    display: none !important;
-  }
-
-  @media (hover: none) {
-    :where(
-      .bb-sidebar-hover-actions-row:has(
-          .bb-sidebar-hover-actions[data-sidebar-hover-actions-mobile="always"]
-        )
-        [data-sidebar-row-trailing-secondary]
-    ) {
-      display: none !important;
-    }
-  }
-
   .bb-thread-title {
     @apply flex min-w-0 items-baseline;
   }

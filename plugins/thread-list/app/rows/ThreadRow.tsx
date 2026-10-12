@@ -321,7 +321,7 @@ function ThreadTrailingIndicator({
       className={cn(
         "inline-flex h-5 shrink-0 items-center gap-1.5 rounded-full px-1.5 font-medium text-xs",
         statusText !== null &&
-          "w-full justify-end gap-1 overflow-hidden whitespace-nowrap px-0",
+          "justify-end gap-1 whitespace-nowrap px-0",
         indicatorKind === "needs-input" && "text-destructive-text",
         indicatorKind === "working" && SIDEBAR_WORKING_STATUS_COLOR_CLASS,
         indicatorKind === "woke" && "text-warning",
@@ -338,11 +338,8 @@ function ThreadTrailingIndicator({
         hideAccessibleLabel={statusText !== null}
       />
       {statusText === null ? null : (
-        <span className="min-w-0 truncate text-right">
-          {elapsedMinutes === null ? null : (
-            <span data-sidebar-status-compact="">{elapsedMinutes}m</span>
-          )}
-          <span data-sidebar-status-full="">{statusText}</span>
+        <span data-sidebar-status-full="" className="text-right">
+          {statusText}
         </span>
       )}
     </span>
@@ -428,12 +425,11 @@ function SidebarThreadPullRequestChip({ threadId }: { threadId: string }) {
       <TooltipTrigger asChild>
         <UrlLink
           data-sidebar-thread-pull-request=""
-          data-sidebar-row-trailing-secondary=""
           href={pullRequest.url}
           aria-label={accessibleLabel}
           onClick={(event) => event.stopPropagation()}
           className={cn(
-            "relative z-20 rounded-sm px-1 text-xs font-medium tabular-nums no-underline outline-none focus-visible:ring-1 focus-visible:ring-ring hover:underline",
+            "relative z-20 shrink-0 whitespace-nowrap rounded-sm px-1 text-xs font-medium tabular-nums no-underline outline-none focus-visible:ring-1 focus-visible:ring-ring hover:underline",
             PULL_REQUEST_STATE_CLASS[pullRequest.state],
           )}
         >
@@ -855,20 +851,12 @@ function ThreadRowComponent({
         <SidebarThreadPullRequestChip threadId={thread.id} />
         {!shortcut && hasVisibleStatus ? (
           <span
-            data-sidebar-row-trailing-secondary=""
-            data-sidebar-hover-actions-open={isActionsOpen ? "true" : undefined}
             className={cn(
               "relative flex shrink-0 items-center justify-center",
-              COARSE_POINTER_ROW_ACTION_SIZE_CLASS,
-            )}
-            style={
               hasFixedStatusSlot
-                ? {
-                    width: "clamp(2.5rem, 18cqi, 7rem)",
-                    minWidth: "2.5rem",
-                  }
-                : undefined
-            }
+                ? "min-w-4"
+                : COARSE_POINTER_ROW_ACTION_SIZE_CLASS,
+            )}
           >
             {miniMap ? (
               <span
