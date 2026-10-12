@@ -108,6 +108,32 @@ function setupVisibility(intersectionSupported = true) {
 }
 
 describe("terminal visibility signals", () => {
+  it("releases contexts clipped by a scroll container without IntersectionObserver", () => {
+    const state = setupVisibility(false);
+    const parent = document.createElement("div");
+    parent.style.overflow = "hidden";
+    document.body.append(parent);
+    parent.append(state.root);
+    let parentBox = new DOMRect(400, 10, 300, 200);
+    vi.spyOn(parent, "getBoundingClientRect").mockImplementation(
+      () => parentBox,
+    );
+    vi.spyOn(parent, "clientWidth", "get").mockImplementation(
+      () => parentBox.width,
+    );
+    vi.spyOn(parent, "clientHeight", "get").mockImplementation(
+      () => parentBox.height,
+    );
+    window.dispatchEvent(new Event("scroll"));
+    expect(state.root.dataset.terminalRenderer).toBe("dom");
+    parentBox = new DOMRect(0, 0, 500, 300);
+    window.dispatchEvent(new Event("scroll"));
+    expect(state.root.dataset.terminalRenderer).toBe("webgl");
+    expect(state.createAddon).toHaveBeenCalledTimes(2);
+    state.observer.dispose();
+    state.renderer.dispose();
+  });
+
   it("releases and reacquires off-screen contexts without IntersectionObserver", () => {
     const state = setupVisibility(false);
     expect(state.root.dataset.terminalRenderer).toBe("webgl");

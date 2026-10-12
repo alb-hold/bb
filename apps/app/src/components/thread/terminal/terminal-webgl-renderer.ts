@@ -186,6 +186,48 @@ export function loadTerminalWebglRenderer(
   };
 }
 
+function intersectsClippingAncestors(
+  root: HTMLElement,
+  box: DOMRect,
+  window: Window | null,
+): boolean {
+  let left = Math.max(box.left, 0);
+  let right = Math.min(box.right, window?.innerWidth ?? 0);
+  let top = Math.max(box.top, 0);
+  let bottom = Math.min(box.bottom, window?.innerHeight ?? 0);
+  for (
+    let parent = root.parentElement;
+    parent !== null;
+    parent = parent.parentElement
+  ) {
+    const style = window?.getComputedStyle(parent);
+    const clipsX = /^(auto|scroll|hidden|clip)$/.test(
+      style?.overflowX || style?.overflow || "",
+    );
+    const clipsY = /^(auto|scroll|hidden|clip)$/.test(
+      style?.overflowY || style?.overflow || "",
+    );
+    if (!clipsX && !clipsY) continue;
+    const bounds = parent.getBoundingClientRect();
+    const scaleX =
+      parent.offsetWidth > 0 ? bounds.width / parent.offsetWidth : 1;
+    const scaleY =
+      parent.offsetHeight > 0 ? bounds.height / parent.offsetHeight : 1;
+    if (clipsX) {
+      const clipLeft = bounds.left + parent.clientLeft * scaleX;
+      left = Math.max(left, clipLeft);
+      right = Math.min(right, clipLeft + parent.clientWidth * scaleX);
+    }
+    if (clipsY) {
+      const clipTop = bounds.top + parent.clientTop * scaleY;
+      top = Math.max(top, clipTop);
+      bottom = Math.min(bottom, clipTop + parent.clientHeight * scaleY);
+    }
+    if (right <= left || bottom <= top) return false;
+  }
+  return right > left && bottom > top;
+}
+
 export function observeTerminalWebglVisibility({
   root,
   renderer,
@@ -199,6 +241,8 @@ export function observeTerminalWebglVisibility({
   const window = document.defaultView;
   let disposed = false;
   let intersects = true;
+  const supportsIntersectionObserver =
+    typeof IntersectionObserver !== "undefined";
   const sync = () => {
     if (disposed) {
       return;
@@ -215,24 +259,32 @@ export function observeTerminalWebglVisibility({
         box.right > 0 &&
         box.top < (window?.innerHeight ?? 0) &&
         box.left < (window?.innerWidth ?? 0) &&
+        (supportsIntersectionObserver ||
+          intersectsClippingAncestors(root, box, window)) &&
         style?.visibility !== "hidden" &&
         style?.visibility !== "collapse",
     );
   };
   const resizeObserver = new ResizeObserver(sync);
-  const intersectionObserver =
-    typeof IntersectionObserver === "undefined"
-      ? null
-      : new IntersectionObserver((entries) => {
-          const entry = entries.find((entry) => entry.target === root);
-          if (entry !== undefined) {
-            intersects = entry.isIntersecting;
-          }
-          sync();
-        });
+  const intersectionObserver = !supportsIntersectionObserver
+    ? null
+    : new IntersectionObserver((entries) => {
+        const entry = entries.find((entry) => entry.target === root);
+        if (entry !== undefined) {
+          intersects = entry.isIntersecting;
+        }
+        sync();
+      });
   resizeObserver.observe(root);
   intersectionObserver?.observe(root);
   if (intersectionObserver === null) {
+    for (
+      let parent = root.parentElement;
+      parent !== null;
+      parent = parent.parentElement
+    ) {
+      resizeObserver.observe(parent);
+    }
     window?.addEventListener("scroll", sync, { capture: true, passive: true });
     window?.addEventListener("resize", sync);
   }
