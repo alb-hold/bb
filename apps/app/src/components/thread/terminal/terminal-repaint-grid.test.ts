@@ -170,6 +170,7 @@ describe("replay repaint nudge", () => {
     transport.sendResize(FITTED_COLS, FITTED_ROWS);
     transport.start();
     socket.onopen?.(new Event("open"));
+    transport.markLayoutSettled();
 
     pty.draw();
     transport.requestRepaint();

@@ -39,6 +39,7 @@ import {
 import { TimelineSelectionMenu } from "@/components/thread/timeline/TimelineSelectionMenu.js";
 import { buildTerminalWebSocketUrl } from "./terminal-websocket-url";
 import { TerminalWebSocketTransport } from "@bb/client-core";
+import { watchTerminalLayoutSettled } from "./terminal-layout-settle";
 import { TerminalLinkOpenDialog } from "./TerminalLinkOpenDialog";
 import { TerminalMobileControls } from "./TerminalMobileControls";
 import {
@@ -904,6 +905,7 @@ export function ThreadTerminalView({
     let resizeObserver: ResizeObserver | null = null;
     let selectionChangeDisposable: { dispose: () => void } | null = null;
     let stopObservingFonts: (() => void) | null = null;
+    let stopWatchingLayout: (() => void) | null = null;
     let sharedSize: TerminalGridSize | null = null;
     let containerHasSize = hasVisibleTerminalSize({
       containerElement: container,
@@ -1153,6 +1155,23 @@ export function ThreadTerminalView({
       reportDocumentVisibility();
       document.addEventListener("visibilitychange", reportDocumentVisibility);
       activeTransport.start();
+      stopWatchingLayout = watchTerminalLayoutSettled({
+        cancelFrame: (handle) => window.cancelAnimationFrame(handle),
+        measure: () => {
+          const rect = containerElement.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0
+            ? `${rect.width}x${rect.height}`
+            : null;
+        },
+        onSettled: () => {
+          if (disposed) {
+            return;
+          }
+          fitTerminal();
+          activeTransport.markLayoutSettled();
+        },
+        requestFrame: (callback) => window.requestAnimationFrame(callback),
+      });
       const sendTerminalInput = (dataBase64: string) =>
         activeTransport.sendInput(dataBase64);
       handleFileDropRef.current = (files) => {
@@ -1237,6 +1256,7 @@ export function ThreadTerminalView({
       setControlActive(false);
       setTerminalReady(false);
       stopObservingFonts?.();
+      stopWatchingLayout?.();
       if (resizeAnimationFrame !== null) {
         window.cancelAnimationFrame(resizeAnimationFrame);
       }

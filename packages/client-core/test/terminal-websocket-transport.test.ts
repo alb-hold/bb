@@ -376,7 +376,7 @@ describe("TerminalWebSocketTransport", () => {
     harness.transport.start();
     const socket = harness.sockets[0]!;
     socket.open();
-    vi.advanceTimersByTime(250);
+    harness.transport.markLayoutSettled();
     const resizes = () =>
       socket.sent.filter((message) => message.includes('"resize"'));
     expect(resizes()).toEqual([
@@ -402,21 +402,37 @@ describe("TerminalWebSocketTransport", () => {
       const socket = harness.sockets[0]!;
       socket.open();
       const resizes = () =>
-        socket.sent.filter((message) => message.includes('"resize"'));
+        socket.sent
+          .filter((message) => message.includes('"resize"'))
+          .map((message) => JSON.parse(message) as { cols: number });
       return { harness, resizes, socket };
     }
 
-    it("sends only the settled size when the first fit is stale", () => {
+    it.each([100, 800])(
+      "sends one resize with the final size when layout settles at %i ms",
+      (settleAtMs) => {
+        const { harness, resizes } = openUnsettled(128, 43);
+
+        vi.advanceTimersByTime(settleAtMs);
+        harness.transport.sendResize(132, 43);
+        vi.advanceTimersByTime(3000);
+
+        expect(resizes()).toEqual([{ type: "resize", cols: 132, rows: 43 }]);
+        harness.transport.dispose();
+      },
+    );
+
+    it("flushes at once when the view reports a settled layout", () => {
       const { harness, resizes } = openUnsettled(128, 43);
 
-      expect(resizes()).toEqual([]);
-      vi.advanceTimersByTime(40);
+      vi.advanceTimersByTime(60);
       harness.transport.sendResize(132, 43);
-      vi.advanceTimersByTime(500);
+      expect(resizes()).toEqual([]);
+      harness.transport.markLayoutSettled();
 
-      expect(resizes()).toEqual([
-        JSON.stringify({ type: "resize", cols: 132, rows: 43 }),
-      ]);
+      expect(resizes()).toEqual([{ type: "resize", cols: 132, rows: 43 }]);
+      vi.advanceTimersByTime(3000);
+      expect(resizes()).toHaveLength(1);
       harness.transport.dispose();
     });
 
@@ -426,30 +442,37 @@ describe("TerminalWebSocketTransport", () => {
       harness.transport.requestRepaint();
       vi.advanceTimersByTime(100);
       expect(resizes()).toEqual([]);
+      harness.transport.markLayoutSettled();
       vi.advanceTimersByTime(1000);
 
-      expect(resizes()).toEqual([
-        JSON.stringify({ type: "resize", cols: 132, rows: 43 }),
-        JSON.stringify({ type: "resize", cols: 131, rows: 43 }),
-        JSON.stringify({ type: "resize", cols: 132, rows: 43 }),
-      ]);
+      expect(resizes().map((resize) => resize.cols)).toEqual([132, 131, 132]);
       harness.transport.dispose();
     });
 
-    it("drops the settled size when the socket closes before it flushes", () => {
+    it("sends the attach size at once on a reconnect after the layout settled", () => {
+      const { harness, resizes, socket } = openUnsettled(132, 43);
+
+      harness.transport.markLayoutSettled();
+      socket.close();
+      vi.advanceTimersByTime(100);
+      const next = harness.sockets[1]!;
+      next.open();
+
+      expect(
+        next.sent.filter((message) => message.includes('"resize"')),
+      ).toEqual([JSON.stringify({ type: "resize", cols: 132, rows: 43 })]);
+      expect(resizes()).toHaveLength(1);
+      harness.transport.dispose();
+    });
+
+    it("drops the held size when the socket closes before it flushes", () => {
       const { harness, resizes, socket } = openUnsettled(128, 43);
 
       vi.advanceTimersByTime(100);
       socket.close();
-      vi.advanceTimersByTime(1000);
+      vi.advanceTimersByTime(3000);
 
       expect(resizes()).toEqual([]);
-      const next = harness.sockets[1]!;
-      next.open();
-      vi.advanceTimersByTime(500);
-      expect(
-        next.sent.filter((message) => message.includes('"resize"')),
-      ).toEqual([JSON.stringify({ type: "resize", cols: 128, rows: 43 })]);
       harness.transport.dispose();
     });
   });
@@ -462,7 +485,7 @@ describe("TerminalWebSocketTransport", () => {
       harness.transport.start();
       const socket = harness.sockets[0]!;
       socket.open();
-      vi.advanceTimersByTime(250);
+      harness.transport.markLayoutSettled();
       return { harness, socket };
     }
 
