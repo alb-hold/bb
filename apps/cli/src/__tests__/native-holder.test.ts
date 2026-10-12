@@ -9,6 +9,7 @@ import { PassThrough } from "node:stream";
 import { pathToFileURL } from "node:url";
 import { spawn as spawnPty } from "node-pty";
 import { afterEach, describe, expect, it } from "vitest";
+import * as nativeHolder from "../native-holder.js";
 import {
   NativeHolderFrame,
   NativeHolderFrameDecoder,
@@ -124,6 +125,31 @@ const ECHO_LOOP: NativeHolderProcess = {
 };
 
 describe("native terminal holder", () => {
+  it("writes an adjacent log when the socket path has no suffix", () => {
+    const socketPath = path.join(path.dirname(socketIn()), "holder");
+    const logEvent = (
+      nativeHolder as unknown as {
+        logNativeHolderEvent?: (
+          socketPath: string,
+          event: string,
+          fields: Record<string, number | string | null>,
+        ) => void;
+      }
+    ).logNativeHolderEvent;
+
+    expect(logEvent).toBeTypeOf("function");
+    logEvent?.(socketPath, "probe", { value: 1 });
+
+    const logPath = `${socketPath}.log`;
+    expect(existsSync(socketPath)).toBe(false);
+    expect(existsSync(logPath)).toBe(true);
+    const [line] = readFileSync(logPath, "utf8").trim().split("\n");
+    expect(JSON.parse(line ?? "{}")).toMatchObject({
+      event: "probe",
+      value: 1,
+    });
+  });
+
   it("keeps the CLI running when its terminal goes away and reattaches to the same process", async () => {
     const socketPath = socketIn();
     const held = startHolder(socketPath, ECHO_LOOP);

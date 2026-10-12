@@ -25,7 +25,9 @@ export function logNativeHolderEvent(
   event: string,
   fields: Record<string, number | string | null>,
 ): void {
-  const logPath = socketPath.replace(/\.sock$/u, ".log");
+  const logPath = socketPath.endsWith(".sock")
+    ? socketPath.replace(/\.sock$/u, ".log")
+    : `${socketPath}.log`;
   const line = `${JSON.stringify({
     time: new Date().toISOString(),
     event,
