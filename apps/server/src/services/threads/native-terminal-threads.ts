@@ -646,8 +646,10 @@ export function reopenNativeTerminalsAfterDaemonReconnect(
         ) {
           return;
         }
+        if (expired) return;
         let reopened: NativeTerminalThread;
         for (;;) {
+          if (expired || !stillWaiting()) return;
           try {
             reopened = await openNativeTerminalDeduplicated(deps, {
               reattachOnly: true,
@@ -676,6 +678,30 @@ export function reopenNativeTerminalsAfterDaemonReconnect(
               setTimeout(resolve, NATIVE_REATTACH_RETRY_MS).unref();
             });
           }
+        }
+        if (expired) {
+          deps.logger.info(
+            {
+              hostId: args.hostId,
+              terminalId: reopened.terminal?.id,
+              threadId,
+            },
+            "Discarding a native terminal reattach that finished after its deadline",
+          );
+          if (reopened.terminal !== null) {
+            await deps.terminalSessions
+              .closeTerminal({
+                terminalId: reopened.terminal.id,
+                payload: { mode: "force", reason: "user" },
+              })
+              .catch((error: unknown) => {
+                deps.logger.warn(
+                  { err: error, hostId: args.hostId, threadId },
+                  "Failed to close a late native terminal reattach",
+                );
+              });
+          }
+          return;
         }
         deps.logger.info(
           { hostId: args.hostId, terminalId: reopened.terminal?.id, threadId },
