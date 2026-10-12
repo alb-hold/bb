@@ -785,11 +785,13 @@ describe("terminal data plane child", () => {
       outputAcks: true,
     });
     daemon.receive({ type: "terminal.output", terminalId: "term_a", chunk: chunk(0) });
+    daemon.receive({ type: "terminal.output", terminalId: "term_a", chunk: chunk(1) });
+    daemon.receive({ type: "terminal.output", terminalId: "term_a", chunk: chunk(2) });
     const written = daemon.sent.length;
     daemon.bufferedAmount = TERMINAL_DATA_PLANE_RELAY_HARD_CAP_BYTES + 1;
 
-    browser.receive({ type: "ack", nextSeq: 1 });
-    browser.receive({ type: "ack", nextSeq: 1 });
+    browser.receive({ type: "ack", nextSeq: 2 });
+    browser.receive({ type: "ack", nextSeq: 3 });
 
     expect(daemon.sent.length).toBe(written);
     expect(daemon.terminated).toBe(true);
