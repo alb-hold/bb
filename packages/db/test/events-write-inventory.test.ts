@@ -122,6 +122,7 @@ const PRUNING_ONLY_WRITERS = [
   "advanceLiveEventPruning",
   "pruneRateLimitSnapshotWindow",
   "pruneContextWindowUsageEventsInTransaction",
+  "pruneTokenUsageEventsInTransaction",
 ];
 
 function listSourceFiles(directory: string): string[] {
