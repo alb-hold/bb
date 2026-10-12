@@ -864,20 +864,21 @@ describe("terminal data plane child", () => {
       { v, type: "daemon.attached", daemonSessionId: "session_1" },
     ]);
     daemon.receive({ type: "terminal.output", terminalId: "term_a", chunk: chunk(1) });
+    daemon.receive({ type: "terminal.output", terminalId: "term_a", chunk: chunk(2) });
     browser.receive({ type: "input", dataBase64: base64("during") });
-    browser.receive({ type: "ack", nextSeq: 2 });
+    browser.receive({ type: "ack", nextSeq: 3 });
 
-    expect(browser.outputSeqs()).toEqual([0, 1]);
+    expect(browser.outputSeqs()).toEqual([0, 1, 2]);
     expect(daemon.frames()).toEqual([
       { type: "terminal.flow-control", terminalId: "term_a", enabled: true },
       { type: "terminal.input", terminalId: "term_a", dataBase64: base64("during") },
-      { type: "terminal.ack", terminalId: "term_a", nextSeq: 2 },
+      { type: "terminal.ack", terminalId: "term_a", nextSeq: 3 },
     ]);
     expect(ofType(harness, "terminal.ack")).toHaveLength(1);
 
     daemon.emitClose();
     browser.receive({ type: "input", dataBase64: base64("after") });
-    browser.receive({ type: "ack", nextSeq: 2 });
+    browser.receive({ type: "ack", nextSeq: 3 });
 
     expect(ofType(harness, "daemon.detached")).toEqual([
       { v, type: "daemon.detached", daemonSessionId: "session_1" },
