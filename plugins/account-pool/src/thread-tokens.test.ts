@@ -101,6 +101,36 @@ it("lets a process credential survive a server restart as a digest-only record",
   });
 });
 
+it("stores a process credential as an owner-only record with digests and no token field", async () => {
+  const { directory, route, token, processFiles } = await processFixture();
+  const names = await processFiles();
+  expect(names).toHaveLength(2);
+  expect((await fs.stat(directory)).mode & 0o777).toBe(0o700);
+  const keys: string[][] = [];
+  for (const name of names) {
+    const file = path.join(directory, name);
+    expect((await fs.stat(file)).mode & 0o777).toBe(0o600);
+    const stored = z
+      .record(z.string(), z.unknown())
+      .parse(JSON.parse(await fs.readFile(file, "utf8")));
+    keys.push(Object.keys(stored).sort());
+    expect(stored.tokenDigest).toMatch(/^[a-f0-9]{64}$/u);
+    expect(stored.threadId).toBe(route.threadId);
+  }
+  expect(keys.sort()).toEqual([
+    [
+      "accountId",
+      "hostId",
+      "hostTokenDigest",
+      "provider",
+      "threadId",
+      "tokenDigest",
+    ],
+    ["hostId", "hostTokenDigest", "threadId", "tokenDigest"],
+  ]);
+  expect(createHash("sha256").update(token).digest("hex")).not.toBe(token);
+});
+
 it("revokes a surviving process credential on archive, sweep and relaunch", async () => {
   const { route, hostToken, token, nested, restart, processFiles } =
     await processFixture();
@@ -125,6 +155,17 @@ it("removes a surviving process credential when the sweep finds the thread gone"
   expect(await processFiles()).toEqual([]);
   expect(await (await restart()).authenticate(token)).toBeNull();
   expect(route.threadId).toBe("thr_one");
+});
+
+it("drops a surviving process credential whose host token generation has expired", async () => {
+  const { hosts, route, token, nested, restart, processFiles, advance } =
+    await processFixture();
+  await hosts.rotate(route.hostId);
+  advance(10 * 60_000 + 1);
+  const restarted = await restart();
+  expect(await restarted.authenticate(token)).toBeNull();
+  expect(await restarted.authenticateNested(nested)).toBeNull();
+  expect(await processFiles()).toEqual([]);
 });
 
 it("replaces a surviving process credential when the thread is relaunched after a restart", async () => {
