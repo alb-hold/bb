@@ -227,6 +227,7 @@ async function holdNativeHarness(
           threadId,
           state: next.state,
           ...(next.prompt === null ? {} : { prompt: next.prompt }),
+          ...(next.state === "waiting" ? { questions: next.questions } : {}),
         })
         .then(
           () => undefined,

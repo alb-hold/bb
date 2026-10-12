@@ -1,6 +1,14 @@
 import { getNativeTerminalThread, getThread } from "@bb/db";
-import type { ReportNativeTerminalActivityRequest } from "@bb/server-contract";
+import { isPluginPendingInteraction, type Thread } from "@bb/domain";
+import type {
+  NativeTerminalOpenQuestion,
+  ReportNativeTerminalActivityRequest,
+} from "@bb/server-contract";
 import { ApiError } from "../../errors.js";
+import {
+  buildChildThreadBlockerSummary,
+  requestChildThreadNeedsAttentionNotification,
+} from "../../internal/interactive-requests.js";
 import type {
   AppDeps,
   LoggedPendingInteractionWorkSessionDeps,
@@ -25,14 +33,18 @@ function requireNativeRecord(deps: Pick<AppDeps, "db">, threadId: string) {
   return record;
 }
 
+export const NATIVE_QUESTION_REQUEST_PREFIX = "native:";
+const NATIVE_QUESTION_TURN_ID = "native-terminal-turn";
+const NATIVE_QUESTION_ANSWERED_REASON = "native-terminal-question-answered";
+
 export function recordNativeTerminalActivity(
   deps: NativeTerminalActivityDeps,
   args: { threadId: string } & ReportNativeTerminalActivityRequest,
 ): void {
   const thread = requirePublicThread(deps.db, args.threadId);
-  requireNativeRecord(deps, args.threadId);
+  const record = requireNativeRecord(deps, args.threadId);
   if (
-    args.state === "working" &&
+    args.state !== "idle" &&
     (thread.status === "idle" || thread.status === "error")
   ) {
     applyLoggedThreadLifecycleEvent(deps, {
@@ -41,8 +53,87 @@ export function recordNativeTerminalActivity(
     });
   }
   if (args.state === "idle") settleNativeTerminalTurn(deps, thread.id);
+  reconcileNativeQuestions(deps, {
+    nativeSessionId: record.nativeSessionId,
+    questions: args.questions ?? [],
+    thread,
+  });
   if (args.prompt !== undefined) {
     titleNativeThreadFromPrompt(deps, thread.id, args.prompt);
+  }
+}
+
+export function interruptNativeTerminalQuestions(
+  deps: Pick<AppDeps, "pendingInteractions">,
+  threadId: string,
+  keep: ReadonlySet<string> = new Set(),
+): void {
+  for (const interaction of deps.pendingInteractions.listPendingThreadInteractions(
+    threadId,
+  )) {
+    if (
+      isPluginPendingInteraction(interaction) ||
+      !interaction.providerRequestId.startsWith(NATIVE_QUESTION_REQUEST_PREFIX) ||
+      keep.has(interaction.providerRequestId)
+    ) {
+      continue;
+    }
+    deps.pendingInteractions.interruptPendingInteraction({
+      interactionId: interaction.id,
+      reason: NATIVE_QUESTION_ANSWERED_REASON,
+    });
+  }
+}
+
+function reconcileNativeQuestions(
+  deps: NativeTerminalActivityDeps,
+  args: {
+    nativeSessionId: string | null;
+    questions: readonly NativeTerminalOpenQuestion[];
+    thread: Thread;
+  },
+): void {
+  const wanted = new Map(
+    args.questions.map((question) => [
+      `${NATIVE_QUESTION_REQUEST_PREFIX}${question.id}`,
+      question,
+    ]),
+  );
+  interruptNativeTerminalQuestions(deps, args.thread.id, new Set(wanted.keys()));
+  for (const [providerRequestId, question] of wanted) {
+    const registered = deps.pendingInteractions.registerPendingInteraction({
+      interaction: {
+        threadId: args.thread.id,
+        turnId: NATIVE_QUESTION_TURN_ID,
+        providerId: args.thread.providerId,
+        providerThreadId: args.nativeSessionId ?? args.thread.id,
+        providerRequestId,
+        payload: {
+          kind: "user_question",
+          questions: [
+            {
+              id: providerRequestId,
+              prompt: question.prompt,
+              multiSelect: false,
+              allowFreeText: true,
+            },
+          ],
+        },
+      },
+    });
+    if (registered.outcome === "rejected") {
+      deps.logger.warn(
+        { reason: registered.reason, threadId: args.thread.id },
+        "Native terminal question was not registered",
+      );
+      continue;
+    }
+    if (registered.outcome === "created") {
+      requestChildThreadNeedsAttentionNotification(deps, {
+        blockerSummary: buildChildThreadBlockerSummary(registered.interaction),
+        childThreadId: args.thread.id,
+      });
+    }
   }
 }
 

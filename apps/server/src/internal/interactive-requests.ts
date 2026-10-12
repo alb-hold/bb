@@ -107,7 +107,7 @@ export function buildChildThreadBlockerSummary(
   );
 }
 
-function requestChildThreadNeedsAttentionNotification(
+export function requestChildThreadNeedsAttentionNotification(
   deps: AppDeps,
   args: RequestChildThreadNeedsAttentionNotificationArgs,
 ): void {

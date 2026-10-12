@@ -108,6 +108,32 @@ export default function plugin(bb: BbPluginApi) {
       },
       activity: {
         transcript: {
+          questions: {
+            open: [
+              {
+                match: {
+                  equals: {
+                    type: "response_item",
+                    "payload.type": "function_call",
+                    "payload.name": "request_user_input",
+                  },
+                },
+                id: "payload.call_id",
+                label: "Codex is asking a question",
+              },
+            ],
+            close: [
+              {
+                match: {
+                  equals: {
+                    type: "response_item",
+                    "payload.type": "function_call_output",
+                  },
+                },
+                id: "payload.call_id",
+              },
+            ],
+          },
           working: [
             { equals: { type: "event_msg", "payload.type": "task_started" } },
           ],

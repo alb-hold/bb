@@ -1087,8 +1087,17 @@ how to see turns: `hooks` (extra argv carrying `{settings}`, the hook event
 names that mean working or idle, and the prompt field; the harness installs
 command hooks that append each event's JSON to a private file) and
 `transcript` (record matches on the session file: equal fields, string
-prefixes, and a prompt text field). The wrapper reports working, idle and the
-first new prompt through `sdk.nativeTerminals.reportActivity`; the server moves
+prefixes, and a prompt text field); `transcript.questions` (`open` and `close`
+record matches that carry a question id) and `hooks.permission` (open and close
+hook events plus the tool-identifying field) mark a CLI blocked on a question
+or permission prompt. The wrapper reports working, waiting (with the open
+question ids and texts), idle and the
+first new prompt through `sdk.nativeTerminals.reportActivity`; a waiting
+report registers one pending interaction per open question (so the sidebar and
+favicon show needs-input exactly as for a chat thread, and the thread view shows
+a banner above the terminal), a later report clears the ones no longer open, and
+answering them through the bridge is refused with 409 because the answer belongs
+in the terminal. The server moves
 the thread between idle and active and titles an untitled thread from the
 prompt. Validated at registration by
 `providerNativeTerminalSchema` in `@bb/domain`: bare executable name, at most

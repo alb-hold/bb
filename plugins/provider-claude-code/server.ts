@@ -90,8 +90,52 @@ export default function plugin(bb: BbPluginApi) {
           working: ["UserPromptSubmit"],
           idle: ["Stop"],
           promptField: "prompt",
+          permission: {
+            open: ["PermissionRequest"],
+            close: ["PostToolUse", "PostToolUseFailure", "PermissionDenied"],
+            idField: "tool_name",
+            label: "Claude Code needs permission to use",
+          },
         },
         transcript: {
+          questions: {
+            open: [
+              {
+                match: {
+                  equals: {
+                    type: "assistant",
+                    "message.content.0.type": "tool_use",
+                    "message.content.0.name": "AskUserQuestion",
+                  },
+                },
+                id: "message.content.0.id",
+                prompt: "message.content.0.input.questions.0.question",
+                label: "Claude Code is asking a question",
+              },
+              {
+                match: {
+                  equals: {
+                    type: "assistant",
+                    "message.content.0.type": "tool_use",
+                    "message.content.0.name": "ExitPlanMode",
+                  },
+                },
+                id: "message.content.0.id",
+                label: "Claude Code is waiting for you to approve its plan",
+              },
+            ],
+            close: [
+              {
+                match: {
+                  equals: {
+                    type: "user",
+                    "message.content.0.type": "tool_result",
+                  },
+                },
+                id: "message.content.0.tool_use_id",
+              },
+            ],
+          },
           working: [],
           idle: [
             {

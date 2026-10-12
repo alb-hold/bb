@@ -168,7 +168,15 @@ started and an ended turn, the field holding the prompt, and the argv that
 loads `{settings}` (bb fills in hooks that append each event to a private
 file); `transcript` lists record matches on the session file (`equals` field
 values, `startsWith` prefixes, dotted paths with numeric array indexes) for
-working, idle and prompt records.
+working, idle and prompt records. A CLI that blocks on a question to the user
+declares it so the thread shows as waiting for input: `transcript.questions`
+lists `open` record matches (the field holding the question's id, an optional
+field holding its text, and a fallback `label`) and `close` matches that carry
+the same id once the user answers; `hooks.permission` names the hook events
+that open and close a permission prompt and the field that identifies the
+tool. An open question survives working signals and ends on its own close
+match, a new prompt, an interrupt or the CLI exiting. A non-blocking question
+must not be declared.
 
 Rules:
 

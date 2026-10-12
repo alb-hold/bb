@@ -6,15 +6,21 @@ import type {
 
 export type NativeActivityState = "working" | "idle";
 
+export interface NativeQuestion {
+  id: string;
+  prompt: string;
+}
+
 export interface NativeActivitySignal {
   state: NativeActivityState | null;
   prompt: string | null;
+  question?: NativeQuestion;
+  answered?: string;
 }
 
-export interface NativeActivityReport {
-  state: NativeActivityState;
-  prompt: string | null;
-}
+export type NativeActivityReport =
+  | { state: NativeActivityState; prompt: string | null }
+  | { state: "waiting"; prompt: null; questions: NativeQuestion[] };
 
 type ActivityHooks = NonNullable<ProviderNativeTerminalActivity["hooks"]>;
 type ActivityTranscript = NonNullable<
@@ -43,7 +49,14 @@ export function nativeActivityHookSettings(
 ): string {
   const file = shellQuote(eventsFile);
   const command = `{ cat; echo; } >> ${file} 2>/dev/null; exit 0`;
-  const entries = [...new Set([...hooks.working, ...hooks.idle])].map(
+  const entries = [
+    ...new Set([
+      ...hooks.working,
+      ...hooks.idle,
+      ...(hooks.permission?.open ?? []),
+      ...(hooks.permission?.close ?? []),
+    ]),
+  ].map(
     (event) => [event, [{ hooks: [{ type: "command", command }] }]] as const,
   );
   return JSON.stringify({ hooks: Object.fromEntries(entries) });
@@ -61,6 +74,22 @@ export function classifyHookRecord(
 ): NativeActivitySignal {
   const event = readRecordField(record, "hook_event_name");
   if (typeof event !== "string") return { state: null, prompt: null };
+  const permission = hooks.permission;
+  if (permission !== undefined) {
+    const id = readRecordField(record, permission.idField);
+    if (typeof id === "string" && id.length > 0) {
+      if (permission.open.includes(event)) {
+        return {
+          state: null,
+          prompt: null,
+          question: { id: `permission:${id}`, prompt: `${permission.label}: ${id}` },
+        };
+      }
+      if (permission.close.includes(event)) {
+        return { state: null, prompt: null, answered: `permission:${id}` };
+      }
+    }
+  }
   if (hooks.working.includes(event)) {
     return {
       state: "working",
@@ -89,6 +118,29 @@ export function classifyTranscriptRecord(
   transcript: ActivityTranscript,
   record: unknown,
 ): NativeActivitySignal {
+  for (const rule of transcript.questions?.open ?? []) {
+    if (!recordMatches(rule.match, record)) continue;
+    const id = readRecordField(record, rule.id);
+    if (typeof id !== "string" || id.length === 0) continue;
+    return {
+      state: null,
+      prompt: null,
+      question: {
+        id,
+        prompt:
+          (rule.prompt === undefined
+            ? null
+            : promptText(readRecordField(record, rule.prompt))) ?? rule.label,
+      },
+    };
+  }
+  for (const rule of transcript.questions?.close ?? []) {
+    if (!recordMatches(rule.match, record)) continue;
+    const id = readRecordField(record, rule.id);
+    if (typeof id === "string" && id.length > 0) {
+      return { state: null, prompt: null, answered: id };
+    }
+  }
   for (const rule of transcript.prompt) {
     if (recordMatches(rule.match, record)) {
       const prompt = promptText(readRecordField(record, rule.text));
@@ -162,9 +214,17 @@ export class JsonlTail {
 export class NativeActivityTracker {
   private state: NativeActivityState = "idle";
   private reportedPrompt: string | null = null;
+  private readonly questions = new Map<string, string>();
 
   apply(signal: NativeActivitySignal): NativeActivityReport | null {
+    if (signal.question !== undefined) {
+      return this.openQuestion(signal.question);
+    }
+    if (signal.answered !== undefined) {
+      return this.closeQuestion(signal.answered);
+    }
     if (signal.state === "idle") {
+      this.questions.clear();
       if (this.state === "idle") return null;
       this.state = "idle";
       this.reportedPrompt = null;
@@ -175,6 +235,7 @@ export class NativeActivityTracker {
       signal.prompt !== null && signal.prompt !== this.reportedPrompt
         ? signal.prompt
         : null;
+    if (newPrompt !== null) this.questions.clear();
     if (this.state === "working" && newPrompt === null) return null;
     this.state = "working";
     if (newPrompt !== null) this.reportedPrompt = newPrompt;
@@ -182,10 +243,33 @@ export class NativeActivityTracker {
   }
 
   heartbeat(): NativeActivityReport | null {
+    if (this.questions.size > 0) return this.waitingReport();
     return this.state === "working" ? { state: "working", prompt: null } : null;
   }
 
   finish(): NativeActivityReport | null {
     return this.apply({ state: "idle", prompt: null });
+  }
+
+  private openQuestion(question: NativeQuestion): NativeActivityReport | null {
+    if (this.questions.get(question.id) === question.prompt) return null;
+    this.state = "working";
+    this.questions.set(question.id, question.prompt);
+    return this.waitingReport();
+  }
+
+  private closeQuestion(id: string): NativeActivityReport | null {
+    if (!this.questions.delete(id)) return null;
+    return this.questions.size > 0
+      ? this.waitingReport()
+      : { state: "working", prompt: null };
+  }
+
+  private waitingReport(): NativeActivityReport {
+    return {
+      state: "waiting",
+      prompt: null,
+      questions: [...this.questions].map(([id, prompt]) => ({ id, prompt })),
+    };
   }
 }
