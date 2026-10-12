@@ -268,6 +268,7 @@ describe("terminal data plane child process", () => {
       expect(await child.waitFor("terminal.input")).toEqual({
         v,
         type: "terminal.input",
+        attachId: "attach_1",
         terminalId: "term_authorized",
         dataBase64: base64("typed"),
       });

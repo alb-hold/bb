@@ -294,7 +294,13 @@ describe("terminal data plane child", () => {
     expect(a.sent.join("")).not.toContain(base64("for-b"));
     expect(b.sent.join("")).not.toContain(base64("out-0"));
     expect(ofType(harness, "terminal.input")).toEqual([
-      { v, type: "terminal.input", terminalId: "term_a", dataBase64: base64("typed-in-a") },
+      {
+        v,
+        type: "terminal.input",
+        attachId: "a1",
+        terminalId: "term_a",
+        dataBase64: base64("typed-in-a"),
+      },
     ]);
   });
 
@@ -640,6 +646,32 @@ describe("terminal data plane child", () => {
       base64("a"),
       base64("bcd"),
       base64("e"),
+    ]);
+  });
+
+  it("never merges input from two browsers into one relay and names the browser that typed it", async () => {
+    vi.useFakeTimers();
+    const harness = createHarness();
+    const first = await attachLive(harness, { attachId: "a1", terminalId: "term_a" });
+    const second = await attachLive(harness, { attachId: "a2", terminalId: "term_a" });
+
+    first.receive({ type: "input", dataBase64: base64("1") });
+    first.receive({ type: "input", dataBase64: base64("2") });
+    second.receive({ type: "input", dataBase64: base64("3") });
+    second.receive({ type: "input", dataBase64: base64("4") });
+    first.receive({ type: "input", dataBase64: base64("5") });
+    vi.advanceTimersByTime(TERMINAL_DATA_PLANE_INPUT_COALESCE_MS);
+
+    expect(
+      ofType(harness, "terminal.input").map((message) => [
+        message.attachId,
+        message.dataBase64,
+      ]),
+    ).toEqual([
+      ["a1", base64("1")],
+      ["a1", base64("2")],
+      ["a2", base64("34")],
+      ["a1", base64("5")],
     ]);
   });
 

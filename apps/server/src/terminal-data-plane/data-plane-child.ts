@@ -95,6 +95,7 @@ interface TerminalRoute {
 }
 
 interface InputWindow {
+  attachId: string;
   bytes: number;
   parts: Buffer[];
   timer: ReturnType<typeof setTimeout>;
@@ -713,16 +714,21 @@ export class TerminalDataPlaneChild {
     const data = Buffer.from(dataBase64, "base64");
     const window = this.inputWindows.get(terminalId);
     if (window === undefined) {
-      this.relayInput(terminalId, data);
+      this.relayInput(terminalId, attach.attachId, data);
       this.inputWindows.set(terminalId, {
+        attachId: attach.attachId,
         bytes: 0,
         parts: [],
         timer: this.armInputWindow(terminalId),
       });
       return;
     }
-    if (window.bytes + data.length > TERMINAL_DATA_MAX_BYTES) {
+    if (
+      window.attachId !== attach.attachId ||
+      window.bytes + data.length > TERMINAL_DATA_MAX_BYTES
+    ) {
       this.flushInputWindow(terminalId, window);
+      window.attachId = attach.attachId;
     }
     window.parts.push(data);
     window.bytes += data.length;
@@ -750,10 +756,10 @@ export class TerminalDataPlaneChild {
     const data = Buffer.concat(window.parts, window.bytes);
     window.parts = [];
     window.bytes = 0;
-    this.relayInput(terminalId, data);
+    this.relayInput(terminalId, window.attachId, data);
   }
 
-  private relayInput(terminalId: string, data: Buffer): void {
+  private relayInput(terminalId: string, attachId: string, data: Buffer): void {
     const dataBase64 = data.toString("base64");
     const bytes = dataBase64.length;
     if (
@@ -769,7 +775,7 @@ export class TerminalDataPlaneChild {
     }
     this.pendingIpcBytes += bytes;
     this.options.sendToMain(
-      { v: V, type: "terminal.input", terminalId, dataBase64 },
+      { v: V, type: "terminal.input", attachId, terminalId, dataBase64 },
       () => {
         this.pendingIpcBytes = Math.max(0, this.pendingIpcBytes - bytes);
       },
