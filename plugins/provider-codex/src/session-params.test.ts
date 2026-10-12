@@ -601,6 +601,9 @@ describe("buildCodexConfig", () => {
     );
     expect(JSON.stringify(config)).not.toContain("private-pool-token");
     expect(JSON.stringify(config)).not.toContain("private-parent-token");
+    expect(JSON.stringify(config)).not.toContain("CODEX_OPENAI_BASE_URL");
+    expect(JSON.stringify(config)).not.toContain("http://127.0.0.1/pool");
+    expect(JSON.stringify(config)).not.toContain("http://127.0.0.1/parent");
   });
 
   it("maps the reasoning level onto model_reasoning_effort", () => {
