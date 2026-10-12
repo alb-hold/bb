@@ -1,5 +1,6 @@
 import { serve } from "@hono/node-server";
 import { existsSync } from "node:fs";
+import { Server as HttpServer } from "node:http";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ServerConfig } from "@bb/config/server";
@@ -46,11 +47,20 @@ import {
   appInstallFromServerConfig,
   createTelemetryService,
 } from "./services/system/telemetry.js";
+import {
+  createTerminalDataPlaneSpawn,
+  startTerminalDataPlane,
+} from "./services/terminals/data-plane/terminal-data-plane.js";
 import { TerminalSessionLifecycle } from "./services/terminals/terminal-session-lifecycle.js";
 import { createLifecycleDedupers } from "./lifecycle-dedupers.js";
 import { TURN_ACCEPTANCE_GRACE_MS } from "./constants.js";
 import type { ServerLogger, ServerRuntimeConfig } from "./types.js";
 import { NotificationHub } from "./ws/hub.js";
+import {
+  onTerminalSocketClose,
+  onTerminalSocketOpen,
+  onTerminalSocketParsedMessage,
+} from "./ws/terminal-protocol.js";
 import { startDaemonLivenessChecks } from "./ws/daemon-protocol.js";
 import { WatchInterestCoordinator } from "./ws/watch-interests.js";
 import { WorkspaceReadCaches } from "./services/environments/workspace-read-cache.js";
@@ -414,6 +424,24 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
     serverConfig,
   });
   injectWebSocket(server);
+  const terminalDataPlane =
+    server instanceof HttpServer
+      ? startTerminalDataPlane({
+          guard: { config: runtimeConfig },
+          lifecycle: {
+            attach: (args) => onTerminalSocketOpen({ terminalSessions }, args),
+            detach: (args) => onTerminalSocketClose({ terminalSessions }, args),
+            handleMessage: (args) =>
+              onTerminalSocketParsedMessage({ terminalSessions }, args),
+            recordInputActivity: () => undefined,
+          },
+          logger,
+          resolveTerminal: (terminalId) =>
+            terminalSessions.resolveRunningTerminalRoute(terminalId),
+          server,
+          spawn: createTerminalDataPlaneSpawn(),
+        })
+      : null;
 
   logger.info(
     {
@@ -490,6 +518,7 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
           resolve();
         });
       });
+      terminalDataPlane?.stop();
       await closeWebSockets();
       await closeServer;
     })();

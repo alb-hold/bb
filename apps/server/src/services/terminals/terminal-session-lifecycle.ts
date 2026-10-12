@@ -1475,6 +1475,20 @@ export class TerminalSessionLifecycle {
     }
   }
 
+  resolveRunningTerminalRoute(
+    terminalId: string,
+  ): { daemonSessionId: string; terminalId: string } | null {
+    const current = getTerminalById(this.options.db, terminalId);
+    if (
+      !current ||
+      current.status !== "running" ||
+      current.daemonSessionId === null
+    ) {
+      return null;
+    }
+    return { daemonSessionId: current.daemonSessionId, terminalId: current.id };
+  }
+
   attachBrowserTerminal(args: AttachBrowserTerminalArgs): void {
     if (args.outputAcks) {
       this.outputAckSocketVisibility.set(args.socket, true);
