@@ -13,6 +13,7 @@ import {
 } from "@bb/db";
 import type { PromptInput } from "@bb/domain";
 import {
+  HOST_DAEMON_PROTOCOL_VERSION,
   hostDaemonServerWsMessageSchema,
   type HostDaemonServerWsMessage,
 } from "@bb/host-daemon-contract";
@@ -29,6 +30,9 @@ import {
   NATIVE_TERMINAL_ENDED_MESSAGE,
   nativeTerminalLaunchCommand,
 } from "../../src/services/threads/native-terminal-threads.js";
+import { handleDaemonSocketClosed } from "../../src/internal/session-owner-side-effects.js";
+import { applyLoggedThreadLifecycleEvent } from "../../src/services/threads/lifecycle-outcome.js";
+import { internalAuthHeaders } from "../helpers/commands.js";
 import { onDaemonSocketOpen } from "../../src/ws/daemon-protocol.js";
 import { resolvePendingThreadSessionOptions } from "../../src/services/threads/thread-session-options.js";
 import { storeAttachment } from "../../src/services/projects/attachments.js";
@@ -1257,6 +1261,131 @@ describe("native terminal threads", () => {
       getNativeTerminalThread(fixture.harness.db, finished.id)
         ?.terminalSessionId,
     ).toBe(finishedOpen.terminalId);
+  });
+
+  async function restartDaemonWithRunningNativeThread(instanceId: string) {
+    const fixture = await createFixture();
+    const running = await openRunningNativeThread(fixture, {
+      providerId: "claude-code",
+    });
+    applyLoggedThreadLifecycleEvent(fixture.harness.deps, {
+      event: { type: "run.started" },
+      threadId: running.thread.id,
+    });
+    expect(getThread(fixture.harness.db, running.thread.id)?.status).toBe(
+      "active",
+    );
+    handleDaemonSocketClosed(fixture.harness.deps, {
+      sessionId: fixture.sessionId,
+    });
+    const opened = await fixture.harness.app.request("/internal/session/open", {
+      method: "POST",
+      headers: internalAuthHeaders(fixture.harness, {
+        hostId: fixture.hostId,
+      }),
+      body: JSON.stringify({
+        hostId: fixture.hostId,
+        instanceId,
+        hostName: "Test Host",
+        hasMachineCredential: false,
+        platform: "darwin",
+        dataDir: "/tmp/host-daemon-restart",
+        localApiPort: null,
+        protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
+        activeThreads: [],
+        undeliveredEventThreadIds: [],
+      }),
+    });
+    expect(opened.status).toBe(201);
+    const { sessionId } = (await readJson(opened)) as { sessionId: string };
+    const socket = createFakeDaemonSocket();
+    onDaemonSocketOpen(fixture.harness.deps, {
+      hostId: fixture.hostId,
+      sessionId,
+      socket,
+    });
+    return { fixture, running, sessionId, socket };
+  }
+
+  function interruptionReasons(fixture: Fixture, threadId: string): string[] {
+    return listEvents(fixture.harness.db, { threadId })
+      .filter((row) => row.type === "system/thread/interrupted")
+      .map((row) => (JSON.parse(row.data) as { reason: string }).reason);
+  }
+
+  it("keeps a running native thread active across a real daemon restart when its holder survives and the reattach lands", async () => {
+    const { fixture, running, sessionId, socket } =
+      await restartDaemonWithRunningNativeThread("instance-restarted");
+    const reopen = await waitForTerminalOpen(socket);
+    expect(reopen.threadId).toBe(running.thread.id);
+    expect(reopen.start.mode === "command" && reopen.start.command).toContain(
+      "--reattach",
+    );
+    expect(interruptionReasons(fixture, running.thread.id)).toEqual([]);
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.hostId,
+      sessionId,
+      message: {
+        type: "terminal.opened",
+        requestId: reopen.requestId,
+        terminalId: reopen.terminalId,
+        shell: "/bin/zsh",
+        title: "zsh",
+        initialCwd: "/tmp/native-workspace",
+        cols: reopen.cols,
+        rows: reopen.rows,
+      },
+    });
+    await expect
+      .poll(
+        () =>
+          getNativeTerminalThread(fixture.harness.db, running.thread.id)
+            ?.terminalSessionId,
+      )
+      .toBe(reopen.terminalId);
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    expect(getThread(fixture.harness.db, running.thread.id)?.status).toBe(
+      "active",
+    );
+    expect(interruptionReasons(fixture, running.thread.id)).toEqual([]);
+  });
+
+  it("interrupts a running native thread after a real daemon restart when the reattach finds the holder gone", async () => {
+    const { fixture, running, sessionId, socket } =
+      await restartDaemonWithRunningNativeThread("instance-restarted");
+    const reopen = await waitForTerminalOpen(socket);
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.hostId,
+      sessionId,
+      message: {
+        type: "terminal.opened",
+        requestId: reopen.requestId,
+        terminalId: reopen.terminalId,
+        shell: "/bin/zsh",
+        title: "zsh",
+        initialCwd: "/tmp/native-workspace",
+        cols: reopen.cols,
+        rows: reopen.rows,
+      },
+    });
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.hostId,
+      sessionId,
+      message: {
+        type: "terminal.exited",
+        terminalId: reopen.terminalId,
+        exitCode: 0,
+        closeReason: "process-exit",
+      },
+    });
+    await expect
+      .poll(() => interruptionReasons(fixture, running.thread.id), {
+        timeout: 5000,
+      })
+      .toEqual(["host-daemon-restarted"]);
+    expect(getThread(fixture.harness.db, running.thread.id)?.status).not.toBe(
+      "active",
+    );
   });
 
   it("gives an explicit open its own launch when it overlaps a reconnect reopen", async () => {

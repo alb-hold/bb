@@ -22,7 +22,10 @@ import type {
   TerminalSession,
 } from "@bb/server-contract";
 import { ApiError } from "../../errors.js";
-import type { AppDeps } from "../../types.js";
+import type {
+  AppDeps,
+  LoggedPendingInteractionWorkSessionDeps,
+} from "../../types.js";
 import { isServerMachineHost } from "../hosts/primary-host.js";
 import { storedProjectAttachmentPath } from "../projects/attachments.js";
 import { requirePublicThread } from "../lib/entity-lookup.js";
@@ -36,6 +39,7 @@ import {
   terminalScreenAlreadyShowsText,
 } from "./native-terminal-echo.js";
 import { createClientTurnRequestId } from "./thread-events.js";
+import { interruptActiveThreadsForHost } from "./thread-lifecycle.js";
 import { scheduleThreadProvisioningAdvance } from "./thread-provisioning.js";
 import type { ThreadProvisioningDeps } from "./thread-provisioning-environment.js";
 import {
@@ -54,6 +58,9 @@ type NativeTerminalDeps = Pick<
   "config" | "db" | "logger" | "providerRegistry" | "terminalSessions"
 >;
 
+type NativeTerminalReopenDeps = NativeTerminalDeps &
+  LoggedPendingInteractionWorkSessionDeps;
+
 type NativeTerminalViewDeps = Pick<
   AppDeps,
   "db" | "providerRegistry" | "terminalSessions"
@@ -66,6 +73,8 @@ interface PendingNativeTerminalOpen {
 
 const pendingOpens = new Map<string, PendingNativeTerminalOpen>();
 const pendingSends = new Map<string, Promise<void>>();
+const NATIVE_REATTACH_POLL_MS = 250;
+const NATIVE_REATTACH_SETTLE_MS = 15_000;
 const NATIVE_TERMINAL_ECHO_POLL_MS = 100;
 const NATIVE_TERMINAL_ECHO_TIMEOUT_MS = 5000;
 const NATIVE_TERMINAL_ECHO_CONTEXT_BYTES = 64 * 1024;
@@ -478,8 +487,45 @@ export function listNativeTerminalThreadsAwaitingDaemon(
   return listNativeTerminalThreadsWithDisconnectedTerminal(deps.db, hostId);
 }
 
+function interruptThreadWhoseHolderIsGone(
+  deps: NativeTerminalReopenDeps,
+  args: { hostId: string; threadId: string },
+): void {
+  deps.logger.info(
+    { hostId: args.hostId, threadId: args.threadId },
+    "Interrupting a native terminal thread whose CLI could not be reattached",
+  );
+  interruptActiveThreadsForHost(deps, {
+    hostId: args.hostId,
+    includeStopping: false,
+    onlyThreadIds: new Set([args.threadId]),
+    reason: "host-daemon-restarted",
+  });
+}
+
+function watchReattachedTerminal(
+  deps: NativeTerminalReopenDeps,
+  args: { hostId: string; terminalId: string; threadId: string },
+): void {
+  const deadline = Date.now() + NATIVE_REATTACH_SETTLE_MS;
+  const check = () => {
+    const record = getNativeTerminalThread(deps.db, args.threadId);
+    if (record === null || record.terminalSessionId !== args.terminalId) {
+      return;
+    }
+    const terminal = readRecordTerminal(deps, record);
+    if (terminal !== null && terminal.status === "exited") {
+      interruptThreadWhoseHolderIsGone(deps, args);
+      return;
+    }
+    if (Date.now() >= deadline) return;
+    setTimeout(check, NATIVE_REATTACH_POLL_MS).unref();
+  };
+  setTimeout(check, NATIVE_REATTACH_POLL_MS).unref();
+}
+
 export function reopenNativeTerminalsAfterDaemonReconnect(
-  deps: NativeTerminalDeps,
+  deps: NativeTerminalReopenDeps,
   args: { hostId: string; threadIds: readonly string[] },
 ): Promise<void> {
   return Promise.all(
@@ -526,11 +572,22 @@ export function reopenNativeTerminalsAfterDaemonReconnect(
           { hostId: args.hostId, terminalId: reopened.terminal?.id, threadId },
           "Reopened native terminal after the host daemon reconnected",
         );
+        if (reopened.terminal !== null) {
+          watchReattachedTerminal(deps, {
+            hostId: args.hostId,
+            terminalId: reopened.terminal.id,
+            threadId,
+          });
+        }
       } catch (error: unknown) {
         deps.logger.warn(
           { err: error, hostId: args.hostId, threadId },
           "Failed to reopen native terminal after the host daemon reconnected",
         );
+        interruptThreadWhoseHolderIsGone(deps, {
+          hostId: args.hostId,
+          threadId,
+        });
       }
     }),
   ).then(() => undefined);
