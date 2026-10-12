@@ -11,7 +11,10 @@ import {
 } from "./upstream-transport.js";
 import path from "node:path";
 import { z } from "zod";
-import type { BbPluginApi } from "@get-bb/plugin-sdk";
+import type {
+  BbPluginApi,
+  ExperimentalPluginProviderEnvContext,
+} from "@get-bb/plugin-sdk";
 import { registerPoolCli } from "./cli.js";
 import {
   accountPoolConfigSchema,
@@ -488,7 +491,9 @@ export function createAccountPoolPlugin(
         provider: PoolProvider,
         serving: (token: string) => Promise<PoolEnvEntry[]>,
       ) =>
-      async (context: { threadId: string; hostId: string }) => {
+      async (context: ExperimentalPluginProviderEnvContext) => {
+        const lifetime =
+          context.experimental_runtimeKind === "native" ? "process" : "durable";
         const unrouted = () =>
           hasConfiguredParentPool ? neutralized(provider) : [];
         const archive = await checkArchived(context.threadId);
@@ -516,10 +521,12 @@ export function createAccountPoolPlugin(
               accountId,
             },
             hostToken,
+            lifetime,
           );
           const nestedToken = await threadTokens.forNested(
             { threadId: context.threadId, hostId: context.hostId },
             hostToken,
+            lifetime,
           );
           if (await revokeIfArchived(context.threadId)) return unrouted();
           if (provider === "claude") {
