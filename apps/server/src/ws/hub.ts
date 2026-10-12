@@ -45,6 +45,12 @@ interface HubSocket {
   send(data: string): void;
 }
 
+type DaemonSessionChange =
+  | { kind: "opened"; hostId: string; sessionId: string }
+  | { kind: "closed"; sessionId: string };
+
+type DaemonSessionListener = (change: DaemonSessionChange) => void;
+
 interface TerminalSize {
   cols: number;
   rows: number;
@@ -274,6 +280,7 @@ export class NotificationHub implements DbNotifier {
     string,
     ReturnType<typeof setTimeout>
   >();
+  private readonly daemonSessionListeners = new Set<DaemonSessionListener>();
   private readonly terminalClientSocketsById = new Map<
     string,
     Set<HubSocket>
@@ -498,6 +505,30 @@ export class NotificationHub implements DbNotifier {
     );
   }
 
+  closeTerminalClients(
+    terminalId: string,
+    code: number,
+    reason: string,
+  ): HubSocket[] {
+    const sockets = [...(this.terminalClientSocketsById.get(terminalId) ?? [])];
+    for (const socket of sockets) {
+      try {
+        socket.close(code, reason);
+      } catch {}
+    }
+    return sockets;
+  }
+
+  subscribeDaemonSessions(listener: DaemonSessionListener): () => void {
+    this.daemonSessionListeners.add(listener);
+    for (const [sessionId, session] of this.daemonSessions) {
+      listener({ kind: "opened", hostId: session.hostId, sessionId });
+    }
+    return () => {
+      this.daemonSessionListeners.delete(listener);
+    };
+  }
+
   hasTerminalClients(terminalId: string): boolean {
     return (this.terminalClientSocketsById.get(terminalId)?.size ?? 0) > 0;
   }
@@ -664,6 +695,9 @@ export class NotificationHub implements DbNotifier {
       socket,
     });
     this.daemonSessionIdsByHost.set(hostId, sessionId);
+    for (const listener of this.daemonSessionListeners) {
+      listener({ kind: "opened", hostId, sessionId });
+    }
     this.resolveDaemonRegistrationWaiters(hostId);
     this.notifyHost(hostId, ["host-connected"]);
   }
@@ -679,6 +713,9 @@ export class NotificationHub implements DbNotifier {
     this.rejectHostOnlineRpcWaitersForSession(sessionId);
     if (this.daemonSessionIdsByHost.get(entry.hostId) === sessionId) {
       this.daemonSessionIdsByHost.delete(entry.hostId);
+    }
+    for (const listener of this.daemonSessionListeners) {
+      listener({ kind: "closed", sessionId });
     }
     const waiters = this.daemonSessionCloseWaiters.get(sessionId);
     if (waiters !== undefined) {

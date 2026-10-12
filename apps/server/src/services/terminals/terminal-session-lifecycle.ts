@@ -558,6 +558,8 @@ export class TerminalSessionLifecycle {
     PendingTerminalRpcKey,
     TerminalReplayMessage
   >;
+  private readonly directOutputSessionIds = new Set<string>();
+  private readonly directOutputSockets = new WeakSet<TerminalClientSocket>();
   private readonly catchingUpTerminalIds = new Set<string>();
   private readonly forwardedNextSeqByTerminalId = new Map<string, number>();
   private readonly outputAckSocketVisibility = new WeakMap<
@@ -1489,6 +1491,72 @@ export class TerminalSessionLifecycle {
     return { daemonSessionId: current.daemonSessionId, terminalId: current.id };
   }
 
+  markDirectOutputSocket(socket: TerminalClientSocket): void {
+    this.directOutputSockets.add(socket);
+  }
+
+  setDaemonSessionDirectOutput(args: {
+    daemonSessionId: string;
+    enabled: boolean;
+  }): void {
+    const enabled = this.directOutputSessionIds.has(args.daemonSessionId);
+    if (enabled === args.enabled) {
+      return;
+    }
+    if (args.enabled) {
+      this.directOutputSessionIds.add(args.daemonSessionId);
+    } else {
+      this.directOutputSessionIds.delete(args.daemonSessionId);
+    }
+    this.closeDaemonSessionBrowserTerminals({
+      code: 1013,
+      daemonSessionId: args.daemonSessionId,
+      reason: "terminal-output-path-changed",
+    });
+  }
+
+  private closeDaemonSessionBrowserTerminals(args: {
+    code: number;
+    daemonSessionId: string;
+    reason: string;
+  }): void {
+    const sessions = listTerminalSessions(this.options.db, {
+      scope: { daemonSessionId: args.daemonSessionId, kind: "daemon" },
+      visible: true,
+    });
+    for (const session of sessions) {
+      const closed = this.options.hub.closeTerminalClients(
+        session.id,
+        args.code,
+        args.reason,
+      );
+      for (const socket of closed) {
+        this.outputFlow.removeClient(session.id, socket);
+      }
+    }
+  }
+
+  recordDirectTerminalInput(terminalId: string): void {
+    const current = getTerminalById(this.options.db, terminalId);
+    if (current?.status !== "running") {
+      return;
+    }
+    const markedInput =
+      current.lastUserInputAt === null
+        ? updateTerminalById(this.options.db, current.id, {
+            kind: "user-input",
+          })
+        : null;
+    if (markedInput) {
+      this.notifyTerminalSessionChanged(markedInput);
+      this.options.hub.sendTerminalClientMessage(markedInput.id, {
+        type: "session-updated",
+        session: toTerminalSession(markedInput),
+      });
+    }
+    emitPluginTerminalInput(toTerminalSession(markedInput ?? current));
+  }
+
   attachBrowserTerminal(args: AttachBrowserTerminalArgs): void {
     if (args.outputAcks) {
       this.outputAckSocketVisibility.set(args.socket, true);
@@ -2238,6 +2306,13 @@ export class TerminalSessionLifecycle {
       return;
     }
 
+    if (
+      this.directOutputSessionIds.has(pending.daemonSessionId) !==
+      this.directOutputSockets.has(pending.socket)
+    ) {
+      pending.socket.close(1013, "terminal-output-path-changed");
+      return;
+    }
     this.options.hub.registerTerminalClient(current.id, pending.socket);
     this.addOutputFlowClient(current.id, pending.socket, message.nextSeq);
     this.forwardedNextSeqByTerminalId.set(
@@ -2267,7 +2342,7 @@ export class TerminalSessionLifecycle {
     nextSeq: number,
   ): void {
     const visible = this.outputAckSocketVisibility.get(socket);
-    if (visible !== undefined) {
+    if (visible !== undefined && !this.directOutputSockets.has(socket)) {
       this.outputFlow.addClient(terminalId, socket, nextSeq, visible);
     }
   }

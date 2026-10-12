@@ -3281,4 +3281,183 @@ describe("public terminal routes", () => {
       closingMessages,
     );
   });
+
+  describe("direct daemon output", () => {
+    async function createRunningTerminal() {
+      const fixture = await createTerminalRouteFixture();
+      harnesses.push(fixture.harness);
+      const stored = createTerminalSession(fixture.harness.db, {
+        cols: 80,
+        daemonSessionId: fixture.session.id,
+        environmentId: fixture.environment.id,
+        hostId: fixture.host.id,
+        initialCwd: "/tmp/terminal-workspace",
+        rows: 24,
+        status: "running",
+        threadId: fixture.thread.id,
+        title: "Terminal 1",
+      });
+      const terminalSessions = fixture.harness.deps.terminalSessions;
+      const attach = async (
+        socket: FakeBrowserSocket,
+        args: { nextSeq: number; outputAcks: boolean },
+      ) => {
+        const before = readDaemonOperationMessages(fixture.socket).length;
+        terminalSessions.attachBrowserTerminal({
+          outputAcks: args.outputAcks,
+          terminalId: stored.id,
+          socket,
+          sinceSeq: args.nextSeq,
+        });
+        const attachMessage = await waitForDaemonMessage(fixture.socket, before);
+        if (attachMessage.type !== "terminal.attach") {
+          throw new Error(
+            `Expected terminal.attach, received ${attachMessage.type}`,
+          );
+        }
+        terminalSessions.handleDaemonTerminalMessage({
+          hostId: fixture.host.id,
+          sessionId: fixture.session.id,
+          message: {
+            type: "terminal.replay",
+            requestId: attachMessage.requestId,
+            terminalId: stored.id,
+            chunks: [],
+            replayStartSeq: args.nextSeq,
+            nextSeq: args.nextSeq,
+          },
+        });
+      };
+      const sendOutput = (seq: number) =>
+        terminalSessions.handleDaemonTerminalMessage({
+          hostId: fixture.host.id,
+          sessionId: fixture.session.id,
+          message: {
+            type: "terminal.output",
+            terminalId: stored.id,
+            chunk: {
+              seq,
+              dataBase64: Buffer.from(`line ${seq}\n`, "utf8").toString("base64"),
+            },
+          },
+        });
+      return { attach, fixture, sendOutput, stored, terminalSessions };
+    }
+
+    it("closes the browsers the server holds when a daemon session starts sending output directly, and releases their pacing", async () => {
+      const { attach, fixture, stored, terminalSessions } =
+        await createRunningTerminal();
+      const browserSocket = createFakeBrowserSocket();
+      await attach(browserSocket, { nextSeq: 0, outputAcks: true });
+      expect(readBrowserMessages(browserSocket)).toEqual([
+        expect.objectContaining({ type: "attached", nextSeq: 0 }),
+      ]);
+
+      terminalSessions.setDaemonSessionDirectOutput({
+        daemonSessionId: fixture.session.id,
+        enabled: true,
+      });
+      terminalSessions.setDaemonSessionDirectOutput({
+        daemonSessionId: fixture.session.id,
+        enabled: true,
+      });
+
+      expect(browserSocket.close).toHaveBeenCalledTimes(1);
+      expect(browserSocket.close).toHaveBeenCalledWith(
+        1013,
+        "terminal-output-path-changed",
+      );
+      expect(readDaemonOperationMessages(fixture.socket).slice(1)).toEqual([
+        { type: "terminal.flow-control", terminalId: stored.id, enabled: true },
+        { type: "terminal.flow-control", terminalId: stored.id, enabled: false },
+      ]);
+    });
+
+    it("refuses a browser on the wrong output path instead of leaving it without live output", async () => {
+      const { attach, fixture, sendOutput, stored, terminalSessions } =
+        await createRunningTerminal();
+      terminalSessions.setDaemonSessionDirectOutput({
+        daemonSessionId: fixture.session.id,
+        enabled: true,
+      });
+
+      const heldByServer = createFakeBrowserSocket();
+      await attach(heldByServer, { nextSeq: 0, outputAcks: false });
+      expect(heldByServer.close).toHaveBeenCalledWith(
+        1013,
+        "terminal-output-path-changed",
+      );
+      expect(readBrowserMessages(heldByServer)).toEqual([]);
+
+      const direct = createFakeBrowserSocket();
+      terminalSessions.markDirectOutputSocket(direct);
+      await attach(direct, { nextSeq: 0, outputAcks: true });
+      expect(direct.close).not.toHaveBeenCalled();
+      expect(readBrowserMessages(direct)).toEqual([
+        expect.objectContaining({ type: "attached", nextSeq: 0 }),
+      ]);
+      expect(
+        readDaemonOperationMessages(fixture.socket).filter(
+          (message) => message.type === "terminal.flow-control",
+        ),
+      ).toEqual([]);
+
+      terminalSessions.setDaemonSessionDirectOutput({
+        daemonSessionId: fixture.session.id,
+        enabled: false,
+      });
+      expect(direct.close).toHaveBeenCalledWith(
+        1013,
+        "terminal-output-path-changed",
+      );
+      terminalSessions.detachBrowserTerminal({
+        terminalId: stored.id,
+        socket: direct,
+      });
+
+      const lateDirect = createFakeBrowserSocket();
+      terminalSessions.markDirectOutputSocket(lateDirect);
+      await attach(lateDirect, { nextSeq: 0, outputAcks: false });
+      expect(lateDirect.close).toHaveBeenCalledWith(
+        1013,
+        "terminal-output-path-changed",
+      );
+
+      const backOnServer = createFakeBrowserSocket();
+      await attach(backOnServer, { nextSeq: 0, outputAcks: false });
+      sendOutput(0);
+      expect(backOnServer.close).not.toHaveBeenCalled();
+      expect(readBrowserMessages(backOnServer)).toEqual([
+        expect.objectContaining({ type: "attached", nextSeq: 0 }),
+        expect.objectContaining({ type: "output" }),
+      ]);
+    });
+
+    it("records typing that bypassed the server once per report", async () => {
+      const { fixture, stored, terminalSessions } = await createRunningTerminal();
+      expect(
+        getTerminalSession(fixture.harness.db, {
+          kind: "terminal",
+          terminalId: stored.id,
+        })?.lastUserInputAt,
+      ).toBeNull();
+
+      terminalSessions.recordDirectTerminalInput(stored.id);
+      const marked = getTerminalSession(fixture.harness.db, {
+        kind: "terminal",
+        terminalId: stored.id,
+      });
+      terminalSessions.recordDirectTerminalInput(stored.id);
+      terminalSessions.recordDirectTerminalInput("term_missing");
+
+      expect(marked?.lastUserInputAt).not.toBeNull();
+      expect(
+        getTerminalSession(fixture.harness.db, {
+          kind: "terminal",
+          terminalId: stored.id,
+        })?.lastUserInputAt,
+      ).toBe(marked?.lastUserInputAt);
+      expect(readDaemonOperationMessages(fixture.socket)).toEqual([]);
+    });
+  });
 });

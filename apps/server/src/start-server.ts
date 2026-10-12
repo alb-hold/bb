@@ -1,6 +1,7 @@
 import { serve } from "@hono/node-server";
 import { existsSync } from "node:fs";
 import { Server as HttpServer } from "node:http";
+import { verifyAuthenticatedDaemon } from "./internal/auth.js";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ServerConfig } from "@bb/config/server";
@@ -427,13 +428,27 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
   const terminalDataPlane =
     server instanceof HttpServer
       ? startTerminalDataPlane({
+          daemons: {
+            currentSessionIdForHost: (hostId) =>
+              hub.getDaemonSessionIdForHost(hostId),
+            request: (args) => hub.requestHostOnlineRpc(args),
+            setSessionDirectOutput: (args) =>
+              terminalSessions.setDaemonSessionDirectOutput(args),
+            subscribe: (listener) => hub.subscribeDaemonSessions(listener),
+            verify: (authorizationHeader) =>
+              verifyAuthenticatedDaemon({ machineAuth }, authorizationHeader),
+          },
           guard: { config: runtimeConfig },
           lifecycle: {
-            attach: (args) => onTerminalSocketOpen({ terminalSessions }, args),
+            attach: (args) => {
+              terminalSessions.markDirectOutputSocket(args.socket);
+              onTerminalSocketOpen({ terminalSessions }, args);
+            },
             detach: (args) => onTerminalSocketClose({ terminalSessions }, args),
             handleMessage: (args) =>
               onTerminalSocketParsedMessage({ terminalSessions }, args),
-            recordInputActivity: () => undefined,
+            recordInputActivity: (terminalId) =>
+              terminalSessions.recordDirectTerminalInput(terminalId),
           },
           logger,
           resolveTerminal: (terminalId) =>
