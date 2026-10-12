@@ -799,6 +799,7 @@ export class TerminalDataPlaneChild {
         );
         socket.on("close", () => this.handleDaemonClosed(daemonSessionId, socket));
         socket.on("error", () => socket.terminate());
+        this.syncSessionFlowClients(daemonSessionId);
         this.send({ v: V, type: "daemon.attached", daemonSessionId });
       },
       () => {
@@ -849,7 +850,16 @@ export class TerminalDataPlaneChild {
       return;
     }
     this.daemonSockets.delete(daemonSessionId);
+    this.syncSessionFlowClients(daemonSessionId);
     this.send({ v: V, type: "daemon.detached", daemonSessionId });
+  }
+
+  private syncSessionFlowClients(daemonSessionId: string): void {
+    for (const [terminalId, route] of this.routes) {
+      if (route.daemonSessionId === daemonSessionId) {
+        this.syncTerminalFlowClients(terminalId);
+      }
+    }
   }
 
   private detachDaemon(daemonSessionId: string): void {
@@ -888,11 +898,14 @@ export class TerminalDataPlaneChild {
   }
 
   private syncFlowClient(attach: BrowserAttach): void {
+    const route = this.routes.get(attach.terminalId);
     const governs =
       !attach.closed &&
       attach.attachedFrameSent &&
       attach.outputAcks &&
-      this.routes.get(attach.terminalId)?.mode === "data-socket";
+      route !== undefined &&
+      route.mode === "data-socket" &&
+      this.daemonSockets.has(route.daemonSessionId);
     if (governs === attach.flowClient) {
       return;
     }
