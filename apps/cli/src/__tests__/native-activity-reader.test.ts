@@ -12,7 +12,8 @@ import {
   providerNativeTerminalActivitySchema,
   type ProviderNativeTerminal,
 } from "@bb/domain";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { JsonlTail } from "../native-activity.js";
 import {
   measureResumedTranscript,
   NativeActivityReader,
@@ -117,6 +118,7 @@ const SESSION_ID = "019a1f3e-0000-7000-8000-000000000001";
 const roots: string[] = [];
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const root of roots.splice(0)) {
     rmSync(root, { recursive: true, force: true });
   }
@@ -297,7 +299,7 @@ function retainedIdentitySizes(reader: NativeActivityReader) {
 }
 
 describe("NativeActivityReader", () => {
-  it("confirms filter matches against transcript identity without rejecting fresh records", () => {
+  it("keeps fresh records free of prefix reads after eviction filter saturation", () => {
     const fixture = claudeFixture();
     fixture.append(
       Array.from({ length: 9000 }, (_, index) => ({
@@ -311,10 +313,17 @@ describe("NativeActivityReader", () => {
     if (typeof filter !== "object" || filter === null)
       throw new Error("Evicted filter unavailable");
     const bits: unknown = Reflect.get(filter, "bits");
-    if (!(bits instanceof Uint8Array))
-      throw new Error("Filter bits unavailable");
-    expect(bits.byteLength).toBe(4 * 1024 * 1024);
-    bits.fill(255);
+    if (bits instanceof Uint8Array) {
+      expect(bits.byteLength).toBe(4 * 1024 * 1024);
+      bits.fill(255);
+    }
+    const reads = vi.spyOn(JsonlTail.prototype, "readRecords");
+    const hookTail = Reflect.get(fixture.reader, "hookTail");
+    const transcriptTail = Reflect.get(fixture.reader, "transcriptTail");
+    const prefixReads = () =>
+      reads.mock.contexts.filter(
+        (tail) => tail !== hookTail && tail !== transcriptTail,
+      ).length;
     fixture.append([
       {
         type: "system",
@@ -326,6 +335,7 @@ describe("NativeActivityReader", () => {
       },
     ]);
     expect(fixture.reader.read()).toEqual([{ state: "idle", prompt: null }]);
+    expect(prefixReads()).toBe(0);
     fixture.append([
       {
         type: "assistant",
@@ -336,6 +346,8 @@ describe("NativeActivityReader", () => {
       },
     ]);
     expect(fixture.reader.read()).toEqual([{ state: "working", prompt: null }]);
+    expect(prefixReads()).toBe(0);
+    reads.mockRestore();
     fixture.append([
       {
         type: "user",

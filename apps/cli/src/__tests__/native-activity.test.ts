@@ -227,6 +227,51 @@ describe("native terminal activity", () => {
     );
   });
 
+  it("reports byte offsets across resumed, malformed and split UTF-8 records", () => {
+    const file = path.join(tempDir(), "offsets.jsonl");
+    const old = '{"old":true}\n';
+    writeFileSync(file, old);
+    const tail = new JsonlTail(Buffer.byteLength(old));
+    const large = {
+      text: "x".repeat(4 * 1024 * 1024 - 20) + "\u{1f642}",
+      uuid: "split",
+    };
+    const content = `not json\n${JSON.stringify(large)}\n${JSON.stringify({ uuid: "last" })}\n`;
+    appendFileSync(file, content);
+    const entries: { record: unknown; offset: number; length: number }[] = [];
+    const accept = (
+      record: unknown,
+      location: { offset: number; length: number },
+    ) => {
+      entries.push({ record, ...location });
+    };
+    tail.readRecords(file, accept);
+    expect(entries).toEqual([]);
+    tail.readRecords(file, accept);
+    expect(entries.map(({ record }) => record)).toEqual([
+      large,
+      { uuid: "last" },
+    ]);
+    const bytes = readFileSync(file);
+    for (const entry of entries) {
+      expect(
+        JSON.parse(
+          bytes
+            .subarray(entry.offset, entry.offset + entry.length)
+            .toString("utf8"),
+        ),
+      ).toEqual(entry.record);
+    }
+    expect(entries[0].offset).toBe(Buffer.byteLength(old + "not json\n"));
+    writeFileSync(file, '{"uuid":"replacement"}\n');
+    const replacement: unknown[] = [];
+    tail.readRecords(file, (record, location) => {
+      replacement.push(record);
+      expect(location.offset).toBe(0);
+    });
+    expect(replacement).toEqual([{ uuid: "replacement" }]);
+  });
+
   it("keeps a resumed turn written before the first poll", () => {
     const file = path.join(tempDir(), "rollout.jsonl");
     writeFileSync(file, `${JSON.stringify({ old: true })}\n`);

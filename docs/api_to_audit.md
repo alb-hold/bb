@@ -1098,11 +1098,15 @@ Providers declaring it must timestamp identifiable records; fresh records
 may arrive out of timestamp order. Missing or invalid timestamps are ignored.
 UUID identity decides replay detection independently of replay timestamps or
 ancestry. A bounded set holds 4,096 recently evicted UUIDs; a lazily allocated
-4 MiB Bloom filter retains four SHA-256-derived bits for every evicted UUID.
-Negative matches avoid transcript reads. Positive matches require exact UUID
-lookup in the processed transcript prefix, ending at the highest evicted append
-position. A filter false positive never rejects a fresh UUID. Saturation can
-increase lookup cost but cannot forget an evicted identity or grow filter memory.
+packed index retains each older UUID's 64-bit SHA-256 hash, original byte
+offset and line length. At 75 percent occupancy it doubles its arrays; slots
+cost 20 bytes, about 27 to 54 bytes per indexed UUID after the initial 160 KiB
+allocation. Hash matches compare the exact UUID in the original line with one
+positioned read per match, never a transcript prefix scan. Distinct hashes need
+no transcript reads; collisions remain eligible after exact confirmation.
+Resizing is linear and amortized across insertions. Lookup cost includes linear
+probing and the lengths of original lines sharing the hash. Index storage grows
+linearly with evictions; the ancestry and turn maps keep their fixed bounds.
 Claude declares the timestamp field. Retained history is bounded to 4,096
 records and 128 turns, while
 completion anchors and compacted continuation ancestry remain available.

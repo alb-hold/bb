@@ -181,13 +181,17 @@ An optional identity `timestamp` names an ISO timestamp field. Providers that
 declare it must timestamp identifiable records; missing or invalid values are
 ignored. UUID identity decides replay detection even if a replay changes its
 timestamp or ancestry. Fresh records may arrive with older timestamps. The
-reader retains 4,096 recently evicted UUIDs and lazily allocates a fixed 4 MiB
-Bloom filter with four SHA-256-derived bit positions for all evicted UUIDs.
-The filter never forgets identities: negative matches avoid transcript reads;
-positive matches require exact UUID lookup in the processed transcript prefix,
-ending at the highest evicted append position. False positives remain eligible
-when that lookup finds no UUID. Filter saturation increases lookup cost without
-changing correctness or its memory bound. Claude declares the timestamp field.
+reader retains 4,096 recently evicted UUIDs and indexes older UUIDs with
+64-bit SHA-256 hashes, original byte offsets and line lengths in packed arrays.
+The index grows geometrically at 75 percent occupancy: 20 bytes per slot,
+about 27 to 54 bytes per evicted UUID after its initial 160 KiB allocation.
+A hash match reads only the original line and compares its exact UUID; hash
+collisions cannot reject a fresh UUID. Fresh hashes require no transcript read.
+Confirmation never scans the transcript prefix, regardless of session length.
+The index uses linear probing and doubles when full enough; resizing costs
+linear work in its entries, amortized over later insertions. A lookup may read
+one line per matching 64-bit hash; its cost depends on those line lengths,
+not the transcript prefix length. Claude declares the timestamp field.
 Identity state is bounded to 4,096 records
 and 128 turns; completion anchors and continuation ancestry remain available.
 Claude uses Stop-hook feedback for continuation and the Stop outcome or turn

@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import type { ProviderNativeTerminal } from "@bb/domain";
 import {
   classifyHookRecord,
@@ -7,9 +6,11 @@ import {
   JsonlTail,
   NativeActivityTracker,
   readRecordField,
+  type JsonlRecordLocation,
   type NativeActivityReport,
   type NativeActivitySignal,
 } from "./native-activity.js";
+import { EvictedRecordIndex } from "./native-activity-index.js";
 import {
   findNativeSessionFile,
   type NativeHarnessEnv,
@@ -18,30 +19,6 @@ import {
 const MAX_RETAINED_RECORDS = 4096;
 const MAX_RETAINED_TURNS = 128;
 const MAX_RECENT_EVICTED_IDS = 4096;
-const EVICTED_FILTER_BYTES = 4 * 1024 * 1024;
-const EVICTED_FILTER_MASK = EVICTED_FILTER_BYTES * 8 - 1;
-
-class EvictedRecordFilter {
-  private readonly bits = new Uint8Array(EVICTED_FILTER_BYTES);
-
-  add(id: string): void {
-    const hash = createHash("sha256").update(id).digest();
-    for (let index = 0; index < 4; index += 1) {
-      const bit = hash.readUInt32LE(index * 4) & EVICTED_FILTER_MASK;
-      this.bits[bit >>> 3] |= 1 << (bit & 7);
-    }
-  }
-
-  mayContain(id: string): boolean {
-    const hash = createHash("sha256").update(id).digest();
-    for (let index = 0; index < 4; index += 1) {
-      const bit = hash.readUInt32LE(index * 4) & EVICTED_FILTER_MASK;
-      if ((this.bits[bit >>> 3] & (1 << (bit & 7))) === 0) return false;
-    }
-    return true;
-  }
-}
-
 export type NativeActivityStart =
   | { kind: "discover" }
   | { kind: "start"; id: string }
@@ -93,16 +70,14 @@ export class NativeActivityReader {
   private sessionId: string | null;
   private currentTurn: string | null = null;
   private workingRecord: string | null = null;
-  private evictedThroughPosition = 0;
   private transcriptPosition = 0;
-  private readonly transcriptStartOffset: number;
-  private evictedRecords: EvictedRecordFilter | null = null;
+  private evictedRecords: EvictedRecordIndex | null = null;
   private readonly recentEvictedIds = new Set<string>();
   private readonly knownTurns = new Set<string>();
   private readonly recordTurns = new Map<string, string | null>();
   private readonly recordParents = new Map<
     string,
-    { parent: string | null; position: number }
+    { parent: string | null; location: JsonlRecordLocation }
   >();
   private readonly completedTurns = new Map<string, string>();
 
@@ -112,7 +87,6 @@ export class NativeActivityReader {
     private readonly eventsFile: string | null,
     start: NativeActivityStart,
   ) {
-    this.transcriptStartOffset = start.kind === "resume" ? start.offset : 0;
     if (start.kind === "resume") {
       this.sessionId = start.id;
       this.transcriptFile = start.transcriptFile;
@@ -156,10 +130,12 @@ export class NativeActivityReader {
     if (transcript === undefined) return reports;
     this.transcriptFile ??= this.findTranscript();
     if (this.transcriptFile === null) return reports;
-    for (const record of this.transcriptTail.readRecords(this.transcriptFile)) {
+    this.transcriptTail.readRecords(this.transcriptFile, (record, location) => {
       const signal = classifyTranscriptRecord(transcript, record);
-      push(this.tracker.apply(this.identifyTranscript(record, signal)));
-    }
+      push(
+        this.tracker.apply(this.identifyTranscript(record, signal, location)),
+      );
+    });
     return reports;
   }
 
@@ -188,6 +164,7 @@ export class NativeActivityReader {
   private identifyTranscript(
     record: unknown,
     signal: NativeActivitySignal,
+    location: JsonlRecordLocation,
   ): NativeActivitySignal {
     const identity = this.cli.activity?.transcript?.identity;
     if (identity === undefined) return signal;
@@ -201,8 +178,8 @@ export class NativeActivityReader {
     }
     if (
       this.recentEvictedIds.has(id) ||
-      (this.evictedRecords?.mayContain(id) === true &&
-        this.wasEvictedInTranscript(id))
+      (this.transcriptFile !== null &&
+        this.evictedRecords?.has(id, this.transcriptFile) === true)
     ) {
       return ignored;
     }
@@ -220,7 +197,7 @@ export class NativeActivityReader {
     this.recordTurns.set(id, turn);
     this.recordParents.set(id, {
       parent: retainedParent,
-      position: this.transcriptPosition,
+      location,
     });
     this.pruneRecords();
     if (turn === null || signal.state === null) return ignored;
@@ -268,12 +245,11 @@ export class NativeActivityReader {
       }
       const record = this.recordParents.get(id);
       if (record !== undefined) {
-        this.evictedThroughPosition = Math.max(
-          this.evictedThroughPosition,
-          record.position,
-        );
-        this.evictedRecords ??= new EvictedRecordFilter();
-        this.evictedRecords.add(id);
+        const identity = this.cli.activity?.transcript?.identity;
+        if (identity !== undefined) {
+          this.evictedRecords ??= new EvictedRecordIndex(identity.recordId);
+          this.evictedRecords.add(id, record.location);
+        }
         this.recentEvictedIds.add(id);
         if (this.recentEvictedIds.size > MAX_RECENT_EVICTED_IDS) {
           const expired = this.recentEvictedIds.values().next().value;
@@ -284,23 +260,6 @@ export class NativeActivityReader {
       this.recordParents.delete(id);
       break;
     }
-  }
-
-  private wasEvictedInTranscript(id: string): boolean {
-    const identity = this.cli.activity?.transcript?.identity;
-    if (this.transcriptFile === null || identity === undefined) return false;
-    const tail = new JsonlTail(this.transcriptStartOffset);
-    let position = 0;
-    while (position < this.evictedThroughPosition) {
-      const records = tail.readRecords(this.transcriptFile);
-      if (records.length === 0) return false;
-      for (const record of records) {
-        position += 1;
-        if (position > this.evictedThroughPosition) return false;
-        if (this.stringField(record, identity.recordId) === id) return true;
-      }
-    }
-    return false;
   }
 
   private descendsFrom(id: string, ancestor: string): boolean {
