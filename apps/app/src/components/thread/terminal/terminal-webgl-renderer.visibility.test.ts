@@ -12,14 +12,17 @@ afterEach(() => {
   document.body.replaceChildren();
 });
 
-function setupVisibility(intersectionSupported = true) {
+function setupVisibility(
+  intersectionSupported = true,
+  initiallyIntersecting = true,
+) {
   const root = document.createElement("div");
   document.body.append(root);
   let box = new DOMRect(10, 10, 300, 200);
   let panelOpen = true;
   let documentVisible = true;
   let resize = () => {};
-  let intersect = (_visible: boolean) => {};
+  let intersect = (_visible: boolean, _bounds?: DOMRect) => {};
   const disconnectResize = vi.fn();
   const disconnectIntersection = vi.fn();
   vi.spyOn(root, "getBoundingClientRect").mockImplementation(() => box);
@@ -41,15 +44,15 @@ function setupVisibility(intersectionSupported = true) {
     intersectionSupported
       ? class {
           constructor(callback: IntersectionObserverCallback) {
-            intersect = (visible: boolean) =>
+            intersect = (visible: boolean, bounds?: DOMRect) =>
               callback(
                 [
                   {
                     target: root,
                     isIntersecting: visible,
                     boundingClientRect: box,
-                    intersectionRect: visible ? box : new DOMRect(),
-                    intersectionRatio: visible ? 1 : 0,
+                    intersectionRect: visible ? (bounds ?? box) : new DOMRect(),
+                    intersectionRatio: visible && bounds === undefined ? 1 : 0,
                     rootBounds: null,
                     time: 0,
                   },
@@ -80,6 +83,7 @@ function setupVisibility(intersectionSupported = true) {
     renderer,
     isPanelOpen: () => panelOpen,
   });
+  if (intersectionSupported && initiallyIntersecting) intersect(true);
   return {
     root,
     renderer,
@@ -87,7 +91,8 @@ function setupVisibility(intersectionSupported = true) {
     createAddon,
     disconnectResize,
     disconnectIntersection,
-    intersect: (visible: boolean) => intersect(visible),
+    intersect: (visible: boolean, bounds?: DOMRect) =>
+      intersect(visible, bounds),
     resize: (nextBox: DOMRect) => {
       box = nextBox;
       resize();
@@ -108,6 +113,34 @@ function setupVisibility(intersectionSupported = true) {
 }
 
 describe("terminal visibility signals", () => {
+  it("waits for a visible-area observation before allocating a context", () => {
+    const state = setupVisibility(true, false);
+    expect(state.root.dataset.terminalRenderer).toBe("dom");
+    expect(state.createAddon).not.toHaveBeenCalled();
+    state.intersect(true, new DOMRect(10, 10, 0, 200));
+    expect(state.createAddon).not.toHaveBeenCalled();
+    state.intersect(true);
+    expect(state.root.dataset.terminalRenderer).toBe("webgl");
+    expect(state.createAddon).toHaveBeenCalledOnce();
+    state.observer.dispose();
+    state.renderer.dispose();
+  });
+
+  it("releases contexts when an intersecting terminal has zero visible area", () => {
+    const state = setupVisibility();
+    for (const bounds of [
+      new DOMRect(10, 10, 0, 200),
+      new DOMRect(10, 10, 300, 0),
+    ]) {
+      state.intersect(true, bounds);
+      expect(state.root.dataset.terminalRenderer).toBe("dom");
+      state.intersect(true);
+      expect(state.root.dataset.terminalRenderer).toBe("webgl");
+    }
+    state.observer.dispose();
+    state.renderer.dispose();
+  });
+
   it("releases contexts clipped by a scroll container without IntersectionObserver", () => {
     const state = setupVisibility(false);
     const parent = document.createElement("div");

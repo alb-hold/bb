@@ -240,9 +240,9 @@ export function observeTerminalWebglVisibility({
   const document = root.ownerDocument;
   const window = document.defaultView;
   let disposed = false;
-  let intersects = true;
   const supportsIntersectionObserver =
     typeof IntersectionObserver !== "undefined";
+  let intersects = !supportsIntersectionObserver;
   const sync = () => {
     if (disposed) {
       return;
@@ -271,7 +271,10 @@ export function observeTerminalWebglVisibility({
     : new IntersectionObserver((entries) => {
         const entry = entries.find((entry) => entry.target === root);
         if (entry !== undefined) {
-          intersects = entry.isIntersecting;
+          intersects =
+            entry.isIntersecting &&
+            entry.intersectionRect.width > 0 &&
+            entry.intersectionRect.height > 0;
         }
         sync();
       });
