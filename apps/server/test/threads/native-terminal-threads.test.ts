@@ -1667,7 +1667,7 @@ describe("native terminal threads", () => {
   }, 60_000);
 
   async function restartWithFailingReattach(
-    failure: (attempt: number) => ApiError | null,
+    failure: (attempt: number) => Error | null,
   ) {
     let attempts = 0;
     const restart = await restartDaemonWithRunningNativeThread(
@@ -1758,13 +1758,54 @@ describe("native terminal threads", () => {
     }
   }, 60_000);
 
-  it("interrupts a running native thread at once when the reattach error proves the holder is gone", async () => {
-    const { fixture, running, attempts } = await restartWithFailingReattach(
-      () => new ApiError(502, "terminal_not_found", "No such terminal"),
-    );
+  it("interrupts a running native thread at once when the reattached terminal exits before its open completes", async () => {
+    const { fixture, running, sessionId, socket } =
+      await restartWithFailingReattach(() => null);
     try {
-      await vi.advanceTimersByTimeAsync(100);
-      expect(attempts()).toBe(1);
+      let reopen: TerminalOpenMessage | undefined;
+      for (let step = 0; step < 400 && reopen === undefined; step += 1) {
+        await vi.advanceTimersByTimeAsync(50);
+        reopen = daemonMessages(socket).find(
+          (message): message is TerminalOpenMessage =>
+            message.type === "terminal.open",
+        );
+      }
+      if (reopen === undefined) throw new Error("reattach never opened");
+      const terminals = fixture.harness.deps.terminalSessions;
+      terminals.handleDaemonTerminalMessage({
+        hostId: fixture.hostId,
+        sessionId,
+        message: {
+          type: "terminal.opened",
+          requestId: reopen.requestId,
+          terminalId: reopen.terminalId,
+          shell: "/bin/zsh",
+          title: "zsh",
+          initialCwd: "/tmp/native-workspace",
+          cols: reopen.cols,
+          rows: reopen.rows,
+        },
+      });
+      terminals.handleDaemonTerminalMessage({
+        hostId: fixture.hostId,
+        sessionId,
+        message: {
+          type: "terminal.exited",
+          terminalId: reopen.terminalId,
+          exitCode: 0,
+          closeReason: "process-exit",
+        },
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(interruptionReasons(fixture, running.thread.id)).toEqual([
+        "host-daemon-restarted",
+      ]);
+      expect(
+        daemonMessages(socket).filter(
+          (message) => message.type === "terminal.open",
+        ),
+      ).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(120_000);
       expect(interruptionReasons(fixture, running.thread.id)).toEqual([
         "host-daemon-restarted",
       ]);
@@ -1772,6 +1813,52 @@ describe("native terminal threads", () => {
       vi.useRealTimers();
     }
   }, 60_000);
+
+  it("retries a cancelled reattach open that did not come from the terminal exiting and interrupts only at the deadline", async () => {
+    const { fixture, running, attempts } = await restartWithFailingReattach(
+      () => new ApiError(409, "terminal_open_cancelled", "Cancelled"),
+    );
+    try {
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(getThread(fixture.harness.db, running.thread.id)?.status).toBe(
+        "active",
+      );
+      expect(interruptionReasons(fixture, running.thread.id)).toEqual([]);
+      expect(attempts()).toBeGreaterThan(2);
+
+      await vi.advanceTimersByTimeAsync(27_000);
+      expect(interruptionReasons(fixture, running.thread.id)).toEqual([
+        "host-daemon-restarted",
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 60_000);
+
+  it.each(["ENOENT", "ECONNREFUSED"])(
+    "treats a %s failure of the reattach open as transient and interrupts only at the deadline",
+    async (code) => {
+      const { fixture, running, attempts } = await restartWithFailingReattach(
+        () => Object.assign(new Error(`connect ${code}`), { code }),
+      );
+      try {
+        await vi.advanceTimersByTimeAsync(44_000);
+        expect(getThread(fixture.harness.db, running.thread.id)?.status).toBe(
+          "active",
+        );
+        expect(interruptionReasons(fixture, running.thread.id)).toEqual([]);
+        expect(attempts()).toBeGreaterThan(1);
+
+        await vi.advanceTimersByTimeAsync(2_000);
+        expect(interruptionReasons(fixture, running.thread.id)).toEqual([
+          "host-daemon-restarted",
+        ]);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+    60_000,
+  );
 
   it("gives an explicit open its own launch when it overlaps a reconnect reopen", async () => {
     const fixture = await createFixture();
