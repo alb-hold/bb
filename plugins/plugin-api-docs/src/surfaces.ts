@@ -531,8 +531,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
           "List a CLI agent with models and an icon; route its threads through its shipped bridge.",
           "Advertise providers in package metadata; runtime registration still controls availability.",
           "Publish context usage and service tiers; support per-model choices and local status checks.",
-          "Launch CLI shims portably, add validated session and turn variables, and handle typed MCP questions.",
-          "Declare experimental_nativeTerminal.experimental_launchEnvArgs to translate routed environment values into native CLI arguments without a core provider branch; missing required values leave the launch unchanged.",
+          "Launch CLI shims with validated environment arguments, session variables, and typed MCP questions.",
         ],
         apiSymbols: [
           "contextSnapshotSchema",

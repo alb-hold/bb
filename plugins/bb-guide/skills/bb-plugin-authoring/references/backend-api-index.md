@@ -362,6 +362,9 @@ Read the installed declarations for exact current signatures.
 - `experimental_nativeRootsHostContract`
 - `experimental_nativeRootsResolveInputSchema`
 - `experimental_nativeRootsResolveOutputSchema`
+- `experimental_nativeTerminalEnvArgs` — translate a provider's declared native
+  launch arguments from resolved environment values; omit them when a required
+  value is absent
 - `experimental_readProcessIdentity` — a PID's command line and start time,
   to confirm it is still the process you recorded before signalling it
 - `experimental_resolveClaudePluginRoots`
