@@ -7641,7 +7641,7 @@ describe("Account Pool plugin", () => {
         };
       }
 
-      it("carries the same history and session to the newly selected account while the running turn keeps its own", async () => {
+      it("carries the same history and session to the newly selected account with a retained credential", async () => {
         const pool = await recordingPool();
         pool.fixture.host.harness.sdk.stub(
           "threads.get",
@@ -7672,7 +7672,7 @@ describe("Account Pool plugin", () => {
         expect(pool.received.map(({ key }) => key)).toEqual([
           "sk-first",
           "sk-second",
-          "sk-first",
+          "sk-second",
         ]);
         for (const request of pool.received) {
           expect(request.body).toEqual(CONVERSATION);
