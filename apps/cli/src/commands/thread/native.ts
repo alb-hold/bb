@@ -259,6 +259,7 @@ async function holdNativeHarness(
         spec,
         process.env,
         activityArgs,
+        cwd,
       );
       discovery = { cli: spec.cli, launchedAtMs: Date.now() };
       recorded = launch.session.kind !== "discover";

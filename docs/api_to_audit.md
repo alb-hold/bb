@@ -4278,11 +4278,13 @@ renaming the member and deleting this audit entry.
 
 ## `experimental_nativeTerminalEnvArgs`
 
-**What it does.** The pure host SDK function translates a provider's
+**What it does.** The host SDK function translates a provider's
 `experimental_launchEnvArgs` declaration and supplied environment into arguments,
 returning an empty list when any required or substituted value is absent.
 Substitutions use JSON string encoding; secrets remain referenced by name in
-literal arguments. The implementation is shared with the domain contract.
+literal arguments. Argument formatting is shared with the domain contract.
+An optional filter recipe reads host-local configuration against the supplied
+launch workspace before producing provider arguments.
 
 **Core callers.** The native CLI harness and the Codex chat bridge both use this
 public SDK function. The Codex plugin owns their single argument declaration.
@@ -4291,3 +4293,34 @@ public SDK function. The Codex plugin owns their single argument declaration.
 bounds, validate third-party declarations, and retain missing-value and
 secret-free argument coverage for every caller. Rename the function and remove
 this entry after the declaration and function stabilize together.
+
+## `experimental_nativeTerminal.experimental_launchEnvArgs.experimental_filterConfig`
+
+**What it does.** A provider declares a configuration root, relative TOML file,
+policy setting, argument flag and environment exclusion patterns. The host SDK
+reads only the named policy from a bounded, read-only user file. It translates
+legacy `exclude` and `include_only` patterns into a canonical filter table while
+preserving the allowlist and adding the provider's exclusions. Invalid syntax,
+mixed representations, conflicting patterns, legacy profile selection or a `set`
+entry that restores an excluded variable refuses pooled launches. Missing routing
+environment values skip both arguments and filesystem access.
+
+Declared system files and launch-workspace ancestor files containing the policy
+also refuse pooled launches, avoiding a second implementation of provider trust
+and configuration merge rules. Declared platform-specific presence files are
+checked with stat only; unsupported platforms refuse pooled launches. Errors
+name the file, setting and remedy without disclosing configuration values. Codex
+declares its Unix system and managed files, ancestor `.codex/config.toml` files,
+macOS managed-preference plist paths, and unsupported Windows pooled launches.
+
+**Core callers.** The native CLI harness passes its launch workspace to
+`experimental_nativeTerminalEnvArgs`; the Codex bridge passes its thread workspace
+through the same host SDK function and the same provider declaration. Neither
+caller implements provider-specific policy translation or reads user settings.
+
+**Audit before stabilizing.** Confirm pinned-provider merge and glob semantics,
+cover include/exclude equivalence and failure paths on supported hosts, and decide
+whether other policy layers should be supported rather than refused. Retain
+read-only, absent-config, malformed-config, missing-route and secret-free launch
+coverage for native and bridge callers. Rename the member and remove this entry
+after its declaration and host translator stabilize together.

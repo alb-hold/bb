@@ -38,7 +38,7 @@ export {
 
 export { experimental_killProcessesWithCwdUnder } from "./kill-processes.js";
 
-export { nativeTerminalEnvArgs as experimental_nativeTerminalEnvArgs } from "@bb/domain";
+export { experimental_nativeTerminalEnvArgs } from "./native-terminal-env-args.js";
 
 export {
   experimental_readProcessIdentity,

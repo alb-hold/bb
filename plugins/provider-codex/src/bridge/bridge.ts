@@ -361,7 +361,10 @@ async function delay(ms: number): Promise<void> {
 const MISSING_CODEX_CLI_GUIDANCE =
   "bb could not find the Codex CLI on this machine. Install Codex (https://developers.openai.com/codex/cli) or put `codex` on PATH, then retry.";
 
-export function resolveAppServerLaunch(env: NodeJS.ProcessEnv = process.env): {
+export function resolveAppServerLaunch(
+  env: NodeJS.ProcessEnv = process.env,
+  cwd: string = process.cwd(),
+): {
   command: string;
   args: string[];
 } {
@@ -374,7 +377,7 @@ export function resolveAppServerLaunch(env: NodeJS.ProcessEnv = process.env): {
     : ["app-server"];
   return {
     command: command ?? "codex",
-    args: [...args, ...codexPoolLaunchArgs(env)],
+    args: [...args, ...codexPoolLaunchArgs(env, cwd)],
   };
 }
 
@@ -1047,6 +1050,7 @@ function handleChildExit(
 }
 
 function spawnChildConnection(callbacks: {
+  cwd?: string;
   envVars?: Readonly<Record<string, string>>;
   recordThreadId: string | null;
   onNotification: (method: string, params: unknown) => void;
@@ -1058,8 +1062,11 @@ function spawnChildConnection(callbacks: {
   onExit: (info: CodexAppServerExitInfo) => void;
 }): CodexAppServerConnection {
   const env = buildAppServerEnv(callbacks.envVars);
-  const launch = resolveAppServerLaunch(appServerLaunchEnv(callbacks.envVars));
-  const { envVars: _envVars, ...connectionCallbacks } = callbacks;
+  const launch = resolveAppServerLaunch(
+    appServerLaunchEnv(callbacks.envVars),
+    callbacks.cwd,
+  );
+  const { envVars: _envVars, cwd: _cwd, ...connectionCallbacks } = callbacks;
   return createCodexAppServerConnection({
     command: launch.command,
     args: launch.args,
@@ -1352,6 +1359,7 @@ async function constructThreadSession(
   let notifications = Promise.resolve();
   const connection = spawnChildConnection({
     envVars: decoded.sessionOptions.envVars,
+    cwd: args.cwd,
     recordThreadId: args.threadId,
     onNotification: (method, params) => {
       notifications = notifications

@@ -93,6 +93,17 @@ ignored, and a failing invocation that carries `--json` also prints
 
 Pooled Codex native terminals and chat bridges exclude pool variables from model-run shell environments and their shell snapshots. Codex itself retains the credential in memory to authenticate pool requests.
 
+The host reads `CODEX_HOME/config.toml` (default `~/.codex/config.toml`) without
+changing it. Existing `shell_environment_policy.exclude`, `include_only`, and
+canonical filters keep their restrictions. Invalid or conflicting policy shapes,
+legacy top-level `profile`, or `set` entries that restore pool variables refuse a
+pooled launch. Move a policy from `/etc/codex/config.toml`,
+`/etc/codex/managed_config.toml`, or an ancestor `.codex/config.toml` to the user
+file before using pooled launches. A present macOS managed-preference plist for
+`com.openai.codex` also refuses pooled launches without reading its contents;
+remove the managed source through its administrator. Errors name the file and
+setting. Windows pooled launches are unsupported. Unpooled launches are unchanged.
+
 The desktop app's Sign in buttons open the same URLs in a clean in-app window with an empty,
 non-persistent session, so the browser's own claude.ai or ChatGPT account is never reused, and
 finish the Claude login from the redirect; the CLI has no window, so it prints the URL.

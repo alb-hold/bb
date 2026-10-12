@@ -225,6 +225,28 @@ export const providerNativeTerminalSchema = z
             ]),
           )
           .max(32),
+        experimental_filterConfig: z
+          .object({
+            root: providerNativeTerminalSessionRootSchema,
+            file: relativePatternSchema([]),
+            setting: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/u),
+            flag: z.string().min(1).max(64),
+            exclude: z.array(z.string().min(1).max(256)).min(1).max(16),
+            policyFiles: z.array(z.string().min(1).max(512)).max(16).optional(),
+            ancestorFile: relativePatternSchema([]).optional(),
+            presenceFiles: z
+              .partialRecord(
+                z.enum(["darwin", "linux", "win32"]),
+                z.array(z.string().min(1).max(512)).max(16),
+              )
+              .optional(),
+            unsupportedPlatforms: z
+              .array(z.enum(["darwin", "linux", "win32"]))
+              .max(3)
+              .optional(),
+          })
+          .strict()
+          .optional(),
       })
       .strict()
       .optional(),

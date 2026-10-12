@@ -98,11 +98,16 @@ export function resolveNativeHarnessLaunch(
   spec: NativeTerminalLaunchSpec,
   env: NativeHarnessEnv,
   activityArgs: readonly string[] = [],
+  cwd: string = process.cwd(),
 ): NativeHarnessLaunch {
   const { cli } = spec;
   const model = [
     ...cli.launchArgs,
-    ...experimental_nativeTerminalEnvArgs(cli.experimental_launchEnvArgs, env),
+    ...experimental_nativeTerminalEnvArgs(
+      cli.experimental_launchEnvArgs,
+      env,
+      cwd,
+    ),
     ...(spec.model === null ? [] : fill(cli.modelArgs, { model: spec.model })),
     ...activityArgs,
   ];

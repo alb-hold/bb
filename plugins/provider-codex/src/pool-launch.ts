@@ -34,17 +34,32 @@ export const CODEX_POOL_LAUNCH_ENV_ARGS: NonNullable<
     "model_providers.bb-account-pool.supports_websockets=false",
     "-c",
     `model_providers.bb-account-pool.env_http_headers.x-bb-account-pool-token="${CODEX_POOL_AUTH_TOKEN_ENV}"`,
-    "-c",
-    'shell_environment_policy.filters.CODEX_*POOL*="exclude"',
-    "-c",
-    'shell_environment_policy.filters.BB_ACCOUNT_POOL_*="exclude"',
-    "-c",
-    'shell_environment_policy.filters.CODEX_OPENAI_BASE_URL="exclude"',
   ],
+  experimental_filterConfig: {
+    root: { env: "CODEX_HOME", home: ".codex" },
+    file: "config.toml",
+    setting: "shell_environment_policy",
+    flag: "-c",
+    exclude: ["CODEX_*POOL*", "BB_ACCOUNT_POOL_*", "CODEX_OPENAI_BASE_URL"],
+    policyFiles: ["/etc/codex/config.toml", "/etc/codex/managed_config.toml"],
+    ancestorFile: ".codex/config.toml",
+    presenceFiles: {
+      darwin: [
+        "/Library/Managed Preferences/com.openai.codex.plist",
+        "/Library/Managed Preferences/{username}/com.openai.codex.plist",
+      ],
+    },
+    unsupportedPlatforms: ["win32"],
+  },
 };
 
 export function codexPoolLaunchArgs(
   env: Readonly<Record<string, string | undefined>>,
+  cwd: string = process.cwd(),
 ): string[] {
-  return experimental_nativeTerminalEnvArgs(CODEX_POOL_LAUNCH_ENV_ARGS, env);
+  return experimental_nativeTerminalEnvArgs(
+    CODEX_POOL_LAUNCH_ENV_ARGS,
+    env,
+    cwd,
+  );
 }
