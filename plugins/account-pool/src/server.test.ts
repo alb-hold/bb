@@ -152,10 +152,11 @@ async function resolveCodexToken(
 }
 
 describe("Explicit subscription routing", () => {
-  async function twoSubscriptions() {
+  async function twoSubscriptions(beforeResponse?: () => Promise<void>) {
     const seen: string[] = [];
-    const upstream = await startUpstream((request, response) => {
+    const upstream = await startUpstream(async (request, response) => {
       seen.push(String(request.headers["x-api-key"]));
+      await beforeResponse?.();
       response.setHeader("content-type", "application/json");
       response.end('{"ok":true}');
     });
@@ -277,7 +278,7 @@ describe("Explicit subscription routing", () => {
     },
   );
 
-  it("keeps a running turn's credential on its account while the next turn changes", async () => {
+  it("applies an idle thread's new selection to the next request using its existing credential", async () => {
     const { fixture, key, seen, request } = await twoSubscriptions();
     fixture.host.harness.sdk.stub("threads.get", async ({ threadId }) =>
       makeThreadResponse({
@@ -299,7 +300,7 @@ describe("Explicit subscription routing", () => {
     expect(nextKey).not.toBe(key);
     expect((await request(key)).status).toBe(200);
     expect((await request(nextKey)).status).toBe(200);
-    expect(seen).toEqual(["sk-second", "sk-first"]);
+    expect(seen).toEqual(["sk-first", "sk-first"]);
     const result = await fixture.host.harness.behavior.runCli([
       "select",
       "thr_pinned",
@@ -309,6 +310,42 @@ describe("Explicit subscription routing", () => {
     ]);
     expect(result.exitCode).toBe(0);
     expect(JSON.parse(result.stdout)).toMatchObject({ accountId: null });
+    expect((await request(key)).status).toBe(200);
+    expect(seen).toEqual(["sk-first", "sk-first", "sk-first"]);
+  });
+
+  it("keeps an in-flight request on its selected account when an idle selection changes", async () => {
+    const arrived = deferred();
+    const release = deferred();
+    const { fixture, key, seen, request } = await twoSubscriptions(async () => {
+      arrived.resolve();
+      await release.promise;
+    });
+    fixture.host.harness.sdk.stub("threads.get", async ({ threadId }) =>
+      makeThreadResponse({
+        id: threadId,
+        providerId: "claude-code",
+        status: "idle",
+      }),
+    );
+    fixture.host.harness.sdk.stub(
+      "threads.queuedMessages.list",
+      async () => [],
+    );
+    const pending = request(key);
+    await arrived.promise;
+    try {
+      await fixture.host.harness.behavior.callRpc("routing.selection.set", {
+        threadId: "thr_pinned",
+        provider: "claude",
+        accountId: fixture.account.id,
+      });
+    } finally {
+      release.resolve();
+    }
+    expect((await pending).status).toBe(200);
+    expect((await request(key)).status).toBe(200);
+    expect(seen).toEqual(["sk-second", "sk-first"]);
   });
 
   it("preserves the original thread ID validation for selection RPCs", async () => {
@@ -7477,7 +7514,7 @@ describe("Account Pool plugin", () => {
         };
       }
 
-      it("carries the same history and session to the newly selected account while the running turn keeps its own", async () => {
+      it("carries the same history and session to the newly selected account with a retained credential", async () => {
         const pool = await recordingPool();
         pool.fixture.host.harness.sdk.stub(
           "threads.get",
@@ -7508,7 +7545,7 @@ describe("Account Pool plugin", () => {
         expect(pool.received.map(({ key }) => key)).toEqual([
           "sk-first",
           "sk-second",
-          "sk-first",
+          "sk-second",
         ]);
         for (const request of pool.received) {
           expect(request.body).toEqual(CONVERSATION);

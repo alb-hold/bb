@@ -52,6 +52,11 @@ import {
 } from "@get-bb/plugin-sdk/provider-bridge";
 import { z } from "zod";
 import {
+  CODEX_POOL_BASE_URL_ENV,
+  CODEX_POOL_AUTH_TOKEN_ENV,
+  codexPoolLaunchArgs,
+} from "../pool-launch.js";
+import {
   CODEX_MACOS_PERMISSION_EXTENSION_KIND,
   summarizeCodexMacOsPermissions,
 } from "../extension-kinds.js";
@@ -290,8 +295,6 @@ function sendRuntimeRequest(
 
 const CODEX_APP_SERVER_COMMAND_ENV = "BB_CODEX_BRIDGE_APP_SERVER_COMMAND";
 const CODEX_APP_SERVER_ARGS_ENV = "BB_CODEX_BRIDGE_APP_SERVER_ARGS";
-const CODEX_POOL_BASE_URL_ENV = "CODEX_OPENAI_BASE_URL";
-const CODEX_POOL_AUTH_TOKEN_ENV = "CODEX_POOL_AUTH_TOKEN";
 
 const CODEX_INITIALIZE_PARAMS = {
   clientInfo: { name: "bb", version: "1.0.0", title: null },
@@ -369,30 +372,9 @@ export function resolveAppServerLaunch(env: NodeJS.ProcessEnv = process.env): {
       ? z.array(z.string()).parse(JSON.parse(rawArgs))
       : []
     : ["app-server"];
-  const poolBaseUrl = env[CODEX_POOL_BASE_URL_ENV];
-  const poolToken = env[CODEX_POOL_AUTH_TOKEN_ENV];
-  if (!poolBaseUrl || !poolToken) return { command: command ?? "codex", args };
   return {
     command: command ?? "codex",
-    args: [
-      ...args,
-      "-c",
-      `openai_base_url=${JSON.stringify(poolBaseUrl)}`,
-      "-c",
-      'model_provider="bb-account-pool"',
-      "-c",
-      'model_providers.bb-account-pool.name="OpenAI"',
-      "-c",
-      `model_providers.bb-account-pool.base_url=${JSON.stringify(poolBaseUrl)}`,
-      "-c",
-      'model_providers.bb-account-pool.wire_api="responses"',
-      "-c",
-      "model_providers.bb-account-pool.requires_openai_auth=true",
-      "-c",
-      "model_providers.bb-account-pool.supports_websockets=false",
-      "-c",
-      'model_providers.bb-account-pool.env_http_headers.x-bb-account-pool-token="CODEX_POOL_AUTH_TOKEN"',
-    ],
+    args: [...args, ...codexPoolLaunchArgs(env)],
   };
 }
 

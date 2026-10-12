@@ -11,8 +11,11 @@ field with `threads.spawn`, or pass that JSON to `bb thread spawn --plugin-creat
 This persists the pin before Fleet's initial admission check. The same draft
 data works for ordinary Enter/button sends and programmatic composer submissions.
 No entry means Automatic. Choices require a local pool; choose Automatic when
-proxying a parent pool. Conversation credentials carry the current account choice;
-active turns keep their choice. Machine token rotation also revokes derived
+proxying a parent pool. The hub resolves the conversation's current account choice
+at the start of each request, including requests from a running native terminal.
+A request already in flight keeps its choice. Native Codex launches use the same
+environment-backed provider configuration as chat turns; no token is passed in
+command arguments. Machine token rotation also revokes derived
 conversation credentials after the existing ten-minute grace period.
 
 The builtin Account Pooler plugin is disabled by default. Enable it, add Claude
@@ -76,7 +79,7 @@ enabled account whose secret file remains readable and valid, matching Claude
 Code or Codex sessions receive the pool route and a secret token scoped to
 their thread. The machine token itself is never handed to an agent.
 Codex receives `CODEX_OPENAI_BASE_URL` and the secret
-`CODEX_POOL_AUTH_TOKEN`; bb applies them as in-memory app-server config.
+`CODEX_POOL_AUTH_TOKEN`; bb applies them as in-memory app-server and native CLI config.
 Codex image generation and editing use the same authenticated pool route.
 Tokens are never printed. `status` prunes tokens for unenrolled machines and
 shows token timestamps plus recently routed threads whose machines need a

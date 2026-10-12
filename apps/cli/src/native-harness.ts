@@ -6,6 +6,7 @@ import {
   type ProviderNativeTerminal,
 } from "@bb/domain";
 import type { NativeTerminalLaunchSpec } from "@bb/server-contract";
+import { codexPoolLaunchArgs } from "bb-plugin-provider-codex/pool-launch";
 import { readRecordField } from "./native-activity.js";
 
 const SESSION_HEADER_MAX_BYTES = 4 * 1024 * 1024;
@@ -101,6 +102,7 @@ export function resolveNativeHarnessLaunch(
   const { cli } = spec;
   const model = [
     ...cli.launchArgs,
+    ...(cli.executable === "codex" ? codexPoolLaunchArgs(env) : []),
     ...(spec.model === null ? [] : fill(cli.modelArgs, { model: spec.model })),
     ...activityArgs,
   ];

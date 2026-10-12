@@ -535,6 +535,9 @@ importers:
       '@bb/thread-view':
         specifier: workspace:*
         version: link:../../packages/thread-view
+      bb-plugin-provider-codex:
+        specifier: workspace:*
+        version: link:../../plugins/provider-codex
       cli-table3:
         specifier: ^0.6.5
         version: 0.6.5
