@@ -94,6 +94,8 @@ interface Fixture {
   daemonSockets: WebSocket[];
   detached: ChildTerminalSocket[];
   directOutput: Array<{ daemonSessionId: string; enabled: boolean }>;
+  failBrowserAttach: { value: boolean };
+  fallbackRouted: boolean[];
   fallbackUpgrades: string[];
   inputActivity: string[];
   openSession(sessionId?: string): void;
@@ -139,8 +141,11 @@ function rpcAnswer(
 async function createFixture(mode: DaemonMode = "capable"): Promise<Fixture> {
   const server: Server = createServer();
   const fallbackUpgrades: string[] = [];
+  const fallbackRouted: boolean[] = [];
+  const failBrowserAttach = { value: false };
   server.on("upgrade", (request, socket: Socket) => {
     fallbackUpgrades.push(request.url ?? "");
+    fallbackRouted.push(plane.isTerminalRouted("term_1"));
     socket.end("HTTP/1.1 404 Not Found\r\n\r\n");
   });
   const children: ChildProcess[] = [];
@@ -283,6 +288,14 @@ async function createFixture(mode: DaemonMode = "capable"): Promise<Fixture> {
         stdio: ["ignore", "inherit", "inherit", "ipc"],
       });
       children.push(child);
+      const send = child.send.bind(child) as (...args: unknown[]) => boolean;
+      (child as { send: unknown }).send = (...args: unknown[]) => {
+        const message = args[0] as { type?: string };
+        if (failBrowserAttach.value && message.type === "browser.attach") {
+          throw new Error("injected browser.attach send failure");
+        }
+        return send(...args);
+      };
       return child;
     },
   });
@@ -312,6 +325,8 @@ async function createFixture(mode: DaemonMode = "capable"): Promise<Fixture> {
     daemonSockets,
     detached,
     directOutput,
+    failBrowserAttach,
+    fallbackRouted,
     fallbackUpgrades,
     inputActivity,
     openSession: (sessionId = "session_1") => {
@@ -365,6 +380,46 @@ async function attachedFixture(): Promise<Fixture> {
 }
 
 describe("terminal data plane", () => {
+  it(
+    "rolls a terminal's route back before the legacy fallback when the helper cannot take the browser, then recovers byte-exact",
+    async () => {
+      const fixture = await attachedFixture();
+      const first = connectClient(fixture.port, "/ws/terminals/term_1?sinceSeq=5");
+      await until(() => first.frames.length >= 2, "the first replay");
+      first.socket.send(
+        JSON.stringify({ type: "input", dataBase64: base64("one") }),
+      );
+      await until(() => first.frames.length >= 3, "the first echo");
+      expect(fixture.plane.isTerminalRouted("term_1")).toBe(true);
+      first.socket.close();
+      await until(() => fixture.detached.length === 1, "the first detach");
+
+      fixture.failBrowserAttach.value = true;
+      const refused = connectClient(fixture.port, "/ws/terminals/term_1?sinceSeq=6");
+      await until(() => refused.closed(), "the refused handoff");
+      expect(fixture.fallbackUpgrades).toEqual(["/ws/terminals/term_1?sinceSeq=6"]);
+      expect(fixture.fallbackRouted).toEqual([false]);
+      expect(fixture.plane.isTerminalRouted("term_1")).toBe(false);
+      expect(fixture.plane.attachedSocketCount).toBe(0);
+
+      fixture.failBrowserAttach.value = false;
+      const recovered = connectClient(fixture.port, "/ws/terminals/term_1?sinceSeq=6");
+      await until(() => recovered.frames.length >= 2, "the recovered replay");
+      recovered.socket.send(
+        JSON.stringify({ type: "input", dataBase64: base64("two") }),
+      );
+      await until(() => recovered.frames.length >= 3, "the recovered echo");
+      expect(recovered.frames).toEqual([
+        { type: "attached", session, replayStartSeq: 6, nextSeq: 7 },
+        { type: "output", chunk: { seq: 6, dataBase64: base64("replayed") } },
+        { type: "output", chunk: { seq: 7, dataBase64: base64("two") } },
+      ]);
+      expect(fixture.plane.isTerminalRouted("term_1")).toBe(true);
+      expect(fixture.fallbackUpgrades).toHaveLength(1);
+    },
+    120_000,
+  );
+
   it(
     "carries a terminal's bytes between the browser and the daemon's data socket and leaves the rest to the server",
     async () => {
