@@ -38,6 +38,8 @@ export {
 
 export { experimental_killProcessesWithCwdUnder } from "./kill-processes.js";
 
+export { experimental_nativeTerminalEnvArgs } from "./native-terminal-env-args.js";
+
 export {
   experimental_readProcessIdentity,
   type ExperimentalProcessIdentity,

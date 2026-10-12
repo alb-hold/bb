@@ -29,7 +29,7 @@ const archiveStateSchema = z
   })
   .strict();
 
-const routeSchema = z
+const legacyRouteSchema = z
   .object({
     hostId: identifierSchema,
     threadId: identifierSchema,
@@ -40,7 +40,7 @@ const routeSchema = z
   })
   .strict();
 
-const nestedRouteSchema = z
+const legacyNestedRouteSchema = z
   .object({
     hostId: identifierSchema,
     threadId: identifierSchema,
@@ -49,11 +49,42 @@ const nestedRouteSchema = z
   })
   .strict();
 
+const routeSchema = legacyRouteSchema.omit({ token: true }).extend({
+  token: tokenSchema.optional(),
+  tokenDigest: digestSchema,
+});
+const nestedRouteSchema = legacyNestedRouteSchema.omit({ token: true }).extend({
+  token: tokenSchema.optional(),
+  tokenDigest: digestSchema,
+});
+const readableRouteSchema = z.union([
+  routeSchema,
+  legacyRouteSchema.transform((record) => ({
+    ...record,
+    tokenDigest: digest(record.token),
+  })),
+]);
+const readableNestedRouteSchema = z.union([
+  nestedRouteSchema,
+  legacyNestedRouteSchema.transform((record) => ({
+    ...record,
+    tokenDigest: digest(record.token),
+  })),
+]);
+
+class CredentialScrubError extends Error {}
+
 type RouteRecord = z.infer<typeof routeSchema>;
 type NestedRouteRecord = z.infer<typeof nestedRouteSchema>;
 
-export type ThreadRoute = Omit<RouteRecord, "token" | "hostTokenDigest">;
-export type NestedRoute = Omit<NestedRouteRecord, "token" | "hostTokenDigest">;
+export type ThreadRoute = Omit<
+  RouteRecord,
+  "token" | "tokenDigest" | "hostTokenDigest"
+>;
+export type NestedRoute = Omit<
+  NestedRouteRecord,
+  "token" | "tokenDigest" | "hostTokenDigest"
+>;
 
 export type ThreadLookup = (
   threadId: string,
@@ -106,7 +137,9 @@ export class ThreadTokenStore {
     }
     this.archiveMarkersLoaded = true;
     for (const name of names) {
-      await this.loadFile(name, enrolled).catch(() => undefined);
+      await this.loadFile(name, enrolled).catch((error) => {
+        if (error instanceof CredentialScrubError) throw error;
+      });
     }
   }
 
@@ -137,14 +170,15 @@ export class ThreadTokenStore {
       name.startsWith(THREAD_ROUTE_PREFIX) ||
       name.startsWith(LEGACY_THREAD_ROUTE_PREFIX)
     ) {
-      const record = await readRecord(file, routeSchema);
+      const record = await this.readCredential(file, readableRouteSchema);
       const archived =
         record === null ? false : await this.isArchived(record.threadId);
       if (
         record !== null &&
         archived &&
         this.hasTransientArchiveReadFailure(record.threadId)
-      ) return;
+      )
+        return;
       if (
         record !== null &&
         !archived &&
@@ -152,20 +186,21 @@ export class ThreadTokenStore {
         (await this.isLive(record, enrolled))
       ) {
         this.routes.set(this.key(record, record.hostTokenDigest), record);
-        this.tokenIndex.set(digest(record.token), record);
+        this.tokenIndex.set(record.tokenDigest, record);
       } else await fs.rm(file, { force: true });
     } else if (
       name.startsWith(NESTED_ROUTE_PREFIX) ||
       name.startsWith(LEGACY_NESTED_ROUTE_PREFIX)
     ) {
-      const record = await readRecord(file, nestedRouteSchema);
+      const record = await this.readCredential(file, readableNestedRouteSchema);
       const archived =
         record === null ? false : await this.isArchived(record.threadId);
       if (
         record !== null &&
         archived &&
         this.hasTransientArchiveReadFailure(record.threadId)
-      ) return;
+      )
+        return;
       if (
         record !== null &&
         !archived &&
@@ -176,54 +211,71 @@ export class ThreadTokenStore {
           this.nestedKey(record, record.hostTokenDigest),
           record,
         );
-        this.nestedTokenIndex.set(digest(record.token), record);
+        this.nestedTokenIndex.set(record.tokenDigest, record);
       } else await fs.rm(file, { force: true });
     }
   }
 
-  async forThread(route: ThreadRoute, hostToken: string): Promise<string> {
+  async forThread(
+    route: ThreadRoute,
+    hostToken: string,
+    lifetime: "durable" | "process" = "durable",
+  ): Promise<string> {
     const parsed = routeSchema
-      .omit({ token: true, hostTokenDigest: true })
+      .omit({ token: true, tokenDigest: true, hostTokenDigest: true })
       .parse(route);
     const hostTokenDigest = digest(hostToken);
     return this.serialize(async () => {
       if (await this.isArchived(parsed.threadId))
         throw new Error("Cannot mint a credential for an archived thread.");
-      const key = this.key(parsed, hostTokenDigest);
+      const key = `${lifetime === "process" ? "process:" : ""}${this.key(parsed, hostTokenDigest)}`;
       const existing = this.routes.get(key);
-      if (existing !== undefined) return existing.token;
+      if (existing?.token !== undefined) return existing.token;
+      if (existing !== undefined) this.tokenIndex.delete(existing.tokenDigest);
+      const token = randomBytes(32).toString("base64url");
       const record = {
         ...parsed,
         hostTokenDigest,
-        token: randomBytes(32).toString("base64url"),
+        token,
+        tokenDigest: digest(token),
       };
-      await this.persist(this.file(record), record);
+      if (lifetime === "durable")
+        await this.persistCredential(this.file(record), record);
       this.routes.set(key, record);
-      this.tokenIndex.set(digest(record.token), record);
+      this.tokenIndex.set(record.tokenDigest, record);
       await this.reclaimDead(record);
       return record.token;
     });
   }
 
-  async forNested(route: NestedRoute, hostToken: string): Promise<string> {
+  async forNested(
+    route: NestedRoute,
+    hostToken: string,
+    lifetime: "durable" | "process" = "durable",
+  ): Promise<string> {
     const parsed = nestedRouteSchema
-      .omit({ token: true, hostTokenDigest: true })
+      .omit({ token: true, tokenDigest: true, hostTokenDigest: true })
       .parse(route);
     const hostTokenDigest = digest(hostToken);
     return this.serialize(async () => {
       if (await this.isArchived(parsed.threadId))
         throw new Error("Cannot mint a credential for an archived thread.");
-      const key = this.nestedKey(parsed, hostTokenDigest);
+      const key = `${lifetime === "process" ? "process:" : ""}${this.nestedKey(parsed, hostTokenDigest)}`;
       const existing = this.nestedRoutes.get(key);
-      if (existing !== undefined) return existing.token;
+      if (existing?.token !== undefined) return existing.token;
+      if (existing !== undefined)
+        this.nestedTokenIndex.delete(existing.tokenDigest);
+      const token = randomBytes(32).toString("base64url");
       const record = {
         ...parsed,
         hostTokenDigest,
-        token: randomBytes(32).toString("base64url"),
+        token,
+        tokenDigest: digest(token),
       };
-      await this.persist(this.nestedFile(record), record);
+      if (lifetime === "durable")
+        await this.persistCredential(this.nestedFile(record), record);
       this.nestedRoutes.set(key, record);
-      this.nestedTokenIndex.set(digest(record.token), record);
+      this.nestedTokenIndex.set(record.tokenDigest, record);
       await this.reclaimDead(record);
       return record.token;
     });
@@ -250,6 +302,15 @@ export class ThreadTokenStore {
       provider: record.provider,
       accountId: record.accountId,
     };
+  }
+
+  isProcessCredential(token: string | null): boolean {
+    const record = lookup(this.tokenIndex, token);
+    return (
+      record !== null &&
+      this.routes.get(`process:${this.key(record, record.hostTokenDigest)}`) ===
+        record
+    );
   }
 
   async authenticateNested(token: string | null): Promise<NestedRoute | null> {
@@ -287,8 +348,12 @@ export class ThreadTokenStore {
         this.archiveMarkerNames(threadId).some((name) =>
           this.seenArchiveMarkers.has(name),
         ) ||
-        [...this.routes.values()].some((record) => record.threadId === threadId) ||
-        [...this.nestedRoutes.values()].some((record) => record.threadId === threadId) ||
+        [...this.routes.values()].some(
+          (record) => record.threadId === threadId,
+        ) ||
+        [...this.nestedRoutes.values()].some(
+          (record) => record.threadId === threadId,
+        ) ||
         this.hasCredentialFile(threadId, names);
       let markerError: unknown;
       if (shouldPersist) {
@@ -320,7 +385,7 @@ export class ThreadTokenStore {
       for (const [key, record] of this.routes) {
         if (record.threadId !== threadId) continue;
         this.routes.delete(key);
-        this.tokenIndex.delete(digest(record.token));
+        this.tokenIndex.delete(record.tokenDigest);
         await this.removeProviderFiles(
           record,
           Math.max(0, nextEpoch - 1),
@@ -329,13 +394,14 @@ export class ThreadTokenStore {
       for (const [key, record] of this.nestedRoutes) {
         if (record.threadId !== threadId) continue;
         this.nestedRoutes.delete(key);
-        this.nestedTokenIndex.delete(digest(record.token));
-        await this.removeNestedFiles(
-          record,
-          Math.max(0, nextEpoch - 1),
-        ).catch(() => undefined);
+        this.nestedTokenIndex.delete(record.tokenDigest);
+        await this.removeNestedFiles(record, Math.max(0, nextEpoch - 1)).catch(
+          () => undefined,
+        );
       }
-      await this.quarantineUnreadableLegacyFiles(threadId, names).catch(() => undefined);
+      await this.quarantineUnreadableLegacyFiles(threadId, names).catch(
+        () => undefined,
+      );
       if (markerError !== undefined) throw markerError;
     });
   }
@@ -408,7 +474,10 @@ export class ThreadTokenStore {
     return this.archiveVersions.get(threadId) ?? 0;
   }
 
-  async restoreThread(threadId: string, expectedVersion: number): Promise<void> {
+  async restoreThread(
+    threadId: string,
+    expectedVersion: number,
+  ): Promise<void> {
     await this.serialize(async () => {
       if (this.archiveVersion(threadId) !== expectedVersion) return;
       if (this.activeArchiveMarkers.has(threadId)) return;
@@ -417,7 +486,8 @@ export class ThreadTokenStore {
         !this.archivedThreads.has(threadId) &&
         !this.hasMarkerFailure(threadId) &&
         !this.archiveDurabilityFailures.has(threadId)
-      ) return;
+      )
+        return;
       const epoch = (await this.maxFileEpoch(threadId)) + 1;
       await this.persist(this.archivedFile(threadId), {
         threadId,
@@ -457,15 +527,21 @@ export class ThreadTokenStore {
       record.hostTokenDigest !== minted.hostTokenDigest;
     for (const [key, record] of this.routes) {
       if (!stale(record) || (await this.isGenerationLive(record))) continue;
-      await this.removeProviderFiles(record, this.archiveEpoch(record.threadId)).catch(() => undefined);
+      await this.removeProviderFiles(
+        record,
+        this.archiveEpoch(record.threadId),
+      ).catch(() => undefined);
       this.routes.delete(key);
-      this.tokenIndex.delete(digest(record.token));
+      this.tokenIndex.delete(record.tokenDigest);
     }
     for (const [key, record] of this.nestedRoutes) {
       if (!stale(record) || (await this.isGenerationLive(record))) continue;
-      await this.removeNestedFiles(record, this.archiveEpoch(record.threadId)).catch(() => undefined);
+      await this.removeNestedFiles(
+        record,
+        this.archiveEpoch(record.threadId),
+      ).catch(() => undefined);
       this.nestedRoutes.delete(key);
-      this.nestedTokenIndex.delete(digest(record.token));
+      this.nestedTokenIndex.delete(record.tokenDigest);
     }
   }
 
@@ -492,10 +568,50 @@ export class ThreadTokenStore {
     return enrolled.has(record.hostId) && (await this.isGenerationLive(record));
   }
 
+  private async readCredential<
+    T extends { token?: string; tokenDigest: string },
+  >(file: string, schema: z.ZodType<T>): Promise<T | null> {
+    const record = await readRecord(file, schema);
+    if (record?.token !== undefined) {
+      try {
+        await this.persistCredential(file, record);
+      } catch {
+        throw new CredentialScrubError(
+          "Account Pooler could not remove a persisted scoped credential.",
+        );
+      }
+    }
+    return record === null ? null : { ...record, token: undefined };
+  }
+
+  private async persistCredential(
+    file: string,
+    record: { token?: string; tokenDigest: string },
+  ): Promise<void> {
+    const { token, ...stored } = record;
+    await this.persist(file, stored);
+  }
+
   private async persist(file: string, record: object): Promise<void> {
     const temporary = `${file}.${randomUUID()}.tmp`;
-    await fs.writeFile(temporary, JSON.stringify(record), { mode: 0o600 });
-    await fs.rename(temporary, file);
+    try {
+      const handle = await fs.open(temporary, "wx", 0o600);
+      try {
+        await handle.writeFile(JSON.stringify(record));
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      await fs.rename(temporary, file);
+      const directory = await fs.open(this.directory, "r");
+      try {
+        await directory.sync();
+      } finally {
+        await directory.close();
+      }
+    } finally {
+      await fs.rm(temporary, { force: true });
+    }
   }
 
   private applyArchiveState(name: string, text: string): boolean {
@@ -532,14 +648,18 @@ export class ThreadTokenStore {
     return parsed.data.archived;
   }
 
-  private hasCredentialFile(threadId: string, names: readonly string[]): boolean {
+  private hasCredentialFile(
+    threadId: string,
+    names: readonly string[],
+  ): boolean {
     for (const name of names) {
       if (
         !name.startsWith(THREAD_ROUTE_PREFIX) &&
         !name.startsWith(LEGACY_THREAD_ROUTE_PREFIX) &&
         !name.startsWith(NESTED_ROUTE_PREFIX) &&
         !name.startsWith(LEGACY_NESTED_ROUTE_PREFIX)
-      ) continue;
+      )
+        continue;
       if (name.includes(threadId)) return true;
     }
     return false;
@@ -554,7 +674,8 @@ export class ThreadTokenStore {
         !name.startsWith(LEGACY_THREAD_ROUTE_PREFIX) &&
         !name.startsWith(NESTED_ROUTE_PREFIX) &&
         !name.startsWith(LEGACY_NESTED_ROUTE_PREFIX)
-      ) continue;
+      )
+        continue;
       if (name.includes(threadId))
         epoch = Math.max(epoch, this.fileEpoch(name));
     }
@@ -571,7 +692,9 @@ export class ThreadTokenStore {
     ]);
   }
 
-  private legacyNestedFile(route: NestedRoute & { hostTokenDigest: string }): string {
+  private legacyNestedFile(
+    route: NestedRoute & { hostTokenDigest: string },
+  ): string {
     return path.join(
       this.directory,
       `${LEGACY_NESTED_ROUTE_PREFIX}${this.nestedKey(route, route.hostTokenDigest)}.json`,
@@ -626,7 +749,8 @@ export class ThreadTokenStore {
       if (
         !name.startsWith(LEGACY_THREAD_ROUTE_PREFIX) &&
         !name.startsWith(LEGACY_NESTED_ROUTE_PREFIX)
-      ) continue;
+      )
+        continue;
       const file = path.join(this.directory, name);
       for (const hostId of hostIds) {
         if (name.startsWith(LEGACY_NESTED_ROUTE_PREFIX)) continue;
@@ -634,18 +758,20 @@ export class ThreadTokenStore {
           const prefix = `${LEGACY_THREAD_ROUTE_PREFIX}${hostId}-${provider}-`;
           if (!name.startsWith(prefix)) continue;
           const routeKey = name.slice(prefix.length);
-          const suffix = /-(?:automatic|[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12})-[a-f0-9]{64}\.json$/u.exec(
-            routeKey,
-          );
+          const suffix =
+            /-(?:automatic|[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12})-[a-f0-9]{64}\.json$/u.exec(
+              routeKey,
+            );
           if (suffix === null || routeKey.slice(0, suffix.index) !== threadId)
             continue;
           const candidateCount = hostIds.filter((candidateHostId) => {
             const candidatePrefix = `${LEGACY_THREAD_ROUTE_PREFIX}${candidateHostId}-${provider}-`;
             if (!name.startsWith(candidatePrefix)) return false;
             const candidateKey = name.slice(candidatePrefix.length);
-            const candidateSuffix = /-(?:automatic|[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12})-[a-f0-9]{64}\.json$/u.exec(
-              candidateKey,
-            );
+            const candidateSuffix =
+              /-(?:automatic|[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12})-[a-f0-9]{64}\.json$/u.exec(
+                candidateKey,
+              );
             return candidateSuffix !== null;
           }).length;
           if (candidateCount === 1) await this.quarantineFile(file);
@@ -658,15 +784,14 @@ export class ThreadTokenStore {
         const candidate = /^(.+)-([a-f0-9]{64})\.json$/u.exec(
           name.slice(prefix.length),
         );
-        return candidate === null
-          ? []
-          : [{ threadId: candidate[1] }];
+        return candidate === null ? [] : [{ threadId: candidate[1] }];
       });
       if (
         name.startsWith(LEGACY_NESTED_ROUTE_PREFIX) &&
         nestedMatches.length === 1 &&
         nestedMatches[0]?.threadId === threadId
-      ) await this.quarantineFile(file);
+      )
+        await this.quarantineFile(file);
     }
   }
 
@@ -681,9 +806,7 @@ export class ThreadTokenStore {
     }
   }
 
-  private legacyFile(
-    route: ThreadRoute & { hostTokenDigest: string },
-  ): string {
+  private legacyFile(route: ThreadRoute & { hostTokenDigest: string }): string {
     return path.join(
       this.directory,
       `${LEGACY_THREAD_ROUTE_PREFIX}${this.key(route, route.hostTokenDigest)}.json`,
@@ -769,7 +892,10 @@ export class ThreadTokenStore {
       for (const name of names) {
         if (!this.transientArchiveReadFailures.has(name)) continue;
         try {
-          const text = await fs.readFile(path.join(this.directory, name), "utf8");
+          const text = await fs.readFile(
+            path.join(this.directory, name),
+            "utf8",
+          );
           this.seenArchiveMarkers.add(name);
           this.applyArchiveState(name, text);
         } catch (error) {
@@ -787,8 +913,10 @@ export class ThreadTokenStore {
     if (
       this.archiveMarkersLoaded &&
       !names.some((name) => this.seenArchiveMarkers.has(name))
-    ) return false;
-    if (this.archiveMarkersLoaded && !this.hasMarkerFailure(threadId)) return false;
+    )
+      return false;
+    if (this.archiveMarkersLoaded && !this.hasMarkerFailure(threadId))
+      return false;
     return this.hasMarkerFailure(threadId);
   }
 }
@@ -816,7 +944,7 @@ function digest(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function lookup<T extends { token: string }>(
+function lookup<T extends { tokenDigest: string }>(
   index: ReadonlyMap<string, T>,
   token: string | null,
 ): T | null {
@@ -824,7 +952,10 @@ function lookup<T extends { token: string }>(
   const record = index.get(digest(token));
   if (
     record === undefined ||
-    !timingSafeEqual(Buffer.from(token), Buffer.from(record.token))
+    !timingSafeEqual(
+      Buffer.from(digest(token), "hex"),
+      Buffer.from(record.tokenDigest, "hex"),
+    )
   )
     return null;
   return record;
