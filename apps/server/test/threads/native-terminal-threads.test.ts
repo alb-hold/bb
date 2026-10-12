@@ -363,8 +363,44 @@ describe("native terminal threads", () => {
       expect(run(supporting)).toBe(
         `wrapper ${thread.id} thread native-run ${thread.id}`,
       );
-      expect(run(legacy)).toBe(`bare ${thread.id}`);
-      expect(run(null)).toBe(`bare ${thread.id}`);
+      expect(run(legacy)).toBe(
+        `bare ${thread.id} --dangerously-skip-permissions`,
+      );
+      expect(run(null)).toBe(
+        `bare ${thread.id} --dangerously-skip-permissions`,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("passes each launch argument intact to the bare harness fallback", () => {
+    const command = nativeTerminalLaunchCommand({
+      executable: "codex",
+      launchArgs: [
+        "--no-daemon",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "it's $HOME",
+      ],
+      reattachOnly: false,
+      threadId: "thr_fallback",
+    });
+    const dir = mkdtempSync(path.join(os.tmpdir(), "bb-native-fallback-"));
+    try {
+      const file = path.join(dir, "codex");
+      writeFileSync(file, '#!/bin/sh\nprintf "%s\\n" "$@"\n');
+      chmodSync(file, 0o755);
+      expect(
+        execFileSync("/bin/sh", ["-c", command], {
+          encoding: "utf8",
+          env: { PATH: `${dir}:/usr/bin:/bin` },
+        }).split("\n"),
+      ).toEqual([
+        "--no-daemon",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "it's $HOME",
+        "",
+      ]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -374,6 +410,7 @@ describe("native terminal threads", () => {
     const threadId = "thr_reattach";
     const command = nativeTerminalLaunchCommand({
       executable: "claude",
+      launchArgs: ["--dangerously-skip-permissions"],
       reattachOnly: true,
       threadId,
     });

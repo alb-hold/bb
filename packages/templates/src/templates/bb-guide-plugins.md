@@ -796,7 +796,9 @@ useBbContext,
 useBbNavigate (including openUrl(url), which applies the current
 client's in-app/external-browser preference, plus
 experimental_openFilePreview({ target, location }) and
-experimental_openFileExternally({ target, location }) for explicit live
+experimental_openSignInWindow({ url, redirectUrlPrefix? }), which returns
+{ close(), result } for a clean, empty-session sign-in window (null on web and
+remote clients), experimental_openFileExternally({ target, location }) for explicit live
 workspace/host/thread-storage files, and experimental_openTerminal({
 terminalId }), which shows a terminal created with useSdk().terminals.create
 in the current surface's terminal panel), and useComposer (one stable handle for

@@ -1,6 +1,8 @@
 import { createContext, useContext, useMemo, type ReactNode } from "react";
 import type {
   ExperimentalAppPanelSurface,
+  ExperimentalSignInWindow,
+  ExperimentalSignInWindowOptions,
   ExperimentalFileOpenOptions,
   JsonValue,
 } from "@get-bb/plugin-sdk";
@@ -32,6 +34,9 @@ interface AppNavigationHostCapabilities {
   openFixedTab?: (intent: AppFixedTabOpenIntent) => boolean;
   openTerminal?: (session: TerminalSession) => boolean;
   openUrl?: (intent: AppUrlOpenIntent) => boolean;
+  openSignInWindow?: (
+    intent: ExperimentalSignInWindowOptions,
+  ) => ExperimentalSignInWindow | null;
 }
 
 interface ResolvedAppNavigationHostCapabilities {
@@ -40,6 +45,9 @@ interface ResolvedAppNavigationHostCapabilities {
   openFixedTab: (intent: AppFixedTabOpenIntent) => boolean;
   openTerminal: (session: TerminalSession) => boolean;
   openUrl: (intent: AppUrlOpenIntent) => boolean;
+  openSignInWindow: (
+    intent: ExperimentalSignInWindowOptions,
+  ) => ExperimentalSignInWindow | null;
 }
 
 const rejectNavigationIntent = () => false;
@@ -49,6 +57,7 @@ const DEFAULT_APP_NAVIGATION_HOST: ResolvedAppNavigationHostCapabilities = {
   openFixedTab: rejectNavigationIntent,
   openTerminal: rejectNavigationIntent,
   openUrl: rejectNavigationIntent,
+  openSignInWindow: () => null,
 };
 
 const AppNavigationHostContext =
@@ -72,6 +81,8 @@ export function AppNavigationHostProvider({
       openFixedTab: capabilities.openFixedTab ?? parent.openFixedTab,
       openTerminal: capabilities.openTerminal ?? parent.openTerminal,
       openUrl: capabilities.openUrl ?? parent.openUrl,
+      openSignInWindow:
+        capabilities.openSignInWindow ?? parent.openSignInWindow,
     }),
     [
       capabilities.openFileExternally,
@@ -79,11 +90,13 @@ export function AppNavigationHostProvider({
       capabilities.openFixedTab,
       capabilities.openTerminal,
       capabilities.openUrl,
+      capabilities.openSignInWindow,
       parent.openFileExternally,
       parent.openFilePreview,
       parent.openFixedTab,
       parent.openTerminal,
       parent.openUrl,
+      parent.openSignInWindow,
     ],
   );
   return (
