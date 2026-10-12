@@ -295,7 +295,7 @@ describe("Explicit subscription routing", () => {
     },
   );
 
-  it("keeps a running turn's credential on its account while the next turn changes", async () => {
+  it("applies an idle thread's new selection to the next request using its existing credential", async () => {
     const { fixture, key, seen, request } = await twoSubscriptions();
     fixture.host.harness.sdk.stub("threads.get", async ({ threadId }) =>
       makeThreadResponse({
@@ -317,7 +317,7 @@ describe("Explicit subscription routing", () => {
     expect(nextKey).not.toBe(key);
     expect((await request(key)).status).toBe(200);
     expect((await request(nextKey)).status).toBe(200);
-    expect(seen).toEqual(["sk-second", "sk-first"]);
+    expect(seen).toEqual(["sk-first", "sk-first"]);
     const result = await fixture.host.harness.behavior.runCli([
       "select",
       "thr_pinned",
@@ -329,7 +329,7 @@ describe("Explicit subscription routing", () => {
     expect(JSON.parse(result.stdout)).toMatchObject({ accountId: null });
   });
 
-  it("keeps an idle retained bridge credential on its original account after a pin change", async () => {
+  it("moves an idle retained bridge credential to the newly selected account", async () => {
     const { fixture, key, seen, request } = await twoSubscriptions();
     expect((await request(key)).status).toBe(200);
     fixture.host.harness.sdk.stub("threads.get", async ({ threadId }) =>
@@ -351,7 +351,7 @@ describe("Explicit subscription routing", () => {
     const nextTurn = await resolveToken(fixture.host, "host-one", "thr_pinned");
     expect((await request(nextTurn)).status).toBe(200);
     expect((await request(key)).status).toBe(200);
-    expect(seen).toEqual(["sk-second", "sk-first", "sk-second"]);
+    expect(seen).toEqual(["sk-second", "sk-first", "sk-first"]);
   });
 
   it("applies an idle native thread's new selection to requests using its existing credential", async () => {

@@ -219,7 +219,6 @@ export class AccountPoolHub {
     );
     const threadRoute =
       authenticated === null ||
-      !this.options.threadTokens.isProcessCredential(token) ||
       this.options.routing === null ||
       this.options.getParentRoute() !== null
         ? authenticated

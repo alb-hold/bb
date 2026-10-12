@@ -11,10 +11,11 @@ field with `threads.spawn`, or pass that JSON to `bb thread spawn --plugin-creat
 This persists the pin before Fleet's initial admission check. The same draft
 data works for ordinary Enter/button sends and programmatic composer submissions.
 No entry means Automatic. Choices require a local pool; choose Automatic when
-proxying a parent pool. For native terminals, the hub resolves the conversation's
-current account choice at the start of each request. A retained bridge credential
-keeps the account chosen when it was issued; a new bridge turn's credential uses
-the current selection. A request already in flight keeps its choice. Native Codex launches use the same
+proxying a parent pool. For native terminals and bridge conversations, the hub
+resolves the conversation's current account choice at the start of each request.
+An idle bridge conversation therefore moves its retained context to the newly
+selected account on its next request. A request already in flight keeps its
+choice. Native Codex launches use the same
 environment-backed provider configuration as chat turns; no token is passed in
 command arguments. Native launch credentials live only in the server process. Existing scoped
 credential files are converted to SHA-256 digests at startup; bridge credentials
