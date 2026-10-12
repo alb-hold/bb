@@ -44,7 +44,9 @@ launched through the hidden `bb thread native-run <id>` wrapper that picks
 fresh launch or resume and reports Codex's session id. The SDK surface is
 `sdk.threads.spawn({ nativeTerminal: true })` plus `sdk.nativeTerminals`
 (`get`, `open`, `switchMode`, `launch`, `recordSession`, and `reportActivity`,
-which the wrapper uses to report a turn working or idle and its prompt); the thread-creation and
+which the wrapper uses to report a turn working or idle and its prompt, and
+`agentTools` and `callAgentTool`, which serve the thread's bb tools to the CLI
+through the hidden `bb thread native-mcp <id>` stdio MCP server); the thread-creation and
 thread-operation skill references and the threads guide chapter describe them.
 
 `bb thread list` adds a **Needs you** column for `Needs input`, `Working`,
