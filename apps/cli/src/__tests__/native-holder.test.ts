@@ -1,5 +1,6 @@
 import { spawn as spawnProcess } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { EventEmitter } from "node:events";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import http from "node:http";
 import type net from "node:net";
 import os from "node:os";
@@ -12,6 +13,7 @@ import {
   NativeHolderFrame,
   NativeHolderFrameDecoder,
   encodeNativeHolderFrame,
+  ignoreNativeHolderSignals,
   nativeHolderSocketPath,
   nativeTerminalClosedForGood,
   openNativeHolderConnection,
@@ -392,6 +394,72 @@ setInterval(() => {}, 1000);`,
       }
     } finally {
       child.kill("SIGKILL");
+    }
+  });
+
+  it("records ignored signals and fake PTY lifecycle events without terminal data", async () => {
+    const socketPath = socketIn();
+    const logPath = socketPath.replace(/\.sock$/u, ".log");
+    const signalTarget = new EventEmitter() as unknown as NodeJS.Process;
+    const ignoreSignals = ignoreNativeHolderSignals as unknown as (
+      target: NodeJS.Process,
+      socketPath: string,
+    ) => () => void;
+    const removeSignals = ignoreSignals(signalTarget, socketPath);
+    signalTarget.emit("SIGTERM");
+    const ptyExit: {
+      current: ((event: { exitCode: number; signal?: number }) => void) | null;
+    } = { current: null };
+    const held = runNativeHolder({
+      socketPath,
+      holderPid: 321,
+      holderPgid: 321,
+      holderSid: 321,
+      cwd: os.tmpdir(),
+      env: {},
+      prepare: async () => ({ command: "fake", args: [] }),
+      spawnPty: () => ({
+        pid: 654,
+        onData: () => undefined,
+        onExit: (listener) => {
+          ptyExit.current = listener;
+        },
+        write: () => undefined,
+        resize: () => undefined,
+        kill: () => undefined,
+      }),
+    });
+    try {
+      const client = await attach(socketPath);
+      await expect.poll(() => ptyExit.current).not.toBeNull();
+      ptyExit.current?.({ exitCode: 9 });
+      await expect(held).resolves.toBe(9);
+      const lines = readFileSync(logPath, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      expect(lines.map(({ event }) => event)).toEqual([
+        "ignored-signal",
+        "holder-start",
+        "pty-child-exit",
+        "holder-finish",
+      ]);
+      expect(lines[0]).toMatchObject({ signal: "SIGTERM" });
+      expect(lines[1]).toMatchObject({
+        pid: 321,
+        pgid: 321,
+        sid: 321,
+        cliPid: 654,
+      });
+      expect(lines[2]).toMatchObject({ exitCode: 9, signal: null });
+      expect(lines[3]).toMatchObject({ reason: "child exited" });
+      for (const line of lines) {
+        expect(line.time).toMatch(/^\d{4}-\d\d-\d\dT/u);
+      }
+      expect(readFileSync(logPath, "utf8")).not.toContain("terminal content");
+      client.socket.destroy();
+    } finally {
+      removeSignals();
     }
   });
 });

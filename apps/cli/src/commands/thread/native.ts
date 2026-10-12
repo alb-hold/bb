@@ -1,6 +1,5 @@
 import { spawn } from "node:child_process";
 import {
-  appendFileSync,
   closeSync,
   mkdirSync,
   openSync,
@@ -39,6 +38,7 @@ import {
   defaultNativeHolderSocketPath,
   openNativeHolderConnection,
   ignoreNativeHolderSignals,
+  logNativeHolderEvent,
   pipeNativeHolderClient,
   runNativeHolder,
 } from "../../native-holder.js";
@@ -181,7 +181,12 @@ async function holdNativeHarness(
   threadId: string,
   socketPath: string,
 ): Promise<number> {
-  ignoreNativeHolderSignals(process);
+  ignoreNativeHolderSignals(process, socketPath);
+  process.on("uncaughtExceptionMonitor", (error) => {
+    logNativeHolderEvent(socketPath, "uncaught-exception", {
+      name: error.name,
+    });
+  });
   const sdk = createCliBbSdk(baseUrl);
   const nodePty = await import("node-pty");
   const cwd = process.cwd();
@@ -244,6 +249,9 @@ async function holdNativeHarness(
   let pty: ReturnType<typeof nodePty.spawn> | null = null;
   const exitCode = await runNativeHolder({
     socketPath,
+    holderPid: process.pid,
+    holderPgid: process.pid,
+    holderSid: process.pid,
     cwd,
     env: process.env,
     prepare: async ({ credential, credentialSocket }) => {
@@ -312,14 +320,9 @@ async function holdNativeHarness(
             }
           : launch.session,
         (total) => {
-          try {
-            appendFileSync(
-              nativeHolderLogPath(socketPath),
-              `native activity: ${total} evicted transcript identities could not be confirmed and were treated as fresh\n`,
-            );
-          } catch {
-            return;
-          }
+          logNativeHolderEvent(socketPath, "activity-transcript-eviction", {
+            count: total,
+          });
         },
       );
       if (activity !== undefined) {
