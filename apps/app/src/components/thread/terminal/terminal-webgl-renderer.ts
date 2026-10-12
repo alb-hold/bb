@@ -232,6 +232,10 @@ export function observeTerminalWebglVisibility({
         });
   resizeObserver.observe(root);
   intersectionObserver?.observe(root);
+  if (intersectionObserver === null) {
+    window?.addEventListener("scroll", sync, { capture: true, passive: true });
+    window?.addEventListener("resize", sync);
+  }
   document.addEventListener("visibilitychange", sync);
   sync();
   return {
@@ -240,6 +244,10 @@ export function observeTerminalWebglVisibility({
       disposed = true;
       resizeObserver.disconnect();
       intersectionObserver?.disconnect();
+      if (intersectionObserver === null) {
+        window?.removeEventListener("scroll", sync, true);
+        window?.removeEventListener("resize", sync);
+      }
       document.removeEventListener("visibilitychange", sync);
     },
   };

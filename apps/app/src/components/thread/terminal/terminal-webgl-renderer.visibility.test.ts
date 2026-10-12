@@ -12,7 +12,7 @@ afterEach(() => {
   document.body.replaceChildren();
 });
 
-function setupVisibility() {
+function setupVisibility(intersectionSupported = true) {
   const root = document.createElement("div");
   document.body.append(root);
   let box = new DOMRect(10, 10, 300, 200);
@@ -38,27 +38,29 @@ function setupVisibility() {
   );
   vi.stubGlobal(
     "IntersectionObserver",
-    class {
-      constructor(callback: IntersectionObserverCallback) {
-        intersect = (visible: boolean) =>
-          callback(
-            [
-              {
-                target: root,
-                isIntersecting: visible,
-                boundingClientRect: box,
-                intersectionRect: visible ? box : new DOMRect(),
-                intersectionRatio: visible ? 1 : 0,
-                rootBounds: null,
-                time: 0,
-              },
-            ],
-            this as unknown as IntersectionObserver,
-          );
-      }
-      observe() {}
-      disconnect = disconnectIntersection;
-    },
+    intersectionSupported
+      ? class {
+          constructor(callback: IntersectionObserverCallback) {
+            intersect = (visible: boolean) =>
+              callback(
+                [
+                  {
+                    target: root,
+                    isIntersecting: visible,
+                    boundingClientRect: box,
+                    intersectionRect: visible ? box : new DOMRect(),
+                    intersectionRatio: visible ? 1 : 0,
+                    rootBounds: null,
+                    time: 0,
+                  },
+                ],
+                this as unknown as IntersectionObserver,
+              );
+          }
+          observe() {}
+          disconnect = disconnectIntersection;
+        }
+      : undefined,
   );
   const createAddon = vi.fn(() => ({
     activate: vi.fn(),
@@ -90,6 +92,10 @@ function setupVisibility() {
       box = nextBox;
       resize();
     },
+    move: (nextBox: DOMRect, event = "scroll") => {
+      box = nextBox;
+      window.dispatchEvent(new Event(event));
+    },
     openPanel: (open: boolean) => {
       panelOpen = open;
       observer.sync();
@@ -102,6 +108,24 @@ function setupVisibility() {
 }
 
 describe("terminal visibility signals", () => {
+  it("releases and reacquires off-screen contexts without IntersectionObserver", () => {
+    const state = setupVisibility(false);
+    expect(state.root.dataset.terminalRenderer).toBe("webgl");
+    state.move(new DOMRect(-400, 0, 300, 200));
+    expect(state.root.dataset.terminalRenderer).toBe("dom");
+    state.move(new DOMRect(10, 10, 300, 200));
+    expect(state.root.dataset.terminalRenderer).toBe("webgl");
+    state.move(new DOMRect(-400, 0, 300, 200), "resize");
+    expect(state.root.dataset.terminalRenderer).toBe("dom");
+    state.move(new DOMRect(10, 10, 300, 200), "resize");
+    expect(state.root.dataset.terminalRenderer).toBe("webgl");
+    expect(state.createAddon).toHaveBeenCalledTimes(3);
+    state.observer.dispose();
+    state.move(new DOMRect(-400, 0, 300, 200));
+    expect(state.root.dataset.terminalRenderer).toBe("webgl");
+    state.renderer.dispose();
+  });
+
   it("releases and reacquires the addon for closed panes and background documents", () => {
     const state = setupVisibility();
     expect(state.root.dataset.terminalRenderer).toBe("webgl");
