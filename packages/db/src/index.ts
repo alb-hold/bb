@@ -33,6 +33,10 @@ export {
   setNativeTerminalThreadTerminal,
   type NativeTerminalThreadRecord,
   type RecordNativeSessionIdResult,
+  setNativeTerminalToolCredential,
+  getNativeTerminalToolCredential,
+  deleteNativeTerminalToolCredential,
+  type NativeTerminalToolCredentialRecord,
 } from "./fork-native-terminal-threads.js";
 export {
   isSqliteForeignKeyConstraint,
