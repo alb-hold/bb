@@ -408,9 +408,12 @@ async function resolveDefaultTerminalShell(): Promise<string> {
 }
 
 function buildTerminalEnv(args: BuildTerminalEnvArgs): NodeJS.ProcessEnv {
-  return {
+  const { ELECTRON_RUN_AS_NODE: _electronRunAsNode, ...inherited } = {
     ...sanitizeInheritedChildProcessEnv({ env: process.env }),
     ...args.shellEnv,
+  };
+  return {
+    ...inherited,
     BB_TERMINAL_SESSION_ID: args.terminalId,
     COLORTERM: "truecolor",
     DISABLE_AUTO_TITLE: "true",

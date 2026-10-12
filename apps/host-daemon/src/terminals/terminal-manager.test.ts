@@ -487,6 +487,19 @@ describe("TerminalManager", () => {
     await cleanupTempDirs();
   });
 
+  it("does not hand the daemon's Electron node mode to the terminal shell", async () => {
+    vi.stubEnv("ELECTRON_RUN_AS_NODE", "1");
+    const harness = createHarness();
+    await openTerminal(harness);
+
+    expect(harness.adapter.spawned[0]?.args.env).not.toHaveProperty(
+      "ELECTRON_RUN_AS_NODE",
+    );
+    expect(harness.adapter.spawned[0]?.args.env).toMatchObject({
+      BB_TERMINAL_SESSION_ID: "term-1",
+    });
+  });
+
   it("opens a PTY in the workspace and keeps the environment active", async () => {
     const harness = createHarness();
     await openTerminal(harness);
