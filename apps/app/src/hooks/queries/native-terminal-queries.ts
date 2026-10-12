@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { PromptInput } from "@bb/domain";
 import type { NativeTerminalThread } from "@bb/server-contract";
 import { sdk } from "@/lib/sdk";
 import { applyNativeTerminalThreadView } from "../cache-owners/terminal-cache-owner";
@@ -21,7 +22,7 @@ interface OpenNativeTerminalArgs {
 }
 
 interface SendNativeTerminalMessageArgs {
-  text: string;
+  input: PromptInput[];
   threadId: string;
 }
 
@@ -31,12 +32,8 @@ export function useSendNativeTerminalMessage() {
       errorMessage: "Failed to send to the native session.",
       lifecycleOperation: "send_message",
     },
-    mutationFn: ({ text, threadId }: SendNativeTerminalMessageArgs) =>
-      sdk.threads.send({
-        threadId,
-        input: [{ type: "text", text, mentions: [] }],
-        mode: "auto",
-      }),
+    mutationFn: ({ input, threadId }: SendNativeTerminalMessageArgs) =>
+      sdk.threads.send({ threadId, input, mode: "auto" }),
   });
 }
 
