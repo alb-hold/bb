@@ -61,8 +61,7 @@ async function createFixture(
     const handled = handleTerminalDataSocketUpgrade(
       {
         attach,
-        currentSessionIdForHost: (hostId) =>
-          hostId === "host_1" ? currentSessionId.value : "session_other",
+        currentSessionIdForHost: () => currentSessionId.value,
         guard: {
           config: {
             serverPort: 3001,
