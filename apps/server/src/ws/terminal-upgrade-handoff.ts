@@ -19,6 +19,11 @@ export interface TerminalUpgradeTarget {
 export interface TerminalUpgradeHandoffOptions {
   attach(args: DataPlaneAttachArgs): string | null;
   guard: BrowserRequestGuardDeps;
+  handleDataSocketUpgrade(
+    request: IncomingMessage,
+    socket: Duplex,
+    head: Buffer,
+  ): boolean;
   isAvailable(): boolean;
   resolveTerminal(terminalId: string): TerminalUpgradeTarget | null;
 }
@@ -122,7 +127,9 @@ export function installTerminalUpgradeHandoff(
   server.on("upgrade", (request, socket, head) => {
     let handled = false;
     try {
-      handled = handOffTerminalUpgrade(options, request, socket, head);
+      handled =
+        options.handleDataSocketUpgrade(request, socket, head) ||
+        handOffTerminalUpgrade(options, request, socket, head);
     } catch {
       handled = false;
     }
