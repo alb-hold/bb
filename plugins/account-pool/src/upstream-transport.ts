@@ -1,16 +1,32 @@
+import { lookup as dnsLookup } from "node:dns";
 import type { LookupFunction } from "node:net";
 import { EnvHttpProxyAgent } from "undici";
 
-export const CONNECT_ATTEMPT_TIMEOUT_MS = 3_000;
+export const CONNECT_TIMEOUT_MS = 10_000;
+export const CONNECT_MAX_ADDRESSES = 4;
+export const CONNECT_ATTEMPT_TIMEOUT_MS = 2_400;
 
 export function createUpstreamTransport(
   connect: { lookup?: LookupFunction } = {},
 ) {
+  const resolve = connect.lookup ?? dnsLookup;
+  const lookup: LookupFunction = (hostname, options, done) => {
+    resolve(hostname, options, (error, address, family) => {
+      done(
+        error,
+        Array.isArray(address)
+          ? address.slice(0, CONNECT_MAX_ADDRESSES)
+          : address,
+        family,
+      );
+    });
+  };
   const dispatcher = new EnvHttpProxyAgent({
     allowH2: false,
     connect: {
+      timeout: CONNECT_TIMEOUT_MS,
       autoSelectFamilyAttemptTimeout: CONNECT_ATTEMPT_TIMEOUT_MS,
-      ...connect,
+      lookup,
     },
   });
   const upstreamFetch: typeof fetch = (input, init) => {
