@@ -1084,6 +1084,41 @@ describe("native terminal threads", () => {
     },
   );
 
+  it("says the attachment is still in the input box when the message appears on screen after it was pasted", async () => {
+    const fixture = await createFixture();
+    seedPrimaryHost(fixture.harness.deps, fixture.hostId);
+    const attachmentPath = await storeImageAttachment(fixture);
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+    });
+    const cli = startFakeCli(
+      fixture,
+      open.terminalId,
+      () =>
+        "\u001b[2;1H\u2022 You could say: run the tests\u001b[6;1H\u001b[2K\u203a [Image #1]",
+    );
+    try {
+      const response = await postJson(fixture, `/threads/${thread.id}/send`, {
+        input: [
+          ...textInput("run the tests"),
+          { type: "localImage", path: attachmentPath },
+        ],
+        mode: "auto",
+      });
+      expect(response.status).toBe(409);
+      const error = apiErrorSchema.parse(await readJson(response));
+      expect(error.code).toBe("native_terminal_input_ambiguous");
+      expect(error.message).toContain("still in the input box");
+      expect(error.message).not.toContain("nothing was sent");
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(cli.inputs()).toEqual([
+        `\u001b[200~${storedAttachmentPath(fixture, attachmentPath)}\u001b[201~`,
+      ]);
+    } finally {
+      cli.stop();
+    }
+  });
+
   it("sends nothing when a redrawn menu already shows the reply", async () => {
     const fixture = await createFixture();
     const { open, thread } = await openRunningNativeThread(fixture, {
