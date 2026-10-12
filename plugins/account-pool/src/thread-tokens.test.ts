@@ -5,7 +5,12 @@ import { tmpdir } from "node:os";
 import { afterEach, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { HubTokenStore } from "./store.js";
-import { ThreadTokenStore, type ThreadLookup } from "./thread-tokens.js";
+import {
+  PROCESS_CREDENTIAL_CLOCK_SKEW_MS,
+  PROCESS_CREDENTIAL_MAX_AGE_MS,
+  ThreadTokenStore,
+  type ThreadLookup,
+} from "./thread-tokens.js";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -40,7 +45,7 @@ async function fixture() {
   };
 }
 
-it("keeps process credentials scoped, revocable, and absent after a restart", async () => {
+it("keeps process credentials scoped, revocable, and valid after a restart without storing the plaintext", async () => {
   const { directory, hosts, threads, route, hostToken } = await fixture();
   const token = await threads.forThread(route, hostToken, "process");
   const nested = await threads.forNested(
@@ -59,14 +64,415 @@ it("keeps process credentials scoped, revocable, and absent after a restart", as
   });
   const restarted = new ThreadTokenStore(directory, hosts);
   await restarted.initialize([route.hostId]);
+  expect(await restarted.authenticate(token, "claude")).toEqual(route);
+  expect(await restarted.authenticate(token, "codex")).toBeNull();
+  expect(restarted.isProcessCredential(token)).toBe(true);
+  expect(await restarted.authenticateNested(nested)).toEqual({
+    hostId: route.hostId,
+    threadId: route.threadId,
+  });
+  expect(await restarted.authenticate(`${token.slice(0, -1)}_`)).toBeNull();
+  for (const name of await fs.readdir(directory)) {
+    const content = await fs.readFile(path.join(directory, name), "utf8");
+    expect(content.includes(token)).toBe(false);
+    expect(content.includes(nested)).toBe(false);
+  }
+  await restarted.removeThread(route.threadId);
   expect(await restarted.authenticate(token)).toBeNull();
   expect(await restarted.authenticateNested(nested)).toBeNull();
+  const afterArchive = new ThreadTokenStore(directory, hosts);
+  await afterArchive.initialize([route.hostId]);
+  expect(await afterArchive.authenticate(token)).toBeNull();
+  expect(await afterArchive.authenticateNested(nested)).toBeNull();
   await threads.removeThread(route.threadId);
   expect(await threads.authenticate(token)).toBeNull();
   expect(await threads.authenticateNested(nested)).toBeNull();
   await expect(threads.forThread(route, hostToken, "process")).rejects.toThrow(
     "archived thread",
   );
+});
+
+it("rotates a restored process credential on reissue: the new token differs and the old one is refused at once", async () => {
+  const { directory, hosts, threads, route, hostToken } = await fixture();
+  const nestedRoute = { hostId: route.hostId, threadId: route.threadId };
+  const oldToken = await threads.forThread(route, hostToken, "process");
+  const oldNested = await threads.forNested(nestedRoute, hostToken, "process");
+  const processFiles = async () =>
+    (await fs.readdir(directory)).filter((name) =>
+      name.startsWith("scoped-process-"),
+    );
+  expect(await processFiles()).toHaveLength(2);
+  const restarted = new ThreadTokenStore(directory, hosts);
+  await restarted.initialize([route.hostId]);
+  expect(await restarted.authenticate(oldToken)).toEqual(route);
+  const newToken = await restarted.forThread(route, hostToken, "process");
+  const newNested = await restarted.forNested(
+    nestedRoute,
+    hostToken,
+    "process",
+  );
+  expect(newToken).not.toBe(oldToken);
+  expect(newNested).not.toBe(oldNested);
+  expect(await restarted.authenticate(oldToken)).toBeNull();
+  expect(await restarted.authenticateNested(oldNested)).toBeNull();
+  expect(await restarted.authenticate(newToken, "claude")).toEqual(route);
+  expect(await restarted.authenticateNested(newNested)).toEqual(nestedRoute);
+  expect(restarted.isProcessCredential(newToken)).toBe(true);
+  expect(await restarted.forThread(route, hostToken, "process")).toBe(
+    newToken,
+  );
+  expect(await processFiles()).toHaveLength(2);
+  const again = new ThreadTokenStore(directory, hosts);
+  await again.initialize([route.hostId]);
+  expect(await again.authenticate(oldToken)).toBeNull();
+  expect(await again.authenticateNested(oldNested)).toBeNull();
+  expect(await again.authenticate(newToken)).toEqual(route);
+  expect(await again.authenticateNested(newNested)).toEqual(nestedRoute);
+});
+
+it("expires process credentials a fixed time after mint and removes expired records on initialize", async () => {
+  const { directory, hosts, route, hostToken } = await fixture();
+  const nestedRoute = { hostId: route.hostId, threadId: route.threadId };
+  let clock = 5_000_000;
+  const minting = new ThreadTokenStore(directory, hosts, () => clock);
+  await minting.initialize([route.hostId]);
+  const token = await minting.forThread(route, hostToken, "process");
+  const nested = await minting.forNested(nestedRoute, hostToken, "process");
+  const durable = await minting.forThread(
+    { ...route, threadId: "thr_durable" },
+    hostToken,
+  );
+  clock += PROCESS_CREDENTIAL_MAX_AGE_MS - 1;
+  expect(await minting.authenticate(token)).toEqual(route);
+  const justBefore = new ThreadTokenStore(directory, hosts, () => clock);
+  await justBefore.initialize([route.hostId]);
+  expect(await justBefore.authenticate(token)).toEqual(route);
+  expect(await justBefore.authenticateNested(nested)).toEqual(nestedRoute);
+  clock += 1;
+  expect(await justBefore.authenticate(token)).toBeNull();
+  expect(await justBefore.authenticateNested(nested)).toBeNull();
+  expect(justBefore.isProcessCredential(token)).toBe(false);
+  const reissued = await justBefore.forThread(route, hostToken, "process");
+  expect(reissued).not.toBe(token);
+  expect(await justBefore.authenticate(reissued)).toEqual(route);
+  clock += 1;
+  const afterExpiry = new ThreadTokenStore(directory, hosts, () => clock);
+  await afterExpiry.initialize([route.hostId]);
+  expect(await afterExpiry.authenticate(token)).toBeNull();
+  expect(await afterExpiry.authenticateNested(nested)).toBeNull();
+  expect(await afterExpiry.authenticate(reissued)).toEqual(route);
+  expect(
+    (await fs.readdir(directory)).filter((name) =>
+      name.startsWith("scoped-process-nested-route-"),
+    ),
+  ).toEqual([]);
+  expect(await afterExpiry.authenticate(durable)).toEqual({
+    ...route,
+    threadId: "thr_durable",
+  });
+});
+
+it("stores a process credential as an owner-only record with digests, an expiry and no token field", async () => {
+  const { directory, hosts, route, hostToken } = await fixture();
+  const clock = 7_000_000;
+  const store = new ThreadTokenStore(directory, hosts, () => clock);
+  await store.initialize([route.hostId]);
+  const token = await store.forThread(route, hostToken, "process");
+  await store.forNested(
+    { hostId: route.hostId, threadId: route.threadId },
+    hostToken,
+    "process",
+  );
+  const names = (await fs.readdir(directory)).filter((name) =>
+    name.startsWith("scoped-process-"),
+  );
+  expect(names).toHaveLength(2);
+  expect((await fs.stat(directory)).mode & 0o777).toBe(0o700);
+  const keys: string[][] = [];
+  for (const name of names) {
+    const file = path.join(directory, name);
+    expect((await fs.stat(file)).mode & 0o777).toBe(0o600);
+    const stored = z
+      .record(z.string(), z.unknown())
+      .parse(JSON.parse(await fs.readFile(file, "utf8")));
+    keys.push(Object.keys(stored).sort());
+    expect(stored.tokenDigest).toMatch(/^[a-f0-9]{64}$/u);
+    expect(stored.expiresAt).toBe(clock + PROCESS_CREDENTIAL_MAX_AGE_MS);
+    expect(JSON.stringify(stored).includes(token)).toBe(false);
+  }
+  expect(keys.sort()).toEqual([
+    [
+      "accountId",
+      "expiresAt",
+      "hostId",
+      "hostTokenDigest",
+      "issuedAt",
+      "provider",
+      "threadId",
+      "tokenDigest",
+    ],
+    [
+      "expiresAt",
+      "hostId",
+      "hostTokenDigest",
+      "issuedAt",
+      "threadId",
+      "tokenDigest",
+    ],
+  ]);
+});
+
+it("removes a surviving process credential when the sweep finds the thread gone", async () => {
+  const { directory, hosts, threads, route, hostToken } = await fixture();
+  const token = await threads.forThread(route, hostToken, "process");
+  const nested = await threads.forNested(
+    { hostId: route.hostId, threadId: route.threadId },
+    hostToken,
+    "process",
+  );
+  const restarted = new ThreadTokenStore(directory, hosts);
+  await restarted.initialize([route.hostId]);
+  expect(await restarted.sweepThreads(async () => "live")).toMatchObject({
+    revoked: 0,
+  });
+  expect(await restarted.authenticate(token)).toEqual(route);
+  expect(await restarted.sweepThreads(async () => "gone")).toMatchObject({
+    revoked: 1,
+    failed: 0,
+  });
+  expect(await restarted.authenticate(token)).toBeNull();
+  expect(await restarted.authenticateNested(nested)).toBeNull();
+  expect(
+    (await fs.readdir(directory)).filter((name) =>
+      name.startsWith("scoped-process-"),
+    ),
+  ).toEqual([]);
+  const again = new ThreadTokenStore(directory, hosts);
+  await again.initialize([route.hostId]);
+  expect(await again.authenticate(token)).toBeNull();
+});
+
+it.each([
+  ["missing", (_stored: Record<string, unknown>) => undefined],
+  ["malformed", (_stored: Record<string, unknown>) => "soon"],
+  ["not an integer", (_stored: Record<string, unknown>) => 1.5],
+  ["zero", (_stored: Record<string, unknown>) => 0],
+  [
+    "further out than mint plus the maximum",
+    (_stored: Record<string, unknown>) =>
+      8_000_000 + PROCESS_CREDENTIAL_MAX_AGE_MS + 1,
+  ],
+])(
+  "discards a restored process record whose expiry is %s and removes its file",
+  async (_label, expiry) => {
+    const { directory, hosts, route, hostToken } = await fixture();
+    const clock = 8_000_000;
+    const minting = new ThreadTokenStore(directory, hosts, () => clock);
+    await minting.initialize([route.hostId]);
+    const nestedRoute = { hostId: route.hostId, threadId: route.threadId };
+    const token = await minting.forThread(route, hostToken, "process");
+    const nested = await minting.forNested(nestedRoute, hostToken, "process");
+    const names = (await fs.readdir(directory)).filter((name) =>
+      name.startsWith("scoped-process-"),
+    );
+    expect(names).toHaveLength(2);
+    for (const name of names) {
+      const file = path.join(directory, name);
+      const stored = z
+        .record(z.string(), z.unknown())
+        .parse(JSON.parse(await fs.readFile(file, "utf8")));
+      const value = expiry(stored);
+      if (value === undefined) delete stored.expiresAt;
+      else stored.expiresAt = value;
+      await fs.writeFile(file, JSON.stringify(stored));
+    }
+    const restored = new ThreadTokenStore(directory, hosts, () => clock);
+    await restored.initialize([route.hostId]);
+    expect(await restored.authenticate(token)).toBeNull();
+    expect(await restored.authenticateNested(nested)).toBeNull();
+    expect(restored.isProcessCredential(token)).toBe(false);
+    expect(
+      (await fs.readdir(directory)).filter((name) =>
+        name.startsWith("scoped-process-"),
+      ),
+    ).toEqual([]);
+  },
+);
+
+it("accepts a restored process record whose expiry is exactly mint plus the maximum", async () => {
+  const { directory, hosts, route, hostToken } = await fixture();
+  const clock = 9_000_000;
+  const minting = new ThreadTokenStore(directory, hosts, () => clock);
+  await minting.initialize([route.hostId]);
+  const token = await minting.forThread(route, hostToken, "process");
+  const restored = new ThreadTokenStore(directory, hosts, () => clock);
+  await restored.initialize([route.hostId]);
+  expect(await restored.authenticate(token)).toEqual(route);
+});
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+it.each([
+  [
+    "an overlong lifetime of mint plus 40 days, restored on day 10",
+    (stored: Record<string, unknown>, issuedAt: number) => {
+      stored.expiresAt = issuedAt + 40 * DAY_MS;
+    },
+    10 * DAY_MS,
+  ],
+  [
+    "a missing issuedAt",
+    (stored: Record<string, unknown>) => {
+      delete stored.issuedAt;
+    },
+    DAY_MS,
+  ],
+  [
+    "an issuedAt in the future beyond the clock skew allowance",
+    (stored: Record<string, unknown>, issuedAt: number) => {
+      stored.issuedAt = issuedAt + 2 * DAY_MS;
+      stored.expiresAt = issuedAt + 2 * DAY_MS + 1000;
+    },
+    DAY_MS,
+  ],
+  [
+    "an issuedAt one millisecond beyond the clock skew allowance",
+    (stored: Record<string, unknown>, issuedAt: number) => {
+      stored.issuedAt = issuedAt + DAY_MS + 60_001;
+      stored.expiresAt = issuedAt + DAY_MS + 60_001 + 1000;
+    },
+    DAY_MS,
+  ],
+  [
+    "an expiresAt equal to issuedAt",
+    (stored: Record<string, unknown>) => {
+      stored.expiresAt = stored.issuedAt;
+    },
+    0,
+  ],
+  [
+    "an expiresAt before issuedAt",
+    (stored: Record<string, unknown>, issuedAt: number) => {
+      stored.expiresAt = issuedAt - 1;
+    },
+    0,
+  ],
+])(
+  "discards a restored process record with %s and removes its file",
+  async (_label, mutate, advance) => {
+    const { directory, hosts, route, hostToken } = await fixture();
+    const issuedAt = 20_000_000;
+    let clock = issuedAt;
+    const minting = new ThreadTokenStore(directory, hosts, () => clock);
+    await minting.initialize([route.hostId]);
+    const token = await minting.forThread(route, hostToken, "process");
+    const nested = await minting.forNested(
+      { hostId: route.hostId, threadId: route.threadId },
+      hostToken,
+      "process",
+    );
+    for (const name of await fs.readdir(directory)) {
+      if (!name.startsWith("scoped-process-")) continue;
+      const file = path.join(directory, name);
+      const stored = z
+        .record(z.string(), z.unknown())
+        .parse(JSON.parse(await fs.readFile(file, "utf8")));
+      mutate(stored, issuedAt);
+      await fs.writeFile(file, JSON.stringify(stored));
+    }
+    clock += advance;
+    const restored = new ThreadTokenStore(directory, hosts, () => clock);
+    await restored.initialize([route.hostId]);
+    expect(await restored.authenticate(token)).toBeNull();
+    expect(await restored.authenticateNested(nested)).toBeNull();
+    expect(restored.isProcessCredential(token)).toBe(false);
+    expect(
+      (await fs.readdir(directory)).filter((name) =>
+        name.startsWith("scoped-process-"),
+      ),
+    ).toEqual([]);
+  },
+);
+
+it("accepts a record minted at the clock skew allowance and one of exactly mint plus 30 days restored on day 29", async () => {
+  const { directory, hosts, route, hostToken } = await fixture();
+  const issuedAt = 30_000_000;
+  let clock = issuedAt;
+  const minting = new ThreadTokenStore(directory, hosts, () => clock);
+  await minting.initialize([route.hostId]);
+  const token = await minting.forThread(route, hostToken, "process");
+  for (const name of await fs.readdir(directory)) {
+    if (!name.startsWith("scoped-process-")) continue;
+    const stored = z
+      .record(z.string(), z.unknown())
+      .parse(JSON.parse(await fs.readFile(path.join(directory, name), "utf8")));
+    expect(stored.issuedAt).toBe(issuedAt);
+    expect(stored.expiresAt).toBe(issuedAt + PROCESS_CREDENTIAL_MAX_AGE_MS);
+  }
+  clock += 29 * DAY_MS;
+  const restored = new ThreadTokenStore(directory, hosts, () => clock);
+  await restored.initialize([route.hostId]);
+  expect(await restored.authenticate(token)).toEqual(route);
+  clock = issuedAt + PROCESS_CREDENTIAL_MAX_AGE_MS;
+  expect(await restored.authenticate(token)).toBeNull();
+  const skewed = new ThreadTokenStore(
+    directory,
+    hosts,
+    () => issuedAt - PROCESS_CREDENTIAL_CLOCK_SKEW_MS,
+  );
+  await skewed.initialize([route.hostId]);
+  expect(await skewed.authenticate(token)).toEqual(route);
+});
+
+it("derives expiry from a single clock read and refuses the token at mint plus the maximum before and after restore", async () => {
+  const { directory, hosts, route, hostToken } = await fixture();
+  let clock = 40_000_000;
+  let step = 1;
+  const now = () => {
+    const value = clock;
+    clock += step;
+    return value;
+  };
+  const minting = new ThreadTokenStore(directory, hosts, now);
+  await minting.initialize([route.hostId]);
+  const nestedRoute = { hostId: route.hostId, threadId: route.threadId };
+  const token = await minting.forThread(route, hostToken, "process");
+  const nested = await minting.forNested(nestedRoute, hostToken, "process");
+  const issued: Record<string, number> = {};
+  for (const name of await fs.readdir(directory)) {
+    if (!name.startsWith("scoped-process-")) continue;
+    const stored = z
+      .record(z.string(), z.unknown())
+      .parse(JSON.parse(await fs.readFile(path.join(directory, name), "utf8")));
+    const issuedAt = z.number().parse(stored.issuedAt);
+    expect(z.number().parse(stored.expiresAt) - issuedAt).toBe(
+      PROCESS_CREDENTIAL_MAX_AGE_MS,
+    );
+    issued[name.startsWith("scoped-process-nested-") ? "nested" : "route"] =
+      issuedAt;
+  }
+  const routeIssued = z.number().parse(issued.route);
+  const nestedIssued = z.number().parse(issued.nested);
+  step = 0;
+  const check = async (
+    store: ThreadTokenStore,
+    offset: number,
+    accepted: boolean,
+  ) => {
+    clock = routeIssued + offset;
+    expect(await store.authenticate(token)).toEqual(accepted ? route : null);
+    clock = nestedIssued + offset;
+    expect(await store.authenticateNested(nested)).toEqual(
+      accepted ? nestedRoute : null,
+    );
+  };
+  await check(minting, PROCESS_CREDENTIAL_MAX_AGE_MS - 1, true);
+  await check(minting, PROCESS_CREDENTIAL_MAX_AGE_MS, false);
+  clock = routeIssued;
+  const restored = new ThreadTokenStore(directory, hosts, now);
+  await restored.initialize([route.hostId]);
+  await check(restored, PROCESS_CREDENTIAL_MAX_AGE_MS - 1, true);
+  await check(restored, PROCESS_CREDENTIAL_MAX_AGE_MS, false);
 });
 
 it("scrubs existing raw provider and nested tokens to hashes without losing authentication", async () => {
@@ -456,6 +862,41 @@ it("sweeps dead and unenrolled credentials on startup and leaves other secrets a
   expect(await credentialFiles("scoped-nested-route-")).toHaveLength(1);
   expect(await credentialFiles("account-keep")).toHaveLength(1);
   expect(await credentialFiles("hub-token-")).toHaveLength(2);
+});
+
+it("revokes restored process credentials once their machine generation expires or the machine is unenrolled", async () => {
+  const { directory, hosts, threads, route, hostToken, advance } =
+    await fixture();
+  const token = await threads.forThread(route, hostToken, "process");
+  const nested = await threads.forNested(
+    { hostId: route.hostId, threadId: route.threadId },
+    hostToken,
+    "process",
+  );
+  await hosts.rotate(route.hostId);
+  const withinGrace = new ThreadTokenStore(directory, hosts);
+  await withinGrace.initialize([route.hostId]);
+  expect(await withinGrace.authenticate(token)).toEqual(route);
+  advance(10 * 60_000 + 1);
+  const expired = new ThreadTokenStore(directory, hosts);
+  await expired.initialize([route.hostId]);
+  expect(await expired.authenticate(token)).toBeNull();
+  expect(await expired.authenticateNested(nested)).toBeNull();
+  expect(
+    (await fs.readdir(directory)).filter((name) =>
+      name.startsWith("scoped-process-"),
+    ),
+  ).toEqual([]);
+
+  const other = await fixture();
+  const otherToken = await other.threads.forThread(
+    other.route,
+    other.hostToken,
+    "process",
+  );
+  const unenrolled = new ThreadTokenStore(other.directory, other.hosts);
+  await unenrolled.initialize(["host-other"]);
+  expect(await unenrolled.authenticate(otherToken)).toBeNull();
 });
 
 it("preserves machine rotation grace and revokes expired or unenrolled credentials after reload", async () => {
