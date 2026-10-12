@@ -826,7 +826,7 @@ export function deleteQueuedRetriesForThreadEventSuffixInTransaction(
 
 function manuallyStoppedQueuePauseQuery(
   db: DbQueryConnection,
-  threadId: string | typeof threads.id,
+  threadId: string | typeof queuedThreadMessages.threadId,
 ) {
   const interruption = alias(events, "queue_pause_interruption");
   const laterInterruption = alias(events, "queue_pause_later_interruption");
@@ -908,19 +908,21 @@ export function listIdleThreadsWithQueuedMessages(
 ): QueuedMessageThreadRow[] {
   return db
     .select({
-      threadId: threads.id,
+      threadId: sql<string>`${threads.id}`,
       oldestQueuedMessageCreatedAt: min(queuedThreadMessages.createdAt),
     })
-    .from(queuedThreadMessages)
-    .innerJoin(threads, eq(threads.id, queuedThreadMessages.threadId))
+    .from(sql`${queuedThreadMessages} cross join ${threads}`)
     .leftJoin(environments, eq(environments.id, threads.environmentId))
     .where(
       and(
+        eq(threads.id, queuedThreadMessages.threadId),
         inArray(threads.status, ["idle", "pending"]),
         isNull(threads.archivedAt),
         isNull(threads.deletedAt),
         or(
-          notExists(manuallyStoppedQueuePauseQuery(db, threads.id)),
+          notExists(
+            manuallyStoppedQueuePauseQuery(db, queuedThreadMessages.threadId),
+          ),
           notOrdinaryTurnEndQueuedThreadMessage(),
         ),
         or(

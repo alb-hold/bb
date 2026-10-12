@@ -1052,6 +1052,80 @@ describe("public terminal routes", () => {
     ).not.toBeNull();
   });
 
+  it.each(["route", "websocket"] as const)(
+    "writes the first-input marker once and not again on later %s input",
+    async (path) => {
+      const fixture = await createTerminalRouteFixture();
+      harnesses.push(fixture.harness);
+      const session = createTerminalSession(fixture.harness.db, {
+        cols: 120,
+        daemonSessionId: fixture.session.id,
+        environmentId: fixture.environment.id,
+        hostId: fixture.host.id,
+        initialCwd: fixture.environment.path ?? "/tmp/terminal-workspace",
+        rows: 32,
+        status: "running",
+        threadId: fixture.thread.id,
+        title: "Terminal 1",
+      });
+      const browserSocket = createFakeBrowserSocket();
+      fixture.harness.hub.registerTerminalClient(session.id, browserSocket);
+      const sqlite = fixture.harness.db.$client;
+      const prepare = sqlite.prepare.bind(sqlite);
+      const statements: string[] = [];
+      vi.spyOn(sqlite, "prepare").mockImplementation((source: string) => {
+        statements.push(source);
+        return prepare(source);
+      });
+      const sendInput = async (text: string) => {
+        const dataBase64 = Buffer.from(text, "utf8").toString("base64");
+        if (path === "route") {
+          const response = await fixture.harness.app.request(
+            `/api/v1/terminals/${session.id}/input`,
+            {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ dataBase64 }),
+            },
+          );
+          expect(response.status).toBe(200);
+          return;
+        }
+        fixture.harness.deps.terminalSessions.handleBrowserTerminalMessage({
+          terminalId: session.id,
+          socket: browserSocket,
+          message: { type: "input", dataBase64 },
+        });
+      };
+      const terminalWrites = () =>
+        statements.filter((source) =>
+          /^\s*update\s+["`]?terminal_sessions["`]?/iu.test(source),
+        ).length;
+
+      await sendInput("a");
+      expect(terminalWrites()).toBe(1);
+      const firstMarker = getTerminalSessionForThread(fixture.harness.db, {
+        threadId: fixture.thread.id,
+        terminalId: session.id,
+      })?.lastUserInputAt;
+      expect(firstMarker).toBeTypeOf("number");
+
+      await sendInput("b");
+      await sendInput("c");
+      expect(terminalWrites()).toBe(1);
+      expect(
+        getTerminalSessionForThread(fixture.harness.db, {
+          threadId: fixture.thread.id,
+          terminalId: session.id,
+        })?.lastUserInputAt,
+      ).toBe(firstMarker);
+      const inputs = readDaemonOperationMessages(fixture.socket).filter(
+        (message) => message.type === "terminal.input",
+      );
+      expect(inputs).toHaveLength(3);
+    },
+  );
+
   it("resizes a running terminal over the daemon session", async () => {
     const fixture = await createTerminalRouteFixture();
     harnesses.push(fixture.harness);
