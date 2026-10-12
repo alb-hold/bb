@@ -159,7 +159,7 @@ describe("terminal data plane IPC contract", () => {
       rejection(() =>
         parseTerminalDataPlaneMainToChildMessage({ type: "shutdown" }),
       ),
-    ).toBe("main-to-child:unsupported-version");
+    ).toBe("main-to-child:malformed");
   });
 
   it("reports the last acknowledged sequence when a browser socket closes", () => {
