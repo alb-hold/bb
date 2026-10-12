@@ -300,7 +300,18 @@ export function terminalOutputShowsPaste(args: {
     replayTerminalOutput(args.before),
     args.pastePlaceholders,
   );
-  return placeholderDetails(drawn, args.pastePlaceholders).some(
-    (detail) => !stale.some((seen) => sameDetail(detail, seen)),
-  );
+  if (
+    placeholderDetails(drawn, args.pastePlaceholders).some(
+      (detail) => !stale.some((seen) => sameDetail(detail, seen)),
+    )
+  ) {
+    return true;
+  }
+  if (TERMINAL_SCREEN_RESET.test(args.output)) return false;
+  const earlier = replayTerminalOutput(args.before);
+  const current = replayTerminalOutput(args.before + args.output);
+  return args.pastePlaceholders.some((placeholder) => {
+    const chip = echoNeedle(placeholder);
+    return occurrenceCount(current, chip) > occurrenceCount(earlier, chip);
+  });
 }

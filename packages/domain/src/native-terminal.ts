@@ -227,9 +227,21 @@ export const providerNativeTerminalSchema = z
       providerNativeTerminalDiscoveredSessionSchema,
     ]),
     activity: providerNativeTerminalActivitySchema.optional(),
+    mcp: templateArgsSchema(["commandJson", "argsJson"]).optional(),
   })
   .strict()
   .superRefine((spec, context) => {
+    if (
+      spec.mcp !== undefined &&
+      (!requiresToken(spec.mcp, "commandJson") ||
+        !requiresToken(spec.mcp, "argsJson"))
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["mcp"],
+        message: "must pass {commandJson} and {argsJson}",
+      });
+    }
     if (spec.modelArgs.length > 0 && !requiresToken(spec.modelArgs, "model")) {
       context.addIssue({
         code: "custom",
