@@ -567,6 +567,89 @@ describe("TerminalWebSocketTransport", () => {
       },
     );
 
+    describe("a grid change while a nudge is pending", () => {
+      function sentSizes(socket: { sent: string[] }) {
+        return socket.sent
+          .filter((message) => message.includes('"resize"'))
+          .map(
+            (message) => JSON.parse(message) as { cols: number; rows: number },
+          );
+      }
+
+      function expectNoSizeAbove(
+        sizes: { cols: number; rows: number }[],
+        grids: { cols: number; rows: number }[],
+      ) {
+        expect(sizes).toHaveLength(grids.length);
+        sizes.forEach((size, index) => {
+          expect(size.cols).toBeLessThanOrEqual(grids[index]!.cols);
+          expect(size.rows).toBeLessThanOrEqual(grids[index]!.rows);
+        });
+      }
+
+      it("sends nothing larger than the grid when it shrinks to 1x1 before the nudge fires", () => {
+        const { harness, socket } = openHarness(2, 2);
+
+        harness.transport.requestRepaint();
+        harness.transport.sendResize(1, 1);
+        vi.advanceTimersByTime(500);
+
+        const sizes = sentSizes(socket);
+        expectNoSizeAbove(sizes, [
+          { cols: 2, rows: 2 },
+          { cols: 1, rows: 1 },
+        ]);
+        expect(sizes.at(-1)).toMatchObject({ cols: 1, rows: 1 });
+        harness.transport.dispose();
+      });
+
+      it("restores to the latest size when the grid shrinks during the nudge gap", () => {
+        const { harness, socket } = openHarness(2, 2);
+
+        harness.transport.requestRepaint();
+        vi.advanceTimersByTime(20);
+        harness.transport.sendResize(1, 1);
+        vi.advanceTimersByTime(500);
+
+        const sizes = sentSizes(socket);
+        expectNoSizeAbove(sizes, [
+          { cols: 2, rows: 2 },
+          { cols: 2, rows: 2 },
+          { cols: 1, rows: 1 },
+        ]);
+        expect(sizes.at(-1)).toMatchObject({ cols: 1, rows: 1 });
+        harness.transport.dispose();
+      });
+
+      it("ends at the grown size when the grid grows from 1x1 to 100x30 before the nudge fires", () => {
+        const { harness, socket } = openHarness(1, 1);
+
+        harness.transport.requestRepaint();
+        harness.transport.sendResize(100, 30);
+        vi.advanceTimersByTime(500);
+
+        const sizes = sentSizes(socket);
+        expect(sizes.at(-1)).toMatchObject({ cols: 100, rows: 30 });
+        expect(sizes.map((size) => `${size.cols}x${size.rows}`)).toEqual([
+          "1x1",
+          "100x30",
+        ]);
+        harness.transport.dispose();
+      });
+
+      it("ends at the grown size when the grid grows during the nudge gap", () => {
+        const { harness, socket } = openHarness(1, 30);
+
+        harness.transport.requestRepaint();
+        vi.advanceTimersByTime(20);
+        harness.transport.sendResize(100, 30);
+        vi.advanceTimersByTime(500);
+
+        expect(sentSizes(socket).at(-1)).toMatchObject({ cols: 100, rows: 30 });
+        harness.transport.dispose();
+      });
+    });
+
     it("does not restore after dispose", () => {
       const { harness, socket } = openHarness(100, 30);
 

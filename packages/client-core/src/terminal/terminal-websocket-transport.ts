@@ -223,6 +223,7 @@ export class TerminalWebSocketTransport {
       return;
     }
     this.lastResize = { cols, rows };
+    this.clearRepaintTimeout();
     const socket = this.socket;
     if (
       this.settleTimeout !== null ||
@@ -246,41 +247,38 @@ export class TerminalWebSocketTransport {
       this.repaintRequestedWhileSettling = true;
       return;
     }
-    const lastResize = this.lastResize;
     const socket = this.socket;
     if (
-      lastResize === null ||
+      this.lastResize === null ||
       socket === null ||
       socket.readyState !== SOCKET_OPEN
     ) {
       return;
     }
-    const nudgeSize = repaintNudgeSize(lastResize);
-    if (nudgeSize === null) {
-      return;
-    }
     this.clearRepaintTimeout();
     this.repaintTimeout = setTimeout(() => {
       this.repaintTimeout = null;
+      const current = this.lastResize;
       if (
         this.disposed ||
         this.socket !== socket ||
         socket.readyState !== SOCKET_OPEN ||
-        this.lastResize !== lastResize
+        current === null
       ) {
         return;
       }
-      this.trySend(
-        socket,
-        JSON.stringify({ type: "resize", ...nudgeSize }),
-      );
+      const nudgeSize = repaintNudgeSize(current);
+      if (nudgeSize === null) {
+        return;
+      }
+      this.trySend(socket, JSON.stringify({ type: "resize", ...nudgeSize }));
       this.repaintTimeout = setTimeout(() => {
         this.repaintTimeout = null;
         if (
           this.disposed ||
           this.socket !== socket ||
           socket.readyState !== SOCKET_OPEN ||
-          this.lastResize !== lastResize
+          this.lastResize !== current
         ) {
           return;
         }
@@ -288,8 +286,8 @@ export class TerminalWebSocketTransport {
           socket,
           JSON.stringify({
             type: "resize",
-            cols: lastResize.cols,
-            rows: lastResize.rows,
+            cols: current.cols,
+            rows: current.rows,
           }),
         );
       }, REPAINT_RESTORE_DELAY_MS);
