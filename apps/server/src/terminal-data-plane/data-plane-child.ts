@@ -709,7 +709,7 @@ export class TerminalDataPlaneChild {
           dataBase64,
         });
         if (
-          daemon.bufferedAmount + frame.length >
+          daemon.bufferedAmount + Buffer.byteLength(frame) >
           TERMINAL_DATA_PLANE_CHILD_PENDING_IPC_BYTES
         ) {
           this.closeTerminalSockets(
@@ -955,7 +955,10 @@ export class TerminalDataPlaneChild {
     socket: TerminalDataPlaneSocket,
     frame: string,
   ): void {
-    if (socket.bufferedAmount > TERMINAL_DATA_PLANE_RELAY_HARD_CAP_BYTES) {
+    if (
+      socket.bufferedAmount + Buffer.byteLength(frame) >
+      TERMINAL_DATA_PLANE_RELAY_HARD_CAP_BYTES
+    ) {
       socket.terminate();
       this.handleDaemonClosed(daemonSessionId, socket);
       return;

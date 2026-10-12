@@ -745,7 +745,7 @@ describe("terminal data plane child", () => {
       daemonSessionId: "session_1",
     });
     const queued = () =>
-      daemon.sent.reduce((total, frame) => total + frame.length, 0);
+      daemon.sent.reduce((total, frame) => total + Buffer.byteLength(frame), 0);
     const block = Buffer.alloc(48 * 1024, 0x61).toString("base64");
     const blocks = Math.ceil(TERMINAL_DATA_PLANE_CHILD_PENDING_IPC_BYTES / block.length) + 5;
 
@@ -769,7 +769,7 @@ describe("terminal data plane child", () => {
     });
   });
 
-  it("drops a data socket whose send backlog passes the hard cap", async () => {
+  it("writes to a data socket only while the frame fits under the hard cap", async () => {
     const harness = createHarness();
     const daemon = await attachDaemon(harness, "session_1");
     main(harness, {
@@ -784,14 +784,54 @@ describe("terminal data plane child", () => {
       terminalId: "term_a",
       outputAcks: true,
     });
-    daemon.receive({ type: "terminal.output", terminalId: "term_a", chunk: chunk(0) });
-    daemon.receive({ type: "terminal.output", terminalId: "term_a", chunk: chunk(1) });
-    daemon.receive({ type: "terminal.output", terminalId: "term_a", chunk: chunk(2) });
+    for (const seq of [0, 1, 2, 3]) {
+      daemon.receive({ type: "terminal.output", terminalId: "term_a", chunk: chunk(seq) });
+    }
+    const ack = (nextSeq: number) =>
+      JSON.stringify({ type: "terminal.ack", terminalId: "term_a", nextSeq });
+
+    daemon.bufferedAmount =
+      TERMINAL_DATA_PLANE_RELAY_HARD_CAP_BYTES - Buffer.byteLength(ack(2));
+    browser.receive({ type: "ack", nextSeq: 2 });
+
+    expect(daemon.sent.at(-1)).toBe(ack(2));
+    expect(daemon.terminated).toBe(false);
     const written = daemon.sent.length;
-    daemon.bufferedAmount = TERMINAL_DATA_PLANE_RELAY_HARD_CAP_BYTES + 1;
+
+    daemon.bufferedAmount =
+      TERMINAL_DATA_PLANE_RELAY_HARD_CAP_BYTES - Buffer.byteLength(ack(3)) + 1;
+    browser.receive({ type: "ack", nextSeq: 3 });
+    browser.receive({ type: "ack", nextSeq: 4 });
+
+    expect(daemon.sent.length).toBe(written);
+    expect(daemon.terminated).toBe(true);
+    expect(ofType(harness, "daemon.detached")).toEqual([
+      { v, type: "daemon.detached", daemonSessionId: "session_1" },
+    ]);
+  });
+
+  it("writes nothing to a data socket whose send backlog is at the hard cap", async () => {
+    const harness = createHarness();
+    const daemon = await attachDaemon(harness, "session_1");
+    main(harness, {
+      v,
+      type: "terminal.route",
+      terminalId: "term_a",
+      daemonSessionId: "session_1",
+      mode: "data-socket",
+    });
+    const browser = await attachLive(harness, {
+      attachId: "a1",
+      terminalId: "term_a",
+      outputAcks: true,
+    });
+    for (const seq of [0, 1, 2]) {
+      daemon.receive({ type: "terminal.output", terminalId: "term_a", chunk: chunk(seq) });
+    }
+    const written = daemon.sent.length;
+    daemon.bufferedAmount = TERMINAL_DATA_PLANE_RELAY_HARD_CAP_BYTES;
 
     browser.receive({ type: "ack", nextSeq: 2 });
-    browser.receive({ type: "ack", nextSeq: 3 });
 
     expect(daemon.sent.length).toBe(written);
     expect(daemon.terminated).toBe(true);
