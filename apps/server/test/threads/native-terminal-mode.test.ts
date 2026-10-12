@@ -1,5 +1,6 @@
 import {
   createConnection,
+  deleteThread,
   getNativeTerminalThread,
   getThread,
   isNativeTerminalThread,
@@ -686,6 +687,26 @@ describe("native terminal activity", () => {
     await stopping;
     expect(threadStatus(fixture, thread.id)).toBe("idle");
     expect(isNativeTerminalThread(fixture.harness.db, thread.id)).toBe(true);
+    await reportActivity(fixture, thread.id, { state: "working" });
+    expect(threadStatus(fixture, thread.id)).toBe("active");
+    await reportActivity(fixture, thread.id, { state: "idle" });
+    expect(threadStatus(fixture, thread.id)).toBe("idle");
+  });
+
+  it("rejects working activity after a cached native thread is deleted", async () => {
+    const fixture = await createFixture();
+    const thread = seedChatThread(fixture, {
+      providerId: "claude-code",
+      providerThreadId: SESSION_ID,
+    });
+    await enterTerminal(fixture, thread.id);
+    await reportActivity(fixture, thread.id, { state: "working" });
+    deleteThread(fixture.harness.db, fixture.harness.hub, thread.id);
+
+    const response = await reportActivity(fixture, thread.id, {
+      state: "working",
+    });
+    expect(response.status).toBe(404);
   });
 
   it("refuses activity for a thread that is not in its terminal", async () => {
