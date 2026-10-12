@@ -17,8 +17,35 @@ import {
   measureResumedTranscript,
   NativeActivityReader,
 } from "../native-activity-reader.js";
-import { createFakePluginHost } from "../../../../packages/plugin-sdk/src/testing/fake-plugin-host.js";
-import claudeCodePlugin from "../../../../plugins/provider-claude-code/server.js";
+interface ClaudePluginTestHost {
+  bb: unknown;
+  harness: {
+    registrations: {
+      providerRegistrations: {
+        id: string;
+        experimental_nativeTerminal?: ProviderNativeTerminal;
+      }[];
+    };
+  };
+}
+
+const {
+  createFakePluginHost,
+}: {
+  createFakePluginHost(options: { pluginId: string }): ClaudePluginTestHost;
+} = await import(
+  new URL(
+    "../../../../packages/plugin-sdk/src/testing/fake-plugin-host.ts",
+    import.meta.url,
+  ).href
+);
+const { default: claudeCodePlugin }: { default(bb: unknown): void } =
+  await import(
+    new URL(
+      "../../../../plugins/provider-claude-code/server.ts",
+      import.meta.url,
+    ).href
+  );
 
 const CODEX_CLI: ProviderNativeTerminal = {
   executable: "codex",
@@ -335,6 +362,22 @@ describe("NativeActivityReader", () => {
       },
     ]);
     fixture.append([
+      {
+        type: "user",
+        uuid: "unread-old-user",
+        parentUuid: null,
+        promptId: "unread-old-turn",
+        origin: { kind: "human" },
+        message: { content: "an older prompt flushed late" },
+      },
+      {
+        type: "system",
+        subtype: "stop_hook_summary",
+        isSidechain: false,
+        hasOutput: false,
+        uuid: "unread-old-end",
+        parentUuid: "unread-old-user",
+      },
       {
         type: "user",
         uuid: "late-interrupt-1",

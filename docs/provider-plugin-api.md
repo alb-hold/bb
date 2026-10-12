@@ -169,7 +169,8 @@ values, `startsWith` prefixes, dotted paths with numeric array indexes) for
 working, idle and prompt records. Equality values may be strings or booleans.
 Optional hook `pending` events are recorded without changing activity; a
 provisional Stop uses the transcript's final outcome to end the turn.
-`hooks.turnId` correlates events with transcript turns. Optional transcript
+`hooks.turnId` selects the current turn so delayed transcript records cannot
+replace a newer prompt. Optional transcript
 `identity` declares the `recordId`, `parentId` and `turnId` field paths. With
 identity, duplicate records and late records from previous turns are ignored;
 only new working records descended from the final record can reopen a

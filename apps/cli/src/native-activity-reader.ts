@@ -164,6 +164,12 @@ export class NativeActivityReader {
     this.recordParents.set(id, parent);
     if (turn === null || signal.state === null) return ignored;
     if (this.currentTurn !== turn) {
+      if (
+        this.currentTurn !== null &&
+        this.cli.activity?.hooks?.turnId !== undefined
+      ) {
+        return ignored;
+      }
       if (signal.state !== "working" || this.knownTurns.has(turn))
         return ignored;
       this.currentTurn = turn;

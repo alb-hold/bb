@@ -1685,7 +1685,7 @@ export interface PluginProviderDeclaration {
    *   object of Claude Code style `hooks`) whose `working` and `idle` events
    *   report the turn; `pending` events are recorded without ending the turn.
    *   `promptField` names the prompt in the `working` event's input, and
-   *   `turnId` optionally correlates hooks with transcript turns.
+   *   `turnId` optionally selects the current turn for transcript correlation.
    *   `transcript` reads records the CLI appends to its session file
    *   after launch: a record whose fields equal every `equals` value and
    *   start with every `startsWith` value marks the turn `working` or `idle`,
