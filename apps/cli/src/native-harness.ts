@@ -5,6 +5,7 @@ import {
   fillNativeTerminalTemplate,
   type ProviderNativeTerminal,
 } from "@bb/domain";
+import { experimental_nativeTerminalEnvArgs } from "@get-bb/plugin-sdk/host";
 import type { NativeTerminalLaunchSpec } from "@bb/server-contract";
 import { readRecordField } from "./native-activity.js";
 
@@ -114,10 +115,16 @@ export function resolveNativeHarnessLaunch(
   env: NativeHarnessEnv,
   activityArgs: readonly string[] = [],
   mcpArgs: readonly string[] = [],
+  cwd: string = process.cwd(),
 ): NativeHarnessLaunch {
   const { cli } = spec;
   const model = [
     ...cli.launchArgs,
+    ...experimental_nativeTerminalEnvArgs(
+      cli.experimental_launchEnvArgs,
+      env,
+      cwd,
+    ),
     ...(spec.model === null ? [] : fill(cli.modelArgs, { model: spec.model })),
     ...activityArgs,
     ...mcpArgs,

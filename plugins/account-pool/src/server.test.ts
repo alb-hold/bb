@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   retryAvailabilityMethod,
   type RetryAvailability,
@@ -117,10 +118,18 @@ async function resolveToken(
   host: ReturnType<typeof createFakePluginHost>,
   hostId = "host-one",
   threadId = "thread-one",
+  runtimeKind?: "native",
 ): Promise<string> {
   const entries = await host.harness.behavior.resolveProviderEnv(
     "claude-code",
-    { threadId, projectId: "project-one", hostId },
+    {
+      threadId,
+      projectId: "project-one",
+      hostId,
+      ...(runtimeKind === undefined
+        ? {}
+        : { experimental_runtimeKind: runtimeKind }),
+    },
   );
   const token = entries.find((entry) => entry.name === "ANTHROPIC_AUTH_TOKEN");
   if (token === undefined || typeof token.value !== "string") {
@@ -152,10 +161,14 @@ async function resolveCodexToken(
 }
 
 describe("Explicit subscription routing", () => {
-  async function twoSubscriptions() {
+  async function twoSubscriptions(
+    beforeResponse?: () => Promise<void>,
+    runtimeKind?: "native",
+  ) {
     const seen: string[] = [];
-    const upstream = await startUpstream((request, response) => {
+    const upstream = await startUpstream(async (request, response) => {
       seen.push(String(request.headers["x-api-key"]));
+      await beforeResponse?.();
       response.setHeader("content-type", "application/json");
       response.end('{"ok":true}');
     });
@@ -180,7 +193,12 @@ describe("Explicit subscription routing", () => {
       thread: { id: "thr_pinned", providerId: "claude-code" },
       data: { provider: "claude", accountId: second.id },
     });
-    const key = await resolveToken(fixture.host, "host-one", "thr_pinned");
+    const key = await resolveToken(
+      fixture.host,
+      "host-one",
+      "thr_pinned",
+      runtimeKind,
+    );
     const request = async (token: string) => {
       const response = await fixture.host.harness.behavior.fetchHttp(
         "POST",
@@ -309,6 +327,152 @@ describe("Explicit subscription routing", () => {
     ]);
     expect(result.exitCode).toBe(0);
     expect(JSON.parse(result.stdout)).toMatchObject({ accountId: null });
+  });
+
+  it("keeps an idle retained bridge credential on its original account after a pin change", async () => {
+    const { fixture, key, seen, request } = await twoSubscriptions();
+    expect((await request(key)).status).toBe(200);
+    fixture.host.harness.sdk.stub("threads.get", async ({ threadId }) =>
+      makeThreadResponse({
+        id: threadId,
+        providerId: "claude-code",
+        status: "idle",
+      }),
+    );
+    fixture.host.harness.sdk.stub(
+      "threads.queuedMessages.list",
+      async () => [],
+    );
+    await fixture.host.harness.behavior.callRpc("routing.selection.set", {
+      threadId: "thr_pinned",
+      provider: "claude",
+      accountId: fixture.account.id,
+    });
+    const nextTurn = await resolveToken(fixture.host, "host-one", "thr_pinned");
+    expect((await request(nextTurn)).status).toBe(200);
+    expect((await request(key)).status).toBe(200);
+    expect(seen).toEqual(["sk-second", "sk-first", "sk-second"]);
+  });
+
+  it("applies an idle native thread's new selection to requests using its existing credential", async () => {
+    const { fixture, key, seen, request } = await twoSubscriptions(
+      undefined,
+      "native",
+    );
+    expect((await request(key)).status).toBe(200);
+    fixture.host.harness.sdk.stub("threads.get", async ({ threadId }) =>
+      makeThreadResponse({
+        id: threadId,
+        providerId: "claude-code",
+        status: "idle",
+      }),
+    );
+    fixture.host.harness.sdk.stub(
+      "threads.queuedMessages.list",
+      async () => [],
+    );
+    await fixture.host.harness.behavior.callRpc("routing.selection.set", {
+      threadId: "thr_pinned",
+      provider: "claude",
+      accountId: fixture.account.id,
+    });
+    expect((await request(key)).status).toBe(200);
+    expect(seen).toEqual(["sk-second", "sk-first"]);
+    const result = await fixture.host.harness.behavior.runCli([
+      "select",
+      "thr_pinned",
+      "claude",
+      "automatic",
+      "--json",
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({ accountId: null });
+    expect((await request(key)).status).toBe(200);
+    expect(seen).toEqual(["sk-second", "sk-first", "sk-first"]);
+  });
+
+  it("keeps native pool credentials out of persisted files while bridge credentials remain durable", async () => {
+    const { fixture, request } = await twoSubscriptions();
+    const entries = await fixture.host.harness.behavior.resolveProviderEnv(
+      "claude-code",
+      {
+        threadId: "thr_native_hygiene",
+        projectId: "project-one",
+        hostId: "host-one",
+        experimental_runtimeKind: "native",
+      },
+    );
+    const tokens = entries
+      .filter((entry) =>
+        ["ANTHROPIC_AUTH_TOKEN", "BB_ACCOUNT_POOL_PARENT_TOKEN"].includes(
+          entry.name,
+        ),
+      )
+      .map((entry) => {
+        if (typeof entry.value !== "string")
+          throw new Error("Missing pool credential.");
+        return entry.value;
+      });
+    expect(tokens.length).toBe(2);
+    expect((await request(tokens[0] ?? "")).status).toBe(200);
+    const files = await fs.readdir(fixture.dataDir, { recursive: true });
+    const persisted = await Promise.all(
+      files.map(async (file) => {
+        const name = path.join(fixture.dataDir, file);
+        return (await fs.stat(name)).isFile()
+          ? fs.readFile(name)
+          : Buffer.alloc(0);
+      }),
+    );
+    expect(
+      persisted.some((content) =>
+        tokens.some((token) => content.includes(token)),
+      ),
+    ).toBe(false);
+    const bridge = await resolveToken(fixture.host);
+    expect(persisted.some((content) => content.includes(bridge))).toBe(false);
+    expect(
+      persisted.some((content) =>
+        content.includes(createHash("sha256").update(bridge).digest("hex")),
+      ),
+    ).toBe(true);
+  });
+
+  it("keeps an in-flight native request on its selected account when an idle selection changes", async () => {
+    const arrived = deferred();
+    const release = deferred();
+    const { fixture, key, seen, request } = await twoSubscriptions(
+      async () => {
+        arrived.resolve();
+        await release.promise;
+      },
+      "native",
+    );
+    fixture.host.harness.sdk.stub("threads.get", async ({ threadId }) =>
+      makeThreadResponse({
+        id: threadId,
+        providerId: "claude-code",
+        status: "idle",
+      }),
+    );
+    fixture.host.harness.sdk.stub(
+      "threads.queuedMessages.list",
+      async () => [],
+    );
+    const pending = request(key);
+    await arrived.promise;
+    try {
+      await fixture.host.harness.behavior.callRpc("routing.selection.set", {
+        threadId: "thr_pinned",
+        provider: "claude",
+        accountId: fixture.account.id,
+      });
+    } finally {
+      release.resolve();
+    }
+    expect((await pending).status).toBe(200);
+    expect((await request(key)).status).toBe(200);
+    expect(seen).toEqual(["sk-second", "sk-first"]);
   });
 
   it("preserves the original thread ID validation for selection RPCs", async () => {

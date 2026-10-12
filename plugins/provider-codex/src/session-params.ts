@@ -20,6 +20,7 @@ import type { UserInput as CodexUserInput } from "./generated/codex-app-server/s
 import type { AskForApproval } from "./generated/codex-app-server/schema/v2/AskForApproval.js";
 import type { ApprovalsReviewer } from "./generated/codex-app-server/schema/v2/ApprovalsReviewer.js";
 import { mapBbReasoningLevelToCodex } from "./models.js";
+import { isCodexPoolEnvironmentVariable } from "./pool-launch.js";
 
 export type CodexSessionOptions = {
   model?: string;
@@ -650,6 +651,7 @@ function buildShellEnvironmentPolicyConfig(
   }
   const config: Record<string, string> = {};
   for (const [key, value] of Object.entries(buildShellEnvOverrides(envVars))) {
+    if (isCodexPoolEnvironmentVariable(key)) continue;
     config[`shell_environment_policy.set.${key}`] = value;
   }
   return Object.keys(config).length > 0 ? config : undefined;

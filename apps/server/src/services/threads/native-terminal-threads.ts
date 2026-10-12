@@ -411,6 +411,7 @@ async function openNativeTerminalOnce(
             threadId: thread.id,
             projectId: thread.projectId,
             hostId: environment.hostId,
+            experimental_runtimeKind: "native",
           },
         });
   if (args.reattachOnly) {
