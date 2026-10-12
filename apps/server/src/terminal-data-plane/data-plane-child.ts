@@ -20,6 +20,7 @@ import {
   TERMINAL_DATA_PLANE_OVERLOAD_CLOSE_CODE,
   TERMINAL_DATA_PLANE_PENDING_REPLAY_BUFFER_BYTES,
   TERMINAL_DATA_PLANE_RELAY_HARD_CAP_BYTES,
+  TERMINAL_DATA_PLANE_SOCKET_FRAME_OVERHEAD_BYTES,
   TERMINAL_DATA_PLANE_STATS_INTERVAL_MS,
   TerminalDataPlaneIpcError,
   parseTerminalDataPlaneMainToChildMessage,
@@ -39,6 +40,17 @@ export interface TerminalDataPlaneSocket {
   on(event: "message", listener: (data: unknown) => void): unknown;
   send(data: string): void;
   terminate(): void;
+}
+
+function queuedBytesAfter(
+  socket: TerminalDataPlaneSocket,
+  frame: string,
+): number {
+  return (
+    socket.bufferedAmount +
+    Buffer.byteLength(frame) +
+    TERMINAL_DATA_PLANE_SOCKET_FRAME_OVERHEAD_BYTES
+  );
 }
 
 export type TerminalDataPlaneSocketUpgrade = (
@@ -709,7 +721,7 @@ export class TerminalDataPlaneChild {
           dataBase64,
         });
         if (
-          daemon.bufferedAmount + Buffer.byteLength(frame) >
+          queuedBytesAfter(daemon, frame) >
           TERMINAL_DATA_PLANE_CHILD_PENDING_IPC_BYTES
         ) {
           this.closeTerminalSockets(
@@ -956,8 +968,7 @@ export class TerminalDataPlaneChild {
     frame: string,
   ): void {
     if (
-      socket.bufferedAmount + Buffer.byteLength(frame) >
-      TERMINAL_DATA_PLANE_RELAY_HARD_CAP_BYTES
+      queuedBytesAfter(socket, frame) > TERMINAL_DATA_PLANE_RELAY_HARD_CAP_BYTES
     ) {
       socket.terminate();
       this.handleDaemonClosed(daemonSessionId, socket);
