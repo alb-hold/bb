@@ -475,6 +475,8 @@ const hostDaemonOnlineRpcResponseSuccessSchema = z.discriminatedUnion(
     onlineRpcResponseSuccessSchemaFor("host.write_file"),
     onlineRpcResponseSuccessSchemaFor("provider.list_models"),
     onlineRpcResponseSuccessSchemaFor("provider.health"),
+    onlineRpcResponseSuccessSchemaFor("terminal-data-plane.probe"),
+    onlineRpcResponseSuccessSchemaFor("terminal-data-plane.connect"),
     onlineRpcResponseSuccessSchemaFor("provider.installation.status"),
     onlineRpcResponseSuccessSchemaFor("provider.installation.run"),
     onlineRpcResponseSuccessSchemaFor("provider.usage"),

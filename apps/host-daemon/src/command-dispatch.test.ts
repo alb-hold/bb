@@ -2427,6 +2427,54 @@ describe("dispatchCommand", () => {
     );
   });
 
+  it("answers the terminal data plane probe from the data socket port and opens one only when asked", async () => {
+    const manager = new RuntimeManager({
+      createRuntime: () => createRuntime(),
+      provisionWorkspace: async () => createWorkspace(),
+    });
+    const withoutPort = makeDispatchOptions({ runtimeManager: manager });
+    await expect(
+      dispatchOnlineRpcCommand(
+        { type: "terminal-data-plane.probe" },
+        withoutPort,
+      ),
+    ).resolves.toEqual({ dataSocket: false, ipcVersion: 1 });
+    await expect(
+      dispatchOnlineRpcCommand(
+        {
+          type: "terminal-data-plane.connect",
+          url: "ws://127.0.0.1:1/internal/terminal-data",
+          ticket: "ticket-ticket-ticket",
+        },
+        withoutPort,
+      ),
+    ).resolves.toEqual({ connected: false });
+
+    const connect = vi.fn(async () => true);
+    const withPort = makeDispatchOptions({
+      runtimeManager: manager,
+      terminalDataSocket: { connect },
+    });
+    await expect(
+      dispatchOnlineRpcCommand({ type: "terminal-data-plane.probe" }, withPort),
+    ).resolves.toEqual({ dataSocket: true, ipcVersion: 1 });
+    expect(connect).not.toHaveBeenCalled();
+    await expect(
+      dispatchOnlineRpcCommand(
+        {
+          type: "terminal-data-plane.connect",
+          url: "ws://127.0.0.1:1/internal/terminal-data",
+          ticket: "ticket-ticket-ticket",
+        },
+        withPort,
+      ),
+    ).resolves.toEqual({ connected: true });
+    expect(connect).toHaveBeenCalledWith({
+      url: "ws://127.0.0.1:1/internal/terminal-data",
+      ticket: "ticket-ticket-ticket",
+    });
+  });
+
   it("routes provider health and usage to the targeted bridge runtime", async () => {
     const runtime = createRuntime();
     const manager = new RuntimeManager({
