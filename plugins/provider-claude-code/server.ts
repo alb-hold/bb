@@ -95,6 +95,7 @@ export default function plugin(bb: BbPluginApi) {
             close: ["PostToolUse", "PostToolUseFailure", "PermissionDenied"],
             idField: "tool_name",
             label: "Claude Code needs permission to use",
+            skip: ["AskUserQuestion", "ExitPlanMode"],
           },
         },
         transcript: {

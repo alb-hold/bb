@@ -79,6 +79,7 @@ export function classifyHookRecord(
     const id = readRecordField(record, permission.idField);
     if (typeof id === "string" && id.length > 0) {
       if (permission.open.includes(event)) {
+        if (permission.skip?.includes(id)) return { state: null, prompt: null };
         return {
           state: null,
           prompt: null,

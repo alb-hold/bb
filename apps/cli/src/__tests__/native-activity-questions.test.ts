@@ -273,6 +273,71 @@ describe("native terminal questions", () => {
     ).toEqual({ state: "working", prompt: null });
   });
 
+  it.each([
+    ["hook before the transcript record", true],
+    ["transcript record before the hook", false],
+  ])(
+    "shows one waiting entry for a real AskUserQuestion that also fires PermissionRequest (%s)",
+    (_name, hookFirst) => {
+      const hooks = CLAUDE.hooks!;
+      const tracker = new NativeActivityTracker();
+      tracker.apply({ state: "working", prompt: "deploy" });
+      const permissionRequest = () =>
+        tracker.apply(
+          classifyHookRecord(hooks, {
+            hook_event_name: "PermissionRequest",
+            tool_name: "AskUserQuestion",
+            tool_input: { questions: [{ question: "Which target?" }] },
+          }),
+        );
+      const transcriptRecord = () =>
+        tracker.apply(
+          claudeTranscript(askUserQuestion("toolu_ask", "Which target?")),
+        );
+      let last: NativeActivityReport | null;
+      if (hookFirst) {
+        permissionRequest();
+        last = transcriptRecord();
+      } else {
+        transcriptRecord();
+        last = permissionRequest();
+      }
+      const open = last ?? tracker.heartbeat();
+      expect(waiting(open)).toEqual([
+        { id: "toolu_ask", prompt: "Which target?" },
+      ]);
+      expect(
+        tracker.apply(
+          classifyHookRecord(hooks, {
+            hook_event_name: "PostToolUse",
+            tool_name: "AskUserQuestion",
+            tool_use_id: "toolu_ask",
+          }),
+        ),
+      ).toBeNull();
+      expect(tracker.apply(claudeTranscript(toolResult("toolu_ask")))).toEqual({
+        state: "working",
+        prompt: null,
+      });
+      expect(tracker.heartbeat()).toEqual({ state: "working", prompt: null });
+    },
+  );
+
+  it("does not add a permission entry for plan approval, which the transcript already reports", () => {
+    const hooks = CLAUDE.hooks!;
+    const tracker = new NativeActivityTracker();
+    tracker.apply({ state: "working", prompt: "plan it" });
+    expect(
+      tracker.apply(
+        classifyHookRecord(hooks, {
+          hook_event_name: "PermissionRequest",
+          tool_name: "ExitPlanMode",
+        }),
+      ),
+    ).toBeNull();
+    expect(tracker.heartbeat()).toEqual({ state: "working", prompt: null });
+  });
+
   it("reports a blocking Codex request_user_input and clears it on its output", () => {
     const tracker = new NativeActivityTracker();
     tracker.apply(

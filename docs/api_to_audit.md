@@ -1089,7 +1089,8 @@ command hooks that append each event's JSON to a private file) and
 `transcript` (record matches on the session file: equal fields, string
 prefixes, and a prompt text field); `transcript.questions` (`open` and `close`
 record matches that carry a question id) and `hooks.permission` (open and close
-hook events plus the tool-identifying field) mark a CLI blocked on a question
+hook events, the tool-identifying field, and tool ids to skip because the
+transcript already reports them) mark a CLI blocked on a question
 or permission prompt. The wrapper reports working, waiting (with the open
 question ids and texts), idle and the
 first new prompt through `sdk.nativeTerminals.reportActivity`; a waiting

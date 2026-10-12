@@ -174,7 +174,8 @@ lists `open` record matches (the field holding the question's id, an optional
 field holding its text, and a fallback `label`) and `close` matches that carry
 the same id once the user answers; `hooks.permission` names the hook events
 that open and close a permission prompt and the field that identifies the
-tool. An open question survives working signals and ends on its own close
+tool, and `skip` lists tool ids whose permission hook is not reported because
+the transcript already declares them as questions (one prompt, one row). An open question survives working signals and ends on its own close
 match, a new prompt, an interrupt or the CLI exiting. A non-blocking question
 must not be declared.
 

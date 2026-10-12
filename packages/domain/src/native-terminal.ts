@@ -107,6 +107,7 @@ export const providerNativeTerminalActivitySchema = z
             close: z.array(hookEventNameSchema).min(1).max(8),
             idField: recordFieldPathSchema,
             label: questionLabelSchema,
+            skip: z.array(z.string().min(1).max(256)).max(8).optional(),
           })
           .strict()
           .optional(),
