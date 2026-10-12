@@ -375,6 +375,15 @@ describe("theme.css sidebar width registration", () => {
 });
 
 describe("thread row trailing space", () => {
+  it("compacts shortcut hints alongside full status text before metadata", () => {
+    expect(css).toMatch(
+      /\[data-sidebar-status-full\],\s*\.bb-sidebar-hover-actions-row \[data-sidebar-shortcut-secondary\]\s*\)\s*\{\s*display: none;/,
+    );
+    expect(css).toMatch(
+      /@container sidebar-thread-row \(min-width: 24rem\)\s*\{\s*:where\([^}]+\[data-sidebar-shortcut-secondary\]\s*\)\s*\{\s*display: inline;/,
+    );
+  });
+
   it("reveals actions on pointer hover and keyboard focus without hiding metadata", () => {
     expect(css).toMatch(
       /\.bb-sidebar-hover-actions-row:is\(:hover, :has\(:focus-visible\)\)\s+\.bb-sidebar-hover-actions,[^{]+\{\s*pointer-events: auto;\s*opacity: 1;/,

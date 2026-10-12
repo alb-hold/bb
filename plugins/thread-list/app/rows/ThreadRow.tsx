@@ -850,7 +850,7 @@ function ThreadRowComponent({
         )}
       >
         <SidebarThreadPullRequestChip threadId={thread.id} />
-        {!shortcut && hasVisibleStatus ? (
+        {hasVisibleStatus ? (
           <span
             className={cn(
               "relative flex shrink-0 items-center justify-center",
@@ -885,8 +885,14 @@ function ThreadRowComponent({
               />
             )}
           </span>
-        ) : shortcut ? (
-          <AppCommandShortcutPill shortcut={shortcut} />
+        ) : null}
+        {shortcut ? (
+          <span
+            data-sidebar-shortcut-secondary={hasVisibleStatus ? "" : undefined}
+            className="shrink-0"
+          >
+            <AppCommandShortcutPill shortcut={shortcut} />
+          </span>
         ) : null}
         {thread.archivedAt !== null ? (
           <span className="flex shrink-0 items-center gap-1 [@media(hover:none)]:hidden">
@@ -922,7 +928,7 @@ function ThreadRowComponent({
               />
             </span>
           </span>
-        ) : shortcut ? null : (
+        ) : (
           <div
             data-sidebar-hover-actions-open={isActionsOpen ? "true" : undefined}
             data-sidebar-hover-actions-mobile={

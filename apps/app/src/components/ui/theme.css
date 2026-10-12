@@ -332,12 +332,18 @@
     color: color-mix(in oklch, var(--success) 80%, var(--ink));
   }
 
-  :where(.bb-sidebar-hover-actions-row [data-sidebar-status-full]) {
+  :where(
+    .bb-sidebar-hover-actions-row [data-sidebar-status-full],
+    .bb-sidebar-hover-actions-row [data-sidebar-shortcut-secondary]
+  ) {
     display: none;
   }
 
   @container sidebar-thread-row (min-width: 24rem) {
-    :where(.bb-sidebar-hover-actions-row [data-sidebar-status-full]) {
+    :where(
+      .bb-sidebar-hover-actions-row [data-sidebar-status-full],
+      .bb-sidebar-hover-actions-row [data-sidebar-shortcut-secondary]
+    ) {
       display: inline;
     }
   }

@@ -640,14 +640,20 @@ describe("ThreadRow", () => {
   it.each(
     [false, true].flatMap((isCompactViewport) =>
       (["Working", "Done"] as const).flatMap((statusLabel) =>
-        (["resting", "hover", "focus", "menu-open"] as const).map(
-          (state) => ({ isCompactViewport, statusLabel, state }),
+        (["resting", "hover", "focus", "menu-open"] as const).flatMap(
+          (state) =>
+            [undefined, "3"].map((shortcutKey) => ({
+              isCompactViewport,
+              statusLabel,
+              state,
+              shortcutKey,
+            })),
         ),
       ),
     ),
   )(
-    "keeps $statusLabel and the PR visible in $state (mobile=$isCompactViewport)",
-    async ({ isCompactViewport, statusLabel, state }) => {
+    "keeps $statusLabel and the PR visible in $state (mobile=$isCompactViewport, shortcut=$shortcutKey)",
+    async ({ isCompactViewport, statusLabel, state, shortcutKey }) => {
       const { container } = renderThreadRow({
         thread: createThread(
           statusLabel === "Working"
@@ -655,6 +661,7 @@ describe("ThreadRow", () => {
             : { isUnread: true },
         ),
         isCompactViewport,
+        shortcutKey,
         sidebarPullRequest: createPullRequest("open"),
       });
       const row = container.querySelector<HTMLElement>(
@@ -688,6 +695,14 @@ describe("ThreadRow", () => {
         statusLabel === "Working" ? "working" : "done-unread",
       );
       expectPersistentRowMetadata(glyph);
+      if (shortcutKey) {
+        expect(
+          screen.getByRole("link", { name: "Open Thread" }).getAttribute("aria-keyshortcuts"),
+        ).toBe("Meta+3");
+        expect(
+          screen.getByText("⌘3").closest("[data-sidebar-shortcut-secondary]"),
+        ).not.toBeNull();
+      }
       expect(status.classList.contains("shrink-0")).toBe(true);
       expect(row.querySelector(".bb-thread-title")?.classList).toContain(
         "flex-1",
@@ -1248,7 +1263,7 @@ describe("ThreadRow", () => {
     expect(statusGlyph().hasAttribute("data-row-status")).toBe(false);
   });
 
-  it("shows a keyboard shortcut in place of a plugin status", () => {
+  it("keeps a plugin status alongside a keyboard shortcut", () => {
     renderThreadRow({
       pluginStatus: {
         icon: "AiContentGenerator01",
@@ -1258,14 +1273,16 @@ describe("ThreadRow", () => {
     });
 
     expect(screen.getByText("⌘3")).not.toBeNull();
-    expect(renderedIndicators()).toEqual([]);
+    expect(statusGlyph().getAttribute("data-row-status")).toBe(
+      "Plugin improving draft",
+    );
   });
 
-  it("shows a keyboard shortcut in place of a split mini-map", () => {
+  it("keeps a split mini-map alongside a keyboard shortcut", () => {
     renderSplitThreadRow({ shortcutKey: "3" });
 
     expect(screen.getByText("⌘3")).not.toBeNull();
-    expect(screen.queryByRole("img", { name: /open in split/ })).toBeNull();
+    expect(screen.getByRole("img", { name: /open in split/ })).not.toBeNull();
   });
 
   it("passes the plugin status tone through to the status glyph", () => {
@@ -1630,7 +1647,7 @@ describe("ThreadRow", () => {
     expect(tier?.querySelector('[aria-hidden="true"].w-px')).not.toBeNull();
   });
 
-  it("shows its Command shortcut in place of an active indicator", () => {
+  it("keeps its active indicator and actions alongside a Command shortcut", () => {
     renderThreadRow({
       shortcutKey: "3",
       thread: createThread({ status: "active", runtimeStatus: "active" }),
@@ -1640,7 +1657,9 @@ describe("ThreadRow", () => {
     expect(shortcut.className).toContain("px-1.5");
     expect(shortcut.className).toContain("py-1");
     expect(shortcut.className).toContain("opacity-60");
-    expect(renderedIndicators()).toEqual([]);
+    expect(screen.getByRole("img", { name: "Working" })).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Archive" })).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Thread actions" })).not.toBeNull();
     expect(
       screen
         .getByRole("link", { name: "Open Thread" })
