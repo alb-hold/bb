@@ -200,7 +200,7 @@ export class ThreadTokenStore {
       if (
         record !== null &&
         !archived &&
-        !this.expired(record) &&
+        this.restorable(record) &&
         this.fileEpoch(name) === this.archiveEpoch(record.threadId) &&
         (await this.isLive(record, enrolled))
       ) {
@@ -236,7 +236,7 @@ export class ThreadTokenStore {
       if (
         record !== null &&
         !archived &&
-        !this.expired(record) &&
+        this.restorable(record) &&
         this.fileEpoch(name) === this.archiveEpoch(record.threadId) &&
         (await this.isLive(record, enrolled))
       ) {
@@ -778,8 +778,24 @@ export class ThreadTokenStore {
     );
   }
 
-  private expired(record: { expiresAt?: number }): boolean {
-    return record.expiresAt !== undefined && record.expiresAt <= this.now();
+  private expired(record: {
+    lifetime?: "process";
+    expiresAt?: number;
+  }): boolean {
+    if (record.lifetime !== "process") return false;
+    return record.expiresAt === undefined || record.expiresAt <= this.now();
+  }
+
+  private restorable(record: {
+    lifetime?: "process";
+    expiresAt?: number;
+  }): boolean {
+    if (record.lifetime !== "process") return true;
+    return (
+      record.expiresAt !== undefined &&
+      !this.expired(record) &&
+      record.expiresAt <= this.now() + PROCESS_CREDENTIAL_MAX_AGE_MS
+    );
   }
 
   private routeMapKey(

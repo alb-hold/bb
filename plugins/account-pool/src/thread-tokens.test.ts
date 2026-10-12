@@ -243,6 +243,64 @@ it("removes a surviving process credential when the sweep finds the thread gone"
   expect(await again.authenticate(token)).toBeNull();
 });
 
+it.each([
+  ["missing", (_stored: Record<string, unknown>) => undefined],
+  ["malformed", (_stored: Record<string, unknown>) => "soon"],
+  ["not an integer", (_stored: Record<string, unknown>) => 1.5],
+  ["zero", (_stored: Record<string, unknown>) => 0],
+  [
+    "further out than mint plus the maximum",
+    (_stored: Record<string, unknown>) =>
+      8_000_000 + PROCESS_CREDENTIAL_MAX_AGE_MS + 1,
+  ],
+])(
+  "discards a restored process record whose expiry is %s and removes its file",
+  async (_label, expiry) => {
+    const { directory, hosts, route, hostToken } = await fixture();
+    const clock = 8_000_000;
+    const minting = new ThreadTokenStore(directory, hosts, () => clock);
+    await minting.initialize([route.hostId]);
+    const nestedRoute = { hostId: route.hostId, threadId: route.threadId };
+    const token = await minting.forThread(route, hostToken, "process");
+    const nested = await minting.forNested(nestedRoute, hostToken, "process");
+    const names = (await fs.readdir(directory)).filter((name) =>
+      name.startsWith("scoped-process-"),
+    );
+    expect(names).toHaveLength(2);
+    for (const name of names) {
+      const file = path.join(directory, name);
+      const stored = z
+        .record(z.string(), z.unknown())
+        .parse(JSON.parse(await fs.readFile(file, "utf8")));
+      const value = expiry(stored);
+      if (value === undefined) delete stored.expiresAt;
+      else stored.expiresAt = value;
+      await fs.writeFile(file, JSON.stringify(stored));
+    }
+    const restored = new ThreadTokenStore(directory, hosts, () => clock);
+    await restored.initialize([route.hostId]);
+    expect(await restored.authenticate(token)).toBeNull();
+    expect(await restored.authenticateNested(nested)).toBeNull();
+    expect(restored.isProcessCredential(token)).toBe(false);
+    expect(
+      (await fs.readdir(directory)).filter((name) =>
+        name.startsWith("scoped-process-"),
+      ),
+    ).toEqual([]);
+  },
+);
+
+it("accepts a restored process record whose expiry is exactly mint plus the maximum", async () => {
+  const { directory, hosts, route, hostToken } = await fixture();
+  const clock = 9_000_000;
+  const minting = new ThreadTokenStore(directory, hosts, () => clock);
+  await minting.initialize([route.hostId]);
+  const token = await minting.forThread(route, hostToken, "process");
+  const restored = new ThreadTokenStore(directory, hosts, () => clock);
+  await restored.initialize([route.hostId]);
+  expect(await restored.authenticate(token)).toEqual(route);
+});
+
 it("scrubs existing raw provider and nested tokens to hashes without losing authentication", async () => {
   const { directory, hosts, threads, route, hostToken } = await fixture();
   const tokens = [
