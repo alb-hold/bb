@@ -72,7 +72,12 @@ function createFixture() {
     handleMessage: vi.fn(),
     recordInputActivity: vi.fn(),
   };
-  const router = new TerminalDataPlaneRouter(transport, lifecycle);
+  const onTerminalExited = vi.fn();
+  const router = new TerminalDataPlaneRouter(
+    transport,
+    lifecycle,
+    onTerminalExited,
+  );
   const request = { url: "/ws/terminals/term_1", headers: [], headBase64: "" };
   const attach = (terminalId = "term_1") => {
     const raw = {} as Socket;
@@ -91,7 +96,16 @@ function createFixture() {
     return { attachId, raw };
   };
   const types = () => sent.map((entry) => entry.message.type);
-  return { attach, attached, lifecycle, router, sent, transport, types };
+  return {
+    attach,
+    attached,
+    lifecycle,
+    onTerminalExited,
+    router,
+    sent,
+    transport,
+    types,
+  };
 }
 
 describe("TerminalDataPlaneRouter", () => {
@@ -216,6 +230,54 @@ describe("TerminalDataPlaneRouter", () => {
     expect(fixture.lifecycle.handleMessage).toHaveBeenCalledWith(
       expect.objectContaining({ terminalId: "term_1" }),
     );
+  });
+
+  it("delivers input only to the attach that named itself and only for its own terminal", () => {
+    const fixture = createFixture();
+    const first = fixture.attach("term_1");
+    const other = fixture.attach("term_2");
+    const input = (attachId: string, terminalId: string) =>
+      fixture.router.handleChildMessage({
+        v: V,
+        type: "terminal.input",
+        attachId,
+        terminalId,
+        dataBase64: "YQ==",
+      });
+
+    input(other.attachId, "term_1");
+    input("unknown", "term_1");
+    input(first.attachId, "term_2");
+    expect(fixture.lifecycle.handleMessage).not.toHaveBeenCalled();
+
+    input(first.attachId, "term_1");
+    expect(fixture.lifecycle.handleMessage).toHaveBeenCalledTimes(1);
+    expect(fixture.lifecycle.handleMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: { type: "input", dataBase64: "YQ==" },
+        socket: fixture.attached[0],
+        terminalId: "term_1",
+      }),
+    );
+  });
+
+  it("tells the owner when a terminal exits, even when another browser's identical broadcast is dropped", async () => {
+    const fixture = createFixture();
+    fixture.attach();
+    fixture.attach();
+    await Promise.resolve();
+    const exited = JSON.stringify({ type: "exited", session });
+    fixture.attached[0]?.send(exited);
+    fixture.attached[1]?.send(exited);
+    expect(fixture.onTerminalExited).toHaveBeenCalledTimes(2);
+    expect(fixture.onTerminalExited).toHaveBeenCalledWith("term_1");
+    expect(
+      fixture.sent.filter(
+        (entry) =>
+          entry.message.type === "browser.send" &&
+          entry.message.message.type === "exited",
+      ),
+    ).toHaveLength(1);
   });
 
   it("detaches the lifecycle socket when the child reports the browser gone", () => {
