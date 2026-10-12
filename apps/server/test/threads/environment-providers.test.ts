@@ -988,19 +988,25 @@ describe("environment providers are asked inside provisioning", () => {
         inputs: z.string().transform(Number),
         provision: (context) => {
           inputs.push(context.inputs);
-          return { action: "wait", reason: "Starting container…" };
+          return { action: "reject", message: "Observed transformed inputs" };
         },
       });
+      const create = vi.spyOn(listEnvironmentProviders()[0].provider, "create");
       const { project } = seedTargetFixture(
         harness,
         "host-target-transformed-inputs",
       );
-      await createTargetThread(harness, {
+      const thread = await createTargetThread(harness, {
         projectId: project.id,
         inputs: "2",
       });
 
-      await expect.poll(() => inputs).toEqual([2]);
+      await expect
+        .poll(() => getThread(harness.db, thread.id)?.status)
+        .toBe("error");
+      expect(create).toHaveBeenCalledOnce();
+      expect(create.mock.calls[0]?.[0].inputs).toBe(2);
+      expect(inputs).toEqual([2]);
     });
   });
 

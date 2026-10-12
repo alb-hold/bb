@@ -11,7 +11,7 @@ import {
 import { ApiError } from "../../errors.js";
 import { resolvePromptAttachmentReferences } from "../projects/attachments.js";
 import {
-  nativeTerminalPrompt,
+  nativeTerminalPromptParts,
   sendNativeTerminalMessage,
 } from "./native-terminal-threads.js";
 import type {
@@ -46,7 +46,7 @@ export async function acceptThreadSendRequest(
       projectId: args.thread.projectId,
       hostId,
     });
-    const text = nativeTerminalPrompt(deps, {
+    const pastes = nativeTerminalPromptParts(deps, {
       hostId,
       input,
       projectId: args.thread.projectId,
@@ -56,10 +56,13 @@ export async function acceptThreadSendRequest(
       args.thread.id,
       projectAttachmentPaths(input),
     );
-    if (text === null) {
+    if (pastes.length === 0) {
       throw new ApiError(400, "invalid_request", "Message text is empty");
     }
-    await sendNativeTerminalMessage(deps, { threadId: args.thread.id, text });
+    await sendNativeTerminalMessage(deps, {
+      threadId: args.thread.id,
+      pastes,
+    });
     return { ok: true, delivery: "sent" };
   }
   assertThreadHostAcceptsWork(deps.db, args.thread);
