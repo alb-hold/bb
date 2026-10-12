@@ -18,6 +18,7 @@ import {
 
 interface NativeThreadTerminalMainProps {
   onOpenLink?: MarkdownPreviewLinkHandler;
+  projectId: string;
   threadId: string;
   threadIsProvisioning: boolean;
   view: NativeTerminalThread;
@@ -25,6 +26,7 @@ interface NativeThreadTerminalMainProps {
 
 export function NativeThreadTerminalMain({
   onOpenLink,
+  projectId,
   threadId,
   threadIsProvisioning,
   view,
@@ -67,6 +69,7 @@ export function NativeThreadTerminalMain({
         />
         {isTouchDevice ? (
           <NativeTerminalPromptBar
+            projectId={projectId}
             providerLabel={providerLabel}
             threadId={threadId}
           />

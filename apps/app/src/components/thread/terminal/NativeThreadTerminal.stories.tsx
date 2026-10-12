@@ -62,6 +62,7 @@ function NativeThreadPhone() {
             onPaste={() => undefined}
           />
           <NativeTerminalPromptBar
+            projectId="proj-story"
             providerLabel="Native CLI"
             threadId="thr-story"
           />

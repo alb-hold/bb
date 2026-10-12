@@ -32,6 +32,8 @@ import {
   decodeTerminalOutputChunks,
   terminalOutputAlreadyShowsText,
   terminalOutputShowsPaste,
+  terminalOutputShowsPasteAgain,
+  terminalScreenAlreadyShowsText,
 } from "./native-terminal-echo.js";
 import { createClientTurnRequestId } from "./thread-events.js";
 import { scheduleThreadProvisioningAdvance } from "./thread-provisioning.js";
@@ -158,12 +160,19 @@ export function nativeTerminalPrompt(
 export const NATIVE_TERMINAL_ENDED_MESSAGE =
   "The CLI for this thread ended while bb was disconnected from this machine. Open the terminal again to resume the session.";
 
+function shellWord(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
 export function nativeTerminalLaunchCommand(args: {
   executable: string;
+  launchArgs: readonly string[];
   reattachOnly: boolean;
   threadId: string;
 }): string {
-  const executable = args.executable;
+  const executable = [args.executable, ...args.launchArgs.map(shellWord)].join(
+    " ",
+  );
   const env = `BB_THREAD_ID=${args.threadId}`;
   const wrapper = args.reattachOnly
     ? `"$BB_CLI" thread native-run ${args.threadId} --reattach`
@@ -182,6 +191,7 @@ export function beginNativeTerminalThreadProvisioning(
   deps: ThreadProvisioningDeps & Pick<AppDeps, "config" | "logger">,
   args: {
     environmentIntent: ThreadProvisionEnvironmentIntent;
+    input: PromptInput[];
     thread: ThreadRow;
     titleProvided: boolean;
   },
@@ -202,7 +212,7 @@ export function beginNativeTerminalThreadProvisioning(
           environmentIntent: args.environmentIntent,
           execution: null,
           fork: null,
-          input: [],
+          input: args.input,
           seedWithoutRun: true,
           titleProvided: args.titleProvided,
         }),
@@ -379,6 +389,7 @@ async function openNativeTerminalOnce(
         mode: "command",
         command: nativeTerminalLaunchCommand({
           executable: provider.cli.executable,
+          launchArgs: provider.cli.launchArgs,
           reattachOnly: args.reattachOnly,
           threadId: thread.id,
         }),
@@ -610,13 +621,25 @@ async function deliverNativeTerminalMessage(
   });
   if (before.status !== "running") throw nativeTerminalNotRunning();
   const shown = decodeTerminalOutputChunks(before.chunks);
-  if (terminalOutputAlreadyShowsText({ output: shown, text: args.text })) {
+  if (
+    terminalScreenAlreadyShowsText({
+      output: shown,
+      screenRows: view.terminal.rows,
+      text: args.text,
+    })
+  ) {
     throw new ApiError(
       409,
       "native_terminal_input_ambiguous",
       `${provider.displayName} already shows this text, so an echo of it could not be told apart from what is on screen, and nothing was sent. Type the message in the terminal, or reword it.`,
     );
   }
+  const showsPaste = terminalOutputAlreadyShowsText({
+    output: shown,
+    text: args.text,
+  })
+    ? terminalOutputShowsPasteAgain
+    : terminalOutputShowsPaste;
   const bracketed = `\u001b[200~${args.text}\u001b[201~`;
   deps.terminalSessions.sendTerminalInput({
     terminalId,
@@ -633,7 +656,7 @@ async function deliverNativeTerminalMessage(
     });
     if (after.status !== "running") throw nativeTerminalNotRunning();
     if (
-      terminalOutputShowsPaste({
+      showsPaste({
         before: shown,
         output: decodeTerminalOutputChunks(after.chunks),
         pastePlaceholders: provider.cli.pastePlaceholders,

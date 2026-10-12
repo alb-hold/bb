@@ -947,6 +947,16 @@ describe("TerminalManager", () => {
     expect(env?.NODE_ENV).toBeUndefined();
   });
 
+  it("keeps the daemon's Electron run-as-node mode out of terminal shells", async () => {
+    vi.stubEnv("ELECTRON_RUN_AS_NODE", "1");
+    const harness = createHarness();
+    await openTerminal(harness);
+
+    const env = harness.adapter.spawned[0]?.args.env;
+    expect(env?.BB_TERMINAL_SESSION_ID).toBe("term-1");
+    expect(env).not.toHaveProperty("ELECTRON_RUN_AS_NODE");
+  });
+
   it("makes every available node-pty spawn-helper executable", async () => {
     const logger = createFakeLogger();
     const packageDirectory = await makeTempDir("bb-node-pty-package-");

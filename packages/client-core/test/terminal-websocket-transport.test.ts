@@ -369,7 +369,7 @@ describe("TerminalWebSocketTransport", () => {
     harness.transport.dispose();
   });
 
-  it("claims the PTY size only on request, sending plain sizes otherwise", () => {
+  it("sends each distinct terminal size once", () => {
     const harness = createHarness();
     harness.transport.sendResize(160, 48);
     harness.transport.start();
@@ -383,11 +383,9 @@ describe("TerminalWebSocketTransport", () => {
 
     harness.transport.sendResize(160, 48);
     expect(resizes()).toHaveLength(1);
-    harness.transport.claimSize();
     harness.transport.sendResize(120, 40);
     expect(resizes()).toEqual([
       JSON.stringify({ type: "resize", cols: 160, rows: 48 }),
-      JSON.stringify({ type: "resize", cols: 160, rows: 48, claim: true }),
       JSON.stringify({ type: "resize", cols: 120, rows: 40 }),
     ]);
     harness.transport.dispose();
