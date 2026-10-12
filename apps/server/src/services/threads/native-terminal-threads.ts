@@ -87,6 +87,7 @@ function bumpReattachEpoch(threadId: string): number {
 const NATIVE_REATTACH_POLL_MS = 250;
 const NATIVE_REATTACH_SETTLE_MS = 15_000;
 const NATIVE_REATTACH_DEADLINE_MS = 45_000;
+const NATIVE_REATTACH_RETRY_MS = 2_000;
 const NATIVE_TERMINAL_ECHO_POLL_MS = 100;
 const NATIVE_TERMINAL_ECHO_TIMEOUT_MS = 5000;
 const NATIVE_TERMINAL_ECHO_CONTEXT_BYTES = 64 * 1024;
@@ -501,6 +502,19 @@ export function listNativeTerminalThreadsAwaitingDaemon(
   return listNativeTerminalThreadsWithDisconnectedTerminal(deps.db, hostId);
 }
 
+export function reopenErrorProvesHolderGone(error: unknown): boolean {
+  if (error instanceof ApiError) {
+    return (
+      error.body.code === "terminal_not_found" ||
+      error.body.code === "terminal_open_cancelled"
+    );
+  }
+  if (error instanceof Error && "code" in error) {
+    return error.code === "ENOENT" || error.code === "ECONNREFUSED";
+  }
+  return false;
+}
+
 function interruptThreadWhoseHolderIsGone(
   deps: NativeTerminalReopenDeps,
   args: { hostId: string; threadId: string },
@@ -554,7 +568,10 @@ export function reopenNativeTerminalsAfterDaemonReconnect(
           terminal === null || !isActiveTerminalSessionStatus(terminal.status)
         );
       };
+      let expired = false;
+      let leaveToDeadline = false;
       const deadline = setTimeout(() => {
+        expired = true;
         if (!stillWaiting()) return;
         interruptThreadWhoseHolderIsGone(deps, {
           hostId: args.hostId,
@@ -595,11 +612,32 @@ export function reopenNativeTerminalsAfterDaemonReconnect(
         ) {
           return;
         }
-        const reopened = await openNativeTerminalDeduplicated(deps, {
-          reattachOnly: true,
-          threadId,
-          request: {},
-        });
+        let reopened: NativeTerminalThread;
+        for (;;) {
+          try {
+            reopened = await openNativeTerminalDeduplicated(deps, {
+              reattachOnly: true,
+              threadId,
+              request: {},
+            });
+            break;
+          } catch (error: unknown) {
+            if (
+              reopenErrorProvesHolderGone(error) ||
+              expired ||
+              !stillWaiting()
+            ) {
+              throw error;
+            }
+            deps.logger.warn(
+              { err: error, hostId: args.hostId, threadId },
+              "Retrying the native terminal reattach after a transient failure",
+            );
+            await new Promise<void>((resolve) => {
+              setTimeout(resolve, NATIVE_REATTACH_RETRY_MS).unref();
+            });
+          }
+        }
         deps.logger.info(
           { hostId: args.hostId, terminalId: reopened.terminal?.id, threadId },
           "Reopened native terminal after the host daemon reconnected",
@@ -616,14 +654,16 @@ export function reopenNativeTerminalsAfterDaemonReconnect(
           { err: error, hostId: args.hostId, threadId },
           "Failed to reopen native terminal after the host daemon reconnected",
         );
-        if (stillWaiting()) {
+        if (!reopenErrorProvesHolderGone(error)) {
+          leaveToDeadline = true;
+        } else if (stillWaiting()) {
           interruptThreadWhoseHolderIsGone(deps, {
             hostId: args.hostId,
             threadId,
           });
         }
       } finally {
-        clearTimeout(deadline);
+        if (!leaveToDeadline) clearTimeout(deadline);
       }
     }),
   ).then(() => undefined);

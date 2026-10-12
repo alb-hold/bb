@@ -38,6 +38,7 @@ import { internalAuthHeaders } from "../helpers/commands.js";
 import { createProviderRegistryService } from "../../src/services/providers/provider-registry.js";
 import { createTestProviderRegistry } from "../helpers/provider-registry.js";
 import { recordNativeTerminalActivity } from "../../src/services/threads/native-terminal-activity.js";
+import { ApiError } from "../../src/errors.js";
 import { onDaemonSocketOpen } from "../../src/ws/daemon-protocol.js";
 import { resolvePendingThreadSessionOptions } from "../../src/services/threads/thread-session-options.js";
 import { storeAttachment } from "../../src/services/projects/attachments.js";
@@ -1270,7 +1271,10 @@ describe("native terminal threads", () => {
 
   async function restartDaemonWithRunningNativeThread(
     instanceId: string,
-    options: { beforeRestart?: () => void; deferProviders?: boolean } = {},
+    options: {
+      beforeRestart?: (fixture: Fixture) => void;
+      deferProviders?: boolean;
+    } = {},
   ) {
     const fixture = await createFixture();
     const running = await openRunningNativeThread(fixture, {
@@ -1283,7 +1287,7 @@ describe("native terminal threads", () => {
     expect(getThread(fixture.harness.db, running.thread.id)?.status).toBe(
       "active",
     );
-    options.beforeRestart?.();
+    options.beforeRestart?.(fixture);
     handleDaemonSocketClosed(fixture.harness.deps, {
       sessionId: fixture.sessionId,
     });
@@ -1659,6 +1663,113 @@ describe("native terminal threads", () => {
       expect(interruptionReasons(fixture, running.thread.id)).toEqual([]);
     } finally {
       if (restoreTimers) vi.useRealTimers();
+    }
+  }, 60_000);
+
+  async function restartWithFailingReattach(
+    failure: (attempt: number) => ApiError | null,
+  ) {
+    let attempts = 0;
+    const restart = await restartDaemonWithRunningNativeThread(
+      "instance-restarted",
+      {
+        beforeRestart: (fixture) => {
+          vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+          const terminals = fixture.harness.deps.terminalSessions;
+          const createTerminal = terminals.createTerminal.bind(terminals);
+          vi.spyOn(terminals, "createTerminal").mockImplementation(
+            async (createArgs) => {
+              attempts += 1;
+              const error = failure(attempts);
+              if (error !== null) throw error;
+              return createTerminal(createArgs);
+            },
+          );
+        },
+      },
+    );
+    return { ...restart, attempts: () => attempts };
+  }
+
+  it("keeps a running native thread active when a transient reattach failure is followed by a successful retry", async () => {
+    const { fixture, running, sessionId, socket, attempts } =
+      await restartWithFailingReattach((attempt) =>
+        attempt === 1
+          ? new ApiError(502, "host_disconnected", "Host is not connected")
+          : null,
+      );
+    try {
+      let reopen: TerminalOpenMessage | undefined;
+      for (let step = 0; step < 400 && reopen === undefined; step += 1) {
+        await vi.advanceTimersByTimeAsync(50);
+        reopen = daemonMessages(socket).find(
+          (message): message is TerminalOpenMessage =>
+            message.type === "terminal.open",
+        );
+      }
+      if (reopen === undefined) throw new Error("retry never reopened");
+      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.hostId,
+        sessionId,
+        message: {
+          type: "terminal.opened",
+          requestId: reopen.requestId,
+          terminalId: reopen.terminalId,
+          shell: "/bin/zsh",
+          title: "zsh",
+          initialCwd: "/tmp/native-workspace",
+          cols: reopen.cols,
+          rows: reopen.rows,
+        },
+      });
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(attempts()).toBe(2);
+      expect(getThread(fixture.harness.db, running.thread.id)?.status).toBe(
+        "active",
+      );
+      expect(interruptionReasons(fixture, running.thread.id)).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 60_000);
+
+  it("interrupts a running native thread exactly once at the deadline when every reattach attempt fails transiently", async () => {
+    const { fixture, running, attempts } = await restartWithFailingReattach(
+      () => new ApiError(502, "host_disconnected", "Host is not connected"),
+    );
+    try {
+      await vi.advanceTimersByTimeAsync(44_000);
+      expect(getThread(fixture.harness.db, running.thread.id)?.status).toBe(
+        "active",
+      );
+      expect(interruptionReasons(fixture, running.thread.id)).toEqual([]);
+      expect(attempts()).toBeGreaterThan(1);
+
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(interruptionReasons(fixture, running.thread.id)).toEqual([
+        "host-daemon-restarted",
+      ]);
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(interruptionReasons(fixture, running.thread.id)).toEqual([
+        "host-daemon-restarted",
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 60_000);
+
+  it("interrupts a running native thread at once when the reattach error proves the holder is gone", async () => {
+    const { fixture, running, attempts } = await restartWithFailingReattach(
+      () => new ApiError(502, "terminal_not_found", "No such terminal"),
+    );
+    try {
+      await vi.advanceTimersByTimeAsync(100);
+      expect(attempts()).toBe(1);
+      expect(interruptionReasons(fixture, running.thread.id)).toEqual([
+        "host-daemon-restarted",
+      ]);
+    } finally {
+      vi.useRealTimers();
     }
   }, 60_000);
 
