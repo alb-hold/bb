@@ -40,7 +40,7 @@ async function fixture() {
   };
 }
 
-it("keeps process credentials scoped, revocable, and absent after a restart", async () => {
+it("keeps process credentials scoped, revocable, and valid after a restart without storing the plaintext", async () => {
   const { directory, hosts, threads, route, hostToken } = await fixture();
   const token = await threads.forThread(route, hostToken, "process");
   const nested = await threads.forNested(
@@ -59,8 +59,26 @@ it("keeps process credentials scoped, revocable, and absent after a restart", as
   });
   const restarted = new ThreadTokenStore(directory, hosts);
   await restarted.initialize([route.hostId]);
+  expect(await restarted.authenticate(token, "claude")).toEqual(route);
+  expect(await restarted.authenticate(token, "codex")).toBeNull();
+  expect(restarted.isProcessCredential(token)).toBe(true);
+  expect(await restarted.authenticateNested(nested)).toEqual({
+    hostId: route.hostId,
+    threadId: route.threadId,
+  });
+  expect(await restarted.authenticate(`${token.slice(0, -1)}_`)).toBeNull();
+  for (const name of await fs.readdir(directory)) {
+    const content = await fs.readFile(path.join(directory, name), "utf8");
+    expect(content.includes(token)).toBe(false);
+    expect(content.includes(nested)).toBe(false);
+  }
+  await restarted.removeThread(route.threadId);
   expect(await restarted.authenticate(token)).toBeNull();
   expect(await restarted.authenticateNested(nested)).toBeNull();
+  const afterArchive = new ThreadTokenStore(directory, hosts);
+  await afterArchive.initialize([route.hostId]);
+  expect(await afterArchive.authenticate(token)).toBeNull();
+  expect(await afterArchive.authenticateNested(nested)).toBeNull();
   await threads.removeThread(route.threadId);
   expect(await threads.authenticate(token)).toBeNull();
   expect(await threads.authenticateNested(nested)).toBeNull();
@@ -456,6 +474,41 @@ it("sweeps dead and unenrolled credentials on startup and leaves other secrets a
   expect(await credentialFiles("scoped-nested-route-")).toHaveLength(1);
   expect(await credentialFiles("account-keep")).toHaveLength(1);
   expect(await credentialFiles("hub-token-")).toHaveLength(2);
+});
+
+it("revokes restored process credentials once their machine generation expires or the machine is unenrolled", async () => {
+  const { directory, hosts, threads, route, hostToken, advance } =
+    await fixture();
+  const token = await threads.forThread(route, hostToken, "process");
+  const nested = await threads.forNested(
+    { hostId: route.hostId, threadId: route.threadId },
+    hostToken,
+    "process",
+  );
+  await hosts.rotate(route.hostId);
+  const withinGrace = new ThreadTokenStore(directory, hosts);
+  await withinGrace.initialize([route.hostId]);
+  expect(await withinGrace.authenticate(token)).toEqual(route);
+  advance(10 * 60_000 + 1);
+  const expired = new ThreadTokenStore(directory, hosts);
+  await expired.initialize([route.hostId]);
+  expect(await expired.authenticate(token)).toBeNull();
+  expect(await expired.authenticateNested(nested)).toBeNull();
+  expect(
+    (await fs.readdir(directory)).filter((name) =>
+      name.startsWith("scoped-process-"),
+    ),
+  ).toEqual([]);
+
+  const other = await fixture();
+  const otherToken = await other.threads.forThread(
+    other.route,
+    other.hostToken,
+    "process",
+  );
+  const unenrolled = new ThreadTokenStore(other.directory, other.hosts);
+  await unenrolled.initialize(["host-other"]);
+  expect(await unenrolled.authenticate(otherToken)).toBeNull();
 });
 
 it("preserves machine rotation grace and revokes expired or unenrolled credentials after reload", async () => {

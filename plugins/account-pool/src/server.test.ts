@@ -10705,6 +10705,78 @@ describe("Account Pool credential scoping", () => {
     expect(await statusOf(host, revokedNested, "/availability")).toBe(401);
   });
 
+  it("keeps native terminal credentials valid across a plugin restart and revokes them on archive", async () => {
+    const fixture = await scopedFixture();
+    const native = async (
+      host: Fixture["host"],
+      providerId: "claude-code" | "codex",
+      name: string,
+      threadId: string,
+    ) => {
+      const entries = await host.harness.behavior.resolveProviderEnv(
+        providerId,
+        {
+          threadId,
+          projectId: "project-one",
+          hostId: "host-one",
+          experimental_runtimeKind: "native",
+        },
+      );
+      const entry = entries.find((candidate) => candidate.name === name);
+      if (entry === undefined || typeof entry.value !== "string")
+        throw new Error(`${name} was not resolved.`);
+      return entry.value;
+    };
+    const claude = await native(
+      fixture.host,
+      "claude-code",
+      "ANTHROPIC_AUTH_TOKEN",
+      "thr_native_live",
+    );
+    const nested = await native(
+      fixture.host,
+      "claude-code",
+      PARENT_TOKEN_ENV,
+      "thr_native_live",
+    );
+    const codex = await native(
+      fixture.host,
+      "codex",
+      "CODEX_POOL_AUTH_TOKEN",
+      "thr_native_live",
+    );
+    const archived = await native(
+      fixture.host,
+      "claude-code",
+      "ANTHROPIC_AUTH_TOKEN",
+      "thr_native_archived",
+    );
+    expect(await statusOf(fixture.host, claude, "/v1/messages")).toBe(200);
+    await fixture.host.harness.behavior.emitThreadEvent("thread.archived", {
+      thread: makeThreadResponse({ id: "thr_native_archived" }),
+    });
+    const host = await reloadHub(fixture, () => {});
+    expect(await statusOf(host, claude, "/v1/messages")).toBe(200);
+    expect(await statusOf(host, nested, "/availability")).toBe(200);
+    expect(await statusOf(host, codex, "/v1/responses")).toBe(200);
+    expect(await statusOf(host, claude, "/v1/responses")).toBe(401);
+    expect(await statusOf(host, archived, "/v1/messages")).toBe(401);
+    const forged = `${claude.slice(0, -1)}${claude.endsWith("A") ? "B" : "A"}`;
+    expect(await statusOf(host, forged, "/v1/messages")).toBe(401);
+    const directory = path.join(fixture.dataDir, ...POOL_SECRETS);
+    for (const name of await fs.readdir(directory)) {
+      const content = await fs.readFile(path.join(directory, name), "utf8");
+      for (const token of [claude, nested, codex])
+        expect(content.includes(token)).toBe(false);
+    }
+    await host.harness.behavior.emitThreadEvent("thread.archived", {
+      thread: makeThreadResponse({ id: "thr_native_live" }),
+    });
+    expect(await statusOf(host, claude, "/v1/messages")).toBe(401);
+    expect(await statusOf(host, nested, "/availability")).toBe(401);
+    expect(await statusOf(host, codex, "/v1/responses")).toBe(401);
+  });
+
   async function reloadHub(
     fixture: Fixture,
     stubLookup: (host: Fixture["host"]) => void,
