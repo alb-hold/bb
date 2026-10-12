@@ -177,6 +177,12 @@ replace a newer prompt. Optional transcript
 identity, duplicate records and late records from previous turns are ignored;
 only new working records descended from the final record can reopen a
 completed turn. The reader keeps polling after pending events and completion.
+An optional identity `timestamp` names an ISO timestamp field. Providers that
+declare it must timestamp identifiable records; missing or invalid values are
+ignored. Once record history is evicted, records at or before its timestamp
+cutoff cannot change activity, including UUID replays outside the recent-ID
+window. Claude declares this field. Identity state is bounded to 4,096 records
+and 128 turns; completion anchors and continuation ancestry remain available.
 Claude uses Stop-hook feedback for continuation and the Stop outcome or turn
 duration for completion. These fields require host daemon protocol 235.
 

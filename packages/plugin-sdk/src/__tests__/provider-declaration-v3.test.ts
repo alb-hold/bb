@@ -528,6 +528,7 @@ describe("provider declaration fields renamed in SDK 0.4.16", () => {
             recordId: "uuid",
             parentId: "parentUuid",
             turnId: "promptId",
+            timestamp: "timestamp",
           },
           working: [{ equals: { type: "assistant", isSidechain: false } }],
           idle: [{ equals: { type: "system", hasOutput: false } }],
@@ -542,6 +543,12 @@ describe("provider declaration fields renamed in SDK 0.4.16", () => {
       );
       for (const identity of [
         { recordId: "uuid", parentId: "..parent", turnId: "promptId" },
+        {
+          recordId: "uuid",
+          parentId: "parentUuid",
+          turnId: "promptId",
+          timestamp: "..time",
+        },
         {
           recordId: "uuid",
           parentId: "parentUuid",

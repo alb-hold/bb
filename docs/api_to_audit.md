@@ -1083,6 +1083,15 @@ Optional `hooks.pending` records provisional events without ending a turn;
 `identity` names `recordId`, `parentId` and `turnId` fields so duplicate or late
 records cannot reactivate a finished turn. A new working record descended
 from its completion record can start a background continuation. The reader
+also accepts an optional identity `timestamp` field path for ISO timestamps.
+When declared, missing or invalid timestamps are ignored and records at or
+before the evicted-history timestamp cutoff cannot affect activity. This
+protects replayed UUIDs after their recent-ID entries have been pruned. Claude
+declares it. Retained history is bounded to 4,096 records and 128 turns, while
+completion anchors and compacted continuation ancestry remain available.
+Stabilization must cover replay after eviction, timestamp ties, bounded memory,
+late flushing, blocked-Stop continuation and providers without ordering fields.
+The reader
 keeps polling after pending and idle records. Claude's Stop is provisional;
 its Stop-hook feedback means working and its transcript outcome means idle.
 The declaration wire fields require host daemon protocol 235.

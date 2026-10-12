@@ -125,6 +125,7 @@ export const providerNativeTerminalActivitySchema = z
             recordId: recordFieldPathSchema,
             parentId: recordFieldPathSchema,
             turnId: recordFieldPathSchema,
+            timestamp: recordFieldPathSchema.optional(),
           })
           .strict()
           .optional(),

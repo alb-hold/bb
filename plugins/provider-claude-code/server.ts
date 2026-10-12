@@ -98,6 +98,7 @@ export default function plugin(bb: BbPluginApi) {
             recordId: "uuid",
             parentId: "parentUuid",
             turnId: "promptId",
+            timestamp: "timestamp",
           },
           working: [
             { equals: { type: "assistant", isSidechain: false } },

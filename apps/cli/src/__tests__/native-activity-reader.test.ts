@@ -193,28 +193,43 @@ function claudeFixture(extraWorking: boolean = false) {
   mkdirSync(dir, { recursive: true });
   const transcript = path.join(dir, `${SESSION_ID}.jsonl`);
   const events = path.join(home, "hooks.jsonl");
+  let clock = Date.parse("2026-10-11T10:00:00Z");
+  const stamped = (records: unknown[]) =>
+    records.map((record) => {
+      if (typeof record !== "object" || record === null) return record;
+      const timestamp =
+        "timestamp" in record
+          ? record.timestamp
+          : new Date(++clock).toISOString();
+      const parsed =
+        typeof timestamp === "string" ? Date.parse(timestamp) : NaN;
+      if (Number.isFinite(parsed)) clock = Math.max(clock, parsed);
+      return { ...record, timestamp };
+    });
   writeFileSync(
     transcript,
-    jsonl([
-      {
-        type: "user",
-        uuid: "user-1",
-        parentUuid: null,
-        promptId: "turn-1",
-        origin: { kind: "human" },
-        message: { content: "first prompt" },
-      },
-      {
-        type: "assistant",
-        isSidechain: false,
-        uuid: "answer-1",
-        parentUuid: "user-1",
-        message: {
-          id: "message-1",
-          content: [{ type: "text", text: "first answer" }],
+    jsonl(
+      stamped([
+        {
+          type: "user",
+          uuid: "user-1",
+          parentUuid: null,
+          promptId: "turn-1",
+          origin: { kind: "human" },
+          message: { content: "first prompt" },
         },
-      },
-    ]),
+        {
+          type: "assistant",
+          isSidechain: false,
+          uuid: "answer-1",
+          parentUuid: "user-1",
+          message: {
+            id: "message-1",
+            content: [{ type: "text", text: "first answer" }],
+          },
+        },
+      ]),
+    ),
   );
   writeFileSync(
     events,
@@ -234,7 +249,8 @@ function claudeFixture(extraWorking: boolean = false) {
   return {
     reader,
     hook: (records: unknown[]) => appendFileSync(events, jsonl(records)),
-    append: (records: unknown[]) => appendFileSync(transcript, jsonl(records)),
+    append: (records: unknown[]) =>
+      appendFileSync(transcript, jsonl(stamped(records))),
   };
 }
 
@@ -278,6 +294,235 @@ function retainedIdentitySizes(reader: NativeActivityReader) {
 }
 
 describe("NativeActivityReader", () => {
+  it("accepts distinct records sharing a timestamp and ignores unordered records", () => {
+    const fixture = claudeFixture();
+    fixture.append([
+      {
+        type: "system",
+        subtype: "stop_hook_summary",
+        isSidechain: false,
+        hasOutput: false,
+        uuid: "invalid-time-end",
+        parentUuid: "answer-1",
+        timestamp: "invalid timestamp",
+      },
+      {
+        type: "system",
+        subtype: "stop_hook_summary",
+        isSidechain: false,
+        hasOutput: false,
+        uuid: "missing-time-end",
+        parentUuid: "answer-1",
+        timestamp: null,
+      },
+    ]);
+    expect(fixture.reader.read()).toEqual([]);
+    expect(fixture.reader.heartbeat()).toEqual({
+      state: "working",
+      prompt: null,
+    });
+    const timestamp = "2026-10-11T10:00:01.000Z";
+    fixture.append([
+      {
+        type: "system",
+        subtype: "stop_hook_summary",
+        isSidechain: false,
+        hasOutput: false,
+        uuid: "same-time-end",
+        parentUuid: "answer-1",
+        timestamp,
+      },
+      {
+        type: "assistant",
+        isSidechain: false,
+        uuid: "same-time-continuation",
+        parentUuid: "same-time-end",
+        timestamp,
+        message: {
+          content: [{ type: "text", text: "same timestamp continuation" }],
+        },
+      },
+      {
+        type: "system",
+        subtype: "stop_hook_summary",
+        isSidechain: false,
+        hasOutput: false,
+        uuid: "same-time-final-end",
+        parentUuid: "same-time-continuation",
+        timestamp,
+      },
+    ]);
+    expect(fixture.reader.read()).toEqual([
+      { state: "idle", prompt: null },
+      { state: "working", prompt: null },
+      { state: "idle", prompt: null },
+    ]);
+    expect(fixture.reader.heartbeat()).toBeNull();
+  });
+
+  it.each(["assistant", "completion", "user"])(
+    "ignores evicted %s and completed-turn replays while preserving later continuation",
+    (kind) => {
+      const fixture = claudeFixture();
+      const replay = {
+        type:
+          kind === "assistant"
+            ? "assistant"
+            : kind === "completion"
+              ? "system"
+              : "user",
+        ...(kind === "completion"
+          ? { subtype: "stop_hook_summary", hasOutput: false }
+          : {}),
+        ...(kind === "user" ? { origin: { kind: "human" } } : {}),
+        isSidechain: false,
+        uuid: "evicted-replay",
+        promptId: "turn-1",
+        parentUuid: kind === "user" ? null : "answer-1",
+        timestamp: "2026-10-11T10:00:01.000Z",
+        message: { content: [{ type: "text", text: "original record" }] },
+      };
+      fixture.append([replay]);
+      expect(fixture.reader.read()).toEqual(
+        kind === "completion" ? [{ state: "idle", prompt: null }] : [],
+      );
+      fixture.append([
+        {
+          type: "assistant",
+          isSidechain: false,
+          uuid: "current-answer",
+          promptId: "turn-1",
+          parentUuid: replay.uuid,
+          timestamp: "2026-10-11T10:00:02.000Z",
+          message: { content: [{ type: "text", text: "current answer" }] },
+        },
+      ]);
+      expect(fixture.reader.read()).toEqual(
+        kind === "completion" ? [{ state: "working", prompt: null }] : [],
+      );
+      fixture.append(
+        Array.from({ length: 5000 }, (_, index) => ({
+          type: "progress",
+          uuid: `replay-noise-${index}`,
+          parentUuid: "current-answer",
+        })),
+      );
+      expect(fixture.reader.read()).toEqual([]);
+      const retained: unknown = Reflect.get(fixture.reader, "recordTurns");
+      expect(retained).toBeInstanceOf(Map);
+      if (!(retained instanceof Map))
+        throw new Error("Identity records unavailable");
+      expect(retained.has(replay.uuid)).toBe(false);
+      fixture.append([replay]);
+      expect(fixture.reader.read()).toEqual([]);
+      expect(fixture.reader.heartbeat()).toEqual({
+        state: "working",
+        prompt: null,
+      });
+      fixture.append([
+        {
+          type: "system",
+          subtype: "stop_hook_summary",
+          isSidechain: false,
+          hasOutput: false,
+          uuid: "current-end",
+          parentUuid: "current-answer",
+        },
+      ]);
+      expect(fixture.reader.read()).toEqual([{ state: "idle", prompt: null }]);
+      fixture.append([replay]);
+      expect(fixture.reader.read()).toEqual([]);
+      expect(fixture.reader.heartbeat()).toBeNull();
+      fixture.append([
+        {
+          type: "assistant",
+          isSidechain: false,
+          uuid: "later-continuation",
+          parentUuid: "current-end",
+          message: {
+            content: [{ type: "text", text: "continue after replay" }],
+          },
+        },
+      ]);
+      expect(fixture.reader.read()).toEqual([
+        { state: "working", prompt: null },
+      ]);
+      fixture.append([
+        {
+          type: "system",
+          subtype: "stop_hook_summary",
+          isSidechain: false,
+          hasOutput: false,
+          uuid: "later-end",
+          parentUuid: "later-continuation",
+        },
+      ]);
+      expect(fixture.reader.read()).toEqual([{ state: "idle", prompt: null }]);
+      fixture.hook([
+        {
+          hook_event_name: "UserPromptSubmit",
+          prompt_id: "turn-2",
+          prompt: "new prompt after eviction",
+        },
+      ]);
+      fixture.append([
+        {
+          type: "user",
+          uuid: "new-prompt",
+          promptId: "turn-2",
+          parentUuid: "later-end",
+          origin: { kind: "human" },
+          message: { content: "new prompt after eviction" },
+        },
+      ]);
+      expect(fixture.reader.read()).toEqual([
+        { state: "working", prompt: "new prompt after eviction" },
+      ]);
+      fixture.append([
+        replay,
+        {
+          type: "user",
+          uuid: "user-1",
+          promptId: "turn-1",
+          parentUuid: null,
+          origin: { kind: "human" },
+          timestamp: "2026-10-11T10:00:00.001Z",
+          message: { content: "first prompt" },
+        },
+        {
+          type: "assistant",
+          isSidechain: false,
+          uuid: "answer-1",
+          promptId: "turn-1",
+          parentUuid: "user-1",
+          timestamp: "2026-10-11T10:00:00.002Z",
+          message: { content: [{ type: "text", text: "first answer" }] },
+        },
+      ]);
+      expect(fixture.reader.read()).toEqual([]);
+      expect(fixture.reader.heartbeat()).toEqual({
+        state: "working",
+        prompt: null,
+      });
+      fixture.append([
+        {
+          type: "system",
+          subtype: "stop_hook_summary",
+          isSidechain: false,
+          hasOutput: false,
+          uuid: "new-prompt-end",
+          parentUuid: "new-prompt",
+        },
+      ]);
+      expect(fixture.reader.read()).toEqual([{ state: "idle", prompt: null }]);
+      const sizes = retainedIdentitySizes(fixture.reader);
+      expect(sizes.recordTurns).toBeLessThanOrEqual(4096);
+      expect(sizes.recordParents).toBeLessThanOrEqual(4096);
+      expect(sizes.knownTurns).toBeLessThanOrEqual(128);
+      expect(sizes.completedTurns).toBeLessThanOrEqual(128);
+    },
+  );
+
   it("bounds retained identity state across 50000 turns with tools, late flushes and duplicates", () => {
     const fixture = claudeFixture();
     finalClaudeStop(fixture);

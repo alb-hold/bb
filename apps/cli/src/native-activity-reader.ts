@@ -68,9 +68,13 @@ export class NativeActivityReader {
   private sessionId: string | null;
   private currentTurn: string | null = null;
   private workingRecord: string | null = null;
+  private evictedThroughTimestamp: number | null = null;
   private readonly knownTurns = new Set<string>();
   private readonly recordTurns = new Map<string, string | null>();
-  private readonly recordParents = new Map<string, string | null>();
+  private readonly recordParents = new Map<
+    string,
+    { parent: string | null; timestamp: number | null }
+  >();
   private readonly completedTurns = new Map<string, string>();
 
   constructor(
@@ -160,6 +164,19 @@ export class NativeActivityReader {
     const ignored = { state: null, prompt: null };
     const id = this.stringField(record, identity.recordId);
     if (id === null || this.recordTurns.has(id)) return ignored;
+    let timestamp: number | null = null;
+    if (identity.timestamp !== undefined) {
+      const value = this.stringField(record, identity.timestamp);
+      if (value === null) return ignored;
+      timestamp = Date.parse(value);
+      if (
+        !Number.isFinite(timestamp) ||
+        (this.evictedThroughTimestamp !== null &&
+          timestamp <= this.evictedThroughTimestamp)
+      ) {
+        return ignored;
+      }
+    }
     const parent = this.stringField(record, identity.parentId);
     const turn =
       this.stringField(record, identity.turnId) ??
@@ -172,7 +189,7 @@ export class NativeActivityReader {
         ? completed
         : parent;
     this.recordTurns.set(id, turn);
-    this.recordParents.set(id, retainedParent);
+    this.recordParents.set(id, { parent: retainedParent, timestamp });
     this.pruneRecords();
     if (turn === null || signal.state === null) return ignored;
     if (this.currentTurn !== turn) {
@@ -217,6 +234,13 @@ export class NativeActivityReader {
       ) {
         continue;
       }
+      const timestamp = this.recordParents.get(id)?.timestamp;
+      if (timestamp !== undefined && timestamp !== null) {
+        this.evictedThroughTimestamp = Math.max(
+          this.evictedThroughTimestamp ?? timestamp,
+          timestamp,
+        );
+      }
       this.recordTurns.delete(id);
       this.recordParents.delete(id);
       break;
@@ -225,11 +249,11 @@ export class NativeActivityReader {
 
   private descendsFrom(id: string, ancestor: string): boolean {
     const visited = new Set<string>();
-    let parent = this.recordParents.get(id) ?? null;
+    let parent = this.recordParents.get(id)?.parent ?? null;
     while (parent !== null && !visited.has(parent)) {
       if (parent === ancestor) return true;
       visited.add(parent);
-      parent = this.recordParents.get(parent) ?? null;
+      parent = this.recordParents.get(parent)?.parent ?? null;
     }
     return false;
   }
