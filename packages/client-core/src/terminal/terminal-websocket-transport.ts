@@ -230,16 +230,6 @@ export class TerminalWebSocketTransport {
       return;
     }
     this.clearRepaintTimeout();
-    const nudgedCols =
-      lastResize.cols < 500 ? lastResize.cols + 1 : lastResize.cols - 1;
-    this.trySend(
-      socket,
-      JSON.stringify({
-        type: "resize",
-        cols: nudgedCols,
-        rows: lastResize.rows,
-      }),
-    );
     this.repaintTimeout = setTimeout(() => {
       this.repaintTimeout = null;
       if (
@@ -250,15 +240,36 @@ export class TerminalWebSocketTransport {
       ) {
         return;
       }
+      const nudgedCols =
+        lastResize.cols < 500 ? lastResize.cols + 1 : lastResize.cols - 1;
       this.trySend(
         socket,
         JSON.stringify({
           type: "resize",
-          cols: lastResize.cols,
+          cols: nudgedCols,
           rows: lastResize.rows,
         }),
       );
-    }, REPAINT_RESTORE_DELAY_MS);
+      this.repaintTimeout = setTimeout(() => {
+        this.repaintTimeout = null;
+        if (
+          this.disposed ||
+          this.socket !== socket ||
+          socket.readyState !== SOCKET_OPEN ||
+          this.lastResize !== lastResize
+        ) {
+          return;
+        }
+        this.trySend(
+          socket,
+          JSON.stringify({
+            type: "resize",
+            cols: lastResize.cols,
+            rows: lastResize.rows,
+          }),
+        );
+      }, REPAINT_RESTORE_DELAY_MS);
+    }, 0);
   }
 
   private connect(state: "connecting" | "reconnecting"): void {
