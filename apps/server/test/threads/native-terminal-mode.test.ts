@@ -20,10 +20,25 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { applyLoggedThreadLifecycleEvent } from "../../src/services/threads/lifecycle-outcome.js";
 import { stopThreadForCurrentState } from "../../src/services/threads/thread-lifecycle.js";
 import { recordNativeTerminalActivity } from "../../src/services/threads/native-terminal-activity.js";
-import {
+import type { ProviderNativeTerminalActivity } from "@bb/domain";
+
+interface NativeActivityClassifiers {
+  classifyHookRecord(
+    hooks: NonNullable<ProviderNativeTerminalActivity["hooks"]>,
+    record: unknown,
+  ): { state: "working" | "idle" | null; prompt: string | null };
+  classifyTranscriptRecord(
+    transcript: NonNullable<ProviderNativeTerminalActivity["transcript"]>,
+    record: unknown,
+  ): { state: "working" | "idle" | null; prompt: string | null };
+}
+
+const {
   classifyHookRecord,
   classifyTranscriptRecord,
-} from "../../../cli/src/native-activity.js";
+}: NativeActivityClassifiers = await import(
+  new URL("../../../cli/src/native-activity.ts", import.meta.url).href
+);
 import { readJson } from "../helpers/json.js";
 import {
   seedEnvironment,
