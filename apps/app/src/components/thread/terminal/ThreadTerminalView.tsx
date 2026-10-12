@@ -656,6 +656,9 @@ function handleTerminalServerMessage({
   }
 }
 
+const CLIPBOARD_BLOCKED_MESSAGE =
+  "This connection can’t read the clipboard. Long-press a message box and choose Paste.";
+
 export function ThreadTerminalView({
   autoFocus,
   isPanelOpen,
@@ -1412,9 +1415,7 @@ export function ThreadTerminalView({
             const terminal = terminalRef.current;
             if (!terminal) return;
             if (!navigator.clipboard?.readText) {
-              appToast.error(
-                "Clipboard unavailable. Use your keyboard’s Paste action.",
-              );
+              appToast.error(CLIPBOARD_BLOCKED_MESSAGE);
               return;
             }
             void navigator.clipboard
@@ -1425,9 +1426,7 @@ export function ThreadTerminalView({
                 terminal.paste(text);
               })
               .catch(() => {
-                appToast.error(
-                  "Clipboard unavailable. Use your keyboard’s Paste action.",
-                );
+                appToast.error(CLIPBOARD_BLOCKED_MESSAGE);
               });
           }}
         />

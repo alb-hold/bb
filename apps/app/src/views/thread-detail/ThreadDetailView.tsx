@@ -2860,6 +2860,7 @@ function ThreadDetailViewInternal(
               nativeTerminalThread === null ? null : (
                 <NativeThreadTerminalMain
                   onOpenLink={handleOpenTimelineLink}
+                  projectId={thread.projectId}
                   threadId={thread.id}
                   threadIsProvisioning={
                     thread.status === "pending" || thread.status === "starting"
