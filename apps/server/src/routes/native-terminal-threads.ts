@@ -37,8 +37,13 @@ export function registerNativeTerminalThreadRoutes(
     ),
   );
 
-  post(routes.launch, (context) =>
-    context.json(takeNativeTerminalLaunchSpec(deps, context.req.param("id"))),
+  post(routes.launch, (context, query) =>
+    context.json(
+      takeNativeTerminalLaunchSpec(deps, {
+        imagesAsArgv: query.images === "argv",
+        threadId: context.req.param("id"),
+      }),
+    ),
   );
 
   post(routes.switchMode, async (context, payload) =>
