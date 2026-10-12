@@ -474,7 +474,7 @@ function threadStatus(fixture: Fixture, threadId: string) {
 }
 
 describe("native terminal activity", () => {
-  it("recovers working after a blocked Claude Stop and before the next tool", async () => {
+  it("keeps working across a provisional Claude Stop and the next tool", async () => {
     const fixture = await createFixture();
     const thread = seedChatThread(fixture, {
       providerId: "claude-code",
@@ -486,7 +486,7 @@ describe("native terminal activity", () => {
         .activity!.hooks!;
     for (const [hook_event_name, expected] of [
       ["UserPromptSubmit", "active"],
-      ["Stop", "idle"],
+      ["Stop", "active"],
       ["PreToolUse", "active"],
     ] as const) {
       const signal = classifyHookRecord(hooks, { hook_event_name });
@@ -506,9 +506,10 @@ describe("native terminal activity", () => {
         providerThreadId: SESSION_ID,
       });
       await enterTerminal(fixture, thread.id);
-      const hooks =
+      const activity =
         fixture.harness.deps.providerRegistry.get("claude-code")!
-          .nativeTerminal!.activity!.hooks!;
+          .nativeTerminal!.activity!;
+      const hooks = activity.hooks!;
       for (const hook_event_name of [
         "UserPromptSubmit",
         "Stop",
@@ -524,8 +525,16 @@ describe("native terminal activity", () => {
         hook_event_name: "Stop",
         stop_hook_active,
       });
-      expect(signal.state).toBe("idle");
-      await reportActivity(fixture, thread.id, { state: "idle" });
+      expect(signal.state).toBeNull();
+      expect(threadStatus(fixture, thread.id)).toBe("active");
+      const completed = classifyTranscriptRecord(activity.transcript!, {
+        type: "system",
+        subtype: "stop_hook_summary",
+        hasOutput: false,
+        isSidechain: false,
+      });
+      expect(completed.state).toBe("idle");
+      await reportActivity(fixture, thread.id, { state: completed.state! });
       expect(threadStatus(fixture, thread.id)).toBe("idle");
     },
   );

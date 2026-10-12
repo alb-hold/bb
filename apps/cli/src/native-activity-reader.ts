@@ -5,7 +5,9 @@ import {
   fileSize,
   JsonlTail,
   NativeActivityTracker,
+  readRecordField,
   type NativeActivityReport,
+  type NativeActivitySignal,
 } from "./native-activity.js";
 import {
   findNativeSessionFile,
@@ -61,6 +63,11 @@ export class NativeActivityReader {
   private readonly transcriptTail: JsonlTail;
   private transcriptFile: string | null;
   private sessionId: string | null;
+  private currentTurn: string | null = null;
+  private readonly knownTurns = new Set<string>();
+  private readonly recordTurns = new Map<string, string | null>();
+  private readonly recordParents = new Map<string, string | null>();
+  private readonly completedTurns = new Map<string, string>();
 
   constructor(
     private readonly cli: ProviderNativeTerminal,
@@ -93,7 +100,18 @@ export class NativeActivityReader {
     const hooks = activity.hooks;
     if (hooks !== undefined && this.eventsFile !== null) {
       for (const record of this.hookTail.readRecords(this.eventsFile)) {
-        push(this.tracker.apply(classifyHookRecord(hooks, record)));
+        const signal = classifyHookRecord(hooks, record);
+        const turn =
+          hooks.turnId === undefined
+            ? null
+            : this.stringField(record, hooks.turnId);
+        if (turn !== null && signal.state === "working") {
+          if (this.completedTurns.has(turn)) continue;
+          if (this.currentTurn !== turn && this.knownTurns.has(turn)) continue;
+          this.currentTurn = turn;
+          this.knownTurns.add(turn);
+        }
+        push(this.tracker.apply(signal));
       }
     }
     const transcript = activity.transcript;
@@ -101,7 +119,8 @@ export class NativeActivityReader {
     this.transcriptFile ??= this.findTranscript();
     if (this.transcriptFile === null) return reports;
     for (const record of this.transcriptTail.readRecords(this.transcriptFile)) {
-      push(this.tracker.apply(classifyTranscriptRecord(transcript, record)));
+      const signal = classifyTranscriptRecord(transcript, record);
+      push(this.tracker.apply(this.identifyTranscript(record, signal)));
     }
     return reports;
   }
@@ -121,5 +140,54 @@ export class NativeActivityReader {
     } catch {
       return null;
     }
+  }
+
+  private stringField(record: unknown, field: string): string | null {
+    const value = readRecordField(record, field);
+    return typeof value === "string" && value.length > 0 ? value : null;
+  }
+
+  private identifyTranscript(
+    record: unknown,
+    signal: NativeActivitySignal,
+  ): NativeActivitySignal {
+    const identity = this.cli.activity?.transcript?.identity;
+    if (identity === undefined) return signal;
+    const ignored = { state: null, prompt: null };
+    const id = this.stringField(record, identity.recordId);
+    if (id === null || this.recordTurns.has(id)) return ignored;
+    const parent = this.stringField(record, identity.parentId);
+    const turn =
+      this.stringField(record, identity.turnId) ??
+      (parent === null ? null : (this.recordTurns.get(parent) ?? null));
+    this.recordTurns.set(id, turn);
+    this.recordParents.set(id, parent);
+    if (turn === null || signal.state === null) return ignored;
+    if (this.currentTurn !== turn) {
+      if (signal.state !== "working" || this.knownTurns.has(turn))
+        return ignored;
+      this.currentTurn = turn;
+      this.knownTurns.add(turn);
+    }
+    const completed = this.completedTurns.get(turn);
+    if (completed !== undefined) {
+      if (signal.state !== "working" || !this.descendsFrom(id, completed)) {
+        return ignored;
+      }
+      this.completedTurns.delete(turn);
+    }
+    if (signal.state === "idle") this.completedTurns.set(turn, id);
+    return signal;
+  }
+
+  private descendsFrom(id: string, ancestor: string): boolean {
+    const visited = new Set<string>();
+    let parent = this.recordParents.get(id) ?? null;
+    while (parent !== null && !visited.has(parent)) {
+      if (parent === ancestor) return true;
+      visited.add(parent);
+      parent = this.recordParents.get(parent) ?? null;
+    }
+    return false;
   }
 }

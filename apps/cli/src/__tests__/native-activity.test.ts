@@ -93,7 +93,11 @@ function tempDir(): string {
 
 describe("native terminal activity", () => {
   it("installs hooks that append each event's input to the events file", () => {
-    const hooks = CLAUDE_ACTIVITY.hooks!;
+    const hooks = {
+      ...CLAUDE_ACTIVITY.hooks!,
+      idle: [],
+      pending: ["Stop"],
+    };
     const eventsFile = path.join(tempDir(), "it's events.jsonl");
     const settings = JSON.parse(nativeActivityHookSettings(hooks, eventsFile));
     const home = tempDir();
@@ -127,9 +131,9 @@ describe("native terminal activity", () => {
       .map((record) => classifyHookRecord(hooks, record));
     expect(signals).toEqual([
       { state: "working", prompt: "fix the build" },
-      { state: "idle", prompt: null },
+      { state: null, prompt: null },
       { state: "working", prompt: null },
-      { state: "idle", prompt: null },
+      { state: null, prompt: null },
     ]);
   });
 

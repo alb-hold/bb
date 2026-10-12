@@ -80,7 +80,10 @@ const recordFieldPathSchema = z
 
 const providerNativeTerminalRecordMatchSchema = z
   .object({
-    equals: z.record(recordFieldPathSchema, z.string().min(1).max(256)),
+    equals: z.record(
+      recordFieldPathSchema,
+      z.union([z.string().min(1).max(256), z.boolean()]),
+    ),
     startsWith: z
       .record(recordFieldPathSchema, z.string().min(1).max(256))
       .optional(),
@@ -97,8 +100,10 @@ export const providerNativeTerminalActivitySchema = z
       .object({
         args: templateArgsSchema(["settings"]),
         working: z.array(hookEventNameSchema).min(1).max(8),
-        idle: z.array(hookEventNameSchema).min(1).max(8),
+        idle: z.array(hookEventNameSchema).max(8),
+        pending: z.array(hookEventNameSchema).min(1).max(8).optional(),
         promptField: recordFieldPathSchema,
+        turnId: recordFieldPathSchema.optional(),
       })
       .strict()
       .superRefine((hooks, context) => {
@@ -115,6 +120,14 @@ export const providerNativeTerminalActivitySchema = z
       .object({
         working: z.array(providerNativeTerminalRecordMatchSchema).max(8),
         idle: z.array(providerNativeTerminalRecordMatchSchema).max(8),
+        identity: z
+          .object({
+            recordId: recordFieldPathSchema,
+            parentId: recordFieldPathSchema,
+            turnId: recordFieldPathSchema,
+          })
+          .strict()
+          .optional(),
         prompt: z
           .array(
             z

@@ -84,12 +84,49 @@ export default function plugin(bb: BbPluginApi) {
         hooks: {
           args: ["--settings", "{settings}"],
           working: ["UserPromptSubmit", "PreToolUse"],
-          idle: ["Stop"],
+          idle: [],
+          pending: ["Stop"],
           promptField: "prompt",
+          turnId: "prompt_id",
         },
         transcript: {
-          working: [],
+          identity: {
+            recordId: "uuid",
+            parentId: "parentUuid",
+            turnId: "promptId",
+          },
+          working: [
+            { equals: { type: "assistant", isSidechain: false } },
+            { equals: { type: "user", "origin.kind": "human" } },
+            {
+              equals: { type: "user", isMeta: true },
+              startsWith: { "message.content": "Stop hook feedback:\n" },
+            },
+          ],
           idle: [
+            {
+              equals: {
+                type: "system",
+                subtype: "stop_hook_summary",
+                hasOutput: false,
+                isSidechain: false,
+              },
+            },
+            {
+              equals: {
+                type: "system",
+                subtype: "stop_hook_summary",
+                preventedContinuation: true,
+                isSidechain: false,
+              },
+            },
+            {
+              equals: {
+                type: "system",
+                subtype: "turn_duration",
+                isSidechain: false,
+              },
+            },
             {
               equals: { type: "user" },
               startsWith: {

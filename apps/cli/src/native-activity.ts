@@ -43,7 +43,9 @@ export function nativeActivityHookSettings(
 ): string {
   const file = shellQuote(eventsFile);
   const command = `{ cat; echo; } >> ${file} 2>/dev/null; exit 0`;
-  const entries = [...new Set([...hooks.working, ...hooks.idle])].map(
+  const entries = [
+    ...new Set([...hooks.working, ...hooks.idle, ...(hooks.pending ?? [])]),
+  ].map(
     (event) => [event, [{ hooks: [{ type: "command", command }] }]] as const,
   );
   return JSON.stringify({ hooks: Object.fromEntries(entries) });

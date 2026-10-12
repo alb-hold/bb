@@ -1683,11 +1683,17 @@ export interface PluginProviderDeclaration {
    *   so the thread shows as working, then as done, and gets a title from its
    *   first prompt. `hooks` adds `args` (with `{settings}` replaced by a JSON
    *   object of Claude Code style `hooks`) whose `working` and `idle` events
-   *   report the turn; `promptField` names the prompt in the `working` event's
-   *   input. `transcript` reads records the CLI appends to its session file
+   *   report the turn; `pending` events are recorded without ending the turn.
+   *   `promptField` names the prompt in the `working` event's input, and
+   *   `turnId` optionally correlates hooks with transcript turns.
+   *   `transcript` reads records the CLI appends to its session file
    *   after launch: a record whose fields equal every `equals` value and
    *   start with every `startsWith` value marks the turn `working` or `idle`,
-   *   and a `prompt` match takes the prompt from its `text` field. Field paths
+   *   and a `prompt` match takes the prompt from its `text` field. `equals`
+   *   accepts strings or booleans. Optional `identity` names `recordId`,
+   *   `parentId` and `turnId` fields: repeated records and older turns cannot
+   *   change activity; a new working record descended from a completed turn's
+   *   final record starts a continuation. Field paths
    *   are dotted and may index arrays (`message.content.0.text`). A CLI that
    *   exits always reports idle.
    *

@@ -17,6 +17,8 @@ import {
   measureResumedTranscript,
   NativeActivityReader,
 } from "../native-activity-reader.js";
+import { createFakePluginHost } from "../../../../packages/plugin-sdk/src/testing/fake-plugin-host.js";
+import claudeCodePlugin from "../../../../plugins/provider-claude-code/server.js";
 
 const CODEX_CLI: ProviderNativeTerminal = {
   executable: "codex",
@@ -136,7 +138,251 @@ function writeRollout(home: string, records: unknown[]): string {
   return file;
 }
 
+function claudeFixture(extraWorking: boolean = false) {
+  const host = createFakePluginHost({ pluginId: "provider-claude-code" });
+  claudeCodePlugin(host.bb);
+  const declaration = host.harness.registrations.providerRegistrations.find(
+    (entry) => entry.id === "claude-code",
+  );
+  const cli = declaration?.experimental_nativeTerminal;
+  if (cli === undefined) throw new Error("Claude native declaration missing");
+  const activity = cli.activity;
+  if (activity?.transcript === undefined)
+    throw new Error("Claude transcript missing");
+  const native = extraWorking
+    ? {
+        ...cli,
+        activity: {
+          ...activity,
+          transcript: {
+            ...activity.transcript,
+            working: [{ equals: { type: "assistant", isSidechain: false } }],
+          },
+        },
+      }
+    : cli;
+  const home = tempHome();
+  const dir = path.join(home, ".claude", "projects", "work");
+  mkdirSync(dir, { recursive: true });
+  const transcript = path.join(dir, `${SESSION_ID}.jsonl`);
+  const events = path.join(home, "hooks.jsonl");
+  writeFileSync(
+    transcript,
+    jsonl([
+      {
+        type: "user",
+        uuid: "user-1",
+        parentUuid: null,
+        promptId: "turn-1",
+        origin: { kind: "human" },
+        message: { content: "first prompt" },
+      },
+      {
+        type: "assistant",
+        isSidechain: false,
+        uuid: "answer-1",
+        parentUuid: "user-1",
+        message: {
+          id: "message-1",
+          content: [{ type: "text", text: "first answer" }],
+        },
+      },
+    ]),
+  );
+  writeFileSync(
+    events,
+    jsonl([
+      {
+        hook_event_name: "UserPromptSubmit",
+        prompt_id: "turn-1",
+        prompt: "first prompt",
+      },
+    ]),
+  );
+  const reader = new NativeActivityReader(native, { HOME: home }, events, {
+    kind: "start",
+    id: SESSION_ID,
+  });
+  expect(reader.read()).toEqual([{ state: "working", prompt: "first prompt" }]);
+  return {
+    reader,
+    hook: (records: unknown[]) => appendFileSync(events, jsonl(records)),
+    append: (records: unknown[]) => appendFileSync(transcript, jsonl(records)),
+  };
+}
+
+function finalClaudeStop(fixture: ReturnType<typeof claudeFixture>) {
+  fixture.hook([
+    { hook_event_name: "Stop", prompt_id: "turn-1", stop_hook_active: false },
+  ]);
+  fixture.append([
+    {
+      type: "system",
+      subtype: "stop_hook_summary",
+      isSidechain: false,
+      hasOutput: false,
+      uuid: "end-1",
+      parentUuid: "answer-1",
+    },
+  ]);
+  expect(fixture.reader.read()).toEqual([{ state: "idle", prompt: null }]);
+  expect(fixture.reader.heartbeat()).toBeNull();
+}
+
 describe("NativeActivityReader", () => {
+  it("keeps a blocked Stop and assistant-only continuation working until the final Stop outcome", () => {
+    const fixture = claudeFixture();
+    fixture.hook([
+      { hook_event_name: "Stop", prompt_id: "turn-1", stop_hook_active: false },
+    ]);
+    fixture.reader.read();
+    fixture.append([
+      {
+        type: "user",
+        isMeta: true,
+        promptId: "turn-1",
+        uuid: "feedback-1",
+        parentUuid: "answer-1",
+        message: {
+          content:
+            "Stop hook feedback:\nWrite two more sentences without tools.",
+        },
+      },
+      {
+        type: "system",
+        subtype: "stop_hook_summary",
+        isSidechain: false,
+        hasOutput: true,
+        uuid: "blocked-1",
+        parentUuid: "feedback-1",
+      },
+      {
+        type: "assistant",
+        isSidechain: false,
+        uuid: "answer-2",
+        parentUuid: "blocked-1",
+        message: {
+          id: "message-2",
+          content: [{ type: "text", text: "Two more sentences." }],
+        },
+      },
+    ]);
+    fixture.reader.read();
+    expect(fixture.reader.heartbeat()).toEqual({
+      state: "working",
+      prompt: null,
+    });
+    expect(fixture.reader.read()).toEqual([]);
+    expect(fixture.reader.heartbeat()).toEqual({
+      state: "working",
+      prompt: null,
+    });
+    fixture.hook([
+      { hook_event_name: "Stop", prompt_id: "turn-1", stop_hook_active: true },
+    ]);
+    fixture.append([
+      {
+        type: "system",
+        subtype: "stop_hook_summary",
+        isSidechain: false,
+        hasOutput: false,
+        uuid: "end-2",
+        parentUuid: "answer-2",
+      },
+    ]);
+    expect(fixture.reader.read()).toEqual([{ state: "idle", prompt: null }]);
+    expect(fixture.reader.heartbeat()).toBeNull();
+  });
+
+  it("keeps final idle when an already-seen assistant message flushes late with a later timestamp", () => {
+    const fixture = claudeFixture(true);
+    finalClaudeStop(fixture);
+    fixture.append([
+      {
+        type: "assistant",
+        isSidechain: false,
+        uuid: "answer-1",
+        parentUuid: "user-1",
+        timestamp: "2099-01-01T00:00:00Z",
+        message: {
+          id: "message-1",
+          content: [{ type: "text", text: "first answer" }],
+        },
+      },
+      {
+        type: "assistant",
+        isSidechain: false,
+        uuid: "late-block-1",
+        parentUuid: "answer-1",
+        message: {
+          id: "message-1",
+          content: [{ type: "text", text: "late content block" }],
+        },
+      },
+    ]);
+    expect(fixture.reader.read()).toEqual([]);
+    expect(fixture.reader.heartbeat()).toBeNull();
+  });
+
+  it("starts a new prompt after idle despite delayed completion records from the previous prompt", () => {
+    const fixture = claudeFixture();
+    finalClaudeStop(fixture);
+    fixture.hook([
+      {
+        hook_event_name: "UserPromptSubmit",
+        prompt_id: "turn-2",
+        prompt: "second prompt",
+      },
+    ]);
+    fixture.append([
+      {
+        type: "user",
+        uuid: "late-interrupt-1",
+        parentUuid: "answer-1",
+        message: {
+          content: [{ type: "text", text: "[Request interrupted by user]" }],
+        },
+      },
+      {
+        type: "system",
+        subtype: "stop_hook_summary",
+        isSidechain: false,
+        hasOutput: false,
+        uuid: "late-end-1",
+        parentUuid: "answer-1",
+      },
+    ]);
+    expect(fixture.reader.read()).toEqual([
+      { state: "working", prompt: "second prompt" },
+    ]);
+    expect(fixture.reader.heartbeat()).toEqual({
+      state: "working",
+      prompt: null,
+    });
+  });
+
+  it("recognizes a new assistant continuation chained after a completed turn without another prompt hook", () => {
+    const fixture = claudeFixture();
+    finalClaudeStop(fixture);
+    fixture.append([
+      {
+        type: "assistant",
+        isSidechain: false,
+        uuid: "background-1",
+        parentUuid: "end-1",
+        message: {
+          id: "background-message",
+          content: [{ type: "text", text: "Background task completed." }],
+        },
+      },
+    ]);
+    expect(fixture.reader.read()).toEqual([{ state: "working", prompt: null }]);
+    expect(fixture.reader.heartbeat()).toEqual({
+      state: "working",
+      prompt: null,
+    });
+  });
+
   it("reports a resumed turn written before the first poll, not the turns before launch", async () => {
     const home = tempHome();
     const file = writeRollout(home, codexTurn("an earlier prompt"));

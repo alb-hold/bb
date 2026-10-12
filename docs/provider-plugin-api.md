@@ -166,7 +166,16 @@ started and an ended turn, the field holding the prompt, and the argv that
 loads `{settings}` (bb fills in hooks that append each event to a private
 file); `transcript` lists record matches on the session file (`equals` field
 values, `startsWith` prefixes, dotted paths with numeric array indexes) for
-working, idle and prompt records.
+working, idle and prompt records. Equality values may be strings or booleans.
+Optional hook `pending` events are recorded without changing activity; a
+provisional Stop uses the transcript's final outcome to end the turn.
+`hooks.turnId` correlates events with transcript turns. Optional transcript
+`identity` declares the `recordId`, `parentId` and `turnId` field paths. With
+identity, duplicate records and late records from previous turns are ignored;
+only new working records descended from the final record can reopen a
+completed turn. The reader keeps polling after pending events and completion.
+Claude uses Stop-hook feedback for continuation and the Stop outcome or turn
+duration for completion. These fields require host daemon protocol 235.
 
 Rules:
 

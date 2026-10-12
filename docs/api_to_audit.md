@@ -1077,7 +1077,16 @@ how to see turns: `hooks` (extra argv carrying `{settings}`, the hook event
 names that mean working or idle, and the prompt field; the harness installs
 command hooks that append each event's JSON to a private file) and
 `transcript` (record matches on the session file: equal fields, string
-prefixes, and a prompt text field). The wrapper reports working, idle and the
+prefixes, and a prompt text field). Equality supports strings and booleans.
+Optional `hooks.pending` records provisional events without ending a turn;
+`hooks.turnId` correlates hook input with transcript turns. Optional transcript
+`identity` names `recordId`, `parentId` and `turnId` fields so duplicate or late
+records cannot reactivate a finished turn. A new working record descended
+from its completion record can start a background continuation. The reader
+keeps polling after pending and idle records. Claude's Stop is provisional;
+its Stop-hook feedback means working and its transcript outcome means idle.
+The declaration wire fields require host daemon protocol 235.
+The wrapper reports working, idle and the
 first new prompt through `sdk.nativeTerminals.reportActivity`; the server moves
 the thread between idle and active and titles an untitled thread from the
 prompt. Validated at registration by
