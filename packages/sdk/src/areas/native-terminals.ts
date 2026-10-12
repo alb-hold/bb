@@ -11,6 +11,10 @@ export interface NativeTerminalThreadArgs {
   threadId: string;
 }
 
+export interface NativeTerminalLaunchArgs extends NativeTerminalThreadArgs {
+  imagesAsArgv?: boolean;
+}
+
 export interface NativeTerminalOpenArgs extends NativeTerminalThreadArgs {
   cols?: number;
   rows?: number;
@@ -36,7 +40,7 @@ export interface NativeTerminalsArea {
   get(
     args: NativeTerminalThreadArgs,
   ): Promise<NativeTerminalThreadResult | null>;
-  launch(args: NativeTerminalThreadArgs): Promise<NativeTerminalLaunchResult>;
+  launch(args: NativeTerminalLaunchArgs): Promise<NativeTerminalLaunchResult>;
   open(args: NativeTerminalOpenArgs): Promise<NativeTerminalThreadResult>;
   recordSession(
     args: NativeTerminalRecordSessionArgs,
@@ -64,7 +68,10 @@ export function createNativeTerminalsArea(
     async launch(input) {
       return transport.readJson(
         route().launch.$post(
-          { param: { id: input.threadId } },
+          {
+            param: { id: input.threadId },
+            query: input.imagesAsArgv === true ? { images: "argv" } : {},
+          },
           ...signalRequestArgs(input.signal),
         ),
       );

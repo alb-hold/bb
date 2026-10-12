@@ -77,7 +77,7 @@ import { deriveForkTitle, deriveTitleFallback } from "./title-generation.js";
 import type { ThreadProvisionEnvironmentIntent } from "./thread-startup-store.js";
 import {
   beginNativeTerminalThreadProvisioning,
-  nativeTerminalPrompt,
+  nativeTerminalLaunchInput,
   requireNativeTerminalProvider,
   type NativeTerminalProvider,
 } from "./native-terminal-threads.js";
@@ -92,6 +92,7 @@ type ThreadCreateDeps = LoggedPendingInteractionWorkSessionDeps;
 interface NativeTerminalCreate {
   provider: NativeTerminalProvider;
   initialPrompt: string | null;
+  initialImages: string[];
 }
 
 interface CreateProvisioningThreadArgs {
@@ -479,6 +480,7 @@ async function createPendingThreadAndAttemptFirstDispatch(
             ? randomUUID()
             : null,
         initialPrompt: args.nativeTerminal.initialPrompt,
+        initialImages: args.nativeTerminal.initialImages,
         model: args.request.model ?? null,
       });
       acquireProjectAttachmentOwnership(
@@ -885,10 +887,11 @@ export async function createThreadFromRequest(
       ? null
       : {
           provider: nativeTerminalProvider,
-          initialPrompt: nativeTerminalPrompt(deps, {
+          ...nativeTerminalLaunchInput(deps, {
             hostId: hostIdForEnvironmentIntent(deps, environmentIntent),
             input: request.input,
             projectId: request.projectId,
+            provider: nativeTerminalProvider,
           }),
         };
 
