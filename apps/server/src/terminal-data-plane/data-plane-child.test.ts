@@ -833,6 +833,7 @@ describe("terminal data plane child", () => {
   });
 
   it("sends input and acks through main while the routed data socket is missing", async () => {
+    vi.useFakeTimers();
     const harness = createHarness();
     main(harness, {
       v,
@@ -879,6 +880,7 @@ describe("terminal data plane child", () => {
     daemon.emitClose();
     browser.receive({ type: "input", dataBase64: base64("after") });
     browser.receive({ type: "ack", nextSeq: 3 });
+    vi.advanceTimersByTime(TERMINAL_DATA_PLANE_INPUT_COALESCE_MS);
 
     expect(ofType(harness, "daemon.detached")).toEqual([
       { v, type: "daemon.detached", daemonSessionId: "session_1" },
