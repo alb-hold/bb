@@ -14,6 +14,9 @@ import {
   type NativeHarnessEnv,
 } from "./native-harness.js";
 
+const MAX_RETAINED_RECORDS = 4096;
+const MAX_RETAINED_TURNS = 128;
+
 export type NativeActivityStart =
   | { kind: "discover" }
   | { kind: "start"; id: string }
@@ -64,6 +67,7 @@ export class NativeActivityReader {
   private transcriptFile: string | null;
   private sessionId: string | null;
   private currentTurn: string | null = null;
+  private workingRecord: string | null = null;
   private readonly knownTurns = new Set<string>();
   private readonly recordTurns = new Map<string, string | null>();
   private readonly recordParents = new Map<string, string | null>();
@@ -109,7 +113,7 @@ export class NativeActivityReader {
           if (this.completedTurns.has(turn)) continue;
           if (this.currentTurn !== turn && this.knownTurns.has(turn)) continue;
           this.currentTurn = turn;
-          this.knownTurns.add(turn);
+          this.rememberTurn(turn);
         }
         push(this.tracker.apply(signal));
       }
@@ -160,8 +164,16 @@ export class NativeActivityReader {
     const turn =
       this.stringField(record, identity.turnId) ??
       (parent === null ? null : (this.recordTurns.get(parent) ?? null));
+    const completed = turn === null ? undefined : this.completedTurns.get(turn);
+    const retainedParent =
+      completed !== undefined &&
+      parent !== null &&
+      (parent === completed || this.descendsFrom(parent, completed))
+        ? completed
+        : parent;
     this.recordTurns.set(id, turn);
-    this.recordParents.set(id, parent);
+    this.recordParents.set(id, retainedParent);
+    this.pruneRecords();
     if (turn === null || signal.state === null) return ignored;
     if (this.currentTurn !== turn) {
       if (
@@ -173,9 +185,8 @@ export class NativeActivityReader {
       if (signal.state !== "working" || this.knownTurns.has(turn))
         return ignored;
       this.currentTurn = turn;
-      this.knownTurns.add(turn);
+      this.rememberTurn(turn);
     }
-    const completed = this.completedTurns.get(turn);
     if (completed !== undefined) {
       if (signal.state !== "working" || !this.descendsFrom(id, completed)) {
         return ignored;
@@ -183,7 +194,33 @@ export class NativeActivityReader {
       this.completedTurns.delete(turn);
     }
     if (signal.state === "idle") this.completedTurns.set(turn, id);
+    if (signal.state === "working") this.workingRecord = id;
     return signal;
+  }
+
+  private rememberTurn(turn: string): void {
+    this.knownTurns.add(turn);
+    if (this.knownTurns.size <= MAX_RETAINED_TURNS) return;
+    const expired = this.knownTurns.values().next().value;
+    if (expired !== undefined) {
+      this.knownTurns.delete(expired);
+      this.completedTurns.delete(expired);
+    }
+  }
+
+  private pruneRecords(): void {
+    if (this.recordTurns.size <= MAX_RETAINED_RECORDS) return;
+    for (const [id, turn] of this.recordTurns) {
+      if (
+        id === this.workingRecord ||
+        (turn !== null && this.completedTurns.get(turn) === id)
+      ) {
+        continue;
+      }
+      this.recordTurns.delete(id);
+      this.recordParents.delete(id);
+      break;
+    }
   }
 
   private descendsFrom(id: string, ancestor: string): boolean {
