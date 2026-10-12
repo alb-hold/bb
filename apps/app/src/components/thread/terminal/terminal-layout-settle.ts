@@ -4,6 +4,7 @@ interface WatchTerminalLayoutSettledArgs {
   cancelFrame: (handle: number) => void;
   measure: () => string | null;
   onSettled: () => void;
+  ready?: Promise<unknown>;
   requestFrame: (callback: () => void) => number;
 }
 
@@ -11,6 +12,7 @@ export function watchTerminalLayoutSettled({
   cancelFrame,
   measure,
   onSettled,
+  ready,
   requestFrame,
 }: WatchTerminalLayoutSettledArgs): () => void {
   let handle: number | null = null;
@@ -37,7 +39,16 @@ export function watchTerminalLayoutSettled({
     }
     handle = requestFrame(tick);
   };
-  handle = requestFrame(tick);
+  if (ready === undefined) {
+    handle = requestFrame(tick);
+  } else {
+    const start = () => {
+      if (!stopped && handle === null) {
+        handle = requestFrame(tick);
+      }
+    };
+    void ready.then(start, start);
+  }
 
   return () => {
     stopped = true;
@@ -46,4 +57,24 @@ export function watchTerminalLayoutSettled({
       handle = null;
     }
   };
+}
+
+export function hasRunningLayoutAnimation(element: Element): boolean {
+  for (
+    let current: Element | null = element;
+    current !== null;
+    current = current.parentElement
+  ) {
+    if (typeof current.getAnimations !== "function") {
+      return false;
+    }
+    if (
+      current
+        .getAnimations()
+        .some((animation) => animation.playState === "running")
+    ) {
+      return true;
+    }
+  }
+  return false;
 }

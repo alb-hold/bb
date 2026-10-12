@@ -39,7 +39,10 @@ import {
 import { TimelineSelectionMenu } from "@/components/thread/timeline/TimelineSelectionMenu.js";
 import { buildTerminalWebSocketUrl } from "./terminal-websocket-url";
 import { TerminalWebSocketTransport } from "@bb/client-core";
-import { watchTerminalLayoutSettled } from "./terminal-layout-settle";
+import {
+  hasRunningLayoutAnimation,
+  watchTerminalLayoutSettled,
+} from "./terminal-layout-settle";
 import { TerminalLinkOpenDialog } from "./TerminalLinkOpenDialog";
 import { TerminalMobileControls } from "./TerminalMobileControls";
 import {
@@ -1159,9 +1162,15 @@ export function ThreadTerminalView({
         cancelFrame: (handle) => window.cancelAnimationFrame(handle),
         measure: () => {
           const rect = containerElement.getBoundingClientRect();
-          return rect.width > 0 && rect.height > 0
-            ? `${rect.width}x${rect.height}`
-            : null;
+          if (
+            rect.width <= 0 ||
+            rect.height <= 0 ||
+            hasRunningLayoutAnimation(containerElement)
+          ) {
+            return null;
+          }
+          const fitted = fitAddon?.proposeDimensions();
+          return `${rect.width}x${rect.height}:${fitted?.cols}x${fitted?.rows}`;
         },
         onSettled: () => {
           if (disposed) {
@@ -1170,6 +1179,7 @@ export function ThreadTerminalView({
           fitTerminal();
           activeTransport.markLayoutSettled();
         },
+        ready: document.fonts?.ready,
         requestFrame: (callback) => window.requestAnimationFrame(callback),
       });
       const sendTerminalInput = (dataBase64: string) =>

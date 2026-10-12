@@ -3,7 +3,10 @@ import {
   type TerminalBrowserSocket,
 } from "@bb/client-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { watchTerminalLayoutSettled } from "./terminal-layout-settle";
+import {
+  hasRunningLayoutAnimation,
+  watchTerminalLayoutSettled,
+} from "./terminal-layout-settle";
 
 const FRAME_MS = 16;
 
@@ -161,5 +164,108 @@ describe("watchTerminalLayoutSettled", () => {
     vi.advanceTimersByTime(20_000);
     expect(socket.resizeCols).toEqual([132]);
     transport.dispose();
+  });
+
+  it.each([2000, 3500])(
+    "sends exactly one resize with the final size when the container is stable for two frames and a font load changes the fit at %i ms",
+    async (fontsReadyAtMs) => {
+      vi.useFakeTimers();
+      const socket = new SentSocket();
+      const transport = new TerminalWebSocketTransport({
+        createSocket: () => socket,
+        onMessage: () => undefined,
+        shouldReconnect: () => false,
+        url: "ws://example.test/ws/terminals/term_1",
+      });
+      let fittedCols = 128;
+      const fit = () => transport.sendResize(fittedCols, 43);
+      const ready = new Promise<void>((resolve) => {
+        setTimeout(() => {
+          fittedCols = 132;
+          resolve();
+        }, fontsReadyAtMs);
+      });
+      fit();
+      transport.start();
+      socket.onopen?.(new Event("open"));
+      watchTerminalLayoutSettled({
+        ...frameScheduler(),
+        measure: () => `800x600:${fittedCols}x43`,
+        onSettled: () => {
+          fit();
+          transport.markLayoutSettled();
+        },
+        ready,
+      });
+
+      await vi.advanceTimersByTimeAsync(fontsReadyAtMs + 10_000);
+
+      expect(socket.resizeCols).toEqual([132]);
+      transport.dispose();
+    },
+  );
+
+  it("starts frames immediately when the font set is already ready", async () => {
+    vi.useFakeTimers();
+    const onSettled = vi.fn();
+    watchTerminalLayoutSettled({
+      ...frameScheduler(),
+      measure: () => "800x600",
+      onSettled,
+      ready: Promise.resolve(),
+    });
+
+    await vi.advanceTimersByTimeAsync(FRAME_MS * 4);
+
+    expect(onSettled).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not report when cancelled before the fonts are ready", async () => {
+    vi.useFakeTimers();
+    const onSettled = vi.fn();
+    let resolveReady: () => void = () => undefined;
+    const stop = watchTerminalLayoutSettled({
+      ...frameScheduler(),
+      measure: () => "800x600",
+      onSettled,
+      ready: new Promise<void>((resolve) => {
+        resolveReady = resolve;
+      }),
+    });
+    stop();
+    resolveReady();
+
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(onSettled).not.toHaveBeenCalled();
+  });
+});
+
+describe("hasRunningLayoutAnimation", () => {
+  function elementWith(
+    animations: readonly { playState: string }[] | undefined,
+    parent: Element | null,
+  ): Element {
+    const element = { parentElement: parent } as Element;
+    if (animations !== undefined) {
+      Object.assign(element, { getAnimations: () => animations });
+    }
+    return element;
+  }
+
+  it("is true when the container or an ancestor has a running animation", () => {
+    const drawer = elementWith([{ playState: "running" }], null);
+    const container = elementWith([], drawer);
+
+    expect(hasRunningLayoutAnimation(container)).toBe(true);
+  });
+
+  it("is false when every animation on the chain is finished or unsupported", () => {
+    const root = elementWith([{ playState: "finished" }], null);
+    const container = elementWith([], root);
+    const unsupported = elementWith(undefined, null);
+
+    expect(hasRunningLayoutAnimation(container)).toBe(false);
+    expect(hasRunningLayoutAnimation(unsupported)).toBe(false);
   });
 });
