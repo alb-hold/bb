@@ -908,7 +908,7 @@ export function listIdleThreadsWithQueuedMessages(
 ): QueuedMessageThreadRow[] {
   return db
     .select({
-      threadId: threads.id,
+      threadId: sql<string>`${threads.id}`,
       oldestQueuedMessageCreatedAt: min(queuedThreadMessages.createdAt),
     })
     .from(sql`${queuedThreadMessages} cross join ${threads}`)
