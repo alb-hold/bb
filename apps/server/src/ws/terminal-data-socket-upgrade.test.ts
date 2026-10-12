@@ -36,6 +36,7 @@ interface Fixture {
   fallback: ReturnType<typeof vi.fn>;
   issue(hostId?: string, daemonSessionId?: string): string;
   port: number;
+  serverSockets: Socket[];
   store: TerminalDataTicketStore;
 }
 
@@ -54,6 +55,8 @@ async function createFixture(
   const fallback = vi.fn();
   const server = createServer();
   servers.push(server);
+  const serverSockets: Socket[] = [];
+  server.on("connection", (accepted) => serverSockets.push(accepted));
   server.on("upgrade", (request, socket, head) => {
     const handled = handleTerminalDataSocketUpgrade(
       {
@@ -94,6 +97,7 @@ async function createFixture(
     issue: (hostId = "host_1", daemonSessionId = "session_1") =>
       store.issue({ daemonSessionId, hostId }),
     port: (server.address() as AddressInfo).port,
+    serverSockets,
     store,
   };
 }
@@ -111,7 +115,7 @@ async function dial(
     path?: string;
   } = {},
 ): Promise<Reply> {
-  const client = connect(port, "127.0.0.1");
+  const client = connect({ allowHalfOpen: true, host: "127.0.0.1", port });
   clients.push(client);
   const lines = [
     `${options.method ?? "GET"} ${options.path ?? TERMINAL_DATA_SOCKET_PATH} HTTP/1.1`,
@@ -296,6 +300,44 @@ describe("terminal data socket upgrade", () => {
     });
     expect(post.status).toBe(400);
     expect(fixture.attach).not.toHaveBeenCalled();
+  });
+
+  it("destroys the server side of every refused socket although the client never closes its side", async () => {
+    const fixture = await createFixture();
+    await dial(fixture.port, { headers: { authorization: "Bearer host-key-1" } });
+    await dial(fixture.port, {
+      headers: authorized(fixture.issue(), { origin: "http://127.0.0.1:3001" }),
+    });
+    await dial(fixture.port, {
+      headers: authorized(fixture.issue()),
+      host: "evil.example",
+    });
+    await dial(fixture.port, {
+      headers: authorized(fixture.issue()),
+      method: "POST",
+    });
+    await dial(fixture.port, {
+      headers: authorized(fixture.issue(), { authorization: "Bearer nope" }),
+    });
+    expect(fixture.serverSockets).toHaveLength(5);
+    expect(fixture.serverSockets.map((socket) => socket.destroyed)).toEqual([
+      true,
+      true,
+      true,
+      true,
+      true,
+    ]);
+  });
+
+  it("destroys the server side of a socket answered 503", async () => {
+    const fixture = await createFixture(false);
+    const reply = await dial(fixture.port, {
+      headers: authorized(fixture.issue()),
+    });
+    expect(reply.status).toBe(503);
+    expect(fixture.serverSockets.map((socket) => socket.destroyed)).toEqual([
+      true,
+    ]);
   });
 
   it("answers 503 when the data plane cannot take the socket", async () => {

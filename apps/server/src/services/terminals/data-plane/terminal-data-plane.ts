@@ -61,6 +61,29 @@ export interface TerminalDataPlane {
   stop(): void;
 }
 
+const CHILD_ENV_ALLOWLIST = [
+  "LANG",
+  "LC_ALL",
+  "NODE_ENV",
+  "NODE_OPTIONS",
+  "PATH",
+  "TMPDIR",
+  "TZ",
+] as const;
+
+export function terminalDataPlaneChildEnv(
+  source: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const name of CHILD_ENV_ALLOWLIST) {
+    const value = source[name];
+    if (value !== undefined) {
+      env[name] = value;
+    }
+  }
+  return env;
+}
+
 export function createTerminalDataPlaneSpawn(): DataPlaneSpawn {
   const runningFromSource = fileURLToPath(import.meta.url).endsWith(".ts");
   const entry = fileURLToPath(
@@ -70,6 +93,7 @@ export function createTerminalDataPlaneSpawn(): DataPlaneSpawn {
   );
   return () =>
     fork(entry, [], {
+      env: terminalDataPlaneChildEnv(process.env),
       execArgv: process.execArgv,
       stdio: ["ignore", "inherit", "inherit", "ipc"],
     });

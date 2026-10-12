@@ -20,6 +20,8 @@ const HANDSHAKE_HEADERS = new Set([
   "upgrade",
 ]);
 
+const REFUSAL_BACKSTOP_MS = 2_000;
+
 const REFUSALS = {
   400: "Bad Request",
   401: "Unauthorized",
@@ -68,6 +70,10 @@ function refuse(socket: Duplex, status: keyof typeof REFUSALS): void {
   if (socket.destroyed) {
     return;
   }
+  const backstop = setTimeout(() => socket.destroy(), REFUSAL_BACKSTOP_MS);
+  backstop.unref();
+  socket.once("finish", () => socket.destroy());
+  socket.once("close", () => clearTimeout(backstop));
   socket.end(
     `HTTP/1.1 ${status} ${REFUSALS[status]}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`,
   );
