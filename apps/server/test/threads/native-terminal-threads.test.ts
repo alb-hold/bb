@@ -764,6 +764,74 @@ describe("native terminal threads", () => {
     }
   });
 
+  it("sends Codex a second image while an earlier image with the same label is still shown", async () => {
+    const fixture = await createFixture();
+    seedPrimaryHost(fixture.harness.deps, fixture.hostId);
+    const attachmentPath = await storeImageAttachment(fixture);
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+    });
+    const cli = startFakeCli(
+      fixture,
+      open.terminalId,
+      (pasted) =>
+        pasted.endsWith(".png")
+          ? "\u001b[6;1H\u001b[2K\u203a [Image #1]"
+          : `\u001b[6;1H\u001b[2K\u203a [Image #1] ${pasted}`,
+      "\u001b[2;1H\u203a [Image #1] What colour is this?\r\n\u2022 Green",
+    );
+    try {
+      const response = await postJson(fixture, `/threads/${thread.id}/send`, {
+        input: [
+          ...textInput("run the tests"),
+          { type: "localImage", path: attachmentPath },
+        ],
+        mode: "auto",
+      });
+      expect(response.status).toBe(200);
+      expect(cli.inputs()).toEqual([
+        `\u001b[200~${storedAttachmentPath(fixture, attachmentPath)}\u001b[201~`,
+        "\u001b[200~run the tests\u001b[201~",
+        "\r",
+      ]);
+    } finally {
+      cli.stop();
+    }
+  });
+
+  it("stops before the message when Codex only redraws an earlier image with the same label", async () => {
+    const fixture = await createFixture();
+    seedPrimaryHost(fixture.harness.deps, fixture.hostId);
+    const attachmentPath = await storeImageAttachment(fixture);
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+    });
+    const cli = startFakeCli(
+      fixture,
+      open.terminalId,
+      () => "\u001b[2;1H\u001b[2K\u203a [Image #1] What colour is this?",
+      "\u001b[2;1H\u203a [Image #1] What colour is this?\r\n\u2022 Green",
+    );
+    try {
+      const response = await postJson(fixture, `/threads/${thread.id}/send`, {
+        input: [
+          ...textInput("run the tests"),
+          { type: "localImage", path: attachmentPath },
+        ],
+        mode: "auto",
+      });
+      expect(response.status).toBe(409);
+      expect(apiErrorSchema.parse(await readJson(response)).code).toBe(
+        "native_terminal_input_not_shown",
+      );
+      expect(cli.inputs()).toEqual([
+        `\u001b[200~${storedAttachmentPath(fixture, attachmentPath)}\u001b[201~`,
+      ]);
+    } finally {
+      cli.stop();
+    }
+  }, 10_000);
+
   it("sends Claude Code an image and a message as two pastes and one Enter", async () => {
     const fixture = await createFixture();
     seedPrimaryHost(fixture.harness.deps, fixture.hostId);
