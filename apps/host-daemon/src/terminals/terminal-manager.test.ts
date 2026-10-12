@@ -1254,6 +1254,7 @@ describe("TerminalManager", () => {
       requestId: "attach-before-expiry",
       terminalId: "term-1",
     });
+    expect(harness.manager["retainedReplayParserStateBytes"]).toBe(0);
     await vi.advanceTimersByTimeAsync(1_000);
     await attachTerminal(harness, {
       requestId: "attach-after-expiry",
@@ -1275,6 +1276,7 @@ describe("TerminalManager", () => {
       }),
     );
     expect(vi.getTimerCount()).toBe(0);
+    expect(harness.manager["retainedReplayParserStateBytes"]).toBe(0);
   });
 
   it("evicts the oldest retained terminal past the retained terminal cap", async () => {
@@ -1313,6 +1315,9 @@ describe("TerminalManager", () => {
       replayStartSeq: 0,
       nextSeq: 1,
     });
+    expect(harness.manager["retainedReplayParserStateBytes"]).toBe(0);
+    harness.manager.dispose();
+    expect(harness.manager["retainedReplayParserStateBytes"]).toBe(0);
   });
 
   it("evicts the oldest retained terminal past the retained byte cap", async () => {
@@ -1362,6 +1367,9 @@ describe("TerminalManager", () => {
       replayStartSeq: 0,
       nextSeq: 1,
     });
+    expect(harness.manager["retainedReplayParserStateBytes"]).toBe(0);
+    harness.manager.dispose();
+    expect(harness.manager["retainedReplayParserStateBytes"]).toBe(0);
   });
 
   it("clears retained scrollback and its timers on dispose", async () => {
@@ -1809,7 +1817,7 @@ describe("TerminalManager", () => {
         vi.advanceTimersByTime(4);
         expect(session.scrollback.at(-1)?.chunk.seq).toBe(index + 1);
       }
-      expect(session.scrollback).toHaveLength(10_000);
+      expect(session.scrollback.length).toBeLessThanOrEqual(10_000);
       expect(
         session.scrollback.every(
           (entry) => entry.parserStateBefore.csiParameters.length <= 1024,
@@ -1819,10 +1827,16 @@ describe("TerminalManager", () => {
         (total, entry) => total + entry.parserStateBefore.csiParameters.length,
         0,
       );
-      expect(snapshotBytes).toBeLessThanOrEqual(10_240_000);
+      const chargedEntries = session.scrollback.filter(
+        (entry) => entry.parserStateBefore.csiParameters.length > 0,
+      ).length;
+      expect(64 * chargedEntries + 2 * snapshotBytes).toBeLessThanOrEqual(
+        4 * 1024 * 1024,
+      );
       if (mode === "held") {
-        expect(snapshotBytes).toBe(10_240_000);
-        expect(session.scrollbackBytes).toBe(10_000);
+        expect(session.scrollback).toHaveLength(1985);
+        expect(snapshotBytes).toBe(1985 * 1024);
+        expect(session.scrollbackBytes).toBe(1985);
       } else {
         expect(
           new Set(
@@ -1830,8 +1844,8 @@ describe("TerminalManager", () => {
               (entry) => entry.parserStateBefore.csiParameters,
             ),
           ).size,
-        ).toBeGreaterThan(9000);
-        expect(snapshotBytes).toBeGreaterThan(4 * 1024 * 1024);
+        ).toBeGreaterThan(1024);
+        expect(snapshotBytes).toBeGreaterThan(1024 * 1024);
         expect(session.scrollbackBytes).toBeLessThan(11_000);
       }
       await harness.manager.handleMessage({
@@ -1870,9 +1884,324 @@ describe("TerminalManager", () => {
       );
       pty.emitExit(0);
       const exited = harness.manager["exitedSessions"].get("term-1");
-      expect(exited?.scrollback).toHaveLength(10_000);
+      expect(exited?.scrollback).toHaveLength(session.scrollback.length);
       expect(exited?.scrollbackBytes).toBe(session.scrollbackBytes);
       harness.manager.dispose();
+    },
+  );
+
+  it("bounds replay snapshots across many active and exited terminals and evicts exited history first", async () => {
+    const harness = createHarness();
+    const exitedPty = await openTerminalWithId(harness, "term-exited");
+    vi.useFakeTimers({
+      toFake: [
+        "setTimeout",
+        "clearTimeout",
+        "setImmediate",
+        "clearImmediate",
+        "performance",
+      ],
+    });
+    const budget = 4 * 1024 * 1024;
+    const measuredCharge = () =>
+      [
+        ...harness.manager["sessions"].values(),
+        ...harness.manager["exitedSessions"].values(),
+      ].reduce(
+        (total, session) =>
+          total +
+          session.scrollback.reduce(
+            (sum, entry) =>
+              sum +
+              (entry.parserStateBefore.csiParameters.length === 0
+                ? 0
+                : 64 + 2 * entry.parserStateBefore.csiParameters.length),
+            0,
+          ),
+        0,
+      );
+    const assertBudget = () => {
+      const measured = measuredCharge();
+      expect(measured).toBeLessThanOrEqual(budget);
+      expect(harness.manager["retainedReplayParserStateBytes"]).toBe(measured);
+    };
+    exitedPty.emitData(`\u001b[${";".repeat(1024)}`);
+    vi.advanceTimersByTime(4);
+    for (let index = 0; index < 2000; index += 1) {
+      exitedPty.emitData("\u0000");
+      vi.advanceTimersByTime(4);
+    }
+    assertBudget();
+    exitedPty.emitExit(0);
+    await attachTerminal(harness, {
+      requestId: "attach-before-budget-eviction",
+      terminalId: "term-exited",
+    });
+    assertBudget();
+    expect(harness.manager["exitedSessions"].has("term-exited")).toBe(true);
+    const quietPty = await openTerminalWithId(harness, "term-quiet");
+    quietPty.emitData("\u001b[?1049hQUIET");
+    vi.advanceTimersByTime(4);
+    const active = [];
+    for (let terminal = 0; terminal < 10; terminal += 1) {
+      const terminalId = `term-busy-${terminal}`;
+      const pty = await openTerminalWithId(harness, terminalId);
+      active.push({ pty, terminalId });
+      pty.emitData(
+        `${terminal === 0 ? "\u001b[?1049h" : ""}\u001b[${";".repeat(1024)}`,
+      );
+      vi.advanceTimersByTime(4);
+      const session = harness.manager["sessions"].get(terminalId);
+      if (!session) {
+        throw new Error("Terminal session did not open");
+      }
+      for (let index = 0; index < 12_000; index += 1) {
+        pty.emitData("\u0000");
+        vi.advanceTimersByTime(4);
+        expect(session.scrollback.at(-1)?.chunk.seq).toBe(index + 1);
+        expect(
+          harness.manager["retainedReplayParserStateBytes"],
+        ).toBeLessThanOrEqual(budget);
+        if (index % 256 === 0) {
+          assertBudget();
+        }
+        if (terminal === 0 && index === 200) {
+          expect(harness.manager["exitedSessions"].has("term-exited")).toBe(
+            false,
+          );
+          await attachTerminal(harness, {
+            requestId: "attach-quiet-before-active-eviction",
+            terminalId: "term-quiet",
+          });
+          expect(harness.messages).toContainEqual(
+            expect.objectContaining({
+              type: "terminal.replay",
+              requestId: "attach-quiet-before-active-eviction",
+              chunks: [textChunk("\u001b[?1049hQUIET", 0)],
+            }),
+          );
+        }
+        harness.messages.length = 0;
+      }
+      assertBudget();
+      expect(session.scrollback.length).toBeLessThanOrEqual(1985);
+      expect(session.scrollbackParserState.csiParameters).toHaveLength(1024);
+    }
+    const quietSession = harness.manager["sessions"].get("term-quiet");
+    expect(quietSession?.scrollback).toHaveLength(1);
+    quietPty.emitData("QUIET-RECOVERED");
+    vi.advanceTimersByTime(4);
+    await attachTerminal(harness, {
+      requestId: "attach-quiet-after-active-eviction",
+      terminalId: "term-quiet",
+    });
+    expect(harness.messages).toContainEqual(
+      expect.objectContaining({
+        type: "terminal.replay",
+        requestId: "attach-quiet-after-active-eviction",
+        chunks: [
+          textChunk("\u001b[?1049hQUIET", 0),
+          textChunk("QUIET-RECOVERED", 1),
+        ],
+      }),
+    );
+    for (const { pty, terminalId } of active) {
+      const marker = `RECOVERED-${terminalId}`;
+      pty.emitData(`m${marker}`);
+      vi.advanceTimersByTime(4);
+      await attachTerminal(harness, { requestId: terminalId, terminalId });
+      expect(harness.messages).toContainEqual(
+        expect.objectContaining({
+          type: "terminal.replay",
+          requestId: terminalId,
+          chunks: [
+            textChunk(
+              `${terminalId === "term-busy-0" ? "\u001b[?1049h" : ""}${marker}`,
+              12_001,
+            ),
+          ],
+        }),
+      );
+      assertBudget();
+    }
+    await harness.manager.shutdownAll();
+    assertBudget();
+    harness.manager.dispose();
+    expect(harness.manager["retainedReplayParserStateBytes"]).toBe(0);
+    expect(measuredCharge()).toBe(0);
+  });
+
+  it.each([{ maxExitedTerminals: 0 }, { exitedRetentionMs: 0 }])(
+    "releases replay snapshot charges when exited retention is disabled: %j",
+    async (options) => {
+      const harness = createHarnessWithOptions({
+        ...options,
+        onSendMessage: () => undefined,
+        resolveShell: async () => "/bin/zsh",
+      });
+      const pty = await openTerminal(harness);
+      pty.emitData(`\u001b[${";".repeat(1024)}`);
+      await attachTerminal(harness, {
+        requestId: "attach-active",
+        terminalId: "term-1",
+      });
+      pty.emitData("\u0000");
+      await attachTerminal(harness, {
+        requestId: "attach-charged",
+        terminalId: "term-1",
+      });
+      expect(harness.manager["retainedReplayParserStateBytes"]).toBe(2112);
+      await harness.manager.shutdownAll();
+      expect(harness.manager["exitedSessions"].size).toBe(0);
+      expect(harness.manager["retainedReplayParserStateBytes"]).toBe(0);
+      harness.manager.dispose();
+      expect(harness.manager["retainedReplayParserStateBytes"]).toBe(0);
+    },
+  );
+
+  it("releases old exited snapshot charges when a terminal ID is reused and on dispose", async () => {
+    const harness = createHarness();
+    const first = await openTerminal(harness);
+    first.emitData(`\u001b[${";".repeat(1024)}`);
+    await attachTerminal(harness, {
+      requestId: "attach-first",
+      terminalId: "term-1",
+    });
+    first.emitData("\u0000");
+    first.emitExit(0);
+    await attachTerminal(harness, {
+      requestId: "attach-exited",
+      terminalId: "term-1",
+    });
+    expect(harness.manager["retainedReplayParserStateBytes"]).toBe(2112);
+    const second = await openTerminalWithId(harness, "term-1");
+    second.emitData("SECOND");
+    second.emitExit(0);
+    await attachTerminal(harness, {
+      requestId: "attach-replaced",
+      terminalId: "term-1",
+    });
+    expect(harness.manager["retainedReplayParserStateBytes"]).toBe(0);
+    const live = await openTerminalWithId(harness, "term-live");
+    live.emitData("\u001b[;");
+    await attachTerminal(harness, {
+      requestId: "attach-live",
+      terminalId: "term-live",
+    });
+    live.emitData("\u0000");
+    await attachTerminal(harness, {
+      requestId: "attach-live-charged",
+      terminalId: "term-live",
+    });
+    expect(harness.manager["retainedReplayParserStateBytes"]).toBe(66);
+    harness.manager.dispose();
+    expect(harness.manager["retainedReplayParserStateBytes"]).toBe(0);
+    expect(
+      harness.manager["sessions"].get("term-live")?.scrollback,
+    ).toHaveLength(0);
+    await harness.manager.shutdownAll();
+    harness.manager.dispose();
+    expect(harness.manager["retainedReplayParserStateBytes"]).toBe(0);
+  });
+
+  it("shares empty CSI snapshots so many benign terminals preserve their replay history", async () => {
+    const harness = createHarness();
+    vi.useFakeTimers({
+      toFake: [
+        "setTimeout",
+        "clearTimeout",
+        "setImmediate",
+        "clearImmediate",
+        "performance",
+      ],
+    });
+    const snapshots = new Set();
+    for (let terminal = 0; terminal < 8; terminal += 1) {
+      const terminalId = `term-benign-${terminal}`;
+      const pty = await openTerminalWithId(harness, terminalId);
+      for (let index = 0; index < 10_000; index += 1) {
+        pty.emitData("BENIGN\n");
+        vi.advanceTimersByTime(4);
+        harness.messages.length = 0;
+      }
+    }
+    for (const session of harness.manager["sessions"].values()) {
+      expect(session.scrollback).toHaveLength(10_000);
+      expect(session.scrollbackBytes).toBe(70_000);
+      for (const entry of session.scrollback) {
+        expect(Object.isFrozen(entry.parserStateBefore)).toBe(true);
+        snapshots.add(entry.parserStateBefore);
+      }
+      await attachTerminal(harness, {
+        requestId: session.terminalId,
+        terminalId: session.terminalId,
+      });
+      const replay = harness.messages.find(
+        (message) =>
+          message.type === "terminal.replay" &&
+          message.requestId === session.terminalId,
+      );
+      if (!replay || replay.type !== "terminal.replay") {
+        throw new Error("Terminal replay was not sent");
+      }
+      expect(replay.chunks).toHaveLength(10_000);
+      expect(replay.chunks[0]).toEqual(textChunk("BENIGN\n", 0));
+      expect(replay.chunks.at(-1)).toEqual(textChunk("BENIGN\n", 9999));
+      harness.messages.length = 0;
+    }
+    expect(snapshots.size).toBe(1);
+    expect(harness.manager["retainedReplayParserStateBytes"]).toBe(0);
+    await harness.manager.shutdownAll();
+    harness.manager.dispose();
+  });
+
+  it.each([
+    { maxExitedTerminals: 1 },
+    { maxExitedScrollbackBytes: 8 },
+    { exitedRetentionMs: 100 },
+  ])(
+    "releases charged exited snapshots through retention limits: %j",
+    async (options) => {
+      const harness = createHarnessWithOptions({
+        ...options,
+        onSendMessage: () => undefined,
+        resolveShell: async () => "/bin/zsh",
+      });
+      vi.useFakeTimers({
+        toFake: [
+          "setTimeout",
+          "clearTimeout",
+          "setImmediate",
+          "clearImmediate",
+          "performance",
+        ],
+      });
+      const pty = await openTerminal(harness);
+      pty.emitData("\u001b[;");
+      vi.advanceTimersByTime(4);
+      pty.emitData("\u0000");
+      vi.advanceTimersByTime(4);
+      pty.emitExit(0);
+      await attachTerminal(harness, {
+        requestId: "attach-charged-exited",
+        terminalId: "term-1",
+      });
+      expect(harness.manager["retainedReplayParserStateBytes"]).toBe(66);
+      if ("exitedRetentionMs" in options) {
+        await vi.advanceTimersByTimeAsync(100);
+      } else {
+        const second = await openTerminalWithId(harness, "term-second");
+        second.emitData("SECOND");
+        second.emitExit(0);
+        await attachTerminal(harness, {
+          requestId: "attach-second",
+          terminalId: "term-second",
+        });
+      }
+      expect(harness.manager["exitedSessions"].has("term-1")).toBe(false);
+      expect(harness.manager["retainedReplayParserStateBytes"]).toBe(0);
+      harness.manager.dispose();
+      expect(harness.manager["exitedSessions"].size).toBe(0);
     },
   );
 

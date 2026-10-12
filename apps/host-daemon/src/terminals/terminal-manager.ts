@@ -39,6 +39,12 @@ const PRIMARY_DEVICE_ATTRIBUTES_QUERY_PATTERN = /\u001b\[(?:0)?c/g;
 const PRIMARY_DEVICE_ATTRIBUTES_RESPONSE = "\u001b[?1;2c";
 const MAX_PRIMARY_DEVICE_ATTRIBUTES_REPLIES_PER_CHUNK = 8;
 const MAX_TERMINAL_REPLAY_CSI_PARAMETER_BYTES = 1024;
+const MAX_RETAINED_REPLAY_PARSER_STATE_BYTES = 4 * 1024 * 1024;
+const REPLAY_PARSER_STATE_FIXED_BYTES = 64;
+const EMPTY_CSI_REPLAY_PARSER_STATES = new Map<
+  string,
+  Readonly<TerminalReplayParserState>
+>();
 const INITIAL_TERMINAL_REPLAY_PARSER_STATE: TerminalReplayParserState = {
   alternateScreen: false,
   controlString: null,
@@ -119,7 +125,8 @@ interface ScrollbackEntry {
     HostDaemonDaemonWsMessage,
     { type: "terminal.output" }
   >["chunk"];
-  parserStateBefore: TerminalReplayParserState;
+  parserStateBefore: Readonly<TerminalReplayParserState>;
+  retentionSeq: number;
 }
 
 interface TerminalReplayParserState {
@@ -135,6 +142,7 @@ interface ExitedTerminalSession {
   nextSeq: number;
   scrollback: ScrollbackEntry[];
   scrollbackBytes: number;
+  scrollbackParserStateBytes: number;
   terminalId: string;
 }
 
@@ -151,6 +159,7 @@ interface TerminalOutputFlow {
 }
 
 interface TerminalSession {
+  chargedScrollbackEntries: ScrollbackEntry[];
   closeReason: TerminalSessionCloseReason | null;
   closeTimeout: ReturnType<typeof setTimeout> | null;
   cols: number;
@@ -168,6 +177,7 @@ interface TerminalSession {
   scrollbackParserState: TerminalReplayParserState;
   scrollback: ScrollbackEntry[];
   scrollbackBytes: number;
+  scrollbackParserStateBytes: number;
   terminalId: string;
 }
 
@@ -692,6 +702,8 @@ export class TerminalManager {
   private readonly sessions = new Map<string, TerminalSession>();
   private readonly exitedSessions = new Map<string, ExitedTerminalSession>();
   private exitedScrollbackBytes = 0;
+  private nextScrollbackRetentionSeq = 0;
+  private retainedReplayParserStateBytes = 0;
 
   constructor(private readonly options: TerminalManagerOptions) {
     this.closeGracePeriodMs =
@@ -708,6 +720,13 @@ export class TerminalManager {
 
   dispose(): void {
     this.releaseOutputFlowControl();
+    for (const session of this.sessions.values()) {
+      this.retainedReplayParserStateBytes -= session.scrollbackParserStateBytes;
+      session.scrollback.length = 0;
+      session.chargedScrollbackEntries.length = 0;
+      session.scrollbackBytes = 0;
+      session.scrollbackParserStateBytes = 0;
+    }
     for (const terminalId of [...this.exitedSessions.keys()]) {
       this.forgetExitedSession(terminalId);
     }
@@ -809,6 +828,7 @@ export class TerminalManager {
         rows: message.rows,
       });
       const session: TerminalSession = {
+        chargedScrollbackEntries: [],
         closeReason: null,
         closeTimeout: null,
         cols: message.cols,
@@ -826,6 +846,7 @@ export class TerminalManager {
         scrollbackParserState: { ...INITIAL_TERMINAL_REPLAY_PARSER_STATE },
         scrollback: [],
         scrollbackBytes: 0,
+        scrollbackParserStateBytes: 0,
         terminalId: message.terminalId,
       };
       this.sessions.set(message.terminalId, session);
@@ -1188,7 +1209,9 @@ export class TerminalManager {
         seq: session.nextSeq,
         dataBase64: dataBuffer.toString("base64"),
       };
-      const parserStateBefore = { ...session.scrollbackParserState };
+      const parserStateBefore = this.replayParserStateSnapshot(
+        session.scrollbackParserState,
+      );
       session.scrollbackParserState = advanceTerminalReplayParserState(
         dataBuffer,
         session.scrollbackParserState,
@@ -1198,9 +1221,17 @@ export class TerminalManager {
         byteLength: dataBuffer.byteLength,
         chunk,
         parserStateBefore,
+        retentionSeq: this.nextScrollbackRetentionSeq++,
       };
+      const parserStateBytes = this.replayParserStateBytes(entry);
+      this.reserveReplayParserState(parserStateBytes);
       session.scrollback.push(entry);
+      if (parserStateBytes > 0) {
+        session.chargedScrollbackEntries.push(entry);
+      }
       session.scrollbackBytes += entry.byteLength;
+      session.scrollbackParserStateBytes += parserStateBytes;
+      this.retainedReplayParserStateBytes += parserStateBytes;
       this.pruneScrollback(session);
       this.recordUnacknowledgedOutput(session, entry);
       this.options.sendMessage({
@@ -1308,11 +1339,78 @@ export class TerminalManager {
       session.scrollbackBytes > DEFAULT_SCROLLBACK_MAX_BYTES ||
       session.scrollback.length > DEFAULT_SCROLLBACK_MAX_CHUNKS
     ) {
-      const removed = session.scrollback.shift();
-      if (!removed) {
-        return;
+      this.removeOldestScrollbackEntry(session);
+    }
+  }
+
+  private replayParserStateBytes(entry: ScrollbackEntry): number {
+    const length = entry.parserStateBefore.csiParameters.length;
+    return length === 0 ? 0 : REPLAY_PARSER_STATE_FIXED_BYTES + 2 * length;
+  }
+
+  private replayParserStateSnapshot(
+    state: TerminalReplayParserState,
+  ): Readonly<TerminalReplayParserState> {
+    if (state.csiParameters.length > 0) {
+      return { ...state };
+    }
+    const key = `${state.alternateScreen}:${state.controlString}:${state.escape}:${state.utf8Remaining}`;
+    const existing = EMPTY_CSI_REPLAY_PARSER_STATES.get(key);
+    if (existing) {
+      return existing;
+    }
+    const snapshot = Object.freeze({ ...state });
+    EMPTY_CSI_REPLAY_PARSER_STATES.set(key, snapshot);
+    return snapshot;
+  }
+
+  private removeOldestScrollbackEntry(session: TerminalSession): void {
+    const removed = session.scrollback.shift();
+    if (!removed) {
+      return;
+    }
+    const parserStateBytes = this.replayParserStateBytes(removed);
+    if (parserStateBytes > 0) {
+      session.chargedScrollbackEntries.shift();
+    }
+    session.scrollbackBytes -= removed.byteLength;
+    session.scrollbackParserStateBytes -= parserStateBytes;
+    this.retainedReplayParserStateBytes -= parserStateBytes;
+  }
+
+  private reserveReplayParserState(bytes: number): void {
+    while (
+      this.retainedReplayParserStateBytes + bytes >
+      MAX_RETAINED_REPLAY_PARSER_STATE_BYTES
+    ) {
+      const oldestExited = [...this.exitedSessions.values()].find(
+        (session) => session.scrollbackParserStateBytes > 0,
+      );
+      if (oldestExited) {
+        this.forgetExitedSession(oldestExited.terminalId);
+        continue;
       }
-      session.scrollbackBytes -= removed.byteLength;
+      let oldestSession: TerminalSession | undefined;
+      let oldestSeq = Infinity;
+      for (const session of this.sessions.values()) {
+        const entry = session.chargedScrollbackEntries[0];
+        if (entry && entry.retentionSeq < oldestSeq) {
+          oldestSession = session;
+          oldestSeq = entry.retentionSeq;
+        }
+      }
+      if (!oldestSession) {
+        throw new Error(
+          "Terminal replay snapshot budget accounting is inconsistent",
+        );
+      }
+      while (
+        oldestSession.scrollback[0] &&
+        this.replayParserStateBytes(oldestSession.scrollback[0]) === 0
+      ) {
+        this.removeOldestScrollbackEntry(oldestSession);
+      }
+      this.removeOldestScrollbackEntry(oldestSession);
     }
   }
 
@@ -1365,6 +1463,7 @@ export class TerminalManager {
 
   private retainExitedSession(session: TerminalSession): void {
     if (this.maxExitedTerminals < 1 || this.exitedRetentionMs <= 0) {
+      this.retainedReplayParserStateBytes -= session.scrollbackParserStateBytes;
       return;
     }
     this.forgetExitedSession(session.terminalId);
@@ -1373,6 +1472,7 @@ export class TerminalManager {
       nextSeq: session.nextSeq,
       scrollback: session.scrollback,
       scrollbackBytes: session.scrollbackBytes,
+      scrollbackParserStateBytes: session.scrollbackParserStateBytes,
       terminalId: session.terminalId,
     };
     const expiryTimeout = setTimeout(() => {
@@ -1411,6 +1511,7 @@ export class TerminalManager {
     }
     this.exitedSessions.delete(terminalId);
     this.exitedScrollbackBytes -= exited.scrollbackBytes;
+    this.retainedReplayParserStateBytes -= exited.scrollbackParserStateBytes;
   }
 
   private sendTerminalError(args: SendTerminalErrorArgs): void {
