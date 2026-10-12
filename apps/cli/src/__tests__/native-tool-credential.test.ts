@@ -12,7 +12,8 @@ import {
   nativeToolCredentialDir,
   readNativeToolCredentialFile,
   removeNativeToolCredentialFile,
-  withBearerCredential,
+  takeNativeToolCredentialFromEnv,
+  withFileCredential,
   writeNativeToolCredentialFile,
 } from "../native-tool-credential.js";
 
@@ -56,17 +57,43 @@ describe("native tool credential file", () => {
     expect(() => readNativeToolCredentialFile(file)).toThrow();
   });
 
-  it("sends the credential as a bearer header on every request", async () => {
+  it("takes the credential from the environment so child processes never inherit it", () => {
+    const socket = socketPath();
+    const env: NodeJS.ProcessEnv = {
+      BB_NATIVE_TOOL_CREDENTIAL: "from-daemon",
+      PATH: "/bin",
+    };
+    takeNativeToolCredentialFromEnv(env, socket);
+    expect(env.BB_NATIVE_TOOL_CREDENTIAL).toBeUndefined();
+    expect(
+      readFileSync(
+        path.join(nativeToolCredentialDir(socket), "credential"),
+        "utf8",
+      ),
+    ).toBe("from-daemon");
+    takeNativeToolCredentialFromEnv({ PATH: "/bin" }, socket);
+    expect(
+      readFileSync(
+        path.join(nativeToolCredentialDir(socket), "credential"),
+        "utf8",
+      ),
+    ).toBe("from-daemon");
+  });
+
+  it("sends the file's current credential as a bearer header on every request", async () => {
+    const socket = socketPath();
+    const file = writeNativeToolCredentialFile(socket, "first");
     const seen: string[] = [];
-    const wrapped = withBearerCredential(
+    const wrapped = withFileCredential(
       (async (_input: RequestInfo | URL, init?: RequestInit) => {
         seen.push(new Headers(init?.headers).get("authorization") ?? "");
         return new Response("{}");
       }) as typeof fetch,
-      "tok",
+      file,
     );
     await wrapped("http://x/y", { headers: { "content-type": "text/plain" } });
+    writeNativeToolCredentialFile(socket, "rotated");
     await wrapped("http://x/y");
-    expect(seen).toEqual(["Bearer tok", "Bearer tok"]);
+    expect(seen).toEqual(["Bearer first", "Bearer rotated"]);
   });
 });

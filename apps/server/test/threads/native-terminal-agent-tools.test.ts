@@ -37,7 +37,11 @@ interface Fixture {
   pluginsDir: string;
   projectId: string;
   sessionId: string;
-  terminalOpens: { requestId: string; terminalId: string }[];
+  terminalOpens: {
+    credential: string | null;
+    requestId: string;
+    terminalId: string;
+  }[];
   credentials: Map<string, string>;
 }
 
@@ -108,11 +112,12 @@ async function createFixture(): Promise<Fixture> {
     projectId: project.id,
     status: "ready",
   });
-  const terminalOpens: { requestId: string; terminalId: string }[] = [];
+  const terminalOpens: Fixture["terminalOpens"] = [];
   harness.hub.registerDaemon(seeded.session.id, seeded.host.id, {
     close: vi.fn(),
     send: vi.fn((data: string) => {
       const message = JSON.parse(data) as {
+        contributedEnv?: { name: string; value: unknown }[];
         requestId?: string;
         terminalId?: string;
         type: string;
@@ -122,7 +127,11 @@ async function createFixture(): Promise<Fixture> {
         message.terminalId &&
         message.requestId
       ) {
+        const env = message.contributedEnv?.find(
+          (entry) => entry.name === "BB_NATIVE_TOOL_CREDENTIAL",
+        );
         terminalOpens.push({
+          credential: typeof env?.value === "string" ? env.value : null,
           requestId: message.requestId,
           terminalId: message.terminalId,
         });
@@ -183,16 +192,8 @@ async function createNativeThread(fixture: Fixture): Promise<string> {
       getNativeTerminalThread(fixture.harness.db, thread.id)
         ?.terminalSessionId === terminalId
     ) {
-      const launch = nativeTerminalLaunchSpecSchema.parse(
-        await readJson(
-          await fixture.harness.app.request(
-            `/api/v1/threads/${thread.id}/native-terminal/launch`,
-            { method: "POST" },
-          ),
-        ),
-      );
-      if (launch.toolCredential === null) throw new Error("no credential");
-      fixture.credentials.set(thread.id, launch.toolCredential);
+      if (open.credential === null) throw new Error("no credential");
+      fixture.credentials.set(thread.id, open.credential);
       return thread.id;
     }
     await new Promise((resolve) => setTimeout(resolve, 5));
@@ -404,21 +405,67 @@ describe("native terminal agent tools", () => {
         })
       ).status,
     ).toBe(200);
-    const relaunch = nativeTerminalLaunchSpecSchema.parse(
-      await readJson(
-        await fixture.harness.app.request(
-          `/api/v1/threads/${first}/native-terminal/launch`,
-          { method: "POST" },
-        ),
-      ),
+    const oldCredential = authHeaders(fixture, first);
+    const launchResponse = await fixture.harness.app.request(
+      `/api/v1/threads/${first}/native-terminal/launch`,
+      { method: "POST" },
     );
-    expect((await post(first, authHeaders(fixture, first))).status).toBe(401);
+    const launchBody = await readJson(launchResponse);
+    expect(JSON.stringify(launchBody)).not.toContain(
+      fixture.credentials.get(first) ?? "unreachable",
+    );
+    expect(launchBody).not.toHaveProperty("toolCredential");
+    expect(nativeTerminalLaunchSpecSchema.safeParse(launchBody).success).toBe(
+      true,
+    );
+    expect((await post(first, oldCredential)).status).toBe(200);
+
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.hostId,
+      sessionId: fixture.sessionId,
+      message: {
+        type: "terminal.exited",
+        terminalId: fixture.terminalOpens[0]?.terminalId ?? "",
+        exitCode: 0,
+        closeReason: "process-exit",
+      },
+    });
+    const reopening = fixture.harness.app.request(
+      `/api/v1/threads/${first}/native-terminal/open`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({}),
+      },
+    );
+    for (let attempt = 0; attempt < 600; attempt += 1) {
+      if (fixture.terminalOpens.length > 2) break;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    const reopen = fixture.terminalOpens[2];
+    if (reopen === undefined || reopen.credential === null) {
+      throw new Error("terminal never reopened with a credential");
+    }
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.hostId,
+      sessionId: fixture.sessionId,
+      message: {
+        type: "terminal.opened",
+        requestId: reopen.requestId,
+        terminalId: reopen.terminalId,
+        shell: "/bin/zsh",
+        title: "zsh",
+        initialCwd: "/tmp/native-tools-workspace",
+        cols: 80,
+        rows: 24,
+      },
+    });
+    expect((await reopening).status).toBe(200);
+    expect(reopen.credential).not.toBe(fixture.credentials.get(first));
+    expect((await post(first, oldCredential)).status).toBe(401);
     expect(
-      (
-        await post(first, {
-          authorization: `Bearer ${relaunch.toolCredential}`,
-        })
-      ).status,
+      (await post(first, { authorization: `Bearer ${reopen.credential}` }))
+        .status,
     ).toBe(200);
   });
 

@@ -180,7 +180,7 @@ export function nativeTerminalLaunchCommand(args: {
     : `"$BB_CLI" thread native-run ${args.threadId}`;
   const fallback = args.reattachOnly
     ? `printf '%s\\r\\n' '${NATIVE_TERMINAL_ENDED_MESSAGE}';`
-    : `${env} exec ${executable};`;
+    : `unset ${NATIVE_TOOL_CREDENTIAL_ENV}; ${env} exec ${executable};`;
   return [
     `if [ -n "$BB_CLI" ] && ${wrapper} --probe >/dev/null 2>&1; then`,
     `${env} exec ${wrapper};`,
@@ -355,6 +355,7 @@ async function openNativeTerminalOnce(
             hostId: environment.hostId,
           },
         });
+  const credential = issueNativeTerminalToolCredential(record.providerId);
   const terminal = await deps.terminalSessions.createTerminal({
     payload: {
       cols: args.request.cols ?? NATIVE_TERMINAL_DEFAULT_COLS,
@@ -370,7 +371,12 @@ async function openNativeTerminalOnce(
       target: { kind: "thread", threadId: thread.id },
       title: provider.displayName,
     },
-    extraContributedEnv: providerEnv,
+    extraContributedEnv: [...providerEnv, credential.env],
+  });
+  setNativeTerminalToolCredential(deps.db, {
+    threadId: thread.id,
+    terminalSessionId: terminal.id,
+    credentialHash: credential.hash,
   });
   setNativeTerminalThreadTerminal(deps.db, {
     threadId: thread.id,
@@ -490,7 +496,6 @@ export function takeNativeTerminalLaunchSpec(
     nativeSessionId: record.nativeSessionId,
     initialPrompt: consumeNativeTerminalThreadInitialPrompt(deps.db, threadId),
     model: record.model,
-    toolCredential: mintNativeTerminalToolCredential(deps, record),
   };
 }
 
@@ -500,18 +505,20 @@ function hashToolCredential(credential: string): Buffer {
   return createHash("sha256").update(credential).digest();
 }
 
-function mintNativeTerminalToolCredential(
-  deps: Pick<AppDeps, "db">,
-  record: NativeTerminalThreadRecord,
-): string | null {
-  if (record.terminalSessionId === null) return null;
-  const credential = randomBytes(TOOL_CREDENTIAL_BYTES).toString("base64url");
-  setNativeTerminalToolCredential(deps.db, {
-    threadId: record.threadId,
-    terminalSessionId: record.terminalSessionId,
-    credentialHash: hashToolCredential(credential).toString("hex"),
-  });
-  return credential;
+export const NATIVE_TOOL_CREDENTIAL_ENV = "BB_NATIVE_TOOL_CREDENTIAL";
+
+function issueNativeTerminalToolCredential(providerId: string) {
+  const secret = randomBytes(TOOL_CREDENTIAL_BYTES).toString("base64url");
+  return {
+    secret,
+    hash: hashToolCredential(secret).toString("hex"),
+    env: {
+      name: NATIVE_TOOL_CREDENTIAL_ENV,
+      value: secret,
+      source: { plugin: providerId },
+      reason: "Credential for this native terminal's bb tools",
+    },
+  };
 }
 
 export function requireNativeTerminalToolCredential(

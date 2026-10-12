@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import {
   closeSync,
+  existsSync,
   mkdirSync,
   openSync,
   rmSync,
@@ -17,10 +18,10 @@ import { action, CliExitError } from "../../action.js";
 import { cliFetch, createCliBbSdk } from "../../client.js";
 import { createNodeBbSdk } from "@bb/sdk/node";
 import {
-  readNativeToolCredentialFile,
+  nativeToolCredentialFile,
   removeNativeToolCredentialFile,
-  withBearerCredential,
-  writeNativeToolCredentialFile,
+  takeNativeToolCredentialFromEnv,
+  withFileCredential,
 } from "../../native-tool-credential.js";
 import { requireThreadIdOrSelf } from "../../context-env.js";
 import { fillNativeTerminalTemplate } from "@bb/domain";
@@ -139,6 +140,7 @@ async function runNativeHarness(
   reattachOnly: boolean,
 ): Promise<number> {
   const socketPath = defaultNativeHolderSocketPath(baseUrl, threadId);
+  takeNativeToolCredentialFromEnv(process.env, socketPath);
   const connection = await openNativeHolderConnection({
     socketPath,
     reattachOnly,
@@ -268,10 +270,9 @@ async function holdNativeHarness(
               }),
             );
       const script = process.argv[1];
-      const credentialFile =
-        spec.toolCredential === null
-          ? null
-          : writeNativeToolCredentialFile(socketPath, spec.toolCredential);
+      const credentialFile = existsSync(nativeToolCredentialFile(socketPath))
+        ? nativeToolCredentialFile(socketPath)
+        : null;
       const mcpArgs =
         script === undefined || credentialFile === null
           ? []
@@ -473,10 +474,7 @@ export function registerNativeCommands(
       action(async (threadId: string, opts: NativeMcpOptions) => {
         const sdk = createNodeBbSdk({
           baseUrl: opts.serverUrl ?? getUrl(),
-          fetch: withBearerCredential(
-            cliFetch,
-            readNativeToolCredentialFile(opts.credentialFile),
-          ),
+          fetch: withFileCredential(cliFetch, opts.credentialFile),
         });
         await runNativeMcpServer(
           {
