@@ -40,7 +40,6 @@ import {
   nativeTerminalClosedForGood,
   openNativeHolderConnection,
   ignoreNativeHolderSignals,
-  nativeHolderCredentialSocketPath,
   pipeNativeHolderClient,
   runNativeHolder,
 } from "../../native-holder.js";
@@ -247,7 +246,7 @@ async function holdNativeHarness(
     socketPath,
     cwd,
     env: process.env,
-    prepare: async ({ credential }) => {
+    prepare: async ({ credential, credentialSocket }) => {
       const spec = await sdk.nativeTerminals.launch({ threadId });
       const activity = spec.cli.activity;
       const hooks = activity?.hooks;
@@ -283,7 +282,7 @@ async function holdNativeHarness(
                 "--server-url",
                 baseUrl,
                 "--credential-socket",
-                nativeHolderCredentialSocketPath(socketPath),
+                credentialSocket,
               ],
             });
       const launch = resolveNativeHarnessLaunch(

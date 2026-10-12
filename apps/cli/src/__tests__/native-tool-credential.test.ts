@@ -11,7 +11,6 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   NativeHolderFrame,
-  nativeHolderCredentialSocketPath,
   encodeNativeHolderFrame,
   runNativeHolder,
   waitForNativeHolder,
@@ -33,9 +32,13 @@ afterEach(() => {
 });
 
 function workDir(): { dir: string; socket: string } {
-  const dir = mkdtempSync(path.join(os.tmpdir(), "bb-nc-"));
+  const dir = mkdtempSync(path.join(os.tmpdir(), "bb-nc-t-"));
   roots.push(dir);
   return { dir, socket: path.join(dir, "thr_abc-1.sock") };
+}
+
+function credentialDirsIn(dir: string): string[] {
+  return readdirSync(dir).filter((name) => name.startsWith("bb-nc-"));
 }
 
 function filesHolding(dir: string, secret: string): string[] {
@@ -72,6 +75,17 @@ function resizeFrame(): Buffer {
   );
 }
 
+function credentialFrame(value: string): Buffer {
+  return encodeNativeHolderFrame(
+    NativeHolderFrame.credential,
+    Buffer.from(value),
+  );
+}
+
+async function pause(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function readUntil(
   credentialSocket: string,
   expected: string,
@@ -82,146 +96,181 @@ async function readUntil(
       () => "",
     );
     if (last === expected) return last;
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await pause(20);
   }
   return last;
 }
 
-async function untilGone(file: string): Promise<boolean> {
+async function noCredentialDirs(dir: string): Promise<boolean> {
   for (let i = 0; i < 50; i += 1) {
-    try {
-      statSync(file);
-    } catch {
-      return true;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    if (credentialDirsIn(dir).length === 0) return true;
+    await pause(20);
   }
   return false;
 }
 
+interface PrepareContext {
+  credential: string | null;
+  credentialSocket: string;
+}
+
+function startHolder(
+  dir: string,
+  socket: string,
+  pty: NativeHolderPty,
+  extra: {
+    prepare?: (
+      context: PrepareContext,
+    ) => Promise<{ command: string; args: string[] }>;
+    reapAfterMs?: number;
+  } = {},
+): Promise<number> {
+  return runNativeHolder({
+    socketPath: socket,
+    credentialRoot: dir,
+    cwd: dir,
+    env: {},
+    ...(extra.reapAfterMs === undefined
+      ? {}
+      : { reapAfterMs: extra.reapAfterMs }),
+    prepare: extra.prepare ?? (async () => ({ command: "x", args: [] })),
+    spawnPty: () => pty,
+  });
+}
+
 describe("native tool credential delivery", () => {
-  it("keeps the secret in memory, serves it over a 0600 socket, rotates it and leaves nothing on disk", async () => {
+  it("keeps the secret in memory, serves it over a 0600 socket in a private directory, rotates it and leaves nothing on disk", async () => {
     const { dir, socket } = workDir();
     const pty = fakePty();
     let prepared: string | null = null;
-    const done = runNativeHolder({
-      socketPath: socket,
-      cwd: dir,
-      env: {},
-      prepare: async ({ credential }) => {
-        prepared = credential;
+    let credentialSocket = "";
+    const done = startHolder(dir, socket, pty, {
+      prepare: async (context) => {
+        prepared = context.credential;
+        credentialSocket = context.credentialSocket;
         return { command: "x", args: [] };
       },
-      spawnPty: () => pty,
     });
     const client = await waitForNativeHolder(socket, 5_000);
     if (client === null) throw new Error("holder did not start");
-    client.write(
-      encodeNativeHolderFrame(
-        NativeHolderFrame.credential,
-        Buffer.from(SECRET),
-      ),
-    );
+    client.write(credentialFrame(SECRET));
     client.write(resizeFrame());
-    const credentialSocket = nativeHolderCredentialSocketPath(socket);
+    const guessed = path.join(dir, credentialDirsIn(dir)[0] ?? "", "s");
+    expect(await readUntil(guessed, SECRET)).toBe(SECRET);
+    expect(credentialSocket).toBe(guessed);
     expect(statSync(credentialSocket).mode & 0o777).toBe(0o600);
-    expect(await readUntil(credentialSocket, SECRET)).toBe(SECRET);
+    expect(statSync(path.dirname(credentialSocket)).mode & 0o777).toBe(0o700);
     expect(prepared).toBe(SECRET);
     expect(filesHolding(dir, SECRET)).toEqual([]);
 
-    client.write(
-      encodeNativeHolderFrame(
-        NativeHolderFrame.credential,
-        Buffer.from("rotated-value"),
-      ),
-    );
+    client.write(credentialFrame("rotated-value"));
     expect(await readUntil(credentialSocket, "rotated-value")).toBe(
       "rotated-value",
     );
 
     pty.exit(0);
     expect(await done).toBe(0);
-    expect(await untilGone(credentialSocket)).toBe(true);
+    expect(await noCredentialDirs(dir)).toBe(true);
     expect(filesHolding(dir, SECRET)).toEqual([]);
     expect(filesHolding(dir, "rotated-value")).toEqual([]);
     client.destroy();
   });
 
-  it("removes the credential socket when preparing the CLI throws", async () => {
+  it("never exposes the socket to group or other users, even under umask 000", async () => {
     const { dir, socket } = workDir();
-    const done = runNativeHolder({
-      socketPath: socket,
-      cwd: dir,
-      env: {},
+    const pty = fakePty();
+    const previous = process.umask(0o000);
+    const observations: string[] = [];
+    let watching = true;
+    const watcher = (async () => {
+      while (watching) {
+        for (const name of credentialDirsIn(dir)) {
+          const credentialDir = path.join(dir, name);
+          try {
+            const dirMode = statSync(credentialDir).mode & 0o777;
+            if (dirMode & 0o077) {
+              observations.push(`dir ${dirMode.toString(8)}`);
+            }
+            const socketMode = statSync(path.join(credentialDir, "s")).mode;
+            if (socketMode & 0o077) {
+              observations.push(`socket ${(socketMode & 0o777).toString(8)}`);
+            }
+          } catch {
+            continue;
+          }
+        }
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+    })();
+    try {
+      const done = startHolder(dir, socket, pty);
+      const client = await waitForNativeHolder(socket, 5_000);
+      if (client === null) throw new Error("holder did not start");
+      client.write(credentialFrame(SECRET));
+      client.write(resizeFrame());
+      await pause(100);
+      const [name] = credentialDirsIn(dir);
+      expect(name).toBeDefined();
+      expect(statSync(path.join(dir, name ?? "")).mode & 0o777).toBe(0o700);
+      expect(statSync(path.join(dir, name ?? "", "s")).mode & 0o777).toBe(
+        0o600,
+      );
+      expect(statSync(socket).mode & 0o777).toBe(0o600);
+      pty.exit(0);
+      await done;
+      client.destroy();
+    } finally {
+      watching = false;
+      process.umask(previous);
+    }
+    await watcher;
+    expect(observations).toEqual([]);
+    expect(await noCredentialDirs(dir)).toBe(true);
+  });
+
+  it("removes the credential directory when preparing the CLI throws", async () => {
+    const { dir, socket } = workDir();
+    const done = startHolder(dir, socket, fakePty(), {
       prepare: async () => {
         throw new Error("launch refused");
       },
-      spawnPty: () => fakePty(),
     });
     const client = await waitForNativeHolder(socket, 5_000);
     if (client === null) throw new Error("holder did not start");
-    client.write(
-      encodeNativeHolderFrame(
-        NativeHolderFrame.credential,
-        Buffer.from(SECRET),
-      ),
-    );
-    client.write(resizeFrame());
     client.on("error", () => undefined);
+    client.write(credentialFrame(SECRET));
+    client.write(resizeFrame());
     expect(await done).toBe(1);
-    expect(await untilGone(nativeHolderCredentialSocketPath(socket))).toBe(
-      true,
-    );
+    expect(await noCredentialDirs(dir)).toBe(true);
     expect(filesHolding(dir, SECRET)).toEqual([]);
   });
 
-  it("removes the credential socket when the holder stops the CLI with a hangup", async () => {
+  it("removes the credential directory when the holder stops the CLI with a hangup", async () => {
     const { dir, socket } = workDir();
     const pty = fakePty();
-    const done = runNativeHolder({
-      socketPath: socket,
-      cwd: dir,
-      env: {},
-      reapAfterMs: 30,
-      prepare: async () => ({ command: "x", args: [] }),
-      spawnPty: () => pty,
-    });
+    const done = startHolder(dir, socket, pty, { reapAfterMs: 30 });
     const client = await waitForNativeHolder(socket, 5_000);
     if (client === null) throw new Error("holder did not start");
-    client.write(
-      encodeNativeHolderFrame(
-        NativeHolderFrame.credential,
-        Buffer.from(SECRET),
-      ),
-    );
+    client.write(credentialFrame(SECRET));
     client.write(resizeFrame());
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await pause(20);
     client.destroy();
     expect(await done).toBe(129);
-    expect(await untilGone(nativeHolderCredentialSocketPath(socket))).toBe(
-      true,
-    );
+    expect(await noCredentialDirs(dir)).toBe(true);
     expect(filesHolding(dir, SECRET)).toEqual([]);
   });
 
   it("refuses to serve before any credential arrived", async () => {
     const { dir, socket } = workDir();
     const pty = fakePty();
-    const done = runNativeHolder({
-      socketPath: socket,
-      cwd: dir,
-      env: {},
-      prepare: async () => ({ command: "x", args: [] }),
-      spawnPty: () => pty,
-    });
+    const done = startHolder(dir, socket, pty);
     const client: net.Socket | null = await waitForNativeHolder(socket, 5_000);
+    const [name] = credentialDirsIn(dir);
     await expect(
-      readNativeToolCredentialFromSocket(
-        nativeHolderCredentialSocketPath(socket),
-      ),
+      readNativeToolCredentialFromSocket(path.join(dir, name ?? "", "s")),
     ).rejects.toThrow();
     client?.write(resizeFrame());
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await pause(100);
     pty.exit(0);
     await done;
     client?.destroy();

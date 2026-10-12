@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, unlinkSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, unlinkSync } from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -113,8 +113,13 @@ export function defaultNativeHolderSocketPath(
   });
 }
 
-export function nativeHolderCredentialSocketPath(socketPath: string): string {
-  return socketPath.replace(/\.sock$/u, ".c");
+function listenPrivately(server: net.Server, socketPath: string): void {
+  const previous = process.umask(0o177);
+  try {
+    server.listen(socketPath);
+  } finally {
+    process.umask(previous);
+  }
 }
 
 export interface NativeHolderPty {
@@ -139,7 +144,11 @@ export interface RunNativeHolderOptions {
   env: NodeJS.ProcessEnv;
   reapAfterMs?: number;
   firstClientTimeoutMs?: number;
-  prepare(context: { credential: string | null }): Promise<NativeHolderProcess>;
+  credentialRoot?: string;
+  prepare(context: {
+    credential: string | null;
+    credentialSocket: string;
+  }): Promise<NativeHolderProcess>;
   spawnPty(
     process: NativeHolderProcess,
     options: {
@@ -233,9 +242,11 @@ export async function runNativeHolder(
   const timers: NodeJS.Timeout[] = [];
 
   const server = net.createServer();
-  const credentialSocketPath = nativeHolderCredentialSocketPath(
-    options.socketPath,
+  const credentialDir = mkdtempSync(
+    path.join(options.credentialRoot ?? os.tmpdir(), "bb-nc-"),
   );
+  chmodSync(credentialDir, 0o700);
+  const credentialSocketPath = path.join(credentialDir, "s");
   const credentialServer = net.createServer((socket) => {
     socket.on("error", () => undefined);
     socket.end(credential ?? "");
@@ -254,7 +265,7 @@ export async function runNativeHolder(
     removeSocketFile(options.socketPath);
     credential = null;
     credentialServer.close();
-    removeSocketFile(credentialSocketPath);
+    rmSync(credentialDir, { recursive: true, force: true });
     resolveExit(code);
   };
 
@@ -275,7 +286,10 @@ export async function runNativeHolder(
     starting = true;
     let child: NativeHolderProcess;
     try {
-      child = await options.prepare({ credential });
+      child = await options.prepare({
+        credential,
+        credentialSocket: credentialSocketPath,
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       writeFrame(
@@ -357,23 +371,30 @@ export async function runNativeHolder(
     socket.on("error", detach);
   });
 
-  removeSocketFile(credentialSocketPath);
-  await new Promise<void>((resolve, reject) => {
-    credentialServer.once("error", reject);
-    credentialServer.listen(credentialSocketPath, () => {
-      credentialServer.off("error", reject);
-      resolve();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      credentialServer.once("error", reject);
+      credentialServer.once("listening", () => {
+        credentialServer.off("error", reject);
+        resolve();
+      });
+      listenPrivately(credentialServer, credentialSocketPath);
     });
-  });
-  chmodSync(credentialSocketPath, 0o600);
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(options.socketPath, () => {
-      server.off("error", reject);
-      resolve();
+    chmodSync(credentialSocketPath, 0o600);
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.once("listening", () => {
+        server.off("error", reject);
+        resolve();
+      });
+      listenPrivately(server, options.socketPath);
     });
-  });
-  chmodSync(options.socketPath, 0o600);
+    chmodSync(options.socketPath, 0o600);
+  } catch (error) {
+    credentialServer.close();
+    rmSync(credentialDir, { recursive: true, force: true });
+    throw error;
+  }
 
   const firstClientTimeoutMs =
     options.firstClientTimeoutMs ?? NATIVE_HOLDER_FIRST_CLIENT_TIMEOUT_MS;
@@ -423,7 +444,7 @@ export async function runNativeHolder(
   } finally {
     credential = null;
     credentialServer.close();
-    removeSocketFile(credentialSocketPath);
+    rmSync(credentialDir, { recursive: true, force: true });
   }
 }
 
