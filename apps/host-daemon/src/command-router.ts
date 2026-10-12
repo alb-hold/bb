@@ -63,6 +63,7 @@ type CommandRouterTask = Promise<HostDaemonCommandResultForCommand>;
 export interface CommandRouterOptions {
   emitEnvironmentHookProgress?: CommandDispatchOptions["emitEnvironmentHookProgress"];
   desktopBrowserBroker?: CommandDispatchOptions["desktopBrowserBroker"];
+  terminalDataSocket?: CommandDispatchOptions["terminalDataSocket"];
   dataDir: CommandDispatchOptions["dataDir"];
   fetchProjectAttachment: CommandDispatchOptions["fetchProjectAttachment"];
   fetchSkillTree?: CommandDispatchOptions["fetchSkillTree"];
@@ -278,6 +279,7 @@ export class CommandRouter {
       fetchPluginHostArtifact: this.options.fetchPluginHostArtifact,
       runtimeManager: this.options.runtimeManager,
       desktopBrowserBroker: this.options.desktopBrowserBroker,
+      terminalDataSocket: this.options.terminalDataSocket,
       dataDir: this.options.dataDir,
       eventSink: this.options.eventSink,
       listModels: this.options.listModels,

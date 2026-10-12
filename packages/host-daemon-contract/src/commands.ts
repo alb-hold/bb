@@ -48,6 +48,12 @@ import {
 import { workspaceResolutionFailureSchema } from "./workspace.js";
 import { HOST_ARTIFACT_MAX_BYTES } from "./protocol.js";
 import {
+  terminalDataPlaneConnectCommandSchema,
+  terminalDataPlaneConnectResultSchema,
+  terminalDataPlaneProbeCommandSchema,
+  terminalDataPlaneProbeResultSchema,
+} from "./terminal-data-plane.js";
+import {
   providerHealthResultSchema,
   providerInstallationStatusSchema,
   providerUsageResultSchema,
@@ -1943,6 +1949,24 @@ export const hostDaemonCommandRegistry = {
     resultSchema: providerListModelsResultSchema,
     transport: "onlineRpc",
     retryable: true,
+    flushEventsBeforeResult: false,
+    envLane: null,
+  }),
+  "terminal-data-plane.probe": defineHostDaemonCommandDescriptor({
+    type: "terminal-data-plane.probe",
+    schema: terminalDataPlaneProbeCommandSchema,
+    resultSchema: terminalDataPlaneProbeResultSchema,
+    transport: "onlineRpc",
+    retryable: false,
+    flushEventsBeforeResult: false,
+    envLane: null,
+  }),
+  "terminal-data-plane.connect": defineHostDaemonCommandDescriptor({
+    type: "terminal-data-plane.connect",
+    schema: terminalDataPlaneConnectCommandSchema,
+    resultSchema: terminalDataPlaneConnectResultSchema,
+    transport: "onlineRpc",
+    retryable: false,
     flushEventsBeforeResult: false,
     envLane: null,
   }),
