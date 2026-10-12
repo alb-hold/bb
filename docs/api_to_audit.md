@@ -1098,8 +1098,19 @@ a turn) through `GET /threads/:id/native-terminal/agent-tools` and
 `POST /threads/:id/native-terminal/agent-tools/:tool/call`. The call path is
 the one `/internal/session/tool-call` uses. Both routes require a live native
 terminal (404 for a chat thread, 409 once the terminal exited or the thread is
-archived). Any local process that can reach the bb server can call these tools
-as that thread: the same exposure the `bb` CLI already has. First-party
+archived). Both routes also require `Authorization: Bearer <credential>`: the
+server mints 32 random bytes each time it hands out the launch spec, stores only
+the SHA-256 hash bound to the thread and its terminal, and compares with
+`timingSafeEqual`; a missing, wrong, other-thread, replaced (new launch) or
+exited-terminal credential is rejected (401, or 409 when the terminal is no
+longer live) before any tool is resolved or invoked. The wrapper writes the
+secret to a mode 0600 file in a 0700 directory beside the holder socket
+(`<thread>-<scope>.tools/credential`, created exclusively, deleted when the
+terminal's holder exits) and passes only the file path to `bb thread
+native-mcp`; the secret is never in argv, environment or logs. Processes of the
+same OS user that can read that file are trusted, since they can already read
+the bb data directory; other users, remote API callers and local processes
+without the file cannot use the routes. First-party
 declarations: `provider-claude-code` (`--mcp-config` with inline JSON) and
 `provider-codex` (`-c mcp_servers.*`). Stabilization audit: decide whether the
 declaration should name the server rather than hard-code `bb-bridge`, and

@@ -14,7 +14,14 @@ import { Command } from "commander";
 import { BbHttpError } from "@bb/sdk";
 import type { NativeTerminalThread } from "@bb/server-contract";
 import { action, CliExitError } from "../../action.js";
-import { createCliBbSdk } from "../../client.js";
+import { cliFetch, createCliBbSdk } from "../../client.js";
+import { createNodeBbSdk } from "@bb/sdk/node";
+import {
+  readNativeToolCredentialFile,
+  removeNativeToolCredentialFile,
+  withBearerCredential,
+  writeNativeToolCredentialFile,
+} from "../../native-tool-credential.js";
 import { requireThreadIdOrSelf } from "../../context-env.js";
 import { fillNativeTerminalTemplate } from "@bb/domain";
 import {
@@ -165,6 +172,7 @@ async function runNativeHarness(
 }
 
 interface NativeMcpOptions {
+  credentialFile: string;
   serverUrl?: string;
 }
 
@@ -260,8 +268,12 @@ async function holdNativeHarness(
               }),
             );
       const script = process.argv[1];
+      const credentialFile =
+        spec.toolCredential === null
+          ? null
+          : writeNativeToolCredentialFile(socketPath, spec.toolCredential);
       const mcpArgs =
-        script === undefined
+        script === undefined || credentialFile === null
           ? []
           : nativeMcpArgs(spec.cli, {
               command: process.execPath,
@@ -273,6 +285,8 @@ async function holdNativeHarness(
                 threadId,
                 "--server-url",
                 baseUrl,
+                "--credential-file",
+                credentialFile,
               ],
             });
       const launch = resolveNativeHarnessLaunch(
@@ -331,6 +345,7 @@ async function holdNativeHarness(
       }
     },
   });
+  removeNativeToolCredentialFile(socketPath);
   for (const timer of activityTimers) clearInterval(timer);
   await discover();
   readActivity();
@@ -450,9 +465,19 @@ export function registerNativeCommands(
       "--server-url <url>",
       "bb server to serve the tools from; the provider CLI starts this command without bb's environment",
     )
+    .requiredOption(
+      "--credential-file <path>",
+      "File holding the terminal's tool credential (mode 0600)",
+    )
     .action(
       action(async (threadId: string, opts: NativeMcpOptions) => {
-        const sdk = createCliBbSdk(opts.serverUrl ?? getUrl());
+        const sdk = createNodeBbSdk({
+          baseUrl: opts.serverUrl ?? getUrl(),
+          fetch: withBearerCredential(
+            cliFetch,
+            readNativeToolCredentialFile(opts.credentialFile),
+          ),
+        });
         await runNativeMcpServer(
           {
             listTools: async () =>

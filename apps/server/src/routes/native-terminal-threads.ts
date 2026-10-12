@@ -46,14 +46,21 @@ export function registerNativeTerminalThreadRoutes(
 
   get(routes.agentTools, async (context) =>
     context.json(
-      await listNativeTerminalAgentTools(deps, context.req.param("id")),
+      await listNativeTerminalAgentTools(deps, {
+        authorization: context.req.header("authorization"),
+        threadId: context.req.param("id"),
+      }),
     ),
   );
 
   post(routes.callAgentTool, async (context, payload) => {
     const { environment, thread } = await requireNativeTerminalAgentToolCall(
       deps,
-      { threadId: context.req.param("id"), tool: context.req.param("tool") },
+      {
+        authorization: context.req.header("authorization"),
+        threadId: context.req.param("id"),
+        tool: context.req.param("tool"),
+      },
     );
     return runAgentToolCall(deps, {
       callId: payload.callId,

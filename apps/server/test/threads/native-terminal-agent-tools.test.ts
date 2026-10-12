@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { getEnvironment, getNativeTerminalThread, threads } from "@bb/db";
 import {
   nativeTerminalAgentToolsSchema,
+  nativeTerminalLaunchSpecSchema,
   threadResponseSchema,
 } from "@bb/server-contract";
 import { eq } from "drizzle-orm";
@@ -37,6 +38,7 @@ interface Fixture {
   projectId: string;
   sessionId: string;
   terminalOpens: { requestId: string; terminalId: string }[];
+  credentials: Map<string, string>;
 }
 
 const harnesses: TestAppHarness[] = [];
@@ -56,9 +58,10 @@ const PLUGIN_SOURCE = `
       description: "Echo params and call context",
       parameters: { type: "object" },
       execute: (params: any, ctx: any) =>
+        (globalThis.__nativeToolCalls = (globalThis.__nativeToolCalls ?? 0) + 1,
         "thread=" + ctx.threadId +
         " project=" + ctx.projectId +
-        " params=" + JSON.stringify(params),
+        " params=" + JSON.stringify(params)),
     });
     bb.agents.registerTool({
       name: "unselected_tool",
@@ -134,6 +137,7 @@ async function createFixture(): Promise<Fixture> {
     projectId: project.id,
     sessionId: seeded.session.id,
     terminalOpens,
+    credentials: new Map(),
   };
 }
 
@@ -152,11 +156,12 @@ async function createNativeThread(fixture: Fixture): Promise<string> {
   });
   expect(response.status).toBe(201);
   const thread = threadResponseSchema.parse(await readJson(response));
+  const opensBefore = fixture.credentials.size;
   for (let attempt = 0; attempt < 600; attempt += 1) {
-    if (fixture.terminalOpens.length > 0) break;
+    if (fixture.terminalOpens.length > opensBefore) break;
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
-  const open = fixture.terminalOpens[0];
+  const open = fixture.terminalOpens[opensBefore];
   if (open === undefined) throw new Error("terminal never opened");
   const terminalId = open.terminalId;
   fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
@@ -178,11 +183,31 @@ async function createNativeThread(fixture: Fixture): Promise<string> {
       getNativeTerminalThread(fixture.harness.db, thread.id)
         ?.terminalSessionId === terminalId
     ) {
+      const launch = nativeTerminalLaunchSpecSchema.parse(
+        await readJson(
+          await fixture.harness.app.request(
+            `/api/v1/threads/${thread.id}/native-terminal/launch`,
+            { method: "POST" },
+          ),
+        ),
+      );
+      if (launch.toolCredential === null) throw new Error("no credential");
+      fixture.credentials.set(thread.id, launch.toolCredential);
       return thread.id;
     }
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   throw new Error("terminal never bound");
+}
+
+function authHeaders(
+  fixture: Fixture,
+  threadId: string,
+): Record<string, string> {
+  const credential = fixture.credentials.get(threadId);
+  return credential === undefined
+    ? {}
+    : { authorization: `Bearer ${credential}` };
 }
 
 type Surface = "native-terminal" | "chat-internal";
@@ -205,7 +230,10 @@ async function callTool(
           `/api/v1/threads/${threadId}/native-terminal/agent-tools/${tool}/call`,
           {
             method: "POST",
-            headers: { "content-type": "application/json" },
+            headers: {
+              "content-type": "application/json",
+              ...authHeaders(fixture, threadId),
+            },
             body: JSON.stringify({ callId: "call-1", arguments: args }),
           },
         )
@@ -269,6 +297,7 @@ describe("native terminal agent tools", () => {
       await readJson(
         await fixture.harness.app.request(
           `/api/v1/threads/${threadId}/native-terminal/agent-tools`,
+          { headers: authHeaders(fixture, threadId) },
         ),
       ),
     );
@@ -323,12 +352,101 @@ describe("native terminal agent tools", () => {
         `/api/v1/threads/${threadId}/native-terminal/agent-tools/${tool}/call`,
         {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers: {
+            "content-type": "application/json",
+            ...authHeaders(fixture, threadId),
+          },
           body: JSON.stringify({ callId: "c", arguments: {} }),
         },
       );
       expect(response.status).toBe(404);
     }
+  });
+
+  it("binds the routes to the terminal's credential", async () => {
+    const fixture = await createFixture();
+    const first = await createNativeThread(fixture);
+    const second = await createNativeThread(fixture);
+    const listPath = (id: string) =>
+      `/api/v1/threads/${id}/native-terminal/agent-tools`;
+    const callPath = (id: string) => `${listPath(id)}/echo_context/call`;
+    const post = (id: string, headers: Record<string, string>) =>
+      fixture.harness.app.request(callPath(id), {
+        method: "POST",
+        headers: { "content-type": "application/json", ...headers },
+        body: JSON.stringify({ callId: "c", arguments: {} }),
+      });
+    const invocations = () =>
+      (globalThis as { __nativeToolCalls?: number }).__nativeToolCalls ?? 0;
+    const before = invocations();
+    const secondCredential = fixture.credentials.get(second) ?? "";
+    expect((await fixture.harness.app.request(listPath(first))).status).toBe(
+      401,
+    );
+    expect((await post(first, {})).status).toBe(401);
+    expect(
+      (await post(first, { authorization: "Bearer not-the-credential" }))
+        .status,
+    ).toBe(401);
+    const foreign = { authorization: `Bearer ${secondCredential}` };
+    expect(
+      (await fixture.harness.app.request(listPath(first), { headers: foreign }))
+        .status,
+    ).toBe(401);
+    expect((await post(first, foreign)).status).toBe(401);
+    expect(invocations()).toBe(before);
+    expect((await post(first, authHeaders(fixture, first))).status).toBe(200);
+    expect(invocations()).toBe(before + 1);
+    expect(
+      (
+        await fixture.harness.app.request(listPath(first), {
+          headers: authHeaders(fixture, first),
+        })
+      ).status,
+    ).toBe(200);
+    const relaunch = nativeTerminalLaunchSpecSchema.parse(
+      await readJson(
+        await fixture.harness.app.request(
+          `/api/v1/threads/${first}/native-terminal/launch`,
+          { method: "POST" },
+        ),
+      ),
+    );
+    expect((await post(first, authHeaders(fixture, first))).status).toBe(401);
+    expect(
+      (
+        await post(first, {
+          authorization: `Bearer ${relaunch.toolCredential}`,
+        })
+      ).status,
+    ).toBe(200);
+  });
+
+  it("rejects the credential once its terminal exited", async () => {
+    const fixture = await createFixture();
+    const threadId = await createNativeThread(fixture);
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.hostId,
+      sessionId: fixture.sessionId,
+      message: {
+        type: "terminal.exited",
+        terminalId: fixture.terminalOpens[0]?.terminalId ?? "",
+        exitCode: 0,
+        closeReason: "process-exit",
+      },
+    });
+    const response = await fixture.harness.app.request(
+      `/api/v1/threads/${threadId}/native-terminal/agent-tools/echo_context/call`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          ...authHeaders(fixture, threadId),
+        },
+        body: JSON.stringify({ callId: "c", arguments: {} }),
+      },
+    );
+    expect([401, 409]).toContain(response.status);
   });
 
   it("answers 404 for a chat thread", async () => {
@@ -361,7 +479,10 @@ describe("native terminal agent tools", () => {
         `/api/v1/threads/${threadId}/native-terminal/agent-tools/echo_context/call`,
         {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers: {
+            "content-type": "application/json",
+            ...authHeaders(fixture, threadId),
+          },
           body: JSON.stringify({ callId: "c", arguments: {} }),
         },
       );
@@ -392,6 +513,7 @@ describe("native terminal agent tools", () => {
     expect(
       await fixture.harness.app.request(
         `/api/v1/threads/${threadId}/native-terminal/agent-tools`,
+        { headers: authHeaders(fixture, threadId) },
       ),
     ).toHaveProperty("status", 409);
   });
@@ -411,6 +533,7 @@ describe("native terminal agent tools", () => {
         headers: {
           "content-type": "application/json",
           origin: "https://evil.example",
+          ...authHeaders(fixture, threadId),
         },
         body: JSON.stringify({ callId: "c", arguments: {} }),
       },
