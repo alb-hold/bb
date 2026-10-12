@@ -4433,10 +4433,15 @@ describe("events", () => {
       { length: 32_751 },
       (_, index) => `thr_missing_${index}`,
     );
-    const chunkedRows = listActiveBackgroundTaskCountsByThreadIds(db, {
-      threadIds: [thread.id, ...missingThreadIds, otherThread.id],
-    });
+    const chunkedRows = db.transaction((tx) =>
+      listActiveBackgroundTaskCountsByThreadIds(tx, {
+        threadIds: [thread.id, ...missingThreadIds, otherThread.id],
+      }),
+    );
 
+    expect(unchunkedRows.map((row) => row.threadId).sort()).toEqual(
+      [thread.id, otherThread.id].sort(),
+    );
     expect(chunkedRows).toEqual(unchunkedRows);
   });
 
