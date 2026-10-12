@@ -101,6 +101,76 @@ describe("queued thread messages", () => {
     ).toContain(thread.id);
   });
 
+  it("checks the manual-stop pause only for threads that have queued messages", () => {
+    const { db, project } = setup();
+    const threadIds = Array.from(
+      { length: 400 },
+      () =>
+        createThread(db, noopNotifier, {
+          projectId: project.id,
+          providerId: "codex",
+          status: "idle",
+        }).id,
+    );
+    const queuedThreadId = threadIds[0];
+    if (queuedThreadId === undefined) {
+      throw new Error("Expected a thread to queue a message on");
+    }
+    queueTurnEndMessage(db, queuedThreadId, defaultInput);
+    db.$client.exec("ANALYZE");
+
+    const captured: { params: unknown[]; sql: string }[] = [];
+    const raw = db.$client;
+    const originalPrepare = raw.prepare.bind(raw);
+    Object.defineProperty(raw, "prepare", {
+      configurable: true,
+      writable: true,
+      value: (source: string) => {
+        const statement = originalPrepare(source);
+        const originalAll = statement.all.bind(statement);
+        statement.all = (...params: unknown[]) => {
+          captured.push({ params, sql: source });
+          return originalAll(...params);
+        };
+        return statement;
+      },
+    });
+    let listedThreadIds: string[];
+    try {
+      listedThreadIds = listIdleThreadsWithQueuedMessages(db).map(
+        (row) => row.threadId,
+      );
+    } finally {
+      Object.defineProperty(raw, "prepare", {
+        configurable: true,
+        writable: true,
+        value: originalPrepare,
+      });
+    }
+    expect(listedThreadIds).toEqual([queuedThreadId]);
+
+    const query = captured.find((entry) =>
+      entry.sql.includes("queue_pause_interruption"),
+    );
+    if (!query) {
+      throw new Error("Expected the idle queued-message thread SQL");
+    }
+    const planDetails = raw
+      .prepare<unknown[], { detail: string }>(
+        `EXPLAIN QUERY PLAN ${query.sql}`,
+      )
+      .all(...query.params)
+      .map((row) => row.detail);
+    const queuedMessagesStep = planDetails.findIndex((detail) =>
+      /^(SEARCH|SCAN) queued_thread_messages\b/u.test(detail),
+    );
+    const pauseLookupStep = planDetails.findIndex((detail) =>
+      detail.includes("queue_pause_interruption"),
+    );
+    expect(queuedMessagesStep).toBeGreaterThanOrEqual(0);
+    expect(pauseLookupStep).toBeGreaterThan(queuedMessagesStep);
+  });
+
   it("updates queued message content without changing its identity or position", () => {
     const { db, thread } = setup();
     const first = createQueuedThreadMessage(db, noopNotifier, {
