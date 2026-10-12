@@ -415,7 +415,7 @@ describe("TerminalWebSocketTransport", () => {
       expect(socket.sent).toEqual([
         JSON.stringify({ type: "resize", cols: 100, rows: 30 }),
         JSON.stringify({ type: "ack", nextSeq: 42 }),
-        JSON.stringify({ type: "resize", cols: 101, rows: 30 }),
+        JSON.stringify({ type: "resize", cols: 99, rows: 30 }),
       ]);
       vi.advanceTimersByTime(49);
       expect(socket.sent).toHaveLength(3);
@@ -428,15 +428,15 @@ describe("TerminalWebSocketTransport", () => {
       harness.transport.dispose();
     });
 
-    it("nudges left at the maximum supported terminal width", () => {
-      const { harness, socket } = openHarness(500, 30);
+    it("nudges right only when the terminal is a single column wide", () => {
+      const { harness, socket } = openHarness(1, 30);
 
       harness.transport.requestRepaint();
       vi.advanceTimersByTime(50);
 
       expect(socket.sent.slice(1)).toEqual([
-        JSON.stringify({ type: "resize", cols: 499, rows: 30 }),
-        JSON.stringify({ type: "resize", cols: 500, rows: 30 }),
+        JSON.stringify({ type: "resize", cols: 2, rows: 30 }),
+        JSON.stringify({ type: "resize", cols: 1, rows: 30 }),
       ]);
       harness.transport.dispose();
     });
@@ -451,7 +451,7 @@ describe("TerminalWebSocketTransport", () => {
 
       expect(socket.sent).toEqual([
         JSON.stringify({ type: "resize", cols: 100, rows: 30 }),
-        JSON.stringify({ type: "resize", cols: 101, rows: 30 }),
+        JSON.stringify({ type: "resize", cols: 99, rows: 30 }),
       ]);
     });
 
@@ -539,8 +539,8 @@ describe("TerminalWebSocketTransport", () => {
       vi.advanceTimersByTime(500);
 
       expect(socket.sent.slice(1)).toEqual([
-        JSON.stringify({ type: "resize", cols: 101, rows: 30 }),
-        JSON.stringify({ type: "resize", cols: 101, rows: 30 }),
+        JSON.stringify({ type: "resize", cols: 99, rows: 30 }),
+        JSON.stringify({ type: "resize", cols: 99, rows: 30 }),
         JSON.stringify({ type: "resize", cols: 100, rows: 30 }),
       ]);
       harness.transport.dispose();

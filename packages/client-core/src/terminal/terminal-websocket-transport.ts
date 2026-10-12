@@ -241,7 +241,7 @@ export class TerminalWebSocketTransport {
         return;
       }
       const nudgedCols =
-        lastResize.cols < 500 ? lastResize.cols + 1 : lastResize.cols - 1;
+        lastResize.cols > 1 ? lastResize.cols - 1 : lastResize.cols + 1;
       this.trySend(
         socket,
         JSON.stringify({
