@@ -14,7 +14,7 @@ import { experimental_nativeTerminalEnvArgs } from "../host.js";
 
 vi.mock("node:os", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:os")>();
-  return { ...original, default: { ...original.default } };
+  return { ...original, default: { ...original } };
 });
 
 const declaration = {
