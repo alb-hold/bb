@@ -33,6 +33,8 @@ import {
 import { handleDaemonSocketClosed } from "../../src/internal/session-owner-side-effects.js";
 import { applyLoggedThreadLifecycleEvent } from "../../src/services/threads/lifecycle-outcome.js";
 import { internalAuthHeaders } from "../helpers/commands.js";
+import { createProviderRegistryService } from "../../src/services/providers/provider-registry.js";
+import { createTestProviderRegistry } from "../helpers/provider-registry.js";
 import { onDaemonSocketOpen } from "../../src/ws/daemon-protocol.js";
 import { resolvePendingThreadSessionOptions } from "../../src/services/threads/thread-session-options.js";
 import { storeAttachment } from "../../src/services/projects/attachments.js";
@@ -1263,7 +1265,10 @@ describe("native terminal threads", () => {
     ).toBe(finishedOpen.terminalId);
   });
 
-  async function restartDaemonWithRunningNativeThread(instanceId: string) {
+  async function restartDaemonWithRunningNativeThread(
+    instanceId: string,
+    options: { deferProviders?: boolean } = {},
+  ) {
     const fixture = await createFixture();
     const running = await openRunningNativeThread(fixture, {
       providerId: "claude-code",
@@ -1278,6 +1283,12 @@ describe("native terminal threads", () => {
     handleDaemonSocketClosed(fixture.harness.deps, {
       sessionId: fixture.sessionId,
     });
+    const lateProviders = options.deferProviders
+      ? createProviderRegistryService({ deferRegistrationsSettled: true })
+      : null;
+    if (lateProviders !== null) {
+      fixture.harness.deps.providerRegistry = lateProviders;
+    }
     const opened = await fixture.harness.app.request("/internal/session/open", {
       method: "POST",
       headers: internalAuthHeaders(fixture.harness, {
@@ -1304,7 +1315,7 @@ describe("native terminal threads", () => {
       sessionId,
       socket,
     });
-    return { fixture, running, sessionId, socket };
+    return { fixture, lateProviders, running, sessionId, socket };
   }
 
   function interruptionReasons(fixture: Fixture, threadId: string): string[] {
@@ -1387,6 +1398,67 @@ describe("native terminal threads", () => {
       "active",
     );
   });
+
+  it("keeps a running native thread active and reattaches the same CLI session when its provider registers after the settle timeout", async () => {
+    const sourceRegistry = await createTestProviderRegistry();
+    const registration = sourceRegistry.get("claude-code");
+    if (registration === null) throw new Error("claude-code is not seeded");
+    const { fixture, lateProviders, running, sessionId, socket } =
+      await restartDaemonWithRunningNativeThread("instance-restarted", {
+        deferProviders: true,
+      });
+    const nativeSessionBefore = getNativeTerminalThread(
+      fixture.harness.db,
+      running.thread.id,
+    )?.nativeSessionId;
+    await new Promise((resolve) => setTimeout(resolve, 30_500));
+    expect(
+      daemonMessages(socket).filter(
+        (message) => message.type === "terminal.open",
+      ),
+    ).toHaveLength(0);
+    expect(getThread(fixture.harness.db, running.thread.id)?.status).toBe(
+      "active",
+    );
+    expect(interruptionReasons(fixture, running.thread.id)).toEqual([]);
+
+    lateProviders?.register(registration);
+    const reopen = await waitForTerminalOpen(socket);
+    expect(reopen.threadId).toBe(running.thread.id);
+    expect(reopen.start.mode === "command" && reopen.start.command).toContain(
+      `native-run ${running.thread.id} --reattach`,
+    );
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.hostId,
+      sessionId,
+      message: {
+        type: "terminal.opened",
+        requestId: reopen.requestId,
+        terminalId: reopen.terminalId,
+        shell: "/bin/zsh",
+        title: "zsh",
+        initialCwd: "/tmp/native-workspace",
+        cols: reopen.cols,
+        rows: reopen.rows,
+      },
+    });
+    await expect
+      .poll(
+        () =>
+          getNativeTerminalThread(fixture.harness.db, running.thread.id)
+            ?.terminalSessionId,
+      )
+      .toBe(reopen.terminalId);
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    expect(getThread(fixture.harness.db, running.thread.id)?.status).toBe(
+      "active",
+    );
+    expect(interruptionReasons(fixture, running.thread.id)).toEqual([]);
+    expect(
+      getNativeTerminalThread(fixture.harness.db, running.thread.id)
+        ?.nativeSessionId,
+    ).toBe(nativeSessionBefore);
+  }, 60_000);
 
   it("gives an explicit open its own launch when it overlaps a reconnect reopen", async () => {
     const fixture = await createFixture();
