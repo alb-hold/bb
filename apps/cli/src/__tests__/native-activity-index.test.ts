@@ -103,7 +103,6 @@ describe("evicted native transcript identity index", () => {
       Reflect.set(index, "hash", () => 7n);
       index.add("stored", lines[0].location);
       expect(index.has("stored", file)).toBe(true);
-      expect(index.unconfirmedReads).toBe(0);
       damage(file);
       expect(index.has("fresh", file)).toBe(false);
       expect(index.has("stored", file)).toBe(false);

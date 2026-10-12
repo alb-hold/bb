@@ -348,11 +348,14 @@ describe("NativeActivityReader", () => {
       },
     ]);
     fixture.reader.read();
+    const retained: unknown = Reflect.get(fixture.reader, "recordTurns");
+    if (!(retained instanceof Map)) throw new Error("Record map unavailable");
+    expect(retained.has("user-1")).toBe(true);
     expect(index.unconfirmedReads).toBe(1);
     expect(counts).toEqual([1]);
   });
 
-  it("keeps fresh records free of prefix reads after eviction filter saturation", () => {
+  it("keeps fresh records free of prefix reads after many evictions", () => {
     const fixture = claudeFixture();
     fixture.append(
       Array.from({ length: 9000 }, (_, index) => ({
