@@ -972,7 +972,11 @@ export class TerminalManager {
         replayBytes -= removed.byteLength;
       }
     }
-    const safePosition = findTerminalReplaySafePosition(replayEntries);
+    const continuesCallerStream =
+      replayEntries[0]?.chunk.seq === args.message.sinceSeq;
+    const safePosition = continuesCallerStream
+      ? { alternateScreen: false, chunkIndex: 0, offset: 0 }
+      : findTerminalReplaySafePosition(replayEntries);
     const chunks = safePosition
       ? replayEntries.slice(safePosition.chunkIndex).map((entry) => entry.chunk)
       : [];
