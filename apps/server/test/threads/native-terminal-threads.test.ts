@@ -1049,6 +1049,41 @@ describe("native terminal threads", () => {
     }
   }, 10_000);
 
+  it.each(["claude-code", "codex"])(
+    "pastes no attachment for %s when the screen already shows the message",
+    async (providerId) => {
+      const fixture = await createFixture();
+      seedPrimaryHost(fixture.harness.deps, fixture.hostId);
+      const attachmentPath = await storeImageAttachment(fixture);
+      const { open, thread } = await openRunningNativeThread(fixture, {
+        providerId,
+      });
+      const cli = startFakeCli(
+        fixture,
+        open.terminalId,
+        () => "\u001b[6;1H\u001b[2K\u203a [Image #1]",
+        "\u001b[2;1H\u203a [Image #1] What colour is this picture?\r\n\u2022 Green",
+      );
+      try {
+        const response = await postJson(fixture, `/threads/${thread.id}/send`, {
+          input: [
+            ...textInput("What colour is this picture?"),
+            { type: "localImage", path: attachmentPath },
+          ],
+          mode: "auto",
+        });
+        expect(response.status).toBe(409);
+        expect(apiErrorSchema.parse(await readJson(response)).code).toBe(
+          "native_terminal_input_ambiguous",
+        );
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        expect(cli.inputs()).toEqual([]);
+      } finally {
+        cli.stop();
+      }
+    },
+  );
+
   it("sends nothing when a redrawn menu already shows the reply", async () => {
     const fixture = await createFixture();
     const { open, thread } = await openRunningNativeThread(fixture, {
