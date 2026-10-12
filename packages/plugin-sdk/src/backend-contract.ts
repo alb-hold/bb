@@ -1654,6 +1654,12 @@ export interface PluginProviderDeclaration {
    *   lives in the terminal's own process and is free once the CLI exits.
    * - `modelArgs`: argv placed first when the thread has a model; `{model}` is
    *   replaced. Empty when the CLI takes no model flag.
+   * - `imageArgs`: argv added once per image attached when the thread is
+   *   created, after the first prompt of a new session; `{image}` is replaced
+   *   by the image's path on the host. Optional: empty or absent when the CLI
+   *   attaches an image from a path in its prompt, in which case the path is
+   *   put in the prompt. A bb CLI that does not ask for launch images also
+   *   gets the paths in the prompt.
    * - `pastePlaceholders`: text the CLI draws in its input box instead of a
    *   long paste, such as `"[Pasted text #"`; empty when it always draws the
    *   pasted text. A message sent to the thread is pasted, and bb presses

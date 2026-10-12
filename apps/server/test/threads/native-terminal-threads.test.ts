@@ -558,14 +558,81 @@ describe("native terminal threads", () => {
       await readJson(
         await postJson(
           fixture,
-          `/threads/${thread.id}/native-terminal/launch`,
+          `/threads/${thread.id}/native-terminal/launch?images=argv`,
           {},
         ),
       ),
     );
-    expect(spec.initialPrompt).toBe(
+    expect(spec.initialPrompt).toBeNull();
+    expect(spec.initialImages).toEqual([
       storedAttachmentPath(fixture, attachmentPath),
+    ]);
+  });
+
+  it("hands Codex an image as a launch image instead of a path in the prompt", async () => {
+    const fixture = await createFixture();
+    seedPrimaryHost(fixture.harness.deps, fixture.hostId);
+    const attachmentPath = await storeImageAttachment(fixture);
+    const { thread } = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+      input: [
+        ...textInput("Describe this screenshot"),
+        { type: "localImage", path: attachmentPath },
+        { type: "localFile", path: "/tmp/notes.txt" },
+      ],
+    });
+    const launch = async () =>
+      nativeTerminalLaunchSpecSchema.parse(
+        await readJson(
+          await postJson(
+            fixture,
+            `/threads/${thread.id}/native-terminal/launch?images=argv`,
+            {},
+          ),
+        ),
+      );
+    const first = await launch();
+    expect(first.initialImages).toEqual([
+      storedAttachmentPath(fixture, attachmentPath),
+    ]);
+    expect(first.initialPrompt).toBe(
+      "/tmp/notes.txt\nDescribe this screenshot",
     );
+    const second = await launch();
+    expect(second.initialImages).toEqual([]);
+    expect(second.initialPrompt).toBeNull();
+  });
+
+  it("keeps a Codex image as a path in the prompt for a bb CLI that does not ask for launch images", async () => {
+    const fixture = await createFixture();
+    seedPrimaryHost(fixture.harness.deps, fixture.hostId);
+    const attachmentPath = await storeImageAttachment(fixture);
+    const { thread } = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+      input: [
+        ...textInput("Describe this screenshot"),
+        { type: "localImage", path: attachmentPath },
+        { type: "localFile", path: "/tmp/notes.txt" },
+      ],
+    });
+    const launch = async () =>
+      nativeTerminalLaunchSpecSchema.parse(
+        await readJson(
+          await postJson(
+            fixture,
+            `/threads/${thread.id}/native-terminal/launch`,
+            {},
+          ),
+        ),
+      );
+    const first = await launch();
+    expect(first.initialImages).toEqual([]);
+    expect(first.initialPrompt).toBe(
+      `${storedAttachmentPath(fixture, attachmentPath)}\n/tmp/notes.txt\nDescribe this screenshot`,
+    );
+    const second = await launch();
+    expect(second.initialImages).toEqual([]);
+    expect(second.initialPrompt).toBeNull();
   });
 
   it("refuses an uploaded attachment for a thread on another machine", async () => {
