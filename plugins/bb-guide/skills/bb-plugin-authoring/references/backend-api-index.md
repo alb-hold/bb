@@ -217,7 +217,7 @@ Read the installed declarations for exact current signatures.
 - `PluginProviderCompletedTurnDisplay`
 - `PluginProviderComposerAction`
 - `PluginProviderDeclaration`
-- `ExperimentalPluginProviderEnvContext`
+- `ExperimentalPluginProviderEnvContext` includes optional `experimental_runtimeKind: "native"` for native launches; contributors may ignore it.
 - `ExperimentalPluginProviderEnvEntry`
 - `ExperimentalPluginProviderEnvHealthContext`
 - `ExperimentalPluginProviderEnvHealth`
@@ -362,6 +362,12 @@ Read the installed declarations for exact current signatures.
 - `experimental_nativeRootsHostContract`
 - `experimental_nativeRootsResolveInputSchema`
 - `experimental_nativeRootsResolveOutputSchema`
+- `experimental_nativeTerminalEnvArgs` — translate a provider's declared native
+  launch arguments from resolved environment values; omit them when a required
+  value is absent. Optional
+  `experimental_nativeTerminal.experimental_launchEnvArgs.experimental_filterConfig`
+  reads the provider-declared user policy on the host, preserves legacy shell
+  allowlists and exclusions, and refuses unsupported policy layers before launch.
 - `experimental_readProcessIdentity` — a PID's command line and start time,
   to confirm it is still the process you recorded before signalling it
 - `experimental_resolveClaudePluginRoots`

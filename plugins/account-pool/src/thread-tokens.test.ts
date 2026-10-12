@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, expect, it, vi } from "vitest";
@@ -38,6 +39,135 @@ async function fixture() {
     },
   };
 }
+
+it("keeps process credentials scoped, revocable, and absent after a restart", async () => {
+  const { directory, hosts, threads, route, hostToken } = await fixture();
+  const token = await threads.forThread(route, hostToken, "process");
+  const nested = await threads.forNested(
+    { hostId: route.hostId, threadId: route.threadId },
+    hostToken,
+    "process",
+  );
+  expect((await threads.forThread(route, hostToken, "process")) === token).toBe(
+    true,
+  );
+  expect(await threads.authenticate(token, "claude")).toEqual(route);
+  expect(await threads.authenticate(token, "codex")).toBeNull();
+  expect(await threads.authenticateNested(nested)).toEqual({
+    hostId: route.hostId,
+    threadId: route.threadId,
+  });
+  const restarted = new ThreadTokenStore(directory, hosts);
+  await restarted.initialize([route.hostId]);
+  expect(await restarted.authenticate(token)).toBeNull();
+  expect(await restarted.authenticateNested(nested)).toBeNull();
+  await threads.removeThread(route.threadId);
+  expect(await threads.authenticate(token)).toBeNull();
+  expect(await threads.authenticateNested(nested)).toBeNull();
+  await expect(threads.forThread(route, hostToken, "process")).rejects.toThrow(
+    "archived thread",
+  );
+});
+
+it("scrubs existing raw provider and nested tokens to hashes without losing authentication", async () => {
+  const { directory, hosts, threads, route, hostToken } = await fixture();
+  const tokens = [
+    await threads.forThread(route, hostToken),
+    await threads.forThread({ ...route, provider: "codex" }, hostToken),
+    await threads.forNested(
+      { hostId: route.hostId, threadId: route.threadId },
+      hostToken,
+    ),
+  ];
+  for (const name of await fs.readdir(directory)) {
+    if (!name.startsWith("scoped-")) continue;
+    const file = path.join(directory, name);
+    const stored = z
+      .record(z.string(), z.unknown())
+      .parse(JSON.parse(await fs.readFile(file, "utf8")));
+    const token =
+      typeof stored.token === "string"
+        ? stored.token
+        : tokens.find(
+            (candidate) =>
+              createHash("sha256").update(candidate).digest("hex") ===
+              stored.tokenDigest,
+          );
+    if (token === undefined) throw new Error("Missing fixture credential.");
+    const { tokenDigest, ...legacy } = stored;
+    await fs.writeFile(file, JSON.stringify({ ...legacy, token }));
+  }
+  const restarted = new ThreadTokenStore(directory, hosts);
+  await restarted.initialize([route.hostId]);
+  expect(await restarted.authenticate(tokens[0] ?? "", "claude")).toEqual(
+    route,
+  );
+  expect(await restarted.authenticate(tokens[1] ?? "", "codex")).toEqual({
+    ...route,
+    provider: "codex",
+  });
+  expect(await restarted.authenticateNested(tokens[2] ?? "")).toEqual({
+    threadId: route.threadId,
+    hostId: route.hostId,
+  });
+  const files = await Promise.all(
+    (await fs.readdir(directory)).map((name) =>
+      fs.readFile(path.join(directory, name)),
+    ),
+  );
+  expect(
+    files.some((content) => tokens.some((token) => content.includes(token))),
+  ).toBe(false);
+  const twice = new ThreadTokenStore(directory, hosts);
+  await twice.initialize([route.hostId]);
+  expect(await twice.authenticate(tokens[0] ?? "", "claude")).toEqual(route);
+  await twice.removeThread(route.threadId);
+  expect(await twice.authenticate(tokens[0] ?? "")).toBeNull();
+});
+
+it("reruns an interrupted conversion atomically and reissues a scoped credential", async () => {
+  const { directory, hosts, threads, route, hostToken } = await fixture();
+  const token = await threads.forThread(route, hostToken);
+  const name = (await fs.readdir(directory)).find((entry) =>
+    entry.startsWith("scoped-route-"),
+  );
+  if (name === undefined) throw new Error("Missing fixture credential file.");
+  const file = path.join(directory, name);
+  const stored = z
+    .record(z.string(), z.unknown())
+    .parse(JSON.parse(await fs.readFile(file, "utf8")));
+  const { tokenDigest, ...legacy } = stored;
+  await fs.writeFile(file, JSON.stringify({ ...legacy, token }));
+  const rename = vi
+    .spyOn(fs, "rename")
+    .mockRejectedValueOnce(new Error("Interrupted before rename"));
+  try {
+    const interrupted = new ThreadTokenStore(directory, hosts);
+    await expect(interrupted.initialize([route.hostId])).rejects.toThrow(
+      "could not remove a persisted scoped credential",
+    );
+  } finally {
+    rename.mockRestore();
+  }
+  expect((await fs.readFile(file)).includes(token)).toBe(true);
+  expect(
+    (await fs.readdir(directory)).some(
+      (entry) => entry.endsWith(".tmp") || entry.endsWith(".bak"),
+    ),
+  ).toBe(false);
+  const restarted = new ThreadTokenStore(directory, hosts);
+  await restarted.initialize([route.hostId]);
+  expect((await fs.readFile(file)).includes(token)).toBe(false);
+  expect((await fs.stat(file)).mode & 0o777).toBe(0o600);
+  expect((await fs.stat(directory)).mode & 0o777).toBe(0o700);
+  expect(await restarted.authenticate(token)).toEqual(route);
+  const current = await restarted.forThread(route, hostToken);
+  expect(await restarted.authenticate(current)).toEqual(route);
+  expect((await fs.readFile(file)).includes(current)).toBe(false);
+  const again = new ThreadTokenStore(directory, hosts);
+  await again.initialize([route.hostId]);
+  expect(await again.authenticate(current)).toEqual(route);
+});
 
 it("binds credentials to a thread, provider, and account snapshot and removes them on deletion", async () => {
   const { directory, threads, route, hostToken } = await fixture();
@@ -132,7 +262,7 @@ it("writes provider and nested credentials under rollback-safe prefixes", async 
     "hostTokenDigest",
     "provider",
     "threadId",
-    "token",
+    "tokenDigest",
   ]);
   const nestedFile = (await fs.readdir(directory)).find((name) =>
     name.startsWith("scoped-nested-route-"),
@@ -192,8 +322,10 @@ it("removes legacy provider and nested credential files when archiving", async (
     hostToken,
   );
   const names = await fs.readdir(directory);
-  for (const name of names.filter((entry) =>
-    entry.startsWith("scoped-route-") || entry.startsWith("scoped-nested-route-"),
+  for (const name of names.filter(
+    (entry) =>
+      entry.startsWith("scoped-route-") ||
+      entry.startsWith("scoped-nested-route-"),
   )) {
     const legacy = name
       .replace(/^scoped-route-/u, "thread-route-")
@@ -227,11 +359,13 @@ it("does not quarantine a legacy nested file whose host and thread split is ambi
   );
   const unreadable = new ThreadTokenStore(directory, hosts);
   const originalReadFile = fs.readFile.bind(fs);
-  const readFile = vi.spyOn(fs, "readFile").mockImplementation((file, options) => {
-    if (String(file) === path.join(directory, legacyName ?? ""))
-      return Promise.reject(Object.assign(new Error("EIO"), { code: "EIO" }));
-    return originalReadFile(file, options);
-  });
+  const readFile = vi
+    .spyOn(fs, "readFile")
+    .mockImplementation((file, options) => {
+      if (String(file) === path.join(directory, legacyName ?? ""))
+        return Promise.reject(Object.assign(new Error("EIO"), { code: "EIO" }));
+      return originalReadFile(file, options);
+    });
   try {
     await unreadable.initialize(["h-a", "h"]);
   } finally {
@@ -256,11 +390,13 @@ it("quarantines only the exact legacy nested thread id", async () => {
   );
   const unreadable = new ThreadTokenStore(directory, hosts);
   const originalReadFile = fs.readFile.bind(fs);
-  const readFile = vi.spyOn(fs, "readFile").mockImplementation((file, options) => {
-    if (String(file) === path.join(directory, legacyName ?? ""))
-      return Promise.reject(Object.assign(new Error("EIO"), { code: "EIO" }));
-    return originalReadFile(file, options);
-  });
+  const readFile = vi
+    .spyOn(fs, "readFile")
+    .mockImplementation((file, options) => {
+      if (String(file) === path.join(directory, legacyName ?? ""))
+        return Promise.reject(Object.assign(new Error("EIO"), { code: "EIO" }));
+      return originalReadFile(file, options);
+    });
   try {
     await unreadable.initialize(["host-one"]);
   } finally {
@@ -436,8 +572,9 @@ it("does not reload an unreadable credential after its thread is archived", asyn
   await reloaded.initialize([route.hostId]);
   expect(await reloaded.authenticate(token)).toBeNull();
   expect(
-    (await fs.readdir(directory)).filter((name) =>
-      name.startsWith("scoped-route-") || name.startsWith("thread-route-"),
+    (await fs.readdir(directory)).filter(
+      (name) =>
+        name.startsWith("scoped-route-") || name.startsWith("thread-route-"),
     ),
   ).toEqual([]);
 });
@@ -489,7 +626,10 @@ it("keeps an evicted token revoked after failed file cleanup and restoration", a
   }
   expect(await fs.readdir(directory)).toContain(routeName);
   expect(await threads.authenticate(oldToken)).toBeNull();
-  await threads.restoreThread(route.threadId, threads.archiveVersion(route.threadId));
+  await threads.restoreThread(
+    route.threadId,
+    threads.archiveVersion(route.threadId),
+  );
   expect(await threads.authenticate(oldToken)).toBeNull();
 });
 
@@ -578,11 +718,13 @@ it("preserves a credential when its archive marker has a transient read error", 
   await fs.writeFile(path.join(directory, name ?? ""), contents);
   const reloaded = new ThreadTokenStore(directory, hosts);
   const originalReadFile = fs.readFile.bind(fs);
-  const readFile = vi.spyOn(fs, "readFile").mockImplementation((file, options) => {
-    if (String(file).includes("archived-thread-"))
-      return Promise.reject(Object.assign(new Error("EIO"), { code: "EIO" }));
-    return originalReadFile(file, options);
-  });
+  const readFile = vi
+    .spyOn(fs, "readFile")
+    .mockImplementation((file, options) => {
+      if (String(file).includes("archived-thread-"))
+        return Promise.reject(Object.assign(new Error("EIO"), { code: "EIO" }));
+      return originalReadFile(file, options);
+    });
   try {
     await reloaded.initialize([route.hostId]);
   } finally {
@@ -590,7 +732,10 @@ it("preserves a credential when its archive marker has a transient read error", 
   }
   expect(await fs.readdir(directory)).toContain(name);
   expect(await reloaded.authenticate(oldToken)).toBeNull();
-  await reloaded.restoreThread(route.threadId, reloaded.archiveVersion(route.threadId));
+  await reloaded.restoreThread(
+    route.threadId,
+    reloaded.archiveVersion(route.threadId),
+  );
   expect(await reloaded.authenticate(oldToken)).toBeNull();
 });
 
@@ -606,7 +751,10 @@ it("recovers an active thread from a corrupt archive marker", async () => {
   const reloaded = new ThreadTokenStore(directory, hosts);
   await reloaded.initialize([route.hostId]);
   expect(await reloaded.authenticate(oldToken)).toBeNull();
-  await reloaded.restoreThread(route.threadId, reloaded.archiveVersion(route.threadId));
+  await reloaded.restoreThread(
+    route.threadId,
+    reloaded.archiveVersion(route.threadId),
+  );
   const newToken = await reloaded.forThread(route, hostToken);
   expect(await reloaded.authenticate(oldToken)).toBeNull();
   const afterRestart = new ThreadTokenStore(directory, hosts);
@@ -630,11 +778,13 @@ it("quarantines unreadable legacy entries and sweeps their token material", asyn
   );
   const unreadable = new ThreadTokenStore(directory, hosts);
   const originalReadFile = fs.readFile.bind(fs);
-  const readFile = vi.spyOn(fs, "readFile").mockImplementation((file, options) => {
-    if (String(file) === path.join(directory, legacyName ?? ""))
-      return Promise.reject(Object.assign(new Error("EIO"), { code: "EIO" }));
-    return originalReadFile(file, options);
-  });
+  const readFile = vi
+    .spyOn(fs, "readFile")
+    .mockImplementation((file, options) => {
+      if (String(file) === path.join(directory, legacyName ?? ""))
+        return Promise.reject(Object.assign(new Error("EIO"), { code: "EIO" }));
+      return originalReadFile(file, options);
+    });
   try {
     await unreadable.initialize([route.hostId]);
   } finally {
@@ -661,7 +811,7 @@ it("uses a fallback archive marker when the primary marker cannot be written", a
     name.startsWith("scoped-route-"),
   );
   const writeFile = vi
-    .spyOn(fs, "writeFile")
+    .spyOn(fs, "open")
     .mockRejectedValueOnce(new Error("EIO"));
   const remove = vi.spyOn(fs, "rm").mockImplementationOnce(async () => {
     throw new Error("EIO");
@@ -677,7 +827,7 @@ it("uses a fallback archive marker when the primary marker cannot be written", a
     false,
   );
   const restoreWrite = vi
-    .spyOn(fs, "writeFile")
+    .spyOn(fs, "open")
     .mockRejectedValueOnce(new Error("EIO"));
   try {
     await expect(
@@ -715,8 +865,8 @@ it("keeps revocation across restart when primary marker and route cleanup fail",
     name.startsWith("scoped-route-"),
   );
   const routeFile = path.join(directory, routeName ?? "");
-  const originalWriteFile = fs.writeFile.bind(fs);
-  const writeFile = vi.spyOn(fs, "writeFile").mockImplementation((file, ...args) => {
+  const originalWriteFile = fs.open.bind(fs);
+  const writeFile = vi.spyOn(fs, "open").mockImplementation((file, ...args) => {
     if (String(file).includes("archived-thread-"))
       return Promise.reject(Object.assign(new Error("EIO"), { code: "EIO" }));
     return originalWriteFile(file, ...args);
@@ -947,7 +1097,9 @@ it("keeps every credential and does not throw when the thread lookup fails", asy
   });
   expect(allFail).toEqual({ checked: 2, revoked: 0, failed: 2 });
   expect(await threads.authenticate(tokenOf("thr_a").provider)).not.toBeNull();
-  expect(await threads.authenticateNested(tokenOf("thr_b").nested)).not.toBeNull();
+  expect(
+    await threads.authenticateNested(tokenOf("thr_b").nested),
+  ).not.toBeNull();
 });
 
 it("keeps a revoked legacy credential revoked after a reload, even if its file reappears", async () => {
@@ -1004,7 +1156,9 @@ it("gives up on a lookup that never settles once the sweep deadline passes and k
     { signal: AbortSignal.timeout(30) },
   );
   expect(result).toEqual({ checked: 1, revoked: 0, failed: 1 });
-  expect(await threads.authenticate(tokenOf("thr_hung").provider)).not.toBeNull();
+  expect(
+    await threads.authenticate(tokenOf("thr_hung").provider),
+  ).not.toBeNull();
 });
 
 async function loadOrder(

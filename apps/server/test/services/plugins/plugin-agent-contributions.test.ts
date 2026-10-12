@@ -420,5 +420,15 @@ describe("plugin agent contributions reach thread runtime config", () => {
         source: { plugin: "env-second" },
       },
     ]);
+    const nativeEnv = await harness.pluginService.resolveProviderEnv({
+      providerId: "codex",
+      context: {
+        threadId: thread.id,
+        projectId: project.id,
+        hostId: host.id,
+        experimental_runtimeKind: "native",
+      },
+    });
+    expect(nativeEnv.entries).toEqual(command.contributedEnv);
   });
 });

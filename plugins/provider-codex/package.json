@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "exports": {
+    "./pool-launch": "./src/pool-launch.ts"
+  },
   "description": "Run bb threads with Codex.",
   "engines": {
     "bb": ">=0.0",

@@ -49,6 +49,8 @@ which the wrapper uses to report a turn working or idle and its prompt, and
 through the hidden `bb thread native-mcp <id>` stdio MCP server); the thread-creation and
 thread-operation skill references and the threads guide chapter describe them.
 
+Account Pooler operators use the existing `bb pool token rotate --machine <id-or-name>` after the one-time Codex snapshot cleanup described in [accounts and routing](../plugins/account-pool/skills/account-pool/references/accounts-and-routing.md#one-time-cleanup-after-upgrading). Keep those operator steps in the owning plugin reference; the command and its ten-minute grace are unchanged.
+
 `bb thread list` adds a **Needs you** column for `Needs input`, `Working`,
 automation `Woke`, and unread `Done` states. Automation labels come from the
 installed Automations plugin; when its read RPC is unavailable, the column
