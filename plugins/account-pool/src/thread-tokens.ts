@@ -304,6 +304,15 @@ export class ThreadTokenStore {
     };
   }
 
+  isProcessCredential(token: string | null): boolean {
+    const record = lookup(this.tokenIndex, token);
+    return (
+      record !== null &&
+      this.routes.get(`process:${this.key(record, record.hostTokenDigest)}`) ===
+        record
+    );
+  }
+
   async authenticateNested(token: string | null): Promise<NestedRoute | null> {
     const record = lookup(this.nestedTokenIndex, token);
     if (record === null) return null;

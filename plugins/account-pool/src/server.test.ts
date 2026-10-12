@@ -118,10 +118,18 @@ async function resolveToken(
   host: ReturnType<typeof createFakePluginHost>,
   hostId = "host-one",
   threadId = "thread-one",
+  runtimeKind?: "native",
 ): Promise<string> {
   const entries = await host.harness.behavior.resolveProviderEnv(
     "claude-code",
-    { threadId, projectId: "project-one", hostId },
+    {
+      threadId,
+      projectId: "project-one",
+      hostId,
+      ...(runtimeKind === undefined
+        ? {}
+        : { experimental_runtimeKind: runtimeKind }),
+    },
   );
   const token = entries.find((entry) => entry.name === "ANTHROPIC_AUTH_TOKEN");
   if (token === undefined || typeof token.value !== "string") {
@@ -153,7 +161,10 @@ async function resolveCodexToken(
 }
 
 describe("Explicit subscription routing", () => {
-  async function twoSubscriptions(beforeResponse?: () => Promise<void>) {
+  async function twoSubscriptions(
+    beforeResponse?: () => Promise<void>,
+    runtimeKind?: "native",
+  ) {
     const seen: string[] = [];
     const upstream = await startUpstream(async (request, response) => {
       seen.push(String(request.headers["x-api-key"]));
@@ -182,7 +193,12 @@ describe("Explicit subscription routing", () => {
       thread: { id: "thr_pinned", providerId: "claude-code" },
       data: { provider: "claude", accountId: second.id },
     });
-    const key = await resolveToken(fixture.host, "host-one", "thr_pinned");
+    const key = await resolveToken(
+      fixture.host,
+      "host-one",
+      "thr_pinned",
+      runtimeKind,
+    );
     const request = async (token: string) => {
       const response = await fixture.host.harness.behavior.fetchHttp(
         "POST",
@@ -279,7 +295,7 @@ describe("Explicit subscription routing", () => {
     },
   );
 
-  it("applies an idle thread's new selection to the next request using its existing credential", async () => {
+  it("keeps a running turn's credential on its account while the next turn changes", async () => {
     const { fixture, key, seen, request } = await twoSubscriptions();
     fixture.host.harness.sdk.stub("threads.get", async ({ threadId }) =>
       makeThreadResponse({
@@ -301,7 +317,7 @@ describe("Explicit subscription routing", () => {
     expect(nextKey).not.toBe(key);
     expect((await request(key)).status).toBe(200);
     expect((await request(nextKey)).status).toBe(200);
-    expect(seen).toEqual(["sk-first", "sk-first"]);
+    expect(seen).toEqual(["sk-second", "sk-first"]);
     const result = await fixture.host.harness.behavior.runCli([
       "select",
       "thr_pinned",
@@ -311,11 +327,9 @@ describe("Explicit subscription routing", () => {
     ]);
     expect(result.exitCode).toBe(0);
     expect(JSON.parse(result.stdout)).toMatchObject({ accountId: null });
-    expect((await request(key)).status).toBe(200);
-    expect(seen).toEqual(["sk-first", "sk-first", "sk-first"]);
   });
 
-  it("keeps bridge turn credentials and retained bridge credentials on the current idle selection", async () => {
+  it("keeps an idle retained bridge credential on its original account after a pin change", async () => {
     const { fixture, key, seen, request } = await twoSubscriptions();
     expect((await request(key)).status).toBe(200);
     fixture.host.harness.sdk.stub("threads.get", async ({ threadId }) =>
@@ -336,6 +350,43 @@ describe("Explicit subscription routing", () => {
     });
     const nextTurn = await resolveToken(fixture.host, "host-one", "thr_pinned");
     expect((await request(nextTurn)).status).toBe(200);
+    expect((await request(key)).status).toBe(200);
+    expect(seen).toEqual(["sk-second", "sk-first", "sk-second"]);
+  });
+
+  it("applies an idle native thread's new selection to requests using its existing credential", async () => {
+    const { fixture, key, seen, request } = await twoSubscriptions(
+      undefined,
+      "native",
+    );
+    expect((await request(key)).status).toBe(200);
+    fixture.host.harness.sdk.stub("threads.get", async ({ threadId }) =>
+      makeThreadResponse({
+        id: threadId,
+        providerId: "claude-code",
+        status: "idle",
+      }),
+    );
+    fixture.host.harness.sdk.stub(
+      "threads.queuedMessages.list",
+      async () => [],
+    );
+    await fixture.host.harness.behavior.callRpc("routing.selection.set", {
+      threadId: "thr_pinned",
+      provider: "claude",
+      accountId: fixture.account.id,
+    });
+    expect((await request(key)).status).toBe(200);
+    expect(seen).toEqual(["sk-second", "sk-first"]);
+    const result = await fixture.host.harness.behavior.runCli([
+      "select",
+      "thr_pinned",
+      "claude",
+      "automatic",
+      "--json",
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({ accountId: null });
     expect((await request(key)).status).toBe(200);
     expect(seen).toEqual(["sk-second", "sk-first", "sk-first"]);
   });
