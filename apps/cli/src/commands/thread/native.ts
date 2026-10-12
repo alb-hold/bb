@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import {
+  appendFileSync,
   closeSync,
   mkdirSync,
   openSync,
@@ -311,6 +312,16 @@ async function holdNativeHarness(
               )),
             }
           : launch.session,
+        (total) => {
+          try {
+            appendFileSync(
+              nativeHolderLogPath(socketPath),
+              `native activity: ${total} evicted transcript identities could not be confirmed and were treated as fresh\n`,
+            );
+          } catch {
+            return;
+          }
+        },
       );
       if (activity !== undefined) {
         activityTimers.push(

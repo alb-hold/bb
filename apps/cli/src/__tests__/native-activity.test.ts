@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import {
   appendFileSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -27,7 +28,7 @@ const CLAUDE_ACTIVITY: ProviderNativeTerminalActivity =
   providerNativeTerminalActivitySchema.parse({
     hooks: {
       args: ["--settings", "{settings}"],
-      working: ["UserPromptSubmit"],
+      working: ["UserPromptSubmit", "PreToolUse"],
       idle: ["Stop"],
       promptField: "prompt",
     },
@@ -92,10 +93,21 @@ function tempDir(): string {
 
 describe("native terminal activity", () => {
   it("installs hooks that append each event's input to the events file", () => {
-    const hooks = CLAUDE_ACTIVITY.hooks!;
+    const hooks = {
+      ...CLAUDE_ACTIVITY.hooks!,
+      idle: [],
+      pending: ["Stop"],
+    };
     const eventsFile = path.join(tempDir(), "it's events.jsonl");
     const settings = JSON.parse(nativeActivityHookSettings(hooks, eventsFile));
+    const home = tempDir();
+    mkdirSync(path.join(home, ".claude"));
+    const userSettings = path.join(home, ".claude", "settings.json");
+    const existing =
+      '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"user-stop-hook"}]}]}}';
+    writeFileSync(userSettings, existing);
     expect(Object.keys(settings.hooks).sort()).toEqual([
+      "PreToolUse",
       "Stop",
       "UserPromptSubmit",
     ]);
@@ -103,19 +115,25 @@ describe("native terminal activity", () => {
     for (const record of [
       { hook_event_name: "UserPromptSubmit", prompt: "fix the build" },
       { hook_event_name: "Stop" },
+      { hook_event_name: "PreToolUse" },
+      { hook_event_name: "Stop", stop_hook_active: true },
     ]) {
       const output = execFileSync("/bin/sh", ["-c", command], {
+        env: { ...process.env, HOME: home },
         input: JSON.stringify(record),
       });
       expect(output.toString()).toBe("");
     }
+    expect(readFileSync(userSettings, "utf8")).toBe(existing);
     const tail = new JsonlTail(0);
     const signals = tail
       .readRecords(eventsFile)
       .map((record) => classifyHookRecord(hooks, record));
     expect(signals).toEqual([
       { state: "working", prompt: "fix the build" },
-      { state: "idle", prompt: null },
+      { state: null, prompt: null },
+      { state: "working", prompt: null },
+      { state: null, prompt: null },
     ]);
   });
 
@@ -207,6 +225,51 @@ describe("native terminal activity", () => {
     expect(new JsonlTail(0).readRecords(path.join(file, "missing"))).toEqual(
       [],
     );
+  });
+
+  it("reports byte offsets across resumed, malformed and split UTF-8 records", () => {
+    const file = path.join(tempDir(), "offsets.jsonl");
+    const old = '{"old":true}\n';
+    writeFileSync(file, old);
+    const tail = new JsonlTail(Buffer.byteLength(old));
+    const large = {
+      text: "x".repeat(4 * 1024 * 1024 - 20) + "\u{1f642}",
+      uuid: "split",
+    };
+    const content = `not json\n${JSON.stringify(large)}\n${JSON.stringify({ uuid: "last" })}\n`;
+    appendFileSync(file, content);
+    const entries: { record: unknown; offset: number; length: number }[] = [];
+    const accept = (
+      record: unknown,
+      location: { offset: number; length: number },
+    ) => {
+      entries.push({ record, ...location });
+    };
+    tail.readRecords(file, accept);
+    expect(entries).toEqual([]);
+    tail.readRecords(file, accept);
+    expect(entries.map(({ record }) => record)).toEqual([
+      large,
+      { uuid: "last" },
+    ]);
+    const bytes = readFileSync(file);
+    for (const entry of entries) {
+      expect(
+        JSON.parse(
+          bytes
+            .subarray(entry.offset, entry.offset + entry.length)
+            .toString("utf8"),
+        ),
+      ).toEqual(entry.record);
+    }
+    expect(entries[0].offset).toBe(Buffer.byteLength(old + "not json\n"));
+    writeFileSync(file, '{"uuid":"replacement"}\n');
+    const replacement: unknown[] = [];
+    tail.readRecords(file, (record, location) => {
+      replacement.push(record);
+      expect(location.offset).toBe(0);
+    });
+    expect(replacement).toEqual([{ uuid: "replacement" }]);
   });
 
   it("keeps a resumed turn written before the first poll", () => {

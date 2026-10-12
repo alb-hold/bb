@@ -25,6 +25,20 @@ import { generateAndApplyThreadTitle } from "./title-generation.js";
 type NativeTerminalActivityDeps = LoggedPendingInteractionWorkSessionDeps &
   Pick<AppDeps, "db" | "hub" | "logger" | "terminalSessions">;
 
+const activeNativeThreads = new WeakMap<AppDeps["hub"], Set<string>>();
+
+function activeThreads(deps: Pick<AppDeps, "hub">): Set<string> {
+  let threads = activeNativeThreads.get(deps.hub);
+  if (threads !== undefined) return threads;
+  threads = new Set<string>();
+  const active = threads;
+  deps.hub.onChangedMessage((message) => {
+    if (message.entity === "thread") active.delete(message.id);
+  });
+  activeNativeThreads.set(deps.hub, active);
+  return active;
+}
+
 function requireNativeRecord(deps: Pick<AppDeps, "db">, threadId: string) {
   const record = getNativeTerminalThread(deps.db, threadId);
   if (record === null) {
@@ -45,16 +59,27 @@ export function recordNativeTerminalActivity(
   deps: NativeTerminalActivityDeps,
   args: { threadId: string } & ReportNativeTerminalActivityRequest,
 ): void {
+  const active = activeThreads(deps);
+  if (
+    args.state === "working" &&
+    args.prompt === undefined &&
+    active.has(args.threadId)
+  ) {
+    return;
+  }
+  active.delete(args.threadId);
   const thread = requirePublicThread(deps.db, args.threadId);
   const record = requireNativeRecord(deps, args.threadId);
+  let working = thread.status === "active";
   if (
     args.state !== "idle" &&
     (thread.status === "idle" || thread.status === "error")
   ) {
-    applyLoggedThreadLifecycleEvent(deps, {
+    const outcome = applyLoggedThreadLifecycleEvent(deps, {
       event: { type: "run.started" },
       threadId: thread.id,
     });
+    working = outcome.applied && outcome.thread.status === "active";
   }
   if (args.state === "idle") settleNativeTerminalTurn(deps, thread.id);
   reconcileNativeQuestions(deps, {
@@ -65,6 +90,7 @@ export function recordNativeTerminalActivity(
   if (args.prompt !== undefined) {
     titleNativeThreadFromPrompt(deps, thread.id, args.prompt);
   }
+  if (args.state === "working" && working) active.add(thread.id);
 }
 
 export function interruptNativeTerminalQuestions(

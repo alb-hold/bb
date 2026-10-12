@@ -1087,18 +1087,47 @@ how to see turns: `hooks` (extra argv carrying `{settings}`, the hook event
 names that mean working or idle, and the prompt field; the harness installs
 command hooks that append each event's JSON to a private file) and
 `transcript` (record matches on the session file: equal fields, string
-prefixes, and a prompt text field); `transcript.questions` (`open` and `close`
-record matches that carry a question id) and `hooks.permission` (open and close
-hook events, the tool-identifying field, and tool ids to skip because the
-transcript already reports them) mark a CLI blocked on a question
-or permission prompt. The wrapper reports working, waiting (with the open
-question ids and texts), idle and the
-first new prompt through `sdk.nativeTerminals.reportActivity`; a waiting
-report registers one pending interaction per open question (so the sidebar and
-favicon show needs-input exactly as for a chat thread, and the thread view shows
-a banner above the terminal), a later report clears the ones no longer open, and
-answering them through the bridge is refused with 409 because the answer belongs
-in the terminal. The server moves
+prefixes, and a prompt text field). Equality supports strings and booleans.
+Optional `hooks.pending` records provisional events without ending a turn;
+`hooks.turnId` correlates hook input with transcript turns. Optional transcript
+`identity` names `recordId`, `parentId` and `turnId` fields so duplicate or late
+records cannot reactivate a finished turn. A new working record descended
+from its completion record can start a background continuation. The reader
+also accepts an optional identity `timestamp` field path for ISO timestamps.
+Providers declaring it must timestamp identifiable records; fresh records
+may arrive out of timestamp order. Missing or invalid timestamps are ignored.
+UUID identity decides replay detection independently of replay timestamps or
+ancestry. A bounded set holds 4,096 recently evicted UUIDs; a lazily allocated
+packed index retains each older UUID's 64-bit SHA-256 hash, original byte
+offset and line length. At 75 percent occupancy it doubles its arrays; slots
+cost 20 bytes, about 27 to 54 bytes per indexed UUID after the initial 160 KiB
+allocation. Hash matches compare the exact UUID in the original line with one
+positioned read per match, never a transcript prefix scan. Distinct hashes need
+no transcript reads; collisions remain eligible after exact confirmation.
+Resizing is linear and amortized across insertions. Lookup cost includes linear
+probing and the lengths of original lines sharing the hash. Index storage grows
+linearly with evictions; the ancestry and turn maps keep their fixed bounds.
+Claude declares the timestamp field. Retained history is bounded to 4,096
+records and 128 turns, while
+completion anchors and compacted continuation ancestry remain available.
+Stabilization must cover replay after eviction, timestamp ties, bounded memory,
+late flushing, blocked-Stop continuation and providers without ordering fields.
+The reader
+keeps polling after pending and idle records. Claude's Stop is provisional;
+its Stop-hook feedback means working and its transcript outcome means idle.
+The declaration wire fields require host daemon protocol 237.
+`transcript.questions` (`open` and `close` record matches that carry a
+question id) and `hooks.permission` (open and close hook events, the
+tool-identifying field, and tool ids to skip because the transcript already
+reports them) mark a CLI blocked on a question or permission prompt; the
+question fields require host daemon protocol 238. The wrapper reports
+working, waiting (with the open question ids and texts), idle and the first
+new prompt through `sdk.nativeTerminals.reportActivity`; a waiting report
+registers one pending interaction per open question (so the sidebar and
+favicon show needs-input exactly as for a chat thread, and the thread view
+shows a banner above the terminal), a later report clears the ones no longer
+open, and answering them through the bridge is refused with 409 because the
+answer belongs in the terminal. The server moves
 the thread between idle and active and titles an untitled thread from the
 prompt. Validated at registration by
 `providerNativeTerminalSchema` in `@bb/domain`: bare executable name, at most

@@ -168,16 +168,46 @@ started and an ended turn, the field holding the prompt, and the argv that
 loads `{settings}` (bb fills in hooks that append each event to a private
 file); `transcript` lists record matches on the session file (`equals` field
 values, `startsWith` prefixes, dotted paths with numeric array indexes) for
-working, idle and prompt records. A CLI that blocks on a question to the user
-declares it so the thread shows as waiting for input: `transcript.questions`
-lists `open` record matches (the field holding the question's id, an optional
-field holding its text, and a fallback `label`) and `close` matches that carry
-the same id once the user answers; `hooks.permission` names the hook events
-that open and close a permission prompt and the field that identifies the
-tool, and `skip` lists tool ids whose permission hook is not reported because
-the transcript already declares them as questions (one prompt, one row). An open question survives working signals and ends on its own close
-match, a new prompt, an interrupt or the CLI exiting. A non-blocking question
-must not be declared.
+working, idle and prompt records. Equality values may be strings or booleans.
+Optional hook `pending` events are recorded without changing activity; a
+provisional Stop uses the transcript's final outcome to end the turn.
+`hooks.turnId` selects the current turn so delayed transcript records cannot
+replace a newer prompt. Optional transcript
+`identity` declares the `recordId`, `parentId` and `turnId` field paths. With
+identity, duplicate records and late records from previous turns are ignored;
+only new working records descended from the final record can reopen a
+completed turn. The reader keeps polling after pending events and completion.
+An optional identity `timestamp` names an ISO timestamp field. Providers that
+declare it must timestamp identifiable records; missing or invalid values are
+ignored. UUID identity decides replay detection even if a replay changes its
+timestamp or ancestry. Fresh records may arrive with older timestamps. The
+reader retains 4,096 recently evicted UUIDs and indexes older UUIDs with
+64-bit SHA-256 hashes, original byte offsets and line lengths in packed arrays.
+The index grows geometrically at 75 percent occupancy: 20 bytes per slot,
+about 27 to 54 bytes per evicted UUID after its initial 160 KiB allocation.
+A hash match reads only the original line and compares its exact UUID; hash
+collisions cannot reject a fresh UUID. Fresh hashes require no transcript read.
+Confirmation never scans the transcript prefix, regardless of session length.
+The index uses linear probing and doubles when full enough; resizing costs
+linear work in its entries, amortized over later insertions. A lookup may read
+one line per matching 64-bit hash; its cost depends on those line lengths,
+not the transcript prefix length. Claude declares the timestamp field.
+Identity state is bounded to 4,096 records
+and 128 turns; completion anchors and continuation ancestry remain available.
+Claude uses Stop-hook feedback for continuation and the Stop outcome or turn
+duration for completion. These fields require host daemon protocol 237.
+
+A CLI that blocks on a question to the user declares it so the thread shows as
+waiting for input: `transcript.questions` lists `open` record matches (the
+field holding the question's id, an optional field holding its text, and a
+fallback `label`) and `close` matches that carry the same id once the user
+answers; `hooks.permission` names the hook events that open and close a
+permission prompt and the field that identifies the tool, and `skip` lists tool
+ids whose permission hook is not reported because the transcript already
+declares them as questions (one prompt, one row). An open question survives
+working signals and ends on its own close match, a new prompt, an interrupt or
+the CLI exiting. A non-blocking question must not be declared. The question
+fields require host daemon protocol 238.
 
 Rules:
 
