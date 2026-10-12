@@ -1,7 +1,18 @@
+import type { LookupFunction } from "node:net";
 import { EnvHttpProxyAgent } from "undici";
 
-export function createUpstreamTransport() {
-  const dispatcher = new EnvHttpProxyAgent({ allowH2: false });
+export const CONNECT_ATTEMPT_TIMEOUT_MS = 3_000;
+
+export function createUpstreamTransport(
+  connect: { lookup?: LookupFunction } = {},
+) {
+  const dispatcher = new EnvHttpProxyAgent({
+    allowH2: false,
+    connect: {
+      autoSelectFamilyAttemptTimeout: CONNECT_ATTEMPT_TIMEOUT_MS,
+      ...connect,
+    },
+  });
   const upstreamFetch: typeof fetch = (input, init) => {
     const options = { ...init, dispatcher };
     return fetch(input, options);
@@ -36,9 +47,21 @@ export function transportErrorCode(error: unknown): string {
       typeof cause.code === "string" &&
       TRANSPORT_CODES.has(cause.code)
     ) {
-      return cause.code;
+      return withMemberCodes(cause, cause.code);
     }
     cause = cause.cause;
   }
   return "unclassified transport error";
+}
+
+function withMemberCodes(error: Error, code: string): string {
+  if (!("errors" in error) || !Array.isArray(error.errors)) return code;
+  const members = error.errors.flatMap((member: unknown) =>
+    member instanceof Error &&
+    "code" in member &&
+    typeof member.code === "string"
+      ? [member.code]
+      : [],
+  );
+  return members.length === 0 ? code : `${code} [${members.join(", ")}]`;
 }

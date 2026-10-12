@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 import http from "node:http";
 import http2 from "node:http2";
 import { once } from "node:events";
+import type { LookupFunction } from "node:net";
 import type { Dispatcher } from "undici";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
@@ -187,4 +188,40 @@ it("does not expose arbitrary error messages or unrecognized codes", () => {
   expect(transportErrorCode(error)).toBe("unclassified transport error");
   error.cause = error;
   expect(transportErrorCode(error)).toBe("unclassified transport error");
+});
+
+const stallingDualStackLookup: LookupFunction = (_hostname, _options, done) => {
+  done(null, [
+    { address: "127.0.0.1", family: 4 },
+    { address: "::1", family: 6 },
+  ]);
+  const until = Date.now() + 600;
+  while (Date.now() < until) {}
+};
+
+it("connects when the event loop stalls longer than Node's default 250ms address-attempt window", async () => {
+  const target = await upstream();
+  const transport = createUpstreamTransport({
+    lookup: stallingDualStackLookup,
+  });
+  cleanups.push(transport.destroy);
+  const response = await transport.fetch(
+    target.url.replace("127.0.0.1", "upstream.test"),
+  );
+  expect(await response.text()).toBe("OK");
+  expect(target.requests()).toBe(1);
+});
+
+it("names the member errors of an aggregate connect failure", () => {
+  const aggregate = Object.assign(new AggregateError([], "connect failed"), {
+    code: "ETIMEDOUT",
+    errors: [
+      Object.assign(new Error("a"), { code: "ETIMEDOUT" }),
+      Object.assign(new Error("b"), { code: "EHOSTUNREACH" }),
+      new Error("no code"),
+    ],
+  });
+  expect(
+    transportErrorCode(new TypeError("fetch failed", { cause: aggregate })),
+  ).toBe("ETIMEDOUT [ETIMEDOUT, EHOSTUNREACH]");
 });
