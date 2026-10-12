@@ -11,6 +11,7 @@ import type { DbNotifier } from "../notifier.js";
 import { projects, projectSources } from "../schema.js";
 import { createProjectId, createProjectSourceId } from "../ids.js";
 import { toProjectSource } from "./project-sources.js";
+import { bumpThreadEventOwnershipEpoch } from "./event-rewrite-generation.js";
 import { createOrderKeyAfter, createOrderKeyBetween } from "./order-keys.js";
 
 export interface CreateProjectLocalPathSourceInput {
@@ -424,6 +425,7 @@ export function deleteProject(
   const existing = db.select().from(projects).where(eq(projects.id, id)).get();
   if (!existing) return false;
   db.delete(projects).where(eq(projects.id, id)).run();
+  bumpThreadEventOwnershipEpoch();
   notifier.notifyProject(id, ["project-deleted"]);
   return true;
 }
