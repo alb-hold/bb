@@ -34,3 +34,6 @@ export const terminalDataPlaneConnectResultSchema = z
 export type TerminalDataPlaneConnectResult = z.infer<
   typeof terminalDataPlaneConnectResultSchema
 >;
+
+export const TERMINAL_DATA_SOCKET_PATH = "/internal/terminal-data";
+export const TERMINAL_DATA_SOCKET_TICKET_HEADER = "x-bb-terminal-data-ticket";

@@ -26,6 +26,7 @@ import {
 } from "./runtime-manager.js";
 import { WatchManager } from "./watch-manager.js";
 import { ConnectTunnelClient } from "./connect-tunnel/index.js";
+import { TerminalDataSocket } from "./terminals/terminal-data-socket.js";
 import { TerminalManager } from "./terminals/terminal-manager.js";
 import {
   createServerClient,
@@ -728,10 +729,29 @@ export async function createHostDaemonApp(
       };
     },
   });
-  const terminalManager = new TerminalManager({
+  const terminalManager: TerminalManager = new TerminalManager({
     logger: options.logger,
     runtimeManager,
-    sendMessage: (message) => sendServerMessage(message),
+    sendMessage: (message) =>
+      (message.type === "terminal.output" &&
+        terminalDataSocket.sendOutput(message)) ||
+      sendServerMessage(message),
+  });
+  const terminalDataSocket = new TerminalDataSocket({
+    hostKey: options.hostKey,
+    logger: options.logger,
+    onAttached: () => terminalManager.releaseOutputFlowControl(),
+    onDetached: () => terminalManager.releaseOutputFlowControl(),
+    onMessage: (message) => {
+      void terminalManager.handleMessage(message).catch((error: unknown) => {
+        options.logger.warn(
+          { terminalId: message.terminalId, ...runtimeErrorLogFields(error) },
+          "Failed to handle a terminal data socket message",
+        );
+      });
+    },
+    serverHeaders: options.serverHeaders ?? {},
+    serverUrl: options.serverUrl,
   });
   const pluginHostManager = new PluginHostManager({
     dataDir: options.dataDir,
@@ -793,6 +813,7 @@ export async function createHostDaemonApp(
   const router = new CommandRouter({
     emitEnvironmentHookProgress: (message) => sendServerMessage(message),
     desktopBrowserBroker,
+    terminalDataSocket,
     dataDir: options.dataDir,
     fetchProjectAttachment: (args) =>
       runSessionRequest({
@@ -889,6 +910,9 @@ export async function createHostDaemonApp(
     },
     onTerminalMessage: (message) => terminalManager.handleMessage(message),
     onSessionOpened: async (session) => {
+      if (sessionState.value !== session.sessionId) {
+        terminalDataSocket.close();
+      }
       sessionState.value = session.sessionId;
       connectTunnel.replaceAuthoritativeShareSet(session.connectShares);
       await pluginHostManager.reconcileGenerations(
@@ -924,6 +948,7 @@ export async function createHostDaemonApp(
       sessionState.value = session?.sessionId ?? null;
       desktopBrowserBroker.setConnected(session !== null);
       if (session === null) {
+        terminalDataSocket.close();
         terminalManager.releaseOutputFlowControl();
         clearInteractiveInterruptRetry();
         interactiveInterruptRetryDelayMs = INTERACTIVE_INTERRUPT_RETRY_DELAY_MS;
@@ -1011,6 +1036,7 @@ export async function createHostDaemonApp(
       connectTunnel.shutdown();
       await watchManager.shutdown();
       disposeParcelWatcherBackend();
+      terminalDataSocket.close();
       await terminalManager.shutdownAll();
       terminalManager.dispose();
       machineEnvironment.replace([]);

@@ -44,6 +44,7 @@ async function createFixture(
     guard: {
       config: { serverPort: 3001, appUrl: undefined, devAppPort: undefined },
     },
+    handleDataSocketUpgrade: () => false,
     isAvailable: () => true,
     resolveTerminal: (terminalId) =>
       terminalId === "term_1"

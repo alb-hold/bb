@@ -612,6 +612,48 @@ describe("ThreadRow", () => {
     expect(actionSlot?.classList.contains("absolute")).toBe(false);
   });
 
+  it("reserves no permanent trailing space for hover actions on hover-capable pointers", () => {
+    const { container } = renderThreadRow({
+      thread: createThread({ status: "active", runtimeStatus: "active" }),
+      sidebarPullRequest: createPullRequest("open"),
+    });
+    const controls = container.querySelector<HTMLElement>(
+      "[data-sidebar-row-controls]",
+    );
+    const actionSlot = controls?.parentElement;
+    const badges = container.querySelector<HTMLElement>(
+      "[data-sidebar-thread-trailing-badges]",
+    );
+    const titleLane = screen.getByRole("link", { name: "Open Thread" })
+      .parentElement;
+
+    expect(actionSlot?.className).toContain("[@media(hover:hover)]:absolute");
+    expect(actionSlot?.className).not.toMatch(/(^|\s)(w-|min-w-)\S+/);
+    expect(badges?.className).toContain("bb-sidebar-hover-actions-fade");
+    expect(badges?.contains(screen.getByLabelText("Working"))).toBe(true);
+    expect(titleLane?.className).toContain("bb-sidebar-hover-actions-inset");
+    expect(
+      titleLane?.style.getPropertyValue("--bb-sidebar-hover-actions-inset"),
+    ).not.toBe("");
+  });
+
+  it("fades the trailing badges while the actions menu is open so they never draw under the actions", async () => {
+    const { container } = renderThreadRow({
+      sidebarPullRequest: createPullRequest("open"),
+    });
+    const badges = container.querySelector<HTMLElement>(
+      "[data-sidebar-thread-trailing-badges]",
+    )!;
+    expect(badges.hasAttribute("data-sidebar-hover-actions-open")).toBe(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "Thread actions" }));
+    await screen.findByRole("menuitem", { name: "Rename" });
+
+    expect(badges.getAttribute("data-sidebar-hover-actions-open")).toBe("true");
+    expect(badges.className).toContain("bb-sidebar-hover-actions-fade");
+    expect(badges.className).toContain("[@media(hover:none)]:opacity-100!");
+  });
+
   it("keeps working status, PR badge, and actions in the trailing layout lane", () => {
     const { container } = renderThreadRow({
       thread: createThread({ status: "active", runtimeStatus: "active" }),
