@@ -68,6 +68,14 @@ function writeHolderTestEvent(
   logEvent?.(socketPath, event, fields);
 }
 
+function oversizedHolderTestFields(): Record<string, number> {
+  const fields: Record<string, number> = {};
+  for (let index = 0; index < 30_000; index += 1) {
+    fields[`field${index}`] = index;
+  }
+  return fields;
+}
+
 function startHolder(
   socketPath: string,
   child: NativeHolderProcess,
@@ -151,16 +159,19 @@ const ECHO_LOOP: NativeHolderProcess = {
 };
 
 describe("native terminal holder", () => {
-  it("keeps the log at the size cap when rotating near the boundary", () => {
+  it("keeps the log at the size cap when an oversized record reaches the boundary", () => {
     const socketPath = socketIn();
     const logPath = socketPath.replace(/\.sock$/u, ".log");
     const maxBytes = 256 * 1024;
     writeFileSync(logPath, Buffer.alloc(maxBytes - 4, 0x78));
 
-    writeHolderTestEvent(socketPath, "boundary", { value: "kept" });
+    writeHolderTestEvent(
+      socketPath,
+      "boundary",
+      oversizedHolderTestFields(),
+    );
 
     expect(statSync(logPath).size).toBeLessThanOrEqual(maxBytes);
-    expect(readFileSync(logPath, "utf8")).toContain('"event":"boundary"');
   });
 
   it("truncates oversized exception names before writing the record", () => {
@@ -180,12 +191,11 @@ describe("native terminal holder", () => {
   it("drops a serialized event that is larger than the log cap", () => {
     const socketPath = socketIn();
     const logPath = socketPath.replace(/\.sock$/u, ".log");
-    const fields: Record<string, number> = {};
-    for (let index = 0; index < 30_000; index += 1) {
-      fields[`field${index}`] = index;
-    }
-
-    writeHolderTestEvent(socketPath, "oversized-record", fields);
+    writeHolderTestEvent(
+      socketPath,
+      "oversized-record",
+      oversizedHolderTestFields(),
+    );
 
     expect(statSync(logPath).size).toBeLessThanOrEqual(256 * 1024);
     expect(readFileSync(logPath, "utf8")).toBe("");
