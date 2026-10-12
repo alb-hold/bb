@@ -15,8 +15,10 @@ proxying a parent pool. The hub resolves the conversation's current account choi
 at the start of each request, including requests from a running native terminal.
 A request already in flight keeps its choice. Native Codex launches use the same
 environment-backed provider configuration as chat turns; no token is passed in
-command arguments. Machine token rotation also revokes derived
-conversation credentials after the existing ten-minute grace period.
+command arguments. Native launch credentials live only in the server process.
+Reopen the terminal after a server restart to obtain a new credential. Machine
+token rotation also revokes derived conversation credentials after the existing
+ten-minute grace period; reopen the terminal after that grace expires.
 
 The builtin Account Pooler plugin is disabled by default. Enable it, add Claude
 or Codex credentials, and inspect its proxy routes and account quota with:

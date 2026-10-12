@@ -217,7 +217,7 @@ Read the installed declarations for exact current signatures.
 - `PluginProviderCompletedTurnDisplay`
 - `PluginProviderComposerAction`
 - `PluginProviderDeclaration`
-- `ExperimentalPluginProviderEnvContext`
+- `ExperimentalPluginProviderEnvContext` includes optional `experimental_runtimeKind: "native"` for native launches; contributors may ignore it.
 - `ExperimentalPluginProviderEnvEntry`
 - `ExperimentalPluginProviderEnvHealthContext`
 - `ExperimentalPluginProviderEnvHealth`

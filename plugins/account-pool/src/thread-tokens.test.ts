@@ -39,6 +39,31 @@ async function fixture() {
   };
 }
 
+it("keeps process credentials scoped, revocable, and absent after a restart", async () => {
+  const { directory, hosts, threads, route, hostToken } = await fixture();
+  const token = await threads.forThread(route, hostToken, "process");
+  const nested = await threads.forNested(route, hostToken, "process");
+  expect((await threads.forThread(route, hostToken, "process")) === token).toBe(
+    true,
+  );
+  expect(await threads.authenticate(token, "claude")).toEqual(route);
+  expect(await threads.authenticate(token, "codex")).toBeNull();
+  expect(await threads.authenticateNested(nested)).toEqual({
+    hostId: route.hostId,
+    threadId: route.threadId,
+  });
+  const restarted = new ThreadTokenStore(directory, hosts);
+  await restarted.initialize([route.hostId]);
+  expect(await restarted.authenticate(token)).toBeNull();
+  expect(await restarted.authenticateNested(nested)).toBeNull();
+  await threads.removeThread(route.threadId);
+  expect(await threads.authenticate(token)).toBeNull();
+  expect(await threads.authenticateNested(nested)).toBeNull();
+  await expect(threads.forThread(route, hostToken, "process")).rejects.toThrow(
+    "archived thread",
+  );
+});
+
 it("binds credentials to a thread, provider, and account snapshot and removes them on deletion", async () => {
   const { directory, threads, route, hostToken } = await fixture();
   const [first, same] = await Promise.all([
@@ -192,8 +217,10 @@ it("removes legacy provider and nested credential files when archiving", async (
     hostToken,
   );
   const names = await fs.readdir(directory);
-  for (const name of names.filter((entry) =>
-    entry.startsWith("scoped-route-") || entry.startsWith("scoped-nested-route-"),
+  for (const name of names.filter(
+    (entry) =>
+      entry.startsWith("scoped-route-") ||
+      entry.startsWith("scoped-nested-route-"),
   )) {
     const legacy = name
       .replace(/^scoped-route-/u, "thread-route-")
@@ -227,11 +254,13 @@ it("does not quarantine a legacy nested file whose host and thread split is ambi
   );
   const unreadable = new ThreadTokenStore(directory, hosts);
   const originalReadFile = fs.readFile.bind(fs);
-  const readFile = vi.spyOn(fs, "readFile").mockImplementation((file, options) => {
-    if (String(file) === path.join(directory, legacyName ?? ""))
-      return Promise.reject(Object.assign(new Error("EIO"), { code: "EIO" }));
-    return originalReadFile(file, options);
-  });
+  const readFile = vi
+    .spyOn(fs, "readFile")
+    .mockImplementation((file, options) => {
+      if (String(file) === path.join(directory, legacyName ?? ""))
+        return Promise.reject(Object.assign(new Error("EIO"), { code: "EIO" }));
+      return originalReadFile(file, options);
+    });
   try {
     await unreadable.initialize(["h-a", "h"]);
   } finally {
@@ -256,11 +285,13 @@ it("quarantines only the exact legacy nested thread id", async () => {
   );
   const unreadable = new ThreadTokenStore(directory, hosts);
   const originalReadFile = fs.readFile.bind(fs);
-  const readFile = vi.spyOn(fs, "readFile").mockImplementation((file, options) => {
-    if (String(file) === path.join(directory, legacyName ?? ""))
-      return Promise.reject(Object.assign(new Error("EIO"), { code: "EIO" }));
-    return originalReadFile(file, options);
-  });
+  const readFile = vi
+    .spyOn(fs, "readFile")
+    .mockImplementation((file, options) => {
+      if (String(file) === path.join(directory, legacyName ?? ""))
+        return Promise.reject(Object.assign(new Error("EIO"), { code: "EIO" }));
+      return originalReadFile(file, options);
+    });
   try {
     await unreadable.initialize(["host-one"]);
   } finally {
@@ -436,8 +467,9 @@ it("does not reload an unreadable credential after its thread is archived", asyn
   await reloaded.initialize([route.hostId]);
   expect(await reloaded.authenticate(token)).toBeNull();
   expect(
-    (await fs.readdir(directory)).filter((name) =>
-      name.startsWith("scoped-route-") || name.startsWith("thread-route-"),
+    (await fs.readdir(directory)).filter(
+      (name) =>
+        name.startsWith("scoped-route-") || name.startsWith("thread-route-"),
     ),
   ).toEqual([]);
 });
@@ -489,7 +521,10 @@ it("keeps an evicted token revoked after failed file cleanup and restoration", a
   }
   expect(await fs.readdir(directory)).toContain(routeName);
   expect(await threads.authenticate(oldToken)).toBeNull();
-  await threads.restoreThread(route.threadId, threads.archiveVersion(route.threadId));
+  await threads.restoreThread(
+    route.threadId,
+    threads.archiveVersion(route.threadId),
+  );
   expect(await threads.authenticate(oldToken)).toBeNull();
 });
 
@@ -578,11 +613,13 @@ it("preserves a credential when its archive marker has a transient read error", 
   await fs.writeFile(path.join(directory, name ?? ""), contents);
   const reloaded = new ThreadTokenStore(directory, hosts);
   const originalReadFile = fs.readFile.bind(fs);
-  const readFile = vi.spyOn(fs, "readFile").mockImplementation((file, options) => {
-    if (String(file).includes("archived-thread-"))
-      return Promise.reject(Object.assign(new Error("EIO"), { code: "EIO" }));
-    return originalReadFile(file, options);
-  });
+  const readFile = vi
+    .spyOn(fs, "readFile")
+    .mockImplementation((file, options) => {
+      if (String(file).includes("archived-thread-"))
+        return Promise.reject(Object.assign(new Error("EIO"), { code: "EIO" }));
+      return originalReadFile(file, options);
+    });
   try {
     await reloaded.initialize([route.hostId]);
   } finally {
@@ -590,7 +627,10 @@ it("preserves a credential when its archive marker has a transient read error", 
   }
   expect(await fs.readdir(directory)).toContain(name);
   expect(await reloaded.authenticate(oldToken)).toBeNull();
-  await reloaded.restoreThread(route.threadId, reloaded.archiveVersion(route.threadId));
+  await reloaded.restoreThread(
+    route.threadId,
+    reloaded.archiveVersion(route.threadId),
+  );
   expect(await reloaded.authenticate(oldToken)).toBeNull();
 });
 
@@ -606,7 +646,10 @@ it("recovers an active thread from a corrupt archive marker", async () => {
   const reloaded = new ThreadTokenStore(directory, hosts);
   await reloaded.initialize([route.hostId]);
   expect(await reloaded.authenticate(oldToken)).toBeNull();
-  await reloaded.restoreThread(route.threadId, reloaded.archiveVersion(route.threadId));
+  await reloaded.restoreThread(
+    route.threadId,
+    reloaded.archiveVersion(route.threadId),
+  );
   const newToken = await reloaded.forThread(route, hostToken);
   expect(await reloaded.authenticate(oldToken)).toBeNull();
   const afterRestart = new ThreadTokenStore(directory, hosts);
@@ -630,11 +673,13 @@ it("quarantines unreadable legacy entries and sweeps their token material", asyn
   );
   const unreadable = new ThreadTokenStore(directory, hosts);
   const originalReadFile = fs.readFile.bind(fs);
-  const readFile = vi.spyOn(fs, "readFile").mockImplementation((file, options) => {
-    if (String(file) === path.join(directory, legacyName ?? ""))
-      return Promise.reject(Object.assign(new Error("EIO"), { code: "EIO" }));
-    return originalReadFile(file, options);
-  });
+  const readFile = vi
+    .spyOn(fs, "readFile")
+    .mockImplementation((file, options) => {
+      if (String(file) === path.join(directory, legacyName ?? ""))
+        return Promise.reject(Object.assign(new Error("EIO"), { code: "EIO" }));
+      return originalReadFile(file, options);
+    });
   try {
     await unreadable.initialize([route.hostId]);
   } finally {
@@ -716,11 +761,13 @@ it("keeps revocation across restart when primary marker and route cleanup fail",
   );
   const routeFile = path.join(directory, routeName ?? "");
   const originalWriteFile = fs.writeFile.bind(fs);
-  const writeFile = vi.spyOn(fs, "writeFile").mockImplementation((file, ...args) => {
-    if (String(file).includes("archived-thread-"))
-      return Promise.reject(Object.assign(new Error("EIO"), { code: "EIO" }));
-    return originalWriteFile(file, ...args);
-  });
+  const writeFile = vi
+    .spyOn(fs, "writeFile")
+    .mockImplementation((file, ...args) => {
+      if (String(file).includes("archived-thread-"))
+        return Promise.reject(Object.assign(new Error("EIO"), { code: "EIO" }));
+      return originalWriteFile(file, ...args);
+    });
   const originalRemove = fs.rm.bind(fs);
   const remove = vi.spyOn(fs, "rm").mockImplementation((file, options) => {
     if (String(file) === routeFile)
@@ -947,7 +994,9 @@ it("keeps every credential and does not throw when the thread lookup fails", asy
   });
   expect(allFail).toEqual({ checked: 2, revoked: 0, failed: 2 });
   expect(await threads.authenticate(tokenOf("thr_a").provider)).not.toBeNull();
-  expect(await threads.authenticateNested(tokenOf("thr_b").nested)).not.toBeNull();
+  expect(
+    await threads.authenticateNested(tokenOf("thr_b").nested),
+  ).not.toBeNull();
 });
 
 it("keeps a revoked legacy credential revoked after a reload, even if its file reappears", async () => {
@@ -1004,7 +1053,9 @@ it("gives up on a lookup that never settles once the sweep deadline passes and k
     { signal: AbortSignal.timeout(30) },
   );
   expect(result).toEqual({ checked: 1, revoked: 0, failed: 1 });
-  expect(await threads.authenticate(tokenOf("thr_hung").provider)).not.toBeNull();
+  expect(
+    await threads.authenticate(tokenOf("thr_hung").provider),
+  ).not.toBeNull();
 });
 
 async function loadOrder(

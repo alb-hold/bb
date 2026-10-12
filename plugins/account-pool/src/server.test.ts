@@ -314,6 +314,73 @@ describe("Explicit subscription routing", () => {
     expect(seen).toEqual(["sk-first", "sk-first", "sk-first"]);
   });
 
+  it("keeps bridge turn credentials and retained bridge credentials on the current idle selection", async () => {
+    const { fixture, key, seen, request } = await twoSubscriptions();
+    expect((await request(key)).status).toBe(200);
+    fixture.host.harness.sdk.stub("threads.get", async ({ threadId }) =>
+      makeThreadResponse({
+        id: threadId,
+        providerId: "claude-code",
+        status: "idle",
+      }),
+    );
+    fixture.host.harness.sdk.stub(
+      "threads.queuedMessages.list",
+      async () => [],
+    );
+    await fixture.host.harness.behavior.callRpc("routing.selection.set", {
+      threadId: "thr_pinned",
+      provider: "claude",
+      accountId: fixture.account.id,
+    });
+    const nextTurn = await resolveToken(fixture.host, "host-one", "thr_pinned");
+    expect((await request(nextTurn)).status).toBe(200);
+    expect((await request(key)).status).toBe(200);
+    expect(seen).toEqual(["sk-second", "sk-first", "sk-first"]);
+  });
+
+  it("keeps native pool credentials out of persisted files while bridge credentials remain durable", async () => {
+    const { fixture, request } = await twoSubscriptions();
+    const entries = await fixture.host.harness.behavior.resolveProviderEnv(
+      "claude-code",
+      {
+        threadId: "thr_native_hygiene",
+        projectId: "project-one",
+        hostId: "host-one",
+        experimental_runtimeKind: "native",
+      },
+    );
+    const tokens = entries
+      .filter((entry) =>
+        ["ANTHROPIC_AUTH_TOKEN", "BB_ACCOUNT_POOL_PARENT_TOKEN"].includes(
+          entry.name,
+        ),
+      )
+      .map((entry) => {
+        if (typeof entry.value !== "string")
+          throw new Error("Missing pool credential.");
+        return entry.value;
+      });
+    expect(tokens.length).toBe(2);
+    expect((await request(tokens[0] ?? "")).status).toBe(200);
+    const files = await fs.readdir(fixture.dataDir, { recursive: true });
+    const persisted = await Promise.all(
+      files.map(async (file) => {
+        const name = path.join(fixture.dataDir, file);
+        return (await fs.stat(name)).isFile()
+          ? fs.readFile(name)
+          : Buffer.alloc(0);
+      }),
+    );
+    expect(
+      persisted.some((content) =>
+        tokens.some((token) => content.includes(token)),
+      ),
+    ).toBe(false);
+    const bridge = await resolveToken(fixture.host);
+    expect(persisted.some((content) => content.includes(bridge))).toBe(true);
+  });
+
   it("keeps an in-flight request on its selected account when an idle selection changes", async () => {
     const arrived = deferred();
     const release = deferred();

@@ -1824,6 +1824,8 @@ export interface ExperimentalPluginProviderEnvContext {
   threadId: string;
   projectId: string;
   hostId: string;
+  /** Native CLI launch; omission retains session and turn behavior. */
+  experimental_runtimeKind?: "native";
 }
 
 export interface ExperimentalPluginProviderEnvEntry {
