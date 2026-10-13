@@ -441,13 +441,10 @@ describe("Explicit subscription routing", () => {
   it("keeps an in-flight native request on its selected account when an idle selection changes", async () => {
     const arrived = deferred();
     const release = deferred();
-    const { fixture, key, seen, request } = await twoSubscriptions(
-      async () => {
-        arrived.resolve();
-        await release.promise;
-      },
-      "native",
-    );
+    const { fixture, key, seen, request } = await twoSubscriptions(async () => {
+      arrived.resolve();
+      await release.promise;
+    }, "native");
     fixture.host.harness.sdk.stub("threads.get", async ({ threadId }) =>
       makeThreadResponse({
         id: threadId,
@@ -10678,7 +10675,7 @@ describe("Account Pool credential scoping", () => {
     expect(await statusOf(host, otherHost, "/v1/messages")).toBe(200);
   });
 
-  it("revokes on archive and delete and issues fresh tokens on the next env resolution", async () => {
+  it("revokes on archive, restores the same tokens on unarchive, and revokes for good on delete", async () => {
     const fixture = await scopedFixture();
     const { host } = fixture;
     const archive = (event: "thread.archived" | "thread.deleted") =>
@@ -10705,8 +10702,8 @@ describe("Account Pool credential scoping", () => {
     });
     const reissued = await claudeToken(host);
     const reissuedNested = await nestedToken(host);
-    expect(reissued).not.toBe(claude);
-    expect(reissuedNested).not.toBe(nested);
+    expect(reissued).toBe(claude);
+    expect(reissuedNested).toBe(nested);
     expect(await statusOf(host, reissued, "/v1/messages")).toBe(200);
     expect(await statusOf(host, reissuedNested, "/availability")).toBe(200);
     await host.harness.behavior.callRpc("bypass.set", {
@@ -10730,33 +10727,14 @@ describe("Account Pool credential scoping", () => {
     await fixture.host.harness.behavior.emitThreadEvent("thread.archived", {
       thread: makeThreadResponse({ id: "thread-gone" }),
     });
-    const host = await fixture.host.harness.lifecycle.reload(
-      createAccountPoolPlugin({
-        usageUrl: EMPTY_USAGE_URL,
-        codexUsageUrl: EMPTY_USAGE_URL,
-        importCodexCredentials: async () => ({
-          accessToken: "codex-access",
-          refreshToken: "codex-refresh",
-          idToken: null,
-          accountId: "codex-account",
-          planType: null,
-          email: null,
-          expiresAt: Date.now() + 60 * 60 * 1_000,
+    const host = await reloadHub(fixture, (reloaded) =>
+      reloaded.harness.sdk.stub("threads.get", async ({ threadId }) =>
+        makeThreadResponse({
+          id: threadId,
+          archivedAt: threadId === "thread-gone" ? 1_000 : null,
         }),
-      }),
+      ),
     );
-    const service = host.harness.behavior.runService("hub");
-    cleanups.push(async () => {
-      service.controller.abort();
-      await service.done;
-      await host.harness.lifecycle.dispose();
-    });
-    await vi.waitFor(async () => {
-      const status = statusSchema.parse(
-        await host.harness.behavior.callRpc("status.get", null),
-      );
-      expect(status.accepting).toBe(true);
-    });
     expect(await statusOf(host, claude, "/v1/messages")).toBe(200);
     expect(await statusOf(host, nested, "/availability")).toBe(200);
     expect(await statusOf(host, revoked, "/v1/messages")).toBe(401);
@@ -10813,7 +10791,14 @@ describe("Account Pool credential scoping", () => {
     await fixture.host.harness.behavior.emitThreadEvent("thread.archived", {
       thread: makeThreadResponse({ id: "thr_native_archived" }),
     });
-    const host = await reloadHub(fixture, () => {});
+    const host = await reloadHub(fixture, (reloaded) =>
+      reloaded.harness.sdk.stub("threads.get", async ({ threadId }) =>
+        makeThreadResponse({
+          id: threadId,
+          archivedAt: threadId === "thr_native_archived" ? 1_000 : null,
+        }),
+      ),
+    );
     expect(await statusOf(host, claude, "/v1/messages")).toBe(200);
     expect(await statusOf(host, nested, "/availability")).toBe(200);
     expect(await statusOf(host, codex, "/v1/responses")).toBe(200);
@@ -11207,8 +11192,9 @@ describe("Account Pool credential scoping", () => {
       makeThreadResponse({ id: threadId }),
     );
     const restored = await claudeToken(host, "thread-held");
-    expect(restored).not.toBe(held);
+    expect(restored).toBe(held);
     expect(await statusOf(host, restored, "/v1/messages")).toBe(200);
+    expect(await statusOf(host, heldNested, "/availability")).toBe(200);
   });
 
   it("mints nothing when the thread lookup fails", async () => {
@@ -11311,6 +11297,74 @@ describe("Account Pool credential scoping", () => {
     );
   });
 
+  it("authenticates a running session's existing credentials again when its thread is unarchived", async () => {
+    const { host } = await scopedFixture();
+    const threadId = "thread-running-session";
+    const token = await claudeToken(host, threadId);
+    const nested = await nestedToken(host, threadId);
+    host.harness.sdk.stub("threads.get", async ({ threadId: id }) =>
+      makeThreadResponse({ id, archivedAt: 1_000 }),
+    );
+    await host.harness.behavior.emitThreadEvent("thread.archived", {
+      thread: makeThreadResponse({ id: threadId, archivedAt: 1_000 }),
+    });
+    expect(await statusOf(host, token, "/v1/messages")).toBe(401);
+    expect(await statusOf(host, nested, "/availability")).toBe(401);
+    host.harness.sdk.stub("threads.get", async ({ threadId: id }) =>
+      makeThreadResponse({ id }),
+    );
+    await host.harness.behavior.emitThreadEvent("thread.unarchived", {
+      thread: makeThreadResponse({ id: threadId }),
+    });
+    expect(await statusOf(host, token, "/v1/messages")).toBe(200);
+    expect(await statusOf(host, nested, "/availability")).toBe(200);
+  });
+
+  it("restores after a second archive event and after a plugin restart while archived", async () => {
+    const fixture = await scopedFixture();
+    const threadId = "thread-archived-twice";
+    const token = await claudeToken(fixture.host, threadId);
+    const nested = await nestedToken(fixture.host, threadId);
+    for (let archives = 0; archives < 2; archives += 1)
+      await fixture.host.harness.behavior.emitThreadEvent("thread.archived", {
+        thread: makeThreadResponse({ id: threadId, archivedAt: 1_000 }),
+      });
+    const host = await reloadHub(fixture, (reloaded) =>
+      reloaded.harness.sdk.stub("threads.get", async ({ threadId: id }) =>
+        makeThreadResponse({ id, archivedAt: 1_000 }),
+      ),
+    );
+    expect(await statusOf(host, token, "/v1/messages")).toBe(401);
+    expect(await statusOf(host, nested, "/availability")).toBe(401);
+    host.harness.sdk.stub("threads.get", async ({ threadId: id }) =>
+      makeThreadResponse({ id }),
+    );
+    await host.harness.behavior.emitThreadEvent("thread.unarchived", {
+      thread: makeThreadResponse({ id: threadId }),
+    });
+    expect(await statusOf(host, token, "/v1/messages")).toBe(200);
+    expect(await statusOf(host, nested, "/availability")).toBe(200);
+  });
+
+  it("never restores the credentials of a deleted thread", async () => {
+    const { host } = await scopedFixture();
+    const threadId = "thread-deleted-while-archived";
+    const token = await claudeToken(host, threadId);
+    await host.harness.behavior.emitThreadEvent("thread.archived", {
+      thread: makeThreadResponse({ id: threadId, archivedAt: 1_000 }),
+    });
+    await host.harness.behavior.emitThreadEvent("thread.deleted", {
+      thread: makeThreadResponse({ id: threadId }),
+    });
+    host.harness.sdk.stub("threads.get", async ({ threadId: id }) =>
+      makeThreadResponse({ id }),
+    );
+    await host.harness.behavior.emitThreadEvent("thread.unarchived", {
+      thread: makeThreadResponse({ id: threadId }),
+    });
+    expect(await statusOf(host, token, "/v1/messages")).toBe(401);
+  });
+
   it("does not restore when archive arrives during the unarchive lookup", async () => {
     const fixture = await scopedFixture();
     const { host } = fixture;
@@ -11409,7 +11463,7 @@ describe("Account Pool credential scoping", () => {
     expect(lookups).toBe(3);
     if (token === undefined || typeof token.value !== "string")
       throw new Error("Account Pool token was not resolved after unarchive.");
-    expect(await statusOf(host, oldToken, "/v1/messages")).toBe(401);
+    expect(await statusOf(host, oldToken, "/v1/messages")).toBe(200);
     expect(await statusOf(host, token.value, "/v1/messages")).toBe(200);
   });
 

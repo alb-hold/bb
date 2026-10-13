@@ -131,9 +131,7 @@ it("keeps a restored process credential valid after a reissue, so a surviving CL
   expect(await restarted.authenticateNested(newNested)).toEqual(nestedRoute);
   expect(restarted.isProcessCredential(oldToken)).toBe(true);
   expect(restarted.isProcessCredential(newToken)).toBe(true);
-  expect(await restarted.forThread(route, hostToken, "process")).toBe(
-    newToken,
-  );
+  expect(await restarted.forThread(route, hostToken, "process")).toBe(newToken);
   expect(await processFilesOf(directory)).toHaveLength(2);
   const again = await restartOf(directory, hosts, route);
   expect(await again.authenticate(oldToken)).toEqual(route);
@@ -156,9 +154,7 @@ it("keeps both an idle relaunched CLI and a long-lived survivor valid across rel
     "process",
   );
   expect(await threads.authenticate(survivor)).toEqual(route);
-  expect(await threads.authenticateNested(survivorNested)).toEqual(
-    nestedRoute,
-  );
+  expect(await threads.authenticateNested(survivorNested)).toEqual(nestedRoute);
   const issued: string[] = [];
   const issuedNested: string[] = [];
   let store = threads;
@@ -1567,8 +1563,8 @@ it("keeps archive revocation across restart and restores only the current archiv
   ).toEqual(route);
 });
 
-it("keeps an evicted token revoked after failed file cleanup and restoration", async () => {
-  const { directory, threads, route, hostToken } = await fixture();
+it("restores an evicted token from its tombstone and drops the stale file that could not be cleaned", async () => {
+  const { directory, hosts, threads, route, hostToken } = await fixture();
   const oldToken = await threads.forThread(route, hostToken);
   const [routeName] = (await fs.readdir(directory)).filter((name) =>
     name.startsWith("scoped-route-"),
@@ -1598,7 +1594,11 @@ it("keeps an evicted token revoked after failed file cleanup and restoration", a
     route.threadId,
     threads.archiveVersion(route.threadId),
   );
-  expect(await threads.authenticate(oldToken)).toBeNull();
+  expect(await threads.authenticate(oldToken)).toEqual(route);
+  const reloaded = new ThreadTokenStore(directory, hosts);
+  await reloaded.initialize([route.hostId]);
+  expect(await reloaded.authenticate(oldToken)).toEqual(route);
+  expect(await fs.readdir(directory)).not.toContain(routeName);
 });
 
 it("does not persist archive markers for threads without credentials", async () => {
@@ -1778,9 +1778,21 @@ it("uses a fallback archive marker when the primary marker cannot be written", a
   const [routeName] = (await fs.readdir(directory)).filter((name) =>
     name.startsWith("scoped-route-"),
   );
-  const writeFile = vi
-    .spyOn(fs, "open")
-    .mockRejectedValueOnce(new Error("EIO"));
+  const originalOpen = fs.open.bind(fs);
+  let markerFailures = 0;
+  const writeFile = vi.spyOn(fs, "open").mockImplementation(((
+    file: Parameters<typeof fs.open>[0],
+    ...rest: unknown[]
+  ) => {
+    if (String(file).includes("archived-thread-") && markerFailures === 0) {
+      markerFailures += 1;
+      return Promise.reject(new Error("EIO"));
+    }
+    return (originalOpen as (...args: unknown[]) => Promise<unknown>)(
+      file,
+      ...rest,
+    );
+  }) as typeof fs.open);
   const remove = vi.spyOn(fs, "rm").mockImplementationOnce(async () => {
     throw new Error("EIO");
   });
@@ -1790,10 +1802,16 @@ it("uses a fallback archive marker when the primary marker cannot be written", a
     writeFile.mockRestore();
     remove.mockRestore();
   }
+  expect(markerFailures).toBe(1);
   expect(await threads.authenticate(oldToken)).toBeNull();
   expect((await fs.readdir(directory)).some((name) => name === routeName)).toBe(
     false,
   );
+  expect(
+    (await fs.readdir(directory)).some((name) =>
+      name.startsWith("archive-revocation-"),
+    ),
+  ).toBe(true);
   const restoreWrite = vi
     .spyOn(fs, "open")
     .mockRejectedValueOnce(new Error("EIO"));
@@ -1814,10 +1832,10 @@ it("uses a fallback archive marker when the primary marker cannot be written", a
     threads.archiveVersion(route.threadId),
   );
   const newToken = await threads.forThread(route, hostToken);
-  expect(await threads.authenticate(oldToken)).toBeNull();
+  expect(await threads.authenticate(oldToken)).toEqual(route);
   const reloaded = new ThreadTokenStore(directory, hosts);
   await reloaded.initialize([route.hostId]);
-  expect(await reloaded.authenticate(oldToken)).toBeNull();
+  expect(await reloaded.authenticate(oldToken)).toEqual(route);
   expect(await reloaded.authenticate(newToken)).toEqual(route);
   expect(
     (await fs.readdir(directory)).filter((name) =>
