@@ -814,15 +814,13 @@ export class ThreadTokenStore {
     );
   }
 
-  private withLivePrior<T extends { prior?: PriorCredential }>(
-    record: T,
-    process: boolean,
-  ): T {
+  private withLivePrior<
+    T extends { tokenDigest: string; prior?: PriorCredential },
+  >(record: T, process: boolean): T {
     if (record.prior === undefined) return record;
     if (process && this.restorable({ lifetime: "process", ...record.prior }))
       return record;
-    const { prior, ...rest } = record;
-    return rest as T;
+    return { ...record, prior: undefined };
   }
 
   private retainedPrior(
