@@ -418,6 +418,36 @@ it("refuses the launch credential after removal, after a dead host generation is
   );
 });
 
+it("keeps a relaunched CLI's launch token valid across restarts that reattach without minting, and holds at most four credentials", async () => {
+  const f = await fixture();
+  const first = await reissueAcrossRestarts(f, "claude", {
+    presentLaunch: false,
+  });
+  const relaunched = await restartOf(f.directory, f.hosts, first.route);
+  const nestedRoute = first.nestedRoute;
+  const relaunchToken = await relaunched.forThread(
+    first.route,
+    f.hostToken,
+    "process",
+  );
+  const relaunchNested = await relaunched.forNested(
+    nestedRoute,
+    f.hostToken,
+    "process",
+  );
+  let store = relaunched;
+  for (let restart = 1; restart <= LAUNCH_CYCLES; restart += 1) {
+    store = await restartOf(f.directory, f.hosts, first.route);
+    expect(await store.authenticate(relaunchToken)).toEqual(first.route);
+    expect(await store.authenticateNested(relaunchNested)).toEqual(nestedRoute);
+  }
+  let valid = 0;
+  for (const token of [...first.threadTokens, relaunchToken])
+    if ((await store.authenticate(token)) !== null) valid += 1;
+  expect(valid).toBeLessThanOrEqual(MAX_PRIOR_CREDENTIALS + 1);
+  expect(await storedPriors(f.directory)).toHaveLength(MAX_PRIOR_CREDENTIALS);
+});
+
 it("refuses every retained digest at once after removal, across a restart", async () => {
   const { directory, hosts, threads, route, hostToken } = await fixture();
   const nestedRoute = { hostId: route.hostId, threadId: route.threadId };
