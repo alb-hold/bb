@@ -491,10 +491,7 @@ export class ThreadTokenStore {
       let nextEpoch = advanceEpoch ? epoch + 1 : epoch;
       if (epochUnknown) nextEpoch = (await this.maxFileEpoch(threadId)) + 2;
       this.archiveEpochs.set(threadId, nextEpoch);
-      if (restorable && !epochUnknown)
-        await this.tombstoneCredentials(threadId, nextEpoch);
-      else await this.dropTombstone(threadId, true);
-      const tombstone = this.tombstones.get(threadId);
+      if (!restorable || epochUnknown) await this.dropTombstone(threadId, true);
       let names: string[] = [];
       let directoryReadFailed = false;
       try {
@@ -549,6 +546,9 @@ export class ThreadTokenStore {
           }
         }
       }
+      if (restorable && !epochUnknown && markerError === undefined)
+        await this.tombstoneCredentials(threadId, nextEpoch);
+      const tombstone = this.tombstones.get(threadId);
       const keepFiles =
         tombstone !== undefined &&
         !tombstone.durable &&
