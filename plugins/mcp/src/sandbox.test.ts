@@ -346,11 +346,37 @@ describe("runSandboxedScript", () => {
     );
 
     it("reports exhaustion as a memory stop when the engine cannot even build its out-of-memory error", async () => {
-      const result = await run(SCRIPTS.objects ?? "", {
-        limits: { memoryLimitBytes: 4 * MIB, ...GENEROUS_CPU_LIMITS },
-      });
+      const limits = { memoryLimitBytes: 4 * MIB, ...GENEROUS_CPU_LIMITS };
+      const engineThrew = await run(
+        `const chunks = []; try { while (true) chunks.push({ a: 1, b: [1, 2], c: "y" }); } catch (error) { chunks.length = 0; return error === null ? "null" : "an error"; }`,
+        { limits },
+      );
+      expect(engineThrew).toMatchObject({ ok: true, value: "null" });
+      const result = await run(SCRIPTS.objects ?? "", { limits });
       expect(result).toMatchObject({ ok: false });
       expect(result.ok === false && result.error).toContain("too much memory");
+    });
+
+    it("reports a script's own throw of null as that value after it allocated past half the limit", async () => {
+      const allocated = await run(
+        `const buffer = new Uint8Array(24 * 1024 * 1024); throw null;`,
+        { limits: { memoryLimitBytes: LIMIT_BYTES, ...GENEROUS_CPU_LIMITS } },
+      );
+      const heapBytes = memories[0]?.buffer.byteLength ?? 0;
+      expect(heapBytes - HEAP_BASE_BYTES).toBeGreaterThanOrEqual(
+        LIMIT_BYTES / 2,
+      );
+      expect(heapBytes).toBeLessThan(HEAP_BASE_BYTES + LIMIT_BYTES);
+      const plain = await run(`throw null;`, {
+        limits: { memoryLimitBytes: LIMIT_BYTES, ...GENEROUS_CPU_LIMITS },
+      });
+      expect(plain).toMatchObject({ ok: false, error: "null" });
+      expect(allocated).toEqual(plain);
+    });
+
+    it("reports a script's own throw of null without any allocation as that value", async () => {
+      const result = await run(`throw null;`);
+      expect(result).toMatchObject({ ok: false, error: "null" });
     });
 
     it("lets the heap grow to the limit before stopping a script", async () => {

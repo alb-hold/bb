@@ -66,9 +66,20 @@ function newBoundedQuickJsModule(memoryLimitBytes: number) {
       QUICKJS_BASE_PAGES + Math.ceil(memoryLimitBytes / WASM_PAGE_BYTES),
     ),
   });
-  return newQuickJSWASMModuleFromVariant(
+  const heap = { refusedGrowth: false };
+  const grow = memory.grow.bind(memory);
+  memory.grow = (delta) => {
+    try {
+      return grow(delta);
+    } catch (error) {
+      heap.refusedGrowth = true;
+      throw error;
+    }
+  };
+  const module = newQuickJSWASMModuleFromVariant(
     newVariant(SINGLEFILE_RELEASE_SYNC, { wasmMemory: memory }),
   );
+  return { module, heap };
 }
 
 const HARDENING_SOURCE = `
@@ -129,9 +140,9 @@ export async function runSandboxedScript(
   args: SandboxRunArgs,
 ): Promise<SandboxRunResult> {
   const limits: SandboxLimits = { ...DEFAULT_SANDBOX_LIMITS, ...args.limits };
-  const QuickJS = await newBoundedQuickJsModule(limits.memoryLimitBytes);
+  const bounded = newBoundedQuickJsModule(limits.memoryLimitBytes);
+  const QuickJS = await bounded.module;
   const runtime: QuickJSRuntime = QuickJS.newRuntime();
-  runtime.setMemoryLimit(limits.memoryLimitBytes);
   runtime.setMaxStackSize(limits.maxStackBytes);
 
   const controller = new AbortController();
@@ -154,12 +165,9 @@ export async function runSandboxedScript(
 
   const cpuStopReason = `The script computed for too long and was stopped. A script may compute for ${limits.synchronousDeadlineMs} ms at a stretch and ${Math.round(limits.cpuBudgetMs / 1000)} seconds in total; waiting on bb calls does not count.`;
   const memoryStopReason = `The script used too much memory and was stopped. A script may use about ${Math.max(1, Math.round(limits.memoryLimitBytes / (1024 * 1024)))} MB.`;
-  const heapGrowthBytes = () =>
-    QuickJS.getWasmMemory().buffer.byteLength -
-    QUICKJS_BASE_PAGES * WASM_PAGE_BYTES;
   const describeFailure = (message: string) =>
     message === OUT_OF_MEMORY_ERROR ||
-    (message === "null" && heapGrowthBytes() >= limits.memoryLimitBytes / 2)
+    (message === "null" && bounded.heap.refusedGrowth)
       ? memoryStopReason
       : message;
   let synchronousDeadline = Number.POSITIVE_INFINITY;
