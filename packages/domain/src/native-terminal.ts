@@ -94,6 +94,8 @@ const hookEventNameSchema = z
   .string()
   .regex(/^[A-Za-z][A-Za-z0-9]{0,63}$/u, "must be a hook event name");
 
+const questionLabelSchema = z.string().trim().min(1).max(256);
+
 export const providerNativeTerminalActivitySchema = z
   .object({
     hooks: z
@@ -103,6 +105,16 @@ export const providerNativeTerminalActivitySchema = z
         idle: z.array(hookEventNameSchema).max(8),
         pending: z.array(hookEventNameSchema).min(1).max(8).optional(),
         promptField: recordFieldPathSchema,
+        permission: z
+          .object({
+            open: z.array(hookEventNameSchema).min(1).max(8),
+            close: z.array(hookEventNameSchema).min(1).max(8),
+            idField: recordFieldPathSchema,
+            label: questionLabelSchema,
+            skip: z.array(z.string().min(1).max(256)).max(8).optional(),
+          })
+          .strict()
+          .optional(),
         turnId: recordFieldPathSchema.optional(),
       })
       .strict()
@@ -139,6 +151,33 @@ export const providerNativeTerminalActivitySchema = z
               .strict(),
           )
           .max(8),
+        questions: z
+          .object({
+            open: z
+              .array(
+                z
+                  .object({
+                    match: providerNativeTerminalRecordMatchSchema,
+                    id: recordFieldPathSchema,
+                    prompt: recordFieldPathSchema.optional(),
+                    label: questionLabelSchema,
+                  })
+                  .strict(),
+              )
+              .max(8),
+            close: z
+              .array(
+                z
+                  .object({
+                    match: providerNativeTerminalRecordMatchSchema,
+                    id: recordFieldPathSchema,
+                  })
+                  .strict(),
+              )
+              .max(8),
+          })
+          .strict()
+          .optional(),
       })
       .strict()
       .optional(),

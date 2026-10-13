@@ -1116,8 +1116,18 @@ The reader
 keeps polling after pending and idle records. Claude's Stop is provisional;
 its Stop-hook feedback means working and its transcript outcome means idle.
 The declaration wire fields require host daemon protocol 237.
-The wrapper reports working, idle and the
-first new prompt through `sdk.nativeTerminals.reportActivity`; the server moves
+`transcript.questions` (`open` and `close` record matches that carry a
+question id) and `hooks.permission` (open and close hook events, the
+tool-identifying field, and tool ids to skip because the transcript already
+reports them) mark a CLI blocked on a question or permission prompt; the
+question fields require host daemon protocol 238. The wrapper reports
+working, waiting (with the open question ids and texts), idle and the first
+new prompt through `sdk.nativeTerminals.reportActivity`; a waiting report
+registers one pending interaction per open question (so the sidebar and
+favicon show needs-input exactly as for a chat thread, and the thread view
+shows a banner above the terminal), a later report clears the ones no longer
+open, and answering them through the bridge is refused with 409 because the
+answer belongs in the terminal. The server moves
 the thread between idle and active and titles an untitled thread from the
 prompt. Validated at registration by
 `providerNativeTerminalSchema` in `@bb/domain`: bare executable name, at most

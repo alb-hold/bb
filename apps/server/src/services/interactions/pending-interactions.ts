@@ -813,6 +813,22 @@ export class PendingInteractionLifecycle {
     return interaction;
   }
 
+  interruptPendingInteraction(
+    args: InterruptPendingInteractionArgs,
+  ): PendingInteraction | null {
+    const updated = setPendingInteractionInterrupted(this.deps.db, {
+      id: args.interactionId,
+      statusReason: args.reason,
+    });
+    if (!updated) {
+      return null;
+    }
+
+    const interaction = toPendingInteraction(updated);
+    this.settleInteractionTerminalState(interaction);
+    return interaction;
+  }
+
   interruptPendingInteractionInTransaction(
     deps: PendingInteractionTransactionDeps,
     args: InterruptPendingInteractionArgs,

@@ -460,7 +460,11 @@ describe("switching a chat thread to its native terminal", () => {
 function reportActivity(
   fixture: Fixture,
   threadId: string,
-  body: { state: "working" | "idle"; prompt?: string },
+  body: {
+    state: "working" | "waiting" | "idle";
+    prompt?: string;
+    questions?: { id: string; prompt: string }[];
+  },
 ): Promise<Response> {
   return postJson(
     fixture,
@@ -783,5 +787,209 @@ describe("native terminal activity", () => {
       (await reportActivity(fixture, thread.id, { state: "working" })).status,
     ).toBe(404);
     expect(threadStatus(fixture, thread.id)).toBe("idle");
+  });
+});
+
+function openInteractions(fixture: Fixture, threadId: string) {
+  return fixture.harness.deps.pendingInteractions.listPendingThreadInteractions(
+    threadId,
+  );
+}
+
+describe("native terminal questions", () => {
+  async function waitingThread() {
+    const fixture = await createFixture();
+    const thread = seedChatThread(fixture, {
+      providerId: "claude-code",
+      providerThreadId: SESSION_ID,
+    });
+    const { open } = await enterTerminal(fixture, thread.id);
+    await reportActivity(fixture, thread.id, { state: "working" });
+    return { fixture, thread, open };
+  }
+
+  it("shows a thread blocked on a question as waiting and clears it when the turn resumes", async () => {
+    const { fixture, thread } = await waitingThread();
+    const waiting = {
+      state: "waiting" as const,
+      questions: [{ id: "toolu_ask", prompt: "Merge now?" }],
+    };
+    for (const _ of [1, 2, 3]) {
+      expect((await reportActivity(fixture, thread.id, waiting)).status).toBe(
+        200,
+      );
+    }
+    expect(threadStatus(fixture, thread.id)).toBe("active");
+    const open = openInteractions(fixture, thread.id);
+    expect(open).toHaveLength(1);
+    expect(open[0]).toMatchObject({
+      status: "pending",
+      providerRequestId: "native:toolu_ask",
+      payload: {
+        kind: "user_question",
+        questions: [{ prompt: "Merge now?" }],
+      },
+    });
+    const listed = await fixture.harness.app.request(
+      `/api/v1/threads/${thread.id}/interactions`,
+    );
+    expect(await readJson(listed)).toHaveLength(1);
+
+    await reportActivity(fixture, thread.id, { state: "working" });
+    expect(openInteractions(fixture, thread.id)).toHaveLength(0);
+    expect(threadStatus(fixture, thread.id)).toBe("active");
+  });
+
+  it("keeps only the questions still open and clears them when the turn ends", async () => {
+    const { fixture, thread } = await waitingThread();
+    await reportActivity(fixture, thread.id, {
+      state: "waiting",
+      questions: [
+        { id: "a", prompt: "A?" },
+        { id: "b", prompt: "B?" },
+      ],
+    });
+    expect(openInteractions(fixture, thread.id)).toHaveLength(2);
+    await reportActivity(fixture, thread.id, {
+      state: "waiting",
+      questions: [{ id: "b", prompt: "B?" }],
+    });
+    expect(
+      openInteractions(fixture, thread.id).map((i) =>
+        "providerRequestId" in i ? i.providerRequestId : null,
+      ),
+    ).toEqual(["native:b"]);
+
+    await reportActivity(fixture, thread.id, { state: "idle" });
+    expect(openInteractions(fixture, thread.id)).toHaveLength(0);
+    expect(threadStatus(fixture, thread.id)).toBe("idle");
+  });
+
+  it("shows an idle thread waiting when its CLI asks before any turn was reported", async () => {
+    const fixture = await createFixture();
+    const thread = seedChatThread(fixture, {
+      providerId: "claude-code",
+      providerThreadId: SESSION_ID,
+    });
+    await enterTerminal(fixture, thread.id);
+    expect(threadStatus(fixture, thread.id)).toBe("idle");
+    await reportActivity(fixture, thread.id, {
+      state: "waiting",
+      questions: [{ id: "q", prompt: "Which branch?" }],
+    });
+    expect(threadStatus(fixture, thread.id)).toBe("active");
+    expect(openInteractions(fixture, thread.id)).toHaveLength(1);
+  });
+
+  it("rejects malformed waiting reports", async () => {
+    const { fixture, thread } = await waitingThread();
+    for (const body of [
+      { state: "waiting" },
+      { state: "waiting", questions: [] },
+      { state: "working", questions: [{ id: "q", prompt: "Q?" }] },
+    ]) {
+      const response = await postJson(
+        fixture,
+        `/threads/${thread.id}/native-terminal/activity`,
+        body,
+      );
+      expect(response.status).toBe(400);
+    }
+    expect(openInteractions(fixture, thread.id)).toHaveLength(0);
+  });
+
+  it("refuses to answer a terminal question through the bridge", async () => {
+    const { fixture, thread } = await waitingThread();
+    await reportActivity(fixture, thread.id, {
+      state: "waiting",
+      questions: [{ id: "q", prompt: "Q?" }],
+    });
+    const [interaction] = openInteractions(fixture, thread.id);
+    const response = await postJson(
+      fixture,
+      `/threads/${thread.id}/interactions/${interaction!.id}/resolve`,
+      {
+        kind: "user_answer",
+        answers: { "native:q": { selected: [], freeText: "yes" } },
+      },
+    );
+    expect(response.status).toBe(409);
+    expect(await readApiErrorCode(response)).toBe("native_terminal_interaction");
+    expect(openInteractions(fixture, thread.id)).toHaveLength(1);
+  });
+
+  it("drops the question when the thread returns to chat", async () => {
+    const { fixture, thread, open } = await waitingThread();
+    await reportActivity(fixture, thread.id, {
+      state: "waiting",
+      questions: [{ id: "q", prompt: "Q?" }],
+    });
+    const leaving = switchMode(fixture, thread.id, "chat");
+    await waitForDaemonMessage(fixture, "terminal.close");
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.hostId,
+      sessionId: fixture.sessionId,
+      message: {
+        type: "terminal.exited",
+        terminalId: open.terminalId,
+        exitCode: 0,
+        closeReason: "user",
+      },
+    });
+    const left = await leaving;
+    expect(left.status).toBe(200);
+    expect(openInteractions(fixture, thread.id)).toHaveLength(0);
+  });
+
+  function exitTerminal(
+    fixture: Fixture,
+    terminalId: string,
+    closeReason: "daemon-disconnect" | "process-exit" | "user",
+  ) {
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.hostId,
+      sessionId: fixture.sessionId,
+      message: {
+        type: "terminal.exited",
+        terminalId,
+        exitCode: closeReason === "process-exit" ? 137 : 0,
+        closeReason,
+      },
+    });
+  }
+
+  it.each([
+    { closeReason: "process-exit", status: "idle" },
+    { closeReason: "user", status: "active" },
+  ] as const)(
+    "clears the pending question when the CLI exits ($closeReason) without answering",
+    async ({ closeReason, status }) => {
+      const { fixture, thread, open } = await waitingThread();
+      await reportActivity(fixture, thread.id, {
+        state: "waiting",
+        questions: [{ id: "q", prompt: "Q?" }],
+      });
+      expect(openInteractions(fixture, thread.id)).toHaveLength(1);
+      expect(threadStatus(fixture, thread.id)).toBe("active");
+
+      exitTerminal(fixture, open.terminalId, closeReason);
+
+      expect(openInteractions(fixture, thread.id)).toHaveLength(0);
+      expect(threadStatus(fixture, thread.id)).toBe(status);
+      expect(isNativeTerminalThread(fixture.harness.db, thread.id)).toBe(true);
+    },
+  );
+
+  it("keeps the pending question when the terminal only lost its daemon", async () => {
+    const { fixture, thread, open } = await waitingThread();
+    await reportActivity(fixture, thread.id, {
+      state: "waiting",
+      questions: [{ id: "q", prompt: "Q?" }],
+    });
+
+    exitTerminal(fixture, open.terminalId, "daemon-disconnect");
+
+    expect(openInteractions(fixture, thread.id)).toHaveLength(1);
+    expect(threadStatus(fixture, thread.id)).toBe("active");
   });
 });

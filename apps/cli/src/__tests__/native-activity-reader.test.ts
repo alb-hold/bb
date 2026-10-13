@@ -1345,6 +1345,69 @@ describe("NativeActivityReader", () => {
     expect(fixture.reader.heartbeat()).toBeNull();
   });
 
+  it("reports one waiting entry for a real AskUserQuestion with its PermissionRequest hook and clears it on the answer", () => {
+    const fixture = claudeFixture();
+    fixture.hook([
+      {
+        hook_event_name: "PermissionRequest",
+        tool_name: "AskUserQuestion",
+        prompt_id: "turn-1",
+      },
+    ]);
+    expect(fixture.reader.read()).toEqual([]);
+    fixture.append([
+      {
+        type: "assistant",
+        isSidechain: false,
+        uuid: "ask-1",
+        parentUuid: "answer-1",
+        promptId: "turn-1",
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              id: "toolu_ask",
+              name: "AskUserQuestion",
+              input: { questions: [{ question: "Which target?" }] },
+            },
+          ],
+        },
+      },
+    ]);
+    const waiting = fixture.reader.read();
+    expect(waiting).toEqual([
+      {
+        state: "waiting",
+        prompt: null,
+        questions: [{ id: "toolu_ask", prompt: "Which target?" }],
+      },
+    ]);
+    expect(fixture.reader.heartbeat()).toEqual(waiting[0]);
+    fixture.hook([
+      {
+        hook_event_name: "PostToolUse",
+        tool_name: "AskUserQuestion",
+        prompt_id: "turn-1",
+      },
+    ]);
+    fixture.append([
+      {
+        type: "user",
+        uuid: "result-1",
+        parentUuid: "ask-1",
+        promptId: "turn-1",
+        message: {
+          content: [{ type: "tool_result", tool_use_id: "toolu_ask" }],
+        },
+      },
+    ]);
+    expect(fixture.reader.read()).toEqual([{ state: "working", prompt: null }]);
+    expect(fixture.reader.heartbeat()).toEqual({
+      state: "working",
+      prompt: null,
+    });
+  });
+
   it("keeps final idle when an already-seen assistant message flushes late with a later timestamp", () => {
     const fixture = claudeFixture(true);
     finalClaudeStop(fixture);

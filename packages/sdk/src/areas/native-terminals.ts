@@ -4,6 +4,7 @@ import type {
   NativeTerminalAgentTools,
   NativeTerminalLaunchSpec,
   NativeTerminalMode,
+  NativeTerminalOpenQuestion,
   NativeTerminalThread,
 } from "@bb/server-contract";
 import { signalRequestArgs, type CreateSdkAreaArgs } from "./common.js";
@@ -33,6 +34,7 @@ export interface NativeTerminalSwitchModeArgs extends NativeTerminalThreadArgs {
 export interface NativeTerminalReportActivityArgs extends NativeTerminalThreadArgs {
   state: NativeTerminalActivityState;
   prompt?: string;
+  questions?: NativeTerminalOpenQuestion[];
 }
 
 export interface NativeTerminalCallAgentToolArgs extends NativeTerminalThreadArgs {
@@ -140,6 +142,9 @@ export function createNativeTerminalsArea(
             json: {
               state: input.state,
               ...(input.prompt === undefined ? {} : { prompt: input.prompt }),
+              ...(input.questions === undefined
+                ? {}
+                : { questions: input.questions }),
             },
           },
           ...signalRequestArgs(input.signal),

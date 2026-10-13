@@ -22,7 +22,10 @@ import {
   readRecordTerminal,
   settlePendingNativeTerminalOpen,
 } from "./native-terminal-threads.js";
-import { settleNativeTerminalTurn } from "./native-terminal-activity.js";
+import {
+  interruptNativeTerminalQuestions,
+  settleNativeTerminalTurn,
+} from "./native-terminal-activity.js";
 import { requireDispatchableProviderThreadId } from "./thread-events.js";
 import { stopThreadForCurrentState } from "./thread-lifecycle.js";
 
@@ -157,6 +160,7 @@ async function leaveTerminalMode(
       )
     ) {
       deleteNativeTerminalThread(deps.db, threadId);
+      interruptNativeTerminalQuestions(deps, threadId);
       settleNativeTerminalTurn(deps, threadId);
       return null;
     }
