@@ -201,6 +201,11 @@ export class NativeActivityReader {
       location,
     });
     this.pruneRecords();
+    if (signal.question !== undefined || signal.answered !== undefined) {
+      return turn === null || this.currentTurn === null || this.currentTurn === turn
+        ? signal
+        : ignored;
+    }
     if (turn === null || signal.state === null) return ignored;
     if (this.currentTurn !== turn) {
       if (

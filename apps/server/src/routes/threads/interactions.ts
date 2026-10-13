@@ -1,3 +1,4 @@
+import { getNativeTerminalThread } from "@bb/db";
 import { PLUGIN_INTERACTION_MAX_PAYLOAD_BYTES } from "@bb/domain";
 import {
   publicApiRoutes,
@@ -58,6 +59,13 @@ export function registerThreadInteractionRoutes(
 
   post(routes.resolveInteraction, async (context, payload) => {
     const thread = requirePublicThread(deps.db, context.req.param("id"));
+    if (getNativeTerminalThread(deps.db, thread.id) !== null) {
+      throw new ApiError(
+        409,
+        "native_terminal_interaction",
+        "This question is open in the thread's native terminal. Answer it there.",
+      );
+    }
     await requireThreadCommandEnvironment(deps, { thread });
     return context.json(
       deps.pendingInteractions.resolvePendingInteraction({

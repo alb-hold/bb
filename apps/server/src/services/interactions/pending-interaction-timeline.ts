@@ -9,6 +9,7 @@ import type {
 } from "@bb/domain";
 import {
   isApprovalPendingInteraction,
+  isNativeTerminalQuestion,
   toInteractionLifecycle,
   turnScope,
   threadScope,
@@ -140,6 +141,7 @@ function buildPendingInteractionTimelineWrites(
   db: Pick<AppDeps, "db">["db"] | DbTransaction,
   interaction: PendingInteraction,
 ): AppendStoredThreadEventArgs[] {
+  if (isNativeTerminalQuestion(interaction)) return [];
   const environmentId =
     getThread(db, interaction.threadId)?.environmentId ?? null;
   const writes: AppendStoredThreadEventArgs[] = [

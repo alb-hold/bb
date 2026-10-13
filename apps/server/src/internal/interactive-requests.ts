@@ -16,7 +16,10 @@ import { getThread, hasStoredTurnStarted } from "@bb/db";
 import { sliceUtf16Head } from "@bb/text-utils";
 import { isParentNotifiableChildThread } from "../services/threads/thread-parent.js";
 import type { Hono } from "hono";
-import type { AppDeps } from "../types.js";
+import type {
+  AppDeps,
+  LoggedPendingInteractionWorkSessionDeps,
+} from "../types.js";
 import { ApiError } from "../errors.js";
 import { deferAfterResponse } from "../services/lib/response-deferral.js";
 import {
@@ -107,8 +110,9 @@ export function buildChildThreadBlockerSummary(
   );
 }
 
-function requestChildThreadNeedsAttentionNotification(
-  deps: AppDeps,
+export function requestChildThreadNeedsAttentionNotification(
+  deps: LoggedPendingInteractionWorkSessionDeps &
+    Pick<AppDeps, "config" | "db" | "logger">,
   args: RequestChildThreadNeedsAttentionNotificationArgs,
 ): void {
   const childThread = getThread(deps.db, args.childThreadId);

@@ -8,9 +8,14 @@ import {
   useNativeTerminalThread,
   useOpenNativeTerminal,
 } from "@/hooks/queries/native-terminal-queries";
+import { useThreadPendingInteractions } from "@/hooks/queries/thread-queries";
 import { useThreadTerminals } from "@/hooks/queries/thread-terminal-queries";
 import { useOptionalPaneContext } from "@/views/thread-detail/PaneContext";
 import { NativeTerminalPromptBar } from "./NativeTerminalPromptBar";
+import {
+  NativeTerminalWaitingBanner,
+  nativeTerminalWaitingPrompts,
+} from "./NativeTerminalWaitingBanner";
 import {
   resolveNativeTerminalSession,
   resolveNativeTerminalState,
@@ -32,6 +37,7 @@ export function NativeThreadTerminalMain({
   view,
 }: NativeThreadTerminalMainProps) {
   const terminalsQuery = useThreadTerminals(threadId);
+  const interactionsQuery = useThreadPendingInteractions(threadId);
   const nativeQuery = useNativeTerminalThread(threadId);
   const openNative = useOpenNativeTerminal();
   const session = resolveNativeTerminalSession({
@@ -59,6 +65,12 @@ export function NativeThreadTerminalMain({
         data-native-terminal-thread={view.providerId}
         data-no-sidebar-swipe=""
       >
+        <NativeTerminalWaitingBanner
+          prompts={nativeTerminalWaitingPrompts(
+            interactionsQuery.data ?? [],
+          )}
+          providerLabel={providerLabel}
+        />
         <LazyThreadTerminalPanel
           autoFocus={paneIsFocused && !isTouchDevice}
           isPanelOpen
