@@ -378,7 +378,7 @@ export class ThreadTokenStore {
       ))
     )
       return null;
-    if (match.current) await this.noteUse(record, false);
+    if (match.current) await this.noteUse({ nested: false, record });
     return {
       hostId: record.hostId,
       threadId: record.threadId,
@@ -410,7 +410,7 @@ export class ThreadTokenStore {
       ))
     )
       return null;
-    if (match.current) await this.noteUse(record, true);
+    if (match.current) await this.noteUse({ nested: true, record });
     return { hostId: record.hostId, threadId: record.threadId };
   }
 
@@ -860,20 +860,22 @@ export class ThreadTokenStore {
   }
 
   private async noteUse(
-    record: RouteRecord | NestedRouteRecord,
-    nested: boolean,
+    use:
+      | { nested: false; record: RouteRecord }
+      | { nested: true; record: NestedRouteRecord },
   ): Promise<void> {
+    const { record } = use;
     if (record.lifetime !== "process" || record.usedAt !== undefined) return;
     record.usedAt = this.now();
     await this.serialize(async () => {
-      const live = nested
-        ? this.nestedRoutes.get(this.nestedMapKey(record))
-        : this.routes.get(this.routeMapKey(record));
-      if (live !== record) return;
-      await this.persistCredential(
-        nested ? this.nestedFile(record) : this.file(record),
-        record,
-      );
+      if (use.nested) {
+        if (this.nestedRoutes.get(this.nestedMapKey(use.record)) !== use.record)
+          return;
+        await this.persistCredential(this.nestedFile(use.record), use.record);
+        return;
+      }
+      if (this.routes.get(this.routeMapKey(use.record)) !== use.record) return;
+      await this.persistCredential(this.file(use.record), use.record);
     }).catch(() => undefined);
   }
 
