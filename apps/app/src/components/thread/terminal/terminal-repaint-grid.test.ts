@@ -90,7 +90,7 @@ class FakeSocket implements TerminalBrowserSocket {
   onmessage: ((event: MessageEvent) => void) | null = null;
   onopen: ((event: Event) => void) | null = null;
   readyState = 1;
-  readonly resizes: Array<{ cols: number; rows: number }> = [];
+  readonly resizes: Array<{ cols: number; rows: number; seq?: number }> = [];
 
   close(): void {
     this.readyState = 3;
@@ -108,7 +108,13 @@ class FakeSocket implements TerminalBrowserSocket {
       "rows" in parsed &&
       typeof parsed.rows === "number"
     ) {
-      this.resizes.push({ cols: parsed.cols, rows: parsed.rows });
+      this.resizes.push({
+        cols: parsed.cols,
+        rows: parsed.rows,
+        ...("seq" in parsed && typeof parsed.seq === "number"
+          ? { seq: parsed.seq }
+          : {}),
+      });
     }
   }
 }
@@ -264,12 +270,24 @@ function createViewHarness(): ViewHarness {
   transport.sendResize(FITTED_COLS, FITTED_ROWS);
   transport.start();
   socket.onopen?.(new Event("open"));
+  socket.onmessage?.(
+    new MessageEvent("message", {
+      data: JSON.stringify({ type: "features", resizeAcks: true }),
+    }),
+  );
   transport.markLayoutSettled();
   let applied = socket.resizes.length;
   const applySizes = async (): Promise<void> => {
     await new Promise((resolve) => setTimeout(resolve, 10));
     for (const resize of socket.resizes.slice(applied)) {
       pty.resize(resize.cols, resize.rows);
+      if (resize.seq !== undefined) {
+        socket.onmessage?.(
+          new MessageEvent("message", {
+            data: JSON.stringify({ type: "resize-applied", seq: resize.seq }),
+          }),
+        );
+      }
     }
     applied = socket.resizes.length;
   };
@@ -309,81 +327,6 @@ describe("page terminal during the repaint nudge", () => {
     await writeAndWait(terminal, "");
 
     expect(terminal.cols).toBe(30);
-    transport.dispose();
-  });
-});
-
-describe("page terminal when a peer holds exactly the nudge size", () => {
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
-  it("ends at the peer's size after the window closes instead of dropping it as the echo of its own nudge", () => {
-    vi.useFakeTimers();
-    const terminal = newTerminal();
-    let sharedSize: { cols: number; rows: number } | null = null;
-    const applyShared = (size: { cols: number; rows: number }): void => {
-      const next = nextSharedTerminalSize(sharedSize, size, false);
-      if (next === null) {
-        return;
-      }
-      sharedSize = next;
-      const display = terminalDisplaySize(
-        { cols: FITTED_COLS, rows: FITTED_ROWS },
-        sharedSize,
-      );
-      terminal.resize(display.cols, display.rows);
-    };
-    const socket = new FakeSocket();
-    const transport = new TerminalWebSocketTransport({
-      createSocket: () => socket,
-      onMessage: (message) => {
-        if (message.type !== "session-updated") {
-          return;
-        }
-        const reported = { cols: message.session.cols, rows: message.session.rows };
-        const next = nextSharedTerminalSize(
-          sharedSize,
-          reported,
-          transport.consumeRepaintNudgeEcho(reported),
-        );
-        if (next !== null) {
-          applyShared(next);
-        }
-      },
-      onRepaintNudgeSizeReleased: applyShared,
-      shouldReconnect: () => false,
-      url: "ws://example.test/ws/terminals/term_1",
-    });
-    transport.sendResize(FITTED_COLS, FITTED_ROWS);
-    transport.start();
-    socket.onopen?.(new Event("open"));
-    transport.markLayoutSettled();
-    transport.requestRepaint();
-    vi.advanceTimersByTime(0);
-    expect(socket.resizes.at(-1)).toEqual({
-      cols: FITTED_COLS - 1,
-      rows: FITTED_ROWS,
-    });
-
-    socket.onmessage?.(
-      new MessageEvent("message", {
-        data: JSON.stringify({
-          type: "session-updated",
-          session: session(FITTED_COLS - 1, FITTED_ROWS),
-        }),
-      }),
-    );
-    expect(terminal.cols).toBe(FITTED_COLS);
-    vi.advanceTimersByTime(400);
-    expect(socket.resizes.at(-1)).toEqual({
-      cols: FITTED_COLS,
-      rows: FITTED_ROWS,
-    });
-    expect(terminal.cols).toBe(FITTED_COLS);
-    vi.advanceTimersByTime(250);
-
-    expect(terminal.cols).toBe(FITTED_COLS - 1);
     transport.dispose();
   });
 });
@@ -451,38 +394,40 @@ function createFitChangeRoom(delayReports = false): FitChangeRoom {
   });
   let delivered = 0;
   let delayed = delayReports;
-  const queued: number[] = [];
-  const deliver = (cols: number): void => {
+  const queued: unknown[] = [];
+  const deliver = (message: unknown): void => {
     socket.onmessage?.(
-      new MessageEvent("message", {
-        data: JSON.stringify({
-          type: "session-updated",
-          session: session(cols, FITTED_ROWS),
-        }),
-      }),
+      new MessageEvent("message", { data: JSON.stringify(message) }),
     );
+  };
+  const emit = (message: unknown): void => {
+    if (delayed) {
+      queued.push(message);
+      return;
+    }
+    deliver(message);
   };
   const hub = (): void => {
     const shared = peerCols === null ? own : Math.min(own, peerCols);
     if (shared !== pty) {
       pty = shared;
-      if (delayed) {
-        queued.push(shared);
-        return;
-      }
-      deliver(shared);
+      emit({ type: "session-updated", session: session(shared, FITTED_ROWS) });
     }
   };
   const syncOwn = (): void => {
     for (const resize of socket.resizes.slice(delivered)) {
       own = resize.cols;
+      hub();
+      if (resize.seq !== undefined) {
+        emit({ type: "resize-applied", seq: resize.seq });
+      }
     }
     delivered = socket.resizes.length;
-    hub();
   };
   transport.sendResize(FITTED_COLS, FITTED_ROWS);
   transport.start();
   socket.onopen?.(new Event("open"));
+  deliver({ type: "features", resizeAcks: true });
   transport.markLayoutSettled();
   syncOwn();
   transport.requestRepaint();
@@ -495,8 +440,8 @@ function createFitChangeRoom(delayReports = false): FitChangeRoom {
     },
     deliverReports: () => {
       delayed = false;
-      for (const cols of queued.splice(0)) {
-        deliver(cols);
+      for (const message of queued.splice(0)) {
+        deliver(message);
       }
     },
     fit: (cols) => {
@@ -549,15 +494,12 @@ describe("page terminal when the fitted size changes between nudge and restore",
     room.transport.dispose();
   });
 
-  it("applies the peer's size only after the grace window when the fit grows past a peer exactly at the nudge size", () => {
+  it("applies the peer's size once the exchange is acknowledged when the fit grows past a peer exactly at the nudge size", () => {
     const room = createFitChangeRoom();
     room.advance(100);
     room.peer(FITTED_COLS - 1);
     room.advance(100);
     room.fit(60);
-    expect(room.terminal.cols).toBe(60);
-    room.advance(249);
-    expect(room.widths).not.toContain(FITTED_COLS - 1);
     room.advance(2000);
 
     expect(room.ptyCols()).toBe(FITTED_COLS - 1);
@@ -604,14 +546,52 @@ describe("page terminal when the fitted size changes between nudge and restore",
     room.transport.dispose();
   });
 
-  it("applies a peer exactly at the nudge size after the grace window when the fit grows before the nudge report is delivered", () => {
+  it("applies a peer exactly at the nudge size once acknowledged when the fit grows before the nudge report is delivered", () => {
     const room = createFitChangeRoom(true);
     room.peer(FITTED_COLS - 1);
     room.fit(60);
     room.advance(50);
-    room.deliverReports();
     expect(room.widths).not.toContain(FITTED_COLS - 1);
+    room.deliverReports();
     room.advance(2000);
+
+    expect(room.ptyCols()).toBe(FITTED_COLS - 1);
+    expect(room.terminal.cols).toBe(FITTED_COLS - 1);
+    room.transport.dispose();
+  });
+
+  it("never takes a nudge report that is delivered 2 s late after the fit changed", () => {
+    const room = createFitChangeRoom(true);
+    room.fit(60);
+    room.advance(2000);
+    room.deliverReports();
+    room.advance(2000);
+
+    expect(room.widths).not.toContain(FITTED_COLS - 1);
+    expect(room.ptyCols()).toBe(60);
+    expect(room.terminal.cols).toBe(60);
+    room.transport.dispose();
+  });
+
+  it("still applies a legitimate later peer at the same size as the nudge", () => {
+    const room = createFitChangeRoom(true);
+    room.fit(60);
+    room.advance(2000);
+    room.deliverReports();
+    room.advance(2000);
+    expect(room.widths).not.toContain(FITTED_COLS - 1);
+    room.peer(FITTED_COLS - 1);
+
+    expect(room.ptyCols()).toBe(FITTED_COLS - 1);
+    expect(room.terminal.cols).toBe(FITTED_COLS - 1);
+    room.transport.dispose();
+  });
+
+  it("applies a peer at the nudge size that arrives after an acknowledged nudge with no fit change", () => {
+    const room = createFitChangeRoom();
+    room.advance(100);
+    room.advance(2000);
+    room.peer(FITTED_COLS - 1);
 
     expect(room.ptyCols()).toBe(FITTED_COLS - 1);
     expect(room.terminal.cols).toBe(FITTED_COLS - 1);

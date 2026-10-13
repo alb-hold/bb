@@ -17,6 +17,11 @@ export type ChildTerminalBroadcastMessage = Extract<
   { type: "session-updated" | "exited" | "error" }
 >;
 
+export type ChildTerminalReplyMessage = Extract<
+  TerminalServerMessage,
+  { type: "features" | "resize-applied" }
+>;
+
 export interface ChildTerminalSocketSink {
   broadcast(
     terminalId: string,
@@ -25,6 +30,7 @@ export interface ChildTerminalSocketSink {
   ): void;
   close(attachId: string, code: number, reason: string): void;
   relayOutput(terminalId: string, chunk: TerminalOutputChunk): void;
+  reply(attachId: string, message: ChildTerminalReplyMessage): void;
   replay(
     socket: ChildTerminalSocket,
     frame: ChildTerminalReplayFrame,
@@ -45,6 +51,7 @@ export class ChildTerminalSocket {
     readonly terminalId: string,
     private readonly sink: ChildTerminalSocketSink,
     readonly outputAcks: boolean,
+    readonly resizeAcks: boolean,
   ) {}
 
   get isClosed(): boolean {
@@ -62,6 +69,10 @@ export class ChildTerminalSocket {
     const message = terminalServerMessageSchema.parse(JSON.parse(data));
     switch (message.type) {
       case "pong":
+        return;
+      case "features":
+      case "resize-applied":
+        this.sink.reply(this.attachId, message);
         return;
       case "attached":
         this.collecting = {

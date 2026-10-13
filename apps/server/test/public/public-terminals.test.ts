@@ -817,6 +817,7 @@ describe("public terminal routes", () => {
 
     fixture.harness.deps.terminalSessions.attachBrowserTerminal({
       outputAcks: false,
+      resizeAcks: false,
       socket: browserSocket,
       sinceSeq: 0,
       terminalId: stored.id,
@@ -1816,6 +1817,7 @@ describe("public terminal routes", () => {
     const first = createFakeBrowserSocket();
     onTerminalSocketOpen(fixture.harness.deps, {
       outputAcks: true,
+      resizeAcks: false,
       sinceSeq: 0,
       socket: first,
       terminalId: stored.id,
@@ -1856,6 +1858,7 @@ describe("public terminal routes", () => {
     const second = createFakeBrowserSocket();
     onTerminalSocketOpen(fixture.harness.deps, {
       outputAcks: true,
+      resizeAcks: false,
       sinceSeq: 4,
       socket: second,
       terminalId: stored.id,
@@ -2017,6 +2020,7 @@ describe("public terminal routes", () => {
       const browserSocket = createFakeBrowserSocket();
       fixture.harness.deps.terminalSessions.attachBrowserTerminal({
         outputAcks: false,
+        resizeAcks: false,
         socket: browserSocket,
         sinceSeq: 5,
         terminalId: stored.id,
@@ -2792,6 +2796,7 @@ describe("public terminal routes", () => {
 
     fixture.harness.deps.terminalSessions.attachBrowserTerminal({
       outputAcks: false,
+      resizeAcks: false,
       terminalId: stored.id,
       socket: firstSocket,
       sinceSeq: 0,
@@ -2815,6 +2820,7 @@ describe("public terminal routes", () => {
 
     fixture.harness.deps.terminalSessions.attachBrowserTerminal({
       outputAcks: false,
+      resizeAcks: false,
       terminalId: stored.id,
       socket: secondSocket,
       sinceSeq: 0,
@@ -2890,6 +2896,7 @@ describe("public terminal routes", () => {
       const before = readDaemonOperationMessages(fixture.socket).length;
       terminals.attachBrowserTerminal({
         outputAcks: false,
+        resizeAcks: false,
         terminalId: stored.id,
         socket,
         sinceSeq: 0,
@@ -2994,6 +3001,105 @@ describe("public terminal routes", () => {
     }
   });
 
+  it("acknowledges each tagged resize after its session update, even when the shared size does not change, and only on sockets that asked", async () => {
+    const fixture = await createTerminalRouteFixture();
+    harnesses.push(fixture.harness);
+    const stored = createTerminalSession(fixture.harness.db, {
+      cols: 80,
+      daemonSessionId: fixture.session.id,
+      environmentId: fixture.environment.id,
+      hostId: fixture.host.id,
+      initialCwd: "/tmp/terminal-workspace",
+      rows: 24,
+      status: "running",
+      threadId: fixture.thread.id,
+      title: "Terminal 1",
+    });
+    const terminals = fixture.harness.deps.terminalSessions;
+    const owner = createFakeBrowserSocket();
+    const peer = createFakeBrowserSocket();
+    const legacy = createFakeBrowserSocket();
+    const send = (
+      socket: FakeBrowserSocket,
+      message: Parameters<
+        typeof terminals.handleBrowserTerminalMessage
+      >[0]["message"],
+    ) =>
+      terminals.handleBrowserTerminalMessage({
+        terminalId: stored.id,
+        socket,
+        message,
+      });
+    const attach = async (socket: FakeBrowserSocket, resizeAcks: boolean) => {
+      const before = readDaemonOperationMessages(fixture.socket).length;
+      terminals.attachBrowserTerminal({
+        outputAcks: false,
+        resizeAcks,
+        terminalId: stored.id,
+        socket,
+        sinceSeq: 0,
+      });
+      const request = await waitForDaemonMessage(fixture.socket, before);
+      if (request.type !== "terminal.attach") {
+        throw new Error(`Expected terminal.attach, received ${request.type}`);
+      }
+      terminals.handleDaemonTerminalMessage({
+        hostId: fixture.host.id,
+        sessionId: fixture.session.id,
+        message: {
+          type: "terminal.replay",
+          requestId: request.requestId,
+          terminalId: stored.id,
+          chunks: [],
+          replayStartSeq: 0,
+          nextSeq: 0,
+        },
+      });
+    };
+    const kinds = (socket: FakeBrowserSocket) =>
+      readBrowserMessages(socket).flatMap((message) => {
+        if (message.type === "session-updated") {
+          return [`size ${message.session.cols}x${message.session.rows}`];
+        }
+        if (message.type === "resize-applied") {
+          return [`applied ${message.seq}`];
+        }
+        if (message.type === "features") {
+          return ["features"];
+        }
+        return [];
+      });
+
+    await attach(owner, true);
+    await attach(peer, false);
+    await attach(legacy, false);
+    expect(kinds(owner)).toEqual(["features"]);
+    expect(kinds(peer)).toEqual([]);
+
+    send(owner, { type: "resize", cols: 60, rows: 20, seq: 1 });
+    expect(kinds(owner)).toEqual(["features", "size 60x20", "applied 1"]);
+    send(owner, { type: "resize", cols: 60, rows: 20, seq: 2 });
+    expect(kinds(owner)).toEqual([
+      "features",
+      "size 60x20",
+      "applied 1",
+      "applied 2",
+    ]);
+    send(peer, { type: "resize", cols: 40, rows: 20 });
+    send(peer, { type: "resize", cols: 30, rows: 10, seq: 7 });
+    send(legacy, { type: "resize", cols: 50, rows: 12 });
+
+    expect(kinds(owner)).toEqual([
+      "features",
+      "size 60x20",
+      "applied 1",
+      "applied 2",
+      "size 40x20",
+      "size 30x10",
+    ]);
+    expect(kinds(peer)).toEqual(["size 60x20", "size 40x20", "size 30x10"]);
+  });
+
   it("paces the daemon by the output an acknowledging browser has parsed", async () => {
     const fixture = await createTerminalRouteFixture();
     harnesses.push(fixture.harness);
@@ -3025,6 +3131,7 @@ describe("public terminal routes", () => {
 
     fixture.harness.deps.terminalSessions.attachBrowserTerminal({
       outputAcks: true,
+      resizeAcks: false,
       terminalId: stored.id,
       socket: browserSocket,
       sinceSeq: 0,
@@ -3086,6 +3193,7 @@ describe("public terminal routes", () => {
 
     fixture.harness.deps.terminalSessions.attachBrowserTerminal({
       outputAcks: false,
+      resizeAcks: false,
       terminalId: stored.id,
       socket: browserSocket,
       sinceSeq: 0,
@@ -3305,6 +3413,7 @@ describe("public terminal routes", () => {
         const before = readDaemonOperationMessages(fixture.socket).length;
         terminalSessions.attachBrowserTerminal({
           outputAcks: args.outputAcks,
+          resizeAcks: false,
           terminalId: stored.id,
           socket,
           sinceSeq: args.nextSeq,

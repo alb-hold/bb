@@ -61,10 +61,10 @@ function createRoom(): TwoClientRoom {
   let restores = 0;
   let nudged = false;
   let delayed = false;
-  const queued: Array<{ cols: number; rows: number }> = [];
+  const queued: unknown[] = [];
 
   const browserSocket: TerminalBrowserSocket & {
-    deliver: (size: { cols: number; rows: number }) => void;
+    deliver: (message: unknown) => void;
   } = {
     onclose: null,
     onerror: null,
@@ -72,14 +72,9 @@ function createRoom(): TwoClientRoom {
     onopen: null,
     readyState: 1,
     close: () => undefined,
-    deliver(size) {
+    deliver(message) {
       this.onmessage?.(
-        new MessageEvent("message", {
-          data: JSON.stringify({
-            type: "session-updated",
-            session: session(size.cols, size.rows),
-          }),
-        }),
+        new MessageEvent("message", { data: JSON.stringify(message) }),
       );
     },
     send(data: string) {
@@ -104,6 +99,9 @@ function createRoom(): TwoClientRoom {
       }
       hub.recordTerminalClientSize(TERMINAL_ID, ownerSocket, size, Date.now());
       settle();
+      if ("seq" in message && typeof message.seq === "number") {
+        emit({ type: "resize-applied", seq: message.seq });
+      }
     },
   };
 
@@ -116,11 +114,15 @@ function createRoom(): TwoClientRoom {
       return;
     }
     pty = shared;
+    emit({ type: "session-updated", session: session(shared.cols, shared.rows) });
+  };
+
+  const emit = (message: unknown): void => {
     if (delayed) {
-      queued.push(shared);
+      queued.push(message);
       return;
     }
-    browserSocket.deliver(shared);
+    browserSocket.deliver(message);
   };
 
   const transport = new TerminalWebSocketTransport({
@@ -152,6 +154,7 @@ function createRoom(): TwoClientRoom {
     connected = true;
     transport.start();
     browserSocket.onopen?.(new Event("open"));
+    browserSocket.deliver({ type: "features", resizeAcks: true });
     transport.markLayoutSettled();
   };
 
@@ -162,8 +165,8 @@ function createRoom(): TwoClientRoom {
     },
     deliverReports: () => {
       delayed = false;
-      for (const size of queued.splice(0)) {
-        browserSocket.deliver(size);
+      for (const message of queued.splice(0)) {
+        browserSocket.deliver(message);
       }
     },
     fit: (cols) => {
@@ -286,17 +289,32 @@ describe("repaint nudge with a second client on the same terminal", () => {
     room.transport.dispose();
   });
 
-  it("applies a peer exactly at the nudge size only after the grace window when the fit grows past it", () => {
+  it("applies a peer exactly at the nudge size once the restore or fit change is acknowledged without a newer report", () => {
     const room = createRoom();
     room.start();
     room.advance(100);
     room.peerResizes(FITTED.cols - 1, FITTED.rows);
     room.advance(50);
     room.fit(200);
-    room.advance(249);
-    expect(room.viewHistory).not.toContain(FITTED.cols - 1);
     room.advance(2000);
 
+    expect(room.ptySize().cols).toBe(FITTED.cols - 1);
+    expect(room.viewCols()).toBe(FITTED.cols - 1);
+    room.transport.dispose();
+  });
+
+  it("never applies a nudge report delivered 2 s late, and still applies a later peer at the same size", () => {
+    const room = createRoom();
+    room.delayReports();
+    room.start();
+    room.fit(200);
+    room.advance(2000);
+    room.deliverReports();
+    room.advance(2000);
+    expect(room.viewHistory).not.toContain(FITTED.cols - 1);
+    expect(room.viewCols()).toBe(200);
+
+    room.peerResizes(FITTED.cols - 1, FITTED.rows);
     expect(room.ptySize().cols).toBe(FITTED.cols - 1);
     expect(room.viewCols()).toBe(FITTED.cols - 1);
     room.transport.dispose();

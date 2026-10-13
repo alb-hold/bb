@@ -11,7 +11,6 @@ const DEFAULT_DRAIN_POLL_MS = 10;
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 15_000;
 const DEFAULT_HEARTBEAT_TIMEOUT_MS = 45_000;
 const REPAINT_RESTORE_DELAY_MS = 400;
-const REPAINT_ECHO_GRACE_MS = 250;
 const ATTACH_RESIZE_SETTLE_CEILING_MS = 5_000;
 const DEFAULT_RECONNECT_DELAYS_MS = [100, 250, 500, 1_000, 2_000] as const;
 
@@ -57,12 +56,16 @@ function terminalSocketUrl(url: string, sinceSeq: number): string {
   const parsed = new URL(url);
   parsed.searchParams.set("sinceSeq", String(sinceSeq));
   parsed.searchParams.set("outputAcks", "1");
+  parsed.searchParams.set("resizeAcks", "1");
   return parsed.toString();
 }
 
 interface RepaintNudgeInFlight {
+  echoTaken: boolean;
+  finalSeq: number | null;
   ignored: { cols: number; rows: number } | null;
-  nudge: { cols: number; rows: number } | null;
+  nudge: { cols: number; rows: number };
+  nudgeSeq: number;
 }
 
 interface PendingTerminalInput {
@@ -111,8 +114,9 @@ export class TerminalWebSocketTransport {
   private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
   private layoutSettled = false;
   private repaintRequestedWhileSettling = false;
-  private repaintEchoReleaseTimeout: ReturnType<typeof setTimeout> | null =
-    null;
+  private ackedResizeSeq = 0;
+  private nextResizeSeq = 0;
+  private resizeAcksConfirmed = false;
   private repaintNudgeInFlight: RepaintNudgeInFlight | null = null;
   private repaintTimeout: ReturnType<typeof setTimeout> | null = null;
   private settleTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -233,23 +237,47 @@ export class TerminalWebSocketTransport {
       return;
     }
     this.lastResize = { cols, rows };
-    this.supersedeRepaintNudge();
+    this.cancelRepaintRestore();
     const socket = this.socket;
     if (
       this.settleTimeout !== null ||
       socket === null ||
       socket.readyState !== SOCKET_OPEN
     ) {
+      this.repaintNudgeInFlight = null;
       return;
     }
-    this.trySend(
-      socket,
-      JSON.stringify({
-        type: "resize",
-        cols,
-        rows,
-      }),
+    this.sendResizeMessage(socket, { cols, rows }, (seq) =>
+      this.setRepaintFinalSeq(seq),
     );
+  }
+
+  private setRepaintFinalSeq(seq: number | null): void {
+    const inFlight = this.repaintNudgeInFlight;
+    if (inFlight === null) {
+      return;
+    }
+    if (seq === null) {
+      this.repaintNudgeInFlight = null;
+      return;
+    }
+    inFlight.finalSeq = seq;
+  }
+
+  private sendResizeMessage(
+    socket: TerminalBrowserSocket,
+    size: { cols: number; rows: number },
+    onSeq: (seq: number | null) => void = () => undefined,
+  ): void {
+    if (!this.resizeAcksConfirmed) {
+      onSeq(null);
+      this.trySend(socket, JSON.stringify({ type: "resize", ...size }));
+      return;
+    }
+    const seq = this.nextResizeSeq + 1;
+    this.nextResizeSeq = seq;
+    onSeq(seq);
+    this.trySend(socket, JSON.stringify({ type: "resize", ...size, seq }));
   }
 
   requestRepaint(): void {
@@ -281,8 +309,18 @@ export class TerminalWebSocketTransport {
       if (nudgeSize === null) {
         return;
       }
-      this.repaintNudgeInFlight = { ignored: null, nudge: nudgeSize };
-      this.trySend(socket, JSON.stringify({ type: "resize", ...nudgeSize }));
+      this.sendResizeMessage(socket, nudgeSize, (nudgeSeq) => {
+        this.repaintNudgeInFlight =
+          nudgeSeq === null
+            ? null
+            : {
+                echoTaken: false,
+                finalSeq: null,
+                ignored: null,
+                nudge: nudgeSize,
+                nudgeSeq,
+              };
+      });
       this.repaintTimeout = setTimeout(() => {
         this.repaintTimeout = null;
         if (
@@ -294,15 +332,9 @@ export class TerminalWebSocketTransport {
           this.repaintNudgeInFlight = null;
           return;
         }
-        this.trySend(
-          socket,
-          JSON.stringify({
-            type: "resize",
-            cols: current.cols,
-            rows: current.rows,
-          }),
+        this.sendResizeMessage(socket, current, (restoreSeq) =>
+          this.setRepaintFinalSeq(restoreSeq),
         );
-        this.startRepaintEchoRelease();
       }, REPAINT_RESTORE_DELAY_MS);
     }, 0);
   }
@@ -313,52 +345,32 @@ export class TerminalWebSocketTransport {
       return false;
     }
     if (
-      inFlight.ignored === null &&
-      inFlight.nudge !== null &&
+      !inFlight.echoTaken &&
       size.cols === inFlight.nudge.cols &&
       size.rows === inFlight.nudge.rows
     ) {
+      inFlight.echoTaken = true;
       inFlight.ignored = size;
-      if (this.repaintEchoReleaseTimeout !== null) {
-        this.startRepaintEchoRelease();
-      }
       return true;
     }
-    this.repaintNudgeInFlight = null;
-    if (this.repaintEchoReleaseTimeout !== null) {
-      clearTimeout(this.repaintEchoReleaseTimeout);
-      this.repaintEchoReleaseTimeout = null;
-    }
+    inFlight.ignored = null;
     return false;
   }
 
-  private supersedeRepaintNudge(): void {
+  private handleResizeApplied(seq: number): void {
+    this.ackedResizeSeq = Math.max(this.ackedResizeSeq, seq);
     const inFlight = this.repaintNudgeInFlight;
-    this.clearRepaintTimeout();
     if (inFlight === null) {
       return;
     }
-    this.repaintNudgeInFlight =
-      inFlight.ignored === null
-        ? { ignored: null, nudge: inFlight.nudge }
-        : { ignored: inFlight.ignored, nudge: null };
-    this.startRepaintEchoRelease();
-  }
-
-  private startRepaintEchoRelease(): void {
-    if (this.repaintEchoReleaseTimeout !== null) {
-      clearTimeout(this.repaintEchoReleaseTimeout);
+    if (this.ackedResizeSeq >= inFlight.nudgeSeq) {
+      inFlight.echoTaken = true;
     }
-    this.repaintEchoReleaseTimeout = setTimeout(() => {
-      this.repaintEchoReleaseTimeout = null;
-      this.releaseRepaintNudge();
-    }, REPAINT_ECHO_GRACE_MS);
-  }
-
-  private releaseRepaintNudge(): void {
-    const inFlight = this.repaintNudgeInFlight;
-    this.clearRepaintTimeout();
-    if (inFlight?.ignored != null) {
+    if (inFlight.finalSeq === null || this.ackedResizeSeq < inFlight.finalSeq) {
+      return;
+    }
+    this.repaintNudgeInFlight = null;
+    if (inFlight.ignored !== null) {
       this.options.onRepaintNudgeSizeReleased?.(inFlight.ignored);
     }
   }
@@ -378,6 +390,10 @@ export class TerminalWebSocketTransport {
       return;
     }
     this.socket = socket;
+    this.ackedResizeSeq = 0;
+    this.nextResizeSeq = 0;
+    this.resizeAcksConfirmed = false;
+    this.repaintNudgeInFlight = null;
     socket.onopen = () => this.handleOpen(socket);
     socket.onmessage = (event) => this.handleMessage(socket, event.data);
     socket.onerror = () => undefined;
@@ -442,7 +458,7 @@ export class TerminalWebSocketTransport {
     ) {
       return;
     }
-    this.trySend(socket, JSON.stringify({ type: "resize", ...settled }));
+    this.sendResizeMessage(socket, settled);
     if (repaintRequested) {
       this.requestRepaint();
     }
@@ -475,6 +491,14 @@ export class TerminalWebSocketTransport {
     const message = parsed.data;
     if (message.type === "pong") {
       this.lastPongAt = this.now();
+    }
+    if (message.type === "features") {
+      this.resizeAcksConfirmed = true;
+      return;
+    }
+    if (message.type === "resize-applied") {
+      this.handleResizeApplied(message.seq);
+      return;
     }
     if (message.type === "attached") {
       this.reconnectAttempt = 0;
@@ -626,10 +650,10 @@ export class TerminalWebSocketTransport {
 
   private clearRepaintTimeout(): void {
     this.repaintNudgeInFlight = null;
-    if (this.repaintEchoReleaseTimeout !== null) {
-      clearTimeout(this.repaintEchoReleaseTimeout);
-      this.repaintEchoReleaseTimeout = null;
-    }
+    this.cancelRepaintRestore();
+  }
+
+  private cancelRepaintRestore(): void {
     if (this.repaintTimeout === null) {
       return;
     }

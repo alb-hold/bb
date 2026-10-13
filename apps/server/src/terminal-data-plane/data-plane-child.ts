@@ -233,6 +233,9 @@ export class TerminalDataPlaneChild {
       case "browser.send":
         this.sendControl(message.terminalId, message.message);
         return;
+      case "browser.reply":
+        this.sendReply(message.attachId, message.message);
+        return;
       case "browser.close":
         this.closeTarget(message);
         return;
@@ -526,6 +529,25 @@ export class TerminalDataPlaneChild {
       } else {
         attach.queuedControl.push(frame);
       }
+    }
+  }
+
+  private sendReply(
+    attachId: string,
+    message: Extract<
+      TerminalServerMessage,
+      { type: "features" | "resize-applied" }
+    >,
+  ): void {
+    const attach = this.attaches.get(attachId);
+    if (attach === undefined || attach.closed) {
+      return;
+    }
+    const frame = JSON.stringify(message);
+    if (attach.attachedFrameSent) {
+      this.write(attach, frame);
+    } else {
+      attach.queuedControl.push(frame);
     }
   }
 

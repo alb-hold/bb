@@ -1006,19 +1006,21 @@ export function createApp(
       const terminalId = context.req.param("terminalId");
       const query = terminalWebSocketQuerySchema.safeParse({
         outputAcks: context.req.query("outputAcks"),
+        resizeAcks: context.req.query("resizeAcks"),
         sinceSeq: context.req.query("sinceSeq"),
       });
       if (!query.success) {
         throw new ApiError(
           400,
           "invalid_terminal_socket_query",
-          "Terminal websocket sinceSeq must be a non-negative integer and outputAcks must be 0 or 1",
+          "Terminal websocket sinceSeq must be a non-negative integer and outputAcks and resizeAcks must be 0 or 1",
         );
       }
       return {
         onOpen: (_event, socket) =>
           onTerminalSocketOpen(deps, {
             outputAcks: query.data.outputAcks,
+            resizeAcks: query.data.resizeAcks,
             socket,
             sinceSeq: query.data.sinceSeq,
             terminalId,

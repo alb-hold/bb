@@ -1028,14 +1028,26 @@ describe("public terminal contracts", () => {
   it("defaults and validates the terminal websocket replay sequence", () => {
     expect(terminalWebSocketQuerySchema.parse({})).toEqual({
       outputAcks: false,
+      resizeAcks: false,
       sinceSeq: 0,
     });
     expect(
       terminalWebSocketQuerySchema.parse({ outputAcks: "1", sinceSeq: "12" }),
     ).toEqual({
       outputAcks: true,
+      resizeAcks: false,
       sinceSeq: 12,
     });
+    expect(
+      terminalWebSocketQuerySchema.parse({ resizeAcks: "1" }),
+    ).toEqual({
+      outputAcks: false,
+      resizeAcks: true,
+      sinceSeq: 0,
+    });
+    expect(
+      terminalWebSocketQuerySchema.safeParse({ resizeAcks: "yes" }).success,
+    ).toBe(false);
     expect(
       terminalWebSocketQuerySchema.safeParse({ sinceSeq: "-1" }).success,
     ).toBe(false);
