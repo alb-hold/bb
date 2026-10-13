@@ -1093,3 +1093,123 @@ describe.each(lifetimes)(
     });
   },
 );
+
+function crashAfter(mutations: number) {
+  const originalRename = fs.rename.bind(fs);
+  const originalRemove = fs.rm.bind(fs);
+  const originalOpen = fs.open.bind(fs);
+  let done = 0;
+  let dead = mutations === 0;
+  const died = () =>
+    Promise.reject(Object.assign(new Error("crashed"), { code: "EIO" }));
+  const rename = vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+    if (dead) return died();
+    await originalRename(from, to);
+    done += 1;
+    if (done >= mutations) dead = true;
+  });
+  const remove = vi
+    .spyOn(fs, "rm")
+    .mockImplementation(async (file, options) => {
+      if (dead) return died();
+      await originalRemove(file, options);
+      done += 1;
+      if (done >= mutations) dead = true;
+    });
+  const open = vi
+    .spyOn(fs, "open")
+    .mockImplementation(((...args: Parameters<typeof fs.open>) =>
+      dead ? died() : originalOpen(...args)) as typeof fs.open);
+  return {
+    get dead() {
+      return dead;
+    },
+    restore() {
+      rename.mockRestore();
+      remove.mockRestore();
+      open.mockRestore();
+    },
+  };
+}
+
+const archiveEvidence = async (directory: string) =>
+  (await markerInodes(directory)).size > 0 ||
+  (await tombstoneNames(directory)).length > 0;
+
+describe.each(lifetimes)(
+  "a %s credential across a crash at every write of an archive",
+  (lifetime) => {
+    const crashPoints = async (
+      scenario: "inside" | "expired",
+      check: (f: Fixture, sessions: Session[]) => Promise<void>,
+    ) => {
+      let withEvidence = 0;
+      let crashes = 0;
+      for (let writes = 0; writes < 60; writes += 1) {
+        const f = await fixture();
+        const launch = await mint(f, await f.open(), lifetime);
+        const threads = await f.open();
+        const sessions = [launch, await mint(f, threads, lifetime)];
+        const before = await markerInodes(f.directory);
+        const crash = crashAfter(writes);
+        await threads.removeThread(f.route.threadId).catch(() => undefined);
+        const crashed = crash.dead;
+        crash.restore();
+        const stamp = new Date(f.clock());
+        for (const [name, inode] of await markerInodes(f.directory))
+          if (before.get(name) !== inode)
+            await fs.utimes(path.join(f.directory, name), stamp, stamp);
+        if (!crashed) {
+          expect(writes).toBeGreaterThan(3);
+          break;
+        }
+        crashes += 1;
+        f.advance(
+          scenario === "inside" ? HOUR : ARCHIVE_TOMBSTONE_MAX_AGE_MS + 1_000,
+        );
+        const evidence = await archiveEvidence(f.directory);
+        const restarted = await f.open();
+        if (!evidence) {
+          for (const session of sessions.slice(-1))
+            expect(await accepted(f, restarted, session)).toBe(true);
+          continue;
+        }
+        withEvidence += 1;
+        for (const session of sessions)
+          expect(await rejected(restarted, session)).toBe(true);
+        await check(f, sessions);
+      }
+      expect(crashes).toBeGreaterThan(3);
+      expect(withEvidence).toBeGreaterThan(2);
+    };
+
+    it("rejects at once after a restart, and a sweep or repeat cannot restore past expiry", async () => {
+      await crashPoints("expired", async (f, sessions) => {
+        const restarted = await f.open();
+        for (const session of sessions)
+          expect(await rejected(restarted, session)).toBe(true);
+        await restarted.sweepThreads(() => Promise.resolve("archived"));
+        await archiveFailingTombstone(f, restarted);
+        await restarted.sweepThreads(() => Promise.resolve("archived"));
+        const again = await f.open();
+        for (const session of sessions)
+          expect(await rejected(again, session)).toBe(true);
+        await expectNothingRestorable(f, again, sessions);
+      });
+    });
+
+    it("rejects at once after a restart, and restores inside the window after sweeps and repeats", async () => {
+      await crashPoints("inside", async (f, sessions) => {
+        const restarted = await f.open();
+        await restarted.sweepThreads(() => Promise.resolve("archived"));
+        await atClockTime(f, () => restarted.removeThread(f.route.threadId));
+        for (const session of sessions)
+          expect(await rejected(restarted, session)).toBe(true);
+        const again = await f.open();
+        await unarchive(again, f.route.threadId);
+        for (const session of sessions)
+          expect(await accepted(f, again, session)).toBe(true);
+      });
+    });
+  },
+);
