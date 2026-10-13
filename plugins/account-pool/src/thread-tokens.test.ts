@@ -6,6 +6,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { HubTokenStore } from "./store.js";
 import {
+  DURABLE_PRIOR_MAX_AGE_MS,
   MAX_PRIOR_CREDENTIALS,
   PROCESS_CREDENTIAL_CLOCK_SKEW_MS,
   PROCESS_CREDENTIAL_MAX_AGE_MS,
@@ -442,6 +443,32 @@ it("documents the residual: a restart before any successful retry restores the o
   expect(await reloaded.authenticate(f.oldToken)).toBeNull();
   const final = await restartOf(f.directory, f.hosts, f.route);
   expect(await final.authenticate(f.oldToken)).toBeNull();
+});
+
+it("refuses a durable prior 24 hours after its re-mint when the successor is never presented, live and after a restart", async () => {
+  const { directory, hosts, route, hostToken } = await fixture();
+  const nestedRoute = { hostId: route.hostId, threadId: route.threadId };
+  let clock = 9_000_000;
+  const minting = await restartOf(directory, hosts, route, () => clock);
+  const oldToken = await minting.forThread(route, hostToken);
+  const oldNested = await minting.forNested(nestedRoute, hostToken);
+  const restarted = await restartOf(directory, hosts, route, () => clock);
+  await restarted.forThread(route, hostToken);
+  await restarted.forNested(nestedRoute, hostToken);
+  const remintedAt = clock;
+  clock = remintedAt + DURABLE_PRIOR_MAX_AGE_MS - 60_000;
+  expect(await restarted.authenticate(oldToken)).toEqual(route);
+  expect(await restarted.authenticateNested(oldNested)).toEqual(nestedRoute);
+  const justBefore = await restartOf(directory, hosts, route, () => clock);
+  expect(await justBefore.authenticate(oldToken)).toEqual(route);
+  expect(await justBefore.authenticateNested(oldNested)).toEqual(nestedRoute);
+  clock = remintedAt + DURABLE_PRIOR_MAX_AGE_MS + 60_000;
+  expect(await restarted.authenticate(oldToken)).toBeNull();
+  expect(await restarted.authenticateNested(oldNested)).toBeNull();
+  expect(await justBefore.authenticate(oldToken)).toBeNull();
+  const afterExpiry = await restartOf(directory, hosts, route, () => clock);
+  expect(await afterExpiry.authenticate(oldToken)).toBeNull();
+  expect(await afterExpiry.authenticateNested(oldNested)).toBeNull();
 });
 
 it("drops every digest of a durable route on revocation", async () => {

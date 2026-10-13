@@ -16,6 +16,7 @@ const PROCESS_THREAD_ROUTE_PREFIX = "scoped-process-route-";
 const NESTED_ROUTE_PREFIX = "scoped-nested-route-";
 const PROCESS_NESTED_ROUTE_PREFIX = "scoped-process-nested-route-";
 export const PROCESS_CREDENTIAL_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+export const DURABLE_PRIOR_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 export const PROCESS_CREDENTIAL_CLOCK_SKEW_MS = 60 * 1000;
 const LEGACY_NESTED_ROUTE_PREFIX = "nested-route-";
 const ARCHIVED_THREAD_PREFIX = "archived-thread-";
@@ -827,7 +828,9 @@ export class ThreadTokenStore {
             this.restorable({ lifetime: "process", ...prior }),
           )
           .slice(-MAX_PRIOR_CREDENTIALS)
-      : record.priors.slice(-MAX_PRIOR_CREDENTIALS);
+      : record.priors
+          .filter((prior) => prior.expiresAt > this.now())
+          .slice(-MAX_PRIOR_CREDENTIALS);
     return { ...record, priors: live.length === 0 ? undefined : live };
   }
 
@@ -870,11 +873,11 @@ export class ThreadTokenStore {
     if (existing.token !== undefined) return [];
     const issuedAt = this.now();
     return [
-      ...(existing.priors ?? []),
+      ...(existing.priors ?? []).filter((prior) => prior.expiresAt > issuedAt),
       {
         tokenDigest: existing.tokenDigest,
         issuedAt,
-        expiresAt: issuedAt + PROCESS_CREDENTIAL_MAX_AGE_MS,
+        expiresAt: issuedAt + DURABLE_PRIOR_MAX_AGE_MS,
       },
     ].slice(-MAX_PRIOR_CREDENTIALS);
   }
@@ -884,7 +887,8 @@ export class ThreadTokenStore {
     prior: PriorCredential | null;
   }): boolean {
     if (match.prior === null) return this.expired(match.record);
-    if (match.record.lifetime !== "process") return false;
+    if (match.record.lifetime !== "process")
+      return match.prior.expiresAt <= this.now();
     return this.expired({ lifetime: "process", ...match.prior });
   }
 
