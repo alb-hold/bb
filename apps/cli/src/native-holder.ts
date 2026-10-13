@@ -5,6 +5,7 @@ import {
   fchmodSync,
   fstatSync,
   ftruncateSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   openSync,
@@ -225,6 +226,8 @@ export interface RunNativeHolderOptions {
   tickIntervalMs?: number;
   terminalClosedForGood?(): Promise<boolean>;
   detachedCheckIntervalMs?: number;
+  onSocketReady?(): void;
+  onSocketClosed?(): void;
 }
 
 const TERMINAL_CLOSES_THAT_STOP_THE_CLI = new Set([
@@ -244,10 +247,11 @@ const NATIVE_HOLDER_IGNORED_SIGNALS = [
 export function ignoreNativeHolderSignals(
   target: NodeJS.Process,
   socketPath?: string,
+  ownsSocket: () => boolean = () => true,
 ): () => void {
   const ignore = (signal: (typeof NATIVE_HOLDER_IGNORED_SIGNALS)[number]) =>
     (): void => {
-      if (socketPath !== undefined) {
+      if (socketPath !== undefined && ownsSocket()) {
         logNativeHolderEvent(socketPath, "ignored-signal", { signal });
       }
     };
@@ -280,8 +284,15 @@ export function nativeTerminalClosedForGood(
   );
 }
 
-function removeSocketFile(socketPath: string): void {
+function removeSocketFile(
+  socketPath: string,
+  expected?: { dev: number; ino: number },
+): void {
   try {
+    if (expected !== undefined) {
+      const current = lstatSync(socketPath);
+      if (current.dev !== expected.dev || current.ino !== expected.ino) return;
+    }
     unlinkSync(socketPath);
   } catch {
     return;
@@ -332,6 +343,7 @@ export async function runNativeHolder(
     if (finished) return;
     finished = true;
     logNativeHolderEvent(options.socketPath, "holder-finish", { reason });
+    options.onSocketClosed?.();
     for (const timer of timers) clearInterval(timer);
     writeFrame(
       client,
@@ -479,6 +491,7 @@ export async function runNativeHolder(
       listenPrivately(server, options.socketPath);
     });
     chmodSync(options.socketPath, 0o600);
+    options.onSocketReady?.();
   } catch (error) {
     credentialServer.close();
     rmSync(credentialDir, { recursive: true, force: true });
@@ -572,12 +585,21 @@ export async function openNativeHolderConnection(args: {
 export async function connectNativeHolder(
   socketPath: string,
 ): Promise<net.Socket | null> {
+  let socketIdentity: { dev: number; ino: number } | null = null;
+  try {
+    const socketStat = lstatSync(socketPath);
+    socketIdentity = { dev: socketStat.dev, ino: socketStat.ino };
+  } catch {
+    socketIdentity = null;
+  }
   return await new Promise((resolve) => {
     const socket = net.createConnection(socketPath);
     socket.once("connect", () => resolve(socket));
     socket.once("error", (error: NodeJS.ErrnoException) => {
       socket.destroy();
-      if (error.code === "ECONNREFUSED") removeSocketFile(socketPath);
+      if (error.code === "ECONNREFUSED" && socketIdentity !== null) {
+        removeSocketFile(socketPath, socketIdentity);
+      }
       resolve(null);
     });
   });

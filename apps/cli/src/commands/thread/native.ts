@@ -181,8 +181,10 @@ async function holdNativeHarness(
   threadId: string,
   socketPath: string,
 ): Promise<number> {
-  ignoreNativeHolderSignals(process, socketPath);
+  let ownsSocket = false;
+  ignoreNativeHolderSignals(process, socketPath, () => ownsSocket);
   process.on("uncaughtExceptionMonitor", (error) => {
+    if (!ownsSocket) return;
     logNativeHolderEvent(socketPath, "uncaught-exception", {
       name: error.name,
     });
@@ -320,9 +322,11 @@ async function holdNativeHarness(
             }
           : launch.session,
         (total) => {
-          logNativeHolderEvent(socketPath, "activity-transcript-eviction", {
-            count: total,
-          });
+          if (ownsSocket) {
+            logNativeHolderEvent(socketPath, "activity-transcript-eviction", {
+              count: total,
+            });
+          }
         },
       );
       if (activity !== undefined) {
@@ -348,6 +352,12 @@ async function holdNativeHarness(
     },
     tick: discover,
     tickIntervalMs: SESSION_DISCOVERY_INTERVAL_MS,
+    onSocketReady: () => {
+      ownsSocket = true;
+    },
+    onSocketClosed: () => {
+      ownsSocket = false;
+    },
     terminalClosedForGood: () =>
       checkNativeTerminalClosedForGood({ baseUrl, threadId }),
   });
