@@ -528,3 +528,61 @@ describe("a signal still active at the 5 s ceiling", () => {
     },
   );
 });
+
+describe("repaint nudge spacing", () => {
+  const RESTORE_DELAY_MS = 400;
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function settledTransport() {
+    vi.useFakeTimers();
+    const socket = new SentSocket();
+    const transport = new TerminalWebSocketTransport({
+      createSocket: () => socket,
+      onMessage: () => undefined,
+      shouldReconnect: () => false,
+      url: "ws://example.test/ws/terminals/term_1",
+    });
+    transport.sendResize(132, 46);
+    transport.start();
+    socket.onopen?.(new Event("open"));
+    transport.markLayoutSettled();
+    socket.resizes.length = 0;
+    return { socket, transport };
+  }
+
+  it("holds the restore until the program has had 400 ms to redraw at the narrower size", async () => {
+    const { socket, transport } = settledTransport();
+
+    transport.requestRepaint();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(socket.resizes).toEqual([{ cols: 131, rows: 46 }]);
+
+    await vi.advanceTimersByTimeAsync(RESTORE_DELAY_MS - 1);
+    expect(socket.resizes).toEqual([{ cols: 131, rows: 46 }]);
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(socket.resizes).toEqual([
+      { cols: 131, rows: 46 },
+      { cols: 132, rows: 46 },
+    ]);
+    transport.dispose();
+  });
+
+  it("skips the restore when the grid changed during the quiet delay", async () => {
+    const { socket, transport } = settledTransport();
+
+    transport.requestRepaint();
+    await vi.advanceTimersByTimeAsync(0);
+    transport.sendResize(100, 30);
+    await vi.advanceTimersByTimeAsync(RESTORE_DELAY_MS * 2);
+
+    expect(socket.resizes).toEqual([
+      { cols: 131, rows: 46 },
+      { cols: 100, rows: 30 },
+    ]);
+    transport.dispose();
+  });
+});
