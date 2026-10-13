@@ -947,6 +947,38 @@ describe("TerminalManager", () => {
     expect(env?.NODE_ENV).toBeUndefined();
   });
 
+  it("keeps a launching agent session's markers out of terminal shells", async () => {
+    const markers = [
+      "CLAUDECODE",
+      "CLAUDE_CODE_CHILD_SESSION",
+      "CLAUDE_CODE_ENTRYPOINT",
+      "CLAUDE_CODE_EXECPATH",
+      "CLAUDE_CODE_MESSAGING_SOCKET",
+      "CLAUDE_CODE_MESSAGING_TOKEN",
+      "CLAUDE_CODE_SESSION_ATTENDED",
+      "CLAUDE_CODE_SESSION_ID",
+      "CLAUDE_PID",
+    ];
+    for (const marker of markers) {
+      vi.stubEnv(marker, "outer-session");
+    }
+    vi.stubEnv("CLAUDE_CODE_USE_BEDROCK", "1");
+    vi.stubEnv("ANTHROPIC_API_KEY", "user-key");
+
+    const harness = createHarness();
+    await openTerminal(harness);
+
+    const env = harness.adapter.spawned[0]?.args.env;
+    expect(env).toMatchObject({
+      ANTHROPIC_API_KEY: "user-key",
+      BB_TERMINAL_SESSION_ID: "term-1",
+      CLAUDE_CODE_USE_BEDROCK: "1",
+    });
+    for (const marker of markers) {
+      expect(env).not.toHaveProperty(marker);
+    }
+  });
+
   it("keeps the daemon's Electron run-as-node mode out of terminal shells", async () => {
     vi.stubEnv("ELECTRON_RUN_AS_NODE", "1");
     const harness = createHarness();

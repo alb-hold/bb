@@ -307,6 +307,8 @@ export function resolvePortFromEnv(args: ResolvePortFromEnvArgs): number {
   });
 }
 
+export { stripInheritedAgentSessionEnv } from "@bb/process-utils";
+
 export function stripThreadContextEnv(
   baseEnv: NodeJS.ProcessEnv,
 ): NodeJS.ProcessEnv {

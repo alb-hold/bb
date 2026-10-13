@@ -1399,6 +1399,70 @@ describe("createAgentRuntime process lifecycle", () => {
     }
   });
 
+  it("keeps a launching agent session's markers out of spawned provider processes", async () => {
+    vi.stubEnv("CLAUDECODE", "1");
+    vi.stubEnv("CLAUDE_CODE_CHILD_SESSION", "1");
+    vi.stubEnv("CLAUDE_CODE_ENTRYPOINT", "cli");
+    vi.stubEnv("CLAUDE_CODE_EXECPATH", "/tmp/outer/claude");
+    vi.stubEnv("CLAUDE_CODE_MESSAGING_SOCKET", "/tmp/outer.sock");
+    vi.stubEnv("CLAUDE_CODE_MESSAGING_TOKEN", "outer-token");
+    vi.stubEnv("CLAUDE_CODE_SESSION_ATTENDED", "1");
+    vi.stubEnv("CLAUDE_CODE_SESSION_ID", "outer-session");
+    vi.stubEnv("CLAUDE_PID", "4242");
+    vi.stubEnv("CLAUDE_CODE_USE_BEDROCK", "1");
+    vi.stubEnv("ANTHROPIC_API_KEY", "user-key");
+    const envScript = join(tmpDir, "agent-marker-env-provider.cjs");
+    writeFileSync(
+      envScript,
+      `const values = [
+        process.env.CLAUDECODE ?? "missing",
+        process.env.CLAUDE_CODE_CHILD_SESSION ?? "missing",
+        process.env.CLAUDE_CODE_ENTRYPOINT ?? "missing",
+        process.env.CLAUDE_CODE_EXECPATH ?? "missing",
+        process.env.CLAUDE_CODE_MESSAGING_SOCKET ?? "missing",
+        process.env.CLAUDE_CODE_MESSAGING_TOKEN ?? "missing",
+        process.env.CLAUDE_CODE_SESSION_ATTENDED ?? "missing",
+        process.env.CLAUDE_CODE_SESSION_ID ?? "missing",
+        process.env.CLAUDE_PID ?? "missing",
+        process.env.CLAUDE_CODE_USE_BEDROCK ?? "missing",
+        process.env.ANTHROPIC_API_KEY ?? "missing"
+      ];
+      process.stderr.write(values.join("|") + "\\n");
+      setInterval(() => {}, 1000);`,
+    );
+    const stderrLines: string[] = [];
+    const manager = createProviderProcessManager({
+      env: {},
+      onProcessExit: vi.fn(),
+      onStderr: (line) => {
+        stderrLines.push(line);
+      },
+      rawScriptPath: envScript,
+      workspacePath: tmpDir,
+    });
+
+    try {
+      const ensure = manager
+        .ensureProvider({
+          bridgeLaunch: MANAGER_BRIDGE_LAUNCH,
+          processKey: "fake",
+          providerId: "fake",
+        })
+        .catch(() => undefined);
+      await waitForRuntimeState({
+        label: "provider agent marker env stderr",
+        predicate: () => stderrLines.length > 0,
+      });
+      expect(stderrLines[0]).toBe(
+        "missing|missing|missing|missing|missing|missing|missing|missing|missing|1|user-key",
+      );
+      await manager.shutdown();
+      await ensure;
+    } finally {
+      await manager.shutdown();
+    }
+  });
+
   it("launches runtime-managed node bridges with the current executable when node is absent from PATH", async () => {
     vi.stubEnv("PATH", "");
     const record = createScriptedEchoRequestRecord();

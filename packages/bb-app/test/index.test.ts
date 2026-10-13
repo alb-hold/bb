@@ -21,6 +21,7 @@ import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { waitForProcessExit } from "@bb/config/child-process-exit";
 import { resolvePortFromEnv } from "@bb/config/runtime";
+import { spawnLoggedProcess } from "../src/logged-process.js";
 import {
   assertBbAppArtifacts,
   assertBbHostArtifacts,
@@ -2167,6 +2168,75 @@ describe("bb-app launcher", () => {
     expect(serverEnv.BB_APP_SOURCE_ORIGIN).toBe("fork");
     expect(serverEnv).not.toHaveProperty("BB_APP_SOURCE_COMMIT");
   });
+
+  it.each(["server", "host-daemon"] as const)(
+    "keeps a launching agent session's markers out of the spawned %s",
+    async (logName) => {
+      const markers = [
+        "CLAUDECODE",
+        "CLAUDE_CODE_CHILD_SESSION",
+        "CLAUDE_CODE_ENTRYPOINT",
+        "CLAUDE_CODE_EXECPATH",
+        "CLAUDE_CODE_MESSAGING_SOCKET",
+        "CLAUDE_CODE_MESSAGING_TOKEN",
+        "CLAUDE_CODE_SESSION_ATTENDED",
+        "CLAUDE_CODE_SESSION_ID",
+        "CLAUDE_PID",
+      ];
+      const launcherEnv: NodeJS.ProcessEnv = {
+        ...process.env,
+        ANTHROPIC_API_KEY: "user-key",
+        CLAUDE_CODE_USE_BEDROCK: "1",
+      };
+      for (const marker of markers) {
+        launcherEnv[marker] = "outer-session";
+      }
+      const context = createTestStartContext();
+      const env =
+        logName === "server"
+          ? createServerEnv({
+              context,
+              env: launcherEnv,
+              install: { kind: "npm" },
+            })
+          : createDaemonEnv({
+              context,
+              env: launcherEnv,
+              serverUrl: context.serverUrl,
+            });
+      const scratch = mkdtempSync(join(tmpdir(), "bb-app-agent-markers-"));
+      try {
+        const logDir = join(scratch, "logs");
+        const child = spawnLoggedProcess({
+          command: process.execPath,
+          args: [
+            "-e",
+            `const names = ${JSON.stringify([
+              ...markers,
+              "CLAUDE_CODE_USE_BEDROCK",
+              "ANTHROPIC_API_KEY",
+            ])};
+            console.log(names.map((name) => process.env[name] ?? "missing").join("|"));`,
+          ],
+          env,
+          logDir,
+          logName,
+        });
+
+        expect(await waitForProcessExit(child)).toEqual({
+          code: 0,
+          signal: null,
+        });
+        expect(
+          readFileSync(join(logDir, `${logName}-stdio.log`), "utf8").trim(),
+        ).toBe(
+          "missing|missing|missing|missing|missing|missing|missing|missing|missing|1|user-key",
+        );
+      } finally {
+        rmSync(scratch, { recursive: true, force: true });
+      }
+    },
+  );
 });
 
 it("preserves machine identity and access headers through real config set and unset", async () => {
