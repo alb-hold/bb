@@ -826,16 +826,17 @@ export class ThreadTokenStore {
             this.restorable({ lifetime: "process", ...prior }),
           )
           .slice(-MAX_PRIOR_CREDENTIALS)
-      : [];
+      : record.priors.slice(-MAX_PRIOR_CREDENTIALS);
     return { ...record, priors: live.length === 0 ? undefined : live };
   }
 
   private retainedPriors(
     existing: RouteRecord | NestedRouteRecord | undefined,
   ): PriorCredential[] {
+    if (existing !== undefined && existing.lifetime !== "process")
+      return this.retainedDurablePriors(existing);
     if (
       existing === undefined ||
-      existing.lifetime !== "process" ||
       existing.token !== undefined ||
       this.expired(existing) ||
       existing.issuedAt === undefined ||
@@ -862,11 +863,27 @@ export class ThreadTokenStore {
     return kept;
   }
 
+  private retainedDurablePriors(
+    existing: RouteRecord | NestedRouteRecord,
+  ): PriorCredential[] {
+    if (existing.token !== undefined) return [];
+    const issuedAt = this.now();
+    return [
+      ...(existing.priors ?? []),
+      {
+        tokenDigest: existing.tokenDigest,
+        issuedAt,
+        expiresAt: issuedAt + PROCESS_CREDENTIAL_MAX_AGE_MS,
+      },
+    ].slice(-MAX_PRIOR_CREDENTIALS);
+  }
+
   private credentialExpired(match: {
     record: RouteRecord | NestedRouteRecord;
     prior: PriorCredential | null;
   }): boolean {
     if (match.prior === null) return this.expired(match.record);
+    if (match.record.lifetime !== "process") return false;
     return this.expired({ lifetime: "process", ...match.prior });
   }
 
@@ -877,7 +894,10 @@ export class ThreadTokenStore {
     prior: PriorCredential | null,
   ): Promise<void> {
     const { record } = use;
-    if (record.lifetime !== "process") return;
+    if (record.lifetime !== "process") {
+      if (prior === null) await this.dropDurablePriors(use);
+      return;
+    }
     if (prior === null) {
       if (record.usedAt !== undefined) return;
       record.usedAt = this.now();
@@ -894,6 +914,28 @@ export class ThreadTokenStore {
       }
       if (this.routes.get(this.routeMapKey(use.record)) !== use.record) return;
       await this.persistCredential(this.file(use.record), use.record);
+    }).catch(() => undefined);
+  }
+
+  private async dropDurablePriors(
+    use:
+      | { nested: false; record: RouteRecord }
+      | { nested: true; record: NestedRouteRecord },
+  ): Promise<void> {
+    const { record } = use;
+    if (record.priors === undefined) return;
+    await this.serialize(async () => {
+      const current = use.nested
+        ? this.nestedRoutes.get(this.nestedMapKey(record))
+        : this.routes.get(this.routeMapKey(record));
+      if (current !== record || record.priors === undefined) return;
+      const index = use.nested ? this.nestedTokenIndex : this.tokenIndex;
+      for (const prior of record.priors) index.delete(prior.tokenDigest);
+      await this.persistCredential(
+        use.nested ? this.nestedFile(record) : this.file(record),
+        { ...record, priors: undefined },
+      );
+      record.priors = undefined;
     }).catch(() => undefined);
   }
 

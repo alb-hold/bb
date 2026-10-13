@@ -357,14 +357,43 @@ it("drops the prior when a later mint reclaims credentials of a dead host genera
   expect(await processFilesOf(directory)).toHaveLength(1);
 });
 
-it("never gives a durable credential a prior: its reissue after a restart still refuses the old token", async () => {
+it("keeps a restored durable credential valid after a re-mint until its successor is presented, for thread and nested routes", async () => {
   const { directory, hosts, threads, route, hostToken } = await fixture();
+  const nestedRoute = { hostId: route.hostId, threadId: route.threadId };
   const oldToken = await threads.forThread(route, hostToken);
+  const oldNested = await threads.forNested(nestedRoute, hostToken);
   const restarted = await restartOf(directory, hosts, route);
   const newToken = await restarted.forThread(route, hostToken);
+  const newNested = await restarted.forNested(nestedRoute, hostToken);
   expect(newToken).not.toBe(oldToken);
-  expect(await restarted.authenticate(oldToken)).toBeNull();
-  expect(await restarted.authenticate(newToken)).toEqual(route);
+  expect(await restarted.authenticate(oldToken)).toEqual(route);
+  expect(await restarted.authenticateNested(oldNested)).toEqual(nestedRoute);
+  const reloaded = await restartOf(directory, hosts, route);
+  expect(await reloaded.authenticate(oldToken)).toEqual(route);
+  expect(await reloaded.authenticateNested(oldNested)).toEqual(nestedRoute);
+  expect(await reloaded.authenticate(newToken)).toEqual(route);
+  expect(await reloaded.authenticate(oldToken)).toBeNull();
+  expect(await reloaded.authenticateNested(newNested)).toEqual(nestedRoute);
+  expect(await reloaded.authenticateNested(oldNested)).toBeNull();
+  const final = await restartOf(directory, hosts, route);
+  expect(await final.authenticate(oldToken)).toBeNull();
+  expect(await final.authenticateNested(oldNested)).toBeNull();
+  expect(await final.authenticate(newToken)).toEqual(route);
+});
+
+it("drops every digest of a durable route on revocation", async () => {
+  const { directory, hosts, threads, route, hostToken } = await fixture();
+  const nestedRoute = { hostId: route.hostId, threadId: route.threadId };
+  const oldToken = await threads.forThread(route, hostToken);
+  const oldNested = await threads.forNested(nestedRoute, hostToken);
+  const restarted = await restartOf(directory, hosts, route);
+  const newToken = await restarted.forThread(route, hostToken);
+  const newNested = await restarted.forNested(nestedRoute, hostToken);
+  await restarted.removeThread(route.threadId);
+  for (const token of [oldToken, newToken])
+    expect(await restarted.authenticate(token)).toBeNull();
+  for (const token of [oldNested, newNested])
+    expect(await restarted.authenticateNested(token)).toBeNull();
 });
 
 it("expires process credentials a fixed time after mint and removes expired records on initialize", async () => {
