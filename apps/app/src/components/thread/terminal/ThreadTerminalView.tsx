@@ -56,6 +56,7 @@ import {
   type TerminalLinkTarget,
 } from "./terminal-links";
 import {
+  nextSharedTerminalSize,
   terminalDisplaySize,
   type TerminalGridSize,
 } from "./terminal-shared-size";
@@ -1071,6 +1072,13 @@ export function ThreadTerminalView({
         }
       };
       const activeTransport = new TerminalWebSocketTransport({
+        onRepaintNudgeSizeReleased: (size) => {
+          const nextSize = nextSharedTerminalSize(sharedSize, size, false);
+          if (nextSize !== null) {
+            sharedSize = nextSize;
+            scheduleFit();
+          }
+        },
         onConnectionState: (state) => {
           if (disposed) {
             return;
@@ -1120,8 +1128,14 @@ export function ThreadTerminalView({
             message.type === "session-updated"
           ) {
             const { cols, rows } = message.session;
-            if (sharedSize?.cols !== cols || sharedSize.rows !== rows) {
-              sharedSize = { cols, rows };
+            const nextSize = nextSharedTerminalSize(
+              sharedSize,
+              { cols, rows },
+              message.type === "session-updated" &&
+                activeTransport.consumeRepaintNudgeEcho({ cols, rows }),
+            );
+            if (nextSize !== null) {
+              sharedSize = nextSize;
               scheduleFit();
             }
           }

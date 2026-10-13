@@ -16,6 +16,7 @@ import {
   ChildTerminalSocket,
   type ChildTerminalBroadcastMessage,
   type ChildTerminalReplayFrame,
+  type ChildTerminalReplyMessage,
   type ChildTerminalSocketSink,
 } from "./child-terminal-socket.js";
 
@@ -33,6 +34,7 @@ export interface DataPlaneTransport {
 export interface DataPlaneLifecyclePort {
   attach(args: {
     outputAcks: boolean;
+    resizeAcks: boolean;
     sinceSeq: number;
     socket: ChildTerminalSocket;
     terminalId: string;
@@ -48,6 +50,7 @@ export interface DataPlaneLifecyclePort {
 
 interface PendingAttach {
   outputAcks: boolean;
+  resizeAcks: boolean;
   sinceSeq: number;
   terminalId: string;
 }
@@ -55,6 +58,7 @@ interface PendingAttach {
 export interface DataPlaneAttachArgs {
   daemonSessionId: string;
   outputAcks: boolean;
+  resizeAcks: boolean;
   request: TerminalDataPlaneHandoffRequest;
   sinceSeq: number;
   socket: Socket;
@@ -90,6 +94,7 @@ export class TerminalDataPlaneRouter implements ChildTerminalSocketSink {
     const attachId = randomUUID();
     this.pending.set(attachId, {
       outputAcks: args.outputAcks,
+      resizeAcks: args.resizeAcks,
       sinceSeq: args.sinceSeq,
       terminalId: args.terminalId,
     });
@@ -279,6 +284,13 @@ export class TerminalDataPlaneRouter implements ChildTerminalSocketSink {
     }
   }
 
+  reply(attachId: string, message: ChildTerminalReplyMessage): void {
+    this.transport.send(
+      { v: V, type: "browser.reply", attachId, message },
+      { bytes: 0 },
+    );
+  }
+
   broadcast(
     terminalId: string,
     message: ChildTerminalBroadcastMessage,
@@ -333,6 +345,7 @@ export class TerminalDataPlaneRouter implements ChildTerminalSocketSink {
       pending.terminalId,
       this,
       pending.outputAcks,
+      pending.resizeAcks,
     );
     this.socketsByAttachId.set(attachId, socket);
     const ids = this.attachIdsByTerminalId.get(pending.terminalId) ?? new Set();
@@ -340,6 +353,7 @@ export class TerminalDataPlaneRouter implements ChildTerminalSocketSink {
     this.attachIdsByTerminalId.set(pending.terminalId, ids);
     this.lifecycle.attach({
       outputAcks: pending.outputAcks,
+      resizeAcks: pending.resizeAcks,
       sinceSeq: pending.sinceSeq,
       socket,
       terminalId: pending.terminalId,
@@ -373,10 +387,12 @@ export class TerminalDataPlaneRouter implements ChildTerminalSocketSink {
       terminalId,
       this,
       socket.outputAcks,
+      socket.resizeAcks,
     );
     this.socketsByAttachId.set(attachId, fresh);
     this.lifecycle.attach({
       outputAcks: fresh.outputAcks,
+      resizeAcks: fresh.resizeAcks,
       sinceSeq: fromSeq,
       socket: fresh,
       terminalId,

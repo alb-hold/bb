@@ -92,6 +92,7 @@ export function handOffTerminalUpgrade(
   }
   const query = terminalWebSocketQuerySchema.safeParse({
     outputAcks: url.searchParams.get("outputAcks") ?? undefined,
+    resizeAcks: url.searchParams.get("resizeAcks") ?? undefined,
     sinceSeq: url.searchParams.get("sinceSeq") ?? undefined,
   });
   if (!query.success) {
@@ -104,6 +105,7 @@ export function handOffTerminalUpgrade(
   const attachId = options.attach({
     daemonSessionId: target.daemonSessionId,
     outputAcks: query.data.outputAcks,
+    resizeAcks: query.data.resizeAcks,
     request: {
       url: `${url.pathname}${url.search}`,
       headers: rawHeaderPairs(request),

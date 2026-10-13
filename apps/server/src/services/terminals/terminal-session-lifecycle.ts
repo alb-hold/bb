@@ -165,6 +165,7 @@ interface ResolvedTerminalLaunchTarget {
 
 interface AttachBrowserTerminalArgs {
   outputAcks: boolean;
+  resizeAcks: boolean;
   socket: TerminalClientSocket;
   sinceSeq: number;
   terminalId: string;
@@ -569,6 +570,7 @@ export class TerminalSessionLifecycle {
     TerminalClientSocket,
     boolean
   >();
+  private readonly resizeAckSockets = new WeakSet<TerminalClientSocket>();
   private readonly outputFlow: TerminalOutputFlowControl;
 
   constructor(private readonly options: TerminalSessionLifecycleOptions) {
@@ -1564,6 +1566,13 @@ export class TerminalSessionLifecycle {
     if (args.outputAcks) {
       this.outputAckSocketVisibility.set(args.socket, true);
     }
+    if (args.resizeAcks) {
+      this.resizeAckSockets.add(args.socket);
+      this.options.hub.sendTerminalSocketMessage(args.socket, {
+        type: "features",
+        resizeAcks: true,
+      });
+    }
     const current = this.getBrowserTerminalSession({
       ...args,
       reportMissing: false,
@@ -2012,6 +2021,12 @@ export class TerminalSessionLifecycle {
       Date.now(),
     );
     this.applySharedTerminalSize(args);
+    if (args.message.seq !== undefined && this.resizeAckSockets.has(args.socket)) {
+      this.options.hub.sendTerminalSocketMessage(args.socket, {
+        type: "resize-applied",
+        seq: args.message.seq,
+      });
+    }
   }
 
   private applySharedTerminalSize(args: {

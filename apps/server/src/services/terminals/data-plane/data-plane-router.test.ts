@@ -84,6 +84,7 @@ function createFixture() {
     const attachId = router.attachBrowser({
       daemonSessionId: "ds_1",
       outputAcks: true,
+      resizeAcks: false,
       request,
       sinceSeq: 0,
       socket: raw,
@@ -124,6 +125,7 @@ describe("TerminalDataPlaneRouter", () => {
       fixture.router.attachBrowser({
         daemonSessionId: "ds_1",
         outputAcks: false,
+        resizeAcks: false,
         request: fixture.sent[0]?.message.type === "browser.attach"
           ? fixture.sent[0].message.request
           : { url: "", headers: [], headBase64: "" },
@@ -165,6 +167,39 @@ describe("TerminalDataPlaneRouter", () => {
       (entry) => entry.message.type === "browser.send",
     );
     expect(updates).toHaveLength(1);
+  });
+
+  it("sends resize acknowledgements to the one browser they name, after the session update that caused them", async () => {
+    const fixture = createFixture();
+    const first = fixture.attach();
+    fixture.attach();
+    await Promise.resolve();
+    const sockets = fixture.attached;
+    sockets[0]?.send(
+      JSON.stringify({ type: "session-updated", session }),
+    );
+    sockets[0]?.send(JSON.stringify({ type: "resize-applied", seq: 3 }));
+    sockets[0]?.send(JSON.stringify({ type: "features", resizeAcks: true }));
+
+    const afterReplay = fixture.sent
+      .map((entry) => entry.message)
+      .filter(
+        (message) =>
+          message.type === "browser.send" || message.type === "browser.reply",
+      );
+    expect(afterReplay.map((message) => message.type)).toEqual([
+      "browser.send",
+      "browser.reply",
+      "browser.reply",
+    ]);
+    expect(afterReplay[1]).toMatchObject({
+      attachId: first.attachId,
+      message: { type: "resize-applied", seq: 3 },
+    });
+    expect(afterReplay[2]).toMatchObject({
+      attachId: first.attachId,
+      message: { type: "features", resizeAcks: true },
+    });
   });
 
   it("relays live output once per sequence number across browsers on one terminal", async () => {

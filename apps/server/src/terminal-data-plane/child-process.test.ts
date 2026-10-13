@@ -288,6 +288,87 @@ describe("terminal data plane child process", () => {
   );
 
   it(
+    "passes a tagged resize to main and writes the replies for that attach after the session update, over a real socket",
+    async () => {
+      const child = startChild();
+      await child.waitFor("ready");
+      const { port } = await listenForUpgrades((request, socket, head) => {
+        child.send(
+          {
+            v,
+            type: "browser.attach",
+            attachId: "attach_1",
+            terminalId: "term_authorized",
+            daemonSessionId: "session_1",
+            outputAcks: false,
+            sinceSeq: 0,
+            request: {
+              url: request.url ?? "/",
+              headers: rawHeaderPairs(request),
+              headBase64: head.toString("base64"),
+            },
+          },
+          socket,
+        );
+      });
+
+      const client = new WebSocket(`ws://127.0.0.1:${port}/ws/terminals/term_authorized`);
+      cleanups.push(() => client.terminate());
+      const received = collectFrames(client);
+      await child.waitFor("browser.attached");
+      child.send({
+        v,
+        type: "browser.reply",
+        attachId: "attach_1",
+        message: { type: "features", resizeAcks: true },
+      });
+      child.send({
+        v,
+        type: "browser.replay",
+        attachId: "attach_1",
+        terminalId: "term_authorized",
+        session,
+        replayStartSeq: 0,
+        chunks: [],
+        nextSeq: 0,
+      });
+      await received.waitForCount(2);
+
+      client.send(JSON.stringify({ type: "resize", cols: 90, rows: 30, seq: 3 }));
+      expect(await child.waitFor("browser.control")).toEqual({
+        v,
+        type: "browser.control",
+        attachId: "attach_1",
+        terminalId: "term_authorized",
+        message: { type: "resize", cols: 90, rows: 30, seq: 3 },
+      });
+      child.send({
+        v,
+        type: "browser.send",
+        terminalId: "term_authorized",
+        message: { type: "session-updated", session: { ...session, cols: 90, rows: 30 } },
+      });
+      child.send({
+        v,
+        type: "browser.reply",
+        attachId: "attach_1",
+        message: { type: "resize-applied", seq: 3 },
+      });
+      await received.waitForCount(4);
+
+      expect(received.frames.map((frame) => frame.type)).toEqual([
+        "attached",
+        "features",
+        "session-updated",
+        "resize-applied",
+      ]);
+      expect(received.frames[3]).toEqual({ type: "resize-applied", seq: 3 });
+      client.close();
+    },
+    120_000,
+  );
+
+  it(
     "rejects a handed socket whose request is not a WebSocket handshake",
     async () => {
       const child = startChild();

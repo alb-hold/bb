@@ -6,6 +6,7 @@ import { attachBrowserOnDataSocket } from "./terminal-data-plane.js";
 const args: DataPlaneAttachArgs = {
   daemonSessionId: "session_1",
   outputAcks: false,
+  resizeAcks: false,
   request: { url: "/ws/terminals/term_1", headers: [], headBase64: "" },
   sinceSeq: 0,
   socket: {} as Socket,

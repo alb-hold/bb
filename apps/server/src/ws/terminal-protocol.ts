@@ -16,6 +16,7 @@ interface TerminalSocket {
 
 interface TerminalSocketOpenArgs {
   outputAcks: boolean;
+  resizeAcks: boolean;
   socket: TerminalSocket;
   sinceSeq: number;
   terminalId: string;
@@ -84,6 +85,7 @@ export function onTerminalSocketOpen(
   try {
     deps.terminalSessions.attachBrowserTerminal({
       outputAcks: args.outputAcks,
+      resizeAcks: args.resizeAcks,
       socket: args.socket,
       sinceSeq: args.sinceSeq,
       terminalId: args.terminalId,

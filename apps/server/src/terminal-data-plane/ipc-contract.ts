@@ -46,6 +46,12 @@ const browserControlClientMessageSchema = terminalClientMessageSchema.refine(
   "Only resize client messages cross to main as browser.control",
 );
 
+const browserReplyServerMessageSchema = terminalServerMessageSchema.refine(
+  (message) =>
+    message.type === "features" || message.type === "resize-applied",
+  "Only features and resize-applied server messages are replies to one browser attach",
+);
+
 const browserSendServerMessageSchema = terminalServerMessageSchema.refine(
   (message) =>
     message.type === "session-updated" ||
@@ -85,6 +91,14 @@ export const terminalDataPlaneMainMessageSchema = z.discriminatedUnion("type", [
       type: z.literal("browser.send"),
       terminalId: idSchema,
       message: browserSendServerMessageSchema,
+    })
+    .strict(),
+  z
+    .object({
+      v: versionSchema,
+      type: z.literal("browser.reply"),
+      attachId: idSchema,
+      message: browserReplyServerMessageSchema,
     })
     .strict(),
   z

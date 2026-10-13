@@ -631,6 +631,46 @@ describe("terminal data plane child", () => {
     ]);
   });
 
+  it("sends a reply only to the attach it names, held until the attached frame is written", async () => {
+    const harness = createHarness();
+    const named = await attachBrowser(harness, { attachId: "a1", terminalId: "term_a" });
+    const other = await attachBrowser(harness, { attachId: "a2", terminalId: "term_a" });
+
+    main(harness, {
+      v,
+      type: "browser.reply",
+      attachId: "a1",
+      message: { type: "resize-applied", seq: 4 },
+    });
+    expect(named.sent).toEqual([]);
+
+    replay(harness, { attachId: "a1", terminalId: "term_a", nextSeq: 0 });
+    replay(harness, { attachId: "a2", terminalId: "term_a", nextSeq: 0 });
+    main(harness, {
+      v,
+      type: "browser.send",
+      terminalId: "term_a",
+      message: { type: "session-updated", session },
+    });
+    main(harness, {
+      v,
+      type: "browser.reply",
+      attachId: "a1",
+      message: { type: "features", resizeAcks: true },
+    });
+
+    expect(named.frames().map((frame) => frame.type)).toEqual([
+      "attached",
+      "resize-applied",
+      "session-updated",
+      "features",
+    ]);
+    expect(other.frames().map((frame) => frame.type)).toEqual([
+      "attached",
+      "session-updated",
+    ]);
+  });
+
   it("answers ping itself and passes resize, ack and visibility to main", async () => {
     const harness = createHarness();
     const socket = await attachLive(harness, {

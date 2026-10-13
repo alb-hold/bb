@@ -15,3 +15,17 @@ export function terminalDisplaySize(
     rows: Math.min(fitted.rows, shared.rows),
   };
 }
+
+export function nextSharedTerminalSize(
+  current: TerminalGridSize | null,
+  reported: TerminalGridSize,
+  isOwnRepaintNudgeEcho: boolean,
+): TerminalGridSize | null {
+  if (isOwnRepaintNudgeEcho) {
+    return null;
+  }
+  if (current?.cols === reported.cols && current.rows === reported.rows) {
+    return null;
+  }
+  return reported;
+}

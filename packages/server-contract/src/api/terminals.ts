@@ -178,6 +178,10 @@ export const terminalWebSocketQuerySchema = z
       .enum(["0", "1"])
       .default("0")
       .transform((value) => value === "1"),
+    resizeAcks: z
+      .enum(["0", "1"])
+      .default("0")
+      .transform((value) => value === "1"),
   })
   .strict();
 
@@ -208,6 +212,7 @@ export const terminalClientMessageSchema = z.discriminatedUnion("type", [
       cols: terminalColsSchema,
       rows: terminalRowsSchema,
       claim: z.literal(true).optional(),
+      seq: z.number().int().positive().optional(),
     })
     .strict(),
   z
@@ -267,6 +272,18 @@ export const terminalServerMessageSchema = z.discriminatedUnion("type", [
   z
     .object({
       type: z.literal("pong"),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("features"),
+      resizeAcks: z.literal(true),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("resize-applied"),
+      seq: z.number().int().positive(),
     })
     .strict(),
 ]);
