@@ -1,5 +1,18 @@
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, unlinkSync } from "node:fs";
+import {
+  chmodSync,
+  closeSync,
+  fchmodSync,
+  fstatSync,
+  ftruncateSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  rmSync,
+  unlinkSync,
+  writeSync,
+} from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -9,6 +22,54 @@ export const NATIVE_HOLDER_REAP_AFTER_MS = 15 * 60_000;
 const NATIVE_HOLDER_FIRST_CLIENT_TIMEOUT_MS = 20_000;
 const NATIVE_HOLDER_REAP_CHECK_MS = 30_000;
 const UNIX_SOCKET_PATH_MAX_BYTES = 100;
+const NATIVE_HOLDER_LOG_MAX_BYTES = 256 * 1024;
+
+export function logNativeHolderEvent(
+  socketPath: string,
+  event: string,
+  fields: Record<string, number | string | null>,
+): void {
+  const logPath = socketPath.endsWith(".sock")
+    ? socketPath.replace(/\.sock$/u, ".log")
+    : `${socketPath}.log`;
+  const safeFields = Object.fromEntries(
+    Object.entries(fields).map(([key, value]) => [
+      key,
+      typeof value === "string" ? value.slice(0, 200) : value,
+    ]),
+  );
+  const line = `${JSON.stringify({
+    time: new Date().toISOString(),
+    event: event.slice(0, 200),
+    ...safeFields,
+  })}\n`;
+  try {
+    const lineBytes = Buffer.byteLength(line);
+    const fd = openSync(logPath, "a", 0o600);
+    try {
+      fchmodSync(fd, 0o600);
+      const existingSize = fstatSync(fd).size;
+      if (
+        existingSize > NATIVE_HOLDER_LOG_MAX_BYTES ||
+        (lineBytes <= NATIVE_HOLDER_LOG_MAX_BYTES &&
+          existingSize + lineBytes > NATIVE_HOLDER_LOG_MAX_BYTES)
+      ) {
+        ftruncateSync(fd, 0);
+      }
+      if (lineBytes <= NATIVE_HOLDER_LOG_MAX_BYTES) {
+        const record = Buffer.from(line);
+        let offset = 0;
+        while (offset < record.length) {
+          offset += writeSync(fd, record, offset, record.length - offset);
+        }
+      }
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return;
+  }
+}
 
 export const NativeHolderFrame = {
   input: 1,
@@ -140,6 +201,9 @@ export interface NativeHolderProcess {
 
 export interface RunNativeHolderOptions {
   socketPath: string;
+  holderPid?: number;
+  holderPgid?: number;
+  holderSid?: number;
   cwd: string;
   env: NodeJS.ProcessEnv;
   reapAfterMs?: number;
@@ -162,6 +226,8 @@ export interface RunNativeHolderOptions {
   tickIntervalMs?: number;
   terminalClosedForGood?(): Promise<boolean>;
   detachedCheckIntervalMs?: number;
+  onSocketReady?(): void;
+  onSocketClosed?(): void;
 }
 
 const TERMINAL_CLOSES_THAT_STOP_THE_CLI = new Set([
@@ -178,14 +244,28 @@ const NATIVE_HOLDER_IGNORED_SIGNALS = [
   "SIGTERM",
 ] as const;
 
-export function ignoreNativeHolderSignals(target: NodeJS.Process): () => void {
-  const ignore = (): void => {};
+export function ignoreNativeHolderSignals(
+  target: NodeJS.Process,
+  socketPath?: string,
+  ownsSocket: () => boolean = () => true,
+): () => void {
+  const ignore = (signal: (typeof NATIVE_HOLDER_IGNORED_SIGNALS)[number]) =>
+    (): void => {
+      if (socketPath !== undefined && ownsSocket()) {
+        logNativeHolderEvent(socketPath, "ignored-signal", { signal });
+      }
+    };
+  const handlers = new Map(
+    NATIVE_HOLDER_IGNORED_SIGNALS.map((signal) => [signal, ignore(signal)]),
+  );
   for (const signal of NATIVE_HOLDER_IGNORED_SIGNALS) {
-    target.on(signal, ignore);
+    const handler = handlers.get(signal);
+    if (handler !== undefined) target.on(signal, handler);
   }
   return () => {
     for (const signal of NATIVE_HOLDER_IGNORED_SIGNALS) {
-      target.off(signal, ignore);
+      const handler = handlers.get(signal);
+      if (handler !== undefined) target.off(signal, handler);
     }
   };
 }
@@ -204,8 +284,15 @@ export function nativeTerminalClosedForGood(
   );
 }
 
-function removeSocketFile(socketPath: string): void {
+function removeSocketFile(
+  socketPath: string,
+  expected?: { dev: number; ino: number },
+): void {
   try {
+    if (expected !== undefined) {
+      const current = lstatSync(socketPath);
+      if (current.dev !== expected.dev || current.ino !== expected.ino) return;
+    }
     unlinkSync(socketPath);
   } catch {
     return;
@@ -251,9 +338,12 @@ export async function runNativeHolder(
     socket.on("error", () => undefined);
     socket.end(credential ?? "");
   });
-  const finish = (code: number): void => {
+  let finishReason = "child exited";
+  const finish = (code: number, reason = finishReason): void => {
     if (finished) return;
     finished = true;
+    logNativeHolderEvent(options.socketPath, "holder-finish", { reason });
+    options.onSocketClosed?.();
     for (const timer of timers) clearInterval(timer);
     writeFrame(
       client,
@@ -319,6 +409,12 @@ export async function runNativeHolder(
       return;
     }
     pendingSize = null;
+    logNativeHolderEvent(options.socketPath, "holder-start", {
+      pid: options.holderPid ?? process.pid,
+      pgid: options.holderPgid ?? process.pid,
+      sid: options.holderSid ?? process.pid,
+      cliPid: pty.pid,
+    });
     if (pendingInput.length > 0) {
       pty.write(pendingInput);
       pendingInput = "";
@@ -327,10 +423,15 @@ export async function runNativeHolder(
       writeFrame(client, NativeHolderFrame.output, Buffer.from(data, "utf8"));
     });
     pty.onExit(({ exitCode, signal }) => {
+      logNativeHolderEvent(options.socketPath, "pty-child-exit", {
+        exitCode,
+        signal: signal ?? null,
+      });
       finish(
         Number.isInteger(exitCode) && exitCode >= 0
           ? exitCode
           : 128 + (signal ?? 0),
+        finishReason,
       );
     });
   };
@@ -390,6 +491,7 @@ export async function runNativeHolder(
       listenPrivately(server, options.socketPath);
     });
     chmodSync(options.socketPath, 0o600);
+    options.onSocketReady?.();
   } catch (error) {
     credentialServer.close();
     rmSync(credentialDir, { recursive: true, force: true });
@@ -407,7 +509,10 @@ export async function runNativeHolder(
     setInterval(
       () => {
         if (pty === null || client !== null) return;
-        if (Date.now() - detachedSince >= reapAfterMs) pty.kill("SIGHUP");
+        if (Date.now() - detachedSince >= reapAfterMs) {
+          finishReason = "reap after detach";
+          pty.kill("SIGHUP");
+        }
       },
       Math.min(NATIVE_HOLDER_REAP_CHECK_MS, reapAfterMs),
     ),
@@ -421,7 +526,10 @@ export async function runNativeHolder(
         checking = true;
         closedForGood()
           .then((closed) => {
-            if (closed && client === null) pty?.kill("SIGHUP");
+            if (closed && client === null) {
+              finishReason = "explicit close";
+              pty?.kill("SIGHUP");
+            }
           })
           .catch(() => {
             if (client === null) detachedSince = Date.now();
@@ -477,12 +585,21 @@ export async function openNativeHolderConnection(args: {
 export async function connectNativeHolder(
   socketPath: string,
 ): Promise<net.Socket | null> {
+  let socketIdentity: { dev: number; ino: number } | null = null;
+  try {
+    const socketStat = lstatSync(socketPath);
+    socketIdentity = { dev: socketStat.dev, ino: socketStat.ino };
+  } catch {
+    socketIdentity = null;
+  }
   return await new Promise((resolve) => {
     const socket = net.createConnection(socketPath);
     socket.once("connect", () => resolve(socket));
     socket.once("error", (error: NodeJS.ErrnoException) => {
       socket.destroy();
-      if (error.code === "ECONNREFUSED") removeSocketFile(socketPath);
+      if (error.code === "ECONNREFUSED" && socketIdentity !== null) {
+        removeSocketFile(socketPath, socketIdentity);
+      }
       resolve(null);
     });
   });

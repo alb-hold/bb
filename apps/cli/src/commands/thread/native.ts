@@ -1,9 +1,6 @@
 import { spawn } from "node:child_process";
 import {
-  appendFileSync,
-  closeSync,
   mkdirSync,
-  openSync,
   rmSync,
   statSync,
   unlinkSync,
@@ -39,6 +36,7 @@ import {
   defaultNativeHolderSocketPath,
   openNativeHolderConnection,
   ignoreNativeHolderSignals,
+  logNativeHolderEvent,
   pipeNativeHolderClient,
   runNativeHolder,
 } from "../../native-holder.js";
@@ -98,37 +96,32 @@ function removeEmptyNativeHolderLog(socketPath: string): void {
 
 function spawnNativeHolder(threadId: string, socketPath: string): void {
   mkdirSync(path.dirname(socketPath), { recursive: true, mode: 0o700 });
-  const log = openSync(nativeHolderLogPath(socketPath), "a", 0o600);
-  try {
-    const script = process.argv[1];
-    if (script === undefined) {
-      throw new CliExitError(
-        "Cannot locate the bb CLI to start the native terminal holder",
-        1,
-      );
-    }
-    const holder = spawn(
-      process.execPath,
-      [
-        ...process.execArgv,
-        script,
-        "thread",
-        "native-hold",
-        threadId,
-        "--socket",
-        socketPath,
-      ],
-      {
-        cwd: process.cwd(),
-        detached: true,
-        env: process.env,
-        stdio: ["ignore", "ignore", log],
-      },
+  const script = process.argv[1];
+  if (script === undefined) {
+    throw new CliExitError(
+      "Cannot locate the bb CLI to start the native terminal holder",
+      1,
     );
-    holder.unref();
-  } finally {
-    closeSync(log);
   }
+  const holder = spawn(
+    process.execPath,
+    [
+      ...process.execArgv,
+      script,
+      "thread",
+      "native-hold",
+      threadId,
+      "--socket",
+      socketPath,
+    ],
+    {
+      cwd: process.cwd(),
+      detached: true,
+      env: process.env,
+      stdio: ["ignore", "ignore", "ignore"],
+    },
+  );
+  holder.unref();
 }
 
 async function runNativeHarness(
@@ -181,7 +174,14 @@ async function holdNativeHarness(
   threadId: string,
   socketPath: string,
 ): Promise<number> {
-  ignoreNativeHolderSignals(process);
+  let ownsSocket = false;
+  ignoreNativeHolderSignals(process, socketPath, () => ownsSocket);
+  process.on("uncaughtExceptionMonitor", (error) => {
+    if (!ownsSocket) return;
+    logNativeHolderEvent(socketPath, "uncaught-exception", {
+      name: error.name,
+    });
+  });
   const sdk = createCliBbSdk(baseUrl);
   const nodePty = await import("node-pty");
   const cwd = process.cwd();
@@ -244,6 +244,9 @@ async function holdNativeHarness(
   let pty: ReturnType<typeof nodePty.spawn> | null = null;
   const exitCode = await runNativeHolder({
     socketPath,
+    holderPid: process.pid,
+    holderPgid: process.pid,
+    holderSid: process.pid,
     cwd,
     env: process.env,
     prepare: async ({ credential, credentialSocket }) => {
@@ -312,13 +315,10 @@ async function holdNativeHarness(
             }
           : launch.session,
         (total) => {
-          try {
-            appendFileSync(
-              nativeHolderLogPath(socketPath),
-              `native activity: ${total} evicted transcript identities could not be confirmed and were treated as fresh\n`,
-            );
-          } catch {
-            return;
+          if (ownsSocket) {
+            logNativeHolderEvent(socketPath, "activity-transcript-eviction", {
+              count: total,
+            });
           }
         },
       );
@@ -345,6 +345,12 @@ async function holdNativeHarness(
     },
     tick: discover,
     tickIntervalMs: SESSION_DISCOVERY_INTERVAL_MS,
+    onSocketReady: () => {
+      ownsSocket = true;
+    },
+    onSocketClosed: () => {
+      ownsSocket = false;
+    },
     terminalClosedForGood: () =>
       checkNativeTerminalClosedForGood({ baseUrl, threadId }),
   });

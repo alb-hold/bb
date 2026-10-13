@@ -1,5 +1,14 @@
 import { spawn as spawnProcess } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { EventEmitter } from "node:events";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import http from "node:http";
 import type net from "node:net";
 import os from "node:os";
@@ -8,10 +17,12 @@ import { PassThrough } from "node:stream";
 import { pathToFileURL } from "node:url";
 import { spawn as spawnPty } from "node-pty";
 import { afterEach, describe, expect, it } from "vitest";
+import * as nativeHolder from "../native-holder.js";
 import {
   NativeHolderFrame,
   NativeHolderFrameDecoder,
   encodeNativeHolderFrame,
+  ignoreNativeHolderSignals,
   nativeHolderSocketPath,
   nativeTerminalClosedForGood,
   openNativeHolderConnection,
@@ -37,6 +48,32 @@ function socketIn(): string {
   const dir = mkdtempSync(path.join(os.tmpdir(), "bb-holder-"));
   tempDirs.push(dir);
   return path.join(dir, "thread.sock");
+}
+
+function writeHolderTestEvent(
+  socketPath: string,
+  event: string,
+  fields: Record<string, number | string | null>,
+): void {
+  const logEvent = (
+    nativeHolder as unknown as {
+      logNativeHolderEvent?: (
+        socketPath: string,
+        event: string,
+        fields: Record<string, number | string | null>,
+      ) => void;
+    }
+  ).logNativeHolderEvent;
+  expect(logEvent).toBeTypeOf("function");
+  logEvent?.(socketPath, event, fields);
+}
+
+function oversizedHolderTestFields(): Record<string, number> {
+  const fields: Record<string, number> = {};
+  for (let index = 0; index < 30_000; index += 1) {
+    fields[`field${index}`] = index;
+  }
+  return fields;
 }
 
 function startHolder(
@@ -122,6 +159,217 @@ const ECHO_LOOP: NativeHolderProcess = {
 };
 
 describe("native terminal holder", () => {
+  it("keeps the log at the size cap when an oversized record reaches the boundary", () => {
+    const socketPath = socketIn();
+    const logPath = socketPath.replace(/\.sock$/u, ".log");
+    const maxBytes = 256 * 1024;
+    writeFileSync(logPath, Buffer.alloc(maxBytes - 4, 0x78));
+
+    writeHolderTestEvent(
+      socketPath,
+      "boundary",
+      oversizedHolderTestFields(),
+    );
+
+    expect(statSync(logPath).size).toBeLessThanOrEqual(maxBytes);
+  });
+
+  it("truncates a nearly full log before writing a fitting record", () => {
+    const socketPath = socketIn();
+    const logPath = socketPath.replace(/\.sock$/u, ".log");
+    const maxBytes = 256 * 1024;
+    writeFileSync(logPath, Buffer.alloc(maxBytes - 10, 0x78));
+
+    writeHolderTestEvent(socketPath, "bounded", {
+      id: 1,
+      detail: "x".repeat(40),
+    });
+
+    const lines = readFileSync(logPath, "utf8").trim().split("\n");
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0] ?? "{}")).toMatchObject({ event: "bounded" });
+    expect(statSync(logPath).size).toBeLessThanOrEqual(maxBytes);
+  });
+
+  it("keeps a competing holder from writing to the socket owner's log", async () => {
+    const socketPath = socketIn();
+    const logPath = socketPath.replace(/\.sock$/u, ".log");
+    const firstPtyExit: {
+      current?: (event: { exitCode: number; signal?: number }) => void;
+    } = {};
+    let firstOwnsSocket = false;
+    const run = (
+      onSocketReady?: () => void,
+      onSocketClosed?: () => void,
+    ): Promise<number> =>
+      runNativeHolder(
+        {
+          socketPath,
+          cwd: os.tmpdir(),
+          env: {},
+          onSocketReady,
+          onSocketClosed,
+          prepare: async () => ({ command: "fake", args: [] }),
+          spawnPty: () => ({
+            pid: 654,
+            onData: () => undefined,
+            onExit: (
+              listener: (event: { exitCode: number; signal?: number }) => void,
+            ) => {
+              firstPtyExit.current = listener;
+            },
+            write: () => undefined,
+            resize: () => undefined,
+            kill: () => undefined,
+          }),
+        } as unknown as Parameters<typeof runNativeHolder>[0],
+      );
+    const first = run(() => {
+      firstOwnsSocket = true;
+    }, () => {
+      firstOwnsSocket = false;
+    });
+    const firstSignalTarget = new EventEmitter() as unknown as NodeJS.Process;
+    const holderModule = pathToFileURL(
+      path.join(import.meta.dirname, "..", "native-holder.ts"),
+    ).href;
+    const ignoreSignals = ignoreNativeHolderSignals as unknown as (
+      target: NodeJS.Process,
+      path: string,
+      ownsSocket: () => boolean,
+    ) => () => void;
+    const removeFirstSignals = ignoreSignals(
+      firstSignalTarget,
+      socketPath,
+      () => firstOwnsSocket,
+    );
+    let client: Client | null = null;
+    try {
+      client = await attach(socketPath);
+      await expect.poll(() => firstPtyExit.current).toBeDefined();
+      firstOwnsSocket = true;
+      const firstLog = readFileSync(logPath, "utf8");
+
+      const second = spawnProcess(
+        process.execPath,
+        [
+          "--experimental-strip-types",
+          "--no-warnings",
+          "--input-type=module",
+          "-e",
+          `const { ignoreNativeHolderSignals, runNativeHolder } = await import(${JSON.stringify(holderModule)});
+let ownsSocket = false;
+ignoreNativeHolderSignals(process, ${JSON.stringify(socketPath)}, () => ownsSocket);
+process.emit("SIGTERM");
+try {
+  await runNativeHolder({
+    socketPath: ${JSON.stringify(socketPath)},
+    cwd: ${JSON.stringify(os.tmpdir())},
+    env: {},
+    onSocketReady: () => { ownsSocket = true; },
+    onSocketClosed: () => { ownsSocket = false; },
+    prepare: async () => ({ command: "fake", args: [] }),
+    spawnPty: () => { throw new Error("must not start a PTY"); },
+  });
+  process.stdout.write("unexpected socket ownership\\n");
+} catch (error) {
+  console.error("competing holder startup failure");
+  process.stdout.write(String(error.code) + "\\n");
+}`,
+        ],
+        { stdio: ["ignore", "pipe", "ignore"] },
+      );
+      let secondOutput = "";
+      const secondExit = new Promise<void>((resolve, reject) => {
+        second.stdout.on("data", (chunk: Buffer) => {
+          secondOutput += chunk.toString("utf8");
+        });
+        second.once("error", reject);
+        second.once("exit", (code, signal) => {
+          if (code === 0 && signal === null) resolve();
+          else reject(new Error(`competing holder exited: ${code} ${signal}`));
+        });
+      });
+      await secondExit;
+      expect(secondOutput.trim()).toBe("EADDRINUSE");
+
+      expect(readFileSync(logPath, "utf8")).toBe(firstLog);
+      firstPtyExit.current?.({ exitCode: 0 });
+      await first;
+      const finishedLog = readFileSync(logPath, "utf8");
+      firstSignalTarget.emit("SIGTERM");
+      expect(readFileSync(logPath, "utf8")).toBe(finishedLog);
+    } finally {
+      removeFirstSignals();
+      client?.socket.destroy();
+      firstPtyExit.current?.({ exitCode: 0 });
+      await first;
+    }
+  });
+
+  it("truncates oversized exception names before writing the record", () => {
+    const socketPath = socketIn();
+    const logPath = socketPath.replace(/\.sock$/u, ".log");
+
+    writeHolderTestEvent(socketPath, "uncaught-exception", {
+      name: "E".repeat(1_024),
+    });
+
+    const [line] = readFileSync(logPath, "utf8").trim().split("\n");
+    const record = JSON.parse(line ?? "{}") as Record<string, unknown>;
+    expect(record.name).toBe("E".repeat(200));
+    expect(statSync(logPath).size).toBeLessThanOrEqual(256 * 1024);
+  });
+
+  it("drops a serialized event that is larger than the log cap", () => {
+    const socketPath = socketIn();
+    const logPath = socketPath.replace(/\.sock$/u, ".log");
+    writeHolderTestEvent(
+      socketPath,
+      "oversized-record",
+      oversizedHolderTestFields(),
+    );
+
+    expect(statSync(logPath).size).toBeLessThanOrEqual(256 * 1024);
+    expect(readFileSync(logPath, "utf8")).toBe("");
+  });
+
+  it("sets an existing holder log to mode 0600 before appending", () => {
+    const socketPath = socketIn();
+    const logPath = socketPath.replace(/\.sock$/u, ".log");
+    writeFileSync(logPath, "existing\n", { mode: 0o644 });
+    chmodSync(logPath, 0o644);
+
+    writeHolderTestEvent(socketPath, "permission-check", { value: 1 });
+
+    expect(statSync(logPath).mode & 0o777).toBe(0o600);
+  });
+
+  it("writes an adjacent log when the socket path has no suffix", () => {
+    const socketPath = path.join(path.dirname(socketIn()), "holder");
+    const logEvent = (
+      nativeHolder as unknown as {
+        logNativeHolderEvent?: (
+          socketPath: string,
+          event: string,
+          fields: Record<string, number | string | null>,
+        ) => void;
+      }
+    ).logNativeHolderEvent;
+
+    expect(logEvent).toBeTypeOf("function");
+    logEvent?.(socketPath, "probe", { value: 1 });
+
+    const logPath = `${socketPath}.log`;
+    expect(existsSync(socketPath)).toBe(false);
+    expect(existsSync(logPath)).toBe(true);
+    const [line] = readFileSync(logPath, "utf8").trim().split("\n");
+    expect(JSON.parse(line ?? "{}")).toMatchObject({
+      event: "probe",
+      value: 1,
+    });
+  });
+
   it("keeps the CLI running when its terminal goes away and reattaches to the same process", async () => {
     const socketPath = socketIn();
     const held = startHolder(socketPath, ECHO_LOOP);
@@ -392,6 +640,72 @@ setInterval(() => {}, 1000);`,
       }
     } finally {
       child.kill("SIGKILL");
+    }
+  });
+
+  it("records ignored signals and fake PTY lifecycle events without terminal data", async () => {
+    const socketPath = socketIn();
+    const logPath = socketPath.replace(/\.sock$/u, ".log");
+    const signalTarget = new EventEmitter() as unknown as NodeJS.Process;
+    const ignoreSignals = ignoreNativeHolderSignals as unknown as (
+      target: NodeJS.Process,
+      socketPath: string,
+    ) => () => void;
+    const removeSignals = ignoreSignals(signalTarget, socketPath);
+    signalTarget.emit("SIGTERM");
+    const ptyExit: {
+      current: ((event: { exitCode: number; signal?: number }) => void) | null;
+    } = { current: null };
+    const held = runNativeHolder({
+      socketPath,
+      holderPid: 321,
+      holderPgid: 321,
+      holderSid: 321,
+      cwd: os.tmpdir(),
+      env: {},
+      prepare: async () => ({ command: "fake", args: [] }),
+      spawnPty: () => ({
+        pid: 654,
+        onData: () => undefined,
+        onExit: (listener) => {
+          ptyExit.current = listener;
+        },
+        write: () => undefined,
+        resize: () => undefined,
+        kill: () => undefined,
+      }),
+    });
+    try {
+      const client = await attach(socketPath);
+      await expect.poll(() => ptyExit.current).not.toBeNull();
+      ptyExit.current?.({ exitCode: 9 });
+      await expect(held).resolves.toBe(9);
+      const lines = readFileSync(logPath, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      expect(lines.map(({ event }) => event)).toEqual([
+        "ignored-signal",
+        "holder-start",
+        "pty-child-exit",
+        "holder-finish",
+      ]);
+      expect(lines[0]).toMatchObject({ signal: "SIGTERM" });
+      expect(lines[1]).toMatchObject({
+        pid: 321,
+        pgid: 321,
+        sid: 321,
+        cliPid: 654,
+      });
+      expect(lines[2]).toMatchObject({ exitCode: 9, signal: null });
+      expect(lines[3]).toMatchObject({ reason: "child exited" });
+      for (const line of lines) {
+        expect(line.time).toMatch(/^\d{4}-\d\d-\d\dT/u);
+      }
+      expect(readFileSync(logPath, "utf8")).not.toContain("terminal content");
+      client.socket.destroy();
+    } finally {
+      removeSignals();
     }
   });
 });
