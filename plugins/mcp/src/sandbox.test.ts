@@ -12,6 +12,10 @@ globalThis.print = (line) => __bbLog(String(line));
 `;
 
 const MIB = 1024 * 1024;
+const GENEROUS_CPU_LIMITS = {
+  synchronousDeadlineMs: 5_000,
+  cpuBudgetMs: 5_000,
+};
 
 function run(code: string, overrides: Partial<SandboxRunArgs> = {}) {
   return runSandboxedScript({
@@ -280,7 +284,7 @@ describe("runSandboxedScript", () => {
   it("fails cleanly when the script exhausts its memory limit", async () => {
     const result = await run(
       `const chunks = []; while (true) chunks.push(new Array(100000).fill("x"));`,
-      { limits: { memoryLimitBytes: 4 * 1024 * 1024 } },
+      { limits: { memoryLimitBytes: 4 * MIB, ...GENEROUS_CPU_LIMITS } },
     );
     expect(result).toMatchObject({ ok: false });
     expect(result.ok === false && result.error).toContain("too much memory");
@@ -323,7 +327,7 @@ describe("runSandboxedScript", () => {
       async (_name, code) => {
         const startedAt = Date.now();
         const result = await run(code, {
-          limits: { memoryLimitBytes: LIMIT_BYTES },
+          limits: { memoryLimitBytes: LIMIT_BYTES, ...GENEROUS_CPU_LIMITS },
         });
         const elapsedMs = Date.now() - startedAt;
         expect(result).toMatchObject({ ok: false });
@@ -340,6 +344,14 @@ describe("runSandboxedScript", () => {
         );
       },
     );
+
+    it("reports exhaustion as a memory stop when the engine cannot even build its out-of-memory error", async () => {
+      const result = await run(SCRIPTS.objects ?? "", {
+        limits: { memoryLimitBytes: 4 * MIB, ...GENEROUS_CPU_LIMITS },
+      });
+      expect(result).toMatchObject({ ok: false });
+      expect(result.ok === false && result.error).toContain("too much memory");
+    });
 
     it("lets the heap grow to the limit before stopping a script", async () => {
       await run(SCRIPTS.arrays ?? "", {

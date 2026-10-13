@@ -154,8 +154,14 @@ export async function runSandboxedScript(
 
   const cpuStopReason = `The script computed for too long and was stopped. A script may compute for ${limits.synchronousDeadlineMs} ms at a stretch and ${Math.round(limits.cpuBudgetMs / 1000)} seconds in total; waiting on bb calls does not count.`;
   const memoryStopReason = `The script used too much memory and was stopped. A script may use about ${Math.max(1, Math.round(limits.memoryLimitBytes / (1024 * 1024)))} MB.`;
+  const heapGrowthBytes = () =>
+    QuickJS.getWasmMemory().buffer.byteLength -
+    QUICKJS_BASE_PAGES * WASM_PAGE_BYTES;
   const describeFailure = (message: string) =>
-    message === OUT_OF_MEMORY_ERROR ? memoryStopReason : message;
+    message === OUT_OF_MEMORY_ERROR ||
+    (message === "null" && heapGrowthBytes() >= limits.memoryLimitBytes / 2)
+      ? memoryStopReason
+      : message;
   let synchronousDeadline = Number.POSITIVE_INFINITY;
   let cpuSpentMs = 0;
   const enterVm = <T>(run: () => T): T => {
