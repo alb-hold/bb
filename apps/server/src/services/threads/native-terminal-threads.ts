@@ -403,7 +403,7 @@ async function openNativeTerminalOnce(
       ? null
       : getEnvironment(deps.db, thread.environmentId);
   const providerEnv =
-    environment === null
+    environment === null || args.reattachOnly
       ? []
       : await resolvePluginProviderEnv({
           providerId: thread.providerId,
