@@ -46,6 +46,7 @@ async function fixture() {
     route,
     nestedRoute,
     hostToken,
+    clock,
     advance: (milliseconds: number) => {
       now += milliseconds;
     },
@@ -527,7 +528,7 @@ async function archiveWithoutTombstone(
   const threads = await f.open(warn);
   const current = await mint(f, threads, lifetime);
   expect(current.token).not.toBe(launch.token);
-  await whileFailing(TOMBSTONE, () => threads.removeThread(f.route.threadId));
+  await archiveFailingTombstone(f, threads);
   return { threads, sessions: [launch, current] };
 }
 
@@ -758,3 +759,130 @@ it("removes the route files when neither the tombstone nor an archive marker can
   const restarted = await f.open();
   expect(await rejected(restarted, session)).toBe(true);
 });
+
+async function markerInodes(directory: string): Promise<Map<string, number>> {
+  const inodes = new Map<string, number>();
+  for (const name of await fs.readdir(directory))
+    if (
+      name.startsWith("archived-thread-") ||
+      name.startsWith("archive-revocation-")
+    )
+      inodes.set(name, (await fs.stat(path.join(directory, name))).ino);
+  return inodes;
+}
+
+async function atClockTime<T>(
+  f: Fixture,
+  action: () => Promise<T>,
+): Promise<T> {
+  const before = await markerInodes(f.directory);
+  const result = await action();
+  const stamp = new Date(f.clock());
+  for (const [name, inode] of await markerInodes(f.directory))
+    if (before.get(name) !== inode)
+      await fs.utimes(path.join(f.directory, name), stamp, stamp);
+  return result;
+}
+
+const archiveFailingTombstone = (f: Fixture, threads: ThreadTokenStore) =>
+  atClockTime(f, () =>
+    whileFailing(TOMBSTONE, () => threads.removeThread(f.route.threadId)),
+  );
+
+const HOUR = 60 * 60_000;
+
+describe.each(lifetimes)(
+  "the restoration window of a %s credential counts from the first archive only",
+  (lifetime) => {
+    it("does not grant a new window to a repeated archive event after expiry, once restarted", async () => {
+      const f = await fixture();
+      const { threads, sessions } = await archiveWithoutTombstone(f, lifetime);
+      f.advance(ARCHIVE_TOMBSTONE_MAX_AGE_MS + 1_000);
+      await archiveFailingTombstone(f, threads);
+      const restarted = await whileFailing(TOMBSTONE, () => f.open());
+      expect(await scopedFiles(f.directory)).toEqual([]);
+      expect(await tombstoneNames(f.directory)).toEqual([]);
+      await unarchive(restarted, f.route.threadId);
+      for (const session of sessions)
+        expect(await rejected(restarted, session)).toBe(true);
+      expect(await scopedFiles(f.directory)).toEqual([]);
+    });
+
+    it("does not restore in the same process after expiry and a repeated archive event", async () => {
+      const f = await fixture();
+      const { threads, sessions } = await archiveWithoutTombstone(f, lifetime);
+      f.advance(ARCHIVE_TOMBSTONE_MAX_AGE_MS + 1_000);
+      await archiveFailingTombstone(f, threads);
+      expect(await scopedFiles(f.directory)).toEqual([]);
+      await unarchive(threads, f.route.threadId);
+      for (const session of sessions)
+        expect(await rejected(threads, session)).toBe(true);
+    });
+
+    it("counts expiry from the first archive when events repeat inside the window", async () => {
+      const f = await fixture();
+      const { threads, sessions } = await archiveWithoutTombstone(f, lifetime);
+      f.advance(12 * HOUR);
+      await archiveFailingTombstone(f, threads);
+      f.advance(13 * HOUR);
+      const restarted = await f.open();
+      expect(await scopedFiles(f.directory)).toEqual([]);
+      await unarchive(restarted, f.route.threadId);
+      for (const session of sessions)
+        expect(await rejected(restarted, session)).toBe(true);
+    });
+
+    it("still restores inside the window after repeated archive events and a restart", async () => {
+      const f = await fixture();
+      const { threads, sessions } = await archiveWithoutTombstone(f, lifetime);
+      f.advance(12 * HOUR);
+      await archiveFailingTombstone(f, threads);
+      f.advance(11 * HOUR);
+      const restarted = await whileFailing(TOMBSTONE, () => f.open());
+      await archiveFailingTombstone(f, restarted);
+      await unarchive(restarted, f.route.threadId);
+      for (const session of sessions)
+        expect(await accepted(f, restarted, session)).toBe(true);
+    });
+
+    it("never restores a pending credential a sweep finds past expiry", async () => {
+      const f = await fixture();
+      const { threads, sessions } = await archiveWithoutTombstone(f, lifetime);
+      f.advance(ARCHIVE_TOMBSTONE_MAX_AGE_MS + 1_000);
+      await threads.sweepThreads(() => Promise.resolve("live"));
+      expect(await scopedFiles(f.directory)).toEqual([]);
+      for (const session of sessions)
+        expect(await rejected(threads, session)).toBe(true);
+    });
+
+    it("does not rewrite the archive marker for a repeated archive event, before or after a restart", async () => {
+      const f = await fixture();
+      const threads = await f.open();
+      await mint(f, threads, lifetime);
+      await threads.removeThread(f.route.threadId);
+      const first = await markerInodes(f.directory);
+      expect(first.size).toBe(1);
+      await threads.removeThread(f.route.threadId);
+      expect(await markerInodes(f.directory)).toEqual(first);
+      const restarted = await f.open();
+      await restarted.removeThread(f.route.threadId);
+      expect(await markerInodes(f.directory)).toEqual(first);
+    });
+
+    it("keeps a durable tombstone's window at the first archive too", async () => {
+      const f = await fixture();
+      const threads = await f.open();
+      const session = await mint(f, threads, lifetime);
+      await atClockTime(f, () => threads.removeThread(f.route.threadId));
+      f.advance(12 * HOUR);
+      await atClockTime(f, () => threads.removeThread(f.route.threadId));
+      f.advance(13 * HOUR);
+      await atClockTime(f, () => threads.removeThread(f.route.threadId));
+      const restarted = await f.open();
+      await unarchive(restarted, f.route.threadId);
+      expect(await rejected(restarted, session)).toBe(true);
+      expect(await tombstoneNames(f.directory)).toEqual([]);
+      expect(await scopedFiles(f.directory)).toEqual([]);
+    });
+  },
+);
