@@ -8,7 +8,10 @@ import type {
 } from "@bb/server-contract";
 import { Terminal } from "@xterm/xterm";
 import { describe, expect, it } from "vitest";
-import { terminalDisplaySize } from "./terminal-shared-size";
+import {
+  nextSharedTerminalSize,
+  terminalDisplaySize,
+} from "./terminal-shared-size";
 
 const FITTED_COLS = 40;
 const FITTED_ROWS = 12;
@@ -41,10 +44,16 @@ class InlineTuiPty {
 
   constructor(
     private readonly deliver: (message: TerminalServerMessage) => void,
+    private readonly echoAfterDraw = false,
   ) {}
 
   resize(cols: number, rows: number): void {
     this.width = cols;
+    if (this.echoAfterDraw) {
+      this.draw();
+      this.deliver({ type: "session-updated", session: session(cols, rows) });
+      return;
+    }
     this.deliver({ type: "session-updated", session: session(cols, rows) });
     this.draw();
   }
@@ -189,6 +198,104 @@ describe("replay repaint nudge", () => {
       rows: FITTED_ROWS,
     });
     expect(screenText(terminal)).toBe(await cleanReferenceScreen());
+    transport.dispose();
+  });
+});
+
+interface ViewHarness {
+  applySizes: () => Promise<void>;
+  pty: InlineTuiPty;
+  socket: FakeSocket;
+  terminal: Terminal;
+  transport: TerminalWebSocketTransport;
+  widths: number[];
+}
+
+function createViewHarness(): ViewHarness {
+  const terminal = newTerminal();
+  const widths: number[] = [];
+  terminal.onResize(({ cols }) => widths.push(cols));
+  let sharedSize: { cols: number; rows: number } | null = null;
+  const socket = new FakeSocket();
+  const transport = new TerminalWebSocketTransport({
+    createSocket: () => socket,
+    onMessage: () => undefined,
+    shouldReconnect: () => false,
+    url: "ws://example.test/ws/terminals/term_1",
+  });
+  const pty = new InlineTuiPty((message) => {
+    if (message.type === "session-updated") {
+      const reported = {
+        cols: message.session.cols,
+        rows: message.session.rows,
+      };
+      const next = nextSharedTerminalSize(
+        sharedSize,
+        reported,
+        transport.consumeRepaintNudgeEcho(reported),
+      );
+      if (next !== null) {
+        sharedSize = next;
+        const display = terminalDisplaySize(
+          { cols: FITTED_COLS, rows: FITTED_ROWS },
+          sharedSize,
+        );
+        terminal.resize(display.cols, display.rows);
+      }
+    }
+    const data = decodeChunk(message);
+    if (data !== null) {
+      terminal.write(data);
+    }
+  }, true);
+  transport.sendResize(FITTED_COLS, FITTED_ROWS);
+  transport.start();
+  socket.onopen?.(new Event("open"));
+  transport.markLayoutSettled();
+  let applied = 0;
+  const applySizes = async (): Promise<void> => {
+    await new Promise((resolve) => setTimeout(resolve, 70));
+    for (const resize of socket.resizes.slice(applied)) {
+      pty.resize(resize.cols, resize.rows);
+    }
+    applied = socket.resizes.length;
+  };
+  return { applySizes, pty, socket, terminal, transport, widths };
+}
+
+describe("page terminal during the repaint nudge", () => {
+  it("never narrows the page's own terminal for the echo of its nudge and ends at the real size with a clean screen", async () => {
+    const { applySizes, pty, socket, terminal, transport, widths } =
+      createViewHarness();
+
+    pty.draw();
+    transport.requestRepaint();
+    for (let step = 0; step < 10; step += 1) {
+      await applySizes();
+    }
+    await writeAndWait(terminal, "");
+
+    expect(socket.resizes.map((resize) => resize.cols)).toEqual([
+      FITTED_COLS,
+      FITTED_COLS - 1,
+      FITTED_COLS,
+    ]);
+    expect(widths.filter((cols) => cols < FITTED_COLS)).toEqual([]);
+    expect(terminal.cols).toBe(FITTED_COLS);
+    expect(screenText(terminal)).toBe(await cleanReferenceScreen());
+    transport.dispose();
+  });
+
+  it("still follows a smaller size another client chose during the nudge window", async () => {
+    const { applySizes, pty, terminal, transport } = createViewHarness();
+
+    pty.draw();
+    transport.requestRepaint();
+    await applySizes();
+    pty.resize(30, FITTED_ROWS);
+    await writeAndWait(terminal, "");
+
+    expect(terminal.cols).toBe(30);
     transport.dispose();
   });
 });

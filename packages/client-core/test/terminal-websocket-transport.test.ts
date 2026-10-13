@@ -552,6 +552,56 @@ describe("TerminalWebSocketTransport", () => {
       harness.transport.dispose();
     });
 
+    it("reports the echo of its own nudge size so the view can ignore it", async () => {
+      const { harness } = openHarness(100, 30);
+
+      expect(harness.transport.consumeRepaintNudgeEcho({ cols: 99, rows: 30 })).toBe(false);
+      harness.transport.requestRepaint();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(harness.transport.consumeRepaintNudgeEcho({ cols: 99, rows: 30 })).toBe(true);
+      vi.advanceTimersByTime(399);
+      expect(harness.transport.consumeRepaintNudgeEcho({ cols: 99, rows: 30 })).toBe(true);
+      harness.transport.dispose();
+    });
+
+    it("still reports a size another client chose during the nudge window as foreign", async () => {
+      const { harness } = openHarness(100, 30);
+
+      harness.transport.requestRepaint();
+      await vi.advanceTimersByTimeAsync(0);
+      vi.advanceTimersByTime(100);
+
+      expect(harness.transport.consumeRepaintNudgeEcho({ cols: 44, rows: 20 })).toBe(false);
+      expect(harness.transport.consumeRepaintNudgeEcho({ cols: 100, rows: 29 })).toBe(false);
+      harness.transport.dispose();
+    });
+
+    it("stops reporting echoes once the restore echo has arrived at the real size", async () => {
+      const { harness } = openHarness(100, 30);
+
+      harness.transport.requestRepaint();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(harness.transport.consumeRepaintNudgeEcho({ cols: 99, rows: 30 })).toBe(true);
+      expect(harness.transport.consumeRepaintNudgeEcho({ cols: 100, rows: 30 })).toBe(false);
+      expect(harness.transport.consumeRepaintNudgeEcho({ cols: 99, rows: 30 })).toBe(true);
+      vi.advanceTimersByTime(400);
+      expect(harness.transport.consumeRepaintNudgeEcho({ cols: 99, rows: 30 })).toBe(true);
+      expect(harness.transport.consumeRepaintNudgeEcho({ cols: 100, rows: 30 })).toBe(false);
+      expect(harness.transport.consumeRepaintNudgeEcho({ cols: 99, rows: 30 })).toBe(false);
+      harness.transport.dispose();
+    });
+
+    it("stops reporting echoes when the grid changed and the restore was skipped", async () => {
+      const { harness } = openHarness(100, 30);
+
+      harness.transport.requestRepaint();
+      await vi.advanceTimersByTimeAsync(0);
+      harness.transport.sendResize(80, 24);
+
+      expect(harness.transport.consumeRepaintNudgeEcho({ cols: 99, rows: 30 })).toBe(false);
+      harness.transport.dispose();
+    });
+
     it("nudges rows instead of columns when the terminal is a single column wide", () => {
       const { harness, socket } = openHarness(1, 30);
 

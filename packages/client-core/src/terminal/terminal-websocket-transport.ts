@@ -59,6 +59,12 @@ function terminalSocketUrl(url: string, sinceSeq: number): string {
   return parsed.toString();
 }
 
+interface RepaintNudgeInFlight {
+  nudge: { cols: number; rows: number };
+  restore: { cols: number; rows: number };
+  restoreSent: boolean;
+}
+
 interface PendingTerminalInput {
   bytes: number;
   payload: string;
@@ -104,6 +110,7 @@ export class TerminalWebSocketTransport {
   private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
   private layoutSettled = false;
   private repaintRequestedWhileSettling = false;
+  private repaintNudgeInFlight: RepaintNudgeInFlight | null = null;
   private repaintTimeout: ReturnType<typeof setTimeout> | null = null;
   private settleTimeout: ReturnType<typeof setTimeout> | null = null;
   private socket: TerminalBrowserSocket | null = null;
@@ -271,6 +278,11 @@ export class TerminalWebSocketTransport {
       if (nudgeSize === null) {
         return;
       }
+      this.repaintNudgeInFlight = {
+        nudge: nudgeSize,
+        restore: { cols: current.cols, rows: current.rows },
+        restoreSent: false,
+      };
       this.trySend(socket, JSON.stringify({ type: "resize", ...nudgeSize }));
       this.repaintTimeout = setTimeout(() => {
         this.repaintTimeout = null;
@@ -280,7 +292,11 @@ export class TerminalWebSocketTransport {
           socket.readyState !== SOCKET_OPEN ||
           this.lastResize !== current
         ) {
+          this.repaintNudgeInFlight = null;
           return;
+        }
+        if (this.repaintNudgeInFlight !== null) {
+          this.repaintNudgeInFlight.restoreSent = true;
         }
         this.trySend(
           socket,
@@ -292,6 +308,24 @@ export class TerminalWebSocketTransport {
         );
       }, REPAINT_RESTORE_DELAY_MS);
     }, 0);
+  }
+
+  consumeRepaintNudgeEcho(size: { cols: number; rows: number }): boolean {
+    const inFlight = this.repaintNudgeInFlight;
+    if (inFlight === null) {
+      return false;
+    }
+    if (size.cols === inFlight.nudge.cols && size.rows === inFlight.nudge.rows) {
+      return true;
+    }
+    if (
+      inFlight.restoreSent &&
+      size.cols === inFlight.restore.cols &&
+      size.rows === inFlight.restore.rows
+    ) {
+      this.repaintNudgeInFlight = null;
+    }
+    return false;
   }
 
   private connect(state: "connecting" | "reconnecting"): void {
@@ -556,6 +590,7 @@ export class TerminalWebSocketTransport {
   }
 
   private clearRepaintTimeout(): void {
+    this.repaintNudgeInFlight = null;
     if (this.repaintTimeout === null) {
       return;
     }
