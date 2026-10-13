@@ -277,6 +277,145 @@ async function storedPriors(directory: string) {
   return stored.priors ?? [];
 }
 
+const LAUNCH_CYCLES = MAX_PRIOR_CREDENTIALS + 3;
+
+async function reissueAcrossRestarts(
+  f: Awaited<ReturnType<typeof fixture>>,
+  provider: "claude" | "codex",
+  options: { presentLaunch: boolean },
+) {
+  const route = { ...f.route, provider };
+  const nestedRoute = { hostId: route.hostId, threadId: route.threadId };
+  const threadTokens = [
+    await f.threads.forThread(route, f.hostToken, "process"),
+  ];
+  const nestedTokens = [
+    await f.threads.forNested(nestedRoute, f.hostToken, "process"),
+  ];
+  if (options.presentLaunch) {
+    expect(await f.threads.authenticate(threadTokens[0])).toEqual(route);
+    expect(await f.threads.authenticateNested(nestedTokens[0])).toEqual(
+      nestedRoute,
+    );
+  }
+  let store = f.threads;
+  for (let swap = 1; swap <= LAUNCH_CYCLES; swap += 1) {
+    store = await restartOf(f.directory, f.hosts, route);
+    threadTokens.push(await store.forThread(route, f.hostToken, "process"));
+    nestedTokens.push(
+      await store.forNested(nestedRoute, f.hostToken, "process"),
+    );
+  }
+  return { route, nestedRoute, threadTokens, nestedTokens, store };
+}
+
+it.each([
+  { provider: "claude" as const, presentLaunch: false },
+  { provider: "claude" as const, presentLaunch: true },
+  { provider: "codex" as const, presentLaunch: false },
+  { provider: "codex" as const, presentLaunch: true },
+])(
+  "keeps the launch credential of a $provider CLI valid across repeated restarts (launch presented: $presentLaunch)",
+  async ({ provider, presentLaunch }) => {
+    const f = await fixture();
+    const { route, nestedRoute, threadTokens, nestedTokens, store } =
+      await reissueAcrossRestarts(f, provider, { presentLaunch });
+    expect(await store.authenticate(threadTokens[0], provider)).toEqual(route);
+    expect(await store.authenticateNested(nestedTokens[0])).toEqual(
+      nestedRoute,
+    );
+    const reloaded = await restartOf(f.directory, f.hosts, route);
+    expect(await reloaded.authenticate(threadTokens[0], provider)).toEqual(
+      route,
+    );
+    expect(await reloaded.authenticateNested(nestedTokens[0])).toEqual(
+      nestedRoute,
+    );
+  },
+);
+
+it("still bounds the reissues no CLI ever presented: the launch credential, the two latest priors and the current token are the only survivors", async () => {
+  const f = await fixture();
+  const { route, nestedRoute, threadTokens, nestedTokens, store } =
+    await reissueAcrossRestarts(f, "claude", { presentLaunch: false });
+  const last = threadTokens.length - 1;
+  const survivors = new Set([0, last - 2, last - 1, last]);
+  for (let index = 0; index <= last; index += 1) {
+    expect(await store.authenticate(threadTokens[index])).toEqual(
+      survivors.has(index) ? route : null,
+    );
+    expect(await store.authenticateNested(nestedTokens[index])).toEqual(
+      survivors.has(index) ? nestedRoute : null,
+    );
+  }
+  expect(await storedPriors(f.directory)).toHaveLength(MAX_PRIOR_CREDENTIALS);
+});
+
+it("refuses the launch credential after removal, after a dead host generation is reclaimed, and at its own expiry", async () => {
+  const removed = await fixture();
+  const first = await reissueAcrossRestarts(removed, "claude", {
+    presentLaunch: false,
+  });
+  expect(await first.store.authenticate(first.threadTokens[0])).toEqual(
+    first.route,
+  );
+  await first.store.removeThread(first.route.threadId);
+  for (const token of first.threadTokens)
+    expect(await first.store.authenticate(token)).toBeNull();
+  for (const token of first.nestedTokens)
+    expect(await first.store.authenticateNested(token)).toBeNull();
+  const afterRemoval = await restartOf(
+    removed.directory,
+    removed.hosts,
+    first.route,
+  );
+  expect(await afterRemoval.authenticate(first.threadTokens[0])).toBeNull();
+  expect(
+    await afterRemoval.authenticateNested(first.nestedTokens[0]),
+  ).toBeNull();
+
+  const rotated = await fixture();
+  const second = await reissueAcrossRestarts(rotated, "claude", {
+    presentLaunch: false,
+  });
+  expect(await second.store.authenticate(second.threadTokens[0])).toEqual(
+    second.route,
+  );
+  await rotated.hosts.rotate(second.route.hostId);
+  const nextHostToken = await rotated.hosts.forHost(second.route.hostId);
+  rotated.advance(10 * 60_000 + 1);
+  await second.store.forThread(second.route, nextHostToken, "process");
+  expect(await second.store.authenticate(second.threadTokens[0])).toBeNull();
+  expect(second.store.isProcessCredential(second.threadTokens[0])).toBe(false);
+
+  const expiring = await fixture();
+  let clock = 5_000_000;
+  const route = expiring.route;
+  const launch = await (
+    await restartOf(expiring.directory, expiring.hosts, route, () => clock)
+  ).forThread(route, expiring.hostToken, "process");
+  let store = expiring.threads;
+  const reissued: string[] = [];
+  for (let swap = 1; swap <= LAUNCH_CYCLES; swap += 1) {
+    clock += 60_000;
+    store = await restartOf(
+      expiring.directory,
+      expiring.hosts,
+      route,
+      () => clock,
+    );
+    reissued.push(await store.forThread(route, expiring.hostToken, "process"));
+  }
+  clock += PROCESS_CREDENTIAL_MAX_AGE_MS - LAUNCH_CYCLES * 60_000 - 1;
+  expect(await store.authenticate(launch)).toEqual(route);
+  clock += 1;
+  expect(await store.authenticate(launch)).toBeNull();
+  expect(store.isProcessCredential(launch)).toBe(false);
+  expect(await store.authenticate(reissued[reissued.length - 1] ?? "")).toEqual(
+    route,
+  );
+});
+
 it("refuses every retained digest at once after removal, across a restart", async () => {
   const { directory, hosts, threads, route, hostToken } = await fixture();
   const nestedRoute = { hostId: route.hostId, threadId: route.threadId };
