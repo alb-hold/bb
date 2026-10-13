@@ -1995,7 +1995,7 @@ describe("TerminalManager", () => {
           expect(lastSeq).toBe(index + 1);
         }
         const retained = harness.manager["retainedReplayParserStateBytes"];
-        if (retained > budget) {
+        if (!(retained <= budget)) {
           expect(retained).toBeLessThanOrEqual(budget);
         }
         if (index % 256 === 0) {
@@ -2065,7 +2065,7 @@ describe("TerminalManager", () => {
     harness.manager.dispose();
     expect(harness.manager["retainedReplayParserStateBytes"]).toBe(0);
     expect(measuredCharge()).toBe(0);
-  }, 45_000);
+  });
 
   it.each([{ maxExitedTerminals: 0 }, { exitedRetentionMs: 0 }])(
     "releases replay snapshot charges when exited retention is disabled: %j",
