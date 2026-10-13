@@ -223,7 +223,7 @@ it("at the fourth reissue evicts the oldest idle digest and keeps the presented 
   );
 });
 
-it("holds at most MAX_PRIOR_CREDENTIALS prior digests per route, evicting the oldest never-presented digest first", async () => {
+it("holds at most MAX_PRIOR_CREDENTIALS prior digests per route, evicting the oldest never-presented reissue first and never the launch credential", async () => {
   const { directory, hosts, threads, route, hostToken } = await fixture();
   const tokens = [await threads.forThread(route, hostToken, "process")];
   let store = threads;
@@ -233,14 +233,15 @@ it("holds at most MAX_PRIOR_CREDENTIALS prior digests per route, evicting the ol
   }
   const latest = tokens.length - 1;
   expect(await store.authenticate(tokens[latest])).toEqual(route);
-  expect(await store.authenticate(tokens[0])).toBeNull();
-  for (let index = 1; index < latest; index += 1)
+  expect(await store.authenticate(tokens[1])).toBeNull();
+  expect(await store.authenticate(tokens[0])).toEqual(route);
+  for (let index = 2; index < latest; index += 1)
     expect(await store.authenticate(tokens[index])).toEqual(route);
   const stored = await storedPriors(directory);
   expect(stored).toHaveLength(MAX_PRIOR_CREDENTIALS);
 });
 
-it("evicts the oldest presented digest only when every retained digest was presented", async () => {
+it("evicts the oldest presented reissue, never the launch credential, when every retained digest was presented", async () => {
   const { directory, hosts, threads, route, hostToken } = await fixture();
   const tokens = [await threads.forThread(route, hostToken, "process")];
   expect(await threads.authenticate(tokens[0])).toEqual(route);
@@ -251,8 +252,9 @@ it("evicts the oldest presented digest only when every retained digest was prese
     tokens.push(token);
     expect(await store.authenticate(token)).toEqual(route);
   }
-  expect(await store.authenticate(tokens[0])).toBeNull();
-  for (let index = 1; index < tokens.length; index += 1)
+  expect(await store.authenticate(tokens[1])).toBeNull();
+  expect(await store.authenticate(tokens[0])).toEqual(route);
+  for (let index = 2; index < tokens.length; index += 1)
     expect(await store.authenticate(tokens[index])).toEqual(route);
   expect(await storedPriors(directory)).toHaveLength(MAX_PRIOR_CREDENTIALS);
 });

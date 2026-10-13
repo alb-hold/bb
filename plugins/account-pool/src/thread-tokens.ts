@@ -857,8 +857,10 @@ export class ThreadTokenStore {
       ...(existing.usedAt === undefined ? {} : { usedAt: existing.usedAt }),
     });
     while (kept.length > MAX_PRIOR_CREDENTIALS) {
-      const unused = kept.filter((prior) => prior.usedAt === undefined);
-      const candidates = unused.length > 0 ? unused : kept;
+      const launch = kept.reduce((a, b) => (b.issuedAt < a.issuedAt ? b : a));
+      const reissues = kept.filter((prior) => prior !== launch);
+      const unused = reissues.filter((prior) => prior.usedAt === undefined);
+      const candidates = unused.length > 0 ? unused : reissues;
       const oldest = candidates.reduce((a, b) =>
         b.issuedAt < a.issuedAt ? b : a,
       );
