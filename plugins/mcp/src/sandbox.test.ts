@@ -11,7 +11,7 @@ globalThis.host = async (name, ...args) =>
 globalThis.print = (line) => __bbLog(String(line));
 `;
 
-const MEMORY_LIMIT_TEST_TIMEOUT_MS = 30_000;
+const MIB = 1024 * 1024;
 
 function run(code: string, overrides: Partial<SandboxRunArgs> = {}) {
   return runSandboxedScript({
@@ -282,8 +282,99 @@ describe("runSandboxedScript", () => {
       `const chunks = []; while (true) chunks.push(new Array(100000).fill("x"));`,
       { limits: { memoryLimitBytes: 4 * 1024 * 1024 } },
     );
-    expect(result.ok).toBe(false);
-  }, MEMORY_LIMIT_TEST_TIMEOUT_MS);
+    expect(result).toMatchObject({ ok: false });
+    expect(result.ok === false && result.error).toContain("too much memory");
+    expect(result.ok === false && result.error).not.toContain(
+      "computed for too long",
+    );
+  });
+
+  describe("memory limit", () => {
+    const originalMemory = WebAssembly.Memory;
+    let memories: WebAssembly.Memory[] = [];
+
+    beforeEach(() => {
+      memories = [];
+      WebAssembly.Memory = class extends originalMemory {
+        constructor(descriptor: WebAssembly.MemoryDescriptor) {
+          super(descriptor);
+          memories.push(this);
+        }
+      };
+    });
+
+    afterEach(() => {
+      WebAssembly.Memory = originalMemory;
+    });
+
+    const HEAP_BASE_BYTES = 16 * MIB;
+    const LIMIT_BYTES = 16 * MIB;
+    const SCRIPTS: Record<string, string> = {
+      arrays: `const chunks = []; while (true) chunks.push(new Array(100000).fill("x"));`,
+      "many strings": `const chunks = []; while (true) chunks.push("x".repeat(1000000) + chunks.length);`,
+      "one huge string": `return "x".repeat(900 * 1024 * 1024).length;`,
+      "typed arrays": `const chunks = []; while (true) chunks.push(new Uint8Array(1000000));`,
+      "one huge typed array": `return new Uint8Array(1500 * 1024 * 1024).length;`,
+      objects: `const chunks = []; while (true) chunks.push({ a: 1, b: [1, 2], c: "y" });`,
+    };
+
+    it.each(Object.entries(SCRIPTS))(
+      "stops %s on the memory limit, not the CPU budget",
+      async (_name, code) => {
+        const startedAt = Date.now();
+        const result = await run(code, {
+          limits: { memoryLimitBytes: LIMIT_BYTES },
+        });
+        const elapsedMs = Date.now() - startedAt;
+        expect(result).toMatchObject({ ok: false });
+        expect(result.ok === false && result.error).toContain(
+          "too much memory",
+        );
+        expect(result.ok === false && result.error).not.toContain(
+          "computed for too long",
+        );
+        expect(elapsedMs).toBeLessThan(2_000);
+        expect(memories).toHaveLength(1);
+        expect(memories[0]?.buffer.byteLength).toBeLessThanOrEqual(
+          HEAP_BASE_BYTES + LIMIT_BYTES,
+        );
+      },
+    );
+
+    it("lets the heap grow to the limit before stopping a script", async () => {
+      await run(SCRIPTS.arrays ?? "", {
+        limits: { memoryLimitBytes: LIMIT_BYTES },
+      });
+      expect(memories[0]?.buffer.byteLength).toBeGreaterThan(
+        HEAP_BASE_BYTES + LIMIT_BYTES / 2,
+      );
+    });
+
+    it("gives each run its own heap", async () => {
+      await run(SCRIPTS.arrays ?? "", {
+        limits: { memoryLimitBytes: LIMIT_BYTES },
+      });
+      const second = await run(`return [1, 2, 3].length;`, {
+        limits: { memoryLimitBytes: LIMIT_BYTES },
+      });
+      expect(second).toMatchObject({ ok: true, value: 3 });
+      expect(memories).toHaveLength(2);
+      expect(memories[1]?.buffer.byteLength).toBe(HEAP_BASE_BYTES);
+    });
+
+    it("still reports a compute-bound script as a CPU stop", async () => {
+      const result = await run(`while (true) {}`, {
+        limits: { memoryLimitBytes: LIMIT_BYTES, synchronousDeadlineMs: 50 },
+      });
+      expect(result).toMatchObject({ ok: false });
+      expect(result.ok === false && result.error).toContain(
+        "computed for too long",
+      );
+      expect(result.ok === false && result.error).not.toContain(
+        "too much memory",
+      );
+    });
+  });
 
   it("caps log output", async () => {
     const result = await run(

@@ -1,6 +1,7 @@
 import SINGLEFILE_RELEASE_SYNC from "@jitl/quickjs-singlefile-cjs-release-sync";
 import {
   newQuickJSWASMModuleFromVariant,
+  newVariant,
   type QuickJSContext,
   type QuickJSDeferredPromise,
   type QuickJSHandle,
@@ -52,7 +53,23 @@ export type SandboxRunResult =
   | { ok: true; value: JsonValue; logs: string }
   | { ok: false; error: string; logs: string };
 
-let quickJsModule = newQuickJSWASMModuleFromVariant(SINGLEFILE_RELEASE_SYNC);
+const WASM_PAGE_BYTES = 64 * 1024;
+const WASM_MAX_PAGES = 65_536;
+const QUICKJS_BASE_PAGES = 256;
+const OUT_OF_MEMORY_ERROR = "InternalError: out of memory";
+
+function newBoundedQuickJsModule(memoryLimitBytes: number) {
+  const memory = new WebAssembly.Memory({
+    initial: QUICKJS_BASE_PAGES,
+    maximum: Math.min(
+      WASM_MAX_PAGES,
+      QUICKJS_BASE_PAGES + Math.ceil(memoryLimitBytes / WASM_PAGE_BYTES),
+    ),
+  });
+  return newQuickJSWASMModuleFromVariant(
+    newVariant(SINGLEFILE_RELEASE_SYNC, { wasmMemory: memory }),
+  );
+}
 
 const HARDENING_SOURCE = `
 (() => {
@@ -112,7 +129,7 @@ export async function runSandboxedScript(
   args: SandboxRunArgs,
 ): Promise<SandboxRunResult> {
   const limits: SandboxLimits = { ...DEFAULT_SANDBOX_LIMITS, ...args.limits };
-  const QuickJS = await quickJsModule;
+  const QuickJS = await newBoundedQuickJsModule(limits.memoryLimitBytes);
   const runtime: QuickJSRuntime = QuickJS.newRuntime();
   runtime.setMemoryLimit(limits.memoryLimitBytes);
   runtime.setMaxStackSize(limits.maxStackBytes);
@@ -136,6 +153,9 @@ export async function runSandboxedScript(
   );
 
   const cpuStopReason = `The script computed for too long and was stopped. A script may compute for ${limits.synchronousDeadlineMs} ms at a stretch and ${Math.round(limits.cpuBudgetMs / 1000)} seconds in total; waiting on bb calls does not count.`;
+  const memoryStopReason = `The script used too much memory and was stopped. A script may use about ${Math.max(1, Math.round(limits.memoryLimitBytes / (1024 * 1024)))} MB.`;
+  const describeFailure = (message: string) =>
+    message === OUT_OF_MEMORY_ERROR ? memoryStopReason : message;
   let synchronousDeadline = Number.POSITIVE_INFINITY;
   let cpuSpentMs = 0;
   const enterVm = <T>(run: () => T): T => {
@@ -327,7 +347,7 @@ export async function runSandboxedScript(
     if (evaluated.error) {
       const message = dumpError(vm, evaluated.error);
       evaluated.error.dispose();
-      return { ok: false, error: stopReason ?? message, logs };
+      return { ok: false, error: stopReason ?? describeFailure(message), logs };
     }
     evaluated.value.dispose();
     drainJobs();
@@ -347,7 +367,11 @@ export async function runSandboxedScript(
       };
     }
     if (outcome.kind !== "ok") {
-      return { ok: false, error: stopReason ?? outcome.text, logs };
+      return {
+        ok: false,
+        error: stopReason ?? describeFailure(outcome.text),
+        logs,
+      };
     }
     return { ok: true, value: JSON.parse(outcome.text) as JsonValue, logs };
   } catch (error) {
@@ -361,7 +385,6 @@ export async function runSandboxedScript(
       runtime.dispose();
     } catch {
       disposeFailures += 1;
-      quickJsModule = newQuickJSWASMModuleFromVariant(SINGLEFILE_RELEASE_SYNC);
     }
   }
 }
