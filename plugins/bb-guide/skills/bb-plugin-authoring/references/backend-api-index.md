@@ -203,7 +203,10 @@ Read the installed declarations for exact current signatures.
 - `PluginMessageDirectiveMessage`
 - `PluginMessageDirectiveOpenWorkspaceFile`
 - `PluginMessageDirectiveProps`
+- `ExperimentalCodeFenceRendererProps`
 - `PluginMessageDirectiveRegistration`
+- `ExperimentalCodeFenceRendererRegistration`
+- `ExperimentalCodeFenceStatus`
 - `PluginNavPanelProps`
 - `PluginNavPanelRegistration`
 - `PluginNewThreadPanelActionContext`

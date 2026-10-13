@@ -30,6 +30,7 @@ import {
   CURATED_MARKETPLACE_V2_URL,
 } from "../../../src/services/plugin-catalog/marketplace-manifest.js";
 import { BUNDLED_CURATED_MARKETPLACE } from "../../../src/services/plugin-catalog/curated-marketplace.js";
+import { loadBundledMarketplace } from "../../../src/services/plugin-catalog/bundled-marketplace.js";
 import {
   BUILTIN_PLUGINS,
   BUNDLED_PLUGINS,
@@ -45,6 +46,9 @@ const V2_MANIFEST_URL = CURATED_MARKETPLACE_V2_URL;
 const CUSTOM_V1_MANIFEST_URL =
   "https://marketplace.test/marketplace/v1/marketplace.json";
 const SEED_ENTRY_COUNT = BUNDLED_CURATED_MARKETPLACE.plugins.length;
+const OFFICIAL_ORDER =
+  loadBundledMarketplace(listBundledPluginRegistrations()).catalog
+    .collections?.[0]?.pluginIds ?? [];
 
 const VALID_SVG = Buffer.from(
   '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M0 0h16v16H0z"/></svg>',
@@ -215,12 +219,7 @@ describe("plugin catalog service", () => {
         "https://getbb.app/marketplace/v2/screenshots/docs/docs-21ddb6757-vault-desktop.png",
       ],
       collections: [
-        {
-          id: "bb-official",
-          rank: BUNDLED_PLUGINS.findIndex(
-            (plugin) => plugin.pluginId === "simple-notes",
-          ),
-        },
+        { id: "bb-official", rank: OFFICIAL_ORDER.indexOf("simple-notes") },
       ],
       source: "builtin:docs",
       marketplace: "bb-official",
@@ -248,7 +247,7 @@ describe("plugin catalog service", () => {
       {
         id: "bb-official",
         displayName: "BB Official",
-        pluginIds: BUNDLED_PLUGINS.map((plugin) => plugin.pluginId),
+        pluginIds: OFFICIAL_ORDER,
       },
     ]);
     for (const category of PLUGIN_CATALOG_CATEGORIES) {
@@ -377,6 +376,7 @@ describe("plugin catalog service", () => {
         sourceKind: "https",
         manifestUrl: V1_MANIFEST_URL,
         sourceGitRef: null,
+        sourceGitSubdirectory: null,
         sourceGitCommit: null,
         manifestJson: JSON.stringify(savedManifest),
         statsJson: null,
@@ -584,7 +584,7 @@ describe("plugin catalog service", () => {
         {
           id: "bb-official",
           displayName: "BB Official",
-          pluginIds: BUNDLED_PLUGINS.map((plugin) => plugin.pluginId),
+          pluginIds: OFFICIAL_ORDER,
         },
         {
           id: "new-and-notable",
@@ -605,6 +605,7 @@ describe("plugin catalog service", () => {
         sourceKind: "path",
         manifestUrl: dataDir,
         sourceGitRef: null,
+        sourceGitSubdirectory: null,
         sourceGitCommit: null,
         manifestJson: JSON.stringify(
           manifestV2([remoteEntry({ icon: "Zap" })], {
@@ -632,7 +633,7 @@ describe("plugin catalog service", () => {
         {
           id: "bb-official",
           displayName: "BB Official",
-          pluginIds: BUNDLED_PLUGINS.map((plugin) => plugin.pluginId),
+          pluginIds: OFFICIAL_ORDER,
         },
       ]);
     });
@@ -643,6 +644,7 @@ describe("plugin catalog service", () => {
         sourceKind: "https",
         manifestUrl: MANIFEST_URL,
         sourceGitRef: null,
+        sourceGitSubdirectory: null,
         sourceGitCommit: null,
         manifestJson: JSON.stringify(
           manifestV2([], {
@@ -1115,7 +1117,10 @@ describe("plugin catalog service", () => {
         },
       });
 
-      await catalog.addMarketplace(thirdPartyManifest);
+      await catalog.addMarketplace({
+        source: thirdPartyManifest,
+        subdirectory: null,
+      });
       await catalog.refreshMarketplaces({ attemptedAt: 2_000 });
       expect((await catalog.search("widgets"))[0]?.installs).toBeNull();
       expect(statsRequests).toEqual([STATS_URL]);
