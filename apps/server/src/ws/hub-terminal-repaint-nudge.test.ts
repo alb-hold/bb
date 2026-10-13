@@ -30,12 +30,14 @@ function session(cols: number, rows: number): TerminalSession {
 
 interface TwoClientRoom {
   advance: (ms: number) => void;
+  fit: (cols: number) => void;
   peerResizes: (cols: number, rows: number) => void;
   ptySize: () => { cols: number; rows: number };
   restoresSentByOwner: () => number;
   start: () => void;
   transport: TerminalWebSocketTransport;
   viewCols: () => number;
+  viewHistory: number[];
 }
 
 function createRoom(): TwoClientRoom {
@@ -46,7 +48,13 @@ function createRoom(): TwoClientRoom {
   hub.registerTerminalClient(TERMINAL_ID, ownerSocket);
   hub.registerTerminalClient(TERMINAL_ID, peerSocket);
   let pty = { ...FITTED };
-  let viewCols = FITTED.cols;
+  let fitted = FITTED.cols;
+  let shared: number | null = null;
+  const viewHistory: number[] = [];
+  const viewCols = (): number => Math.min(fitted, shared ?? fitted);
+  const track = (): void => {
+    viewHistory.push(viewCols());
+  };
   let restores = 0;
   let nudged = false;
 
@@ -84,7 +92,7 @@ function createRoom(): TwoClientRoom {
         return;
       }
       const size = { cols: message.cols, rows: message.rows };
-      if (size.cols < FITTED.cols) {
+      if (size.cols === FITTED.cols - 1) {
         nudged = true;
       } else if (nudged && size.cols === FITTED.cols) {
         restores += 1;
@@ -114,11 +122,13 @@ function createRoom(): TwoClientRoom {
       }
       const reported = { cols: message.session.cols, rows: message.session.rows };
       if (!transport.consumeRepaintNudgeEcho(reported)) {
-        viewCols = Math.min(FITTED.cols, reported.cols);
+        shared = reported.cols;
+        track();
       }
     },
     onRepaintNudgeSizeReleased: (size) => {
-      viewCols = Math.min(FITTED.cols, size.cols);
+      shared = size.cols;
+      track();
     },
     shouldReconnect: () => false,
     url: "ws://example.test/ws/terminals/term_1",
@@ -127,6 +137,11 @@ function createRoom(): TwoClientRoom {
 
   return {
     advance: (ms) => vi.advanceTimersByTime(ms),
+    fit: (cols) => {
+      fitted = cols;
+      track();
+      transport.sendResize(cols, FITTED.rows);
+    },
     peerResizes: (cols, rows) => {
       hub.recordTerminalClientSize(
         TERMINAL_ID,
@@ -146,7 +161,8 @@ function createRoom(): TwoClientRoom {
       vi.advanceTimersByTime(0);
     },
     transport,
-    viewCols: () => viewCols,
+    viewCols,
+    viewHistory,
   };
 }
 
@@ -208,6 +224,53 @@ describe("repaint nudge with a second client on the same terminal", () => {
 
     expect(room.ptySize()).toEqual(FITTED);
     expect(room.viewCols()).toBe(FITTED.cols);
+    room.transport.dispose();
+  });
+
+  it("never applies the nudge size when the fit grows between nudge and restore and a smaller peer resizes", () => {
+    const room = createRoom();
+    room.start();
+    room.advance(100);
+    room.fit(200);
+    room.advance(50);
+    room.peerResizes(44, 20);
+    room.advance(2000);
+
+    expect(room.viewHistory).not.toContain(FITTED.cols - 1);
+    expect(room.restoresSentByOwner()).toBe(0);
+    expect(room.ptySize().cols).toBe(44);
+    expect(room.viewCols()).toBe(44);
+    room.transport.dispose();
+  });
+
+  it("never applies the nudge size when the fit shrinks between nudge and restore and a peer sits exactly at the nudge size", () => {
+    const room = createRoom();
+    room.start();
+    room.advance(100);
+    room.peerResizes(FITTED.cols - 1, FITTED.rows);
+    room.advance(50);
+    room.fit(100);
+    room.advance(2000);
+
+    expect(room.viewHistory).not.toContain(FITTED.cols - 1);
+    expect(room.ptySize().cols).toBe(100);
+    expect(room.viewCols()).toBe(100);
+    room.transport.dispose();
+  });
+
+  it("applies a peer exactly at the nudge size only after the grace window when the fit grows past it", () => {
+    const room = createRoom();
+    room.start();
+    room.advance(100);
+    room.peerResizes(FITTED.cols - 1, FITTED.rows);
+    room.advance(50);
+    room.fit(200);
+    room.advance(249);
+    expect(room.viewHistory).not.toContain(FITTED.cols - 1);
+    room.advance(2000);
+
+    expect(room.ptySize().cols).toBe(FITTED.cols - 1);
+    expect(room.viewCols()).toBe(FITTED.cols - 1);
     room.transport.dispose();
   });
 });

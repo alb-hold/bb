@@ -387,3 +387,177 @@ describe("page terminal when a peer holds exactly the nudge size", () => {
     transport.dispose();
   });
 });
+
+interface FitChangeRoom {
+  advance: (ms: number) => void;
+  fit: (cols: number) => void;
+  peer: (cols: number) => void;
+  ptyCols: () => number;
+  terminal: Terminal;
+  transport: TerminalWebSocketTransport;
+  widths: number[];
+}
+
+function createFitChangeRoom(): FitChangeRoom {
+  vi.useFakeTimers();
+  const terminal = newTerminal();
+  const widths: number[] = [];
+  terminal.onResize(({ cols }) => widths.push(cols));
+  let fitted = FITTED_COLS;
+  let own = FITTED_COLS;
+  let peerCols: number | null = null;
+  let pty = FITTED_COLS;
+  let sharedSize: { cols: number; rows: number } | null = null;
+  const socket = new FakeSocket();
+
+  const show = (): void => {
+    const display = terminalDisplaySize(
+      { cols: fitted, rows: FITTED_ROWS },
+      sharedSize,
+    );
+    terminal.resize(display.cols, display.rows);
+  };
+  const applyShared = (size: { cols: number; rows: number }): void => {
+    const next = nextSharedTerminalSize(sharedSize, size, false);
+    if (next === null) {
+      return;
+    }
+    sharedSize = next;
+    show();
+  };
+  const transport = new TerminalWebSocketTransport({
+    createSocket: () => socket,
+    onMessage: (message) => {
+      if (message.type !== "session-updated") {
+        return;
+      }
+      const reported = {
+        cols: message.session.cols,
+        rows: message.session.rows,
+      };
+      const next = nextSharedTerminalSize(
+        sharedSize,
+        reported,
+        transport.consumeRepaintNudgeEcho(reported),
+      );
+      if (next !== null) {
+        applyShared(next);
+      }
+    },
+    onRepaintNudgeSizeReleased: applyShared,
+    shouldReconnect: () => false,
+    url: "ws://example.test/ws/terminals/term_1",
+  });
+  let delivered = 0;
+  const hub = (): void => {
+    const shared = peerCols === null ? own : Math.min(own, peerCols);
+    if (shared !== pty) {
+      pty = shared;
+      socket.onmessage?.(
+        new MessageEvent("message", {
+          data: JSON.stringify({
+            type: "session-updated",
+            session: session(shared, FITTED_ROWS),
+          }),
+        }),
+      );
+    }
+  };
+  const syncOwn = (): void => {
+    for (const resize of socket.resizes.slice(delivered)) {
+      own = resize.cols;
+    }
+    delivered = socket.resizes.length;
+    hub();
+  };
+  transport.sendResize(FITTED_COLS, FITTED_ROWS);
+  transport.start();
+  socket.onopen?.(new Event("open"));
+  transport.markLayoutSettled();
+  syncOwn();
+  transport.requestRepaint();
+  vi.advanceTimersByTime(0);
+  syncOwn();
+  return {
+    advance: (ms) => {
+      vi.advanceTimersByTime(ms);
+      syncOwn();
+    },
+    fit: (cols) => {
+      fitted = cols;
+      show();
+      transport.sendResize(cols, FITTED_ROWS);
+      syncOwn();
+    },
+    peer: (cols) => {
+      peerCols = cols;
+      hub();
+    },
+    ptyCols: () => pty,
+    terminal,
+    transport,
+    widths,
+  };
+}
+
+describe("page terminal when the fitted size changes between nudge and restore", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("never takes the nudge size when the fit grows past a smaller peer, and ends at the peer's size", () => {
+    const room = createFitChangeRoom();
+    room.advance(100);
+    room.fit(60);
+    room.advance(100);
+    room.peer(30);
+    room.advance(2000);
+
+    expect(room.widths).not.toContain(FITTED_COLS - 1);
+    expect(room.ptyCols()).toBe(30);
+    expect(room.terminal.cols).toBe(30);
+    room.transport.dispose();
+  });
+
+  it("never takes the nudge size when the fit shrinks and a peer sits exactly at the nudge size", () => {
+    const room = createFitChangeRoom();
+    room.advance(100);
+    room.peer(FITTED_COLS - 1);
+    room.advance(100);
+    room.fit(30);
+    room.advance(2000);
+
+    expect(room.widths).not.toContain(FITTED_COLS - 1);
+    expect(room.ptyCols()).toBe(30);
+    expect(room.terminal.cols).toBe(30);
+    room.transport.dispose();
+  });
+
+  it("applies the peer's size only after the grace window when the fit grows past a peer exactly at the nudge size", () => {
+    const room = createFitChangeRoom();
+    room.advance(100);
+    room.peer(FITTED_COLS - 1);
+    room.advance(100);
+    room.fit(60);
+    expect(room.terminal.cols).toBe(60);
+    room.advance(249);
+    expect(room.widths).not.toContain(FITTED_COLS - 1);
+    room.advance(2000);
+
+    expect(room.ptyCols()).toBe(FITTED_COLS - 1);
+    expect(room.terminal.cols).toBe(FITTED_COLS - 1);
+    room.transport.dispose();
+  });
+
+  it("follows the fit with no peer and never takes the nudge size", () => {
+    const room = createFitChangeRoom();
+    room.advance(100);
+    room.fit(30);
+    room.advance(2000);
+
+    expect(room.widths).not.toContain(FITTED_COLS - 1);
+    expect(room.ptyCols()).toBe(30);
+    expect(room.terminal.cols).toBe(30);
+    room.transport.dispose();
+  });
+});

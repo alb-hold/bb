@@ -62,7 +62,7 @@ function terminalSocketUrl(url: string, sinceSeq: number): string {
 
 interface RepaintNudgeInFlight {
   ignored: { cols: number; rows: number } | null;
-  nudge: { cols: number; rows: number };
+  nudge: { cols: number; rows: number } | null;
 }
 
 interface PendingTerminalInput {
@@ -233,7 +233,7 @@ export class TerminalWebSocketTransport {
       return;
     }
     this.lastResize = { cols, rows };
-    this.releaseRepaintNudge();
+    this.supersedeRepaintNudge();
     const socket = this.socket;
     if (
       this.settleTimeout !== null ||
@@ -317,6 +317,7 @@ export class TerminalWebSocketTransport {
     }
     if (
       inFlight.ignored === null &&
+      inFlight.nudge !== null &&
       size.cols === inFlight.nudge.cols &&
       size.rows === inFlight.nudge.rows
     ) {
@@ -329,6 +330,19 @@ export class TerminalWebSocketTransport {
       this.repaintEchoReleaseTimeout = null;
     }
     return false;
+  }
+
+  private supersedeRepaintNudge(): void {
+    const held = this.repaintNudgeInFlight?.ignored ?? null;
+    this.clearRepaintTimeout();
+    if (held === null) {
+      return;
+    }
+    this.repaintNudgeInFlight = { ignored: held, nudge: null };
+    this.repaintEchoReleaseTimeout = setTimeout(() => {
+      this.repaintEchoReleaseTimeout = null;
+      this.releaseRepaintNudge();
+    }, REPAINT_ECHO_GRACE_MS);
   }
 
   private releaseRepaintNudge(): void {

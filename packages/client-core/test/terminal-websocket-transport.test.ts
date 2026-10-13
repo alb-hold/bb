@@ -642,7 +642,7 @@ describe("TerminalWebSocketTransport", () => {
       harness.transport.dispose();
     });
 
-    it("releases the held size when the fitted size changes mid-window", async () => {
+    it("does not apply the held nudge size when the fitted size changes mid-window and the server reports the new shared size", async () => {
       const released = vi.fn<(size: { cols: number; rows: number }) => void>();
       const { harness } = openHarness(100, 30, {
         onRepaintNudgeSizeReleased: released,
@@ -654,10 +654,47 @@ describe("TerminalWebSocketTransport", () => {
         harness.transport.consumeRepaintNudgeEcho({ cols: 99, rows: 30 }),
       ).toBe(true);
       harness.transport.sendResize(80, 24);
+      expect(released).not.toHaveBeenCalled();
+      expect(
+        harness.transport.consumeRepaintNudgeEcho({ cols: 80, rows: 24 }),
+      ).toBe(false);
+      vi.advanceTimersByTime(5000);
 
+      expect(released).not.toHaveBeenCalled();
+      harness.transport.dispose();
+    });
+
+    it("applies the held size after a fitted size change only when the server reports nothing new", async () => {
+      const released = vi.fn<(size: { cols: number; rows: number }) => void>();
+      const { harness } = openHarness(100, 30, {
+        onRepaintNudgeSizeReleased: released,
+      });
+
+      harness.transport.requestRepaint();
+      await vi.advanceTimersByTimeAsync(0);
+      harness.transport.consumeRepaintNudgeEcho({ cols: 99, rows: 30 });
+      harness.transport.sendResize(200, 60);
+      vi.advanceTimersByTime(249);
+      expect(released).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+
+      expect(released).toHaveBeenCalledOnce();
       expect(released).toHaveBeenCalledWith({ cols: 99, rows: 30 });
       vi.advanceTimersByTime(5000);
       expect(released).toHaveBeenCalledOnce();
+      harness.transport.dispose();
+    });
+
+    it("does not send the obsolete restore after the fitted size changed", async () => {
+      const { harness, socket } = openHarness(100, 30);
+
+      harness.transport.requestRepaint();
+      await vi.advanceTimersByTimeAsync(0);
+      harness.transport.sendResize(80, 24);
+      const sentBefore = socket.sent.length;
+      vi.advanceTimersByTime(5000);
+
+      expect(socket.sent.length).toBe(sentBefore);
       harness.transport.dispose();
     });
 
