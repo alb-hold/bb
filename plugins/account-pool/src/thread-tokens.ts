@@ -483,13 +483,16 @@ export class ThreadTokenStore {
   ): Promise<void> {
     this.archiveVersions.set(threadId, this.archiveVersion(threadId) + 1);
     const advanceEpoch = !this.archivedThreads.has(threadId);
+    const epochUnknown = advanceEpoch && this.hasMarkerFailure(threadId);
     this.archivedThreads.add(threadId);
     this.activeArchiveMarkers.delete(threadId);
     await this.serialize(async () => {
       const epoch = this.archiveEpoch(threadId);
-      const nextEpoch = advanceEpoch ? epoch + 1 : epoch;
+      let nextEpoch = advanceEpoch ? epoch + 1 : epoch;
+      if (epochUnknown) nextEpoch = (await this.maxFileEpoch(threadId)) + 2;
       this.archiveEpochs.set(threadId, nextEpoch);
-      if (restorable) await this.tombstoneCredentials(threadId, nextEpoch);
+      if (restorable && !epochUnknown)
+        await this.tombstoneCredentials(threadId, nextEpoch);
       else await this.dropTombstone(threadId, true);
       const tombstone = this.tombstones.get(threadId);
       let names: string[] = [];
@@ -499,6 +502,7 @@ export class ThreadTokenStore {
       } catch {
         directoryReadFailed = true;
       }
+      if (epochUnknown) await this.purgeCredentialFiles(threadId, names);
       const shouldPersist =
         directoryReadFailed ||
         this.archiveMarkerNames(threadId).some((name) =>
@@ -770,6 +774,51 @@ export class ThreadTokenStore {
     await this.persistTombstone(tombstone);
   }
 
+  private expireUnreadablePending(threadId: string): void {
+    void this.serialize(async () => {
+      if (!this.archivedThreads.has(threadId)) return;
+      const epoch = this.archiveEpoch(threadId);
+      await this.dropTombstone(threadId, true);
+      let names: string[];
+      try {
+        names = await fs.readdir(this.directory);
+      } catch {
+        return;
+      }
+      await this.purgeCredentialFiles(threadId, names, epoch - 1);
+    });
+  }
+
+  private async purgeCredentialFiles(
+    threadId: string,
+    names: readonly string[],
+    epoch?: number,
+  ): Promise<void> {
+    for (const name of names) {
+      if (epoch !== undefined && this.fileEpoch(name) !== epoch) continue;
+      const nested =
+        name.startsWith(NESTED_ROUTE_PREFIX) ||
+        name.startsWith(PROCESS_NESTED_ROUTE_PREFIX) ||
+        name.startsWith(LEGACY_NESTED_ROUTE_PREFIX);
+      const route =
+        name.startsWith(THREAD_ROUTE_PREFIX) ||
+        name.startsWith(PROCESS_THREAD_ROUTE_PREFIX) ||
+        name.startsWith(LEGACY_THREAD_ROUTE_PREFIX);
+      if (!nested && !route) continue;
+      const file = path.join(this.directory, name);
+      try {
+        const record = await readRecord(
+          file,
+          nested ? readableNestedRouteSchema : readableRouteSchema,
+        );
+        if (record?.threadId === threadId)
+          await this.removeCredentialFile(file);
+      } catch {
+        continue;
+      }
+    }
+  }
+
   private async persistTombstone(tombstone: Tombstone): Promise<void> {
     const { durable, ...stored } = tombstone;
     try {
@@ -949,7 +998,15 @@ export class ThreadTokenStore {
       return;
     }
     const { threadId, epoch, archivedAt } = parsed.data;
-    if (this.hasTransientArchiveReadFailure(threadId)) return;
+    if (this.hasTransientArchiveReadFailure(threadId)) {
+      await this.removePendingFiles({
+        epoch,
+        routes: parsed.data.routes,
+        nested: parsed.data.nested,
+      });
+      await this.dropFile(file);
+      return;
+    }
     const owned = (record: { threadId: string }) =>
       record.threadId === threadId;
     const alive = async (record: {
@@ -1566,6 +1623,7 @@ export class ThreadTokenStore {
     const names = this.archiveMarkerNames(threadId);
     if (names.some((name) => this.corruptArchiveMarkers.has(name))) return true;
     if (names.some((name) => this.transientArchiveReadFailures.has(name))) {
+      let resolved = false;
       for (const name of names) {
         if (!this.transientArchiveReadFailures.has(name)) continue;
         try {
@@ -1575,6 +1633,7 @@ export class ThreadTokenStore {
           );
           this.seenArchiveMarkers.add(name);
           this.applyArchiveState(name, text);
+          resolved = true;
         } catch (error) {
           if (isNodeError(error) && error.code === "ENOENT") {
             this.transientArchiveReadFailures.delete(name);
@@ -1584,6 +1643,8 @@ export class ThreadTokenStore {
           return true;
         }
       }
+      if (resolved && this.archivedThreads.has(threadId))
+        this.expireUnreadablePending(threadId);
     }
     if (this.archivedThreads.has(threadId)) return true;
     if (this.activeArchiveMarkers.has(threadId)) return false;

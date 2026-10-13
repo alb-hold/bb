@@ -1675,7 +1675,7 @@ it("recovers from a transient archive-marker read failure on active lookup", asy
   expect(await reloaded.authenticate(oldToken)).toBeNull();
 });
 
-it("preserves a credential when its archive marker has a transient read error", async () => {
+it("drops a pending credential and its tombstone when the archive marker cannot be read at startup", async () => {
   const { directory, hosts, threads, route, hostToken } = await fixture();
   const oldToken = await threads.forThread(route, hostToken);
   const [name] = (await fs.readdir(directory)).filter((entry) =>
@@ -1698,7 +1698,12 @@ it("preserves a credential when its archive marker has a transient read error", 
   } finally {
     readFile.mockRestore();
   }
-  expect(await fs.readdir(directory)).toContain(name);
+  expect(await fs.readdir(directory)).not.toContain(name);
+  expect(
+    (await fs.readdir(directory)).filter((entry) =>
+      entry.startsWith("archived-credentials-"),
+    ),
+  ).toEqual([]);
   expect(await reloaded.authenticate(oldToken)).toBeNull();
   await reloaded.restoreThread(
     route.threadId,
