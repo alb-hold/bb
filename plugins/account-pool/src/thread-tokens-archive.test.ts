@@ -1,4 +1,4 @@
-import fs from "node:fs/promises";
+import fs, { type FileHandle } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { tmpdir } from "node:os";
@@ -9,6 +9,8 @@ import {
   ThreadTokenStore,
   type ThreadLookup,
 } from "./thread-tokens.js";
+
+const live: ThreadLookup = async () => "live";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -26,9 +28,12 @@ async function fixture() {
   const clock = () => now;
   const hosts = new HubTokenStore(directory, clock);
   await hosts.initialize();
-  const open = async (warn?: (message: string) => void) => {
+  const open = async (
+    warn?: (message: string) => void,
+    lookup: ThreadLookup = live,
+  ) => {
     const store = new ThreadTokenStore(directory, hosts, clock, warn);
-    await store.initialize(["host-one"]);
+    await store.initialize(["host-one"], lookup);
     return store;
   };
   const route = {
@@ -1094,32 +1099,63 @@ describe.each(lifetimes)(
   },
 );
 
+const crash = (): Error => Object.assign(new Error("crashed"), { code: "EIO" });
+
 function crashAfter(mutations: number) {
   const originalRename = fs.rename.bind(fs);
   const originalRemove = fs.rm.bind(fs);
   const originalOpen = fs.open.bind(fs);
   let done = 0;
   let dead = mutations === 0;
-  const died = () =>
-    Promise.reject(Object.assign(new Error("crashed"), { code: "EIO" }));
-  const rename = vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
-    if (dead) return died();
-    await originalRename(from, to);
+  const count = () => {
     done += 1;
     if (done >= mutations) dead = true;
-  });
+  };
+  const mutate = async <T>(action: () => Promise<T>): Promise<T> => {
+    if (dead) throw crash();
+    const result = await action();
+    count();
+    return result;
+  };
+  const wrap = (handle: FileHandle): FileHandle =>
+    new Proxy(handle, {
+      get(target, key) {
+        const value: unknown = Reflect.get(target, key);
+        if (typeof value !== "function") return value;
+        const call = (value as (...args: unknown[]) => Promise<unknown>).bind(
+          target,
+        );
+        if (key === "close")
+          return async () => {
+            await call();
+            if (dead) throw crash();
+            count();
+          };
+        if (key === "writeFile" || key === "sync")
+          return (...args: unknown[]) => mutate(() => call(...args));
+        return call;
+      },
+    });
+  const rename = vi
+    .spyOn(fs, "rename")
+    .mockImplementation((from, to) => mutate(() => originalRename(from, to)));
   const remove = vi
     .spyOn(fs, "rm")
-    .mockImplementation(async (file, options) => {
-      if (dead) return died();
-      await originalRemove(file, options);
-      done += 1;
-      if (done >= mutations) dead = true;
-    });
-  const open = vi
-    .spyOn(fs, "open")
-    .mockImplementation(((...args: Parameters<typeof fs.open>) =>
-      dead ? died() : originalOpen(...args)) as typeof fs.open);
+    .mockImplementation((file, options) =>
+      mutate(() => originalRemove(file, options)),
+    );
+  const open = vi.spyOn(fs, "open").mockImplementation((async (
+    file: Parameters<typeof fs.open>[0],
+    flags?: Parameters<typeof fs.open>[1],
+    mode?: Parameters<typeof fs.open>[2],
+  ) => {
+    const creates = typeof flags === "string" && flags !== "r";
+    if (!creates && dead) throw crash();
+    const handle = creates
+      ? await mutate(() => originalOpen(file, flags, mode))
+      : await originalOpen(file, flags, mode);
+    return wrap(handle);
+  }) as typeof fs.open);
   return {
     get dead() {
       return dead;
@@ -1132,84 +1168,315 @@ function crashAfter(mutations: number) {
   };
 }
 
-const archiveEvidence = async (directory: string) =>
-  (await markerInodes(directory)).size > 0 ||
-  (await tombstoneNames(directory)).length > 0;
+const bbArchived: ThreadLookup = async () => "archived";
+const archivedAt =
+  (at: number): ThreadLookup =>
+  async () => ({ status: "archived", archivedAt: at });
+const unreachable: ThreadLookup = async () => {
+  throw new Error("bb is unreachable");
+};
+
+const markerTemporaries = async (directory: string) =>
+  (await fs.readdir(directory)).filter(
+    (name) =>
+      (name.startsWith("archived-thread-") ||
+        name.startsWith("archive-revocation-")) &&
+      name.endsWith(".tmp"),
+  );
+
+const emptyMarkerTemporary = async (directory: string) => {
+  for (const name of await markerTemporaries(directory))
+    if ((await fs.stat(path.join(directory, name))).size === 0) return true;
+  return false;
+};
+
+async function everyCrashPoint(
+  lifetime: Lifetime,
+  body: (f: Fixture, sessions: Session[], writes: number) => Promise<void>,
+) {
+  let crashes = 0;
+  for (let writes = 0; writes < 120; writes += 1) {
+    const f = await fixture();
+    const launch = await mint(f, await f.open(), lifetime);
+    const threads = await f.open();
+    const sessions = [launch, await mint(f, threads, lifetime)];
+    const before = await markerInodes(f.directory);
+    const interruption = crashAfter(writes);
+    await threads.removeThread(f.route.threadId).catch(() => undefined);
+    const crashed = interruption.dead;
+    interruption.restore();
+    const stamp = new Date(f.clock());
+    for (const [name, inode] of await markerInodes(f.directory))
+      if (before.get(name) !== inode)
+        await fs.utimes(path.join(f.directory, name), stamp, stamp);
+    if (!crashed) {
+      expect(writes).toBeGreaterThan(12);
+      break;
+    }
+    crashes += 1;
+    await body(f, sessions, writes);
+  }
+  expect(crashes).toBeGreaterThan(12);
+}
 
 describe.each(lifetimes)(
-  "a %s credential across a crash at every write of an archive",
+  "a %s credential across a crash at every mutation of an archive",
   (lifetime) => {
-    const crashPoints = async (
-      scenario: "inside" | "expired",
-      check: (f: Fixture, sessions: Session[]) => Promise<void>,
-    ) => {
-      let withEvidence = 0;
-      let crashes = 0;
-      for (let writes = 0; writes < 60; writes += 1) {
-        const f = await fixture();
-        const launch = await mint(f, await f.open(), lifetime);
-        const threads = await f.open();
-        const sessions = [launch, await mint(f, threads, lifetime)];
-        const before = await markerInodes(f.directory);
-        const crash = crashAfter(writes);
-        await threads.removeThread(f.route.threadId).catch(() => undefined);
-        const crashed = crash.dead;
-        crash.restore();
-        const stamp = new Date(f.clock());
-        for (const [name, inode] of await markerInodes(f.directory))
-          if (before.get(name) !== inode)
-            await fs.utimes(path.join(f.directory, name), stamp, stamp);
-        if (!crashed) {
-          expect(writes).toBeGreaterThan(3);
-          break;
-        }
-        crashes += 1;
-        f.advance(
-          scenario === "inside" ? HOUR : ARCHIVE_TOMBSTONE_MAX_AGE_MS + 1_000,
-        );
-        const evidence = await archiveEvidence(f.directory);
-        const restarted = await f.open();
-        if (!evidence) {
-          for (const session of sessions.slice(-1))
-            expect(await accepted(f, restarted, session)).toBe(true);
-          continue;
-        }
-        withEvidence += 1;
+    it("is rejected at once after a restart at every crash point, and nothing restores past expiry", async () => {
+      await everyCrashPoint(lifetime, async (f, sessions) => {
+        const bb = archivedAt(f.clock());
+        f.advance(ARCHIVE_TOMBSTONE_MAX_AGE_MS + 1_000);
+        const restarted = await f.open(undefined, bb);
         for (const session of sessions)
           expect(await rejected(restarted, session)).toBe(true);
-        await check(f, sessions);
-      }
-      expect(crashes).toBeGreaterThan(3);
-      expect(withEvidence).toBeGreaterThan(2);
-    };
-
-    it("rejects at once after a restart, and a sweep or repeat cannot restore past expiry", async () => {
-      await crashPoints("expired", async (f, sessions) => {
-        const restarted = await f.open();
-        for (const session of sessions)
-          expect(await rejected(restarted, session)).toBe(true);
-        await restarted.sweepThreads(() => Promise.resolve("archived"));
+        await restarted.sweepThreads(bb);
         await archiveFailingTombstone(f, restarted);
-        await restarted.sweepThreads(() => Promise.resolve("archived"));
-        const again = await f.open();
+        await restarted.sweepThreads(bb);
+        const again = await f.open(undefined, bb);
         for (const session of sessions)
           expect(await rejected(again, session)).toBe(true);
         await expectNothingRestorable(f, again, sessions);
       });
     });
 
-    it("rejects at once after a restart, and restores inside the window after sweeps and repeats", async () => {
-      await crashPoints("inside", async (f, sessions) => {
-        const restarted = await f.open();
-        await restarted.sweepThreads(() => Promise.resolve("archived"));
+    it("restores nothing past expiry when unarchived right after the first restart, whatever the crash point", async () => {
+      await everyCrashPoint(lifetime, async (f, sessions) => {
+        const bb = archivedAt(f.clock());
+        f.advance(ARCHIVE_TOMBSTONE_MAX_AGE_MS + 1_000);
+        const restarted = await f.open(undefined, bb);
+        await expectNothingRestorable(f, restarted, sessions);
+      });
+    });
+
+    it("is rejected at once after a restart at every crash point, and restores inside the window only what the archive kept", async () => {
+      await everyCrashPoint(lifetime, async (f, sessions) => {
+        const lostMarker = await emptyMarkerTemporary(f.directory);
+        const bb = archivedAt(f.clock());
+        f.advance(HOUR);
+        const restarted = await f.open(undefined, bb);
+        for (const session of sessions)
+          expect(await rejected(restarted, session)).toBe(true);
+        await restarted.sweepThreads(bb);
         await atClockTime(f, () => restarted.removeThread(f.route.threadId));
         for (const session of sessions)
           expect(await rejected(restarted, session)).toBe(true);
-        const again = await f.open();
+        const again = await f.open(undefined, bb);
+        for (const session of sessions)
+          expect(await rejected(again, session)).toBe(true);
         await unarchive(again, f.route.threadId);
         for (const session of sessions)
-          expect(await accepted(f, again, session)).toBe(true);
+          expect(await accepted(f, again, session)).toBe(!lostMarker);
       });
+    });
+
+    it("is rejected at once when bb cannot be asked after the restart, whatever the crash point", async () => {
+      await everyCrashPoint(lifetime, async (f, sessions) => {
+        const restarted = await f.open(undefined, unreachable);
+        for (const session of sessions)
+          expect(await rejected(restarted, session)).toBe(true);
+        await restarted.sweepThreads(bbArchived);
+        for (const session of sessions)
+          expect(await rejected(restarted, session)).toBe(true);
+      });
+    });
+
+    it("is rejected at once from the disk alone once the archive marker or its temporary file exists, even if bb answers live", async () => {
+      await everyCrashPoint(lifetime, async (f, sessions, writes) => {
+        const evidence =
+          (await markerInodes(f.directory)).size > 0 ||
+          (await tombstoneNames(f.directory)).length > 0;
+        const restarted = await f.open(undefined, live);
+        for (const session of sessions.slice(-1))
+          expect(await rejected(restarted, session)).toBe(evidence);
+        if (writes > 0) expect(evidence).toBe(true);
+      });
+    });
+  },
+);
+
+describe.each(lifetimes)(
+  "a %s credential whose archive marker was interrupted before its rename",
+  (lifetime) => {
+    const writeTemporary = (f: Fixture, state: string, prefix?: string) =>
+      fs.writeFile(
+        path.join(
+          f.directory,
+          `${prefix ?? "archived-thread-"}${createHash("sha256")
+            .update(f.route.threadId)
+            .digest(
+              "hex",
+            )}.json.${"0".repeat(8)}-0000-0000-0000-${"0".repeat(12)}.tmp`,
+        ),
+        state,
+      );
+
+    it("treats a complete temporary marker as the archive and anchors the window to its modification time", async () => {
+      const f = await fixture();
+      const threads = await f.open();
+      const session = await mint(f, threads, lifetime);
+      await writeTemporary(
+        f,
+        JSON.stringify({
+          threadId: f.route.threadId,
+          epoch: 1,
+          archived: true,
+        }),
+      );
+      const restarted = await f.open(undefined, live);
+      expect(await rejected(restarted, session)).toBe(true);
+      expect(await markerTemporaries(f.directory)).toEqual([]);
+      expect((await markerInodes(f.directory)).size).toBe(1);
+      await unarchive(restarted, f.route.threadId);
+      expect(await accepted(f, restarted, session)).toBe(true);
+    });
+
+    it("treats an empty or truncated temporary marker like an unreadable marker and recovers when the thread is unarchived", async () => {
+      for (const state of ["", '{"threadId":"thr_one","epo']) {
+        const f = await fixture();
+        const threads = await f.open();
+        const session = await mint(f, threads, lifetime);
+        await writeTemporary(f, state);
+        const restarted = await f.open(undefined, live);
+        expect(await rejected(restarted, session)).toBe(true);
+        expect(await scopedFiles(f.directory)).toEqual([]);
+        await expect(
+          restarted.forThread(f.route, f.hostToken, lifetime),
+        ).rejects.toThrow("archived thread");
+        await unarchive(restarted, f.route.threadId);
+        expect(await markerTemporaries(f.directory)).toEqual([]);
+        const minted = await mint(f, restarted, lifetime);
+        expect(await accepted(f, restarted, minted)).toBe(true);
+      }
+    });
+
+    it("ignores a stale unarchive temporary and keeps the thread archived", async () => {
+      const f = await fixture();
+      const threads = await f.open();
+      const session = await mint(f, threads, lifetime);
+      await threads.removeThread(f.route.threadId);
+      await writeTemporary(
+        f,
+        JSON.stringify({
+          threadId: f.route.threadId,
+          epoch: 2,
+          archived: false,
+        }),
+      );
+      const restarted = await f.open(undefined, live);
+      expect(await rejected(restarted, session)).toBe(true);
+      expect(await markerTemporaries(f.directory)).toEqual([]);
+      await unarchive(restarted, f.route.threadId);
+      expect(await accepted(f, restarted, session)).toBe(true);
+    });
+
+    it("discards an unreadable temporary when a readable archived marker already exists", async () => {
+      const f = await fixture();
+      const threads = await f.open();
+      const session = await mint(f, threads, lifetime);
+      await threads.removeThread(f.route.threadId);
+      await writeTemporary(f, '{"threadId":');
+      const restarted = await f.open(undefined, live);
+      expect(await rejected(restarted, session)).toBe(true);
+      expect(await markerTemporaries(f.directory)).toEqual([]);
+      await unarchive(restarted, f.route.threadId);
+      expect(await accepted(f, restarted, session)).toBe(true);
+    });
+
+    it("reads the fallback marker's temporary the same way", async () => {
+      const f = await fixture();
+      const threads = await f.open();
+      const session = await mint(f, threads, lifetime);
+      await writeTemporary(
+        f,
+        JSON.stringify({
+          threadId: f.route.threadId,
+          epoch: 1,
+          archived: true,
+        }),
+        "archive-revocation-",
+      );
+      const restarted = await f.open(undefined, live);
+      expect(await rejected(restarted, session)).toBe(true);
+      expect(await markerTemporaries(f.directory)).toEqual([]);
+    });
+  },
+);
+
+describe.each(lifetimes)(
+  "a %s credential loaded at startup is trusted only after bb answers",
+  (lifetime) => {
+    it("is rejected until a sweep can reach bb, then accepted when the thread is live", async () => {
+      const f = await fixture();
+      const session = await mint(f, await f.open(), lifetime);
+      const restarted = await f.open(undefined, unreachable);
+      expect(await rejected(restarted, session)).toBe(true);
+      await restarted.sweepThreads(unreachable);
+      expect(await rejected(restarted, session)).toBe(true);
+      await restarted.sweepThreads(live);
+      expect(await accepted(f, restarted, session)).toBe(true);
+    });
+
+    it("is revoked while the store loads when bb already has the thread archived", async () => {
+      const f = await fixture();
+      const session = await mint(f, await f.open(), lifetime);
+      const restarted = await f.open(undefined, bbArchived);
+      expect(await rejected(restarted, session)).toBe(true);
+      expect(await scopedFiles(f.directory)).toEqual([]);
+      expect(await tombstoneNames(f.directory)).toHaveLength(1);
+      await unarchive(restarted, f.route.threadId);
+      expect(await accepted(f, restarted, session)).toBe(true);
+    });
+
+    it("is deleted while the store loads when bb no longer has the thread", async () => {
+      const f = await fixture();
+      const session = await mint(f, await f.open(), lifetime);
+      const restarted = await f.open(undefined, async () => "gone");
+      expect(await rejected(restarted, session)).toBe(true);
+      expect(await scopedFiles(f.directory)).toEqual([]);
+      expect(await tombstoneNames(f.directory)).toEqual([]);
+    });
+
+    it("counts the restoration window from when bb archived the thread, not from the late reconcile", async () => {
+      const f = await fixture();
+      const session = await mint(f, await f.open(), lifetime);
+      f.advance(23 * HOUR);
+      const restarted = await f.open(
+        undefined,
+        archivedAt(f.clock() - 23 * HOUR),
+      );
+      expect(await rejected(restarted, session)).toBe(true);
+      f.advance(2 * HOUR);
+      const later = await f.open(undefined, bbArchived);
+      await expectNothingRestorable(f, later, [session]);
+    });
+
+    it("keeps no tombstone for a thread bb archived longer ago than the window", async () => {
+      const f = await fixture();
+      const session = await mint(f, await f.open(), lifetime);
+      const restarted = await f.open(
+        undefined,
+        archivedAt(f.clock() - 30 * HOUR),
+      );
+      expect(await rejected(restarted, session)).toBe(true);
+      expect(await scopedFiles(f.directory)).toEqual([]);
+      expect(await tombstoneNames(f.directory)).toEqual([]);
+      await expectNothingRestorable(f, restarted, [session]);
+    });
+
+    it("accepts a credential minted for a loaded thread once bb has said it is live, though the lookup failed at startup", async () => {
+      const f = await fixture();
+      await mint(f, await f.open(), lifetime);
+      const restarted = await f.open(undefined, unreachable);
+      await unarchive(restarted, f.route.threadId);
+      const minted = await mint(f, restarted, lifetime);
+      expect(await accepted(f, restarted, minted)).toBe(true);
+    });
+
+    it("keeps trusting a credential minted after the load", async () => {
+      const f = await fixture();
+      const restarted = await f.open(undefined, unreachable);
+      const session = await mint(f, restarted, lifetime);
+      expect(await accepted(f, restarted, session)).toBe(true);
     });
   },
 );

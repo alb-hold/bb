@@ -75,6 +75,12 @@ interface Fixture {
 
 const cleanups: Array<() => Promise<void>> = [];
 
+type ThreadGet = (args: {
+  threadId: string;
+  signal?: AbortSignal;
+}) => Promise<ReturnType<typeof makeThreadResponse>>;
+let setupThreadGet: ThreadGet | null = null;
+
 function sdkStubs() {
   return {
     hosts: {
@@ -100,8 +106,10 @@ function sdkStubs() {
           },
         ],
       },
-      get: async ({ threadId }: { threadId: string }) =>
-        makeThreadResponse({ id: threadId }),
+      get: async (args: { threadId: string; signal?: AbortSignal }) =>
+        setupThreadGet === null
+          ? makeThreadResponse({ id: args.threadId })
+          : setupThreadGet(args),
     },
     system: {
       providerStates: async () => ({ providers: [] }),
@@ -526,6 +534,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  setupThreadGet = null;
   vi.unstubAllEnvs();
   while (cleanups.length > 0) await cleanups.pop()?.();
 });
@@ -11041,12 +11050,22 @@ describe("Account Pool credential scoping", () => {
     expect(await statusOf(host, live, "/v1/messages")).toBe(200);
   });
 
-  it("starts accepting after the startup timeout when the thread lookup hangs, then retries and revokes the stale credential", async () => {
+  it("starts accepting after the startup timeout when the thread lookup hangs, rejecting every loaded thread until the lookup recovers", async () => {
     const fixture = await scopedFixture();
     const stale = await claudeToken(fixture.host, "thread-stale");
     const live = await claudeToken(fixture.host, "thread-live");
     await downgradeToLegacyFiles(fixture, "thread-stale");
     await downgradeToLegacyFiles(fixture, "thread-live");
+    let recovered = false;
+    setupThreadGet = ({ threadId }) =>
+      recovered
+        ? Promise.resolve(
+            makeThreadResponse({
+              id: threadId,
+              archivedAt: threadId === "thread-stale" ? 1_000 : null,
+            }),
+          )
+        : new Promise(() => undefined);
     const host = await fixture.host.harness.lifecycle.reload(
       createAccountPoolPlugin({
         threadSweepTimeoutMs: 50,
@@ -11064,18 +11083,60 @@ describe("Account Pool credential scoping", () => {
         }),
       }),
     );
-    let recovered = false;
-    host.harness.sdk.stub(
-      "threads.get",
-      ({ threadId }: { threadId: string }) =>
-        recovered
-          ? Promise.resolve(
-              makeThreadResponse({
-                id: threadId,
-                archivedAt: threadId === "thread-stale" ? 1_000 : null,
-              }),
-            )
-          : new Promise(() => undefined),
+    expect(await statusOf(host, stale, "/v1/messages")).not.toBe(200);
+    expect(await statusOf(host, live, "/v1/messages")).not.toBe(200);
+    const service = host.harness.behavior.runService("hub");
+    cleanups.push(async () => {
+      service.controller.abort();
+      await service.done;
+      await host.harness.lifecycle.dispose();
+    });
+    await vi.waitFor(async () => {
+      const status = statusSchema.parse(
+        await host.harness.behavior.callRpc("status.get", null),
+      );
+      expect(status.accepting).toBe(true);
+    });
+    expect(await statusOf(host, stale, "/v1/messages")).toBe(401);
+    expect(await statusOf(host, live, "/v1/messages")).toBe(401);
+    recovered = true;
+    await vi.waitFor(async () => {
+      expect(await statusOf(host, live, "/v1/messages")).toBe(200);
+    });
+    expect(await statusOf(host, stale, "/v1/messages")).toBe(401);
+  });
+
+  it("asks bb about every loaded thread while the plugin loads, before the hub service runs", async () => {
+    const fixture = await scopedFixture();
+    const stale = await claudeToken(fixture.host, "thread-stale");
+    const live = await claudeToken(fixture.host, "thread-live");
+    await downgradeToLegacyFiles(fixture, "thread-stale");
+    await downgradeToLegacyFiles(fixture, "thread-live");
+    const asked: string[] = [];
+    setupThreadGet = async ({ threadId }) => {
+      asked.push(threadId);
+      return makeThreadResponse({
+        id: threadId,
+        archivedAt: threadId === "thread-stale" ? 1_000 : null,
+      });
+    };
+    const host = await fixture.host.harness.lifecycle.reload(
+      createAccountPoolPlugin({
+        usageUrl: EMPTY_USAGE_URL,
+        codexUsageUrl: EMPTY_USAGE_URL,
+        importCodexCredentials: async () => ({
+          accessToken: "codex-access",
+          refreshToken: "codex-refresh",
+          idToken: null,
+          accountId: "codex-account",
+          planType: null,
+          email: null,
+          expiresAt: Date.now() + 60 * 60 * 1_000,
+        }),
+      }),
+    );
+    expect(asked).toEqual(
+      expect.arrayContaining(["thread-live", "thread-stale"]),
     );
     const service = host.harness.behavior.runService("hub");
     cleanups.push(async () => {
@@ -11089,12 +11150,7 @@ describe("Account Pool credential scoping", () => {
       );
       expect(status.accepting).toBe(true);
     });
-    expect(await statusOf(host, stale, "/v1/messages")).toBe(200);
-    expect(await statusOf(host, live, "/v1/messages")).toBe(200);
-    recovered = true;
-    await vi.waitFor(async () => {
-      expect(await statusOf(host, stale, "/v1/messages")).toBe(401);
-    });
+    expect(await statusOf(host, stale, "/v1/messages")).toBe(401);
     expect(await statusOf(host, live, "/v1/messages")).toBe(200);
   });
 
