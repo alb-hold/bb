@@ -129,7 +129,12 @@ type Tombstone = {
   archivedAt: number;
   routes: RouteRecord[];
   nested: NestedRouteRecord[];
+  durable: boolean;
 };
+
+type PendingFile =
+  | { threadId: string; record: RouteRecord; nested: false }
+  | { threadId: string; record: NestedRouteRecord; nested: true };
 
 export type ThreadLookup = (
   threadId: string,
@@ -163,11 +168,14 @@ export class ThreadTokenStore {
   private tail: Promise<void> = Promise.resolve();
   private readonly pendingPriorDrops = new WeakSet<object>();
   private readonly tombstones = new Map<string, Tombstone>();
+  private readonly expiredTombstoneThreads = new Set<string>();
+  private pendingFiles: PendingFile[] = [];
 
   constructor(
     private readonly directory: string,
     private readonly hosts: HubTokenStore,
     private readonly now: () => number = Date.now,
+    private readonly warn: (message: string) => void = () => undefined,
   ) {}
 
   async initialize(hostIds: readonly string[]): Promise<void> {
@@ -189,6 +197,7 @@ export class ThreadTokenStore {
         if (error instanceof CredentialScrubError) throw error;
       });
     }
+    await this.recoverPendingFiles();
   }
 
   private async loadArchiveMarker(name: string): Promise<void> {
@@ -253,7 +262,17 @@ export class ThreadTokenStore {
       ) {
         this.routes.set(this.routeMapKey(record), record);
         indexCredential(this.tokenIndex, record);
-      } else await fs.rm(file, { force: true });
+      } else if (
+        record !== null &&
+        archived &&
+        this.awaitsTombstone(name, record)
+      )
+        this.pendingFiles.push({
+          threadId: record.threadId,
+          record,
+          nested: false,
+        });
+      else await fs.rm(file, { force: true });
     } else if (
       name.startsWith(NESTED_ROUTE_PREFIX) ||
       name.startsWith(PROCESS_NESTED_ROUTE_PREFIX) ||
@@ -289,7 +308,17 @@ export class ThreadTokenStore {
       ) {
         this.nestedRoutes.set(this.nestedMapKey(record), record);
         indexCredential(this.nestedTokenIndex, record);
-      } else await fs.rm(file, { force: true });
+      } else if (
+        record !== null &&
+        archived &&
+        this.awaitsTombstone(name, record)
+      )
+        this.pendingFiles.push({
+          threadId: record.threadId,
+          record,
+          nested: true,
+        });
+      else await fs.rm(file, { force: true });
     }
   }
 
@@ -462,6 +491,7 @@ export class ThreadTokenStore {
       this.archiveEpochs.set(threadId, nextEpoch);
       if (restorable) await this.tombstoneCredentials(threadId, nextEpoch);
       else await this.dropTombstone(threadId, true);
+      const tombstone = this.tombstones.get(threadId);
       let names: string[] = [];
       let directoryReadFailed = false;
       try {
@@ -508,10 +538,19 @@ export class ThreadTokenStore {
           }
         }
       }
+      const keepFiles =
+        tombstone !== undefined &&
+        !tombstone.durable &&
+        markerError === undefined;
+      if (keepFiles)
+        this.warn(
+          `Account Pooler could not persist the archive tombstone for thread ${threadId}; its credentials stay rejected and are retried on the next archive event or sweep.`,
+        );
       for (const [key, record] of this.routes) {
         if (record.threadId !== threadId) continue;
         this.routes.delete(key);
         unindexCredential(this.tokenIndex, record);
+        if (keepFiles) continue;
         await this.removeProviderFiles(
           record,
           Math.max(0, nextEpoch - 1),
@@ -521,6 +560,7 @@ export class ThreadTokenStore {
         if (record.threadId !== threadId) continue;
         this.nestedRoutes.delete(key);
         unindexCredential(this.nestedTokenIndex, record);
+        if (keepFiles) continue;
         await this.removeNestedFiles(record, Math.max(0, nextEpoch - 1)).catch(
           () => undefined,
         );
@@ -536,7 +576,10 @@ export class ThreadTokenStore {
     lookup: ThreadLookup,
     options: ThreadSweepOptions = {},
   ): Promise<ThreadSweepResult> {
-    await this.serialize(() => this.purgeExpiredTombstones());
+    await this.serialize(async () => {
+      await this.purgeExpiredTombstones();
+      await this.retryTombstones();
+    });
     const threadIds = new Set<string>(this.tombstones.keys());
     for (const record of this.routes.values()) threadIds.add(record.threadId);
     for (const record of this.nestedRoutes.values())
@@ -689,7 +732,14 @@ export class ThreadTokenStore {
     threadId: string,
     epoch: number,
   ): Promise<void> {
-    if (this.tombstones.get(threadId)?.epoch === epoch) return;
+    const held = this.tombstones.get(threadId);
+    if (held?.epoch === epoch) {
+      if (!held.durable) {
+        await this.persistTombstone(held);
+        if (held.durable) await this.removePendingFiles(held);
+      }
+      return;
+    }
     const routes = [...this.routes.values()].filter(
       (record) => record.threadId === threadId,
     );
@@ -704,21 +754,120 @@ export class ThreadTokenStore {
       archivedAt: this.now(),
       routes,
       nested,
+      durable: false,
     };
     this.tombstones.set(threadId, tombstone);
-    await this.persist(this.tombstoneFile(threadId), {
-      ...tombstone,
-      routes: routes.map(({ token, ...stored }) => stored),
-      nested: nested.map(({ token, ...stored }) => stored),
-    }).catch(() => undefined);
+    await this.persistTombstone(tombstone);
+  }
+
+  private async persistTombstone(tombstone: Tombstone): Promise<void> {
+    const { durable, ...stored } = tombstone;
+    try {
+      await this.persist(this.tombstoneFile(tombstone.threadId), {
+        ...stored,
+        routes: tombstone.routes.map(({ token, ...record }) => record),
+        nested: tombstone.nested.map(({ token, ...record }) => record),
+      });
+    } catch {
+      return;
+    }
+    tombstone.durable = true;
+  }
+
+  private async retryTombstones(): Promise<void> {
+    for (const tombstone of this.tombstones.values()) {
+      if (
+        tombstone.durable ||
+        !this.archivedThreads.has(tombstone.threadId) ||
+        tombstone.epoch !== this.archiveEpoch(tombstone.threadId)
+      )
+        continue;
+      await this.persistTombstone(tombstone);
+      if (tombstone.durable) await this.removePendingFiles(tombstone);
+      else
+        this.warn(
+          `Account Pooler still could not persist the archive tombstone for thread ${tombstone.threadId}.`,
+        );
+    }
+  }
+
+  private async removePendingFiles(
+    tombstone: Pick<Tombstone, "epoch" | "routes" | "nested">,
+  ): Promise<void> {
+    const epoch = Math.max(0, tombstone.epoch - 1);
+    for (const record of tombstone.routes)
+      await this.removeProviderFiles(record, epoch).catch(() => undefined);
+    for (const record of tombstone.nested)
+      await this.removeNestedFiles(record, epoch).catch(() => undefined);
   }
 
   private async dropTombstone(threadId: string, force = false): Promise<void> {
-    const held = this.tombstones.delete(threadId);
-    if (held || force)
+    const tombstone = this.tombstones.get(threadId);
+    this.tombstones.delete(threadId);
+    if (tombstone !== undefined && (force || !tombstone.durable))
+      await this.removePendingFiles(tombstone);
+    if (tombstone !== undefined || force)
       await this.removeCredentialFile(this.tombstoneFile(threadId)).catch(
         () => undefined,
       );
+  }
+
+  private awaitsTombstone(name: string, record: { threadId: string }): boolean {
+    const epoch = this.archiveEpoch(record.threadId);
+    return epoch > 0 && this.fileEpoch(name) === epoch - 1;
+  }
+
+  private async recoverPendingFiles(): Promise<void> {
+    const pending = this.pendingFiles;
+    this.pendingFiles = [];
+    for (const threadId of new Set(pending.map((entry) => entry.threadId))) {
+      const entries = pending.filter((entry) => entry.threadId === threadId);
+      const epoch = this.archiveEpoch(threadId);
+      const routes = entries.flatMap((entry) =>
+        entry.nested ? [] : [entry.record],
+      );
+      const nested = entries.flatMap((entry) =>
+        entry.nested ? [entry.record] : [],
+      );
+      const archivedAt = await this.archiveMarkerTime(threadId);
+      const tombstone: Tombstone = {
+        threadId,
+        epoch,
+        archivedAt: archivedAt ?? 0,
+        routes,
+        nested,
+        durable: false,
+      };
+      if (
+        this.tombstones.get(threadId)?.epoch === epoch ||
+        this.expiredTombstoneThreads.has(threadId) ||
+        archivedAt === null ||
+        this.tombstoneExpired(tombstone)
+      ) {
+        await this.removePendingFiles(tombstone);
+        continue;
+      }
+      this.tombstones.set(threadId, tombstone);
+      await this.persistTombstone(tombstone);
+      if (tombstone.durable) await this.removePendingFiles(tombstone);
+      else
+        this.warn(
+          `Account Pooler could not persist the archive tombstone for thread ${threadId}; it is retried on the next sweep.`,
+        );
+    }
+  }
+
+  private async archiveMarkerTime(threadId: string): Promise<number | null> {
+    let newest: number | null = null;
+    for (const name of this.archiveMarkerNames(threadId)) {
+      try {
+        const { mtimeMs } = await fs.stat(path.join(this.directory, name));
+        newest = Math.max(newest ?? 0, Math.floor(mtimeMs));
+      } catch {
+        continue;
+      }
+    }
+    return newest;
   }
 
   private async purgeExpiredTombstones(): Promise<void> {
@@ -805,7 +954,16 @@ export class ThreadTokenStore {
     const nested: NestedRouteRecord[] = [];
     for (const record of parsed.data.nested)
       if (owned(record) && (await alive(record))) nested.push(record);
-    const tombstone = { threadId, epoch, archivedAt, routes, nested };
+    const tombstone = {
+      threadId,
+      epoch,
+      archivedAt,
+      routes,
+      nested,
+      durable: true,
+    };
+    if (this.tombstoneExpired(tombstone))
+      this.expiredTombstoneThreads.add(threadId);
     if (
       !this.archivedThreads.has(threadId) ||
       this.archiveEpoch(threadId) !== epoch ||

@@ -154,7 +154,12 @@ export function createAccountPoolPlugin(
     await hubTokens.initialize();
     const enrolledHosts = await bb.sdk.hosts.list();
     await hubTokens.prune(enrolledHosts.map((host) => host.id));
-    const threadTokens = new ThreadTokenStore(secretDir, hubTokens, now);
+    const threadTokens = new ThreadTokenStore(
+      secretDir,
+      hubTokens,
+      now,
+      (message) => bb.log.warn(message),
+    );
     await threadTokens.initialize(enrolledHosts.map((host) => host.id));
     const routing = new RoutingStore(bb.storage.kv, now);
     const env = options.env ?? process.env;
