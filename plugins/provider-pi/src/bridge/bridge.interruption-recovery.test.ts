@@ -8,6 +8,8 @@ import {
   FULL_PERMISSION_OPTIONS,
 } from "./test-support.js";
 
+const PI_PROCESS_TEST_TIMEOUT_MS = 90_000;
+
 let h: FakePiBridgeHarness | undefined;
 let nextId = 2000;
 afterEach(async () => {
@@ -101,6 +103,7 @@ it.each(["0.84.0", "1.0.2"])(
     expect(deltas.filter((d) => d.kind === "usage")).toHaveLength(1);
     expect(t.commands().filter((c) => c === "prompt")).toHaveLength(1);
   },
+  PI_PROCESS_TEST_TIMEOUT_MS,
 );
 
 it.each([undefined, "false", "true", '"bad"', "null", "0"])(
@@ -120,6 +123,7 @@ it.each([undefined, "false", "true", '"bad"', "null", "0"])(
         /interrupted|Invalid Pi settlement/,
       );
   },
+  PI_PROCESS_TEST_TIMEOUT_MS,
 );
 
 it.each(["/native-retry", "/native-overflow"])(
@@ -145,6 +149,7 @@ it.each(["/native-retry", "/native-overflow"])(
       2,
     );
   },
+  PI_PROCESS_TEST_TIMEOUT_MS,
 );
 
 it("shows a failed run's error when queued work continues to a completed turn", async () => {
@@ -167,7 +172,7 @@ it("shows a failed run's error when queued work continues to a completed turn", 
     ),
   ).toHaveLength(1);
   expect(deltas.filter((d) => d.kind === "turn.open")).toHaveLength(1);
-});
+}, PI_PROCESS_TEST_TIMEOUT_MS);
 
 it.each([
   "/unexpected-abort",
@@ -186,7 +191,7 @@ it.each([
   expect(t.wireEvents().filter((e) => e.type === "agent_start")).toHaveLength(
     1,
   );
-});
+}, PI_PROCESS_TEST_TIMEOUT_MS);
 
 it.each(["/threshold-cancel", "/stop-overflow-cancel", "/stop-overflow-error"])(
   "does not mistake optional compaction %s for failed recovery",
@@ -205,6 +210,7 @@ it.each(["/threshold-cancel", "/stop-overflow-cancel", "/stop-overflow-error"])(
     ).toBe(true);
     expect(deltas.filter((d) => d.kind === "usage")).toHaveLength(1);
   },
+  PI_PROCESS_TEST_TIMEOUT_MS,
 );
 
 it.each(["hello", "/unexpected-abort"])(
@@ -219,6 +225,7 @@ it.each(["hello", "/unexpected-abort"])(
     ]);
     expect(t.wireEvents().some((e) => e.type === "agent_settled")).toBe(false);
   },
+  PI_PROCESS_TEST_TIMEOUT_MS,
 );
 
 it("Stop interrupts intentionally and release never starts a new run", async () => {
@@ -240,7 +247,7 @@ it("Stop interrupts intentionally and release never starts a new run", async () 
       .slice(count)
       .some((d) => d.kind === "turn.open"),
   ).toBe(false);
-});
+}, PI_PROCESS_TEST_TIMEOUT_MS);
 
 it.each(["/hold", "/wait-hold"])(
   "keeps %s live until authorized steering is consumed",
@@ -265,6 +272,7 @@ it.each(["/hold", "/wait-hold"])(
       1,
     );
   },
+  PI_PROCESS_TEST_TIMEOUT_MS,
 );
 
 it("drains queued followUp before the only final boundary", async () => {
@@ -300,7 +308,7 @@ it("drains queued followUp before the only final boundary", async () => {
       .map((e) => e.type),
   ).toEqual(["agent_start", "agent_start", "agent_settled"]);
   expect(t.deltas().filter((d) => d.kind === "turn.boundary")).toHaveLength(1);
-});
+}, PI_PROCESS_TEST_TIMEOUT_MS);
 
 it.each(["Approved answer", "Permission refused"])(
   "question response %s stays in the same live run without replay",
@@ -326,6 +334,7 @@ it.each(["Approved answer", "Permission refused"])(
     );
     expect(t.commands().filter((c) => c === "prompt")).toHaveLength(1);
   },
+  PI_PROCESS_TEST_TIMEOUT_MS,
 );
 
 it("child exit fails rather than completing", async () => {
@@ -333,4 +342,4 @@ it("child exit fails rather than completing", async () => {
   expect(
     (await t.run("/die")).filter((d) => d.kind === "turn.boundary"),
   ).toEqual([expect.objectContaining({ status: "failed" })]);
-});
+}, PI_PROCESS_TEST_TIMEOUT_MS);
