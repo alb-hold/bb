@@ -4193,6 +4193,14 @@ export async function runBbApp(
   });
   if (!runtimeRecordOwned) {
     warnExistingRuntimeRecord(context.dataDir);
+    if (await isHealthyServerAnswering(`${serverListenerUrl}/health`)) {
+      log(
+        red("✗"),
+        `bb already serves ${serverListenerUrl} from this data directory`,
+      );
+      process.exitCode = 1;
+      return;
+    }
   }
   const cliLauncherPath =
     options.worktreePolicy === null && !runsFromSourceCheckout(import.meta.url)

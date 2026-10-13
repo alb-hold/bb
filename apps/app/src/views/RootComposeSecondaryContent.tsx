@@ -127,7 +127,6 @@ export function RootComposeSecondaryContent({
             style={PAGE_SHELL_CONTENT_STYLE}
           >
             {children}
-            {compactScrollContent}
             <PluginHomepageSections />
           </div>
         </div>
