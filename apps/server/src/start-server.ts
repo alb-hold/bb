@@ -2,6 +2,7 @@ import { serve } from "@hono/node-server";
 import { existsSync } from "node:fs";
 import { Server as HttpServer } from "node:http";
 import { verifyAuthenticatedDaemon } from "./internal/auth.js";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ServerConfig } from "@bb/config/server";
@@ -24,6 +25,10 @@ import { PluginHostArtifactRegistry } from "./services/plugins/plugin-host-artif
 import { createProviderNativeRootsCache } from "./services/providers/native-roots.js";
 import { createAiServiceRegistry } from "./services/ai/ai-service-registry.js";
 import { createAppUpdateService } from "./services/system/app-update.js";
+import {
+  createCliCommandService,
+  createWindowsUserPath,
+} from "./services/system/cli-command.js";
 import { createAppVersionService } from "./services/system/app-version.js";
 import {
   resetWorkspaceWriteClaims,
@@ -293,6 +298,13 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
     mode: appUpdateMode,
     notifyChanged: () => hub.notifySystem(["app-update-changed"]),
   });
+  const cliCommand = createCliCommandService({
+    env: process.env,
+    homeDir: homedir(),
+    launcherPath: serverConfig.BB_CLI_LAUNCHER ?? null,
+    platform: process.platform,
+    windowsUserPath: createWindowsUserPath(process.env),
+  });
   const {
     app,
     closeWebSockets,
@@ -305,6 +317,7 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
       appUpdate,
       appVersion,
       bbAppManagedConfig,
+      cliCommand,
       config: runtimeConfig,
       db,
       hub,

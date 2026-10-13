@@ -34,6 +34,10 @@ import {
   type AppUpdateService,
 } from "../../src/services/system/app-update.js";
 import {
+  createCliCommandService,
+  type CliCommandService,
+} from "../../src/services/system/cli-command.js";
+import {
   createAppVersionService,
   type AppVersionService,
 } from "../../src/services/system/app-version.js";
@@ -91,6 +95,7 @@ export type TestAppHarnessConfigOverrides = Partial<ServerRuntimeConfig> & {
   appUpdateService?: AppUpdateService;
   appVersionService?: AppVersionService;
   db?: DbConnection;
+  cliCommandService?: CliCommandService;
   terminalAttachTimeoutMs?: number;
   terminalCloseTimeoutMs?: number;
   terminalOpenTimeoutMs?: number;
@@ -159,6 +164,7 @@ export async function createTestAppHarness(
     appUpdateService,
     appVersionService,
     db: providedDb,
+    cliCommandService,
     terminalAttachTimeoutMs = TEST_TERMINAL_RPC_TIMEOUT_MS,
     terminalCloseTimeoutMs,
     terminalOpenTimeoutMs = TEST_TERMINAL_RPC_TIMEOUT_MS,
@@ -306,6 +312,18 @@ export async function createTestAppHarness(
     appUpdate,
     appVersion,
     bbAppManagedConfig,
+    cliCommand:
+      cliCommandService ??
+      createCliCommandService({
+        env: {},
+        homeDir: dataDir,
+        launcherPath: null,
+        platform: process.platform,
+        windowsUserPath: {
+          read: () => Promise.reject(new Error("no Windows PATH in tests")),
+          write: () => Promise.reject(new Error("no Windows PATH in tests")),
+        },
+      }),
     config,
     db,
     hub,
