@@ -56,8 +56,9 @@ that has already run out is dropped. One rule decides every one of these: the
 window starts at the earliest of the archive marker's modification time, the
 tombstone's own archive time and bb's archive time, and it can only move
 earlier. A time learned from bb is first written into the marker's modification
-time, and only then is anything deleted; a tombstone is deleted before the route
-files it replaced. A restart at any point therefore sees the same or an earlier
+time, and only then is anything deleted (if that write fails nothing is deleted:
+the thread stays unrestorable in memory and the next sweep or load retries); a
+tombstone is deleted before the route files it replaced. A restart at any point therefore sees the same or an earlier
 window, and route files left without a tombstone are recovered against the
 marker and expire with it.
 
