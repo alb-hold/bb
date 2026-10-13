@@ -381,6 +381,69 @@ it("keeps a restored durable credential valid after a re-mint until its successo
   expect(await final.authenticate(newToken)).toEqual(route);
 });
 
+async function durablePendingFixture() {
+  const base = await fixture();
+  const directory = await fs.mkdtemp(path.join(tmpdir(), "bb-thread-token-"));
+  directories.push(directory);
+  const { hosts, route, hostToken } = base;
+  const threads = new ThreadTokenStore(directory, hosts);
+  await threads.initialize([route.hostId]);
+  const nestedRoute = { hostId: route.hostId, threadId: route.threadId };
+  const oldToken = await threads.forThread(route, hostToken);
+  const oldNested = await threads.forNested(nestedRoute, hostToken);
+  const restarted = await restartOf(directory, hosts, route);
+  const newToken = await restarted.forThread(route, hostToken);
+  const newNested = await restarted.forNested(nestedRoute, hostToken);
+  const failWrites = () => fs.chmod(directory, 0o500);
+  const allowWrites = () => fs.chmod(directory, 0o700);
+  return {
+    ...base,
+    directory,
+    nestedRoute,
+    oldToken,
+    oldNested,
+    restarted,
+    newToken,
+    newNested,
+    failWrites,
+    allowWrites,
+  };
+}
+
+it("refuses the old durable digest at once when persisting its drop fails, and retries the write on the next authentication", async () => {
+  const f = await durablePendingFixture();
+  await f.failWrites();
+  expect(await f.restarted.authenticate(f.newToken)).toEqual(f.route);
+  expect(await f.restarted.authenticate(f.oldToken)).toBeNull();
+  expect(await f.restarted.authenticateNested(f.newNested)).toEqual(
+    f.nestedRoute,
+  );
+  expect(await f.restarted.authenticateNested(f.oldNested)).toBeNull();
+  await f.allowWrites();
+  expect(await f.restarted.authenticate(f.newToken)).toEqual(f.route);
+  expect(await f.restarted.authenticateNested(f.newNested)).toEqual(
+    f.nestedRoute,
+  );
+  const reloaded = await restartOf(f.directory, f.hosts, f.route);
+  expect(await reloaded.authenticate(f.oldToken)).toBeNull();
+  expect(await reloaded.authenticateNested(f.oldNested)).toBeNull();
+  expect(await reloaded.authenticate(f.newToken)).toEqual(f.route);
+});
+
+it("documents the residual: a restart before any successful retry restores the old durable digest until the new one is presented again", async () => {
+  const f = await durablePendingFixture();
+  await f.failWrites();
+  expect(await f.restarted.authenticate(f.newToken)).toEqual(f.route);
+  expect(await f.restarted.authenticate(f.oldToken)).toBeNull();
+  await f.allowWrites();
+  const reloaded = await restartOf(f.directory, f.hosts, f.route);
+  expect(await reloaded.authenticate(f.oldToken)).toEqual(f.route);
+  expect(await reloaded.authenticate(f.newToken)).toEqual(f.route);
+  expect(await reloaded.authenticate(f.oldToken)).toBeNull();
+  const final = await restartOf(f.directory, f.hosts, f.route);
+  expect(await final.authenticate(f.oldToken)).toBeNull();
+});
+
 it("drops every digest of a durable route on revocation", async () => {
   const { directory, hosts, threads, route, hostToken } = await fixture();
   const nestedRoute = { hostId: route.hostId, threadId: route.threadId };

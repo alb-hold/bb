@@ -140,6 +140,7 @@ export class ThreadTokenStore {
   private readonly lookupFailures = new Map<string, number>();
   private readonly archiveVersions = new Map<string, number>();
   private tail: Promise<void> = Promise.resolve();
+  private readonly pendingPriorDrops = new WeakSet<object>();
 
   constructor(
     private readonly directory: string,
@@ -923,23 +924,22 @@ export class ThreadTokenStore {
       | { nested: true; record: NestedRouteRecord },
   ): Promise<void> {
     const { record } = use;
-    if (record.priors === undefined) return;
+    if (record.priors === undefined && !this.pendingPriorDrops.has(record))
+      return;
     await this.serialize(async () => {
-      const priors = record.priors;
-      if (priors === undefined) return;
-      if (use.nested) {
-        if (this.nestedRoutes.get(this.nestedMapKey(use.record)) !== use.record)
-          return;
-        for (const prior of priors)
-          this.nestedTokenIndex.delete(prior.tokenDigest);
-        use.record.priors = undefined;
-        await this.persistCredential(this.nestedFile(use.record), use.record);
-        return;
-      }
-      if (this.routes.get(this.routeMapKey(use.record)) !== use.record) return;
-      for (const prior of priors) this.tokenIndex.delete(prior.tokenDigest);
-      use.record.priors = undefined;
-      await this.persistCredential(this.file(use.record), use.record);
+      const registered = use.nested
+        ? this.nestedRoutes.get(this.nestedMapKey(use.record))
+        : this.routes.get(this.routeMapKey(use.record));
+      if (registered !== record) return;
+      const index = use.nested ? this.nestedTokenIndex : this.tokenIndex;
+      for (const prior of record.priors ?? []) index.delete(prior.tokenDigest);
+      record.priors = undefined;
+      this.pendingPriorDrops.add(record);
+      await this.persistCredential(
+        use.nested ? this.nestedFile(use.record) : this.file(use.record),
+        record,
+      );
+      this.pendingPriorDrops.delete(record);
     }).catch(() => undefined);
   }
 
