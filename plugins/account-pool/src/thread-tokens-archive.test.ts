@@ -22,12 +22,12 @@ type Lifetime = (typeof lifetimes)[number];
 async function fixture() {
   const directory = await fs.mkdtemp(path.join(tmpdir(), "bb-tombstone-"));
   directories.push(directory);
-  let now = 1_000_000;
+  let now = Date.now();
   const clock = () => now;
   const hosts = new HubTokenStore(directory, clock);
   await hosts.initialize();
-  const open = async () => {
-    const store = new ThreadTokenStore(directory, hosts, clock);
+  const open = async (warn?: (message: string) => void) => {
+    const store = new ThreadTokenStore(directory, hosts, clock, warn);
     await store.initialize(["host-one"]);
     return store;
   };
@@ -499,4 +499,262 @@ describe("a restart in the middle of an archive or an unarchive", () => {
     expect(await accepted(f, restarted, fresh)).toBe(true);
     expect(await rejected(restarted, session)).toBe(true);
   });
+});
+
+const scopedFiles = async (directory: string) =>
+  (await fs.readdir(directory)).filter((name) => name.startsWith("scoped-"));
+
+async function whileFailing<T>(
+  markers: string[],
+  action: () => Promise<T>,
+): Promise<T> {
+  const failing = failOpening(...markers);
+  try {
+    return await action();
+  } finally {
+    failing.mockRestore();
+  }
+}
+
+const TOMBSTONE = ["archived-credentials-"];
+
+async function archiveWithoutTombstone(
+  f: Fixture,
+  lifetime: Lifetime,
+  warn?: (message: string) => void,
+) {
+  const launch = await mint(f, await f.open(), lifetime);
+  const threads = await f.open(warn);
+  const current = await mint(f, threads, lifetime);
+  expect(current.token).not.toBe(launch.token);
+  await whileFailing(TOMBSTONE, () => threads.removeThread(f.route.threadId));
+  return { threads, sessions: [launch, current] };
+}
+
+describe.each(lifetimes)(
+  "a %s credential when the tombstone cannot be written during an archive",
+  (lifetime) => {
+    it("keeps the route files, rejects before and after a restart, and restores the original session", async () => {
+      const f = await fixture();
+      const warn = vi.fn();
+      const { threads, sessions } = await archiveWithoutTombstone(
+        f,
+        lifetime,
+        warn,
+      );
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(await tombstoneNames(f.directory)).toEqual([]);
+      expect(await scopedFiles(f.directory)).not.toEqual([]);
+      for (const session of sessions)
+        expect(await rejected(threads, session)).toBe(true);
+
+      const restarted = await f.open();
+      for (const session of sessions)
+        expect(await rejected(restarted, session)).toBe(true);
+      expect(await tombstoneNames(f.directory)).toHaveLength(1);
+      expect(await scopedFiles(f.directory)).toEqual([]);
+
+      await unarchive(restarted, f.route.threadId);
+      for (const session of sessions)
+        expect(await accepted(f, restarted, session)).toBe(true);
+      const afterUnarchive = await f.open();
+      for (const session of sessions.slice(-1))
+        expect(await accepted(f, afterUnarchive, session)).toBe(true);
+    });
+
+    it("restores in the same process from the memory copy", async () => {
+      const f = await fixture();
+      const { threads, sessions } = await archiveWithoutTombstone(f, lifetime);
+      await unarchive(threads, f.route.threadId);
+      for (const session of sessions)
+        expect(await accepted(f, threads, session)).toBe(true);
+      const restarted = await f.open();
+      for (const session of sessions.slice(-1))
+        expect(await accepted(f, restarted, session)).toBe(true);
+      expect(await scopedFiles(f.directory)).not.toEqual([]);
+    });
+
+    it("recovers from the route files again when the tombstone cannot be written at the restart either", async () => {
+      const f = await fixture();
+      const warn = vi.fn();
+      const { sessions } = await archiveWithoutTombstone(f, lifetime);
+      const restarted = await whileFailing(TOMBSTONE, () => f.open(warn));
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(await scopedFiles(f.directory)).not.toEqual([]);
+      for (const session of sessions)
+        expect(await rejected(restarted, session)).toBe(true);
+      const again = await whileFailing(TOMBSTONE, () => f.open());
+      await unarchive(again, f.route.threadId);
+      for (const session of sessions)
+        expect(await accepted(f, again, session)).toBe(true);
+      const afterUnarchive = await f.open();
+      for (const session of sessions.slice(-1))
+        expect(await accepted(f, afterUnarchive, session)).toBe(true);
+    });
+
+    it("writes the tombstone and removes the route files on the next sweep", async () => {
+      const f = await fixture();
+      const { threads, sessions } = await archiveWithoutTombstone(f, lifetime);
+      const result = await threads.sweepThreads(() =>
+        Promise.resolve("archived"),
+      );
+      expect(result).toEqual({ checked: 1, revoked: 0, failed: 0 });
+      expect(await tombstoneNames(f.directory)).toHaveLength(1);
+      expect(await scopedFiles(f.directory)).toEqual([]);
+      const restarted = await f.open();
+      await unarchive(restarted, f.route.threadId);
+      for (const session of sessions)
+        expect(await accepted(f, restarted, session)).toBe(true);
+    });
+
+    it("retries the tombstone on a second archive, and keeps the route files while it still fails", async () => {
+      const f = await fixture();
+      const { threads, sessions } = await archiveWithoutTombstone(f, lifetime);
+      await whileFailing(TOMBSTONE, () =>
+        threads.removeThread(f.route.threadId),
+      );
+      expect(await tombstoneNames(f.directory)).toEqual([]);
+      expect(await scopedFiles(f.directory)).not.toEqual([]);
+      const restarted = await whileFailing(TOMBSTONE, () => f.open());
+      await restarted.removeThread(f.route.threadId);
+      expect(await tombstoneNames(f.directory)).toHaveLength(1);
+      expect(await scopedFiles(f.directory)).toEqual([]);
+      for (const session of sessions)
+        expect(await rejected(restarted, session)).toBe(true);
+      await unarchive(restarted, f.route.threadId);
+      for (const session of sessions)
+        expect(await accepted(f, restarted, session)).toBe(true);
+    });
+
+    it("keeps a good tombstone when a second archive's write would fail", async () => {
+      const f = await fixture();
+      const threads = await f.open();
+      const session = await mint(f, threads, lifetime);
+      await threads.removeThread(f.route.threadId);
+      await whileFailing(TOMBSTONE, () =>
+        threads.removeThread(f.route.threadId),
+      );
+      const restarted = await f.open();
+      await unarchive(restarted, f.route.threadId);
+      expect(await accepted(f, restarted, session)).toBe(true);
+    });
+
+    it("recovers a later archive episode whose tombstone cannot be written", async () => {
+      const f = await fixture();
+      let threads = await f.open();
+      const session = await mint(f, threads, lifetime);
+      await threads.removeThread(f.route.threadId);
+      await unarchive(threads, f.route.threadId);
+      await whileFailing(TOMBSTONE, () =>
+        threads.removeThread(f.route.threadId),
+      );
+      expect(await rejected(threads, session)).toBe(true);
+      threads = await f.open();
+      expect(await rejected(threads, session)).toBe(true);
+      await unarchive(threads, f.route.threadId);
+      expect(await accepted(f, threads, session)).toBe(true);
+    });
+
+    it("ends final when the thread is deleted in that state, in the same process and after a restart", async () => {
+      const f = await fixture();
+      const { threads, sessions } = await archiveWithoutTombstone(f, lifetime);
+      await threads.deleteThread(f.route.threadId);
+      expect(await scopedFiles(f.directory)).toEqual([]);
+      expect(await tombstoneNames(f.directory)).toEqual([]);
+      await unarchive(threads, f.route.threadId);
+      for (const session of sessions)
+        expect(await rejected(threads, session)).toBe(true);
+      const restarted = await f.open();
+      await unarchive(restarted, f.route.threadId);
+      for (const session of sessions)
+        expect(await rejected(restarted, session)).toBe(true);
+
+      const other = await fixture();
+      const second = await archiveWithoutTombstone(other, lifetime);
+      const afterRestart = await whileFailing(TOMBSTONE, () => other.open());
+      await afterRestart.deleteThread(other.route.threadId);
+      expect(await scopedFiles(other.directory)).toEqual([]);
+      const last = await other.open();
+      await unarchive(last, other.route.threadId);
+      for (const session of second.sessions)
+        expect(await rejected(last, session)).toBe(true);
+      expect(await tombstoneNames(other.directory)).toEqual([]);
+    });
+
+    it("does not resurrect a pending credential once its tombstone expired", async () => {
+      const f = await fixture();
+      const { sessions } = await archiveWithoutTombstone(f, lifetime);
+      f.advance(ARCHIVE_TOMBSTONE_MAX_AGE_MS + 1_000);
+      const restarted = await f.open();
+      expect(await scopedFiles(f.directory)).toEqual([]);
+      await unarchive(restarted, f.route.threadId);
+      for (const session of sessions)
+        expect(await rejected(restarted, session)).toBe(true);
+    });
+  },
+);
+
+describe.each(lifetimes)(
+  "a %s credential whose route files cannot be removed after a good tombstone",
+  (lifetime) => {
+    it("stays rejected, is not recovered from the leftover file, and restores from the tombstone", async () => {
+      const f = await fixture();
+      const threads = await f.open();
+      const session = await mint(f, threads, lifetime);
+      const leftovers = await scopedFiles(f.directory);
+      const originalRemove = fs.rm.bind(fs);
+      const remove = vi.spyOn(fs, "rm").mockImplementation((file, options) => {
+        if (leftovers.some((name) => String(file).endsWith(name)))
+          return Promise.reject(
+            Object.assign(new Error("EIO"), { code: "EIO" }),
+          );
+        return originalRemove(file, options);
+      });
+      const originalRename = fs.rename.bind(fs);
+      const rename = vi.spyOn(fs, "rename").mockImplementation((from, to) => {
+        if (
+          leftovers.some((name) => String(from).endsWith(name)) &&
+          String(to).includes("revoked-route-")
+        )
+          return Promise.reject(
+            Object.assign(new Error("EIO"), { code: "EIO" }),
+          );
+        return originalRename(from, to);
+      });
+      try {
+        await threads.removeThread(f.route.threadId);
+      } finally {
+        remove.mockRestore();
+        rename.mockRestore();
+      }
+      expect(await tombstoneNames(f.directory)).toHaveLength(1);
+      expect(await scopedFiles(f.directory)).toEqual(leftovers);
+      expect(await rejected(threads, session)).toBe(true);
+
+      const restarted = await f.open();
+      expect(await rejected(restarted, session)).toBe(true);
+      expect(await scopedFiles(f.directory)).toEqual([]);
+      expect(await tombstoneNames(f.directory)).toHaveLength(1);
+      await unarchive(restarted, f.route.threadId);
+      expect(await accepted(f, restarted, session)).toBe(true);
+    });
+  },
+);
+
+it("removes the route files when neither the tombstone nor an archive marker can be written", async () => {
+  const f = await fixture();
+  const threads = await f.open();
+  const session = await mint(f, threads, "process");
+  await whileFailing(
+    [...TOMBSTONE, "archived-thread-", "archive-revocation-"],
+    async () => {
+      await expect(threads.removeThread(f.route.threadId)).rejects.toThrow(
+        "EIO",
+      );
+    },
+  );
+  expect(await scopedFiles(f.directory)).toEqual([]);
+  expect(await rejected(threads, session)).toBe(true);
+  const restarted = await f.open();
+  expect(await rejected(restarted, session)).toBe(true);
 });
