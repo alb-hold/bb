@@ -92,19 +92,29 @@ it("keeps process credentials scoped, revocable, and valid after a restart witho
   );
 });
 
-it("rotates a restored process credential on reissue: the new token differs and the old one is refused at once", async () => {
+const processFilesOf = async (directory: string) =>
+  (await fs.readdir(directory)).filter(
+    (name) => name.startsWith("scoped-process-") && name.endsWith(".json"),
+  );
+
+async function restartOf(
+  directory: string,
+  hosts: HubTokenStore,
+  route: { hostId: string },
+  clock: () => number = Date.now,
+) {
+  const restarted = new ThreadTokenStore(directory, hosts, clock);
+  await restarted.initialize([route.hostId]);
+  return restarted;
+}
+
+it("keeps a restored process credential valid after a reissue, so a surviving CLI keeps authenticating", async () => {
   const { directory, hosts, threads, route, hostToken } = await fixture();
   const nestedRoute = { hostId: route.hostId, threadId: route.threadId };
   const oldToken = await threads.forThread(route, hostToken, "process");
   const oldNested = await threads.forNested(nestedRoute, hostToken, "process");
-  const processFiles = async () =>
-    (await fs.readdir(directory)).filter((name) =>
-      name.startsWith("scoped-process-"),
-    );
-  expect(await processFiles()).toHaveLength(2);
-  const restarted = new ThreadTokenStore(directory, hosts);
-  await restarted.initialize([route.hostId]);
-  expect(await restarted.authenticate(oldToken)).toEqual(route);
+  expect(await processFilesOf(directory)).toHaveLength(2);
+  const restarted = await restartOf(directory, hosts, route);
   const newToken = await restarted.forThread(route, hostToken, "process");
   const newNested = await restarted.forNested(
     nestedRoute,
@@ -113,21 +123,181 @@ it("rotates a restored process credential on reissue: the new token differs and 
   );
   expect(newToken).not.toBe(oldToken);
   expect(newNested).not.toBe(oldNested);
-  expect(await restarted.authenticate(oldToken)).toBeNull();
-  expect(await restarted.authenticateNested(oldNested)).toBeNull();
+  expect(await restarted.authenticate(oldToken, "claude")).toEqual(route);
+  expect(await restarted.authenticateNested(oldNested)).toEqual(nestedRoute);
   expect(await restarted.authenticate(newToken, "claude")).toEqual(route);
   expect(await restarted.authenticateNested(newNested)).toEqual(nestedRoute);
+  expect(restarted.isProcessCredential(oldToken)).toBe(true);
   expect(restarted.isProcessCredential(newToken)).toBe(true);
   expect(await restarted.forThread(route, hostToken, "process")).toBe(
     newToken,
   );
-  expect(await processFiles()).toHaveLength(2);
-  const again = new ThreadTokenStore(directory, hosts);
-  await again.initialize([route.hostId]);
-  expect(await again.authenticate(oldToken)).toBeNull();
-  expect(await again.authenticateNested(oldNested)).toBeNull();
+  expect(await processFilesOf(directory)).toHaveLength(2);
+  const again = await restartOf(directory, hosts, route);
+  expect(await again.authenticate(oldToken)).toEqual(route);
+  expect(await again.authenticateNested(oldNested)).toEqual(nestedRoute);
   expect(await again.authenticate(newToken)).toEqual(route);
-  expect(await again.authenticateNested(newNested)).toEqual(nestedRoute);
+  for (const name of await fs.readdir(directory)) {
+    const content = await fs.readFile(path.join(directory, name), "utf8");
+    for (const token of [oldToken, oldNested, newToken, newNested])
+      expect(content.includes(token)).toBe(false);
+  }
+});
+
+it("keeps the original token of a surviving CLI across two restarts when no CLI was launched on the reissued token", async () => {
+  const { directory, hosts, threads, route, hostToken } = await fixture();
+  const nestedRoute = { hostId: route.hostId, threadId: route.threadId };
+  const original = await threads.forThread(route, hostToken, "process");
+  const originalNested = await threads.forNested(
+    nestedRoute,
+    hostToken,
+    "process",
+  );
+  expect(await threads.authenticate(original)).toEqual(route);
+  expect(await threads.authenticateNested(originalNested)).toEqual(
+    nestedRoute,
+  );
+  await threads.forThread(route, hostToken, "process");
+  await threads.forNested(nestedRoute, hostToken, "process");
+  const first = await restartOf(directory, hosts, route);
+  const second = await first.forThread(route, hostToken, "process");
+  const secondNested = await first.forNested(nestedRoute, hostToken, "process");
+  const third = await restartOf(directory, hosts, route);
+  const thirdToken = await third.forThread(route, hostToken, "process");
+  const thirdNested = await third.forNested(nestedRoute, hostToken, "process");
+  expect(await third.authenticate(original)).toEqual(route);
+  expect(await third.authenticateNested(originalNested)).toEqual(nestedRoute);
+  expect(await third.authenticate(second)).toBeNull();
+  expect(await third.authenticateNested(secondNested)).toBeNull();
+  expect(await third.authenticate(thirdToken)).toEqual(route);
+  expect(await third.authenticateNested(thirdNested)).toEqual(nestedRoute);
+  expect(await processFilesOf(directory)).toHaveLength(2);
+});
+
+it("moves the prior slot forward when the reissued token was used, and holds at most one prior per route", async () => {
+  const { directory, hosts, threads, route, hostToken } = await fixture();
+  const nestedRoute = { hostId: route.hostId, threadId: route.threadId };
+  const original = await threads.forThread(route, hostToken, "process");
+  await threads.forNested(nestedRoute, hostToken, "process");
+  expect(await threads.authenticate(original)).toEqual(route);
+  const first = await restartOf(directory, hosts, route);
+  const second = await first.forThread(route, hostToken, "process");
+  expect(await first.authenticate(second)).toEqual(route);
+  await first.forThread(route, hostToken, "process");
+  const third = await restartOf(directory, hosts, route);
+  const thirdToken = await third.forThread(route, hostToken, "process");
+  expect(await third.authenticate(second)).toEqual(route);
+  expect(await third.authenticate(thirdToken)).toEqual(route);
+  expect(await third.authenticate(original)).toBeNull();
+  const priors = (await processFilesOf(directory)).filter((name) =>
+    name.startsWith("scoped-process-route-"),
+  );
+  expect(priors).toHaveLength(1);
+  const stored = z
+    .object({ prior: z.object({ tokenDigest: z.string() }).passthrough().optional() })
+    .passthrough()
+    .parse(
+      JSON.parse(
+        await fs.readFile(path.join(directory, priors[0] ?? ""), "utf8"),
+      ),
+    );
+  expect(Object.keys(stored.prior ?? {}).sort()).toEqual([
+    "expiresAt",
+    "issuedAt",
+    "tokenDigest",
+  ]);
+});
+
+it("refuses the prior and the reissued token at once after removal, across a restart", async () => {
+  const { directory, hosts, threads, route, hostToken } = await fixture();
+  const nestedRoute = { hostId: route.hostId, threadId: route.threadId };
+  const oldToken = await threads.forThread(route, hostToken, "process");
+  const oldNested = await threads.forNested(nestedRoute, hostToken, "process");
+  const restarted = await restartOf(directory, hosts, route);
+  const newToken = await restarted.forThread(route, hostToken, "process");
+  const newNested = await restarted.forNested(
+    nestedRoute,
+    hostToken,
+    "process",
+  );
+  expect(await restarted.authenticate(oldToken)).toEqual(route);
+  await restarted.removeThread(route.threadId);
+  for (const token of [oldToken, newToken])
+    expect(await restarted.authenticate(token)).toBeNull();
+  for (const token of [oldNested, newNested])
+    expect(await restarted.authenticateNested(token)).toBeNull();
+  expect(await processFilesOf(directory)).toEqual([]);
+  const after = await restartOf(directory, hosts, route);
+  for (const token of [oldToken, newToken])
+    expect(await after.authenticate(token)).toBeNull();
+  for (const token of [oldNested, newNested])
+    expect(await after.authenticateNested(token)).toBeNull();
+});
+
+it("refuses the prior when a restored thread is swept as gone", async () => {
+  const { directory, hosts, threads, route, hostToken } = await fixture();
+  const oldToken = await threads.forThread(route, hostToken, "process");
+  const restarted = await restartOf(directory, hosts, route);
+  const newToken = await restarted.forThread(route, hostToken, "process");
+  expect(await restarted.authenticate(oldToken)).toEqual(route);
+  expect(await restarted.sweepThreads(async () => "gone")).toMatchObject({
+    revoked: 1,
+  });
+  expect(await restarted.authenticate(oldToken)).toBeNull();
+  expect(await restarted.authenticate(newToken)).toBeNull();
+});
+
+it("refuses the prior once its own expiry passes, while the reissued token stays valid", async () => {
+  const { directory, hosts, route, hostToken } = await fixture();
+  let clock = 5_000_000;
+  const minting = await restartOf(directory, hosts, route, () => clock);
+  const oldToken = await minting.forThread(route, hostToken, "process");
+  clock += 60_000;
+  const restarted = await restartOf(directory, hosts, route, () => clock);
+  const newToken = await restarted.forThread(route, hostToken, "process");
+  clock += PROCESS_CREDENTIAL_MAX_AGE_MS - 60_001;
+  expect(await restarted.authenticate(oldToken)).toEqual(route);
+  const reloaded = await restartOf(directory, hosts, route, () => clock);
+  expect(await reloaded.authenticate(oldToken)).toEqual(route);
+  clock += 1;
+  expect(await restarted.authenticate(oldToken)).toBeNull();
+  expect(restarted.isProcessCredential(oldToken)).toBe(false);
+  expect(await restarted.authenticate(newToken)).toEqual(route);
+  const afterExpiry = await restartOf(directory, hosts, route, () => clock);
+  expect(await afterExpiry.authenticate(oldToken)).toBeNull();
+  expect(await afterExpiry.authenticate(newToken)).toEqual(route);
+});
+
+it("drops the prior when a later mint reclaims credentials of a dead host generation", async () => {
+  const { directory, hosts, route, hostToken, advance } = await fixture();
+  const minting = await restartOf(directory, hosts, route);
+  const oldToken = await minting.forThread(route, hostToken, "process");
+  const restarted = await restartOf(directory, hosts, route);
+  const newToken = await restarted.forThread(route, hostToken, "process");
+  expect(restarted.isProcessCredential(oldToken)).toBe(true);
+  expect(restarted.isProcessCredential(newToken)).toBe(true);
+  await hosts.rotate(route.hostId);
+  const nextHostToken = await hosts.forHost(route.hostId);
+  advance(10 * 60_000 + 1);
+  const replacement = await restarted.forThread(
+    route,
+    nextHostToken,
+    "process",
+  );
+  expect(await restarted.authenticate(replacement)).toEqual(route);
+  expect(restarted.isProcessCredential(oldToken)).toBe(false);
+  expect(restarted.isProcessCredential(newToken)).toBe(false);
+  expect(await processFilesOf(directory)).toHaveLength(1);
+});
+
+it("never gives a durable credential a prior: its reissue after a restart still refuses the old token", async () => {
+  const { directory, hosts, threads, route, hostToken } = await fixture();
+  const oldToken = await threads.forThread(route, hostToken);
+  const restarted = await restartOf(directory, hosts, route);
+  const newToken = await restarted.forThread(route, hostToken);
+  expect(newToken).not.toBe(oldToken);
+  expect(await restarted.authenticate(oldToken)).toBeNull();
+  expect(await restarted.authenticate(newToken)).toEqual(route);
 });
 
 it("expires process credentials a fixed time after mint and removes expired records on initialize", async () => {

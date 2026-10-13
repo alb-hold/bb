@@ -10777,6 +10777,57 @@ describe("Account Pool credential scoping", () => {
     expect(await statusOf(host, codex, "/v1/responses")).toBe(401);
   });
 
+  it("keeps a surviving native CLI's original credentials working when the environment is rebuilt after each restart", async () => {
+    const fixture = await scopedFixture();
+    const resolve = async (host: Fixture["host"], threadId: string) => {
+      const entries = await host.harness.behavior.resolveProviderEnv(
+        "claude-code",
+        {
+          threadId,
+          projectId: "project-one",
+          hostId: "host-one",
+          experimental_runtimeKind: "native",
+        },
+      );
+      const value = (name: string) => {
+        const entry = entries.find((candidate) => candidate.name === name);
+        if (entry === undefined || typeof entry.value !== "string")
+          throw new Error(`${name} was not resolved.`);
+        return entry.value;
+      };
+      return {
+        claude: value("ANTHROPIC_AUTH_TOKEN"),
+        nested: value(PARENT_TOKEN_ENV),
+      };
+    };
+    const original = await resolve(fixture.host, "thr_native_survivor");
+    expect(await statusOf(fixture.host, original.claude, "/v1/messages")).toBe(
+      200,
+    );
+    expect(await statusOf(fixture.host, original.nested, "/availability")).toBe(
+      200,
+    );
+    expect(await resolve(fixture.host, "thr_native_survivor")).toEqual(
+      original,
+    );
+    const first = await reloadHub(fixture, () => {});
+    const reissued = await resolve(first, "thr_native_survivor");
+    expect(reissued.claude).not.toBe(original.claude);
+    expect(await statusOf(first, original.claude, "/v1/messages")).toBe(200);
+    expect(await statusOf(first, original.nested, "/availability")).toBe(200);
+    const second = await reloadHub({ ...fixture, host: first }, () => {});
+    const latest = await resolve(second, "thr_native_survivor");
+    expect(await statusOf(second, latest.claude, "/v1/messages")).toBe(200);
+    expect(await statusOf(second, original.claude, "/v1/messages")).toBe(200);
+    expect(await statusOf(second, original.nested, "/availability")).toBe(200);
+    await second.harness.behavior.emitThreadEvent("thread.archived", {
+      thread: makeThreadResponse({ id: "thr_native_survivor" }),
+    });
+    expect(await statusOf(second, original.claude, "/v1/messages")).toBe(401);
+    expect(await statusOf(second, original.nested, "/availability")).toBe(401);
+    expect(await statusOf(second, latest.claude, "/v1/messages")).toBe(401);
+  });
+
   async function reloadHub(
     fixture: Fixture,
     stubLookup: (host: Fixture["host"]) => void,
