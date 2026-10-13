@@ -3140,6 +3140,70 @@ is temporarily unavailable renders BB's renderer without erasing the pin.
 5. **Two slots or one.** Confirm source and diff should stay separately
    replaceable rather than one "code renderer" registration.
 
+## `app.slots.experimental_codeFenceRenderer` (`@get-bb/plugin-sdk/app`)
+
+**What it does.** `app.slots.experimental_codeFenceRenderer({ id, languages,
+component })` renders fenced code blocks of the claimed languages in assistant
+and nested-agent message Markdown with a plugin component — the same places
+`messageDirective` activates. User messages, file previews, and plugin
+Markdown keep BB's code block. `id` is unique within the plugin (letters,
+digits, `-`, `_`); `languages` is non-empty, each lowercase
+`/^[a-z0-9][a-z0-9+#._-]*$/`, and a language may be claimed once per plugin
+(duplicates across that plugin's registrations are rejected at load).
+
+The component receives `{ code, language, status, index, message, Original }`.
+`code` is the fence body so far and grows while the reply streams. `status` is
+`"streaming"` (no closing delimiter yet, reply still being written),
+`"closed"` (closing delimiter present, `code` final), or `"unclosed"` (the
+reply ended without one). `index` is the zero-based ordinal among fences of
+the same language in the message. `Original` renders BB's code block (syntax
+highlighting, copy button, mermaid diagram for `mermaid`). Inside the
+component `useBbNavigate().openThreadPanel` works as it does for
+`messageDirective`.
+
+BB mounts the component once per fence and keeps that instance for as long as
+the message stays on screen. The Markdown tree renders an empty placeholder
+where the fence sits; a host around the message's Markdown owns the component
+and portals it into a container that follows the placeholder, so the instance
+survives the placeholder moving from the streaming tail to the settled region
+and the reply finishing. A fence is identified by the source offset of its
+opening delimiter, which does not move while a reply is appended to. Where
+the browser supports `Element.moveBefore`, an iframe inside the component
+also survives those moves without reloading; elsewhere component state
+survives and the iframe reloads. State that must outlive the mounted
+component belongs under `${message.id}#${language}#${index}`.
+
+Fallbacks: BB's code block renders when two plugins claim one language (BB
+logs a console warning naming them), when the plugin is missing or disabled,
+and for a fence whose component throws. A throw affects that fence only, and
+BB tries the component again when that fence's `code` or `status` changes.
+
+**Core callers on the same path.** Assistant and nested-agent message Markdown
+rendering — `MarkdownPreview`'s code renderer, the pipeline that also resolves
+`messageDirective`. The built-in `inline-vis` plugin renders its
+` ```inline-vis ` pages through this slot. BB's `mermaid` diagram stays
+a core special case inside `Original`, because it renders on every Markdown
+surface and this slot is scoped to messages. The SDK testing harness exposes
+registrations as `loadPluginApp(...).codeFenceRenderers`, renderable with
+`renderSlot`.
+
+**Audit before stabilizing.**
+
+1. **Collision model.** Confirm that a contested language falling back to
+   BB's code block is enough, or whether users need a per-language picker
+   like the source/diff renderer pin.
+2. **Streaming contract.** Confirm `code`/`status`/`index` cover real
+   generative-UI renderers (partial JSON/DSL parsing), and whether the rest
+   of the info string should be exposed as `meta`.
+3. **Scope.** Confirm the slot should stay limited to assistant and
+   nested-agent Markdown, whether common languages (`json`, `ts`) should be
+   claimable, and whether `mermaid` should be claimable or reserved for BB.
+4. **Identity.** Confirm keying a fence by source offset holds for every
+   path that rewrites a message's text, and decide whether iframes must
+   survive the tail-to-settled move in browsers without `moveBefore`.
+5. **Source visibility.** Decide whether BB should offer its own "view
+   source" control for claimed fences instead of leaving it to each plugin.
+
 ## `experimental_useSidebarThreads` / `experimental_useSidebarThreadActions` (`@get-bb/plugin-sdk/app`)
 
 **New-thread machine selection (Sep 2026).**
@@ -4314,6 +4378,10 @@ Stabilize after verifying group archive and Undo with descendants, already archi
 Starts a server-owned plugin update and returns its job immediately. `experimental_updateJobs.list/get` exposes queued/running phases and terminal update, rollback, or failure results. Jobs continue across client disconnects; finished jobs remain for ten minutes. Jobs are in memory and do not survive server restarts. `applyUpdate` retains its result contract by polling the job; raw callers without `Prefer: respond-async` retain the synchronous response. Running updates cannot be cancelled during activation or rollback.
 
 Stabilization requires exercising reconnect/reload, concurrent deduplication, rollback delivery, missing jobs after restart, and CLI/SDK parity before dropping the experimental prefix. No host-daemon wire change.
+
+## `PluginBbSdk.system.experimental_recordTelemetryEvent`
+
+`system.experimental_recordTelemetryEvent(event)` posts one anonymous product event to `POST /api/v1/system/telemetry/events`, which forwards it to the server's usage telemetry under the install's anonymous id and drops it when usage data sharing is off. The request schema is a strict allow-list of setup-guide events with fixed enum or boolean properties; anything else is rejected with 400. Core callers, all through `recordTelemetryEvent` in `apps/app/src/components/onboarding/onboarding-telemetry.ts`: the setup guide (`OnboardingFlow`). Stabilize after deciding whether third-party plugins may emit product events at all (and, if so, how events are namespaced per plugin and rate limited), then rename project-wide and remove this entry.
 
 ## `PluginBbSdk.hosts.experimental_discoverRepos`
 

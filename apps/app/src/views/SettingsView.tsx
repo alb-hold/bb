@@ -956,7 +956,7 @@ export function GeneralSettingsSection({
 
           <SettingsWithControl
             label="Thread archive confirmation"
-            description="Ask before archiving a thread with unarchived children."
+            description="Ask before archiving a thread with unarchived child threads."
           >
             <Switch
               checked={confirmThreadArchive}
@@ -1068,7 +1068,7 @@ export function PrivacySettingsSection({
 
         <SettingsWithControl
           label="Share anonymous usage data"
-          description="Send anonymous app starts, thread and message counts, and plugin installs to help improve BB. Turning this off takes effect immediately for this server."
+          description="Send anonymous usage data, such as app starts, setup progress and feature use, to help improve bb. Turning this off takes effect immediately for this server."
         >
           <Switch
             checked={telemetryEnabled}

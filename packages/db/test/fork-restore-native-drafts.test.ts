@@ -20,6 +20,7 @@ import {
 import {
   dropIdleLifecycleIndexes,
   dropPluginEnabledFollowsDefaultColumn,
+  dropMarketplaceSourceGitSubdirectoryColumn,
   dropQueuedMessageEditHeldUntilColumn,
   rewindThreadPruningWork,
 } from "./helpers/rewind.js";
@@ -73,6 +74,7 @@ it("lets a user edit and send a first-message draft that the original 0132 moved
     rewindThreadPruningWork(db);
     dropPluginEnabledFollowsDefaultColumn(db);
     dropQueuedMessageEditHeldUntilColumn(db);
+    dropMarketplaceSourceGitSubdirectoryColumn(db);
     db.$client
       .prepare("INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)")
       .run(
@@ -191,6 +193,7 @@ it("restores a first-message draft from a same-provider thread's turn history wh
     rewindThreadPruningWork(db);
     dropPluginEnabledFollowsDefaultColumn(db);
     dropQueuedMessageEditHeldUntilColumn(db);
+    dropMarketplaceSourceGitSubdirectoryColumn(db);
     db.$client
       .prepare("INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)")
       .run(
@@ -309,6 +312,7 @@ it("restores a first-message draft with the most recent same-provider turn's exe
     rewindThreadPruningWork(db);
     dropPluginEnabledFollowsDefaultColumn(db);
     dropQueuedMessageEditHeldUntilColumn(db);
+    dropMarketplaceSourceGitSubdirectoryColumn(db);
     db.$client
       .prepare("INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)")
       .run(
