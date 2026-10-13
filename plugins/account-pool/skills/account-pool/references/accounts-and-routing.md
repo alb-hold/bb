@@ -52,7 +52,14 @@ counts as an archive in progress: the thread loads as archived but, because its
 modification time cannot be trusted as an anchor, gets no restoration window;
 an unreadable one is treated like an unreadable marker. When bb reports an
 archive time earlier than the marker's, the earlier one is used, and a window
-that has already run out is dropped.
+that has already run out is dropped. One rule decides every one of these: the
+window starts at the earliest of the archive marker's modification time, the
+tombstone's own archive time and bb's archive time, and it can only move
+earlier. A time learned from bb is first written into the marker's modification
+time, and only then is anything deleted; a tombstone is deleted before the route
+files it replaced. A restart at any point therefore sees the same or an earlier
+window, and route files left without a tombstone are recovered against the
+marker and expire with it.
 
 The builtin Account Pooler plugin is disabled by default. Enable it, add Claude
 or Codex credentials, and inspect its proxy routes and account quota with:
