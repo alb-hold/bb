@@ -15,6 +15,21 @@ const INHERITED_AGENT_SESSION_ENV_KEYS: ReadonlySet<string> = new Set([
   "CLAUDE_PID",
 ]);
 
+export function stripInheritedAgentSessionEnv(
+  baseEnv: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(baseEnv)) {
+    const normalizedKey =
+      process.platform === "win32" ? key.toUpperCase() : key;
+    if (INHERITED_AGENT_SESSION_ENV_KEYS.has(normalizedKey)) {
+      continue;
+    }
+    env[key] = value;
+  }
+  return env;
+}
+
 export function sanitizeInheritedChildProcessEnv(
   args: SanitizeInheritedChildProcessEnvArgs,
 ): NodeJS.ProcessEnv {
