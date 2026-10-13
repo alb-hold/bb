@@ -685,6 +685,62 @@ describe("TerminalWebSocketTransport", () => {
       harness.transport.dispose();
     });
 
+    it("still takes the nudge report that arrives after the fitted size changed as the stale echo, then applies the next size", async () => {
+      const released = vi.fn<(size: { cols: number; rows: number }) => void>();
+      const { harness } = openHarness(100, 30, {
+        onRepaintNudgeSizeReleased: released,
+      });
+      const echo = (cols: number, rows: number) =>
+        harness.transport.consumeRepaintNudgeEcho({ cols, rows });
+
+      harness.transport.requestRepaint();
+      await vi.advanceTimersByTimeAsync(0);
+      harness.transport.sendResize(80, 24);
+      vi.advanceTimersByTime(50);
+
+      expect(echo(99, 30)).toBe(true);
+      expect(echo(80, 24)).toBe(false);
+      vi.advanceTimersByTime(5000);
+      expect(released).not.toHaveBeenCalled();
+      harness.transport.dispose();
+    });
+
+    it("applies the stale nudge report after a fitted size change when nothing newer follows within the grace window", async () => {
+      const released = vi.fn<(size: { cols: number; rows: number }) => void>();
+      const { harness } = openHarness(100, 30, {
+        onRepaintNudgeSizeReleased: released,
+      });
+
+      harness.transport.requestRepaint();
+      await vi.advanceTimersByTimeAsync(0);
+      harness.transport.sendResize(200, 60);
+      vi.advanceTimersByTime(100);
+      expect(
+        harness.transport.consumeRepaintNudgeEcho({ cols: 99, rows: 30 }),
+      ).toBe(true);
+      vi.advanceTimersByTime(249);
+      expect(released).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+
+      expect(released).toHaveBeenCalledOnce();
+      expect(released).toHaveBeenCalledWith({ cols: 99, rows: 30 });
+      harness.transport.dispose();
+    });
+
+    it("stops expecting the nudge report once the grace window passes after a fitted size change, so a later peer at that size is applied", async () => {
+      const { harness } = openHarness(100, 30);
+
+      harness.transport.requestRepaint();
+      await vi.advanceTimersByTimeAsync(0);
+      harness.transport.sendResize(80, 24);
+      vi.advanceTimersByTime(250);
+
+      expect(
+        harness.transport.consumeRepaintNudgeEcho({ cols: 99, rows: 30 }),
+      ).toBe(false);
+      harness.transport.dispose();
+    });
+
     it("does not send the obsolete restore after the fitted size changed", async () => {
       const { harness, socket } = openHarness(100, 30);
 

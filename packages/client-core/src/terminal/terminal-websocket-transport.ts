@@ -302,10 +302,7 @@ export class TerminalWebSocketTransport {
             rows: current.rows,
           }),
         );
-        this.repaintEchoReleaseTimeout = setTimeout(() => {
-          this.repaintEchoReleaseTimeout = null;
-          this.releaseRepaintNudge();
-        }, REPAINT_ECHO_GRACE_MS);
+        this.startRepaintEchoRelease();
       }, REPAINT_RESTORE_DELAY_MS);
     }, 0);
   }
@@ -322,6 +319,9 @@ export class TerminalWebSocketTransport {
       size.rows === inFlight.nudge.rows
     ) {
       inFlight.ignored = size;
+      if (this.repaintEchoReleaseTimeout !== null) {
+        this.startRepaintEchoRelease();
+      }
       return true;
     }
     this.repaintNudgeInFlight = null;
@@ -333,12 +333,22 @@ export class TerminalWebSocketTransport {
   }
 
   private supersedeRepaintNudge(): void {
-    const held = this.repaintNudgeInFlight?.ignored ?? null;
+    const inFlight = this.repaintNudgeInFlight;
     this.clearRepaintTimeout();
-    if (held === null) {
+    if (inFlight === null) {
       return;
     }
-    this.repaintNudgeInFlight = { ignored: held, nudge: null };
+    this.repaintNudgeInFlight =
+      inFlight.ignored === null
+        ? { ignored: null, nudge: inFlight.nudge }
+        : { ignored: inFlight.ignored, nudge: null };
+    this.startRepaintEchoRelease();
+  }
+
+  private startRepaintEchoRelease(): void {
+    if (this.repaintEchoReleaseTimeout !== null) {
+      clearTimeout(this.repaintEchoReleaseTimeout);
+    }
     this.repaintEchoReleaseTimeout = setTimeout(() => {
       this.repaintEchoReleaseTimeout = null;
       this.releaseRepaintNudge();

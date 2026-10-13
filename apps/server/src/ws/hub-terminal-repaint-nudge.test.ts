@@ -30,6 +30,8 @@ function session(cols: number, rows: number): TerminalSession {
 
 interface TwoClientRoom {
   advance: (ms: number) => void;
+  delayReports: () => void;
+  deliverReports: () => void;
   fit: (cols: number) => void;
   peerResizes: (cols: number, rows: number) => void;
   ptySize: () => { cols: number; rows: number };
@@ -57,6 +59,8 @@ function createRoom(): TwoClientRoom {
   };
   let restores = 0;
   let nudged = false;
+  let delayed = false;
+  const queued: Array<{ cols: number; rows: number }> = [];
 
   const browserSocket: TerminalBrowserSocket & {
     deliver: (size: { cols: number; rows: number }) => void;
@@ -111,6 +115,10 @@ function createRoom(): TwoClientRoom {
       return;
     }
     pty = shared;
+    if (delayed) {
+      queued.push(shared);
+      return;
+    }
     browserSocket.deliver(shared);
   };
 
@@ -137,6 +145,15 @@ function createRoom(): TwoClientRoom {
 
   return {
     advance: (ms) => vi.advanceTimersByTime(ms),
+    delayReports: () => {
+      delayed = true;
+    },
+    deliverReports: () => {
+      delayed = false;
+      for (const size of queued.splice(0)) {
+        browserSocket.deliver(size);
+      }
+    },
     fit: (cols) => {
       fitted = cols;
       track();
@@ -268,6 +285,68 @@ describe("repaint nudge with a second client on the same terminal", () => {
     room.advance(249);
     expect(room.viewHistory).not.toContain(FITTED.cols - 1);
     room.advance(2000);
+
+    expect(room.ptySize().cols).toBe(FITTED.cols - 1);
+    expect(room.viewCols()).toBe(FITTED.cols - 1);
+    room.transport.dispose();
+  });
+
+  it("never applies the nudge size when the fit changes before the nudge report is delivered", () => {
+    const room = createRoom();
+    room.delayReports();
+    room.start();
+    room.fit(200);
+    room.advance(50);
+    room.deliverReports();
+    room.advance(2000);
+
+    expect(room.viewHistory).not.toContain(FITTED.cols - 1);
+    expect(room.ptySize().cols).toBe(200);
+    expect(room.viewCols()).toBe(200);
+    room.transport.dispose();
+  });
+
+  it("never applies the nudge size when the fit changes before the nudge report and a smaller peer resizes", () => {
+    const room = createRoom();
+    room.delayReports();
+    room.start();
+    room.fit(200);
+    room.peerResizes(44, 20);
+    room.advance(50);
+    room.deliverReports();
+    room.advance(2000);
+
+    expect(room.viewHistory).not.toContain(FITTED.cols - 1);
+    expect(room.ptySize().cols).toBe(44);
+    expect(room.viewCols()).toBe(44);
+    room.transport.dispose();
+  });
+
+  it("is not stuck when the nudge report never arrives because a smaller peer already held the shared size", () => {
+    const room = createRoom();
+    room.peerResizes(44, 20);
+    room.start();
+    room.advance(50);
+    room.fit(200);
+    room.advance(2000);
+
+    expect(room.viewHistory).not.toContain(FITTED.cols - 1);
+    expect(room.viewCols()).toBe(44);
+
+    room.peerResizes(FITTED.cols - 1, FITTED.rows);
+    expect(room.ptySize().cols).toBe(FITTED.cols - 1);
+    expect(room.viewCols()).toBe(FITTED.cols - 1);
+    room.transport.dispose();
+  });
+
+  it("applies a peer that later resizes to exactly the nudge size once the stale window has passed", () => {
+    const room = createRoom();
+    room.peerResizes(300, 60);
+    room.start();
+    room.advance(50);
+    room.fit(500);
+    room.advance(2000);
+    room.peerResizes(FITTED.cols - 1, FITTED.rows);
 
     expect(room.ptySize().cols).toBe(FITTED.cols - 1);
     expect(room.viewCols()).toBe(FITTED.cols - 1);
