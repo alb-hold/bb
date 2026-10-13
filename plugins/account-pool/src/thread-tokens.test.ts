@@ -1793,8 +1793,11 @@ it("uses a fallback archive marker when the primary marker cannot be written", a
       ...rest,
     );
   }) as typeof fs.open);
-  const remove = vi.spyOn(fs, "rm").mockImplementationOnce(async () => {
-    throw new Error("EIO");
+  const originalRemove = fs.rm.bind(fs);
+  const remove = vi.spyOn(fs, "rm").mockImplementation((file, options) => {
+    if (String(file).endsWith(routeName ?? ""))
+      return Promise.reject(new Error("EIO"));
+    return originalRemove(file, options);
   });
   try {
     await expect(threads.removeThread(route.threadId)).resolves.toBeUndefined();
