@@ -273,10 +273,11 @@ try {
   });
   process.stdout.write("unexpected socket ownership\\n");
 } catch (error) {
+  console.error("competing holder startup failure");
   process.stdout.write(String(error.code) + "\\n");
 }`,
         ],
-        { stdio: ["ignore", "pipe", "inherit"] },
+        { stdio: ["ignore", "pipe", "ignore"] },
       );
       let secondOutput = "";
       const secondExit = new Promise<void>((resolve, reject) => {

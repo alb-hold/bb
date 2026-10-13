@@ -1,8 +1,6 @@
 import { spawn } from "node:child_process";
 import {
-  closeSync,
   mkdirSync,
-  openSync,
   rmSync,
   statSync,
   unlinkSync,
@@ -98,37 +96,32 @@ function removeEmptyNativeHolderLog(socketPath: string): void {
 
 function spawnNativeHolder(threadId: string, socketPath: string): void {
   mkdirSync(path.dirname(socketPath), { recursive: true, mode: 0o700 });
-  const log = openSync(nativeHolderLogPath(socketPath), "a", 0o600);
-  try {
-    const script = process.argv[1];
-    if (script === undefined) {
-      throw new CliExitError(
-        "Cannot locate the bb CLI to start the native terminal holder",
-        1,
-      );
-    }
-    const holder = spawn(
-      process.execPath,
-      [
-        ...process.execArgv,
-        script,
-        "thread",
-        "native-hold",
-        threadId,
-        "--socket",
-        socketPath,
-      ],
-      {
-        cwd: process.cwd(),
-        detached: true,
-        env: process.env,
-        stdio: ["ignore", "ignore", log],
-      },
+  const script = process.argv[1];
+  if (script === undefined) {
+    throw new CliExitError(
+      "Cannot locate the bb CLI to start the native terminal holder",
+      1,
     );
-    holder.unref();
-  } finally {
-    closeSync(log);
   }
+  const holder = spawn(
+    process.execPath,
+    [
+      ...process.execArgv,
+      script,
+      "thread",
+      "native-hold",
+      threadId,
+      "--socket",
+      socketPath,
+    ],
+    {
+      cwd: process.cwd(),
+      detached: true,
+      env: process.env,
+      stdio: ["ignore", "ignore", "ignore"],
+    },
+  );
+  holder.unref();
 }
 
 async function runNativeHarness(
