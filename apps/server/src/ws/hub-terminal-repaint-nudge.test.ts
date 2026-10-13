@@ -29,6 +29,7 @@ function session(cols: number, rows: number): TerminalSession {
 }
 
 interface TwoClientRoom {
+  connect: () => void;
   advance: (ms: number) => void;
   delayReports: () => void;
   deliverReports: () => void;
@@ -143,6 +144,17 @@ function createRoom(): TwoClientRoom {
   });
   transport.sendResize(FITTED.cols, FITTED.rows);
 
+  let connected = false;
+  const connect = (): void => {
+    if (connected) {
+      return;
+    }
+    connected = true;
+    transport.start();
+    browserSocket.onopen?.(new Event("open"));
+    transport.markLayoutSettled();
+  };
+
   return {
     advance: (ms) => vi.advanceTimersByTime(ms),
     delayReports: () => {
@@ -170,10 +182,9 @@ function createRoom(): TwoClientRoom {
     },
     ptySize: () => pty,
     restoresSentByOwner: () => restores,
+    connect,
     start: () => {
-      transport.start();
-      browserSocket.onopen?.(new Event("open"));
-      transport.markLayoutSettled();
+      connect();
       transport.requestRepaint();
       vi.advanceTimersByTime(0);
     },
@@ -324,6 +335,7 @@ describe("repaint nudge with a second client on the same terminal", () => {
 
   it("is not stuck when the nudge report never arrives because a smaller peer already held the shared size", () => {
     const room = createRoom();
+    room.connect();
     room.peerResizes(44, 20);
     room.start();
     room.advance(50);
@@ -341,6 +353,7 @@ describe("repaint nudge with a second client on the same terminal", () => {
 
   it("applies a peer that later resizes to exactly the nudge size once the stale window has passed", () => {
     const room = createRoom();
+    room.connect();
     room.peerResizes(300, 60);
     room.start();
     room.advance(50);
