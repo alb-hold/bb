@@ -1183,10 +1183,14 @@ const EVENT_HANDLE = new Set([
   "setMaxListeners",
 ]);
 
-function crashAfter(mutations: number) {
+function crashAfter(
+  mutations: number,
+  faults: { failFirstMarkerOpen?: boolean } = {},
+) {
   const target = fs as unknown as Record<string, unknown>;
   let done = 0;
   let dead = mutations === 0;
+  let faulted = false;
   const counted: string[] = [];
   const unclassified = new Set<string>();
   const methods = new Set<string>();
@@ -1248,6 +1252,14 @@ function crashAfter(mutations: number) {
       if (name === "open")
         return (async () => {
           const flags = args[1];
+          if (
+            faults.failFirstMarkerOpen === true &&
+            flags === "r+" &&
+            !faulted
+          ) {
+            faulted = true;
+            throw crash();
+          }
           const creates = typeof flags === "string" && flags !== "r";
           if (!creates && dead) throw crash();
           const handle = (
@@ -1798,6 +1810,7 @@ type Scenario = {
   prepare: (f: Fixture, lifetime: Lifetime) => Promise<Context>;
   operate: (f: Fixture, context: Context) => Promise<unknown>;
   drives: string[];
+  lowers?: boolean;
 };
 
 async function liveThread(f: Fixture, lifetime: Lifetime): Promise<Context> {
@@ -1854,7 +1867,7 @@ async function snapshot(directory: string): Promise<string> {
   for (const name of (await fs.readdir(directory)).sort()) {
     if (!STATE_PREFIXES.some((prefix) => name.startsWith(prefix))) continue;
     const { mtimeMs, size } = await fs.stat(path.join(directory, name));
-    rows.push(`${name}:${Math.floor(mtimeMs)}:${size}`);
+    rows.push(`${name}:${Math.round(mtimeMs)}:${size}`);
   }
   return rows.join("\n");
 }
@@ -1963,11 +1976,40 @@ async function restartedCopy(f: Fixture, offset: number): Promise<Fixture> {
   };
 }
 
+async function storedDigests(directory: string): Promise<Set<string>> {
+  const found = new Set<string>();
+  const collect = (value: unknown) => {
+    if (Array.isArray(value)) value.forEach(collect);
+    else if (typeof value === "object" && value !== null)
+      for (const [key, inner] of Object.entries(value))
+        if (key === "tokenDigest" && typeof inner === "string")
+          found.add(inner);
+        else collect(inner);
+  };
+  for (const name of await fs.readdir(directory))
+    if (
+      name.endsWith(".json") &&
+      (name.startsWith("scoped-") || name.startsWith("archived-credentials-"))
+    )
+      collect(
+        JSON.parse(await fs.readFile(path.join(directory, name), "utf8")),
+      );
+  return found;
+}
+
+const sha256 = (value: string) =>
+  createHash("sha256").update(value).digest("hex");
+
 async function step(label: string, action: () => Promise<void>) {
   try {
     await action();
   } catch (error) {
-    throw new Error(`[${label}] ${String(error)}`);
+    throw new Error(
+      `[${label}] ${String(error)} ${String((error as Error).stack)
+        .split("\n")
+        .slice(1, 3)
+        .join(" | ")}`,
+    );
   }
 }
 
@@ -1977,6 +2019,7 @@ async function checkCell(
   context: Context,
   before: string,
   completed: boolean,
+  fault = false,
 ) {
   const { sessions } = context;
   const view = await diskView(f.directory, f.route.threadId);
@@ -1988,18 +2031,28 @@ async function checkCell(
 
   await step("bb unreachable at restart", async () => {
     const first = await restartedCopy(f, 0);
+    const kept = await storedDigests(first.directory);
     const restarted = await first.open(undefined, unreachable);
     for (const session of sessions)
       expect(await rejected(restarted, session)).toBe(true);
     if (!allowed) await expectNothingRestorable(first, restarted, sessions);
     else {
       await unarchive(restarted, f.route.threadId);
-      if (completed && view.archived && scenario.keeps !== "skip") {
-        for (const session of sessions)
-          expect(await accepted(first, restarted, session)).toBe(
-            scenario.keeps === "all",
-          );
+      const outcomes: boolean[] = [];
+      for (const session of sessions) {
+        const route = await restarted.authenticate(session.token, "claude");
+        const nested = await restarted.authenticateNested(session.nested);
+        if (route !== null) expect(kept.has(sha256(session.token))).toBe(true);
+        if (nested !== null)
+          expect(kept.has(sha256(session.nested))).toBe(true);
+        outcomes.push(
+          route?.threadId === f.route.threadId &&
+            nested?.threadId === f.route.threadId,
+        );
       }
+      if (completed && view.archived && scenario.keeps !== "skip" && !fault)
+        for (const outcome of outcomes)
+          expect(outcome).toBe(scenario.keeps === "all");
     }
   });
 
@@ -2028,19 +2081,23 @@ async function checkCell(
     });
 }
 
-async function crashWalk(scenario: Scenario, lifetime: Lifetime) {
+async function crashWalk(
+  scenario: Scenario,
+  lifetime: Lifetime,
+  fault = false,
+) {
   let crashes = 0;
   for (let writes = 0; writes < 200; writes += 1) {
     const f = await fixture();
     const context = await scenario.prepare(f, lifetime);
     const before = await snapshot(f.directory);
-    const interruption = crashAfter(writes);
+    const interruption = crashAfter(writes, { failFirstMarkerOpen: fault });
     await scenario.operate(f, context).catch(() => undefined);
     const crashed = interruption.dead;
     interruption.restore();
     expect(interruption.unclassified).toEqual([]);
     try {
-      await checkCell(f, scenario, context, before, !crashed);
+      await checkCell(f, scenario, context, before, !crashed, fault);
     } catch (error) {
       const view = await diskView(f.directory, f.route.threadId);
       const listing = (await fs.readdir(f.directory)).filter((name) =>
@@ -2053,7 +2110,7 @@ async function crashWalk(scenario: Scenario, lifetime: Lifetime) {
     if (!crashed) break;
     crashes += 1;
   }
-  expect(crashes).toBeGreaterThanOrEqual(3);
+  expect(crashes).toBeGreaterThanOrEqual(fault ? 1 : 3);
 }
 
 const writeCompleteTemporary = (f: Fixture) =>
@@ -2118,6 +2175,7 @@ const SCENARIOS: Scenario[] = [
   },
   {
     name: "tombstone clamped to an earlier bb archive time inside the window",
+    lowers: true,
     closedByBb: false,
     keeps: "all",
     prepare: async (f, lifetime) => {
@@ -2131,6 +2189,7 @@ const SCENARIOS: Scenario[] = [
   },
   {
     name: "tombstone and leftover route files clamped past the window at load",
+    lowers: true,
     closedByBb: true,
     keeps: "none",
     prepare: (f, lifetime) =>
@@ -2150,6 +2209,7 @@ const SCENARIOS: Scenario[] = [
   },
   {
     name: "pending files without a tombstone clamped past the window at load",
+    lowers: true,
     closedByBb: true,
     keeps: "none",
     prepare: archiveWithoutTombstone,
@@ -2194,6 +2254,7 @@ const SCENARIOS: Scenario[] = [
   },
   {
     name: "held tombstone clamped by a sweep past the window",
+    lowers: true,
     closedByBb: true,
     keeps: "none",
     prepare: async (f, lifetime) => {
@@ -2261,6 +2322,46 @@ describe.each(SCENARIOS)("the crash table: $name", (scenario) => {
       await crashWalk(scenario, lifetime);
     },
   );
+
+  if (scenario.lowers === true)
+    it.each(lifetimes)(
+      "leaves nothing restorable at every mutation after the marker's time could not be written, %s",
+      async (lifetime) => {
+        await crashWalk(scenario, lifetime, true);
+      },
+    );
+});
+
+describe.each(lifetimes)("the clamp at load, %s", (lifetime) => {
+  it("restores nothing after the crash between the last route-file removal and the tombstone removal", async () => {
+    const scenario = SCENARIOS.find(
+      (candidate) =>
+        candidate.name ===
+        "tombstone and leftover route files clamped past the window at load",
+    );
+    if (scenario === undefined) throw new Error("scenario missing");
+    let checked = 0;
+    for (let writes = 1; writes < 200 && checked === 0; writes += 1) {
+      const f = await fixture();
+      const context = await scenario.prepare(f, lifetime);
+      const before = await snapshot(f.directory);
+      const interruption = crashAfter(writes);
+      await scenario.operate(f, context).catch(() => undefined);
+      const crashed = interruption.dead;
+      interruption.restore();
+      if (!crashed) break;
+      if (
+        (await scopedFiles(f.directory)).length === 0 &&
+        (await tombstoneNames(f.directory)).some((name) =>
+          name.endsWith(".json"),
+        )
+      ) {
+        await checkCell(f, scenario, context, before, false);
+        checked += 1;
+      }
+    }
+    expect(checked).toBeGreaterThan(0);
+  });
 });
 
 const MUTATORS: Record<string, { drivenBy: string[] } | { because: string }> = {
