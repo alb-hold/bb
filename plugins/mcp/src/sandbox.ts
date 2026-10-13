@@ -66,13 +66,15 @@ function newBoundedQuickJsModule(memoryLimitBytes: number) {
       QUICKJS_BASE_PAGES + Math.ceil(memoryLimitBytes / WASM_PAGE_BYTES),
     ),
   });
-  const heap = { refusedGrowth: false };
+  const heap = { lastGrowthRefused: false };
   const grow = memory.grow.bind(memory);
   memory.grow = (delta) => {
     try {
-      return grow(delta);
+      const previousPages = grow(delta);
+      heap.lastGrowthRefused = false;
+      return previousPages;
     } catch (error) {
-      heap.refusedGrowth = true;
+      heap.lastGrowthRefused = true;
       throw error;
     }
   };
@@ -167,7 +169,7 @@ export async function runSandboxedScript(
   const memoryStopReason = `The script used too much memory and was stopped. A script may use about ${Math.max(1, Math.round(limits.memoryLimitBytes / (1024 * 1024)))} MB.`;
   const describeFailure = (message: string) =>
     message === OUT_OF_MEMORY_ERROR ||
-    (message === "null" && bounded.heap.refusedGrowth)
+    (message === "null" && bounded.heap.lastGrowthRefused)
       ? memoryStopReason
       : message;
   let synchronousDeadline = Number.POSITIVE_INFINITY;
