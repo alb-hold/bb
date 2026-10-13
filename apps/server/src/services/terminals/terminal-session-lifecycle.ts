@@ -562,6 +562,9 @@ export class TerminalSessionLifecycle {
   private readonly directOutputSockets = new WeakSet<TerminalClientSocket>();
   private readonly catchingUpTerminalIds = new Set<string>();
   private readonly forwardedNextSeqByTerminalId = new Map<string, number>();
+  private readonly exitListeners = new Set<
+    (session: TerminalSessionRow) => void
+  >();
   private readonly outputAckSocketVisibility = new WeakMap<
     TerminalClientSocket,
     boolean
@@ -2407,11 +2410,24 @@ export class TerminalSessionLifecycle {
     });
   }
 
-  private notifyTerminalSessionChanged(
-    session: Pick<TerminalSessionRow, "threadId">,
-  ): void {
+  onTerminalExited(listener: (session: TerminalSessionRow) => void): void {
+    this.exitListeners.add(listener);
+  }
+
+  private notifyTerminalSessionChanged(session: TerminalSessionRow): void {
     if (session.threadId !== null) {
       this.options.hub.notifyThread(session.threadId, ["terminals-changed"]);
+    }
+    if (session.status !== "exited") return;
+    for (const listener of this.exitListeners) {
+      try {
+        listener(session);
+      } catch (error) {
+        this.options.logger.warn(
+          { err: error, terminalId: session.id },
+          "Terminal exit listener failed",
+        );
+      }
     }
   }
 }

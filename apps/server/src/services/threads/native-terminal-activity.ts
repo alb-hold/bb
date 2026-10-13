@@ -1,4 +1,8 @@
-import { getNativeTerminalThread, getThread } from "@bb/db";
+import {
+  getNativeTerminalThread,
+  getThread,
+  type TerminalSessionRow,
+} from "@bb/db";
 import {
   isNativeTerminalQuestion,
   NATIVE_TERMINAL_QUESTION_REQUEST_PREFIX,
@@ -163,6 +167,24 @@ function reconcileNativeQuestions(
         childThreadId: args.thread.id,
       });
     }
+  }
+}
+
+export function clearNativeTerminalStateOnExit(
+  deps: Pick<
+    AppDeps,
+    "db" | "hub" | "logger" | "pendingInteractions" | "providerRegistry"
+  >,
+  session: Pick<TerminalSessionRow, "closeReason" | "id" | "threadId">,
+): void {
+  if (session.threadId === null || session.closeReason === "daemon-disconnect") {
+    return;
+  }
+  const record = getNativeTerminalThread(deps.db, session.threadId);
+  if (record === null || record.terminalSessionId !== session.id) return;
+  interruptNativeTerminalQuestions(deps, session.threadId);
+  if (session.closeReason === "process-exit") {
+    settleNativeTerminalTurn(deps, session.threadId);
   }
 }
 

@@ -2,6 +2,7 @@ import { registerInternalForkAdoptionRoutes } from "./internal/fork-adoption.js"
 import { createPluginUpdateJobs } from "./services/plugins/plugin-update-jobs.js";
 import { registerPluginUpdateJobRoutes } from "./routes/plugin-update-jobs.js";
 import { recheckEnvironmentProvisioning } from "./services/threads/thread-environment-providers.js";
+import { clearNativeTerminalStateOnExit } from "./services/threads/native-terminal-activity.js";
 import {
   enrolledInstallerScript,
   enrolledWindowsInstallerScript,
@@ -463,6 +464,10 @@ function closeWebSocketServer(args: CloseWebSocketServerArgs): Promise<void> {
   });
 }
 
+const nativeExitHandlingRegistered = new WeakSet<
+  ServerAppDeps["terminalSessions"]
+>();
+
 export function createApp(
   deps: ServerAppDeps,
   options?: CreateAppOptions,
@@ -539,6 +544,12 @@ export function createApp(
     });
   });
   app.onError(createServerErrorHandler(deps.logger));
+  if (!nativeExitHandlingRegistered.has(deps.terminalSessions)) {
+    nativeExitHandlingRegistered.add(deps.terminalSessions);
+    deps.terminalSessions.onTerminalExited((session) => {
+      clearNativeTerminalStateOnExit(deps, session);
+    });
+  }
   app.get("/health", async (context) => {
     const serverMove = await readServerMoveHealth({
       dataDir: deps.config.dataDir,

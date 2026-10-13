@@ -940,4 +940,56 @@ describe("native terminal questions", () => {
     expect(left.status).toBe(200);
     expect(openInteractions(fixture, thread.id)).toHaveLength(0);
   });
+
+  function exitTerminal(
+    fixture: Fixture,
+    terminalId: string,
+    closeReason: "daemon-disconnect" | "process-exit" | "user",
+  ) {
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.hostId,
+      sessionId: fixture.sessionId,
+      message: {
+        type: "terminal.exited",
+        terminalId,
+        exitCode: closeReason === "process-exit" ? 137 : 0,
+        closeReason,
+      },
+    });
+  }
+
+  it.each([
+    { closeReason: "process-exit", status: "idle" },
+    { closeReason: "user", status: "active" },
+  ] as const)(
+    "clears the pending question when the CLI exits ($closeReason) without answering",
+    async ({ closeReason, status }) => {
+      const { fixture, thread, open } = await waitingThread();
+      await reportActivity(fixture, thread.id, {
+        state: "waiting",
+        questions: [{ id: "q", prompt: "Q?" }],
+      });
+      expect(openInteractions(fixture, thread.id)).toHaveLength(1);
+      expect(threadStatus(fixture, thread.id)).toBe("active");
+
+      exitTerminal(fixture, open.terminalId, closeReason);
+
+      expect(openInteractions(fixture, thread.id)).toHaveLength(0);
+      expect(threadStatus(fixture, thread.id)).toBe(status);
+      expect(isNativeTerminalThread(fixture.harness.db, thread.id)).toBe(true);
+    },
+  );
+
+  it("keeps the pending question when the terminal only lost its daemon", async () => {
+    const { fixture, thread, open } = await waitingThread();
+    await reportActivity(fixture, thread.id, {
+      state: "waiting",
+      questions: [{ id: "q", prompt: "Q?" }],
+    });
+
+    exitTerminal(fixture, open.terminalId, "daemon-disconnect");
+
+    expect(openInteractions(fixture, thread.id)).toHaveLength(1);
+    expect(threadStatus(fixture, thread.id)).toBe("active");
+  });
 });
