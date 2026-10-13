@@ -1072,6 +1072,13 @@ export function ThreadTerminalView({
         }
       };
       const activeTransport = new TerminalWebSocketTransport({
+        onRepaintNudgeSizeReleased: (size) => {
+          const nextSize = nextSharedTerminalSize(sharedSize, size, false);
+          if (nextSize !== null) {
+            sharedSize = nextSize;
+            scheduleFit();
+          }
+        },
         onConnectionState: (state) => {
           if (disposed) {
             return;

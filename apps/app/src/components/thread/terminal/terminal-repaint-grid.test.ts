@@ -7,7 +7,7 @@ import type {
   TerminalSession,
 } from "@bb/server-contract";
 import { Terminal } from "@xterm/xterm";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   nextSharedTerminalSize,
   terminalDisplaySize,
@@ -217,9 +217,22 @@ function createViewHarness(): ViewHarness {
   terminal.onResize(({ cols }) => widths.push(cols));
   let sharedSize: { cols: number; rows: number } | null = null;
   const socket = new FakeSocket();
+  const applyShared = (size: { cols: number; rows: number }): void => {
+    const next = nextSharedTerminalSize(sharedSize, size, false);
+    if (next === null) {
+      return;
+    }
+    sharedSize = next;
+    const display = terminalDisplaySize(
+      { cols: FITTED_COLS, rows: FITTED_ROWS },
+      sharedSize,
+    );
+    terminal.resize(display.cols, display.rows);
+  };
   const transport = new TerminalWebSocketTransport({
     createSocket: () => socket,
     onMessage: () => undefined,
+    onRepaintNudgeSizeReleased: applyShared,
     shouldReconnect: () => false,
     url: "ws://example.test/ws/terminals/term_1",
   });
@@ -252,9 +265,9 @@ function createViewHarness(): ViewHarness {
   transport.start();
   socket.onopen?.(new Event("open"));
   transport.markLayoutSettled();
-  let applied = 0;
+  let applied = socket.resizes.length;
   const applySizes = async (): Promise<void> => {
-    await new Promise((resolve) => setTimeout(resolve, 70));
+    await new Promise((resolve) => setTimeout(resolve, 10));
     for (const resize of socket.resizes.slice(applied)) {
       pty.resize(resize.cols, resize.rows);
     }
@@ -270,7 +283,7 @@ describe("page terminal during the repaint nudge", () => {
 
     pty.draw();
     transport.requestRepaint();
-    for (let step = 0; step < 10; step += 1) {
+    for (let step = 0; step < 70; step += 1) {
       await applySizes();
     }
     await writeAndWait(terminal, "");
@@ -296,6 +309,81 @@ describe("page terminal during the repaint nudge", () => {
     await writeAndWait(terminal, "");
 
     expect(terminal.cols).toBe(30);
+    transport.dispose();
+  });
+});
+
+describe("page terminal when a peer holds exactly the nudge size", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("ends at the peer's size after the window closes instead of dropping it as the echo of its own nudge", () => {
+    vi.useFakeTimers();
+    const terminal = newTerminal();
+    let sharedSize: { cols: number; rows: number } | null = null;
+    const applyShared = (size: { cols: number; rows: number }): void => {
+      const next = nextSharedTerminalSize(sharedSize, size, false);
+      if (next === null) {
+        return;
+      }
+      sharedSize = next;
+      const display = terminalDisplaySize(
+        { cols: FITTED_COLS, rows: FITTED_ROWS },
+        sharedSize,
+      );
+      terminal.resize(display.cols, display.rows);
+    };
+    const socket = new FakeSocket();
+    const transport = new TerminalWebSocketTransport({
+      createSocket: () => socket,
+      onMessage: (message) => {
+        if (message.type !== "session-updated") {
+          return;
+        }
+        const reported = { cols: message.session.cols, rows: message.session.rows };
+        const next = nextSharedTerminalSize(
+          sharedSize,
+          reported,
+          transport.consumeRepaintNudgeEcho(reported),
+        );
+        if (next !== null) {
+          applyShared(next);
+        }
+      },
+      onRepaintNudgeSizeReleased: applyShared,
+      shouldReconnect: () => false,
+      url: "ws://example.test/ws/terminals/term_1",
+    });
+    transport.sendResize(FITTED_COLS, FITTED_ROWS);
+    transport.start();
+    socket.onopen?.(new Event("open"));
+    transport.markLayoutSettled();
+    transport.requestRepaint();
+    vi.advanceTimersByTime(0);
+    expect(socket.resizes.at(-1)).toEqual({
+      cols: FITTED_COLS - 1,
+      rows: FITTED_ROWS,
+    });
+
+    socket.onmessage?.(
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "session-updated",
+          session: session(FITTED_COLS - 1, FITTED_ROWS),
+        }),
+      }),
+    );
+    expect(terminal.cols).toBe(FITTED_COLS);
+    vi.advanceTimersByTime(400);
+    expect(socket.resizes.at(-1)).toEqual({
+      cols: FITTED_COLS,
+      rows: FITTED_ROWS,
+    });
+    expect(terminal.cols).toBe(FITTED_COLS);
+    vi.advanceTimersByTime(250);
+
+    expect(terminal.cols).toBe(FITTED_COLS - 1);
     transport.dispose();
   });
 });

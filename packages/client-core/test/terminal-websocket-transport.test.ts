@@ -492,9 +492,13 @@ describe("TerminalWebSocketTransport", () => {
   });
 
   describe("requestRepaint", () => {
-    function openHarness(cols: number, rows: number) {
+    function openHarness(
+      cols: number,
+      rows: number,
+      overrides: Parameters<typeof createHarness>[0] = {},
+    ) {
       vi.useFakeTimers();
-      const harness = createHarness();
+      const harness = createHarness(overrides);
       harness.transport.sendResize(cols, rows);
       harness.transport.start();
       const socket = harness.sockets[0]!;
@@ -552,54 +556,124 @@ describe("TerminalWebSocketTransport", () => {
       harness.transport.dispose();
     });
 
-    it("reports the echo of its own nudge size so the view can ignore it", async () => {
+    it("reports the first size after its nudge as the echo, once, so the view can hold it", async () => {
       const { harness } = openHarness(100, 30);
+      const echo = (cols: number, rows: number) =>
+        harness.transport.consumeRepaintNudgeEcho({ cols, rows });
 
-      expect(harness.transport.consumeRepaintNudgeEcho({ cols: 99, rows: 30 })).toBe(false);
+      expect(echo(99, 30)).toBe(false);
       harness.transport.requestRepaint();
       await vi.advanceTimersByTimeAsync(0);
-      expect(harness.transport.consumeRepaintNudgeEcho({ cols: 99, rows: 30 })).toBe(true);
-      vi.advanceTimersByTime(399);
-      expect(harness.transport.consumeRepaintNudgeEcho({ cols: 99, rows: 30 })).toBe(true);
+      expect(echo(99, 30)).toBe(true);
+      expect(echo(99, 30)).toBe(false);
       harness.transport.dispose();
     });
 
-    it("still reports a size another client chose during the nudge window as foreign", async () => {
+    it("treats a size other than the nudge size as a peer's and applies it at once", async () => {
       const { harness } = openHarness(100, 30);
+      const echo = (cols: number, rows: number) =>
+        harness.transport.consumeRepaintNudgeEcho({ cols, rows });
 
       harness.transport.requestRepaint();
       await vi.advanceTimersByTimeAsync(0);
       vi.advanceTimersByTime(100);
 
-      expect(harness.transport.consumeRepaintNudgeEcho({ cols: 44, rows: 20 })).toBe(false);
-      expect(harness.transport.consumeRepaintNudgeEcho({ cols: 100, rows: 29 })).toBe(false);
+      expect(echo(44, 20)).toBe(false);
+      expect(echo(99, 30)).toBe(false);
       harness.transport.dispose();
     });
 
-    it("stops reporting echoes once the restore echo has arrived at the real size", async () => {
-      const { harness } = openHarness(100, 30);
+    it("keeps the restore after a peer resized in the window so this client's own size does not stay narrowed", async () => {
+      const { harness, socket } = openHarness(100, 30);
 
       harness.transport.requestRepaint();
       await vi.advanceTimersByTimeAsync(0);
-      expect(harness.transport.consumeRepaintNudgeEcho({ cols: 99, rows: 30 })).toBe(true);
-      expect(harness.transport.consumeRepaintNudgeEcho({ cols: 100, rows: 30 })).toBe(false);
-      expect(harness.transport.consumeRepaintNudgeEcho({ cols: 99, rows: 30 })).toBe(true);
+      expect(
+        harness.transport.consumeRepaintNudgeEcho({ cols: 44, rows: 20 }),
+      ).toBe(false);
       vi.advanceTimersByTime(400);
-      expect(harness.transport.consumeRepaintNudgeEcho({ cols: 99, rows: 30 })).toBe(true);
-      expect(harness.transport.consumeRepaintNudgeEcho({ cols: 100, rows: 30 })).toBe(false);
-      expect(harness.transport.consumeRepaintNudgeEcho({ cols: 99, rows: 30 })).toBe(false);
+
+      expect(socket.sent.at(-1)).toBe(
+        JSON.stringify({ type: "resize", cols: 100, rows: 30 }),
+      );
       harness.transport.dispose();
     });
 
-    it("stops reporting echoes when the grid changed and the restore was skipped", async () => {
-      const { harness } = openHarness(100, 30);
+    it("releases the held nudge size when no restore echo follows, so a peer that holds exactly the nudge size is not dropped", async () => {
+      const released = vi.fn<(size: { cols: number; rows: number }) => void>();
+      const { harness } = openHarness(100, 30, {
+        onRepaintNudgeSizeReleased: released,
+      });
 
       harness.transport.requestRepaint();
       await vi.advanceTimersByTimeAsync(0);
+      expect(
+        harness.transport.consumeRepaintNudgeEcho({ cols: 99, rows: 30 }),
+      ).toBe(true);
+      vi.advanceTimersByTime(400);
+      expect(released).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(249);
+      expect(released).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+
+      expect(released).toHaveBeenCalledOnce();
+      expect(released).toHaveBeenCalledWith({ cols: 99, rows: 30 });
+      harness.transport.dispose();
+    });
+
+    it("does not release when the restore echo arrives", async () => {
+      const released = vi.fn<(size: { cols: number; rows: number }) => void>();
+      const { harness } = openHarness(100, 30, {
+        onRepaintNudgeSizeReleased: released,
+      });
+
+      harness.transport.requestRepaint();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(
+        harness.transport.consumeRepaintNudgeEcho({ cols: 99, rows: 30 }),
+      ).toBe(true);
+      vi.advanceTimersByTime(400);
+      expect(
+        harness.transport.consumeRepaintNudgeEcho({ cols: 100, rows: 30 }),
+      ).toBe(false);
+      vi.advanceTimersByTime(5000);
+
+      expect(released).not.toHaveBeenCalled();
+      harness.transport.dispose();
+    });
+
+    it("releases the held size when the fitted size changes mid-window", async () => {
+      const released = vi.fn<(size: { cols: number; rows: number }) => void>();
+      const { harness } = openHarness(100, 30, {
+        onRepaintNudgeSizeReleased: released,
+      });
+
+      harness.transport.requestRepaint();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(
+        harness.transport.consumeRepaintNudgeEcho({ cols: 99, rows: 30 }),
+      ).toBe(true);
       harness.transport.sendResize(80, 24);
 
-      expect(harness.transport.consumeRepaintNudgeEcho({ cols: 99, rows: 30 })).toBe(false);
+      expect(released).toHaveBeenCalledWith({ cols: 99, rows: 30 });
+      vi.advanceTimersByTime(5000);
+      expect(released).toHaveBeenCalledOnce();
       harness.transport.dispose();
+    });
+
+    it("drops the held size silently on dispose", async () => {
+      const released = vi.fn<(size: { cols: number; rows: number }) => void>();
+      const { harness } = openHarness(100, 30, {
+        onRepaintNudgeSizeReleased: released,
+      });
+
+      harness.transport.requestRepaint();
+      await vi.advanceTimersByTimeAsync(0);
+      harness.transport.consumeRepaintNudgeEcho({ cols: 99, rows: 30 });
+      harness.transport.dispose();
+      vi.advanceTimersByTime(5000);
+
+      expect(released).not.toHaveBeenCalled();
     });
 
     it("nudges rows instead of columns when the terminal is a single column wide", () => {
