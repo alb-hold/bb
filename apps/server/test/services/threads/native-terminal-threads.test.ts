@@ -15,6 +15,7 @@ import {
 import { eq } from "drizzle-orm";
 import { createProviderRegistryService } from "../../../src/services/providers/provider-registry.js";
 import {
+  openNativeTerminal,
   reopenNativeTerminalsAfterDaemonReconnect,
   takeNativeTerminalLaunchSpec,
 } from "../../../src/services/threads/native-terminal-threads.js";
@@ -142,7 +143,7 @@ describe("reopenNativeTerminalsAfterDaemonReconnect", () => {
     });
   }, 45_000);
 
-  it("rejects a stale reconnect immediately before terminal creation", async () => {
+  it("resolves no provider env for a reattach, so no pooler credential is minted for a CLI that keeps its launch env", async () => {
     await withTestHarness({ seedFirstPartyProviders: false }, async (h) => {
       const host = upsertHost(h.db, noopNotifier, {
         id: "host-native-stale",
@@ -161,47 +162,87 @@ describe("reopenNativeTerminalsAfterDaemonReconnect", () => {
       const providerRegistry = createProviderRegistryService();
       providerRegistry.register(registration);
       h.deps.providerRegistry = providerRegistry;
-      let releaseProviderEnv!: (value: { entries: [] }) => void;
-      let providerEnvStarted!: () => void;
-      const providerEnvReady = new Promise<void>((resolve) => {
-        providerEnvStarted = resolve;
-      });
-      const providerEnv = new Promise<{ entries: [] }>((resolve) => {
-        releaseProviderEnv = resolve;
-      });
-      vi.spyOn(h.pluginService, "resolveProviderEnv").mockImplementation(
-        async () => {
-          providerEnvStarted();
-          return providerEnv;
-        },
-      );
-      const createTerminal = vi.spyOn(
-        h.deps.terminalSessions,
-        "createTerminal",
-      );
-      const warn = vi.spyOn(h.deps.logger, "warn");
+      const resolveProviderEnv = vi
+        .spyOn(h.pluginService, "resolveProviderEnv")
+        .mockResolvedValue({ entries: [] });
+      const createTerminal = vi
+        .spyOn(h.deps.terminalSessions, "createTerminal")
+        .mockImplementation(async () =>
+          createTerminalSession(h.db, {
+            threadId,
+            environmentId: null,
+            hostId: host.id,
+            daemonSessionId: null,
+            title: "Codex",
+            initialCwd: "/tmp",
+            cols: 120,
+            rows: 36,
+            status: "running",
+          }),
+        );
 
-      const reopening = reopenNativeTerminalsAfterDaemonReconnect(h.deps, {
+      await reopenNativeTerminalsAfterDaemonReconnect(h.deps, {
         hostId: host.id,
         threadIds: [threadId],
       });
-      await providerEnvReady;
-      archiveThread(h.db, noopNotifier, threadId);
-      releaseProviderEnv({ entries: [] });
-      await reopening;
 
-      expect(createTerminal).not.toHaveBeenCalled();
-      expect(warn).toHaveBeenCalledWith(
+      expect(resolveProviderEnv).not.toHaveBeenCalled();
+      expect(createTerminal).toHaveBeenCalledOnce();
+      const contributed =
+        createTerminal.mock.calls[0]?.[0].extraContributedEnv ?? [];
+      expect(contributed.map((entry) => entry.name)).toEqual([
+        "BB_NATIVE_TOOL_CREDENTIAL",
+      ]);
+    });
+  });
+
+  it("still resolves the native provider env when a new terminal is opened", async () => {
+    await withTestHarness({ seedFirstPartyProviders: false }, async (h) => {
+      const host = upsertHost(h.db, noopNotifier, {
+        id: "host-native-open",
+        name: "Native Terminal Host",
+      });
+      const { threadId } = await createDisconnectedNativeThread(h, 5, host.id);
+      h.db
+        .update(terminalSessions)
+        .set({ status: "exited", closeReason: "user" })
+        .where(eq(terminalSessions.threadId, threadId))
+        .run();
+      const sourceRegistry = await createTestProviderRegistry();
+      const registration = sourceRegistry.get("codex");
+      if (registration === null)
+        throw new Error("Codex provider is not seeded");
+      const providerRegistry = createProviderRegistryService();
+      providerRegistry.register(registration);
+      h.deps.providerRegistry = providerRegistry;
+      const resolveProviderEnv = vi
+        .spyOn(h.pluginService, "resolveProviderEnv")
+        .mockResolvedValue({ entries: [] });
+      vi.spyOn(h.deps.terminalSessions, "createTerminal").mockImplementation(
+        async () =>
+          createTerminalSession(h.db, {
+            threadId,
+            environmentId: null,
+            hostId: host.id,
+            daemonSessionId: null,
+            title: "Codex",
+            initialCwd: "/tmp",
+            cols: 120,
+            rows: 36,
+            status: "running",
+          }),
+      );
+
+      await openNativeTerminal(h.deps, { threadId, request: {} });
+
+      expect(resolveProviderEnv).toHaveBeenCalledOnce();
+      expect(resolveProviderEnv).toHaveBeenCalledWith(
         expect.objectContaining({
-          threadId,
-          err: expect.objectContaining({
-            status: 409,
-            body: expect.objectContaining({
-              code: "native_terminal_reconnect_stale",
-            }),
+          context: expect.objectContaining({
+            threadId,
+            experimental_runtimeKind: "native",
           }),
         }),
-        "Failed to reopen native terminal after the host daemon reconnected",
       );
     });
   });
