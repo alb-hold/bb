@@ -886,3 +886,210 @@ describe.each(lifetimes)(
     });
   },
 );
+
+function failReading(...markers: string[]) {
+  const originalReadFile = fs.readFile.bind(fs);
+  return vi.spyOn(fs, "readFile").mockImplementation(((
+    file: Parameters<typeof fs.readFile>[0],
+    ...rest: unknown[]
+  ) => {
+    if (markers.some((marker) => String(file).includes(marker)))
+      return Promise.reject(Object.assign(new Error("EIO"), { code: "EIO" }));
+    return (originalReadFile as (...args: unknown[]) => Promise<unknown>)(
+      file,
+      ...rest,
+    );
+  }) as typeof fs.readFile);
+}
+
+const MARKERS = ["archived-thread-", "archive-revocation-"];
+
+async function whileUnreadable<T>(action: () => Promise<T>): Promise<T> {
+  const failing = failReading(...MARKERS);
+  try {
+    return await action();
+  } finally {
+    failing.mockRestore();
+  }
+}
+
+async function expectNothingRestorable(
+  f: Fixture,
+  threads: ThreadTokenStore,
+  sessions: Session[],
+) {
+  await unarchive(threads, f.route.threadId);
+  for (const session of sessions)
+    expect(await rejected(threads, session)).toBe(true);
+  expect(await scopedFiles(f.directory)).toEqual([]);
+  expect(await tombstoneNames(f.directory)).toEqual([]);
+}
+
+describe.each(lifetimes)(
+  "a %s credential whose archive epoch cannot be established",
+  (lifetime) => {
+    it("is not restorable when the marker is unreadable but writable and the archive event repeats", async () => {
+      const f = await fixture();
+      const { sessions } = await archiveWithoutTombstone(f, lifetime);
+      f.advance(ARCHIVE_TOMBSTONE_MAX_AGE_MS + 1_000);
+      const restarted = await whileUnreadable(async () => {
+        const store = await f.open();
+        await archiveFailingTombstone(f, store);
+        return store;
+      });
+      await expectNothingRestorable(f, restarted, sessions);
+      await expectNothingRestorable(f, await f.open(), sessions);
+    });
+
+    it("is not restorable when the marker is unreadable only at startup", async () => {
+      const f = await fixture();
+      const { sessions } = await archiveWithoutTombstone(f, lifetime);
+      f.advance(ARCHIVE_TOMBSTONE_MAX_AGE_MS + 1_000);
+      const restarted = await whileUnreadable(() => f.open());
+      await archiveFailingTombstone(f, restarted);
+      await expectNothingRestorable(f, restarted, sessions);
+      await expectNothingRestorable(f, await f.open(), sessions);
+    });
+
+    it("is not restorable inside the window either, when the epoch was lost", async () => {
+      const f = await fixture();
+      const { sessions } = await archiveWithoutTombstone(f, lifetime);
+      f.advance(HOUR);
+      const restarted = await whileUnreadable(() => f.open());
+      await archiveFailingTombstone(f, restarted);
+      await expectNothingRestorable(f, await f.open(), sessions);
+    });
+
+    it("stays rejected and unrestorable when the pending files cannot be deleted", async () => {
+      const f = await fixture();
+      const { sessions } = await archiveWithoutTombstone(f, lifetime);
+      const restarted = await whileUnreadable(() => f.open());
+      const originalRemove = fs.rm.bind(fs);
+      const remove = vi.spyOn(fs, "rm").mockImplementation((file, options) => {
+        if (String(file).includes("scoped-"))
+          return Promise.reject(
+            Object.assign(new Error("EIO"), { code: "EIO" }),
+          );
+        return originalRemove(file, options);
+      });
+      const originalRename = fs.rename.bind(fs);
+      const rename = vi.spyOn(fs, "rename").mockImplementation((from, to) => {
+        if (String(from).includes("scoped-"))
+          return Promise.reject(
+            Object.assign(new Error("EIO"), { code: "EIO" }),
+          );
+        return originalRename(from, to);
+      });
+      try {
+        await archiveFailingTombstone(f, restarted);
+        for (const session of sessions)
+          expect(await rejected(restarted, session)).toBe(true);
+      } finally {
+        remove.mockRestore();
+        rename.mockRestore();
+      }
+      const again = await f.open();
+      await expectNothingRestorable(f, again, sessions);
+    });
+
+    it("is not restorable when the marker is corrupt and the archive event repeats", async () => {
+      const f = await fixture();
+      const { sessions } = await archiveWithoutTombstone(f, lifetime);
+      f.advance(ARCHIVE_TOMBSTONE_MAX_AGE_MS + 1_000);
+      const marker = (await fs.readdir(f.directory)).find((name) =>
+        name.startsWith("archived-thread-"),
+      );
+      await fs.writeFile(path.join(f.directory, marker ?? ""), "{broken");
+      const restarted = await f.open();
+      await archiveFailingTombstone(f, restarted);
+      await expectNothingRestorable(f, restarted, sessions);
+      await expectNothingRestorable(f, await f.open(), sessions);
+    });
+
+    it("still restores inside the window with a healthy marker, across a restart", async () => {
+      const f = await fixture();
+      const { sessions } = await archiveWithoutTombstone(f, lifetime);
+      f.advance(HOUR);
+      const restarted = await f.open();
+      await unarchive(restarted, f.route.threadId);
+      for (const session of sessions)
+        expect(await accepted(f, restarted, session)).toBe(true);
+    });
+  },
+);
+
+const flush = (threads: ThreadTokenStore) =>
+  threads.sweepThreads(() => Promise.resolve("archived"));
+
+describe.each(lifetimes)(
+  "a %s credential when the marker is unreadable only at startup and a live session then resolves it",
+  (lifetime) => {
+    it("is dropped once the marker reads back, even before any archive event repeats", async () => {
+      const f = await fixture();
+      const { sessions } = await archiveWithoutTombstone(f, lifetime);
+      f.advance(HOUR);
+      const restarted = await whileUnreadable(() => f.open());
+      await expect(
+        restarted.forThread(f.route, f.hostToken, lifetime),
+      ).rejects.toThrow("archived thread");
+      await flush(restarted);
+      expect(await scopedFiles(f.directory)).toEqual([]);
+      await expectNothingRestorable(f, await f.open(), sessions);
+    });
+
+    it("is dropped when the archive event repeats afterwards, past expiry", async () => {
+      const f = await fixture();
+      const { sessions } = await archiveWithoutTombstone(f, lifetime);
+      f.advance(ARCHIVE_TOMBSTONE_MAX_AGE_MS + 1_000);
+      const restarted = await whileUnreadable(() => f.open());
+      await expect(
+        restarted.forThread(f.route, f.hostToken, lifetime),
+      ).rejects.toThrow("archived thread");
+      await archiveFailingTombstone(f, restarted);
+      await expectNothingRestorable(f, await f.open(), sessions);
+    });
+
+    it("is dropped when the archive event repeats afterwards, inside the window", async () => {
+      const f = await fixture();
+      const { sessions } = await archiveWithoutTombstone(f, lifetime);
+      f.advance(HOUR);
+      const restarted = await whileUnreadable(() => f.open());
+      await expect(
+        restarted.forThread(f.route, f.hostToken, lifetime),
+      ).rejects.toThrow("archived thread");
+      await archiveFailingTombstone(f, restarted);
+      await expectNothingRestorable(f, await f.open(), sessions);
+    });
+
+    it("stays rejected in the same process when the pending files cannot be deleted", async () => {
+      const f = await fixture();
+      const { sessions } = await archiveWithoutTombstone(f, lifetime);
+      const restarted = await whileUnreadable(() => f.open());
+      const originalRemove = fs.rm.bind(fs);
+      const remove = vi.spyOn(fs, "rm").mockImplementation((file, options) => {
+        if (String(file).includes("scoped-"))
+          return Promise.reject(
+            Object.assign(new Error("EIO"), { code: "EIO" }),
+          );
+        return originalRemove(file, options);
+      });
+      const originalRename = fs.rename.bind(fs);
+      const rename = vi.spyOn(fs, "rename").mockImplementation((from, to) => {
+        if (String(from).includes("scoped-"))
+          return Promise.reject(
+            Object.assign(new Error("EIO"), { code: "EIO" }),
+          );
+        return originalRename(from, to);
+      });
+      try {
+        await archiveFailingTombstone(f, restarted);
+        await unarchive(restarted, f.route.threadId);
+        for (const session of sessions)
+          expect(await rejected(restarted, session)).toBe(true);
+      } finally {
+        remove.mockRestore();
+        rename.mockRestore();
+      }
+    });
+  },
+);
