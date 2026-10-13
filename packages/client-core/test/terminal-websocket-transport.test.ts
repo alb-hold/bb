@@ -518,7 +518,7 @@ describe("TerminalWebSocketTransport", () => {
         JSON.stringify({ type: "ack", nextSeq: 42 }),
         JSON.stringify({ type: "resize", cols: 99, rows: 30 }),
       ]);
-      vi.advanceTimersByTime(49);
+      vi.advanceTimersByTime(399);
       expect(socket.sent).toHaveLength(3);
       vi.advanceTimersByTime(1);
       expect(socket.sent.slice(3)).toEqual([
@@ -529,11 +529,34 @@ describe("TerminalWebSocketTransport", () => {
       harness.transport.dispose();
     });
 
+    it("ends at the full size with one restore when a second repaint is requested inside the quiet delay", async () => {
+      const { harness, socket } = openHarness(100, 30);
+
+      harness.transport.requestRepaint();
+      await vi.advanceTimersByTimeAsync(0);
+      vi.advanceTimersByTime(200);
+      harness.transport.requestRepaint();
+      await vi.advanceTimersByTimeAsync(0);
+      vi.advanceTimersByTime(399);
+      expect(socket.sent.at(-1)).toBe(
+        JSON.stringify({ type: "resize", cols: 99, rows: 30 }),
+      );
+      vi.advanceTimersByTime(1);
+      expect(socket.sent.at(-1)).toBe(
+        JSON.stringify({ type: "resize", cols: 100, rows: 30 }),
+      );
+      vi.advanceTimersByTime(5000);
+      expect(
+        socket.sent.filter((m) => m.includes('"cols":100')),
+      ).toHaveLength(2);
+      harness.transport.dispose();
+    });
+
     it("nudges rows instead of columns when the terminal is a single column wide", () => {
       const { harness, socket } = openHarness(1, 30);
 
       harness.transport.requestRepaint();
-      vi.advanceTimersByTime(50);
+      vi.advanceTimersByTime(400);
 
       expect(socket.sent.slice(1)).toEqual([
         JSON.stringify({ type: "resize", cols: 1, rows: 29 }),
