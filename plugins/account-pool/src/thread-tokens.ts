@@ -53,12 +53,23 @@ const legacyNestedRouteSchema = z
   })
   .strict();
 
+export const MAX_PRIOR_CREDENTIALS = 3;
+const priorCredentialSchema = z
+  .object({
+    tokenDigest: digestSchema,
+    issuedAt: z.number().int().positive(),
+    expiresAt: z.number().int().positive(),
+    usedAt: z.number().int().positive().optional(),
+  })
+  .strict();
 const routeSchema = legacyRouteSchema.omit({ token: true }).extend({
   token: tokenSchema.optional(),
   tokenDigest: digestSchema,
   lifetime: z.literal("process").optional(),
   expiresAt: z.number().int().positive().optional(),
   issuedAt: z.number().int().positive().optional(),
+  usedAt: z.number().int().positive().optional(),
+  priors: z.array(priorCredentialSchema).max(MAX_PRIOR_CREDENTIALS).optional(),
 });
 const nestedRouteSchema = legacyNestedRouteSchema.omit({ token: true }).extend({
   token: tokenSchema.optional(),
@@ -66,6 +77,8 @@ const nestedRouteSchema = legacyNestedRouteSchema.omit({ token: true }).extend({
   lifetime: z.literal("process").optional(),
   expiresAt: z.number().int().positive().optional(),
   issuedAt: z.number().int().positive().optional(),
+  usedAt: z.number().int().positive().optional(),
+  priors: z.array(priorCredentialSchema).max(MAX_PRIOR_CREDENTIALS).optional(),
 });
 const readableRouteSchema = z.union([
   routeSchema,
@@ -86,14 +99,15 @@ class CredentialScrubError extends Error {}
 
 type RouteRecord = z.infer<typeof routeSchema>;
 type NestedRouteRecord = z.infer<typeof nestedRouteSchema>;
+type PriorCredential = z.infer<typeof priorCredentialSchema>;
 
 export type ThreadRoute = Omit<
   RouteRecord,
-  "token" | "tokenDigest" | "hostTokenDigest" | "lifetime"
+  "token" | "tokenDigest" | "hostTokenDigest" | "lifetime" | "usedAt" | "priors"
 >;
 export type NestedRoute = Omit<
   NestedRouteRecord,
-  "token" | "tokenDigest" | "hostTokenDigest" | "lifetime"
+  "token" | "tokenDigest" | "hostTokenDigest" | "lifetime" | "usedAt" | "priors"
 >;
 
 export type ThreadLookup = (
@@ -187,7 +201,10 @@ export class ThreadTokenStore {
         loaded === null
           ? null
           : {
-              ...loaded,
+              ...this.withLivePriors(
+                loaded,
+                name.startsWith(PROCESS_THREAD_ROUTE_PREFIX),
+              ),
               lifetime: name.startsWith(PROCESS_THREAD_ROUTE_PREFIX)
                 ? ("process" as const)
                 : undefined,
@@ -208,7 +225,7 @@ export class ThreadTokenStore {
         (await this.isLive(record, enrolled))
       ) {
         this.routes.set(this.routeMapKey(record), record);
-        this.tokenIndex.set(record.tokenDigest, record);
+        indexCredential(this.tokenIndex, record);
       } else await fs.rm(file, { force: true });
     } else if (
       name.startsWith(NESTED_ROUTE_PREFIX) ||
@@ -223,7 +240,10 @@ export class ThreadTokenStore {
         loaded === null
           ? null
           : {
-              ...loaded,
+              ...this.withLivePriors(
+                loaded,
+                name.startsWith(PROCESS_NESTED_ROUTE_PREFIX),
+              ),
               lifetime: name.startsWith(PROCESS_NESTED_ROUTE_PREFIX)
                 ? ("process" as const)
                 : undefined,
@@ -244,7 +264,7 @@ export class ThreadTokenStore {
         (await this.isLive(record, enrolled))
       ) {
         this.nestedRoutes.set(this.nestedMapKey(record), record);
-        this.nestedTokenIndex.set(record.tokenDigest, record);
+        indexCredential(this.nestedTokenIndex, record);
       } else await fs.rm(file, { force: true });
     }
   }
@@ -255,7 +275,13 @@ export class ThreadTokenStore {
     lifetime: "durable" | "process" = "durable",
   ): Promise<string> {
     const parsed = routeSchema
-      .omit({ token: true, tokenDigest: true, hostTokenDigest: true })
+      .omit({
+        token: true,
+        tokenDigest: true,
+        hostTokenDigest: true,
+        usedAt: true,
+        priors: true,
+      })
       .parse(route);
     const hostTokenDigest = digest(hostToken);
     return this.serialize(async () => {
@@ -269,7 +295,7 @@ export class ThreadTokenStore {
       const existing = this.routes.get(key);
       if (existing?.token !== undefined && !this.expired(existing))
         return existing.token;
-      if (existing !== undefined) this.tokenIndex.delete(existing.tokenDigest);
+      const priors = this.retainedPriors(existing);
       const token = randomBytes(32).toString("base64url");
       const record = {
         ...parsed,
@@ -279,10 +305,12 @@ export class ThreadTokenStore {
         ...(lifetime === "process"
           ? { lifetime, ...this.processLifetime() }
           : {}),
+        ...(priors.length === 0 ? {} : { priors }),
       };
       await this.persistCredential(this.file(record), record);
+      if (existing !== undefined) unindexCredential(this.tokenIndex, existing);
       this.routes.set(key, record);
-      this.tokenIndex.set(record.tokenDigest, record);
+      indexCredential(this.tokenIndex, record);
       await this.reclaimDead(record);
       return record.token;
     });
@@ -294,7 +322,13 @@ export class ThreadTokenStore {
     lifetime: "durable" | "process" = "durable",
   ): Promise<string> {
     const parsed = nestedRouteSchema
-      .omit({ token: true, tokenDigest: true, hostTokenDigest: true })
+      .omit({
+        token: true,
+        tokenDigest: true,
+        hostTokenDigest: true,
+        usedAt: true,
+        priors: true,
+      })
       .parse(route);
     const hostTokenDigest = digest(hostToken);
     return this.serialize(async () => {
@@ -308,8 +342,7 @@ export class ThreadTokenStore {
       const existing = this.nestedRoutes.get(key);
       if (existing?.token !== undefined && !this.expired(existing))
         return existing.token;
-      if (existing !== undefined)
-        this.nestedTokenIndex.delete(existing.tokenDigest);
+      const priors = this.retainedPriors(existing);
       const token = randomBytes(32).toString("base64url");
       const record = {
         ...parsed,
@@ -319,10 +352,13 @@ export class ThreadTokenStore {
         ...(lifetime === "process"
           ? { lifetime, ...this.processLifetime() }
           : {}),
+        ...(priors.length === 0 ? {} : { priors }),
       };
       await this.persistCredential(this.nestedFile(record), record);
+      if (existing !== undefined)
+        unindexCredential(this.nestedTokenIndex, existing);
       this.nestedRoutes.set(key, record);
-      this.nestedTokenIndex.set(record.tokenDigest, record);
+      indexCredential(this.nestedTokenIndex, record);
       await this.reclaimDead(record);
       return record.token;
     });
@@ -332,8 +368,9 @@ export class ThreadTokenStore {
     token: string | null,
     provider?: ThreadRoute["provider"],
   ): Promise<ThreadRoute | null> {
-    const record = lookup(this.tokenIndex, token);
-    if (record === null || this.expired(record)) return null;
+    const match = lookup(this.tokenIndex, token);
+    if (match === null || this.credentialExpired(match)) return null;
+    const { record } = match;
     if (await this.isArchived(record.threadId)) return null;
     if (provider !== undefined && provider !== record.provider) return null;
     if (
@@ -343,6 +380,7 @@ export class ThreadTokenStore {
       ))
     )
       return null;
+    await this.noteUse({ nested: false, record }, match.prior);
     return {
       hostId: record.hostId,
       threadId: record.threadId,
@@ -352,18 +390,20 @@ export class ThreadTokenStore {
   }
 
   isProcessCredential(token: string | null): boolean {
-    const record = lookup(this.tokenIndex, token);
+    const match = lookup(this.tokenIndex, token);
     return (
-      record !== null &&
-      !this.expired(record) &&
-      this.routes.get(`process:${this.key(record, record.hostTokenDigest)}`) ===
-        record
+      match !== null &&
+      !this.credentialExpired(match) &&
+      this.routes.get(
+        `process:${this.key(match.record, match.record.hostTokenDigest)}`,
+      ) === match.record
     );
   }
 
   async authenticateNested(token: string | null): Promise<NestedRoute | null> {
-    const record = lookup(this.nestedTokenIndex, token);
-    if (record === null || this.expired(record)) return null;
+    const match = lookup(this.nestedTokenIndex, token);
+    if (match === null || this.credentialExpired(match)) return null;
+    const { record } = match;
     if (await this.isArchived(record.threadId)) return null;
     if (
       !(await this.hosts.authenticateGeneration(
@@ -372,6 +412,7 @@ export class ThreadTokenStore {
       ))
     )
       return null;
+    await this.noteUse({ nested: true, record }, match.prior);
     return { hostId: record.hostId, threadId: record.threadId };
   }
 
@@ -433,7 +474,7 @@ export class ThreadTokenStore {
       for (const [key, record] of this.routes) {
         if (record.threadId !== threadId) continue;
         this.routes.delete(key);
-        this.tokenIndex.delete(record.tokenDigest);
+        unindexCredential(this.tokenIndex, record);
         await this.removeProviderFiles(
           record,
           Math.max(0, nextEpoch - 1),
@@ -442,7 +483,7 @@ export class ThreadTokenStore {
       for (const [key, record] of this.nestedRoutes) {
         if (record.threadId !== threadId) continue;
         this.nestedRoutes.delete(key);
-        this.nestedTokenIndex.delete(record.tokenDigest);
+        unindexCredential(this.nestedTokenIndex, record);
         await this.removeNestedFiles(record, Math.max(0, nextEpoch - 1)).catch(
           () => undefined,
         );
@@ -580,7 +621,7 @@ export class ThreadTokenStore {
         this.archiveEpoch(record.threadId),
       ).catch(() => undefined);
       this.routes.delete(key);
-      this.tokenIndex.delete(record.tokenDigest);
+      unindexCredential(this.tokenIndex, record);
     }
     for (const [key, record] of this.nestedRoutes) {
       if (!stale(record) || (await this.isGenerationLive(record))) continue;
@@ -589,7 +630,7 @@ export class ThreadTokenStore {
         this.archiveEpoch(record.threadId),
       ).catch(() => undefined);
       this.nestedRoutes.delete(key);
-      this.nestedTokenIndex.delete(record.tokenDigest);
+      unindexCredential(this.nestedTokenIndex, record);
     }
   }
 
@@ -773,6 +814,87 @@ export class ThreadTokenStore {
       this.directory,
       `${prefix}${this.key(route, route.hostTokenDigest)}-v${epoch}.json`,
     );
+  }
+
+  private withLivePriors<
+    T extends { tokenDigest: string; priors?: PriorCredential[] },
+  >(record: T, process: boolean): T {
+    if (record.priors === undefined) return record;
+    const live = process
+      ? record.priors
+          .filter((prior) =>
+            this.restorable({ lifetime: "process", ...prior }),
+          )
+          .slice(-MAX_PRIOR_CREDENTIALS)
+      : [];
+    return { ...record, priors: live.length === 0 ? undefined : live };
+  }
+
+  private retainedPriors(
+    existing: RouteRecord | NestedRouteRecord | undefined,
+  ): PriorCredential[] {
+    if (
+      existing === undefined ||
+      existing.lifetime !== "process" ||
+      existing.token !== undefined ||
+      this.expired(existing) ||
+      existing.issuedAt === undefined ||
+      existing.expiresAt === undefined
+    )
+      return [];
+    const kept = (existing.priors ?? []).filter(
+      (prior) => !this.expired({ lifetime: "process", ...prior }),
+    );
+    kept.push({
+      tokenDigest: existing.tokenDigest,
+      issuedAt: existing.issuedAt,
+      expiresAt: existing.expiresAt,
+      ...(existing.usedAt === undefined ? {} : { usedAt: existing.usedAt }),
+    });
+    while (kept.length > MAX_PRIOR_CREDENTIALS) {
+      const unused = kept.filter((prior) => prior.usedAt === undefined);
+      const candidates = unused.length > 0 ? unused : kept;
+      const oldest = candidates.reduce((a, b) =>
+        b.issuedAt < a.issuedAt ? b : a,
+      );
+      kept.splice(kept.indexOf(oldest), 1);
+    }
+    return kept;
+  }
+
+  private credentialExpired(match: {
+    record: RouteRecord | NestedRouteRecord;
+    prior: PriorCredential | null;
+  }): boolean {
+    if (match.prior === null) return this.expired(match.record);
+    return this.expired({ lifetime: "process", ...match.prior });
+  }
+
+  private async noteUse(
+    use:
+      | { nested: false; record: RouteRecord }
+      | { nested: true; record: NestedRouteRecord },
+    prior: PriorCredential | null,
+  ): Promise<void> {
+    const { record } = use;
+    if (record.lifetime !== "process") return;
+    if (prior === null) {
+      if (record.usedAt !== undefined) return;
+      record.usedAt = this.now();
+    } else {
+      if (prior.usedAt !== undefined) return;
+      prior.usedAt = this.now();
+    }
+    await this.serialize(async () => {
+      if (use.nested) {
+        if (this.nestedRoutes.get(this.nestedMapKey(use.record)) !== use.record)
+          return;
+        await this.persistCredential(this.nestedFile(use.record), use.record);
+        return;
+      }
+      if (this.routes.get(this.routeMapKey(use.record)) !== use.record) return;
+      await this.persistCredential(this.file(use.record), use.record);
+    }).catch(() => undefined);
   }
 
   private processLifetime(): {
@@ -1064,21 +1186,41 @@ function digest(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function lookup<T extends { tokenDigest: string }>(
+type CredentialRecord = {
+  tokenDigest: string;
+  priors?: readonly PriorCredential[];
+};
+
+function indexCredential<T extends CredentialRecord>(
+  index: Map<string, T>,
+  record: T,
+): void {
+  index.set(record.tokenDigest, record);
+  for (const prior of record.priors ?? []) index.set(prior.tokenDigest, record);
+}
+
+function unindexCredential<T extends CredentialRecord>(
+  index: Map<string, T>,
+  record: T,
+): void {
+  index.delete(record.tokenDigest);
+  for (const prior of record.priors ?? []) index.delete(prior.tokenDigest);
+}
+
+function lookup<T extends CredentialRecord>(
   index: ReadonlyMap<string, T>,
   token: string | null,
-): T | null {
+): { record: T; prior: PriorCredential | null } | null {
   if (token === null || token.length !== 43) return null;
-  const record = index.get(digest(token));
-  if (
-    record === undefined ||
-    !timingSafeEqual(
-      Buffer.from(digest(token), "hex"),
-      Buffer.from(record.tokenDigest, "hex"),
-    )
-  )
-    return null;
-  return record;
+  const presented = digest(token);
+  const record = index.get(presented);
+  if (record === undefined) return null;
+  const matches = (stored: string) =>
+    timingSafeEqual(Buffer.from(presented, "hex"), Buffer.from(stored, "hex"));
+  if (matches(record.tokenDigest)) return { record, prior: null };
+  for (const prior of record.priors ?? [])
+    if (matches(prior.tokenDigest)) return { record, prior };
+  return null;
 }
 
 async function readRecord<T>(
