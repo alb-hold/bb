@@ -11387,7 +11387,7 @@ describe("Account Pool credential scoping", () => {
       });
     const host = await reloadHub(fixture, (reloaded) =>
       reloaded.harness.sdk.stub("threads.get", async ({ threadId: id }) =>
-        makeThreadResponse({ id, archivedAt: 1_000 }),
+        makeThreadResponse({ id, archivedAt: Date.now() }),
       ),
     );
     expect(await statusOf(host, token, "/v1/messages")).toBe(401);
