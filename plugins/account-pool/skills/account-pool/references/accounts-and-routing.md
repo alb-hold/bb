@@ -38,6 +38,18 @@ logged. Older builds ignore the tombstone and treat the archived thread as
 revoked; they delete credential files left that way, so downgrading while a
 tombstone write was failing loses those credentials.
 
+After a restart the plugin asks bb about every thread that still has stored
+credentials while it loads, before it registers its routes, and a credential is
+accepted only once bb has said its thread is live. A thread bb reports archived
+is archived then, with its 24 hour window counted from the time bb archived it
+(a thread archived longer ago keeps no tombstone), and one bb reports deleted is
+deleted. If bb cannot be asked,
+those credentials stay rejected and the periodic sweep, retried every minute,
+accepts them once bb answers. An archive marker temporary file left by a crash
+counts as an archive in progress: the thread loads as archived and the window
+counts from the file's modification time; an unreadable one is treated like an
+unreadable marker.
+
 The builtin Account Pooler plugin is disabled by default. Enable it, add Claude
 or Codex credentials, and inspect its proxy routes and account quota with:
 

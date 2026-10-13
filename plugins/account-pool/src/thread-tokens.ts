@@ -24,6 +24,8 @@ const ARCHIVED_THREAD_PREFIX = "archived-thread-";
 const ARCHIVE_FALLBACK_PREFIX = "archive-revocation-";
 const REVOKED_ROUTE_PREFIX = "revoked-route-";
 const TOMBSTONE_PREFIX = "archived-credentials-";
+const MARKER_TEMPORARY =
+  /^(archived-thread-|archive-revocation-)([a-f0-9]{64})\.json\.[A-Za-z0-9-]+\.tmp$/u;
 
 const identifierSchema = z.string().regex(/^[A-Za-z0-9_-]+$/u);
 const tokenSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/u);
@@ -136,10 +138,15 @@ type PendingFile =
   | { threadId: string; record: RouteRecord; nested: false }
   | { threadId: string; record: NestedRouteRecord; nested: true };
 
+export type ThreadLookupResult =
+  | "live"
+  | "archived"
+  | "gone"
+  | { status: "archived"; archivedAt: number };
 export type ThreadLookup = (
   threadId: string,
   signal?: AbortSignal,
-) => Promise<"live" | "archived" | "gone">;
+) => Promise<ThreadLookupResult>;
 export type ThreadSweepOptions = {
   signal?: AbortSignal;
   lookupTimeoutMs?: number;
@@ -170,6 +177,9 @@ export class ThreadTokenStore {
   private readonly tombstones = new Map<string, Tombstone>();
   private readonly expiredTombstoneThreads = new Set<string>();
   private pendingFiles: PendingFile[] = [];
+  private readonly unverified = new Set<string>();
+  private readonly archivedMarkerFiles = new Set<string>();
+  private readonly leftoverTemporaries = new Map<string, string[]>();
 
   constructor(
     private readonly directory: string,
@@ -178,7 +188,11 @@ export class ThreadTokenStore {
     private readonly warn: (message: string) => void = () => undefined,
   ) {}
 
-  async initialize(hostIds: readonly string[]): Promise<void> {
+  async initialize(
+    hostIds: readonly string[],
+    lookup: ThreadLookup,
+    options: ThreadSweepOptions = {},
+  ): Promise<void> {
     await fs.mkdir(this.directory, { recursive: true, mode: 0o700 });
     await fs.chmod(this.directory, 0o700);
     const enrolled = new Set(hostIds);
@@ -191,6 +205,7 @@ export class ThreadTokenStore {
       )
         await this.loadArchiveMarker(name);
     }
+    await this.settleTemporaries(names);
     this.archiveMarkersLoaded = true;
     for (const name of names) {
       await this.loadFile(name, enrolled).catch((error) => {
@@ -198,6 +213,81 @@ export class ThreadTokenStore {
       });
     }
     await this.recoverPendingFiles();
+    for (const record of this.routes.values())
+      this.unverified.add(record.threadId);
+    for (const record of this.nestedRoutes.values())
+      this.unverified.add(record.threadId);
+    await this.checkThreads([...this.unverified], lookup, options);
+  }
+
+  private async settleTemporaries(names: readonly string[]): Promise<void> {
+    for (const name of names) {
+      if (name.startsWith(TOMBSTONE_PREFIX) && name.endsWith(".tmp")) {
+        await this.dropFile(path.join(this.directory, name));
+        continue;
+      }
+      const match = MARKER_TEMPORARY.exec(name);
+      if (match === null) continue;
+      const marker = `${match[1]}${match[2]}.json`;
+      const partner = `${match[1] === ARCHIVED_THREAD_PREFIX ? ARCHIVE_FALLBACK_PREFIX : ARCHIVED_THREAD_PREFIX}${match[2]}.json`;
+      const file = path.join(this.directory, name);
+      let text: string | null = null;
+      try {
+        text = await fs.readFile(file, "utf8");
+      } catch {
+        text = null;
+      }
+      const state = text === null ? null : readArchiveState(text);
+      if (
+        text !== null &&
+        state !== null &&
+        digest(state.threadId) === match[2]
+      ) {
+        if (!state.archived) {
+          await this.dropFile(file);
+          continue;
+        }
+        this.applyArchiveState(marker, text);
+        if (
+          this.archivedThreads.has(state.threadId) &&
+          this.archiveEpoch(state.threadId) === state.epoch
+        ) {
+          try {
+            await fs.rename(file, path.join(this.directory, marker));
+            this.seenArchiveMarkers.add(marker);
+          } catch {
+            this.keepTemporary(marker, name);
+          }
+        } else await this.dropFile(file);
+        continue;
+      }
+      if (
+        this.archivedMarkerFiles.has(marker) ||
+        this.archivedMarkerFiles.has(partner)
+      ) {
+        await this.dropFile(file);
+        continue;
+      }
+      this.corruptArchiveMarkers.add(marker);
+      this.keepTemporary(marker, name);
+    }
+  }
+
+  private keepTemporary(marker: string, name: string): void {
+    this.leftoverTemporaries.set(marker, [
+      ...(this.leftoverTemporaries.get(marker) ?? []),
+      name,
+    ]);
+  }
+
+  private async removeMarkerTemporaries(threadId: string): Promise<void> {
+    for (const marker of this.archiveMarkerNames(threadId)) {
+      const leftovers = this.leftoverTemporaries.get(marker);
+      if (leftovers === undefined) continue;
+      this.leftoverTemporaries.delete(marker);
+      for (const name of leftovers)
+        await this.dropFile(path.join(this.directory, name));
+    }
   }
 
   private async loadArchiveMarker(name: string): Promise<void> {
@@ -425,6 +515,7 @@ export class ThreadTokenStore {
     if (match === null || this.credentialExpired(match)) return null;
     const { record } = match;
     if (await this.isArchived(record.threadId)) return null;
+    if (this.unverified.has(record.threadId)) return null;
     if (provider !== undefined && provider !== record.provider) return null;
     if (
       !(await this.hosts.authenticateGeneration(
@@ -458,6 +549,7 @@ export class ThreadTokenStore {
     if (match === null || this.credentialExpired(match)) return null;
     const { record } = match;
     if (await this.isArchived(record.threadId)) return null;
+    if (this.unverified.has(record.threadId)) return null;
     if (
       !(await this.hosts.authenticateGeneration(
         record.hostId,
@@ -480,8 +572,10 @@ export class ThreadTokenStore {
   private async revokeThread(
     threadId: string,
     restorable: boolean,
+    archivedAt?: number,
   ): Promise<void> {
     this.archiveVersions.set(threadId, this.archiveVersion(threadId) + 1);
+    this.unverified.delete(threadId);
     const advanceEpoch = !this.archivedThreads.has(threadId);
     const epochUnknown = advanceEpoch && this.hasMarkerFailure(threadId);
     this.archivedThreads.add(threadId);
@@ -530,6 +624,8 @@ export class ThreadTokenStore {
           this.seenArchiveMarkers.add(this.archivedName(threadId));
           this.clearMarkerFailures(threadId);
           this.archiveDurabilityFailures.delete(threadId);
+          await this.removeMarkerTemporaries(threadId);
+          await this.anchorMarker(this.archivedFile(threadId), archivedAt);
         } catch (error) {
           try {
             await this.persist(this.archiveFallbackFile(threadId), {
@@ -540,6 +636,11 @@ export class ThreadTokenStore {
             this.seenArchiveMarkers.add(this.archiveFallbackName(threadId));
             this.clearMarkerFailures(threadId);
             this.archiveDurabilityFailures.delete(threadId);
+            await this.removeMarkerTemporaries(threadId);
+            await this.anchorMarker(
+              this.archiveFallbackFile(threadId),
+              archivedAt,
+            );
           } catch {
             markerError = error;
             this.archiveDurabilityFailures.add(threadId);
@@ -547,7 +648,7 @@ export class ThreadTokenStore {
         }
       }
       if (restorable && !epochUnknown && markerError === undefined)
-        await this.tombstoneCredentials(threadId, nextEpoch);
+        await this.tombstoneCredentials(threadId, nextEpoch, archivedAt);
       const tombstone = this.tombstones.get(threadId);
       const keepFiles =
         tombstone !== undefined &&
@@ -602,6 +703,14 @@ export class ThreadTokenStore {
         (this.lookupFailures.get(left) ?? 0) -
         (this.lookupFailures.get(right) ?? 0),
     );
+    return this.checkThreads(ordered, lookup, options);
+  }
+
+  private async checkThreads(
+    ordered: readonly string[],
+    lookup: ThreadLookup,
+    options: ThreadSweepOptions,
+  ): Promise<ThreadSweepResult> {
     const result: ThreadSweepResult = {
       checked: ordered.length,
       revoked: 0,
@@ -622,19 +731,31 @@ export class ThreadTokenStore {
         lookupSignals.length === 0 ? undefined : AbortSignal.any(lookupSignals);
       const version = this.archiveVersion(threadId);
       try {
-        const status = await untilAborted(
+        const found = await untilAborted(
           lookup(threadId, lookupSignal),
           lookupSignal,
         );
+        const status = typeof found === "string" ? found : found.status;
+        const archivedAt =
+          typeof found === "string" ? undefined : found.archivedAt;
         this.lookupFailures.delete(threadId);
         if (status === "live") {
+          this.unverified.delete(threadId);
           if (this.tombstones.has(threadId))
             await this.restoreThread(threadId, version);
           continue;
         }
-        if (status === "archived" && !this.hasRoutes(threadId)) continue;
+        if (status === "archived" && !this.hasRoutes(threadId)) {
+          this.unverified.delete(threadId);
+          continue;
+        }
         if (
-          await this.removeThreadIfVersion(threadId, version, status === "gone")
+          await this.removeThreadIfVersion(
+            threadId,
+            version,
+            status === "gone",
+            archivedAt,
+          )
         )
           result.revoked += 1;
       } catch {
@@ -652,11 +773,12 @@ export class ThreadTokenStore {
     threadId: string,
     expectedVersion: number,
     final = false,
+    archivedAt?: number,
   ): Promise<boolean> {
     if (this.archiveVersion(threadId) !== expectedVersion)
       return this.archivedThreads.has(threadId);
     if (final) await this.deleteThread(threadId);
-    else await this.removeThread(threadId);
+    else await this.revokeThread(threadId, true, archivedAt);
     return true;
   }
 
@@ -681,6 +803,7 @@ export class ThreadTokenStore {
   ): Promise<void> {
     await this.serialize(async () => {
       if (this.archiveVersion(threadId) !== expectedVersion) return;
+      this.unverified.delete(threadId);
       if (this.activeArchiveMarkers.has(threadId)) return;
       if (
         this.archiveEpoch(threadId) === 0 &&
@@ -711,6 +834,7 @@ export class ThreadTokenStore {
         this.seenArchiveMarkers.add(this.archiveFallbackName(threadId));
       this.clearMarkerFailures(threadId);
       this.archiveDurabilityFailures.delete(threadId);
+      await this.removeMarkerTemporaries(threadId);
       for (const record of revived.routes) {
         this.routes.set(this.routeMapKey(record), record);
         indexCredential(this.tokenIndex, record);
@@ -739,9 +863,19 @@ export class ThreadTokenStore {
     );
   }
 
+  private async anchorMarker(
+    file: string,
+    archivedAt: number | undefined,
+  ): Promise<void> {
+    if (archivedAt === undefined || archivedAt >= this.now()) return;
+    const stamp = new Date(archivedAt);
+    await fs.utimes(file, stamp, stamp).catch(() => undefined);
+  }
+
   private async tombstoneCredentials(
     threadId: string,
     epoch: number,
+    archivedAt?: number,
   ): Promise<void> {
     const held = this.tombstones.get(threadId);
     if (held !== undefined && this.tombstoneExpired(held)) {
@@ -765,11 +899,12 @@ export class ThreadTokenStore {
     const tombstone = {
       threadId,
       epoch,
-      archivedAt: this.now(),
+      archivedAt: Math.min(this.now(), archivedAt ?? this.now()),
       routes,
       nested,
       durable: false,
     };
+    if (this.tombstoneExpired(tombstone)) return;
     this.tombstones.set(threadId, tombstone);
     await this.persistTombstone(tombstone);
   }
@@ -1168,6 +1303,8 @@ export class ThreadTokenStore {
     }
     this.corruptArchiveMarkers.delete(name);
     this.transientArchiveReadFailures.delete(name);
+    if (parsed.data.archived) this.archivedMarkerFiles.add(name);
+    else this.archivedMarkerFiles.delete(name);
     const threadId = parsed.data.threadId;
     const currentEpoch = this.archiveEpoch(threadId);
     const currentArchived = this.archivedThreads.has(threadId);
@@ -1676,6 +1813,17 @@ function untilAborted<T>(
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && "code" in error;
+}
+
+function readArchiveState(
+  text: string,
+): z.infer<typeof archiveStateSchema> | null {
+  try {
+    const parsed = archiveStateSchema.safeParse(JSON.parse(text));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
 }
 
 function digest(value: string): string {
