@@ -925,17 +925,21 @@ export class ThreadTokenStore {
     const { record } = use;
     if (record.priors === undefined) return;
     await this.serialize(async () => {
-      const current = use.nested
-        ? this.nestedRoutes.get(this.nestedMapKey(record))
-        : this.routes.get(this.routeMapKey(record));
-      if (current !== record || record.priors === undefined) return;
-      const index = use.nested ? this.nestedTokenIndex : this.tokenIndex;
-      for (const prior of record.priors) index.delete(prior.tokenDigest);
-      await this.persistCredential(
-        use.nested ? this.nestedFile(record) : this.file(record),
-        { ...record, priors: undefined },
-      );
-      record.priors = undefined;
+      const priors = record.priors;
+      if (priors === undefined) return;
+      if (use.nested) {
+        if (this.nestedRoutes.get(this.nestedMapKey(use.record)) !== use.record)
+          return;
+        for (const prior of priors)
+          this.nestedTokenIndex.delete(prior.tokenDigest);
+        use.record.priors = undefined;
+        await this.persistCredential(this.nestedFile(use.record), use.record);
+        return;
+      }
+      if (this.routes.get(this.routeMapKey(use.record)) !== use.record) return;
+      for (const prior of priors) this.tokenIndex.delete(prior.tokenDigest);
+      use.record.priors = undefined;
+      await this.persistCredential(this.file(use.record), use.record);
     }).catch(() => undefined);
   }
 
