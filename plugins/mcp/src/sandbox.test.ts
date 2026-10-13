@@ -296,13 +296,25 @@ describe("runSandboxedScript", () => {
   describe("memory limit", () => {
     const originalMemory = WebAssembly.Memory;
     let memories: WebAssembly.Memory[] = [];
+    let hostRefusesGrowth = false;
+    let hostRefusedGrowthCount = 0;
 
     beforeEach(() => {
       memories = [];
+      hostRefusesGrowth = false;
+      hostRefusedGrowthCount = 0;
       WebAssembly.Memory = class extends originalMemory {
         constructor(descriptor: WebAssembly.MemoryDescriptor) {
           super(descriptor);
           memories.push(this);
+        }
+
+        override grow(delta: number): number {
+          if (hostRefusesGrowth) {
+            hostRefusedGrowthCount += 1;
+            throw new RangeError("WebAssembly.Memory.grow(): Unable to grow");
+          }
+          return super.grow(delta);
         }
       };
     });
@@ -372,6 +384,17 @@ describe("runSandboxedScript", () => {
       });
       expect(plain).toMatchObject({ ok: false, error: "null" });
       expect(allocated).toEqual(plain);
+    });
+
+    it("reports a script's own throw of null as that value after the host refused to grow the heap within the maximum", async () => {
+      hostRefusesGrowth = true;
+      const result = await run(
+        `const chunks = []; try { while (true) chunks.push(new Uint8Array(1024 * 1024)); } catch (error) {} chunks.length = 0; throw null;`,
+        { limits: { memoryLimitBytes: LIMIT_BYTES, ...GENEROUS_CPU_LIMITS } },
+      );
+      expect(hostRefusedGrowthCount).toBeGreaterThan(0);
+      expect(memories[0]?.buffer.byteLength).toBe(HEAP_BASE_BYTES);
+      expect(result).toMatchObject({ ok: false, error: "null" });
     });
 
     it("reports a script's own throw of null without any allocation as that value", async () => {

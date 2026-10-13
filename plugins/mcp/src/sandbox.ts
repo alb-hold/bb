@@ -59,22 +59,24 @@ const QUICKJS_BASE_PAGES = 256;
 const OUT_OF_MEMORY_ERROR = "InternalError: out of memory";
 
 function newBoundedQuickJsModule(memoryLimitBytes: number) {
+  const maximumPages = Math.min(
+    WASM_MAX_PAGES,
+    QUICKJS_BASE_PAGES + Math.ceil(memoryLimitBytes / WASM_PAGE_BYTES),
+  );
   const memory = new WebAssembly.Memory({
     initial: QUICKJS_BASE_PAGES,
-    maximum: Math.min(
-      WASM_MAX_PAGES,
-      QUICKJS_BASE_PAGES + Math.ceil(memoryLimitBytes / WASM_PAGE_BYTES),
-    ),
+    maximum: maximumPages,
   });
   const heap = { lastGrowthRefused: false };
   const grow = memory.grow.bind(memory);
   memory.grow = (delta) => {
+    const requestedPages = memory.buffer.byteLength / WASM_PAGE_BYTES + delta;
     try {
       const previousPages = grow(delta);
       heap.lastGrowthRefused = false;
       return previousPages;
     } catch (error) {
-      heap.lastGrowthRefused = true;
+      heap.lastGrowthRefused = requestedPages > maximumPages;
       throw error;
     }
   };
