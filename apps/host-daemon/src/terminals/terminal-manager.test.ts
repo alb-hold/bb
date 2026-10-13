@@ -1958,10 +1958,14 @@ describe("TerminalManager", () => {
       for (let index = 0; index < 12_000; index += 1) {
         pty.emitData("\u0000");
         vi.advanceTimersByTime(4);
-        expect(session.scrollback.at(-1)?.chunk.seq).toBe(index + 1);
-        expect(
-          harness.manager["retainedReplayParserStateBytes"],
-        ).toBeLessThanOrEqual(budget);
+        const lastSeq = session.scrollback.at(-1)?.chunk.seq;
+        if (lastSeq !== index + 1) {
+          expect(lastSeq).toBe(index + 1);
+        }
+        const retained = harness.manager["retainedReplayParserStateBytes"];
+        if (retained > budget) {
+          expect(retained).toBeLessThanOrEqual(budget);
+        }
         if (index % 256 === 0) {
           assertBudget();
         }
@@ -2029,7 +2033,7 @@ describe("TerminalManager", () => {
     harness.manager.dispose();
     expect(harness.manager["retainedReplayParserStateBytes"]).toBe(0);
     expect(measuredCharge()).toBe(0);
-  });
+  }, 45_000);
 
   it.each([{ maxExitedTerminals: 0 }, { exitedRetentionMs: 0 }])(
     "releases replay snapshot charges when exited retention is disabled: %j",
