@@ -359,7 +359,7 @@ describe("runSandboxedScript", () => {
 
     it("reports a script's own throw of null as that value after it allocated past half the limit", async () => {
       const allocated = await run(
-        `const buffer = new Uint8Array(24 * 1024 * 1024); throw null;`,
+        `const chunks = []; for (let i = 0; i < 24; i += 1) chunks.push(new Uint8Array(1024 * 1024)); throw null;`,
         { limits: { memoryLimitBytes: LIMIT_BYTES, ...GENEROUS_CPU_LIMITS } },
       );
       const heapBytes = memories[0]?.buffer.byteLength ?? 0;
