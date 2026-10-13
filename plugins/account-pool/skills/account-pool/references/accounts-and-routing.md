@@ -45,10 +45,14 @@ is archived then, with its 24 hour window counted from the time bb archived it
 (a thread archived longer ago keeps no tombstone), and one bb reports deleted is
 deleted. If bb cannot be asked,
 those credentials stay rejected and the periodic sweep, retried every minute,
-accepts them once bb answers. An archive marker temporary file left by a crash
-counts as an archive in progress: the thread loads as archived and the window
-counts from the file's modification time; an unreadable one is treated like an
-unreadable marker.
+accepts them once bb answers. The archive marker carries its window anchor as
+its modification time, set on the temporary file before the rename, so a
+marker on disk always has it. An archive marker temporary file left by a crash
+counts as an archive in progress: the thread loads as archived but, because its
+modification time cannot be trusted as an anchor, gets no restoration window;
+an unreadable one is treated like an unreadable marker. When bb reports an
+archive time earlier than the marker's, the earlier one is used, and a window
+that has already run out is dropped.
 
 The builtin Account Pooler plugin is disabled by default. Enable it, add Claude
 or Codex credentials, and inspect its proxy routes and account quota with:
