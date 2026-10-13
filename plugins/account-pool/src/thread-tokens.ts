@@ -512,7 +512,14 @@ export class ThreadTokenStore {
         ) ||
         this.hasCredentialFile(threadId, names);
       let markerError: unknown;
-      if (shouldPersist) {
+      const markerCurrent =
+        !advanceEpoch &&
+        !this.archiveDurabilityFailures.has(threadId) &&
+        !this.hasMarkerFailure(threadId) &&
+        this.archiveMarkerNames(threadId).some((name) =>
+          this.seenArchiveMarkers.has(name),
+        );
+      if (shouldPersist && !markerCurrent) {
         try {
           await this.persist(this.archivedFile(threadId), {
             threadId,
@@ -733,7 +740,10 @@ export class ThreadTokenStore {
     epoch: number,
   ): Promise<void> {
     const held = this.tombstones.get(threadId);
-    if (held?.epoch === epoch) {
+    if (held !== undefined && this.tombstoneExpired(held)) {
+      await this.dropTombstone(threadId);
+      if (held.epoch === epoch) return;
+    } else if (held?.epoch === epoch) {
       if (!held.durable) {
         await this.persistTombstone(held);
         if (held.durable) await this.removePendingFiles(held);
@@ -778,6 +788,7 @@ export class ThreadTokenStore {
     for (const tombstone of this.tombstones.values()) {
       if (
         tombstone.durable ||
+        this.tombstoneExpired(tombstone) ||
         !this.archivedThreads.has(tombstone.threadId) ||
         tombstone.epoch !== this.archiveEpoch(tombstone.threadId)
       )
