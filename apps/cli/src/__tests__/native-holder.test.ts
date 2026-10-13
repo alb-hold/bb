@@ -194,9 +194,9 @@ describe("native terminal holder", () => {
   it("keeps a competing holder from writing to the socket owner's log", async () => {
     const socketPath = socketIn();
     const logPath = socketPath.replace(/\.sock$/u, ".log");
-    let firstPtyExit:
-      | ((event: { exitCode: number; signal?: number }) => void)
-      | null = null;
+    const firstPtyExit: {
+      current?: (event: { exitCode: number; signal?: number }) => void;
+    } = {};
     let firstOwnsSocket = false;
     const run = (
       onSocketReady?: () => void,
@@ -213,8 +213,10 @@ describe("native terminal holder", () => {
           spawnPty: () => ({
             pid: 654,
             onData: () => undefined,
-            onExit: (listener) => {
-              firstPtyExit = listener;
+            onExit: (
+              listener: (event: { exitCode: number; signal?: number }) => void,
+            ) => {
+              firstPtyExit.current = listener;
             },
             write: () => undefined,
             resize: () => undefined,
@@ -244,7 +246,7 @@ describe("native terminal holder", () => {
     let client: Client | null = null;
     try {
       client = await attach(socketPath);
-      await expect.poll(() => firstPtyExit).not.toBeNull();
+      await expect.poll(() => firstPtyExit.current).toBeDefined();
       firstOwnsSocket = true;
       const firstLog = readFileSync(logPath, "utf8");
 
@@ -291,7 +293,7 @@ try {
       expect(secondOutput.trim()).toBe("EADDRINUSE");
 
       expect(readFileSync(logPath, "utf8")).toBe(firstLog);
-      firstPtyExit?.({ exitCode: 0 });
+      firstPtyExit.current?.({ exitCode: 0 });
       await first;
       const finishedLog = readFileSync(logPath, "utf8");
       firstSignalTarget.emit("SIGTERM");
@@ -299,7 +301,7 @@ try {
     } finally {
       removeFirstSignals();
       client?.socket.destroy();
-      firstPtyExit?.({ exitCode: 0 });
+      firstPtyExit.current?.({ exitCode: 0 });
       await first;
     }
   });
