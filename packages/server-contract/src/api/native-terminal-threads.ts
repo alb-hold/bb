@@ -57,17 +57,47 @@ export type SwitchNativeTerminalModeRequest = z.infer<
   typeof switchNativeTerminalModeRequestSchema
 >;
 
-export const nativeTerminalActivityStateSchema = z.enum(["working", "idle"]);
+export const nativeTerminalActivityStateSchema = z.enum([
+  "working",
+  "waiting",
+  "idle",
+]);
 export type NativeTerminalActivityState = z.infer<
   typeof nativeTerminalActivityStateSchema
+>;
+
+export const NATIVE_TERMINAL_MAX_OPEN_QUESTIONS = 8;
+
+export const nativeTerminalOpenQuestionSchema = z
+  .object({
+    id: z.string().trim().min(1).max(256),
+    prompt: z.string().trim().min(1).max(4_000),
+  })
+  .strict();
+export type NativeTerminalOpenQuestion = z.infer<
+  typeof nativeTerminalOpenQuestionSchema
 >;
 
 export const reportNativeTerminalActivityRequestSchema = z
   .object({
     state: nativeTerminalActivityStateSchema,
     prompt: z.string().trim().min(1).max(4_000).optional(),
+    questions: z
+      .array(nativeTerminalOpenQuestionSchema)
+      .min(1)
+      .max(NATIVE_TERMINAL_MAX_OPEN_QUESTIONS)
+      .optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((request, context) => {
+    if ((request.state === "waiting") !== (request.questions !== undefined)) {
+      context.addIssue({
+        code: "custom",
+        path: ["questions"],
+        message: "questions are required when waiting and only then",
+      });
+    }
+  });
 export type ReportNativeTerminalActivityRequest = z.infer<
   typeof reportNativeTerminalActivityRequestSchema
 >;

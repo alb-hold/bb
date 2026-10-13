@@ -197,6 +197,18 @@ and 128 turns; completion anchors and continuation ancestry remain available.
 Claude uses Stop-hook feedback for continuation and the Stop outcome or turn
 duration for completion. These fields require host daemon protocol 237.
 
+A CLI that blocks on a question to the user declares it so the thread shows as
+waiting for input: `transcript.questions` lists `open` record matches (the
+field holding the question's id, an optional field holding its text, and a
+fallback `label`) and `close` matches that carry the same id once the user
+answers; `hooks.permission` names the hook events that open and close a
+permission prompt and the field that identifies the tool, and `skip` lists tool
+ids whose permission hook is not reported because the transcript already
+declares them as questions (one prompt, one row). An open question survives
+working signals and ends on its own close match, a new prompt, an interrupt or
+the CLI exiting. A non-blocking question must not be declared. The question
+fields require host daemon protocol 238.
+
 Rules:
 
 - Capabilities project to exactly one client shape, `ProviderInfo`.

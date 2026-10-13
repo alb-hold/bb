@@ -1,6 +1,22 @@
-import { getNativeTerminalThread, getThread } from "@bb/db";
-import type { ReportNativeTerminalActivityRequest } from "@bb/server-contract";
+import {
+  getNativeTerminalThread,
+  getThread,
+  type TerminalSessionRow,
+} from "@bb/db";
+import {
+  isNativeTerminalQuestion,
+  NATIVE_TERMINAL_QUESTION_REQUEST_PREFIX,
+  type Thread,
+} from "@bb/domain";
+import type {
+  NativeTerminalOpenQuestion,
+  ReportNativeTerminalActivityRequest,
+} from "@bb/server-contract";
 import { ApiError } from "../../errors.js";
+import {
+  buildChildThreadBlockerSummary,
+  requestChildThreadNeedsAttentionNotification,
+} from "../../internal/interactive-requests.js";
 import type {
   AppDeps,
   LoggedPendingInteractionWorkSessionDeps,
@@ -39,6 +55,10 @@ function requireNativeRecord(deps: Pick<AppDeps, "db">, threadId: string) {
   return record;
 }
 
+const NATIVE_QUESTION_REQUEST_PREFIX = NATIVE_TERMINAL_QUESTION_REQUEST_PREFIX;
+const NATIVE_QUESTION_TURN_ID = "native-terminal-turn";
+const NATIVE_QUESTION_ANSWERED_REASON = "native-terminal-question-answered";
+
 export function recordNativeTerminalActivity(
   deps: NativeTerminalActivityDeps,
   args: { threadId: string } & ReportNativeTerminalActivityRequest,
@@ -53,10 +73,10 @@ export function recordNativeTerminalActivity(
   }
   active.delete(args.threadId);
   const thread = requirePublicThread(deps.db, args.threadId);
-  requireNativeRecord(deps, args.threadId);
+  const record = requireNativeRecord(deps, args.threadId);
   let working = thread.status === "active";
   if (
-    args.state === "working" &&
+    args.state !== "idle" &&
     (thread.status === "idle" || thread.status === "error")
   ) {
     const outcome = applyLoggedThreadLifecycleEvent(deps, {
@@ -66,10 +86,106 @@ export function recordNativeTerminalActivity(
     working = outcome.applied && outcome.thread.status === "active";
   }
   if (args.state === "idle") settleNativeTerminalTurn(deps, thread.id);
+  reconcileNativeQuestions(deps, {
+    nativeSessionId: record.nativeSessionId,
+    questions: args.questions ?? [],
+    thread,
+  });
   if (args.prompt !== undefined) {
     titleNativeThreadFromPrompt(deps, thread.id, args.prompt);
   }
   if (args.state === "working" && working) active.add(thread.id);
+}
+
+export function interruptNativeTerminalQuestions(
+  deps: Pick<AppDeps, "pendingInteractions">,
+  threadId: string,
+  keep: ReadonlySet<string> = new Set(),
+): void {
+  for (const interaction of deps.pendingInteractions.listPendingThreadInteractions(
+    threadId,
+  )) {
+    if (
+      !isNativeTerminalQuestion(interaction) ||
+      keep.has(interaction.providerRequestId)
+    ) {
+      continue;
+    }
+    deps.pendingInteractions.interruptPendingInteraction({
+      interactionId: interaction.id,
+      reason: NATIVE_QUESTION_ANSWERED_REASON,
+    });
+  }
+}
+
+function reconcileNativeQuestions(
+  deps: NativeTerminalActivityDeps,
+  args: {
+    nativeSessionId: string | null;
+    questions: readonly NativeTerminalOpenQuestion[];
+    thread: Thread;
+  },
+): void {
+  const wanted = new Map(
+    args.questions.map((question) => [
+      `${NATIVE_QUESTION_REQUEST_PREFIX}${question.id}`,
+      question,
+    ]),
+  );
+  interruptNativeTerminalQuestions(deps, args.thread.id, new Set(wanted.keys()));
+  for (const [providerRequestId, question] of wanted) {
+    const registered = deps.pendingInteractions.registerPendingInteraction({
+      interaction: {
+        threadId: args.thread.id,
+        turnId: NATIVE_QUESTION_TURN_ID,
+        providerId: args.thread.providerId,
+        providerThreadId: args.nativeSessionId ?? args.thread.id,
+        providerRequestId,
+        payload: {
+          kind: "user_question",
+          questions: [
+            {
+              id: providerRequestId,
+              prompt: question.prompt,
+              multiSelect: false,
+              allowFreeText: true,
+            },
+          ],
+        },
+      },
+    });
+    if (registered.outcome === "rejected") {
+      deps.logger.warn(
+        { reason: registered.reason, threadId: args.thread.id },
+        "Native terminal question was not registered",
+      );
+      continue;
+    }
+    if (registered.outcome === "created") {
+      requestChildThreadNeedsAttentionNotification(deps, {
+        blockerSummary: buildChildThreadBlockerSummary(registered.interaction),
+        childThreadId: args.thread.id,
+      });
+    }
+  }
+}
+
+export function clearNativeTerminalStateOnExit(
+  deps: Pick<
+    AppDeps,
+    "db" | "hub" | "logger" | "pendingInteractions" | "providerRegistry"
+  >,
+  session: Pick<TerminalSessionRow, "closeReason" | "id" | "threadId">,
+): void {
+  if (session.threadId === null || session.closeReason === "daemon-disconnect") {
+    return;
+  }
+  const record = getNativeTerminalThread(deps.db, session.threadId);
+  if (record === null || record.terminalSessionId !== session.id) return;
+  interruptNativeTerminalQuestions(deps, session.threadId);
+  if (session.closeReason === "process-exit") {
+    settleNativeTerminalTurn(deps, session.threadId);
+  }
 }
 
 export function settleNativeTerminalTurn(
