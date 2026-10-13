@@ -18,10 +18,12 @@ const PROCESS_NESTED_ROUTE_PREFIX = "scoped-process-nested-route-";
 export const PROCESS_CREDENTIAL_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 export const DURABLE_PRIOR_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 export const PROCESS_CREDENTIAL_CLOCK_SKEW_MS = 60 * 1000;
+export const ARCHIVE_TOMBSTONE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const LEGACY_NESTED_ROUTE_PREFIX = "nested-route-";
 const ARCHIVED_THREAD_PREFIX = "archived-thread-";
 const ARCHIVE_FALLBACK_PREFIX = "archive-revocation-";
 const REVOKED_ROUTE_PREFIX = "revoked-route-";
+const TOMBSTONE_PREFIX = "archived-credentials-";
 
 const identifierSchema = z.string().regex(/^[A-Za-z0-9_-]+$/u);
 const tokenSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/u);
@@ -96,6 +98,16 @@ const readableNestedRouteSchema = z.union([
   })),
 ]);
 
+const tombstoneSchema = z
+  .object({
+    threadId: identifierSchema,
+    epoch: z.number().int().positive(),
+    archivedAt: z.number().int().positive(),
+    routes: z.array(routeSchema.omit({ token: true })),
+    nested: z.array(nestedRouteSchema.omit({ token: true })),
+  })
+  .strict();
+
 class CredentialScrubError extends Error {}
 
 type RouteRecord = z.infer<typeof routeSchema>;
@@ -111,10 +123,18 @@ export type NestedRoute = Omit<
   "token" | "tokenDigest" | "hostTokenDigest" | "lifetime" | "usedAt" | "priors"
 >;
 
+type Tombstone = {
+  threadId: string;
+  epoch: number;
+  archivedAt: number;
+  routes: RouteRecord[];
+  nested: NestedRouteRecord[];
+};
+
 export type ThreadLookup = (
   threadId: string,
   signal?: AbortSignal,
-) => Promise<"live" | "gone">;
+) => Promise<"live" | "archived" | "gone">;
 export type ThreadSweepOptions = {
   signal?: AbortSignal;
   lookupTimeoutMs?: number;
@@ -142,6 +162,7 @@ export class ThreadTokenStore {
   private readonly archiveVersions = new Map<string, number>();
   private tail: Promise<void> = Promise.resolve();
   private readonly pendingPriorDrops = new WeakSet<object>();
+  private readonly tombstones = new Map<string, Tombstone>();
 
   constructor(
     private readonly directory: string,
@@ -193,6 +214,10 @@ export class ThreadTokenStore {
       return;
     }
     if (name.startsWith(ARCHIVED_THREAD_PREFIX)) return;
+    if (name.startsWith(TOMBSTONE_PREFIX)) {
+      await this.loadTombstone(name, enrolled);
+      return;
+    }
     if (
       name.startsWith(THREAD_ROUTE_PREFIX) ||
       name.startsWith(PROCESS_THREAD_ROUTE_PREFIX) ||
@@ -234,10 +259,7 @@ export class ThreadTokenStore {
       name.startsWith(PROCESS_NESTED_ROUTE_PREFIX) ||
       name.startsWith(LEGACY_NESTED_ROUTE_PREFIX)
     ) {
-      const loaded = await this.readCredential(
-        file,
-        readableNestedRouteSchema,
-      );
+      const loaded = await this.readCredential(file, readableNestedRouteSchema);
       const record =
         loaded === null
           ? null
@@ -419,6 +441,17 @@ export class ThreadTokenStore {
   }
 
   async removeThread(threadId: string): Promise<void> {
+    await this.revokeThread(threadId, true);
+  }
+
+  async deleteThread(threadId: string): Promise<void> {
+    await this.revokeThread(threadId, false);
+  }
+
+  private async revokeThread(
+    threadId: string,
+    restorable: boolean,
+  ): Promise<void> {
     this.archiveVersions.set(threadId, this.archiveVersion(threadId) + 1);
     const advanceEpoch = !this.archivedThreads.has(threadId);
     this.archivedThreads.add(threadId);
@@ -427,6 +460,8 @@ export class ThreadTokenStore {
       const epoch = this.archiveEpoch(threadId);
       const nextEpoch = advanceEpoch ? epoch + 1 : epoch;
       this.archiveEpochs.set(threadId, nextEpoch);
+      if (restorable) await this.tombstoneCredentials(threadId, nextEpoch);
+      else await this.dropTombstone(threadId, true);
       let names: string[] = [];
       let directoryReadFailed = false;
       try {
@@ -501,7 +536,8 @@ export class ThreadTokenStore {
     lookup: ThreadLookup,
     options: ThreadSweepOptions = {},
   ): Promise<ThreadSweepResult> {
-    const threadIds = new Set<string>();
+    await this.serialize(() => this.purgeExpiredTombstones());
+    const threadIds = new Set<string>(this.tombstones.keys());
     for (const record of this.routes.values()) threadIds.add(record.threadId);
     for (const record of this.nestedRoutes.values())
       threadIds.add(record.threadId);
@@ -537,8 +573,15 @@ export class ThreadTokenStore {
           lookupSignal,
         );
         this.lookupFailures.delete(threadId);
-        if (status === "live") continue;
-        if (await this.removeThreadIfVersion(threadId, version))
+        if (status === "live") {
+          if (this.tombstones.has(threadId))
+            await this.restoreThread(threadId, version);
+          continue;
+        }
+        if (status === "archived" && !this.hasRoutes(threadId)) continue;
+        if (
+          await this.removeThreadIfVersion(threadId, version, status === "gone")
+        )
           result.revoked += 1;
       } catch {
         this.lookupFailures.set(
@@ -554,11 +597,24 @@ export class ThreadTokenStore {
   async removeThreadIfVersion(
     threadId: string,
     expectedVersion: number,
+    final = false,
   ): Promise<boolean> {
     if (this.archiveVersion(threadId) !== expectedVersion)
       return this.archivedThreads.has(threadId);
-    await this.removeThread(threadId);
+    if (final) await this.deleteThread(threadId);
+    else await this.removeThread(threadId);
     return true;
+  }
+
+  private hasRoutes(threadId: string): boolean {
+    return (
+      [...this.routes.values()].some(
+        (record) => record.threadId === threadId,
+      ) ||
+      [...this.nestedRoutes.values()].some(
+        (record) => record.threadId === threadId,
+      )
+    );
   }
 
   archiveVersion(threadId: string): number {
@@ -580,6 +636,7 @@ export class ThreadTokenStore {
       )
         return;
       const epoch = (await this.maxFileEpoch(threadId)) + 1;
+      const revived = await this.reviveTombstone(threadId, epoch);
       await this.persist(this.archivedFile(threadId), {
         threadId,
         epoch,
@@ -600,7 +657,169 @@ export class ThreadTokenStore {
         this.seenArchiveMarkers.add(this.archiveFallbackName(threadId));
       this.clearMarkerFailures(threadId);
       this.archiveDurabilityFailures.delete(threadId);
+      for (const record of revived.routes) {
+        this.routes.set(this.routeMapKey(record), record);
+        indexCredential(this.tokenIndex, record);
+      }
+      for (const record of revived.nested) {
+        this.nestedRoutes.set(this.nestedMapKey(record), record);
+        indexCredential(this.nestedTokenIndex, record);
+      }
+      await this.dropTombstone(threadId);
     });
+  }
+
+  private tombstoneName(threadId: string): string {
+    return `${TOMBSTONE_PREFIX}${digest(threadId)}.json`;
+  }
+
+  private tombstoneFile(threadId: string): string {
+    return path.join(this.directory, this.tombstoneName(threadId));
+  }
+
+  private tombstoneExpired(tombstone: { archivedAt: number }): boolean {
+    const now = this.now();
+    return (
+      tombstone.archivedAt > now + PROCESS_CREDENTIAL_CLOCK_SKEW_MS ||
+      tombstone.archivedAt + ARCHIVE_TOMBSTONE_MAX_AGE_MS <= now
+    );
+  }
+
+  private async tombstoneCredentials(
+    threadId: string,
+    epoch: number,
+  ): Promise<void> {
+    if (this.tombstones.get(threadId)?.epoch === epoch) return;
+    const routes = [...this.routes.values()].filter(
+      (record) => record.threadId === threadId,
+    );
+    const nested = [...this.nestedRoutes.values()].filter(
+      (record) => record.threadId === threadId,
+    );
+    await this.dropTombstone(threadId);
+    if (routes.length === 0 && nested.length === 0) return;
+    const tombstone = {
+      threadId,
+      epoch,
+      archivedAt: this.now(),
+      routes,
+      nested,
+    };
+    this.tombstones.set(threadId, tombstone);
+    await this.persist(this.tombstoneFile(threadId), {
+      ...tombstone,
+      routes: routes.map(({ token, ...stored }) => stored),
+      nested: nested.map(({ token, ...stored }) => stored),
+    }).catch(() => undefined);
+  }
+
+  private async dropTombstone(threadId: string, force = false): Promise<void> {
+    const held = this.tombstones.delete(threadId);
+    if (held || force)
+      await this.removeCredentialFile(this.tombstoneFile(threadId)).catch(
+        () => undefined,
+      );
+  }
+
+  private async purgeExpiredTombstones(): Promise<void> {
+    for (const [threadId, tombstone] of this.tombstones)
+      if (this.tombstoneExpired(tombstone)) await this.dropTombstone(threadId);
+  }
+
+  private async reviveTombstone(
+    threadId: string,
+    epoch: number,
+  ): Promise<{ routes: RouteRecord[]; nested: NestedRouteRecord[] }> {
+    const revived = {
+      routes: [] as RouteRecord[],
+      nested: [] as NestedRouteRecord[],
+    };
+    const tombstone = this.tombstones.get(threadId);
+    if (tombstone === undefined) return revived;
+    if (
+      tombstone.epoch !== this.archiveEpoch(threadId) ||
+      this.tombstoneExpired(tombstone)
+    ) {
+      await this.dropTombstone(threadId);
+      return revived;
+    }
+    for (const stored of tombstone.routes) {
+      const record = this.withLivePriors(stored, stored.lifetime === "process");
+      if (
+        !this.restorable(record) ||
+        this.routes.has(this.routeMapKey(record)) ||
+        !(await this.isGenerationLive(record))
+      )
+        continue;
+      await this.persistCredential(this.fileAtEpoch(record, epoch), record);
+      revived.routes.push(record);
+    }
+    for (const stored of tombstone.nested) {
+      const record = this.withLivePriors(stored, stored.lifetime === "process");
+      if (
+        !this.restorable(record) ||
+        this.nestedRoutes.has(this.nestedMapKey(record)) ||
+        !(await this.isGenerationLive(record))
+      )
+        continue;
+      await this.persistCredential(
+        this.nestedFileAtEpoch(record, epoch),
+        record,
+      );
+      revived.nested.push(record);
+    }
+    return revived;
+  }
+
+  private async loadTombstone(
+    name: string,
+    enrolled: ReadonlySet<string>,
+  ): Promise<void> {
+    const file = path.join(this.directory, name);
+    let value: unknown;
+    try {
+      value = JSON.parse(await fs.readFile(file, "utf8"));
+    } catch (error) {
+      if (error instanceof SyntaxError) await this.dropFile(file);
+      return;
+    }
+    const parsed = tombstoneSchema.safeParse(value);
+    if (!parsed.success || name !== this.tombstoneName(parsed.data.threadId)) {
+      await this.dropFile(file);
+      return;
+    }
+    const { threadId, epoch, archivedAt } = parsed.data;
+    if (this.hasTransientArchiveReadFailure(threadId)) return;
+    const owned = (record: { threadId: string }) =>
+      record.threadId === threadId;
+    const alive = async (record: {
+      hostId: string;
+      hostTokenDigest: string;
+      lifetime?: "process";
+      expiresAt?: number;
+      issuedAt?: number;
+    }) => this.restorable(record) && (await this.isLive(record, enrolled));
+    const routes: RouteRecord[] = [];
+    for (const record of parsed.data.routes)
+      if (owned(record) && (await alive(record))) routes.push(record);
+    const nested: NestedRouteRecord[] = [];
+    for (const record of parsed.data.nested)
+      if (owned(record) && (await alive(record))) nested.push(record);
+    const tombstone = { threadId, epoch, archivedAt, routes, nested };
+    if (
+      !this.archivedThreads.has(threadId) ||
+      this.archiveEpoch(threadId) !== epoch ||
+      this.tombstoneExpired(tombstone) ||
+      (routes.length === 0 && nested.length === 0)
+    ) {
+      await this.dropFile(file);
+      return;
+    }
+    this.tombstones.set(threadId, tombstone);
+  }
+
+  private async dropFile(file: string): Promise<void> {
+    await this.removeCredentialFile(file).catch(() => undefined);
   }
 
   private async reclaimDead(minted: {
@@ -824,9 +1043,7 @@ export class ThreadTokenStore {
     if (record.priors === undefined) return record;
     const live = process
       ? record.priors
-          .filter((prior) =>
-            this.restorable({ lifetime: "process", ...prior }),
-          )
+          .filter((prior) => this.restorable({ lifetime: "process", ...prior }))
           .slice(-MAX_PRIOR_CREDENTIALS)
       : record.priors
           .filter((prior) => prior.expiresAt > this.now())
@@ -976,10 +1193,7 @@ export class ThreadTokenStore {
     issuedAt?: number;
   }): boolean {
     if (record.lifetime !== "process") return false;
-    return (
-      !this.lifetimeSound(record) ||
-      (record.expiresAt ?? 0) <= this.now()
-    );
+    return !this.lifetimeSound(record) || (record.expiresAt ?? 0) <= this.now();
   }
 
   private restorable(record: {

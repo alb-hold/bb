@@ -25,6 +25,15 @@ Reopen the terminal after a server restart to obtain a new credential. Machine
 token rotation also revokes derived conversation credentials after the existing
 ten-minute grace period; reopen the terminal after that grace expires.
 
+Archiving a thread revokes its scoped credentials at once and keeps their
+digests, never the plaintext, in an `archived-credentials-*` file in the secrets
+directory for 24 hours. Unarchiving the same archive within that window, or the
+periodic thread sweep finding the thread live again, makes the session's existing
+credentials authenticate again; nothing is accepted while the thread is archived.
+Deleting the thread, a rotated machine token past its grace period, a credential's
+own expiry, or the 24 hours ending makes them final. Older builds ignore the file
+and treat the archived thread as revoked.
+
 The builtin Account Pooler plugin is disabled by default. Enable it, add Claude
 or Codex credentials, and inspect its proxy routes and account quota with:
 

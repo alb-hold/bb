@@ -298,7 +298,7 @@ export function createAccountPoolPlugin(
     });
     bb.events.on("thread.deleted", async ({ thread }) => {
       await Promise.all([
-        threadTokens.removeThread(thread.id),
+        threadTokens.deleteThread(thread.id),
         routing.removeThread(thread.id),
       ]);
     });
@@ -418,9 +418,8 @@ export function createAccountPoolPlugin(
     const lookupThread: ThreadLookup = async (threadId, signal) => {
       try {
         const thread = await bb.sdk.threads.get({ threadId, signal });
-        return thread.archivedAt === null && thread.deletedAt === null
-          ? "live"
-          : "gone";
+        if (thread.deletedAt !== null) return "gone";
+        return thread.archivedAt === null ? "live" : "archived";
       } catch (error) {
         if (isThreadNotFound(error)) return "gone";
         throw error;
