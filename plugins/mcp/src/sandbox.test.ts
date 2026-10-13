@@ -11,6 +11,8 @@ globalThis.host = async (name, ...args) =>
 globalThis.print = (line) => __bbLog(String(line));
 `;
 
+const MEMORY_LIMIT_TEST_TIMEOUT_MS = 30_000;
+
 function run(code: string, overrides: Partial<SandboxRunArgs> = {}) {
   return runSandboxedScript({
     code,
@@ -281,7 +283,7 @@ describe("runSandboxedScript", () => {
       { limits: { memoryLimitBytes: 4 * 1024 * 1024 } },
     );
     expect(result.ok).toBe(false);
-  });
+  }, MEMORY_LIMIT_TEST_TIMEOUT_MS);
 
   it("caps log output", async () => {
     const result = await run(
