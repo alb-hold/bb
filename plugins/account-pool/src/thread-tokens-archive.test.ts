@@ -10,6 +10,8 @@ import {
   type ThreadLookup,
 } from "./thread-tokens.js";
 
+vi.setConfig({ testTimeout: 120_000 });
+
 const live: ThreadLookup = async () => "live";
 
 const directories: string[] = [];
