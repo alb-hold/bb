@@ -1910,7 +1910,7 @@ async function diskView(
     markers.push({
       epoch: state.epoch ?? 0,
       archived: state.archived === true,
-      mtime: Math.floor((await fs.stat(path.join(directory, name))).mtimeMs),
+      mtime: Math.round((await fs.stat(path.join(directory, name))).mtimeMs),
     });
   }
   const top = Math.max(-1, ...markers.map((marker) => marker.epoch));
@@ -2406,3 +2406,22 @@ describe("the crash table covers every operation that mutates credential, marker
       ).toBe(true);
   });
 });
+
+it.each(lifetimes)(
+  "keeps a %s tombstone to the last millisecond of its window when the marker's time reads back a hair early",
+  async (lifetime) => {
+    const f = await fixture();
+    const session = await mint(f, await f.open(), lifetime);
+    const archived = f.clock();
+    await (await f.open()).removeThread(f.route.threadId);
+    const early = (archived - 0.0004) / 1000;
+    for (const name of await fs.readdir(f.directory))
+      if (name.startsWith("archived-thread-") && name.endsWith(".json"))
+        await fs.utimes(path.join(f.directory, name), early, early);
+    f.advance(ARCHIVE_TOMBSTONE_MAX_AGE_MS - 1);
+    const restarted = await f.open();
+    expect(await tombstoneNames(f.directory)).toHaveLength(1);
+    await unarchive(restarted, f.route.threadId);
+    expect(await accepted(f, restarted, session)).toBe(true);
+  },
+);

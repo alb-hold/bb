@@ -889,7 +889,7 @@ export class ThreadTokenStore {
           continue;
         anchors.push({
           file,
-          modifiedAt: Math.floor((await fs.stat(file)).mtimeMs),
+          modifiedAt: Math.round((await fs.stat(file)).mtimeMs),
         });
       } catch {
         continue;
