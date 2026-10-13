@@ -6,6 +6,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { HubTokenStore } from "./store.js";
 import {
+  DURABLE_PRIOR_MAX_AGE_MS,
   MAX_PRIOR_CREDENTIALS,
   PROCESS_CREDENTIAL_CLOCK_SKEW_MS,
   PROCESS_CREDENTIAL_MAX_AGE_MS,
@@ -357,14 +358,132 @@ it("drops the prior when a later mint reclaims credentials of a dead host genera
   expect(await processFilesOf(directory)).toHaveLength(1);
 });
 
-it("never gives a durable credential a prior: its reissue after a restart still refuses the old token", async () => {
+it("keeps a restored durable credential valid after a re-mint until its successor is presented, for thread and nested routes", async () => {
   const { directory, hosts, threads, route, hostToken } = await fixture();
+  const nestedRoute = { hostId: route.hostId, threadId: route.threadId };
   const oldToken = await threads.forThread(route, hostToken);
+  const oldNested = await threads.forNested(nestedRoute, hostToken);
   const restarted = await restartOf(directory, hosts, route);
   const newToken = await restarted.forThread(route, hostToken);
+  const newNested = await restarted.forNested(nestedRoute, hostToken);
   expect(newToken).not.toBe(oldToken);
+  expect(await restarted.authenticate(oldToken)).toEqual(route);
+  expect(await restarted.authenticateNested(oldNested)).toEqual(nestedRoute);
+  const reloaded = await restartOf(directory, hosts, route);
+  expect(await reloaded.authenticate(oldToken)).toEqual(route);
+  expect(await reloaded.authenticateNested(oldNested)).toEqual(nestedRoute);
+  expect(await reloaded.authenticate(newToken)).toEqual(route);
+  expect(await reloaded.authenticate(oldToken)).toBeNull();
+  expect(await reloaded.authenticateNested(newNested)).toEqual(nestedRoute);
+  expect(await reloaded.authenticateNested(oldNested)).toBeNull();
+  const final = await restartOf(directory, hosts, route);
+  expect(await final.authenticate(oldToken)).toBeNull();
+  expect(await final.authenticateNested(oldNested)).toBeNull();
+  expect(await final.authenticate(newToken)).toEqual(route);
+});
+
+async function durablePendingFixture() {
+  const base = await fixture();
+  const directory = await fs.mkdtemp(path.join(tmpdir(), "bb-thread-token-"));
+  directories.push(directory);
+  const { hosts, route, hostToken } = base;
+  const threads = new ThreadTokenStore(directory, hosts);
+  await threads.initialize([route.hostId]);
+  const nestedRoute = { hostId: route.hostId, threadId: route.threadId };
+  const oldToken = await threads.forThread(route, hostToken);
+  const oldNested = await threads.forNested(nestedRoute, hostToken);
+  const restarted = await restartOf(directory, hosts, route);
+  const newToken = await restarted.forThread(route, hostToken);
+  const newNested = await restarted.forNested(nestedRoute, hostToken);
+  const failWrites = () => fs.chmod(directory, 0o500);
+  const allowWrites = () => fs.chmod(directory, 0o700);
+  return {
+    ...base,
+    directory,
+    nestedRoute,
+    oldToken,
+    oldNested,
+    restarted,
+    newToken,
+    newNested,
+    failWrites,
+    allowWrites,
+  };
+}
+
+it("refuses the old durable digest at once when persisting its drop fails, and retries the write on the next authentication", async () => {
+  const f = await durablePendingFixture();
+  await f.failWrites();
+  expect(await f.restarted.authenticate(f.newToken)).toEqual(f.route);
+  expect(await f.restarted.authenticate(f.oldToken)).toBeNull();
+  expect(await f.restarted.authenticateNested(f.newNested)).toEqual(
+    f.nestedRoute,
+  );
+  expect(await f.restarted.authenticateNested(f.oldNested)).toBeNull();
+  await f.allowWrites();
+  expect(await f.restarted.authenticate(f.newToken)).toEqual(f.route);
+  expect(await f.restarted.authenticateNested(f.newNested)).toEqual(
+    f.nestedRoute,
+  );
+  const reloaded = await restartOf(f.directory, f.hosts, f.route);
+  expect(await reloaded.authenticate(f.oldToken)).toBeNull();
+  expect(await reloaded.authenticateNested(f.oldNested)).toBeNull();
+  expect(await reloaded.authenticate(f.newToken)).toEqual(f.route);
+});
+
+it("documents the residual: a restart before any successful retry restores the old durable digest until the new one is presented again", async () => {
+  const f = await durablePendingFixture();
+  await f.failWrites();
+  expect(await f.restarted.authenticate(f.newToken)).toEqual(f.route);
+  expect(await f.restarted.authenticate(f.oldToken)).toBeNull();
+  await f.allowWrites();
+  const reloaded = await restartOf(f.directory, f.hosts, f.route);
+  expect(await reloaded.authenticate(f.oldToken)).toEqual(f.route);
+  expect(await reloaded.authenticate(f.newToken)).toEqual(f.route);
+  expect(await reloaded.authenticate(f.oldToken)).toBeNull();
+  const final = await restartOf(f.directory, f.hosts, f.route);
+  expect(await final.authenticate(f.oldToken)).toBeNull();
+});
+
+it("refuses a durable prior 24 hours after its re-mint when the successor is never presented, live and after a restart", async () => {
+  const { directory, hosts, route, hostToken } = await fixture();
+  const nestedRoute = { hostId: route.hostId, threadId: route.threadId };
+  let clock = 9_000_000;
+  const minting = await restartOf(directory, hosts, route, () => clock);
+  const oldToken = await minting.forThread(route, hostToken);
+  const oldNested = await minting.forNested(nestedRoute, hostToken);
+  const restarted = await restartOf(directory, hosts, route, () => clock);
+  await restarted.forThread(route, hostToken);
+  await restarted.forNested(nestedRoute, hostToken);
+  const remintedAt = clock;
+  clock = remintedAt + DURABLE_PRIOR_MAX_AGE_MS - 60_000;
+  expect(await restarted.authenticate(oldToken)).toEqual(route);
+  expect(await restarted.authenticateNested(oldNested)).toEqual(nestedRoute);
+  const justBefore = await restartOf(directory, hosts, route, () => clock);
+  expect(await justBefore.authenticate(oldToken)).toEqual(route);
+  expect(await justBefore.authenticateNested(oldNested)).toEqual(nestedRoute);
+  clock = remintedAt + DURABLE_PRIOR_MAX_AGE_MS + 60_000;
   expect(await restarted.authenticate(oldToken)).toBeNull();
-  expect(await restarted.authenticate(newToken)).toEqual(route);
+  expect(await restarted.authenticateNested(oldNested)).toBeNull();
+  expect(await justBefore.authenticate(oldToken)).toBeNull();
+  const afterExpiry = await restartOf(directory, hosts, route, () => clock);
+  expect(await afterExpiry.authenticate(oldToken)).toBeNull();
+  expect(await afterExpiry.authenticateNested(oldNested)).toBeNull();
+});
+
+it("drops every digest of a durable route on revocation", async () => {
+  const { directory, hosts, threads, route, hostToken } = await fixture();
+  const nestedRoute = { hostId: route.hostId, threadId: route.threadId };
+  const oldToken = await threads.forThread(route, hostToken);
+  const oldNested = await threads.forNested(nestedRoute, hostToken);
+  const restarted = await restartOf(directory, hosts, route);
+  const newToken = await restarted.forThread(route, hostToken);
+  const newNested = await restarted.forNested(nestedRoute, hostToken);
+  await restarted.removeThread(route.threadId);
+  for (const token of [oldToken, newToken])
+    expect(await restarted.authenticate(token)).toBeNull();
+  for (const token of [oldNested, newNested])
+    expect(await restarted.authenticateNested(token)).toBeNull();
 });
 
 it("expires process credentials a fixed time after mint and removes expired records on initialize", async () => {

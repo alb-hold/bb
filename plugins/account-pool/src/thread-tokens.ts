@@ -16,6 +16,7 @@ const PROCESS_THREAD_ROUTE_PREFIX = "scoped-process-route-";
 const NESTED_ROUTE_PREFIX = "scoped-nested-route-";
 const PROCESS_NESTED_ROUTE_PREFIX = "scoped-process-nested-route-";
 export const PROCESS_CREDENTIAL_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+export const DURABLE_PRIOR_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 export const PROCESS_CREDENTIAL_CLOCK_SKEW_MS = 60 * 1000;
 const LEGACY_NESTED_ROUTE_PREFIX = "nested-route-";
 const ARCHIVED_THREAD_PREFIX = "archived-thread-";
@@ -140,6 +141,7 @@ export class ThreadTokenStore {
   private readonly lookupFailures = new Map<string, number>();
   private readonly archiveVersions = new Map<string, number>();
   private tail: Promise<void> = Promise.resolve();
+  private readonly pendingPriorDrops = new WeakSet<object>();
 
   constructor(
     private readonly directory: string,
@@ -826,16 +828,19 @@ export class ThreadTokenStore {
             this.restorable({ lifetime: "process", ...prior }),
           )
           .slice(-MAX_PRIOR_CREDENTIALS)
-      : [];
+      : record.priors
+          .filter((prior) => prior.expiresAt > this.now())
+          .slice(-MAX_PRIOR_CREDENTIALS);
     return { ...record, priors: live.length === 0 ? undefined : live };
   }
 
   private retainedPriors(
     existing: RouteRecord | NestedRouteRecord | undefined,
   ): PriorCredential[] {
+    if (existing !== undefined && existing.lifetime !== "process")
+      return this.retainedDurablePriors(existing);
     if (
       existing === undefined ||
-      existing.lifetime !== "process" ||
       existing.token !== undefined ||
       this.expired(existing) ||
       existing.issuedAt === undefined ||
@@ -862,11 +867,28 @@ export class ThreadTokenStore {
     return kept;
   }
 
+  private retainedDurablePriors(
+    existing: RouteRecord | NestedRouteRecord,
+  ): PriorCredential[] {
+    if (existing.token !== undefined) return [];
+    const issuedAt = this.now();
+    return [
+      ...(existing.priors ?? []).filter((prior) => prior.expiresAt > issuedAt),
+      {
+        tokenDigest: existing.tokenDigest,
+        issuedAt,
+        expiresAt: issuedAt + DURABLE_PRIOR_MAX_AGE_MS,
+      },
+    ].slice(-MAX_PRIOR_CREDENTIALS);
+  }
+
   private credentialExpired(match: {
     record: RouteRecord | NestedRouteRecord;
     prior: PriorCredential | null;
   }): boolean {
     if (match.prior === null) return this.expired(match.record);
+    if (match.record.lifetime !== "process")
+      return match.prior.expiresAt <= this.now();
     return this.expired({ lifetime: "process", ...match.prior });
   }
 
@@ -877,7 +899,10 @@ export class ThreadTokenStore {
     prior: PriorCredential | null,
   ): Promise<void> {
     const { record } = use;
-    if (record.lifetime !== "process") return;
+    if (record.lifetime !== "process") {
+      if (prior === null) await this.dropDurablePriors(use);
+      return;
+    }
     if (prior === null) {
       if (record.usedAt !== undefined) return;
       record.usedAt = this.now();
@@ -894,6 +919,31 @@ export class ThreadTokenStore {
       }
       if (this.routes.get(this.routeMapKey(use.record)) !== use.record) return;
       await this.persistCredential(this.file(use.record), use.record);
+    }).catch(() => undefined);
+  }
+
+  private async dropDurablePriors(
+    use:
+      | { nested: false; record: RouteRecord }
+      | { nested: true; record: NestedRouteRecord },
+  ): Promise<void> {
+    const { record } = use;
+    if (record.priors === undefined && !this.pendingPriorDrops.has(record))
+      return;
+    await this.serialize(async () => {
+      const registered = use.nested
+        ? this.nestedRoutes.get(this.nestedMapKey(use.record))
+        : this.routes.get(this.routeMapKey(use.record));
+      if (registered !== record) return;
+      const index = use.nested ? this.nestedTokenIndex : this.tokenIndex;
+      for (const prior of record.priors ?? []) index.delete(prior.tokenDigest);
+      record.priors = undefined;
+      this.pendingPriorDrops.add(record);
+      await this.persistCredential(
+        use.nested ? this.nestedFile(use.record) : this.file(use.record),
+        record,
+      );
+      this.pendingPriorDrops.delete(record);
     }).catch(() => undefined);
   }
 
