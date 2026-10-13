@@ -4530,6 +4530,64 @@ describe("Account Pool plugin", () => {
       },
     );
 
+    it("keeps a managed thread's pre-restart bearer valid after a re-mint until the new bearer is presented", async () => {
+      const upstreamFetch: typeof fetch = async () => Response.json({});
+      const fixture = await affinityFixture("claude", upstreamFetch);
+      const resolveToken = async (host: Fixture["host"]) => {
+        const entries = await host.harness.behavior.resolveProviderEnv(
+          "claude-code",
+          {
+            threadId: "thread-one",
+            projectId: "project-one",
+            hostId: "host-one",
+          },
+        );
+        const entry = entries.find(
+          (candidate) => candidate.name === "ANTHROPIC_AUTH_TOKEN",
+        );
+        if (entry === undefined || typeof entry.value !== "string")
+          throw new Error("ANTHROPIC_AUTH_TOKEN was not resolved.");
+        return entry.value;
+      };
+      const oldToken = await resolveToken(fixture.host);
+      let host = await fixture.host.harness.lifecycle.reload(
+        createAccountPoolPlugin({
+          fetch: upstreamFetch,
+          now: () => 1_800_000_000_000,
+          usageUrl: EMPTY_USAGE_URL,
+          codexUsageUrl: EMPTY_USAGE_URL,
+        }),
+      );
+      const service = host.harness.behavior.runService("hub");
+      cleanups.push(async () => {
+        service.controller.abort();
+        await service.done;
+        await host.harness.lifecycle.dispose();
+      });
+      await vi.waitFor(async () => {
+        const status = statusSchema.parse(
+          await host.harness.behavior.callRpc("status.get", null),
+        );
+        expect(status.accepting).toBe(true);
+      });
+      const newToken = await resolveToken(host);
+      expect(newToken).not.toBe(oldToken);
+      const send = async (token: string) => {
+        const response = await host.harness.behavior.fetchHttp(
+          "POST",
+          "/v1/messages",
+          { headers: authHeaders(token), body: claudeBody("restart") },
+        );
+        await response.text();
+        return response.status;
+      };
+      expect(await send(oldToken)).toBe(200);
+      expect(await send(oldToken)).toBe(200);
+      expect(await send(newToken)).toBe(200);
+      expect(await send(oldToken)).toBe(401);
+      expect(await send(newToken)).toBe(200);
+    });
+
     it.each(["claude", "codex"] as const)(
       "routes %s across conversations and keeps a recovered earlier account as backup",
       async (provider) => {
