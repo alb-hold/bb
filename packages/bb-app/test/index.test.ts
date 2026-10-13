@@ -2011,11 +2011,24 @@ describe("bb-app launcher", () => {
     );
   });
 
-  it("runs the extensionless bundled CLI through Node on Windows", () => {
+  it("runs the bundled CLI with the launcher's own Node runtime", () => {
     expect(
       resolveBundledCliLaunch({
         args: ["status"],
-        cliPath: "C:\\bb\\host-daemon\\dist\\bb",
+        bundledCliPath: "/opt/bb/host-daemon/dist/bb",
+        cliOverride: null,
+        nodePath: "/Applications/bb.app/Contents/MacOS/bb",
+        platform: "darwin",
+      }),
+    ).toEqual({
+      command: "/Applications/bb.app/Contents/MacOS/bb",
+      args: ["/opt/bb/host-daemon/dist/bb", "status"],
+    });
+    expect(
+      resolveBundledCliLaunch({
+        args: ["status"],
+        bundledCliPath: "C:\\bb\\host-daemon\\dist\\bb",
+        cliOverride: null,
         nodePath: "C:\\node\\node.exe",
         platform: "win32",
       }),
@@ -2023,10 +2036,26 @@ describe("bb-app launcher", () => {
       command: "C:\\node\\node.exe",
       args: ["C:\\bb\\host-daemon\\dist\\bb", "status"],
     });
+  });
+
+  it("runs a BB_CLI override directly, or through Node when it is extensionless on Windows", () => {
     expect(
       resolveBundledCliLaunch({
         args: ["status"],
-        cliPath: "C:\\tools\\bb.exe",
+        bundledCliPath: "C:\\bb\\host-daemon\\dist\\bb",
+        cliOverride: "C:\\dev\\bb",
+        nodePath: "C:\\node\\node.exe",
+        platform: "win32",
+      }),
+    ).toEqual({
+      command: "C:\\node\\node.exe",
+      args: ["C:\\dev\\bb", "status"],
+    });
+    expect(
+      resolveBundledCliLaunch({
+        args: ["status"],
+        bundledCliPath: "C:\\bb\\host-daemon\\dist\\bb",
+        cliOverride: "C:\\tools\\bb.exe",
         nodePath: "C:\\node\\node.exe",
         platform: "win32",
       }),
@@ -2034,11 +2063,12 @@ describe("bb-app launcher", () => {
     expect(
       resolveBundledCliLaunch({
         args: ["status"],
-        cliPath: "/opt/bb/host-daemon/dist/bb",
+        bundledCliPath: "/opt/bb/host-daemon/dist/bb",
+        cliOverride: "/repo/apps/cli/bin/bb",
         nodePath: "/usr/bin/node",
         platform: "linux",
       }),
-    ).toEqual({ command: "/opt/bb/host-daemon/dist/bb", args: ["status"] });
+    ).toEqual({ command: "/repo/apps/cli/bin/bb", args: ["status"] });
   });
 
   it("limits npm package metadata to documented runtimes", () => {
@@ -2133,16 +2163,19 @@ describe("bb-app launcher", () => {
     const context = createTestStartContext();
 
     const desktopServerEnv = createServerEnv({
+      cliLauncherPath: null,
       context,
       env: { BB_APP_SURFACE: "desktop" },
       install: { kind: "desktop" },
     });
     const webServerEnv = createServerEnv({
+      cliLauncherPath: null,
       context,
       env: {},
       install: { kind: "npm" },
     });
     const invalidSurfaceServerEnv = createServerEnv({
+      cliLauncherPath: null,
       context,
       env: { BB_APP_SURFACE: "bogus" },
       install: { kind: "npm" },
@@ -2155,6 +2188,7 @@ describe("bb-app launcher", () => {
 
   it("replaces inherited install markers so a fork never reports a stale commit", () => {
     const serverEnv = createServerEnv({
+      cliLauncherPath: null,
       context: createTestStartContext(),
       env: {
         BB_APP_INSTALL_KIND: "source",
@@ -2195,6 +2229,7 @@ describe("bb-app launcher", () => {
       const env =
         logName === "server"
           ? createServerEnv({
+              cliLauncherPath: null,
               context,
               env: launcherEnv,
               install: { kind: "npm" },
@@ -2237,6 +2272,26 @@ describe("bb-app launcher", () => {
       }
     },
   );
+  it("tells the server about the bb command launcher only when this start wrote one", () => {
+    const context = createTestStartContext();
+
+    expect(
+      createServerEnv({
+        cliLauncherPath: "/home/me/.bb/bin/bb",
+        context,
+        env: { BB_CLI_LAUNCHER: "/stale/bin/bb" },
+        install: { kind: "npm" },
+      }).BB_CLI_LAUNCHER,
+    ).toBe("/home/me/.bb/bin/bb");
+    expect(
+      createServerEnv({
+        cliLauncherPath: null,
+        context,
+        env: { BB_CLI_LAUNCHER: "/stale/bin/bb" },
+        install: { kind: "source", origin: "none" },
+      }),
+    ).not.toHaveProperty("BB_CLI_LAUNCHER");
+  });
 });
 
 it("preserves machine identity and access headers through real config set and unset", async () => {
