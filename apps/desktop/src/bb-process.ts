@@ -214,14 +214,30 @@ function createRuntimeLogBuffer(
   };
 }
 
+const INHERITED_AGENT_SESSION_ENV_KEYS: readonly string[] = [
+  "CLAUDECODE",
+  "CLAUDE_CODE_CHILD_SESSION",
+  "CLAUDE_CODE_ENTRYPOINT",
+  "CLAUDE_CODE_EXECPATH",
+  "CLAUDE_CODE_MESSAGING_SOCKET",
+  "CLAUDE_CODE_MESSAGING_TOKEN",
+  "CLAUDE_CODE_SESSION_ATTENDED",
+  "CLAUDE_CODE_SESSION_ID",
+  "CLAUDE_PID",
+];
+
 export function createBbAppProcessEnv(
   args: CreateBbAppProcessEnvArgs,
 ): NodeJS.ProcessEnv {
+  const env = { ...args.env };
+  for (const key of INHERITED_AGENT_SESSION_ENV_KEYS) {
+    delete env[key];
+  }
   if (args.runtimeMode === "electron-node") {
-    return { ...args.env, ELECTRON_RUN_AS_NODE: "1" };
+    env.ELECTRON_RUN_AS_NODE = "1";
+    return env;
   }
 
-  const env = { ...args.env };
   delete env.ELECTRON_RUN_AS_NODE;
   return env;
 }

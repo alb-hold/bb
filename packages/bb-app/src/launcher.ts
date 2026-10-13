@@ -77,6 +77,7 @@ import {
   resolveDataDirDatabasePath,
   resolvePortFromEnv,
   resolveProdDataDir,
+  stripInheritedAgentSessionEnv,
   stripThreadContextEnv,
 } from "@bb/config/runtime";
 import {
@@ -2511,7 +2512,7 @@ function resolveOwnAppInstall(args: {
 }
 
 export function createServerEnv(args: CreateServerEnvArgs): NodeJS.ProcessEnv {
-  const inheritedEnv = { ...args.env };
+  const inheritedEnv = stripInheritedAgentSessionEnv(args.env);
   delete inheritedEnv[APP_INSTALL_KIND_ENV_NAME];
   delete inheritedEnv[APP_SOURCE_COMMIT_ENV_NAME];
   delete inheritedEnv[APP_SOURCE_ORIGIN_ENV_NAME];
@@ -2531,7 +2532,7 @@ export function createServerEnv(args: CreateServerEnvArgs): NodeJS.ProcessEnv {
 
 export function createDaemonEnv(args: CreateDaemonEnvArgs): NodeJS.ProcessEnv {
   return {
-    ...stripThreadContextEnv(args.env),
+    ...stripInheritedAgentSessionEnv(stripThreadContextEnv(args.env)),
     BB_APP_VERSION: args.context.appVersion,
     BB_BRIDGE_DIR: args.context.daemonBundleDir,
     BB_CLI_DIR: args.context.daemonBundleDir,
