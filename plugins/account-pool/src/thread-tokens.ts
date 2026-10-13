@@ -53,11 +53,13 @@ const legacyNestedRouteSchema = z
   })
   .strict();
 
+export const MAX_PRIOR_CREDENTIALS = 3;
 const priorCredentialSchema = z
   .object({
     tokenDigest: digestSchema,
     issuedAt: z.number().int().positive(),
     expiresAt: z.number().int().positive(),
+    usedAt: z.number().int().positive().optional(),
   })
   .strict();
 const routeSchema = legacyRouteSchema.omit({ token: true }).extend({
@@ -67,7 +69,7 @@ const routeSchema = legacyRouteSchema.omit({ token: true }).extend({
   expiresAt: z.number().int().positive().optional(),
   issuedAt: z.number().int().positive().optional(),
   usedAt: z.number().int().positive().optional(),
-  prior: priorCredentialSchema.optional(),
+  priors: z.array(priorCredentialSchema).max(MAX_PRIOR_CREDENTIALS).optional(),
 });
 const nestedRouteSchema = legacyNestedRouteSchema.omit({ token: true }).extend({
   token: tokenSchema.optional(),
@@ -76,7 +78,7 @@ const nestedRouteSchema = legacyNestedRouteSchema.omit({ token: true }).extend({
   expiresAt: z.number().int().positive().optional(),
   issuedAt: z.number().int().positive().optional(),
   usedAt: z.number().int().positive().optional(),
-  prior: priorCredentialSchema.optional(),
+  priors: z.array(priorCredentialSchema).max(MAX_PRIOR_CREDENTIALS).optional(),
 });
 const readableRouteSchema = z.union([
   routeSchema,
@@ -101,11 +103,11 @@ type PriorCredential = z.infer<typeof priorCredentialSchema>;
 
 export type ThreadRoute = Omit<
   RouteRecord,
-  "token" | "tokenDigest" | "hostTokenDigest" | "lifetime" | "usedAt" | "prior"
+  "token" | "tokenDigest" | "hostTokenDigest" | "lifetime" | "usedAt" | "priors"
 >;
 export type NestedRoute = Omit<
   NestedRouteRecord,
-  "token" | "tokenDigest" | "hostTokenDigest" | "lifetime" | "usedAt" | "prior"
+  "token" | "tokenDigest" | "hostTokenDigest" | "lifetime" | "usedAt" | "priors"
 >;
 
 export type ThreadLookup = (
@@ -199,7 +201,7 @@ export class ThreadTokenStore {
         loaded === null
           ? null
           : {
-              ...this.withLivePrior(
+              ...this.withLivePriors(
                 loaded,
                 name.startsWith(PROCESS_THREAD_ROUTE_PREFIX),
               ),
@@ -238,7 +240,7 @@ export class ThreadTokenStore {
         loaded === null
           ? null
           : {
-              ...this.withLivePrior(
+              ...this.withLivePriors(
                 loaded,
                 name.startsWith(PROCESS_NESTED_ROUTE_PREFIX),
               ),
@@ -278,7 +280,7 @@ export class ThreadTokenStore {
         tokenDigest: true,
         hostTokenDigest: true,
         usedAt: true,
-        prior: true,
+        priors: true,
       })
       .parse(route);
     const hostTokenDigest = digest(hostToken);
@@ -293,7 +295,7 @@ export class ThreadTokenStore {
       const existing = this.routes.get(key);
       if (existing?.token !== undefined && !this.expired(existing))
         return existing.token;
-      const prior = this.retainedPrior(existing);
+      const priors = this.retainedPriors(existing);
       const token = randomBytes(32).toString("base64url");
       const record = {
         ...parsed,
@@ -303,7 +305,7 @@ export class ThreadTokenStore {
         ...(lifetime === "process"
           ? { lifetime, ...this.processLifetime() }
           : {}),
-        ...(prior === undefined ? {} : { prior }),
+        ...(priors.length === 0 ? {} : { priors }),
       };
       await this.persistCredential(this.file(record), record);
       if (existing !== undefined) unindexCredential(this.tokenIndex, existing);
@@ -325,7 +327,7 @@ export class ThreadTokenStore {
         tokenDigest: true,
         hostTokenDigest: true,
         usedAt: true,
-        prior: true,
+        priors: true,
       })
       .parse(route);
     const hostTokenDigest = digest(hostToken);
@@ -340,7 +342,7 @@ export class ThreadTokenStore {
       const existing = this.nestedRoutes.get(key);
       if (existing?.token !== undefined && !this.expired(existing))
         return existing.token;
-      const prior = this.retainedPrior(existing);
+      const priors = this.retainedPriors(existing);
       const token = randomBytes(32).toString("base64url");
       const record = {
         ...parsed,
@@ -350,7 +352,7 @@ export class ThreadTokenStore {
         ...(lifetime === "process"
           ? { lifetime, ...this.processLifetime() }
           : {}),
-        ...(prior === undefined ? {} : { prior }),
+        ...(priors.length === 0 ? {} : { priors }),
       };
       await this.persistCredential(this.nestedFile(record), record);
       if (existing !== undefined)
@@ -378,7 +380,7 @@ export class ThreadTokenStore {
       ))
     )
       return null;
-    if (match.current) await this.noteUse({ nested: false, record });
+    await this.noteUse({ nested: false, record }, match.prior);
     return {
       hostId: record.hostId,
       threadId: record.threadId,
@@ -410,7 +412,7 @@ export class ThreadTokenStore {
       ))
     )
       return null;
-    if (match.current) await this.noteUse({ nested: true, record });
+    await this.noteUse({ nested: true, record }, match.prior);
     return { hostId: record.hostId, threadId: record.threadId };
   }
 
@@ -814,18 +816,23 @@ export class ThreadTokenStore {
     );
   }
 
-  private withLivePrior<
-    T extends { tokenDigest: string; prior?: PriorCredential },
+  private withLivePriors<
+    T extends { tokenDigest: string; priors?: PriorCredential[] },
   >(record: T, process: boolean): T {
-    if (record.prior === undefined) return record;
-    if (process && this.restorable({ lifetime: "process", ...record.prior }))
-      return record;
-    return { ...record, prior: undefined };
+    if (record.priors === undefined) return record;
+    const live = process
+      ? record.priors
+          .filter((prior) =>
+            this.restorable({ lifetime: "process", ...prior }),
+          )
+          .slice(-MAX_PRIOR_CREDENTIALS)
+      : [];
+    return { ...record, priors: live.length === 0 ? undefined : live };
   }
 
-  private retainedPrior(
+  private retainedPriors(
     existing: RouteRecord | NestedRouteRecord | undefined,
-  ): PriorCredential | undefined {
+  ): PriorCredential[] {
     if (
       existing === undefined ||
       existing.lifetime !== "process" ||
@@ -834,39 +841,50 @@ export class ThreadTokenStore {
       existing.issuedAt === undefined ||
       existing.expiresAt === undefined
     )
-      return undefined;
-    const carried =
-      existing.prior !== undefined &&
-      !this.expired({ lifetime: "process", ...existing.prior })
-        ? existing.prior
-        : undefined;
-    if (existing.usedAt === undefined && carried !== undefined) return carried;
-    return {
+      return [];
+    const kept = (existing.priors ?? []).filter(
+      (prior) => !this.expired({ lifetime: "process", ...prior }),
+    );
+    kept.push({
       tokenDigest: existing.tokenDigest,
       issuedAt: existing.issuedAt,
       expiresAt: existing.expiresAt,
-    };
+      ...(existing.usedAt === undefined ? {} : { usedAt: existing.usedAt }),
+    });
+    while (kept.length > MAX_PRIOR_CREDENTIALS) {
+      const unused = kept.filter((prior) => prior.usedAt === undefined);
+      const candidates = unused.length > 0 ? unused : kept;
+      const oldest = candidates.reduce((a, b) =>
+        b.issuedAt < a.issuedAt ? b : a,
+      );
+      kept.splice(kept.indexOf(oldest), 1);
+    }
+    return kept;
   }
 
   private credentialExpired(match: {
     record: RouteRecord | NestedRouteRecord;
-    current: boolean;
+    prior: PriorCredential | null;
   }): boolean {
-    if (match.current) return this.expired(match.record);
-    const { prior } = match.record;
-    return (
-      prior === undefined || this.expired({ lifetime: "process", ...prior })
-    );
+    if (match.prior === null) return this.expired(match.record);
+    return this.expired({ lifetime: "process", ...match.prior });
   }
 
   private async noteUse(
     use:
       | { nested: false; record: RouteRecord }
       | { nested: true; record: NestedRouteRecord },
+    prior: PriorCredential | null,
   ): Promise<void> {
     const { record } = use;
-    if (record.lifetime !== "process" || record.usedAt !== undefined) return;
-    record.usedAt = this.now();
+    if (record.lifetime !== "process") return;
+    if (prior === null) {
+      if (record.usedAt !== undefined) return;
+      record.usedAt = this.now();
+    } else {
+      if (prior.usedAt !== undefined) return;
+      prior.usedAt = this.now();
+    }
     await this.serialize(async () => {
       if (use.nested) {
         if (this.nestedRoutes.get(this.nestedMapKey(use.record)) !== use.record)
@@ -1170,7 +1188,7 @@ function digest(value: string): string {
 
 type CredentialRecord = {
   tokenDigest: string;
-  prior?: { tokenDigest: string };
+  priors?: readonly PriorCredential[];
 };
 
 function indexCredential<T extends CredentialRecord>(
@@ -1178,7 +1196,7 @@ function indexCredential<T extends CredentialRecord>(
   record: T,
 ): void {
   index.set(record.tokenDigest, record);
-  if (record.prior !== undefined) index.set(record.prior.tokenDigest, record);
+  for (const prior of record.priors ?? []) index.set(prior.tokenDigest, record);
 }
 
 function unindexCredential<T extends CredentialRecord>(
@@ -1186,22 +1204,22 @@ function unindexCredential<T extends CredentialRecord>(
   record: T,
 ): void {
   index.delete(record.tokenDigest);
-  if (record.prior !== undefined) index.delete(record.prior.tokenDigest);
+  for (const prior of record.priors ?? []) index.delete(prior.tokenDigest);
 }
 
 function lookup<T extends CredentialRecord>(
   index: ReadonlyMap<string, T>,
   token: string | null,
-): { record: T; current: boolean } | null {
+): { record: T; prior: PriorCredential | null } | null {
   if (token === null || token.length !== 43) return null;
   const presented = digest(token);
   const record = index.get(presented);
   if (record === undefined) return null;
   const matches = (stored: string) =>
     timingSafeEqual(Buffer.from(presented, "hex"), Buffer.from(stored, "hex"));
-  if (matches(record.tokenDigest)) return { record, current: true };
-  if (record.prior !== undefined && matches(record.prior.tokenDigest))
-    return { record, current: false };
+  if (matches(record.tokenDigest)) return { record, prior: null };
+  for (const prior of record.priors ?? [])
+    if (matches(prior.tokenDigest)) return { record, prior };
   return null;
 }
 
