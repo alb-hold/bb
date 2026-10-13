@@ -15,7 +15,9 @@ vi.setConfig({ testTimeout: 120_000 });
 const live: ThreadLookup = async () => "live";
 
 const directories: string[] = [];
+const interruptions: Array<{ restore(): void }> = [];
 afterEach(async () => {
+  for (const interruption of interruptions.splice(0)) interruption.restore();
   for (const directory of directories.splice(0))
     await fs.rm(directory, { recursive: true, force: true });
 });
@@ -1187,12 +1189,22 @@ function crashAfter(mutations: number) {
   let dead = mutations === 0;
   const counted: string[] = [];
   const unclassified = new Set<string>();
+  const methods = new Set<string>();
+  const callers = () => {
+    const limit = Error.stackTraceLimit;
+    Error.stackTraceLimit = 80;
+    const stack = new Error().stack ?? "";
+    Error.stackTraceLimit = limit;
+    for (const match of stack.matchAll(/ThreadTokenStore\.(\w+)/gu))
+      methods.add(match[1] ?? "");
+  };
   const count = (name: string) => {
     counted.push(name);
     done += 1;
     if (done >= mutations) dead = true;
   };
   const mutate = async <T>(name: string, action: () => Promise<T>) => {
+    callers();
     if (dead) throw crash();
     const result = await action();
     count(name);
@@ -1209,6 +1221,7 @@ function crashAfter(mutations: number) {
         );
         if (key === "close")
           return async () => {
+            callers();
             await call();
             if (dead) throw crash();
             count("handle.close");
@@ -1249,12 +1262,15 @@ function crashAfter(mutations: number) {
     }) as never);
     return [spy];
   });
-  return {
+  const interruption = {
     get dead() {
       return dead;
     },
     get counted() {
       return counted;
+    },
+    get methods() {
+      return methods;
     },
     get unclassified() {
       return [...unclassified];
@@ -1263,6 +1279,8 @@ function crashAfter(mutations: number) {
       for (const spy of spies) spy.mockRestore();
     },
   };
+  interruptions.push(interruption);
+  return interruption;
 }
 
 const bbArchived: ThreadLookup = async () => "archived";
@@ -1770,3 +1788,621 @@ describe.each(lifetimes)(
     });
   },
 );
+
+type Context = { threads: ThreadTokenStore; sessions: Session[] };
+type Keeps = "all" | "none" | "skip";
+type Scenario = {
+  name: string;
+  closedByBb: boolean;
+  keeps: Keeps;
+  prepare: (f: Fixture, lifetime: Lifetime) => Promise<Context>;
+  operate: (f: Fixture, context: Context) => Promise<unknown>;
+  drives: string[];
+};
+
+async function liveThread(f: Fixture, lifetime: Lifetime): Promise<Context> {
+  const launch = await mint(f, await f.open(), lifetime);
+  const threads = await f.open();
+  const current = await mint(f, threads, lifetime);
+  return { threads, sessions: [launch, current] };
+}
+
+const crashPoints = new Map<string, number>();
+
+async function archiveCrashedWhere(
+  f: Fixture,
+  lifetime: Lifetime,
+  key: string,
+  wanted: (directory: string) => Promise<boolean>,
+): Promise<Context> {
+  const memo = `${key}:${lifetime}`;
+  let writes = crashPoints.get(memo);
+  for (let candidate = 1; writes === undefined; candidate += 1) {
+    expect(candidate).toBeLessThan(200);
+    const scratch = await fixture();
+    const { threads } = await liveThread(scratch, lifetime);
+    const interruption = crashAfter(candidate);
+    await threads.removeThread(scratch.route.threadId).catch(() => undefined);
+    interruption.restore();
+    if (await wanted(scratch.directory)) {
+      writes = candidate;
+      crashPoints.set(memo, candidate);
+    }
+  }
+  const context = await liveThread(f, lifetime);
+  const interruption = crashAfter(writes);
+  await context.threads.removeThread(f.route.threadId).catch(() => undefined);
+  interruption.restore();
+  return context;
+}
+
+const tombstoneBesideRouteFiles = async (directory: string) =>
+  (await tombstoneNames(directory)).some((name) => name.endsWith(".json")) &&
+  (await scopedFiles(directory)).length > 0;
+
+const STATE_PREFIXES = [
+  "scoped-",
+  "thread-route-",
+  "nested-route-",
+  "revoked-route-",
+  "archived-",
+  "archive-revocation-",
+];
+
+async function snapshot(directory: string): Promise<string> {
+  const rows: string[] = [];
+  for (const name of (await fs.readdir(directory)).sort()) {
+    if (!STATE_PREFIXES.some((prefix) => name.startsWith(prefix))) continue;
+    const { mtimeMs, size } = await fs.stat(path.join(directory, name));
+    rows.push(`${name}:${Math.floor(mtimeMs)}:${size}`);
+  }
+  return rows.join("\n");
+}
+
+type DiskView = {
+  archived: boolean;
+  lostWindow: boolean;
+  start: number | null;
+};
+
+async function diskView(
+  directory: string,
+  threadId: string,
+): Promise<DiskView> {
+  const id = createHash("sha256").update(threadId).digest("hex");
+  const parse = async (name: string) => {
+    try {
+      return JSON.parse(
+        await fs.readFile(path.join(directory, name), "utf8"),
+      ) as {
+        epoch?: number;
+        archived?: boolean;
+        archivedAt?: number;
+      };
+    } catch {
+      return null;
+    }
+  };
+  const names = await fs.readdir(directory);
+  const markers: Array<{ epoch: number; archived: boolean; mtime: number }> =
+    [];
+  let lostWindow = false;
+  let unreadableTemporary = false;
+  for (const name of names) {
+    const marker =
+      name === `archived-thread-${id}.json` ||
+      name === `archive-revocation-${id}.json`;
+    const temporary =
+      (name.startsWith(`archived-thread-${id}.json.`) ||
+        name.startsWith(`archive-revocation-${id}.json.`)) &&
+      name.endsWith(".tmp");
+    if (!marker && !temporary) continue;
+    const state = await parse(name);
+    if (temporary) {
+      if (state === null) unreadableTemporary = true;
+      else if (state.archived === true) {
+        lostWindow = true;
+        markers.push({ epoch: state.epoch ?? 0, archived: true, mtime: 0 });
+      }
+      continue;
+    }
+    if (state === null) continue;
+    markers.push({
+      epoch: state.epoch ?? 0,
+      archived: state.archived === true,
+      mtime: Math.floor((await fs.stat(path.join(directory, name))).mtimeMs),
+    });
+  }
+  const top = Math.max(-1, ...markers.map((marker) => marker.epoch));
+  const archivedMarkers = markers.filter(
+    (marker) => marker.epoch === top && marker.archived,
+  );
+  const anchors = archivedMarkers.map((marker) => marker.mtime);
+  const tombstone = await parse(`archived-credentials-${id}.json`);
+  if (
+    tombstone !== null &&
+    tombstone.epoch === top &&
+    archivedMarkers.length > 0
+  )
+    anchors.push(tombstone.archivedAt ?? 0);
+  const readable = archivedMarkers.some((marker) => marker.mtime > 0);
+  return {
+    archived: archivedMarkers.length > 0 || unreadableTemporary,
+    lostWindow: lostWindow || (unreadableTemporary && !readable),
+    start: anchors.length === 0 ? null : Math.min(...anchors),
+  };
+}
+
+const windowOpenOnDisk = (view: DiskView, now: number) =>
+  !view.lostWindow &&
+  view.start !== null &&
+  view.start <= now + 60_000 &&
+  view.start + ARCHIVE_TOMBSTONE_MAX_AGE_MS > now;
+
+async function restartedCopy(f: Fixture, offset: number): Promise<Fixture> {
+  const directory = await fs.mkdtemp(path.join(tmpdir(), "bb-tombstone-"));
+  directories.push(directory);
+  await fs.cp(f.directory, directory, {
+    recursive: true,
+    preserveTimestamps: true,
+  });
+  const clock = () => f.clock() + offset;
+  const hosts = new HubTokenStore(directory, clock);
+  await hosts.initialize();
+  return {
+    ...f,
+    directory,
+    hosts,
+    clock,
+    advance: () => undefined,
+    open: async (warn, lookup = live) => {
+      const store = new ThreadTokenStore(directory, hosts, clock, warn);
+      await store.initialize(["host-one"], lookup);
+      return store;
+    },
+  };
+}
+
+async function step(label: string, action: () => Promise<void>) {
+  try {
+    await action();
+  } catch (error) {
+    throw new Error(`[${label}] ${String(error)}`);
+  }
+}
+
+async function checkCell(
+  f: Fixture,
+  scenario: Scenario,
+  context: Context,
+  before: string,
+  completed: boolean,
+) {
+  const { sessions } = context;
+  const view = await diskView(f.directory, f.route.threadId);
+  const changed = (await snapshot(f.directory)) !== before;
+  const now = f.clock();
+  const allowed =
+    !view.archived ||
+    (windowOpenOnDisk(view, now) && !(scenario.closedByBb && changed));
+
+  await step("bb unreachable at restart", async () => {
+    const first = await restartedCopy(f, 0);
+    const restarted = await first.open(undefined, unreachable);
+    for (const session of sessions)
+      expect(await rejected(restarted, session)).toBe(true);
+    if (!allowed) await expectNothingRestorable(first, restarted, sessions);
+    else {
+      await unarchive(restarted, f.route.threadId);
+      if (completed && view.archived && scenario.keeps !== "skip") {
+        for (const session of sessions)
+          expect(await accepted(first, restarted, session)).toBe(
+            scenario.keeps === "all",
+          );
+      }
+    }
+  });
+
+  if (view.archived)
+    await step("bb unreachable, unarchived after the window", async () => {
+      const later = await restartedCopy(f, ARCHIVE_TOMBSTONE_MAX_AGE_MS + HOUR);
+      await expectNothingRestorable(
+        later,
+        await later.open(undefined, unreachable),
+        sessions,
+      );
+    });
+
+  const answers: Array<[string, ThreadLookup]> = [
+    ["bb archived the thread 30 hours ago", archivedAt(now - 30 * HOUR)],
+    ["bb no longer has the thread", async () => "gone"],
+  ];
+  for (const [label, lookup] of answers)
+    await step(label, async () => {
+      const copy = await restartedCopy(f, 0);
+      await expectNothingRestorable(
+        copy,
+        await copy.open(undefined, lookup),
+        sessions,
+      );
+    });
+}
+
+async function crashWalk(scenario: Scenario, lifetime: Lifetime) {
+  let crashes = 0;
+  for (let writes = 0; writes < 200; writes += 1) {
+    const f = await fixture();
+    const context = await scenario.prepare(f, lifetime);
+    const before = await snapshot(f.directory);
+    const interruption = crashAfter(writes);
+    await scenario.operate(f, context).catch(() => undefined);
+    const crashed = interruption.dead;
+    interruption.restore();
+    expect(interruption.unclassified).toEqual([]);
+    try {
+      await checkCell(f, scenario, context, before, !crashed);
+    } catch (error) {
+      const view = await diskView(f.directory, f.route.threadId);
+      const listing = (await fs.readdir(f.directory)).filter((name) =>
+        STATE_PREFIXES.some((prefix) => name.startsWith(prefix)),
+      );
+      throw new Error(
+        `${scenario.name} ${lifetime} n=${writes}: ${String(error)} view=${JSON.stringify(view)} files=${JSON.stringify(listing)}`,
+      );
+    }
+    if (!crashed) break;
+    crashes += 1;
+  }
+  expect(crashes).toBeGreaterThanOrEqual(3);
+}
+
+const writeCompleteTemporary = (f: Fixture) =>
+  fs.writeFile(
+    path.join(
+      f.directory,
+      `archived-thread-${createHash("sha256")
+        .update(f.route.threadId)
+        .digest(
+          "hex",
+        )}.json.${"0".repeat(8)}-0000-0000-0000-${"0".repeat(12)}.tmp`,
+    ),
+    JSON.stringify({ threadId: f.route.threadId, epoch: 1, archived: true }),
+  );
+
+const SCENARIOS: Scenario[] = [
+  {
+    name: "archive by event",
+    closedByBb: false,
+    keeps: "all",
+    prepare: liveThread,
+    operate: (f, { threads }) => threads.removeThread(f.route.threadId),
+    drives: ["revokeThread", "tombstoneCredentials", "persistTombstone"],
+  },
+  {
+    name: "archive by a late reconcile, bb says 30 h ago",
+    closedByBb: true,
+    keeps: "none",
+    prepare: liveThread,
+    operate: (f, { threads }) =>
+      threads.sweepThreads(archivedAt(f.clock() - 30 * HOUR)),
+    drives: ["revokeThread", "checkThreads"],
+  },
+  {
+    name: "archive by a late reconcile, bb says 12 h ago",
+    closedByBb: false,
+    keeps: "all",
+    prepare: liveThread,
+    operate: (f, { threads }) =>
+      threads.sweepThreads(archivedAt(f.clock() - 12 * HOUR)),
+    drives: ["revokeThread", "tombstoneCredentials", "persistTombstone"],
+  },
+  {
+    name: "pending files recovered into a tombstone at load",
+    closedByBb: false,
+    keeps: "all",
+    prepare: archiveWithoutTombstone,
+    operate: (f) => f.open(undefined, unreachable),
+    drives: ["recoverPendingFiles", "persistTombstone", "removePendingFiles"],
+  },
+  {
+    name: "pending files found past the window at load",
+    closedByBb: false,
+    keeps: "none",
+    prepare: async (f, lifetime) => {
+      const { threads, sessions } = await archiveWithoutTombstone(f, lifetime);
+      f.advance(ARCHIVE_TOMBSTONE_MAX_AGE_MS + HOUR);
+      return { threads, sessions };
+    },
+    operate: (f) => f.open(undefined, unreachable),
+    drives: ["recoverPendingFiles", "removePendingFiles"],
+  },
+  {
+    name: "tombstone clamped to an earlier bb archive time inside the window",
+    closedByBb: false,
+    keeps: "all",
+    prepare: async (f, lifetime) => {
+      const context = await liveThread(f, lifetime);
+      await context.threads.removeThread(f.route.threadId);
+      f.advance(2 * HOUR);
+      return context;
+    },
+    operate: (f) => f.open(undefined, archivedAt(f.clock() - 20 * HOUR)),
+    drives: ["clampTombstone", "windowOpen", "lowerMarker", "persistTombstone"],
+  },
+  {
+    name: "tombstone and leftover route files clamped past the window at load",
+    closedByBb: true,
+    keeps: "none",
+    prepare: (f, lifetime) =>
+      archiveCrashedWhere(
+        f,
+        lifetime,
+        "tombstone beside files",
+        tombstoneBesideRouteFiles,
+      ),
+    operate: (f) => f.open(undefined, archivedAt(f.clock() - 30 * HOUR)),
+    drives: [
+      "clampTombstone",
+      "dropTombstone",
+      "lowerMarker",
+      "removePendingFiles",
+    ],
+  },
+  {
+    name: "pending files without a tombstone clamped past the window at load",
+    closedByBb: true,
+    keeps: "none",
+    prepare: archiveWithoutTombstone,
+    operate: (f) => f.open(undefined, archivedAt(f.clock() - 30 * HOUR)),
+    drives: ["recoverPendingFiles", "lowerMarker", "removePendingFiles"],
+  },
+  {
+    name: "tombstone newer than its marker, route files left beside it",
+    closedByBb: false,
+    keeps: "none",
+    prepare: async (f, lifetime) => {
+      const context = await archiveCrashedWhere(
+        f,
+        lifetime,
+        "tombstone beside files, old marker",
+        tombstoneBesideRouteFiles,
+      );
+      const old = new Date(f.clock() - 30 * HOUR);
+      for (const name of await fs.readdir(f.directory))
+        if (
+          name.startsWith("archived-thread-") ||
+          name.startsWith("archive-revocation-")
+        )
+          await fs.utimes(path.join(f.directory, name), old, old);
+      return context;
+    },
+    operate: (f) => f.open(undefined, unreachable),
+    drives: ["loadTombstone", "removePendingFiles", "windowOpen"],
+  },
+  {
+    name: "expired tombstone purged by a sweep",
+    closedByBb: false,
+    keeps: "none",
+    prepare: async (f, lifetime) => {
+      const context = await liveThread(f, lifetime);
+      await context.threads.removeThread(f.route.threadId);
+      f.advance(ARCHIVE_TOMBSTONE_MAX_AGE_MS + HOUR);
+      return context;
+    },
+    operate: (_f, { threads }) => threads.sweepThreads(bbArchived),
+    drives: ["purgeExpiredTombstones", "dropTombstone"],
+  },
+  {
+    name: "held tombstone clamped by a sweep past the window",
+    closedByBb: true,
+    keeps: "none",
+    prepare: async (f, lifetime) => {
+      const context = await liveThread(f, lifetime);
+      await context.threads.removeThread(f.route.threadId);
+      f.advance(HOUR);
+      return context;
+    },
+    operate: (f, { threads }) =>
+      threads.sweepThreads(archivedAt(f.clock() - 30 * HOUR)),
+    drives: ["clampTombstone", "dropTombstone", "lowerMarker"],
+  },
+  {
+    name: "restore of a tombstoned thread",
+    closedByBb: false,
+    keeps: "skip",
+    prepare: async (f, lifetime) => {
+      const context = await liveThread(f, lifetime);
+      await context.threads.removeThread(f.route.threadId);
+      f.advance(HOUR);
+      return context;
+    },
+    operate: (f, { threads }) => unarchive(threads, f.route.threadId),
+    drives: [
+      "restoreThread",
+      "reviveTombstone",
+      "persistCredential",
+      "dropTombstone",
+    ],
+  },
+  {
+    name: "complete temporary marker settled at load",
+    closedByBb: false,
+    keeps: "none",
+    prepare: async (f, lifetime) => {
+      const context = await liveThread(f, lifetime);
+      await writeCompleteTemporary(f);
+      return context;
+    },
+    operate: (f) => f.open(undefined, unreachable),
+    drives: ["settleTemporaries"],
+  },
+  {
+    name: "delete of an archived thread whose tombstone was never written",
+    closedByBb: false,
+    keeps: "none",
+    prepare: archiveWithoutTombstone,
+    operate: (f, { threads }) => threads.deleteThread(f.route.threadId),
+    drives: ["deleteThread", "revokeThread", "dropTombstone"],
+  },
+  {
+    name: "tombstone retried by a sweep",
+    closedByBb: false,
+    keeps: "all",
+    prepare: archiveWithoutTombstone,
+    operate: (_f, { threads }) => threads.sweepThreads(bbArchived),
+    drives: ["retryTombstones", "persistTombstone", "removePendingFiles"],
+  },
+];
+
+describe.each(SCENARIOS)("the crash table: $name", (scenario) => {
+  it.each(lifetimes)(
+    "leaves nothing restorable that the first archive's 24 hours or bb's time had closed, at every mutation, %s",
+    async (lifetime) => {
+      await crashWalk(scenario, lifetime);
+    },
+  );
+});
+
+const MUTATORS: Record<string, { drivenBy: string[] } | { because: string }> = {
+  initialize: {
+    because:
+      "creates the directory and sets its mode; both are idempotent and touch no credential, marker or tombstone",
+  },
+  loadFile: {
+    because:
+      "removes one stale or revoked file per call; a crash leaves that file and the next load removes it by the same rule",
+  },
+  quarantineFile: {
+    because:
+      "renames or removes one legacy file per call; a crash leaves the file, which stays unreadable to the archive path and is quarantined again by the next archive",
+  },
+  settleTemporaries: {
+    drivenBy: ["complete temporary marker settled at load"],
+  },
+  lowerMarker: {
+    drivenBy: [
+      "tombstone clamped to an earlier bb archive time inside the window",
+      "tombstone and leftover route files clamped past the window at load",
+    ],
+  },
+  persist: {
+    drivenBy: [
+      "archive by event",
+      "restore of a tombstoned thread",
+      "tombstone retried by a sweep",
+    ],
+  },
+  removeCredentialFile: {
+    drivenBy: [
+      "archive by event",
+      "expired tombstone purged by a sweep",
+      "delete of an archived thread whose tombstone was never written",
+    ],
+  },
+};
+
+const OPERATIONS = [
+  "revokeThread",
+  "tombstoneCredentials",
+  "persistTombstone",
+  "clampTombstone",
+  "windowOpen",
+  "lowerMarker",
+  "dropTombstone",
+  "removePendingFiles",
+  "recoverPendingFiles",
+  "loadTombstone",
+  "settleTemporaries",
+  "restoreThread",
+  "reviveTombstone",
+  "purgeExpiredTombstones",
+  "retryTombstones",
+  "deleteThread",
+];
+
+describe("the crash table covers every operation that mutates credential, marker or tombstone files", () => {
+  const source = fs.readFile(
+    new URL("./thread-tokens.ts", import.meta.url),
+    "utf8",
+  );
+
+  it("classifies every method of the store that calls a mutating filesystem function", async () => {
+    const mutating =
+      /\bfs\.(appendFile|chmod|chown|copyFile|cp|link|mkdir|mkdtemp|open|rename|rm|rmdir|symlink|truncate|unlink|utimes|writeFile)\(/u;
+    const found = new Set<string>();
+    let method = "";
+    for (const line of (await source).split("\n")) {
+      const declared =
+        /^ {2}(?:(?:private|public|protected|static|readonly) )*(?:async )?([A-Za-z_]\w*)\(/u.exec(
+          line,
+        );
+      if (declared !== null) method = declared[1] ?? "";
+      if (mutating.test(line)) found.add(method);
+    }
+    expect([...found].sort()).toEqual(Object.keys(MUTATORS).sort());
+  });
+
+  it("keeps the restore window in one function with one expiry rule", async () => {
+    const text = await source;
+    expect(text.match(/tombstoneExpired\(/gu)).toHaveLength(2);
+    expect(text.match(/ARCHIVE_TOMBSTONE_MAX_AGE_MS/gu)).toHaveLength(2);
+  });
+
+  it("drives every classified method and every operation from at least one table scenario", async () => {
+    const observed = new Map<string, Set<string>>();
+    const entering: Array<Set<string>> = [];
+    for (const scenario of SCENARIOS) {
+      const f = await fixture();
+      const context = await scenario.prepare(f, "durable");
+      const prototype = ThreadTokenStore.prototype as unknown as Record<
+        string,
+        unknown
+      >;
+      const spies = Object.getOwnPropertyNames(prototype)
+        .filter(
+          (name) =>
+            name !== "constructor" && typeof prototype[name] === "function",
+        )
+        .map(
+          (name) =>
+            [
+              name,
+              (
+                vi.spyOn as unknown as (
+                  object: unknown,
+                  method: string,
+                ) => MockInstance
+              )(prototype, name),
+            ] as const,
+        );
+      const interruption = crashAfter(Number.MAX_SAFE_INTEGER);
+      await scenario.operate(f, context).catch(() => undefined);
+      interruption.restore();
+      const entered = new Set(
+        spies.flatMap(([name, spy]) =>
+          spy.mock.calls.length > 0 ? [name] : [],
+        ),
+      );
+      for (const [, spy] of spies) spy.mockRestore();
+      expect(interruption.unclassified).toEqual([]);
+      observed.set(scenario.name, new Set(interruption.methods));
+      entering.push(entered);
+      for (const method of scenario.drives)
+        expect(entered.has(method), `${scenario.name} enters ${method}`).toBe(
+          true,
+        );
+    }
+    for (const [method, entry] of Object.entries(MUTATORS))
+      if ("drivenBy" in entry)
+        for (const name of entry.drivenBy)
+          expect(
+            observed.get(name)?.has(method),
+            `${name} drives ${method}`,
+          ).toBe(true);
+    for (const operation of OPERATIONS)
+      expect(
+        entering.some((entered) => entered.has(operation)),
+        `no scenario drives ${operation}`,
+      ).toBe(true);
+  });
+});
