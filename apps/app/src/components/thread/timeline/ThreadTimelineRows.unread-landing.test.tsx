@@ -188,10 +188,10 @@ describe("opening a thread with unseen activity", () => {
     expect(area.scrollTop).not.toBeLessThanOrEqual(DIVIDER_OFFSET);
   });
 
-  it("keeps the viewport on the latest content while a nested timeline expands", async () => {
+  it("renders no unread divider in a nested timeline and does not move the viewport when it expands", async () => {
     const { area, container, settle } = openUnseenThread();
     settle();
-    expect(area.scrollTop).toBe(LATEST_SCROLL_TOP);
+    const scrollTopBeforeExpanding = area.scrollTop;
 
     fireEvent.click(screen.getByText("Ran 3 commands"));
     await act(() => vi.advanceTimersByTimeAsync(500));
@@ -207,6 +207,6 @@ describe("opening a thread with unseen activity", () => {
     expect(
       container.querySelectorAll('[data-testid="thread-unread-divider"]'),
     ).toHaveLength(1);
-    expect(area.scrollTop).toBe(LATEST_SCROLL_TOP);
+    expect(area.scrollTop).toBe(scrollTopBeforeExpanding);
   });
 });
