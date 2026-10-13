@@ -31,8 +31,12 @@ directory for 24 hours. Unarchiving the same archive within that window, or the
 periodic thread sweep finding the thread live again, makes the session's existing
 credentials authenticate again; nothing is accepted while the thread is archived.
 Deleting the thread, a rotated machine token past its grace period, a credential's
-own expiry, or the 24 hours ending makes them final. Older builds ignore the file
-and treat the archived thread as revoked.
+own expiry, or the 24 hours ending makes them final. If the tombstone cannot be
+written, the credential files stay on disk, rejected by the archive marker, until
+a restart, the next archive event or the sweep writes it, and the failure is
+logged. Older builds ignore the tombstone and treat the archived thread as
+revoked; they delete credential files left that way, so downgrading while a
+tombstone write was failing loses those credentials.
 
 The builtin Account Pooler plugin is disabled by default. Enable it, add Claude
 or Codex credentials, and inspect its proxy routes and account quota with:
