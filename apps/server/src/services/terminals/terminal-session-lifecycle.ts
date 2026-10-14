@@ -775,6 +775,10 @@ export class TerminalSessionLifecycle {
     if (!session || session.status !== "running") return;
     const now = attention.at ?? Date.now();
     const source = attention.source;
+    const alreadyVisible = this.options.hub.hasVisibleTerminalClient(
+      attention.terminalId,
+      now,
+    );
     const daemonSeq = source === "daemon" ? attention.seq : null;
     const { terminalId, ...value } = attention;
     const previous = getTerminalAttention(this.options.db, terminalId);
@@ -799,13 +803,18 @@ export class TerminalSessionLifecycle {
       body: value.body ?? null,
       attentionAt: now,
     });
+    if (alreadyVisible) {
+      clearTerminalAttention(this.options.db, terminalId, now);
+    }
     if (session.threadId !== null) {
-      const previous = this.lastThreadAttentionAt.get(session.threadId) ?? 0;
-      if (now - previous >= TERMINAL_THREAD_ATTENTION_DEBOUNCE_MS) {
-        updateThread(this.options.db, this.options.hub, session.threadId, {
-          latestAttentionAt: now,
-        });
-        this.lastThreadAttentionAt.set(session.threadId, now);
+      if (!alreadyVisible) {
+        const previous = this.lastThreadAttentionAt.get(session.threadId) ?? 0;
+        if (now - previous >= TERMINAL_THREAD_ATTENTION_DEBOUNCE_MS) {
+          updateThread(this.options.db, this.options.hub, session.threadId, {
+            latestAttentionAt: now,
+          });
+          this.lastThreadAttentionAt.set(session.threadId, now);
+        }
       }
       this.options.hub.notifyThread(session.threadId, ["terminals-changed"]);
     }

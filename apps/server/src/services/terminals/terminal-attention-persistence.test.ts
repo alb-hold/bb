@@ -3,6 +3,7 @@ import {
   createConnection,
   createTerminalSession,
   getTerminalAttention,
+  getThread,
 } from "@bb/db";
 import {
   seedHostSession,
@@ -23,6 +24,101 @@ afterEach(async () => {
 });
 
 describe("terminal attention persistence", () => {
+  it("keeps daemon attention cleared while the terminal is visible", async () => {
+    const harness = await createTestAppHarness();
+    harnesses.push(harness);
+    const { daemonSessionId, hostId, terminalId, threadId } =
+      createAttentionTerminal(harness);
+    const latestAttentionAt = getThread(harness.db, threadId)?.latestAttentionAt;
+    const socket = { close() {}, send() {} };
+    harness.deps.terminalSessions.handleBrowserTerminalMessage({
+      terminalId,
+      socket,
+      message: { type: "visibility", visible: true },
+    });
+
+    harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId,
+      sessionId: daemonSessionId,
+      message: {
+        type: "terminal.attention",
+        terminalId,
+        seq: 1,
+        kind: "bell",
+        title: "visible daemon signal",
+      },
+    });
+
+    expect(
+      getTerminalAttention(harness.db, terminalId)?.clearedAt,
+    ).not.toBeNull();
+    expect(
+      await getTerminalApiAttention(harness, threadId, terminalId),
+    ).toBeNull();
+    expect(getThread(harness.db, threadId)?.latestAttentionAt).toBe(
+      latestAttentionAt,
+    );
+  });
+
+  it("keeps API attention cleared while the terminal is visible", async () => {
+    const harness = await createTestAppHarness();
+    harnesses.push(harness);
+    const { terminalId, threadId } = createAttentionTerminal(harness);
+    const latestAttentionAt = getThread(harness.db, threadId)?.latestAttentionAt;
+    harness.deps.terminalSessions.handleBrowserTerminalMessage({
+      terminalId,
+      socket: { close() {}, send() {} },
+      message: { type: "visibility", visible: true },
+    });
+
+    harness.deps.terminalSessions.notifyTerminal({
+      terminalId,
+      payload: { title: "visible API signal" },
+    });
+
+    expect(
+      getTerminalAttention(harness.db, terminalId)?.clearedAt,
+    ).not.toBeNull();
+    expect(
+      await getTerminalApiAttention(harness, threadId, terminalId),
+    ).toBeNull();
+    expect(getThread(harness.db, threadId)?.latestAttentionAt).toBe(
+      latestAttentionAt,
+    );
+  });
+
+  it("keeps daemon attention unread while the terminal is hidden", async () => {
+    const harness = await createTestAppHarness();
+    harnesses.push(harness);
+    const { daemonSessionId, hostId, terminalId, threadId } =
+      createAttentionTerminal(harness);
+    harness.deps.terminalSessions.handleBrowserTerminalMessage({
+      terminalId,
+      socket: { close() {}, send() {} },
+      message: { type: "visibility", visible: false },
+    });
+
+    harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId,
+      sessionId: daemonSessionId,
+      message: {
+        type: "terminal.attention",
+        terminalId,
+        seq: 1,
+        kind: "bell",
+        title: "hidden daemon signal",
+      },
+    });
+
+    expect(getTerminalAttention(harness.db, terminalId)?.clearedAt).toBeNull();
+    expect(
+      await getTerminalApiAttention(harness, threadId, terminalId),
+    ).toMatchObject({
+      seq: 1,
+      title: "hidden daemon signal",
+    });
+  });
+
   it("keeps daemon ordering independent from direct notifications", async () => {
     const harness = await createTestAppHarness();
     harnesses.push(harness);
