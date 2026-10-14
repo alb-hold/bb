@@ -33,6 +33,14 @@ const CTRL_LEFT = {
   alt: false,
   shift: false,
 };
+const ALT_LEFT = {
+  key: "ArrowLeft",
+  mod: false,
+  meta: false,
+  control: false,
+  alt: true,
+  shift: false,
+};
 
 function defaultBinding(
   command: AppCommandId,
@@ -68,6 +76,7 @@ vi.mock("@/hooks/queries/system-queries", () => ({
       },
       keybindings: [
         { ...defaultBinding("pane.focus.left"), shortcut: CTRL_LEFT },
+        { ...defaultBinding("pane.focus.left"), shortcut: ALT_LEFT },
       ],
       defaultKeybindings: [
         defaultBinding("thread.new", { none: ["modalOpen"] }),
