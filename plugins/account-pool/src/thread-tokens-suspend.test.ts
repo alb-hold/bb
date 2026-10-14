@@ -143,10 +143,182 @@ async function snapshot(directory: string): Promise<Record<string, string>> {
   return files;
 }
 
-const DELETION_WRITES = [
+const DELETION_WRITES: readonly string[] = [
   "deleted-thread-",
   "archived-thread-",
   "archive-revocation-",
+];
+
+function refuseRecords(): void {
+  refuseWrites(DELETION_WRITES);
+  const originalMkdir = fs.mkdir.bind(fs);
+  vi.spyOn(fs, "mkdir").mockImplementation((async (
+    file: unknown,
+    options: unknown,
+  ) => {
+    if (String(file).includes("deleted-thread-"))
+      throw Object.assign(new Error("ENOSPC"), { code: "ENOSPC" });
+    return originalMkdir(file as never, options as never);
+  }) as never);
+}
+
+type FaultClass = "content" | "rename" | "rm" | "mkdir";
+const FAULT_CLASSES: readonly FaultClass[] = [
+  "content",
+  "rename",
+  "rm",
+  "mkdir",
+];
+type Mutation = { method: string; target: string; ok: boolean };
+
+function injectFaults(
+  faults: ReadonlySet<FaultClass>,
+  crashAfter = Number.POSITIVE_INFINITY,
+): Mutation[] {
+  const mutations: Mutation[] = [];
+  const attempt = async <T>(
+    method: string,
+    target: unknown,
+    fault: FaultClass | null,
+    run: () => Promise<T>,
+  ): Promise<T> => {
+    const mutation = {
+      method,
+      target: path.basename(String(target)),
+      ok: false,
+    };
+    mutations.push(mutation);
+    if (mutations.length > crashAfter)
+      throw Object.assign(new Error("simulated crash"), { code: "EIO" });
+    if (fault !== null && faults.has(fault))
+      throw Object.assign(new Error("EACCES"), { code: "EACCES" });
+    const result = await run();
+    mutation.ok = true;
+    return result;
+  };
+  const originalOpen = fs.open.bind(fs);
+  vi.spyOn(fs, "open").mockImplementation(async (file, flags, mode) => {
+    if (flags === undefined || flags === "r")
+      return originalOpen(file, flags, mode);
+    const record = DELETION_WRITES.some((fragment) =>
+      path.basename(String(file)).startsWith(fragment),
+    );
+    return attempt("open", file, record ? "content" : null, () =>
+      originalOpen(file, flags, mode),
+    );
+  });
+  for (const [method, fault] of [
+    ["rename", "rename"],
+    ["rm", "rm"],
+    ["unlink", "rm"],
+    ["mkdir", "mkdir"],
+    ["chmod", null],
+  ] as const) {
+    const original = (
+      fs[method] as (...args: unknown[]) => Promise<unknown>
+    ).bind(fs);
+    vi.spyOn(fs, method).mockImplementation((async (...args: unknown[]) =>
+      attempt(method, method === "rename" ? args[1] : args[0], fault, () =>
+        original(...args),
+      )) as never);
+  }
+  return mutations;
+}
+
+function recordsDeletion(mutation: Mutation): boolean {
+  if (!mutation.ok) return false;
+  if (mutation.method === "open")
+    return /^deleted-thread-[a-f0-9]{64}\.json$/u.test(mutation.target);
+  if (mutation.method === "mkdir")
+    return /^deleted-thread-[a-f0-9]{64}\.d$/u.test(mutation.target);
+  if (mutation.method === "rename")
+    return /^(?:deleted-thread-[a-f0-9]{64}\.json$|archived-thread-|archive-revocation-|deleted-pending-)/u.test(
+      mutation.target,
+    );
+  return false;
+}
+
+async function deletionOutcome(
+  lifetime: Lifetime,
+  faults: ReadonlySet<FaultClass>,
+  files: 1 | 2,
+  crash: { during: "delete" | "restart"; after: number } | null,
+) {
+  const w = await world();
+  const store = await w.open();
+  const token = await store.forThread(route, w.hostToken, lifetime);
+  const nested =
+    files === 2
+      ? await store.forNested(nestedRoute, w.hostToken, lifetime)
+      : null;
+  w.setBb("gone");
+  const deleteMutations = injectFaults(
+    faults,
+    crash?.during === "delete" ? crash.after : undefined,
+  );
+  await store.removeThread(route.threadId).catch(() => undefined);
+  vi.restoreAllMocks();
+  w.setBb("live");
+  if (crash?.during === "restart") {
+    injectFaults(new Set(), crash.after);
+    await w.open().catch(() => undefined);
+    vi.restoreAllMocks();
+  }
+  const restartMutations = crash === null ? injectFaults(new Set()) : [];
+  const restarted = await w.open();
+  vi.restoreAllMocks();
+  const oldTokenAccepted =
+    (await restarted.authenticate(token)) !== null ||
+    (nested !== null && (await restarted.authenticateNested(nested)) !== null);
+  const mint =
+    (await restarted.forThread(route, w.hostToken, lifetime).then(
+      () => true,
+      () => false,
+    )) ||
+    (await restarted.forNested(nestedRoute, w.hostToken, lifetime).then(
+      () => true,
+      () => false,
+    ));
+  return {
+    outcome: { token: oldTokenAccepted, mint },
+    deleteMutations,
+    restartMutations,
+  };
+}
+
+const EXPECTED_RESIDUAL = [
+  "1 file | refused: none | record: yes | old token accepted: no | mint succeeds: no",
+  "1 file | refused: content | record: yes | old token accepted: no | mint succeeds: no",
+  "1 file | refused: rename | record: yes | old token accepted: no | mint succeeds: no",
+  "1 file | refused: content+rename | record: yes | old token accepted: no | mint succeeds: no",
+  "1 file | refused: rm | record: yes | old token accepted: no | mint succeeds: no",
+  "1 file | refused: content+rm | record: yes | old token accepted: no | mint succeeds: no",
+  "1 file | refused: rename+rm | record: yes | old token accepted: no | mint succeeds: no",
+  "1 file | refused: content+rename+rm | record: yes | old token accepted: no | mint succeeds: no",
+  "1 file | refused: mkdir | record: yes | old token accepted: no | mint succeeds: no",
+  "1 file | refused: content+mkdir | record: yes | old token accepted: no | mint succeeds: no",
+  "1 file | refused: rename+mkdir | record: yes | old token accepted: no | mint succeeds: no",
+  "1 file | refused: content+rename+mkdir | record: no | old token accepted: no | mint succeeds: yes",
+  "1 file | refused: rm+mkdir | record: yes | old token accepted: no | mint succeeds: no",
+  "1 file | refused: content+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no",
+  "1 file | refused: rename+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no",
+  "1 file | refused: content+rename+rm+mkdir | record: no | old token accepted: yes | mint succeeds: yes",
+  "2 files | refused: none | record: yes | old token accepted: no | mint succeeds: no",
+  "2 files | refused: content | record: yes | old token accepted: no | mint succeeds: no",
+  "2 files | refused: rename | record: yes | old token accepted: no | mint succeeds: no",
+  "2 files | refused: content+rename | record: yes | old token accepted: no | mint succeeds: no",
+  "2 files | refused: rm | record: yes | old token accepted: no | mint succeeds: no",
+  "2 files | refused: content+rm | record: yes | old token accepted: no | mint succeeds: no",
+  "2 files | refused: rename+rm | record: yes | old token accepted: no | mint succeeds: no",
+  "2 files | refused: content+rename+rm | record: yes | old token accepted: no | mint succeeds: no",
+  "2 files | refused: mkdir | record: yes | old token accepted: no | mint succeeds: no",
+  "2 files | refused: content+mkdir | record: yes | old token accepted: no | mint succeeds: no",
+  "2 files | refused: rename+mkdir | record: yes | old token accepted: no | mint succeeds: no",
+  "2 files | refused: content+rename+mkdir | record: no | old token accepted: no | mint succeeds: yes",
+  "2 files | refused: rm+mkdir | record: yes | old token accepted: no | mint succeeds: no",
+  "2 files | refused: content+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no",
+  "2 files | refused: rename+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no",
+  "2 files | refused: content+rename+rm+mkdir | record: no | old token accepted: yes | mint succeeds: yes",
 ];
 
 function crashAfter(
@@ -1092,7 +1264,7 @@ describe.each(["durable", "process"] as const)("%s credentials", (lifetime) => {
     const store = await w.open();
     const tokens = await mint(store, w.hostToken, lifetime);
     const stored = await threadFiles(w.directory);
-    refuseWrites(DELETION_WRITES);
+    refuseRecords();
     w.setBb("gone");
     const removal = await store.removeThread(route.threadId).then(
       () => "recorded",
@@ -1133,7 +1305,7 @@ describe.each(["durable", "process"] as const)("%s credentials", (lifetime) => {
     const store = await w.open();
     const tokens = await mint(store, w.hostToken, lifetime);
     const stored = await threadFiles(w.directory);
-    refuseWrites(DELETION_WRITES);
+    refuseRecords();
     w.setBb("gone");
     const removal = await store.removeThread(route.threadId).then(
       () => "recorded",
@@ -1200,4 +1372,80 @@ describe.each(["durable", "process"] as const)("%s credentials", (lifetime) => {
     expect(await unarchive(store)).toBe(false);
     expect(await snapshot(w.directory)).toEqual(before);
   });
+
+  it("keeps a deleted thread deleted after a restart whose first bb answer is live when every deletion-record write and the rename of its only credential file are refused, because the deletion directory records it", async () => {
+    const w = await world();
+    const store = await w.open();
+    const token = await store.forThread(route, w.hostToken, lifetime);
+    w.setBb("gone");
+    injectFaults(new Set(["content", "rename"]));
+    const removal = await store.removeThread(route.threadId).then(
+      () => "recorded",
+      (error: unknown) => String(error),
+    );
+    vi.restoreAllMocks();
+    w.setBb("live");
+    const restarted = await w.open();
+    expect(await restarted.authenticate(token)).toBeNull();
+    expect(await restarted.settleThread(route.threadId)).toBe(false);
+    await expectNoMint(restarted, w.hostToken, lifetime);
+    expect(await threadFiles(w.directory)).toEqual([]);
+    expect(await deletedMarkers(w.directory)).toEqual([]);
+    expect(
+      (await fs.readdir(w.directory)).filter((name) =>
+        /^deleted-thread-[a-f0-9]{64}\.d$/u.test(name),
+      ),
+    ).toHaveLength(1);
+    expect(removal).toBe("recorded");
+  });
+
+  it("computes the deletion residual for every subset of refused mutation classes, one and two credential files, and every crash point after the deletion is recorded and during the next start", async () => {
+    const yes = (value: boolean) => (value ? "yes" : "no");
+    const rows: string[] = [];
+    const runs: number[] = [];
+    for (const files of [1, 2] as const)
+      for (let mask = 0; mask < 16; mask += 1) {
+        const faults = new Set(
+          FAULT_CLASSES.filter((_, bit) => (mask & (1 << bit)) !== 0),
+        );
+        const probe = await deletionOutcome(lifetime, faults, files, null);
+        const commit = probe.deleteMutations.findIndex(recordsDeletion);
+        const outcomes = [probe.outcome];
+        if (commit !== -1)
+          for (
+            let after = commit + 1;
+            after < probe.deleteMutations.length;
+            after += 1
+          )
+            outcomes.push(
+              (
+                await deletionOutcome(lifetime, faults, files, {
+                  during: "delete",
+                  after,
+                })
+              ).outcome,
+            );
+        for (let after = 0; after < probe.restartMutations.length; after += 1)
+          outcomes.push(
+            (
+              await deletionOutcome(lifetime, faults, files, {
+                during: "restart",
+                after,
+              })
+            ).outcome,
+          );
+        rows.push(
+          `${files} file${files === 1 ? "" : "s"} | refused: ${[...faults].join("+") || "none"} | record: ${yes(commit !== -1)} | old token accepted: ${yes(outcomes.some((outcome) => outcome.token))} | mint succeeds: ${yes(outcomes.some((outcome) => outcome.mint))}`,
+        );
+        runs.push(outcomes.length);
+      }
+    console.log(
+      [
+        `deletion residual (${lifetime}), bb's first answer live after every restart:`,
+        ...rows.map((row, index) => `${row} | runs: ${runs[index]}`),
+      ].join("\n"),
+    );
+    expect(rows).toEqual(EXPECTED_RESIDUAL);
+    expect(runs.every((count) => count > 1)).toBe(true);
+  }, 600_000);
 });

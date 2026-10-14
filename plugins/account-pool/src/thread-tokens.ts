@@ -24,7 +24,7 @@ const ARCHIVE_FALLBACK_PREFIX = "archive-revocation-";
 const REVOKED_ROUTE_PREFIX = "revoked-route-";
 const SUSPENDED_FILE_PREFIX = "suspended-";
 const DELETED_THREAD_PREFIX = "deleted-thread-";
-const DELETED_THREAD_NAME = /^deleted-thread-([a-f0-9]{64})\.json$/u;
+const DELETED_THREAD_NAME = /^deleted-thread-([a-f0-9]{64})\.(?:json|d)$/u;
 const DELETED_PENDING_PREFIX = "deleted-pending-";
 const DELETED_PENDING_NAME = /^deleted-pending-([a-f0-9]{64})-/u;
 
@@ -537,7 +537,7 @@ export class ThreadTokenStore {
       if (!(await this.persistDeletion(threadId, nextEpoch, holding))) {
         if (holding) await this.holdDeletedFiles(threadId, names, epoch);
         throw new Error(
-          `Account Pooler could not record the deletion of thread ${threadId}; its credential files are renamed to deleted-pending- files, which keep it deleted across restarts until the deletion is recorded.`,
+          `Account Pooler could not record the deletion of thread ${threadId}; its credential files are renamed to deleted-pending- files, which keep it deleted across restarts until the deletion is recorded, or removed where renaming fails.`,
         );
       }
       for (const [key, record] of this.routes) {
@@ -593,11 +593,46 @@ export class ThreadTokenStore {
       }
     }
     if (!recorded) recorded = await writeDeleted();
+    if (!recorded) recorded = await this.createDeletedRecord(threadId);
+    if (!recorded) recorded = await this.createDeletedDirectory(threadId);
     if (recorded) {
       this.clearMarkerFailures(threadId);
       this.archiveDurabilityFailures.delete(threadId);
     } else this.archiveDurabilityFailures.add(threadId);
     return recorded;
+  }
+
+  private async createDeletedRecord(threadId: string): Promise<boolean> {
+    let handle: Awaited<ReturnType<typeof fs.open>>;
+    try {
+      handle = await fs.open(this.deletedFile(threadId), "w", 0o600);
+    } catch {
+      return false;
+    }
+    try {
+      await handle.writeFile(JSON.stringify({ threadId, deleted: true }));
+      await handle.sync();
+    } catch {
+    } finally {
+      await handle.close().catch(() => undefined);
+    }
+    return true;
+  }
+
+  private async createDeletedDirectory(threadId: string): Promise<boolean> {
+    return fs
+      .mkdir(
+        path.join(
+          this.directory,
+          `${DELETED_THREAD_PREFIX}${digest(threadId)}.d`,
+        ),
+        { mode: 0o700 },
+      )
+      .then(
+        () => true,
+        (error: unknown) =>
+          error instanceof Error && "code" in error && error.code === "EEXIST",
+      );
   }
 
   private async holdDeletedFiles(
@@ -624,16 +659,33 @@ export class ThreadTokenStore {
       held.add(path.basename(this.legacyNestedFile(record)));
     }
     const threadDigest = digest(threadId);
-    for (const name of held)
-      await fs
+    for (const name of held) {
+      const file = path.join(this.directory, name);
+      const renamed = await fs
         .rename(
-          path.join(this.directory, name),
+          file,
           path.join(
             this.directory,
             `${DELETED_PENDING_PREFIX}${threadDigest}-${name}`,
           ),
         )
-        .catch(() => undefined);
+        .then(
+          () => true,
+          (error: unknown) =>
+            error instanceof Error &&
+            "code" in error &&
+            error.code === "ENOENT",
+        );
+      if (renamed) continue;
+      const removed = await fs.rm(file, { force: true }).then(
+        () => true,
+        () => false,
+      );
+      if (!removed)
+        this.warn(
+          `Account Pooler could not rename or remove credential file ${name} of deleted thread ${threadId}; it stays in place.`,
+        );
+    }
   }
 
   async suspendThread(threadId: string): Promise<void> {

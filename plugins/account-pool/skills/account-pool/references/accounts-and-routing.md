@@ -298,12 +298,15 @@ records it in a `deleted-thread-<digest>.json` marker and in the thread's
 archive marker and its fallback, and never restores or mints credentials for
 that thread again, even if bb later reports it live, in which case it logs a
 warning. Credential files are removed only after one of those records is on
-disk. If none can be written, the files are renamed to
-`deleted-pending-<digest>-<name>` instead. A pending file keeps the thread
-deleted across restarts whatever bb reports, is never loaded as a credential,
-and is removed at the next start that can write the deletion marker. If the
-directory refuses every write and rename, the deletion holds for the rest of
-the process only. bb's thread state is the
+disk. If the marker cannot be written atomically, it is created in place, and
+failing that the plugin creates a `deleted-thread-<digest>.d` directory, which
+records the deletion by its existence alone. If no record can be made, each
+credential file is renamed to `deleted-pending-<digest>-<name>`, or removed
+where renaming fails. A pending file keeps the thread deleted across restarts
+whatever bb reports, is never loaded as a credential, and is removed at the
+next start that can write the deletion marker. Only a directory that refuses
+every write, rename and directory creation leaves no record; then bb's own
+answer decides after a restart. bb's thread state is the
 authority, asked each time a thread's token is presented (concurrent requests
 for one thread share one lookup): live accepts, archived rejects and suspends,
 deleted rejects and revokes. A missed archive or unarchive event therefore

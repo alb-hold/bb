@@ -10960,11 +10960,21 @@ describe("Account Pool credential scoping", () => {
             throw Object.assign(new Error("ENOSPC"), { code: "ENOSPC" });
           return originalOpen(file, flags, mode);
         });
+      const originalMkdir = fs.mkdir.bind(fs);
+      const refusedDirectory = vi.spyOn(fs, "mkdir").mockImplementation((async (
+        file: unknown,
+        options: unknown,
+      ) => {
+        if (fragments.length > 1 && String(file).includes("deleted-thread-"))
+          throw Object.assign(new Error("ENOSPC"), { code: "ENOSPC" });
+        return originalMkdir(file as never, options as never);
+      }) as never);
       bbThreadStates.set("thread-unrecorded", "deleted");
       await host.harness.behavior.emitThreadEvent("thread.deleted", {
         thread: makeThreadResponse({ id: "thread-unrecorded" }),
       });
       refused.mockRestore();
+      refusedDirectory.mockRestore();
       const held = (await fs.readdir(secrets)).filter((name) =>
         name.includes("thread-unrecorded"),
       );
