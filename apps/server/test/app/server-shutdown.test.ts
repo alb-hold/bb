@@ -1,7 +1,10 @@
 import { once } from "node:events";
 import { createConnection, migrate, type DbConnection } from "@bb/db";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { startHttpListener } from "../../src/start-server.js";
+import {
+  shutdownHttpBeforePlugins,
+  startHttpListener,
+} from "../../src/start-server.js";
 
 type ShutdownHttpBeforePlugins = (args: {
   closeWebSockets: () => Promise<void>;
@@ -20,6 +23,7 @@ describe("server shutdown ordering", () => {
   });
 
   afterEach(async () => {
+    server?.closeAllConnections();
     if (server?.listening) {
       await new Promise<void>((resolve) => server?.close(() => resolve()));
     }
@@ -93,4 +97,42 @@ describe("server shutdown ordering", () => {
     await shutdown;
     expect(stopStarted).toBe(true);
   });
+
+  it("bounds shutdown when an HTTP response stream stays open", async () => {
+    server = startHttpListener({
+      fetch: async () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(new Uint8Array([1]));
+            },
+          }),
+        ),
+      logger: { warn: () => {} },
+      serverConfig: {
+        BB_SERVER_BIND_HOST: "127.0.0.1",
+        BB_SERVER_PORT: 0,
+      },
+    });
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server did not bind a TCP port");
+    }
+    const response = await fetch(`http://127.0.0.1:${address.port}/stream`);
+    const reader = response.body?.getReader();
+    if (!reader) {
+      throw new Error("stream response had no body");
+    }
+    await reader.read();
+    const startedAt = Date.now();
+    await shutdownHttpBeforePlugins({
+      closeWebSockets: async () => {},
+      server,
+      stopPlugins: async () => {},
+      stopTerminalDataPlane: () => {},
+    });
+    expect(Date.now() - startedAt).toBeLessThan(4_000);
+    await reader.cancel().catch(() => {});
+  }, 5_000);
 });

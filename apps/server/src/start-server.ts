@@ -89,18 +89,20 @@ import {
   setPluginToolCallRegistry,
 } from "./services/plugins/plugin-tool-calls.js";
 
+const HTTP_SHUTDOWN_DRAIN_TIMEOUT_MS = 2_000;
+
 interface StartHttpListenerArgs {
   fetch: Parameters<typeof serve>[0]["fetch"];
   logger: Pick<ServerLogger, "warn">;
   serverConfig: Pick<ServerConfig, "BB_SERVER_BIND_HOST" | "BB_SERVER_PORT">;
 }
 
-export function startHttpListener(args: StartHttpListenerArgs) {
+export function startHttpListener(args: StartHttpListenerArgs): HttpServer {
   const server = serve({
     hostname: args.serverConfig.BB_SERVER_BIND_HOST,
     port: args.serverConfig.BB_SERVER_PORT,
     fetch: args.fetch,
-  });
+  }) as HttpServer;
   superviseTcpServerSockets(server, (error, _socket, context) => {
     args.logger.warn(
       {
@@ -121,7 +123,7 @@ export async function shutdownHttpBeforePlugins(args: {
 }): Promise<void> {
   args.stopTerminalDataPlane();
   await args.closeWebSockets();
-  await new Promise<void>((resolve, reject) => {
+  const closed = new Promise<void>((resolve, reject) => {
     args.server.close((error) => {
       if (error) {
         reject(error);
@@ -130,6 +132,28 @@ export async function shutdownHttpBeforePlugins(args: {
       resolve();
     });
   });
+  args.server.closeIdleConnections();
+  let drainTimer: ReturnType<typeof setTimeout> | undefined;
+  let drained = false;
+  try {
+    drained = await Promise.race([
+      closed.then(() => true),
+      new Promise<boolean>((resolve) => {
+        drainTimer = setTimeout(
+          () => resolve(false),
+          HTTP_SHUTDOWN_DRAIN_TIMEOUT_MS,
+        );
+      }),
+    ]);
+  } finally {
+    if (drainTimer !== undefined) {
+      clearTimeout(drainTimer);
+    }
+  }
+  if (!drained) {
+    args.server.closeAllConnections();
+    await closed;
+  }
   await args.stopPlugins();
 }
 
