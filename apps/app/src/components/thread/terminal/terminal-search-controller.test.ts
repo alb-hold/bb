@@ -40,8 +40,12 @@ describe("terminal search controller", () => {
     controller.next();
     controller.next();
     controller.previous();
+    const positions = onChange.mock.calls
+      .map(([state]) => state.resultIndex)
+      .filter((position, index, all) => index === 0 || position !== all[index - 1]);
     expect(addon.findNext).toHaveBeenLastCalledWith("needle", expect.anything());
     expect(addon.findPrevious).toHaveBeenCalledWith("needle", expect.anything());
+    expect(positions).toEqual([1, 2, 3, 1, 3]);
     expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({
       query: "needle",
       resultIndex: 3,
