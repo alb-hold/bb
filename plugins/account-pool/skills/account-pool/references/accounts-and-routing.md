@@ -299,8 +299,14 @@ archive marker and its fallback. If the marker cannot be written atomically,
 it is created in place, and failing that the plugin creates a
 `deleted-thread-<digest>.d` directory, which records the deletion by its
 existence alone. If none of those lands, each credential file is renamed to
-`deleted-pending-<digest>-<name>`; that rename is itself a record. Then, every
-time, the plugin also writes a `deleted-thread:<digest>` row to bb's own
+`deleted-pending-<digest>-<name>`; that rename is itself a record. A
+filesystem record counts only once its content write, the file sync and the
+sync of the store directory all succeed; any failure on the way moves on to the
+next path. At start, a deletion marker found on disk counts only if its content
+is complete and syncing it and the directory succeeds; a partial, empty or
+unreadable `deleted-thread-<digest>.json` keeps the thread deleted, blocking
+restore and mint, but removes nothing and the record is written again. Then,
+every time, the plugin also writes a `deleted-thread:<digest>` row to bb's own
 database through plugin kv, the database that already holds the thread's
 committed `deletedAt`. Every filesystem path is tried before the kv write, so
 a refused kv write followed by a crash never leaves a filesystem record
@@ -315,8 +321,9 @@ on the next delete event, sweep and start. The kv rows are loaded once at
 start; while that load fails, every thread token is rejected and nothing is
 minted, and the load is retried on each sweep. Authentication never reads kv.
 The only case the plugin cannot hold is a restart after bb's database refused
-the kv write and the marker writes, the renames and the directory were all
-refused too. Then nothing was removed, bb's own database could not have
+the kv write and no filesystem record became durable: the marker writes, the
+renames and the directory were all refused, or the store directory refused
+every sync and the machine then lost power. Then nothing was removed, bb's own database could not have
 committed the delete either, and the plugin follows bb. bb's thread state is
 the
 authority, asked each time a thread's token is presented (concurrent requests
