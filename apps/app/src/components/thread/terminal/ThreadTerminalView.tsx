@@ -1392,7 +1392,7 @@ export function ThreadTerminalView({
     hoveredTerminalLink !== null || activeSelection !== null;
 
   return (
-    <div className="relative flex h-full min-h-0 flex-col">
+    <div className="flex h-full min-h-0 flex-col">
       <ContextMenu
         onOpenChange={(open) => {
           if (!open) {
@@ -1532,12 +1532,15 @@ export function ThreadTerminalView({
           }}
         />
       ) : null}
-      {textSnapshot !== null ? (
+      {isTouchDevice ? (
         <TerminalTextSelectSheet
-          text={textSnapshot}
-          onClose={() => setTextSnapshot(null)}
+          open={textSnapshot !== null}
+          text={textSnapshot ?? ""}
+          onOpenChange={(open) => {
+            if (!open) setTextSnapshot(null);
+          }}
           onCopyAll={() => {
-            void copyToClipboardWithToast(textSnapshot, {
+            void copyToClipboardWithToast(textSnapshot ?? "", {
               successMessage: "Terminal text copied",
               errorMessage: "Failed to copy",
             });
