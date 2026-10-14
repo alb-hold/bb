@@ -6,6 +6,7 @@ import {
   shutdownHttpBeforePlugins,
   startHttpListener,
 } from "../../src/start-server.js";
+import { closeWebSocketServer } from "../../src/server.js";
 
 type ShutdownHttpBeforePlugins = (args: {
   closeWebSockets: () => Promise<void>;
@@ -148,6 +149,31 @@ describe("server shutdown ordering", () => {
     await reader.cancel().catch(() => {});
   }, 5_000);
 
+  it("bounds plugin shutdown after the HTTP listener closes", async () => {
+    server = startHttpListener({
+      fetch: async () => new Response("ready"),
+      logger: { warn: () => {} },
+      serverConfig: {
+        BB_SERVER_BIND_HOST: "127.0.0.1",
+        BB_SERVER_PORT: 0,
+      },
+    });
+    await once(server, "listening");
+    let pluginStopStartedAfterHttpClosed = false;
+    const startedAt = Date.now();
+    await shutdownHttpBeforePlugins({
+      closeWebSockets: async () => {},
+      server,
+      stopPlugins: () => {
+        pluginStopStartedAfterHttpClosed = !server?.listening;
+        return new Promise<void>(() => {});
+      },
+      stopTerminalDataPlane: () => {},
+    });
+    expect(pluginStopStartedAfterHttpClosed).toBe(true);
+    expect(Date.now() - startedAt).toBeLessThan(4_000);
+  }, 4_500);
+
   it("stops accepting HTTP before closing WebSocket clients", async () => {
     server = startHttpListener({
       fetch: async () => new Response("ready"),
@@ -170,38 +196,7 @@ describe("server shutdown ordering", () => {
     expect(listenerClosedBeforeWebSockets).toBe(true);
   });
 
-  it("stops plugins before awaiting WebSocket shutdown", async () => {
-    server = startHttpListener({
-      fetch: async () => new Response("ready"),
-      logger: { warn: () => {} },
-      serverConfig: {
-        BB_SERVER_BIND_HOST: "127.0.0.1",
-        BB_SERVER_PORT: 0,
-      },
-    });
-    await once(server, "listening");
-    let pluginsStopped = false;
-    let webSocketsClosedAfterPlugins = false;
-    let closeWebSockets: (() => void) | undefined;
-    await shutdownHttpBeforePlugins({
-      closeWebSockets: () =>
-        new Promise<void>((resolve) => {
-          closeWebSockets = () => {
-            webSocketsClosedAfterPlugins = pluginsStopped;
-            resolve();
-          };
-        }),
-      server,
-      stopPlugins: async () => {
-        pluginsStopped = true;
-        closeWebSockets?.();
-      },
-      stopTerminalDataPlane: () => {},
-    });
-    expect(webSocketsClosedAfterPlugins).toBe(true);
-  }, 5_000);
-
-  it("can finish HTTP shutdown when a WebSocket needs plugin stop", async () => {
+  it("bounds shutdown when a WebSocket client ignores the close request", async () => {
     server = startHttpListener({
       fetch: async () => new Response("ready"),
       logger: { warn: () => {} },
@@ -225,19 +220,23 @@ describe("server shutdown ordering", () => {
     webSocketClient = new WebSocket(`ws://127.0.0.1:${address.port}`);
     await once(webSocketClient, "open");
     const [webSocket] = (await accepted) as [WebSocket];
-    let finishWebSocketClose: (() => void) | undefined;
-    const shutdown = shutdownHttpBeforePlugins({
+    webSocket.close = (() => webSocket) as WebSocket["close"];
+    let pluginsStoppedAfterHttpClosed = false;
+    const startedAt = Date.now();
+    await shutdownHttpBeforePlugins({
       closeWebSockets: () =>
-        new Promise<void>((resolve) => {
-          finishWebSocketClose = () => {
-            webSocket.terminate();
-            resolve();
-          };
+        closeWebSocketServer({
+          forceCloseAfterMs: 1_000,
+          reason: "server-shutdown",
+          server: webSocketServer!,
         }),
       server,
-      stopPlugins: async () => finishWebSocketClose?.(),
+      stopPlugins: async () => {
+        pluginsStoppedAfterHttpClosed = !server?.listening;
+      },
       stopTerminalDataPlane: () => {},
     });
-    await shutdown;
-  }, 5_000);
+    expect(Date.now() - startedAt).toBeLessThan(2_500);
+    expect(pluginsStoppedAfterHttpClosed).toBe(true);
+  }, 4_000);
 });

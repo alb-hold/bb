@@ -90,6 +90,7 @@ import {
 } from "./services/plugins/plugin-tool-calls.js";
 
 const HTTP_SHUTDOWN_DRAIN_TIMEOUT_MS = 2_000;
+const PLUGIN_SHUTDOWN_TIMEOUT_MS = 3_000;
 
 interface StartHttpListenerArgs {
   fetch: Parameters<typeof serve>[0]["fetch"];
@@ -117,6 +118,7 @@ export function startHttpListener(args: StartHttpListenerArgs): HttpServer {
 
 export async function shutdownHttpBeforePlugins(args: {
   closeWebSockets: () => Promise<void>;
+  onPluginStopTimeout?: () => void;
   server: ReturnType<typeof startHttpListener>;
   stopPlugins: () => Promise<void>;
   stopTerminalDataPlane: () => void;
@@ -150,14 +152,26 @@ export async function shutdownHttpBeforePlugins(args: {
       clearTimeout(drainTimer);
     }
   }
-  let pluginsStopped: Promise<void> | undefined;
   if (!drained) {
     args.server.closeAllConnections();
-    pluginsStopped = args.stopPlugins();
-    await closed;
   }
-  await (pluginsStopped ?? args.stopPlugins());
   await webSocketsClosed;
+  await closed;
+  let pluginStopTimer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const stopped = await Promise.race([
+      args.stopPlugins().then(() => true),
+      new Promise<false>((resolve) => {
+        pluginStopTimer = setTimeout(
+          () => resolve(false),
+          PLUGIN_SHUTDOWN_TIMEOUT_MS,
+        );
+      }),
+    ]);
+    if (!stopped) args.onPluginStopTimeout?.();
+  } finally {
+    if (pluginStopTimer !== undefined) clearTimeout(pluginStopTimer);
+  }
 }
 
 export interface StartServerPluginsArgs {
@@ -581,6 +595,10 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
       await pluginService.stopPeriodicUpdateChecks();
       await shutdownHttpBeforePlugins({
         closeWebSockets,
+        onPluginStopTimeout: () =>
+          logger.warn(
+            `Plugin shutdown did not finish within ${PLUGIN_SHUTDOWN_TIMEOUT_MS}ms`,
+          ),
         server,
         stopPlugins: async () => {
           if (pendingServerMove !== null) return;
