@@ -9,23 +9,29 @@ export interface PreparedTerminalShellIntegration {
 }
 
 const BASH_RC = String.raw`if [[ $- == *i* ]]; then
-  [[ -r "$HOME/.bashrc" ]] && source "$HOME/.bashrc"
-  PS0=$'\e]133;B\a\e]133;C\a'
-  __bb_previous_prompt_command=
-  __bb_prompt_command() {
-    local __bb_status=$?
-    if [[ -n $__bb_previous_prompt_command ]]; then
-      (exit "$__bb_status")
-      eval "$__bb_previous_prompt_command"
+  if [[ -z ${"${"}__bb_terminal_integration_user_rc_loaded:-} ]]; then
+    __bb_terminal_integration_user_rc_loaded=1
+    [[ -r "$HOME/.bashrc" ]] && source "$HOME/.bashrc"
+  fi
+  if [[ -z ${"${"}__bb_terminal_shell_integration_installed:-} ]]; then
+    __bb_terminal_shell_integration_installed=1
+    PS0="${"${"}PS0-}"$'\e]133;B\a\e]133;C\a'
+    __bb_previous_prompt_command=
+    __bb_prompt_command() {
+      local __bb_status=$?
+      if [[ -n $__bb_previous_prompt_command ]]; then
+        (exit "$__bb_status")
+        eval "$__bb_previous_prompt_command"
+      fi
+      printf '\e]133;D;%s\a\e]133;A\a\e]7;file://localhost%s\a' "$__bb_status" "$PWD"
+      return "$__bb_status"
+    }
+    if [[ $(declare -p PROMPT_COMMAND 2>/dev/null) == "declare -a"* ]]; then
+      PROMPT_COMMAND=(__bb_prompt_command "${"${"}PROMPT_COMMAND[@]}")
+    else
+      __bb_previous_prompt_command=$PROMPT_COMMAND
+      PROMPT_COMMAND=__bb_prompt_command
     fi
-    printf '\e]133;D;%s\a\e]133;A\a\e]7;file://localhost%s\a' "$__bb_status" "$PWD"
-    return "$__bb_status"
-  }
-  if [[ $(declare -p PROMPT_COMMAND 2>/dev/null) == "declare -a"* ]]; then
-    PROMPT_COMMAND=(__bb_prompt_command "${"${"}PROMPT_COMMAND[@]}")
-  else
-    __bb_previous_prompt_command=$PROMPT_COMMAND
-    PROMPT_COMMAND=__bb_prompt_command
   fi
 fi
 `;
@@ -57,21 +63,28 @@ if [[ "$BB_TERMINAL_USER_ZDOTDIR_SET" == "1" ]]; then
 else
   unset ZDOTDIR
 fi
-function __bb_preexec() { print -Pn '\e]133;B\a\e]133;C\a' }
-function __bb_precmd() { local __bb_status=$?; printf '\e]133;D;%s\a\e]133;A\a\e]7;file://localhost%s\a' "$__bb_status" "$PWD" }
-preexec_functions+=(__bb_preexec)
-precmd_functions+=(__bb_precmd)
+function __bb_terminal_shell_integration_preexec() { print -Pn '\e]133;B\a\e]133;C\a' }
+function __bb_terminal_shell_integration_precmd() { local __bb_status=$?; printf '\e]133;D;%s\a\e]133;A\a\e]7;file://localhost%s\a' "$__bb_status" "$PWD" }
+if [[ -z ${"${"}__bb_terminal_shell_integration_hooks_installed:-} ]]; then
+  __bb_terminal_shell_integration_hooks_installed=1
+  preexec_functions+=(__bb_terminal_shell_integration_preexec)
+  precmd_functions+=(__bb_terminal_shell_integration_precmd)
+fi
 `;
 
 const FISH_CONF = String.raw`if status is-interactive
-function __bb_prompt --on-event fish_prompt
+if not functions -q __bb_terminal_shell_integration_installed
+function __bb_terminal_shell_integration_installed
+end
+function __bb_terminal_shell_integration_prompt --on-event fish_prompt
   printf '\e]133;A\a\e]7;file://localhost%s\a' $PWD
 end
-function __bb_preexec --on-event fish_preexec
+function __bb_terminal_shell_integration_preexec --on-event fish_preexec
   printf '\e]133;B\a\e]133;C\a'
 end
-function __bb_postexec --on-event fish_postexec
+function __bb_terminal_shell_integration_postexec --on-event fish_postexec
   printf '\e]133;D;%s\a' $status
+end
 end
 end
 `;

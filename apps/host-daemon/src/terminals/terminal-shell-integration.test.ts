@@ -27,6 +27,7 @@ async function makeRoot(): Promise<string> {
 interface ShellFixture {
   bashRc?: string;
   command?: string;
+  sourceIntegrationTwice?: boolean;
   userZdotdir?: "home" | null;
   zshEnv?: string;
   zshRc?: string;
@@ -78,7 +79,7 @@ async function runShell(
   return await new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       terminal.kill();
-      reject(new Error(`${shell} integration timed out`));
+      reject(new Error(`${shell} integration timed out: ${JSON.stringify(output)}`));
     }, 8_000);
     terminal.onData((chunk) => {
       output += chunk;
@@ -88,7 +89,12 @@ async function runShell(
         output.includes("\u001b]133;A\u0007")
       ) {
         commandState = 1;
-        terminal.write(`${fixture.command ?? "cd /tmp; false"}\n`);
+        const command = fixture.command ?? "cd /tmp; false";
+        const integrationSource = integration.args[1];
+        const sourceTwice = fixture.sourceIntegrationTwice
+          ? `source '${integrationSource?.replaceAll("'", "'\\''") ?? ""}'; `
+          : "";
+        terminal.write(`${sourceTwice}${command}\n`);
       } else if (
         commandState === 1 &&
         output.includes("\u001b]133;D;1\u0007")
@@ -159,6 +165,21 @@ describe("terminal shell integration", () => {
     expect(result.exitCode).toBe(1);
   });
 
+  it("composes PS0 and installs its hooks once when the rc is sourced twice", async () => {
+    const result = await runShell("bash", {
+      bashRc: `PS0='USER_PS0>'\nprintf 'BB_USER_RC_LOADED\\n'\n`,
+      sourceIntegrationTwice: true,
+    });
+    expect(result.output).toContain("USER_PS0>");
+    expect(result.output).toContain("\u001b]133;B\u0007");
+    expect(result.output).toContain("\u001b]133;C\u0007");
+    expect(result.output.split("USER_PS0>")).toHaveLength(3);
+    expect(result.output.split("\u001b]133;B\u0007")).toHaveLength(3);
+    expect(result.output.split("\u001b]133;C\u0007")).toHaveLength(3);
+    expect(result.output.split("BB_USER_RC_LOADED")).toHaveLength(2);
+    expect(result.exitCode).toBe(1);
+  });
+
   it.skipIf(!shellAvailable("zsh"))(
     "loads the user config and reports cwd and command status in zsh",
     async () => {
@@ -218,6 +239,13 @@ describe("terminal shell integration", () => {
     expect(fishConf).toContain("fish_preexec");
     expect(fishConf).toContain("fish_postexec");
     expect(fishConf).toContain("fish_prompt");
+    expect(fishConf).toContain(
+      "if not functions -q __bb_terminal_shell_integration_installed",
+    );
+    expect(fishConf).toContain(
+      "function __bb_terminal_shell_integration_prompt --on-event fish_prompt",
+    );
+    expect(fishConf).not.toContain("function fish_prompt");
     expect(integration?.args).toEqual([]);
     await integration?.cleanup();
   });
