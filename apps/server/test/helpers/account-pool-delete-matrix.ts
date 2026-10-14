@@ -67,6 +67,35 @@ type Mutation = {
   ok: boolean;
   refused: boolean;
 };
+type Injection = { mutations: Mutation[]; crashedAt: number | null };
+type Start = "delete" | "first" | "restart";
+type CrashPoint = { during: Start; after: number };
+type CrashStatus = "reached" | "beyond" | "missed";
+
+class InjectedFault extends Error {
+  readonly code: "EACCES" | "EIO";
+
+  constructor(message: string, code: "EACCES" | "EIO") {
+    super(message);
+    this.code = code;
+  }
+}
+
+function injected(error: unknown): boolean {
+  if (error instanceof InjectedFault) return true;
+  if (error instanceof AggregateError)
+    return error.errors.length > 0 && error.errors.every(injected);
+  return (
+    error instanceof Error && error.cause !== undefined && injected(error.cause)
+  );
+}
+
+function describeError(error: unknown): string {
+  return error instanceof Error
+    ? `${error.name}: ${error.message}`
+    : String(error);
+}
+
 type Watch = {
   dataDir: string;
   directory: string;
@@ -300,12 +329,14 @@ function injectFaults(
   faults: ReadonlySet<FaultClass>,
   crashAfter = Number.POSITIVE_INFINITY,
   point: ContentPoint = "open",
-): Mutation[] {
+): Injection {
   const mutations: Mutation[] = [];
+  const injection: Injection = { mutations, crashedAt: null };
   let crashed = false;
   const crash = () => {
+    if (!crashed) injection.crashedAt = mutations.length - 1;
     crashed = true;
-    throw Object.assign(new Error("simulated crash"), { code: "EIO" });
+    throw new InjectedFault("simulated crash", "EIO");
   };
   const attempt = async <T>(
     method: string,
@@ -324,7 +355,7 @@ function injectFaults(
     if (crashed || mutations.length > crashAfter) crash();
     if (fault !== null && faults.has(fault)) {
       mutation.refused = true;
-      throw Object.assign(new Error("EACCES"), { code: "EACCES" });
+      throw new InjectedFault("refused", "EACCES");
     }
     await checkRemoval(watch, method, args);
     const result = await run();
@@ -457,7 +488,7 @@ function injectFaults(
       );
     }) as never);
   }
-  return mutations;
+  return injection;
 }
 
 function faultSubsets(): Set<FaultClass>[] {
@@ -494,6 +525,12 @@ function retainedHeap(): number {
 
 type BbLink = { server: Server | null; lookups: string[] };
 const STOPPED = "the deletion matrix stopped this plugin host";
+const EXPORT_FAILED = "provider environment contribution failed: ";
+const MINT_REFUSALS = [
+  "Cannot mint a credential for a deleted thread.",
+  "Cannot mint a credential for an archived thread.",
+  "Cannot mint a credential for a thread bb has not confirmed live.",
+];
 
 function fakeBbSdk(host: World["host"], link: BbLink) {
   return {
@@ -588,7 +625,7 @@ async function deletionOutcome(
   faults: ReadonlySet<FaultClass>,
   point: ContentPoint,
   files: 1 | 2,
-  crash: { during: "delete" | "restart"; after: number } | null,
+  crash: CrashPoint | null,
 ) {
   const thread = seedThread(world.base.deps, {
     environmentId: world.environmentId,
@@ -627,14 +664,50 @@ async function deletionOutcome(
     unsynced: new Set(),
     undurable: [],
   };
+  const replaced = new WeakSet<object>();
   const capture = (pool: FakePluginHost): Started => {
     if (captured.threadTokens === null || captured.hostTokens === null)
       throw new Error("the plugin's token stores were not observed");
+    if (
+      replaced.has(pool) ||
+      replaced.has(captured.threadTokens) ||
+      replaced.has(captured.hostTokens)
+    )
+      throw new Error("the start reused a replaced plugin instance");
     return {
       pool,
       threadTokens: captured.threadTokens,
       hostTokens: captured.hostTokens,
     };
+  };
+  const retire = (pool: FakePluginHost) => {
+    replaced.add(pool);
+    if (captured.threadTokens !== null) replaced.add(captured.threadTokens);
+    if (captured.hostTokens !== null) replaced.add(captured.hostTokens);
+  };
+  const unexpected: string[] = [];
+  const expectInjected = (at: string, errors: readonly unknown[]) => {
+    for (const error of errors)
+      if (!injected(error)) unexpected.push(`${at}: ${describeError(error)}`);
+  };
+  const expectNone = (at: string, errors: readonly unknown[]) => {
+    for (const error of errors)
+      unexpected.push(`${at}: ${describeError(error)}`);
+  };
+  const crashStatus = (during: Start, injection: Injection) => {
+    if (crash?.during !== during) return null;
+    const status: CrashStatus =
+      injection.crashedAt === crash.after
+        ? "reached"
+        : injection.crashedAt === null &&
+            injection.mutations.length <= crash.after
+          ? "beyond"
+          : "missed";
+    if (status === "missed")
+      unexpected.push(
+        `${during}@${crash.after}: the crash fired at mutation ${injection.crashedAt ?? "none"} of ${injection.mutations.length}`,
+      );
+    return status;
   };
   const route: PoolRoute = {
     threadId: thread.id,
@@ -677,65 +750,89 @@ async function deletionOutcome(
     (existsSync(watch.directory) ? readdirSync(watch.directory) : []).filter(
       (name) => isCredential(watch, name),
     );
+  let live: FakePluginHost = pool0;
   let started: Started | null = null;
-  const restart = async (
+  const sweepNow = async (pool: FakePluginHost): Promise<unknown[]> => {
+    captured.sweep = null;
+    services.push(pool.harness.behavior.runService("hub").controller);
+    const sweep = sweeping();
+    if (sweep === null)
+      return [new Error("the start did not sweep the thread credentials")];
+    return sweep.then(
+      () => [],
+      (error: unknown) => [error],
+    );
+  };
+  const start = async (
     crashAt: number | undefined,
     sweep: boolean,
-  ): Promise<Mutation[]> => {
-    if (started === null) throw new Error("no plugin host to restart");
+  ): Promise<Injection & { errors: unknown[] }> => {
     stopServices();
     server = await restartServer(server);
     link.server = server;
-    let mutations: Mutation[] = [];
+    retire(live);
+    started = null;
+    let injection: Injection = { mutations: [], crashedAt: null };
     let atFactoryEnd = 0;
-    const previous: Started = started;
+    const errors: unknown[] = [];
+    captured.sweep = null;
     try {
-      const pool = await previous.pool.harness.lifecycle.reload(async (bb) => {
+      const pool = await live.harness.lifecycle.reload(async (bb) => {
         restoreFaults();
         losePower(watch);
         watch.kv = bb.storage.kv;
         captured.threadTokens = null;
         captured.hostTokens = null;
-        mutations = injectFaults(watch, new Set(), crashAt);
+        injection = injectFaults(watch, new Set(), crashAt);
         await plugin(bb);
-        atFactoryEnd = mutations.length;
+        atFactoryEnd = injection.mutations.length;
       });
-      if (mutations.length !== atFactoryEnd)
+      if (injection.mutations.length !== atFactoryEnd)
         watch.violations.push(
           "the previous plugin instance mutated its data directory while it was being replaced",
         );
-      started = capture(pool);
+      live = pool;
       world.current.pool = pool;
-      if (sweep) {
-        captured.sweep = null;
-        services.push(pool.harness.behavior.runService("hub").controller);
-        const sweep = sweeping();
-        if (sweep === null)
-          throw new Error("the start did not sweep the thread credentials");
-        await sweep.catch(() => undefined);
-      }
+      if (crashAt === undefined) started = capture(pool);
+      if (sweep) errors.push(...(await sweepNow(pool)));
+      else if (sweeping() !== null)
+        errors.push(new Error("the start swept before it was probed"));
     } catch (error) {
-      if (crashAt === undefined) throw error;
+      errors.push(error);
     }
-    restoreFaults();
-    return mutations;
+    if (crashAt === undefined) restoreFaults();
+    return { ...injection, errors };
   };
-  const probe = async (): Promise<Outcome & { lookups: number }> => {
-    if (started === null) throw new Error("no plugin host to probe");
+  const probe = async (
+    at: string,
+  ): Promise<Outcome & { lookups: number }> => {
+    if (started === null)
+      throw new Error(`${at}: no fresh plugin instance to probe`);
     const { pool, threadTokens, hostTokens } = started;
+    injectFaults(watch, new Set());
     link.lookups = [];
     const hostToken = await hostTokens.forHost(world.hostId);
+    const refused = (mint: string) => (error: unknown) => {
+      if (!(error instanceof Error && MINT_REFUSALS.includes(error.message)))
+        unexpected.push(`${at}: ${mint} ${describeError(error)}`);
+      return false;
+    };
     const minted = [
-      await threadTokens.forThread(route, hostToken, lifetime).then(
-        () => true,
-        () => false,
-      ),
-      await threadTokens.forNested(nestedRoute, hostToken, lifetime).then(
-        () => true,
-        () => false,
-      ),
+      await threadTokens
+        .forThread(route, hostToken, lifetime)
+        .then(() => true, refused("forThread")),
+      await threadTokens
+        .forNested(nestedRoute, hostToken, lifetime)
+        .then(() => true, refused("forNested")),
     ];
+    const logged = pool.harness.inspection.logEntries.length;
     const exported = (await exportEntries(pool)).length > 0;
+    for (const entry of pool.harness.inspection.logEntries.slice(logged))
+      if (
+        entry.message.startsWith(EXPORT_FAILED) &&
+        !MINT_REFUSALS.includes(entry.message.slice(EXPORT_FAILED.length))
+      )
+        unexpected.push(`${at}: env export ${entry.message}`);
     const token =
       (await threadTokenAccepted(pool, tokens.token)) ||
       (tokens.nested !== null &&
@@ -743,6 +840,7 @@ async function deletionOutcome(
     const rows = link.lookups.filter(
       (threadId) => threadId === thread.id,
     ).length;
+    restoreFaults();
     return { token, mint: minted.some(Boolean), exported, lookups: rows };
   };
   const tokens: { token: string; nested: string | null } = {
@@ -787,12 +885,13 @@ async function deletionOutcome(
 
     watch.kv = pool0.bb.storage.kv;
     deliverDeletes(world);
-    const deleteMutations = injectFaults(
+    const deleteInjection = injectFaults(
       watch,
       faults,
       crash?.during === "delete" ? crash.after : undefined,
       point,
     );
+    const deleteMutations = deleteInjection.mutations;
     const deleted = await world.base.app.request(
       `${API}/threads/${thread.id}`,
       {
@@ -802,44 +901,90 @@ async function deletionOutcome(
       },
     );
     const deliveries = world.deliveries.splice(0);
-    await Promise.all(deliveries);
-    restoreFaults();
+    const delivered = await Promise.all(deliveries);
+    if (crash?.during !== "delete") restoreFaults();
     expect(deleted.status).toBe(200);
+    const faulted =
+      deleteInjection.crashedAt !== null ||
+      deleteMutations.some((mutation) => mutation.refused);
+    const unrecorded = `Account Pooler could not record the deletion of thread ${thread.id};`;
+    let explained = 0;
+    expectInjected(
+      "thread.deleted",
+      delivered
+        .flatMap((result) => result.errors)
+        .filter((error) => {
+          const reported =
+            faulted &&
+            error instanceof Error &&
+            error.message.startsWith(unrecorded);
+          if (reported) explained += 1;
+          return !reported;
+        }),
+    );
+    const crashes: Partial<Record<Start, CrashStatus | null>> = {
+      delete: crashStatus("delete", deleteInjection),
+    };
     const durable = await durableRecords(watch);
+    const probes: (Outcome & { lookups: number })[] = [];
 
-    await restart(undefined, false);
+    const first = await start(
+      crash?.during === "first" ? crash.after : undefined,
+      false,
+    );
     const committed = getThread(server.db, thread.id)?.deletedAt ?? null;
+    if (crash?.during === "first") {
+      crashes.first = crashStatus("first", first);
+      expectInjected("first start", first.errors);
+    } else {
+      expectNone("first start", first.errors);
+      probes.push(await probe("first start"));
+    }
+    let restartMutations: Mutation[] = [];
+    if (crash === null || crash.during === "restart") {
+      const second = await start(crash?.after, true);
+      restartMutations = second.mutations;
+      if (crash === null) expectNone("second start", second.errors);
+      else {
+        crashes.restart = crashStatus("restart", second);
+        expectInjected("crash restart", second.errors);
+      }
+    }
+    const recovery = await start(undefined, false);
+    expectNone("recovery start", recovery.errors);
+    probes.push(await probe("recovery start before its sweep"));
+    if (started === null) throw new Error("the recovery start did not start");
     injectFaults(watch, new Set());
-    const first = await probe();
+    expectNone("recovery sweep", await sweepNow(started.pool));
     restoreFaults();
-    if (crash?.during === "restart") await restart(crash.after, true);
-    const restartMutations = await restart(undefined, true);
-    injectFaults(watch, new Set());
-    const last = await probe();
-    restoreFaults();
+    probes.push(await probe("recovery start after its sweep"));
     return {
       outcome: {
-        token: first.token || last.token,
-        mint: first.mint || last.mint,
-        exported: first.exported || last.exported,
+        token: probes.some((p) => p.token),
+        mint: probes.some((p) => p.mint),
+        exported: probes.some((p) => p.exported),
       },
       committed: committed !== null,
       delivered: deliveries.length,
-      asked: first.lookups > 0 && last.lookups > 0,
+      asked: probes.every((p) => p.lookups > 0),
+      probes: probes.length,
       recorded: durable.other || durable.pending,
       kvRefused: deleteMutations.some(
         (mutation) => mutation.method === "kv" && mutation.refused,
       ),
       deleteMutations,
+      firstMutations: first.mutations,
       restartMutations,
+      crash: crash === null ? null : (crashes[crash.during] ?? "missed"),
+      unexpected,
+      explained,
       violations: watch.violations,
     };
   } finally {
     restoreFaults();
     world.current.pool = null;
     stopServices();
-    const last: Started | null = started;
-    if (last !== null) await last.pool.harness.lifecycle.dispose();
+    await live.harness.lifecycle.dispose();
     await stopServer(server);
     link.server = null;
     link.lookups = [];
@@ -851,13 +996,24 @@ export function describeDeletionMatrix(lifetime: Lifetime, files: 1 | 2): void {
   describe(`Account Pooler deletion matrix through bb's real delete route (${lifetime} credentials, ${files} credential file${files === 1 ? "" : "s"})`, () => {
     beforeAll(observePlugin);
     afterAll(stopObserving);
-    it("refuses every old token, mint and env export for every subset of refused plugin kv, content, rename, rm and directory mutations, content refused at its open, write, file sync or directory sync, and every crash point of the delete and of the next start, losing every unsynced change at each restart, minting first on a start that has not swept yet, with every lookup after the delete read by the real SDK from the thread row of a bb server restarted on its serialized database", async () => {
+    it("refuses every old token, mint and env export for every subset of refused plugin kv, content, rename, rm and directory mutations, content refused at its open, write, file sync or directory sync, and every crash point of the delete, of the first start and of the next start, each one the injected fault at exactly its mutation, losing every unsynced change at each restart, minting first on a start that has not swept yet, probing a fresh recovery instance before and after its sweep after every crash, with every lookup after the delete read by the real SDK from the thread row of a bb server restarted on its serialized database", async () => {
       const base = await createTestAppHarness();
       const rows: string[] = [];
       const runs: number[] = [];
       const violations: string[] = [];
       const failures: string[] = [];
       const retained: { cell: number; megabytes: number }[] = [];
+      const unexpected: string[] = [];
+      const beyond: string[] = [];
+      const exercised: Record<Start, Record<CrashStatus, number>> = {
+        delete: { reached: 0, beyond: 0, missed: 0 },
+        first: { reached: 0, beyond: 0, missed: 0 },
+        restart: { reached: 0, beyond: 0, missed: 0 },
+      };
+      let recoveries = 0;
+      let cleanFinals = 0;
+      let probed = 0;
+      let explained = 0;
       try {
         const world = seedWorld(base);
         for (const faults of faultSubsets())
@@ -873,17 +1029,37 @@ export function describeDeletionMatrix(lifetime: Lifetime, files: 1 | 2): void {
               violations.push(
                 ...run.violations.map((v) => `${cell} ${at}: ${v}`),
               );
+              unexpected.push(...run.unexpected.map((u) => `${cell} ${at}: ${u}`));
               outcomes.push(run.outcome);
+              if (run.crash === null) cleanFinals += 1;
+              else recoveries += 1;
+              probed += run.probes;
+              explained += run.explained;
+              const during = at.split("@")[0];
+              if (
+                run.crash !== null &&
+                (during === "delete" ||
+                  during === "first" ||
+                  during === "restart")
+              ) {
+                exercised[during][run.crash] += 1;
+                if (run.crash === "beyond")
+                  beyond.push(
+                    `${cell} | ${at} | crash point beyond this start's mutations`,
+                  );
+              }
               if (
                 run.outcome.token ||
                 run.outcome.mint ||
                 run.outcome.exported ||
                 !run.committed ||
                 run.delivered !== 1 ||
-                !run.asked
+                !run.asked ||
+                run.crash === "missed" ||
+                run.unexpected.length > 0
               )
                 failures.push(
-                  `${cell} | ${at} | durable record before the crash: ${yes(run.recorded)} | kv write refused before the crash: ${yes(run.kvRefused)} | deletedAt committed in the restarted database: ${yes(run.committed)} | thread.deleted deliveries: ${run.delivered} | bb asked after both starts: ${yes(run.asked)} | old token accepted: ${yes(run.outcome.token)} | mint succeeds: ${yes(run.outcome.mint)} | export carries a pool credential: ${yes(run.outcome.exported)}`,
+                  `${cell} | ${at} | crash point: ${run.crash ?? "none"} | unexpected errors: ${run.unexpected.length} | durable record before the crash: ${yes(run.recorded)} | kv write refused before the crash: ${yes(run.kvRefused)} | deletedAt committed in the restarted database: ${yes(run.committed)} | thread.deleted deliveries: ${run.delivered} | bb asked at every probe: ${yes(run.asked)} | old token accepted: ${yes(run.outcome.token)} | mint succeeds: ${yes(run.outcome.mint)} | export carries a pool credential: ${yes(run.outcome.exported)}`,
                 );
             };
             const first = await deletionOutcome(
@@ -905,6 +1081,18 @@ export function describeDeletionMatrix(lifetime: Lifetime, files: 1 | 2): void {
                 `delete@${after}`,
                 await deletionOutcome(world, lifetime, faults, point, files, {
                   during: "delete",
+                  after,
+                }),
+              );
+            for (
+              let after = 0;
+              after < first.firstMutations.length;
+              after += 1
+            )
+              note(
+                `first@${after}`,
+                await deletionOutcome(world, lifetime, faults, point, files, {
+                  during: "first",
                   after,
                 }),
               );
@@ -936,24 +1124,36 @@ export function describeDeletionMatrix(lifetime: Lifetime, files: 1 | 2): void {
           `deletion matrix through bb's real delete route (${label}); every unsynced change is lost at each restart, the first start mints, exports and authenticates before any sweep, and every lookup after the delete reads bb's restarted database through the real SDK:`,
           ...rows,
           "",
-          `runs that accepted an old token, minted, exported a pool credential, lost the committed delete, did not receive exactly one thread.deleted or never asked bb (${label}: ${failures.length}):`,
+          `runs that accepted an old token, minted, exported a pool credential, lost the committed delete, did not receive exactly one thread.deleted, never asked bb, missed its crash point or hit an error that was not injected (${label}: ${failures.length}):`,
           ...failures,
           "",
           `invariant violations (${label}: ${violations.length}):`,
           ...violations,
+          "",
+          `crash points (${label}): ${(["delete", "first", "restart"] as const).map((during) => `${during === "delete" ? "delete" : during === "first" ? "first start" : "crash restart"} ${exercised[during].reached + exercised[during].beyond + exercised[during].missed} exercised, ${exercised[during].reached} reached, ${exercised[during].beyond} beyond, ${exercised[during].missed} missed`).join("; ")}; final start: 0 crash points, ${recoveries} recovery starts after a crash point, each a fresh plugin instance over the crashed data directory and the restarted database, and ${cleanFinals} final starts after a run without a crash, every one probed before and after its sweep (${probed} probes in all)`,
+          `thread.deleted reported the deletion unrecorded after an injected refusal or crash of that delete (${label}: ${explained})`,
+          `crash points beyond this start's mutations (${label}: ${beyond.length}):`,
+          ...beyond,
+          "",
+          `unexpected errors (${label}: ${unexpected.length}):`,
+          ...unexpected,
           "",
           `retained heap after a full GC (${label}): ${retained.map(({ cell, megabytes }) => `cell ${cell} ${megabytes} MB`).join(", ")}`,
           `worker memory (${label}): heap used ${Math.round(process.memoryUsage().heapUsed / 1_048_576)} MB at the end, heap limit ${Math.round(getHeapStatistics().heap_size_limit / 1_048_576)} MB, peak resident ${Math.round(process.resourceUsage().maxRSS / 1024)} MB`,
         ].join("\n")}\n`,
       );
       expect(violations).toEqual([]);
+      expect(unexpected).toEqual([]);
+      expect(beyond).toEqual([]);
       expect(failures).toEqual([]);
+      expect(exercised.restart.reached).toBeGreaterThan(0);
+      expect(exercised.delete.reached).toBeGreaterThan(0);
       expect(rows).toHaveLength(80);
       expect(retained.map(({ cell }) => cell)).toEqual(SAMPLED_CELLS);
       const growth =
         (retained.at(-1)?.megabytes ?? 0) - (retained[0]?.megabytes ?? 0);
       expect(growth).toBeLessThan(MAX_RETAINED_GROWTH_MB);
       expect(runs.every((count) => count > 1)).toBe(true);
-    }, 1_200_000);
+    }, 1_800_000);
   });
 }
