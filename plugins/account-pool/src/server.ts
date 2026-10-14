@@ -430,8 +430,7 @@ export function createAccountPoolPlugin(
         return threadTokens.removeThreadIfVersion(threadId, archiveVersion);
       if (thread.archivedAt !== null)
         return threadTokens.suspendThreadIfVersion(threadId, archiveVersion);
-      await threadTokens.restoreThread(threadId, archiveVersion);
-      return false;
+      return !(await threadTokens.restoreThread(threadId, archiveVersion));
     };
     const sweepThreadCredentialsOnce = async (
       serviceSignal: AbortSignal,

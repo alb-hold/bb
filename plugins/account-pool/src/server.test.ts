@@ -10735,6 +10735,66 @@ describe("Account Pool credential scoping", () => {
     expect(await statusOf(host, nested, "/availability")).toBe(200);
   });
 
+  it("rejects both token paths when thread.archived arrives while a restore is paused after its version check, and keeps the credentials", async () => {
+    const fixture = await scopedFixture();
+    const { host } = fixture;
+    const secrets = path.join(fixture.dataDir, ...POOL_SECRETS);
+    const claude = await claudeToken(host, "thread-race");
+    const nested = await nestedToken(host, "thread-race");
+    bbThreadStates.set("thread-race", "archived");
+    expect(
+      await host.harness.behavior.emitThreadEvent("thread.archived", {
+        thread: makeThreadResponse({ id: "thread-race" }),
+      }),
+    ).toEqual({ errors: [] });
+    bbThreadStates.delete("thread-race");
+    let open = () => {};
+    const gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    let reach = () => {};
+    const reached = new Promise<void>((resolve) => {
+      reach = resolve;
+    });
+    let paused = false;
+    const readdir = fs.readdir.bind(fs) as (
+      ...args: unknown[]
+    ) => Promise<unknown>;
+    const spy = vi.spyOn(fs, "readdir").mockImplementation((async (
+      ...args: unknown[]
+    ) => {
+      if (!paused && String(args[0]) === secrets) {
+        paused = true;
+        reach();
+        await gate;
+      }
+      return readdir(...args);
+    }) as never);
+    const inFlight = Promise.all([
+      statusOf(host, claude, "/v1/messages"),
+      statusOf(host, nested, "/availability"),
+    ]);
+    await reached;
+    bbThreadStates.set("thread-race", "archived");
+    const archived = host.harness.behavior.emitThreadEvent("thread.archived", {
+      thread: makeThreadResponse({ id: "thread-race" }),
+    });
+    spy.mockRestore();
+    open();
+    expect(await inFlight).toEqual([401, 401]);
+    expect(await archived).toEqual({ errors: [] });
+    expect(await statusOf(host, claude, "/v1/messages")).toBe(401);
+    expect(await statusOf(host, nested, "/availability")).toBe(401);
+    expect(
+      (await fs.readdir(secrets)).filter((name) =>
+        name.includes("thread-race"),
+      ),
+    ).toHaveLength(2);
+    bbThreadStates.delete("thread-race");
+    expect(await statusOf(host, claude, "/v1/messages")).toBe(200);
+    expect(await statusOf(host, nested, "/availability")).toBe(200);
+  });
+
   it("suspends on archive, accepts the same tokens after unarchive and revokes on delete", async () => {
     const fixture = await scopedFixture();
     const { host } = fixture;

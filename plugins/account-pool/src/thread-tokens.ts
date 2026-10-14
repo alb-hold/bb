@@ -384,7 +384,8 @@ export class ThreadTokenStore {
     const match = lookup(this.tokenIndex, token);
     if (match === null || this.credentialExpired(match)) return null;
     const { record } = match;
-    if (!(await this.admit(record.threadId))) return null;
+    const admitted = await this.admit(record.threadId);
+    if (admitted === null) return null;
     if (provider !== undefined && provider !== record.provider) return null;
     if (
       !(await this.hosts.authenticateGeneration(
@@ -394,6 +395,7 @@ export class ThreadTokenStore {
     )
       return null;
     await this.noteUse({ nested: false, record }, match.prior);
+    if (this.archiveVersion(record.threadId) !== admitted) return null;
     return {
       hostId: record.hostId,
       threadId: record.threadId,
@@ -417,7 +419,8 @@ export class ThreadTokenStore {
     const match = lookup(this.nestedTokenIndex, token);
     if (match === null || this.credentialExpired(match)) return null;
     const { record } = match;
-    if (!(await this.admit(record.threadId))) return null;
+    const admitted = await this.admit(record.threadId);
+    if (admitted === null) return null;
     if (
       !(await this.hosts.authenticateGeneration(
         record.hostId,
@@ -426,6 +429,7 @@ export class ThreadTokenStore {
     )
       return null;
     await this.noteUse({ nested: true, record }, match.prior);
+    if (this.archiveVersion(record.threadId) !== admitted) return null;
     return { hostId: record.hostId, threadId: record.threadId };
   }
 
@@ -603,9 +607,10 @@ export class ThreadTokenStore {
   async restoreThread(
     threadId: string,
     expectedVersion: number,
-  ): Promise<void> {
-    await this.serialize(async () => {
-      if (this.archiveVersion(threadId) !== expectedVersion) return;
+  ): Promise<boolean> {
+    return this.serialize(async () => {
+      const current = () => this.archiveVersion(threadId) === expectedVersion;
+      if (!current()) return false;
       if (
         this.activeArchiveMarkers.has(threadId) ||
         (this.archiveEpoch(threadId) === 0 &&
@@ -613,9 +618,10 @@ export class ThreadTokenStore {
           !this.hasMarkerFailure(threadId) &&
           !this.archiveDurabilityFailures.has(threadId))
       ) {
-        return;
+        return true;
       }
       await this.isArchived(threadId);
+      if (!current()) return false;
       const markerUnknown = this.hasTransientArchiveReadFailure(threadId);
       let names: string[] | null = null;
       try {
@@ -623,45 +629,66 @@ export class ThreadTokenStore {
       } catch {
         names = null;
       }
+      if (!current()) return false;
       const epoch = Math.max(
         this.archiveEpoch(threadId),
         names === null ? 0 : this.maxEpochIn(threadId, names),
       );
-      this.archivedThreads.delete(threadId);
-      this.activeArchiveMarkers.add(threadId);
-      this.archiveEpochs.set(threadId, epoch);
-      this.clearMarkerFailures(threadId);
-      this.archiveDurabilityFailures.delete(threadId);
       await this.persistArchiveMarker(threadId, epoch, false).catch(
         () => undefined,
       );
-      if (names === null) return;
-      for (const name of this.suspendedFiles(threadId, names))
-        await fs
-          .rename(
-            path.join(this.directory, name),
-            path.join(this.directory, name.slice(SUSPENDED_FILE_PREFIX.length)),
-          )
-          .catch(() => undefined);
-      if (!markerUnknown && !this.hasLoadedCredentials(threadId))
-        await this.loadThreadFiles(threadId, await fs.readdir(this.directory));
+      if (names !== null) {
+        for (const name of this.suspendedFiles(threadId, names)) {
+          if (!current()) return false;
+          await fs
+            .rename(
+              path.join(this.directory, name),
+              path.join(
+                this.directory,
+                name.slice(SUSPENDED_FILE_PREFIX.length),
+              ),
+            )
+            .catch(() => undefined);
+        }
+        if (!current()) return false;
+        if (!markerUnknown && !this.hasLoadedCredentials(threadId))
+          await this.loadThreadFiles(
+            threadId,
+            await fs.readdir(this.directory),
+          );
+      }
+      if (!current()) return false;
+      this.archivedThreads.delete(threadId);
+      this.activeArchiveMarkers.add(threadId);
+      this.archiveEpochs.set(
+        threadId,
+        Math.max(this.archiveEpoch(threadId), epoch),
+      );
+      this.clearMarkerFailures(threadId);
+      this.archiveDurabilityFailures.delete(threadId);
+      return true;
     });
   }
 
-  private async admit(threadId: string): Promise<boolean> {
-    if (this.threadState === undefined)
-      return !(await this.isArchived(threadId));
+  private async admit(threadId: string): Promise<number | null> {
+    if (this.threadState === undefined) {
+      const version = this.archiveVersion(threadId);
+      if (await this.isArchived(threadId)) return null;
+      return this.archiveVersion(threadId) === version ? version : null;
+    }
     let answer: { status: "live" | "archived" | "gone"; version: number };
     try {
       answer = await this.askBb(threadId);
     } catch (error) {
       this.warnUnanswered(threadId, error);
-      return false;
+      return null;
     }
     if (answer.status === "live") {
-      if (this.archiveVersion(threadId) !== answer.version) return false;
-      await this.restoreThread(threadId, answer.version);
-      return !(await this.isArchived(threadId));
+      if (!(await this.restoreThread(threadId, answer.version))) return null;
+      if (await this.isArchived(threadId)) return null;
+      return this.archiveVersion(threadId) === answer.version
+        ? answer.version
+        : null;
     }
     if (answer.status === "archived")
       await this.suspendThreadIfVersion(threadId, answer.version).catch(
@@ -671,7 +698,7 @@ export class ThreadTokenStore {
       await this.removeThreadIfVersion(threadId, answer.version).catch(
         () => undefined,
       );
-    return false;
+    return null;
   }
 
   private askBb(
@@ -757,6 +784,7 @@ export class ThreadTokenStore {
         throw error;
       }
     }
+    if (!archived) return;
     this.clearMarkerFailures(threadId);
     this.archiveDurabilityFailures.delete(threadId);
   }
@@ -1386,6 +1414,7 @@ export class ThreadTokenStore {
   }
 
   private async isArchived(threadId: string): Promise<boolean> {
+    const version = this.archiveVersion(threadId);
     const names = this.archiveMarkerNames(threadId);
     if (names.some((name) => this.corruptArchiveMarkers.has(name))) return true;
     if (names.some((name) => this.transientArchiveReadFailures.has(name))) {
@@ -1396,9 +1425,11 @@ export class ThreadTokenStore {
             path.join(this.directory, name),
             "utf8",
           );
+          if (this.archiveVersion(threadId) !== version) return true;
           this.seenArchiveMarkers.add(name);
           this.applyArchiveState(name, text);
         } catch (error) {
+          if (this.archiveVersion(threadId) !== version) return true;
           if (isNodeError(error) && error.code === "ENOENT") {
             this.transientArchiveReadFailures.delete(name);
             continue;

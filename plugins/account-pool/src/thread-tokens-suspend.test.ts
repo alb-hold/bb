@@ -143,6 +143,165 @@ function crashAfter(
   return { crashed: () => crashed };
 }
 
+const PAUSED_FS_METHODS = [
+  "readdir",
+  "readFile",
+  "open",
+  "rename",
+  "rm",
+  "writeFile",
+  "mkdir",
+  "chmod",
+] as const;
+
+function pauseAt(
+  point: number,
+  only: (method: string) => boolean = () => true,
+) {
+  let count = 0;
+  let open = () => {};
+  const gate = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  let reach = () => {};
+  const paused = new Promise<void>((resolve) => {
+    reach = resolve;
+  });
+  const step = async () => {
+    count += 1;
+    if (count !== point) return;
+    reach();
+    await gate;
+  };
+  for (const method of PAUSED_FS_METHODS) {
+    const original = (
+      fs[method] as (...args: unknown[]) => Promise<unknown>
+    ).bind(fs);
+    vi.spyOn(fs, method).mockImplementation((async (...args: unknown[]) => {
+      if (only(method)) await step();
+      return original(...args);
+    }) as never);
+  }
+  return {
+    step,
+    paused,
+    release: () => {
+      vi.restoreAllMocks();
+      open();
+    },
+  };
+}
+
+type Transition = "restore" | "suspend" | "remove" | "admit";
+type ThreadEvent = "archived" | "unarchived" | "deleted";
+
+async function threadFiles(directory: string): Promise<string[]> {
+  return (await fs.readdir(directory))
+    .filter((name) => name.includes(route.threadId))
+    .map((name) => name.replace(/^suspended-/, ""))
+    .sort();
+}
+
+async function interleave(
+  lifetime: Lifetime,
+  transition: Transition,
+  event: ThreadEvent,
+  point: number,
+): Promise<boolean> {
+  const w = await world();
+  let step = async () => {};
+  const lookup: ThreadLookup = async (threadId, signal) => {
+    await step();
+    return w.lookup(threadId, signal);
+  };
+  const store = new ThreadTokenStore(w.directory, w.hosts, w.clock, lookup);
+  await store.initialize([route.hostId]);
+  const tokens = await mint(store, w.hostToken, lifetime);
+  const stored = await threadFiles(w.directory);
+  if (transition === "restore" || transition === "admit") {
+    w.setBb("archived");
+    await store.suspendThread(route.threadId);
+    w.setBb("live");
+  } else {
+    w.setBb(transition === "suspend" ? "archived" : "gone");
+  }
+  const pause = pauseAt(point);
+  step = pause.step;
+  let inFlight: { token: boolean; nested: boolean } | null = null;
+  const done = { token: false, nested: false };
+  const run = (async () => {
+    if (transition === "restore")
+      await store.restoreThread(
+        route.threadId,
+        store.archiveVersion(route.threadId),
+      );
+    else if (transition === "suspend")
+      await store.suspendThread(route.threadId);
+    else if (transition === "remove") await store.removeThread(route.threadId);
+    else {
+      const [token, nested] = await Promise.all([
+        store.authenticate(tokens.token).finally(() => {
+          done.token = true;
+        }),
+        store.authenticateNested(tokens.nested).finally(() => {
+          done.nested = true;
+        }),
+      ]);
+      inFlight = { token: token !== null, nested: nested !== null };
+    }
+  })();
+  const reached = await Promise.race([
+    pause.paused.then(() => true),
+    run.then(() => false),
+  ]);
+  if (!reached) {
+    pause.release();
+    return false;
+  }
+  const final =
+    transition === "remove" || event === "deleted"
+      ? "gone"
+      : event === "archived"
+        ? "archived"
+        : "live";
+  w.setBb(final);
+  const before = { ...done };
+  const delivered =
+    event === "archived"
+      ? store.suspendThread(route.threadId)
+      : event === "deleted"
+        ? store.removeThread(route.threadId)
+        : (async () => {
+            const version = store.archiveVersion(route.threadId);
+            if ((await w.lookup(route.threadId)) === "live")
+              await store.restoreThread(route.threadId, version);
+          })();
+  step = async () => {};
+  pause.release();
+  await run;
+  await delivered;
+  const both = (value: boolean) => ({ token: value, nested: value });
+  const at = `${transition} paused at point ${point}, then ${event}`;
+  if (inFlight !== null)
+    expect(inFlight, `${at}: in flight`).toEqual({
+      token: before.token || final === "live",
+      nested: before.nested || final === "live",
+    });
+  expect(await accepted(store, tokens), `${at}: next request`).toEqual(
+    both(final === "live"),
+  );
+  if (final === "archived") {
+    expect(await threadFiles(w.directory), `${at}: files`).toEqual(stored);
+    w.setBb("live");
+    expect(await accepted(store, tokens), `${at}: once live`).toEqual(
+      both(true),
+    );
+  }
+  if (final === "gone")
+    expect(await threadFiles(w.directory), `${at}: files`).toEqual([]);
+  return true;
+}
+
 describe.each(["durable", "process"] as const)("%s credentials", (lifetime) => {
   it("accepts the same tokens after unarchive, in process and across a restart", async () => {
     const w = await world();
@@ -573,4 +732,50 @@ describe.each(["durable", "process"] as const)("%s credentials", (lifetime) => {
       expect(mutations).toBeGreaterThan(1);
     });
   }
+  it("rejects both token paths when thread.archived arrives while restore is paused after its version check, and keeps the credentials", async () => {
+    const w = await world();
+    const store = await w.open();
+    const tokens = await mint(store, w.hostToken, lifetime);
+    const stored = await threadFiles(w.directory);
+    w.setBb("archived");
+    await store.suspendThread(route.threadId);
+    w.setBb("live");
+    const pause = pauseAt(1, (method) => method === "readdir");
+    const inFlight = Promise.all([
+      store.authenticate(tokens.token),
+      store.authenticateNested(tokens.nested),
+    ]);
+    await pause.paused;
+    w.setBb("archived");
+    const archived = store.suspendThread(route.threadId);
+    pause.release();
+    expect(await inFlight).toEqual([null, null]);
+    await archived;
+    expect(await accepted(store, tokens)).toEqual({
+      token: false,
+      nested: false,
+    });
+    expect(await threadFiles(w.directory)).toEqual(stored);
+    w.setBb("live");
+    expect(await accepted(store, tokens)).toEqual({
+      token: true,
+      nested: true,
+    });
+  });
+
+  it.each(["restore", "suspend", "remove", "admit"] as const)(
+    "ends in the state of the last event when archive, unarchive or delete arrives at any pause of %s",
+    async (transition) => {
+      let deepest = 0;
+      for (const event of ["archived", "unarchived", "deleted"] as const) {
+        let point = 1;
+        while (await interleave(lifetime, transition, event, point)) {
+          deepest = Math.max(deepest, point);
+          point += 1;
+        }
+      }
+      expect(deepest).toBeGreaterThan(1);
+    },
+    120_000,
+  );
 });

@@ -1799,7 +1799,7 @@ it("uses a fallback archive marker when the primary marker cannot be written", a
         route.threadId,
         threads.archiveVersion(route.threadId),
       ),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe(true);
   } finally {
     restoreWrite.mockRestore();
   }
