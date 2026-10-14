@@ -12,7 +12,8 @@ import {
 import fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { getHeapStatistics } from "node:v8";
+import { getHeapStatistics, setFlagsFromString } from "node:v8";
+import { runInNewContext } from "node:vm";
 import { createConnection, getThread, type DbConnection } from "@bb/db";
 import { createBbSdk } from "@bb/sdk/core";
 import { createHttpTransport } from "@bb/sdk/node";
@@ -481,6 +482,38 @@ function faultLabel(
 
 const yes = (value: boolean) => (value ? "yes" : "no");
 
+const SAMPLED_CELLS = [1, 40, 80];
+const MAX_RETAINED_GROWTH_MB = 64;
+setFlagsFromString("--expose-gc");
+const collectGarbage: () => void = runInNewContext("gc");
+
+function retainedHeap(): number {
+  collectGarbage();
+  return Math.round(process.memoryUsage().heapUsed / 1_048_576);
+}
+
+type BbLink = { server: Server | null; lookups: string[] };
+const STOPPED = "the deletion matrix stopped this plugin host";
+
+function fakeBbSdk(host: World["host"], link: BbLink) {
+  return {
+    hosts: { list: async () => [host] },
+    system: { providerStates: async () => ({ providers: [] }) },
+    threads: {
+      get: async (args: { threadId: string; signal?: AbortSignal }) => {
+        link.lookups.push(args.threadId);
+        if (link.server === null) throw new Error("bb's server is stopped");
+        return link.server.sdk.threads.get(args);
+      },
+    },
+    plugins: {
+      list: async () => ({
+        plugins: [{ id: "account-pool", enabled: true }],
+      }),
+    },
+  };
+}
+
 type World = {
   base: TestAppHarness;
   hostId: string;
@@ -568,25 +601,15 @@ async function deletionOutcome(
     harness: null,
     sdk: realSdk(world.base),
   };
-  const lookups: string[] = [];
+  const link: BbLink = { server, lookups: [] };
+  const services: AbortController[] = [];
+  const stopServices = () => {
+    for (const controller of services.splice(0)) controller.abort(STOPPED);
+  };
   const pool0 = createFakePluginHost({
     pluginId: "account-pool",
     dataDir,
-    sdk: {
-      hosts: { list: async () => [world.host] },
-      system: { providerStates: async () => ({ providers: [] }) },
-      threads: {
-        get: async (args: { threadId: string; signal?: AbortSignal }) => {
-          lookups.push(args.threadId);
-          return server.sdk.threads.get(args);
-        },
-      },
-      plugins: {
-        list: async () => ({
-          plugins: [{ id: "account-pool", enabled: true }],
-        }),
-      },
-    },
+    sdk: fakeBbSdk(world.host, link),
   });
   const watch: Watch = {
     dataDir,
@@ -660,7 +683,9 @@ async function deletionOutcome(
     sweep: boolean,
   ): Promise<Mutation[]> => {
     if (started === null) throw new Error("no plugin host to restart");
+    stopServices();
     server = await restartServer(server);
+    link.server = server;
     let mutations: Mutation[] = [];
     let atFactoryEnd = 0;
     const previous: Started = started;
@@ -683,7 +708,7 @@ async function deletionOutcome(
       world.current.pool = pool;
       if (sweep) {
         captured.sweep = null;
-        pool.harness.behavior.runService("hub");
+        services.push(pool.harness.behavior.runService("hub").controller);
         const sweep = sweeping();
         if (sweep === null)
           throw new Error("the start did not sweep the thread credentials");
@@ -698,7 +723,7 @@ async function deletionOutcome(
   const probe = async (): Promise<Outcome & { lookups: number }> => {
     if (started === null) throw new Error("no plugin host to probe");
     const { pool, threadTokens, hostTokens } = started;
-    lookups.length = 0;
+    link.lookups = [];
     const hostToken = await hostTokens.forHost(world.hostId);
     const minted = [
       await threadTokens.forThread(route, hostToken, lifetime).then(
@@ -715,7 +740,9 @@ async function deletionOutcome(
       (await threadTokenAccepted(pool, tokens.token)) ||
       (tokens.nested !== null &&
         (await nestedTokenAccepted(pool, tokens.nested)));
-    const rows = lookups.filter((threadId) => threadId === thread.id).length;
+    const rows = link.lookups.filter(
+      (threadId) => threadId === thread.id,
+    ).length;
     return { token, mint: minted.some(Boolean), exported, lookups: rows };
   };
   const tokens: { token: string; nested: string | null } = {
@@ -810,9 +837,12 @@ async function deletionOutcome(
   } finally {
     restoreFaults();
     world.current.pool = null;
+    stopServices();
     const last: Started | null = started;
     if (last !== null) await last.pool.harness.lifecycle.dispose();
     await stopServer(server);
+    link.server = null;
+    link.lookups = [];
     await fs.rm(dataDir, { recursive: true, force: true });
   }
 }
@@ -827,6 +857,7 @@ export function describeDeletionMatrix(lifetime: Lifetime, files: 1 | 2): void {
       const runs: number[] = [];
       const violations: string[] = [];
       const failures: string[] = [];
+      const retained: { cell: number; megabytes: number }[] = [];
       try {
         const world = seedWorld(base);
         for (const faults of faultSubsets())
@@ -893,6 +924,8 @@ export function describeDeletionMatrix(lifetime: Lifetime, files: 1 | 2): void {
               `${cell} | durable record: ${yes(first.recorded)} | old token accepted: ${yes(outcomes.some((o) => o.token))} | mint succeeds: ${yes(outcomes.some((o) => o.mint))} | export carries a pool credential: ${yes(outcomes.some((o) => o.exported))} | runs: ${outcomes.length}`,
             );
             runs.push(outcomes.length);
+            if (SAMPLED_CELLS.includes(rows.length))
+              retained.push({ cell: rows.length, megabytes: retainedHeap() });
           }
       } finally {
         await base.cleanup();
@@ -909,12 +942,17 @@ export function describeDeletionMatrix(lifetime: Lifetime, files: 1 | 2): void {
           `invariant violations (${label}: ${violations.length}):`,
           ...violations,
           "",
+          `retained heap after a full GC (${label}): ${retained.map(({ cell, megabytes }) => `cell ${cell} ${megabytes} MB`).join(", ")}`,
           `worker memory (${label}): heap used ${Math.round(process.memoryUsage().heapUsed / 1_048_576)} MB at the end, heap limit ${Math.round(getHeapStatistics().heap_size_limit / 1_048_576)} MB, peak resident ${Math.round(process.resourceUsage().maxRSS / 1024)} MB`,
         ].join("\n")}\n`,
       );
       expect(violations).toEqual([]);
       expect(failures).toEqual([]);
       expect(rows).toHaveLength(80);
+      expect(retained.map(({ cell }) => cell)).toEqual(SAMPLED_CELLS);
+      const growth =
+        (retained.at(-1)?.megabytes ?? 0) - (retained[0]?.megabytes ?? 0);
+      expect(growth).toBeLessThan(MAX_RETAINED_GROWTH_MB);
       expect(runs.every((count) => count > 1)).toBe(true);
     }, 1_200_000);
   });
