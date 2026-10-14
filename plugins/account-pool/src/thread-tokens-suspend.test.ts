@@ -308,14 +308,16 @@ function injectFaults(
     );
   }
   const originalOpen = fs.open.bind(fs);
+  const unsynced = async (opening: ReturnType<typeof fs.open>) =>
+    Object.assign(await opening, { sync: async () => undefined });
   vi.spyOn(fs, "open").mockImplementation(async (file, flags, mode) => {
     if (flags === undefined || flags === "r")
-      return originalOpen(file, flags, mode);
+      return unsynced(originalOpen(file, flags, mode));
     const record = DELETION_WRITES.some((fragment) =>
       path.basename(String(file)).startsWith(fragment),
     );
     return attempt("open", file, record ? "content" : null, () =>
-      originalOpen(file, flags, mode),
+      unsynced(originalOpen(file, flags, mode)),
     );
   });
   for (const [method, fault] of [
@@ -367,6 +369,7 @@ async function deletionOutcome(
   crash: { during: "delete" | "restart"; after: number } | null,
   answer: BbAnswer,
 ) {
+  injectFaults(new Set());
   const w = await world();
   const watch: Watch = { directory: w.directory, kv: w.kv, violations: [] };
   const store = await w.open();
@@ -375,6 +378,7 @@ async function deletionOutcome(
     files === 2
       ? await store.forNested(nestedRoute, w.hostToken, lifetime)
       : null;
+  vi.restoreAllMocks();
   w.setBb("gone");
   const deleteMutations = injectFaults(
     faults,
@@ -392,6 +396,7 @@ async function deletionOutcome(
   const restartMutations = injectFaults(new Set(), undefined, watch);
   const restarted = await w.open();
   vi.restoreAllMocks();
+  injectFaults(new Set());
   const oldTokenAccepted =
     (await restarted.authenticate(token)) !== null ||
     (nested !== null && (await restarted.authenticateNested(nested)) !== null);
@@ -404,6 +409,8 @@ async function deletionOutcome(
       () => true,
       () => false,
     ));
+  vi.restoreAllMocks();
+  await fs.rm(w.directory, { recursive: true, force: true });
   return {
     outcome: { token: oldTokenAccepted, mint },
     recorded: deleteMutations.some(recordsDeletion),
