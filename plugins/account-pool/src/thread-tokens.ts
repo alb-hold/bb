@@ -114,7 +114,9 @@ export type NestedRoute = Omit<
 export type ThreadLookup = (
   threadId: string,
   signal?: AbortSignal,
-) => Promise<"live" | "gone">;
+) => Promise<"live" | "archived" | "gone">;
+export const THREAD_STATE_LOOKUP_TIMEOUT_MS = 5_000;
+export const ARCHIVED_STATE_RECHECK_MS = 30_000;
 export type ThreadSweepOptions = {
   signal?: AbortSignal;
   lookupTimeoutMs?: number;
@@ -140,6 +142,8 @@ export class ThreadTokenStore {
   private archiveMarkersLoaded = false;
   private readonly lookupFailures = new Map<string, number>();
   private readonly archiveVersions = new Map<string, number>();
+  private readonly archiveChecks = new Map<string, number>();
+  private readonly pendingArchiveChecks = new Map<string, Promise<boolean>>();
   private tail: Promise<void> = Promise.resolve();
   private readonly pendingPriorDrops = new WeakSet<object>();
 
@@ -147,6 +151,7 @@ export class ThreadTokenStore {
     private readonly directory: string,
     private readonly hosts: HubTokenStore,
     private readonly now: () => number = Date.now,
+    private readonly threadState?: ThreadLookup,
   ) {}
 
   async initialize(hostIds: readonly string[]): Promise<void> {
@@ -221,7 +226,6 @@ export class ThreadTokenStore {
         return;
       if (
         record !== null &&
-        !archived &&
         this.restorable(record) &&
         this.fileEpoch(name) === this.archiveEpoch(record.threadId) &&
         (await this.isLive(record, enrolled))
@@ -234,10 +238,7 @@ export class ThreadTokenStore {
       name.startsWith(PROCESS_NESTED_ROUTE_PREFIX) ||
       name.startsWith(LEGACY_NESTED_ROUTE_PREFIX)
     ) {
-      const loaded = await this.readCredential(
-        file,
-        readableNestedRouteSchema,
-      );
+      const loaded = await this.readCredential(file, readableNestedRouteSchema);
       const record =
         loaded === null
           ? null
@@ -260,7 +261,6 @@ export class ThreadTokenStore {
         return;
       if (
         record !== null &&
-        !archived &&
         this.restorable(record) &&
         this.fileEpoch(name) === this.archiveEpoch(record.threadId) &&
         (await this.isLive(record, enrolled))
@@ -373,7 +373,11 @@ export class ThreadTokenStore {
     const match = lookup(this.tokenIndex, token);
     if (match === null || this.credentialExpired(match)) return null;
     const { record } = match;
-    if (await this.isArchived(record.threadId)) return null;
+    if (
+      (await this.isArchived(record.threadId)) &&
+      !(await this.recheckArchived(record.threadId))
+    )
+      return null;
     if (provider !== undefined && provider !== record.provider) return null;
     if (
       !(await this.hosts.authenticateGeneration(
@@ -406,7 +410,11 @@ export class ThreadTokenStore {
     const match = lookup(this.nestedTokenIndex, token);
     if (match === null || this.credentialExpired(match)) return null;
     const { record } = match;
-    if (await this.isArchived(record.threadId)) return null;
+    if (
+      (await this.isArchived(record.threadId)) &&
+      !(await this.recheckArchived(record.threadId))
+    )
+      return null;
     if (
       !(await this.hosts.authenticateGeneration(
         record.hostId,
@@ -420,12 +428,15 @@ export class ThreadTokenStore {
 
   async removeThread(threadId: string): Promise<void> {
     this.archiveVersions.set(threadId, this.archiveVersion(threadId) + 1);
-    const advanceEpoch = !this.archivedThreads.has(threadId);
     this.archivedThreads.add(threadId);
     this.activeArchiveMarkers.delete(threadId);
+    this.archiveChecks.set(threadId, this.now());
     await this.serialize(async () => {
-      const epoch = this.archiveEpoch(threadId);
-      const nextEpoch = advanceEpoch ? epoch + 1 : epoch;
+      const epoch = Math.max(
+        this.archiveEpoch(threadId),
+        await this.maxFileEpoch(threadId).catch(() => 0),
+      );
+      const nextEpoch = epoch + 1;
       this.archiveEpochs.set(threadId, nextEpoch);
       let names: string[] = [];
       let directoryReadFailed = false;
@@ -434,66 +445,54 @@ export class ThreadTokenStore {
       } catch {
         directoryReadFailed = true;
       }
-      const shouldPersist =
-        directoryReadFailed ||
-        this.archiveMarkerNames(threadId).some((name) =>
-          this.seenArchiveMarkers.has(name),
-        ) ||
-        [...this.routes.values()].some(
-          (record) => record.threadId === threadId,
-        ) ||
-        [...this.nestedRoutes.values()].some(
-          (record) => record.threadId === threadId,
-        ) ||
-        this.hasCredentialFile(threadId, names);
       let markerError: unknown;
-      if (shouldPersist) {
+      if (directoryReadFailed || this.holdsCredentials(threadId, names)) {
         try {
-          await this.persist(this.archivedFile(threadId), {
-            threadId,
-            epoch: nextEpoch,
-            archived: true,
-          });
-          this.seenArchiveMarkers.add(this.archivedName(threadId));
-          this.clearMarkerFailures(threadId);
-          this.archiveDurabilityFailures.delete(threadId);
+          await this.persistArchiveMarker(threadId, nextEpoch, true);
         } catch (error) {
-          try {
-            await this.persist(this.archiveFallbackFile(threadId), {
-              threadId,
-              epoch: nextEpoch,
-              archived: true,
-            });
-            this.seenArchiveMarkers.add(this.archiveFallbackName(threadId));
-            this.clearMarkerFailures(threadId);
-            this.archiveDurabilityFailures.delete(threadId);
-          } catch {
-            markerError = error;
-            this.archiveDurabilityFailures.add(threadId);
-          }
+          markerError = error;
         }
       }
       for (const [key, record] of this.routes) {
         if (record.threadId !== threadId) continue;
         this.routes.delete(key);
         unindexCredential(this.tokenIndex, record);
-        await this.removeProviderFiles(
-          record,
-          Math.max(0, nextEpoch - 1),
-        ).catch(() => undefined);
+        await this.removeProviderFiles(record, epoch).catch(() => undefined);
       }
       for (const [key, record] of this.nestedRoutes) {
         if (record.threadId !== threadId) continue;
         this.nestedRoutes.delete(key);
         unindexCredential(this.nestedTokenIndex, record);
-        await this.removeNestedFiles(record, Math.max(0, nextEpoch - 1)).catch(
-          () => undefined,
-        );
+        await this.removeNestedFiles(record, epoch).catch(() => undefined);
       }
       await this.quarantineUnreadableLegacyFiles(threadId, names).catch(
         () => undefined,
       );
       if (markerError !== undefined) throw markerError;
+    });
+  }
+
+  async suspendThread(threadId: string): Promise<void> {
+    this.archiveVersions.set(threadId, this.archiveVersion(threadId) + 1);
+    this.archivedThreads.add(threadId);
+    this.activeArchiveMarkers.delete(threadId);
+    this.archiveChecks.set(threadId, this.now());
+    await this.serialize(async () => {
+      let names: string[] = [];
+      let directoryReadFailed = false;
+      try {
+        names = await fs.readdir(this.directory);
+      } catch {
+        directoryReadFailed = true;
+      }
+      if (!directoryReadFailed && !this.holdsCredentials(threadId, names))
+        return;
+      const epoch = Math.max(
+        this.archiveEpoch(threadId),
+        directoryReadFailed ? 0 : this.maxEpochIn(threadId, names),
+      );
+      this.archiveEpochs.set(threadId, epoch);
+      await this.persistArchiveMarker(threadId, epoch, true);
     });
   }
 
@@ -537,7 +536,14 @@ export class ThreadTokenStore {
           lookupSignal,
         );
         this.lookupFailures.delete(threadId);
-        if (status === "live") continue;
+        if (status === "live") {
+          await this.restoreThread(threadId, version);
+          continue;
+        }
+        if (status === "archived") {
+          await this.suspendThreadIfVersion(threadId, version);
+          continue;
+        }
         if (await this.removeThreadIfVersion(threadId, version))
           result.revoked += 1;
       } catch {
@@ -561,6 +567,16 @@ export class ThreadTokenStore {
     return true;
   }
 
+  async suspendThreadIfVersion(
+    threadId: string,
+    expectedVersion: number,
+  ): Promise<boolean> {
+    if (this.archiveVersion(threadId) !== expectedVersion)
+      return this.archivedThreads.has(threadId);
+    await this.suspendThread(threadId);
+    return true;
+  }
+
   archiveVersion(threadId: string): number {
     return this.archiveVersions.get(threadId) ?? 0;
   }
@@ -571,36 +587,161 @@ export class ThreadTokenStore {
   ): Promise<void> {
     await this.serialize(async () => {
       if (this.archiveVersion(threadId) !== expectedVersion) return;
-      if (this.activeArchiveMarkers.has(threadId)) return;
       if (
-        this.archiveEpoch(threadId) === 0 &&
-        !this.archivedThreads.has(threadId) &&
-        !this.hasMarkerFailure(threadId) &&
-        !this.archiveDurabilityFailures.has(threadId)
-      )
+        this.activeArchiveMarkers.has(threadId) ||
+        (this.archiveEpoch(threadId) === 0 &&
+          !this.archivedThreads.has(threadId) &&
+          !this.hasMarkerFailure(threadId) &&
+          !this.archiveDurabilityFailures.has(threadId))
+      ) {
+        this.archiveChecks.delete(threadId);
         return;
-      const epoch = (await this.maxFileEpoch(threadId)) + 1;
-      await this.persist(this.archivedFile(threadId), {
-        threadId,
-        epoch,
-        archived: false,
-      });
-      if (this.seenArchiveMarkers.has(this.archiveFallbackName(threadId))) {
-        await this.persist(this.archiveFallbackFile(threadId), {
-          threadId,
-          epoch,
-          archived: false,
-        });
       }
+      await this.isArchived(threadId);
+      const markerUnknown = this.hasTransientArchiveReadFailure(threadId);
+      let names: string[] | null = null;
+      try {
+        names = await fs.readdir(this.directory);
+      } catch {
+        names = null;
+      }
+      const epoch = Math.max(
+        this.archiveEpoch(threadId),
+        names === null ? 0 : this.maxEpochIn(threadId, names),
+      );
       this.archivedThreads.delete(threadId);
       this.activeArchiveMarkers.add(threadId);
       this.archiveEpochs.set(threadId, epoch);
-      this.seenArchiveMarkers.add(this.archivedName(threadId));
-      if (this.seenArchiveMarkers.has(this.archiveFallbackName(threadId)))
-        this.seenArchiveMarkers.add(this.archiveFallbackName(threadId));
       this.clearMarkerFailures(threadId);
       this.archiveDurabilityFailures.delete(threadId);
+      this.archiveChecks.delete(threadId);
+      await this.persistArchiveMarker(threadId, epoch, false).catch(
+        () => undefined,
+      );
+      if (
+        names !== null &&
+        !markerUnknown &&
+        !this.hasLoadedCredentials(threadId)
+      )
+        await this.loadThreadFiles(threadId, names);
     });
+  }
+
+  private recheckArchived(threadId: string): Promise<boolean> {
+    const lookup = this.threadState;
+    if (lookup === undefined) return Promise.resolve(false);
+    const checkedAt = this.archiveChecks.get(threadId);
+    if (
+      checkedAt !== undefined &&
+      this.now() - checkedAt < ARCHIVED_STATE_RECHECK_MS
+    )
+      return Promise.resolve(false);
+    const pending = this.pendingArchiveChecks.get(threadId);
+    if (pending !== undefined) return pending;
+    this.archiveChecks.set(threadId, this.now());
+    const version = this.archiveVersion(threadId);
+    const check = (async () => {
+      try {
+        const signal = AbortSignal.timeout(THREAD_STATE_LOOKUP_TIMEOUT_MS);
+        const status = await untilAborted(lookup(threadId, signal), signal);
+        if (this.archiveVersion(threadId) !== version) return false;
+        if (status === "live") {
+          await this.restoreThread(threadId, version);
+          return !(await this.isArchived(threadId));
+        }
+        if (status === "gone")
+          await this.removeThreadIfVersion(threadId, version);
+        return false;
+      } catch {
+        return false;
+      } finally {
+        this.pendingArchiveChecks.delete(threadId);
+      }
+    })();
+    this.pendingArchiveChecks.set(threadId, check);
+    return check;
+  }
+
+  private async persistArchiveMarker(
+    threadId: string,
+    epoch: number,
+    archived: boolean,
+  ): Promise<void> {
+    try {
+      await this.persist(this.archivedFile(threadId), {
+        threadId,
+        epoch,
+        archived,
+      });
+      this.seenArchiveMarkers.add(this.archivedName(threadId));
+      if (this.seenArchiveMarkers.has(this.archiveFallbackName(threadId)))
+        await this.persist(this.archiveFallbackFile(threadId), {
+          threadId,
+          epoch,
+          archived,
+        });
+    } catch (error) {
+      if (!archived) throw error;
+      try {
+        await this.persist(this.archiveFallbackFile(threadId), {
+          threadId,
+          epoch,
+          archived,
+        });
+        this.seenArchiveMarkers.add(this.archiveFallbackName(threadId));
+      } catch {
+        this.archiveDurabilityFailures.add(threadId);
+        throw error;
+      }
+    }
+    this.clearMarkerFailures(threadId);
+    this.archiveDurabilityFailures.delete(threadId);
+  }
+
+  private holdsCredentials(
+    threadId: string,
+    names: readonly string[],
+  ): boolean {
+    return (
+      this.archiveMarkerNames(threadId).some((name) =>
+        this.seenArchiveMarkers.has(name),
+      ) ||
+      this.hasLoadedCredentials(threadId) ||
+      this.hasCredentialFile(threadId, names)
+    );
+  }
+
+  private hasLoadedCredentials(threadId: string): boolean {
+    return (
+      [...this.routes.values()].some(
+        (record) => record.threadId === threadId,
+      ) ||
+      [...this.nestedRoutes.values()].some(
+        (record) => record.threadId === threadId,
+      )
+    );
+  }
+
+  private async loadThreadFiles(
+    threadId: string,
+    names: readonly string[],
+  ): Promise<void> {
+    const enrolled = new Set(
+      (await this.hosts.list()).map((host) => host.hostId),
+    );
+    const loaded = new Set([
+      ...[...this.routes.values()].map((record) =>
+        path.basename(this.file(record)),
+      ),
+      ...[...this.nestedRoutes.values()].map((record) =>
+        path.basename(this.nestedFile(record)),
+      ),
+    ]);
+    for (const name of names) {
+      if (loaded.has(name) || !this.hasCredentialFile(threadId, [name]))
+        continue;
+      await this.loadFile(name, enrolled).catch(() => undefined);
+    }
   }
 
   private async reclaimDead(minted: {
@@ -759,8 +900,14 @@ export class ThreadTokenStore {
   }
 
   private async maxFileEpoch(threadId: string): Promise<number> {
-    let epoch = this.archiveEpoch(threadId);
-    const names = await fs.readdir(this.directory);
+    return Math.max(
+      this.archiveEpoch(threadId),
+      this.maxEpochIn(threadId, await fs.readdir(this.directory)),
+    );
+  }
+
+  private maxEpochIn(threadId: string, names: readonly string[]): number {
+    let epoch = 0;
     for (const name of names) {
       if (
         !name.startsWith(THREAD_ROUTE_PREFIX) &&
@@ -824,9 +971,7 @@ export class ThreadTokenStore {
     if (record.priors === undefined) return record;
     const live = process
       ? record.priors
-          .filter((prior) =>
-            this.restorable({ lifetime: "process", ...prior }),
-          )
+          .filter((prior) => this.restorable({ lifetime: "process", ...prior }))
           .slice(-MAX_PRIOR_CREDENTIALS)
       : record.priors
           .filter((prior) => prior.expiresAt > this.now())
@@ -976,10 +1121,7 @@ export class ThreadTokenStore {
     issuedAt?: number;
   }): boolean {
     if (record.lifetime !== "process") return false;
-    return (
-      !this.lifetimeSound(record) ||
-      (record.expiresAt ?? 0) <= this.now()
-    );
+    return !this.lifetimeSound(record) || (record.expiresAt ?? 0) <= this.now();
   }
 
   private restorable(record: {

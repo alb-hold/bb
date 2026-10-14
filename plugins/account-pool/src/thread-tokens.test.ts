@@ -131,9 +131,7 @@ it("keeps a restored process credential valid after a reissue, so a surviving CL
   expect(await restarted.authenticateNested(newNested)).toEqual(nestedRoute);
   expect(restarted.isProcessCredential(oldToken)).toBe(true);
   expect(restarted.isProcessCredential(newToken)).toBe(true);
-  expect(await restarted.forThread(route, hostToken, "process")).toBe(
-    newToken,
-  );
+  expect(await restarted.forThread(route, hostToken, "process")).toBe(newToken);
   expect(await processFilesOf(directory)).toHaveLength(2);
   const again = await restartOf(directory, hosts, route);
   expect(await again.authenticate(oldToken)).toEqual(route);
@@ -156,9 +154,7 @@ it("keeps both an idle relaunched CLI and a long-lived survivor valid across rel
     "process",
   );
   expect(await threads.authenticate(survivor)).toEqual(route);
-  expect(await threads.authenticateNested(survivorNested)).toEqual(
-    nestedRoute,
-  );
+  expect(await threads.authenticateNested(survivorNested)).toEqual(nestedRoute);
   const issued: string[] = [];
   const issuedNested: string[] = [];
   let store = threads;
@@ -1803,19 +1799,22 @@ it("uses a fallback archive marker when the primary marker cannot be written", a
         route.threadId,
         threads.archiveVersion(route.threadId),
       ),
-    ).rejects.toThrow("EIO");
+    ).resolves.toBeUndefined();
   } finally {
     restoreWrite.mockRestore();
   }
-  await expect(threads.forThread(route, hostToken)).rejects.toThrow();
-  expect(await threads.authenticate(oldToken)).toBeNull();
-  await threads.restoreThread(
-    route.threadId,
-    threads.archiveVersion(route.threadId),
-  );
   const newToken = await threads.forThread(route, hostToken);
+  expect(await threads.authenticate(newToken)).toEqual(route);
   expect(await threads.authenticate(oldToken)).toBeNull();
-  const reloaded = new ThreadTokenStore(directory, hosts);
+  const unconfirmed = new ThreadTokenStore(directory, hosts);
+  await unconfirmed.initialize([route.hostId]);
+  expect(await unconfirmed.authenticate(newToken)).toBeNull();
+  const reloaded = new ThreadTokenStore(
+    directory,
+    hosts,
+    Date.now,
+    async () => "live",
+  );
   await reloaded.initialize([route.hostId]);
   expect(await reloaded.authenticate(oldToken)).toBeNull();
   expect(await reloaded.authenticate(newToken)).toEqual(route);

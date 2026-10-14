@@ -74,6 +74,20 @@ interface Fixture {
 }
 
 const cleanups: Array<() => Promise<void>> = [];
+const bbThreadStates = new Map<string, "archived" | "deleted">();
+
+function bbThread(threadId: string) {
+  const state = bbThreadStates.get(threadId);
+  if (state === "deleted")
+    throw Object.assign(new Error("Thread not found"), {
+      status: 404,
+      code: "thread_not_found",
+    });
+  return makeThreadResponse({
+    id: threadId,
+    ...(state === "archived" ? { archivedAt: 1_000 } : {}),
+  });
+}
 
 function sdkStubs() {
   return {
@@ -100,8 +114,7 @@ function sdkStubs() {
           },
         ],
       },
-      get: async ({ threadId }: { threadId: string }) =>
-        makeThreadResponse({ id: threadId }),
+      get: async ({ threadId }: { threadId: string }) => bbThread(threadId),
     },
     system: {
       providerStates: async () => ({ providers: [] }),
@@ -441,13 +454,10 @@ describe("Explicit subscription routing", () => {
   it("keeps an in-flight native request on its selected account when an idle selection changes", async () => {
     const arrived = deferred();
     const release = deferred();
-    const { fixture, key, seen, request } = await twoSubscriptions(
-      async () => {
-        arrived.resolve();
-        await release.promise;
-      },
-      "native",
-    );
+    const { fixture, key, seen, request } = await twoSubscriptions(async () => {
+      arrived.resolve();
+      await release.promise;
+    }, "native");
     fixture.host.harness.sdk.stub("threads.get", async ({ threadId }) =>
       makeThreadResponse({
         id: threadId,
@@ -531,6 +541,7 @@ beforeEach(() => {
 afterEach(async () => {
   vi.unstubAllEnvs();
   while (cleanups.length > 0) await cleanups.pop()?.();
+  bbThreadStates.clear();
 });
 
 async function startUpstream(handler: UpstreamHandler): Promise<Upstream> {
@@ -10678,13 +10689,21 @@ describe("Account Pool credential scoping", () => {
     expect(await statusOf(host, otherHost, "/v1/messages")).toBe(200);
   });
 
-  it("revokes on archive and delete and issues fresh tokens on the next env resolution", async () => {
+  it("suspends on archive, accepts the same tokens after unarchive and revokes on delete", async () => {
     const fixture = await scopedFixture();
     const { host } = fixture;
-    const archive = (event: "thread.archived" | "thread.deleted") =>
-      host.harness.behavior.emitThreadEvent(event, {
+    const emit = (
+      event: "thread.archived" | "thread.unarchived" | "thread.deleted",
+    ) => {
+      if (event === "thread.archived")
+        bbThreadStates.set("thread-one", "archived");
+      if (event === "thread.unarchived") bbThreadStates.delete("thread-one");
+      if (event === "thread.deleted")
+        bbThreadStates.set("thread-one", "deleted");
+      return host.harness.behavior.emitThreadEvent(event, {
         thread: makeThreadResponse({ id: "thread-one" }),
       });
+    };
     const claude = fixture.key;
     const nested = await nestedToken(host);
     const sibling = await claudeToken(host, "thread-two");
@@ -10692,7 +10711,7 @@ describe("Account Pool credential scoping", () => {
       threadId: "thread-one",
       bypassed: true,
     });
-    expect(await archive("thread.archived")).toEqual({ errors: [] });
+    expect(await emit("thread.archived")).toEqual({ errors: [] });
     expect(await statusOf(host, claude, "/v1/messages")).toBe(401);
     expect(await statusOf(host, nested, "/availability")).toBe(401);
     expect(await statusOf(host, sibling, "/v1/messages")).toBe(200);
@@ -10703,19 +10722,18 @@ describe("Account Pool credential scoping", () => {
       threadId: "thread-one",
       bypassed: false,
     });
-    const reissued = await claudeToken(host);
-    const reissuedNested = await nestedToken(host);
-    expect(reissued).not.toBe(claude);
-    expect(reissuedNested).not.toBe(nested);
-    expect(await statusOf(host, reissued, "/v1/messages")).toBe(200);
-    expect(await statusOf(host, reissuedNested, "/availability")).toBe(200);
+    expect(await emit("thread.unarchived")).toEqual({ errors: [] });
+    expect(await statusOf(host, claude, "/v1/messages")).toBe(200);
+    expect(await statusOf(host, nested, "/availability")).toBe(200);
+    expect(await claudeToken(host)).toBe(claude);
+    expect(await nestedToken(host)).toBe(nested);
     await host.harness.behavior.callRpc("bypass.set", {
       threadId: "thread-one",
       bypassed: true,
     });
-    expect(await archive("thread.deleted")).toEqual({ errors: [] });
-    expect(await statusOf(host, reissued, "/v1/messages")).toBe(401);
-    expect(await statusOf(host, reissuedNested, "/availability")).toBe(401);
+    expect(await emit("thread.deleted")).toEqual({ errors: [] });
+    expect(await statusOf(host, claude, "/v1/messages")).toBe(401);
+    expect(await statusOf(host, nested, "/availability")).toBe(401);
     await expect(
       host.harness.behavior.callRpc("bypass.get", { threadId: "thread-one" }),
     ).resolves.toEqual({ threadId: "thread-one", bypassed: false });
@@ -10727,6 +10745,7 @@ describe("Account Pool credential scoping", () => {
     const nested = await nestedToken(fixture.host);
     const revoked = await claudeToken(fixture.host, "thread-gone");
     const revokedNested = await nestedToken(fixture.host, "thread-gone");
+    bbThreadStates.set("thread-gone", "archived");
     await fixture.host.harness.behavior.emitThreadEvent("thread.archived", {
       thread: makeThreadResponse({ id: "thread-gone" }),
     });
@@ -10763,7 +10782,7 @@ describe("Account Pool credential scoping", () => {
     expect(await statusOf(host, revokedNested, "/availability")).toBe(401);
   });
 
-  it("keeps native terminal credentials valid across a plugin restart and revokes them on archive", async () => {
+  it("keeps native terminal credentials valid across a plugin restart, suspends them on archive and accepts them again after unarchive", async () => {
     const fixture = await scopedFixture();
     const native = async (
       host: Fixture["host"],
@@ -10810,6 +10829,7 @@ describe("Account Pool credential scoping", () => {
       "thr_native_archived",
     );
     expect(await statusOf(fixture.host, claude, "/v1/messages")).toBe(200);
+    bbThreadStates.set("thr_native_archived", "archived");
     await fixture.host.harness.behavior.emitThreadEvent("thread.archived", {
       thread: makeThreadResponse({ id: "thr_native_archived" }),
     });
@@ -10827,12 +10847,23 @@ describe("Account Pool credential scoping", () => {
       for (const token of [claude, nested, codex])
         expect(content.includes(token)).toBe(false);
     }
+    bbThreadStates.set("thr_native_live", "archived");
     await host.harness.behavior.emitThreadEvent("thread.archived", {
       thread: makeThreadResponse({ id: "thr_native_live" }),
     });
     expect(await statusOf(host, claude, "/v1/messages")).toBe(401);
     expect(await statusOf(host, nested, "/availability")).toBe(401);
     expect(await statusOf(host, codex, "/v1/responses")).toBe(401);
+    bbThreadStates.delete("thr_native_live");
+    await host.harness.behavior.emitThreadEvent("thread.unarchived", {
+      thread: makeThreadResponse({ id: "thr_native_live" }),
+    });
+    expect(await statusOf(host, claude, "/v1/messages")).toBe(200);
+    expect(await statusOf(host, nested, "/availability")).toBe(200);
+    expect(await statusOf(host, codex, "/v1/responses")).toBe(200);
+    const restarted = await reloadHub({ ...fixture, host }, () => {});
+    expect(await statusOf(restarted, claude, "/v1/messages")).toBe(200);
+    expect(await statusOf(restarted, archived, "/v1/messages")).toBe(401);
   });
 
   it("keeps a surviving native CLI's original credentials working when the environment is rebuilt after each restart", async () => {
@@ -10937,7 +10968,7 @@ describe("Account Pool credential scoping", () => {
     }
   }
 
-  it("revokes the legacy tokens of a thread archived while the plugin was down and keeps an active thread's legacy tokens", async () => {
+  it("suspends the legacy tokens of a thread archived while the plugin was down, accepts them after unarchive and keeps an active thread's legacy tokens", async () => {
     const fixture = await scopedFixture();
     const missed = await claudeToken(fixture.host, "thread-missed");
     const missedNested = await nestedToken(fixture.host, "thread-missed");
@@ -10965,10 +10996,20 @@ describe("Account Pool credential scoping", () => {
       "thread-one",
     ]);
     const names = await fs.readdir(path.join(fixture.dataDir, ...POOL_SECRETS));
-    expect(names.filter((name) => name.includes("thread-missed"))).toEqual([]);
+    expect(names.filter((name) => name.includes("thread-missed"))).toHaveLength(
+      2,
+    );
     expect(names.some((name) => name.startsWith("archived-thread-"))).toBe(
       true,
     );
+    host.harness.sdk.stub("threads.get", async ({ threadId }) =>
+      makeThreadResponse({ id: threadId }),
+    );
+    await host.harness.behavior.emitThreadEvent("thread.unarchived", {
+      thread: makeThreadResponse({ id: "thread-missed" }),
+    });
+    expect(await statusOf(host, missed, "/v1/messages")).toBe(200);
+    expect(await statusOf(host, missedNested, "/availability")).toBe(200);
   });
 
   it("revokes the tokens of a thread that no longer exists but keeps them when the lookup fails or a 404 is not a missing thread", async () => {
@@ -11178,7 +11219,7 @@ describe("Account Pool credential scoping", () => {
     expect(await statusOf(host, live, "/v1/messages")).toBe(200);
   });
 
-  it("exports nothing for an archived thread and revokes any token it already held", async () => {
+  it("exports nothing for an archived thread and suspends any token it already held until unarchive", async () => {
     const fixture = await scopedFixture();
     const { host } = fixture;
     const archived = async ({ threadId }: { threadId: string }) =>
@@ -11200,15 +11241,16 @@ describe("Account Pool credential scoping", () => {
     expect(await entries("thread-late")).toEqual([]);
     expect(await credentialFiles("thread-late")).toEqual([]);
     expect(await entries("thread-held")).toEqual([]);
-    expect(await credentialFiles("thread-held")).toEqual([]);
+    expect(await credentialFiles("thread-held")).toHaveLength(2);
     expect(await statusOf(host, held, "/v1/messages")).toBe(401);
     expect(await statusOf(host, heldNested, "/availability")).toBe(401);
     host.harness.sdk.stub("threads.get", async ({ threadId }) =>
       makeThreadResponse({ id: threadId }),
     );
     const restored = await claudeToken(host, "thread-held");
-    expect(restored).not.toBe(held);
-    expect(await statusOf(host, restored, "/v1/messages")).toBe(200);
+    expect(restored).toBe(held);
+    expect(await statusOf(host, held, "/v1/messages")).toBe(200);
+    expect(await statusOf(host, heldNested, "/availability")).toBe(200);
   });
 
   it("mints nothing when the thread lookup fails", async () => {
@@ -11254,7 +11296,7 @@ describe("Account Pool credential scoping", () => {
     ).toEqual([]);
   });
 
-  it("revokes what it minted when the thread is archived while its environment resolves", async () => {
+  it("suspends what it minted when the thread is archived while its environment resolves", async () => {
     const fixture = await scopedFixture();
     const { host } = fixture;
     let lookups = 0;
@@ -11275,11 +11317,14 @@ describe("Account Pool credential scoping", () => {
     );
     expect(lookups).toBe(2);
     expect(entries).toEqual([]);
-    expect(
-      (await fs.readdir(path.join(fixture.dataDir, ...POOL_SECRETS))).filter(
-        (name) => name.includes("thread-racing"),
-      ),
-    ).toEqual([]);
+    const directory = path.join(fixture.dataDir, ...POOL_SECRETS);
+    const markerName = (await fs.readdir(directory)).find((name) =>
+      name.startsWith("archived-thread-"),
+    );
+    const marker = JSON.parse(
+      await fs.readFile(path.join(directory, markerName ?? ""), "utf8"),
+    ) as { archived: boolean };
+    expect(marker.archived).toBe(true);
   });
 
   it("does not restore an archived thread from a delayed unarchive event", async () => {
@@ -11373,7 +11418,7 @@ describe("Account Pool credential scoping", () => {
     expect(await statusOf(host, token, "/v1/messages")).toBe(401);
   });
 
-  it("does not apply a stale archived lookup after archive and unarchive events", async () => {
+  it("keeps the same token valid when a stale archived lookup races archive and unarchive events", async () => {
     const fixture = await scopedFixture();
     const { host } = fixture;
     const oldToken = await claudeToken(host, "thread-racing");
@@ -11409,8 +11454,8 @@ describe("Account Pool credential scoping", () => {
     expect(lookups).toBe(3);
     if (token === undefined || typeof token.value !== "string")
       throw new Error("Account Pool token was not resolved after unarchive.");
-    expect(await statusOf(host, oldToken, "/v1/messages")).toBe(401);
-    expect(await statusOf(host, token.value, "/v1/messages")).toBe(200);
+    expect(token.value).toBe(oldToken);
+    expect(await statusOf(host, oldToken, "/v1/messages")).toBe(200);
   });
 
   it("blanks the inherited routing for an archived thread on a nested server", async () => {
@@ -11464,7 +11509,7 @@ describe("Account Pool credential scoping", () => {
           name.includes(threadId),
         );
 
-      it("revokes its tokens after a missed archive event the next time its environment resolves", async () => {
+      it("suspends its tokens after a missed archive event the next time its environment resolves", async () => {
         const fixture = await scopedFixture();
         const { host } = fixture;
         const held = await claudeToken(host, "thread-missed");
@@ -11488,9 +11533,9 @@ describe("Account Pool credential scoping", () => {
         expect(entries).toEqual([]);
         expect(await statusOf(host, held, "/v1/messages")).toBe(401);
         expect(await statusOf(host, heldNested, "/availability")).toBe(401);
-        expect(await credentialFiles(fixture.dataDir, "thread-missed")).toEqual(
-          [],
-        );
+        expect(
+          await credentialFiles(fixture.dataDir, "thread-missed"),
+        ).toHaveLength(2);
         expect(
           await credentialFiles(fixture.dataDir, "thread-other"),
         ).toHaveLength(2);
@@ -11500,7 +11545,7 @@ describe("Account Pool credential scoping", () => {
         expect(await statusOf(host, other, "/v1/messages")).not.toBe(401);
       });
 
-      it("revokes its tokens after a missed archive event on a nested server and blanks the inherited routing", async () => {
+      it("suspends its tokens after a missed archive event on a nested server and blanks the inherited routing", async () => {
         const parent = await scopedFixture();
         const { host: child, dataDir } = await startNestedChild(
           parent,
@@ -11527,7 +11572,7 @@ describe("Account Pool credential scoping", () => {
         ]);
         expect(await statusOf(child, held, "/v1/messages")).toBe(401);
         expect(await statusOf(child, heldNested, "/availability")).toBe(401);
-        expect(await credentialFiles(dataDir, "thread-missed")).toEqual([]);
+        expect(await credentialFiles(dataDir, "thread-missed")).toHaveLength(2);
       });
 
       it("stays unrouted without minting when its thread lookup fails on a nested server", async () => {

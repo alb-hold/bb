@@ -154,7 +154,22 @@ export function createAccountPoolPlugin(
     await hubTokens.initialize();
     const enrolledHosts = await bb.sdk.hosts.list();
     await hubTokens.prune(enrolledHosts.map((host) => host.id));
-    const threadTokens = new ThreadTokenStore(secretDir, hubTokens, now);
+    const lookupThread: ThreadLookup = async (threadId, signal) => {
+      try {
+        const thread = await bb.sdk.threads.get({ threadId, signal });
+        if (thread.deletedAt !== null) return "gone";
+        return thread.archivedAt === null ? "live" : "archived";
+      } catch (error) {
+        if (isThreadNotFound(error)) return "gone";
+        throw error;
+      }
+    };
+    const threadTokens = new ThreadTokenStore(
+      secretDir,
+      hubTokens,
+      now,
+      lookupThread,
+    );
     await threadTokens.initialize(enrolledHosts.map((host) => host.id));
     const routing = new RoutingStore(bb.storage.kv, now);
     const env = options.env ?? process.env;
@@ -287,7 +302,7 @@ export function createAccountPoolPlugin(
       },
     );
     bb.events.on("thread.archived", async ({ thread }) => {
-      await threadTokens.removeThread(thread.id);
+      await threadTokens.suspendThread(thread.id);
     });
     bb.events.on("thread.unarchived", async ({ thread }) => {
       const archiveVersion = threadTokens.archiveVersion(thread.id);
@@ -413,18 +428,9 @@ export function createAccountPoolPlugin(
         await threadTokens.restoreThread(threadId, archiveVersion);
         return false;
       }
-      return threadTokens.removeThreadIfVersion(threadId, archiveVersion);
-    };
-    const lookupThread: ThreadLookup = async (threadId, signal) => {
-      try {
-        const thread = await bb.sdk.threads.get({ threadId, signal });
-        return thread.archivedAt === null && thread.deletedAt === null
-          ? "live"
-          : "gone";
-      } catch (error) {
-        if (isThreadNotFound(error)) return "gone";
-        throw error;
-      }
+      return thread.deletedAt === null
+        ? threadTokens.suspendThreadIfVersion(threadId, archiveVersion)
+        : threadTokens.removeThreadIfVersion(threadId, archiveVersion);
     };
     const sweepThreadCredentialsOnce = async (
       serviceSignal: AbortSignal,

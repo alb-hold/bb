@@ -284,12 +284,18 @@ pooler routing through its environment. The parent contributes
 `BB_ACCOUNT_POOL_PARENT_URL` and `BB_ACCOUNT_POOL_PARENT_TOKEN` alongside the
 provider routing variables, and the nested server enables the pooler on first run
 when it sees them. The token is scoped to the launching thread, is accepted only
-for pooled provider requests and `/availability`, and stops working when that
-thread is archived or deleted, or ten minutes after the machine token is
-rotated. An archive or delete event missed while the plugin is down is not
-replayed, so those tokens end when bb next resolves that archived thread's
-environment, or when you rotate the machine token and wait out those ten
-minutes. A nested server
+for pooled provider requests and `/availability`. It is suspended while that
+thread is archived and works again, unchanged, once the thread is unarchived;
+it ends for good when the thread is deleted, or ten minutes after the machine
+token is rotated. Archiving never deletes a thread's credentials: the plugin
+keeps their digests on disk behind an archive marker, so a crash at any point
+of an archive or unarchive cannot cost a running session its token. bb's
+thread state is the authority. The plugin checks it for every thread holding
+credentials at startup, before the hub accepts requests, and every 15 minutes.
+It also checks when bb resolves the thread's environment, and at most every
+30 seconds while a thread it holds as archived presents its token. A missed
+archive event therefore takes effect at the next of those checks, and a
+missed unarchive event at the next request. A nested server
 started before this scoping existed holds the machine token, which the hub no
 longer accepts; relaunch it so it receives a scoped token.
 
