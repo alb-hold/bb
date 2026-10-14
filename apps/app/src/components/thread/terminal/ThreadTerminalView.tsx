@@ -1,10 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type TouchEvent as ReactTouchEvent,
-} from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import "@xterm/xterm/css/xterm.css";
 import type { ITheme, Terminal as XTermTerminal } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
@@ -205,14 +199,64 @@ export function focusTerminalFromTouchRelease({
   return true;
 }
 
+type TerminalTouchListLike = ArrayLike<
+  Pick<Touch, "clientX" | "clientY" | "identifier">
+>;
+
+interface TerminalTouchEventLike {
+  changedTouches: TerminalTouchListLike;
+  timeStamp: number;
+  touches: TerminalTouchListLike;
+}
+
 function terminalTouchPoints(
-  touches: ReactTouchEvent<HTMLDivElement>["touches"],
+  touches: TerminalTouchListLike,
 ): TerminalTouchPoint[] {
   return Array.from(touches, (touch) => ({
     identifier: touch.identifier,
     x: touch.clientX,
     y: touch.clientY,
   }));
+}
+
+export function createTerminalTouchHandlers(terminalRef: {
+  readonly current: Pick<XTermTerminal, "element" | "focus" | "modes"> | null;
+}) {
+  let gesture: TerminalTouchFocusGesture | null = null;
+  return {
+    cancel(): void {
+      gesture = null;
+    },
+    end(event: TerminalTouchEventLike): void {
+      const completed = gesture;
+      gesture = null;
+      const changedTouches = terminalTouchPoints(event.changedTouches);
+      const tapped = focusTerminalFromTouchRelease({
+        changedTouches,
+        focus: () => terminalRef.current?.focus(),
+        gesture: completed,
+        releasedAt: event.timeStamp,
+        remainingTouchCount: event.touches.length,
+      });
+      const terminal = terminalRef.current;
+      const tap = changedTouches[0];
+      if (tapped && terminal !== null && tap !== undefined) {
+        sendTerminalTapClick(terminal, tap);
+      }
+    },
+    move(event: TerminalTouchEventLike): void {
+      gesture = updateTerminalTouchFocusGesture(
+        gesture,
+        terminalTouchPoints(event.touches),
+      );
+    },
+    start(event: TerminalTouchEventLike): void {
+      gesture = startTerminalTouchFocusGesture(
+        terminalTouchPoints(event.touches),
+        event.timeStamp,
+      );
+    },
+  };
 }
 
 interface HasVisibleTerminalSizeArgs {
@@ -693,7 +737,13 @@ export function ThreadTerminalView({
   const terminalRef = useRef<XTermTerminal | null>(null);
   const hoveredTerminalLinkRef = useRef<TerminalLinkTarget | null>(null);
   const pointerStartPointRef = useRef<SelectionAnchorPoint | null>(null);
-  const touchFocusGestureRef = useRef<TerminalTouchFocusGesture | null>(null);
+  const touchHandlersRef = useRef<ReturnType<
+    typeof createTerminalTouchHandlers
+  > | null>(null);
+  const touchHandlers = useCallback(() => {
+    touchHandlersRef.current ??= createTerminalTouchHandlers(terminalRef);
+    return touchHandlersRef.current;
+  }, []);
   const lastPointerReleaseAnchorRef = useRef<SelectionAnchor | null>(null);
   const handleFileDropRef = useRef<((files: FileList) => void) | null>(null);
   const onSessionChangeRef = useRef<
@@ -842,53 +892,8 @@ export function ThreadTerminalView({
     pointerStartPointRef.current = null;
   }, []);
 
-  const handleTerminalTouchStart = useCallback(
-    (event: ReactTouchEvent<HTMLDivElement>) => {
-      touchFocusGestureRef.current = startTerminalTouchFocusGesture(
-        terminalTouchPoints(event.touches),
-        event.timeStamp,
-      );
-    },
-    [],
-  );
-
-  const handleTerminalTouchMove = useCallback(
-    (event: ReactTouchEvent<HTMLDivElement>) => {
-      touchFocusGestureRef.current = updateTerminalTouchFocusGesture(
-        touchFocusGestureRef.current,
-        terminalTouchPoints(event.touches),
-      );
-    },
-    [],
-  );
-
-  const handleTerminalTouchEnd = useCallback(
-    (event: ReactTouchEvent<HTMLDivElement>) => {
-      const gesture = touchFocusGestureRef.current;
-      touchFocusGestureRef.current = null;
-      const changedTouches = terminalTouchPoints(event.changedTouches);
-      const tapped = focusTerminalFromTouchRelease({
-        changedTouches,
-        focus: () => terminalRef.current?.focus(),
-        gesture,
-        releasedAt: event.timeStamp,
-        remainingTouchCount: event.touches.length,
-      });
-      const terminal = terminalRef.current;
-      const tap = changedTouches[0];
-      if (tapped && terminal !== null && tap !== undefined) {
-        sendTerminalTapClick(terminal, tap);
-      }
-    },
-    [],
-  );
-
-  const handleTerminalTouchCancel = useCallback(() => {
-    touchFocusGestureRef.current = null;
-  }, []);
-
   useEffect(() => {
-    touchFocusGestureRef.current = null;
+    touchHandlersRef.current?.cancel();
     setActiveSelection(null);
     setTextSnapshot(null);
     updateHoveredTerminalLink(null);
@@ -1404,10 +1409,10 @@ export function ThreadTerminalView({
           <div
             className="relative min-h-0 w-full flex-1 overflow-hidden bg-sidebar p-2"
             onContextMenuCapture={captureTerminalContextMenu}
-            onTouchStart={handleTerminalTouchStart}
-            onTouchMove={handleTerminalTouchMove}
-            onTouchEnd={handleTerminalTouchEnd}
-            onTouchCancel={handleTerminalTouchCancel}
+            onTouchStart={(event) => touchHandlers().start(event)}
+            onTouchMove={(event) => touchHandlers().move(event)}
+            onTouchEnd={(event) => touchHandlers().end(event)}
+            onTouchCancel={() => touchHandlers().cancel()}
           >
             <div
               ref={containerRef}
@@ -1538,12 +1543,6 @@ export function ThreadTerminalView({
           text={textSnapshot ?? ""}
           onOpenChange={(open) => {
             if (!open) setTextSnapshot(null);
-          }}
-          onCopyAll={() => {
-            void copyToClipboardWithToast(textSnapshot ?? "", {
-              successMessage: "Terminal text copied",
-              errorMessage: "Failed to copy",
-            });
           }}
         />
       ) : null}

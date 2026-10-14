@@ -1,19 +1,18 @@
 import { useLayoutEffect, useRef } from "react";
 import { Button } from "@bb/shared-ui/button";
+import { copyToClipboardWithToast } from "@/lib/clipboard";
 import {
   PersistentResponsiveDrawerShell,
   useResponsiveDrawerRealization,
 } from "@bb/shared-ui/responsive-overlay";
 
 interface TerminalTextSelectSheetProps {
-  onCopyAll: () => void;
   onOpenChange: (open: boolean) => void;
   open: boolean;
   text: string;
 }
 
 export function TerminalTextSelectSheet({
-  onCopyAll,
   onOpenChange,
   open,
   text,
@@ -41,7 +40,16 @@ export function TerminalTextSelectSheet({
             <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
               Touch and hold to select
             </span>
-            <Button type="button" variant="ghost" onClick={onCopyAll}>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => {
+                void copyToClipboardWithToast(text, {
+                  successMessage: "Terminal text copied",
+                  errorMessage: "Failed to copy",
+                });
+              }}
+            >
               Copy all
             </Button>
             <Button type="button" onClick={() => onOpenChange(false)}>
