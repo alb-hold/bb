@@ -108,6 +108,7 @@ describe("TerminalMobileControls select key", () => {
         onInput={vi.fn()}
         onKeyboardToggle={vi.fn()}
         onPaste={vi.fn()}
+        onSearch={vi.fn()}
         onSelectText={onSelectText}
       />,
     );

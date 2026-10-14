@@ -70,6 +70,7 @@ function SearchableTerminal({ touch = false }: { touch?: boolean }) {
           onKeyboardToggle={() => undefined}
           onPaste={() => undefined}
           onSearch={() => setOpen(true)}
+          onSelectText={() => undefined}
         />
       ) : null}
     </div>
