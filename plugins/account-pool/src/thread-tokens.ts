@@ -117,6 +117,7 @@ export type ThreadLookup = (
   signal?: AbortSignal,
 ) => Promise<"live" | "archived" | "gone">;
 export const THREAD_STATE_LOOKUP_TIMEOUT_MS = 5_000;
+export const UNANSWERED_WARNING_MS = 60_000;
 export type ThreadSweepOptions = {
   signal?: AbortSignal;
   lookupTimeoutMs?: number;
@@ -142,7 +143,7 @@ export class ThreadTokenStore {
   private archiveMarkersLoaded = false;
   private readonly lookupFailures = new Map<string, number>();
   private readonly archiveVersions = new Map<string, number>();
-  private readonly verifiedThreads = new Set<string>();
+  private readonly unansweredWarnings = new Map<string, number>();
   private readonly pendingLookups = new Map<
     string,
     Promise<{ status: "live" | "archived" | "gone"; version: number }>
@@ -156,6 +157,7 @@ export class ThreadTokenStore {
     private readonly now: () => number = Date.now,
     private readonly threadState?: ThreadLookup,
     private readonly lookupTimeoutMs = THREAD_STATE_LOOKUP_TIMEOUT_MS,
+    private readonly warn: (message: string) => void = () => {},
   ) {}
 
   async initialize(hostIds: readonly string[]): Promise<void> {
@@ -323,7 +325,6 @@ export class ThreadTokenStore {
       this.routes.set(key, record);
       indexCredential(this.tokenIndex, record);
       await this.reclaimDead(record);
-      this.verifiedThreads.add(parsed.threadId);
       return record.token;
     });
   }
@@ -372,7 +373,6 @@ export class ThreadTokenStore {
       this.nestedRoutes.set(key, record);
       indexCredential(this.nestedTokenIndex, record);
       await this.reclaimDead(record);
-      this.verifiedThreads.add(parsed.threadId);
       return record.token;
     });
   }
@@ -433,7 +433,6 @@ export class ThreadTokenStore {
     this.archiveVersions.set(threadId, this.archiveVersion(threadId) + 1);
     this.archivedThreads.add(threadId);
     this.activeArchiveMarkers.delete(threadId);
-    this.verifiedThreads.delete(threadId);
     await this.serialize(async () => {
       const epoch = Math.max(
         this.archiveEpoch(threadId),
@@ -483,7 +482,6 @@ export class ThreadTokenStore {
     this.archiveVersions.set(threadId, this.archiveVersion(threadId) + 1);
     this.archivedThreads.add(threadId);
     this.activeArchiveMarkers.delete(threadId);
-    this.verifiedThreads.delete(threadId);
     await this.serialize(async () => {
       let names: string[] = [];
       let directoryReadFailed = false;
@@ -615,7 +613,6 @@ export class ThreadTokenStore {
           !this.hasMarkerFailure(threadId) &&
           !this.archiveDurabilityFailures.has(threadId))
       ) {
-        this.verifiedThreads.add(threadId);
         return;
       }
       await this.isArchived(threadId);
@@ -635,7 +632,6 @@ export class ThreadTokenStore {
       this.archiveEpochs.set(threadId, epoch);
       this.clearMarkerFailures(threadId);
       this.archiveDurabilityFailures.delete(threadId);
-      this.verifiedThreads.add(threadId);
       await this.persistArchiveMarker(threadId, epoch, false).catch(
         () => undefined,
       );
@@ -658,17 +654,14 @@ export class ThreadTokenStore {
     let answer: { status: "live" | "archived" | "gone"; version: number };
     try {
       answer = await this.askBb(threadId);
-    } catch {
-      return (
-        this.verifiedThreads.has(threadId) && !(await this.isArchived(threadId))
-      );
+    } catch (error) {
+      this.warnUnanswered(threadId, error);
+      return false;
     }
     if (answer.status === "live") {
       if (this.archiveVersion(threadId) !== answer.version) return false;
       await this.restoreThread(threadId, answer.version);
-      return (
-        this.verifiedThreads.has(threadId) && !(await this.isArchived(threadId))
-      );
+      return !(await this.isArchived(threadId));
     }
     if (answer.status === "archived")
       await this.suspendThreadIfVersion(threadId, answer.version).catch(
@@ -691,12 +684,30 @@ export class ThreadTokenStore {
     const version = this.archiveVersion(threadId);
     const signal = AbortSignal.timeout(this.lookupTimeoutMs);
     const flight = untilAborted(lookup(threadId, signal), signal)
+      .catch((error: unknown) => {
+        if (signal.aborted) throw error;
+        return untilAborted(lookup(threadId, signal), signal);
+      })
       .then((status) => ({ status, version }))
       .finally(() => {
         this.pendingLookups.delete(threadId);
       });
     this.pendingLookups.set(threadId, flight);
     return flight;
+  }
+
+  private warnUnanswered(threadId: string, error: unknown): void {
+    const warnedAt = this.unansweredWarnings.get(threadId);
+    if (warnedAt !== undefined && this.now() - warnedAt < UNANSWERED_WARNING_MS)
+      return;
+    this.unansweredWarnings.set(threadId, this.now());
+    const reason =
+      error instanceof DOMException && error.name === "TimeoutError"
+        ? "timed out"
+        : "failed";
+    this.warn(
+      `Account Pooler rejected a token for thread ${threadId}: bb's thread lookup ${reason}, so the thread could not be confirmed live.`,
+    );
   }
 
   private holdSuspended(threadId: string): void {

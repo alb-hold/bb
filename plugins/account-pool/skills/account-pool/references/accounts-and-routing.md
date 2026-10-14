@@ -297,10 +297,11 @@ by its own expiry or a machine-token rotation. bb's thread state is the
 authority, asked each time a thread's token is presented (concurrent requests
 for one thread share one lookup): live accepts, archived rejects and suspends,
 deleted rejects and revokes. A missed archive or unarchive event therefore
-takes effect on the next request. If bb cannot answer, the token is accepted
-only when bb confirmed the thread live earlier in this process and no archive
-is known locally; after a start, a thread bb has not yet confirmed is
-rejected until it answers. The plugin also checks every thread holding
+takes effect on the next request. If bb's lookup fails or times out (one retry
+on failure, none on timeout), the token is rejected with 401 and nothing is
+deleted or suspended; the same token works again once bb answers live. The
+plugin logs a warning naming the thread, at most once a minute per thread. It
+also checks every thread holding
 credentials at startup and every 15 minutes. A nested server
 started before this scoping existed holds the machine token, which the hub no
 longer accepts; relaunch it so it receives a scoped token.

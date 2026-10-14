@@ -10707,9 +10707,30 @@ describe("Account Pool credential scoping", () => {
     bbThreadStates.delete("thread-silent");
     expect(await statusOf(host, claude, "/v1/messages")).toBe(200);
     expect(await statusOf(host, nested, "/availability")).toBe(200);
+  });
+
+  it("rejects both token paths of a confirmed thread archived without the event while bb's lookups fail, keeps the credentials, and accepts the same tokens once bb reports it live", async () => {
+    const fixture = await scopedFixture();
+    const { host } = fixture;
+    const claude = await claudeToken(host, "thread-unanswered");
+    const nested = await nestedToken(host, "thread-unanswered");
+    expect(await statusOf(host, claude, "/v1/messages")).toBe(200);
+    expect(await statusOf(host, nested, "/availability")).toBe(200);
+    bbThreadStates.set("thread-unanswered", "archived");
     host.harness.sdk.stub("threads.get", async () => {
       throw new Error("lookup failed");
     });
+    expect(await statusOf(host, claude, "/v1/messages")).toBe(401);
+    expect(await statusOf(host, nested, "/availability")).toBe(401);
+    expect(
+      (await fs.readdir(path.join(fixture.dataDir, ...POOL_SECRETS))).filter(
+        (name) => name.includes("thread-unanswered"),
+      ),
+    ).toHaveLength(2);
+    bbThreadStates.delete("thread-unanswered");
+    host.harness.sdk.stub("threads.get", async ({ threadId }) =>
+      bbThread(threadId),
+    );
     expect(await statusOf(host, claude, "/v1/messages")).toBe(200);
     expect(await statusOf(host, nested, "/availability")).toBe(200);
   });
@@ -11246,7 +11267,8 @@ describe("Account Pool credential scoping", () => {
     expect(await statusOf(host, stale, "/v1/messages")).toBe(200);
     mode = "hang";
     await vi.waitFor(() => expect(hangs).toBeGreaterThan(1));
-    expect(await statusOf(host, stale, "/v1/messages")).toBe(200);
+    expect(await statusOf(host, stale, "/v1/messages")).toBe(401);
+    expect(await statusOf(host, live, "/v1/messages")).toBe(401);
     mode = "archived";
     await vi.waitFor(async () => {
       expect(await statusOf(host, stale, "/v1/messages")).toBe(401);

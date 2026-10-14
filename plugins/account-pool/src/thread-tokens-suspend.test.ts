@@ -242,38 +242,63 @@ describe.each(["durable", "process"] as const)("%s credentials", (lifetime) => {
     });
   });
 
-  it("falls back to local state when bb cannot answer: accepts only a thread bb confirmed live in this process with no archive known", async () => {
+  it("rejects without deleting or suspending anything while bb cannot answer, even for a thread bb confirmed live, and accepts the same tokens once it answers", async () => {
     const w = await world();
-    const store = await w.open();
+    const warnings: string[] = [];
+    const store = new ThreadTokenStore(
+      w.directory,
+      w.hosts,
+      w.clock,
+      w.lookup,
+      5_000,
+      (message) => warnings.push(message),
+    );
+    await store.initialize([route.hostId]);
     const tokens = await mint(store, w.hostToken, lifetime);
     expect(await accepted(store, tokens)).toEqual({
       token: true,
       nested: true,
     });
+    const stored = (await fs.readdir(w.directory)).filter((name) =>
+      name.includes(route.threadId),
+    );
+    w.setBb("archived");
     w.setBb("unreachable");
     expect(await accepted(store, tokens)).toEqual({
-      token: true,
-      nested: true,
-    });
-    const unconfirmed = await w.open();
-    expect(await accepted(unconfirmed, tokens)).toEqual({
       token: false,
       nested: false,
     });
-    await store.suspendThread(route.threadId);
-    expect(await accepted(store, tokens)).toEqual({
-      token: false,
-      nested: false,
-    });
+    expect(
+      (await fs.readdir(w.directory)).filter((name) =>
+        name.includes(route.threadId),
+      ),
+    ).toEqual(stored);
+    expect(warnings).toEqual([
+      `Account Pooler rejected a token for thread ${route.threadId}: bb's thread lookup failed, so the thread could not be confirmed live.`,
+    ]);
+    w.advance(LATER_MS * 2);
+    expect(await store.authenticate(tokens.token)).toBeNull();
+    expect(warnings).toHaveLength(2);
     w.setBb("live");
     expect(await accepted(store, tokens)).toEqual({
       token: true,
       nested: true,
     });
-    expect(await accepted(unconfirmed, tokens)).toEqual({
-      token: true,
-      nested: true,
-    });
+  });
+
+  it("retries a failed lookup once within the same flight", async () => {
+    const w = await world();
+    let calls = 0;
+    const flaky: ThreadLookup = async () => {
+      calls += 1;
+      if (calls === 1) throw new Error("transient");
+      return "live";
+    };
+    const store = new ThreadTokenStore(w.directory, w.hosts, w.clock, flaky);
+    await store.initialize([route.hostId]);
+    const tokens = await mint(store, w.hostToken, lifetime);
+    expect(await store.authenticate(tokens.token)).not.toBeNull();
+    expect(calls).toBe(2);
   });
 
   it("revokes for good on delete, even when bb later reports the thread live", async () => {
