@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   createConnection,
   createTerminalSession,
-  getTerminalSession,
+  getTerminalAttention,
 } from "@bb/db";
 import {
   seedHostSession,
@@ -65,19 +65,19 @@ describe("terminal attention persistence", () => {
       terminalId,
       payload: { body: "Tests passed", title: "Build finished" },
     });
-    expect(
-      typeof getTerminalSession(original.db, { kind: "terminal", terminalId })
-        ?.attentionJson,
-    ).toBe("string");
+    expect(getTerminalAttention(original.db, terminalId)).toMatchObject({
+      seq: 1,
+      clearedAt: null,
+    });
     original.deps.terminalSessions.handleBrowserTerminalMessage({
       terminalId,
       socket: { close() {}, send() {} },
       message: { type: "visibility", visible: true },
     });
-    expect(
-      getTerminalSession(original.db, { kind: "terminal", terminalId })
-        ?.attentionJson,
-    ).toBeNull();
+    expect(getTerminalAttention(original.db, terminalId)).toMatchObject({
+      seq: 1,
+      clearedAt: expect.any(Number),
+    });
     const serialized = original.db.$client.serialize();
     const restarted = await createTestAppHarness({
       db: createConnection(serialized),
@@ -90,9 +90,7 @@ describe("terminal attention persistence", () => {
   });
 });
 
-function createAttentionTerminal(
-  harness: TestAppHarness,
-): {
+function createAttentionTerminal(harness: TestAppHarness): {
   daemonSessionId: string;
   hostId: string;
   terminalId: string;

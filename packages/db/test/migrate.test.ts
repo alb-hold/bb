@@ -9,7 +9,6 @@ import {
   rewindThreadPruningWork,
   dropMarketplaceSourceGitSubdirectoryColumn,
   dropQueuedMessageEditHeldUntilColumn,
-  dropTerminalAttentionColumn,
 } from "./helpers/rewind.js";
 import { defaultAppSettings } from "@bb/domain";
 import {
@@ -627,7 +626,6 @@ function dropOnboardingCompletedAtColumn(db: DbConnection): void {
 }
 
 function resetMigrationsAfterThreadSearch(db: DbConnection): void {
-  dropTerminalAttentionColumn(db);
   restoreLegacyThreadOriginColumn(db);
   dropRewindAddedTables(db);
   db.$client
@@ -1264,7 +1262,6 @@ function runMigrationFile(args: RunMigrationFileArgs): void {
 }
 
 function markEventLargeValuesMigrationUnapplied(db: DbConnection): void {
-  dropTerminalAttentionColumn(db);
   db.$client.prepare("DROP TABLE IF EXISTS event_large_values").run();
   restoreEnvironmentCleanupModeColumn(db);
   restoreEnvironmentCleanupRequestedAtColumn(db);

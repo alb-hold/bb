@@ -7,10 +7,12 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import {
   createTerminalSession,
+  clearTerminalAttention,
+  getTerminalAttention,
   getSessionById,
   getTerminalSession,
   listTerminalSessions,
-  setTerminalAttention,
+  upsertTerminalAttention,
   updateTerminalSession,
   updateTerminalSessions,
   updateThread,
@@ -533,17 +535,6 @@ const terminalAttentionStateSchema = z
 
 type TerminalAttentionState = z.infer<typeof terminalAttentionStateSchema>;
 
-function parseTerminalAttention(value: string | null): TerminalAttentionState | null {
-  if (value === null) return null;
-  try {
-    const parsed: unknown = JSON.parse(value);
-    const result = terminalAttentionStateSchema.safeParse(parsed);
-    return result.success ? result.data : null;
-  } catch {
-    return null;
-  }
-}
-
 const TERMINAL_THREAD_ATTENTION_DEBOUNCE_MS = 10_000;
 
 function getTerminalById(
@@ -729,9 +720,19 @@ export class TerminalSessionLifecycle {
   }
 
   private toTerminalSession(row: TerminalSessionRow): TerminalSession {
+    const attention = getTerminalAttention(this.options.db, row.id);
     return {
       ...toTerminalSession(row),
-      attention: parseTerminalAttention(row.attentionJson),
+      attention:
+        attention === null || attention.clearedAt !== null
+          ? null
+          : {
+              at: attention.attentionAt,
+              body: attention.body ?? undefined,
+              kind: attention.kind,
+              seq: attention.seq,
+              title: attention.title ?? undefined,
+            },
     };
   }
 
@@ -741,11 +742,15 @@ export class TerminalSessionLifecycle {
   }): TerminalSession {
     const session = getTerminalById(this.options.db, args.terminalId);
     if (!session || session.status !== "running") {
-      throw new ApiError(404, "terminal_not_found", "Running terminal not found");
+      throw new ApiError(
+        404,
+        "terminal_not_found",
+        "Running terminal not found",
+      );
     }
     this.recordTerminalAttention({
       terminalId: session.id,
-      seq: parseTerminalAttention(session.attentionJson)?.seq ?? 0,
+      seq: (getTerminalAttention(this.options.db, session.id)?.seq ?? 0) + 1,
       kind: "osc-9",
       ...args.payload,
     });
@@ -753,17 +758,25 @@ export class TerminalSessionLifecycle {
   }
 
   private recordTerminalAttention(
-    attention: Omit<TerminalAttentionState, "at"> & { at?: number; terminalId: string },
+    attention: Omit<TerminalAttentionState, "at"> & {
+      at?: number;
+      terminalId: string;
+    },
   ): void {
     const session = getTerminalById(this.options.db, attention.terminalId);
     if (!session || session.status !== "running") return;
     const now = attention.at ?? Date.now();
     const { terminalId, ...value } = attention;
-    setTerminalAttention(
-      this.options.db,
-      terminalId,
-      JSON.stringify({ ...value, at: now }),
-    );
+    const previous = getTerminalAttention(this.options.db, terminalId);
+    if (previous !== null && value.seq <= previous.seq) return;
+    upsertTerminalAttention(this.options.db, {
+      terminalSessionId: terminalId,
+      seq: value.seq,
+      kind: value.kind,
+      title: value.title ?? null,
+      body: value.body ?? null,
+      attentionAt: now,
+    });
     if (session.threadId !== null) {
       const previous = this.lastThreadAttentionAt.get(session.threadId) ?? 0;
       if (now - previous >= TERMINAL_THREAD_ATTENTION_DEBOUNCE_MS) {
@@ -778,8 +791,9 @@ export class TerminalSessionLifecycle {
 
   private clearTerminalAttention(terminalId: string): void {
     const session = getTerminalById(this.options.db, terminalId);
-    if (!session?.attentionJson) return;
-    setTerminalAttention(this.options.db, terminalId, null);
+    const attention = getTerminalAttention(this.options.db, terminalId);
+    if (attention === null || attention.clearedAt !== null) return;
+    clearTerminalAttention(this.options.db, terminalId, Date.now());
     if (session?.threadId !== null && session?.threadId !== undefined) {
       this.options.hub.notifyThread(session.threadId, ["terminals-changed"]);
     }
@@ -1836,7 +1850,10 @@ export class TerminalSessionLifecycle {
       case "heartbeat":
         return;
       case "terminal.attention": {
-        const session = getTerminalById(this.options.db, args.message.terminalId);
+        const session = getTerminalById(
+          this.options.db,
+          args.message.terminalId,
+        );
         if (
           session?.daemonSessionId !== args.sessionId ||
           session.status !== "running"
@@ -1847,8 +1864,12 @@ export class TerminalSessionLifecycle {
           terminalId: session.id,
           seq: args.message.seq,
           kind: args.message.kind,
-          ...(args.message.title === undefined ? {} : { title: args.message.title }),
-          ...(args.message.body === undefined ? {} : { body: args.message.body }),
+          ...(args.message.title === undefined
+            ? {}
+            : { title: args.message.title }),
+          ...(args.message.body === undefined
+            ? {}
+            : { body: args.message.body }),
         });
         return;
       }
@@ -2129,7 +2150,10 @@ export class TerminalSessionLifecycle {
       Date.now(),
     );
     this.applySharedTerminalSize(args);
-    if (args.message.seq !== undefined && this.resizeAckSockets.has(args.socket)) {
+    if (
+      args.message.seq !== undefined &&
+      this.resizeAckSockets.has(args.socket)
+    ) {
       this.options.hub.sendTerminalSocketMessage(args.socket, {
         type: "resize-applied",
         seq: args.message.seq,

@@ -8,6 +8,7 @@ import { bumpThreadEventOwnershipEpoch } from "./data/event-rewrite-generation.j
 import { ensureItemCompletionLookupIndex } from "./fork-item-completion-index.js";
 import { ensureThreadSpawnersTable } from "./fork-thread-spawners.js";
 import { ensureNativeTerminalThreadsTable } from "./fork-native-terminal-threads.js";
+import { ensureTerminalAttentionTable } from "./fork-terminal-attention.js";
 import { restoreNativeThreadDraftsToDraftsQueue } from "./fork-restore-native-drafts.js";
 import {
   compatibleMigrationHashes,
@@ -1625,4 +1626,5 @@ export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
   ensureItemCompletionLookupIndex(db);
   ensureThreadSpawnersTable(db);
   ensureNativeTerminalThreadsTable(db);
+  ensureTerminalAttentionTable(db);
 }

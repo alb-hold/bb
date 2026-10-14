@@ -1191,7 +1191,6 @@ export const terminalSessions = sqliteTable(
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
     lastUserInputAt: integer("last_user_input_at"),
-    attentionJson: text("attention_json"),
   },
   (table) => [
     index("terminal_sessions_thread_status_updated_idx").on(
