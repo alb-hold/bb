@@ -23,6 +23,8 @@ const ARCHIVED_THREAD_PREFIX = "archived-thread-";
 const ARCHIVE_FALLBACK_PREFIX = "archive-revocation-";
 const REVOKED_ROUTE_PREFIX = "revoked-route-";
 const SUSPENDED_FILE_PREFIX = "suspended-";
+const DELETED_THREAD_PREFIX = "deleted-thread-";
+const DELETED_THREAD_NAME = /^deleted-thread-([a-f0-9]{64})\.json$/u;
 
 const identifierSchema = z.string().regex(/^[A-Za-z0-9_-]+$/u);
 const tokenSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/u);
@@ -134,6 +136,8 @@ export class ThreadTokenStore {
   private readonly nestedRoutes = new Map<string, NestedRouteRecord>();
   private readonly nestedTokenIndex = new Map<string, NestedRouteRecord>();
   private readonly archivedThreads = new Set<string>();
+  private readonly deletedThreadDigests = new Set<string>();
+  private readonly deletedLiveWarnings = new Map<string, number>();
   private readonly activeArchiveMarkers = new Set<string>();
   private readonly archiveEpochs = new Map<string, number>();
   private readonly seenArchiveMarkers = new Set<string>();
@@ -172,6 +176,10 @@ export class ThreadTokenStore {
     await fs.chmod(this.directory, 0o700);
     const enrolled = new Set(hostIds);
     const names = await fs.readdir(this.directory);
+    for (const name of names) {
+      const deleted = DELETED_THREAD_NAME.exec(name);
+      if (deleted?.[1] !== undefined) this.deletedThreadDigests.add(deleted[1]);
+    }
     for (const name of names) {
       if (
         (name.startsWith(ARCHIVED_THREAD_PREFIX) ||
@@ -213,6 +221,7 @@ export class ThreadTokenStore {
       return;
     }
     if (name.startsWith(ARCHIVED_THREAD_PREFIX)) return;
+    if (name.startsWith(DELETED_THREAD_PREFIX)) return;
     const suspended = name.startsWith(SUSPENDED_FILE_PREFIX);
     if (suspended) name = name.slice(SUSPENDED_FILE_PREFIX.length);
     if (
@@ -233,6 +242,10 @@ export class ThreadTokenStore {
                 ? ("process" as const)
                 : undefined,
             };
+      if (record !== null && this.isDeleted(record.threadId)) {
+        await fs.rm(file, { force: true });
+        return;
+      }
       const archived =
         record === null ? false : await this.isArchived(record.threadId);
       if (
@@ -269,6 +282,10 @@ export class ThreadTokenStore {
                 ? ("process" as const)
                 : undefined,
             };
+      if (record !== null && this.isDeleted(record.threadId)) {
+        await fs.rm(file, { force: true });
+        return;
+      }
       const archived =
         record === null ? false : await this.isArchived(record.threadId);
       if (
@@ -306,6 +323,8 @@ export class ThreadTokenStore {
       .parse(route);
     const hostTokenDigest = digest(hostToken);
     return this.serialize(async () => {
+      if (this.isDeleted(parsed.threadId))
+        throw new Error("Cannot mint a credential for a deleted thread.");
       if (await this.isArchived(parsed.threadId))
         throw new Error("Cannot mint a credential for an archived thread.");
       const key = this.routeMapKey({
@@ -353,6 +372,8 @@ export class ThreadTokenStore {
       .parse(route);
     const hostTokenDigest = digest(hostToken);
     return this.serialize(async () => {
+      if (this.isDeleted(parsed.threadId))
+        throw new Error("Cannot mint a credential for a deleted thread.");
       if (await this.isArchived(parsed.threadId))
         throw new Error("Cannot mint a credential for an archived thread.");
       const key = this.nestedMapKey({
@@ -445,6 +466,7 @@ export class ThreadTokenStore {
     this.commitArchiveState(
       threadId,
       () => {
+        this.deletedThreadDigests.add(digest(threadId));
         this.archivedThreads.add(threadId);
         this.activeArchiveMarkers.delete(threadId);
       },
@@ -467,11 +489,19 @@ export class ThreadTokenStore {
         directoryReadFailed = true;
       }
       let markerError: unknown;
+      try {
+        await this.persist(this.deletedFile(threadId), {
+          threadId,
+          deleted: true,
+        });
+      } catch (error) {
+        markerError = error;
+      }
       if (directoryReadFailed || this.holdsCredentials(threadId, names)) {
         try {
           await this.persistArchiveMarker(threadId, nextEpoch, true);
         } catch (error) {
-          markerError = error;
+          markerError ??= error;
         }
       }
       for (const [key, record] of this.routes) {
@@ -655,7 +685,9 @@ export class ThreadTokenStore {
     unarchived = false,
   ): Promise<number | null> {
     return this.serialize(async () => {
-      const current = () => !this.suspendedSince(threadId, expectedVersion);
+      const current = () =>
+        !this.isDeleted(threadId) &&
+        !this.suspendedSince(threadId, expectedVersion);
       if (!current()) return null;
       if (
         this.activeArchiveMarkers.has(threadId) ||
@@ -739,6 +771,14 @@ export class ThreadTokenStore {
   ): Promise<number | null> {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const answer = await this.askBb(threadId, unarchived);
+      if (this.isDeleted(threadId)) {
+        if (
+          answer.status === "live" &&
+          !this.suspendedSince(threadId, answer.version)
+        )
+          this.warnDeletedLive(threadId);
+        return null;
+      }
       if (answer.status === "live") {
         const version = await this.restoreThread(
           threadId,
@@ -785,6 +825,20 @@ export class ThreadTokenStore {
       });
     this.pendingLookups.set(threadId, { version, flight });
     return flight;
+  }
+
+  private isDeleted(threadId: string): boolean {
+    return this.deletedThreadDigests.has(digest(threadId));
+  }
+
+  private warnDeletedLive(threadId: string): void {
+    const warnedAt = this.deletedLiveWarnings.get(threadId);
+    if (warnedAt !== undefined && this.now() - warnedAt < UNANSWERED_WARNING_MS)
+      return;
+    this.deletedLiveWarnings.set(threadId, this.now());
+    this.warn(
+      `Account Pooler kept thread ${threadId} deleted: bb reported it live after it was deleted, and a deleted thread's credentials are never restored or minted again.`,
+    );
   }
 
   private warnUnanswered(threadId: string, error: unknown): void {
@@ -1435,6 +1489,13 @@ export class ThreadTokenStore {
     return path.join(this.directory, this.archiveFallbackName(threadId));
   }
 
+  private deletedFile(threadId: string): string {
+    return path.join(
+      this.directory,
+      `${DELETED_THREAD_PREFIX}${digest(threadId)}.json`,
+    );
+  }
+
   private archivedName(threadId: string): string {
     return `${ARCHIVED_THREAD_PREFIX}${digest(threadId)}.json`;
   }
@@ -1482,6 +1543,7 @@ export class ThreadTokenStore {
   }
 
   private async isArchived(threadId: string): Promise<boolean> {
+    if (this.isDeleted(threadId)) return true;
     const version = this.archiveVersion(threadId);
     const names = this.archiveMarkerNames(threadId);
     if (names.some((name) => this.corruptArchiveMarkers.has(name))) return true;

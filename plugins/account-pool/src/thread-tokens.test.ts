@@ -90,7 +90,7 @@ it("keeps process credentials scoped, revocable, and valid after a restart witho
   expect(await threads.authenticate(token)).toBeNull();
   expect(await threads.authenticateNested(nested)).toBeNull();
   await expect(threads.forThread(route, hostToken, "process")).rejects.toThrow(
-    "archived thread",
+    "deleted thread",
   );
 });
 
@@ -1543,24 +1543,36 @@ it("does not reload an unreadable credential after its thread is archived", asyn
   ).toEqual([]);
 });
 
-it("keeps archive revocation across restart and restores only the current archive generation", async () => {
+it("keeps a deletion across restart and restores it at no archive generation", async () => {
   const { directory, hosts, threads, route, hostToken } = await fixture();
   const token = await threads.forThread(route, hostToken);
   const staleVersion = threads.archiveVersion(route.threadId);
   await threads.removeThread(route.threadId);
   await expect(threads.forThread(route, hostToken)).rejects.toThrow(
-    "Cannot mint a credential for an archived thread.",
+    "Cannot mint a credential for a deleted thread.",
   );
-  await threads.restoreThread(route.threadId, staleVersion);
-  await expect(threads.forThread(route, hostToken)).rejects.toThrow();
+  expect(await threads.restoreThread(route.threadId, staleVersion)).toBeNull();
+  expect(
+    await threads.restoreThread(
+      route.threadId,
+      threads.archiveVersion(route.threadId),
+    ),
+  ).toBeNull();
+  await expect(threads.forThread(route, hostToken)).rejects.toThrow(
+    "Cannot mint a credential for a deleted thread.",
+  );
   const reloaded = new ThreadTokenStore(directory, hosts);
   await reloaded.initialize([route.hostId]);
   expect(await reloaded.authenticate(token)).toBeNull();
-  const currentVersion = reloaded.archiveVersion(route.threadId);
-  await reloaded.restoreThread(route.threadId, currentVersion);
   expect(
-    await reloaded.authenticate(await reloaded.forThread(route, hostToken)),
-  ).toEqual(route);
+    await reloaded.restoreThread(
+      route.threadId,
+      reloaded.archiveVersion(route.threadId),
+    ),
+  ).toBeNull();
+  await expect(reloaded.forThread(route, hostToken)).rejects.toThrow(
+    "Cannot mint a credential for a deleted thread.",
+  );
 });
 
 it("keeps an evicted token revoked after failed file cleanup and restoration", async () => {
@@ -1649,7 +1661,7 @@ it("does not scan credential files when restoring a never-archived thread", asyn
   readdir.mockRestore();
 });
 
-it("recovers from a transient archive-marker read failure on active lookup", async () => {
+it("keeps a deletion when the archive marker cannot be read on restart", async () => {
   const { directory, hosts, threads, route, hostToken } = await fixture();
   const oldToken = await threads.forThread(route, hostToken);
   await threads.removeThread(route.threadId);
@@ -1662,12 +1674,15 @@ it("recovers from a transient archive-marker read failure on active lookup", asy
   } finally {
     readFile.mockRestore();
   }
-  await reloaded.restoreThread(
-    route.threadId,
-    reloaded.archiveVersion(route.threadId),
+  expect(
+    await reloaded.restoreThread(
+      route.threadId,
+      reloaded.archiveVersion(route.threadId),
+    ),
+  ).toBeNull();
+  await expect(reloaded.forThread(route, hostToken)).rejects.toThrow(
+    "Cannot mint a credential for a deleted thread.",
   );
-  const newToken = await reloaded.forThread(route, hostToken);
-  expect(newToken).not.toBe(oldToken);
   expect(await reloaded.authenticate(oldToken)).toBeNull();
 });
 
@@ -1677,9 +1692,7 @@ it("preserves a credential when its archive marker has a transient read error", 
   const [name] = (await fs.readdir(directory)).filter((entry) =>
     entry.startsWith("scoped-route-"),
   );
-  const contents = await fs.readFile(path.join(directory, name ?? ""));
-  await threads.removeThread(route.threadId);
-  await fs.writeFile(path.join(directory, name ?? ""), contents);
+  await threads.suspendThread(route.threadId);
   const reloaded = new ThreadTokenStore(directory, hosts);
   const originalReadFile = fs.readFile.bind(fs);
   const readFile = vi
@@ -1700,13 +1713,13 @@ it("preserves a credential when its archive marker has a transient read error", 
     route.threadId,
     reloaded.archiveVersion(route.threadId),
   );
-  expect(await reloaded.authenticate(oldToken)).toBeNull();
+  expect(await reloaded.authenticate(oldToken)).toEqual(route);
 });
 
 it("recovers an active thread from a corrupt archive marker", async () => {
   const { directory, hosts, threads, route, hostToken } = await fixture();
   const oldToken = await threads.forThread(route, hostToken);
-  await threads.removeThread(route.threadId);
+  await threads.suspendThread(route.threadId);
   const marker = (await fs.readdir(directory)).find((name) =>
     name.startsWith("archived-thread-"),
   );
@@ -1719,11 +1732,11 @@ it("recovers an active thread from a corrupt archive marker", async () => {
     route.threadId,
     reloaded.archiveVersion(route.threadId),
   );
+  expect(await reloaded.authenticate(oldToken)).toEqual(route);
   const newToken = await reloaded.forThread(route, hostToken);
-  expect(await reloaded.authenticate(oldToken)).toBeNull();
+  expect(await reloaded.authenticate(newToken)).toEqual(route);
   const afterRestart = new ThreadTokenStore(directory, hosts);
   await afterRestart.initialize([route.hostId]);
-  expect(await afterRestart.authenticate(oldToken)).toBeNull();
   expect(await afterRestart.authenticate(newToken)).toEqual(route);
 });
 
@@ -1777,18 +1790,21 @@ it("uses a fallback archive marker when the primary marker cannot be written", a
   const writeFile = vi
     .spyOn(fs, "open")
     .mockRejectedValueOnce(new Error("EIO"));
-  const remove = vi.spyOn(fs, "rm").mockImplementationOnce(async () => {
-    throw new Error("EIO");
-  });
   try {
-    await expect(threads.removeThread(route.threadId)).resolves.toBeUndefined();
+    await expect(
+      threads.suspendThread(route.threadId),
+    ).resolves.toBeUndefined();
   } finally {
     writeFile.mockRestore();
-    remove.mockRestore();
   }
   expect(await threads.authenticate(oldToken)).toBeNull();
+  expect(
+    (await fs.readdir(directory)).some((name) =>
+      name.startsWith("archive-revocation-"),
+    ),
+  ).toBe(true);
   expect((await fs.readdir(directory)).some((name) => name === routeName)).toBe(
-    false,
+    true,
   );
   const restoreWrite = vi
     .spyOn(fs, "open")
@@ -1803,12 +1819,10 @@ it("uses a fallback archive marker when the primary marker cannot be written", a
   } finally {
     restoreWrite.mockRestore();
   }
-  const newToken = await threads.forThread(route, hostToken);
-  expect(await threads.authenticate(newToken)).toEqual(route);
-  expect(await threads.authenticate(oldToken)).toBeNull();
+  expect(await threads.authenticate(oldToken)).toEqual(route);
   const unconfirmed = new ThreadTokenStore(directory, hosts);
   await unconfirmed.initialize([route.hostId]);
-  expect(await unconfirmed.authenticate(newToken)).toBeNull();
+  expect(await unconfirmed.authenticate(oldToken)).toBeNull();
   const reloaded = new ThreadTokenStore(
     directory,
     hosts,
@@ -1816,8 +1830,7 @@ it("uses a fallback archive marker when the primary marker cannot be written", a
     async () => "live",
   );
   await reloaded.initialize([route.hostId]);
-  expect(await reloaded.authenticate(oldToken)).toBeNull();
-  expect(await reloaded.authenticate(newToken)).toEqual(route);
+  expect(await reloaded.authenticate(oldToken)).toEqual(route);
   expect(
     (await fs.readdir(directory)).filter((name) =>
       name.startsWith("revoked-route-"),
@@ -1871,7 +1884,7 @@ it("keeps revocation across restart when primary marker and route cleanup fail",
   expect(await fs.readdir(directory)).not.toContain(routeName);
 });
 
-it("does not revive an unreadable pre-archive credential after unarchive", async () => {
+it("does not revive an unreadable credential of a deleted thread", async () => {
   const { directory, hosts, threads, route, hostToken } = await fixture();
   const oldToken = await threads.forThread(route, hostToken);
   const unreadable = new ThreadTokenStore(directory, hosts);
@@ -1882,20 +1895,23 @@ it("does not revive an unreadable pre-archive credential after unarchive", async
     readFile.mockRestore();
   }
   await unreadable.removeThread(route.threadId);
-  await unreadable.restoreThread(
-    route.threadId,
-    unreadable.archiveVersion(route.threadId),
-  );
+  expect(
+    await unreadable.restoreThread(
+      route.threadId,
+      unreadable.archiveVersion(route.threadId),
+    ),
+  ).toBeNull();
   const reloaded = new ThreadTokenStore(directory, hosts);
   await reloaded.initialize([route.hostId]);
   expect(await reloaded.authenticate(oldToken)).toBeNull();
-  const newToken = await reloaded.forThread(route, hostToken);
-  expect(newToken).not.toBe(oldToken);
-  expect(await reloaded.authenticate(newToken)).toEqual(route);
-  const afterRestart = new ThreadTokenStore(directory, hosts);
-  await afterRestart.initialize([route.hostId]);
-  expect(await afterRestart.authenticate(oldToken)).toBeNull();
-  expect(await afterRestart.authenticate(newToken)).toEqual(route);
+  await expect(reloaded.forThread(route, hostToken)).rejects.toThrow(
+    "Cannot mint a credential for a deleted thread.",
+  );
+  expect(
+    (await fs.readdir(directory)).filter((name) =>
+      name.startsWith("scoped-route-"),
+    ),
+  ).toEqual([]);
 });
 
 it("mints even when an expired-generation record cannot be removed", async () => {

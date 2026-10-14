@@ -10842,6 +10842,99 @@ describe("Account Pool credential scoping", () => {
     expect(await statusOf(host, nested, "/availability")).toBe(200);
   });
 
+  it("keeps a deleted thread deleted when bb answers live afterwards, stale or fresh, for tokens, env resolution and a restart", async () => {
+    const fixture = await scopedFixture();
+    const { host } = fixture;
+    const secrets = path.join(fixture.dataDir, ...POOL_SECRETS);
+    const claude = await claudeToken(host, "thread-deleted-live");
+    const nested = await nestedToken(host, "thread-deleted-live");
+    let armed = true;
+    let open = () => {};
+    const gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    let reach = () => {};
+    const reached = new Promise<void>((resolve) => {
+      reach = resolve;
+    });
+    host.harness.sdk.stub(
+      "threads.get",
+      async ({ threadId }: { threadId: string }) => {
+        if (!armed || threadId !== "thread-deleted-live")
+          return bbThread(threadId);
+        armed = false;
+        const captured = await bbThread(threadId);
+        reach();
+        await gate;
+        return captured;
+      },
+    );
+    const inFlight = statusOf(host, claude, "/v1/messages");
+    await reached;
+    bbThreadStates.set("thread-deleted-live", "deleted");
+    expect(
+      await host.harness.behavior.emitThreadEvent("thread.deleted", {
+        thread: makeThreadResponse({ id: "thread-deleted-live" }),
+      }),
+    ).toEqual({ errors: [] });
+    bbThreadStates.delete("thread-deleted-live");
+    open();
+    expect(await inFlight).toBe(401);
+    const routedTokens = async (target: Fixture["host"]) =>
+      (
+        await target.harness.behavior.resolveProviderEnv("claude-code", {
+          threadId: "thread-deleted-live",
+          projectId: "project-one",
+          hostId: "host-one",
+        })
+      ).filter(
+        (entry) => entry.name === "ANTHROPIC_AUTH_TOKEN" && entry.value !== "",
+      );
+    const credentialFiles = async () =>
+      (await fs.readdir(secrets)).filter((name) =>
+        name.includes("thread-deleted-live"),
+      );
+    expect(await statusOf(host, claude, "/v1/messages")).toBe(401);
+    expect(await statusOf(host, nested, "/availability")).toBe(401);
+    expect(await routedTokens(host)).toEqual([]);
+    expect(await credentialFiles()).toEqual([]);
+    const reloaded = await host.harness.lifecycle.reload(
+      createAccountPoolPlugin({
+        usageUrl: EMPTY_USAGE_URL,
+        codexUsageUrl: EMPTY_USAGE_URL,
+        importCodexCredentials: async () => ({
+          accessToken: "codex-access",
+          refreshToken: "codex-refresh",
+          idToken: null,
+          accountId: "codex-account",
+          planType: null,
+          email: null,
+          expiresAt: Date.now() + 60 * 60 * 1_000,
+        }),
+      }),
+    );
+    reloaded.harness.sdk.stub(
+      "threads.get",
+      async ({ threadId }: { threadId: string }) => bbThread(threadId),
+    );
+    const service = reloaded.harness.behavior.runService("hub");
+    cleanups.push(async () => {
+      service.controller.abort();
+      await service.done;
+      await reloaded.harness.lifecycle.dispose();
+    });
+    await vi.waitFor(async () => {
+      const status = statusSchema.parse(
+        await reloaded.harness.behavior.callRpc("status.get", null),
+      );
+      expect(status.accepting).toBe(true);
+    });
+    expect(await statusOf(reloaded, claude, "/v1/messages")).toBe(401);
+    expect(await statusOf(reloaded, nested, "/availability")).toBe(401);
+    expect(await routedTokens(reloaded)).toEqual([]);
+    expect(await credentialFiles()).toEqual([]);
+  });
+
   it("suspends on archive, accepts the same tokens after unarchive and revokes on delete", async () => {
     const fixture = await scopedFixture();
     const { host } = fixture;

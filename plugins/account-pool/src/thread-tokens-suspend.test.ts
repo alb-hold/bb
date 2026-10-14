@@ -192,6 +192,25 @@ function pauseAt(
   };
 }
 
+async function expectNoMint(
+  store: ThreadTokenStore,
+  hostToken: string,
+  lifetime: Lifetime,
+): Promise<void> {
+  await expect(store.forThread(route, hostToken, lifetime)).rejects.toThrow(
+    "Cannot mint a credential for a deleted thread.",
+  );
+  await expect(
+    store.forNested(nestedRoute, hostToken, lifetime),
+  ).rejects.toThrow("Cannot mint a credential for a deleted thread.");
+}
+
+async function deletedMarkers(directory: string): Promise<string[]> {
+  return (await fs.readdir(directory)).filter((name) =>
+    /^deleted-thread-[a-f0-9]{64}\.json$/u.test(name),
+  );
+}
+
 const unarchive = (store: ThreadTokenStore) =>
   store.unarchiveThread(route.threadId);
 
@@ -296,8 +315,14 @@ async function interleave(
       both(true),
     );
   }
-  if (final === "gone")
+  if (final === "gone") {
     expect(await threadFiles(w.directory), `${at}: files`).toEqual([]);
+    w.setBb("live");
+    expect(await store.settleThread(route.threadId), `${at}: settle`).toBe(
+      false,
+    );
+    await expectNoMint(store, w.hostToken, lifetime);
+  }
   return true;
 }
 
@@ -393,6 +418,11 @@ async function staleAnswer(
   );
   if (final === "gone") {
     expect(await threadFiles(w.directory), `${at}: files`).toEqual([]);
+    w.setBb("live");
+    expect(await store.settleThread(route.threadId), `${at}: settle`).toBe(
+      false,
+    );
+    await expectNoMint(store, w.hostToken, lifetime);
     return;
   }
   expect(await threadFiles(w.directory), `${at}: files`).toEqual(stored);
@@ -930,4 +960,93 @@ describe.each(["durable", "process"] as const)("%s credentials", (lifetime) => {
     },
     60_000,
   );
+  it("keeps a deleted thread deleted when bb answers live afterwards, stale or fresh: old tokens are rejected and nothing can be minted, also after a restart", async () => {
+    const w = await world();
+    const held = holdOneLookup(w.lookup);
+    const warnings: string[] = [];
+    const store = new ThreadTokenStore(
+      w.directory,
+      w.hosts,
+      w.clock,
+      held.lookup,
+      60_000,
+      (message) => warnings.push(message),
+    );
+    await store.initialize([route.hostId]);
+    const tokens = await mint(store, w.hostToken, lifetime);
+    held.arm();
+    const inFlight = store.authenticate(tokens.token);
+    await held.reached;
+    w.setBb("gone");
+    await store.removeThread(route.threadId);
+    w.setBb("live");
+    held.release();
+    expect(await inFlight).toBeNull();
+    expect(await accepted(store, tokens)).toEqual({
+      token: false,
+      nested: false,
+    });
+    expect(await store.settleThread(route.threadId)).toBe(false);
+    expect(await unarchive(store)).toBe(false);
+    expect(
+      await store.restoreThread(
+        route.threadId,
+        store.archiveVersion(route.threadId),
+      ),
+    ).toBeNull();
+    await store.sweepThreads(held.lookup);
+    await expectNoMint(store, w.hostToken, lifetime);
+    expect(await accepted(store, tokens)).toEqual({
+      token: false,
+      nested: false,
+    });
+    expect(await threadFiles(w.directory)).toEqual([]);
+    expect(await deletedMarkers(w.directory)).toHaveLength(1);
+    expect(warnings).toContain(
+      `Account Pooler kept thread ${route.threadId} deleted: bb reported it live after it was deleted, and a deleted thread's credentials are never restored or minted again.`,
+    );
+    const restarted = await w.open();
+    expect(await accepted(restarted, tokens)).toEqual({
+      token: false,
+      nested: false,
+    });
+    expect(await restarted.settleThread(route.threadId)).toBe(false);
+    await expectNoMint(restarted, w.hostToken, lifetime);
+    expect(await threadFiles(w.directory)).toEqual([]);
+  });
+
+  it("keeps a thread deleted in process when its deleted marker cannot be written, and records it once bb reports it gone after a restart", async () => {
+    const w = await world();
+    const store = await w.open();
+    const tokens = await mint(store, w.hostToken, lifetime);
+    const originalOpen = fs.open.bind(fs);
+    vi.spyOn(fs, "open").mockImplementation(async (file, flags, mode) => {
+      if (String(file).includes("deleted-thread-"))
+        throw Object.assign(new Error("ENOSPC"), { code: "ENOSPC" });
+      return originalOpen(file, flags, mode);
+    });
+    w.setBb("gone");
+    await expect(store.removeThread(route.threadId)).rejects.toThrow("ENOSPC");
+    w.setBb("live");
+    expect(await store.settleThread(route.threadId)).toBe(false);
+    await expectNoMint(store, w.hostToken, lifetime);
+    vi.restoreAllMocks();
+    expect(await deletedMarkers(w.directory)).toEqual([]);
+    w.setBb("gone");
+    const restarted = await w.open();
+    expect(await accepted(restarted, tokens)).toEqual({
+      token: false,
+      nested: false,
+    });
+    expect(await restarted.settleThread(route.threadId)).toBe(false);
+    expect(await deletedMarkers(w.directory)).toHaveLength(1);
+    w.setBb("live");
+    expect(await restarted.settleThread(route.threadId)).toBe(false);
+    await expectNoMint(restarted, w.hostToken, lifetime);
+    expect(await accepted(restarted, tokens)).toEqual({
+      token: false,
+      nested: false,
+    });
+    expect(await threadFiles(w.directory)).toEqual([]);
+  });
 });
