@@ -62,6 +62,7 @@ import {
 } from "./terminal-shared-size";
 import { handleTerminalFileDrop } from "./terminal-file-drop";
 import { dropMouseReportsWithoutPosition } from "./terminal-mouse-reports";
+import { attachTerminalWheelLines } from "./terminal-wheel";
 import { attachTerminalInteractions } from "./terminal-interactions";
 import {
   loadOptionalTerminalWebglAddon,
@@ -987,6 +988,7 @@ export function ThreadTerminalView({
         ),
       );
       terminal.open(containerElement);
+      attachTerminalWheelLines(terminal);
       if (webglAddonModule !== null) {
         webglRenderer = loadTerminalWebglRenderer(
           terminal,
