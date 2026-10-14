@@ -62,6 +62,7 @@ import {
 } from "./terminal-shared-size";
 import { handleTerminalFileDrop } from "./terminal-file-drop";
 import { dropMouseReportsWithoutPosition } from "./terminal-mouse-reports";
+import { sendTerminalTapClick } from "./terminal-tap-click";
 import { attachTerminalWheelLines } from "./terminal-wheel";
 import { attachTerminalInteractions } from "./terminal-interactions";
 import {
@@ -862,13 +863,19 @@ export function ThreadTerminalView({
     (event: ReactTouchEvent<HTMLDivElement>) => {
       const gesture = touchFocusGestureRef.current;
       touchFocusGestureRef.current = null;
-      focusTerminalFromTouchRelease({
-        changedTouches: terminalTouchPoints(event.changedTouches),
+      const changedTouches = terminalTouchPoints(event.changedTouches);
+      const tapped = focusTerminalFromTouchRelease({
+        changedTouches,
         focus: () => terminalRef.current?.focus(),
         gesture,
         releasedAt: event.timeStamp,
         remainingTouchCount: event.touches.length,
       });
+      const terminal = terminalRef.current;
+      const tap = changedTouches[0];
+      if (tapped && terminal !== null && tap !== undefined) {
+        sendTerminalTapClick(terminal, tap);
+      }
     },
     [],
   );
