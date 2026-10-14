@@ -4,6 +4,7 @@ import {
   closeSession,
   createTerminalSession,
   getAppSettings,
+  getThread,
   getTerminalSession,
   listTerminalSessions,
   setAppSettings,
@@ -535,6 +536,69 @@ describe("public terminal routes", () => {
         title: "Terminal 1",
       }),
     ]);
+  });
+
+  it("records daemon attention on the existing thread unread timestamp and clears terminal state when visible", async () => {
+    const fixture = await createTerminalRouteFixture();
+    harnesses.push(fixture.harness);
+    const stored = createTerminalSession(fixture.harness.db, {
+      cols: 120,
+      daemonSessionId: fixture.session.id,
+      environmentId: fixture.environment.id,
+      hostId: fixture.host.id,
+      initialCwd: fixture.environment.path ?? "/tmp/terminal-workspace",
+      rows: 32,
+      status: "running",
+      threadId: fixture.thread.id,
+      title: "Terminal attention",
+    });
+    const at = Date.now();
+    onDaemonSocketMessage(fixture.harness.deps, {
+      hostId: fixture.host.id,
+      raw: JSON.stringify({
+        type: "terminal.attention",
+        terminalId: stored.id,
+        seq: 7,
+        kind: "osc-777",
+        title: "Build",
+        body: "Finished",
+      }),
+      sessionId: fixture.session.id,
+      socket: fixture.socket,
+    });
+    expect(getThread(fixture.harness.db, fixture.thread.id)?.latestAttentionAt).toBe(at);
+    const visible = await fixture.harness.app.request(
+      `/api/v1/terminals?threadId=${encodeURIComponent(fixture.thread.id)}`,
+    );
+    const listed = terminalListResponseSchema.parse(await readJson(visible));
+    expect(listed.sessions[0]?.attention).toEqual({
+      at,
+      body: "Finished",
+      kind: "osc-777",
+      seq: 7,
+      title: "Build",
+    });
+    const browserSocket = createFakeBrowserSocket();
+    onTerminalSocketOpen(fixture.harness.deps, {
+      outputAcks: true,
+      resizeAcks: false,
+      sinceSeq: 0,
+      socket: browserSocket,
+      terminalId: stored.id,
+    });
+    onTerminalSocketMessage(fixture.harness.deps, {
+      raw: JSON.stringify({ type: "visibility", visible: true }),
+      socket: browserSocket,
+      terminalId: stored.id,
+    });
+    const afterClear = terminalListResponseSchema.parse(
+      await readJson(
+        await fixture.harness.app.request(
+          `/api/v1/terminals?threadId=${encodeURIComponent(fixture.thread.id)}`,
+        ),
+      ),
+    );
+    expect(afterClear.sessions[0]?.attention).toBeNull();
   });
 
   it("gets and renames a terminal by ID without a redundant scope", async () => {

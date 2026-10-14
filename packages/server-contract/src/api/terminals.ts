@@ -22,8 +22,35 @@ export const terminalSessionSchema = z.object({
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
   lastUserInputAt: z.number().int().nonnegative().nullable(),
+  attention: z
+    .object({
+      at: z.number().int().nonnegative(),
+      body: z.string().max(2048).optional(),
+      kind: z.enum(["bell", "osc-9", "osc-99", "osc-777"]),
+      seq: z.number().int().nonnegative(),
+      title: z.string().max(256).optional(),
+    })
+    .strict()
+    .nullable()
+    .optional(),
 });
 export type TerminalSession = z.infer<typeof terminalSessionSchema>;
+
+const terminalNotificationTextSchema = (maxLength: number) =>
+  z
+    .string()
+    .max(4096)
+    .transform((value) =>
+      value.replace(/[\u0000-\u001f\u007f-\u009f]/gu, "").slice(0, maxLength),
+    );
+
+export const terminalNotifyRequestSchema = z
+  .object({
+    title: terminalNotificationTextSchema(256).optional(),
+    body: terminalNotificationTextSchema(2048).optional(),
+  })
+  .strict();
+export type TerminalNotifyRequest = z.infer<typeof terminalNotifyRequestSchema>;
 
 export const terminalListResponseSchema = z.object({
   sessions: z.array(terminalSessionSchema),

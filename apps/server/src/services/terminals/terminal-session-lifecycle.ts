@@ -11,6 +11,7 @@ import {
   listTerminalSessions,
   updateTerminalSession,
   updateTerminalSessions,
+  updateThread,
   type TerminalSessionMutation,
   type TerminalSessionRow,
 } from "@bb/db";
@@ -33,6 +34,7 @@ import type {
   TerminalOutputResponse,
   TerminalResizeRequest,
   TerminalSession,
+  TerminalNotifyRequest,
   UpdateTerminalRequest,
 } from "@bb/server-contract";
 import { ApiError } from "../../errors.js";
@@ -513,8 +515,19 @@ function toTerminalSession(row: TerminalSessionRow): TerminalSession {
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     lastUserInputAt: row.lastUserInputAt,
+    attention: null,
   };
 }
+
+interface TerminalAttentionState {
+  at: number;
+  body?: string;
+  kind: "bell" | "osc-9" | "osc-99" | "osc-777";
+  seq: number;
+  title?: string;
+}
+
+const TERMINAL_THREAD_ATTENTION_DEBOUNCE_MS = 10_000;
 
 function getTerminalById(
   db: AppDeps["db"],
@@ -535,6 +548,11 @@ function updateTerminalById(
 }
 
 export class TerminalSessionLifecycle {
+  private readonly attentionByTerminalId = new Map<
+    string,
+    TerminalAttentionState
+  >();
+  private readonly lastThreadAttentionAt = new Map<string, number>();
   private readonly pendingAttaches: PendingRpcRegistry<
     PendingTerminalAttachKey,
     TerminalReplayMessage
@@ -647,7 +665,7 @@ export class TerminalSessionLifecycle {
       return listTerminalSessions(this.options.db, {
         scope: { kind: "thread", threadId: query.threadId },
         visible: true,
-      }).map(toTerminalSession);
+      }).map((row) => this.toTerminalSession(row));
     }
     if (query.environmentId !== undefined) {
       requireEnvironment(this.options.db, query.environmentId);
@@ -657,7 +675,7 @@ export class TerminalSessionLifecycle {
           kind: "threadless-environment",
         },
         visible: true,
-      }).map(toTerminalSession);
+      }).map((row) => this.toTerminalSession(row));
     }
     const hostId = query.hostId;
     if (hostId === undefined) {
@@ -682,7 +700,7 @@ export class TerminalSessionLifecycle {
           session.hostId === hostId &&
           (query.cwd === undefined || session.initialCwd === query.cwd),
       )
-      .map(toTerminalSession);
+      .map((row) => this.toTerminalSession(row));
   }
 
   getTerminal(args: GetTerminalArgs): TerminalSession {
@@ -694,7 +712,61 @@ export class TerminalSessionLifecycle {
         "Terminal session not found",
       );
     }
-    return toTerminalSession(session);
+    return this.toTerminalSession(session);
+  }
+
+  private toTerminalSession(row: TerminalSessionRow): TerminalSession {
+    return {
+      ...toTerminalSession(row),
+      attention: this.attentionByTerminalId.get(row.id) ?? null,
+    };
+  }
+
+  notifyTerminal(args: {
+    payload: TerminalNotifyRequest;
+    terminalId: string;
+  }): TerminalSession {
+    const session = getTerminalById(this.options.db, args.terminalId);
+    if (!session || session.status !== "running") {
+      throw new ApiError(404, "terminal_not_found", "Running terminal not found");
+    }
+    this.recordTerminalAttention({
+      terminalId: session.id,
+      seq: this.attentionByTerminalId.get(session.id)?.seq ?? 0,
+      kind: "osc-9",
+      ...args.payload,
+    });
+    return this.toTerminalSession(session);
+  }
+
+  private recordTerminalAttention(
+    attention: Omit<TerminalAttentionState, "at"> & { at?: number; terminalId: string },
+  ): void {
+    const session = getTerminalById(this.options.db, attention.terminalId);
+    if (!session || session.status !== "running") return;
+    const now = attention.at ?? Date.now();
+    const { terminalId, ...value } = attention;
+    this.attentionByTerminalId.set(terminalId, { ...value, at: now });
+    if (session.threadId !== null) {
+      const previous = this.lastThreadAttentionAt.get(session.threadId) ?? 0;
+      if (now - previous >= TERMINAL_THREAD_ATTENTION_DEBOUNCE_MS) {
+        updateThread(this.options.db, this.options.hub, session.threadId, {
+          latestAttentionAt: now,
+        });
+        this.lastThreadAttentionAt.set(session.threadId, now);
+      }
+      this.options.hub.notifyThread(session.threadId, ["terminals-changed"]);
+    }
+  }
+
+  private clearTerminalAttention(terminalId: string): void {
+    const previous = this.attentionByTerminalId.get(terminalId);
+    if (!previous) return;
+    this.attentionByTerminalId.delete(terminalId);
+    const session = getTerminalById(this.options.db, terminalId);
+    if (session?.threadId !== null && session?.threadId !== undefined) {
+      this.options.hub.notifyThread(session.threadId, ["terminals-changed"]);
+    }
   }
 
   async createTerminal(args: CreateTerminalArgs): Promise<TerminalSession> {
@@ -1714,6 +1786,9 @@ export class TerminalSessionLifecycle {
         );
         return;
       case "visibility":
+        if (args.message.visible) {
+          this.clearTerminalAttention(args.terminalId);
+        }
         if (this.outputAckSocketVisibility.has(args.socket)) {
           this.outputAckSocketVisibility.set(args.socket, args.message.visible);
         }
@@ -1744,6 +1819,23 @@ export class TerminalSessionLifecycle {
     switch (args.message.type) {
       case "heartbeat":
         return;
+      case "terminal.attention": {
+        const session = getTerminalById(this.options.db, args.message.terminalId);
+        if (
+          session?.daemonSessionId !== args.sessionId ||
+          session.status !== "running"
+        ) {
+          return;
+        }
+        this.recordTerminalAttention({
+          terminalId: session.id,
+          seq: args.message.seq,
+          kind: args.message.kind,
+          ...(args.message.title === undefined ? {} : { title: args.message.title }),
+          ...(args.message.body === undefined ? {} : { body: args.message.body }),
+        });
+        return;
+      }
       case "terminal.opened":
         this.pendingOpens.settle(
           terminalResponseRpcKey(args.sessionId, args.message),
@@ -1787,6 +1879,7 @@ export class TerminalSessionLifecycle {
           },
         });
         if (exited) {
+          this.clearTerminalAttention(exited.id);
           this.forwardedNextSeqByTerminalId.delete(exited.id);
           this.outputFlow.forgetTerminal(exited.id);
           this.pendingCloses.settle(

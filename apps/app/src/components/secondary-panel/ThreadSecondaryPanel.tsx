@@ -671,11 +671,13 @@ function ThreadSecondaryPanelContent({
             ariaLabel: tab.ariaLabel,
             leadingVisual: tab.leadingVisual,
             onSelect: tab.onSelect,
+            attention: tab.attention,
           }))}
           tabs={visibleSurfaceTabs.map((tab) => ({
             id: tab.tab.id,
             label: tab.label,
             ariaLabel: tab.label,
+            attention: tab.attention,
             leadingVisual: tab.leadingVisual,
             onSelect: tab.onSelect,
             onClose: tab.isPinned ? null : tab.onClose,

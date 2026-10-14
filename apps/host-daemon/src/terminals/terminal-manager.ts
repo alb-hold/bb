@@ -20,6 +20,11 @@ import { runtimeErrorLogFields } from "../error-utils.js";
 import { requireResolvedWorkspaceForCommand } from "../workspace-resolution.js";
 import { ExpectedCommandDispatchError } from "../command-dispatch-support.js";
 import {
+  consumeTerminalAttention,
+  INITIAL_TERMINAL_ATTENTION_PARSER_STATE,
+  type TerminalAttentionParserState,
+} from "./terminal-attention-parser.js";
+import {
   resolveWindowsTerminalShell,
   terminalShellArgs,
   terminalShellTitle,
@@ -29,6 +34,7 @@ const DEFAULT_SCROLLBACK_MAX_BYTES = 4 * 1024 * 1024;
 const DEFAULT_SCROLLBACK_MAX_CHUNKS = 10_000;
 const MAX_OUTPUT_CHUNK_BYTES = 64 * 1024;
 const DEFAULT_OUTPUT_BATCH_DELAY_MS = 4;
+const TERMINAL_ATTENTION_COALESCE_MS = 2_000;
 const OUTPUT_FLOW_PAUSE_BYTES = 1024 * 1024;
 const OUTPUT_FLOW_RESUME_BYTES = 512 * 1024;
 const PAUSED_PROCESS_EXIT_POLL_MS = 50;
@@ -166,10 +172,12 @@ interface TerminalSession {
   disposables: TerminalPtyDisposable[];
   environmentId: string | null;
   lastOutputFlushAt: number;
+  lastAttentionAt: number;
   nextSeq: number;
   outputBuffers: Buffer[];
   outputBytes: number;
   outputFlow: TerminalOutputFlow | null;
+  attentionParserState: TerminalAttentionParserState;
   outputFlushCancel: (() => void) | null;
   pendingPrimaryDeviceAttributesQuery: PendingPrimaryDeviceAttributesQuery;
   pty: TerminalPtyProcess;
@@ -835,10 +843,12 @@ export class TerminalManager {
         disposables: [],
         environmentId: target.environmentId,
         lastOutputFlushAt: 0,
+        lastAttentionAt: Number.NEGATIVE_INFINITY,
         nextSeq: 0,
         outputBuffers: [],
         outputBytes: 0,
         outputFlow: null,
+        attentionParserState: { ...INITIAL_TERMINAL_ATTENTION_PARSER_STATE },
         outputFlushCancel: null,
         pendingPrimaryDeviceAttributesQuery: "",
         pty,
@@ -1213,6 +1223,28 @@ export class TerminalManager {
         seq: session.nextSeq,
         dataBase64: dataBuffer.toString("base64"),
       };
+      const attention = consumeTerminalAttention(
+        session.attentionParserState,
+        dataBuffer,
+      );
+      const now = Date.now();
+      if (
+        attention.length > 0 &&
+        now - session.lastAttentionAt >= TERMINAL_ATTENTION_COALESCE_MS
+      ) {
+        session.lastAttentionAt = now;
+        const detection = attention[0];
+        if (detection) {
+          this.options.sendMessage({
+            type: "terminal.attention",
+            terminalId: session.terminalId,
+            seq: chunk.seq,
+            kind: detection.kind,
+            ...(detection.title === undefined ? {} : { title: detection.title }),
+            ...(detection.body === undefined ? {} : { body: detection.body }),
+          });
+        }
+      }
       const parserStateBefore = this.replayParserStateSnapshot(
         session.scrollbackParserState,
       );

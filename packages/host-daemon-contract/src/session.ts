@@ -782,6 +782,23 @@ const hostDaemonTerminalOutputMessageSchema = z
   })
   .strict();
 
+const terminalAttentionTextSchema = (maxLength: number) =>
+  z
+    .string()
+    .max(4096)
+    .transform((value) => value.replace(/[\u0000-\u001f\u007f-\u009f]/gu, "").slice(0, maxLength));
+
+const hostDaemonTerminalAttentionMessageSchema = z
+  .object({
+    type: z.literal("terminal.attention"),
+    terminalId: z.string().min(1),
+    seq: z.number().int().nonnegative(),
+    kind: z.enum(["bell", "osc-9", "osc-99", "osc-777"]),
+    title: terminalAttentionTextSchema(256).optional(),
+    body: terminalAttentionTextSchema(2048).optional(),
+  })
+  .strict();
+
 const hostDaemonTerminalReplayMessageSchema = z
   .object({
     type: z.literal("terminal.replay"),
@@ -826,6 +843,7 @@ export const hostDaemonDaemonWsMessageSchema = z.union([
   serverMoveProgressMessageSchema,
   hostDaemonTerminalOpenedMessageSchema,
   hostDaemonTerminalOutputMessageSchema,
+  hostDaemonTerminalAttentionMessageSchema,
   hostDaemonTerminalReplayMessageSchema,
   hostDaemonTerminalExitedMessageSchema,
   hostDaemonTerminalErrorMessageSchema,

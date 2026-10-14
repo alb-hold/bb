@@ -21,6 +21,7 @@ export interface SecondaryPanelPaneRenderContext {
 }
 
 export interface SecondaryPanelRenderableTab {
+  attention?: boolean;
   contentFillsRegion?: boolean;
   label: string;
   isHidden?: boolean;

@@ -1234,7 +1234,7 @@ const CONTRIBUTED_ENV = [
 
 describe("host-daemon command schemas", () => {
   it("uses the current host-daemon protocol version", () => {
-    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(238);
+    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(239);
     expect(HOST_ARTIFACT_MAX_BYTES).toBe(256 * 1024 * 1024);
   });
 
@@ -3812,6 +3812,34 @@ describe("host-daemon session schemas", () => {
       hostDaemonTerminalOutputChunkSchema.safeParse({
         seq: 0,
         dataBase64: oversizedEncodedPayload,
+      }).success,
+    ).toBe(false);
+  });
+
+  it("sanitizes and bounds daemon terminal attention payloads", () => {
+    const result = hostDaemonDaemonWsMessageSchema.parse({
+      type: "terminal.attention",
+      terminalId: "term_123",
+      seq: 7,
+      kind: "osc-777",
+      title: `Build\u0000${"x".repeat(300)}`,
+      body: `Done\u001b${"y".repeat(2100)}`,
+    });
+    if (result.type !== "terminal.attention") {
+      throw new Error("Expected a terminal attention message");
+    }
+    expect(result).toMatchObject({
+      title: `Build${"x".repeat(251)}`,
+      body: `Done${"y".repeat(2044)}`,
+    });
+    expect(result.title).toHaveLength(256);
+    expect(result.body).toHaveLength(2048);
+    expect(
+      hostDaemonDaemonWsMessageSchema.safeParse({
+        type: "terminal.attention",
+        terminalId: "term_123",
+        seq: -1,
+        kind: "osc-777",
       }).success,
     ).toBe(false);
   });

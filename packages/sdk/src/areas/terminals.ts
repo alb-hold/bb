@@ -5,6 +5,7 @@ import type {
   TerminalListResponse,
   TerminalOutputQuery,
   TerminalOutputResponse,
+  TerminalNotifyRequest,
   TerminalResizeRequest,
   TerminalSession,
   UpdateTerminalRequest,
@@ -98,6 +99,8 @@ export interface TerminalOutputArgs extends TerminalTargetArgs {
   tailBytes?: TerminalOutputQuery["tailBytes"];
 }
 
+export interface TerminalNotifyArgs extends TerminalTargetArgs, TerminalNotifyRequest {}
+
 export type TerminalRestartArgs = TerminalTargetArgs;
 
 export type TerminalListResult = TerminalListResponse;
@@ -117,6 +120,7 @@ export interface TerminalsArea {
   input(args: TerminalInputArgs): Promise<TerminalInputResult>;
   list(args: TerminalListArgs): Promise<TerminalListResult>;
   output(args: TerminalOutputArgs): Promise<TerminalOutputResult>;
+  notify(args: TerminalNotifyArgs): Promise<TerminalGetResult>;
   rename(args: TerminalRenameArgs): Promise<TerminalRenameResult>;
   restart(args: TerminalRestartArgs): Promise<TerminalRestartResult>;
   resize(args: TerminalResizeArgs): Promise<TerminalResizeResult>;
@@ -256,6 +260,17 @@ export function createTerminalsArea(args: CreateSdkAreaArgs): TerminalsArea {
           },
           ...signalRequestArgs(input.signal),
         ),
+      );
+    },
+    async notify(input) {
+      return transport.readJson(
+        transport.api.v1.terminals[":terminalId"].notify.$post({
+          param: { terminalId: input.terminalId },
+          json: {
+            ...(input.title === undefined ? {} : { title: input.title }),
+            ...(input.body === undefined ? {} : { body: input.body }),
+          },
+        }),
       );
     },
     async rename(input) {

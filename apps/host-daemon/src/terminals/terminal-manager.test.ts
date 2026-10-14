@@ -1124,6 +1124,41 @@ describe("TerminalManager", () => {
     });
   });
 
+  it("reports unattended terminal attention and coalesces repeats for two seconds", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000_000);
+    try {
+      const harness = createHarness();
+      const pty = await openTerminal(harness);
+      pty.emitData("\u0007\u001b]9;build finished\u0007");
+      await vi.advanceTimersByTimeAsync(50);
+      expect(
+        harness.messages.filter((message) => message.type === "terminal.attention"),
+      ).toEqual([
+        {
+          type: "terminal.attention",
+          terminalId: "term-1",
+          seq: 0,
+          kind: "bell",
+        },
+      ]);
+      vi.setSystemTime(1_001_999);
+      pty.emitData("\u001b]777;notify;Build;Again\u0007");
+      await vi.advanceTimersByTimeAsync(50);
+      expect(
+        harness.messages.filter((message) => message.type === "terminal.attention"),
+      ).toHaveLength(1);
+      vi.setSystemTime(1_002_000);
+      pty.emitData("\u001b]777;notify;Build;Again\u0007");
+      await vi.advanceTimersByTimeAsync(50);
+      expect(
+        harness.messages.filter((message) => message.type === "terminal.attention"),
+      ).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("flushes the first output after an idle period without the batch delay", async () => {
     const harness = createHarness();
     const pty = await openTerminal(harness);

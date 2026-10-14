@@ -1389,7 +1389,7 @@ export function ThreadTerminalView({
       >
         <ContextMenuTrigger asChild disabled={!hasTerminalContextMenuTarget}>
           <div
-            className="relative min-h-0 w-full flex-1 overflow-hidden bg-sidebar p-2"
+            className={`relative min-h-0 w-full flex-1 overflow-hidden bg-sidebar p-2 ${session.attention ? "ring-2 ring-inset ring-attention" : ""}`}
             onContextMenuCapture={captureTerminalContextMenu}
             onTouchStart={handleTerminalTouchStart}
             onTouchMove={handleTerminalTouchMove}
