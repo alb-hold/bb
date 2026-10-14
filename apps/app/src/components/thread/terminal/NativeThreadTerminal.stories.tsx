@@ -60,6 +60,7 @@ function NativeThreadPhone() {
             onInput={() => undefined}
             onKeyboardToggle={() => undefined}
             onPaste={() => undefined}
+            onSearch={() => undefined}
             onSelectText={() => undefined}
           />
           <NativeTerminalPromptBar
