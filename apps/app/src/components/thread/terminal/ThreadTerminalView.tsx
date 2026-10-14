@@ -1536,6 +1536,7 @@ export function ThreadTerminalView({
             else terminal.focus();
           }}
           onSearch={() => setTerminalSearchOpen(true)}
+          searchAvailable={terminalSearchAddon !== null}
           onPaste={() => {
             const terminal = terminalRef.current;
             if (!terminal) return;

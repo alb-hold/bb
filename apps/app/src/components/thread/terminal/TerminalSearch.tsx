@@ -85,7 +85,11 @@ export function TerminalSearch({
         browserPlatform(),
         open && (focusWithinSearch || focusWithinTerminal),
       );
-      if (shortcut === "open" && terminal.textarea === document.activeElement) {
+      if (
+        shortcut === "open" &&
+        addon &&
+        terminal.textarea === document.activeElement
+      ) {
         event.preventDefault();
         event.stopPropagation();
         setOpen(true);
@@ -98,7 +102,7 @@ export function TerminalSearch({
     };
     document.addEventListener("keydown", onKeyDown, true);
     return () => document.removeEventListener("keydown", onKeyDown, true);
-  }, [close, open, setOpen, terminal]);
+  }, [addon, close, open, setOpen, terminal]);
 
   useEffect(() => {
     if (!open || !addon || !terminal) return;

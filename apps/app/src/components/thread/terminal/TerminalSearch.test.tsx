@@ -1,12 +1,16 @@
 // @vitest-environment jsdom
 
 import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Terminal } from "@xterm/xterm";
+import type { TerminalSearchAddonInstance } from "./terminal-search-addon";
+import { TerminalMobileControls } from "./TerminalMobileControls";
 import { TerminalSearch } from "./TerminalSearch";
+import { loadOptionalTerminalSearchAddon } from "./terminal-search-addon";
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
   document
     .querySelectorAll("textarea")
     .forEach((textarea) => textarea.remove());
@@ -16,7 +20,19 @@ afterEach(() => {
   });
 });
 
-function renderSearch(open = false) {
+function createSearchAddon(): TerminalSearchAddonInstance {
+  return {
+    clearDecorations: vi.fn(),
+    findNext: vi.fn(() => true),
+    findPrevious: vi.fn(() => true),
+    onDidChangeResults: vi.fn(() => ({ dispose: vi.fn() })),
+  } as unknown as TerminalSearchAddonInstance;
+}
+
+function renderSearch(
+  open = false,
+  addon: TerminalSearchAddonInstance | null = null,
+) {
   const textarea = document.createElement("textarea");
   document.body.appendChild(textarea);
   const terminal = { textarea } as unknown as Terminal;
@@ -26,7 +42,7 @@ function renderSearch(open = false) {
     view.rerender(
       <div className="group/terminal-pane">
         <TerminalSearch
-          addon={null}
+          addon={addon}
           terminal={terminal}
           open={searchOpen}
           onOpenChange={updateOpen}
@@ -37,7 +53,7 @@ function renderSearch(open = false) {
   const view = render(
     <div className="group/terminal-pane">
       <TerminalSearch
-        addon={null}
+        addon={addon}
         terminal={terminal}
         open={searchOpen}
         onOpenChange={updateOpen}
@@ -64,24 +80,59 @@ function sendKey(
 }
 
 describe("TerminalSearch shortcuts and closed controls", () => {
-  it("leaves macOS Ctrl+F unprevented for the terminal and opens on Cmd+F", () => {
+  it("does not open search shortcuts when the optional add-on failed to load", async () => {
     Object.defineProperty(navigator, "platform", {
       configurable: true,
       value: "MacIntel",
     });
-    renderSearch();
+    const addonModule = await loadOptionalTerminalSearchAddon(async () => {
+      throw new Error("search add-on unavailable");
+    });
+    expect(addonModule).toBeNull();
+    const { textarea } = renderSearch();
 
     const controlFind = sendKey("f", { ctrlKey: true });
     expect(controlFind.defaultPrevented).toBe(false);
-    expect(
+    const commandFind = sendKey("f", { metaKey: true });
+    expect.soft(commandFind.defaultPrevented).toBe(false);
+    expect.soft(
       screen.queryByRole("search", { name: "Search terminal output" }),
     ).toBeNull();
 
-    const commandFind = sendKey("f", { metaKey: true });
-    expect(commandFind.defaultPrevented).toBe(true);
+    render(
+      <TerminalMobileControls
+        controlActive={false}
+        disabled={false}
+        onArrow={vi.fn()}
+        onControlChange={vi.fn()}
+        onInput={vi.fn()}
+        onKeyboardToggle={vi.fn()}
+        onPaste={vi.fn()}
+        onSearch={vi.fn()}
+        searchAvailable={addonModule !== null}
+        onSelectText={vi.fn()}
+      />,
+    );
+    const mobileControls = document.querySelector(
+      "[data-terminal-mobile-controls]",
+    );
+    expect.soft(
+      mobileControls?.querySelector(
+        'button[aria-label="Search terminal output"]',
+      ),
+    ).toBeNull();
     expect(
-      screen.getByRole("search", { name: "Search terminal output" }),
-    ).toBeTruthy();
+      (screen.getByRole("button", {
+        name: "Search terminal output",
+      }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+
+    const terminalReceivedKey = vi.fn();
+    textarea.addEventListener("keydown", terminalReceivedKey);
+    const terminalKey = sendKey("x", {}, textarea);
+    textarea.removeEventListener("keydown", terminalReceivedKey);
+    expect(terminalKey.defaultPrevented).toBe(false);
+    expect(terminalReceivedKey).toHaveBeenCalledOnce();
   });
 
   it("keeps macOS Ctrl+G available to the terminal while search is open", () => {
@@ -96,6 +147,22 @@ describe("TerminalSearch shortcuts and closed controls", () => {
     expect(
       sendKey("g", { metaKey: true, shiftKey: true }).defaultPrevented,
     ).toBe(true);
+  });
+
+  it("opens on Cmd+F when the search add-on is available", () => {
+    Object.defineProperty(navigator, "platform", {
+      configurable: true,
+      value: "MacIntel",
+    });
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
+    renderSearch(false, createSearchAddon());
+
+    const commandFind = sendKey("f", { metaKey: true });
+
+    expect(commandFind.defaultPrevented).toBe(true);
+    expect(
+      screen.getByRole("search", { name: "Search terminal output" }),
+    ).toBeTruthy();
   });
 
   it("leaves Escape in its terminal unprevented while search is open", () => {
@@ -142,16 +209,18 @@ describe("TerminalSearch shortcuts and closed controls", () => {
     ).toBeNull();
   });
 
-  it("uses Ctrl+Shift+F outside macOS and reveals its closed button on hover or focus", () => {
+  it("opens from Ctrl+Shift+F outside macOS when the add-on is available", () => {
     Object.defineProperty(navigator, "platform", {
       configurable: true,
       value: "Linux x86_64",
     });
-    renderSearch();
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
+    renderSearch(false, createSearchAddon());
 
     const button = screen.getByRole("button", {
       name: "Search terminal output",
     });
+    expect((button as HTMLButtonElement).disabled).toBe(false);
     expect(button.className).toContain("opacity-0");
     expect(button.className).toContain("pointer-events-none");
     expect(button.className).toContain("group-hover/terminal-pane:opacity-100");
@@ -162,5 +231,8 @@ describe("TerminalSearch shortcuts and closed controls", () => {
     expect(
       sendKey("f", { ctrlKey: true, shiftKey: true }).defaultPrevented,
     ).toBe(true);
+    expect(
+      screen.getByRole("search", { name: "Search terminal output" }),
+    ).toBeTruthy();
   });
 });
