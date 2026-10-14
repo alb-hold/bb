@@ -8,6 +8,7 @@ afterEach(cleanup);
 
 function renderControls() {
   const onInput = vi.fn();
+  const onSearch = vi.fn();
   render(
     <TerminalMobileControls
       controlActive={false}
@@ -17,9 +18,10 @@ function renderControls() {
       onInput={onInput}
       onKeyboardToggle={vi.fn()}
       onPaste={vi.fn()}
+      onSearch={onSearch}
     />,
   );
-  return onInput;
+  return { onInput, onSearch };
 }
 
 describe("TerminalMobileControls", () => {
@@ -41,11 +43,17 @@ describe("TerminalMobileControls", () => {
     ["Home", "\x1b[H"],
     ["End", "\x1b[F"],
   ])("sends the %s sequence a TUI expects", (label, sequence) => {
-    const onInput = renderControls();
+    const { onInput } = renderControls();
     fireEvent.click(screen.getByRole("button", { name: "More terminal keys" }));
     fireEvent.click(screen.getByRole("button", { name: label }));
 
     expect(onInput).toHaveBeenCalledTimes(1);
     expect(onInput).toHaveBeenCalledWith(sequence);
+  });
+
+  it("opens terminal output search from the touch controls", () => {
+    const { onSearch } = renderControls();
+    fireEvent.click(screen.getByRole("button", { name: "Search terminal output" }));
+    expect(onSearch).toHaveBeenCalledOnce();
   });
 });

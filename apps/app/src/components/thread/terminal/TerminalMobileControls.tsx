@@ -12,6 +12,7 @@ interface TerminalMobileControlsProps {
   onInput: (data: string) => void;
   onKeyboardToggle: () => void;
   onPaste: () => void;
+  onSearch: () => void;
 }
 
 function Key({
@@ -63,6 +64,7 @@ export function TerminalMobileControls({
   onInput,
   onKeyboardToggle,
   onPaste,
+  onSearch,
 }: TerminalMobileControlsProps) {
   const [expanded, setExpanded] = useState(false);
   const keyProps = { disabled };
@@ -131,6 +133,9 @@ export function TerminalMobileControls({
       <div className="flex gap-1">
         <Key {...keyProps} label="Escape" onPress={() => onInput("\x1b")}>
           Esc
+        </Key>
+        <Key {...keyProps} label="Search terminal output" onPress={onSearch}>
+          <Icon name="Search" className="size-4" />
         </Key>
         <Key {...keyProps} label="Tab" onPress={() => onInput("\t")}>
           Tab

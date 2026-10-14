@@ -46,6 +46,9 @@ import {
 } from "./terminal-layout-settle";
 import { TerminalLinkOpenDialog } from "./TerminalLinkOpenDialog";
 import { TerminalMobileControls } from "./TerminalMobileControls";
+import { TerminalSearch } from "./TerminalSearch";
+import type { TerminalSearchAddonInstance } from "./terminal-search-addon";
+import { loadOptionalTerminalSearchAddon } from "./terminal-search-addon";
 import {
   applyTerminalControl,
   encodeTerminalArrow,
@@ -668,6 +671,9 @@ export function ThreadTerminalView({
     setControlActive(active);
   };
   const [terminalReady, setTerminalReady] = useState(false);
+  const [terminalSearchAddon, setTerminalSearchAddon] =
+    useState<TerminalSearchAddonInstance | null>(null);
+  const [terminalSearchOpen, setTerminalSearchOpen] = useState(false);
   const [activeSelection, setActiveSelection] =
     useState<MessageProseSelection | null>(null);
   const [hoveredTerminalLink, setHoveredTerminalLink] =
@@ -933,6 +939,9 @@ export function ThreadTerminalView({
       const webglAddonModulePromise = loadOptionalTerminalWebglAddon(
         () => import("@xterm/addon-webgl"),
       );
+      const searchAddonModulePromise = loadOptionalTerminalSearchAddon(
+        () => import("@xterm/addon-search"),
+      );
       const [
         { Terminal },
         { FitAddon: LoadedFitAddon },
@@ -940,6 +949,7 @@ export function ThreadTerminalView({
         { Unicode11Addon },
       ] = await requiredModulesPromise;
       const webglAddonModule = await webglAddonModulePromise;
+      const searchAddonModule = await searchAddonModulePromise;
       if (disposed) {
         return;
       }
@@ -987,6 +997,11 @@ export function ThreadTerminalView({
         ),
       );
       terminal.open(containerElement);
+      if (searchAddonModule !== null) {
+        const searchAddon = new searchAddonModule.SearchAddon();
+        terminal.loadAddon(searchAddon);
+        setTerminalSearchAddon(searchAddon);
+      }
       if (webglAddonModule !== null) {
         webglRenderer = loadTerminalWebglRenderer(
           terminal,
@@ -1289,6 +1304,8 @@ export function ThreadTerminalView({
       controlActiveRef.current = false;
       setControlActive(false);
       setTerminalReady(false);
+      setTerminalSearchAddon(null);
+      setTerminalSearchOpen(false);
       stopObservingFonts?.();
       stopWatchingLayout?.();
       if (resizeAnimationFrame !== null) {
@@ -1402,6 +1419,13 @@ export function ThreadTerminalView({
               data-terminal-context-loss-count="0"
               className="h-full min-h-0 w-full overflow-hidden"
             />
+            <TerminalSearch
+              addon={terminalSearchAddon}
+              terminal={terminalRef.current}
+              touch={isTouchDevice}
+              open={terminalSearchOpen}
+              onOpenChange={setTerminalSearchOpen}
+            />
             {connectionNoticeText !== null ? (
               <div
                 role="status"
@@ -1493,6 +1517,7 @@ export function ThreadTerminalView({
             if (document.activeElement === terminal.textarea) terminal.blur();
             else terminal.focus();
           }}
+          onSearch={() => setTerminalSearchOpen(true)}
           onPaste={() => {
             const terminal = terminalRef.current;
             if (!terminal) return;
