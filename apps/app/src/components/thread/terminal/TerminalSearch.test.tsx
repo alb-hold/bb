@@ -121,11 +121,10 @@ describe("TerminalSearch shortcuts and closed controls", () => {
         'button[aria-label="Search terminal output"]',
       ),
     ).toBeNull();
-    expect(
-      (screen.getByRole("button", {
-        name: "Search terminal output",
-      }) as HTMLButtonElement).disabled,
-    ).toBe(true);
+    const closedSearchButton = screen.queryByRole("button", {
+      name: "Search terminal output",
+    }) as HTMLButtonElement | null;
+    expect.soft(closedSearchButton?.disabled).toBe(true);
 
     const terminalReceivedKey = vi.fn();
     textarea.addEventListener("keydown", terminalReceivedKey);
