@@ -64,6 +64,22 @@ const NODE_PTY_SPAWN_HELPER_MISSING_MESSAGE =
 const requireForNodePty = createRequire(import.meta.url);
 let nodePtySpawnHelperChecked = false;
 
+async function cleanupTerminalShellIntegration(args: {
+  cleanup: (() => Promise<void>) | null | undefined;
+  logger: HostDaemonLogger;
+  terminalId: string;
+}): Promise<void> {
+  if (args.cleanup === null || args.cleanup === undefined) return;
+  try {
+    await args.cleanup();
+  } catch (error) {
+    args.logger.warn(
+      { terminalId: args.terminalId, ...runtimeErrorLogFields(error) },
+      "Failed to remove terminal shell integration files",
+    );
+  }
+}
+
 export interface TerminalPtyDisposable {
   dispose(): void;
 }
@@ -857,7 +873,11 @@ export class TerminalManager {
           rows: message.rows,
         });
       } catch (error) {
-        await integration?.cleanup();
+        await cleanupTerminalShellIntegration({
+          cleanup: integration?.cleanup,
+          logger: this.options.logger,
+          terminalId: message.terminalId,
+        });
         throw error;
       }
       const session: TerminalSession = {
@@ -1483,14 +1503,10 @@ export class TerminalManager {
       disposable.dispose();
     }
     if (args.session.shellIntegrationCleanup !== null) {
-      void args.session.shellIntegrationCleanup().catch((error) => {
-        this.options.logger.warn(
-          {
-            terminalId: args.session.terminalId,
-            ...runtimeErrorLogFields(error),
-          },
-          "Failed to remove terminal shell integration files",
-        );
+      void cleanupTerminalShellIntegration({
+        cleanup: args.session.shellIntegrationCleanup,
+        logger: this.options.logger,
+        terminalId: args.session.terminalId,
       });
     }
     try {

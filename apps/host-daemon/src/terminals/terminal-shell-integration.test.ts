@@ -1,5 +1,13 @@
 import { existsSync } from "node:fs";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  access,
+  mkdtemp,
+  mkdir,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node-pty";
@@ -213,4 +221,39 @@ describe("terminal shell integration", () => {
     expect(integration?.args).toEqual([]);
     await integration?.cleanup();
   });
+
+  it.each(["bash", "zsh", "fish"])(
+    "uses private temporary files for %s integration and removes them",
+    async (shell) => {
+      const root = await makeRoot();
+      const integration = await prepareTerminalShellIntegration({
+        env: { ...process.env, HOME: root },
+        shell: `/usr/bin/${shell}`,
+      });
+      expect(integration).not.toBeNull();
+      if (!integration) throw new Error("Expected shell integration");
+
+      const directory =
+        shell === "bash"
+          ? path.dirname(integration.args[1] ?? "")
+          : shell === "zsh"
+            ? (integration.env.ZDOTDIR ?? "")
+            : (integration.env.XDG_DATA_DIRS?.split(path.delimiter)[0] ?? "");
+      const files =
+        shell === "bash"
+          ? [path.join(directory, "bashrc")]
+          : shell === "zsh"
+            ? [path.join(directory, ".zshenv"), path.join(directory, ".zshrc")]
+            : [path.join(directory, "fish", "vendor_conf.d", "bb-terminal.fish")];
+      roots.push(directory);
+
+      expect((await stat(directory)).mode & 0o777).toBe(0o700);
+      for (const file of files) {
+        expect((await stat(file)).mode & 0o777).toBe(0o600);
+      }
+
+      await integration.cleanup();
+      await expect(access(directory)).rejects.toThrow();
+    },
+  );
 });
