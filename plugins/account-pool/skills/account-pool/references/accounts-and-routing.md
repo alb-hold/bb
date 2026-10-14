@@ -289,13 +289,19 @@ thread is archived and works again, unchanged, once the thread is unarchived;
 it ends for good when the thread is deleted, or ten minutes after the machine
 token is rotated. Archiving never deletes a thread's credentials: the plugin
 keeps their digests on disk behind an archive marker, so a crash at any point
-of an archive or unarchive cannot cost a running session its token. bb's
-thread state is the authority. The plugin checks it for every thread holding
-credentials at startup, before the hub accepts requests, and every 15 minutes.
-It also checks when bb resolves the thread's environment, and at most every
-30 seconds while a thread it holds as archived presents its token. A missed
-archive event therefore takes effect at the next of those checks, and a
-missed unarchive event at the next request. A nested server
+of an archive or unarchive cannot cost a running session its token. If no
+archive marker can be written, the thread's credential files are renamed to
+`suspended-<name>`, keeping their content, and renamed back on unarchive. Only
+deleting the thread removes its credentials; a credential otherwise ends only
+by its own expiry or a machine-token rotation. bb's thread state is the
+authority. After a start, a thread's token is accepted only once bb has
+confirmed that thread live: the startup sweep confirms every thread holding
+credentials, and a thread it could not reach is looked up when its token is
+presented and rejected while bb does not answer. The plugin also checks every
+15 minutes, when bb resolves the thread's environment, and at most every 30
+seconds while a thread it holds as archived presents its token. A missed
+archive event therefore takes effect at the next of those checks, and a missed
+unarchive event at the next request. A nested server
 started before this scoping existed holds the machine token, which the hub no
 longer accepts; relaunch it so it receives a scoped token.
 

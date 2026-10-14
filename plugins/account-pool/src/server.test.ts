@@ -11012,7 +11012,7 @@ describe("Account Pool credential scoping", () => {
     expect(await statusOf(host, missedNested, "/availability")).toBe(200);
   });
 
-  it("revokes the tokens of a thread that no longer exists but keeps them when the lookup fails or a 404 is not a missing thread", async () => {
+  it("revokes the tokens of a thread that no longer exists, and rejects but keeps them while the lookup fails or a 404 is not a missing thread", async () => {
     const fixture = await scopedFixture();
     const gone = await claudeToken(fixture.host, "thread-gone");
     const failing = await claudeToken(fixture.host, "thread-failing");
@@ -11035,8 +11035,14 @@ describe("Account Pool credential scoping", () => {
       }),
     );
     expect(await statusOf(host, gone, "/v1/messages")).toBe(401);
+    expect(await statusOf(host, failing, "/v1/messages")).toBe(401);
+    expect(await statusOf(host, proxy, "/v1/messages")).toBe(401);
+    host.harness.sdk.stub("threads.get", async ({ threadId }) =>
+      makeThreadResponse({ id: threadId }),
+    );
     expect(await statusOf(host, failing, "/v1/messages")).toBe(200);
     expect(await statusOf(host, proxy, "/v1/messages")).toBe(200);
+    expect(await statusOf(host, gone, "/v1/messages")).toBe(401);
   });
 
   it("reports acceptance only after the startup sweep revoked a stale legacy credential", async () => {
@@ -11052,6 +11058,7 @@ describe("Account Pool credential scoping", () => {
     let entered = 0;
     const host = await fixture.host.harness.lifecycle.reload(
       createAccountPoolPlugin({
+        threadSweepLookupTimeoutMs: 100,
         usageUrl: EMPTY_USAGE_URL,
         codexUsageUrl: EMPTY_USAGE_URL,
         importCodexCredentials: async () => ({
@@ -11097,7 +11104,7 @@ describe("Account Pool credential scoping", () => {
     expect(await statusOf(host, live, "/v1/messages")).toBe(200);
   });
 
-  it("starts accepting after the startup timeout when the thread lookup hangs, then retries and revokes the stale credential", async () => {
+  it("starts accepting after the startup timeout when the thread lookup hangs, rejects every unconfirmed thread until bb answers, then suspends the stale credential", async () => {
     const fixture = await scopedFixture();
     const stale = await claudeToken(fixture.host, "thread-stale");
     const live = await claudeToken(fixture.host, "thread-live");
@@ -11107,6 +11114,7 @@ describe("Account Pool credential scoping", () => {
       createAccountPoolPlugin({
         threadSweepTimeoutMs: 50,
         threadSweepRetryMs: 50,
+        threadSweepLookupTimeoutMs: 50,
         usageUrl: EMPTY_USAGE_URL,
         codexUsageUrl: EMPTY_USAGE_URL,
         importCodexCredentials: async () => ({
@@ -11145,8 +11153,8 @@ describe("Account Pool credential scoping", () => {
       );
       expect(status.accepting).toBe(true);
     });
-    expect(await statusOf(host, stale, "/v1/messages")).toBe(200);
-    expect(await statusOf(host, live, "/v1/messages")).toBe(200);
+    expect(await statusOf(host, stale, "/v1/messages")).toBe(401);
+    expect(await statusOf(host, live, "/v1/messages")).toBe(401);
     recovered = true;
     await vi.waitFor(async () => {
       expect(await statusOf(host, stale, "/v1/messages")).toBe(401);

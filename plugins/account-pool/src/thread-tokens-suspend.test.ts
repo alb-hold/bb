@@ -9,7 +9,7 @@ import {
   type ThreadLookup,
 } from "./thread-tokens.js";
 
-type BbState = "live" | "archived" | "gone";
+type BbState = "live" | "archived" | "gone" | "unreachable";
 type Lifetime = "durable" | "process";
 
 const directories: string[] = [];
@@ -36,6 +36,7 @@ async function world() {
   const clock = () => now;
   const lookup: ThreadLookup = async () => {
     lookups += 1;
+    if (bb === "unreachable") throw new Error("bb unreachable");
     return bb;
   };
   const hosts = new HubTokenStore(directory, clock);
@@ -50,6 +51,7 @@ async function world() {
   return {
     directory,
     hosts,
+    clock,
     hostToken,
     open,
     lookup,
@@ -84,7 +86,22 @@ async function accepted(
   };
 }
 
-function crashAfter(mutations: number): { crashed: () => boolean } {
+function refuseArchiveMarkers(): void {
+  const originalOpen = fs.open.bind(fs);
+  vi.spyOn(fs, "open").mockImplementation(async (file, flags, mode) => {
+    if (
+      String(file).includes("archived-thread-") ||
+      String(file).includes("archive-revocation-")
+    )
+      throw Object.assign(new Error("ENOSPC"), { code: "ENOSPC" });
+    return originalOpen(file, flags, mode);
+  });
+}
+
+function crashAfter(
+  mutations: number,
+  refuseMarkers = false,
+): { crashed: () => boolean } {
   let count = 0;
   let crashed = false;
   const fail = () => {
@@ -96,6 +113,12 @@ function crashAfter(mutations: number): { crashed: () => boolean } {
   };
   const originalOpen = fs.open.bind(fs);
   vi.spyOn(fs, "open").mockImplementation(async (file, flags, mode) => {
+    if (
+      refuseMarkers &&
+      (String(file).includes("archived-thread-") ||
+        String(file).includes("archive-revocation-"))
+    )
+      throw Object.assign(new Error("ENOSPC"), { code: "ENOSPC" });
     if (flags !== undefined && flags !== "r") fail();
     return originalOpen(file, flags, mode);
   });
@@ -203,43 +226,154 @@ describe.each(["durable", "process"] as const)("%s credentials", (lifetime) => {
     });
   });
 
-  it("removes the files when no archive marker can be written, yet accepts the tokens after an in-process unarchive", async () => {
+  it("renames the files aside, never deleting them, when no archive marker can be written", async () => {
     const w = await world();
     const store = await w.open();
     const tokens = await mint(store, w.hostToken, lifetime);
+    const before = (await fs.readdir(w.directory))
+      .filter((name) => name.includes(route.threadId))
+      .sort();
+    const contents = await Promise.all(
+      before.map((name) => fs.readFile(path.join(w.directory, name), "utf8")),
+    );
     w.setBb("archived");
-    const originalOpen = fs.open.bind(fs);
-    vi.spyOn(fs, "open").mockImplementation(async (file, flags, mode) => {
-      if (String(file).includes("archive"))
-        throw Object.assign(new Error("ENOSPC"), { code: "ENOSPC" });
-      return originalOpen(file, flags, mode);
-    });
+    refuseArchiveMarkers();
     await expect(store.suspendThread(route.threadId)).rejects.toThrow("ENOSPC");
     vi.restoreAllMocks();
+    const aside = (await fs.readdir(w.directory))
+      .filter((name) => name.includes(route.threadId))
+      .sort();
+    expect(aside).toEqual(before.map((name) => `suspended-${name}`));
+    expect(
+      await Promise.all(
+        aside.map((name) => fs.readFile(path.join(w.directory, name), "utf8")),
+      ),
+    ).toEqual(contents);
     expect(await accepted(store, tokens)).toEqual({
       token: false,
       nested: false,
     });
-    const offline = new ThreadTokenStore(w.directory, w.hosts);
+    const offline = new ThreadTokenStore(w.directory, w.hosts, w.clock);
     await offline.initialize([route.hostId]);
     expect(await accepted(offline, tokens)).toEqual({
       token: false,
       nested: false,
     });
     w.setBb("live");
-    await store.restoreThread(
-      route.threadId,
-      store.archiveVersion(route.threadId),
-    );
-    expect(await accepted(store, tokens)).toEqual({
-      token: true,
-      nested: true,
-    });
     const restarted = await w.open();
     expect(await accepted(restarted, tokens)).toEqual({
       token: true,
       nested: true,
     });
+    expect(
+      (await fs.readdir(w.directory))
+        .filter((name) => name.includes(route.threadId))
+        .sort(),
+    ).toEqual(before);
+  });
+
+  it("keeps the files and the suspension when the marker writes and the renames all fail, and accepts nothing until bb answers", async () => {
+    const w = await world();
+    const store = await w.open();
+    const tokens = await mint(store, w.hostToken, lifetime);
+    w.setBb("archived");
+    refuseArchiveMarkers();
+    vi.spyOn(fs, "rename").mockRejectedValue(
+      Object.assign(new Error("EROFS"), { code: "EROFS" }),
+    );
+    await expect(store.suspendThread(route.threadId)).rejects.toThrow("ENOSPC");
+    vi.restoreAllMocks();
+    expect(await accepted(store, tokens)).toEqual({
+      token: false,
+      nested: false,
+    });
+    w.setBb("unreachable");
+    const unreachable = await w.open();
+    expect(await accepted(unreachable, tokens)).toEqual({
+      token: false,
+      nested: false,
+    });
+    w.setBb("archived");
+    expect(await accepted(unreachable, tokens)).toEqual({
+      token: false,
+      nested: false,
+    });
+    w.setBb("live");
+    w.advance(ARCHIVED_STATE_RECHECK_MS);
+    expect(await accepted(unreachable, tokens)).toEqual({
+      token: true,
+      nested: true,
+    });
+  });
+
+  it("accepts the tokens after unarchive when renaming the suspended files back fails, and again after a restart", async () => {
+    const w = await world();
+    const store = await w.open();
+    const tokens = await mint(store, w.hostToken, lifetime);
+    w.setBb("archived");
+    refuseArchiveMarkers();
+    await expect(store.suspendThread(route.threadId)).rejects.toThrow("ENOSPC");
+    vi.restoreAllMocks();
+    w.setBb("live");
+    refuseArchiveMarkers();
+    vi.spyOn(fs, "rename").mockRejectedValue(
+      Object.assign(new Error("EIO"), { code: "EIO" }),
+    );
+    await store.restoreThread(
+      route.threadId,
+      store.archiveVersion(route.threadId),
+    );
+    vi.restoreAllMocks();
+    expect(await accepted(store, tokens)).toEqual({
+      token: true,
+      nested: true,
+    });
+    w.setBb("unreachable");
+    const unreachable = await w.open();
+    expect(await accepted(unreachable, tokens)).toEqual({
+      token: false,
+      nested: false,
+    });
+    w.setBb("live");
+    const restarted = await w.open();
+    expect(await accepted(restarted, tokens)).toEqual({
+      token: true,
+      nested: true,
+    });
+  });
+
+  it("keeps every token after a crash at any point of an archive whose marker cannot be written", async () => {
+    let completed = false;
+    let mutations = 0;
+    for (; !completed; mutations += 1) {
+      expect(mutations).toBeLessThan(50);
+      const w = await world();
+      const store = await w.open();
+      const tokens = await mint(store, w.hostToken, lifetime);
+      w.setBb("archived");
+      const crash = crashAfter(mutations, true);
+      await store.suspendThread(route.threadId).catch(() => undefined);
+      vi.restoreAllMocks();
+      completed = !crash.crashed();
+      w.setBb("unreachable");
+      const unreachable = await w.open();
+      expect(await accepted(unreachable, tokens)).toEqual({
+        token: false,
+        nested: false,
+      });
+      w.setBb("live");
+      w.advance(ARCHIVED_STATE_RECHECK_MS);
+      expect(await accepted(unreachable, tokens)).toEqual({
+        token: true,
+        nested: true,
+      });
+      const again = await w.open();
+      expect(await accepted(again, tokens)).toEqual({
+        token: true,
+        nested: true,
+      });
+    }
+    expect(mutations).toBeGreaterThan(1);
   });
 
   it("rejects the tokens of a thread bb archived while the store missed the event", async () => {
