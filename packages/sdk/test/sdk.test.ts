@@ -956,6 +956,7 @@ describe("@bb/sdk", () => {
       { body: session, status: 201 },
       { body: session, status: 201 },
       { body: session, status: 201 },
+      { body: session, status: 201 },
       { body: session },
       { body: { ...session, title: "Dev server" } },
       { body: { ...session, lastUserInputAt: 3 } },
@@ -998,6 +999,12 @@ describe("@bb/sdk", () => {
       cols: 80,
       rows: 24,
       scope: { kind: "host_path", hostId: "host_remote", cwd: null },
+    });
+    await sdk.terminals.create({
+      cols: 80,
+      cwd: "/tmp/split",
+      rows: 24,
+      scope: { kind: "thread", threadId: "thr_remote" },
     });
     await sdk.terminals.get({ terminalId: "term_remote" });
     await sdk.terminals.rename({
@@ -1063,6 +1070,16 @@ describe("@bb/sdk", () => {
           cols: 80,
           rows: 24,
           target: { kind: "host_path", hostId: "host_remote", cwd: null },
+        }),
+        method: "POST",
+        url: "http://bb.test/api/v1/terminals",
+      },
+      {
+        bodyText: JSON.stringify({
+          cols: 80,
+          cwd: "/tmp/split",
+          rows: 24,
+          target: { kind: "thread", threadId: "thr_remote" },
         }),
         method: "POST",
         url: "http://bb.test/api/v1/terminals",

@@ -42,6 +42,7 @@ interface TerminalStartOptions
   cols?: string;
   rows?: string;
   title?: string;
+  workingDirectory?: string;
 }
 
 interface TerminalSendOptions extends TerminalJsonOptions {
@@ -146,6 +147,7 @@ export function registerTerminalCommands(
       )
       .option("--cols <n>", "Initial terminal columns")
       .option("--rows <n>", "Initial terminal rows")
+      .option("--working-directory <path>", "Initial shell working directory")
       .option("--attach", "Attach after creating")
       .option("--json", "Print machine-readable JSON output"),
   ).action(
@@ -157,6 +159,9 @@ export function registerTerminalCommands(
       });
       const session = await sdk.terminals.create({
         cols: parsePositiveInteger(opts.cols, DEFAULT_COLS, "--cols"),
+        ...(opts.workingDirectory === undefined
+          ? {}
+          : { cwd: opts.workingDirectory }),
         rows: parsePositiveInteger(opts.rows, DEFAULT_ROWS, "--rows"),
         scope: await resolveTerminalCreateScope(opts, getUrl()),
         title: opts.title,

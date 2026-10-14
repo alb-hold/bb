@@ -3713,6 +3713,7 @@ describe("host-daemon session schemas", () => {
         requestId: "request-1",
         terminalId: "term_123",
         threadId: "thr_123",
+        cwd: "/tmp/workspace/packages/app",
         target: {
           kind: "workspace",
           environmentId: "env_123",
@@ -3720,6 +3721,23 @@ describe("host-daemon session schemas", () => {
             workspacePath: "/tmp/workspace",
           },
         },
+        cols: TERMINAL_COLS_MAX,
+        rows: TERMINAL_ROWS_MAX,
+        start: { mode: "shell" },
+      }).success,
+    ).toBe(true);
+    expect(
+      hostDaemonServerWsMessageSchema.safeParse({
+        type: "terminal.open",
+        contributedEnv: [],
+        requestId: "request-1",
+        terminalId: "term_123",
+        target: {
+          kind: "workspace",
+          environmentId: "env_123",
+          workspaceContext: { workspacePath: "/tmp/workspace" },
+        },
+        cwd: "x".repeat(4097),
         cols: TERMINAL_COLS_MAX,
         rows: TERMINAL_ROWS_MAX,
         start: { mode: "shell" },

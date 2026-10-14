@@ -114,6 +114,7 @@ export const createTerminalRequestSchema = z
   .object({
     cols: terminalColsSchema,
     rows: terminalRowsSchema,
+    cwd: z.string().trim().min(1).max(4096).optional(),
     start: z
       .discriminatedUnion("mode", [
         z

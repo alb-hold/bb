@@ -121,6 +121,10 @@ import { usePanelPluginPanels } from "@/components/secondary-panel/usePanelPlugi
 import { usePanelFiles } from "@/components/secondary-panel/usePanelFiles";
 import { usePanelTerminals } from "@/components/secondary-panel/usePanelTerminals";
 import {
+  getTerminalCurrentCwd,
+  terminalSpawnCwd,
+} from "@/components/thread/terminal/terminal-shell-state";
+import {
   findEnvironmentDisplayProvider,
   getEnvironmentSummaryChrome,
   isHostAmbiguous,
@@ -1544,6 +1548,25 @@ function ThreadDetailViewInternal(
     (session: TerminalSession) => session.threadId === threadId,
     [threadId],
   );
+  const activeTerminalSession =
+    activeFixedSecondaryTab?.kind === "terminal"
+      ? visibleTerminalSessions?.find(
+          (session) => session.id === activeFixedSecondaryTab.terminalId,
+        )
+      : undefined;
+  const activeTerminalSessionId = activeTerminalSession?.id;
+  const activeTerminalInitialCwd = activeTerminalSession?.initialCwd;
+  const getActiveTerminalSpawnCwd = useCallback(
+    () =>
+      activeTerminalSessionId !== undefined &&
+      activeTerminalInitialCwd !== undefined
+        ? terminalSpawnCwd({
+            currentCwd: getTerminalCurrentCwd(activeTerminalSessionId),
+            initialCwd: activeTerminalInitialCwd,
+          })
+        : undefined,
+    [activeTerminalInitialCwd, activeTerminalSessionId],
+  );
   const terminals = usePanelTerminals({
     panelStateId: threadId,
     syncThreadId: threadId,
@@ -1551,6 +1574,7 @@ function ThreadDetailViewInternal(
       canCreateTerminal && threadId !== undefined
         ? { kind: "thread", threadId }
         : null,
+    getSpawnCwd: getActiveTerminalSpawnCwd,
     isFocused,
     acceptsSession: acceptsThreadTerminal,
     tabsCarryTarget: false,
@@ -1561,17 +1585,25 @@ function ThreadDetailViewInternal(
   const startTerminalSession = useCallback(async (): Promise<string | null> => {
     if (!canStartTerminal || !threadId) return null;
     try {
+      const cwd = getActiveTerminalSpawnCwd();
       const session = await createTerminal.mutateAsync({
         target: { kind: "thread", threadId },
         cols: 100,
         rows: 30,
+        ...(cwd === undefined ? {} : { cwd }),
       });
       selectTerminal(session.id);
       return session.id;
     } catch {
       return null;
     }
-  }, [createTerminal, canStartTerminal, selectTerminal, threadId]);
+  }, [
+    getActiveTerminalSpawnCwd,
+    createTerminal,
+    canStartTerminal,
+    selectTerminal,
+    threadId,
+  ]);
   const appNavigationCapabilities = useMemo(
     () => ({
       openFilePreview: openLiveFilePreview,

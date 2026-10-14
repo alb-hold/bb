@@ -29,6 +29,7 @@ import {
   terminalShellArgs,
   terminalShellTitle,
 } from "./terminal-shell.js";
+import { prepareTerminalShellIntegration } from "./terminal-shell-integration.js";
 
 const DEFAULT_SCROLLBACK_MAX_BYTES = 4 * 1024 * 1024;
 const DEFAULT_SCROLLBACK_MAX_CHUNKS = 10_000;
@@ -68,6 +69,22 @@ const NODE_PTY_SPAWN_HELPER_MISSING_MESSAGE =
   "no node-pty spawn-helper found at known paths";
 const requireForNodePty = createRequire(import.meta.url);
 let nodePtySpawnHelperChecked = false;
+
+async function cleanupTerminalShellIntegration(args: {
+  cleanup: (() => Promise<void>) | null | undefined;
+  logger: HostDaemonLogger;
+  terminalId: string;
+}): Promise<void> {
+  if (args.cleanup === null || args.cleanup === undefined) return;
+  try {
+    await args.cleanup();
+  } catch (error) {
+    args.logger.warn(
+      { terminalId: args.terminalId, ...runtimeErrorLogFields(error) },
+      "Failed to remove terminal shell integration files",
+    );
+  }
+}
 
 export interface TerminalPtyDisposable {
   dispose(): void;
@@ -170,6 +187,7 @@ interface TerminalSession {
   closeTimeout: ReturnType<typeof setTimeout> | null;
   cols: number;
   disposables: TerminalPtyDisposable[];
+  shellIntegrationCleanup: (() => Promise<void>) | null;
   environmentId: string | null;
   lastOutputFlushAt: number;
   lastAttentionAt: number;
@@ -485,11 +503,35 @@ async function requireTerminalCwd(cwd: string | null): Promise<string> {
   if (!path.isAbsolute(resolvedCwd)) {
     throw new Error("Terminal cwd must be an absolute path");
   }
-  const info = await stat(resolvedCwd);
+  const normalizedCwd = path.normalize(resolvedCwd);
+  const info = await stat(normalizedCwd);
   if (!info.isDirectory()) {
     throw new Error(`Terminal cwd is not a directory: ${resolvedCwd}`);
   }
-  return resolvedCwd;
+  return normalizedCwd;
+}
+
+export async function resolveTerminalCwdOverride(args: {
+  cwd: string | undefined;
+  defaultCwd: string;
+}, dependencies: {
+  pathApi: Pick<typeof path, "isAbsolute" | "normalize" | "sep">;
+  statPath: (cwd: string) => Promise<{ isDirectory: () => boolean }>;
+} = { pathApi: path, statPath: stat }): Promise<string> {
+  if (args.cwd === undefined || args.cwd.length > 4096) return args.defaultCwd;
+  try {
+    if (
+      !dependencies.pathApi.isAbsolute(args.cwd) ||
+      args.cwd.split(/[\\/]/).includes("..")
+    ) {
+      return args.defaultCwd;
+    }
+    const cwd = dependencies.pathApi.normalize(args.cwd);
+    if (!(await dependencies.statPath(cwd)).isDirectory()) return args.defaultCwd;
+    return cwd;
+  } catch {
+    return args.defaultCwd;
+  }
 }
 
 function createTerminalOperationCompletion(): TerminalOperationCompletion {
@@ -820,27 +862,45 @@ export class TerminalManager {
     try {
       const target = await this.resolveTerminalOpenTarget(message);
       const shell = await this.resolveShell();
-      const pty = this.ptyAdapter.spawn({
-        args: terminalShellArgs({ shell, start: message.start }),
-        cols: message.cols,
-        cwd: target.cwd,
-        env: operationEnvironment(
-          message.contributedEnv,
-          buildTerminalEnv({
-            shellEnv: this.options.runtimeManager.getShellEnv(),
-            terminalId: message.terminalId,
-          }),
-        ),
-        file: shell,
-        logger: this.options.logger,
-        rows: message.rows,
-      });
+      const baseEnv = operationEnvironment(
+        message.contributedEnv,
+        buildTerminalEnv({
+          shellEnv: this.options.runtimeManager.getShellEnv(),
+          terminalId: message.terminalId,
+        }),
+      );
+      const integration =
+        message.start.mode === "shell"
+          ? await prepareTerminalShellIntegration({ env: baseEnv, shell })
+          : null;
+      let pty: TerminalPtyProcess;
+      try {
+        pty = this.ptyAdapter.spawn({
+          args:
+            integration?.args ??
+            terminalShellArgs({ shell, start: message.start }),
+          cols: message.cols,
+          cwd: target.cwd,
+          env: integration?.env ?? baseEnv,
+          file: shell,
+          logger: this.options.logger,
+          rows: message.rows,
+        });
+      } catch (error) {
+        await cleanupTerminalShellIntegration({
+          cleanup: integration?.cleanup,
+          logger: this.options.logger,
+          terminalId: message.terminalId,
+        });
+        throw error;
+      }
       const session: TerminalSession = {
         chargedScrollbackEntries: [],
         closeReason: null,
         closeTimeout: null,
         cols: message.cols,
         disposables: [],
+        shellIntegrationCleanup: integration?.cleanup ?? null,
         environmentId: target.environmentId,
         lastOutputFlushAt: 0,
         lastAttentionAt: Number.NEGATIVE_INFINITY,
@@ -918,6 +978,8 @@ export class TerminalManager {
   private async resolveTerminalOpenTarget(
     message: TerminalOpenMessage,
   ): Promise<ResolvedTerminalOpenTarget> {
+    const cwdOverride = (defaultCwd: string) =>
+      resolveTerminalCwdOverride({ cwd: message.cwd, defaultCwd });
     switch (message.target.kind) {
       case "workspace": {
         const entry = await requireResolvedWorkspaceForCommand({
@@ -926,13 +988,13 @@ export class TerminalManager {
           workspaceContext: message.target.workspaceContext,
         });
         return {
-          cwd: entry.path,
+          cwd: await cwdOverride(entry.path),
           environmentId: message.target.environmentId,
         };
       }
       case "host_path":
         return {
-          cwd: await requireTerminalCwd(message.target.cwd),
+          cwd: await cwdOverride(await requireTerminalCwd(message.target.cwd)),
           environmentId: null,
         };
     }
@@ -1477,6 +1539,13 @@ export class TerminalManager {
     }
     for (const disposable of args.session.disposables) {
       disposable.dispose();
+    }
+    if (args.session.shellIntegrationCleanup !== null) {
+      void cleanupTerminalShellIntegration({
+        cleanup: args.session.shellIntegrationCleanup,
+        logger: this.options.logger,
+        terminalId: args.session.terminalId,
+      });
     }
     try {
       args.session.pty.dispose();
