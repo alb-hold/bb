@@ -113,6 +113,26 @@ export function startHttpListener(args: StartHttpListenerArgs) {
   return server;
 }
 
+export async function shutdownHttpBeforePlugins(args: {
+  closeWebSockets: () => Promise<void>;
+  server: ReturnType<typeof startHttpListener>;
+  stopPlugins: () => Promise<void>;
+  stopTerminalDataPlane: () => void;
+}): Promise<void> {
+  args.stopTerminalDataPlane();
+  await args.closeWebSockets();
+  await new Promise<void>((resolve, reject) => {
+    args.server.close((error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
+  await args.stopPlugins();
+}
+
 export interface StartServerPluginsArgs {
   dataDir: string;
   logger: Pick<ServerLogger, "error" | "warn">;
@@ -532,23 +552,17 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
       }
       pluginCatalogService.stopPeriodicRefresh();
       await pluginService.stopPeriodicUpdateChecks();
-      if (pendingServerMove === null) {
-        await pluginService.stop().catch((error: unknown) => {
-          logger.warn({ err: error }, "Plugin shutdown failed");
-        });
-      }
-      const closeServer = new Promise<void>((resolve, reject) => {
-        server.close((error) => {
-          if (error) {
-            reject(error);
-            return;
-          }
-          resolve();
-        });
+      await shutdownHttpBeforePlugins({
+        closeWebSockets,
+        server,
+        stopPlugins: async () => {
+          if (pendingServerMove !== null) return;
+          await pluginService.stop().catch((error: unknown) => {
+            logger.warn({ err: error }, "Plugin shutdown failed");
+          });
+        },
+        stopTerminalDataPlane: () => terminalDataPlane?.stop(),
       });
-      terminalDataPlane?.stop();
-      await closeWebSockets();
-      await closeServer;
     })();
     return shutdownPromise;
   };

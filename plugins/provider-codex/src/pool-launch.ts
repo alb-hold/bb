@@ -22,6 +22,12 @@ export const CODEX_POOL_LAUNCH_ENV_ARGS: NonNullable<
     "-c",
     'model_providers.bb-account-pool.name="OpenAI"',
     "-c",
+    "model_providers.bb-account-pool.request_max_retries=100",
+    "-c",
+    "model_providers.bb-account-pool.stream_max_retries=100",
+    "-c",
+    "model_providers.bb-account-pool.stream_idle_timeout_ms=300000",
+    "-c",
     {
       env: CODEX_POOL_BASE_URL_ENV,
       prefix: "model_providers.bb-account-pool.base_url=",
