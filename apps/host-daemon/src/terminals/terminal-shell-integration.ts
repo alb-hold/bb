@@ -22,7 +22,7 @@ const BASH_RC = String.raw`if [[ $- == *i* ]]; then
     return "$__bb_status"
   }
   if [[ $(declare -p PROMPT_COMMAND 2>/dev/null) == "declare -a"* ]]; then
-    PROMPT_COMMAND=(__bb_prompt_command "${PROMPT_COMMAND[@]}")
+    PROMPT_COMMAND=(__bb_prompt_command "${"${"}PROMPT_COMMAND[@]}")
   else
     __bb_previous_prompt_command=$PROMPT_COMMAND
     PROMPT_COMMAND=__bb_prompt_command
