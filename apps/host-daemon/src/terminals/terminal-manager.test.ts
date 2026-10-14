@@ -523,6 +523,66 @@ describe("TerminalManager", () => {
     expect(harness.runtime.shutdown).not.toHaveBeenCalled();
   });
 
+  it("starts a split terminal in the requested existing directory", async () => {
+    const harness = createHarness();
+    await harness.manager.handleMessage({
+      type: "terminal.open",
+      contributedEnv: [],
+      requestId: "open-split",
+      terminalId: "term-split",
+      threadId: "thr-1",
+      target: {
+        kind: "workspace",
+        environmentId: "env-1",
+        workspaceContext: { workspacePath: "/tmp/terminal-workspace" },
+      },
+      cwd: "/tmp",
+      cols: 100,
+      rows: 30,
+      start: DEFAULT_TERMINAL_START,
+    });
+    expect(harness.adapter.spawned[0]?.args.cwd).toBe("/tmp");
+  });
+
+  it.each([
+    ["relative", "tmp", "/tmp/terminal-workspace"],
+    ["parent traversal", "/tmp/../tmp", "/tmp/terminal-workspace"],
+    ["NUL", "/tmp\0invalid", "/tmp/terminal-workspace"],
+    ["file", "/etc/passwd", "/tmp/terminal-workspace"],
+    ["missing", "/tmp/p19-missing-cwd", "/tmp/terminal-workspace"],
+    ["over-long", `/${"a".repeat(4096)}`, "/tmp/terminal-workspace"],
+  ] as const)(
+    "safely resolves %s cwd input",
+    async (_label, cwd, expectedCwd) => {
+      const harness = createHarness();
+      await harness.manager.handleMessage({
+        type: "terminal.open",
+        contributedEnv: [],
+        requestId: "open-cwd-input",
+        terminalId: "term-cwd-input",
+        threadId: "thr-1",
+        target: {
+          kind: "workspace",
+          environmentId: "env-1",
+          workspaceContext: { workspacePath: "/tmp/terminal-workspace" },
+        },
+        cwd,
+        cols: 100,
+        rows: 30,
+        start: DEFAULT_TERMINAL_START,
+      });
+      expect(harness.adapter.spawned).toHaveLength(1);
+      expect(harness.adapter.spawned[0]?.args.cwd).toBe(expectedCwd);
+      expect(harness.messages).toContainEqual(
+        expect.objectContaining({
+          type: "terminal.opened",
+          terminalId: "term-cwd-input",
+          initialCwd: expectedCwd,
+        }),
+      );
+    },
+  );
+
   it("injects host credentials into a PTY and forwards terminal output as-is", async () => {
     const harness = createHarness();
     const pty = await openTerminal(harness, [

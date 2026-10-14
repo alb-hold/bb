@@ -12,6 +12,8 @@ interface TerminalMobileControlsProps {
   onInput: (data: string) => void;
   onKeyboardToggle: () => void;
   onPaste: () => void;
+  onPreviousPrompt?: () => void;
+  onNextPrompt?: () => void;
 }
 
 function Key({
@@ -63,6 +65,8 @@ export function TerminalMobileControls({
   onInput,
   onKeyboardToggle,
   onPaste,
+  onPreviousPrompt,
+  onNextPrompt,
 }: TerminalMobileControlsProps) {
   const [expanded, setExpanded] = useState(false);
   const keyProps = { disabled };
@@ -75,6 +79,20 @@ export function TerminalMobileControls({
     >
       {expanded ? (
         <div className="mb-1 flex gap-1">
+          {onPreviousPrompt ? (
+            <Key
+              {...keyProps}
+              label="Previous prompt"
+              onPress={onPreviousPrompt}
+            >
+              ↑ Prompt
+            </Key>
+          ) : null}
+          {onNextPrompt ? (
+            <Key {...keyProps} label="Next prompt" onPress={onNextPrompt}>
+              ↓ Prompt
+            </Key>
+          ) : null}
           <Key
             {...keyProps}
             label="Shift Tab"

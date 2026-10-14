@@ -321,6 +321,7 @@ async function createTerminalRouteFixture(
 
 async function startPendingTerminalOpen(
   fixture: TerminalRouteFixture,
+  cwd?: string,
 ): Promise<PendingTerminalOpen> {
   const responsePromise = Promise.resolve(
     fixture.harness.app.request("/api/v1/terminals", {
@@ -329,6 +330,7 @@ async function startPendingTerminalOpen(
       body: JSON.stringify({
         cols: 100,
         rows: 30,
+        ...(cwd === undefined ? {} : { cwd }),
         target: { kind: "thread", threadId: fixture.thread.id },
       }),
     }),
@@ -734,6 +736,7 @@ describe("public terminal routes", () => {
       kind: "host_path",
       cwd: null,
     });
+    expect(openMessage).not.toHaveProperty("cwd");
     acknowledgeTerminalOpen(fixture, openMessage, "/home/bb");
 
     const response = await responsePromise;
@@ -745,6 +748,21 @@ describe("public terminal routes", () => {
         initialCwd: "/home/bb",
         threadId: null,
         status: "running",
+      },
+    );
+  });
+
+  it("forwards an explicitly requested cwd to the daemon", async () => {
+    const fixture = await createTerminalRouteFixture();
+    harnesses.push(fixture.harness);
+    const pending = await startPendingTerminalOpen(fixture, "/tmp/split");
+    expect(pending.openMessage.cwd).toBe("/tmp/split");
+    acknowledgeTerminalOpen(fixture, pending.openMessage, "/tmp/split");
+    const response = await pending.responsePromise;
+    expect(response.status).toBe(201);
+    expect(terminalSessionSchema.parse(await readJson(response))).toMatchObject(
+      {
+        initialCwd: "/tmp/split",
       },
     );
   });
@@ -3418,7 +3436,10 @@ describe("public terminal routes", () => {
           socket,
           sinceSeq: args.nextSeq,
         });
-        const attachMessage = await waitForDaemonMessage(fixture.socket, before);
+        const attachMessage = await waitForDaemonMessage(
+          fixture.socket,
+          before,
+        );
         if (attachMessage.type !== "terminal.attach") {
           throw new Error(
             `Expected terminal.attach, received ${attachMessage.type}`,
@@ -3446,7 +3467,9 @@ describe("public terminal routes", () => {
             terminalId: stored.id,
             chunk: {
               seq,
-              dataBase64: Buffer.from(`line ${seq}\n`, "utf8").toString("base64"),
+              dataBase64: Buffer.from(`line ${seq}\n`, "utf8").toString(
+                "base64",
+              ),
             },
           },
         });
@@ -3486,7 +3509,11 @@ describe("public terminal routes", () => {
         ),
       ).toEqual([
         { type: "terminal.flow-control", terminalId: stored.id, enabled: true },
-        { type: "terminal.flow-control", terminalId: stored.id, enabled: false },
+        {
+          type: "terminal.flow-control",
+          terminalId: stored.id,
+          enabled: false,
+        },
       ]);
     });
 
@@ -3551,7 +3578,8 @@ describe("public terminal routes", () => {
     });
 
     it("records typing that bypassed the server once per report", async () => {
-      const { fixture, stored, terminalSessions } = await createRunningTerminal();
+      const { fixture, stored, terminalSessions } =
+        await createRunningTerminal();
       expect(
         getTerminalSession(fixture.harness.db, {
           kind: "terminal",

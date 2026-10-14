@@ -566,6 +566,7 @@ const hostDaemonTerminalOpenMessageSchema = z
     terminalId: terminalIdSchema,
     threadId: z.string().min(1).optional(),
     target: hostDaemonTerminalOpenTargetSchema,
+    cwd: z.string().max(65_536).optional(),
     cols: terminalColsSchema,
     rows: terminalRowsSchema,
     start: z

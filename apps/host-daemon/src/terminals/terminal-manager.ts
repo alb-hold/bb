@@ -24,6 +24,7 @@ import {
   terminalShellArgs,
   terminalShellTitle,
 } from "./terminal-shell.js";
+import { prepareTerminalShellIntegration } from "./terminal-shell-integration.js";
 
 const DEFAULT_SCROLLBACK_MAX_BYTES = 4 * 1024 * 1024;
 const DEFAULT_SCROLLBACK_MAX_CHUNKS = 10_000;
@@ -164,6 +165,7 @@ interface TerminalSession {
   closeTimeout: ReturnType<typeof setTimeout> | null;
   cols: number;
   disposables: TerminalPtyDisposable[];
+  shellIntegrationCleanup: (() => Promise<void>) | null;
   environmentId: string | null;
   lastOutputFlushAt: number;
   nextSeq: number;
@@ -477,11 +479,29 @@ async function requireTerminalCwd(cwd: string | null): Promise<string> {
   if (!path.isAbsolute(resolvedCwd)) {
     throw new Error("Terminal cwd must be an absolute path");
   }
-  const info = await stat(resolvedCwd);
+  const normalizedCwd = path.normalize(resolvedCwd);
+  const info = await stat(normalizedCwd);
   if (!info.isDirectory()) {
     throw new Error(`Terminal cwd is not a directory: ${resolvedCwd}`);
   }
-  return resolvedCwd;
+  return normalizedCwd;
+}
+
+export async function resolveTerminalCwdOverride(args: {
+  cwd: string | undefined;
+  defaultCwd: string;
+}): Promise<string> {
+  if (args.cwd === undefined || args.cwd.length > 4096) return args.defaultCwd;
+  try {
+    if (!path.isAbsolute(args.cwd) || args.cwd.split(path.sep).includes("..")) {
+      return args.defaultCwd;
+    }
+    const cwd = path.normalize(args.cwd);
+    if (!(await stat(cwd)).isDirectory()) return args.defaultCwd;
+    return cwd;
+  } catch {
+    return args.defaultCwd;
+  }
 }
 
 function createTerminalOperationCompletion(): TerminalOperationCompletion {
@@ -812,27 +832,41 @@ export class TerminalManager {
     try {
       const target = await this.resolveTerminalOpenTarget(message);
       const shell = await this.resolveShell();
-      const pty = this.ptyAdapter.spawn({
-        args: terminalShellArgs({ shell, start: message.start }),
-        cols: message.cols,
-        cwd: target.cwd,
-        env: operationEnvironment(
-          message.contributedEnv,
-          buildTerminalEnv({
-            shellEnv: this.options.runtimeManager.getShellEnv(),
-            terminalId: message.terminalId,
-          }),
-        ),
-        file: shell,
-        logger: this.options.logger,
-        rows: message.rows,
-      });
+      const baseEnv = operationEnvironment(
+        message.contributedEnv,
+        buildTerminalEnv({
+          shellEnv: this.options.runtimeManager.getShellEnv(),
+          terminalId: message.terminalId,
+        }),
+      );
+      const integration =
+        message.start.mode === "shell"
+          ? await prepareTerminalShellIntegration({ env: baseEnv, shell })
+          : null;
+      let pty: TerminalPtyProcess;
+      try {
+        pty = this.ptyAdapter.spawn({
+          args:
+            integration?.args ??
+            terminalShellArgs({ shell, start: message.start }),
+          cols: message.cols,
+          cwd: target.cwd,
+          env: integration?.env ?? baseEnv,
+          file: shell,
+          logger: this.options.logger,
+          rows: message.rows,
+        });
+      } catch (error) {
+        await integration?.cleanup();
+        throw error;
+      }
       const session: TerminalSession = {
         chargedScrollbackEntries: [],
         closeReason: null,
         closeTimeout: null,
         cols: message.cols,
         disposables: [],
+        shellIntegrationCleanup: integration?.cleanup ?? null,
         environmentId: target.environmentId,
         lastOutputFlushAt: 0,
         nextSeq: 0,
@@ -908,6 +942,8 @@ export class TerminalManager {
   private async resolveTerminalOpenTarget(
     message: TerminalOpenMessage,
   ): Promise<ResolvedTerminalOpenTarget> {
+    const cwdOverride = (defaultCwd: string) =>
+      resolveTerminalCwdOverride({ cwd: message.cwd, defaultCwd });
     switch (message.target.kind) {
       case "workspace": {
         const entry = await requireResolvedWorkspaceForCommand({
@@ -916,13 +952,13 @@ export class TerminalManager {
           workspaceContext: message.target.workspaceContext,
         });
         return {
-          cwd: entry.path,
+          cwd: await cwdOverride(entry.path),
           environmentId: message.target.environmentId,
         };
       }
       case "host_path":
         return {
-          cwd: await requireTerminalCwd(message.target.cwd),
+          cwd: await cwdOverride(await requireTerminalCwd(message.target.cwd)),
           environmentId: null,
         };
     }
@@ -1445,6 +1481,17 @@ export class TerminalManager {
     }
     for (const disposable of args.session.disposables) {
       disposable.dispose();
+    }
+    if (args.session.shellIntegrationCleanup !== null) {
+      void args.session.shellIntegrationCleanup().catch((error) => {
+        this.options.logger.warn(
+          {
+            terminalId: args.session.terminalId,
+            ...runtimeErrorLogFields(error),
+          },
+          "Failed to remove terminal shell integration files",
+        );
+      });
     }
     try {
       args.session.pty.dispose();

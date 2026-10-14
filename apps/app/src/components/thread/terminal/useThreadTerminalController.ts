@@ -32,6 +32,13 @@ import {
   type ThreadTerminalTarget,
 } from "./terminal-scope";
 import { normalizeTerminalTitle } from "./thread-terminal-title";
+import {
+  clearTerminalCurrentCwd,
+  setTerminalCurrentCwd,
+  shouldUseTerminalCwdTitle,
+  terminalCwdTitle,
+  terminalSpawnCwd,
+} from "./terminal-shell-state";
 
 export const DEFAULT_TERMINAL_COLS = 100;
 export const DEFAULT_TERMINAL_ROWS = 30;
@@ -55,6 +62,7 @@ export interface ThreadTerminalControllerArgs {
 
 export interface ThreadTerminalController {
   activeSession: TerminalSession | null;
+  handleActiveTerminalCwdChange: (cwd: string) => void;
   handleActiveTerminalSessionChange: (session: TerminalSession) => void;
   handleActiveTerminalTitleChange: ThreadTerminalTitleChangeHandler;
   handleActiveTerminalUserInput: ThreadTerminalActionHandler;
@@ -163,6 +171,9 @@ export function useThreadTerminalController({
     resolvedSyncThreadId,
   );
   const uiCreatedTerminalIdsRef = useRef<Set<string>>(new Set());
+  const terminalCwdsRef = useRef(new Map<string, string>());
+  const terminalCwdTitlesRef = useRef(new Map<string, string>());
+  const userSetTerminalTitlesRef = useRef(new Set<string>());
   const dirtyTerminalIdsRef = useRef<Set<string>>(new Set());
   const closingCleanTerminalIdsRef = useRef<Set<string>>(new Set());
   const closingDisconnectedTerminalIdsRef = useRef<Set<string>>(new Set());
@@ -231,12 +242,7 @@ export function useThreadTerminalController({
         preferredTerminalId ?? terminalId ?? null,
         fixedTerminalId ?? terminalId,
       ),
-    [
-      fixedTerminalId,
-      preferredTerminalId,
-      terminalId,
-      visibleSessions,
-    ],
+    [fixedTerminalId, preferredTerminalId, terminalId, visibleSessions],
   );
   const activeSession =
     visibleSessions.find((session) => session.id === activeTerminalId) ?? null;
@@ -266,7 +272,7 @@ export function useThreadTerminalController({
       setRetainedTerminalViewId(null);
     }
   }, [
-    activeSession?.id,
+    activeSession,
     activeSession?.status,
     activeTerminalId,
     retainedTerminalViewId,
@@ -309,9 +315,16 @@ export function useThreadTerminalController({
     if (!canCreateTerminal || isCreateTerminalPending) {
       return;
     }
+    const activeCwd = activeSession
+      ? terminalSpawnCwd({
+          currentCwd: terminalCwdsRef.current.get(activeSession.id),
+          initialCwd: activeSession.initialCwd,
+        })
+      : undefined;
     const request = {
       cols: DEFAULT_TERMINAL_COLS,
       rows: DEFAULT_TERMINAL_ROWS,
+      ...(activeCwd === undefined ? {} : { cwd: activeCwd }),
     };
     const created = createTerminal.mutateAsync({
       ...request,
@@ -326,10 +339,38 @@ export function useThreadTerminalController({
   }, [
     canCreateTerminal,
     createTerminal,
+    activeSession?.id,
     isCreateTerminalPending,
     resolvedFixedPanelTarget,
     setActiveFixedTerminal,
   ]);
+
+  const handleActiveTerminalCwdChange = useCallback(
+    (cwd: string) => {
+      if (!activeSession) return;
+      terminalCwdsRef.current.set(activeSession.id, cwd);
+      setTerminalCurrentCwd(activeSession.id, cwd);
+      if (
+        userSetTerminalTitlesRef.current.has(activeSession.id) ||
+        !shouldUseTerminalCwdTitle({
+          currentTitle: activeSession.title,
+          defaultTitle: ["bash", "zsh", "fish"].includes(activeSession.title)
+            ? activeSession.title
+            : "",
+          previousCwdTitle:
+            terminalCwdTitlesRef.current.get(activeSession.id) ?? null,
+        })
+      ) {
+        return;
+      }
+      const title = terminalCwdTitle(cwd);
+      terminalCwdTitlesRef.current.set(activeSession.id, title);
+      if (title !== activeSession.title && activeSession.status === "running") {
+        renameTerminal.mutate({ terminalId: activeSession.id, title });
+      }
+    },
+    [activeSession, renameTerminal],
+  );
 
   const closeTerminal = useCallback(
     ({
@@ -492,6 +533,10 @@ export function useThreadTerminalController({
   const handleActiveTerminalSessionChange = useCallback(
     (session: TerminalSession) => {
       if (session.status === "exited") {
+        clearTerminalCurrentCwd(session.id);
+        terminalCwdsRef.current.delete(session.id);
+        terminalCwdTitlesRef.current.delete(session.id);
+        userSetTerminalTitlesRef.current.delete(session.id);
         applyTerminalSessionClose({
           queryClient,
           session,
@@ -521,6 +566,20 @@ export function useThreadTerminalController({
         if (!normalizedTitle || normalizedTitle === activeSession.title) {
           return;
         }
+        if (
+          userSetTerminalTitlesRef.current.has(activeSession.id) ||
+          !shouldUseTerminalCwdTitle({
+            currentTitle: activeSession.title,
+            defaultTitle: ["bash", "zsh", "fish"].includes(activeSession.title)
+              ? activeSession.title
+              : "",
+            previousCwdTitle:
+              terminalCwdTitlesRef.current.get(activeSession.id) ?? null,
+          })
+        ) {
+          return;
+        }
+        userSetTerminalTitlesRef.current.add(activeSession.id);
 
         const request: TerminalTitleRenameRequest = {
           terminalId: activeSession.id,
@@ -579,6 +638,7 @@ export function useThreadTerminalController({
 
   return {
     activeSession,
+    handleActiveTerminalCwdChange,
     handleActiveTerminalSessionChange,
     handleActiveTerminalTitleChange,
     handleActiveTerminalUserInput,

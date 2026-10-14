@@ -46,6 +46,7 @@ import {
 } from "./terminal-layout-settle";
 import { TerminalLinkOpenDialog } from "./TerminalLinkOpenDialog";
 import { TerminalMobileControls } from "./TerminalMobileControls";
+import { TerminalCommandGutter } from "./TerminalCommandGutter";
 import {
   applyTerminalControl,
   encodeTerminalArrow,
@@ -61,6 +62,11 @@ import {
   type TerminalGridSize,
 } from "./terminal-shared-size";
 import { handleTerminalFileDrop } from "./terminal-file-drop";
+import { terminalPromptLine } from "./terminal-shell-state";
+import {
+  attachTerminalPromptTracker,
+  type TerminalPromptTrackerState,
+} from "./terminal-prompt-tracker";
 import { dropMouseReportsWithoutPosition } from "./terminal-mouse-reports";
 import { attachTerminalInteractions } from "./terminal-interactions";
 import {
@@ -346,6 +352,7 @@ interface ThreadTerminalViewProps {
   onSelectionAddToChat?: (text: string) => void;
   onSessionChange?: (session: TerminalSession) => void;
   onTitleChange?: TerminalTitleChangeHandler;
+  onCwdChange?: (cwd: string) => void;
   onUserInput?: () => void;
   session: TerminalSession;
 }
@@ -356,6 +363,12 @@ type TerminalConnectionNotice = "reconnecting" | "reconnected";
 
 const TERMINAL_RECONNECTING_NOTICE_DELAY_MS = 1_000;
 const TERMINAL_RECONNECTED_NOTICE_DURATION_MS = 1_500;
+const EMPTY_TERMINAL_PROMPT_TRACKER: TerminalPromptTrackerState = {
+  commandMarks: [],
+  lineHeight: 16,
+  promptLines: [],
+  viewportLine: 0,
+};
 
 interface WriteTerminalStatusArgs {
   terminal: XTermTerminal;
@@ -657,6 +670,7 @@ export function ThreadTerminalView({
   onSelectionAddToChat,
   onSessionChange,
   onTitleChange,
+  onCwdChange,
   onUserInput,
   session,
 }: ThreadTerminalViewProps) {
@@ -668,6 +682,9 @@ export function ThreadTerminalView({
     setControlActive(active);
   };
   const [terminalReady, setTerminalReady] = useState(false);
+  const [promptTrackerState, setPromptTrackerState] = useState(
+    EMPTY_TERMINAL_PROMPT_TRACKER,
+  );
   const [activeSelection, setActiveSelection] =
     useState<MessageProseSelection | null>(null);
   const [hoveredTerminalLink, setHoveredTerminalLink] =
@@ -686,6 +703,7 @@ export function ThreadTerminalView({
     typeof observeTerminalWebglVisibility
   > | null>(null);
   const terminalRef = useRef<XTermTerminal | null>(null);
+  const promptLinesRef = useRef<number[]>([]);
   const hoveredTerminalLinkRef = useRef<TerminalLinkTarget | null>(null);
   const pointerStartPointRef = useRef<SelectionAnchorPoint | null>(null);
   const touchFocusGestureRef = useRef<TerminalTouchFocusGesture | null>(null);
@@ -697,6 +715,7 @@ export function ThreadTerminalView({
   const onTitleChangeRef = useRef<TerminalTitleChangeHandler | undefined>(
     onTitleChange,
   );
+  const onCwdChangeRef = useRef(onCwdChange);
   const onUserInputRef = useRef<(() => void) | undefined>(onUserInput);
   const onAutoFocusHandledRef = useRef<(() => void) | undefined>(
     onAutoFocusHandled,
@@ -716,6 +735,17 @@ export function ThreadTerminalView({
   );
   const effectiveOnOpenLink = onOpenLink ?? handleOpenLinkByPreference;
   const onOpenLinkRef = useRef<MarkdownPreviewLinkHandler>(effectiveOnOpenLink);
+  promptLinesRef.current = promptTrackerState.promptLines;
+  const jumpToPrompt = useCallback((direction: "previous" | "next") => {
+    const terminal = terminalRef.current;
+    if (!terminal) return;
+    const line = terminalPromptLine(
+      promptLinesRef.current,
+      terminal.buffer.active.viewportY,
+      direction,
+    );
+    if (line !== null) terminal.scrollToLine(line);
+  }, []);
 
   autoFocusRef.current = autoFocus;
   isPanelOpenRef.current = isPanelOpen;
@@ -725,6 +755,7 @@ export function ThreadTerminalView({
   onOpenLinkRef.current = effectiveOnOpenLink;
   onSessionChangeRef.current = onSessionChange;
   onTitleChangeRef.current = onTitleChange;
+  onCwdChangeRef.current = onCwdChange;
   onUserInputRef.current = onUserInput;
 
   const reportTerminalSelection = useCallback(
@@ -909,6 +940,7 @@ export function ThreadTerminalView({
     > | null = null;
     let resizeObserver: ResizeObserver | null = null;
     let selectionChangeDisposable: { dispose: () => void } | null = null;
+    let shellOscDisposable: { dispose: () => void } | null = null;
     let stopObservingFonts: (() => void) | null = null;
     let stopWatchingLayout: (() => void) | null = null;
     let sharedSize: TerminalGridSize | null = null;
@@ -962,6 +994,25 @@ export function ThreadTerminalView({
         linkHandler: osc8LinkHandler,
         scrollback: 10_000,
         theme: buildTerminalTheme(),
+      });
+      setPromptTrackerState(EMPTY_TERMINAL_PROMPT_TRACKER);
+      shellOscDisposable = attachTerminalPromptTracker({
+        onChange: setPromptTrackerState,
+        onCwdChange: (cwd) => onCwdChangeRef.current?.(cwd),
+        terminal,
+      });
+      terminal.attachCustomKeyEventHandler((event) => {
+        if (
+          event.type === "keydown" &&
+          event.altKey &&
+          event.shiftKey &&
+          (event.key === "ArrowUp" || event.key === "ArrowDown")
+        ) {
+          event.preventDefault();
+          jumpToPrompt(event.key === "ArrowUp" ? "previous" : "next");
+          return false;
+        }
+        return true;
       });
       terminalRef.current = terminal;
       fitAddon = new LoadedFitAddon();
@@ -1300,6 +1351,7 @@ export function ThreadTerminalView({
       setConnectionNotice(null);
       resizeObserver?.disconnect();
       selectionChangeDisposable?.dispose();
+      shellOscDisposable?.dispose();
       terminalInteractions?.dispose();
       handleFileDropRef.current = null;
       document.removeEventListener(
@@ -1320,6 +1372,7 @@ export function ThreadTerminalView({
     handleTerminalPointerDown,
     handleTerminalPointerRelease,
     handleTerminalPointerCancel,
+    jumpToPrompt,
     requestOpenTerminalLink,
     session.id,
     session.threadId,
@@ -1400,7 +1453,13 @@ export function ThreadTerminalView({
               ref={containerRef}
               data-terminal-renderer="dom"
               data-terminal-context-loss-count="0"
-              className="h-full min-h-0 w-full overflow-hidden"
+              className="box-border h-full min-h-0 w-full overflow-hidden pl-2"
+            />
+            <TerminalCommandGutter
+              commandMarks={promptTrackerState.commandMarks}
+              lineHeight={promptTrackerState.lineHeight}
+              rows={session.rows}
+              viewportLine={promptTrackerState.viewportLine}
             />
             {connectionNoticeText !== null ? (
               <div
@@ -1472,6 +1531,8 @@ export function ThreadTerminalView({
             changeControlActive(active);
             if (active) terminalRef.current?.focus();
           }}
+          onPreviousPrompt={() => jumpToPrompt("previous")}
+          onNextPrompt={() => jumpToPrompt("next")}
           onArrow={(key) => {
             const terminal = terminalRef.current;
             if (!terminal) return;
