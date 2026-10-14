@@ -12,6 +12,7 @@ interface TerminalMobileControlsProps {
   onInput: (data: string) => void;
   onKeyboardToggle: () => void;
   onPaste: () => void;
+  onSelectText: () => void;
 }
 
 function Key({
@@ -63,6 +64,7 @@ export function TerminalMobileControls({
   onInput,
   onKeyboardToggle,
   onPaste,
+  onSelectText,
 }: TerminalMobileControlsProps) {
   const [expanded, setExpanded] = useState(false);
   const keyProps = { disabled };
@@ -118,6 +120,13 @@ export function TerminalMobileControls({
           </Key>
           <Key {...keyProps} label="Paste" onPress={onPaste}>
             Paste
+          </Key>
+          <Key
+            disabled={false}
+            label="Select terminal text"
+            onPress={onSelectText}
+          >
+            Select
           </Key>
           <Key
             {...keyProps}

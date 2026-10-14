@@ -46,6 +46,8 @@ import {
 } from "./terminal-layout-settle";
 import { TerminalLinkOpenDialog } from "./TerminalLinkOpenDialog";
 import { TerminalMobileControls } from "./TerminalMobileControls";
+import { TerminalTextSelectSheet } from "./TerminalTextSelectSheet";
+import { terminalTextSnapshot } from "./terminal-text-snapshot";
 import {
   applyTerminalControl,
   encodeTerminalArrow,
@@ -670,6 +672,7 @@ export function ThreadTerminalView({
     setControlActive(active);
   };
   const [terminalReady, setTerminalReady] = useState(false);
+  const [textSnapshot, setTextSnapshot] = useState<string | null>(null);
   const [activeSelection, setActiveSelection] =
     useState<MessageProseSelection | null>(null);
   const [hoveredTerminalLink, setHoveredTerminalLink] =
@@ -887,6 +890,7 @@ export function ThreadTerminalView({
   useEffect(() => {
     touchFocusGestureRef.current = null;
     setActiveSelection(null);
+    setTextSnapshot(null);
     updateHoveredTerminalLink(null);
     setPendingTerminalLink(null);
     setContextMenuState({ link: null, selectionText: "" });
@@ -1388,7 +1392,7 @@ export function ThreadTerminalView({
     hoveredTerminalLink !== null || activeSelection !== null;
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="relative flex h-full min-h-0 flex-col">
       <ContextMenu
         onOpenChange={(open) => {
           if (!open) {
@@ -1519,6 +1523,24 @@ export function ThreadTerminalView({
               .catch(() => {
                 appToast.error(CLIPBOARD_BLOCKED_MESSAGE);
               });
+          }}
+          onSelectText={() => {
+            const terminal = terminalRef.current;
+            if (!terminal) return;
+            terminal.blur();
+            setTextSnapshot(terminalTextSnapshot(terminal));
+          }}
+        />
+      ) : null}
+      {textSnapshot !== null ? (
+        <TerminalTextSelectSheet
+          text={textSnapshot}
+          onClose={() => setTextSnapshot(null)}
+          onCopyAll={() => {
+            void copyToClipboardWithToast(textSnapshot, {
+              successMessage: "Terminal text copied",
+              errorMessage: "Failed to copy",
+            });
           }}
         />
       ) : null}
