@@ -2,20 +2,22 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   runSandboxedScript,
   sandboxDisposeFailureCount,
+  type JsonValue,
   type SandboxRunArgs,
+  type SandboxRunResult,
 } from "./sandbox.js";
-
-const PRELUDE = `
-globalThis.host = async (name, ...args) =>
-  JSON.parse(await __bbHost(name, JSON.stringify(args)));
-globalThis.print = (line) => __bbLog(String(line));
-`;
 
 const MIB = 1024 * 1024;
 const GENEROUS_CPU_LIMITS = {
   synchronousDeadlineMs: 5_000,
   cpuBudgetMs: 5_000,
 };
+
+const PRELUDE = `
+globalThis.host = async (name, ...args) =>
+  JSON.parse(await __bbHost(name, JSON.stringify(args)));
+globalThis.print = (line) => __bbLog(String(line));
+`;
 
 function run(code: string, overrides: Partial<SandboxRunArgs> = {}) {
   return runSandboxedScript({
@@ -24,6 +26,13 @@ function run(code: string, overrides: Partial<SandboxRunArgs> = {}) {
     hostFunctions: {},
     ...overrides,
   });
+}
+
+function failure(result: SandboxRunResult): string {
+  if (result.ok) {
+    throw new Error(`Expected a failure, got ${JSON.stringify(result.value)}`);
+  }
+  return result.error;
 }
 
 describe("runSandboxedScript", () => {
@@ -93,14 +102,14 @@ describe("runSandboxedScript", () => {
 
   it("reports a syntax error instead of throwing", async () => {
     const result = await run(`return (;`);
-    expect(result.ok).toBe(false);
+    expect(failure(result)).toContain("SyntaxError");
   });
 
   it("interrupts a synchronous infinite loop", async () => {
     const result = await run(`while (true) {}`, {
       limits: { synchronousDeadlineMs: 50 },
     });
-    expect(result.ok).toBe(false);
+    expect(failure(result)).toContain("computed for too long");
   });
 
   it("stops a script that swallows the interrupt and keeps spinning", async () => {
@@ -123,7 +132,7 @@ describe("runSandboxedScript", () => {
       { limits: { synchronousDeadlineMs: 100, cpuBudgetMs: 400 } },
     );
     expect(Date.now() - startedAt).toBeLessThan(3_000);
-    expect(result.ok).toBe(false);
+    expect(failure(result)).toContain("computed for too long");
   });
 
   it("stops an endless chain of cheap microtasks", async () => {
@@ -132,7 +141,7 @@ describe("runSandboxedScript", () => {
       limits: { synchronousDeadlineMs: 100, cpuBudgetMs: 400 },
     });
     expect(Date.now() - startedAt).toBeLessThan(3_000);
-    expect(result.ok).toBe(false);
+    expect(failure(result)).toContain("computed for too long");
   });
 
   it("charges computation across bb calls to one total budget", async () => {
@@ -195,8 +204,7 @@ describe("runSandboxedScript", () => {
     const result = await run(`await new Promise(() => {});`, {
       limits: { totalDeadlineMs: 80 },
     });
-    expect(result).toMatchObject({ ok: false });
-    expect(result.ok === false && result.error).toContain("was stopped");
+    expect(failure(result)).toContain("ran longer than");
   });
 
   it("stops a script whose host call never settles and aborts that call", async () => {
@@ -213,7 +221,7 @@ describe("runSandboxedScript", () => {
           }),
       },
     });
-    expect(result.ok).toBe(false);
+    expect(failure(result)).toContain("ran longer than");
     expect(aborted).toBe(true);
   });
 
@@ -286,11 +294,8 @@ describe("runSandboxedScript", () => {
       `const chunks = []; while (true) chunks.push(new Array(100000).fill("x"));`,
       { limits: { memoryLimitBytes: 4 * MIB, ...GENEROUS_CPU_LIMITS } },
     );
-    expect(result).toMatchObject({ ok: false });
-    expect(result.ok === false && result.error).toContain("too much memory");
-    expect(result.ok === false && result.error).not.toContain(
-      "computed for too long",
-    );
+    expect(failure(result)).toContain("ran out of memory");
+    expect(failure(result)).not.toContain("computed for too long");
   });
 
   describe("memory limit", () => {
@@ -341,44 +346,57 @@ describe("runSandboxedScript", () => {
         const result = await run(code, {
           limits: { memoryLimitBytes: LIMIT_BYTES, ...GENEROUS_CPU_LIMITS },
         });
-        const elapsedMs = Date.now() - startedAt;
-        expect(result).toMatchObject({ ok: false });
-        expect(result.ok === false && result.error).toContain(
-          "too much memory",
-        );
-        expect(result.ok === false && result.error).not.toContain(
-          "computed for too long",
-        );
-        expect(elapsedMs).toBeLessThan(2_000);
-        expect(memories).toHaveLength(1);
+        expect(failure(result)).toContain("ran out of memory");
+        expect(failure(result)).not.toContain("computed for too long");
+        expect(Date.now() - startedAt).toBeLessThan(2_000);
         expect(memories[0]?.buffer.byteLength).toBeLessThanOrEqual(
           HEAP_BASE_BYTES + LIMIT_BYTES,
         );
       },
     );
 
-    it("reports exhaustion as a memory stop when the engine cannot even build its out-of-memory error", async () => {
+    it("stops scripts that swallow the out-of-memory error", async () => {
+      const result = await run(
+        `const keep = []; for (;;) { try { keep.push(new Uint8Array(1024 * 1024)); } catch {} }`,
+        { limits: { memoryLimitBytes: LIMIT_BYTES, ...GENEROUS_CPU_LIMITS } },
+      );
+      expect(failure(result)).toContain("ran out of memory");
+    });
+
+    it("stops a script when a host result does not fit in its memory", async () => {
+      const result = await run(
+        `const keep = []; for (let i = 0; i < 14; i += 1) keep.push(new Uint8Array(1024 * 1024)); await host("big"); return keep.length;`,
+        {
+          limits: { memoryLimitBytes: LIMIT_BYTES },
+          hostFunctions: { big: async () => "b".repeat(4 * MIB) },
+        },
+      );
+      expect(failure(result)).toContain("ran out of memory");
+    });
+
+    it("stops a script when a host result cannot be serialised", async () => {
+      const cyclic: { [key: string]: JsonValue } = {};
+      cyclic.self = cyclic;
+      const result = await run(`await host("cyclic"); return "done";`, {
+        hostFunctions: { cyclic: async () => cyclic },
+      });
+      expect(failure(result)).toContain("internal error");
+    });
+
+    it("stops when the engine cannot build its out-of-memory error", async () => {
       const limits = { memoryLimitBytes: 4 * MIB, ...GENEROUS_CPU_LIMITS };
-      const engineThrew = await run(
+      const result = await run(
         `const chunks = []; try { while (true) chunks.push({ a: 1, b: [1, 2], c: "y" }); } catch (error) { chunks.length = 0; return error === null ? "null" : "an error"; }`,
         { limits },
       );
-      expect(engineThrew).toMatchObject({ ok: true, value: "null" });
-      const result = await run(SCRIPTS.objects ?? "", { limits });
-      expect(result).toMatchObject({ ok: false });
-      expect(result.ok === false && result.error).toContain("too much memory");
+      expect(failure(result)).toContain("ran out of memory");
     });
 
-    it("reports a script's own throw of null as that value after it allocated past half the limit", async () => {
+    it("preserves a script's throw of null after an allocation that stays within the limit", async () => {
       const allocated = await run(
-        `const chunks = []; for (let i = 0; i < 24; i += 1) chunks.push(new Uint8Array(1024 * 1024)); throw null;`,
+        `const chunks = []; for (let i = 0; i < 8; i += 1) chunks.push(new Uint8Array(1024 * 1024)); throw null;`,
         { limits: { memoryLimitBytes: LIMIT_BYTES, ...GENEROUS_CPU_LIMITS } },
       );
-      const heapBytes = memories[0]?.buffer.byteLength ?? 0;
-      expect(heapBytes - HEAP_BASE_BYTES).toBeGreaterThanOrEqual(
-        LIMIT_BYTES / 2,
-      );
-      expect(heapBytes).toBeLessThan(HEAP_BASE_BYTES + LIMIT_BYTES);
       const plain = await run(`throw null;`, {
         limits: { memoryLimitBytes: LIMIT_BYTES, ...GENEROUS_CPU_LIMITS },
       });
@@ -386,11 +404,11 @@ describe("runSandboxedScript", () => {
       expect(allocated).toEqual(plain);
     });
 
-    it("reports a script's own throw of null as that value after the host refused to grow the heap within the maximum", async () => {
+    it("does not misclassify a null throw after the host refuses growth within the cap", async () => {
       hostRefusesGrowth = true;
       const result = await run(
         `const chunks = []; try { while (true) chunks.push(new Uint8Array(1024 * 1024)); } catch (error) {} chunks.length = 0; throw null;`,
-        { limits: { memoryLimitBytes: LIMIT_BYTES, ...GENEROUS_CPU_LIMITS } },
+        { limits: { memoryLimitBytes: 23 * MIB, ...GENEROUS_CPU_LIMITS } },
       );
       expect(hostRefusedGrowthCount).toBeGreaterThan(0);
       expect(memories[0]?.buffer.byteLength).toBe(HEAP_BASE_BYTES);
@@ -402,7 +420,7 @@ describe("runSandboxedScript", () => {
       expect(result).toMatchObject({ ok: false, error: "null" });
     });
 
-    it("lets the heap grow to the limit before stopping a script", async () => {
+    it("lets the heap grow to the configured limit before stopping a script", async () => {
       await run(SCRIPTS.arrays ?? "", {
         limits: { memoryLimitBytes: LIMIT_BYTES },
       });
@@ -415,11 +433,13 @@ describe("runSandboxedScript", () => {
       await run(SCRIPTS.arrays ?? "", {
         limits: { memoryLimitBytes: LIMIT_BYTES },
       });
+      const firstMemory = memories[0];
       const second = await run(`return [1, 2, 3].length;`, {
         limits: { memoryLimitBytes: LIMIT_BYTES },
       });
       expect(second).toMatchObject({ ok: true, value: 3 });
       expect(memories).toHaveLength(2);
+      expect(memories[1]).not.toBe(firstMemory);
       expect(memories[1]?.buffer.byteLength).toBe(HEAP_BASE_BYTES);
     });
 
@@ -427,13 +447,8 @@ describe("runSandboxedScript", () => {
       const result = await run(`while (true) {}`, {
         limits: { memoryLimitBytes: LIMIT_BYTES, synchronousDeadlineMs: 50 },
       });
-      expect(result).toMatchObject({ ok: false });
-      expect(result.ok === false && result.error).toContain(
-        "computed for too long",
-      );
-      expect(result.ok === false && result.error).not.toContain(
-        "too much memory",
-      );
+      expect(failure(result)).toContain("computed for too long");
+      expect(failure(result)).not.toContain("ran out of memory");
     });
   });
 

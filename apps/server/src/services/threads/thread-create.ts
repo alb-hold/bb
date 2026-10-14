@@ -1,16 +1,15 @@
 import { requestThreadStorageDeletion } from "./thread-lifecycle.js";
 import { seedThreadSessionOptionSelections } from "./thread-session-options.js";
 import { assertEnvironmentPathAvailable } from "../environments/path-admission.js";
-import { randomUUID } from "node:crypto";
 import {
   acquireProjectAttachmentOwnership,
   createNativeTerminalThread,
   isNativeTerminalThread,
   markThreadDeleted,
   getEnvironment,
-  getProjectSourceByHost,
   getThread,
 } from "@bb/db";
+import { randomUUID } from "node:crypto";
 import {
   describeSessionOptionConflict,
   modelSessionOptionConflict,
@@ -22,10 +21,7 @@ import {
   type ThreadOriginKind,
   type ThreadVisibility,
 } from "@bb/domain";
-import type {
-  AppDeps,
-  LoggedPendingInteractionWorkSessionDeps,
-} from "../../types.js";
+import type { LoggedPendingInteractionWorkSessionDeps } from "../../types.js";
 import { ApiError } from "../../errors.js";
 import { ensureHostSessionReadyForWork } from "../hosts/host-lifecycle.js";
 import { buildExecutionOptions } from "./thread-commands.js";
@@ -39,6 +35,7 @@ import {
   resolveProjectExecutionDefaultsForCreate,
 } from "./project-execution-defaults.js";
 import { resolvePromptAttachmentReferences } from "../projects/attachments.js";
+import { projectCheckoutPathOnHost } from "../projects/project-workspace.js";
 import {
   appendPluginMentionContext,
   captureUserMessageSentTelemetry,
@@ -318,15 +315,6 @@ function childHostIdForResolvedEnvironment(
     case "personal":
       return resolvedEnvironment.hostId;
   }
-}
-
-function projectCheckoutPathOnHost(
-  deps: Pick<AppDeps, "db">,
-  projectId: string,
-  hostId: string,
-): string | undefined {
-  const source = getProjectSourceByHost(deps.db, projectId, hostId);
-  return source?.type === "local_path" ? source.path : undefined;
 }
 
 function modelCatalogCwdForResolvedEnvironment(
