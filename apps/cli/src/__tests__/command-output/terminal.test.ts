@@ -78,7 +78,7 @@ describe("bb terminal command output", () => {
 
   it("raises attention for the terminal identity injected into its shell", async () => {
     const notify = vi.fn(async () => makeTerminalSession());
-    stubServerApi({ 'v1.terminals[":terminalId"].notify.$post': notify });
+    stubServerApi({ "v1.terminals.:terminalId.notify.$post": notify });
     const previousId = process.env.BB_TERMINAL_SESSION_ID;
     process.env.BB_TERMINAL_SESSION_ID = "term-from-env";
     try {

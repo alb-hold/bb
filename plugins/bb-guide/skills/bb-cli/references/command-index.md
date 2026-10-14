@@ -151,6 +151,7 @@ move and downloads the new server's bb-app package for its service.
 
 - `bb terminal`
 - `bb terminal list`
+- `bb terminal notify`
 - `bb terminal create`
 - `bb terminal start`
 - `bb terminal show`
