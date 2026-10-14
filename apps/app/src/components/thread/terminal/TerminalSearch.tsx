@@ -76,7 +76,7 @@ export function TerminalSearch({
       const modifier = event.metaKey || event.ctrlKey;
       if (!modifier || event.altKey) return;
       const key = event.key.toLowerCase();
-      if (key === "f" && terminal.hasFocus()) {
+      if (key === "f" && terminal.textarea === document.activeElement) {
         event.preventDefault();
         event.stopPropagation();
         setOpen(true);
