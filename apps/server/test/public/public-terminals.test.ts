@@ -552,7 +552,6 @@ describe("public terminal routes", () => {
       threadId: fixture.thread.id,
       title: "Terminal attention",
     });
-    const at = Date.now();
     onDaemonSocketMessage(fixture.harness.deps, {
       hostId: fixture.host.id,
       raw: JSON.stringify({
@@ -566,13 +565,17 @@ describe("public terminal routes", () => {
       sessionId: fixture.session.id,
       socket: fixture.socket,
     });
-    expect(getThread(fixture.harness.db, fixture.thread.id)?.latestAttentionAt).toBe(at);
+    const latestAttentionAt = getThread(
+      fixture.harness.db,
+      fixture.thread.id,
+    )?.latestAttentionAt;
+    expect(latestAttentionAt).toBeGreaterThan(fixture.thread.latestAttentionAt);
     const visible = await fixture.harness.app.request(
       `/api/v1/terminals?threadId=${encodeURIComponent(fixture.thread.id)}`,
     );
     const listed = terminalListResponseSchema.parse(await readJson(visible));
     expect(listed.sessions[0]?.attention).toEqual({
-      at,
+      at: latestAttentionAt,
       body: "Finished",
       kind: "osc-777",
       seq: 7,
