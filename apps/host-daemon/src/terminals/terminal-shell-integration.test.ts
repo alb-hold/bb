@@ -16,8 +16,17 @@ async function makeRoot(): Promise<string> {
   return root;
 }
 
+interface ShellFixture {
+  bashRc?: string;
+  command?: string;
+  userZdotdir?: "home" | null;
+  zshEnv?: string;
+  zshRc?: string;
+}
+
 async function runShell(
   shell: string,
+  fixture: ShellFixture = {},
 ): Promise<{ output: string; exitCode: number }> {
   const root = await makeRoot();
   const home = path.join(root, "home");
@@ -25,20 +34,23 @@ async function runShell(
   if (path.basename(shell) === "bash") {
     await writeFile(
       path.join(home, ".bashrc"),
-      "printf 'BB_USER_RC_LOADED\\n'\n",
+      fixture.bashRc ?? "printf 'BB_USER_RC_LOADED\\n'\n",
     );
   } else {
     await writeFile(
       path.join(home, ".zshenv"),
-      "printf 'BB_USER_ENV_LOADED\\n'\n",
+      fixture.zshEnv ?? "printf 'BB_USER_ENV_LOADED\\n'\n",
     );
     await writeFile(
       path.join(home, ".zshrc"),
-      "printf 'BB_USER_RC_LOADED\\n'\n",
+      fixture.zshRc ?? "printf 'BB_USER_RC_LOADED\\n'\n",
     );
   }
+  const shellEnv: NodeJS.ProcessEnv = { ...process.env, HOME: home };
+  if (fixture.userZdotdir === null) delete shellEnv.ZDOTDIR;
+  else shellEnv.ZDOTDIR = home;
   const integration = await prepareTerminalShellIntegration({
-    env: { ...process.env, HOME: home, ZDOTDIR: home },
+    env: shellEnv,
     shell,
   });
   if (!integration) throw new Error(`No integration prepared for ${shell}`);
@@ -68,7 +80,7 @@ async function runShell(
         output.includes("\u001b]133;A\u0007")
       ) {
         commandState = 1;
-        terminal.write("cd /tmp; false\n");
+        terminal.write(`${fixture.command ?? "cd /tmp; false"}\n`);
       } else if (
         commandState === 1 &&
         output.includes("\u001b]133;D;1\u0007")
@@ -122,6 +134,23 @@ describe("terminal shell integration", () => {
     expect(result.exitCode).toBe(1);
   });
 
+  it("preserves the failed command status for a scalar bash PROMPT_COMMAND", async () => {
+    const result = await runShell("bash", {
+      bashRc: `PROMPT_COMMAND='printf "BB_PREV_STATUS=%s\\n" "$?"'\nprintf 'BB_USER_RC_LOADED\\n'\n`,
+    });
+    expect(result.output).toContain("BB_PREV_STATUS=1");
+    expect(result.exitCode).toBe(1);
+  });
+
+  it("preserves and prepends to an array bash PROMPT_COMMAND", async () => {
+    const result = await runShell("bash", {
+      bashRc: `PROMPT_COMMAND=('printf "BB_ARRAY_STATUS=%s\\n" "$?"' 'printf "BB_ARRAY_SECOND\\n"')\nprintf 'BB_USER_RC_LOADED\\n'\n`,
+    });
+    expect(result.output).toContain("BB_ARRAY_STATUS=1");
+    expect(result.output).toContain("BB_ARRAY_SECOND");
+    expect(result.exitCode).toBe(1);
+  });
+
   it.skipIf(!shellAvailable("zsh"))(
     "loads the user config and reports cwd and command status in zsh",
     async () => {
@@ -130,6 +159,37 @@ describe("terminal shell integration", () => {
       expect(result.output).toContain("\u001b]133;B\u0007");
       expect(result.output).toContain("\u001b]133;C\u0007");
       expect(result.exitCode).toBe(1);
+    },
+  );
+
+  it.skipIf(!shellAvailable("zsh"))(
+    "uses the user's ZDOTDIR while loading zsh config and in later commands",
+    async () => {
+      const result = await runShell("zsh", {
+        userZdotdir: "home",
+        zshEnv: `printf 'BB_USER_ENV_ZDOTDIR=%s\\n' "$ZDOTDIR"\nprintf 'BB_USER_ENV_LOADED\\n'\n`,
+        zshRc: `printf 'BB_USER_RC_ZDOTDIR=%s\\n' "$ZDOTDIR"\nprintf 'BB_USER_RC_LOADED\\n'\n`,
+        command: `printf 'BB_LATER_ZDOTDIR=%s\\n' "$ZDOTDIR"; cd /tmp; false`,
+      });
+      const home = roots.at(-1)?.concat("/home");
+      expect(result.output).toContain(`BB_USER_ENV_ZDOTDIR=${home}`);
+      expect(result.output).toContain(`BB_USER_RC_ZDOTDIR=${home}`);
+      expect(result.output).toContain(`BB_LATER_ZDOTDIR=${home}`);
+    },
+  );
+
+  it.skipIf(!shellAvailable("zsh"))(
+    "leaves ZDOTDIR unset when the user did not set it",
+    async () => {
+      const result = await runShell("zsh", {
+        userZdotdir: null,
+        zshEnv: `printf 'BB_USER_ENV_ZDOTDIR=%s\\n' "$ZDOTDIR"\nprintf 'BB_USER_ENV_LOADED\\n'\n`,
+        zshRc: `printf 'BB_USER_RC_ZDOTDIR=%s\\n' "$ZDOTDIR"\nprintf 'BB_USER_RC_LOADED\\n'\n`,
+        command: `printf 'BB_LATER_ZDOTDIR=%s\\n' "$ZDOTDIR"; cd /tmp; false`,
+      });
+      expect(result.output).toContain("BB_USER_ENV_ZDOTDIR=\r\n");
+      expect(result.output).toContain("BB_USER_RC_ZDOTDIR=\r\n");
+      expect(result.output).toContain("BB_LATER_ZDOTDIR=\r\n");
     },
   );
 
