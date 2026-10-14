@@ -2521,6 +2521,12 @@ async function terminateProcessIfRunning(
     childProcess: args.childProcess,
     timeoutMs: MANAGED_PROCESS_KILL_TIMEOUT_MS,
   });
+  if (!hasProcessExited(args.childProcess)) {
+    log(
+      yellow("!"),
+      `${args.processName} did not stop after SIGKILL within ${MANAGED_PROCESS_KILL_TIMEOUT_MS}ms`,
+    );
+  }
 }
 
 function createSharedEnv(args: CreateSharedEnvArgs): NodeJS.ProcessEnv {
@@ -3139,7 +3145,7 @@ export async function startFullStackServerProcess(
     args: [args.context.serverEntry],
     command: process.execPath,
     env: { ...args.env, BB_SERVER_LAUNCH_ID: launchId },
-    ipc: args.onSpawned !== undefined,
+    ipc: true,
     logDir: args.context.logDir,
     processName: "server",
   });
@@ -3239,25 +3245,13 @@ async function restartManagedProcess(
   return null;
 }
 
-export const DAEMON_DETACH_HEAD_START_MS = 3_000;
-
 export async function terminateManagedFullStackProcesses(
   args: TerminateManagedFullStackProcessesArgs,
 ): Promise<void> {
   const serverRun = args.processes.serverRun;
   const daemonRun = args.processes.daemonRun;
-  const daemonTermination =
-    daemonRun === null ? Promise.resolve() : daemonRun.terminate(args.signal);
-  let headStart: NodeJS.Timeout | undefined;
-  await Promise.race([
-    daemonTermination,
-    new Promise<void>((resolve) => {
-      headStart = setTimeout(resolve, DAEMON_DETACH_HEAD_START_MS);
-    }),
-  ]);
-  clearTimeout(headStart);
   await Promise.all([
-    daemonTermination,
+    daemonRun === null ? Promise.resolve() : daemonRun.terminate(args.signal),
     serverRun === null ? Promise.resolve() : serverRun.terminate(args.signal),
   ]);
 }

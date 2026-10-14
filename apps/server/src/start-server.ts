@@ -36,6 +36,7 @@ import {
   stopWorkspaceWriteClaimHeartbeat,
 } from "./services/threads/workspace-write-serialization.js";
 import { createLauncherChannel } from "./services/system/launcher-channel.js";
+import { watchLauncherDisconnect } from "./services/system/launcher-disconnect.js";
 import { createBbAppManagedConfigReloader } from "./services/system/bb-app-managed-config.js";
 import { startGatedPerformanceDiagnostics } from "./services/system/performance-diagnostics.js";
 import { startEventLoopStallMonitor } from "./services/system/event-loop-stall-monitor.js";
@@ -137,6 +138,7 @@ export function startServerPlugins(
 }
 
 export async function runServer(serverConfig: ServerConfig): Promise<void> {
+  const launcherDisconnect = watchLauncherDisconnect(process);
   const logger = createLogger({
     component: "server",
     dataDir: serverConfig.BB_DATA_DIR,
@@ -575,5 +577,9 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
   });
   process.once("SIGTERM", () => {
     void runShutdown().finally(() => process.exit(0));
+  });
+  launcherDisconnect.setShutdown({
+    shutdown: runShutdown,
+    exit: (code) => process.exit(code),
   });
 }
