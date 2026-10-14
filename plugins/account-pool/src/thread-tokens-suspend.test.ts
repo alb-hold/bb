@@ -374,7 +374,6 @@ async function deletionOutcome(
   files: 1 | 2,
   crash: { during: "delete" | "restart"; after: number } | null,
 ) {
-  const answer = faults.has("kv") ? "live" : "gone";
   injectFaults(new Set());
   const w = await world();
   const watch: Watch = { directory: w.directory, kv: w.kv, violations: [] };
@@ -393,7 +392,13 @@ async function deletionOutcome(
   );
   await store.removeThread(route.threadId).catch(() => undefined);
   vi.restoreAllMocks();
-  w.setBb(answer);
+  w.setBb(
+    deleteMutations.some(
+      (mutation) => mutation.method === "kv" && mutation.refused,
+    )
+      ? "live"
+      : "gone",
+  );
   if (crash?.during === "restart") {
     injectFaults(new Set(), crash.after, watch);
     await w.open().catch(() => undefined);
