@@ -23,6 +23,12 @@ describe("fork terminal attention table", () => {
     const db = createConnection(":memory:");
     connections.push(db);
     migrate(db);
+    const initializedByMigrate = db.$client
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+      )
+      .get("fork_terminal_attention");
+    expect(initializedByMigrate).toBeDefined();
     ensureTerminalAttentionTable(db);
     ensureTerminalAttentionTable(db);
 
