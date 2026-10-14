@@ -27,6 +27,7 @@ async function makeRoot(): Promise<string> {
 interface ShellFixture {
   bashRc?: string;
   command?: string;
+  cwdPath?: string;
   fishConfig?: string;
   fishSourceIntegrationTwice?: boolean;
   sourceIntegrationTwice?: boolean;
@@ -122,7 +123,8 @@ async function runShell(
         /\u001b\]133;A(?:;[^\u0007]*)?\u0007/.test(output)
       ) {
         commandState = 1;
-        const command = fixture.command ?? "cd /tmp; false";
+        const command =
+          fixture.command ?? `cd '${fixture.cwdPath ?? "/tmp"}'; false`;
         const integrationSource = integration.args[1];
         const sourceTwice =
           shellName === "bash" && fixture.sourceIntegrationTwice
@@ -144,10 +146,7 @@ async function runShell(
     terminal.onExit(({ exitCode }) => {
       clearTimeout(timer);
       void integration.cleanup();
-      const cwdMark =
-        shellName === "fish"
-          ? /\u001b\]7;file:\/\/[^/]*\/tmp\u0007/.test(output)
-          : output.includes("\u001b]7;file://localhost/tmp\u0007");
+      const cwdMark = /\u001b\]7;file:\/\/[^\u0007]+\u0007/.test(output);
       if (!cwdMark) {
         reject(
           new Error(`${shell} did not emit OSC 7: ${JSON.stringify(output)}`),
@@ -175,12 +174,61 @@ function shellAvailable(shell: string): boolean {
   );
 }
 
+function percentEncodePath(value: string): string {
+  return [...Buffer.from(value)]
+    .map((byte) => {
+      if (
+        (byte >= 0x41 && byte <= 0x5a) ||
+        (byte >= 0x61 && byte <= 0x7a) ||
+        (byte >= 0x30 && byte <= 0x39) ||
+        [0x2d, 0x2e, 0x2f, 0x5f, 0x7e].includes(byte)
+      ) {
+        return String.fromCharCode(byte);
+      }
+      return `%${byte.toString(16).padStart(2, "0").toUpperCase()}`;
+    })
+    .join("");
+}
+
 describe("terminal shell integration", () => {
   afterEach(async () => {
     await Promise.all(
       roots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
     );
   });
+
+  it.skipIf(["bash", "zsh", "fish"].some((shell) => !shellAvailable(shell)))(
+    "percent-encodes OSC 7 cwd paths without changing their decoded value in Bash, zsh, and fish",
+    async () => {
+      const names = ["q?x", "h#x", "p%20x", "s p", "café"];
+      for (const shell of ["bash", "zsh", "fish"]) {
+        for (const name of names) {
+          const root = await makeRoot();
+          const cwd = path.join(root, name);
+          await mkdir(cwd);
+          const result = await runShell(shell, { cwdPath: cwd });
+          const localCwdUrls = [
+            ...result.output.matchAll(
+              /\u001b\]7;(file:\/\/localhost[^\u0007]*)\u0007/g,
+            ),
+          ].map((match) => match[1]);
+          const cwdUrl = localCwdUrls.find((value) =>
+            value.includes(percentEncodePath(cwd)),
+          );
+
+          expect(
+            cwdUrl,
+            `${shell}:${name}:${JSON.stringify(result.output)}`,
+          ).toBeTruthy();
+          const encodedPath = new URL(cwdUrl!).pathname;
+          expect(encodedPath).toBe(percentEncodePath(cwd));
+          expect(decodeURIComponent(encodedPath)).toBe(cwd);
+          expect(result.exitCode).toBe(1);
+        }
+      }
+    },
+    60_000,
+  );
 
   it("loads the user config and reports cwd and command status in bash", async () => {
     const result = await runShell("bash");

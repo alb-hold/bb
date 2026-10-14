@@ -26,6 +26,19 @@ describe("terminal shell OSC state", () => {
   });
 
   it.each([
+    ["/tmp/q%3Fx", "/tmp/q?x"],
+    ["/tmp/h%23x", "/tmp/h#x"],
+    ["/tmp/p%2520x", "/tmp/p%20x"],
+    ["/tmp/s%20p", "/tmp/s p"],
+    ["/tmp/caf%C3%A9", "/tmp/café"],
+  ])("decodes an encoded OSC 7 path once: %s", (encodedPath, cwd) => {
+    expect(parseTerminalShellOsc(7, `file://localhost${encodedPath}`)).toEqual({
+      type: "cwd",
+      cwd,
+    });
+  });
+
+  it.each([
     "https://example.com/tmp",
     "file://attacker.example/tmp",
     "file://localhost/tmp%00evil",

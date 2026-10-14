@@ -184,26 +184,29 @@ describe("two split panes each holding a terminal", () => {
     expect(closedIds).toEqual(["term_orphan"]);
   });
 
-  it("opens a new terminal in the focused pane's reported cwd", async () => {
-    const source = session("term_a", "running");
-    const created = session("term_new", "running");
-    vi.mocked(sdk.terminals.list).mockResolvedValue({ sessions: [source] });
-    vi.mocked(sdk.terminals.create).mockResolvedValue(created);
-    const { wrapper } = createQueryClientTestHarness();
-    const { result } = renderHook(
-      () => useThreadTerminalController(paneArgs("term_a")),
-      { wrapper },
-    );
+  it.each(["/tmp/q?x", "/tmp/h#x", "/tmp/p%20x", "/tmp/s p", "/tmp/café"])(
+    "opens a new terminal in the focused pane's cwd: %s",
+    async (cwd) => {
+      const source = session("term_a", "running");
+      const created = session("term_new", "running");
+      vi.mocked(sdk.terminals.list).mockResolvedValue({ sessions: [source] });
+      vi.mocked(sdk.terminals.create).mockResolvedValue(created);
+      const { wrapper } = createQueryClientTestHarness();
+      const { result } = renderHook(
+        () => useThreadTerminalController(paneArgs("term_a")),
+        { wrapper },
+      );
 
-    await waitFor(() =>
-      expect(result.current.activeSession?.id).toBe("term_a"),
-    );
-    act(() => result.current.handleActiveTerminalCwdChange("/tmp/focused"));
-    act(() => result.current.handleCreateTerminal());
+      await waitFor(() =>
+        expect(result.current.activeSession?.id).toBe("term_a"),
+      );
+      act(() => result.current.handleActiveTerminalCwdChange(cwd));
+      act(() => result.current.handleCreateTerminal());
 
-    await waitFor(() => expect(sdk.terminals.create).toHaveBeenCalled());
-    expect(sdk.terminals.create).toHaveBeenCalledWith(
-      expect.objectContaining({ cwd: "/tmp/focused" }),
-    );
-  });
+      await waitFor(() => expect(sdk.terminals.create).toHaveBeenCalled());
+      expect(sdk.terminals.create).toHaveBeenCalledWith(
+        expect.objectContaining({ cwd }),
+      );
+    },
+  );
 });
