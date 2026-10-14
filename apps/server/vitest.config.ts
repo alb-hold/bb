@@ -33,7 +33,6 @@ export default defineWorkspaceTestConfig({
         extends: true,
         test: {
           name: "@bb/server:account-pool-delete-matrix",
-          silent: false,
           include: [deletionMatrix],
           exclude,
           sequence: { groupOrder: 1 },

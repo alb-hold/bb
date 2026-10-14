@@ -20,7 +20,7 @@ import {
   createFakePluginHost,
   type FakePluginHost,
 } from "@get-bb/plugin-sdk/testing";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { setPluginThreadEventEmitter } from "../../src/services/plugins/plugin-thread-events.js";
 import { toThreadResponseFromThread } from "../../src/services/threads/thread-runtime-display.js";
 import {
@@ -275,6 +275,24 @@ async function checkRemoval(
   );
 }
 
+const overrides: (() => void)[] = [];
+
+function override<T extends object, K extends keyof T>(
+  target: T,
+  method: K,
+  implementation: T[K],
+): void {
+  const original = target[method];
+  target[method] = implementation;
+  overrides.push(() => {
+    target[method] = original;
+  });
+}
+
+function restoreFaults(): void {
+  for (const restore of overrides.splice(0).reverse()) restore();
+}
+
 function injectFaults(
   watch: Watch,
   faults: ReadonlySet<FaultClass>,
@@ -323,7 +341,7 @@ function injectFaults(
     isRecord(file) && point === at ? "content" : null;
   const kv = watch.kv;
   const originalSet = kv.set.bind(kv);
-  vi.spyOn(kv, "set").mockImplementation(async (key, value) => {
+  override(kv, "set", async (key, value) => {
     if (!key.startsWith("deleted-thread:")) {
       if (crashed) crash();
       return originalSet(key, value);
@@ -331,7 +349,7 @@ function injectFaults(
     return attempt("kv", key, "kv", () => originalSet(key, value));
   });
   const originalDelete = kv.delete.bind(kv);
-  vi.spyOn(kv, "delete").mockImplementation(async (key) => {
+  override(kv, "delete", async (key) => {
     if (crashed) crash();
     return originalDelete(key);
   });
@@ -370,7 +388,7 @@ function injectFaults(
       },
     });
   };
-  vi.spyOn(fs, "open").mockImplementation(async (file, flags, mode) => {
+  override(fs, "open", async (file, flags, mode) => {
     if (!inside(file)) return originalOpen(file, flags, mode);
     if (flags === undefined || flags === "r")
       return handled(file, await originalOpen(file, flags, mode), false);
@@ -400,7 +418,7 @@ function injectFaults(
     const original = (
       fs[method] as (...args: unknown[]) => Promise<unknown>
     ).bind(fs);
-    vi.spyOn(fs, method).mockImplementation((async (...args: unknown[]) => {
+    override(fs, method, (async (...args: unknown[]) => {
       if (!inside(args[0]) && !(method === "rename" && inside(args[1])))
         return original(...args);
       return attempt(
@@ -647,7 +665,7 @@ async function deletionOutcome(
     const previous: Started = started;
     try {
       const pool = await previous.pool.harness.lifecycle.reload(async (bb) => {
-        vi.restoreAllMocks();
+        restoreFaults();
         losePower(watch);
         watch.kv = bb.storage.kv;
         captured.threadTokens = null;
@@ -673,7 +691,7 @@ async function deletionOutcome(
     } catch (error) {
       if (crashAt === undefined) throw error;
     }
-    vi.restoreAllMocks();
+    restoreFaults();
     return mutations;
   };
   const probe = async (): Promise<Outcome & { lookups: number }> => {
@@ -757,7 +775,7 @@ async function deletionOutcome(
     );
     const deliveries = world.deliveries.splice(0);
     await Promise.all(deliveries);
-    vi.restoreAllMocks();
+    restoreFaults();
     expect(deleted.status).toBe(200);
     const durable = await durableRecords(watch);
 
@@ -765,12 +783,12 @@ async function deletionOutcome(
     const committed = getThread(server.db, thread.id)?.deletedAt ?? null;
     injectFaults(watch, new Set());
     const first = await probe();
-    vi.restoreAllMocks();
+    restoreFaults();
     if (crash?.during === "restart") await restart(crash.after, true);
     const restartMutations = await restart(undefined, true);
     injectFaults(watch, new Set());
     const last = await probe();
-    vi.restoreAllMocks();
+    restoreFaults();
     return {
       outcome: {
         token: first.token || last.token,
@@ -789,7 +807,7 @@ async function deletionOutcome(
       violations: watch.violations,
     };
   } finally {
-    vi.restoreAllMocks();
+    restoreFaults();
     world.current.pool = null;
     const last: Started | null = started;
     if (last !== null) await last.pool.harness.lifecycle.dispose();
@@ -814,7 +832,7 @@ export function describeDeletionMatrix(lifetime: Lifetime, files: 1 | 2): void {
           for (const point of faults.has("content")
             ? CONTENT_POINTS
             : (["open"] as const)) {
-            const cell = `${files} file${files === 1 ? "" : "s"} | refused: ${faultLabel(faults, point)}`;
+            const cell = `${lifetime} | ${files} file${files === 1 ? "" : "s"} | refused: ${faultLabel(faults, point)}`;
             const outcomes: Outcome[] = [];
             const note = (
               at: string,
@@ -878,17 +896,20 @@ export function describeDeletionMatrix(lifetime: Lifetime, files: 1 | 2): void {
       } finally {
         await base.cleanup();
       }
-      console.log(
-        [
-          `deletion matrix through bb's real delete route (${lifetime}, ${files} file${files === 1 ? "" : "s"}); every unsynced change is lost at each restart, the first start mints, exports and authenticates before any sweep, and every lookup after the delete reads bb's restarted database through the real SDK:`,
+      const label = `${lifetime}, ${files} file${files === 1 ? "" : "s"}`;
+      process.stdout.write(
+        `${[
+          `deletion matrix through bb's real delete route (${label}); every unsynced change is lost at each restart, the first start mints, exports and authenticates before any sweep, and every lookup after the delete reads bb's restarted database through the real SDK:`,
           ...rows,
           "",
-          `runs that accepted an old token, minted, exported a pool credential, lost the committed delete, did not receive exactly one thread.deleted or never asked bb (${failures.length}):`,
+          `runs that accepted an old token, minted, exported a pool credential, lost the committed delete, did not receive exactly one thread.deleted or never asked bb (${label}: ${failures.length}):`,
           ...failures,
           "",
-          `invariant violations (${violations.length}):`,
+          `invariant violations (${label}: ${violations.length}):`,
           ...violations,
-        ].join("\n"),
+          "",
+          `worker memory (${label}): heap used ${Math.round(process.memoryUsage().heapUsed / 1_048_576)} MB at the end, peak resident ${Math.round(process.resourceUsage().maxRSS / 1024)} MB`,
+        ].join("\n")}\n`,
       );
       expect(violations).toEqual([]);
       expect(failures).toEqual([]);
