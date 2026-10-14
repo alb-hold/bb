@@ -1197,9 +1197,7 @@ function refuses(faults: Fault, name: string, args: unknown[]): boolean {
   const target = args[0];
   const base = typeof target === "string" ? path.basename(target) : "";
   if (faults.everything === true)
-    return name !== "open" || args[1] !== "r"
-      ? MUTATING_FS.has(name)
-      : false;
+    return name !== "open" || args[1] !== "r" ? MUTATING_FS.has(name) : false;
   if (name === "open") {
     if (
       faults.marker === true &&
@@ -1847,7 +1845,11 @@ type Scenario = {
 type FaultCase = { name: string; fault: Fault; recorded: boolean };
 
 const FAULT_CASES: FaultCase[] = [
-  { name: "the marker lowering fails", fault: { marker: true }, recorded: true },
+  {
+    name: "the marker lowering fails",
+    fault: { marker: true },
+    recorded: true,
+  },
   {
     name: "the tombstone rewrite fails",
     fault: { tombstoneWrite: true },
@@ -2127,7 +2129,8 @@ async function checkCell(
         );
       }
       if (completed && view.archived && expected !== "skip")
-        for (const outcome of outcomes) expect(outcome).toBe(expected === "all");
+        for (const outcome of outcomes)
+          expect(outcome).toBe(expected === "all");
     }
   });
 
@@ -2518,17 +2521,12 @@ describe.each(lifetimes)(
         everything: true,
       });
       await scenario.operate(f, context).catch(() => undefined);
-      await unarchive(context.threads, f.route.threadId).catch(
-        () => undefined,
-      );
+      await unarchive(context.threads, f.route.threadId).catch(() => undefined);
       for (const session of context.sessions)
         expect(await rejected(context.threads, session)).toBe(true);
       interruption.restore();
       expect(await snapshot(f.directory)).toBe(before);
-      const later = await restartedCopy(
-        f,
-        ARCHIVE_TOMBSTONE_MAX_AGE_MS + HOUR,
-      );
+      const later = await restartedCopy(f, ARCHIVE_TOMBSTONE_MAX_AGE_MS + HOUR);
       await expectNothingRestorable(
         later,
         await later.open(undefined, unreachable),

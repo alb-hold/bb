@@ -141,9 +141,10 @@ type Tombstone = {
   routes: RouteRecord[];
   nested: NestedRouteRecord[];
   durable: boolean;
+  holdsAnchor?: boolean;
 };
 
-type WindowState = "open" | "closed" | "unsettled";
+type Window = { start: number | null; open: boolean; lowered: boolean };
 
 type PendingFile =
   | { threadId: string; record: RouteRecord; nested: false }
@@ -874,10 +875,12 @@ export class ThreadTokenStore {
     return path.join(this.directory, this.tombstoneName(threadId));
   }
 
-  private async archiveMarkerAnchors(
-    threadId: string,
-  ): Promise<Array<{ file: string; modifiedAt: number }>> {
+  private async archiveMarkerAnchors(threadId: string): Promise<{
+    anchors: Array<{ file: string; modifiedAt: number }>;
+    unreadable: boolean;
+  }> {
     const anchors: Array<{ file: string; modifiedAt: number }> = [];
+    let unreadable = false;
     for (const name of this.archiveMarkerNames(threadId)) {
       const file = path.join(this.directory, name);
       try {
@@ -893,11 +896,11 @@ export class ThreadTokenStore {
           file,
           modifiedAt: Math.round((await fs.stat(file)).mtimeMs),
         });
-      } catch {
-        continue;
+      } catch (error) {
+        if (!isNodeError(error) || error.code !== "ENOENT") unreadable = true;
       }
     }
-    return anchors;
+    return { anchors, unreadable };
   }
 
   private async lowerMarker(file: string, modifiedAt: number): Promise<void> {
@@ -914,44 +917,64 @@ export class ThreadTokenStore {
   private async restoreWindow(
     threadId: string,
     known: { tombstoneAt?: number; bbAt?: number } = {},
-  ): Promise<{ start: number | null; state: WindowState }> {
-    const markers = await this.archiveMarkerAnchors(threadId);
+  ): Promise<Window> {
+    const { anchors: markers, unreadable } =
+      await this.archiveMarkerAnchors(threadId);
     const anchors = [
       known.tombstoneAt,
       known.bbAt,
       ...markers.map((marker) => marker.modifiedAt),
     ].filter((anchor): anchor is number => anchor !== undefined);
-    if (anchors.length === 0) return { start: null, state: "closed" };
+    if (anchors.length === 0)
+      return { start: null, open: false, lowered: true };
     const start = Math.min(...anchors);
-    let recorded = true;
+    let lowered = true;
     for (const marker of markers)
       if (marker.modifiedAt - start > MARKER_ANCHOR_TOLERANCE_MS)
         try {
           await this.lowerMarker(marker.file, start);
         } catch {
-          recorded = false;
+          lowered = false;
         }
     const postdated =
       known.tombstoneAt !== undefined &&
       known.tombstoneAt > this.now() + PROCESS_CREDENTIAL_CLOCK_SKEW_MS;
-    const open = !postdated && !this.tombstoneExpired({ archivedAt: start });
-    return { start, state: open ? "open" : recorded ? "closed" : "unsettled" };
+    const open =
+      !postdated &&
+      !unreadable &&
+      !this.tombstoneExpired({ archivedAt: start });
+    return { start, open, lowered };
+  }
+
+  private async settleWindow(
+    tombstone: Tombstone,
+    window: Window,
+  ): Promise<boolean> {
+    if (window.start === null) return false;
+    const shrank = window.start < tombstone.archivedAt;
+    if (shrank) tombstone.archivedAt = window.start;
+    if (window.lowered) {
+      tombstone.holdsAnchor = false;
+      if (shrank && window.open && tombstone.durable)
+        await this.persistTombstone(tombstone);
+      return window.open;
+    }
+    if (shrank || !tombstone.durable) await this.persistTombstone(tombstone);
+    tombstone.holdsAnchor = tombstone.durable;
+    return tombstone.durable && window.open;
   }
 
   private async windowOpen(
     tombstone: Tombstone,
     bbAt?: number,
-  ): Promise<WindowState> {
-    const { start, state } = await this.restoreWindow(tombstone.threadId, {
-      tombstoneAt: tombstone.archivedAt,
-      bbAt,
-    });
-    if (start === null) return "closed";
-    const shrank = start < tombstone.archivedAt;
-    if (shrank) tombstone.archivedAt = start;
-    if (shrank && state === "open" && tombstone.durable)
-      await this.persistTombstone(tombstone);
-    return state;
+  ): Promise<boolean> {
+    return this.settleWindow(
+      tombstone,
+      await this.restoreWindow(tombstone.threadId, {
+        tombstoneAt: tombstone.archivedAt,
+        bbAt,
+      }),
+    );
   }
 
   private tombstoneExpired(tombstone: { archivedAt: number }): boolean {
@@ -968,10 +991,10 @@ export class ThreadTokenStore {
     archivedAt?: number,
   ): Promise<void> {
     const held = this.tombstones.get(threadId);
-    const heldWindow =
-      held === undefined ? "open" : await this.windowOpen(held, archivedAt);
-    if (held !== undefined && heldWindow !== "open") {
-      if (heldWindow === "closed") await this.dropTombstone(threadId, true);
+    const heldOpen =
+      held === undefined ? true : await this.windowOpen(held, archivedAt);
+    if (held !== undefined && !heldOpen) {
+      await this.dropTombstone(threadId, true);
       if (held.epoch === epoch) return;
     } else if (held?.epoch === epoch) {
       if (!held.durable) {
@@ -996,8 +1019,13 @@ export class ThreadTokenStore {
       nested,
       durable: false,
     };
-    if ((await this.windowOpen(tombstone, archivedAt)) !== "open") return;
+    const open = await this.windowOpen(tombstone, archivedAt);
+    if (!open && !tombstone.durable) return;
     this.tombstones.set(threadId, tombstone);
+    if (!open) {
+      await this.dropTombstone(threadId, true);
+      return;
+    }
     await this.persistTombstone(tombstone);
   }
 
@@ -1047,7 +1075,8 @@ export class ThreadTokenStore {
   }
 
   private async persistTombstone(tombstone: Tombstone): Promise<void> {
-    const { durable, ...stored } = tombstone;
+    const { durable, holdsAnchor, ...stored } = tombstone;
+    tombstone.durable = false;
     try {
       await this.persist(this.tombstoneFile(tombstone.threadId), {
         ...stored,
@@ -1065,10 +1094,13 @@ export class ThreadTokenStore {
       if (
         tombstone.durable ||
         !this.archivedThreads.has(tombstone.threadId) ||
-        tombstone.epoch !== this.archiveEpoch(tombstone.threadId) ||
-        (await this.windowOpen(tombstone)) !== "open"
+        tombstone.epoch !== this.archiveEpoch(tombstone.threadId)
       )
         continue;
+      if (!(await this.windowOpen(tombstone))) {
+        await this.dropTombstone(tombstone.threadId, true);
+        continue;
+      }
       await this.persistTombstone(tombstone);
       if (tombstone.durable) await this.removePendingFiles(tombstone);
       else
@@ -1091,11 +1123,15 @@ export class ThreadTokenStore {
   private async dropTombstone(threadId: string, force = false): Promise<void> {
     const tombstone = this.tombstones.get(threadId);
     this.tombstones.delete(threadId);
+    const removePending =
+      tombstone !== undefined && (force || !tombstone.durable);
+    if (removePending && tombstone.holdsAnchor === true)
+      await this.removePendingFiles(tombstone);
     if (tombstone !== undefined || force)
       await this.removeCredentialFile(this.tombstoneFile(threadId)).catch(
         () => undefined,
       );
-    if (tombstone !== undefined && (force || !tombstone.durable))
+    if (removePending && tombstone.holdsAnchor !== true)
       await this.removePendingFiles(tombstone);
   }
 
@@ -1144,7 +1180,7 @@ export class ThreadTokenStore {
   ): Promise<void> {
     const held = this.tombstones.get(threadId);
     if (held === undefined) return;
-    if ((await this.windowOpen(held, archivedAt)) === "closed")
+    if (!(await this.windowOpen(held, archivedAt)))
       await this.dropTombstone(threadId, true);
   }
 
@@ -1175,13 +1211,14 @@ export class ThreadTokenStore {
         nested,
         durable: false,
       };
-      if (window.state === "unsettled") continue;
-      if (
-        held?.epoch === epoch ||
-        this.expiredTombstoneThreads.has(threadId) ||
-        window.state === "closed"
-      ) {
+      if (held?.epoch === epoch || this.expiredTombstoneThreads.has(threadId)) {
         await this.removePendingFiles(tombstone);
+        continue;
+      }
+      const open = await this.settleWindow(tombstone, window);
+      if (!open) {
+        this.tombstones.set(threadId, tombstone);
+        await this.dropTombstone(threadId, true);
         continue;
       }
       this.tombstones.set(threadId, tombstone);
@@ -1196,7 +1233,7 @@ export class ThreadTokenStore {
 
   private async purgeExpiredTombstones(): Promise<void> {
     for (const [threadId, tombstone] of this.tombstones)
-      if ((await this.windowOpen(tombstone)) === "closed")
+      if (!(await this.windowOpen(tombstone)))
         await this.dropTombstone(threadId, true);
   }
 
@@ -1214,12 +1251,10 @@ export class ThreadTokenStore {
       await this.dropTombstone(threadId);
       return revived;
     }
-    const window = await this.windowOpen(tombstone);
-    if (window === "closed") {
+    if (!(await this.windowOpen(tombstone))) {
       await this.dropTombstone(threadId, true);
       return revived;
     }
-    if (window === "unsettled") return revived;
     for (const stored of tombstone.routes) {
       const record = this.withLivePriors(stored, stored.lifetime === "process");
       if (
@@ -1306,9 +1341,10 @@ export class ThreadTokenStore {
       await this.dropFile(file);
       return;
     }
-    if ((await this.windowOpen(tombstone)) === "closed") {
+    if (!(await this.windowOpen(tombstone))) {
       this.expiredTombstoneThreads.add(threadId);
-      await this.dropFile(file);
+      this.tombstones.set(threadId, tombstone);
+      await this.dropTombstone(threadId, true);
       return;
     }
     this.tombstones.set(threadId, tombstone);

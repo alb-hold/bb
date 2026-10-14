@@ -56,11 +56,19 @@ that has already run out is dropped. One rule decides every one of these: the
 window starts at the earliest of the archive marker's modification time, the
 tombstone's own archive time and bb's archive time, and it can only move
 earlier. A time learned from bb is first written into the marker's modification
-time, and only then is anything deleted (if that write fails nothing is deleted:
-the thread stays unrestorable in memory and the next sweep or load retries); a
-tombstone is deleted before the route files it replaced. A restart at any point therefore sees the same or an earlier
-window, and route files left without a tombstone are recovered against the
-marker and expire with it.
+time. If that write fails, the tombstone is rewritten with the earlier time
+instead, and only then is anything deleted; the route files go first and the
+tombstone last, so what still carries the earlier time is deleted last. If
+neither write succeeds, the earlier time cannot be recorded and the thread
+becomes unrestorable: the tombstone is deleted (renamed aside if the delete
+fails), then the route files it replaced. A marker whose time cannot be read
+closes the window the same way. Otherwise a tombstone is deleted before the
+route files it replaced. A restart at any point therefore sees the same or an
+earlier window, and route files left without a tombstone are recovered against
+the marker and expire with it. One residual remains: if neither write succeeds
+and the process dies before the deletions finish (or the filesystem refuses
+every write and delete), the disk still holds the later time and a restart
+with bb unreachable restores within that later window.
 
 The builtin Account Pooler plugin is disabled by default. Enable it, add Claude
 or Codex credentials, and inspect its proxy routes and account quota with:
