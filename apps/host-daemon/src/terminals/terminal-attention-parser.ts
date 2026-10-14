@@ -1,5 +1,3 @@
-import { Buffer } from "node:buffer";
-
 export type TerminalAttentionKind = "bell" | "osc-9" | "osc-99" | "osc-777";
 
 export interface TerminalAttentionDetection {
@@ -13,13 +11,16 @@ export interface TerminalAttentionParserState {
 }
 
 const MAX_PENDING_BYTES = 4096;
+const decoders = new WeakMap<TerminalAttentionParserState, TextDecoder>();
 
-export const INITIAL_TERMINAL_ATTENTION_PARSER_STATE: TerminalAttentionParserState = {
-  pending: "",
-};
+export const INITIAL_TERMINAL_ATTENTION_PARSER_STATE: TerminalAttentionParserState =
+  {
+    pending: "",
+  };
 
 function parseOsc(value: string): TerminalAttentionDetection | null {
   if (value.startsWith("9;")) {
+    if (/^9;\d+;/u.test(value)) return null;
     return { body: value.slice(2), kind: "osc-9" };
   }
   if (value.startsWith("99;")) {
@@ -51,7 +52,12 @@ export function consumeTerminalAttention(
   state: TerminalAttentionParserState,
   bytes: Uint8Array,
 ): TerminalAttentionDetection[] {
-  let input = state.pending + Buffer.from(bytes).toString("utf8");
+  let decoder = decoders.get(state);
+  if (!decoder) {
+    decoder = new TextDecoder();
+    decoders.set(state, decoder);
+  }
+  let input = state.pending + decoder.decode(bytes, { stream: true });
   state.pending = "";
   const detections: TerminalAttentionDetection[] = [];
   while (input.length > 0) {
@@ -61,6 +67,7 @@ export function consumeTerminalAttention(
       for (let index = 0; index < bells; index += 1) {
         detections.push({ kind: "bell" });
       }
+      if (input.endsWith("\u001b")) state.pending = "\u001b";
       return detections;
     }
     const before = input.slice(0, start);
@@ -71,9 +78,10 @@ export function consumeTerminalAttention(
     input = input.slice(start + 2);
     const belEnd = input.indexOf("\u0007");
     const stEnd = input.indexOf("\u001b\\");
-    const end = belEnd < 0 ? stEnd : stEnd < 0 ? belEnd : Math.min(belEnd, stEnd);
+    const end =
+      belEnd < 0 ? stEnd : stEnd < 0 ? belEnd : Math.min(belEnd, stEnd);
     if (end < 0) {
-      state.pending = (`\u001b]${input}`).slice(-MAX_PENDING_BYTES);
+      state.pending = `\u001b]${input}`.slice(-MAX_PENDING_BYTES);
       return detections;
     }
     const detection = parseOsc(input.slice(0, end));
