@@ -40,6 +40,9 @@ import {
 } from "./terminal-layout-settle";
 import { TerminalLinkOpenDialog } from "./TerminalLinkOpenDialog";
 import { TerminalMobileControls } from "./TerminalMobileControls";
+import { TerminalSearch } from "./TerminalSearch";
+import type { TerminalSearchAddonInstance } from "./terminal-search-addon";
+import { loadOptionalTerminalSearchAddon } from "./terminal-search-addon";
 import { TerminalTextSelectSheet } from "./TerminalTextSelectSheet";
 import { terminalTextSnapshot } from "./terminal-text-snapshot";
 import {
@@ -716,6 +719,9 @@ export function ThreadTerminalView({
     setControlActive(active);
   };
   const [terminalReady, setTerminalReady] = useState(false);
+  const [terminalSearchAddon, setTerminalSearchAddon] =
+    useState<TerminalSearchAddonInstance | null>(null);
+  const [terminalSearchOpen, setTerminalSearchOpen] = useState(false);
   const [textSnapshot, setTextSnapshot] = useState<string | null>(null);
   const [activeSelection, setActiveSelection] =
     useState<MessageProseSelection | null>(null);
@@ -950,6 +956,9 @@ export function ThreadTerminalView({
       const webglAddonModulePromise = loadOptionalTerminalWebglAddon(
         () => import("@xterm/addon-webgl"),
       );
+      const searchAddonModulePromise = loadOptionalTerminalSearchAddon(
+        () => import("@xterm/addon-search"),
+      );
       const [
         { Terminal },
         { FitAddon: LoadedFitAddon },
@@ -957,6 +966,7 @@ export function ThreadTerminalView({
         { Unicode11Addon },
       ] = await requiredModulesPromise;
       const webglAddonModule = await webglAddonModulePromise;
+      const searchAddonModule = await searchAddonModulePromise;
       if (disposed) {
         return;
       }
@@ -1004,6 +1014,11 @@ export function ThreadTerminalView({
         ),
       );
       terminal.open(containerElement);
+      if (searchAddonModule !== null) {
+        const searchAddon = new searchAddonModule.SearchAddon();
+        terminal.loadAddon(searchAddon);
+        setTerminalSearchAddon(searchAddon);
+      }
       attachTerminalWheelLines(terminal);
       if (webglAddonModule !== null) {
         webglRenderer = loadTerminalWebglRenderer(
@@ -1307,6 +1322,8 @@ export function ThreadTerminalView({
       controlActiveRef.current = false;
       setControlActive(false);
       setTerminalReady(false);
+      setTerminalSearchAddon(null);
+      setTerminalSearchOpen(false);
       stopObservingFonts?.();
       stopWatchingLayout?.();
       if (resizeAnimationFrame !== null) {
@@ -1407,7 +1424,7 @@ export function ThreadTerminalView({
       >
         <ContextMenuTrigger asChild disabled={!hasTerminalContextMenuTarget}>
           <div
-            className="relative min-h-0 w-full flex-1 overflow-hidden bg-sidebar p-2"
+            className="group/terminal-pane relative min-h-0 w-full flex-1 overflow-hidden bg-sidebar p-2"
             onContextMenuCapture={captureTerminalContextMenu}
             onTouchStart={(event) => touchHandlers().start(event)}
             onTouchMove={(event) => touchHandlers().move(event)}
@@ -1419,6 +1436,13 @@ export function ThreadTerminalView({
               data-terminal-renderer="dom"
               data-terminal-context-loss-count="0"
               className="h-full min-h-0 w-full overflow-hidden"
+            />
+            <TerminalSearch
+              addon={terminalSearchAddon}
+              terminal={terminalRef.current}
+              touch={isTouchDevice}
+              open={terminalSearchOpen}
+              onOpenChange={setTerminalSearchOpen}
             />
             {connectionNoticeText !== null ? (
               <div
@@ -1511,6 +1535,8 @@ export function ThreadTerminalView({
             if (document.activeElement === terminal.textarea) terminal.blur();
             else terminal.focus();
           }}
+          onSearch={() => setTerminalSearchOpen(true)}
+          searchAvailable={terminalSearchAddon !== null}
           onPaste={() => {
             const terminal = terminalRef.current;
             if (!terminal) return;
