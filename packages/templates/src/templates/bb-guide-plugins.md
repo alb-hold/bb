@@ -105,10 +105,11 @@ Tokens are never printed. `status` prunes tokens for
 unenrolled machines and shows token timestamps plus recently routed threads
 whose machines need a local Claude login before the pool can be disabled
 safely. Rotation keeps the prior token, and the thread-scoped tokens derived from
-it, valid for ten minutes; archiving or deleting a thread revokes its tokens when
-the plugin receives the event, and one missed while the plugin is down is not
-replayed, so they end when bb next resolves that archived thread's environment,
-or when you rotate the machine token and wait out the ten minutes. Agents should
+it, valid for ten minutes. Archiving a thread suspends its tokens and
+unarchiving it accepts the same tokens again, so a running session keeps
+working; deleting a thread revokes them for good. The plugin asks bb for the
+thread's state each time a token is presented, so a missed archive or unarchive
+event takes effect on the next request. Agents should
 use
 `--api-key-stdin`, which reads exactly one non-empty key from piped standard
 input. Secret options reject inline values and are accepted only from stdin.
