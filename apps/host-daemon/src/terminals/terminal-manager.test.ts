@@ -1126,7 +1126,8 @@ describe("TerminalManager", () => {
 
   it("reports unattended terminal attention and coalesces repeats for two seconds", async () => {
     vi.useFakeTimers();
-    vi.setSystemTime(1_000_000);
+    let now = 1_000_000;
+    const dateNow = vi.spyOn(Date, "now").mockImplementation(() => now);
     try {
       const harness = createHarness();
       const pty = await openTerminal(harness);
@@ -1142,19 +1143,20 @@ describe("TerminalManager", () => {
           kind: "bell",
         },
       ]);
-      vi.setSystemTime(1_001_999);
+      now = 1_001_999;
       pty.emitData("\u001b]777;notify;Build;Again\u0007");
       await vi.advanceTimersByTimeAsync(50);
       expect(
         harness.messages.filter((message) => message.type === "terminal.attention"),
       ).toHaveLength(1);
-      vi.setSystemTime(1_002_000);
+      now = 1_002_000;
       pty.emitData("\u001b]777;notify;Build;Again\u0007");
       await vi.advanceTimersByTimeAsync(50);
       expect(
         harness.messages.filter((message) => message.type === "terminal.attention"),
       ).toHaveLength(2);
     } finally {
+      dateNow.mockRestore();
       vi.useRealTimers();
     }
   });

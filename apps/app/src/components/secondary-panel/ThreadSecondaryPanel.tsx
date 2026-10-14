@@ -166,6 +166,7 @@ export function resolveCollapsedPanelTrafficLightReserveClassName({
 const HIDE_PANEL_LABEL = "Hide right panel";
 
 export interface SecondaryPanelFixedTab {
+  attention?: boolean;
   ariaLabel: string;
   contentFillsRegion?: boolean;
   label: string;
