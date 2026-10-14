@@ -60,5 +60,8 @@ describe("server move snapshot fence", () => {
         .map(([type]) => type)
         .sort(),
     );
+    expect(SNAPSHOT_FENCE_CLASSIFICATION["terminal.attention"]).toBe(
+      "unfenced",
+    );
   });
 });
