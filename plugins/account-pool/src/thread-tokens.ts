@@ -146,6 +146,7 @@ export class ThreadTokenStore {
   private readonly recordedDeletions = new Set<string>();
   private readonly unrecordedThreads = new Set<string>();
   private readonly unrecordedPending = new Set<string>();
+  private readonly heldDeletedFiles = new Map<string, Set<string>>();
   private deletionRecordsUnloaded = false;
   private readonly deletedLiveWarnings = new Map<string, number>();
   private readonly activeArchiveMarkers = new Set<string>();
@@ -622,11 +623,14 @@ export class ThreadTokenStore {
         await this.removeNestedFiles(record, epoch).catch(() => undefined);
       }
       const threadDigest = digest(threadId);
+      const held = this.heldDeletedFiles.get(threadId) ?? new Set<string>();
+      this.heldDeletedFiles.delete(threadId);
       for (const name of [
         ...this.suspendedFiles(threadId, names),
-        ...names.filter((name) => this.hasCredentialFile(threadId, [name])),
-        ...names.filter((name) =>
-          name.startsWith(`${DELETED_PENDING_PREFIX}${threadDigest}-`),
+        ...names.filter(
+          (name) =>
+            held.has(name) ||
+            name.startsWith(`${DELETED_PENDING_PREFIX}${threadDigest}-`),
         ),
       ])
         await this.removeCredentialFile(path.join(this.directory, name)).catch(
@@ -725,10 +729,14 @@ export class ThreadTokenStore {
             "code" in error &&
             error.code === "ENOENT",
         );
-      if (!renamed)
-        this.warn(
-          `Account Pooler could not rename credential file ${name} of deleted thread ${threadId}; it stays in place until a deletion record can be written.`,
-        );
+      if (renamed) continue;
+      this.heldDeletedFiles.set(
+        threadId,
+        new Set([...(this.heldDeletedFiles.get(threadId) ?? []), name]),
+      );
+      this.warn(
+        `Account Pooler could not rename credential file ${name} of deleted thread ${threadId}; it stays in place until a deletion record can be written.`,
+      );
     }
   }
 

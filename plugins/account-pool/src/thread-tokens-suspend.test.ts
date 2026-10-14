@@ -332,7 +332,10 @@ function injectFaults(
       attempt(
         method,
         method === "rename" ? args[1] : args[0],
-        fault,
+        method === "mkdir" &&
+          !path.basename(String(args[0])).startsWith("deleted-thread-")
+          ? null
+          : fault,
         () => original(...args),
         args,
       )) as never);
