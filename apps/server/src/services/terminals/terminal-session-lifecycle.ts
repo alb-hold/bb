@@ -773,25 +773,26 @@ export class TerminalSessionLifecycle {
     const session = getTerminalById(this.options.db, attention.terminalId);
     if (!session || session.status !== "running") return;
     const now = attention.at ?? Date.now();
-    const { source, terminalId, ...value } = attention;
+    const source = attention.source;
+    const daemonSeq = source === "daemon" ? attention.seq : null;
+    const { terminalId, ...value } = attention;
     const previous = getTerminalAttention(this.options.db, terminalId);
     if (
-      source === "daemon" &&
+      daemonSeq !== null &&
       previous?.daemonSeq !== null &&
       previous?.daemonSeq !== undefined &&
-      value.seq <= previous.daemonSeq
+      daemonSeq <= previous.daemonSeq
     ) {
       return;
     }
     const seq =
-      source === "daemon"
-        ? Math.max((previous?.seq ?? -1) + 1, value.seq)
+      daemonSeq !== null
+        ? Math.max((previous?.seq ?? -1) + 1, daemonSeq)
         : (previous?.seq ?? 0) + 1;
     upsertTerminalAttention(this.options.db, {
       terminalSessionId: terminalId,
       seq,
-      daemonSeq:
-        source === "daemon" ? value.seq : (previous?.daemonSeq ?? null),
+      daemonSeq: daemonSeq ?? previous?.daemonSeq ?? null,
       kind: value.kind,
       title: value.title ?? null,
       body: value.body ?? null,
