@@ -502,6 +502,7 @@ export {
   createTerminalSession,
   getTerminalSession,
   listTerminalSessions,
+  setTerminalAttention,
   updateTerminalSession,
   updateTerminalSessions,
 } from "./terminal-sessions.js";

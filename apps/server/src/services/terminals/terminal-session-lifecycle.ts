@@ -4,11 +4,13 @@ import {
   resolveHostEnvironment,
 } from "../hosts/host-environment.js";
 import { randomUUID } from "node:crypto";
+import { z } from "zod";
 import {
   createTerminalSession,
   getSessionById,
   getTerminalSession,
   listTerminalSessions,
+  setTerminalAttention,
   updateTerminalSession,
   updateTerminalSessions,
   updateThread,
@@ -519,12 +521,27 @@ function toTerminalSession(row: TerminalSessionRow): TerminalSession {
   };
 }
 
-interface TerminalAttentionState {
-  at: number;
-  body?: string;
-  kind: "bell" | "osc-9" | "osc-99" | "osc-777";
-  seq: number;
-  title?: string;
+const terminalAttentionStateSchema = z
+  .object({
+    at: z.number().int().nonnegative(),
+    body: z.string().max(2048).optional(),
+    kind: z.enum(["bell", "osc-9", "osc-99", "osc-777"]),
+    seq: z.number().int().nonnegative(),
+    title: z.string().max(256).optional(),
+  })
+  .strict();
+
+type TerminalAttentionState = z.infer<typeof terminalAttentionStateSchema>;
+
+function parseTerminalAttention(value: string | null): TerminalAttentionState | null {
+  if (value === null) return null;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    const result = terminalAttentionStateSchema.safeParse(parsed);
+    return result.success ? result.data : null;
+  } catch {
+    return null;
+  }
 }
 
 const TERMINAL_THREAD_ATTENTION_DEBOUNCE_MS = 10_000;
@@ -548,10 +565,6 @@ function updateTerminalById(
 }
 
 export class TerminalSessionLifecycle {
-  private readonly attentionByTerminalId = new Map<
-    string,
-    TerminalAttentionState
-  >();
   private readonly lastThreadAttentionAt = new Map<string, number>();
   private readonly pendingAttaches: PendingRpcRegistry<
     PendingTerminalAttachKey,
@@ -718,7 +731,7 @@ export class TerminalSessionLifecycle {
   private toTerminalSession(row: TerminalSessionRow): TerminalSession {
     return {
       ...toTerminalSession(row),
-      attention: this.attentionByTerminalId.get(row.id) ?? null,
+      attention: parseTerminalAttention(row.attentionJson),
     };
   }
 
@@ -732,7 +745,7 @@ export class TerminalSessionLifecycle {
     }
     this.recordTerminalAttention({
       terminalId: session.id,
-      seq: this.attentionByTerminalId.get(session.id)?.seq ?? 0,
+      seq: parseTerminalAttention(session.attentionJson)?.seq ?? 0,
       kind: "osc-9",
       ...args.payload,
     });
@@ -746,7 +759,11 @@ export class TerminalSessionLifecycle {
     if (!session || session.status !== "running") return;
     const now = attention.at ?? Date.now();
     const { terminalId, ...value } = attention;
-    this.attentionByTerminalId.set(terminalId, { ...value, at: now });
+    setTerminalAttention(
+      this.options.db,
+      terminalId,
+      JSON.stringify({ ...value, at: now }),
+    );
     if (session.threadId !== null) {
       const previous = this.lastThreadAttentionAt.get(session.threadId) ?? 0;
       if (now - previous >= TERMINAL_THREAD_ATTENTION_DEBOUNCE_MS) {
@@ -760,10 +777,9 @@ export class TerminalSessionLifecycle {
   }
 
   private clearTerminalAttention(terminalId: string): void {
-    const previous = this.attentionByTerminalId.get(terminalId);
-    if (!previous) return;
-    this.attentionByTerminalId.delete(terminalId);
     const session = getTerminalById(this.options.db, terminalId);
+    if (!session?.attentionJson) return;
+    setTerminalAttention(this.options.db, terminalId, null);
     if (session?.threadId !== null && session?.threadId !== undefined) {
       this.options.hub.notifyThread(session.threadId, ["terminals-changed"]);
     }
@@ -1879,7 +1895,6 @@ export class TerminalSessionLifecycle {
           },
         });
         if (exited) {
-          this.clearTerminalAttention(exited.id);
           this.forwardedNextSeqByTerminalId.delete(exited.id);
           this.outputFlow.forgetTerminal(exited.id);
           this.pendingCloses.settle(

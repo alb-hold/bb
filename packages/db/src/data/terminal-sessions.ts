@@ -11,6 +11,19 @@ type TerminalSessionConnection = DbConnection | DbTransaction;
 
 export type TerminalSessionRow = typeof terminalSessions.$inferSelect;
 
+export function setTerminalAttention(
+  db: TerminalSessionConnection,
+  terminalId: string,
+  attentionJson: string | null,
+): TerminalSessionRow | null {
+  return db
+    .update(terminalSessions)
+    .set({ attentionJson })
+    .where(eq(terminalSessions.id, terminalId))
+    .returning()
+    .get() ?? null;
+}
+
 export interface CreateTerminalSessionInput {
   cols: number;
   daemonSessionId: string | null;
