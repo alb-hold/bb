@@ -208,7 +208,12 @@ const FAULT_CLASSES: readonly FaultClass[] = [
   "rm",
   "mkdir",
 ];
-type Mutation = { method: string; target: string; ok: boolean };
+type Mutation = {
+  method: string;
+  target: string;
+  ok: boolean;
+  refused: boolean;
+};
 type Watch = {
   directory: string;
   kv: ReturnType<typeof memoryKv>;
@@ -290,12 +295,15 @@ function injectFaults(
       method,
       target: path.basename(String(target)),
       ok: false,
+      refused: false,
     };
     mutations.push(mutation);
     if (mutations.length > crashAfter)
       throw Object.assign(new Error("simulated crash"), { code: "EIO" });
-    if (fault !== null && faults.has(fault))
+    if (fault !== null && faults.has(fault)) {
+      mutation.refused = true;
       throw Object.assign(new Error("EACCES"), { code: "EACCES" });
+    }
     if (watch !== null) checkRemoval(watch, method, args);
     const result = await run();
     mutation.ok = true;
@@ -360,15 +368,13 @@ function recordsDeletion(mutation: Mutation): boolean {
   return false;
 }
 
-type BbAnswer = "gone" | "live";
-
 async function deletionOutcome(
   lifetime: Lifetime,
   faults: ReadonlySet<FaultClass>,
   files: 1 | 2,
   crash: { during: "delete" | "restart"; after: number } | null,
-  answer: BbAnswer,
 ) {
+  const answer = faults.has("kv") ? "live" : "gone";
   injectFaults(new Set());
   const w = await world();
   const watch: Watch = { directory: w.directory, kv: w.kv, violations: [] };
@@ -414,6 +420,9 @@ async function deletionOutcome(
   return {
     outcome: { token: oldTokenAccepted, mint },
     recorded: deleteMutations.some(recordsDeletion),
+    kvRefused: deleteMutations.some(
+      (mutation) => mutation.method === "kv" && mutation.refused,
+    ),
     deleteMutations,
     restartMutations,
     violations: watch.violations,
@@ -435,145 +444,77 @@ function residualRow(
   files: 1 | 2,
   faults: ReadonlySet<FaultClass>,
   recorded: boolean,
-  after: { token: boolean; mint: boolean },
-  before: { token: boolean; mint: boolean },
+  outcome: { token: boolean; mint: boolean },
 ): string {
   const yes = (value: boolean) => (value ? "yes" : "no");
-  return `${files} file${files === 1 ? "" : "s"} | refused: ${[...faults].join("+") || "none"} | record: ${yes(recorded)} | old token accepted: ${yes(after.token)} | mint succeeds: ${yes(after.mint)} | crash before the first record: old token accepted: ${yes(before.token)}, mint succeeds: ${yes(before.mint)}`;
+  return `${files} file${files === 1 ? "" : "s"} | refused: ${[...faults].join("+") || "none"} | record: ${yes(recorded)} | old token accepted: ${yes(outcome.token)} | mint succeeds: ${yes(outcome.mint)}`;
 }
 
-const EXPECTED_GONE = [
-  "1 file | refused: none | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "1 file | refused: kv | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "1 file | refused: content | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "1 file | refused: kv+content | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "1 file | refused: rename | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "1 file | refused: kv+rename | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "1 file | refused: content+rename | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "1 file | refused: kv+content+rename | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "1 file | refused: rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "1 file | refused: kv+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "1 file | refused: content+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "1 file | refused: kv+content+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "1 file | refused: rename+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "1 file | refused: kv+rename+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "1 file | refused: content+rename+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "1 file | refused: kv+content+rename+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "1 file | refused: mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "1 file | refused: kv+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "1 file | refused: content+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "1 file | refused: kv+content+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "1 file | refused: rename+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "1 file | refused: kv+rename+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "1 file | refused: content+rename+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "1 file | refused: kv+content+rename+mkdir | record: no | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "1 file | refused: rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "1 file | refused: kv+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "1 file | refused: content+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "1 file | refused: kv+content+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "1 file | refused: rename+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "1 file | refused: kv+rename+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "1 file | refused: content+rename+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "1 file | refused: kv+content+rename+rm+mkdir | record: no | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "2 files | refused: none | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "2 files | refused: kv | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "2 files | refused: content | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "2 files | refused: kv+content | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "2 files | refused: rename | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "2 files | refused: kv+rename | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "2 files | refused: content+rename | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "2 files | refused: kv+content+rename | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "2 files | refused: rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "2 files | refused: kv+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "2 files | refused: content+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "2 files | refused: kv+content+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "2 files | refused: rename+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "2 files | refused: kv+rename+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "2 files | refused: content+rename+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "2 files | refused: kv+content+rename+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "2 files | refused: mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "2 files | refused: kv+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "2 files | refused: content+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "2 files | refused: kv+content+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "2 files | refused: rename+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "2 files | refused: kv+rename+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "2 files | refused: content+rename+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "2 files | refused: kv+content+rename+mkdir | record: no | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "2 files | refused: rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "2 files | refused: kv+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "2 files | refused: content+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "2 files | refused: kv+content+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "2 files | refused: rename+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "2 files | refused: kv+rename+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "2 files | refused: content+rename+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-  "2 files | refused: kv+content+rename+rm+mkdir | record: no | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
-];
-
-const EXPECTED_LIVE = [
-  "1 file | refused: none | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "1 file | refused: kv | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "1 file | refused: content | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "1 file | refused: kv+content | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "1 file | refused: rename | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "1 file | refused: kv+rename | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "1 file | refused: content+rename | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "1 file | refused: kv+content+rename | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "1 file | refused: rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "1 file | refused: kv+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "1 file | refused: content+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "1 file | refused: kv+content+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "1 file | refused: rename+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "1 file | refused: kv+rename+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "1 file | refused: content+rename+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "1 file | refused: kv+content+rename+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "1 file | refused: mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "1 file | refused: kv+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "1 file | refused: content+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "1 file | refused: kv+content+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "1 file | refused: rename+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "1 file | refused: kv+rename+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "1 file | refused: content+rename+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "1 file | refused: kv+content+rename+mkdir | record: no | old token accepted: yes | mint succeeds: yes | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "1 file | refused: rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "1 file | refused: kv+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "1 file | refused: content+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "1 file | refused: kv+content+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "1 file | refused: rename+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "1 file | refused: kv+rename+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "1 file | refused: content+rename+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "1 file | refused: kv+content+rename+rm+mkdir | record: no | old token accepted: yes | mint succeeds: yes | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "2 files | refused: none | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "2 files | refused: kv | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "2 files | refused: content | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "2 files | refused: kv+content | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "2 files | refused: rename | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "2 files | refused: kv+rename | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "2 files | refused: content+rename | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "2 files | refused: kv+content+rename | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "2 files | refused: rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "2 files | refused: kv+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "2 files | refused: content+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "2 files | refused: kv+content+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "2 files | refused: rename+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "2 files | refused: kv+rename+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "2 files | refused: content+rename+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "2 files | refused: kv+content+rename+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "2 files | refused: mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "2 files | refused: kv+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "2 files | refused: content+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "2 files | refused: kv+content+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "2 files | refused: rename+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "2 files | refused: kv+rename+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "2 files | refused: content+rename+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "2 files | refused: kv+content+rename+mkdir | record: no | old token accepted: yes | mint succeeds: yes | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "2 files | refused: rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "2 files | refused: kv+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "2 files | refused: content+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "2 files | refused: kv+content+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "2 files | refused: rename+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "2 files | refused: kv+rename+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "2 files | refused: content+rename+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
-  "2 files | refused: kv+content+rename+rm+mkdir | record: no | old token accepted: yes | mint succeeds: yes | crash before the first record: old token accepted: yes, mint succeeds: yes",
+const EXPECTED_RESIDUAL = [
+  "1 file | refused: none | record: yes | old token accepted: no | mint succeeds: no",
+  "1 file | refused: kv | record: yes | old token accepted: no | mint succeeds: no",
+  "1 file | refused: content | record: yes | old token accepted: no | mint succeeds: no",
+  "1 file | refused: kv+content | record: yes | old token accepted: no | mint succeeds: no",
+  "1 file | refused: rename | record: yes | old token accepted: no | mint succeeds: no",
+  "1 file | refused: kv+rename | record: yes | old token accepted: no | mint succeeds: no",
+  "1 file | refused: content+rename | record: yes | old token accepted: no | mint succeeds: no",
+  "1 file | refused: kv+content+rename | record: yes | old token accepted: no | mint succeeds: no",
+  "1 file | refused: rm | record: yes | old token accepted: no | mint succeeds: no",
+  "1 file | refused: kv+rm | record: yes | old token accepted: no | mint succeeds: no",
+  "1 file | refused: content+rm | record: yes | old token accepted: no | mint succeeds: no",
+  "1 file | refused: kv+content+rm | record: yes | old token accepted: no | mint succeeds: no",
+  "1 file | refused: rename+rm | record: yes | old token accepted: no | mint succeeds: no",
+  "1 file | refused: kv+rename+rm | record: yes | old token accepted: no | mint succeeds: no",
+  "1 file | refused: content+rename+rm | record: yes | old token accepted: no | mint succeeds: no",
+  "1 file | refused: kv+content+rename+rm | record: yes | old token accepted: no | mint succeeds: no",
+  "1 file | refused: mkdir | record: yes | old token accepted: no | mint succeeds: no",
+  "1 file | refused: kv+mkdir | record: yes | old token accepted: no | mint succeeds: no",
+  "1 file | refused: content+mkdir | record: yes | old token accepted: no | mint succeeds: no",
+  "1 file | refused: kv+content+mkdir | record: yes | old token accepted: no | mint succeeds: no",
+  "1 file | refused: rename+mkdir | record: yes | old token accepted: no | mint succeeds: no",
+  "1 file | refused: kv+rename+mkdir | record: yes | old token accepted: no | mint succeeds: no",
+  "1 file | refused: content+rename+mkdir | record: yes | old token accepted: no | mint succeeds: no",
+  "1 file | refused: kv+content+rename+mkdir | record: no | old token accepted: yes | mint succeeds: yes",
+  "1 file | refused: rm+mkdir | record: yes | old token accepted: no | mint succeeds: no",
+  "1 file | refused: kv+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no",
+  "1 file | refused: content+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no",
+  "1 file | refused: kv+content+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no",
+  "1 file | refused: rename+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no",
+  "1 file | refused: kv+rename+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no",
+  "1 file | refused: content+rename+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no",
+  "1 file | refused: kv+content+rename+rm+mkdir | record: no | old token accepted: yes | mint succeeds: yes",
+  "2 files | refused: none | record: yes | old token accepted: no | mint succeeds: no",
+  "2 files | refused: kv | record: yes | old token accepted: no | mint succeeds: no",
+  "2 files | refused: content | record: yes | old token accepted: no | mint succeeds: no",
+  "2 files | refused: kv+content | record: yes | old token accepted: no | mint succeeds: no",
+  "2 files | refused: rename | record: yes | old token accepted: no | mint succeeds: no",
+  "2 files | refused: kv+rename | record: yes | old token accepted: no | mint succeeds: no",
+  "2 files | refused: content+rename | record: yes | old token accepted: no | mint succeeds: no",
+  "2 files | refused: kv+content+rename | record: yes | old token accepted: no | mint succeeds: no",
+  "2 files | refused: rm | record: yes | old token accepted: no | mint succeeds: no",
+  "2 files | refused: kv+rm | record: yes | old token accepted: no | mint succeeds: no",
+  "2 files | refused: content+rm | record: yes | old token accepted: no | mint succeeds: no",
+  "2 files | refused: kv+content+rm | record: yes | old token accepted: no | mint succeeds: no",
+  "2 files | refused: rename+rm | record: yes | old token accepted: no | mint succeeds: no",
+  "2 files | refused: kv+rename+rm | record: yes | old token accepted: no | mint succeeds: no",
+  "2 files | refused: content+rename+rm | record: yes | old token accepted: no | mint succeeds: no",
+  "2 files | refused: kv+content+rename+rm | record: yes | old token accepted: no | mint succeeds: no",
+  "2 files | refused: mkdir | record: yes | old token accepted: no | mint succeeds: no",
+  "2 files | refused: kv+mkdir | record: yes | old token accepted: no | mint succeeds: no",
+  "2 files | refused: content+mkdir | record: yes | old token accepted: no | mint succeeds: no",
+  "2 files | refused: kv+content+mkdir | record: yes | old token accepted: no | mint succeeds: no",
+  "2 files | refused: rename+mkdir | record: yes | old token accepted: no | mint succeeds: no",
+  "2 files | refused: kv+rename+mkdir | record: yes | old token accepted: no | mint succeeds: no",
+  "2 files | refused: content+rename+mkdir | record: yes | old token accepted: no | mint succeeds: no",
+  "2 files | refused: kv+content+rename+mkdir | record: no | old token accepted: yes | mint succeeds: yes",
+  "2 files | refused: rm+mkdir | record: yes | old token accepted: no | mint succeeds: no",
+  "2 files | refused: kv+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no",
+  "2 files | refused: content+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no",
+  "2 files | refused: kv+content+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no",
+  "2 files | refused: rename+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no",
+  "2 files | refused: kv+rename+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no",
+  "2 files | refused: content+rename+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no",
+  "2 files | refused: kv+content+rename+rm+mkdir | record: no | old token accepted: yes | mint succeeds: yes",
 ];
 
 function crashAfter(
@@ -1869,79 +1810,65 @@ describe.each(["durable", "process"] as const)("%s credentials", (lifetime) => {
     await expectNoMint(restarted, w.hostToken, lifetime);
   });
 
-  it("computes the deletion residual for every subset of refused bb-database, content, rename, rm and directory mutations, one and two credential files, both bb answers after the restart, and every crash point from the first mutation of the delete through the next start", async () => {
-    const tables: Record<BbAnswer, string[]> = { gone: [], live: [] };
-    const runs: Record<BbAnswer, number[]> = { gone: [], live: [] };
+  it("computes the deletion residual for every subset of refused bb-database, content, rename, rm and directory mutations, one and two credential files, and every crash point from the first mutation of the delete through the next start, with bb answering live after a restart only when its database refused the deletion record", async () => {
+    const rows: string[] = [];
+    const runs: number[] = [];
     const violations: string[] = [];
-    const any = (outcomes: readonly { token: boolean; mint: boolean }[]) => ({
-      token: outcomes.some((outcome) => outcome.token),
-      mint: outcomes.some((outcome) => outcome.mint),
-    });
-    for (const answer of ["gone", "live"] as const)
-      for (const files of [1, 2] as const)
-        for (const faults of faultSubsets()) {
-          const cell = `${answer} ${files} ${[...faults].join("+") || "none"}`;
-          const probe = await deletionOutcome(
-            lifetime,
-            faults,
-            files,
-            null,
-            answer,
+    const acceptedRuns: string[] = [];
+    for (const files of [1, 2] as const)
+      for (const faults of faultSubsets()) {
+        const cell = `${files} file${files === 1 ? "" : "s"} | refused: ${[...faults].join("+") || "none"}`;
+        const outcomes: { token: boolean; mint: boolean }[] = [];
+        const note = (
+          point: string,
+          run: Awaited<ReturnType<typeof deletionOutcome>>,
+        ) => {
+          violations.push(
+            ...run.violations.map((v) => `${cell} ${point}: ${v}`),
           );
-          violations.push(...probe.violations.map((v) => `${cell}: ${v}`));
-          const after = [probe.outcome];
-          const before: { token: boolean; mint: boolean }[] = [];
-          for (
-            let point = 0;
-            point < probe.deleteMutations.length;
-            point += 1
-          ) {
-            const run = await deletionOutcome(
-              lifetime,
-              faults,
-              files,
-              { during: "delete", after: point },
-              answer,
+          outcomes.push(run.outcome);
+          if (run.outcome.token || run.outcome.mint)
+            acceptedRuns.push(
+              `${cell} | ${point} | record before the crash: ${run.recorded ? "yes" : "no"} | kv write refused before the crash: ${run.kvRefused ? "yes" : "no"} | old token accepted: ${run.outcome.token ? "yes" : "no"} | mint succeeds: ${run.outcome.mint ? "yes" : "no"}`,
             );
-            violations.push(
-              ...run.violations.map((v) => `${cell} delete@${point}: ${v}`),
-            );
-            (run.recorded ? after : before).push(run.outcome);
-          }
-          for (
-            let point = 0;
-            point < probe.restartMutations.length;
-            point += 1
-          ) {
-            const run = await deletionOutcome(
-              lifetime,
-              faults,
-              files,
-              { during: "restart", after: point },
-              answer,
-            );
-            violations.push(
-              ...run.violations.map((v) => `${cell} restart@${point}: ${v}`),
-            );
-            (probe.recorded ? after : before).push(run.outcome);
-          }
-          tables[answer].push(
-            residualRow(files, faults, probe.recorded, any(after), any(before)),
+        };
+        const probe = await deletionOutcome(lifetime, faults, files, null);
+        note("completed", probe);
+        for (let point = 0; point < probe.deleteMutations.length; point += 1)
+          note(
+            `delete@${point}`,
+            await deletionOutcome(lifetime, faults, files, {
+              during: "delete",
+              after: point,
+            }),
           );
-          runs[answer].push(after.length + before.length);
-        }
-    for (const answer of ["gone", "live"] as const)
-      console.log(
-        [
-          `deletion residual (${lifetime}), bb's first answer ${answer} after every restart:`,
-          ...tables[answer].map(
-            (row, index) => `${row} | runs: ${runs[answer][index]}`,
-          ),
-        ].join("\n"),
-      );
+        for (let point = 0; point < probe.restartMutations.length; point += 1)
+          note(
+            `restart@${point}`,
+            await deletionOutcome(lifetime, faults, files, {
+              during: "restart",
+              after: point,
+            }),
+          );
+        rows.push(
+          residualRow(files, faults, probe.recorded, {
+            token: outcomes.some((outcome) => outcome.token),
+            mint: outcomes.some((outcome) => outcome.mint),
+          }),
+        );
+        runs.push(outcomes.length);
+      }
+    console.log(
+      [
+        `deletion residual (${lifetime}); after every restart bb answers live only when the subset refuses its database (kv), and gone otherwise:`,
+        ...rows.map((row, index) => `${row} | runs: ${runs[index]}`),
+        "",
+        `runs that accepted an old token or minted (${acceptedRuns.length}):`,
+        ...acceptedRuns,
+      ].join("\n"),
+    );
     expect(violations).toEqual([]);
-    expect(tables.gone).toEqual(EXPECTED_GONE);
-    expect(tables.live).toEqual(EXPECTED_LIVE);
-    expect([...runs.gone, ...runs.live].every((count) => count > 1)).toBe(true);
+    expect(rows).toEqual(EXPECTED_RESIDUAL);
+    expect(runs.every((count) => count > 1)).toBe(true);
   }, 1_800_000);
 });
