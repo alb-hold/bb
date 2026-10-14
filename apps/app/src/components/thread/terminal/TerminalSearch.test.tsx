@@ -148,6 +148,35 @@ describe("TerminalSearch shortcuts and closed controls", () => {
     ).toBe(true);
   });
 
+  it("keeps macOS Ctrl+F and Ctrl+G available with the add-on loaded", () => {
+    Object.defineProperty(navigator, "platform", {
+      configurable: true,
+      value: "MacIntel",
+    });
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
+    const addon = createSearchAddon();
+    const { textarea } = renderSearch(false, addon);
+
+    const controlFind = sendKey("f", { ctrlKey: true });
+    expect(controlFind.defaultPrevented).toBe(false);
+    expect(
+      screen.queryByRole("search", { name: "Search terminal output" }),
+    ).toBeNull();
+
+    const commandFind = sendKey("f", { metaKey: true });
+    expect(commandFind.defaultPrevented).toBe(true);
+    expect(
+      screen.getByRole("search", { name: "Search terminal output" }),
+    ).toBeTruthy();
+
+    textarea.focus();
+    const controlG = sendKey("g", { ctrlKey: true });
+    expect(controlG.defaultPrevented).toBe(false);
+    expect(
+      screen.getByRole("search", { name: "Search terminal output" }),
+    ).toBeTruthy();
+  });
+
   it("opens on Cmd+F when the search add-on is available", () => {
     Object.defineProperty(navigator, "platform", {
       configurable: true,
