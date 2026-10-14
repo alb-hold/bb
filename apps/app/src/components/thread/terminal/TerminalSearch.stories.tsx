@@ -50,7 +50,7 @@ function SearchableTerminal({ touch = false }: { touch?: boolean }) {
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col">
-      <div className="relative min-h-0 flex-1 overflow-hidden bg-sidebar p-2">
+      <div className="group/terminal-pane relative min-h-0 flex-1 overflow-hidden bg-sidebar p-2">
         <div ref={hostRef} className="h-full w-full overflow-hidden" />
         <TerminalSearch
           addon={addon}

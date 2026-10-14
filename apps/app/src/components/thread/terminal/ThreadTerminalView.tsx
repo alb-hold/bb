@@ -1424,7 +1424,7 @@ export function ThreadTerminalView({
       >
         <ContextMenuTrigger asChild disabled={!hasTerminalContextMenuTarget}>
           <div
-            className="relative min-h-0 w-full flex-1 overflow-hidden bg-sidebar p-2"
+            className="group/terminal-pane relative min-h-0 w-full flex-1 overflow-hidden bg-sidebar p-2"
             onContextMenuCapture={captureTerminalContextMenu}
             onTouchStart={(event) => touchHandlers().start(event)}
             onTouchMove={(event) => touchHandlers().move(event)}
