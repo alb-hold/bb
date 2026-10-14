@@ -122,7 +122,6 @@ export async function shutdownHttpBeforePlugins(args: {
   stopTerminalDataPlane: () => void;
 }): Promise<void> {
   args.stopTerminalDataPlane();
-  await args.closeWebSockets();
   const closed = new Promise<void>((resolve, reject) => {
     args.server.close((error) => {
       if (error) {
@@ -133,11 +132,12 @@ export async function shutdownHttpBeforePlugins(args: {
     });
   });
   args.server.closeIdleConnections();
+  const webSocketsClosed = args.closeWebSockets();
   let drainTimer: ReturnType<typeof setTimeout> | undefined;
   let drained = false;
   try {
     drained = await Promise.race([
-      closed.then(() => true),
+      Promise.all([closed, webSocketsClosed]).then(() => true),
       new Promise<boolean>((resolve) => {
         drainTimer = setTimeout(
           () => resolve(false),
@@ -152,7 +152,7 @@ export async function shutdownHttpBeforePlugins(args: {
   }
   if (!drained) {
     args.server.closeAllConnections();
-    await closed;
+    await Promise.all([closed, webSocketsClosed]);
   }
   await args.stopPlugins();
 }

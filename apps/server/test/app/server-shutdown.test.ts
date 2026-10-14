@@ -135,4 +135,26 @@ describe("server shutdown ordering", () => {
     expect(Date.now() - startedAt).toBeLessThan(4_000);
     await reader.cancel().catch(() => {});
   }, 5_000);
+
+  it("stops accepting HTTP before closing WebSocket clients", async () => {
+    server = startHttpListener({
+      fetch: async () => new Response("ready"),
+      logger: { warn: () => {} },
+      serverConfig: {
+        BB_SERVER_BIND_HOST: "127.0.0.1",
+        BB_SERVER_PORT: 0,
+      },
+    });
+    await once(server, "listening");
+    let listenerClosedBeforeWebSockets = false;
+    await shutdownHttpBeforePlugins({
+      closeWebSockets: async () => {
+        listenerClosedBeforeWebSockets = !server?.listening;
+      },
+      server,
+      stopPlugins: async () => {},
+      stopTerminalDataPlane: () => {},
+    });
+    expect(listenerClosedBeforeWebSockets).toBe(true);
+  });
 });
