@@ -75,6 +75,7 @@ function makeController({
     activeSession,
     handleActiveTerminalSessionChange: noopSessionChange,
     handleActiveTerminalTitleChange: noopTitleChange,
+    handleActiveTerminalCwdChange: () => undefined,
     handleActiveTerminalUserInput: () => undefined,
     handleCreateTerminal: () => undefined,
     handleSelectTerminal: noopTerminalIdAction,

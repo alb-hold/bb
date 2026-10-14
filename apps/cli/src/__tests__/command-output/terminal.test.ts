@@ -153,6 +153,34 @@ describe("bb terminal command output", () => {
     });
   });
 
+  it("forwards a working directory when creating a terminal", async () => {
+    const create = vi.fn(async () => makeTerminalSession());
+    stubServerApi({ "v1.terminals.$post": create });
+
+    await runCommand(
+      [
+        "terminal",
+        "create",
+        "--thread",
+        "thr-1",
+        "--working-directory",
+        "/tmp/split",
+      ],
+      register,
+    );
+
+    expect(create).toHaveBeenCalledWith({
+      json: {
+        cols: 80,
+        cwd: "/tmp/split",
+        rows: 24,
+        title: undefined,
+        start: { mode: "shell" },
+        target: { kind: "thread", threadId: "thr-1" },
+      },
+    });
+  });
+
   it("creates a machine terminal at host home with an explicit host ID", async () => {
     const hosts = vi.fn(async () => [makeHost()]);
     const create = vi.fn(async () =>
