@@ -486,12 +486,17 @@ export class ThreadTokenStore {
       })
       .parse(route);
     const hostTokenDigest = digest(hostToken);
+    const admitted = await this.admit(parsed.threadId);
     return this.serialize(async () => {
       await this.requireDeletionRecords();
       if (this.isDeleted(parsed.threadId))
         throw new Error("Cannot mint a credential for a deleted thread.");
       if (await this.isArchived(parsed.threadId))
         throw new Error("Cannot mint a credential for an archived thread.");
+      if (admitted === null)
+        throw new Error(
+          "Cannot mint a credential for a thread bb has not confirmed live.",
+        );
       const key = this.routeMapKey({
         ...parsed,
         hostTokenDigest,
@@ -536,12 +541,17 @@ export class ThreadTokenStore {
       })
       .parse(route);
     const hostTokenDigest = digest(hostToken);
+    const admitted = await this.admit(parsed.threadId);
     return this.serialize(async () => {
       await this.requireDeletionRecords();
       if (this.isDeleted(parsed.threadId))
         throw new Error("Cannot mint a credential for a deleted thread.");
       if (await this.isArchived(parsed.threadId))
         throw new Error("Cannot mint a credential for an archived thread.");
+      if (admitted === null)
+        throw new Error(
+          "Cannot mint a credential for a thread bb has not confirmed live.",
+        );
       const key = this.nestedMapKey({
         ...parsed,
         hostTokenDigest,

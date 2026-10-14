@@ -320,15 +320,14 @@ deleted in the running process, and the record, then the removal, is retried
 on the next delete event, sweep and start. The kv rows are loaded once at
 start; while that load fails, every thread token is rejected and nothing is
 minted, and the load is retried on each sweep. Authentication never reads kv.
-The only case the plugin cannot hold is a restart after bb's database refused
-the kv write and no filesystem record became durable: the marker writes, the
-renames and the directory were all refused, or the store directory refused
-every sync and the machine then lost power. Then nothing was removed, bb's own database could not have
-committed the delete either, and the plugin follows bb. bb's thread state is
-the
-authority, asked each time a thread's token is presented (concurrent requests
-for one thread share one lookup): live accepts, archived rejects and suspends,
-deleted rejects and revokes. A missed archive or unarchive event therefore
+There is no residual: bb commits a thread's deletion before the plugin hears of
+it, so after a committed delete bb answers gone, and every mint, env export and
+authentication asks bb, even when none of the plugin's own records survived.
+bb's thread state is the authority, asked each time a thread's token is
+presented and before every credential is minted or exported (concurrent
+requests for one thread share one lookup): live accepts, archived rejects and
+suspends, deleted rejects and revokes. A mint or export while bb cannot answer
+is refused, like a token. A missed archive or unarchive event therefore
 takes effect on the next request. If bb's lookup fails or times out (one retry
 on failure, none on timeout), the token is rejected with 401 and nothing is
 deleted or suspended; the same token works again once bb answers live. The

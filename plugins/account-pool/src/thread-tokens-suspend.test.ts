@@ -528,13 +528,6 @@ async function deletionOutcome(
   vi.restoreAllMocks();
   const durable = durableRecords(watch);
   losePower(watch);
-  w.setBb(
-    deleteMutations.some(
-      (mutation) => mutation.method === "kv" && mutation.refused,
-    )
-      ? "live"
-      : "gone",
-  );
   if (crash?.during === "restart") {
     injectFaults(new Set(), crash.after, watch);
     await w.open().catch(() => undefined);
@@ -614,7 +607,7 @@ const EXPECTED_RESIDUAL = [
   "1 file | refused: kv+content@open | durable record: yes | old token accepted: no | mint succeeds: no",
   "1 file | refused: kv+content@write | durable record: yes | old token accepted: no | mint succeeds: no",
   "1 file | refused: kv+content@sync | durable record: yes | old token accepted: no | mint succeeds: no",
-  "1 file | refused: kv+content@dirsync | durable record: no | old token accepted: yes | mint succeeds: yes",
+  "1 file | refused: kv+content@dirsync | durable record: no | old token accepted: no | mint succeeds: no",
   "1 file | refused: rename | durable record: yes | old token accepted: no | mint succeeds: no",
   "1 file | refused: kv+rename | durable record: yes | old token accepted: no | mint succeeds: no",
   "1 file | refused: content@open+rename | durable record: yes | old token accepted: no | mint succeeds: no",
@@ -624,7 +617,7 @@ const EXPECTED_RESIDUAL = [
   "1 file | refused: kv+content@open+rename | durable record: yes | old token accepted: no | mint succeeds: no",
   "1 file | refused: kv+content@write+rename | durable record: yes | old token accepted: no | mint succeeds: no",
   "1 file | refused: kv+content@sync+rename | durable record: yes | old token accepted: no | mint succeeds: no",
-  "1 file | refused: kv+content@dirsync+rename | durable record: no | old token accepted: yes | mint succeeds: yes",
+  "1 file | refused: kv+content@dirsync+rename | durable record: no | old token accepted: no | mint succeeds: no",
   "1 file | refused: rm | durable record: yes | old token accepted: no | mint succeeds: no",
   "1 file | refused: kv+rm | durable record: yes | old token accepted: no | mint succeeds: no",
   "1 file | refused: content@open+rm | durable record: yes | old token accepted: no | mint succeeds: no",
@@ -634,7 +627,7 @@ const EXPECTED_RESIDUAL = [
   "1 file | refused: kv+content@open+rm | durable record: yes | old token accepted: no | mint succeeds: no",
   "1 file | refused: kv+content@write+rm | durable record: yes | old token accepted: no | mint succeeds: no",
   "1 file | refused: kv+content@sync+rm | durable record: yes | old token accepted: no | mint succeeds: no",
-  "1 file | refused: kv+content@dirsync+rm | durable record: no | old token accepted: yes | mint succeeds: yes",
+  "1 file | refused: kv+content@dirsync+rm | durable record: no | old token accepted: no | mint succeeds: no",
   "1 file | refused: rename+rm | durable record: yes | old token accepted: no | mint succeeds: no",
   "1 file | refused: kv+rename+rm | durable record: yes | old token accepted: no | mint succeeds: no",
   "1 file | refused: content@open+rename+rm | durable record: yes | old token accepted: no | mint succeeds: no",
@@ -644,7 +637,7 @@ const EXPECTED_RESIDUAL = [
   "1 file | refused: kv+content@open+rename+rm | durable record: yes | old token accepted: no | mint succeeds: no",
   "1 file | refused: kv+content@write+rename+rm | durable record: yes | old token accepted: no | mint succeeds: no",
   "1 file | refused: kv+content@sync+rename+rm | durable record: yes | old token accepted: no | mint succeeds: no",
-  "1 file | refused: kv+content@dirsync+rename+rm | durable record: no | old token accepted: yes | mint succeeds: yes",
+  "1 file | refused: kv+content@dirsync+rename+rm | durable record: no | old token accepted: no | mint succeeds: no",
   "1 file | refused: mkdir | durable record: yes | old token accepted: no | mint succeeds: no",
   "1 file | refused: kv+mkdir | durable record: yes | old token accepted: no | mint succeeds: no",
   "1 file | refused: content@open+mkdir | durable record: yes | old token accepted: no | mint succeeds: no",
@@ -654,17 +647,17 @@ const EXPECTED_RESIDUAL = [
   "1 file | refused: kv+content@open+mkdir | durable record: yes | old token accepted: no | mint succeeds: no",
   "1 file | refused: kv+content@write+mkdir | durable record: yes | old token accepted: no | mint succeeds: no",
   "1 file | refused: kv+content@sync+mkdir | durable record: yes | old token accepted: no | mint succeeds: no",
-  "1 file | refused: kv+content@dirsync+mkdir | durable record: no | old token accepted: yes | mint succeeds: yes",
+  "1 file | refused: kv+content@dirsync+mkdir | durable record: no | old token accepted: no | mint succeeds: no",
   "1 file | refused: rename+mkdir | durable record: yes | old token accepted: no | mint succeeds: no",
   "1 file | refused: kv+rename+mkdir | durable record: yes | old token accepted: no | mint succeeds: no",
   "1 file | refused: content@open+rename+mkdir | durable record: yes | old token accepted: no | mint succeeds: no",
   "1 file | refused: content@write+rename+mkdir | durable record: yes | old token accepted: no | mint succeeds: no",
   "1 file | refused: content@sync+rename+mkdir | durable record: yes | old token accepted: no | mint succeeds: no",
   "1 file | refused: content@dirsync+rename+mkdir | durable record: yes | old token accepted: no | mint succeeds: no",
-  "1 file | refused: kv+content@open+rename+mkdir | durable record: no | old token accepted: yes | mint succeeds: yes",
-  "1 file | refused: kv+content@write+rename+mkdir | durable record: no | old token accepted: yes | mint succeeds: yes",
-  "1 file | refused: kv+content@sync+rename+mkdir | durable record: no | old token accepted: yes | mint succeeds: yes",
-  "1 file | refused: kv+content@dirsync+rename+mkdir | durable record: no | old token accepted: yes | mint succeeds: yes",
+  "1 file | refused: kv+content@open+rename+mkdir | durable record: no | old token accepted: no | mint succeeds: no",
+  "1 file | refused: kv+content@write+rename+mkdir | durable record: no | old token accepted: no | mint succeeds: no",
+  "1 file | refused: kv+content@sync+rename+mkdir | durable record: no | old token accepted: no | mint succeeds: no",
+  "1 file | refused: kv+content@dirsync+rename+mkdir | durable record: no | old token accepted: no | mint succeeds: no",
   "1 file | refused: rm+mkdir | durable record: yes | old token accepted: no | mint succeeds: no",
   "1 file | refused: kv+rm+mkdir | durable record: yes | old token accepted: no | mint succeeds: no",
   "1 file | refused: content@open+rm+mkdir | durable record: yes | old token accepted: no | mint succeeds: no",
@@ -674,17 +667,17 @@ const EXPECTED_RESIDUAL = [
   "1 file | refused: kv+content@open+rm+mkdir | durable record: yes | old token accepted: no | mint succeeds: no",
   "1 file | refused: kv+content@write+rm+mkdir | durable record: yes | old token accepted: no | mint succeeds: no",
   "1 file | refused: kv+content@sync+rm+mkdir | durable record: yes | old token accepted: no | mint succeeds: no",
-  "1 file | refused: kv+content@dirsync+rm+mkdir | durable record: no | old token accepted: yes | mint succeeds: yes",
+  "1 file | refused: kv+content@dirsync+rm+mkdir | durable record: no | old token accepted: no | mint succeeds: no",
   "1 file | refused: rename+rm+mkdir | durable record: yes | old token accepted: no | mint succeeds: no",
   "1 file | refused: kv+rename+rm+mkdir | durable record: yes | old token accepted: no | mint succeeds: no",
   "1 file | refused: content@open+rename+rm+mkdir | durable record: yes | old token accepted: no | mint succeeds: no",
   "1 file | refused: content@write+rename+rm+mkdir | durable record: yes | old token accepted: no | mint succeeds: no",
   "1 file | refused: content@sync+rename+rm+mkdir | durable record: yes | old token accepted: no | mint succeeds: no",
   "1 file | refused: content@dirsync+rename+rm+mkdir | durable record: yes | old token accepted: no | mint succeeds: no",
-  "1 file | refused: kv+content@open+rename+rm+mkdir | durable record: no | old token accepted: yes | mint succeeds: yes",
-  "1 file | refused: kv+content@write+rename+rm+mkdir | durable record: no | old token accepted: yes | mint succeeds: yes",
-  "1 file | refused: kv+content@sync+rename+rm+mkdir | durable record: no | old token accepted: yes | mint succeeds: yes",
-  "1 file | refused: kv+content@dirsync+rename+rm+mkdir | durable record: no | old token accepted: yes | mint succeeds: yes",
+  "1 file | refused: kv+content@open+rename+rm+mkdir | durable record: no | old token accepted: no | mint succeeds: no",
+  "1 file | refused: kv+content@write+rename+rm+mkdir | durable record: no | old token accepted: no | mint succeeds: no",
+  "1 file | refused: kv+content@sync+rename+rm+mkdir | durable record: no | old token accepted: no | mint succeeds: no",
+  "1 file | refused: kv+content@dirsync+rename+rm+mkdir | durable record: no | old token accepted: no | mint succeeds: no",
   "2 files | refused: none | durable record: yes | old token accepted: no | mint succeeds: no",
   "2 files | refused: kv | durable record: yes | old token accepted: no | mint succeeds: no",
   "2 files | refused: content@open | durable record: yes | old token accepted: no | mint succeeds: no",
@@ -694,7 +687,7 @@ const EXPECTED_RESIDUAL = [
   "2 files | refused: kv+content@open | durable record: yes | old token accepted: no | mint succeeds: no",
   "2 files | refused: kv+content@write | durable record: yes | old token accepted: no | mint succeeds: no",
   "2 files | refused: kv+content@sync | durable record: yes | old token accepted: no | mint succeeds: no",
-  "2 files | refused: kv+content@dirsync | durable record: no | old token accepted: yes | mint succeeds: yes",
+  "2 files | refused: kv+content@dirsync | durable record: no | old token accepted: no | mint succeeds: no",
   "2 files | refused: rename | durable record: yes | old token accepted: no | mint succeeds: no",
   "2 files | refused: kv+rename | durable record: yes | old token accepted: no | mint succeeds: no",
   "2 files | refused: content@open+rename | durable record: yes | old token accepted: no | mint succeeds: no",
@@ -704,7 +697,7 @@ const EXPECTED_RESIDUAL = [
   "2 files | refused: kv+content@open+rename | durable record: yes | old token accepted: no | mint succeeds: no",
   "2 files | refused: kv+content@write+rename | durable record: yes | old token accepted: no | mint succeeds: no",
   "2 files | refused: kv+content@sync+rename | durable record: yes | old token accepted: no | mint succeeds: no",
-  "2 files | refused: kv+content@dirsync+rename | durable record: no | old token accepted: yes | mint succeeds: yes",
+  "2 files | refused: kv+content@dirsync+rename | durable record: no | old token accepted: no | mint succeeds: no",
   "2 files | refused: rm | durable record: yes | old token accepted: no | mint succeeds: no",
   "2 files | refused: kv+rm | durable record: yes | old token accepted: no | mint succeeds: no",
   "2 files | refused: content@open+rm | durable record: yes | old token accepted: no | mint succeeds: no",
@@ -714,7 +707,7 @@ const EXPECTED_RESIDUAL = [
   "2 files | refused: kv+content@open+rm | durable record: yes | old token accepted: no | mint succeeds: no",
   "2 files | refused: kv+content@write+rm | durable record: yes | old token accepted: no | mint succeeds: no",
   "2 files | refused: kv+content@sync+rm | durable record: yes | old token accepted: no | mint succeeds: no",
-  "2 files | refused: kv+content@dirsync+rm | durable record: no | old token accepted: yes | mint succeeds: yes",
+  "2 files | refused: kv+content@dirsync+rm | durable record: no | old token accepted: no | mint succeeds: no",
   "2 files | refused: rename+rm | durable record: yes | old token accepted: no | mint succeeds: no",
   "2 files | refused: kv+rename+rm | durable record: yes | old token accepted: no | mint succeeds: no",
   "2 files | refused: content@open+rename+rm | durable record: yes | old token accepted: no | mint succeeds: no",
@@ -724,7 +717,7 @@ const EXPECTED_RESIDUAL = [
   "2 files | refused: kv+content@open+rename+rm | durable record: yes | old token accepted: no | mint succeeds: no",
   "2 files | refused: kv+content@write+rename+rm | durable record: yes | old token accepted: no | mint succeeds: no",
   "2 files | refused: kv+content@sync+rename+rm | durable record: yes | old token accepted: no | mint succeeds: no",
-  "2 files | refused: kv+content@dirsync+rename+rm | durable record: no | old token accepted: yes | mint succeeds: yes",
+  "2 files | refused: kv+content@dirsync+rename+rm | durable record: no | old token accepted: no | mint succeeds: no",
   "2 files | refused: mkdir | durable record: yes | old token accepted: no | mint succeeds: no",
   "2 files | refused: kv+mkdir | durable record: yes | old token accepted: no | mint succeeds: no",
   "2 files | refused: content@open+mkdir | durable record: yes | old token accepted: no | mint succeeds: no",
@@ -734,17 +727,17 @@ const EXPECTED_RESIDUAL = [
   "2 files | refused: kv+content@open+mkdir | durable record: yes | old token accepted: no | mint succeeds: no",
   "2 files | refused: kv+content@write+mkdir | durable record: yes | old token accepted: no | mint succeeds: no",
   "2 files | refused: kv+content@sync+mkdir | durable record: yes | old token accepted: no | mint succeeds: no",
-  "2 files | refused: kv+content@dirsync+mkdir | durable record: no | old token accepted: yes | mint succeeds: yes",
+  "2 files | refused: kv+content@dirsync+mkdir | durable record: no | old token accepted: no | mint succeeds: no",
   "2 files | refused: rename+mkdir | durable record: yes | old token accepted: no | mint succeeds: no",
   "2 files | refused: kv+rename+mkdir | durable record: yes | old token accepted: no | mint succeeds: no",
   "2 files | refused: content@open+rename+mkdir | durable record: yes | old token accepted: no | mint succeeds: no",
   "2 files | refused: content@write+rename+mkdir | durable record: yes | old token accepted: no | mint succeeds: no",
   "2 files | refused: content@sync+rename+mkdir | durable record: yes | old token accepted: no | mint succeeds: no",
   "2 files | refused: content@dirsync+rename+mkdir | durable record: yes | old token accepted: no | mint succeeds: no",
-  "2 files | refused: kv+content@open+rename+mkdir | durable record: no | old token accepted: yes | mint succeeds: yes",
-  "2 files | refused: kv+content@write+rename+mkdir | durable record: no | old token accepted: yes | mint succeeds: yes",
-  "2 files | refused: kv+content@sync+rename+mkdir | durable record: no | old token accepted: yes | mint succeeds: yes",
-  "2 files | refused: kv+content@dirsync+rename+mkdir | durable record: no | old token accepted: yes | mint succeeds: yes",
+  "2 files | refused: kv+content@open+rename+mkdir | durable record: no | old token accepted: no | mint succeeds: no",
+  "2 files | refused: kv+content@write+rename+mkdir | durable record: no | old token accepted: no | mint succeeds: no",
+  "2 files | refused: kv+content@sync+rename+mkdir | durable record: no | old token accepted: no | mint succeeds: no",
+  "2 files | refused: kv+content@dirsync+rename+mkdir | durable record: no | old token accepted: no | mint succeeds: no",
   "2 files | refused: rm+mkdir | durable record: yes | old token accepted: no | mint succeeds: no",
   "2 files | refused: kv+rm+mkdir | durable record: yes | old token accepted: no | mint succeeds: no",
   "2 files | refused: content@open+rm+mkdir | durable record: yes | old token accepted: no | mint succeeds: no",
@@ -754,17 +747,17 @@ const EXPECTED_RESIDUAL = [
   "2 files | refused: kv+content@open+rm+mkdir | durable record: yes | old token accepted: no | mint succeeds: no",
   "2 files | refused: kv+content@write+rm+mkdir | durable record: yes | old token accepted: no | mint succeeds: no",
   "2 files | refused: kv+content@sync+rm+mkdir | durable record: yes | old token accepted: no | mint succeeds: no",
-  "2 files | refused: kv+content@dirsync+rm+mkdir | durable record: no | old token accepted: yes | mint succeeds: yes",
+  "2 files | refused: kv+content@dirsync+rm+mkdir | durable record: no | old token accepted: no | mint succeeds: no",
   "2 files | refused: rename+rm+mkdir | durable record: yes | old token accepted: no | mint succeeds: no",
   "2 files | refused: kv+rename+rm+mkdir | durable record: yes | old token accepted: no | mint succeeds: no",
   "2 files | refused: content@open+rename+rm+mkdir | durable record: yes | old token accepted: no | mint succeeds: no",
   "2 files | refused: content@write+rename+rm+mkdir | durable record: yes | old token accepted: no | mint succeeds: no",
   "2 files | refused: content@sync+rename+rm+mkdir | durable record: yes | old token accepted: no | mint succeeds: no",
   "2 files | refused: content@dirsync+rename+rm+mkdir | durable record: yes | old token accepted: no | mint succeeds: no",
-  "2 files | refused: kv+content@open+rename+rm+mkdir | durable record: no | old token accepted: yes | mint succeeds: yes",
-  "2 files | refused: kv+content@write+rename+rm+mkdir | durable record: no | old token accepted: yes | mint succeeds: yes",
-  "2 files | refused: kv+content@sync+rename+rm+mkdir | durable record: no | old token accepted: yes | mint succeeds: yes",
-  "2 files | refused: kv+content@dirsync+rename+rm+mkdir | durable record: no | old token accepted: yes | mint succeeds: yes",
+  "2 files | refused: kv+content@open+rename+rm+mkdir | durable record: no | old token accepted: no | mint succeeds: no",
+  "2 files | refused: kv+content@write+rename+rm+mkdir | durable record: no | old token accepted: no | mint succeeds: no",
+  "2 files | refused: kv+content@sync+rename+rm+mkdir | durable record: no | old token accepted: no | mint succeeds: no",
+  "2 files | refused: kv+content@dirsync+rename+rm+mkdir | durable record: no | old token accepted: no | mint succeeds: no",
 ];
 
 function crashAfter(
@@ -2060,6 +2053,82 @@ describe.each(["durable", "process"] as const)("%s credentials", (lifetime) => {
     await expectNoMint(restarted, w.hostToken, lifetime);
   });
 
+  it("asks bb before every mint: serves a thread bb reports live as before, refuses and suspends one bb reports archived, and refuses without changing anything while bb cannot answer", async () => {
+    const w = await world();
+    const store = await w.open();
+    const before = w.lookups();
+    const tokens = await mint(store, w.hostToken, lifetime);
+    expect(w.lookups()).toBe(before + 2);
+    expect(await mint(store, w.hostToken, lifetime)).toEqual(tokens);
+    expect(await accepted(store, tokens)).toEqual({
+      token: true,
+      nested: true,
+    });
+    const stored = await snapshot(w.directory);
+    w.setBb("unreachable");
+    await expect(store.forThread(route, w.hostToken, lifetime)).rejects.toThrow(
+      "bb has not confirmed live",
+    );
+    await expect(
+      store.forNested(nestedRoute, w.hostToken, lifetime),
+    ).rejects.toThrow("bb has not confirmed live");
+    expect(await snapshot(w.directory)).toEqual(stored);
+    w.setBb("archived");
+    await expect(store.forThread(route, w.hostToken, lifetime)).rejects.toThrow(
+      "archived thread",
+    );
+    await expect(
+      store.forNested(nestedRoute, w.hostToken, lifetime),
+    ).rejects.toThrow("archived thread");
+    expect(await accepted(store, tokens)).toEqual({
+      token: false,
+      nested: false,
+    });
+    expect(await threadFiles(w.directory)).not.toEqual([]);
+    w.setBb("live");
+    expect(await mint(store, w.hostToken, lifetime)).toEqual(tokens);
+    expect(await accepted(store, tokens)).toEqual({
+      token: true,
+      nested: true,
+    });
+    w.setBb("gone");
+    await expect(store.forThread(route, w.hostToken, lifetime)).rejects.toThrow(
+      "deleted thread",
+    );
+    expect(await threadFiles(w.directory)).toEqual([]);
+  });
+
+  it("refuses a mint after a restart when bb committed the delete and no deletion record survived anywhere", async () => {
+    const w = await world();
+    const watch = watching(w);
+    const store = await w.open();
+    const tokens = await mint(store, w.hostToken, lifetime);
+    w.setBb("gone");
+    injectFaults(new Set(NO_RECORD), undefined, watch);
+    await expect(store.removeThread(route.threadId)).rejects.toThrow(
+      "could not record the deletion",
+    );
+    vi.restoreAllMocks();
+    expect(durableRecords(watch)).toEqual({ other: false, pending: false });
+    expect(w.kv.rows.size).toBe(0);
+    const restarted = new ThreadTokenStore(
+      w.directory,
+      w.hosts,
+      w.clock,
+      w.lookup,
+      undefined,
+      undefined,
+      w.kv,
+    );
+    await restarted.initialize([route.hostId]);
+    await expectNoMint(restarted, w.hostToken, lifetime);
+    expect(await accepted(restarted, tokens)).toEqual({
+      token: false,
+      nested: false,
+    });
+    expect(watch.violations).toEqual([]);
+  });
+
   it.each([
     ["the write after open", "write", false],
     ["the write after open", "write", true],
@@ -2147,7 +2216,7 @@ describe.each(["durable", "process"] as const)("%s credentials", (lifetime) => {
     },
   );
 
-  it("computes the deletion residual for every subset of refused bb-database, content, rename, rm and directory mutations, with content refused at its open, its write, its file sync or the directory sync, one and two credential files, and every crash point from the first mutation of the delete through the next start, losing every unsynced change at each restart, with bb answering live after a restart only when the run attempted its database write and it was refused", async () => {
+  it("computes the deletion residual for every subset of refused bb-database, content, rename, rm and directory mutations, with content refused at its open, its write, its file sync or the directory sync, one and two credential files, and every crash point from the first mutation of the delete through the next start, losing every unsynced change at each restart, with bb answering gone after every restart because the delete is committed in bb's own thread row", async () => {
     const shared = await sharedHosts();
     const rows: string[] = [];
     const runs: number[] = [];
@@ -2216,7 +2285,7 @@ describe.each(["durable", "process"] as const)("%s credentials", (lifetime) => {
         }
     console.log(
       [
-        `deletion residual (${lifetime}); every unsynced change is lost at each restart, and after it bb answers live only when the run attempted its database (kv) write and it was refused, and gone otherwise:`,
+        `deletion residual (${lifetime}); every unsynced change is lost at each restart, and after it bb answers gone, as its committed deletedAt does:`,
         ...rows.map((row, index) => `${row} | runs: ${runs[index]}`),
         "",
         `runs that accepted an old token or minted (${acceptedRuns.length}):`,
