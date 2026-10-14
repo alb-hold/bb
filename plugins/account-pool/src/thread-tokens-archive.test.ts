@@ -544,7 +544,7 @@ async function archiveWithoutTombstone(
 describe.each(lifetimes)(
   "a %s credential when the tombstone cannot be written during an archive",
   (lifetime) => {
-    it("keeps the route files, rejects before and after a restart, and restores the original session", async () => {
+    it("keeps the route files while the process runs, and discards them at a restart without ever restoring from them", async () => {
       const f = await fixture();
       const warn = vi.fn();
       const { threads, sessions } = await archiveWithoutTombstone(
@@ -561,15 +561,15 @@ describe.each(lifetimes)(
       const restarted = await f.open();
       for (const session of sessions)
         expect(await rejected(restarted, session)).toBe(true);
-      expect(await tombstoneNames(f.directory)).toHaveLength(1);
+      expect(await tombstoneNames(f.directory)).toEqual([]);
       expect(await scopedFiles(f.directory)).toEqual([]);
 
       await unarchive(restarted, f.route.threadId);
       for (const session of sessions)
-        expect(await accepted(f, restarted, session)).toBe(true);
+        expect(await rejected(restarted, session)).toBe(true);
       const afterUnarchive = await f.open();
-      for (const session of sessions.slice(-1))
-        expect(await accepted(f, afterUnarchive, session)).toBe(true);
+      for (const session of sessions)
+        expect(await rejected(afterUnarchive, session)).toBe(true);
     });
 
     it("restores in the same process from the memory copy", async () => {
@@ -584,22 +584,22 @@ describe.each(lifetimes)(
       expect(await scopedFiles(f.directory)).not.toEqual([]);
     });
 
-    it("recovers from the route files again when the tombstone cannot be written at the restart either", async () => {
+    it("discards the route files at a restart whether or not a tombstone could be written", async () => {
       const f = await fixture();
       const warn = vi.fn();
       const { sessions } = await archiveWithoutTombstone(f, lifetime);
       const restarted = await whileFailing(TOMBSTONE, () => f.open(warn));
-      expect(warn).toHaveBeenCalledTimes(1);
-      expect(await scopedFiles(f.directory)).not.toEqual([]);
+      expect(warn).not.toHaveBeenCalled();
+      expect(await scopedFiles(f.directory)).toEqual([]);
+      expect(await tombstoneNames(f.directory)).toEqual([]);
       for (const session of sessions)
         expect(await rejected(restarted, session)).toBe(true);
-      const again = await whileFailing(TOMBSTONE, () => f.open());
-      await unarchive(again, f.route.threadId);
+      await unarchive(restarted, f.route.threadId);
       for (const session of sessions)
-        expect(await accepted(f, again, session)).toBe(true);
+        expect(await rejected(restarted, session)).toBe(true);
       const afterUnarchive = await f.open();
-      for (const session of sessions.slice(-1))
-        expect(await accepted(f, afterUnarchive, session)).toBe(true);
+      for (const session of sessions)
+        expect(await rejected(afterUnarchive, session)).toBe(true);
     });
 
     it("writes the tombstone and removes the route files on the next sweep", async () => {
@@ -617,7 +617,7 @@ describe.each(lifetimes)(
         expect(await accepted(f, restarted, session)).toBe(true);
     });
 
-    it("retries the tombstone on a second archive, and keeps the route files while it still fails", async () => {
+    it("retries the tombstone on a second archive in the same process, and keeps the route files while it still fails", async () => {
       const f = await fixture();
       const { threads, sessions } = await archiveWithoutTombstone(f, lifetime);
       await whileFailing(TOMBSTONE, () =>
@@ -625,12 +625,12 @@ describe.each(lifetimes)(
       );
       expect(await tombstoneNames(f.directory)).toEqual([]);
       expect(await scopedFiles(f.directory)).not.toEqual([]);
-      const restarted = await whileFailing(TOMBSTONE, () => f.open());
-      await restarted.removeThread(f.route.threadId);
+      await threads.removeThread(f.route.threadId);
       expect(await tombstoneNames(f.directory)).toHaveLength(1);
       expect(await scopedFiles(f.directory)).toEqual([]);
       for (const session of sessions)
-        expect(await rejected(restarted, session)).toBe(true);
+        expect(await rejected(threads, session)).toBe(true);
+      const restarted = await f.open();
       await unarchive(restarted, f.route.threadId);
       for (const session of sessions)
         expect(await accepted(f, restarted, session)).toBe(true);
@@ -649,7 +649,7 @@ describe.each(lifetimes)(
       expect(await accepted(f, restarted, session)).toBe(true);
     });
 
-    it("recovers a later archive episode whose tombstone cannot be written", async () => {
+    it("restores a later archive episode whose tombstone cannot be written in the same process, and not after a restart", async () => {
       const f = await fixture();
       let threads = await f.open();
       const session = await mint(f, threads, lifetime);
@@ -659,10 +659,15 @@ describe.each(lifetimes)(
         threads.removeThread(f.route.threadId),
       );
       expect(await rejected(threads, session)).toBe(true);
+      await unarchive(threads, f.route.threadId);
+      expect(await accepted(f, threads, session)).toBe(true);
+      await whileFailing(TOMBSTONE, () =>
+        threads.removeThread(f.route.threadId),
+      );
       threads = await f.open();
       expect(await rejected(threads, session)).toBe(true);
       await unarchive(threads, f.route.threadId);
-      expect(await accepted(f, threads, session)).toBe(true);
+      expect(await rejected(threads, session)).toBe(true);
     });
 
     it("ends final when the thread is deleted in that state, in the same process and after a restart", async () => {
@@ -841,17 +846,25 @@ describe.each(lifetimes)(
         expect(await rejected(restarted, session)).toBe(true);
     });
 
-    it("still restores inside the window after repeated archive events and a restart", async () => {
+    it("restores in the same process inside the window after repeated archive events, and not after a restart", async () => {
       const f = await fixture();
       const { threads, sessions } = await archiveWithoutTombstone(f, lifetime);
       f.advance(12 * HOUR);
       await archiveFailingTombstone(f, threads);
       f.advance(11 * HOUR);
-      const restarted = await whileFailing(TOMBSTONE, () => f.open());
-      await archiveFailingTombstone(f, restarted);
-      await unarchive(restarted, f.route.threadId);
+      await unarchive(threads, f.route.threadId);
       for (const session of sessions)
-        expect(await accepted(f, restarted, session)).toBe(true);
+        expect(await accepted(f, threads, session)).toBe(true);
+      const other = await fixture();
+      const second = await archiveWithoutTombstone(other, lifetime);
+      other.advance(12 * HOUR);
+      await archiveFailingTombstone(other, second.threads);
+      other.advance(11 * HOUR);
+      const restarted = await whileFailing(TOMBSTONE, () => other.open());
+      await archiveFailingTombstone(other, restarted);
+      await unarchive(restarted, other.route.threadId);
+      for (const session of second.sessions)
+        expect(await rejected(restarted, session)).toBe(true);
     });
 
     it("never restores a pending credential a sweep finds past expiry", async () => {
@@ -1015,14 +1028,14 @@ describe.each(lifetimes)(
       await expectNothingRestorable(f, await f.open(), sessions);
     });
 
-    it("still restores inside the window with a healthy marker, across a restart", async () => {
+    it("restores nothing across a restart when no tombstone reached the disk, with a healthy marker", async () => {
       const f = await fixture();
       const { sessions } = await archiveWithoutTombstone(f, lifetime);
       f.advance(HOUR);
       const restarted = await f.open();
       await unarchive(restarted, f.route.threadId);
       for (const session of sessions)
-        expect(await accepted(f, restarted, session)).toBe(true);
+        expect(await rejected(restarted, session)).toBe(true);
     });
   },
 );
@@ -1183,47 +1196,53 @@ const EVENT_HANDLE = new Set([
   "setMaxListeners",
 ]);
 
-type Fault = {
-  marker?: boolean;
-  tombstoneWrite?: boolean;
-  tombstoneRemove?: boolean;
-  everything?: boolean;
-};
+const FAULT_CLASSES = [
+  "tombstoneWrite",
+  "tombstoneRemove",
+  "tombstoneRename",
+  "markerWrite",
+  "pending",
+] as const;
+type FaultClass = (typeof FAULT_CLASSES)[number];
+type Fault = { refuse?: ReadonlySet<FaultClass>; everything?: boolean };
 
 const refused = (): Error =>
   Object.assign(new Error("refused"), { code: "EIO" });
 
-function refuses(faults: Fault, name: string, args: unknown[]): boolean {
+const CREDENTIAL_NAMES = ["scoped-", "thread-route-", "nested-route-"];
+
+function faultClassOf(name: string, args: unknown[]): FaultClass | null {
   const target = args[0];
   const base = typeof target === "string" ? path.basename(target) : "";
-  if (faults.everything === true)
-    return name !== "open" || args[1] !== "r" ? MUTATING_FS.has(name) : false;
-  if (name === "open") {
-    if (
-      faults.marker === true &&
-      args[1] === "r+" &&
-      (base.startsWith("archived-thread-") ||
-        base.startsWith("archive-revocation-"))
-    )
-      return true;
-    return (
-      faults.tombstoneWrite === true &&
-      args[1] === "wx" &&
-      base.startsWith("archived-credentials-")
-    );
+  const temporary = base.endsWith(".tmp");
+  const json = base.endsWith(".json");
+  const tombstone = base.startsWith("archived-credentials-");
+  const marker =
+    base.startsWith("archived-thread-") ||
+    base.startsWith("archive-revocation-");
+  const credential = CREDENTIAL_NAMES.some((prefix) => base.startsWith(prefix));
+  if (name === "open" && args[1] === "wx") {
+    if (tombstone) return "tombstoneWrite";
+    return marker ? "markerWrite" : null;
   }
-  return (
-    faults.tombstoneRemove === true &&
-    name === "rm" &&
-    base.startsWith("archived-credentials-") &&
-    base.endsWith(".json")
-  );
+  if (name === "rename") {
+    if (tombstone && temporary) return "tombstoneWrite";
+    if (tombstone && json) return "tombstoneRename";
+    if (marker && temporary) return "markerWrite";
+    return credential && json ? "pending" : null;
+  }
+  if (name === "rm") {
+    if (tombstone && json) return "tombstoneRemove";
+    return credential && json ? "pending" : null;
+  }
+  return null;
 }
 
 function crashAfter(mutations: number, faults: Fault = {}) {
   const target = fs as unknown as Record<string, unknown>;
   let done = 0;
   let dead = mutations === 0;
+  const attempted = new Set<FaultClass>();
   const counted: string[] = [];
   const unclassified = new Set<string>();
   const methods = new Set<string>();
@@ -1282,8 +1301,15 @@ function crashAfter(mutations: number, faults: Fault = {}) {
     )(target, name).mockImplementation(((...args: unknown[]) => {
       if (!MUTATING_FS.has(name) && !READ_ONLY_FS.has(name))
         unclassified.add(name);
-      if (MUTATING_FS.has(name) && refuses(faults, name, args))
-        return Promise.reject(refused());
+      if (MUTATING_FS.has(name)) {
+        const faultClass = faultClassOf(name, args);
+        if (faultClass !== null) attempted.add(faultClass);
+        if (
+          faults.everything === true ||
+          (faultClass !== null && faults.refuse?.has(faultClass) === true)
+        )
+          return Promise.reject(refused());
+      }
       if (name === "open")
         return (async () => {
           const flags = args[1];
@@ -1307,6 +1333,9 @@ function crashAfter(mutations: number, faults: Fault = {}) {
     },
     get counted() {
       return counted;
+    },
+    get attempted() {
+      return attempted;
     },
     get methods() {
       return methods;
@@ -1424,6 +1453,8 @@ describe.each(lifetimes)(
     it("is rejected at once after a restart at every crash point, and restores inside the window only what the archive kept", async () => {
       await everyCrashPoint(lifetime, async (f, sessions) => {
         const lostMarker = (await markerTemporaries(f.directory)).length > 0;
+        const view = await diskView(f.directory, f.route.threadId);
+        const restorable = !view.archived || view.tombstoned;
         const bb = archivedAt(f.clock());
         f.advance(HOUR);
         const restarted = await f.open(undefined, bb);
@@ -1438,7 +1469,9 @@ describe.each(lifetimes)(
           expect(await rejected(again, session)).toBe(true);
         await unarchive(again, f.route.threadId);
         for (const session of sessions)
-          expect(await accepted(f, again, session)).toBe(!lostMarker);
+          expect(await accepted(f, again, session)).toBe(
+            !lostMarker && restorable,
+          );
       });
     });
 
@@ -1530,6 +1563,8 @@ describe.each(lifetimes)(
         lifetime,
         async (f, sessions) => {
           const lostMarker = (await markerTemporaries(f.directory)).length > 0;
+          const view = await diskView(f.directory, f.route.threadId);
+          const restorable = !view.archived || view.tombstoned;
           await markersCarryTheAnchor(f.directory, f.clock() - 12 * HOUR);
           const bb = archivedAt(f.clock() - 12 * HOUR);
           f.advance(HOUR);
@@ -1538,7 +1573,9 @@ describe.each(lifetimes)(
             expect(await rejected(restarted, session)).toBe(true);
           await unarchive(restarted, f.route.threadId);
           for (const session of sessions)
-            expect(await accepted(f, restarted, session)).toBe(!lostMarker);
+            expect(await accepted(f, restarted, session)).toBe(
+              !lostMarker && restorable,
+            );
         },
         inside,
       );
@@ -1837,35 +1874,25 @@ type Scenario = {
   prepare: (f: Fixture, lifetime: Lifetime) => Promise<Context>;
   operate: (f: Fixture, context: Context) => Promise<unknown>;
   drives: string[];
-  lowers?: boolean;
   earliest?: (f: Fixture) => number;
   matrix?: boolean;
 };
 
-type FaultCase = { name: string; fault: Fault; kept: boolean };
+type FaultCase = { name: string; classes: FaultClass[]; represents: number };
 
-const FAULT_CASES: FaultCase[] = [
-  {
-    name: "the marker lowering fails",
-    fault: { marker: true },
-    kept: true,
-  },
-  {
-    name: "the tombstone rewrite fails",
-    fault: { tombstoneWrite: true },
-    kept: true,
-  },
-  {
-    name: "the marker lowering and the tombstone rewrite both fail",
-    fault: { marker: true, tombstoneWrite: true },
-    kept: false,
-  },
-  {
-    name: "the marker lowering, the tombstone rewrite and the tombstone delete all fail",
-    fault: { marker: true, tombstoneWrite: true, tombstoneRemove: true },
-    kept: false,
-  },
-];
+const faultOf = (fault: FaultCase | null): Fault =>
+  fault === null ? {} : { refuse: new Set(fault.classes) };
+
+const faultName = (classes: readonly FaultClass[]) =>
+  classes.length === 0 ? "no failure" : `${classes.join(" + ")} refused`;
+
+const isResidual = (fault: FaultCase | null) =>
+  fault !== null &&
+  fault.classes.includes("tombstoneRemove") &&
+  fault.classes.includes("tombstoneRename");
+
+const residuals = new Map<string, Set<string>>();
+let walkLabel = "";
 
 async function liveThread(f: Fixture, lifetime: Lifetime): Promise<Context> {
   const launch = await mint(f, await f.open(), lifetime);
@@ -1928,6 +1955,7 @@ async function snapshot(directory: string): Promise<string> {
 
 type DiskView = {
   archived: boolean;
+  tombstoned: boolean;
   lostWindow: boolean;
   start: number | null;
 };
@@ -1995,6 +2023,10 @@ async function diskView(
   const readable = archivedMarkers.some((marker) => marker.mtime > 0);
   return {
     archived: archivedMarkers.length > 0 || unreadableTemporary,
+    tombstoned:
+      tombstone !== null &&
+      tombstone.epoch === top &&
+      archivedMarkers.length > 0,
     lostWindow: lostWindow || (unreadableTemporary && !readable),
     start: anchors.length === 0 ? null : Math.min(...anchors),
   };
@@ -2080,11 +2112,20 @@ async function checkCell(
   const { sessions } = context;
   const view = await diskView(f.directory, f.route.threadId);
   const after = await snapshot(f.directory);
-  const changed = after !== before;
+  const authority = (rows: string) =>
+    rows
+      .split("\n")
+      .filter(
+        (row) =>
+          row.startsWith("archived-") || row.startsWith("archive-revocation-"),
+      )
+      .join("\n");
+  const changed = authority(after) !== authority(before);
   const now = f.clock();
   const allowed =
     !view.archived ||
-    (windowOpenOnDisk(view, now) &&
+    (view.tombstoned &&
+      windowOpenOnDisk(view, now) &&
       !(scenario.closedByBb && changed && fault === null));
   const names = (rows: string) =>
     new Set(rows.split("\n").map((row) => row.split(":")[0] ?? ""));
@@ -2094,16 +2135,18 @@ async function checkCell(
   const deleted =
     [...beforeDigests].some((digest) => !digestsAfter.has(digest)) ||
     (tombstoneName(before) && !tombstoneName(after));
+  const startChanged =
+    view.start !== beforeView.start ||
+    view.tombstoned !== beforeView.tombstoned;
   if (
     fault !== null &&
     scenario.earliest !== undefined &&
     deleted &&
-    view.archived &&
-    view.start !== null &&
-    digestsAfter.size > 0
+    view.tombstoned &&
+    view.start !== null
   )
     expect(view.start).toBeLessThanOrEqual(scenario.earliest(f) + 1000);
-  if (beforeView.archived && view.archived)
+  if (beforeView.tombstoned && view.tombstoned)
     expect(
       view.start === null ||
         beforeView.start === null ||
@@ -2111,10 +2154,6 @@ async function checkCell(
     ).toBe(true);
   for (const digest of digestsAfter)
     expect(beforeDigests.has(digest)).toBe(true);
-  const expected =
-    fault !== null && !fault.kept && scenario.lowers === true
-      ? "none"
-      : scenario.keeps;
 
   await step("bb unreachable at restart", async () => {
     const first = await restartedCopy(f, 0);
@@ -2141,9 +2180,14 @@ async function checkCell(
             nested?.threadId === f.route.threadId,
         );
       }
-      if (completed && view.archived && expected !== "skip")
+      if (
+        fault === null &&
+        completed &&
+        view.archived &&
+        scenario.keeps !== "skip"
+      )
         for (const outcome of outcomes)
-          expect(outcome).toBe(expected === "all");
+          expect(outcome).toBe(scenario.keeps === "all");
     }
   });
 
@@ -2158,21 +2202,34 @@ async function checkCell(
         const at = earliestWindowEnd;
         const copy = await restartedCopy(f, at - now);
         const reopened = await copy.open(undefined, unreachable);
+        const strict =
+          fault === null
+            ? scenario.closedByBb && changed
+            : completed || deleted || startChanged;
         const permitted =
-          windowOpenOnDisk(view, at) &&
-          !(scenario.closedByBb && changed && fault === null) &&
-          !(fault !== null && deleted);
-        if (!permitted) await expectNothingRestorable(copy, reopened, sessions);
-        else {
-          await unarchive(reopened, f.route.threadId);
-          for (const session of sessions) {
-            const route = await reopened.authenticate(session.token, "claude");
-            const nested = await reopened.authenticateNested(session.nested);
-            if (route !== null)
-              expect(beforeDigests.has(sha256(session.token))).toBe(true);
-            if (nested !== null)
-              expect(beforeDigests.has(sha256(session.nested))).toBe(true);
-          }
+          view.tombstoned && windowOpenOnDisk(view, at) && !strict;
+        await unarchive(reopened, f.route.threadId);
+        let restored = false;
+        for (const session of sessions) {
+          const route = await reopened.authenticate(session.token, "claude");
+          const nested = await reopened.authenticateNested(session.nested);
+          if (route !== null || nested !== null) restored = true;
+          if (route !== null)
+            expect(beforeDigests.has(sha256(session.token))).toBe(true);
+          if (nested !== null)
+            expect(beforeDigests.has(sha256(session.nested))).toBe(true);
+        }
+        if (!permitted && restored) {
+          if (!isResidual(fault))
+            throw new Error(
+              `restored past the earliest anchor's 24 hours under ${faultName(fault?.classes ?? [])}`,
+            );
+          const key = fault?.classes.join("+") ?? "";
+          residuals.set(key, (residuals.get(key) ?? new Set()).add(walkLabel));
+        }
+        if (!permitted && !restored && !isResidual(fault)) {
+          expect(await scopedFiles(copy.directory)).toEqual([]);
+          expect(await tombstoneNames(copy.directory)).toEqual([]);
         }
       },
     );
@@ -2208,13 +2265,14 @@ async function crashWalk(
   fault: FaultCase | null = null,
 ) {
   let crashes = 0;
+  walkLabel = `${scenario.name} / ${lifetime}`;
   for (let writes = 0; writes < 200; writes += 1) {
     const f = await fixture();
     const context = await scenario.prepare(f, lifetime);
     const before = await snapshot(f.directory);
     const beforeDigests = await storedDigests(f.directory);
     const beforeView = await diskView(f.directory, f.route.threadId);
-    const interruption = crashAfter(writes, fault?.fault ?? {});
+    const interruption = crashAfter(writes, faultOf(fault));
     await scenario.operate(f, context).catch(() => undefined);
     const crashed = interruption.dead;
     interruption.restore();
@@ -2236,13 +2294,74 @@ async function crashWalk(
         STATE_PREFIXES.some((prefix) => name.startsWith(prefix)),
       );
       throw new Error(
-        `${scenario.name} ${lifetime} n=${writes}: ${String(error)} view=${JSON.stringify(view)} files=${JSON.stringify(listing)}`,
+        `${scenario.name} ${lifetime} ${faultName(fault?.classes ?? [])} n=${writes}: ${String(error)} view=${JSON.stringify(view)} files=${JSON.stringify(listing)}`,
       );
     }
     if (!crashed) break;
     crashes += 1;
   }
-  expect(crashes).toBeGreaterThanOrEqual(fault === null ? 3 : 1);
+  expect(crashes).toBeGreaterThanOrEqual(fault === null ? 3 : 0);
+}
+
+const fingerprint = async (directory: string) =>
+  (await fs.readdir(directory))
+    .filter((name) => STATE_PREFIXES.some((prefix) => name.startsWith(prefix)))
+    .map((name) =>
+      name
+        .replaceAll(
+          /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gu,
+          "uuid",
+        )
+        .replaceAll(/-[0-9a-f]{64}-v/gu, "-digest-v"),
+    )
+    .sort()
+    .join("|");
+
+async function runWith(
+  scenario: Scenario,
+  lifetime: Lifetime,
+  classes: readonly FaultClass[],
+) {
+  const f = await fixture();
+  const context = await scenario.prepare(f, lifetime);
+  const run = crashAfter(Number.MAX_SAFE_INTEGER, {
+    refuse: new Set(classes),
+  });
+  await scenario.operate(f, context).catch(() => undefined);
+  run.restore();
+  return {
+    attempted: new Set(run.attempted),
+    state: await fingerprint(f.directory),
+  };
+}
+
+async function distinctFaultSets(
+  scenario: Scenario,
+  lifetime: Lifetime,
+): Promise<FaultCase[]> {
+  const distinct = new Map<string, FaultCase>();
+  for (let mask = 0; mask < 1 << FAULT_CLASSES.length; mask += 1) {
+    const classes = FAULT_CLASSES.filter(
+      (_, index) => (mask & (1 << index)) !== 0,
+    );
+    const full = await runWith(scenario, lifetime, classes);
+    const canonical = classes.filter((name) => full.attempted.has(name));
+    const reduced = await runWith(scenario, lifetime, canonical);
+    expect(
+      reduced.state,
+      `${faultName(classes)} equals ${faultName(canonical)}`,
+    ).toBe(full.state);
+    const key = canonical.join("+");
+    const known = distinct.get(key);
+    if (known === undefined)
+      distinct.set(key, {
+        name: faultName(canonical),
+        classes: canonical,
+        represents: 1,
+      });
+    else known.represents += 1;
+  }
+  return [...distinct.values()];
 }
 
 const writeCompleteTemporary = (f: Fixture) =>
@@ -2288,12 +2407,12 @@ const SCENARIOS: Scenario[] = [
     drives: ["revokeThread", "tombstoneCredentials", "persistTombstone"],
   },
   {
-    name: "pending files recovered into a tombstone at load",
+    name: "pending files without a tombstone discarded at load",
     closedByBb: false,
-    keeps: "all",
+    keeps: "none",
     prepare: archiveWithoutTombstone,
     operate: (f) => f.open(undefined, unreachable),
-    drives: ["recoverPendingFiles", "persistTombstone", "removePendingFiles"],
+    drives: ["loadFile", "dropFile"],
   },
   {
     name: "pending files found past the window at load",
@@ -2305,11 +2424,10 @@ const SCENARIOS: Scenario[] = [
       return { threads, sessions };
     },
     operate: (f) => f.open(undefined, unreachable),
-    drives: ["recoverPendingFiles", "removePendingFiles"],
+    drives: ["loadFile", "dropFile"],
   },
   {
     name: "tombstone clamped to an earlier bb archive time inside the window",
-    lowers: true,
     matrix: true,
     earliest: (f) => f.clock() - 20 * HOUR,
     closedByBb: false,
@@ -2321,11 +2439,10 @@ const SCENARIOS: Scenario[] = [
       return context;
     },
     operate: (f) => f.open(undefined, archivedAt(f.clock() - 20 * HOUR)),
-    drives: ["clampTombstone", "windowOpen", "lowerMarker", "persistTombstone"],
+    drives: ["clampTombstone", "windowOpen", "persistTombstone"],
   },
   {
     name: "tombstone and leftover route files clamped past the window at load",
-    lowers: true,
     matrix: true,
     earliest: (f) => f.clock() - 30 * HOUR,
     closedByBb: true,
@@ -2338,23 +2455,17 @@ const SCENARIOS: Scenario[] = [
         tombstoneBesideRouteFiles,
       ),
     operate: (f) => f.open(undefined, archivedAt(f.clock() - 30 * HOUR)),
-    drives: [
-      "clampTombstone",
-      "dropTombstone",
-      "lowerMarker",
-      "removePendingFiles",
-    ],
+    drives: ["clampTombstone", "dropTombstone", "removePendingFiles"],
   },
   {
-    name: "pending files without a tombstone clamped past the window at load",
-    lowers: true,
+    name: "pending files without a tombstone, bb reports 30 h, discarded at load",
     matrix: true,
     earliest: (f) => f.clock() - 30 * HOUR,
     closedByBb: true,
     keeps: "none",
     prepare: archiveWithoutTombstone,
     operate: (f) => f.open(undefined, archivedAt(f.clock() - 30 * HOUR)),
-    drives: ["recoverPendingFiles", "lowerMarker", "removePendingFiles"],
+    drives: ["loadFile", "dropFile"],
   },
   {
     name: "tombstone newer than its marker, route files left beside it",
@@ -2396,7 +2507,6 @@ const SCENARIOS: Scenario[] = [
   },
   {
     name: "held tombstone clamped by a sweep past the window",
-    lowers: true,
     matrix: true,
     earliest: (f) => f.clock() - 30 * HOUR,
     closedByBb: true,
@@ -2409,7 +2519,7 @@ const SCENARIOS: Scenario[] = [
     },
     operate: (f, { threads }) =>
       threads.sweepThreads(archivedAt(f.clock() - 30 * HOUR)),
-    drives: ["clampTombstone", "dropTombstone", "lowerMarker"],
+    drives: ["clampTombstone", "dropTombstone"],
   },
   {
     name: "restore of a tombstoned thread",
@@ -2466,20 +2576,40 @@ describe.each(SCENARIOS)("the crash table: $name", (scenario) => {
       await crashWalk(scenario, lifetime);
     },
   );
+});
 
-  if (scenario.matrix === true)
-    describe.each(FAULT_CASES)("when $name", (fault) => {
-      it.each(lifetimes)(
-        "restores nothing past the earliest anchor's 24 hours at any later mutation, %s",
-        async (lifetime) => {
-          await crashWalk(scenario, lifetime, fault);
-        },
-      );
-    });
+describe.each(SCENARIOS.filter((scenario) => scenario.matrix === true))(
+  "the fault matrix: $name",
+  (scenario) => {
+    it.each(lifetimes)(
+      "restores nothing past the earliest anchor's 24 hours under every distinct fault set, at every later mutation, %s",
+      async (lifetime) => {
+        const sets = await distinctFaultSets(scenario, lifetime);
+        console.log(
+          `FAULT-SETS ${scenario.name} / ${lifetime}: ${sets.length} distinct of ${1 << FAULT_CLASSES.length}: ${sets.map((set) => `[${set.classes.join("+")}]x${set.represents}`).join(" ")}`,
+        );
+        for (const set of sets) await crashWalk(scenario, lifetime, set);
+      },
+      900_000,
+    );
+  },
+);
+
+it("restores past the earliest anchor's 24 hours only under fault sets that refuse both the removal and the rename of the tombstone", () => {
+  const lines = [...residuals]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(
+      ([key, rows]) => `RESIDUAL [${key}] in ${[...rows].sort().join("; ")}`,
+    );
+  console.log(lines.length === 0 ? "RESIDUAL none" : lines.join("\n"));
+  for (const key of residuals.keys()) {
+    expect(key.split("+")).toContain("tombstoneRemove");
+    expect(key.split("+")).toContain("tombstoneRename");
+  }
 });
 
 describe.each(lifetimes)("the clamp at load, %s", (lifetime) => {
-  it("restores nothing after the crash between the last route-file removal and the tombstone removal", async () => {
+  it("leaves the restore authority untouched when the load crashes between the last route-file removal and the tombstone removal", async () => {
     const scenario = SCENARIOS.find(
       (candidate) =>
         candidate.name ===
@@ -2504,6 +2634,17 @@ describe.each(lifetimes)("the clamp at load, %s", (lifetime) => {
           name.endsWith(".json"),
         )
       ) {
+        const authority = (rows: string) =>
+          rows
+            .split("\n")
+            .filter(
+              (row) =>
+                row.startsWith("archived-") ||
+                row.startsWith("archive-revocation-"),
+            );
+        expect(authority(await snapshot(f.directory))).toEqual(
+          authority(before),
+        );
         await checkCell(
           f,
           scenario,
@@ -2526,6 +2667,19 @@ const scenarioNamed = (name: string): Scenario => {
   return scenario;
 };
 
+const named = (...classes: FaultClass[]): FaultCase => ({
+  name: faultName(classes),
+  classes,
+  represents: 1,
+});
+
+const NAMED_FAULTS: FaultCase[] = [
+  named("tombstoneWrite"),
+  named("tombstoneWrite", "tombstoneRemove"),
+  named("tombstoneWrite", "markerWrite", "pending"),
+  named("tombstoneWrite", "tombstoneRemove", "markerWrite", "pending"),
+];
+
 const operatingStore = (
   operated: unknown,
   context: Context,
@@ -2535,9 +2689,10 @@ const operatingStore = (
 describe.each(lifetimes)(
   "an earlier anchor that cannot be made durable, %s",
   (lifetime) => {
-    it.each(FAULT_CASES.filter((fault) => !fault.kept))(
+    it.each(NAMED_FAULTS)(
       "restores nothing after a restart with bb unreachable past the earliest anchor's 24 hours when $name",
-      async ({ fault }) => {
+      async (named) => {
+        const fault = faultOf(named);
         const scenario = scenarioNamed(
           "tombstone clamped to an earlier bb archive time inside the window",
         );
@@ -2613,6 +2768,66 @@ describe.each(lifetimes)(
 );
 
 describe.each(lifetimes)(
+  "a thread failed closed with its pending route and nested files left behind, %s",
+  (lifetime) => {
+    it("authenticates nothing after an unarchive in the same process or after a restart", async () => {
+      const scenario = scenarioNamed(
+        "tombstone and leftover route files clamped past the window at load",
+      );
+      const f = await fixture();
+      const context = await scenario.prepare(f, lifetime);
+      const leftovers = await scopedFiles(f.directory);
+      expect(leftovers).not.toEqual([]);
+      const interruption = crashAfter(Number.MAX_SAFE_INTEGER, {
+        refuse: new Set<FaultClass>(["pending"]),
+      });
+      const operating = operatingStore(
+        await scenario.operate(f, context),
+        context,
+      );
+      interruption.restore();
+      expect(await tombstoneNames(f.directory)).toEqual([]);
+      expect(await scopedFiles(f.directory)).toEqual(leftovers);
+      const archiveEpoch = await markerEpoch(f.directory);
+      await unarchive(operating, f.route.threadId);
+      expect(await markerEpoch(f.directory)).toBeGreaterThan(archiveEpoch);
+      for (const session of context.sessions)
+        expect(await rejected(operating, session)).toBe(true);
+      const restarted = await restartedCopy(f, 0);
+      const reopened = await restarted.open(undefined, unreachable);
+      for (const session of context.sessions)
+        expect(await rejected(reopened, session)).toBe(true);
+      await unarchive(reopened, f.route.threadId);
+      for (const session of context.sessions)
+        expect(await rejected(reopened, session)).toBe(true);
+      const again = await restartedCopy(f, 0);
+      const last = await again.open(undefined, live);
+      for (const session of context.sessions)
+        expect(await rejected(last, session)).toBe(true);
+    });
+  },
+);
+
+async function markerEpoch(directory: string): Promise<number> {
+  let epoch = -1;
+  for (const name of await fs.readdir(directory))
+    if (
+      name.endsWith(".json") &&
+      (name.startsWith("archived-thread-") ||
+        name.startsWith("archive-revocation-"))
+    )
+      epoch = Math.max(
+        epoch,
+        (
+          JSON.parse(await fs.readFile(path.join(directory, name), "utf8")) as {
+            epoch: number;
+          }
+        ).epoch,
+      );
+  return epoch;
+}
+
+describe.each(lifetimes)(
   "a marker whose time cannot be read while the thread is unarchived, %s",
   (lifetime) => {
     it("closes the window instead of trusting the tombstone alone", async () => {
@@ -2652,18 +2867,6 @@ const MUTATORS: Record<string, { drivenBy: string[] } | { because: string }> = {
   settleTemporaries: {
     drivenBy: ["complete temporary marker settled at load"],
   },
-  voidMarkers: {
-    drivenBy: [
-      "pending files without a tombstone clamped past the window at load | the marker lowering and the tombstone rewrite both fail",
-      "tombstone clamped to an earlier bb archive time inside the window | the marker lowering and the tombstone rewrite both fail",
-    ],
-  },
-  lowerMarker: {
-    drivenBy: [
-      "tombstone clamped to an earlier bb archive time inside the window",
-      "tombstone and leftover route files clamped past the window at load",
-    ],
-  },
   persist: {
     drivenBy: [
       "archive by event",
@@ -2686,13 +2889,11 @@ const OPERATIONS = [
   "persistTombstone",
   "clampTombstone",
   "windowOpen",
-  "settleWindow",
-  "voidMarkers",
-  "lowerMarker",
   "dropTombstone",
   "removePendingFiles",
-  "recoverPendingFiles",
   "loadTombstone",
+  "loadFile",
+  "dropFile",
   "settleTemporaries",
   "restoreThread",
   "reviveTombstone",
@@ -2724,6 +2925,39 @@ describe("the crash table covers every operation that mutates credential, marker
       .filter(([, body]) => mutating.test(body.replaceAll(/\n\s*/gu, "")))
       .map(([name]) => name);
     expect(found.sort()).toEqual(Object.keys(MUTATORS).sort());
+  });
+
+  it("never turns an archived thread's route or nested file into a credential without a tombstone", async () => {
+    const text = await source;
+    const holders = new Map<string, string>();
+    let method = "";
+    for (const line of text.split("\n")) {
+      const declared =
+        /^ {2}(?:(?:private|public|protected|static|readonly) )*(?:async )?([A-Za-z_]\w*)\(/u.exec(
+          line,
+        );
+      if (declared !== null) method = declared[1] ?? "";
+      holders.set(method, `${holders.get(method) ?? ""}${line}\n`);
+    }
+    const installing = [...holders]
+      .filter(([, body]) => /\b(routes|nestedRoutes)\.set\(/u.test(body))
+      .map(([name]) => name)
+      .sort();
+    expect(installing).toEqual([
+      "forNested",
+      "forThread",
+      "loadFile",
+      "restoreThread",
+    ]);
+    const loader = holders.get("loadFile") ?? "";
+    for (const install of loader.matchAll(/\b(?:routes|nestedRoutes)\.set\(/gu))
+      expect(
+        loader.slice(Math.max(0, install.index - 420), install.index),
+      ).toContain("!archived &&");
+    const revival = holders.get("restoreThread") ?? "";
+    expect(revival).toContain("reviveTombstone");
+    expect(text).not.toContain("pendingFiles");
+    expect(text).not.toContain("recoverPendingFiles");
   });
 
   it("keeps the restore window in one function with one expiry rule", async () => {
@@ -2771,45 +3005,6 @@ describe("the crash table covers every operation that mutates credential, marker
       expect(interruption.unclassified).toEqual([]);
       observed.set(scenario.name, new Set(interruption.methods));
       entering.push(entered);
-      if (scenario.matrix === true)
-        for (const fault of FAULT_CASES) {
-          const faulted = await fixture();
-          const faultedContext = await scenario.prepare(faulted, "durable");
-          const faultedSpies = Object.getOwnPropertyNames(prototype)
-            .filter(
-              (name) =>
-                name !== "constructor" && typeof prototype[name] === "function",
-            )
-            .map(
-              (name) =>
-                [
-                  name,
-                  (
-                    vi.spyOn as unknown as (
-                      object: unknown,
-                      method: string,
-                    ) => MockInstance
-                  )(prototype, name),
-                ] as const,
-            );
-          const faultedRun = crashAfter(Number.MAX_SAFE_INTEGER, fault.fault);
-          await scenario
-            .operate(faulted, faultedContext)
-            .catch(() => undefined);
-          faultedRun.restore();
-          entering.push(
-            new Set(
-              faultedSpies.flatMap(([name, spy]) =>
-                spy.mock.calls.length > 0 ? [name] : [],
-              ),
-            ),
-          );
-          for (const [, spy] of faultedSpies) spy.mockRestore();
-          observed.set(
-            `${scenario.name} | ${fault.name}`,
-            new Set(faultedRun.methods),
-          );
-        }
       for (const method of scenario.drives)
         expect(entered.has(method), `${scenario.name} enters ${method}`).toBe(
           true,
