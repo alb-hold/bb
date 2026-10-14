@@ -101,10 +101,6 @@ describe("TerminalSearch shortcuts and closed controls", () => {
     });
     renderSearch();
 
-    expect(sendKey("f", { ctrlKey: true }).defaultPrevented).toBe(false);
-    expect(
-      sendKey("f", { ctrlKey: true, shiftKey: true }).defaultPrevented,
-    ).toBe(true);
     const button = screen.getByRole("button", {
       name: "Search terminal output",
     });
@@ -114,5 +110,9 @@ describe("TerminalSearch shortcuts and closed controls", () => {
     expect(button.className).toContain(
       "group-focus-within/terminal-pane:opacity-100",
     );
+    expect(sendKey("f", { ctrlKey: true }).defaultPrevented).toBe(false);
+    expect(
+      sendKey("f", { ctrlKey: true, shiftKey: true }).defaultPrevented,
+    ).toBe(true);
   });
 });
