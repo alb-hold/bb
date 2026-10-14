@@ -284,12 +284,56 @@ pooler routing through its environment. The parent contributes
 `BB_ACCOUNT_POOL_PARENT_URL` and `BB_ACCOUNT_POOL_PARENT_TOKEN` alongside the
 provider routing variables, and the nested server enables the pooler on first run
 when it sees them. The token is scoped to the launching thread, is accepted only
-for pooled provider requests and `/availability`, and stops working when that
-thread is archived or deleted, or ten minutes after the machine token is
-rotated. An archive or delete event missed while the plugin is down is not
-replayed, so those tokens end when bb next resolves that archived thread's
-environment, or when you rotate the machine token and wait out those ten
-minutes. A nested server
+for pooled provider requests and `/availability`. It is suspended while that
+thread is archived and works again, unchanged, once the thread is unarchived;
+it ends for good when the thread is deleted, or ten minutes after the machine
+token is rotated. Archiving never deletes a thread's credentials: the plugin
+keeps their digests on disk behind an archive marker, so a crash at any point
+of an archive or unarchive cannot cost a running session its token. If no
+archive marker can be written, the thread's credential files are renamed to
+`suspended-<name>`, keeping their content, and renamed back on unarchive. Only
+deleting the thread removes its credentials; a credential otherwise ends only
+by its own expiry or a machine-token rotation. Deletion is final: the plugin
+records it in a `deleted-thread-<digest>.json` marker and in the thread's
+archive marker and its fallback. If the marker cannot be written atomically,
+it is created in place, and failing that the plugin creates a
+`deleted-thread-<digest>.d` directory, which records the deletion by its
+existence alone. If none of those lands, each credential file is renamed to
+`deleted-pending-<digest>-<name>`; that rename is itself a record. A
+filesystem record counts only once its content write, the file sync and the
+sync of the store directory all succeed; any failure on the way moves on to the
+next path. At start, a deletion marker found on disk counts only if its content
+is complete and syncing it and the directory succeeds; a partial, empty or
+unreadable `deleted-thread-<digest>.json` keeps the thread deleted, blocking
+restore and mint, but removes nothing and the record is written again. Then,
+every time, the plugin also writes a `deleted-thread:<digest>` row to bb's own
+database through plugin kv, the database that already holds the thread's
+committed `deletedAt`. Every filesystem path is tried before the kv write, so
+a refused kv write followed by a crash never leaves a filesystem record
+untried. The plugin never restores or mints credentials for that thread
+again, even if bb later reports it live, in which case it logs a warning.
+Credentials are never removed before a deletion record is durable, and the kv
+row lands before the first credential removal whenever kv accepts it. A
+pending file is removed only once a record of another kind exists. Where the
+rename also fails the file stays untouched. Either way the thread stays
+deleted in the running process, and the record, then the removal, is retried
+on the next delete event, sweep and start. The kv rows are loaded once at
+start; while that load fails, every thread token is rejected and nothing is
+minted, and the load is retried on each sweep. Authentication never reads kv.
+There is no residual: bb commits a thread's deletion before the plugin hears of
+it, so after a committed delete bb answers gone, and every mint, env export and
+authentication asks bb, even when none of the plugin's own records survived.
+bb's thread state is the authority, asked each time a thread's token is
+presented and before every credential is minted or exported (concurrent
+requests for one thread share one lookup): live accepts, archived rejects and
+suspends, deleted rejects and revokes. A mint or export while bb cannot answer
+is refused, like a token. A missed archive or unarchive event therefore
+takes effect on the next request. If bb's lookup fails or times out (one retry
+on failure, none on timeout), the token is rejected with 401 and nothing is
+deleted or suspended; the same token works again once bb answers live. The
+plugin logs a warning naming the thread, at most once a minute per thread. It
+also checks every thread holding
+credentials at startup and every 15 minutes. A nested server
 started before this scoping existed holds the machine token, which the hub no
 longer accepts; relaunch it so it receives a scoped token.
 
