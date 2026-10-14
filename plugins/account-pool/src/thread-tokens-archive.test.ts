@@ -1183,14 +1183,49 @@ const EVENT_HANDLE = new Set([
   "setMaxListeners",
 ]);
 
-function crashAfter(
-  mutations: number,
-  faults: { failFirstMarkerOpen?: boolean } = {},
-) {
+type Fault = {
+  marker?: boolean;
+  tombstoneWrite?: boolean;
+  tombstoneRemove?: boolean;
+  everything?: boolean;
+};
+
+const refused = (): Error =>
+  Object.assign(new Error("refused"), { code: "EIO" });
+
+function refuses(faults: Fault, name: string, args: unknown[]): boolean {
+  const target = args[0];
+  const base = typeof target === "string" ? path.basename(target) : "";
+  if (faults.everything === true)
+    return name !== "open" || args[1] !== "r"
+      ? MUTATING_FS.has(name)
+      : false;
+  if (name === "open") {
+    if (
+      faults.marker === true &&
+      args[1] === "r+" &&
+      (base.startsWith("archived-thread-") ||
+        base.startsWith("archive-revocation-"))
+    )
+      return true;
+    return (
+      faults.tombstoneWrite === true &&
+      args[1] === "wx" &&
+      base.startsWith("archived-credentials-")
+    );
+  }
+  return (
+    faults.tombstoneRemove === true &&
+    name === "rm" &&
+    base.startsWith("archived-credentials-") &&
+    base.endsWith(".json")
+  );
+}
+
+function crashAfter(mutations: number, faults: Fault = {}) {
   const target = fs as unknown as Record<string, unknown>;
   let done = 0;
   let dead = mutations === 0;
-  let faulted = false;
   const counted: string[] = [];
   const unclassified = new Set<string>();
   const methods = new Set<string>();
@@ -1249,17 +1284,11 @@ function crashAfter(
     )(target, name).mockImplementation(((...args: unknown[]) => {
       if (!MUTATING_FS.has(name) && !READ_ONLY_FS.has(name))
         unclassified.add(name);
+      if (MUTATING_FS.has(name) && refuses(faults, name, args))
+        return Promise.reject(refused());
       if (name === "open")
         return (async () => {
           const flags = args[1];
-          if (
-            faults.failFirstMarkerOpen === true &&
-            flags === "r+" &&
-            !faulted
-          ) {
-            faulted = true;
-            throw crash();
-          }
           const creates = typeof flags === "string" && flags !== "r";
           if (!creates && dead) throw crash();
           const handle = (
@@ -1811,7 +1840,30 @@ type Scenario = {
   operate: (f: Fixture, context: Context) => Promise<unknown>;
   drives: string[];
   lowers?: boolean;
+  earliest?: (f: Fixture) => number;
+  matrix?: boolean;
 };
+
+type FaultCase = { name: string; fault: Fault; recorded: boolean };
+
+const FAULT_CASES: FaultCase[] = [
+  { name: "the marker lowering fails", fault: { marker: true }, recorded: true },
+  {
+    name: "the tombstone rewrite fails",
+    fault: { tombstoneWrite: true },
+    recorded: true,
+  },
+  {
+    name: "the marker lowering and the tombstone rewrite both fail",
+    fault: { marker: true, tombstoneWrite: true },
+    recorded: false,
+  },
+  {
+    name: "the marker lowering, the tombstone rewrite and the tombstone delete all fail",
+    fault: { marker: true, tombstoneWrite: true, tombstoneRemove: true },
+    recorded: false,
+  },
+];
 
 async function liveThread(f: Fixture, lifetime: Lifetime): Promise<Context> {
   const launch = await mint(f, await f.open(), lifetime);
@@ -2018,16 +2070,40 @@ async function checkCell(
   scenario: Scenario,
   context: Context,
   before: string,
+  beforeDigests: ReadonlySet<string>,
   completed: boolean,
-  fault = false,
+  fault: FaultCase | null = null,
 ) {
   const { sessions } = context;
   const view = await diskView(f.directory, f.route.threadId);
-  const changed = (await snapshot(f.directory)) !== before;
+  const after = await snapshot(f.directory);
+  const changed = after !== before;
   const now = f.clock();
   const allowed =
     !view.archived ||
-    (windowOpenOnDisk(view, now) && !(scenario.closedByBb && changed));
+    (windowOpenOnDisk(view, now) &&
+      !(scenario.closedByBb && changed && fault === null));
+  const names = (rows: string) =>
+    new Set(rows.split("\n").map((row) => row.split(":")[0] ?? ""));
+  const tombstoneName = (rows: string) =>
+    [...names(rows)].some((name) => name.startsWith("archived-credentials-"));
+  const digestsAfter = await storedDigests(f.directory);
+  const deleted =
+    [...beforeDigests].some((digest) => !digestsAfter.has(digest)) ||
+    (tombstoneName(before) && !tombstoneName(after));
+  if (
+    fault?.recorded === true &&
+    scenario.earliest !== undefined &&
+    deleted &&
+    view.archived &&
+    view.start !== null &&
+    digestsAfter.size > 0
+  )
+    expect(view.start).toBeLessThanOrEqual(scenario.earliest(f) + 1000);
+  const expected =
+    fault !== null && !fault.recorded && scenario.lowers === true
+      ? "none"
+      : scenario.keeps;
 
   await step("bb unreachable at restart", async () => {
     const first = await restartedCopy(f, 0);
@@ -2050,9 +2126,8 @@ async function checkCell(
             nested?.threadId === f.route.threadId,
         );
       }
-      if (completed && view.archived && scenario.keeps !== "skip" && !fault)
-        for (const outcome of outcomes)
-          expect(outcome).toBe(scenario.keeps === "all");
+      if (completed && view.archived && expected !== "skip")
+        for (const outcome of outcomes) expect(outcome).toBe(expected === "all");
     }
   });
 
@@ -2084,20 +2159,29 @@ async function checkCell(
 async function crashWalk(
   scenario: Scenario,
   lifetime: Lifetime,
-  fault = false,
+  fault: FaultCase | null = null,
 ) {
   let crashes = 0;
   for (let writes = 0; writes < 200; writes += 1) {
     const f = await fixture();
     const context = await scenario.prepare(f, lifetime);
     const before = await snapshot(f.directory);
-    const interruption = crashAfter(writes, { failFirstMarkerOpen: fault });
+    const beforeDigests = await storedDigests(f.directory);
+    const interruption = crashAfter(writes, fault?.fault ?? {});
     await scenario.operate(f, context).catch(() => undefined);
     const crashed = interruption.dead;
     interruption.restore();
     expect(interruption.unclassified).toEqual([]);
     try {
-      await checkCell(f, scenario, context, before, !crashed, fault);
+      await checkCell(
+        f,
+        scenario,
+        context,
+        before,
+        beforeDigests,
+        !crashed,
+        fault,
+      );
     } catch (error) {
       const view = await diskView(f.directory, f.route.threadId);
       const listing = (await fs.readdir(f.directory)).filter((name) =>
@@ -2110,7 +2194,7 @@ async function crashWalk(
     if (!crashed) break;
     crashes += 1;
   }
-  expect(crashes).toBeGreaterThanOrEqual(fault ? 1 : 3);
+  expect(crashes).toBeGreaterThanOrEqual(fault === null ? 3 : 1);
 }
 
 const writeCompleteTemporary = (f: Fixture) =>
@@ -2137,6 +2221,7 @@ const SCENARIOS: Scenario[] = [
   },
   {
     name: "archive by a late reconcile, bb says 30 h ago",
+    matrix: true,
     closedByBb: true,
     keeps: "none",
     prepare: liveThread,
@@ -2146,6 +2231,7 @@ const SCENARIOS: Scenario[] = [
   },
   {
     name: "archive by a late reconcile, bb says 12 h ago",
+    matrix: true,
     closedByBb: false,
     keeps: "all",
     prepare: liveThread,
@@ -2176,6 +2262,8 @@ const SCENARIOS: Scenario[] = [
   {
     name: "tombstone clamped to an earlier bb archive time inside the window",
     lowers: true,
+    matrix: true,
+    earliest: (f) => f.clock() - 20 * HOUR,
     closedByBb: false,
     keeps: "all",
     prepare: async (f, lifetime) => {
@@ -2190,6 +2278,8 @@ const SCENARIOS: Scenario[] = [
   {
     name: "tombstone and leftover route files clamped past the window at load",
     lowers: true,
+    matrix: true,
+    earliest: (f) => f.clock() - 30 * HOUR,
     closedByBb: true,
     keeps: "none",
     prepare: (f, lifetime) =>
@@ -2210,6 +2300,8 @@ const SCENARIOS: Scenario[] = [
   {
     name: "pending files without a tombstone clamped past the window at load",
     lowers: true,
+    matrix: true,
+    earliest: (f) => f.clock() - 30 * HOUR,
     closedByBb: true,
     keeps: "none",
     prepare: archiveWithoutTombstone,
@@ -2218,6 +2310,8 @@ const SCENARIOS: Scenario[] = [
   },
   {
     name: "tombstone newer than its marker, route files left beside it",
+    matrix: true,
+    earliest: (f) => f.clock() - 30 * HOUR,
     closedByBb: false,
     keeps: "none",
     prepare: async (f, lifetime) => {
@@ -2255,6 +2349,8 @@ const SCENARIOS: Scenario[] = [
   {
     name: "held tombstone clamped by a sweep past the window",
     lowers: true,
+    matrix: true,
+    earliest: (f) => f.clock() - 30 * HOUR,
     closedByBb: true,
     keeps: "none",
     prepare: async (f, lifetime) => {
@@ -2323,13 +2419,15 @@ describe.each(SCENARIOS)("the crash table: $name", (scenario) => {
     },
   );
 
-  if (scenario.lowers === true)
-    it.each(lifetimes)(
-      "leaves nothing restorable at every mutation after the marker's time could not be written, %s",
-      async (lifetime) => {
-        await crashWalk(scenario, lifetime, true);
-      },
-    );
+  if (scenario.matrix === true)
+    describe.each(FAULT_CASES)("when $name", (fault) => {
+      it.each(lifetimes)(
+        "restores nothing past the earliest anchor's 24 hours at any later mutation, %s",
+        async (lifetime) => {
+          await crashWalk(scenario, lifetime, fault);
+        },
+      );
+    });
 });
 
 describe.each(lifetimes)("the clamp at load, %s", (lifetime) => {
@@ -2345,6 +2443,7 @@ describe.each(lifetimes)("the clamp at load, %s", (lifetime) => {
       const f = await fixture();
       const context = await scenario.prepare(f, lifetime);
       const before = await snapshot(f.directory);
+      const beforeDigests = await storedDigests(f.directory);
       const interruption = crashAfter(writes);
       await scenario.operate(f, context).catch(() => undefined);
       const crashed = interruption.dead;
@@ -2356,13 +2455,88 @@ describe.each(lifetimes)("the clamp at load, %s", (lifetime) => {
           name.endsWith(".json"),
         )
       ) {
-        await checkCell(f, scenario, context, before, false);
+        await checkCell(f, scenario, context, before, beforeDigests, false);
         checked += 1;
       }
     }
     expect(checked).toBeGreaterThan(0);
   });
 });
+
+const scenarioNamed = (name: string): Scenario => {
+  const scenario = SCENARIOS.find((candidate) => candidate.name === name);
+  if (scenario === undefined) throw new Error("scenario missing");
+  return scenario;
+};
+
+const operatingStore = (
+  operated: unknown,
+  context: Context,
+): ThreadTokenStore =>
+  operated instanceof ThreadTokenStore ? operated : context.threads;
+
+describe.each(lifetimes)(
+  "an earlier anchor that cannot be made durable, %s",
+  (lifetime) => {
+    it.each(FAULT_CASES.filter((fault) => !fault.recorded))(
+      "restores nothing after a restart with bb unreachable past the earliest anchor's 24 hours when $name",
+      async ({ fault }) => {
+        const scenario = scenarioNamed(
+          "tombstone clamped to an earlier bb archive time inside the window",
+        );
+        const f = await fixture();
+        const context = await scenario.prepare(f, lifetime);
+        const interruption = crashAfter(Number.MAX_SAFE_INTEGER, fault);
+        const operating = operatingStore(
+          await scenario.operate(f, context),
+          context,
+        );
+        interruption.restore();
+        expect(interruption.dead).toBe(false);
+        const earliest = scenario.earliest?.(f) ?? 0;
+        const restartAt = earliest + ARCHIVE_TOMBSTONE_MAX_AGE_MS + HOUR;
+        expect(restartAt).toBeGreaterThan(f.clock());
+        const restarted = await restartedCopy(f, restartAt - f.clock());
+        const reopened = await restarted.open(undefined, unreachable);
+        await unarchive(reopened, f.route.threadId);
+        for (const session of context.sessions)
+          expect(await rejected(reopened, session)).toBe(true);
+        await unarchive(operating, f.route.threadId);
+        for (const session of context.sessions)
+          expect(await rejected(operating, session)).toBe(true);
+      },
+    );
+
+    it("restores nothing in the running process when every filesystem mutation is refused, and leaves the disk as it was", async () => {
+      const scenario = scenarioNamed(
+        "held tombstone clamped by a sweep past the window",
+      );
+      const f = await fixture();
+      const context = await scenario.prepare(f, lifetime);
+      const before = await snapshot(f.directory);
+      const interruption = crashAfter(Number.MAX_SAFE_INTEGER, {
+        everything: true,
+      });
+      await scenario.operate(f, context).catch(() => undefined);
+      await unarchive(context.threads, f.route.threadId).catch(
+        () => undefined,
+      );
+      for (const session of context.sessions)
+        expect(await rejected(context.threads, session)).toBe(true);
+      interruption.restore();
+      expect(await snapshot(f.directory)).toBe(before);
+      const later = await restartedCopy(
+        f,
+        ARCHIVE_TOMBSTONE_MAX_AGE_MS + HOUR,
+      );
+      await expectNothingRestorable(
+        later,
+        await later.open(undefined, unreachable),
+        context.sessions,
+      );
+    });
+  },
+);
 
 const MUTATORS: Record<string, { drivenBy: string[] } | { because: string }> = {
   initialize: {
