@@ -61,7 +61,104 @@ async function selectAndCopy(terminal: Terminal): Promise<string> {
   return copied[0] ?? "";
 }
 
+async function findSnapshotTextarea(): Promise<HTMLTextAreaElement> {
+  return waitFor(() => {
+    const element = document.querySelector("[data-terminal-text-snapshot]");
+    if (!(element instanceof HTMLTextAreaElement)) {
+      throw new Error("terminal snapshot textarea not rendered yet");
+    }
+    return element;
+  });
+}
+
 describe("TerminalTextSelectSheet", () => {
+  it("offers Copy selection for the snapshot", async () => {
+    render(
+      <TerminalTextSelectSheet
+        open
+        text="alpha beta"
+        onOpenChange={vi.fn()}
+      />,
+    );
+    await screen.findByText("alpha beta");
+    expect(
+      screen.queryByRole("button", { name: "Copy selection" }),
+    ).not.toBeNull();
+  });
+
+  it("copies exactly the selected snapshot substring", async () => {
+    render(
+      <TerminalTextSelectSheet
+        open
+        text="alpha beta gamma"
+        onOpenChange={vi.fn()}
+      />,
+    );
+    const textarea = await findSnapshotTextarea();
+    Object.defineProperties(textarea, {
+      selectionStart: { configurable: true, value: 6 },
+      selectionEnd: { configurable: true, value: 10 },
+    });
+    fireEvent.select(textarea);
+    fireEvent.click(screen.getByRole("button", { name: "Copy selection" }));
+    expect(copied).toEqual(["beta"]);
+  });
+
+  it("disables Copy selection when the snapshot selection is empty", async () => {
+    render(
+      <TerminalTextSelectSheet
+        open
+        text="alpha beta"
+        onOpenChange={vi.fn()}
+      />,
+    );
+    expect(
+      await screen.findByRole("button", { name: "Copy selection" }),
+    ).toHaveProperty("disabled", true);
+  });
+
+  it("keeps the textarea focused and selected when Copy selection is pressed", async () => {
+    render(
+      <TerminalTextSelectSheet
+        open
+        text="alpha beta"
+        onOpenChange={vi.fn()}
+      />,
+    );
+    const textarea = await findSnapshotTextarea();
+    Object.defineProperties(textarea, {
+      selectionStart: { configurable: true, value: 0 },
+      selectionEnd: { configurable: true, value: 5 },
+    });
+    textarea.focus();
+    const button = screen.getByRole("button", { name: "Copy selection" });
+    const pointerDown = new PointerEvent("pointerdown", {
+      bubbles: true,
+      cancelable: true,
+    });
+    button.dispatchEvent(pointerDown);
+    expect(pointerDown.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(textarea);
+    expect([textarea.selectionStart, textarea.selectionEnd]).toEqual([0, 5]);
+  });
+
+  it("uses a read-only textarea without requesting a keyboard", async () => {
+    render(
+      <TerminalTextSelectSheet
+        open
+        text="alpha beta"
+        onOpenChange={vi.fn()}
+      />,
+    );
+    const textarea = await findSnapshotTextarea();
+    expect(textarea).toHaveProperty("readOnly", true);
+    expect(textarea.getAttribute("inputmode")).toBe("none");
+    expect(textarea.getAttribute("autocorrect")).toBe("off");
+    expect(textarea.getAttribute("autocapitalize")).toBe("off");
+    expect(textarea.getAttribute("spellcheck")).toBe("false");
+    expect(textarea.getAttribute("wrap")).toBe("off");
+  });
+
   it("copies scrollback beyond one screen, first line included", async () => {
     const terminal = new Terminal({ cols: 30, rows: 5, scrollback: 500 });
     terminals.push(terminal);
