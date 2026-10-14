@@ -154,8 +154,35 @@ export function createAccountPoolPlugin(
     await hubTokens.initialize();
     const enrolledHosts = await bb.sdk.hosts.list();
     await hubTokens.prune(enrolledHosts.map((host) => host.id));
-    const threadTokens = new ThreadTokenStore(secretDir, hubTokens, now);
-    await threadTokens.initialize(enrolledHosts.map((host) => host.id));
+    const threadTokens = new ThreadTokenStore(
+      secretDir,
+      hubTokens,
+      now,
+      (message) => bb.log.warn(message),
+    );
+    const lookupThread: ThreadLookup = async (threadId, signal) => {
+      try {
+        const thread = await bb.sdk.threads.get({ threadId, signal });
+        if (thread.deletedAt !== null) return "gone";
+        return thread.archivedAt === null
+          ? "live"
+          : { status: "archived", archivedAt: thread.archivedAt };
+      } catch (error) {
+        if (isThreadNotFound(error)) return "gone";
+        throw error;
+      }
+    };
+    await threadTokens.initialize(
+      enrolledHosts.map((host) => host.id),
+      lookupThread,
+      {
+        signal: AbortSignal.timeout(
+          options.threadSweepTimeoutMs ?? THREAD_SWEEP_TIMEOUT_MS,
+        ),
+        lookupTimeoutMs:
+          options.threadSweepLookupTimeoutMs ?? THREAD_SWEEP_LOOKUP_TIMEOUT_MS,
+      },
+    );
     const routing = new RoutingStore(bb.storage.kv, now);
     const env = options.env ?? process.env;
     const configuredParentPool = readParentPool(env);
@@ -298,7 +325,7 @@ export function createAccountPoolPlugin(
     });
     bb.events.on("thread.deleted", async ({ thread }) => {
       await Promise.all([
-        threadTokens.removeThread(thread.id),
+        threadTokens.deleteThread(thread.id),
         routing.removeThread(thread.id),
       ]);
     });
@@ -414,17 +441,6 @@ export function createAccountPoolPlugin(
         return false;
       }
       return threadTokens.removeThreadIfVersion(threadId, archiveVersion);
-    };
-    const lookupThread: ThreadLookup = async (threadId, signal) => {
-      try {
-        const thread = await bb.sdk.threads.get({ threadId, signal });
-        return thread.archivedAt === null && thread.deletedAt === null
-          ? "live"
-          : "gone";
-      } catch (error) {
-        if (isThreadNotFound(error)) return "gone";
-        throw error;
-      }
     };
     const sweepThreadCredentialsOnce = async (
       serviceSignal: AbortSignal,

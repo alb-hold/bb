@@ -18,10 +18,23 @@ const PROCESS_NESTED_ROUTE_PREFIX = "scoped-process-nested-route-";
 export const PROCESS_CREDENTIAL_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 export const DURABLE_PRIOR_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 export const PROCESS_CREDENTIAL_CLOCK_SKEW_MS = 60 * 1000;
+export const ARCHIVE_TOMBSTONE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const MARKER_ANCHOR_TOLERANCE_MS = 1_000;
 const LEGACY_NESTED_ROUTE_PREFIX = "nested-route-";
 const ARCHIVED_THREAD_PREFIX = "archived-thread-";
 const ARCHIVE_FALLBACK_PREFIX = "archive-revocation-";
 const REVOKED_ROUTE_PREFIX = "revoked-route-";
+const TOMBSTONE_PREFIX = "archived-credentials-";
+const CREDENTIAL_PREFIXES = [
+  THREAD_ROUTE_PREFIX,
+  PROCESS_THREAD_ROUTE_PREFIX,
+  LEGACY_THREAD_ROUTE_PREFIX,
+  NESTED_ROUTE_PREFIX,
+  PROCESS_NESTED_ROUTE_PREFIX,
+  LEGACY_NESTED_ROUTE_PREFIX,
+];
+const MARKER_TEMPORARY =
+  /^(archived-thread-|archive-revocation-)([a-f0-9]{64})\.json\.[A-Za-z0-9-]+\.tmp$/u;
 
 const identifierSchema = z.string().regex(/^[A-Za-z0-9_-]+$/u);
 const tokenSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/u);
@@ -96,6 +109,16 @@ const readableNestedRouteSchema = z.union([
   })),
 ]);
 
+const tombstoneSchema = z
+  .object({
+    threadId: identifierSchema,
+    epoch: z.number().int().positive(),
+    archivedAt: z.number().int().positive(),
+    routes: z.array(routeSchema.omit({ token: true })),
+    nested: z.array(nestedRouteSchema.omit({ token: true })),
+  })
+  .strict();
+
 class CredentialScrubError extends Error {}
 
 type RouteRecord = z.infer<typeof routeSchema>;
@@ -111,10 +134,26 @@ export type NestedRoute = Omit<
   "token" | "tokenDigest" | "hostTokenDigest" | "lifetime" | "usedAt" | "priors"
 >;
 
+type Tombstone = {
+  threadId: string;
+  epoch: number;
+  archivedAt: number;
+  routes: RouteRecord[];
+  nested: NestedRouteRecord[];
+  durable: boolean;
+};
+
+type Window = { start: number | null; open: boolean };
+
+export type ThreadLookupResult =
+  | "live"
+  | "archived"
+  | "gone"
+  | { status: "archived"; archivedAt: number };
 export type ThreadLookup = (
   threadId: string,
   signal?: AbortSignal,
-) => Promise<"live" | "gone">;
+) => Promise<ThreadLookupResult>;
 export type ThreadSweepOptions = {
   signal?: AbortSignal;
   lookupTimeoutMs?: number;
@@ -142,14 +181,23 @@ export class ThreadTokenStore {
   private readonly archiveVersions = new Map<string, number>();
   private tail: Promise<void> = Promise.resolve();
   private readonly pendingPriorDrops = new WeakSet<object>();
+  private readonly tombstones = new Map<string, Tombstone>();
+  private readonly unverified = new Set<string>();
+  private readonly archivedMarkerFiles = new Set<string>();
+  private readonly leftoverTemporaries = new Map<string, string[]>();
 
   constructor(
     private readonly directory: string,
     private readonly hosts: HubTokenStore,
     private readonly now: () => number = Date.now,
+    private readonly warn: (message: string) => void = () => undefined,
   ) {}
 
-  async initialize(hostIds: readonly string[]): Promise<void> {
+  async initialize(
+    hostIds: readonly string[],
+    lookup: ThreadLookup,
+    options: ThreadSweepOptions = {},
+  ): Promise<void> {
     await fs.mkdir(this.directory, { recursive: true, mode: 0o700 });
     await fs.chmod(this.directory, 0o700);
     const enrolled = new Set(hostIds);
@@ -162,11 +210,101 @@ export class ThreadTokenStore {
       )
         await this.loadArchiveMarker(name);
     }
+    await this.settleTemporaries(names);
     this.archiveMarkersLoaded = true;
     for (const name of names) {
       await this.loadFile(name, enrolled).catch((error) => {
         if (error instanceof CredentialScrubError) throw error;
       });
+    }
+    const answers = await this.archiveAnswers(
+      this.tombstones.keys(),
+      lookup,
+      options,
+    );
+    for (const [threadId, archivedAt] of answers.archivedAt)
+      await this.clampTombstone(threadId, archivedAt);
+    for (const threadId of answers.gone) await this.deleteThread(threadId);
+    for (const record of this.routes.values())
+      this.unverified.add(record.threadId);
+    for (const record of this.nestedRoutes.values())
+      this.unverified.add(record.threadId);
+    await this.checkThreads([...this.unverified], lookup, options);
+  }
+
+  private async settleTemporaries(names: readonly string[]): Promise<void> {
+    for (const name of names) {
+      if (
+        name.endsWith(".tmp") &&
+        (name.startsWith(TOMBSTONE_PREFIX) ||
+          CREDENTIAL_PREFIXES.some((prefix) => name.startsWith(prefix)))
+      ) {
+        await this.dropFile(path.join(this.directory, name));
+        continue;
+      }
+      const match = MARKER_TEMPORARY.exec(name);
+      if (match === null) continue;
+      const marker = `${match[1]}${match[2]}.json`;
+      const partner = `${match[1] === ARCHIVED_THREAD_PREFIX ? ARCHIVE_FALLBACK_PREFIX : ARCHIVED_THREAD_PREFIX}${match[2]}.json`;
+      const file = path.join(this.directory, name);
+      let text: string | null = null;
+      try {
+        text = await fs.readFile(file, "utf8");
+      } catch {
+        text = null;
+      }
+      const state = text === null ? null : readArchiveState(text);
+      if (
+        text !== null &&
+        state !== null &&
+        digest(state.threadId) === match[2]
+      ) {
+        if (!state.archived) {
+          await this.dropFile(file);
+          continue;
+        }
+        this.applyArchiveState(marker, text);
+        if (
+          this.archivedThreads.has(state.threadId) &&
+          this.archiveEpoch(state.threadId) === state.epoch
+        ) {
+          try {
+            const unanchored = new Date(0);
+            await fs.utimes(file, unanchored, unanchored);
+            await fs.rename(file, path.join(this.directory, marker));
+            this.seenArchiveMarkers.add(marker);
+          } catch {
+            this.keepTemporary(marker, name);
+          }
+        } else await this.dropFile(file);
+        continue;
+      }
+      if (
+        this.archivedMarkerFiles.has(marker) ||
+        this.archivedMarkerFiles.has(partner)
+      ) {
+        await this.dropFile(file);
+        continue;
+      }
+      this.corruptArchiveMarkers.add(marker);
+      this.keepTemporary(marker, name);
+    }
+  }
+
+  private keepTemporary(marker: string, name: string): void {
+    this.leftoverTemporaries.set(marker, [
+      ...(this.leftoverTemporaries.get(marker) ?? []),
+      name,
+    ]);
+  }
+
+  private async removeMarkerTemporaries(threadId: string): Promise<void> {
+    for (const marker of this.archiveMarkerNames(threadId)) {
+      const leftovers = this.leftoverTemporaries.get(marker);
+      if (leftovers === undefined) continue;
+      this.leftoverTemporaries.delete(marker);
+      for (const name of leftovers)
+        await this.dropFile(path.join(this.directory, name));
     }
   }
 
@@ -193,6 +331,10 @@ export class ThreadTokenStore {
       return;
     }
     if (name.startsWith(ARCHIVED_THREAD_PREFIX)) return;
+    if (name.startsWith(TOMBSTONE_PREFIX)) {
+      await this.loadTombstone(name, enrolled);
+      return;
+    }
     if (
       name.startsWith(THREAD_ROUTE_PREFIX) ||
       name.startsWith(PROCESS_THREAD_ROUTE_PREFIX) ||
@@ -228,16 +370,14 @@ export class ThreadTokenStore {
       ) {
         this.routes.set(this.routeMapKey(record), record);
         indexCredential(this.tokenIndex, record);
-      } else await fs.rm(file, { force: true });
+      } else if (record !== null && archived) await this.dropFile(file);
+      else await fs.rm(file, { force: true });
     } else if (
       name.startsWith(NESTED_ROUTE_PREFIX) ||
       name.startsWith(PROCESS_NESTED_ROUTE_PREFIX) ||
       name.startsWith(LEGACY_NESTED_ROUTE_PREFIX)
     ) {
-      const loaded = await this.readCredential(
-        file,
-        readableNestedRouteSchema,
-      );
+      const loaded = await this.readCredential(file, readableNestedRouteSchema);
       const record =
         loaded === null
           ? null
@@ -267,7 +407,8 @@ export class ThreadTokenStore {
       ) {
         this.nestedRoutes.set(this.nestedMapKey(record), record);
         indexCredential(this.nestedTokenIndex, record);
-      } else await fs.rm(file, { force: true });
+      } else if (record !== null && archived) await this.dropFile(file);
+      else await fs.rm(file, { force: true });
     }
   }
 
@@ -374,6 +515,7 @@ export class ThreadTokenStore {
     if (match === null || this.credentialExpired(match)) return null;
     const { record } = match;
     if (await this.isArchived(record.threadId)) return null;
+    if (this.unverified.has(record.threadId)) return null;
     if (provider !== undefined && provider !== record.provider) return null;
     if (
       !(await this.hosts.authenticateGeneration(
@@ -407,6 +549,7 @@ export class ThreadTokenStore {
     if (match === null || this.credentialExpired(match)) return null;
     const { record } = match;
     if (await this.isArchived(record.threadId)) return null;
+    if (this.unverified.has(record.threadId)) return null;
     if (
       !(await this.hosts.authenticateGeneration(
         record.hostId,
@@ -419,14 +562,30 @@ export class ThreadTokenStore {
   }
 
   async removeThread(threadId: string): Promise<void> {
+    await this.revokeThread(threadId, true);
+  }
+
+  async deleteThread(threadId: string): Promise<void> {
+    await this.revokeThread(threadId, false);
+  }
+
+  private async revokeThread(
+    threadId: string,
+    restorable: boolean,
+    archivedAt?: number,
+  ): Promise<void> {
     this.archiveVersions.set(threadId, this.archiveVersion(threadId) + 1);
+    this.unverified.delete(threadId);
     const advanceEpoch = !this.archivedThreads.has(threadId);
+    const epochUnknown = advanceEpoch && this.hasMarkerFailure(threadId);
     this.archivedThreads.add(threadId);
     this.activeArchiveMarkers.delete(threadId);
     await this.serialize(async () => {
       const epoch = this.archiveEpoch(threadId);
-      const nextEpoch = advanceEpoch ? epoch + 1 : epoch;
+      let nextEpoch = advanceEpoch ? epoch + 1 : epoch;
+      if (epochUnknown) nextEpoch = (await this.maxFileEpoch(threadId)) + 2;
       this.archiveEpochs.set(threadId, nextEpoch);
+      if (!restorable || epochUnknown) await this.dropTombstone(threadId, true);
       let names: string[] = [];
       let directoryReadFailed = false;
       try {
@@ -434,6 +593,7 @@ export class ThreadTokenStore {
       } catch {
         directoryReadFailed = true;
       }
+      if (epochUnknown) await this.purgeCredentialFiles(threadId, names);
       const shouldPersist =
         directoryReadFailed ||
         this.archiveMarkerNames(threadId).some((name) =>
@@ -447,36 +607,58 @@ export class ThreadTokenStore {
         ) ||
         this.hasCredentialFile(threadId, names);
       let markerError: unknown;
-      if (shouldPersist) {
+      const anchor = Math.min(this.now(), archivedAt ?? this.now());
+      const markerCurrent =
+        !advanceEpoch &&
+        !this.archiveDurabilityFailures.has(threadId) &&
+        !this.hasMarkerFailure(threadId) &&
+        this.archiveMarkerNames(threadId).some((name) =>
+          this.seenArchiveMarkers.has(name),
+        );
+      if (shouldPersist && !markerCurrent) {
         try {
-          await this.persist(this.archivedFile(threadId), {
-            threadId,
-            epoch: nextEpoch,
-            archived: true,
-          });
+          await this.persist(
+            this.archivedFile(threadId),
+            { threadId, epoch: nextEpoch, archived: true },
+            anchor,
+          );
           this.seenArchiveMarkers.add(this.archivedName(threadId));
           this.clearMarkerFailures(threadId);
           this.archiveDurabilityFailures.delete(threadId);
+          await this.removeMarkerTemporaries(threadId);
         } catch (error) {
           try {
-            await this.persist(this.archiveFallbackFile(threadId), {
-              threadId,
-              epoch: nextEpoch,
-              archived: true,
-            });
+            await this.persist(
+              this.archiveFallbackFile(threadId),
+              { threadId, epoch: nextEpoch, archived: true },
+              anchor,
+            );
             this.seenArchiveMarkers.add(this.archiveFallbackName(threadId));
             this.clearMarkerFailures(threadId);
             this.archiveDurabilityFailures.delete(threadId);
+            await this.removeMarkerTemporaries(threadId);
           } catch {
             markerError = error;
             this.archiveDurabilityFailures.add(threadId);
           }
         }
       }
+      if (restorable && !epochUnknown && markerError === undefined)
+        await this.tombstoneCredentials(threadId, nextEpoch, archivedAt);
+      const tombstone = this.tombstones.get(threadId);
+      const keepFiles =
+        tombstone !== undefined &&
+        !tombstone.durable &&
+        markerError === undefined;
+      if (keepFiles)
+        this.warn(
+          `Account Pooler could not persist the archive tombstone for thread ${threadId}; its credentials stay rejected and are retried on the next archive event or sweep, and are lost if the process stops first.`,
+        );
       for (const [key, record] of this.routes) {
         if (record.threadId !== threadId) continue;
         this.routes.delete(key);
         unindexCredential(this.tokenIndex, record);
+        if (keepFiles) continue;
         await this.removeProviderFiles(
           record,
           Math.max(0, nextEpoch - 1),
@@ -486,6 +668,7 @@ export class ThreadTokenStore {
         if (record.threadId !== threadId) continue;
         this.nestedRoutes.delete(key);
         unindexCredential(this.nestedTokenIndex, record);
+        if (keepFiles) continue;
         await this.removeNestedFiles(record, Math.max(0, nextEpoch - 1)).catch(
           () => undefined,
         );
@@ -501,7 +684,11 @@ export class ThreadTokenStore {
     lookup: ThreadLookup,
     options: ThreadSweepOptions = {},
   ): Promise<ThreadSweepResult> {
-    const threadIds = new Set<string>();
+    await this.serialize(async () => {
+      await this.purgeExpiredTombstones();
+      await this.retryTombstones();
+    });
+    const threadIds = new Set<string>(this.tombstones.keys());
     for (const record of this.routes.values()) threadIds.add(record.threadId);
     for (const record of this.nestedRoutes.values())
       threadIds.add(record.threadId);
@@ -512,6 +699,14 @@ export class ThreadTokenStore {
         (this.lookupFailures.get(left) ?? 0) -
         (this.lookupFailures.get(right) ?? 0),
     );
+    return this.checkThreads(ordered, lookup, options);
+  }
+
+  private async checkThreads(
+    ordered: readonly string[],
+    lookup: ThreadLookup,
+    options: ThreadSweepOptions,
+  ): Promise<ThreadSweepResult> {
     const result: ThreadSweepResult = {
       checked: ordered.length,
       revoked: 0,
@@ -522,23 +717,37 @@ export class ThreadTokenStore {
         result.failed += 1;
         continue;
       }
-      const lookupSignals = [
-        ...(options.signal === undefined ? [] : [options.signal]),
-        ...(options.lookupTimeoutMs === undefined
-          ? []
-          : [AbortSignal.timeout(options.lookupTimeoutMs)]),
-      ];
-      const lookupSignal =
-        lookupSignals.length === 0 ? undefined : AbortSignal.any(lookupSignals);
+      const lookupSignal = this.lookupSignal(options);
       const version = this.archiveVersion(threadId);
       try {
-        const status = await untilAborted(
+        const found = await untilAborted(
           lookup(threadId, lookupSignal),
           lookupSignal,
         );
+        const status = typeof found === "string" ? found : found.status;
+        const archivedAt =
+          typeof found === "string" ? undefined : found.archivedAt;
         this.lookupFailures.delete(threadId);
-        if (status === "live") continue;
-        if (await this.removeThreadIfVersion(threadId, version))
+        if (status === "live") {
+          this.unverified.delete(threadId);
+          if (this.tombstones.has(threadId))
+            await this.restoreThread(threadId, version);
+          continue;
+        }
+        if (status === "archived" && archivedAt !== undefined)
+          await this.serialize(() => this.clampTombstone(threadId, archivedAt));
+        if (status === "archived" && !this.hasRoutes(threadId)) {
+          this.unverified.delete(threadId);
+          continue;
+        }
+        if (
+          await this.removeThreadIfVersion(
+            threadId,
+            version,
+            status === "gone",
+            archivedAt,
+          )
+        )
           result.revoked += 1;
       } catch {
         this.lookupFailures.set(
@@ -554,11 +763,25 @@ export class ThreadTokenStore {
   async removeThreadIfVersion(
     threadId: string,
     expectedVersion: number,
+    final = false,
+    archivedAt?: number,
   ): Promise<boolean> {
     if (this.archiveVersion(threadId) !== expectedVersion)
       return this.archivedThreads.has(threadId);
-    await this.removeThread(threadId);
+    if (final) await this.deleteThread(threadId);
+    else await this.revokeThread(threadId, true, archivedAt);
     return true;
+  }
+
+  private hasRoutes(threadId: string): boolean {
+    return (
+      [...this.routes.values()].some(
+        (record) => record.threadId === threadId,
+      ) ||
+      [...this.nestedRoutes.values()].some(
+        (record) => record.threadId === threadId,
+      )
+    );
   }
 
   archiveVersion(threadId: string): number {
@@ -571,6 +794,7 @@ export class ThreadTokenStore {
   ): Promise<void> {
     await this.serialize(async () => {
       if (this.archiveVersion(threadId) !== expectedVersion) return;
+      this.unverified.delete(threadId);
       if (this.activeArchiveMarkers.has(threadId)) return;
       if (
         this.archiveEpoch(threadId) === 0 &&
@@ -580,6 +804,7 @@ export class ThreadTokenStore {
       )
         return;
       const epoch = (await this.maxFileEpoch(threadId)) + 1;
+      const revived = await this.reviveTombstone(threadId, epoch);
       await this.persist(this.archivedFile(threadId), {
         threadId,
         epoch,
@@ -600,7 +825,412 @@ export class ThreadTokenStore {
         this.seenArchiveMarkers.add(this.archiveFallbackName(threadId));
       this.clearMarkerFailures(threadId);
       this.archiveDurabilityFailures.delete(threadId);
+      await this.removeMarkerTemporaries(threadId);
+      for (const record of revived.routes) {
+        this.routes.set(this.routeMapKey(record), record);
+        indexCredential(this.tokenIndex, record);
+      }
+      for (const record of revived.nested) {
+        this.nestedRoutes.set(this.nestedMapKey(record), record);
+        indexCredential(this.nestedTokenIndex, record);
+      }
+      await this.dropTombstone(threadId);
     });
+  }
+
+  private tombstoneName(threadId: string): string {
+    return `${TOMBSTONE_PREFIX}${digest(threadId)}.json`;
+  }
+
+  private tombstoneFile(threadId: string): string {
+    return path.join(this.directory, this.tombstoneName(threadId));
+  }
+
+  private async archiveMarkerAnchors(threadId: string): Promise<{
+    anchors: Array<{ file: string; modifiedAt: number }>;
+    unreadable: boolean;
+  }> {
+    const anchors: Array<{ file: string; modifiedAt: number }> = [];
+    let unreadable = false;
+    for (const name of this.archiveMarkerNames(threadId)) {
+      const file = path.join(this.directory, name);
+      try {
+        const state = readArchiveState(await fs.readFile(file, "utf8"));
+        if (
+          state === null ||
+          !state.archived ||
+          state.threadId !== threadId ||
+          state.epoch !== this.archiveEpoch(threadId)
+        )
+          continue;
+        anchors.push({
+          file,
+          modifiedAt: Math.round((await fs.stat(file)).mtimeMs),
+        });
+      } catch (error) {
+        if (!isNodeError(error) || error.code !== "ENOENT") unreadable = true;
+      }
+    }
+    return { anchors, unreadable };
+  }
+
+  private async restoreWindow(
+    threadId: string,
+    known: { tombstoneAt?: number; bbAt?: number } = {},
+  ): Promise<Window> {
+    const { anchors: markers, unreadable } =
+      await this.archiveMarkerAnchors(threadId);
+    const anchors = [
+      known.tombstoneAt,
+      known.bbAt,
+      ...markers.map((marker) => marker.modifiedAt),
+    ].filter((anchor): anchor is number => anchor !== undefined);
+    if (anchors.length === 0) return { start: null, open: false };
+    const start = Math.min(...anchors);
+    const postdated =
+      known.tombstoneAt !== undefined &&
+      known.tombstoneAt > this.now() + PROCESS_CREDENTIAL_CLOCK_SKEW_MS;
+    const open =
+      !postdated &&
+      !unreadable &&
+      !this.tombstoneExpired({ archivedAt: start });
+    return { start, open };
+  }
+
+  private async windowOpen(
+    tombstone: Tombstone,
+    bbAt?: number,
+  ): Promise<boolean> {
+    const { start, open } = await this.restoreWindow(tombstone.threadId, {
+      tombstoneAt: tombstone.archivedAt,
+      bbAt,
+    });
+    if (start === null || !open) return false;
+    const recorded = tombstone.archivedAt;
+    tombstone.archivedAt = Math.min(recorded, start);
+    if (
+      tombstone.durable &&
+      recorded - tombstone.archivedAt > MARKER_ANCHOR_TOLERANCE_MS
+    ) {
+      await this.persistTombstone(tombstone);
+      return tombstone.durable;
+    }
+    return true;
+  }
+
+  private tombstoneExpired(tombstone: { archivedAt: number }): boolean {
+    const now = this.now();
+    return (
+      tombstone.archivedAt > now + PROCESS_CREDENTIAL_CLOCK_SKEW_MS ||
+      tombstone.archivedAt + ARCHIVE_TOMBSTONE_MAX_AGE_MS <= now
+    );
+  }
+
+  private async tombstoneCredentials(
+    threadId: string,
+    epoch: number,
+    archivedAt?: number,
+  ): Promise<void> {
+    const held = this.tombstones.get(threadId);
+    const heldOpen =
+      held === undefined ? true : await this.windowOpen(held, archivedAt);
+    if (held !== undefined && !heldOpen) {
+      await this.dropTombstone(threadId, true);
+      if (held.epoch === epoch) return;
+    } else if (held?.epoch === epoch) {
+      if (!held.durable) {
+        await this.persistTombstone(held);
+        if (held.durable) await this.removePendingFiles(held);
+      }
+      return;
+    }
+    const routes = [...this.routes.values()].filter(
+      (record) => record.threadId === threadId,
+    );
+    const nested = [...this.nestedRoutes.values()].filter(
+      (record) => record.threadId === threadId,
+    );
+    await this.dropTombstone(threadId);
+    if (routes.length === 0 && nested.length === 0) return;
+    const tombstone = {
+      threadId,
+      epoch,
+      archivedAt: Math.min(this.now(), archivedAt ?? this.now()),
+      routes,
+      nested,
+      durable: false,
+    };
+    if (!(await this.windowOpen(tombstone, archivedAt))) return;
+    this.tombstones.set(threadId, tombstone);
+    await this.persistTombstone(tombstone);
+  }
+
+  private expireUnreadablePending(threadId: string): void {
+    void this.serialize(async () => {
+      if (!this.archivedThreads.has(threadId)) return;
+      const epoch = this.archiveEpoch(threadId);
+      await this.dropTombstone(threadId, true);
+      let names: string[];
+      try {
+        names = await fs.readdir(this.directory);
+      } catch {
+        return;
+      }
+      await this.purgeCredentialFiles(threadId, names, epoch - 1);
+    });
+  }
+
+  private async purgeCredentialFiles(
+    threadId: string,
+    names: readonly string[],
+    epoch?: number,
+  ): Promise<void> {
+    for (const name of names) {
+      if (epoch !== undefined && this.fileEpoch(name) !== epoch) continue;
+      const nested =
+        name.startsWith(NESTED_ROUTE_PREFIX) ||
+        name.startsWith(PROCESS_NESTED_ROUTE_PREFIX) ||
+        name.startsWith(LEGACY_NESTED_ROUTE_PREFIX);
+      const route =
+        name.startsWith(THREAD_ROUTE_PREFIX) ||
+        name.startsWith(PROCESS_THREAD_ROUTE_PREFIX) ||
+        name.startsWith(LEGACY_THREAD_ROUTE_PREFIX);
+      if (!nested && !route) continue;
+      const file = path.join(this.directory, name);
+      try {
+        const record = await readRecord(
+          file,
+          nested ? readableNestedRouteSchema : readableRouteSchema,
+        );
+        if (record?.threadId === threadId)
+          await this.removeCredentialFile(file);
+      } catch {
+        continue;
+      }
+    }
+  }
+
+  private async persistTombstone(tombstone: Tombstone): Promise<void> {
+    const { durable, ...stored } = tombstone;
+    tombstone.durable = false;
+    try {
+      await this.persist(this.tombstoneFile(tombstone.threadId), {
+        ...stored,
+        routes: tombstone.routes.map(({ token, ...record }) => record),
+        nested: tombstone.nested.map(({ token, ...record }) => record),
+      });
+    } catch {
+      return;
+    }
+    tombstone.durable = true;
+  }
+
+  private async retryTombstones(): Promise<void> {
+    for (const tombstone of this.tombstones.values()) {
+      if (
+        tombstone.durable ||
+        !this.archivedThreads.has(tombstone.threadId) ||
+        tombstone.epoch !== this.archiveEpoch(tombstone.threadId)
+      )
+        continue;
+      if (!(await this.windowOpen(tombstone))) {
+        await this.dropTombstone(tombstone.threadId, true);
+        continue;
+      }
+      await this.persistTombstone(tombstone);
+      if (tombstone.durable) await this.removePendingFiles(tombstone);
+      else
+        this.warn(
+          `Account Pooler still could not persist the archive tombstone for thread ${tombstone.threadId}.`,
+        );
+    }
+  }
+
+  private async removePendingFiles(
+    tombstone: Pick<Tombstone, "epoch" | "routes" | "nested">,
+  ): Promise<void> {
+    const epoch = Math.max(0, tombstone.epoch - 1);
+    for (const record of tombstone.routes)
+      await this.removeProviderFiles(record, epoch).catch(() => undefined);
+    for (const record of tombstone.nested)
+      await this.removeNestedFiles(record, epoch).catch(() => undefined);
+  }
+
+  private async dropTombstone(threadId: string, force = false): Promise<void> {
+    const tombstone = this.tombstones.get(threadId);
+    this.tombstones.delete(threadId);
+    if (tombstone !== undefined || force)
+      await this.removeCredentialFile(this.tombstoneFile(threadId)).catch(
+        () => undefined,
+      );
+    if (tombstone !== undefined && (force || !tombstone.durable))
+      await this.removePendingFiles(tombstone);
+  }
+
+  private lookupSignal(options: ThreadSweepOptions): AbortSignal | undefined {
+    const signals = [
+      ...(options.signal === undefined ? [] : [options.signal]),
+      ...(options.lookupTimeoutMs === undefined
+        ? []
+        : [AbortSignal.timeout(options.lookupTimeoutMs)]),
+    ];
+    return signals.length === 0 ? undefined : AbortSignal.any(signals);
+  }
+
+  private async archiveAnswers(
+    threadIds: Iterable<string>,
+    lookup: ThreadLookup,
+    options: ThreadSweepOptions,
+  ): Promise<{ archivedAt: Map<string, number>; gone: Set<string> }> {
+    const answers = {
+      archivedAt: new Map<string, number>(),
+      gone: new Set<string>(),
+    };
+    for (const threadId of new Set(threadIds)) {
+      if (options.signal?.aborted === true) break;
+      const signal = this.lookupSignal(options);
+      try {
+        const found = await untilAborted(lookup(threadId, signal), signal);
+        if (found === "gone") answers.gone.add(threadId);
+        else if (typeof found !== "string")
+          answers.archivedAt.set(threadId, found.archivedAt);
+      } catch {
+        continue;
+      }
+    }
+    return answers;
+  }
+
+  private async clampTombstone(
+    threadId: string,
+    archivedAt: number,
+  ): Promise<void> {
+    const held = this.tombstones.get(threadId);
+    if (held === undefined) return;
+    if (!(await this.windowOpen(held, archivedAt)))
+      await this.dropTombstone(threadId, true);
+  }
+
+  private async purgeExpiredTombstones(): Promise<void> {
+    for (const [threadId, tombstone] of this.tombstones)
+      if (!(await this.windowOpen(tombstone)))
+        await this.dropTombstone(threadId, true);
+  }
+
+  private async reviveTombstone(
+    threadId: string,
+    epoch: number,
+  ): Promise<{ routes: RouteRecord[]; nested: NestedRouteRecord[] }> {
+    const revived = {
+      routes: [] as RouteRecord[],
+      nested: [] as NestedRouteRecord[],
+    };
+    const tombstone = this.tombstones.get(threadId);
+    if (tombstone === undefined) return revived;
+    if (tombstone.epoch !== this.archiveEpoch(threadId)) {
+      await this.dropTombstone(threadId);
+      return revived;
+    }
+    if (!(await this.windowOpen(tombstone))) {
+      await this.dropTombstone(threadId, true);
+      return revived;
+    }
+    for (const stored of tombstone.routes) {
+      const record = this.withLivePriors(stored, stored.lifetime === "process");
+      if (
+        !this.restorable(record) ||
+        this.routes.has(this.routeMapKey(record)) ||
+        !(await this.isGenerationLive(record))
+      )
+        continue;
+      await this.persistCredential(this.fileAtEpoch(record, epoch), record);
+      revived.routes.push(record);
+    }
+    for (const stored of tombstone.nested) {
+      const record = this.withLivePriors(stored, stored.lifetime === "process");
+      if (
+        !this.restorable(record) ||
+        this.nestedRoutes.has(this.nestedMapKey(record)) ||
+        !(await this.isGenerationLive(record))
+      )
+        continue;
+      await this.persistCredential(
+        this.nestedFileAtEpoch(record, epoch),
+        record,
+      );
+      revived.nested.push(record);
+    }
+    return revived;
+  }
+
+  private async loadTombstone(
+    name: string,
+    enrolled: ReadonlySet<string>,
+  ): Promise<void> {
+    const file = path.join(this.directory, name);
+    let value: unknown;
+    try {
+      value = JSON.parse(await fs.readFile(file, "utf8"));
+    } catch (error) {
+      if (error instanceof SyntaxError) await this.dropFile(file);
+      return;
+    }
+    const parsed = tombstoneSchema.safeParse(value);
+    if (!parsed.success || name !== this.tombstoneName(parsed.data.threadId)) {
+      await this.dropFile(file);
+      return;
+    }
+    const { threadId, epoch, archivedAt } = parsed.data;
+    if (this.hasTransientArchiveReadFailure(threadId)) {
+      await this.dropFile(file);
+      await this.removePendingFiles({
+        epoch,
+        routes: parsed.data.routes,
+        nested: parsed.data.nested,
+      });
+      return;
+    }
+    const owned = (record: { threadId: string }) =>
+      record.threadId === threadId;
+    const alive = async (record: {
+      hostId: string;
+      hostTokenDigest: string;
+      lifetime?: "process";
+      expiresAt?: number;
+      issuedAt?: number;
+    }) => this.restorable(record) && (await this.isLive(record, enrolled));
+    const routes: RouteRecord[] = [];
+    for (const record of parsed.data.routes)
+      if (owned(record) && (await alive(record))) routes.push(record);
+    const nested: NestedRouteRecord[] = [];
+    for (const record of parsed.data.nested)
+      if (owned(record) && (await alive(record))) nested.push(record);
+    const tombstone = {
+      threadId,
+      epoch,
+      archivedAt,
+      routes,
+      nested,
+      durable: true,
+    };
+    if (
+      !this.archivedThreads.has(threadId) ||
+      this.archiveEpoch(threadId) !== epoch ||
+      (routes.length === 0 && nested.length === 0)
+    ) {
+      await this.dropFile(file);
+      return;
+    }
+    if (!(await this.windowOpen(tombstone))) {
+      this.tombstones.set(threadId, tombstone);
+      await this.dropTombstone(threadId, true);
+      return;
+    }
+    this.tombstones.set(threadId, tombstone);
+  }
+
+  private async dropFile(file: string): Promise<void> {
+    await this.removeCredentialFile(file).catch(() => undefined);
   }
 
   private async reclaimDead(minted: {
@@ -683,13 +1313,22 @@ export class ThreadTokenStore {
     await this.persist(file, stored);
   }
 
-  private async persist(file: string, record: object): Promise<void> {
+  private async persist(
+    file: string,
+    record: object,
+    modifiedAt?: number,
+  ): Promise<void> {
     const temporary = `${file}.${randomUUID()}.tmp`;
     try {
       const handle = await fs.open(temporary, "wx", 0o600);
       try {
         await handle.writeFile(JSON.stringify(record));
         await handle.sync();
+        if (modifiedAt !== undefined) {
+          const stamp = new Date(modifiedAt);
+          await handle.utimes(stamp, stamp);
+          await handle.sync();
+        }
       } finally {
         await handle.close();
       }
@@ -723,6 +1362,8 @@ export class ThreadTokenStore {
     }
     this.corruptArchiveMarkers.delete(name);
     this.transientArchiveReadFailures.delete(name);
+    if (parsed.data.archived) this.archivedMarkerFiles.add(name);
+    else this.archivedMarkerFiles.delete(name);
     const threadId = parsed.data.threadId;
     const currentEpoch = this.archiveEpoch(threadId);
     const currentArchived = this.archivedThreads.has(threadId);
@@ -824,9 +1465,7 @@ export class ThreadTokenStore {
     if (record.priors === undefined) return record;
     const live = process
       ? record.priors
-          .filter((prior) =>
-            this.restorable({ lifetime: "process", ...prior }),
-          )
+          .filter((prior) => this.restorable({ lifetime: "process", ...prior }))
           .slice(-MAX_PRIOR_CREDENTIALS)
       : record.priors
           .filter((prior) => prior.expiresAt > this.now())
@@ -976,10 +1615,7 @@ export class ThreadTokenStore {
     issuedAt?: number;
   }): boolean {
     if (record.lifetime !== "process") return false;
-    return (
-      !this.lifetimeSound(record) ||
-      (record.expiresAt ?? 0) <= this.now()
-    );
+    return !this.lifetimeSound(record) || (record.expiresAt ?? 0) <= this.now();
   }
 
   private restorable(record: {
@@ -1183,6 +1819,7 @@ export class ThreadTokenStore {
     const names = this.archiveMarkerNames(threadId);
     if (names.some((name) => this.corruptArchiveMarkers.has(name))) return true;
     if (names.some((name) => this.transientArchiveReadFailures.has(name))) {
+      let resolved = false;
       for (const name of names) {
         if (!this.transientArchiveReadFailures.has(name)) continue;
         try {
@@ -1192,6 +1829,7 @@ export class ThreadTokenStore {
           );
           this.seenArchiveMarkers.add(name);
           this.applyArchiveState(name, text);
+          resolved = true;
         } catch (error) {
           if (isNodeError(error) && error.code === "ENOENT") {
             this.transientArchiveReadFailures.delete(name);
@@ -1201,6 +1839,8 @@ export class ThreadTokenStore {
           return true;
         }
       }
+      if (resolved && this.archivedThreads.has(threadId))
+        this.expireUnreadablePending(threadId);
     }
     if (this.archivedThreads.has(threadId)) return true;
     if (this.activeArchiveMarkers.has(threadId)) return false;
@@ -1232,6 +1872,17 @@ function untilAborted<T>(
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && "code" in error;
+}
+
+function readArchiveState(
+  text: string,
+): z.infer<typeof archiveStateSchema> | null {
+  try {
+    const parsed = archiveStateSchema.safeParse(JSON.parse(text));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
 }
 
 function digest(value: string): string {

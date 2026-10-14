@@ -25,6 +25,60 @@ Reopen the terminal after a server restart to obtain a new credential. Machine
 token rotation also revokes derived conversation credentials after the existing
 ten-minute grace period; reopen the terminal after that grace expires.
 
+Archiving a thread revokes its scoped credentials at once and keeps their
+digests, never the plaintext, in an `archived-credentials-*` file in the secrets
+directory for 24 hours. Unarchiving the same archive within that window, or the
+periodic thread sweep finding the thread live again, makes the session's existing
+credentials authenticate again; nothing is accepted while the thread is archived.
+Deleting the thread, a rotated machine token past its grace period, a credential's
+own expiry, or the 24 hours ending makes them final. If the tombstone cannot be
+written, the credentials stay rejected and the running process keeps retrying it
+on the next archive event and on the sweep, so an unarchive in that same process
+still restores them; the failure is logged. The tombstone is the only source a
+restore ever reads. Route and nested credential files left next to a tombstone,
+or left without one, are never read back: when the plugin loads, the files of an
+archived thread are discarded (deleted, else renamed aside), and a thread whose
+tombstone never reached the disk (a crash or a failed write during the archive,
+then a restart) loses its credentials, so a running session gets 401 and a new
+launch gets a fresh credential. Older builds ignore the tombstone and treat the
+archived thread as revoked; they delete credential files left that way, so
+downgrading while a tombstone write was failing loses those credentials.
+
+After a restart the plugin asks bb about every thread that still has stored
+credentials while it loads, before it registers its routes, and a credential is
+accepted only once bb has said its thread is live. A thread bb reports archived
+is archived then, with its 24 hour window counted from the time bb archived it
+(a thread archived longer ago keeps no tombstone), and one bb reports deleted is
+deleted. If bb cannot be asked,
+those credentials stay rejected and the periodic sweep, retried every minute,
+accepts them once bb answers. The archive marker carries its window anchor as
+its modification time, set on the temporary file before the rename, so a
+marker on disk always has it. An archive marker temporary file left by a crash
+counts as an archive in progress: the thread loads as archived but, because its
+modification time cannot be trusted as an anchor, gets no restoration window;
+an unreadable one is treated like an unreadable marker. One rule decides every
+one of these: the window starts at the earliest of the archive marker's
+modification time, the tombstone's own archive time and bb's archive time, and
+it can only move earlier. A window that has already run out is closed by one
+step: the tombstone is deleted, and if the delete is refused it is renamed
+aside to a `revoked-route-*` name that nothing reads. When bb reports an
+archive time earlier than the tombstone's but still inside the window, the
+tombstone is rewritten with the earlier time; if that rewrite is refused the
+window is closed the same way. Nothing depends on a route file removal or a
+marker rename succeeding, and an unarchive always moves the thread to a new
+epoch above every file left behind, so a leftover file can never be read as a
+credential of the new epoch.
+
+One residual remains, and the crash and fault tests compute it rather than
+assume it: across every combination of refused tombstone writes, tombstone
+deletes, tombstone renames, marker writes and credential file removals, a
+restore past the earliest anchor's 24 hours is possible only when the filesystem
+refuses the tombstone rewrite, its delete and its rename together
+(`tombstoneWrite+tombstoneRemove+tombstoneRename`, with or without refused
+credential file removals). The disk then still holds the later time and, once the
+filesystem recovers, a restart with bb unreachable restores within that later
+window.
+
 The builtin Account Pooler plugin is disabled by default. Enable it, add Claude
 or Codex credentials, and inspect its proxy routes and account quota with:
 
