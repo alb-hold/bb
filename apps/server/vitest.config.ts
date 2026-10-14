@@ -34,6 +34,7 @@ export default defineWorkspaceTestConfig({
         test: {
           name: "@bb/server:account-pool-delete-matrix",
           include: [deletionMatrix],
+          execArgv: ["--max-old-space-size=1024"],
           exclude,
           sequence: { groupOrder: 1 },
         },

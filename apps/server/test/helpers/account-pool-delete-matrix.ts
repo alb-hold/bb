@@ -12,6 +12,7 @@ import {
 import fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { getHeapStatistics } from "node:v8";
 import { createConnection, getThread, type DbConnection } from "@bb/db";
 import { createBbSdk } from "@bb/sdk/core";
 import { createHttpTransport } from "@bb/sdk/node";
@@ -908,7 +909,7 @@ export function describeDeletionMatrix(lifetime: Lifetime, files: 1 | 2): void {
           `invariant violations (${label}: ${violations.length}):`,
           ...violations,
           "",
-          `worker memory (${label}): heap used ${Math.round(process.memoryUsage().heapUsed / 1_048_576)} MB at the end, peak resident ${Math.round(process.resourceUsage().maxRSS / 1024)} MB`,
+          `worker memory (${label}): heap used ${Math.round(process.memoryUsage().heapUsed / 1_048_576)} MB at the end, heap limit ${Math.round(getHeapStatistics().heap_size_limit / 1_048_576)} MB, peak resident ${Math.round(process.resourceUsage().maxRSS / 1024)} MB`,
         ].join("\n")}\n`,
       );
       expect(violations).toEqual([]);
