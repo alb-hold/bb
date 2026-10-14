@@ -25,6 +25,8 @@ const REVOKED_ROUTE_PREFIX = "revoked-route-";
 const SUSPENDED_FILE_PREFIX = "suspended-";
 const DELETED_THREAD_PREFIX = "deleted-thread-";
 const DELETED_THREAD_NAME = /^deleted-thread-([a-f0-9]{64})\.json$/u;
+const DELETED_PENDING_PREFIX = "deleted-pending-";
+const DELETED_PENDING_NAME = /^deleted-pending-([a-f0-9]{64})-/u;
 
 const identifierSchema = z.string().regex(/^[A-Za-z0-9_-]+$/u);
 const tokenSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/u);
@@ -177,10 +179,26 @@ export class ThreadTokenStore {
     await fs.chmod(this.directory, 0o700);
     const enrolled = new Set(hostIds);
     const names = await fs.readdir(this.directory);
+    const recorded = new Set<string>();
+    const pending = new Map<string, string[]>();
     for (const name of names) {
       const deleted = DELETED_THREAD_NAME.exec(name);
-      if (deleted?.[1] !== undefined) this.deletedThreadDigests.add(deleted[1]);
+      if (deleted?.[1] !== undefined) {
+        this.deletedThreadDigests.add(deleted[1]);
+        recorded.add(deleted[1]);
+      }
+      const held = DELETED_PENDING_NAME.exec(name);
+      if (held?.[1] !== undefined) {
+        this.deletedThreadDigests.add(held[1]);
+        pending.set(held[1], [...(pending.get(held[1]) ?? []), name]);
+      }
     }
+    for (const [threadDigest, held] of pending)
+      await this.recordPendingDeletion(
+        threadDigest,
+        held,
+        recorded.has(threadDigest),
+      );
     for (const name of names) {
       if (
         (name.startsWith(ARCHIVED_THREAD_PREFIX) ||
@@ -195,6 +213,30 @@ export class ThreadTokenStore {
         if (error instanceof CredentialScrubError) throw error;
       });
     }
+  }
+
+  private async recordPendingDeletion(
+    threadDigest: string,
+    held: readonly string[],
+    recorded: boolean,
+  ): Promise<void> {
+    if (!recorded) {
+      try {
+        await this.persist(
+          path.join(
+            this.directory,
+            `${DELETED_THREAD_PREFIX}${threadDigest}.json`,
+          ),
+          { threadDigest, deleted: true },
+        );
+      } catch {
+        return;
+      }
+    }
+    for (const name of held)
+      await fs
+        .rm(path.join(this.directory, name), { force: true })
+        .catch(() => undefined);
   }
 
   private async loadArchiveMarker(name: string): Promise<void> {
@@ -223,6 +265,7 @@ export class ThreadTokenStore {
     }
     if (name.startsWith(ARCHIVED_THREAD_PREFIX)) return;
     if (name.startsWith(DELETED_THREAD_PREFIX)) return;
+    if (name.startsWith(DELETED_PENDING_PREFIX)) return;
     const suspended = name.startsWith(SUSPENDED_FILE_PREFIX);
     if (suspended) name = name.slice(SUSPENDED_FILE_PREFIX.length);
     if (
@@ -492,9 +535,9 @@ export class ThreadTokenStore {
       const holding =
         directoryReadFailed || this.holdsCredentials(threadId, names);
       if (!(await this.persistDeletion(threadId, nextEpoch, holding))) {
-        if (holding) await this.holdDeletedFiles(threadId, names);
+        if (holding) await this.holdDeletedFiles(threadId, names, epoch);
         throw new Error(
-          `Account Pooler could not record the deletion of thread ${threadId}; its credential files stay suspended until bb reports the thread gone.`,
+          `Account Pooler could not record the deletion of thread ${threadId}; its credential files are renamed to deleted-pending- files, which keep it deleted across restarts until the deletion is recorded.`,
         );
       }
       for (const [key, record] of this.routes) {
@@ -560,25 +603,37 @@ export class ThreadTokenStore {
   private async holdDeletedFiles(
     threadId: string,
     names: readonly string[],
+    epoch: number,
   ): Promise<void> {
+    const held = new Set([
+      ...names.filter((name) => this.hasCredentialFile(threadId, [name])),
+      ...this.suspendedFiles(threadId, names),
+    ]);
     for (const [key, record] of this.routes) {
       if (record.threadId !== threadId) continue;
       this.routes.delete(key);
       unindexCredential(this.tokenIndex, record);
+      held.add(path.basename(this.fileAtEpoch(record, epoch)));
+      held.add(path.basename(this.legacyFile(record)));
     }
     for (const [key, record] of this.nestedRoutes) {
       if (record.threadId !== threadId) continue;
       this.nestedRoutes.delete(key);
       unindexCredential(this.nestedTokenIndex, record);
+      held.add(path.basename(this.nestedFileAtEpoch(record, epoch)));
+      held.add(path.basename(this.legacyNestedFile(record)));
     }
-    for (const name of names)
-      if (this.hasCredentialFile(threadId, [name]))
-        await fs
-          .rename(
-            path.join(this.directory, name),
-            path.join(this.directory, `${SUSPENDED_FILE_PREFIX}${name}`),
-          )
-          .catch(() => undefined);
+    const threadDigest = digest(threadId);
+    for (const name of held)
+      await fs
+        .rename(
+          path.join(this.directory, name),
+          path.join(
+            this.directory,
+            `${DELETED_PENDING_PREFIX}${threadDigest}-${name}`,
+          ),
+        )
+        .catch(() => undefined);
   }
 
   async suspendThread(threadId: string): Promise<void> {

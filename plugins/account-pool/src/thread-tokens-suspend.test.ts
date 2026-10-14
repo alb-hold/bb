@@ -116,6 +116,39 @@ function refuseWrites(fragments: readonly string[]): void {
   });
 }
 
+function refuseMutations(): void {
+  const refuse = () => {
+    throw Object.assign(new Error("EROFS"), { code: "EROFS" });
+  };
+  const originalOpen = fs.open.bind(fs);
+  vi.spyOn(fs, "open").mockImplementation(async (file, flags, mode) => {
+    if (flags !== undefined && flags !== "r") refuse();
+    return originalOpen(file, flags, mode);
+  });
+  for (const method of [
+    "rename",
+    "rm",
+    "unlink",
+    "writeFile",
+    "mkdir",
+    "chmod",
+  ] as const)
+    vi.spyOn(fs, method).mockImplementation((async () => refuse()) as never);
+}
+
+async function snapshot(directory: string): Promise<Record<string, string>> {
+  const files: Record<string, string> = {};
+  for (const name of (await fs.readdir(directory)).sort())
+    files[name] = await fs.readFile(path.join(directory, name), "utf8");
+  return files;
+}
+
+const DELETION_WRITES = [
+  "deleted-thread-",
+  "archived-thread-",
+  "archive-revocation-",
+];
+
 function crashAfter(
   mutations: number,
   refuseMarkers = false,
@@ -229,7 +262,11 @@ type ThreadEvent = "archived" | "unarchived" | "deleted";
 async function threadFiles(directory: string): Promise<string[]> {
   return (await fs.readdir(directory))
     .filter((name) => name.includes(route.threadId))
-    .map((name) => name.replace(/^suspended-/, ""))
+    .map((name) =>
+      name
+        .replace(/^deleted-pending-[a-f0-9]{64}-/u, "")
+        .replace(/^suspended-/u, ""),
+    )
     .sort();
 }
 
@@ -1050,16 +1087,12 @@ describe.each(["durable", "process"] as const)("%s credentials", (lifetime) => {
     expect(removal).toBe("recorded");
   });
 
-  it("keeps every credential file suspended when no deletion record can be written, and finishes the delete once bb reports the thread gone after a restart", async () => {
+  it("keeps every credential file as a pending deletion when no deletion record can be written, and finishes the delete after a restart whose bb answer is gone", async () => {
     const w = await world();
     const store = await w.open();
     const tokens = await mint(store, w.hostToken, lifetime);
     const stored = await threadFiles(w.directory);
-    refuseWrites([
-      "deleted-thread-",
-      "archived-thread-",
-      "archive-revocation-",
-    ]);
+    refuseWrites(DELETION_WRITES);
     w.setBb("gone");
     const removal = await store.removeThread(route.threadId).then(
       () => "recorded",
@@ -1076,7 +1109,9 @@ describe.each(["durable", "process"] as const)("%s credentials", (lifetime) => {
     const held = (await fs.readdir(w.directory)).filter((name) =>
       name.includes(route.threadId),
     );
-    expect(held.every((name) => name.startsWith("suspended-"))).toBe(true);
+    expect(held.every((name) => name.startsWith("deleted-pending-"))).toBe(
+      true,
+    );
     expect(await threadFiles(w.directory)).toEqual(stored);
     expect(await deletedMarkers(w.directory)).toEqual([]);
     expect(removal).toContain("could not record the deletion");
@@ -1091,5 +1126,78 @@ describe.each(["durable", "process"] as const)("%s credentials", (lifetime) => {
     });
     expect(await restarted.settleThread(route.threadId)).toBe(false);
     await expectNoMint(restarted, w.hostToken, lifetime);
+  });
+
+  it("keeps a thread deleted after restarts whose first bb answer is live when no deletion record can be written, and records the delete once a write succeeds", async () => {
+    const w = await world();
+    const store = await w.open();
+    const tokens = await mint(store, w.hostToken, lifetime);
+    const stored = await threadFiles(w.directory);
+    refuseWrites(DELETION_WRITES);
+    w.setBb("gone");
+    const removal = await store.removeThread(route.threadId).then(
+      () => "recorded",
+      (error: unknown) => String(error),
+    );
+    expect(removal).toContain("could not record the deletion");
+    w.setBb("live");
+    const restarted = await w.open();
+    expect(await restarted.settleThread(route.threadId)).toBe(false);
+    await expectNoMint(restarted, w.hostToken, lifetime);
+    expect(await accepted(restarted, tokens)).toEqual({
+      token: false,
+      nested: false,
+    });
+    expect(await deletedMarkers(w.directory)).toEqual([]);
+    const held = (await fs.readdir(w.directory)).filter((name) =>
+      name.includes(route.threadId),
+    );
+    expect(held.length).toBeGreaterThan(0);
+    expect(held.every((name) => name.startsWith("deleted-pending-"))).toBe(
+      true,
+    );
+    expect(await threadFiles(w.directory)).toEqual(stored);
+    vi.restoreAllMocks();
+    const recorded = await w.open();
+    expect(await deletedMarkers(w.directory)).toHaveLength(1);
+    expect(await threadFiles(w.directory)).toEqual([]);
+    expect(await recorded.settleThread(route.threadId)).toBe(false);
+    await expectNoMint(recorded, w.hostToken, lifetime);
+    expect(await accepted(recorded, tokens)).toEqual({
+      token: false,
+      nested: false,
+    });
+    const later = await w.open();
+    expect(await later.settleThread(route.threadId)).toBe(false);
+    await expectNoMint(later, w.hostToken, lifetime);
+  });
+
+  it("keeps a thread deleted in process and leaves the disk unchanged when every mutation in its directory is refused", async () => {
+    const w = await world();
+    const store = await w.open();
+    const tokens = await mint(store, w.hostToken, lifetime);
+    const before = await snapshot(w.directory);
+    refuseMutations();
+    w.setBb("gone");
+    const removal = await store.removeThread(route.threadId).then(
+      () => "recorded",
+      (error: unknown) => String(error),
+    );
+    expect(removal).toContain("could not record the deletion");
+    w.setBb("live");
+    expect(await store.settleThread(route.threadId)).toBe(false);
+    await expectNoMint(store, w.hostToken, lifetime);
+    expect(await accepted(store, tokens)).toEqual({
+      token: false,
+      nested: false,
+    });
+    expect(
+      await store.restoreThread(
+        route.threadId,
+        store.archiveVersion(route.threadId),
+      ),
+    ).toBeNull();
+    expect(await unarchive(store)).toBe(false);
+    expect(await snapshot(w.directory)).toEqual(before);
   });
 });

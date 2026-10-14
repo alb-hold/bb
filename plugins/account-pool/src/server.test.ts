@@ -10935,81 +10935,103 @@ describe("Account Pool credential scoping", () => {
     expect(await credentialFiles()).toEqual([]);
   });
 
-  it("keeps a deleted thread deleted for tokens and env resolution after a restart whose first bb answer is live, when its deleted marker could not be written", async () => {
-    const fixture = await scopedFixture();
-    const { host } = fixture;
-    const secrets = path.join(fixture.dataDir, ...POOL_SECRETS);
-    const claude = await claudeToken(host, "thread-unrecorded");
-    const nested = await nestedToken(host, "thread-unrecorded");
-    const originalOpen = fs.open.bind(fs);
-    const refused = vi
-      .spyOn(fs, "open")
-      .mockImplementation(async (file, flags, mode) => {
-        if (String(file).includes("deleted-thread-"))
-          throw Object.assign(new Error("ENOSPC"), { code: "ENOSPC" });
-        return originalOpen(file, flags, mode);
+  it.each([
+    {
+      refusal: "its deleted marker could not be written",
+      fragments: ["deleted-thread-"],
+    },
+    {
+      refusal: "no deletion record could be written",
+      fragments: ["deleted-thread-", "archived-thread-", "archive-revocation-"],
+    },
+  ])(
+    "keeps a deleted thread deleted for tokens and env resolution after a restart whose first bb answer is live, when $refusal",
+    async ({ fragments }) => {
+      const fixture = await scopedFixture();
+      const { host } = fixture;
+      const secrets = path.join(fixture.dataDir, ...POOL_SECRETS);
+      const claude = await claudeToken(host, "thread-unrecorded");
+      const nested = await nestedToken(host, "thread-unrecorded");
+      const originalOpen = fs.open.bind(fs);
+      const refused = vi
+        .spyOn(fs, "open")
+        .mockImplementation(async (file, flags, mode) => {
+          if (fragments.some((fragment) => String(file).includes(fragment)))
+            throw Object.assign(new Error("ENOSPC"), { code: "ENOSPC" });
+          return originalOpen(file, flags, mode);
+        });
+      bbThreadStates.set("thread-unrecorded", "deleted");
+      await host.harness.behavior.emitThreadEvent("thread.deleted", {
+        thread: makeThreadResponse({ id: "thread-unrecorded" }),
       });
-    bbThreadStates.set("thread-unrecorded", "deleted");
-    await host.harness.behavior.emitThreadEvent("thread.deleted", {
-      thread: makeThreadResponse({ id: "thread-unrecorded" }),
-    });
-    refused.mockRestore();
-    expect(
-      (await fs.readdir(secrets)).some((name) =>
-        name.startsWith("deleted-thread-"),
-      ),
-    ).toBe(false);
-    bbThreadStates.delete("thread-unrecorded");
-    const reloaded = await host.harness.lifecycle.reload(
-      createAccountPoolPlugin({
-        usageUrl: EMPTY_USAGE_URL,
-        codexUsageUrl: EMPTY_USAGE_URL,
-        importCodexCredentials: async () => ({
-          accessToken: "codex-access",
-          refreshToken: "codex-refresh",
-          idToken: null,
-          accountId: "codex-account",
-          planType: null,
-          email: null,
-          expiresAt: Date.now() + 60 * 60 * 1_000,
-        }),
-      }),
-    );
-    reloaded.harness.sdk.stub(
-      "threads.get",
-      async ({ threadId }: { threadId: string }) => bbThread(threadId),
-    );
-    const service = reloaded.harness.behavior.runService("hub");
-    cleanups.push(async () => {
-      service.controller.abort();
-      await service.done;
-      await reloaded.harness.lifecycle.dispose();
-    });
-    await vi.waitFor(async () => {
-      const status = statusSchema.parse(
-        await reloaded.harness.behavior.callRpc("status.get", null),
-      );
-      expect(status.accepting).toBe(true);
-    });
-    expect(
-      (
-        await reloaded.harness.behavior.resolveProviderEnv("claude-code", {
-          threadId: "thread-unrecorded",
-          projectId: "project-one",
-          hostId: "host-one",
-        })
-      ).filter(
-        (entry) => entry.name === "ANTHROPIC_AUTH_TOKEN" && entry.value !== "",
-      ),
-    ).toEqual([]);
-    expect(await statusOf(reloaded, claude, "/v1/messages")).toBe(401);
-    expect(await statusOf(reloaded, nested, "/availability")).toBe(401);
-    expect(
-      (await fs.readdir(secrets)).filter((name) =>
+      refused.mockRestore();
+      const held = (await fs.readdir(secrets)).filter((name) =>
         name.includes("thread-unrecorded"),
-      ),
-    ).toEqual([]);
-  });
+      );
+      expect(
+        (await fs.readdir(secrets)).some((name) =>
+          name.startsWith("deleted-thread-"),
+        ),
+      ).toBe(false);
+      if (fragments.length > 1) {
+        expect(held.length).toBeGreaterThan(0);
+        expect(held.every((name) => name.startsWith("deleted-pending-"))).toBe(
+          true,
+        );
+      }
+      bbThreadStates.delete("thread-unrecorded");
+      const reloaded = await host.harness.lifecycle.reload(
+        createAccountPoolPlugin({
+          usageUrl: EMPTY_USAGE_URL,
+          codexUsageUrl: EMPTY_USAGE_URL,
+          importCodexCredentials: async () => ({
+            accessToken: "codex-access",
+            refreshToken: "codex-refresh",
+            idToken: null,
+            accountId: "codex-account",
+            planType: null,
+            email: null,
+            expiresAt: Date.now() + 60 * 60 * 1_000,
+          }),
+        }),
+      );
+      reloaded.harness.sdk.stub(
+        "threads.get",
+        async ({ threadId }: { threadId: string }) => bbThread(threadId),
+      );
+      const service = reloaded.harness.behavior.runService("hub");
+      cleanups.push(async () => {
+        service.controller.abort();
+        await service.done;
+        await reloaded.harness.lifecycle.dispose();
+      });
+      await vi.waitFor(async () => {
+        const status = statusSchema.parse(
+          await reloaded.harness.behavior.callRpc("status.get", null),
+        );
+        expect(status.accepting).toBe(true);
+      });
+      expect(
+        (
+          await reloaded.harness.behavior.resolveProviderEnv("claude-code", {
+            threadId: "thread-unrecorded",
+            projectId: "project-one",
+            hostId: "host-one",
+          })
+        ).filter(
+          (entry) =>
+            entry.name === "ANTHROPIC_AUTH_TOKEN" && entry.value !== "",
+        ),
+      ).toEqual([]);
+      expect(await statusOf(reloaded, claude, "/v1/messages")).toBe(401);
+      expect(await statusOf(reloaded, nested, "/availability")).toBe(401);
+      expect(
+        (await fs.readdir(secrets)).filter((name) =>
+          name.includes("thread-unrecorded"),
+        ),
+      ).toEqual([]);
+    },
+  );
 
   it("suspends on archive, accepts the same tokens after unarchive and revokes on delete", async () => {
     const fixture = await scopedFixture();
