@@ -187,6 +187,8 @@ export async function shutdownHttpBeforePlugins(args: {
   }
   await waitAtMost(webSocketsClosed, WEBSOCKET_SHUTDOWN_WAIT_TIMEOUT_MS);
   await waitAtMost(closed, HTTP_CLOSE_WAIT_TIMEOUT_MS);
+  for (const socket of shutdownSockets.get(args.server) ?? []) socket.destroy();
+  await waitAtMost(closed, HTTP_CLOSE_WAIT_TIMEOUT_MS);
   let pluginStopTimer: ReturnType<typeof setTimeout> | undefined;
   try {
     const stopped = await Promise.race([
@@ -202,8 +204,6 @@ export async function shutdownHttpBeforePlugins(args: {
   } finally {
     if (pluginStopTimer !== undefined) clearTimeout(pluginStopTimer);
   }
-  for (const socket of shutdownSockets.get(args.server) ?? []) socket.destroy();
-  await waitAtMost(closed, HTTP_CLOSE_WAIT_TIMEOUT_MS);
 }
 
 export interface StartServerPluginsArgs {

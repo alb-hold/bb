@@ -250,7 +250,9 @@ describe("server shutdown ordering", () => {
       },
     });
     webSocketServer = new WebSocketServer({ noServer: true });
+    let upgradedSocket: { destroyed: boolean } | undefined;
     server.on("upgrade", (request, socket, head) => {
+      upgradedSocket = socket;
       webSocketServer?.handleUpgrade(request, socket, head, (webSocket) => {
         webSocketServer?.emit("connection", webSocket, request);
       });
@@ -266,6 +268,7 @@ describe("server shutdown ordering", () => {
     const [pluginSocket] = (await accepted) as [WebSocket];
     let pluginStopCalled = false;
     let acceptedAfterPluginStop = true;
+    let upgradedSocketDestroyedAtPluginStop = false;
     const startedAt = Date.now();
     const shutdown = shutdownHttpBeforePlugins({
       closeWebSockets: () => new Promise<void>(() => {}),
@@ -273,7 +276,9 @@ describe("server shutdown ordering", () => {
       stopPlugins: async () => {
         pluginStopCalled = true;
         acceptedAfterPluginStop = server!.listening;
+        upgradedSocketDestroyedAtPluginStop = upgradedSocket?.destroyed ?? false;
         pluginSocket.terminate();
+        await new Promise<void>(() => {});
       },
       stopTerminalDataPlane: () => {},
     });
@@ -282,6 +287,7 @@ describe("server shutdown ordering", () => {
     await shutdown;
     expect(pluginStopCalled).toBe(true);
     expect(acceptedAfterPluginStop).toBe(false);
-    expect(Date.now() - startedAt).toBeLessThan(3_000);
-  }, 4_000);
+    expect(upgradedSocketDestroyedAtPluginStop).toBe(true);
+    expect(Date.now() - startedAt).toBeLessThan(5_800);
+  }, 6_000);
 });
