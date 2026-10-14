@@ -286,6 +286,36 @@ describe.each(["durable", "process"] as const)("%s credentials", (lifetime) => {
     });
   });
 
+  it("rejects and names the timeout when bb's lookup hangs, without retrying it", async () => {
+    const w = await world();
+    let calls = 0;
+    const answer = { hang: false };
+    const hanging: ThreadLookup = (threadId, signal) => {
+      calls += 1;
+      return answer.hang
+        ? new Promise(() => undefined)
+        : w.lookup(threadId, signal);
+    };
+    const warnings: string[] = [];
+    const store = new ThreadTokenStore(
+      w.directory,
+      w.hosts,
+      w.clock,
+      hanging,
+      20,
+      (message) => warnings.push(message),
+    );
+    await store.initialize([route.hostId]);
+    const tokens = await mint(store, w.hostToken, lifetime);
+    answer.hang = true;
+    calls = 0;
+    expect(await store.authenticate(tokens.token)).toBeNull();
+    expect(calls).toBe(1);
+    expect(warnings).toEqual([
+      `Account Pooler rejected a token for thread ${route.threadId}: bb's thread lookup timed out, so the thread could not be confirmed live.`,
+    ]);
+  });
+
   it("retries a failed lookup once within the same flight", async () => {
     const w = await world();
     let calls = 0;
