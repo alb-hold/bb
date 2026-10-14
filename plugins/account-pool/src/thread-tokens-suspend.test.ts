@@ -2061,10 +2061,10 @@ describe.each(["durable", "process"] as const)("%s credentials", (lifetime) => {
   });
 
   it.each([
-    ["its write after open", "write", false],
-    ["its write after open", "write", true],
-    ["its file sync", "sync", false],
-    ["its file sync", "sync", true],
+    ["the write after open", "write", false],
+    ["the write after open", "write", true],
+    ["the file sync", "sync", false],
+    ["the file sync", "sync", true],
     [
       "the directory sync after the in-place create and after mkdir",
       "dirsync",
@@ -2076,7 +2076,7 @@ describe.each(["durable", "process"] as const)("%s credentials", (lifetime) => {
       true,
     ],
   ] as const)(
-    "counts no deletion record on a path whose %s fails (point %s, bb's database refused: %s), removes no credential before a durable record, and accepts no old token and mints nothing after restarts",
+    "counts no deletion record when %s fails on every record path (point %s, bb's database refused: %s), removes no credential before a durable record, and accepts no old token and mints nothing after restarts",
     async (_, point, kvRefused) => {
       const w = await world();
       const watch = watching(w);
