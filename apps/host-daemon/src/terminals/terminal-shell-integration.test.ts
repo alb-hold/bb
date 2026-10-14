@@ -27,7 +27,10 @@ async function makeRoot(): Promise<string> {
 interface ShellFixture {
   bashRc?: string;
   command?: string;
+  fishConfig?: string;
+  fishSourceIntegrationTwice?: boolean;
   sourceIntegrationTwice?: boolean;
+  xdgDataDirs?: string;
   userZdotdir?: "home" | null;
   zshEnv?: string;
   zshRc?: string;
@@ -36,16 +39,21 @@ interface ShellFixture {
 async function runShell(
   shell: string,
   fixture: ShellFixture = {},
-): Promise<{ output: string; exitCode: number }> {
+): Promise<{
+  output: string;
+  outputAtCommandEnd: string | null;
+  exitCode: number;
+}> {
   const root = await makeRoot();
   const home = path.join(root, "home");
   await mkdir(home);
-  if (path.basename(shell) === "bash") {
+  const shellName = path.basename(shell);
+  if (shellName === "bash") {
     await writeFile(
       path.join(home, ".bashrc"),
       fixture.bashRc ?? "printf 'BB_USER_RC_LOADED\\n'\n",
     );
-  } else {
+  } else if (shellName === "zsh") {
     await writeFile(
       path.join(home, ".zshenv"),
       fixture.zshEnv ?? "printf 'BB_USER_ENV_LOADED\\n'\n",
@@ -54,15 +62,37 @@ async function runShell(
       path.join(home, ".zshrc"),
       fixture.zshRc ?? "printf 'BB_USER_RC_LOADED\\n'\n",
     );
+  } else {
+    const fishConfigDirectory = path.join(home, ".config", "fish");
+    await mkdir(fishConfigDirectory, { recursive: true });
+    await writeFile(
+      path.join(fishConfigDirectory, "config.fish"),
+      fixture.fishConfig ?? "printf 'BB_USER_RC_LOADED\\n'\n",
+    );
   }
   const shellEnv: NodeJS.ProcessEnv = { ...process.env, HOME: home };
   if (fixture.userZdotdir === null) delete shellEnv.ZDOTDIR;
   else shellEnv.ZDOTDIR = home;
+  if (fixture.xdgDataDirs) shellEnv.XDG_DATA_DIRS = fixture.xdgDataDirs;
   const integration = await prepareTerminalShellIntegration({
     env: shellEnv,
     shell,
   });
   if (!integration) throw new Error(`No integration prepared for ${shell}`);
+  if (shellName === "fish" && fixture.fishSourceIntegrationTwice) {
+    const integrationFile = path.join(
+      integration.env.XDG_DATA_DIRS?.split(path.delimiter)[0] ?? "",
+      "fish",
+      "vendor_conf.d",
+      "bb-terminal.fish",
+    );
+    const fishConfigPath = path.join(home, ".config", "fish", "config.fish");
+    await writeFile(
+      fishConfigPath,
+      `source '${integrationFile.replaceAll("'", "'\\''")}';\nsource '${integrationFile.replaceAll("'", "'\\''")}'\n`,
+      { flag: "a" },
+    );
+  }
   const executable = process.env.PATH?.split(path.delimiter)
     .map((directory) => path.join(directory, shell))
     .find((candidate) => existsSync(candidate));
@@ -75,38 +105,50 @@ async function runShell(
     env: integration.env,
   });
   let output = "";
+  let outputAtCommandEnd: string | null = null;
   let commandState = 0;
   return await new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       terminal.kill();
-      reject(new Error(`${shell} integration timed out: ${JSON.stringify(output)}`));
+      reject(
+        new Error(`${shell} integration timed out: ${JSON.stringify(output)}`),
+      );
     }, 8_000);
     terminal.onData((chunk) => {
       output += chunk;
       if (
         commandState === 0 &&
         output.includes("BB_USER_RC_LOADED") &&
-        output.includes("\u001b]133;A\u0007")
+        /\u001b\]133;A(?:;[^\u0007]*)?\u0007/.test(output)
       ) {
         commandState = 1;
         const command = fixture.command ?? "cd /tmp; false";
         const integrationSource = integration.args[1];
-        const sourceTwice = fixture.sourceIntegrationTwice
-          ? `source '${integrationSource?.replaceAll("'", "'\\''") ?? ""}'; `
-          : "";
+        const sourceTwice =
+          shellName === "bash" && fixture.sourceIntegrationTwice
+            ? `source '${integrationSource?.replaceAll("'", "'\\''") ?? ""}'; `
+            : "";
         terminal.write(`${sourceTwice}${command}\n`);
       } else if (
         commandState === 1 &&
-        output.includes("\u001b]133;D;1\u0007")
+        output.includes("\u001b]133;D;1\u0007") &&
+        (shellName !== "fish" ||
+          (output.match(/\u001b\]133;A(?:;[^\u0007]*)?\u0007/g)?.length ?? 0) >=
+            2)
       ) {
         commandState = 2;
+        outputAtCommandEnd = output;
         terminal.write("exit 1\n");
       }
     });
     terminal.onExit(({ exitCode }) => {
       clearTimeout(timer);
       void integration.cleanup();
-      if (!output.includes("\u001b]7;file://localhost/tmp\u0007")) {
+      const cwdMark =
+        shellName === "fish"
+          ? /\u001b\]7;file:\/\/[^/]*\/tmp\u0007/.test(output)
+          : output.includes("\u001b]7;file://localhost/tmp\u0007");
+      if (!cwdMark) {
         reject(
           new Error(`${shell} did not emit OSC 7: ${JSON.stringify(output)}`),
         );
@@ -120,7 +162,7 @@ async function runShell(
         );
         return;
       }
-      resolve({ output, exitCode });
+      resolve({ output, outputAtCommandEnd, exitCode });
     });
   });
 }
@@ -187,6 +229,59 @@ describe("terminal shell integration", () => {
       expect(result.output).toContain("\u001b]133;A\u0007");
       expect(result.output).toContain("\u001b]133;B\u0007");
       expect(result.output).toContain("\u001b]133;C\u0007");
+      expect(result.exitCode).toBe(1);
+    },
+  );
+
+  it.skipIf(!shellAvailable("fish"))(
+    "preserves fish user config and XDG_DATA_DIRS while emitting command marks once",
+    async () => {
+      const userDataDirectories = [
+        path.join(os.tmpdir(), "bb-fish-user-data-one"),
+        path.join(os.tmpdir(), "bb-fish-user-data-two"),
+      ].join(path.delimiter);
+      const result = await runShell("fish", {
+        fishConfig: [
+          "set -g BB_FISH_USER_VALUE preserved",
+          "function fish_prompt",
+          "  printf 'USER_FISH_PROMPT\\n'",
+          "end",
+          "printf 'BB_FISH_USER_VALUE=%s\\n' $BB_FISH_USER_VALUE",
+          "printf 'BB_XDG_DATA_DIRS=%s\\n' \"$XDG_DATA_DIRS\"",
+          "printf 'BB_USER_RC_LOADED\\n'",
+        ].join("\n"),
+        fishSourceIntegrationTwice: true,
+        xdgDataDirs: userDataDirectories,
+      });
+      const output = result.outputAtCommandEnd ?? result.output;
+      const reportedDataDirectories = output.match(
+        /BB_XDG_DATA_DIRS=([^\r\n]+)/,
+      )?.[1];
+      const integrationDirectory = reportedDataDirectories?.split(
+        path.delimiter,
+      )[0];
+
+      expect(output).toContain("USER_FISH_PROMPT");
+      expect(output).toContain("BB_FISH_USER_VALUE=preserved");
+      expect(output).toContain("BB_XDG_DATA_DIRS=");
+      expect(reportedDataDirectories).toBeTruthy();
+      expect(reportedDataDirectories).toContain(
+        `${integrationDirectory}${path.delimiter}${userDataDirectories}`,
+      );
+      expect(output).toMatch(/\u001b\]133;A(?:;[^\u0007]*)?\u0007/);
+      expect(output).toMatch(/\u001b\]133;B\u0007/);
+      expect(output).toMatch(/\u001b\]133;C(?:;[^\u0007]*)?\u0007/);
+      expect(output).toMatch(/\u001b\]133;D;1\u0007/);
+      expect(output).toMatch(/\u001b\]7;file:\/\/[^/]*\/tmp\u0007/);
+      expect(output.match(/\u001b\]133;A(?:;[^\u0007]*)?\u0007/g)).toHaveLength(
+        2,
+      );
+      expect(output.match(/\u001b\]133;B\u0007/g)).toHaveLength(1);
+      expect(output.match(/\u001b\]133;C(?:;[^\u0007]*)?\u0007/g)).toHaveLength(
+        1,
+      );
+      expect(output.match(/\u001b\]133;D;1\u0007/g)).toHaveLength(1);
+      expect(integrationDirectory).toBeTruthy();
       expect(result.exitCode).toBe(1);
     },
   );
@@ -272,7 +367,14 @@ describe("terminal shell integration", () => {
           ? [path.join(directory, "bashrc")]
           : shell === "zsh"
             ? [path.join(directory, ".zshenv"), path.join(directory, ".zshrc")]
-            : [path.join(directory, "fish", "vendor_conf.d", "bb-terminal.fish")];
+            : [
+                path.join(
+                  directory,
+                  "fish",
+                  "vendor_conf.d",
+                  "bb-terminal.fish",
+                ),
+              ];
       roots.push(directory);
 
       expect((await stat(directory)).mode & 0o777).toBe(0o700);

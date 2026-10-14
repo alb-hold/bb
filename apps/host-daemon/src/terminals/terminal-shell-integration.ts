@@ -76,6 +76,11 @@ const FISH_CONF = String.raw`if status is-interactive
 if not functions -q __bb_terminal_shell_integration_installed
 function __bb_terminal_shell_integration_installed
 end
+if string match -rq '^4\.' -- $version
+function __bb_terminal_shell_integration_preexec --on-event fish_preexec
+  printf '\e]133;B\a'
+end
+else
 function __bb_terminal_shell_integration_prompt --on-event fish_prompt
   printf '\e]133;A\a\e]7;file://localhost%s\a' $PWD
 end
@@ -84,6 +89,7 @@ function __bb_terminal_shell_integration_preexec --on-event fish_preexec
 end
 function __bb_terminal_shell_integration_postexec --on-event fish_postexec
   printf '\e]133;D;%s\a' $status
+end
 end
 end
 end
@@ -109,7 +115,8 @@ export async function prepareTerminalShellIntegration(args: {
     await writeFile(path.join(directory, ".zshrc"), ZSH_RC, { mode: 0o600 });
     env.BB_TERMINAL_ZDOTDIR = directory;
     env.BB_TERMINAL_USER_ZDOTDIR = userConfigDirectory;
-    env.BB_TERMINAL_USER_ZDOTDIR_SET = originalZdotdir === undefined ? "0" : "1";
+    env.BB_TERMINAL_USER_ZDOTDIR_SET =
+      originalZdotdir === undefined ? "0" : "1";
     env.BB_TERMINAL_USER_ZDOTDIR_VALUE = originalZdotdir ?? "";
     env.ZDOTDIR = directory;
   } else {
