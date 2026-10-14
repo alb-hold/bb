@@ -70,6 +70,20 @@ if [[ "$active" != 1 ]]; then
   exit 1
 fi
 
+pool_in_flight=0
+for attempt in $(seq 1 120); do
+  pool_json="$(BB_SERVER_URL="$server_url" pnpm bb:dev pool status --json)"
+  pool_in_flight="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).inFlight ?? 0))' "$pool_json")"
+  if [[ "$pool_in_flight" =~ ^[1-9][0-9]*$ ]]; then
+    break
+  fi
+  sleep 0.25
+done
+if [[ ! "$pool_in_flight" =~ ^[1-9][0-9]*$ ]]; then
+  printf '%s\n' 'The managed Codex turn did not open a pooled request.' >&2
+  exit 1
+fi
+
 BB_SERVER_URL="$server_url" pnpm dev:restart-server
 
 completed=0
@@ -97,4 +111,4 @@ if ! rg -q 'service hub did not stop within 5000ms' "$data_dir"/logs/server.*.lo
   exit 1
 fi
 
-printf 'P7 swap503 passed: server=%s daemon=%s data=%s thread=%s\n' "$server_port" "$daemon_port" "$data_dir" "$thread_id"
+printf 'P7 swap503 passed: server=%s daemon=%s data=%s thread=%s pooled_requests=%s\n' "$server_port" "$daemon_port" "$data_dir" "$thread_id" "$pool_in_flight"
