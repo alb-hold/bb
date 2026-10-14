@@ -2652,6 +2652,12 @@ const MUTATORS: Record<string, { drivenBy: string[] } | { because: string }> = {
   settleTemporaries: {
     drivenBy: ["complete temporary marker settled at load"],
   },
+  voidMarkers: {
+    drivenBy: [
+      "pending files without a tombstone clamped past the window at load | the marker lowering and the tombstone rewrite both fail",
+      "tombstone clamped to an earlier bb archive time inside the window | the marker lowering and the tombstone rewrite both fail",
+    ],
+  },
   lowerMarker: {
     drivenBy: [
       "tombstone clamped to an earlier bb archive time inside the window",
@@ -2680,6 +2686,8 @@ const OPERATIONS = [
   "persistTombstone",
   "clampTombstone",
   "windowOpen",
+  "settleWindow",
+  "voidMarkers",
   "lowerMarker",
   "dropTombstone",
   "removePendingFiles",
@@ -2701,8 +2709,8 @@ describe("the crash table covers every operation that mutates credential, marker
 
   it("classifies every method of the store that calls a mutating filesystem function", async () => {
     const mutating =
-      /\bfs\.(appendFile|chmod|chown|copyFile|cp|link|mkdir|mkdtemp|open|rename|rm|rmdir|symlink|truncate|unlink|utimes|writeFile)\(/u;
-    const found = new Set<string>();
+      /\bfs\s*\.\s*(appendFile|chmod|chown|copyFile|cp|link|mkdir|mkdtemp|open|rename|rm|rmdir|symlink|truncate|unlink|utimes|writeFile)\s*\(/u;
+    const bodies = new Map<string, string>();
     let method = "";
     for (const line of (await source).split("\n")) {
       const declared =
@@ -2710,9 +2718,12 @@ describe("the crash table covers every operation that mutates credential, marker
           line,
         );
       if (declared !== null) method = declared[1] ?? "";
-      if (mutating.test(line)) found.add(method);
+      bodies.set(method, `${bodies.get(method) ?? ""}${line}\n`);
     }
-    expect([...found].sort()).toEqual(Object.keys(MUTATORS).sort());
+    const found = [...bodies]
+      .filter(([, body]) => mutating.test(body.replaceAll(/\n\s*/gu, "")))
+      .map(([name]) => name);
+    expect(found.sort()).toEqual(Object.keys(MUTATORS).sort());
   });
 
   it("keeps the restore window in one function with one expiry rule", async () => {
@@ -2760,6 +2771,45 @@ describe("the crash table covers every operation that mutates credential, marker
       expect(interruption.unclassified).toEqual([]);
       observed.set(scenario.name, new Set(interruption.methods));
       entering.push(entered);
+      if (scenario.matrix === true)
+        for (const fault of FAULT_CASES) {
+          const faulted = await fixture();
+          const faultedContext = await scenario.prepare(faulted, "durable");
+          const faultedSpies = Object.getOwnPropertyNames(prototype)
+            .filter(
+              (name) =>
+                name !== "constructor" && typeof prototype[name] === "function",
+            )
+            .map(
+              (name) =>
+                [
+                  name,
+                  (
+                    vi.spyOn as unknown as (
+                      object: unknown,
+                      method: string,
+                    ) => MockInstance
+                  )(prototype, name),
+                ] as const,
+            );
+          const faultedRun = crashAfter(Number.MAX_SAFE_INTEGER, fault.fault);
+          await scenario
+            .operate(faulted, faultedContext)
+            .catch(() => undefined);
+          faultedRun.restore();
+          entering.push(
+            new Set(
+              faultedSpies.flatMap(([name, spy]) =>
+                spy.mock.calls.length > 0 ? [name] : [],
+              ),
+            ),
+          );
+          for (const [, spy] of faultedSpies) spy.mockRestore();
+          observed.set(
+            `${scenario.name} | ${fault.name}`,
+            new Set(faultedRun.methods),
+          );
+        }
       for (const method of scenario.drives)
         expect(entered.has(method), `${scenario.name} enters ${method}`).toBe(
           true,
