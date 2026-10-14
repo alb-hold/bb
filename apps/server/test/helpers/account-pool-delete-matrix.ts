@@ -67,18 +67,61 @@ type Mutation = {
   ok: boolean;
   refused: boolean;
 };
-type Injection = { mutations: Mutation[]; crashedAt: number | null };
+type Injection = {
+  mutations: Mutation[];
+  crashedAt: number | null;
+  crash: InjectedFault | null;
+  crashed: Promise<never>;
+  signalled: unknown;
+};
+
+function idleInjection(): Injection {
+  return {
+    mutations: [],
+    crashedAt: null,
+    crash: null,
+    crashed: new Promise<never>(() => {}),
+    signalled: null,
+  };
+}
+
+async function settle(
+  operation: Promise<unknown>,
+  injection: () => Injection | null,
+): Promise<{ errors: unknown[]; beforeCrash: boolean }> {
+  return operation.then(
+    () => ({ errors: [], beforeCrash: injection()?.signalled == null }),
+    (error: unknown) => ({
+      errors: [error],
+      beforeCrash: injection()?.signalled == null,
+    }),
+  );
+}
 type Start = "delete" | "first" | "restart";
 type CrashPoint = { during: Start; after: number };
 type CrashStatus = "reached" | "beyond" | "missed";
 
 class InjectedFault extends Error {
   readonly code: "EACCES" | "EIO";
+  readonly mutation: number;
 
-  constructor(message: string, code: "EACCES" | "EIO") {
+  constructor(message: string, code: "EACCES" | "EIO", mutation: number) {
     super(message);
     this.code = code;
+    this.mutation = mutation;
   }
+}
+
+function carries(error: unknown, fault: InjectedFault): number {
+  if (error === fault) return 1;
+  if (error instanceof AggregateError)
+    return error.errors.reduce<number>(
+      (count, inner) => count + carries(inner, fault),
+      0,
+    );
+  return error instanceof Error && error.cause !== undefined
+    ? carries(error.cause, fault)
+    : 0;
 }
 
 function injected(error: unknown): boolean {
@@ -331,12 +374,38 @@ function injectFaults(
   point: ContentPoint = "open",
 ): Injection {
   const mutations: Mutation[] = [];
-  const injection: Injection = { mutations, crashedAt: null };
+  let signal: (fault: InjectedFault) => void = () => {};
+  const injection: Injection = {
+    mutations,
+    crashedAt: null,
+    crash: null,
+    crashed: new Promise<never>((_, reject) => {
+      signal = reject;
+    }),
+    signalled: null,
+  };
+  injection.crashed.catch((fault: unknown) => {
+    injection.signalled = fault;
+  });
   let crashed = false;
   const crash = () => {
-    if (!crashed) injection.crashedAt = mutations.length - 1;
-    crashed = true;
-    throw new InjectedFault("simulated crash", "EIO");
+    if (!crashed) {
+      const fault = new InjectedFault(
+        "simulated crash",
+        "EIO",
+        mutations.length - 1,
+      );
+      injection.crashedAt = fault.mutation;
+      injection.crash = fault;
+      crashed = true;
+      signal(fault);
+      throw fault;
+    }
+    throw new InjectedFault(
+      "write after the crash",
+      "EIO",
+      mutations.length - 1,
+    );
   };
   const attempt = async <T>(
     method: string,
@@ -355,7 +424,7 @@ function injectFaults(
     if (crashed || mutations.length > crashAfter) crash();
     if (fault !== null && faults.has(fault)) {
       mutation.refused = true;
-      throw new InjectedFault("refused", "EACCES");
+      throw new InjectedFault("refused", "EACCES", mutations.length - 1);
     }
     await checkRemoval(watch, method, args);
     const result = await run();
@@ -694,8 +763,16 @@ async function deletionOutcome(
     for (const error of errors)
       unexpected.push(`${at}: ${describeError(error)}`);
   };
-  const crashStatus = (during: Start, injection: Injection) => {
+  const crashDefects: string[] = [];
+  let carriedByPlugin = false;
+  const crashStatus = (
+    during: Start,
+    injection: Injection,
+    beforeCrash: boolean,
+    errors: readonly unknown[],
+  ) => {
     if (crash?.during !== during) return null;
+    const at = `${during}@${crash.after}`;
     const status: CrashStatus =
       injection.crashedAt === crash.after
         ? "reached"
@@ -704,9 +781,31 @@ async function deletionOutcome(
           ? "beyond"
           : "missed";
     if (status === "missed")
-      unexpected.push(
-        `${during}@${crash.after}: the crash fired at mutation ${injection.crashedAt ?? "none"} of ${injection.mutations.length}`,
+      crashDefects.push(
+        `${at}: the crash fired at mutation ${injection.crashedAt ?? "none"} of ${injection.mutations.length}`,
       );
+    if (status !== "reached") return status;
+    const fault = injection.crash;
+    if (
+      fault === null ||
+      injection.signalled !== fault ||
+      fault.code !== "EIO" ||
+      fault.mutation !== crash.after
+    )
+      crashDefects.push(
+        `${at}: the operation did not end with the injected EIO crash at mutation ${crash.after}`,
+      );
+    if (beforeCrash)
+      crashDefects.push(`${at}: the operation settled before its crash fired`);
+    const survived = injection.mutations.findIndex(
+      (mutation, index) => index >= crash.after && mutation.ok,
+    );
+    if (survived !== -1)
+      crashDefects.push(
+        `${at}: mutation ${survived} (${injection.mutations[survived]?.method} ${injection.mutations[survived]?.target}) succeeded after the crash`,
+      );
+    if (fault !== null && errors.some((error) => carries(error, fault) > 0))
+      carriedByPlugin = true;
     return status;
   };
   const route: PoolRoute = {
@@ -763,31 +862,29 @@ async function deletionOutcome(
       (error: unknown) => [error],
     );
   };
-  const start = async (
-    crashAt: number | undefined,
-    sweep: boolean,
-  ): Promise<Injection & { errors: unknown[] }> => {
+  const start = async (crashAt: number | undefined, sweep: boolean) => {
     stopServices();
     server = await restartServer(server);
     link.server = server;
     retire(live);
     started = null;
-    let injection: Injection = { mutations: [], crashedAt: null };
+    const holder: { injection: Injection | null } = { injection: null };
     let atFactoryEnd = 0;
     const errors: unknown[] = [];
     captured.sweep = null;
-    try {
+    const operation = (async () => {
       const pool = await live.harness.lifecycle.reload(async (bb) => {
         restoreFaults();
         losePower(watch);
         watch.kv = bb.storage.kv;
         captured.threadTokens = null;
         captured.hostTokens = null;
-        injection = injectFaults(watch, new Set(), crashAt);
+        holder.injection = injectFaults(watch, new Set(), crashAt);
         await plugin(bb);
-        atFactoryEnd = injection.mutations.length;
+        atFactoryEnd = holder.injection.mutations.length;
       });
-      if (injection.mutations.length !== atFactoryEnd)
+      const injection = holder.injection;
+      if (injection !== null && injection.mutations.length !== atFactoryEnd)
         watch.violations.push(
           "the previous plugin instance mutated its data directory while it was being replaced",
         );
@@ -797,15 +894,17 @@ async function deletionOutcome(
       if (sweep) errors.push(...(await sweepNow(pool)));
       else if (sweeping() !== null)
         errors.push(new Error("the start swept before it was probed"));
-    } catch (error) {
-      errors.push(error);
-    }
+    })();
+    const ended = await settle(operation, () => holder.injection);
+    errors.push(...ended.errors);
     if (crashAt === undefined) restoreFaults();
-    return { ...injection, errors };
+    return {
+      ...(holder.injection ?? idleInjection()),
+      errors,
+      beforeCrash: ended.beforeCrash,
+    };
   };
-  const probe = async (
-    at: string,
-  ): Promise<Outcome & { lookups: number }> => {
+  const probe = async (at: string): Promise<Outcome & { lookups: number }> => {
     if (started === null)
       throw new Error(`${at}: no fresh plugin instance to probe`);
     const { pool, threadTokens, hostTokens } = started;
@@ -901,6 +1000,10 @@ async function deletionOutcome(
       },
     );
     const deliveries = world.deliveries.splice(0);
+    const delivery = await settle(
+      Promise.all(deliveries),
+      () => deleteInjection,
+    );
     const delivered = await Promise.all(deliveries);
     if (crash?.during !== "delete") restoreFaults();
     expect(deleted.status).toBe(200);
@@ -923,7 +1026,12 @@ async function deletionOutcome(
         }),
     );
     const crashes: Partial<Record<Start, CrashStatus | null>> = {
-      delete: crashStatus("delete", deleteInjection),
+      delete: crashStatus(
+        "delete",
+        deleteInjection,
+        delivery.beforeCrash,
+        delivered.flatMap((result) => result.errors),
+      ),
     };
     const durable = await durableRecords(watch);
     const probes: (Outcome & { lookups: number })[] = [];
@@ -934,7 +1042,12 @@ async function deletionOutcome(
     );
     const committed = getThread(server.db, thread.id)?.deletedAt ?? null;
     if (crash?.during === "first") {
-      crashes.first = crashStatus("first", first);
+      crashes.first = crashStatus(
+        "first",
+        first,
+        first.beforeCrash,
+        first.errors,
+      );
       expectInjected("first start", first.errors);
     } else {
       expectNone("first start", first.errors);
@@ -946,7 +1059,12 @@ async function deletionOutcome(
       restartMutations = second.mutations;
       if (crash === null) expectNone("second start", second.errors);
       else {
-        crashes.restart = crashStatus("restart", second);
+        crashes.restart = crashStatus(
+          "restart",
+          second,
+          second.beforeCrash,
+          second.errors,
+        );
         expectInjected("crash restart", second.errors);
       }
     }
@@ -977,6 +1095,8 @@ async function deletionOutcome(
       restartMutations,
       crash: crash === null ? null : (crashes[crash.during] ?? "missed"),
       unexpected,
+      crashDefects,
+      carriedByPlugin,
       explained,
       violations: watch.violations,
     };
@@ -996,7 +1116,7 @@ export function describeDeletionMatrix(lifetime: Lifetime, files: 1 | 2): void {
   describe(`Account Pooler deletion matrix through bb's real delete route (${lifetime} credentials, ${files} credential file${files === 1 ? "" : "s"})`, () => {
     beforeAll(observePlugin);
     afterAll(stopObserving);
-    it("refuses every old token, mint and env export for every subset of refused plugin kv, content, rename, rm and directory mutations, content refused at its open, write, file sync or directory sync, and every crash point of the delete, of the first start and of the next start, each one the injected fault at exactly its mutation, losing every unsynced change at each restart, minting first on a start that has not swept yet, probing a fresh recovery instance before and after its sweep after every crash, with every lookup after the delete read by the real SDK from the thread row of a bb server restarted on its serialized database", async () => {
+    it("refuses every old token, mint and env export for every subset of refused plugin kv, content, rename, rm and directory mutations, content refused at its open, write, file sync or directory sync, and every crash point of the delete, of the first start and of the next start, each one the injected EIO at exactly its mutation while the crashing operation still runs, with no mutation at or after it succeeding, losing every unsynced change at each restart, minting first on a start that has not swept yet, probing a fresh recovery instance before and after its sweep after every crash, with every lookup after the delete read by the real SDK from the thread row of a bb server restarted on its serialized database", async () => {
       const base = await createTestAppHarness();
       const rows: string[] = [];
       const runs: number[] = [];
@@ -1005,6 +1125,13 @@ export function describeDeletionMatrix(lifetime: Lifetime, files: 1 | 2): void {
       const retained: { cell: number; megabytes: number }[] = [];
       const unexpected: string[] = [];
       const beyond: string[] = [];
+      const crashDefects: string[] = [];
+      const ended: Record<Start, number> = { delete: 0, first: 0, restart: 0 };
+      const carried: Record<Start, number> = {
+        delete: 0,
+        first: 0,
+        restart: 0,
+      };
       const exercised: Record<Start, Record<CrashStatus, number>> = {
         delete: { reached: 0, beyond: 0, missed: 0 },
         first: { reached: 0, beyond: 0, missed: 0 },
@@ -1029,7 +1156,9 @@ export function describeDeletionMatrix(lifetime: Lifetime, files: 1 | 2): void {
               violations.push(
                 ...run.violations.map((v) => `${cell} ${at}: ${v}`),
               );
-              unexpected.push(...run.unexpected.map((u) => `${cell} ${at}: ${u}`));
+              unexpected.push(
+                ...run.unexpected.map((u) => `${cell} ${at}: ${u}`),
+              );
               outcomes.push(run.outcome);
               if (run.crash === null) cleanFinals += 1;
               else recoveries += 1;
@@ -1043,6 +1172,12 @@ export function describeDeletionMatrix(lifetime: Lifetime, files: 1 | 2): void {
                   during === "restart")
               ) {
                 exercised[during][run.crash] += 1;
+                crashDefects.push(
+                  ...run.crashDefects.map((d) => `${cell} ${at}: ${d}`),
+                );
+                if (run.crash === "reached" && run.crashDefects.length === 0)
+                  ended[during] += 1;
+                if (run.carriedByPlugin) carried[during] += 1;
                 if (run.crash === "beyond")
                   beyond.push(
                     `${cell} | ${at} | crash point beyond this start's mutations`,
@@ -1056,10 +1191,11 @@ export function describeDeletionMatrix(lifetime: Lifetime, files: 1 | 2): void {
                 run.delivered !== 1 ||
                 !run.asked ||
                 run.crash === "missed" ||
-                run.unexpected.length > 0
+                run.unexpected.length > 0 ||
+                run.crashDefects.length > 0
               )
                 failures.push(
-                  `${cell} | ${at} | crash point: ${run.crash ?? "none"} | unexpected errors: ${run.unexpected.length} | durable record before the crash: ${yes(run.recorded)} | kv write refused before the crash: ${yes(run.kvRefused)} | deletedAt committed in the restarted database: ${yes(run.committed)} | thread.deleted deliveries: ${run.delivered} | bb asked at every probe: ${yes(run.asked)} | old token accepted: ${yes(run.outcome.token)} | mint succeeds: ${yes(run.outcome.mint)} | export carries a pool credential: ${yes(run.outcome.exported)}`,
+                  `${cell} | ${at} | crash point: ${run.crash ?? "none"} | crash defects: ${run.crashDefects.length} | unexpected errors: ${run.unexpected.length} | durable record before the crash: ${yes(run.recorded)} | kv write refused before the crash: ${yes(run.kvRefused)} | deletedAt committed in the restarted database: ${yes(run.committed)} | thread.deleted deliveries: ${run.delivered} | bb asked at every probe: ${yes(run.asked)} | old token accepted: ${yes(run.outcome.token)} | mint succeeds: ${yes(run.outcome.mint)} | export carries a pool credential: ${yes(run.outcome.exported)}`,
                 );
             };
             const first = await deletionOutcome(
@@ -1084,11 +1220,7 @@ export function describeDeletionMatrix(lifetime: Lifetime, files: 1 | 2): void {
                   after,
                 }),
               );
-            for (
-              let after = 0;
-              after < first.firstMutations.length;
-              after += 1
-            )
+            for (let after = 0; after < first.firstMutations.length; after += 1)
               note(
                 `first@${after}`,
                 await deletionOutcome(world, lifetime, faults, point, files, {
@@ -1135,6 +1267,11 @@ export function describeDeletionMatrix(lifetime: Lifetime, files: 1 | 2): void {
           `crash points beyond this start's mutations (${label}: ${beyond.length}):`,
           ...beyond,
           "",
+          `crash runs that ended the world at their crash point: the operation was still running when its EIO fired, and no mutation at or after it succeeded (${label}): ${(["delete", "first", "restart"] as const).map((during) => `${during} ${ended[during]} of ${exercised[during].reached + exercised[during].beyond + exercised[during].missed}`).join(", ")}`,
+          `crash runs whose injected EIO also came out through the plugin's own error path (${label}): ${(["delete", "first", "restart"] as const).map((during) => `${during} ${carried[during]}`).join(", ")}`,
+          `crash defects (${label}: ${crashDefects.length}):`,
+          ...crashDefects,
+          "",
           `unexpected errors (${label}: ${unexpected.length}):`,
           ...unexpected,
           "",
@@ -1144,6 +1281,7 @@ export function describeDeletionMatrix(lifetime: Lifetime, files: 1 | 2): void {
       );
       expect(violations).toEqual([]);
       expect(unexpected).toEqual([]);
+      expect(crashDefects).toEqual([]);
       expect(beyond).toEqual([]);
       expect(failures).toEqual([]);
       expect(exercised.restart.reached).toBeGreaterThan(0);
