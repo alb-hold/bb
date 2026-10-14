@@ -528,6 +528,31 @@ async function deletionOutcome(
   vi.restoreAllMocks();
   const durable = durableRecords(watch);
   losePower(watch);
+  injectFaults(new Set(), undefined, watch);
+  const first = new ThreadTokenStore(
+    w.directory,
+    w.hosts,
+    w.clock,
+    w.lookup,
+    undefined,
+    undefined,
+    w.kv,
+  );
+  await first.initialize([route.hostId]);
+  const firstMint =
+    (await first.forThread(route, w.hostToken, lifetime).then(
+      () => true,
+      () => false,
+    )) ||
+    (await first.forNested(nestedRoute, w.hostToken, lifetime).then(
+      () => true,
+      () => false,
+    ));
+  const firstToken =
+    (await first.authenticate(token)) !== null ||
+    (nested !== null && (await first.authenticateNested(nested)) !== null);
+  vi.restoreAllMocks();
+  losePower(watch);
   if (crash?.during === "restart") {
     injectFaults(new Set(), crash.after, watch);
     await w.open().catch(() => undefined);
@@ -553,7 +578,7 @@ async function deletionOutcome(
   vi.restoreAllMocks();
   await fs.rm(w.directory, { recursive: true, force: true });
   return {
-    outcome: { token: oldTokenAccepted, mint },
+    outcome: { token: firstToken || oldTokenAccepted, mint: firstMint || mint },
     recorded: durable.other || durable.pending,
     kvRefused: deleteMutations.some(
       (mutation) => mutation.method === "kv" && mutation.refused,
@@ -1267,14 +1292,20 @@ describe.each(["durable", "process"] as const)("%s credentials", (lifetime) => {
   it("retries a failed lookup once within the same flight", async () => {
     const w = await world();
     let calls = 0;
+    let failNext = false;
     const flaky: ThreadLookup = async () => {
       calls += 1;
-      if (calls === 1) throw new Error("transient");
+      if (failNext) {
+        failNext = false;
+        throw new Error("transient");
+      }
       return "live";
     };
     const store = new ThreadTokenStore(w.directory, w.hosts, w.clock, flaky);
     await store.initialize([route.hostId]);
     const tokens = await mint(store, w.hostToken, lifetime);
+    calls = 0;
+    failNext = true;
     expect(await store.authenticate(tokens.token)).not.toBeNull();
     expect(calls).toBe(2);
   });
@@ -2216,7 +2247,7 @@ describe.each(["durable", "process"] as const)("%s credentials", (lifetime) => {
     },
   );
 
-  it("computes the deletion residual for every subset of refused bb-database, content, rename, rm and directory mutations, with content refused at its open, its write, its file sync or the directory sync, one and two credential files, and every crash point from the first mutation of the delete through the next start, losing every unsynced change at each restart, with bb answering gone after every restart because the delete is committed in bb's own thread row", async () => {
+  it("computes the deletion residual for every subset of refused bb-database, content, rename, rm and directory mutations, with content refused at its open, its write, its file sync or the directory sync, one and two credential files, and every crash point from the first mutation of the delete through the next start, losing every unsynced change at each restart, minting first on a start that has not swept yet, with bb answering gone after every restart because the delete is committed in bb's own thread row", async () => {
     const shared = await sharedHosts();
     const rows: string[] = [];
     const runs: number[] = [];
@@ -2285,7 +2316,7 @@ describe.each(["durable", "process"] as const)("%s credentials", (lifetime) => {
         }
     console.log(
       [
-        `deletion residual (${lifetime}); every unsynced change is lost at each restart, and after it bb answers gone, as its committed deletedAt does:`,
+        `deletion residual (${lifetime}); every unsynced change is lost at each restart, the first start mints and authenticates before any sweep, and bb answers gone, as its committed deletedAt does:`,
         ...rows.map((row, index) => `${row} | runs: ${runs[index]}`),
         "",
         `runs that accepted an old token or minted (${acceptedRuns.length}):`,

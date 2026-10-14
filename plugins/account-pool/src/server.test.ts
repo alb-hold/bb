@@ -11719,7 +11719,7 @@ describe("Account Pool credential scoping", () => {
     ).toEqual([]);
   });
 
-  it("suspends what it minted when the thread is archived while its environment resolves", async () => {
+  it("mints nothing when the thread is archived while its environment resolves, because the mint asks bb itself", async () => {
     const fixture = await scopedFixture();
     const { host } = fixture;
     let lookups = 0;
@@ -11740,14 +11740,11 @@ describe("Account Pool credential scoping", () => {
     );
     expect(lookups).toBe(2);
     expect(entries).toEqual([]);
-    const directory = path.join(fixture.dataDir, ...POOL_SECRETS);
-    const markerName = (await fs.readdir(directory)).find((name) =>
-      name.startsWith("archived-thread-"),
-    );
-    const marker = JSON.parse(
-      await fs.readFile(path.join(directory, markerName ?? ""), "utf8"),
-    ) as { archived: boolean };
-    expect(marker.archived).toBe(true);
+    expect(
+      (await fs.readdir(path.join(fixture.dataDir, ...POOL_SECRETS))).filter(
+        (name) => name.includes("thread-racing"),
+      ),
+    ).toEqual([]);
   });
 
   it("does not restore an archived thread from a delayed unarchive event", async () => {
@@ -11875,7 +11872,7 @@ describe("Account Pool credential scoping", () => {
     const token = entries.find(
       (entry) => entry.name === "ANTHROPIC_AUTH_TOKEN",
     );
-    expect(lookups).toBe(4);
+    expect(lookups).toBe(6);
     if (token === undefined || typeof token.value !== "string")
       throw new Error("Account Pool token was not resolved after unarchive.");
     expect(token.value).toBe(oldToken);
