@@ -1,9 +1,15 @@
+import { createHash } from "node:crypto";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HubTokenStore } from "./store.js";
-import { ThreadTokenStore, type ThreadLookup } from "./thread-tokens.js";
+import {
+  ThreadTokenStore,
+  type DeletionRecords,
+  type ThreadLookup,
+} from "./thread-tokens.js";
 
 type BbState = "live" | "archived" | "gone" | "unreachable";
 const LATER_MS = 30_000;
@@ -41,14 +47,24 @@ async function world() {
   const hosts = new HubTokenStore(directory, clock);
   await hosts.initialize();
   const hostToken = await hosts.forHost(route.hostId);
+  const kv = memoryKv();
   const open = async () => {
-    const store = new ThreadTokenStore(directory, hosts, clock, lookup);
+    const store = new ThreadTokenStore(
+      directory,
+      hosts,
+      clock,
+      lookup,
+      undefined,
+      undefined,
+      kv,
+    );
     await store.initialize([route.hostId]);
     await store.sweepThreads(lookup);
     return store;
   };
   return {
     directory,
+    kv,
     hosts,
     clock,
     hostToken,
@@ -116,10 +132,31 @@ function refuseWrites(fragments: readonly string[]): void {
   });
 }
 
-function refuseMutations(): void {
+function memoryKv(): DeletionRecords & { rows: Map<string, unknown> } {
+  const rows = new Map<string, unknown>();
+  return {
+    rows,
+    set: async (key, value) => {
+      rows.set(key, value);
+    },
+    list: async (prefix) =>
+      [...rows.keys()].filter(
+        (key) => prefix === undefined || key.startsWith(prefix),
+      ),
+  };
+}
+
+function refuseKv(kv: DeletionRecords): void {
+  vi.spyOn(kv, "set").mockRejectedValue(
+    Object.assign(new Error("SQLITE_FULL"), { code: "SQLITE_FULL" }),
+  );
+}
+
+function refuseMutations(kv: DeletionRecords): void {
   const refuse = () => {
     throw Object.assign(new Error("EROFS"), { code: "EROFS" });
   };
+  refuseKv(kv);
   const originalOpen = fs.open.bind(fs);
   vi.spyOn(fs, "open").mockImplementation(async (file, flags, mode) => {
     if (flags !== undefined && flags !== "r") refuse();
@@ -149,7 +186,8 @@ const DELETION_WRITES: readonly string[] = [
   "archive-revocation-",
 ];
 
-function refuseRecords(): void {
+function refuseRecords(kv: DeletionRecords): void {
+  refuseKv(kv);
   refuseWrites(DELETION_WRITES);
   const originalMkdir = fs.mkdir.bind(fs);
   vi.spyOn(fs, "mkdir").mockImplementation((async (
@@ -162,18 +200,83 @@ function refuseRecords(): void {
   }) as never);
 }
 
-type FaultClass = "content" | "rename" | "rm" | "mkdir";
+type FaultClass = "kv" | "content" | "rename" | "rm" | "mkdir";
 const FAULT_CLASSES: readonly FaultClass[] = [
+  "kv",
   "content",
   "rename",
   "rm",
   "mkdir",
 ];
 type Mutation = { method: string; target: string; ok: boolean };
+type Watch = {
+  directory: string;
+  kv: ReturnType<typeof memoryKv>;
+  violations: string[];
+};
+
+const THREAD_DIGEST = createHash("sha256").update(route.threadId).digest("hex");
+const CREDENTIAL_NAME =
+  /^(?:suspended-)?(?:scoped-route-|scoped-process-route-|thread-route-|scoped-nested-route-|scoped-process-nested-route-|nested-route-)/u;
+
+function isCredential(name: string): boolean {
+  return CREDENTIAL_NAME.test(name) && name.includes(route.threadId);
+}
+
+function durableRecords(watch: Watch): { other: boolean; pending: boolean } {
+  const names = readdirSync(watch.directory);
+  const deletedMarker = (name: string) => {
+    if (!names.includes(name)) return false;
+    try {
+      return (
+        JSON.parse(readFileSync(path.join(watch.directory, name), "utf8"))
+          .deleted === true
+      );
+    } catch {
+      return false;
+    }
+  };
+  return {
+    other:
+      watch.kv.rows.has(`deleted-thread:${THREAD_DIGEST}`) ||
+      names.includes(`deleted-thread-${THREAD_DIGEST}.json`) ||
+      names.includes(`deleted-thread-${THREAD_DIGEST}.d`) ||
+      deletedMarker(`archived-thread-${THREAD_DIGEST}.json`) ||
+      deletedMarker(`archive-revocation-${THREAD_DIGEST}.json`),
+    pending: names.some((name) =>
+      name.startsWith(`deleted-pending-${THREAD_DIGEST}-`),
+    ),
+  };
+}
+
+function checkRemoval(
+  watch: Watch,
+  method: string,
+  args: readonly unknown[],
+): void {
+  const source = String(args[0]);
+  if (!["rm", "unlink", "rename"].includes(method) || !existsSync(source))
+    return;
+  const name = path.basename(source);
+  const target = method === "rename" ? path.basename(String(args[1])) : null;
+  const removesPending = name.startsWith("deleted-pending-");
+  const removesCredential =
+    isCredential(name) &&
+    (target === null ||
+      (!CREDENTIAL_NAME.test(target) &&
+        !target.startsWith("deleted-pending-")));
+  if (!removesPending && !removesCredential) return;
+  const records = durableRecords(watch);
+  if (removesPending ? records.other : records.other || records.pending) return;
+  watch.violations.push(
+    `${method} ${name}${target === null ? "" : ` -> ${target}`} while no ${removesPending ? "other " : ""}deletion record was durable`,
+  );
+}
 
 function injectFaults(
   faults: ReadonlySet<FaultClass>,
   crashAfter = Number.POSITIVE_INFINITY,
+  watch: Watch | null = null,
 ): Mutation[] {
   const mutations: Mutation[] = [];
   const attempt = async <T>(
@@ -181,6 +284,7 @@ function injectFaults(
     target: unknown,
     fault: FaultClass | null,
     run: () => Promise<T>,
+    args: readonly unknown[] = [],
   ): Promise<T> => {
     const mutation = {
       method,
@@ -192,10 +296,17 @@ function injectFaults(
       throw Object.assign(new Error("simulated crash"), { code: "EIO" });
     if (fault !== null && faults.has(fault))
       throw Object.assign(new Error("EACCES"), { code: "EACCES" });
+    if (watch !== null) checkRemoval(watch, method, args);
     const result = await run();
     mutation.ok = true;
     return result;
   };
+  if (watch !== null) {
+    const originalSet = watch.kv.set.bind(watch.kv);
+    vi.spyOn(watch.kv, "set").mockImplementation(async (key, value) =>
+      attempt("kv", key, "kv", () => originalSet(key, value)),
+    );
+  }
   const originalOpen = fs.open.bind(fs);
   vi.spyOn(fs, "open").mockImplementation(async (file, flags, mode) => {
     if (flags === undefined || flags === "r")
@@ -218,8 +329,12 @@ function injectFaults(
       fs[method] as (...args: unknown[]) => Promise<unknown>
     ).bind(fs);
     vi.spyOn(fs, method).mockImplementation((async (...args: unknown[]) =>
-      attempt(method, method === "rename" ? args[1] : args[0], fault, () =>
-        original(...args),
+      attempt(
+        method,
+        method === "rename" ? args[1] : args[0],
+        fault,
+        () => original(...args),
+        args,
       )) as never);
   }
   return mutations;
@@ -227,6 +342,8 @@ function injectFaults(
 
 function recordsDeletion(mutation: Mutation): boolean {
   if (!mutation.ok) return false;
+  if (mutation.method === "kv")
+    return mutation.target === `deleted-thread:${THREAD_DIGEST}`;
   if (mutation.method === "open")
     return /^deleted-thread-[a-f0-9]{64}\.json$/u.test(mutation.target);
   if (mutation.method === "mkdir")
@@ -238,13 +355,17 @@ function recordsDeletion(mutation: Mutation): boolean {
   return false;
 }
 
+type BbAnswer = "gone" | "live";
+
 async function deletionOutcome(
   lifetime: Lifetime,
   faults: ReadonlySet<FaultClass>,
   files: 1 | 2,
   crash: { during: "delete" | "restart"; after: number } | null,
+  answer: BbAnswer,
 ) {
   const w = await world();
+  const watch: Watch = { directory: w.directory, kv: w.kv, violations: [] };
   const store = await w.open();
   const token = await store.forThread(route, w.hostToken, lifetime);
   const nested =
@@ -255,16 +376,17 @@ async function deletionOutcome(
   const deleteMutations = injectFaults(
     faults,
     crash?.during === "delete" ? crash.after : undefined,
+    watch,
   );
   await store.removeThread(route.threadId).catch(() => undefined);
   vi.restoreAllMocks();
-  w.setBb("live");
+  w.setBb(answer);
   if (crash?.during === "restart") {
-    injectFaults(new Set(), crash.after);
+    injectFaults(new Set(), crash.after, watch);
     await w.open().catch(() => undefined);
     vi.restoreAllMocks();
   }
-  const restartMutations = crash === null ? injectFaults(new Set()) : [];
+  const restartMutations = injectFaults(new Set(), undefined, watch);
   const restarted = await w.open();
   vi.restoreAllMocks();
   const oldTokenAccepted =
@@ -281,44 +403,167 @@ async function deletionOutcome(
     ));
   return {
     outcome: { token: oldTokenAccepted, mint },
+    recorded: deleteMutations.some(recordsDeletion),
     deleteMutations,
     restartMutations,
+    violations: watch.violations,
   };
 }
 
-const EXPECTED_RESIDUAL = [
-  "1 file | refused: none | record: yes | old token accepted: no | mint succeeds: no",
-  "1 file | refused: content | record: yes | old token accepted: no | mint succeeds: no",
-  "1 file | refused: rename | record: yes | old token accepted: no | mint succeeds: no",
-  "1 file | refused: content+rename | record: yes | old token accepted: no | mint succeeds: no",
-  "1 file | refused: rm | record: yes | old token accepted: no | mint succeeds: no",
-  "1 file | refused: content+rm | record: yes | old token accepted: no | mint succeeds: no",
-  "1 file | refused: rename+rm | record: yes | old token accepted: no | mint succeeds: no",
-  "1 file | refused: content+rename+rm | record: yes | old token accepted: no | mint succeeds: no",
-  "1 file | refused: mkdir | record: yes | old token accepted: no | mint succeeds: no",
-  "1 file | refused: content+mkdir | record: yes | old token accepted: no | mint succeeds: no",
-  "1 file | refused: rename+mkdir | record: yes | old token accepted: no | mint succeeds: no",
-  "1 file | refused: content+rename+mkdir | record: no | old token accepted: no | mint succeeds: yes",
-  "1 file | refused: rm+mkdir | record: yes | old token accepted: no | mint succeeds: no",
-  "1 file | refused: content+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no",
-  "1 file | refused: rename+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no",
-  "1 file | refused: content+rename+rm+mkdir | record: no | old token accepted: yes | mint succeeds: yes",
-  "2 files | refused: none | record: yes | old token accepted: no | mint succeeds: no",
-  "2 files | refused: content | record: yes | old token accepted: no | mint succeeds: no",
-  "2 files | refused: rename | record: yes | old token accepted: no | mint succeeds: no",
-  "2 files | refused: content+rename | record: yes | old token accepted: no | mint succeeds: no",
-  "2 files | refused: rm | record: yes | old token accepted: no | mint succeeds: no",
-  "2 files | refused: content+rm | record: yes | old token accepted: no | mint succeeds: no",
-  "2 files | refused: rename+rm | record: yes | old token accepted: no | mint succeeds: no",
-  "2 files | refused: content+rename+rm | record: yes | old token accepted: no | mint succeeds: no",
-  "2 files | refused: mkdir | record: yes | old token accepted: no | mint succeeds: no",
-  "2 files | refused: content+mkdir | record: yes | old token accepted: no | mint succeeds: no",
-  "2 files | refused: rename+mkdir | record: yes | old token accepted: no | mint succeeds: no",
-  "2 files | refused: content+rename+mkdir | record: no | old token accepted: no | mint succeeds: yes",
-  "2 files | refused: rm+mkdir | record: yes | old token accepted: no | mint succeeds: no",
-  "2 files | refused: content+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no",
-  "2 files | refused: rename+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no",
-  "2 files | refused: content+rename+rm+mkdir | record: no | old token accepted: yes | mint succeeds: yes",
+const NO_RECORD: readonly FaultClass[] = ["kv", "content", "rename", "mkdir"];
+
+function faultSubsets(): Set<FaultClass>[] {
+  const subsets: Set<FaultClass>[] = [];
+  for (let mask = 0; mask < 1 << FAULT_CLASSES.length; mask += 1)
+    subsets.push(
+      new Set(FAULT_CLASSES.filter((_, bit) => (mask & (1 << bit)) !== 0)),
+    );
+  return subsets;
+}
+
+function residualRow(
+  files: 1 | 2,
+  faults: ReadonlySet<FaultClass>,
+  recorded: boolean,
+  after: { token: boolean; mint: boolean },
+  before: { token: boolean; mint: boolean },
+): string {
+  const yes = (value: boolean) => (value ? "yes" : "no");
+  return `${files} file${files === 1 ? "" : "s"} | refused: ${[...faults].join("+") || "none"} | record: ${yes(recorded)} | old token accepted: ${yes(after.token)} | mint succeeds: ${yes(after.mint)} | crash before the first record: old token accepted: ${yes(before.token)}, mint succeeds: ${yes(before.mint)}`;
+}
+
+const EXPECTED_GONE = [
+  "1 file | refused: none | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "1 file | refused: kv | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "1 file | refused: content | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "1 file | refused: kv+content | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "1 file | refused: rename | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "1 file | refused: kv+rename | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "1 file | refused: content+rename | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "1 file | refused: kv+content+rename | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "1 file | refused: rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "1 file | refused: kv+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "1 file | refused: content+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "1 file | refused: kv+content+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "1 file | refused: rename+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "1 file | refused: kv+rename+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "1 file | refused: content+rename+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "1 file | refused: kv+content+rename+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "1 file | refused: mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "1 file | refused: kv+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "1 file | refused: content+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "1 file | refused: kv+content+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "1 file | refused: rename+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "1 file | refused: kv+rename+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "1 file | refused: content+rename+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "1 file | refused: kv+content+rename+mkdir | record: no | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "1 file | refused: rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "1 file | refused: kv+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "1 file | refused: content+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "1 file | refused: kv+content+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "1 file | refused: rename+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "1 file | refused: kv+rename+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "1 file | refused: content+rename+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "1 file | refused: kv+content+rename+rm+mkdir | record: no | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "2 files | refused: none | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "2 files | refused: kv | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "2 files | refused: content | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "2 files | refused: kv+content | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "2 files | refused: rename | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "2 files | refused: kv+rename | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "2 files | refused: content+rename | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "2 files | refused: kv+content+rename | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "2 files | refused: rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "2 files | refused: kv+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "2 files | refused: content+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "2 files | refused: kv+content+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "2 files | refused: rename+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "2 files | refused: kv+rename+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "2 files | refused: content+rename+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "2 files | refused: kv+content+rename+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "2 files | refused: mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "2 files | refused: kv+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "2 files | refused: content+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "2 files | refused: kv+content+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "2 files | refused: rename+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "2 files | refused: kv+rename+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "2 files | refused: content+rename+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "2 files | refused: kv+content+rename+mkdir | record: no | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "2 files | refused: rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "2 files | refused: kv+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "2 files | refused: content+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "2 files | refused: kv+content+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "2 files | refused: rename+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "2 files | refused: kv+rename+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "2 files | refused: content+rename+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+  "2 files | refused: kv+content+rename+rm+mkdir | record: no | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: no, mint succeeds: no",
+];
+
+const EXPECTED_LIVE = [
+  "1 file | refused: none | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "1 file | refused: kv | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "1 file | refused: content | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "1 file | refused: kv+content | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "1 file | refused: rename | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "1 file | refused: kv+rename | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "1 file | refused: content+rename | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "1 file | refused: kv+content+rename | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "1 file | refused: rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "1 file | refused: kv+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "1 file | refused: content+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "1 file | refused: kv+content+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "1 file | refused: rename+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "1 file | refused: kv+rename+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "1 file | refused: content+rename+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "1 file | refused: kv+content+rename+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "1 file | refused: mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "1 file | refused: kv+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "1 file | refused: content+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "1 file | refused: kv+content+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "1 file | refused: rename+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "1 file | refused: kv+rename+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "1 file | refused: content+rename+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "1 file | refused: kv+content+rename+mkdir | record: no | old token accepted: yes | mint succeeds: yes | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "1 file | refused: rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "1 file | refused: kv+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "1 file | refused: content+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "1 file | refused: kv+content+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "1 file | refused: rename+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "1 file | refused: kv+rename+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "1 file | refused: content+rename+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "1 file | refused: kv+content+rename+rm+mkdir | record: no | old token accepted: yes | mint succeeds: yes | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "2 files | refused: none | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "2 files | refused: kv | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "2 files | refused: content | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "2 files | refused: kv+content | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "2 files | refused: rename | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "2 files | refused: kv+rename | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "2 files | refused: content+rename | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "2 files | refused: kv+content+rename | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "2 files | refused: rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "2 files | refused: kv+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "2 files | refused: content+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "2 files | refused: kv+content+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "2 files | refused: rename+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "2 files | refused: kv+rename+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "2 files | refused: content+rename+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "2 files | refused: kv+content+rename+rm | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "2 files | refused: mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "2 files | refused: kv+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "2 files | refused: content+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "2 files | refused: kv+content+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "2 files | refused: rename+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "2 files | refused: kv+rename+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "2 files | refused: content+rename+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "2 files | refused: kv+content+rename+mkdir | record: no | old token accepted: yes | mint succeeds: yes | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "2 files | refused: rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "2 files | refused: kv+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "2 files | refused: content+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "2 files | refused: kv+content+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "2 files | refused: rename+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "2 files | refused: kv+rename+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "2 files | refused: content+rename+rm+mkdir | record: yes | old token accepted: no | mint succeeds: no | crash before the first record: old token accepted: yes, mint succeeds: yes",
+  "2 files | refused: kv+content+rename+rm+mkdir | record: no | old token accepted: yes | mint succeeds: yes | crash before the first record: old token accepted: yes, mint succeeds: yes",
 ];
 
 function crashAfter(
@@ -1264,7 +1509,7 @@ describe.each(["durable", "process"] as const)("%s credentials", (lifetime) => {
     const store = await w.open();
     const tokens = await mint(store, w.hostToken, lifetime);
     const stored = await threadFiles(w.directory);
-    refuseRecords();
+    refuseRecords(w.kv);
     w.setBb("gone");
     const removal = await store.removeThread(route.threadId).then(
       () => "recorded",
@@ -1305,7 +1550,7 @@ describe.each(["durable", "process"] as const)("%s credentials", (lifetime) => {
     const store = await w.open();
     const tokens = await mint(store, w.hostToken, lifetime);
     const stored = await threadFiles(w.directory);
-    refuseRecords();
+    refuseRecords(w.kv);
     w.setBb("gone");
     const removal = await store.removeThread(route.threadId).then(
       () => "recorded",
@@ -1349,7 +1594,7 @@ describe.each(["durable", "process"] as const)("%s credentials", (lifetime) => {
     const store = await w.open();
     const tokens = await mint(store, w.hostToken, lifetime);
     const before = await snapshot(w.directory);
-    refuseMutations();
+    refuseMutations(w.kv);
     w.setBb("gone");
     const removal = await store.removeThread(route.threadId).then(
       () => "recorded",
@@ -1399,53 +1644,294 @@ describe.each(["durable", "process"] as const)("%s credentials", (lifetime) => {
     expect(removal).toBe("recorded");
   });
 
-  it("computes the deletion residual for every subset of refused mutation classes, one and two credential files, and every crash point after the deletion is recorded and during the next start", async () => {
-    const yes = (value: boolean) => (value ? "yes" : "no");
-    const rows: string[] = [];
-    const runs: number[] = [];
-    for (const files of [1, 2] as const)
-      for (let mask = 0; mask < 16; mask += 1) {
-        const faults = new Set(
-          FAULT_CLASSES.filter((_, bit) => (mask & (1 << bit)) !== 0),
-        );
-        const probe = await deletionOutcome(lifetime, faults, files, null);
-        const commit = probe.deleteMutations.findIndex(recordsDeletion);
-        const outcomes = [probe.outcome];
-        if (commit !== -1)
-          for (
-            let after = commit + 1;
-            after < probe.deleteMutations.length;
-            after += 1
-          )
-            outcomes.push(
-              (
-                await deletionOutcome(lifetime, faults, files, {
-                  during: "delete",
-                  after,
-                })
-              ).outcome,
-            );
-        for (let after = 0; after < probe.restartMutations.length; after += 1)
-          outcomes.push(
-            (
-              await deletionOutcome(lifetime, faults, files, {
-                during: "restart",
-                after,
-              })
-            ).outcome,
-          );
-        rows.push(
-          `${files} file${files === 1 ? "" : "s"} | refused: ${[...faults].join("+") || "none"} | record: ${yes(commit !== -1)} | old token accepted: ${yes(outcomes.some((outcome) => outcome.token))} | mint succeeds: ${yes(outcomes.some((outcome) => outcome.mint))}`,
-        );
-        runs.push(outcomes.length);
-      }
-    console.log(
-      [
-        `deletion residual (${lifetime}), bb's first answer live after every restart:`,
-        ...rows.map((row, index) => `${row} | runs: ${runs[index]}`),
-      ].join("\n"),
+  it("records the deletion in bb's database before removing any file when content writes, renames and the deletion directory are refused but rm works, and accepts no old token and mints nothing after a restart whose first bb answer is live", async () => {
+    const w = await world();
+    const watch: Watch = { directory: w.directory, kv: w.kv, violations: [] };
+    const store = await w.open();
+    const tokens = await mint(store, w.hostToken, lifetime);
+    w.setBb("gone");
+    const mutations = injectFaults(
+      new Set(["content", "rename", "mkdir"]),
+      undefined,
+      watch,
     );
-    expect(rows).toEqual(EXPECTED_RESIDUAL);
-    expect(runs.every((count) => count > 1)).toBe(true);
-  }, 600_000);
+    const removal = await store.removeThread(route.threadId).then(
+      () => "recorded",
+      (error: unknown) => String(error),
+    );
+    vi.restoreAllMocks();
+    const kvRecord = mutations.findIndex(
+      (mutation) => mutation.method === "kv" && mutation.ok,
+    );
+    const firstRemoval = mutations.findIndex(
+      (mutation) =>
+        (mutation.method === "rm" || mutation.method === "unlink") &&
+        mutation.ok &&
+        isCredential(mutation.target),
+    );
+    expect(removal).toBe("recorded");
+    expect(kvRecord).toBe(0);
+    expect(firstRemoval).toBeGreaterThan(kvRecord);
+    expect(w.kv.rows.get(`deleted-thread:${THREAD_DIGEST}`)).toEqual({
+      deletedAt: w.clock(),
+    });
+    expect(await threadFiles(w.directory)).toEqual([]);
+    expect(await deletedMarkers(w.directory)).toEqual([]);
+    expect(watch.violations).toEqual([]);
+    w.setBb("live");
+    const restarted = await w.open();
+    expect(await accepted(restarted, tokens)).toEqual({
+      token: false,
+      nested: false,
+    });
+    expect(await restarted.settleThread(route.threadId)).toBe(false);
+    await expectNoMint(restarted, w.hostToken, lifetime);
+  });
+
+  it("keeps the deleted-pending renames as the only record when bb's database, content writes and the deletion directory are refused, and accepts no old token and mints nothing after a restart whose first bb answer is live", async () => {
+    const w = await world();
+    const watch: Watch = { directory: w.directory, kv: w.kv, violations: [] };
+    const store = await w.open();
+    const tokens = await mint(store, w.hostToken, lifetime);
+    const stored = await threadFiles(w.directory);
+    w.setBb("gone");
+    injectFaults(new Set(["kv", "content", "mkdir"]), undefined, watch);
+    const removal = await store.removeThread(route.threadId).then(
+      () => "recorded",
+      (error: unknown) => String(error),
+    );
+    expect(removal).toContain("could not record the deletion");
+    w.setBb("live");
+    const restarted = await w.open();
+    expect(await accepted(restarted, tokens)).toEqual({
+      token: false,
+      nested: false,
+    });
+    expect(await restarted.settleThread(route.threadId)).toBe(false);
+    await expectNoMint(restarted, w.hostToken, lifetime);
+    await restarted.sweepThreads(w.lookup);
+    vi.restoreAllMocks();
+    const held = (await fs.readdir(w.directory)).filter((name) =>
+      name.includes(route.threadId),
+    );
+    expect(held.length).toBe(stored.length);
+    expect(held.every((name) => name.startsWith("deleted-pending-"))).toBe(
+      true,
+    );
+    expect(await threadFiles(w.directory)).toEqual(stored);
+    expect(w.kv.rows.size).toBe(0);
+    expect(await deletedMarkers(w.directory)).toEqual([]);
+    expect(watch.violations).toEqual([]);
+  });
+
+  it("removes nothing and keeps every file byte-identical when bb's database, content writes, renames and the deletion directory are all refused even though rm works, while the thread stays deleted in process", async () => {
+    const w = await world();
+    const watch: Watch = { directory: w.directory, kv: w.kv, violations: [] };
+    const store = await w.open();
+    const tokens = await mint(store, w.hostToken, lifetime);
+    const before = await snapshot(w.directory);
+    w.setBb("gone");
+    injectFaults(new Set(NO_RECORD), undefined, watch);
+    const removal = await store.removeThread(route.threadId).then(
+      () => "recorded",
+      (error: unknown) => String(error),
+    );
+    expect(removal).toContain("could not record the deletion");
+    w.setBb("live");
+    await store.sweepThreads(w.lookup);
+    expect(await accepted(store, tokens)).toEqual({
+      token: false,
+      nested: false,
+    });
+    expect(await store.settleThread(route.threadId)).toBe(false);
+    await expectNoMint(store, w.hostToken, lifetime);
+    vi.restoreAllMocks();
+    expect(await snapshot(w.directory)).toEqual(before);
+    expect(w.kv.rows.size).toBe(0);
+    expect(watch.violations).toEqual([]);
+  });
+
+  it("retries an unrecorded deletion on the next sweep, recording it in bb's database before removing the deleted-pending files", async () => {
+    const w = await world();
+    const watch: Watch = { directory: w.directory, kv: w.kv, violations: [] };
+    const store = await w.open();
+    const tokens = await mint(store, w.hostToken, lifetime);
+    refuseRecords(w.kv);
+    w.setBb("gone");
+    await expect(store.removeThread(route.threadId)).rejects.toThrow(
+      "could not record the deletion",
+    );
+    vi.restoreAllMocks();
+    expect(
+      (await fs.readdir(w.directory))
+        .filter((name) => name.includes(route.threadId))
+        .every((name) => name.startsWith("deleted-pending-")),
+    ).toBe(true);
+    w.setBb("live");
+    injectFaults(new Set(), undefined, watch);
+    await store.sweepThreads(w.lookup);
+    vi.restoreAllMocks();
+    expect(w.kv.rows.has(`deleted-thread:${THREAD_DIGEST}`)).toBe(true);
+    expect(
+      (await fs.readdir(w.directory)).filter((name) =>
+        name.includes(route.threadId),
+      ),
+    ).toEqual([]);
+    expect(watch.violations).toEqual([]);
+    expect(await accepted(store, tokens)).toEqual({
+      token: false,
+      nested: false,
+    });
+    await expectNoMint(store, w.hostToken, lifetime);
+  });
+
+  it("rejects every token and refuses mints while bb's deletion records cannot be loaded at start, accepts a live thread's tokens once a sweep reloads them, and never reads them on authentication", async () => {
+    const w = await world();
+    const store = await w.open();
+    const tokens = await mint(store, w.hostToken, lifetime);
+    const failing = vi
+      .spyOn(w.kv, "list")
+      .mockRejectedValue(new Error("SQLITE_BUSY"));
+    const restarted = new ThreadTokenStore(
+      w.directory,
+      w.hosts,
+      w.clock,
+      w.lookup,
+      undefined,
+      undefined,
+      w.kv,
+    );
+    await restarted.initialize([route.hostId]);
+    expect(await accepted(restarted, tokens)).toEqual({
+      token: false,
+      nested: false,
+    });
+    await expect(
+      restarted.forThread(route, w.hostToken, lifetime),
+    ).rejects.toThrow("before Account Pooler has loaded its deletion records");
+    await restarted.sweepThreads(w.lookup);
+    expect(await accepted(restarted, tokens)).toEqual({
+      token: false,
+      nested: false,
+    });
+    failing.mockRestore();
+    await restarted.sweepThreads(w.lookup);
+    const reads = vi.spyOn(w.kv, "list");
+    const writes = vi.spyOn(w.kv, "set");
+    expect(await accepted(restarted, tokens)).toEqual({
+      token: true,
+      nested: true,
+    });
+    expect(reads).not.toHaveBeenCalled();
+    expect(writes).not.toHaveBeenCalled();
+  });
+
+  it("removes the credentials of a thread deleted only in bb's database once a sweep reloads the deletion records that failed to load at start", async () => {
+    const w = await world();
+    const store = await w.open();
+    const tokens = await mint(store, w.hostToken, lifetime);
+    await w.kv.set(`deleted-thread:${THREAD_DIGEST}`, { deletedAt: w.clock() });
+    const failing = vi
+      .spyOn(w.kv, "list")
+      .mockRejectedValue(new Error("SQLITE_BUSY"));
+    const restarted = new ThreadTokenStore(
+      w.directory,
+      w.hosts,
+      w.clock,
+      w.lookup,
+      undefined,
+      undefined,
+      w.kv,
+    );
+    await restarted.initialize([route.hostId]);
+    expect(await threadFiles(w.directory)).not.toEqual([]);
+    expect(await accepted(restarted, tokens)).toEqual({
+      token: false,
+      nested: false,
+    });
+    failing.mockRestore();
+    await restarted.sweepThreads(w.lookup);
+    expect(await threadFiles(w.directory)).toEqual([]);
+    expect(await accepted(restarted, tokens)).toEqual({
+      token: false,
+      nested: false,
+    });
+    await expectNoMint(restarted, w.hostToken, lifetime);
+  });
+
+  it("computes the deletion residual for every subset of refused bb-database, content, rename, rm and directory mutations, one and two credential files, both bb answers after the restart, and every crash point from the first mutation of the delete through the next start", async () => {
+    const tables: Record<BbAnswer, string[]> = { gone: [], live: [] };
+    const runs: Record<BbAnswer, number[]> = { gone: [], live: [] };
+    const violations: string[] = [];
+    const any = (outcomes: readonly { token: boolean; mint: boolean }[]) => ({
+      token: outcomes.some((outcome) => outcome.token),
+      mint: outcomes.some((outcome) => outcome.mint),
+    });
+    for (const answer of ["gone", "live"] as const)
+      for (const files of [1, 2] as const)
+        for (const faults of faultSubsets()) {
+          const cell = `${answer} ${files} ${[...faults].join("+") || "none"}`;
+          const probe = await deletionOutcome(
+            lifetime,
+            faults,
+            files,
+            null,
+            answer,
+          );
+          violations.push(...probe.violations.map((v) => `${cell}: ${v}`));
+          const after = [probe.outcome];
+          const before: { token: boolean; mint: boolean }[] = [];
+          for (
+            let point = 0;
+            point < probe.deleteMutations.length;
+            point += 1
+          ) {
+            const run = await deletionOutcome(
+              lifetime,
+              faults,
+              files,
+              { during: "delete", after: point },
+              answer,
+            );
+            violations.push(
+              ...run.violations.map((v) => `${cell} delete@${point}: ${v}`),
+            );
+            (run.recorded ? after : before).push(run.outcome);
+          }
+          for (
+            let point = 0;
+            point < probe.restartMutations.length;
+            point += 1
+          ) {
+            const run = await deletionOutcome(
+              lifetime,
+              faults,
+              files,
+              { during: "restart", after: point },
+              answer,
+            );
+            violations.push(
+              ...run.violations.map((v) => `${cell} restart@${point}: ${v}`),
+            );
+            (probe.recorded ? after : before).push(run.outcome);
+          }
+          tables[answer].push(
+            residualRow(files, faults, probe.recorded, any(after), any(before)),
+          );
+          runs[answer].push(after.length + before.length);
+        }
+    for (const answer of ["gone", "live"] as const)
+      console.log(
+        [
+          `deletion residual (${lifetime}), bb's first answer ${answer} after every restart:`,
+          ...tables[answer].map(
+            (row, index) => `${row} | runs: ${runs[answer][index]}`,
+          ),
+        ].join("\n"),
+      );
+    expect(violations).toEqual([]);
+    expect(tables.gone).toEqual(EXPECTED_GONE);
+    expect(tables.live).toEqual(EXPECTED_LIVE);
+    expect([...runs.gone, ...runs.live].every((count) => count > 1)).toBe(true);
+  }, 1_800_000);
 });

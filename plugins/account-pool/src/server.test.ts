@@ -10939,14 +10939,25 @@ describe("Account Pool credential scoping", () => {
     {
       refusal: "its deleted marker could not be written",
       fragments: ["deleted-thread-"],
+      database: true,
+      renames: true,
     },
     {
       refusal: "no deletion record could be written",
       fragments: ["deleted-thread-", "archived-thread-", "archive-revocation-"],
+      database: false,
+      renames: true,
+    },
+    {
+      refusal:
+        "only bb's database could record the deletion and no credential file could be renamed",
+      fragments: ["deleted-thread-", "archived-thread-", "archive-revocation-"],
+      database: true,
+      renames: false,
     },
   ])(
     "keeps a deleted thread deleted for tokens and env resolution after a restart whose first bb answer is live, when $refusal",
-    async ({ fragments }) => {
+    async ({ fragments, database, renames }) => {
       const fixture = await scopedFixture();
       const { host } = fixture;
       const secrets = path.join(fixture.dataDir, ...POOL_SECRETS);
@@ -10969,12 +10980,27 @@ describe("Account Pool credential scoping", () => {
           throw Object.assign(new Error("ENOSPC"), { code: "ENOSPC" });
         return originalMkdir(file as never, options as never);
       }) as never);
+      const originalSet = host.bb.storage.kv.set.bind(host.bb.storage.kv);
+      const refusedDatabase = vi
+        .spyOn(host.bb.storage.kv, "set")
+        .mockImplementation(async (key, value) => {
+          if (!database && key.startsWith("deleted-thread:"))
+            throw new Error("SQLITE_FULL");
+          return originalSet(key, value);
+        });
+      const refusedRename = vi.spyOn(fs, "rename");
+      if (!renames)
+        refusedRename.mockRejectedValue(
+          Object.assign(new Error("EACCES"), { code: "EACCES" }),
+        );
       bbThreadStates.set("thread-unrecorded", "deleted");
       await host.harness.behavior.emitThreadEvent("thread.deleted", {
         thread: makeThreadResponse({ id: "thread-unrecorded" }),
       });
       refused.mockRestore();
       refusedDirectory.mockRestore();
+      refusedDatabase.mockRestore();
+      refusedRename.mockRestore();
       const held = (await fs.readdir(secrets)).filter((name) =>
         name.includes("thread-unrecorded"),
       );
@@ -10983,12 +11009,16 @@ describe("Account Pool credential scoping", () => {
           name.startsWith("deleted-thread-"),
         ),
       ).toBe(false);
-      if (fragments.length > 1) {
+      expect((await host.bb.storage.kv.list("deleted-thread:")).length).toBe(
+        database ? 1 : 0,
+      );
+      if (!database) {
         expect(held.length).toBeGreaterThan(0);
         expect(held.every((name) => name.startsWith("deleted-pending-"))).toBe(
           true,
         );
       }
+      if (!renames) expect(held).toEqual([]);
       bbThreadStates.delete("thread-unrecorded");
       const reloaded = await host.harness.lifecycle.reload(
         createAccountPoolPlugin({

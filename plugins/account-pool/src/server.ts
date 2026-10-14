@@ -171,6 +171,7 @@ export function createAccountPoolPlugin(
       lookupThread,
       options.threadSweepLookupTimeoutMs ?? THREAD_SWEEP_LOOKUP_TIMEOUT_MS,
       (message) => bb.log.warn(message),
+      bb.storage.kv,
     );
     await threadTokens.initialize(enrolledHosts.map((host) => host.id));
     const routing = new RoutingStore(bb.storage.kv, now);

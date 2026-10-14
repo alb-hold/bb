@@ -6,6 +6,7 @@ import {
 } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import type { PluginKvStorage } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { providerSchema } from "./contracts.js";
 import type { HubTokenStore } from "./store.js";
@@ -27,6 +28,7 @@ const DELETED_THREAD_PREFIX = "deleted-thread-";
 const DELETED_THREAD_NAME = /^deleted-thread-([a-f0-9]{64})\.(?:json|d)$/u;
 const DELETED_PENDING_PREFIX = "deleted-pending-";
 const DELETED_PENDING_NAME = /^deleted-pending-([a-f0-9]{64})-/u;
+const DELETED_THREAD_KEY = "deleted-thread:";
 
 const identifierSchema = z.string().regex(/^[A-Za-z0-9_-]+$/u);
 const tokenSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/u);
@@ -123,6 +125,7 @@ export type ThreadLookup = (
 ) => Promise<"live" | "archived" | "gone">;
 export const THREAD_STATE_LOOKUP_TIMEOUT_MS = 5_000;
 export const UNANSWERED_WARNING_MS = 60_000;
+export type DeletionRecords = Pick<PluginKvStorage, "set" | "list">;
 export type ThreadSweepOptions = {
   signal?: AbortSignal;
   lookupTimeoutMs?: number;
@@ -140,6 +143,10 @@ export class ThreadTokenStore {
   private readonly nestedTokenIndex = new Map<string, NestedRouteRecord>();
   private readonly archivedThreads = new Set<string>();
   private readonly deletedThreadDigests = new Set<string>();
+  private readonly recordedDeletions = new Set<string>();
+  private readonly unrecordedThreads = new Set<string>();
+  private readonly unrecordedPending = new Set<string>();
+  private deletionRecordsUnloaded = false;
   private readonly deletedLiveWarnings = new Map<string, number>();
   private readonly activeArchiveMarkers = new Set<string>();
   private readonly archiveEpochs = new Map<string, number>();
@@ -172,33 +179,30 @@ export class ThreadTokenStore {
     private readonly threadState?: ThreadLookup,
     private readonly lookupTimeoutMs = THREAD_STATE_LOOKUP_TIMEOUT_MS,
     private readonly warn: (message: string) => void = () => {},
+    private readonly deletions?: DeletionRecords,
   ) {}
 
   async initialize(hostIds: readonly string[]): Promise<void> {
     await fs.mkdir(this.directory, { recursive: true, mode: 0o700 });
     await fs.chmod(this.directory, 0o700);
     const enrolled = new Set(hostIds);
+    await this.loadDeletionRecords();
     const names = await fs.readdir(this.directory);
-    const recorded = new Set<string>();
-    const pending = new Map<string, string[]>();
+    const pending = new Set<string>();
     for (const name of names) {
       const deleted = DELETED_THREAD_NAME.exec(name);
       if (deleted?.[1] !== undefined) {
         this.deletedThreadDigests.add(deleted[1]);
-        recorded.add(deleted[1]);
+        this.recordedDeletions.add(deleted[1]);
       }
       const held = DELETED_PENDING_NAME.exec(name);
       if (held?.[1] !== undefined) {
         this.deletedThreadDigests.add(held[1]);
-        pending.set(held[1], [...(pending.get(held[1]) ?? []), name]);
+        pending.add(held[1]);
       }
     }
-    for (const [threadDigest, held] of pending)
-      await this.recordPendingDeletion(
-        threadDigest,
-        held,
-        recorded.has(threadDigest),
-      );
+    for (const threadDigest of pending)
+      await this.recordPendingDeletion(threadDigest, names);
     for (const name of names) {
       if (
         (name.startsWith(ARCHIVED_THREAD_PREFIX) ||
@@ -215,28 +219,87 @@ export class ThreadTokenStore {
     }
   }
 
+  private async loadDeletionRecords(): Promise<boolean> {
+    if (this.deletions === undefined) return true;
+    try {
+      for (const key of await this.deletions.list(DELETED_THREAD_KEY)) {
+        const threadDigest = digestSchema.safeParse(
+          key.slice(DELETED_THREAD_KEY.length),
+        );
+        if (!key.startsWith(DELETED_THREAD_KEY) || !threadDigest.success)
+          continue;
+        this.deletedThreadDigests.add(threadDigest.data);
+        this.recordedDeletions.add(threadDigest.data);
+      }
+      this.deletionRecordsUnloaded = false;
+    } catch {
+      this.deletionRecordsUnloaded = true;
+    }
+    return !this.deletionRecordsUnloaded;
+  }
+
   private async recordPendingDeletion(
     threadDigest: string,
-    held: readonly string[],
-    recorded: boolean,
+    names: readonly string[],
   ): Promise<void> {
-    if (!recorded) {
-      try {
-        await this.persist(
-          path.join(
-            this.directory,
-            `${DELETED_THREAD_PREFIX}${threadDigest}.json`,
-          ),
-          { threadDigest, deleted: true },
+    if (
+      !this.recordedDeletions.has(threadDigest) &&
+      !(await this.recordDeletion(threadDigest, null))
+    ) {
+      this.unrecordedPending.add(threadDigest);
+      return;
+    }
+    this.unrecordedPending.delete(threadDigest);
+    for (const name of names)
+      if (name.startsWith(`${DELETED_PENDING_PREFIX}${threadDigest}-`))
+        await fs
+          .rm(path.join(this.directory, name), { force: true })
+          .catch(() => undefined);
+  }
+
+  private async recordDeletion(
+    threadDigest: string,
+    marker: { threadId: string; epoch: number } | null,
+  ): Promise<boolean> {
+    let recorded = false;
+    if (this.deletions !== undefined)
+      recorded = await this.deletions
+        .set(`${DELETED_THREAD_KEY}${threadDigest}`, { deletedAt: this.now() })
+        .then(
+          () => true,
+          () => false,
         );
-      } catch {
-        return;
+    const writeDeleted = () =>
+      this.persist(this.deletedFileOf(threadDigest), {
+        threadDigest,
+        deleted: true,
+      }).then(
+        () => true,
+        () => false,
+      );
+    let filed = await writeDeleted();
+    if (marker !== null) {
+      const { threadId, epoch } = marker;
+      const archived = { threadId, epoch, archived: true, deleted: true };
+      for (const [file, name] of [
+        [this.archivedFile(threadId), this.archivedName(threadId)],
+        [
+          this.archiveFallbackFile(threadId),
+          this.archiveFallbackName(threadId),
+        ],
+      ] as const) {
+        try {
+          await this.persist(file, archived);
+          this.seenArchiveMarkers.add(name);
+          filed = true;
+        } catch {}
       }
     }
-    for (const name of held)
-      await fs
-        .rm(path.join(this.directory, name), { force: true })
-        .catch(() => undefined);
+    if (!filed) filed = await writeDeleted();
+    if (!filed) filed = await this.createDeletedRecord(threadDigest);
+    if (!filed) filed = await this.createDeletedDirectory(threadDigest);
+    if (recorded || filed) this.recordedDeletions.add(threadDigest);
+    return recorded || filed;
   }
 
   private async loadArchiveMarker(name: string): Promise<void> {
@@ -367,6 +430,7 @@ export class ThreadTokenStore {
       .parse(route);
     const hostTokenDigest = digest(hostToken);
     return this.serialize(async () => {
+      await this.requireDeletionRecords();
       if (this.isDeleted(parsed.threadId))
         throw new Error("Cannot mint a credential for a deleted thread.");
       if (await this.isArchived(parsed.threadId))
@@ -416,6 +480,7 @@ export class ThreadTokenStore {
       .parse(route);
     const hostTokenDigest = digest(hostToken);
     return this.serialize(async () => {
+      await this.requireDeletionRecords();
       if (this.isDeleted(parsed.threadId))
         throw new Error("Cannot mint a credential for a deleted thread.");
       if (await this.isArchived(parsed.threadId))
@@ -456,6 +521,7 @@ export class ThreadTokenStore {
   ): Promise<ThreadRoute | null> {
     const match = lookup(this.tokenIndex, token);
     if (match === null || this.credentialExpired(match)) return null;
+    if (this.deletionRecordsUnloaded) return null;
     const { record } = match;
     const admitted = await this.admit(record.threadId);
     if (admitted === null) return null;
@@ -491,6 +557,7 @@ export class ThreadTokenStore {
   async authenticateNested(token: string | null): Promise<NestedRoute | null> {
     const match = lookup(this.nestedTokenIndex, token);
     if (match === null || this.credentialExpired(match)) return null;
+    if (this.deletionRecordsUnloaded) return null;
     const { record } = match;
     const admitted = await this.admit(record.threadId);
     if (admitted === null) return null;
@@ -535,11 +602,13 @@ export class ThreadTokenStore {
       const holding =
         directoryReadFailed || this.holdsCredentials(threadId, names);
       if (!(await this.persistDeletion(threadId, nextEpoch, holding))) {
+        this.unrecordedThreads.add(threadId);
         if (holding) await this.holdDeletedFiles(threadId, names, epoch);
         throw new Error(
-          `Account Pooler could not record the deletion of thread ${threadId}; its credential files are renamed to deleted-pending- files, which keep it deleted across restarts until the deletion is recorded, or removed where renaming fails.`,
+          `Account Pooler could not record the deletion of thread ${threadId}; it stays deleted in this process, its credential files are renamed to deleted-pending- files where renaming works and otherwise stay untouched, and the record is retried on the next event, sweep and start.`,
         );
       }
+      this.unrecordedThreads.delete(threadId);
       for (const [key, record] of this.routes) {
         if (record.threadId !== threadId) continue;
         this.routes.delete(key);
@@ -552,7 +621,14 @@ export class ThreadTokenStore {
         unindexCredential(this.nestedTokenIndex, record);
         await this.removeNestedFiles(record, epoch).catch(() => undefined);
       }
-      for (const name of this.suspendedFiles(threadId, names))
+      const threadDigest = digest(threadId);
+      for (const name of [
+        ...this.suspendedFiles(threadId, names),
+        ...names.filter((name) => this.hasCredentialFile(threadId, [name])),
+        ...names.filter((name) =>
+          name.startsWith(`${DELETED_PENDING_PREFIX}${threadDigest}-`),
+        ),
+      ])
         await this.removeCredentialFile(path.join(this.directory, name)).catch(
           () => undefined,
         );
@@ -567,34 +643,10 @@ export class ThreadTokenStore {
     epoch: number,
     holding: boolean,
   ): Promise<boolean> {
-    const writeDeleted = () =>
-      this.persist(this.deletedFile(threadId), {
-        threadId,
-        deleted: true,
-      }).then(
-        () => true,
-        () => false,
-      );
-    let recorded = await writeDeleted();
-    if (holding) {
-      const marker = { threadId, epoch, archived: true, deleted: true };
-      for (const [file, name] of [
-        [this.archivedFile(threadId), this.archivedName(threadId)],
-        [
-          this.archiveFallbackFile(threadId),
-          this.archiveFallbackName(threadId),
-        ],
-      ] as const) {
-        try {
-          await this.persist(file, marker);
-          this.seenArchiveMarkers.add(name);
-          recorded = true;
-        } catch {}
-      }
-    }
-    if (!recorded) recorded = await writeDeleted();
-    if (!recorded) recorded = await this.createDeletedRecord(threadId);
-    if (!recorded) recorded = await this.createDeletedDirectory(threadId);
+    const recorded = await this.recordDeletion(
+      digest(threadId),
+      holding ? { threadId, epoch } : null,
+    );
     if (recorded) {
       this.clearMarkerFailures(threadId);
       this.archiveDurabilityFailures.delete(threadId);
@@ -602,15 +654,15 @@ export class ThreadTokenStore {
     return recorded;
   }
 
-  private async createDeletedRecord(threadId: string): Promise<boolean> {
+  private async createDeletedRecord(threadDigest: string): Promise<boolean> {
     let handle: Awaited<ReturnType<typeof fs.open>>;
     try {
-      handle = await fs.open(this.deletedFile(threadId), "w", 0o600);
+      handle = await fs.open(this.deletedFileOf(threadDigest), "w", 0o600);
     } catch {
       return false;
     }
     try {
-      await handle.writeFile(JSON.stringify({ threadId, deleted: true }));
+      await handle.writeFile(JSON.stringify({ threadDigest, deleted: true }));
       await handle.sync();
     } catch {
     } finally {
@@ -619,13 +671,10 @@ export class ThreadTokenStore {
     return true;
   }
 
-  private async createDeletedDirectory(threadId: string): Promise<boolean> {
+  private async createDeletedDirectory(threadDigest: string): Promise<boolean> {
     return fs
       .mkdir(
-        path.join(
-          this.directory,
-          `${DELETED_THREAD_PREFIX}${digest(threadId)}.d`,
-        ),
+        path.join(this.directory, `${DELETED_THREAD_PREFIX}${threadDigest}.d`),
         { mode: 0o700 },
       )
       .then(
@@ -676,14 +725,9 @@ export class ThreadTokenStore {
             "code" in error &&
             error.code === "ENOENT",
         );
-      if (renamed) continue;
-      const removed = await fs.rm(file, { force: true }).then(
-        () => true,
-        () => false,
-      );
-      if (!removed)
+      if (!renamed)
         this.warn(
-          `Account Pooler could not rename or remove credential file ${name} of deleted thread ${threadId}; it stays in place.`,
+          `Account Pooler could not rename credential file ${name} of deleted thread ${threadId}; it stays in place until a deletion record can be written.`,
         );
     }
   }
@@ -731,10 +775,38 @@ export class ThreadTokenStore {
     });
   }
 
+  private async requireDeletionRecords(): Promise<void> {
+    if (!this.deletionRecordsUnloaded || (await this.loadDeletionRecords()))
+      return;
+    throw new Error(
+      "Cannot mint a credential before Account Pooler has loaded its deletion records.",
+    );
+  }
+
+  private async retryDeletionRecords(): Promise<void> {
+    if (this.deletionRecordsUnloaded) await this.loadDeletionRecords();
+    const threadIds = new Set(this.unrecordedThreads);
+    for (const record of [
+      ...this.routes.values(),
+      ...this.nestedRoutes.values(),
+    ])
+      if (this.isDeleted(record.threadId)) threadIds.add(record.threadId);
+    for (const threadId of threadIds)
+      await this.removeThread(threadId).catch(() => undefined);
+    if (this.unrecordedPending.size === 0) return;
+    const names = await fs.readdir(this.directory).catch(() => null);
+    if (names === null) return;
+    for (const threadDigest of [...this.unrecordedPending])
+      await this.serialize(() =>
+        this.recordPendingDeletion(threadDigest, names),
+      );
+  }
+
   async sweepThreads(
     lookup: ThreadLookup,
     options: ThreadSweepOptions = {},
   ): Promise<ThreadSweepResult> {
+    await this.retryDeletionRecords();
     const threadIds = new Set<string>();
     for (const record of this.routes.values()) threadIds.add(record.threadId);
     for (const record of this.nestedRoutes.values())
@@ -1657,10 +1729,10 @@ export class ThreadTokenStore {
     return path.join(this.directory, this.archiveFallbackName(threadId));
   }
 
-  private deletedFile(threadId: string): string {
+  private deletedFileOf(threadDigest: string): string {
     return path.join(
       this.directory,
-      `${DELETED_THREAD_PREFIX}${digest(threadId)}.json`,
+      `${DELETED_THREAD_PREFIX}${threadDigest}.json`,
     );
   }
 
