@@ -17,6 +17,7 @@ function renderControls() {
       onInput={onInput}
       onKeyboardToggle={vi.fn()}
       onPaste={vi.fn()}
+      onSelectText={vi.fn()}
     />,
   );
   return onInput;
