@@ -261,15 +261,8 @@ export class ThreadTokenStore {
   private async recordDeletion(
     threadDigest: string,
     marker: { threadId: string; epoch: number } | null,
+    holdFiles: (() => Promise<void>) | null = null,
   ): Promise<boolean> {
-    let recorded = false;
-    if (this.deletions !== undefined)
-      recorded = await this.deletions
-        .set(`${DELETED_THREAD_KEY}${threadDigest}`, { deletedAt: this.now() })
-        .then(
-          () => true,
-          () => false,
-        );
     const writeDeleted = () =>
       this.persist(this.deletedFileOf(threadDigest), {
         threadDigest,
@@ -299,6 +292,15 @@ export class ThreadTokenStore {
     if (!filed) filed = await writeDeleted();
     if (!filed) filed = await this.createDeletedRecord(threadDigest);
     if (!filed) filed = await this.createDeletedDirectory(threadDigest);
+    if (!filed && holdFiles !== null) await holdFiles();
+    let recorded = false;
+    if (this.deletions !== undefined)
+      recorded = await this.deletions
+        .set(`${DELETED_THREAD_KEY}${threadDigest}`, { deletedAt: this.now() })
+        .then(
+          () => true,
+          () => false,
+        );
     if (recorded || filed) this.recordedDeletions.add(threadDigest);
     return recorded || filed;
   }
@@ -602,9 +604,21 @@ export class ThreadTokenStore {
       }
       const holding =
         directoryReadFailed || this.holdsCredentials(threadId, names);
-      if (!(await this.persistDeletion(threadId, nextEpoch, holding))) {
+      let held = false;
+      const recorded = await this.persistDeletion(
+        threadId,
+        nextEpoch,
+        holding,
+        holding
+          ? async () => {
+              held = true;
+              await this.holdDeletedFiles(threadId, names, epoch);
+            }
+          : null,
+      );
+      if (held) names = await fs.readdir(this.directory).catch(() => names);
+      if (!recorded) {
         this.unrecordedThreads.add(threadId);
-        if (holding) await this.holdDeletedFiles(threadId, names, epoch);
         throw new Error(
           `Account Pooler could not record the deletion of thread ${threadId}; it stays deleted in this process, its credential files are renamed to deleted-pending- files where renaming works and otherwise stay untouched, and the record is retried on the next event, sweep and start.`,
         );
@@ -646,10 +660,12 @@ export class ThreadTokenStore {
     threadId: string,
     epoch: number,
     holding: boolean,
+    holdFiles: (() => Promise<void>) | null,
   ): Promise<boolean> {
     const recorded = await this.recordDeletion(
       digest(threadId),
       holding ? { threadId, epoch } : null,
+      holdFiles,
     );
     if (recorded) {
       this.clearMarkerFailures(threadId);
