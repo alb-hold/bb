@@ -11253,6 +11253,34 @@ describe("Account Pool credential scoping", () => {
     expect(await statusOf(host, heldNested, "/availability")).toBe(200);
   });
 
+  it("revokes the tokens of a thread bb reports deleted without an archive time", async () => {
+    const fixture = await scopedFixture();
+    const { host } = fixture;
+    const held = await claudeToken(host, "thread-deleted");
+    const heldNested = await nestedToken(host, "thread-deleted");
+    host.harness.sdk.stub("threads.get", async ({ threadId }) =>
+      makeThreadResponse({ id: threadId, archivedAt: null, deletedAt: 2_000 }),
+    );
+    await expect(
+      host.harness.behavior.resolveProviderEnv("claude-code", {
+        threadId: "thread-deleted",
+        projectId: "project-one",
+        hostId: "host-one",
+      }),
+    ).resolves.toEqual([]);
+    expect(await statusOf(host, held, "/v1/messages")).toBe(401);
+    expect(await statusOf(host, heldNested, "/availability")).toBe(401);
+    expect(
+      (await fs.readdir(path.join(fixture.dataDir, ...POOL_SECRETS))).filter(
+        (name) => name.includes("thread-deleted"),
+      ),
+    ).toEqual([]);
+    await host.harness.behavior.emitThreadEvent("thread.unarchived", {
+      thread: makeThreadResponse({ id: "thread-deleted" }),
+    });
+    expect(await statusOf(host, held, "/v1/messages")).toBe(401);
+  });
+
   it("mints nothing when the thread lookup fails", async () => {
     const fixture = await scopedFixture();
     const { host } = fixture;

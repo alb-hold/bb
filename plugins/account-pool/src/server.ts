@@ -307,7 +307,7 @@ export function createAccountPoolPlugin(
     bb.events.on("thread.unarchived", async ({ thread }) => {
       const archiveVersion = threadTokens.archiveVersion(thread.id);
       const current = await bb.sdk.threads.get({ threadId: thread.id });
-      if (current.archivedAt === null) {
+      if (current.archivedAt === null && current.deletedAt === null) {
         await threadTokens.restoreThread(thread.id, archiveVersion);
       }
     });
@@ -424,13 +424,12 @@ export function createAccountPoolPlugin(
     const revokeIfArchived = async (threadId: string): Promise<boolean> => {
       const archiveVersion = threadTokens.archiveVersion(threadId);
       const thread = await bb.sdk.threads.get({ threadId });
-      if (thread.archivedAt === null) {
-        await threadTokens.restoreThread(threadId, archiveVersion);
-        return false;
-      }
-      return thread.deletedAt === null
-        ? threadTokens.suspendThreadIfVersion(threadId, archiveVersion)
-        : threadTokens.removeThreadIfVersion(threadId, archiveVersion);
+      if (thread.deletedAt !== null)
+        return threadTokens.removeThreadIfVersion(threadId, archiveVersion);
+      if (thread.archivedAt !== null)
+        return threadTokens.suspendThreadIfVersion(threadId, archiveVersion);
+      await threadTokens.restoreThread(threadId, archiveVersion);
+      return false;
     };
     const sweepThreadCredentialsOnce = async (
       serviceSignal: AbortSignal,

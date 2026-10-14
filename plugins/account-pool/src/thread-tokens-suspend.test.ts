@@ -49,6 +49,7 @@ async function world() {
   };
   return {
     directory,
+    hosts,
     hostToken,
     open,
     lookup,
@@ -199,6 +200,45 @@ describe.each(["durable", "process"] as const)("%s credentials", (lifetime) => {
     expect(await accepted(restarted, tokens)).toEqual({
       token: false,
       nested: false,
+    });
+  });
+
+  it("removes the files when no archive marker can be written, yet accepts the tokens after an in-process unarchive", async () => {
+    const w = await world();
+    const store = await w.open();
+    const tokens = await mint(store, w.hostToken, lifetime);
+    w.setBb("archived");
+    const originalOpen = fs.open.bind(fs);
+    vi.spyOn(fs, "open").mockImplementation(async (file, flags, mode) => {
+      if (String(file).includes("archive"))
+        throw Object.assign(new Error("ENOSPC"), { code: "ENOSPC" });
+      return originalOpen(file, flags, mode);
+    });
+    await expect(store.suspendThread(route.threadId)).rejects.toThrow("ENOSPC");
+    vi.restoreAllMocks();
+    expect(await accepted(store, tokens)).toEqual({
+      token: false,
+      nested: false,
+    });
+    const offline = new ThreadTokenStore(w.directory, w.hosts);
+    await offline.initialize([route.hostId]);
+    expect(await accepted(offline, tokens)).toEqual({
+      token: false,
+      nested: false,
+    });
+    w.setBb("live");
+    await store.restoreThread(
+      route.threadId,
+      store.archiveVersion(route.threadId),
+    );
+    expect(await accepted(store, tokens)).toEqual({
+      token: true,
+      nested: true,
+    });
+    const restarted = await w.open();
+    expect(await accepted(restarted, tokens)).toEqual({
+      token: true,
+      nested: true,
     });
   });
 

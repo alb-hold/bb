@@ -143,6 +143,7 @@ export class ThreadTokenStore {
   private readonly lookupFailures = new Map<string, number>();
   private readonly archiveVersions = new Map<string, number>();
   private readonly archiveChecks = new Map<string, number>();
+  private readonly unpersistedThreads = new Set<string>();
   private readonly pendingArchiveChecks = new Map<string, Promise<boolean>>();
   private tail: Promise<void> = Promise.resolve();
   private readonly pendingPriorDrops = new WeakSet<object>();
@@ -430,7 +431,8 @@ export class ThreadTokenStore {
     this.archiveVersions.set(threadId, this.archiveVersion(threadId) + 1);
     this.archivedThreads.add(threadId);
     this.activeArchiveMarkers.delete(threadId);
-    this.archiveChecks.set(threadId, this.now());
+    this.archiveChecks.delete(threadId);
+    this.unpersistedThreads.delete(threadId);
     await this.serialize(async () => {
       const epoch = Math.max(
         this.archiveEpoch(threadId),
@@ -492,7 +494,20 @@ export class ThreadTokenStore {
         directoryReadFailed ? 0 : this.maxEpochIn(threadId, names),
       );
       this.archiveEpochs.set(threadId, epoch);
-      await this.persistArchiveMarker(threadId, epoch, true);
+      try {
+        await this.persistArchiveMarker(threadId, epoch, true);
+      } catch (error) {
+        for (const record of this.routes.values())
+          if (record.threadId === threadId)
+            await this.removeProviderFiles(record, epoch).catch(
+              () => undefined,
+            );
+        for (const record of this.nestedRoutes.values())
+          if (record.threadId === threadId)
+            await this.removeNestedFiles(record, epoch).catch(() => undefined);
+        this.unpersistedThreads.add(threadId);
+        throw error;
+      }
     });
   }
 
@@ -509,7 +524,9 @@ export class ThreadTokenStore {
     const ordered = [...threadIds].sort(
       (left, right) =>
         (this.lookupFailures.get(left) ?? 0) -
-        (this.lookupFailures.get(right) ?? 0),
+          (this.lookupFailures.get(right) ?? 0) ||
+        Number(this.archivedThreads.has(left)) -
+          Number(this.archivedThreads.has(right)),
     );
     const result: ThreadSweepResult = {
       checked: ordered.length,
@@ -624,6 +641,8 @@ export class ThreadTokenStore {
         !this.hasLoadedCredentials(threadId)
       )
         await this.loadThreadFiles(threadId, names);
+      if (this.unpersistedThreads.delete(threadId))
+        await this.repersistThread(threadId);
     });
   }
 
@@ -696,6 +715,19 @@ export class ThreadTokenStore {
     }
     this.clearMarkerFailures(threadId);
     this.archiveDurabilityFailures.delete(threadId);
+  }
+
+  private async repersistThread(threadId: string): Promise<void> {
+    for (const record of this.routes.values())
+      if (record.threadId === threadId)
+        await this.persistCredential(this.file(record), record).catch(
+          () => undefined,
+        );
+    for (const record of this.nestedRoutes.values())
+      if (record.threadId === threadId)
+        await this.persistCredential(this.nestedFile(record), record).catch(
+          () => undefined,
+        );
   }
 
   private holdsCredentials(
