@@ -94,6 +94,22 @@ export function TerminalMobileControls({
   };
   useEffect(() => stopBackspaceRepeat, []);
   useEffect(() => {
+    const clearTransientInput = () => {
+      stopBackspaceRepeat();
+      pointerBackspace.current = false;
+      if (controlMode !== "off") onControlChange("off");
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") clearTransientInput();
+    };
+    window.addEventListener("blur", clearTransientInput);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.removeEventListener("blur", clearTransientInput);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [controlMode, onControlChange]);
+  useEffect(() => {
     const viewport = window.visualViewport;
     if (!viewport || !dockRef.current) return;
     const update = () => {

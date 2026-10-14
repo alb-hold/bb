@@ -120,6 +120,63 @@ describe("TerminalMobileControls", () => {
     expect(onInput).toHaveBeenCalledTimes(countAtRelease);
     vi.useRealTimers();
   });
+
+  it("stops Backspace repeat when the window loses focus", () => {
+    vi.useFakeTimers();
+    const onInput = vi.fn();
+    render(<TerminalMobileControls {...controlProps({ onInput })} />);
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Backspace" }));
+    vi.advanceTimersByTime(550);
+    const countAtBlur = onInput.mock.calls.length;
+
+    fireEvent(window, new Event("blur"));
+    vi.advanceTimersByTime(250);
+
+    expect(onInput).toHaveBeenCalledTimes(countAtBlur);
+  });
+
+  it("stops Backspace repeat when the document becomes hidden", () => {
+    vi.useFakeTimers();
+    const onInput = vi.fn();
+    const hiddenDescriptor = Object.getOwnPropertyDescriptor(document, "hidden");
+    const visibilityDescriptor = Object.getOwnPropertyDescriptor(document, "visibilityState");
+    Object.defineProperty(document, "hidden", { configurable: true, value: false });
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+    try {
+      render(<TerminalMobileControls {...controlProps({ onInput })} />);
+      fireEvent.pointerDown(screen.getByRole("button", { name: "Backspace" }));
+      vi.advanceTimersByTime(550);
+      const countWhenHidden = onInput.mock.calls.length;
+
+      Object.defineProperty(document, "hidden", { configurable: true, value: true });
+      Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+      fireEvent(document, new Event("visibilitychange"));
+      vi.advanceTimersByTime(250);
+
+      expect(onInput).toHaveBeenCalledTimes(countWhenHidden);
+    } finally {
+      if (hiddenDescriptor) Object.defineProperty(document, "hidden", hiddenDescriptor);
+      else Reflect.deleteProperty(document, "hidden");
+      if (visibilityDescriptor) Object.defineProperty(document, "visibilityState", visibilityDescriptor);
+      else Reflect.deleteProperty(document, "visibilityState");
+    }
+  });
+
+  it.each(["one-shot", "locked"] as const)("clears %s Ctrl when the window loses focus", (mode) => {
+    function StatefulControls() {
+      const [controlMode, setControlMode] = useState<"off" | "one-shot" | "locked">("off");
+      return <TerminalMobileControls {...controlProps({ controlMode, onControlChange: setControlMode })} />;
+    }
+    render(<StatefulControls />);
+    fireEvent.click(screen.getByRole("button", { name: "Control for next key" }));
+    if (mode === "locked") {
+      fireEvent.click(screen.getByRole("button", { name: "Control for next key, active" }));
+    }
+
+    fireEvent(window, new Event("blur"));
+
+    expect(screen.getByRole("button", { name: "Control for next key" }).getAttribute("aria-pressed")).toBe("false");
+  });
 });
 
 function controlProps(overrides: Partial<ComponentProps<typeof TerminalMobileControls>> = {}) {
