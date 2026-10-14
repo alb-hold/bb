@@ -59,7 +59,7 @@ export function TerminalSearch({
   onOpenChange: (open: boolean) => void;
 }) {
   const [state, setState] = useState(initialState);
-  const setOpen = onOpenChange;
+  const setOpen = useCallback((nextOpen: boolean) => onOpenChange(nextOpen), [onOpenChange]);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const controllerRef = useRef<ReturnType<typeof createTerminalSearchController> | null>(null);
 
@@ -68,7 +68,7 @@ export function TerminalSearch({
     controllerRef.current = null;
     setOpen(false);
     setState(initialState);
-  }, [onOpenChange]);
+  }, [setOpen]);
 
   useEffect(() => {
     if (!terminal) return;
@@ -89,7 +89,7 @@ export function TerminalSearch({
     };
     document.addEventListener("keydown", onKeyDown, true);
     return () => document.removeEventListener("keydown", onKeyDown, true);
-  }, [onOpenChange, open, terminal]);
+  }, [open, setOpen, terminal]);
 
   useEffect(() => {
     if (!open || !addon || !terminal) return;
