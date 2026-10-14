@@ -6,6 +6,10 @@ Keep the discoverable surfaces in sync whenever you add or change a `bb` CLI com
 - For core commands, update the bb-cli skill at `plugins/bb-guide/skills/bb-cli/SKILL.md` or its relevant reference. For plugin commands and settings, update the owning plugin's `skills/<name>/SKILL.md` or supporting reference, including built-in plugins. Keep plugin-specific behavior out of the core CLI skill. Configuration knobs also belong in `docs/configuration.md`.
 - Match the existing chapter/section style; keep entries concise and accurate against the implementation.
 
+The `bb terminal create --working-directory <path>` flag selects the shell's
+initial directory within its chosen scope. The SDK `terminals.create` method
+accepts the equivalent `cwd` field.
+
 Environment lifecycle hooks are core policy: bb runs `.bb-env-setup.sh` after
 an environment provider creates an owned path, and `.bb-env-teardown.sh` before
 provider removal. Each has a 15-minute timeout; setup failure fails provisioning,

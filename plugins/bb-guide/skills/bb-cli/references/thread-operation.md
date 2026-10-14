@@ -249,6 +249,9 @@ For review or fix pipelines, get the environment ID from
   `--environment <id>`, or `--machine <id-or-name>` (`--host` is an alias).
   Add `--cwd <path>` only to a machine scope. Machine targets resolve to an
   explicit host ID; terminal commands never silently fall back to the server machine.
+- Add `--working-directory <path>` to start the shell in a specific directory
+  inside its selected scope. The SDK `terminals.create` call accepts `cwd` for
+  the same purpose.
 - Start a server with
   `bb terminal create --thread <thread-id> --title "pnpm dev" --command "pnpm dev"`.
 - A terminal runs the machine's own shell: `$SHELL` (then zsh, bash, sh) on

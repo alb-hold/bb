@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { chmodSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { AgentRuntime } from "@bb/agent-runtime";
@@ -15,6 +16,7 @@ import { RuntimeManager } from "../runtime-manager.js";
 import {
   ensureNodePtySpawnHelpersExecutableInPackage,
   resolveNodePtySpawnHelperPaths,
+  resolveTerminalCwdOverride,
   TerminalManager,
   type ResolveTerminalShell,
   type SpawnTerminalPtyArgs,
@@ -39,6 +41,7 @@ interface SpawnedTerminal {
 
 interface TerminalManagerHarness {
   adapter: FakeTerminalPtyAdapter;
+  logger: HostDaemonLogger;
   manager: TerminalManager;
   messages: HostDaemonDaemonWsMessage[];
   runtime: AgentRuntime;
@@ -102,7 +105,10 @@ async function cleanupTempDirs(): Promise<void> {
   await Promise.all(
     tempDirs
       .splice(0)
-      .map((tempDir) => fs.rm(tempDir, { force: true, recursive: true })),
+      .map(async (tempDir) => {
+        await fs.chmod(tempDir, 0o700).catch(() => undefined);
+        await fs.rm(tempDir, { force: true, recursive: true });
+      }),
   );
 }
 
@@ -213,13 +219,22 @@ class FakeTerminalPty implements TerminalPtyProcess {
 }
 
 class FakeTerminalPtyAdapter implements TerminalPtyAdapter {
+  lastSpawnArgs: SpawnTerminalPtyArgs | null;
+  onSpawn: ((args: SpawnTerminalPtyArgs) => void) | null;
+  spawnError: Error | null;
   readonly spawned: SpawnedTerminal[];
 
   constructor() {
     this.spawned = [];
+    this.lastSpawnArgs = null;
+    this.onSpawn = null;
+    this.spawnError = null;
   }
 
   spawn(args: SpawnTerminalPtyArgs): TerminalPtyProcess {
+    this.lastSpawnArgs = args;
+    this.onSpawn?.(args);
+    if (this.spawnError !== null) throw this.spawnError;
     const pty = new FakeTerminalPty();
     this.spawned.push({ args, pty });
     return pty;
@@ -330,6 +345,7 @@ function createHarnessWithOptions(
 ): TerminalManagerHarness {
   const adapter = new FakeTerminalPtyAdapter();
   const messages: HostDaemonDaemonWsMessage[] = [];
+  const logger = createFakeLogger();
   const runtime = createFakeRuntime();
   const workspace = createFakeWorkspace("/tmp/terminal-workspace");
   const runtimeManager = new RuntimeManager({
@@ -344,7 +360,7 @@ function createHarnessWithOptions(
     exitedRetentionMs: args.exitedRetentionMs,
     maxExitedScrollbackBytes: args.maxExitedScrollbackBytes,
     maxExitedTerminals: args.maxExitedTerminals,
-    logger: createFakeLogger(),
+    logger,
     ptyAdapter: adapter,
     resolveShell: args.resolveShell,
     runtimeManager,
@@ -357,6 +373,7 @@ function createHarnessWithOptions(
 
   return {
     adapter,
+    logger,
     manager,
     messages,
     runtime,
@@ -521,6 +538,217 @@ describe("TerminalManager", () => {
     await harness.runtimeManager.replaceBaseShellEnv({ BB_BASE_ENV: "2" });
     expect(harness.runtimeManager.get("env-1")).toBeDefined();
     expect(harness.runtime.shutdown).not.toHaveBeenCalled();
+  });
+
+  it("starts a split terminal in the requested existing directory", async () => {
+    const harness = createHarness();
+    await harness.manager.handleMessage({
+      type: "terminal.open",
+      contributedEnv: [],
+      requestId: "open-split",
+      terminalId: "term-split",
+      threadId: "thr-1",
+      target: {
+        kind: "workspace",
+        environmentId: "env-1",
+        workspaceContext: { workspacePath: "/tmp/terminal-workspace" },
+      },
+      cwd: "/tmp",
+      cols: 100,
+      rows: 30,
+      start: DEFAULT_TERMINAL_START,
+    });
+    expect(harness.adapter.spawned[0]?.args.cwd).toBe("/tmp");
+  });
+
+  it("removes shell integration files after a terminal closes", async () => {
+    const harness = createHarness();
+    const pty = await openTerminal(harness);
+    const directory = harness.adapter.spawned[0]?.args.env.ZDOTDIR;
+    if (!directory) throw new Error("Expected temporary ZDOTDIR");
+    tempDirs.push(directory);
+    await expect(fs.access(directory)).resolves.toBeUndefined();
+
+    await harness.manager.handleMessage({
+      type: "terminal.close",
+      terminalId: "term-1",
+      reason: "user",
+    });
+    pty.emitExit(0);
+
+    await vi.waitFor(() =>
+      expect(
+        harness.messages.some(
+          (message) =>
+            message.type === "terminal.exited" &&
+            message.terminalId === "term-1",
+        ),
+      ).toBe(true),
+    );
+    await vi.waitFor(async () => expect(fs.access(directory)).rejects.toThrow());
+  });
+
+  it("removes shell integration files when PTY spawn fails", async () => {
+    const harness = createHarness();
+    harness.adapter.spawnError = new Error("spawn fixture failure");
+
+    await harness.manager.handleMessage({
+      type: "terminal.open",
+      contributedEnv: [],
+      requestId: "open-fails",
+      terminalId: "term-fails",
+      threadId: "thr-1",
+      target: {
+        kind: "workspace",
+        environmentId: "env-1",
+        workspaceContext: { workspacePath: "/tmp/terminal-workspace" },
+      },
+      cols: 100,
+      rows: 30,
+      start: DEFAULT_TERMINAL_START,
+    });
+
+    const directory = harness.adapter.lastSpawnArgs?.env.ZDOTDIR;
+    if (!directory) throw new Error("Expected temporary ZDOTDIR");
+    tempDirs.push(directory);
+    await expect(fs.access(directory)).rejects.toThrow();
+    expect(harness.messages).toContainEqual(
+      expect.objectContaining({
+        type: "terminal.error",
+        terminalId: "term-fails",
+        message: "spawn fixture failure",
+      }),
+    );
+  });
+
+  it("logs and preserves the spawn error when integration cleanup fails", async () => {
+    const harness = createHarness();
+    const spawnError = new Error("spawn fixture failure");
+    harness.adapter.spawnError = spawnError;
+    harness.adapter.onSpawn = (args) => {
+      const directory = args.env.ZDOTDIR;
+      if (!directory) throw new Error("Expected temporary ZDOTDIR");
+      chmodSync(directory, 0o500);
+    };
+
+    await harness.manager.handleMessage({
+      type: "terminal.open",
+      contributedEnv: [],
+      requestId: "open-cleanup-fails",
+      terminalId: "term-cleanup-fails",
+      threadId: "thr-1",
+      target: {
+        kind: "workspace",
+        environmentId: "env-1",
+        workspaceContext: { workspacePath: "/tmp/terminal-workspace" },
+      },
+      cols: 100,
+      rows: 30,
+      start: DEFAULT_TERMINAL_START,
+    });
+
+    const directory = harness.adapter.lastSpawnArgs?.env.ZDOTDIR;
+    if (!directory) throw new Error("Expected temporary ZDOTDIR");
+    tempDirs.push(directory);
+    expect(harness.logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ terminalId: "term-cleanup-fails" }),
+      "Failed to remove terminal shell integration files",
+    );
+    expect(harness.messages).toContainEqual(
+      expect.objectContaining({
+        type: "terminal.error",
+        terminalId: "term-cleanup-fails",
+        message: spawnError.message,
+      }),
+    );
+    await fs.chmod(directory, 0o700);
+    await fs.rm(directory, { force: true, recursive: true });
+  });
+
+  it("logs shell integration cleanup failures without interrupting close", async () => {
+    const harness = createHarness();
+    const pty = await openTerminal(harness);
+    const directory = harness.adapter.spawned[0]?.args.env.ZDOTDIR;
+    if (!directory) throw new Error("Expected temporary ZDOTDIR");
+    tempDirs.push(directory);
+    await fs.chmod(directory, 0o500);
+
+    await harness.manager.handleMessage({
+      type: "terminal.close",
+      terminalId: "term-1",
+      reason: "user",
+    });
+    pty.emitExit(0);
+
+    await vi.waitFor(() =>
+      expect(harness.logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ terminalId: "term-1" }),
+        "Failed to remove terminal shell integration files",
+      ),
+    );
+    expect(harness.messages).toContainEqual(
+      expect.objectContaining({
+        type: "terminal.exited",
+        terminalId: "term-1",
+        exitCode: 0,
+      }),
+    );
+    await fs.chmod(directory, 0o700);
+    await fs.rm(directory, { force: true, recursive: true });
+  });
+
+  it.each([
+    ["relative", "tmp", "/tmp/terminal-workspace"],
+    ["parent traversal", "/tmp/../tmp", "/tmp/terminal-workspace"],
+    ["NUL", "/tmp\0invalid", "/tmp/terminal-workspace"],
+    ["file", "/etc/passwd", "/tmp/terminal-workspace"],
+    ["missing", "/tmp/p19-missing-cwd", "/tmp/terminal-workspace"],
+    ["over-long", `/${"a".repeat(4096)}`, "/tmp/terminal-workspace"],
+  ] as const)(
+    "safely resolves %s cwd input",
+    async (_label, cwd, expectedCwd) => {
+      const harness = createHarness();
+      await harness.manager.handleMessage({
+        type: "terminal.open",
+        contributedEnv: [],
+        requestId: "open-cwd-input",
+        terminalId: "term-cwd-input",
+        threadId: "thr-1",
+        target: {
+          kind: "workspace",
+          environmentId: "env-1",
+          workspaceContext: { workspacePath: "/tmp/terminal-workspace" },
+        },
+        cwd,
+        cols: 100,
+        rows: 30,
+        start: DEFAULT_TERMINAL_START,
+      });
+      expect(harness.adapter.spawned).toHaveLength(1);
+      expect(harness.adapter.spawned[0]?.args.cwd).toBe(expectedCwd);
+      expect(harness.messages).toContainEqual(
+        expect.objectContaining({
+          type: "terminal.opened",
+          terminalId: "term-cwd-input",
+          initialCwd: expectedCwd,
+        }),
+      );
+    },
+  );
+
+  it.each([
+    ["forward slash", "C:/base/../outside"],
+    ["backslash", String.raw`C:\base\..\outside`],
+  ])("rejects Windows cwd traversal with %s separators", async (_label, cwd) => {
+    const statPath = vi.fn(async () => ({ isDirectory: () => true }));
+
+    await expect(
+      resolveTerminalCwdOverride(
+        { cwd, defaultCwd: String.raw`C:\workspace` },
+        { pathApi: path.win32, statPath },
+      ),
+    ).resolves.toBe(String.raw`C:\workspace`);
+    expect(statPath).not.toHaveBeenCalled();
   });
 
   it("injects host credentials into a PTY and forwards terminal output as-is", async () => {

@@ -29,6 +29,7 @@ interface UsePanelTerminalsArgs {
   panelStateId: string | null | undefined;
   syncThreadId: string | null | undefined;
   createTarget: TerminalCreateTarget | null;
+  getSpawnCwd?: () => string | undefined;
   isFocused: boolean;
   acceptsSession: (session: TerminalSession) => boolean;
   tabsCarryTarget: boolean;
@@ -63,6 +64,7 @@ export function usePanelTerminals({
   panelStateId,
   syncThreadId,
   createTarget,
+  getSpawnCwd,
   isFocused,
   acceptsSession,
   tabsCarryTarget,
@@ -117,9 +119,11 @@ export function usePanelTerminals({
   const canStart = createTarget !== null && !isStarting;
   const start = useCallback(() => {
     if (createTarget === null || createTerminal.isPending) return;
+    const spawnCwd = getSpawnCwd?.();
     void createTerminal
       .mutateAsync({
         cols: DEFAULT_TERMINAL_COLS,
+        ...(spawnCwd === undefined ? {} : { cwd: spawnCwd }),
         rows: DEFAULT_TERMINAL_ROWS,
         target: createTarget,
       })
@@ -130,7 +134,14 @@ export function usePanelTerminals({
         select(session.id, tabsCarryTarget ? createTarget : undefined);
       })
       .catch(() => undefined);
-  }, [createTarget, createTerminal, select, tabsCarryTarget, updatePanelState]);
+  }, [
+    createTarget,
+    createTerminal,
+    select,
+    getSpawnCwd,
+    tabsCarryTarget,
+    updatePanelState,
+  ]);
 
   useAppCommandHandler("terminal.open", () => {
     if (!isFocused || !canStart) return false;
