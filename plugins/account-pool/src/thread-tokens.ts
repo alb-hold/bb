@@ -604,19 +604,20 @@ export class ThreadTokenStore {
       }
       const holding =
         directoryReadFailed || this.holdsCredentials(threadId, names);
-      let held = false;
+      let heldAside = false;
       const recorded = await this.persistDeletion(
         threadId,
         nextEpoch,
         holding,
         holding
           ? async () => {
-              held = true;
+              heldAside = true;
               await this.holdDeletedFiles(threadId, names, epoch);
             }
           : null,
       );
-      if (held) names = await fs.readdir(this.directory).catch(() => names);
+      if (heldAside)
+        names = await fs.readdir(this.directory).catch(() => names);
       if (!recorded) {
         this.unrecordedThreads.add(threadId);
         throw new Error(
