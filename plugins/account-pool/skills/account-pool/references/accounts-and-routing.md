@@ -294,27 +294,31 @@ archive marker can be written, the thread's credential files are renamed to
 `suspended-<name>`, keeping their content, and renamed back on unarchive. Only
 deleting the thread removes its credentials; a credential otherwise ends only
 by its own expiry or a machine-token rotation. Deletion is final: the plugin
-first records it in bb's own database (a `deleted-thread:<digest>` plugin kv
-row, the database that already holds the thread's committed `deletedAt`), then
-as a second copy in a `deleted-thread-<digest>.json` marker and in the
-thread's archive marker and its fallback. It never restores or mints
-credentials for that thread again, even if bb later reports it live, in which
-case it logs a warning. Credentials are never removed before a deletion record
-is durable. If the marker cannot be written atomically, it is created in
-place, and failing that the plugin creates a `deleted-thread-<digest>.d`
-directory, which records the deletion by its existence alone. If no record can
-be made, each credential file is renamed to
-`deleted-pending-<digest>-<name>`; that rename is itself a record, so a
+records it in a `deleted-thread-<digest>.json` marker and in the thread's
+archive marker and its fallback. If the marker cannot be written atomically,
+it is created in place, and failing that the plugin creates a
+`deleted-thread-<digest>.d` directory, which records the deletion by its
+existence alone. If none of those lands, each credential file is renamed to
+`deleted-pending-<digest>-<name>`; that rename is itself a record. Then, every
+time, the plugin also writes a `deleted-thread:<digest>` row to bb's own
+database through plugin kv, the database that already holds the thread's
+committed `deletedAt`. Every filesystem path is tried before the kv write, so
+a refused kv write followed by a crash never leaves a filesystem record
+untried. The plugin never restores or mints credentials for that thread
+again, even if bb later reports it live, in which case it logs a warning.
+Credentials are never removed before a deletion record is durable, and the kv
+row lands before the first credential removal whenever kv accepts it. A
 pending file is removed only once a record of another kind exists. Where the
 rename also fails the file stays untouched. Either way the thread stays
 deleted in the running process, and the record, then the removal, is retried
 on the next delete event, sweep and start. The kv rows are loaded once at
 start; while that load fails, every thread token is rejected and nothing is
 minted, and the load is retried on each sweep. Authentication never reads kv.
-The only case the plugin cannot hold is a restart in which bb's own database
-reports a deleted thread live and none of the kv row, the marker, the
-directory or the rename could be written; then the plugin follows bb. bb's
-thread state is the
+The only case the plugin cannot hold is a restart after bb's database refused
+the kv write and the marker writes, the renames and the directory were all
+refused too. Then nothing was removed, bb's own database could not have
+committed the delete either, and the plugin follows bb. bb's thread state is
+the
 authority, asked each time a thread's token is presented (concurrent requests
 for one thread share one lookup): live accepts, archived rejects and suspends,
 deleted rejects and revokes. A missed archive or unarchive event therefore

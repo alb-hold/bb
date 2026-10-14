@@ -30,8 +30,21 @@ const route = {
 };
 const nestedRoute = { hostId: route.hostId, threadId: route.threadId };
 
-async function world() {
-  const directory = await fs.mkdtemp(path.join(tmpdir(), "bb-thread-suspend-"));
+type SharedHosts = { root: string; hosts: HubTokenStore; hostToken: string };
+
+async function sharedHosts(): Promise<SharedHosts> {
+  const root = existsSync("/dev/shm") ? "/dev/shm" : tmpdir();
+  const directory = await fs.mkdtemp(path.join(root, "bb-thread-hosts-"));
+  directories.push(directory);
+  const hosts = new HubTokenStore(directory, () => 1_000_000);
+  await hosts.initialize();
+  return { root, hosts, hostToken: await hosts.forHost(route.hostId) };
+}
+
+async function world(shared: SharedHosts | null = null) {
+  const directory = await fs.mkdtemp(
+    path.join(shared?.root ?? tmpdir(), "bb-thread-suspend-"),
+  );
   directories.push(directory);
   let now = 1_000_000;
   let bb: BbState = "live";
@@ -44,9 +57,9 @@ async function world() {
     if (bb === "unreachable") throw new Error("bb unreachable");
     return bb;
   };
-  const hosts = new HubTokenStore(directory, clock);
-  await hosts.initialize();
-  const hostToken = await hosts.forHost(route.hostId);
+  const hosts = shared?.hosts ?? new HubTokenStore(directory, clock);
+  if (shared === null) await hosts.initialize();
+  const hostToken = shared?.hostToken ?? (await hosts.forHost(route.hostId));
   const kv = memoryKv();
   const open = async () => {
     const store = new ThreadTokenStore(
@@ -373,9 +386,10 @@ async function deletionOutcome(
   faults: ReadonlySet<FaultClass>,
   files: 1 | 2,
   crash: { during: "delete" | "restart"; after: number } | null,
+  shared: SharedHosts,
 ) {
   injectFaults(new Set());
-  const w = await world();
+  const w = await world(shared);
   const watch: Watch = { directory: w.directory, kv: w.kv, violations: [] };
   const store = await w.open();
   const token = await store.forThread(route, w.hostToken, lifetime);
@@ -1816,6 +1830,7 @@ describe.each(["durable", "process"] as const)("%s credentials", (lifetime) => {
   });
 
   it("computes the deletion residual for every subset of refused bb-database, content, rename, rm and directory mutations, one and two credential files, and every crash point from the first mutation of the delete through the next start, with bb answering live after a restart only when its database refused the deletion record", async () => {
+    const shared = await sharedHosts();
     const rows: string[] = [];
     const runs: number[] = [];
     const violations: string[] = [];
@@ -1837,23 +1852,35 @@ describe.each(["durable", "process"] as const)("%s credentials", (lifetime) => {
               `${cell} | ${point} | record before the crash: ${run.recorded ? "yes" : "no"} | kv write refused before the crash: ${run.kvRefused ? "yes" : "no"} | old token accepted: ${run.outcome.token ? "yes" : "no"} | mint succeeds: ${run.outcome.mint ? "yes" : "no"}`,
             );
         };
-        const probe = await deletionOutcome(lifetime, faults, files, null);
+        const probe = await deletionOutcome(
+          lifetime,
+          faults,
+          files,
+          null,
+          shared,
+        );
         note("completed", probe);
         for (let point = 0; point < probe.deleteMutations.length; point += 1)
           note(
             `delete@${point}`,
-            await deletionOutcome(lifetime, faults, files, {
-              during: "delete",
-              after: point,
-            }),
+            await deletionOutcome(
+              lifetime,
+              faults,
+              files,
+              { during: "delete", after: point },
+              shared,
+            ),
           );
         for (let point = 0; point < probe.restartMutations.length; point += 1)
           note(
             `restart@${point}`,
-            await deletionOutcome(lifetime, faults, files, {
-              during: "restart",
-              after: point,
-            }),
+            await deletionOutcome(
+              lifetime,
+              faults,
+              files,
+              { during: "restart", after: point },
+              shared,
+            ),
           );
         rows.push(
           residualRow(files, faults, probe.recorded, {
