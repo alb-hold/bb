@@ -19,6 +19,7 @@ function renderControls() {
       onKeyboardToggle={vi.fn()}
       onPaste={vi.fn()}
       onSearch={onSearch}
+      onSelectText={vi.fn()}
     />,
   );
   return { onInput, onSearch };
