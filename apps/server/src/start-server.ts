@@ -1,6 +1,7 @@
 import { serve } from "@hono/node-server";
 import { existsSync } from "node:fs";
 import { Server as HttpServer } from "node:http";
+import type { Socket } from "node:net";
 import { verifyAuthenticatedDaemon } from "./internal/auth.js";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -90,7 +91,27 @@ import {
 } from "./services/plugins/plugin-tool-calls.js";
 
 const HTTP_SHUTDOWN_DRAIN_TIMEOUT_MS = 2_000;
+const HTTP_CLOSE_WAIT_TIMEOUT_MS = 100;
 const PLUGIN_SHUTDOWN_TIMEOUT_MS = 3_000;
+const WEBSOCKET_SHUTDOWN_WAIT_TIMEOUT_MS = 250;
+const shutdownSockets = new WeakMap<HttpServer, Set<Socket>>();
+
+async function waitAtMost(
+  promise: Promise<unknown>,
+  timeoutMs: number,
+): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      promise.catch(() => undefined),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
 
 interface StartHttpListenerArgs {
   fetch: Parameters<typeof serve>[0]["fetch"];
@@ -104,6 +125,12 @@ export function startHttpListener(args: StartHttpListenerArgs): HttpServer {
     port: args.serverConfig.BB_SERVER_PORT,
     fetch: args.fetch,
   }) as HttpServer;
+  const sockets = new Set<Socket>();
+  shutdownSockets.set(server, sockets);
+  server.on("connection", (socket) => {
+    sockets.add(socket);
+    socket.once("close", () => sockets.delete(socket));
+  });
   superviseTcpServerSockets(server, (error, _socket, context) => {
     args.logger.warn(
       {
@@ -139,7 +166,10 @@ export async function shutdownHttpBeforePlugins(args: {
   let drained = false;
   try {
     drained = await Promise.race([
-      closed.then(() => true),
+      closed.then(
+        () => true,
+        () => false,
+      ),
       new Promise<boolean>((resolve) => {
         drainTimer = setTimeout(
           () => resolve(false),
@@ -155,8 +185,8 @@ export async function shutdownHttpBeforePlugins(args: {
   if (!drained) {
     args.server.closeAllConnections();
   }
-  await webSocketsClosed;
-  await closed;
+  await waitAtMost(webSocketsClosed, WEBSOCKET_SHUTDOWN_WAIT_TIMEOUT_MS);
+  await waitAtMost(closed, HTTP_CLOSE_WAIT_TIMEOUT_MS);
   let pluginStopTimer: ReturnType<typeof setTimeout> | undefined;
   try {
     const stopped = await Promise.race([
@@ -172,6 +202,8 @@ export async function shutdownHttpBeforePlugins(args: {
   } finally {
     if (pluginStopTimer !== undefined) clearTimeout(pluginStopTimer);
   }
+  for (const socket of shutdownSockets.get(args.server) ?? []) socket.destroy();
+  await waitAtMost(closed, HTTP_CLOSE_WAIT_TIMEOUT_MS);
 }
 
 export interface StartServerPluginsArgs {

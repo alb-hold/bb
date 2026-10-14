@@ -239,4 +239,49 @@ describe("server shutdown ordering", () => {
     expect(Date.now() - startedAt).toBeLessThan(2_500);
     expect(pluginsStoppedAfterHttpClosed).toBe(true);
   }, 4_000);
+
+  it("stops accepting before plugin stop and bounds an upgraded plugin socket", async () => {
+    server = startHttpListener({
+      fetch: async () => new Response("ready"),
+      logger: { warn: () => {} },
+      serverConfig: {
+        BB_SERVER_BIND_HOST: "127.0.0.1",
+        BB_SERVER_PORT: 0,
+      },
+    });
+    webSocketServer = new WebSocketServer({ noServer: true });
+    server.on("upgrade", (request, socket, head) => {
+      webSocketServer?.handleUpgrade(request, socket, head, (webSocket) => {
+        webSocketServer?.emit("connection", webSocket, request);
+      });
+    });
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server did not bind a TCP port");
+    }
+    const accepted = once(webSocketServer, "connection");
+    webSocketClient = new WebSocket(`ws://127.0.0.1:${address.port}`);
+    await once(webSocketClient, "open");
+    const [pluginSocket] = (await accepted) as [WebSocket];
+    let pluginStopCalled = false;
+    let acceptedAfterPluginStop = true;
+    const startedAt = Date.now();
+    const shutdown = shutdownHttpBeforePlugins({
+      closeWebSockets: () => new Promise<void>(() => {}),
+      server,
+      stopPlugins: async () => {
+        pluginStopCalled = true;
+        acceptedAfterPluginStop = server!.listening;
+        pluginSocket.terminate();
+      },
+      stopTerminalDataPlane: () => {},
+    });
+    await expect(fetch(`http://127.0.0.1:${address.port}/new`)).rejects.toThrow();
+    expect(pluginStopCalled).toBe(false);
+    await shutdown;
+    expect(pluginStopCalled).toBe(true);
+    expect(acceptedAfterPluginStop).toBe(false);
+    expect(Date.now() - startedAt).toBeLessThan(3_000);
+  }, 4_000);
 });
