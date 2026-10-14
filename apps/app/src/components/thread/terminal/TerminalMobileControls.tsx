@@ -12,6 +12,8 @@ interface TerminalMobileControlsProps {
   onInput: (data: string) => void;
   onKeyboardToggle: () => void;
   onPaste: () => void;
+  onSearch: () => void;
+  searchAvailable?: boolean;
   onSelectText: () => void;
 }
 
@@ -64,6 +66,8 @@ export function TerminalMobileControls({
   onInput,
   onKeyboardToggle,
   onPaste,
+  onSearch,
+  searchAvailable = true,
   onSelectText,
 }: TerminalMobileControlsProps) {
   const [expanded, setExpanded] = useState(false);
@@ -141,6 +145,11 @@ export function TerminalMobileControls({
         <Key {...keyProps} label="Escape" onPress={() => onInput("\x1b")}>
           Esc
         </Key>
+        {searchAvailable ? (
+          <Key {...keyProps} label="Search terminal output" onPress={onSearch}>
+            <Icon name="Search" className="size-4" />
+          </Key>
+        ) : null}
         <Key {...keyProps} label="Tab" onPress={() => onInput("\t")}>
           Tab
         </Key>
