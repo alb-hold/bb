@@ -749,8 +749,8 @@ export class TerminalSessionLifecycle {
       );
     }
     this.recordTerminalAttention({
+      source: "api",
       terminalId: session.id,
-      seq: (getTerminalAttention(this.options.db, session.id)?.seq ?? 0) + 1,
       kind: "osc-9",
       ...args.payload,
     });
@@ -758,20 +758,40 @@ export class TerminalSessionLifecycle {
   }
 
   private recordTerminalAttention(
-    attention: Omit<TerminalAttentionState, "at"> & {
-      at?: number;
-      terminalId: string;
-    },
+    attention:
+      | (Omit<TerminalAttentionState, "at" | "seq"> & {
+          at?: number;
+          source: "api";
+          terminalId: string;
+        })
+      | (Omit<TerminalAttentionState, "at"> & {
+          at?: number;
+          source: "daemon";
+          terminalId: string;
+        }),
   ): void {
     const session = getTerminalById(this.options.db, attention.terminalId);
     if (!session || session.status !== "running") return;
     const now = attention.at ?? Date.now();
-    const { terminalId, ...value } = attention;
+    const { source, terminalId, ...value } = attention;
     const previous = getTerminalAttention(this.options.db, terminalId);
-    if (previous !== null && value.seq <= previous.seq) return;
+    if (
+      source === "daemon" &&
+      previous?.daemonSeq !== null &&
+      previous?.daemonSeq !== undefined &&
+      value.seq <= previous.daemonSeq
+    ) {
+      return;
+    }
+    const seq =
+      source === "daemon"
+        ? Math.max((previous?.seq ?? -1) + 1, value.seq)
+        : (previous?.seq ?? 0) + 1;
     upsertTerminalAttention(this.options.db, {
       terminalSessionId: terminalId,
-      seq: value.seq,
+      seq,
+      daemonSeq:
+        source === "daemon" ? value.seq : (previous?.daemonSeq ?? null),
       kind: value.kind,
       title: value.title ?? null,
       body: value.body ?? null,
@@ -1861,6 +1881,7 @@ export class TerminalSessionLifecycle {
           return;
         }
         this.recordTerminalAttention({
+          source: "daemon",
           terminalId: session.id,
           seq: args.message.seq,
           kind: args.message.kind,

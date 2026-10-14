@@ -45,6 +45,7 @@ describe("fork terminal attention table", () => {
     expect(columns.map((column) => column.name)).toEqual([
       "terminal_session_id",
       "seq",
+      "daemon_seq",
       "kind",
       "title",
       "body",
@@ -73,6 +74,7 @@ describe("fork terminal attention table", () => {
     upsertTerminalAttention(db, {
       terminalSessionId: terminal.id,
       seq: 1,
+      daemonSeq: 1,
       kind: "bell",
       title: null,
       body: null,

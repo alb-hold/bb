@@ -5,6 +5,7 @@ export type TerminalAttentionKind = "bell" | "osc-9" | "osc-99" | "osc-777";
 export interface TerminalAttentionRecord {
   terminalSessionId: string;
   seq: number;
+  daemonSeq: number | null;
   kind: TerminalAttentionKind;
   title: string | null;
   body: string | null;
@@ -19,6 +20,7 @@ export function ensureTerminalAttentionTable(db: DbConnection): void {
       terminal_session_id TEXT PRIMARY KEY NOT NULL
         REFERENCES terminal_sessions(id) ON DELETE CASCADE,
       seq INTEGER NOT NULL CHECK (seq >= 0),
+      daemon_seq INTEGER,
       kind TEXT NOT NULL CHECK (kind IN ('bell', 'osc-9', 'osc-99', 'osc-777')),
       title TEXT,
       body TEXT,
@@ -27,6 +29,14 @@ export function ensureTerminalAttentionTable(db: DbConnection): void {
       updated_at INTEGER NOT NULL
     );
   `);
+  const columns = db.$client
+    .prepare(`PRAGMA table_info(fork_terminal_attention)`)
+    .all() as Array<{ name: string }>;
+  if (!columns.some((column) => column.name === "daemon_seq")) {
+    db.$client.exec(
+      `ALTER TABLE fork_terminal_attention ADD COLUMN daemon_seq INTEGER`,
+    );
+  }
 }
 
 export function getTerminalAttention(
@@ -35,7 +45,8 @@ export function getTerminalAttention(
 ): TerminalAttentionRecord | null {
   const row = db.$client
     .prepare(
-      `SELECT terminal_session_id AS terminalSessionId, seq, kind, title, body,
+      `SELECT terminal_session_id AS terminalSessionId, seq,
+              daemon_seq AS daemonSeq, kind, title, body,
               attention_at AS attentionAt, cleared_at AS clearedAt, updated_at AS updatedAt
        FROM fork_terminal_attention WHERE terminal_session_id = ?`,
     )
@@ -48,6 +59,7 @@ export function upsertTerminalAttention(
   args: {
     terminalSessionId: string;
     seq: number;
+    daemonSeq: number | null;
     kind: TerminalAttentionKind;
     title: string | null;
     body: string | null;
@@ -57,10 +69,11 @@ export function upsertTerminalAttention(
   db.$client
     .prepare(
       `INSERT INTO fork_terminal_attention
-         (terminal_session_id, seq, kind, title, body, attention_at, cleared_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, NULL, ?)
+         (terminal_session_id, seq, daemon_seq, kind, title, body, attention_at, cleared_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)
        ON CONFLICT(terminal_session_id) DO UPDATE SET
          seq = excluded.seq,
+         daemon_seq = excluded.daemon_seq,
          kind = excluded.kind,
          title = excluded.title,
          body = excluded.body,
@@ -72,6 +85,7 @@ export function upsertTerminalAttention(
     .run(
       args.terminalSessionId,
       args.seq,
+      args.daemonSeq,
       args.kind,
       args.title,
       args.body,

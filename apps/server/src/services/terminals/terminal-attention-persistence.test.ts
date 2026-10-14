@@ -23,6 +23,71 @@ afterEach(async () => {
 });
 
 describe("terminal attention persistence", () => {
+  it("keeps daemon ordering independent from direct notifications", async () => {
+    const harness = await createTestAppHarness();
+    harnesses.push(harness);
+    const { daemonSessionId, hostId, terminalId } =
+      createAttentionTerminal(harness);
+    const daemonAttention = (seq: number) =>
+      harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        hostId,
+        sessionId: daemonSessionId,
+        message: {
+          type: "terminal.attention",
+          terminalId,
+          seq,
+          kind: "bell",
+          title: `daemon-${seq}`,
+        },
+      });
+
+    daemonAttention(7);
+    expect(getTerminalAttention(harness.db, terminalId)).toMatchObject({
+      seq: 7,
+      title: "daemon-7",
+    });
+    harness.deps.terminalSessions.notifyTerminal({
+      terminalId,
+      payload: { title: "api-1" },
+    });
+    expect(getTerminalAttention(harness.db, terminalId)).toMatchObject({
+      seq: 8,
+      title: "api-1",
+    });
+    harness.deps.terminalSessions.notifyTerminal({
+      terminalId,
+      payload: { title: "api-2" },
+    });
+    expect(getTerminalAttention(harness.db, terminalId)).toMatchObject({
+      seq: 9,
+      title: "api-2",
+    });
+    harness.deps.terminalSessions.notifyTerminal({
+      terminalId,
+      payload: { title: "api-3" },
+    });
+    expect(getTerminalAttention(harness.db, terminalId)).toMatchObject({
+      seq: 10,
+      title: "api-3",
+    });
+
+    daemonAttention(8);
+    expect(getTerminalAttention(harness.db, terminalId)).toMatchObject({
+      seq: 11,
+      title: "daemon-8",
+    });
+    daemonAttention(8);
+    expect(getTerminalAttention(harness.db, terminalId)).toMatchObject({
+      seq: 11,
+      title: "daemon-8",
+    });
+    daemonAttention(9);
+    expect(getTerminalAttention(harness.db, terminalId)).toMatchObject({
+      seq: 12,
+      title: "daemon-9",
+    });
+  });
+
   it("keeps unread attention and its sequence through a database restart", async () => {
     const original = await createTestAppHarness();
     harnesses.push(original);
