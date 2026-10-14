@@ -107,6 +107,15 @@ function refuseArchiveMarkers(): void {
   });
 }
 
+function refuseWrites(fragments: readonly string[]): void {
+  const originalOpen = fs.open.bind(fs);
+  vi.spyOn(fs, "open").mockImplementation(async (file, flags, mode) => {
+    if (fragments.some((fragment) => String(file).includes(fragment)))
+      throw Object.assign(new Error("ENOSPC"), { code: "ENOSPC" });
+    return originalOpen(file, flags, mode);
+  });
+}
+
 function crashAfter(
   mutations: number,
   refuseMarkers = false,
@@ -1015,38 +1024,72 @@ describe.each(["durable", "process"] as const)("%s credentials", (lifetime) => {
     expect(await threadFiles(w.directory)).toEqual([]);
   });
 
-  it("keeps a thread deleted in process when its deleted marker cannot be written, and records it once bb reports it gone after a restart", async () => {
+  it("keeps a thread deleted after a restart whose first bb answer is live when its deleted marker could not be written", async () => {
     const w = await world();
     const store = await w.open();
     const tokens = await mint(store, w.hostToken, lifetime);
-    const originalOpen = fs.open.bind(fs);
-    vi.spyOn(fs, "open").mockImplementation(async (file, flags, mode) => {
-      if (String(file).includes("deleted-thread-"))
-        throw Object.assign(new Error("ENOSPC"), { code: "ENOSPC" });
-      return originalOpen(file, flags, mode);
-    });
+    refuseWrites(["deleted-thread-"]);
     w.setBb("gone");
-    await expect(store.removeThread(route.threadId)).rejects.toThrow("ENOSPC");
-    w.setBb("live");
-    expect(await store.settleThread(route.threadId)).toBe(false);
-    await expectNoMint(store, w.hostToken, lifetime);
+    const removal = await store.removeThread(route.threadId).then(
+      () => "recorded",
+      (error: unknown) => String(error),
+    );
     vi.restoreAllMocks();
     expect(await deletedMarkers(w.directory)).toEqual([]);
-    w.setBb("gone");
-    const restarted = await w.open();
-    expect(await accepted(restarted, tokens)).toEqual({
-      token: false,
-      nested: false,
-    });
-    expect(await restarted.settleThread(route.threadId)).toBe(false);
-    expect(await deletedMarkers(w.directory)).toHaveLength(1);
     w.setBb("live");
+    const restarted = await w.open();
+    const before = w.lookups();
     expect(await restarted.settleThread(route.threadId)).toBe(false);
+    expect(w.lookups()).toBe(before + 1);
     await expectNoMint(restarted, w.hostToken, lifetime);
     expect(await accepted(restarted, tokens)).toEqual({
       token: false,
       nested: false,
     });
     expect(await threadFiles(w.directory)).toEqual([]);
+    expect(removal).toBe("recorded");
+  });
+
+  it("keeps every credential file suspended when no deletion record can be written, and finishes the delete once bb reports the thread gone after a restart", async () => {
+    const w = await world();
+    const store = await w.open();
+    const tokens = await mint(store, w.hostToken, lifetime);
+    const stored = await threadFiles(w.directory);
+    refuseWrites([
+      "deleted-thread-",
+      "archived-thread-",
+      "archive-revocation-",
+    ]);
+    w.setBb("gone");
+    const removal = await store.removeThread(route.threadId).then(
+      () => "recorded",
+      (error: unknown) => String(error),
+    );
+    vi.restoreAllMocks();
+    w.setBb("live");
+    expect(await accepted(store, tokens)).toEqual({
+      token: false,
+      nested: false,
+    });
+    expect(await store.settleThread(route.threadId)).toBe(false);
+    await expectNoMint(store, w.hostToken, lifetime);
+    const held = (await fs.readdir(w.directory)).filter((name) =>
+      name.includes(route.threadId),
+    );
+    expect(held.every((name) => name.startsWith("suspended-"))).toBe(true);
+    expect(await threadFiles(w.directory)).toEqual(stored);
+    expect(await deletedMarkers(w.directory)).toEqual([]);
+    expect(removal).toContain("could not record the deletion");
+    w.setBb("gone");
+    const restarted = await w.open();
+    expect(await deletedMarkers(w.directory)).toHaveLength(1);
+    expect(await threadFiles(w.directory)).toEqual([]);
+    w.setBb("live");
+    expect(await accepted(restarted, tokens)).toEqual({
+      token: false,
+      nested: false,
+    });
+    expect(await restarted.settleThread(route.threadId)).toBe(false);
+    await expectNoMint(restarted, w.hostToken, lifetime);
   });
 });

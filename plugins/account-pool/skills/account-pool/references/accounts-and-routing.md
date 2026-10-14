@@ -294,11 +294,13 @@ archive marker can be written, the thread's credential files are renamed to
 `suspended-<name>`, keeping their content, and renamed back on unarchive. Only
 deleting the thread removes its credentials; a credential otherwise ends only
 by its own expiry or a machine-token rotation. Deletion is final: the plugin
-records it in a `deleted-thread-<digest>.json` marker and never restores or
-mints credentials for that thread again, even if bb later reports it live, in
-which case it logs a warning. If the marker cannot be written, the deletion
-holds for the rest of the process, and after a restart bb's report that the
-thread is gone records it again. bb's thread state is the
+records it in a `deleted-thread-<digest>.json` marker and in the thread's
+archive marker and its fallback, and never restores or mints credentials for
+that thread again, even if bb later reports it live, in which case it logs a
+warning. Credential files are removed only after one of those records is on
+disk. If none can be written, the files are renamed to `suspended-<name>`
+instead, the deletion holds for the rest of the process, and after a restart
+bb's report that the thread is gone completes it. bb's thread state is the
 authority, asked each time a thread's token is presented (concurrent requests
 for one thread share one lookup): live accepts, archived rejects and suspends,
 deleted rejects and revokes. A missed archive or unarchive event therefore

@@ -34,6 +34,7 @@ const archiveStateSchema = z
     threadId: identifierSchema,
     epoch: z.number().int().nonnegative(),
     archived: z.boolean(),
+    deleted: z.literal(true).optional(),
   })
   .strict();
 
@@ -488,21 +489,13 @@ export class ThreadTokenStore {
       } catch {
         directoryReadFailed = true;
       }
-      let markerError: unknown;
-      try {
-        await this.persist(this.deletedFile(threadId), {
-          threadId,
-          deleted: true,
-        });
-      } catch (error) {
-        markerError = error;
-      }
-      if (directoryReadFailed || this.holdsCredentials(threadId, names)) {
-        try {
-          await this.persistArchiveMarker(threadId, nextEpoch, true);
-        } catch (error) {
-          markerError ??= error;
-        }
+      const holding =
+        directoryReadFailed || this.holdsCredentials(threadId, names);
+      if (!(await this.persistDeletion(threadId, nextEpoch, holding))) {
+        if (holding) await this.holdDeletedFiles(threadId, names);
+        throw new Error(
+          `Account Pooler could not record the deletion of thread ${threadId}; its credential files stay suspended until bb reports the thread gone.`,
+        );
       }
       for (const [key, record] of this.routes) {
         if (record.threadId !== threadId) continue;
@@ -523,8 +516,69 @@ export class ThreadTokenStore {
       await this.quarantineUnreadableLegacyFiles(threadId, names).catch(
         () => undefined,
       );
-      if (markerError !== undefined) throw markerError;
     });
+  }
+
+  private async persistDeletion(
+    threadId: string,
+    epoch: number,
+    holding: boolean,
+  ): Promise<boolean> {
+    const writeDeleted = () =>
+      this.persist(this.deletedFile(threadId), {
+        threadId,
+        deleted: true,
+      }).then(
+        () => true,
+        () => false,
+      );
+    let recorded = await writeDeleted();
+    if (holding) {
+      const marker = { threadId, epoch, archived: true, deleted: true };
+      for (const [file, name] of [
+        [this.archivedFile(threadId), this.archivedName(threadId)],
+        [
+          this.archiveFallbackFile(threadId),
+          this.archiveFallbackName(threadId),
+        ],
+      ] as const) {
+        try {
+          await this.persist(file, marker);
+          this.seenArchiveMarkers.add(name);
+          recorded = true;
+        } catch {}
+      }
+    }
+    if (!recorded) recorded = await writeDeleted();
+    if (recorded) {
+      this.clearMarkerFailures(threadId);
+      this.archiveDurabilityFailures.delete(threadId);
+    } else this.archiveDurabilityFailures.add(threadId);
+    return recorded;
+  }
+
+  private async holdDeletedFiles(
+    threadId: string,
+    names: readonly string[],
+  ): Promise<void> {
+    for (const [key, record] of this.routes) {
+      if (record.threadId !== threadId) continue;
+      this.routes.delete(key);
+      unindexCredential(this.tokenIndex, record);
+    }
+    for (const [key, record] of this.nestedRoutes) {
+      if (record.threadId !== threadId) continue;
+      this.nestedRoutes.delete(key);
+      unindexCredential(this.nestedTokenIndex, record);
+    }
+    for (const name of names)
+      if (this.hasCredentialFile(threadId, [name]))
+        await fs
+          .rename(
+            path.join(this.directory, name),
+            path.join(this.directory, `${SUSPENDED_FILE_PREFIX}${name}`),
+          )
+          .catch(() => undefined);
   }
 
   async suspendThread(threadId: string): Promise<void> {
@@ -702,7 +756,7 @@ export class ThreadTokenStore {
       }
       await this.isArchived(threadId);
       if (!current()) return null;
-      const markerUnknown = this.hasTransientArchiveReadFailure(threadId);
+      if (this.hasTransientArchiveReadFailure(threadId)) return null;
       let names: string[] | null = null;
       try {
         names = await fs.readdir(this.directory);
@@ -731,7 +785,7 @@ export class ThreadTokenStore {
             .catch(() => undefined);
         }
         if (!current()) return null;
-        if (!markerUnknown && !this.hasLoadedCredentials(threadId))
+        if (!this.hasLoadedCredentials(threadId))
           await this.loadThreadFiles(
             threadId,
             await fs.readdir(this.directory),
@@ -877,27 +931,18 @@ export class ThreadTokenStore {
     epoch: number,
     archived: boolean,
   ): Promise<void> {
+    const marker = this.isDeleted(threadId)
+      ? { threadId, epoch, archived: true, deleted: true }
+      : { threadId, epoch, archived };
     try {
-      await this.persist(this.archivedFile(threadId), {
-        threadId,
-        epoch,
-        archived,
-      });
+      await this.persist(this.archivedFile(threadId), marker);
       this.seenArchiveMarkers.add(this.archivedName(threadId));
       if (this.seenArchiveMarkers.has(this.archiveFallbackName(threadId)))
-        await this.persist(this.archiveFallbackFile(threadId), {
-          threadId,
-          epoch,
-          archived,
-        });
+        await this.persist(this.archiveFallbackFile(threadId), marker);
     } catch (error) {
       if (!archived) throw error;
       try {
-        await this.persist(this.archiveFallbackFile(threadId), {
-          threadId,
-          epoch,
-          archived,
-        });
+        await this.persist(this.archiveFallbackFile(threadId), marker);
         this.seenArchiveMarkers.add(this.archiveFallbackName(threadId));
       } catch {
         this.archiveDurabilityFailures.add(threadId);
@@ -1077,6 +1122,22 @@ export class ThreadTokenStore {
     this.corruptArchiveMarkers.delete(name);
     this.transientArchiveReadFailures.delete(name);
     const threadId = parsed.data.threadId;
+    if (parsed.data.deleted === true) {
+      this.commitArchiveState(
+        threadId,
+        () => {
+          this.deletedThreadDigests.add(digest(threadId));
+          this.archivedThreads.add(threadId);
+          this.activeArchiveMarkers.delete(threadId);
+          this.archiveEpochs.set(
+            threadId,
+            Math.max(this.archiveEpoch(threadId), parsed.data.epoch),
+          );
+        },
+        true,
+      );
+      return true;
+    }
     const currentEpoch = this.archiveEpoch(threadId);
     const currentArchived = this.archivedThreads.has(threadId);
     if (parsed.data.epoch < currentEpoch) return currentArchived;

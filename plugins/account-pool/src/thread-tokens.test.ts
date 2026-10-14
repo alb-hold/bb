@@ -1647,6 +1647,7 @@ it("persists revocation when the credential directory cannot be read", async () 
     threadId: route.threadId,
     epoch: 1,
     archived: true,
+    deleted: true,
   });
   const reloaded = new ThreadTokenStore(directory, hosts);
   await reloaded.initialize([route.hostId]);
