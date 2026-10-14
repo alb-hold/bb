@@ -32,11 +32,17 @@ periodic thread sweep finding the thread live again, makes the session's existin
 credentials authenticate again; nothing is accepted while the thread is archived.
 Deleting the thread, a rotated machine token past its grace period, a credential's
 own expiry, or the 24 hours ending makes them final. If the tombstone cannot be
-written, the credential files stay on disk, rejected by the archive marker, until
-a restart, the next archive event or the sweep writes it, and the failure is
-logged. Older builds ignore the tombstone and treat the archived thread as
-revoked; they delete credential files left that way, so downgrading while a
-tombstone write was failing loses those credentials.
+written, the credentials stay rejected and the running process keeps retrying it
+on the next archive event and on the sweep, so an unarchive in that same process
+still restores them; the failure is logged. The tombstone is the only source a
+restore ever reads. Route and nested credential files left next to a tombstone,
+or left without one, are never read back: when the plugin loads, the files of an
+archived thread are discarded (deleted, else renamed aside), and a thread whose
+tombstone never reached the disk (a crash or a failed write during the archive,
+then a restart) loses its credentials, so a running session gets 401 and a new
+launch gets a fresh credential. Older builds ignore the tombstone and treat the
+archived thread as revoked; they delete credential files left that way, so
+downgrading while a tombstone write was failing loses those credentials.
 
 After a restart the plugin asks bb about every thread that still has stored
 credentials while it loads, before it registers its routes, and a credential is
@@ -50,27 +56,28 @@ its modification time, set on the temporary file before the rename, so a
 marker on disk always has it. An archive marker temporary file left by a crash
 counts as an archive in progress: the thread loads as archived but, because its
 modification time cannot be trusted as an anchor, gets no restoration window;
-an unreadable one is treated like an unreadable marker. When bb reports an
-archive time earlier than the marker's, the earlier one is used, and a window
-that has already run out is dropped. One rule decides every one of these: the
-window starts at the earliest of the archive marker's modification time, the
-tombstone's own archive time and bb's archive time, and it can only move
-earlier. A time learned from bb is first written into the marker's modification
-time. If that write fails, the tombstone is rewritten with the earlier time
-instead, and only then is anything deleted; the route files go first and the
-tombstone last, so what still carries the earlier time is deleted last. If
-neither write succeeds, the earlier time
-cannot be recorded and the thread becomes unrestorable: the markers that could
-not be lowered are first renamed to their temporary names, which a restart
-reads as an archive with no restoration window, and then the tombstone is
-deleted (renamed aside if the delete fails), then the route files it replaced.
-A marker whose time cannot be read closes the window the same way. Otherwise a
-tombstone is deleted before the route files it replaced. A restart at any point
-therefore sees the same or an earlier window, and route files left without a
-tombstone are recovered against the marker and expire with it. One residual
-remains: if the filesystem refuses every write, delete and rename, the disk
-still holds the later time and, once the filesystem recovers, a restart with bb
-unreachable restores within that later window.
+an unreadable one is treated like an unreadable marker. One rule decides every
+one of these: the window starts at the earliest of the archive marker's
+modification time, the tombstone's own archive time and bb's archive time, and
+it can only move earlier. A window that has already run out is closed by one
+step: the tombstone is deleted, and if the delete is refused it is renamed
+aside to a `revoked-route-*` name that nothing reads. When bb reports an
+archive time earlier than the tombstone's but still inside the window, the
+tombstone is rewritten with the earlier time; if that rewrite is refused the
+window is closed the same way. Nothing depends on a route file removal or a
+marker rename succeeding, and an unarchive always moves the thread to a new
+epoch above every file left behind, so a leftover file can never be read as a
+credential of the new epoch.
+
+One residual remains, and the crash and fault tests compute it rather than
+assume it: across every combination of refused tombstone writes, tombstone
+deletes, tombstone renames, marker writes and credential file removals, a
+restore past the earliest anchor's 24 hours is possible only when the filesystem
+refuses the tombstone rewrite, its delete and its rename together
+(`tombstoneWrite+tombstoneRemove+tombstoneRename`, with or without refused
+credential file removals). The disk then still holds the later time and, once the
+filesystem recovers, a restart with bb unreachable restores within that later
+window.
 
 The builtin Account Pooler plugin is disabled by default. Enable it, add Claude
 or Codex credentials, and inspect its proxy routes and account quota with:
