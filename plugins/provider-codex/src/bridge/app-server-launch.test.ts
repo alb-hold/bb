@@ -25,18 +25,14 @@ describe("Codex Account Pool launch", () => {
     );
     expect(launch.args).toContain('model_provider="bb-account-pool"');
     expect(launch.args).toContain(
-      "model_providers.bb-account-pool.request_max_retries=100",
+      "model_providers.bb-account-pool.request_max_retries=11",
     );
     expect(launch.args).toContain(
-      "model_providers.bb-account-pool.stream_max_retries=100",
-    );
-    expect(launch.args).toContain(
-      "model_providers.bb-account-pool.stream_idle_timeout_ms=300000",
+      "model_providers.bb-account-pool.stream_max_retries=11",
     );
     for (const setting of [
-      "model_providers.bb-account-pool.request_max_retries=100",
-      "model_providers.bb-account-pool.stream_max_retries=100",
-      "model_providers.bb-account-pool.stream_idle_timeout_ms=300000",
+      "model_providers.bb-account-pool.request_max_retries=11",
+      "model_providers.bb-account-pool.stream_max_retries=11",
     ]) {
       expect(launch.args[launch.args.indexOf(setting) - 1]).toBe("-c");
     }
@@ -50,13 +46,23 @@ describe("Codex Account Pool launch", () => {
         arg.startsWith("model_providers.bb-account-pool.request_max_retries="),
       )?.split("=")[1],
     );
-    const exponentialRetryBudgetMs = Array.from(
-      { length: 10 },
+    const retryCount = 11;
+    const retryDelaysMs = Array.from(
+      { length: retryCount },
       (_, retry) => 200 * 2 ** retry,
-    ).reduce((total, delay) => total + delay, 0);
-    expect(streamRetries).toBe(100);
-    expect(requestRetries).toBe(100);
-    expect(exponentialRetryBudgetMs).toBeGreaterThanOrEqual(180_000);
+    );
+    const minimumRetryBudgetMs = retryDelaysMs.reduce(
+      (total, delay) => total + delay * 0.9,
+      0,
+    );
+    const maximumRetryBudgetMs = retryDelaysMs.reduce(
+      (total, delay) => total + delay * 1.1,
+      0,
+    );
+    expect(streamRetries).toBe(retryCount);
+    expect(requestRetries).toBe(retryCount);
+    expect(minimumRetryBudgetMs).toBeGreaterThanOrEqual(180_000);
+    expect(maximumRetryBudgetMs).toBeLessThanOrEqual(600_000);
     expect(launch.args).toContain(
       'model_providers.bb-account-pool.env_http_headers.x-bb-account-pool-token="CODEX_POOL_AUTH_TOKEN"',
     );
