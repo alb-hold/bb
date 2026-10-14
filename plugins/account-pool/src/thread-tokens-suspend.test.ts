@@ -2226,5 +2226,5 @@ describe.each(["durable", "process"] as const)("%s credentials", (lifetime) => {
     expect(violations).toEqual([]);
     expect(rows).toEqual(EXPECTED_RESIDUAL);
     expect(runs.every((count) => count > 1)).toBe(true);
-  }, 1_800_000);
+  }, 600_000);
 });
