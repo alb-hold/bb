@@ -192,6 +192,9 @@ function pauseAt(
   };
 }
 
+const unarchive = (store: ThreadTokenStore) =>
+  store.unarchiveThread(route.threadId);
+
 type Transition = "restore" | "suspend" | "remove" | "admit";
 type ThreadEvent = "archived" | "unarchived" | "deleted";
 
@@ -271,11 +274,7 @@ async function interleave(
       ? store.suspendThread(route.threadId)
       : event === "deleted"
         ? store.removeThread(route.threadId)
-        : (async () => {
-            const version = store.archiveVersion(route.threadId);
-            if ((await w.lookup(route.threadId)) === "live")
-              await store.restoreThread(route.threadId, version);
-          })();
+        : unarchive(store);
   step = async () => {};
   pause.release();
   await run;
@@ -300,6 +299,109 @@ async function interleave(
   if (final === "gone")
     expect(await threadFiles(w.directory), `${at}: files`).toEqual([]);
   return true;
+}
+
+function holdOneLookup(answer: ThreadLookup) {
+  let armed = false;
+  let open = () => {};
+  const gate = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  let reach = () => {};
+  const reached = new Promise<void>((resolve) => {
+    reach = resolve;
+  });
+  const lookup: ThreadLookup = async (threadId, signal) => {
+    if (!armed) return answer(threadId, signal);
+    armed = false;
+    const captured = await answer(threadId, signal);
+    reach();
+    await gate;
+    return captured;
+  };
+  return {
+    lookup,
+    reached,
+    arm: () => {
+      armed = true;
+    },
+    release: () => open(),
+  };
+}
+
+type Answer = "live" | "archived" | "gone";
+
+async function staleAnswer(
+  lifetime: Lifetime,
+  source: "admit" | "sweep",
+  answer: Answer,
+  event: ThreadEvent,
+): Promise<void> {
+  const w = await world();
+  const held = holdOneLookup(w.lookup);
+  const lookup = held.lookup;
+  const store = new ThreadTokenStore(
+    w.directory,
+    w.hosts,
+    w.clock,
+    lookup,
+    60_000,
+  );
+  await store.initialize([route.hostId]);
+  const tokens = await mint(store, w.hostToken, lifetime);
+  const stored = await threadFiles(w.directory);
+  if (answer === "archived") {
+    w.setBb("archived");
+    await store.suspendThread(route.threadId);
+  }
+  if (answer === "gone") w.setBb("gone");
+  held.arm();
+  const run =
+    source === "admit"
+      ? Promise.all([
+          store.authenticate(tokens.token),
+          store.authenticateNested(tokens.nested),
+        ]).then(([token, nested]) => ({
+          token: token !== null,
+          nested: nested !== null,
+        }))
+      : store.sweepThreads(lookup).then(() => null);
+  await held.reached;
+  const final =
+    event === "archived"
+      ? "archived"
+      : event === "unarchived"
+        ? "live"
+        : "gone";
+  w.setBb(final);
+  if (event === "archived") await store.suspendThread(route.threadId);
+  else if (event === "deleted") await store.removeThread(route.threadId);
+  else expect(await unarchive(store)).toBe(true);
+  held.release();
+  const inFlight = await run;
+  const both = (value: boolean) => ({ token: value, nested: value });
+  const at = `${source} holding a stale ${answer} answer, then ${event}`;
+  if (inFlight !== null)
+    expect(inFlight, `${at}: in flight`).toEqual(both(final === "live"));
+  expect(await accepted(store, tokens), `${at}: next request`).toEqual(
+    both(final === "live"),
+  );
+  const local = new ThreadTokenStore(w.directory, w.hosts, w.clock);
+  await local.initialize([route.hostId]);
+  expect(await accepted(local, tokens), `${at}: on-disk state`).toEqual(
+    both(final === "live"),
+  );
+  if (final === "gone") {
+    expect(await threadFiles(w.directory), `${at}: files`).toEqual([]);
+    return;
+  }
+  expect(await threadFiles(w.directory), `${at}: files`).toEqual(stored);
+  if (final === "archived") {
+    w.setBb("live");
+    expect(await accepted(store, tokens), `${at}: once live`).toEqual(
+      both(true),
+    );
+  }
 }
 
 describe.each(["durable", "process"] as const)("%s credentials", (lifetime) => {
@@ -777,5 +879,55 @@ describe.each(["durable", "process"] as const)("%s credentials", (lifetime) => {
       expect(deepest).toBeGreaterThan(1);
     },
     120_000,
+  );
+  it("keeps the same tokens accepted when a lookup that saw the thread archived returns after the thread was unarchived", async () => {
+    const w = await world();
+    const held = holdOneLookup(w.lookup);
+    const store = new ThreadTokenStore(
+      w.directory,
+      w.hosts,
+      w.clock,
+      held.lookup,
+      60_000,
+    );
+    await store.initialize([route.hostId]);
+    const tokens = await mint(store, w.hostToken, lifetime);
+    const stored = await threadFiles(w.directory);
+    w.setBb("archived");
+    await store.suspendThread(route.threadId);
+    held.arm();
+    const inFlight = store.authenticate(tokens.token);
+    await held.reached;
+    w.setBb("live");
+    expect(await unarchive(store)).toBe(true);
+    expect(await store.authenticateNested(tokens.nested)).not.toBeNull();
+    held.release();
+    expect(await inFlight).not.toBeNull();
+    expect(await accepted(store, tokens)).toEqual({
+      token: true,
+      nested: true,
+    });
+    expect(await threadFiles(w.directory)).toEqual(stored);
+    const local = new ThreadTokenStore(w.directory, w.hosts, w.clock);
+    await local.initialize([route.hostId]);
+    expect(await accepted(local, tokens)).toEqual({
+      token: true,
+      nested: true,
+    });
+  });
+
+  it.each(
+    (["admit", "sweep"] as const).flatMap((source) =>
+      (["live", "archived", "gone"] as const).map(
+        (answer) => [source, answer] as const,
+      ),
+    ),
+  )(
+    "drops a stale %s lookup answer of %s when archive, unarchive or delete completes while it is held",
+    async (source, answer) => {
+      for (const event of ["archived", "unarchived", "deleted"] as const)
+        await staleAnswer(lifetime, source, answer, event);
+    },
+    60_000,
   );
 });

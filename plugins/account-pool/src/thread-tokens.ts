@@ -143,10 +143,17 @@ export class ThreadTokenStore {
   private archiveMarkersLoaded = false;
   private readonly lookupFailures = new Map<string, number>();
   private readonly archiveVersions = new Map<string, number>();
+  private readonly lastSuspensions = new Map<string, number>();
   private readonly unansweredWarnings = new Map<string, number>();
   private readonly pendingLookups = new Map<
     string,
-    Promise<{ status: "live" | "archived" | "gone"; version: number }>
+    {
+      version: number;
+      flight: Promise<{
+        status: "live" | "archived" | "gone";
+        version: number;
+      }>;
+    }
   >();
   private tail: Promise<void> = Promise.resolve();
   private readonly pendingPriorDrops = new WeakSet<object>();
@@ -196,6 +203,7 @@ export class ThreadTokenStore {
   private async loadFile(
     fileName: string,
     enrolled: ReadonlySet<string>,
+    restoring = false,
   ): Promise<void> {
     let name = fileName;
     if (!name.endsWith(".json")) return;
@@ -239,7 +247,7 @@ export class ThreadTokenStore {
         this.fileEpoch(name) === this.archiveEpoch(record.threadId) &&
         (await this.isLive(record, enrolled))
       ) {
-        if (suspended) this.holdSuspended(record.threadId);
+        if (suspended && !restoring) this.holdSuspended(record.threadId);
         this.routes.set(this.routeMapKey(record), record);
         indexCredential(this.tokenIndex, record);
       } else await fs.rm(file, { force: true });
@@ -275,7 +283,7 @@ export class ThreadTokenStore {
         this.fileEpoch(name) === this.archiveEpoch(record.threadId) &&
         (await this.isLive(record, enrolled))
       ) {
-        if (suspended) this.holdSuspended(record.threadId);
+        if (suspended && !restoring) this.holdSuspended(record.threadId);
         this.nestedRoutes.set(this.nestedMapKey(record), record);
         indexCredential(this.nestedTokenIndex, record);
       } else await fs.rm(file, { force: true });
@@ -395,7 +403,7 @@ export class ThreadTokenStore {
     )
       return null;
     await this.noteUse({ nested: false, record }, match.prior);
-    if (this.archiveVersion(record.threadId) !== admitted) return null;
+    if (this.suspendedSince(record.threadId, admitted)) return null;
     return {
       hostId: record.hostId,
       threadId: record.threadId,
@@ -429,21 +437,28 @@ export class ThreadTokenStore {
     )
       return null;
     await this.noteUse({ nested: true, record }, match.prior);
-    if (this.archiveVersion(record.threadId) !== admitted) return null;
+    if (this.suspendedSince(record.threadId, admitted)) return null;
     return { hostId: record.hostId, threadId: record.threadId };
   }
 
   async removeThread(threadId: string): Promise<void> {
-    this.archiveVersions.set(threadId, this.archiveVersion(threadId) + 1);
-    this.archivedThreads.add(threadId);
-    this.activeArchiveMarkers.delete(threadId);
+    this.commitArchiveState(
+      threadId,
+      () => {
+        this.archivedThreads.add(threadId);
+        this.activeArchiveMarkers.delete(threadId);
+      },
+      true,
+    );
     await this.serialize(async () => {
       const epoch = Math.max(
         this.archiveEpoch(threadId),
         await this.maxFileEpoch(threadId).catch(() => 0),
       );
       const nextEpoch = epoch + 1;
-      this.archiveEpochs.set(threadId, nextEpoch);
+      this.commitArchiveState(threadId, () => {
+        this.archiveEpochs.set(threadId, nextEpoch);
+      });
       let names: string[] = [];
       let directoryReadFailed = false;
       try {
@@ -483,9 +498,14 @@ export class ThreadTokenStore {
   }
 
   async suspendThread(threadId: string): Promise<void> {
-    this.archiveVersions.set(threadId, this.archiveVersion(threadId) + 1);
-    this.archivedThreads.add(threadId);
-    this.activeArchiveMarkers.delete(threadId);
+    this.commitArchiveState(
+      threadId,
+      () => {
+        this.archivedThreads.add(threadId);
+        this.activeArchiveMarkers.delete(threadId);
+      },
+      true,
+    );
     await this.serialize(async () => {
       let names: string[] = [];
       let directoryReadFailed = false;
@@ -500,7 +520,10 @@ export class ThreadTokenStore {
         this.archiveEpoch(threadId),
         directoryReadFailed ? 0 : this.maxEpochIn(threadId, names),
       );
-      this.archiveEpochs.set(threadId, epoch);
+      if (epoch !== this.archiveEpoch(threadId))
+        this.commitArchiveState(threadId, () => {
+          this.archiveEpochs.set(threadId, epoch);
+        });
       try {
         await this.persistArchiveMarker(threadId, epoch, true);
       } catch (error) {
@@ -584,8 +607,7 @@ export class ThreadTokenStore {
     threadId: string,
     expectedVersion: number,
   ): Promise<boolean> {
-    if (this.archiveVersion(threadId) !== expectedVersion)
-      return this.archivedThreads.has(threadId);
+    if (this.archiveVersion(threadId) !== expectedVersion) return false;
     await this.removeThread(threadId);
     return true;
   }
@@ -594,8 +616,7 @@ export class ThreadTokenStore {
     threadId: string,
     expectedVersion: number,
   ): Promise<boolean> {
-    if (this.archiveVersion(threadId) !== expectedVersion)
-      return this.archivedThreads.has(threadId);
+    if (this.archiveVersion(threadId) !== expectedVersion) return false;
     await this.suspendThread(threadId);
     return true;
   }
@@ -604,13 +625,38 @@ export class ThreadTokenStore {
     return this.archiveVersions.get(threadId) ?? 0;
   }
 
+  async unarchiveThread(threadId: string): Promise<boolean> {
+    return (await this.settle(threadId, true)) !== null;
+  }
+
+  async settleThread(threadId: string): Promise<boolean> {
+    return (await this.settle(threadId)) !== null;
+  }
+
+  private commitArchiveState(
+    threadId: string,
+    change: () => void,
+    suspends = false,
+  ): number {
+    change();
+    const version = this.archiveVersion(threadId) + 1;
+    this.archiveVersions.set(threadId, version);
+    if (suspends) this.lastSuspensions.set(threadId, version);
+    return version;
+  }
+
+  private suspendedSince(threadId: string, version: number): boolean {
+    return (this.lastSuspensions.get(threadId) ?? 0) > version;
+  }
+
   async restoreThread(
     threadId: string,
     expectedVersion: number,
-  ): Promise<boolean> {
+    unarchived = false,
+  ): Promise<number | null> {
     return this.serialize(async () => {
-      const current = () => this.archiveVersion(threadId) === expectedVersion;
-      if (!current()) return false;
+      const current = () => !this.suspendedSince(threadId, expectedVersion);
+      if (!current()) return null;
       if (
         this.activeArchiveMarkers.has(threadId) ||
         (this.archiveEpoch(threadId) === 0 &&
@@ -618,10 +664,12 @@ export class ThreadTokenStore {
           !this.hasMarkerFailure(threadId) &&
           !this.archiveDurabilityFailures.has(threadId))
       ) {
-        return true;
+        return unarchived
+          ? this.commitArchiveState(threadId, () => {})
+          : this.archiveVersion(threadId);
       }
       await this.isArchived(threadId);
-      if (!current()) return false;
+      if (!current()) return null;
       const markerUnknown = this.hasTransientArchiveReadFailure(threadId);
       let names: string[] | null = null;
       try {
@@ -629,7 +677,7 @@ export class ThreadTokenStore {
       } catch {
         names = null;
       }
-      if (!current()) return false;
+      if (!current()) return null;
       const epoch = Math.max(
         this.archiveEpoch(threadId),
         names === null ? 0 : this.maxEpochIn(threadId, names),
@@ -639,7 +687,7 @@ export class ThreadTokenStore {
       );
       if (names !== null) {
         for (const name of this.suspendedFiles(threadId, names)) {
-          if (!current()) return false;
+          if (!current()) return null;
           await fs
             .rename(
               path.join(this.directory, name),
@@ -650,23 +698,24 @@ export class ThreadTokenStore {
             )
             .catch(() => undefined);
         }
-        if (!current()) return false;
+        if (!current()) return null;
         if (!markerUnknown && !this.hasLoadedCredentials(threadId))
           await this.loadThreadFiles(
             threadId,
             await fs.readdir(this.directory),
           );
       }
-      if (!current()) return false;
-      this.archivedThreads.delete(threadId);
-      this.activeArchiveMarkers.add(threadId);
-      this.archiveEpochs.set(
-        threadId,
-        Math.max(this.archiveEpoch(threadId), epoch),
-      );
-      this.clearMarkerFailures(threadId);
-      this.archiveDurabilityFailures.delete(threadId);
-      return true;
+      if (!current()) return null;
+      return this.commitArchiveState(threadId, () => {
+        this.archivedThreads.delete(threadId);
+        this.activeArchiveMarkers.add(threadId);
+        this.archiveEpochs.set(
+          threadId,
+          Math.max(this.archiveEpoch(threadId), epoch),
+        );
+        this.clearMarkerFailures(threadId);
+        this.archiveDurabilityFailures.delete(threadId);
+      });
     });
   }
 
@@ -674,41 +723,55 @@ export class ThreadTokenStore {
     if (this.threadState === undefined) {
       const version = this.archiveVersion(threadId);
       if (await this.isArchived(threadId)) return null;
-      return this.archiveVersion(threadId) === version ? version : null;
+      return this.suspendedSince(threadId, version) ? null : version;
     }
-    let answer: { status: "live" | "archived" | "gone"; version: number };
     try {
-      answer = await this.askBb(threadId);
+      return await this.settle(threadId);
     } catch (error) {
       this.warnUnanswered(threadId, error);
       return null;
     }
-    if (answer.status === "live") {
-      if (!(await this.restoreThread(threadId, answer.version))) return null;
-      if (await this.isArchived(threadId)) return null;
-      return this.archiveVersion(threadId) === answer.version
-        ? answer.version
-        : null;
+  }
+
+  private async settle(
+    threadId: string,
+    unarchived = false,
+  ): Promise<number | null> {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const answer = await this.askBb(threadId, unarchived);
+      if (answer.status === "live") {
+        const version = await this.restoreThread(
+          threadId,
+          answer.version,
+          unarchived,
+        );
+        if (version === null) continue;
+        if (await this.isArchived(threadId)) return null;
+        if (this.suspendedSince(threadId, version)) continue;
+        return version;
+      }
+      try {
+        const applied =
+          answer.status === "archived"
+            ? await this.suspendThreadIfVersion(threadId, answer.version)
+            : await this.removeThreadIfVersion(threadId, answer.version);
+        if (!applied) continue;
+      } catch {}
+      return null;
     }
-    if (answer.status === "archived")
-      await this.suspendThreadIfVersion(threadId, answer.version).catch(
-        () => undefined,
-      );
-    else
-      await this.removeThreadIfVersion(threadId, answer.version).catch(
-        () => undefined,
-      );
     return null;
   }
 
   private askBb(
     threadId: string,
+    fresh = false,
   ): Promise<{ status: "live" | "archived" | "gone"; version: number }> {
     const lookup = this.threadState;
     if (lookup === undefined) return Promise.reject(new Error("no lookup"));
-    const pending = this.pendingLookups.get(threadId);
-    if (pending !== undefined) return pending;
     const version = this.archiveVersion(threadId);
+    const pending = this.pendingLookups.get(threadId);
+    if (!fresh && pending !== undefined && pending.version === version)
+      return pending.flight;
     const signal = AbortSignal.timeout(this.lookupTimeoutMs);
     const flight = untilAborted(lookup(threadId, signal), signal)
       .catch((error: unknown) => {
@@ -717,9 +780,10 @@ export class ThreadTokenStore {
       })
       .then((status) => ({ status, version }))
       .finally(() => {
-        this.pendingLookups.delete(threadId);
+        if (this.pendingLookups.get(threadId)?.flight === flight)
+          this.pendingLookups.delete(threadId);
       });
-    this.pendingLookups.set(threadId, flight);
+    this.pendingLookups.set(threadId, { version, flight });
     return flight;
   }
 
@@ -738,8 +802,10 @@ export class ThreadTokenStore {
   }
 
   private holdSuspended(threadId: string): void {
-    this.archivedThreads.add(threadId);
-    this.activeArchiveMarkers.delete(threadId);
+    this.commitArchiveState(threadId, () => {
+      this.archivedThreads.add(threadId);
+      this.activeArchiveMarkers.delete(threadId);
+    });
   }
 
   private suspendedFiles(threadId: string, names: readonly string[]): string[] {
@@ -832,7 +898,7 @@ export class ThreadTokenStore {
     for (const name of names) {
       if (loaded.has(name) || !this.hasCredentialFile(threadId, [name]))
         continue;
-      await this.loadFile(name, enrolled).catch(() => undefined);
+      await this.loadFile(name, enrolled, true).catch(() => undefined);
     }
   }
 
@@ -961,14 +1027,16 @@ export class ThreadTokenStore {
     const currentArchived = this.archivedThreads.has(threadId);
     if (parsed.data.epoch < currentEpoch) return currentArchived;
     if (parsed.data.epoch === currentEpoch && currentArchived) return true;
-    this.archiveEpochs.set(threadId, parsed.data.epoch);
-    if (parsed.data.archived) {
-      this.archivedThreads.add(threadId);
-      this.activeArchiveMarkers.delete(threadId);
-    } else {
-      this.archivedThreads.delete(threadId);
-      this.activeArchiveMarkers.add(threadId);
-    }
+    this.commitArchiveState(threadId, () => {
+      this.archiveEpochs.set(threadId, parsed.data.epoch);
+      if (parsed.data.archived) {
+        this.archivedThreads.add(threadId);
+        this.activeArchiveMarkers.delete(threadId);
+      } else {
+        this.archivedThreads.delete(threadId);
+        this.activeArchiveMarkers.add(threadId);
+      }
+    });
     return parsed.data.archived;
   }
 

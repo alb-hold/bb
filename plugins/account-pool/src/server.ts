@@ -307,11 +307,7 @@ export function createAccountPoolPlugin(
       await threadTokens.suspendThread(thread.id);
     });
     bb.events.on("thread.unarchived", async ({ thread }) => {
-      const archiveVersion = threadTokens.archiveVersion(thread.id);
-      const current = await bb.sdk.threads.get({ threadId: thread.id });
-      if (current.archivedAt === null && current.deletedAt === null) {
-        await threadTokens.restoreThread(thread.id, archiveVersion);
-      }
+      await threadTokens.unarchiveThread(thread.id);
     });
     bb.events.on("thread.deleted", async ({ thread }) => {
       await Promise.all([
@@ -423,15 +419,8 @@ export function createAccountPoolPlugin(
         reason:
           "Account Pooler is isolated from the parent bb server's pool on this instance",
       }));
-    const revokeIfArchived = async (threadId: string): Promise<boolean> => {
-      const archiveVersion = threadTokens.archiveVersion(threadId);
-      const thread = await bb.sdk.threads.get({ threadId });
-      if (thread.deletedAt !== null)
-        return threadTokens.removeThreadIfVersion(threadId, archiveVersion);
-      if (thread.archivedAt !== null)
-        return threadTokens.suspendThreadIfVersion(threadId, archiveVersion);
-      return !(await threadTokens.restoreThread(threadId, archiveVersion));
-    };
+    const revokeIfArchived = async (threadId: string): Promise<boolean> =>
+      !(await threadTokens.settleThread(threadId));
     const sweepThreadCredentialsOnce = async (
       serviceSignal: AbortSignal,
     ): Promise<boolean> => {

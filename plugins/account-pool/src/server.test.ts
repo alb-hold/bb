@@ -10795,6 +10795,53 @@ describe("Account Pool credential scoping", () => {
     expect(await statusOf(host, nested, "/availability")).toBe(200);
   });
 
+  it("keeps the same tokens accepted when a lookup that saw the thread archived returns after the thread was unarchived", async () => {
+    const fixture = await scopedFixture();
+    const { host } = fixture;
+    const claude = await claudeToken(host, "thread-stale-answer");
+    const nested = await nestedToken(host, "thread-stale-answer");
+    bbThreadStates.set("thread-stale-answer", "archived");
+    expect(
+      await host.harness.behavior.emitThreadEvent("thread.archived", {
+        thread: makeThreadResponse({ id: "thread-stale-answer" }),
+      }),
+    ).toEqual({ errors: [] });
+    let armed = true;
+    let open = () => {};
+    const gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    let reach = () => {};
+    const reached = new Promise<void>((resolve) => {
+      reach = resolve;
+    });
+    host.harness.sdk.stub(
+      "threads.get",
+      async ({ threadId }: { threadId: string }) => {
+        if (!armed || threadId !== "thread-stale-answer")
+          return bbThread(threadId);
+        armed = false;
+        const captured = await bbThread(threadId);
+        reach();
+        await gate;
+        return captured;
+      },
+    );
+    const inFlight = statusOf(host, claude, "/v1/messages");
+    await reached;
+    bbThreadStates.delete("thread-stale-answer");
+    expect(
+      await host.harness.behavior.emitThreadEvent("thread.unarchived", {
+        thread: makeThreadResponse({ id: "thread-stale-answer" }),
+      }),
+    ).toEqual({ errors: [] });
+    expect(await statusOf(host, nested, "/availability")).toBe(200);
+    open();
+    expect(await inFlight).toBe(200);
+    expect(await statusOf(host, claude, "/v1/messages")).toBe(200);
+    expect(await statusOf(host, nested, "/availability")).toBe(200);
+  });
+
   it("suspends on archive, accepts the same tokens after unarchive and revokes on delete", async () => {
     const fixture = await scopedFixture();
     const { host } = fixture;
@@ -11597,7 +11644,7 @@ describe("Account Pool credential scoping", () => {
     const token = entries.find(
       (entry) => entry.name === "ANTHROPIC_AUTH_TOKEN",
     );
-    expect(lookups).toBe(3);
+    expect(lookups).toBe(4);
     if (token === undefined || typeof token.value !== "string")
       throw new Error("Account Pool token was not resolved after unarchive.");
     expect(token.value).toBe(oldToken);
