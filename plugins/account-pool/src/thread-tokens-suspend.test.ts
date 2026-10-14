@@ -2129,7 +2129,7 @@ describe.each(["durable", "process"] as const)("%s credentials", (lifetime) => {
     expect(await threadFiles(w.directory)).toEqual([]);
   });
 
-  it("refuses a mint after a restart when bb committed the delete and no deletion record survived anywhere", async () => {
+  it("refuses a mint after a restart when the lookup stub answers gone, as bb does after a committed delete, and no deletion record survived anywhere", async () => {
     const w = await world();
     const watch = watching(w);
     const store = await w.open();
@@ -2247,7 +2247,7 @@ describe.each(["durable", "process"] as const)("%s credentials", (lifetime) => {
     },
   );
 
-  it("computes the deletion residual for every subset of refused bb-database, content, rename, rm and directory mutations, with content refused at its open, its write, its file sync or the directory sync, one and two credential files, and every crash point from the first mutation of the delete through the next start, losing every unsynced change at each restart, minting first on a start that has not swept yet, with bb answering gone after every restart because the delete is committed in bb's own thread row", async () => {
+  it("computes the deletion residual for every subset of refused bb-database, content, rename, rm and directory mutations, with content refused at its open, its write, its file sync or the directory sync, one and two credential files, and every crash point from the first mutation of the delete through the next start, losing every unsynced change at each restart, minting first on a start that has not swept yet, with a lookup stub answering gone after every restart in place of bb's committed thread row, which the server deletion matrix reads for real", async () => {
     const shared = await sharedHosts();
     const rows: string[] = [];
     const runs: number[] = [];
@@ -2316,7 +2316,7 @@ describe.each(["durable", "process"] as const)("%s credentials", (lifetime) => {
         }
     console.log(
       [
-        `deletion residual (${lifetime}); every unsynced change is lost at each restart, the first start mints and authenticates before any sweep, and bb answers gone, as its committed deletedAt does:`,
+        `deletion residual (${lifetime}); every unsynced change is lost at each restart, the first start mints and authenticates before any sweep, and the lookup stub answers gone in place of bb's committed deletedAt:`,
         ...rows.map((row, index) => `${row} | runs: ${runs[index]}`),
         "",
         `runs that accepted an old token or minted (${acceptedRuns.length}):`,
