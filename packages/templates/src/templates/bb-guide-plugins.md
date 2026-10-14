@@ -107,10 +107,9 @@ whose machines need a local Claude login before the pool can be disabled
 safely. Rotation keeps the prior token, and the thread-scoped tokens derived from
 it, valid for ten minutes. Archiving a thread suspends its tokens and
 unarchiving it accepts the same tokens again, so a running session keeps
-working; deleting a thread revokes them for good. The plugin checks bb's thread
-state at startup, every 15 minutes, and within 30 seconds when a suspended
-thread presents its token, so a missed archive or unarchive event corrects
-itself. Agents should
+working; deleting a thread revokes them for good. The plugin asks bb for the
+thread's state each time a token is presented, so a missed archive or unarchive
+event takes effect on the next request. Agents should
 use
 `--api-key-stdin`, which reads exactly one non-empty key from piped standard
 input. Secret options reject inline values and are accepted only from stdin.

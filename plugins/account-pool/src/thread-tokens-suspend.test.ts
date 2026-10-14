@@ -3,13 +3,10 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HubTokenStore } from "./store.js";
-import {
-  ARCHIVED_STATE_RECHECK_MS,
-  ThreadTokenStore,
-  type ThreadLookup,
-} from "./thread-tokens.js";
+import { ThreadTokenStore, type ThreadLookup } from "./thread-tokens.js";
 
 type BbState = "live" | "archived" | "gone" | "unreachable";
+const LATER_MS = 30_000;
 type Lifetime = "durable" | "process";
 
 const directories: string[] = [];
@@ -33,9 +30,11 @@ async function world() {
   let now = 1_000_000;
   let bb: BbState = "live";
   let lookups = 0;
+  let gate: Promise<void> | null = null;
   const clock = () => now;
   const lookup: ThreadLookup = async () => {
     lookups += 1;
+    if (gate !== null) await gate;
     if (bb === "unreachable") throw new Error("bb unreachable");
     return bb;
   };
@@ -62,6 +61,16 @@ async function world() {
       now += milliseconds;
     },
     lookups: () => lookups,
+    hold: () => {
+      let release = () => {};
+      gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return () => {
+        gate = null;
+        release();
+      };
+    },
   };
 }
 
@@ -169,38 +178,102 @@ describe.each(["durable", "process"] as const)("%s credentials", (lifetime) => {
     });
   });
 
-  it("accepts the tokens again after a missed unarchive event once bb reports the thread live", async () => {
+  it("accepts the tokens again on the next request after a missed unarchive event once bb reports the thread live", async () => {
     const w = await world();
     const store = await w.open();
     const tokens = await mint(store, w.hostToken, lifetime);
     w.setBb("archived");
     await store.suspendThread(route.threadId);
-    w.setBb("live");
     expect(await accepted(store, tokens)).toEqual({
       token: false,
       nested: false,
     });
-    w.advance(ARCHIVED_STATE_RECHECK_MS);
+    w.setBb("live");
     expect(await accepted(store, tokens)).toEqual({
       token: true,
       nested: true,
     });
   });
 
-  it("rechecks an archived thread with bb at most once per interval", async () => {
+  it("asks bb on every authentication, sharing one in-flight lookup between concurrent ones", async () => {
     const w = await world();
     const store = await w.open();
     const tokens = await mint(store, w.hostToken, lifetime);
-    w.setBb("archived");
-    await store.suspendThread(route.threadId);
     const before = w.lookups();
-    for (let attempt = 0; attempt < 5; attempt += 1)
-      expect(await store.authenticate(tokens.token)).toBeNull();
-    expect(w.lookups()).toBe(before);
-    w.advance(ARCHIVED_STATE_RECHECK_MS);
-    for (let attempt = 0; attempt < 5; attempt += 1)
-      expect(await store.authenticate(tokens.token)).toBeNull();
+    const release = w.hold();
+    const attempts = Array.from({ length: 8 }, (_, index) =>
+      index % 2 === 0
+        ? store.authenticate(tokens.token)
+        : store.authenticateNested(tokens.nested),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 10));
     expect(w.lookups()).toBe(before + 1);
+    release();
+    expect((await Promise.all(attempts)).every((value) => value !== null)).toBe(
+      true,
+    );
+    expect(w.lookups()).toBe(before + 1);
+    expect(await store.authenticate(tokens.token)).not.toBeNull();
+    expect(w.lookups()).toBe(before + 2);
+  });
+
+  it("rejects at once when bb archives a confirmed thread without delivering the event, and accepts the same tokens when bb reports it live", async () => {
+    const w = await world();
+    const store = await w.open();
+    const tokens = await mint(store, w.hostToken, lifetime);
+    expect(await accepted(store, tokens)).toEqual({
+      token: true,
+      nested: true,
+    });
+    w.setBb("archived");
+    expect(await accepted(store, tokens)).toEqual({
+      token: false,
+      nested: false,
+    });
+    expect(
+      (await fs.readdir(w.directory)).filter((name) =>
+        name.includes(route.threadId),
+      ),
+    ).toHaveLength(2);
+    w.setBb("live");
+    expect(await accepted(store, tokens)).toEqual({
+      token: true,
+      nested: true,
+    });
+  });
+
+  it("falls back to local state when bb cannot answer: accepts only a thread bb confirmed live in this process with no archive known", async () => {
+    const w = await world();
+    const store = await w.open();
+    const tokens = await mint(store, w.hostToken, lifetime);
+    expect(await accepted(store, tokens)).toEqual({
+      token: true,
+      nested: true,
+    });
+    w.setBb("unreachable");
+    expect(await accepted(store, tokens)).toEqual({
+      token: true,
+      nested: true,
+    });
+    const unconfirmed = await w.open();
+    expect(await accepted(unconfirmed, tokens)).toEqual({
+      token: false,
+      nested: false,
+    });
+    await store.suspendThread(route.threadId);
+    expect(await accepted(store, tokens)).toEqual({
+      token: false,
+      nested: false,
+    });
+    w.setBb("live");
+    expect(await accepted(store, tokens)).toEqual({
+      token: true,
+      nested: true,
+    });
+    expect(await accepted(unconfirmed, tokens)).toEqual({
+      token: true,
+      nested: true,
+    });
   });
 
   it("revokes for good on delete, even when bb later reports the thread live", async () => {
@@ -214,7 +287,7 @@ describe.each(["durable", "process"] as const)("%s credentials", (lifetime) => {
       route.threadId,
       store.archiveVersion(route.threadId),
     );
-    w.advance(ARCHIVED_STATE_RECHECK_MS);
+    w.advance(LATER_MS);
     expect(await accepted(store, tokens)).toEqual({
       token: false,
       nested: false,
@@ -299,7 +372,7 @@ describe.each(["durable", "process"] as const)("%s credentials", (lifetime) => {
       nested: false,
     });
     w.setBb("live");
-    w.advance(ARCHIVED_STATE_RECHECK_MS);
+    w.advance(LATER_MS);
     expect(await accepted(unreachable, tokens)).toEqual({
       token: true,
       nested: true,
@@ -362,7 +435,7 @@ describe.each(["durable", "process"] as const)("%s credentials", (lifetime) => {
         nested: false,
       });
       w.setBb("live");
-      w.advance(ARCHIVED_STATE_RECHECK_MS);
+      w.advance(LATER_MS);
       expect(await accepted(unreachable, tokens)).toEqual({
         token: true,
         nested: true,
@@ -387,7 +460,7 @@ describe.each(["durable", "process"] as const)("%s credentials", (lifetime) => {
       nested: false,
     });
     w.setBb("live");
-    w.advance(ARCHIVED_STATE_RECHECK_MS);
+    w.advance(LATER_MS);
     expect(await accepted(restarted, tokens)).toEqual({
       token: true,
       nested: true,

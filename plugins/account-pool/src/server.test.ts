@@ -10689,6 +10689,31 @@ describe("Account Pool credential scoping", () => {
     expect(await statusOf(host, otherHost, "/v1/messages")).toBe(200);
   });
 
+  it("rejects both token paths at once when bb archives a confirmed thread without the event, keeps the credentials, and accepts the same tokens once bb reports it live", async () => {
+    const fixture = await scopedFixture();
+    const { host } = fixture;
+    const claude = await claudeToken(host, "thread-silent");
+    const nested = await nestedToken(host, "thread-silent");
+    expect(await statusOf(host, claude, "/v1/messages")).toBe(200);
+    expect(await statusOf(host, nested, "/availability")).toBe(200);
+    bbThreadStates.set("thread-silent", "archived");
+    expect(await statusOf(host, claude, "/v1/messages")).toBe(401);
+    expect(await statusOf(host, nested, "/availability")).toBe(401);
+    expect(
+      (await fs.readdir(path.join(fixture.dataDir, ...POOL_SECRETS))).filter(
+        (name) => name.includes("thread-silent"),
+      ),
+    ).toHaveLength(2);
+    bbThreadStates.delete("thread-silent");
+    expect(await statusOf(host, claude, "/v1/messages")).toBe(200);
+    expect(await statusOf(host, nested, "/availability")).toBe(200);
+    host.harness.sdk.stub("threads.get", async () => {
+      throw new Error("lookup failed");
+    });
+    expect(await statusOf(host, claude, "/v1/messages")).toBe(200);
+    expect(await statusOf(host, nested, "/availability")).toBe(200);
+  });
+
   it("suspends on archive, accepts the same tokens after unarchive and revokes on delete", async () => {
     const fixture = await scopedFixture();
     const { host } = fixture;
@@ -10909,6 +10934,7 @@ describe("Account Pool credential scoping", () => {
     expect(await statusOf(second, latest.claude, "/v1/messages")).toBe(200);
     expect(await statusOf(second, original.claude, "/v1/messages")).toBe(200);
     expect(await statusOf(second, original.nested, "/availability")).toBe(200);
+    bbThreadStates.set("thr_native_survivor", "archived");
     await second.harness.behavior.emitThreadEvent("thread.archived", {
       thread: makeThreadResponse({ id: "thr_native_survivor" }),
     });
@@ -10990,7 +11016,7 @@ describe("Account Pool credential scoping", () => {
     expect(await statusOf(host, missedNested, "/availability")).toBe(401);
     expect(await statusOf(host, active, "/v1/messages")).toBe(200);
     expect(await statusOf(host, activeNested, "/availability")).toBe(200);
-    expect(lookups.sort()).toEqual([
+    expect([...new Set(lookups)].sort()).toEqual([
       "thread-live",
       "thread-missed",
       "thread-one",
@@ -11172,6 +11198,7 @@ describe("Account Pool credential scoping", () => {
     let hangs = 0;
     const host = await fixture.host.harness.lifecycle.reload(
       createAccountPoolPlugin({
+        threadSweepLookupTimeoutMs: 50,
         threadSweepTimeoutMs: 50,
         threadSweepIntervalMs: 50,
         threadSweepRetryMs: 50,
@@ -11401,13 +11428,14 @@ describe("Account Pool credential scoping", () => {
     host.harness.sdk.stub("threads.get", async ({ threadId }) => {
       lookupStarted.resolve();
       await releaseLookup.promise;
-      return makeThreadResponse({ id: threadId });
+      return bbThread(threadId);
     });
     const restoring = host.harness.behavior.emitThreadEvent(
       "thread.unarchived",
       { thread: makeThreadResponse({ id: "thread-unarchive-race" }) },
     );
     await lookupStarted.promise;
+    bbThreadStates.set("thread-unarchive-race", "archived");
     await host.harness.behavior.emitThreadEvent("thread.archived", {
       thread: makeThreadResponse({
         id: "thread-unarchive-race",
@@ -11729,6 +11757,7 @@ describe("Account Pool credential scoping", () => {
     const childToken = await claudeToken(child, "thread-nested");
     expect(await statusOf(child, childToken, "/v1/messages")).toBe(200);
     expect(await statusOf(parent.host, scoped, "/availability")).toBe(200);
+    bbThreadStates.set("thread-one", "archived");
     await parent.host.harness.behavior.emitThreadEvent("thread.archived", {
       thread: makeThreadResponse({ id: "thread-one" }),
     });

@@ -117,7 +117,6 @@ export type ThreadLookup = (
   signal?: AbortSignal,
 ) => Promise<"live" | "archived" | "gone">;
 export const THREAD_STATE_LOOKUP_TIMEOUT_MS = 5_000;
-export const ARCHIVED_STATE_RECHECK_MS = 30_000;
 export type ThreadSweepOptions = {
   signal?: AbortSignal;
   lookupTimeoutMs?: number;
@@ -143,9 +142,11 @@ export class ThreadTokenStore {
   private archiveMarkersLoaded = false;
   private readonly lookupFailures = new Map<string, number>();
   private readonly archiveVersions = new Map<string, number>();
-  private readonly archiveChecks = new Map<string, number>();
   private readonly verifiedThreads = new Set<string>();
-  private readonly pendingArchiveChecks = new Map<string, Promise<boolean>>();
+  private readonly pendingLookups = new Map<
+    string,
+    Promise<{ status: "live" | "archived" | "gone"; version: number }>
+  >();
   private tail: Promise<void> = Promise.resolve();
   private readonly pendingPriorDrops = new WeakSet<object>();
 
@@ -432,7 +433,6 @@ export class ThreadTokenStore {
     this.archiveVersions.set(threadId, this.archiveVersion(threadId) + 1);
     this.archivedThreads.add(threadId);
     this.activeArchiveMarkers.delete(threadId);
-    this.archiveChecks.delete(threadId);
     this.verifiedThreads.delete(threadId);
     await this.serialize(async () => {
       const epoch = Math.max(
@@ -483,7 +483,6 @@ export class ThreadTokenStore {
     this.archiveVersions.set(threadId, this.archiveVersion(threadId) + 1);
     this.archivedThreads.add(threadId);
     this.activeArchiveMarkers.delete(threadId);
-    this.archiveChecks.set(threadId, this.now());
     this.verifiedThreads.delete(threadId);
     await this.serialize(async () => {
       let names: string[] = [];
@@ -616,7 +615,6 @@ export class ThreadTokenStore {
           !this.hasMarkerFailure(threadId) &&
           !this.archiveDurabilityFailures.has(threadId))
       ) {
-        this.archiveChecks.delete(threadId);
         this.verifiedThreads.add(threadId);
         return;
       }
@@ -637,7 +635,6 @@ export class ThreadTokenStore {
       this.archiveEpochs.set(threadId, epoch);
       this.clearMarkerFailures(threadId);
       this.archiveDurabilityFailures.delete(threadId);
-      this.archiveChecks.delete(threadId);
       this.verifiedThreads.add(threadId);
       await this.persistArchiveMarker(threadId, epoch, false).catch(
         () => undefined,
@@ -658,51 +655,48 @@ export class ThreadTokenStore {
   private async admit(threadId: string): Promise<boolean> {
     if (this.threadState === undefined)
       return !(await this.isArchived(threadId));
-    if (this.verifiedThreads.has(threadId))
-      return !(await this.isArchived(threadId));
-    return this.confirmWithBb(threadId);
+    let answer: { status: "live" | "archived" | "gone"; version: number };
+    try {
+      answer = await this.askBb(threadId);
+    } catch {
+      return (
+        this.verifiedThreads.has(threadId) && !(await this.isArchived(threadId))
+      );
+    }
+    if (answer.status === "live") {
+      if (this.archiveVersion(threadId) !== answer.version) return false;
+      await this.restoreThread(threadId, answer.version);
+      return (
+        this.verifiedThreads.has(threadId) && !(await this.isArchived(threadId))
+      );
+    }
+    if (answer.status === "archived")
+      await this.suspendThreadIfVersion(threadId, answer.version).catch(
+        () => undefined,
+      );
+    else
+      await this.removeThreadIfVersion(threadId, answer.version).catch(
+        () => undefined,
+      );
+    return false;
   }
 
-  private confirmWithBb(threadId: string): Promise<boolean> {
+  private askBb(
+    threadId: string,
+  ): Promise<{ status: "live" | "archived" | "gone"; version: number }> {
     const lookup = this.threadState;
-    if (lookup === undefined) return Promise.resolve(false);
-    const checkedAt = this.archiveChecks.get(threadId);
-    if (
-      checkedAt !== undefined &&
-      this.now() - checkedAt < ARCHIVED_STATE_RECHECK_MS
-    )
-      return Promise.resolve(false);
-    const pending = this.pendingArchiveChecks.get(threadId);
+    if (lookup === undefined) return Promise.reject(new Error("no lookup"));
+    const pending = this.pendingLookups.get(threadId);
     if (pending !== undefined) return pending;
-    if (this.archivedThreads.has(threadId))
-      this.archiveChecks.set(threadId, this.now());
     const version = this.archiveVersion(threadId);
-    const check = (async () => {
-      try {
-        const signal = AbortSignal.timeout(this.lookupTimeoutMs);
-        const status = await untilAborted(lookup(threadId, signal), signal);
-        if (this.archiveVersion(threadId) !== version) return false;
-        if (status === "live") {
-          await this.restoreThread(threadId, version);
-          return (
-            this.verifiedThreads.has(threadId) &&
-            !(await this.isArchived(threadId))
-          );
-        }
-        if (status === "archived")
-          await this.suspendThreadIfVersion(threadId, version).catch(
-            () => undefined,
-          );
-        else await this.removeThreadIfVersion(threadId, version);
-        return false;
-      } catch {
-        return false;
-      } finally {
-        this.pendingArchiveChecks.delete(threadId);
-      }
-    })();
-    this.pendingArchiveChecks.set(threadId, check);
-    return check;
+    const signal = AbortSignal.timeout(this.lookupTimeoutMs);
+    const flight = untilAborted(lookup(threadId, signal), signal)
+      .then((status) => ({ status, version }))
+      .finally(() => {
+        this.pendingLookups.delete(threadId);
+      });
+    this.pendingLookups.set(threadId, flight);
+    return flight;
   }
 
   private holdSuspended(threadId: string): void {
