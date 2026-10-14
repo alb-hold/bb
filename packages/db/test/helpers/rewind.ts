@@ -10,6 +10,7 @@ export function dropPluginEnabledFollowsDefaultColumn(db: DbConnection): void {
 }
 
 export function rewindThreadPruningWork(db: DbConnection): void {
+  dropTerminalAttentionColumn(db);
   db.$client.exec(`
     DROP TABLE IF EXISTS thread_pruning_work;
     DELETE FROM __drizzle_migrations WHERE created_at >= 1791399370294;
@@ -21,6 +22,15 @@ export function rewindThreadPruningWork(db: DbConnection): void {
     db.$client.exec(
       "ALTER TABLE thread_pruning_cursors DROP COLUMN work_revision",
     );
+}
+
+export function dropTerminalAttentionColumn(db: DbConnection): void {
+  const terminalColumns = db.$client
+    .prepare<[], { name: string }>("PRAGMA table_info(terminal_sessions)")
+    .all();
+  if (terminalColumns.some((column) => column.name === "attention_json")) {
+    db.$client.exec("ALTER TABLE terminal_sessions DROP COLUMN attention_json");
+  }
 }
 
 export function dropIdleLifecycleIndexes(db: DbConnection): void {

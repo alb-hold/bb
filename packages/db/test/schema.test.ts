@@ -128,6 +128,7 @@ describe("db rebuild schema", () => {
         "created_at",
         "updated_at",
         "last_user_input_at",
+        "attention_json",
       ]);
     } finally {
       closeConnection(db);
