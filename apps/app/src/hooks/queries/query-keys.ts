@@ -513,6 +513,7 @@ type SystemExecutionOptionsQueryKey = readonly [
   string | null,
   string | null,
   string | null,
+  string | null,
 ];
 type AllSystemExecutionOptionsQueryKeyPrefix = readonly [
   typeof SYSTEM_EXECUTION_OPTIONS_QUERY_KEY,
@@ -1249,18 +1250,21 @@ interface SystemExecutionOptionsQueryKeyArgs {
   environmentId: string | null;
   hostId: string | null;
   providerId: string | null;
+  projectId?: string | null;
 }
 
 export function systemExecutionOptionsQueryKey({
   environmentId,
   hostId,
   providerId,
+  projectId = null,
 }: SystemExecutionOptionsQueryKeyArgs): SystemExecutionOptionsQueryKey {
   return [
     SYSTEM_EXECUTION_OPTIONS_QUERY_KEY,
     environmentId,
     hostId,
     providerId,
+    projectId,
   ];
 }
 

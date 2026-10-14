@@ -6,6 +6,7 @@ import {
   type QuickJSDeferredPromise,
   type QuickJSHandle,
   type QuickJSRuntime,
+  type QuickJSWASMModule,
 } from "quickjs-emscripten-core";
 
 export type JsonValue =
@@ -54,37 +55,90 @@ export type SandboxRunResult =
   | { ok: false; error: string; logs: string };
 
 const WASM_PAGE_BYTES = 64 * 1024;
-const WASM_MAX_PAGES = 65_536;
 const QUICKJS_BASE_PAGES = 256;
-const OUT_OF_MEMORY_ERROR = "InternalError: out of memory";
+const MAX_MEMORY_LIMIT_PAGES = 32_768;
+const MAX_MEMORY_PAGES = 65_536;
+const TRANSFER_MARGIN_BYTES = 4 * 1024;
+const CANCELLED_REASON = "The call was cancelled.";
 
-function newBoundedQuickJsModule(memoryLimitBytes: number) {
-  const maximumPages = Math.min(
-    WASM_MAX_PAGES,
-    QUICKJS_BASE_PAGES + Math.ceil(memoryLimitBytes / WASM_PAGE_BYTES),
-  );
+declare const WebAssembly: {
+  Memory: new (descriptor: { initial: number; maximum: number }) => {
+    buffer: ArrayBuffer;
+    grow(deltaPages: number): number;
+    toFixedLengthBuffer(): ArrayBuffer;
+    toResizableBuffer(options?: { maxByteLength: number }): ArrayBuffer;
+  };
+};
+
+interface SandboxMemory {
+  buffer: ArrayBuffer;
+  grow(deltaPages: number): number;
+  toFixedLengthBuffer(): ArrayBuffer;
+  toResizableBuffer(options?: { maxByteLength: number }): ArrayBuffer;
+  readonly pages: number;
+  readonly maximumPages: number;
+  exhausted: boolean;
+  lastGrowthRefused: boolean;
+}
+
+function createSandboxMemory(
+  limitPages: number,
+  maximumPages: number,
+): SandboxMemory {
   const memory = new WebAssembly.Memory({
     initial: QUICKJS_BASE_PAGES,
     maximum: maximumPages,
+  }) as unknown as SandboxMemory;
+  Object.assign(memory, {
+    pages: limitPages,
+    maximumPages,
+    exhausted: false,
+    lastGrowthRefused: false,
   });
-  const heap = { lastGrowthRefused: false };
   const grow = memory.grow.bind(memory);
-  memory.grow = (delta) => {
-    const requestedPages = memory.buffer.byteLength / WASM_PAGE_BYTES + delta;
+  memory.grow = (deltaPages) => {
+    const requestedPages = memory.buffer.byteLength / WASM_PAGE_BYTES + deltaPages;
     try {
-      const previousPages = grow(delta);
-      heap.lastGrowthRefused = false;
+      const previousPages = grow(deltaPages);
+      memory.lastGrowthRefused = false;
       return previousPages;
     } catch (error) {
-      heap.lastGrowthRefused = requestedPages > maximumPages;
+      memory.lastGrowthRefused = requestedPages > memory.maximumPages;
+      memory.exhausted = memory.lastGrowthRefused;
       throw error;
     }
   };
-  const module = newQuickJSWASMModuleFromVariant(
+  return memory;
+}
+
+interface SandboxInstance {
+  memory: SandboxMemory;
+  module: QuickJSWASMModule;
+}
+
+async function acquireInstance(
+  memoryLimitBytes: number,
+): Promise<SandboxInstance> {
+  const limitPages = Math.ceil(memoryLimitBytes / WASM_PAGE_BYTES);
+  const maximumPages = QUICKJS_BASE_PAGES + limitPages;
+  if (!(limitPages > 0 && limitPages <= MAX_MEMORY_LIMIT_PAGES)) {
+    throw new RangeError(
+      `memoryLimitBytes must be between 1 and ${MAX_MEMORY_LIMIT_PAGES * WASM_PAGE_BYTES}, got ${memoryLimitBytes}.`,
+    );
+  }
+  const memory = createSandboxMemory(
+    limitPages,
+    Math.min(MAX_MEMORY_PAGES, maximumPages),
+  );
+  const module = await newQuickJSWASMModuleFromVariant(
     newVariant(SINGLEFILE_RELEASE_SYNC, { wasmMemory: memory }),
   );
-  return { module, heap };
+  return { memory, module };
 }
+
+const ALLOCATION_PROBE_SOURCE = `
+((ArrayBufferConstructor) => (bytes) => { new ArrayBufferConstructor(bytes); })(ArrayBuffer)
+`;
 
 const HARDENING_SOURCE = `
 (() => {
@@ -144,9 +198,16 @@ export async function runSandboxedScript(
   args: SandboxRunArgs,
 ): Promise<SandboxRunResult> {
   const limits: SandboxLimits = { ...DEFAULT_SANDBOX_LIMITS, ...args.limits };
-  const bounded = newBoundedQuickJsModule(limits.memoryLimitBytes);
-  const QuickJS = await bounded.module;
-  const runtime: QuickJSRuntime = QuickJS.newRuntime();
+  const signalAborted = () => args.signal?.aborted === true;
+  if (signalAborted()) {
+    return { ok: false, error: CANCELLED_REASON, logs: "" };
+  }
+  const instance = await acquireInstance(limits.memoryLimitBytes);
+  if (signalAborted()) {
+    return { ok: false, error: CANCELLED_REASON, logs: "" };
+  }
+  const { memory } = instance;
+  const runtime: QuickJSRuntime = instance.module.newRuntime();
   runtime.setMaxStackSize(limits.maxStackBytes);
 
   const controller = new AbortController();
@@ -156,9 +217,8 @@ export async function runSandboxedScript(
     stopReason = reason;
     controller.abort(reason);
   };
-  const onOuterAbort = () => stop("The call was cancelled.");
+  const onOuterAbort = () => stop(CANCELLED_REASON);
   args.signal?.addEventListener("abort", onOuterAbort, { once: true });
-  if (args.signal?.aborted === true) onOuterAbort();
   const totalTimer = setTimeout(
     () =>
       stop(
@@ -167,11 +227,14 @@ export async function runSandboxedScript(
     limits.totalDeadlineMs,
   );
 
+  const memoryStopReason = `The script ran out of memory and was stopped. A script has ${Math.floor(limits.memoryLimitBytes / (1024 * 1024))} MB of memory; keep less data at once.`;
   const cpuStopReason = `The script computed for too long and was stopped. A script may compute for ${limits.synchronousDeadlineMs} ms at a stretch and ${Math.round(limits.cpuBudgetMs / 1000)} seconds in total; waiting on bb calls does not count.`;
-  const memoryStopReason = `The script used too much memory and was stopped. A script may use about ${Math.max(1, Math.round(limits.memoryLimitBytes / (1024 * 1024)))} MB.`;
+  const memoryCapReached = () =>
+    memory.lastGrowthRefused ||
+    memory.buffer.byteLength >= memory.maximumPages * WASM_PAGE_BYTES;
   const describeFailure = (message: string) =>
-    message === OUT_OF_MEMORY_ERROR ||
-    (message === "null" && bounded.heap.lastGrowthRefused)
+    (message === "InternalError: out of memory" && memoryCapReached()) ||
+    (message === "null" && memoryCapReached())
       ? memoryStopReason
       : message;
   let synchronousDeadline = Number.POSITIVE_INFINITY;
@@ -186,6 +249,7 @@ export async function runSandboxedScript(
     } finally {
       const finishedAt = Date.now();
       cpuSpentMs += finishedAt - startedAt;
+      if (memoryCapReached()) stop(memoryStopReason);
       if (
         finishedAt > synchronousDeadline ||
         cpuSpentMs >= limits.cpuBudgetMs
@@ -195,22 +259,41 @@ export async function runSandboxedScript(
     }
   };
   runtime.setInterruptHandler(
-    () => controller.signal.aborted || Date.now() > synchronousDeadline,
+    () =>
+      memoryCapReached() ||
+      controller.signal.aborted ||
+      Date.now() > synchronousDeadline,
   );
-  const drainJobs = () => {
-    enterVm(() => {
-      while (!controller.signal.aborted && Date.now() <= synchronousDeadline) {
-        const jobs = runtime.executePendingJobs(1);
-        if (jobs.error) {
-          jobs.error.dispose();
-          continue;
-        }
-        if (jobs.value === 0) return;
+  const runPendingJobs = () => {
+    while (
+      !memoryCapReached() &&
+      !controller.signal.aborted &&
+      Date.now() <= synchronousDeadline
+    ) {
+      const jobs = runtime.executePendingJobs(1);
+      if (jobs.error) {
+        jobs.error.dispose();
+        continue;
       }
-    });
+      if (jobs.value === 0) return;
+    }
   };
 
   const vm = runtime.newContext();
+  const allocationProbe = vm.unwrapResult(vm.evalCode(ALLOCATION_PROBE_SOURCE));
+  const hasRoomFor = (text: string): boolean => {
+      if (memoryCapReached()) return false;
+    const utf8Bytes = Buffer.byteLength(text);
+    const stringBytes =
+      utf8Bytes === text.length ? text.length : 2 * text.length;
+    const bytes = vm.newNumber(utf8Bytes + stringBytes + TRANSFER_MARGIN_BYTES);
+    const attempt = vm.callFunction(allocationProbe, vm.undefined, bytes);
+    if (memoryCapReached()) return false;
+    const fits = attempt.error === undefined;
+    bytes.dispose();
+    attempt.dispose();
+    return fits;
+  };
   const pending = new Set<PendingHostCall>();
   let closed = false;
   let hostCalls = 0;
@@ -232,20 +315,33 @@ export async function runSandboxedScript(
     settlement: { value: string } | { error: unknown },
   ) => {
     if (closed || controller.signal.aborted || !pending.delete(call)) return;
-    if ("value" in settlement) {
-      const handle = vm.newString(settlement.value);
-      call.deferred.resolve(handle);
-      handle.dispose();
-    } else {
-      const handle = vm.newError(errorMessage(settlement.error));
-      call.deferred.reject(handle);
-      handle.dispose();
-    }
-    call.deferred.dispose();
-    drainJobs();
+    enterVm(() => {
+      const text =
+        "value" in settlement
+          ? settlement.value
+          : errorMessage(settlement.error);
+      if (!hasRoomFor(text)) {
+        memory.exhausted = true;
+        memory.lastGrowthRefused = true;
+        stop(memoryStopReason);
+        return;
+      }
+      if ("value" in settlement) {
+        const handle = vm.newString(text);
+        call.deferred.resolve(handle);
+        handle.dispose();
+      } else {
+        const handle = vm.newError(text);
+        call.deferred.reject(handle);
+        handle.dispose();
+      }
+      call.deferred.dispose();
+      runPendingJobs();
+    });
   };
 
   const rejectImmediately = (message: string): QuickJSHandle => {
+    if (!hasRoomFor(message)) return vm.undefined;
     const deferred = vm.newPromise();
     const promise = deferred.handle.dup();
     const error = vm.newError(message);
@@ -260,7 +356,7 @@ export async function runSandboxedScript(
     closed = true;
     for (const call of pending) {
       call.controller.abort();
-      call.deferred.dispose();
+      if (!memory.exhausted) call.deferred.dispose();
     }
     pending.clear();
   };
@@ -269,6 +365,7 @@ export async function runSandboxedScript(
     const hostFunction = vm.newFunction(
       "__bbHost",
       (nameHandle, argsHandle) => {
+        if (memoryCapReached()) return vm.undefined;
         if (closed || controller.signal.aborted) {
           return rejectImmediately("The script is no longer running.");
         }
@@ -306,6 +403,11 @@ export async function runSandboxedScript(
               settle(call, { value: JSON.stringify(value ?? null) ?? "null" }),
             (error) => settle(call, { error }),
           )
+          .catch((error: unknown) => {
+            stop(
+              `The script was stopped by an internal error: ${errorMessage(error)}`,
+            );
+          })
           .finally(() =>
             controller.signal.removeEventListener("abort", onStop),
           );
@@ -368,7 +470,7 @@ export async function runSandboxedScript(
       return { ok: false, error: stopReason ?? describeFailure(message), logs };
     }
     evaluated.value.dispose();
-    drainJobs();
+    enterVm(runPendingJobs);
     const stopped = new Promise<"stopped">((resolve) => {
       if (controller.signal.aborted) resolve("stopped");
       controller.signal.addEventListener("abort", () => resolve("stopped"), {
@@ -398,11 +500,14 @@ export async function runSandboxedScript(
     clearTimeout(totalTimer);
     args.signal?.removeEventListener("abort", onOuterAbort);
     closeBridge();
-    try {
-      vm.dispose();
-      runtime.dispose();
-    } catch {
-      disposeFailures += 1;
+    if (!memory.exhausted) {
+      try {
+        allocationProbe.dispose();
+        vm.dispose();
+        runtime.dispose();
+      } catch {
+        disposeFailures += 1;
+      }
     }
   }
 }
