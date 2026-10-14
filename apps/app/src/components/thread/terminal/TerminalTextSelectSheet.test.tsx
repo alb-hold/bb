@@ -1,6 +1,12 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TerminalMobileControls } from "./TerminalMobileControls";
 import { TerminalTextSelectSheet } from "./TerminalTextSelectSheet";
@@ -8,24 +14,42 @@ import { TerminalTextSelectSheet } from "./TerminalTextSelectSheet";
 afterEach(cleanup);
 
 describe("TerminalTextSelectSheet", () => {
-  it("shows the terminal text as selectable text and wires its buttons", () => {
-    const onClose = vi.fn();
+  it("shows the terminal text as selectable text and wires its buttons", async () => {
+    const onOpenChange = vi.fn();
     const onCopyAll = vi.fn();
     render(
       <TerminalTextSelectSheet
+        open
         text={"first line\nsecond line"}
-        onClose={onClose}
+        onOpenChange={onOpenChange}
         onCopyAll={onCopyAll}
       />,
     );
-    const text = document.querySelector("[data-terminal-text-snapshot]");
-    expect(text?.textContent).toBe("first line\nsecond line");
-    expect(text?.className).toContain("select-text");
+    await waitFor(() => {
+      expect(
+        document.querySelector("[data-terminal-text-snapshot]")?.textContent,
+      ).toBe("first line\nsecond line");
+    });
+    expect(
+      document.querySelector("[data-terminal-text-snapshot]")?.className,
+    ).toContain("select-text");
 
     fireEvent.click(screen.getByRole("button", { name: "Copy all" }));
     fireEvent.click(screen.getByRole("button", { name: "Done" }));
     expect(onCopyAll).toHaveBeenCalledTimes(1);
-    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("renders no text while closed", () => {
+    render(
+      <TerminalTextSelectSheet
+        open={false}
+        text="hidden"
+        onOpenChange={vi.fn()}
+        onCopyAll={vi.fn()}
+      />,
+    );
+    expect(document.querySelector("[data-terminal-text-snapshot]")).toBeNull();
   });
 });
 
