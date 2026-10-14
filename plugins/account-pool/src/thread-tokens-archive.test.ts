@@ -1842,28 +1842,28 @@ type Scenario = {
   matrix?: boolean;
 };
 
-type FaultCase = { name: string; fault: Fault; recorded: boolean };
+type FaultCase = { name: string; fault: Fault; kept: boolean };
 
 const FAULT_CASES: FaultCase[] = [
   {
     name: "the marker lowering fails",
     fault: { marker: true },
-    recorded: true,
+    kept: true,
   },
   {
     name: "the tombstone rewrite fails",
     fault: { tombstoneWrite: true },
-    recorded: true,
+    kept: true,
   },
   {
     name: "the marker lowering and the tombstone rewrite both fail",
     fault: { marker: true, tombstoneWrite: true },
-    recorded: false,
+    kept: false,
   },
   {
     name: "the marker lowering, the tombstone rewrite and the tombstone delete all fail",
     fault: { marker: true, tombstoneWrite: true, tombstoneRemove: true },
-    recorded: false,
+    kept: false,
   },
 ];
 
@@ -2073,6 +2073,7 @@ async function checkCell(
   context: Context,
   before: string,
   beforeDigests: ReadonlySet<string>,
+  beforeView: DiskView,
   completed: boolean,
   fault: FaultCase | null = null,
 ) {
@@ -2094,7 +2095,7 @@ async function checkCell(
     [...beforeDigests].some((digest) => !digestsAfter.has(digest)) ||
     (tombstoneName(before) && !tombstoneName(after));
   if (
-    fault?.recorded === true &&
+    fault !== null &&
     scenario.earliest !== undefined &&
     deleted &&
     view.archived &&
@@ -2102,8 +2103,16 @@ async function checkCell(
     digestsAfter.size > 0
   )
     expect(view.start).toBeLessThanOrEqual(scenario.earliest(f) + 1000);
+  if (beforeView.archived && view.archived)
+    expect(
+      view.start === null ||
+        beforeView.start === null ||
+        view.start <= beforeView.start + 1000,
+    ).toBe(true);
+  for (const digest of digestsAfter)
+    expect(beforeDigests.has(digest)).toBe(true);
   const expected =
-    fault !== null && !fault.recorded && scenario.lowers === true
+    fault !== null && !fault.kept && scenario.lowers === true
       ? "none"
       : scenario.keeps;
 
@@ -2123,6 +2132,10 @@ async function checkCell(
         if (route !== null) expect(kept.has(sha256(session.token))).toBe(true);
         if (nested !== null)
           expect(kept.has(sha256(session.nested))).toBe(true);
+        if (route !== null)
+          expect(beforeDigests.has(sha256(session.token))).toBe(true);
+        if (nested !== null)
+          expect(beforeDigests.has(sha256(session.nested))).toBe(true);
         outcomes.push(
           route?.threadId === f.route.threadId &&
             nested?.threadId === f.route.threadId,
@@ -2133,6 +2146,36 @@ async function checkCell(
           expect(outcome).toBe(expected === "all");
     }
   });
+
+  const earliestWindowEnd =
+    scenario.earliest === undefined
+      ? null
+      : scenario.earliest(f) + ARCHIVE_TOMBSTONE_MAX_AGE_MS + HOUR;
+  if (view.archived && earliestWindowEnd !== null && earliestWindowEnd > now)
+    await step(
+      "bb unreachable, past the earliest anchor's 24 hours",
+      async () => {
+        const at = earliestWindowEnd;
+        const copy = await restartedCopy(f, at - now);
+        const reopened = await copy.open(undefined, unreachable);
+        const permitted =
+          windowOpenOnDisk(view, at) &&
+          !(scenario.closedByBb && changed && fault === null) &&
+          !(fault !== null && deleted);
+        if (!permitted) await expectNothingRestorable(copy, reopened, sessions);
+        else {
+          await unarchive(reopened, f.route.threadId);
+          for (const session of sessions) {
+            const route = await reopened.authenticate(session.token, "claude");
+            const nested = await reopened.authenticateNested(session.nested);
+            if (route !== null)
+              expect(beforeDigests.has(sha256(session.token))).toBe(true);
+            if (nested !== null)
+              expect(beforeDigests.has(sha256(session.nested))).toBe(true);
+          }
+        }
+      },
+    );
 
   if (view.archived)
     await step("bb unreachable, unarchived after the window", async () => {
@@ -2170,6 +2213,7 @@ async function crashWalk(
     const context = await scenario.prepare(f, lifetime);
     const before = await snapshot(f.directory);
     const beforeDigests = await storedDigests(f.directory);
+    const beforeView = await diskView(f.directory, f.route.threadId);
     const interruption = crashAfter(writes, fault?.fault ?? {});
     await scenario.operate(f, context).catch(() => undefined);
     const crashed = interruption.dead;
@@ -2182,6 +2226,7 @@ async function crashWalk(
         context,
         before,
         beforeDigests,
+        beforeView,
         !crashed,
         fault,
       );
@@ -2447,6 +2492,7 @@ describe.each(lifetimes)("the clamp at load, %s", (lifetime) => {
       const context = await scenario.prepare(f, lifetime);
       const before = await snapshot(f.directory);
       const beforeDigests = await storedDigests(f.directory);
+      const beforeView = await diskView(f.directory, f.route.threadId);
       const interruption = crashAfter(writes);
       await scenario.operate(f, context).catch(() => undefined);
       const crashed = interruption.dead;
@@ -2458,7 +2504,15 @@ describe.each(lifetimes)("the clamp at load, %s", (lifetime) => {
           name.endsWith(".json"),
         )
       ) {
-        await checkCell(f, scenario, context, before, beforeDigests, false);
+        await checkCell(
+          f,
+          scenario,
+          context,
+          before,
+          beforeDigests,
+          beforeView,
+          false,
+        );
         checked += 1;
       }
     }
@@ -2481,7 +2535,7 @@ const operatingStore = (
 describe.each(lifetimes)(
   "an earlier anchor that cannot be made durable, %s",
   (lifetime) => {
-    it.each(FAULT_CASES.filter((fault) => !fault.recorded))(
+    it.each(FAULT_CASES.filter((fault) => !fault.kept))(
       "restores nothing after a restart with bb unreachable past the earliest anchor's 24 hours when $name",
       async ({ fault }) => {
         const scenario = scenarioNamed(
@@ -2509,6 +2563,28 @@ describe.each(lifetimes)(
           expect(await rejected(operating, session)).toBe(true);
       },
     );
+
+    it("cannot restore at all while every filesystem mutation is refused, so only a recovered filesystem can restore", async () => {
+      const scenario = scenarioNamed(
+        "held tombstone clamped by a sweep past the window",
+      );
+      const f = await fixture();
+      const context = await scenario.prepare(f, lifetime);
+      const restarted = await restartedCopy(f, 0);
+      const reopened = await restarted.open(undefined, unreachable);
+      const interruption = crashAfter(Number.MAX_SAFE_INTEGER, {
+        everything: true,
+      });
+      await unarchive(reopened, f.route.threadId).catch(() => undefined);
+      interruption.restore();
+      for (const session of context.sessions)
+        expect(await rejected(reopened, session)).toBe(true);
+      await unarchive(reopened, f.route.threadId);
+      let restored = 0;
+      for (const session of context.sessions)
+        if (!(await rejected(reopened, session))) restored += 1;
+      expect(restored).toBeGreaterThan(0);
+    });
 
     it("restores nothing in the running process when every filesystem mutation is refused, and leaves the disk as it was", async () => {
       const scenario = scenarioNamed(
