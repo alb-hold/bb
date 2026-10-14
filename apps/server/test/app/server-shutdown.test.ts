@@ -21,7 +21,6 @@ describe("server shutdown ordering", () => {
 
   afterEach(async () => {
     if (server?.listening) {
-      server.closeAllConnections();
       await new Promise<void>((resolve) => server?.close(() => resolve()));
     }
     server = undefined;
