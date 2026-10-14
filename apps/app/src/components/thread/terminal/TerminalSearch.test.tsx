@@ -7,6 +7,9 @@ import { TerminalSearch } from "./TerminalSearch";
 
 afterEach(() => {
   cleanup();
+  document
+    .querySelectorAll("textarea")
+    .forEach((textarea) => textarea.remove());
   Object.defineProperty(navigator, "platform", {
     configurable: true,
     value: "",
@@ -48,6 +51,7 @@ function renderSearch(open = false) {
 function sendKey(
   key: string,
   modifiers: { metaKey?: boolean; ctrlKey?: boolean; shiftKey?: boolean } = {},
+  target: EventTarget = document,
 ) {
   const event = new KeyboardEvent("keydown", {
     key,
@@ -55,7 +59,7 @@ function sendKey(
     cancelable: true,
     ...modifiers,
   });
-  document.dispatchEvent(event);
+  target.dispatchEvent(event);
   return event;
 }
 
@@ -94,11 +98,43 @@ describe("TerminalSearch shortcuts and closed controls", () => {
     ).toBe(true);
   });
 
+  it("leaves Escape in its terminal unprevented while search is open", () => {
+    const { textarea } = renderSearch(true);
+    textarea.focus();
+
+    const escape = sendKey("Escape", {}, textarea);
+
+    expect(escape.defaultPrevented).toBe(false);
+    expect(
+      screen.getByRole("search", { name: "Search terminal output" }),
+    ).toBeTruthy();
+  });
+
+  it("does not let one pane consume another pane's Escape or Cmd+G", () => {
+    Object.defineProperty(navigator, "platform", {
+      configurable: true,
+      value: "MacIntel",
+    });
+    renderSearch(true);
+    const { textarea } = renderSearch(false);
+    textarea.focus();
+
+    const escape = sendKey("Escape", {}, textarea);
+    const commandG = sendKey("g", { metaKey: true }, textarea);
+
+    expect(escape.defaultPrevented).toBe(false);
+    expect(commandG.defaultPrevented).toBe(false);
+    expect(
+      screen.getAllByRole("search", { name: "Search terminal output" }),
+    ).toHaveLength(1);
+  });
+
   it("closes with Escape when focus has moved to a search control", () => {
     renderSearch(true);
-    screen.getByRole("button", { name: "Next match" }).focus();
+    const next = screen.getByRole("button", { name: "Next match" });
+    next.focus();
 
-    const escape = sendKey("Escape");
+    const escape = sendKey("Escape", {}, next);
 
     expect(escape.defaultPrevented).toBe(true);
     expect(

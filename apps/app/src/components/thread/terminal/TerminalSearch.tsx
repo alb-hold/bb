@@ -61,6 +61,7 @@ export function TerminalSearch({
     [onOpenChange],
   );
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const searchRootRef = useRef<HTMLDivElement | null>(null);
   const controllerRef = useRef<ReturnType<
     typeof createTerminalSearchController
   > | null>(null);
@@ -75,16 +76,14 @@ export function TerminalSearch({
   useEffect(() => {
     if (!terminal) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (open && event.key === "Escape") {
-        event.preventDefault();
-        event.stopPropagation();
-        close();
-        return;
-      }
+      const activeElement = document.activeElement;
+      const focusWithinSearch =
+        searchRootRef.current?.contains(activeElement) ?? false;
+      const focusWithinTerminal = terminal.textarea === activeElement;
       const shortcut = getTerminalSearchShortcut(
         event,
         browserPlatform(),
-        open,
+        open && (focusWithinSearch || focusWithinTerminal),
       );
       if (shortcut === "open" && terminal.textarea === document.activeElement) {
         event.preventDefault();
@@ -144,6 +143,14 @@ export function TerminalSearch({
         <div
           role="search"
           aria-label="Search terminal output"
+          ref={searchRootRef}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.preventDefault();
+              event.stopPropagation();
+              close();
+            }
+          }}
           className="pointer-events-auto w-full max-w-xl rounded-lg border border-border bg-popover p-2 text-popover-foreground shadow-lg"
         >
           <div className="flex flex-wrap items-center gap-1.5">
