@@ -79,7 +79,7 @@ export function attachTerminalPromptTracker(args: {
     }
   };
   const oscDisposable = registerTerminalShellOscHandlers(
-    args.terminal,
+    args.terminal.parser,
     onShellEvent,
   );
   const scrollDisposable = args.terminal.onScroll((viewportLine) => {
