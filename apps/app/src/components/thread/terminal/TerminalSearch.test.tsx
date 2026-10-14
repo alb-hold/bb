@@ -94,6 +94,18 @@ describe("TerminalSearch shortcuts and closed controls", () => {
     ).toBe(true);
   });
 
+  it("closes with Escape when focus has moved to a search control", () => {
+    renderSearch(true);
+    screen.getByRole("button", { name: "Next match" }).focus();
+
+    const escape = sendKey("Escape");
+
+    expect(escape.defaultPrevented).toBe(true);
+    expect(
+      screen.queryByRole("search", { name: "Search terminal output" }),
+    ).toBeNull();
+  });
+
   it("uses Ctrl+Shift+F outside macOS and reveals its closed button on hover or focus", () => {
     Object.defineProperty(navigator, "platform", {
       configurable: true,

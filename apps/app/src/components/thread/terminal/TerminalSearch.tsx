@@ -75,6 +75,12 @@ export function TerminalSearch({
   useEffect(() => {
     if (!terminal) return;
     const onKeyDown = (event: KeyboardEvent) => {
+      if (open && event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        close();
+        return;
+      }
       const shortcut = getTerminalSearchShortcut(
         event,
         browserPlatform(),
@@ -93,7 +99,7 @@ export function TerminalSearch({
     };
     document.addEventListener("keydown", onKeyDown, true);
     return () => document.removeEventListener("keydown", onKeyDown, true);
-  }, [open, setOpen, terminal]);
+  }, [close, open, setOpen, terminal]);
 
   useEffect(() => {
     if (!open || !addon || !terminal) return;
@@ -151,10 +157,7 @@ export function TerminalSearch({
                 controllerRef.current?.setQuery(query);
               }}
               onKeyDown={(event) => {
-                if (event.key === "Escape") {
-                  event.preventDefault();
-                  close();
-                } else if (event.key === "Enter") {
+                if (event.key === "Enter") {
                   event.preventDefault();
                   if (event.shiftKey) controllerRef.current?.previous();
                   else controllerRef.current?.next();
