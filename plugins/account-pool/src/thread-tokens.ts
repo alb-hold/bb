@@ -41,6 +41,9 @@ const archiveStateSchema = z
     deleted: z.literal(true).optional(),
   })
   .strict();
+const deletedRecordSchema = z
+  .object({ threadDigest: digestSchema, deleted: z.literal(true) })
+  .strict();
 
 const legacyRouteSchema = z
   .object({
@@ -194,7 +197,9 @@ export class ThreadTokenStore {
       const deleted = DELETED_THREAD_NAME.exec(name);
       if (deleted?.[1] !== undefined) {
         this.deletedThreadDigests.add(deleted[1]);
-        this.recordedDeletions.add(deleted[1]);
+        if (await this.confirmsDeletedRecord(name, deleted[1]))
+          this.recordedDeletions.add(deleted[1]);
+        else pending.add(deleted[1]);
       }
       const held = DELETED_PENDING_NAME.exec(name);
       if (held?.[1] !== undefined) {
@@ -305,6 +310,45 @@ export class ThreadTokenStore {
     return recorded || filed;
   }
 
+  private async confirmsDeletedRecord(
+    name: string,
+    threadDigest: string,
+  ): Promise<boolean> {
+    if (name.endsWith(".d"))
+      return this.syncDirectory().then(
+        () => true,
+        () => false,
+      );
+    try {
+      const value: unknown = JSON.parse(
+        await fs.readFile(path.join(this.directory, name), "utf8"),
+      );
+      const parsed = deletedRecordSchema.safeParse(value);
+      return (
+        parsed.success &&
+        parsed.data.threadDigest === threadDigest &&
+        (await this.confirmsRecord(name))
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  private async confirmsRecord(name: string): Promise<boolean> {
+    try {
+      const handle = await fs.open(path.join(this.directory, name), "r");
+      try {
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      await this.syncDirectory();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   private async loadArchiveMarker(name: string): Promise<void> {
     this.seenArchiveMarkers.add(name);
     let text: string;
@@ -315,6 +359,14 @@ export class ThreadTokenStore {
       return;
     }
     this.applyArchiveState(name, text);
+    if (this.corruptArchiveMarkers.has(name)) return;
+    const parsed = archiveStateSchema.safeParse(JSON.parse(text));
+    if (
+      parsed.success &&
+      parsed.data.deleted === true &&
+      (await this.confirmsRecord(name))
+    )
+      this.recordedDeletions.add(digest(parsed.data.threadId));
   }
 
   private async loadFile(
@@ -353,7 +405,8 @@ export class ThreadTokenStore {
                 : undefined,
             };
       if (record !== null && this.isDeleted(record.threadId)) {
-        await fs.rm(file, { force: true });
+        if (this.recordedDeletions.has(digest(record.threadId)))
+          await fs.rm(file, { force: true });
         return;
       }
       const archived =
@@ -393,7 +446,8 @@ export class ThreadTokenStore {
                 : undefined,
             };
       if (record !== null && this.isDeleted(record.threadId)) {
-        await fs.rm(file, { force: true });
+        if (this.recordedDeletions.has(digest(record.threadId)))
+          await fs.rm(file, { force: true });
         return;
       }
       const archived =
@@ -676,33 +730,59 @@ export class ThreadTokenStore {
   }
 
   private async createDeletedRecord(threadDigest: string): Promise<boolean> {
-    let handle: Awaited<ReturnType<typeof fs.open>>;
     try {
-      handle = await fs.open(this.deletedFileOf(threadDigest), "w", 0o600);
+      const handle = await fs.open(
+        this.deletedFileOf(threadDigest),
+        "w",
+        0o600,
+      );
+      try {
+        await handle.writeFile(JSON.stringify({ threadDigest, deleted: true }));
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      await this.syncDirectory();
+      return true;
     } catch {
       return false;
     }
-    try {
-      await handle.writeFile(JSON.stringify({ threadDigest, deleted: true }));
-      await handle.sync();
-    } catch {
-    } finally {
-      await handle.close().catch(() => undefined);
-    }
-    return true;
   }
 
   private async createDeletedDirectory(threadDigest: string): Promise<boolean> {
-    return fs
-      .mkdir(
-        path.join(this.directory, `${DELETED_THREAD_PREFIX}${threadDigest}.d`),
-        { mode: 0o700 },
-      )
-      .then(
-        () => true,
-        (error: unknown) =>
-          error instanceof Error && "code" in error && error.code === "EEXIST",
-      );
+    try {
+      await fs
+        .mkdir(
+          path.join(
+            this.directory,
+            `${DELETED_THREAD_PREFIX}${threadDigest}.d`,
+          ),
+          { mode: 0o700 },
+        )
+        .catch((error: unknown) => {
+          if (
+            !(
+              error instanceof Error &&
+              "code" in error &&
+              error.code === "EEXIST"
+            )
+          )
+            throw error;
+        });
+      await this.syncDirectory();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async syncDirectory(): Promise<void> {
+    const directory = await fs.open(this.directory, "r");
+    try {
+      await directory.sync();
+    } finally {
+      await directory.close();
+    }
   }
 
   private async holdDeletedFiles(
@@ -729,6 +809,7 @@ export class ThreadTokenStore {
       held.add(path.basename(this.legacyNestedFile(record)));
     }
     const threadDigest = digest(threadId);
+    let renamedAny = false;
     for (const name of held) {
       const file = path.join(this.directory, name);
       const renamed = await fs
@@ -746,7 +827,10 @@ export class ThreadTokenStore {
             "code" in error &&
             error.code === "ENOENT",
         );
-      if (renamed) continue;
+      if (renamed) {
+        renamedAny = true;
+        continue;
+      }
       this.heldDeletedFiles.set(
         threadId,
         new Set([...(this.heldDeletedFiles.get(threadId) ?? []), name]),
@@ -755,6 +839,12 @@ export class ThreadTokenStore {
         `Account Pooler could not rename credential file ${name} of deleted thread ${threadId}; it stays in place until a deletion record can be written.`,
       );
     }
+    if (renamedAny)
+      await this.syncDirectory().catch(() =>
+        this.warn(
+          `Account Pooler could not sync the deleted-pending renames of thread ${threadId}; they may not survive a power loss, and the deletion record is retried on the next event, sweep and start.`,
+        ),
+      );
   }
 
   async suspendThread(threadId: string): Promise<void> {
@@ -1296,12 +1386,7 @@ export class ThreadTokenStore {
         await handle.close();
       }
       await fs.rename(temporary, file);
-      const directory = await fs.open(this.directory, "r");
-      try {
-        await directory.sync();
-      } finally {
-        await directory.close();
-      }
+      await this.syncDirectory();
     } finally {
       await fs.rm(temporary, { force: true });
     }
