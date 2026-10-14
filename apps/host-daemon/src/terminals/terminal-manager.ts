@@ -506,14 +506,20 @@ async function requireTerminalCwd(cwd: string | null): Promise<string> {
 export async function resolveTerminalCwdOverride(args: {
   cwd: string | undefined;
   defaultCwd: string;
-}): Promise<string> {
+}, dependencies: {
+  pathApi: Pick<typeof path, "isAbsolute" | "normalize" | "sep">;
+  statPath: (cwd: string) => Promise<{ isDirectory: () => boolean }>;
+} = { pathApi: path, statPath: stat }): Promise<string> {
   if (args.cwd === undefined || args.cwd.length > 4096) return args.defaultCwd;
   try {
-    if (!path.isAbsolute(args.cwd) || args.cwd.split(path.sep).includes("..")) {
+    if (
+      !dependencies.pathApi.isAbsolute(args.cwd) ||
+      args.cwd.split(/[\\/]/).includes("..")
+    ) {
       return args.defaultCwd;
     }
-    const cwd = path.normalize(args.cwd);
-    if (!(await stat(cwd)).isDirectory()) return args.defaultCwd;
+    const cwd = dependencies.pathApi.normalize(args.cwd);
+    if (!(await dependencies.statPath(cwd)).isDirectory()) return args.defaultCwd;
     return cwd;
   } catch {
     return args.defaultCwd;

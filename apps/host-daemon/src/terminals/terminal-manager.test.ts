@@ -16,6 +16,7 @@ import { RuntimeManager } from "../runtime-manager.js";
 import {
   ensureNodePtySpawnHelpersExecutableInPackage,
   resolveNodePtySpawnHelperPaths,
+  resolveTerminalCwdOverride,
   TerminalManager,
   type ResolveTerminalShell,
   type SpawnTerminalPtyArgs,
@@ -734,6 +735,21 @@ describe("TerminalManager", () => {
       );
     },
   );
+
+  it.each([
+    ["forward slash", "C:/base/../outside"],
+    ["backslash", String.raw`C:\base\..\outside`],
+  ])("rejects Windows cwd traversal with %s separators", async (_label, cwd) => {
+    const statPath = vi.fn(async () => ({ isDirectory: () => true }));
+
+    await expect(
+      resolveTerminalCwdOverride(
+        { cwd, defaultCwd: String.raw`C:\workspace` },
+        { pathApi: path.win32, statPath },
+      ),
+    ).resolves.toBe(String.raw`C:\workspace`);
+    expect(statPath).not.toHaveBeenCalled();
+  });
 
   it("injects host credentials into a PTY and forwards terminal output as-is", async () => {
     const harness = createHarness();
