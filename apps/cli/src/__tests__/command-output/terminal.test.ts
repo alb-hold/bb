@@ -76,6 +76,26 @@ describe("bb terminal command output", () => {
     );
   });
 
+  it("raises attention for the terminal identity injected into its shell", async () => {
+    const notify = vi.fn(async () => makeTerminalSession());
+    stubServerApi({ 'v1.terminals[":terminalId"].notify.$post': notify });
+    const previousId = process.env.BB_TERMINAL_SESSION_ID;
+    process.env.BB_TERMINAL_SESSION_ID = "term-from-env";
+    try {
+      await runCommand(
+        ["terminal", "notify", "--title", "Build", "--body", "Finished"],
+        register,
+      );
+      expect(notify).toHaveBeenCalledWith({
+        param: { terminalId: "term-from-env" },
+        json: { title: "Build", body: "Finished" },
+      });
+    } finally {
+      if (previousId === undefined) delete process.env.BB_TERMINAL_SESSION_ID;
+      else process.env.BB_TERMINAL_SESSION_ID = previousId;
+    }
+  });
+
   it("resolves an explicit machine and cwd without a primary-host fallback", async () => {
     const hosts = vi.fn(async () => [makeHost()]);
     const list = vi.fn(async () => ({ sessions: [] }));

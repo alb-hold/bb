@@ -35,6 +35,7 @@ import {
   terminalOutputChunkSchema,
   terminalOutputResponseSchema,
   terminalSessionSchema,
+  terminalNotifyRequestSchema,
   terminalWebSocketQuerySchema,
   threadListResponseSchema,
   threadPendingInteractionsResponseSchema,
@@ -940,6 +941,17 @@ describe("public host contracts", () => {
 });
 
 describe("public terminal contracts", () => {
+  it("strips control characters and bounds explicit terminal attention text", () => {
+    expect(
+      terminalNotifyRequestSchema.parse({
+        title: `Build\u0000${"x".repeat(300)}`,
+        body: `Done\u001b${"y".repeat(2100)}`,
+      }),
+    ).toEqual({
+      title: `Build${"x".repeat(251)}`,
+      body: `Done${"y".repeat(2044)}`,
+    });
+  });
   it("allows threadless terminal session responses", () => {
     expect(
       terminalSessionSchema.safeParse({
