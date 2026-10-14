@@ -12,9 +12,21 @@ import {
 import { makeTerminalSession } from "@/test/fixtures/terminal-sessions";
 import { clearTerminalCurrentCwd } from "./terminal-shell-state";
 
-vi.mock("@/lib/sdk", () => ({
-  sdk: { terminals: { list: vi.fn(), close: vi.fn(), create: vi.fn() } },
-}));
+vi.mock("@/lib/sdk", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/sdk")>();
+  return {
+    ...actual,
+    sdk: {
+      ...actual.sdk,
+      terminals: {
+        ...actual.sdk.terminals,
+        list: vi.fn(),
+        close: vi.fn(),
+        create: vi.fn(),
+      },
+    },
+  };
+});
 
 function session(id: string, status: TerminalSession["status"]) {
   return makeTerminalSession({

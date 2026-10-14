@@ -311,16 +311,19 @@ export function useThreadTerminalController({
     };
   }, []);
 
+  const activeSessionId = activeSession?.id;
+  const activeSessionInitialCwd = activeSession?.initialCwd;
   const startTerminal = useCallback(() => {
     if (!canCreateTerminal || isCreateTerminalPending) {
       return;
     }
-    const activeCwd = activeSession
-      ? terminalSpawnCwd({
-          currentCwd: terminalCwdsRef.current.get(activeSession.id),
-          initialCwd: activeSession.initialCwd,
-        })
-      : undefined;
+    const activeCwd =
+      activeSessionId && activeSessionInitialCwd
+        ? terminalSpawnCwd({
+            currentCwd: terminalCwdsRef.current.get(activeSessionId),
+            initialCwd: activeSessionInitialCwd,
+          })
+        : undefined;
     const request = {
       cols: DEFAULT_TERMINAL_COLS,
       rows: DEFAULT_TERMINAL_ROWS,
@@ -339,7 +342,8 @@ export function useThreadTerminalController({
   }, [
     canCreateTerminal,
     createTerminal,
-    activeSession?.id,
+    activeSessionId,
+    activeSessionInitialCwd,
     isCreateTerminalPending,
     resolvedFixedPanelTarget,
     setActiveFixedTerminal,
