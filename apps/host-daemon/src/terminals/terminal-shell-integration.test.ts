@@ -99,6 +99,14 @@ async function runShell(
   });
 }
 
+function shellAvailable(shell: string): boolean {
+  return (
+    process.env.PATH?.split(path.delimiter)
+      .map((directory) => path.join(directory, shell))
+      .some((candidate) => existsSync(candidate)) ?? false
+  );
+}
+
 describe("terminal shell integration", () => {
   afterEach(async () => {
     await Promise.all(
@@ -106,10 +114,18 @@ describe("terminal shell integration", () => {
     );
   });
 
-  it.each(["bash", "zsh"])(
-    "loads the user config and reports cwd and command status in %s",
-    async (shell) => {
-      const result = await runShell(shell);
+  it("loads the user config and reports cwd and command status in bash", async () => {
+    const result = await runShell("bash");
+    expect(result.output).toContain("\u001b]133;A\u0007");
+    expect(result.output).toContain("\u001b]133;B\u0007");
+    expect(result.output).toContain("\u001b]133;C\u0007");
+    expect(result.exitCode).toBe(1);
+  });
+
+  it.skipIf(!shellAvailable("zsh"))(
+    "loads the user config and reports cwd and command status in zsh",
+    async () => {
+      const result = await runShell("zsh");
       expect(result.output).toContain("\u001b]133;A\u0007");
       expect(result.output).toContain("\u001b]133;B\u0007");
       expect(result.output).toContain("\u001b]133;C\u0007");
