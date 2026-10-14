@@ -5,7 +5,7 @@ import {
   getTerminalSession,
 } from "@bb/db";
 import {
-  seedHost,
+  seedHostSession,
   seedProjectWithSource,
   seedThread,
 } from "../../../test/helpers/seed.js";
@@ -26,11 +26,20 @@ describe("terminal attention persistence", () => {
   it("keeps unread attention and its sequence through a database restart", async () => {
     const original = await createTestAppHarness();
     harnesses.push(original);
-    const { terminalId, threadId } = createAttentionTerminal(original);
+    const { daemonSessionId, hostId, terminalId, threadId } =
+      createAttentionTerminal(original);
 
-    original.deps.terminalSessions.notifyTerminal({
-      terminalId,
-      payload: { body: "Tests passed", title: "Build finished" },
+    original.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId,
+      sessionId: daemonSessionId,
+      message: {
+        type: "terminal.attention",
+        terminalId,
+        seq: 17,
+        kind: "bell",
+        body: "Tests passed",
+        title: "Build finished",
+      },
     });
     const beforeRestart = await getTerminalApiAttention(
       original,
@@ -83,22 +92,32 @@ describe("terminal attention persistence", () => {
 
 function createAttentionTerminal(
   harness: TestAppHarness,
-): { terminalId: string; threadId: string } {
-  const host = seedHost(harness.deps);
+): {
+  daemonSessionId: string;
+  hostId: string;
+  terminalId: string;
+  threadId: string;
+} {
+  const { host, session } = seedHostSession(harness.deps);
   const { project } = seedProjectWithSource(harness.deps, { hostId: host.id });
   const thread = seedThread(harness.deps, { projectId: project.id });
   const terminal = createTerminalSession(harness.db, {
     cols: 80,
-    daemonSessionId: null,
     environmentId: null,
     hostId: host.id,
+    daemonSessionId: session.id,
     initialCwd: "/tmp",
     rows: 24,
     status: "running",
     threadId: thread.id,
     title: "Build terminal",
   });
-  return { terminalId: terminal.id, threadId: thread.id };
+  return {
+    daemonSessionId: session.id,
+    hostId: host.id,
+    terminalId: terminal.id,
+    threadId: thread.id,
+  };
 }
 
 async function getTerminalApiAttention(
