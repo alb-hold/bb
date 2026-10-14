@@ -29,14 +29,113 @@ describe("terminal attention parser", () => {
       consumeTerminalAttention(
         state,
         bytes(
-          "\u001b]9;hello\u0007\u001b]99;Agent;Ready\u0007\u001b]777;notify;Build;Done\u0007",
+          "\u001b]9;hello\u0007\u001b]99;p=title;Agent\u001b\\\u001b]777;notify;Build;Done\u0007",
         ),
       ),
     ).toEqual([
       { kind: "osc-9", body: "hello" },
-      { kind: "osc-99", title: "Agent", body: "Ready" },
+      { kind: "osc-99", title: "Agent" },
       { kind: "osc-777", title: "Build", body: "Done" },
     ]);
+  });
+
+  it("parses spec-valid OSC 99 metadata with default title and done values", () => {
+    const state = { ...INITIAL_TERMINAL_ATTENTION_PARSER_STATE };
+    expect(
+      consumeTerminalAttention(
+        state,
+        bytes("\u001b]99;i=notice-1;Build finished\u001b\\"),
+      ),
+    ).toEqual([{ kind: "osc-99", title: "Build finished" }]);
+  });
+
+  it("joins OSC 99 title and body sequences by notification id", () => {
+    const state = { ...INITIAL_TERMINAL_ATTENTION_PARSER_STATE };
+    expect(
+      consumeTerminalAttention(
+        state,
+        bytes("\u001b]99;i=notice-2:d=0;Agent\u001b\\"),
+      ),
+    ).toEqual([]);
+    expect(
+      consumeTerminalAttention(
+        state,
+        bytes("\u001b]99;i=notice-2:p=body;Needs approval\u001b\\"),
+      ),
+    ).toEqual([
+      { kind: "osc-99", title: "Agent", body: "Needs approval" },
+    ]);
+  });
+
+  it("holds OSC 99 d=0 chunks until a d=1 chunk completes the notification", () => {
+    const state = { ...INITIAL_TERMINAL_ATTENTION_PARSER_STATE };
+    expect(
+      consumeTerminalAttention(
+        state,
+        bytes("\u001b]99;i=notice-3:p=title:d=0;Long\u001b\\"),
+      ),
+    ).toEqual([]);
+    expect(
+      consumeTerminalAttention(
+        state,
+        bytes("\u001b]99;i=notice-3:p=title; task\u001b\\"),
+      ),
+    ).toEqual([{ kind: "osc-99", title: "Long task" }]);
+  });
+
+  it("ignores OSC 99 capability queries", () => {
+    const state = { ...INITIAL_TERMINAL_ATTENTION_PARSER_STATE };
+    expect(
+      consumeTerminalAttention(state, bytes("\u001b]99;p=?;\u001b\\")),
+    ).toEqual([]);
+  });
+
+  it("decodes base64 OSC 99 payloads", () => {
+    const state = { ...INITIAL_TERMINAL_ATTENTION_PARSER_STATE };
+    expect(
+      consumeTerminalAttention(
+        state,
+        bytes("\u001b]99;e=1:p=body;SGVsbG8g8J+QiA==\u001b\\"),
+      ),
+    ).toEqual([{ kind: "osc-99", body: "Hello 🐈" }]);
+  });
+
+  it("ignores malformed OSC 99 base64 payloads", () => {
+    const state = { ...INITIAL_TERMINAL_ATTENTION_PARSER_STATE };
+    expect(
+      consumeTerminalAttention(
+        state,
+        bytes("\u001b]99;e=1:p=body;not base64\u001b\\"),
+      ),
+    ).toEqual([]);
+  });
+
+  it("bounds incomplete OSC 99 notification accumulation per terminal", () => {
+    const state = { ...INITIAL_TERMINAL_ATTENTION_PARSER_STATE };
+    consumeTerminalAttention(
+      state,
+      bytes(`\u001b]99;i=large:p=body:d=0;${"x".repeat(1024)}\u001b\\`),
+    );
+    consumeTerminalAttention(
+      state,
+      bytes(`\u001b]99;i=large:p=body:d=0;${"x".repeat(1024)}\u001b\\`),
+    );
+    consumeTerminalAttention(
+      state,
+      bytes(`\u001b]99;i=large:p=body:d=0;${"x".repeat(1024)}\u001b\\`),
+    );
+    consumeTerminalAttention(
+      state,
+      bytes(`\u001b]99;i=large:p=body:d=0;${"x".repeat(1024)}\u001b\\`),
+    );
+    expect(state.osc99AssemblyBytes ?? 0).toBeLessThanOrEqual(4096);
+    expect(
+      consumeTerminalAttention(
+        state,
+        bytes("\u001b]99;i=large:p=body;done\u001b\\"),
+      ),
+    ).toEqual([]);
+    expect(state.osc99AssemblyBytes).toBe(0);
   });
 
   it("ignores numeric OSC 9 subcommands such as progress reports", () => {
