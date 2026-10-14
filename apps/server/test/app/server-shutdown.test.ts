@@ -157,4 +157,35 @@ describe("server shutdown ordering", () => {
     });
     expect(listenerClosedBeforeWebSockets).toBe(true);
   });
+
+  it("stops plugins before awaiting WebSocket shutdown", async () => {
+    server = startHttpListener({
+      fetch: async () => new Response("ready"),
+      logger: { warn: () => {} },
+      serverConfig: {
+        BB_SERVER_BIND_HOST: "127.0.0.1",
+        BB_SERVER_PORT: 0,
+      },
+    });
+    await once(server, "listening");
+    let pluginsStopped = false;
+    let webSocketsClosedAfterPlugins = false;
+    let closeWebSockets: (() => void) | undefined;
+    await shutdownHttpBeforePlugins({
+      closeWebSockets: () =>
+        new Promise<void>((resolve) => {
+          closeWebSockets = () => {
+            webSocketsClosedAfterPlugins = pluginsStopped;
+            resolve();
+          };
+        }),
+      server,
+      stopPlugins: async () => {
+        pluginsStopped = true;
+        closeWebSockets?.();
+      },
+      stopTerminalDataPlane: () => {},
+    });
+    expect(webSocketsClosedAfterPlugins).toBe(true);
+  }, 5_000);
 });

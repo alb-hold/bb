@@ -137,7 +137,7 @@ export async function shutdownHttpBeforePlugins(args: {
   let drained = false;
   try {
     drained = await Promise.race([
-      Promise.all([closed, webSocketsClosed]).then(() => true),
+      closed.then(() => true),
       new Promise<boolean>((resolve) => {
         drainTimer = setTimeout(
           () => resolve(false),
@@ -152,9 +152,10 @@ export async function shutdownHttpBeforePlugins(args: {
   }
   if (!drained) {
     args.server.closeAllConnections();
-    await Promise.all([closed, webSocketsClosed]);
+    await closed;
   }
   await args.stopPlugins();
+  await webSocketsClosed;
 }
 
 export interface StartServerPluginsArgs {
