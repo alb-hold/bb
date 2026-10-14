@@ -2538,6 +2538,30 @@ describe.each(lifetimes)(
   },
 );
 
+describe.each(lifetimes)(
+  "a marker whose time cannot be read while the thread is unarchived, %s",
+  (lifetime) => {
+    it("closes the window instead of trusting the tombstone alone", async () => {
+      const f = await fixture();
+      const sessions = [
+        await mint(f, await f.open(), lifetime),
+        await mint(f, await f.open(), lifetime),
+      ];
+      const threads = await f.open();
+      await threads.removeThread(f.route.threadId);
+      f.advance(HOUR);
+      await whileUnreadable(() => unarchive(threads, f.route.threadId));
+      for (const session of sessions)
+        expect(await rejected(threads, session)).toBe(true);
+      expect(await tombstoneNames(f.directory)).toEqual([]);
+      const restarted = await f.open();
+      await unarchive(restarted, f.route.threadId);
+      for (const session of sessions)
+        expect(await rejected(restarted, session)).toBe(true);
+    });
+  },
+);
+
 const MUTATORS: Record<string, { drivenBy: string[] } | { because: string }> = {
   initialize: {
     because:
