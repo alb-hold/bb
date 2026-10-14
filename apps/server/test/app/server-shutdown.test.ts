@@ -1,6 +1,7 @@
 import { once } from "node:events";
 import { createConnection, migrate, type DbConnection } from "@bb/db";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import WebSocket, { WebSocketServer } from "ws";
 import {
   shutdownHttpBeforePlugins,
   startHttpListener,
@@ -16,6 +17,8 @@ type ShutdownHttpBeforePlugins = (args: {
 describe("server shutdown ordering", () => {
   let server: ReturnType<typeof startHttpListener> | undefined;
   let db: DbConnection | undefined;
+  let webSocketServer: WebSocketServer | undefined;
+  let webSocketClient: WebSocket | undefined;
 
   beforeEach(() => {
     db = createConnection(":memory:");
@@ -23,11 +26,20 @@ describe("server shutdown ordering", () => {
   });
 
   afterEach(async () => {
+    webSocketClient?.terminate();
+    if (webSocketServer !== undefined) {
+      for (const socket of webSocketServer.clients) socket.terminate();
+      await new Promise<void>((resolve) =>
+        webSocketServer?.close(() => resolve()),
+      );
+    }
     server?.closeAllConnections();
     if (server?.listening) {
       await new Promise<void>((resolve) => server?.close(() => resolve()));
     }
     server = undefined;
+    webSocketServer = undefined;
+    webSocketClient = undefined;
     db?.$client.close();
     db = undefined;
   });
@@ -187,5 +199,45 @@ describe("server shutdown ordering", () => {
       stopTerminalDataPlane: () => {},
     });
     expect(webSocketsClosedAfterPlugins).toBe(true);
+  }, 5_000);
+
+  it("can finish HTTP shutdown when a WebSocket needs plugin stop", async () => {
+    server = startHttpListener({
+      fetch: async () => new Response("ready"),
+      logger: { warn: () => {} },
+      serverConfig: {
+        BB_SERVER_BIND_HOST: "127.0.0.1",
+        BB_SERVER_PORT: 0,
+      },
+    });
+    webSocketServer = new WebSocketServer({ noServer: true });
+    server.on("upgrade", (request, socket, head) => {
+      webSocketServer?.handleUpgrade(request, socket, head, (webSocket) => {
+        webSocketServer?.emit("connection", webSocket, request);
+      });
+    });
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server did not bind a TCP port");
+    }
+    const accepted = once(webSocketServer, "connection");
+    webSocketClient = new WebSocket(`ws://127.0.0.1:${address.port}`);
+    await once(webSocketClient, "open");
+    const [webSocket] = (await accepted) as [WebSocket];
+    let finishWebSocketClose: (() => void) | undefined;
+    const shutdown = shutdownHttpBeforePlugins({
+      closeWebSockets: () =>
+        new Promise<void>((resolve) => {
+          finishWebSocketClose = () => {
+            webSocket.terminate();
+            resolve();
+          };
+        }),
+      server,
+      stopPlugins: async () => finishWebSocketClose?.(),
+      stopTerminalDataPlane: () => {},
+    });
+    await shutdown;
   }, 5_000);
 });

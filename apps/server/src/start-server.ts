@@ -150,11 +150,13 @@ export async function shutdownHttpBeforePlugins(args: {
       clearTimeout(drainTimer);
     }
   }
+  let pluginsStopped: Promise<void> | undefined;
   if (!drained) {
     args.server.closeAllConnections();
+    pluginsStopped = args.stopPlugins();
     await closed;
   }
-  await args.stopPlugins();
+  await (pluginsStopped ?? args.stopPlugins());
   await webSocketsClosed;
 }
 
