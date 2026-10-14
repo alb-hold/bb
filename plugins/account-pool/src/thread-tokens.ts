@@ -144,7 +144,7 @@ type Tombstone = {
   holdsAnchor?: boolean;
 };
 
-type Window = { start: number | null; open: boolean; lowered: boolean };
+type Window = { start: number | null; open: boolean; unlowered: string[] };
 
 type PendingFile =
   | { threadId: string; record: RouteRecord; nested: false }
@@ -926,15 +926,15 @@ export class ThreadTokenStore {
       ...markers.map((marker) => marker.modifiedAt),
     ].filter((anchor): anchor is number => anchor !== undefined);
     if (anchors.length === 0)
-      return { start: null, open: false, lowered: true };
+      return { start: null, open: false, unlowered: [] };
     const start = Math.min(...anchors);
-    let lowered = true;
+    const unlowered: string[] = [];
     for (const marker of markers)
       if (marker.modifiedAt - start > MARKER_ANCHOR_TOLERANCE_MS)
         try {
           await this.lowerMarker(marker.file, start);
         } catch {
-          lowered = false;
+          unlowered.push(marker.file);
         }
     const postdated =
       known.tombstoneAt !== undefined &&
@@ -943,7 +943,7 @@ export class ThreadTokenStore {
       !postdated &&
       !unreadable &&
       !this.tombstoneExpired({ archivedAt: start });
-    return { start, open, lowered };
+    return { start, open, unlowered };
   }
 
   private async settleWindow(
@@ -953,7 +953,7 @@ export class ThreadTokenStore {
     if (window.start === null) return false;
     const shrank = window.start < tombstone.archivedAt;
     if (shrank) tombstone.archivedAt = window.start;
-    if (window.lowered) {
+    if (window.unlowered.length === 0) {
       tombstone.holdsAnchor = false;
       if (shrank && window.open && tombstone.durable)
         await this.persistTombstone(tombstone);
@@ -961,7 +961,15 @@ export class ThreadTokenStore {
     }
     if (shrank || !tombstone.durable) await this.persistTombstone(tombstone);
     tombstone.holdsAnchor = tombstone.durable;
+    if (!tombstone.durable) await this.voidMarkers(window.unlowered);
     return tombstone.durable && window.open;
+  }
+
+  private async voidMarkers(files: readonly string[]): Promise<void> {
+    for (const file of files)
+      await fs
+        .rename(file, `${file}.${randomUUID()}.tmp`)
+        .catch(() => undefined);
   }
 
   private async windowOpen(
