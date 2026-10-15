@@ -59,8 +59,8 @@ import {
   type TerminalLinkTarget,
 } from "./terminal-links";
 import {
+  applyTerminalFitDimensions,
   nextSharedTerminalSize,
-  terminalDisplaySize,
   type TerminalGridSize,
 } from "./terminal-shared-size";
 import { handleTerminalFileDrop } from "./terminal-file-drop";
@@ -1113,7 +1113,7 @@ export function ThreadTerminalView({
           terminal,
         });
         const fitTerminal = () => {
-          if (!fitAddon || !terminal || !surfaceVisible) {
+          if (!fitAddon || !terminal) {
             return;
           }
           if (!hasVisibleTerminalSize({ containerElement })) {
@@ -1127,14 +1127,17 @@ export function ThreadTerminalView({
           ) {
             return;
           }
-          const display = terminalDisplaySize(fitted, sharedSize);
-          if (
-            terminal.cols !== display.cols ||
-            terminal.rows !== display.rows
-          ) {
-            terminal.resize(display.cols, display.rows);
-          }
-          transport?.sendResize(fitted.cols, fitted.rows);
+          applyTerminalFitDimensions(
+            fitted,
+            sharedSize,
+            surfaceVisible,
+            (cols, rows) => {
+              if (activeTerminal.cols !== cols || activeTerminal.rows !== rows) {
+                activeTerminal.resize(cols, rows);
+              }
+            },
+            (cols, rows) => transport?.sendResize(cols, rows),
+          );
         };
         const scheduleFit: TerminalFitScheduler = () => {
           resizeCoalescer?.schedule();
@@ -1385,7 +1388,7 @@ export function ThreadTerminalView({
             containerHasSize = hasSize;
             reportDocumentVisibility();
           }
-          if (!hasSize || !surfaceVisible) {
+          if (!hasSize) {
             return;
           }
           scheduleFit();

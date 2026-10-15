@@ -8,7 +8,9 @@ import type {
 } from "@bb/server-contract";
 import { Terminal } from "@xterm/xterm";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createTerminalResizeCoalescer } from "./terminal-resize-coalescer";
 import {
+  applyTerminalFitDimensions,
   nextSharedTerminalSize,
   terminalDisplaySize,
 } from "./terminal-shared-size";
@@ -335,8 +337,11 @@ interface FitChangeRoom {
   advance: (ms: number) => void;
   deliverReports: () => void;
   fit: (cols: number) => void;
+  hiddenFit: (cols: number) => void;
   peer: (cols: number) => void;
+  release: () => void;
   ptyCols: () => number;
+  resizeCount: () => number;
   terminal: Terminal;
   transport: TerminalWebSocketTransport;
   widths: number[];
@@ -348,7 +353,7 @@ function createFitChangeRoom(delayReports = false): FitChangeRoom {
   const widths: number[] = [];
   terminal.onResize(({ cols }) => widths.push(cols));
   let fitted = FITTED_COLS;
-  let own = FITTED_COLS;
+  let own: number | null = FITTED_COLS;
   let peerCols: number | null = null;
   let pty = FITTED_COLS;
   let sharedSize: { cols: number; rows: number } | null = null;
@@ -408,8 +413,13 @@ function createFitChangeRoom(delayReports = false): FitChangeRoom {
     deliver(message);
   };
   const hub = (): void => {
-    const shared = peerCols === null ? own : Math.min(own, peerCols);
-    if (shared !== pty) {
+    const shared =
+      own === null
+        ? peerCols
+        : peerCols === null
+          ? own
+          : Math.min(own, peerCols);
+    if (shared !== null && shared !== pty) {
       pty = shared;
       emit({ type: "session-updated", session: session(shared, FITTED_ROWS) });
     }
@@ -423,6 +433,17 @@ function createFitChangeRoom(delayReports = false): FitChangeRoom {
       }
     }
     delivered = socket.resizes.length;
+  };
+  const applyFit = (cols: number, visible: boolean): void => {
+    fitted = cols;
+    applyTerminalFitDimensions(
+      { cols, rows: FITTED_ROWS },
+      sharedSize,
+      visible,
+      (displayCols, displayRows) => terminal.resize(displayCols, displayRows),
+      (nextCols, nextRows) => transport.sendResize(nextCols, nextRows),
+    );
+    syncOwn();
   };
   transport.sendResize(FITTED_COLS, FITTED_ROWS);
   transport.start();
@@ -444,17 +465,18 @@ function createFitChangeRoom(delayReports = false): FitChangeRoom {
         deliver(message);
       }
     },
-    fit: (cols) => {
-      fitted = cols;
-      show();
-      transport.sendResize(cols, FITTED_ROWS);
-      syncOwn();
-    },
+    fit: (cols) => applyFit(cols, true),
+    hiddenFit: (cols) => applyFit(cols, false),
     peer: (cols) => {
       peerCols = cols;
       hub();
     },
+    release: () => {
+      own = null;
+      hub();
+    },
     ptyCols: () => pty,
+    resizeCount: () => socket.resizes.length,
     terminal,
     transport,
     widths,
@@ -595,6 +617,59 @@ describe("page terminal when the fitted size changes between nudge and restore",
 
     expect(room.ptyCols()).toBe(FITTED_COLS - 1);
     expect(room.terminal.cols).toBe(FITTED_COLS - 1);
+    room.transport.dispose();
+  });
+});
+
+describe("hidden terminal fit and shared PTY size", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("sends the final hidden geometry after a burst so the shared PTY no longer has stale ownership", () => {
+    const room = createFitChangeRoom();
+    let geometry = 70;
+    room.peer(20);
+    const coalescer = createTerminalResizeCoalescer({
+      isSettled: () => true,
+      onSettled: () => room.hiddenFit(geometry),
+      quietPeriodMs: 120,
+    });
+    for (let elapsed = 0; elapsed <= 500; elapsed += 16) {
+      geometry = 72 - Math.floor(elapsed / 25);
+      coalescer.schedule();
+      vi.advanceTimersByTime(16);
+    }
+    vi.advanceTimersByTime(120);
+    room.peer(80);
+
+    expect(room.ptyCols()).toBe(53);
+    coalescer.cancel();
+    room.transport.dispose();
+  });
+
+  it("releases a hidden client's size claim when its terminal unmounts", () => {
+    const room = createFitChangeRoom();
+    room.hiddenFit(16);
+    room.peer(24);
+    room.transport.setVisible(false);
+    room.transport.dispose();
+    room.release();
+
+    expect(room.ptyCols()).toBe(24);
+  });
+
+  it("uses the settled fit after visibility returns without sending a duplicate resize", () => {
+    const room = createFitChangeRoom();
+    room.hiddenFit(56);
+    const callsAtSettledSize = room.resizeCount();
+    room.transport.setVisible(false);
+    room.transport.setVisible(true);
+    room.fit(56);
+
+    expect(room.ptyCols()).toBe(56);
+    expect(room.resizeCount()).toBe(callsAtSettledSize);
+    expect(room.terminal.cols).toBe(56);
     room.transport.dispose();
   });
 });
