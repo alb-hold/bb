@@ -224,7 +224,7 @@ export interface RunNativeHolderOptions {
   ): NativeHolderPty;
   tick?(): Promise<void>;
   tickIntervalMs?: number;
-  terminalClosedForGood?(): Promise<boolean>;
+  checkTerminal?(): Promise<NativeTerminalCheck>;
   detachedCheckIntervalMs?: number;
   onSocketReady?(): void;
   onSocketClosed?(): void;
@@ -282,6 +282,22 @@ export function nativeTerminalClosedForGood(
     terminal.closeReason !== null &&
     TERMINAL_CLOSES_THAT_STOP_THE_CLI.has(terminal.closeReason)
   );
+}
+
+export type NativeTerminalCheck =
+  | "closed-for-good"
+  | "awaiting-daemon"
+  | "detached";
+
+export function nativeTerminalCheck(
+  view: {
+    terminal: { status: string; closeReason: string | null } | null;
+  } | null,
+): NativeTerminalCheck {
+  if (nativeTerminalClosedForGood(view)) return "closed-for-good";
+  return view?.terminal?.status === "disconnected"
+    ? "awaiting-daemon"
+    : "detached";
 }
 
 function removeSocketFile(
@@ -517,22 +533,35 @@ export async function runNativeHolder(
       Math.min(NATIVE_HOLDER_REAP_CHECK_MS, reapAfterMs),
     ),
   );
-  if (options.terminalClosedForGood !== undefined) {
-    const closedForGood = options.terminalClosedForGood;
+  if (options.checkTerminal !== undefined) {
+    const checkTerminal = options.checkTerminal;
     let checking = false;
+    let pausedFor: string | null = null;
+    const pauseReap = (reason: string): void => {
+      if (client !== null) return;
+      detachedSince = Date.now();
+      if (pausedFor === reason) return;
+      pausedFor = reason;
+      logNativeHolderEvent(options.socketPath, "reap-paused", { reason });
+    };
     timers.push(
       setInterval(() => {
         if (pty === null || client !== null || checking) return;
         checking = true;
-        closedForGood()
-          .then((closed) => {
-            if (closed && client === null) {
+        checkTerminal()
+          .then((state) => {
+            if (client !== null) return;
+            if (state === "closed-for-good") {
               finishReason = "explicit close";
               pty?.kill("SIGHUP");
+            } else if (state === "awaiting-daemon") {
+              pauseReap("bb awaits the host daemon");
+            } else {
+              pausedFor = null;
             }
           })
           .catch(() => {
-            if (client === null) detachedSince = Date.now();
+            pauseReap("bb unreachable");
           })
           .finally(() => {
             checking = false;
