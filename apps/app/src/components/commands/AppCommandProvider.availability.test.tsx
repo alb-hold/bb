@@ -198,6 +198,17 @@ describe("isCommandAvailable", () => {
     });
     expect(onInvoke).toHaveBeenCalledOnce();
   });
+
+  it("still runs an Alt+Arrow app shortcut outside the terminal", () => {
+    const onInvoke = vi.fn();
+    renderProvider(<OutsideChordProbe onInvoke={onInvoke} />);
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Other input" }), {
+      key: "ArrowLeft",
+      altKey: true,
+    });
+    expect(onInvoke).toHaveBeenCalledOnce();
+  });
+
   it("is false while no component handles the command", () => {
     renderProvider(<Availability command="thread.new" />);
     expect(availabilityOf("thread.new")).toBe("no");
