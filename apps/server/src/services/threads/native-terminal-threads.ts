@@ -486,7 +486,6 @@ function openNativeTerminalDeduplicated(
   deps: NativeTerminalDeps,
   args: {
     reattachOnly: boolean;
-    coalescePendingReattach?: boolean;
     threadId: string;
     request: OpenNativeTerminalRequest;
   },
@@ -494,9 +493,7 @@ function openNativeTerminalDeduplicated(
   const pending = pendingOpens.get(args.threadId);
   if (
     pending !== undefined &&
-    (args.reattachOnly ||
-      !pending.reattachOnly ||
-      args.coalescePendingReattach === true)
+    (args.reattachOnly || !pending.reattachOnly)
   ) {
     return pending.promise;
   }
@@ -715,9 +712,11 @@ function reopenNativeTerminals(
         for (;;) {
           if (shouldStop()) return;
           try {
+            const exitedAfterArchive =
+              currentTerminal?.status === "exited" &&
+              currentTerminal.closeReason === "thread-archived";
             reopened = await openNativeTerminalDeduplicated(deps, {
-              reattachOnly: reason === "daemon-reconnect",
-              coalescePendingReattach: reason === "thread-unarchived",
+              reattachOnly: reason === "daemon-reconnect" && !exitedAfterArchive,
               threadId,
               request: {},
             });

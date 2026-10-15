@@ -700,7 +700,7 @@ describe("native terminal threads", () => {
     expect(warn).not.toHaveBeenCalled();
   });
 
-  it("reattaches an unarchived thread whose terminal exited during archive to the same provider session", async () => {
+  it("launches an unarchived thread whose terminal exited during archive into the same provider session", async () => {
     const fixture = await createMigratedMemoryFixture();
     const { thread } = await openRunningNativeThread(fixture, {
       providerId: "claude-code",
@@ -732,7 +732,10 @@ describe("native terminal threads", () => {
     if (reopen.start.mode !== "command") {
       throw new Error("Expected a native CLI command start");
     }
-    expect(reopen.start.command).toContain("--reattach");
+    expect(reopen.start.command).not.toContain("--reattach");
+    expect(reopen.start.command).toContain(
+      `exec "$BB_CLI" thread native-run ${thread.id}`,
+    );
     acknowledgeOpen(fixture, reopen);
     await reopening;
 
@@ -771,7 +774,66 @@ describe("native terminal threads", () => {
     await new Promise((resolve) => setTimeout(resolve, 300));
   });
 
-  it("coalesces reconnect and unarchive reopens into one terminal.open and holder start", async () => {
+  it("reattaches an unarchived thread whose terminal exited during daemon disconnect", async () => {
+    const fixture = await createMigratedMemoryFixture();
+    const { thread } = await openRunningNativeThread(fixture, {
+      providerId: "claude-code",
+    });
+    const record = getNativeTerminalThread(fixture.harness.db, thread.id);
+    if (
+      record?.terminalSessionId === null ||
+      record?.terminalSessionId === undefined
+    ) {
+      throw new Error("native thread has no terminal");
+    }
+    if (record.nativeSessionId === null) {
+      throw new Error("native thread has no provider session");
+    }
+    fixture.harness.db
+      .update(terminalSessions)
+      .set({ status: "exited", closeReason: "daemon-disconnect" })
+      .where(eq(terminalSessions.id, record.terminalSessionId))
+      .run();
+    fixture.socket.sentMessages.length = 0;
+
+    const reopening = reopenNativeTerminalsAfterDaemonReconnect(
+      fixture.harness.deps,
+      { hostId: fixture.hostId, threadIds: [thread.id] },
+    );
+    const reopen = await waitForTerminalOpen(fixture.socket);
+    expect(reopen.start.mode).toBe("command");
+    if (reopen.start.mode !== "command") {
+      throw new Error("Expected a native CLI command start");
+    }
+    expect(reopen.start.command).toContain("--reattach");
+    acknowledgeOpen(fixture, reopen);
+    await reopening;
+
+    expect(
+      daemonMessages(fixture.socket).filter(
+        (message) => message.type === "terminal.open",
+      ),
+    ).toHaveLength(1);
+    expect(getNativeTerminalThread(fixture.harness.db, thread.id)).toMatchObject(
+      {
+        nativeSessionId: record.nativeSessionId,
+        terminalSessionId: reopen.terminalId,
+      },
+    );
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.hostId,
+      sessionId: fixture.sessionId,
+      message: {
+        type: "terminal.exited",
+        terminalId: reopen.terminalId,
+        exitCode: 0,
+        closeReason: "user",
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  });
+
+  it("coalesces reconnect and unarchive into one launch-capable terminal.open that resumes the stored session", async () => {
     const fixture = await createMigratedMemoryFixture();
     const { thread } = await openRunningNativeThread(fixture, {
       providerId: "claude-code",
@@ -834,6 +896,10 @@ describe("native terminal threads", () => {
     if (reopen.start.mode !== "command") {
       throw new Error("Expected a native CLI command start");
     }
+    expect(reopen.start.command).not.toContain("--reattach");
+    expect(reopen.start.command).toContain(
+      `exec "$BB_CLI" thread native-run ${thread.id}`,
+    );
     acknowledgeOpen(fixture, reopen);
     await new Promise((resolve) => setTimeout(resolve, 50));
     const opens = daemonMessages(fixture.socket).filter(
@@ -881,6 +947,7 @@ describe("native terminal threads", () => {
       terminalSessionId: reopen.terminalId,
     });
     expect(launch.nativeSessionId).toBe(record.nativeSessionId);
+    expect(opens).toHaveLength(1);
   });
 
   it("hands the creation prompt to the first launch only", async () => {
