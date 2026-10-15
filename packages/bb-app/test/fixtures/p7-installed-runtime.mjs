@@ -73,7 +73,7 @@ const server = createServer((request, response) => {
   response.writeHead(404);
   response.end();
 });
-server.listen(Number(process.env.BB_SERVER_PORT), "127.0.0.1", () => event("server:ready"));
+server.listen(Number(process.env.BB_SERVER_PORT), "127.0.0.1", () => event("server:ready", { hasIpc: typeof process.send === "function" }));
 process.once("SIGTERM", async () => {
   event("server:received-sigterm");
   for (const phase of JSON.parse(process.env.P7_SERVER_PHASES_MS || "[]")) await new Promise(resolve => setTimeout(resolve, phase));

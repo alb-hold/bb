@@ -142,6 +142,7 @@ it("handles SIGTERM through the real launcher and bounded server children", asyn
     expect(code).toBe(0);
     expect(signal).toBeNull();
     expect(byEvent("server:ready")).toBeDefined();
+    expect(byEvent("server:ready")?.hasIpc).toBe(true);
     expect(byEvent("daemon:ready")).toBeDefined();
     expect(elapsedMs).toBeLessThan(DESKTOP_OWNED_RUNTIME_SHUTDOWN_GRACE_MS);
     expect(elapsedMs, JSON.stringify(events)).toBeGreaterThanOrEqual(5_000);
