@@ -558,6 +558,42 @@ describe("thread pruning", () => {
     }
   }, 15_000);
 
+  it("prunes task progress superseded by legacy rows with missing or mismatched item kinds", () => {
+    const f = setup();
+    try {
+      seed(f, 1, {
+        type: "item/backgroundTask/progress",
+        itemId: "task-null-kind",
+        itemKind: "backgroundTask",
+      });
+      seed(f, 2, {
+        type: "item/backgroundTask/progress",
+        itemId: "task-null-kind",
+        itemKind: null,
+      });
+      seed(f, 3, {
+        type: "item/backgroundTask/progress",
+        itemId: "task-mismatched-kind",
+        itemKind: "backgroundTask",
+      });
+      seed(f, 4, {
+        type: "item/backgroundTask/progress",
+        itemId: "task-mismatched-kind",
+        itemKind: "agentMessage",
+      });
+      seed(f, 5, { type: "turn/completed" });
+
+      cycle(f, "resolved-items");
+
+      expect(sequences(f)).not.toContain(1);
+      expect(sequences(f)).toContain(2);
+      expect(sequences(f)).not.toContain(3);
+      expect(sequences(f)).toContain(4);
+    } finally {
+      f.db.$client.close();
+    }
+  });
+
   it("prunes oversized snapshots without parsing their payloads", () => {
     const f = setup();
     try {

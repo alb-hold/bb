@@ -86,6 +86,14 @@ const prepareProgress = (db: DbQueryConnection) =>
       AND item_kind = 'backgroundTask'
       AND item_id = ${sql.placeholder("itemId")}`,
   );
+const prepareLegacyProgress = (db: DbQueryConnection) =>
+  prepareSupport(
+    db,
+    "events_legacy_background_task_progress_thread_item_sequence_idx",
+    sql`type = 'item/backgroundTask/progress'
+      AND (item_kind IS NULL OR item_kind <> 'backgroundTask')
+      AND item_id = ${sql.placeholder("itemId")}`,
+  );
 const prepareEarlier = (db: DbQueryConnection) =>
   prepareSupport(
     db,
@@ -137,7 +145,7 @@ function pruneResolvedItemCandidates(
           : candidate.type === "item/commandExecution/outputDelta"
             ? prepareOutput
             : prepareCompletion;
-    return prepareCachedQuery(db, build).all({
+    const queryArgs = {
       threadId: args.threadId,
       turnId: candidate.turnId,
       itemId: candidate.itemId,
@@ -148,7 +156,20 @@ function pruneResolvedItemCandidates(
           : probe.probeSequence,
       beforeSequence: candidate.sequence,
       limit,
-    });
+    };
+    const support = prepareCachedQuery(db, build).all(queryArgs);
+    if (
+      args.kind === "background" &&
+      probe.probePhase === 1 &&
+      support.length === 0
+    ) {
+      return prepareCachedQuery(db, prepareLegacyProgress).all({
+        ...queryArgs,
+        afterSequence: candidate.sequence,
+        limit: 1,
+      });
+    }
+    return support;
   };
   for (const candidate of rows) {
     if (remaining <= 0) break;
