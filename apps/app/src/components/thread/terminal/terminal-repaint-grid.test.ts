@@ -88,6 +88,7 @@ class InlineTuiPty {
 
 class FakeSocket implements TerminalBrowserSocket {
   onclose: ((event: CloseEvent) => void) | null = null;
+  onDisposed: (() => void) | null = null;
   onerror: ((event: Event) => void) | null = null;
   onmessage: ((event: MessageEvent) => void) | null = null;
   onopen: ((event: Event) => void) | null = null;
@@ -96,6 +97,7 @@ class FakeSocket implements TerminalBrowserSocket {
 
   close(): void {
     this.readyState = 3;
+    this.onDisposed?.();
   }
 
   send(data: string): void {
@@ -384,7 +386,6 @@ interface FitChangeRoom {
   fit: (cols: number) => void;
   hiddenFit: (cols: number) => void;
   peer: (cols: number) => void;
-  release: () => void;
   ptyCols: () => number;
   resizeCount: () => number;
   terminal: Terminal;
@@ -469,6 +470,10 @@ function createFitChangeRoom(delayReports = false): FitChangeRoom {
       emit({ type: "session-updated", session: session(shared, FITTED_ROWS) });
     }
   };
+  socket.onDisposed = () => {
+    own = null;
+    hub();
+  };
   const syncOwn = (): void => {
     for (const resize of socket.resizes.slice(delivered)) {
       own = resize.cols;
@@ -514,10 +519,6 @@ function createFitChangeRoom(delayReports = false): FitChangeRoom {
     hiddenFit: (cols) => applyFit(cols, false),
     peer: (cols) => {
       peerCols = cols;
-      hub();
-    },
-    release: () => {
-      own = null;
       hub();
     },
     ptyCols: () => pty,
@@ -699,7 +700,6 @@ describe("hidden terminal fit and shared PTY size", () => {
     room.peer(24);
     room.transport.setVisible(false);
     room.transport.dispose();
-    room.release();
 
     expect(room.ptyCols()).toBe(24);
   });
