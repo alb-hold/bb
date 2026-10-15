@@ -4,6 +4,7 @@ import {
   closeSession,
   createTerminalSession,
   getAppSettings,
+  getThread,
   getTerminalSession,
   listTerminalSessions,
   setAppSettings,
@@ -555,6 +556,72 @@ describe("public terminal routes", () => {
         title: "Terminal 1",
       }),
     ]);
+  });
+
+  it("records daemon attention on the existing thread unread timestamp and clears terminal state when visible", async () => {
+    const fixture = await createTerminalRouteFixture();
+    harnesses.push(fixture.harness);
+    const stored = createTerminalSession(fixture.harness.db, {
+      cols: 120,
+      daemonSessionId: fixture.session.id,
+      environmentId: fixture.environment.id,
+      hostId: fixture.host.id,
+      initialCwd: fixture.environment.path ?? "/tmp/terminal-workspace",
+      rows: 32,
+      status: "running",
+      threadId: fixture.thread.id,
+      title: "Terminal attention",
+    });
+    onDaemonSocketMessage(fixture.harness.deps, {
+      hostId: fixture.host.id,
+      raw: JSON.stringify({
+        type: "terminal.attention",
+        terminalId: stored.id,
+        seq: 7,
+        kind: "osc-777",
+        title: "Build",
+        body: "Finished",
+      }),
+      sessionId: fixture.session.id,
+      socket: fixture.socket,
+    });
+    const latestAttentionAt = getThread(
+      fixture.harness.db,
+      fixture.thread.id,
+    )?.latestAttentionAt;
+    expect(latestAttentionAt).toBeGreaterThan(fixture.thread.latestAttentionAt);
+    const visible = await fixture.harness.app.request(
+      `/api/v1/terminals?threadId=${encodeURIComponent(fixture.thread.id)}`,
+    );
+    const listed = terminalListResponseSchema.parse(await readJson(visible));
+    expect(listed.sessions[0]?.attention).toEqual({
+      at: latestAttentionAt,
+      body: "Finished",
+      kind: "osc-777",
+      seq: 7,
+      title: "Build",
+    });
+    const browserSocket = createFakeBrowserSocket();
+    onTerminalSocketOpen(fixture.harness.deps, {
+      outputAcks: true,
+      resizeAcks: false,
+      sinceSeq: 0,
+      socket: browserSocket,
+      terminalId: stored.id,
+    });
+    onTerminalSocketMessage(fixture.harness.deps, {
+      raw: JSON.stringify({ type: "visibility", visible: true }),
+      socket: browserSocket,
+      terminalId: stored.id,
+    });
+    const afterClear = terminalListResponseSchema.parse(
+      await readJson(
+        await fixture.harness.app.request(
+          `/api/v1/terminals?threadId=${encodeURIComponent(fixture.thread.id)}`,
+        ),
+      ),
+    );
+    expect(afterClear.sessions[0]?.attention).toBeNull();
   });
 
   it("gets and renames a terminal by ID without a redundant scope", async () => {
@@ -3033,7 +3100,7 @@ describe("public terminal routes", () => {
     });
   });
 
-  it("sizes the PTY to the smallest visible device so every screen renders it", async () => {
+  it("applies hidden resize bursts and releases the size owner on socket close", async () => {
     const fixture = await createTerminalRouteFixture();
     harnesses.push(fixture.harness);
     const stored = createTerminalSession(fixture.harness.db, {
@@ -3050,6 +3117,12 @@ describe("public terminal routes", () => {
     const terminals = fixture.harness.deps.terminalSessions;
     const desktop = createFakeBrowserSocket();
     const phone = createFakeBrowserSocket();
+    phone.close = vi.fn(() =>
+      onTerminalSocketClose(fixture.harness.deps, {
+        terminalId: stored.id,
+        socket: phone,
+      }),
+    );
     const sizes = () =>
       readDaemonOperationMessages(fixture.socket).flatMap((message) =>
         message.type === "terminal.resize"
@@ -3113,8 +3186,22 @@ describe("public terminal routes", () => {
 
     send(phone, { type: "visibility", visible: false });
     expect(sizes()).toEqual(["160x48", "44x30", "44x20", "150x48"]);
+    for (const geometry of [
+      { cols: 67, rows: 22 },
+      { cols: 58, rows: 20 },
+      { cols: 53, rows: 18 },
+    ]) {
+      send(phone, { type: "resize", ...geometry });
+    }
+    expect(sizes()).toHaveLength(4);
     send(phone, { type: "visibility", visible: true });
-    expect(sizes()).toEqual(["160x48", "44x30", "44x20", "150x48", "44x20"]);
+    expect(sizes()).toEqual([
+      "160x48",
+      "44x30",
+      "44x20",
+      "150x48",
+      "53x18",
+    ]);
     send(desktop, { type: "ping" });
     send(desktop, { type: "resize", cols: 170, rows: 50 });
     send(desktop, { type: "resize", cols: 150, rows: 48 });
@@ -3124,15 +3211,19 @@ describe("public terminal routes", () => {
       fixture.harness.deps.terminalSessions.getTerminal({
         terminalId: stored.id,
       }),
-    ).toMatchObject({ cols: 44, rows: 20 });
+    ).toMatchObject({ cols: 53, rows: 18 });
 
-    terminals.detachBrowserTerminal({ terminalId: stored.id, socket: phone });
+    send(phone, { type: "visibility", visible: false });
+    const unregister = vi.spyOn(fixture.harness.hub, "unregisterTerminalClient");
+    phone.close();
+    expect(phone.close).toHaveBeenCalledOnce();
+    expect(unregister).toHaveBeenCalledWith(stored.id, phone);
     expect(sizes()).toEqual([
       "160x48",
       "44x30",
       "44x20",
       "150x48",
-      "44x20",
+      "53x18",
       "150x48",
     ]);
     expect(

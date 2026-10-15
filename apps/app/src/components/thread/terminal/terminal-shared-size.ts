@@ -3,6 +3,20 @@ export interface TerminalGridSize {
   rows: number;
 }
 
+export function applyTerminalFitDimensions(
+  fitted: TerminalGridSize,
+  shared: TerminalGridSize | null,
+  surfaceVisible: boolean,
+  resizeTerminal: (cols: number, rows: number) => void,
+  sendPtyResize: (cols: number, rows: number) => void,
+): void {
+  const display = terminalDisplaySize(fitted, shared);
+  if (surfaceVisible) {
+    resizeTerminal(display.cols, display.rows);
+  }
+  sendPtyResize(fitted.cols, fitted.rows);
+}
+
 export function terminalDisplaySize(
   fitted: TerminalGridSize,
   shared: TerminalGridSize | null,

@@ -2795,6 +2795,7 @@ function ThreadDetailViewInternal(
           return {
             ...shared,
             label: session?.title ?? "Terminal",
+            attention: session?.attention != null,
             leadingVisual: (
               <Icon
                 name="Terminal"

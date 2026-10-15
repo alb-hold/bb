@@ -21,6 +21,14 @@ export {
   recordThreadSpawner,
 } from "./fork-thread-spawners.js";
 export {
+  clearTerminalAttention,
+  ensureTerminalAttentionTable,
+  getTerminalAttention,
+  upsertTerminalAttention,
+  type TerminalAttentionKind,
+  type TerminalAttentionRecord,
+} from "./fork-terminal-attention.js";
+export {
   consumeNativeTerminalThreadLaunchInput,
   createNativeTerminalThread,
   deleteNativeTerminalThread,

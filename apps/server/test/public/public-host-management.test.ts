@@ -2,8 +2,11 @@ import { createBbSdk } from "@bb/sdk/core";
 import { createHttpTransport } from "@bb/sdk/node";
 import { spawnSync } from "node:child_process";
 import {
+  createTerminalSession,
   getEnvironment,
   getHost,
+  getTerminalSession,
+  updateTerminalSession,
   hosts,
   hostDaemonSessions,
   getSessionById,
@@ -792,6 +795,64 @@ describe("public host management", () => {
 
       expect(response.status).toBe(200);
       expect(getStoredProviderModelCatalog(harness.db, key)).toBeNull();
+    });
+  });
+
+  it("closes a removed host's waiting terminals for good and leaves closed ones as they were", async () => {
+    await withTestHarness(async (harness) => {
+      const primary = seedHost(harness.deps, { id: "host_primary" });
+      seedPrimaryHost(harness.deps, primary.id);
+      const host = seedHost(harness.deps, { id: "host_remove_terminals" });
+      const terminal = (status: "disconnected" | "running") =>
+        createTerminalSession(harness.db, {
+          cols: 80,
+          daemonSessionId: null,
+          environmentId: null,
+          hostId: host.id,
+          initialCwd: "~",
+          rows: 24,
+          status,
+          threadId: null,
+          title: "zsh",
+        });
+      const waiting = terminal("disconnected");
+      const closed = terminal("running");
+      updateTerminalSession(harness.db, {
+        scope: { kind: "terminal", terminalId: closed.id },
+        update: { closeReason: "user", kind: "exit" },
+      });
+      const otherHost = seedHost(harness.deps, { id: "host_kept_terminals" });
+      const elsewhere = createTerminalSession(harness.db, {
+        cols: 80,
+        daemonSessionId: null,
+        environmentId: null,
+        hostId: otherHost.id,
+        initialCwd: "~",
+        rows: 24,
+        status: "disconnected",
+        threadId: null,
+        title: "zsh",
+      });
+
+      const response = await harness.app.request(`${API}/hosts/${host.id}`, {
+        method: "DELETE",
+      });
+
+      expect(response.status).toBe(200);
+      const read = (terminalId: string) =>
+        getTerminalSession(harness.db, { kind: "terminal", terminalId });
+      expect(read(waiting.id)).toMatchObject({
+        status: "exited",
+        closeReason: "host-removed",
+      });
+      expect(read(closed.id)).toMatchObject({
+        status: "exited",
+        closeReason: "user",
+      });
+      expect(read(elsewhere.id)).toMatchObject({
+        status: "disconnected",
+        closeReason: null,
+      });
     });
   });
 
