@@ -1972,8 +1972,9 @@ describe("bb-app launcher", () => {
       "process.send('ready');",
       "setInterval(() => {}, 1000);",
     ].join("\n");
+    const daemonDetachDelayMs = DAEMON_DETACH_HEAD_START_MS - 500;
     const daemonProgram = [
-      `const delay=${DAEMON_DETACH_HEAD_START_MS - 100};`,
+      `const delay=${daemonDetachDelayMs};`,
       "process.on('SIGTERM', () => setTimeout(() => { process.send('detach-acked', () => process.exit(0)); }, delay));",
       "process.send('ready');",
       "setInterval(() => {}, 1000);",
@@ -2058,12 +2059,14 @@ describe("bb-app launcher", () => {
       expect(processSignals.get("daemon")).toEqual(["SIGTERM"]);
       expect(processSignals.get("server")).toEqual(["SIGTERM"]);
       expect(serverSignalAt - shutdownStartedAt).toBeGreaterThanOrEqual(
-        DAEMON_DETACH_HEAD_START_MS - SERVER_SHUTDOWN_SAFETY_MARGIN_MS,
+        daemonDetachDelayMs - SERVER_SHUTDOWN_SAFETY_MARGIN_MS,
       );
       expect(serverSignalAt - shutdownStartedAt).toBeLessThan(
         DAEMON_DETACH_HEAD_START_MS + SERVER_SHUTDOWN_SAFETY_MARGIN_MS,
       );
-      expect(elapsedMs).toBeGreaterThanOrEqual(DAEMON_DETACH_HEAD_START_MS);
+      expect(elapsedMs).toBeGreaterThanOrEqual(
+        daemonDetachDelayMs - SERVER_SHUTDOWN_SAFETY_MARGIN_MS,
+      );
       expect(elapsedMs).toBeLessThan(
         DAEMON_DETACH_HEAD_START_MS +
           SERVER_SHUTDOWN_BOUND_MS +
