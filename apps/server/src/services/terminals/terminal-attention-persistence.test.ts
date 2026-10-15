@@ -4,6 +4,8 @@ import {
   createTerminalSession,
   getTerminalAttention,
   getThread,
+  migrate,
+  updateTerminalSession,
 } from "@bb/db";
 import {
   seedHostSession,
@@ -24,12 +26,58 @@ afterEach(async () => {
 });
 
 describe("terminal attention persistence", () => {
+  it("includes unread persisted attention in a WebSocket attach snapshot", async () => {
+    const db = createConnection(":memory:");
+    migrate(db);
+    const harness = await createTestAppHarness({ db });
+    harnesses.push(harness);
+    const { terminalId } = createAttentionTerminal(harness);
+    harness.deps.terminalSessions.notifyTerminal({
+      terminalId,
+      payload: { body: "Tests passed", title: "Build finished" },
+    });
+    updateTerminalSession(harness.db, {
+      scope: { kind: "terminal", terminalId },
+      update: { closeReason: "process-exit", kind: "exit" },
+    });
+    const sent: string[] = [];
+    const socket = {
+      close() {},
+      send(data: string) {
+        sent.push(data);
+      },
+    };
+
+    harness.deps.terminalSessions.attachBrowserTerminal({
+      outputAcks: false,
+      resizeAcks: false,
+      socket,
+      sinceSeq: 0,
+      terminalId,
+    });
+
+    const attached = sent
+      .map((data) => JSON.parse(data) as Record<string, unknown>)
+      .find((message) => message.type === "attached");
+    expect(attached?.session).toMatchObject({
+      attention: {
+        body: "Tests passed",
+        kind: "osc-9",
+        seq: 1,
+        title: "Build finished",
+      },
+    });
+  });
+
   it("keeps daemon attention cleared while the terminal is visible", async () => {
     const harness = await createTestAppHarness();
     harnesses.push(harness);
     const { daemonSessionId, hostId, terminalId, threadId } =
       createAttentionTerminal(harness);
-    const latestAttentionAt = getThread(harness.db, threadId)?.latestAttentionAt;
+    const latestAttentionAt = getThread(
+      harness.db,
+      threadId,
+    )?.latestAttentionAt;
     const socket = { close() {}, send() {} };
     harness.deps.terminalSessions.handleBrowserTerminalMessage({
       terminalId,
@@ -64,7 +112,10 @@ describe("terminal attention persistence", () => {
     const harness = await createTestAppHarness();
     harnesses.push(harness);
     const { terminalId, threadId } = createAttentionTerminal(harness);
-    const latestAttentionAt = getThread(harness.db, threadId)?.latestAttentionAt;
+    const latestAttentionAt = getThread(
+      harness.db,
+      threadId,
+    )?.latestAttentionAt;
     harness.deps.terminalSessions.handleBrowserTerminalMessage({
       terminalId,
       socket: { close() {}, send() {} },

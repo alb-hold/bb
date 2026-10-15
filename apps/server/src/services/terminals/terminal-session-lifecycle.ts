@@ -504,26 +504,6 @@ function getTerminalDaemonCloseTarget(
   };
 }
 
-function toTerminalSession(row: TerminalSessionRow): TerminalSession {
-  return {
-    id: row.id,
-    threadId: row.threadId,
-    environmentId: row.environmentId,
-    hostId: row.hostId,
-    title: row.title,
-    initialCwd: row.initialCwd,
-    cols: row.cols,
-    rows: row.rows,
-    status: row.status,
-    exitCode: row.exitCode,
-    closeReason: row.closeReason,
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
-    lastUserInputAt: row.lastUserInputAt,
-    attention: null,
-  };
-}
-
 const terminalAttentionStateSchema = z
   .object({
     at: z.number().int().nonnegative(),
@@ -723,7 +703,20 @@ export class TerminalSessionLifecycle {
   private toTerminalSession(row: TerminalSessionRow): TerminalSession {
     const attention = getTerminalAttention(this.options.db, row.id);
     return {
-      ...toTerminalSession(row),
+      id: row.id,
+      threadId: row.threadId,
+      environmentId: row.environmentId,
+      hostId: row.hostId,
+      title: row.title,
+      initialCwd: row.initialCwd,
+      cols: row.cols,
+      rows: row.rows,
+      status: row.status,
+      exitCode: row.exitCode,
+      closeReason: row.closeReason,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+      lastUserInputAt: row.lastUserInputAt,
       attention:
         attention === null || attention.clearedAt !== null
           ? null
@@ -1032,7 +1025,7 @@ export class TerminalSessionLifecycle {
       );
     }
     this.notifyTerminalSessionChanged(runningSession);
-    return toTerminalSession(runningSession);
+    return this.toTerminalSession(runningSession);
   }
 
   private resolveTerminalLaunchTarget(
@@ -1090,7 +1083,7 @@ export class TerminalSessionLifecycle {
       );
     }
     this.notifyTerminalSessionChanged(renamed);
-    const session = toTerminalSession(renamed);
+    const session = this.toTerminalSession(renamed);
     this.options.hub.sendTerminalClientMessage(renamed.id, {
       type: "session-updated",
       session,
@@ -1191,7 +1184,7 @@ export class TerminalSessionLifecycle {
         current.closeReason === "daemon-disconnect" &&
         args.payload.reason === "user"
       ) {
-        return toTerminalSession(
+        return this.toTerminalSession(
           updateTerminalById(this.options.db, current.id, {
             closeReason: "user",
             exitCode: current.exitCode,
@@ -1199,10 +1192,10 @@ export class TerminalSessionLifecycle {
           }) ?? current,
         );
       }
-      return toTerminalSession(current);
+      return this.toTerminalSession(current);
     }
     if (args.payload.mode === "if-clean" && current.lastUserInputAt !== null) {
-      return toTerminalSession(current);
+      return this.toTerminalSession(current);
     }
     if (
       current.daemonSessionId === null ||
@@ -1240,14 +1233,14 @@ export class TerminalSessionLifecycle {
       }
     }
     try {
-      return toTerminalSession(await pending.promise);
+      return this.toTerminalSession(await pending.promise);
     } catch (error) {
       const finalized = getTerminalById(this.options.db, current.id);
       if (
         finalized?.status === "exited" &&
         finalized.closeReason === args.payload.reason
       ) {
-        return toTerminalSession(finalized);
+        return this.toTerminalSession(finalized);
       }
       throw error;
     }
@@ -1268,7 +1261,7 @@ export class TerminalSessionLifecycle {
       code: "terminal_closed",
       message: "Terminal session closed",
     });
-    return toTerminalSession(session);
+    return this.toTerminalSession(session);
   }
 
   sendTerminalInput(args: SendTerminalInputArgs): TerminalSession {
@@ -1299,7 +1292,7 @@ export class TerminalSessionLifecycle {
       this.notifyTerminalSessionChanged(markedInput);
       this.options.hub.sendTerminalClientMessage(markedInput.id, {
         type: "session-updated",
-        session: toTerminalSession(markedInput),
+        session: this.toTerminalSession(markedInput),
       });
     }
 
@@ -1318,8 +1311,8 @@ export class TerminalSessionLifecycle {
       throw new ApiError(502, "host_disconnected", "Host is not connected");
     }
     if (args.payload.dataBase64.length > 0)
-      emitPluginTerminalInput(toTerminalSession(session));
-    return toTerminalSession(session);
+      emitPluginTerminalInput(this.toTerminalSession(session));
+    return this.toTerminalSession(session);
   }
 
   resizeTerminal(args: ResizeTerminalArgs): TerminalSession {
@@ -1352,7 +1345,7 @@ export class TerminalSessionLifecycle {
       this.notifyTerminalSessionChanged(resized);
       this.options.hub.sendTerminalClientMessage(resized.id, {
         type: "session-updated",
-        session: toTerminalSession(resized),
+        session: this.toTerminalSession(resized),
       });
     }
 
@@ -1371,7 +1364,7 @@ export class TerminalSessionLifecycle {
       });
       throw new ApiError(502, "host_disconnected", "Host is not connected");
     }
-    return toTerminalSession(session);
+    return this.toTerminalSession(session);
   }
 
   async readTerminalOutput(
@@ -1586,7 +1579,7 @@ export class TerminalSessionLifecycle {
       this.notifyTerminalSessionChanged(reconnected);
       this.options.hub.sendTerminalClientMessage(reconnected.id, {
         type: "session-updated",
-        session: toTerminalSession(reconnected),
+        session: this.toTerminalSession(reconnected),
       });
       this.requestTerminalCatchUp({
         daemonSessionId: args.daemonSessionId,
@@ -1690,10 +1683,10 @@ export class TerminalSessionLifecycle {
       this.notifyTerminalSessionChanged(markedInput);
       this.options.hub.sendTerminalClientMessage(markedInput.id, {
         type: "session-updated",
-        session: toTerminalSession(markedInput),
+        session: this.toTerminalSession(markedInput),
       });
     }
-    emitPluginTerminalInput(toTerminalSession(markedInput ?? current));
+    emitPluginTerminalInput(this.toTerminalSession(markedInput ?? current));
   }
 
   attachBrowserTerminal(args: AttachBrowserTerminalArgs): void {
@@ -1719,7 +1712,7 @@ export class TerminalSessionLifecycle {
       );
     }
 
-    const session = toTerminalSession(current);
+    const session = this.toTerminalSession(current);
     if (current.status === "disconnected") {
       this.holdBrowserTerminalForReattach({
         session,
@@ -1956,7 +1949,7 @@ export class TerminalSessionLifecycle {
             exited,
           );
           this.notifyTerminalSessionChanged(exited);
-          const session = toTerminalSession(exited);
+          const session = this.toTerminalSession(exited);
           this.options.hub.sendTerminalClientMessage(exited.id, {
             type: "exited",
             session,
@@ -2106,7 +2099,7 @@ export class TerminalSessionLifecycle {
     this.notifyTerminalSessionChanged(args.session);
     this.options.hub.sendTerminalClientMessage(args.session.id, {
       type: "exited",
-      session: toTerminalSession(args.session),
+      session: this.toTerminalSession(args.session),
     });
     this.rejectPendingAttachesForTerminal({
       terminalId: args.session.id,
@@ -2143,7 +2136,7 @@ export class TerminalSessionLifecycle {
           })
         : null;
     if (markedInput) {
-      const session = toTerminalSession(markedInput);
+      const session = this.toTerminalSession(markedInput);
       this.notifyTerminalSessionChanged(markedInput);
       this.options.hub.sendTerminalClientMessage(markedInput.id, {
         type: "session-updated",
@@ -2168,7 +2161,7 @@ export class TerminalSessionLifecycle {
         daemonSessionId: current.daemonSessionId,
       });
     } else if (args.message.dataBase64.length > 0) {
-      emitPluginTerminalInput(toTerminalSession(markedInput ?? current));
+      emitPluginTerminalInput(this.toTerminalSession(markedInput ?? current));
     }
   }
 
@@ -2228,7 +2221,7 @@ export class TerminalSessionLifecycle {
         rows: size.rows,
       });
       if (resized) {
-        const session = toTerminalSession(resized);
+        const session = this.toTerminalSession(resized);
         this.notifyTerminalSessionChanged(resized);
         this.options.hub.sendTerminalClientMessage(resized.id, {
           type: "session-updated",
@@ -2354,7 +2347,7 @@ export class TerminalSessionLifecycle {
       this.notifyTerminalSessionChanged(session);
       this.options.hub.sendTerminalClientMessage(session.id, {
         type: "session-updated",
-        session: toTerminalSession(session),
+        session: this.toTerminalSession(session),
       });
     }
   }
@@ -2507,7 +2500,7 @@ export class TerminalSessionLifecycle {
     );
     this.options.hub.sendTerminalSocketMessage(pending.socket, {
       type: "attached",
-      session: toTerminalSession(current),
+      session: this.toTerminalSession(current),
       replayStartSeq: message.replayStartSeq,
       nextSeq: message.nextSeq,
     });
