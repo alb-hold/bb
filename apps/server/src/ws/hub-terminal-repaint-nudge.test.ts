@@ -33,9 +33,11 @@ interface TwoClientRoom {
   advance: (ms: number) => void;
   delayReports: () => void;
   deliverReports: () => void;
-  fit: (cols: number) => void;
+  fit: (cols: number, rows?: number) => void;
   peerResizes: (cols: number, rows: number) => void;
   ptySize: () => { cols: number; rows: number };
+  peerViewSize: () => { cols: number; rows: number };
+  ownerViewSize: () => { cols: number; rows: number };
   restoresSentByOwner: () => number;
   start: () => void;
   transport: TerminalWebSocketTransport;
@@ -51,10 +53,18 @@ function createRoom(): TwoClientRoom {
   hub.registerTerminalClient(TERMINAL_ID, ownerSocket);
   hub.registerTerminalClient(TERMINAL_ID, peerSocket);
   let pty = { ...FITTED };
-  let fitted = FITTED.cols;
-  let shared: number | null = null;
+  let fitted = { ...FITTED };
+  let peerFitted: { cols: number; rows: number } | null = null;
+  let shared: { cols: number; rows: number } | null = null;
   const viewHistory: number[] = [];
-  const viewCols = (): number => Math.min(fitted, shared ?? fitted);
+  const viewSize = (client: { cols: number; rows: number }) =>
+    shared === null
+      ? client
+      : {
+          cols: Math.min(client.cols, shared.cols),
+          rows: Math.min(client.rows, shared.rows),
+        };
+  const viewCols = (): number => viewSize(fitted).cols;
   const track = (): void => {
     viewHistory.push(viewCols());
   };
@@ -133,12 +143,12 @@ function createRoom(): TwoClientRoom {
       }
       const reported = { cols: message.session.cols, rows: message.session.rows };
       if (!transport.consumeRepaintNudgeEcho(reported)) {
-        shared = reported.cols;
+        shared = reported;
         track();
       }
     },
     onRepaintNudgeSizeReleased: (size) => {
-      shared = size.cols;
+      shared = size;
       track();
     },
     shouldReconnect: () => false,
@@ -169,12 +179,13 @@ function createRoom(): TwoClientRoom {
         browserSocket.deliver(message);
       }
     },
-    fit: (cols) => {
-      fitted = cols;
+    fit: (cols, rows = FITTED.rows) => {
+      fitted = { cols, rows };
       track();
-      transport.sendResize(cols, FITTED.rows);
+      transport.sendResize(cols, rows);
     },
     peerResizes: (cols, rows) => {
+      peerFitted = { cols, rows };
       hub.recordTerminalClientSize(
         TERMINAL_ID,
         peerSocket,
@@ -184,6 +195,8 @@ function createRoom(): TwoClientRoom {
       settle();
     },
     ptySize: () => pty,
+    peerViewSize: () => viewSize(peerFitted ?? FITTED),
+    ownerViewSize: () => viewSize(fitted),
     restoresSentByOwner: () => restores,
     connect,
     start: () => {
@@ -243,6 +256,18 @@ describe("repaint nudge with a second client on the same terminal", () => {
 
     expect(room.ptySize()).toEqual(FITTED);
     expect(room.viewCols()).toBe(FITTED.cols);
+    room.transport.dispose();
+  });
+
+  it("recomputes the shared PTY rows and columns when one client zooms", () => {
+    const room = createRoom();
+    room.connect();
+    room.peerResizes(100, 24);
+    room.fit(72, 30);
+
+    expect(room.ptySize()).toEqual({ cols: 72, rows: 24 });
+    expect(room.ownerViewSize()).toEqual({ cols: 72, rows: 24 });
+    expect(room.peerViewSize()).toEqual({ cols: 72, rows: 24 });
     room.transport.dispose();
   });
 
