@@ -32,6 +32,11 @@ describe("setTerminalRenderDemand", () => {
     expect(setTerminalRenderDemand(terminal, true)).toBe(true);
     expect(setTerminalRenderDemand(terminal, true)).toBe(false);
 
+    expect(renderService._isPaused).toBe(true);
+    expect(refresh).not.toHaveBeenCalled();
+
+    renderService._isPaused = false;
+
     expect(renderService._isPaused).toBe(false);
     expect(renderService._needsFullRefresh).toBe(false);
     expect(refresh).toHaveBeenCalledOnce();
@@ -49,6 +54,23 @@ describe("setTerminalRenderDemand", () => {
     expect(setTerminalRenderDemand(terminal, false)).toBe(false);
     expect(renderService._isPaused).toBe(true);
     expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it("keeps xterm's pause active when visibility returns until xterm resumes", () => {
+    const { renderService, refresh, terminal } = makeTerminal();
+
+    setTerminalRenderDemand(terminal, false);
+    renderService._isPaused = true;
+    expect(setTerminalRenderDemand(terminal, true)).toBe(true);
+
+    expect(renderService._isPaused).toBe(true);
+    expect(refresh).not.toHaveBeenCalled();
+
+    renderService._isPaused = false;
+
+    expect(renderService._isPaused).toBe(false);
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(refresh).toHaveBeenCalledWith(0, 23);
   });
 
   it("leaves terminals without the pinned renderer service untouched", () => {

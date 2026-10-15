@@ -24,6 +24,7 @@ const demandStateByService = new WeakMap<
 
 function demandStateFor(
   renderService: TerminalRenderService,
+  requestFullRefresh: () => void,
 ): TerminalRenderDemandState {
   const existing = demandStateByService.get(renderService);
   if (existing !== undefined) {
@@ -31,23 +32,34 @@ function demandStateFor(
   }
   let rendererPaused = renderService._isPaused;
   let demandPaused = false;
+  let pendingVisibilityRefresh = false;
   Object.defineProperty(renderService, "_isPaused", {
     configurable: true,
     enumerable: true,
     get: () => demandPaused || rendererPaused,
     set: (paused: boolean) => {
       rendererPaused = paused;
+      if (!paused && !demandPaused && pendingVisibilityRefresh) {
+        pendingVisibilityRefresh = false;
+        requestFullRefresh();
+      }
     },
   });
   const state = {
     setVisible: (visible: boolean) => {
       const wasDemandPaused = demandPaused;
-      const wasRendererPaused = rendererPaused;
       demandPaused = !visible;
       if (visible) {
-        rendererPaused = false;
+        if (rendererPaused) {
+          const wasRefreshPending = pendingVisibilityRefresh;
+          pendingVisibilityRefresh = true;
+          return wasDemandPaused || !wasRefreshPending;
+        }
+        if (wasDemandPaused) {
+          requestFullRefresh();
+        }
       }
-      return wasDemandPaused !== demandPaused || (visible && wasRendererPaused);
+      return wasDemandPaused !== demandPaused;
     },
   };
   demandStateByService.set(renderService, state);
@@ -63,13 +75,12 @@ export function setTerminalRenderDemand(
   if (renderService === undefined) {
     return false;
   }
-  const demandState = demandStateFor(renderService);
-  if (!demandState.setVisible(visible)) {
-    return false;
-  }
-  if (visible) {
+  const demandState = demandStateFor(renderService, () => {
     renderService._needsFullRefresh = false;
     terminal.refresh(0, terminal.rows - 1);
+  });
+  if (!demandState.setVisible(visible)) {
+    return false;
   }
   return true;
 }
