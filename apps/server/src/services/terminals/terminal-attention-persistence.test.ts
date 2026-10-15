@@ -67,6 +67,30 @@ describe("terminal attention persistence", () => {
         title: "Build finished",
       },
     });
+
+    harness.hub.registerTerminalClient(terminalId, socket);
+    const renamed = harness.deps.terminalSessions.renameTerminal({
+      terminalId,
+      payload: { title: "Renamed build terminal" },
+    });
+    expect(renamed.attention).toMatchObject({
+      body: "Tests passed",
+      kind: "osc-9",
+      seq: 1,
+      title: "Build finished",
+    });
+    expect(
+      sent
+        .map((data) => JSON.parse(data) as Record<string, unknown>)
+        .find((message) => message.type === "session-updated")?.session,
+    ).toMatchObject({
+      attention: {
+        body: "Tests passed",
+        kind: "osc-9",
+        seq: 1,
+        title: "Build finished",
+      },
+    });
   });
 
   it("keeps daemon attention cleared while the terminal is visible", async () => {
