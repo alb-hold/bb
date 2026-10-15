@@ -14,6 +14,8 @@ The normal probe keeps using the existing `events_background_task_thread_type_it
 
 No event payload is rewritten and no database rows are migrated. The additional index is required because the existing fast index intentionally excludes mismatched and `NULL` item kinds; scanning the general sequence index for fallback rows on each candidate would reintroduce the quadratic behavior.
 
+The generated migration uses `CREATE INDEX IF NOT EXISTS` because the migration test harness can start from a schema that already contains the latest index before replaying migration history. The replay must remain idempotent.
+
 ## Load measurements
 
 With 24 `yes` workers and the workers and test pinned to CPUs 0–3, the prior old-query mutant timed out once in 30 runs (median 10.564s, maximum 15.62s); the fixed query on that same candidate passed 30/30 (median 1.833s, maximum 3.781s). Both runs reported `REMOTE_HEAD=f352c40036bcb9cd1b43e360da231d8e8df014e6`. The current fix, including the legacy-row fallback, passed 30/30 under the same four-core load (median 1.826s, maximum 4.376s), with `REMOTE_HEAD=7d78b88a3`. The current set's per-run records are in the PR verification details; full local evidence is `/tmp/p19-prune-flake/final-legacy-safe-fixed-load-30.measurements.log` and raw hsrpc output is `/tmp/p19-prune-flake/final-fixed-raw-30.log`.

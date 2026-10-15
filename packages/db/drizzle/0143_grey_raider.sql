@@ -1,1 +1,1 @@
-CREATE INDEX `events_legacy_background_task_progress_thread_item_sequence_idx` ON `events` (`thread_id`,`type`,`item_id`,`sequence`) WHERE "events"."type" = 'item/backgroundTask/progress' AND ("events"."item_kind" IS NULL OR "events"."item_kind" <> 'backgroundTask');
+CREATE INDEX IF NOT EXISTS `events_legacy_background_task_progress_thread_item_sequence_idx` ON `events` (`thread_id`,`type`,`item_id`,`sequence`) WHERE "events"."type" = 'item/backgroundTask/progress' AND ("events"."item_kind" IS NULL OR "events"."item_kind" <> 'backgroundTask');
