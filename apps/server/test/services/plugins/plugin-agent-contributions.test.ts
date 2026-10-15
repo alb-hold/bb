@@ -208,7 +208,7 @@ describe("plugin agent contributions reach thread runtime config", () => {
     pluginsDir = await mkdtemp(join(tmpdir(), "bb-plugin-runtime-test-"));
   });
 
-  it("isolates resolver failures and timeouts", async () => {
+  it("refuses to resolve without an environment whose resolver fails or times out twice", async () => {
     const db = createConnection(":memory:");
     migrate(db);
     const service = createPluginService({
@@ -247,10 +247,74 @@ describe("plugin agent contributions reach thread runtime config", () => {
 
       await expect(
         service.resolveProviderEnv({ providerId: "codex", context }),
-      ).resolves.toEqual({ entries: [] });
+      ).rejects.toMatchObject({
+        status: 503,
+        body: { code: "provider_environment_unavailable" },
+      });
       await expect(
         service.resolveProviderEnv({ providerId: "claude-code", context }),
-      ).resolves.toEqual({ entries: [] });
+      ).rejects.toMatchObject({
+        status: 503,
+        body: { code: "provider_environment_unavailable" },
+      });
+    } finally {
+      await service.stop();
+    }
+  });
+
+  it("retries a resolver that misses the first deadline with a longer one", async () => {
+    const db = createConnection(":memory:");
+    migrate(db);
+    const service = createPluginService({
+      aiServices: createAiServiceRegistry(),
+      telemetry: createNoopTelemetryService(),
+      db,
+      hub: {
+        getDaemonSessionIdForHost: () => null,
+        notifyPluginSignal: () => 0,
+        notifySystem: () => {},
+      },
+      logger,
+      dataDir: join(pluginsDir, "retry-data"),
+      appVersion: "0.9.0",
+      loadTimeoutMs: 2_000,
+      providerEnvResolveTimeoutMs: 20,
+    });
+    try {
+      const root = await writePlugin(pluginsDir, {
+        name: "bb-plugin-env-slow",
+        serverSource: `
+          export default function plugin(bb) {
+            let calls = 0;
+            bb.providers.experimental_contributeEnv("claude-code", async () => {
+              calls += 1;
+              await new Promise((resolve) => setTimeout(resolve, calls === 1 ? 1_000 : 40));
+              return [{ name: "ANTHROPIC_BASE_URL", value: "http://pool.test", reason: "routed" }];
+            });
+          }
+        `,
+      });
+      await service.installPath(root);
+
+      await expect(
+        service.resolveProviderEnv({
+          providerId: "claude-code",
+          context: {
+            threadId: "thread-slow",
+            projectId: "project-slow",
+            hostId: "host-slow",
+          },
+        }),
+      ).resolves.toEqual({
+        entries: [
+          {
+            name: "ANTHROPIC_BASE_URL",
+            value: "http://pool.test",
+            reason: "routed",
+            source: { plugin: "env-slow" },
+          },
+        ],
+      });
     } finally {
       await service.stop();
     }
@@ -430,5 +494,57 @@ describe("plugin agent contributions reach thread runtime config", () => {
       },
     });
     expect(nativeEnv.entries).toEqual(command.contributedEnv);
+  });
+
+  it("does not build a thread start command without a failing plugin's environment", async () => {
+    const root = await writePlugin(pluginsDir, {
+      name: "bb-plugin-env-broken",
+      serverSource: `
+        export default function plugin(bb) {
+          bb.providers.experimental_contributeEnv("codex", () => {
+            throw new Error("routing unavailable");
+          });
+        }
+      `,
+    });
+    await harness.pluginService.installPath(root);
+    const { host } = seedHostSession(harness.deps, {
+      id: "host-provider-env-broken",
+    });
+    const { project } = seedProjectWithSource(harness.deps, {
+      hostId: host.id,
+    });
+    const environment = seedEnvironment(harness.deps, {
+      hostId: host.id,
+      projectId: project.id,
+      path: join(harness.config.dataDir, "provider-env-broken-workspace"),
+    });
+    const thread = seedThread(harness.deps, {
+      projectId: project.id,
+      environmentId: environment.id,
+      providerId: "codex",
+    });
+    const execution = await buildExecutionOptions(
+      harness.deps,
+      { model: "gpt-5" },
+      { threadId: thread.id },
+    );
+
+    await expect(
+      buildThreadStartCommand(harness.deps, {
+        environment,
+        execution,
+        fork: null,
+        permissionEscalation: "ask",
+        input: textInput("hello"),
+        projectId: project.id,
+        providerId: "codex",
+        requestId: encodeClientTurnRequestIdNumber({ value: 4 }),
+        syncGeneratedTitle: false,
+        thread,
+      }),
+    ).rejects.toMatchObject({
+      body: { code: "provider_environment_unavailable" },
+    });
   });
 });

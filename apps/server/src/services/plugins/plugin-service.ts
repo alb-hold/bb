@@ -6,6 +6,7 @@ import { watch } from "node:fs";
 import { readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { ApiError } from "../../errors.js";
 import type { Context } from "hono";
 import {
   CUSTOM_THEME_CSS_MAX_LENGTH,
@@ -464,6 +465,7 @@ export interface PluginService {
 const DEFAULT_MENTION_SEARCH_TIMEOUT_MS = 2_000;
 const DEFAULT_MENTION_RESOLVE_TIMEOUT_MS = 10_000;
 const DEFAULT_PROVIDER_ENV_RESOLVE_TIMEOUT_MS = 5_000;
+const PROVIDER_ENV_RETRY_TIMEOUT_FACTOR = 6;
 const DEFAULT_STABILIZATION_WINDOW_MS = 30_000;
 const DEFAULT_ARTIFACT_RETENTION_MS = 7 * 24 * 60 * 60_000;
 const SCHEDULE_SWEEP_BATCH_SIZE = 100;
@@ -2344,19 +2346,32 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
       for (const [pluginId, plugin] of loaded) {
         const resolve = plugin.handle.providerEnvResolvers.get(providerId);
         if (resolve === undefined) continue;
-        const outcome = await invokeWrapped(
-          pluginId,
-          `provider environment for ${providerId}`,
-          async () =>
-            raceTimeout(
-              Promise.resolve(resolve(context)).then((value) =>
-                validatePluginProviderEnvEntries(value),
+        const attempt = (timeoutMs: number) =>
+          invokeWrapped(
+            pluginId,
+            `provider environment for ${providerId}`,
+            async () =>
+              raceTimeout(
+                Promise.resolve(resolve(context)).then((value) =>
+                  validatePluginProviderEnvEntries(value),
+                ),
+                timeoutMs,
+                `timed out after ${timeoutMs}ms`,
               ),
-              providerEnvResolveTimeoutMs,
-              `timed out after ${providerEnvResolveTimeoutMs}ms`,
-            ),
-        );
-        if (!outcome.ok) continue;
+          );
+        let outcome = await attempt(providerEnvResolveTimeoutMs);
+        if (!outcome.ok) {
+          outcome = await attempt(
+            providerEnvResolveTimeoutMs * PROVIDER_ENV_RETRY_TIMEOUT_FACTOR,
+          );
+        }
+        if (!outcome.ok) {
+          throw new ApiError(
+            503,
+            "provider_environment_unavailable",
+            `Plugin ${pluginId} could not provide the ${providerId} environment (${outcome.error}), so the session was not started without it. Try again.`,
+          );
+        }
         for (const entry of outcome.value) {
           const earlierPluginId = ownerByName.get(entry.name);
           if (earlierPluginId !== undefined) {
