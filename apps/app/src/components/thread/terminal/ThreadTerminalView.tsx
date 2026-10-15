@@ -120,6 +120,21 @@ export function shouldFocusTerminalAfterAsyncMount({
   return hasExplicitFocusRequest || !currentFocusIsAvailable;
 }
 
+export function handleTerminalSurfaceVisibility(
+  visible: boolean,
+  onSurfaceVisibility: (visible: boolean) => void,
+  onRenderDemand: (visible: boolean) => void,
+  reportVisibility: () => void,
+  scheduleFit: () => void,
+): void {
+  onSurfaceVisibility(visible);
+  onRenderDemand(visible);
+  reportVisibility();
+  if (visible) {
+    scheduleFit();
+  }
+}
+
 interface TerminalTouchPoint extends SelectionAnchorPoint {
   identifier: number;
 }
@@ -1108,12 +1123,16 @@ export function ThreadTerminalView({
           renderer: webglRenderer,
           isPanelOpen: () => isPanelOpenRef.current,
           onVisibilityChange: (visible) => {
-            surfaceVisible = visible;
-            setTerminalRenderDemand(activeTerminal, visible);
-            reportDocumentVisibility();
-            if (visible) {
-              scheduleFitRef.current?.();
-            }
+            handleTerminalSurfaceVisibility(
+              visible,
+              (nextVisible) => {
+                surfaceVisible = nextVisible;
+              },
+              (nextVisible) =>
+                setTerminalRenderDemand(activeTerminal, nextVisible),
+              reportDocumentVisibility,
+              () => scheduleFitRef.current?.(),
+            );
           },
         });
         writeTerminalSessionStatusNotice({

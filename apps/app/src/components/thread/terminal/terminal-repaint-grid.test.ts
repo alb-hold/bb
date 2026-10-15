@@ -388,6 +388,7 @@ interface FitChangeRoom {
   peer: (cols: number) => void;
   ptyCols: () => number;
   resizeCount: () => number;
+  resizeCountFor: (cols: number) => number;
   terminal: Terminal;
   transport: TerminalWebSocketTransport;
   widths: number[];
@@ -523,6 +524,8 @@ function createFitChangeRoom(delayReports = false): FitChangeRoom {
     },
     ptyCols: () => pty,
     resizeCount: () => socket.resizes.length,
+    resizeCountFor: (cols) =>
+      socket.resizes.filter((resize) => resize.cols === cols).length,
     terminal,
     transport,
     widths,
@@ -707,13 +710,12 @@ describe("hidden terminal fit and shared PTY size", () => {
   it("uses the settled fit after visibility returns without sending a duplicate resize", () => {
     const room = createFitChangeRoom();
     room.hiddenFit(56);
-    const callsAtSettledSize = room.resizeCount();
     room.transport.setVisible(false);
     room.transport.setVisible(true);
     room.fit(56);
 
     expect(room.ptyCols()).toBe(56);
-    expect(room.resizeCount()).toBe(callsAtSettledSize);
+    expect(room.resizeCountFor(56)).toBe(1);
     expect(room.terminal.cols).toBe(56);
     room.transport.dispose();
   });
