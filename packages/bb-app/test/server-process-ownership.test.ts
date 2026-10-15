@@ -5,6 +5,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { DESKTOP_OWNED_RUNTIME_SHUTDOWN_GRACE_MS } from "@bb/config/full-stack-shutdown";
 import { afterEach, describe, expect, it } from "vitest";
 
 const fixtureDir = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
@@ -336,7 +337,7 @@ describe("server process ownership", () => {
     }
   });
 
-  it("finishes the launcher SIGTERM shutdown with its server child inside six seconds", async () => {
+  it("finishes the launcher SIGTERM shutdown with its server child inside desktop grace", async () => {
     const dir = scratchDir();
     const marker = join(dir, "shutdown.log");
     const launcher = spawnFixture(shutdownLauncherEntry, {
@@ -359,7 +360,7 @@ describe("server process ownership", () => {
       process.kill(launcher.pid!, "SIGTERM");
       await waitForExit(launcher, 10_000);
       const elapsedMs = Date.now() - startedAt;
-      expect(elapsedMs).toBeLessThan(6_000);
+      expect(elapsedMs).toBeLessThan(DESKTOP_OWNED_RUNTIME_SHUTDOWN_GRACE_MS);
       const shutdown = readFileSync(marker, "utf8");
       expect(shutdown).toContain("server:stopped");
       expect(shutdown).toContain("daemon:stopped");
