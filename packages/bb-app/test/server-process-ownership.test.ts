@@ -213,7 +213,12 @@ describe("server process ownership", () => {
       await waitForExit(launcher, 2_000);
       await waitForProcessExitByPid(serverPid, 10_000);
       activeChildren.delete(serverPid);
-      expect(readFileSync(join(dir, "run-shutdown.log"), "utf8")).toContain("server-close");
+      const shutdownLog = readFileSync(
+        join(dir, "run-shutdown.log"),
+        "utf8",
+      );
+      expect(shutdownLog).toContain("server-close");
+      expect(shutdownLog).toContain("db-close");
       expect(isProcessRunning(agentPid)).toBe(true);
       expect(isProcessRunning(holderPid)).toBe(true);
       const Database = createRequire(import.meta.url)("better-sqlite3");
