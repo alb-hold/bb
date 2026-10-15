@@ -8,6 +8,7 @@ import type {
 } from "@bb/server-contract";
 import { Terminal } from "@xterm/xterm";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { handleTerminalSurfaceVisibility } from "./ThreadTerminalView";
 import { createTerminalResizeCoalescer } from "./terminal-resize-coalescer";
 import {
   applyTerminalFitDimensions,
@@ -93,11 +94,12 @@ class FakeSocket implements TerminalBrowserSocket {
   onmessage: ((event: MessageEvent) => void) | null = null;
   onopen: ((event: Event) => void) | null = null;
   readyState = 1;
+  closed = false;
   readonly resizes: Array<{ cols: number; rows: number; seq?: number }> = [];
 
   close(): void {
     this.readyState = 3;
-    this.onDisposed?.();
+    this.closed = true;
   }
 
   send(data: string): void {
@@ -389,6 +391,7 @@ interface FitChangeRoom {
   ptyCols: () => number;
   resizeCount: () => number;
   resizeCountFor: (cols: number) => number;
+  socketClosed: () => boolean;
   terminal: Terminal;
   transport: TerminalWebSocketTransport;
   widths: number[];
@@ -526,6 +529,7 @@ function createFitChangeRoom(delayReports = false): FitChangeRoom {
     resizeCount: () => socket.resizes.length,
     resizeCountFor: (cols) =>
       socket.resizes.filter((resize) => resize.cols === cols).length,
+    socketClosed: () => socket.closed,
     terminal,
     transport,
     widths,
@@ -697,26 +701,36 @@ describe("hidden terminal fit and shared PTY size", () => {
     room.transport.dispose();
   });
 
-  it("releases a hidden client's size claim when its terminal unmounts", () => {
+  it("closes the hidden terminal transport when its view unmounts", () => {
     const room = createFitChangeRoom();
     room.hiddenFit(16);
-    room.peer(24);
     room.transport.setVisible(false);
     room.transport.dispose();
 
-    expect(room.ptyCols()).toBe(24);
+    expect(room.socketClosed()).toBe(true);
   });
 
   it("uses the settled fit after visibility returns without sending a duplicate resize", () => {
     const room = createFitChangeRoom();
-    room.hiddenFit(56);
-    room.transport.setVisible(false);
-    room.transport.setVisible(true);
-    room.fit(56);
+    room.hiddenFit(48);
+    const coalescer = createTerminalResizeCoalescer({
+      isSettled: () => true,
+      onSettled: () => room.fit(56),
+      quietPeriodMs: 120,
+    });
+    handleTerminalSurfaceVisibility(
+      true,
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      () => coalescer.schedule(),
+    );
+    vi.advanceTimersByTime(120);
 
     expect(room.ptyCols()).toBe(56);
     expect(room.resizeCountFor(56)).toBe(1);
     expect(room.terminal.cols).toBe(56);
+    coalescer.cancel();
     room.transport.dispose();
   });
 });

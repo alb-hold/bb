@@ -3113,8 +3113,16 @@ describe("public terminal routes", () => {
 
     send(phone, { type: "visibility", visible: false });
     expect(sizes()).toEqual(["160x48", "44x30", "44x20", "150x48"]);
+    send(phone, { type: "resize", cols: 53, rows: 18 });
+    expect(sizes()).toHaveLength(4);
     send(phone, { type: "visibility", visible: true });
-    expect(sizes()).toEqual(["160x48", "44x30", "44x20", "150x48", "44x20"]);
+    expect(sizes()).toEqual([
+      "160x48",
+      "44x30",
+      "44x20",
+      "150x48",
+      "53x18",
+    ]);
     send(desktop, { type: "ping" });
     send(desktop, { type: "resize", cols: 170, rows: 50 });
     send(desktop, { type: "resize", cols: 150, rows: 48 });
@@ -3124,15 +3132,21 @@ describe("public terminal routes", () => {
       fixture.harness.deps.terminalSessions.getTerminal({
         terminalId: stored.id,
       }),
-    ).toMatchObject({ cols: 44, rows: 20 });
+    ).toMatchObject({ cols: 53, rows: 18 });
 
-    terminals.detachBrowserTerminal({ terminalId: stored.id, socket: phone });
+    send(phone, { type: "visibility", visible: false });
+    const unregister = vi.spyOn(fixture.harness.hub, "unregisterTerminalClient");
+    onTerminalSocketClose(fixture.harness.deps, {
+      terminalId: stored.id,
+      socket: phone,
+    });
+    expect(unregister).toHaveBeenCalledWith(stored.id, phone);
     expect(sizes()).toEqual([
       "160x48",
       "44x30",
       "44x20",
       "150x48",
-      "44x20",
+      "53x18",
       "150x48",
     ]);
     expect(
