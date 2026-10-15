@@ -20,6 +20,17 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { waitForProcessExit } from "@bb/config/child-process-exit";
+import {
+  DESKTOP_OWNED_RUNTIME_SHUTDOWN_GRACE_MS,
+  LAUNCHER_MAX_SHUTDOWN_MS,
+  SERVER_HTTP_CLOSE_WAIT_TIMEOUT_MS,
+  SERVER_HTTP_DRAIN_TIMEOUT_MS,
+  SERVER_PLUGIN_SHUTDOWN_TIMEOUT_MS,
+  SERVER_PROCESS_TERMINATION_TIMEOUT_MS,
+  SERVER_SHUTDOWN_BOUND_MS,
+  SERVER_SHUTDOWN_SAFETY_MARGIN_MS,
+  SERVER_WEBSOCKET_SHUTDOWN_WAIT_TIMEOUT_MS,
+} from "@bb/config/full-stack-shutdown";
 import { resolvePortFromEnv } from "@bb/config/runtime";
 import { spawnLoggedProcess } from "../src/logged-process.js";
 import {
@@ -44,6 +55,7 @@ import {
   runBundledCliCommand,
   DAEMON_DETACH_HEAD_START_MS,
   superviseFullStackProcesses,
+  terminateProcessIfRunning,
   terminateManagedFullStackProcesses,
   waitForHostDaemonStatus,
 } from "../src/launcher.js";
@@ -1919,6 +1931,131 @@ describe("bb-app launcher", () => {
       vi.useRealTimers();
     }
   });
+
+  it("keeps the nested full-stack shutdown schedule inside desktop grace", () => {
+    expect(
+      DAEMON_DETACH_HEAD_START_MS +
+        SERVER_SHUTDOWN_BOUND_MS +
+        SERVER_SHUTDOWN_SAFETY_MARGIN_MS,
+    ).toBeLessThan(SERVER_PROCESS_TERMINATION_TIMEOUT_MS);
+    expect(LAUNCHER_MAX_SHUTDOWN_MS).toBeLessThan(
+      DESKTOP_OWNED_RUNTIME_SHUTDOWN_GRACE_MS,
+    );
+  });
+
+  it("stops the server on its own after the daemon head start", async () => {
+    const phaseDurations = [
+      SERVER_HTTP_DRAIN_TIMEOUT_MS,
+      SERVER_WEBSOCKET_SHUTDOWN_WAIT_TIMEOUT_MS,
+      SERVER_HTTP_CLOSE_WAIT_TIMEOUT_MS,
+      SERVER_HTTP_CLOSE_WAIT_TIMEOUT_MS,
+      SERVER_PLUGIN_SHUTDOWN_TIMEOUT_MS,
+    ];
+    const serverProgram = [
+      `const phases=${JSON.stringify(phaseDurations)};`,
+      "process.on('SIGTERM', async () => {",
+      "for (const duration of phases) await new Promise(resolve => setTimeout(resolve, duration));",
+      "process.exit(0);",
+      "});",
+      "process.send('ready');",
+      "setInterval(() => {}, 1000);",
+    ].join("\n");
+    const daemonProgram = [
+      `const delay=${DAEMON_DETACH_HEAD_START_MS};`,
+      "process.on('SIGTERM', () => setTimeout(() => process.exit(0), delay));",
+      "process.send('ready');",
+      "setInterval(() => {}, 1000);",
+    ].join("\n");
+    const spawnReadyChild = (program: string) => {
+      const child = spawn(process.execPath, ["-e", program], {
+        env: {},
+        stdio: ["ignore", "ignore", "ignore", "ipc"],
+      });
+      const ready = new Promise<void>((resolve, reject) => {
+        child.once("message", () => resolve());
+        child.once("error", reject);
+        child.once("exit", (code, signal) => {
+          if (code !== null || signal !== null) {
+            reject(new Error(`child exited before ready: ${String(code)} ${String(signal)}`));
+          }
+        });
+      });
+      return { child, ready };
+    };
+    const server = spawnReadyChild(serverProgram);
+    const daemon = spawnReadyChild(daemonProgram);
+    const processSignals = new Map<ManagedProcessName, NodeJS.Signals[]>();
+    let shutdownStartedAt = 0;
+    let serverSignalAt = 0;
+    const createRun = (
+      name: ManagedProcessName,
+      child: ReturnType<typeof spawn>,
+    ): ManagedProcessRun => {
+      const kill = child.kill.bind(child);
+      child.kill = (signal) => {
+        if (signal !== undefined) {
+          const signals = processSignals.get(name) ?? [];
+          signals.push(signal);
+          processSignals.set(name, signals);
+        }
+        return kill(signal);
+      };
+      return {
+        exit: waitForProcessExit(child).then((result) => ({
+          processName: name,
+          result,
+        })),
+        terminate: async (signal) => {
+          if (name === "server") serverSignalAt = Date.now();
+          await terminateProcessIfRunning({
+            childProcess: child,
+            processName: name,
+            signal,
+          });
+        },
+      };
+    };
+    const processes = {
+      serverRun: createRun("server", server.child),
+      daemonRun: createRun("daemon", daemon.child),
+    };
+
+    try {
+      await Promise.all([server.ready, daemon.ready]);
+      shutdownStartedAt = Date.now();
+      await terminateManagedFullStackProcesses({
+        processes,
+        signal: "SIGTERM",
+      });
+      const elapsedMs = Date.now() - shutdownStartedAt;
+      const serverExit = await processes.serverRun.exit;
+      const daemonExit = await processes.daemonRun.exit;
+
+      expect(daemonExit.result).toEqual({ code: 0, signal: null });
+      expect(serverExit.result).toEqual({ code: 0, signal: null });
+      expect(processSignals.get("daemon")).toEqual(["SIGTERM"]);
+      expect(processSignals.get("server")).toEqual(["SIGTERM"]);
+      expect(serverSignalAt - shutdownStartedAt).toBeGreaterThanOrEqual(
+        DAEMON_DETACH_HEAD_START_MS - SERVER_SHUTDOWN_SAFETY_MARGIN_MS,
+      );
+      expect(serverSignalAt - shutdownStartedAt).toBeLessThan(
+        DAEMON_DETACH_HEAD_START_MS + SERVER_SHUTDOWN_SAFETY_MARGIN_MS,
+      );
+      expect(elapsedMs).toBeGreaterThanOrEqual(DAEMON_DETACH_HEAD_START_MS);
+      expect(elapsedMs).toBeLessThan(
+        DAEMON_DETACH_HEAD_START_MS +
+          SERVER_SHUTDOWN_BOUND_MS +
+          SERVER_SHUTDOWN_SAFETY_MARGIN_MS,
+      );
+      expect(elapsedMs).toBeLessThan(DESKTOP_OWNED_RUNTIME_SHUTDOWN_GRACE_MS);
+    } finally {
+      for (const child of [server.child, daemon.child]) {
+        if (child.exitCode === null && child.signalCode === null) {
+          child.kill("SIGKILL");
+        }
+      }
+    }
+  }, 10_000);
 
   it("sets exit code to 0 after clean full-stack shutdown", async () => {
     const previousExitCode = process.exitCode;

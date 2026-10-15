@@ -9,6 +9,12 @@ import { fileURLToPath } from "node:url";
 import type { ServerConfig } from "@bb/config/server";
 import { isLoopbackHostname } from "@bb/config/loopback";
 import { toOptionalString } from "@bb/config/strings";
+import {
+  SERVER_HTTP_CLOSE_WAIT_TIMEOUT_MS,
+  SERVER_HTTP_DRAIN_TIMEOUT_MS,
+  SERVER_PLUGIN_SHUTDOWN_TIMEOUT_MS,
+  SERVER_WEBSOCKET_SHUTDOWN_WAIT_TIMEOUT_MS,
+} from "@bb/config/full-stack-shutdown";
 import { superviseTcpServerSockets } from "@bb/process-utils";
 import { createLogger } from "@bb/logger";
 import {
@@ -90,10 +96,6 @@ import {
   setPluginToolCallRegistry,
 } from "./services/plugins/plugin-tool-calls.js";
 
-const HTTP_SHUTDOWN_DRAIN_TIMEOUT_MS = 2_000;
-const HTTP_CLOSE_WAIT_TIMEOUT_MS = 100;
-const PLUGIN_SHUTDOWN_TIMEOUT_MS = 3_000;
-const WEBSOCKET_SHUTDOWN_WAIT_TIMEOUT_MS = 250;
 const shutdownSockets = new WeakMap<HttpServer, Set<Socket>>();
 
 async function waitAtMost(
@@ -174,7 +176,7 @@ export async function shutdownHttpBeforePlugins(args: {
       new Promise<boolean>((resolve) => {
         drainTimer = setTimeout(
           () => resolve(false),
-          HTTP_SHUTDOWN_DRAIN_TIMEOUT_MS,
+          SERVER_HTTP_DRAIN_TIMEOUT_MS,
         );
       }),
     ]);
@@ -186,10 +188,10 @@ export async function shutdownHttpBeforePlugins(args: {
   if (!drained) {
     args.server.closeAllConnections();
   }
-  await waitAtMost(webSocketsClosed, WEBSOCKET_SHUTDOWN_WAIT_TIMEOUT_MS);
-  await waitAtMost(closed, HTTP_CLOSE_WAIT_TIMEOUT_MS);
+  await waitAtMost(webSocketsClosed, SERVER_WEBSOCKET_SHUTDOWN_WAIT_TIMEOUT_MS);
+  await waitAtMost(closed, SERVER_HTTP_CLOSE_WAIT_TIMEOUT_MS);
   for (const socket of shutdownSockets.get(args.server) ?? []) socket.destroy();
-  await waitAtMost(closed, HTTP_CLOSE_WAIT_TIMEOUT_MS);
+  await waitAtMost(closed, SERVER_HTTP_CLOSE_WAIT_TIMEOUT_MS);
   let pluginStopTimer: ReturnType<typeof setTimeout> | undefined;
   try {
     const stopped = await Promise.race([
@@ -200,7 +202,7 @@ export async function shutdownHttpBeforePlugins(args: {
       new Promise<false>((resolve) => {
         pluginStopTimer = setTimeout(
           () => resolve(false),
-          PLUGIN_SHUTDOWN_TIMEOUT_MS,
+          SERVER_PLUGIN_SHUTDOWN_TIMEOUT_MS,
         );
       }),
     ]);
@@ -632,7 +634,7 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
         closeWebSockets,
         onPluginStopTimeout: () =>
           logger.warn(
-            `Plugin shutdown did not finish within ${PLUGIN_SHUTDOWN_TIMEOUT_MS}ms`,
+            `Plugin shutdown did not finish within ${SERVER_PLUGIN_SHUTDOWN_TIMEOUT_MS}ms`,
           ),
         server,
         stopPeriodicUpdateChecks: () =>

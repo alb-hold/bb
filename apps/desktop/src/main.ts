@@ -27,6 +27,7 @@ import {
   APP_SURFACE_DESKTOP,
   APP_SURFACE_ENV_NAME,
 } from "@bb/config/app-surface";
+import { DESKTOP_OWNED_RUNTIME_SHUTDOWN_GRACE_MS } from "@bb/config/full-stack-shutdown";
 import { findMachineServiceFile } from "@bb/config/machine-service";
 import {
   deriveConnectBaseUrl,
@@ -295,7 +296,6 @@ import {
   type WindowStateKey,
 } from "./types.js";
 
-const OWNED_RUNTIME_STOP_TIMEOUT_MS = 6_000;
 const OWNED_RUNTIME_KILL_TIMEOUT_MS = 1_000;
 const FOREIGN_RUNTIME_STOP_TIMEOUT_MS = 15_000;
 const FOREIGN_RUNTIME_KILL_TIMEOUT_MS = 3_000;
@@ -2190,7 +2190,7 @@ async function stopOwnedRuntime(): Promise<void> {
       killSignal: "SIGKILL",
       killTimeoutMs: OWNED_RUNTIME_KILL_TIMEOUT_MS,
       signal: "SIGTERM",
-      timeoutMs: OWNED_RUNTIME_STOP_TIMEOUT_MS,
+      timeoutMs: DESKTOP_OWNED_RUNTIME_SHUTDOWN_GRACE_MS,
     });
   } finally {
     if (runtime.userDataPath !== null) {
