@@ -62,9 +62,7 @@ describe("terminal attention parser", () => {
         state,
         bytes("\u001b]99;i=notice-2:p=body;Needs approval\u001b\\"),
       ),
-    ).toEqual([
-      { kind: "osc-99", title: "Agent", body: "Needs approval" },
-    ]);
+    ).toEqual([{ kind: "osc-99", title: "Agent", body: "Needs approval" }]);
   });
 
   it("holds OSC 99 d=0 chunks until a d=1 chunk completes the notification", () => {
@@ -116,6 +114,38 @@ describe("terminal attention parser", () => {
     ).toEqual([{ kind: "osc-99", body: "Hello world!" }]);
   });
 
+  it("decodes independently padded base64 OSC 99 chunks", () => {
+    const state = { ...INITIAL_TERMINAL_ATTENTION_PARSER_STATE };
+    expect(
+      consumeTerminalAttention(
+        state,
+        bytes("\u001b]99;i=pre-encoded:e=1:p=body:d=0;SGVsbG8=\u001b\\"),
+      ),
+    ).toEqual([]);
+    expect(
+      consumeTerminalAttention(
+        state,
+        bytes("\u001b]99;i=pre-encoded:e=1:p=body;IHdvcmxk\u001b\\"),
+      ),
+    ).toEqual([{ kind: "osc-99", body: "Hello world" }]);
+  });
+
+  it("joins UTF-8 bytes split across independently encoded OSC 99 chunks", () => {
+    const state = { ...INITIAL_TERMINAL_ATTENTION_PARSER_STATE };
+    expect(
+      consumeTerminalAttention(
+        state,
+        bytes("\u001b]99;i=pre-encoded-utf8:e=1:p=body:d=0;8J8=\u001b\\"),
+      ),
+    ).toEqual([]);
+    expect(
+      consumeTerminalAttention(
+        state,
+        bytes("\u001b]99;i=pre-encoded-utf8:e=1:p=body;kIg=\u001b\\"),
+      ),
+    ).toEqual([{ kind: "osc-99", body: "🐈" }]);
+  });
+
   it("accepts an unpadded final base64 OSC 99 chunk", () => {
     const state = { ...INITIAL_TERMINAL_ATTENTION_PARSER_STATE };
     expect(
@@ -153,7 +183,7 @@ describe("terminal attention parser", () => {
     expect(
       consumeTerminalAttention(
         base64State,
-        bytes("\u001b]99;i=bad-base64:e=1:p=body;bG8=\u001b\\"),
+        bytes("\u001b]99;i=bad-base64:e=1:p=body;bG8==\u001b\\"),
       ),
     ).toEqual([]);
 
@@ -178,6 +208,16 @@ describe("terminal attention parser", () => {
       consumeTerminalAttention(
         state,
         bytes("\u001b]99;e=1:p=body;not base64\u001b\\"),
+      ),
+    ).toEqual([]);
+  });
+
+  it("rejects padding in the middle of one OSC 99 base64 chunk", () => {
+    const state = { ...INITIAL_TERMINAL_ATTENTION_PARSER_STATE };
+    expect(
+      consumeTerminalAttention(
+        state,
+        bytes("\u001b]99;e=1:p=body;SGV=sbG8=\u001b\\"),
       ),
     ).toEqual([]);
   });
