@@ -42,6 +42,7 @@ import { createTerminalResizeCoalescer } from "./terminal-resize-coalescer";
 import { terminalRealizationScheduler } from "./terminal-realization-scheduler";
 import { setTerminalRenderDemand } from "./terminal-render-demand";
 import { TerminalLinkOpenDialog } from "./TerminalLinkOpenDialog";
+import { TerminalAttentionPane } from "./TerminalAttentionPane";
 import { TerminalMobileControls } from "./TerminalMobileControls";
 import { TerminalCommandGutter } from "./TerminalCommandGutter";
 import type { TerminalControlMode } from "./TerminalMobileControls";
@@ -1571,8 +1572,9 @@ export function ThreadTerminalView({
         }}
       >
         <ContextMenuTrigger asChild disabled={!hasTerminalContextMenuTarget}>
-          <div
-            className={`group/terminal-pane relative min-h-0 w-full flex-1 overflow-hidden bg-sidebar p-2 ${session.attention ? "ring-2 ring-inset ring-attention" : ""}`}
+          <TerminalAttentionPane
+            attention={session.attention}
+            className="group/terminal-pane relative min-h-0 w-full flex-1 overflow-hidden bg-sidebar p-2"
             data-app-terminal=""
             onContextMenuCapture={captureTerminalContextMenu}
             onTouchStart={(event) => touchHandlers().start(event)}
@@ -1607,7 +1609,7 @@ export function ThreadTerminalView({
                 {connectionNoticeText}
               </div>
             ) : null}
-          </div>
+          </TerminalAttentionPane>
         </ContextMenuTrigger>
         <ContextMenuContent className="min-w-36">
           {contextMenuLink !== null ? (
