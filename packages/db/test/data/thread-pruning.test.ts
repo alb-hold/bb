@@ -625,7 +625,7 @@ describe("thread pruning", () => {
   });
 
   it("bounds legacy progress fallback for 510 task candidates", () => {
-    for (let batch = 0; batch < 3; batch++) {
+    for (let batch = 0; batch < 6; batch++) {
       const f = setup();
       try {
         f.db.transaction(() => {
