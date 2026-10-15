@@ -81,8 +81,10 @@ const prepareLifecycle = (db: DbQueryConnection) =>
 const prepareProgress = (db: DbQueryConnection) =>
   prepareSupport(
     db,
-    "events_thread_type_sequence_idx",
-    sql`type = 'item/backgroundTask/progress'`,
+    "events_background_task_thread_type_item_sequence_idx",
+    sql`type = 'item/backgroundTask/progress'
+      AND item_kind = 'backgroundTask'
+      AND item_id = ${sql.placeholder("itemId")}`,
   );
 const prepareEarlier = (db: DbQueryConnection) =>
   prepareSupport(

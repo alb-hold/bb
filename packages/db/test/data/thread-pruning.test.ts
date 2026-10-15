@@ -531,10 +531,12 @@ describe("thread pruning", () => {
           seed(f, i, {
             type: "item/backgroundTask/progress",
             itemId: `task-${i}`,
+            itemKind: "backgroundTask",
           });
         seed(f, 511, {
           type: "item/backgroundTask/progress",
           itemId: "task-1",
+          itemKind: "backgroundTask",
         });
         seed(f, 512, { type: "turn/completed" });
       });
