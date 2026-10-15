@@ -203,11 +203,11 @@ describe("server process ownership", () => {
       serverPid = Number((await waitForFile(join(dir, "server.pid"), 1_000)).trim());
       activeChildren.add(serverPid);
       agentPid = Number(await waitForFile(agentPidFile));
+      activeChildren.add(agentPid);
       holderPid = Number(await waitForFile(holderPidFile));
+      activeChildren.add(holderPid);
       await waitForFile(join(dir, "agent.ready"));
       await waitForFile(join(dir, "native-holder.ready"));
-      activeChildren.add(agentPid);
-      activeChildren.add(holderPid);
       process.kill(launcher.pid!, "SIGKILL");
       await waitForExit(launcher, 2_000);
       await waitForProcessExitByPid(serverPid, 10_000);
