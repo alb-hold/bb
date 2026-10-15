@@ -2495,7 +2495,7 @@ function delayMilliseconds(args: DelayMillisecondsArgs): Promise<void> {
   });
 }
 
-async function terminateProcessIfRunning(
+export async function terminateProcessIfRunning(
   args: TerminateProcessIfRunningArgs,
 ): Promise<void> {
   if (hasProcessExited(args.childProcess)) {
@@ -2522,10 +2522,11 @@ async function terminateProcessIfRunning(
     timeoutMs: MANAGED_PROCESS_KILL_TIMEOUT_MS,
   });
   if (!hasProcessExited(args.childProcess)) {
-    log(
-      yellow("!"),
-      `${args.processName} did not stop after SIGKILL within ${MANAGED_PROCESS_KILL_TIMEOUT_MS}ms`,
-    );
+    const message = `${args.processName} did not stop after SIGKILL within ${MANAGED_PROCESS_KILL_TIMEOUT_MS}ms`;
+    log(yellow("!"), message);
+    await new Promise<void>((resolve) => {
+      process.stderr.write(message + "\n", resolve);
+    });
   }
 }
 

@@ -1,39 +1,30 @@
 import { writeFileSync } from "node:fs";
-import { startFullStackServerProcess } from "../../src/launcher.ts";
+import { spawn } from "node:child_process";
+import { spawnLoggedProcess } from "../../src/logged-process.ts";
 
+const dir = process.env.BB_ORPHAN_DIR;
 const port = Number(process.env.BB_SERVER_PORT);
-const dataDir = process.env.BB_ORPHAN_DIR;
-const context = {
-  appDistDir: `${dataDir}/app/dist`,
-  appVersion: "0.0.0-test",
-  configFile: `${dataDir}/config.json`,
-  daemonBundleDir: `${dataDir}/host-daemon/dist`,
-  daemonEntry: `${dataDir}/host-daemon/dist/daemon-bundle.mjs`,
-  daemonLockDir: `${dataDir}/daemon.lock.lock`,
-  daemonLockFile: `${dataDir}/daemon.lock`,
-  daemonPort: port + 1,
-  dataDir,
-  dbPath: `${dataDir}/bb.db`,
-  envFile: `${dataDir}/env.json`,
-  logDir: `${dataDir}/logs`,
-  packageRoot: `${dataDir}/package`,
-  serverEntry: process.env.BB_ORPHAN_SERVER_ENTRY,
-  serverPort: port,
-  serverUrl: `http://127.0.0.1:${port}`,
-};
-const processes = { daemonRun: null, serverRun: null };
-const run = await startFullStackServerProcess({
-  context,
+const holder = spawn(process.execPath, [process.env.BB_HOLDER_ENTRY], {
+  detached: true,
+  stdio: "ignore",
+  env: { ...process.env, BB_HOLDER_READY: process.env.BB_HOLDER_READY },
+});
+writeFileSync(process.env.BB_HOLDER_PID_FILE, String(holder.pid));
+const server = spawnLoggedProcess({
+  command: process.execPath,
+  args: [process.env.BB_ORPHAN_SERVER_ENTRY],
   env: {
+    ...process.env,
+    BB_SERVER_PORT: String(port),
     BB_ORPHAN_MARKER: process.env.BB_ORPHAN_MARKER,
     BB_ORPHAN_PID_FILE: process.env.BB_ORPHAN_PID_FILE,
-    BB_SERVER_PORT: String(port),
-    PATH: process.env.PATH,
   },
-  processes,
+  ipc: true,
+  logDir: dir + "/logs",
+  logName: "server",
 });
-writeFileSync(
-  process.env.BB_ORPHAN_LAUNCHER_READY,
-  String(run.childProcess.pid),
-);
-await run.exit;
+writeFileSync(process.env.BB_ORPHAN_LAUNCHER_READY, String(process.pid));
+await new Promise((resolve, reject) => {
+  server.once("error", reject);
+  server.once("exit", (code, signal) => resolve({ code, signal }));
+});

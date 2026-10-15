@@ -1,8 +1,14 @@
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
 import { spawnLoggedProcess } from "../../src/logged-process.ts";
 import { terminateManagedFullStackProcesses } from "../../src/launcher.ts";
 
 const marker = process.env.BB_SHUTDOWN_MARKER;
+const holder = spawn(process.execPath, [process.env.BB_HOLDER_ENTRY], {
+  detached: true, stdio: "ignore",
+  env: { ...process.env, BB_HOLDER_READY: process.env.BB_HOLDER_READY },
+});
+writeFileSync(process.env.BB_HOLDER_PID_FILE, String(holder.pid));
 writeFileSync(marker, "");
 const logDir = process.env.BB_SHUTDOWN_LOG_DIR;
 const entry = process.env.BB_SHUTDOWN_CHILD_ENTRY;
@@ -31,6 +37,11 @@ const daemonChild = spawnLoggedProcess({
 });
 writeFileSync(process.env.BB_SERVER_CHILD_PID_FILE, String(serverChild.pid));
 writeFileSync(process.env.BB_DAEMON_CHILD_PID_FILE, String(daemonChild.pid));
+const originalServerKill = serverChild.kill.bind(serverChild);
+serverChild.kill = (signal) => {
+  if (process.env.BB_STUB_SIGKILL === "true" && signal === "SIGKILL") return true;
+  return originalServerKill(signal);
+};
 const makeRun = (processName, childProcess) => ({
   processName,
   exit: new Promise((resolve) => {

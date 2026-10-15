@@ -1,16 +1,22 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { watchLauncherDisconnect } from "../../../apps/server/src/services/system/launcher-disconnect.ts";
 
 const fixtureDir = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
 const launcherEntry = join(fixtureDir, "orphan-launcher.mjs");
 const serverEntry = join(fixtureDir, "orphan-server.mjs");
 const shutdownLauncherEntry = join(fixtureDir, "sigterm-launcher.mjs");
 const slowChildEntry = join(fixtureDir, "slow-stop-child.mjs");
+const realServerEntry = join(fixtureDir, "real-server-entry.mjs");
+const realLauncherEntry = join(fixtureDir, "real-server-launcher.mjs");
+const detachedHolderEntry = join(fixtureDir, "detached-holder.mjs");
+const reportLauncherEntry = join(fixtureDir, "report-stuck-child.mjs");
 const scratchDirs: string[] = [];
 const activeChildren = new Set<number>();
 const childErrors = new WeakMap<ChildProcess, { stderr: string }>();
@@ -55,10 +61,11 @@ function spawnFixture(entry: string, env: NodeJS.ProcessEnv): ChildProcess {
     {
       cwd: process.cwd(),
       env: { ...process.env, ...env },
-      stdio: ["ignore", "ignore", "pipe"],
+      stdio: ["ignore", "pipe", "pipe"],
     },
   );
   const captured = { stderr: "" };
+  child.stdout?.on("data", (chunk: Buffer) => { captured.stderr += chunk.toString(); });
   child.stderr?.on("data", (chunk: Buffer) => {
     captured.stderr += chunk.toString();
   });
@@ -153,6 +160,87 @@ async function waitForProcessExitByPid(
 }
 
 describe("server process ownership", () => {
+  it("queues a launcher disconnect that arrives before shutdown registration", async () => {
+    const port = new EventEmitter() as EventEmitter & { channel?: { unref(): void } };
+    port.channel = { unref: vi.fn() };
+    const watch = watchLauncherDisconnect(port as never);
+    port.emit("disconnect");
+    const shutdown = vi.fn(async () => undefined);
+    const exit = vi.fn((_code: number): never => undefined as never);
+    watch.setShutdown({ shutdown, exit });
+    await vi.waitFor(() => expect(shutdown).toHaveBeenCalledTimes(1));
+    expect(port.channel.unref).toHaveBeenCalledOnce();
+  });
+
+  it("runs production shutdown on parent loss and releases its database and port", async () => {
+    const dir = scratchDir();
+    const port = await freePort();
+    const ready = join(dir, "ready");
+    const launcher = spawnFixture(realLauncherEntry, {
+      BB_OWNERSHIP_DIR: dir, BB_ORPHAN_READY: ready,
+      BB_SERVER_PID_FILE: join(dir, "server.pid"),
+      BB_RUN_SHUTDOWN_MARKER: join(dir, "run-shutdown.log"),
+      BB_REAL_LAUNCHER_PID: join(dir, "launcher.pid"),
+      BB_REAL_SERVER_ENTRY: realServerEntry, BB_SERVER_PORT: String(port),
+    });
+    let serverPid: number | null = null;
+    try {
+      await waitForFile(join(dir, "server.pid"), 45_000);
+      const deadline = Date.now() + 45_000;
+      while (Date.now() < deadline) {
+        try { await fetch(`http://127.0.0.1:${port}/`); break; }
+        catch { await new Promise((resolve) => setTimeout(resolve, 50)); }
+      }
+      expect(await fetch(`http://127.0.0.1:${port}/`).then(() => true)).toBe(true);
+      serverPid = Number((await waitForFile(join(dir, "server.pid"), 1_000)).trim());
+      activeChildren.add(serverPid);
+      process.kill(launcher.pid!, "SIGKILL");
+      await waitForExit(launcher, 2_000);
+      await waitForProcessExitByPid(serverPid, 10_000);
+      activeChildren.delete(serverPid);
+      expect(readFileSync(join(dir, "run-shutdown.log"), "utf8")).toContain("server-close");
+      const Database = (await import("better-sqlite3")).default;
+      const db = new Database(join(dir, "bb.db"));
+      db.close();
+      await expect(fetch(`http://127.0.0.1:${port}/`)).rejects.toThrow();
+    } finally {
+      if (serverPid !== null && activeChildren.has(serverPid)) {
+        try { process.kill(serverPid, "SIGKILL"); } catch {}
+        activeChildren.delete(serverPid);
+      }
+    }
+  }, 120_000);
+
+  it("keeps a standalone server alive without an IPC parent channel", async () => {
+    const dir = scratchDir();
+    const port = await freePort();
+    const server = spawn(process.execPath, ["--conditions=source", "--import", "tsx", realServerEntry], {
+      cwd: process.cwd(),
+      env: { ...process.env, BB_DATA_DIR: dir, BB_ORPHAN_READY: join(dir, "ready"), BB_SERVER_PID_FILE: join(dir, "server.pid"), BB_SERVER_BIND_HOST: "127.0.0.1", BB_SERVER_PORT: String(port), BB_HOST_DAEMON_PORT: String(port + 1), BB_TELEMETRY: "false", NODE_ENV: "test" },
+      stdio: "ignore",
+    });
+    if (server.pid !== undefined) activeChildren.add(server.pid);
+    try {
+      await waitForFile(join(dir, "server.pid"), 45_000);
+      const deadline = Date.now() + 45_000;
+      while (Date.now() < deadline) {
+        try {
+          const response = await fetch(`http://127.0.0.1:${port}/`);
+          if (response.ok) break;
+        } catch {}
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      expect(server.exitCode).toBeNull();
+      expect(await fetch(`http://127.0.0.1:${port}/`).then((response) => response.status)).toBe(200);
+    } finally {
+      if (server.pid !== undefined) {
+        try { process.kill(server.pid, "SIGTERM"); } catch {}
+        await waitForExit(server, 8_000).catch(() => undefined);
+        activeChildren.delete(server.pid);
+      }
+    }
+  }, 120_000);
   it("runs normal server shutdown when its launcher is SIGKILLed", async () => {
     const dir = scratchDir();
     const port = await freePort();
@@ -160,6 +248,9 @@ describe("server process ownership", () => {
     const marker = join(dir, "shutdown.log");
     const launcherReady = join(dir, "launcher.pid");
     const launcher = spawnFixture(launcherEntry, {
+      BB_HOLDER_ENTRY: detachedHolderEntry,
+      BB_HOLDER_PID_FILE: join(dir, "holder.pid"),
+      BB_HOLDER_READY: join(dir, "holder.ready"),
       BB_ORPHAN_DIR: dir,
       BB_ORPHAN_LAUNCHER_READY: launcherReady,
       BB_ORPHAN_MARKER: marker,
@@ -171,6 +262,8 @@ describe("server process ownership", () => {
     let serverExited = false;
     try {
       await waitForFile(launcherReady);
+      const holderPid = Number(await waitForFile(join(dir, "holder.pid")));
+      activeChildren.add(holderPid);
       serverPid = Number(await waitForFile(pidFile));
       activeChildren.add(serverPid);
       process.kill(launcher.pid!, "SIGKILL");
@@ -183,6 +276,7 @@ describe("server process ownership", () => {
         1_000,
       );
       expect(shutdown).toBe("shutdown-started\nshutdown-finished\n");
+      expect(isProcessRunning(holderPid)).toBe(true);
       if (serverPid !== null) activeChildren.delete(serverPid);
     } finally {
       if (
@@ -198,10 +292,36 @@ describe("server process ownership", () => {
     }
   });
 
+  it("reports a managed child that survives SIGKILL", async () => {
+    const dir = scratchDir();
+    const launcher = spawnFixture(reportLauncherEntry, {
+      BB_SHUTDOWN_CHILD_ENTRY: slowChildEntry,
+      BB_SHUTDOWN_LOG_DIR: join(dir, "logs"),
+      BB_SHUTDOWN_MARKER: join(dir, "child.log"),
+      BB_REPORT_PID_FILE: join(dir, "server.pid"),
+    });
+    let serverPid: number | null = null;
+    try {
+      serverPid = Number(await waitForFile(join(dir, "server.pid"), 10_000));
+      activeChildren.add(serverPid);
+      await waitForExit(launcher, 8_000);
+      expect(childErrors.get(launcher)?.stderr).toContain("server did not stop after SIGKILL");
+      expect(isProcessRunning(serverPid)).toBe(true);
+    } finally {
+      if (serverPid !== null) {
+        try { process.kill(serverPid, "SIGKILL"); } catch {}
+        activeChildren.delete(serverPid);
+      }
+    }
+  });
+
   it("finishes the launcher SIGTERM shutdown with its server child inside six seconds", async () => {
     const dir = scratchDir();
     const marker = join(dir, "shutdown.log");
     const launcher = spawnFixture(shutdownLauncherEntry, {
+      BB_HOLDER_ENTRY: detachedHolderEntry,
+      BB_HOLDER_PID_FILE: join(dir, "holder.pid"),
+      BB_HOLDER_READY: join(dir, "holder.ready"),
       BB_SHUTDOWN_CHILD_ENTRY: slowChildEntry,
       BB_SHUTDOWN_LOG_DIR: join(dir, "logs"),
       BB_SHUTDOWN_MARKER: marker,
@@ -212,6 +332,8 @@ describe("server process ownership", () => {
       await waitForText(launcher, marker, "launcher:ready");
       activeChildren.add(Number(readFileSync(join(dir, "server.pid"), "utf8")));
       activeChildren.add(Number(readFileSync(join(dir, "daemon.pid"), "utf8")));
+      const holderPid = Number(readFileSync(join(dir, "holder.pid"), "utf8"));
+      activeChildren.add(holderPid);
       const startedAt = Date.now();
       process.kill(launcher.pid!, "SIGTERM");
       await waitForExit(launcher, 10_000);
@@ -221,6 +343,7 @@ describe("server process ownership", () => {
       expect(shutdown).toContain("server:stopped");
       expect(shutdown).toContain("daemon:stopped");
       expect(shutdown).toContain("launcher:stopped");
+      expect(isProcessRunning(holderPid)).toBe(true);
       for (const childPidFile of [
         join(dir, "server.pid"),
         join(dir, "daemon.pid"),

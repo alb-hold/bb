@@ -551,6 +551,7 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
       terminalDataPlane?.stop();
       await closeWebSockets();
       await closeServer;
+      db.$client.close();
     })();
     return shutdownPromise;
   };
