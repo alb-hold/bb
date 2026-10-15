@@ -262,7 +262,7 @@ describe("plugin agent contributions reach thread runtime config", () => {
     }
   });
 
-  it("retries a resolver that misses the first deadline with a longer one", async () => {
+  it("calls a timed-out resolver once per resolution, never overlapping a second call", async () => {
     const db = createConnection(":memory:");
     migrate(db);
     const service = createPluginService({
@@ -286,31 +286,43 @@ describe("plugin agent contributions reach thread runtime config", () => {
         serverSource: `
           export default function plugin(bb) {
             let calls = 0;
+            let inFlight = 0;
+            let maxInFlight = 0;
             bb.providers.experimental_contributeEnv("claude-code", async () => {
               calls += 1;
-              await new Promise((resolve) => setTimeout(resolve, calls === 1 ? 1_000 : 40));
-              return [{ name: "ANTHROPIC_BASE_URL", value: "http://pool.test", reason: "routed" }];
+              inFlight += 1;
+              maxInFlight = Math.max(maxInFlight, inFlight);
+              try {
+                if (calls === 1) await new Promise((resolve) => setTimeout(resolve, 200));
+                return [{ name: "RESOLVER_CALLS", value: calls + ":" + maxInFlight, reason: "observed" }];
+              } finally {
+                inFlight -= 1;
+              }
             });
           }
         `,
       });
       await service.installPath(root);
+      const context = {
+        threadId: "thread-slow",
+        projectId: "project-slow",
+        hostId: "host-slow",
+      };
 
       await expect(
-        service.resolveProviderEnv({
-          providerId: "claude-code",
-          context: {
-            threadId: "thread-slow",
-            projectId: "project-slow",
-            hostId: "host-slow",
-          },
-        }),
+        service.resolveProviderEnv({ providerId: "claude-code", context }),
+      ).rejects.toMatchObject({
+        body: { code: "provider_environment_unavailable" },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      await expect(
+        service.resolveProviderEnv({ providerId: "claude-code", context }),
       ).resolves.toEqual({
         entries: [
           {
-            name: "ANTHROPIC_BASE_URL",
-            value: "http://pool.test",
-            reason: "routed",
+            name: "RESOLVER_CALLS",
+            value: "2:1",
+            reason: "observed",
             source: { plugin: "env-slow" },
           },
         ],

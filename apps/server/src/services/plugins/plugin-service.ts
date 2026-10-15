@@ -464,8 +464,8 @@ export interface PluginService {
 
 const DEFAULT_MENTION_SEARCH_TIMEOUT_MS = 2_000;
 const DEFAULT_MENTION_RESOLVE_TIMEOUT_MS = 10_000;
-const DEFAULT_PROVIDER_ENV_RESOLVE_TIMEOUT_MS = 5_000;
-const PROVIDER_ENV_RETRY_TIMEOUT_FACTOR = 6;
+const DEFAULT_PROVIDER_ENV_RESOLVE_TIMEOUT_MS = 30_000;
+const PROVIDER_ENV_HEALTH_TIMEOUT_MS = 5_000;
 const DEFAULT_STABILIZATION_WINDOW_MS = 30_000;
 const DEFAULT_ARTIFACT_RETENTION_MS = 7 * 24 * 60 * 60_000;
 const SCHEDULE_SWEEP_BATCH_SIZE = 100;
@@ -610,6 +610,10 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
     deps.mentionResolveTimeoutMs ?? DEFAULT_MENTION_RESOLVE_TIMEOUT_MS;
   const providerEnvResolveTimeoutMs =
     deps.providerEnvResolveTimeoutMs ?? DEFAULT_PROVIDER_ENV_RESOLVE_TIMEOUT_MS;
+  const providerEnvHealthTimeoutMs = Math.min(
+    providerEnvResolveTimeoutMs,
+    PROVIDER_ENV_HEALTH_TIMEOUT_MS,
+  );
   const stabilizationWindowMs =
     deps.stabilizationWindowMs ?? DEFAULT_STABILIZATION_WINDOW_MS;
   const artifactRetentionMs =
@@ -2346,25 +2350,18 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
       for (const [pluginId, plugin] of loaded) {
         const resolve = plugin.handle.providerEnvResolvers.get(providerId);
         if (resolve === undefined) continue;
-        const attempt = (timeoutMs: number) =>
-          invokeWrapped(
-            pluginId,
-            `provider environment for ${providerId}`,
-            async () =>
-              raceTimeout(
-                Promise.resolve(resolve(context)).then((value) =>
-                  validatePluginProviderEnvEntries(value),
-                ),
-                timeoutMs,
-                `timed out after ${timeoutMs}ms`,
+        const outcome = await invokeWrapped(
+          pluginId,
+          `provider environment for ${providerId}`,
+          async () =>
+            raceTimeout(
+              Promise.resolve(resolve(context)).then((value) =>
+                validatePluginProviderEnvEntries(value),
               ),
-          );
-        let outcome = await attempt(providerEnvResolveTimeoutMs);
-        if (!outcome.ok) {
-          outcome = await attempt(
-            providerEnvResolveTimeoutMs * PROVIDER_ENV_RETRY_TIMEOUT_FACTOR,
-          );
-        }
+              providerEnvResolveTimeoutMs,
+              `timed out after ${providerEnvResolveTimeoutMs}ms`,
+            ),
+        );
         if (!outcome.ok) {
           throw new ApiError(
             503,
@@ -2405,8 +2402,8 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
           async () => {
             const value = await raceTimeout(
               Promise.resolve(resolve(context)),
-              providerEnvResolveTimeoutMs,
-              `timed out after ${providerEnvResolveTimeoutMs}ms`,
+              providerEnvHealthTimeoutMs,
+              `timed out after ${providerEnvHealthTimeoutMs}ms`,
             );
             if (value === null) return null;
             if (value.label.trim().length === 0) {
