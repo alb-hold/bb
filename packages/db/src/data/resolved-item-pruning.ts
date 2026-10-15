@@ -86,14 +86,6 @@ const prepareProgress = (db: DbQueryConnection) =>
       AND item_kind = 'backgroundTask'
       AND item_id = ${sql.placeholder("itemId")}`,
   );
-const prepareLegacyProgress = (db: DbQueryConnection) =>
-  prepareSupport(
-    db,
-    "events_thread_type_sequence_idx",
-    sql`type = 'item/backgroundTask/progress'
-      AND (item_kind IS NULL OR item_kind <> 'backgroundTask')
-      AND item_id = ${sql.placeholder("itemId")}`,
-  );
 const prepareEarlier = (db: DbQueryConnection) =>
   prepareSupport(
     db,
@@ -133,6 +125,20 @@ function pruneResolvedItemCandidates(
         AND type = 'item/backgroundTask/progress'
         AND (item_kind IS NULL OR item_kind <> 'backgroundTask')
       LIMIT 1`) !== undefined;
+  const legacyProgressByItemId = new Map<string, number>();
+  if (hasLegacyProgress) {
+    const rows = db.all<{ itemId: string; maxSequence: number }>(sql`
+      SELECT item_id AS itemId, MAX(sequence) AS maxSequence
+      FROM events INDEXED BY events_thread_type_sequence_idx
+      WHERE thread_id = ${args.threadId}
+        AND type = 'item/backgroundTask/progress'
+        AND (item_kind IS NULL OR item_kind <> 'backgroundTask')
+        AND item_id IS NOT NULL
+      GROUP BY item_id
+    `);
+    for (const row of rows)
+      legacyProgressByItemId.set(row.itemId, row.maxSequence);
+  }
   const discarded: string[] = [];
   let remaining = args.limit;
   let sequence = 0;
@@ -165,18 +171,6 @@ function pruneResolvedItemCandidates(
       limit,
     };
     const support = prepareCachedQuery(db, build).all(queryArgs);
-    if (
-      hasLegacyProgress &&
-      args.kind === "background" &&
-      probe.probePhase === 1 &&
-      support.length === 0
-    ) {
-      return prepareCachedQuery(db, prepareLegacyProgress).all({
-        ...queryArgs,
-        afterSequence: candidate.sequence,
-        limit: 1,
-      });
-    }
     return support;
   };
   for (const candidate of rows) {
@@ -225,14 +219,22 @@ function pruneResolvedItemCandidates(
                 (candidate.type !== "item/commandExecution/outputDelta" ||
                   row.hasOutput !== 0))),
       );
-      if (match) {
+      const legacySupersedes =
+        !match &&
+        support.length === 0 &&
+        args.kind === "background" &&
+        probe.probePhase === 1 &&
+        candidate.itemId !== null &&
+        (legacyProgressByItemId.get(candidate.itemId) ?? 0) >
+          candidate.sequence;
+      if (match || legacySupersedes) {
         if (args.kind === "background" || probe.probePhase === 1) {
           discarded.push(candidate.id);
           finished = true;
         } else {
           probe.probePhase = 1;
           probe.probeSequence = 0;
-          probe.probeWitnessId = match.id;
+          probe.probeWitnessId = match?.id ?? null;
         }
       } else if (support.length < limit) {
         if (args.kind === "background" && probe.probePhase === 0) {

@@ -5,11 +5,20 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
 import { createConnection } from "../../src/connection.js";
-import { events, threadPruningCursors, threadPruningWork, threads } from "../../src/schema.js";
+import {
+  events,
+  threadPruningCursors,
+  threadPruningWork,
+  threads,
+} from "../../src/schema.js";
 import { noopNotifier } from "../../src/notifier.js";
 import { upsertHost } from "../../src/data/hosts.js";
 import { createProject } from "../../src/data/projects.js";
-import { archiveThread, createThread, unarchiveThread } from "../../src/data/threads.js";
+import {
+  archiveThread,
+  createThread,
+  unarchiveThread,
+} from "../../src/data/threads.js";
 import {
   advanceThreadPruning,
   getNextThreadPruningPolicy,
@@ -110,27 +119,42 @@ describe("thread pruning", () => {
         lifecycleOwnerThreadId: f.thread.id,
       });
       const work = () => f.db.select().from(threadPruningWork).all();
-      expect(() => f.db.transaction((tx) => {
-        archiveThread(tx, noopNotifier, f.thread.id);
-        throw new Error("rollback archive");
-      })).toThrow("rollback archive");
+      expect(() =>
+        f.db.transaction((tx) => {
+          archiveThread(tx, noopNotifier, f.thread.id);
+          throw new Error("rollback archive");
+        }),
+      ).toThrow("rollback archive");
       expect(work()).toEqual([]);
-      expect(f.db.select().from(threads).all().every((thread) => thread.archivedAt === null)).toBe(true);
+      expect(
+        f.db
+          .select()
+          .from(threads)
+          .all()
+          .every((thread) => thread.archivedAt === null),
+      ).toBe(true);
       archiveThread(f.db, noopNotifier, f.thread.id);
       expect(work()).toHaveLength(2);
-      expect(work()).toEqual(expect.arrayContaining([
-        { policy: "rate-limits", threadId: f.thread.id, revision: 1 },
-        { policy: "rate-limits", threadId: child.id, revision: 1 },
-      ]));
+      expect(work()).toEqual(
+        expect.arrayContaining([
+          { policy: "rate-limits", threadId: f.thread.id, revision: 1 },
+          { policy: "rate-limits", threadId: child.id, revision: 1 },
+        ]),
+      );
       archiveThread(f.db, noopNotifier, f.thread.id);
       expect(work().every((row) => row.revision === 1)).toBe(true);
       unarchiveThread(f.db, noopNotifier, f.thread.id);
-      expect(() => f.db.transaction(() => {
-        unarchiveThread(f.db, noopNotifier, child.id);
-        throw new Error("rollback unarchive");
-      })).toThrow("rollback unarchive");
+      expect(() =>
+        f.db.transaction(() => {
+          unarchiveThread(f.db, noopNotifier, child.id);
+          throw new Error("rollback unarchive");
+        }),
+      ).toThrow("rollback unarchive");
       expect(work().find((row) => row.threadId === child.id)?.revision).toBe(1);
-      expect(f.db.select().from(threads).where(eq(threads.id, child.id)).get()?.archivedAt).not.toBeNull();
+      expect(
+        f.db.select().from(threads).where(eq(threads.id, child.id)).get()
+          ?.archivedAt,
+      ).not.toBeNull();
       unarchiveThread(f.db, noopNotifier, child.id);
       expect(work().every((row) => row.revision === 2)).toBe(true);
     } finally {
@@ -563,36 +587,77 @@ describe("thread pruning", () => {
     try {
       seed(f, 1, {
         type: "item/backgroundTask/progress",
-        itemId: "task-null-kind",
+        itemId: "task-unrelated",
         itemKind: "backgroundTask",
       });
       seed(f, 2, {
         type: "item/backgroundTask/progress",
         itemId: "task-null-kind",
-        itemKind: null,
+        itemKind: "backgroundTask",
       });
       seed(f, 3, {
         type: "item/backgroundTask/progress",
-        itemId: "task-mismatched-kind",
-        itemKind: "backgroundTask",
+        itemId: "task-null-kind",
+        itemKind: null,
       });
       seed(f, 4, {
         type: "item/backgroundTask/progress",
         itemId: "task-mismatched-kind",
+        itemKind: "backgroundTask",
+      });
+      seed(f, 5, {
+        type: "item/backgroundTask/progress",
+        itemId: "task-mismatched-kind",
         itemKind: "agentMessage",
       });
-      seed(f, 5, { type: "turn/completed" });
+      seed(f, 6, { type: "turn/completed" });
 
       cycle(f, "resolved-items");
 
-      expect(sequences(f)).not.toContain(1);
-      expect(sequences(f)).toContain(2);
-      expect(sequences(f)).not.toContain(3);
-      expect(sequences(f)).toContain(4);
+      expect(sequences(f)).toContain(1);
+      expect(sequences(f)).not.toContain(2);
+      expect(sequences(f)).toContain(3);
+      expect(sequences(f)).not.toContain(4);
+      expect(sequences(f)).toContain(5);
     } finally {
       f.db.$client.close();
     }
   });
+
+  it("bounds legacy progress fallback for 510 task candidates", () => {
+    const f = setup();
+    try {
+      f.db.transaction(() => {
+        for (let i = 1; i <= 510; i++)
+          seed(f, i, {
+            type: "item/backgroundTask/progress",
+            itemId: `task-${i}`,
+            itemKind: "backgroundTask",
+          });
+        seed(f, 511, {
+          type: "item/backgroundTask/progress",
+          itemId: "task-1",
+          itemKind: null,
+        });
+        seed(f, 512, {
+          type: "item/backgroundTask/progress",
+          itemId: "task-2",
+          itemKind: "agentMessage",
+        });
+        seed(f, 513, { type: "turn/completed" });
+      });
+
+      cycle(f, "resolved-items");
+
+      expect(sequences(f)).not.toContain(1);
+      expect(sequences(f)).not.toContain(2);
+      expect(sequences(f)).toContain(511);
+      expect(sequences(f)).toContain(512);
+      expect(sequences(f)).toContain(510);
+    } finally {
+      f.db.$client.close();
+    }
+  }, 15_000);
 
   it("prunes oversized snapshots without parsing their payloads", () => {
     const f = setup();
@@ -1045,7 +1110,9 @@ describe("thread pruning", () => {
         const window = seedWindow(
           f,
           16,
-          THREAD_EVENT_KEEP_RECENT_BY_MODE[archivedAt === null ? "idle" : "archived"],
+          THREAD_EVENT_KEEP_RECENT_BY_MODE[
+            archivedAt === null ? "idle" : "archived"
+          ],
           {
             type: "thread/tokenUsage/updated",
             data: '{"tokenUsage":{"modelContextWindow":null}}',
