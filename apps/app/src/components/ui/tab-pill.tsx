@@ -36,6 +36,7 @@ interface TabPillProps {
   labelMaxWidthClass?: string;
   closeAction: TabPillCloseAction | null;
   enlargeCloseTargetOnCoarsePointer?: boolean;
+  attention?: boolean;
 }
 
 export function TabPill({
@@ -52,6 +53,7 @@ export function TabPill({
   labelMaxWidthClass = TAB_PILL_DEFAULT_LABEL_MAX_WIDTH_CLASS,
   closeAction,
   enlargeCloseTargetOnCoarsePointer = false,
+  attention = false,
 }: TabPillProps) {
   return (
     <div
@@ -70,6 +72,7 @@ export function TabPill({
         isActive
           ? cn(CONTEXT_SELECTION_SURFACE_CLASS, "text-foreground")
           : "text-muted-foreground hover:bg-state-hover",
+        attention && "ring-2 ring-inset ring-attention",
       )}
     >
       <button

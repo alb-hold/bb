@@ -44,12 +44,17 @@ All other operations need only the terminal ID. They also accept the scope
 flags above and ignore them, so a command built for `list` or `create` still
 runs:
 
+From inside a bb terminal, `bb terminal notify --title "Build" --body "Finished"`
+raises attention on its terminal. The SDK exposes the same operation as
+`sdk.terminals.notify({ terminalId, title, body })`.
+
   bb terminal show <terminal-id>
   bb terminal attach <terminal-id>        Ctrl-B d detaches
   bb terminal send <terminal-id> --text <text> [--enter]
     --stdin                               Read bytes from stdin instead of --text
   bb terminal resize <terminal-id> --cols <n> --rows <n>
   bb terminal rename <terminal-id> <title>
+  bb terminal notify --title <title> --body <body>   Raise attention from this terminal
   bb terminal restart <terminal-id>       Atomically replaces it with a shell; does not replay the original command
   bb terminal close <terminal-id> [--if-clean]
 

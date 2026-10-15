@@ -166,6 +166,7 @@ export function resolveCollapsedPanelTrafficLightReserveClassName({
 const HIDE_PANEL_LABEL = "Hide right panel";
 
 export interface SecondaryPanelFixedTab {
+  attention?: boolean;
   ariaLabel: string;
   contentFillsRegion?: boolean;
   label: string;
@@ -671,11 +672,13 @@ function ThreadSecondaryPanelContent({
             ariaLabel: tab.ariaLabel,
             leadingVisual: tab.leadingVisual,
             onSelect: tab.onSelect,
+            attention: tab.attention,
           }))}
           tabs={visibleSurfaceTabs.map((tab) => ({
             id: tab.tab.id,
             label: tab.label,
             ariaLabel: tab.label,
+            attention: tab.attention,
             leadingVisual: tab.leadingVisual,
             onSelect: tab.onSelect,
             onClose: tab.isPinned ? null : tab.onClose,
