@@ -41,7 +41,7 @@ import {
   runNativeHolder,
 } from "../../native-holder.js";
 import { runNativeMcpServer } from "../../native-mcp.js";
-import { checkNativeTerminalClosedForGood } from "../../native-closed-for-good.js";
+import { checkNativeTerminal } from "../../native-terminal-check.js";
 import { outputJson } from "../helpers.js";
 import { attachTerminal } from "../terminal.js";
 
@@ -352,8 +352,7 @@ async function holdNativeHarness(
     onSocketClosed: () => {
       ownsSocket = false;
     },
-    terminalClosedForGood: () =>
-      checkNativeTerminalClosedForGood({ baseUrl, threadId }),
+    checkTerminal: () => checkNativeTerminal({ baseUrl, threadId }),
   });
   for (const timer of activityTimers) clearInterval(timer);
   await discover();
