@@ -7576,6 +7576,37 @@ describe("Account Pool plugin", () => {
       expect(pool.seen).toEqual(["sk-first", "sk-first", "sk-second"]);
     });
 
+    it("sends Automatic conversations to the fresh account while the active one nears the weekly threshold", async () => {
+      const pool = await fixtureWithAccounts();
+      const weekly = (sevenDayUtilization: number) => ({
+        fiveHourUtilization: 0.01,
+        fiveHourResetAt: now + 4 * 60 * 60 * 1_000,
+        sevenDayUtilization,
+        sevenDayResetAt: now + 3 * 24 * 60 * 60 * 1_000,
+      });
+      setQuota(pool.fixture, pool.fixture.account.id, weekly(0.5));
+      setQuota(pool.fixture, pool.second.id, weekly(0.6));
+      await pool.send("thr_near_existing", "session-near-existing");
+      expect(pool.seen).toEqual(["sk-first"]);
+
+      setQuota(pool.fixture, pool.fixture.account.id, weekly(0.96));
+      setQuota(pool.fixture, pool.second.id, weekly(0.01));
+      await pool.send("thr_near_new", "session-near-new");
+      await pool.send("thr_near_existing", "session-near-existing");
+      expect(pool.seen).toEqual(["sk-first", "sk-second", "sk-first"]);
+
+      setQuota(pool.fixture, pool.fixture.account.id, weekly(0.98));
+      await pool.send("thr_near_existing", "session-near-existing");
+      await pool.send("thr_near_later", "session-near-later");
+      expect(pool.seen).toEqual([
+        "sk-first",
+        "sk-second",
+        "sk-first",
+        "sk-second",
+        "sk-second",
+      ]);
+    });
+
     it("keeps explicit thread pins independent from automatic headroom", async () => {
       const pool = await fixtureWithAccounts();
       setQuota(pool.fixture, pool.fixture.account.id, {
