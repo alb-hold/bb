@@ -100,6 +100,78 @@ describe("terminal attention parser", () => {
     ).toEqual([{ kind: "osc-99", body: "Hello 🐈" }]);
   });
 
+  it("decodes base64 OSC 99 payloads split after encoding mid-quantum", () => {
+    const state = { ...INITIAL_TERMINAL_ATTENTION_PARSER_STATE };
+    expect(
+      consumeTerminalAttention(
+        state,
+        bytes("\u001b]99;i=split:e=1:p=body:d=0;SGVsbG8\u001b\\"),
+      ),
+    ).toEqual([]);
+    expect(
+      consumeTerminalAttention(
+        state,
+        bytes("\u001b]99;i=split:e=1:p=body;gd29ybGQh\u001b\\"),
+      ),
+    ).toEqual([{ kind: "osc-99", body: "Hello world!" }]);
+  });
+
+  it("accepts an unpadded final base64 OSC 99 chunk", () => {
+    const state = { ...INITIAL_TERMINAL_ATTENTION_PARSER_STATE };
+    expect(
+      consumeTerminalAttention(
+        state,
+        bytes("\u001b]99;i=unpadded:e=1:p=body;SGVsbG8\u001b\\"),
+      ),
+    ).toEqual([{ kind: "osc-99", body: "Hello" }]);
+  });
+
+  it("decodes a UTF-8 character whose encoded bytes straddle base64 chunks", () => {
+    const state = { ...INITIAL_TERMINAL_ATTENTION_PARSER_STATE };
+    expect(
+      consumeTerminalAttention(
+        state,
+        bytes("\u001b]99;i=utf8:e=1:p=body:d=0;8J+Q\u001b\\"),
+      ),
+    ).toEqual([]);
+    expect(
+      consumeTerminalAttention(
+        state,
+        bytes("\u001b]99;i=utf8:e=1:p=body;iA==\u001b\\"),
+      ),
+    ).toEqual([{ kind: "osc-99", body: "🐈" }]);
+  });
+
+  it("rejects invalid base64 and invalid UTF-8 after assembling OSC 99 chunks", () => {
+    const base64State = { ...INITIAL_TERMINAL_ATTENTION_PARSER_STATE };
+    expect(
+      consumeTerminalAttention(
+        base64State,
+        bytes("\u001b]99;i=bad-base64:e=1:p=body:d=0;SGV=\u001b\\"),
+      ),
+    ).toEqual([]);
+    expect(
+      consumeTerminalAttention(
+        base64State,
+        bytes("\u001b]99;i=bad-base64:e=1:p=body;bG8=\u001b\\"),
+      ),
+    ).toEqual([]);
+
+    const utf8State = { ...INITIAL_TERMINAL_ATTENTION_PARSER_STATE };
+    expect(
+      consumeTerminalAttention(
+        utf8State,
+        bytes("\u001b]99;i=bad-utf8:e=1:p=body:d=0;AQ\u001b\\"),
+      ),
+    ).toEqual([]);
+    expect(
+      consumeTerminalAttention(
+        utf8State,
+        bytes("\u001b]99;i=bad-utf8:e=1:p=body;CA\u001b\\"),
+      ),
+    ).toEqual([]);
+  });
+
   it("ignores malformed OSC 99 base64 payloads", () => {
     const state = { ...INITIAL_TERMINAL_ATTENTION_PARSER_STATE };
     expect(

@@ -8,7 +8,16 @@ export interface TerminalAttentionDetection {
 
 export interface TerminalAttentionParserState {
   pending: string;
-  osc99Assemblies?: Map<string, { body: string; title: string; bytes: number }>;
+  osc99Assemblies?: Map<
+    string,
+    {
+      body: string;
+      bodyEncoding?: "base64" | "text";
+      title: string;
+      titleEncoding?: "base64" | "text";
+      bytes: number;
+    }
+  >;
   osc99AssemblyBytes?: number;
 }
 
@@ -17,6 +26,29 @@ const MAX_OSC99_ASSEMBLY_BYTES = 4096;
 const MAX_OSC99_ASSEMBLIES = 32;
 const MAX_OSC99_PAYLOAD_BYTES = 2048;
 const decoders = new WeakMap<TerminalAttentionParserState, TextDecoder>();
+
+function decodeBase64Utf8(value: string): string | null {
+  if (!/^[A-Za-z0-9+/]*={0,2}$/u.test(value)) return null;
+  const unpadded = value.replace(/=+$/u, "");
+  if (unpadded.length % 4 === 1 || (value.includes("=") && value.length % 4 !== 0)) {
+    return null;
+  }
+  const padded = unpadded + "=".repeat((4 - (unpadded.length % 4)) % 4);
+  if (
+    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(
+      padded,
+    )
+  ) {
+    return null;
+  }
+  const decoded = Buffer.from(padded, "base64");
+  if (decoded.toString("base64") !== padded) return null;
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(decoded);
+  } catch {
+    return null;
+  }
+}
 
 export const INITIAL_TERMINAL_ATTENTION_PARSER_STATE: TerminalAttentionParserState =
   {
@@ -69,37 +101,32 @@ function parseOsc99(
   const encoding = metadata.get("e");
   if (encoding !== undefined && encoding !== "1") return null;
 
-  let payload = value.slice(secondSeparator + 1);
-  if (encoding === "1") {
-    if (
-      payload.length > MAX_OSC99_PAYLOAD_BYTES * 2 ||
-      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(
-        payload,
-      )
-    ) {
-      return null;
-    }
-    const encodedPayload = payload;
-    try {
-      payload = new TextDecoder("utf-8", { fatal: true }).decode(
-        Buffer.from(payload, "base64"),
-      );
-      if (Buffer.from(payload, "utf8").toString("base64") !== encodedPayload) {
-        return null;
-      }
-    } catch {
-      return null;
-    }
+  const payload = value.slice(secondSeparator + 1);
+  const payloadEncoding = encoding === "1" ? "base64" : "text";
+  const payloadBytes = Buffer.byteLength(payload, "utf8");
+  if (
+    payloadBytes >
+    (payloadEncoding === "base64"
+      ? MAX_OSC99_ASSEMBLY_BYTES
+      : MAX_OSC99_PAYLOAD_BYTES)
+  ) {
+    return null;
   }
-  if (Buffer.byteLength(payload, "utf8") > MAX_OSC99_PAYLOAD_BYTES) return null;
-
   const id = metadata.get("i");
   const isDone = done !== "0";
   if (!id) {
     if (!isDone) return null;
+    const decodedPayload =
+      payloadEncoding === "base64" ? decodeBase64Utf8(payload) : payload;
+    if (
+      decodedPayload === null ||
+      Buffer.byteLength(decodedPayload, "utf8") > MAX_OSC99_PAYLOAD_BYTES
+    ) {
+      return null;
+    }
     return part === "title"
-      ? { kind: "osc-99", title: payload }
-      : { kind: "osc-99", body: payload };
+      ? { kind: "osc-99", title: decodedPayload }
+      : { kind: "osc-99", body: decodedPayload };
   }
 
   const assemblies = (state.osc99Assemblies ??= new Map());
@@ -115,9 +142,20 @@ function parseOsc99(
     }
   }
   const existing = assemblies.get(id) ?? { title: "", body: "", bytes: 0 };
+  const existingEncoding =
+    part === "title" ? existing.titleEncoding : existing.bodyEncoding;
+  if (existingEncoding !== undefined && existingEncoding !== payloadEncoding) {
+    if (assemblies.delete(id)) {
+      state.osc99AssemblyBytes = Math.max(
+        0,
+        (state.osc99AssemblyBytes ?? 0) - existing.bytes,
+      );
+    }
+    return null;
+  }
   const nextTitle = existing.title + (part === "title" ? payload : "");
   const nextBody = existing.body + (part === "body" ? payload : "");
-  const addedBytes = Buffer.byteLength(payload, "utf8");
+  const addedBytes = payloadBytes;
   const nextBytes = existing.bytes + addedBytes;
   const totalBytes = state.osc99AssemblyBytes ?? 0;
   if (
@@ -130,15 +168,43 @@ function parseOsc99(
   }
 
   if (!isDone) {
-    assemblies.set(id, { title: nextTitle, body: nextBody, bytes: nextBytes });
+    assemblies.set(id, {
+      title: nextTitle,
+      body: nextBody,
+      titleEncoding:
+        part === "title" ? payloadEncoding : existing.titleEncoding,
+      bodyEncoding: part === "body" ? payloadEncoding : existing.bodyEncoding,
+      bytes: nextBytes,
+    });
     state.osc99AssemblyBytes = totalBytes - existing.bytes + nextBytes;
     return null;
   }
 
   assemblies.delete(id);
   state.osc99AssemblyBytes = Math.max(0, totalBytes - existing.bytes);
-  const title = nextTitle || undefined;
-  const body = nextBody || undefined;
+  const titleEncoding =
+    part === "title" ? payloadEncoding : existing.titleEncoding;
+  const bodyEncoding = part === "body" ? payloadEncoding : existing.bodyEncoding;
+  const titleValue =
+    titleEncoding === "base64"
+      ? decodeBase64Utf8(nextTitle)
+      : nextTitle;
+  const bodyValue =
+    bodyEncoding === "base64"
+      ? decodeBase64Utf8(nextBody)
+      : nextBody;
+  if (
+    titleValue === null ||
+    bodyValue === null ||
+    (titleValue !== undefined &&
+      Buffer.byteLength(titleValue, "utf8") > MAX_OSC99_PAYLOAD_BYTES) ||
+    (bodyValue !== undefined &&
+      Buffer.byteLength(bodyValue, "utf8") > MAX_OSC99_PAYLOAD_BYTES)
+  ) {
+    return null;
+  }
+  const title = titleValue || undefined;
+  const body = bodyValue || undefined;
   return title || body ? { kind: "osc-99", title, body } : null;
 }
 
