@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { createServer } from "node:net";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -37,7 +38,28 @@ function isRunning(pid: number): boolean {
   }
 }
 
+async function allocateLoopbackPort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (address === null || typeof address === "string") {
+    throw new Error("Loopback server did not expose a port");
+  }
+  await new Promise<void>((resolve, reject) =>
+    server.close((error) => (error ? reject(error) : resolve())),
+  );
+  if (address.port === 38886 || address.port === 38887) {
+    return allocateLoopbackPort();
+  }
+  return address.port;
+}
+
 it("handles SIGTERM through the real launcher and bounded server children", async () => {
+  const serverPort = await allocateLoopbackPort();
+  const daemonPort = await allocateLoopbackPort();
   const dataDir = mkdtempSync(join(tmpdir(), "bb-launcher-sigterm-"));
   const marker = join(dataDir, "shutdown-events.jsonl");
   const serverPhases = [
@@ -58,6 +80,8 @@ it("handles SIGTERM through the real launcher and bounded server children", asyn
         BB_HOST_ENROLL_KEY: "p7-test-enroll-key",
         P7_DAEMON_DETACH_MS: "5500",
         P7_DETACHED_CHILDREN: "true",
+        P7_SERVER_PORT: String(serverPort),
+        P7_DAEMON_PORT: String(daemonPort),
         P7_SERVER_PHASES_MS: JSON.stringify(serverPhases),
         P7_SHUTDOWN_MARKER: marker,
       },

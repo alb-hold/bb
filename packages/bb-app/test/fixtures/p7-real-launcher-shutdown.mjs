@@ -28,7 +28,7 @@ if (role === 'server') {
     }
     response.writeHead(404);
     response.end();
-  }).listen(Number(process.env.BB_SERVER_PORT || 41188), '127.0.0.1', () => {
+  }).listen(Number(process.env.P7_SERVER_PORT || process.env.BB_SERVER_PORT || 41188), '127.0.0.1', () => {
     appendEvent(role + ':ready');
     process.send?.('ready');
   });
@@ -84,9 +84,9 @@ runLauncherEntry(() =>
       "--data-dir",
       process.env.BB_DATA_DIR,
       "--server-port",
-      "41188",
+      process.env.P7_SERVER_PORT || "41188",
       "--host-daemon-port",
-      "41189",
+      process.env.P7_DAEMON_PORT || "41189",
       "--no-in-app-updates",
     ],
     { startManagedProcess, worktreePolicy: null },

@@ -1,4 +1,5 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -20,6 +21,25 @@ const launcherFixture = resolve(
 const liveProcesses = new Set<number>();
 const scratchDirs: string[] = [];
 const markerFiles: string[] = [];
+
+async function allocateLoopbackPort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (address === null || typeof address === "string") {
+    throw new Error("Loopback server did not expose a port");
+  }
+  await new Promise<void>((resolve, reject) =>
+    server.close((error) => (error ? reject(error) : resolve())),
+  );
+  if (address.port === 38886 || address.port === 38887) {
+    return allocateLoopbackPort();
+  }
+  return address.port;
+}
 
 afterEach(() => {
   for (const pid of liveProcesses) {
@@ -60,6 +80,8 @@ afterEach(() => {
 });
 
 async function stopRuntimeThroughDesktop(runtimeKind: "direct" | "appimage") {
+  const serverPort = await allocateLoopbackPort();
+  const daemonPort = await allocateLoopbackPort();
   const dir = mkdtempSync(join(tmpdir(), "bb-desktop-shutdown-p7-"));
   scratchDirs.push(dir);
   const marker = join(dir, "shutdown-events.jsonl");
@@ -79,6 +101,8 @@ async function stopRuntimeThroughDesktop(runtimeKind: "direct" | "appimage") {
     NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --conditions=source --import=tsx`.trim(),
     P7_DAEMON_DETACH_MS: "5500",
     P7_DETACHED_CHILDREN: "true",
+    P7_SERVER_PORT: String(serverPort),
+    P7_DAEMON_PORT: String(daemonPort),
     P7_SERVER_PHASES_MS: JSON.stringify(serverPhases),
     P7_SHUTDOWN_MARKER: marker,
   };
