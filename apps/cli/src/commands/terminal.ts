@@ -644,6 +644,7 @@ export async function attachTerminal(args: {
     socket.onopen = () => {
       process.stdin.setRawMode(true);
       process.stdin.resume();
+      socket.send(JSON.stringify({ type: "visibility", visible: true }));
       onResize();
       heartbeat = setInterval(() => {
         socket.send(JSON.stringify({ type: "ping" }));

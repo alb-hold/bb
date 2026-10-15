@@ -825,6 +825,13 @@ export class TerminalSessionLifecycle {
     const attention = getTerminalAttention(this.options.db, terminalId);
     if (attention === null || attention.clearedAt !== null) return;
     clearTerminalAttention(this.options.db, terminalId, Date.now());
+    const updatedSession = getTerminalById(this.options.db, terminalId);
+    if (updatedSession !== null) {
+      this.options.hub.sendTerminalClientMessage(terminalId, {
+        type: "session-updated",
+        session: this.toTerminalSession(updatedSession),
+      });
+    }
     if (session?.threadId !== null && session?.threadId !== undefined) {
       this.options.hub.notifyThread(session.threadId, ["terminals-changed"]);
     }

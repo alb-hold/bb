@@ -120,6 +120,21 @@ afterEach(() => {
 });
 
 describe("TerminalWebSocketTransport", () => {
+  it("reports visible state when a socket opens", () => {
+    const harness = createHarness();
+
+    harness.transport.setVisible(true);
+    harness.transport.start();
+    harness.sockets[0]?.open();
+
+    expect(
+      harness.sockets[0]?.sent
+        .map((payload) => JSON.parse(payload))
+        .filter((message) => message.type === "visibility"),
+    ).toEqual([{ type: "visibility", visible: true }]);
+    harness.transport.dispose();
+  });
+
   it("queues input before open and preserves it across reconnect", () => {
     vi.useFakeTimers();
     const harness = createHarness();
