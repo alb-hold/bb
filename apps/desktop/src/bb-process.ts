@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { posix as posixPath } from "node:path";
+import { DESKTOP_OWNED_RUNTIME_SHUTDOWN_GRACE_MS } from "@bb/config/full-stack-shutdown";
 import {
   hasProcessExited,
   waitForProcessExit,
@@ -89,6 +90,7 @@ const APPIMAGE_BRIDGE_RELATIVE_PATH_ENV =
 
 async function runAppImageBridgeSupervisor(
   bridgeRelativePathEnv: string,
+  shutdownGraceMs: number,
 ): Promise<void> {
   const { spawn: spawnChild } = process.getBuiltinModule("node:child_process");
   const { readdirSync, readFileSync } = process.getBuiltinModule("node:fs");
@@ -164,7 +166,10 @@ async function runAppImageBridgeSupervisor(
     }
     terminationSignal = signal;
     signalBridgeGroup(signal);
-    killTimer = setTimeout(() => signalBridgeGroup("SIGKILL"), 4_000);
+    killTimer = setTimeout(
+      () => signalBridgeGroup("SIGKILL"),
+      shutdownGraceMs,
+    );
   };
   process.on("SIGINT", () => beginTermination("SIGINT"));
   process.on("SIGTERM", () => beginTermination("SIGTERM"));
@@ -188,7 +193,7 @@ async function runAppImageBridgeSupervisor(
   }
 }
 
-const APPIMAGE_BRIDGE_BOOTSTRAP = `await (${runAppImageBridgeSupervisor.toString()})(${JSON.stringify(APPIMAGE_BRIDGE_RELATIVE_PATH_ENV)});`;
+const APPIMAGE_BRIDGE_BOOTSTRAP = `await (${runAppImageBridgeSupervisor.toString()})(${JSON.stringify(APPIMAGE_BRIDGE_RELATIVE_PATH_ENV)}, ${DESKTOP_OWNED_RUNTIME_SHUTDOWN_GRACE_MS});`;
 
 function createRuntimeLogBuffer(
   args: CreateRuntimeLogBufferArgs,
