@@ -49,6 +49,9 @@ function demandStateFor(
     setVisible: (visible: boolean) => {
       const wasDemandPaused = demandPaused;
       demandPaused = !visible;
+      if (!visible) {
+        pendingVisibilityRefresh = false;
+      }
       if (visible) {
         if (rendererPaused) {
           const wasRefreshPending = pendingVisibilityRefresh;

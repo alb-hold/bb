@@ -73,6 +73,24 @@ describe("setTerminalRenderDemand", () => {
     expect(refresh).toHaveBeenCalledWith(0, 23);
   });
 
+  it("clears a deferred refresh when hidden again before xterm resumes", () => {
+    const { renderService, refresh, terminal } = makeTerminal();
+
+    setTerminalRenderDemand(terminal, false);
+    renderService._isPaused = true;
+    setTerminalRenderDemand(terminal, true);
+    setTerminalRenderDemand(terminal, false);
+    renderService._isPaused = false;
+    setTerminalRenderDemand(terminal, true);
+
+    expect(refresh).toHaveBeenCalledOnce();
+
+    renderService._isPaused = true;
+    renderService._isPaused = false;
+
+    expect(refresh).toHaveBeenCalledOnce();
+  });
+
   it("leaves terminals without the pinned renderer service untouched", () => {
     const refresh = vi.fn();
     const terminal = { refresh, rows: 24 } as unknown as Terminal;
