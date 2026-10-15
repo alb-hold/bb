@@ -654,9 +654,12 @@
       ]
     },
     "@bb/desktop#test": {
-      "dependsOn": ["//#ensure-native-modules", "topo"],
+      "dependsOn": ["//#ensure-native-modules", "topo", "bb-app#build"],
       "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/vitest*.ts"],
       "passThroughEnv": ["DISPLAY"]
+    },
+    "bb-app#test": {
+      "dependsOn": ["bb-app#build"]
     },
     // plugin-scaffold-external packs @get-bb/plugin-sdk (prepack rebuilds its
     // dist), so the SDK build is a dependency.

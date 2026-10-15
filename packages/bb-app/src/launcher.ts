@@ -11,6 +11,12 @@ import {
   type StartMovedResponderArgs,
 } from "./moved-responder.js";
 import { mutateManagedJsonFile } from "@bb/config/managed-json-file";
+import {
+  DAEMON_DETACH_HEAD_START_MS,
+  DAEMON_PROCESS_TERMINATION_TIMEOUT_MS,
+  MANAGED_PROCESS_KILL_WAIT_TIMEOUT_MS,
+  SERVER_PROCESS_TERMINATION_TIMEOUT_MS,
+} from "@bb/config/full-stack-shutdown";
 import { access, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve, win32 } from "node:path";
@@ -141,8 +147,6 @@ const HEALTH_CHECK_TIMEOUT_MS = 60_000;
 const SERVER_START_HEALTH_TIMEOUT_MS = 180_000;
 const HEALTH_CHECK_INTERVAL_MS = 100;
 const HEALTH_CHECK_REQUEST_TIMEOUT_MS = 1_000;
-const MANAGED_PROCESS_TERMINATION_TIMEOUT_MS = 5_000;
-const MANAGED_PROCESS_KILL_TIMEOUT_MS = 1_000;
 const MANAGED_PROCESS_RESTART_RETRY_DELAY_MS = 1_000;
 const HOST_DAEMON_RESTART_INITIAL_DELAY_MS = 1_000;
 const HOST_DAEMON_RESTART_MAX_DELAY_MS = 30_000;
@@ -2501,10 +2505,14 @@ export async function terminateProcessIfRunning(
   if (hasProcessExited(args.childProcess)) {
     return;
   }
+  const terminationTimeoutMs =
+    args.processName === "server"
+      ? SERVER_PROCESS_TERMINATION_TIMEOUT_MS
+      : DAEMON_PROCESS_TERMINATION_TIMEOUT_MS;
   args.childProcess.kill(args.signal);
   const gracefulResult = await waitForProcessExitWithTimeout({
     childProcess: args.childProcess,
-    timeoutMs: MANAGED_PROCESS_TERMINATION_TIMEOUT_MS,
+    timeoutMs: terminationTimeoutMs,
   });
   if (gracefulResult === "exited") {
     return;
@@ -2512,14 +2520,14 @@ export async function terminateProcessIfRunning(
 
   log(
     yellow("!"),
-    `${args.processName} did not stop after ${MANAGED_PROCESS_TERMINATION_TIMEOUT_MS}ms - sending SIGKILL`,
+    `${args.processName} did not stop after ${terminationTimeoutMs}ms - sending SIGKILL`,
   );
   if (!hasProcessExited(args.childProcess)) {
     args.childProcess.kill("SIGKILL");
   }
   await waitForProcessExitWithTimeout({
     childProcess: args.childProcess,
-    timeoutMs: MANAGED_PROCESS_KILL_TIMEOUT_MS,
+    timeoutMs: MANAGED_PROCESS_KILL_WAIT_TIMEOUT_MS,
   });
   if (!hasProcessExited(args.childProcess)) {
     const message = `${args.processName} did not stop after SIGKILL within ${MANAGED_PROCESS_KILL_TIMEOUT_MS}ms`;
@@ -3246,7 +3254,7 @@ async function restartManagedProcess(
   return null;
 }
 
-export const DAEMON_DETACH_HEAD_START_MS = 3_000;
+export { DAEMON_DETACH_HEAD_START_MS };
 
 export async function terminateManagedFullStackProcesses(
   args: TerminateManagedFullStackProcessesArgs,
@@ -4007,9 +4015,16 @@ export async function runSourceAppUpdateShim(
   });
 }
 
-export async function runBbApp(
+export function runBbApp(
   cliArgs: string[] = process.argv.slice(2),
   options: RunBbAppOptions = { worktreePolicy: null },
+): Promise<void> {
+  return runBbAppInternal(cliArgs, options);
+}
+
+async function runBbAppInternal(
+  cliArgs: string[],
+  options: RunBbAppOptions,
 ): Promise<void> {
   const parsedArgs = parseLauncherArgs(cliArgs);
   const underAppUpdateShim = isRunningUnderAppUpdateShim(process.env);
@@ -4314,15 +4329,19 @@ export async function runBbApp(
               serverUrl: context.serverUrl,
             });
             return () =>
-              startDaemonProcess({
-                context,
-                env: daemonEnv,
-                processes,
-                serverUrl: context.serverUrl,
-              });
+              (async () => {
+                const daemonRun = await startDaemonProcess({
+                  context,
+                  env: daemonEnv,
+                  processes,
+                  serverUrl: context.serverUrl,
+                });
+                processes.daemonRun = daemonRun;
+                return daemonRun;
+              })();
           },
-          startServer: () =>
-            startFullStackServerProcess({
+          startServer: async () => {
+            return startFullStackServerProcess({
               ...(options.beforeServerStart === undefined
                 ? {}
                 : { beforeStart: options.beforeServerStart }),
@@ -4335,7 +4354,8 @@ export async function runBbApp(
                       appUpdateController.attachServer(childProcess),
                   }),
               processes,
-            }),
+            });
+          },
         };
       },
       processes,

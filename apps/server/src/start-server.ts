@@ -1,6 +1,7 @@
 import { serve } from "@hono/node-server";
 import { existsSync } from "node:fs";
 import { Server as HttpServer } from "node:http";
+import type { Socket } from "node:net";
 import { verifyAuthenticatedDaemon } from "./internal/auth.js";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -8,6 +9,12 @@ import { fileURLToPath } from "node:url";
 import type { ServerConfig } from "@bb/config/server";
 import { isLoopbackHostname } from "@bb/config/loopback";
 import { toOptionalString } from "@bb/config/strings";
+import {
+  SERVER_HTTP_CLOSE_WAIT_TIMEOUT_MS,
+  SERVER_HTTP_DRAIN_TIMEOUT_MS,
+  SERVER_PLUGIN_SHUTDOWN_TIMEOUT_MS,
+  SERVER_WEBSOCKET_SHUTDOWN_WAIT_TIMEOUT_MS,
+} from "@bb/config/full-stack-shutdown";
 import { superviseTcpServerSockets } from "@bb/process-utils";
 import { createLogger } from "@bb/logger";
 import {
@@ -90,17 +97,42 @@ import {
   setPluginToolCallRegistry,
 } from "./services/plugins/plugin-tool-calls.js";
 
+const shutdownSockets = new WeakMap<HttpServer, Set<Socket>>();
+
+async function waitAtMost(
+  promise: Promise<unknown>,
+  timeoutMs: number,
+): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      promise.catch(() => undefined),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 interface StartHttpListenerArgs {
   fetch: Parameters<typeof serve>[0]["fetch"];
   logger: Pick<ServerLogger, "warn">;
   serverConfig: Pick<ServerConfig, "BB_SERVER_BIND_HOST" | "BB_SERVER_PORT">;
 }
 
-export function startHttpListener(args: StartHttpListenerArgs) {
+export function startHttpListener(args: StartHttpListenerArgs): HttpServer {
   const server = serve({
     hostname: args.serverConfig.BB_SERVER_BIND_HOST,
     port: args.serverConfig.BB_SERVER_PORT,
     fetch: args.fetch,
+  }) as HttpServer;
+  const sockets = new Set<Socket>();
+  shutdownSockets.set(server, sockets);
+  server.on("connection", (socket) => {
+    sockets.add(socket);
+    socket.once("close", () => sockets.delete(socket));
   });
   superviseTcpServerSockets(server, (error, _socket, context) => {
     args.logger.warn(
@@ -112,6 +144,73 @@ export function startHttpListener(args: StartHttpListenerArgs) {
     );
   });
   return server;
+}
+
+export async function shutdownHttpBeforePlugins(args: {
+  closeWebSockets: () => Promise<void>;
+  onPluginStopTimeout?: () => void;
+  server: ReturnType<typeof startHttpListener>;
+  stopPeriodicUpdateChecks?: () => Promise<void>;
+  stopPlugins: () => Promise<void>;
+  stopTerminalDataPlane: () => void;
+}): Promise<void> {
+  args.stopTerminalDataPlane();
+  const closed = new Promise<void>((resolve, reject) => {
+    args.server.close((error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
+  args.server.closeIdleConnections();
+  const webSocketsClosed = args.closeWebSockets();
+  let drainTimer: ReturnType<typeof setTimeout> | undefined;
+  let drained = false;
+  try {
+    drained = await Promise.race([
+      closed.then(
+        () => true,
+        () => false,
+      ),
+      new Promise<boolean>((resolve) => {
+        drainTimer = setTimeout(
+          () => resolve(false),
+          SERVER_HTTP_DRAIN_TIMEOUT_MS,
+        );
+      }),
+    ]);
+  } finally {
+    if (drainTimer !== undefined) {
+      clearTimeout(drainTimer);
+    }
+  }
+  if (!drained) {
+    args.server.closeAllConnections();
+  }
+  await waitAtMost(webSocketsClosed, SERVER_WEBSOCKET_SHUTDOWN_WAIT_TIMEOUT_MS);
+  await waitAtMost(closed, SERVER_HTTP_CLOSE_WAIT_TIMEOUT_MS);
+  for (const socket of shutdownSockets.get(args.server) ?? []) socket.destroy();
+  await waitAtMost(closed, SERVER_HTTP_CLOSE_WAIT_TIMEOUT_MS);
+  let pluginStopTimer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const stopped = await Promise.race([
+      Promise.all([
+        args.stopPeriodicUpdateChecks?.(),
+        args.stopPlugins(),
+      ]).then(() => true),
+      new Promise<false>((resolve) => {
+        pluginStopTimer = setTimeout(
+          () => resolve(false),
+          SERVER_PLUGIN_SHUTDOWN_TIMEOUT_MS,
+        );
+      }),
+    ]);
+    if (!stopped) args.onPluginStopTimeout?.();
+  } finally {
+    if (pluginStopTimer !== undefined) clearTimeout(pluginStopTimer);
+  }
 }
 
 export interface StartServerPluginsArgs {
@@ -533,24 +632,23 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
         clearInterval(sweepInterval);
       }
       pluginCatalogService.stopPeriodicRefresh();
-      await pluginService.stopPeriodicUpdateChecks();
-      if (pendingServerMove === null) {
-        await pluginService.stop().catch((error: unknown) => {
-          logger.warn({ err: error }, "Plugin shutdown failed");
-        });
-      }
-      const closeServer = new Promise<void>((resolve, reject) => {
-        server.close((error) => {
-          if (error) {
-            reject(error);
-            return;
-          }
-          resolve();
-        });
+      await shutdownHttpBeforePlugins({
+        closeWebSockets,
+        onPluginStopTimeout: () =>
+          logger.warn(
+            `Plugin shutdown did not finish within ${SERVER_PLUGIN_SHUTDOWN_TIMEOUT_MS}ms`,
+          ),
+        server,
+        stopPeriodicUpdateChecks: () =>
+          pluginService.stopPeriodicUpdateChecks(),
+        stopPlugins: async () => {
+          if (pendingServerMove !== null) return;
+          await pluginService.stop().catch((error: unknown) => {
+            logger.warn({ err: error }, "Plugin shutdown failed");
+          });
+        },
+        stopTerminalDataPlane: () => terminalDataPlane?.stop(),
       });
-      terminalDataPlane?.stop();
-      await closeWebSockets();
-      await closeServer;
       db.$client.close();
     })();
     return shutdownPromise;

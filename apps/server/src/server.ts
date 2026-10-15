@@ -440,26 +440,32 @@ async function findPrecompressedStaticFile(args: {
   return null;
 }
 
-function closeWebSocketServer(args: CloseWebSocketServerArgs): Promise<void> {
+export function closeWebSocketServer(
+  args: CloseWebSocketServerArgs,
+): Promise<void> {
   for (const client of args.server.clients) {
     client.close(WEB_SOCKET_SHUTDOWN_CODE, args.reason);
   }
 
   return new Promise<void>((resolvePromise, reject) => {
+    let settled = false;
+    const finish = (error?: WebSocketCloseError) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(forceCloseTimeout);
+      if (error) reject(error);
+      else resolvePromise();
+    };
     const forceCloseTimeout = setTimeout(() => {
       for (const client of args.server.clients) {
         client.terminate();
       }
+      finish();
     }, args.forceCloseAfterMs);
     forceCloseTimeout.unref();
 
     args.server.close((error: WebSocketCloseError) => {
-      clearTimeout(forceCloseTimeout);
-      if (error) {
-        reject(error);
-        return;
-      }
-      resolvePromise();
+      finish(error);
     });
   });
 }

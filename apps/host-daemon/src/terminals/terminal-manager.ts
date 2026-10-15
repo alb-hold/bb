@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { spawn as spawnPty } from "node-pty";
-import type { TerminalSessionCloseReason } from "@bb/domain";
+import type { HostDaemonTerminalCloseReason } from "@bb/domain";
 import type { HostDaemonDaemonWsMessage } from "@bb/host-daemon-contract";
 import { HOST_DAEMON_TERMINAL_EXIT_RETENTION_MS } from "@bb/host-daemon-contract/protocol";
 import {
@@ -183,7 +183,7 @@ interface TerminalOutputFlow {
 
 interface TerminalSession {
   chargedScrollbackEntries: ScrollbackEntry[];
-  closeReason: TerminalSessionCloseReason | null;
+  closeReason: HostDaemonTerminalCloseReason | null;
   closeTimeout: ReturnType<typeof setTimeout> | null;
   cols: number;
   disposables: TerminalPtyDisposable[];
@@ -227,12 +227,12 @@ interface SendTerminalErrorArgs {
 }
 
 interface CloseTerminalArgs {
-  reason: TerminalSessionCloseReason;
+  reason: HostDaemonTerminalCloseReason;
   terminalId: string;
 }
 
 interface ShutdownTerminalArgs {
-  reason: TerminalSessionCloseReason;
+  reason: HostDaemonTerminalCloseReason;
   terminalId: string;
 }
 
@@ -253,7 +253,7 @@ interface ResolvedTerminalOpenTarget {
 }
 
 interface FinishTerminalSessionArgs {
-  closeReason: TerminalSessionCloseReason;
+  closeReason: HostDaemonTerminalCloseReason;
   exitCode: number | null;
   session: TerminalSession;
 }
@@ -463,6 +463,7 @@ async function resolveDefaultTerminalShell(): Promise<string> {
 
 function buildTerminalEnv(args: BuildTerminalEnvArgs): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
+    CLAUDE_CODE_FORCE_SYNC_OUTPUT: "1",
     ...sanitizeInheritedChildProcessEnv({ env: process.env }),
     ...args.shellEnv,
     BB_TERMINAL_SESSION_ID: args.terminalId,
@@ -831,7 +832,7 @@ export class TerminalManager {
   }
 
   async shutdownAll(
-    reason: TerminalSessionCloseReason = "daemon-disconnect",
+    reason: HostDaemonTerminalCloseReason = "daemon-disconnect",
   ): Promise<void> {
     const terminalIds = new Set([
       ...this.sessions.keys(),
