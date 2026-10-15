@@ -6,7 +6,7 @@ interface TerminalRenderService {
 }
 
 interface TerminalRenderDemandState {
-  setVisible: (visible: boolean) => void;
+  setVisible: (visible: boolean) => boolean;
 }
 
 interface TerminalCore {
@@ -41,10 +41,13 @@ function demandStateFor(
   });
   const state = {
     setVisible: (visible: boolean) => {
+      const wasDemandPaused = demandPaused;
+      const wasRendererPaused = rendererPaused;
       demandPaused = !visible;
       if (visible) {
         rendererPaused = false;
       }
+      return wasDemandPaused !== demandPaused || (visible && wasRendererPaused);
     },
   };
   demandStateByService.set(renderService, state);
@@ -61,10 +64,9 @@ export function setTerminalRenderDemand(
     return false;
   }
   const demandState = demandStateFor(renderService);
-  if (renderService._isPaused === !visible) {
+  if (!demandState.setVisible(visible)) {
     return false;
   }
-  demandState.setVisible(visible);
   if (visible) {
     renderService._needsFullRefresh = false;
     terminal.refresh(0, terminal.rows - 1);

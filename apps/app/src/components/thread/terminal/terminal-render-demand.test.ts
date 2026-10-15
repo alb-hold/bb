@@ -38,6 +38,19 @@ describe("setTerminalRenderDemand", () => {
     expect(refresh).toHaveBeenCalledWith(0, 23);
   });
 
+  it("keeps hidden demand latched when the renderer was already paused", () => {
+    const { renderService, refresh, terminal } = makeTerminal(true);
+
+    expect(setTerminalRenderDemand(terminal, false)).toBe(true);
+
+    renderService._isPaused = false;
+
+    expect(renderService._isPaused).toBe(true);
+    expect(setTerminalRenderDemand(terminal, false)).toBe(false);
+    expect(renderService._isPaused).toBe(true);
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
   it("leaves terminals without the pinned renderer service untouched", () => {
     const refresh = vi.fn();
     const terminal = { refresh, rows: 24 } as unknown as Terminal;
