@@ -165,11 +165,8 @@ async function runAppImageBridgeSupervisor(
       return;
     }
     terminationSignal = signal;
-    signalBridgeGroup(signal);
-    killTimer = setTimeout(
-      () => signalBridgeGroup("SIGKILL"),
-      shutdownGraceMs,
-    );
+    bridgeProcess.kill(signal);
+    killTimer = setTimeout(() => signalBridgeGroup("SIGKILL"), shutdownGraceMs);
   };
   process.on("SIGINT", () => beginTermination("SIGINT"));
   process.on("SIGTERM", () => beginTermination("SIGTERM"));

@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   DAEMON_DETACH_HEAD_START_MS,
@@ -13,14 +13,20 @@ import {
 } from "@bb/config/full-stack-shutdown";
 import { startBbAppProcess } from "../src/bb-process.js";
 import { stopOwnedRuntimeProcess } from "../src/owned-runtime-shutdown.js";
-
-const launcherFixture = resolve(
-  process.cwd(),
-  "../../packages/bb-app/test/fixtures/p7-real-launcher-shutdown.mjs",
-);
+import { createP7InstalledRuntime } from "../../packages/bb-app/test/fixtures/p7-installed-runtime.mjs";
 const liveProcesses = new Set<number>();
 const scratchDirs: string[] = [];
 const markerFiles: string[] = [];
+const installedRuntimes: Array<{ cleanup(): void }> = [];
+
+function isRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 async function allocateLoopbackPort(): Promise<number> {
   const server = createServer();
@@ -59,13 +65,15 @@ afterEach(() => {
         events
           .filter(
             (event) =>
-              typeof event.event === "string" && event.event.endsWith(":exit"),
+              typeof event.event === "string" &&
+              event.event.endsWith(":process-exit"),
           )
           .map((event) => event.pid)
           .filter((pid): pid is number => typeof pid === "number"),
       );
       for (const event of events) {
-        if (typeof event.pid !== "number" || exitedPids.has(event.pid)) continue;
+        if (typeof event.pid !== "number" || exitedPids.has(event.pid))
+          continue;
         try {
           process.kill(event.pid, 0);
           process.kill(event.pid, "SIGKILL");
@@ -77,9 +85,14 @@ afterEach(() => {
     const dir = scratchDirs.pop();
     if (dir !== undefined) rmSync(dir, { recursive: true, force: true });
   }
+  while (installedRuntimes.length > 0) {
+    installedRuntimes.pop()?.cleanup();
+  }
 });
 
 async function stopRuntimeThroughDesktop(runtimeKind: "direct" | "appimage") {
+  const installed = createP7InstalledRuntime();
+  installedRuntimes.push(installed);
   const serverPort = await allocateLoopbackPort();
   const daemonPort = await allocateLoopbackPort();
   const dir = mkdtempSync(join(tmpdir(), "bb-desktop-shutdown-p7-"));
@@ -95,26 +108,25 @@ async function stopRuntimeThroughDesktop(runtimeKind: "direct" | "appimage") {
   ];
   const env = {
     ...process.env,
-    ...(runtimeKind === "appimage" ? { APPDIR: dirname(launcherFixture) } : {}),
+    ...(runtimeKind === "appimage" ? { APPDIR: installed.packageRoot } : {}),
     BB_DATA_DIR: join(dir, "data"),
     BB_HOST_ENROLL_KEY: "p7-test-enroll-key",
-    NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --conditions=source --import=tsx`.trim(),
+    BB_HOST_ID: "p7-test-host",
+    BB_SERVER_PORT: String(serverPort),
+    BB_HOST_DAEMON_PORT: String(daemonPort),
     P7_DAEMON_DETACH_MS: "5500",
-    P7_DETACHED_CHILDREN: "true",
-    P7_SERVER_PORT: String(serverPort),
-    P7_DAEMON_PORT: String(daemonPort),
     P7_SERVER_PHASES_MS: JSON.stringify(serverPhases),
     P7_SHUTDOWN_MARKER: marker,
   };
   const bbProcess = startBbAppProcess({
-    bridgePath: launcherFixture,
+    bridgePath: installed.binPath,
     cwd: process.cwd(),
     env,
     logLineLimit: 100,
     runtime:
       runtimeKind === "appimage"
         ? {
-            appDirPath: dirname(launcherFixture),
+            appDirPath: installed.packageRoot,
             executablePath: process.execPath,
             kind: "appimage",
             mode: "electron-node",
@@ -161,11 +173,11 @@ async function stopRuntimeThroughDesktop(runtimeKind: "direct" | "appimage") {
   const event = (name: string) => events.find((item) => item.event === name);
 
   return {
-    daemonExit: event("daemon:exit"),
+    daemonExit: event("daemon:process-exit"),
     elapsedMs,
     events,
     exit,
-    serverExit: event("server:exit"),
+    serverExit: event("server:process-exit"),
     serverSignal: event("server:received-sigterm"),
     shutdownStartedAt,
   };
@@ -187,9 +199,22 @@ describe.sequential("owned runtime shutdown signal path", () => {
       expect(result.elapsedMs).toBeLessThan(
         DESKTOP_OWNED_RUNTIME_SHUTDOWN_GRACE_MS,
       );
-      expect(result.elapsedMs).toBeGreaterThanOrEqual(5_000);
+      expect(result.elapsedMs, JSON.stringify(result)).toBeGreaterThanOrEqual(
+        5_000,
+      );
       expect(result.daemonExit?.code).toBe(0);
-      expect(result.daemonExit?.signal).toBeNull();
+      expect(
+        result.events.find((item) => item.event === "daemon:ready"),
+      ).toBeDefined();
+      expect(
+        result.events.find((item) => item.event === "server:ready"),
+      ).toBeDefined();
+      expect(
+        result.events.find((item) => item.event === "daemon:received-sigterm"),
+      ).toBeDefined();
+      expect(
+        result.events.find((item) => item.event === "server:received-sigterm"),
+      ).toBeDefined();
       expect(result.serverSignal?.at).toBeGreaterThanOrEqual(
         result.daemonExit?.at as number,
       );
@@ -197,10 +222,25 @@ describe.sequential("owned runtime shutdown signal path", () => {
         (result.serverSignal?.at as number) - result.shutdownStartedAt,
       ).toBeLessThanOrEqual(DAEMON_DETACH_HEAD_START_MS);
       expect(result.serverExit?.code).toBe(0);
-      expect(result.serverExit?.signal).toBeNull();
-      expect(result.events.some((item) => item.signal === "SIGKILL")).toBe(
-        false,
-      );
+      expect(
+        result.events.find((item) => item.event === "daemon:shutdown-complete"),
+      ).toBeDefined();
+      expect(
+        result.events.find((item) => item.event === "server:shutdown-complete"),
+      ).toBeDefined();
+      expect(
+        result.events.find((item) => item.event === "server:process-exit")
+          ?.code,
+      ).toBe(0);
+      expect(
+        result.events.find((item) => item.event === "daemon:process-exit")
+          ?.code,
+      ).toBe(0);
+      for (const item of result.events.filter((item) =>
+        ["daemon:ready", "server:ready"].includes(String(item.event)),
+      )) {
+        expect(typeof item.pid === "number" && isRunning(item.pid)).toBe(false);
+      }
     },
     20_000,
   );

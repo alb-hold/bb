@@ -292,21 +292,6 @@ interface RunBbAppOptions {
   worktreePolicy: WorktreeRuntimePolicy | null;
 }
 
-interface TestManagedProcessStarterArgs {
-  context: BbAppStartContext;
-  env: NodeJS.ProcessEnv;
-  processName: ManagedProcessName;
-  serverUrl: string;
-}
-
-type TestManagedProcessStarter = (
-  args: TestManagedProcessStarterArgs,
-) => Promise<ManagedProcessRun>;
-
-interface RunBbAppTestOptions extends RunBbAppOptions {
-  startManagedProcess: TestManagedProcessStarter;
-}
-
 export interface BbAppStartContext {
   appDistDir: string;
   appVersion: string;
@@ -4030,18 +4015,9 @@ export function runBbApp(
   return runBbAppInternal(cliArgs, options);
 }
 
-export function runBbAppWithTestManagedProcess(
-  cliArgs: string[],
-  options: RunBbAppTestOptions,
-): Promise<void> {
-  const { startManagedProcess, ...runOptions } = options;
-  return runBbAppInternal(cliArgs, runOptions, startManagedProcess);
-}
-
 async function runBbAppInternal(
   cliArgs: string[],
   options: RunBbAppOptions,
-  testManagedProcessStarter?: TestManagedProcessStarter,
 ): Promise<void> {
   const parsedArgs = parseLauncherArgs(cliArgs);
   const underAppUpdateShim = isRunningUnderAppUpdateShim(process.env);
@@ -4152,9 +4128,7 @@ async function runBbAppInternal(
     return;
   }
 
-  if (testManagedProcessStarter === undefined) {
-    assertBbAppArtifacts(runtime.context);
-  }
+  assertBbAppArtifacts(runtime.context);
 
   if (
     shouldRunNpmAppUpdateShim({
@@ -4349,35 +4323,17 @@ async function runBbAppInternal(
             });
             return () =>
               (async () => {
-                const daemonRun =
-                  testManagedProcessStarter === undefined
-                    ? await startDaemonProcess({
-                        context,
-                        env: daemonEnv,
-                        processes,
-                        serverUrl: context.serverUrl,
-                      })
-                    : await testManagedProcessStarter({
-                        context,
-                        env: daemonEnv,
-                        processName: "daemon",
-                        serverUrl: context.serverUrl,
-                      });
+                const daemonRun = await startDaemonProcess({
+                  context,
+                  env: daemonEnv,
+                  processes,
+                  serverUrl: context.serverUrl,
+                });
                 processes.daemonRun = daemonRun;
                 return daemonRun;
               })();
           },
           startServer: async () => {
-            if (testManagedProcessStarter !== undefined) {
-              const serverRun = await testManagedProcessStarter({
-                context,
-                env: serverEnv,
-                processName: "server",
-                serverUrl: context.serverUrl,
-              });
-              processes.serverRun = serverRun;
-              return serverRun;
-            }
             return startFullStackServerProcess({
               ...(options.beforeServerStart === undefined
                 ? {}

@@ -2,8 +2,7 @@ import { spawn } from "node:child_process";
 import { createServer } from "node:net";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { once } from "node:events";
 import {
   DAEMON_DETACH_HEAD_START_MS,
@@ -14,12 +13,7 @@ import {
   SERVER_WEBSOCKET_SHUTDOWN_WAIT_TIMEOUT_MS,
 } from "@bb/config/full-stack-shutdown";
 import { expect, it } from "vitest";
-
-const launcherFixture = join(
-  dirname(fileURLToPath(import.meta.url)),
-  "fixtures",
-  "p7-real-launcher-shutdown.mjs",
-);
+import { createP7InstalledRuntime } from "./fixtures/p7-installed-runtime.mjs";
 
 function readEvents(marker: string): Array<Record<string, unknown>> {
   return readFileSync(marker, "utf8")
@@ -58,6 +52,7 @@ async function allocateLoopbackPort(): Promise<number> {
 }
 
 it("handles SIGTERM through the real launcher and bounded server children", async () => {
+  const installed = createP7InstalledRuntime();
   const serverPort = await allocateLoopbackPort();
   const daemonPort = await allocateLoopbackPort();
   const dataDir = mkdtempSync(join(tmpdir(), "bb-launcher-sigterm-"));
@@ -71,17 +66,28 @@ it("handles SIGTERM through the real launcher and bounded server children", asyn
   ];
   const launcher = spawn(
     process.execPath,
-    ["--conditions=source", "--import", "tsx", launcherFixture],
+    [
+      installed.binPath,
+      "start",
+      "--data-dir",
+      dataDir,
+      "--server-port",
+      String(serverPort),
+      "--host-daemon-port",
+      String(daemonPort),
+      "--no-in-app-updates",
+      "--bundled",
+    ],
     {
       cwd: process.cwd(),
       env: {
         ...process.env,
         BB_DATA_DIR: dataDir,
         BB_HOST_ENROLL_KEY: "p7-test-enroll-key",
+        BB_HOST_ID: "p7-test-host",
         P7_DAEMON_DETACH_MS: "5500",
-        P7_DETACHED_CHILDREN: "true",
-        P7_SERVER_PORT: String(serverPort),
-        P7_DAEMON_PORT: String(daemonPort),
+        BB_SERVER_PORT: String(serverPort),
+        BB_HOST_DAEMON_PORT: String(daemonPort),
         P7_SERVER_PHASES_MS: JSON.stringify(serverPhases),
         P7_SHUTDOWN_MARKER: marker,
       },
@@ -129,23 +135,30 @@ it("handles SIGTERM through the real launcher and bounded server children", asyn
     const events = readEvents(marker);
     const byEvent = (name: string) =>
       events.find((event) => event.event === name);
-    const daemonExit = byEvent("daemon:exit");
+    const daemonExit = byEvent("daemon:process-exit");
     const serverSignal = byEvent("server:received-sigterm");
-    const serverExit = byEvent("server:exit");
+    const serverExit = byEvent("server:process-exit");
 
     expect(code).toBe(0);
     expect(signal).toBeNull();
+    expect(byEvent("server:ready")).toBeDefined();
+    expect(byEvent("daemon:ready")).toBeDefined();
     expect(elapsedMs).toBeLessThan(DESKTOP_OWNED_RUNTIME_SHUTDOWN_GRACE_MS);
     expect(elapsedMs, JSON.stringify(events)).toBeGreaterThanOrEqual(5_000);
     expect(byEvent("daemon:detach-acked")).toBeDefined();
     expect(daemonExit?.code).toBe(0);
-    expect(daemonExit?.signal).toBeNull();
     expect(serverSignal?.at).toBeGreaterThanOrEqual(daemonExit?.at as number);
-    expect((serverSignal?.at as number) - shutdownStartedAt).toBeLessThanOrEqual(
-      DAEMON_DETACH_HEAD_START_MS,
-    );
+    expect(
+      (serverSignal?.at as number) - shutdownStartedAt,
+    ).toBeLessThanOrEqual(DAEMON_DETACH_HEAD_START_MS);
     expect(serverExit?.code).toBe(0);
-    expect(serverExit?.signal).toBeNull();
+    expect(byEvent("server:shutdown-complete")).toBeDefined();
+    expect(byEvent("daemon:shutdown-complete")).toBeDefined();
+    for (const event of [byEvent("server:ready"), byEvent("daemon:ready")]) {
+      expect(typeof event?.pid === "number" && isRunning(event.pid)).toBe(
+        false,
+      );
+    }
     expect(events.some((event) => event.signal === "SIGKILL")).toBe(false);
   } finally {
     if (shutdownTimeout !== undefined) clearTimeout(shutdownTimeout);
@@ -155,11 +168,15 @@ it("handles SIGTERM through the real launcher and bounded server children", asyn
         const events = readEvents(marker);
         const exitedPids = new Set(
           events
-            .filter((event) =>
-              typeof event.event === "string" && event.event.endsWith(":exit"),
+            .filter(
+              (event) =>
+                typeof event.event === "string" &&
+                event.event.endsWith(":process-exit"),
             )
             .map((event) => event.pid)
-            .filter((eventPid): eventPid is number => typeof eventPid === "number"),
+            .filter(
+              (eventPid): eventPid is number => typeof eventPid === "number",
+            ),
         );
         for (const event of events) {
           if (typeof event.pid === "number" && isRunning(event.pid)) {
@@ -169,5 +186,6 @@ it("handles SIGTERM through the real launcher and bounded server children", asyn
       } catch {}
     }
     rmSync(dataDir, { recursive: true, force: true });
+    installed.cleanup();
   }
-}, 20_000);
+}, 30_000);
