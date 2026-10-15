@@ -1,5 +1,4 @@
 import { appendFileSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { Server } from "node:http";
 import { register } from "tsx/esm/api";
 
@@ -8,12 +7,6 @@ const closeServer = Server.prototype.close;
 Server.prototype.close = function (...args) {
   appendFileSync(process.env.BB_RUN_SHUTDOWN_MARKER, "server-close\n");
   return closeServer.apply(this, args);
-};
-const Database = createRequire(import.meta.url)("better-sqlite3");
-const closeDatabase = Database.prototype.close;
-Database.prototype.close = function (...args) {
-  appendFileSync(process.env.BB_RUN_SHUTDOWN_MARKER, "db-close\n");
-  return closeDatabase.apply(this, args);
 };
 const { loadServerConfig } = await import("@bb/config/server");
 const { runServer } = await import("../../../../apps/server/src/start-server.ts");

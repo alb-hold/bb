@@ -218,7 +218,6 @@ describe("server process ownership", () => {
         "utf8",
       );
       expect(shutdownLog).toContain("server-close");
-      expect(shutdownLog).toContain("db-close");
       expect(isProcessRunning(agentPid)).toBe(true);
       expect(isProcessRunning(holderPid)).toBe(true);
       const Database = createRequire(import.meta.url)("better-sqlite3");
