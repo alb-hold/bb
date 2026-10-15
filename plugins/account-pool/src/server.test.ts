@@ -11804,6 +11804,38 @@ describe("Account Pool credential scoping", () => {
     ).toEqual([]);
   });
 
+  it("routes through a readable account when an earlier enabled account fails to read", async () => {
+    const fixture = await scopedFixture();
+    await fixture.host.harness.behavior.callRpc("account.add", {
+      provider: "claude",
+      source: { kind: "api-key", apiKey: "sk-healthy" },
+      label: "Healthy subscription",
+      priority: 200,
+    });
+    const readSecret = AccountStore.prototype.readSecret;
+    const read = vi
+      .spyOn(AccountStore.prototype, "readSecret")
+      .mockImplementation(async function (this: AccountStore, id) {
+        if (id === fixture.account.id)
+          throw Object.assign(new Error("disk read failed"), { code: "EIO" });
+        return readSecret.call(this, id);
+      });
+    try {
+      const entries = await fixture.host.harness.behavior.resolveProviderEnv(
+        "claude-code",
+        {
+          threadId: "thread-mixed",
+          projectId: "project-one",
+          hostId: "host-one",
+        },
+      );
+      expect(read.mock.calls[0]?.[0]).toBe(fixture.account.id);
+      expect(entries.map((entry) => entry.name)).toContain(PARENT_TOKEN_ENV);
+    } finally {
+      read.mockRestore();
+    }
+  });
+
   it("leaves a thread unrouted when the pool has no enabled account for its provider", async () => {
     const { host } = await scopedFixture();
     const list = vi.spyOn(AccountStore.prototype, "list").mockResolvedValue([]);

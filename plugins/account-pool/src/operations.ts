@@ -668,16 +668,17 @@ export class PoolOperations {
   }
 
   async hasUsableEnabledAccount(provider: PoolProvider): Promise<boolean> {
+    let readFailure: { error: unknown } | null = null;
     for (const account of await this.accounts.list()) {
       if (!account.enabled || account.provider !== provider) continue;
       try {
         await this.accounts.readSecret(account.id);
         return true;
       } catch (error) {
-        if (isUnusableSecret(error)) continue;
-        throw error;
+        if (!isUnusableSecret(error)) readFailure ??= { error };
       }
     }
+    if (readFailure !== null) throw readFailure.error;
     return false;
   }
 
