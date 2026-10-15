@@ -233,6 +233,7 @@ import type {
   TerminalSession,
   TerminalInputRequest,
   TerminalListQuery,
+  TerminalNotifyRequest,
   TerminalOutputQuery,
   TerminalOutputResponse,
   TerminalResizeRequest,
@@ -436,6 +437,7 @@ import {
   threadStoragePathsQuerySchema,
   terminalInputRequestSchema,
   terminalListQuerySchema,
+  terminalNotifyRequestSchema,
   terminalOutputQuerySchema,
   terminalResizeRequestSchema,
   threadTimelineQuerySchema,
@@ -1141,6 +1143,14 @@ export const publicApiRoutes = {
       method: "post",
       request: jsonRequest<PathTerminal, TerminalInputRequest>(
         terminalInputRequestSchema,
+      ),
+      response: jsonResponse<TerminalSession>(),
+    }),
+    notify: defineRoute({
+      path: "/terminals/:terminalId/notify",
+      method: "post",
+      request: jsonRequest<PathTerminal, TerminalNotifyRequest>(
+        terminalNotifyRequestSchema,
       ),
       response: jsonResponse<TerminalSession>(),
     }),

@@ -1812,6 +1812,7 @@ export interface UpdateThreadInput {
   projectId?: string;
   sectionId?: string | null;
   lastReadAt?: number | null;
+  latestAttentionAt?: number;
   parentThreadId?: string | null;
   title?: string | null;
   visibility?: ThreadVisibility;
@@ -1831,6 +1832,7 @@ export function updateThread(
   const changes: ThreadChangeKind[] = [];
   if ("title" in input || "sectionId" in input) changes.push("title-changed");
   if ("lastReadAt" in input) changes.push("read-state-changed");
+  if ("latestAttentionAt" in input) changes.push("read-state-changed");
   if ("visibility" in input && input.visibility !== existing.visibility) {
     changes.push("title-changed");
   }
@@ -1859,6 +1861,9 @@ export function updateThread(
   if ("projectId" in input) set.projectId = input.projectId;
   if ("lastReadAt" in input) {
     set.lastReadAt = input.lastReadAt;
+  }
+  if ("latestAttentionAt" in input) {
+    set.latestAttentionAt = input.latestAttentionAt;
   }
   if ("parentThreadId" in input) set.parentThreadId = input.parentThreadId;
   if ("visibility" in input) set.visibility = input.visibility;

@@ -374,6 +374,21 @@ export class NotificationHub implements DbNotifier {
     state.lastSeenAt = now;
   }
 
+  hasVisibleTerminalClient(terminalId: string, now: number): boolean {
+    for (const state of this.terminalClientStateById
+      .get(terminalId)
+      ?.values() ?? []) {
+      if (
+        state.visible &&
+        (!state.heartbeats ||
+          now - state.lastSeenAt <= TERMINAL_CLIENT_STALE_MS)
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   recordTerminalClientSeen(
     terminalId: string,
     socket: HubSocket,

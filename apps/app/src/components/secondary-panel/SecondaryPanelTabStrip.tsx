@@ -654,6 +654,7 @@ function PanelTab({
         tab.tab.kind === "thread-storage-file-preview" ||
         tab.tab.kind === "attachment-file-preview"
       }
+      attention={tab.attention}
       closeAction={
         tab.isPinned
           ? null
