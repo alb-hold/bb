@@ -44,15 +44,20 @@ import { setTerminalRenderDemand } from "./terminal-render-demand";
 import { TerminalLinkOpenDialog } from "./TerminalLinkOpenDialog";
 import { TerminalMobileControls } from "./TerminalMobileControls";
 import { TerminalCommandGutter } from "./TerminalCommandGutter";
+import type { TerminalControlMode } from "./TerminalMobileControls";
 import { TerminalSearch } from "./TerminalSearch";
 import type { TerminalSearchAddonInstance } from "./terminal-search-addon";
 import { loadOptionalTerminalSearchAddon } from "./terminal-search-addon";
 import { TerminalTextSelectSheet } from "./TerminalTextSelectSheet";
 import { terminalTextSnapshot } from "./terminal-text-snapshot";
 import {
-  applyTerminalControl,
+  applyTerminalControlMode,
   encodeTerminalArrow,
 } from "./terminal-mobile-input";
+import {
+  readTerminalMobileFontSize,
+  writeTerminalMobileFontSize,
+} from "./terminal-mobile-settings";
 import {
   createTerminalOsc8LinkHandler,
   requestTerminalLinkOpen,
@@ -729,12 +734,16 @@ export function ThreadTerminalView({
   session,
 }: ThreadTerminalViewProps) {
   const isTouchDevice = useMediaQuery("(pointer: coarse)");
-  const [controlActive, setControlActive] = useState(false);
-  const controlActiveRef = useRef(false);
-  const changeControlActive = (active: boolean) => {
-    controlActiveRef.current = active;
-    setControlActive(active);
-  };
+  const [controlMode, setControlMode] = useState<TerminalControlMode>("off");
+  const controlModeRef = useRef<TerminalControlMode>("off");
+  const [mobileFontSize, setMobileFontSize] = useState(() =>
+    typeof localStorage === "undefined" ? 12 : readTerminalMobileFontSize(localStorage),
+  );
+  const mobileFontSizeRef = useRef(mobileFontSize);
+  const changeControlMode = useCallback((mode: TerminalControlMode) => {
+    controlModeRef.current = mode;
+    setControlMode(mode);
+  }, []);
   const [terminalReady, setTerminalReady] = useState(false);
   const [promptTrackerState, setPromptTrackerState] = useState(
     EMPTY_TERMINAL_PROMPT_TRACKER,
@@ -1031,7 +1040,7 @@ export function ThreadTerminalView({
           convertEol: true,
           cursorBlink: true,
           fontFamily: readTerminalFontFamily(),
-          fontSize: 12,
+          fontSize: mobileFontSizeRef.current,
           linkHandler: osc8LinkHandler,
           scrollback: 10_000,
           theme: buildTerminalTheme(),
@@ -1355,10 +1364,12 @@ export function ThreadTerminalView({
           onFilesDrop: (files) => handleFileDropRef.current?.(files),
         });
         activeTerminal.onData((data) => {
-          if (controlActiveRef.current) {
-            data = applyTerminalControl(data);
-            controlActiveRef.current = false;
-            setControlActive(false);
+          if (controlModeRef.current !== "off") {
+            const applied = applyTerminalControlMode(data, controlModeRef.current);
+            data = applied.data;
+            if (applied.nextMode !== controlModeRef.current) {
+              changeControlMode(applied.nextMode);
+            }
           }
           forwardTerminalData({
             data,
@@ -1424,8 +1435,8 @@ export function ThreadTerminalView({
 
     return () => {
       disposed = true;
-      controlActiveRef.current = false;
-      setControlActive(false);
+      controlModeRef.current = "off";
+      setControlMode("off");
       setTerminalReady(false);
       setTerminalSearchAddon(null);
       setTerminalSearchOpen(false);
@@ -1462,6 +1473,7 @@ export function ThreadTerminalView({
     handleTerminalPointerCancel,
     jumpToPrompt,
     requestOpenTerminalLink,
+    changeControlMode,
     session.id,
     session.threadId,
     updateHoveredTerminalLink,
@@ -1490,6 +1502,17 @@ export function ThreadTerminalView({
       terminal,
     });
   }, [session]);
+
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    if (!terminal) {
+      return;
+    }
+    terminal.options.fontSize = mobileFontSize;
+    forceTerminalFontMeasurement(terminal);
+    scheduleFitRef.current?.();
+    if (isTouchDevice) writeTerminalMobileFontSize(localStorage, mobileFontSize);
+  }, [isTouchDevice, mobileFontSize]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
@@ -1531,6 +1554,7 @@ export function ThreadTerminalView({
         <ContextMenuTrigger asChild disabled={!hasTerminalContextMenuTarget}>
           <div
             className="group/terminal-pane relative min-h-0 w-full flex-1 overflow-hidden bg-sidebar p-2"
+            data-app-terminal=""
             onContextMenuCapture={captureTerminalContextMenu}
             onTouchStart={(event) => touchHandlers().start(event)}
             onTouchMove={(event) => touchHandlers().move(event)}
@@ -1620,28 +1644,31 @@ export function ThreadTerminalView({
       </ContextMenu>
       {isTouchDevice ? (
         <TerminalMobileControls
-          controlActive={controlActive}
+          controlMode={controlMode}
           disabled={!terminalReady || session.status !== "running"}
-          onControlChange={(active) => {
-            changeControlActive(active);
-            if (active) terminalRef.current?.focus();
+          onControlChange={(mode) => {
+            changeControlMode(mode);
+            if (mode !== "off") terminalRef.current?.focus();
           }}
           onPreviousPrompt={() => jumpToPrompt("previous")}
           onNextPrompt={() => jumpToPrompt("next")}
           onArrow={(key) => {
             const terminal = terminalRef.current;
             if (!terminal) return;
-            changeControlActive(false);
+            const controlled = controlModeRef.current !== "off";
+            if (controlModeRef.current === "one-shot") changeControlMode("off");
             terminal.input(
               encodeTerminalArrow(
                 key,
                 terminal.modes.applicationCursorKeysMode,
+                controlled,
               ),
             );
           }}
           onInput={(data) => {
-            changeControlActive(false);
-            terminalRef.current?.input(data);
+            const applied = applyTerminalControlMode(data, controlModeRef.current);
+            if (applied.nextMode !== controlModeRef.current) changeControlMode(applied.nextMode);
+            terminalRef.current?.input(applied.data);
           }}
           onKeyboardToggle={() => {
             const terminal = terminalRef.current;
@@ -1662,7 +1689,7 @@ export function ThreadTerminalView({
               .readText()
               .then((text) => {
                 if (terminalRef.current !== terminal) return;
-                changeControlActive(false);
+                changeControlMode("off");
                 terminal.paste(text);
               })
               .catch(() => {
@@ -1674,6 +1701,12 @@ export function ThreadTerminalView({
             if (!terminal) return;
             terminal.blur();
             setTextSnapshot(terminalTextSnapshot(terminal));
+          }}
+          fontSize={mobileFontSize}
+          onFontSizeChange={(delta) => {
+            const next = writeTerminalMobileFontSize(localStorage, mobileFontSize + delta);
+            mobileFontSizeRef.current = next;
+            setMobileFontSize(next);
           }}
         />
       ) : null}
