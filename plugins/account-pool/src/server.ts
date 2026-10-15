@@ -530,6 +530,17 @@ export function createAccountPoolPlugin(
           }
           return [...(await serving(token)), ...markerEntries(nestedToken)];
         }
+        if (
+          !bypassed &&
+          accountId === null &&
+          proxyingParent() === null &&
+          (await operations.isRoutingEnabled(provider)) &&
+          (await operations.hasEnabledAccount(provider))
+        ) {
+          throw new Error(
+            `Account Pooler has enabled ${provider} accounts but none has a readable credential, so this thread was not started on the local login.`,
+          );
+        }
         await bb.storage.kv.delete(`retry-route:${context.threadId}`);
         return unrouted();
       };

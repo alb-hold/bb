@@ -18,6 +18,7 @@ import type {
 } from "./store.js";
 import type { ClaudeOAuthAccount } from "./oauth-login.js";
 import type { CodexDeviceAccount } from "./codex-device-login.js";
+import { z } from "zod";
 import { subscriptionMembers } from "./subscriptions.js";
 
 interface PoolHost {
@@ -667,16 +668,24 @@ export class PoolOperations {
   }
 
   async hasUsableEnabledAccount(provider: PoolProvider): Promise<boolean> {
+    let readFailure: { error: unknown } | null = null;
     for (const account of await this.accounts.list()) {
       if (!account.enabled || account.provider !== provider) continue;
       try {
         await this.accounts.readSecret(account.id);
         return true;
-      } catch {
-        continue;
+      } catch (error) {
+        if (!isUnusableSecret(error)) readFailure ??= { error };
       }
     }
+    if (readFailure !== null) throw readFailure.error;
     return false;
+  }
+
+  async hasEnabledAccount(provider: PoolProvider): Promise<boolean> {
+    return (await this.accounts.list()).some(
+      (account) => account.enabled && account.provider === provider,
+    );
   }
 
   async routesOnlyApiKeys(provider: PoolProvider): Promise<boolean> {
@@ -737,4 +746,12 @@ export class PoolOperations {
       ];
     });
   }
+}
+
+function isUnusableSecret(error: unknown): boolean {
+  return (
+    error instanceof SyntaxError ||
+    error instanceof z.ZodError ||
+    (error instanceof Error && "code" in error && error.code === "ENOENT")
+  );
 }

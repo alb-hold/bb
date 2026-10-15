@@ -2021,7 +2021,7 @@ describe("providers.experimental_contributeEnv", () => {
         projectId: "project-1",
         hostId: "host-1",
       }),
-    ).resolves.toEqual([]);
+    ).rejects.toThrow();
     expect(harness.inspection.logEntries.at(-1)).toMatchObject({
       level: "warn",
     });

@@ -208,7 +208,7 @@ describe("plugin agent contributions reach thread runtime config", () => {
     pluginsDir = await mkdtemp(join(tmpdir(), "bb-plugin-runtime-test-"));
   });
 
-  it("isolates resolver failures and timeouts", async () => {
+  it("refuses to resolve without an environment whose resolver fails or times out twice", async () => {
     const db = createConnection(":memory:");
     migrate(db);
     const service = createPluginService({
@@ -232,7 +232,7 @@ describe("plugin agent contributions reach thread runtime config", () => {
         serverSource: `
           export default function plugin(bb) {
             bb.providers.experimental_contributeEnv("codex", () => {
-              throw new Error("resolver exploded");
+              throw new Error("resolver exploded with sk-ant-sentinel-0451");
             });
             bb.providers.experimental_contributeEnv("claude-code", () => new Promise(() => {}));
           }
@@ -245,12 +245,94 @@ describe("plugin agent contributions reach thread runtime config", () => {
         hostId: "host-timeout",
       };
 
-      await expect(
-        service.resolveProviderEnv({ providerId: "codex", context }),
-      ).resolves.toEqual({ entries: [] });
+      const failure = await service
+        .resolveProviderEnv({ providerId: "codex", context })
+        .then(
+          () => null,
+          (error: unknown) => error,
+        );
+      expect(failure).toMatchObject({
+        status: 503,
+        body: { code: "provider_environment_unavailable" },
+      });
+      expect(JSON.stringify(failure)).not.toContain("sk-ant-sentinel-0451");
+      expect(String(failure)).not.toContain("sk-ant-sentinel-0451");
       await expect(
         service.resolveProviderEnv({ providerId: "claude-code", context }),
-      ).resolves.toEqual({ entries: [] });
+      ).rejects.toMatchObject({
+        status: 503,
+        body: { code: "provider_environment_unavailable" },
+      });
+    } finally {
+      await service.stop();
+    }
+  });
+
+  it("calls a timed-out resolver once per resolution, never overlapping a second call", async () => {
+    const db = createConnection(":memory:");
+    migrate(db);
+    const service = createPluginService({
+      aiServices: createAiServiceRegistry(),
+      telemetry: createNoopTelemetryService(),
+      db,
+      hub: {
+        getDaemonSessionIdForHost: () => null,
+        notifyPluginSignal: () => 0,
+        notifySystem: () => {},
+      },
+      logger,
+      dataDir: join(pluginsDir, "retry-data"),
+      appVersion: "0.9.0",
+      loadTimeoutMs: 2_000,
+      providerEnvResolveTimeoutMs: 20,
+    });
+    try {
+      const root = await writePlugin(pluginsDir, {
+        name: "bb-plugin-env-slow",
+        serverSource: `
+          export default function plugin(bb) {
+            let calls = 0;
+            let inFlight = 0;
+            let maxInFlight = 0;
+            bb.providers.experimental_contributeEnv("claude-code", async () => {
+              calls += 1;
+              inFlight += 1;
+              maxInFlight = Math.max(maxInFlight, inFlight);
+              try {
+                if (calls === 1) await new Promise((resolve) => setTimeout(resolve, 200));
+                return [{ name: "RESOLVER_CALLS", value: calls + ":" + maxInFlight, reason: "observed" }];
+              } finally {
+                inFlight -= 1;
+              }
+            });
+          }
+        `,
+      });
+      await service.installPath(root);
+      const context = {
+        threadId: "thread-slow",
+        projectId: "project-slow",
+        hostId: "host-slow",
+      };
+
+      await expect(
+        service.resolveProviderEnv({ providerId: "claude-code", context }),
+      ).rejects.toMatchObject({
+        body: { code: "provider_environment_unavailable" },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      await expect(
+        service.resolveProviderEnv({ providerId: "claude-code", context }),
+      ).resolves.toEqual({
+        entries: [
+          {
+            name: "RESOLVER_CALLS",
+            value: "2:1",
+            reason: "observed",
+            source: { plugin: "env-slow" },
+          },
+        ],
+      });
     } finally {
       await service.stop();
     }
@@ -430,5 +512,74 @@ describe("plugin agent contributions reach thread runtime config", () => {
       },
     });
     expect(nativeEnv.entries).toEqual(command.contributedEnv);
+  });
+
+  it("does not build a thread start command without a failing plugin's environment", async () => {
+    const root = await writePlugin(pluginsDir, {
+      name: "bb-plugin-env-broken",
+      serverSource: `
+        export default function plugin(bb) {
+          bb.providers.experimental_contributeEnv("codex", () => {
+            throw new Error("routing unavailable for sk-ant-sentinel-0452");
+          });
+        }
+      `,
+    });
+    await harness.pluginService.installPath(root);
+    const { host } = seedHostSession(harness.deps, {
+      id: "host-provider-env-broken",
+    });
+    const { project } = seedProjectWithSource(harness.deps, {
+      hostId: host.id,
+    });
+    const environment = seedEnvironment(harness.deps, {
+      hostId: host.id,
+      projectId: project.id,
+      path: join(harness.config.dataDir, "provider-env-broken-workspace"),
+    });
+    const thread = seedThread(harness.deps, {
+      projectId: project.id,
+      environmentId: environment.id,
+      providerId: "codex",
+    });
+    const execution = await buildExecutionOptions(
+      harness.deps,
+      { model: "gpt-5" },
+      { threadId: thread.id },
+    );
+
+    const failure = await buildThreadStartCommand(harness.deps, {
+      environment,
+      execution,
+      fork: null,
+      permissionEscalation: "ask",
+      input: textInput("hello"),
+      projectId: project.id,
+      providerId: "codex",
+      requestId: encodeClientTurnRequestIdNumber({ value: 5 }),
+      syncGeneratedTitle: false,
+      thread,
+    }).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(JSON.stringify(failure)).not.toContain("sk-ant-sentinel-0452");
+    expect(String(failure)).not.toContain("sk-ant-sentinel-0452");
+    await expect(
+      buildThreadStartCommand(harness.deps, {
+        environment,
+        execution,
+        fork: null,
+        permissionEscalation: "ask",
+        input: textInput("hello"),
+        projectId: project.id,
+        providerId: "codex",
+        requestId: encodeClientTurnRequestIdNumber({ value: 4 }),
+        syncGeneratedTitle: false,
+        thread,
+      }),
+    ).rejects.toMatchObject({
+      body: { code: "provider_environment_unavailable" },
+    });
   });
 });
