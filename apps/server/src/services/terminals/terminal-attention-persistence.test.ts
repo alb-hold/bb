@@ -132,6 +132,66 @@ describe("terminal attention persistence", () => {
     );
   });
 
+  it("publishes the cleared attention on the visible client session update", async () => {
+    const db = createConnection(":memory:");
+    migrate(db);
+    const harness = await createTestAppHarness({ db });
+    harnesses.push(harness);
+    const { terminalId } = createAttentionTerminal(harness);
+    harness.deps.terminalSessions.notifyTerminal({
+      terminalId,
+      payload: { title: "hidden signal" },
+    });
+    const sent: string[] = [];
+    const socket = {
+      close() {},
+      send(data: string) {
+        sent.push(data);
+      },
+    };
+    harness.hub.registerTerminalClient(terminalId, socket);
+
+    harness.deps.terminalSessions.handleBrowserTerminalMessage({
+      terminalId,
+      socket,
+      message: { type: "visibility", visible: true },
+    });
+
+    expect(
+      getTerminalAttention(harness.db, terminalId)?.clearedAt,
+    ).not.toBeNull();
+    expect(
+      sent
+        .map((data) => JSON.parse(data) as Record<string, unknown>)
+        .find((message) => message.type === "session-updated")?.session,
+    ).toMatchObject({ attention: null, id: terminalId });
+  });
+
+  it("keeps pending attention when a second client attaches hidden", async () => {
+    const db = createConnection(":memory:");
+    migrate(db);
+    const harness = await createTestAppHarness({ db });
+    harnesses.push(harness);
+    const { terminalId } = createAttentionTerminal(harness);
+    harness.deps.terminalSessions.notifyTerminal({
+      terminalId,
+      payload: { title: "hidden before attach" },
+    });
+    const socket = { close() {}, send() {} };
+    harness.hub.registerTerminalClient(terminalId, socket);
+
+    harness.deps.terminalSessions.handleBrowserTerminalMessage({
+      terminalId,
+      socket,
+      message: { type: "visibility", visible: false },
+    });
+
+    expect(getTerminalAttention(harness.db, terminalId)).toMatchObject({
+      clearedAt: null,
+      title: "hidden before attach",
+    });
+  });
+
   it("keeps API attention cleared while the terminal is visible", async () => {
     const harness = await createTestAppHarness();
     harnesses.push(harness);
