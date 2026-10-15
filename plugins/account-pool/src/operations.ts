@@ -681,6 +681,12 @@ export class PoolOperations {
     return false;
   }
 
+  async hasEnabledAccount(provider: PoolProvider): Promise<boolean> {
+    return (await this.accounts.list()).some(
+      (account) => account.enabled && account.provider === provider,
+    );
+  }
+
   async routesOnlyApiKeys(provider: PoolProvider): Promise<boolean> {
     let usable = false;
     for (const account of await this.accounts.list()) {

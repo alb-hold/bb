@@ -2364,7 +2364,7 @@ describe("Account Pool plugin", () => {
     await expect(cacheEntry()).resolves.toBeUndefined();
   });
 
-  it("withholds env and proxied health when an enabled account secret is missing", async () => {
+  it("refuses the launch and withholds proxied health when an enabled account secret is missing", async () => {
     const upstream = await startUpstream(async (request, response) => {
       await readRequestBody(request);
       response.writeHead(200, { "content-type": "application/json" });
@@ -2387,7 +2387,7 @@ describe("Account Pool plugin", () => {
         projectId: "project-one",
         hostId: "host-one",
       }),
-    ).resolves.toEqual([]);
+    ).rejects.toThrow("none has a readable credential");
     await expect(
       fixture.host.harness.behavior.resolveProviderEnvHealth("claude-code", {
         hostId: "host-one",
@@ -11777,29 +11777,45 @@ describe("Account Pool credential scoping", () => {
   });
 
   it.each([
-    ["a missing secret", Object.assign(new Error("gone"), { code: "ENOENT" }), false],
-    ["a corrupt secret", new SyntaxError("Unexpected end of JSON input"), false],
-    ["an invalid secret", new z.ZodError([]), false],
-    ["an unreadable secret", Object.assign(new Error("disk read failed"), { code: "EIO" }), true],
-  ])("decides pool availability from %s, refusing only an I/O failure", async (_label, failure, refuses) => {
-    const { host } = await scopedFixture();
+    ["a missing secret", Object.assign(new Error("gone"), { code: "ENOENT" }), "none has a readable credential"],
+    ["a corrupt secret", new SyntaxError("Unexpected end of JSON input"), "none has a readable credential"],
+    ["an invalid secret", new z.ZodError([]), "none has a readable credential"],
+    ["an unreadable secret", Object.assign(new Error("disk read failed"), { code: "EIO" }), "disk read failed"],
+  ])("refuses the launch when every enabled account has %s", async (_label, failure, message) => {
+    const fixture = await scopedFixture();
     const read = vi
       .spyOn(AccountStore.prototype, "readSecret")
       .mockRejectedValue(failure);
     try {
-      const resolving = host.harness.behavior.resolveProviderEnv("claude-code", {
-        threadId: "thread-secret",
+      await expect(
+        fixture.host.harness.behavior.resolveProviderEnv("claude-code", {
+          threadId: "thread-secret",
+          projectId: "project-one",
+          hostId: "host-one",
+        }),
+      ).rejects.toThrow(message);
+    } finally {
+      read.mockRestore();
+    }
+    expect(
+      (await fs.readdir(path.join(fixture.dataDir, ...POOL_SECRETS))).filter(
+        (name) => name.includes("thread-secret"),
+      ),
+    ).toEqual([]);
+  });
+
+  it("leaves a thread unrouted when the pool has no enabled account for its provider", async () => {
+    const { host } = await scopedFixture();
+    const list = vi.spyOn(AccountStore.prototype, "list").mockResolvedValue([]);
+    try {
+      const entries = await host.harness.behavior.resolveProviderEnv("claude-code", {
+        threadId: "thread-empty-pool",
         projectId: "project-one",
         hostId: "host-one",
       });
-      if (refuses) {
-        await expect(resolving).rejects.toThrow("disk read failed");
-      } else {
-        const entries = await resolving;
-        expect(entries.map((entry) => entry.name)).not.toContain(PARENT_TOKEN_ENV);
-      }
+      expect(entries.map((entry) => entry.name)).not.toContain(PARENT_TOKEN_ENV);
     } finally {
-      read.mockRestore();
+      list.mockRestore();
     }
   });
 
