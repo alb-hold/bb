@@ -42,6 +42,7 @@ import {
   runBbApp,
   shouldRunSourceAppUpdateShim,
   runBundledCliCommand,
+  DAEMON_DETACH_HEAD_START_MS,
   superviseFullStackProcesses,
   terminateManagedFullStackProcesses,
   waitForHostDaemonStatus,
@@ -1867,10 +1868,9 @@ describe("bb-app launcher", () => {
     expect(supervisor.daemonRuns).toHaveLength(1);
   });
 
-  it("stops the server and host daemon in parallel", async () => {
+  it("lets the host daemon detach before it stops the server, but only for a bounded head start", async () => {
     const order: string[] = [];
     let finishDaemon: () => void = () => undefined;
-    let finishServer: () => void = () => undefined;
     const daemonRun: ManagedProcessRun = {
       exit: new Promise(() => undefined),
       terminate: async () => {
@@ -1885,9 +1885,6 @@ describe("bb-app launcher", () => {
       exit: new Promise(() => undefined),
       terminate: async () => {
         order.push("server:signalled");
-        await new Promise<void>((resolve) => {
-          finishServer = resolve;
-        });
       },
     };
 
@@ -1896,15 +1893,31 @@ describe("bb-app launcher", () => {
       signal: "SIGTERM",
     });
     await Promise.resolve();
-    expect(order.slice(0, 2)).toEqual(["daemon:signalled", "server:signalled"]);
+    expect(order).toEqual(["daemon:signalled"]);
     finishDaemon();
-    finishServer();
     await quickDetach;
     expect(order).toEqual([
       "daemon:signalled",
-      "server:signalled",
       "daemon:stopped",
+      "server:signalled",
     ]);
+
+    vi.useFakeTimers();
+    try {
+      order.length = 0;
+      const stuckDetach = terminateManagedFullStackProcesses({
+        processes: { daemonRun, serverRun },
+        signal: "SIGTERM",
+      });
+      await vi.advanceTimersByTimeAsync(DAEMON_DETACH_HEAD_START_MS - 1);
+      expect(order).toEqual(["daemon:signalled"]);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(order).toEqual(["daemon:signalled", "server:signalled"]);
+      finishDaemon();
+      await stuckDetach;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("sets exit code to 0 after clean full-stack shutdown", async () => {

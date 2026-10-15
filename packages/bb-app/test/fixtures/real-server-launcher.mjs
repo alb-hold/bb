@@ -1,8 +1,21 @@
 import { writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
 import { spawnLoggedProcess } from "../../src/logged-process.ts";
 
 const dir = process.env.BB_OWNERSHIP_DIR;
 const port = Number(process.env.BB_SERVER_PORT);
+const agent = spawn(process.execPath, [process.env.BB_AGENT_ENTRY], {
+  detached: true,
+  env: { ...process.env, BB_HOLDER_READY: process.env.BB_AGENT_READY },
+  stdio: "ignore",
+});
+writeFileSync(process.env.BB_AGENT_PID_FILE, String(agent.pid));
+const holder = spawn(process.execPath, [process.env.BB_HOLDER_ENTRY], {
+  detached: true,
+  env: { ...process.env, BB_HOLDER_READY: process.env.BB_NATIVE_HOLDER_READY },
+  stdio: "ignore",
+});
+writeFileSync(process.env.BB_HOLDER_PID_FILE, String(holder.pid));
 const child = spawnLoggedProcess({
   command: process.execPath,
   args: ["--conditions=source", "--import", "tsx", process.env.BB_REAL_SERVER_ENTRY],

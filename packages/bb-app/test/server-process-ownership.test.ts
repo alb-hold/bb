@@ -174,14 +174,24 @@ describe("server process ownership", () => {
     const dir = scratchDir();
     const port = await freePort();
     const ready = join(dir, "ready");
+    const agentPidFile = join(dir, "agent.pid");
+    const holderPidFile = join(dir, "holder.pid");
     const launcher = spawnFixture(realLauncherEntry, {
       BB_OWNERSHIP_DIR: dir, BB_ORPHAN_READY: ready,
       BB_SERVER_PID_FILE: join(dir, "server.pid"),
+      BB_AGENT_ENTRY: detachedHolderEntry,
+      BB_AGENT_PID_FILE: agentPidFile,
+      BB_AGENT_READY: join(dir, "agent.ready"),
+      BB_HOLDER_ENTRY: detachedHolderEntry,
+      BB_HOLDER_PID_FILE: holderPidFile,
+      BB_NATIVE_HOLDER_READY: join(dir, "native-holder.ready"),
       BB_RUN_SHUTDOWN_MARKER: join(dir, "run-shutdown.log"),
       BB_REAL_LAUNCHER_PID: join(dir, "launcher.pid"),
       BB_REAL_SERVER_ENTRY: realServerEntry, BB_SERVER_PORT: String(port),
     });
     let serverPid: number | null = null;
+    let agentPid: number | null = null;
+    let holderPid: number | null = null;
     try {
       await waitForFile(join(dir, "server.pid"), 45_000);
       const deadline = Date.now() + 45_000;
@@ -192,11 +202,19 @@ describe("server process ownership", () => {
       expect(await fetch(`http://127.0.0.1:${port}/`).then(() => true)).toBe(true);
       serverPid = Number((await waitForFile(join(dir, "server.pid"), 1_000)).trim());
       activeChildren.add(serverPid);
+      agentPid = Number(await waitForFile(agentPidFile));
+      holderPid = Number(await waitForFile(holderPidFile));
+      await waitForFile(join(dir, "agent.ready"));
+      await waitForFile(join(dir, "native-holder.ready"));
+      activeChildren.add(agentPid);
+      activeChildren.add(holderPid);
       process.kill(launcher.pid!, "SIGKILL");
       await waitForExit(launcher, 2_000);
       await waitForProcessExitByPid(serverPid, 10_000);
       activeChildren.delete(serverPid);
       expect(readFileSync(join(dir, "run-shutdown.log"), "utf8")).toContain("server-close");
+      expect(isProcessRunning(agentPid)).toBe(true);
+      expect(isProcessRunning(holderPid)).toBe(true);
       const Database = createRequire(import.meta.url)("better-sqlite3");
       const db = new Database(join(dir, "bb.db"));
       db.close();
@@ -205,6 +223,11 @@ describe("server process ownership", () => {
       if (serverPid !== null && activeChildren.has(serverPid)) {
         try { process.kill(serverPid, "SIGKILL"); } catch {}
         activeChildren.delete(serverPid);
+      }
+      for (const pid of [agentPid, holderPid]) {
+        if (pid === null || !activeChildren.has(pid)) continue;
+        try { process.kill(pid, "SIGKILL"); } catch {}
+        activeChildren.delete(pid);
       }
     }
   }, 120_000);
