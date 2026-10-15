@@ -123,6 +123,7 @@ export class TerminalWebSocketTransport {
   private socket: TerminalBrowserSocket | null = null;
   private terminalEnded = false;
   private visible = true;
+  private visibilityReported = false;
 
   constructor(private readonly options: TerminalWebSocketTransportOptions) {
     this.createSocket = options.createSocket ?? ((url) => new WebSocket(url));
@@ -222,6 +223,7 @@ export class TerminalWebSocketTransport {
   }
 
   setVisible(visible: boolean): void {
+    this.visibilityReported = true;
     if (this.visible === visible) {
       return;
     }
@@ -406,10 +408,10 @@ export class TerminalWebSocketTransport {
     }
     this.lastPongAt = this.now();
     this.startHeartbeat(socket);
-    if (!this.visible) {
+    if (this.visibilityReported) {
       this.trySend(
         socket,
-        JSON.stringify({ type: "visibility", visible: false }),
+        JSON.stringify({ type: "visibility", visible: this.visible }),
       );
     }
     this.beginResizeSettle(socket);
