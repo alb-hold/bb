@@ -141,6 +141,10 @@ import {
 import { useMountedTerminalIds } from "@/components/thread/terminal/mounted-terminals";
 import { resolveTerminalScopeKey } from "@/components/thread/terminal/terminal-scope";
 import {
+  getTerminalCurrentCwd,
+  terminalSpawnCwd,
+} from "@/components/thread/terminal/terminal-shell-state";
+import {
   getActiveFixedSecondaryTab,
   useSetThreadSecondaryPanelSelection,
 } from "./thread-detail/threadSecondaryPanelSelection";
@@ -787,12 +791,12 @@ function RootComposeSurface({
     checkThreadStorageFileExists: checkRootThreadStorageFileExists,
     threadStorageFiles: rootThreadStorageFiles,
   } = useThreadStorageViewer({
-      fileListEnabled: shouldLoadThreadStorageFileList({
-        hasThread: rootPanelThreadId !== null,
-        isSecondaryPanelOpen,
-        secondaryTabs: fixedPanelTabsState.secondary.tabs,
-      }),
-      threadId: rootPanelThreadId ?? undefined,
+    fileListEnabled: shouldLoadThreadStorageFileList({
+      hasThread: rootPanelThreadId !== null,
+      isSecondaryPanelOpen,
+      secondaryTabs: fixedPanelTabsState.secondary.tabs,
+    }),
+    threadId: rootPanelThreadId ?? undefined,
   });
   const environmentTerminalsListQuery = useEnvironmentTerminals(
     rootPanelEnvironmentId ?? "",
@@ -835,6 +839,23 @@ function RootComposeSurface({
   const terminalsById = useMemo(
     () => new Map(terminalSessions.map((session) => [session.id, session])),
     [terminalSessions],
+  );
+  const activeTerminalSession =
+    activeFixedSecondaryTab?.kind === "terminal"
+      ? terminalsById.get(activeFixedSecondaryTab.terminalId)
+      : undefined;
+  const activeTerminalSessionId = activeTerminalSession?.id;
+  const activeTerminalInitialCwd = activeTerminalSession?.initialCwd;
+  const getActiveTerminalSpawnCwd = useCallback(
+    () =>
+      activeTerminalSessionId !== undefined &&
+      activeTerminalInitialCwd !== undefined
+        ? terminalSpawnCwd({
+            currentCwd: getTerminalCurrentCwd(activeTerminalSessionId),
+            initialCwd: activeTerminalInitialCwd,
+          })
+        : undefined,
+    [activeTerminalInitialCwd, activeTerminalSessionId],
   );
   const [shouldAutoFocusNewTab, setShouldAutoFocusNewTab] = useState(false);
   const handleNewTabAutoFocusHandled = useCallback(
@@ -1121,6 +1142,7 @@ function RootComposeSurface({
     panelStateId: ROOT_COMPOSE_FIXED_PANEL_STATE_ID,
     syncThreadId: null,
     createTarget: canCreateRootTerminal ? rootPanelTerminalTarget : null,
+    getSpawnCwd: getActiveTerminalSpawnCwd,
     isFocused: isFocusedPane,
     acceptsSession: acceptsRootTerminal,
     tabsCarryTarget: false,
