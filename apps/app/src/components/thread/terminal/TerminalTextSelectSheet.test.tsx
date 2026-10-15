@@ -198,7 +198,7 @@ describe("TerminalMobileControls select key", () => {
     const onSelectText = vi.fn();
     render(
       <TerminalMobileControls
-        controlActive={false}
+        controlMode="off"
         disabled={false}
         onArrow={vi.fn()}
         onControlChange={vi.fn()}
@@ -207,6 +207,8 @@ describe("TerminalMobileControls select key", () => {
         onPaste={vi.fn()}
         onSearch={vi.fn()}
         onSelectText={onSelectText}
+        fontSize={12}
+        onFontSizeChange={vi.fn()}
       />,
     );
     fireEvent.click(screen.getByRole("button", { name: "More terminal keys" }));
