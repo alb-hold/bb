@@ -2366,7 +2366,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
           throw new ApiError(
             503,
             "provider_environment_unavailable",
-            `Plugin ${pluginId} could not provide the ${providerId} environment (${outcome.error}), so the session was not started without it. Try again.`,
+            `Plugin ${pluginId} could not provide the ${providerId} environment, so the session was not started without it. Try again.`,
           );
         }
         for (const entry of outcome.value) {

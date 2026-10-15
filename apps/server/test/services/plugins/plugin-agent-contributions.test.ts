@@ -232,7 +232,7 @@ describe("plugin agent contributions reach thread runtime config", () => {
         serverSource: `
           export default function plugin(bb) {
             bb.providers.experimental_contributeEnv("codex", () => {
-              throw new Error("resolver exploded");
+              throw new Error("resolver exploded with sk-ant-sentinel-0451");
             });
             bb.providers.experimental_contributeEnv("claude-code", () => new Promise(() => {}));
           }
@@ -245,12 +245,18 @@ describe("plugin agent contributions reach thread runtime config", () => {
         hostId: "host-timeout",
       };
 
-      await expect(
-        service.resolveProviderEnv({ providerId: "codex", context }),
-      ).rejects.toMatchObject({
+      const failure = await service
+        .resolveProviderEnv({ providerId: "codex", context })
+        .then(
+          () => null,
+          (error: unknown) => error,
+        );
+      expect(failure).toMatchObject({
         status: 503,
         body: { code: "provider_environment_unavailable" },
       });
+      expect(JSON.stringify(failure)).not.toContain("sk-ant-sentinel-0451");
+      expect(String(failure)).not.toContain("sk-ant-sentinel-0451");
       await expect(
         service.resolveProviderEnv({ providerId: "claude-code", context }),
       ).rejects.toMatchObject({
@@ -514,7 +520,7 @@ describe("plugin agent contributions reach thread runtime config", () => {
       serverSource: `
         export default function plugin(bb) {
           bb.providers.experimental_contributeEnv("codex", () => {
-            throw new Error("routing unavailable");
+            throw new Error("routing unavailable for sk-ant-sentinel-0452");
           });
         }
       `,
@@ -542,6 +548,23 @@ describe("plugin agent contributions reach thread runtime config", () => {
       { threadId: thread.id },
     );
 
+    const failure = await buildThreadStartCommand(harness.deps, {
+      environment,
+      execution,
+      fork: null,
+      permissionEscalation: "ask",
+      input: textInput("hello"),
+      projectId: project.id,
+      providerId: "codex",
+      requestId: encodeClientTurnRequestIdNumber({ value: 5 }),
+      syncGeneratedTitle: false,
+      thread,
+    }).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(JSON.stringify(failure)).not.toContain("sk-ant-sentinel-0452");
+    expect(String(failure)).not.toContain("sk-ant-sentinel-0452");
     await expect(
       buildThreadStartCommand(harness.deps, {
         environment,
