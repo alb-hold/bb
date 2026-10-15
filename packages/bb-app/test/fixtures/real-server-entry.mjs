@@ -1,4 +1,5 @@
 import { appendFileSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { Server } from "node:http";
 import { register } from "tsx/esm/api";
 
