@@ -21,8 +21,12 @@ import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { waitForProcessExit } from "@bb/config/child-process-exit";
 import {
+  DAEMON_PROCESS_TERMINATION_TIMEOUT_MS,
+  DAEMON_DETACH_HEAD_START_MARGIN_MS,
   DESKTOP_OWNED_RUNTIME_SHUTDOWN_GRACE_MS,
+  DESKTOP_SHUTDOWN_OUTER_MARGIN_MS,
   LAUNCHER_MAX_SHUTDOWN_MS,
+  MEASURED_MAX_DAEMON_STOP_STEP_MS,
   SERVER_HTTP_CLOSE_WAIT_TIMEOUT_MS,
   SERVER_HTTP_DRAIN_TIMEOUT_MS,
   SERVER_PLUGIN_SHUTDOWN_TIMEOUT_MS,
@@ -1933,13 +1937,21 @@ describe("bb-app launcher", () => {
   });
 
   it("keeps the nested full-stack shutdown schedule inside desktop grace", () => {
-    expect(
+    expect(DAEMON_DETACH_HEAD_START_MS).toBeGreaterThanOrEqual(
+      MEASURED_MAX_DAEMON_STOP_STEP_MS + DAEMON_DETACH_HEAD_START_MARGIN_MS,
+    );
+    expect(SERVER_PROCESS_TERMINATION_TIMEOUT_MS).toBeGreaterThanOrEqual(
+      SERVER_SHUTDOWN_BOUND_MS + SERVER_SHUTDOWN_SAFETY_MARGIN_MS * 2,
+    );
+    expect(DAEMON_PROCESS_TERMINATION_TIMEOUT_MS).toBe(
       DAEMON_DETACH_HEAD_START_MS +
-        SERVER_SHUTDOWN_BOUND_MS +
-        SERVER_SHUTDOWN_SAFETY_MARGIN_MS,
-    ).toBeLessThan(SERVER_PROCESS_TERMINATION_TIMEOUT_MS);
+        SERVER_PROCESS_TERMINATION_TIMEOUT_MS,
+    );
     expect(LAUNCHER_MAX_SHUTDOWN_MS).toBeLessThan(
       DESKTOP_OWNED_RUNTIME_SHUTDOWN_GRACE_MS,
+    );
+    expect(DESKTOP_OWNED_RUNTIME_SHUTDOWN_GRACE_MS).toBe(
+      LAUNCHER_MAX_SHUTDOWN_MS + DESKTOP_SHUTDOWN_OUTER_MARGIN_MS,
     );
   });
 
@@ -1961,8 +1973,8 @@ describe("bb-app launcher", () => {
       "setInterval(() => {}, 1000);",
     ].join("\n");
     const daemonProgram = [
-      `const delay=${DAEMON_DETACH_HEAD_START_MS};`,
-      "process.on('SIGTERM', () => setTimeout(() => process.exit(0), delay));",
+      `const delay=${DAEMON_DETACH_HEAD_START_MS - 100};`,
+      "process.on('SIGTERM', () => setTimeout(() => { process.send('detach-acked', () => process.exit(0)); }, delay));",
       "process.send('ready');",
       "setInterval(() => {}, 1000);",
     ].join("\n");
@@ -2019,6 +2031,14 @@ describe("bb-app launcher", () => {
       serverRun: createRun("server", server.child),
       daemonRun: createRun("daemon", daemon.child),
     };
+    let detachAcked = false;
+    let daemonExitAt = 0;
+    daemon.child.on("message", (message) => {
+      if (message === "detach-acked") detachAcked = true;
+    });
+    daemon.child.once("exit", () => {
+      daemonExitAt = Date.now();
+    });
 
     try {
       await Promise.all([server.ready, daemon.ready]);
@@ -2033,6 +2053,8 @@ describe("bb-app launcher", () => {
 
       expect(daemonExit.result).toEqual({ code: 0, signal: null });
       expect(serverExit.result).toEqual({ code: 0, signal: null });
+      expect(detachAcked).toBe(true);
+      expect(serverSignalAt).toBeGreaterThanOrEqual(daemonExitAt);
       expect(processSignals.get("daemon")).toEqual(["SIGTERM"]);
       expect(processSignals.get("server")).toEqual(["SIGTERM"]);
       expect(serverSignalAt - shutdownStartedAt).toBeGreaterThanOrEqual(
@@ -2055,7 +2077,7 @@ describe("bb-app launcher", () => {
         }
       }
     }
-  }, 10_000);
+  }, 15_000);
 
   it("sets exit code to 0 after clean full-stack shutdown", async () => {
     const previousExitCode = process.exitCode;
