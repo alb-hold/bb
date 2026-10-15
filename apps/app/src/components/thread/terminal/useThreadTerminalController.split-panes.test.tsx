@@ -10,10 +10,23 @@ import {
   type ThreadTerminalControllerArgs,
 } from "./useThreadTerminalController";
 import { makeTerminalSession } from "@/test/fixtures/terminal-sessions";
+import { clearTerminalCurrentCwd } from "./terminal-shell-state";
 
-vi.mock("@/lib/sdk", () => ({
-  sdk: { terminals: { list: vi.fn(), close: vi.fn() } },
-}));
+vi.mock("@/lib/sdk", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/sdk")>();
+  return {
+    ...actual,
+    sdk: {
+      ...actual.sdk,
+      terminals: {
+        ...actual.sdk.terminals,
+        list: vi.fn(),
+        close: vi.fn(),
+        create: vi.fn(),
+      },
+    },
+  };
+});
 
 function session(id: string, status: TerminalSession["status"]) {
   return makeTerminalSession({
@@ -39,11 +52,17 @@ function paneArgs(preferredTerminalId: string): ThreadTerminalControllerArgs {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  for (const terminalId of ["term_a", "term_b", "term_orphan", "term_new"]) {
+    clearTerminalCurrentCwd(terminalId);
+  }
 });
 
 describe("two split panes each holding a terminal", () => {
   it("does not close the other pane's terminal when both disconnect", async () => {
-    const running = [session("term_a", "running"), session("term_b", "running")];
+    const running = [
+      session("term_a", "running"),
+      session("term_b", "running"),
+    ];
     vi.mocked(sdk.terminals.list).mockResolvedValue({ sessions: running });
     vi.mocked(sdk.terminals.close).mockImplementation(
       async ({ terminalId }: { terminalId: string }) =>
@@ -164,4 +183,30 @@ describe("two split panes each holding a terminal", () => {
     ];
     expect(closedIds).toEqual(["term_orphan"]);
   });
+
+  it.each(["/tmp/q?x", "/tmp/h#x", "/tmp/p%20x", "/tmp/s p", "/tmp/café"])(
+    "opens a new terminal in the focused pane's cwd: %s",
+    async (cwd) => {
+      const source = session("term_a", "running");
+      const created = session("term_new", "running");
+      vi.mocked(sdk.terminals.list).mockResolvedValue({ sessions: [source] });
+      vi.mocked(sdk.terminals.create).mockResolvedValue(created);
+      const { wrapper } = createQueryClientTestHarness();
+      const { result } = renderHook(
+        () => useThreadTerminalController(paneArgs("term_a")),
+        { wrapper },
+      );
+
+      await waitFor(() =>
+        expect(result.current.activeSession?.id).toBe("term_a"),
+      );
+      act(() => result.current.handleActiveTerminalCwdChange(cwd));
+      act(() => result.current.handleCreateTerminal());
+
+      await waitFor(() => expect(sdk.terminals.create).toHaveBeenCalled());
+      expect(sdk.terminals.create).toHaveBeenCalledWith(
+        expect.objectContaining({ cwd }),
+      );
+    },
+  );
 });

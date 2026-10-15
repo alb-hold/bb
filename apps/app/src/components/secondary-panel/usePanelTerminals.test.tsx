@@ -113,7 +113,11 @@ const SURFACES: readonly SurfaceCase[] = [
 
 const PANEL_STATE_ID = "panel-terminals-contract";
 
-function renderSurface(surface: SurfaceCase, isFocused = true) {
+function renderSurface(
+  surface: SurfaceCase,
+  isFocused = true,
+  getSpawnCwd?: () => string | undefined,
+) {
   const { wrapper } = createQueryClientTestHarness();
   return renderHook(
     () => ({
@@ -121,6 +125,7 @@ function renderSurface(surface: SurfaceCase, isFocused = true) {
         panelStateId: PANEL_STATE_ID,
         syncThreadId: null,
         createTarget: surface.createTarget,
+        getSpawnCwd,
         isFocused,
         acceptsSession: surface.acceptsSession,
         tabsCarryTarget: surface.tabsCarryTarget,
@@ -221,6 +226,16 @@ describe.each(SURFACES)("panel terminals on the $name", (surface) => {
         target: surface.tabsCarryTarget ? surface.createTarget : undefined,
       }),
     ]);
+  });
+
+  it("forwards the focused terminal cwd when opening a new terminal", async () => {
+    vi.mocked(sdk.terminals.create).mockResolvedValue(surface.own);
+    const { result } = renderSurface(surface, true, () => "/tmp/focused");
+    act(() => result.current.terminals.start());
+    await waitFor(() => expect(sdk.terminals.create).toHaveBeenCalled());
+    expect(sdk.terminals.create).toHaveBeenCalledWith(
+      expect.objectContaining({ cwd: "/tmp/focused" }),
+    );
   });
 
   it("starts a terminal from the shortcut only while focused", async () => {

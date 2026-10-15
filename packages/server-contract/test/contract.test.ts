@@ -966,9 +966,18 @@ describe("public terminal contracts", () => {
       createTerminalRequestSchema.safeParse({
         cols: TERMINAL_COLS_MAX,
         rows: TERMINAL_ROWS_MAX,
+        cwd: "/tmp/workspace/packages/app",
         target: { kind: "thread", threadId: "thr_1" },
       }).success,
     ).toBe(true);
+    expect(
+      createTerminalRequestSchema.safeParse({
+        cols: TERMINAL_COLS_MAX,
+        rows: TERMINAL_ROWS_MAX,
+        cwd: "x".repeat(4097),
+        target: { kind: "thread", threadId: "thr_1" },
+      }).success,
+    ).toBe(false);
     expect(
       createTerminalRequestSchema.safeParse({
         cols: TERMINAL_COLS_MAX + 1,
@@ -1039,9 +1048,7 @@ describe("public terminal contracts", () => {
       resizeAcks: false,
       sinceSeq: 12,
     });
-    expect(
-      terminalWebSocketQuerySchema.parse({ resizeAcks: "1" }),
-    ).toEqual({
+    expect(terminalWebSocketQuerySchema.parse({ resizeAcks: "1" })).toEqual({
       outputAcks: false,
       resizeAcks: true,
       sinceSeq: 0,

@@ -283,6 +283,7 @@ interface GetTerminalArgs {
 interface TerminalCreatePayload {
   cols: number;
   rows: number;
+  cwd?: string;
   start?: NonNullable<CreateTerminalRequest["start"]>;
   title?: string;
 }
@@ -794,6 +795,7 @@ export class TerminalSessionLifecycle {
       terminalId: startingSession.id,
       ...(args.threadId !== null ? { threadId: args.threadId } : {}),
       target: launchTarget.daemonTarget,
+      ...(args.payload.cwd !== undefined ? { cwd: args.payload.cwd } : {}),
       cols: args.payload.cols,
       rows: args.payload.rows,
       start,
@@ -2021,7 +2023,10 @@ export class TerminalSessionLifecycle {
       Date.now(),
     );
     this.applySharedTerminalSize(args);
-    if (args.message.seq !== undefined && this.resizeAckSockets.has(args.socket)) {
+    if (
+      args.message.seq !== undefined &&
+      this.resizeAckSockets.has(args.socket)
+    ) {
       this.options.hub.sendTerminalSocketMessage(args.socket, {
         type: "resize-applied",
         seq: args.message.seq,

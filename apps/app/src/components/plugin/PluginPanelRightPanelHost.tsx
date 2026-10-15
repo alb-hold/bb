@@ -46,6 +46,10 @@ import {
 } from "@/components/secondary-panel/lazySecondaryPanelComponents";
 import { useMountedTerminalIds } from "@/components/thread/terminal/mounted-terminals";
 import { resolveTerminalScopeKey } from "@/components/thread/terminal/terminal-scope";
+import {
+  getTerminalCurrentCwd,
+  terminalSpawnCwd,
+} from "@/components/thread/terminal/terminal-shell-state";
 import type {
   SecondaryPanelFixedTab,
   SecondaryPanelRenderableTab,
@@ -340,6 +344,22 @@ export function PluginPanelRightPanelHost({
       new Map((terminalSessions ?? []).map((session) => [session.id, session])),
     [terminalSessions],
   );
+  const activeTerminalSession = activeTerminalTab
+    ? terminalsById.get(activeTerminalTab.terminalId)
+    : undefined;
+  const activeTerminalSessionId = activeTerminalSession?.id;
+  const activeTerminalInitialCwd = activeTerminalSession?.initialCwd;
+  const getActiveTerminalSpawnCwd = useCallback(
+    () =>
+      activeTerminalSessionId !== undefined &&
+      activeTerminalInitialCwd !== undefined
+        ? terminalSpawnCwd({
+            currentCwd: getTerminalCurrentCwd(activeTerminalSessionId),
+            initialCwd: activeTerminalInitialCwd,
+          })
+        : undefined,
+    [activeTerminalInitialCwd, activeTerminalSessionId],
+  );
   const retainedTerminalIds = useMountedTerminalIds(
     activeTerminalTarget === null
       ? null
@@ -531,6 +551,7 @@ export function PluginPanelRightPanelHost({
       panel !== null && selectedTerminalHost?.status === "connected"
         ? { kind: "host_path", hostId: selectedTerminalHost.id, cwd: null }
         : null,
+    getSpawnCwd: getActiveTerminalSpawnCwd,
     isFocused,
     acceptsSession,
     tabsCarryTarget: true,
