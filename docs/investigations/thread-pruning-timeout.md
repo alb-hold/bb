@@ -10,11 +10,9 @@ A read-only live-database inventory reported 6,389 task progress events across 1
 
 ## Change and safety behavior
 
-The normal probe keeps using the existing `events_background_task_thread_type_item_sequence_idx` fast path for correctly typed rows. If it finds no such row, it probes mismatched and `NULL` rows through a second partial composite index keyed by thread, event type, item ID, and sequence. The index covers only legacy/mismatched progress rows, so this safety path remains selective without reverting to a per-candidate scan over all progress events. A real migrated in-memory SQLite test covers both `NULL` and mismatched kinds; without the fallback, the older task progress rows remain and the test fails.
+The normal probe keeps using the existing `events_background_task_thread_type_item_sequence_idx` fast path for correctly typed rows. Once per thread in each pruning pass, the pruner checks for any mismatched or `NULL` progress row using the existing `events_thread_type_sequence_idx` and a `LIMIT 1`; it performs the per-candidate legacy probe only when that check finds a row. The legacy probe also uses the existing thread/type/sequence index and filters by item ID. This avoids a startup index build and keeps the fallback off the normal path. A real migrated in-memory SQLite test covers both `NULL` and mismatched kinds; without the fallback, the older task progress rows remain and the test fails.
 
-No event payload is rewritten and no database rows are migrated. The additional index is required because the existing fast index intentionally excludes mismatched and `NULL` item kinds; scanning the general sequence index for fallback rows on each candidate would reintroduce the quadratic behavior.
-
-The generated migration uses `CREATE INDEX IF NOT EXISTS` because the migration test harness can start from a schema that already contains the latest index before replaying migration history. The replay must remain idempotent.
+No event payload is rewritten and no database rows are migrated. No migration is needed: building a new partial index would scan the full events table during startup. The one-per-thread existence check runs only as pruning advances, uses an existing index, and the live inventory found no legacy progress rows.
 
 ## Load measurements
 

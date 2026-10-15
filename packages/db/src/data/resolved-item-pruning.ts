@@ -89,7 +89,7 @@ const prepareProgress = (db: DbQueryConnection) =>
 const prepareLegacyProgress = (db: DbQueryConnection) =>
   prepareSupport(
     db,
-    "events_legacy_background_task_progress_thread_item_sequence_idx",
+    "events_thread_type_sequence_idx",
     sql`type = 'item/backgroundTask/progress'
       AND (item_kind IS NULL OR item_kind <> 'backgroundTask')
       AND item_id = ${sql.placeholder("itemId")}`,
@@ -126,6 +126,13 @@ function pruneResolvedItemCandidates(
 ) {
   const rows = args.candidates;
   const probe = args.probe;
+  const hasLegacyProgress =
+    args.kind === "background" &&
+    db.get(sql`SELECT 1 FROM events INDEXED BY events_thread_type_sequence_idx
+      WHERE thread_id = ${args.threadId}
+        AND type = 'item/backgroundTask/progress'
+        AND (item_kind IS NULL OR item_kind <> 'backgroundTask')
+      LIMIT 1`) !== undefined;
   const discarded: string[] = [];
   let remaining = args.limit;
   let sequence = 0;
@@ -159,6 +166,7 @@ function pruneResolvedItemCandidates(
     };
     const support = prepareCachedQuery(db, build).all(queryArgs);
     if (
+      hasLegacyProgress &&
       args.kind === "background" &&
       probe.probePhase === 1 &&
       support.length === 0
