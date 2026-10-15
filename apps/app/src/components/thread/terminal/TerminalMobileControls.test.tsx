@@ -49,6 +49,61 @@ describe("TerminalMobileControls", () => {
     }
   });
 
+  it.each([
+    ["desktop without a keyboard", 844, 0, 844, 0],
+    ["Android resize mode", 500, 0, 500, 0],
+    ["iOS viewport scroll", 844, 50, 400, 394],
+  ] as const)(
+    "pins the dock for %s",
+    (_mode, layoutHeight, offsetTop, visualHeight, expectedBottom) => {
+      const originalViewport = Object.getOwnPropertyDescriptor(
+        window,
+        "visualViewport",
+      );
+      const originalHeight = Object.getOwnPropertyDescriptor(
+        window,
+        "innerHeight",
+      );
+      const viewport: EventTarget & { offsetTop: number; height: number } =
+        Object.assign(new EventTarget(), { offsetTop, height: visualHeight });
+      Object.defineProperty(window, "innerHeight", {
+        configurable: true,
+        value: layoutHeight,
+      });
+      Object.defineProperty(window, "visualViewport", {
+        configurable: true,
+        value: viewport,
+      });
+      try {
+        renderControls();
+        const dock = document.querySelector(
+          "[data-terminal-mobile-controls]",
+        ) as HTMLElement;
+        expect(
+          dock.style.getPropertyValue("--terminal-mobile-dock-bottom"),
+        ).toBe(`${expectedBottom}px`);
+        if (_mode === "iOS viewport scroll") {
+          viewport.offsetTop = 200;
+          viewport.dispatchEvent(new Event("scroll"));
+          expect(
+            dock.style.getPropertyValue("--terminal-mobile-dock-bottom"),
+          ).toBe("244px");
+        }
+      } finally {
+        if (originalViewport) {
+          Object.defineProperty(window, "visualViewport", originalViewport);
+        } else {
+          Reflect.deleteProperty(window, "visualViewport");
+        }
+        if (originalHeight) {
+          Object.defineProperty(window, "innerHeight", originalHeight);
+        } else {
+          Reflect.deleteProperty(window, "innerHeight");
+        }
+      }
+    },
+  );
+
   it("hides the extra keys until the user expands them", () => {
     renderControls();
     expect(screen.queryByRole("button", { name: "Shift Tab" })).toBeNull();
@@ -119,6 +174,21 @@ describe("TerminalMobileControls", () => {
     vi.advanceTimersByTime(100);
     expect(onInput).toHaveBeenCalledTimes(countAtRelease);
     vi.useRealTimers();
+  });
+
+  it("stops Backspace repeat when the held pointer is cancelled", () => {
+    vi.useFakeTimers();
+    const onInput = vi.fn();
+    render(<TerminalMobileControls {...controlProps({ onInput })} />);
+    const backspace = screen.getByRole("button", { name: "Backspace" });
+    fireEvent.pointerDown(backspace);
+    vi.advanceTimersByTime(550);
+    const countAtCancel = onInput.mock.calls.length;
+
+    fireEvent.pointerCancel(backspace);
+    vi.advanceTimersByTime(250);
+
+    expect(onInput).toHaveBeenCalledTimes(countAtCancel);
   });
 
   it("stops Backspace repeat when the window loses focus", () => {
