@@ -426,7 +426,8 @@ async function openNativeTerminalOnce(
       (currentTerminal?.status !== "disconnected" &&
         !(
           currentTerminal?.status === "exited" &&
-          currentTerminal.closeReason === "daemon-disconnect"
+          (currentTerminal.closeReason === "daemon-disconnect" ||
+            currentTerminal.closeReason === "thread-archived")
         ))
     ) {
       throw new ApiError(
@@ -485,12 +486,18 @@ function openNativeTerminalDeduplicated(
   deps: NativeTerminalDeps,
   args: {
     reattachOnly: boolean;
+    coalescePendingReattach?: boolean;
     threadId: string;
     request: OpenNativeTerminalRequest;
   },
 ): Promise<NativeTerminalThread> {
   const pending = pendingOpens.get(args.threadId);
-  if (pending !== undefined && (args.reattachOnly || !pending.reattachOnly)) {
+  if (
+    pending !== undefined &&
+    (args.reattachOnly ||
+      !pending.reattachOnly ||
+      args.coalescePendingReattach === true)
+  ) {
     return pending.promise;
   }
   const opening: Promise<NativeTerminalThread> = (
@@ -710,6 +717,7 @@ function reopenNativeTerminals(
           try {
             reopened = await openNativeTerminalDeduplicated(deps, {
               reattachOnly: reason === "daemon-reconnect",
+              coalescePendingReattach: reason === "thread-unarchived",
               threadId,
               request: {},
             });

@@ -3,17 +3,23 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
+  archiveThread,
+  createConnection,
   createNativeTerminalThread,
   createTerminalSession,
   getNativeTerminalThread,
   getTerminalSession,
   getThread,
   listEvents,
+  migrate,
+  noopNotifier,
   projectAttachmentThreads,
   setNativeTerminalThreadTerminal,
   terminalSessions,
   threads,
+  unarchiveThread,
   upsertProjectExecutionDefaults,
+  type DbConnection,
 } from "@bb/db";
 import { eq } from "drizzle-orm";
 import type { PromptInput } from "@bb/domain";
@@ -35,6 +41,7 @@ import {
   NATIVE_TERMINAL_ENDED_MESSAGE,
   nativeTerminalLaunchCommand,
   reopenNativeTerminalsAfterDaemonReconnect,
+  resumeNativeTerminalAfterUnarchive,
 } from "../../src/services/threads/native-terminal-threads.js";
 import { handleDaemonSocketClosed } from "../../src/internal/session-owner-side-effects.js";
 import { applyLoggedThreadLifecycleEvent } from "../../src/services/threads/lifecycle-outcome.js";
@@ -82,9 +89,11 @@ interface Fixture {
 }
 
 const harnesses: TestAppHarness[] = [];
+const explicitlyMigratedDbs: DbConnection[] = [];
 
 afterEach(async () => {
   for (const harness of harnesses.splice(0)) await harness.cleanup();
+  for (const db of explicitlyMigratedDbs.splice(0)) db.$client.close();
 });
 
 function createFakeDaemonSocket(): FakeDaemonSocket {
@@ -120,8 +129,8 @@ async function waitForTerminalOpen(
   throw new Error("Timed out waiting for terminal.open");
 }
 
-async function createFixture(): Promise<Fixture> {
-  const harness = await createTestAppHarness();
+async function createFixture(db?: DbConnection): Promise<Fixture> {
+  const harness = await createTestAppHarness(db === undefined ? {} : { db });
   harnesses.push(harness);
   const seeded = seedHostSession(harness.deps, { id: "native-host" });
   const { project } = seedProjectWithSource(harness.deps, {
@@ -144,6 +153,13 @@ async function createFixture(): Promise<Fixture> {
     sessionId: seeded.session.id,
     socket,
   };
+}
+
+async function createMigratedMemoryFixture(): Promise<Fixture> {
+  const db = createConnection(":memory:");
+  migrate(db);
+  explicitlyMigratedDbs.push(db);
+  return createFixture(db);
 }
 
 async function postJson(
@@ -589,6 +605,282 @@ describe("native terminal threads", () => {
       ),
     );
     expect(launch.nativeSessionId).toBe(sessionId);
+  });
+
+  it("does not attempt reconnect reattachment while the native thread is still archived", async () => {
+    const fixture = await createMigratedMemoryFixture();
+    const { thread } = await openRunningNativeThread(fixture, {
+      providerId: "claude-code",
+    });
+    const terminalId = getNativeTerminalThread(
+      fixture.harness.db,
+      thread.id,
+    )?.terminalSessionId;
+    if (terminalId === null || terminalId === undefined) {
+      throw new Error("native thread has no terminal");
+    }
+    archiveThread(fixture.harness.db, noopNotifier, thread.id);
+    fixture.harness.db
+      .update(terminalSessions)
+      .set({ status: "exited", closeReason: "thread-archived" })
+      .where(eq(terminalSessions.id, terminalId))
+      .run();
+    fixture.socket.sentMessages.length = 0;
+    const warn = vi.spyOn(fixture.harness.deps.logger, "warn");
+
+    await reopenNativeTerminalsAfterDaemonReconnect(fixture.harness.deps, {
+      hostId: fixture.hostId,
+      threadIds: [thread.id],
+    });
+
+    expect(daemonMessages(fixture.socket)).toEqual([]);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("does not attempt reconnect reattachment for a deleted native thread", async () => {
+    const fixture = await createMigratedMemoryFixture();
+    const { thread } = await openRunningNativeThread(fixture, {
+      providerId: "claude-code",
+    });
+    const terminalId = getNativeTerminalThread(
+      fixture.harness.db,
+      thread.id,
+    )?.terminalSessionId;
+    if (terminalId === null || terminalId === undefined) {
+      throw new Error("native thread has no terminal");
+    }
+    fixture.harness.db
+      .update(threads)
+      .set({ deletedAt: Date.now() })
+      .where(eq(threads.id, thread.id))
+      .run();
+    fixture.harness.db
+      .update(terminalSessions)
+      .set({ status: "exited", closeReason: "thread-archived" })
+      .where(eq(terminalSessions.id, terminalId))
+      .run();
+    fixture.socket.sentMessages.length = 0;
+    const warn = vi.spyOn(fixture.harness.deps.logger, "warn");
+
+    await reopenNativeTerminalsAfterDaemonReconnect(fixture.harness.deps, {
+      hostId: fixture.hostId,
+      threadIds: [thread.id],
+    });
+
+    expect(daemonMessages(fixture.socket)).toEqual([]);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("does not reconnect an exited terminal unless its close reason is eligible", async () => {
+    const fixture = await createMigratedMemoryFixture();
+    const { thread } = await openRunningNativeThread(fixture, {
+      providerId: "claude-code",
+    });
+    const terminalId = getNativeTerminalThread(
+      fixture.harness.db,
+      thread.id,
+    )?.terminalSessionId;
+    if (terminalId === null || terminalId === undefined) {
+      throw new Error("native thread has no terminal");
+    }
+    fixture.harness.db
+      .update(terminalSessions)
+      .set({ status: "exited", closeReason: "user" })
+      .where(eq(terminalSessions.id, terminalId))
+      .run();
+    fixture.socket.sentMessages.length = 0;
+    const warn = vi.spyOn(fixture.harness.deps.logger, "warn");
+
+    await reopenNativeTerminalsAfterDaemonReconnect(fixture.harness.deps, {
+      hostId: fixture.hostId,
+      threadIds: [thread.id],
+    });
+
+    expect(daemonMessages(fixture.socket)).toEqual([]);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("reattaches an unarchived thread whose terminal exited during archive to the same provider session", async () => {
+    const fixture = await createMigratedMemoryFixture();
+    const { thread } = await openRunningNativeThread(fixture, {
+      providerId: "claude-code",
+    });
+    const record = getNativeTerminalThread(fixture.harness.db, thread.id);
+    if (
+      record?.terminalSessionId === null ||
+      record?.terminalSessionId === undefined
+    ) {
+      throw new Error("native thread has no terminal");
+    }
+    if (record.nativeSessionId === null) {
+      throw new Error("native thread has no provider session");
+    }
+    fixture.harness.db
+      .update(terminalSessions)
+      .set({ status: "exited", closeReason: "thread-archived" })
+      .where(eq(terminalSessions.id, record.terminalSessionId))
+      .run();
+    fixture.socket.sentMessages.length = 0;
+    const warn = vi.spyOn(fixture.harness.deps.logger, "warn");
+
+    const reopening = reopenNativeTerminalsAfterDaemonReconnect(
+      fixture.harness.deps,
+      { hostId: fixture.hostId, threadIds: [thread.id] },
+    );
+    const reopen = await waitForTerminalOpen(fixture.socket);
+    expect(reopen.start.mode).toBe("command");
+    if (reopen.start.mode !== "command") {
+      throw new Error("Expected a native CLI command start");
+    }
+    expect(reopen.start.command).toContain("--reattach");
+    acknowledgeOpen(fixture, reopen);
+    await reopening;
+
+    expect(
+      daemonMessages(fixture.socket).filter(
+        (message) => message.type === "terminal.open",
+      ),
+    ).toHaveLength(1);
+    expect(warn).not.toHaveBeenCalled();
+    expect(
+      getNativeTerminalThread(fixture.harness.db, thread.id),
+    ).toMatchObject({
+      nativeSessionId: record.nativeSessionId,
+      terminalSessionId: reopen.terminalId,
+    });
+    const launch = nativeTerminalLaunchSpecSchema.parse(
+      await readJson(
+        await postJson(
+          fixture,
+          `/threads/${thread.id}/native-terminal/launch`,
+          {},
+        ),
+      ),
+    );
+    expect(launch.nativeSessionId).toBe(record.nativeSessionId);
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.hostId,
+      sessionId: fixture.sessionId,
+      message: {
+        type: "terminal.exited",
+        terminalId: reopen.terminalId,
+        exitCode: 0,
+        closeReason: "user",
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  });
+
+  it("coalesces reconnect and unarchive reopens into one terminal.open and holder start", async () => {
+    const fixture = await createMigratedMemoryFixture();
+    const { thread } = await openRunningNativeThread(fixture, {
+      providerId: "claude-code",
+    });
+    const record = getNativeTerminalThread(fixture.harness.db, thread.id);
+    if (
+      record?.terminalSessionId === null ||
+      record?.terminalSessionId === undefined
+    ) {
+      throw new Error("native thread has no terminal");
+    }
+    if (record.nativeSessionId === null) {
+      throw new Error("native thread has no provider session");
+    }
+    archiveThread(fixture.harness.db, noopNotifier, thread.id);
+    fixture.harness.db
+      .update(terminalSessions)
+      .set({ status: "exited", closeReason: "thread-archived" })
+      .where(eq(terminalSessions.id, record.terminalSessionId))
+      .run();
+    expect(
+      unarchiveThread(fixture.harness.db, fixture.harness.hub, thread.id),
+    ).not.toBeNull();
+    fixture.socket.sentMessages.length = 0;
+
+    let enterCreateTerminal: (() => void) | undefined;
+    const createTerminalEntered = new Promise<void>((resolve) => {
+      enterCreateTerminal = resolve;
+    });
+    let releaseCreateTerminal: (() => void) | undefined;
+    const createTerminalGate = new Promise<void>((resolve) => {
+      releaseCreateTerminal = resolve;
+    });
+    const createTerminal =
+      fixture.harness.deps.terminalSessions.createTerminal.bind(
+        fixture.harness.deps.terminalSessions,
+      );
+    vi.spyOn(
+      fixture.harness.deps.terminalSessions,
+      "createTerminal",
+    ).mockImplementation(async (args) => {
+      enterCreateTerminal?.();
+      await createTerminalGate;
+      return createTerminal(args);
+    });
+
+    const reconnecting = reopenNativeTerminalsAfterDaemonReconnect(
+      fixture.harness.deps,
+      { hostId: fixture.hostId, threadIds: [thread.id] },
+    );
+    await createTerminalEntered;
+    const unarchiving = resumeNativeTerminalAfterUnarchive(
+      fixture.harness.deps,
+      { threadId: thread.id },
+    );
+    releaseCreateTerminal?.();
+
+    const reopen = await waitForTerminalOpen(fixture.socket);
+    expect(reopen.start.mode).toBe("command");
+    if (reopen.start.mode !== "command") {
+      throw new Error("Expected a native CLI command start");
+    }
+    acknowledgeOpen(fixture, reopen);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const opens = daemonMessages(fixture.socket).filter(
+      (message): message is TerminalOpenMessage =>
+        message.type === "terminal.open",
+    );
+    for (const extraOpen of opens.slice(1)) {
+      acknowledgeOpen(fixture, extraOpen);
+    }
+    await Promise.all([reconnecting, unarchiving]);
+    const launch = nativeTerminalLaunchSpecSchema.parse(
+      await readJson(
+        await postJson(
+          fixture,
+          `/threads/${thread.id}/native-terminal/launch`,
+          {},
+        ),
+      ),
+    );
+    for (const open of opens) {
+      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.hostId,
+        sessionId: fixture.sessionId,
+        message: {
+          type: "terminal.exited",
+          terminalId: open.terminalId,
+          exitCode: 0,
+          closeReason: "user",
+        },
+      });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    expect(opens).toHaveLength(1);
+    expect(
+      opens.filter((message) => message.start.mode === "command"),
+    ).toHaveLength(1);
+    expect(opens[0]?.type === "terminal.open" && opens[0].terminalId).toBe(
+      reopen.terminalId,
+    );
+    expect(
+      getNativeTerminalThread(fixture.harness.db, thread.id),
+    ).toMatchObject({
+      nativeSessionId: record.nativeSessionId,
+      terminalSessionId: reopen.terminalId,
+    });
+    expect(launch.nativeSessionId).toBe(record.nativeSessionId);
   });
 
   it("hands the creation prompt to the first launch only", async () => {
