@@ -1,7 +1,10 @@
 import { appendFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { hasProcessExited, waitForProcessExit } from "@bb/config/child-process-exit";
-import { runBbApp, runLauncherEntry } from "../../src/launcher.ts";
+import {
+  runBbAppWithTestManagedProcess,
+  runLauncherEntry,
+} from "../../src/launcher.ts";
 
 const marker = process.env.P7_SHUTDOWN_MARKER;
 const appendEvent = (event, details = {}) => {
@@ -78,7 +81,7 @@ setInterval(() => undefined, 1000);
 
 process.once("exit", (code) => appendEvent("launcher:exit", { code }));
 runLauncherEntry(() =>
-  runBbApp(
+  runBbAppWithTestManagedProcess(
     [
       "start",
       "--data-dir",

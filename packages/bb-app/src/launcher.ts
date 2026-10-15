@@ -289,13 +289,22 @@ interface ResolveWorktreeRuntimePolicyArgs {
 interface RunBbAppOptions {
   dryRun?: boolean;
   beforeServerStart?: () => Promise<void> | void;
-  startManagedProcess?: (args: {
-    context: BbAppStartContext;
-    env: NodeJS.ProcessEnv;
-    processName: ManagedProcessName;
-    serverUrl: string;
-  }) => Promise<ManagedProcessRun>;
   worktreePolicy: WorktreeRuntimePolicy | null;
+}
+
+interface TestManagedProcessStarterArgs {
+  context: BbAppStartContext;
+  env: NodeJS.ProcessEnv;
+  processName: ManagedProcessName;
+  serverUrl: string;
+}
+
+type TestManagedProcessStarter = (
+  args: TestManagedProcessStarterArgs,
+) => Promise<ManagedProcessRun>;
+
+interface RunBbAppTestOptions extends RunBbAppOptions {
+  startManagedProcess: TestManagedProcessStarter;
 }
 
 export interface BbAppStartContext {
@@ -4014,9 +4023,25 @@ export async function runSourceAppUpdateShim(
   });
 }
 
-export async function runBbApp(
+export function runBbApp(
   cliArgs: string[] = process.argv.slice(2),
   options: RunBbAppOptions = { worktreePolicy: null },
+): Promise<void> {
+  return runBbAppInternal(cliArgs, options);
+}
+
+export function runBbAppWithTestManagedProcess(
+  cliArgs: string[],
+  options: RunBbAppTestOptions,
+): Promise<void> {
+  const { startManagedProcess, ...runOptions } = options;
+  return runBbAppInternal(cliArgs, runOptions, startManagedProcess);
+}
+
+async function runBbAppInternal(
+  cliArgs: string[],
+  options: RunBbAppOptions,
+  testManagedProcessStarter?: TestManagedProcessStarter,
 ): Promise<void> {
   const parsedArgs = parseLauncherArgs(cliArgs);
   const underAppUpdateShim = isRunningUnderAppUpdateShim(process.env);
@@ -4127,7 +4152,7 @@ export async function runBbApp(
     return;
   }
 
-  if (options.startManagedProcess === undefined) {
+  if (testManagedProcessStarter === undefined) {
     assertBbAppArtifacts(runtime.context);
   }
 
@@ -4325,14 +4350,14 @@ export async function runBbApp(
             return () =>
               (async () => {
                 const daemonRun =
-                  options.startManagedProcess === undefined
+                  testManagedProcessStarter === undefined
                     ? await startDaemonProcess({
                         context,
                         env: daemonEnv,
                         processes,
                         serverUrl: context.serverUrl,
                       })
-                    : await options.startManagedProcess({
+                    : await testManagedProcessStarter({
                         context,
                         env: daemonEnv,
                         processName: "daemon",
@@ -4343,8 +4368,8 @@ export async function runBbApp(
               })();
           },
           startServer: async () => {
-            if (options.startManagedProcess !== undefined) {
-              const serverRun = await options.startManagedProcess({
+            if (testManagedProcessStarter !== undefined) {
+              const serverRun = await testManagedProcessStarter({
                 context,
                 env: serverEnv,
                 processName: "server",
