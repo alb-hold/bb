@@ -382,7 +382,24 @@ export function startBbAppProcess(args: StartBbAppProcessArgs): BbAppProcess {
       }
 
       if (!hasProcessExited(childProcess)) {
-        childProcess.kill(stopArgs.killSignal);
+        if (args.runtime.kind === "appimage") {
+          try {
+            process.kill(-pid, stopArgs.killSignal);
+          } catch (error) {
+            if (
+              typeof error === "object" &&
+              error !== null &&
+              "code" in error &&
+              error.code === "ESRCH"
+            ) {
+              childProcess.kill(stopArgs.killSignal);
+            } else {
+              throw error;
+            }
+          }
+        } else {
+          childProcess.kill(stopArgs.killSignal);
+        }
       }
       await waitForProcessExitWithTimeout({
         childProcess,
