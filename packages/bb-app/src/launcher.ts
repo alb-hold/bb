@@ -289,6 +289,12 @@ interface ResolveWorktreeRuntimePolicyArgs {
 interface RunBbAppOptions {
   dryRun?: boolean;
   beforeServerStart?: () => Promise<void> | void;
+  startManagedProcess?: (args: {
+    context: BbAppStartContext;
+    env: NodeJS.ProcessEnv;
+    processName: ManagedProcessName;
+    serverUrl: string;
+  }) => Promise<ManagedProcessRun>;
   worktreePolicy: WorktreeRuntimePolicy | null;
 }
 
@@ -4121,7 +4127,9 @@ export async function runBbApp(
     return;
   }
 
-  assertBbAppArtifacts(runtime.context);
+  if (options.startManagedProcess === undefined) {
+    assertBbAppArtifacts(runtime.context);
+  }
 
   if (
     shouldRunNpmAppUpdateShim({
@@ -4315,15 +4323,37 @@ export async function runBbApp(
               serverUrl: context.serverUrl,
             });
             return () =>
-              startDaemonProcess({
+              (async () => {
+                const daemonRun =
+                  options.startManagedProcess === undefined
+                    ? await startDaemonProcess({
+                        context,
+                        env: daemonEnv,
+                        processes,
+                        serverUrl: context.serverUrl,
+                      })
+                    : await options.startManagedProcess({
+                        context,
+                        env: daemonEnv,
+                        processName: "daemon",
+                        serverUrl: context.serverUrl,
+                      });
+                processes.daemonRun = daemonRun;
+                return daemonRun;
+              })();
+          },
+          startServer: async () => {
+            if (options.startManagedProcess !== undefined) {
+              const serverRun = await options.startManagedProcess({
                 context,
-                env: daemonEnv,
-                processes,
+                env: serverEnv,
+                processName: "server",
                 serverUrl: context.serverUrl,
               });
-          },
-          startServer: () =>
-            startFullStackServerProcess({
+              processes.serverRun = serverRun;
+              return serverRun;
+            }
+            return startFullStackServerProcess({
               ...(options.beforeServerStart === undefined
                 ? {}
                 : { beforeStart: options.beforeServerStart }),
@@ -4336,7 +4366,8 @@ export async function runBbApp(
                       appUpdateController.attachServer(childProcess),
                   }),
               processes,
-            }),
+            });
+          },
         };
       },
       processes,
