@@ -3,11 +3,14 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
+  createNativeTerminalThread,
+  createTerminalSession,
   getNativeTerminalThread,
   getTerminalSession,
   getThread,
   listEvents,
   projectAttachmentThreads,
+  setNativeTerminalThreadTerminal,
   terminalSessions,
   threads,
   upsertProjectExecutionDefaults,
@@ -51,6 +54,7 @@ import {
   seedPrimaryHost,
   seedProjectWithSource,
   seedSession,
+  seedThread,
 } from "../helpers/seed.js";
 import {
   createTestAppHarness,
@@ -501,6 +505,90 @@ describe("native terminal threads", () => {
     );
     expect(view.terminal?.id).toBe(open.terminalId);
     expect(view.terminal?.status).toBe("running");
+  });
+
+  it("resumes the same native session when an archived thread is unarchived", async () => {
+    const fixture = await createFixture();
+    const thread = seedThread(fixture.harness.deps, {
+      projectId: fixture.projectId,
+      environmentId: fixture.environment.id,
+      providerId: "claude-code",
+      status: "active",
+    });
+    const sessionId = "11111111-2222-3333-4444-555555555555";
+    const terminal = createTerminalSession(fixture.harness.db, {
+      cols: 80,
+      daemonSessionId: null,
+      environmentId: fixture.environment.id,
+      hostId: fixture.hostId,
+      initialCwd: "/tmp/native-workspace",
+      rows: 24,
+      status: "running",
+      threadId: thread.id,
+      title: "Claude Code",
+    });
+    createNativeTerminalThread(fixture.harness.db, {
+      threadId: thread.id,
+      providerId: "claude-code",
+      nativeSessionId: sessionId,
+      initialPrompt: null,
+      initialImages: [],
+      model: null,
+    });
+    setNativeTerminalThreadTerminal(fixture.harness.db, {
+      threadId: thread.id,
+      terminalSessionId: terminal.id,
+    });
+
+    fixture.harness.hub.unregisterDaemon(fixture.sessionId);
+    const archive = await postJson(
+      fixture,
+      `/threads/${thread.id}/archive-all`,
+      {},
+    );
+    expect(archive.status).toBe(200);
+    expect(
+      getTerminalSession(fixture.harness.db, {
+        kind: "terminal",
+        terminalId: terminal.id,
+      }),
+    ).toMatchObject({ status: "exited", closeReason: "thread-archived" });
+
+    fixture.harness.hub.registerDaemon(
+      fixture.sessionId,
+      fixture.hostId,
+      fixture.socket,
+    );
+    const unarchive = await postJson(
+      fixture,
+      `/threads/${thread.id}/unarchive`,
+      {},
+    );
+    expect(unarchive.status).toBe(200);
+
+    const reopen = await waitForTerminalOpen(fixture.socket);
+    expect(reopen.threadId).toBe(thread.id);
+    expect(reopen.start).toMatchObject({
+      mode: "command",
+      command: expect.not.stringContaining("--reattach"),
+    });
+    acknowledgeOpen(fixture, reopen);
+    await expect
+      .poll(() => getNativeTerminalThread(fixture.harness.db, thread.id))
+      .toMatchObject({
+        nativeSessionId: sessionId,
+        terminalSessionId: reopen.terminalId,
+      });
+    const launch = nativeTerminalLaunchSpecSchema.parse(
+      await readJson(
+        await postJson(
+          fixture,
+          `/threads/${thread.id}/native-terminal/launch`,
+          {},
+        ),
+      ),
+    );
+    expect(launch.nativeSessionId).toBe(sessionId);
   });
 
   it("hands the creation prompt to the first launch only", async () => {

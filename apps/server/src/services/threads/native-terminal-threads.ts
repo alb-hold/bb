@@ -622,9 +622,10 @@ function watchReattachedTerminal(
   setTimeout(check, NATIVE_REATTACH_POLL_MS).unref();
 }
 
-export function reopenNativeTerminalsAfterDaemonReconnect(
+function reopenNativeTerminals(
   deps: NativeTerminalReopenDeps,
   args: { hostId: string; threadIds: readonly string[] },
+  reason: "daemon-reconnect" | "thread-unarchived",
   monotonicNowMs: () => number = () => performance.now(),
 ): Promise<void> {
   return Promise.all(
@@ -690,11 +691,15 @@ export function reopenNativeTerminalsAfterDaemonReconnect(
           thread === null ||
           thread.archivedAt !== null ||
           thread.deletedAt !== null ||
-          (currentTerminal?.status !== "disconnected" &&
-            !(
-              currentTerminal?.status === "exited" &&
-              currentTerminal.closeReason === "daemon-disconnect"
-            ))
+          (reason === "thread-unarchived"
+            ? currentTerminal?.status !== "exited" ||
+              currentTerminal.closeReason !== "thread-archived"
+            : currentTerminal?.status !== "disconnected" &&
+              !(
+                currentTerminal?.status === "exited" &&
+                (currentTerminal.closeReason === "daemon-disconnect" ||
+                  currentTerminal.closeReason === "thread-archived")
+              ))
         ) {
           return;
         }
@@ -704,7 +709,7 @@ export function reopenNativeTerminalsAfterDaemonReconnect(
           if (shouldStop()) return;
           try {
             reopened = await openNativeTerminalDeduplicated(deps, {
-              reattachOnly: true,
+              reattachOnly: reason === "daemon-reconnect",
               threadId,
               request: {},
             });
@@ -763,7 +768,7 @@ export function reopenNativeTerminalsAfterDaemonReconnect(
         }
         deps.logger.info(
           { hostId: args.hostId, terminalId: reopened.terminal?.id, threadId },
-          "Reopened native terminal after the host daemon reconnected",
+          "Reopened native terminal session",
         );
         if (reopened.terminal !== null) {
           watchReattachedTerminal(deps, {
@@ -775,7 +780,7 @@ export function reopenNativeTerminalsAfterDaemonReconnect(
       } catch (error: unknown) {
         deps.logger.warn(
           { err: error, hostId: args.hostId, threadId },
-          "Failed to reopen native terminal after the host daemon reconnected",
+          "Failed to reopen native terminal session",
         );
         if (
           !reopenErrorProvesHolderGone(deps, {
@@ -797,6 +802,34 @@ export function reopenNativeTerminalsAfterDaemonReconnect(
       }
     }),
   ).then(() => undefined);
+}
+
+export function reopenNativeTerminalsAfterDaemonReconnect(
+  deps: NativeTerminalReopenDeps,
+  args: { hostId: string; threadIds: readonly string[] },
+  monotonicNowMs: () => number = () => performance.now(),
+): Promise<void> {
+  return reopenNativeTerminals(deps, args, "daemon-reconnect", monotonicNowMs);
+}
+
+export async function resumeNativeTerminalAfterUnarchive(
+  deps: NativeTerminalReopenDeps,
+  args: { threadId: string },
+): Promise<void> {
+  const record = getNativeTerminalThread(deps.db, args.threadId);
+  const terminal = record === null ? null : readRecordTerminal(deps, record);
+  if (
+    record === null ||
+    terminal?.status !== "exited" ||
+    terminal.closeReason !== "thread-archived"
+  ) {
+    return Promise.resolve();
+  }
+  return reopenNativeTerminals(
+    deps,
+    { hostId: terminal.hostId, threadIds: [args.threadId] },
+    "thread-unarchived",
+  );
 }
 
 function launchInputWithImagesInPrompt(input: {
