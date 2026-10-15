@@ -1993,7 +1993,7 @@ describe("bb-app launcher", () => {
     ): ManagedProcessRun => {
       const kill = child.kill.bind(child);
       child.kill = (signal) => {
-        if (signal !== undefined) {
+        if (typeof signal === "string") {
           const signals = processSignals.get(name) ?? [];
           signals.push(signal);
           processSignals.set(name, signals);
