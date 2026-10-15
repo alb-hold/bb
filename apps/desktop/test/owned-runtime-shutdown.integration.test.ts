@@ -1,7 +1,8 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   DAEMON_DETACH_HEAD_START_MS,
@@ -13,7 +14,6 @@ import {
 } from "@bb/config/full-stack-shutdown";
 import { startBbAppProcess } from "../src/bb-process.js";
 import { stopOwnedRuntimeProcess } from "../src/owned-runtime-shutdown.js";
-import { createP7InstalledRuntime } from "../../packages/bb-app/test/fixtures/p7-installed-runtime.mjs";
 const liveProcesses = new Set<number>();
 const scratchDirs: string[] = [];
 const markerFiles: string[] = [];
@@ -91,6 +91,21 @@ afterEach(() => {
 });
 
 async function stopRuntimeThroughDesktop(runtimeKind: "direct" | "appimage") {
+  const fixtureModule = (await import(
+    pathToFileURL(
+      resolve(
+        process.cwd(),
+        "../../packages/bb-app/test/fixtures/p7-installed-runtime.mjs",
+      ),
+    ).href
+  )) as {
+    createP7InstalledRuntime(): {
+      binPath: string;
+      cleanup(): void;
+      packageRoot: string;
+    };
+  };
+  const { createP7InstalledRuntime } = fixtureModule;
   const installed = createP7InstalledRuntime();
   installedRuntimes.push(installed);
   const serverPort = await allocateLoopbackPort();
