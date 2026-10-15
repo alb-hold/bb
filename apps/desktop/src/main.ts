@@ -161,6 +161,7 @@ import {
   type ConnectSessionRenewal,
 } from "./connect-session-renewal.js";
 import { registerDesktopShutdownSignalHandlers } from "./desktop-shutdown.js";
+import { stopOwnedRuntimeProcess } from "./owned-runtime-shutdown.js";
 import {
   createDesktopWindowFactory,
   type DesktopBrowserWindow,
@@ -295,8 +296,6 @@ import {
   type WindowStateKey,
 } from "./types.js";
 
-const OWNED_RUNTIME_STOP_TIMEOUT_MS = 6_000;
-const OWNED_RUNTIME_KILL_TIMEOUT_MS = 1_000;
 const FOREIGN_RUNTIME_STOP_TIMEOUT_MS = 15_000;
 const FOREIGN_RUNTIME_KILL_TIMEOUT_MS = 3_000;
 const REMOTE_SYSTEM_CONFIG_POLL_INTERVAL_MS = 5 * 60 * 1000;
@@ -2179,24 +2178,8 @@ async function createApplicationWindow(
 
 async function stopOwnedRuntime(): Promise<void> {
   const runtime = currentRuntime;
-  if (runtime === null || runtime.ownership !== "spawned") {
-    setCurrentRuntime(null);
-    return;
-  }
-
   setCurrentRuntime(null);
-  try {
-    await runtime.bbProcess?.stop({
-      killSignal: "SIGKILL",
-      killTimeoutMs: OWNED_RUNTIME_KILL_TIMEOUT_MS,
-      signal: "SIGTERM",
-      timeoutMs: OWNED_RUNTIME_STOP_TIMEOUT_MS,
-    });
-  } finally {
-    if (runtime.userDataPath !== null) {
-      await clearOwnedRuntimePidFile({ userDataPath: runtime.userDataPath });
-    }
-  }
+  await stopOwnedRuntimeProcess(runtime);
 }
 
 function handleBeforeQuit(event: Event): void {

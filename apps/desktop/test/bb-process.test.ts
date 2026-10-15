@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { DESKTOP_OWNED_RUNTIME_SHUTDOWN_GRACE_MS } from "@bb/config/full-stack-shutdown";
 import {
   createBbAppProcessLaunch,
   createBbAppProcessEnv,
@@ -223,6 +224,9 @@ describe("bb app process", () => {
       },
     });
 
+    expect(launch.args[2]).toContain(
+      `, ${DESKTOP_OWNED_RUNTIME_SHUTDOWN_GRACE_MS});`,
+    );
     expect(launch.args.slice(-3)).toEqual([
       "--",
       desktopMountScript.path,
