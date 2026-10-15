@@ -31,7 +31,7 @@ export function isActiveTerminalSessionStatus(
   }
 }
 
-const terminalSessionCloseReasonValues = [
+const hostDaemonTerminalCloseReasonValues = [
   "user",
   "process-exit",
   "daemon-disconnect",
@@ -39,6 +39,12 @@ const terminalSessionCloseReasonValues = [
   "thread-archived",
   "thread-deleted",
   "open-timeout",
+] as const;
+export type HostDaemonTerminalCloseReason =
+  (typeof hostDaemonTerminalCloseReasonValues)[number];
+const terminalSessionCloseReasonValues = [
+  ...hostDaemonTerminalCloseReasonValues,
+  "host-removed",
 ] as const;
 export const terminalSessionCloseReasonSchema = z.enum(
   terminalSessionCloseReasonValues,

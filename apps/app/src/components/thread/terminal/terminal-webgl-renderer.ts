@@ -232,14 +232,17 @@ export function observeTerminalWebglVisibility({
   root,
   renderer,
   isPanelOpen,
+  onVisibilityChange,
 }: {
   root: HTMLElement;
-  renderer: TerminalWebglRenderer;
+  renderer: TerminalWebglRenderer | null;
   isPanelOpen: () => boolean;
+  onVisibilityChange?: (visible: boolean) => void;
 }): IDisposable & { sync: () => void } {
   const document = root.ownerDocument;
   const window = document.defaultView;
   let disposed = false;
+  let previousVisibility: boolean | null = null;
   const supportsIntersectionObserver =
     typeof IntersectionObserver !== "undefined";
   let hasObserved = !supportsIntersectionObserver;
@@ -250,20 +253,24 @@ export function observeTerminalWebglVisibility({
     }
     const box = root.getBoundingClientRect();
     const style = window?.getComputedStyle(root);
-    renderer.setVisible(
+    const visible =
       isPanelOpen() &&
-        intersects &&
-        document.visibilityState === "visible" &&
-        box.width > 0 &&
-        box.height > 0 &&
-        box.bottom > 0 &&
-        box.right > 0 &&
-        box.top < (window?.innerHeight ?? 0) &&
-        box.left < (window?.innerWidth ?? 0) &&
-        intersectsClippingAncestors(root, box, window) &&
-        style?.visibility !== "hidden" &&
-        style?.visibility !== "collapse",
-    );
+      intersects &&
+      document.visibilityState === "visible" &&
+      box.width > 0 &&
+      box.height > 0 &&
+      box.bottom > 0 &&
+      box.right > 0 &&
+      box.top < (window?.innerHeight ?? 0) &&
+      box.left < (window?.innerWidth ?? 0) &&
+      intersectsClippingAncestors(root, box, window) &&
+      style?.visibility !== "hidden" &&
+      style?.visibility !== "collapse";
+    renderer?.setVisible(visible);
+    if (visible !== previousVisibility) {
+      previousVisibility = visible;
+      onVisibilityChange?.(visible);
+    }
   };
   const syncGeometry = () => {
     if (hasObserved) {
