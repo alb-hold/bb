@@ -11719,7 +11719,7 @@ describe("Account Pool credential scoping", () => {
         projectId: "project-one",
         hostId: "host-one",
       }),
-    ).resolves.toEqual([]);
+    ).rejects.toThrow("lookup failed");
     expect(
       (await fs.readdir(path.join(fixture.dataDir, ...POOL_SECRETS))).filter(
         (name) => name.includes("thread-lookup"),
@@ -11727,7 +11727,7 @@ describe("Account Pool credential scoping", () => {
     ).toEqual([]);
   });
 
-  it("mints nothing and skips the contribution when the thread lookup fails on a nested server", async () => {
+  it("mints nothing and refuses the contribution when the thread lookup fails on a nested server", async () => {
     const parent = await scopedFixture();
     const { host: child, dataDir } = await startNestedChild(
       parent,
@@ -11742,7 +11742,7 @@ describe("Account Pool credential scoping", () => {
         projectId: "project-one",
         hostId: "host-one",
       }),
-    ).resolves.toEqual([]);
+    ).rejects.toThrow("lookup failed");
     expect(
       (
         await fs.readdir(path.join(dataDir, ...POOL_SECRETS)).catch(() => [])
@@ -11761,21 +11761,46 @@ describe("Account Pool credential scoping", () => {
         archivedAt: lookups === 1 ? null : 1_000,
       });
     });
-    const entries = await host.harness.behavior.resolveProviderEnv(
-      "claude-code",
-      {
+    await expect(
+      host.harness.behavior.resolveProviderEnv("claude-code", {
         threadId: "thread-racing",
         projectId: "project-one",
         hostId: "host-one",
-      },
-    );
+      }),
+    ).rejects.toThrow("Cannot mint a credential for an archived thread.");
     expect(lookups).toBe(2);
-    expect(entries).toEqual([]);
     expect(
       (await fs.readdir(path.join(fixture.dataDir, ...POOL_SECRETS))).filter(
         (name) => name.includes("thread-racing"),
       ),
     ).toEqual([]);
+  });
+
+  it.each([
+    ["a missing secret", Object.assign(new Error("gone"), { code: "ENOENT" }), false],
+    ["a corrupt secret", new SyntaxError("Unexpected end of JSON input"), false],
+    ["an invalid secret", new z.ZodError([]), false],
+    ["an unreadable secret", Object.assign(new Error("disk read failed"), { code: "EIO" }), true],
+  ])("decides pool availability from %s, refusing only an I/O failure", async (_label, failure, refuses) => {
+    const { host } = await scopedFixture();
+    const read = vi
+      .spyOn(AccountStore.prototype, "readSecret")
+      .mockRejectedValue(failure);
+    try {
+      const resolving = host.harness.behavior.resolveProviderEnv("claude-code", {
+        threadId: "thread-secret",
+        projectId: "project-one",
+        hostId: "host-one",
+      });
+      if (refuses) {
+        await expect(resolving).rejects.toThrow("disk read failed");
+      } else {
+        const entries = await resolving;
+        expect(entries.map((entry) => entry.name)).not.toContain(PARENT_TOKEN_ENV);
+      }
+    } finally {
+      read.mockRestore();
+    }
   });
 
   it("does not restore an archived thread from a delayed unarchive event", async () => {

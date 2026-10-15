@@ -1709,7 +1709,7 @@ function createFakePluginHostInternal(
           "warn",
           `provider environment contribution failed: ${error instanceof Error ? error.message : String(error)}`,
         );
-        return [];
+        throw error;
       }
     },
     async resolveProviderEnvHealth(providerId, context) {

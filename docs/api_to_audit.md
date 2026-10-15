@@ -208,7 +208,11 @@ authenticated `BB_SERVER_URL`. Contributions override the shell environment.
 Provider environment events report their names, sources, and reasons with
 values masked. The resolver
 receives `ExperimentalPluginProviderEnvContext` and returns
-`ExperimentalPluginProviderEnvEntry` values.
+`ExperimentalPluginProviderEnvEntry` values. A resolver that throws, or does
+not answer within 30 seconds, is called once and never retried; the launch is
+refused with `503 provider_environment_unavailable` instead of starting
+without that plugin's environment. The SDK's fake plugin host rethrows the
+same way.
 
 The optional `ExperimentalPluginProviderEnvContext.experimental_runtimeKind`
 is `"native"` when core opens a native terminal through this same resolver.
@@ -225,7 +229,7 @@ core native launch on this path.
 1. Confirm one resolver per provider is sufficient when plugins need multiple
    independently disposable features.
 2. Confirm plugin load order is the right deterministic conflict policy.
-3. Confirm the 32-entry cap and five-second timeout fit providers that resolve
+3. Confirm the 32-entry cap and 30-second timeout fit providers that resolve
    short-lived credentials.
 4. Decide whether `serverPath` needs structured query parameters or non-HTTP
    server endpoints before accepting more shapes.
