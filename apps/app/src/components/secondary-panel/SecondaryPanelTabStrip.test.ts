@@ -22,6 +22,44 @@ afterEach(() => {
 });
 
 describe("secondary panel tab-strip edge fades", () => {
+  it("shows the attention ring on an unread terminal tab", () => {
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        disconnect() {}
+      },
+    );
+    const { getByRole } = render(
+      createElement(SecondaryPanelTabStrip, {
+        activeTabId: "terminal-1",
+        tabs: [
+          {
+            attention: true,
+            label: "Build terminal",
+            isPinned: false,
+            leadingVisual: null,
+            statusLabel: null,
+            onSelect: vi.fn(),
+            onClose: vi.fn(),
+            renderContent: () => null,
+            tab: {
+              id: "terminal-1",
+              kind: "terminal" as const,
+              terminalId: "terminal-1",
+            },
+          },
+        ],
+        onReorderTab: vi.fn(),
+        usesDesktopChrome: false,
+        isPanelOpen: true,
+      }),
+    );
+
+    const tab = getByRole("button", { name: "Build terminal" });
+    expect(tab.parentElement?.classList).toContain("ring-attention");
+  });
+
   it("keeps the desktop tab viewport outside the window drag region", () => {
     vi.stubGlobal(
       "ResizeObserver",

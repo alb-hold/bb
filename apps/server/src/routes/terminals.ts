@@ -61,6 +61,14 @@ export function registerTerminalRoutes(app: Hono, deps: AppDeps): void {
     return context.json(session);
   });
 
+  post(routes.notify, (context, payload) => {
+    const session = deps.terminalSessions.notifyTerminal({
+      payload,
+      terminalId: context.req.param("terminalId"),
+    });
+    return context.json(session);
+  });
+
   post(routes.resize, (context, payload) => {
     const session = deps.terminalSessions.resizeTerminal({
       payload,

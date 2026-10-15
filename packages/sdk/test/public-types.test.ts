@@ -489,6 +489,7 @@ type ExpectedTerminalsKey =
   | "get"
   | "input"
   | "list"
+  | "notify"
   | "output"
   | "rename"
   | "restart"

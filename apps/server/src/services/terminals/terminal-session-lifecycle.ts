@@ -4,13 +4,18 @@ import {
   resolveHostEnvironment,
 } from "../hosts/host-environment.js";
 import { randomUUID } from "node:crypto";
+import { z } from "zod";
 import {
   createTerminalSession,
+  clearTerminalAttention,
+  getTerminalAttention,
   getSessionById,
   getTerminalSession,
   listTerminalSessions,
+  upsertTerminalAttention,
   updateTerminalSession,
   updateTerminalSessions,
+  updateThread,
   type TerminalSessionMutation,
   type TerminalSessionRow,
 } from "@bb/db";
@@ -33,6 +38,7 @@ import type {
   TerminalOutputResponse,
   TerminalResizeRequest,
   TerminalSession,
+  TerminalNotifyRequest,
   UpdateTerminalRequest,
 } from "@bb/server-contract";
 import { ApiError } from "../../errors.js";
@@ -514,8 +520,23 @@ function toTerminalSession(row: TerminalSessionRow): TerminalSession {
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     lastUserInputAt: row.lastUserInputAt,
+    attention: null,
   };
 }
+
+const terminalAttentionStateSchema = z
+  .object({
+    at: z.number().int().nonnegative(),
+    body: z.string().max(2048).optional(),
+    kind: z.enum(["bell", "osc-9", "osc-99", "osc-777"]),
+    seq: z.number().int().nonnegative(),
+    title: z.string().max(256).optional(),
+  })
+  .strict();
+
+type TerminalAttentionState = z.infer<typeof terminalAttentionStateSchema>;
+
+const TERMINAL_THREAD_ATTENTION_DEBOUNCE_MS = 10_000;
 
 function getTerminalById(
   db: AppDeps["db"],
@@ -536,6 +557,7 @@ function updateTerminalById(
 }
 
 export class TerminalSessionLifecycle {
+  private readonly lastThreadAttentionAt = new Map<string, number>();
   private readonly pendingAttaches: PendingRpcRegistry<
     PendingTerminalAttachKey,
     TerminalReplayMessage
@@ -648,7 +670,7 @@ export class TerminalSessionLifecycle {
       return listTerminalSessions(this.options.db, {
         scope: { kind: "thread", threadId: query.threadId },
         visible: true,
-      }).map(toTerminalSession);
+      }).map((row) => this.toTerminalSession(row));
     }
     if (query.environmentId !== undefined) {
       requireEnvironment(this.options.db, query.environmentId);
@@ -658,7 +680,7 @@ export class TerminalSessionLifecycle {
           kind: "threadless-environment",
         },
         visible: true,
-      }).map(toTerminalSession);
+      }).map((row) => this.toTerminalSession(row));
     }
     const hostId = query.hostId;
     if (hostId === undefined) {
@@ -683,7 +705,7 @@ export class TerminalSessionLifecycle {
           session.hostId === hostId &&
           (query.cwd === undefined || session.initialCwd === query.cwd),
       )
-      .map(toTerminalSession);
+      .map((row) => this.toTerminalSession(row));
   }
 
   getTerminal(args: GetTerminalArgs): TerminalSession {
@@ -695,7 +717,117 @@ export class TerminalSessionLifecycle {
         "Terminal session not found",
       );
     }
-    return toTerminalSession(session);
+    return this.toTerminalSession(session);
+  }
+
+  private toTerminalSession(row: TerminalSessionRow): TerminalSession {
+    const attention = getTerminalAttention(this.options.db, row.id);
+    return {
+      ...toTerminalSession(row),
+      attention:
+        attention === null || attention.clearedAt !== null
+          ? null
+          : {
+              at: attention.attentionAt,
+              body: attention.body ?? undefined,
+              kind: attention.kind,
+              seq: attention.seq,
+              title: attention.title ?? undefined,
+            },
+    };
+  }
+
+  notifyTerminal(args: {
+    payload: TerminalNotifyRequest;
+    terminalId: string;
+  }): TerminalSession {
+    const session = getTerminalById(this.options.db, args.terminalId);
+    if (!session || session.status !== "running") {
+      throw new ApiError(
+        404,
+        "terminal_not_found",
+        "Running terminal not found",
+      );
+    }
+    this.recordTerminalAttention({
+      source: "api",
+      terminalId: session.id,
+      kind: "osc-9",
+      ...args.payload,
+    });
+    return this.toTerminalSession(session);
+  }
+
+  private recordTerminalAttention(
+    attention:
+      | (Omit<TerminalAttentionState, "at" | "seq"> & {
+          at?: number;
+          source: "api";
+          terminalId: string;
+        })
+      | (Omit<TerminalAttentionState, "at"> & {
+          at?: number;
+          source: "daemon";
+          terminalId: string;
+        }),
+  ): void {
+    const session = getTerminalById(this.options.db, attention.terminalId);
+    if (!session || session.status !== "running") return;
+    const now = attention.at ?? Date.now();
+    const source = attention.source;
+    const alreadyVisible = this.options.hub.hasVisibleTerminalClient(
+      attention.terminalId,
+      now,
+    );
+    const daemonSeq = source === "daemon" ? attention.seq : null;
+    const { terminalId, ...value } = attention;
+    const previous = getTerminalAttention(this.options.db, terminalId);
+    if (
+      daemonSeq !== null &&
+      previous?.daemonSeq !== null &&
+      previous?.daemonSeq !== undefined &&
+      daemonSeq <= previous.daemonSeq
+    ) {
+      return;
+    }
+    const seq =
+      daemonSeq !== null
+        ? Math.max((previous?.seq ?? -1) + 1, daemonSeq)
+        : (previous?.seq ?? 0) + 1;
+    upsertTerminalAttention(this.options.db, {
+      terminalSessionId: terminalId,
+      seq,
+      daemonSeq: daemonSeq ?? previous?.daemonSeq ?? null,
+      kind: value.kind,
+      title: value.title ?? null,
+      body: value.body ?? null,
+      attentionAt: now,
+    });
+    if (alreadyVisible) {
+      clearTerminalAttention(this.options.db, terminalId, now);
+    }
+    if (session.threadId !== null) {
+      if (!alreadyVisible) {
+        const previous = this.lastThreadAttentionAt.get(session.threadId) ?? 0;
+        if (now - previous >= TERMINAL_THREAD_ATTENTION_DEBOUNCE_MS) {
+          updateThread(this.options.db, this.options.hub, session.threadId, {
+            latestAttentionAt: now,
+          });
+          this.lastThreadAttentionAt.set(session.threadId, now);
+        }
+      }
+      this.options.hub.notifyThread(session.threadId, ["terminals-changed"]);
+    }
+  }
+
+  private clearTerminalAttention(terminalId: string): void {
+    const session = getTerminalById(this.options.db, terminalId);
+    const attention = getTerminalAttention(this.options.db, terminalId);
+    if (attention === null || attention.clearedAt !== null) return;
+    clearTerminalAttention(this.options.db, terminalId, Date.now());
+    if (session?.threadId !== null && session?.threadId !== undefined) {
+      this.options.hub.notifyThread(session.threadId, ["terminals-changed"]);
+    }
   }
 
   async createTerminal(args: CreateTerminalArgs): Promise<TerminalSession> {
@@ -1716,6 +1848,9 @@ export class TerminalSessionLifecycle {
         );
         return;
       case "visibility":
+        if (args.message.visible) {
+          this.clearTerminalAttention(args.terminalId);
+        }
         if (this.outputAckSocketVisibility.has(args.socket)) {
           this.outputAckSocketVisibility.set(args.socket, args.message.visible);
         }
@@ -1746,6 +1881,31 @@ export class TerminalSessionLifecycle {
     switch (args.message.type) {
       case "heartbeat":
         return;
+      case "terminal.attention": {
+        const session = getTerminalById(
+          this.options.db,
+          args.message.terminalId,
+        );
+        if (
+          session?.daemonSessionId !== args.sessionId ||
+          session.status !== "running"
+        ) {
+          return;
+        }
+        this.recordTerminalAttention({
+          source: "daemon",
+          terminalId: session.id,
+          seq: args.message.seq,
+          kind: args.message.kind,
+          ...(args.message.title === undefined
+            ? {}
+            : { title: args.message.title }),
+          ...(args.message.body === undefined
+            ? {}
+            : { body: args.message.body }),
+        });
+        return;
+      }
       case "terminal.opened":
         this.pendingOpens.settle(
           terminalResponseRpcKey(args.sessionId, args.message),
