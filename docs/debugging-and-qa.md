@@ -125,6 +125,9 @@ not know a command type closes its server connection, so they ship with a
 `HOST_DAEMON_PROTOCOL_VERSION` bump and the server never sends them to an older
 daemon.
 
+The fork's recent host-daemon protocol changes are listed in the
+[protocol history](fork/host-daemon-protocol-history.md).
+
 The data socket is admitted only with a single-use ticket (15 seconds, bound to
 the host and its daemon session, sent over the already authenticated server
 connection) plus the daemon's host key, and never with an `Origin` header.

@@ -75,6 +75,11 @@ interface TerminalCloseOptions extends TerminalJsonOptions {
   ifClean?: boolean;
 }
 
+interface TerminalNotifyOptions {
+  body: string;
+  title: string;
+}
+
 type TerminalStartResolution =
   | { mode: "shell" }
   | { mode: "command"; command: string }
@@ -105,6 +110,30 @@ export function registerTerminalCommands(
       printTerminalTable(result.sessions);
     }),
   );
+
+  terminal
+    .command("notify")
+    .description("Raise terminal attention from the current bb terminal")
+    .requiredOption("--title <title>", "Notification title")
+    .requiredOption("--body <body>", "Notification body")
+    .action(
+      action(async (opts: TerminalNotifyOptions) => {
+        const terminalId = process.env.BB_TERMINAL_SESSION_ID;
+        if (!terminalId) {
+          throw new CliUsageError({
+            code: "missing_terminal_identity",
+            hint: "Run this command inside a terminal created by bb.",
+            message: "This shell has no bb terminal identity.",
+          });
+        }
+        await createCliBbSdk(getUrl()).terminals.notify({
+          terminalId,
+          title: opts.title,
+          body: opts.body,
+        });
+        console.log(`Attention sent for terminal ${terminalId}`);
+      }),
+    );
 
   addTerminalScopeOptions(
     terminal

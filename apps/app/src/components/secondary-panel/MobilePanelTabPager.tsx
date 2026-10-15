@@ -21,6 +21,7 @@ interface MobilePanelTab {
   leadingVisual: ReactNode;
   onSelect: () => void;
   onClose: (() => void) | null;
+  attention?: boolean;
 }
 
 interface MobilePanelTabPagerProps {
@@ -153,6 +154,7 @@ export function MobilePanelTabPager({
             isActive={tab.id === activeTabId}
             onSelect={tab.onSelect}
             closeAction={null}
+            attention={tab.attention}
           />
         ))}
       </div>
@@ -244,6 +246,7 @@ export function MobilePanelTabPager({
                           closeLabel: `Close ${displayedTab.label}`,
                         }
                   }
+                  attention={displayedTab.attention}
                 />
               </div>
             ))}
