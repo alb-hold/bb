@@ -1,12 +1,11 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { EventEmitter } from "node:events";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { createRequire } from "node:module";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { watchLauncherDisconnect } from "../../../apps/server/src/services/system/launcher-disconnect.ts";
+import { afterEach, describe, expect, it } from "vitest";
 
 const fixtureDir = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
 const launcherEntry = join(fixtureDir, "orphan-launcher.mjs");
@@ -17,6 +16,7 @@ const realServerEntry = join(fixtureDir, "real-server-entry.mjs");
 const realLauncherEntry = join(fixtureDir, "real-server-launcher.mjs");
 const detachedHolderEntry = join(fixtureDir, "detached-holder.mjs");
 const reportLauncherEntry = join(fixtureDir, "report-stuck-child.mjs");
+const disconnectQueueEntry = join(fixtureDir, "launcher-disconnect-queue.mjs");
 const scratchDirs: string[] = [];
 const activeChildren = new Set<number>();
 const childErrors = new WeakMap<ChildProcess, { stderr: string }>();
@@ -161,15 +161,13 @@ async function waitForProcessExitByPid(
 
 describe("server process ownership", () => {
   it("queues a launcher disconnect that arrives before shutdown registration", async () => {
-    const port = new EventEmitter() as EventEmitter & { channel?: { unref(): void } };
-    port.channel = { unref: vi.fn() };
-    const watch = watchLauncherDisconnect(port as never);
-    port.emit("disconnect");
-    const shutdown = vi.fn(async () => undefined);
-    const exit = vi.fn((_code: number): never => undefined as never);
-    watch.setShutdown({ shutdown, exit });
-    await vi.waitFor(() => expect(shutdown).toHaveBeenCalledTimes(1));
-    expect(port.channel.unref).toHaveBeenCalledOnce();
+    const dir = scratchDir();
+    const marker = join(dir, "disconnect.log");
+    const child = spawnFixture(disconnectQueueEntry, {
+      BB_DISCONNECT_MARKER: marker,
+    });
+    await waitForExit(child, 5_000);
+    expect(readFileSync(marker, "utf8")).toBe("shutdown\nexit:0\n");
   });
 
   it("runs production shutdown on parent loss and releases its database and port", async () => {
@@ -199,7 +197,7 @@ describe("server process ownership", () => {
       await waitForProcessExitByPid(serverPid, 10_000);
       activeChildren.delete(serverPid);
       expect(readFileSync(join(dir, "run-shutdown.log"), "utf8")).toContain("server-close");
-      const Database = (await import("better-sqlite3")).default;
+      const Database = createRequire(import.meta.url)("better-sqlite3");
       const db = new Database(join(dir, "bb.db"));
       db.close();
       await expect(fetch(`http://127.0.0.1:${port}/`)).rejects.toThrow();
