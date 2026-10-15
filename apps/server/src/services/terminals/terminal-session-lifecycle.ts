@@ -19,7 +19,10 @@ import {
   type TerminalSessionMutation,
   type TerminalSessionRow,
 } from "@bb/db";
-import type { TerminalSessionCloseReason } from "@bb/domain";
+import type {
+  HostDaemonTerminalCloseReason,
+  TerminalSessionCloseReason,
+} from "@bb/domain";
 import type {
   HostDaemonContributedEnvEntry,
   HostDaemonDaemonWsMessage,
@@ -134,7 +137,7 @@ interface RejectPendingOpenForTerminalArgs {
 }
 
 interface RequestTerminalClosesArgs {
-  closeReason: TerminalSessionCloseReason;
+  closeReason: HostDaemonTerminalCloseReason;
   sessions: readonly TerminalSessionRow[];
 }
 
@@ -258,7 +261,7 @@ interface PublishLifecycleTerminalExitsForSessionsArgs {
 }
 
 interface CloseThreadTerminalsForLifecycleArgs {
-  closeReason: TerminalSessionCloseReason;
+  closeReason: HostDaemonTerminalCloseReason;
   message: string;
   threadId: string;
 }
@@ -331,6 +334,10 @@ interface CloseArchivedThreadTerminalsArgs {
 
 interface CloseDestroyedEnvironmentTerminalsArgs {
   environmentId: string;
+}
+
+interface CloseRemovedHostTerminalsArgs {
+  hostId: string;
 }
 
 interface ReconcileDisconnectedHostTerminalsArgs {
@@ -1541,6 +1548,26 @@ export class TerminalSessionLifecycle {
     });
   }
 
+  closeRemovedHostTerminals(args: CloseRemovedHostTerminalsArgs): void {
+    const currentSessions = listTerminalSessions(this.options.db, {
+      scope: { hostId: args.hostId, kind: "host" },
+      visible: false,
+    });
+    const exitedSessions = updateTerminalSessions(this.options.db, {
+      scope: {
+        hostId: args.hostId,
+        kind: "host",
+        statuses: NON_TERMINAL_SESSION_STATUSES,
+      },
+      update: { closeReason: "host-removed", kind: "exit" },
+    });
+    this.publishLifecycleTerminalExitsForSessions({
+      currentSessions,
+      exitedSessions,
+      message: "Terminal session closed because the machine was removed",
+    });
+  }
+
   reconcileDisconnectedHostTerminals(
     args: ReconcileDisconnectedHostTerminalsArgs,
   ): void {
@@ -2065,7 +2092,12 @@ export class TerminalSessionLifecycle {
     this.options.hub.sendDaemonSessionMessage(args.daemonSessionId, {
       type: "terminal.close",
       terminalId: args.terminalId,
-      reason: current?.closeReason ?? "daemon-disconnect",
+      reason:
+        current?.closeReason === undefined ||
+        current.closeReason === null ||
+        current.closeReason === "host-removed"
+          ? "daemon-disconnect"
+          : current.closeReason,
     });
   }
 

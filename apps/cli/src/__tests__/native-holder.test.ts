@@ -24,17 +24,19 @@ import {
   encodeNativeHolderFrame,
   ignoreNativeHolderSignals,
   nativeHolderSocketPath,
+  nativeTerminalCheck,
   nativeTerminalClosedForGood,
   openNativeHolderConnection,
   pipeNativeHolderClient,
   runNativeHolder,
   waitForNativeHolder,
   type NativeHolderProcess,
+  type NativeTerminalCheck,
 } from "../native-holder.js";
 import {
   NativeBbUnreachableError,
-  checkNativeTerminalClosedForGood,
-} from "../native-closed-for-good.js";
+  checkNativeTerminal,
+} from "../native-terminal-check.js";
 
 const tempDirs: string[] = [];
 
@@ -80,16 +82,16 @@ function startHolder(
   socketPath: string,
   child: NativeHolderProcess,
   reapAfterMs?: number,
-  terminalClosedForGood?: () => Promise<boolean>,
+  checkTerminal?: () => Promise<NativeTerminalCheck>,
 ): Promise<number> {
   return runNativeHolder({
     socketPath,
     cwd: os.tmpdir(),
     env: { ...process.env, PS1: "" },
     ...(reapAfterMs === undefined ? {} : { reapAfterMs }),
-    ...(terminalClosedForGood === undefined
+    ...(checkTerminal === undefined
       ? {}
-      : { terminalClosedForGood, detachedCheckIntervalMs: 20 }),
+      : { checkTerminal, detachedCheckIntervalMs: 20 }),
     prepare: async () => child,
     spawnPty: (process, options) =>
       spawnPty(process.command, process.args, {
@@ -406,7 +408,7 @@ try {
     let checks = 0;
     const held = startHolder(socketPath, ECHO_LOOP, undefined, async () => {
       checks += 1;
-      return true;
+      return "closed-for-good";
     });
     const client = await attach(socketPath);
     const pid = (await client.waitFor(/started:(\d+)/u))[1];
@@ -426,7 +428,7 @@ try {
     const held = startHolder(socketPath, ECHO_LOOP, undefined, async () => {
       checks += 1;
       if (checks % 2 === 0) throw new Error("fetch failed");
-      return false;
+      return "detached";
     });
     const first = await attach(socketPath);
     const pid = (await first.waitFor(/started:(\d+)/u))[1];
@@ -444,7 +446,7 @@ try {
     let reachable = false;
     const held = startHolder(socketPath, ECHO_LOOP, 300, async () => {
       if (!reachable) throw new Error("fetch failed");
-      return false;
+      return "detached";
     });
     const first = await attach(socketPath);
     const pid = (await first.waitFor(/started:(\d+)/u))[1];
@@ -457,6 +459,35 @@ try {
     second.socket.destroy();
     const code = await held;
     expect(code).not.toBe(7);
+  });
+
+  it("keeps a detached CLI for twenty reap windows while bb waits for the host daemon, and reaps it once bb stops waiting", async () => {
+    const socketPath = socketIn();
+    let state: NativeTerminalCheck = "awaiting-daemon";
+    const held = startHolder(socketPath, ECHO_LOOP, 100, async () => state);
+    const first = await attach(socketPath);
+    const pid = (await first.waitFor(/started:(\d+)/u))[1];
+    first.socket.destroy();
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+    const second = await attach(socketPath);
+    second.type("daemon back\r");
+    await second.waitFor(new RegExp(`got:daemon back:${pid}`, "u"));
+    state = "detached";
+    second.socket.destroy();
+    expect(await held).not.toBe(7);
+    const events = readFileSync(socketPath.replace(/\.sock$/u, ".log"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { event: string; reason?: string });
+    expect(
+      events.filter((entry) => entry.event === "reap-paused"),
+    ).toEqual([
+      expect.objectContaining({ reason: "bb awaits the host daemon" }),
+    ]);
+    expect(events.at(-1)).toMatchObject({
+      event: "holder-finish",
+      reason: "reap after detach",
+    });
   });
 
   it("gives up when no terminal ever attaches", async () => {
@@ -735,8 +766,29 @@ describe("native terminal closed for good", () => {
     ["the thread was archived", exited("thread-archived"), true],
     ["the thread was deleted", exited("thread-deleted"), true],
     ["the workspace was destroyed", exited("environment-destroyed"), true],
+    ["the machine was removed", exited("host-removed"), true],
   ] as const)("when %s", (_name, view, closed) => {
     expect(nativeTerminalClosedForGood(view)).toBe(closed);
+  });
+
+  it.each([
+    ["the thread is gone", null, "closed-for-good"],
+    ["the user closed the terminal", exited("user"), "closed-for-good"],
+    ["the machine was removed", exited("host-removed"), "closed-for-good"],
+    [
+      "bb lost the host daemon and waits for it",
+      { terminal: { status: "disconnected", closeReason: null } },
+      "awaiting-daemon",
+    ],
+    [
+      "the terminal is running",
+      { terminal: { status: "running", closeReason: null } },
+      "detached",
+    ],
+    ["bb gave up on the daemon", exited("daemon-disconnect"), "detached"],
+    ["no terminal is recorded", { terminal: null }, "detached"],
+  ] as const)("checks the terminal as %s", (_name, view, state) => {
+    expect(nativeTerminalCheck(view)).toBe(state);
   });
 });
 
@@ -786,7 +838,7 @@ describe("checking whether bb closed a native terminal for good", () => {
   }
 
   const check = (baseUrl: string) =>
-    checkNativeTerminalClosedForGood({
+    checkNativeTerminal({
       baseUrl,
       threadId: "thr_x",
       timeoutMs: 200,
@@ -797,7 +849,7 @@ describe("checking whether bb closed a native terminal for good", () => {
       check(
         await answering(404, '{"error":{"code":"not_found","message":"x"}}'),
       ),
-    ).resolves.toBe(true);
+    ).resolves.toBe("closed-for-good");
   });
 
   it("counts a server error as bb answering and the terminal not closed", async () => {
@@ -805,15 +857,19 @@ describe("checking whether bb closed a native terminal for good", () => {
       check(
         await answering(500, '{"error":{"code":"internal","message":"x"}}'),
       ),
-    ).resolves.toBe(false);
+    ).resolves.toBe("detached");
   });
 
   it("counts a response the CLI could not read as bb answering", async () => {
-    await expect(check(await answering(200, "not json"))).resolves.toBe(false);
+    await expect(check(await answering(200, "not json"))).resolves.toBe(
+      "detached",
+    );
   });
 
   it("counts a response whose body stalls past the timeout as bb answering", async () => {
-    await expect(check(await stallingAfterHeaders())).resolves.toBe(false);
+    await expect(check(await stallingAfterHeaders())).resolves.toBe(
+      "detached",
+    );
   });
 
   it.each([
@@ -845,6 +901,73 @@ describe("checking whether bb closed a native terminal for good", () => {
     second.socket.destroy();
     expect(await held).not.toBe(7);
   });
+
+  it("keeps a detached CLI past the reap window while bb answers that its terminal awaits the host daemon", async () => {
+    let waiting = true;
+    const baseUrl = await bb((response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          terminal: {
+            status: waiting ? "disconnected" : "running",
+            closeReason: null,
+          },
+        }),
+      );
+    });
+    const socketPath = socketIn();
+    const held = startHolder(socketPath, ECHO_LOOP, 300, () => check(baseUrl));
+    const first = await attach(socketPath);
+    const pid = (await first.waitFor(/started:(\d+)/u))[1];
+    first.socket.destroy();
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    const second = await attach(socketPath);
+    second.type("survived\r");
+    await second.waitFor(new RegExp(`got:survived:${pid}`, "u"));
+    waiting = false;
+    second.socket.destroy();
+    expect(await held).not.toBe(7);
+  });
+
+  it.each(["thread-archived", "host-removed"] as const)(
+    "ends a CLI that waits for the host daemon at once when bb closes its terminal for good as %s",
+    async (closeReason) => {
+      let closed = false;
+      const baseUrl = await bb((response) => {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(
+          JSON.stringify({
+            terminal: closed
+              ? { status: "exited", closeReason }
+              : { status: "disconnected", closeReason: null },
+          }),
+        );
+      });
+      const socketPath = socketIn();
+      const held = startHolder(socketPath, ECHO_LOOP, 60_000, () =>
+        check(baseUrl),
+      );
+      const client = await attach(socketPath);
+      await client.waitFor(/started:/u);
+      client.socket.destroy();
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      closed = true;
+      const startedWaiting = Date.now();
+      expect(await held).not.toBe(7);
+      expect(Date.now() - startedWaiting).toBeLessThan(5_000);
+      const events = readFileSync(
+        socketPath.replace(/\.sock$/u, ".log"),
+        "utf8",
+      )
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as { event: string; reason?: string });
+      expect(events.at(-1)).toMatchObject({
+        event: "holder-finish",
+        reason: "explicit close",
+      });
+    },
+  );
 
   it.each([
     ["answering with unreadable responses", () => answering(200, "not json")],
