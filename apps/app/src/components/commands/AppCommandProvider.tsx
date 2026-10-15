@@ -91,6 +91,16 @@ const EMPTY_CONTEXT: AppCommandContext = {
   linuxPlatform: false,
 };
 
+function isTerminalModifierChord(event: KeyboardEvent): boolean {
+  return (
+    (event.ctrlKey || event.altKey) &&
+    event.key !== "Control" &&
+    event.key !== "Alt" &&
+    event.target instanceof HTMLElement &&
+    event.target.closest("[data-app-terminal]") !== null
+  );
+}
+
 const OPEN_MODAL_SELECTOR = [
   '[aria-modal="true"]:not([inert]):not([inert] *):not([data-state="closed"])',
   '[role="dialog"][data-state="open"]:not([inert]):not([inert] *)',
@@ -316,7 +326,7 @@ export function AppCommandProvider({ children }: { children: ReactNode }) {
       event: KeyboardEvent,
       commands: readonly KeyboardCommandId[],
     ): KeyboardCommandId | null => {
-      if (event.defaultPrevented || event.isComposing || event.repeat) {
+      if (event.defaultPrevented || event.isComposing || event.repeat || isTerminalModifierChord(event)) {
         return null;
       }
       const isMac = isMacKeyboardPlatform(browserPlatform());
@@ -341,7 +351,7 @@ export function AppCommandProvider({ children }: { children: ReactNode }) {
 
   const handleKeyboardEvent = useCallback(
     (event: KeyboardEvent): boolean => {
-      if (event.defaultPrevented || event.isComposing || event.repeat) {
+      if (event.defaultPrevented || event.isComposing || event.repeat || isTerminalModifierChord(event)) {
         return false;
       }
       if (attemptedEventsRef.current.has(event)) return false;
