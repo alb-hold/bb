@@ -1140,6 +1140,33 @@ describe("@bb/sdk", () => {
     ]);
   });
 
+  it("supports an explicit client-cleanup close reason", async () => {
+    const queue = createFetchQueue([
+      { body: makeTerminalSession({ id: "term_cleanup" }), status: 200 },
+    ]);
+    const sdk = createBbSdk({
+      transport: createHttpTransport({
+        baseUrl: "http://bb.test",
+        fetch: queue.fetch,
+        runtime: "node",
+      }),
+    });
+
+    await sdk.terminals.close({
+      terminalId: "term_cleanup",
+      mode: "force",
+      reason: "client-cleanup",
+    });
+
+    expect(queue.requests).toEqual([
+      {
+        bodyText: JSON.stringify({ mode: "force", reason: "client-cleanup" }),
+        method: "POST",
+        url: "http://bb.test/api/v1/terminals/term_cleanup/close",
+      },
+    ]);
+  });
+
   it("rejects mixed terminal scope selectors before transport", async () => {
     const queue = createFetchQueue([]);
     const sdk = createBbSdk({

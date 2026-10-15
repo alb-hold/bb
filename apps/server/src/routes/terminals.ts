@@ -49,6 +49,7 @@ export function registerTerminalRoutes(app: Hono, deps: AppDeps): void {
     const session = await deps.terminalSessions.closeTerminal({
       payload,
       terminalId: context.req.param("terminalId"),
+      caller: "public-terminal-close-route",
     });
     return context.json(session);
   });

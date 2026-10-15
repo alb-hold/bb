@@ -1,4 +1,5 @@
 import type {
+  CloseTerminalRequest,
   CreateTerminalRequest,
   TerminalInputRequest,
   TerminalListQuery,
@@ -82,6 +83,7 @@ export interface TerminalRenameArgs extends TerminalTargetArgs {
 
 export interface TerminalCloseArgs extends TerminalTargetArgs {
   mode: "force" | "if-clean";
+  reason?: CloseTerminalRequest["reason"];
 }
 
 export interface TerminalInputArgs extends TerminalTargetArgs {
@@ -229,7 +231,7 @@ export function createTerminalsArea(args: CreateSdkAreaArgs): TerminalsArea {
       return transport.readJson(
         transport.api.v1.terminals[":terminalId"].close.$post({
           param: { terminalId: input.terminalId },
-          json: { mode: input.mode, reason: "user" },
+          json: { mode: input.mode, reason: input.reason ?? "user" },
         }),
       );
     },

@@ -12,7 +12,8 @@ import {
 import { makeTerminalSession } from "@/test/fixtures/terminal-sessions";
 
 vi.mock("@/lib/sdk", () => ({
-  sdk: { terminals: { list: vi.fn() } },
+  BbHttpError: class BbHttpError extends Error {},
+  sdk: { terminals: { close: vi.fn(), list: vi.fn() } },
 }));
 
 const session: TerminalSession = makeTerminalSession({
@@ -46,6 +47,33 @@ afterEach(() => {
 });
 
 describe("useThreadTerminalController terminal view mounting", () => {
+  it("sends client-cleanup for an unretained disconnected terminal", async () => {
+    const disconnected = makeTerminalSession({
+      id: "term_disconnected",
+      threadId: "thr_1",
+      status: "disconnected",
+    });
+    vi.mocked(sdk.terminals.list).mockResolvedValue({
+      sessions: [disconnected],
+    });
+    vi.mocked(sdk.terminals.close).mockResolvedValue(disconnected);
+    const { wrapper } = createQueryClientTestHarness();
+    const args = controllerArgs({
+      isPanelOpen: true,
+      isPanelPersistedOpen: true,
+    });
+    delete args.terminalId;
+    renderHook(() => useThreadTerminalController(args), { wrapper });
+
+    await waitFor(() => {
+      expect(sdk.terminals.close).toHaveBeenCalledWith({
+        mode: "force",
+        reason: "client-cleanup",
+        terminalId: disconnected.id,
+      });
+    });
+  });
+
   it("does not mount a persisted-open terminal the panel never showed", () => {
     vi.mocked(sdk.terminals.list).mockResolvedValue({ sessions: [session] });
     const { wrapper } = createQueryClientTestHarness();
