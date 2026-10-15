@@ -193,11 +193,10 @@ export async function shutdownHttpBeforePlugins(args: {
   let pluginStopTimer: ReturnType<typeof setTimeout> | undefined;
   try {
     const stopped = await Promise.race([
-      (async () => {
-        await args.stopPeriodicUpdateChecks?.();
-        await args.stopPlugins();
-        return true;
-      })(),
+      Promise.all([
+        args.stopPeriodicUpdateChecks?.(),
+        args.stopPlugins(),
+      ]).then(() => true),
       new Promise<false>((resolve) => {
         pluginStopTimer = setTimeout(
           () => resolve(false),

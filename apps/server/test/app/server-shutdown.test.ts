@@ -193,6 +193,7 @@ describe("server shutdown ordering", () => {
       updateCheckStarted = resolve;
     });
     let pluginStopCalled = false;
+    let pluginStopStartedAt = Number.POSITIVE_INFINITY;
     const startedAt = Date.now();
     const shutdown = shutdownHttpBeforePlugins({
       closeWebSockets: async () => {},
@@ -203,14 +204,16 @@ describe("server shutdown ordering", () => {
       },
       stopPlugins: async () => {
         pluginStopCalled = true;
+        pluginStopStartedAt = Date.now();
       },
       stopTerminalDataPlane: () => {},
     });
     await updateCheckEntered;
     await expect(fetch(`http://127.0.0.1:${address.port}/new`)).rejects.toThrow();
+    expect(pluginStopCalled).toBe(true);
+    expect(pluginStopStartedAt - startedAt).toBeLessThan(1_000);
     await shutdown;
     expect(server.listening).toBe(false);
-    expect(pluginStopCalled).toBe(false);
     expect(Date.now() - startedAt).toBeLessThan(5_800);
   }, 6_000);
 
