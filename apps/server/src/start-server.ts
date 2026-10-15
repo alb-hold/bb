@@ -147,6 +147,7 @@ export async function shutdownHttpBeforePlugins(args: {
   closeWebSockets: () => Promise<void>;
   onPluginStopTimeout?: () => void;
   server: ReturnType<typeof startHttpListener>;
+  stopPeriodicUpdateChecks?: () => Promise<void>;
   stopPlugins: () => Promise<void>;
   stopTerminalDataPlane: () => void;
 }): Promise<void> {
@@ -192,7 +193,11 @@ export async function shutdownHttpBeforePlugins(args: {
   let pluginStopTimer: ReturnType<typeof setTimeout> | undefined;
   try {
     const stopped = await Promise.race([
-      args.stopPlugins().then(() => true),
+      (async () => {
+        await args.stopPeriodicUpdateChecks?.();
+        await args.stopPlugins();
+        return true;
+      })(),
       new Promise<false>((resolve) => {
         pluginStopTimer = setTimeout(
           () => resolve(false),
@@ -624,7 +629,6 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
         clearInterval(sweepInterval);
       }
       pluginCatalogService.stopPeriodicRefresh();
-      await pluginService.stopPeriodicUpdateChecks();
       await shutdownHttpBeforePlugins({
         closeWebSockets,
         onPluginStopTimeout: () =>
@@ -632,6 +636,8 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
             `Plugin shutdown did not finish within ${PLUGIN_SHUTDOWN_TIMEOUT_MS}ms`,
           ),
         server,
+        stopPeriodicUpdateChecks: () =>
+          pluginService.stopPeriodicUpdateChecks(),
         stopPlugins: async () => {
           if (pendingServerMove !== null) return;
           await pluginService.stop().catch((error: unknown) => {

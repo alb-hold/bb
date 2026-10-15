@@ -174,6 +174,46 @@ describe("server shutdown ordering", () => {
     expect(Date.now() - startedAt).toBeLessThan(4_000);
   }, 4_500);
 
+  it("stops accepting before a stalled plugin update check and bounds shutdown", async () => {
+    server = startHttpListener({
+      fetch: async () => new Response("ready"),
+      logger: { warn: () => {} },
+      serverConfig: {
+        BB_SERVER_BIND_HOST: "127.0.0.1",
+        BB_SERVER_PORT: 0,
+      },
+    });
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server did not bind a TCP port");
+    }
+    let updateCheckStarted: (() => void) | undefined;
+    const updateCheckEntered = new Promise<void>((resolve) => {
+      updateCheckStarted = resolve;
+    });
+    let pluginStopCalled = false;
+    const startedAt = Date.now();
+    const shutdown = shutdownHttpBeforePlugins({
+      closeWebSockets: async () => {},
+      server,
+      stopPeriodicUpdateChecks: () => {
+        updateCheckStarted?.();
+        return new Promise<void>(() => {});
+      },
+      stopPlugins: async () => {
+        pluginStopCalled = true;
+      },
+      stopTerminalDataPlane: () => {},
+    });
+    await updateCheckEntered;
+    await expect(fetch(`http://127.0.0.1:${address.port}/new`)).rejects.toThrow();
+    await shutdown;
+    expect(server.listening).toBe(false);
+    expect(pluginStopCalled).toBe(false);
+    expect(Date.now() - startedAt).toBeLessThan(5_800);
+  }, 6_000);
+
   it("stops accepting HTTP before closing WebSocket clients", async () => {
     server = startHttpListener({
       fetch: async () => new Response("ready"),
