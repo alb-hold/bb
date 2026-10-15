@@ -625,37 +625,39 @@ describe("thread pruning", () => {
   });
 
   it("bounds legacy progress fallback for 510 task candidates", () => {
-    const f = setup();
-    try {
-      f.db.transaction(() => {
-        for (let i = 1; i <= 510; i++)
-          seed(f, i, {
+    for (let batch = 0; batch < 3; batch++) {
+      const f = setup();
+      try {
+        f.db.transaction(() => {
+          for (let i = 1; i <= 510; i++)
+            seed(f, i, {
+              type: "item/backgroundTask/progress",
+              itemId: `task-${i}`,
+              itemKind: "backgroundTask",
+            });
+          seed(f, 511, {
             type: "item/backgroundTask/progress",
-            itemId: `task-${i}`,
-            itemKind: "backgroundTask",
+            itemId: "task-1",
+            itemKind: null,
           });
-        seed(f, 511, {
-          type: "item/backgroundTask/progress",
-          itemId: "task-1",
-          itemKind: null,
+          seed(f, 512, {
+            type: "item/backgroundTask/progress",
+            itemId: "task-2",
+            itemKind: "agentMessage",
+          });
+          seed(f, 513, { type: "turn/completed" });
         });
-        seed(f, 512, {
-          type: "item/backgroundTask/progress",
-          itemId: "task-2",
-          itemKind: "agentMessage",
-        });
-        seed(f, 513, { type: "turn/completed" });
-      });
 
-      cycle(f, "resolved-items");
+        cycle(f, "resolved-items");
 
-      expect(sequences(f)).not.toContain(1);
-      expect(sequences(f)).not.toContain(2);
-      expect(sequences(f)).toContain(511);
-      expect(sequences(f)).toContain(512);
-      expect(sequences(f)).toContain(510);
-    } finally {
-      f.db.$client.close();
+        expect(sequences(f)).not.toContain(1);
+        expect(sequences(f)).not.toContain(2);
+        expect(sequences(f)).toContain(511);
+        expect(sequences(f)).toContain(512);
+        expect(sequences(f)).toContain(510);
+      } finally {
+        f.db.$client.close();
+      }
     }
   }, 15_000);
 
