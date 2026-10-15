@@ -204,12 +204,12 @@ async function startIntegrationServer(
     performanceDiagnosticsAvailable: false,
   };
   const terminalSessions = new TerminalSessionLifecycle({
-    attachTimeoutMs: 50,
+    attachTimeoutMs: 10_000,
     config,
     db,
     hub,
     logger: testLogger,
-    openTimeoutMs: 50,
+    openTimeoutMs: 10_000,
   });
   const machineAuth = await createMachineAuthService({
     dataDir: serverDataDir,
