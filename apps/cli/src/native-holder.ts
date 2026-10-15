@@ -235,6 +235,7 @@ const TERMINAL_CLOSES_THAT_STOP_THE_CLI = new Set([
   "thread-archived",
   "thread-deleted",
   "environment-destroyed",
+  "host-removed",
 ]);
 
 const NATIVE_HOLDER_IGNORED_SIGNALS = [

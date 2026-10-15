@@ -276,6 +276,7 @@ export function settleRemovedHostWork(
     reason: "host-removed",
   });
   settleDanglingBackgroundTasks(deps, { hostId: args.hostId });
+  deps.terminalSessions.closeRemovedHostTerminals({ hostId: args.hostId });
   notifyHostThreadRuntimeStatusChanged(deps, args.hostId);
 }
 
