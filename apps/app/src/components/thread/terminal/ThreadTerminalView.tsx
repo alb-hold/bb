@@ -753,7 +753,9 @@ export function ThreadTerminalView({
   const [controlMode, setControlMode] = useState<TerminalControlMode>("off");
   const controlModeRef = useRef<TerminalControlMode>("off");
   const [mobileFontSize, setMobileFontSize] = useState(() =>
-    typeof localStorage === "undefined" ? 12 : readTerminalMobileFontSize(localStorage),
+    typeof localStorage === "undefined"
+      ? 12
+      : readTerminalMobileFontSize(localStorage),
   );
   const mobileFontSizeRef = useRef(mobileFontSize);
   const changeControlMode = useCallback((mode: TerminalControlMode) => {
@@ -1161,7 +1163,10 @@ export function ThreadTerminalView({
             sharedSize,
             surfaceVisible,
             (cols, rows) => {
-              if (activeTerminal.cols !== cols || activeTerminal.rows !== rows) {
+              if (
+                activeTerminal.cols !== cols ||
+                activeTerminal.rows !== rows
+              ) {
                 activeTerminal.resize(cols, rows);
               }
             },
@@ -1385,7 +1390,10 @@ export function ThreadTerminalView({
         });
         activeTerminal.onData((data) => {
           if (controlModeRef.current !== "off") {
-            const applied = applyTerminalControlMode(data, controlModeRef.current);
+            const applied = applyTerminalControlMode(
+              data,
+              controlModeRef.current,
+            );
             data = applied.data;
             if (applied.nextMode !== controlModeRef.current) {
               changeControlMode(applied.nextMode);
@@ -1531,7 +1539,8 @@ export function ThreadTerminalView({
     terminal.options.fontSize = mobileFontSize;
     forceTerminalFontMeasurement(terminal);
     scheduleFitRef.current?.();
-    if (isTouchDevice) writeTerminalMobileFontSize(localStorage, mobileFontSize);
+    if (isTouchDevice)
+      writeTerminalMobileFontSize(localStorage, mobileFontSize);
   }, [isTouchDevice, mobileFontSize]);
 
   useEffect(() => {
@@ -1687,8 +1696,12 @@ export function ThreadTerminalView({
             );
           }}
           onInput={(data) => {
-            const applied = applyTerminalControlMode(data, controlModeRef.current);
-            if (applied.nextMode !== controlModeRef.current) changeControlMode(applied.nextMode);
+            const applied = applyTerminalControlMode(
+              data,
+              controlModeRef.current,
+            );
+            if (applied.nextMode !== controlModeRef.current)
+              changeControlMode(applied.nextMode);
             terminalRef.current?.input(applied.data);
           }}
           onKeyboardToggle={() => {
@@ -1725,7 +1738,10 @@ export function ThreadTerminalView({
           }}
           fontSize={mobileFontSize}
           onFontSizeChange={(delta) => {
-            const next = writeTerminalMobileFontSize(localStorage, mobileFontSize + delta);
+            const next = writeTerminalMobileFontSize(
+              localStorage,
+              mobileFontSize + delta,
+            );
             mobileFontSizeRef.current = next;
             setMobileFontSize(next);
           }}

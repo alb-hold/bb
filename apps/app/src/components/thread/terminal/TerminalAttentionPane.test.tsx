@@ -1,6 +1,9 @@
 // @vitest-environment jsdom
 
-import type { TerminalServerMessage, TerminalSession } from "@bb/server-contract";
+import type {
+  TerminalServerMessage,
+  TerminalSession,
+} from "@bb/server-contract";
 import { cleanup, fireEvent, render } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { useState } from "react";

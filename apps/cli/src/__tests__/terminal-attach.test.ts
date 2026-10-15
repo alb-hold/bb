@@ -51,7 +51,12 @@ describe("terminal attach", () => {
     defineTerminalProperty(process.stdin, stdinDescriptors, "isTTY", true);
     defineTerminalProperty(process.stdout, stdoutDescriptors, "isTTY", true);
     defineTerminalProperty(process.stdin, stdinDescriptors, "isRaw", false);
-    defineTerminalProperty(process.stdin, stdinDescriptors, "setRawMode", vi.fn());
+    defineTerminalProperty(
+      process.stdin,
+      stdinDescriptors,
+      "setRawMode",
+      vi.fn(),
+    );
     defineTerminalProperty(process.stdin, stdinDescriptors, "resume", vi.fn());
     defineTerminalProperty(process.stdin, stdinDescriptors, "pause", vi.fn());
     defineTerminalProperty(process.stdout, stdoutDescriptors, "columns", 80);
