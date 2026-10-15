@@ -250,6 +250,11 @@ describe("server process ownership", () => {
       await waitForFile(join(dir, "server.pid"), 45_000);
       const deadline = Date.now() + 45_000;
       while (Date.now() < deadline) {
+        if (server.exitCode !== null || server.signalCode !== null) {
+          throw new Error(
+            `Standalone server exited before health: ${String(server.exitCode)} ${String(server.signalCode)}`,
+          );
+        }
         try {
           const response = await fetch(`http://127.0.0.1:${port}/`);
           if (response.ok) break;
