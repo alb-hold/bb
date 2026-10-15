@@ -20,6 +20,21 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { waitForProcessExit } from "@bb/config/child-process-exit";
+import {
+  DAEMON_PROCESS_TERMINATION_TIMEOUT_MS,
+  DAEMON_DETACH_HEAD_START_MARGIN_MS,
+  DESKTOP_OWNED_RUNTIME_SHUTDOWN_GRACE_MS,
+  DESKTOP_SHUTDOWN_OUTER_MARGIN_MS,
+  LAUNCHER_MAX_SHUTDOWN_MS,
+  MEASURED_MAX_DAEMON_STOP_STEP_MS,
+  SERVER_HTTP_CLOSE_WAIT_TIMEOUT_MS,
+  SERVER_HTTP_DRAIN_TIMEOUT_MS,
+  SERVER_PLUGIN_SHUTDOWN_TIMEOUT_MS,
+  SERVER_PROCESS_TERMINATION_TIMEOUT_MS,
+  SERVER_SHUTDOWN_BOUND_MS,
+  SERVER_SHUTDOWN_SAFETY_MARGIN_MS,
+  SERVER_WEBSOCKET_SHUTDOWN_WAIT_TIMEOUT_MS,
+} from "@bb/config/full-stack-shutdown";
 import { resolvePortFromEnv } from "@bb/config/runtime";
 import { spawnLoggedProcess } from "../src/logged-process.js";
 import {
@@ -44,6 +59,7 @@ import {
   runBundledCliCommand,
   DAEMON_DETACH_HEAD_START_MS,
   superviseFullStackProcesses,
+  terminateProcessIfRunning,
   terminateManagedFullStackProcesses,
   waitForHostDaemonStatus,
 } from "../src/launcher.js";
@@ -1919,6 +1935,152 @@ describe("bb-app launcher", () => {
       vi.useRealTimers();
     }
   });
+
+  it("keeps the nested full-stack shutdown schedule inside desktop grace", () => {
+    expect(DAEMON_DETACH_HEAD_START_MS).toBeGreaterThanOrEqual(
+      MEASURED_MAX_DAEMON_STOP_STEP_MS + DAEMON_DETACH_HEAD_START_MARGIN_MS,
+    );
+    expect(SERVER_PROCESS_TERMINATION_TIMEOUT_MS).toBeGreaterThanOrEqual(
+      SERVER_SHUTDOWN_BOUND_MS + SERVER_SHUTDOWN_SAFETY_MARGIN_MS * 2,
+    );
+    expect(DAEMON_PROCESS_TERMINATION_TIMEOUT_MS).toBe(
+      DAEMON_DETACH_HEAD_START_MS +
+        SERVER_PROCESS_TERMINATION_TIMEOUT_MS,
+    );
+    expect(LAUNCHER_MAX_SHUTDOWN_MS).toBeLessThan(
+      DESKTOP_OWNED_RUNTIME_SHUTDOWN_GRACE_MS,
+    );
+    expect(DESKTOP_OWNED_RUNTIME_SHUTDOWN_GRACE_MS).toBe(
+      LAUNCHER_MAX_SHUTDOWN_MS + DESKTOP_SHUTDOWN_OUTER_MARGIN_MS,
+    );
+  });
+
+  it("stops the server on its own after the daemon head start", async () => {
+    const phaseDurations = [
+      SERVER_HTTP_DRAIN_TIMEOUT_MS,
+      SERVER_WEBSOCKET_SHUTDOWN_WAIT_TIMEOUT_MS,
+      SERVER_HTTP_CLOSE_WAIT_TIMEOUT_MS,
+      SERVER_HTTP_CLOSE_WAIT_TIMEOUT_MS,
+      SERVER_PLUGIN_SHUTDOWN_TIMEOUT_MS,
+    ];
+    const serverProgram = [
+      `const phases=${JSON.stringify(phaseDurations)};`,
+      "process.on('SIGTERM', async () => {",
+      "for (const duration of phases) await new Promise(resolve => setTimeout(resolve, duration));",
+      "process.exit(0);",
+      "});",
+      "process.send('ready');",
+      "setInterval(() => {}, 1000);",
+    ].join("\n");
+    const daemonDetachDelayMs = DAEMON_DETACH_HEAD_START_MS - 500;
+    const daemonProgram = [
+      `const delay=${daemonDetachDelayMs};`,
+      "process.on('SIGTERM', () => setTimeout(() => { process.send('detach-acked', () => process.exit(0)); }, delay));",
+      "process.send('ready');",
+      "setInterval(() => {}, 1000);",
+    ].join("\n");
+    const spawnReadyChild = (program: string) => {
+      const child = spawn(process.execPath, ["-e", program], {
+        env: {},
+        stdio: ["ignore", "ignore", "ignore", "ipc"],
+      });
+      const ready = new Promise<void>((resolve, reject) => {
+        child.once("message", () => resolve());
+        child.once("error", reject);
+        child.once("exit", (code, signal) => {
+          if (code !== null || signal !== null) {
+            reject(new Error(`child exited before ready: ${String(code)} ${String(signal)}`));
+          }
+        });
+      });
+      return { child, ready };
+    };
+    const server = spawnReadyChild(serverProgram);
+    const daemon = spawnReadyChild(daemonProgram);
+    const processSignals = new Map<ManagedProcessName, NodeJS.Signals[]>();
+    let shutdownStartedAt = 0;
+    let serverSignalAt = 0;
+    const createRun = (
+      name: ManagedProcessName,
+      child: ReturnType<typeof spawn>,
+    ): ManagedProcessRun => {
+      const kill = child.kill.bind(child);
+      child.kill = (signal) => {
+        if (typeof signal === "string") {
+          const signals = processSignals.get(name) ?? [];
+          signals.push(signal);
+          processSignals.set(name, signals);
+        }
+        return kill(signal);
+      };
+      return {
+        exit: waitForProcessExit(child).then((result) => ({
+          processName: name,
+          result,
+        })),
+        terminate: async (signal) => {
+          if (name === "server") serverSignalAt = Date.now();
+          await terminateProcessIfRunning({
+            childProcess: child,
+            processName: name,
+            signal,
+          });
+        },
+      };
+    };
+    const processes = {
+      serverRun: createRun("server", server.child),
+      daemonRun: createRun("daemon", daemon.child),
+    };
+    let detachAcked = false;
+    let daemonExitAt = 0;
+    daemon.child.on("message", (message) => {
+      if (message === "detach-acked") detachAcked = true;
+    });
+    daemon.child.once("exit", () => {
+      daemonExitAt = Date.now();
+    });
+
+    try {
+      await Promise.all([server.ready, daemon.ready]);
+      shutdownStartedAt = Date.now();
+      await terminateManagedFullStackProcesses({
+        processes,
+        signal: "SIGTERM",
+      });
+      const elapsedMs = Date.now() - shutdownStartedAt;
+      const serverExit = await processes.serverRun.exit;
+      const daemonExit = await processes.daemonRun.exit;
+
+      expect(daemonExit.result).toEqual({ code: 0, signal: null });
+      expect(serverExit.result).toEqual({ code: 0, signal: null });
+      expect(detachAcked).toBe(true);
+      expect(serverSignalAt).toBeGreaterThanOrEqual(daemonExitAt);
+      expect(processSignals.get("daemon")).toEqual(["SIGTERM"]);
+      expect(processSignals.get("server")).toEqual(["SIGTERM"]);
+      expect(serverSignalAt - shutdownStartedAt).toBeGreaterThanOrEqual(
+        daemonDetachDelayMs - SERVER_SHUTDOWN_SAFETY_MARGIN_MS,
+      );
+      expect(serverSignalAt - shutdownStartedAt).toBeLessThan(
+        DAEMON_DETACH_HEAD_START_MS + SERVER_SHUTDOWN_SAFETY_MARGIN_MS,
+      );
+      expect(elapsedMs).toBeGreaterThanOrEqual(
+        daemonDetachDelayMs - SERVER_SHUTDOWN_SAFETY_MARGIN_MS,
+      );
+      expect(elapsedMs).toBeLessThan(
+        DAEMON_DETACH_HEAD_START_MS +
+          SERVER_SHUTDOWN_BOUND_MS +
+          SERVER_SHUTDOWN_SAFETY_MARGIN_MS,
+      );
+      expect(elapsedMs).toBeLessThan(DESKTOP_OWNED_RUNTIME_SHUTDOWN_GRACE_MS);
+    } finally {
+      for (const child of [server.child, daemon.child]) {
+        if (child.exitCode === null && child.signalCode === null) {
+          child.kill("SIGKILL");
+        }
+      }
+    }
+  }, 15_000);
 
   it("sets exit code to 0 after clean full-stack shutdown", async () => {
     const previousExitCode = process.exitCode;

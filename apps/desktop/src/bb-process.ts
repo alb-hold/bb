@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { posix as posixPath } from "node:path";
+import { DESKTOP_OWNED_RUNTIME_SHUTDOWN_GRACE_MS } from "@bb/config/full-stack-shutdown";
 import {
   hasProcessExited,
   waitForProcessExit,
@@ -89,6 +90,7 @@ const APPIMAGE_BRIDGE_RELATIVE_PATH_ENV =
 
 async function runAppImageBridgeSupervisor(
   bridgeRelativePathEnv: string,
+  shutdownGraceMs: number,
 ): Promise<void> {
   const { spawn: spawnChild } = process.getBuiltinModule("node:child_process");
   const { readdirSync, readFileSync } = process.getBuiltinModule("node:fs");
@@ -163,8 +165,8 @@ async function runAppImageBridgeSupervisor(
       return;
     }
     terminationSignal = signal;
-    signalBridgeGroup(signal);
-    killTimer = setTimeout(() => signalBridgeGroup("SIGKILL"), 4_000);
+    bridgeProcess.kill(signal);
+    killTimer = setTimeout(() => signalBridgeGroup("SIGKILL"), shutdownGraceMs);
   };
   process.on("SIGINT", () => beginTermination("SIGINT"));
   process.on("SIGTERM", () => beginTermination("SIGTERM"));
@@ -188,7 +190,7 @@ async function runAppImageBridgeSupervisor(
   }
 }
 
-const APPIMAGE_BRIDGE_BOOTSTRAP = `await (${runAppImageBridgeSupervisor.toString()})(${JSON.stringify(APPIMAGE_BRIDGE_RELATIVE_PATH_ENV)});`;
+const APPIMAGE_BRIDGE_BOOTSTRAP = `await (${runAppImageBridgeSupervisor.toString()})(${JSON.stringify(APPIMAGE_BRIDGE_RELATIVE_PATH_ENV)}, ${DESKTOP_OWNED_RUNTIME_SHUTDOWN_GRACE_MS});`;
 
 function createRuntimeLogBuffer(
   args: CreateRuntimeLogBufferArgs,
@@ -380,7 +382,24 @@ export function startBbAppProcess(args: StartBbAppProcessArgs): BbAppProcess {
       }
 
       if (!hasProcessExited(childProcess)) {
-        childProcess.kill(stopArgs.killSignal);
+        if (args.runtime.kind === "appimage") {
+          try {
+            process.kill(-pid, stopArgs.killSignal);
+          } catch (error) {
+            if (
+              typeof error === "object" &&
+              error !== null &&
+              "code" in error &&
+              error.code === "ESRCH"
+            ) {
+              childProcess.kill(stopArgs.killSignal);
+            } else {
+              throw error;
+            }
+          }
+        } else {
+          childProcess.kill(stopArgs.killSignal);
+        }
       }
       await waitForProcessExitWithTimeout({
         childProcess,
