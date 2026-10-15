@@ -327,7 +327,9 @@ describe("server process ownership", () => {
       serverPid = Number(await waitForFile(join(dir, "server.pid"), 10_000));
       activeChildren.add(serverPid);
       await waitForExit(launcher, 8_000);
-      expect(childErrors.get(launcher)?.stderr).toContain("server did not stop after SIGKILL");
+      expect(childErrors.get(launcher)?.stderr).toContain(
+        "server did not stop after SIGKILL within",
+      );
       expect(isProcessRunning(serverPid)).toBe(true);
     } finally {
       if (serverPid !== null) {
@@ -358,7 +360,7 @@ describe("server process ownership", () => {
       activeChildren.add(holderPid);
       const startedAt = Date.now();
       process.kill(launcher.pid!, "SIGTERM");
-      await waitForExit(launcher, 10_000);
+      await waitForExit(launcher, DESKTOP_OWNED_RUNTIME_SHUTDOWN_GRACE_MS);
       const elapsedMs = Date.now() - startedAt;
       expect(elapsedMs).toBeLessThan(DESKTOP_OWNED_RUNTIME_SHUTDOWN_GRACE_MS);
       const shutdown = readFileSync(marker, "utf8");

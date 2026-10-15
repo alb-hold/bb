@@ -2530,7 +2530,7 @@ export async function terminateProcessIfRunning(
     timeoutMs: MANAGED_PROCESS_KILL_WAIT_TIMEOUT_MS,
   });
   if (!hasProcessExited(args.childProcess)) {
-    const message = `${args.processName} did not stop after SIGKILL within ${MANAGED_PROCESS_KILL_TIMEOUT_MS}ms`;
+    const message = `${args.processName} did not stop after SIGKILL within ${MANAGED_PROCESS_KILL_WAIT_TIMEOUT_MS}ms`;
     log(yellow("!"), message);
     await new Promise<void>((resolve) => {
       process.stderr.write(message + "\n", "utf8", () => resolve());
