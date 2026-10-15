@@ -147,11 +147,13 @@ it("handles SIGTERM through the real launcher and bounded server children", asyn
     expect(elapsedMs, JSON.stringify(events)).toBeGreaterThanOrEqual(5_000);
     expect(byEvent("daemon:detach-acked")).toBeDefined();
     expect(daemonExit?.code).toBe(0);
+    expect(daemonExit?.signal).toBeNull();
     expect(serverSignal?.at).toBeGreaterThanOrEqual(daemonExit?.at as number);
     expect(
       (serverSignal?.at as number) - shutdownStartedAt,
     ).toBeLessThanOrEqual(DAEMON_DETACH_HEAD_START_MS);
     expect(serverExit?.code).toBe(0);
+    expect(serverExit?.signal).toBeNull();
     expect(byEvent("server:shutdown-complete")).toBeDefined();
     expect(byEvent("daemon:shutdown-complete")).toBeDefined();
     for (const event of [byEvent("server:ready"), byEvent("daemon:ready")]) {

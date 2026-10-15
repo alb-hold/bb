@@ -218,6 +218,7 @@ describe.sequential("owned runtime shutdown signal path", () => {
         5_000,
       );
       expect(result.daemonExit?.code).toBe(0);
+      expect(result.daemonExit?.signal).toBeNull();
       expect(
         result.events.find((item) => item.event === "daemon:ready"),
       ).toBeDefined();
@@ -237,6 +238,7 @@ describe.sequential("owned runtime shutdown signal path", () => {
         (result.serverSignal?.at as number) - result.shutdownStartedAt,
       ).toBeLessThanOrEqual(DAEMON_DETACH_HEAD_START_MS);
       expect(result.serverExit?.code).toBe(0);
+      expect(result.serverExit?.signal).toBeNull();
       expect(
         result.events.find((item) => item.event === "daemon:shutdown-complete"),
       ).toBeDefined();
