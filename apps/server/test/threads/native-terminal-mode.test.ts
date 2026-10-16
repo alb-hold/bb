@@ -5,6 +5,7 @@ import {
   getPendingInteractionByProviderRequest,
   getThread,
   isNativeTerminalThread,
+  listPendingInteractionsByThread,
   type DbConnection,
 } from "@bb/db";
 import {
@@ -19,6 +20,7 @@ import {
   threadResponseSchema,
 } from "@bb/server-contract";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import * as interactiveRequests from "../../src/internal/interactive-requests.js";
 import { applyLoggedThreadLifecycleEvent } from "../../src/services/threads/lifecycle-outcome.js";
 import { stopThreadForCurrentState } from "../../src/services/threads/thread-lifecycle.js";
 import {
@@ -495,7 +497,12 @@ describe("native terminal activity", () => {
         state: "waiting",
         questions: [question],
       });
+    const notification = vi.spyOn(
+      interactiveRequests,
+      "requestChildThreadNeedsAttentionNotification",
+    );
     expect((await report()).status).toBe(200);
+    notification.mockClear();
     const requestId = `native:${question.id}`;
     const before = getPendingInteractionByProviderRequest(fixture.harness.db, {
       providerId: "claude-code",
@@ -530,6 +537,7 @@ describe("native terminal activity", () => {
       payload: { kind: "user_question" },
     });
     expect(warn).not.toHaveBeenCalled();
+    expect(notification).not.toHaveBeenCalled();
   });
 
   it("keeps answered native questions rejected and warns only once", async () => {
@@ -545,7 +553,12 @@ describe("native terminal activity", () => {
         state: "waiting",
         questions: [question],
       });
+    const notification = vi.spyOn(
+      interactiveRequests,
+      "requestChildThreadNeedsAttentionNotification",
+    );
     expect((await report()).status).toBe(200);
+    notification.mockClear();
     const requestId = `native:${question.id}`;
     const original = getPendingInteractionByProviderRequest(
       fixture.harness.db,
@@ -556,7 +569,15 @@ describe("native terminal activity", () => {
       },
     );
     expect(original?.status).toBe("pending");
+    if (!original) throw new Error("Expected a pending native question");
     interruptNativeTerminalQuestions(fixture.harness.deps, thread.id);
+    expect(
+      getPendingInteractionByProviderRequest(fixture.harness.db, {
+        providerId: "claude-code",
+        providerThreadId: SESSION_ID,
+        providerRequestId: requestId,
+      })?.statusReason,
+    ).toBe("native-terminal-question-answered");
     const warn = vi.spyOn(fixture.harness.deps.logger, "warn");
 
     expect((await report()).status).toBe(200);
@@ -574,6 +595,76 @@ describe("native terminal activity", () => {
         thread.id,
       ),
     ).toHaveLength(0);
+    expect(
+      listPendingInteractionsByThread(fixture.harness.db, {
+        threadId: thread.id,
+      }),
+    ).toHaveLength(1);
+    expect(notification).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps user-cancelled native questions rejected without a notification", async () => {
+    const fixture = await createFixture();
+    const thread = seedChatThread(fixture, {
+      providerId: "claude-code",
+      providerThreadId: SESSION_ID,
+    });
+    await enterTerminal(fixture, thread.id);
+    const question = { id: "toolu_cancelled", prompt: "Continue?" };
+    const report = () =>
+      reportActivity(fixture, thread.id, {
+        state: "waiting",
+        questions: [question],
+      });
+    const notification = vi.spyOn(
+      interactiveRequests,
+      "requestChildThreadNeedsAttentionNotification",
+    );
+    expect((await report()).status).toBe(200);
+    const requestId = `native:${question.id}`;
+    const original = getPendingInteractionByProviderRequest(
+      fixture.harness.db,
+      {
+        providerId: "claude-code",
+        providerThreadId: SESSION_ID,
+        providerRequestId: requestId,
+      },
+    );
+    expect(original?.status).toBe("pending");
+    if (!original) throw new Error("Expected a pending native question");
+    notification.mockClear();
+    fixture.harness.deps.pendingInteractions.interruptPendingInteraction({
+      interactionId: original.id,
+      reason: "user",
+    });
+    const warn = vi.spyOn(fixture.harness.deps.logger, "warn");
+
+    expect((await report()).status).toBe(200);
+    expect((await report()).status).toBe(200);
+
+    expect(
+      getPendingInteractionByProviderRequest(fixture.harness.db, {
+        providerId: "claude-code",
+        providerThreadId: SESSION_ID,
+        providerRequestId: requestId,
+      }),
+    ).toMatchObject({
+      id: original.id,
+      status: "interrupted",
+      statusReason: "user",
+    });
+    expect(
+      fixture.harness.deps.pendingInteractions.listPendingThreadInteractions(
+        thread.id,
+      ),
+    ).toHaveLength(0);
+    expect(
+      listPendingInteractionsByThread(fixture.harness.db, {
+        threadId: thread.id,
+      }),
+    ).toHaveLength(1);
+    expect(notification).not.toHaveBeenCalled();
     expect(warn).toHaveBeenCalledTimes(1);
   });
 
