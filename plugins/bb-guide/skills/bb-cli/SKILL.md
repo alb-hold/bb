@@ -104,6 +104,12 @@ A plugin's commands and settings are documented in that plugin's own skill.
 
 ## Common checks
 
+Terminal output can be read with `bb terminal output <id> --lines <n>` after
+exit. The server retains 64 KiB per terminal, 2 MiB and 128 terminals per
+machine for 30 minutes, evicting oldest output first. Use `bb terminal pipe <id> --follow` to
+stream until exit or Ctrl-C; `--command <cmd>` sends the stream to a local
+command.
+
 ```sh
 bb project list --json
 bb machine list --json

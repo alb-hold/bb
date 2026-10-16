@@ -504,13 +504,112 @@ describe("bb terminal command output", () => {
       .mockImplementation(() => true);
     stubServerApi({ "v1.terminals.:terminalId.output.$get": output });
 
-    await runCommand(["terminal", "output", "term-1"], register);
+    await runCommand(
+      ["terminal", "output", "term-1", "--lines", "1"],
+      register,
+    );
 
     expect(output).toHaveBeenCalledWith({
       param: { terminalId: "term-1" },
-      query: {},
+      query: { lines: 1 },
     });
-    expect(write).toHaveBeenCalledWith(Buffer.from("hello\n", "utf8"));
+    expect(
+      Buffer.from(write.mock.calls[0]?.[0] as Uint8Array).toString("utf8"),
+    ).toBe("hello\n");
+  });
+
+  it.each(["€", "🙂"])(
+    "prints split UTF-8 character %s intact from line-limited output",
+    async (glyph) => {
+      const glyphBytes = Buffer.from(glyph);
+      const writes: Uint8Array[] = [];
+      const output = vi.fn(async () => ({
+        chunks: [
+          {
+            seq: 0,
+            dataBase64: Buffer.concat([
+              Buffer.from("before\n"),
+              glyphBytes.subarray(0, 1),
+            ]).toString("base64"),
+          },
+          {
+            seq: 1,
+            dataBase64: Buffer.concat([
+              glyphBytes.subarray(1),
+              Buffer.from(" after\n"),
+            ]).toString("base64"),
+          },
+        ],
+        nextSeq: 2,
+        truncated: false,
+        status: "exited",
+        exitCode: 0,
+        closeReason: "process-exit",
+      }));
+      vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+        if (typeof chunk === "string") writes.push(Buffer.from(chunk));
+        else if (chunk !== undefined) writes.push(Buffer.from(chunk));
+        return true;
+      });
+      stubServerApi({ "v1.terminals.:terminalId.output.$get": output });
+
+      await runCommand(
+        ["terminal", "output", "term-1", "--lines", "2"],
+        register,
+      );
+
+      expect(output).toHaveBeenCalledWith({
+        param: { terminalId: "term-1" },
+        query: { lines: 2 },
+      });
+      expect(Buffer.concat(writes).toString("utf8")).toBe(
+        `before\n${glyph} after\n`,
+      );
+    },
+  );
+
+  it("streams terminal output with terminal pipe --follow", async () => {
+    const output = vi.fn(async () =>
+      outputResponse({ nextSeq: 1, status: "exited", text: "hello\n" }),
+    );
+    const write = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation(() => true);
+    stubServerApi({ "v1.terminals.:terminalId.output.$get": output });
+
+    await runCommand(["terminal", "pipe", "term-1", "--follow"], register);
+
+    expect(output).toHaveBeenCalledOnce();
+    expect(
+      Buffer.from(write.mock.calls[0]?.[0] as Uint8Array).toString("utf8"),
+    ).toBe("hello\n");
+  });
+
+  it("pipes terminal output into the requested local command", async () => {
+    const output = vi.fn(async () =>
+      outputResponse({ nextSeq: 1, status: "exited", text: "hello\n" }),
+    );
+    const write = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation(() => true);
+    stubServerApi({ "v1.terminals.:terminalId.output.$get": output });
+
+    await runCommand(
+      [
+        "terminal",
+        "pipe",
+        "term-1",
+        "--follow",
+        "--command",
+        'node -e "process.stdin.pipe(process.stdout)"',
+      ],
+      register,
+    );
+
+    expect(output).toHaveBeenCalledOnce();
+    expect(
+      Buffer.from(write.mock.calls[0]?.[0] as Uint8Array).toString("utf8"),
+    ).toBe("hello\n");
   });
 
   function outputResponse(args: {
@@ -620,6 +719,41 @@ describe("bb terminal command output", () => {
     });
     expect(output.mock.calls[1]?.[0]).toMatchObject({ query: { sinceSeq: 4 } });
   });
+
+  it.each(["€", "🙂"])(
+    "matches UTF-8 character %s split across terminal chunks",
+    async (glyph) => {
+      const bytes = Buffer.from(glyph, "utf8");
+      const first = Buffer.concat([Buffer.from("ready "), bytes.subarray(0, 1)]);
+      const second = Buffer.concat([bytes.subarray(1), Buffer.from("\n")]);
+      const output = vi.fn(async () => ({
+        chunks: [first, second].map((chunk, index) => ({
+          seq: index,
+          dataBase64: chunk.toString("base64"),
+        })),
+        nextSeq: 2,
+        truncated: false,
+        status: "exited",
+        exitCode: 0,
+        closeReason: "process-exit",
+      }));
+      stubServerApi({ "v1.terminals.:terminalId.output.$get": output });
+
+      await runCommand(
+        ["terminal", "wait", "term-1", "--from-start", "--contains", glyph, "--json"],
+        register,
+      );
+
+      expect(
+        JSON.parse(collectLogPayloads(vi.mocked(console.log)).at(-1) ?? "{}"),
+      ).toEqual({
+        exitCode: 0,
+        matched: glyph,
+        nextSeq: 2,
+        terminalId: "term-1",
+      });
+    },
+  );
 
   it("finds a marker that is followed by more output than the retained window", async () => {
     const output = vi.fn().mockResolvedValueOnce(

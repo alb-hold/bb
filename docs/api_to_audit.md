@@ -95,6 +95,16 @@ Stabilization requires verifying placement isolation, plugin
 disable/uninstall, loading and failure states, and pairing lifecycle on
 Mobile.
 
+## `TerminalsArea.experimental_follow`
+
+Streams terminal output as `AsyncGenerator<Uint8Array>`, polling the existing
+terminal output endpoint until the terminal exits or the caller aborts. It may
+start from retained output and then continue at the response's next sequence.
+It is experimental because polling interval and backpressure behavior remain
+subject to review. Stabilization requires audit of cancellation, sequence gaps,
+polling load, output retention expiry, and behavior when a terminal or host
+disconnects during iteration.
+
 ## `app.commands.register`
 
 Unprefixed by explicit request. Registers frontend commands

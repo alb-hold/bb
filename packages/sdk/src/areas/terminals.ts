@@ -95,6 +95,7 @@ export interface TerminalResizeArgs extends TerminalTargetArgs {
 }
 
 export interface TerminalOutputArgs extends TerminalTargetArgs {
+  lines?: TerminalOutputQuery["lines"];
   limitChunks?: TerminalOutputQuery["limitChunks"];
   signal?: AbortSignal;
   sinceSeq?: TerminalOutputQuery["sinceSeq"];
@@ -131,6 +132,9 @@ export interface TerminalsArea {
   list(args: TerminalListArgs): Promise<TerminalListResult>;
   output(args: TerminalOutputArgs): Promise<TerminalOutputResult>;
   notify(args: TerminalNotifyArgs): Promise<TerminalGetResult>;
+  experimental_follow(
+    args: TerminalOutputArgs & { pollIntervalMs?: number },
+  ): AsyncGenerator<Uint8Array>;
   rename(args: TerminalRenameArgs): Promise<TerminalRenameResult>;
   restart(args: TerminalRestartArgs): Promise<TerminalRestartResult>;
   resize(args: TerminalResizeArgs): Promise<TerminalResizeResult>;
@@ -198,6 +202,7 @@ function terminalCreateTarget(
 
 function terminalOutputQuery(args: TerminalOutputArgs): TerminalOutputQuery {
   return {
+    ...(args.lines === undefined ? {} : { lines: args.lines }),
     ...(args.sinceSeq === undefined ? {} : { sinceSeq: args.sinceSeq }),
     ...(args.tailBytes === undefined ? {} : { tailBytes: args.tailBytes }),
     ...(args.limitChunks === undefined
@@ -315,6 +320,35 @@ export function createTerminalsArea(args: CreateSdkAreaArgs): TerminalsArea {
           },
         }),
       );
+    },
+    async *experimental_follow(input) {
+      let sinceSeq = input.sinceSeq ?? 0;
+      let first = true;
+      while (!input.signal?.aborted) {
+        const output = await transport.readJson(
+          transport.api.v1.terminals[":terminalId"].output.$get(
+            {
+              param: { terminalId: input.terminalId },
+              query: terminalOutputQuery({
+                ...input,
+                ...(first ? {} : { lines: undefined, sinceSeq }),
+              }),
+            },
+            ...signalRequestArgs(input.signal),
+          ),
+        );
+        first = false;
+        for (const chunk of output.chunks) {
+          yield Uint8Array.from(atob(chunk.dataBase64), (character) =>
+            character.charCodeAt(0),
+          );
+        }
+        sinceSeq = output.nextSeq;
+        if (output.status === "exited") return;
+        await new Promise((resolve) =>
+          setTimeout(resolve, input.pollIntervalMs ?? 250),
+        );
+      }
     },
     async rename(input) {
       return transport.readJson(
