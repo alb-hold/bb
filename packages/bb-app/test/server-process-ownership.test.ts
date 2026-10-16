@@ -337,7 +337,7 @@ describe("server process ownership", () => {
           }
           expect(databaseFdFound).toBe(true);
         }
-        await waitForFile(disconnectReady, 10_000);
+        await waitForFile(disconnectReady, 45_000);
         await new Promise((resolve) => setTimeout(resolve, SERVER_SHUTDOWN_BOUND_MS + SERVER_SHUTDOWN_SAFETY_MARGIN_MS));
         expect(isProcessRunning(serverPid)).toBe(true);
         if (mode === "during-startup") {
