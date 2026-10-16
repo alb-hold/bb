@@ -930,14 +930,8 @@ describe("thread pruning", () => {
     expectLegacyParityCase(rows, kept, ["legacy-1", "legacy-2"]);
   });
 
-  it("matches the old progress query for 20 seeded fixtures at every pass budget", () => {
-    const passBudgets: readonly LegacyPassBudget[] = [
-      1,
-      2,
-      3,
-      64,
-      "unlimited",
-    ];
+  it("matches the legacy oracle for 20 seeded fixtures at every live pass budget", () => {
+    const passBudgets = [1, 2, 3, 64] as const;
     for (let initialSeed = 1; initialSeed <= 20; initialSeed++) {
       let seedValue = initialSeed;
       const next = () => {
@@ -951,20 +945,33 @@ describe("thread pruning", () => {
         itemKind: kinds[next() % kinds.length] ?? null,
         turnId: `turn-${next() % 5}`,
       }));
-      for (const passBudget of passBudgets) {
-        const f = setup();
-        try {
-          const { kept, pruned } = runLegacyParityFixture(
-            f,
-            rows,
-            passBudget,
-          );
-          expect(new Set([...kept, ...pruned])).toEqual(
-            new Set(rows.map((row) => `legacy-${row.sequence}`)),
-          );
-        } finally {
-          f.db.$client.close();
+      const oracleFixture = setup();
+      try {
+        seedLegacyParityFixture(oracleFixture, rows);
+        const before = readProgressIds(oracleFixture);
+        const legacyPruned = legacyReferencePrunedIds(oracleFixture);
+        const legacyKept = new Set(
+          before.filter((id) => !legacyPruned.has(id)),
+        );
+        const unlimitedKept = driveLivePruning(oracleFixture, "unlimited");
+        expect(unlimitedKept).toEqual(legacyKept);
+
+        for (const passBudget of passBudgets) {
+          const f = setup();
+          try {
+            seedLegacyParityFixture(f, rows);
+            const seeded = readProgressIds(f);
+            const liveKept = driveLivePruning(f, passBudget);
+            expect(new Set(seeded.filter((id) => !liveKept.has(id)))).toEqual(
+              legacyPruned,
+            );
+            expect(liveKept).toEqual(legacyKept);
+          } finally {
+            f.db.$client.close();
+          }
         }
+      } finally {
+        oracleFixture.db.$client.close();
       }
     }
   }, 120_000);
