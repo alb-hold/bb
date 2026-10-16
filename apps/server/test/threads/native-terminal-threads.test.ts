@@ -3170,6 +3170,13 @@ describe("native terminal threads", () => {
         infoLog.mock.calls.filter(
           ([, message]) =>
             message ===
+            "Discarding a native terminal reattach that finished after its deadline",
+        ),
+      ).toHaveLength(1);
+      expect(
+        infoLog.mock.calls.filter(
+          ([, message]) =>
+            message ===
             "Interrupting a native terminal thread whose CLI could not be reattached",
         ),
       ).toHaveLength(0);
