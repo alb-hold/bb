@@ -7,26 +7,39 @@ import {
   type ThreadRowState,
   type ThreadRowStatus,
 } from "@bb/domain";
-export type { ThreadRowProgress, ThreadRowState, ThreadRowStatus } from "@bb/domain";
+export type {
+  ThreadRowProgress,
+  ThreadRowState,
+  ThreadRowStatus,
+} from "@bb/domain";
 
 interface StoredThreadRowState {
   statusesJson: string;
   progressJson: string | null;
+  updatedAt: number;
 }
+
+export const THREAD_ROW_STATE_TTL_MS = 60 * 60 * 1000;
 
 export function getThreadRowState(
   db: DbConnection,
   threadId: string,
+  nowMs = Date.now(),
 ): ThreadRowState {
   const row = db.$client
     .prepare(
-      "SELECT statuses_json AS statusesJson, progress_json AS progressJson FROM fork_thread_row_states WHERE thread_id = ?",
+      "SELECT statuses_json AS statusesJson, progress_json AS progressJson, updated_at AS updatedAt FROM fork_thread_row_states WHERE thread_id = ? AND updated_at >= ?",
     )
-    .get(threadId) as StoredThreadRowState | undefined;
+    .get(threadId, nowMs - THREAD_ROW_STATE_TTL_MS) as
+    | StoredThreadRowState
+    | undefined;
   return threadRowStateSchema.parse(
     row
       ? {
-          statuses: JSON.parse(row.statusesJson) as Record<string, ThreadRowStatus>,
+          statuses: JSON.parse(row.statusesJson) as Record<
+            string,
+            ThreadRowStatus
+          >,
           progress: row.progressJson
             ? (JSON.parse(row.progressJson) as ThreadRowProgress)
             : null,
@@ -50,16 +63,18 @@ export function putThreadRowState(
   }
   db.$client
     .prepare(
-      `INSERT INTO fork_thread_row_states (thread_id, statuses_json, progress_json)
-       VALUES (?, ?, ?)
+      `INSERT INTO fork_thread_row_states (thread_id, statuses_json, progress_json, updated_at)
+       VALUES (?, ?, ?, ?)
        ON CONFLICT(thread_id) DO UPDATE SET
          statuses_json = excluded.statuses_json,
-         progress_json = excluded.progress_json`,
+         progress_json = excluded.progress_json,
+         updated_at = excluded.updated_at`,
     )
     .run(
       threadId,
       JSON.stringify(state.statuses),
       state.progress === null ? null : JSON.stringify(state.progress),
+      Date.now(),
     );
 }
 

@@ -1346,4 +1346,5 @@ export const forkThreadRowStates = sqliteTable("fork_thread_row_states", {
     .references(() => threads.id, { onDelete: "cascade" }),
   statusesJson: text("statuses_json").notNull().default("{}"),
   progressJson: text("progress_json"),
+  updatedAt: integer("updated_at").notNull().default(0),
 });

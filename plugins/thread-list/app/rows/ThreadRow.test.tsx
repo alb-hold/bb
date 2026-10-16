@@ -435,6 +435,7 @@ describe("ThreadRow", () => {
     );
     renderThreadRow({
       thread: createThread({
+        archivedAt: Date.now(),
         experimental_rowState: {
           statuses,
           progress: { value: 0.4, label: "Implementation" },
@@ -442,10 +443,18 @@ describe("ThreadRow", () => {
       }),
     });
 
-    expect(document.querySelectorAll("[data-sidebar-thread-status-chip]")).toHaveLength(2);
+    expect(
+      document.querySelectorAll("[data-sidebar-thread-status-chip]"),
+    ).toHaveLength(2);
     expect(screen.getByText("+6 more")).toBeTruthy();
-    expect(screen.getByRole("progressbar", { name: "Implementation" }).getAttribute("aria-valuenow")).toBe("40");
-    expect(screen.getByText("A long status value 0").classList.contains("truncate")).toBe(true);
+    expect(
+      screen
+        .getByRole("progressbar", { name: "Implementation" })
+        .getAttribute("aria-valuenow"),
+    ).toBe("40");
+    expect(
+      screen.getByText("A long status value 0").classList.contains("truncate"),
+    ).toBe(true);
   });
 
   it("renders Needs input, Working, Woke 3m elapsed, and Done labels", async () => {
@@ -470,7 +479,13 @@ describe("ThreadRow", () => {
         status: "active",
         runtimeStatus: "active",
       }),
-      createThread({ id: "thr_woke" }),
+      createThread({
+        id: "thr_woke",
+        experimental_rowState: {
+          statuses: { task: { value: "Running" } },
+          progress: { value: 0.3, label: "Writing tests" },
+        },
+      }),
       createThread({ id: "thr_done", isUnread: true }),
     ];
     renderThreadRows(threads, callRpc);
@@ -479,6 +494,10 @@ describe("ThreadRow", () => {
     );
     expect(screen.getByLabelText("Working")).toBeTruthy();
     await waitFor(() => expect(screen.getByLabelText("Woke 3m")).toBeTruthy());
+    expect(screen.getByText("Running")).toBeTruthy();
+    expect(
+      screen.getByRole("progressbar", { name: "Writing tests" }),
+    ).toBeTruthy();
     expect(screen.getByLabelText("Done")).toBeTruthy();
     expect(callRpc).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -646,8 +665,9 @@ describe("ThreadRow", () => {
     const badges = container.querySelector<HTMLElement>(
       "[data-sidebar-thread-trailing-badges]",
     );
-    const titleLane = screen.getByRole("link", { name: "Open Thread" })
-      .parentElement;
+    const titleLane = screen.getByRole("link", {
+      name: "Open Thread",
+    }).parentElement;
 
     expect(actionSlot?.className).toContain("[@media(hover:hover)]:absolute");
     expect(actionSlot?.className).not.toMatch(/(^|\s)(w-|min-w-)\S+/);
@@ -704,14 +724,13 @@ describe("ThreadRow", () => {
   it.each(
     [false, true].flatMap((isCompactViewport) =>
       (["Working", "Done"] as const).flatMap((statusLabel) =>
-        (["resting", "hover", "focus", "menu-open"] as const).flatMap(
-          (state) =>
-            [undefined, "3"].map((shortcutKey) => ({
-              isCompactViewport,
-              statusLabel,
-              state,
-              shortcutKey,
-            })),
+        (["resting", "hover", "focus", "menu-open"] as const).flatMap((state) =>
+          [undefined, "3"].map((shortcutKey) => ({
+            isCompactViewport,
+            statusLabel,
+            state,
+            shortcutKey,
+          })),
         ),
       ),
     ),
@@ -761,7 +780,9 @@ describe("ThreadRow", () => {
       expectPersistentRowMetadata(glyph);
       if (shortcutKey) {
         expect(
-          screen.getByRole("link", { name: "Open Thread" }).getAttribute("aria-keyshortcuts"),
+          screen
+            .getByRole("link", { name: "Open Thread" })
+            .getAttribute("aria-keyshortcuts"),
         ).toBe("Meta+3");
         expect(
           screen.getByText("⌘3").closest("[data-sidebar-shortcut-secondary]"),
@@ -774,14 +795,14 @@ describe("ThreadRow", () => {
       expect(row.querySelector(".bb-thread-title")?.classList).toContain(
         "truncate",
       );
-      expect(archive.closest(".bb-sidebar-hover-actions")?.classList).not.toContain(
-        "absolute",
-      );
+      expect(
+        archive.closest(".bb-sidebar-hover-actions")?.classList,
+      ).not.toContain("absolute");
       if (isCompactViewport) {
         expect(
-          menu.closest("[data-sidebar-hover-actions-mobile]")?.getAttribute(
-            "data-sidebar-hover-actions-mobile",
-          ),
+          menu
+            .closest("[data-sidebar-hover-actions-mobile]")
+            ?.getAttribute("data-sidebar-hover-actions-mobile"),
         ).toBe("always");
       }
     },
@@ -1750,7 +1771,9 @@ describe("ThreadRow", () => {
     expect(shortcut.className).toContain("opacity-60");
     expect(screen.getByRole("img", { name: "Working" })).not.toBeNull();
     expect(screen.getByRole("button", { name: "Archive" })).not.toBeNull();
-    expect(screen.getByRole("button", { name: "Thread actions" })).not.toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Thread actions" }),
+    ).not.toBeNull();
     expect(
       screen
         .getByRole("link", { name: "Open Thread" })
