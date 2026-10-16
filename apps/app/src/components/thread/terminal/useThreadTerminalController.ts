@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import type {
+  CloseTerminalRequest,
   TerminalCreateTarget,
   TerminalSession,
 } from "@bb/server-contract";
@@ -381,15 +382,17 @@ export function useThreadTerminalController({
       mode,
       onSettled,
       onSuccess,
+      reason,
       terminalId,
     }: {
       mode: TerminalCloseMode;
       onSettled?: () => void;
       onSuccess?: (session: TerminalSession) => void;
+      reason?: CloseTerminalRequest["reason"];
       terminalId: string;
     }) => {
       closeTerminalMutation.mutate(
-        { mode, terminalId },
+        { mode, reason, terminalId },
         {
           onSettled: () => onSettled?.(),
           onSuccess: (session) => {
@@ -418,6 +421,7 @@ export function useThreadTerminalController({
       closingDisconnectedTerminalIdsRef.current.add(session.id);
       closeTerminal({
         mode: "force",
+        reason: "client-cleanup",
         terminalId: session.id,
         onSuccess: (closedSession) => {
           if (closedSession.status !== "exited") {
@@ -497,6 +501,7 @@ export function useThreadTerminalController({
       closingCleanTerminalIdsRef.current.add(session.id);
       closeTerminal({
         mode: "if-clean",
+        reason: "client-cleanup",
         terminalId: session.id,
         onSuccess: (closedSession) => {
           if (closedSession.status !== "exited") {

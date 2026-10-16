@@ -183,6 +183,7 @@ export async function maintainMachine(
           deps.terminalSessions.closeTerminal({
             terminalId: terminal.id,
             payload: { mode: "force", reason: "user" },
+            caller: "machine-lifecycle",
           }),
         ),
       );

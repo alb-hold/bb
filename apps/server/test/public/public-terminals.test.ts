@@ -7,6 +7,8 @@ import {
   getThread,
   getTerminalSession,
   listTerminalSessions,
+  createNativeTerminalThread,
+  setNativeTerminalThreadTerminal,
   setAppSettings,
   updateHost,
   updateTerminalSession,
@@ -100,6 +102,46 @@ function getThreadlessTerminalSessionForEnvironment(
     kind: "terminal",
     terminalId: args.terminalId,
   });
+}
+
+function createDisconnectedNativeTerminal(
+  fixture: TerminalRouteFixture,
+  status: "disconnected" | "exited" = "exited",
+) {
+  const terminal = createTerminalSession(fixture.harness.db, {
+    cols: 100,
+    daemonSessionId: null,
+    environmentId: fixture.environment.id,
+    hostId: fixture.host.id,
+    initialCwd: "/tmp/terminal-workspace",
+    rows: 30,
+    status,
+    threadId: fixture.thread.id,
+    title: "Native terminal",
+  });
+  if (status === "exited") {
+    updateTerminalSession(fixture.harness.db, {
+      scope: { kind: "terminal", terminalId: terminal.id },
+      update: {
+        kind: "exit",
+        closeReason: "daemon-disconnect",
+        exitCode: null,
+      },
+    });
+  }
+  createNativeTerminalThread(fixture.harness.db, {
+    threadId: fixture.thread.id,
+    providerId: "claude-code",
+    nativeSessionId: "native-session",
+    initialPrompt: null,
+    initialImages: [],
+    model: null,
+  });
+  setNativeTerminalThreadTerminal(fixture.harness.db, {
+    threadId: fixture.thread.id,
+    terminalSessionId: terminal.id,
+  });
+  return terminal;
 }
 
 function listTerminalSessionsByThread(db: TestDb, threadId: string) {
@@ -2806,6 +2848,136 @@ describe("public terminal routes", () => {
     expect(terminalSessionSchema.parse(await readJson(response))).toMatchObject(
       {
         id: stored.id,
+        closeReason: "user",
+        status: "exited",
+      },
+    );
+  });
+
+  it("keeps a native daemon-disconnected terminal open for client cleanup", async () => {
+    const fixture = await createTerminalRouteFixture();
+    harnesses.push(fixture.harness);
+    const terminal = createDisconnectedNativeTerminal(fixture);
+
+    const response = await fixture.harness.app.request(
+      `/api/v1/terminals/${terminal.id}/close`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ mode: "force", reason: "client-cleanup" }),
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(terminalSessionSchema.parse(await readJson(response))).toMatchObject(
+      {
+        id: terminal.id,
+        closeReason: "daemon-disconnect",
+        status: "exited",
+      },
+    );
+    expect(
+      fixture.harness.db.$client
+        .prepare(
+          "SELECT terminal_session_id FROM fork_native_terminal_threads WHERE thread_id = ?",
+        )
+        .get(fixture.thread.id),
+    ).toEqual({ terminal_session_id: terminal.id });
+  });
+
+  it("keeps a disconnected native terminal open for client cleanup", async () => {
+    const fixture = await createTerminalRouteFixture();
+    harnesses.push(fixture.harness);
+    const terminal = createDisconnectedNativeTerminal(fixture, "disconnected");
+
+    const response = await fixture.harness.app.request(
+      `/api/v1/terminals/${terminal.id}/close`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ mode: "force", reason: "client-cleanup" }),
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(terminalSessionSchema.parse(await readJson(response))).toMatchObject(
+      {
+        id: terminal.id,
+        closeReason: null,
+        status: "disconnected",
+      },
+    );
+  });
+
+  it("lets an explicit user close supersede a native daemon disconnect", async () => {
+    const fixture = await createTerminalRouteFixture();
+    harnesses.push(fixture.harness);
+    const terminal = createDisconnectedNativeTerminal(fixture);
+
+    const response = await fixture.harness.app.request(
+      `/api/v1/terminals/${terminal.id}/close`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ mode: "force", reason: "user" }),
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(terminalSessionSchema.parse(await readJson(response))).toMatchObject(
+      {
+        id: terminal.id,
+        closeReason: "user",
+        status: "exited",
+      },
+    );
+  });
+
+  it("closes a running terminal for client cleanup using the existing daemon close reason", async () => {
+    const fixture = await createTerminalRouteFixture();
+    harnesses.push(fixture.harness);
+    const terminal = createTerminalSession(fixture.harness.db, {
+      cols: 80,
+      daemonSessionId: fixture.session.id,
+      environmentId: fixture.environment.id,
+      hostId: fixture.host.id,
+      initialCwd: "/tmp/terminal-workspace",
+      rows: 24,
+      status: "running",
+      threadId: fixture.thread.id,
+      title: "Terminal 1",
+    });
+
+    const responsePromise = fixture.harness.app.request(
+      `/api/v1/terminals/${terminal.id}/close`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ mode: "force", reason: "client-cleanup" }),
+      },
+    );
+
+    expect(await waitForDaemonMessage(fixture.socket)).toMatchObject({
+      type: "terminal.close",
+      terminalId: terminal.id,
+      reason: "user",
+    });
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.host.id,
+      sessionId: fixture.session.id,
+      message: {
+        type: "terminal.exited",
+        terminalId: terminal.id,
+        exitCode: 0,
+        closeReason: "user",
+      },
+    });
+
+    const response = await responsePromise;
+    expect(response.status).toBe(200);
+    expect(terminalSessionSchema.parse(await readJson(response))).toMatchObject(
+      {
+        id: terminal.id,
         closeReason: "user",
         status: "exited",
       },

@@ -167,6 +167,7 @@ async function leaveTerminalMode(
     await deps.terminalSessions.closeTerminal({
       terminalId: terminal.id,
       payload: { mode: "force", reason: "user" },
+      caller: "native-terminal-mode-exit",
     });
   }
   throw new ApiError(

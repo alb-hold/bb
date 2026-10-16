@@ -77,6 +77,72 @@ async function createDisconnectedNativeThread(
 }
 
 describe("reopenNativeTerminalsAfterDaemonReconnect", () => {
+  it("reopens a native CLI after client cleanup preserves its daemon disconnect", async () => {
+    await withTestHarness({ seedFirstPartyProviders: false }, async (h) => {
+      const host = upsertHost(h.db, noopNotifier, {
+        id: "host-native-cleanup",
+        name: "Native Terminal Host",
+      });
+      const { threadId, terminalId } = await createDisconnectedNativeThread(
+        h,
+        8,
+        host.id,
+      );
+      h.db
+        .update(terminalSessions)
+        .set({ status: "exited", closeReason: "daemon-disconnect" })
+        .where(eq(terminalSessions.id, terminalId))
+        .run();
+
+      await h.deps.terminalSessions.closeTerminal({
+        caller: "native-terminal-cleanup-test",
+        terminalId,
+        payload: { mode: "force", reason: "client-cleanup" },
+      });
+      expect(
+        h.db
+          .select({ closeReason: terminalSessions.closeReason })
+          .from(terminalSessions)
+          .where(eq(terminalSessions.id, terminalId))
+          .get()?.closeReason,
+      ).toBe("daemon-disconnect");
+
+      const sourceRegistry = await createTestProviderRegistry();
+      const registration = sourceRegistry.get("codex");
+      if (registration === null)
+        throw new Error("Codex provider is not seeded");
+      const providerRegistry = createProviderRegistryService();
+      providerRegistry.register(registration);
+      h.deps.providerRegistry = providerRegistry;
+      const createTerminal = vi
+        .spyOn(h.deps.terminalSessions, "createTerminal")
+        .mockImplementation(async () =>
+          createTerminalSession(h.db, {
+            threadId,
+            environmentId: null,
+            hostId: host.id,
+            daemonSessionId: null,
+            title: "Codex",
+            initialCwd: "/tmp",
+            cols: 120,
+            rows: 36,
+            status: "running",
+          }),
+        );
+
+      await reopenNativeTerminalsAfterDaemonReconnect(h.deps, {
+        hostId: host.id,
+        threadIds: [threadId],
+      });
+
+      expect(createTerminal).toHaveBeenCalledOnce();
+      expect(
+        takeNativeTerminalLaunchSpec(h.deps, { imagesAsArgv: true, threadId })
+          .nativeSessionId,
+      ).toBe("session-existing-8");
+    });
+  });
+
   it("reopens with the same CLI session when the provider registers after the settle timeout", async () => {
     await withTestHarness({ seedFirstPartyProviders: false }, async (h) => {
       const host = upsertHost(h.db, noopNotifier, {
@@ -280,6 +346,7 @@ describe("reopenNativeTerminalsAfterDaemonReconnect", () => {
       await h.deps.terminalSessions.closeTerminal({
         terminalId: closed.terminalId,
         payload: { mode: "force", reason: "user" },
+        caller: "native-terminal-threads-test",
       });
       expect(
         h.db

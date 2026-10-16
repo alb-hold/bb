@@ -145,7 +145,7 @@ export type CreateTerminalRequest = z.infer<typeof createTerminalRequestSchema>;
 export const closeTerminalRequestSchema = z
   .object({
     mode: z.enum(["force", "if-clean"]),
-    reason: z.literal("user"),
+    reason: z.enum(["user", "client-cleanup"]).default("user"),
   })
   .strict();
 export type CloseTerminalRequest = z.infer<typeof closeTerminalRequestSchema>;
