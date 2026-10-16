@@ -1276,9 +1276,8 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
         bullets: [
           "Create threads, send messages, manage projects and machines, and attribute threads to the plugin.",
           "Read thread, context, prompt history, host, and environment state through the SDK.",
-          "Clean up unused provider environments and control plugin safe mode with explicit SDK calls.",
+          "Clean up provider environments, control plugin safe mode, and manage attention rings.",
           "Use app and CLI operations with ownership controls; start updates and track progress or rollback.",
-          "List, select, and clear terminal attention through the experimental SDK area.",
         ],
         apiSymbols: [
           "BbPluginApi",
