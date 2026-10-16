@@ -1,3 +1,4 @@
+import { Command } from "commander";
 import { describe, expect, it, vi } from "vitest";
 import {
   setupCommandOutputTestEnvironment,
@@ -7,7 +8,7 @@ import {
 import type { CommandRegistrar } from "../helpers/command-output-harness.js";
 import { registerThreadCommands } from "../../commands/thread/index.js";
 
-describe("bb thread status and progress", () => {
+describe("bb thread row-status and progress", () => {
   setupCommandOutputTestEnvironment();
 
   const register: CommandRegistrar = (program) =>
@@ -22,7 +23,7 @@ describe("bb thread status and progress", () => {
     stubServerApi({ "v1.threads.:id.row-state.$patch": update });
 
     await runCommand(
-      ["thread", "status", "set", "review", "Ready", "--icon", "✓", "--priority", "3"],
+      ["thread", "row-status", "set", "review", "Ready", "--icon", "✓", "--priority", "3"],
       register,
     );
     expect(update.mock.calls[0]?.[0]).toEqual({
@@ -49,11 +50,23 @@ describe("bb thread status and progress", () => {
     }));
     stubServerApi({ "v1.threads.:id.row-state.$get": read });
 
-    await runCommand(["thread", "status", "list"], register);
+    await runCommand(["thread", "row-status", "list"], register);
 
     expect(read).toHaveBeenCalledWith({ param: { id: "thread-current" } });
     expect(vi.mocked(console.log)).toHaveBeenCalledWith(
       expect.stringContaining('"review": {'),
     );
+  });
+
+  it("registers row-status commands separately from the show aliases", () => {
+    const program = new Command();
+    register(program);
+    const threadCommand = program.commands.find((command) => command.name() === "thread");
+    const showCommand = threadCommand?.commands.find((command) => command.name() === "show");
+    expect(showCommand?.aliases()).toContain("status");
+    expect(showCommand?.commands.some((command) => command.name() === "set")).toBe(false);
+    expect(showCommand?.commands.some((command) => command.name() === "list")).toBe(false);
+    expect(showCommand?.commands.some((command) => command.name() === "clear")).toBe(false);
+    expect(threadCommand?.commands.some((command) => command.name() === "row-status")).toBe(true);
   });
 });

@@ -10,6 +10,7 @@ question.
 
 ## Thread row status and progress
 
+`bb thread row-status set|clear|list` manages current-thread sidebar statuses.
 `bb.sdk.threads.experimental_rowState({ threadId })` reads the transient status
 chips and progress shown on a thread's sidebar row. `experimental_updateRowState`
 sets or clears them through the same server route used by the CLI. State clears

@@ -27,12 +27,12 @@ export function registerThreadCommands(
   registerCountCommand(thread, getUrl);
   registerContextCommand(thread, getUrl);
   registerSessionStateCommands(thread, getUrl);
-  const show = registerShowCommand(thread, getUrl);
+  registerShowCommand(thread, getUrl);
   registerOpenCommand(thread, getUrl);
   registerPaneCommand(thread, getUrl);
   registerOrganizationCommands(thread, getUrl);
   registerActionsCommands(thread, getUrl);
   registerInteractionCommands(thread, getUrl);
   registerNativeCommands(thread, getUrl);
-  registerRowStateCommands(thread, getUrl, show);
+  registerRowStateCommands(thread, getUrl);
 }

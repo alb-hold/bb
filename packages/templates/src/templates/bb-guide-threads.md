@@ -9,9 +9,9 @@ Thread commands
 
 Sidebar status and progress:
 
-  bb thread status set <key> <value> [--icon <icon>] [--color <color>] [--priority <number>]
-  bb thread status clear [<key>]
-  bb thread status list
+  bb thread row-status set <key> <value> [--icon <icon>] [--color <color>] [--priority <number>]
+  bb thread row-status clear [<key>]
+  bb thread row-status list
   bb thread progress <0..1> [--label <text>]
   bb thread progress clear
 

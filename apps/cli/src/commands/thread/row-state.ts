@@ -32,9 +32,8 @@ function printState(
 export function registerRowStateCommands(
   parent: Command,
   getUrl: () => string,
-  status: Command,
 ): void {
-  status.description("Show thread status; use set, clear, or list for sidebar statuses");
+  const status = parent.command("row-status").description("Manage this thread's sidebar statuses");
   status.command("set")
     .description("Set a sidebar status")
     .argument("<key>")
