@@ -22,6 +22,7 @@ interface MobilePanelTab {
   onSelect: () => void;
   onClose: (() => void) | null;
   attention?: boolean;
+  statusLabel?: string | null;
 }
 
 interface MobilePanelTabPagerProps {
@@ -247,6 +248,12 @@ export function MobilePanelTabPager({
                         }
                   }
                   attention={displayedTab.attention}
+                  secondaryLabel={
+                    displayedTab.statusLabel === null ||
+                    displayedTab.statusLabel === undefined
+                      ? null
+                      : `(${displayedTab.statusLabel})`
+                  }
                 />
               </div>
             ))}

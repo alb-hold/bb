@@ -249,6 +249,7 @@ export function listTerminalSessions(
                           terminalSessions.id,
                         ),
                         gt(forkTerminalOutput.expiresAt, Date.now()),
+                        isNull(forkTerminalOutput.dismissedAt),
                       ),
                     ),
                 ),

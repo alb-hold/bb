@@ -204,6 +204,20 @@ export function markRetainedTerminalOutputExited(
     .run(now + TERMINAL_OUTPUT_RETENTION_MS, terminalSessionId, hostId);
 }
 
+export function dismissRetainedTerminalOutput(
+  db: DbConnection,
+  terminalSessionId: string,
+  hostId: string,
+  now: number,
+): void {
+  db.$client
+    .prepare(
+      `UPDATE fork_terminal_output SET dismissed_at = ?
+       WHERE terminal_session_id = ? AND host_id = ?`,
+    )
+    .run(now, terminalSessionId, hostId);
+}
+
 export function getRetainedTerminalOutput(
   db: DbConnection,
   args: { hostId: string; terminalSessionId: string; now: number },

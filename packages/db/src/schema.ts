@@ -1199,6 +1199,7 @@ export const forkTerminalOutput = sqliteTable(
     byteLength: integer("byte_length").notNull(),
     retainedAt: integer("retained_at").notNull(),
     expiresAt: integer("expires_at"),
+    dismissedAt: integer("dismissed_at"),
   },
   (table) => [
     index("fork_terminal_output_host_retained_idx").on(

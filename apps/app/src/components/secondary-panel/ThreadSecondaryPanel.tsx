@@ -679,6 +679,7 @@ function ThreadSecondaryPanelContent({
             label: tab.label,
             ariaLabel: tab.label,
             attention: tab.attention,
+            statusLabel: tab.statusLabel,
             leadingVisual: tab.leadingVisual,
             onSelect: tab.onSelect,
             onClose: tab.isPinned ? null : tab.onClose,

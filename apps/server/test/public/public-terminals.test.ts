@@ -564,6 +564,69 @@ describe("public terminal routes", () => {
     ]);
   });
 
+  it("keeps a retained exited terminal listed until a tab close dismisses it", async () => {
+    const fixture = await createTerminalRouteFixture();
+    harnesses.push(fixture.harness);
+    const session = createTerminalSession(fixture.harness.db, {
+      cols: 120,
+      daemonSessionId: fixture.session.id,
+      environmentId: fixture.environment.id,
+      hostId: fixture.host.id,
+      initialCwd: fixture.environment.path ?? "/tmp/terminal-workspace",
+      rows: 32,
+      status: "running",
+      threadId: fixture.thread.id,
+      title: "Retained tab",
+    });
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.host.id,
+      sessionId: fixture.session.id,
+      message: {
+        type: "terminal.output",
+        terminalId: session.id,
+        chunk: {
+          seq: 0,
+          dataBase64: Buffer.from("retained tab output\n").toString("base64"),
+        },
+      },
+    });
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.host.id,
+      sessionId: fixture.session.id,
+      message: {
+        type: "terminal.exited",
+        terminalId: session.id,
+        exitCode: 0,
+        closeReason: "process-exit",
+      },
+    });
+
+    const listUrl = `/api/v1/terminals?threadId=${encodeURIComponent(fixture.thread.id)}`;
+    const listed = terminalListResponseSchema.parse(
+      await readJson(await fixture.harness.app.request(listUrl)),
+    );
+    expect(listed.sessions).toContainEqual(
+      expect.objectContaining({ id: session.id, status: "exited" }),
+    );
+
+    const closeResponse = await fixture.harness.app.request(
+      `/api/v1/terminals/${session.id}/close`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ mode: "force", reason: "user" }),
+      },
+    );
+    expect(closeResponse.status).toBe(200);
+
+    const afterClose = terminalListResponseSchema.parse(
+      await readJson(await fixture.harness.app.request(listUrl)),
+    );
+    expect(afterClose.sessions).not.toContainEqual(
+      expect.objectContaining({ id: session.id }),
+    );
+  });
+
   it("records daemon attention on the existing thread unread timestamp and clears terminal state when visible", async () => {
     const fixture = await createTerminalRouteFixture();
     harnesses.push(fixture.harness);

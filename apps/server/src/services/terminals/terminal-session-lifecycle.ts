@@ -8,6 +8,7 @@ import { Buffer } from "node:buffer";
 import { z } from "zod";
 import {
   createTerminalSession,
+  dismissRetainedTerminalOutput,
   appendRetainedTerminalOutputChunk,
   clearTerminalAttention,
   getTerminalAttention,
@@ -1253,6 +1254,14 @@ export class TerminalSessionLifecycle {
   ): Promise<TerminalSession> {
     const current = args.current;
     if (current.status === "exited") {
+      if (args.payload.reason === "user") {
+        dismissRetainedTerminalOutput(
+          this.options.db,
+          current.id,
+          current.hostId,
+          Date.now(),
+        );
+      }
       if (
         current.closeReason === "daemon-disconnect" &&
         args.payload.reason === "user"
@@ -1306,13 +1315,30 @@ export class TerminalSessionLifecycle {
       }
     }
     try {
-      return this.toTerminalSession(await pending.promise);
+      const closed = await pending.promise;
+      if (args.payload.reason === "user") {
+        dismissRetainedTerminalOutput(
+          this.options.db,
+          current.id,
+          current.hostId,
+          Date.now(),
+        );
+      }
+      return this.toTerminalSession(closed);
     } catch (error) {
       const finalized = getTerminalById(this.options.db, current.id);
       if (
         finalized?.status === "exited" &&
         finalized.closeReason === args.payload.reason
       ) {
+        if (args.payload.reason === "user") {
+          dismissRetainedTerminalOutput(
+            this.options.db,
+            current.id,
+            current.hostId,
+            Date.now(),
+          );
+        }
         return this.toTerminalSession(finalized);
       }
       throw error;
@@ -1329,6 +1355,14 @@ export class TerminalSessionLifecycle {
       kind: "exit",
     });
     const session = closed ?? args.current;
+    if (args.reason === "user") {
+      dismissRetainedTerminalOutput(
+        this.options.db,
+        args.current.id,
+        args.current.hostId,
+        Date.now(),
+      );
+    }
     this.notifyExitedTerminalSession({
       session,
       code: "terminal_closed",

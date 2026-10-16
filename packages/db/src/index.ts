@@ -39,6 +39,7 @@ export {
 } from "./fork-terminal-attention.js";
 export {
   appendRetainedTerminalOutputChunk,
+  dismissRetainedTerminalOutput,
   getRetainedTerminalOutput,
   markRetainedTerminalOutputExited,
   pruneRetainedTerminalOutput,
