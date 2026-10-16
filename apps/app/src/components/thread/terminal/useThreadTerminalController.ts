@@ -15,10 +15,7 @@ import {
   useRemoveFixedRightTerminalTab,
   useSetFixedRightTerminalActiveTerminal,
 } from "@/lib/fixed-panel-tabs";
-import {
-  applyTerminalSessionClose,
-  applyTerminalSessionUpsert,
-} from "@/hooks/cache-owners/terminal-cache-owner";
+import { applyTerminalSessionUpsert } from "@/hooks/cache-owners/terminal-cache-owner";
 import {
   isVisibleTerminalSession,
   shouldCloseUnretainedDisconnectedTerminalSession,
@@ -231,6 +228,8 @@ export function useThreadTerminalController({
   const [retainedTerminalViewId, setRetainedTerminalViewId] = useState<
     string | null
   >(null);
+  const [retainedExitedSession, setRetainedExitedSession] =
+    useState<TerminalSession | null>(null);
   const [hasPanelOpened, setHasPanelOpened] = useState(isPanelOpen);
   const panelMount = resolveTerminalPanelMount({
     hasPanelOpened,
@@ -253,13 +252,20 @@ export function useThreadTerminalController({
   const sessions = useMemo(() => {
     const currentSessions =
       terminalsQuery.data?.sessions ?? EMPTY_TERMINAL_SESSIONS;
-    if (target.kind !== "host_path") {
-      return currentSessions;
+    const scopedSessions =
+      target.kind === "host_path"
+        ? currentSessions.filter((session) =>
+            terminalSessionBelongsToTarget(session, target),
+          )
+        : currentSessions;
+    if (
+      retainedExitedSession === null ||
+      scopedSessions.some((session) => session.id === retainedExitedSession.id)
+    ) {
+      return scopedSessions;
     }
-    return currentSessions.filter((session) =>
-      terminalSessionBelongsToTarget(session, target),
-    );
-  }, [target, terminalsQuery.data?.sessions]);
+    return [...scopedSessions, retainedExitedSession];
+  }, [retainedExitedSession, target, terminalsQuery.data?.sessions]);
   const paneRetainedTerminalIds = useMemo(
     () =>
       new Set<string>(
@@ -312,6 +318,7 @@ export function useThreadTerminalController({
       activeTerminalId !== retainedTerminalViewId
     ) {
       setRetainedTerminalViewId(null);
+      setRetainedExitedSession(null);
     }
   }, [
     activeSession,
@@ -583,11 +590,8 @@ export function useThreadTerminalController({
         terminalCwdsRef.current.delete(session.id);
         terminalCwdTitlesRef.current.delete(session.id);
         userSetTerminalTitlesRef.current.delete(session.id);
-        applyTerminalSessionClose({
-          queryClient,
-          session,
-          terminalId: session.id,
-        });
+        setRetainedExitedSession(session);
+        applyTerminalSessionUpsert({ queryClient, session });
         return;
       }
       applyTerminalSessionUpsert({ queryClient, session });

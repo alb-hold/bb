@@ -1186,6 +1186,28 @@ export const terminalSessions = sqliteTable(
   ],
 );
 
+export const forkTerminalOutput = sqliteTable(
+  "fork_terminal_output",
+  {
+    terminalSessionId: text("terminal_session_id")
+      .primaryKey()
+      .references(() => terminalSessions.id, { onDelete: "cascade" }),
+    hostId: text("host_id")
+      .notNull()
+      .references(() => hosts.id, { onDelete: "cascade" }),
+    chunksJson: text("chunks_json").notNull(),
+    byteLength: integer("byte_length").notNull(),
+    retainedAt: integer("retained_at").notNull(),
+    expiresAt: integer("expires_at"),
+  },
+  (table) => [
+    index("fork_terminal_output_host_retained_idx").on(
+      table.hostId,
+      table.retainedAt,
+    ),
+  ],
+);
+
 export const pendingInteractions = sqliteTable(
   "pending_interactions",
   {
