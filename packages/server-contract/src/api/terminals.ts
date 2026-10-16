@@ -195,6 +195,7 @@ export const terminalOutputQuerySchema = z
       .max(4 * 1024 * 1024)
       .optional(),
     limitChunks: z.coerce.number().int().positive().max(10_000).optional(),
+    lines: z.coerce.number().int().positive().max(10_000).optional(),
   })
   .strict();
 export type TerminalOutputQuery = z.infer<typeof terminalOutputQuerySchema>;

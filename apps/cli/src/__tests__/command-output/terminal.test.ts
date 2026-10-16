@@ -449,13 +449,62 @@ describe("bb terminal command output", () => {
       .mockImplementation(() => true);
     stubServerApi({ "v1.terminals.:terminalId.output.$get": output });
 
-    await runCommand(["terminal", "output", "term-1"], register);
+    await runCommand(
+      ["terminal", "output", "term-1", "--lines", "1"],
+      register,
+    );
 
     expect(output).toHaveBeenCalledWith({
       param: { terminalId: "term-1" },
-      query: {},
+      query: { lines: 1 },
     });
-    expect(write).toHaveBeenCalledWith(Buffer.from("hello\n", "utf8"));
+    expect(
+      Buffer.from(write.mock.calls[0]?.[0] as Uint8Array).toString("utf8"),
+    ).toBe("hello\n");
+  });
+
+  it("streams terminal output with terminal pipe --follow", async () => {
+    const output = vi.fn(async () =>
+      outputResponse({ nextSeq: 1, status: "exited", text: "hello\n" }),
+    );
+    const write = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation(() => true);
+    stubServerApi({ "v1.terminals.:terminalId.output.$get": output });
+
+    await runCommand(["terminal", "pipe", "term-1", "--follow"], register);
+
+    expect(output).toHaveBeenCalledOnce();
+    expect(
+      Buffer.from(write.mock.calls[0]?.[0] as Uint8Array).toString("utf8"),
+    ).toBe("hello\n");
+  });
+
+  it("pipes terminal output into the requested local command", async () => {
+    const output = vi.fn(async () =>
+      outputResponse({ nextSeq: 1, status: "exited", text: "hello\n" }),
+    );
+    const write = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation(() => true);
+    stubServerApi({ "v1.terminals.:terminalId.output.$get": output });
+
+    await runCommand(
+      [
+        "terminal",
+        "pipe",
+        "term-1",
+        "--follow",
+        "--command",
+        'node -e "process.stdin.pipe(process.stdout)"',
+      ],
+      register,
+    );
+
+    expect(output).toHaveBeenCalledOnce();
+    expect(
+      Buffer.from(write.mock.calls[0]?.[0] as Uint8Array).toString("utf8"),
+    ).toBe("hello\n");
   });
 
   function outputResponse(args: {

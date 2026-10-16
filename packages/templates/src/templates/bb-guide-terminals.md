@@ -64,14 +64,19 @@ raises attention on its terminal. The SDK exposes the same operation as
   takes the size when it attaches and when its window resizes.
 
   bb terminal output <terminal-id>
+    --lines <n>                          Print the latest N lines
     --since-seq <n>                       Read output chunks from a sequence
     --tail-bytes <n>                      Bound output to latest N bytes
     --limit-chunks <n>                    Bound output to latest N chunks
     --json                                Print chunks, nextSeq, truncated, status, exitCode, and closeReason
 
-  Output stays readable after the command exits: the machine keeps a finished
-  terminal's scrollback for 30 minutes, until its daemon restarts, or until many
-  newer terminals have exited. For an exited terminal the output is followed by
+  bb terminal pipe <terminal-id> --follow
+    --command <command>                  Pipe output into a local command
+
+  Output stays readable after the command exits for 30 minutes, capped at 64 KiB
+  per terminal, 2 MiB and 128 terminals per machine, with oldest output evicted first. Output
+  is retained by the server and survives daemon restarts. `pipe --follow` streams
+  output until exit or Ctrl-C. For an exited terminal the output is followed by
   `Terminal <id> exited with code N` on stderr. Once the scrollback is gone,
   output fails with `terminal_output_unavailable` and says why.
 

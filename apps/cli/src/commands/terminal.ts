@@ -1,4 +1,6 @@
 import { Buffer } from "node:buffer";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { Command, Option } from "commander";
 import { TERMINAL_DATA_MAX_BYTES } from "@bb/domain";
 import type { TerminalCreateScope, TerminalListScope } from "@bb/sdk";
@@ -58,8 +60,14 @@ interface TerminalResizeOptions extends TerminalJsonOptions {
 
 interface TerminalOutputOptions extends TerminalJsonOptions {
   limitChunks?: string;
+  lines?: string;
   sinceSeq?: string;
   tailBytes?: string;
+}
+
+interface TerminalPipeOptions {
+  command?: string;
+  follow?: boolean;
 }
 
 interface TerminalWaitOptions extends TerminalOutputOptions {
@@ -262,10 +270,13 @@ export function registerTerminalCommands(
   terminal
     .command("output <terminalId>")
     .alias("read")
-    .description("Print terminal output from daemon scrollback")
+    .description(
+      "Print terminal output; retention is 64 KiB per terminal, 2 MiB and 128 terminals per machine for 30 minutes",
+    )
     .option("--since-seq <n>", "Only output chunks from this sequence")
     .option("--tail-bytes <n>", "Bound output to the latest N bytes")
     .option("--limit-chunks <n>", "Bound output to the latest N chunks")
+    .option("--lines <n>", "Print the latest N lines")
     .option("--json", "Print machine-readable JSON output")
     .action(
       action(async (terminalId: string, opts: TerminalOutputOptions) => {
@@ -278,6 +289,58 @@ export function registerTerminalCommands(
         writeOutputChunks(output.chunks);
         if (output.status === "exited") {
           console.error(describeTerminalExit(terminalId, output.exitCode));
+        }
+      }),
+    );
+
+  terminal
+    .command("pipe <terminalId>")
+    .description("Stream terminal output until it exits or Ctrl-C")
+    .option("--follow", "Continue streaming new output")
+    .option("--command <command>", "Pipe output into a local command")
+    .action(
+      action(async (terminalId: string, opts: TerminalPipeOptions) => {
+        if (!opts.follow)
+          throw new CliUsageError({
+            code: "missing_follow_option",
+            hint: "Run `bb terminal pipe <id> --follow` to stream output.",
+            message: "terminal pipe requires --follow",
+          });
+        const sdk = createCliBbSdk(getUrl());
+        const controller = new AbortController();
+        const onInterrupt = (): void => controller.abort();
+        process.once("SIGINT", onInterrupt);
+        const child = opts.command
+          ? spawn(opts.command, {
+              shell: true,
+              stdio: ["pipe", "pipe", process.stderr],
+            })
+          : null;
+        child?.stdout?.pipe(process.stdout);
+        try {
+          for await (const chunk of sdk.terminals.experimental_follow({
+            terminalId,
+            signal: controller.signal,
+          })) {
+            if (child?.stdin && !child.stdin.write(chunk)) {
+              await once(child.stdin, "drain");
+            } else if (!child) {
+              process.stdout.write(chunk);
+            }
+          }
+          child?.stdin?.end();
+          if (child)
+            await new Promise<void>((resolve, reject) => {
+              child.once("error", reject);
+              child.once("exit", (code) =>
+                code === 0
+                  ? resolve()
+                  : reject(new Error(`Local command exited with code ${code}`)),
+              );
+            });
+        } finally {
+          process.removeListener("SIGINT", onInterrupt);
+          if (child && !child.killed) child.kill();
         }
       }),
     );
@@ -527,6 +590,9 @@ export async function resolveSendData(
 
 function terminalOutputQuery(opts: TerminalOutputOptions) {
   return {
+    ...(opts.lines !== undefined
+      ? { lines: parseRequiredPositiveInteger(opts.lines, "--lines") }
+      : {}),
     ...(opts.sinceSeq !== undefined
       ? { sinceSeq: parseNonNegativeInteger(opts.sinceSeq, "--since-seq") }
       : {}),

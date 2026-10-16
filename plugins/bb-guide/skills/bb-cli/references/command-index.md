@@ -159,6 +159,7 @@ move and downloads the new server's bb-app package for its service.
 - `bb terminal send`
 - `bb terminal resize`
 - `bb terminal output`
+- `bb terminal pipe`
 - `bb terminal read`
 - `bb terminal wait`
 - `bb terminal rename`

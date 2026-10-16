@@ -1,5 +1,12 @@
 # CLI, Guide, And Skill
 
+`bb terminal output <id> --lines <n>` prints the latest lines, including from
+recently exited terminals. The server retains at most 64 KiB per terminal,
+2 MiB and 128 terminals per machine for 30 minutes, evicting oldest output
+first. Use
+`bb terminal pipe <id> --follow [--command <cmd>]` to stream output to stdout or
+a local command until the terminal exits or Ctrl-C.
+
 Keep the discoverable surfaces in sync whenever you add or change a `bb` CLI command, flag, or a user-facing configuration knob (env var, `.bb/` workspace file, settings field):
 
 - Update the in-CLI guide templates under `packages/templates/src/templates/bb-guide-*.md`, turbo regenerates `packages/templates/src/generated/templates.generated.ts` (not committed) before every build, typecheck, and test task.

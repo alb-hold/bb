@@ -28,7 +28,6 @@ import type {
   HostDaemonDaemonWsMessage,
   HostDaemonServerWsMessage,
 } from "@bb/host-daemon-contract";
-import { HOST_DAEMON_TERMINAL_EXIT_RETENTION_MS } from "@bb/host-daemon-contract/protocol";
 import type {
   CloseTerminalRequest,
   CreateTerminalRequest,
@@ -75,13 +74,16 @@ const DEFAULT_TERMINAL_START: NonNullable<CreateTerminalRequest["start"]> = {
 };
 const HOST_HOME_INITIAL_CWD = "~";
 const TERMINAL_SCROLLBACK_MAX_BYTES = 4 * 1024 * 1024;
+const TERMINAL_RETAINED_OUTPUT_BYTES = 64 * 1024;
+const HOST_RETAINED_OUTPUT_BYTES = 2 * 1024 * 1024;
+const HOST_RETAINED_TERMINAL_LIMIT = 128;
+const TERMINAL_OUTPUT_RETENTION_MS = 30 * 60_000;
 const TERMINAL_EXIT_RETENTION_MINUTES = Math.round(
-  HOST_DAEMON_TERMINAL_EXIT_RETENTION_MS / 60_000,
+  TERMINAL_OUTPUT_RETENTION_MS / 60_000,
 );
 const TERMINAL_OUTPUT_NOT_RUNNING_MESSAGE =
   "Terminal output is unavailable because the session is not running";
-const TERMINAL_OUTPUT_DISCARDED_MESSAGE = `The host no longer has the output of this exited terminal. Hosts keep terminal output for ${TERMINAL_EXIT_RETENTION_MINUTES} minutes after a terminal exits, so read it sooner or run the command again.`;
-const TERMINAL_OUTPUT_HOST_GONE_MESSAGE = `The host session that ran this terminal is no longer connected, so its output is gone. Hosts keep terminal output for ${TERMINAL_EXIT_RETENTION_MINUTES} minutes after a terminal exits and lose it when the host daemon restarts.`;
+const TERMINAL_OUTPUT_DISCARDED_MESSAGE = `The server no longer has the retained output of this exited terminal. The server keeps terminal output for ${TERMINAL_EXIT_RETENTION_MINUTES} minutes after a terminal exits, so read it sooner or run the command again.`;
 const TERMINAL_ATTACH_CANCELLED = new Error("Terminal attach cancelled");
 const DAEMON_OWNED_TERMINAL_STATUSES = ["starting", "running"] as const;
 const NON_TERMINAL_SESSION_STATUSES = [
@@ -455,25 +457,31 @@ function applyTerminalOutputBounds(args: {
   return { chunks: bounded, truncated };
 }
 
-function retainedTerminalOutputError(error: unknown): ApiError | null {
-  if (!(error instanceof ApiError)) {
-    return null;
-  }
-  if (error.body.code === "terminal_not_found") {
-    return new ApiError(
-      409,
-      "terminal_output_unavailable",
-      TERMINAL_OUTPUT_DISCARDED_MESSAGE,
-    );
-  }
-  if (error.body.code === "host_disconnected") {
-    return new ApiError(
-      409,
-      "terminal_output_unavailable",
-      TERMINAL_OUTPUT_HOST_GONE_MESSAGE,
-    );
-  }
-  return null;
+function terminalOutputLastLines(
+  output: { chunks: TerminalOutputChunk[]; truncated: boolean },
+  lines: number,
+): { chunks: TerminalOutputChunk[]; truncated: boolean } {
+  const text = output.chunks
+    .map((chunk) => Buffer.from(chunk.dataBase64, "base64").toString("utf8"))
+    .join("");
+  const trailingNewline = text.endsWith("\n");
+  const split = text.split("\n");
+  if (trailingNewline) split.pop();
+  const selected = split.slice(-lines);
+  const selectedText = `${selected.join("\n")}${trailingNewline ? "\n" : ""}`;
+  const firstSeq = output.chunks[0]?.seq ?? 0;
+  return {
+    chunks:
+      selectedText.length === 0
+        ? []
+        : [
+            {
+              seq: firstSeq,
+              dataBase64: Buffer.from(selectedText).toString("base64"),
+            },
+          ],
+    truncated: output.truncated || split.length > lines,
+  };
 }
 
 function isRunningBrowserTerminalSession(
@@ -545,6 +553,17 @@ function updateTerminalById(
 
 export class TerminalSessionLifecycle {
   private readonly lastThreadAttentionAt = new Map<string, number>();
+  private retentionClock = 0;
+  private readonly retainedOutput = new Map<
+    string,
+    {
+      bytes: number;
+      chunks: TerminalOutputChunk[];
+      chunkTimes: number[];
+      expiresAt: number;
+      hostId: string;
+    }
+  >();
   private readonly pendingAttaches: PendingRpcRegistry<
     PendingTerminalAttachKey,
     TerminalReplayMessage
@@ -1405,10 +1424,126 @@ export class TerminalSessionLifecycle {
         TERMINAL_OUTPUT_NOT_RUNNING_MESSAGE,
       );
     }
-    return this.readExitedTerminalOutput({
+    const retained = this.getRetainedOutput(current);
+    if (retained === null) {
+      throw new ApiError(
+        409,
+        "terminal_output_unavailable",
+        TERMINAL_OUTPUT_DISCARDED_MESSAGE,
+      );
+    }
+    return this.formatRetainedOutput({
       query: args.query,
       session: current,
+      chunks: retained,
     });
+  }
+
+  private getRetainedOutput(
+    session: TerminalSessionRow,
+  ): TerminalOutputChunk[] | null {
+    this.pruneRetainedOutput();
+    const retained = this.retainedOutput.get(session.id);
+    return retained?.hostId === session.hostId ? retained.chunks : null;
+  }
+
+  private formatRetainedOutput(args: {
+    chunks: TerminalOutputChunk[];
+    query: TerminalOutputQuery;
+    session: TerminalSessionRow;
+  }): TerminalOutputResponse {
+    const chunks = args.chunks;
+    const nextSeq = (chunks.at(-1)?.seq ?? -1) + 1;
+    const bounded = applyTerminalOutputBounds({
+      chunks,
+      query: args.query,
+      replayNextSeq: nextSeq,
+      requestedSinceSeq: args.query.sinceSeq ?? 0,
+    });
+    const lineBounded =
+      args.query.lines === undefined
+        ? bounded
+        : terminalOutputLastLines(bounded, args.query.lines);
+    return {
+      chunks: lineBounded.chunks,
+      nextSeq,
+      truncated: bounded.truncated || lineBounded.truncated,
+      status: args.session.status,
+      exitCode: args.session.exitCode,
+      closeReason: args.session.closeReason,
+    };
+  }
+
+  private retainTerminalOutput(
+    session: TerminalSessionRow,
+    chunk: TerminalOutputChunk,
+  ): void {
+    this.pruneRetainedOutput();
+    let retained = this.retainedOutput.get(session.id);
+    if (!retained || retained.hostId !== session.hostId) {
+      retained = {
+        bytes: 0,
+        chunks: [],
+        chunkTimes: [],
+        expiresAt: Date.now() + TERMINAL_OUTPUT_RETENTION_MS,
+        hostId: session.hostId,
+      };
+      this.retainedOutput.set(session.id, retained);
+    }
+    const byteLength = Buffer.byteLength(chunk.dataBase64, "base64");
+    retained.chunks.push(chunk);
+    retained.chunkTimes.push(++this.retentionClock);
+    retained.bytes += byteLength;
+    while (
+      retained.bytes > TERMINAL_RETAINED_OUTPUT_BYTES &&
+      retained.chunks.length > 0
+    ) {
+      const removed = retained.chunks.shift();
+      retained.chunkTimes.shift();
+      if (removed)
+        retained.bytes -= Buffer.byteLength(removed.dataBase64, "base64");
+    }
+    let hostBytes = [...this.retainedOutput.values()]
+      .filter((entry) => entry.hostId === session.hostId)
+      .reduce((total, entry) => total + entry.bytes, 0);
+    while (hostBytes > HOST_RETAINED_OUTPUT_BYTES) {
+      const oldest = this.oldestRetainedTerminal(session.hostId);
+      if (!oldest) break;
+      const [terminalId, entry] = oldest;
+      const removed = entry.chunks.shift();
+      entry.chunkTimes.shift();
+      if (removed) {
+        const removedBytes = Buffer.byteLength(removed.dataBase64, "base64");
+        entry.bytes -= removedBytes;
+        hostBytes -= removedBytes;
+      }
+      if (entry.chunks.length === 0) this.retainedOutput.delete(terminalId);
+    }
+    while (
+      [...this.retainedOutput.values()].filter(
+        (entry) => entry.hostId === session.hostId,
+      ).length > HOST_RETAINED_TERMINAL_LIMIT
+    ) {
+      const oldest = this.oldestRetainedTerminal(session.hostId);
+      if (!oldest) break;
+      this.retainedOutput.delete(oldest[0]);
+    }
+  }
+
+  private oldestRetainedTerminal(hostId: string) {
+    return [...this.retainedOutput.entries()]
+      .filter(([, entry]) => entry.hostId === hostId && entry.chunks.length > 0)
+      .sort(
+        (left, right) =>
+          (left[1].chunkTimes[0] ?? 0) - (right[1].chunkTimes[0] ?? 0),
+      )[0];
+  }
+
+  private pruneRetainedOutput(): void {
+    const now = Date.now();
+    for (const [terminalId, entry] of this.retainedOutput) {
+      if (entry.expiresAt <= now) this.retainedOutput.delete(terminalId);
+    }
   }
 
   private async readRunningTerminalOutput(
@@ -1441,25 +1576,19 @@ export class TerminalSessionLifecycle {
   private async readExitedTerminalOutput(
     args: ReadExitedTerminalOutputArgs,
   ): Promise<TerminalOutputResponse> {
-    const daemonSessionId = this.options.hub.getDaemonSessionIdForHost(
-      args.session.hostId,
-    );
-    if (daemonSessionId === null) {
+    const retained = this.getRetainedOutput(args.session);
+    if (retained === null) {
       throw new ApiError(
         409,
         "terminal_output_unavailable",
-        TERMINAL_OUTPUT_HOST_GONE_MESSAGE,
+        TERMINAL_OUTPUT_DISCARDED_MESSAGE,
       );
     }
-    try {
-      return await this.requestTerminalOutputReplay({
-        daemonSessionId,
-        query: args.query,
-        session: args.session,
-      });
-    } catch (error) {
-      throw retainedTerminalOutputError(error) ?? error;
-    }
+    return this.formatRetainedOutput({
+      chunks: retained,
+      query: args.query,
+      session: args.session,
+    });
   }
 
   private async requestTerminalOutputReplay(
@@ -1503,13 +1632,20 @@ export class TerminalSessionLifecycle {
       replayNextSeq: replay.nextSeq,
       requestedSinceSeq,
     });
-    return {
+    const output = {
       chunks: bounded.chunks,
       nextSeq: replay.nextSeq,
       truncated: bounded.truncated,
       status: args.session.status,
       exitCode: args.session.exitCode,
       closeReason: args.session.closeReason,
+    };
+    if (args.query.lines === undefined) return output;
+    const lineBounded = terminalOutputLastLines(output, args.query.lines);
+    return {
+      ...output,
+      chunks: lineBounded.chunks,
+      truncated: output.truncated || lineBounded.truncated,
     };
   }
 
@@ -1978,6 +2114,10 @@ export class TerminalSessionLifecycle {
         if (exited) {
           this.forwardedNextSeqByTerminalId.delete(exited.id);
           this.outputFlow.forgetTerminal(exited.id);
+          const retained = this.retainedOutput.get(exited.id);
+          if (retained) {
+            retained.expiresAt = Date.now() + TERMINAL_OUTPUT_RETENTION_MS;
+          }
           this.pendingCloses.settle(
             terminalRpcKey(args.sessionId, exited.id, exited.id),
             exited,
@@ -2017,10 +2157,30 @@ export class TerminalSessionLifecycle {
         ) {
           return;
         }
+        this.retainTerminalOutput(
+          current,
+          toTerminalOutputChunk(args.message.chunk),
+        );
         this.forwardTerminalOutput(current.id, args.message.chunk);
         return;
       }
       case "terminal.replay":
+        {
+          const current = getTerminalById(
+            this.options.db,
+            args.message.terminalId,
+          );
+          if (current && !this.retainedOutput.has(current.id)) {
+            for (const chunk of args.message.chunks) {
+              this.retainTerminalOutput(current, toTerminalOutputChunk(chunk));
+            }
+            if (current.status === "exited") {
+              const retained = this.retainedOutput.get(current.id);
+              if (retained)
+                retained.expiresAt = Date.now() + TERMINAL_OUTPUT_RETENTION_MS;
+            }
+          }
+        }
         this.pendingAttaches.settle(
           terminalResponseRpcKey(args.sessionId, args.message),
           args.message,

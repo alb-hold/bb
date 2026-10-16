@@ -1025,6 +1025,7 @@ describe("@bb/sdk", () => {
       sinceSeq: 2,
       tailBytes: 1024,
       limitChunks: 10,
+      lines: 4,
     });
     await sdk.terminals.close({
       terminalId: "term_remote",
@@ -1107,12 +1108,47 @@ describe("@bb/sdk", () => {
       {
         bodyText: undefined,
         method: "GET",
-        url: "http://bb.test/api/v1/terminals/term_remote/output?sinceSeq=2&tailBytes=1024&limitChunks=10",
+        url: "http://bb.test/api/v1/terminals/term_remote/output?lines=4&sinceSeq=2&tailBytes=1024&limitChunks=10",
       },
       {
         bodyText: JSON.stringify({ mode: "force", reason: "user" }),
         method: "POST",
         url: "http://bb.test/api/v1/terminals/term_remote/close",
+      },
+    ]);
+  });
+
+  it("streams terminal output through the experimental follow SDK method", async () => {
+    const queue = createFetchQueue([
+      {
+        body: {
+          chunks: [{ seq: 0, dataBase64: "aGVsbG8=" }],
+          nextSeq: 1,
+          truncated: false,
+          status: "exited",
+          exitCode: 0,
+          closeReason: "process-exit",
+        },
+      },
+    ]);
+    const sdk = createBbSdk({
+      transport: createHttpTransport({
+        baseUrl: "http://bb.test",
+        fetch: queue.fetch,
+        runtime: "node",
+      }),
+    });
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of sdk.terminals.experimental_follow({
+      terminalId: "term_remote",
+    }))
+      chunks.push(chunk);
+    expect(new TextDecoder().decode(chunks[0])).toBe("hello");
+    expect(queue.requests).toEqual([
+      {
+        bodyText: undefined,
+        method: "GET",
+        url: "http://bb.test/api/v1/terminals/term_remote/output?",
       },
     ]);
   });
