@@ -625,6 +625,47 @@ describe("AppCommandProvider", () => {
     expect(testState.calls).toEqual(["browser"]);
   });
 
+  it("suppresses a terminal-scoped command from a native terminal input", () => {
+    const previousKeybindings = testState.keybindings;
+    testState.keybindings = [
+      ...previousKeybindings.filter((binding) => binding.command !== "thread.search"),
+      {
+        command: "thread.search",
+        desktopOnly: false,
+        shortcut: {
+          key: "k",
+          mod: false,
+          meta: false,
+          control: true,
+          alt: false,
+          shift: false,
+        },
+        when: { all: ["mainSurface"], none: ["terminalFocus"] },
+      },
+    ];
+    renderProvider(
+      <>
+        <Handler command="thread.search" name="search" result={true} />
+        <div data-app-terminal="">
+          <textarea aria-label="Terminal input" />
+        </div>
+      </>,
+    );
+    const terminalInput = screen.getByLabelText("Terminal input");
+    terminalInput.focus();
+    const event = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      ctrlKey: true,
+      key: "k",
+    });
+    terminalInput.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(testState.calls).toEqual([]);
+    testState.keybindings = previousKeybindings;
+  });
+
   it.each([
     ["thread.new" as const, "o", true],
     ["panel.toggle" as const, "j", false],

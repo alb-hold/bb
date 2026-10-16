@@ -1468,7 +1468,7 @@ export function ThreadTerminalView({
     hoveredTerminalLink !== null || activeSelection !== null;
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="flex h-full min-h-0 flex-col" data-app-terminal="">
       <ContextMenu
         onOpenChange={(open) => {
           if (!open) {
