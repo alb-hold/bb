@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -14,7 +14,6 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createConnection, migrate, upsertInstalledPlugin } from "../../db/src/index.js";
 import {
   DESKTOP_OWNED_RUNTIME_SHUTDOWN_GRACE_MS,
   SERVER_SHUTDOWN_BOUND_MS,
@@ -30,6 +29,7 @@ const slowChildEntry = join(fixtureDir, "slow-stop-child.mjs");
 const realServerEntry = join(fixtureDir, "real-server-entry.mjs");
 const realLauncherEntry = join(fixtureDir, "real-server-launcher.mjs");
 const pluginTimeoutLauncherEntry = join(fixtureDir, "plugin-timeout-launcher.mjs");
+const seedPluginDatabaseEntry = join(fixtureDir, "seed-plugin-database.mjs");
 const startupStallLauncherEntry = join(fixtureDir, "startup-stall-launcher.mjs");
 const liveDisconnectLauncherEntry = join(fixtureDir, "disconnect-live-launcher.mjs");
 const pluginStopTimeoutEntry = join(fixtureDir, "plugin-stop-timeout.mjs");
@@ -481,27 +481,11 @@ describe("server process ownership", () => {
     const dbCloseMarker = join(dir, "database-closed");
     const httpShutdownMarker = join(dir, "http-shutdown.log");
     const serverPidFile = join(dir, "server.pid");
-    const pluginDb = createConnection(databasePath);
-    migrate(pluginDb);
-    upsertInstalledPlugin(pluginDb, {
-      id: "stuck-dispose",
-      source: `path:${pluginDir}`,
-      provenance: { kind: "direct" },
-      sourceIntent: { kind: "path", canonicalPath: pluginDir },
-      exactResolution: { kind: "path" },
-      updateState: {
-        lastCheckAt: null,
-        availableCompatibleVersion: null,
-        newestIncompatibleVersion: null,
-        statusDetail: null,
-      },
-      activeArtifactId: null,
-      rootDir: pluginDir,
-      version: "0.1.0",
-      enabled: true,
-      enabledFollowsDefault: false,
-    });
-    pluginDb.$client.close();
+    execFileSync(
+      process.execPath,
+      ["--conditions=source", "--import", "tsx", seedPluginDatabaseEntry, databasePath, pluginDir],
+      { cwd: process.cwd(), stdio: "pipe" },
+    );
     mkdirSync(pluginDir, { recursive: true });
     writeFileSync(
       join(pluginDir, "package.json"),
@@ -591,12 +575,15 @@ describe("server process ownership", () => {
       );
       expect(readFileSync(httpShutdownMarker, "utf8")).toContain("server-close");
       expect(existsSync(dbCloseMarker), "production runShutdown closed bb.db").toBe(false);
-      const reopenedDb = createConnection(databasePath);
+      const Database = createRequire(
+        join(dirname(fileURLToPath(import.meta.url)), "../../db/package.json"),
+      )("better-sqlite3");
+      const reopenedDb = new Database(databasePath);
       try {
-        reopenedDb.$client.prepare("CREATE TABLE shutdown_reopen_probe (value INTEGER)").run();
-        expect(reopenedDb.$client.prepare("SELECT count(*) AS count FROM shutdown_reopen_probe").get()).toEqual({ count: 0 });
+        reopenedDb.exec("CREATE TABLE shutdown_reopen_probe (value INTEGER)");
+        expect(reopenedDb.prepare("SELECT count(*) AS count FROM shutdown_reopen_probe").get()).toEqual({ count: 0 });
       } finally {
-        reopenedDb.$client.close();
+        reopenedDb.close();
       }
     } finally {
       if (!serverExited && serverPid !== null && activeChildren.has(serverPid)) {
