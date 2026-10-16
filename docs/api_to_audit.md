@@ -8,11 +8,54 @@ renaming project-wide, and deleting the entry in the same change. An entry
 that stays experimental after an audit says so with the date and the open
 question.
 
+## Thread row status and progress
+
+`bb thread row-status set|clear|list` manages current-thread sidebar statuses.
+`bb.sdk.threads.experimental_rowState({ threadId })` reads the transient status
+chips and progress shown on a thread's sidebar row. `experimental_updateRowState`
+sets or clears them through the same server route used by the CLI. State clears
+when a managed turn settles to idle or error, or when a native terminal session
+closes with process exit or user close. A daemon disconnect does not clear
+native state because the terminal may reattach. Explicit clear commands remove
+the selected state, and a targeted read hides state after 60 minutes without
+an update as a backstop. Stabilization requires auditing turn completion across
+providers, count and text bounds, and live sidebar refresh on desktop and
+compact layouts.
+
+`PluginSidebarThread.experimental_rowState` exposes this state to the core
+thread-list renderer. The CLI and renderer both use the shared persisted thread
+row-state contract. This property stays experimental until its shape,
+prioritization, truncation and compact behavior are audited with the host
+sidebar.
+
 "Docs:" names a file in
 `plugins/bb-guide/skills/bb-plugin-authoring/references/`, or
 [provider-plugin-api.md](provider-plugin-api.md) /
 [provider-bridge-protocol.md](provider-bridge-protocol.md). An entry without
 a "Docs:" line has no owning doc, so it keeps the essential contract itself.
+
+## `sdk.terminals.experimental_attention`
+
+Lists uncleared terminal attention in oldest-first order, returns the next
+terminal needing attention, and explicitly clears a terminal ring.
+`TerminalAttentionCommandHandler` and `apps/cli/src/commands/terminal.ts` call
+this same SDK area; visibly opening a terminal clears through the existing
+terminal attach path.
+
+Global list and explicit clear operations are intentionally host-wide, matching
+the existing terminal routes. The public API has no per-user principal. Every
+`/api/v1` request passes the server-wide `requestHostProblem` guard in
+`apps/server/src/server.ts`, which rejects untrusted Host headers with
+`forbidden_host`. Existing `GET /terminals`, close, input, and restart routes
+also operate across host terminals without per-caller scoping; these attention
+routes share that server trust boundary.
+
+**Audit before stabilizing.** Verify ordering when timestamps tie and
+cross-client behavior of explicit clearing. The app shortcut uses Alt+Shift+N
+and remains active with terminal focus.
+
+Plugin Guide surface: `The bb SDK` in
+`plugins/plugin-api-docs/src/surfaces.ts`.
 
 ## Composer popups
 
@@ -116,6 +159,7 @@ when no other source-project thread uses it; shared worktrees are refused.
 Before stabilization, audit cross-project parent and child operations, managed
 environment lifecycle and cleanup, thread-list cache refresh in both projects,
 and moving threads between projects with identical project names.
+
 ## Queued message edit holds
 
 `bb.sdk.threads.queuedMessages.experimental_holdForEdit({ threadId, queuedMessageId })`

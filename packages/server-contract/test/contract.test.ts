@@ -1308,6 +1308,7 @@ describe("server-contract canonical schemas", () => {
           titleFallback: "Pending thread",
           sectionId: null,
           status: "idle",
+          rowState: { statuses: {}, progress: null },
           parentThreadId: null,
           sourceThreadId: null,
           lifecycleOwnerThreadId: null,

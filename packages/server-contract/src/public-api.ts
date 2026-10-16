@@ -229,6 +229,7 @@ import type {
   SystemVoiceTranscriptionForm,
   SystemVoiceTranscriptionResponse,
   TerminalListResponse,
+  TerminalAttentionListResponse,
   ThemeCatalogResponse,
   TerminalSession,
   TerminalInputRequest,
@@ -341,6 +342,11 @@ import type {
   UpdateThreadTabsRequest,
 } from "./api/thread-tabs.js";
 import { updateThreadTabsRequestSchema } from "./api/thread-tabs.js";
+import type {
+  ThreadRowState,
+  UpdateThreadRowStateRequest,
+} from "./api/thread-row-state.js";
+import { updateThreadRowStateRequestSchema } from "./api/thread-row-state.js";
 import type {
   PathUiPreferenceKey,
   UiPreferenceResponse,
@@ -1092,6 +1098,12 @@ export const publicApiRoutes = {
   },
 
   terminals: {
+    attention: defineRoute({
+      path: "/terminals/attention",
+      method: "get",
+      request: noRequest(),
+      response: jsonResponse<TerminalAttentionListResponse>(),
+    }),
     list: defineRoute({
       path: "/terminals",
       method: "get",
@@ -1152,6 +1164,12 @@ export const publicApiRoutes = {
       request: jsonRequest<PathTerminal, TerminalNotifyRequest>(
         terminalNotifyRequestSchema,
       ),
+      response: jsonResponse<TerminalSession>(),
+    }),
+    clearAttention: defineRoute({
+      path: "/terminals/:terminalId/attention/clear",
+      method: "post",
+      request: noRequest<PathTerminal>(),
       response: jsonResponse<TerminalSession>(),
     }),
     resize: defineRoute({
@@ -1677,6 +1695,20 @@ export const publicApiRoutes = {
         jsonResponse<ThreadTabsWireResponse>(),
         jsonResponse<ApiError>({ status: 409 }),
       ],
+    }),
+    rowState: defineRoute({
+      path: "/threads/:id/row-state",
+      method: "get",
+      request: noRequest<PathId>(),
+      response: jsonResponse<ThreadRowState>(),
+    }),
+    updateRowState: defineRoute({
+      path: "/threads/:id/row-state",
+      method: "patch",
+      request: jsonRequest<PathId, UpdateThreadRowStateRequest>(
+        updateThreadRowStateRequestSchema,
+      ),
+      response: jsonResponse<ThreadRowState>(),
     }),
     pin: defineRoute({
       path: "/threads/:id/pin",

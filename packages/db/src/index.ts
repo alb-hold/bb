@@ -21,9 +21,18 @@ export {
   recordThreadSpawner,
 } from "./fork-thread-spawners.js";
 export {
+  clearThreadRowState,
+  getThreadRowState,
+  putThreadRowState,
+  type ThreadRowProgress,
+  type ThreadRowState,
+  type ThreadRowStatus,
+} from "./fork-thread-row-state.js";
+export {
   clearTerminalAttention,
   ensureTerminalAttentionTable,
   getTerminalAttention,
+  listTerminalAttention,
   upsertTerminalAttention,
   type TerminalAttentionKind,
   type TerminalAttentionRecord,

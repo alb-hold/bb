@@ -408,6 +408,8 @@ type ExpectedThemeKey = "catalog" | "get" | "resolve" | "set";
 type ExpectedThreadSectionsKey = "create" | "delete" | "list" | "update";
 
 type ExpectedThreadsKey =
+  | "experimental_rowState"
+  | "experimental_updateRowState"
   | "experimental_listAncestors"
   | "experimental_listDescendants"
   | "experimental_listPluginMetadata"
@@ -486,6 +488,7 @@ type ExpectedThreadTabsKey = "get" | "update";
 type ExpectedTerminalsKey =
   | "close"
   | "create"
+  | "experimental_attention"
   | "get"
   | "input"
   | "list"

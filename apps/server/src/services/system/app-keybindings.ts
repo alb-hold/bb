@@ -289,6 +289,12 @@ export const DEFAULT_APP_KEYBINDINGS: AppDefaultKeybindings = [
     mainWithoutModal,
   ),
   binding(
+    "terminal.attention.next",
+    "n",
+    { alt: true, shift: true },
+    mainWithoutModal,
+  ),
+  binding(
     "composer.focus",
     "c",
     { mod: true, shift: true },

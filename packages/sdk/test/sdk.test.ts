@@ -5,6 +5,7 @@ import { createBbSdk } from "../src/core.js";
 import { createHttpTransport } from "../src/transport-http.js";
 import { ThreadWaitTimeoutError } from "../src/areas/threads.js";
 import type { FetchImplementation } from "../src/response.js";
+import { TERMINAL_ATTENTION_CONTRACT_CASES } from "../../test-helpers/src/terminal-attention-contract.js";
 
 interface CapturedRequest {
   bodyText: string | undefined;
@@ -1116,6 +1117,74 @@ describe("@bb/sdk", () => {
       },
     ]);
   });
+
+  it.each(TERMINAL_ATTENTION_CONTRACT_CASES)(
+    "follows the shared terminal attention contract: $name",
+    async (contract) => {
+      const makeSession = (entry: (typeof contract.sessions)[number]) =>
+        makeTerminalSession({
+          id: entry.id,
+          title: entry.title,
+          createdAt: entry.attentionAt,
+          attention: {
+            at: entry.attentionAt,
+            kind: "bell",
+            seq: entry.seq,
+          },
+        });
+      const sessions = contract.sessions.map(makeSession);
+      const afterClear = contract.unreadIdsAfterClear.map((id) => {
+        const entry = contract.sessions.find((item) => item.id === id);
+        if (entry === undefined) throw new Error(`Unknown contract terminal ${id}`);
+        return makeSession(entry);
+      });
+      const responses: QueuedJsonResponse[] = [
+        { body: { sessions } },
+        { body: { sessions } },
+      ];
+      if (contract.clearId !== null) {
+        responses.push(
+          {
+            body: makeTerminalSession({
+              id: contract.clearId,
+              attention: null,
+            }),
+          },
+          { body: { sessions: afterClear } },
+        );
+      }
+      const queue = createFetchQueue(responses);
+      const sdk = createBbSdk({
+        transport: createHttpTransport({
+          baseUrl: "http://bb.test",
+          fetch: queue.fetch,
+          runtime: "node",
+        }),
+      });
+
+      expect(
+        (await sdk.terminals.experimental_attention.list()).map(
+          ({ id }) => id,
+        ),
+      ).toEqual(contract.unreadIds);
+      expect((await sdk.terminals.experimental_attention.next())?.id ?? null).toBe(
+        contract.nextId,
+      );
+      if (contract.clearId !== null) {
+        await sdk.terminals.experimental_attention.clear({
+          terminalId: contract.clearId,
+        });
+        expect(
+          (await sdk.terminals.experimental_attention.list()).map(
+            ({ id }) => id,
+          ),
+        ).toEqual(contract.unreadIdsAfterClear);
+        expect(queue.requests[2]?.url).toBe(
+          `http://bb.test/api/v1/terminals/${contract.clearId}/attention/clear`,
+        );
+      }
+    },
+  );
 
   it("restarts a terminal without requiring its scope from the caller", async () => {
     const replacement = makeTerminalSession({ id: "term_new" });

@@ -17,6 +17,7 @@ import {
 import {
   DEFAULT_TURN_RETRY_REASON,
   threadTabsResponseSchema,
+  threadRowStateSchema,
 } from "@bb/server-contract";
 import type { ThreadExecutionProfileResponse } from "@bb/server-contract";
 import type {
@@ -85,6 +86,8 @@ import type {
   ThreadConversationOutlineQuery,
   TimelineTurnSummaryDetailsQuery,
   UpdateThreadTabsRequest,
+  ThreadRowState,
+  UpdateThreadRowStateRequest,
   UpdateThreadRequest,
   UpdateQueuedMessageRequest,
 } from "@bb/server-contract";
@@ -652,6 +655,10 @@ export interface ThreadsArea {
    */
   stop(args: ThreadActionArgs): Promise<ThreadStopResult>;
   tabs: ThreadTabsArea;
+  experimental_rowState(args: ThreadStatusArgs): Promise<ThreadRowState>;
+  experimental_updateRowState(
+    args: ThreadStatusArgs & UpdateThreadRowStateRequest,
+  ): Promise<ThreadRowState>;
   context(args: ThreadStatusArgs): Promise<ThreadContextResult>;
   timeline(args: ThreadTimelineArgs): Promise<ThreadTimelineResult>;
   timelineTurnSummaryDetails(
@@ -1159,6 +1166,25 @@ export function createThreadsArea(args: CreateSdkAreaArgs): ThreadsArea {
     },
   };
   return {
+    async experimental_rowState(input) {
+      const body = await transport.readJson(
+        transport.api.v1.threads[":id"]["row-state"].$get(
+          { param: { id: input.threadId } },
+          ...signalRequestArgs(input.signal),
+        ),
+      );
+      return threadRowStateSchema.parse(body);
+    },
+    async experimental_updateRowState(input) {
+      const { threadId, signal, ...json } = input;
+      const body = await transport.readJson(
+        transport.api.v1.threads[":id"]["row-state"].$patch(
+          { param: { id: threadId }, json },
+          ...signalRequestArgs(signal),
+        ),
+      );
+      return threadRowStateSchema.parse(body);
+    },
     archive: archiveAll,
     archiveAll,
     async childSummary(input) {

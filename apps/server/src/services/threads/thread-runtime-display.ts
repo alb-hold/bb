@@ -1,5 +1,6 @@
 import {
   getEnvironment,
+  getThreadRowState,
   getSessionById,
   listActiveBackgroundTaskCountsByThreadIds,
   listLatestClosedSessionsForHosts,
@@ -98,6 +99,7 @@ interface ToThreadListEntryResponseFromLatestSessionArgs {
   latestClosedSession: HostDaemonSessionRow | null;
   now?: number;
   queuedWork: ThreadQueuedWork;
+  rowState: ReturnType<typeof getThreadRowState>;
   thread: ThreadWithPendingInteractionState;
 }
 
@@ -596,6 +598,7 @@ export function toThreadListEntryResponses(
           ? null
           : (latestClosedSessionByHostId.get(thread.environmentHostId) ?? null),
       now: args.now,
+      rowState: getThreadRowState(deps.db, thread.id),
       thread,
     });
     const withEnvironmentHost =
@@ -636,6 +639,7 @@ function toThreadListEntryResponseFromLatestSession(
     }),
     hasPendingInteraction: args.thread.hasPendingInteraction,
     listIndicator: "none",
+    rowState: args.rowState,
     runtime: resolveThreadRuntimeStateFromLatestSession({
       environmentHostId: args.thread.environmentHostId,
       hostConnected: args.hostConnected,
