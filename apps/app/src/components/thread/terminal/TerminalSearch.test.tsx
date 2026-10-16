@@ -231,7 +231,7 @@ describe("TerminalSearch shortcuts and closed controls", () => {
     ).toBeTruthy();
   });
 
-  it("closes search and consumes Escape when focus is in its terminal", () => {
+  it("leaves Escape in its terminal unprevented while search is open", () => {
     const { textarea } = renderSearch(true);
     textarea.focus();
     const terminalKeys = watchTerminalKeys(textarea);
@@ -239,11 +239,11 @@ describe("TerminalSearch shortcuts and closed controls", () => {
     const escape = sendKey("Escape", {}, textarea);
     terminalKeys.stop();
 
-    expect(escape.defaultPrevented).toBe(true);
-    expect(terminalKeys.keys).toEqual([]);
+    expect(escape.defaultPrevented).toBe(false);
+    expect(terminalKeys.keys).toEqual(["Escape"]);
     expect(
-      screen.queryByRole("search", { name: "Search terminal output" }),
-    ).toBeNull();
+      screen.getByRole("search", { name: "Search terminal output" }),
+    ).toBeTruthy();
   });
 
   it("does not let one pane consume another pane's Escape or Cmd+G", () => {

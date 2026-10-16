@@ -430,6 +430,40 @@ afterEach(() => {
 });
 
 describe("CommandPalette", () => {
+  it("moves terminal focus into thread search and restores it after Escape", async () => {
+    const { unmount } = renderPalette();
+    const terminal = document.createElement("textarea");
+    terminal.className = "xterm-helper-textarea";
+    document.body.append(terminal);
+    const terminalKeys: string[] = [];
+    terminal.addEventListener("keydown", (event) => {
+      terminalKeys.push(event.key);
+    });
+    terminal.focus();
+
+    openThreadSearch();
+    await screen.findByRole("combobox", { name: "Search threads" });
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByRole("combobox", { name: "Search threads" }),
+      ),
+    );
+    const search = screen.getByRole("combobox", { name: "Search threads" });
+    terminalKeys.length = 0;
+
+    fireEvent.keyDown(search, { key: "Escape" });
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("combobox", { name: "Search threads" }),
+      ).toBeNull(),
+    );
+    expect(terminalKeys).toEqual([]);
+    expect(document.activeElement).toBe(terminal);
+
+    terminal.remove();
+    unmount();
+  });
+
   const splitLayout: SplitLayout = {
     root: {
       type: "pane",
@@ -835,7 +869,7 @@ describe("CommandPalette", () => {
     expectClasses(searchThreadsRow, "bg-state-hover", "text-foreground");
   });
 
-  it("enters thread mode from its existing command and pops one level per Escape", async () => {
+  it("enters thread mode from its existing command and closes it on Escape", async () => {
     modeState.activeRecents = [makeThread("selected")];
     renderPalette();
     const event = openThreadSearch();
@@ -864,19 +898,14 @@ describe("CommandPalette", () => {
     expect(threadDescriptionId).not.toBeNull();
     expectText(
       document.getElementById(threadDescriptionId ?? ""),
-      "Use Escape to return to commands.",
+      "Use Backspace to return to commands.",
     );
 
     fireEvent.keyDown(screen.getByRole("combobox"), { key: "Escape" });
     await waitFor(() =>
-      expect(
-        screen.getByRole("combobox", { name: "Search commands" }),
-      ).toBeTruthy(),
+      expect(screen.queryByTestId("command-palette")).toBeNull(),
     );
-    expect(screen.queryByRole("button", { name: "Thread scope" })).toBeNull();
-
-    fireEvent.keyDown(screen.getByRole("combobox"), { key: "Escape" });
-    await waitFor(() => expect(screen.queryByRole("combobox")).toBeNull());
+    expect(screen.queryByRole("combobox")).toBeNull();
   });
 
   it("uses the shared tab-pill clear affordance without running the mode command", async () => {

@@ -35,10 +35,15 @@ describe("TerminalMobileControls", () => {
     expect(screen.getByRole("button", { name: "Shift Tab" })).toBeTruthy();
   });
 
-  it("expands the extra keys on the first pointer tap", () => {
+  it("shows the extra keys after one pointer tap sequence", () => {
     renderControls();
-    const moreKeys = screen.getByRole("button", { name: "More terminal keys" });
-
+    const terminal = document.createElement("textarea");
+    terminal.className = "xterm-helper-textarea";
+    document.body.append(terminal);
+    terminal.focus();
+    const moreKeys = screen.getByRole("button", {
+      name: "More terminal keys",
+    });
     const pointerDown = new Event("pointerdown", {
       bubbles: true,
       cancelable: true,
@@ -46,9 +51,10 @@ describe("TerminalMobileControls", () => {
     moreKeys.dispatchEvent(pointerDown);
     fireEvent.pointerUp(moreKeys, { pointerType: "touch" });
     fireEvent.click(moreKeys);
-
-    expect(pointerDown.defaultPrevented).toBe(false);
+    expect(pointerDown.defaultPrevented).toBe(true);
     expect(screen.getByRole("button", { name: "Shift Tab" })).toBeTruthy();
+    expect(document.activeElement).toBe(terminal);
+    terminal.remove();
   });
 
   it.each([

@@ -254,6 +254,15 @@ export function CommandPalette({ threadId, projectId }: CommandPaletteProps) {
         aria-describedby={undefined}
         compactContentClassName="h-[min(32rem,80dvh)]"
         className={`top-[12%] max-w-[640px] translate-y-0 gap-0 p-0 shadow-lg sm:rounded-xl ${isCompact ? "min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)]" : ""}`}
+        onOpenAutoFocus={(event) => {
+          if (!searchingThreads) return;
+          event.preventDefault();
+          const content = event.currentTarget;
+          if (!(content instanceof HTMLElement)) return;
+          content
+            .querySelector<HTMLInputElement>('[aria-label="Search threads"]')
+            ?.focus();
+        }}
         onAfterCloseAutoFocus={handleAfterCloseAutoFocus}
         onKeyDownCapture={(event) => {
           if (
@@ -277,12 +286,6 @@ export function CommandPalette({ threadId, projectId }: CommandPaletteProps) {
           const action = shortcutActions.get(command);
           if (action) chooseAction(action);
         }}
-        onEscapeKeyDown={(event) => {
-          if (searchingThreads) {
-            event.preventDefault();
-            exitMode();
-          }
-        }}
         data-testid="command-palette"
       >
         <DialogTitle className="sr-only">Quick palette</DialogTitle>
@@ -301,6 +304,7 @@ export function CommandPalette({ threadId, projectId }: CommandPaletteProps) {
             query={query}
             onQueryChange={setQuery}
             onExit={exitMode}
+            onClose={() => handleOpenChange(false)}
             runAfterClose={runAfterClose}
           />
         )}
