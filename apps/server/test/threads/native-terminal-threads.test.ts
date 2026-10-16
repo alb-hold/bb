@@ -633,7 +633,19 @@ describe("native terminal threads", () => {
         fixture.harness.db,
         fixture.hostId,
       ),
-    ).toContain(thread.id);
+    ).not.toContain(thread.id);
+    const reopening = reopenNativeTerminalsAfterDaemonReconnect(
+      fixture.harness.deps,
+      { hostId: fixture.hostId, threadIds: [thread.id] },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const accidentalOpen = daemonMessages(fixture.socket).find(
+      (message): message is TerminalOpenMessage =>
+        message.type === "terminal.open",
+    );
+    if (accidentalOpen !== undefined) acknowledgeOpen(fixture, accidentalOpen);
+    await reopening;
+    expect(accidentalOpen).toBeUndefined();
     fixture.socket.sentMessages.length = 0;
     fixture.harness.hub.unregisterDaemon(fixture.sessionId);
     onDaemonSocketOpen(fixture.harness.deps, {
