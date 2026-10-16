@@ -22,6 +22,8 @@ import {
   useAppCommandShortcut,
   useIsAppCommandModifierHeld,
 } from "./AppCommandProvider";
+import { makeTerminalSession } from "@/test/fixtures/terminal-sessions";
+import { ThreadTerminalView } from "@/components/thread/terminal/ThreadTerminalView";
 
 const testState = vi.hoisted(() => ({
   calls: [] as string[],
@@ -650,20 +652,44 @@ describe("AppCommandProvider", () => {
     renderProvider(
       <>
         <Handler command="thread.search" name="search" result={true} />
-        <div data-app-terminal="">
-          <textarea aria-label="Terminal input" />
+        <button type="button" aria-label="Outside terminal" />
+        <div data-testid="terminal-view">
+          <ThreadTerminalView
+            autoFocus={false}
+            isPanelOpen
+            session={makeTerminalSession({
+              id: "term_focus",
+              threadId: "thr_focus",
+              environmentId: "env_focus",
+              hostId: "host_focus",
+              createdAt: 1,
+              updatedAt: 1,
+              status: "running",
+            })}
+          />
         </div>
       </>,
     );
-    const terminalInput = screen.getByLabelText("Terminal input");
+    const terminalPane = screen.getByTestId("terminal-view").firstElementChild;
+    if (terminalPane === null) throw new Error("Terminal pane is not mounted");
+    const terminalInput = document.createElement("textarea");
+    terminalPane.appendChild(terminalInput);
+    const outside = screen.getByLabelText("Outside terminal");
+    const dispatchSearch = (target: Element) => {
+      const event = new KeyboardEvent("keydown", {
+        bubbles: true,
+        cancelable: true,
+        ctrlKey: true,
+        key: "k",
+      });
+      target.dispatchEvent(event);
+      return event;
+    };
+    expect(dispatchSearch(outside).defaultPrevented).toBe(true);
+    expect(testState.calls).toEqual(["search"]);
+    testState.calls.length = 0;
     terminalInput.focus();
-    const event = new KeyboardEvent("keydown", {
-      bubbles: true,
-      cancelable: true,
-      ctrlKey: true,
-      key: "k",
-    });
-    terminalInput.dispatchEvent(event);
+    const event = dispatchSearch(terminalInput);
 
     expect(event.defaultPrevented).toBe(false);
     expect(testState.calls).toEqual([]);
