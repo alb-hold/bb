@@ -1,4 +1,4 @@
-CREATE TABLE `fork_terminal_output` (
+CREATE TABLE IF NOT EXISTS `fork_terminal_output` (
 	`terminal_session_id` text PRIMARY KEY NOT NULL,
 	`host_id` text NOT NULL,
 	`chunks_json` text NOT NULL,
@@ -9,4 +9,4 @@ CREATE TABLE `fork_terminal_output` (
 	FOREIGN KEY (`host_id`) REFERENCES `hosts`(`id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
-CREATE INDEX `fork_terminal_output_host_retained_idx` ON `fork_terminal_output` (`host_id`,`retained_at`);
+CREATE INDEX IF NOT EXISTS `fork_terminal_output_host_retained_idx` ON `fork_terminal_output` (`host_id`,`retained_at`);
