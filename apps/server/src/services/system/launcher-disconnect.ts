@@ -32,55 +32,64 @@ export function watchLauncherDisconnect(
   let exit: ((code: number) => never) | null = null;
   let startupDeadline: ReturnType<typeof setTimeout> | undefined;
   let pathLogged = false;
-  const startupWorker =
+  let parentLossHandled = false;
+  const launcherPid = process.ppid;
+  const parentWatch =
     options !== undefined && port.channel !== undefined
       ? new Worker(
           `const { parentPort, workerData } = require("node:worker_threads");
 const { readFileSync } = require("node:fs");
-const pollMs = workerData.timeoutMs / 1_000;
+const pollMs = workerData.pollMs;
 const pause = new Int32Array(new SharedArrayBuffer(4));
 let stopped = false;
-const parentAlive = () => {
-  try {
-    if (process.platform === "linux") {
+const parentGone = () => {
+  if (process.platform === "linux") {
+    try {
       const stat = readFileSync("/proc/" + workerData.serverPid + "/stat", "utf8");
-      return Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]) === workerData.parentPid;
-    }
-    return process.ppid === workerData.parentPid;
-  } catch { return false; }
+      if (Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]) !== workerData.parentPid) return true;
+    } catch { return true; }
+  }
+  try {
+    process.kill(workerData.parentPid, 0);
+    return false;
+  } catch (error) {
+    return error && error.code === "ESRCH";
+  }
 };
 parentPort.on("message", () => { stopped = true; });
-while (!stopped && parentAlive()) Atomics.wait(pause, 0, 0, pollMs);
+while (!stopped && !parentGone()) Atomics.wait(pause, 0, 0, pollMs);
 if (!stopped) {
+  parentPort.postMessage("parent-gone");
   const startedAt = Date.now();
-  while (Date.now() - startedAt < workerData.timeoutMs - workerData.safetyMarginMs) Atomics.wait(pause, 0, 0, pollMs);
+  while (!stopped && Date.now() - startedAt < workerData.timeoutMs - workerData.safetyMarginMs * 3) Atomics.wait(pause, 0, 0, pollMs);
   if (!stopped) {
-    process.stderr.write("Launcher disappeared during startup; terminating server at the shutdown bound\\n");
+    process.stderr.write("Launcher disappeared; terminating server at the shutdown bound\\n");
     process.kill(workerData.serverPid, "SIGKILL");
   }
 }`,
           {
             eval: true,
             workerData: {
-              parentPid: process.ppid,
-              serverPid: process.pid,
+              parentPid: launcherPid,
+              pollMs: SERVER_SHUTDOWN_SAFETY_MARGIN_MS,
               safetyMarginMs: SERVER_SHUTDOWN_SAFETY_MARGIN_MS,
+              serverPid: process.pid,
               timeoutMs: SERVER_SHUTDOWN_BOUND_MS,
             },
           },
         )
       : undefined;
-  const startupWatchReady =
-    startupWorker === undefined
+  const parentWatchReady =
+    parentWatch === undefined
       ? Promise.resolve()
       : new Promise<void>((resolve, reject) => {
-          startupWorker.once("online", resolve);
-          startupWorker.once("error", reject);
+          parentWatch.once("online", resolve);
+          parentWatch.once("error", reject);
         });
-  startupWorker?.on("error", (error) =>
-    options?.log(`Launcher startup deadline worker failed: ${error.message}`),
+  parentWatch?.on("error", (error) =>
+    options?.log(`Launcher parent watcher failed: ${error.message}`),
   );
-  startupWorker?.unref();
+  parentWatch?.unref();
 
   const stopStartupTimer = (): void => {
     if (startupDeadline !== undefined) {
@@ -91,7 +100,7 @@ if (!stopped) {
 
   const stopStartupWatch = (): void => {
     stopStartupTimer();
-    startupWorker?.postMessage("stop");
+    parentWatch?.postMessage("stop");
   };
 
   const logPath = (message: string): void => {
@@ -101,8 +110,9 @@ if (!stopped) {
   };
 
   const stop = (): void => {
-    if (!disconnected || shutdown === null || exit === null) return;
-    logPath("Launcher disconnected; running normal server shutdown");
+    if (!disconnected || shutdown === null || exit === null || parentLossHandled) return;
+    parentLossHandled = true;
+    logPath("Launcher parent disappeared; running normal server shutdown");
     const runShutdown = shutdown;
     const exitProcess = exit;
     shutdown = null;
@@ -113,24 +123,45 @@ if (!stopped) {
     });
   };
 
-  port.channel?.unref();
-  port.once("disconnect", () => {
+  const parentIsAlive = (): boolean => {
+    if (process.ppid !== launcherPid) return false;
+    try {
+      process.kill(launcherPid, 0);
+      return true;
+    } catch (error) {
+      return !(error instanceof Error && "code" in error && error.code === "ESRCH");
+    }
+  };
+
+  const handleConfirmedParentLoss = (): void => {
     disconnected = true;
-    if (shutdown === null && options !== undefined) {
+    if (shutdown === null && options !== undefined && startupDeadline === undefined) {
       startupDeadline = setTimeout(() => {
-        if (shutdown !== null) return;
-        logPath("Launcher disconnected during startup; exiting before shutdown registration");
+        if (shutdown !== null || parentIsAlive()) return;
+        logPath("Launcher disappeared during startup; exiting before shutdown registration");
         options.exit(1);
       }, SERVER_SHUTDOWN_BOUND_MS);
     }
     stop();
+  };
+
+  parentWatch?.on("message", (message: unknown) => {
+    if (message === "parent-gone") handleConfirmedParentLoss();
+  });
+
+  port.channel?.unref();
+  port.once("disconnect", () => {
+    if (parentIsAlive()) {
+      options?.log("Launcher IPC disconnected while parent is alive (reason ipc-disconnect-parent-alive)");
+      return;
+    }
+    handleConfirmedParentLoss();
   });
 
   return {
-    ready: () => startupWatchReady,
+    ready: () => parentWatchReady,
     setShutdown(args) {
       stopStartupTimer();
-      stopStartupWatch();
       shutdown = args.shutdown;
       exit = args.exit;
       stop();

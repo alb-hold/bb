@@ -209,10 +209,15 @@ describe("server shutdown ordering", () => {
       stopTerminalDataPlane: () => {},
     });
     const result = await shutdown;
+    if (result?.pluginStopTimedOut !== true) {
+      databaseClosed = true;
+      db?.$client.close();
+    }
     await new Promise((resolve) => setTimeout(resolve, 50));
     if (pluginProbe !== undefined) clearInterval(pluginProbe);
-    expect(result.pluginStopTimedOut).toBe(true);
-    expect(result.completedWithinBounds).toBe(false);
+    expect(pluginObservedDatabaseError, "plugin database read failed after shutdown began").toBeUndefined();
+    expect(result?.pluginStopTimedOut).toBe(true);
+    expect(result?.completedWithinBounds).toBe(false);
     expect(databaseClosed).toBe(false);
     expect(pluginObservedDatabaseError).toBeUndefined();
     expect(db?.$client.prepare("SELECT 1").get()).toBeDefined();

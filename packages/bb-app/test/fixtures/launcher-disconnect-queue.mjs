@@ -5,7 +5,16 @@ import { watchLauncherDisconnect } from "../../../../apps/server/src/services/sy
 const marker = process.env.BB_DISCONNECT_MARKER;
 const port = new EventEmitter();
 port.channel = { unref() {} };
-const watch = watchLauncherDisconnect(port);
+const watch = watchLauncherDisconnect(port, {
+  exit(code) {
+    appendFileSync(marker, `exit:${code}\n`);
+    process.exit(code);
+  },
+  log(message) {
+    appendFileSync(marker, `${message}\n`);
+  },
+});
+await watch.ready();
 port.emit("disconnect");
 watch.setShutdown({
   async shutdown() {
@@ -16,3 +25,6 @@ watch.setShutdown({
     process.exit(code);
   },
 });
+await new Promise((resolve) => setTimeout(resolve, 100));
+appendFileSync(marker, "alive\n");
+process.exit(0);

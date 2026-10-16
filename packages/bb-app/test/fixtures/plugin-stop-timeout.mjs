@@ -38,18 +38,25 @@ const result = await shutdownHttpBeforePlugins({
   stopPlugins: () => new Promise(() => {}),
   stopTerminalDataPlane: () => {},
 });
+if (result?.pluginStopTimedOut !== true) {
+  databaseClosed = true;
+  db.$client.close();
+}
 await new Promise((resolve) => setTimeout(resolve, 50));
 clearInterval(pluginProbe);
-const dbReadable = !databaseClosed && db.$client.prepare("SELECT 1").get() !== undefined;
+let dbReadable = false;
+try {
+  dbReadable = !databaseClosed && db.$client.prepare("SELECT 1").get() !== undefined;
+} catch {}
 writeFileSync(
   process.env.BB_PLUGIN_TIMEOUT_RESULT,
   JSON.stringify({
-    completedWithinBounds: result.completedWithinBounds,
+    completedWithinBounds: result?.completedWithinBounds ?? false,
     databaseClosed,
     dbReadable,
     elapsedMs: Date.now() - startedAt,
     pluginObservedDatabaseError,
-    pluginStopTimedOut: result.pluginStopTimedOut,
+    pluginStopTimedOut: result?.pluginStopTimedOut ?? false,
     shutdownBoundMs: SERVER_SHUTDOWN_BOUND_MS,
   }),
 );

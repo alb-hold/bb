@@ -6,6 +6,7 @@ import {
   readdirSync,
   readlinkSync,
   rmSync,
+  writeFileSync,
 } from "node:fs";
 import { createRequire } from "node:module";
 import { createServer } from "node:http";
@@ -15,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import {
   DESKTOP_OWNED_RUNTIME_SHUTDOWN_GRACE_MS,
   SERVER_SHUTDOWN_BOUND_MS,
+  SERVER_SHUTDOWN_SAFETY_MARGIN_MS,
 } from "@bb/config/full-stack-shutdown";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -26,6 +28,7 @@ const slowChildEntry = join(fixtureDir, "slow-stop-child.mjs");
 const realServerEntry = join(fixtureDir, "real-server-entry.mjs");
 const realLauncherEntry = join(fixtureDir, "real-server-launcher.mjs");
 const startupStallLauncherEntry = join(fixtureDir, "startup-stall-launcher.mjs");
+const liveDisconnectLauncherEntry = join(fixtureDir, "disconnect-live-launcher.mjs");
 const pluginStopTimeoutEntry = join(fixtureDir, "plugin-stop-timeout.mjs");
 const detachedHolderEntry = join(fixtureDir, "detached-holder.mjs");
 const reportLauncherEntry = join(fixtureDir, "report-stuck-child.mjs");
@@ -179,14 +182,16 @@ async function waitForProcessExitByPid(
 }
 
 describe("server process ownership", () => {
-  it("queues a launcher disconnect that arrives before shutdown registration", async () => {
+  it("ignores IPC disconnect while its launcher parent is alive", async () => {
     const dir = scratchDir();
     const marker = join(dir, "disconnect.log");
     const child = spawnFixture(disconnectQueueEntry, {
       BB_DISCONNECT_MARKER: marker,
     });
     await waitForExit(child, 5_000);
-    expect(readFileSync(marker, "utf8")).toBe("shutdown\nexit:0\n");
+    expect(readFileSync(marker, "utf8")).toContain("reason ipc-disconnect-parent-alive");
+    expect(readFileSync(marker, "utf8")).toContain("alive\n");
+    expect(readFileSync(marker, "utf8")).not.toContain("shutdown\n");
   });
 
   it("runs production shutdown on parent loss and releases its database and port", async () => {
@@ -254,6 +259,92 @@ describe("server process ownership", () => {
       }
     }
   }, 120_000);
+
+  it.each(["during-startup", "after-startup"] as const)(
+    "keeps a server alive when IPC disconnects while its launcher remains alive %s",
+    async (mode) => {
+      const dir = scratchDir();
+      const port = await freePort();
+      const disconnectReady = join(dir, "disconnected");
+      const releaseLauncher = join(dir, "release-launcher");
+      const serverPidFile = join(dir, "server.pid");
+      let lockDb: { exec(sql: string): unknown; close(): void } | undefined;
+      if (mode === "during-startup") {
+        const Database = createRequire(import.meta.url)("better-sqlite3");
+        const setup = new Database(join(dir, "bb.db"));
+        setup.pragma("journal_mode = WAL");
+        setup.exec("CREATE TABLE IF NOT EXISTS startup_disconnect_probe (value INTEGER)");
+        setup.close();
+        const startupLock = new Database(join(dir, "bb.db")) as { exec(sql: string): unknown; close(): void };
+        lockDb = startupLock;
+        startupLock.exec("BEGIN IMMEDIATE");
+      }
+      const launcher = spawnFixture(liveDisconnectLauncherEntry, {
+        BB_OWNERSHIP_DIR: dir,
+        BB_DISCONNECT_MODE: mode === "after-startup" ? "after-ready" : "during-startup",
+        BB_DISCONNECT_READY_FILE: disconnectReady,
+        BB_LAUNCHER_RELEASE_FILE: releaseLauncher,
+        BB_ORPHAN_READY: join(dir, "server-ready"),
+        BB_SERVER_PID_FILE: serverPidFile,
+        BB_RUN_SHUTDOWN_MARKER: join(dir, "run-shutdown.log"),
+        BB_REAL_SERVER_ENTRY: realServerEntry,
+        BB_SERVER_PORT: String(port),
+      });
+      let serverPid: number | null = null;
+      try {
+        serverPid = Number(await waitForFile(serverPidFile, 45_000));
+        activeChildren.add(serverPid);
+        if (mode === "during-startup") {
+          const deadline = Date.now() + 10_000;
+          let databaseFdFound = false;
+          while (Date.now() < deadline && !databaseFdFound) {
+            try {
+              databaseFdFound = readdirSync(`/proc/${serverPid}/fd`).some((fd) =>
+                readlinkSync(`/proc/${serverPid}/fd/${fd}`).startsWith(join(dir, "bb.db")),
+              );
+            } catch {}
+            if (!databaseFdFound) await new Promise((resolve) => setTimeout(resolve, 10));
+          }
+          expect(databaseFdFound).toBe(true);
+        }
+        await waitForFile(disconnectReady, 10_000);
+        await new Promise((resolve) => setTimeout(resolve, SERVER_SHUTDOWN_BOUND_MS + SERVER_SHUTDOWN_SAFETY_MARGIN_MS));
+        expect(isProcessRunning(serverPid)).toBe(true);
+        if (mode === "during-startup") {
+          if (lockDb === undefined) throw new Error("Startup database lock is missing");
+          lockDb.exec("ROLLBACK");
+          const healthDeadline = Date.now() + 45_000;
+          while (Date.now() < healthDeadline) {
+            try {
+              const response = await fetch(`http://127.0.0.1:${port}/`);
+              if (response.ok) break;
+            } catch {}
+            await new Promise((resolve) => setTimeout(resolve, 50));
+          }
+        }
+        expect(await fetch(`http://127.0.0.1:${port}/`).then((response) => response.status)).toBe(200);
+        await new Promise((resolve) => setTimeout(resolve, SERVER_SHUTDOWN_BOUND_MS + SERVER_SHUTDOWN_SAFETY_MARGIN_MS));
+        expect(await fetch(`http://127.0.0.1:${port}/`).then((response) => response.status)).toBe(200);
+        writeFileSync(releaseLauncher, "exit");
+        await waitForExit(launcher, 5_000);
+        await waitForProcessExitByPid(serverPid, SERVER_SHUTDOWN_BOUND_MS + SERVER_SHUTDOWN_SAFETY_MARGIN_MS);
+        activeChildren.delete(serverPid);
+        expect(readFileSync(join(dir, "run-shutdown.log"), "utf8")).toContain("server-close");
+        await expect(fetch(`http://127.0.0.1:${port}/`)).rejects.toThrow();
+      } finally {
+        try { lockDb?.exec("ROLLBACK"); } catch {}
+        lockDb?.close();
+        if (serverPid !== null && activeChildren.has(serverPid)) {
+          try { process.kill(serverPid, "SIGKILL"); } catch {}
+          activeChildren.delete(serverPid);
+        }
+        if (launcher.exitCode === null && launcher.signalCode === null) {
+          try { process.kill(launcher.pid!, "SIGKILL"); } catch {}
+        }
+      }
+    },
+    120_000,
+  );
 
   it("exits within the shared bound when the launcher dies during database startup", async () => {
     if (process.platform !== "linux") return;
@@ -368,6 +459,7 @@ describe("server process ownership", () => {
       pluginStopTimedOut: boolean;
       shutdownBoundMs: number;
     };
+    expect(result.pluginObservedDatabaseError, "plugin database read failed after shutdown began").toBe(false);
     expect(result.completedWithinBounds).toBe(false);
     expect(result.pluginStopTimedOut).toBe(true);
     expect(result.databaseClosed).toBe(false);
