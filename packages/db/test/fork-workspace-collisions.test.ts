@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createMigratedConnection } from "./helpers/migrated-connection.js";
+import { createMigratedConnection } from "../src/testing.js";
 import {
   listRecentWorkspaceFiles,
   recordWorkspaceFileChanges,

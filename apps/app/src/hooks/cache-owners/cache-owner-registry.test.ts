@@ -264,6 +264,10 @@ const CACHE_OWNER_QUERY_KEY_IMPORTS: CacheOwnerQueryKeyImportRegistry = {
     "threadTimelineQueryKeyPrefix",
   ],
   "hooks/cache-owners/thread-tabs-cache-owner.ts": ["threadTabsQueryKey"],
+  "hooks/cache-owners/thread-timeline-push-owner.ts": [
+    "systemConfigQueryKey",
+    "threadTimelineQueryKey",
+  ],
   "hooks/cache-owners/thread-timeline-unseen-events.ts": [
     "threadTimelineQueryKey",
   ],

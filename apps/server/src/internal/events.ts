@@ -83,7 +83,10 @@ import { validatePresentationIcons } from "./presentation-icons.js";
 import { listSharedWorkspaceActiveThreadIds } from "../services/threads/workspace-awareness.js";
 import { appendThreadEvent } from "../services/threads/thread-events.js";
 import { threadScope } from "@bb/domain";
-import { observeTurnTraceEventBatch } from "../services/system/turn-trace.js";
+import {
+  observeStreamTraceEventBatch,
+  observeTurnTraceEventBatch,
+} from "../services/system/turn-trace.js";
 
 interface ToStoredEventArgs {
   envelope: HostDaemonEventEnvelope;
@@ -1357,12 +1360,14 @@ export function registerInternalEventRoutes(app: Hono, deps: AppDeps): void {
         eventInputs,
         insertedInputIndexes: appendResult.insertedInputIndexes,
       });
-      observeTurnTraceEventBatch({
+      const turnTraceBatch = {
         committedAt,
         events: postableEvents,
         notifiedAt: performance.now(),
         receivedAt,
-      });
+      };
+      observeTurnTraceEventBatch(turnTraceBatch);
+      observeStreamTraceEventBatch(deps, turnTraceBatch);
 
       const followUps = await applyEventEffects(
         deps,

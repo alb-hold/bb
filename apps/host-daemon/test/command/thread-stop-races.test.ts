@@ -22,6 +22,7 @@ import type {
   HostDaemonBridgeLaunch,
   HostDaemonOnlineRpcResponseMessage,
 } from "@bb/host-daemon-contract";
+import { makeTempDir } from "@bb/test-helpers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { dispatchCommand } from "../../src/command-dispatch.js";
 import {
@@ -32,10 +33,8 @@ import {
 import { CommandRouter } from "../../src/command-router.js";
 import { RuntimeManager } from "../../src/runtime-manager.js";
 import {
-  cleanupTempDirs,
   createFakeWorkspace,
   makeDispatchOptions,
-  makeTempDir,
   noopEventSink,
   unexpectedProjectAttachmentFetch,
   unexpectedProviderMaintenance,
@@ -77,7 +76,6 @@ afterEach(async () => {
   await Promise.all(
     managers.splice(0).map((manager) => manager.shutdownAll("stop")),
   );
-  await cleanupTempDirs();
 });
 
 function nextClientRequestId(): ClientTurnRequestId {

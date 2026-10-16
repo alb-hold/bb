@@ -20,6 +20,7 @@ import {
   applyTerminalSessionUpsert,
 } from "@/hooks/cache-owners/terminal-cache-owner";
 import {
+  isVisibleTerminalSession,
   shouldCloseUnretainedDisconnectedTerminalSession,
   shouldShowRetainedTerminalSession,
 } from "@/lib/terminal-session-visibility";
@@ -103,16 +104,62 @@ export function shouldAutoCloseCleanTerminalSession({
   );
 }
 
-function shouldMountTerminalViewForPanel({
-  hasPanelOpened,
-  isPanelOpen,
-  isPanelPersistedOpen,
-}: {
+interface TerminalPanelVisibility {
   hasPanelOpened: boolean;
   isPanelOpen: boolean;
   isPanelPersistedOpen: boolean;
-}): boolean {
-  return isPanelOpen || (isPanelPersistedOpen && hasPanelOpened);
+}
+
+export function resolveTerminalPanelMount({
+  hasPanelOpened,
+  isPanelOpen,
+  isPanelPersistedOpen,
+}: TerminalPanelVisibility): {
+  hasPanelOpened: boolean;
+  shouldFetchTerminals: boolean;
+  shouldMountTerminalView: boolean;
+} {
+  const nextHasPanelOpened = isPanelOpen
+    ? true
+    : isPanelPersistedOpen && hasPanelOpened;
+  return {
+    hasPanelOpened: nextHasPanelOpened,
+    shouldFetchTerminals: isPanelOpen,
+    shouldMountTerminalView:
+      isPanelOpen || (isPanelPersistedOpen && nextHasPanelOpened),
+  };
+}
+
+function terminalSessionBelongsToTarget(
+  session: TerminalSession,
+  target: TerminalCreateTarget,
+): boolean {
+  return (
+    target.kind !== "host_path" ||
+    (session.threadId === null &&
+      session.environmentId === null &&
+      session.hostId === target.hostId &&
+      (target.cwd === null || session.initialCwd === target.cwd))
+  );
+}
+
+export function selectActiveTerminalSession({
+  sessions,
+  target,
+  terminalId,
+}: {
+  sessions: readonly TerminalSession[];
+  target: TerminalCreateTarget;
+  terminalId: string;
+}): TerminalSession | null {
+  return (
+    sessions.find(
+      (session) =>
+        session.id === terminalId &&
+        isVisibleTerminalSession(session) &&
+        terminalSessionBelongsToTarget(session, target),
+    ) ?? null
+  );
 }
 
 export function shouldAutoCloseCleanTerminalSessionsForPanel({
@@ -185,18 +232,17 @@ export function useThreadTerminalController({
     string | null
   >(null);
   const [hasPanelOpened, setHasPanelOpened] = useState(isPanelOpen);
-  if (isPanelOpen && !hasPanelOpened) {
-    setHasPanelOpened(true);
-  } else if (!isPanelOpen && !isPanelPersistedOpen && hasPanelOpened) {
-    setHasPanelOpened(false);
-  }
-  const shouldMountTerminalView = shouldMountTerminalViewForPanel({
+  const panelMount = resolveTerminalPanelMount({
     hasPanelOpened,
     isPanelOpen,
     isPanelPersistedOpen,
   });
+  if (panelMount.hasPanelOpened !== hasPanelOpened) {
+    setHasPanelOpened(panelMount.hasPanelOpened);
+  }
+  const { shouldMountTerminalView } = panelMount;
   const terminalsQuery = useTerminals(terminalQueryScopeForTarget(target), {
-    enabled: isPanelOpen,
+    enabled: panelMount.shouldFetchTerminals,
   });
   const createTerminal = useCreateTerminal();
   const closeTerminalMutation = useCloseTerminal();
@@ -210,12 +256,8 @@ export function useThreadTerminalController({
     if (target.kind !== "host_path") {
       return currentSessions;
     }
-    return currentSessions.filter(
-      (session) =>
-        session.threadId === null &&
-        session.environmentId === null &&
-        session.hostId === target.hostId &&
-        (target.cwd === null || session.initialCwd === target.cwd),
+    return currentSessions.filter((session) =>
+      terminalSessionBelongsToTarget(session, target),
     );
   }, [target, terminalsQuery.data?.sessions]);
   const paneRetainedTerminalIds = useMemo(

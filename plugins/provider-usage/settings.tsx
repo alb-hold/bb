@@ -12,7 +12,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
-import type { providerUsageRpcContract } from "./server.js";
+import type { providerUsageRpcContract, UsageRequest } from "./server.js";
 import {
   combinedUsageMachine,
   usageTargetsToRefresh,
@@ -29,6 +29,7 @@ import {
   type UsageMachine,
   type UsageProvider,
   type ProviderUsage,
+  type UsageSnapshot,
   type UsageWindow,
 } from "./usage-schema.js";
 function SettingsBadge({ children }: { children: ReactNode }) {
@@ -552,6 +553,80 @@ export function UsageSettingsContent({
   );
 }
 
+interface UsageLoadTarget {
+  disposed: () => boolean;
+  setMachines: (
+    update: UsageMachine[] | ((current: UsageMachine[]) => UsageMachine[]),
+  ) => void;
+  setError: (error: boolean) => void;
+  setSourceErrors: (sourceErrors: boolean) => void;
+}
+
+export async function loadUsage(
+  getUsage: (input: UsageRequest) => Promise<UsageSnapshot>,
+  selectedId: string | null,
+  force: boolean,
+  target: UsageLoadTarget,
+): Promise<void> {
+  target.setError(false);
+  try {
+    const inventory = await getUsage({
+      force: false,
+      machineIds: null,
+      providerIds: [],
+      maxAgeMs: 60_000,
+    });
+    if (target.disposed()) return;
+    target.setMachines(inventory.machines);
+    const targets = usageTargetsToRefresh(inventory.machines, selectedId)
+      .filter(({ machine }) => machine.status === "connected")
+      .map(({ machine, providerIds }) => ({
+        machine,
+        providerIds: providerIds.filter((providerId) =>
+          machine.providers.some(
+            (provider) =>
+              provider.providerId === providerId &&
+              provider.usage?.status !== "not_installed",
+          ),
+        ),
+      }))
+      .filter(({ providerIds }) => providerIds.length > 0);
+    const results = await Promise.allSettled(
+      targets.map(({ machine, providerIds }) =>
+        getUsage({
+          force,
+          machineIds: [machine.id],
+          providerIds,
+          maxAgeMs: 60_000,
+        }),
+      ),
+    );
+    if (target.disposed()) return;
+    target.setSourceErrors(
+      results.some(
+        (result) =>
+          result.status === "rejected" ||
+          result.value.machines.some((machine) => machine.error !== null),
+      ),
+    );
+    for (const [index, result] of results.entries()) {
+      if (result.status === "fulfilled") {
+        const refreshed = targets[index]!;
+        target.setMachines((current) =>
+          mergeUsageMachines(
+            current,
+            result.value.machines,
+            refreshed.machine.id,
+            refreshed.providerIds,
+          ),
+        );
+      }
+    }
+  } catch {
+    if (!target.disposed()) target.setError(true);
+  }
+}
+
 export function UsageSettings() {
   const rpc = useRpc<typeof providerUsageRpcContract>();
   const [machines, setMachines] = useState<UsageMachine[]>([]);
@@ -570,62 +645,13 @@ export function UsageSettings() {
       if (running) return;
       running = true;
       setLoading(true);
-      setError(false);
       try {
-        const inventory = await rpc.call("getUsage", {
-          force: false,
-          machineIds: null,
-          providerIds: [],
-          maxAgeMs: 60_000,
-        });
-        if (disposed) return;
-        setMachines(inventory.machines);
-        const targets = usageTargetsToRefresh(inventory.machines, selectedId)
-          .filter(({ machine }) => machine.status === "connected")
-          .map(({ machine, providerIds }) => ({
-            machine,
-            providerIds: providerIds.filter((providerId) =>
-              machine.providers.some(
-                (provider) =>
-                  provider.providerId === providerId &&
-                  provider.usage?.status !== "not_installed",
-              ),
-            ),
-          }))
-          .filter(({ providerIds }) => providerIds.length > 0);
-        const results = await Promise.allSettled(
-          targets.map(({ machine, providerIds }) =>
-            rpc.call("getUsage", {
-              force,
-              machineIds: [machine.id],
-              providerIds,
-              maxAgeMs: 60_000,
-            }),
-          ),
+        await loadUsage(
+          (input) => rpc.call("getUsage", input),
+          selectedId,
+          force,
+          { disposed: () => disposed, setMachines, setError, setSourceErrors },
         );
-        if (disposed) return;
-        setSourceErrors(
-          results.some(
-            (result) =>
-              result.status === "rejected" ||
-              result.value.machines.some((machine) => machine.error !== null),
-          ),
-        );
-        for (const [index, result] of results.entries()) {
-          if (result.status === "fulfilled") {
-            const target = targets[index]!;
-            setMachines((current) =>
-              mergeUsageMachines(
-                current,
-                result.value.machines,
-                target.machine.id,
-                target.providerIds,
-              ),
-            );
-          }
-        }
-      } catch {
-        if (!disposed) setError(true);
       } finally {
         running = false;
         if (!disposed) setLoading(false);

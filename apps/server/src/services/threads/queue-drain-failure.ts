@@ -146,7 +146,7 @@ export function recordQueuedMessageDrainFailure(
   clearQueuedMessageDispatchRetry(deps.db, args.row.id);
   if (
     updated !== null &&
-    updated.nextAttemptAt === null &&
+    updated.state === "failed_exhausted" &&
     isParentNotifiableChildThread(args.thread)
   ) {
     void queueChildThreadTurnNotificationBestEffort(deps, {

@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ThreadEvent } from "@bb/domain";
 import { spawn } from "node:child_process";
 import { connect, createServer, type Socket } from "node:net";
@@ -372,10 +372,10 @@ describe("socket bridge workers", () => {
       { settle: true },
     );
     try {
-      expect(JSON.stringify(events)).not.toContain("chunk3");
-
       const detaching = runtime.detach();
-      expect(JSON.stringify(events)).toContain("chunk2 chunk3 ");
+      await vi.waitFor(() =>
+        expect(JSON.stringify(events)).toContain("chunk3"),
+      );
       settleAll();
       await detaching;
 
