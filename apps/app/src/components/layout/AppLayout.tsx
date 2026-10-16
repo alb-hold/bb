@@ -130,6 +130,7 @@ import { useAppSettingsRouteMemory } from "@/hooks/useAppSettingsRouteMemory";
 import { useSetRootComposeProjectId } from "@/lib/root-compose-selection";
 import { BackToAppCommandHandler } from "./BackToAppCommandHandler";
 import { HistoryCommandHandlers } from "./HistoryCommandHandlers";
+import { TerminalAttentionCommandHandler } from "./TerminalAttentionCommandHandler";
 
 const ProjectPathDialog = lazy(() =>
   import("@/components/dialogs/ProjectPathDialog").then((module) => ({
@@ -839,6 +840,7 @@ export function AppLayout({ children }: AppLayoutProps) {
                 <BackToAppCommandHandler routePath={backToAppRoutePath} />
               ) : null}
               <HistoryCommandHandlers />
+              <TerminalAttentionCommandHandler />
               <AppLayoutSidebar
                 mode={
                   isGlobalSettingsView

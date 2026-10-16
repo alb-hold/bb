@@ -51,6 +51,43 @@ function commandPair(left: string, right: string): string {
 }
 
 describe("app keybindings", () => {
+  it("binds next terminal attention to Alt+Shift+N across terminal focus", () => {
+    const binding = DEFAULT_APP_KEYBINDINGS.find(
+      (candidate) => candidate.command === "terminal.attention.next",
+    );
+    expect(binding?.shortcut).toEqual({
+      key: "n",
+      mod: false,
+      meta: false,
+      control: false,
+      alt: true,
+      shift: true,
+    });
+    expect(binding?.when.none).not.toContain("terminalFocus");
+    expect(
+      DEFAULT_APP_KEYBINDINGS.filter(
+        (candidate) =>
+          candidate.command !== "terminal.attention.next" &&
+          candidate.shortcut !== null &&
+          isAppKeybindingAvailableForClient(candidate, {
+            isDesktop: false,
+            platform: "linux",
+          }) &&
+          matchesAppShortcut(
+            {
+              key: "n",
+              code: "KeyN",
+              altKey: true,
+              shiftKey: true,
+              metaKey: false,
+              ctrlKey: false,
+            },
+            candidate.shortcut,
+            false,
+          ),
+      ),
+    ).toEqual([]);
+  });
   it("persists plugin bindings even before the plugin is loaded", async () => {
     await withTestHarness(async (harness) => {
       const overrides = [
@@ -599,6 +636,7 @@ describe("app keybindings", () => {
             shift: binding.shortcut.shift,
           })),
       ).toEqual([
+        { command: "terminal.attention.next", shift: true },
         { command: "modelPicker.cycleModel", shift: false },
         { command: "modelPicker.cycleModelBackward", shift: true },
         { command: "modelPicker.cycleProvider", shift: false },

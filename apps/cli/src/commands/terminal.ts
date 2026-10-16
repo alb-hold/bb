@@ -80,6 +80,8 @@ interface TerminalNotifyOptions {
   title: string;
 }
 
+interface TerminalAttentionOptions extends TerminalJsonOptions {}
+
 type TerminalStartResolution =
   | { mode: "shell" }
   | { mode: "command"; command: string }
@@ -110,6 +112,69 @@ export function registerTerminalCommands(
       printTerminalTable(result.sessions);
     }),
   );
+
+  const attention = terminal
+    .command("attention")
+    .description("Inspect and manage uncleared terminal attention");
+
+  attention
+    .command("list")
+    .description("List terminals with uncleared attention")
+    .option("--json", "Print machine-readable JSON output")
+    .action(
+      action(async (opts: TerminalAttentionOptions) => {
+        const sessions =
+          await createCliBbSdk(
+            getUrl(),
+          ).terminals.experimental_attention.list();
+        if (outputJson(opts, { sessions })) return;
+        if (sessions.length === 0) {
+          console.log("Nothing needs attention.");
+          return;
+        }
+        for (const session of sessions) {
+          console.log(
+            `${session.attention?.at ?? 0}\t${session.id}\t${session.title}\t${session.threadId ?? session.environmentId ?? session.hostId}`,
+          );
+        }
+      }),
+    );
+
+  attention
+    .command("next")
+    .description("Print the oldest terminal with uncleared attention")
+    .option("--json", "Print machine-readable JSON output")
+    .action(
+      action(async (opts: TerminalAttentionOptions) => {
+        const session =
+          await createCliBbSdk(
+            getUrl(),
+          ).terminals.experimental_attention.next();
+        if (session === null) {
+          if (outputJson(opts, { session: null })) return;
+          console.log("Nothing needs attention.");
+          return;
+        }
+        if (outputJson(opts, { session })) return;
+        console.log(
+          `${session.id}\t${session.title}\t${session.threadId ?? session.environmentId ?? session.hostId}`,
+        );
+      }),
+    );
+
+  attention
+    .command("clear <terminalId>")
+    .description("Clear attention for a terminal")
+    .option("--json", "Print machine-readable JSON output")
+    .action(
+      action(async (terminalId: string, opts: TerminalAttentionOptions) => {
+        const session = await createCliBbSdk(
+          getUrl(),
+        ).terminals.experimental_attention.clear({ terminalId });
+        if (outputJson(opts, session)) return;
+        console.log(`Cleared attention for terminal ${session.id}`);
+      }),
+    );
 
   terminal
     .command("notify")
