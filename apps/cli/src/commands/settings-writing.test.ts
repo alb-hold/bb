@@ -1,0 +1,37 @@
+import { describe, expect, it } from "vitest";
+import { parseWritingSetting } from "./settings-writing.js";
+
+describe("parseWritingSetting", () => {
+  it("maps each CLI key to its setting", () => {
+    expect(parseWritingSetting("mode", "developer")).toEqual({
+      mode: "developer",
+    });
+    expect(parseWritingSetting("typing-correction", "suggest")).toEqual({
+      typingCorrection: "suggest",
+    });
+    expect(parseWritingSetting("dictation-formatting", "off")).toEqual({
+      dictationFormatting: false,
+    });
+    expect(parseWritingSetting("daily-correction-limit", "50")).toEqual({
+      dailyCorrectionLimit: 50,
+    });
+    expect(parseWritingSetting("daily-dictation-minutes", "0")).toEqual({
+      dailyDictationMinutes: 0,
+    });
+  });
+
+  it("explains invalid keys and values", () => {
+    expect(() => parseWritingSetting("mode", "loud")).toThrow(
+      /mode must be one of/,
+    );
+    expect(() => parseWritingSetting("dictation-formatting", "yes")).toThrow(
+      /on or off/,
+    );
+    expect(() => parseWritingSetting("daily-correction-limit", "1.5")).toThrow(
+      /whole number/,
+    );
+    expect(() => parseWritingSetting("color", "red")).toThrow(
+      /Unknown setting/,
+    );
+  });
+});

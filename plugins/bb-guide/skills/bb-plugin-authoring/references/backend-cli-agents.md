@@ -250,10 +250,11 @@ data-dir user instructions, then workspace instructions. Tool snippets above
 truncated to 4096 characters, and a throwing `contributeInstructions` is
 logged and contributes nothing.
 
-### bb.experimental_aiServices — titles, commit messages, and voice
+### bb.experimental_aiServices — titles, commit messages, writing, and voice
 
 bb's helper tasks are served by plugins: thread titles (branch names follow the
-title), commit messages, and voice transcripts. Register plain functions in
+title), commit messages, writing assistance, and voice transcripts. Register
+plain functions in
 `server.ts`. The user picks a service per task in Settings → AI services or
 with `bb settings ai-services set <task> <service-id>`:
 
@@ -280,15 +281,18 @@ bb.experimental_aiServices.register({
 
 - `complete(prompt, { signal })` returns the model's text. bb writes the
   prompt and cleans the reply (think blocks, quotes, labels, extra lines), so
-  return the text as-is. Declared services appear for titles and commits.
+  return the text as-is. Declared services appear for titles, commits, and
+  writing. Writing prompts ask for JSON edit proposals or formatted dictation
+  of up to about 70 words; bb validates both and keeps the user's text when a
+  reply is malformed, truncated, or changes protected tokens or negations.
 - `transcribe(audio: File, { signal, hint })` returns a transcript. `hint` is
   vocabulary text or `null`. Declared services appear for voice input.
 - `status()` is optional. Its message shows beside the service in the picker.
   A service that is not ready is skipped by Automatic and hides the
   microphone. bb caches the result for about 10 seconds.
 - The plugin owns everything behind the function: model, API, retries. Failure
-  is a rejected promise. bb aborts `signal` after 5 seconds for text and 10
-  seconds for voice.
+  is a rejected promise. bb aborts `signal` after 5 seconds for text (9 for
+  writing) and 10 seconds for voice.
 - The functions run in the server process. To use host-local state (a login
   file, a local model), call your own `bb.host` entry through
   `bb.hosts.experimental_client`, as the Codex plugin does.

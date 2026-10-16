@@ -59,8 +59,13 @@ Settings stored server-side apply to every window and survive restarts.
 
   bb settings show
   bb settings ai-services
-  bb settings ai-services set <thread-title|commit-message|voice> <automatic|off|service-id> [--plugin <plugin-id>]
-  bb settings ai-services test <thread-title|commit-message>
+  bb settings ai-services set <thread-title|commit-message|voice|writing> <automatic|off|service-id> [--plugin <plugin-id>]
+  bb settings ai-services test <thread-title|commit-message|writing>
+  bb settings writing [show]
+  bb settings writing set <key> <value>
+  bb settings writing vocabulary add|remove <terms...>
+  bb settings writing correct <text> [--context <text>] [--partial]
+  bb settings writing transcribe <audio-file> --seconds <n> [--context <text>]
   bb settings general <key> <value>
   bb settings replay-onboarding
   bb settings completed-turns [provider-id] [collapse|flat|default]
@@ -82,6 +87,20 @@ message through the current choice. Settings → AI services has the same
 controls. Each plugin chooses its own model. The removed `BB_INFERENCE`,
 `BB_INFERENCE_FALLBACK`, and `BB_TRANSCRIPTION` variables are ignored with a
 warning in `~/.bb/config.json`, and `bb-app config set` refuses them.
+
+Writing assistance: the native terminal composer formats dictation and
+corrects typing through the `writing` AI service. `bb settings writing` shows
+the settings and today's usage (requests, dictated minutes, and a list-price
+cost estimate). `set` keys: `mode` (prompt, developer, natural, polished,
+verbatim, literal-code), `typing-correction` (automatic, suggest, off),
+`dictation-formatting` (on, off), `daily-correction-limit` (requests per UTC
+day, 0-5000), and `daily-dictation-minutes` (0-1440). Only spelling,
+punctuation, capitalization and agreement fixes outside code, paths,
+identifiers and vocabulary terms apply by themselves; anything that could
+change meaning is offered as a suggestion. `correct` and `transcribe` run the
+same pipeline as the composer. Settings → General → Writing assistance has the
+same controls; Cmd/Ctrl+Shift+D starts and stops dictation
+(`composer.dictation.toggle` in Settings → Keyboard).
 
 General keys: `bb settings general` accepts any key from `generalSettings` in
 `bb settings show`; an unknown key or wrongly shaped value is rejected with the

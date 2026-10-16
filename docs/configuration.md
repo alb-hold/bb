@@ -273,8 +273,9 @@ readiness was observed, not that authentication succeeded; `new_thread_submit`
 ## AI services
 
 Thread titles (and the branch names built from them), commit messages, and
-voice transcripts come from AI services that plugins register. Each task
-(`thread-title`, `commit-message`, `voice`) is `automatic` (default), `off`,
+voice transcripts come from AI services that plugins register, as do dictation
+formatting and typing corrections in the native terminal composer. Each task
+(`thread-title`, `commit-message`, `voice`, `writing`) is `automatic` (default), `off`,
 or a service id; set it in Settings → AI services or with
 `bb settings ai-services set <task> <value> [--plugin <plugin-id>]` (see
 `bb guide customization`). Automatic tries bb cloud (the `bb-ai` plugin, for a
@@ -288,6 +289,30 @@ it fails, titles fall back to the start of the prompt and commits to
 The removed `BB_INFERENCE`, `BB_INFERENCE_FALLBACK`, and `BB_TRANSCRIPTION`
 keys are ignored with a warning in `~/.bb/config.json`, and `bb-app config set`
 refuses them.
+
+Writing assistance: the native terminal composer has a microphone and typing assistance. Dictation
+records phrase by phrase: each pause ends a short clip that is transcribed by the
+`voice` service and then punctuated and formatted by the `writing` service, so
+no recording is re-uploaded and raw audio is not kept. A formatted phrase that
+adds words the speaker did not say, changes a number, or drops a protected
+term is discarded in favor of the plain transcript. Typing assistance sends
+only finished sentences that changed, with up to 500 characters of preceding
+text, after about a second of idle time.
+
+Settings (stored server-side; also `bb settings writing`):
+
+| Setting                 | Default     | Meaning                                                                                                                                              |
+| ----------------------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mode`                  | `prompt`    | `prompt`, `developer`, `natural`, `polished`, `verbatim`, `literal-code`                                                                             |
+| `typingCorrection`      | `automatic` | `automatic` applies only deterministic-safe fixes and suggests the rest; `suggest`; `off`                                                            |
+| `dictationFormatting`   | `true`      | Format dictated phrases; off inserts transcripts as heard                                                                                            |
+| `vocabulary`            | `[]`        | Up to 200 terms to spell exactly; sent with each request                                                                                             |
+| `dailyCorrectionLimit`  | `300`       | Writing requests per UTC day before assistance pauses                                                                                                |
+| `dailyDictationMinutes` | `60`        | Dictated minutes per UTC day before dictation stops; bb cloud also caps each account at $0.50 of AI usage per day, about 80 minutes of transcription |
+
+Usage counts and the cost estimate use list prices and are not a bill: bb
+cloud has its own daily limit, and Codex uses the primary machine's Codex
+login. Typing and sending never wait for assistance.
 
 bb accepts voice recordings up to 25 MB; a service may set a lower limit, and
 Codex transcribes up to 20 MB and bb cloud up to 10 MB. With a ChatGPT
@@ -726,21 +751,21 @@ ui_preference_conflict`. Read and write them with `bb settings ui
 list|get|set|reset` or `sdk.system.uiPreferences` (see
 `bb guide customization`).
 
-| Key                           | Value                                                                                                                                                  |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `sidebar.organizationMode`           | `project`, `chronological`, or `machine`                                                                         |
-| `sidebar.threadGrouping.environment` | `auto`, `true`, or `false`                                                                                       |
-| `sidebar.chronologicalSort`          | `updated`, `created`, `alpha`, or `none`                                                                         |
-| `sidebar.sectionOrder`               | Section id list for **By project**                                                                               |
-| `sidebar.manualSectionOrder`         | Section id list for **Manually**                                                                                 |
-| `sidebar.machineSectionOrder`        | Section id list for **By machine**                                                                               |
-| `sidebar.hiddenGroups`               | Legacy project, custom section, and machine ids migrated once into the Thread list plugin                        |
-| `sidebar.threadListProvider`  | Plugin key or `__automatic__` (default): the first installed thread list plugin other than the bundled `thread-list/thread-list`, else the bundled one |
-| `sidebar.pluginPanelOrder`    | Rail destination order                                                                                                                                 |
-| `sidebar.visiblePluginPanels` | Rail destinations shown, or `null` for every destination                                                                                               |
-| `sidebar.footerOrder`         | Footer action order                                                                                                                                    |
-| `sidebar.hiddenFooterItems`   | Footer actions moved into More                                                                                                                         |
-| `infoPanel.collapsedSections` | Collapsed thread Info panel sections (`commits`, `uncommittedChanges`, `childThreads`, `forks`, `threadStorage`)                                       |
+| Key                                  | Value                                                                                                                                                  |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `sidebar.organizationMode`           | `project`, `chronological`, or `machine`                                                                                                               |
+| `sidebar.threadGrouping.environment` | `auto`, `true`, or `false`                                                                                                                             |
+| `sidebar.chronologicalSort`          | `updated`, `created`, `alpha`, or `none`                                                                                                               |
+| `sidebar.sectionOrder`               | Section id list for **By project**                                                                                                                     |
+| `sidebar.manualSectionOrder`         | Section id list for **Manually**                                                                                                                       |
+| `sidebar.machineSectionOrder`        | Section id list for **By machine**                                                                                                                     |
+| `sidebar.hiddenGroups`               | Legacy project, custom section, and machine ids migrated once into the Thread list plugin                                                              |
+| `sidebar.threadListProvider`         | Plugin key or `__automatic__` (default): the first installed thread list plugin other than the bundled `thread-list/thread-list`, else the bundled one |
+| `sidebar.pluginPanelOrder`           | Rail destination order                                                                                                                                 |
+| `sidebar.visiblePluginPanels`        | Rail destinations shown, or `null` for every destination                                                                                               |
+| `sidebar.footerOrder`                | Footer action order                                                                                                                                    |
+| `sidebar.hiddenFooterItems`          | Footer actions moved into More                                                                                                                         |
+| `infoPanel.collapsedSections`        | Collapsed thread Info panel sections (`commits`, `uncommittedChanges`, `childThreads`, `forks`, `threadStorage`)                                       |
 
 A legacy `__builtin__` thread list selection resolves to the bundled plugin.
 Footer IDs are `builtin:mobile`, `builtin:report-bug`, and

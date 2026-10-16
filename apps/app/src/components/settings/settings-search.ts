@@ -85,6 +85,16 @@ export const SETTINGS_SEARCH_INDEX: Record<
         keywords: ["voice input", "audio", "dictation", "speech"],
       },
       {
+        title: "Writing assistance",
+        keywords: [
+          "dictation",
+          "grammar",
+          "spelling",
+          "autocorrect",
+          "vocabulary",
+        ],
+      },
+      {
         title: "Streamer mode",
         keywords: ["privacy", "screen share", "hide models"],
       },
@@ -118,6 +128,10 @@ export const SETTINGS_SEARCH_INDEX: Record<
       {
         title: "Voice input",
         keywords: ["transcription", "dictation", "microphone", "speech"],
+      },
+      {
+        title: "Writing assistance",
+        keywords: ["grammar", "spelling", "formatting", "dictation"],
       },
     ],
   },

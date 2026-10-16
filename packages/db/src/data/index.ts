@@ -231,6 +231,13 @@ export {
   setDisabledProviderIds,
   setPluginSafeMode,
 } from "./app-settings.js";
+export {
+  addWritingUsage,
+  emptyWritingUsage,
+  getWritingAssistanceSettings,
+  getWritingUsage,
+  updateWritingAssistanceSettings,
+} from "./writing-assistance.js";
 export { getStoredThreadTabs, replaceStoredThreadTabs } from "./thread-tabs.js";
 export {
   getStoredUiPreferenceDefault,

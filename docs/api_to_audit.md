@@ -116,6 +116,7 @@ when no other source-project thread uses it; shared worktrees are refused.
 Before stabilization, audit cross-project parent and child operations, managed
 environment lifecycle and cleanup, thread-list cache refresh in both projects,
 and moving threads between projects with identical project names.
+
 ## Queued message edit holds
 
 `bb.sdk.threads.queuedMessages.experimental_holdForEdit({ threadId, queuedMessageId })`
@@ -2162,7 +2163,9 @@ Docs: `frontend-registration.md`.
 ## AI services (`bb.experimental_aiServices.register`)
 
 Registers `{ id, displayName, complete?, transcribe?, status? }`. `complete`
-serves thread titles and commit messages, `transcribe` serves voice input,
+serves thread titles, commit messages, and writing assistance (typing
+corrections as JSON edits and dictation formatting, both validated by the
+server before use), `transcribe` serves voice input and dictation segments,
 and `status` feeds pickers and Automatic. The user selects per task
 (`automatic`, `off`, or `{ pluginId, serviceId }`), and an explicit pick
 never falls through to another service.

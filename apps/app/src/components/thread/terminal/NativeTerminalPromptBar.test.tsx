@@ -1,22 +1,98 @@
 // @vitest-environment jsdom
 
 import {
+  act,
   cleanup,
   fireEvent,
   render,
   screen,
   waitFor,
 } from "@testing-library/react";
+import type {
+  WritingAssistanceView,
+  WritingCorrectionResponse,
+  WritingEdit,
+} from "@bb/domain";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import { NativeTerminalPromptBar } from "./NativeTerminalPromptBar";
 
 const send = vi.hoisted(() => vi.fn());
 const upload = vi.hoisted(() => vi.fn());
+const correct = vi.hoisted(() => vi.fn());
+const writingView = vi.hoisted(() => vi.fn());
+const dictationHook = vi.hoisted(() => ({
+  options: null as null | {
+    onText(text: string): void;
+    onFinished?(): void;
+  },
+  phase: "idle" as "idle" | "recording" | "finalizing",
+  start: vi.fn(),
+  stop: vi.fn(),
+  cancel: vi.fn(),
+}));
 
 vi.mock("@/lib/sdk", () => ({
-  sdk: { threads: { send }, projects: { attachments: { upload } } },
+  sdk: {
+    threads: { send },
+    projects: { attachments: { upload } },
+    writingAssistance: {
+      view: writingView,
+      correct,
+      transcribeDictationSegment: vi.fn(),
+    },
+  },
 }));
+
+vi.mock("@/hooks/queries/system-queries", () => ({
+  useSystemConfig: () => ({ data: { voiceTranscriptionEnabled: true } }),
+}));
+
+vi.mock("@/hooks/useSegmentedDictation", () => ({
+  useSegmentedDictation: (options: typeof dictationHook.options) => {
+    dictationHook.options = options;
+    return {
+      phase: dictationHook.phase,
+      pending: 0,
+      failure: null,
+      speaking: false,
+      startedAt: null,
+      stream: null,
+      start: dictationHook.start,
+      stop: dictationHook.stop,
+      cancel: dictationHook.cancel,
+      retry: vi.fn(),
+      discardFailed: vi.fn(),
+    };
+  },
+}));
+
+function view(
+  overrides: Partial<WritingAssistanceView["settings"]> = {},
+): WritingAssistanceView {
+  return {
+    settings: {
+      mode: "prompt",
+      typingCorrection: "automatic",
+      dictationFormatting: true,
+      vocabulary: [],
+      dailyCorrectionLimit: 300,
+      dailyDictationMinutes: 120,
+      ...overrides,
+    },
+    usage: {
+      day: "2026-10-16",
+      corrections: 0,
+      formattings: 0,
+      dictationSegments: 0,
+      audioSeconds: 0,
+      inputChars: 0,
+      outputChars: 0,
+      estimatedCostMicros: 0,
+    },
+    correctionAvailable: true,
+  };
+}
 
 vi.mock("@/lib/attachment-local-previews", () => ({
   registerLocalAttachmentPreview: vi.fn(),
@@ -40,6 +116,14 @@ function renderBar() {
 }
 
 beforeEach(() => {
+  writingView.mockReset();
+  writingView.mockResolvedValue(view({ typingCorrection: "off" }));
+  correct.mockReset();
+  dictationHook.options = null;
+  dictationHook.phase = "idle";
+  dictationHook.start.mockReset();
+  dictationHook.stop.mockReset();
+  dictationHook.cancel.mockReset();
   send.mockReset();
   send.mockResolvedValue({});
   upload.mockReset();
@@ -230,3 +314,241 @@ describe("NativeTerminalPromptBar", () => {
     });
   });
 });
+
+function startDictation() {
+  const mic = screen.getByRole("button", {
+    name: "Dictate a message to Native CLI",
+  });
+  fireEvent.pointerDown(mic, { button: 0 });
+  fireEvent.pointerUp(mic);
+  fireEvent.click(mic);
+  expect(dictationHook.start).toHaveBeenCalledTimes(1);
+}
+
+function deliver(text: string) {
+  act(() => {
+    dictationHook.options?.onText(text);
+  });
+}
+
+function edit(overrides: Partial<WritingEdit>): WritingEdit {
+  return {
+    start: 0,
+    end: 0,
+    original: "",
+    replacement: "",
+    category: "grammar" as const,
+    confidence: "high" as const,
+    semanticImpact: "none" as const,
+    explanation: null,
+    disposition: "apply" as const,
+    ...overrides,
+  };
+}
+
+async function renderWithAssistance() {
+  writingView.mockResolvedValue(view());
+  const rendered = renderBar();
+  await waitFor(() => expect(writingView).toHaveBeenCalled());
+  await act(async () => {
+    await writingView.mock.results[0]?.value;
+    for (let flush = 0; flush < 3; flush += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  });
+  return rendered;
+}
+
+describe("NativeTerminalPromptBar dictation", () => {
+  it("appends dictated phrases in order and keeps edits made while dictating", () => {
+    const { input } = renderBar();
+    fireEvent.change(input, { target: { value: "Fix the login. " } });
+    startDictation();
+    deliver("Then add tests.");
+    expect(input.value).toBe("Fix the login. Then add tests.");
+    fireEvent.change(input, {
+      target: { value: "Please fix the login. Then add tests." },
+    });
+    deliver("Finally deploy.");
+    expect(input.value).toBe(
+      "Please fix the login. Then add tests. Finally deploy.",
+    );
+  });
+
+  it("inserts at the caret and spaces it from the following text", () => {
+    const { input } = renderBar();
+    fireEvent.change(input, { target: { value: "existing words" } });
+    input.focus();
+    input.setSelectionRange(0, 0);
+    startDictation();
+    deliver("Hello.");
+    expect(input.value).toBe("Hello. existing words");
+    deliver("1. Check auth.");
+    expect(input.value).toBe("Hello.\n1. Check auth. existing words");
+  });
+
+  it("puts a numbered list on its own line", () => {
+    const { input } = renderBar();
+    fireEvent.change(input, { target: { value: "Plan:" } });
+    startDictation();
+    deliver("1. Check authentication.\n2. Verify refresh tokens.");
+    expect(input.value).toBe(
+      "Plan:\n1. Check authentication.\n2. Verify refresh tokens.",
+    );
+  });
+
+  it("waits for the last phrase before sending when Send is pressed mid-dictation", async () => {
+    dictationHook.phase = "recording";
+    const { input, sendButton } = renderBar();
+    fireEvent.change(input, { target: { value: "draft" } });
+    fireEvent.click(sendButton);
+    expect(dictationHook.stop).toHaveBeenCalledTimes(1);
+    expect(send).not.toHaveBeenCalled();
+    deliver("and the rest.");
+    act(() => {
+      dictationHook.options?.onFinished?.();
+    });
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    expect(send.mock.calls[0]?.[0]).toMatchObject({
+      input: [{ type: "text", text: "draft and the rest." }],
+    });
+  });
+
+  it("never sends dictation on its own", () => {
+    const { input } = renderBar();
+    startDictation();
+    deliver("Delete the production database.");
+    act(() => {
+      dictationHook.options?.onFinished?.();
+    });
+    expect(input.value).toBe("Delete the production database.");
+    expect(send).not.toHaveBeenCalled();
+  });
+});
+
+describe(
+  "NativeTerminalPromptBar typing assistance",
+  { timeout: 20_000 },
+  () => {
+    it("applies a safe fix to a finished sentence and lets Undo restore it", async () => {
+      correct.mockResolvedValue({
+        status: "ok",
+        edits: [
+          edit({ start: 9, end: 12, original: "are", replacement: "is" }),
+        ],
+      });
+      const { input } = await renderWithAssistance();
+      fireEvent.change(input, { target: { value: "The user are here. " } });
+      await waitFor(() => expect(input.value).toBe("The user is here. "), {
+        timeout: 8_000,
+      });
+      expect(correct).toHaveBeenCalledWith(
+        expect.objectContaining({
+          target: "The user are here.",
+          context: "",
+          complete: true,
+        }),
+      );
+      expect(screen.getByText("Fixed 1 issue")).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: /Undo/ }));
+      expect(input.value).toBe("The user are here. ");
+    });
+
+    it("does not send a corrected sentence back for another correction", async () => {
+      correct.mockImplementation(async (request: { target: string }) => ({
+        status: "ok",
+        edits: request.target.includes("user are")
+          ? [edit({ start: 9, end: 12, original: "are", replacement: "is" })]
+          : [],
+      }));
+      const { input } = await renderWithAssistance();
+      fireEvent.change(input, { target: { value: "The user are here. " } });
+      await waitFor(() => expect(input.value).toBe("The user is here. "), {
+        timeout: 8_000,
+      });
+      fireEvent.change(input, { target: { value: "The user is here. And" } });
+      await new Promise((resolve) => setTimeout(resolve, 1_600));
+      const targets = correct.mock.calls.map((call) => call[0].target);
+      expect(targets).toContain("The user are here.");
+      expect(targets).not.toContain("The user is here.");
+    });
+
+    it("drops a correction when the user edited that sentence meanwhile", async () => {
+      let resolve: ((value: WritingCorrectionResponse) => void) | undefined;
+      correct.mockImplementation(
+        () =>
+          new Promise<WritingCorrectionResponse>((done) => {
+            resolve = done;
+          }),
+      );
+      const { input } = await renderWithAssistance();
+      fireEvent.change(input, { target: { value: "The user are here. " } });
+      await waitFor(() => expect(correct).toHaveBeenCalled(), {
+        timeout: 8_000,
+      });
+      fireEvent.change(input, { target: { value: "The users are here. " } });
+      await act(async () => {
+        resolve?.({
+          status: "ok",
+          edits: [
+            edit({ start: 9, end: 12, original: "are", replacement: "is" }),
+          ],
+        });
+      });
+      expect(input.value).toBe("The users are here. ");
+      expect(screen.queryByText("Fixed 1 issue")).toBeNull();
+    });
+
+    it("offers meaning changes as suggestions the user can accept", async () => {
+      correct.mockResolvedValue({
+        status: "ok",
+        edits: [
+          edit({
+            start: 19,
+            end: 26,
+            original: "talking",
+            replacement: "token",
+            category: "speech-recognition",
+            semanticImpact: "possible",
+            disposition: "suggest",
+          }),
+        ],
+      });
+      const { input } = await renderWithAssistance();
+      const text = "The authentication talking expires. ";
+      fireEvent.change(input, { target: { value: text } });
+      const chip = await screen.findByRole(
+        "button",
+        { name: "Replace “talking” with “token”" },
+        { timeout: 8_000 },
+      );
+      expect(input.value).toBe(text);
+      fireEvent.click(chip);
+      expect(input.value).toBe("The authentication token expires. ");
+    });
+
+    it("keeps typing and sending working while a correction is pending", async () => {
+      correct.mockImplementation(() => new Promise(() => undefined));
+      const { input } = await renderWithAssistance();
+      fireEvent.change(input, { target: { value: "First sentence. " } });
+      await waitFor(() => expect(correct).toHaveBeenCalled(), {
+        timeout: 8_000,
+      });
+      fireEvent.change(input, { target: { value: "First sentence. Second" } });
+      fireEvent.keyDown(input, { key: "Enter" });
+      await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+      expect(send.mock.calls[0]?.[0]).toMatchObject({
+        input: [{ type: "text", text: "First sentence. Second" }],
+      });
+    });
+
+    it("does not ask for corrections when typing correction is off", async () => {
+      writingView.mockResolvedValue(view({ typingCorrection: "off" }));
+      const { input } = renderBar();
+      await waitFor(() => expect(writingView).toHaveBeenCalled());
+      fireEvent.change(input, { target: { value: "The user are here. " } });
+      await new Promise((resolve) => setTimeout(resolve, 1_300));
+      expect(correct).not.toHaveBeenCalled();
+    });
+  },
+);
