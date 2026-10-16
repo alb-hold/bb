@@ -28,7 +28,7 @@ import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { cn } from "@bb/shared-ui/lib/utils";
 import { Popover, PopoverAnchor, PopoverContent } from "@bb/shared-ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@bb/shared-ui/tooltip";
-import { useIsSidebarFramed } from "@/components/ui/sidebar.js";
+import { useIsSidebarFramed, useSidebar } from "@/components/ui/sidebar.js";
 import { AppCommandShortcutPill } from "@/components/commands/AppCommandShortcutHint";
 import { useAppCommandShortcut } from "@/components/commands/AppCommandProvider";
 import {
@@ -104,10 +104,12 @@ function RailItem({
   item,
   onCustomize,
   onMenuCloseAutoFocus,
+  terminalTargetFallbackRef,
 }: {
   item: SidebarNavigationItem;
   onCustomize: () => void;
   onMenuCloseAutoFocus: (event: Event) => void;
+  terminalTargetFallbackRef: RefObject<HTMLElement | null>;
 }) {
   const { activeItemId, actions } = useSidebarNavigation();
   const split = useSidebarNavigationSplit(item.id);
@@ -133,11 +135,13 @@ function RailItem({
             {...split.splitProps}
             onPointerDown={() => {
               const active = document.activeElement;
-              terminalTargetRef.current =
+              const focusedTarget =
                 active instanceof HTMLElement &&
                 active.closest("[data-app-terminal]") !== null
                   ? active
                   : null;
+              terminalTargetRef.current =
+                focusedTarget ?? terminalTargetFallbackRef.current;
             }}
             onClick={(event) => {
               const terminalTarget = terminalTargetRef.current;
@@ -220,11 +224,13 @@ function RailMoreMenu({
   hidden,
   onCustomize,
   onMenuCloseAutoFocus,
+  terminalTargetFallbackRef,
 }: {
   buttonRef: RefObject<HTMLButtonElement | null>;
   hidden: readonly SidebarNavigationItem[];
   onCustomize: () => void;
   onMenuCloseAutoFocus: (event: Event) => void;
+  terminalTargetFallbackRef: RefObject<HTMLElement | null>;
 }) {
   const { actions } = useSidebarNavigation();
   const searchingThreadsRef = useRef(false);
@@ -237,11 +243,13 @@ function RailMoreMenu({
           label="More"
           onPointerDown={() => {
             const active = document.activeElement;
-            terminalTargetRef.current =
+            const focusedTarget =
               active instanceof HTMLElement &&
               active.closest("[data-app-terminal]") !== null
                 ? active
                 : null;
+            terminalTargetRef.current =
+              focusedTarget ?? terminalTargetFallbackRef.current;
           }}
         >
           <Icon name="MoreHorizontal" aria-hidden="true" />
@@ -307,6 +315,44 @@ export function AppNavRail({
   const [desktopInfo] = useState(getBbDesktopInfo);
   const isFramed = useIsSidebarFramed();
   const isCompactViewport = useIsCompactViewport();
+  const { openMobile } = useSidebar();
+  const drawerTerminalTargetRef = useRef<HTMLElement | null>(null);
+  const blurredTerminalTargetRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    const handlePointerDown = (event: PointerEvent) => {
+      if (
+        !isCompactViewport ||
+        !(event.target instanceof Element) ||
+        event.target.closest('[data-sidebar="trigger"]') === null
+      ) {
+        return;
+      }
+      const active = document.activeElement;
+      if (
+        active instanceof HTMLElement &&
+        active.closest("[data-app-terminal]") !== null
+      ) {
+        blurredTerminalTargetRef.current = active;
+      }
+    };
+    document.addEventListener("pointerdown", handlePointerDown, true);
+    return () => document.removeEventListener("pointerdown", handlePointerDown, true);
+  }, [isCompactViewport]);
+
+  useEffect(() => {
+    if (isCompactViewport && openMobile) {
+      const active = document.activeElement;
+      drawerTerminalTargetRef.current =
+        active instanceof HTMLElement &&
+        active.closest("[data-app-terminal]") !== null
+          ? active
+          : blurredTerminalTargetRef.current;
+      return;
+    }
+    drawerTerminalTargetRef.current = null;
+    blurredTerminalTargetRef.current = null;
+  }, [isCompactViewport, openMobile]);
 
   const isHomeActive =
     isAppMode &&
@@ -384,6 +430,7 @@ export function AppNavRail({
                 item={item}
                 onCustomize={requestCustomize}
                 onMenuCloseAutoFocus={handleMenuCloseAutoFocus}
+                terminalTargetFallbackRef={drawerTerminalTargetRef}
               />
             ))}
             <RailMoreMenu
@@ -395,6 +442,7 @@ export function AppNavRail({
                   : requestCustomize
               }
               onMenuCloseAutoFocus={handleMenuCloseAutoFocus}
+              terminalTargetFallbackRef={drawerTerminalTargetRef}
             />
             <PopoverContent
               side="right"

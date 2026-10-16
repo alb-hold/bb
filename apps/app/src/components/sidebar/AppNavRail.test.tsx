@@ -531,6 +531,37 @@ describe("AppNavRail", () => {
     terminalRoot.remove();
   });
 
+  it("keeps the terminal target when the compact drawer trigger takes focus", async () => {
+    renderRail(THREAD_PATH, {
+      visibleKeys: ["__bb__/search-threads"],
+      isCompactViewport: true,
+      useLayout: true,
+    });
+    const terminal = document.createElement("textarea");
+    terminal.className = "xterm-helper-textarea";
+    const terminalRoot = document.createElement("div");
+    terminalRoot.setAttribute("data-app-terminal", "");
+    terminalRoot.append(terminal);
+    document.body.append(terminalRoot);
+
+    terminal.focus();
+    const trigger = screen.getByRole("button", { name: "Toggle Sidebar" });
+    fireEvent.pointerDown(trigger);
+    trigger.focus();
+    fireEvent.click(trigger);
+    await waitFor(() =>
+      expect(trigger.getAttribute("aria-expanded")).toBe("true"),
+    );
+    const searchThreads = railButton("Search threads");
+    fireEvent.pointerDown(searchThreads);
+    fireEvent.click(searchThreads);
+
+    await waitFor(() =>
+      expect(mocks.dispatch).toHaveBeenCalledWith("thread.search", terminal),
+    );
+    terminalRoot.remove();
+  });
+
   it("opens the customize sheet from More on a compact viewport", async () => {
     renderRail(THREAD_PATH, { isCompactViewport: true });
 
