@@ -1,7 +1,10 @@
 import {
+  createNativeTerminalThread,
   createTerminalSession,
+  getNativeTerminalThread,
   getTerminalSession,
   getThread,
+  setNativeTerminalThreadTerminal,
   threads,
 } from "@bb/db";
 import { eq } from "drizzle-orm";
@@ -170,6 +173,51 @@ describe("archive undo grace", () => {
         closeReason: "thread-archived",
         status: "exited",
       });
+    });
+  });
+
+  it("closes a native terminal immediately while preserving archive undo grace for the thread", async () => {
+    await withTestHarness(async (harness) => {
+      const { environment, host, thread } = seedArchivableActiveThread(harness);
+      const terminal = seedRunningTerminal(harness, {
+        environmentId: environment.id,
+        hostId: host.id,
+        threadId: thread.id,
+      });
+      createNativeTerminalThread(harness.db, {
+        threadId: thread.id,
+        providerId: "claude-code",
+        nativeSessionId: null,
+        initialPrompt: null,
+        initialImages: [],
+        model: null,
+      });
+      setNativeTerminalThreadTerminal(harness.db, {
+        threadId: thread.id,
+        terminalSessionId: terminal.id,
+      });
+
+      await archiveThread(harness, thread.id);
+
+      expect(getThread(harness.db, thread.id)).toMatchObject({
+        archivedAt: expect.any(Number),
+        status: "active",
+      });
+      expect(
+        getTerminalSession(harness.db, {
+          kind: "terminal",
+          terminalId: terminal.id,
+        }),
+      ).toMatchObject({
+        closeReason: "thread-archived",
+        status: "exited",
+      });
+      expect(
+        getNativeTerminalThread(harness.db, thread.id)?.terminalSessionId,
+      ).toBe(terminal.id);
+      expect(
+        listQueuedThreadCommands(harness, "thread.stop", thread.id),
+      ).toEqual([]);
     });
   });
 

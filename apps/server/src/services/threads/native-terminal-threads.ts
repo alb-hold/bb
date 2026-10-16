@@ -386,7 +386,6 @@ async function openNativeTerminalOnce(
     terminalIsLive(existing) &&
     !(args.reattachOnly && existing?.status === "disconnected")
   ) {
-    bumpReattachEpoch(args.threadId);
     return toNativeTerminalThread(deps, record);
   }
   const thread = requirePublicThread(deps.db, args.threadId);
@@ -426,7 +425,8 @@ async function openNativeTerminalOnce(
       (currentTerminal?.status !== "disconnected" &&
         !(
           currentTerminal?.status === "exited" &&
-          currentTerminal.closeReason === "daemon-disconnect"
+          (currentTerminal.closeReason === "daemon-disconnect" ||
+            currentTerminal.closeReason === "thread-archived")
         ))
     ) {
       throw new ApiError(
@@ -464,7 +464,6 @@ async function openNativeTerminalOnce(
     threadId: thread.id,
     terminalSessionId: terminal.id,
   });
-  bumpReattachEpoch(thread.id);
   return toNativeTerminalThread(deps, record, terminal);
 }
 
@@ -478,6 +477,7 @@ export function openNativeTerminal(
   deps: NativeTerminalDeps,
   args: { threadId: string; request: OpenNativeTerminalRequest },
 ): Promise<NativeTerminalThread> {
+  bumpReattachEpoch(args.threadId);
   return openNativeTerminalDeduplicated(deps, { ...args, reattachOnly: false });
 }
 
@@ -599,6 +599,13 @@ function interruptThreadWhoseHolderIsGone(
   });
 }
 
+function isClosedDatabaseConnectionError(error: unknown): boolean {
+  return (
+    error instanceof TypeError &&
+    error.message === "The database connection is not open"
+  );
+}
+
 function watchReattachedTerminal(
   deps: NativeTerminalReopenDeps,
   args: { hostId: string; terminalId: string; threadId: string },
@@ -622,19 +629,23 @@ function watchReattachedTerminal(
   setTimeout(check, NATIVE_REATTACH_POLL_MS).unref();
 }
 
-export function reopenNativeTerminalsAfterDaemonReconnect(
+function reopenNativeTerminals(
   deps: NativeTerminalReopenDeps,
   args: { hostId: string; threadIds: readonly string[] },
+  reason: "daemon-reconnect" | "thread-unarchived",
   monotonicNowMs: () => number = () => performance.now(),
 ): Promise<void> {
   return Promise.all(
     args.threadIds.map(async (threadId) => {
       const attempt = bumpReattachEpoch(threadId);
       const startedAt = Date.now();
+      let lateTerminalBeingDiscarded: string | null = null;
       const stillWaiting = () => {
         if (currentReattachEpoch(threadId) !== attempt) return false;
         const current = getNativeTerminalThread(deps.db, threadId);
         if (current === null) return false;
+        if (current.terminalSessionId === lateTerminalBeingDiscarded)
+          return true;
         const terminal = readRecordTerminal(deps, current);
         return (
           terminal === null || !isActiveTerminalSessionStatus(terminal.status)
@@ -643,26 +654,88 @@ export function reopenNativeTerminalsAfterDaemonReconnect(
       const deadlineAt = monotonicNowMs() + NATIVE_REATTACH_DEADLINE_MS;
       let expired = false;
       let interrupted = false;
+      let interruptAttempts = 0;
+      let interrupting: Promise<void> | null = null;
       let leaveToDeadline = false;
       const pastDeadline = () => expired || monotonicNowMs() >= deadlineAt;
-      const interruptOnce = () => {
+      const interruptOnce = async () => {
         if (interrupted) return;
-        interrupted = true;
-        interruptThreadWhoseHolderIsGone(deps, {
-          hostId: args.hostId,
-          threadId,
-        });
+        if (interrupting !== null) return interrupting;
+        interrupting = (async () => {
+          while (!interrupted && interruptAttempts < 3) {
+            if (!stillWaiting()) {
+              deps.logger.debug(
+                {
+                  attempts: interruptAttempts,
+                  hostId: args.hostId,
+                  threadId,
+                },
+                "Stopping native terminal interrupt retries after reattach recovery",
+              );
+              return;
+            }
+            interruptAttempts += 1;
+            try {
+              interruptThreadWhoseHolderIsGone(deps, {
+                hostId: args.hostId,
+                threadId,
+              });
+              interrupted = true;
+            } catch (error: unknown) {
+              if (isClosedDatabaseConnectionError(error)) return;
+              if (interruptAttempts === 3) {
+                deps.logger.error(
+                  {
+                    attempts: interruptAttempts,
+                    err: error,
+                    hostId: args.hostId,
+                    threadId,
+                  },
+                  "Failed to interrupt a native terminal thread after retries",
+                );
+                return;
+              }
+              deps.logger.warn(
+                {
+                  attempt: interruptAttempts,
+                  err: error,
+                  hostId: args.hostId,
+                  threadId,
+                },
+                "Retrying a failed native terminal thread interrupt",
+              );
+              await new Promise<void>((resolve) => {
+                setTimeout(resolve, 25);
+              });
+            }
+          }
+        })();
+        try {
+          await interrupting;
+        } finally {
+          interrupting = null;
+        }
       };
-      const shouldStop = () => {
+      const shouldStop = async () => {
         if (pastDeadline()) {
-          if (stillWaiting()) interruptOnce();
+          if (stillWaiting()) await interruptOnce();
           return true;
         }
         return !stillWaiting();
       };
       const deadline = setTimeout(() => {
         expired = true;
-        if (stillWaiting()) interruptOnce();
+        void (async () => {
+          try {
+            if (stillWaiting()) await interruptOnce();
+          } catch (error: unknown) {
+            if (isClosedDatabaseConnectionError(error)) return;
+            deps.logger.warn(
+              { err: error, hostId: args.hostId, threadId },
+              "Failed to check the native terminal reattach deadline",
+            );
+          }
+        })();
       }, NATIVE_REATTACH_DEADLINE_MS);
       deadline.unref();
       try {
@@ -690,21 +763,29 @@ export function reopenNativeTerminalsAfterDaemonReconnect(
           thread === null ||
           thread.archivedAt !== null ||
           thread.deletedAt !== null ||
-          (currentTerminal?.status !== "disconnected" &&
-            !(
-              currentTerminal?.status === "exited" &&
-              currentTerminal.closeReason === "daemon-disconnect"
-            ))
+          (reason === "thread-unarchived"
+            ? currentTerminal?.status !== "exited" ||
+              currentTerminal.closeReason !== "thread-archived"
+            : currentTerminal?.status !== "disconnected" &&
+              !(
+                currentTerminal?.status === "exited" &&
+                (currentTerminal.closeReason === "daemon-disconnect" ||
+                  currentTerminal.closeReason === "thread-archived")
+              ))
         ) {
           return;
         }
-        if (shouldStop()) return;
+        if (await shouldStop()) return;
         let reopened: NativeTerminalThread;
         for (;;) {
-          if (shouldStop()) return;
+          if (await shouldStop()) return;
           try {
+            const exitedAfterArchive =
+              currentTerminal?.status === "exited" &&
+              currentTerminal.closeReason === "thread-archived";
             reopened = await openNativeTerminalDeduplicated(deps, {
-              reattachOnly: true,
+              reattachOnly:
+                reason === "daemon-reconnect" && !exitedAfterArchive,
               threadId,
               request: {},
             });
@@ -741,29 +822,40 @@ export function reopenNativeTerminalsAfterDaemonReconnect(
             "Discarding a native terminal reattach that finished after its deadline",
           );
           if (reopened.terminal !== null) {
-            if (
+            const isCurrentTerminal =
               getNativeTerminalThread(deps.db, threadId)?.terminalSessionId ===
-              reopened.terminal.id
-            ) {
-              interruptOnce();
+              reopened.terminal.id;
+            const belongsToCurrentReattach =
+              isCurrentTerminal && currentReattachEpoch(threadId) === attempt;
+            if (belongsToCurrentReattach) {
+              lateTerminalBeingDiscarded = reopened.terminal.id;
+              await interruptOnce();
             }
-            await deps.terminalSessions
-              .closeTerminal({
-                terminalId: reopened.terminal.id,
-                payload: { mode: "force", reason: "user" },
-              })
-              .catch((error: unknown) => {
-                deps.logger.warn(
-                  { err: error, hostId: args.hostId, threadId },
-                  "Failed to close a late native terminal reattach",
-                );
-              });
+            const stillCurrentTerminal =
+              getNativeTerminalThread(deps.db, threadId)?.terminalSessionId ===
+              reopened.terminal.id;
+            if (
+              !stillCurrentTerminal ||
+              currentReattachEpoch(threadId) === attempt
+            ) {
+              await deps.terminalSessions
+                .closeTerminal({
+                  terminalId: reopened.terminal.id,
+                  payload: { mode: "force", reason: "user" },
+                })
+                .catch((error: unknown) => {
+                  deps.logger.warn(
+                    { err: error, hostId: args.hostId, threadId },
+                    "Failed to close a late native terminal reattach",
+                  );
+                });
+            }
           }
           return;
         }
         deps.logger.info(
           { hostId: args.hostId, terminalId: reopened.terminal?.id, threadId },
-          "Reopened native terminal after the host daemon reconnected",
+          "Reopened native terminal session",
         );
         if (reopened.terminal !== null) {
           watchReattachedTerminal(deps, {
@@ -775,7 +867,7 @@ export function reopenNativeTerminalsAfterDaemonReconnect(
       } catch (error: unknown) {
         deps.logger.warn(
           { err: error, hostId: args.hostId, threadId },
-          "Failed to reopen native terminal after the host daemon reconnected",
+          "Failed to reopen native terminal session",
         );
         if (
           !reopenErrorProvesHolderGone(deps, {
@@ -785,18 +877,46 @@ export function reopenNativeTerminalsAfterDaemonReconnect(
           })
         ) {
           if (pastDeadline()) {
-            if (stillWaiting()) interruptOnce();
+            if (stillWaiting()) await interruptOnce();
           } else {
             leaveToDeadline = true;
           }
         } else if (stillWaiting()) {
-          interruptOnce();
+          await interruptOnce();
         }
       } finally {
         if (!leaveToDeadline) clearTimeout(deadline);
       }
     }),
   ).then(() => undefined);
+}
+
+export function reopenNativeTerminalsAfterDaemonReconnect(
+  deps: NativeTerminalReopenDeps,
+  args: { hostId: string; threadIds: readonly string[] },
+  monotonicNowMs: () => number = () => performance.now(),
+): Promise<void> {
+  return reopenNativeTerminals(deps, args, "daemon-reconnect", monotonicNowMs);
+}
+
+export async function resumeNativeTerminalAfterUnarchive(
+  deps: NativeTerminalReopenDeps,
+  args: { threadId: string },
+): Promise<void> {
+  const record = getNativeTerminalThread(deps.db, args.threadId);
+  const terminal = record === null ? null : readRecordTerminal(deps, record);
+  if (
+    record === null ||
+    terminal?.status !== "exited" ||
+    terminal.closeReason !== "thread-archived"
+  ) {
+    return Promise.resolve();
+  }
+  return reopenNativeTerminals(
+    deps,
+    { hostId: terminal.hostId, threadIds: [args.threadId] },
+    "thread-unarchived",
+  );
 }
 
 function launchInputWithImagesInPrompt(input: {
