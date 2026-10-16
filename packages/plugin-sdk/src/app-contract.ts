@@ -16,6 +16,7 @@ import type {
   ThreadQueuedWork,
   ThreadRuntimeDisplayStatus,
   ThreadStatus,
+  ThreadRowState,
   WorkspaceGitOperation,
 } from "@bb/domain";
 import type {
@@ -976,6 +977,7 @@ export interface PluginSidebarThread {
    * "active", "stopping") above idle ones. Treat an unknown value as "idle".
    */
   status: ThreadStatus;
+  experimental_rowState?: ThreadRowState;
   /**
    * `status` refined by host and environment state: adds "provisioning" and
    * "waiting-for-host" for a thread whose machine is not ready. Treat an

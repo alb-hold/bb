@@ -8,6 +8,26 @@ renaming project-wide, and deleting the entry in the same change. An entry
 that stays experimental after an audit says so with the date and the open
 question.
 
+## Thread row status and progress
+
+`bb thread row-status set|clear|list` manages current-thread sidebar statuses.
+`bb.sdk.threads.experimental_rowState({ threadId })` reads the transient status
+chips and progress shown on a thread's sidebar row. `experimental_updateRowState`
+sets or clears them through the same server route used by the CLI. State clears
+when a managed turn settles to idle or error, or when a native terminal session
+closes with process exit or user close. A daemon disconnect does not clear
+native state because the terminal may reattach. Explicit clear commands remove
+the selected state, and a targeted read hides state after 60 minutes without
+an update as a backstop. Stabilization requires auditing turn completion across
+providers, count and text bounds, and live sidebar refresh on desktop and
+compact layouts.
+
+`PluginSidebarThread.experimental_rowState` exposes this state to the core
+thread-list renderer. The CLI and renderer both use the shared persisted thread
+row-state contract. This property stays experimental until its shape,
+prioritization, truncation and compact behavior are audited with the host
+sidebar.
+
 "Docs:" names a file in
 `plugins/bb-guide/skills/bb-plugin-authoring/references/`, or
 [provider-plugin-api.md](provider-plugin-api.md) /

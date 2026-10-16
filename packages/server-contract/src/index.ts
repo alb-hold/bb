@@ -5,6 +5,7 @@ export * from "./api/spend.js";
 export * from "./api/writing-assistance.js";
 export * from "./api/native-terminal-threads.js";
 export * from "./api/thread-tabs.js";
+export * from "./api/thread-row-state.js";
 export * from "./common.js";
 export * from "./errors.js";
 export * from "./public-api.js";
