@@ -33,7 +33,6 @@ import {
 import { TimelineSelectionMenu } from "@/components/thread/timeline/TimelineSelectionMenu.js";
 import { buildTerminalWebSocketUrl } from "./terminal-websocket-url";
 import { TerminalWebSocketTransport } from "@bb/client-core";
-import { attachTerminalCopyShortcut } from "./terminal-copy-shortcut";
 import {
   hasRunningLayoutAnimation,
   observeLayoutSignals,
@@ -42,6 +41,7 @@ import {
 import { TerminalLinkOpenDialog } from "./TerminalLinkOpenDialog";
 import { TerminalAttentionPane } from "./TerminalAttentionPane";
 import { TerminalMobileControls } from "./TerminalMobileControls";
+import { attachTerminalCopyShortcut } from "./terminal-copy-shortcut";
 import { TerminalCommandGutter } from "./TerminalCommandGutter";
 import { TerminalSearch } from "./TerminalSearch";
 import type { TerminalSearchAddonInstance } from "./terminal-search-addon";
@@ -1005,67 +1005,66 @@ export function ThreadTerminalView({
         return;
       }
 
-      const realizeTerminal = () => {
-        if (disposed) {
-          return;
-        }
+      const osc8LinkHandler = createTerminalOsc8LinkHandler({
+        onActivate: requestOpenTerminalLink,
+        onHover: (target) => {
+          if (!disposed) {
+            updateHoveredTerminalLink(target);
+          }
+        },
+      });
 
-        const osc8LinkHandler = createTerminalOsc8LinkHandler({
-          onActivate: requestOpenTerminalLink,
-          onHover: (target) => {
-            if (!disposed) {
-              updateHoveredTerminalLink(target);
+      terminal = new Terminal({
+        allowProposedApi: TERMINAL_ALLOW_PROPOSED_API,
+        convertEol: true,
+        cursorBlink: true,
+        fontFamily: readTerminalFontFamily(),
+        fontSize: 12,
+        linkHandler: osc8LinkHandler,
+        scrollback: 10_000,
+        theme: buildTerminalTheme(),
+      });
+      setPromptTrackerState(EMPTY_TERMINAL_PROMPT_TRACKER);
+      shellOscDisposable = attachTerminalPromptTracker({
+        onChange: setPromptTrackerState,
+        onCwdChange: (cwd) => onCwdChangeRef.current?.(cwd),
+        terminal,
+      });
+      attachTerminalCopyShortcut({
+        copy: (text) => {
+          void copyToClipboardWithToast(text, { successMessage: null });
+        },
+        onOtherKey: (event) => {
+          if (
+            event.type === "keydown" &&
+            event.altKey &&
+            event.shiftKey &&
+            (event.key === "ArrowUp" || event.key === "ArrowDown")
+          ) {
+            event.preventDefault();
+            jumpToPrompt(event.key === "ArrowUp" ? "previous" : "next");
+            return false;
+          }
+          return true;
+        },
+        terminal,
+      });
+      terminalRef.current = terminal;
+      fitAddon = new LoadedFitAddon();
+      terminal.loadAddon(fitAddon);
+      terminal.loadAddon(new Unicode11Addon());
+      terminal.unicode.activeVersion = TERMINAL_UNICODE_VERSION;
+      terminal.loadAddon(
+        new WebLinksAddon(
+          (event, uri) => {
+            if (event.button !== 0) {
+              return;
             }
+            requestOpenTerminalLink({ source: "detected-url", uri });
           },
-        });
-
-        terminal = new Terminal({
-          allowProposedApi: TERMINAL_ALLOW_PROPOSED_API,
-          convertEol: true,
-          cursorBlink: true,
-          fontFamily: readTerminalFontFamily(),
-          fontSize: 12,
-          linkHandler: osc8LinkHandler,
-          scrollback: 10_000,
-          theme: buildTerminalTheme(),
-        });
-        setPromptTrackerState(EMPTY_TERMINAL_PROMPT_TRACKER);
-        shellOscDisposable = attachTerminalPromptTracker({
-          onChange: setPromptTrackerState,
-          onCwdChange: (cwd) => onCwdChangeRef.current?.(cwd),
-          terminal,
-        });
-        attachTerminalCopyShortcut({
-          copy: (text) => {
-            void copyToClipboardWithToast(text, { successMessage: null });
-          },
-          onOtherKey: (event) => {
-            if (
-              event.type === "keydown" &&
-              event.altKey &&
-              event.shiftKey &&
-              (event.key === "ArrowUp" || event.key === "ArrowDown")
-            ) {
-              event.preventDefault();
-              jumpToPrompt(event.key === "ArrowUp" ? "previous" : "next");
-              return false;
-            }
-            return true;
-          },
-          terminal,
-        });
-        terminalRef.current = terminal;
-        fitAddon = new LoadedFitAddon();
-        terminal.loadAddon(fitAddon);
-        terminal.loadAddon(new Unicode11Addon());
-        terminal.unicode.activeVersion = TERMINAL_UNICODE_VERSION;
-        terminal.loadAddon(
-          new WebLinksAddon(
-            (event, uri) => {
-              if (event.button !== 0) {
-                return;
-              }
-              requestOpenTerminalLink({ source: "detected-url", uri });
+          {
+            hover: (_event, uri) => {
+              updateHoveredTerminalLink({ source: "detected-url", uri });
             },
             leave: () => {
               updateHoveredTerminalLink(null);
