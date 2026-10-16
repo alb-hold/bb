@@ -6,6 +6,7 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
 } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import type { ReactNode } from "react";
@@ -631,7 +632,7 @@ describe("AppCommandProvider", () => {
     expect(testState.calls).toEqual(["browser"]);
   });
 
-  it("suppresses a terminal-scoped command from a native terminal input", () => {
+  it("suppresses a terminal-scoped command from a native terminal input", async () => {
     const previousKeybindings = testState.keybindings;
     testState.keybindings = [
       ...previousKeybindings.filter((binding) => binding.command !== "thread.search"),
@@ -649,6 +650,19 @@ describe("AppCommandProvider", () => {
         when: { all: ["mainSurface"], none: ["terminalFocus"] },
       },
     ];
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+      measureText: (text: string) => ({ width: text.length * 9 }),
+    } as unknown as CanvasRenderingContext2D);
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(
+      function offsetWidth(this: HTMLElement) {
+        return this.classList.contains("xterm-char-measure-element") ? 288 : 108;
+      },
+    );
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(
+      function offsetHeight(this: HTMLElement) {
+        return this.classList.contains("xterm-char-measure-element") ? 18 : 90;
+      },
+    );
     renderProvider(
       <>
         <Handler command="thread.search" name="search" result={true} />
@@ -672,8 +686,13 @@ describe("AppCommandProvider", () => {
     );
     const terminalPane = screen.getByTestId("terminal-view").firstElementChild;
     if (terminalPane === null) throw new Error("Terminal pane is not mounted");
-    const terminalInput = document.createElement("textarea");
-    terminalPane.appendChild(terminalInput);
+    const terminalInput = await waitFor(() => {
+      const textarea = terminalPane.querySelector<HTMLTextAreaElement>(
+        ".xterm-helper-textarea",
+      );
+      if (textarea === null) throw new Error("xterm input is not mounted");
+      return textarea;
+    });
     const outside = screen.getByLabelText("Outside terminal");
     const dispatchSearch = (target: Element) => {
       const event = new KeyboardEvent("keydown", {
