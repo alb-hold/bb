@@ -3002,6 +3002,7 @@ describe("native terminal threads", () => {
             vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
           },
           deferProviders: true,
+          useMigratedMemoryDb: true,
         });
       void reopenNativeTerminalsAfterDaemonReconnect(
         fixture.harness.deps,
@@ -3071,6 +3072,107 @@ describe("native terminal threads", () => {
       ).toHaveLength(1);
     } finally {
       vi.useRealTimers();
+    }
+  }, 60_000);
+
+  it("keeps a late reconnect open under the newer reconnect epoch and deadline", async () => {
+    let createStarted!: () => void;
+    let releaseCreate!: () => void;
+    let restoreTimers = false;
+    let now = 0;
+    let createSpy: ReturnType<typeof vi.spyOn> | undefined;
+    const createEntered = new Promise<void>((resolve) => {
+      createStarted = resolve;
+    });
+    const createGate = new Promise<void>((resolve) => {
+      releaseCreate = resolve;
+    });
+    try {
+      const { fixture, running, sessionId, socket } =
+        await restartDaemonWithRunningNativeThread("instance-restarted", {
+          beforeRestart: () => {
+            vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+            restoreTimers = true;
+          },
+          useMigratedMemoryDb: true,
+        });
+      const terminals = fixture.harness.deps.terminalSessions;
+      const createTerminal = terminals.createTerminal.bind(terminals);
+      createSpy = vi
+        .spyOn(terminals, "createTerminal")
+        .mockImplementation(async (args) => {
+          const opened = createTerminal(args);
+          createStarted();
+          await createGate;
+          return opened;
+        });
+      const firstReconnect = reopenNativeTerminalsAfterDaemonReconnect(
+        fixture.harness.deps,
+        { hostId: fixture.hostId, threadIds: [running.thread.id] },
+        () => now,
+      );
+      await createEntered;
+      let openMessage: TerminalOpenMessage | undefined;
+      for (let step = 0; step < 20 && openMessage === undefined; step += 1) {
+        await vi.advanceTimersByTimeAsync(5);
+        openMessage = daemonMessages(socket).find(
+          (message): message is TerminalOpenMessage =>
+            message.type === "terminal.open",
+        );
+      }
+      if (openMessage === undefined) throw new Error("reconnect never opened");
+
+      now = 20_000;
+      const secondReconnect = reopenNativeTerminalsAfterDaemonReconnect(
+        fixture.harness.deps,
+        { hostId: fixture.hostId, threadIds: [running.thread.id] },
+        () => now,
+      );
+      now = 45_001;
+
+      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.hostId,
+        sessionId,
+        message: {
+          type: "terminal.opened",
+          requestId: openMessage.requestId,
+          terminalId: openMessage.terminalId,
+          shell: "/bin/zsh",
+          title: "zsh",
+          initialCwd: "/tmp/native-workspace",
+          cols: openMessage.cols,
+          rows: openMessage.rows,
+        },
+      });
+      releaseCreate();
+      await Promise.all([firstReconnect, secondReconnect]);
+
+      expect(createSpy).toHaveBeenCalledTimes(1);
+      expect(
+        daemonMessages(socket).filter(
+          (message) => message.type === "terminal.open",
+        ),
+      ).toHaveLength(1);
+      expect(
+        daemonMessages(socket).some(
+          (message) =>
+            message.type === "terminal.close" &&
+            message.terminalId === openMessage.terminalId,
+        ),
+      ).toBe(false);
+      expect(getThread(fixture.harness.db, running.thread.id)?.status).toBe(
+        "active",
+      );
+      expect(interruptionReasons(fixture, running.thread.id)).toEqual([]);
+
+      now = 65_001;
+      expect(getThread(fixture.harness.db, running.thread.id)?.status).toBe(
+        "active",
+      );
+      expect(interruptionReasons(fixture, running.thread.id)).toEqual([]);
+    } finally {
+      createSpy?.mockRestore();
+      if (restoreTimers) vi.useRealTimers();
     }
   }, 60_000);
 

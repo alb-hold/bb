@@ -386,7 +386,6 @@ async function openNativeTerminalOnce(
     terminalIsLive(existing) &&
     !(args.reattachOnly && existing?.status === "disconnected")
   ) {
-    bumpReattachEpoch(args.threadId);
     return toNativeTerminalThread(deps, record);
   }
   const thread = requirePublicThread(deps.db, args.threadId);
@@ -465,7 +464,6 @@ async function openNativeTerminalOnce(
     threadId: thread.id,
     terminalSessionId: terminal.id,
   });
-  bumpReattachEpoch(thread.id);
   return toNativeTerminalThread(deps, record, terminal);
 }
 
@@ -479,6 +477,7 @@ export function openNativeTerminal(
   deps: NativeTerminalDeps,
   args: { threadId: string; request: OpenNativeTerminalRequest },
 ): Promise<NativeTerminalThread> {
+  bumpReattachEpoch(args.threadId);
   return openNativeTerminalDeduplicated(deps, { ...args, reattachOnly: false });
 }
 
@@ -638,7 +637,7 @@ function reopenNativeTerminals(
 ): Promise<void> {
   return Promise.all(
     args.threadIds.map(async (threadId) => {
-      let attempt = bumpReattachEpoch(threadId);
+      const attempt = bumpReattachEpoch(threadId);
       const startedAt = Date.now();
       let lateTerminalBeingDiscarded: string | null = null;
       const stillWaiting = () => {
@@ -790,13 +789,6 @@ function reopenNativeTerminals(
               threadId,
               request: {},
             });
-            if (
-              reopened.terminal !== null &&
-              getNativeTerminalThread(deps.db, threadId)?.terminalSessionId ===
-                reopened.terminal.id
-            ) {
-              attempt = currentReattachEpoch(threadId);
-            }
             break;
           } catch (error: unknown) {
             if (
