@@ -337,6 +337,19 @@ describe("dictation segments", () => {
     });
   });
 
+  it("keeps the transcript when formatting numbers a list nobody enumerated", async () => {
+    await withTestHarness({}, async (harness) => {
+      registerFakeAiService(harness.deps.aiServices, {
+        transcribe: async () => "deploy code",
+        complete: async () => "7. Deploy code.",
+      });
+      await expect((await postSegment(harness)).json()).resolves.toMatchObject({
+        text: "deploy code",
+        formatted: false,
+      });
+    });
+  });
+
   it("formats a numbered list built from spoken ordinals", async () => {
     await withTestHarness({}, async (harness) => {
       registerFakeAiService(harness.deps.aiServices, {

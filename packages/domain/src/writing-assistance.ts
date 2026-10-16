@@ -658,6 +658,7 @@ export type FormattedTranscriptVerdict =
         | "added-words"
         | "dropped-words"
         | "negation"
+        | "list-numbers"
         | "empty";
     };
 
@@ -896,6 +897,29 @@ function nextSpokenWord(
   return undefined;
 }
 
+function spokenEnumeration(tokens: readonly string[]): Map<number, string> {
+  const spoken = new Map<number, string>();
+  for (let index = 0; index < tokens.length; index += 1) {
+    const value = ENUMERATOR_VALUES.get(tokens[index]!);
+    const next = nextSpokenWord(tokens, index);
+    if (value !== undefined && next !== undefined && !spoken.has(value)) {
+      spoken.set(value, next);
+    }
+  }
+  return spoken;
+}
+
+function listMatchesSpeech(
+  itemStarts: ReadonlyMap<number, string>,
+  rawTokens: readonly string[],
+): boolean {
+  const spoken = spokenEnumeration(rawTokens);
+  return [...itemStarts].every(
+    ([number, first], position) =>
+      number === position + 1 && spoken.get(number) === first,
+  );
+}
+
 export function validateFormattedTranscript(
   raw: string,
   formatted: string,
@@ -914,6 +938,11 @@ export function validateFormattedTranscript(
   const vocabularyTokens = new Set(
     vocabulary.flatMap((term) => wordTokens(term)),
   );
+  const itemStarts = listItemStarts(formatted);
+  const list = itemStarts.size > 0;
+  if (list && !listMatchesSpeech(itemStarts, rawTokens)) {
+    return { ok: false, reason: "list-numbers" };
+  }
   const body = formatted.replace(/^(\s*)\d{1,2}[.)]\s+/gmu, "$1");
   const rawNumbers = new Set(raw.match(/\d+(?:[.,]\d+)*/gu) ?? []);
   for (const number of body.match(/\d+(?:[.,]\d+)*/gu) ?? []) {
@@ -931,8 +960,6 @@ export function validateFormattedTranscript(
     if (allowedNovelToken(token, source)) continue;
     return { ok: false, reason: "added-words" };
   }
-  const itemStarts = listItemStarts(formatted);
-  const list = itemStarts.size > 0;
   let enumerated = 0;
   const { marker, window } = correctionCoverage(rawTokens);
   const dropped = droppedTokens(

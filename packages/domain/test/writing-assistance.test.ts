@@ -385,6 +385,23 @@ describe("validateFormattedTranscript", () => {
     },
   );
 
+  it.each([
+    ["deploy code", "7. Deploy code."],
+    ["deploy code", "1. Deploy code."],
+    ["check auth run tests", "1. Check auth.\n2. Run tests."],
+    ["first check auth second run tests", "1. Check auth.\n3. Run tests."],
+    ["first check auth second run tests", "2. Check auth.\n1. Run tests."],
+    ["first check auth second run tests", "1. Run tests.\n2. Check auth."],
+  ])(
+    "keeps the transcript when list numbers do not match the spoken enumeration: %s -> %s",
+    (raw, formatted) => {
+      expect(validateFormattedTranscript(raw, formatted)).toEqual({
+        ok: false,
+        reason: "list-numbers",
+      });
+    },
+  );
+
   it("accepts vocabulary spellings and accent restorations of spoken words", () => {
     expect(
       validateFormattedTranscript(
@@ -510,7 +527,7 @@ describe("validateFormattedTranscript", () => {
         "check the first endpoint then preserve seven retries",
         "1. Check the endpoint.\n2. Preserve retries.",
       ),
-    ).toEqual({ ok: false, reason: "dropped-words" });
+    ).toEqual({ ok: false, reason: "list-numbers" });
     expect(
       validateFormattedTranscript(
         "first check auth second run three migrations",
@@ -537,13 +554,13 @@ describe("validateFormattedTranscript", () => {
         "check the first endpoint then second run the tests",
         "1. Check the endpoint.\n2. Run the tests.",
       ),
-    ).toEqual({ ok: false, reason: "dropped-words" });
+    ).toEqual({ ok: false, reason: "list-numbers" });
     expect(
       validateFormattedTranscript(
         "one check auth two run the tests",
         "1. Check auth.\n2. Run the tests.",
       ),
-    ).toEqual({ ok: false, reason: "dropped-words" });
+    ).toEqual({ ok: false, reason: "list-numbers" });
     expect(
       validateFormattedTranscript(
         "first um check auth and then second run the tests",
