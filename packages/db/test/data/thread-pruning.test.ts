@@ -109,6 +109,114 @@ function sequences(f: Fixture) {
     .map((r) => r.sequence);
 }
 
+type LegacyProgressFixture = {
+  sequence: number;
+  itemId: string;
+  itemKind: (typeof events.$inferInsert)["itemKind"];
+  turnId: string;
+};
+
+function legacyReferencePrunedIds(f: Fixture) {
+  const candidates = f.db.all<{
+    id: string;
+    sequence: number;
+    itemId: string;
+  }>(sql`SELECT id, sequence, item_id AS itemId
+    FROM events INDEXED BY events_thread_type_sequence_idx
+    WHERE thread_id = ${f.thread.id}
+      AND type = 'item/backgroundTask/progress'
+      AND item_id IS NOT NULL
+    ORDER BY sequence`);
+  const discarded = new Set<string>();
+  for (const candidate of candidates) {
+    let probeSequence = 0;
+    let finished = false;
+    let remaining = 100_000;
+    while (!finished && remaining > 0) {
+      const limit = Math.min(remaining, probeSequence === 0 ? 1 : 64);
+      const support = f.db.all<{
+        id: string;
+        sequence: number;
+        itemId: string | null;
+      }>(sql`SELECT id, sequence, item_id AS itemId
+        FROM events INDEXED BY events_thread_type_sequence_idx
+        WHERE thread_id = ${f.thread.id}
+          AND sequence > ${Math.max(candidate.sequence, probeSequence)}
+          AND type = 'item/backgroundTask/progress'
+        ORDER BY sequence
+        LIMIT ${limit}`);
+      remaining -= Math.max(1, support.length);
+      const match = support.find((row) => row.itemId === candidate.itemId);
+      if (match) {
+        discarded.add(candidate.id);
+        finished = true;
+      } else if (support.length < limit) {
+        finished = true;
+      } else {
+        const last = support.at(-1);
+        if (!last) throw new Error("Missing legacy reference cursor");
+        probeSequence = last.sequence;
+      }
+    }
+  }
+  return discarded;
+}
+
+function runLegacyParityFixture(
+  f: Fixture,
+  rows: readonly LegacyProgressFixture[],
+) {
+  f.db.transaction(() => {
+    for (const row of rows)
+      seed(f, row.sequence, {
+        id: `legacy-${row.sequence}`,
+        type: "item/backgroundTask/progress",
+        itemId: row.itemId,
+        itemKind: row.itemKind,
+        turnId: row.turnId,
+      });
+    seed(f, Math.max(...rows.map((row) => row.sequence)) + 1, {
+      type: "turn/completed",
+    });
+  });
+  const before = f.db.all<{ id: string }>(sql`SELECT id FROM events
+    WHERE thread_id = ${f.thread.id}
+      AND type = 'item/backgroundTask/progress'
+      AND item_id IS NOT NULL`);
+  const reference = legacyReferencePrunedIds(f);
+  const result = advanceLiveEventPruning(f.db, {
+    threadId: f.thread.id,
+    kind: "background",
+    limit: 100_000,
+  });
+  expect(result.complete).toBe(true);
+  const after = new Set(
+    f.db.all<{ id: string }>(sql`SELECT id FROM events
+      WHERE thread_id = ${f.thread.id}
+        AND type = 'item/backgroundTask/progress'
+        AND item_id IS NOT NULL`).map((row) => row.id),
+  );
+  const pruned = new Set(before.filter((row) => !after.has(row.id)).map((row) => row.id));
+  const kept = new Set(before.filter((row) => after.has(row.id)).map((row) => row.id));
+  expect(pruned).toEqual(reference);
+  return { kept, pruned };
+}
+
+function expectLegacyParityCase(
+  rows: readonly LegacyProgressFixture[],
+  expectedKept: readonly string[],
+  expectedPruned: readonly string[],
+) {
+  const f = setup();
+  try {
+    const { kept, pruned } = runLegacyParityFixture(f, rows);
+    expect(kept).toEqual(new Set(expectedKept));
+    expect(pruned).toEqual(new Set(expectedPruned));
+  } finally {
+    f.db.$client.close();
+  }
+}
+
 describe("thread pruning", () => {
   it("queues archive changes for every owned thread and rolls them back together", () => {
     const f = setup();
@@ -623,6 +731,83 @@ describe("thread pruning", () => {
       f.db.$client.close();
     }
   });
+
+  it("matches the old progress query across legacy supersession edge cases", () => {
+    expectLegacyParityCase(
+      [
+        { sequence: 1, itemId: "reused", itemKind: "backgroundTask", turnId: "turn-a" },
+        { sequence: 2, itemId: "reused", itemKind: null, turnId: "turn-b" },
+      ],
+      ["legacy-2"],
+      ["legacy-1"],
+    );
+    expectLegacyParityCase(
+      [
+        { sequence: 1, itemId: "earlier", itemKind: null, turnId: "turn-a" },
+        { sequence: 2, itemId: "earlier", itemKind: "backgroundTask", turnId: "turn-b" },
+        { sequence: 3, itemId: "equal", itemKind: "agentMessage", turnId: "turn-c" },
+      ],
+      ["legacy-2", "legacy-3"],
+      ["legacy-1"],
+    );
+    expectLegacyParityCase(
+      [
+        { sequence: 1, itemId: "inside-window", itemKind: "backgroundTask", turnId: "turn-a" },
+        { sequence: 2, itemId: "interleaved-a", itemKind: "backgroundTask", turnId: "turn-a" },
+        { sequence: 3, itemId: "inside-window", itemKind: null, turnId: "turn-b" },
+        { sequence: 4, itemId: "outside-window", itemKind: "backgroundTask", turnId: "turn-a" },
+        { sequence: 5, itemId: "outside-window", itemKind: "agentMessage", turnId: "turn-b" },
+        { sequence: 6, itemId: "interleaved-b", itemKind: "backgroundTask", turnId: "turn-a" },
+      ],
+      ["legacy-2", "legacy-3", "legacy-5", "legacy-6"],
+      ["legacy-1", "legacy-4"],
+    );
+    expectLegacyParityCase(
+      [
+        { sequence: 1, itemId: "chain", itemKind: null, turnId: "turn-a" },
+        { sequence: 2, itemId: "chain", itemKind: "agentMessage", turnId: "turn-b" },
+        { sequence: 3, itemId: "chain", itemKind: null, turnId: "turn-c" },
+      ],
+      ["legacy-3"],
+      ["legacy-1", "legacy-2"],
+    );
+    expectLegacyParityCase(
+      [
+        { sequence: 1, itemId: "null-kind", itemKind: "backgroundTask", turnId: "turn-a" },
+        { sequence: 2, itemId: "null-kind", itemKind: null, turnId: "turn-b" },
+        { sequence: 3, itemId: "mismatched-kind", itemKind: "backgroundTask", turnId: "turn-a" },
+        { sequence: 4, itemId: "mismatched-kind", itemKind: "agentMessage", turnId: "turn-b" },
+      ],
+      ["legacy-2", "legacy-4"],
+      ["legacy-1", "legacy-3"],
+    );
+  });
+
+  it("matches the old progress query for 20 seeded randomized mixed-turn fixtures", () => {
+    for (let initialSeed = 1; initialSeed <= 20; initialSeed++) {
+      const f = setup();
+      try {
+        let seedValue = initialSeed;
+        const next = () => {
+          seedValue = (seedValue * 48271) % 2147483647;
+          return seedValue;
+        };
+        const kinds = ["backgroundTask", null, "agentMessage"] as const;
+        const rows = Array.from({ length: 200 }, (_, index) => ({
+          sequence: index + 1,
+          itemId: `item-${next() % 12}`,
+          itemKind: kinds[next() % kinds.length] ?? null,
+          turnId: `turn-${next() % 5}`,
+        }));
+        const { kept, pruned } = runLegacyParityFixture(f, rows);
+        expect(new Set([...kept, ...pruned])).toEqual(
+          new Set(rows.map((row) => `legacy-${row.sequence}`)),
+        );
+      } finally {
+        f.db.$client.close();
+      }
+    }
+  }, 15_000);
 
   it("bounds legacy progress fallback for 510 task candidates", () => {
     for (let batch = 0; batch < 7; batch++) {
