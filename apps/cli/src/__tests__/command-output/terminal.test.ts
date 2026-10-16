@@ -665,6 +665,41 @@ describe("bb terminal command output", () => {
     expect(output.mock.calls[1]?.[0]).toMatchObject({ query: { sinceSeq: 4 } });
   });
 
+  it.each(["€", "🙂"])(
+    "matches UTF-8 character %s split across terminal chunks",
+    async (glyph) => {
+      const bytes = Buffer.from(glyph, "utf8");
+      const first = Buffer.concat([Buffer.from("ready "), bytes.subarray(0, 1)]);
+      const second = Buffer.concat([bytes.subarray(1), Buffer.from("\n")]);
+      const output = vi.fn(async () => ({
+        chunks: [first, second].map((chunk, index) => ({
+          seq: index,
+          dataBase64: chunk.toString("base64"),
+        })),
+        nextSeq: 2,
+        truncated: false,
+        status: "exited",
+        exitCode: 0,
+        closeReason: "process-exit",
+      }));
+      stubServerApi({ "v1.terminals.:terminalId.output.$get": output });
+
+      await runCommand(
+        ["terminal", "wait", "term-1", "--from-start", "--contains", glyph, "--json"],
+        register,
+      );
+
+      expect(
+        JSON.parse(collectLogPayloads(vi.mocked(console.log)).at(-1) ?? "{}"),
+      ).toEqual({
+        exitCode: 0,
+        matched: glyph,
+        nextSeq: 2,
+        terminalId: "term-1",
+      });
+    },
+  );
+
   it("finds a marker that is followed by more output than the retained window", async () => {
     const output = vi.fn().mockResolvedValueOnce(
       outputResponse({
