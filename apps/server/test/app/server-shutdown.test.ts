@@ -2,7 +2,8 @@ import { once } from "node:events";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { createConnection, migrate, type DbConnection } from "@bb/db";
+import { createMigratedConnection } from "@bb/db/testing";
+import type { DbConnection } from "@bb/db";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
 import {
@@ -28,8 +29,7 @@ describe("server shutdown ordering", () => {
   let webSocketClient: WebSocket | undefined;
 
   beforeEach(() => {
-    db = createConnection(":memory:");
-    migrate(db);
+    db = createMigratedConnection();
   });
 
   afterEach(async () => {

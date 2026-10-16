@@ -1,10 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { createMigratedConnection } from "@bb/db/testing";
 import {
-  createConnection,
   createEnvironment,
   createProject,
   createThread,
-  migrate,
   noopNotifier,
   recordWorkspaceFileChanges,
   upsertHost,
@@ -22,8 +21,7 @@ function setup(): {
   currentThread: ReturnType<typeof createThread>;
   neighbourThread: ReturnType<typeof createThread>;
 } {
-  const db = createConnection(":memory:");
-  migrate(db);
+  const db = createMigratedConnection();
   const host = upsertHost(db, noopNotifier, {
     name: "test-host",
     type: "persistent",

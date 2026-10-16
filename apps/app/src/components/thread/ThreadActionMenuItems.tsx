@@ -174,6 +174,21 @@ function ThreadActionLabel({ action }: { action: PluginBoundThreadAction }) {
   );
 }
 
+function ThreadActionSubmenuLabel({
+  action,
+}: {
+  action: PluginBoundThreadAction;
+}) {
+  return (
+    <span className="min-w-0 flex-1 truncate">
+      {action.label}
+      {action.detail === undefined ? null : (
+        <span className="sr-only">, {action.detail}</span>
+      )}
+    </span>
+  );
+}
+
 function ThreadActionMenuRow({
   entry,
   surface,
@@ -214,11 +229,7 @@ function ThreadActionMenuRow({
         }}
       >
         <Icon name={action.icon} aria-hidden="true" />
-        {action.detail === undefined ? (
-          <span className="min-w-0 flex-1 truncate">{action.label}</span>
-        ) : (
-          <ThreadActionLabel action={action} />
-        )}
+        <ThreadActionSubmenuLabel action={action} />
         <Icon name="ChevronRight" className="ml-auto" aria-hidden="true" />
       </DropdownMenuItem>
     );
@@ -232,7 +243,7 @@ function ThreadActionMenuRow({
     <Sub>
       <SubTrigger disabled={action.disabled}>
         <Icon name={action.icon} aria-hidden="true" />
-        <ThreadActionLabel action={action} />
+        <ThreadActionSubmenuLabel action={action} />
       </SubTrigger>
       <SubContent className={CHOICES_CONTENT_CLASS}>
         <ThreadActionChoiceRows entry={entry} surface={surface} />
@@ -298,9 +309,7 @@ export function ThreadActionMenuRows({
   }
   return groups.map((group, index) => (
     <Fragment key={group[0]?.group ?? index}>
-      {index > 0 && !isDrawer ? (
-        <ActionMenuSeparator surface={surface} />
-      ) : null}
+      {index > 0 ? <ActionMenuSeparator surface={surface} /> : null}
       {group.map((entry) => (
         <ThreadActionMenuRow
           key={entry.key}

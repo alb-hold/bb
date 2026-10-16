@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { createMigratedConnection } from "@bb/db/testing";
 import {
   createConnection,
   createTerminalSession,
   getTerminalAttention,
   getThread,
-  migrate,
   updateTerminalSession,
 } from "@bb/db";
 import {
@@ -27,8 +27,7 @@ afterEach(async () => {
 
 describe("terminal attention persistence", () => {
   it("includes unread persisted attention in a WebSocket attach snapshot", async () => {
-    const db = createConnection(":memory:");
-    migrate(db);
+    const db = createMigratedConnection();
     const harness = await createTestAppHarness({ db });
     harnesses.push(harness);
     const { terminalId } = createAttentionTerminal(harness);
@@ -133,8 +132,7 @@ describe("terminal attention persistence", () => {
   });
 
   it("publishes the cleared attention on the visible client session update", async () => {
-    const db = createConnection(":memory:");
-    migrate(db);
+    const db = createMigratedConnection();
     const harness = await createTestAppHarness({ db });
     harnesses.push(harness);
     const { terminalId } = createAttentionTerminal(harness);
@@ -168,8 +166,7 @@ describe("terminal attention persistence", () => {
   });
 
   it("keeps pending attention when a second client attaches hidden", async () => {
-    const db = createConnection(":memory:");
-    migrate(db);
+    const db = createMigratedConnection();
     const harness = await createTestAppHarness({ db });
     harnesses.push(harness);
     const { terminalId } = createAttentionTerminal(harness);

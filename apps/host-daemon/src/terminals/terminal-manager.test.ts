@@ -7,6 +7,7 @@ import type { HostDaemonDaemonWsMessage } from "@bb/host-daemon-contract";
 import type { HostWorkspace } from "@bb/host-workspace";
 import {
   createDeferredPromise,
+  makeTempDir,
   makeWorkspaceMergeBase,
   makeWorkspaceStatus,
 } from "@bb/test-helpers";
@@ -26,8 +27,8 @@ import {
   type TerminalPtyProcess,
 } from "./terminal-manager.js";
 
-const tempDirs: string[] = [];
 const DEFAULT_TERMINAL_START = { mode: "shell" } as const;
+const tempDirs: string[] = [];
 
 interface ResizeCall {
   cols: number;
@@ -80,12 +81,6 @@ type TerminalOutputChunk = Extract<
 >["chunk"];
 
 type SteerTurnResult = Awaited<ReturnType<AgentRuntime["steerTurn"]>>;
-
-async function makeTempDir(prefix: string): Promise<string> {
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
-  tempDirs.push(tempDir);
-  return tempDir;
-}
 
 async function writeEmptyFile(filePath: string): Promise<void> {
   await fs.mkdir(path.dirname(filePath), { recursive: true });

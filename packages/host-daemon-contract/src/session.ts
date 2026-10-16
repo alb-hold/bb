@@ -382,6 +382,13 @@ const hostDaemonOnlineRpcRequestMessageSchema = z
   })
   .strict();
 
+const hostDaemonOnlineRpcCancelMessageSchema = z
+  .object({
+    type: z.literal("host-rpc.cancel"),
+    requestId: hostDaemonOnlineRpcRequestIdSchema,
+  })
+  .strict();
+
 const hostDaemonWatchSetReplaceMessageSchema = hostDaemonWatchSetSchema
   .extend({
     type: z.literal("watch-set.replace"),
@@ -535,6 +542,10 @@ export type HostDaemonOnlineRpcRequestMessage = z.infer<
   typeof hostDaemonOnlineRpcRequestMessageSchema
 >;
 
+export type HostDaemonOnlineRpcCancelMessage = z.infer<
+  typeof hostDaemonOnlineRpcCancelMessageSchema
+>;
+
 export const hostDaemonTerminalOutputChunkSchema = z
   .object({
     seq: z.number().int().nonnegative(),
@@ -673,6 +684,7 @@ export const hostDaemonServerWsMessageSchema = z.discriminatedUnion("type", [
     })
     .strict(),
   hostDaemonOnlineRpcRequestMessageSchema,
+  hostDaemonOnlineRpcCancelMessageSchema,
   hostDaemonWatchSetReplaceMessageSchema,
   hostDaemonConnectSharesReplaceMessageSchema,
   hostDaemonTerminalOpenMessageSchema,
