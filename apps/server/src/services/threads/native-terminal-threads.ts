@@ -638,12 +638,15 @@ function reopenNativeTerminals(
 ): Promise<void> {
   return Promise.all(
     args.threadIds.map(async (threadId) => {
-      const attempt = bumpReattachEpoch(threadId);
+      let attempt = bumpReattachEpoch(threadId);
       const startedAt = Date.now();
+      let lateTerminalBeingDiscarded: string | null = null;
       const stillWaiting = () => {
         if (currentReattachEpoch(threadId) !== attempt) return false;
         const current = getNativeTerminalThread(deps.db, threadId);
         if (current === null) return false;
+        if (current.terminalSessionId === lateTerminalBeingDiscarded)
+          return true;
         const terminal = readRecordTerminal(deps, current);
         return (
           terminal === null || !isActiveTerminalSessionStatus(terminal.status)
@@ -787,6 +790,13 @@ function reopenNativeTerminals(
               threadId,
               request: {},
             });
+            if (
+              reopened.terminal !== null &&
+              getNativeTerminalThread(deps.db, threadId)?.terminalSessionId ===
+                reopened.terminal.id
+            ) {
+              attempt = currentReattachEpoch(threadId);
+            }
             break;
           } catch (error: unknown) {
             if (
@@ -820,23 +830,34 @@ function reopenNativeTerminals(
             "Discarding a native terminal reattach that finished after its deadline",
           );
           if (reopened.terminal !== null) {
-            if (
+            const isCurrentTerminal =
               getNativeTerminalThread(deps.db, threadId)?.terminalSessionId ===
-              reopened.terminal.id
-            ) {
+              reopened.terminal.id;
+            const belongsToCurrentReattach =
+              isCurrentTerminal && currentReattachEpoch(threadId) === attempt;
+            if (belongsToCurrentReattach) {
+              lateTerminalBeingDiscarded = reopened.terminal.id;
               await interruptOnce();
             }
-            await deps.terminalSessions
-              .closeTerminal({
-                terminalId: reopened.terminal.id,
-                payload: { mode: "force", reason: "user" },
-              })
-              .catch((error: unknown) => {
-                deps.logger.warn(
-                  { err: error, hostId: args.hostId, threadId },
-                  "Failed to close a late native terminal reattach",
-                );
-              });
+            const stillCurrentTerminal =
+              getNativeTerminalThread(deps.db, threadId)?.terminalSessionId ===
+              reopened.terminal.id;
+            if (
+              !stillCurrentTerminal ||
+              currentReattachEpoch(threadId) === attempt
+            ) {
+              await deps.terminalSessions
+                .closeTerminal({
+                  terminalId: reopened.terminal.id,
+                  payload: { mode: "force", reason: "user" },
+                })
+                .catch((error: unknown) => {
+                  deps.logger.warn(
+                    { err: error, hostId: args.hostId, threadId },
+                    "Failed to close a late native terminal reattach",
+                  );
+                });
+            }
           }
           return;
         }
