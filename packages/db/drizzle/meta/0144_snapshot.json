@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "5953b831-d070-489c-ab18-7e86fd32b663",
+  "id": "026da89a-d869-44d7-98f5-02c438f3ce46",
   "prevId": "d4b02fa4-a3e0-473f-bbc2-0cee3c0d4606",
   "tables": {
     "app_settings": {
@@ -1179,82 +1179,48 @@
         }
       }
     },
-    "fork_terminal_output": {
-      "name": "fork_terminal_output",
+    "fork_thread_row_states": {
+      "name": "fork_thread_row_states",
       "columns": {
-        "terminal_session_id": {
-          "name": "terminal_session_id",
+        "thread_id": {
+          "name": "thread_id",
           "type": "text",
           "primaryKey": true,
           "notNull": true,
           "autoincrement": false
         },
-        "host_id": {
-          "name": "host_id",
+        "statuses_json": {
+          "name": "statuses_json",
           "type": "text",
           "primaryKey": false,
           "notNull": true,
-          "autoincrement": false
+          "autoincrement": false,
+          "default": "'{}'"
         },
-        "chunks_json": {
-          "name": "chunks_json",
+        "progress_json": {
+          "name": "progress_json",
           "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "byte_length": {
-          "name": "byte_length",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "retained_at": {
-          "name": "retained_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "expires_at": {
-          "name": "expires_at",
-          "type": "integer",
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false
-        }
-      },
-      "indexes": {
-        "fork_terminal_output_host_retained_idx": {
-          "name": "fork_terminal_output_host_retained_idx",
-          "columns": [
-            "host_id",
-            "retained_at"
-          ],
-          "isUnique": false
-        }
-      },
-      "foreignKeys": {
-        "fork_terminal_output_terminal_session_id_terminal_sessions_id_fk": {
-          "name": "fork_terminal_output_terminal_session_id_terminal_sessions_id_fk",
-          "tableFrom": "fork_terminal_output",
-          "tableTo": "terminal_sessions",
-          "columnsFrom": [
-            "terminal_session_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
         },
-        "fork_terminal_output_host_id_hosts_id_fk": {
-          "name": "fork_terminal_output_host_id_hosts_id_fk",
-          "tableFrom": "fork_terminal_output",
-          "tableTo": "hosts",
+        "updated_at": {
+          "name": "updated_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "fork_thread_row_states_thread_id_threads_id_fk": {
+          "name": "fork_thread_row_states_thread_id_threads_id_fk",
+          "tableFrom": "fork_thread_row_states",
+          "tableTo": "threads",
           "columnsFrom": [
-            "host_id"
+            "thread_id"
           ],
           "columnsTo": [
             "id"

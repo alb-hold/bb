@@ -398,8 +398,8 @@ function printChildSummary(summary: ThreadChildSummaryResult): void {
 export function registerShowCommand(
   parent: Command,
   getUrl: () => string,
-): void {
-  parent
+): Command {
+  const showCommand = parent
     .command("show [id]")
     .aliases(["get", "view", "status"])
     .description("Show thread details and pull request status")
@@ -636,7 +636,6 @@ export function registerShowCommand(
         }
       }),
     );
-
   parent
     .command("log [id]")
     .aliases(["messages", "timeline"])
@@ -784,6 +783,7 @@ export function registerShowCommand(
         },
       ),
     );
+  return showCommand;
 }
 
 function printThreadStatus(
