@@ -12,7 +12,11 @@ import {
   updateTerminalSession,
   updateTerminalSessions,
 } from "@bb/db";
-import type { EnvironmentStatus, TerminalSessionCloseReason } from "@bb/domain";
+import {
+  TERMINAL_DATA_MAX_BYTES,
+  type EnvironmentStatus,
+  type TerminalSessionCloseReason,
+} from "@bb/domain";
 import {
   hostDaemonOnlineRpcResponseMessageSchema,
   hostDaemonServerWsMessageSchema,
@@ -1296,6 +1300,38 @@ describe("public terminal routes", () => {
         terminalId: session.id,
       })?.lastUserInputAt,
     ).not.toBeNull();
+  });
+
+  it("rejects oversized public terminal input before forwarding it", async () => {
+    const fixture = await createTerminalRouteFixture();
+    harnesses.push(fixture.harness);
+    const session = createTerminalSession(fixture.harness.db, {
+      cols: 120,
+      daemonSessionId: fixture.session.id,
+      environmentId: fixture.environment.id,
+      hostId: fixture.host.id,
+      initialCwd: fixture.environment.path ?? "/tmp/terminal-workspace",
+      rows: 32,
+      status: "running",
+      threadId: fixture.thread.id,
+      title: "Terminal 1",
+    });
+
+    const response = await fixture.harness.app.request(
+      `/api/v1/terminals/${session.id}/input`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          dataBase64: Buffer.alloc(TERMINAL_DATA_MAX_BYTES + 1).toString(
+            "base64",
+          ),
+        }),
+      },
+    );
+
+    expect(response.status).toBe(400);
+    expect(readDaemonOperationMessages(fixture.socket)).toEqual([]);
   });
 
   it.each(["route", "websocket"] as const)(
