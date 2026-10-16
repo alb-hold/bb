@@ -43,7 +43,7 @@ function PhoneFrame({ children }: { children: ReactNode }) {
 }
 
 function NativeThreadPhone() {
-  const [controlMode, setControlMode] = useState<"off" | "one-shot" | "locked">("off");
+  const [controlActive, setControlActive] = useState(false);
   return (
     <QueryClientProvider client={queryClient}>
       <PhoneFrame>
@@ -53,17 +53,15 @@ function NativeThreadPhone() {
         >
           <FakeTerminal />
           <TerminalMobileControls
-            controlMode={controlMode}
+            controlActive={controlActive}
             disabled={false}
             onArrow={() => undefined}
-            onControlChange={setControlMode}
+            onControlChange={setControlActive}
             onInput={() => undefined}
             onKeyboardToggle={() => undefined}
             onPaste={() => undefined}
             onSearch={() => undefined}
             onSelectText={() => undefined}
-            fontSize={12}
-            onFontSizeChange={() => undefined}
           />
           <NativeTerminalPromptBar
             projectId="proj-story"

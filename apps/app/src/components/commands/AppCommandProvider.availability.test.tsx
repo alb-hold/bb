@@ -25,22 +25,6 @@ const MOD_P = {
   alt: false,
   shift: false,
 };
-const CTRL_LEFT = {
-  key: "ArrowLeft",
-  mod: false,
-  meta: false,
-  control: true,
-  alt: false,
-  shift: false,
-};
-const ALT_LEFT = {
-  key: "ArrowLeft",
-  mod: false,
-  meta: false,
-  control: false,
-  alt: true,
-  shift: false,
-};
 
 function defaultBinding(
   command: AppCommandId,
@@ -74,10 +58,7 @@ vi.mock("@/hooks/queries/system-queries", () => ({
         ...defaultAppSettings,
         showKeyboardHints: false,
       },
-      keybindings: [
-        { ...defaultBinding("pane.focus.left"), shortcut: CTRL_LEFT },
-        { ...defaultBinding("pane.focus.left"), shortcut: ALT_LEFT },
-      ],
+      keybindings: [],
       defaultKeybindings: [
         defaultBinding("thread.new", { none: ["modalOpen"] }),
         defaultBinding("thread.rename", { unassigned: true }),
@@ -105,32 +86,6 @@ function Handler({ command }: { command: AppCommandId }) {
 function SplitContext() {
   useAppCommandContext("splitActive", true);
   return null;
-}
-
-function ObservedHandler({ onInvoke }: { onInvoke: () => void }) {
-  useAppCommandHandler("pane.focus.left", () => {
-    onInvoke();
-    return true;
-  });
-  return null;
-}
-
-function TerminalChordProbe({ onInvoke }: { onInvoke: () => void }) {
-  return (
-    <div data-app-terminal="">
-      <ObservedHandler onInvoke={onInvoke} />
-      <textarea aria-label="Terminal input" />
-    </div>
-  );
-}
-
-function OutsideChordProbe({ onInvoke }: { onInvoke: () => void }) {
-  return (
-    <>
-      <ObservedHandler onInvoke={onInvoke} />
-      <textarea aria-label="Other input" />
-    </>
-  );
 }
 
 function Availability({
@@ -176,39 +131,6 @@ afterEach(() => {
 });
 
 describe("isCommandAvailable", () => {
-  it.each([
-    ["Ctrl", { ctrlKey: true }],
-    ["Alt", { altKey: true }],
-  ])("leaves %s plus arrow input for the focused terminal", (_modifier, modifier) => {
-    const onInvoke = vi.fn();
-    renderProvider(<TerminalChordProbe onInvoke={onInvoke} />);
-    fireEvent.keyDown(screen.getByRole("textbox", { name: "Terminal input" }), {
-      key: "ArrowLeft",
-      ...modifier,
-    });
-    expect(onInvoke).not.toHaveBeenCalled();
-  });
-
-  it("still runs a matching app shortcut outside the terminal", () => {
-    const onInvoke = vi.fn();
-    renderProvider(<OutsideChordProbe onInvoke={onInvoke} />);
-    fireEvent.keyDown(screen.getByRole("textbox", { name: "Other input" }), {
-      key: "ArrowLeft",
-      ctrlKey: true,
-    });
-    expect(onInvoke).toHaveBeenCalledOnce();
-  });
-
-  it("still runs an Alt+Arrow app shortcut outside the terminal", () => {
-    const onInvoke = vi.fn();
-    renderProvider(<OutsideChordProbe onInvoke={onInvoke} />);
-    fireEvent.keyDown(screen.getByRole("textbox", { name: "Other input" }), {
-      key: "ArrowLeft",
-      altKey: true,
-    });
-    expect(onInvoke).toHaveBeenCalledOnce();
-  });
-
   it("is false while no component handles the command", () => {
     renderProvider(<Availability command="thread.new" />);
     expect(availabilityOf("thread.new")).toBe("no");

@@ -114,7 +114,7 @@ describe("TerminalSearch shortcuts and closed controls", () => {
 
     render(
       <TerminalMobileControls
-        controlMode="off"
+        controlActive={false}
         disabled={false}
         onArrow={vi.fn()}
         onControlChange={vi.fn()}
@@ -124,8 +124,6 @@ describe("TerminalSearch shortcuts and closed controls", () => {
         onSearch={vi.fn()}
         searchAvailable={addonModule !== null}
         onSelectText={vi.fn()}
-        fontSize={12}
-        onFontSizeChange={vi.fn()}
       />,
     );
     const mobileControls = document.querySelector(

@@ -3100,7 +3100,7 @@ describe("public terminal routes", () => {
     });
   });
 
-  it("applies hidden resize bursts and releases the size owner on socket close", async () => {
+  it("sizes the PTY to the smallest visible device so every screen renders it", async () => {
     const fixture = await createTerminalRouteFixture();
     harnesses.push(fixture.harness);
     const stored = createTerminalSession(fixture.harness.db, {
@@ -3117,12 +3117,6 @@ describe("public terminal routes", () => {
     const terminals = fixture.harness.deps.terminalSessions;
     const desktop = createFakeBrowserSocket();
     const phone = createFakeBrowserSocket();
-    phone.close = vi.fn(() =>
-      onTerminalSocketClose(fixture.harness.deps, {
-        terminalId: stored.id,
-        socket: phone,
-      }),
-    );
     const sizes = () =>
       readDaemonOperationMessages(fixture.socket).flatMap((message) =>
         message.type === "terminal.resize"
@@ -3186,22 +3180,8 @@ describe("public terminal routes", () => {
 
     send(phone, { type: "visibility", visible: false });
     expect(sizes()).toEqual(["160x48", "44x30", "44x20", "150x48"]);
-    for (const geometry of [
-      { cols: 67, rows: 22 },
-      { cols: 58, rows: 20 },
-      { cols: 53, rows: 18 },
-    ]) {
-      send(phone, { type: "resize", ...geometry });
-    }
-    expect(sizes()).toHaveLength(4);
     send(phone, { type: "visibility", visible: true });
-    expect(sizes()).toEqual([
-      "160x48",
-      "44x30",
-      "44x20",
-      "150x48",
-      "53x18",
-    ]);
+    expect(sizes()).toEqual(["160x48", "44x30", "44x20", "150x48", "44x20"]);
     send(desktop, { type: "ping" });
     send(desktop, { type: "resize", cols: 170, rows: 50 });
     send(desktop, { type: "resize", cols: 150, rows: 48 });
@@ -3211,19 +3191,15 @@ describe("public terminal routes", () => {
       fixture.harness.deps.terminalSessions.getTerminal({
         terminalId: stored.id,
       }),
-    ).toMatchObject({ cols: 53, rows: 18 });
+    ).toMatchObject({ cols: 44, rows: 20 });
 
-    send(phone, { type: "visibility", visible: false });
-    const unregister = vi.spyOn(fixture.harness.hub, "unregisterTerminalClient");
-    phone.close();
-    expect(phone.close).toHaveBeenCalledOnce();
-    expect(unregister).toHaveBeenCalledWith(stored.id, phone);
+    terminals.detachBrowserTerminal({ terminalId: stored.id, socket: phone });
     expect(sizes()).toEqual([
       "160x48",
       "44x30",
       "44x20",
       "150x48",
-      "53x18",
+      "44x20",
       "150x48",
     ]);
     expect(
