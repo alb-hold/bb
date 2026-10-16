@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -13,6 +14,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createConnection, migrate, upsertInstalledPlugin } from "../../db/src/index.js";
 import {
   DESKTOP_OWNED_RUNTIME_SHUTDOWN_GRACE_MS,
   SERVER_SHUTDOWN_BOUND_MS,
@@ -27,6 +29,7 @@ const shutdownLauncherEntry = join(fixtureDir, "sigterm-launcher.mjs");
 const slowChildEntry = join(fixtureDir, "slow-stop-child.mjs");
 const realServerEntry = join(fixtureDir, "real-server-entry.mjs");
 const realLauncherEntry = join(fixtureDir, "real-server-launcher.mjs");
+const pluginTimeoutLauncherEntry = join(fixtureDir, "plugin-timeout-launcher.mjs");
 const startupStallLauncherEntry = join(fixtureDir, "startup-stall-launcher.mjs");
 const liveDisconnectLauncherEntry = join(fixtureDir, "disconnect-live-launcher.mjs");
 const pluginStopTimeoutEntry = join(fixtureDir, "plugin-stop-timeout.mjs");
@@ -467,6 +470,143 @@ describe("server process ownership", () => {
     expect(result.pluginObservedDatabaseError).toBe(false);
     expect(result.elapsedMs).toBeLessThanOrEqual(result.shutdownBoundMs);
   }, 15_000);
+
+  it("keeps the production database open when a real plugin does not stop", async () => {
+    const dir = scratchDir();
+    const port = await freePort();
+    const databasePath = join(dir, "bb.db");
+    const pluginDir = join(dir, "plugins", "stuck-dispose");
+    const pluginReady = join(dir, "plugin-ready");
+    const pluginStopping = join(dir, "plugin-stopping");
+    const dbCloseMarker = join(dir, "database-closed");
+    const serverPidFile = join(dir, "server.pid");
+    const pluginDb = createConnection(databasePath);
+    migrate(pluginDb);
+    upsertInstalledPlugin(pluginDb, {
+      id: "stuck-dispose",
+      source: `path:${pluginDir}`,
+      provenance: { kind: "direct" },
+      sourceIntent: { kind: "path", canonicalPath: pluginDir },
+      exactResolution: { kind: "path" },
+      updateState: {
+        lastCheckAt: null,
+        availableCompatibleVersion: null,
+        newestIncompatibleVersion: null,
+        statusDetail: null,
+      },
+      activeArtifactId: null,
+      rootDir: pluginDir,
+      version: "0.1.0",
+      enabled: true,
+      enabledFollowsDefault: false,
+    });
+    pluginDb.$client.close();
+    mkdirSync(pluginDir, { recursive: true });
+    writeFileSync(
+      join(pluginDir, "package.json"),
+      JSON.stringify({
+        name: "bb-plugin-stuck-dispose",
+        version: "0.1.0",
+        bb: {
+          name: "Stuck dispose fixture",
+          description: "A plugin whose cleanup does not finish.",
+          branding: { icon: "Zap" },
+          server: "./server.ts",
+        },
+      }),
+    );
+    writeFileSync(
+      join(pluginDir, "server.ts"),
+      `import { writeFileSync } from "node:fs";\nexport default function plugin(bb: any) {\n  writeFileSync(${JSON.stringify(pluginReady)}, "ready");\n  bb.onDispose(() => {\n    writeFileSync(${JSON.stringify(pluginStopping)}, "started");\n    return new Promise<void>(() => {});\n  });\n}`,
+    );
+    const launcher = spawnFixture(pluginTimeoutLauncherEntry, {
+      BB_DATA_DIR: dir,
+      BB_ORPHAN_READY: join(dir, "server-starting"),
+      BB_RUN_SHUTDOWN_MARKER: join(dir, "http-shutdown.log"),
+      BB_REAL_SERVER_ENTRY: realServerEntry,
+      BB_SERVER_PID_FILE: serverPidFile,
+      BB_SERVER_CHILD_OUTPUT: join(dir, "server-output.log"),
+      BB_SERVER_BIND_HOST: "127.0.0.1",
+      BB_SERVER_PORT: String(port),
+      BB_HOST_DAEMON_PORT: String(port + 1),
+      BB_TELEMETRY: "false",
+      NODE_ENV: "test",
+      P7_DB_PATH: databasePath,
+      P7_DB_CLOSE_MARKER: dbCloseMarker,
+    });
+    let serverPid: number | null = null;
+    let serverExited = false;
+    try {
+      try {
+        serverPid = Number(await waitForFile(serverPidFile, 45_000));
+      } catch (error) {
+        const outputPath = join(dir, "server-output.log");
+        throw new Error(
+          `${String(error)}; server output: ${existsSync(outputPath) ? readFileSync(outputPath, "utf8") : "none"}; launcher output: ${childErrors.get(launcher)?.stderr ?? "none"}`,
+        );
+      }
+      activeChildren.add(serverPid);
+      const healthDeadline = Date.now() + 45_000;
+      while (Date.now() < healthDeadline) {
+        if (!isProcessRunning(serverPid)) {
+          const serverOutputPath = join(dir, "server-output.log");
+          const serverOutput = existsSync(serverOutputPath)
+            ? readFileSync(serverOutputPath, "utf8")
+            : "no server output captured";
+          throw new Error(
+            `Server ${serverPid} exited before becoming healthy: ${serverOutput}`,
+          );
+        }
+        try {
+          const response = await fetch(`http://127.0.0.1:${port}/`);
+          if (response.status === 200) break;
+        } catch {}
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      expect(await fetch(`http://127.0.0.1:${port}/`).then((response) => response.status)).toBe(200);
+      try {
+        await waitForFile(pluginReady, 10_000);
+      } catch (error) {
+        const outputPath = join(dir, "server-output.log");
+        throw new Error(
+          `${String(error)}; server output: ${existsSync(outputPath) ? readFileSync(outputPath, "utf8") : "none"}`,
+        );
+      }
+      const startedAt = Date.now();
+      process.kill(launcher.pid!, "SIGKILL");
+      await waitForExit(launcher, 2_000);
+      try {
+        await waitForFile(pluginStopping, SERVER_SHUTDOWN_BOUND_MS);
+      } catch (error) {
+        const outputPath = join(dir, "server-output.log");
+        throw new Error(
+          `${String(error)}; server output: ${existsSync(outputPath) ? readFileSync(outputPath, "utf8") : "none"}`,
+        );
+      }
+      await waitForProcessExitByPid(serverPid, SERVER_SHUTDOWN_BOUND_MS + 1_000);
+      serverExited = true;
+      expect(Date.now() - startedAt).toBeLessThanOrEqual(
+        SERVER_SHUTDOWN_BOUND_MS + 1_000,
+      );
+      expect(existsSync(dbCloseMarker), "production runShutdown closed bb.db").toBe(false);
+      const reopenedDb = createConnection(databasePath);
+      try {
+        reopenedDb.$client.prepare("CREATE TABLE shutdown_reopen_probe (value INTEGER)").run();
+        expect(reopenedDb.$client.prepare("SELECT count(*) AS count FROM shutdown_reopen_probe").get()).toEqual({ count: 0 });
+      } finally {
+        reopenedDb.$client.close();
+      }
+    } finally {
+      if (!serverExited && serverPid !== null && activeChildren.has(serverPid)) {
+        try { process.kill(serverPid, "SIGKILL"); } catch {}
+        activeChildren.delete(serverPid);
+      }
+      if (launcher.exitCode === null && launcher.signalCode === null) {
+        try { process.kill(launcher.pid!, "SIGKILL"); } catch {}
+        await waitForExit(launcher, 2_000).catch(() => undefined);
+      }
+    }
+  }, 60_000);
 
   it("keeps a standalone server alive without an IPC parent channel", async () => {
     const dir = scratchDir();
