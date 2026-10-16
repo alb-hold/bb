@@ -479,6 +479,7 @@ describe("server process ownership", () => {
     const pluginReady = join(dir, "plugin-ready");
     const pluginStopping = join(dir, "plugin-stopping");
     const dbCloseMarker = join(dir, "database-closed");
+    const httpShutdownMarker = join(dir, "http-shutdown.log");
     const serverPidFile = join(dir, "server.pid");
     const pluginDb = createConnection(databasePath);
     migrate(pluginDb);
@@ -522,7 +523,7 @@ describe("server process ownership", () => {
     const launcher = spawnFixture(pluginTimeoutLauncherEntry, {
       BB_DATA_DIR: dir,
       BB_ORPHAN_READY: join(dir, "server-starting"),
-      BB_RUN_SHUTDOWN_MARKER: join(dir, "http-shutdown.log"),
+      BB_RUN_SHUTDOWN_MARKER: httpShutdownMarker,
       BB_REAL_SERVER_ENTRY: realServerEntry,
       BB_SERVER_PID_FILE: serverPidFile,
       BB_SERVER_CHILD_OUTPUT: join(dir, "server-output.log"),
@@ -588,6 +589,7 @@ describe("server process ownership", () => {
       expect(Date.now() - startedAt).toBeLessThanOrEqual(
         SERVER_SHUTDOWN_BOUND_MS + 1_000,
       );
+      expect(readFileSync(httpShutdownMarker, "utf8")).toContain("server-close");
       expect(existsSync(dbCloseMarker), "production runShutdown closed bb.db").toBe(false);
       const reopenedDb = createConnection(databasePath);
       try {
