@@ -3145,7 +3145,7 @@ describe("native terminal threads", () => {
         },
       });
       releaseCreate();
-      await vi.advanceTimersByTimeAsync(10_001);
+      await vi.advanceTimersByTimeAsync(65_001);
       await Promise.all([firstReconnect, secondReconnect]);
 
       expect(createSpy).toHaveBeenCalledTimes(1);
@@ -3167,6 +3167,7 @@ describe("native terminal threads", () => {
       expect(interruptionReasons(fixture, running.thread.id)).toEqual([]);
 
       now = 65_001;
+      expect(interruptionReasons(fixture, running.thread.id)).toEqual([]);
       expect(getThread(fixture.harness.db, running.thread.id)?.status).toBe(
         "active",
       );
