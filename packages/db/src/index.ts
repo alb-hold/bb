@@ -24,6 +24,7 @@ export {
   clearTerminalAttention,
   ensureTerminalAttentionTable,
   getTerminalAttention,
+  listTerminalAttention,
   upsertTerminalAttention,
   type TerminalAttentionKind,
   type TerminalAttentionRecord,

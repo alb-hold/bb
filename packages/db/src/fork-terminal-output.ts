@@ -72,6 +72,10 @@ export function appendRetainedTerminalOutputChunk(
 ): void {
   const run = db.$client.transaction(() => {
     pruneRetainedTerminalOutput(db, args.now);
+    const owner = db.$client
+      .prepare("SELECT host_id AS hostId FROM terminal_sessions WHERE id = ?")
+      .get(args.terminalSessionId) as { hostId: string } | undefined;
+    if (owner?.hostId !== args.hostId) return;
 
     const existing = db.$client
       .prepare(
@@ -190,13 +194,14 @@ export function appendRetainedTerminalOutputChunk(
 export function markRetainedTerminalOutputExited(
   db: DbConnection,
   terminalSessionId: string,
+  hostId: string,
   now: number,
 ): void {
   db.$client
     .prepare(
-      `UPDATE fork_terminal_output SET expires_at = ? WHERE terminal_session_id = ?`,
+      `UPDATE fork_terminal_output SET expires_at = ? WHERE terminal_session_id = ? AND host_id = ?`,
     )
-    .run(now + TERMINAL_OUTPUT_RETENTION_MS, terminalSessionId);
+    .run(now + TERMINAL_OUTPUT_RETENTION_MS, terminalSessionId, hostId);
 }
 
 export function getRetainedTerminalOutput(

@@ -5,6 +5,7 @@ import {
   closeSession,
   createTerminalSession,
   getAppSettings,
+  getRetainedTerminalOutput,
   getThread,
   getTerminalSession,
   listTerminalSessions,
@@ -1620,6 +1621,136 @@ describe("public terminal routes", () => {
         status: "exited",
         exitCode: 0,
       }),
+    );
+  });
+
+  it("accepts retained output only from the terminal's owning host", async () => {
+    const fixture = await createTerminalRouteFixture();
+    harnesses.push(fixture.harness);
+    const warn = vi.spyOn(fixture.harness.deps.logger, "warn");
+    const foreignHost = seedHostSession(fixture.harness, {
+      id: "host-foreign",
+      name: "Foreign Host",
+    });
+    const makeOwnedTerminal = (title: string) =>
+      createTerminalSession(fixture.harness.db, {
+        cols: 120,
+        daemonSessionId: fixture.session.id,
+        environmentId: fixture.environment.id,
+        hostId: fixture.host.id,
+        initialCwd: fixture.environment.path ?? "/tmp/terminal-workspace",
+        rows: 32,
+        status: "running",
+        threadId: fixture.thread.id,
+        title,
+      });
+    const trustedTerminal = makeOwnedTerminal("Trusted terminal output");
+    const replayTerminal = makeOwnedTerminal("Trusted terminal replay");
+    const trustedChunk = {
+      seq: 0,
+      dataBase64: Buffer.from("owner output\n").toString("base64"),
+    };
+    const foreignChunk = {
+      seq: 1,
+      dataBase64: Buffer.from("foreign poison\n").toString("base64"),
+    };
+    const replayChunk = {
+      seq: 0,
+      dataBase64: Buffer.from("owner replay\n").toString("base64"),
+    };
+
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.host.id,
+      sessionId: fixture.session.id,
+      message: {
+        type: "terminal.output",
+        terminalId: trustedTerminal.id,
+        chunk: trustedChunk,
+      },
+    });
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: foreignHost.host.id,
+      sessionId: foreignHost.session.id,
+      message: {
+        type: "terminal.replay",
+        requestId: "foreign-replay",
+        terminalId: trustedTerminal.id,
+        chunks: [foreignChunk],
+        replayStartSeq: 1,
+        nextSeq: 2,
+      },
+    });
+    expect(
+      getRetainedTerminalOutput(fixture.harness.db, {
+        hostId: fixture.host.id,
+        terminalSessionId: trustedTerminal.id,
+        now: Date.now(),
+      }),
+    ).toEqual([trustedChunk]);
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.host.id,
+      sessionId: fixture.session.id,
+      message: {
+        type: "terminal.exited",
+        terminalId: trustedTerminal.id,
+        exitCode: 0,
+        closeReason: "process-exit",
+      },
+    });
+    const unchangedResponse = await fixture.harness.app.request(
+      `/api/v1/terminals/${trustedTerminal.id}/output`,
+    );
+    expect(
+      terminalOutputResponseSchema.parse(await readJson(unchangedResponse))
+        .chunks,
+    ).toEqual([trustedChunk]);
+
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: foreignHost.host.id,
+      sessionId: foreignHost.session.id,
+      message: {
+        type: "terminal.replay",
+        requestId: "foreign-replay-only",
+        terminalId: replayTerminal.id,
+        chunks: [replayChunk],
+        replayStartSeq: 0,
+        nextSeq: 1,
+      },
+    });
+    expect(
+      getRetainedTerminalOutput(fixture.harness.db, {
+        hostId: fixture.host.id,
+        terminalSessionId: replayTerminal.id,
+        now: Date.now(),
+      }),
+    ).toBeNull();
+
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.host.id,
+      sessionId: fixture.session.id,
+      message: {
+        type: "terminal.replay",
+        requestId: "owner-replay",
+        terminalId: replayTerminal.id,
+        chunks: [replayChunk],
+        replayStartSeq: 0,
+        nextSeq: 1,
+      },
+    });
+    expect(
+      getRetainedTerminalOutput(fixture.harness.db, {
+        hostId: fixture.host.id,
+        terminalSessionId: replayTerminal.id,
+        now: Date.now(),
+      }),
+    ).toEqual([replayChunk]);
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        hostId: foreignHost.host.id,
+        ownerHostId: fixture.host.id,
+        terminalId: trustedTerminal.id,
+      }),
+      "Ignoring terminal replay from a non-owner host",
     );
   });
 

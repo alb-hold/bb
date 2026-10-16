@@ -10,6 +10,7 @@ import {
   appendRetainedTerminalOutputChunk,
   clearTerminalAttention,
   getTerminalAttention,
+  listTerminalAttention,
   getSessionById,
   getTerminalSession,
   getRetainedTerminalOutput,
@@ -701,6 +702,36 @@ export class TerminalSessionLifecycle {
           (query.cwd === undefined || session.initialCwd === query.cwd),
       )
       .map((row) => this.toTerminalSession(row));
+  }
+
+  listAttention(): TerminalSession[] {
+    return listTerminalAttention(this.options.db).flatMap(
+      ({ terminalSessionId }) => {
+        const row = getTerminalById(this.options.db, terminalSessionId);
+        return row === null ? [] : [this.toTerminalSession(row)];
+      },
+    );
+  }
+
+  clearAttention(terminalId: string): TerminalSession {
+    const row = getTerminalById(this.options.db, terminalId);
+    if (row === null) {
+      throw new ApiError(
+        404,
+        "terminal_not_found",
+        "Terminal session not found",
+      );
+    }
+    this.clearTerminalAttention(terminalId);
+    const updated = getTerminalById(this.options.db, terminalId);
+    if (updated === null) {
+      throw new ApiError(
+        404,
+        "terminal_not_found",
+        "Terminal session not found",
+      );
+    }
+    return this.toTerminalSession(updated);
   }
 
   getTerminal(args: GetTerminalArgs): TerminalSession {
@@ -2030,6 +2061,27 @@ export class TerminalSessionLifecycle {
         );
         return;
       case "terminal.exited":
+        const current = getTerminalById(
+          this.options.db,
+          args.message.terminalId,
+        );
+        if (
+          !current ||
+          current.hostId !== args.hostId ||
+          current.daemonSessionId !== args.sessionId
+        ) {
+          if (current) {
+            this.options.logger.warn(
+              {
+                hostId: args.hostId,
+                ownerHostId: current.hostId,
+                terminalId: current.id,
+              },
+              "Ignoring terminal exit from a non-owner host",
+            );
+          }
+          return;
+        }
         const exited = updateTerminalSession(this.options.db, {
           scope: {
             daemonSessionId: args.sessionId,
@@ -2048,6 +2100,7 @@ export class TerminalSessionLifecycle {
           markRetainedTerminalOutputExited(
             this.options.db,
             exited.id,
+            exited.hostId,
             Date.now(),
           );
           this.pendingCloses.settle(
@@ -2073,18 +2126,34 @@ export class TerminalSessionLifecycle {
         }
         return;
       case "terminal.output": {
-        this.outputFlow.recordOutput(
-          args.message.terminalId,
-          args.sessionId,
-          args.message.chunk.seq,
-        );
         const current = getTerminalById(
           this.options.db,
           args.message.terminalId,
         );
         if (
-          current?.status !== "running" ||
-          current.daemonSessionId !== args.sessionId ||
+          !current ||
+          current.hostId !== args.hostId ||
+          current.daemonSessionId !== args.sessionId
+        ) {
+          if (current) {
+            this.options.logger.warn(
+              {
+                hostId: args.hostId,
+                ownerHostId: current.hostId,
+                terminalId: current.id,
+              },
+              "Ignoring terminal output from a non-owner host",
+            );
+          }
+          return;
+        }
+        this.outputFlow.recordOutput(
+          args.message.terminalId,
+          args.sessionId,
+          args.message.chunk.seq,
+        );
+        if (
+          current.status !== "running" ||
           this.catchingUpTerminalIds.has(current.id)
         ) {
           return;
@@ -2102,6 +2171,21 @@ export class TerminalSessionLifecycle {
             this.options.db,
             args.message.terminalId,
           );
+          if (
+            current &&
+            (current.hostId !== args.hostId ||
+              current.daemonSessionId !== args.sessionId)
+          ) {
+            this.options.logger.warn(
+              {
+                hostId: args.hostId,
+                ownerHostId: current.hostId,
+                terminalId: current.id,
+              },
+              "Ignoring terminal replay from a non-owner host",
+            );
+            return;
+          }
           if (current) {
             for (const chunk of args.message.chunks) {
               this.retainTerminalOutput(current, toTerminalOutputChunk(chunk));
@@ -2110,6 +2194,7 @@ export class TerminalSessionLifecycle {
               markRetainedTerminalOutputExited(
                 this.options.db,
                 current.id,
+                current.hostId,
                 Date.now(),
               );
             }
@@ -2230,6 +2315,7 @@ export class TerminalSessionLifecycle {
     markRetainedTerminalOutputExited(
       this.options.db,
       args.session.id,
+      args.session.hostId,
       Date.now(),
     );
     this.forwardedNextSeqByTerminalId.delete(args.session.id);

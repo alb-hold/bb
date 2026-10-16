@@ -486,6 +486,7 @@ type ExpectedThreadTabsKey = "get" | "update";
 type ExpectedTerminalsKey =
   | "close"
   | "create"
+  | "experimental_attention"
   | "experimental_follow"
   | "get"
   | "input"

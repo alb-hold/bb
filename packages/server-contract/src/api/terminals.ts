@@ -57,6 +57,13 @@ export const terminalListResponseSchema = z.object({
 });
 export type TerminalListResponse = z.infer<typeof terminalListResponseSchema>;
 
+export const terminalAttentionListResponseSchema = z.object({
+  sessions: z.array(terminalSessionSchema),
+});
+export type TerminalAttentionListResponse = z.infer<
+  typeof terminalAttentionListResponseSchema
+>;
+
 export const terminalListQuerySchema = z
   .object({
     cwd: z.string().trim().min(1).optional(),

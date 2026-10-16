@@ -23,6 +23,7 @@ import { openUrlInExternalBrowser } from "@/lib/url-open-routing";
 import { decodeBase64Bytes } from "@/lib/base64-bytes";
 import { sdk } from "@/lib/sdk";
 import { useAppNavigationHost } from "@/lib/app-navigation-host";
+import { sdk } from "@/lib/sdk";
 import { copyToClipboardWithToast } from "@/lib/clipboard";
 import {
   anchorPointFromMouseEvent,
@@ -729,12 +730,27 @@ export function ThreadTerminalView({
   session,
 }: ThreadTerminalViewProps) {
   const isTouchDevice = useMediaQuery("(pointer: coarse)");
+  const attentionClearRequestRef = useRef<string | null>(null);
   const [controlActive, setControlActive] = useState(false);
   const controlActiveRef = useRef(false);
   const changeControlActive = (active: boolean) => {
     controlActiveRef.current = active;
     setControlActive(active);
   };
+
+  useEffect(() => {
+    if (!isPanelOpen || session.attention == null) return;
+    const requestKey = `${session.id}:${session.attention.seq}`;
+    if (attentionClearRequestRef.current === requestKey) return;
+    attentionClearRequestRef.current = requestKey;
+    void sdk.terminals.experimental_attention
+      .clear({ terminalId: session.id })
+      .then((updatedSession) => onSessionChange?.(updatedSession))
+      .catch(() => {
+        attentionClearRequestRef.current = null;
+        appToast.error("Couldn't clear terminal attention.");
+      });
+  }, [isPanelOpen, onSessionChange, session.attention, session.id]);
   const [terminalReady, setTerminalReady] = useState(false);
   const [promptTrackerState, setPromptTrackerState] = useState(
     EMPTY_TERMINAL_PROMPT_TRACKER,

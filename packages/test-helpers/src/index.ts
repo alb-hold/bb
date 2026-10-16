@@ -26,3 +26,8 @@ export {
 export type { CorpusThread } from "./provider-corpus.js";
 export { makeTempDir, makeTempDirSync } from "./temp-dir.js";
 export { createMemoryStorage } from "./memory-storage.js";
+export {
+  TERMINAL_ATTENTION_CONTRACT_CASES,
+  type TerminalAttentionContractCase,
+  type TerminalAttentionContractSession,
+} from "./terminal-attention-contract.js";

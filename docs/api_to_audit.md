@@ -14,6 +14,29 @@ question.
 [provider-bridge-protocol.md](provider-bridge-protocol.md). An entry without
 a "Docs:" line has no owning doc, so it keeps the essential contract itself.
 
+## `sdk.terminals.experimental_attention`
+
+Lists uncleared terminal attention in oldest-first order, returns the next
+terminal needing attention, and explicitly clears a terminal ring.
+`TerminalAttentionCommandHandler` and `apps/cli/src/commands/terminal.ts` call
+this same SDK area; visibly opening a terminal clears through the existing
+terminal attach path.
+
+Global list and explicit clear operations are intentionally host-wide, matching
+the existing terminal routes. The public API has no per-user principal. Every
+`/api/v1` request passes the server-wide `requestHostProblem` guard in
+`apps/server/src/server.ts`, which rejects untrusted Host headers with
+`forbidden_host`. Existing `GET /terminals`, close, input, and restart routes
+also operate across host terminals without per-caller scoping; these attention
+routes share that server trust boundary.
+
+**Audit before stabilizing.** Verify ordering when timestamps tie and
+cross-client behavior of explicit clearing. The app shortcut uses Alt+Shift+N
+and remains active with terminal focus.
+
+Plugin Guide surface: `The bb SDK` in
+`plugins/plugin-api-docs/src/surfaces.ts`.
+
 ## Composer popups
 
 `ComposerCustomization.experimental_popups` registers `{ id, label, component }`

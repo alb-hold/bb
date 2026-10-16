@@ -11,6 +11,7 @@ import { useRootComposePlacement } from "@/lib/root-compose-selection";
 import { useInitialPromptDraft } from "@/components/promptbox/mentions/initial-prompt-draft";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
+import { useQueryClient } from "@tanstack/react-query";
 import { useSystemProviders } from "@/hooks/queries/system-queries";
 import {
   findLocalPathProjectSourceForHost,
@@ -23,6 +24,7 @@ import type {
   SidebarBootstrapResponse,
   TerminalSession,
 } from "@bb/server-contract";
+import { terminalSessionSchema } from "@bb/server-contract";
 import {
   NewThreadComposer,
   type NewThreadComposerState,
@@ -79,7 +81,11 @@ import {
 import { usePanelBrowser } from "@/components/secondary-panel/usePanelBrowser";
 import { usePanelPluginPanels } from "@/components/secondary-panel/usePanelPluginPanels";
 import { usePanelFiles } from "@/components/secondary-panel/usePanelFiles";
-import { usePanelTerminals } from "@/components/secondary-panel/usePanelTerminals";
+import {
+  terminalTargetForSession,
+  usePanelTerminals,
+} from "@/components/secondary-panel/usePanelTerminals";
+import { applyTerminalSessionUpsert } from "@/hooks/cache-owners/terminal-cache-owner";
 import { useEnvironment } from "@/hooks/queries/environment-queries";
 import { useHostProviderCliStatus } from "@/hooks/queries/system-queries";
 import {
@@ -110,6 +116,7 @@ import {
   useFixedPanelTabsStorageMaintenance,
   useTouchFixedPanelTabsState,
   useUpdateFixedPanelTabsState,
+  useSetFixedRightTerminalActiveTerminal,
 } from "@/lib/fixed-panel-tabs";
 import type { MarkdownPreviewLinkHandler } from "@/components/ui/markdown-link";
 import { UrlOpenRoutingProvider } from "@/lib/url-open-routing";
@@ -174,6 +181,22 @@ import {
 const ROOT_COMPOSE_SIDEBAR_ACTION_ALIGNED_TOP_PADDING_CLASS = "pt-14";
 
 const EMPTY_TERMINAL_SESSIONS: readonly TerminalSession[] = [];
+
+function terminalAttentionSessionFromState(
+  state: unknown,
+): TerminalSession | null {
+  if (
+    state === null ||
+    typeof state !== "object" ||
+    !("terminalAttentionSession" in state)
+  ) {
+    return null;
+  }
+  const parsed = terminalSessionSchema.safeParse(
+    state.terminalAttentionSession,
+  );
+  return parsed.success && parsed.data.threadId === null ? parsed.data : null;
+}
 
 function readSectionIdFromLocationState(state: unknown): string | null {
   if (typeof state !== "object" || state === null) {
@@ -472,6 +495,10 @@ function RootComposeSurface({
   const isFocusedPane = paneContext?.isFocused ?? true;
   const location = useLocation();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const [terminalAttentionSession] = useState(() =>
+    terminalAttentionSessionFromState(location.state),
+  );
   const [, setPlacement] = useRootComposePlacement();
   const isPointerCoarse = usePointerCoarse();
   const quickCreateProject = useQuickCreateProjectController();
@@ -716,6 +743,31 @@ function RootComposeSurface({
       isCompactViewport,
       threadId: ROOT_COMPOSE_FIXED_PANEL_STATE_ID,
     });
+  const setActiveTerminal = useSetFixedRightTerminalActiveTerminal(
+    ROOT_COMPOSE_FIXED_PANEL_STATE_ID,
+    null,
+  );
+  useEffect(() => {
+    const session = terminalAttentionSessionFromState(location.state);
+    if (session === null) return;
+    applyTerminalSessionUpsert({ queryClient, session });
+    setActiveTerminal(session.id, terminalTargetForSession(session));
+    secondaryPanelDrawerVisibility.openDrawer();
+    void navigate(`${location.pathname}${location.search}${location.hash}`, {
+      replace: true,
+      state: null,
+    });
+  }, [
+    location.hash,
+    location.pathname,
+    location.search,
+    location.state,
+    navigate,
+    queryClient,
+    secondaryPanelDrawerVisibility,
+    secondaryPanelDrawerVisibility.openDrawer,
+    setActiveTerminal,
+  ]);
   const isWorkspacePanelOpen = isCompactViewport
     ? secondaryPanelDrawerVisibility.isDrawerVisible
     : isPersistedSecondaryPanelOpen;
@@ -820,20 +872,24 @@ function RootComposeSurface({
         isSecondaryPanelOpen && rootPanelTerminalTarget?.kind === "host_path",
     },
   );
-  const loadedTerminalSessions = useMemo(
-    () =>
-      buildRootComposeTerminalSessions({
-        environmentTerminalSessions:
-          environmentTerminalsListQuery.data?.sessions,
-        globalTerminalSessions: globalTerminalsListQuery.data?.sessions,
-        terminalTarget: rootPanelTerminalTarget,
-      }),
-    [
-      environmentTerminalsListQuery.data?.sessions,
-      globalTerminalsListQuery.data?.sessions,
-      rootPanelTerminalTarget,
-    ],
-  );
+  const loadedTerminalSessions = useMemo(() => {
+    const sessions = buildRootComposeTerminalSessions({
+      environmentTerminalSessions: environmentTerminalsListQuery.data?.sessions,
+      globalTerminalSessions: globalTerminalsListQuery.data?.sessions,
+      terminalTarget: rootPanelTerminalTarget,
+    });
+    if (terminalAttentionSession === null) return sessions;
+    return sessions === undefined
+      ? [terminalAttentionSession]
+      : sessions.some(({ id }) => id === terminalAttentionSession.id)
+        ? sessions
+        : [...sessions, terminalAttentionSession];
+  }, [
+    environmentTerminalsListQuery.data?.sessions,
+    globalTerminalsListQuery.data?.sessions,
+    rootPanelTerminalTarget,
+    terminalAttentionSession,
+  ]);
   const terminalSessions = loadedTerminalSessions ?? EMPTY_TERMINAL_SESSIONS;
   const terminalsListLoaded = loadedTerminalSessions !== undefined;
   const terminalsById = useMemo(
