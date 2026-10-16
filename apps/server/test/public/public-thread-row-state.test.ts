@@ -1,4 +1,7 @@
-import { threadListResponseSchema, threadRowStateSchema } from "@bb/server-contract";
+import {
+  threadListResponseSchema,
+  threadRowStateSchema,
+} from "@bb/server-contract";
 import { describe, expect, it, vi } from "vitest";
 import { readJson } from "../helpers/json.js";
 import { seedThreadFixture } from "../helpers/seed.js";
@@ -39,15 +42,31 @@ describe("public thread row state", () => {
       });
       expect(setStatus.status).toBe(200);
       expect(notifyThread).toHaveBeenCalledWith(thread.id, ["status-changed"]);
-      expect(notifyProject).toHaveBeenCalledWith(thread.projectId, ["threads-changed"]);
+      expect(notifyProject).toHaveBeenCalledWith(thread.projectId, [
+        "threads-changed",
+      ]);
+
+      const setSecondStatus = await updateState(harness, thread.id, {
+        action: "status-set",
+        key: "planning",
+        status: { value: "In progress" },
+      });
+      expect(setSecondStatus.status).toBe(200);
 
       const setProgress = await updateState(harness, thread.id, {
         action: "progress-set",
         progress: { value: 0.75, label: "Review" },
       });
       expect(setProgress.status).toBe(200);
-      expect(threadRowStateSchema.parse(await readJson(await readState(harness, thread.id)))).toEqual({
-        statuses: { review: { value: "Ready", icon: "✓", priority: 5 } },
+      expect(
+        threadRowStateSchema.parse(
+          await readJson(await readState(harness, thread.id)),
+        ),
+      ).toEqual({
+        statuses: {
+          review: { value: "Ready", icon: "✓", priority: 5 },
+          planning: { value: "In progress" },
+        },
         progress: { value: 0.75, label: "Review" },
       });
       const listResponse = await harness.app.request(
@@ -55,37 +74,111 @@ describe("public thread row state", () => {
       );
       const list = threadListResponseSchema.parse(await readJson(listResponse));
       expect(list.find((entry) => entry.id === thread.id)?.rowState).toEqual({
-        statuses: { review: { value: "Ready", icon: "✓", priority: 5 } },
+        statuses: {
+          review: { value: "Ready", icon: "✓", priority: 5 },
+          planning: { value: "In progress" },
+        },
         progress: { value: 0.75, label: "Review" },
       });
 
-      for (let index = 0; index < 7; index += 1) {
-        expect((await updateState(harness, thread.id, {
-          action: "status-set",
-          key: `status-${index}`,
-          status: { value: "ok" },
-        })).status).toBe(200);
+      for (let index = 0; index < 6; index += 1) {
+        expect(
+          (
+            await updateState(harness, thread.id, {
+              action: "status-set",
+              key: `status-${index}`,
+              status: { value: "ok" },
+            })
+          ).status,
+        ).toBe(200);
       }
-      expect((await updateState(harness, thread.id, {
-        action: "status-set",
-        key: "ninth",
-        status: { value: "too many" },
-      })).status).toBe(400);
-      expect((await updateState(harness, thread.id, {
-        action: "progress-set",
-        progress: { value: 1.01 },
-      })).status).toBe(400);
-      expect((await updateState(harness, thread.id, {
-        action: "status-set",
-        key: "review",
-        status: { value: "x".repeat(121) },
-      })).status).toBe(400);
+      expect(
+        (
+          await updateState(harness, thread.id, {
+            action: "status-set",
+            key: "ninth",
+            status: { value: "too many" },
+          })
+        ).status,
+      ).toBe(400);
+      expect(
+        (
+          await updateState(harness, thread.id, {
+            action: "progress-set",
+            progress: { value: 1.01 },
+          })
+        ).status,
+      ).toBe(400);
+      expect(
+        (
+          await updateState(harness, thread.id, {
+            action: "status-set",
+            key: "review",
+            status: { value: "x".repeat(121) },
+          })
+        ).status,
+      ).toBe(400);
 
-      const cleared = await updateState(harness, thread.id, { action: "clear" });
+      const clearOne = await updateState(harness, thread.id, {
+        action: "status-clear",
+        key: "review",
+      });
+      expect(threadRowStateSchema.parse(await readJson(clearOne))).toEqual({
+        statuses: {
+          planning: { value: "In progress" },
+          ...Object.fromEntries(
+            Array.from({ length: 6 }, (_, index) => [
+              `status-${index}`,
+              { value: "ok" },
+            ]),
+          ),
+        },
+        progress: { value: 0.75, label: "Review" },
+      });
+      expect(notifyThread).toHaveBeenLastCalledWith(thread.id, [
+        "status-changed",
+      ]);
+      expect(notifyProject).toHaveBeenLastCalledWith(thread.projectId, [
+        "threads-changed",
+      ]);
+
+      const clearProgress = await updateState(harness, thread.id, {
+        action: "progress-clear",
+      });
+      expect(threadRowStateSchema.parse(await readJson(clearProgress))).toEqual(
+        {
+          statuses: {
+            planning: { value: "In progress" },
+            ...Object.fromEntries(
+              Array.from({ length: 6 }, (_, index) => [
+                `status-${index}`,
+                { value: "ok" },
+              ]),
+            ),
+          },
+          progress: null,
+        },
+      );
+      expect(notifyThread).toHaveBeenLastCalledWith(thread.id, [
+        "status-changed",
+      ]);
+      expect(notifyProject).toHaveBeenLastCalledWith(thread.projectId, [
+        "threads-changed",
+      ]);
+
+      const cleared = await updateState(harness, thread.id, {
+        action: "clear",
+      });
       expect(threadRowStateSchema.parse(await readJson(cleared))).toEqual({
         statuses: {},
         progress: null,
       });
+      expect(notifyThread).toHaveBeenLastCalledWith(thread.id, [
+        "status-changed",
+      ]);
+      expect(notifyProject).toHaveBeenLastCalledWith(thread.projectId, [
+        "threads-changed",
+      ]);
     });
   });
 });

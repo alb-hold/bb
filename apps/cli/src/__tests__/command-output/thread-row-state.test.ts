@@ -23,7 +23,17 @@ describe("bb thread row-status and progress", () => {
     stubServerApi({ "v1.threads.:id.row-state.$patch": update });
 
     await runCommand(
-      ["thread", "row-status", "set", "review", "Ready", "--icon", "✓", "--priority", "3"],
+      [
+        "thread",
+        "row-status",
+        "set",
+        "review",
+        "Ready",
+        "--icon",
+        "✓",
+        "--priority",
+        "3",
+      ],
       register,
     );
     expect(update.mock.calls[0]?.[0]).toEqual({
@@ -35,10 +45,16 @@ describe("bb thread row-status and progress", () => {
       },
     });
 
-    await runCommand(["thread", "progress", "0.5", "--label", "Review"], register);
+    await runCommand(
+      ["thread", "progress", "0.5", "--label", "Review"],
+      register,
+    );
     expect(update.mock.calls[1]?.[0]).toEqual({
       param: { id: "thread-current" },
-      json: { action: "progress-set", progress: { value: 0.5, label: "Review" } },
+      json: {
+        action: "progress-set",
+        progress: { value: 0.5, label: "Review" },
+      },
     });
   });
 
@@ -58,15 +74,48 @@ describe("bb thread row-status and progress", () => {
     );
   });
 
+  it("clears one status, all statuses, and progress", async () => {
+    vi.stubEnv("BB_THREAD_ID", "thread-current");
+    const update = vi.fn(async (_request: { json: unknown }) => ({
+      statuses: {},
+      progress: null,
+    }));
+    stubServerApi({ "v1.threads.:id.row-state.$patch": update });
+
+    await runCommand(["thread", "row-status", "clear", "review"], register);
+    await runCommand(["thread", "row-status", "clear"], register);
+    await runCommand(["thread", "progress", "clear"], register);
+
+    expect(update.mock.calls.map(([request]) => request.json)).toEqual([
+      { action: "status-clear", key: "review" },
+      { action: "status-clear" },
+      { action: "progress-clear" },
+    ]);
+  });
+
   it("registers row-status commands separately from the show aliases", () => {
     const program = new Command();
     register(program);
-    const threadCommand = program.commands.find((command) => command.name() === "thread");
-    const showCommand = threadCommand?.commands.find((command) => command.name() === "show");
+    const threadCommand = program.commands.find(
+      (command) => command.name() === "thread",
+    );
+    const showCommand = threadCommand?.commands.find(
+      (command) => command.name() === "show",
+    );
     expect(showCommand?.aliases()).toContain("status");
-    expect(showCommand?.commands.some((command) => command.name() === "set")).toBe(false);
-    expect(showCommand?.commands.some((command) => command.name() === "list")).toBe(false);
-    expect(showCommand?.commands.some((command) => command.name() === "clear")).toBe(false);
-    expect(threadCommand?.commands.some((command) => command.name() === "row-status")).toBe(true);
+    expect(
+      showCommand?.commands.some((command) => command.name() === "set"),
+    ).toBe(false);
+    expect(
+      showCommand?.commands.some((command) => command.name() === "list"),
+    ).toBe(false);
+    expect(
+      showCommand?.commands.some((command) => command.name() === "clear"),
+    ).toBe(false);
+    expect(
+      threadCommand?.commands.some(
+        (command) => command.name() === "row-status",
+      ),
+    ).toBe(true);
   });
 });

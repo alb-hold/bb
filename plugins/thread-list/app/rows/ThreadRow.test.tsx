@@ -457,6 +457,40 @@ describe("ThreadRow", () => {
     ).toBe(true);
   });
 
+  it("renders cleared status and progress without stale row indicators", () => {
+    const { rerenderThreadRow } = renderThreadRow({
+      thread: createThread({
+        archivedAt: Date.now(),
+        experimental_rowState: {
+          statuses: {
+            removed: { value: "Cleared status" },
+            remaining: { value: "Still active" },
+          },
+          progress: { value: 0.4, label: "In progress" },
+        },
+      }),
+    });
+
+    expect(screen.getByText("Cleared status")).toBeTruthy();
+    expect(
+      screen.getByRole("progressbar", { name: "In progress" }),
+    ).toBeTruthy();
+
+    rerenderThreadRow(
+      createThread({
+        archivedAt: Date.now(),
+        experimental_rowState: {
+          statuses: { remaining: { value: "Still active" } },
+          progress: null,
+        },
+      }),
+    );
+
+    expect(screen.getByText("Still active")).toBeTruthy();
+    expect(screen.queryByText("Cleared status")).toBeNull();
+    expect(screen.queryByRole("progressbar")).toBeNull();
+  });
+
   it("renders Needs input, Working, Woke 3m elapsed, and Done labels", async () => {
     const callRpc = vi.fn().mockResolvedValue({
       automations: [
