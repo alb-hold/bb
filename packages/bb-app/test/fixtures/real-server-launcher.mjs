@@ -22,6 +22,8 @@ const child = spawnLoggedProcess({
   env: {
     ...process.env,
     BB_DATA_DIR: dir,
+    BB_AGENT_PID_FILE: process.env.BB_AGENT_PID_FILE,
+    BB_HOLDER_PID_FILE: process.env.BB_HOLDER_PID_FILE,
     BB_SERVER_BIND_HOST: "127.0.0.1",
     BB_SERVER_PORT: String(port),
     BB_HOST_DAEMON_PORT: String(port + 1),
