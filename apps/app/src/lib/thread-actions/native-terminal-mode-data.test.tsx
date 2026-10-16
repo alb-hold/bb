@@ -28,11 +28,13 @@ vi.mock("@/hooks/queries/system-queries", () => ({
   }),
 }));
 vi.mock("@/lib/plugin-sidebar-hooks", () => ({
-  useThreadEntryMap: () => new Map(),
   lookupCachedThread: (_client: unknown, threadId: string) => {
     const providerId = providerOf.get(threadId);
     return providerId === undefined ? null : { providerId };
   },
+}));
+vi.mock("@/lib/sidebar-thread-entries", () => ({
+  useSidebarThreadEntries: () => new Map(),
 }));
 
 function view(threadId: string, canReturnToChat: boolean) {
