@@ -4,8 +4,8 @@ import type { Environment, JsonValue } from "@bb/domain";
 import { createBbSdk } from "../src/core.js";
 import { createHttpTransport } from "../src/transport-http.js";
 import { ThreadWaitTimeoutError } from "../src/areas/threads.js";
-import type { FetchImplementation } from "../src/response.js";
 import { TERMINAL_ATTENTION_CONTRACT_CASES } from "../../test-helpers/src/terminal-attention-contract.js";
+import type { FetchImplementation } from "../src/response.js";
 
 interface CapturedRequest {
   bodyText: string | undefined;
@@ -1026,6 +1026,7 @@ describe("@bb/sdk", () => {
       sinceSeq: 2,
       tailBytes: 1024,
       limitChunks: 10,
+      lines: 4,
     });
     await sdk.terminals.close({
       terminalId: "term_remote",
@@ -1108,7 +1109,7 @@ describe("@bb/sdk", () => {
       {
         bodyText: undefined,
         method: "GET",
-        url: "http://bb.test/api/v1/terminals/term_remote/output?sinceSeq=2&tailBytes=1024&limitChunks=10",
+        url: "http://bb.test/api/v1/terminals/term_remote/output?lines=4&sinceSeq=2&tailBytes=1024&limitChunks=10",
       },
       {
         bodyText: JSON.stringify({ mode: "force", reason: "user" }),
@@ -1117,6 +1118,64 @@ describe("@bb/sdk", () => {
       },
     ]);
   });
+
+  it.each(["€", "🙂"])(
+    "streams split UTF-8 character %s intact through the experimental follow SDK method",
+    async (glyph) => {
+      const glyphBytes = new TextEncoder().encode(glyph);
+      const queue = createFetchQueue([
+        {
+          body: {
+            chunks: [
+              {
+                seq: 0,
+                dataBase64: Buffer.from([
+                  ...new TextEncoder().encode("before\n"),
+                  glyphBytes[0]!,
+                ]).toString("base64"),
+              },
+              {
+                seq: 1,
+                dataBase64: Buffer.from([
+                  ...glyphBytes.subarray(1),
+                  ...new TextEncoder().encode(" after\n"),
+                ]).toString("base64"),
+              },
+            ],
+            nextSeq: 2,
+            truncated: false,
+            status: "exited",
+            exitCode: 0,
+            closeReason: "process-exit",
+          },
+        },
+      ]);
+      const sdk = createBbSdk({
+        transport: createHttpTransport({
+          baseUrl: "http://bb.test",
+          fetch: queue.fetch,
+          runtime: "node",
+        }),
+      });
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of sdk.terminals.experimental_follow({
+        terminalId: "term_remote",
+      }))
+        chunks.push(chunk);
+      expect(
+        Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString(
+          "utf8",
+        ),
+      ).toBe(`before\n${glyph} after\n`);
+      expect(queue.requests).toEqual([
+        {
+          bodyText: undefined,
+          method: "GET",
+          url: "http://bb.test/api/v1/terminals/term_remote/output?",
+        },
+      ]);
+    },
+  );
 
   it.each(TERMINAL_ATTENTION_CONTRACT_CASES)(
     "follows the shared terminal attention contract: $name",
