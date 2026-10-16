@@ -1,5 +1,6 @@
 import type { ChildProcess } from "node:child_process";
 import {
+  existsSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -44,7 +45,7 @@ function waitForExit(child: ChildProcess): Promise<number | null> {
 
 describe("spawnLoggedProcess", () => {
   it.each(["server", "host-daemon"] as const)(
-    "captures %s stdout and stderr bursts without a parent stream reader",
+    "captures %s stdout and stderr bursts while draining child pipes",
     async (logName) => {
       const logDir = join(scratchDir(), "logs");
       const child = spawnLoggedProcess({
@@ -52,11 +53,9 @@ describe("spawnLoggedProcess", () => {
         args: [
           "-e",
           `
-            const { fstatSync } = require("node:fs");
-            if (!fstatSync(1).isFile() || !fstatSync(2).isFile()) process.exit(2);
-            console.log("o".repeat(2 * 1024 * 1024));
-            console.error("e".repeat(2 * 1024 * 1024));
-            setImmediate(() => console.log("event loop responsive"));
+            process.stdout.write("A".repeat(2 * 1024 * 1024) + "\\n");
+            process.stderr.write("B".repeat(2 * 1024 * 1024) + "\\n");
+            setImmediate(() => process.stdout.write("done\\n"));
           `,
         ],
         env: process.env,
@@ -66,9 +65,10 @@ describe("spawnLoggedProcess", () => {
 
       expect(await waitForExit(child)).toBe(0);
       const logPath = join(logDir, `${logName}-stdio.log`);
-      expect(readFileSync(logPath, "utf8")).toBe(
-        `${"o".repeat(2 * 1024 * 1024)}\n${"e".repeat(2 * 1024 * 1024)}\nevent loop responsive\n`,
-      );
+      const output = readFileSync(logPath, "utf8");
+      expect(output.split("A").length - 1).toBe(2 * 1024 * 1024);
+      expect(output.split("B").length - 1).toBe(2 * 1024 * 1024);
+      expect(output).toContain("done\n");
       if (process.platform !== "win32")
         expect(statSync(logPath).mode & 0o777).toBe(0o600);
     },
@@ -92,6 +92,31 @@ describe("spawnLoggedProcess", () => {
     expect(readFileSync(join(logDir, "server-stdio.log"), "utf8")).toBe(
       "first startup\nsecond startup\n",
     );
+  });
+
+  it("rotates stdio output at the log size limit", async () => {
+    const logDir = scratchDir();
+    const child = spawnLoggedProcess({
+      command: process.execPath,
+      args: [
+        "-e",
+        `process.stdout.write("x".repeat(61 * 1024 * 1024));`,
+      ],
+      env: process.env,
+      logDir,
+      logName: "server",
+    });
+
+    expect(await waitForExit(child)).toBe(0);
+    const currentPath = join(logDir, "server-stdio.log");
+    const rotatedPath = `${currentPath}.1`;
+    expect(statSync(currentPath).size).toBe(1024 * 1024);
+    expect(statSync(rotatedPath).size).toBe(10 * 1024 * 1024);
+    expect(readFileSync(currentPath, "utf8")).toBe("x".repeat(1024 * 1024));
+    for (let index = 2; index <= 5; index += 1) {
+      expect(statSync(`${currentPath}.${index}`).size).toBe(10 * 1024 * 1024);
+    }
+    expect(existsSync(`${currentPath}.6`)).toBe(false);
   });
 
   it("fails instead of falling back to terminal output when logs cannot be opened", () => {
