@@ -3081,6 +3081,7 @@ describe("native terminal threads", () => {
     let restoreTimers = false;
     let now = 0;
     let createSpy: ReturnType<typeof vi.spyOn> | undefined;
+    let infoLog: ReturnType<typeof vi.spyOn> | undefined;
     const createEntered = new Promise<void>((resolve) => {
       createStarted = resolve;
     });
@@ -3097,6 +3098,7 @@ describe("native terminal threads", () => {
           useMigratedMemoryDb: true,
         });
       const terminals = fixture.harness.deps.terminalSessions;
+      infoLog = vi.spyOn(fixture.harness.deps.logger, "info");
       const createTerminal = terminals.createTerminal.bind(terminals);
       createSpy = vi
         .spyOn(terminals, "createTerminal")
@@ -3164,6 +3166,13 @@ describe("native terminal threads", () => {
         "active",
       );
       expect(interruptionReasons(fixture, running.thread.id)).toEqual([]);
+      expect(
+        infoLog.mock.calls.filter(
+          ([, message]) =>
+            message ===
+            "Interrupting a native terminal thread whose CLI could not be reattached",
+        ),
+      ).toHaveLength(0);
 
       now = 65_001;
       expect(getThread(fixture.harness.db, running.thread.id)?.status).toBe(
@@ -3172,6 +3181,7 @@ describe("native terminal threads", () => {
       expect(interruptionReasons(fixture, running.thread.id)).toEqual([]);
     } finally {
       createSpy?.mockRestore();
+      infoLog?.mockRestore();
       if (restoreTimers) vi.useRealTimers();
     }
   }, 60_000);
