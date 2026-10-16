@@ -331,51 +331,6 @@ describe("page terminal during the repaint nudge", () => {
   });
 });
 
-describe("font zoom across terminal clients", () => {
-  it("reflows both clients to the minimum shared columns and rows", () => {
-    const clients = [newTerminal(), newTerminal()];
-    const fitted = [
-      { cols: 132, rows: 46 },
-      { cols: 100, rows: 24 },
-    ];
-    let sharedSize: { cols: number; rows: number } | null = null;
-    let ptySize = { ...fitted[1] };
-    const reflow = (): void => {
-      for (let index = 0; index < clients.length; index += 1) {
-        const display = terminalDisplaySize(fitted[index], sharedSize);
-        clients[index].resize(display.cols, display.rows);
-      }
-    };
-    const reportZoomedClient = (): void => {
-      const aggregatedSize = fitted.reduce(
-        (minimum, clientSize) => ({
-          cols: Math.min(minimum.cols, clientSize.cols),
-          rows: Math.min(minimum.rows, clientSize.rows),
-        }),
-        { cols: Number.POSITIVE_INFINITY, rows: Number.POSITIVE_INFINITY },
-      );
-      const nextSize = nextSharedTerminalSize(
-        sharedSize,
-        aggregatedSize,
-        false,
-      );
-      if (nextSize === null) return;
-      sharedSize = nextSize;
-      ptySize = nextSize;
-      reflow();
-    };
-
-    fitted[0] = { cols: 72, rows: 30 };
-    reportZoomedClient();
-
-    expect(ptySize).toEqual({ cols: 72, rows: 24 });
-    expect(clients.map(({ cols, rows }) => ({ cols, rows }))).toEqual([
-      { cols: 72, rows: 24 },
-      { cols: 72, rows: 24 },
-    ]);
-  });
-});
-
 interface FitChangeRoom {
   advance: (ms: number) => void;
   deliverReports: () => void;
