@@ -5,18 +5,10 @@ import { join } from "node:path";
 const stdioLogWriter = `
 const fs = require("node:fs");
 const logPath = process.argv[1];
+const lockPath = logPath + ".lock";
 const sizeLimit = 10 * 1024 * 1024;
 const fileCount = 5;
-for (let index = 0; index <= fileCount; index += 1) {
-  const filePath = index === 0 ? logPath : logPath + "." + index;
-  if (fs.existsSync(filePath) && fs.statSync(filePath).size > sizeLimit) {
-    fs.unlinkSync(filePath);
-  }
-}
-let size = fs.existsSync(logPath) ? fs.statSync(logPath).size : 0;
-let fd = fs.openSync(logPath, "a", 0o600);
 const rotate = () => {
-  fs.closeSync(fd);
   const oldestPath = logPath + "." + fileCount;
   if (fs.existsSync(oldestPath)) fs.unlinkSync(oldestPath);
   for (let index = fileCount - 1; index >= 1; index -= 1) {
@@ -24,21 +16,94 @@ const rotate = () => {
     if (fs.existsSync(sourcePath)) fs.renameSync(sourcePath, logPath + "." + (index + 1));
   }
   if (fs.existsSync(logPath)) fs.renameSync(logPath, logPath + ".1");
-  fd = fs.openSync(logPath, "a", 0o600);
-  size = 0;
 };
-process.stdin.on("data", (chunk) => {
-  let offset = 0;
-  while (offset < chunk.length) {
-    if (size >= sizeLimit) rotate();
-    const length = Math.min(sizeLimit - size, chunk.length - offset);
-    const written = fs.writeSync(fd, chunk, offset, length);
-    if (written === 0) throw new Error("Unable to write stdio log");
-    offset += written;
-    size += written;
+const releaseLock = (fd) => {
+  try { fs.closeSync(fd); } catch {}
+  try { fs.unlinkSync(lockPath); } catch {}
+};
+const lockOwnerIsAlive = () => {
+  try {
+    const stat = fs.statSync(lockPath);
+    if (stat.size === 0 && Date.now() - stat.mtimeMs > 1000) return false;
+    const ownerPid = Number(fs.readFileSync(lockPath, "utf8"));
+    if (!Number.isInteger(ownerPid) || ownerPid < 1) return true;
+    if (ownerPid === process.pid) return false;
+    try {
+      process.kill(ownerPid, 0);
+      return true;
+    } catch (error) {
+      return error.code !== "ESRCH";
+    }
+  } catch {
+    return true;
   }
+};
+const acquireLock = () => {
+  let fd;
+  try {
+    fd = fs.openSync(lockPath, "wx", 0o600);
+    fs.writeSync(fd, String(process.pid));
+    return fd;
+  } catch (error) {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd); } catch {}
+      try { fs.unlinkSync(lockPath); } catch {}
+    }
+    if (error.code !== "EEXIST") return -1;
+    if (!lockOwnerIsAlive()) {
+      try { fs.unlinkSync(lockPath); } catch {}
+    }
+    return null;
+  }
+};
+const processChunk = (chunk) => {
+  const lockFd = acquireLock();
+  if (lockFd === null) {
+    setTimeout(() => processChunk(chunk), 10);
+    return;
+  }
+  if (lockFd < 0) {
+    process.stdin.resume();
+    return;
+  }
+  let fd;
+  try {
+    let size = fs.existsSync(logPath) ? fs.statSync(logPath).size : 0;
+    if (size > sizeLimit) {
+      rotate();
+      size = 0;
+    }
+    fd = fs.openSync(logPath, "a", 0o600);
+    let offset = 0;
+    while (offset < chunk.length) {
+      if (size >= sizeLimit) {
+        fs.closeSync(fd);
+        fd = undefined;
+        rotate();
+        size = 0;
+        fd = fs.openSync(logPath, "a", 0o600);
+      }
+      const length = Math.min(sizeLimit - size, chunk.length - offset);
+      const written = fs.writeSync(fd, chunk, offset, length);
+      if (written === 0) break;
+      offset += written;
+      size += written;
+    }
+  } catch {}
+  finally {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd); } catch {}
+    }
+    releaseLock(lockFd);
+    process.stdin.resume();
+  }
+};
+process.on("uncaughtException", () => {});
+process.stdin.on("error", () => {});
+process.stdin.on("data", (chunk) => {
+  process.stdin.pause();
+  processChunk(chunk);
 });
-process.stdin.on("end", () => fs.closeSync(fd));
 `;
 
 interface SpawnLoggedProcessArgs {
@@ -56,6 +121,7 @@ export function spawnLoggedProcess(args: SpawnLoggedProcessArgs): ChildProcess {
   const logPath = join(args.logDir, `${args.logName}-stdio.log`);
   const logWriter = spawn(process.execPath, ["-e", stdioLogWriter, logPath], {
     detached: true,
+    env: process.env,
     stdio: ["pipe", "ignore", "ignore"],
   });
   logWriter.unref();

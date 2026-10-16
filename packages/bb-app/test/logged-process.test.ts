@@ -1,10 +1,13 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import {
   existsSync,
+  chmodSync,
   mkdtempSync,
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -89,9 +92,15 @@ describe("spawnLoggedProcess", () => {
       });
       expect(await waitForExit(child)).toBe(1);
     }
-    expect(readFileSync(join(logDir, "server-stdio.log"), "utf8")).toBe(
-      "first startup\nsecond startup\n",
-    );
+    const logPath = join(logDir, "server-stdio.log");
+    await expect
+      .poll(
+        () =>
+          existsSync(logPath) &&
+          readFileSync(logPath, "utf8") === "first startup\nsecond startup\n",
+        { timeout: 5_000 },
+      )
+      .toBe(true);
   });
 
   it("keeps the child alive and logging after its parent exits", async () => {
@@ -136,6 +145,169 @@ describe("spawnLoggedProcess", () => {
       )
       .toBe(true);
   });
+
+  it("keeps the child alive and resumes logging after a write error", async () => {
+    const logDir = scratchDir();
+    const logPath = join(logDir, "server-stdio.log");
+    const attemptedPath = join(logDir, "first-write-attempted");
+    const laterPath = join(logDir, "later-write-completed");
+    symlinkSync("/dev/full", logPath);
+    const child = spawnLoggedProcess({
+      command: process.execPath,
+      args: [
+        "-e",
+        `
+          const fs = require("node:fs");
+          process.stdout.write("x".repeat(4 * 1024 * 1024), () => {
+            fs.writeFileSync(${JSON.stringify(attemptedPath)}, "attempted");
+            setTimeout(() => {
+              process.stdout.write("later output recovered\\n");
+              fs.writeFileSync(${JSON.stringify(laterPath)}, "alive");
+            }, 150);
+            setTimeout(() => process.exit(0), 250);
+          });
+        `,
+      ],
+      env: process.env,
+      logDir,
+      logName: "server",
+    });
+
+    await expect
+      .poll(() => existsSync(attemptedPath), { timeout: 5_000 })
+      .toBe(true);
+    unlinkSync(logPath);
+    expect(await waitForExit(child)).toBe(0);
+    expect(existsSync(laterPath)).toBe(true);
+    await expect
+      .poll(
+        () =>
+          existsSync(logPath) &&
+          readFileSync(logPath, "utf8").includes("later output recovered\n"),
+        { timeout: 5_000 },
+      )
+      .toBe(true);
+  });
+
+  it("rotates an oversized active log without discarding its contents", async () => {
+    const logDir = scratchDir();
+    const logPath = join(logDir, "server-stdio.log");
+    writeFileSync(logPath, `previous-active:${"x".repeat(11 * 1024 * 1024)}`);
+    for (let index = 1; index <= 5; index += 1) {
+      writeFileSync(`${logPath}.${index}`, `previous-${index}`);
+    }
+    const child = spawnLoggedProcess({
+      command: process.execPath,
+      args: ["-e", `process.stdout.write("new active output\\n");`],
+      env: process.env,
+      logDir,
+      logName: "server",
+    });
+
+    expect(await waitForExit(child)).toBe(0);
+    await expect
+      .poll(
+        () =>
+          existsSync(logPath) &&
+          readFileSync(logPath, "utf8").includes("new active output\n"),
+        { timeout: 5_000 },
+      )
+      .toBe(true);
+    expect(readFileSync(`${logPath}.1`, "utf8")).toContain("previous-active:");
+    for (let index = 1; index <= 4; index += 1) {
+      expect(readFileSync(`${logPath}.${index + 1}`, "utf8")).toBe(
+        `previous-${index}`,
+      );
+    }
+    expect(existsSync(`${logPath}.6`)).toBe(false);
+  });
+
+  it("preserves the size cap when two writers share a log path", async () => {
+    const logDir = scratchDir();
+    const children = ["a", "b"].map((marker) =>
+      spawnLoggedProcess({
+        command: process.execPath,
+        args: [
+          "-e",
+          `process.stdout.write(${JSON.stringify(marker)}.repeat(12 * 1024 * 1024));`,
+        ],
+        env: process.env,
+        logDir,
+        logName: "server",
+      }),
+    );
+
+    expect(await Promise.all(children.map(waitForExit))).toEqual([0, 0]);
+    const logPath = join(logDir, "server-stdio.log");
+    await expect
+      .poll(
+        () =>
+          [
+            logPath,
+            ...Array.from({ length: 5 }, (_, i) => `${logPath}.${i + 1}`),
+          ]
+            .filter(existsSync)
+            .reduce((total, filePath) => total + statSync(filePath).size, 0),
+        { timeout: 5_000 },
+      )
+      .toBe(24 * 1024 * 1024);
+    for (const filePath of [
+      logPath,
+      ...Array.from({ length: 5 }, (_, i) => `${logPath}.${i + 1}`),
+    ]) {
+      if (existsSync(filePath)) {
+        expect(statSync(filePath).size).toBeLessThanOrEqual(10 * 1024 * 1024);
+      }
+    }
+    expect(existsSync(`${logPath}.6`)).toBe(false);
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "passes the parent environment to the detached log writer",
+    async () => {
+      const logDir = scratchDir();
+      const fakeElectronPath = join(logDir, "electron");
+      const writerStartedPath = join(logDir, "writer-started");
+      writeFileSync(
+        fakeElectronPath,
+        `#!/usr/bin/env node\nif (process.env.ELECTRON_RUN_AS_NODE !== "1") process.exit(88);\nrequire("node:fs").writeFileSync(${JSON.stringify(writerStartedPath)}, "started");\nconst { spawnSync } = require("node:child_process");\nconst result = spawnSync(${JSON.stringify(process.execPath)}, process.argv.slice(2), { stdio: "inherit", env: process.env });\nprocess.exit(result.status ?? 1);\n`,
+      );
+      chmodSync(fakeElectronPath, 0o700);
+      const outputPath = join(logDir, "server-stdio.log");
+      const previousExecPath = process.execPath;
+      const previousElectronMode = process.env.ELECTRON_RUN_AS_NODE;
+      process.env.ELECTRON_RUN_AS_NODE = "1";
+      Object.defineProperty(process, "execPath", { value: fakeElectronPath });
+      let child!: ChildProcess;
+      try {
+        child = spawnLoggedProcess({
+          command: previousExecPath,
+          args: ["-e", `process.stdout.write("writer environment\\n");`],
+          env: process.env,
+          logDir,
+          logName: "server",
+        });
+      } finally {
+        Object.defineProperty(process, "execPath", { value: previousExecPath });
+        if (previousElectronMode === undefined)
+          delete process.env.ELECTRON_RUN_AS_NODE;
+        else process.env.ELECTRON_RUN_AS_NODE = previousElectronMode;
+      }
+
+      expect(await waitForExit(child)).toBe(0);
+      await expect
+        .poll(() => existsSync(writerStartedPath), { timeout: 5_000 })
+        .toBe(true);
+      await expect
+        .poll(
+          () =>
+            existsSync(outputPath) &&
+            readFileSync(outputPath, "utf8").includes("writer environment\n"),
+          { timeout: 5_000 },
+        )
+        .toBe(true);
+    },
+  );
 
   it("rotates stdio output at the log size limit", async () => {
     const logDir = scratchDir();
