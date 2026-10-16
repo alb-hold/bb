@@ -299,6 +299,41 @@ describe("terminal output encoding", () => {
     ).toBe("🙂");
   });
 
+  it.each(["€", "🙂"])(
+    "renders split UTF-8 character %s through the terminal output handler",
+    async (glyph) => {
+      const terminal = new Terminal({ cols: 80, rows: 24 });
+      const glyphBytes = Buffer.from(glyph);
+      const payloads = [
+        Buffer.concat([Buffer.from("before\n"), glyphBytes.subarray(0, 1)]),
+        Buffer.concat([glyphBytes.subarray(1), Buffer.from(" after\n")]),
+      ];
+      payloads.forEach((payload, seq) => {
+        handleTerminalServerMessage({
+          acknowledgeOutput: vi.fn(),
+          message: {
+            type: "output",
+            chunk: { seq, dataBase64: payload.toString("base64") },
+          },
+          onReplayComplete: vi.fn(),
+          replayNextSeq: null,
+          replayWriteState: { suppressedWriteCount: 0 },
+          setReplayNextSeq: vi.fn(),
+          terminal,
+        });
+      });
+      await new Promise<void>((resolve) => terminal.write("", resolve));
+
+      expect(
+        terminal.buffer.active.getLine(0)?.translateToString().trimEnd(),
+      ).toBe("before");
+      expect(terminal.buffer.active.getLine(1)?.translateToString()).toContain(
+        `${glyph} after`,
+      );
+      terminal.dispose();
+    },
+  );
+
   it("sends nothing for a touch fling's positionless wheel reports", () => {
     const onInput = vi.fn<(dataBase64: string) => void>();
     const onUserInput = vi.fn();

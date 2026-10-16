@@ -463,6 +463,56 @@ describe("bb terminal command output", () => {
     ).toBe("hello\n");
   });
 
+  it.each(["€", "🙂"])(
+    "prints split UTF-8 character %s intact from line-limited output",
+    async (glyph) => {
+      const glyphBytes = Buffer.from(glyph);
+      const writes: Uint8Array[] = [];
+      const output = vi.fn(async () => ({
+        chunks: [
+          {
+            seq: 0,
+            dataBase64: Buffer.concat([
+              Buffer.from("before\n"),
+              glyphBytes.subarray(0, 1),
+            ]).toString("base64"),
+          },
+          {
+            seq: 1,
+            dataBase64: Buffer.concat([
+              glyphBytes.subarray(1),
+              Buffer.from(" after\n"),
+            ]).toString("base64"),
+          },
+        ],
+        nextSeq: 2,
+        truncated: false,
+        status: "exited",
+        exitCode: 0,
+        closeReason: "process-exit",
+      }));
+      vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+        if (typeof chunk === "string") writes.push(Buffer.from(chunk));
+        else if (chunk !== undefined) writes.push(Buffer.from(chunk));
+        return true;
+      });
+      stubServerApi({ "v1.terminals.:terminalId.output.$get": output });
+
+      await runCommand(
+        ["terminal", "output", "term-1", "--lines", "2"],
+        register,
+      );
+
+      expect(output).toHaveBeenCalledWith({
+        param: { terminalId: "term-1" },
+        query: { lines: 2 },
+      });
+      expect(Buffer.concat(writes).toString("utf8")).toBe(
+        `before\n${glyph} after\n`,
+      );
+    },
+  );
+
   it("streams terminal output with terminal pipe --follow", async () => {
     const output = vi.fn(async () =>
       outputResponse({ nextSeq: 1, status: "exited", text: "hello\n" }),

@@ -1118,40 +1118,63 @@ describe("@bb/sdk", () => {
     ]);
   });
 
-  it("streams terminal output through the experimental follow SDK method", async () => {
-    const queue = createFetchQueue([
-      {
-        body: {
-          chunks: [{ seq: 0, dataBase64: "aGVsbG8=" }],
-          nextSeq: 1,
-          truncated: false,
-          status: "exited",
-          exitCode: 0,
-          closeReason: "process-exit",
+  it.each(["€", "🙂"])(
+    "streams split UTF-8 character %s intact through the experimental follow SDK method",
+    async (glyph) => {
+      const glyphBytes = new TextEncoder().encode(glyph);
+      const queue = createFetchQueue([
+        {
+          body: {
+            chunks: [
+              {
+                seq: 0,
+                dataBase64: Buffer.from([
+                  ...new TextEncoder().encode("before\n"),
+                  glyphBytes[0]!,
+                ]).toString("base64"),
+              },
+              {
+                seq: 1,
+                dataBase64: Buffer.from([
+                  ...glyphBytes.subarray(1),
+                  ...new TextEncoder().encode(" after\n"),
+                ]).toString("base64"),
+              },
+            ],
+            nextSeq: 2,
+            truncated: false,
+            status: "exited",
+            exitCode: 0,
+            closeReason: "process-exit",
+          },
         },
-      },
-    ]);
-    const sdk = createBbSdk({
-      transport: createHttpTransport({
-        baseUrl: "http://bb.test",
-        fetch: queue.fetch,
-        runtime: "node",
-      }),
-    });
-    const chunks: Uint8Array[] = [];
-    for await (const chunk of sdk.terminals.experimental_follow({
-      terminalId: "term_remote",
-    }))
-      chunks.push(chunk);
-    expect(new TextDecoder().decode(chunks[0])).toBe("hello");
-    expect(queue.requests).toEqual([
-      {
-        bodyText: undefined,
-        method: "GET",
-        url: "http://bb.test/api/v1/terminals/term_remote/output?",
-      },
-    ]);
-  });
+      ]);
+      const sdk = createBbSdk({
+        transport: createHttpTransport({
+          baseUrl: "http://bb.test",
+          fetch: queue.fetch,
+          runtime: "node",
+        }),
+      });
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of sdk.terminals.experimental_follow({
+        terminalId: "term_remote",
+      }))
+        chunks.push(chunk);
+      expect(
+        Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString(
+          "utf8",
+        ),
+      ).toBe(`before\n${glyph} after\n`);
+      expect(queue.requests).toEqual([
+        {
+          bodyText: undefined,
+          method: "GET",
+          url: "http://bb.test/api/v1/terminals/term_remote/output?",
+        },
+      ]);
+    },
+  );
 
   it("restarts a terminal without requiring its scope from the caller", async () => {
     const replacement = makeTerminalSession({ id: "term_new" });

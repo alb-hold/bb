@@ -461,9 +461,9 @@ function terminalOutputLastLines(
   output: { chunks: TerminalOutputChunk[]; truncated: boolean },
   lines: number,
 ): { chunks: TerminalOutputChunk[]; truncated: boolean } {
-  const text = output.chunks
-    .map((chunk) => Buffer.from(chunk.dataBase64, "base64").toString("utf8"))
-    .join("");
+  const text = Buffer.concat(
+    output.chunks.map((chunk) => Buffer.from(chunk.dataBase64, "base64")),
+  ).toString("utf8");
   const trailingNewline = text.endsWith("\n");
   const split = text.split("\n");
   if (trailingNewline) split.pop();

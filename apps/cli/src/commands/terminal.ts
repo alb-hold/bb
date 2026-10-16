@@ -797,9 +797,9 @@ function describeTerminalExit(
 }
 
 function decodeChunks(chunks: readonly { dataBase64: string }[]): string {
-  return chunks
-    .map((chunk) => Buffer.from(chunk.dataBase64, "base64").toString("utf8"))
-    .join("");
+  return Buffer.concat(
+    chunks.map((chunk) => Buffer.from(chunk.dataBase64, "base64")),
+  ).toString("utf8");
 }
 
 async function waitForTerminal(args: {

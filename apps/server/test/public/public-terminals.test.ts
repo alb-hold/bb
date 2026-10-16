@@ -1623,6 +1623,64 @@ describe("public terminal routes", () => {
     );
   });
 
+  it.each(["€", "🙂"])(
+    "keeps split UTF-8 character %s intact when limiting exited output by lines",
+    async (glyph) => {
+      const fixture = await createTerminalRouteFixture();
+      harnesses.push(fixture.harness);
+      const session = createTerminalSession(fixture.harness.db, {
+        cols: 120,
+        daemonSessionId: fixture.session.id,
+        environmentId: fixture.environment.id,
+        hostId: fixture.host.id,
+        initialCwd: fixture.environment.path ?? "/tmp/terminal-workspace",
+        rows: 32,
+        status: "running",
+        threadId: fixture.thread.id,
+        title: "Terminal UTF-8 line limit",
+      });
+      const glyphBytes = Buffer.from(glyph);
+      const outputChunks = [
+        Buffer.concat([Buffer.from("before\n"), glyphBytes.subarray(0, 1)]),
+        Buffer.concat([glyphBytes.subarray(1), Buffer.from(" after\n")]),
+      ].map((bytes, index) => ({
+        seq: index,
+        dataBase64: bytes.toString("base64"),
+      }));
+      for (const chunk of outputChunks) {
+        fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+          hostId: fixture.host.id,
+          sessionId: fixture.session.id,
+          message: { type: "terminal.output", terminalId: session.id, chunk },
+        });
+      }
+      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.host.id,
+        sessionId: fixture.session.id,
+        message: {
+          type: "terminal.exited",
+          terminalId: session.id,
+          exitCode: 0,
+          closeReason: "process-exit",
+        },
+      });
+
+      const response = await fixture.harness.app.request(
+        `/api/v1/terminals/${session.id}/output?lines=2`,
+      );
+
+      expect(response.status).toBe(200);
+      const result = terminalOutputResponseSchema.parse(
+        await readJson(response),
+      );
+      expect(
+        Buffer.concat(
+          result.chunks.map((chunk) => Buffer.from(chunk.dataBase64, "base64")),
+        ).toString("utf8"),
+      ).toBe(`before\n${glyph} after\n`);
+    },
+  );
+
   it("evicts the oldest output chunk at the per-host cap", async () => {
     const fixture = await createTerminalRouteFixture();
     harnesses.push(fixture.harness);

@@ -1400,41 +1400,20 @@ Docs: `backend-foundation.md`, `testing.md`.
 
 **Audit before stabilizing.**
 
-1. **Process reap.** `experimental_killProcessesWithCwdUnder({ directories,
-   graceMs? })` from `@get-bb/plugin-sdk/host` is the same helper bb's own
-daemon used to reap a managed workspace before removing it: SIGTERM to
-every process whose working directory is at or under any of the paths,
-SIGKILL after the grace, returning what it signalled. Each sweep lists
-process working directories once for all paths, so batch callers pass every
-directory in one call. The input was `{ directory }` through SDK 0.6.26;
-the SDK export still accepts that shape at runtime but types only
-`directories`, because git-installed plugins are rebuilt against the newest
-matching SDK without a type check. Published for the worktree and
-environment-personal-workspace plugins, which own their teardown and call it
-before deleting the directory; Storage & retention passes whole cleanup
-batches. Confirm the platform coverage (Linux
-`/proc`, macOS `lsof`) and whether the grace should be per call.
-
-2. **Process identity.** `experimental_readProcessIdentity(pid)` from
-`@get-bb/plugin-sdk/host` returns `{ command, startedAt }` (`ps` on POSIX,
-CIM on Windows) or null. bb's launcher uses the same probe to confirm a
-recorded PID before stopping it. Storage & retention checks a development
-instance's recorded launcher entry path and start time before signalling
-it, so a reused PID is never killed. Confirm start-time precision per
-platform and whether a combined verified-stop helper should replace it.
-
-3. **Call timeout.** `ExperimentalHostCallOptions.timeoutMs` (default 30s,
-   capped at 30 minutes) lets a plugin run a long host call — a setup
-   script, a clone — as one call instead of a job it polls. Added for the
-   worktree plugin; confirm the cap and whether the default should be
-   declared per method on the contract instead.
-
-4. **Contract shape.** Confirm Standard Schema values remain the right runtime
+1. **Process reap and identity.** Confirm
+   `experimental_killProcessesWithCwdUnder`'s platform coverage (Linux
+   `/proc`, macOS `lsof`) and whether the grace should be per call. Confirm
+   `experimental_readProcessIdentity`'s start-time precision per platform and
+   whether a combined verified-stop helper should replace it.
+2. **Call timeout.** `ExperimentalHostCallOptions.timeoutMs` defaults to 30 s
+   and is capped at 30 minutes. Confirm the cap, and whether the default should
+   be declared per method on the contract instead.
+3. **Contract shape.** Confirm Standard Schema values remain the right runtime
    boundary and decide whether method-specific typed errors are necessary.
-5. **Targeting.** Confirm explicit host ids are enough for V1 and add an
+4. **Targeting.** Confirm explicit host ids are enough for V1 and add an
    environment-aware primitive only alongside a plugin that proves its
    locking and workspace semantics.
-6. **Process lifetime.** Measure whether five idle minutes is the right timeout,
+5. **Process lifetime.** Measure whether five idle minutes is the right timeout,
    whether watches should continue retaining automatically, and whether leases
    acquired only during active handlers are expressive enough. Confirm there is
    no need for manifest lifetime flags, plugin-selected timeouts, a global
@@ -1443,7 +1422,7 @@ platform and whether a combined verified-stop helper should replace it.
    graceful and idle disposal, and does not create crash loops.
    Verify reconnect generation reconciliation covers disable/uninstall during
    an outage without stopping a still-current worker on every transient drop.
-7. **Signals and watches.** Confirm host signals should remain private,
+6. **Signals and watches.** Confirm host signals should remain private,
    ephemeral invalidations rather than a durable event log. Audit native-watch
    coalescing, backpressure, rescan/error events, per-worker limits, and cleanup
    against a plugin that watches real workspace state.
