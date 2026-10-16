@@ -38,9 +38,6 @@ import {
   observeLayoutSignals,
   watchTerminalLayoutSettled,
 } from "./terminal-layout-settle";
-import { createTerminalResizeCoalescer } from "./terminal-resize-coalescer";
-import { terminalRealizationScheduler } from "./terminal-realization-scheduler";
-import { setTerminalRenderDemand } from "./terminal-render-demand";
 import { TerminalLinkOpenDialog } from "./TerminalLinkOpenDialog";
 import { TerminalAttentionPane } from "./TerminalAttentionPane";
 import { TerminalMobileControls } from "./TerminalMobileControls";
@@ -65,8 +62,8 @@ import {
   type TerminalLinkTarget,
 } from "./terminal-links";
 import {
-  applyTerminalFitDimensions,
   nextSharedTerminalSize,
+  terminalDisplaySize,
   type TerminalGridSize,
 } from "./terminal-shared-size";
 import { handleTerminalFileDrop } from "./terminal-file-drop";
@@ -119,21 +116,6 @@ export function shouldFocusTerminalAfterAsyncMount({
     return false;
   }
   return hasExplicitFocusRequest || !currentFocusIsAvailable;
-}
-
-export function handleTerminalSurfaceVisibility(
-  visible: boolean,
-  onSurfaceVisibility: (visible: boolean) => void,
-  onRenderDemand: (visible: boolean) => void,
-  reportVisibility: () => void,
-  scheduleFit: () => void,
-): void {
-  onSurfaceVisibility(visible);
-  onRenderDemand(visible);
-  reportVisibility();
-  if (visible) {
-    scheduleFit();
-  }
 }
 
 interface TerminalTouchPoint extends SelectionAnchorPoint {
@@ -753,9 +735,7 @@ export function ThreadTerminalView({
   const [controlMode, setControlMode] = useState<TerminalControlMode>("off");
   const controlModeRef = useRef<TerminalControlMode>("off");
   const [mobileFontSize, setMobileFontSize] = useState(() =>
-    typeof localStorage === "undefined"
-      ? 12
-      : readTerminalMobileFontSize(localStorage),
+    typeof localStorage === "undefined" ? 12 : readTerminalMobileFontSize(localStorage),
   );
   const mobileFontSizeRef = useRef(mobileFontSize);
   const changeControlMode = useCallback((mode: TerminalControlMode) => {
@@ -986,6 +966,7 @@ export function ThreadTerminalView({
     const replayWriteState: TerminalReplayWriteState = {
       suppressedWriteCount: 0,
     };
+    let resizeAnimationFrame: number | null = null;
     let connectionNoticeTimeout: ReturnType<typeof setTimeout> | null = null;
     let terminalInteractions: ReturnType<
       typeof attachTerminalInteractions
@@ -995,20 +976,13 @@ export function ThreadTerminalView({
     let shellOscDisposable: { dispose: () => void } | null = null;
     let stopObservingFonts: (() => void) | null = null;
     let stopWatchingLayout: (() => void) | null = null;
-    let cancelTerminalRealization: (() => void) | null = null;
-    let resizeCoalescer: ReturnType<
-      typeof createTerminalResizeCoalescer
-    > | null = null;
     let sharedSize: TerminalGridSize | null = null;
-    let surfaceVisible = false;
     let containerHasSize = hasVisibleTerminalSize({
       containerElement: container,
     });
     const reportDocumentVisibility = () => {
       transport?.setVisible(
-        document.visibilityState === "visible" &&
-          containerHasSize &&
-          surfaceVisible,
+        document.visibilityState === "visible" && containerHasSize,
       );
     };
 
@@ -1039,419 +1013,362 @@ export function ThreadTerminalView({
         return;
       }
 
-      const realizeTerminal = () => {
-        if (disposed) {
-          return;
-        }
-
-        const osc8LinkHandler = createTerminalOsc8LinkHandler({
-          onActivate: requestOpenTerminalLink,
-          onHover: (target) => {
-            if (!disposed) {
-              updateHoveredTerminalLink(target);
-            }
-          },
-        });
-
-        terminal = new Terminal({
-          allowProposedApi: TERMINAL_ALLOW_PROPOSED_API,
-          convertEol: true,
-          cursorBlink: true,
-          fontFamily: readTerminalFontFamily(),
-          fontSize: mobileFontSizeRef.current,
-          linkHandler: osc8LinkHandler,
-          scrollback: 10_000,
-          theme: buildTerminalTheme(),
-        });
-        setPromptTrackerState(EMPTY_TERMINAL_PROMPT_TRACKER);
-        shellOscDisposable = attachTerminalPromptTracker({
-          onChange: setPromptTrackerState,
-          onCwdChange: (cwd) => onCwdChangeRef.current?.(cwd),
-          terminal,
-        });
-        terminal.attachCustomKeyEventHandler((event) => {
-          if (
-            event.type === "keydown" &&
-            event.altKey &&
-            event.shiftKey &&
-            (event.key === "ArrowUp" || event.key === "ArrowDown")
-          ) {
-            event.preventDefault();
-            jumpToPrompt(event.key === "ArrowUp" ? "previous" : "next");
-            return false;
+      const osc8LinkHandler = createTerminalOsc8LinkHandler({
+        onActivate: requestOpenTerminalLink,
+        onHover: (target) => {
+          if (!disposed) {
+            updateHoveredTerminalLink(target);
           }
-          return true;
-        });
-        terminalRef.current = terminal;
-        fitAddon = new LoadedFitAddon();
-        terminal.loadAddon(fitAddon);
-        terminal.loadAddon(new Unicode11Addon());
-        terminal.unicode.activeVersion = TERMINAL_UNICODE_VERSION;
-        terminal.loadAddon(
-          new WebLinksAddon(
-            (event, uri) => {
-              if (event.button !== 0) {
-                return;
-              }
-              requestOpenTerminalLink({ source: "detected-url", uri });
+        },
+      });
+
+      terminal = new Terminal({
+        allowProposedApi: TERMINAL_ALLOW_PROPOSED_API,
+        convertEol: true,
+        cursorBlink: true,
+        fontFamily: readTerminalFontFamily(),
+        fontSize: mobileFontSizeRef.current,
+        linkHandler: osc8LinkHandler,
+        scrollback: 10_000,
+        theme: buildTerminalTheme(),
+      });
+      setPromptTrackerState(EMPTY_TERMINAL_PROMPT_TRACKER);
+      shellOscDisposable = attachTerminalPromptTracker({
+        onChange: setPromptTrackerState,
+        onCwdChange: (cwd) => onCwdChangeRef.current?.(cwd),
+        terminal,
+      });
+      terminal.attachCustomKeyEventHandler((event) => {
+        if (
+          event.type === "keydown" &&
+          event.altKey &&
+          event.shiftKey &&
+          (event.key === "ArrowUp" || event.key === "ArrowDown")
+        ) {
+          event.preventDefault();
+          jumpToPrompt(event.key === "ArrowUp" ? "previous" : "next");
+          return false;
+        }
+        return true;
+      });
+      terminalRef.current = terminal;
+      fitAddon = new LoadedFitAddon();
+      terminal.loadAddon(fitAddon);
+      terminal.loadAddon(new Unicode11Addon());
+      terminal.unicode.activeVersion = TERMINAL_UNICODE_VERSION;
+      terminal.loadAddon(
+        new WebLinksAddon(
+          (event, uri) => {
+            if (event.button !== 0) {
+              return;
+            }
+            requestOpenTerminalLink({ source: "detected-url", uri });
+          },
+          {
+            hover: (_event, uri) => {
+              updateHoveredTerminalLink({ source: "detected-url", uri });
             },
-            {
-              hover: (_event, uri) => {
-                updateHoveredTerminalLink({ source: "detected-url", uri });
-              },
-              leave: () => {
-                updateHoveredTerminalLink(null);
-              },
+            leave: () => {
+              updateHoveredTerminalLink(null);
             },
-          ),
+          },
+        ),
+      );
+      terminal.open(containerElement);
+      if (searchAddonModule !== null) {
+        const searchAddon = new searchAddonModule.SearchAddon();
+        terminal.loadAddon(searchAddon);
+        setTerminalSearchAddon(searchAddon);
+      }
+      attachTerminalWheelLines(terminal);
+      if (webglAddonModule !== null) {
+        webglRenderer = loadTerminalWebglRenderer(
+          terminal,
+          () => new webglAddonModule.WebglAddon(),
+          { root: containerElement, visible: false },
         );
-        terminal.open(containerElement);
-        const activeTerminal = terminal;
-        setTerminalRenderDemand(activeTerminal, false);
-        if (searchAddonModule !== null) {
-          const searchAddon = new searchAddonModule.SearchAddon();
-          terminal.loadAddon(searchAddon);
-          setTerminalSearchAddon(searchAddon);
-        }
-        attachTerminalWheelLines(terminal);
-        if (webglAddonModule !== null) {
-          webglRenderer = loadTerminalWebglRenderer(
-            terminal,
-            () => new webglAddonModule.WebglAddon(),
-            { root: containerElement, visible: false },
-          );
-        }
         webglVisibilityRef.current = observeTerminalWebglVisibility({
           root: containerElement,
           renderer: webglRenderer,
           isPanelOpen: () => isPanelOpenRef.current,
-          onVisibilityChange: (visible) => {
-            handleTerminalSurfaceVisibility(
-              visible,
-              (nextVisible) => {
-                surfaceVisible = nextVisible;
-              },
-              (nextVisible) =>
-                setTerminalRenderDemand(activeTerminal, nextVisible),
-              reportDocumentVisibility,
-              () => scheduleFitRef.current?.(),
-            );
-          },
         });
-        writeTerminalSessionStatusNotice({
-          lastNotice: lastStatusNoticeRef,
-          session: sessionRef.current,
-          terminal,
+      }
+      writeTerminalSessionStatusNotice({
+        lastNotice: lastStatusNoticeRef,
+        session: sessionRef.current,
+        terminal,
+      });
+      const fitTerminal = () => {
+        if (!fitAddon || !terminal) {
+          return;
+        }
+        if (!hasVisibleTerminalSize({ containerElement })) {
+          return;
+        }
+        const fitted = fitAddon.proposeDimensions();
+        if (
+          fitted === undefined ||
+          !Number.isFinite(fitted.cols) ||
+          !Number.isFinite(fitted.rows)
+        ) {
+          return;
+        }
+        const display = terminalDisplaySize(fitted, sharedSize);
+        if (terminal.cols !== display.cols || terminal.rows !== display.rows) {
+          terminal.resize(display.cols, display.rows);
+        }
+        transport?.sendResize(fitted.cols, fitted.rows);
+      };
+      const scheduleFit: TerminalFitScheduler = () => {
+        if (resizeAnimationFrame !== null) {
+          return;
+        }
+        resizeAnimationFrame = window.requestAnimationFrame(() => {
+          resizeAnimationFrame = null;
+          fitTerminal();
         });
-        const fitTerminal = () => {
-          if (!fitAddon || !terminal) {
+      };
+      fitTerminal();
+      const fontSet = document.fonts;
+      if (fontSet !== undefined) {
+        stopObservingFonts = observeTerminalFontLoading(fontSet, () => {
+          if (terminal === null) {
             return;
           }
-          if (!hasVisibleTerminalSize({ containerElement })) {
-            return;
-          }
-          const fitted = fitAddon.proposeDimensions();
-          if (
-            fitted === undefined ||
-            !Number.isFinite(fitted.cols) ||
-            !Number.isFinite(fitted.rows)
-          ) {
-            return;
-          }
-          applyTerminalFitDimensions(
-            fitted,
-            sharedSize,
-            surfaceVisible,
-            (cols, rows) => {
-              if (
-                activeTerminal.cols !== cols ||
-                activeTerminal.rows !== rows
-              ) {
-                activeTerminal.resize(cols, rows);
-              }
-            },
-            (cols, rows) => transport?.sendResize(cols, rows),
-          );
-        };
-        const scheduleFit: TerminalFitScheduler = () => {
-          resizeCoalescer?.schedule();
-        };
-        resizeCoalescer = createTerminalResizeCoalescer({
-          isSettled: () => {
-            const rect = containerElement.getBoundingClientRect();
-            return (
-              rect.width > 0 &&
-              rect.height > 0 &&
-              !hasRunningLayoutAnimation(containerElement) &&
-              document.fonts?.status !== "loading"
-            );
-          },
-          onSettled: fitTerminal,
+          forceTerminalFontMeasurement(terminal);
+          scheduleFit();
         });
-        fitTerminal();
-        const fontSet = document.fonts;
-        if (fontSet !== undefined) {
-          stopObservingFonts = observeTerminalFontLoading(fontSet, () => {
-            if (terminal === null) {
+      }
+      scheduleFitRef.current = scheduleFit;
+      const currentActiveElement = document.activeElement;
+      if (
+        shouldFocusTerminalAfterAsyncMount({
+          currentFocusIsAvailable:
+            currentActiveElement !== null &&
+            currentActiveElement !== document.body &&
+            currentActiveElement.isConnected,
+          hasExplicitFocusRequest: autoFocusRef.current,
+          focusMovedDuringMount: currentActiveElement !== activeElementAtMount,
+          isPanelOpen: isPanelOpenRef.current,
+        })
+      ) {
+        terminal.focus();
+        onAutoFocusHandledRef.current?.();
+      }
+
+      const activeTerminal = terminal;
+      let reconnecting = false;
+      let reconnectingNoticeVisible = false;
+      const clearConnectionNoticeTimeout = () => {
+        if (connectionNoticeTimeout !== null) {
+          clearTimeout(connectionNoticeTimeout);
+          connectionNoticeTimeout = null;
+        }
+      };
+      const activeTransport = new TerminalWebSocketTransport({
+        onRepaintNudgeSizeReleased: (size) => {
+          const nextSize = nextSharedTerminalSize(sharedSize, size, false);
+          if (nextSize !== null) {
+            sharedSize = nextSize;
+            scheduleFit();
+          }
+        },
+        onConnectionState: (state) => {
+          if (disposed) {
+            return;
+          }
+          if (state === "reconnecting") {
+            if (reconnecting) {
               return;
             }
-            forceTerminalFontMeasurement(terminal);
-            scheduleFit();
-          });
-        }
-        scheduleFitRef.current = scheduleFit;
-        const currentActiveElement = document.activeElement;
-        if (
-          shouldFocusTerminalAfterAsyncMount({
-            currentFocusIsAvailable:
-              currentActiveElement !== null &&
-              currentActiveElement !== document.body &&
-              currentActiveElement.isConnected,
-            hasExplicitFocusRequest: autoFocusRef.current,
-            focusMovedDuringMount:
-              currentActiveElement !== activeElementAtMount,
-            isPanelOpen: isPanelOpenRef.current,
-          })
-        ) {
-          terminal.focus();
-          onAutoFocusHandledRef.current?.();
-        }
-
-        let reconnecting = false;
-        let reconnectingNoticeVisible = false;
-        const clearConnectionNoticeTimeout = () => {
-          if (connectionNoticeTimeout !== null) {
-            clearTimeout(connectionNoticeTimeout);
-            connectionNoticeTimeout = null;
+            reconnecting = true;
+            clearConnectionNoticeTimeout();
+            setConnectionNotice(null);
+            connectionNoticeTimeout = setTimeout(() => {
+              connectionNoticeTimeout = null;
+              reconnectingNoticeVisible = true;
+              setConnectionNotice("reconnecting");
+            }, TERMINAL_RECONNECTING_NOTICE_DELAY_MS);
+            return;
           }
-        };
-        const activeTransport = new TerminalWebSocketTransport({
-          onRepaintNudgeSizeReleased: (size) => {
-            const nextSize = nextSharedTerminalSize(sharedSize, size, false);
+          reconnecting = false;
+          clearConnectionNoticeTimeout();
+          if (state === "attached" && reconnectingNoticeVisible) {
+            setConnectionNotice("reconnected");
+            connectionNoticeTimeout = setTimeout(() => {
+              connectionNoticeTimeout = null;
+              setConnectionNotice(null);
+            }, TERMINAL_RECONNECTED_NOTICE_DURATION_MS);
+          } else {
+            setConnectionNotice(null);
+          }
+          reconnectingNoticeVisible = false;
+        },
+        onInputOverflow: (maxBytes) => {
+          writeTerminalStatus({
+            terminal: activeTerminal,
+            text: `Terminal input queue is full (${maxBytes} bytes); input was not sent`,
+          });
+        },
+        onInvalidMessage: () => {
+          writeTerminalStatus({
+            terminal: activeTerminal,
+            text: "Terminal received an invalid server message",
+          });
+        },
+        onMessage: (message) => {
+          if (
+            message.type === "attached" ||
+            message.type === "session-updated"
+          ) {
+            const { cols, rows } = message.session;
+            const nextSize = nextSharedTerminalSize(
+              sharedSize,
+              { cols, rows },
+              message.type === "session-updated" &&
+                activeTransport.consumeRepaintNudgeEcho({ cols, rows }),
+            );
             if (nextSize !== null) {
               sharedSize = nextSize;
               scheduleFit();
             }
-          },
-          onConnectionState: (state) => {
-            if (disposed) {
-              return;
-            }
-            if (state === "reconnecting") {
-              if (reconnecting) {
-                return;
-              }
-              reconnecting = true;
-              clearConnectionNoticeTimeout();
-              setConnectionNotice(null);
-              connectionNoticeTimeout = setTimeout(() => {
-                connectionNoticeTimeout = null;
-                reconnectingNoticeVisible = true;
-                setConnectionNotice("reconnecting");
-              }, TERMINAL_RECONNECTING_NOTICE_DELAY_MS);
-              return;
-            }
-            reconnecting = false;
-            clearConnectionNoticeTimeout();
-            if (state === "attached" && reconnectingNoticeVisible) {
-              setConnectionNotice("reconnected");
-              connectionNoticeTimeout = setTimeout(() => {
-                connectionNoticeTimeout = null;
-                setConnectionNotice(null);
-              }, TERMINAL_RECONNECTED_NOTICE_DURATION_MS);
-            } else {
-              setConnectionNotice(null);
-            }
-            reconnectingNoticeVisible = false;
-          },
-          onInputOverflow: (maxBytes) => {
-            writeTerminalStatus({
-              terminal: activeTerminal,
-              text: `Terminal input queue is full (${maxBytes} bytes); input was not sent`,
-            });
-          },
-          onInvalidMessage: () => {
-            writeTerminalStatus({
-              terminal: activeTerminal,
-              text: "Terminal received an invalid server message",
-            });
-          },
-          onMessage: (message) => {
-            if (
-              message.type === "attached" ||
-              message.type === "session-updated"
-            ) {
-              const { cols, rows } = message.session;
-              const nextSize = nextSharedTerminalSize(
-                sharedSize,
-                { cols, rows },
-                message.type === "session-updated" &&
-                  activeTransport.consumeRepaintNudgeEcho({ cols, rows }),
-              );
-              if (nextSize !== null) {
-                sharedSize = nextSize;
-                scheduleFit();
-              }
-            }
-            handleTerminalServerMessage({
-              acknowledgeOutput: (nextSeq) =>
-                activeTransport.acknowledgeOutput(nextSeq),
-              message,
-              onReplayComplete: () => {
-                if (!disposed && sessionStatusRef.current === "running") {
-                  activeTransport.requestRepaint();
-                }
-              },
-              onSessionChange: onSessionChangeRef.current,
-              replayNextSeq,
-              replayWriteState,
-              setReplayNextSeq: (nextSeq) => {
-                replayNextSeq = nextSeq;
-              },
-              terminal: activeTerminal,
-            });
-          },
-          onSequenceGap: () => {
-            activeTerminal.reset();
-            writeTerminalStatus({
-              terminal: activeTerminal,
-              text: "Some terminal output was unavailable after reconnect",
-            });
-          },
-          shouldReconnect: () =>
-            !disposed && sessionStatusRef.current === "running",
-          url: buildTerminalWebSocketUrl({ terminalId: session.id }),
-        });
-        transport = activeTransport;
-        fitTerminal();
-        reportDocumentVisibility();
-        document.addEventListener("visibilitychange", reportDocumentVisibility);
-        activeTransport.start();
-        stopWatchingLayout = watchTerminalLayoutSettled({
-          cancelFrame: (handle) => window.cancelAnimationFrame(handle),
-          measure: () => {
-            const rect = containerElement.getBoundingClientRect();
-            if (
-              rect.width <= 0 ||
-              rect.height <= 0 ||
-              hasRunningLayoutAnimation(containerElement) ||
-              document.fonts?.status === "loading"
-            ) {
-              return null;
-            }
-            const fitted = fitAddon?.proposeDimensions();
-            return `${rect.width}x${rect.height}:${fitted?.cols}x${fitted?.rows}`;
-          },
-          onSettled: () => {
-            if (disposed) {
-              return;
-            }
-            activeTransport.markLayoutSettled();
-          },
-          ready: document.fonts?.ready,
-          subscribe: (onSignal) =>
-            observeLayoutSignals({
-              affectsContainer: (target) =>
-                target instanceof Node && target.contains(containerElement),
-              document,
-              fontSet: document.fonts,
-              onSignal,
-            }),
-          requestFrame: (callback) => window.requestAnimationFrame(callback),
-        });
-        const sendTerminalInput = (dataBase64: string) =>
-          activeTransport.sendInput(dataBase64);
-        handleFileDropRef.current = (files) => {
-          const desktop = window.bbDesktop;
-          handleTerminalFileDrop({
-            files: Array.from(files),
-            getPathForFile: desktop?.getPathForFile,
-            isRunning: sessionStatusRef.current === "running",
-            sendInput: (input) =>
-              forwardTerminalData({
-                data: input,
-                onInput: sendTerminalInput,
-                onUserInput: onUserInputRef.current,
-                replayWriteState,
-                sessionStatus: sessionStatusRef.current,
-              }),
-          });
-        };
-        terminalInteractions = attachTerminalInteractions({
-          element: containerElement.parentElement ?? containerElement,
-          getSelection: () => activeTerminal.getSelection(),
-          onPointerDown: handleTerminalPointerDown,
-          onPointerRelease: handleTerminalPointerRelease,
-          onPointerCancel: handleTerminalPointerCancel,
-          onSelection: (text) =>
-            reportTerminalSelection(lastPointerReleaseAnchorRef.current, text),
-          copySelection: copyTerminalSelection,
-          onFilesDrop: (files) => handleFileDropRef.current?.(files),
-        });
-        activeTerminal.onData((data) => {
-          if (controlModeRef.current !== "off") {
-            const applied = applyTerminalControlMode(
-              data,
-              controlModeRef.current,
-            );
-            data = applied.data;
-            if (applied.nextMode !== controlModeRef.current) {
-              changeControlMode(applied.nextMode);
-            }
           }
-          forwardTerminalData({
-            data,
-            onInput: sendTerminalInput,
-            onUserInput: onUserInputRef.current,
+          handleTerminalServerMessage({
+            acknowledgeOutput: (nextSeq) =>
+              activeTransport.acknowledgeOutput(nextSeq),
+            message,
+            onReplayComplete: () => {
+              if (!disposed && sessionStatusRef.current === "running") {
+                activeTransport.requestRepaint();
+              }
+            },
+            onSessionChange: onSessionChangeRef.current,
+            replayNextSeq,
             replayWriteState,
-            sessionStatus: sessionStatusRef.current,
+            setReplayNextSeq: (nextSeq) => {
+              replayNextSeq = nextSeq;
+            },
+            terminal: activeTerminal,
           });
-        });
-        setTerminalReady(true);
-        activeTerminal.onTitleChange((title) => {
-          if (replayWriteState.suppressedWriteCount > 0) {
+        },
+        onSequenceGap: () => {
+          activeTerminal.reset();
+          writeTerminalStatus({
+            terminal: activeTerminal,
+            text: "Some terminal output was unavailable after reconnect",
+          });
+        },
+        shouldReconnect: () =>
+          !disposed && sessionStatusRef.current === "running",
+        url: buildTerminalWebSocketUrl({ terminalId: session.id }),
+      });
+      transport = activeTransport;
+      fitTerminal();
+      reportDocumentVisibility();
+      document.addEventListener("visibilitychange", reportDocumentVisibility);
+      activeTransport.start();
+      stopWatchingLayout = watchTerminalLayoutSettled({
+        cancelFrame: (handle) => window.cancelAnimationFrame(handle),
+        measure: () => {
+          const rect = containerElement.getBoundingClientRect();
+          if (
+            rect.width <= 0 ||
+            rect.height <= 0 ||
+            hasRunningLayoutAnimation(containerElement) ||
+            document.fonts?.status === "loading"
+          ) {
+            return null;
+          }
+          const fitted = fitAddon?.proposeDimensions();
+          return `${rect.width}x${rect.height}:${fitted?.cols}x${fitted?.rows}`;
+        },
+        onSettled: () => {
+          if (disposed) {
             return;
           }
-          if (sessionStatusRef.current !== "running") {
-            return;
-          }
-          onTitleChangeRef.current?.(title);
+          fitTerminal();
+          activeTransport.markLayoutSettled();
+        },
+        ready: document.fonts?.ready,
+        subscribe: (onSignal) =>
+          observeLayoutSignals({
+            affectsContainer: (target) =>
+              target instanceof Node && target.contains(containerElement),
+            document,
+            fontSet: document.fonts,
+            onSignal,
+          }),
+        requestFrame: (callback) => window.requestAnimationFrame(callback),
+      });
+      const sendTerminalInput = (dataBase64: string) =>
+        activeTransport.sendInput(dataBase64);
+      handleFileDropRef.current = (files) => {
+        const desktop = window.bbDesktop;
+        handleTerminalFileDrop({
+          files: Array.from(files),
+          getPathForFile: desktop?.getPathForFile,
+          isRunning: sessionStatusRef.current === "running",
+          sendInput: (input) =>
+            forwardTerminalData({
+              data: input,
+              onInput: sendTerminalInput,
+              onUserInput: onUserInputRef.current,
+              replayWriteState,
+              sessionStatus: sessionStatusRef.current,
+            }),
         });
-        selectionChangeDisposable = activeTerminal.onSelectionChange(
-          terminalInteractions.onSelectionChange,
-        );
-
-        resizeObserver = new ResizeObserver((entries) => {
-          const hasSize = hasVisibleTerminalSize({ containerElement, entries });
-          if (hasSize !== containerHasSize) {
-            containerHasSize = hasSize;
-            reportDocumentVisibility();
-          }
-          if (!hasSize) {
-            return;
-          }
-          scheduleFit();
-        });
-        resizeObserver.observe(containerElement);
       };
-      const bounds = containerElement.getBoundingClientRect();
-      const priority =
-        isPanelOpenRef.current &&
-        document.visibilityState === "visible" &&
-        bounds.width > 0 &&
-        bounds.height > 0 &&
-        (autoFocusRef.current ||
-          containerElement.contains(document.activeElement));
-      cancelTerminalRealization = terminalRealizationScheduler.schedule(() => {
-        try {
-          realizeTerminal();
-        } catch (error) {
-          if (!disposed) {
-            containerElement.textContent =
-              error instanceof Error ? error.message : String(error);
-          }
+      terminalInteractions = attachTerminalInteractions({
+        element: containerElement.parentElement ?? containerElement,
+        getSelection: () => activeTerminal.getSelection(),
+        onPointerDown: handleTerminalPointerDown,
+        onPointerRelease: handleTerminalPointerRelease,
+        onPointerCancel: handleTerminalPointerCancel,
+        onSelection: (text) =>
+          reportTerminalSelection(lastPointerReleaseAnchorRef.current, text),
+        copySelection: copyTerminalSelection,
+        onFilesDrop: (files) => handleFileDropRef.current?.(files),
+      });
+      activeTerminal.onData((data) => {
+        if (controlModeRef.current !== "off") {
+          const applied = applyTerminalControlMode(data, controlModeRef.current);
+          data = applied.data;
+          if (applied.nextMode !== controlModeRef.current) changeControlMode(applied.nextMode);
         }
-      }, priority);
+        forwardTerminalData({
+          data,
+          onInput: sendTerminalInput,
+          onUserInput: onUserInputRef.current,
+          replayWriteState,
+          sessionStatus: sessionStatusRef.current,
+        });
+      });
+      setTerminalReady(true);
+      activeTerminal.onTitleChange((title) => {
+        if (replayWriteState.suppressedWriteCount > 0) {
+          return;
+        }
+        if (sessionStatusRef.current !== "running") {
+          return;
+        }
+        onTitleChangeRef.current?.(title);
+      });
+      selectionChangeDisposable = activeTerminal.onSelectionChange(
+        terminalInteractions.onSelectionChange,
+      );
+
+      resizeObserver = new ResizeObserver((entries) => {
+        const hasSize = hasVisibleTerminalSize({ containerElement, entries });
+        if (hasSize !== containerHasSize) {
+          containerHasSize = hasSize;
+          reportDocumentVisibility();
+        }
+        if (!hasSize) {
+          return;
+        }
+        scheduleFit();
+      });
+      resizeObserver.observe(containerElement);
     }
 
     void mountTerminal(container).catch((error) => {
@@ -1470,8 +1387,9 @@ export function ThreadTerminalView({
       setTerminalSearchOpen(false);
       stopObservingFonts?.();
       stopWatchingLayout?.();
-      cancelTerminalRealization?.();
-      resizeCoalescer?.cancel();
+      if (resizeAnimationFrame !== null) {
+        window.cancelAnimationFrame(resizeAnimationFrame);
+      }
       if (connectionNoticeTimeout !== null) {
         clearTimeout(connectionNoticeTimeout);
       }
@@ -1539,8 +1457,7 @@ export function ThreadTerminalView({
     terminal.options.fontSize = mobileFontSize;
     forceTerminalFontMeasurement(terminal);
     scheduleFitRef.current?.();
-    if (isTouchDevice)
-      writeTerminalMobileFontSize(localStorage, mobileFontSize);
+    if (isTouchDevice) writeTerminalMobileFontSize(localStorage, mobileFontSize);
   }, [isTouchDevice, mobileFontSize]);
 
   useEffect(() => {
@@ -1696,12 +1613,8 @@ export function ThreadTerminalView({
             );
           }}
           onInput={(data) => {
-            const applied = applyTerminalControlMode(
-              data,
-              controlModeRef.current,
-            );
-            if (applied.nextMode !== controlModeRef.current)
-              changeControlMode(applied.nextMode);
+            const applied = applyTerminalControlMode(data, controlModeRef.current);
+            if (applied.nextMode !== controlModeRef.current) changeControlMode(applied.nextMode);
             terminalRef.current?.input(applied.data);
           }}
           onKeyboardToggle={() => {
@@ -1738,10 +1651,7 @@ export function ThreadTerminalView({
           }}
           fontSize={mobileFontSize}
           onFontSizeChange={(delta) => {
-            const next = writeTerminalMobileFontSize(
-              localStorage,
-              mobileFontSize + delta,
-            );
+            const next = writeTerminalMobileFontSize(localStorage, mobileFontSize + delta);
             mobileFontSizeRef.current = next;
             setMobileFontSize(next);
           }}
