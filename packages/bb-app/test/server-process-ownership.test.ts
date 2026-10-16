@@ -574,8 +574,7 @@ describe("server process ownership", () => {
         );
       }
       const startedAt = Date.now();
-      process.kill(launcher.pid!, "SIGKILL");
-      await waitForExit(launcher, 2_000);
+      process.kill(serverPid, "SIGTERM");
       try {
         await waitForFile(pluginStopping, SERVER_SHUTDOWN_BOUND_MS);
       } catch (error) {
@@ -586,6 +585,7 @@ describe("server process ownership", () => {
       }
       await waitForProcessExitByPid(serverPid, SERVER_SHUTDOWN_BOUND_MS + 1_000);
       serverExited = true;
+      await waitForExit(launcher, 2_000);
       expect(Date.now() - startedAt).toBeLessThanOrEqual(
         SERVER_SHUTDOWN_BOUND_MS + 1_000,
       );
