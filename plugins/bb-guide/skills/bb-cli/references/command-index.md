@@ -179,6 +179,7 @@ move and downloads the new server's bb-app package for its service.
 - `bb thread get`
 - `bb thread view`
 - `bb thread status`
+- `bb thread progress`
 - `bb thread log`
 - `bb thread messages`
 - `bb thread timeline`

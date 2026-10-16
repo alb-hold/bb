@@ -16,6 +16,7 @@ import {
 import { threadStatusSchema, threadStatusValues } from "./thread-status.js";
 import { threadOriginKindSchema } from "./thread-origin-kind.js";
 import { threadVisibilitySchema } from "./thread-visibility.js";
+import { threadRowStateSchema } from "./thread-row-state.js";
 export { threadStatusSchema, threadStatusValues } from "./thread-status.js";
 export type { ThreadStatus } from "./thread-status.js";
 export { threadOriginKindSchema } from "./thread-origin-kind.js";
@@ -472,5 +473,6 @@ export const threadListEntrySchema = threadWithRuntimeSchema.extend({
   environmentProviderId: z.string().nullable(),
   environmentIsWorktree: z.boolean().nullable(),
   environmentWorkspaceDisplayKind: environmentWorkspaceDisplayKindSchema,
+  rowState: threadRowStateSchema,
 });
 export type ThreadListEntry = z.infer<typeof threadListEntrySchema>;

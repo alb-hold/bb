@@ -272,6 +272,11 @@ Opening threads and files in the app:
     --line <number>                        Line number to focus
     --split <placement>                    right, down, left, top, or replace
   bb thread pane <action> [thread-id]      Maximize, restore, toggle, spotlight, or clear spotlight
+  bb thread status set <key> <value>       Set a status chip on this thread's sidebar row
+  bb thread status clear [key]             Clear one or all sidebar status chips
+  bb thread status list                    List this thread's sidebar status chips
+  bb thread progress <0..1> [--label text] Set sidebar progress for this thread
+  bb thread progress clear                 Clear sidebar progress
 
   Inside a BB thread, BB_THREAD_ID selects the current thread automatically and
   the thread ID argument is omitted for file-only opens. Outside a BB thread,

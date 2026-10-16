@@ -1,5 +1,20 @@
 # APIs To Audit
 
+## Thread row status and progress
+
+`bb.sdk.threads.experimental_rowState({ threadId })` reads the transient status
+chips and progress shown on a thread's sidebar row. `experimental_updateRowState`
+supports setting or clearing statuses and progress. State is scoped to the thread
+and cleared when an agent turn ends; native terminal threads have no turns, so
+their state remains until explicitly cleared. Stabilization requires auditing
+turn completion coverage across providers, maximum status count and text bounds,
+and live sidebar refresh on desktop and compact layouts.
+
+The `PluginSidebarThread.experimental_rowState` property exposes the same
+validated state to thread-list renderers. It remains experimental until its
+shape, priority sorting, truncation and compact behavior are audited alongside
+the host sidebar.
+
 ## Environment removal notification
 
 `experimental_environment.removed` announces successful provider removal after

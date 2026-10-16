@@ -426,6 +426,28 @@ afterEach(() => {
 });
 
 describe("ThreadRow", () => {
+  it("renders bounded status chips and progress on the row", () => {
+    const statuses = Object.fromEntries(
+      Array.from({ length: 8 }, (_, index) => [
+        `status-${index}`,
+        { value: `A long status value ${index}`, priority: 8 - index },
+      ]),
+    );
+    renderThreadRow({
+      thread: createThread({
+        experimental_rowState: {
+          statuses,
+          progress: { value: 0.4, label: "Implementation" },
+        },
+      }),
+    });
+
+    expect(document.querySelectorAll("[data-sidebar-thread-status-chip]")).toHaveLength(2);
+    expect(screen.getByText("+6 more")).toBeTruthy();
+    expect(screen.getByRole("progressbar", { name: "Implementation" }).getAttribute("aria-valuenow")).toBe("40");
+    expect(screen.getByText("A long status value 0").classList.contains("truncate")).toBe(true);
+  });
+
   it("renders Needs input, Working, Woke 3m elapsed, and Done labels", async () => {
     const callRpc = vi.fn().mockResolvedValue({
       automations: [

@@ -151,6 +151,18 @@ hostId, providerId, projectId, parentThreadId, groupBy })`.
 
 ## Inspecting Results
 
+- Inside a thread (`BB_THREAD_ID` set), use `bb thread status set <key> <value>
+  [--icon <icon>] [--color <color>] [--priority <number>]` to add or update a
+  sidebar chip. Use `bb thread status clear [<key>]` to remove one or all chips,
+  and `bb thread status list` to inspect them. Up to eight keys are allowed and
+  values are limited to 120 characters.
+- Use `bb thread progress <0..1> [--label <text>]` to show progress on the
+  sidebar row, or `bb thread progress clear` to remove it. Both status and
+  progress clear when an agent turn settles to idle or error. Native terminal
+  threads have no bb-managed turns, so their row state remains until cleared.
+  The SDK equivalents are `threads.experimental_rowState` and
+  `threads.experimental_updateRowState`.
+
 - Use `bb thread search <query> [--limit <1-50>]` for sidebar search. Use
   `bb thread prompt-search [query] [--project <id>] [--limit <1-200>]` to find
   previously sent prompts across threads, or omit the query for recent prompts.

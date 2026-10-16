@@ -61,3 +61,5 @@ installed Automations plugin; when its read RPC is unavailable, the column
 still reports the thread-list states it can resolve locally.
 
 Modal image debugging uses `bb modal image build`, `bb modal sandbox run`, `bb modal sandbox exec ID [--json] -- COMMAND...`, and `bb modal sandbox stop ID`. Debug compute expires after 30 minutes and skips BB enrollment and project setup. See the plugin skill for output limits and typed RPC equivalents.
+
+`bb thread status set <key> <value> [--icon <icon>] [--color <color>] [--priority <number>]`, `bb thread status clear [<key>]`, and `bb thread status list` manage up to eight status chips on the current thread's sidebar row. `bb thread progress <0..1> [--label <text>]` sets its progress bar; `bb thread progress clear` removes it. These commands use `BB_THREAD_ID` and fail outside a thread. Statuses and progress clear when an agent turn settles to idle or error. Native terminal threads have no bb-managed turns, so their row state remains until explicitly cleared. The SDK equivalents are `threads.experimental_rowState` and `threads.experimental_updateRowState`.
