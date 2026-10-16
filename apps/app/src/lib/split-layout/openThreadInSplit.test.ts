@@ -81,31 +81,23 @@ describe("openThreadInSplit", () => {
     );
   });
 
-  it("coerces to a replace of the focused pane at the eight-pane cap", () => {
-    let current = eightPanes();
+  it("refuses at the eight-pane cap instead of replacing the focused pane", () => {
+    const current = eightPanes();
+    const set = vi.fn();
     const navigate = vi.fn();
-    openThreadInSplit({
-      store: {
-        get: () => current,
-        set: (_atom, value) => {
-          current = value;
-        },
-      },
+    const result = openThreadInSplit({
+      store: { get: () => current, set },
       navigate,
       projectId: "project-1",
       threadId: "thread-9",
       isCompact: false,
     });
 
+    expect(result).toBe("at-pane-limit");
     expect(countPanes(current.root)).toBe(8);
-    expect(
-      findPaneByThread(current.root, "project-1", "thread-9")?.paneId,
-    ).toBe("pane-1");
-    expect(findPaneByThread(current.root, "project-1", "thread-1")).toBeNull();
-    expect(navigate).toHaveBeenCalledWith(
-      "/projects/project-1/threads/thread-9",
-      undefined,
-    );
+    expect(findPaneByThread(current.root, "project-1", "thread-1")).not.toBeNull();
+    expect(set).not.toHaveBeenCalled();
+    expect(navigate).not.toHaveBeenCalled();
   });
 
   it("plain-navigates without touching the layout on compact viewports", () => {

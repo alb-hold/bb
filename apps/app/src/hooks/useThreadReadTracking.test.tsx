@@ -313,7 +313,7 @@ describe("useThreadReadTracking", () => {
     vi.spyOn(document, "hasFocus").mockReturnValue(false);
     const markThreadRead = makeMarkThreadRead();
 
-    renderHook(() =>
+    renderTrackingHook(() =>
       useThreadReadTracking({
         markThreadRead,
         thread: { id: "thr_unfocused", lastReadAt: 10, latestAttentionAt: 20 },
@@ -336,7 +336,7 @@ describe("useThreadReadTracking", () => {
   it("waits for input when attention arrives after the user went idle", () => {
     pressKeyWithFakeTimers();
     const markThreadRead = makeMarkThreadRead();
-    const { rerender } = renderHook(
+    const { rerender } = renderTrackingHook(
       ({ latestAttentionAt }: { latestAttentionAt: number }) =>
         useThreadReadTracking({
           markThreadRead,
@@ -360,7 +360,7 @@ describe("useThreadReadTracking", () => {
   it("goes idle when the window loses focus", () => {
     pressKeyWithFakeTimers();
     const markThreadRead = makeMarkThreadRead();
-    const { rerender } = renderHook(
+    const { rerender } = renderTrackingHook(
       ({ latestAttentionAt }: { latestAttentionAt: number }) =>
         useThreadReadTracking({
           markThreadRead,
@@ -382,7 +382,7 @@ describe("useThreadReadTracking", () => {
   it("keeps a thread marked unread elsewhere while the user is idle", () => {
     pressKeyWithFakeTimers();
     const markThreadRead = makeMarkThreadRead();
-    const { rerender } = renderHook(
+    const { rerender } = renderTrackingHook(
       ({ lastReadAt }: { lastReadAt: number | null }) =>
         useThreadReadTracking({
           markThreadRead,

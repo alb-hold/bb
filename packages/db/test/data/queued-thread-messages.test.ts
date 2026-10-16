@@ -222,25 +222,36 @@ describe("queued thread messages", () => {
         .run();
     const idleThreadWaitingOn = (kind: string) => {
       const threadId = idleThread();
-      setQueuedRow(queueOn(threadId), { waitingOn: JSON.stringify({ kind }) });
+      setQueuedRow(queueOn(threadId), { state: "waiting", waitingOn: JSON.stringify({ kind }) });
       return threadId;
     };
 
     const onlyClaimed = idleThread();
-    setQueuedRow(queueOn(onlyClaimed), { claimedAt: 1, claimToken: "claim" });
+    setQueuedRow(queueOn(onlyClaimed), {
+      state: "claimed",
+      claimedAt: 1,
+      claimToken: "claim",
+    });
 
     const claimedAndFree = idleThread();
     setQueuedRow(queueOn(claimedAndFree), {
+      state: "claimed",
       claimedAt: 1,
       claimToken: "other-claim",
     });
     queueOn(claimedAndFree);
 
     const onlyFailed = idleThread();
-    setQueuedRow(queueOn(onlyFailed), { failureReason: "provider rejected" });
+    setQueuedRow(queueOn(onlyFailed), {
+      state: "failed_exhausted",
+      failureReason: "provider rejected",
+    });
 
     const failedAndFree = idleThread();
-    setQueuedRow(queueOn(failedAndFree), { failureReason: "provider rejected" });
+    setQueuedRow(queueOn(failedAndFree), {
+      state: "failed_exhausted",
+      failureReason: "provider rejected",
+    });
     queueOn(failedAndFree);
 
     const waitingOnTurnStart = idleThreadWaitingOn("turn-starting");

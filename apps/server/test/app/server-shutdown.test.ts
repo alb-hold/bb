@@ -1,5 +1,6 @@
 import { once } from "node:events";
-import { createConnection, migrate, type DbConnection } from "@bb/db";
+import { createMigratedConnection } from "@bb/db/testing";
+import type { DbConnection } from "@bb/db";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
 import {
@@ -22,8 +23,7 @@ describe("server shutdown ordering", () => {
   let webSocketClient: WebSocket | undefined;
 
   beforeEach(() => {
-    db = createConnection(":memory:");
-    migrate(db);
+    db = createMigratedConnection();
   });
 
   afterEach(async () => {
