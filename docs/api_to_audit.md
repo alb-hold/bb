@@ -14,10 +14,13 @@ question.
 `bb.sdk.threads.experimental_rowState({ threadId })` reads the transient status
 chips and progress shown on a thread's sidebar row. `experimental_updateRowState`
 sets or clears them through the same server route used by the CLI. State clears
-when an agent turn settles to idle or error; native terminal threads have no
-bb-managed turns and retain state until explicitly cleared. Stabilization
-requires auditing turn completion across providers, count and text bounds, and
-live sidebar refresh on desktop and compact layouts.
+when a managed turn settles to idle or error, or when a native terminal session
+closes with process exit or user close. A daemon disconnect does not clear
+native state because the terminal may reattach. Explicit clear commands remove
+the selected state, and a targeted read hides state after 60 minutes without
+an update as a backstop. Stabilization requires auditing turn completion across
+providers, count and text bounds, and live sidebar refresh on desktop and
+compact layouts.
 
 `PluginSidebarThread.experimental_rowState` exposes this state to the core
 thread-list renderer. The CLI and renderer both use the shared persisted thread

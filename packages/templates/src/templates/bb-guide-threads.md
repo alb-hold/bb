@@ -16,11 +16,13 @@ Sidebar status and progress:
   bb thread progress clear
 
 These commands use BB_THREAD_ID and update the current thread's sidebar row.
-They support at most eight statuses with values up to 120 characters. Statuses
-and progress clear when an agent turn settles to idle or error. Native terminal
-threads have no bb-managed turns and retain row state until explicitly cleared.
-The SDK equivalents are threads.experimental_rowState and
-threads.experimental_updateRowState.
+They support at most eight statuses with values up to 120 characters. Row state
+clears when a managed turn settles to idle or error, or when a native terminal
+session closes with process exit or user close. A daemon disconnect does not
+clear native row state because the terminal may reattach. Explicit clear
+commands remove the selected state, and a targeted read hides state after 60
+minutes without an update as a backstop. The SDK equivalents are
+threads.experimental_rowState and threads.experimental_updateRowState.
 
 Every command supports --json for machine-readable output. Read-only commands
 take a thread ID or --self where supported; mutating lifecycle and messaging
