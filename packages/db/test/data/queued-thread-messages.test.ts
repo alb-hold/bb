@@ -245,12 +245,14 @@ describe("queued thread messages", () => {
     setQueuedRow(queueOn(onlyFailed), {
       state: "failed_exhausted",
       failureReason: "provider rejected",
+      failureCount: 1,
     });
 
     const failedAndFree = idleThread();
     setQueuedRow(queueOn(failedAndFree), {
       state: "failed_exhausted",
       failureReason: "provider rejected",
+      failureCount: 1,
     });
     queueOn(failedAndFree);
 
