@@ -634,6 +634,7 @@ describe("native terminal threads", () => {
         fixture.hostId,
       ),
     ).toContain(thread.id);
+    fixture.socket.sentMessages.length = 0;
     fixture.harness.hub.unregisterDaemon(fixture.sessionId);
     onDaemonSocketOpen(fixture.harness.deps, {
       hostId: fixture.hostId,
