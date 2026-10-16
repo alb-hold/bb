@@ -10,6 +10,7 @@ import {
   getNativeTerminalThread,
   getTerminalSession,
   getThread,
+  listNativeTerminalThreadsWithDisconnectedTerminal,
   listEvents,
   migrate,
   noopNotifier,
@@ -627,14 +628,92 @@ describe("native terminal threads", () => {
       .run();
     fixture.socket.sentMessages.length = 0;
     const warn = vi.spyOn(fixture.harness.deps.logger, "warn");
-
-    await reopenNativeTerminalsAfterDaemonReconnect(fixture.harness.deps, {
+    expect(
+      listNativeTerminalThreadsWithDisconnectedTerminal(
+        fixture.harness.db,
+        fixture.hostId,
+      ),
+    ).toContain(thread.id);
+    fixture.harness.hub.unregisterDaemon(fixture.sessionId);
+    onDaemonSocketOpen(fixture.harness.deps, {
       hostId: fixture.hostId,
-      threadIds: [thread.id],
+      sessionId: fixture.sessionId,
+      socket: fixture.socket,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    expect(
+      daemonMessages(fixture.socket).filter(
+        (message) => message.type === "terminal.open",
+      ),
+    ).toEqual([]);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("dispatches an unarchived thread-archived terminal on daemon reconnect", async () => {
+    const fixture = await createMigratedMemoryFixture();
+    const { thread } = await openRunningNativeThread(fixture, {
+      providerId: "claude-code",
+    });
+    const record = getNativeTerminalThread(fixture.harness.db, thread.id);
+    if (
+      record?.terminalSessionId === null ||
+      record?.terminalSessionId === undefined
+    ) {
+      throw new Error("native thread has no terminal");
+    }
+    if (record.nativeSessionId === null) {
+      throw new Error("native thread has no provider session");
+    }
+    archiveThread(fixture.harness.db, noopNotifier, thread.id);
+    fixture.harness.db
+      .update(terminalSessions)
+      .set({ status: "exited", closeReason: "thread-archived" })
+      .where(eq(terminalSessions.id, record.terminalSessionId))
+      .run();
+    expect(
+      unarchiveThread(fixture.harness.db, fixture.harness.hub, thread.id),
+    ).not.toBeNull();
+    expect(
+      listNativeTerminalThreadsWithDisconnectedTerminal(
+        fixture.harness.db,
+        fixture.hostId,
+      ),
+    ).toContain(thread.id);
+    fixture.harness.hub.unregisterDaemon(fixture.sessionId);
+    onDaemonSocketOpen(fixture.harness.deps, {
+      hostId: fixture.hostId,
+      sessionId: fixture.sessionId,
+      socket: fixture.socket,
     });
 
-    expect(daemonMessages(fixture.socket)).toEqual([]);
-    expect(warn).not.toHaveBeenCalled();
+    const reopen = await waitForTerminalOpen(fixture.socket);
+    expect(reopen.threadId).toBe(thread.id);
+    expect(reopen.start.mode).toBe("command");
+    if (reopen.start.mode !== "command") {
+      throw new Error("Expected a native CLI command start");
+    }
+    expect(reopen.start.command).not.toContain("--reattach");
+    expect(reopen.start.command).toContain(
+      `exec "$BB_CLI" thread native-run ${thread.id}`,
+    );
+    acknowledgeOpen(fixture, reopen);
+    await expect
+      .poll(() => getNativeTerminalThread(fixture.harness.db, thread.id))
+      .toMatchObject({
+        nativeSessionId: record.nativeSessionId,
+        terminalSessionId: reopen.terminalId,
+      });
+    const launch = nativeTerminalLaunchSpecSchema.parse(
+      await readJson(
+        await postJson(
+          fixture,
+          `/threads/${thread.id}/native-terminal/launch`,
+          {},
+        ),
+      ),
+    );
+    expect(launch.nativeSessionId).toBe(record.nativeSessionId);
   });
 
   it("does not attempt reconnect reattachment for a deleted native thread", async () => {
