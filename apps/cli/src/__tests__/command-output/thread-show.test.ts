@@ -819,4 +819,24 @@ describe("bb thread show command output", () => {
       },
     });
   });
+
+  it("keeps bb thread status as an alias for showing a thread", async () => {
+    const thread: domain.Thread = fixtures.makeThread({
+      id: "thread-status-show-alias",
+      projectId: "proj-1",
+      providerId: "codex",
+      status: "idle",
+      createdAt: 1,
+      updatedAt: 2,
+    });
+    const get = vi.fn(async () => thread);
+    stubThreadApi({
+      "v1.threads.:id.$get": get,
+      "v1.threads.:id.timeline.$get": fixtures.makeEmptyTimelineGetMock(),
+    });
+
+    await runCommand(["thread", "status", thread.id, "--json"], register);
+
+    expect(get).toHaveBeenCalledWith({ param: { id: thread.id } });
+  });
 });
