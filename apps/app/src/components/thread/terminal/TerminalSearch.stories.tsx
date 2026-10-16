@@ -11,9 +11,7 @@ export default {
 
 function SearchableTerminal({ touch = false }: { touch?: boolean }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
-  const fitRef = useRef<{ fit: () => void } | null>(null);
   const [terminal, setTerminal] = useState<Terminal | null>(null);
-  const [fontSize, setFontSize] = useState(12);
   const [addon, setAddon] = useState<TerminalSearchAddonInstance | null>(null);
   const [open, setOpen] = useState(false);
 
@@ -33,7 +31,6 @@ function SearchableTerminal({ touch = false }: { touch?: boolean }) {
         scrollback: 10_000,
       });
       const fit = new fitModule.FitAddon();
-      fitRef.current = fit;
       const search = new searchModule.SearchAddon();
       mountedTerminal.loadAddon(fit);
       mountedTerminal.loadAddon(search);
@@ -48,15 +45,8 @@ function SearchableTerminal({ touch = false }: { touch?: boolean }) {
     return () => {
       active = false;
       mountedTerminal?.dispose();
-      fitRef.current = null;
     };
   }, []);
-
-  useEffect(() => {
-    if (!terminal) return;
-    terminal.options.fontSize = fontSize;
-    fitRef.current?.fit();
-  }, [fontSize, terminal]);
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col">
@@ -72,7 +62,7 @@ function SearchableTerminal({ touch = false }: { touch?: boolean }) {
       </div>
       {touch ? (
         <TerminalMobileControls
-          controlMode="off"
+          controlActive={false}
           disabled={terminal === null}
           onArrow={() => undefined}
           onControlChange={() => undefined}
@@ -81,8 +71,6 @@ function SearchableTerminal({ touch = false }: { touch?: boolean }) {
           onPaste={() => undefined}
           onSearch={() => setOpen(true)}
           onSelectText={() => undefined}
-          fontSize={fontSize}
-          onFontSizeChange={(delta) => setFontSize((current) => current + delta)}
         />
       ) : null}
     </div>

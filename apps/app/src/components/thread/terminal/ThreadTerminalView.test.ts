@@ -13,7 +13,6 @@ import {
   captureTerminalContextMenuState,
   encodeTerminalInputChunks,
   handleTerminalServerMessage,
-  handleTerminalSurfaceVisibility,
   forceTerminalFontMeasurement,
   focusTerminalFromTouchRelease,
   forwardTerminalData,
@@ -32,31 +31,6 @@ import {
   createTerminalOsc8LinkHandler,
   requestTerminalLinkOpen,
 } from "./terminal-links";
-
-describe("terminal surface visibility", () => {
-  it("schedules a fit on visibility return after updating render demand", () => {
-    const calls: string[] = [];
-    const setSurfaceVisibility = vi.fn((visible: boolean) =>
-      calls.push(`surface:${visible}`),
-    );
-    const setRenderDemand = vi.fn((visible: boolean) =>
-      calls.push(`render:${visible}`),
-    );
-    const reportVisibility = vi.fn(() => calls.push("report"));
-    const scheduleFit = vi.fn(() => calls.push("fit"));
-
-    handleTerminalSurfaceVisibility(
-      true,
-      setSurfaceVisibility,
-      setRenderDemand,
-      reportVisibility,
-      scheduleFit,
-    );
-
-    expect(calls).toEqual(["surface:true", "render:true", "report", "fit"]);
-    expect(scheduleFit).toHaveBeenCalledOnce();
-  });
-});
 
 describe("terminal hyperlinks", () => {
   it("preserves OSC-8 provenance through hover and primary activation", () => {

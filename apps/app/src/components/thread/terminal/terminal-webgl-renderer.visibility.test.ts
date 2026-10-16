@@ -23,7 +23,6 @@ function setupVisibility(
   let documentVisible = true;
   let resize = () => {};
   let intersect = (_visible: boolean, _bounds?: DOMRect) => {};
-  const visibilityChanges: boolean[] = [];
   const disconnectResize = vi.fn();
   const disconnectIntersection = vi.fn();
   vi.spyOn(root, "getBoundingClientRect").mockImplementation(() => box);
@@ -109,14 +108,12 @@ function setupVisibility(
     root,
     renderer,
     isPanelOpen: () => panelOpen,
-    onVisibilityChange: (visible) => visibilityChanges.push(visible),
   });
   if (intersectionSupported && initiallyIntersecting) intersect(true);
   return {
     root,
     renderer,
     observer,
-    visibilityChanges,
     createAddon,
     disconnectResize,
     disconnectIntersection,
@@ -307,46 +304,5 @@ describe("terminal visibility signals", () => {
     expect(root.dataset.terminalContextLossCount).toBe("0");
     renderer.dispose();
     expect(loseContext).toHaveBeenCalledOnce();
-  });
-
-  it("reports one render-demand change per document and panel visibility transition", () => {
-    const state = setupVisibility();
-    expect(state.visibilityChanges).toEqual([false, true]);
-
-    state.showDocument(false);
-    state.showDocument(false);
-    state.showDocument(true);
-    state.openPanel(false);
-    state.openPanel(true);
-
-    expect(state.visibilityChanges).toEqual([
-      false,
-      true,
-      false,
-      true,
-      false,
-      true,
-    ]);
-    state.observer.dispose();
-    state.renderer.dispose();
-  });
-
-  it("continues render-demand visibility tracking without WebGL support", () => {
-    const state = setupVisibility(false);
-    state.observer.dispose();
-    const changes: boolean[] = [];
-    const observer = observeTerminalWebglVisibility({
-      root: state.root,
-      renderer: null,
-      isPanelOpen: () => true,
-      onVisibilityChange: (visible) => changes.push(visible),
-    });
-
-    state.showDocument(false);
-    state.showDocument(true);
-
-    expect(changes).toEqual([true, false, true]);
-    observer.dispose();
-    state.renderer.dispose();
   });
 });
