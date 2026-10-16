@@ -160,10 +160,14 @@ This index lists every command path that the core CLI registers, including alias
 - `bb thread fork`
 - `bb thread list`
 - `bb thread show`
+- `bb thread show clear`
+- `bb thread show list`
+- `bb thread show set`
 - `bb thread get`
 - `bb thread view`
 - `bb thread status`
 - `bb thread progress`
+- `bb thread progress clear`
 - `bb thread log`
 - `bb thread messages`
 - `bb thread timeline`
