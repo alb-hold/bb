@@ -113,6 +113,7 @@ function RailItem({
   const split = useSidebarNavigationSplit(item.id);
   const [disablePending, setDisablePending] = useState(false);
   const isPluginItem = item.pluginId !== null;
+  const terminalTargetRef = useRef<HTMLElement | null>(null);
 
   return (
     <ContextMenu>
@@ -130,11 +131,26 @@ function RailItem({
             aria-keyshortcuts={item.shortcut?.ariaKeyShortcuts}
             className={cn(item.isLoading && "opacity-60")}
             {...split.splitProps}
-            onClick={(event) =>
+            onPointerDown={() => {
+              const active = document.activeElement;
+              terminalTargetRef.current =
+                active instanceof HTMLElement &&
+                active.closest("[data-app-terminal]") !== null
+                  ? active
+                  : null;
+            }}
+            onClick={(event) => {
+              const terminalTarget = terminalTargetRef.current;
+              terminalTargetRef.current = null;
               actions.activate(item.id, {
                 openInSplit: event.metaKey || event.ctrlKey,
-              })
-            }
+                target:
+                  item.action.kind === "search-threads" &&
+                  terminalTarget?.isConnected
+                    ? terminalTarget
+                    : null,
+              });
+            }}
           >
             <SidebarNavigationIcon
               icon={item.icon}
