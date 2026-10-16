@@ -92,8 +92,18 @@ export function addWritingUsage(
   day: string,
   delta: Partial<Omit<WritingUsage, "day">>,
 ): WritingUsage {
+  return reserveWritingUsage(db, day, delta, () => true)!;
+}
+
+export function reserveWritingUsage(
+  db: DbConnection,
+  day: string,
+  delta: Partial<Omit<WritingUsage, "day">>,
+  allowed: (current: WritingUsage) => boolean,
+): WritingUsage | null {
   return db.transaction((tx) => {
     const current = getWritingUsage(tx, day);
+    if (!allowed(current)) return null;
     const next: WritingUsage = {
       day,
       corrections: current.corrections + (delta.corrections ?? 0),

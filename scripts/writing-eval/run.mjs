@@ -179,12 +179,15 @@ async function runCorrection() {
       (edit) => letters(edit.original) !== letters(edit.replacement),
     );
     const result = applyEdits(item.text, applied);
-    const found = item.expectApplied.filter(
-      ([original, replacement]) =>
-        forbiddenSpans(result, [original]).length <
-          forbiddenSpans(item.text, [original]).length &&
-        result.includes(replacement),
-    );
+    const fixedIn = (text) =>
+      item.expectFixed.filter(
+        ([original, replacement]) =>
+          forbiddenSpans(text, [original]).length <
+            forbiddenSpans(item.text, [original]).length &&
+          text.includes(replacement),
+      );
+    const appliedFixes = fixedIn(result);
+    const found = fixedIn(applyEdits(item.text, body.edits));
     results.push({
       id: item.id,
       status,
@@ -199,7 +202,8 @@ async function runCorrection() {
         .filter((edit) => !harmful.includes(edit))
         .map((edit) => `${edit.original} → ${edit.replacement}`),
       expectedFound: found.length,
-      expectedTotal: item.expectApplied.length,
+      expectedApplied: appliedFixes.length,
+      expectedTotal: item.expectFixed.length,
     });
   }
   return results;
@@ -262,6 +266,10 @@ if (values.only !== "dictation") {
         0,
       ),
       expectedFixesFound: ok.reduce((sum, item) => sum + item.expectedFound, 0),
+      expectedFixesApplied: ok.reduce(
+        (sum, item) => sum + item.expectedApplied,
+        0,
+      ),
       expectedFixes: ok.reduce((sum, item) => sum + item.expectedTotal, 0),
       autoApplied: ok.reduce((sum, item) => sum + item.applied.length, 0),
       suggested: ok.reduce((sum, item) => sum + item.suggested.length, 0),

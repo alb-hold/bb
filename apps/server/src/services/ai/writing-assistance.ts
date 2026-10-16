@@ -2,6 +2,7 @@ import {
   addWritingUsage,
   getWritingAssistanceSettings,
   getWritingUsage,
+  reserveWritingUsage,
   updateWritingAssistanceSettings,
 } from "@bb/db";
 import {
@@ -234,7 +235,13 @@ export async function correctWriting(
     return skipped("off", "Typing assistance is off");
   }
   const day = utcDay();
-  if (!correctionBudgetLeft(settings, getWritingUsage(deps.db, day))) {
+  const reserved = reserveWritingUsage(
+    deps.db,
+    day,
+    { corrections: 1 },
+    (usage) => correctionBudgetLeft(settings, usage),
+  );
+  if (reserved === null) {
     return skipped(
       "budget",
       `Daily writing assistance limit of ${settings.dailyCorrectionLimit} requests reached`,
@@ -254,6 +261,7 @@ export async function correctWriting(
     accept: (raw) => (typeof raw === "string" ? raw : null),
   });
   if (!outcome.ok) {
+    addWritingUsage(deps.db, day, { corrections: -1 });
     if (outcome.reason === "cancelled") {
       throw new ApiError(400, "cancelled", "Writing correction was cancelled");
     }
@@ -269,7 +277,6 @@ export async function correctWriting(
     );
   }
   addWritingUsage(deps.db, day, {
-    corrections: 1,
     inputChars: prompt.length,
     outputChars: outcome.value.length,
     estimatedCostMicros: estimateTextCostMicros(
@@ -310,9 +317,13 @@ async function formatDictation(
     return unformatted;
   }
   const day = utcDay();
-  if (!correctionBudgetLeft(settings, getWritingUsage(deps.db, day))) {
-    return unformatted;
-  }
+  const reserved = reserveWritingUsage(
+    deps.db,
+    day,
+    { formattings: 1 },
+    (usage) => correctionBudgetLeft(settings, usage),
+  );
+  if (reserved === null) return unformatted;
   const prompt = buildDictationFormatPrompt(settings, raw, context);
   const outcome = await runAiTask(deps, {
     task: "writing",
@@ -327,9 +338,11 @@ async function formatDictation(
     accept: (reply) =>
       typeof reply === "string" ? cleanFormattedReply(reply) : null,
   });
-  if (!outcome.ok) return unformatted;
+  if (!outcome.ok) {
+    addWritingUsage(deps.db, day, { formattings: -1 });
+    return unformatted;
+  }
   addWritingUsage(deps.db, day, {
-    formattings: 1,
     inputChars: prompt.length,
     outputChars: outcome.value.length,
     estimatedCostMicros: estimateTextCostMicros(
@@ -387,11 +400,15 @@ export async function transcribeDictationSegment(
   }
   const settings = getWritingAssistanceSettings(deps.db);
   const day = utcDay();
-  const usage = getWritingUsage(deps.db, day);
-  if (
-    usage.audioSeconds + args.durationMs / 1_000 >
-    settings.dailyDictationMinutes * 60
-  ) {
+  const seconds = Math.ceil(args.durationMs / 100) / 10;
+  const reserved = reserveWritingUsage(
+    deps.db,
+    day,
+    { audioSeconds: seconds },
+    (usage) =>
+      usage.audioSeconds + seconds <= settings.dailyDictationMinutes * 60,
+  );
+  if (reserved === null) {
     throw new ApiError(
       429,
       "budget_exhausted",
@@ -399,15 +416,19 @@ export async function transcribeDictationSegment(
     );
   }
   const context = args.context.slice(-DICTATION_CONTEXT_CHARS);
-  const transcript = await transcribeVoiceInput(deps, {
-    file: args.file,
-    prompt: transcriptionHint(settings, context),
-    signal: args.signal,
-  });
-  const seconds = args.durationMs / 1_000;
+  let transcript: string;
+  try {
+    transcript = await transcribeVoiceInput(deps, {
+      file: args.file,
+      prompt: transcriptionHint(settings, context),
+      signal: args.signal,
+    });
+  } catch (error) {
+    addWritingUsage(deps.db, day, { audioSeconds: -seconds });
+    throw error;
+  }
   addWritingUsage(deps.db, day, {
     dictationSegments: 1,
-    audioSeconds: seconds,
     estimatedCostMicros: Math.ceil(seconds * TRANSCRIPTION_MICROS_PER_SECOND),
   });
   if (normalizeDictatedText(transcript).length === 0) {

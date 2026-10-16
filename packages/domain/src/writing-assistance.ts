@@ -341,6 +341,47 @@ function isInflection(a: string, b: string): boolean {
   return INFLECTION_SUFFIXES.some((suffix) => long === `${short}${suffix}`);
 }
 
+const MEANING_INVARIANT_GROUPS: readonly (readonly string[])[] = [
+  ["is", "are", "am", "be"],
+  ["was", "were"],
+  ["has", "have"],
+  ["does", "do"],
+  ["a", "an"],
+  ["isn't", "aren't"],
+  ["wasn't", "weren't"],
+  ["hasn't", "haven't"],
+  ["doesn't", "don't"],
+];
+
+const NON_WORD_RESTORATIONS: ReadonlyMap<string, string> = new Map([
+  ["nao", "não"],
+  ["voce", "você"],
+  ["tambem", "também"],
+  ["entao", "então"],
+  ["amanha", "amanhã"],
+]);
+
+function isMeaningInvariantChange(
+  original: string,
+  replacement: string,
+): boolean {
+  const before = wordTokens(original.replaceAll("’", "'"));
+  const after = wordTokens(replacement.replaceAll("’", "'"));
+  if (before.length !== after.length) return false;
+  const changed = before.flatMap((word, index) =>
+    word === after[index] ? [] : [[word, after[index]!] as const],
+  );
+  if (changed.length === 0) return true;
+  if (changed.length !== 1) return false;
+  const [from, to] = changed[0]!;
+  return (
+    NON_WORD_RESTORATIONS.get(from) === to ||
+    MEANING_INVARIANT_GROUPS.some(
+      (group) => group.includes(from) && group.includes(to),
+    )
+  );
+}
+
 export type WritingChangeKind =
   | "surface"
   | "spelling"
@@ -519,12 +560,13 @@ export function resolveWritingEdits(
     ) {
       continue;
     }
-    const kind = removesRepeatedWord(args.target, change)
+    const repeated = removesRepeatedWord(args.target, change);
+    const kind = repeated
       ? "surface"
       : classifyWritingChange(change.original, change.replacement);
     const deterministicSafe =
-      kind === "surface" ||
-      ((kind === "spelling" || kind === "agreement") &&
+      repeated ||
+      (isMeaningInvariantChange(change.original, change.replacement) &&
         proposal.category !== "word-choice" &&
         proposal.category !== "speech-recognition");
     const apply =

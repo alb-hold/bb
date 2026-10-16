@@ -537,7 +537,9 @@ when the server runs elsewhere. `--only correction` skips audio. The report
 gives word error rates for the raw and formatted transcripts, key words the
 formatter lost, list mismatches, auto-applied edits that changed the words of a
 protected token (`harmfulAutoApplies`, which must be 0) or only its case
-(`caseOnlyTouchesOnProtected`), expected fixes found, and p50/p95
+(`caseOnlyTouchesOnProtected`), expected fixes offered as an edit or a
+suggestion (`expectedFixesFound`) and how many of them applied by themselves
+(`expectedFixesApplied`), and p50/p95
 latency. Each case calls the real AI services and counts against the daily
 writing limits.
 

@@ -5,7 +5,7 @@ import {
   setAiServiceSelection,
   updateWritingAssistanceSettings,
 } from "@bb/db";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   cleanFormattedReply,
   parseCorrectionReply,
@@ -150,6 +150,46 @@ describe("writing assistance corrections", () => {
       ).json();
       expect(limited).toMatchObject({ status: "skipped", reason: "budget" });
       expect(service.completeCalls).toHaveLength(1);
+    });
+  });
+
+  it("holds the last request for a correction still in flight", async () => {
+    await withTestHarness({}, async (harness) => {
+      let release = (_reply: string) => {};
+      const service = registerFakeAiService(harness.deps.aiServices, {
+        complete: () =>
+          new Promise<string>((resolve) => {
+            release = resolve;
+          }),
+      });
+      updateWritingAssistanceSettings(harness.deps.db, {
+        dailyCorrectionLimit: 1,
+      });
+      const first = postCorrection(harness, { target: "One." });
+      await vi.waitFor(() => expect(service.completeCalls).toHaveLength(1));
+      const limited = await (
+        await postCorrection(harness, { target: "Two." })
+      ).json();
+      expect(limited).toMatchObject({ status: "skipped", reason: "budget" });
+      expect(service.completeCalls).toHaveLength(1);
+      release(editsReply([]));
+      expect(await (await first).json()).toMatchObject({ status: "ok" });
+      expect(getWritingUsage(harness.deps.db, utcDay()).corrections).toBe(1);
+    });
+  });
+
+  it("returns the reserved request when the correction fails", async () => {
+    await withTestHarness({}, async (harness) => {
+      registerFakeAiService(harness.deps.aiServices, {
+        complete: async () => {
+          throw new Error("down");
+        },
+      });
+      const failed = await (
+        await postCorrection(harness, { target: "One." })
+      ).json();
+      expect(failed).toMatchObject({ status: "skipped", reason: "failed" });
+      expect(getWritingUsage(harness.deps.db, utcDay()).corrections).toBe(0);
     });
   });
 
@@ -338,6 +378,55 @@ describe("dictation segments", () => {
         code: "budget_exhausted",
       });
       expect(service.transcribeCalls).toHaveLength(1);
+    });
+  });
+
+  it("refuses a concurrent segment that the one still transcribing has reserved", async () => {
+    await withTestHarness({}, async (harness) => {
+      let release = (_text: string) => {};
+      const service = registerFakeAiService(harness.deps.aiServices, {
+        transcribe: () =>
+          new Promise<string>((resolve) => {
+            release = resolve;
+          }),
+      });
+      updateWritingAssistanceSettings(harness.deps.db, {
+        dailyDictationMinutes: 1,
+        dictationFormatting: false,
+      });
+      addWritingUsage(harness.deps.db, utcDay(), { audioSeconds: 50 });
+      const first = postSegment(harness, { durationMs: "6000" });
+      await vi.waitFor(() => expect(service.transcribeCalls).toHaveLength(1));
+      const second = await postSegment(harness, { durationMs: "6000" });
+      expect(second.status).toBe(429);
+      await expect(second.json()).resolves.toMatchObject({
+        code: "budget_exhausted",
+      });
+      expect(service.transcribeCalls).toHaveLength(1);
+      release("hello there");
+      expect((await first).status).toBe(200);
+      expect(getWritingUsage(harness.deps.db, utcDay())).toMatchObject({
+        audioSeconds: 56,
+        dictationSegments: 1,
+      });
+    });
+  });
+
+  it("returns the reserved seconds when transcription fails", async () => {
+    await withTestHarness({}, async (harness) => {
+      registerFakeAiService(harness.deps.aiServices, {
+        transcribe: async () => {
+          throw new Error("down");
+        },
+      });
+      addWritingUsage(harness.deps.db, utcDay(), { audioSeconds: 10 });
+      expect((await postSegment(harness, { durationMs: "4000" })).status).toBe(
+        502,
+      );
+      expect(getWritingUsage(harness.deps.db, utcDay())).toMatchObject({
+        audioSeconds: 10,
+        dictationSegments: 0,
+      });
     });
   });
 

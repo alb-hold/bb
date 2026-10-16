@@ -233,6 +233,7 @@ export {
 } from "./app-settings.js";
 export {
   addWritingUsage,
+  reserveWritingUsage,
   emptyWritingUsage,
   getWritingAssistanceSettings,
   getWritingUsage,

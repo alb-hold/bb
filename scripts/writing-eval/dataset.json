@@ -133,7 +133,7 @@
     {
       "id": "agreement-and-typo",
       "text": "The user are authenticated before acessing the endpoint.",
-      "expectApplied": [
+      "expectFixed": [
         ["are", "is"],
         ["acessing", "accessing"]
       ],
@@ -142,55 +142,55 @@
     {
       "id": "typo-receive",
       "text": "Please recieve the payload and validate it.",
-      "expectApplied": [["recieve", "receive"]],
+      "expectFixed": [["recieve", "receive"]],
       "forbidden": []
     },
     {
       "id": "identifier-protected",
       "text": "Call refreshTokn() before fetchUser in auth.ts.",
-      "expectApplied": [],
+      "expectFixed": [],
       "forbidden": ["refreshTokn()", "fetchUser", "auth.ts"]
     },
     {
       "id": "path-protected",
       "text": "Update src/utils/parseDate.ts so it handles UTC.",
-      "expectApplied": [],
+      "expectFixed": [],
       "forbidden": ["src/utils/parseDate.ts", "UTC"]
     },
     {
       "id": "negation-kept",
       "text": "The function should not cache results between requests.",
-      "expectApplied": [],
+      "expectFixed": [],
       "forbidden": ["not"]
     },
     {
       "id": "asr-word-suggest-only",
       "text": "The authentication talking expires after an hour.",
-      "expectApplied": [],
+      "expectFixed": [],
       "forbidden": ["talking"]
     },
     {
       "id": "numbers-protected",
       "text": "Set the limit to 3000 requests per minute and keep 5 retries.",
-      "expectApplied": [],
+      "expectFixed": [],
       "forbidden": ["3000", "5"]
     },
     {
       "id": "url-protected",
       "text": "See https://example.com/docs/api-reference for details.",
-      "expectApplied": [],
+      "expectFixed": [],
       "forbidden": ["https://example.com/docs/api-reference"]
     },
     {
       "id": "version-protected",
       "text": "Upgrade react to 18.3.1 and rerun the tests.",
-      "expectApplied": [],
+      "expectFixed": [],
       "forbidden": ["18.3.1"]
     },
     {
       "id": "capitalization",
       "text": "we need to fix this today. the deploy is blocked.",
-      "expectApplied": [
+      "expectFixed": [
         ["we", "We"],
         ["the", "The"]
       ],
@@ -199,13 +199,13 @@
     {
       "id": "informal-no-rewrite",
       "text": "gonna need u to check the logs asap",
-      "expectApplied": [],
+      "expectFixed": [],
       "forbidden": ["gonna", "u"]
     },
     {
       "id": "pt-accents",
       "text": "Voce pode verificar a configuracao do servidor?",
-      "expectApplied": [
+      "expectFixed": [
         ["Voce", "Você"],
         ["configuracao", "configuração"]
       ],
@@ -214,49 +214,49 @@
     {
       "id": "pt-negation-kept",
       "text": "Não remova a validação do formulário de login.",
-      "expectApplied": [],
+      "expectFixed": [],
       "forbidden": ["Não"]
     },
     {
       "id": "pt-branch-protected",
       "text": "Precisamos fazer o merge da branch feature/login amanha.",
-      "expectApplied": [["amanha", "amanhã"]],
+      "expectFixed": [["amanha", "amanhã"]],
       "forbidden": ["feature/login", "merge"]
     },
     {
       "id": "mixed-no-translation",
       "text": "O webhook falha quando o payload chega vazio.",
-      "expectApplied": [],
+      "expectFixed": [],
       "forbidden": ["webhook", "payload"]
     },
     {
       "id": "code-fence-ignored",
       "text": "Run `pnpm tset` and paste the output.",
-      "expectApplied": [],
+      "expectFixed": [],
       "forbidden": ["`pnpm tset`"]
     },
     {
       "id": "constant-protected",
       "text": "Raise MAX_RETRYS to ten for the importer.",
-      "expectApplied": [],
+      "expectFixed": [],
       "forbidden": ["MAX_RETRYS"]
     },
     {
       "id": "requirement-not-added",
       "text": "Add tests for the login form.",
-      "expectApplied": [],
+      "expectFixed": [],
       "forbidden": ["tests", "login", "form"]
     },
     {
       "id": "double-word",
       "text": "Check the the cache before the deploy.",
-      "expectApplied": [["the the", "the"]],
+      "expectFixed": [["the the", "the"]],
       "forbidden": []
     },
     {
       "id": "its-agreement",
       "text": "The service returns it's status code on every call.",
-      "expectApplied": [["it's", "its"]],
+      "expectFixed": [["it's", "its"]],
       "forbidden": []
     }
   ]

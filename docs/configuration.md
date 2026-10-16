@@ -304,7 +304,7 @@ Settings (stored server-side; also `bb settings writing`):
 | Setting                 | Default     | Meaning                                                                                                                                              |
 | ----------------------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `mode`                  | `prompt`    | `prompt`, `developer`, `natural`, `polished`, `verbatim`, `literal-code`                                                                             |
-| `typingCorrection`      | `automatic` | `automatic` applies only deterministic-safe fixes and suggests the rest; `suggest`; `off`                                                            |
+| `typingCorrection`      | `automatic` | `automatic` applies only punctuation, capitalization, repeated-word and agreement fixes and suggests spelling and the rest; `suggest`; `off`         |
 | `dictationFormatting`   | `true`      | Format dictated phrases; off inserts transcripts as heard                                                                                            |
 | `vocabulary`            | `[]`        | Up to 200 terms to spell exactly; sent with each request                                                                                             |
 | `dailyCorrectionLimit`  | `300`       | Writing requests per UTC day before assistance pauses                                                                                                |

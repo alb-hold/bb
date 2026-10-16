@@ -94,10 +94,11 @@ the settings and today's usage (requests, dictated minutes, and a list-price
 cost estimate). `set` keys: `mode` (prompt, developer, natural, polished,
 verbatim, literal-code), `typing-correction` (automatic, suggest, off),
 `dictation-formatting` (on, off), `daily-correction-limit` (requests per UTC
-day, 0-5000), and `daily-dictation-minutes` (0-1440). Only spelling,
-punctuation, capitalization and agreement fixes outside code, paths,
-identifiers and vocabulary terms apply by themselves; anything that could
-change meaning is offered as a suggestion. `correct` and `transcribe` run the
+day, 0-5000), and `daily-dictation-minutes` (0-1440). Only punctuation,
+capitalization, repeated words and verb or article agreement (is/are,
+has/have, a/an) outside code, paths, identifiers and vocabulary terms apply by
+themselves; spelling and anything else that could change meaning is offered
+as a suggestion. `correct` and `transcribe` run the
 same pipeline as the composer. Settings → General → Writing assistance has the
 same controls; Cmd/Ctrl+Shift+D starts and stops dictation
 (`composer.dictation.toggle` in Settings → Keyboard).

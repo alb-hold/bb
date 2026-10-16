@@ -122,7 +122,7 @@ describe("resolveWritingEdits", () => {
         original: "configuracao",
         replacement: "configuração",
         start: target.indexOf("configuracao"),
-        disposition: "apply",
+        disposition: "suggest",
       }),
     ]);
   });
@@ -243,12 +243,58 @@ describe("resolveWritingEdits", () => {
     ).toEqual([]);
   });
 
+  it.each([
+    ["public", "pubic", "spelling"],
+    ["recieve", "receive", "spelling"],
+    ["esta", "está", "grammar"],
+    ["there", "their", "grammar"],
+    ["it's", "its", "grammar"],
+    ["we'll", "well", "punctuation"],
+    ["everyday", "every day", "spelling"],
+    ["deploy", "deployed", "grammar"],
+    ["file", "files", "grammar"],
+  ] as const)(
+    "never auto-applies %s -> %s even when the model calls it harmless",
+    (original, replacement, category) => {
+      const target = `Please ${original} it now.`;
+      const edits = resolveWritingEdits({
+        ...base,
+        target,
+        proposals: [proposal(original, replacement, { category })],
+      });
+      expect(edits).toEqual([
+        expect.objectContaining({ replacement, disposition: "suggest" }),
+      ]);
+    },
+  );
+
+  it("auto-applies agreement and accent fixes whose meaning cannot change", () => {
+    const target =
+      "Voce disse que nao the users is ready and a error happened.";
+    const edits = resolveWritingEdits({
+      ...base,
+      target,
+      proposals: [
+        proposal("Voce", "Você", { category: "spelling" }),
+        proposal("nao", "não", { category: "spelling" }),
+        proposal("users is", "users are"),
+        proposal("a error", "an error"),
+      ],
+    });
+    expect(edits.map((edit) => [edit.replacement, edit.disposition])).toEqual([
+      ["Você", "apply"],
+      ["não", "apply"],
+      ["are", "apply"],
+      ["an", "apply"],
+    ]);
+  });
+
   it("only auto-applies when the model reports no semantic impact", () => {
     const edits = resolveWritingEdits({
       ...base,
-      target: "It work fine.",
+      target: "The users is here.",
       proposals: [
-        proposal("It work", "It works", { semanticImpact: "possible" }),
+        proposal("users is", "users are", { semanticImpact: "possible" }),
       ],
     });
     expect(edits[0]?.disposition).toBe("suggest");
