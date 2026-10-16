@@ -416,6 +416,33 @@ describe("validateFormattedTranscript", () => {
     ).toEqual({ ok: true });
   });
 
+  it("never treats a spoken quantity or an adjective as a list marker", () => {
+    expect(
+      validateFormattedTranscript(
+        "first check auth second run two migrations",
+        "1. Check auth.\n2. Run migrations.",
+      ),
+    ).toEqual({ ok: false, reason: "dropped-words" });
+    expect(
+      validateFormattedTranscript(
+        "check the first endpoint then second run the tests",
+        "1. Check the endpoint.\n2. Run the tests.",
+      ),
+    ).toEqual({ ok: false, reason: "dropped-words" });
+    expect(
+      validateFormattedTranscript(
+        "one check auth two run the tests",
+        "1. Check auth.\n2. Run the tests.",
+      ),
+    ).toEqual({ ok: false, reason: "dropped-words" });
+    expect(
+      validateFormattedTranscript(
+        "first um check auth and then second run the tests",
+        "1. Check auth.\n2. Run the tests.",
+      ),
+    ).toEqual({ ok: true });
+  });
+
   it("drops list connectors and repeated words only when safe", () => {
     expect(
       validateFormattedTranscript(

@@ -375,8 +375,9 @@ export function NativeTerminalPromptBar({
 
   const stopDictation = dictation.stop;
   const finishPress = useCallback(
-    (cancelled: boolean) => {
+    (cancelled: boolean, onButton: boolean) => {
       releasePressRef.current?.();
+      if (!onButton) ignoreClickRef.current = false;
       const press = pressRef.current;
       pressRef.current = null;
       if (press === null || !press.startedDictation) return;
@@ -400,11 +401,16 @@ export function NativeTerminalPromptBar({
     const startedDictation = dictation.phase === "idle";
     pressRef.current = { startedAt: performance.now(), startedDictation };
     const pointerId = event.pointerId;
+    const button = event.currentTarget;
     const onUp = (release: globalThis.PointerEvent) => {
-      if (release.pointerId === pointerId) finishPress(false);
+      if (release.pointerId !== pointerId) return;
+      finishPress(
+        false,
+        release.target instanceof Node && button.contains(release.target),
+      );
     };
     const onCancel = (release: globalThis.PointerEvent) => {
-      if (release.pointerId === pointerId) finishPress(true);
+      if (release.pointerId === pointerId) finishPress(true, false);
     };
     window.addEventListener("pointerup", onUp, true);
     window.addEventListener("pointercancel", onCancel, true);
@@ -582,10 +588,11 @@ export function NativeTerminalPromptBar({
               aria-keyshortcuts={dictationShortcut?.ariaKeyshortcuts}
               data-dictation-state={dictation.phase}
               onPointerDown={onMicPointerDown}
-              onClick={() => {
+              onClick={(event) => {
+                const fromPointer = event.detail > 0;
                 if (ignoreClickRef.current) {
                   ignoreClickRef.current = false;
-                  return;
+                  if (fromPointer) return;
                 }
                 toggleDictation();
               }}

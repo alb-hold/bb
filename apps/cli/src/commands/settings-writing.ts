@@ -196,7 +196,9 @@ export function registerWritingSettingsCommands(
     );
   vocabulary
     .command("remove <terms...>")
-    .description("Remove terms")
+    .description(
+      "Remove terms; changes nothing and fails if any term is not in the vocabulary",
+    )
     .option("--json", "Print machine-readable JSON output")
     .action(
       action(async (terms: string[], opts: JsonOptions) => {
@@ -207,13 +209,15 @@ export function registerWritingSettingsCommands(
           current,
           terms,
         );
+        if (missing.length > 0) {
+          throw new Error(
+            `Not in the vocabulary: ${missing.join(", ")}. Nothing was removed.`,
+          );
+        }
         const view = await sdk.writingAssistance.updateSettings({
           vocabulary: next,
         });
         if (outputJson(opts, view)) return;
-        if (missing.length > 0) {
-          console.error(`Not in the vocabulary: ${missing.join(", ")}`);
-        }
         console.log(view.settings.vocabulary.join("\n"));
       }),
     );

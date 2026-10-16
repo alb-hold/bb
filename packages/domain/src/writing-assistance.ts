@@ -558,57 +558,34 @@ export function resolveWritingEdits(
 }
 
 const ENUMERATOR_VALUES: ReadonlyMap<string, number> = new Map([
-  ["one", 1],
   ["first", 1],
-  ["um", 1],
-  ["uma", 1],
   ["primeiro", 1],
   ["primeira", 1],
-  ["two", 2],
   ["second", 2],
-  ["dois", 2],
-  ["duas", 2],
   ["segundo", 2],
   ["segunda", 2],
-  ["three", 3],
   ["third", 3],
-  ["três", 3],
-  ["tres", 3],
   ["terceiro", 3],
   ["terceira", 3],
-  ["four", 4],
   ["fourth", 4],
-  ["quatro", 4],
   ["quarto", 4],
   ["quarta", 4],
-  ["five", 5],
   ["fifth", 5],
-  ["cinco", 5],
   ["quinto", 5],
   ["quinta", 5],
-  ["six", 6],
   ["sixth", 6],
-  ["seis", 6],
   ["sexto", 6],
   ["sexta", 6],
-  ["seven", 7],
   ["seventh", 7],
-  ["sete", 7],
   ["sétimo", 7],
   ["sétima", 7],
-  ["eight", 8],
   ["eighth", 8],
-  ["oito", 8],
   ["oitavo", 8],
   ["oitava", 8],
-  ["nine", 9],
   ["ninth", 9],
-  ["nove", 9],
   ["nono", 9],
   ["nona", 9],
-  ["ten", 10],
   ["tenth", 10],
-  ["dez", 10],
   ["décimo", 10],
   ["décima", 10],
 ]);
@@ -836,6 +813,26 @@ function splitJoinedToken(
   return null;
 }
 
+function listItemStarts(formatted: string): Map<number, string> {
+  const starts = new Map<number, string>();
+  for (const match of formatted.matchAll(/^\s*(\d{1,2})[.)]\s+(.*)$/gmu)) {
+    const first = wordTokens(match[2] ?? "")[0];
+    if (first !== undefined) starts.set(Number(match[1]), first);
+  }
+  return starts;
+}
+
+function nextSpokenWord(
+  tokens: readonly string[],
+  index: number,
+): string | undefined {
+  for (let next = index + 1; next < tokens.length; next += 1) {
+    const token = tokens[next]!;
+    if (!FILLER_WORDS.has(token) && !LIST_CONNECTORS.has(token)) return token;
+  }
+  return undefined;
+}
+
 export function validateFormattedTranscript(
   raw: string,
   formatted: string,
@@ -870,8 +867,8 @@ export function validateFormattedTranscript(
     if (allowedNovelToken(token, source)) continue;
     return { ok: false, reason: "added-words" };
   }
-  const listItems = formatted.match(/^\s*\d{1,2}[.)]\s/gmu)?.length ?? 0;
-  const list = listItems > 0;
+  const itemStarts = listItemStarts(formatted);
+  const list = itemStarts.size > 0;
   let enumerated = 0;
   const { marker, window } = correctionCoverage(rawTokens);
   const dropped = droppedTokens(
@@ -894,7 +891,7 @@ export function validateFormattedTranscript(
     if (
       enumerator !== undefined &&
       enumerator === enumerated + 1 &&
-      enumerator <= listItems
+      itemStarts.get(enumerator) === nextSpokenWord(rawTokens, index)
     ) {
       enumerated = enumerator;
       continue;

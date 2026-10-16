@@ -388,7 +388,10 @@ export async function transcribeDictationSegment(
   const settings = getWritingAssistanceSettings(deps.db);
   const day = utcDay();
   const usage = getWritingUsage(deps.db, day);
-  if (usage.audioSeconds >= settings.dailyDictationMinutes * 60) {
+  if (
+    usage.audioSeconds + args.durationMs / 1_000 >
+    settings.dailyDictationMinutes * 60
+  ) {
     throw new ApiError(
       429,
       "budget_exhausted",

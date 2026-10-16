@@ -271,6 +271,19 @@ describe("dictation segments", () => {
     });
   });
 
+  it("keeps the transcript when a list drops a quantity spoken as its next number", async () => {
+    await withTestHarness({}, async (harness) => {
+      registerFakeAiService(harness.deps.aiServices, {
+        transcribe: async () => "first check auth second run two migrations",
+        complete: async () => "1. Check auth.\n2. Run migrations.",
+      });
+      await expect((await postSegment(harness)).json()).resolves.toMatchObject({
+        text: "first check auth second run two migrations",
+        formatted: false,
+      });
+    });
+  });
+
   it("keeps the transcript when the writing service fails or formatting is off", async () => {
     await withTestHarness({}, async (harness) => {
       const service = registerFakeAiService(harness.deps.aiServices, {
@@ -304,6 +317,27 @@ describe("dictation segments", () => {
         code: "budget_exhausted",
       });
       expect(service.transcribeCalls).toHaveLength(0);
+    });
+  });
+
+  it("refuses a segment longer than the minutes left today", async () => {
+    await withTestHarness({}, async (harness) => {
+      const service = registerFakeAiService(harness.deps.aiServices, {
+        transcribe: async () => "hello there",
+      });
+      updateWritingAssistanceSettings(harness.deps.db, {
+        dailyDictationMinutes: 1,
+      });
+      addWritingUsage(harness.deps.db, utcDay(), { audioSeconds: 50 });
+      expect((await postSegment(harness, { durationMs: "4000" })).status).toBe(
+        200,
+      );
+      const refused = await postSegment(harness, { durationMs: "8000" });
+      expect(refused.status).toBe(429);
+      await expect(refused.json()).resolves.toMatchObject({
+        code: "budget_exhausted",
+      });
+      expect(service.transcribeCalls).toHaveLength(1);
     });
   });
 

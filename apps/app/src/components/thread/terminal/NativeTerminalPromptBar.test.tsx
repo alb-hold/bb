@@ -321,7 +321,7 @@ function startDictation() {
   });
   fireEvent.pointerDown(mic, { button: 0 });
   fireEvent.pointerUp(mic);
-  fireEvent.click(mic);
+  fireEvent.click(mic, { detail: 1 });
   expect(dictationHook.start).toHaveBeenCalledTimes(1);
 }
 
@@ -366,7 +366,6 @@ describe("NativeTerminalPromptBar push-to-talk", () => {
       name: "Dictate a message to Native CLI",
     });
     fireEvent.pointerDown(mic, { button: 0, pointerId: 7 });
-    expect(dictationHook.start).toHaveBeenCalledTimes(1);
   }
 
   function releaseAt(at: number, type: "pointerUp" | "pointerCancel") {
@@ -386,6 +385,7 @@ describe("NativeTerminalPromptBar push-to-talk", () => {
   it("stops a held recording when the pointer is released off the button", () => {
     renderBar();
     pressMic(1_000);
+    expect(dictationHook.start).toHaveBeenCalledTimes(1);
     releaseAt(1_600, "pointerUp");
     expect(dictationHook.stop).toHaveBeenCalledTimes(1);
   });
@@ -404,6 +404,52 @@ describe("NativeTerminalPromptBar push-to-talk", () => {
     releaseAt(5_000, "pointerUp");
     releaseAt(5_100, "pointerCancel");
     expect(dictationHook.stop).not.toHaveBeenCalled();
+  });
+
+  function micButton() {
+    return screen.getByRole("button", {
+      name: "Dictate a message to Native CLI",
+    });
+  }
+
+  it("still toggles from the keyboard after a cancelled press", () => {
+    renderBar();
+    pressMic(1_000);
+    releaseAt(1_050, "pointerCancel");
+    fireEvent.click(micButton(), { detail: 0 });
+    expect(dictationHook.start).toHaveBeenCalledTimes(2);
+  });
+
+  it("still toggles from the keyboard and the mouse after releasing off the button", () => {
+    renderBar();
+    pressMic(1_000);
+    releaseAt(1_100, "pointerUp");
+    fireEvent.click(micButton(), { detail: 0 });
+    expect(dictationHook.start).toHaveBeenCalledTimes(2);
+    pressMic(5_000);
+    releaseAt(5_100, "pointerUp");
+    fireEvent.click(micButton(), { detail: 1 });
+    expect(dictationHook.start).toHaveBeenCalledTimes(4);
+  });
+
+  it("does not toggle twice for one pointer press on the button", () => {
+    renderBar();
+    pressMic(1_000);
+    vi.spyOn(performance, "now").mockReturnValue(1_100);
+    fireEvent.pointerUp(micButton(), { pointerId: 7 });
+    fireEvent.click(micButton(), { detail: 1 });
+    expect(dictationHook.start).toHaveBeenCalledTimes(1);
+    fireEvent.click(micButton(), { detail: 0 });
+    expect(dictationHook.start).toHaveBeenCalledTimes(2);
+  });
+
+  it("toggles from the keyboard when a press on the button produced no click", () => {
+    renderBar();
+    pressMic(1_000);
+    vi.spyOn(performance, "now").mockReturnValue(1_100);
+    fireEvent.pointerUp(micButton(), { pointerId: 7 });
+    fireEvent.click(micButton(), { detail: 0 });
+    expect(dictationHook.start).toHaveBeenCalledTimes(2);
   });
 
   it("stops listening for the release when the composer unmounts", () => {
