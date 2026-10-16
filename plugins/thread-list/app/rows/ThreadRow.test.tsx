@@ -1071,7 +1071,7 @@ describe("ThreadRow", () => {
   });
 
   it.each(["dropdown", "context"] as const)(
-    "adds Customize actions to the %s menu",
+    "adds Customize row actions to the %s menu",
     async (surface) => {
       const customize = vi.fn();
       renderThreadRow({ onCustomizeRowActions: customize });
@@ -1083,18 +1083,18 @@ describe("ThreadRow", () => {
         );
       }
       fireEvent.click(
-        await screen.findByRole("menuitem", { name: "Customize actions" }),
+        await screen.findByRole("menuitem", { name: "Customize row actions" }),
       );
       expect(customize).toHaveBeenCalledWith("thr_test");
     },
   );
 
-  it("leaves Customize actions out when the list cannot customize", async () => {
+  it("leaves Customize row actions out when the list cannot customize", async () => {
     renderThreadRow();
     fireEvent.click(screen.getByRole("button", { name: "Thread actions" }));
     await screen.findByRole("menuitem", { name: "Rename" });
     expect(
-      screen.queryByRole("menuitem", { name: "Customize actions" }),
+      screen.queryByRole("menuitem", { name: "Customize row actions" }),
     ).toBeNull();
   });
 
