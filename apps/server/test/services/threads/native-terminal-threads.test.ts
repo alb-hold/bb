@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { Buffer } from "node:buffer";
 import {
   archiveThread,
   createEnvironment,
@@ -13,13 +14,21 @@ import {
   upsertHost,
 } from "@bb/db";
 import { eq } from "drizzle-orm";
+import { terminalDataBase64Schema, TERMINAL_DATA_MAX_BYTES } from "@bb/domain";
 import { createProviderRegistryService } from "../../../src/services/providers/provider-registry.js";
 import {
   openNativeTerminal,
   reopenNativeTerminalsAfterDaemonReconnect,
+  sendNativeTerminalMessage,
   takeNativeTerminalLaunchSpec,
 } from "../../../src/services/threads/native-terminal-threads.js";
 import { createTestProviderRegistry } from "../../helpers/provider-registry.js";
+import {
+  seedEnvironment,
+  seedHostSession,
+  seedProjectWithSource,
+  seedThread,
+} from "../../helpers/seed.js";
 import {
   withTestHarness,
   type TestAppHarness,
@@ -77,6 +86,126 @@ async function createDisconnectedNativeThread(
 }
 
 describe("reopenNativeTerminalsAfterDaemonReconnect", () => {
+  it("sends a large native tell as ordered valid frames without closing its session", async () => {
+    await withTestHarness(async (h) => {
+      const seeded = seedHostSession(h.deps, { id: "host-native-large-tell" });
+      const { project } = seedProjectWithSource(h.deps, {
+        hostId: seeded.host.id,
+        path: "/tmp/native-large-tell-project",
+      });
+      const environment = seedEnvironment(h.deps, {
+        hostId: seeded.host.id,
+        path: "/tmp/native-large-tell-workspace",
+        projectId: project.id,
+        status: "ready",
+      });
+      const thread = seedThread(h.deps, {
+        environmentId: environment.id,
+        projectId: project.id,
+        providerId: "claude-code",
+      });
+      createNativeTerminalThread(h.db, {
+        threadId: thread.id,
+        providerId: "claude-code",
+        nativeSessionId: "native-large-tell-session",
+        initialPrompt: null,
+        initialImages: [],
+        model: null,
+      });
+      const terminal = createTerminalSession(h.db, {
+        threadId: thread.id,
+        environmentId: environment.id,
+        hostId: seeded.host.id,
+        daemonSessionId: seeded.session.id,
+        title: "Claude Code",
+        initialCwd: environment.path ?? "/tmp",
+        cols: 120,
+        rows: 36,
+        status: "running",
+      });
+      setNativeTerminalThreadTerminal(h.db, {
+        threadId: thread.id,
+        terminalSessionId: terminal.id,
+      });
+
+      const sentMessages: unknown[] = [];
+      const socket = {
+        close: vi.fn(),
+        send: vi.fn((data: string) => sentMessages.push(JSON.parse(data))),
+      };
+      h.hub.registerDaemon(seeded.session.id, seeded.host.id, socket);
+
+      const before = {
+        chunks: [],
+        nextSeq: 0,
+        truncated: false,
+        status: "running" as const,
+        exitCode: null,
+        closeReason: null,
+      };
+      const after = {
+        ...before,
+        chunks: [
+          {
+            seq: 0,
+            dataBase64: Buffer.from(
+              "\r\n> [Pasted text #1 +24000 lines]",
+            ).toString("base64"),
+          },
+        ],
+        nextSeq: 1,
+      };
+      let outputReads = 0;
+      vi.spyOn(
+        h.deps.terminalSessions,
+        "readTerminalOutput",
+      ).mockImplementation(async () => {
+        outputReads += 1;
+        return outputReads > 2 ? after : before;
+      });
+
+      const text = "æ🧪😀\n".repeat(24_000);
+      const result = await sendNativeTerminalMessage(h.deps, {
+        threadId: thread.id,
+        pastes: [text],
+      });
+
+      expect(result.status).toBe("running");
+      expect(socket.close).not.toHaveBeenCalled();
+      expect(
+        h.deps.terminalSessions.getTerminal({ terminalId: terminal.id }).status,
+      ).toBe("running");
+      const inputFrames = sentMessages
+        .filter(
+          (message): message is { type: string; dataBase64: string } =>
+            typeof message === "object" &&
+            message !== null &&
+            "type" in message &&
+            message.type === "terminal.input" &&
+            "dataBase64" in message &&
+            typeof message.dataBase64 === "string",
+        )
+        .map((message) => message.dataBase64);
+      expect(inputFrames.length).toBeGreaterThan(1);
+      for (const frame of inputFrames) {
+        expect(terminalDataBase64Schema.parse(frame)).toBe(frame);
+        expect(Buffer.from(frame, "base64").byteLength).toBeLessThanOrEqual(
+          TERMINAL_DATA_MAX_BYTES,
+        );
+      }
+      expect(inputFrames.length).toBeGreaterThan(2);
+      const bracketed = Buffer.from(`\u001b[200~${text}\u001b[201~`);
+      expect(
+        Buffer.concat(
+          inputFrames.slice(0, -1).map((frame) => Buffer.from(frame, "base64")),
+        ),
+      ).toEqual(bracketed);
+      expect(Buffer.from(inputFrames.at(-1) ?? "", "base64")).toEqual(
+        Buffer.from("\r"),
+      );
+    });
+  });
+
   it("reopens with the same CLI session when the provider registers after the settle timeout", async () => {
     await withTestHarness({ seedFirstPartyProviders: false }, async (h) => {
       const host = upsertHost(h.db, noopNotifier, {
