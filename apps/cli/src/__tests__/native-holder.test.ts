@@ -161,48 +161,6 @@ const ECHO_LOOP: NativeHolderProcess = {
 };
 
 describe("native terminal holder", () => {
-  it.each(["1", "0"])(
-    "passes CLAUDE_CODE_FORCE_SYNC_OUTPUT=%s from the holder environment to its PTY",
-    async (forceSyncOutput) => {
-      const socketPath = socketIn();
-      let receivedEnv: NodeJS.ProcessEnv | undefined;
-      let ptyExit:
-        | ((event: { exitCode: number; signal?: number }) => void)
-        | undefined;
-      const held = runNativeHolder({
-        socketPath,
-        cwd: os.tmpdir(),
-        env: { CLAUDE_CODE_FORCE_SYNC_OUTPUT: forceSyncOutput },
-        prepare: async () => ({ command: "fake", args: [] }),
-        spawnPty: (_process, options) => {
-          receivedEnv = options.env;
-          return {
-            pid: 654,
-            onData: () => undefined,
-            onExit: (listener) => {
-              ptyExit = listener;
-            },
-            write: () => undefined,
-            resize: () => undefined,
-            kill: () => undefined,
-          };
-        },
-      });
-      let client: Client | null = null;
-      try {
-        client = await attach(socketPath);
-        await expect.poll(() => receivedEnv).toBeDefined();
-        expect(receivedEnv?.CLAUDE_CODE_FORCE_SYNC_OUTPUT).toBe(
-          forceSyncOutput,
-        );
-      } finally {
-        ptyExit?.({ exitCode: 0 });
-        client?.socket.destroy();
-        await held;
-      }
-    },
-  );
-
   it("keeps the log at the size cap when an oversized record reaches the boundary", () => {
     const socketPath = socketIn();
     const logPath = socketPath.replace(/\.sock$/u, ".log");

@@ -463,7 +463,6 @@ async function resolveDefaultTerminalShell(): Promise<string> {
 
 function buildTerminalEnv(args: BuildTerminalEnvArgs): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
-    CLAUDE_CODE_FORCE_SYNC_OUTPUT: "1",
     ...sanitizeInheritedChildProcessEnv({ env: process.env }),
     ...args.shellEnv,
     BB_TERMINAL_SESSION_ID: args.terminalId,
