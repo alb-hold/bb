@@ -81,6 +81,12 @@ process.once("SIGTERM", async () => {
   event("server:shutdown-complete");
   process.exit(0);
 });
+process.once("disconnect", async () => {
+  event("server:launcher-disconnected");
+  await new Promise(resolve => server.close(resolve));
+  event("server:shutdown-complete");
+  process.exit(0);
+});
 process.once("exit", code => event("server:process-exit", { code, signal: null }));
 setInterval(() => undefined, 1000);
 `;

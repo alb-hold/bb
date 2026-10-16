@@ -7,6 +7,7 @@ import { once } from "node:events";
 import {
   DAEMON_DETACH_HEAD_START_MS,
   DESKTOP_OWNED_RUNTIME_SHUTDOWN_GRACE_MS,
+  SERVER_SHUTDOWN_BOUND_MS,
   SERVER_HTTP_CLOSE_WAIT_TIMEOUT_MS,
   SERVER_HTTP_DRAIN_TIMEOUT_MS,
   SERVER_PLUGIN_SHUTDOWN_TIMEOUT_MS,
@@ -25,6 +26,12 @@ function readEvents(marker: string): Array<Record<string, unknown>> {
 
 function isRunning(pid: number): boolean {
   try {
+    if (process.platform === "linux") {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      if (stat.slice(stat.lastIndexOf(")") + 2, stat.lastIndexOf(")") + 3) === "Z") {
+        return false;
+      }
+    }
     process.kill(pid, 0);
     return true;
   } catch {
@@ -192,3 +199,82 @@ it("handles SIGTERM through the real launcher and bounded server children", asyn
     installed.cleanup();
   }
 }, 30_000);
+
+it("stops the real launched server after its launcher is SIGKILLed", async () => {
+  const installed = createP7InstalledRuntime();
+  const serverPort = await allocateLoopbackPort();
+  const daemonPort = await allocateLoopbackPort();
+  const dataDir = mkdtempSync(join(tmpdir(), "bb-launcher-parent-loss-"));
+  const marker = join(dataDir, "shutdown-events.jsonl");
+  const launcher = spawn(
+    process.execPath,
+    [
+      installed.binPath,
+      "start",
+      "--data-dir",
+      dataDir,
+      "--server-port",
+      String(serverPort),
+      "--host-daemon-port",
+      String(daemonPort),
+      "--no-in-app-updates",
+      "--bundled",
+    ],
+    {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        BB_DATA_DIR: dataDir,
+        BB_HOST_ENROLL_KEY: "p7-test-enroll-key",
+        BB_HOST_ID: "p7-test-host",
+        BB_SERVER_PORT: String(serverPort),
+        BB_HOST_DAEMON_PORT: String(daemonPort),
+        P7_SHUTDOWN_MARKER: marker,
+      },
+      stdio: "ignore",
+    },
+  );
+  const launcherPid = launcher.pid;
+  if (launcherPid === undefined) throw new Error("Launcher did not expose a PID");
+  let serverPid: number | undefined;
+
+  try {
+    const readyAt = Date.now();
+    while (!readFileSyncSafe(marker).includes('"event":"server:ready"')) {
+      if (launcher.exitCode !== null || launcher.signalCode !== null) {
+        throw new Error("Launcher exited before the server became ready");
+      }
+      if (Date.now() - readyAt > 15_000) {
+        throw new Error("Server did not become ready");
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    serverPid = readEvents(marker).find((event) => event.event === "server:ready")
+      ?.pid as number | undefined;
+    if (serverPid === undefined) throw new Error("Server ready event had no PID");
+
+    process.kill(launcherPid, "SIGKILL");
+    await once(launcher, "exit");
+    const exitStartedAt = Date.now();
+    while (isRunning(serverPid) && Date.now() - exitStartedAt < SERVER_SHUTDOWN_BOUND_MS) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(isRunning(serverPid)).toBe(false);
+    expect(readEvents(marker).some((event) => event.event === "server:launcher-disconnected")).toBe(true);
+  } finally {
+    if (isRunning(launcherPid)) process.kill(launcherPid, "SIGKILL");
+    if (serverPid !== undefined && isRunning(serverPid)) {
+      process.kill(serverPid, "SIGKILL");
+    }
+    rmSync(dataDir, { recursive: true, force: true });
+    installed.cleanup();
+  }
+}, DESKTOP_OWNED_RUNTIME_SHUTDOWN_GRACE_MS + 5_000);
+
+function readFileSyncSafe(path: string): string {
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return "";
+  }
+}
