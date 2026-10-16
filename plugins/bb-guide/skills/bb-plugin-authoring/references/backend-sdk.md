@@ -26,7 +26,7 @@ signatures (see "Looking up the exact API" in distribution.md).
   `storagePaths` `cancelPlan` `clearGoal` `defaultExecutionOptions`
   `restoreEnvironment` `getPluginMetadata` `updatePluginMetadata`
   `experimental_listPluginMetadata` `experimental_listAncestors`
-  `experimental_listDescendants`; sub-areas `events` (`list` `wait`),
+  `experimental_listDescendants` `experimental_searchPromptHistory`; sub-areas `events` (`list` `wait`),
   `interactions` (`get` `list` `cancel` `resolve` `respond`), `queue`
   (`list`), `queuedMessages` (`create` `list` `update` `delete` `send`
   `reorder` `setGroupBoundary` `experimental_holdForEdit`

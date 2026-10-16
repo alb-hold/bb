@@ -31,6 +31,7 @@ Read the installed SDK declarations for the exact current signatures.
 - `experimental_usePluginId`
 - `experimental_useQuestionFormHost`
 - `useBbNavigate`
+- `experimental_useSidebarProjectActions`
 - `experimental_useAppPanel`
 - `experimental_useFixedTabTarget`
 - `useComposer`
