@@ -1,5 +1,6 @@
 import {
   isStandaloneBuiltinClearCommand,
+  isStandaloneBuiltinCompactCommand,
   projectAttachmentPaths,
   type Thread,
 } from "@bb/domain";
@@ -8,7 +9,6 @@ import {
   getEnvironment,
   isNativeTerminalThread,
 } from "@bb/db";
-import { ApiError } from "../../errors.js";
 import { resolvePromptAttachmentReferences } from "../projects/attachments.js";
 import {
   nativeTerminalPromptParts,
@@ -35,6 +35,9 @@ export async function acceptThreadSendRequest(
   args: AcceptThreadSendRequestArgs,
 ): Promise<SendMessageResponse> {
   if (isNativeTerminalThread(deps.db, args.thread.id)) {
+    if (args.payload.compactFirst) {
+      throwInvalidCompactFirst("is not supported for native terminal threads");
+    }
     const hostId =
       args.thread.environmentId === null
         ? null
@@ -66,18 +69,35 @@ export async function acceptThreadSendRequest(
     return { ok: true, delivery: "sent" };
   }
   assertThreadHostAcceptsWork(deps.db, args.thread);
-  if (isStandaloneBuiltinClearCommand(args.payload.input)) {
+  const { compactFirst, ...request } = args.payload;
+  if (isStandaloneBuiltinClearCommand(request.input)) {
+    if (compactFirst) throwInvalidCompactFirst("cannot clear the context");
     const environment = await requireThreadCommandEnvironment(deps, {
       thread: args.thread,
     });
     await sendThreadMessage(deps, {
       environment,
-      payload: args.payload,
+      payload: request,
       thread: args.thread,
       trigger: "user",
     });
     return { ok: true, delivery: "sent" };
   }
+
+  if (compactFirst) {
+    if (isStandaloneBuiltinCompactCommand(request.input)) {
+      throwInvalidCompactFirst("needs a message to send after compacting");
+    }
+    if (request.sendAt !== undefined) {
+      throwInvalidCompactFirst("cannot be scheduled with sendAt");
+    }
+    if (request.mode === "steer") {
+      throwInvalidCompactFirst("cannot steer a turn");
+    }
+  }
+  const payload: SendMessageRequest = compactFirst
+    ? { ...request, mode: "queue-if-active", compactFirst }
+    : request;
 
   const outcome = await runWithTurnTrace(
     deps,
@@ -85,10 +105,10 @@ export async function acceptThreadSendRequest(
     () =>
       attemptDispatch(deps, {
         thread: args.thread,
-        payload: args.payload,
+        payload,
         source: { kind: "inline" },
         queuePayload: { kind: "inline" },
-        pluginSubmission: args.payload.pluginSubmission ?? null,
+        pluginSubmission: payload.pluginSubmission ?? null,
         origin: null,
         originPluginId: null,
         startedOnBehalfOf: null,
@@ -107,4 +127,8 @@ export async function acceptThreadSendRequest(
     delivery: "queued",
     queuedMessage: outcome.entry,
   };
+}
+
+function throwInvalidCompactFirst(reason: string): never {
+  throw new ApiError(400, "invalid_request", `compactFirst ${reason}`);
 }

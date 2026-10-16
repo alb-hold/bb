@@ -728,7 +728,9 @@ export function updateCachedThreadListStatusState(
       return list;
     }
     return list.map((thread) =>
-      thread.id === threadId ? { ...thread, ...statusChange } : thread,
+      thread.id === threadId && statusChange.updatedAt >= thread.updatedAt
+        ? { ...thread, ...statusChange }
+        : thread,
     );
   });
 }

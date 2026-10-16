@@ -61,6 +61,10 @@ import {
   voiceUnsupportedMessage,
   type VoiceUnsupportedReason,
 } from "@/hooks/voice-input-support";
+import type {
+  FailedVoiceRecording,
+  VoiceDelivery,
+} from "@/lib/voice-recording-store";
 import { Button } from "@bb/shared-ui/button";
 import { Icon, type IconName } from "@bb/shared-ui/icon";
 import {
@@ -133,6 +137,7 @@ import {
   type AttachmentMentionSuggestion,
 } from "@/hooks/promptMentionCandidates";
 import { VoiceRecordingBar } from "./VoiceRecordingBar";
+import { FailedVoiceRecordings } from "./FailedVoiceRecordings";
 import {
   ComposerPlusMenuSlot,
   type PromptBoxAction,
@@ -591,13 +596,18 @@ type PromptVoiceState = "idle" | "recording" | "transcribing" | "error";
 
 export interface PromptVoiceConfig {
   state: PromptVoiceState;
+  delivery: VoiceDelivery;
   microphoneWarning: string | null;
   isSupported: boolean;
   unsupportedReason?: VoiceUnsupportedReason | null;
   stream: MediaStream | null;
+  failedRecordings: readonly FailedVoiceRecording[];
   start: () => void | Promise<void>;
   stop: () => void;
   send: () => void;
+  retry: (recording: FailedVoiceRecording) => void;
+  discard: (recording: FailedVoiceRecording) => void;
+  download: (recording: FailedVoiceRecording) => void;
   cancel: () => void;
 }
 
@@ -639,6 +649,7 @@ interface PromptBoxInternalProps {
   header?: ReactNode;
   modeHeader?: ReactNode;
   footerStart?: ReactNode;
+  submitAccessory?: ReactNode;
   submission?: PromptBoxSubmissionConfig;
   minHeight?: number;
   typeahead: TypeaheadConfig;
@@ -1282,6 +1293,7 @@ export function PromptBoxInternal({
   header,
   modeHeader,
   footerStart,
+  submitAccessory,
   submission = {},
   minHeight = PROMPTBOX_MIN_HEIGHT,
   typeahead,
@@ -3177,12 +3189,10 @@ export function PromptBoxInternal({
     return beforeCursor.length > 0 ? beforeCursor : undefined;
   }, []);
 
-  const [voiceSubmitBaseline, setVoiceSubmitBaseline] = useState<string | null>(
-    null,
-  );
+  const voiceSubmitBaselineRef = useRef<string | null>(null);
   const sendVoiceTranscript = useCallback(
     (text: string) => {
-      setVoiceSubmitBaseline(valueRef.current);
+      voiceSubmitBaselineRef.current = valueRef.current;
       insertTextAtCursor(text);
     },
     [insertTextAtCursor],
@@ -3210,13 +3220,16 @@ export function PromptBoxInternal({
     ],
   );
 
-  const canSubmitAction = (action: typeof immediateSubmitAction) =>
+  const canSubmitActionAfterVoice = (action: typeof immediateSubmitAction) =>
     action.onSubmit !== undefined &&
     (!action.requiresInput || hasSubmittableInput) &&
     !isAttaching &&
     !isSubmitting &&
-    !submitDisabled &&
-    !showVoiceActionGroup;
+    !submitDisabled;
+  const canSubmitAction = (action: typeof immediateSubmitAction) =>
+    canSubmitActionAfterVoice(action) && !showVoiceActionGroup;
+  const canSubmitVoiceTranscript =
+    hasSubmittableInput && canSubmitActionAfterVoice(primarySubmitAction);
   const canPrimarySubmit = canSubmitAction(primarySubmitAction);
   const canSubmit = hasSubmittableInput && canPrimarySubmit;
   const canModifierSubmit = canSubmitAction(modifierSubmitAction);
@@ -3404,33 +3417,27 @@ export function PromptBoxInternal({
       ? submitDisabledReason
       : submitTitle;
 
+  const dispatchSubmit = useCallback(() => {
+    if (editorRef.current) cancelPromptThreadLinkPaste(editorRef.current);
+    onSubmit?.();
+  }, [onSubmit]);
+
   const submitPrompt = useCallback(() => {
     const shouldBlurAfterSubmit = blurAfterPointerSubmitRef.current;
     blurAfterPointerSubmitRef.current = false;
     if (!canPrimarySubmit) return;
-    if (editorRef.current) cancelPromptThreadLinkPaste(editorRef.current);
-    onSubmit?.();
+    dispatchSubmit();
     if (shouldBlurAfterSubmit) {
       blurPromptEditor(editorRef.current);
     }
-  }, [canPrimarySubmit, onSubmit]);
+  }, [canPrimarySubmit, dispatchSubmit]);
 
-  useEffect(() => {
-    if (
-      voiceSubmitBaseline === null ||
-      showVoiceActionGroup ||
-      value === voiceSubmitBaseline
-    )
-      return;
-    setVoiceSubmitBaseline(null);
-    if (canSubmit) submitPrompt();
-  }, [
-    voiceSubmitBaseline,
-    showVoiceActionGroup,
-    value,
-    canSubmit,
-    submitPrompt,
-  ]);
+  useLayoutEffect(() => {
+    const baseline = voiceSubmitBaselineRef.current;
+    if (baseline === null || value === baseline) return;
+    voiceSubmitBaselineRef.current = null;
+    if (canSubmitVoiceTranscript) dispatchSubmit();
+  }, [value, canSubmitVoiceTranscript, dispatchSubmit]);
 
   const handleSubmitClick = useCallback(
     (event: ReactMouseEvent<HTMLButtonElement>) => {
@@ -3830,6 +3837,16 @@ export function PromptBoxInternal({
           {modeHeader}
         </div>
       ) : null}
+      {voice && voice.failedRecordings.length > 0 ? (
+        <FailedVoiceRecordings
+          recordings={voice.failedRecordings}
+          className="px-1.5 pt-1.5"
+          retryDisabled={false}
+          onRetry={voice.retry}
+          onDownload={voice.download}
+          onDiscard={voice.discard}
+        />
+      ) : null}
       <div
         data-promptbox-layout=""
         className={cn(COLLAPSING_GRID_CLASS, showCompactLayout && "relative")}
@@ -4035,6 +4052,7 @@ export function PromptBoxInternal({
                   <VoiceRecordingBar
                     isCompact={showCompactLayout}
                     state={renderedVoiceActionState}
+                    delivery={voice.delivery}
                     stream={voice.stream}
                     microphoneWarning={voice.microphoneWarning}
                     submitIcon={submitIcon ?? "CornerDownLeft"}
@@ -4084,6 +4102,7 @@ export function PromptBoxInternal({
                     !showCompactLayout && !suppressPluginComposerCustomizations
                   }
                 >
+                  {submitAccessory}
                   {!showCompactLayout || showCompactVoiceAction ? (
                     <>
                       {voice &&

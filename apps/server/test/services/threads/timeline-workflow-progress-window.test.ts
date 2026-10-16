@@ -291,6 +291,8 @@ function buildPage(
     eventBudget,
     includeClearedContextHistory: false,
     includeDiagnosticOperations: false,
+    compactionOfferEnabled: false,
+    summarizeShellCommands: true,
     includeNestedRows: false,
     maxInlineOutputChars: 32_000,
     maxSeq: 0,

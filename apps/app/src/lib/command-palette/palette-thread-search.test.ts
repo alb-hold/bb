@@ -25,6 +25,7 @@ function makeThread(
     originKind: null,
     originPluginId: null,
     visibility: "visible",
+    parentNotifications: "auto",
     archivedAt: null,
     pinnedAt: null,
     pinSortKey: null,
@@ -343,9 +344,7 @@ describe("buildPaletteThreadSearchRows", () => {
         archived: { total: 0, results: [] },
       };
       expect(
-        build({ query: "fix", searchResponse }).rows.map(
-          (row) => row.threadId,
-        ),
+        build({ query: "fix", searchResponse }).rows.map((row) => row.threadId),
       ).toEqual(["title-hit", "message-only"]);
       expect(
         build({ query: "fix", searchResponse, sort: "updated" }).rows.map(

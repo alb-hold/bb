@@ -24,6 +24,7 @@ import {
   getDisabledProviderIds,
   listRunningThreads,
   type DbConnection,
+  setAppSettings,
 } from "@bb/db";
 import { initDb } from "./db.js";
 import { createApp } from "./server.js";
@@ -322,6 +323,15 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
       db,
       logger,
     });
+  }
+  if (serverConfig.BB_SKIP_ONBOARDING) {
+    const settings = getAppSettings(db);
+    if (settings.onboardingCompletedAt === null) {
+      setAppSettings(db, {
+        ...settings,
+        onboardingCompletedAt: new Date().toISOString(),
+      });
+    }
   }
   const serverMoveRun =
     pendingServerMove === null

@@ -1904,6 +1904,9 @@ export function createDeltaAssembler(
             total: { ...delta.total },
             last: { ...delta.last },
             modelContextWindow: delta.modelContextWindow,
+            ...(delta.promptCacheTtlMs === undefined
+              ? {}
+              : { promptCacheTtlMs: delta.promptCacheTtlMs }),
           },
         });
         return;

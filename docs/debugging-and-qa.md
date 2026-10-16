@@ -15,6 +15,11 @@
 
 ## Desktop Browser Tab Recovery
 
+When the desktop app connects to a BB Connect server, it installs and renews
+the Connect desktop session in both the app and embedded browser cookie stores.
+This also authenticates shared-port links under the same Connect domain. The
+browser keeps its separate profile; unrelated site cookies are not copied.
+
 Saved desktop browser tabs keep their URL and owning host/window. Opening one
 in the desktop app attaches the existing view when that window still owns it,
 including after its connection generation changes. While the desktop or host is
@@ -47,6 +52,21 @@ Inspect the persisted owner with
 with `bb browser instances --host <hostId> --json` or
 `sdk.experimental_desktopBrowsers.listInstances`. Recovery uses the existing
 native snapshot and browser APIs; no daemon wire fields change.
+
+Browser tab favicons retain their candidates across same-origin navigation. The
+native desktop manager caches candidates for the 40 most recently used HTTP(S)
+origins per connected server; returning to an origin or reopening its tab can
+reuse those candidates. Same-origin candidate updates retain earlier candidates as fallbacks, and empty
+updates leave the known icon intact. Crossing to an uncached origin clears the
+previous icon. The cache is in memory and ends with the desktop process.
+
+The preload browser `onState` subscription immediately replays the latest
+validated state for up to 100 recently updated tabs before forwarding live
+updates. This lets remounted tab headers recover without waiting for a new
+favicon event. Renderer image-size measurements are also bounded and reused
+so remounts retain the appropriate Retina candidate. Image bytes still load
+through the renderer's browser cache; authenticated icon fetching through the
+embedded browser session is not implemented by this cache.
 
 ## Log Fields
 
@@ -864,3 +884,25 @@ read; symlinked skill directories or files and roots escaping the workspace are
 skipped before reading. Command lookup sets `includeAgentInstructions: false`,
 so an invalid `.bb/AGENTS.md` cannot break the command catalog; turn
 preparation sets it to `true` and reports instruction-read errors.
+
+## Interrupted Optimistic Query Refreshes
+
+Optimistic cache owners use `cancelOptimisticQueries` instead of calling
+`queryClient.cancelQueries` directly. During a mutation it records interrupted
+reads and the mutations pending at cancellation. It invalidates those queries
+after those mutations finish, including success, error, and settled callbacks.
+A later optimistic cancellation of the same query extends that wait even if
+the query is already idle. Active queries refresh; inactive queries become
+stale for their next mount. Removed queries are discarded from recovery.
+
+This deliberately waits for every mutation pending at cancellation because a
+cache owner does not have the identity of its calling mutation. Later unrelated
+mutations do not delay recovery. Queries without an interrupted read are not
+refetched. Calling cache-owner helpers outside a mutation retains ordinary
+cancellation behavior. Browser suspension and realtime replacement reads have
+their own recovery paths and continue to use ordinary cancellation.
+
+For a stale drawer or sidebar, check whether an optimistic mutation canceled
+the last realtime refresh, then whether its recovery ran after the mutation
+callbacks. Cover this ordering with real Query and Mutation observers; an
+isolated rollback helper test does not exercise mutation settlement.

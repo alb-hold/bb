@@ -4,6 +4,7 @@ import type {
   StartedOnBehalfOf,
   ThreadCreateOrigin,
   ThreadOriginKind,
+  ThreadParentNotifications,
   ThreadVisibility,
 } from "@bb/domain";
 import type {
@@ -34,6 +35,7 @@ export interface ThreadCreateServiceRequestInput {
   originPluginId?: CreateThreadRequest["originPluginId"];
   originKind?: ThreadOriginKind | null;
   parentThreadId?: string;
+  parentNotifications?: ThreadParentNotifications;
   lifecycleOwnerThreadId?: string;
   permissionMode?: CreateThreadRequest["permissionMode"];
   projectId: string;
@@ -56,6 +58,7 @@ export interface ThreadCreateServiceRequest extends Omit<
   environment: EnvironmentArgs | ProviderEnvironmentArgs;
   pluginMetadata: { pluginId: string; metadata: JsonObject } | null;
   providerId: string;
+  parentNotifications: ThreadParentNotifications;
   titleFallback: string | null;
   visibility: ThreadVisibility;
 }

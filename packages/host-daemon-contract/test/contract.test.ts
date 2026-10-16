@@ -935,10 +935,11 @@ const INTENTIONAL_OPTIONAL_HOST_DAEMON_FIELDS: Record<string, string> = {
 
 describe("cache usage wire compatibility", () => {
   it.each([
-    {},
-    { cacheReadInputTokens: 31, cacheWriteInputTokens: 9 },
-    { cacheWriteInputTokens: 0 },
-  ])("preserves legacy and reported cache fields %j", (counts) => {
+    [{}, {}],
+    [{ cacheReadInputTokens: 31, cacheWriteInputTokens: 9 }, {}],
+    [{ cacheWriteInputTokens: 0 }, {}],
+    [{ cacheWriteInputTokens: 9 }, { promptCacheTtlMs: 3_600_000 }],
+  ])("preserves legacy and reported cache fields %j %j", (counts, cache) => {
     const usage = {
       totalTokens: 140,
       inputTokens: 80,
@@ -962,6 +963,7 @@ describe("cache usage wire compatibility", () => {
                 total: usage,
                 last: usage,
                 modelContextWindow: null,
+                ...cache,
               },
             },
           ],
@@ -1259,7 +1261,7 @@ describe("host-daemon command schemas", () => {
   });
 
   it("uses the current host-daemon protocol version", () => {
-    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(241);
+    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(242);
     expect(HOST_ARTIFACT_MAX_BYTES).toBe(256 * 1024 * 1024);
   });
 

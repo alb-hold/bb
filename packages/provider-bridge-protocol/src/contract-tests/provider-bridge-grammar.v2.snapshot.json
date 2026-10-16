@@ -178,6 +178,7 @@
       "total": "required",
       "last": "required",
       "modelContextWindow": "required",
+      "promptCacheTtlMs": "optional",
       "providerTurnId": "optional"
     }
   },

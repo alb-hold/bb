@@ -2238,7 +2238,10 @@ function createCanUseTool(threadIdRef: ThreadIdRef): CanUseTool {
       };
     }
 
-    if (threadSession.attachment.permissionMode === "bypassPermissions") {
+    if (
+      threadSession.attachment.permissionMode === "bypassPermissions" &&
+      !isBypassPermissionsAvailable()
+    ) {
       return {
         behavior: "allow",
         updatedInput: input,
