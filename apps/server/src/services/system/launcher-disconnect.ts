@@ -35,7 +35,7 @@ export function watchLauncherDisconnect(
   let parentLossHandled = false;
   const launcherPid = process.ppid;
   const parentWatch =
-    options !== undefined && port.channel !== undefined
+    port.channel !== undefined
       ? new Worker(
           `const { parentPort, workerData } = require("node:worker_threads");
 const { readFileSync } = require("node:fs");
