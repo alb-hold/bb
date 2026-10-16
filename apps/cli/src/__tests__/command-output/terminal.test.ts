@@ -2,6 +2,7 @@ import { Buffer } from "node:buffer";
 import { Readable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import { TERMINAL_DATA_MAX_BYTES } from "@bb/domain";
+import { TERMINAL_ATTENTION_CONTRACT_CASES } from "@bb/test-helpers";
 import {
   collectLogLines,
   collectLogPayloads,
@@ -95,6 +96,60 @@ describe("bb terminal command output", () => {
       else process.env.BB_TERMINAL_SESSION_ID = previousId;
     }
   });
+
+  it.each(TERMINAL_ATTENTION_CONTRACT_CASES)(
+    "follows the shared terminal attention contract: $name",
+    async (contract) => {
+      const sessions = contract.sessions.map((entry) =>
+        makeTerminalSession({
+          id: entry.id,
+          title: entry.title,
+          createdAt: entry.attentionAt,
+          attention: {
+            at: entry.attentionAt,
+            kind: "bell",
+            seq: entry.seq,
+          },
+        }),
+      );
+      const listAttention = vi.fn(async () => ({ sessions }));
+      stubServerApi({ "v1.terminals.attention.$get": listAttention });
+      await runCommand(["terminal", "attention", "list", "--json"], register);
+      expect(
+        JSON.parse(collectLogPayloads(vi.mocked(console.log)).at(-1) ?? "{}")
+          .sessions.map((session: { id: string }) => session.id),
+      ).toEqual(contract.unreadIds);
+
+      stubServerApi({ "v1.terminals.attention.$get": listAttention });
+      await runCommand(["terminal", "attention", "next", "--json"], register);
+      const next = JSON.parse(
+        collectLogPayloads(vi.mocked(console.log)).at(-1) ?? "{}",
+      ).session as { id: string } | null;
+      expect(next?.id ?? null).toBe(contract.nextId);
+      if (contract.nextId === null) {
+        stubServerApi({ "v1.terminals.attention.$get": listAttention });
+        await runCommand(["terminal", "attention", "next"], register);
+        expect(collectLogLines(vi.mocked(console.log)).join("\n")).toContain(
+          "Nothing needs attention.",
+        );
+      }
+      if (contract.clearId !== null) {
+        const clearAttention = vi.fn(async () =>
+          makeTerminalSession({ id: contract.clearId, attention: null }),
+        );
+        stubServerApi({
+          "v1.terminals.:terminalId.attention.clear.$post": clearAttention,
+        });
+        await runCommand(
+          ["terminal", "attention", "clear", contract.clearId, "--json"],
+          register,
+        );
+        expect(clearAttention).toHaveBeenCalledWith({
+          param: { terminalId: contract.clearId },
+        });
+      }
+    },
+  );
 
   it("resolves an explicit machine and cwd without a primary-host fallback", async () => {
     const hosts = vi.fn(async () => [makeHost()]);

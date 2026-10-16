@@ -229,6 +229,7 @@ import type {
   SystemVoiceTranscriptionForm,
   SystemVoiceTranscriptionResponse,
   TerminalListResponse,
+  TerminalAttentionListResponse,
   ThemeCatalogResponse,
   TerminalSession,
   TerminalInputRequest,
@@ -1097,6 +1098,12 @@ export const publicApiRoutes = {
   },
 
   terminals: {
+    attention: defineRoute({
+      path: "/terminals/attention",
+      method: "get",
+      request: noRequest(),
+      response: jsonResponse<TerminalAttentionListResponse>(),
+    }),
     list: defineRoute({
       path: "/terminals",
       method: "get",
@@ -1157,6 +1164,12 @@ export const publicApiRoutes = {
       request: jsonRequest<PathTerminal, TerminalNotifyRequest>(
         terminalNotifyRequestSchema,
       ),
+      response: jsonResponse<TerminalSession>(),
+    }),
+    clearAttention: defineRoute({
+      path: "/terminals/:terminalId/attention/clear",
+      method: "post",
+      request: noRequest<PathTerminal>(),
       response: jsonResponse<TerminalSession>(),
     }),
     resize: defineRoute({

@@ -136,6 +136,10 @@ This index lists every command path that the core CLI registers, including alias
 - `bb terminal`
 - `bb terminal list`
 - `bb terminal notify`
+- `bb terminal attention`
+- `bb terminal attention list`
+- `bb terminal attention next`
+- `bb terminal attention clear`
 - `bb terminal create`
 - `bb terminal start`
 - `bb terminal show`

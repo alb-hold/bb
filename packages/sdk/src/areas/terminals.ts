@@ -3,6 +3,7 @@ import type {
   TerminalInputRequest,
   TerminalListQuery,
   TerminalListResponse,
+  TerminalAttentionListResponse,
   TerminalOutputQuery,
   TerminalOutputResponse,
   TerminalNotifyRequest,
@@ -100,7 +101,8 @@ export interface TerminalOutputArgs extends TerminalTargetArgs {
   tailBytes?: TerminalOutputQuery["tailBytes"];
 }
 
-export interface TerminalNotifyArgs extends TerminalTargetArgs, TerminalNotifyRequest {}
+export interface TerminalNotifyArgs
+  extends TerminalTargetArgs, TerminalNotifyRequest {}
 
 export type TerminalRestartArgs = TerminalTargetArgs;
 
@@ -114,7 +116,14 @@ export type TerminalResizeResult = TerminalSession;
 export type TerminalOutputResult = TerminalOutputResponse;
 export type TerminalRestartResult = TerminalSession;
 
+export interface ExperimentalTerminalAttentionArea {
+  clear(args: TerminalTargetArgs): Promise<TerminalGetResult>;
+  list(): Promise<TerminalAttentionListResponse["sessions"]>;
+  next(): Promise<TerminalGetResult | null>;
+}
+
 export interface TerminalsArea {
+  experimental_attention: ExperimentalTerminalAttentionArea;
   close(args: TerminalCloseArgs): Promise<TerminalCloseResult>;
   create(args: TerminalCreateArgs): Promise<TerminalCreateResult>;
   get(args: TerminalGetArgs): Promise<TerminalGetResult>;
@@ -210,6 +219,25 @@ export function createTerminalsArea(args: CreateSdkAreaArgs): TerminalsArea {
       ),
     );
 
+  const listAttention = async (): Promise<
+    TerminalAttentionListResponse["sessions"]
+  > => {
+    const response: TerminalAttentionListResponse = await transport.readJson(
+      transport.api.v1.terminals.attention.$get({}),
+    );
+    return response.sessions
+      .filter(
+        (session) =>
+          session.attention !== null && session.attention !== undefined,
+      )
+      .sort(
+        (left, right) =>
+          (left.attention?.at ?? 0) - (right.attention?.at ?? 0) ||
+          left.createdAt - right.createdAt ||
+          left.id.localeCompare(right.id),
+      );
+  };
+
   const create = (input: TerminalCreateArgs): Promise<TerminalCreateResult> =>
     transport.readJson(
       transport.api.v1.terminals.$post({
@@ -225,6 +253,19 @@ export function createTerminalsArea(args: CreateSdkAreaArgs): TerminalsArea {
     );
 
   return {
+    experimental_attention: {
+      async clear(input) {
+        return transport.readJson(
+          transport.api.v1.terminals[":terminalId"].attention.clear.$post({
+            param: { terminalId: input.terminalId },
+          }),
+        );
+      },
+      list: listAttention,
+      async next() {
+        return (await listAttention())[0] ?? null;
+      },
+    },
     async close(input) {
       return transport.readJson(
         transport.api.v1.terminals[":terminalId"].close.$post({
