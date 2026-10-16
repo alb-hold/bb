@@ -7,17 +7,16 @@ import {
 } from "@bb/domain";
 import type { ClientTurnRequestId, Thread } from "@bb/domain";
 import {
-  createConnection,
   createProject,
   createThread,
   getCompletedEventOutputTruncationLimits,
   getLatestThreadSequence,
   insertEvents,
-  migrate,
   migrateNextLegacyImageGenerationOutput,
   noopNotifier,
   upsertHost,
 } from "@bb/db";
+import { createMigratedConnection } from "@bb/db/testing";
 import { LOCAL_WORKFLOW_TASK_TYPE } from "@bb/domain";
 import type { DbConnection } from "@bb/db";
 import type {
@@ -30,7 +29,7 @@ import {
   THREAD_TIMELINE_EVENT_DATA_BYTE_LIMIT,
   TIMELINE_TURN_DETAILS_PAGE_LEAF_LIMIT,
 } from "../../../src/services/threads/timeline.js";
-import { TIMELINE_INLINE_OUTPUT_PREVIEW_THRESHOLD_CHARS } from "../../../src/services/threads/timeline-output-preview.js";
+import { TIMELINE_INLINE_OUTPUT_PREVIEW_THRESHOLD_CHARS } from "../../../src/services/threads/timeline-output-shortening.js";
 
 const LARGE_BUDGET = 1_000_000;
 const BYTE_WINDOW_ITEM_COUNT = 250;
@@ -53,8 +52,7 @@ function requestId(value: number): ClientTurnRequestId {
 }
 
 function setup(): { db: DbConnection; thread: Thread } {
-  const db = createConnection(":memory:");
-  migrate(db);
+  const db = createMigratedConnection();
   const host = upsertHost(db, noopNotifier, {
     name: "test-host",
   });
@@ -610,7 +608,7 @@ function walkAllPages(
       olderRows: response.rows,
       loadedRows: mergedRows,
     });
-    if (!response.timelinePage.hasOlderRows) {
+    if (response.timelinePage.olderCursor === null) {
       break;
     }
     const next = response.timelinePage.olderCursor;
@@ -796,7 +794,7 @@ describe("in-turn timeline windows", () => {
 
     const timeline = buildPage(db, thread, LARGE_BUDGET, null).response;
     const latest = buildPage(db, thread, LARGE_BUDGET, null, 1).response;
-    expect(latest.timelinePage.hasOlderRows).toBe(true);
+    expect(latest.timelinePage.olderCursor).not.toBeNull();
     expect(latest.rows).toContainEqual(
       expect.objectContaining({
         kind: "conversation",
@@ -814,7 +812,7 @@ describe("in-turn timeline windows", () => {
       latest.timelinePage.olderCursor!,
       1,
     ).response;
-    expect(older.timelinePage.hasOlderRows).toBe(false);
+    expect(older.timelinePage.olderCursor).toBeNull();
     expect(
       prependOlderTimelineRows({
         loadedRows: latest.rows,
@@ -876,20 +874,16 @@ describe("in-turn timeline windows", () => {
 
     const unbudgeted = buildPage(db, thread, LARGE_BUDGET, null);
     expect(unbudgeted.profile.eventRowCount).toBeGreaterThan(600);
-    expect(unbudgeted.response.timelinePage.hasOlderRows).toBe(false);
+    expect(unbudgeted.response.timelinePage.olderCursor).toBeNull();
 
     const budgeted = buildPage(db, thread, 100, null);
     expect(budgeted.profile.eventRowCount).toBe(
       unbudgeted.profile.eventRowCount,
     );
-    expect(
-      budgeted.response.timelinePage.contentPage?.end! -
-        budgeted.response.timelinePage.contentPage?.start!,
-    ).toBeLessThanOrEqual(100);
     expect(budgeted.response.rows.length).toBeLessThan(
       unbudgeted.response.rows.length,
     );
-    expect(budgeted.response.timelinePage.hasOlderRows).toBe(true);
+    expect(budgeted.response.timelinePage.olderCursor).not.toBeNull();
     expect(budgeted.response.timelinePage.olderCursor?.anchorId).toMatch(
       /^timeline-v3:/,
     );
@@ -948,7 +942,7 @@ describe("in-turn timeline windows", () => {
 
     const budgeted = buildPage(db, thread, 100, null);
 
-    expect(budgeted.response.timelinePage.hasOlderRows).toBe(false);
+    expect(budgeted.response.timelinePage.olderCursor).toBeNull();
     expect(budgeted.response.timelinePage.olderCursor).toBeNull();
     expect(budgeted.response.rows).toEqual(
       buildPage(db, thread, LARGE_BUDGET, null).response.rows,
@@ -1005,7 +999,7 @@ describe("in-turn timeline windows", () => {
         Buffer.byteLength(JSON.stringify(page.response.rows)),
         `page ${pages}`,
       ).toBeLessThanOrEqual(SCALED_BYTE_BUDGET);
-      if (!page.response.timelinePage.hasOlderRows) {
+      if (page.response.timelinePage.olderCursor === null) {
         break;
       }
       cursor = page.response.timelinePage.olderCursor;
@@ -1188,7 +1182,7 @@ describe("in-turn timeline windows", () => {
         Buffer.byteLength(JSON.stringify(page.response.rows)),
         `page ${pages}`,
       ).toBeLessThanOrEqual(SCALED_BYTE_BUDGET);
-      if (!page.response.timelinePage.hasOlderRows) {
+      if (page.response.timelinePage.olderCursor === null) {
         break;
       }
       cursor = page.response.timelinePage.olderCursor;
@@ -1219,7 +1213,7 @@ describe("in-turn timeline windows", () => {
     ]);
 
     const latest = buildPage(db, thread, LARGE_BUDGET, null);
-    expect(latest.response.timelinePage.hasOlderRows).toBe(false);
+    expect(latest.response.timelinePage.olderCursor).toBeNull();
     expect(latest.response.timelinePage.olderCursor).toBeNull();
     expect(latest.response.rows).toHaveLength(1);
     const row = latest.response.rows[0]!;
@@ -1402,7 +1396,7 @@ describe("in-turn timeline windows", () => {
     const unbudgeted = buildNestedPage(db, thread, LARGE_BUDGET, null);
     const budgeted = buildNestedPage(db, thread, 100, null);
 
-    expect(budgeted.response.timelinePage.hasOlderRows).toBe(true);
+    expect(budgeted.response.timelinePage.olderCursor).not.toBeNull();
     expect(budgeted.profile.eventRowCount).toBeGreaterThan(600);
     expect(walkAllPages(db, thread, 100, 20, true).rows).toEqual(
       unbudgeted.response.rows.map((row) => JSON.stringify(row)),
@@ -1435,7 +1429,7 @@ describe("in-turn timeline windows", () => {
     }
     expect(delegation.status).toBe("completed");
     expect(delegation.childRows).toBeNull();
-    expect(page.response.timelinePage.hasOlderRows).toBe(false);
+    expect(page.response.timelinePage.olderCursor).toBeNull();
 
     const firstPage = buildTurnDetailsPage(db, thread, {
       deferContent: true,
@@ -1545,7 +1539,7 @@ describe("in-turn timeline windows", () => {
           }
         }
       }
-      if (!page.response.timelinePage.hasOlderRows) {
+      if (page.response.timelinePage.olderCursor === null) {
         break;
       }
       cursor = page.response.timelinePage.olderCursor;
@@ -1683,7 +1677,7 @@ describe("timeline window hints", () => {
 
     const timeline = buildPage(db, thread, 1_501, null).response;
 
-    expect(timeline.timelinePage.hasOlderRows).toBe(false);
+    expect(timeline.timelinePage.olderCursor).toBeNull();
     expect(timeline.timelinePage.olderCursor).toBeNull();
     expect(timeline.rows).toEqual(
       expect.arrayContaining([
@@ -1717,7 +1711,7 @@ describe("timeline window hints", () => {
     expect(exactFloor.olderCursor).toMatchObject({ anchorSeq: 3 });
 
     const latest = buildPage(db, thread, LARGE_BUDGET, null, 1).response;
-    expect(latest.timelinePage.hasOlderRows).toBe(true);
+    expect(latest.timelinePage.olderCursor).not.toBeNull();
     expect(latest.rows).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -1738,7 +1732,7 @@ describe("timeline window hints", () => {
       latest.timelinePage.olderCursor,
       1,
     ).response;
-    expect(older.timelinePage.hasOlderRows).toBe(false);
+    expect(older.timelinePage.olderCursor).toBeNull();
     expect(older.timelinePage.olderCursor).toBeNull();
     expect(older.rows).toEqual([
       expect.objectContaining({
@@ -1906,7 +1900,7 @@ describe("timeline window hints", () => {
         },
       ]);
       const reference = buildPage(db, thread, LARGE_BUDGET, null, 100).response;
-      expect(reference.timelinePage.hasOlderRows).toBe(false);
+      expect(reference.timelinePage.olderCursor).toBeNull();
       for (const segmentLimit of [1, 2]) {
         const walked = walkAllPages(db, thread, LARGE_BUDGET, segmentLimit);
         expect(walked.rows).toEqual(
@@ -2091,10 +2085,6 @@ describe("background tasks across an in-turn window", () => {
       /^timeline-v3:/,
     );
     expect(budgeted.profile.eventRowCount).toBeGreaterThan(600);
-    expect(
-      budgeted.response.timelinePage.contentPage?.end! -
-        budgeted.response.timelinePage.contentPage?.start!,
-    ).toBeLessThanOrEqual(100);
     expect(budgeted.response.activeWorkflows).toHaveLength(1);
     expect(budgeted.response.activeWorkflows).toEqual(
       buildPage(db, thread, LARGE_BUDGET, null).response.activeWorkflows,
@@ -2193,7 +2183,7 @@ describe("in-turn windows and items that only stream", () => {
         (row) => row.kind === "conversation" && row.role === "assistant",
       );
 
-      expect(budgeted.response.timelinePage.hasOlderRows).toBe(true);
+      expect(budgeted.response.timelinePage.olderCursor).not.toBeNull();
       expect(assistant?.text).toBe(chunks.join(""));
       const laterChunks = Array.from(
         { length: 25 },

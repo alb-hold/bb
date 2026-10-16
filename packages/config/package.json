@@ -152,6 +152,11 @@
       "source": "./src/full-stack-shutdown.ts",
       "types": "./src/full-stack-shutdown.ts",
       "default": "./src/full-stack-shutdown.ts"
+    },
+    "./desktop-app-update": {
+      "source": "./src/desktop-app-update.ts",
+      "types": "./src/desktop-app-update.ts",
+      "default": "./src/desktop-app-update.ts"
     }
   },
   "scripts": {

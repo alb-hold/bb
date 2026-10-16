@@ -42,6 +42,7 @@ export * from "./prompt-history.js";
 export * from "./prompt-history-search.js";
 export * from "./protocol-ids.js";
 export * from "./queued-message.js";
+export * from "./queued-message-lifecycle.js";
 export * from "./system-message.js";
 export * from "./provider-event.js";
 export * from "./provider-environment.js";

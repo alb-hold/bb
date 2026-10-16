@@ -2,62 +2,8 @@
 
 Keep the discoverable surfaces in sync whenever you add or change a `bb` CLI command, flag, or a user-facing configuration knob (env var, `.bb/` workspace file, settings field):
 
-- Update the in-CLI guide templates under `packages/templates/src/templates/bb-guide-*.md`, turbo regenerates `packages/templates/src/generated/templates.generated.ts` (not committed) before every build, typecheck, and test task.
-- For core commands, update the bb-cli skill at `plugins/bb-guide/skills/bb-cli/SKILL.md` or its relevant reference. For plugin commands and settings, update the owning plugin's `skills/<name>/SKILL.md` or supporting reference, including built-in plugins. Keep plugin-specific behavior out of the core CLI skill. Configuration knobs also belong in `docs/configuration.md`.
+- The in-CLI guide templates under `packages/templates/src/templates/bb-guide-*.md` are the core CLI manual. Document core commands, flags, and settings there; turbo regenerates `packages/templates/src/generated/templates.generated.ts` (not committed) before every build, typecheck, and test task.
+- The bb-cli skill (`plugins/bb-guide/skills/bb-cli/SKILL.md`) only routes agents to guide chapters and states agent habits and safety rules. Do not copy command documentation into it. Add new core command paths to its `references/command-index.md`.
+- For plugin commands and settings, update the owning plugin's `skills/<name>/SKILL.md` or supporting reference, including built-in plugins. Configuration knobs also belong in `docs/configuration.md`.
+- Keep maintainer and repository-development instructions (source startup, release and publishing steps) in `docs/` and app READMEs, not in the guide or shipped skills.
 - Match the existing chapter/section style; keep entries concise and accurate against the implementation.
-
-The `bb terminal create --working-directory <path>` flag selects the shell's
-initial directory within its chosen scope. The SDK `terminals.create` method
-accepts the equivalent `cwd` field.
-
-Environment lifecycle hooks are core policy: bb runs `.bb-env-setup.sh` after
-an environment provider creates an owned path, and `.bb-env-teardown.sh` before
-provider removal. Each has a 15-minute timeout; setup failure fails provisioning,
-while reported teardown script failure does not block removal. Transport failure
-keeps cleanup pending until the daemon confirms hook termination. Hook identity
-and completion persist across server restarts. Attached checkout and
-personal-workspace paths skip both hooks. These semantics apply equally to CLI,
-SDK, and app launches; see [worktrees.md](worktrees.md).
-
-The Machines settings creation drawer prepares an existing-machine command when access is ready, otherwise shows setup guidance. After access is ready, Choose a machine provider reviews provider inputs and launches through `hosts.experimental_create`/`bb machine create`. A machine belongs to no project; projects reach it later through project sources.
-
-`bb machine list` enumerates persistent machines and takes `--all` to include
-disposable provider sandboxes, matching the app's Show all machines reveal.
-`bb updates` and `bb skill install-cli-skills` default to persistent machines
-and still accept a sandbox through an explicit `--machine`.
-
-Machine maintenance state is part of `bb machine list --json`; there is no
-separate machine lifecycle command. Keep the machine guide and bb-cli command
-index aligned with this surface.
-
-Local installed-daemon start, stop, and uninstall operations are flags on
-`install-machine.sh`, not `bb machine` subcommands. `install-machine.sh --adopt` installs the
-service for an already-enrolled data directory and backs
-`bb server install-machine-service`.
-
-Modal connection and machine commands are documented in [modal-sandboxes](../plugins/environment-modal-sandbox/skills/modal-sandboxes/SKILL.md). `bb modal image show [--json]` reads the Dockerfile shown in settings; `bb modal image set --file PATH [--json]` saves a validated plugin-wide override and `bb modal image reset [--json]` restores the bundled default for future machines; `bb modal account inspect --json` checks credentials; `bb machine create --provider modal-sandbox --json` automatically prepares the bundled image and installs the daemon. `bb machine remove MACHINE --yes` explicitly removes compute and private snapshots.
-
-`bb thread spawn --machine-inputs <json>` configures either an explicit
-`--new-machine` or the machine provider owned by a composed
-`--environment-provider`; a composition rejects separate machine selectors.
-
-`bb thread spawn --native` and `bb thread native` (with `--convert` and
-`--chat` to switch an existing chat thread) cover native terminal
-threads: the provider's own `claude` or `codex` TUI runs in a thread terminal,
-launched through the hidden `bb thread native-run <id>` wrapper that picks
-fresh launch or resume and reports Codex's session id. The SDK surface is
-`sdk.threads.spawn({ nativeTerminal: true })` plus `sdk.nativeTerminals`
-(`get`, `open`, `switchMode`, `launch`, `recordSession`, and `reportActivity`,
-which the wrapper uses to report a turn working or idle and its prompt, and
-`agentTools` and `callAgentTool`, which serve the thread's bb tools to the CLI
-through the hidden `bb thread native-mcp <id>` stdio MCP server); the thread-creation and
-thread-operation skill references and the threads guide chapter describe them.
-
-Account Pooler operators use the existing `bb pool token rotate --machine <id-or-name>` after the one-time Codex snapshot cleanup described in [accounts and routing](../plugins/account-pool/skills/account-pool/references/accounts-and-routing.md#one-time-cleanup-after-upgrading). Keep those operator steps in the owning plugin reference; the command and its ten-minute grace are unchanged.
-
-`bb thread list` adds a **Needs you** column for `Needs input`, `Working`,
-automation `Woke`, and unread `Done` states. Automation labels come from the
-installed Automations plugin; when its read RPC is unavailable, the column
-still reports the thread-list states it can resolve locally.
-
-Modal image debugging uses `bb modal image build`, `bb modal sandbox run`, `bb modal sandbox exec ID [--json] -- COMMAND...`, and `bb modal sandbox stop ID`. Debug compute expires after 30 minutes and skips BB enrollment and project setup. See the plugin skill for output limits and typed RPC equivalents.

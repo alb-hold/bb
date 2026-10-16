@@ -71,6 +71,7 @@ import {
 } from "./thread-actions/thread-action-registry";
 import { useCodeTheme } from "./plugin-code-theme";
 import { copyToClipboard } from "./clipboard";
+import { saveFile } from "./save-file";
 
 function useArchiveEnvironmentThreads(): (
   environmentId: string,
@@ -132,6 +133,7 @@ export const pluginSdkAppImplementation = {
   experimental_useCodeTheme: useCodeTheme,
   experimental_VoiceInputTextarea: VoiceInputTextarea,
   experimental_copyToClipboard: copyToClipboard,
+  experimental_saveFile: saveFile,
 } satisfies PluginSdkApp;
 
 function PluginMarkdown({

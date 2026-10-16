@@ -1,4 +1,9 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import {
+  mutationOptions,
+  type QueryClient,
+  useMutation,
+  useQueryClient,
+} from "@tanstack/react-query";
 import type {
   ThreadArchiveAllResponse,
   ThreadResponse,
@@ -66,10 +71,11 @@ interface ThreadReadMutationInput {
 
 export const MARK_THREAD_UNREAD_MUTATION_KEY = ["mark-thread-unread"] as const;
 
-export function useUpdateThread(options?: UpdateThreadMutationOptions) {
-  const queryClient = useQueryClient();
-
-  return useMutation<
+export function updateThreadMutationOptions(
+  queryClient: QueryClient,
+  options?: UpdateThreadMutationOptions,
+) {
+  return mutationOptions<
     ThreadResponse,
     Error,
     UpdateThreadMutationRequest,
@@ -120,6 +126,11 @@ export function useUpdateThread(options?: UpdateThreadMutationOptions) {
       settleThreadPatchTransaction(context);
     },
   });
+}
+
+export function useUpdateThread(options?: UpdateThreadMutationOptions) {
+  const queryClient = useQueryClient();
+  return useMutation(updateThreadMutationOptions(queryClient, options));
 }
 
 export function usePinThread() {
@@ -305,10 +316,8 @@ export function useDeleteThread() {
   });
 }
 
-export function useMarkThreadRead() {
-  const queryClient = useQueryClient();
-
-  return useMutation({
+export function markThreadReadMutationOptions(queryClient: QueryClient) {
+  return mutationOptions({
     meta: {
       errorMessage: "Failed to mark thread read.",
       showErrorToast: false,
@@ -336,10 +345,13 @@ export function useMarkThreadRead() {
   });
 }
 
-export function useMarkThreadUnread() {
+export function useMarkThreadRead() {
   const queryClient = useQueryClient();
+  return useMutation(markThreadReadMutationOptions(queryClient));
+}
 
-  return useMutation({
+export function markThreadUnreadMutationOptions(queryClient: QueryClient) {
+  return mutationOptions({
     meta: {
       errorMessage: "Failed to mark thread unread.",
       showErrorToast: false,
@@ -367,4 +379,9 @@ export function useMarkThreadUnread() {
       settleThreadReadStateTransaction({ queryClient, transaction });
     },
   });
+}
+
+export function useMarkThreadUnread() {
+  const queryClient = useQueryClient();
+  return useMutation(markThreadUnreadMutationOptions(queryClient));
 }

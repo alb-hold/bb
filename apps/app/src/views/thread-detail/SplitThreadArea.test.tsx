@@ -58,6 +58,7 @@ import {
   INERT_TYPEAHEAD_COMMAND_CONFIG,
   PromptBoxInternal,
 } from "@/components/promptbox/PromptBoxInternal";
+import { LocationProbe } from "@/test/location-probe";
 
 const threadStore = vi.hoisted(
   () =>
@@ -686,11 +687,6 @@ function registerDocsPanel() {
       ],
     }),
   );
-}
-
-function LocationProbe() {
-  const location = useLocation();
-  return <div data-testid="location">{location.pathname}</div>;
 }
 
 function ExternalNav({ to }: { to: string }) {

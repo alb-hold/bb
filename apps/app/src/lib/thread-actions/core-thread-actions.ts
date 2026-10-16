@@ -208,6 +208,7 @@ export const CORE_THREAD_ACTIONS: readonly PluginThreadActionRegistration<unknow
     coreThreadAction({
       id: "split",
       group: GROUPS.open,
+      order: 10,
       title: "Open beside",
       icon: "Columns2",
       useData: useSplitAvailability,
@@ -271,8 +272,8 @@ export const CORE_THREAD_ACTIONS: readonly PluginThreadActionRegistration<unknow
     }),
     coreThreadAction({
       id: "newThreadInEnvironment",
-      group: GROUPS.organize,
-      order: 10,
+      group: GROUPS.open,
+      order: 30,
       title: "New thread in environment",
       icon: "MessageSquarePlus",
       useData: useIsCompactViewport,
@@ -299,12 +300,12 @@ export const CORE_THREAD_ACTIONS: readonly PluginThreadActionRegistration<unknow
     }),
     coreThreadAction({
       id: "copyLink",
-      group: GROUPS.organize,
+      group: GROUPS.open,
       order: 20,
-      title: "Copy thread link",
+      title: "Copy link",
       icon: "Copy",
       item: ({ thread }) => ({
-        label: "Copy thread link",
+        label: "Copy link",
         icon: "Copy",
         run: () =>
           copyToClipboardWithToast(getThreadUrl(thread), {
@@ -315,7 +316,7 @@ export const CORE_THREAD_ACTIONS: readonly PluginThreadActionRegistration<unknow
     }),
     coreThreadAction({
       id: "read",
-      group: GROUPS.organize,
+      group: GROUPS.state,
       order: 30,
       title: "Mark read / unread",
       icon: "MailOpen",
@@ -342,8 +343,8 @@ export const CORE_THREAD_ACTIONS: readonly PluginThreadActionRegistration<unknow
     }),
     coreThreadAction({
       id: "pin",
-      group: GROUPS.organize,
-      order: 40,
+      group: GROUPS.state,
+      order: 20,
       title: "Pin",
       icon: "Pin",
       item: ({ thread, sdk }) => {
@@ -415,7 +416,7 @@ export const CORE_THREAD_ACTIONS: readonly PluginThreadActionRegistration<unknow
     coreThreadAction({
       id: "rename",
       group: GROUPS.organize,
-      order: 60,
+      order: 10,
       title: "Rename",
       icon: "Edit",
       item: ({ thread }) => ({
