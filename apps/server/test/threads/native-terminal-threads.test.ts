@@ -3147,6 +3147,7 @@ describe("native terminal threads", () => {
         },
       });
       releaseCreate();
+      await vi.advanceTimersByTimeAsync(10_001);
       await Promise.all([firstReconnect, secondReconnect]);
 
       expect(createSpy).toHaveBeenCalledTimes(1);
