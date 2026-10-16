@@ -613,9 +613,10 @@ describe("ThreadPromptContextBanner", () => {
       </MemoryRouter>,
     );
 
-    const childThreadToggle = screen.getByRole("button", {
-      name: /Card 31: mobile thread header/u,
-    });
+    const titleText = screen.getByText(title);
+    expect(titleText.closest(".truncate, [class*='truncate']")).not.toBeNull();
+    expect(titleText.closest("a, button")?.className ?? "").toContain("min-w-0");
+  });
     expect(
       childThreadToggle.querySelector("span.font-medium")?.className,
     ).toContain("flex-1");

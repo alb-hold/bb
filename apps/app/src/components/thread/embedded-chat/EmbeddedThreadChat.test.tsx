@@ -94,6 +94,9 @@ vi.mock("@/components/promptbox/FollowUpPromptBox", async () => {
               ? composer.submitMode.reason
               : undefined
           }
+          hidden={
+            pendingInteraction !== undefined && pendingInteraction !== null
+          }
           value={composer.message}
           onChange={(event) => composer.onChangeMessage(event.target.value, [])}
         />
