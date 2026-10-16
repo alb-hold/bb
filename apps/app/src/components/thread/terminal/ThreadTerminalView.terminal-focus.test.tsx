@@ -27,6 +27,8 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       />,
     );
 
-    expect(container.firstElementChild).toHaveAttribute("data-app-terminal", "");
+    expect(
+      container.firstElementChild?.getAttribute("data-app-terminal"),
+    ).toBe("");
   });
 });
