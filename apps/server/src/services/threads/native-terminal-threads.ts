@@ -667,7 +667,14 @@ function reopenNativeTerminals(
       };
       const deadline = setTimeout(() => {
         expired = true;
-        if (stillWaiting()) interruptOnce();
+        try {
+          if (stillWaiting()) interruptOnce();
+        } catch (error: unknown) {
+          deps.logger.warn(
+            { err: error, hostId: args.hostId, threadId },
+            "Failed to check the native terminal reattach deadline",
+          );
+        }
       }, NATIVE_REATTACH_DEADLINE_MS);
       deadline.unref();
       try {
