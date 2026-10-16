@@ -2465,17 +2465,19 @@ describe("native terminal threads", () => {
     let restoreTimers = false;
     let transaction: ReturnType<typeof vi.spyOn> | undefined;
     try {
-      const { fixture, running } = await restartDaemonWithRunningNativeThread(
-        "instance-restarted",
-        {
+      const { fixture, lateProviders, running, sessionId, socket } =
+        await restartDaemonWithRunningNativeThread("instance-restarted", {
           beforeRestart: () => {
             vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
             restoreTimers = true;
           },
           deferProviders: true,
           useMigratedMemoryDb: true,
-        },
+        });
+      const registration = (await createTestProviderRegistry()).get(
+        "claude-code",
       );
+      if (registration === null) throw new Error("claude-code is not seeded");
       transaction = vi.spyOn(fixture.harness.deps.db, "transaction");
       transaction.mockImplementationOnce(() => {
         throw new Error("injected interrupt transaction failure");
@@ -2484,13 +2486,46 @@ describe("native terminal threads", () => {
       await vi.advanceTimersByTimeAsync(45_000);
 
       expect(transaction).toHaveBeenCalledTimes(1);
-      void reopenNativeTerminalsAfterDaemonReconnect(fixture.harness.deps, {
+      const reconnect = reopenNativeTerminalsAfterDaemonReconnect(
+        fixture.harness.deps,
+        { hostId: fixture.hostId, threadIds: [running.thread.id] },
+      );
+      lateProviders?.register(registration);
+      let opening: TerminalOpenMessage | undefined;
+      for (let step = 0; step < 20 && opening === undefined; step += 1) {
+        await vi.advanceTimersByTimeAsync(1);
+        opening = daemonMessages(socket).find(
+          (message): message is TerminalOpenMessage =>
+            message.type === "terminal.open",
+        );
+      }
+      if (opening === undefined) throw new Error("reconnect never opened");
+      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
         hostId: fixture.hostId,
-        threadIds: [running.thread.id],
+        sessionId,
+        message: {
+          type: "terminal.opened",
+          requestId: opening.requestId,
+          terminalId: opening.terminalId,
+          shell: "/bin/zsh",
+          title: "zsh",
+          initialCwd: "/tmp/native-workspace",
+          cols: opening.cols,
+          rows: opening.rows,
+        },
       });
+      await reconnect;
+
+      expect(
+        getTerminalSession(fixture.harness.db, {
+          kind: "terminal",
+          terminalId: opening.terminalId,
+        }),
+      ).toMatchObject({ status: "running" });
+      const recoveredTransactionCount = transaction.mock.calls.length;
       await vi.advanceTimersByTimeAsync(25);
 
-      expect(transaction).toHaveBeenCalledTimes(1);
+      expect(transaction).toHaveBeenCalledTimes(recoveredTransactionCount);
       expect(getThread(fixture.harness.db, running.thread.id)?.status).toBe(
         "active",
       );
