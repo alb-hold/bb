@@ -79,6 +79,7 @@ export const APP_COMMAND_IDS = [
   "file.quickOpen",
   "diff.toggle",
   "terminal.open",
+  "terminal.attention.next",
   "composer.focus",
   "composer.searchPromptHistory",
   "composer.dictation.toggle",
