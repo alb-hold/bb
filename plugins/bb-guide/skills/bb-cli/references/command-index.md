@@ -155,6 +155,7 @@ This index lists every command path that the core CLI registers, including alias
 - `bb terminal send`
 - `bb terminal resize`
 - `bb terminal output`
+- `bb terminal pipe`
 - `bb terminal read`
 - `bb terminal wait`
 - `bb terminal rename`
