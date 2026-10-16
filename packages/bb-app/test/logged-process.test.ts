@@ -1,4 +1,4 @@
-import type { ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import {
   existsSync,
   mkdtempSync,
@@ -94,14 +94,54 @@ describe("spawnLoggedProcess", () => {
     );
   });
 
+  it("keeps the child alive and logging after its parent exits", async () => {
+    const logDir = scratchDir();
+    const markerPath = join(logDir, "child-alive");
+    const launcher = spawn(
+      process.execPath,
+      [
+        "--conditions=source",
+        "--import",
+        "tsx",
+        "--input-type=module",
+        "-e",
+        `
+          import { spawnLoggedProcess } from "./src/logged-process.ts";
+          spawnLoggedProcess({
+            command: process.execPath,
+            args: ["-e", ${JSON.stringify(
+              `setTimeout(() => { process.stdout.write("after parent close\\n"); require("node:fs").writeFileSync(${JSON.stringify(markerPath)}, "alive"); }, 250); setTimeout(() => process.exit(0), 350);`,
+            )}],
+            env: process.env,
+            logDir: ${JSON.stringify(logDir)},
+            logName: "server",
+          });
+          process.exit(0);
+        `,
+      ],
+      { cwd: process.cwd(), env: process.env, stdio: "ignore" },
+    );
+
+    expect(await waitForExit(launcher)).toBe(0);
+    await expect
+      .poll(() => existsSync(markerPath), { timeout: 5_000 })
+      .toBe(true);
+    const logPath = join(logDir, "server-stdio.log");
+    await expect
+      .poll(
+        () =>
+          existsSync(logPath) &&
+          readFileSync(logPath, "utf8").includes("after parent close\n"),
+        { timeout: 5_000 },
+      )
+      .toBe(true);
+  });
+
   it("rotates stdio output at the log size limit", async () => {
     const logDir = scratchDir();
     const child = spawnLoggedProcess({
       command: process.execPath,
-      args: [
-        "-e",
-        `process.stdout.write("x".repeat(61 * 1024 * 1024));`,
-      ],
+      args: ["-e", `process.stdout.write("x".repeat(61 * 1024 * 1024));`],
       env: process.env,
       logDir,
       logName: "server",
