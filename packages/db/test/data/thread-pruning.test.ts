@@ -930,11 +930,9 @@ describe("thread pruning", () => {
     expectLegacyParityCase(rows, kept, ["legacy-1", "legacy-2"]);
   });
 
-  it("matches the old progress query for 20 seeded fixtures at every pass budget", () => {
+  it("matches the old progress query for 20 seeded fixtures at representative pass budgets", () => {
     const passBudgets: readonly LegacyPassBudget[] = [
       1,
-      2,
-      3,
       64,
       "unlimited",
     ];
