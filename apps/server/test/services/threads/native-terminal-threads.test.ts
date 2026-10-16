@@ -19,10 +19,11 @@ import { createProviderRegistryService } from "../../../src/services/providers/p
 import {
   openNativeTerminal,
   reopenNativeTerminalsAfterDaemonReconnect,
-  sendNativeTerminalMessage,
   takeNativeTerminalLaunchSpec,
 } from "../../../src/services/threads/native-terminal-threads.js";
+import { acceptThreadSendRequest } from "../../../src/services/threads/thread-send-request.js";
 import { createTestProviderRegistry } from "../../helpers/provider-registry.js";
+import { textInput } from "../../helpers/prompt-input.js";
 import {
   seedEnvironment,
   seedHostSession,
@@ -86,7 +87,7 @@ async function createDisconnectedNativeThread(
 }
 
 describe("reopenNativeTerminalsAfterDaemonReconnect", () => {
-  it("sends a large native tell as ordered valid frames without closing its session", async () => {
+  it("sends a large public tell as ordered valid frames without closing its session", async () => {
     await withTestHarness(async (h) => {
       const seeded = seedHostSession(h.deps, { id: "host-native-large-tell" });
       const { project } = seedProjectWithSource(h.deps, {
@@ -149,7 +150,7 @@ describe("reopenNativeTerminalsAfterDaemonReconnect", () => {
           {
             seq: 0,
             dataBase64: Buffer.from(
-              "\r\n> [Pasted text #1 +24000 lines]",
+              "\r\n> [Pasted text #1 +4000 lines]",
             ).toString("base64"),
           },
         ],
@@ -164,13 +165,15 @@ describe("reopenNativeTerminalsAfterDaemonReconnect", () => {
         return outputReads > 2 ? after : before;
       });
 
-      const text = "æ🧪😀\n".repeat(24_000);
-      const result = await sendNativeTerminalMessage(h.deps, {
-        threadId: thread.id,
-        pastes: [text],
+      const prefix = "a".repeat(TERMINAL_DATA_MAX_BYTES - 7);
+      const middle = "b".repeat(TERMINAL_DATA_MAX_BYTES - 3);
+      const text = `${prefix}€${middle}😀${"æ🧪😀\n".repeat(4_000)}END`;
+      const result = await acceptThreadSendRequest(h.deps, {
+        thread,
+        payload: { input: textInput(text), mode: "start" },
       });
 
-      expect(result.status).toBe("running");
+      expect(result).toEqual({ ok: true, delivery: "sent" });
       expect(socket.close).not.toHaveBeenCalled();
       expect(
         h.deps.terminalSessions.getTerminal({ terminalId: terminal.id }).status,
@@ -193,16 +196,13 @@ describe("reopenNativeTerminalsAfterDaemonReconnect", () => {
           TERMINAL_DATA_MAX_BYTES,
         );
       }
-      expect(inputFrames.length).toBeGreaterThan(2);
-      const bracketed = Buffer.from(`\u001b[200~${text}\u001b[201~`);
-      expect(
-        Buffer.concat(
-          inputFrames.slice(0, -1).map((frame) => Buffer.from(frame, "base64")),
-        ),
-      ).toEqual(bracketed);
-      expect(Buffer.from(inputFrames.at(-1) ?? "", "base64")).toEqual(
-        Buffer.from("\r"),
-      );
+      expect(inputFrames.length).toBeGreaterThanOrEqual(2);
+      const expected = Buffer.from(`\u001b[200~${text}\u001b[201~\r`);
+      const decoded = inputFrames.map((frame) => Buffer.from(frame, "base64"));
+      expect(Buffer.concat(decoded)).toEqual(expected);
+      expect(expected.byteLength).toBeGreaterThan(120_000);
+      expect(Buffer.concat(decoded).toString("utf8")).toContain("€");
+      expect(Buffer.concat(decoded).toString("utf8")).toContain("😀");
     });
   });
 
