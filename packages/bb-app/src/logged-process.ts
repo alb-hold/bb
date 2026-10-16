@@ -9,6 +9,8 @@ const lockPath = logPath + ".lock";
 const sizeLimit = 10 * 1024 * 1024;
 const fileCount = 5;
 const lockWaitLimitMs = 500;
+const locklessPeriodMs = 5_000;
+let locklessUntil = 0;
 const rotate = () => {
   const oldestPath = logPath + "." + fileCount;
   if (fs.existsSync(oldestPath)) fs.unlinkSync(oldestPath);
@@ -57,24 +59,32 @@ const acquireLock = () => {
     return null;
   }
 };
+const appendWithoutLock = (chunk) => {
+  let fd;
+  try {
+    fd = fs.openSync(logPath, "a", 0o600);
+    fs.writeSync(fd, chunk);
+  } catch {}
+  finally {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd); } catch {}
+    }
+    process.stdin.resume();
+  }
+};
 const processChunk = (chunk, startedAt) => {
+  if (Date.now() < locklessUntil) {
+    appendWithoutLock(chunk);
+    return;
+  }
   const lockFd = acquireLock();
   if (lockFd === null) {
     if (Date.now() - startedAt < lockWaitLimitMs) {
       setTimeout(() => processChunk(chunk, startedAt), 10);
       return;
     }
-    let fd;
-    try {
-      fd = fs.openSync(logPath, "a", 0o600);
-      fs.writeSync(fd, chunk);
-    } catch {}
-    finally {
-      if (fd !== undefined) {
-        try { fs.closeSync(fd); } catch {}
-      }
-      process.stdin.resume();
-    }
+    locklessUntil = Date.now() + locklessPeriodMs;
+    appendWithoutLock(chunk);
     return;
   }
   if (lockFd < 0) {

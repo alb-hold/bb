@@ -103,32 +103,46 @@ describe("spawnLoggedProcess", () => {
       .toBe(true);
   });
 
-  it("drains output when a live unrelated process owns the log lock", async () => {
+  it("drains sustained output when a live unrelated process owns the log lock", async () => {
     const logDir = scratchDir();
     const logPath = join(logDir, "server-stdio.log");
+    const expectedSize = 2 * 1024 * 1024;
     writeFileSync(`${logPath}.lock`, String(process.pid));
     const child = spawnLoggedProcess({
       command: process.execPath,
       args: [
         "-e",
-        `process.stdout.write("output after bounded lock wait\\n");`,
+        `
+          const chunk = "x".repeat(4096);
+          let remaining = ${expectedSize};
+          const writeNext = () => {
+            const next = chunk.slice(0, Math.min(chunk.length, remaining));
+            process.stdout.write(next, (error) => {
+              if (error) process.exit(1);
+              remaining -= next.length;
+              if (remaining > 0) setImmediate(writeNext);
+              else process.exit(0);
+            });
+          };
+          writeNext();
+        `,
       ],
       env: process.env,
       logDir,
       logName: "server",
     });
+    const childExit = waitForExit(child);
 
-    expect(await waitForExit(child)).toBe(0);
-    await expect
-      .poll(
-        () =>
-          existsSync(logPath) &&
-          readFileSync(logPath, "utf8").includes(
-            "output after bounded lock wait\n",
-          ),
-        { timeout: 3_000 },
-      )
-      .toBe(true);
+    try {
+      await expect
+        .poll(() => (existsSync(logPath) ? statSync(logPath).size : 0), {
+          timeout: 3_000,
+        })
+        .toBe(expectedSize);
+      expect(await childExit).toBe(0);
+    } finally {
+      if (child.exitCode === null) child.kill("SIGKILL");
+    }
   });
 
   it("keeps the child alive and logging after its parent exits", async () => {
