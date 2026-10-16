@@ -965,7 +965,7 @@ describe("thread pruning", () => {
         }
       }
     }
-  }, 120_000);
+  }, 60_000);
 
   it("bounds legacy progress fallback for 510 task candidates", () => {
     for (let batch = 0; batch < 7; batch++) {
