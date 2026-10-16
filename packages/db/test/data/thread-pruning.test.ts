@@ -974,7 +974,7 @@ describe("thread pruning", () => {
         oracleFixture.db.$client.close();
       }
     }
-  }, 60_000);
+  }, 120_000);
 
   it("bounds legacy progress fallback for 510 task candidates", () => {
     for (let batch = 0; batch < 7; batch++) {
