@@ -3,6 +3,7 @@ import {
   existsSync,
   chmodSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -106,14 +107,15 @@ describe("spawnLoggedProcess", () => {
   it("drains sustained output when a live unrelated process owns the log lock", async () => {
     const logDir = scratchDir();
     const logPath = join(logDir, "server-stdio.log");
-    const expectedSize = 2 * 1024 * 1024;
+    const expectedSize = 25 * 1024 * 1024;
+    const sizeLimit = 10 * 1024 * 1024;
     writeFileSync(`${logPath}.lock`, String(process.pid));
     const child = spawnLoggedProcess({
       command: process.execPath,
       args: [
         "-e",
         `
-          const chunk = "x".repeat(4096);
+          const chunk = "x".repeat(64 * 1024);
           let remaining = ${expectedSize};
           const writeNext = () => {
             const next = chunk.slice(0, Math.min(chunk.length, remaining));
@@ -132,14 +134,42 @@ describe("spawnLoggedProcess", () => {
       logName: "server",
     });
     const childExit = waitForExit(child);
+    const logFiles = () =>
+      readdirSync(logDir)
+        .filter(
+          (name) =>
+            name === "server-stdio.log" ||
+            /^server-stdio\.log\.\d+$/.test(name),
+        )
+        .map((name) => join(logDir, name));
 
     try {
       await expect
-        .poll(() => (existsSync(logPath) ? statSync(logPath).size : 0), {
-          timeout: 3_000,
-        })
+        .poll(
+          () => {
+            return logFiles().reduce(
+              (total, filePath) => total + statSync(filePath).size,
+              0,
+            );
+          },
+          { timeout: 3_000 },
+        )
         .toBe(expectedSize);
       expect(await childExit).toBe(0);
+      const filePaths = logFiles();
+      expect(filePaths.length).toBeLessThanOrEqual(6);
+      expect(
+        filePaths.every((filePath) => statSync(filePath).size <= sizeLimit),
+      ).toBe(true);
+      expect(
+        filePaths.filter((filePath) => filePath !== logPath).length,
+      ).toBeLessThanOrEqual(5);
+      expect(
+        filePaths.reduce(
+          (total, filePath) => total + statSync(filePath).size,
+          0,
+        ),
+      ).toBeLessThanOrEqual(6 * sizeLimit);
     } finally {
       if (child.exitCode === null) child.kill("SIGKILL");
     }

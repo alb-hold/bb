@@ -62,8 +62,14 @@ const acquireLock = () => {
 const appendWithoutLock = (chunk) => {
   let fd;
   try {
+    let size = fs.existsSync(logPath) ? fs.statSync(logPath).size : 0;
+    if (size + chunk.length > sizeLimit) {
+      rotate();
+      size = 0;
+    }
     fd = fs.openSync(logPath, "a", 0o600);
-    fs.writeSync(fd, chunk);
+    const length = Math.min(sizeLimit - size, chunk.length);
+    if (length > 0) fs.writeSync(fd, chunk, 0, length);
   } catch {}
   finally {
     if (fd !== undefined) {
