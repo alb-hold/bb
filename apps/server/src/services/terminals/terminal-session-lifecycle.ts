@@ -1970,6 +1970,12 @@ export class TerminalSessionLifecycle {
     });
   }
 
+  sharedBrowserTerminalSize(
+    terminalId: string,
+  ): { cols: number; rows: number } | null {
+    return this.options.hub.terminalSharedSize(terminalId, Date.now());
+  }
+
   handleBrowserTerminalMessage(args: HandleBrowserTerminalMessageArgs): void {
     switch (args.message.type) {
       case "ping":

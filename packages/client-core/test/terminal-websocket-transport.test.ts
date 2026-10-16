@@ -478,7 +478,7 @@ describe("TerminalWebSocketTransport", () => {
       harness.transport.dispose();
     });
 
-    it("sends the attach size at once on a reconnect after the layout settled", () => {
+    it("resends the unchanged client size on reconnect without a fit change", () => {
       const { harness, resizes, socket } = openUnsettled(132, 43);
 
       harness.transport.markLayoutSettled();

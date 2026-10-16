@@ -356,6 +356,82 @@ function composerScreen(pasted: string): string {
 }
 
 describe("native terminal threads", () => {
+  it("applies a reconnecting client's size after a native terminal reopens", async () => {
+    const fixture = await createMigratedMemoryFixture();
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "claude-code",
+    });
+    fixture.harness.db
+      .update(terminalSessions)
+      .set({ closeReason: "daemon-disconnect", status: "disconnected" })
+      .where(eq(terminalSessions.id, open.terminalId))
+      .run();
+
+    const restarted = await createTestAppHarness({ db: fixture.harness.db });
+    harnesses.push(restarted);
+    const daemonSocket = createFakeDaemonSocket();
+    restarted.hub.registerDaemon(
+      fixture.sessionId,
+      fixture.hostId,
+      daemonSocket,
+    );
+    const browserSocket = { close() {}, send() {} };
+    restarted.deps.terminalSessions.attachBrowserTerminal({
+      outputAcks: false,
+      resizeAcks: false,
+      socket: browserSocket,
+      sinceSeq: 0,
+      terminalId: open.terminalId,
+    });
+    restarted.deps.terminalSessions.handleBrowserTerminalMessage({
+      terminalId: open.terminalId,
+      socket: browserSocket,
+      message: { type: "visibility", visible: true },
+    });
+    restarted.deps.terminalSessions.handleBrowserTerminalMessage({
+      terminalId: open.terminalId,
+      socket: browserSocket,
+      message: { type: "resize", cols: 52, rows: 41 },
+    });
+
+    expect(
+      getTerminalSession(restarted.db, {
+        kind: "terminal",
+        terminalId: open.terminalId,
+      }),
+    ).toMatchObject({ cols: 120, rows: 36, status: "disconnected" });
+
+    const reopening = reopenNativeTerminalsAfterDaemonReconnect(
+      restarted.deps,
+      { hostId: fixture.hostId, threadIds: [thread.id] },
+    );
+    const reopen = await waitForTerminalOpen(daemonSocket);
+    expect(reopen).toMatchObject({ cols: 52, rows: 41 });
+    acknowledgeOpen(
+      { ...fixture, harness: restarted, socket: daemonSocket },
+      reopen,
+    );
+    await reopening;
+
+    const reopenedTerminalId = getNativeTerminalThread(
+      restarted.db,
+      thread.id,
+    )?.terminalSessionId;
+    expect(reopenedTerminalId).toBe(reopen.terminalId);
+    expect(
+      getTerminalSession(restarted.db, {
+        kind: "terminal",
+        terminalId: reopen.terminalId,
+      }),
+    ).toMatchObject({ cols: 52, rows: 41, status: "running" });
+    restarted.db
+      .update(terminalSessions)
+      .set({ closeReason: "user", status: "exited" })
+      .where(eq(terminalSessions.id, reopen.terminalId))
+      .run();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  });
+
   it("runs the bb wrapper when BB_CLI supports it and the bare harness otherwise", async () => {
     const fixture = await createFixture();
     const { open, thread } = await openRunningNativeThread(fixture, {

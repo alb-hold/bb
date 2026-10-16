@@ -783,11 +783,18 @@ function reopenNativeTerminals(
             const exitedAfterArchive =
               currentTerminal?.status === "exited" &&
               currentTerminal.closeReason === "thread-archived";
+            const sharedSize =
+              currentRecord?.terminalSessionId === null ||
+              currentRecord?.terminalSessionId === undefined
+                ? null
+                : deps.terminalSessions.sharedBrowserTerminalSize(
+                    currentRecord.terminalSessionId,
+                  );
             reopened = await openNativeTerminalDeduplicated(deps, {
               reattachOnly:
                 reason === "daemon-reconnect" && !exitedAfterArchive,
               threadId,
-              request: {},
+              request: sharedSize ?? {},
             });
             break;
           } catch (error: unknown) {
