@@ -11,6 +11,7 @@ import {
   type ThreadChangeKind,
   type ThreadChangeMetadata,
   type ThreadEventType,
+  type ThreadTimelineSubscriptionTarget,
 } from "@bb/domain";
 import type { DbNotifier } from "@bb/db";
 import type {
@@ -26,6 +27,7 @@ import {
   terminalServerMessageSchema,
   threadOpenSignalSchema,
   threadPaneActionSignalSchema,
+  type ThreadTimelineSignal,
   type ThreadPaneAction,
   type ThreadOpenFile,
   type ThreadOpenSplit,
@@ -204,6 +206,7 @@ interface DaemonSessionCloseWaiter {
 }
 
 interface HostOnlineRpcWaiter {
+  detachAbortListener: () => void;
   reject: (reason?: Error) => void;
   resolve: (message: HostDaemonOnlineRpcResponseMessage) => void;
   sessionId: string;
@@ -231,6 +234,13 @@ export class HostOnlineRpcTimeoutError extends Error {
   }
 }
 
+export class HostOnlineRpcCancelledError extends Error {
+  constructor() {
+    super("Host RPC request was cancelled");
+    this.name = "HostOnlineRpcCancelledError";
+  }
+}
+
 export class HostOnlineRpcUnavailableError extends Error {
   constructor() {
     super("Host daemon is not connected");
@@ -241,6 +251,10 @@ export class HostOnlineRpcUnavailableError extends Error {
 export class NotificationHub implements DbNotifier {
   private readonly clientKeysBySocket = new Map<HubSocket, Set<string>>();
   private readonly clientSocketsByKey = new Map<string, Set<HubSocket>>();
+  private readonly threadTimelineTargetsByKey = new Map<
+    string,
+    ThreadTimelineSubscriptionTarget
+  >();
   private readonly daemonSessions = new Map<
     string,
     {
@@ -327,6 +341,7 @@ export class NotificationHub implements DbNotifier {
       sockets.delete(socket);
       if (sockets.size === 0) {
         this.clientSocketsByKey.delete(key);
+        this.threadTimelineTargetsByKey.delete(key);
       }
     }
 
@@ -664,6 +679,12 @@ export class NotificationHub implements DbNotifier {
     const sockets = this.clientSocketsByKey.get(key) ?? new Set<HubSocket>();
     sockets.add(socket);
     this.clientSocketsByKey.set(key, sockets);
+    if (
+      target.kind === "thread-timeline" &&
+      !this.threadTimelineTargetsByKey.has(key)
+    ) {
+      this.threadTimelineTargetsByKey.set(key, { ...target });
+    }
   }
 
   unsubscribe(socket: HubSocket, target: RealtimeSubscriptionTarget): void {
@@ -677,7 +698,30 @@ export class NotificationHub implements DbNotifier {
     sockets.delete(socket);
     if (sockets.size === 0) {
       this.clientSocketsByKey.delete(key);
+      this.threadTimelineTargetsByKey.delete(key);
     }
+  }
+
+  listThreadTimelineTargets(
+    threadId: string,
+  ): ThreadTimelineSubscriptionTarget[] {
+    const targets: ThreadTimelineSubscriptionTarget[] = [];
+    for (const target of this.threadTimelineTargetsByKey.values()) {
+      if (target.threadId === threadId) {
+        targets.push(target);
+      }
+    }
+    return targets;
+  }
+
+  sendThreadTimelineSignal(signal: ThreadTimelineSignal): number {
+    const sockets = this.clientSocketsByKey.get(subscriptionKey(signal.target));
+    if (!sockets) {
+      return 0;
+    }
+    const payload = JSON.stringify(signal);
+    this.notifyClientsByKeySet(sockets, payload);
+    return payload.length;
   }
 
   recordDaemonSessionPlatform(sessionId: string, platform: HostPlatform): void {
@@ -912,6 +956,7 @@ export class NotificationHub implements DbNotifier {
   requestHostOnlineRpc(args: {
     hostId: string;
     message: HostDaemonOnlineRpcRequestMessage;
+    signal?: AbortSignal;
     timeoutMs: number;
   }): Promise<HostDaemonOnlineRpcResponseMessage> {
     const sessionId = this.daemonSessionIdsByHost.get(args.hostId);
@@ -922,23 +967,39 @@ export class NotificationHub implements DbNotifier {
     if (!session) {
       return Promise.reject(new HostOnlineRpcUnavailableError());
     }
+    const signal = args.signal;
+    if (signal?.aborted) {
+      return Promise.reject(new HostOnlineRpcCancelledError());
+    }
+    const requestId = args.message.requestId;
 
     return new Promise<HostDaemonOnlineRpcResponseMessage>(
       (resolve, reject) => {
+        const abandon = (error: Error): void => {
+          this.deleteHostOnlineRpcWaiter(requestId, waiter);
+          this.sendHostOnlineRpcCancel(sessionId, requestId);
+          reject(error);
+        };
+        const onAbort = (): void => {
+          abandon(new HostOnlineRpcCancelledError());
+        };
         const waiter: HostOnlineRpcWaiter = {
+          detachAbortListener: () => {
+            signal?.removeEventListener("abort", onAbort);
+          },
           reject,
           resolve,
           sessionId,
           timeout: setTimeout(() => {
-            this.deleteHostOnlineRpcWaiter(args.message.requestId, waiter);
-            reject(new HostOnlineRpcTimeoutError());
+            abandon(new HostOnlineRpcTimeoutError());
           }, args.timeoutMs),
         };
-        this.hostOnlineRpcWaiters.set(args.message.requestId, waiter);
+        signal?.addEventListener("abort", onAbort, { once: true });
+        this.hostOnlineRpcWaiters.set(requestId, waiter);
         try {
           session.socket.send(JSON.stringify(args.message));
         } catch (error) {
-          this.deleteHostOnlineRpcWaiter(args.message.requestId, waiter);
+          this.deleteHostOnlineRpcWaiter(requestId, waiter);
           reject(error instanceof Error ? error : new Error(String(error)));
         }
       },
@@ -1148,8 +1209,20 @@ export class NotificationHub implements DbNotifier {
     waiter: HostOnlineRpcWaiter,
   ): void {
     clearTimeout(waiter.timeout);
+    waiter.detachAbortListener();
     if (this.hostOnlineRpcWaiters.get(requestId) === waiter) {
       this.hostOnlineRpcWaiters.delete(requestId);
+    }
+  }
+
+  private sendHostOnlineRpcCancel(sessionId: string, requestId: string): void {
+    try {
+      this.sendDaemonSessionMessage(sessionId, {
+        type: "host-rpc.cancel",
+        requestId,
+      });
+    } catch {
+      return;
     }
   }
 

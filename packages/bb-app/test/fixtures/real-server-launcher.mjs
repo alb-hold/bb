@@ -1,9 +1,11 @@
+import { relayDesktopAppUpdates } from "@bb/config/desktop-app-update";
 import { writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { spawnLoggedProcess } from "../../src/logged-process.ts";
 
 const dir = process.env.BB_OWNERSHIP_DIR;
 const port = Number(process.env.BB_SERVER_PORT);
+const desktop = process.env.BB_OWNERSHIP_DESKTOP === "1";
 const agent = spawn(process.execPath, [process.env.BB_AGENT_ENTRY], {
   detached: true,
   env: { ...process.env, BB_HOLDER_READY: process.env.BB_AGENT_READY },
@@ -29,11 +31,13 @@ const child = spawnLoggedProcess({
     BB_HOST_DAEMON_PORT: String(port + 1),
     BB_TELEMETRY: "false",
     NODE_ENV: "test",
+    ...(desktop ? { BB_APP_SURFACE: "desktop" } : {}),
   },
   ipc: true,
   logDir: `${dir}/logs`,
   logName: "server",
 });
+if (desktop) relayDesktopAppUpdates(child);
 writeFileSync(process.env.BB_SERVER_PID_FILE, String(child.pid));
 await new Promise((resolve, reject) => {
   child.once("error", reject);

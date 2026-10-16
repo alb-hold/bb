@@ -22,6 +22,7 @@ import {
 } from "@bb/db";
 import {
   flattenPromptInputGroups,
+  isQueuedMessageFailedState,
   queuedMessageSystemNoticeSchema,
 } from "@bb/domain";
 import type {
@@ -147,7 +148,8 @@ export function createAutomaticQueuedMessageGroupEligibility(
       if (deferredRetryIds.has(member.id) && !args.retryingFailure) {
         return false;
       }
-      if (member.failureReason !== null && !args.retryingFailure) return false;
+      if (isQueuedMessageFailedState(member.state) && !args.retryingFailure)
+        return false;
       const waitingOn = parseStoredQueuedThreadMessageWaitingOn(member);
       switch (waitingOn?.kind) {
         case undefined:

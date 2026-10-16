@@ -10,15 +10,11 @@ import {
 const COMPACT_HOME_CHROME_OFFSET_PX = 56;
 const COMPACT_HOME_COLUMN_CLASS = `mx-auto w-full ${CONTENT_MEASURE_MAX_WIDTH_CLASS} px-4`;
 const COMPACT_HOME_REST_VISIBLE_ROWS = 4.5;
-const COMPACT_HOME_SCROLLED_VISIBLE_ROWS = 5.5;
-const COMPACT_HOME_SCROLLED_BAND_PX =
-  COMPACT_HOME_SCROLLED_VISIBLE_ROWS * MOBILE_RECENT_ROW_HEIGHT_PX +
+const COMPACT_HOME_REST_BAND_PX =
+  COMPACT_HOME_REST_VISIBLE_ROWS * MOBILE_RECENT_ROW_HEIGHT_PX +
   MOBILE_RECENT_LABEL_HEIGHT_PX;
-const COMPACT_HOME_REST_OFFSET_PX =
-  (COMPACT_HOME_SCROLLED_VISIBLE_ROWS - COMPACT_HOME_REST_VISIBLE_ROWS) *
-  MOBILE_RECENT_ROW_HEIGHT_PX;
 
-export function getCompactHomeScrollViewportTop({
+export function getCompactHomeLeadingSpace({
   regionHeight,
   composerHeight,
 }: {
@@ -26,8 +22,11 @@ export function getCompactHomeScrollViewportTop({
   composerHeight: number;
 }): number {
   return Math.max(
-    COMPACT_HOME_CHROME_OFFSET_PX,
-    regionHeight - composerHeight - COMPACT_HOME_SCROLLED_BAND_PX,
+    MOBILE_RECENT_ROW_HEIGHT_PX,
+    regionHeight -
+      composerHeight -
+      COMPACT_HOME_REST_BAND_PX -
+      COMPACT_HOME_CHROME_OFFSET_PX,
   );
 }
 
@@ -41,6 +40,7 @@ function useCompactHomeMetrics() {
   const composerRef = useRef<HTMLDivElement>(null);
   const scrollViewportRef = useRef<HTMLDivElement>(null);
   const scrollContentRef = useRef<HTMLDivElement>(null);
+  const leadingSpacerRef = useRef<HTMLDivElement>(null);
   const bottomSpacerRef = useRef<HTMLDivElement>(null);
   const composerFadeRef = useRef<HTMLDivElement>(null);
 
@@ -49,6 +49,7 @@ function useCompactHomeMetrics() {
     const composer = composerRef.current;
     const scrollViewport = scrollViewportRef.current;
     const scrollContent = scrollContentRef.current;
+    const leadingSpacer = leadingSpacerRef.current;
     const bottomSpacer = bottomSpacerRef.current;
     const composerFade = composerFadeRef.current;
     if (
@@ -56,6 +57,7 @@ function useCompactHomeMetrics() {
       !composer ||
       !scrollViewport ||
       !scrollContent ||
+      !leadingSpacer ||
       !bottomSpacer ||
       !composerFade
     ) {
@@ -73,7 +75,7 @@ function useCompactHomeMetrics() {
         );
       }
       const composerHeight = composer.offsetHeight;
-      scrollViewport.style.top = `${getCompactHomeScrollViewportTop({
+      leadingSpacer.style.height = `${getCompactHomeLeadingSpace({
         regionHeight: region.offsetHeight,
         composerHeight,
       })}px`;
@@ -95,6 +97,7 @@ function useCompactHomeMetrics() {
     composerRef,
     scrollViewportRef,
     scrollContentRef,
+    leadingSpacerRef,
     bottomSpacerRef,
     composerFadeRef,
   };
@@ -109,6 +112,7 @@ export function RootComposeCompactHome({
     composerRef,
     scrollViewportRef,
     scrollContentRef,
+    leadingSpacerRef,
     bottomSpacerRef,
     composerFadeRef,
   } = useCompactHomeMetrics();
@@ -132,9 +136,9 @@ export function RootComposeCompactHome({
           className="flex min-h-full flex-col justify-end"
         >
           <div
+            ref={leadingSpacerRef}
             aria-hidden
-            data-testid="root-compose-compact-recents-offset"
-            style={{ height: COMPACT_HOME_REST_OFFSET_PX }}
+            data-testid="root-compose-compact-leading-spacer"
           />
           <div className={COMPACT_HOME_COLUMN_CLASS}>{children}</div>
           <div
