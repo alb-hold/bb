@@ -2739,10 +2739,7 @@ describe("delta assembler text-delta batching", () => {
     });
 
     const first = assemble(assembler, textDelta("agentMessage", "a1"));
-    expect(first.map((event) => event.type)).toEqual([
-      "item/started",
-      "item/agentMessage/delta",
-    ]);
+    expect(first.map((event) => event.type)).toEqual(["item/started"]);
     assemble(assembler, textDelta("reasoningText", "r1"));
     advance(10);
     expect(assemble(assembler, textDelta("agentMessage", "a2"))).toEqual([]);
@@ -2755,8 +2752,8 @@ describe("delta assembler text-delta batching", () => {
       providerTurnId: "turn-1",
     });
     expect(events.map((event) => event.type)).toEqual([
-      "item/agentMessage/delta",
       "item/reasoning/textDelta",
+      "item/agentMessage/delta",
       "turn/completed",
     ]);
   });
@@ -2792,7 +2789,7 @@ describe("delta assembler text-delta batching", () => {
     expect(flushed).toEqual([
       {
         threadId: THREAD_ID,
-        events: [expect.objectContaining({ delta: "llo" })],
+        events: [expect.objectContaining({ delta: "hello" })],
       },
     ]);
     expect(assembler.hasPendingOutput()).toBe(false);
