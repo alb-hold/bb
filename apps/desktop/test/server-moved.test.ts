@@ -28,6 +28,7 @@ import {
   createServerTargetStore,
   type ServerTargetFs,
 } from "../src/server-target.js";
+import { createDeferredPromise } from "@bb/test-helpers";
 
 const tempDirs: string[] = [];
 
@@ -456,14 +457,6 @@ describe("createServerMovedWatcher", () => {
     };
   }
 
-  function createDeferred<T>() {
-    let resolveDeferred: (value: T) => void = () => undefined;
-    const promise = new Promise<T>((resolvePromise) => {
-      resolveDeferred = resolvePromise;
-    });
-    return { promise, resolve: resolveDeferred };
-  }
-
   type ConfirmMove = (
     move: DesktopServerMove,
     isCancelled: () => boolean,
@@ -581,8 +574,8 @@ describe("createServerMovedWatcher", () => {
   });
 
   it("checks again when the lock changes during a confirmation", async () => {
-    const first = createDeferred<boolean>();
-    const firstConfirmationStarted = createDeferred<void>();
+    const first = createDeferredPromise<boolean>();
+    const firstConfirmationStarted = createDeferredPromise<void>();
     const harness = await createHarness({
       confirmMove: () => {
         firstConfirmationStarted.resolve();
@@ -664,8 +657,8 @@ describe("createServerMovedWatcher", () => {
   });
 
   it("cancels a confirmation that is still running when stopped", async () => {
-    const confirmation = createDeferred<boolean>();
-    const confirmationStarted = createDeferred<void>();
+    const confirmation = createDeferredPromise<boolean>();
+    const confirmationStarted = createDeferredPromise<void>();
     const cancellationChecks: Array<() => boolean> = [];
     const harness = await createHarness({
       confirmMove: (_move, isCancelled) => {
@@ -1168,26 +1161,19 @@ describe("waitForServerMoveDestination", () => {
     };
   }
 
-  function jsonResponse(body: unknown, status = 200): Response {
-    return new Response(JSON.stringify(body), {
-      headers: { "content-type": "application/json" },
-      status,
-    });
-  }
-
   it("waits until the new server answers outside pending mode", async () => {
     const clock = createClock();
     const fetchImpl = vi
       .fn<(input: string) => Promise<Response>>()
       .mockRejectedValueOnce(new Error("ECONNREFUSED"))
       .mockResolvedValueOnce(
-        jsonResponse({
+        Response.json({
           ok: true,
           serverMove: { moveId: "m", state: "pending" },
         }),
       )
-      .mockResolvedValueOnce(jsonResponse({ ok: false }, 503))
-      .mockResolvedValueOnce(jsonResponse({ ok: true }));
+      .mockResolvedValueOnce(Response.json({ ok: false }, { status: 503 }))
+      .mockResolvedValueOnce(Response.json({ ok: true }));
 
     await expect(
       waitForServerMoveDestination({

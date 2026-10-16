@@ -41,6 +41,7 @@ import {
 import { TerminalLinkOpenDialog } from "./TerminalLinkOpenDialog";
 import { TerminalAttentionPane } from "./TerminalAttentionPane";
 import { TerminalMobileControls } from "./TerminalMobileControls";
+import { attachTerminalCopyShortcut } from "./terminal-copy-shortcut";
 import { TerminalCommandGutter } from "./TerminalCommandGutter";
 import { TerminalSearch } from "./TerminalSearch";
 import type { TerminalSearchAddonInstance } from "./terminal-search-addon";
@@ -1029,18 +1030,24 @@ export function ThreadTerminalView({
         onCwdChange: (cwd) => onCwdChangeRef.current?.(cwd),
         terminal,
       });
-      terminal.attachCustomKeyEventHandler((event) => {
-        if (
-          event.type === "keydown" &&
-          event.altKey &&
-          event.shiftKey &&
-          (event.key === "ArrowUp" || event.key === "ArrowDown")
-        ) {
-          event.preventDefault();
-          jumpToPrompt(event.key === "ArrowUp" ? "previous" : "next");
-          return false;
-        }
-        return true;
+      attachTerminalCopyShortcut({
+        copy: (text) => {
+          void copyToClipboardWithToast(text, { successMessage: null });
+        },
+        onOtherKey: (event) => {
+          if (
+            event.type === "keydown" &&
+            event.altKey &&
+            event.shiftKey &&
+            (event.key === "ArrowUp" || event.key === "ArrowDown")
+          ) {
+            event.preventDefault();
+            jumpToPrompt(event.key === "ArrowUp" ? "previous" : "next");
+            return false;
+          }
+          return true;
+        },
+        terminal,
       });
       terminalRef.current = terminal;
       fitAddon = new LoadedFitAddon();

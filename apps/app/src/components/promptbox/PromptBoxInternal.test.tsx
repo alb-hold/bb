@@ -147,6 +147,7 @@ function createPromptBoxProps(
       mention: {
         results: EMPTY_ORDERED_MENTION_SUGGESTIONS,
         isLoading: false,
+        isRefreshing: false,
         isError: false,
         onQueryChange: vi.fn(),
       },
@@ -177,6 +178,7 @@ function buildTypeaheadConfig({
         suggestions: mentionSuggestions,
       }),
       isLoading: false,
+      isRefreshing: false,
       isError: false,
       onQueryChange: onMentionQueryChange,
     },
@@ -2408,32 +2410,40 @@ describe("PromptBoxInternal submit shortcuts", () => {
     }
   });
 
-  it("does not submit a hardware Enter that is committing IME composition", () => {
-    const restoreMatchMedia = mockPointerCoarse(true);
-    const restoreNavigator = mockIPadOSWebKit();
-    try {
-      const onSubmit = vi.fn();
-      render(
-        <PromptBoxInternal
-          {...createPromptBoxProps({
-            value: "Composing",
-            onSubmit,
-          })}
-        />,
-      );
+  it.each([
+    { signal: "isComposing", coarse: true, init: { isComposing: true } },
+    { signal: "isComposing", coarse: false, init: { isComposing: true } },
+    { signal: "keyCode 229", coarse: true, init: { keyCode: 229 } },
+    { signal: "keyCode 229", coarse: false, init: { keyCode: 229 } },
+  ])(
+    "does not submit a hardware Enter that is committing IME composition ($signal, coarse pointer: $coarse)",
+    ({ coarse, init }) => {
+      const restoreMatchMedia = mockPointerCoarse(coarse);
+      const restoreNavigator = mockIPadOSWebKit();
+      try {
+        const onSubmit = vi.fn();
+        render(
+          <PromptBoxInternal
+            {...createPromptBoxProps({
+              value: "Composing",
+              onSubmit,
+            })}
+          />,
+        );
 
-      fireEvent.keyDown(getPromptEditorElement(), {
-        key: "Enter",
-        code: "Enter",
-        isComposing: true,
-      });
+        fireEvent.keyDown(getPromptEditorElement(), {
+          key: "Enter",
+          code: "Enter",
+          ...init,
+        });
 
-      expect(onSubmit).not.toHaveBeenCalled();
-    } finally {
-      restoreNavigator();
-      restoreMatchMedia();
-    }
-  });
+        expect(onSubmit).not.toHaveBeenCalled();
+      } finally {
+        restoreNavigator();
+        restoreMatchMedia();
+      }
+    },
+  );
 
   it("does not submit the Enter keydown immediately following compositionend", () => {
     const restoreMatchMedia = mockPointerCoarse(true);
@@ -5120,6 +5130,7 @@ describe("PromptBoxInternal mention triggers", () => {
                 suggestions: mentionSuggestions,
               }),
               isLoading: false,
+              isRefreshing: false,
               isError: false,
               onQueryChange: vi.fn(),
             },
@@ -6038,6 +6049,7 @@ describe("PromptBoxInternal command typeahead submit", () => {
             mention: {
               results: EMPTY_ORDERED_MENTION_SUGGESTIONS,
               isLoading: false,
+              isRefreshing: false,
               isError: false,
               onQueryChange: () => {},
             },

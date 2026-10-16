@@ -73,14 +73,18 @@ async function freePort(): Promise<number> {
   return port;
 }
 
-function spawnFixture(entry: string, env: NodeJS.ProcessEnv): ChildProcess {
+function spawnFixture(
+  entry: string,
+  env: NodeJS.ProcessEnv,
+  ipc = false,
+): ChildProcess {
   const child = spawn(
     process.execPath,
     ["--conditions=source", "--import", "tsx", entry],
     {
       cwd: process.cwd(),
       env: { ...process.env, ...env },
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ipc ? ["ignore", "pipe", "pipe", "ipc"] : ["ignore", "pipe", "pipe"],
     },
   );
   const captured = { stderr: "" };
@@ -197,7 +201,7 @@ describe("server process ownership", () => {
     expect(readFileSync(marker, "utf8")).not.toContain("shutdown\n");
   });
 
-  it("runs production shutdown on parent loss and releases its database and port", async () => {
+  it.each(["standalone", "desktop"] as const)("runs production shutdown on parent loss and releases its database and port (%s)", async (surface) => {
     const dir = scratchDir();
     const port = await freePort();
     const ready = join(dir, "ready");
@@ -215,7 +219,8 @@ describe("server process ownership", () => {
       BB_RUN_SHUTDOWN_MARKER: join(dir, "run-shutdown.log"),
       BB_REAL_LAUNCHER_PID: join(dir, "launcher.pid"),
       BB_REAL_SERVER_ENTRY: realServerEntry, BB_SERVER_PORT: String(port),
-    });
+      ...(surface === "desktop" ? { BB_OWNERSHIP_DESKTOP: "1" } : {}),
+    }, surface === "desktop");
     let serverPid: number | null = null;
     let agentPid: number | null = null;
     let holderPid: number | null = null;
@@ -263,9 +268,15 @@ describe("server process ownership", () => {
     }
   }, 120_000);
 
-  it.each(["during-startup", "after-startup"] as const)(
-    "keeps a server alive when IPC disconnects while its launcher remains alive %s",
-    async (mode) => {
+  it.each(
+    (["standalone", "desktop"] as const).flatMap((surface) =>
+      (["during-startup", "after-startup"] as const).map(
+        (mode) => [surface, mode] as const,
+      ),
+    ),
+  )(
+    "keeps a %s server alive when IPC disconnects while its launcher remains alive %s",
+    async (surface, mode) => {
       const dir = scratchDir();
       const port = await freePort();
       const disconnectReady = join(dir, "disconnected");
@@ -292,7 +303,8 @@ describe("server process ownership", () => {
         BB_RUN_SHUTDOWN_MARKER: join(dir, "run-shutdown.log"),
         BB_REAL_SERVER_ENTRY: realServerEntry,
         BB_SERVER_PORT: String(port),
-      });
+        ...(surface === "desktop" ? { BB_OWNERSHIP_DESKTOP: "1" } : {}),
+      }, surface === "desktop");
       let serverPid: number | null = null;
       try {
         serverPid = Number(await waitForFile(serverPidFile, 45_000));

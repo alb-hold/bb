@@ -240,3 +240,4 @@ export const experimental_useCodeTheme = runtimeFunction(
 export const experimental_copyToClipboard = runtimeFunction(
   "experimental_copyToClipboard",
 );
+export const experimental_saveFile = runtimeFunction("experimental_saveFile");

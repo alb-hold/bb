@@ -27,7 +27,7 @@ import { createProject } from "../../src/data/projects.js";
 import { archiveThread, createThread } from "../../src/data/threads.js";
 import { upsertHost } from "../../src/data/hosts.js";
 import { environments, queuedThreadMessages } from "../../src/schema.js";
-import { createMigratedConnection } from "../helpers/migrated-connection.js";
+import { createMigratedConnection } from "../../src/testing.js";
 
 function textInput(text: string): PromptInput[] {
   return [{ type: "text", text, mentions: [] }];
@@ -222,25 +222,38 @@ describe("queued thread messages", () => {
         .run();
     const idleThreadWaitingOn = (kind: string) => {
       const threadId = idleThread();
-      setQueuedRow(queueOn(threadId), { waitingOn: JSON.stringify({ kind }) });
+      setQueuedRow(queueOn(threadId), { state: "waiting", waitingOn: JSON.stringify({ kind }) });
       return threadId;
     };
 
     const onlyClaimed = idleThread();
-    setQueuedRow(queueOn(onlyClaimed), { claimedAt: 1, claimToken: "claim" });
+    setQueuedRow(queueOn(onlyClaimed), {
+      state: "claimed",
+      claimedAt: 1,
+      claimToken: "claim",
+    });
 
     const claimedAndFree = idleThread();
     setQueuedRow(queueOn(claimedAndFree), {
+      state: "claimed",
       claimedAt: 1,
       claimToken: "other-claim",
     });
     queueOn(claimedAndFree);
 
     const onlyFailed = idleThread();
-    setQueuedRow(queueOn(onlyFailed), { failureReason: "provider rejected" });
+    setQueuedRow(queueOn(onlyFailed), {
+      state: "failed_exhausted",
+      failureReason: "provider rejected",
+      failureCount: 1,
+    });
 
     const failedAndFree = idleThread();
-    setQueuedRow(queueOn(failedAndFree), { failureReason: "provider rejected" });
+    setQueuedRow(queueOn(failedAndFree), {
+      state: "failed_exhausted",
+      failureReason: "provider rejected",
+      failureCount: 1,
+    });
     queueOn(failedAndFree);
 
     const waitingOnTurnStart = idleThreadWaitingOn("turn-starting");
