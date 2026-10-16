@@ -116,53 +116,133 @@ type LegacyProgressFixture = {
   turnId: string;
 };
 
-function legacyReferencePrunedIds(f: Fixture) {
-  const candidates = f.db.all<{
+type LegacyPassBudget = number | "unlimited";
+
+function legacyReferencePrunedIds(
+  f: Fixture,
+  passBudget: LegacyPassBudget = "unlimited",
+  carryCursorAcrossCandidates = false,
+) {
+  const allProgress = f.db.all<{
     id: string;
     sequence: number;
-    itemId: string;
+    itemId: string | null;
   }>(sql`SELECT id, sequence, item_id AS itemId
     FROM events INDEXED BY events_thread_type_sequence_idx
     WHERE thread_id = ${f.thread.id}
       AND type = 'item/backgroundTask/progress'
-      AND item_id IS NOT NULL
     ORDER BY sequence`);
-  const discarded = new Set<string>();
-  for (const candidate of candidates) {
-    let probeSequence = 0;
-    let finished = false;
-    let remaining = 100_000;
-    while (!finished && remaining > 0) {
-      const limit = Math.min(remaining, probeSequence === 0 ? 1 : 64);
-      const support = f.db.all<{
-        id: string;
-        sequence: number;
-        itemId: string | null;
-      }>(sql`SELECT id, sequence, item_id AS itemId
-        FROM events INDEXED BY events_thread_type_sequence_idx
-        WHERE thread_id = ${f.thread.id}
-          AND sequence > ${Math.max(candidate.sequence, probeSequence)}
-          AND type = 'item/backgroundTask/progress'
-        ORDER BY sequence
-        LIMIT ${limit}`);
-      remaining -= Math.max(1, support.length);
-      const match = support.find((row) => row.itemId === candidate.itemId);
-      if (match) {
-        discarded.add(candidate.id);
-        finished = true;
-      } else if (support.length < limit) {
-        finished = true;
-      } else {
-        const last = support.at(-1);
-        if (!last) throw new Error("Missing legacy reference cursor");
-        probeSequence = last.sequence;
+  const upperSequence = f.db.get<{ sequence: number }>(sql`SELECT sequence
+    FROM events WHERE thread_id = ${f.thread.id}
+    ORDER BY sequence DESC LIMIT 1`)?.sequence ?? 0;
+  const passLimit =
+    passBudget === "unlimited" ? 100_000 : passBudget + 1;
+  const pruned = new Set<string>();
+  let cursorSequence = 0;
+  let probeEventId: string | null = null;
+  let probeSequence = 0;
+  let probePhase = 0;
+  for (let pass = 0; pass < 20_000; pass++) {
+    const activeAtPassStart = allProgress.filter(
+      (row) => !pruned.has(row.id),
+    );
+    const candidates = activeAtPassStart
+      .filter(
+        (row) =>
+          row.itemId !== null &&
+          row.sequence > cursorSequence &&
+          row.sequence <= upperSequence,
+      )
+      .slice(0, passLimit);
+    if (candidates.length === 0) return pruned;
+    let remaining = passLimit;
+    let processed = 0;
+    let sequence = 0;
+    const discardedThisPass = new Set<string>();
+    for (const candidate of candidates) {
+      if (remaining <= 0) break;
+      remaining -= 1;
+      if (probeEventId !== candidate.id) {
+        if (!carryCursorAcrossCandidates) {
+          probeEventId = null;
+          probeSequence = 0;
+          probePhase = 0;
+        }
+        probeEventId = candidate.id;
+      }
+      let finished = false;
+      while (!finished && remaining > 0) {
+        const limit = Math.min(remaining, probeSequence === 0 ? 1 : 64);
+        const support: {
+          id: string;
+          sequence: number;
+          type?: string;
+          itemId?: string | null;
+        }[] =
+          probePhase === 0
+            ? f.db.all<{ id: string; sequence: number; type: string }>(sql`
+                SELECT id, sequence, type
+                FROM events INDEXED BY events_item_lifecycle_thread_item_sequence_idx
+                WHERE thread_id = ${f.thread.id}
+                  AND sequence > ${probeSequence}
+                  AND item_id = ${candidate.itemId}
+                  AND type IN ('item/started', 'item/completed', 'item/backgroundTask/completed')
+                ORDER BY sequence LIMIT ${limit}`)
+            : f.db.all<{
+                id: string;
+                sequence: number;
+                itemId: string | null;
+              }>(sql`SELECT id, sequence, item_id AS itemId
+                FROM events INDEXED BY events_thread_type_sequence_idx
+                WHERE thread_id = ${f.thread.id}
+                  AND sequence > ${Math.max(candidate.sequence, probeSequence)}
+                  AND type = 'item/backgroundTask/progress'
+                ORDER BY sequence LIMIT ${limit}`);
+        remaining -= Math.max(1, support.length);
+        const match =
+          probePhase === 0
+            ? support.find(
+                (row) => row.type === "item/backgroundTask/completed",
+              )
+            : support.find(
+                (row) =>
+                  "itemId" in row && row.itemId === candidate.itemId,
+              );
+        if (match) {
+          discardedThisPass.add(candidate.id);
+          finished = true;
+        } else if (support.length < limit) {
+          if (probePhase === 0) {
+            probePhase = 1;
+            probeSequence = 0;
+          } else finished = true;
+        } else {
+          const last = support.at(-1);
+          if (!last) throw new Error("Missing legacy reference cursor");
+          probeSequence = last.sequence;
+        }
+      }
+      if (!finished) break;
+      sequence = candidate.sequence;
+      processed += 1;
+      if (!carryCursorAcrossCandidates) {
+        probeEventId = null;
+        probeSequence = 0;
+        probePhase = 0;
       }
     }
+    for (const id of discardedThisPass) pruned.add(id);
+    if (sequence > 0) cursorSequence = sequence;
+    if (
+      processed === candidates.length &&
+      (candidates.length < passLimit || cursorSequence >= upperSequence)
+    )
+      return pruned;
   }
-  return discarded;
+  throw new Error("Legacy pruning reference did not finish");
 }
 
-function runLegacyParityFixture(
+function seedLegacyParityFixture(
   f: Fixture,
   rows: readonly LegacyProgressFixture[],
 ) {
@@ -179,25 +259,46 @@ function runLegacyParityFixture(
       type: "turn/completed",
     });
   });
-  const before = f.db.all<{ id: string }>(sql`SELECT id FROM events
+
+}
+
+function readProgressIds(f: Fixture) {
+  return f.db.all<{ id: string }>(sql`SELECT id FROM events
     WHERE thread_id = ${f.thread.id}
       AND type = 'item/backgroundTask/progress'
-      AND item_id IS NOT NULL`);
-  const reference = legacyReferencePrunedIds(f);
-  const result = advanceLiveEventPruning(f.db, {
-    threadId: f.thread.id,
-    kind: "background",
-    limit: 100_000,
-  });
-  expect(result.complete).toBe(true);
-  const after = new Set(
-    f.db.all<{ id: string }>(sql`SELECT id FROM events
-      WHERE thread_id = ${f.thread.id}
-        AND type = 'item/backgroundTask/progress'
-        AND item_id IS NOT NULL`).map((row) => row.id),
+      AND item_id IS NOT NULL`).map((row) => row.id);
+}
+
+function driveLivePruning(f: Fixture, passBudget: LegacyPassBudget) {
+  const passLimit =
+    passBudget === "unlimited" ? 100_000 : passBudget + 1;
+  let complete = false;
+  for (let pass = 0; pass < 20_000 && !complete; pass++)
+    complete = advanceLiveEventPruning(f.db, {
+      threadId: f.thread.id,
+      kind: "background",
+      limit: passLimit,
+    }).complete;
+  expect(complete).toBe(true);
+  return new Set(readProgressIds(f));
+}
+
+function runLegacyParityFixture(
+  f: Fixture,
+  rows: readonly LegacyProgressFixture[],
+  passBudget: LegacyPassBudget = "unlimited",
+  carryCursorAcrossCandidates = false,
+) {
+  seedLegacyParityFixture(f, rows);
+  const before = readProgressIds(f);
+  const reference = legacyReferencePrunedIds(
+    f,
+    passBudget,
+    carryCursorAcrossCandidates,
   );
-  const pruned = new Set(before.filter((row) => !after.has(row.id)).map((row) => row.id));
-  const kept = new Set(before.filter((row) => after.has(row.id)).map((row) => row.id));
+  const after = driveLivePruning(f, passBudget);
+  const pruned = new Set(before.filter((id) => !after.has(id)));
+  const kept = new Set(before.filter((id) => after.has(id)));
   expect(pruned).toEqual(reference);
   return { kept, pruned };
 }
@@ -206,10 +307,11 @@ function expectLegacyParityCase(
   rows: readonly LegacyProgressFixture[],
   expectedKept: readonly string[],
   expectedPruned: readonly string[],
+  passBudget: LegacyPassBudget = "unlimited",
 ) {
   const f = setup();
   try {
-    const { kept, pruned } = runLegacyParityFixture(f, rows);
+    const { kept, pruned } = runLegacyParityFixture(f, rows, passBudget);
     expect(kept).toEqual(new Set(expectedKept));
     expect(pruned).toEqual(new Set(expectedPruned));
   } finally {
@@ -783,31 +885,89 @@ describe("thread pruning", () => {
     );
   });
 
-  it("matches the old progress query for 20 seeded randomized mixed-turn fixtures", () => {
+  it("resumes phase-one scans across bounded passes", () => {
+    const rows: LegacyProgressFixture[] = [
+      { sequence: 1, itemId: "first-filler", itemKind: "backgroundTask", turnId: "turn-a" },
+      { sequence: 2, itemId: "target", itemKind: null, turnId: "turn-a" },
+      { sequence: 3, itemId: "target", itemKind: "backgroundTask", turnId: "turn-b" },
+      { sequence: 4, itemId: "filler-4", itemKind: "backgroundTask", turnId: "turn-b" },
+      { sequence: 5, itemId: "filler-5", itemKind: "backgroundTask", turnId: "turn-c" },
+      { sequence: 6, itemId: "filler-6", itemKind: "backgroundTask", turnId: "turn-a" },
+      { sequence: 7, itemId: "filler-7", itemKind: "backgroundTask", turnId: "turn-b" },
+      { sequence: 8, itemId: "target", itemKind: "agentMessage", turnId: "turn-c" },
+    ];
+    for (const passBudget of [1, 2, 3] as const)
+      expectLegacyParityCase(
+        rows,
+        ["legacy-1", "legacy-4", "legacy-5", "legacy-6", "legacy-7", "legacy-8"],
+        ["legacy-2", "legacy-3"],
+        passBudget,
+      );
+  });
+
+  it("resets the probe cursor before scanning the next candidate", () => {
+    const rows: LegacyProgressFixture[] = [
+      { sequence: 1, itemId: "first-item", itemKind: "backgroundTask", turnId: "turn-a" },
+      { sequence: 2, itemId: "second-item", itemKind: "backgroundTask", turnId: "turn-b" },
+      ...Array.from({ length: 17 }, (_, index) => ({
+        sequence: index + 3,
+        itemId: `filler-${index + 3}`,
+        itemKind: "backgroundTask" as const,
+        turnId: `turn-${index % 3}`,
+      })),
+      { sequence: 20, itemId: "second-item", itemKind: "agentMessage", turnId: "turn-c" },
+      ...Array.from({ length: 49 }, (_, index) => ({
+        sequence: index + 21,
+        itemId: `filler-${index + 21}`,
+        itemKind: "backgroundTask" as const,
+        turnId: `turn-${index % 3}`,
+      })),
+      { sequence: 70, itemId: "first-item", itemKind: null, turnId: "turn-b" },
+    ];
+    const kept = [
+      ...Array.from({ length: 68 }, (_, index) => `legacy-${index + 3}`),
+    ];
+    expectLegacyParityCase(rows, kept, ["legacy-1", "legacy-2"]);
+  });
+
+  it("matches the old progress query for 20 seeded fixtures at every pass budget", () => {
+    const passBudgets: readonly LegacyPassBudget[] = [
+      1,
+      2,
+      3,
+      64,
+      "unlimited",
+    ];
     for (let initialSeed = 1; initialSeed <= 20; initialSeed++) {
-      const f = setup();
-      try {
-        let seedValue = initialSeed;
-        const next = () => {
-          seedValue = (seedValue * 48271) % 2147483647;
-          return seedValue;
-        };
-        const kinds = ["backgroundTask", null, "agentMessage"] as const;
-        const rows = Array.from({ length: 200 }, (_, index) => ({
-          sequence: index + 1,
-          itemId: `item-${next() % 12}`,
-          itemKind: kinds[next() % kinds.length] ?? null,
-          turnId: `turn-${next() % 5}`,
-        }));
-        const { kept, pruned } = runLegacyParityFixture(f, rows);
-        expect(new Set([...kept, ...pruned])).toEqual(
-          new Set(rows.map((row) => `legacy-${row.sequence}`)),
-        );
-      } finally {
-        f.db.$client.close();
+      let seedValue = initialSeed;
+      const next = () => {
+        seedValue = (seedValue * 48271) % 2147483647;
+        return seedValue;
+      };
+      const kinds = ["backgroundTask", null, "agentMessage"] as const;
+      const rows = Array.from({ length: 200 }, (_, index) => ({
+        sequence: index + 1,
+        itemId: `item-${next() % 12}`,
+        itemKind: kinds[next() % kinds.length] ?? null,
+        turnId: `turn-${next() % 5}`,
+      }));
+      for (const passBudget of passBudgets) {
+        const f = setup();
+        try {
+          const { kept, pruned } = runLegacyParityFixture(
+            f,
+            rows,
+            passBudget,
+          );
+          expect(new Set([...kept, ...pruned])).toEqual(
+            new Set(rows.map((row) => `legacy-${row.sequence}`)),
+          );
+        } finally {
+          f.db.$client.close();
+        }
       }
     }
-  }, 15_000);
+  }, 60_000);
 
   it("bounds legacy progress fallback for 510 task candidates", () => {
     for (let batch = 0; batch < 7; batch++) {
