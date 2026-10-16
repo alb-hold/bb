@@ -1,4 +1,5 @@
-import type { DbConnection } from "./connection.js";
+import { sql } from "drizzle-orm";
+import type { DbConnection, DbQueryConnection } from "./connection.js";
 
 export interface NativeTerminalThreadRecord {
   threadId: string;
@@ -126,16 +127,12 @@ export function deleteNativeTerminalThread(
 }
 
 export function isNativeTerminalThread(
-  db: DbConnection,
+  db: DbQueryConnection,
   threadId: string,
 ): boolean {
-  return (
-    db.$client
-      .prepare(
-        `SELECT 1 AS present FROM fork_native_terminal_threads WHERE thread_id = ?`,
-      )
-      .get(threadId) !== undefined
-  );
+  return db.get(
+    sql`SELECT 1 AS present FROM fork_native_terminal_threads WHERE thread_id = ${threadId}`,
+  ) !== undefined;
 }
 
 export function listNativeTerminalThreadIds(

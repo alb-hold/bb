@@ -989,6 +989,56 @@ function ThreadRowComponent({
           </div>
         )}
       </span>
+      {thread.experimental_rowState &&
+      (Object.keys(thread.experimental_rowState.statuses).length > 0 ||
+        thread.experimental_rowState.progress !== null) ? (
+        <div
+          data-sidebar-thread-row-state=""
+          className="pointer-events-none relative z-[1] flex min-w-0 flex-col gap-1 pl-6 pr-2 pb-1"
+        >
+          {Object.entries(thread.experimental_rowState.statuses)
+            .sort(([, left], [, right]) => (right.priority ?? 0) - (left.priority ?? 0))
+            .slice(0, 2)
+            .map(([key, status]) => (
+              <span
+                key={key}
+                data-sidebar-thread-status-chip={key}
+                title={`${key}: ${status.value}`}
+                className="max-w-full truncate rounded-sm bg-sidebar-accent px-1.5 py-0.5 font-medium text-xs text-sidebar-accent-foreground"
+                style={status.color ? { color: status.color } : undefined}
+              >
+                {status.icon ? `${status.icon} ` : ""}{status.value}
+              </span>
+            ))}
+          {Object.keys(thread.experimental_rowState.statuses).length > 2 ? (
+            <span className="text-muted-foreground text-xs">
+              +{Object.keys(thread.experimental_rowState.statuses).length - 2} more
+            </span>
+          ) : null}
+          {thread.experimental_rowState.progress ? (
+            <div className="flex min-w-0 flex-col gap-0.5">
+              {thread.experimental_rowState.progress.label ? (
+                <span className="truncate text-muted-foreground text-xs">
+                  {thread.experimental_rowState.progress.label}
+                </span>
+              ) : null}
+              <div
+                role="progressbar"
+                aria-label={thread.experimental_rowState.progress.label ?? "Thread progress"}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={Math.round(thread.experimental_rowState.progress.value * 100)}
+                className="h-1 overflow-hidden rounded-full bg-sidebar-accent"
+              >
+                <div
+                  className="h-full rounded-full bg-sidebar-primary transition-[width]"
+                  style={{ width: `${thread.experimental_rowState.progress.value * 100}%` }}
+                />
+              </div>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       {finishCustomizingActions ? (
         <ThreadRowActionsEditor onDone={finishCustomizingActions} />
       ) : null}

@@ -1,6 +1,7 @@
 import {
   getNativeTerminalThread,
   getThread,
+  clearThreadRowState,
   type TerminalSessionRow,
 } from "@bb/db";
 import {
@@ -132,7 +133,11 @@ function reconcileNativeQuestions(
       question,
     ]),
   );
-  interruptNativeTerminalQuestions(deps, args.thread.id, new Set(wanted.keys()));
+  interruptNativeTerminalQuestions(
+    deps,
+    args.thread.id,
+    new Set(wanted.keys()),
+  );
   for (const [providerRequestId, question] of wanted) {
     const registered = deps.pendingInteractions.registerPendingInteraction({
       interaction: {
@@ -177,12 +182,17 @@ export function clearNativeTerminalStateOnExit(
   >,
   session: Pick<TerminalSessionRow, "closeReason" | "id" | "threadId">,
 ): void {
-  if (session.threadId === null || session.closeReason === "daemon-disconnect") {
+  if (
+    session.threadId === null ||
+    session.closeReason === "daemon-disconnect"
+  ) {
     return;
   }
   const record = getNativeTerminalThread(deps.db, session.threadId);
   if (record === null || record.terminalSessionId !== session.id) return;
   interruptNativeTerminalQuestions(deps, session.threadId);
+  clearThreadRowState(deps.db, session.threadId);
+  deps.hub.notifyThread(session.threadId, ["status-changed"]);
   if (session.closeReason === "process-exit") {
     settleNativeTerminalTurn(deps, session.threadId);
   }
