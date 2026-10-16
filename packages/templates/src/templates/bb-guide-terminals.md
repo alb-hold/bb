@@ -55,6 +55,9 @@ raises attention on its terminal. The SDK exposes the same operation as
   bb terminal resize <terminal-id> --cols <n> --rows <n>
   bb terminal rename <terminal-id> <title>
   bb terminal notify --title <title> --body <body>   Raise attention from this terminal
+  bb terminal attention list                     List uncleared terminal attention
+  bb terminal attention next                     Print the oldest terminal needing attention
+  bb terminal attention clear <terminal-id>       Clear attention for a terminal
   bb terminal restart <terminal-id>       Atomically replaces it with a shell; does not replay the original command
   bb terminal close <terminal-id> [--if-clean]   (alias: stop)
 
@@ -62,6 +65,12 @@ raises attention on its terminal. The SDK exposes the same operation as
   you last typed, pasted or clicked in sets the size; opening or resizing
   another view does not change it until you use that view. bb terminal attach
   takes the size when it attaches and when its window resizes.
+
+The app's “Next terminal needing attention” command and Alt+Shift+N open the
+oldest uncleared terminal in its thread and terminal pane. When no terminal
+needs attention, the app shows “Nothing needs attention.” The CLI's `next`
+prints the target because it has no app window. The SDK exposes
+`sdk.terminals.experimental_attention.list()`, `.next()`, and `.clear({ terminalId })`.
 
   bb terminal output <terminal-id>
     --since-seq <n>                       Read output chunks from a sequence

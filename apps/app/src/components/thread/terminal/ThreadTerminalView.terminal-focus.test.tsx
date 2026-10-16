@@ -10,7 +10,20 @@ import {
 } from "@/components/commands/AppCommandProvider";
 import { ThreadTerminalView } from "./ThreadTerminalView";
 
-const testState = vi.hoisted(() => ({ calls: [] as string[] }));
+const testState = vi.hoisted(() => ({
+  calls: [] as string[],
+  clearAttention: vi.fn(),
+}));
+
+vi.mock("@/lib/sdk", () => ({
+  sdk: {
+    terminals: {
+      experimental_attention: {
+        clear: testState.clearAttention,
+      },
+    },
+  },
+}));
 
 vi.mock("@/hooks/queries/system-queries", () => ({
   useSystemConfig: () => ({
@@ -58,9 +71,54 @@ afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
   testState.calls.length = 0;
+  testState.clearAttention.mockReset();
 });
 
 describe("ThreadTerminalView terminal focus boundary", () => {
+  it("clears attention when its terminal panel becomes visible", async () => {
+    const session = makeTerminalSession({
+      id: "term_attention",
+      attention: { at: 10, kind: "bell", seq: 3 },
+    });
+    const updatedSession = { ...session, attention: null };
+    const onSessionChange = vi.fn();
+    testState.clearAttention.mockResolvedValue(updatedSession);
+
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+      measureText: (text: string) => ({ width: text.length * 9 }),
+    } as unknown as CanvasRenderingContext2D);
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(
+      function offsetWidth(this: HTMLElement) {
+        return this.classList.contains("xterm-char-measure-element") ? 288 : 108;
+      },
+    );
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(
+      function offsetHeight(this: HTMLElement) {
+        return this.classList.contains("xterm-char-measure-element") ? 18 : 90;
+      },
+    );
+
+    render(
+      <MemoryRouter>
+        <AppCommandProvider>
+          <ThreadTerminalView
+            autoFocus={false}
+            isPanelOpen
+            onSessionChange={onSessionChange}
+            session={session}
+          />
+        </AppCommandProvider>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(testState.clearAttention).toHaveBeenCalledWith({
+        terminalId: session.id,
+      });
+      expect(onSessionChange).toHaveBeenCalledWith(updatedSession);
+    });
+  });
+
   it("suppresses terminal-scoped shortcuts from the real xterm input", async () => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
       measureText: (text: string) => ({ width: text.length * 9 }),

@@ -54,6 +54,24 @@ export function getTerminalAttention(
   return row ?? null;
 }
 
+export function listTerminalAttention(
+  db: DbConnection,
+): TerminalAttentionRecord[] {
+  return db.$client
+    .prepare(
+      `SELECT a.terminal_session_id AS terminalSessionId, a.seq,
+              a.daemon_seq AS daemonSeq, a.kind, a.title, a.body,
+              a.attention_at AS attentionAt, a.cleared_at AS clearedAt,
+              a.updated_at AS updatedAt
+       FROM fork_terminal_attention a
+       JOIN terminal_sessions t ON t.id = a.terminal_session_id
+       WHERE a.cleared_at IS NULL
+         AND t.status IN ('starting', 'running', 'disconnected')
+       ORDER BY a.attention_at ASC, t.created_at ASC, t.id ASC`,
+    )
+    .all() as TerminalAttentionRecord[];
+}
+
 export function upsertTerminalAttention(
   db: DbConnection,
   args: {

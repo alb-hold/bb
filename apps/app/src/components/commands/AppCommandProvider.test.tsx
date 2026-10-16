@@ -715,6 +715,82 @@ describe("AppCommandProvider", () => {
     testState.keybindings = previousKeybindings;
   });
 
+  it("dispatches terminal attention from the real key handler while terminal input is focused", async () => {
+    const previousKeybindings = testState.keybindings;
+    testState.keybindings = [
+      ...previousKeybindings,
+      {
+        command: "terminal.attention.next",
+        desktopOnly: false,
+        shortcut: {
+          key: "n",
+          mod: false,
+          meta: false,
+          control: false,
+          alt: true,
+          shift: true,
+        },
+        when: { all: ["mainSurface"], none: [] },
+      },
+    ];
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+      measureText: (text: string) => ({ width: text.length * 9 }),
+    } as unknown as CanvasRenderingContext2D);
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(
+      function offsetWidth(this: HTMLElement) {
+        return this.classList.contains("xterm-char-measure-element") ? 288 : 108;
+      },
+    );
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(
+      function offsetHeight(this: HTMLElement) {
+        return this.classList.contains("xterm-char-measure-element") ? 18 : 90;
+      },
+    );
+    renderProvider(
+      <>
+        <Handler command="terminal.attention.next" name="attention" result />
+        <div data-testid="terminal-view">
+          <ThreadTerminalView
+            autoFocus={false}
+            isPanelOpen
+            session={makeTerminalSession({
+              id: "term_attention_focus",
+              threadId: "thr_attention_focus",
+              environmentId: "env_attention_focus",
+              hostId: "host_attention_focus",
+              createdAt: 1,
+              updatedAt: 1,
+              status: "running",
+            })}
+          />
+        </div>
+      </>,
+    );
+    const terminalPane = screen.getByTestId("terminal-view").firstElementChild;
+    if (terminalPane === null) throw new Error("Terminal pane is not mounted");
+    const terminalInput = await waitFor(() => {
+      const textarea = terminalPane.querySelector<HTMLTextAreaElement>(
+        ".xterm-helper-textarea",
+      );
+      if (textarea === null) throw new Error("xterm input is not mounted");
+      return textarea;
+    });
+    terminalInput.focus();
+    const event = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      altKey: true,
+      shiftKey: true,
+      key: "n",
+      code: "KeyN",
+    });
+    terminalInput.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(testState.calls).toEqual(["attention"]);
+    testState.keybindings = previousKeybindings;
+  });
+
   it.each([
     ["thread.new" as const, "o", true],
     ["panel.toggle" as const, "j", false],
