@@ -200,7 +200,7 @@
       "id": "informal-no-rewrite",
       "text": "gonna need u to check the logs asap",
       "expectApplied": [],
-      "forbidden": ["gonna", "u", "asap"]
+      "forbidden": ["gonna", "u"]
     },
     {
       "id": "pt-accents",

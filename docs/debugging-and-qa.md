@@ -535,8 +535,9 @@ node scripts/writing-eval/run.mjs --server <server-url> --audio /tmp/writing-eva
 `say` and `afconvert` are macOS tools; generate the clips there and copy them
 when the server runs elsewhere. `--only correction` skips audio. The report
 gives word error rates for the raw and formatted transcripts, key words the
-formatter lost, list mismatches, auto-applied edits that touched a protected
-token (`harmfulAutoApplies`, which must be 0), expected fixes found, and p50/p95
+formatter lost, list mismatches, auto-applied edits that changed the words of a
+protected token (`harmfulAutoApplies`, which must be 0) or only its case
+(`caseOnlyTouchesOnProtected`), expected fixes found, and p50/p95
 latency. Each case calls the real AI services and counts against the daily
 writing limits.
 

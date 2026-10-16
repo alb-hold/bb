@@ -99,6 +99,82 @@ describe("resolveWritingEdits", () => {
     ]);
   });
 
+  it("splits a bundled multi-word fix into safe per-word edits", () => {
+    const target = "Voce pode verificar a configuracao do servidor?";
+    const edits = resolveWritingEdits({
+      ...base,
+      target,
+      proposals: [
+        proposal(
+          "Voce pode verificar a configuracao",
+          "Você pode verificar a configuração",
+          { category: "spelling" },
+        ),
+      ],
+    });
+    expect(edits).toEqual([
+      expect.objectContaining({
+        original: "Voce",
+        replacement: "Você",
+        disposition: "apply",
+      }),
+      expect.objectContaining({
+        original: "configuracao",
+        replacement: "configuração",
+        start: target.indexOf("configuracao"),
+        disposition: "apply",
+      }),
+    ]);
+  });
+
+  it("keeps a bundled rewrite whole when any word changes meaning", () => {
+    const edits = resolveWritingEdits({
+      ...base,
+      target: "Voce pode apagar a configuracao do servidor?",
+      proposals: [
+        proposal(
+          "Voce pode apagar a configuracao",
+          "Você pode salvar a configuração",
+          {
+            category: "spelling",
+          },
+        ),
+      ],
+    });
+    expect(edits).toEqual([
+      expect.objectContaining({
+        disposition: "suggest",
+        semanticImpact: "possible",
+      }),
+    ]);
+  });
+
+  it("auto-applies removing an accidentally repeated word", () => {
+    const edits = resolveWritingEdits({
+      ...base,
+      target: "Check the the cache before the deploy.",
+      proposals: [proposal("the the cache", "the cache")],
+    });
+    expect(edits).toEqual([
+      expect.objectContaining({ disposition: "apply", semanticImpact: "none" }),
+    ]);
+  });
+
+  it("only suggests removing a repeat that can be grammatical or is not adjacent", () => {
+    const grammatical = resolveWritingEdits({
+      ...base,
+      target: "I had had enough of the flaky test.",
+      proposals: [proposal("had had", "had")],
+    });
+    expect(grammatical.map((edit) => edit.disposition)).toEqual(["suggest"]);
+    const distant = resolveWritingEdits({
+      ...base,
+      target: "Check the cache before the deploy.",
+      proposals: [proposal("the deploy", "deploy")],
+    });
+    expect(distant.map((edit) => edit.disposition)).toEqual(["suggest"]);
+  });
+
   it("never auto-applies a content-word swap even at high confidence", () => {
     const edits = resolveWritingEdits({
       ...base,

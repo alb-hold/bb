@@ -435,18 +435,76 @@ export interface ResolveWritingEditsArgs {
   complete: boolean;
 }
 
+const GRAMMATICAL_REPEATS: ReadonlySet<string> = new Set(["had", "that", "is"]);
+
+function removesRepeatedWord(
+  target: string,
+  change: { start: number; end: number; replacement: string },
+): boolean {
+  const before = wordTokens(target);
+  const after = wordTokens(
+    `${target.slice(0, change.start)}${change.replacement}${target.slice(change.end)}`,
+  );
+  if (before.length !== after.length + 1) return false;
+  let index = 0;
+  while (index < after.length && before[index] === after[index]) index += 1;
+  if (before.slice(index + 1).join(" ") !== after.slice(index).join(" ")) {
+    return false;
+  }
+  const removed = before[index];
+  if (removed === undefined || GRAMMATICAL_REPEATS.has(removed)) return false;
+  return removed === before[index - 1] || removed === before[index + 1];
+}
+
+interface TextChangeSpan {
+  start: number;
+  end: number;
+  original: string;
+  replacement: string;
+}
+
+function splitWordChanges(change: TextChangeSpan): TextChangeSpan[] {
+  const before = change.original.split(/(\s+)/u);
+  const after = change.replacement.split(/(\s+)/u);
+  if (before.length !== after.length) return [change];
+  const pieces: TextChangeSpan[] = [];
+  let offset = change.start;
+  for (let index = 0; index < before.length; index += 1) {
+    const from = before[index]!;
+    const to = after[index]!;
+    if (index % 2 === 1 && from !== to) return [change];
+    if (from !== to) {
+      if (classifyWritingChange(from, to) === "content") return [change];
+      pieces.push({
+        start: offset,
+        end: offset + from.length,
+        original: from,
+        replacement: to,
+      });
+    }
+    offset += from.length;
+  }
+  return pieces.length > 1 ? pieces : [change];
+}
+
 export function resolveWritingEdits(
   args: ResolveWritingEditsArgs,
 ): WritingEdit[] {
   if (args.behavior === "off") return [];
   const spans = findProtectedSpans(args.target, args.vocabulary);
   const accepted: WritingEdit[] = [];
-  for (const proposal of args.proposals) {
-    if (proposal.original === proposal.replacement) continue;
+  const changes = args.proposals.flatMap((proposal) => {
+    if (proposal.original === proposal.replacement) return [];
     const at = findUniqueOccurrence(args.target, proposal.original);
-    if (at === null) continue;
+    if (at === null) return [];
     const change = minimalChange(at, proposal.original, proposal.replacement);
-    if (change.original === change.replacement) continue;
+    if (change.original === change.replacement) return [];
+    return splitWordChanges(change).map((piece) => ({
+      change: piece,
+      proposal,
+    }));
+  });
+  for (const { change, proposal } of changes) {
     if (overlapsProtectedSpan(spans, change.start, change.end)) continue;
     if (
       accepted.some(
@@ -461,7 +519,9 @@ export function resolveWritingEdits(
     ) {
       continue;
     }
-    const kind = classifyWritingChange(change.original, change.replacement);
+    const kind = removesRepeatedWord(args.target, change)
+      ? "surface"
+      : classifyWritingChange(change.original, change.replacement);
     const deterministicSafe =
       kind === "surface" ||
       ((kind === "spelling" || kind === "agreement") &&

@@ -8,15 +8,18 @@ const { values } = parseArgs({
     audio: { type: "string" },
     out: { type: "string" },
     only: { type: "string" },
+    delay: { type: "string" },
   },
 });
 if (values.server === undefined) {
   console.error(
-    "usage: node scripts/writing-eval/run.mjs --server <url> [--audio <dir>] [--out <file>] [--only dictation|correction]",
+    "usage: node scripts/writing-eval/run.mjs --server <url> [--audio <dir>] [--out <file>] [--only dictation|correction] [--delay ms]",
   );
   process.exit(2);
 }
 const server = values.server.replace(/\/$/u, "");
+const delayMs = Number(values.delay ?? "0");
+const pause = () => new Promise((resolve) => setTimeout(resolve, delayMs));
 const dataset = JSON.parse(
   await readFile(new URL("./dataset.json", import.meta.url), "utf8"),
 );
@@ -87,6 +90,7 @@ async function post(path, init) {
 async function runDictation(audioDir) {
   const results = [];
   for (const item of dataset.dictation) {
+    await pause();
     const audio = await readFile(join(audioDir, `${item.id}.wav`));
     const form = new FormData();
     form.set(
@@ -124,6 +128,10 @@ async function runDictation(audioDir) {
   return results;
 }
 
+function letters(text) {
+  return text.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+}
+
 function applyEdits(text, edits) {
   let result = text;
   for (const edit of [...edits].sort((a, b) => b.start - a.start)) {
@@ -150,6 +158,7 @@ function forbiddenSpans(text, forbidden) {
 async function runCorrection() {
   const results = [];
   for (const item of dataset.correction) {
+    await pause();
     const { status, body, ms } = await post("/writing-assistance/corrections", {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ target: item.text, context: "", complete: true }),
@@ -163,26 +172,32 @@ async function runCorrection() {
       (edit) => edit.disposition === "suggest",
     );
     const spans = forbiddenSpans(item.text, item.forbidden);
-    const harmful = applied.filter((edit) =>
+    const touched = applied.filter((edit) =>
       spans.some(([start, end]) => edit.start < end && edit.end > start),
     );
-    const found = item.expectApplied.filter(([original, replacement]) =>
-      applied.some(
-        (edit) =>
-          edit.original.includes(original) &&
-          edit.replacement.includes(replacement),
-      ),
+    const harmful = touched.filter(
+      (edit) => letters(edit.original) !== letters(edit.replacement),
+    );
+    const result = applyEdits(item.text, applied);
+    const found = item.expectApplied.filter(
+      ([original, replacement]) =>
+        forbiddenSpans(result, [original]).length <
+          forbiddenSpans(item.text, [original]).length &&
+        result.includes(replacement),
     );
     results.push({
       id: item.id,
       status,
       ms,
-      result: applyEdits(item.text, applied),
+      result,
       applied: applied.map((edit) => `${edit.original} → ${edit.replacement}`),
       suggested: suggested.map(
         (edit) => `${edit.original} → ${edit.replacement}`,
       ),
       harmful: harmful.map((edit) => `${edit.original} → ${edit.replacement}`),
+      caseOnlyOnProtected: touched
+        .filter((edit) => !harmful.includes(edit))
+        .map((edit) => `${edit.original} → ${edit.replacement}`),
       expectedFound: found.length,
       expectedTotal: item.expectApplied.length,
     });
@@ -240,6 +255,10 @@ if (values.only !== "dictation") {
       skipped: correction.length - ok.length,
       harmfulAutoApplies: ok.reduce(
         (sum, item) => sum + item.harmful.length,
+        0,
+      ),
+      caseOnlyTouchesOnProtected: ok.reduce(
+        (sum, item) => sum + item.caseOnlyOnProtected.length,
         0,
       ),
       expectedFixesFound: ok.reduce((sum, item) => sum + item.expectedFound, 0),
