@@ -784,7 +784,6 @@ describe("useThreadFileTabs recently closed tabs", () => {
         projectId: "proj_1",
         storageFiles: undefined,
         terminalSessions: undefined,
-        retainedTerminalIds: new Set<string>(),
       }),
     );
 
@@ -1009,7 +1008,6 @@ describe("useThreadFileTabs active owners", () => {
         projectId: "proj_selected",
         storageFiles: undefined,
         terminalSessions: undefined,
-        retainedTerminalIds: new Set<string>(),
       }),
     );
 
@@ -1593,7 +1591,6 @@ describe("useThreadFileTabs file opener diversion", () => {
           truncated: false,
         },
         terminalSessions: undefined,
-        retainedTerminalIds: new Set<string>(),
       }),
     );
 
