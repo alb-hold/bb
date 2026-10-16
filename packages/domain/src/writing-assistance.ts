@@ -749,7 +749,6 @@ function allowedNovelToken(
   token: string,
   source: ReadonlySet<string>,
 ): boolean {
-  if (/^\d{1,2}$/u.test(token)) return true;
   for (const word of source) {
     if (NON_WORD_RESTORATIONS.get(word) === token) return true;
   }
@@ -915,13 +914,14 @@ export function validateFormattedTranscript(
   const vocabularyTokens = new Set(
     vocabulary.flatMap((term) => wordTokens(term)),
   );
+  const body = formatted.replace(/^(\s*)\d{1,2}[.)]\s+/gmu, "$1");
   const rawNumbers = new Set(raw.match(/\d+(?:[.,]\d+)*/gu) ?? []);
-  for (const number of formatted.match(/\d+(?:[.,]\d+)*/gu) ?? []) {
-    if (!rawNumbers.has(number) && !/^\d{1,2}$/u.test(number)) {
+  for (const number of body.match(/\d+(?:[.,]\d+)*/gu) ?? []) {
+    if (!rawNumbers.has(number)) {
       return { ok: false, reason: "added-words" };
     }
   }
-  const formattedTokens = wordTokens(formatted).flatMap((token) =>
+  const formattedTokens = wordTokens(body).flatMap((token) =>
     options.literalCode && !source.has(token)
       ? (splitJoinedToken(token, rawTokens) ?? [token])
       : [token],

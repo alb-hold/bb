@@ -324,6 +324,32 @@ describe("dictation segments", () => {
     });
   });
 
+  it("keeps the transcript when formatting adds a number that was not spoken", async () => {
+    await withTestHarness({}, async (harness) => {
+      registerFakeAiService(harness.deps.aiServices, {
+        transcribe: async () => "deploy code",
+        complete: async () => "Deploy 7 code.",
+      });
+      await expect((await postSegment(harness)).json()).resolves.toMatchObject({
+        text: "deploy code",
+        formatted: false,
+      });
+    });
+  });
+
+  it("formats a numbered list built from spoken ordinals", async () => {
+    await withTestHarness({}, async (harness) => {
+      registerFakeAiService(harness.deps.aiServices, {
+        transcribe: async () => "first check auth second run the tests",
+        complete: async () => "1. Check auth.\n2. Run the tests.",
+      });
+      await expect((await postSegment(harness)).json()).resolves.toMatchObject({
+        text: "1. Check auth.\n2. Run the tests.",
+        formatted: true,
+      });
+    });
+  });
+
   it("keeps the transcript when the writing service fails or formatting is off", async () => {
     await withTestHarness({}, async (harness) => {
       const service = registerFakeAiService(harness.deps.aiServices, {

@@ -95,11 +95,12 @@ cost estimate). `set` keys: `mode` (prompt, developer, natural, polished,
 verbatim, literal-code), `typing-correction` (automatic, suggest, off),
 `dictation-formatting` (on, off), `daily-correction-limit` (requests per UTC
 day, 0-5000), and `daily-dictation-minutes` (0-1440). Only capitalization,
-spacing, a sentence-final period, repeated words, verb or article agreement
-(is/are, has/have, a/an) and accents on a fixed list of Portuguese words (nao,
-voce, tambem, entao, amanha) apply by themselves, never inside code, paths,
-identifiers or vocabulary terms; spelling, other punctuation and anything
-else that could change meaning is offered as a suggestion. `correct` and `transcribe` run the
+spacing, a sentence-final period, removing a repeated word, swaps within
+is/are/am/be, was/were, has/have, does/do (and isn't/aren't, wasn't/weren't,
+hasn't/haven't, doesn't/don't) or a/an, and accents on nao, voce, tambem,
+entao and amanha apply by themselves, never inside code, paths, identifiers or
+vocabulary terms. Everything else, including spelling, other punctuation and
+tense or plural changes such as deploy/deployed, is offered as a suggestion. `correct` and `transcribe` run the
 same pipeline as the composer. Settings → General → Writing assistance has the
 same controls; Cmd/Ctrl+Shift+D starts and stops dictation
 (`composer.dictation.toggle` in Settings → Keyboard).

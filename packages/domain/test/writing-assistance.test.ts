@@ -372,6 +372,9 @@ describe("validateFormattedTranscript", () => {
     ["make the endpoint public", "Make the endpoint pubic."],
     ["the user are logged in", "The user is logged in."],
     ["it expire tomorrow", "It expires tomorrow."],
+    ["deploy code", "Deploy 7 code."],
+    ["first check auth second run tests", "1. Check auth.\n2. Run 2 tests."],
+    ["check auth run tests", "Check auth. 1. Run tests."],
   ])(
     "keeps the transcript when formatting swaps a spoken word: %s",
     (raw, formatted) => {

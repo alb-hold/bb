@@ -118,7 +118,7 @@ export function WritingAssistanceSettingsSection() {
         </SettingsWithControl>
         <SettingsWithControl
           label="Correct while typing"
-          description="Only capitalization, a sentence-final period, repeated words, verb or article agreement and accents on a few Portuguese words (nao → não) apply by themselves, never inside code or identifiers; spelling, other punctuation and anything else that could change meaning is a suggestion."
+          description="Only capitalization, a sentence-final period, a repeated word, swaps within is/are/am/be, was/were, has/have, does/do (and their negated forms) or a/an, and accents on nao, voce, tambem, entao and amanha apply by themselves, never inside code or identifiers. Everything else, including spelling, other punctuation and tense or plural changes, is a suggestion."
         >
           <Select
             value={settings.typingCorrection}
