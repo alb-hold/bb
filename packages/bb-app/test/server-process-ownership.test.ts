@@ -1,11 +1,21 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  readlinkSync,
+  rmSync,
+} from "node:fs";
 import { createRequire } from "node:module";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DESKTOP_OWNED_RUNTIME_SHUTDOWN_GRACE_MS } from "@bb/config/full-stack-shutdown";
+import {
+  DESKTOP_OWNED_RUNTIME_SHUTDOWN_GRACE_MS,
+  SERVER_SHUTDOWN_BOUND_MS,
+} from "@bb/config/full-stack-shutdown";
 import { afterEach, describe, expect, it } from "vitest";
 
 const fixtureDir = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
@@ -15,6 +25,8 @@ const shutdownLauncherEntry = join(fixtureDir, "sigterm-launcher.mjs");
 const slowChildEntry = join(fixtureDir, "slow-stop-child.mjs");
 const realServerEntry = join(fixtureDir, "real-server-entry.mjs");
 const realLauncherEntry = join(fixtureDir, "real-server-launcher.mjs");
+const startupStallLauncherEntry = join(fixtureDir, "startup-stall-launcher.mjs");
+const pluginStopTimeoutEntry = join(fixtureDir, "plugin-stop-timeout.mjs");
 const detachedHolderEntry = join(fixtureDir, "detached-holder.mjs");
 const reportLauncherEntry = join(fixtureDir, "report-stuck-child.mjs");
 const disconnectQueueEntry = join(fixtureDir, "launcher-disconnect-queue.mjs");
@@ -141,6 +153,12 @@ async function waitForFileText(
 
 function isProcessRunning(pid: number): boolean {
   try {
+    if (process.platform === "linux") {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      if (stat.slice(stat.lastIndexOf(")") + 2, stat.lastIndexOf(")") + 3) === "Z") {
+        return false;
+      }
+    }
     process.kill(pid, 0);
     return true;
   } catch {
@@ -236,6 +254,127 @@ describe("server process ownership", () => {
       }
     }
   }, 120_000);
+
+  it("exits within the shared bound when the launcher dies during database startup", async () => {
+    if (process.platform !== "linux") return;
+    const dir = scratchDir();
+    const databasePath = join(dir, "bb.db");
+    const Database = createRequire(import.meta.url)("better-sqlite3");
+    const setupDb = new Database(databasePath);
+    setupDb.pragma("auto_vacuum = INCREMENTAL");
+    setupDb.pragma("journal_mode = WAL");
+    setupDb.exec("CREATE TABLE startup_deadline_probe (value INTEGER)");
+    setupDb.close();
+    const lockDb = new Database(databasePath);
+    lockDb.exec("BEGIN IMMEDIATE");
+    const serverPidFile = join(dir, "server.pid");
+    const launcher = spawnFixture(startupStallLauncherEntry, {
+      BB_OWNERSHIP_DIR: dir,
+      BB_ORPHAN_READY: join(dir, "server-started"),
+      BB_SERVER_PID_FILE: serverPidFile,
+      BB_REAL_SERVER_ENTRY: realServerEntry,
+      BB_SERVER_PORT: String(await freePort()),
+    });
+    let serverPid: number | null = null;
+    try {
+      serverPid = Number(await waitForFile(serverPidFile));
+      activeChildren.add(serverPid);
+      const openDatabaseDeadline = Date.now() + 10_000;
+      let databaseFdFound = false;
+      while (Date.now() < openDatabaseDeadline) {
+        if (!isProcessRunning(serverPid)) break;
+        try {
+          databaseFdFound = readdirSync(`/proc/${serverPid}/fd`).some((fd) =>
+            readlinkSync(`/proc/${serverPid}/fd/${fd}`).startsWith(databasePath),
+          );
+        } catch {}
+        if (databaseFdFound) break;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      let descriptors = "unavailable";
+      try {
+        descriptors = readdirSync(`/proc/${serverPid}/fd`).map((fd) => {
+          try { return readlinkSync(`/proc/${serverPid}/fd/${fd}`); } catch { return "unreadable"; }
+        }).join(", ");
+      } catch {}
+      let serverOutput = "";
+      try { serverOutput = readFileSync(join(dir, "logs", "server-stdio.log"), "utf8"); } catch {}
+      expect(
+        databaseFdFound,
+        `server db descriptors: ${descriptors}; server output: ${serverOutput}; launcher output: ${childErrors.get(launcher)?.stderr ?? ""}`,
+      ).toBe(true);
+      expect(isProcessRunning(serverPid)).toBe(true);
+      const killedAt = Date.now();
+      process.kill(launcher.pid!, "SIGKILL");
+      await waitForExit(launcher, 2_000);
+      let statAfterLauncherExit = "unavailable";
+      try { statAfterLauncherExit = readFileSync(`/proc/${serverPid}/stat`, "utf8"); } catch {}
+      try {
+        await waitForProcessExitByPid(serverPid, SERVER_SHUTDOWN_BOUND_MS);
+      } catch (error) {
+        let serverOutput = "";
+        try {
+          serverOutput = readFileSync(
+            join(dir, "logs", "server-stdio.log"),
+            "utf8",
+          );
+        } catch {}
+        try {
+          serverOutput += readdirSync(join(dir, "logs"))
+            .map(
+              (file) =>
+                `${file}: ${readFileSync(join(dir, "logs", file), "utf8")}`,
+            )
+            .join("\n");
+        } catch {}
+        try {
+          serverOutput += ` server stat: ${readFileSync(`/proc/${serverPid}/stat`, "utf8")}`;
+        } catch {}
+        serverOutput += ` stat after launcher exit: ${statAfterLauncherExit}`;
+        throw new Error(`${String(error)}; server output: ${serverOutput}`);
+      }
+      activeChildren.delete(serverPid);
+      expect(Date.now() - killedAt).toBeLessThanOrEqual(SERVER_SHUTDOWN_BOUND_MS);
+      lockDb.exec("ROLLBACK");
+      lockDb.prepare("INSERT INTO startup_deadline_probe (value) VALUES (1)").run();
+      expect(lockDb.prepare("SELECT value FROM startup_deadline_probe").get()).toEqual({ value: 1 });
+    } finally {
+      try { lockDb.exec("ROLLBACK"); } catch {}
+      lockDb.close();
+      if (serverPid !== null && activeChildren.has(serverPid)) {
+        try { process.kill(serverPid, "SIGKILL"); } catch {}
+        activeChildren.delete(serverPid);
+      }
+    }
+  }, 30_000);
+
+  it("exits after plugin timeout without closing its migrated database", async () => {
+    const dir = scratchDir();
+    const resultPath = join(dir, "plugin-timeout.json");
+    const child = spawnFixture(pluginStopTimeoutEntry, {
+      BB_PLUGIN_TIMEOUT_RESULT: resultPath,
+    });
+    await waitForExit(
+      child,
+      DESKTOP_OWNED_RUNTIME_SHUTDOWN_GRACE_MS,
+    );
+    expect(child.exitCode, childErrors.get(child)?.stderr ?? "").toBe(0);
+    const result = JSON.parse(readFileSync(resultPath, "utf8")) as {
+      completedWithinBounds: boolean;
+      databaseClosed: boolean;
+      dbReadable: boolean;
+      elapsedMs: number;
+      pluginObservedDatabaseError: boolean;
+      pluginStopTimedOut: boolean;
+      shutdownBoundMs: number;
+    };
+    expect(result.completedWithinBounds).toBe(false);
+    expect(result.pluginStopTimedOut).toBe(true);
+    expect(result.databaseClosed).toBe(false);
+    expect(result.dbReadable).toBe(true);
+    expect(result.pluginObservedDatabaseError).toBe(false);
+    expect(result.elapsedMs).toBeLessThanOrEqual(result.shutdownBoundMs);
+  }, 15_000);
 
   it("keeps a standalone server alive without an IPC parent channel", async () => {
     const dir = scratchDir();
