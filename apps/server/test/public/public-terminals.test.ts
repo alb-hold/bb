@@ -1681,6 +1681,7 @@ describe("public terminal routes", () => {
         title,
       });
     const trustedTerminal = makeOwnedTerminal("Trusted terminal output");
+    const exitedTerminal = makeOwnedTerminal("Trusted terminal exit");
     const replayTerminal = makeOwnedTerminal("Trusted terminal replay");
     const trustedChunk = {
       seq: 0,
@@ -1706,7 +1707,76 @@ describe("public terminal routes", () => {
     });
     fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: foreignHost.host.id,
-      sessionId: foreignHost.session.id,
+      sessionId: fixture.session.id,
+      message: {
+        type: "terminal.output",
+        terminalId: trustedTerminal.id,
+        chunk: foreignChunk,
+      },
+    });
+    expect(
+      getRetainedTerminalOutput(fixture.harness.db, {
+        hostId: fixture.host.id,
+        terminalSessionId: trustedTerminal.id,
+        now: Date.now(),
+      }),
+    ).toEqual([trustedChunk]);
+    expect(
+      fixture.harness.deps.terminalSessions.getTerminal({
+        terminalId: trustedTerminal.id,
+      }),
+    ).toMatchObject({
+      status: "running",
+      exitCode: null,
+      closeReason: null,
+    });
+
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.host.id,
+      sessionId: fixture.session.id,
+      message: {
+        type: "terminal.output",
+        terminalId: exitedTerminal.id,
+        chunk: trustedChunk,
+      },
+    });
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: foreignHost.host.id,
+      sessionId: fixture.session.id,
+      message: {
+        type: "terminal.exited",
+        terminalId: exitedTerminal.id,
+        exitCode: 137,
+        closeReason: "process-exit",
+      },
+    });
+    expect(
+      fixture.harness.deps.terminalSessions.getTerminal({
+        terminalId: exitedTerminal.id,
+      }),
+    ).toMatchObject({
+      status: "running",
+      exitCode: null,
+      closeReason: null,
+    });
+    expect(
+      getRetainedTerminalOutput(fixture.harness.db, {
+        hostId: fixture.host.id,
+        terminalSessionId: exitedTerminal.id,
+        now: Date.now(),
+      }),
+    ).toEqual([trustedChunk]);
+    expect(
+      fixture.harness.db.$client
+        .prepare(
+          "SELECT expires_at AS expiresAt FROM fork_terminal_output WHERE terminal_session_id = ?",
+        )
+        .get(exitedTerminal.id),
+    ).toEqual({ expiresAt: null });
+
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: foreignHost.host.id,
+      sessionId: fixture.session.id,
       message: {
         type: "terminal.replay",
         requestId: "foreign-replay",
@@ -1743,7 +1813,7 @@ describe("public terminal routes", () => {
 
     fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: foreignHost.host.id,
-      sessionId: foreignHost.session.id,
+      sessionId: fixture.session.id,
       message: {
         type: "terminal.replay",
         requestId: "foreign-replay-only",
