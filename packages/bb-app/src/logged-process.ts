@@ -8,6 +8,7 @@ const logPath = process.argv[1];
 const lockPath = logPath + ".lock";
 const sizeLimit = 10 * 1024 * 1024;
 const fileCount = 5;
+const lockWaitLimitMs = 500;
 const rotate = () => {
   const oldestPath = logPath + "." + fileCount;
   if (fs.existsSync(oldestPath)) fs.unlinkSync(oldestPath);
@@ -56,10 +57,24 @@ const acquireLock = () => {
     return null;
   }
 };
-const processChunk = (chunk) => {
+const processChunk = (chunk, startedAt) => {
   const lockFd = acquireLock();
   if (lockFd === null) {
-    setTimeout(() => processChunk(chunk), 10);
+    if (Date.now() - startedAt < lockWaitLimitMs) {
+      setTimeout(() => processChunk(chunk, startedAt), 10);
+      return;
+    }
+    let fd;
+    try {
+      fd = fs.openSync(logPath, "a", 0o600);
+      fs.writeSync(fd, chunk);
+    } catch {}
+    finally {
+      if (fd !== undefined) {
+        try { fs.closeSync(fd); } catch {}
+      }
+      process.stdin.resume();
+    }
     return;
   }
   if (lockFd < 0) {
@@ -102,7 +117,7 @@ process.on("uncaughtException", () => {});
 process.stdin.on("error", () => {});
 process.stdin.on("data", (chunk) => {
   process.stdin.pause();
-  processChunk(chunk);
+  processChunk(chunk, Date.now());
 });
 `;
 
