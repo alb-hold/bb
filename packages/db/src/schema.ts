@@ -1339,3 +1339,12 @@ export const projectAttachmentBackfills = sqliteTable(
     error: text("error"),
   },
 );
+
+export const forkThreadRowStates = sqliteTable("fork_thread_row_states", {
+  threadId: text("thread_id")
+    .primaryKey()
+    .references(() => threads.id, { onDelete: "cascade" }),
+  statusesJson: text("statuses_json").notNull().default("{}"),
+  progressJson: text("progress_json"),
+  updatedAt: integer("updated_at").notNull().default(0),
+});
