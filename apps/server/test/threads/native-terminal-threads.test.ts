@@ -4,7 +4,6 @@ import os from "node:os";
 import path from "node:path";
 import {
   archiveThread,
-  createConnection,
   createNativeTerminalThread,
   createTerminalSession,
   getNativeTerminalThread,
@@ -12,7 +11,6 @@ import {
   getThread,
   listNativeTerminalThreadsWithDisconnectedTerminal,
   listEvents,
-  migrate,
   noopNotifier,
   projectAttachmentThreads,
   setNativeTerminalThreadTerminal,
@@ -22,6 +20,7 @@ import {
   upsertProjectExecutionDefaults,
   type DbConnection,
 } from "@bb/db";
+import { createMigratedConnection } from "@bb/db/testing";
 import { eq } from "drizzle-orm";
 import type { PromptInput } from "@bb/domain";
 import {
@@ -157,8 +156,7 @@ async function createFixture(db?: DbConnection): Promise<Fixture> {
 }
 
 async function createMigratedMemoryFixture(): Promise<Fixture> {
-  const db = createConnection(":memory:");
-  migrate(db);
+  const db = createMigratedConnection();
   explicitlyMigratedDbs.push(db);
   return createFixture(db);
 }
