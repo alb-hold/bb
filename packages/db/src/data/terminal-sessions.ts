@@ -1,11 +1,21 @@
-import { and, asc, eq, inArray, isNull, type SQL } from "drizzle-orm";
+import {
+  and,
+  asc,
+  eq,
+  exists,
+  gt,
+  inArray,
+  isNull,
+  or,
+  type SQL,
+} from "drizzle-orm";
 import type {
   TerminalSessionCloseReason,
   TerminalSessionStatus,
 } from "@bb/domain";
 import type { DbConnection, DbTransaction } from "../connection.js";
 import { createTerminalSessionId } from "../ids.js";
-import { terminalSessions } from "../schema.js";
+import { forkTerminalOutput, terminalSessions } from "../schema.js";
 
 type TerminalSessionConnection = DbConnection | DbTransaction;
 
@@ -222,7 +232,28 @@ export function listTerminalSessions(
       terminalScope(
         args.scope,
         args.visible
-          ? inArray(terminalSessions.status, NON_TERMINAL_SESSION_STATUSES)
+          ? or(
+              inArray(terminalSessions.status, NON_TERMINAL_SESSION_STATUSES),
+              and(
+                eq(terminalSessions.status, "exited"),
+                exists(
+                  db
+                    .select({
+                      terminalSessionId: forkTerminalOutput.terminalSessionId,
+                    })
+                    .from(forkTerminalOutput)
+                    .where(
+                      and(
+                        eq(
+                          forkTerminalOutput.terminalSessionId,
+                          terminalSessions.id,
+                        ),
+                        gt(forkTerminalOutput.expiresAt, Date.now()),
+                      ),
+                    ),
+                ),
+              ),
+            )
           : undefined,
       ),
     )

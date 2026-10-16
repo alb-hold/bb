@@ -2102,14 +2102,7 @@ export class TerminalSessionLifecycle {
             this.options.db,
             args.message.terminalId,
           );
-          if (
-            current &&
-            getRetainedTerminalOutput(this.options.db, {
-              hostId: current.hostId,
-              terminalSessionId: current.id,
-              now: Date.now(),
-            }) === null
-          ) {
+          if (current) {
             for (const chunk of args.message.chunks) {
               this.retainTerminalOutput(current, toTerminalOutputChunk(chunk));
             }

@@ -3873,6 +3873,30 @@ describe("public terminal routes", () => {
         }),
       }),
     ]);
+    const retainedOutputResponse = await fixture.harness.app.request(
+      `/api/v1/terminals/${stored.id}/output?tailBytes=4096`,
+    );
+    expect(retainedOutputResponse.status).toBe(200);
+    const retainedOutput = terminalOutputResponseSchema.parse(
+      await retainedOutputResponse.json(),
+    );
+    expect(
+      Buffer.concat(
+        retainedOutput.chunks.map((chunk) =>
+          Buffer.from(chunk.dataBase64, "base64"),
+        ),
+      ).toString("utf8"),
+    ).toContain("hello\nworld\nfinal output\n");
+    const retainedTerminalsResponse = await fixture.harness.app.request(
+      `/api/v1/terminals?threadId=${fixture.thread.id}`,
+    );
+    expect(retainedTerminalsResponse.status).toBe(200);
+    const retainedTerminals = terminalListResponseSchema.parse(
+      await retainedTerminalsResponse.json(),
+    );
+    expect(retainedTerminals.sessions).toContainEqual(
+      expect.objectContaining({ id: stored.id, status: "exited" }),
+    );
 
     fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.host.id,

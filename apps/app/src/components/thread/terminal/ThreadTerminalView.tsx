@@ -21,6 +21,7 @@ import { usePreferredTheme } from "@/hooks/useTheme";
 import type { MarkdownPreviewLinkHandler } from "@/components/ui/markdown-link";
 import { openUrlInExternalBrowser } from "@/lib/url-open-routing";
 import { decodeBase64Bytes } from "@/lib/base64-bytes";
+import { sdk } from "@/lib/sdk";
 import { useAppNavigationHost } from "@/lib/app-navigation-host";
 import { copyToClipboardWithToast } from "@/lib/clipboard";
 import {
@@ -1264,7 +1265,19 @@ export function ThreadTerminalView({
       fitTerminal();
       reportDocumentVisibility();
       document.addEventListener("visibilitychange", reportDocumentVisibility);
-      activeTransport.start();
+      if (sessionRef.current.status === "exited") {
+        const output = await sdk.terminals.output({
+          terminalId: sessionRef.current.id,
+          tailBytes: 64 * 1024,
+        });
+        if (!disposed) {
+          for (const chunk of output.chunks) {
+            activeTerminal.write(decodeBase64Bytes(chunk.dataBase64));
+          }
+        }
+      } else {
+        activeTransport.start();
+      }
       stopWatchingLayout = watchTerminalLayoutSettled({
         cancelFrame: (handle) => window.cancelAnimationFrame(handle),
         measure: () => {

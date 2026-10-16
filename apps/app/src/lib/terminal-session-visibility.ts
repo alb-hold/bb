@@ -4,7 +4,8 @@ import type { TerminalSession } from "@bb/server-contract";
 export function isVisibleTerminalSession(session: TerminalSession): boolean {
   return (
     isActiveTerminalSessionStatus(session.status) ||
-    session.status === "disconnected"
+    session.status === "disconnected" ||
+    session.status === "exited"
   );
 }
 
@@ -19,7 +20,9 @@ export function shouldShowRetainedTerminalSession({
 }: RetainedTerminalSessionArgs): boolean {
   return (
     isActiveTerminalSessionStatus(session.status) ||
-    (session.status === "disconnected" && retainedTerminalIds.has(session.id))
+    (session.status === "disconnected" &&
+      retainedTerminalIds.has(session.id)) ||
+    session.status === "exited"
   );
 }
 
