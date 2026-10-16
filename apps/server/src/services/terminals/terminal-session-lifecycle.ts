@@ -7,15 +7,19 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import {
   createTerminalSession,
+  appendRetainedTerminalOutputChunk,
   clearTerminalAttention,
   getTerminalAttention,
   getSessionById,
   getTerminalSession,
+  getRetainedTerminalOutput,
   listTerminalSessions,
+  markRetainedTerminalOutputExited,
   upsertTerminalAttention,
   updateTerminalSession,
   updateTerminalSessions,
   updateThread,
+  TERMINAL_OUTPUT_RETENTION_MS,
   type TerminalSessionMutation,
   type TerminalSessionRow,
 } from "@bb/db";
@@ -74,10 +78,6 @@ const DEFAULT_TERMINAL_START: NonNullable<CreateTerminalRequest["start"]> = {
 };
 const HOST_HOME_INITIAL_CWD = "~";
 const TERMINAL_SCROLLBACK_MAX_BYTES = 4 * 1024 * 1024;
-const TERMINAL_RETAINED_OUTPUT_BYTES = 64 * 1024;
-const HOST_RETAINED_OUTPUT_BYTES = 2 * 1024 * 1024;
-const HOST_RETAINED_TERMINAL_LIMIT = 128;
-const TERMINAL_OUTPUT_RETENTION_MS = 30 * 60_000;
 const TERMINAL_EXIT_RETENTION_MINUTES = Math.round(
   TERMINAL_OUTPUT_RETENTION_MS / 60_000,
 );
@@ -553,17 +553,6 @@ function updateTerminalById(
 
 export class TerminalSessionLifecycle {
   private readonly lastThreadAttentionAt = new Map<string, number>();
-  private retentionClock = 0;
-  private readonly retainedOutput = new Map<
-    string,
-    {
-      bytes: number;
-      chunks: TerminalOutputChunk[];
-      chunkTimes: number[];
-      expiresAt: number;
-      hostId: string;
-    }
-  >();
   private readonly pendingAttaches: PendingRpcRegistry<
     PendingTerminalAttachKey,
     TerminalReplayMessage
@@ -1442,9 +1431,11 @@ export class TerminalSessionLifecycle {
   private getRetainedOutput(
     session: TerminalSessionRow,
   ): TerminalOutputChunk[] | null {
-    this.pruneRetainedOutput();
-    const retained = this.retainedOutput.get(session.id);
-    return retained?.hostId === session.hostId ? retained.chunks : null;
+    return getRetainedTerminalOutput(this.options.db, {
+      hostId: session.hostId,
+      terminalSessionId: session.id,
+      now: Date.now(),
+    });
   }
 
   private formatRetainedOutput(args: {
@@ -1478,72 +1469,12 @@ export class TerminalSessionLifecycle {
     session: TerminalSessionRow,
     chunk: TerminalOutputChunk,
   ): void {
-    this.pruneRetainedOutput();
-    let retained = this.retainedOutput.get(session.id);
-    if (!retained || retained.hostId !== session.hostId) {
-      retained = {
-        bytes: 0,
-        chunks: [],
-        chunkTimes: [],
-        expiresAt: Date.now() + TERMINAL_OUTPUT_RETENTION_MS,
-        hostId: session.hostId,
-      };
-      this.retainedOutput.set(session.id, retained);
-    }
-    const byteLength = Buffer.byteLength(chunk.dataBase64, "base64");
-    retained.chunks.push(chunk);
-    retained.chunkTimes.push(++this.retentionClock);
-    retained.bytes += byteLength;
-    while (
-      retained.bytes > TERMINAL_RETAINED_OUTPUT_BYTES &&
-      retained.chunks.length > 0
-    ) {
-      const removed = retained.chunks.shift();
-      retained.chunkTimes.shift();
-      if (removed)
-        retained.bytes -= Buffer.byteLength(removed.dataBase64, "base64");
-    }
-    let hostBytes = [...this.retainedOutput.values()]
-      .filter((entry) => entry.hostId === session.hostId)
-      .reduce((total, entry) => total + entry.bytes, 0);
-    while (hostBytes > HOST_RETAINED_OUTPUT_BYTES) {
-      const oldest = this.oldestRetainedTerminal(session.hostId);
-      if (!oldest) break;
-      const [terminalId, entry] = oldest;
-      const removed = entry.chunks.shift();
-      entry.chunkTimes.shift();
-      if (removed) {
-        const removedBytes = Buffer.byteLength(removed.dataBase64, "base64");
-        entry.bytes -= removedBytes;
-        hostBytes -= removedBytes;
-      }
-      if (entry.chunks.length === 0) this.retainedOutput.delete(terminalId);
-    }
-    while (
-      [...this.retainedOutput.values()].filter(
-        (entry) => entry.hostId === session.hostId,
-      ).length > HOST_RETAINED_TERMINAL_LIMIT
-    ) {
-      const oldest = this.oldestRetainedTerminal(session.hostId);
-      if (!oldest) break;
-      this.retainedOutput.delete(oldest[0]);
-    }
-  }
-
-  private oldestRetainedTerminal(hostId: string) {
-    return [...this.retainedOutput.entries()]
-      .filter(([, entry]) => entry.hostId === hostId && entry.chunks.length > 0)
-      .sort(
-        (left, right) =>
-          (left[1].chunkTimes[0] ?? 0) - (right[1].chunkTimes[0] ?? 0),
-      )[0];
-  }
-
-  private pruneRetainedOutput(): void {
-    const now = Date.now();
-    for (const [terminalId, entry] of this.retainedOutput) {
-      if (entry.expiresAt <= now) this.retainedOutput.delete(terminalId);
-    }
+    appendRetainedTerminalOutputChunk(this.options.db, {
+      hostId: session.hostId,
+      terminalSessionId: session.id,
+      chunk,
+      now: Date.now(),
+    });
   }
 
   private async readRunningTerminalOutput(
@@ -2114,10 +2045,11 @@ export class TerminalSessionLifecycle {
         if (exited) {
           this.forwardedNextSeqByTerminalId.delete(exited.id);
           this.outputFlow.forgetTerminal(exited.id);
-          const retained = this.retainedOutput.get(exited.id);
-          if (retained) {
-            retained.expiresAt = Date.now() + TERMINAL_OUTPUT_RETENTION_MS;
-          }
+          markRetainedTerminalOutputExited(
+            this.options.db,
+            exited.id,
+            Date.now(),
+          );
           this.pendingCloses.settle(
             terminalRpcKey(args.sessionId, exited.id, exited.id),
             exited,
@@ -2170,14 +2102,23 @@ export class TerminalSessionLifecycle {
             this.options.db,
             args.message.terminalId,
           );
-          if (current && !this.retainedOutput.has(current.id)) {
+          if (
+            current &&
+            getRetainedTerminalOutput(this.options.db, {
+              hostId: current.hostId,
+              terminalSessionId: current.id,
+              now: Date.now(),
+            }) === null
+          ) {
             for (const chunk of args.message.chunks) {
               this.retainTerminalOutput(current, toTerminalOutputChunk(chunk));
             }
             if (current.status === "exited") {
-              const retained = this.retainedOutput.get(current.id);
-              if (retained)
-                retained.expiresAt = Date.now() + TERMINAL_OUTPUT_RETENTION_MS;
+              markRetainedTerminalOutputExited(
+                this.options.db,
+                current.id,
+                Date.now(),
+              );
             }
           }
         }
@@ -2293,6 +2234,11 @@ export class TerminalSessionLifecycle {
   private notifyExitedTerminalSession(
     args: NotifyExitedTerminalSessionArgs,
   ): void {
+    markRetainedTerminalOutputExited(
+      this.options.db,
+      args.session.id,
+      Date.now(),
+    );
     this.forwardedNextSeqByTerminalId.delete(args.session.id);
     this.outputFlow.forgetTerminal(args.session.id);
     this.notifyTerminalSessionChanged(args.session);

@@ -36,7 +36,7 @@ describe("bb guide command output", () => {
 
     const output = collectLogLines(vi.mocked(console.log)).join("\n");
     expect(output).toContain(
-      "bb terminal output|read <terminalId>  [--since-seq <n>] [--tail-bytes <n>] [--limit-chunks <n>] [--lines <n>] [--json]\n    Print terminal output; retention is 64 KiB per terminal, 2 MiB and 128 terminals per machine for 30 minutes",
+      "bb terminal output|read <terminalId>  [--since-seq <n>] [--tail-bytes <n>] [--limit-chunks <n>] [--lines <n>] [--json]\n    Print terminal output; retention survives server restarts and is capped at 64 KiB per terminal, 2 MiB and 128 terminals per machine for 30 minutes",
     );
     expect(output).toContain(
       "bb terminal pipe <terminalId>  [--follow] [--command <command>]\n    Stream terminal output until it exits or Ctrl-C",

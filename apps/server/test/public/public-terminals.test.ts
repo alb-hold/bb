@@ -1,6 +1,7 @@
 import { replaceMachineEnvironment } from "../../src/services/machines/environment-settings.js";
 import * as gitCredentials from "../../src/services/machines/git-credentials.js";
 import {
+  createConnection,
   closeSession,
   createTerminalSession,
   getAppSettings,
@@ -1561,6 +1562,67 @@ describe("public terminal routes", () => {
     ]);
   });
 
+  it("reads exited terminal output after reopening the database", async () => {
+    const fixture = await createTerminalRouteFixture();
+    harnesses.push(fixture.harness);
+    const session = createTerminalSession(fixture.harness.db, {
+      cols: 120,
+      daemonSessionId: fixture.session.id,
+      environmentId: fixture.environment.id,
+      hostId: fixture.host.id,
+      initialCwd: fixture.environment.path ?? "/tmp/terminal-workspace",
+      rows: 32,
+      status: "running",
+      threadId: fixture.thread.id,
+      title: "Terminal restart retention",
+    });
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.host.id,
+      sessionId: fixture.session.id,
+      message: {
+        type: "terminal.output",
+        terminalId: session.id,
+        chunk: {
+          seq: 0,
+          dataBase64: Buffer.from("restart survived\n").toString("base64"),
+        },
+      },
+    });
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.host.id,
+      sessionId: fixture.session.id,
+      message: {
+        type: "terminal.exited",
+        terminalId: session.id,
+        exitCode: 0,
+        closeReason: "process-exit",
+      },
+    });
+    const reopenedDb = createConnection(fixture.harness.db.$client.serialize());
+    const reopenedHarness = await createTestAppHarness({ db: reopenedDb });
+    harnesses.push(reopenedHarness);
+
+    const response = await reopenedHarness.app.request(
+      `/api/v1/terminals/${session.id}/output`,
+    );
+
+    expect(response.status).toBe(200);
+    expect(
+      terminalOutputResponseSchema.parse(await readJson(response)),
+    ).toEqual(
+      expect.objectContaining({
+        chunks: [
+          {
+            seq: 0,
+            dataBase64: Buffer.from("restart survived\n").toString("base64"),
+          },
+        ],
+        status: "exited",
+        exitCode: 0,
+      }),
+    );
+  });
+
   it("evicts the oldest output chunk at the per-host cap", async () => {
     const fixture = await createTerminalRouteFixture();
     harnesses.push(fixture.harness);
@@ -1609,6 +1671,111 @@ describe("public terminal routes", () => {
     const output = terminalOutputResponseSchema.parse(await readJson(response));
     expect(output.chunks[0]?.seq).toBe(1);
     expect(output.chunks).toHaveLength(3);
+    expect(output.truncated).toBe(true);
+  });
+
+  it("keeps at most 128 retained terminal buffers per host", async () => {
+    const fixture = await createTerminalRouteFixture();
+    harnesses.push(fixture.harness);
+    const sessions = Array.from({ length: 129 }, (_, index) =>
+      createTerminalSession(fixture.harness.db, {
+        cols: 120,
+        daemonSessionId: fixture.session.id,
+        environmentId: fixture.environment.id,
+        hostId: fixture.host.id,
+        initialCwd: fixture.environment.path ?? "/tmp/terminal-workspace",
+        rows: 32,
+        status: "running",
+        threadId: fixture.thread.id,
+        title: `Retained terminal ${index}`,
+      }),
+    );
+    for (const session of sessions) {
+      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.host.id,
+        sessionId: fixture.session.id,
+        message: {
+          type: "terminal.output",
+          terminalId: session.id,
+          chunk: {
+            seq: 0,
+            dataBase64: Buffer.from("retained\n").toString("base64"),
+          },
+        },
+      });
+      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.host.id,
+        sessionId: fixture.session.id,
+        message: {
+          type: "terminal.exited",
+          terminalId: session.id,
+          exitCode: 0,
+          closeReason: "process-exit",
+        },
+      });
+    }
+
+    const oldestResponse = await fixture.harness.app.request(
+      `/api/v1/terminals/${sessions[0]?.id}/output`,
+    );
+    const newestResponse = await fixture.harness.app.request(
+      `/api/v1/terminals/${sessions.at(-1)?.id}/output`,
+    );
+
+    expect(oldestResponse.status).toBe(409);
+    expect(newestResponse.status).toBe(200);
+  });
+
+  it("keeps only the last 64 KiB for one terminal", async () => {
+    const fixture = await createTerminalRouteFixture();
+    harnesses.push(fixture.harness);
+    const session = createTerminalSession(fixture.harness.db, {
+      cols: 120,
+      daemonSessionId: fixture.session.id,
+      environmentId: fixture.environment.id,
+      hostId: fixture.host.id,
+      initialCwd: fixture.environment.path ?? "/tmp/terminal-workspace",
+      rows: 32,
+      status: "running",
+      threadId: fixture.thread.id,
+      title: "Bounded retained terminal",
+    });
+    const dataBase64 = Buffer.alloc(16 * 1024, 65).toString("base64");
+    for (let seq = 0; seq < 5; seq += 1) {
+      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.host.id,
+        sessionId: fixture.session.id,
+        message: {
+          type: "terminal.output",
+          terminalId: session.id,
+          chunk: { seq, dataBase64 },
+        },
+      });
+    }
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.host.id,
+      sessionId: fixture.session.id,
+      message: {
+        type: "terminal.exited",
+        terminalId: session.id,
+        exitCode: 0,
+        closeReason: "process-exit",
+      },
+    });
+
+    const response = await fixture.harness.app.request(
+      `/api/v1/terminals/${session.id}/output`,
+    );
+
+    expect(response.status).toBe(200);
+    const output = terminalOutputResponseSchema.parse(await readJson(response));
+    expect(output.chunks.map((chunk) => chunk.seq)).toEqual([1, 2, 3, 4]);
+    expect(
+      output.chunks.reduce(
+        (total, chunk) => total + Buffer.byteLength(chunk.dataBase64, "base64"),
+        0,
+      ),
+    ).toBe(64 * 1024);
     expect(output.truncated).toBe(true);
   });
 

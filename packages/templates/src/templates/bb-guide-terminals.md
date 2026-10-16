@@ -75,7 +75,7 @@ raises attention on its terminal. The SDK exposes the same operation as
 
   Output stays readable after the command exits for 30 minutes, capped at 64 KiB
   per terminal, 2 MiB and 128 terminals per machine, with oldest output evicted first. Output
-  is retained by the server and survives daemon restarts. `pipe --follow` streams
+  is stored in the server database and survives server restarts. `pipe --follow` streams
   output until exit or Ctrl-C. For an exited terminal the output is followed by
   `Terminal <id> exited with code N` on stderr. Once the scrollback is gone,
   output fails with `terminal_output_unavailable` and says why.

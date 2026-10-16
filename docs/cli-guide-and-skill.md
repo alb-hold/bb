@@ -3,7 +3,8 @@
 `bb terminal output <id> --lines <n>` prints the latest lines, including from
 recently exited terminals. The server retains at most 64 KiB per terminal,
 2 MiB and 128 terminals per machine for 30 minutes, evicting oldest output
-first. Use
+first. The retained output is stored in the server database and survives server
+restarts. Use
 `bb terminal pipe <id> --follow [--command <cmd>]` to stream output to stdout or
 a local command until the terminal exits or Ctrl-C.
 

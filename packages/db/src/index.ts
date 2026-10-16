@@ -29,6 +29,17 @@ export {
   type TerminalAttentionRecord,
 } from "./fork-terminal-attention.js";
 export {
+  appendRetainedTerminalOutputChunk,
+  getRetainedTerminalOutput,
+  markRetainedTerminalOutputExited,
+  pruneRetainedTerminalOutput,
+  TERMINAL_RETAINED_OUTPUT_BYTES,
+  HOST_RETAINED_OUTPUT_BYTES,
+  HOST_RETAINED_TERMINAL_LIMIT,
+  TERMINAL_OUTPUT_RETENTION_MS,
+  type RetainedTerminalOutputChunk,
+} from "./fork-terminal-output.js";
+export {
   consumeNativeTerminalThreadLaunchInput,
   createNativeTerminalThread,
   deleteNativeTerminalThread,

@@ -271,7 +271,7 @@ export function registerTerminalCommands(
     .command("output <terminalId>")
     .alias("read")
     .description(
-      "Print terminal output; retention is 64 KiB per terminal, 2 MiB and 128 terminals per machine for 30 minutes",
+      "Print terminal output; retention survives server restarts and is capped at 64 KiB per terminal, 2 MiB and 128 terminals per machine for 30 minutes",
     )
     .option("--since-seq <n>", "Only output chunks from this sequence")
     .option("--tail-bytes <n>", "Bound output to the latest N bytes")
