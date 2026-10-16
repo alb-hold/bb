@@ -25,6 +25,7 @@ function Key({
   onPress,
   active = false,
   toggle = false,
+  preventFocus = true,
   disabled,
   className,
 }: {
@@ -33,6 +34,7 @@ function Key({
   onPress: () => void;
   active?: boolean;
   toggle?: boolean;
+  preventFocus?: boolean;
   disabled: boolean;
   className?: string;
 }) {
@@ -42,7 +44,9 @@ function Key({
       aria-label={label}
       aria-pressed={toggle ? active : undefined}
       disabled={disabled}
-      onPointerDown={(event) => event.preventDefault()}
+      onPointerDown={(event) => {
+        if (preventFocus) event.preventDefault();
+      }}
       onClick={() => {
         const shell = getNativeShell();
         if (shell?.has("haptic"))
@@ -206,7 +210,8 @@ export function TerminalMobileControls({
           label="More terminal keys"
           toggle
           active={expanded}
-          onPress={() => setExpanded(!expanded)}
+          preventFocus={false}
+          onPress={() => setExpanded((current) => !current)}
         >
           <Icon name="MoreHorizontal" className="size-4" />
         </Key>

@@ -35,6 +35,22 @@ describe("TerminalMobileControls", () => {
     expect(screen.getByRole("button", { name: "Shift Tab" })).toBeTruthy();
   });
 
+  it("expands the extra keys on the first pointer tap", () => {
+    renderControls();
+    const moreKeys = screen.getByRole("button", { name: "More terminal keys" });
+
+    const pointerDown = new Event("pointerdown", {
+      bubbles: true,
+      cancelable: true,
+    });
+    moreKeys.dispatchEvent(pointerDown);
+    fireEvent.pointerUp(moreKeys, { pointerType: "touch" });
+    fireEvent.click(moreKeys);
+
+    expect(pointerDown.defaultPrevented).toBe(false);
+    expect(screen.getByRole("button", { name: "Shift Tab" })).toBeTruthy();
+  });
+
   it.each([
     ["Shift Tab", "\x1b[Z"],
     ["Interrupt (Control C)", "\x03"],

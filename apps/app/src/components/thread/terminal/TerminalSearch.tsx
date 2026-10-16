@@ -80,6 +80,16 @@ export function TerminalSearch({
       const focusWithinSearch =
         searchRootRef.current?.contains(activeElement) ?? false;
       const focusWithinTerminal = terminal.textarea === activeElement;
+      if (
+        open &&
+        event.key === "Escape" &&
+        (focusWithinSearch || focusWithinTerminal)
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        close();
+        return;
+      }
       const shortcut = getTerminalSearchShortcut(
         event,
         browserPlatform(),
