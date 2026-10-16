@@ -42,6 +42,9 @@ Messaging:
   Code and Codex threads). Plain "/plan ..." text is not recognized; it reaches
   the provider as literal text. Approve or deny the proposed plan with
   `bb thread interactions`; `bb thread cancel-plan` leaves Plan mode early.
+  A Codex thread in Plan mode may stop to ask questions; answer them with
+  `bb thread interactions` too. The next prompt without --plan returns Codex
+  to its default mode.
   SDK callers build the same input with
   `createBuiltinPlanCommandTextInput(text)` from `@bb/sdk` and pass it as
   `input` to `threads.spawn` or `threads.send`.
@@ -58,6 +61,7 @@ Ownership:
     --model <model>                        Set the sticky model for the next and later turns
     --reasoning-level <level>              Set the sticky reasoning level (provider-dependent)
     --visibility <visibility>              Set visible or hidden
+    --project <id-or-name>                 Move the thread to another project; use --self for the current thread
 
   Clearing a parent inherits the former parent's section unless --section or
   --clear-section is also supplied. Children released by environment archiving
@@ -92,6 +96,16 @@ Interactions:
   `show` prints a plugin form's `Data` so you can shape the `--value` JSON.
   A provider's plugin-defined request cannot be cancelled; stop the thread to
   back out of it.
+
+  When an MCP server asks for input with a form, Codex and Claude Code threads
+  show it as a user question with one question per field (ids field-1,
+  field-2, ...). Answer it with `answer`: use --choice for a choice, Yes/No or
+  Skip, and --text for typed text or numbers. bb checks the answers against the
+  form and asks again, up to 3 times, if one is invalid. Forms with more than 4
+  fields or choices, nested fields, rules bb cannot check (such as a pattern),
+  or a URL to open are declined. Codex asks
+  only in approval modes that can prompt the user. In full access, or when
+  escalation is set to deny, Codex declines MCP forms itself.
 
 Queued messages:
 

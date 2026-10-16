@@ -21,7 +21,10 @@ Listing:
     --unsectioned                          Show only threads outside sections
     --include-hidden                       Include hidden threads
 
-  The table prints ID, Title, Project, and Status. Title uses the thread
+  The table prints ID, Title, Project, Status, and Needs you. Needs you shows
+  Needs input, Working, automation Woke, or unread Done when applicable. Woke
+  is omitted when the Automations plugin RPC is unavailable. JSON rows include
+  `listIndicator`. Title uses the thread
   title, then the fallback title from the first prompt, then "-". Long
   titles are cut at 60 characters. Project shows the project name; the
   personal project shows "-". Use --json for the full thread records.
@@ -29,6 +32,8 @@ Listing:
   bb thread search <query> [--limit <1-50>]
                                              Search threads and messages
   bb thread history <id>                   List prompt history
+  bb thread prompt-search [query] [--project <id>] [--limit <1-200>]
+                                             Search prompts sent in any thread; omit query for recent prompts
 
   bb thread count                          Count threads without listing them
     --status <status>                      Count threads in this status: pending, idle, starting, active, stopping, error
@@ -59,7 +64,7 @@ Inspecting:
   bb thread options [id]                   List the session options the agent reports, with current values (--self, --json)
     --set <option=value>                   Choose a value, applied on the thread's next turn (repeatable)
     --clear <option>                       Drop a choice that has not been applied yet (repeatable)
-  bb thread show [id]                      Show thread details and pull request status
+  bb thread show [id] [--usage]            Show details, token usage, child agents, and pull request status; --usage adds token weather and compaction estimates
     --self                                 Target current thread
     --work-status                          Include git working-tree status
     --git-diff                             Include git diff
@@ -94,6 +99,9 @@ Inspecting:
   on stderr when more events exist beyond the printed page. Human-format --all
   walks a consistent history snapshot and joins paginated group contents.
   Appends stay outside that walk; rerun the command if a history edit invalidates it.
+  Every format masks provider environment values other than PATH and bb's own
+  BB_* variables: JSON reports them as {masked: true}, and the diagnostic
+  timeline prints NAME=••••••.
 
   bb thread output [id]                    Get the final output of a thread
     --self                                 Target current thread

@@ -97,3 +97,35 @@ Lifecycle:
   inspect teardown until the lifecycle reaches destroyed. Deleting thread
   storage first stops processes whose working directory is inside it,
   including dev servers in nested checkouts (macOS and Linux only).
+
+Native terminal threads:
+
+  bb thread native [id] [--attach]         Open a --native thread's provider CLI terminal,
+                                           resuming the same session when it has exited
+  bb thread native [id] --convert          Move a claude-code or codex chat thread to its
+                                           terminal: stops its running turn, then resumes
+                                           the same session in claude or codex
+  bb thread native [id] --chat             Move a converted thread back to chat: closes
+                                           its terminal; bb continues the same session
+
+  A thread is in one mode at a time. While it is in its terminal, chat sends
+  paste into the terminal and bb starts no turns. Turns taken in the terminal
+  stay in the provider's session but do not appear in the thread timeline.
+  --convert fails with native_terminal_unsupported for providers without a
+  terminal CLI (Cursor, Elyra) and native_terminal_no_session for a thread that
+  has no provider session yet; --chat fails with native_terminal_no_chat_session
+  for a thread started with --native.
+
+  Tell on a native thread pastes the text into its running terminal and presses
+  Enter; it fails with native_terminal_not_running when the harness has exited.
+  bb presses Enter only once the CLI shows the text in its input box. When a
+  menu or dialog is open (an update, folder-trust or tool-permission prompt)
+  nothing is submitted and tell fails with native_terminal_input_not_shown.
+  When the screen already shows the same text (a short reply such as 1 or y,
+  or a repeated message), nothing is sent and tell fails with
+  native_terminal_input_ambiguous; type it in the terminal or reword it.
+  Read the screen with bb terminal read <terminal-id>.
+
+  A native thread shows Working while its CLI runs a turn and Done when the
+  turn ends, and the first prompt typed in the terminal titles an untitled
+  thread. Stop on a native thread presses Esc in its terminal.
