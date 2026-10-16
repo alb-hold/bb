@@ -35,6 +35,7 @@ import {
   listDeferredLegacyTables,
   migrateNextCompletedEventItemOutput,
   migrateNextLegacyImageGenerationOutput,
+  pruneRetainedTerminalOutput,
   environments,
   pruneClosedSessions,
   RETAINED_EVENT_OUTPUT_TARGETS,
@@ -478,6 +479,13 @@ async function runRetainedEventOutputExpirySweep(
   }
 }
 
+function runRetainedTerminalOutputExpirySweep(
+  deps: LoggedPendingInteractionWorkSessionDeps,
+  now: number,
+): void {
+  pruneRetainedTerminalOutput(deps.db, now);
+}
+
 function runFileChangeDiffTruncationSweep(
   deps: LoggedPendingInteractionWorkSessionDeps,
   now: number,
@@ -540,6 +548,12 @@ const PERIODIC_SWEEP_JOBS: PeriodicSweepJob[] = [
     category: "retention",
     name: "retained-event-output-expiry",
     run: runRetainedEventOutputExpirySweep,
+  },
+  {
+    cadenceMs: 0,
+    category: "retention",
+    name: "retained-terminal-output-expiry",
+    run: runRetainedTerminalOutputExpirySweep,
   },
   {
     cadenceMs: 0,
