@@ -4,6 +4,7 @@ import {
   resolveHostEnvironment,
 } from "../hosts/host-environment.js";
 import { randomUUID } from "node:crypto";
+import { Buffer } from "node:buffer";
 import { z } from "zod";
 import {
   createTerminalSession,
@@ -24,6 +25,7 @@ import type {
   HostDaemonTerminalCloseReason,
   TerminalSessionCloseReason,
 } from "@bb/domain";
+import { TERMINAL_DATA_MAX_BYTES } from "@bb/domain";
 import type {
   HostDaemonContributedEnvEntry,
   HostDaemonDaemonWsMessage,
@@ -89,6 +91,24 @@ const NON_TERMINAL_SESSION_STATUSES = [
   ...DAEMON_OWNED_TERMINAL_STATUSES,
   "disconnected",
 ] as const;
+
+function splitTerminalInputFrames(dataBase64: string): string[] {
+  const data = Buffer.from(dataBase64, "base64");
+  if (data.byteLength <= TERMINAL_DATA_MAX_BYTES) return [dataBase64];
+  const frames: string[] = [];
+  for (
+    let offset = 0;
+    offset < data.byteLength;
+    offset += TERMINAL_DATA_MAX_BYTES
+  ) {
+    frames.push(
+      data
+        .subarray(offset, offset + TERMINAL_DATA_MAX_BYTES)
+        .toString("base64"),
+    );
+  }
+  return frames;
+}
 
 type TerminalOpenedMessage = Extract<
   HostDaemonDaemonWsMessage,
@@ -1341,19 +1361,23 @@ export class TerminalSessionLifecycle {
       });
     }
 
-    const sent = this.options.hub.sendDaemonSessionMessage(
-      current.daemonSessionId,
-      {
-        type: "terminal.input",
-        terminalId: current.id,
-        dataBase64: args.payload.dataBase64,
-      },
-    );
-    if (!sent) {
-      this.disconnectDaemonSessionTerminals({
-        daemonSessionId: current.daemonSessionId,
-      });
-      throw new ApiError(502, "host_disconnected", "Host is not connected");
+    for (const dataBase64 of splitTerminalInputFrames(
+      args.payload.dataBase64,
+    )) {
+      const sent = this.options.hub.sendDaemonSessionMessage(
+        current.daemonSessionId,
+        {
+          type: "terminal.input",
+          terminalId: current.id,
+          dataBase64,
+        },
+      );
+      if (!sent) {
+        this.disconnectDaemonSessionTerminals({
+          daemonSessionId: current.daemonSessionId,
+        });
+        throw new ApiError(502, "host_disconnected", "Host is not connected");
+      }
     }
     if (args.payload.dataBase64.length > 0)
       emitPluginTerminalInput(this.toTerminalSession(session));

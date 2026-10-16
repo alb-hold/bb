@@ -7,6 +7,23 @@ editingNotes: Keep flags accurate against the CLI implementation. Run the json-f
 ---
 Thread commands
 
+Sidebar status and progress:
+
+  bb thread row-status set <key> <value> [--icon <icon>] [--color <color>] [--priority <number>]
+  bb thread row-status clear [<key>]
+  bb thread row-status list
+  bb thread progress <0..1> [--label <text>]
+  bb thread progress clear
+
+These commands use BB_THREAD_ID and update the current thread's sidebar row.
+They support at most eight statuses with values up to 120 characters. Row state
+clears when a managed turn settles to idle or error, or when a native terminal
+session closes with process exit or user close. A daemon disconnect does not
+clear native row state because the terminal may reattach. Explicit clear
+commands remove the selected state, and a targeted read hides state after 60
+minutes without an update as a backstop. The SDK equivalents are
+threads.experimental_rowState and threads.experimental_updateRowState.
+
 Every command supports --json for machine-readable output. Read-only commands
 take a thread ID or --self where supported; mutating lifecycle and messaging
 commands require an explicit ID or --self.

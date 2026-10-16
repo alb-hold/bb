@@ -163,6 +163,10 @@ This index lists every command path that the core CLI registers, including alias
 - `bb thread new`
 - `bb thread fork`
 - `bb thread list`
+- `bb thread count`
+- `bb thread context`
+- `bb thread commands`
+- `bb thread options`
 - `bb thread show`
 - `bb thread get`
 - `bb thread view`
@@ -184,7 +188,6 @@ This index lists every command path that the core CLI registers, including alias
 - `bb thread read`
 - `bb thread unread`
 - `bb thread reorder-pinned`
-- `bb thread count`
 - `bb thread queue`
 - `bb thread queue list`
 - `bb thread queue create`
@@ -210,9 +213,6 @@ This index lists every command path that the core CLI registers, including alias
 - `bb thread retry`
 - `bb thread stop`
 - `bb thread compact`
-- `bb thread context`
-- `bb thread commands`
-- `bb thread options`
 - `bb thread clear`
 - `bb thread cancel-plan`
 - `bb thread clear-goal`
@@ -225,7 +225,12 @@ This index lists every command path that the core CLI registers, including alias
 - `bb thread interactions respond`
 - `bb thread interactions deny`
 - `bb thread native`
-
+- `bb thread row-status`
+- `bb thread row-status set`
+- `bb thread row-status clear`
+- `bb thread row-status list`
+- `bb thread progress`
+- `bb thread progress clear`
 ## environment
 
 - `bb environment`

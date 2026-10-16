@@ -343,6 +343,11 @@ import type {
 } from "./api/thread-tabs.js";
 import { updateThreadTabsRequestSchema } from "./api/thread-tabs.js";
 import type {
+  ThreadRowState,
+  UpdateThreadRowStateRequest,
+} from "./api/thread-row-state.js";
+import { updateThreadRowStateRequestSchema } from "./api/thread-row-state.js";
+import type {
   PathUiPreferenceKey,
   UiPreferenceResponse,
   UiPreferencesResponse,
@@ -1690,6 +1695,20 @@ export const publicApiRoutes = {
         jsonResponse<ThreadTabsWireResponse>(),
         jsonResponse<ApiError>({ status: 409 }),
       ],
+    }),
+    rowState: defineRoute({
+      path: "/threads/:id/row-state",
+      method: "get",
+      request: noRequest<PathId>(),
+      response: jsonResponse<ThreadRowState>(),
+    }),
+    updateRowState: defineRoute({
+      path: "/threads/:id/row-state",
+      method: "patch",
+      request: jsonRequest<PathId, UpdateThreadRowStateRequest>(
+        updateThreadRowStateRequestSchema,
+      ),
+      response: jsonResponse<ThreadRowState>(),
     }),
     pin: defineRoute({
       path: "/threads/:id/pin",

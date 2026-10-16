@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { Buffer } from "node:buffer";
 import {
   archiveThread,
   createEnvironment,
@@ -13,13 +14,22 @@ import {
   upsertHost,
 } from "@bb/db";
 import { eq } from "drizzle-orm";
+import { terminalDataBase64Schema, TERMINAL_DATA_MAX_BYTES } from "@bb/domain";
 import { createProviderRegistryService } from "../../../src/services/providers/provider-registry.js";
 import {
   openNativeTerminal,
   reopenNativeTerminalsAfterDaemonReconnect,
   takeNativeTerminalLaunchSpec,
 } from "../../../src/services/threads/native-terminal-threads.js";
+import { acceptThreadSendRequest } from "../../../src/services/threads/thread-send-request.js";
 import { createTestProviderRegistry } from "../../helpers/provider-registry.js";
+import { textInput } from "../../helpers/prompt-input.js";
+import {
+  seedEnvironment,
+  seedHostSession,
+  seedProjectWithSource,
+  seedThread,
+} from "../../helpers/seed.js";
 import {
   withTestHarness,
   type TestAppHarness,
@@ -77,6 +87,152 @@ async function createDisconnectedNativeThread(
 }
 
 describe("reopenNativeTerminalsAfterDaemonReconnect", () => {
+  it("sends a large public tell as ordered valid frames without closing its session", async () => {
+    await withTestHarness(async (h) => {
+      const seeded = seedHostSession(h.deps, { id: "host-native-large-tell" });
+      const { project } = seedProjectWithSource(h.deps, {
+        hostId: seeded.host.id,
+        path: "/tmp/native-large-tell-project",
+      });
+      const environment = seedEnvironment(h.deps, {
+        hostId: seeded.host.id,
+        path: "/tmp/native-large-tell-workspace",
+        projectId: project.id,
+        status: "ready",
+      });
+      const thread = seedThread(h.deps, {
+        environmentId: environment.id,
+        projectId: project.id,
+        providerId: "claude-code",
+      });
+      createNativeTerminalThread(h.db, {
+        threadId: thread.id,
+        providerId: "claude-code",
+        nativeSessionId: "native-large-tell-session",
+        initialPrompt: null,
+        initialImages: [],
+        model: null,
+      });
+      const terminal = createTerminalSession(h.db, {
+        threadId: thread.id,
+        environmentId: environment.id,
+        hostId: seeded.host.id,
+        daemonSessionId: seeded.session.id,
+        title: "Claude Code",
+        initialCwd: environment.path ?? "/tmp",
+        cols: 120,
+        rows: 36,
+        status: "running",
+      });
+      setNativeTerminalThreadTerminal(h.db, {
+        threadId: thread.id,
+        terminalSessionId: terminal.id,
+      });
+
+      const sentMessages: unknown[] = [];
+      const socket = {
+        close: vi.fn(),
+        send: vi.fn((data: string) => sentMessages.push(JSON.parse(data))),
+      };
+      h.hub.registerDaemon(seeded.session.id, seeded.host.id, socket);
+
+      const before = {
+        chunks: [],
+        nextSeq: 0,
+        truncated: false,
+        status: "running" as const,
+        exitCode: null,
+        closeReason: null,
+      };
+      const after = {
+        ...before,
+        chunks: [
+          {
+            seq: 0,
+            dataBase64: Buffer.from(
+              "\r\n> [Pasted text #1 +4000 lines]",
+            ).toString("base64"),
+          },
+        ],
+        nextSeq: 1,
+      };
+      let outputReads = 0;
+      vi.spyOn(
+        h.deps.terminalSessions,
+        "readTerminalOutput",
+      ).mockImplementation(async () => {
+        outputReads += 1;
+        return outputReads > 2 ? after : before;
+      });
+
+      const bracketedPastePrefix = "\u001b[200~";
+      const bracketedPastePrefixBytes = bracketedPastePrefix.length;
+      const euro = "€";
+      const emoji = "😀";
+      const prefixText = "a".repeat(
+        TERMINAL_DATA_MAX_BYTES - bracketedPastePrefixBytes - 1,
+      );
+      const middleText = "b".repeat(
+        TERMINAL_DATA_MAX_BYTES - Buffer.byteLength(euro),
+      );
+      const text = `${prefixText}${euro}${middleText}${emoji}${"æ🧪😀\n".repeat(4_000)}END`;
+      const euroStartByte =
+        bracketedPastePrefixBytes + Buffer.byteLength(prefixText);
+      const emojiStartByte =
+        euroStartByte + Buffer.byteLength(euro) + Buffer.byteLength(middleText);
+      const result = await acceptThreadSendRequest(h.deps, {
+        thread,
+        payload: { input: textInput(text), mode: "start" },
+      });
+
+      expect(result).toEqual({ ok: true, delivery: "sent" });
+      expect(socket.close).not.toHaveBeenCalled();
+      expect(
+        h.deps.terminalSessions.getTerminal({ terminalId: terminal.id }).status,
+      ).toBe("running");
+      const inputFrames = sentMessages
+        .filter(
+          (message): message is { type: string; dataBase64: string } =>
+            typeof message === "object" &&
+            message !== null &&
+            "type" in message &&
+            message.type === "terminal.input" &&
+            "dataBase64" in message &&
+            typeof message.dataBase64 === "string",
+        )
+        .map((message) => message.dataBase64);
+      expect(inputFrames.length).toBeGreaterThan(1);
+      for (const frame of inputFrames) {
+        expect(terminalDataBase64Schema.parse(frame)).toBe(frame);
+        expect(Buffer.from(frame, "base64").byteLength).toBeLessThanOrEqual(
+          TERMINAL_DATA_MAX_BYTES,
+        );
+      }
+      expect(inputFrames.length).toBeGreaterThanOrEqual(2);
+      const expected = Buffer.from(
+        `${bracketedPastePrefix}${text}\u001b[201~\r`,
+      );
+      const decoded = inputFrames.map((frame) => Buffer.from(frame, "base64"));
+      expect(Buffer.concat(decoded)).toEqual(expected);
+      expect(expected.byteLength).toBeGreaterThan(120_000);
+      expect(decoded.length).toBeGreaterThanOrEqual(3);
+      expect(euroStartByte).toBe(TERMINAL_DATA_MAX_BYTES - 1);
+      expect(emojiStartByte).toBe(TERMINAL_DATA_MAX_BYTES * 2 - 1);
+      expect(decoded[0].at(-1)).toBe(0xe2);
+      expect(decoded[1].subarray(0, 2)).toEqual(Buffer.from([0x82, 0xac]));
+      expect(decoded[1].at(-1)).toBe(0xf0);
+      expect(decoded[2].subarray(0, 3)).toEqual(
+        Buffer.from([0x9f, 0x98, 0x80]),
+      );
+      const fatalUtf8Decoder = new TextDecoder("utf-8", { fatal: true });
+      expect(() => fatalUtf8Decoder.decode(decoded[0])).toThrow();
+      expect(() => fatalUtf8Decoder.decode(decoded[1])).toThrow();
+      expect(fatalUtf8Decoder.decode(Buffer.concat(decoded))).toBe(
+        expected.toString("utf8"),
+      );
+    });
+  });
+
   it("reopens with the same CLI session when the provider registers after the settle timeout", async () => {
     await withTestHarness({ seedFirstPartyProviders: false }, async (h) => {
       const host = upsertHost(h.db, noopNotifier, {

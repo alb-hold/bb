@@ -1,6 +1,8 @@
 import {
   applyThreadLifecycleEvent,
   applyThreadLifecycleEventInTransaction,
+  clearThreadRowState,
+  isNativeTerminalThread,
   type ApplyThreadLifecycleEventArgs,
   type ApplyThreadLifecycleEventOutcome,
   type DbConnection,
@@ -61,7 +63,11 @@ export function applyLoggedThreadLifecycleEvent(
 ): ApplyThreadLifecycleEventOutcome {
   const outcome = applyThreadLifecycleEvent(deps.db, args);
   if (outcome.applied) {
-    if (outcome.thread.status === "idle" || outcome.thread.status === "error") {
+    if (
+      (outcome.thread.status === "idle" || outcome.thread.status === "error") &&
+      !isNativeTerminalThread(deps.db, args.threadId)
+    ) {
+      clearThreadRowState(deps.db, args.threadId);
       releaseWorkspaceForThread(deps, outcome.thread);
     }
     deps.hub.notifyThread(
@@ -83,8 +89,10 @@ export function applyLoggedThreadLifecycleEventInTransaction(
   const outcome = applyThreadLifecycleEventInTransaction(deps.db, args);
   if (
     outcome.applied &&
-    (outcome.thread.status === "idle" || outcome.thread.status === "error")
+    (outcome.thread.status === "idle" || outcome.thread.status === "error") &&
+    !isNativeTerminalThread(deps.db, args.threadId)
   ) {
+    clearThreadRowState(deps.db, args.threadId);
     releaseWorkspaceForThread(deps, outcome.thread);
   }
   logUnappliedThreadLifecycleEvent(deps.logger, args, outcome);
