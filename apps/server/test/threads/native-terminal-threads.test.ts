@@ -906,12 +906,12 @@ describe("native terminal threads", () => {
         (message) => message.type === "terminal.open",
       ),
     ).toHaveLength(1);
-    expect(getNativeTerminalThread(fixture.harness.db, thread.id)).toMatchObject(
-      {
-        nativeSessionId: record.nativeSessionId,
-        terminalSessionId: reopen.terminalId,
-      },
-    );
+    expect(
+      getNativeTerminalThread(fixture.harness.db, thread.id),
+    ).toMatchObject({
+      nativeSessionId: record.nativeSessionId,
+      terminalSessionId: reopen.terminalId,
+    });
     fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.hostId,
       sessionId: fixture.sessionId,
@@ -2147,9 +2147,12 @@ describe("native terminal threads", () => {
     options: {
       beforeRestart?: (fixture: Fixture) => void;
       deferProviders?: boolean;
+      useMigratedMemoryDb?: boolean;
     } = {},
   ) {
-    const fixture = await createFixture();
+    const fixture = options.useMigratedMemoryDb
+      ? await createMigratedMemoryFixture()
+      : await createFixture();
     const running = await openRunningNativeThread(fixture, {
       providerId: "claude-code",
     });
@@ -2417,6 +2420,89 @@ describe("native terminal threads", () => {
         "active",
       );
     } finally {
+      if (restoreTimers) vi.useRealTimers();
+    }
+  }, 60_000);
+
+  it("retries a failed deadline interrupt and stops the native thread on the next attempt", async () => {
+    let restoreTimers = false;
+    let transaction: ReturnType<typeof vi.spyOn> | undefined;
+    let errorLog: ReturnType<typeof vi.spyOn> | undefined;
+    try {
+      const { fixture, running } = await restartDaemonWithRunningNativeThread(
+        "instance-restarted",
+        {
+          beforeRestart: () => {
+            vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+            restoreTimers = true;
+          },
+          deferProviders: true,
+          useMigratedMemoryDb: true,
+        },
+      );
+      transaction = vi.spyOn(fixture.harness.deps.db, "transaction");
+      transaction.mockImplementationOnce(() => {
+        throw new Error("injected interrupt transaction failure");
+      });
+      errorLog = vi.spyOn(fixture.harness.deps.logger, "error");
+
+      await vi.advanceTimersByTimeAsync(46_000);
+
+      expect(transaction).toHaveBeenCalledTimes(2);
+      expect(getThread(fixture.harness.db, running.thread.id)?.status).not.toBe(
+        "active",
+      );
+      expect(interruptionReasons(fixture, running.thread.id)).toEqual([
+        "host-daemon-restarted",
+      ]);
+      expect(errorLog).not.toHaveBeenCalled();
+    } finally {
+      transaction?.mockRestore();
+      errorLog?.mockRestore();
+      if (restoreTimers) vi.useRealTimers();
+    }
+  }, 60_000);
+
+  it("bounds failed deadline interrupt retries and logs the final failure", async () => {
+    let restoreTimers = false;
+    let transaction: ReturnType<typeof vi.spyOn> | undefined;
+    let errorLog: ReturnType<typeof vi.spyOn> | undefined;
+    try {
+      const { fixture, running } = await restartDaemonWithRunningNativeThread(
+        "instance-restarted",
+        {
+          beforeRestart: () => {
+            vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+            restoreTimers = true;
+          },
+          deferProviders: true,
+          useMigratedMemoryDb: true,
+        },
+      );
+      transaction = vi.spyOn(fixture.harness.deps.db, "transaction");
+      transaction.mockImplementation(() => {
+        throw new Error("persistent interrupt transaction failure");
+      });
+      errorLog = vi.spyOn(fixture.harness.deps.logger, "error");
+
+      await vi.advanceTimersByTimeAsync(46_000);
+
+      expect(transaction).toHaveBeenCalledTimes(3);
+      expect(getThread(fixture.harness.db, running.thread.id)?.status).toBe(
+        "active",
+      );
+      expect(interruptionReasons(fixture, running.thread.id)).toEqual([]);
+      expect(errorLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          attempts: 3,
+          hostId: fixture.hostId,
+          threadId: running.thread.id,
+        }),
+        "Failed to interrupt a native terminal thread after retries",
+      );
+    } finally {
+      transaction?.mockRestore();
+      errorLog?.mockRestore();
       if (restoreTimers) vi.useRealTimers();
     }
   }, 60_000);
