@@ -1117,6 +1117,59 @@ describe("@bb/sdk", () => {
     ]);
   });
 
+  it("uses one oldest-first terminal attention action for list, next, and clear", async () => {
+    const oldest = makeTerminalSession({
+      id: "term_oldest",
+      createdAt: 1,
+      attention: { at: 10, kind: "bell", seq: 1 },
+    });
+    const newest = makeTerminalSession({
+      id: "term_newest",
+      createdAt: 2,
+      attention: { at: 20, kind: "osc-9", seq: 2 },
+    });
+    const queue = createFetchQueue([
+      { body: { sessions: [newest, oldest] } },
+      { body: { sessions: [newest, oldest] } },
+      { body: oldest },
+    ]);
+    const sdk = createBbSdk({
+      transport: createHttpTransport({
+        baseUrl: "http://bb.test",
+        fetch: queue.fetch,
+        runtime: "node",
+      }),
+    });
+
+    expect(
+      (await sdk.terminals.experimental_attention.list()).map(({ id }) => id),
+    ).toEqual(["term_oldest", "term_newest"]);
+    expect((await sdk.terminals.experimental_attention.next())?.id).toBe(
+      "term_oldest",
+    );
+    await sdk.terminals.experimental_attention.clear({
+      terminalId: "term_oldest",
+    });
+
+    expect(queue.requests).toEqual([
+      {
+        bodyText: undefined,
+        method: "GET",
+        url: "http://bb.test/api/v1/terminals/attention",
+      },
+      {
+        bodyText: undefined,
+        method: "GET",
+        url: "http://bb.test/api/v1/terminals/attention",
+      },
+      {
+        bodyText: undefined,
+        method: "POST",
+        url: "http://bb.test/api/v1/terminals/term_oldest/attention/clear",
+      },
+    ]);
+  });
+
   it("restarts a terminal without requiring its scope from the caller", async () => {
     const replacement = makeTerminalSession({ id: "term_new" });
     const queue = createFetchQueue([{ body: replacement, status: 201 }]);

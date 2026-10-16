@@ -14,6 +14,22 @@ question.
 [provider-bridge-protocol.md](provider-bridge-protocol.md). An entry without
 a "Docs:" line has no owning doc, so it keeps the essential contract itself.
 
+## `sdk.terminals.experimental_attention`
+
+Lists uncleared terminal attention in oldest-first order, returns the next
+terminal needing attention, and explicitly clears a terminal ring.
+`TerminalAttentionCommandHandler` and `apps/cli/src/commands/terminal.ts` call
+this same SDK area; visibly opening a terminal clears through the existing
+terminal attach path.
+
+**Audit before stabilizing.** Confirm authorization scope for global list and
+clear operations, ordering when timestamps tie, and cross-client behavior of
+explicit clearing. The app shortcut uses Alt+Shift+N and remains active with
+terminal focus.
+
+Plugin Guide surface: `The bb SDK` in
+`plugins/plugin-api-docs/src/surfaces.ts`.
+
 ## Composer popups
 
 `ComposerCustomization.experimental_popups` registers `{ id, label, component }`

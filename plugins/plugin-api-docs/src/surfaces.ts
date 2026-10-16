@@ -1278,6 +1278,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
           "Read thread, context, prompt history, host, and environment state through the SDK.",
           "Clean up unused provider environments and control plugin safe mode with explicit SDK calls.",
           "Use app and CLI operations with ownership controls; start updates and track progress or rollback.",
+          "List, select, and clear terminal attention through the experimental SDK area.",
         ],
         apiSymbols: [
           "BbPluginApi",
@@ -1300,6 +1301,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
           "PluginBbSdk.threads.queuedMessages.experimental_holdForEdit",
           "PluginBbSdk.threads.queuedMessages.experimental_releaseEditHold",
           "PluginBbSdk.threads.experimental_listDescendants",
+          "PluginBbSdk.terminals.experimental_attention",
         ],
         firstParty: [
           "Account Pooler [Experimental]",

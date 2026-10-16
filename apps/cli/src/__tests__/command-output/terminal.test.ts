@@ -96,6 +96,55 @@ describe("bb terminal command output", () => {
     }
   });
 
+  it.each([
+    [
+      "list",
+      [
+        {
+          ...makeTerminalSession(),
+          attention: { at: 10, kind: "bell", seq: 1 },
+        },
+      ],
+    ],
+    [
+      "next",
+      [
+        {
+          ...makeTerminalSession(),
+          attention: { at: 10, kind: "bell", seq: 1 },
+        },
+      ],
+    ],
+  ])("uses the shared attention target for %s", async (command, sessions) => {
+    const listAttention = vi.fn(async () => ({ sessions }));
+    stubServerApi({ "v1.terminals.attention.$get": listAttention });
+
+    await runCommand(["terminal", "attention", command], register);
+
+    expect(listAttention).toHaveBeenCalledWith({});
+    expect(collectLogLines(vi.mocked(console.log)).join("\n")).toContain(
+      "term-1",
+    );
+  });
+
+  it("shows an explicit empty attention state and clears by terminal ID", async () => {
+    const listAttention = vi.fn(async () => ({ sessions: [] }));
+    stubServerApi({ "v1.terminals.attention.$get": listAttention });
+    await runCommand(["terminal", "attention", "next"], register);
+    expect(collectLogLines(vi.mocked(console.log))).toContain(
+      "Nothing needs attention.",
+    );
+
+    const clearAttention = vi.fn(async () => makeTerminalSession());
+    stubServerApi({
+      "v1.terminals.:terminalId.attention.clear.$post": clearAttention,
+    });
+    await runCommand(["terminal", "attention", "clear", "term-1"], register);
+    expect(clearAttention).toHaveBeenCalledWith({
+      param: { terminalId: "term-1" },
+    });
+  });
+
   it("resolves an explicit machine and cwd without a primary-host fallback", async () => {
     const hosts = vi.fn(async () => [makeHost()]);
     const list = vi.fn(async () => ({ sessions: [] }));

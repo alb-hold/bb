@@ -15,6 +15,7 @@ import {
 import { nanoid } from "nanoid";
 import { useSystemProviderInfo } from "@/hooks/queries/system-queries";
 import { useImmediateRouteNavigate } from "@/components/ui/app-route-anchor";
+import { useLocation } from "react-router-dom";
 import { useAtom } from "jotai";
 import { useDesktopBrowserReveal } from "@/lib/use-desktop-browser-reveal";
 import { atomWithStorage } from "jotai/utils";
@@ -279,6 +280,7 @@ import {
   useReconciledFixedPanelTabsState,
   useTouchFixedPanelTabsState,
   useUpdateFixedPanelTabsState,
+  useSetFixedRightTerminalActiveTerminal,
 } from "@/lib/fixed-panel-tabs";
 import {
   createGitDiffFixedPanelTab,
@@ -515,6 +517,34 @@ function ThreadDetailViewInternal(
     isBoundedPane,
   } = usePaneContext();
   const navigate = useImmediateRouteNavigate();
+  const location = useLocation();
+  const setActiveTerminal = useSetFixedRightTerminalActiveTerminal(
+    threadId,
+    threadId,
+  );
+  const terminalAttentionId =
+    location.state !== null &&
+    typeof location.state === "object" &&
+    "terminalAttentionId" in location.state &&
+    typeof location.state.terminalAttentionId === "string"
+      ? location.state.terminalAttentionId
+      : null;
+  useEffect(() => {
+    if (terminalAttentionId === null) return;
+    setActiveTerminal(terminalAttentionId, { kind: "thread", threadId });
+    void navigate(`${location.pathname}${location.search}${location.hash}`, {
+      replace: true,
+      state: null,
+    });
+  }, [
+    location.hash,
+    location.pathname,
+    location.search,
+    navigate,
+    setActiveTerminal,
+    terminalAttentionId,
+    threadId,
+  ]);
   useFixedPanelTabsStorageMaintenance();
   const systemConfigQuery = useSystemConfig();
   const threadDetailBootstrapQuery = useThreadDetailBootstrap(threadId);

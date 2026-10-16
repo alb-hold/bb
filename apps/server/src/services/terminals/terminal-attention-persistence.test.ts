@@ -26,6 +26,39 @@ afterEach(async () => {
 });
 
 describe("terminal attention persistence", () => {
+  it("lists the oldest unread terminal attention and clears it explicitly", async () => {
+    const harness = await createTestAppHarness();
+    harnesses.push(harness);
+    const { terminalId } = createAttentionTerminal(harness);
+    harness.deps.terminalSessions.notifyTerminal({
+      terminalId,
+      payload: { title: "Build", body: "Finished" },
+    });
+
+    const listed = await harness.app.request("/api/v1/terminals/attention");
+    expect(listed.status).toBe(200);
+    expect(await listed.json()).toMatchObject({
+      sessions: [
+        { id: terminalId, attention: { title: "Build", body: "Finished" } },
+      ],
+    });
+
+    const cleared = await harness.app.request(
+      `/api/v1/terminals/${terminalId}/attention/clear`,
+      { method: "POST" },
+    );
+    expect(cleared.status).toBe(200);
+    expect(await cleared.json()).toMatchObject({
+      id: terminalId,
+      attention: null,
+    });
+    expect(
+      await (await harness.app.request("/api/v1/terminals/attention")).json(),
+    ).toEqual({
+      sessions: [],
+    });
+  });
+
   it("includes unread persisted attention in a WebSocket attach snapshot", async () => {
     const db = createMigratedConnection();
     const harness = await createTestAppHarness({ db });
