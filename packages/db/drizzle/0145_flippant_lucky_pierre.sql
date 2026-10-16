@@ -1,1 +1,0 @@
-ALTER TABLE `fork_thread_row_states` ADD `updated_at` integer DEFAULT 0 NOT NULL;
