@@ -2463,6 +2463,46 @@ describe("native terminal threads", () => {
     }
   }, 60_000);
 
+  it("stops retrying a failed deadline interrupt when a newer reconnect moves the reattach epoch", async () => {
+    let restoreTimers = false;
+    let transaction: ReturnType<typeof vi.spyOn> | undefined;
+    try {
+      const { fixture, running } = await restartDaemonWithRunningNativeThread(
+        "instance-restarted",
+        {
+          beforeRestart: () => {
+            vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+            restoreTimers = true;
+          },
+          deferProviders: true,
+          useMigratedMemoryDb: true,
+        },
+      );
+      transaction = vi.spyOn(fixture.harness.deps.db, "transaction");
+      transaction.mockImplementationOnce(() => {
+        throw new Error("injected interrupt transaction failure");
+      });
+
+      await vi.advanceTimersByTimeAsync(45_000);
+
+      expect(transaction).toHaveBeenCalledTimes(1);
+      void reopenNativeTerminalsAfterDaemonReconnect(fixture.harness.deps, {
+        hostId: fixture.hostId,
+        threadIds: [running.thread.id],
+      });
+      await vi.advanceTimersByTimeAsync(25);
+
+      expect(transaction).toHaveBeenCalledTimes(1);
+      expect(getThread(fixture.harness.db, running.thread.id)?.status).toBe(
+        "active",
+      );
+      expect(interruptionReasons(fixture, running.thread.id)).toEqual([]);
+    } finally {
+      transaction?.mockRestore();
+      if (restoreTimers) vi.useRealTimers();
+    }
+  }, 60_000);
+
   it("bounds failed deadline interrupt retries and logs the final failure", async () => {
     let restoreTimers = false;
     let transaction: ReturnType<typeof vi.spyOn> | undefined;

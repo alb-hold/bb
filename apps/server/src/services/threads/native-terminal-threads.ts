@@ -661,6 +661,17 @@ function reopenNativeTerminals(
         if (interrupting !== null) return interrupting;
         interrupting = (async () => {
           while (!interrupted && interruptAttempts < 3) {
+            if (!stillWaiting()) {
+              deps.logger.debug(
+                {
+                  attempts: interruptAttempts,
+                  hostId: args.hostId,
+                  threadId,
+                },
+                "Stopping native terminal interrupt retries after reattach recovery",
+              );
+              return;
+            }
             interruptAttempts += 1;
             try {
               interruptThreadWhoseHolderIsGone(deps, {
