@@ -38,6 +38,7 @@ import {
 } from "../../services/plugins/plugin-thread-events.js";
 import { toThreadQueuedMessage } from "../../services/threads/thread-queued-messages.js";
 import { retryFailedTurn } from "../../services/threads/turn-retry.js";
+import { resumeNativeTerminalAfterUnarchive } from "../../services/threads/native-terminal-threads.js";
 import {
   requireConnectedHostSession,
   requirePublicThread,
@@ -615,6 +616,14 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
         refreshProviderRetirement(deps, unarchivedThread.environmentId);
       emitPluginThreadUnarchived(unarchivedThread);
     }
+    void resumeNativeTerminalAfterUnarchive(deps, {
+      threadId: thread.id,
+    }).catch((error: unknown) => {
+      deps.logger.warn(
+        { err: error, threadId: thread.id },
+        "Failed to resume native terminal after thread unarchive",
+      );
+    });
     const environment = thread.environmentId
       ? getEnvironment(deps.db, thread.environmentId)
       : null;

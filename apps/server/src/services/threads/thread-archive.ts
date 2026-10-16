@@ -11,6 +11,7 @@ import {
   listLifecycleThreadDependents,
   archiveThread,
   getEnvironment,
+  getNativeTerminalThread,
   listNonDeletedChildThreads,
   listNonDeletedHiddenSourceThreads,
 } from "@bb/db";
@@ -63,7 +64,10 @@ function archiveThreadWithLifecycleEffects(
   }
 
   const now = Date.now();
-  if (!archiveUndoGraceKeepsTerminals(archivedThread, now)) {
+  if (
+    getNativeTerminalThread(deps.db, archivedThread.id) !== null ||
+    !archiveUndoGraceKeepsTerminals(archivedThread, now)
+  ) {
     deps.terminalSessions.closeArchivedThreadTerminals({
       threadId: archivedThread.id,
     });
