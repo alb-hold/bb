@@ -4,6 +4,7 @@ import {
   createTerminalSession,
   ensureTerminalAttentionTable,
   getTerminalAttention,
+  listTerminalAttention,
   migrate,
   noopNotifier,
   upsertHost,
@@ -86,5 +87,48 @@ describe("fork terminal attention table", () => {
       .run(terminal.id);
 
     expect(getTerminalAttention(db, terminal.id)).toBeNull();
+  });
+
+  it("lists only visible uncleared rings in oldest-first order", () => {
+    const db = createConnection(":memory:");
+    connections.push(db);
+    migrate(db);
+    const host = upsertHost(db, noopNotifier, { name: "test-host" });
+    const makeTerminal = (title: string, status: "running" | "exited") =>
+      createTerminalSession(db, {
+        cols: 80,
+        daemonSessionId: null,
+        environmentId: null,
+        hostId: host.id,
+        initialCwd: "/tmp",
+        rows: 24,
+        status,
+        threadId: null,
+        title,
+      });
+    const later = makeTerminal("later", "running");
+    const oldest = makeTerminal("oldest", "running");
+    const exited = makeTerminal("exited", "exited");
+    for (const [terminalSessionId, attentionAt] of [
+      [later.id, 200],
+      [oldest.id, 100],
+      [exited.id, 50],
+    ] as const) {
+      upsertTerminalAttention(db, {
+        terminalSessionId,
+        seq: 1,
+        daemonSeq: 1,
+        kind: "bell",
+        title: null,
+        body: null,
+        attentionAt,
+      });
+    }
+
+    expect(
+      listTerminalAttention(db).map(
+        ({ terminalSessionId }) => terminalSessionId,
+      ),
+    ).toEqual([oldest.id, later.id]);
   });
 });

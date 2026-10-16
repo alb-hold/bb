@@ -15,6 +15,7 @@ import {
 import { nanoid } from "nanoid";
 import { useSystemProviderInfo } from "@/hooks/queries/system-queries";
 import { useImmediateRouteNavigate } from "@/components/ui/app-route-anchor";
+import { useLocation } from "react-router-dom";
 import { useAtom } from "jotai";
 import { useDesktopBrowserReveal } from "@/lib/use-desktop-browser-reveal";
 import { atomWithStorage } from "jotai/utils";
@@ -185,6 +186,7 @@ import {
   useThreadSecondaryPanelVisibility,
   type ThreadSecondaryPanelFileOpenOptions,
 } from "./useThreadSecondaryPanelVisibility";
+import { useTerminalAttentionHandoff } from "./useTerminalAttentionHandoff";
 import type { HostConnectionNotice } from "@/components/thread/timeline/ThreadTimelineSurface";
 import type { ThreadTimelineConsumerMessageAction } from "@/components/thread/timeline/types";
 import {
@@ -279,6 +281,7 @@ import {
   useReconciledFixedPanelTabsState,
   useTouchFixedPanelTabsState,
   useUpdateFixedPanelTabsState,
+  useSetFixedRightTerminalActiveTerminal,
 } from "@/lib/fixed-panel-tabs";
 import {
   createGitDiffFixedPanelTab,
@@ -515,6 +518,11 @@ function ThreadDetailViewInternal(
     isBoundedPane,
   } = usePaneContext();
   const navigate = useImmediateRouteNavigate();
+  const location = useLocation();
+  const setActiveTerminal = useSetFixedRightTerminalActiveTerminal(
+    threadId,
+    threadId,
+  );
   useFixedPanelTabsStorageMaintenance();
   const systemConfigQuery = useSystemConfig();
   const threadDetailBootstrapQuery = useThreadDetailBootstrap(threadId);
@@ -1284,6 +1292,13 @@ function ThreadDetailViewInternal(
     openPersistedStorageFile: panelFiles.openStorageFile,
     openPersistedWorkspaceFile: panelFiles.openWorkspaceFile,
     togglePersistedPanel: toggleDefaultPersistedSecondaryPanel,
+  });
+  useTerminalAttentionHandoff({
+    location,
+    navigate,
+    openCompactDrawer,
+    setActiveTerminal,
+    threadId,
   });
   const dismissPluginDetails = pluginDetails.dismiss;
   const closeSecondaryPanel = useCallback(() => {

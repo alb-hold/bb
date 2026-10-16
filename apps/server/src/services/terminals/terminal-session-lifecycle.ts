@@ -10,6 +10,7 @@ import {
   createTerminalSession,
   clearTerminalAttention,
   getTerminalAttention,
+  listTerminalAttention,
   getSessionById,
   getTerminalSession,
   listTerminalSessions,
@@ -713,6 +714,36 @@ export class TerminalSessionLifecycle {
           (query.cwd === undefined || session.initialCwd === query.cwd),
       )
       .map((row) => this.toTerminalSession(row));
+  }
+
+  listAttention(): TerminalSession[] {
+    return listTerminalAttention(this.options.db).flatMap(
+      ({ terminalSessionId }) => {
+        const row = getTerminalById(this.options.db, terminalSessionId);
+        return row === null ? [] : [this.toTerminalSession(row)];
+      },
+    );
+  }
+
+  clearAttention(terminalId: string): TerminalSession {
+    const row = getTerminalById(this.options.db, terminalId);
+    if (row === null) {
+      throw new ApiError(
+        404,
+        "terminal_not_found",
+        "Terminal session not found",
+      );
+    }
+    this.clearTerminalAttention(terminalId);
+    const updated = getTerminalById(this.options.db, terminalId);
+    if (updated === null) {
+      throw new ApiError(
+        404,
+        "terminal_not_found",
+        "Terminal session not found",
+      );
+    }
+    return this.toTerminalSession(updated);
   }
 
   getTerminal(args: GetTerminalArgs): TerminalSession {
