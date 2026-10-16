@@ -21,6 +21,7 @@ import {
   getAppSettings,
   getDisabledProviderIds,
   listRunningThreads,
+  type DbConnection,
 } from "@bb/db";
 import { initDb } from "./db.js";
 import { createApp } from "./server.js";
@@ -43,6 +44,7 @@ import {
   stopWorkspaceWriteClaimHeartbeat,
 } from "./services/threads/workspace-write-serialization.js";
 import { createLauncherChannel } from "./services/system/launcher-channel.js";
+import { watchLauncherDisconnect } from "./services/system/launcher-disconnect.js";
 import { createBbAppManagedConfigReloader } from "./services/system/bb-app-managed-config.js";
 import { startGatedPerformanceDiagnostics } from "./services/system/performance-diagnostics.js";
 import { startEventLoopStallMonitor } from "./services/system/event-loop-stall-monitor.js";
@@ -101,13 +103,16 @@ const shutdownSockets = new WeakMap<HttpServer, Set<Socket>>();
 async function waitAtMost(
   promise: Promise<unknown>,
   timeoutMs: number,
-): Promise<void> {
+): Promise<boolean> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    await Promise.race([
-      promise.catch(() => undefined),
-      new Promise<void>((resolve) => {
-        timer = setTimeout(resolve, timeoutMs);
+    return await Promise.race([
+      promise.then(
+        () => true,
+        () => false,
+      ),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), timeoutMs);
       }),
     ]);
   } finally {
@@ -146,13 +151,16 @@ export function startHttpListener(args: StartHttpListenerArgs): HttpServer {
 }
 
 export async function shutdownHttpBeforePlugins(args: {
+  closeDatabase?: () => void;
   closeWebSockets: () => Promise<void>;
   onPluginStopTimeout?: () => void;
   server: ReturnType<typeof startHttpListener>;
   stopPeriodicUpdateChecks?: () => Promise<void>;
   stopPlugins: () => Promise<void>;
   stopTerminalDataPlane: () => void;
-}): Promise<void> {
+}): Promise<{ completedWithinBounds: boolean; pluginStopTimedOut: boolean }> {
+  let completedWithinBounds = true;
+  let pluginStopTimedOut = false;
   args.stopTerminalDataPlane();
   const closed = new Promise<void>((resolve, reject) => {
     args.server.close((error) => {
@@ -188,10 +196,18 @@ export async function shutdownHttpBeforePlugins(args: {
   if (!drained) {
     args.server.closeAllConnections();
   }
-  await waitAtMost(webSocketsClosed, SERVER_WEBSOCKET_SHUTDOWN_WAIT_TIMEOUT_MS);
-  await waitAtMost(closed, SERVER_HTTP_CLOSE_WAIT_TIMEOUT_MS);
+  completedWithinBounds =
+    (await waitAtMost(
+      webSocketsClosed,
+      SERVER_WEBSOCKET_SHUTDOWN_WAIT_TIMEOUT_MS,
+    )) && completedWithinBounds;
+  completedWithinBounds =
+    (await waitAtMost(closed, SERVER_HTTP_CLOSE_WAIT_TIMEOUT_MS)) &&
+    completedWithinBounds;
   for (const socket of shutdownSockets.get(args.server) ?? []) socket.destroy();
-  await waitAtMost(closed, SERVER_HTTP_CLOSE_WAIT_TIMEOUT_MS);
+  completedWithinBounds =
+    (await waitAtMost(closed, SERVER_HTTP_CLOSE_WAIT_TIMEOUT_MS)) &&
+    completedWithinBounds;
   let pluginStopTimer: ReturnType<typeof setTimeout> | undefined;
   try {
     const stopped = await Promise.race([
@@ -206,10 +222,45 @@ export async function shutdownHttpBeforePlugins(args: {
         );
       }),
     ]);
-    if (!stopped) args.onPluginStopTimeout?.();
+    if (!stopped) {
+      pluginStopTimedOut = true;
+      args.onPluginStopTimeout?.();
+    }
+    completedWithinBounds = stopped && completedWithinBounds;
   } finally {
     if (pluginStopTimer !== undefined) clearTimeout(pluginStopTimer);
   }
+  if (completedWithinBounds) args.closeDatabase?.();
+  return { completedWithinBounds, pluginStopTimedOut };
+}
+
+export async function shutdownServerRuntime(args: {
+  closeWebSockets: () => Promise<void>;
+  db: DbConnection;
+  logger: Pick<ServerLogger, "warn">;
+  stopPeriodicUpdateChecks: () => Promise<void>;
+  stopPlugins: () => Promise<void>;
+  server: ReturnType<typeof startHttpListener>;
+  stopTerminalDataPlane: () => void;
+}): Promise<{ completedWithinBounds: boolean; pluginStopTimedOut: boolean }> {
+  const result = await shutdownHttpBeforePlugins({
+    closeDatabase: () => args.db.$client.close(),
+    closeWebSockets: args.closeWebSockets,
+    onPluginStopTimeout: () =>
+      args.logger.warn(
+        `Plugin shutdown did not finish within ${SERVER_PLUGIN_SHUTDOWN_TIMEOUT_MS}ms`,
+      ),
+    server: args.server,
+    stopPeriodicUpdateChecks: args.stopPeriodicUpdateChecks,
+    stopPlugins: args.stopPlugins,
+    stopTerminalDataPlane: args.stopTerminalDataPlane,
+  });
+  if (result.pluginStopTimedOut) {
+    args.logger.warn("Database close skipped because plugin stop timed out");
+  } else if (!result.completedWithinBounds) {
+    args.logger.warn("Database close skipped because a shutdown step exceeded its bound");
+  }
+  return result;
 }
 
 export interface StartServerPluginsArgs {
@@ -240,6 +291,11 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
     component: "server",
     dataDir: serverConfig.BB_DATA_DIR,
   });
+  const launcherDisconnect = watchLauncherDisconnect(process, {
+    exit: (code) => process.exit(code),
+    log: (message) => logger.warn(message),
+  });
+  await launcherDisconnect.ready();
   await refuseInterruptedServerImport({
     dataDir: serverConfig.BB_DATA_DIR,
     logger,
@@ -630,21 +686,19 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
         clearInterval(sweepInterval);
       }
       pluginCatalogService.stopPeriodicRefresh();
-      await shutdownHttpBeforePlugins({
+      await shutdownServerRuntime({
         closeWebSockets,
-        onPluginStopTimeout: () =>
-          logger.warn(
-            `Plugin shutdown did not finish within ${SERVER_PLUGIN_SHUTDOWN_TIMEOUT_MS}ms`,
-          ),
-        server,
-        stopPeriodicUpdateChecks: () =>
-          pluginService.stopPeriodicUpdateChecks(),
+        db,
+        logger,
         stopPlugins: async () => {
           if (pendingServerMove !== null) return;
           await pluginService.stop().catch((error: unknown) => {
             logger.warn({ err: error }, "Plugin shutdown failed");
           });
         },
+        stopPeriodicUpdateChecks: () =>
+          pluginService.stopPeriodicUpdateChecks(),
+        server,
         stopTerminalDataPlane: () => terminalDataPlane?.stop(),
       });
     })();
@@ -673,5 +727,9 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
   });
   process.once("SIGTERM", () => {
     void runShutdown().finally(() => process.exit(0));
+  });
+  launcherDisconnect.setShutdown({
+    shutdown: runShutdown,
+    exit: (code) => process.exit(code),
   });
 }
