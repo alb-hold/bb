@@ -2,6 +2,7 @@
 
 import { act, cleanup, render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { TERMINAL_ATTENTION_CONTRACT_CASES } from "@bb/test-helpers";
 import { TerminalAttentionCommandHandler } from "./TerminalAttentionCommandHandler";
 
 const mocks = vi.hoisted(() => ({
@@ -45,36 +46,42 @@ afterEach(() => {
 });
 
 describe("terminal attention command", () => {
-  it("shows a visible empty state when no terminal needs attention", async () => {
-    mocks.next.mockResolvedValue(null);
-    render(<TerminalAttentionCommandHandler />);
+  it.each(TERMINAL_ATTENTION_CONTRACT_CASES)(
+    "follows the shared terminal attention contract: $name",
+    async (contract) => {
+      const next =
+        contract.nextId === null
+          ? null
+          : {
+              id: contract.nextId,
+              threadId: "thr_1",
+            };
+      mocks.next.mockResolvedValue(next);
+      mocks.getThread.mockResolvedValue({ projectId: "proj_1" });
+      render(<TerminalAttentionCommandHandler />);
 
-    await act(async () => {
-      mocks.handler?.();
-    });
+      await act(async () => {
+        mocks.handler?.();
+      });
 
-    await waitFor(() => {
-      expect(mocks.message).toHaveBeenCalledWith("Nothing needs attention.");
-    });
-    expect(mocks.navigate).not.toHaveBeenCalled();
-  });
+      if (contract.nextId === null) {
+        await waitFor(() => {
+          expect(mocks.message).toHaveBeenCalledWith(
+            "Nothing needs attention.",
+          );
+        });
+        expect(mocks.navigate).not.toHaveBeenCalled();
+        return;
+      }
 
-  it("opens the oldest target in its thread with its terminal pane selected", async () => {
-    mocks.next.mockResolvedValue({ id: "term_oldest", threadId: "thr_1" });
-    mocks.getThread.mockResolvedValue({ projectId: "proj_1" });
-    render(<TerminalAttentionCommandHandler />);
-
-    await act(async () => {
-      mocks.handler?.();
-    });
-
-    await waitFor(() => {
-      expect(mocks.navigate).toHaveBeenCalledWith(
-        "/projects/proj_1/threads/thr_1",
-        { state: { terminalAttentionId: "term_oldest" } },
-      );
-    });
-  });
+      await waitFor(() => {
+        expect(mocks.navigate).toHaveBeenCalledWith(
+          "/projects/proj_1/threads/thr_1",
+          { state: { terminalAttentionId: contract.nextId } },
+        );
+      });
+    },
+  );
 
   it("opens a threadless target in the root terminal pane", async () => {
     const session = {

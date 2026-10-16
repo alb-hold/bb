@@ -4,9 +4,11 @@ import {
   createConnection,
   createTerminalSession,
   getTerminalAttention,
+  upsertTerminalAttention,
   getThread,
   updateTerminalSession,
 } from "@bb/db";
+import { TERMINAL_ATTENTION_CONTRACT_CASES } from "@bb/test-helpers";
 import {
   seedHostSession,
   seedProjectWithSource,
@@ -26,38 +28,57 @@ afterEach(async () => {
 });
 
 describe("terminal attention persistence", () => {
-  it("lists the oldest unread terminal attention and clears it explicitly", async () => {
-    const harness = await createTestAppHarness();
-    harnesses.push(harness);
-    const { terminalId } = createAttentionTerminal(harness);
-    harness.deps.terminalSessions.notifyTerminal({
-      terminalId,
-      payload: { title: "Build", body: "Finished" },
-    });
+  it.each(TERMINAL_ATTENTION_CONTRACT_CASES)(
+    "follows the shared terminal attention contract: $name",
+    async (contract) => {
+      const harness = await createTestAppHarness();
+      harnesses.push(harness);
+      const terminalIds = new Map<string, string>();
+      for (const entry of contract.sessions) {
+        const { terminalId } = createAttentionTerminal(harness);
+        terminalIds.set(entry.id, terminalId);
+        upsertTerminalAttention(harness.db, {
+          terminalSessionId: terminalId,
+          seq: entry.seq,
+          daemonSeq: null,
+          kind: "bell",
+          title: entry.title,
+          body: null,
+          attentionAt: entry.attentionAt,
+        });
+      }
 
-    const listed = await harness.app.request("/api/v1/terminals/attention");
-    expect(listed.status).toBe(200);
-    expect(await listed.json()).toMatchObject({
-      sessions: [
-        { id: terminalId, attention: { title: "Build", body: "Finished" } },
-      ],
-    });
+      const listed = await harness.app.request("/api/v1/terminals/attention");
+      expect(listed.status).toBe(200);
+      const listedBody = (await listed.json()) as {
+        sessions: Array<{ id: string }>;
+      };
+      expect(
+        listedBody.sessions.map(({ id }) =>
+          [...terminalIds.entries()].find(([, terminalId]) => terminalId === id)?.[0],
+        ),
+      ).toEqual(contract.unreadIds);
 
-    const cleared = await harness.app.request(
-      `/api/v1/terminals/${terminalId}/attention/clear`,
-      { method: "POST" },
-    );
-    expect(cleared.status).toBe(200);
-    expect(await cleared.json()).toMatchObject({
-      id: terminalId,
-      attention: null,
-    });
-    expect(
-      await (await harness.app.request("/api/v1/terminals/attention")).json(),
-    ).toEqual({
-      sessions: [],
-    });
-  });
+      if (contract.nextId !== null) {
+        const clearId = terminalIds.get(contract.clearId ?? "");
+        expect(clearId).toBeDefined();
+        const cleared = await harness.app.request(
+          `/api/v1/terminals/${clearId}/attention/clear`,
+          { method: "POST" },
+        );
+        expect(cleared.status).toBe(200);
+        expect(await cleared.json()).toMatchObject({ attention: null });
+        const afterClear = (await (
+          await harness.app.request("/api/v1/terminals/attention")
+        ).json()) as { sessions: Array<{ id: string }> };
+        expect(
+          afterClear.sessions.map(({ id }) =>
+            [...terminalIds.entries()].find(([, terminalId]) => terminalId === id)?.[0],
+          ),
+        ).toEqual(contract.unreadIdsAfterClear);
+      }
+    },
+  );
 
   it("includes unread persisted attention in a WebSocket attach snapshot", async () => {
     const db = createMigratedConnection();
