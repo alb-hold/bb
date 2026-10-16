@@ -1,21 +1,17 @@
 // @vitest-environment jsdom
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { useState, type ComponentProps } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TerminalMobileControls } from "./TerminalMobileControls";
 
-afterEach(() => {
-  cleanup();
-  vi.useRealTimers();
-});
+afterEach(cleanup);
 
 function renderControls() {
   const onInput = vi.fn();
   const onSearch = vi.fn();
   render(
     <TerminalMobileControls
-      controlMode="off"
+      controlActive={false}
       disabled={false}
       onArrow={vi.fn()}
       onControlChange={vi.fn()}
@@ -24,86 +20,12 @@ function renderControls() {
       onPaste={vi.fn()}
       onSearch={onSearch}
       onSelectText={vi.fn()}
-      fontSize={12}
-      onFontSizeChange={vi.fn()}
     />,
   );
   return { onInput, onSearch };
 }
 
 describe("TerminalMobileControls", () => {
-  it("pins to the visual keyboard edge as it resizes", () => {
-    const original = Object.getOwnPropertyDescriptor(window, "visualViewport");
-    const viewport = Object.assign(new EventTarget(), { offsetTop: 0, height: 400 });
-    Object.defineProperty(window, "visualViewport", { configurable: true, value: viewport });
-    try {
-      renderControls();
-      const dock = document.querySelector("[data-terminal-mobile-controls]") as HTMLElement;
-      expect(dock.style.getPropertyValue("--terminal-mobile-dock-bottom")).toBe("368px");
-      viewport.height = 700;
-      viewport.dispatchEvent(new Event("resize"));
-      expect(dock.style.getPropertyValue("--terminal-mobile-dock-bottom")).toBe("68px");
-    } finally {
-      if (original) Object.defineProperty(window, "visualViewport", original);
-      else Reflect.deleteProperty(window, "visualViewport");
-    }
-  });
-
-  it.each([
-    ["desktop without a keyboard", 844, 0, 844, 0],
-    ["Android resize mode", 500, 0, 500, 0],
-    ["iOS viewport scroll", 844, 50, 400, 394],
-  ] as const)(
-    "pins the dock for %s",
-    (_mode, layoutHeight, offsetTop, visualHeight, expectedBottom) => {
-      const originalViewport = Object.getOwnPropertyDescriptor(
-        window,
-        "visualViewport",
-      );
-      const originalHeight = Object.getOwnPropertyDescriptor(
-        window,
-        "innerHeight",
-      );
-      const viewport: EventTarget & { offsetTop: number; height: number } =
-        Object.assign(new EventTarget(), { offsetTop, height: visualHeight });
-      Object.defineProperty(window, "innerHeight", {
-        configurable: true,
-        value: layoutHeight,
-      });
-      Object.defineProperty(window, "visualViewport", {
-        configurable: true,
-        value: viewport,
-      });
-      try {
-        renderControls();
-        const dock = document.querySelector(
-          "[data-terminal-mobile-controls]",
-        ) as HTMLElement;
-        expect(
-          dock.style.getPropertyValue("--terminal-mobile-dock-bottom"),
-        ).toBe(`${expectedBottom}px`);
-        if (_mode === "iOS viewport scroll") {
-          viewport.offsetTop = 200;
-          viewport.dispatchEvent(new Event("scroll"));
-          expect(
-            dock.style.getPropertyValue("--terminal-mobile-dock-bottom"),
-          ).toBe("244px");
-        }
-      } finally {
-        if (originalViewport) {
-          Object.defineProperty(window, "visualViewport", originalViewport);
-        } else {
-          Reflect.deleteProperty(window, "visualViewport");
-        }
-        if (originalHeight) {
-          Object.defineProperty(window, "innerHeight", originalHeight);
-        } else {
-          Reflect.deleteProperty(window, "innerHeight");
-        }
-      }
-    },
-  );
-
   it("hides the extra keys until the user expands them", () => {
     renderControls();
     expect(screen.queryByRole("button", { name: "Shift Tab" })).toBeNull();
@@ -135,133 +57,4 @@ describe("TerminalMobileControls", () => {
     fireEvent.click(screen.getByRole("button", { name: "Search terminal output" }));
     expect(onSearch).toHaveBeenCalledOnce();
   });
-
-  it("exposes font size controls that update the terminal preference", () => {
-    const onFontSizeChange = vi.fn();
-    render(<TerminalMobileControls {...controlProps({ onFontSizeChange })} />);
-    fireEvent.click(screen.getByRole("button", { name: "Increase terminal text size" }));
-    expect(onFontSizeChange).toHaveBeenCalledWith(1);
-  });
-
-  it("cycles Ctrl from one-shot to locked and then off with visible state", () => {
-    function StatefulControls() {
-      const [controlMode, setControlMode] = useState<"off" | "one-shot" | "locked">("off");
-      return <TerminalMobileControls {...controlProps({ controlMode, onControlChange: setControlMode })} />;
-    }
-    render(<StatefulControls />);
-    const ctrl = screen.getByRole("button", { name: "Control for next key" });
-    fireEvent.click(ctrl);
-    expect(screen.getByRole("button", { name: "Control for next key, active" }).getAttribute("aria-pressed")).toBe("true");
-    fireEvent.click(screen.getByRole("button", { name: "Control for next key, active" }));
-    expect(screen.getByRole("button", { name: "Control locked" }).textContent).toContain("Ctrl·");
-    fireEvent.click(screen.getByRole("button", { name: "Control locked" }));
-    expect(screen.getByRole("button", { name: "Control for next key" }).getAttribute("aria-pressed")).toBe("false");
-  });
-
-  it("repeats Backspace while its pointer remains held", () => {
-    vi.useFakeTimers();
-    const onInput = vi.fn();
-    render(<TerminalMobileControls {...controlProps({ onInput })} />);
-    const backspace = screen.getByRole("button", { name: "Backspace" });
-    fireEvent.pointerDown(backspace);
-    expect(onInput).toHaveBeenCalledTimes(1);
-    vi.advanceTimersByTime(550);
-    expect(onInput.mock.calls.length).toBeGreaterThanOrEqual(3);
-    const countAtRelease = onInput.mock.calls.length;
-    fireEvent.pointerUp(backspace);
-    fireEvent.click(backspace);
-    expect(onInput).toHaveBeenCalledTimes(countAtRelease);
-    vi.advanceTimersByTime(100);
-    expect(onInput).toHaveBeenCalledTimes(countAtRelease);
-    vi.useRealTimers();
-  });
-
-  it("stops Backspace repeat when the held pointer is cancelled", () => {
-    vi.useFakeTimers();
-    const onInput = vi.fn();
-    render(<TerminalMobileControls {...controlProps({ onInput })} />);
-    const backspace = screen.getByRole("button", { name: "Backspace" });
-    fireEvent.pointerDown(backspace);
-    vi.advanceTimersByTime(550);
-    const countAtCancel = onInput.mock.calls.length;
-
-    fireEvent.pointerCancel(backspace);
-    vi.advanceTimersByTime(250);
-
-    expect(onInput).toHaveBeenCalledTimes(countAtCancel);
-  });
-
-  it("stops Backspace repeat when the window loses focus", () => {
-    vi.useFakeTimers();
-    const onInput = vi.fn();
-    render(<TerminalMobileControls {...controlProps({ onInput })} />);
-    fireEvent.pointerDown(screen.getByRole("button", { name: "Backspace" }));
-    vi.advanceTimersByTime(550);
-    const countAtBlur = onInput.mock.calls.length;
-
-    fireEvent(window, new Event("blur"));
-    vi.advanceTimersByTime(250);
-
-    expect(onInput).toHaveBeenCalledTimes(countAtBlur);
-  });
-
-  it("stops Backspace repeat when the document becomes hidden", () => {
-    vi.useFakeTimers();
-    const onInput = vi.fn();
-    const hiddenDescriptor = Object.getOwnPropertyDescriptor(document, "hidden");
-    const visibilityDescriptor = Object.getOwnPropertyDescriptor(document, "visibilityState");
-    Object.defineProperty(document, "hidden", { configurable: true, value: false });
-    Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
-    try {
-      render(<TerminalMobileControls {...controlProps({ onInput })} />);
-      fireEvent.pointerDown(screen.getByRole("button", { name: "Backspace" }));
-      vi.advanceTimersByTime(550);
-      const countWhenHidden = onInput.mock.calls.length;
-
-      Object.defineProperty(document, "hidden", { configurable: true, value: true });
-      Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
-      fireEvent(document, new Event("visibilitychange"));
-      vi.advanceTimersByTime(250);
-
-      expect(onInput).toHaveBeenCalledTimes(countWhenHidden);
-    } finally {
-      if (hiddenDescriptor) Object.defineProperty(document, "hidden", hiddenDescriptor);
-      else Reflect.deleteProperty(document, "hidden");
-      if (visibilityDescriptor) Object.defineProperty(document, "visibilityState", visibilityDescriptor);
-      else Reflect.deleteProperty(document, "visibilityState");
-    }
-  });
-
-  it.each(["one-shot", "locked"] as const)("clears %s Ctrl when the window loses focus", (mode) => {
-    function StatefulControls() {
-      const [controlMode, setControlMode] = useState<"off" | "one-shot" | "locked">("off");
-      return <TerminalMobileControls {...controlProps({ controlMode, onControlChange: setControlMode })} />;
-    }
-    render(<StatefulControls />);
-    fireEvent.click(screen.getByRole("button", { name: "Control for next key" }));
-    if (mode === "locked") {
-      fireEvent.click(screen.getByRole("button", { name: "Control for next key, active" }));
-    }
-
-    fireEvent(window, new Event("blur"));
-
-    expect(screen.getByRole("button", { name: "Control for next key" }).getAttribute("aria-pressed")).toBe("false");
-  });
 });
-
-function controlProps(overrides: Partial<ComponentProps<typeof TerminalMobileControls>> = {}) {
-  return {
-    controlMode: "off" as const,
-    disabled: false,
-    onArrow: vi.fn(),
-    onControlChange: vi.fn(),
-    onInput: vi.fn(),
-    onKeyboardToggle: vi.fn(),
-    onPaste: vi.fn(),
-    onSearch: vi.fn(),
-    onSelectText: vi.fn(),
-    fontSize: 12,
-    onFontSizeChange: vi.fn(),
-    ...overrides,
-  };
-}

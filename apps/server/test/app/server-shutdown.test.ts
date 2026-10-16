@@ -1,20 +1,26 @@
 import { once } from "node:events";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { createMigratedConnection } from "@bb/db/testing";
 import type { DbConnection } from "@bb/db";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
 import {
   shutdownHttpBeforePlugins,
+  shutdownServerRuntime,
   startHttpListener,
 } from "../../src/start-server.js";
 import { closeWebSocketServer } from "../../src/server.js";
+import { createTestAppHarness } from "../helpers/test-app.js";
 
 type ShutdownHttpBeforePlugins = (args: {
+  closeDatabase?: () => void;
   closeWebSockets: () => Promise<void>;
   server: ReturnType<typeof startHttpListener>;
   stopPlugins: () => Promise<void>;
   stopTerminalDataPlane: () => void;
-}) => Promise<void>;
+}) => Promise<{ completedWithinBounds: boolean; pluginStopTimedOut: boolean }>;
 
 describe("server shutdown ordering", () => {
   let server: ReturnType<typeof startHttpListener> | undefined;
@@ -101,6 +107,7 @@ describe("server shutdown ordering", () => {
               else resolve();
             });
           });
+          return { completedWithinBounds: true, pluginStopTimedOut: false };
         })();
     await new Promise((resolve) => setTimeout(resolve, 10));
     releaseRequest();
@@ -172,6 +179,60 @@ describe("server shutdown ordering", () => {
     });
     expect(pluginStopStartedAfterHttpClosed).toBe(true);
     expect(Date.now() - startedAt).toBeLessThan(4_000);
+  }, 4_500);
+
+  it("keeps the real migrated database open when a plugin never disposes", async () => {
+    const pluginRoot = await mkdtemp(join(tmpdir(), "bb-server-shutdown-plugin-"));
+    const pluginDir = join(pluginRoot, "bb-plugin-stuck-dispose");
+    await mkdir(pluginDir, { recursive: true });
+    await writeFile(
+      join(pluginDir, "package.json"),
+      JSON.stringify({
+        name: "bb-plugin-stuck-dispose",
+        version: "0.1.0",
+        bb: {
+          name: "Stuck dispose fixture",
+          description: "A plugin whose cleanup does not finish.",
+          branding: { icon: "Zap" },
+          server: "./server.ts",
+        },
+      }),
+    );
+    await writeFile(
+      join(pluginDir, "server.ts"),
+      "export default function plugin(bb: any) { bb.onDispose(() => new Promise<void>(() => {})); }",
+    );
+    const harness = await createTestAppHarness({ db: db! });
+    const installed = await harness.pluginService.installPath(pluginDir);
+    expect(installed.status).toBe("running");
+    server = startHttpListener({
+      fetch: async () => new Response("ready"),
+      logger: { warn: () => {} },
+      serverConfig: {
+        BB_SERVER_BIND_HOST: "127.0.0.1",
+        BB_SERVER_PORT: 0,
+      },
+    });
+    await once(server, "listening");
+    const warnings: string[] = [];
+    const result = await shutdownServerRuntime({
+      closeWebSockets: async () => {},
+      db: db!,
+      logger: { warn: (message: string) => warnings.push(message) },
+      stopPeriodicUpdateChecks: () =>
+        harness.pluginService.stopPeriodicUpdateChecks(),
+      stopPlugins: () => harness.pluginService.stop(),
+      server,
+      stopTerminalDataPlane: () => {},
+    });
+    expect(db?.$client.prepare("SELECT 1").get()).toBeDefined();
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(db?.$client.prepare("SELECT 1").get()).toBeDefined();
+    expect(result.pluginStopTimedOut).toBe(true);
+    expect(result.completedWithinBounds).toBe(false);
+    expect(warnings).toContain("Database close skipped because plugin stop timed out");
+    await rm(pluginRoot, { recursive: true, force: true });
+    await rm(harness.config.dataDir, { recursive: true, force: true });
   }, 4_500);
 
   it("stops accepting before a stalled plugin update check and bounds shutdown", async () => {

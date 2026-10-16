@@ -2530,6 +2530,13 @@ export async function terminateProcessIfRunning(
     childProcess: args.childProcess,
     timeoutMs: MANAGED_PROCESS_KILL_WAIT_TIMEOUT_MS,
   });
+  if (!hasProcessExited(args.childProcess)) {
+    const message = `${args.processName} did not stop after SIGKILL within ${MANAGED_PROCESS_KILL_WAIT_TIMEOUT_MS}ms`;
+    log(yellow("!"), message);
+    await new Promise<void>((resolve) => {
+      process.stderr.write(message + "\n", "utf8", () => resolve());
+    });
+  }
 }
 
 function createSharedEnv(args: CreateSharedEnvArgs): NodeJS.ProcessEnv {
@@ -3148,7 +3155,7 @@ export async function startFullStackServerProcess(
     args: [args.context.serverEntry],
     command: process.execPath,
     env: { ...args.env, BB_SERVER_LAUNCH_ID: launchId },
-    ipc: args.onSpawned !== undefined,
+    ipc: true,
     logDir: args.context.logDir,
     processName: "server",
   });

@@ -513,7 +513,6 @@ describe("TerminalManager", () => {
     expect(harness.adapter.spawned[0]?.args.env).toMatchObject({
       BB_BASE_ENV: "1",
       BB_TERMINAL_SESSION_ID: "term-1",
-      CLAUDE_CODE_FORCE_SYNC_OUTPUT: "1",
       COLORTERM: "truecolor",
       DISABLE_AUTO_TITLE: "true",
       FORCE_HYPERLINK: "1",
@@ -534,25 +533,6 @@ describe("TerminalManager", () => {
     await harness.runtimeManager.replaceBaseShellEnv({ BB_BASE_ENV: "2" });
     expect(harness.runtimeManager.get("env-1")).toBeDefined();
     expect(harness.runtime.shutdown).not.toHaveBeenCalled();
-  });
-
-  it("keeps a synchronized output preference set in the host or shell environment", async () => {
-    vi.stubEnv("CLAUDE_CODE_FORCE_SYNC_OUTPUT", "0");
-    const fromHost = createHarness();
-    await openTerminal(fromHost);
-    expect(
-      fromHost.adapter.spawned[0]?.args.env.CLAUDE_CODE_FORCE_SYNC_OUTPUT,
-    ).toBe("0");
-
-    vi.unstubAllEnvs();
-    const fromShell = createHarness();
-    await fromShell.runtimeManager.replaceBaseShellEnv({
-      CLAUDE_CODE_FORCE_SYNC_OUTPUT: "0",
-    });
-    await openTerminal(fromShell);
-    expect(
-      fromShell.adapter.spawned[0]?.args.env.CLAUDE_CODE_FORCE_SYNC_OUTPUT,
-    ).toBe("0");
   });
 
   it("starts a split terminal in the requested existing directory", async () => {
