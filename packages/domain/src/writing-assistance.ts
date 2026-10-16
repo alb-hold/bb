@@ -557,49 +557,60 @@ export function resolveWritingEdits(
   return accepted.sort((a, b) => a.start - b.start);
 }
 
-const NUMBER_WORDS: ReadonlySet<string> = new Set([
-  "one",
-  "two",
-  "three",
-  "four",
-  "five",
-  "six",
-  "seven",
-  "eight",
-  "nine",
-  "ten",
-  "first",
-  "second",
-  "third",
-  "fourth",
-  "fifth",
-  "sixth",
-  "seventh",
-  "eighth",
-  "ninth",
-  "tenth",
-  "um",
-  "dois",
-  "duas",
-  "três",
-  "tres",
-  "quatro",
-  "cinco",
-  "seis",
-  "sete",
-  "oito",
-  "nove",
-  "dez",
-  "primeiro",
-  "primeira",
-  "segundo",
-  "segunda",
-  "terceiro",
-  "terceira",
-  "quarto",
-  "quarta",
-  "quinto",
-  "quinta",
+const ENUMERATOR_VALUES: ReadonlyMap<string, number> = new Map([
+  ["one", 1],
+  ["first", 1],
+  ["um", 1],
+  ["uma", 1],
+  ["primeiro", 1],
+  ["primeira", 1],
+  ["two", 2],
+  ["second", 2],
+  ["dois", 2],
+  ["duas", 2],
+  ["segundo", 2],
+  ["segunda", 2],
+  ["three", 3],
+  ["third", 3],
+  ["três", 3],
+  ["tres", 3],
+  ["terceiro", 3],
+  ["terceira", 3],
+  ["four", 4],
+  ["fourth", 4],
+  ["quatro", 4],
+  ["quarto", 4],
+  ["quarta", 4],
+  ["five", 5],
+  ["fifth", 5],
+  ["cinco", 5],
+  ["quinto", 5],
+  ["quinta", 5],
+  ["six", 6],
+  ["sixth", 6],
+  ["seis", 6],
+  ["sexto", 6],
+  ["sexta", 6],
+  ["seven", 7],
+  ["seventh", 7],
+  ["sete", 7],
+  ["sétimo", 7],
+  ["sétima", 7],
+  ["eight", 8],
+  ["eighth", 8],
+  ["oito", 8],
+  ["oitavo", 8],
+  ["oitava", 8],
+  ["nine", 9],
+  ["ninth", 9],
+  ["nove", 9],
+  ["nono", 9],
+  ["nona", 9],
+  ["ten", 10],
+  ["tenth", 10],
+  ["dez", 10],
+  ["décimo", 10],
+  ["décima", 10],
 ]);
 
 export type FormattedTranscriptVerdict =
@@ -859,7 +870,9 @@ export function validateFormattedTranscript(
     if (allowedNovelToken(token, source)) continue;
     return { ok: false, reason: "added-words" };
   }
-  const list = /^\s*\d{1,2}[.)]\s/mu.test(formatted);
+  const listItems = formatted.match(/^\s*\d{1,2}[.)]\s/gmu)?.length ?? 0;
+  const list = listItems > 0;
+  let enumerated = 0;
   const { marker, window } = correctionCoverage(rawTokens);
   const dropped = droppedTokens(
     rawTokens,
@@ -877,7 +890,15 @@ export function validateFormattedTranscript(
     if (FILLER_WORDS.has(token)) continue;
     if (options.literalCode && SPOKEN_SYMBOLS.has(token)) continue;
     if (index > 0 && rawTokens[index - 1] === token) continue;
-    if (NUMBER_WORDS.has(token) && list) continue;
+    const enumerator = ENUMERATOR_VALUES.get(token);
+    if (
+      enumerator !== undefined &&
+      enumerator === enumerated + 1 &&
+      enumerator <= listItems
+    ) {
+      enumerated = enumerator;
+      continue;
+    }
     if (LIST_CONNECTORS.has(token) && list) continue;
     return { ok: false, reason: "dropped-words" };
   }

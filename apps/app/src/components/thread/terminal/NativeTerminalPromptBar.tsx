@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useEffect,
   useId,
   useLayoutEffect,
   useRef,
@@ -106,6 +107,7 @@ export function NativeTerminalPromptBar({
     startedAt: number;
     startedDictation: boolean;
   } | null>(null);
+  const releasePressRef = useRef<(() => void) | null>(null);
   const ignoreClickRef = useRef(false);
   const [attachments, setAttachments] = useState<UploadedPromptAttachment[]>(
     [],
@@ -371,25 +373,47 @@ export function NativeTerminalPromptBar({
     voiceAvailable && paneIsFocused,
   );
 
+  const stopDictation = dictation.stop;
+  const finishPress = useCallback(
+    (cancelled: boolean) => {
+      releasePressRef.current?.();
+      const press = pressRef.current;
+      pressRef.current = null;
+      if (press === null || !press.startedDictation) return;
+      if (
+        cancelled ||
+        performance.now() - press.startedAt >= PUSH_TO_TALK_HOLD_MS
+      ) {
+        stopDictation();
+      }
+    },
+    [stopDictation],
+  );
+
+  useEffect(() => () => releasePressRef.current?.(), []);
+
   const onMicPointerDown = (event: PointerEvent<HTMLButtonElement>) => {
     if (event.button !== 0) return;
     event.preventDefault();
     ignoreClickRef.current = true;
+    releasePressRef.current?.();
     const startedDictation = dictation.phase === "idle";
     pressRef.current = { startedAt: performance.now(), startedDictation };
+    const pointerId = event.pointerId;
+    const onUp = (release: globalThis.PointerEvent) => {
+      if (release.pointerId === pointerId) finishPress(false);
+    };
+    const onCancel = (release: globalThis.PointerEvent) => {
+      if (release.pointerId === pointerId) finishPress(true);
+    };
+    window.addEventListener("pointerup", onUp, true);
+    window.addEventListener("pointercancel", onCancel, true);
+    releasePressRef.current = () => {
+      window.removeEventListener("pointerup", onUp, true);
+      window.removeEventListener("pointercancel", onCancel, true);
+      releasePressRef.current = null;
+    };
     toggleDictation();
-  };
-
-  const onMicPointerUp = () => {
-    const press = pressRef.current;
-    pressRef.current = null;
-    if (
-      press !== null &&
-      press.startedDictation &&
-      performance.now() - press.startedAt >= PUSH_TO_TALK_HOLD_MS
-    ) {
-      dictation.stop();
-    }
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -558,8 +582,6 @@ export function NativeTerminalPromptBar({
               aria-keyshortcuts={dictationShortcut?.ariaKeyshortcuts}
               data-dictation-state={dictation.phase}
               onPointerDown={onMicPointerDown}
-              onPointerUp={onMicPointerUp}
-              onPointerCancel={onMicPointerUp}
               onClick={() => {
                 if (ignoreClickRef.current) {
                   ignoreClickRef.current = false;

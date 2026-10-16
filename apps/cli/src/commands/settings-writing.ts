@@ -53,6 +53,25 @@ function parseCount(key: string, value: string, max: number): number {
   return parsed;
 }
 
+export function addVocabularyTerms(
+  current: readonly string[],
+  terms: readonly string[],
+): string[] {
+  const added = terms.map((term) => term.trim()).filter((term) => term !== "");
+  return [...new Set([...current, ...added])];
+}
+
+export function removeVocabularyTerms(
+  current: readonly string[],
+  terms: readonly string[],
+): { vocabulary: string[]; missing: string[] } {
+  const removed = new Set(terms.map((term) => term.trim()));
+  return {
+    vocabulary: current.filter((term) => !removed.has(term)),
+    missing: [...removed].filter((term) => !current.includes(term)),
+  };
+}
+
 export function parseWritingSetting(
   key: string,
   value: string,
@@ -169,7 +188,7 @@ export function registerWritingSettingsCommands(
         const current = (await sdk.writingAssistance.view()).settings
           .vocabulary;
         const view = await sdk.writingAssistance.updateSettings({
-          vocabulary: [...new Set([...current, ...terms.map((t) => t.trim())])],
+          vocabulary: addVocabularyTerms(current, terms),
         });
         if (outputJson(opts, view)) return;
         console.log(view.settings.vocabulary.join("\n"));
@@ -184,10 +203,17 @@ export function registerWritingSettingsCommands(
         const sdk = createCliBbSdk(getUrl());
         const current = (await sdk.writingAssistance.view()).settings
           .vocabulary;
+        const { vocabulary: next, missing } = removeVocabularyTerms(
+          current,
+          terms,
+        );
         const view = await sdk.writingAssistance.updateSettings({
-          vocabulary: current.filter((term) => !terms.includes(term)),
+          vocabulary: next,
         });
         if (outputJson(opts, view)) return;
+        if (missing.length > 0) {
+          console.error(`Not in the vocabulary: ${missing.join(", ")}`);
+        }
         console.log(view.settings.vocabulary.join("\n"));
       }),
     );

@@ -359,6 +359,62 @@ async function renderWithAssistance() {
   return rendered;
 }
 
+describe("NativeTerminalPromptBar push-to-talk", () => {
+  function pressMic(at: number) {
+    vi.spyOn(performance, "now").mockReturnValue(at);
+    const mic = screen.getByRole("button", {
+      name: "Dictate a message to Native CLI",
+    });
+    fireEvent.pointerDown(mic, { button: 0, pointerId: 7 });
+    expect(dictationHook.start).toHaveBeenCalledTimes(1);
+  }
+
+  function releaseAt(at: number, type: "pointerUp" | "pointerCancel") {
+    vi.spyOn(performance, "now").mockReturnValue(at);
+    fireEvent[type](document.body, { pointerId: 7 });
+  }
+
+  beforeEach(() => {
+    dictationHook.start.mockClear();
+    dictationHook.stop.mockClear();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("stops a held recording when the pointer is released off the button", () => {
+    renderBar();
+    pressMic(1_000);
+    releaseAt(1_600, "pointerUp");
+    expect(dictationHook.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops the recording it started when the press is cancelled", () => {
+    renderBar();
+    pressMic(1_000);
+    releaseAt(1_050, "pointerCancel");
+    expect(dictationHook.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a tapped recording running and stops listening after the tap", () => {
+    renderBar();
+    pressMic(1_000);
+    releaseAt(1_100, "pointerUp");
+    releaseAt(5_000, "pointerUp");
+    releaseAt(5_100, "pointerCancel");
+    expect(dictationHook.stop).not.toHaveBeenCalled();
+  });
+
+  it("stops listening for the release when the composer unmounts", () => {
+    renderBar();
+    pressMic(1_000);
+    cleanup();
+    releaseAt(2_000, "pointerUp");
+    expect(dictationHook.stop).not.toHaveBeenCalled();
+  });
+});
+
 describe("NativeTerminalPromptBar dictation", () => {
   it("appends dictated phrases in order and keeps edits made while dictating", () => {
     const { input } = renderBar();

@@ -395,6 +395,27 @@ describe("validateFormattedTranscript", () => {
     ).toEqual({ ok: false, reason: "negation" });
   });
 
+  it("only drops number words that enumerate the list in order", () => {
+    expect(
+      validateFormattedTranscript(
+        "check the first endpoint then preserve seven retries",
+        "1. Check the endpoint.\n2. Preserve retries.",
+      ),
+    ).toEqual({ ok: false, reason: "dropped-words" });
+    expect(
+      validateFormattedTranscript(
+        "first check auth second run three migrations",
+        "1. Check auth.\n2. Run migrations.",
+      ),
+    ).toEqual({ ok: false, reason: "dropped-words" });
+    expect(
+      validateFormattedTranscript(
+        "primeiro verificar o login segundo rodar os testes",
+        "1. Verificar o login.\n2. Rodar os testes.",
+      ),
+    ).toEqual({ ok: true });
+  });
+
   it("drops list connectors and repeated words only when safe", () => {
     expect(
       validateFormattedTranscript(

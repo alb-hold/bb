@@ -257,6 +257,20 @@ describe("dictation segments", () => {
     });
   });
 
+  it("keeps the transcript when a list drops a spoken quantity", async () => {
+    await withTestHarness({}, async (harness) => {
+      registerFakeAiService(harness.deps.aiServices, {
+        transcribe: async () =>
+          "check the first endpoint then preserve seven retries",
+        complete: async () => "1. Check the endpoint.\n2. Preserve retries.",
+      });
+      await expect((await postSegment(harness)).json()).resolves.toMatchObject({
+        text: "check the first endpoint then preserve seven retries",
+        formatted: false,
+      });
+    });
+  });
+
   it("keeps the transcript when the writing service fails or formatting is off", async () => {
     await withTestHarness({}, async (harness) => {
       const service = registerFakeAiService(harness.deps.aiServices, {
