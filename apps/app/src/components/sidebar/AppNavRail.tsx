@@ -211,10 +211,23 @@ function RailMoreMenu({
   onMenuCloseAutoFocus: (event: Event) => void;
 }) {
   const { actions } = useSidebarNavigation();
+  const searchingThreadsRef = useRef(false);
+  const terminalTargetRef = useRef<HTMLElement | null>(null);
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <RailButton ref={buttonRef} label="More">
+        <RailButton
+          ref={buttonRef}
+          label="More"
+          onPointerDown={() => {
+            const active = document.activeElement;
+            terminalTargetRef.current =
+              active instanceof HTMLElement &&
+              active.closest("[data-app-terminal]") !== null
+                ? active
+                : null;
+          }}
+        >
           <Icon name="MoreHorizontal" aria-hidden="true" />
         </RailButton>
       </DropdownMenuTrigger>
@@ -223,13 +236,31 @@ function RailMoreMenu({
         align="start"
         sideOffset={RAIL_MENU_SIDE_OFFSET}
         data-testid="nav-rail-more-menu"
-        onCloseAutoFocus={onMenuCloseAutoFocus}
+        onCloseAutoFocus={(event) => {
+          if (searchingThreadsRef.current) {
+            searchingThreadsRef.current = false;
+            event.preventDefault();
+            return;
+          }
+          onMenuCloseAutoFocus(event);
+        }}
       >
         {hidden.map((item) => (
           <DropdownMenuItem
             key={item.id}
             disabled={item.isDisabled || item.isLoading}
-            onSelect={() => actions.activate(item.id, { openInSplit: false })}
+            onSelect={() => {
+              searchingThreadsRef.current = item.action.kind === "search-threads";
+              const terminalTarget = terminalTargetRef.current;
+              terminalTargetRef.current = null;
+              actions.activate(item.id, {
+                openInSplit: false,
+                target:
+                  searchingThreadsRef.current && terminalTarget?.isConnected
+                    ? terminalTarget
+                    : null,
+              });
+            }}
           >
             <SidebarNavigationIcon icon={item.icon} />
             {item.label}

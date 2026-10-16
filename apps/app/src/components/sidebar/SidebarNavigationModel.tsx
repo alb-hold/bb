@@ -257,7 +257,7 @@ export function SidebarNavigationModelProvider({
             return;
           case "search-threads":
             current.host.onSearchThreads?.();
-            current.commandRunner.dispatch("thread.search", null);
+            current.commandRunner.dispatch("thread.search", options.target ?? null);
             return;
           case "open-extensions":
           case "open-skills": {

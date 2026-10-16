@@ -488,6 +488,29 @@ describe("AppNavRail", () => {
     expect(mocks.dispatch).toHaveBeenCalledWith("thread.search", null);
   });
 
+  it("dispatches Search threads from More with terminal focus restored", async () => {
+    renderRail(THREAD_PATH);
+    const terminal = document.createElement("textarea");
+    terminal.className = "xterm-helper-textarea";
+    const terminalRoot = document.createElement("div");
+    terminalRoot.setAttribute("data-app-terminal", "");
+    terminalRoot.append(terminal);
+    document.body.append(terminalRoot);
+
+    terminal.focus();
+    fireEvent.pointerDown(railButton("More"));
+    fireEvent.click(railButton("More"));
+    const searchThreads = await screen.findByRole("menuitem", {
+      name: "Search threads",
+    });
+    fireEvent.click(searchThreads);
+
+    await waitFor(() =>
+      expect(mocks.dispatch).toHaveBeenCalledWith("thread.search", terminal),
+    );
+    terminalRoot.remove();
+  });
+
   it("opens the customize sheet from More on a compact viewport", async () => {
     renderRail(THREAD_PATH, { isCompactViewport: true });
 
