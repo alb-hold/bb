@@ -172,6 +172,7 @@ export function createEventSink(options: CreateEventSinkOptions): EventSink {
   let turnStartRetryDelayMs = TURN_START_RETRY_INITIAL_MS;
   let turnStartRetryPending = false;
   let turnStartRepaired = false;
+  let turnStartRepairCount = 0;
   const pendingTurnStarts = new Map<string, number>();
   let undetailedTurnStartSinceMs: number | null = null;
   const expiredTurnStarts: TurnStartPendingResponseDetails[] = [];
@@ -571,6 +572,7 @@ export function createEventSink(options: CreateEventSinkOptions): EventSink {
           turnStartRetryPending = false;
           turnStartRetryDelayMs = TURN_START_RETRY_INITIAL_MS;
           turnStartRepaired = true;
+          turnStartRepairCount += 1;
         }
       })
       .finally(() => {
@@ -607,12 +609,16 @@ export function createEventSink(options: CreateEventSinkOptions): EventSink {
     clearRetry();
     for (;;) {
       const failuresBefore = failedPosts;
+      const repairsBefore = turnStartRepairCount;
       startEligibleBatch();
       if (inFlightPosts.size === 0) {
         return;
       }
       await Promise.all(inFlightPosts);
-      if (failedPosts !== failuresBefore) {
+      if (
+        failedPosts !== failuresBefore &&
+        turnStartRepairCount === repairsBefore
+      ) {
         return;
       }
     }
