@@ -529,22 +529,6 @@ function ThreadDetailViewInternal(
     typeof location.state.terminalAttentionId === "string"
       ? location.state.terminalAttentionId
       : null;
-  useEffect(() => {
-    if (terminalAttentionId === null) return;
-    setActiveTerminal(terminalAttentionId, { kind: "thread", threadId });
-    void navigate(`${location.pathname}${location.search}${location.hash}`, {
-      replace: true,
-      state: null,
-    });
-  }, [
-    location.hash,
-    location.pathname,
-    location.search,
-    navigate,
-    setActiveTerminal,
-    terminalAttentionId,
-    threadId,
-  ]);
   useFixedPanelTabsStorageMaintenance();
   const systemConfigQuery = useSystemConfig();
   const threadDetailBootstrapQuery = useThreadDetailBootstrap(threadId);
@@ -1315,6 +1299,24 @@ function ThreadDetailViewInternal(
     openPersistedWorkspaceFile: panelFiles.openWorkspaceFile,
     togglePersistedPanel: toggleDefaultPersistedSecondaryPanel,
   });
+  useEffect(() => {
+    if (terminalAttentionId === null) return;
+    setActiveTerminal(terminalAttentionId, { kind: "thread", threadId });
+    openCompactDrawer();
+    void navigate(`${location.pathname}${location.search}${location.hash}`, {
+      replace: true,
+      state: null,
+    });
+  }, [
+    location.hash,
+    location.pathname,
+    location.search,
+    navigate,
+    openCompactDrawer,
+    setActiveTerminal,
+    terminalAttentionId,
+    threadId,
+  ]);
   const dismissPluginDetails = pluginDetails.dismiss;
   const closeSecondaryPanel = useCallback(() => {
     dismissPluginDetails();
