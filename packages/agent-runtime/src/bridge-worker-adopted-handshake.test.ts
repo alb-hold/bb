@@ -139,6 +139,7 @@ describe("an adopted bridge worker keeps its negotiated handshake", () => {
         identityRegistry.createProviderState({ providerId }),
       env: PROVIDER_ENFORCED_APPROVALS,
       getNextRequestId: () => nextRequestId++,
+      handleDeferredEvents: () => undefined,
       handleStdoutLine: ({ line, providerProcess }) => {
         const parsed = parseJsonRpcLine(line);
         if (parsed.kind === "response") {

@@ -314,6 +314,7 @@ function createFollowUpPromptBoxProps(
       mention: {
         results: EMPTY_ORDERED_MENTION_SUGGESTIONS,
         isLoading: false,
+        isRefreshing: false,
         isError: false,
         onQueryChange: vi.fn(),
       },
@@ -1542,7 +1543,9 @@ describe("FollowUpPromptBox", () => {
   it("stays compact on mount when a coarse pointer will not focus the editor", () => {
     mocks.isPointerCoarse = true;
     render(
-      <FollowUpPromptBox {...createFollowUpPromptBoxProps({ kind: "ready" })} />,
+      <FollowUpPromptBox
+        {...createFollowUpPromptBoxProps({ kind: "ready" })}
+      />,
     );
 
     expect(

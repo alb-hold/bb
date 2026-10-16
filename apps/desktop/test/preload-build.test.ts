@@ -135,6 +135,7 @@ async function startDesktopSmokeServer(
             changelogPreview: false,
             serverMove: false,
             performanceDiagnostics: false,
+            timelinePush: false,
           },
           featureFlags: {
             placeholder: false,

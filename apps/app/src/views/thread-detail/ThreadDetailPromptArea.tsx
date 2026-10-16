@@ -46,7 +46,6 @@ import type {
   ExperimentalComposerSelection,
   ExperimentalComposerSubmitOptions,
 } from "@get-bb/plugin-sdk";
-import type { ChildThreadPendingAttention } from "@/hooks/queries/child-thread-pending-interactions";
 import {
   readExecutionSelection,
   resolveComposerSelectionDeadline,
@@ -235,7 +234,6 @@ interface ThreadDetailPromptAreaProps {
   activeWorkflows: TimelineWorkflowWorkRow[];
   activeBackgroundCommands: TimelineWorkflowWorkRow[];
   parentThreadSection: ThreadPromptParentThreadSection | null;
-  childPendingInteractions: readonly ChildThreadPendingAttention[];
   childThreadsSection: ThreadPromptChildThreadsSection | null;
   pullRequest: ThreadPullRequest | null;
   sendMessage: SendMessageMutationLike;
@@ -453,7 +451,6 @@ export function ThreadDetailPromptArea({
   activeWorkflows,
   activeBackgroundCommands,
   parentThreadSection,
-  childPendingInteractions,
   childThreadsSection,
   pullRequest,
   sendMessage,
@@ -2176,22 +2173,10 @@ export function ThreadDetailPromptArea({
     thread.id,
     inlineTypeaheadConfig,
   ]);
-  const childPendingInteractionBanners = useMemo(
-    () =>
-      childPendingInteractions.map((item) => (
-        <ThreadPendingInteractionBanners
-          key={item.childThreadId}
-          interactions={item.interactions}
-          sourceThread={{ href: item.href, title: item.childTitle }}
-          threadId={item.childThreadId}
-        />
-      )),
-    [childPendingInteractions],
-  );
+  const contextBannerKey = `thread-prompt-context-banner:${thread.id}`;
   const promptStack = useMemo(
     () => (
       <>
-        {childPendingInteractionBanners}
         <ThreadWorkflowStack
           workflows={activeWorkflows}
           isStackExpanded={isWorkflowStackExpanded}
@@ -2225,6 +2210,7 @@ export function ThreadDetailPromptArea({
           <ThreadMachineStatus hostId={environmentHostId} />
         ) : null}
         <ThreadPromptContextBanner
+          key={contextBannerKey}
           archivedSection={
             thread.archivedAt !== null
               ? {
@@ -2308,7 +2294,7 @@ export function ThreadDetailPromptArea({
       queueExpanded,
       setQueueExpanded,
       canUseGitUi,
-      childPendingInteractionBanners,
+      contextBannerKey,
       contextBannerMergeBase,
       environmentHostId,
       expandedBannerSection,
@@ -2378,7 +2364,18 @@ export function ThreadDetailPromptArea({
   const pendingInteractionStack = useMemo(
     () => (
       <>
-        {childPendingInteractionBanners}
+        <ThreadPromptContextBanner
+          key={contextBannerKey}
+          archivedSection={null}
+          environmentGoneSection={null}
+          parentThreadSection={null}
+          childThreadsSection={childThreadsSection}
+          pullRequestSection={null}
+          gitSection={null}
+          gitSectionPending={false}
+          expandedSection={expandedBannerSection}
+          onToggleSection={handleToggleBannerSection}
+        />
         {activePromptMode ? activePromptModeCard : null}
         {goal ? activeGoalCard : null}
       </>
@@ -2387,8 +2384,11 @@ export function ThreadDetailPromptArea({
       activeGoalCard,
       activePromptMode,
       activePromptModeCard,
-      childPendingInteractionBanners,
+      childThreadsSection,
+      expandedBannerSection,
       goal,
+      handleToggleBannerSection,
+      contextBannerKey,
     ],
   );
 

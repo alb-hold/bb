@@ -293,6 +293,7 @@ export function makeQueueEntry(
     serviceTier: "default",
     groupWithNext: false,
     sendAt: null,
+    state: "waiting",
     waitingOn: {
       kind: "plugin",
       pluginId: "test-plugin",

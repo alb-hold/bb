@@ -86,7 +86,7 @@ import type {
   DbConnection,
   DbQueryConnection,
 } from "../../src/connection.js";
-import { createMigratedConnection } from "../helpers/migrated-connection.js";
+import { createMigratedConnection } from "../../src/testing.js";
 import { migrate } from "../../src/migrate.js";
 
 function setup() {

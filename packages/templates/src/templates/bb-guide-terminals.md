@@ -19,7 +19,7 @@ List and create require exactly one explicit scope:
 
   bb terminal create --thread <thread-id> [--working-directory <path>] --command "pnpm dev"
   bb terminal create --environment <environment-id>
-  bb terminal create --machine <id-or-name> [--cwd <path>]
+  bb terminal create --machine <id-or-name> [--cwd <path>]   (alias: start)
     --working-directory <path>       Initial shell working directory
     --host <id-or-name>                   Alias for --machine
     --title <title>                       Display title
@@ -56,7 +56,7 @@ raises attention on its terminal. The SDK exposes the same operation as
   bb terminal rename <terminal-id> <title>
   bb terminal notify --title <title> --body <body>   Raise attention from this terminal
   bb terminal restart <terminal-id>       Atomically replaces it with a shell; does not replay the original command
-  bb terminal close <terminal-id> [--if-clean]
+  bb terminal close <terminal-id> [--if-clean]   (alias: stop)
 
   A terminal has one size. When several windows or devices show it, the one
   you last typed, pasted or clicked in sets the size; opening or resizing
