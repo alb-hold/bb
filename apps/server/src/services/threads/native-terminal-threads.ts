@@ -603,6 +603,13 @@ function interruptThreadWhoseHolderIsGone(
   });
 }
 
+function isClosedDatabaseConnectionError(error: unknown): boolean {
+  return (
+    error instanceof TypeError &&
+    error.message === "The database connection is not open"
+  );
+}
+
 function watchReattachedTerminal(
   deps: NativeTerminalReopenDeps,
   args: { hostId: string; terminalId: string; threadId: string },
@@ -648,33 +655,77 @@ function reopenNativeTerminals(
       const deadlineAt = monotonicNowMs() + NATIVE_REATTACH_DEADLINE_MS;
       let expired = false;
       let interrupted = false;
+      let interruptAttempts = 0;
+      let interrupting: Promise<void> | null = null;
       let leaveToDeadline = false;
       const pastDeadline = () => expired || monotonicNowMs() >= deadlineAt;
-      const interruptOnce = () => {
+      const interruptOnce = async () => {
         if (interrupted) return;
-        interrupted = true;
-        interruptThreadWhoseHolderIsGone(deps, {
-          hostId: args.hostId,
-          threadId,
-        });
+        if (interrupting !== null) return interrupting;
+        interrupting = (async () => {
+          while (!interrupted && interruptAttempts < 3) {
+            interruptAttempts += 1;
+            try {
+              interruptThreadWhoseHolderIsGone(deps, {
+                hostId: args.hostId,
+                threadId,
+              });
+              interrupted = true;
+            } catch (error: unknown) {
+              if (isClosedDatabaseConnectionError(error)) return;
+              if (interruptAttempts === 3) {
+                deps.logger.error(
+                  {
+                    attempts: interruptAttempts,
+                    err: error,
+                    hostId: args.hostId,
+                    threadId,
+                  },
+                  "Failed to interrupt a native terminal thread after retries",
+                );
+                return;
+              }
+              deps.logger.warn(
+                {
+                  attempt: interruptAttempts,
+                  err: error,
+                  hostId: args.hostId,
+                  threadId,
+                },
+                "Retrying a failed native terminal thread interrupt",
+              );
+              await new Promise<void>((resolve) => {
+                setTimeout(resolve, 25);
+              });
+            }
+          }
+        })();
+        try {
+          await interrupting;
+        } finally {
+          interrupting = null;
+        }
       };
-      const shouldStop = () => {
+      const shouldStop = async () => {
         if (pastDeadline()) {
-          if (stillWaiting()) interruptOnce();
+          if (stillWaiting()) await interruptOnce();
           return true;
         }
         return !stillWaiting();
       };
       const deadline = setTimeout(() => {
         expired = true;
-        try {
-          if (stillWaiting()) interruptOnce();
-        } catch (error: unknown) {
-          deps.logger.warn(
-            { err: error, hostId: args.hostId, threadId },
-            "Failed to check the native terminal reattach deadline",
-          );
-        }
+        void (async () => {
+          try {
+            if (stillWaiting()) await interruptOnce();
+          } catch (error: unknown) {
+            if (isClosedDatabaseConnectionError(error)) return;
+            deps.logger.warn(
+              { err: error, hostId: args.hostId, threadId },
+              "Failed to check the native terminal reattach deadline",
+            );
+          }
+        })();
       }, NATIVE_REATTACH_DEADLINE_MS);
       deadline.unref();
       try {
@@ -714,10 +765,10 @@ function reopenNativeTerminals(
         ) {
           return;
         }
-        if (shouldStop()) return;
+        if (await shouldStop()) return;
         let reopened: NativeTerminalThread;
         for (;;) {
-          if (shouldStop()) return;
+          if (await shouldStop()) return;
           try {
             const exitedAfterArchive =
               currentTerminal?.status === "exited" &&
@@ -764,7 +815,7 @@ function reopenNativeTerminals(
               getNativeTerminalThread(deps.db, threadId)?.terminalSessionId ===
               reopened.terminal.id
             ) {
-              interruptOnce();
+              await interruptOnce();
             }
             await deps.terminalSessions
               .closeTerminal({
@@ -804,12 +855,12 @@ function reopenNativeTerminals(
           })
         ) {
           if (pastDeadline()) {
-            if (stillWaiting()) interruptOnce();
+            if (stillWaiting()) await interruptOnce();
           } else {
             leaveToDeadline = true;
           }
         } else if (stillWaiting()) {
-          interruptOnce();
+          await interruptOnce();
         }
       } finally {
         if (!leaveToDeadline) clearTimeout(deadline);
