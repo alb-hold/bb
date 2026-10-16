@@ -983,7 +983,7 @@ export function validateFormattedTranscript(
     if (
       enumerator !== undefined &&
       enumerator === enumerated + 1 &&
-      itemStarts.get(enumerator) === nextSpokenWord(rawTokens, index)
+      itemStarts.has(enumerator)
     ) {
       enumerated = enumerator;
       continue;

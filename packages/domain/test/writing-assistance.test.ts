@@ -392,6 +392,8 @@ describe("validateFormattedTranscript", () => {
     ["first check auth second run tests", "1. Check auth.\n3. Run tests."],
     ["first check auth second run tests", "2. Check auth.\n1. Run tests."],
     ["first check auth second run tests", "1. Run tests.\n2. Check auth."],
+    ["first check auth third run tests", "1. Check auth.\n3. Run tests."],
+    ["second run tests first check auth", "2. Run tests.\n1. Check auth."],
   ])(
     "keeps the transcript when list numbers do not match the spoken enumeration: %s -> %s",
     (raw, formatted) => {
@@ -401,6 +403,15 @@ describe("validateFormattedTranscript", () => {
       });
     },
   );
+
+  it("keeps the transcript when a spoken enumerator numbers no list item", () => {
+    expect(
+      validateFormattedTranscript(
+        "first check auth second run tests",
+        "1. Check auth. Run tests.",
+      ),
+    ).toEqual({ ok: false, reason: "dropped-words" });
+  });
 
   it("accepts vocabulary spellings and accent restorations of spoken words", () => {
     expect(
