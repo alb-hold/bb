@@ -39,6 +39,7 @@ export interface PendingInteractionProviderRequestIdentity {
 
 export interface ReviveInterruptedProviderInteractionArgs
   extends PendingInteractionProviderRequestIdentity {
+  interruptedProviderRequestId?: string;
   interruptionReason: string;
   payload: string;
   threadId: string;
@@ -206,6 +207,14 @@ export function reviveInterruptedProviderInteraction(
         eq(pendingInteractions.threadId, args.threadId),
         eq(pendingInteractions.providerId, args.providerId),
         eq(pendingInteractions.providerThreadId, args.providerThreadId),
+        ...(args.interruptedProviderRequestId === undefined
+          ? []
+          : [
+              eq(
+                pendingInteractions.providerRequestId,
+                args.interruptedProviderRequestId,
+              ),
+            ]),
         eq(pendingInteractions.turnId, args.turnId),
         eq(pendingInteractions.payload, args.payload),
         eq(pendingInteractions.status, "interrupted"),

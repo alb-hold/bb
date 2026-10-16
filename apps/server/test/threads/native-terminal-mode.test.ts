@@ -2,6 +2,7 @@ import {
   createConnection,
   deleteThread,
   getNativeTerminalThread,
+  getPendingInteractionByProviderRequest,
   getThread,
   isNativeTerminalThread,
   type DbConnection,
@@ -20,7 +21,10 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { applyLoggedThreadLifecycleEvent } from "../../src/services/threads/lifecycle-outcome.js";
 import { stopThreadForCurrentState } from "../../src/services/threads/thread-lifecycle.js";
-import { recordNativeTerminalActivity } from "../../src/services/threads/native-terminal-activity.js";
+import {
+  interruptNativeTerminalQuestions,
+  recordNativeTerminalActivity,
+} from "../../src/services/threads/native-terminal-activity.js";
 import type { ProviderNativeTerminalActivity } from "@bb/domain";
 
 interface NativeActivityClassifiers {
@@ -478,6 +482,101 @@ function threadStatus(fixture: Fixture, threadId: string) {
 }
 
 describe("native terminal activity", () => {
+  it("reopens a daemon-restarted native question on its activity report", async () => {
+    const fixture = await createFixture();
+    const thread = seedChatThread(fixture, {
+      providerId: "claude-code",
+      providerThreadId: SESSION_ID,
+    });
+    await enterTerminal(fixture, thread.id);
+    const question = { id: "toolu_survived_restart", prompt: "Continue?" };
+    const report = () =>
+      reportActivity(fixture, thread.id, {
+        state: "waiting",
+        questions: [question],
+      });
+    expect((await report()).status).toBe(200);
+    const requestId = `native:${question.id}`;
+    const before = getPendingInteractionByProviderRequest(fixture.harness.db, {
+      providerId: "claude-code",
+      providerThreadId: SESSION_ID,
+      providerRequestId: requestId,
+    });
+    expect(before?.status).toBe("pending");
+    const warn = vi.spyOn(fixture.harness.deps.logger, "warn");
+
+    fixture.harness.deps.pendingInteractions.interruptPendingInteractionsForThreadIds(
+      {
+        threadIds: [thread.id],
+        reason:
+          "Host daemon restarted while awaiting user interaction; retry the thread to continue",
+      },
+    );
+    expect((await report()).status).toBe(200);
+    expect((await report()).status).toBe(200);
+
+    expect(
+      fixture.harness.deps.pendingInteractions.listPendingThreadInteractions(
+        thread.id,
+      ),
+    ).toHaveLength(1);
+    expect(
+      fixture.harness.deps.pendingInteractions.listPendingThreadInteractions(
+        thread.id,
+      )[0],
+    ).toMatchObject({
+      id: before?.id,
+      providerRequestId: requestId,
+      payload: { kind: "user_question" },
+    });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("keeps answered native questions rejected and warns only once", async () => {
+    const fixture = await createFixture();
+    const thread = seedChatThread(fixture, {
+      providerId: "claude-code",
+      providerThreadId: SESSION_ID,
+    });
+    await enterTerminal(fixture, thread.id);
+    const question = { id: "toolu_answered", prompt: "Continue?" };
+    const report = () =>
+      reportActivity(fixture, thread.id, {
+        state: "waiting",
+        questions: [question],
+      });
+    expect((await report()).status).toBe(200);
+    const requestId = `native:${question.id}`;
+    const original = getPendingInteractionByProviderRequest(
+      fixture.harness.db,
+      {
+        providerId: "claude-code",
+        providerThreadId: SESSION_ID,
+        providerRequestId: requestId,
+      },
+    );
+    expect(original?.status).toBe("pending");
+    interruptNativeTerminalQuestions(fixture.harness.deps, thread.id);
+    const warn = vi.spyOn(fixture.harness.deps.logger, "warn");
+
+    expect((await report()).status).toBe(200);
+    expect((await report()).status).toBe(200);
+
+    expect(
+      getPendingInteractionByProviderRequest(fixture.harness.db, {
+        providerId: "claude-code",
+        providerThreadId: SESSION_ID,
+        providerRequestId: requestId,
+      }),
+    ).toMatchObject({ id: original?.id, status: "interrupted" });
+    expect(
+      fixture.harness.deps.pendingInteractions.listPendingThreadInteractions(
+        thread.id,
+      ),
+    ).toHaveLength(0);
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps working across a provisional Claude Stop and the next tool", async () => {
     const fixture = await createFixture();
     const thread = seedChatThread(fixture, {
