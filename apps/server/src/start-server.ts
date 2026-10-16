@@ -21,6 +21,7 @@ import {
   getAppSettings,
   getDisabledProviderIds,
   listRunningThreads,
+  type DbConnection,
 } from "@bb/db";
 import { initDb } from "./db.js";
 import { createApp } from "./server.js";
@@ -231,6 +232,35 @@ export async function shutdownHttpBeforePlugins(args: {
   }
   if (completedWithinBounds) args.closeDatabase?.();
   return { completedWithinBounds, pluginStopTimedOut };
+}
+
+export async function shutdownServerRuntime(args: {
+  closeWebSockets: () => Promise<void>;
+  db: DbConnection;
+  logger: Pick<ServerLogger, "warn">;
+  stopPeriodicUpdateChecks: () => Promise<void>;
+  stopPlugins: () => Promise<void>;
+  server: ReturnType<typeof startHttpListener>;
+  stopTerminalDataPlane: () => void;
+}): Promise<{ completedWithinBounds: boolean; pluginStopTimedOut: boolean }> {
+  const result = await shutdownHttpBeforePlugins({
+    closeDatabase: () => args.db.$client.close(),
+    closeWebSockets: args.closeWebSockets,
+    onPluginStopTimeout: () =>
+      args.logger.warn(
+        `Plugin shutdown did not finish within ${SERVER_PLUGIN_SHUTDOWN_TIMEOUT_MS}ms`,
+      ),
+    server: args.server,
+    stopPeriodicUpdateChecks: args.stopPeriodicUpdateChecks,
+    stopPlugins: args.stopPlugins,
+    stopTerminalDataPlane: args.stopTerminalDataPlane,
+  });
+  if (result.pluginStopTimedOut) {
+    args.logger.warn("Database close skipped because plugin stop timed out");
+  } else if (!result.completedWithinBounds) {
+    args.logger.warn("Database close skipped because a shutdown step exceeded its bound");
+  }
+  return result;
 }
 
 export interface StartServerPluginsArgs {
@@ -656,29 +686,21 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
         clearInterval(sweepInterval);
       }
       pluginCatalogService.stopPeriodicRefresh();
-      const shutdownResult = await shutdownHttpBeforePlugins({
-        closeDatabase: () => db.$client.close(),
+      await shutdownServerRuntime({
         closeWebSockets,
-        onPluginStopTimeout: () =>
-          logger.warn(
-            `Plugin shutdown did not finish within ${SERVER_PLUGIN_SHUTDOWN_TIMEOUT_MS}ms`,
-          ),
-        server,
-        stopPeriodicUpdateChecks: () =>
-          pluginService.stopPeriodicUpdateChecks(),
+        db,
+        logger,
         stopPlugins: async () => {
           if (pendingServerMove !== null) return;
           await pluginService.stop().catch((error: unknown) => {
             logger.warn({ err: error }, "Plugin shutdown failed");
           });
         },
+        stopPeriodicUpdateChecks: () =>
+          pluginService.stopPeriodicUpdateChecks(),
+        server,
         stopTerminalDataPlane: () => terminalDataPlane?.stop(),
       });
-      if (shutdownResult.pluginStopTimedOut) {
-        logger.warn("Database close skipped because plugin stop timed out");
-      } else if (!shutdownResult.completedWithinBounds) {
-        logger.warn("Database close skipped because a shutdown step exceeded its bound");
-      }
     })();
     return shutdownPromise;
   };

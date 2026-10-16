@@ -1,12 +1,17 @@
 import { once } from "node:events";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { createConnection, migrate, type DbConnection } from "@bb/db";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
 import {
   shutdownHttpBeforePlugins,
+  shutdownServerRuntime,
   startHttpListener,
 } from "../../src/start-server.js";
 import { closeWebSocketServer } from "../../src/server.js";
+import { createTestAppHarness } from "../helpers/test-app.js";
 
 type ShutdownHttpBeforePlugins = (args: {
   closeDatabase?: () => void;
@@ -176,7 +181,30 @@ describe("server shutdown ordering", () => {
     expect(Date.now() - startedAt).toBeLessThan(4_000);
   }, 4_500);
 
-  it("skips database close when a plugin stop never resolves", async () => {
+  it("keeps the real migrated database open when a plugin never disposes", async () => {
+    const pluginRoot = await mkdtemp(join(tmpdir(), "bb-server-shutdown-plugin-"));
+    const pluginDir = join(pluginRoot, "bb-plugin-stuck-dispose");
+    await mkdir(pluginDir, { recursive: true });
+    await writeFile(
+      join(pluginDir, "package.json"),
+      JSON.stringify({
+        name: "bb-plugin-stuck-dispose",
+        version: "0.1.0",
+        bb: {
+          name: "Stuck dispose fixture",
+          description: "A plugin whose cleanup does not finish.",
+          branding: { icon: "Zap" },
+          server: "./server.ts",
+        },
+      }),
+    );
+    await writeFile(
+      join(pluginDir, "server.ts"),
+      "export default function plugin(bb: any) { bb.onDispose(() => new Promise<void>(() => {})); }",
+    );
+    const harness = await createTestAppHarness({ db: db! });
+    const installed = await harness.pluginService.installPath(pluginDir);
+    expect(installed.status).toBe("running");
     server = startHttpListener({
       fetch: async () => new Response("ready"),
       logger: { warn: () => {} },
@@ -186,41 +214,25 @@ describe("server shutdown ordering", () => {
       },
     });
     await once(server, "listening");
-    let databaseClosed = false;
-    let pluginObservedDatabaseError: unknown;
-    let pluginProbe: ReturnType<typeof setInterval> | undefined;
-    const shutdown = shutdownHttpBeforePlugins({
-      closeDatabase: () => {
-        databaseClosed = true;
-        db?.$client.close();
-      },
+    const warnings: string[] = [];
+    const result = await shutdownServerRuntime({
       closeWebSockets: async () => {},
+      db: db!,
+      logger: { warn: (message: string) => warnings.push(message) },
+      stopPeriodicUpdateChecks: () =>
+        harness.pluginService.stopPeriodicUpdateChecks(),
+      stopPlugins: () => harness.pluginService.stop(),
       server,
-      stopPlugins: () => {
-        pluginProbe = setInterval(() => {
-          try {
-            db?.$client.prepare("SELECT 1").get();
-          } catch (error) {
-            pluginObservedDatabaseError = error;
-          }
-        }, 25);
-        return new Promise<void>(() => {});
-      },
       stopTerminalDataPlane: () => {},
     });
-    const result = await shutdown;
-    if (result?.pluginStopTimedOut !== true) {
-      databaseClosed = true;
-      db?.$client.close();
-    }
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    if (pluginProbe !== undefined) clearInterval(pluginProbe);
-    expect(pluginObservedDatabaseError, "plugin database read failed after shutdown began").toBeUndefined();
-    expect(result?.pluginStopTimedOut).toBe(true);
-    expect(result?.completedWithinBounds).toBe(false);
-    expect(databaseClosed).toBe(false);
-    expect(pluginObservedDatabaseError).toBeUndefined();
     expect(db?.$client.prepare("SELECT 1").get()).toBeDefined();
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(db?.$client.prepare("SELECT 1").get()).toBeDefined();
+    expect(result.pluginStopTimedOut).toBe(true);
+    expect(result.completedWithinBounds).toBe(false);
+    expect(warnings).toContain("Database close skipped because plugin stop timed out");
+    await rm(pluginRoot, { recursive: true, force: true });
+    await rm(harness.config.dataDir, { recursive: true, force: true });
   }, 4_500);
 
   it("stops accepting before a stalled plugin update check and bounds shutdown", async () => {
