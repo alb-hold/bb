@@ -289,6 +289,39 @@ describe("resolveWritingEdits", () => {
     ]);
   });
 
+  it.each([
+    ["Let's eat, grandma", "Let's eat grandma"],
+    ["Let's eat grandma", "Let's eat, grandma"],
+    ["Is it ready", "Is it ready?"],
+    ["Ship it.", "Ship it!"],
+  ])(
+    "never auto-applies the punctuation change %s -> %s",
+    (original, replacement) => {
+      const edits = resolveWritingEdits({
+        ...base,
+        target: `${original} `,
+        proposals: [
+          proposal(original, replacement, { category: "punctuation" }),
+        ],
+      });
+      expect(edits.map((edit) => edit.disposition)).toEqual(["suggest"]);
+    },
+  );
+
+  it("auto-applies capitalization and a sentence-final period", () => {
+    const edits = resolveWritingEdits({
+      ...base,
+      target: "we ship tomorrow",
+      proposals: [
+        proposal("we ship tomorrow", "We ship tomorrow.", {
+          category: "capitalization",
+        }),
+      ],
+    });
+    expect(edits.length).toBeGreaterThan(0);
+    expect(edits.every((edit) => edit.disposition === "apply")).toBe(true);
+  });
+
   it("only auto-applies when the model reports no semantic impact", () => {
     const edits = resolveWritingEdits({
       ...base,
@@ -335,6 +368,33 @@ describe("validateFormattedTranscript", () => {
     ).toEqual({ ok: false, reason: "added-words" });
   });
 
+  it.each([
+    ["make the endpoint public", "Make the endpoint pubic."],
+    ["the user are logged in", "The user is logged in."],
+    ["it expire tomorrow", "It expires tomorrow."],
+  ])(
+    "keeps the transcript when formatting swaps a spoken word: %s",
+    (raw, formatted) => {
+      expect(validateFormattedTranscript(raw, formatted)).toEqual({
+        ok: false,
+        reason: "added-words",
+      });
+    },
+  );
+
+  it("accepts vocabulary spellings and accent restorations of spoken words", () => {
+    expect(
+      validateFormattedTranscript(
+        "ask hermez about it",
+        "Ask Hermes about it.",
+        ["Hermes"],
+      ),
+    ).toEqual({ ok: true });
+    expect(
+      validateFormattedTranscript("voce nao precisa", "Você não precisa."),
+    ).toEqual({ ok: true });
+  });
+
   it("rejects added requirements and changed numbers", () => {
     expect(
       validateFormattedTranscript(
@@ -363,7 +423,7 @@ describe("validateFormattedTranscript", () => {
     expect(
       validateFormattedTranscript(
         "please make sure the login form validates the email field and shows an error",
-        "Validate email.",
+        "Validates email.",
       ),
     ).toEqual({ ok: false, reason: "dropped-words" });
   });

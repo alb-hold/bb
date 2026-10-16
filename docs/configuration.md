@@ -304,11 +304,24 @@ Settings (stored server-side; also `bb settings writing`):
 | Setting                 | Default     | Meaning                                                                                                                                              |
 | ----------------------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `mode`                  | `prompt`    | `prompt`, `developer`, `natural`, `polished`, `verbatim`, `literal-code`                                                                             |
-| `typingCorrection`      | `automatic` | `automatic` applies only punctuation, capitalization, repeated-word and agreement fixes and suggests spelling and the rest; `suggest`; `off`         |
+| `typingCorrection`      | `automatic` | `automatic` applies only the fixes listed below and suggests the rest; `suggest`; `off`                                                              |
 | `dictationFormatting`   | `true`      | Format dictated phrases; off inserts transcripts as heard                                                                                            |
 | `vocabulary`            | `[]`        | Up to 200 terms to spell exactly; sent with each request                                                                                             |
 | `dailyCorrectionLimit`  | `300`       | Writing requests per UTC day before assistance pauses                                                                                                |
 | `dailyDictationMinutes` | `60`        | Dictated minutes per UTC day before dictation stops; bb cloud also caps each account at $0.50 of AI usage per day, about 80 minutes of transcription |
+
+Automatic typing correction applies an edit by itself only when its meaning cannot
+change, whatever the AI service reports: capitalization and spacing, a period at
+the end of a sentence, removing an accidentally repeated word, verb or article
+agreement from a fixed list (is/are/am/be, was/were, has/have, does/do and their
+negated forms, a/an), and accents on a fixed list of Portuguese words that are
+not words without them (nao, voce, tambem, entao, amanha). Spelling fixes, other
+punctuation (commas, question marks), homophones such as its/it's, and tense or
+plural changes are offered as suggestions. Code, paths, identifiers and
+vocabulary terms are never edited. Dictation formatting follows the same rule:
+if the formatter changes a spoken word into another word, other than a
+vocabulary term or one of those accent restorations, the transcript is inserted
+as heard.
 
 Usage counts and the cost estimate use list prices and are not a bill: bb
 cloud has its own daily limit, and Codex uses the primary machine's Codex
