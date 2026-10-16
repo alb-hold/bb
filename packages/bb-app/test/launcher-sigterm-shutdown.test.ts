@@ -252,6 +252,7 @@ it("stops the real launched server after its launcher is SIGKILLed", async () =>
     serverPid = readEvents(marker).find((event) => event.event === "server:ready")
       ?.pid as number | undefined;
     if (serverPid === undefined) throw new Error("Server ready event had no PID");
+    expect(readEvents(marker).find((event) => event.event === "server:ready")?.hasIpc).toBe(true);
 
     process.kill(launcherPid, "SIGKILL");
     await once(launcher, "exit");
