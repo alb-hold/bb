@@ -4,7 +4,7 @@ import {
   SERVER_SHUTDOWN_BOUND_MS,
 } from "@bb/config/full-stack-shutdown";
 import {
-  shutdownHttpBeforePlugins,
+  shutdownServerRuntime,
   startHttpListener,
 } from "../../../../apps/server/src/start-server.ts";
 
@@ -18,7 +18,6 @@ const server = startHttpListener({
   },
 });
 await new Promise((resolve) => server.once("listening", resolve));
-let databaseClosed = false;
 let pluginObservedDatabaseError = false;
 const pluginProbe = setInterval(() => {
   try {
@@ -28,35 +27,31 @@ const pluginProbe = setInterval(() => {
   }
 }, 25);
 const startedAt = Date.now();
-const result = await shutdownHttpBeforePlugins({
-  closeDatabase: () => {
-    databaseClosed = true;
-    db.$client.close();
-  },
+const result = await shutdownServerRuntime({
   closeWebSockets: async () => {},
-  server,
+  db,
+  logger: { warn() {} },
+  stopPeriodicUpdateChecks: async () => {},
   stopPlugins: () => new Promise(() => {}),
+  server,
   stopTerminalDataPlane: () => {},
 });
-if (result?.pluginStopTimedOut !== true) {
-  databaseClosed = true;
-  db.$client.close();
-}
 await new Promise((resolve) => setTimeout(resolve, 50));
 clearInterval(pluginProbe);
 let dbReadable = false;
 try {
-  dbReadable = !databaseClosed && db.$client.prepare("SELECT 1").get() !== undefined;
+  dbReadable = db.$client.prepare("SELECT 1").get() !== undefined;
 } catch {}
+const databaseClosed = !dbReadable;
 writeFileSync(
   process.env.BB_PLUGIN_TIMEOUT_RESULT,
   JSON.stringify({
-    completedWithinBounds: result?.completedWithinBounds ?? false,
+    completedWithinBounds: result.completedWithinBounds,
     databaseClosed,
     dbReadable,
     elapsedMs: Date.now() - startedAt,
     pluginObservedDatabaseError,
-    pluginStopTimedOut: result?.pluginStopTimedOut ?? false,
+    pluginStopTimedOut: result.pluginStopTimedOut,
     shutdownBoundMs: SERVER_SHUTDOWN_BOUND_MS,
   }),
 );
