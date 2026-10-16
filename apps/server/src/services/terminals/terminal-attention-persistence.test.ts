@@ -28,6 +28,60 @@ afterEach(async () => {
 });
 
 describe("terminal attention persistence", () => {
+  it("uses the public API host guard and rejects unknown clear targets", async () => {
+    const harness = await createTestAppHarness();
+    harnesses.push(harness);
+    const { terminalId } = createAttentionTerminal(harness);
+    upsertTerminalAttention(harness.db, {
+      terminalSessionId: terminalId,
+      seq: 1,
+      daemonSeq: null,
+      kind: "bell",
+      title: "Build finished",
+      body: null,
+      attentionAt: Date.now(),
+    });
+
+    const deniedRequests = [
+      ["GET", "/api/v1/terminals"],
+      ["GET", "/api/v1/terminals/attention"],
+      ["POST", `/api/v1/terminals/${terminalId}/attention/clear`],
+    ] as const;
+    for (const [method, path] of deniedRequests) {
+      const response = await harness.app.request(path, {
+        method,
+        headers: { host: "untrusted.invalid" },
+      });
+      expect(response.status).toBe(403);
+      expect(await response.json()).toMatchObject({ code: "forbidden_host" });
+    }
+
+    const listed = await harness.app.request("/api/v1/terminals/attention", {
+      headers: { host: "localhost" },
+    });
+    expect(listed.status).toBe(200);
+    expect(await listed.json()).toMatchObject({
+      sessions: [expect.objectContaining({ id: terminalId })],
+    });
+
+    const cleared = await harness.app.request(
+      `/api/v1/terminals/${terminalId}/attention/clear`,
+      { method: "POST", headers: { host: "localhost" } },
+    );
+    expect(cleared.status).toBe(200);
+    expect(await cleared.json()).toMatchObject({
+      id: terminalId,
+      attention: null,
+    });
+
+    const unknown = await harness.app.request(
+      "/api/v1/terminals/term_unknown/attention/clear",
+      { method: "POST", headers: { host: "localhost" } },
+    );
+    expect(unknown.status).toBe(404);
+    expect(await unknown.json()).toMatchObject({ code: "terminal_not_found" });
+  });
+
   it.each(TERMINAL_ATTENTION_CONTRACT_CASES)(
     "follows the shared terminal attention contract: $name",
     async (contract) => {
@@ -54,8 +108,11 @@ describe("terminal attention persistence", () => {
         sessions: Array<{ id: string }>;
       };
       expect(
-        listedBody.sessions.map(({ id }) =>
-          [...terminalIds.entries()].find(([, terminalId]) => terminalId === id)?.[0],
+        listedBody.sessions.map(
+          ({ id }) =>
+            [...terminalIds.entries()].find(
+              ([, terminalId]) => terminalId === id,
+            )?.[0],
         ),
       ).toEqual(contract.unreadIds);
 
@@ -72,8 +129,11 @@ describe("terminal attention persistence", () => {
           await harness.app.request("/api/v1/terminals/attention")
         ).json()) as { sessions: Array<{ id: string }> };
         expect(
-          afterClear.sessions.map(({ id }) =>
-            [...terminalIds.entries()].find(([, terminalId]) => terminalId === id)?.[0],
+          afterClear.sessions.map(
+            ({ id }) =>
+              [...terminalIds.entries()].find(
+                ([, terminalId]) => terminalId === id,
+              )?.[0],
           ),
         ).toEqual(contract.unreadIdsAfterClear);
       }

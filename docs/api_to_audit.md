@@ -22,10 +22,17 @@ terminal needing attention, and explicitly clears a terminal ring.
 this same SDK area; visibly opening a terminal clears through the existing
 terminal attach path.
 
-**Audit before stabilizing.** Confirm authorization scope for global list and
-clear operations, ordering when timestamps tie, and cross-client behavior of
-explicit clearing. The app shortcut uses Alt+Shift+N and remains active with
-terminal focus.
+Global list and explicit clear operations are intentionally host-wide, matching
+the existing terminal routes. The public API has no per-user principal. Every
+`/api/v1` request passes the server-wide `requestHostProblem` guard in
+`apps/server/src/server.ts`, which rejects untrusted Host headers with
+`forbidden_host`. Existing `GET /terminals`, close, input, and restart routes
+also operate across host terminals without per-caller scoping; these attention
+routes share that server trust boundary.
+
+**Audit before stabilizing.** Verify ordering when timestamps tie and
+cross-client behavior of explicit clearing. The app shortcut uses Alt+Shift+N
+and remains active with terminal focus.
 
 Plugin Guide surface: `The bb SDK` in
 `plugins/plugin-api-docs/src/surfaces.ts`.
@@ -132,6 +139,7 @@ when no other source-project thread uses it; shared worktrees are refused.
 Before stabilization, audit cross-project parent and child operations, managed
 environment lifecycle and cleanup, thread-list cache refresh in both projects,
 and moving threads between projects with identical project names.
+
 ## Queued message edit holds
 
 `bb.sdk.threads.queuedMessages.experimental_holdForEdit({ threadId, queuedMessageId })`
