@@ -27,4 +27,3 @@ export const updateThreadRowStateRequestSchema = z.discriminatedUnion("action", 
 export type UpdateThreadRowStateRequest = z.infer<
   typeof updateThreadRowStateRequestSchema
 >;
-
