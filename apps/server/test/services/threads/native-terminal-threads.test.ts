@@ -165,9 +165,21 @@ describe("reopenNativeTerminalsAfterDaemonReconnect", () => {
         return outputReads > 2 ? after : before;
       });
 
-      const prefix = "a".repeat(TERMINAL_DATA_MAX_BYTES - 7);
-      const middle = "b".repeat(TERMINAL_DATA_MAX_BYTES - 3);
-      const text = `${prefix}€${middle}😀${"æ🧪😀\n".repeat(4_000)}END`;
+      const bracketedPastePrefix = "\u001b[200~";
+      const bracketedPastePrefixBytes = bracketedPastePrefix.length;
+      const euro = "€";
+      const emoji = "😀";
+      const prefixText = "a".repeat(
+        TERMINAL_DATA_MAX_BYTES - bracketedPastePrefixBytes - 1,
+      );
+      const middleText = "b".repeat(
+        TERMINAL_DATA_MAX_BYTES - Buffer.byteLength(euro),
+      );
+      const text = `${prefixText}${euro}${middleText}${emoji}${"æ🧪😀\n".repeat(4_000)}END`;
+      const euroStartByte =
+        bracketedPastePrefixBytes + Buffer.byteLength(prefixText);
+      const emojiStartByte =
+        euroStartByte + Buffer.byteLength(euro) + Buffer.byteLength(middleText);
       const result = await acceptThreadSendRequest(h.deps, {
         thread,
         payload: { input: textInput(text), mode: "start" },
@@ -197,12 +209,27 @@ describe("reopenNativeTerminalsAfterDaemonReconnect", () => {
         );
       }
       expect(inputFrames.length).toBeGreaterThanOrEqual(2);
-      const expected = Buffer.from(`\u001b[200~${text}\u001b[201~\r`);
+      const expected = Buffer.from(
+        `${bracketedPastePrefix}${text}\u001b[201~\r`,
+      );
       const decoded = inputFrames.map((frame) => Buffer.from(frame, "base64"));
       expect(Buffer.concat(decoded)).toEqual(expected);
       expect(expected.byteLength).toBeGreaterThan(120_000);
-      expect(Buffer.concat(decoded).toString("utf8")).toContain("€");
-      expect(Buffer.concat(decoded).toString("utf8")).toContain("😀");
+      expect(decoded.length).toBeGreaterThanOrEqual(3);
+      expect(euroStartByte).toBe(TERMINAL_DATA_MAX_BYTES - 1);
+      expect(emojiStartByte).toBe(TERMINAL_DATA_MAX_BYTES * 2 - 1);
+      expect(decoded[0].at(-1)).toBe(0xe2);
+      expect(decoded[1].subarray(0, 2)).toEqual(Buffer.from([0x82, 0xac]));
+      expect(decoded[1].at(-1)).toBe(0xf0);
+      expect(decoded[2].subarray(0, 3)).toEqual(
+        Buffer.from([0x9f, 0x98, 0x80]),
+      );
+      const fatalUtf8Decoder = new TextDecoder("utf-8", { fatal: true });
+      expect(() => fatalUtf8Decoder.decode(decoded[0])).toThrow();
+      expect(() => fatalUtf8Decoder.decode(decoded[1])).toThrow();
+      expect(fatalUtf8Decoder.decode(Buffer.concat(decoded))).toBe(
+        expected.toString("utf8"),
+      );
     });
   });
 
