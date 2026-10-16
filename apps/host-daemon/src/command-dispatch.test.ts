@@ -2428,6 +2428,7 @@ describe("dispatchCommand", () => {
       dispatchOnlineRpcCommand(
         { type: "terminal-data-plane.probe" },
         withoutPort,
+        new AbortController().signal,
       ),
     ).resolves.toEqual({ dataSocket: false, ipcVersion: 1 });
     await expect(
@@ -2438,6 +2439,7 @@ describe("dispatchCommand", () => {
           ticket: "ticket-ticket-ticket",
         },
         withoutPort,
+        new AbortController().signal,
       ),
     ).resolves.toEqual({ connected: false });
 
@@ -2447,7 +2449,11 @@ describe("dispatchCommand", () => {
       terminalDataSocket: { connect },
     });
     await expect(
-      dispatchOnlineRpcCommand({ type: "terminal-data-plane.probe" }, withPort),
+      dispatchOnlineRpcCommand(
+        { type: "terminal-data-plane.probe" },
+        withPort,
+        new AbortController().signal,
+      ),
     ).resolves.toEqual({ dataSocket: true, ipcVersion: 1 });
     expect(connect).not.toHaveBeenCalled();
     await expect(
@@ -2458,6 +2464,7 @@ describe("dispatchCommand", () => {
           ticket: "ticket-ticket-ticket",
         },
         withPort,
+        new AbortController().signal,
       ),
     ).resolves.toEqual({ connected: true });
     expect(connect).toHaveBeenCalledWith({

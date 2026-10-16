@@ -158,6 +158,7 @@ describe("useThreadFileTabs recently closed tabs", () => {
         retainedTerminalIds: new Set<string>(),
         storageFiles: undefined,
         terminalSessions: undefined,
+        retainedTerminalIds: new Set<string>(),
       }),
     );
     act(() => result.current.openTab({ kind: "new-tab" }));
@@ -379,6 +380,7 @@ describe("useThreadFileTabs recently closed tabs", () => {
         environmentId: "env_1",
         storageFiles: undefined,
         terminalSessions: undefined,
+        retainedTerminalIds: new Set<string>(),
       }),
     );
 
@@ -433,6 +435,7 @@ describe("useThreadFileTabs recently closed tabs", () => {
         environmentId: "env_1",
         storageFiles: undefined,
         terminalSessions: undefined,
+        retainedTerminalIds: new Set<string>(),
       }),
     );
     const fileRequest = {
@@ -478,6 +481,7 @@ describe("useThreadFileTabs recently closed tabs", () => {
         environmentId: "env_1",
         storageFiles,
         terminalSessions: undefined,
+        retainedTerminalIds: new Set<string>(),
       }),
     );
 
@@ -551,6 +555,7 @@ describe("useThreadFileTabs recently closed tabs", () => {
         environmentId: "env_1",
         storageFiles: undefined,
         terminalSessions: undefined,
+        retainedTerminalIds: new Set<string>(),
       }),
     );
 
@@ -583,6 +588,7 @@ describe("useThreadFileTabs recently closed tabs", () => {
         storageFileExists,
         storageFiles: { files: [], truncated: true },
         terminalSessions: undefined,
+        retainedTerminalIds: new Set<string>(),
       }),
     );
 
@@ -626,6 +632,7 @@ describe("useThreadFileTabs recently closed tabs", () => {
         storageFileExists,
         storageFiles: { files: [], truncated: true },
         terminalSessions: undefined,
+        retainedTerminalIds: new Set<string>(),
       }),
     );
 
@@ -677,6 +684,7 @@ describe("useThreadFileTabs recently closed tabs", () => {
         environmentId: "env_1",
         storageFiles: { files: [], truncated: true },
         terminalSessions: undefined,
+        retainedTerminalIds: new Set<string>(),
       }),
     );
 
@@ -784,6 +792,7 @@ describe("useThreadFileTabs recently closed tabs", () => {
         projectId: "proj_1",
         storageFiles: undefined,
         terminalSessions: undefined,
+        retainedTerminalIds: new Set<string>(),
       }),
     );
 
@@ -849,6 +858,7 @@ describe("useThreadFileTabs terminal pruning", () => {
         environmentId: "env_root",
         storageFiles: undefined,
         terminalSessions: undefined,
+        retainedTerminalIds: new Set<string>(),
       }),
     );
 
@@ -1008,6 +1018,7 @@ describe("useThreadFileTabs active owners", () => {
         projectId: "proj_selected",
         storageFiles: undefined,
         terminalSessions: undefined,
+        retainedTerminalIds: new Set<string>(),
       }),
     );
 
@@ -1049,6 +1060,7 @@ describe("useThreadFileTabs active owners", () => {
         preserveWorkspaceTabsAcrossContexts: true,
         storageFiles: undefined,
         terminalSessions: undefined,
+        retainedTerminalIds: new Set<string>(),
       }),
     );
 
@@ -1092,6 +1104,7 @@ describe("useThreadFileTabs active owners", () => {
         preserveWorkspaceTabsAcrossContexts: true,
         storageFiles: undefined,
         terminalSessions: undefined,
+        retainedTerminalIds: new Set<string>(),
       }),
     );
 
@@ -1139,6 +1152,7 @@ describe("useThreadFileTabs active owners", () => {
         preserveWorkspaceTabsAcrossContexts: true,
         storageFiles: undefined,
         terminalSessions: undefined,
+        retainedTerminalIds: new Set<string>(),
       }),
     );
 
@@ -1161,6 +1175,7 @@ describe("useThreadFileTabs plugin panel tabs", () => {
         environmentId: "env_1",
         storageFiles: undefined,
         terminalSessions: undefined,
+        retainedTerminalIds: new Set<string>(),
       }),
     );
     const action = {
@@ -1196,6 +1211,7 @@ describe("useThreadFileTabs plugin panel tabs", () => {
         environmentId: "env_1",
         storageFiles: undefined,
         terminalSessions: undefined,
+        retainedTerminalIds: new Set<string>(),
       }),
     );
     act(() =>
@@ -1223,6 +1239,7 @@ describe("useThreadFileTabs plugin panel tabs", () => {
         environmentId: "env_1",
         storageFiles: undefined,
         terminalSessions: undefined,
+        retainedTerminalIds: new Set<string>(),
       }),
     );
 
@@ -1284,6 +1301,7 @@ describe("useThreadFileTabs plugin panel tabs", () => {
         environmentId: "env_1",
         storageFiles: undefined,
         terminalSessions: undefined,
+        retainedTerminalIds: new Set<string>(),
       }),
     );
     act(() => result.current.openTab({ kind: "new-tab" }));
@@ -1334,6 +1352,7 @@ describe("useThreadFileTabs file opener diversion", () => {
         environmentId: "env_1",
         storageFiles: undefined,
         terminalSessions: undefined,
+        retainedTerminalIds: new Set<string>(),
       }),
     );
 
@@ -1402,6 +1421,7 @@ describe("useThreadFileTabs file opener diversion", () => {
         environmentId: "env_1",
         storageFiles: undefined,
         terminalSessions: undefined,
+        retainedTerminalIds: new Set<string>(),
       }),
     );
     const open = () =>
@@ -1436,6 +1456,7 @@ describe("useThreadFileTabs file opener diversion", () => {
         environmentId: "env_1",
         storageFiles: undefined,
         terminalSessions: undefined,
+        retainedTerminalIds: new Set<string>(),
       }),
     );
 
@@ -1502,6 +1523,7 @@ describe("useThreadFileTabs file opener diversion", () => {
         environmentId: "env_1",
         storageFiles: undefined,
         terminalSessions: undefined,
+        retainedTerminalIds: new Set<string>(),
       }),
     );
 
@@ -1544,6 +1566,7 @@ describe("useThreadFileTabs file opener diversion", () => {
         environmentId: "env_1",
         storageFiles: undefined,
         terminalSessions: undefined,
+        retainedTerminalIds: new Set<string>(),
       }),
     );
 
@@ -1589,6 +1612,7 @@ describe("useThreadFileTabs file opener diversion", () => {
           truncated: false,
         },
         terminalSessions: undefined,
+        retainedTerminalIds: new Set<string>(),
       }),
     );
 
@@ -1628,6 +1652,7 @@ describe("useThreadFileTabs file opener diversion", () => {
         environmentId: "env_1",
         storageFiles: undefined,
         terminalSessions: undefined,
+        retainedTerminalIds: new Set<string>(),
       }),
     );
 
@@ -1657,6 +1682,7 @@ describe("useThreadFileTabs file opener diversion", () => {
         environmentId: "env_1",
         storageFiles: undefined,
         terminalSessions: undefined,
+        retainedTerminalIds: new Set<string>(),
       }),
     );
 
@@ -1681,6 +1707,7 @@ describe("useThreadFileTabs file opener diversion", () => {
         environmentId: "env_1",
         storageFiles: undefined,
         terminalSessions: undefined,
+        retainedTerminalIds: new Set<string>(),
       }),
     );
 
@@ -1713,6 +1740,7 @@ describe("useThreadFileTabs file opener diversion", () => {
         environmentId: "env_1",
         storageFiles: undefined,
         terminalSessions: undefined,
+        retainedTerminalIds: new Set<string>(),
       }),
     );
 
@@ -1742,6 +1770,7 @@ describe("useThreadFileTabs file opener diversion", () => {
         environmentId: "env_1",
         storageFiles: undefined,
         terminalSessions: undefined,
+        retainedTerminalIds: new Set<string>(),
       }),
     );
 

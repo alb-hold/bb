@@ -8,6 +8,7 @@ import {
 
 function createPromptBox() {
   return {
+    openPromptHistorySearch: vi.fn(() => false),
     captureHeightForLayoutChange: vi.fn(),
     focusEnd: vi.fn(),
     getTextBeforeCursor: vi.fn(),

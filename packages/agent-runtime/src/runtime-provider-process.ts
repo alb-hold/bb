@@ -1,5 +1,4 @@
 import type { ThreadEvent } from "@bb/domain";
-import type { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import {

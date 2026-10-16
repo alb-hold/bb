@@ -112,8 +112,15 @@ async function writeInjectedSkillSource(
   };
 }
 
-afterEach(() => {
+const tempDirs: string[] = [];
+
+afterEach(async () => {
   vi.unstubAllEnvs();
+  await Promise.all(
+    tempDirs
+      .splice(0)
+      .map((dir) => fs.rm(dir, { recursive: true, force: true })),
+  );
 });
 
 function getProvisionWorkspacePath(args: ProvisionWorkspaceArgs): string {

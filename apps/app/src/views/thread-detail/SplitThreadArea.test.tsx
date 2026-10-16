@@ -376,6 +376,7 @@ vi.mock("./LazyThreadDetailView", () => ({
                   mention: {
                     results: EMPTY_ORDERED_MENTION_SUGGESTIONS,
                     isLoading: false,
+                    isRefreshing: false,
                     isError: false,
                     onQueryChange: () => undefined,
                   },

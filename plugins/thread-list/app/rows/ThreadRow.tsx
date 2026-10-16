@@ -2,7 +2,6 @@ import {
   memo,
   useCallback,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -204,61 +203,6 @@ function getHoverActionsInsetStyle(actionCount: number): CSSProperties {
   return {
     "--bb-sidebar-hover-actions-inset": `calc(var(--spacing) * ${7.5 * actionCount})`,
   } as CSSProperties;
-}
-
-function measureDisclosureClearance(
-  content: HTMLElement,
-  actions: HTMLElement | null,
-): number | null {
-  const toggle = content.querySelector("button[aria-expanded]");
-  const trigger = actions?.querySelector("[data-thread-actions-trigger]");
-  const controls = trigger?.parentElement;
-  const firstAction = controls?.firstElementChild;
-  const lastAction = trigger?.previousElementSibling;
-  if (!toggle || !trigger || !controls || !firstAction || !lastAction) {
-    return null;
-  }
-  const toggleRect = toggle.getBoundingClientRect();
-  const triggerRect = trigger.getBoundingClientRect();
-  if (toggleRect.width === 0 || triggerRect.width === 0) return null;
-  const gap = Number.parseFloat(getComputedStyle(controls).columnGap) || 0;
-  const restingActionsLeft =
-    triggerRect.left -
-    gap -
-    (lastAction.getBoundingClientRect().right -
-      firstAction.getBoundingClientRect().left);
-  return toggleRect.right + gap > restingActionsLeft
-    ? Math.ceil(triggerRect.left - toggleRect.left)
-    : null;
-}
-
-function useDisclosureActionsClearance(enabled: boolean, actionCount: number) {
-  const contentRef = useRef<HTMLSpanElement>(null);
-  const titleRef = useRef<HTMLSpanElement>(null);
-  const actionsRef = useRef<HTMLDivElement>(null);
-  const [clearance, setClearance] = useState<number | null>(null);
-  useLayoutEffect(() => {
-    const content = contentRef.current;
-    const title = titleRef.current;
-    if (
-      !enabled ||
-      !content ||
-      !title ||
-      typeof ResizeObserver === "undefined"
-    ) {
-      return;
-    }
-    const observer = new ResizeObserver(() =>
-      setClearance(measureDisclosureClearance(content, actionsRef.current)),
-    );
-    observer.observe(content);
-    observer.observe(title);
-    return () => {
-      observer.disconnect();
-      setClearance(null);
-    };
-  }, [enabled, actionCount]);
-  return { contentRef, titleRef, actionsRef, clearance };
 }
 
 function getThreadRowStyle(depth: number): CSSProperties {
@@ -618,7 +562,7 @@ function ThreadRowComponent({
             key: CUSTOMIZE_ROW_ACTIONS_KEY,
             group: experimental_THREAD_ACTION_GROUPS.settings,
             action: {
-              label: "Customize actions",
+              label: "Customize row actions",
               icon: "FilterHorizontal",
               run: () => {
                 const begin = () => customizeRowActions(thread.id);
@@ -784,7 +728,6 @@ function ThreadRowComponent({
         />
       ) : null}
       <span
-        ref={disclosureActions.contentRef}
         className={cn(
           "relative flex min-w-0 flex-1 items-center gap-1.5 self-stretch",
           hasVisibleStatus && "gap-1",
@@ -831,7 +774,6 @@ function ThreadRowComponent({
           className="absolute inset-0 rounded-md outline-none"
         />
         <span
-          ref={disclosureActions.titleRef}
           className={cn(
             "pointer-events-none relative flex min-w-0 flex-1 items-center self-stretch",
           )}

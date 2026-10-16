@@ -36,6 +36,8 @@ import { LazyQueuedMessagesList } from "@/components/promptbox/banner/LazyQueued
 import { getPromptDraftAccessor } from "@/hooks/usePromptDraftStorage";
 import { ThreadDetailPromptArea } from "./ThreadDetailPromptArea";
 
+const shellProbeRenders = vi.fn();
+
 
 const PROJECT_ID = "proj_keystrokes";
 

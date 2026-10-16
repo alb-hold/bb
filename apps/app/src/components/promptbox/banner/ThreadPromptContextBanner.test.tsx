@@ -604,6 +604,7 @@ describe("ThreadPromptContextBanner", () => {
                 hasPendingInteraction: false,
               },
             ],
+            pendingInteractions: [],
           }}
           pullRequestSection={null}
           expandedSection={null}
