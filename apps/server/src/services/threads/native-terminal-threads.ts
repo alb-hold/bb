@@ -374,6 +374,7 @@ async function openNativeTerminalOnce(
   deps: NativeTerminalDeps,
   args: {
     reattachOnly: boolean;
+    repaintOnAttach?: boolean;
     replaceLiveTerminal: boolean;
     threadId: string;
     request: OpenNativeTerminalRequest;
@@ -438,6 +439,14 @@ async function openNativeTerminalOnce(
   }
   const credential = issueNativeTerminalToolCredential(record.providerId);
   const terminal = await deps.terminalSessions.createTerminal({
+    ...(args.repaintOnAttach
+      ? {
+          onTerminalStarted: (terminalId: string) =>
+            deps.terminalSessions.requestNativeTerminalRepaintOnNextAttach(
+              terminalId,
+            ),
+        }
+      : {}),
     payload: {
       cols: args.request.cols ?? NATIVE_TERMINAL_DEFAULT_COLS,
       rows: args.request.rows ?? NATIVE_TERMINAL_DEFAULT_ROWS,
@@ -485,6 +494,7 @@ function openNativeTerminalDeduplicated(
   deps: NativeTerminalDeps,
   args: {
     reattachOnly: boolean;
+    repaintOnAttach?: boolean;
     threadId: string;
     request: OpenNativeTerminalRequest;
   },
@@ -783,11 +793,19 @@ function reopenNativeTerminals(
             const exitedAfterArchive =
               currentTerminal?.status === "exited" &&
               currentTerminal.closeReason === "thread-archived";
+            const sharedSize =
+              currentRecord?.terminalSessionId === null ||
+              currentRecord?.terminalSessionId === undefined
+                ? null
+                : deps.terminalSessions.sharedBrowserTerminalSize(
+                    currentRecord.terminalSessionId,
+                  );
             reopened = await openNativeTerminalDeduplicated(deps, {
+              repaintOnAttach: sharedSize !== null,
               reattachOnly:
                 reason === "daemon-reconnect" && !exitedAfterArchive,
               threadId,
-              request: {},
+              request: sharedSize ?? {},
             });
             break;
           } catch (error: unknown) {
