@@ -60,9 +60,19 @@ it("isolates failed cache restores while preserving healthy caches through a rea
   );
   const root = mkdtempSync(join(tmpdir(), "bb-ci-cache-fallback-"));
   onTestFinished(() => rmSync(root, { recursive: true, force: true }));
+  const packageManager = JSON.parse(
+    readFileSync(
+      fileURLToPath(new URL("../../../package.json", import.meta.url)),
+      "utf8",
+    ),
+  ).packageManager;
   writeFileSync(
     join(root, "package.json"),
-    '{"name":"cache-fixture","private":true}',
+    JSON.stringify({
+      name: "cache-fixture",
+      private: true,
+      packageManager,
+    }),
   );
   const env = {
     ...process.env,
