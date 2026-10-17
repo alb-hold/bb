@@ -365,6 +365,25 @@ describe("resolveWritingEdits", () => {
     ]);
   });
 
+  it.each([
+    ["Let's eat, grandma. We are late.", "eat, grandma", "eat grandma"],
+    ["Let's eat grandma. We are late.", "eat grandma", "eat, grandma"],
+    ["Ship it now. Then rest.", "Ship it now", "Ship it now!"],
+  ])(
+    "never auto-applies a punctuation change inside the finished sentences %j",
+    (target, original, replacement) => {
+      const edits = resolveWritingEdits({
+        ...base,
+        target,
+        proposals: [
+          proposal(original, replacement, { category: "punctuation" }),
+        ],
+      });
+      expect(edits.length).toBeGreaterThan(0);
+      expect(edits.map((edit) => edit.disposition)).not.toContain("apply");
+    },
+  );
+
   it("auto-applies capitalization in a sentence that already ends with a period", () => {
     const edits = resolveWritingEdits({
       ...base,
