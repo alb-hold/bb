@@ -14,6 +14,7 @@ import type {
 } from "@bb/server-contract";
 import { DeviceHandoffSheet } from "./DeviceHandoffSheet";
 import { useDeviceHandoffQueue } from "./useDeviceHandoffQueue";
+import { openUrlInExternalBrowser } from "@/lib/url-open-routing";
 
 const copied = vi.hoisted(() => vi.fn());
 const registerDeviceHandoff = vi.hoisted(() =>
@@ -97,6 +98,43 @@ describe("DeviceHandoffSheet", () => {
       successMessage: "Copied on this device",
       errorMessage: "Could not copy text",
     });
+  });
+
+  it("opens the requested URL and acknowledges it only after the user taps Open", async () => {
+    const url = "https://example.com/dh-open";
+    const signal: DeviceHandoffSignal = {
+      type: "device-handoff",
+      id: "open-handoff",
+      createdAt: Date.now(),
+      expiresAt: Date.now() + 600_000,
+      originLabel: "Terminal",
+      request: {
+        kind: "open-url",
+        url,
+        origin: { terminalSessionId: "term_1" },
+      },
+    };
+    const onDismiss = vi.fn();
+    const onShown = vi.fn();
+    render(
+      <DeviceHandoffSheet
+        signal={signal}
+        position={1}
+        count={1}
+        onDismiss={onDismiss}
+        onShown={onShown}
+      />,
+    );
+
+    expect(await screen.findByText("example.com")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Open" })).toBeTruthy();
+    expect(openUrlInExternalBrowser).not.toHaveBeenCalled();
+    expect(onDismiss).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+
+    expect(openUrlInExternalBrowser).toHaveBeenCalledTimes(1);
+    expect(openUrlInExternalBrowser).toHaveBeenCalledWith(url);
+    expect(onDismiss).toHaveBeenCalledTimes(1);
   });
 
   it("shows queued handoffs in arrival order when several arrive before dismissal", async () => {
