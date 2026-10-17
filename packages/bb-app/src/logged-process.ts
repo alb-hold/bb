@@ -5,6 +5,7 @@ import { join } from "node:path";
 const stdioLogWriter = `
 const fs = require("node:fs");
 const crypto = require("node:crypto");
+const net = require("node:net");
 const { execFileSync } = require("node:child_process");
 const path = require("node:path");
 const logPath = process.argv[1];
@@ -16,8 +17,16 @@ const retryDelayMs = 10;
 const maxChunkRetryMs = 2_000;
 const recoveryIntervalMs = writerBarrier?.recoveryIntervalMs ?? 1_000;
 const identityFallbackMs = writerBarrier?.identityFallbackMs ?? 10 * 60 * 1000;
-const identityRecheckMs = writerBarrier?.identityRecheckMs ?? 5_000;
-const processIdentityCache = new Map();
+const errorCode = (error) => typeof error?.code === "string" ? error.code : "UNKNOWN";
+const reportDiagnostic = (message) => {
+  try {
+    fs.writeSync(2, Buffer.from("[bb] " + message + "\\n"));
+  } catch (error) {
+    const diagnosticErrorCode = errorCode(error);
+    if (diagnosticErrorCode === "EPIPE") return;
+  }
+};
+const reportFsError = (operation, error) => reportDiagnostic(operation + ": " + errorCode(error));
 const fingerprint = (value) => crypto.createHash("sha256").update(value).digest("hex").slice(0, 16);
 const readProcStartTime = (pid) => {
   try {
@@ -51,28 +60,54 @@ const readProcessIdentity = (pid) => {
   if (startTime !== undefined) return { source: 2, fingerprint: fingerprint(startTime) };
   return { source: 0, fingerprint: "0000000000000000" };
 };
-const cachedProcessFingerprint = (pid, source) => {
-  const key = pid + "-" + source;
-  const cached = processIdentityCache.get(key);
-  const now = Date.now();
-  if (cached !== undefined && now - cached.checkedAt < identityRecheckMs) return cached.fingerprint;
-  let value;
-  if (writerBarrier?.unreadableOwnerIdentityPids?.includes(pid)) {
-    value = undefined;
-  } else if (source === 1) {
-    const startTime = readProcStartTime(pid);
-    value = startTime === undefined ? undefined : fingerprint(startTime);
-  } else if (source === 2) {
-    const startTime = readPsStartTime(pid);
-    value = startTime === undefined ? undefined : fingerprint(startTime);
-  }
-  processIdentityCache.set(key, { fingerprint: value, checkedAt: now });
-  return value;
-};
-const ownerIdentity = readProcessIdentity(process.pid);
-const token = process.pid + "-" + ownerIdentity.source + "-" + ownerIdentity.fingerprint + "-" + crypto.randomUUID();
+const ownerIdentity = writerBarrier?.ownerIdentity ?? readProcessIdentity(process.pid);
+const ownerPid = writerBarrier?.ownerIdentity?.pid ?? process.pid;
+const token = ownerPid + "-" + ownerIdentity.source + "-" + ownerIdentity.fingerprint + "-" + crypto.randomUUID();
 const familyPrefix = logPath + ".";
 const activePath = familyPrefix + "active-" + token;
+const socketToken = token.split("-").slice(3).join("-");
+const familyHash = crypto.createHash("sha256").update(path.resolve(logPath) + "-" + (process.getuid?.() ?? process.env.USERNAME ?? "")).digest("hex").slice(0, 12);
+const socketDir = path.join("/tmp", ".bb-stdio-" + familyHash);
+const socketPath = process.platform === "win32"
+  ? "\\\\.\\pipe\\bb-stdio-" + familyHash + "-" + socketToken
+  : path.join(socketDir, "s-" + socketToken);
+let socketDirectoryAvailable = true;
+if (process.platform !== "win32") {
+  try {
+    fs.mkdirSync(socketDir, { recursive: true, mode: 0o700 });
+    fs.chmodSync(socketDir, 0o700);
+  } catch (error) {
+    socketDirectoryAvailable = false;
+    reportFsError("stdio liveness directory setup failed", error);
+  }
+}
+const livenessServer = net.createServer((connection) => connection.destroy());
+const livenessReady = new Promise((resolve) => {
+  if (!socketDirectoryAvailable) {
+    resolve();
+    return;
+  }
+  const onListenError = (error) => {
+    socketDirectoryAvailable = false;
+    reportFsError("stdio liveness endpoint setup failed", error);
+    resolve();
+  };
+  livenessServer.once("error", onListenError);
+  try {
+    livenessServer.listen(socketPath, () => {
+      livenessServer.off("error", onListenError);
+      livenessServer.on("error", (error) => {
+        socketDirectoryAvailable = false;
+        reportFsError("stdio liveness endpoint failed", error);
+      });
+      resolve();
+    });
+  } catch (error) {
+    onListenError(error);
+  }
+});
+let recoveryPromise;
+let initializationPromise;
 let activeFd;
 let activeSize = 0;
 let aliasSequence = 0;
@@ -98,17 +133,49 @@ const maxPendingBytes = 16 * 1024 * 1024;
 const backupPattern = /^.+\\.backup-[0-9]+-[0-9]+-[a-f0-9-]+$/;
 const activePattern = /^.+\\.active-[0-9]+-[012]-[a-f0-9]{16}-[a-f0-9-]+$/;
 const paths = () => fs.readdirSync(path.dirname(logPath)).map((name) => path.join(path.dirname(logPath), name));
-const uniqueBackupPath = () => familyPrefix + "backup-" + Date.now() + "-" + token + "-" + crypto.randomUUID();
-const errorCode = (error) => typeof error?.code === "string" ? error.code : "UNKNOWN";
-const reportDiagnostic = (message) => {
-  try {
-    fs.writeSync(2, Buffer.from("[bb] " + message + "\\n"));
-  } catch (error) {
-    const diagnosticErrorCode = errorCode(error);
-    if (diagnosticErrorCode === "EPIPE") return;
+const socketPathForToken = (value) => process.platform === "win32"
+  ? "\\\\.\\pipe\\bb-stdio-" + familyHash + "-" + value
+  : path.join(socketDir, "s-" + value);
+const probeOwnerSocket = (value) => new Promise((resolve) => {
+  const recordProbe = (result) => {
+    if (writerBarrier?.socketProbePath !== undefined) {
+      try {
+        fs.appendFileSync(writerBarrier.socketProbePath, value + " " + result + "\\n");
+      } catch (error) {
+        reportFsError("stdio socket probe capture failed", error);
+      }
+    }
+  };
+  if (writerBarrier?.unreadableOwnerSocketTokens?.includes(value)) {
+    recordProbe("unknown");
+    resolve(undefined);
+    return;
   }
-};
-const reportFsError = (operation, error) => reportDiagnostic(operation + ": " + errorCode(error));
+  const client = net.createConnection(socketPathForToken(value));
+  let settled = false;
+  const timer = setTimeout(() => finish(undefined), 500);
+  const finish = (result) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    client.destroy();
+    resolve(result);
+  };
+  client.once("connect", () => {
+    recordProbe("alive");
+    finish(true);
+  });
+  client.once("error", (error) => {
+    if (error.code === "ENOENT" || error.code === "ECONNREFUSED" || error.code === "ECONNRESET" || error.code === "EPIPE") {
+      recordProbe("dead");
+      finish(false);
+    } else {
+      recordProbe("unknown");
+      finish(undefined);
+    }
+  });
+});
+const uniqueBackupPath = () => familyPrefix + "backup-" + Date.now() + "-" + token + "-" + crypto.randomUUID();
 const makeInjectedFailure = (operation) => {
   const error = new Error("injected stdio " + operation + " failure");
   error.code = "EIO";
@@ -251,50 +318,61 @@ const migrateLegacyFiles = () => {
   }
   pruneBackups();
 };
-const recoverClosedSegments = () => {
-  for (const file of paths()) {
-    const name = path.basename(file);
-    if (!file.startsWith(familyPrefix) || file === activePath || !activePattern.test(name)) continue;
-    const ownerParts = name.slice(name.indexOf(".active-") + 8).split("-");
-    const ownerPid = Number(ownerParts[0]);
-    const ownerSource = Number(ownerParts[1]);
-    const ownerFingerprint = ownerParts[2];
-    if (!Number.isInteger(ownerPid) || ownerPid < 1) continue;
-    let recover = false;
-    try {
-      process.kill(ownerPid, 0);
-    } catch (error) {
-      if (error.code === "ESRCH") {
-        recover = true;
-      } else if (error.code !== "EPERM") {
-        reportFsError("stdio segment owner check failed", error);
-        continue;
-      }
-    }
-    if (!recover) {
-      const currentFingerprint = ownerSource === 0 ? undefined : cachedProcessFingerprint(ownerPid, ownerSource);
-      if (currentFingerprint !== undefined) {
-        recover = currentFingerprint !== ownerFingerprint;
-      } else {
-        try {
-          recover = Date.now() - fs.statSync(file).mtimeMs > identityFallbackMs;
-        } catch (statError) {
-          if (statError.code !== "ENOENT") reportFsError("stdio segment idle check failed", statError);
+const recoverClosedSegments = async () => {
+  if (recoveryPromise !== undefined) return recoveryPromise;
+  recoveryPromise = (async () => {
+    await livenessReady;
+    for (const file of paths()) {
+      const name = path.basename(file);
+      if (!file.startsWith(familyPrefix) || file === activePath || !activePattern.test(name)) continue;
+      const ownerParts = name.slice(name.indexOf(".active-") + 8).split("-");
+      const ownerPid = Number(ownerParts[0]);
+      const ownerUuid = ownerParts.slice(3).join("-");
+      if (!Number.isInteger(ownerPid) || ownerPid < 1 || ownerUuid.length === 0) continue;
+      let recover = false;
+      try {
+        process.kill(ownerPid, 0);
+      } catch (error) {
+        if (error.code === "ESRCH") {
+          recover = true;
+        } else if (error.code !== "EPERM") {
+          reportFsError("stdio segment owner check failed", error);
           continue;
         }
-        if (recover) reportDiagnostic("stdio segment owner identity unavailable; recovering after idle bound");
+      }
+      if (!recover) {
+        const socketAlive = await probeOwnerSocket(ownerUuid);
+        if (socketAlive === false) {
+          recover = true;
+        } else if (socketAlive === undefined) {
+          try {
+            recover = Date.now() - fs.statSync(file).mtimeMs > identityFallbackMs;
+          } catch (statError) {
+            if (statError.code !== "ENOENT") reportFsError("stdio segment idle check failed", statError);
+            continue;
+          }
+          if (recover) reportDiagnostic("stdio segment owner socket unavailable; recovering after idle bound");
+        }
+      }
+      if (recover) {
+        try {
+          pruneBackups(retainedBackups - 1);
+          fs.renameSync(file, uniqueBackupPath());
+          try {
+            fs.unlinkSync(socketPathForToken(ownerUuid));
+          } catch (socketError) {
+            if (socketError.code !== "ENOENT") reportFsError("stale stdio owner socket cleanup failed", socketError);
+          }
+        } catch (renameError) {
+          if (renameError.code !== "ENOENT") reportFsError("orphan stdio segment recovery failed", renameError);
+        }
       }
     }
-    if (recover) {
-      try {
-        pruneBackups(retainedBackups - 1);
-        fs.renameSync(file, uniqueBackupPath());
-      } catch (renameError) {
-        if (renameError.code !== "ENOENT") reportFsError("orphan stdio segment recovery failed", renameError);
-      }
-    }
-  }
-  pruneBackups();
+    pruneBackups();
+  })().finally(() => {
+    recoveryPromise = undefined;
+  });
+  return recoveryPromise;
 };
 const createActive = () => {
   activeFd = fs.openSync(activePath, "wx", 0o600);
@@ -302,11 +380,18 @@ const createActive = () => {
   publishAliasTo(activePath);
 };
 const ensureInitialized = () => {
-  if (initialized) return;
-  migrateLegacyFiles();
-  recoverClosedSegments();
-  createActive();
-  initialized = true;
+  if (initialized) return Promise.resolve();
+  if (initializationPromise !== undefined) return initializationPromise;
+  initializationPromise = (async () => {
+    await livenessReady;
+    migrateLegacyFiles();
+    await recoverClosedSegments();
+    createActive();
+    initialized = true;
+  })().finally(() => {
+    initializationPromise = undefined;
+  });
+  return initializationPromise;
 };
 const closeActive = (archive) => {
   if (activeFd !== undefined) {
@@ -319,17 +404,53 @@ const closeActive = (archive) => {
     pruneBackups();
   }
 };
-const rotateOwnedSegment = () => {
+const closeLivenessServer = () => new Promise((resolve, reject) => {
+  const cleanup = () => {
+    if (process.platform === "win32") {
+      resolve();
+      return;
+    }
+    try {
+      fs.unlinkSync(socketPath);
+    } catch (error) {
+      if (error.code !== "ENOENT") {
+        reject(error);
+        return;
+      }
+    }
+    try {
+      fs.rmdirSync(socketDir);
+    } catch (error) {
+      if (error.code !== "ENOENT" && error.code !== "ENOTEMPTY" && error.code !== "EEXIST") {
+        reject(error);
+        return;
+      }
+    }
+    resolve();
+  };
+  if (!livenessServer.listening) {
+    cleanup();
+    return;
+  }
+  livenessServer.close((error) => {
+    if (error) {
+      reject(error);
+    } else {
+      cleanup();
+    }
+  });
+});
+const rotateOwnedSegment = async () => {
   closeActive(true);
-  recoverClosedSegments();
+  await recoverClosedSegments();
   createActive();
 };
-const appendBuffer = (buffer, startOffset, kind) => {
+const appendBuffer = async (buffer, startOffset, kind) => {
   let offset = startOffset;
   while (offset < buffer.length) {
-    ensureInitialized();
+    await ensureInitialized();
     if (activeFd === undefined) createActive();
-    if (activeSize >= sizeLimit) rotateOwnedSegment();
+    if (activeSize >= sizeLimit) await rotateOwnedSegment();
     const length = Math.min(sizeLimit - activeSize, buffer.length - offset);
     if (kind === "output" && writerBarrier !== null && !writerBarrierUsed && writerBarrier.pauseAtBytes !== undefined && activeSize >= writerBarrier.pauseAtBytes) {
       writerBarrierUsed = true;
@@ -365,10 +486,10 @@ const appendBuffer = (buffer, startOffset, kind) => {
   }
   return offset;
 };
-const writePendingLossMarker = () => {
+const writePendingLossMarker = async () => {
   if (pendingLossBytes === 0) return;
   if (pendingLossMarker === undefined) pendingLossMarker = Buffer.from("[bb] " + pendingLossBytes + " bytes of child output lost: " + pendingLossErrno + "\\n");
-  pendingLossMarkerOffset = appendBuffer(pendingLossMarker, pendingLossMarkerOffset, "marker");
+  pendingLossMarkerOffset = await appendBuffer(pendingLossMarker, pendingLossMarkerOffset, "marker");
   pendingLossBytes = 0;
   pendingLossErrno = "";
   pendingLossMarker = undefined;
@@ -393,10 +514,10 @@ const scheduleRetry = (delayMs = retryDelayMs) => {
   if (retryTimer !== undefined || finalized) return;
   retryTimer = setTimeout(() => {
     retryTimer = undefined;
-    processNext();
+    void processNext();
   }, delayMs);
 };
-const finishStream = () => {
+const finishStream = async () => {
   if (finalized) return;
   try {
     if (writerBarrier?.finalizationEnteredPath !== undefined) {
@@ -409,8 +530,9 @@ const finishStream = () => {
         Atomics.wait(waitCell, 0, 0, 10);
       }
     }
-    if (pendingLossBytes > 0) writePendingLossMarker();
+    if (pendingLossBytes > 0) await writePendingLossMarker();
     closeActive(true);
+    await closeLivenessServer();
     if (writerBarrier?.completionPath !== undefined) {
       fs.writeFileSync(writerBarrier.completionPath, "done");
     }
@@ -422,26 +544,27 @@ const finishStream = () => {
     scheduleRetry(Math.min(1_000, retryDelayMs * Math.max(1, finalizationAttempts)));
   }
 };
-const processNext = () => {
+const processNext = async () => {
   if (processing || finalized) return;
+  processing = true;
   const chunk = pendingChunks[0];
   if (chunk === undefined) {
     if (inputEnded) {
-      processing = true;
-      finishStream();
+      await finishStream();
       processing = false;
+      return;
     }
+    processing = false;
     return;
   }
-  processing = true;
   if (chunkRetryStartedAt === undefined) chunkRetryStartedAt = Date.now();
   try {
-    ensureInitialized();
-    writePendingLossMarker();
-    pendingOffset = appendBuffer(chunk, pendingOffset, "output");
+    await ensureInitialized();
+    await writePendingLossMarker();
+    pendingOffset = await appendBuffer(chunk, pendingOffset, "output");
     dequeueChunk(chunk);
     processing = false;
-    setImmediate(processNext);
+    setImmediate(() => void processNext());
   } catch (error) {
     const code = errorCode(error);
     if (error.writerKind === "marker") pendingLossMarkerOffset = error.writerOffset;
@@ -460,14 +583,10 @@ const processNext = () => {
     pendingLossErrno = code;
     if (lostBytes > 0) reportDiagnostic(lostBytes + " bytes of child output lost: " + code);
     processing = false;
-    setImmediate(processNext);
+    setImmediate(() => void processNext());
   }
 };
-try {
-  ensureInitialized();
-} catch (error) {
-  reportFsError("stdio writer setup failed", error);
-}
+void ensureInitialized().catch((error) => reportFsError("stdio writer setup failed", error));
 process.stdin.on("data", (chunk) => {
   pendingChunks.push(chunk);
   pendingBytes += chunk.length;
@@ -475,16 +594,16 @@ process.stdin.on("data", (chunk) => {
     inputPaused = true;
     process.stdin.pause();
   }
-  processNext();
+  void processNext();
 });
 process.stdin.on("end", () => {
   inputEnded = true;
-  processNext();
+  void processNext();
 });
 process.stdin.on("error", (error) => {
   reportFsError("stdio input stream failed", error);
   inputEnded = true;
-  processNext();
+  void processNext();
 });
 process.stderr.on("error", (error) => {
   const diagnosticErrorCode = errorCode(error);
@@ -502,7 +621,7 @@ recoveryTimer = setInterval(() => {
       const now = new Date();
       fs.futimesSync(activeFd, now, now);
     }
-    recoverClosedSegments();
+    void recoverClosedSegments().catch((error) => reportFsError("stdio periodic segment recovery failed", error));
   } catch (error) {
     reportFsError("stdio periodic segment recovery failed", error);
   }
@@ -521,6 +640,7 @@ interface SpawnLoggedProcessArgs {
 }
 
 export interface LoggedChildProcess extends ChildProcess {
+  readonly writerProcess: ChildProcess;
   readonly writerExit: Promise<void>;
 }
 
@@ -531,9 +651,14 @@ export interface StdioLogWriterTestBarrier {
   failActiveOpenCount?: number;
   failActiveWriteCount?: number;
   identityFallbackMs?: number;
-  identityRecheckMs?: number;
   recoveryIntervalMs?: number;
-  unreadableOwnerIdentityPids?: number[];
+  unreadableOwnerSocketTokens?: string[];
+  socketProbePath?: string;
+  ownerIdentity?: {
+    pid: number;
+    source: 0 | 1 | 2;
+    fingerprint: string;
+  };
   forcePsIdentity?: boolean;
   writerEnv?: Pick<NodeJS.ProcessEnv, "LC_ALL" | "TZ">;
   diagnosticPath?: string;
@@ -587,5 +712,5 @@ export function spawnLoggedProcess(
         : ["ignore", logWriter.stdin, logWriter.stdin],
   });
   logWriter.stdin?.destroy();
-  return Object.assign(child, { writerExit });
+  return Object.assign(child, { writerExit, writerProcess: logWriter });
 }

@@ -1,4 +1,13 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { ChildProcess } from "node:child_process";
 import {
   createServer,
   type IncomingMessage,
@@ -284,20 +293,83 @@ describe("startFullStackServerProcess", () => {
     });
     const startedAt = Date.now();
     const termination = serverRun.terminate("SIGTERM");
+    let writerPid: number | undefined;
+    let writerKill: ReturnType<typeof vi.spyOn> | undefined;
 
     try {
       await vi.waitFor(() =>
         expect(existsSync(finalizationEnteredPath)).toBe(true),
       );
+      writerPid = Number(readFileSync(finalizationEnteredPath, "utf8"));
+      expect(writerPid).toBeGreaterThan(0);
+      const realKill = ChildProcess.prototype.kill;
+      writerKill = vi
+        .spyOn(ChildProcess.prototype, "kill")
+        .mockImplementation(function (
+          this: ChildProcess,
+          signal?: number | NodeJS.Signals,
+        ) {
+          if (this.pid === writerPid && signal === "SIGKILL") {
+            setTimeout(() => {
+              try {
+                process.kill(writerPid!, "SIGKILL");
+              } catch (error) {
+                if ((error as NodeJS.ErrnoException).code !== "ESRCH")
+                  throw error;
+              }
+            }, 200);
+            return true;
+          }
+          return realKill.call(this, signal);
+        });
       await termination;
       expect(Date.now() - startedAt).toBeGreaterThanOrEqual(1_500);
-      expect(Date.now() - startedAt).toBeLessThan(4_000);
+      expect(Date.now() - startedAt).toBeLessThan(4_500);
       expect(existsSync(completionPath)).toBe(false);
-    } finally {
-      if (!existsSync(finalizationReleasePath)) {
-        writeFileSync(finalizationReleasePath, "release");
+      let writerIsGone = false;
+      try {
+        process.kill(writerPid, 0);
+      } catch (error) {
+        writerIsGone = (error as NodeJS.ErrnoException).code === "ESRCH";
       }
-      await vi.waitFor(() => expect(existsSync(completionPath)).toBe(true));
+      expect(writerIsGone).toBe(true);
+      const snapshot = readdirSync(context.logDir)
+        .sort()
+        .map((name) => {
+          const info = statSync(join(context.logDir, name));
+          return [name, info.ino, info.size, info.mtimeMs];
+        });
+      await new Promise<void>((resolvePromise) => {
+        setTimeout(resolvePromise, 50);
+      });
+      expect(
+        readdirSync(context.logDir)
+          .sort()
+          .map((name) => {
+            const info = statSync(join(context.logDir, name));
+            return [name, info.ino, info.size, info.mtimeMs];
+          }),
+      ).toEqual(snapshot);
+      expect(() =>
+        rmSync(context.logDir, { force: true, recursive: true }),
+      ).not.toThrow();
+    } finally {
+      writerKill?.mockRestore();
+      if (writerPid !== undefined && !existsSync(finalizationReleasePath)) {
+        let writerIsAlive = true;
+        try {
+          process.kill(writerPid, 0);
+        } catch (error) {
+          writerIsAlive = (error as NodeJS.ErrnoException).code !== "ESRCH";
+        }
+        if (writerIsAlive) writeFileSync(finalizationReleasePath, "release");
+      }
+      await termination;
+      if (writerPid !== undefined) {
+        await vi.waitFor(() => {
+          expect(() => process.kill(writerPid!, 0)).toThrow();
+        });
+      }
     }
   });
 

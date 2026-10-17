@@ -2471,6 +2471,7 @@ function spawnNamedManagedProcess(
 }
 
 const STDIO_LOG_WRITER_EXIT_TIMEOUT_MS = 2_000;
+const STDIO_LOG_WRITER_KILL_WAIT_TIMEOUT_MS = 1_000;
 
 async function waitForStdioLogWriterExit(
   childProcess: LoggedChildProcess,
@@ -2492,6 +2493,38 @@ async function waitForStdioLogWriterExit(
       yellow("!"),
       `${processName} stdio log writer did not exit within ${STDIO_LOG_WRITER_EXIT_TIMEOUT_MS}ms`,
     );
+    try {
+      childProcess.writerProcess.kill("SIGKILL");
+    } catch (error) {
+      if (
+        typeof error !== "object" ||
+        error === null ||
+        !("code" in error) ||
+        error.code !== "ESRCH"
+      ) {
+        log(
+          red("✗"),
+          `${processName} stdio log writer SIGKILL failed: ${String(error)}`,
+        );
+        throw error;
+      }
+    }
+    let killWaitTimeout: NodeJS.Timeout | undefined;
+    const killResult = await Promise.race([
+      childProcess.writerExit.then(() => "exited" as const),
+      new Promise<"timed-out">((resolvePromise) => {
+        killWaitTimeout = setTimeout(
+          () => resolvePromise("timed-out"),
+          STDIO_LOG_WRITER_KILL_WAIT_TIMEOUT_MS,
+        );
+      }),
+    ]);
+    if (killWaitTimeout !== undefined) clearTimeout(killWaitTimeout);
+    if (killResult === "timed-out") {
+      const message = `${processName} stdio log writer ${String(childProcess.writerProcess.pid)} did not exit within ${STDIO_LOG_WRITER_KILL_WAIT_TIMEOUT_MS}ms after SIGKILL`;
+      log(red("✗"), message);
+      throw new Error(message);
+    }
   }
 }
 
