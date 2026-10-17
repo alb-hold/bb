@@ -322,7 +322,7 @@ Settings (stored server-side; also `bb settings writing`):
 
 Automatic typing correction applies an edit by itself only when its meaning cannot
 change, whatever the AI service reports: capitalization and spacing inside a
-sentence that already ends with . ! or ?, removing a word typed twice with only spaces between
+sentence that already ends with . ! or ?, removing a word typed twice with only spaces between (not a tab or line break)
 when it is one of these words, which never stand twice in a row: the, a, an, I, we, they, he, she, our, your, their, of, and, or, but, if, and the Portuguese o, os, a, as, um, uma, de, da, dos, das, em, na, nas, e, ou, eu, ele, ela, nós, por, com (any
 other repeat can be meant and is only suggested: very very, had had, that that, not not, her her as in
 tell her her access, in in as in log in in five minutes, para para, and a pair split by punctuation
@@ -345,8 +345,8 @@ expected spelling more likely but do not guarantee it; formatting may change
 their case or punctuation
 ("next js" to "Next.js") but never their letters, since without a dictionary a
 misheard name cannot be told from a real word ("public" is never rewritten as
-a similar term). Formatting may leave out only fillers (um, uh, er, ah, hmm and
-similar), a spoken self-correction (no wait, I mean, scratch that, actually,
+a similar term). Formatting may leave out only fillers (uh, umm, er, ah, hmm and
+similar; never um, which is also Portuguese for one or a), a spoken self-correction (no wait, I mean, scratch that, actually,
 quer dizer, na verdade and the like) together with the words just before it
 that it replaces (at most six, and no more than were said after it; a phrase
 that replaces nothing, as in "no wait is required", is not a correction), one of those words said twice with only spaces between (never another word, such as very, had, that, is, her or in, and never across punctuation), spoken symbol names in literal-code

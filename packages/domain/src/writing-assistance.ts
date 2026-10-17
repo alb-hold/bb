@@ -538,7 +538,7 @@ function accidentalRepeatPairs(text: string): boolean[] {
     return (
       previous[0].toLowerCase() === token &&
       ACCIDENTAL_REPEATS.has(token) &&
-      /^[^\S\n]+$/u.test(between)
+      /^ +$/u.test(between)
     );
   });
 }
@@ -749,7 +749,6 @@ export type FormattedTranscriptVerdict =
     };
 
 const FILLER_WORDS: ReadonlySet<string> = new Set([
-  "um",
   "umm",
   "uh",
   "uhm",

@@ -181,6 +181,7 @@ describe("resolveWritingEdits", () => {
     ["Do do come in.", "Do do", "Do"],
     ["So did I. I left early.", "I. I", "I"],
     ["We\nwe deploy on Fridays.", "We\nwe", "We"],
+    ["Check the\tthe cache.", "the\tthe", "the"],
   ])(
     "only suggests removing the repeat in %s",
     (target, original, replacement) => {
@@ -727,7 +728,7 @@ describe("validateFormattedTranscript", () => {
     ).toEqual({ ok: true });
     expect(
       validateFormattedTranscript(
-        "um is the build green?",
+        "uh is the build green?",
         "Is the build green?",
       ),
     ).toEqual({ ok: true });
@@ -770,6 +771,7 @@ describe("validateFormattedTranscript", () => {
     ["log in in five minutes", "Log in five minutes."],
     ["o carro para para deixar passar", "O carro para deixar passar."],
     ["so did i. i left early", "So did I left early."],
+    ["check the\tthe cache", "Check the cache."],
   ])(
     "keeps the transcript when formatting drops a repeat that can be meant: %s",
     (raw, formatted) => {
@@ -840,10 +842,20 @@ describe("validateFormattedTranscript", () => {
     ).toEqual({ ok: true });
   });
 
+  it.each([
+    ["quero um, não dois", "Quero, não dois."],
+    ["um is the build green?", "Is the build green?"],
+  ])("keeps um, which is also the Portuguese for one: %s", (raw, formatted) => {
+    expect(validateFormattedTranscript(raw, formatted)).toEqual({
+      ok: false,
+      reason: "dropped-words",
+    });
+  });
+
   it("allows filler removal and self-corrections", () => {
     expect(
       validateFormattedTranscript(
-        "um we should deploy on monday no wait on tuesday",
+        "uh we should deploy on monday no wait on tuesday",
         "We should deploy on Tuesday.",
       ),
     ).toEqual({ ok: true });
@@ -955,7 +967,7 @@ describe("validateFormattedTranscript", () => {
     ).toEqual({ ok: false, reason: "list-numbers" });
     expect(
       validateFormattedTranscript(
-        "first um check auth and then second run the tests",
+        "first uh check auth and then second run the tests",
         "1. Check auth.\n2. Run the tests.",
       ),
     ).toEqual({ ok: true });
