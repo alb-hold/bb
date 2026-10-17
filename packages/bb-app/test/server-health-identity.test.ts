@@ -18,6 +18,7 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   BbAppStartContext,
+  ManagedProcessRun,
   ManagedFullStackProcesses,
 } from "../src/launcher.js";
 import {
@@ -216,6 +217,71 @@ describe("startFullStackServerProcess", () => {
     } finally {
       await serverRun.terminate("SIGTERM");
     }
+  });
+
+  it("terminates promptly when the stdio writer fails to spawn", async () => {
+    const serverPort = await reserveFreePort();
+    const entry = writeImmediateServerEntry();
+    const context = createStartContext({ serverEntry: entry, serverPort });
+    const processes: ManagedFullStackProcesses = {
+      daemonRun: null,
+      serverRun: null,
+    };
+    const originalExecPath = Object.getOwnPropertyDescriptor(
+      process,
+      "execPath",
+    );
+    if (originalExecPath === undefined) throw new Error("Missing execPath");
+    const realExecPath = String(originalExecPath.value);
+    let execPathReads = 0;
+    let spawnedChild: ChildProcess | undefined;
+    const restoreExecPath = () =>
+      Object.defineProperty(process, "execPath", originalExecPath);
+    Object.defineProperty(process, "execPath", {
+      configurable: true,
+      enumerable: originalExecPath.enumerable,
+      get: () => {
+        execPathReads += 1;
+        return execPathReads === 1
+          ? realExecPath
+          : join(dirname(entry), "missing-writer-runtime");
+      },
+    });
+    const starting: Promise<ManagedProcessRun> = startFullStackServerProcess({
+      context,
+      env: {
+        BB_SERVER_PORT: String(context.serverPort),
+        PATH: process.env.PATH,
+      },
+      onSpawned: (child) => {
+        spawnedChild = child;
+        restoreExecPath();
+      },
+      processes,
+    });
+    const serverRun = await starting.finally(restoreExecPath);
+    expect(execPathReads).toBe(2);
+    expect(spawnedChild).toBeDefined();
+    const writerProcess = (
+      spawnedChild as ChildProcess & { writerProcess: ChildProcess }
+    ).writerProcess;
+    expect(writerProcess.pid).toBeUndefined();
+    const startedAt = Date.now();
+    const termination = serverRun.terminate("SIGTERM").then(
+      () => "resolved" as const,
+      () => "rejected" as const,
+    );
+    let timeout: NodeJS.Timeout | undefined;
+    const result = await Promise.race([
+      termination,
+      new Promise<"timed-out">((resolvePromise) => {
+        timeout = setTimeout(() => resolvePromise("timed-out"), 700);
+      }),
+    ]);
+    if (timeout !== undefined) clearTimeout(timeout);
+    expect(result).toBe("resolved");
+    expect(Date.now() - startedAt).toBeLessThan(700);
+    expect(writerProcess.pid).toBeUndefined();
   });
 
   it("waits for stdio log finalization before termination resolves", async () => {

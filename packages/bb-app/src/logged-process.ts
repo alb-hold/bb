@@ -384,11 +384,13 @@ const recoverClosedSegments = async () => {
           if (socketAlive === false) recover = true;
         } else {
           const currentIdentity = readProcessIdentity(ownerPid);
-          if (
-            ownerSource > 0 &&
-            currentIdentity.source === ownerSource &&
-            currentIdentity.fingerprint !== ownerFingerprint
-          ) {
+          if (ownerSource > 0 && currentIdentity.source > 0) {
+            if (
+              currentIdentity.source === ownerSource &&
+              currentIdentity.fingerprint === ownerFingerprint
+            ) {
+              continue;
+            }
             recover = true;
           }
         }
