@@ -412,6 +412,19 @@ describe("dictation segments", () => {
     });
   });
 
+  it("keeps the transcript when formatting turns a question into a statement", async () => {
+    await withTestHarness({}, async (harness) => {
+      registerFakeAiService(harness.deps.aiServices, {
+        transcribe: async () => "vai funcionar, né?",
+        complete: async () => "Vai funcionar.",
+      });
+      await expect((await postSegment(harness)).json()).resolves.toMatchObject({
+        text: "vai funcionar, né?",
+        formatted: false,
+      });
+    });
+  });
+
   it("keeps the transcript when formatting reorders spoken words", async () => {
     await withTestHarness({}, async (harness) => {
       registerFakeAiService(harness.deps.aiServices, {

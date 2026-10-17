@@ -333,7 +333,9 @@ transcript spells them; formatting may change their case or punctuation
 misheard name cannot be told from a real word ("public" is never rewritten as
 a similar term). The spoken words must also keep the order they were said in,
 and no word, accented or not, may appear more times than it was said ("nao"
-never becomes "Não não.").
+never becomes "Não não."). A question stays a question: the formatted text
+keeps every question mark of the transcript and the tags né and eh ("vai
+funcionar, né?" never becomes "Vai funcionar.").
 
 Usage counts and the cost estimate use list prices and are not a bill: bb
 cloud has its own daily limit, and Codex uses the primary machine's Codex

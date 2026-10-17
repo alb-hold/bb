@@ -676,6 +676,7 @@ export type FormattedTranscriptVerdict =
         | "negation"
         | "list-numbers"
         | "reordered"
+        | "question"
         | "empty";
     };
 
@@ -689,10 +690,8 @@ const FILLER_WORDS: ReadonlySet<string> = new Set([
   "erm",
   "ah",
   "ahn",
-  "eh",
   "hmm",
   "hum",
-  "né",
 ]);
 
 const LIST_CONNECTORS: ReadonlySet<string> = new Set([
@@ -932,6 +931,10 @@ function listMatchesSpeech(
   });
 }
 
+function questionMarks(text: string): number {
+  return text.match(/[?？]/gu)?.length ?? 0;
+}
+
 function keepsSpokenOrder(
   tokens: readonly string[],
   rawTokens: readonly string[],
@@ -952,6 +955,9 @@ export function validateFormattedTranscript(
   options: { literalCode: boolean } = { literalCode: false },
 ): FormattedTranscriptVerdict {
   if (formatted.trim().length === 0) return { ok: false, reason: "empty" };
+  if (questionMarks(formatted) < questionMarks(raw)) {
+    return { ok: false, reason: "question" };
+  }
   for (const span of findProtectedSpans(raw, vocabulary)) {
     if (span.kind === "number") continue;
     if (!formatted.includes(raw.slice(span.start, span.end))) {

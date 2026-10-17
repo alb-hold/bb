@@ -559,6 +559,34 @@ describe("validateFormattedTranscript", () => {
     ).toEqual({ ok: false, reason: "dropped-words" });
   });
 
+  it.each([
+    ["vai funcionar, né?", "Vai funcionar.", "question"],
+    ["it works, eh?", "It works.", "question"],
+    ["is the build green?", "The build is green.", "question"],
+    ["vai funcionar né", "Vai funcionar.", "dropped-words"],
+    ["it works eh", "It works.", "dropped-words"],
+  ])(
+    "keeps the transcript when formatting turns a question into a statement: %s -> %s",
+    (raw, formatted, reason) => {
+      expect(validateFormattedTranscript(raw, formatted)).toEqual({
+        ok: false,
+        reason,
+      });
+    },
+  );
+
+  it("accepts formatting that keeps a question a question", () => {
+    expect(
+      validateFormattedTranscript("vai funcionar, né?", "Vai funcionar, né?"),
+    ).toEqual({ ok: true });
+    expect(
+      validateFormattedTranscript(
+        "um is the build green?",
+        "Is the build green?",
+      ),
+    ).toEqual({ ok: true });
+  });
+
   it("allows filler removal and self-corrections", () => {
     expect(
       validateFormattedTranscript(
