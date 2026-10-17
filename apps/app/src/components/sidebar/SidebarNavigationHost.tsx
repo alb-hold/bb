@@ -1,4 +1,6 @@
 import {
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useRef,
@@ -8,7 +10,6 @@ import {
 } from "react";
 import type { ExperimentalSidebarNavigationPlacement } from "@get-bb/plugin-sdk";
 import { Popover, PopoverAnchor } from "@bb/shared-ui/popover";
-import { PluginReplacementSlot } from "@/components/plugin/PluginReplacementSlot";
 import { appToast } from "@/components/ui/app-toast";
 import { useSidebar } from "@/components/ui/sidebar.js";
 import type { ExperimentalSidebarNavigationSlot } from "@/lib/plugin-slots";
@@ -16,6 +17,11 @@ import { SidebarNavigationCustomizePopoverContent } from "./SidebarNavigationCus
 import type { ResolvedSidebarNavigation } from "./sidebarNavigationProvider";
 
 const SIDEBAR_NAVIGATION_SLOT_KIND = "sidebarNavigation";
+const BUILTIN_NAVIGATION_PLUGIN_ID = "navigation";
+const LazyPluginReplacementSlot = lazy(async () => {
+  const module = await import("@/components/plugin/PluginReplacementSlot");
+  return { default: module.PluginReplacementSlot };
+});
 const OPEN_MENU_SELECTOR = '[role="menu"]';
 const OPEN_MENU_WAIT_MS = 1000;
 const FOCUSABLE_SELECTOR =
@@ -102,20 +108,33 @@ function NavigationProviderSlot({
   onCrash?: (pluginId: string) => void;
 }) {
   return (
-    <PluginReplacementSlot
-      replacement={{ kind: "plugin", registration: slot }}
-      original={original}
-      slotKind={SIDEBAR_NAVIGATION_SLOT_KIND}
-      {...(onCrash === undefined ? {} : { onCrash })}
+    <Suspense
+      fallback={
+        original ??
+        (slot.pluginId === BUILTIN_NAVIGATION_PLUGIN_ID ? (
+          <slot.component
+            isCompactViewport={isCompactViewport}
+            placement={slot.placement}
+            experimental_Original={() => null}
+          />
+        ) : null)
+      }
     >
-      {(registration, Original) => (
-        <registration.component
-          isCompactViewport={isCompactViewport}
-          placement={registration.placement}
-          experimental_Original={Original}
-        />
-      )}
-    </PluginReplacementSlot>
+      <LazyPluginReplacementSlot
+        replacement={{ kind: "plugin", registration: slot }}
+        original={original}
+        slotKind={SIDEBAR_NAVIGATION_SLOT_KIND}
+        {...(onCrash === undefined ? {} : { onCrash })}
+      >
+        {(_registration, Original) => (
+          <slot.component
+            isCompactViewport={isCompactViewport}
+            placement={slot.placement}
+            experimental_Original={Original}
+          />
+        )}
+      </LazyPluginReplacementSlot>
+    </Suspense>
   );
 }
 
