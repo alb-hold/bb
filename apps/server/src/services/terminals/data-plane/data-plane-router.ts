@@ -46,6 +46,11 @@ export interface DataPlaneLifecyclePort {
     terminalId: string;
   }): void;
   recordInputActivity(terminalId: string): void;
+  recordOutputBatch(args: {
+    chunks: TerminalOutputChunk[];
+    daemonSessionId: string;
+    terminalId: string;
+  }): void;
 }
 
 interface PendingAttach {
