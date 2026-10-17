@@ -7,7 +7,6 @@ const fs = require("node:fs");
 const crypto = require("node:crypto");
 const net = require("node:net");
 const { execFileSync } = require("node:child_process");
-const os = require("node:os");
 const path = require("node:path");
 const logPath = process.argv[1];
 const writerBarrier = process.argv[2] ? JSON.parse(process.argv[2]) : null;
@@ -80,11 +79,9 @@ const rejectSocketDirectory = (message) => {
   throw error;
 };
 if (process.platform !== "win32") {
-  const bases = [...new Set([os.tmpdir(), "/tmp"])];
-  for (const base of bases) {
-    const candidateDir = path.join(base, socketDirName);
-    const candidateSocketPath = path.join(candidateDir, "s-" + socketToken);
-    if (Buffer.byteLength(candidateSocketPath) > socketPathLimit) continue;
+  const candidateDir = path.join("/tmp", socketDirName);
+  const candidateSocketPath = path.join(candidateDir, "s-" + socketToken);
+  if (Buffer.byteLength(candidateSocketPath) <= socketPathLimit) {
     try {
       try {
         fs.mkdirSync(candidateDir, { mode: 0o700 });
@@ -104,10 +101,8 @@ if (process.platform !== "win32") {
       socketDir = candidateDir;
       socketPath = candidateSocketPath;
       socketDirectoryAvailable = true;
-      break;
     } catch (error) {
       reportFsError("stdio liveness directory rejected", error);
-      break;
     }
   }
   if (!socketDirectoryAvailable) {

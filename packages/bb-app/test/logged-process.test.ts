@@ -33,11 +33,7 @@ function scratchDir(): string {
   return dir;
 }
 
-function livenessDirectory(
-  logDir: string,
-  logName: string,
-  base = tmpdir(),
-): string {
+function livenessDirectory(logDir: string, logName: string): string {
   const logPath = join(logDir, `${logName}-stdio.log`);
   const user = process.getuid?.() ?? process.env.USERNAME ?? "";
   const hash = createHash("sha256")
@@ -45,11 +41,7 @@ function livenessDirectory(
     .digest("hex")
     .slice(0, 12);
   const name = `.bb-stdio-${hash}`;
-  const perUserDir = join(base, name);
-  const sampleSocketPath = join(perUserDir, `s-${"0".repeat(36)}`);
-  return Buffer.byteLength(sampleSocketPath) <= 103
-    ? perUserDir
-    : join("/tmp", name);
+  return join("/tmp", name);
 }
 
 function familyFiles(logDir: string, logName: string): string[] {
@@ -149,7 +141,7 @@ describe("spawnLoggedProcess", () => {
     async () => {
       const logDir = scratchDir();
       const firstTempDir = scratchDir();
-      const socketDir = livenessDirectory(logDir, "server", firstTempDir);
+      const socketDir = livenessDirectory(logDir, "server");
       const stopFirstPath = join(logDir, "stop-no-endpoint-first");
       const stopObserverPath = join(logDir, "stop-no-endpoint-observer");
       const diagnosticPath = join(logDir, "unsafe-directory-diagnostic");
@@ -215,7 +207,7 @@ describe("spawnLoggedProcess", () => {
             file.includes(".active-") &&
             readFileSync(file, "utf8").includes("no-endpoint-observer-"),
         )!;
-        expect(observerSegment).toContain("-e-");
+        expect(observerSegment).toContain("-n-");
         await expect
           .poll(
             () => {
@@ -1032,6 +1024,134 @@ describe("spawnLoggedProcess", () => {
       if (!existsSync(secondStopPath)) writeFileSync(secondStopPath, "stop");
       if (first.exitCode === null) first.kill("SIGKILL");
       if (second?.exitCode === null) second.kill("SIGKILL");
+    }
+  });
+
+  it("probes live writer endpoints across different temporary directories", async () => {
+    const logDir = scratchDir();
+    const firstTempDir = mkdtempSync(join("/tmp", "bb-a-"));
+    const secondTempDir = mkdtempSync(join("/tmp", "bb-b-"));
+    scratchDirs.push(firstTempDir, secondTempDir);
+    const firstStopPath = join(logDir, "stop-tmpdir-writer-one");
+    const secondStopPath = join(logDir, "stop-tmpdir-writer-two");
+    const makeArgs = (label: string, stopPath: string) => [
+      "-e",
+      `const fs = require("node:fs"); let count = 0; const timer = setInterval(() => { process.stdout.write(${JSON.stringify(label)} + (++count) + "\\n"); if (fs.existsSync(${JSON.stringify(stopPath)})) { clearInterval(timer); process.exit(0); } }, 10);`,
+    ];
+    const first = spawnLoggedProcess({
+      command: process.execPath,
+      args: makeArgs("tmpdir-writer-one-", firstStopPath),
+      env: process.env,
+      logDir,
+      logName: "server",
+      testWriterBarrier: {
+        recoveryIntervalMs: 60_000,
+        writerEnv: { TMPDIR: firstTempDir },
+      },
+    });
+    let second: ReturnType<typeof spawnLoggedProcess> | undefined;
+    try {
+      await expect
+        .poll(
+          () =>
+            familyFiles(logDir, "server").find(
+              (file) =>
+                file.includes(".active-") &&
+                readFileSync(file, "utf8").includes("tmpdir-writer-one-"),
+            ),
+          { timeout: 5_000, interval: 10 },
+        )
+        .toBeDefined();
+      const firstActivePath = familyFiles(logDir, "server").find(
+        (file) =>
+          file.includes(".active-") &&
+          readFileSync(file, "utf8").includes("tmpdir-writer-one-"),
+      )!;
+      expect(firstActivePath).toContain("-e-");
+      const firstSocketDir = livenessDirectory(logDir, "server");
+      const firstToken = firstActivePath.slice(
+        firstActivePath.indexOf("-e-") + 3,
+      );
+      expect(readdirSync(firstSocketDir)).toContain(`s-${firstToken}`);
+      second = spawnLoggedProcess({
+        command: process.execPath,
+        args: makeArgs("tmpdir-writer-two-", secondStopPath),
+        env: process.env,
+        logDir,
+        logName: "server",
+        testWriterBarrier: {
+          recoveryIntervalMs: 25,
+          writerEnv: { TMPDIR: secondTempDir },
+        },
+      });
+      await expect
+        .poll(
+          () =>
+            familyFiles(logDir, "server").some(
+              (file) =>
+                file.includes(".active-") &&
+                readFileSync(file, "utf8").includes("tmpdir-writer-two-"),
+            ),
+          { timeout: 5_000, interval: 10 },
+        )
+        .toBe(true);
+      const secondActivePath = familyFiles(logDir, "server").find(
+        (file) =>
+          file.includes(".active-") &&
+          readFileSync(file, "utf8").includes("tmpdir-writer-two-"),
+      )!;
+      const secondSocketDir = livenessDirectory(logDir, "server");
+      expect(secondSocketDir).toBe(firstSocketDir);
+      const secondToken = secondActivePath.slice(
+        secondActivePath.indexOf("-e-") + 3,
+      );
+      expect(readdirSync(secondSocketDir)).toContain(`s-${secondToken}`);
+      await expect
+        .poll(
+          () =>
+            existsSync(firstActivePath) &&
+            (readFileSync(firstActivePath, "utf8").match(/tmpdir-writer-one-/gu)
+              ?.length ?? 0) >= 10,
+          { timeout: 3_000, interval: 10 },
+        )
+        .toBe(true);
+      expect(existsSync(firstActivePath)).toBe(true);
+
+      first.writerProcess.kill("SIGSTOP");
+      first.kill("SIGKILL");
+      first.writerProcess.kill("SIGKILL");
+      await first.writerExit;
+      await expect
+        .poll(
+          () =>
+            !existsSync(firstActivePath) &&
+            familyFiles(logDir, "server").some(
+              (file) =>
+                file.includes(".backup-") &&
+                readFileSync(file, "utf8").includes("tmpdir-writer-one-"),
+            ),
+          { timeout: 3_000, interval: 10 },
+        )
+        .toBe(true);
+      writeFileSync(secondStopPath, "stop");
+      expect(await waitForExit(second)).toBe(0);
+      await second.writerExit;
+      expect(
+        uniqueFamilyFiles(logDir, "server")
+          .map((file) => readFileSync(file, "utf8"))
+          .join(""),
+      ).toContain("tmpdir-writer-one-");
+    } finally {
+      if (first.exitCode === null) first.kill("SIGKILL");
+      if (first.writerProcess.exitCode === null) {
+        first.writerProcess.kill("SIGKILL");
+        await first.writerExit;
+      }
+      if (second !== undefined && second.exitCode === null) {
+        writeFileSync(secondStopPath, "stop");
+        await waitForExit(second);
+      }
+      if (second !== undefined) await second.writerExit;
     }
   });
 
