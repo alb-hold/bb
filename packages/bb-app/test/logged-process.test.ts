@@ -928,6 +928,10 @@ describe("spawnLoggedProcess", () => {
 
   it("keeps live segments when writers use different locale environments", async () => {
     const logDir = scratchDir();
+    const socketDir = livenessDirectory(logDir, "server");
+    mkdirSync(socketDir, { mode: 0o755 });
+    scratchDirs.push(socketDir);
+    chmodSync(socketDir, 0o755);
     const firstStopPath = join(logDir, "stop-locale-writer-one");
     const secondStopPath = join(logDir, "stop-locale-writer-two");
     const firstCompletionPath = join(logDir, "locale-writer-one-finished");
