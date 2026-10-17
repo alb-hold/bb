@@ -268,6 +268,47 @@ describe("terminal touch focus", () => {
 });
 
 describe("terminal output encoding", () => {
+  it("finishes rendering many retained chunks before the exit notice", async () => {
+    const terminal = new Terminal({ cols: 80, rows: 24 });
+    const session = {
+      id: "term_many_chunks",
+      threadId: "thr_1",
+      environmentId: "env_1",
+      hostId: "host_1",
+      title: "Terminal",
+      initialCwd: "/workspace",
+      cols: 80,
+      rows: 24,
+      status: "exited",
+      exitCode: 0,
+      closeReason: null,
+      createdAt: 1,
+      updatedAt: 1,
+      lastUserInputAt: null,
+    } satisfies TerminalSession;
+    const chunks = Array.from({ length: 1_024 }, () =>
+      new TextEncoder().encode("x"),
+    );
+
+    await writeRetainedTerminalOutput({
+      chunks,
+      lastNotice: { current: null },
+      session,
+      terminal,
+    });
+
+    const renderedText = Array.from(
+      { length: terminal.buffer.active.length },
+      (_, index) =>
+        terminal.buffer.active.getLine(index)?.translateToString() ?? "",
+    ).join("");
+    expect(renderedText).toContain("Terminal exited with code 0");
+    expect(
+      renderedText.replace("Terminal exited with code 0", "").match(/x/g),
+    ).toHaveLength(chunks.length);
+    terminal.dispose();
+  }, 10_000);
+
   it("writes the exit notice after all retained output has parsed", async () => {
     const terminal = new Terminal({ cols: 80, rows: 24 });
     const session = {
