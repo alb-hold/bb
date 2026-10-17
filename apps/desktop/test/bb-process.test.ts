@@ -319,6 +319,100 @@ process.stdout.write(\`grandchild=\${grandchild.pid}\\n\`);
     },
   );
 
+  it.skipIf(process.platform !== "linux")(
+    "waits for live process-group members after the supervisor exits",
+    async () => {
+      const script = await createTempScript({
+        contents: `
+import { spawn } from "node:child_process";
+const grandchild = spawn(
+  process.execPath,
+  ["--eval", "setInterval(() => undefined, 1000)"],
+  { stdio: "inherit" },
+);
+process.stdout.write("grandchild=" + grandchild.pid + "\\n");
+setInterval(() => undefined, 1000);
+`,
+      });
+      const processEntry = startBbAppProcess({
+        bridgePath: script.path,
+        cwd: script.root,
+        env: {
+          ...process.env,
+          APPDIR: script.root,
+        },
+        logLineLimit: 20,
+        runtime: {
+          appDirPath: script.root,
+          executablePath: process.execPath,
+          kind: "appimage",
+          mode: "electron-node",
+        },
+      });
+      processes.push(processEntry);
+      await waitForLog({ process: processEntry, text: "grandchild=" });
+      const grandchildPid = Number(
+        processEntry.logs.text().match(/grandchild=(\d+)/u)?.[1],
+      );
+      expect(grandchildPid).toBeGreaterThan(0);
+
+      let signalGroupKill!: () => void;
+      const groupKillRequested = new Promise<void>((resolvePromise) => {
+        signalGroupKill = resolvePromise;
+      });
+      const realKill = process.kill.bind(process);
+      const killSpy = vi.spyOn(process, "kill").mockImplementation(
+        (target, signal) => {
+          if (target === -processEntry.pid && signal === "SIGKILL") {
+            signalGroupKill();
+            realKill(processEntry.pid, signal);
+            return true;
+          }
+          return realKill(target, signal);
+        },
+      );
+
+      let stopResolved = false;
+      const stopPromise = processEntry
+        .stop({
+          killSignal: "SIGKILL",
+          killTimeoutMs: 1_000,
+          signal: "SIGTERM",
+          timeoutMs: 50,
+        })
+        .then(() => {
+          stopResolved = true;
+        });
+      try {
+        await groupKillRequested;
+        await processEntry.exit;
+        const liveGrandchild = await readLinuxProcessStat(grandchildPid);
+        expect(liveGrandchild.state).not.toBe("Z");
+        expect(stopResolved).toBe(false);
+      } finally {
+        killSpy.mockRestore();
+        realKill(-processEntry.pid, "SIGKILL");
+      }
+      await stopPromise;
+
+      const stoppedGrandchild = await readLinuxProcessStat(grandchildPid).catch(
+        (error: unknown) => {
+          if (
+            error instanceof Error &&
+            "code" in error &&
+            (error.code === "ENOENT" || error.code === "ESRCH")
+          ) {
+            return null;
+          }
+          throw error;
+        },
+      );
+      expect(
+        stoppedGrandchild === null || stoppedGrandchild.state === "Z",
+      ).toBe(true);
+    },
+  );
+
   it("uses the inner executable for an unpacked Linux build", () => {
     expect(
       resolveBbAppProcessRuntime({
