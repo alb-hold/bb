@@ -29,21 +29,43 @@ import {
 } from "../../src/services/threads/native-terminal-activity.js";
 import type { ProviderNativeTerminalActivity } from "@bb/domain";
 
-interface NativeActivityClassifiers {
+interface NativeActivitySignalForTest {
+  state: "working" | "idle" | null;
+  prompt: string | null;
+  question?: { id: string; prompt: string };
+  answered?: string;
+}
+
+type NativeActivityReportForTest =
+  | {
+      state: "waiting";
+      prompt: null;
+      questions: { id: string; prompt: string }[];
+    }
+  | { state: "working" | "idle"; prompt: string | null };
+
+interface NativeActivityTestTools {
   classifyHookRecord(
     hooks: NonNullable<ProviderNativeTerminalActivity["hooks"]>,
     record: unknown,
-  ): { state: "working" | "idle" | null; prompt: string | null };
+  ): NativeActivitySignalForTest;
   classifyTranscriptRecord(
     transcript: NonNullable<ProviderNativeTerminalActivity["transcript"]>,
     record: unknown,
-  ): { state: "working" | "idle" | null; prompt: string | null };
+  ): NativeActivitySignalForTest;
+  NativeActivityTracker: new () => {
+    apply(
+      signal: NativeActivitySignalForTest,
+    ): NativeActivityReportForTest | null;
+    heartbeat(): NativeActivityReportForTest | null;
+  };
 }
 
 const {
   classifyHookRecord,
   classifyTranscriptRecord,
-}: NativeActivityClassifiers = await import(
+  NativeActivityTracker,
+}: NativeActivityTestTools = await import(
   new URL("../../../cli/src/native-activity.ts", import.meta.url).href
 );
 import { readJson } from "../helpers/json.js";
@@ -484,7 +506,7 @@ function threadStatus(fixture: Fixture, threadId: string) {
 }
 
 describe("native terminal activity", () => {
-  it("reopens a daemon-restarted native question on its activity report", async () => {
+  it("revives a daemon-restarted question for the terminal and settles it after the TUI answer", async () => {
     const fixture = await createFixture();
     const thread = seedChatThread(fixture, {
       providerId: "claude-code",
@@ -492,17 +514,49 @@ describe("native terminal activity", () => {
     });
     await enterTerminal(fixture, thread.id);
     const question = { id: "toolu_survived_restart", prompt: "Continue?" };
-    const report = () =>
-      reportActivity(fixture, thread.id, {
+    const nativeActivity = new NativeActivityTracker();
+    const activity = fixture.harness.deps.providerRegistry.get(
+      thread.providerId,
+    )?.nativeTerminal?.activity;
+    if (!activity?.transcript) {
+      throw new Error("Expected Claude Code native terminal transcript rules");
+    }
+    const questionReport = nativeActivity.apply(
+      classifyTranscriptRecord(activity.transcript, {
+        type: "assistant",
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              id: question.id,
+              name: "AskUserQuestion",
+              input: { questions: [{ question: question.prompt }] },
+            },
+          ],
+        },
+      }),
+    );
+    expect(questionReport).toMatchObject({
+      state: "waiting",
+      questions: [question],
+    });
+    const report = (next: NativeActivityReportForTest | null) => {
+      if (next?.state !== "waiting") {
+        throw new Error(
+          "Expected the native activity tracker to report waiting",
+        );
+      }
+      return reportActivity(fixture, thread.id, {
         state: "waiting",
-        questions: [question],
+        questions: next.questions,
       });
+    };
     const notification = vi.spyOn(
       interactiveRequests,
       "requestChildThreadNeedsAttentionNotification",
     );
-    expect((await report()).status).toBe(200);
-    notification.mockClear();
+    const warn = vi.spyOn(fixture.harness.deps.logger, "warn");
+    expect((await report(questionReport)).status).toBe(200);
     const requestId = `native:${question.id}`;
     const before = getPendingInteractionByProviderRequest(fixture.harness.db, {
       providerId: "claude-code",
@@ -510,7 +564,7 @@ describe("native terminal activity", () => {
       providerRequestId: requestId,
     });
     expect(before?.status).toBe("pending");
-    const warn = vi.spyOn(fixture.harness.deps.logger, "warn");
+    expect(notification).toHaveBeenCalledTimes(1);
 
     fixture.harness.deps.pendingInteractions.interruptPendingInteractionsForThreadIds(
       {
@@ -519,8 +573,8 @@ describe("native terminal activity", () => {
           "Host daemon restarted while awaiting user interaction; retry the thread to continue",
       },
     );
-    expect((await report()).status).toBe(200);
-    expect((await report()).status).toBe(200);
+    expect((await report(nativeActivity.heartbeat())).status).toBe(200);
+    expect((await report(nativeActivity.heartbeat())).status).toBe(200);
 
     expect(
       fixture.harness.deps.pendingInteractions.listPendingThreadInteractions(
@@ -536,8 +590,65 @@ describe("native terminal activity", () => {
       providerRequestId: requestId,
       payload: { kind: "user_question" },
     });
+    const listed = await fixture.harness.app.request(
+      `/api/v1/threads/${thread.id}/interactions`,
+    );
+    expect(await readJson(listed)).toHaveLength(1);
+    const [revived] = openInteractions(fixture, thread.id);
+    const answerFromBb = await postJson(
+      fixture,
+      `/threads/${thread.id}/interactions/${revived!.id}/resolve`,
+      {
+        kind: "user_answer",
+        answers: { [requestId]: { selected: [], freeText: "continue" } },
+      },
+    );
+    expect(answerFromBb.status).toBe(409);
+    expect(
+      apiErrorSchema.parse(await readJson(answerFromBb)).message,
+    ).toContain("Answer it there");
+
+    const answeredActivity = nativeActivity.apply(
+      classifyTranscriptRecord(activity.transcript, {
+        type: "user",
+        message: {
+          content: [{ type: "tool_result", tool_use_id: question.id }],
+        },
+      }),
+    );
+    expect(answeredActivity).toEqual({ state: "working", prompt: null });
+    expect(
+      (
+        await reportActivity(fixture, thread.id, {
+          state: answeredActivity!.state,
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      getPendingInteractionByProviderRequest(fixture.harness.db, {
+        providerId: "claude-code",
+        providerThreadId: SESSION_ID,
+        providerRequestId: requestId,
+      }),
+    ).toMatchObject({
+      id: before?.id,
+      status: "interrupted",
+      statusReason: "native-terminal-question-answered",
+    });
+
+    expect(
+      (await reportActivity(fixture, thread.id, { state: "working" })).status,
+    ).toBe(200);
+    expect(
+      getPendingInteractionByProviderRequest(fixture.harness.db, {
+        providerId: "claude-code",
+        providerThreadId: SESSION_ID,
+        providerRequestId: requestId,
+      }),
+    ).toMatchObject({ id: before?.id, status: "interrupted" });
+    expect(openInteractions(fixture, thread.id)).toHaveLength(0);
+    expect(notification).toHaveBeenCalledTimes(1);
     expect(warn).not.toHaveBeenCalled();
-    expect(notification).not.toHaveBeenCalled();
   });
 
   it("keeps answered native questions rejected and warns only once", async () => {
@@ -1104,7 +1215,9 @@ describe("native terminal questions", () => {
       },
     );
     expect(response.status).toBe(409);
-    expect(await readApiErrorCode(response)).toBe("native_terminal_interaction");
+    expect(await readApiErrorCode(response)).toBe(
+      "native_terminal_interaction",
+    );
     expect(openInteractions(fixture, thread.id)).toHaveLength(1);
   });
 
