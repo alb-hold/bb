@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { NotificationHub } from "../../src/ws/hub.js";
 import { createMockHubSocket } from "../helpers/mock-hub-socket.js";
 
@@ -133,6 +133,32 @@ describe("NotificationHub device handoff routing", () => {
     expect(JSON.parse(terminalViewer.messages[0]!).request).toMatchObject({
       text: "terminal copy",
     });
+  });
+
+  it("expires undelivered origin-scoped payloads", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(1_000_000);
+      const hub = new NotificationHub();
+      hub.notifyDeviceHandoff(
+        {
+          kind: "copy-text",
+          text: "expired copy",
+          origin: { threadId: "thr_1" },
+        },
+        "Thread one",
+      );
+      vi.advanceTimersByTime(2 * 60 * 1000);
+
+      const laterAtOrigin = createMockHubSocket();
+      hub.subscribe(laterAtOrigin, {
+        kind: "thread-detail",
+        threadId: "thr_1",
+      });
+      expect(laterAtOrigin.messages).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("broadcasts to every connected client and returns the delivered count", () => {

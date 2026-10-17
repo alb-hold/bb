@@ -330,6 +330,7 @@ export class NotificationHub implements DbNotifier {
       expiresAt: number;
       origin: DeviceHandoffRequest["origin"];
       payload: string;
+      timeout: ReturnType<typeof setTimeout>;
     }>
   >();
 
@@ -1173,11 +1174,17 @@ export class NotificationHub implements DbNotifier {
     }
     const originKey = this.deviceHandoffOriginKey(request.origin);
     const pending = this.pendingDeviceHandoffsByOrigin.get(originKey) ?? [];
-    pending.push({
+    const handoff = {
       expiresAt: signal.expiresAt,
       origin: request.origin,
       payload,
-    });
+      timeout: setTimeout(
+        () => this.removePendingDeviceHandoff(originKey, payload),
+        Math.max(0, signal.expiresAt - Date.now()),
+      ),
+    };
+    handoff.timeout.unref?.();
+    pending.push(handoff);
     this.pendingDeviceHandoffsByOrigin.set(originKey, pending);
     this.enforcePendingDeviceHandoffLimit();
     return 0;
@@ -1186,6 +1193,9 @@ export class NotificationHub implements DbNotifier {
   private prunePendingDeviceHandoffs(now: number): void {
     for (const [originKey, handoffs] of this.pendingDeviceHandoffsByOrigin) {
       const live = handoffs.filter((handoff) => handoff.expiresAt > now);
+      for (const handoff of handoffs) {
+        if (handoff.expiresAt <= now) clearTimeout(handoff.timeout);
+      }
       if (live.length === 0) {
         this.pendingDeviceHandoffsByOrigin.delete(originKey);
       } else if (live.length !== handoffs.length) {
@@ -1249,6 +1259,7 @@ export class NotificationHub implements DbNotifier {
         const recipients = this.deviceHandoffRecipients(handoff.origin, now);
         if (recipients.size === 0) continue;
         for (const socket of recipients) socket.send(handoff.payload);
+        clearTimeout(handoff.timeout);
       }
       const remaining = handoffs.filter(
         (handoff) => !matchingOrigin(handoff.origin),
@@ -1286,7 +1297,10 @@ export class NotificationHub implements DbNotifier {
         const index = handoffs.findIndex(
           (handoff) => handoff.payload === payload,
         );
-        if (index !== -1) handoffs.splice(index, 1);
+        if (index !== -1) {
+          clearTimeout(handoffs[index]?.timeout);
+          handoffs.splice(index, 1);
+        }
         if (handoffs.length === 0) {
           this.pendingDeviceHandoffsByOrigin.delete(originKey);
         }
@@ -1309,6 +1323,18 @@ export class NotificationHub implements DbNotifier {
       id: projectId,
       changes,
     });
+  }
+
+  private removePendingDeviceHandoff(originKey: string, payload: string): void {
+    const handoffs = this.pendingDeviceHandoffsByOrigin.get(originKey);
+    if (!handoffs) return;
+    const remaining = handoffs.filter((handoff) => handoff.payload !== payload);
+    if (remaining.length === handoffs.length) return;
+    if (remaining.length === 0) {
+      this.pendingDeviceHandoffsByOrigin.delete(originKey);
+    } else {
+      this.pendingDeviceHandoffsByOrigin.set(originKey, remaining);
+    }
   }
 
   notifyEnvironment(
