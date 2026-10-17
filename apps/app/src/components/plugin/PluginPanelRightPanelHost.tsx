@@ -1064,6 +1064,7 @@ export function PluginPanelRightPanelHost({
             onNativeFocus={onNativeFocus}
             threadId={panelStateId}
             onUpdate={updateBrowserTab}
+            onOpenInNewTab={panelBrowser.open}
           />
         );
       const drawerFallback = renderDeck(
@@ -1111,6 +1112,7 @@ export function PluginPanelRightPanelHost({
       browserTabs,
       fixedTabs,
       panelBrowser.handleAddressFocusRequestConsumed,
+      panelBrowser.open,
       hidePanel,
       isOpen,
       openNewTab,
