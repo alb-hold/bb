@@ -574,7 +574,10 @@ describe("spawnLoggedProcess", () => {
         .poll(
           () =>
             familyFiles(logDir, "server").some(
-              (path) => path.includes(".active-") && path !== firstActivePath,
+              (path) =>
+                path.includes(".active-") &&
+                path !== firstActivePath &&
+                readFileSync(path, "utf8").includes("locale-writer-two"),
             ),
           { timeout: 5_000, interval: 10 },
         )
