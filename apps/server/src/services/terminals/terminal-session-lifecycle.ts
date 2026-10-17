@@ -1315,30 +1315,13 @@ export class TerminalSessionLifecycle {
       }
     }
     try {
-      const closed = await pending.promise;
-      if (args.payload.reason === "user") {
-        dismissRetainedTerminalOutput(
-          this.options.db,
-          current.id,
-          current.hostId,
-          Date.now(),
-        );
-      }
-      return this.toTerminalSession(closed);
+      return this.toTerminalSession(await pending.promise);
     } catch (error) {
       const finalized = getTerminalById(this.options.db, current.id);
       if (
         finalized?.status === "exited" &&
         finalized.closeReason === args.payload.reason
       ) {
-        if (args.payload.reason === "user") {
-          dismissRetainedTerminalOutput(
-            this.options.db,
-            current.id,
-            current.hostId,
-            Date.now(),
-          );
-        }
         return this.toTerminalSession(finalized);
       }
       throw error;
@@ -1355,14 +1338,6 @@ export class TerminalSessionLifecycle {
       kind: "exit",
     });
     const session = closed ?? args.current;
-    if (args.reason === "user") {
-      dismissRetainedTerminalOutput(
-        this.options.db,
-        args.current.id,
-        args.current.hostId,
-        Date.now(),
-      );
-    }
     this.notifyExitedTerminalSession({
       session,
       code: "terminal_closed",

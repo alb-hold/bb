@@ -1199,12 +1199,31 @@ export const forkTerminalOutput = sqliteTable(
     byteLength: integer("byte_length").notNull(),
     retainedAt: integer("retained_at").notNull(),
     expiresAt: integer("expires_at"),
-    dismissedAt: integer("dismissed_at"),
   },
   (table) => [
     index("fork_terminal_output_host_retained_idx").on(
       table.hostId,
       table.retainedAt,
+    ),
+  ],
+);
+
+export const forkTerminalTabDismissals = sqliteTable(
+  "fork_terminal_tab_dismissals",
+  {
+    terminalSessionId: text("terminal_session_id")
+      .primaryKey()
+      .references(() => terminalSessions.id, { onDelete: "cascade" }),
+    hostId: text("host_id")
+      .notNull()
+      .references(() => hosts.id, { onDelete: "cascade" }),
+    dismissedAt: integer("dismissed_at").notNull(),
+    expiresAt: integer("expires_at").notNull(),
+  },
+  (table) => [
+    index("fork_terminal_tab_dismissals_host_expiry_idx").on(
+      table.hostId,
+      table.expiresAt,
     ),
   ],
 );

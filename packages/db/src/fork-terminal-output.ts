@@ -210,12 +210,25 @@ export function dismissRetainedTerminalOutput(
   hostId: string,
   now: number,
 ): void {
-  db.$client
-    .prepare(
-      `UPDATE fork_terminal_output SET dismissed_at = ?
-       WHERE terminal_session_id = ? AND host_id = ?`,
-    )
-    .run(now, terminalSessionId, hostId);
+  db.$client.transaction(() => {
+    db.$client
+      .prepare(
+        `DELETE FROM fork_terminal_tab_dismissals
+         WHERE host_id = ? AND expires_at <= ?`,
+      )
+      .run(hostId, now);
+    db.$client
+      .prepare(
+        `INSERT INTO fork_terminal_tab_dismissals
+           (terminal_session_id, host_id, dismissed_at, expires_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(terminal_session_id) DO UPDATE SET
+           host_id = excluded.host_id,
+           dismissed_at = excluded.dismissed_at,
+           expires_at = excluded.expires_at`,
+      )
+      .run(terminalSessionId, hostId, now, now + TERMINAL_OUTPUT_RETENTION_MS);
+  })();
 }
 
 export function getRetainedTerminalOutput(

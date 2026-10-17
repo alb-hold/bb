@@ -1,1 +1,0 @@
-ALTER TABLE `fork_terminal_output` ADD `dismissed_at` integer;
