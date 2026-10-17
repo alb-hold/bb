@@ -6,6 +6,7 @@ import {
   getThread,
   hasActiveThreadAttention,
   updateThread,
+  updateTerminalSession,
 } from "@bb/db";
 import {
   createTestAppHarness,
@@ -143,6 +144,114 @@ describe("device handoff route validation", () => {
 });
 
 describe("device handoff pending attention", () => {
+  it("clears terminal attention when its originating terminal exits", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps);
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+      });
+      const thread = seedThread(harness.deps, { projectId: project.id });
+      const terminal = createTerminalSession(harness.db, {
+        cols: 80,
+        environmentId: null,
+        hostId: host.id,
+        daemonSessionId: session.id,
+        initialCwd: "/tmp",
+        rows: 24,
+        status: "running",
+        threadId: thread.id,
+        title: "Exiting handoff terminal",
+      });
+      const response = await harness.app.request("/api/v1/device-handoff", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          kind: "copy-text",
+          text: "private copy text",
+          origin: { threadId: thread.id, terminalSessionId: terminal.id },
+        }),
+      });
+      expect(response.status).toBe(200);
+      expect(
+        getTerminalAttention(harness.db, terminal.id)?.clearedAt,
+      ).toBeNull();
+
+      harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        hostId: host.id,
+        sessionId: session.id,
+        message: {
+          type: "terminal.exited",
+          terminalId: terminal.id,
+          exitCode: 0,
+          closeReason: "process-exit",
+        },
+      });
+
+      expect(
+        getTerminalAttention(harness.db, terminal.id)?.clearedAt,
+      ).not.toBeNull();
+      expect(
+        harness.deps.terminalSessions.getTerminal({ terminalId: terminal.id })
+          .attention,
+      ).toBeNull();
+    });
+  });
+
+  it("clears terminal attention when an undelivered handoff expires after exit", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps);
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+      });
+      const thread = seedThread(harness.deps, { projectId: project.id });
+      const terminal = createTerminalSession(harness.db, {
+        cols: 80,
+        environmentId: null,
+        hostId: host.id,
+        daemonSessionId: session.id,
+        initialCwd: "/tmp",
+        rows: 24,
+        status: "running",
+        threadId: thread.id,
+        title: "Expired handoff terminal",
+      });
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(Date.now());
+        const response = await harness.app.request("/api/v1/device-handoff", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            kind: "copy-text",
+            text: "private expiring text",
+            origin: { threadId: thread.id, terminalSessionId: terminal.id },
+          }),
+        });
+        expect(response.status).toBe(200);
+        updateTerminalSession(harness.db, {
+          scope: { kind: "terminal", terminalId: terminal.id },
+          update: {
+            kind: "exit",
+            closeReason: "process-exit",
+            exitCode: 0,
+          },
+        });
+
+        await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
+
+        expect(
+          getTerminalAttention(harness.db, terminal.id)?.clearedAt,
+        ).not.toBeNull();
+        expect(
+          harness.deps.terminalSessions.getTerminal({ terminalId: terminal.id })
+            .attention,
+        ).toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
   it("raises fixed, payload-free terminal attention and clears it on delivery", async () => {
     await withTestHarness(async (harness) => {
       const { host, session } = seedHostSession(harness.deps);

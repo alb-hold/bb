@@ -824,7 +824,7 @@ export class TerminalSessionLifecycle {
 
   setDeviceHandoffAttention(terminalId: string, pending: boolean): void {
     const session = getTerminalById(this.options.db, terminalId);
-    if (!session || session.status !== "running") return;
+    if (!session || (pending && session.status !== "running")) return;
     if (pending) {
       this.recordTerminalAttention({
         source: "api",
@@ -2314,6 +2314,7 @@ export class TerminalSessionLifecycle {
     if (!exited) {
       return;
     }
+    this.clearTerminalAttention(exited.id);
     this.forwardedNextSeqByTerminalId.delete(exited.id);
     this.outputFlow.forgetTerminal(exited.id);
     markRetainedTerminalOutputExited(
@@ -2440,6 +2441,7 @@ export class TerminalSessionLifecycle {
   private notifyExitedTerminalSession(
     args: NotifyExitedTerminalSessionArgs,
   ): void {
+    this.clearTerminalAttention(args.session.id);
     markRetainedTerminalOutputExited(
       this.options.db,
       args.session.id,
