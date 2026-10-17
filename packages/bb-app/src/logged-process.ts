@@ -715,7 +715,7 @@ export interface StdioLogWriterTestBarrier {
     fingerprint: string;
   };
   forcePsIdentity?: boolean;
-  writerEnv?: Pick<NodeJS.ProcessEnv, "LC_ALL" | "TZ">;
+  writerEnv?: Pick<NodeJS.ProcessEnv, "LC_ALL" | "TMPDIR" | "TZ">;
   diagnosticPath?: string;
   completionPath?: string;
   finalizationEnteredPath?: string;

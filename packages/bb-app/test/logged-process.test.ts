@@ -33,7 +33,11 @@ function scratchDir(): string {
   return dir;
 }
 
-function livenessDirectory(logDir: string, logName: string): string {
+function livenessDirectory(
+  logDir: string,
+  logName: string,
+  base = tmpdir(),
+): string {
   const logPath = join(logDir, `${logName}-stdio.log`);
   const user = process.getuid?.() ?? process.env.USERNAME ?? "";
   const hash = createHash("sha256")
@@ -41,7 +45,7 @@ function livenessDirectory(logDir: string, logName: string): string {
     .digest("hex")
     .slice(0, 12);
   const name = `.bb-stdio-${hash}`;
-  const perUserDir = join(tmpdir(), name);
+  const perUserDir = join(base, name);
   const sampleSocketPath = join(perUserDir, `s-${"0".repeat(36)}`);
   return Buffer.byteLength(sampleSocketPath) <= 103
     ? perUserDir
@@ -144,7 +148,8 @@ describe("spawnLoggedProcess", () => {
     "keeps a live segment when its endpoint directory has unsafe permissions",
     async () => {
       const logDir = scratchDir();
-      const socketDir = livenessDirectory(logDir, "server");
+      const firstTempDir = scratchDir();
+      const socketDir = livenessDirectory(logDir, "server", firstTempDir);
       const stopFirstPath = join(logDir, "stop-no-endpoint-first");
       const stopObserverPath = join(logDir, "stop-no-endpoint-observer");
       const diagnosticPath = join(logDir, "unsafe-directory-diagnostic");
@@ -161,7 +166,10 @@ describe("spawnLoggedProcess", () => {
         env: process.env,
         logDir,
         logName: "server",
-        testWriterBarrier: { diagnosticPath },
+        testWriterBarrier: {
+          diagnosticPath,
+          writerEnv: { TMPDIR: firstTempDir },
+        },
       });
       let observer: ReturnType<typeof spawnLoggedProcess> | undefined;
       try {
@@ -202,6 +210,12 @@ describe("spawnLoggedProcess", () => {
             { timeout: 5_000, interval: 10 },
           )
           .toBe(true);
+        const observerSegment = familyFiles(logDir, "server").find(
+          (file) =>
+            file.includes(".active-") &&
+            readFileSync(file, "utf8").includes("no-endpoint-observer-"),
+        )!;
+        expect(observerSegment).toContain("-e-");
         await expect
           .poll(
             () => {
