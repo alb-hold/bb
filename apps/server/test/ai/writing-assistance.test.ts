@@ -86,7 +86,7 @@ describe("writing assistance corrections", () => {
           ])}`,
       });
       const target =
-        "The user are sure the talking from refreshTokn() expires.";
+        "The user are sure the talking expires.\nIt comes from refreshTokn().";
       const response = await postCorrection(harness, { target });
       expect(response.status).toBe(200);
       const body = await response.json();
@@ -107,6 +107,37 @@ describe("writing assistance corrections", () => {
       });
       expect(service.completeCalls[0]?.prompt).toContain(target);
       expect(getWritingUsage(harness.deps.db, utcDay()).corrections).toBe(1);
+    });
+  });
+
+  it("only suggests a safe edit on a line that contains code", async () => {
+    await withTestHarness({}, async (harness) => {
+      registerFakeAiService(harness.deps.aiServices, {
+        complete: async () =>
+          editsReply([
+            {
+              original: "user are",
+              replacement: "user is",
+              category: "grammar",
+              confidence: "high",
+              semanticImpact: "none",
+              explanation: null,
+            },
+          ]),
+      });
+      const response = await postCorrection(harness, {
+        target: "The user are sure refreshTokn() expires.",
+      });
+      await expect(response.json()).resolves.toEqual({
+        status: "ok",
+        edits: [
+          expect.objectContaining({
+            original: "are",
+            replacement: "is",
+            disposition: "suggest",
+          }),
+        ],
+      });
     });
   });
 
