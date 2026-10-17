@@ -303,7 +303,7 @@ export function useDeviceHandoffQueue(activeThreadId: string | null) {
       };
     });
   }, [activeThreadId]);
-  const acknowledgeShown = useCallback((id: string) => {
+  const acknowledge = useCallback((id: string) => {
     wsManager.acknowledgeDeviceHandoff(id);
   }, []);
 
@@ -312,6 +312,6 @@ export function useDeviceHandoffQueue(activeThreadId: string | null) {
     position: activeProgress?.position ?? 1,
     count: activeProgress?.total ?? 0,
     dismiss,
-    acknowledgeShown,
+    acknowledge,
   };
 }

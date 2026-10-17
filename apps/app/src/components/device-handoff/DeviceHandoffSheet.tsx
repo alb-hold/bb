@@ -16,7 +16,7 @@ interface DeviceHandoffSheetProps {
   position: number;
   count: number;
   onDismiss(): void;
-  onShown(id: string): void;
+  onAcknowledge(id: string): void;
 }
 
 export function DeviceHandoffSheet({
@@ -24,15 +24,10 @@ export function DeviceHandoffSheet({
   position,
   count,
   onDismiss,
-  onShown,
+  onAcknowledge,
 }: DeviceHandoffSheetProps) {
   const open = signal !== null;
   const { isContentRealized } = useResponsiveDrawerRealization({ open });
-  useEffect(() => {
-    if (isContentRealized && signal?.type === "device-handoff") {
-      onShown(signal.id);
-    }
-  }, [isContentRealized, onShown, signal]);
   useEffect(() => {
     if (signal === null || signal.type !== "device-handoff") return;
     const timer = window.setTimeout(
@@ -52,7 +47,10 @@ export function DeviceHandoffSheet({
       successMessage: "Copied on this device",
       errorMessage: "Could not copy text",
     }).then((copied) => {
-      if (copied) onDismiss();
+      if (copied) {
+        onAcknowledge(signal.id);
+        onDismiss();
+      }
     });
   };
 
@@ -60,6 +58,12 @@ export function DeviceHandoffSheet({
     if (signal?.type !== "device-handoff" || signal.request.kind !== "open-url")
       return;
     openUrlInExternalBrowser(signal.request.url);
+    onAcknowledge(signal.id);
+    onDismiss();
+  };
+
+  const dismiss = () => {
+    if (signal?.type === "device-handoff") onAcknowledge(signal.id);
     onDismiss();
   };
 
@@ -85,7 +89,7 @@ export function DeviceHandoffSheet({
           {signal.request.text.length > 1_000 ? "…" : ""}
         </pre>
         <div className="flex justify-end gap-2">
-          <Button type="button" variant="ghost" onClick={onDismiss}>
+          <Button type="button" variant="ghost" onClick={dismiss}>
             Dismiss
           </Button>
           <Button type="button" onClick={copy}>
@@ -99,7 +103,7 @@ export function DeviceHandoffSheet({
         <p className="text-sm text-muted-foreground">{signal.originLabel}</p>
         <p className="break-all text-sm">{new URL(signal.request.url).host}</p>
         <div className="flex justify-end gap-2">
-          <Button type="button" variant="ghost" onClick={onDismiss}>
+          <Button type="button" variant="ghost" onClick={dismiss}>
             Dismiss
           </Button>
           <Button type="button" onClick={openUrl}>

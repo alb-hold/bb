@@ -42,6 +42,7 @@ vi.mock("@/lib/ws", () => ({
 afterEach(() => {
   cleanup();
   copied.mockReset();
+  vi.mocked(openUrlInExternalBrowser).mockClear();
   registerDeviceHandoff.mockClear();
   acknowledgeDeviceHandoff.mockClear();
 });
@@ -58,7 +59,7 @@ function DeviceHandoffQueueHarness({
       position={queue.position}
       count={queue.count}
       onDismiss={queue.dismiss}
-      onShown={queue.acknowledgeShown}
+      onAcknowledge={queue.acknowledge}
     />
   );
 }
@@ -79,26 +80,30 @@ describe("DeviceHandoffSheet", () => {
       },
     };
     const onDismiss = vi.fn();
-    const onShown = vi.fn();
+    const onAcknowledge = vi.fn();
     render(
       <DeviceHandoffSheet
         signal={signal}
         position={1}
         count={1}
         onDismiss={onDismiss}
-        onShown={onShown}
+        onAcknowledge={onAcknowledge}
       />,
     );
 
     expect(copied).not.toHaveBeenCalled();
     const copyButton = await screen.findByRole("button", { name: "Copy" });
-    await waitFor(() => expect(onShown).toHaveBeenCalledWith("handoff-1"));
+    expect(onAcknowledge).not.toHaveBeenCalled();
     expect(copied).not.toHaveBeenCalled();
     fireEvent.click(copyButton);
     expect(copied).toHaveBeenCalledWith("secret-free test text", {
       successMessage: "Copied on this device",
       errorMessage: "Could not copy text",
     });
+    await waitFor(() =>
+      expect(onAcknowledge).toHaveBeenCalledWith("handoff-1"),
+    );
+    expect(onDismiss).toHaveBeenCalledTimes(1);
   });
 
   it("opens the requested URL and acknowledges it only after the user taps Open", async () => {
@@ -116,14 +121,14 @@ describe("DeviceHandoffSheet", () => {
       },
     };
     const onDismiss = vi.fn();
-    const onShown = vi.fn();
+    const onAcknowledge = vi.fn();
     render(
       <DeviceHandoffSheet
         signal={signal}
         position={1}
         count={1}
         onDismiss={onDismiss}
-        onShown={onShown}
+        onAcknowledge={onAcknowledge}
       />,
     );
 
@@ -135,10 +140,12 @@ describe("DeviceHandoffSheet", () => {
 
     expect(openUrlInExternalBrowser).toHaveBeenCalledTimes(1);
     expect(openUrlInExternalBrowser).toHaveBeenCalledWith(url);
+    expect(onAcknowledge).toHaveBeenCalledExactlyOnceWith("open-handoff");
     expect(onDismiss).toHaveBeenCalledTimes(1);
   });
 
-  it("shows queued handoffs in arrival order when several arrive before dismissal", async () => {
+  it("shows queued handoffs in arrival order and acknowledges only explicit actions", async () => {
+    copied.mockResolvedValue(true);
     const now = Date.now();
     const handoffs: DeviceHandoffSignal[] = [
       {
@@ -190,21 +197,32 @@ describe("DeviceHandoffSheet", () => {
 
     expect(acknowledgeDeviceHandoff).not.toHaveBeenCalled();
     expect(await screen.findByText("first copied code")).toBeTruthy();
-    await waitFor(() =>
-      expect(acknowledgeDeviceHandoff).toHaveBeenCalledWith("handoff-first"),
-    );
+    expect(acknowledgeDeviceHandoff).not.toHaveBeenCalled();
     expect(screen.getByText("1 of 3")).toBeTruthy();
     expect(screen.queryByText("second.example")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+    await waitFor(() =>
+      expect(acknowledgeDeviceHandoff).toHaveBeenCalledExactlyOnceWith(
+        "handoff-first",
+      ),
+    );
 
     expect(await screen.findByText("second.example")).toBeTruthy();
     expect(screen.getByText("2 of 3")).toBeTruthy();
     expect(screen.queryByText("third copied code")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+    expect(openUrlInExternalBrowser).toHaveBeenCalledExactlyOnceWith(
+      "https://second.example/login",
+    );
+    expect(acknowledgeDeviceHandoff).toHaveBeenCalledTimes(2);
+    expect(acknowledgeDeviceHandoff).toHaveBeenLastCalledWith("handoff-second");
 
     expect(await screen.findByText("third copied code")).toBeTruthy();
     expect(screen.getByText("3 of 3")).toBeTruthy();
+    expect(acknowledgeDeviceHandoff).toHaveBeenCalledTimes(2);
     fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(acknowledgeDeviceHandoff).toHaveBeenCalledTimes(3);
+    expect(acknowledgeDeviceHandoff).toHaveBeenLastCalledWith("handoff-third");
     expect(screen.queryByText("third copied code")).toBeNull();
   });
 

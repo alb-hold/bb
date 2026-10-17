@@ -1043,7 +1043,7 @@ describe("device handoff websocket acknowledgement", () => {
     }
   });
 
-  it("keeps a handoff pending for a subscribed hidden view until the shown item is acknowledged", async () => {
+  it("redelivers a shown but unacknowledged handoff when its thread is reopened", async () => {
     const server = await startTestServer();
     const { thread } = seedThreadFixture(server);
     const socket = await connectRealtime(server.baseUrl);
@@ -1081,6 +1081,21 @@ describe("device handoff websocket acknowledgement", () => {
       });
       const signal = await handoff;
       expect(signal).toMatchObject({
+        type: "device-handoff",
+        request: { kind: "copy-text", text: "pending until shown" },
+      });
+      expect(getThread(server.db, thread.id)?.latestAttentionAt).toBe(
+        raisedAttentionAt,
+      );
+
+      sendRealtime(socket, { type: "device-handoff-view", threadId: null });
+      const returnedHandoff = nextRealtimeMessage(socket, "device-handoff");
+      sendRealtime(socket, {
+        type: "device-handoff-view",
+        threadId: thread.id,
+      });
+      expect(await returnedHandoff).toMatchObject({
+        id: signal.id,
         type: "device-handoff",
         request: { kind: "copy-text", text: "pending until shown" },
       });
