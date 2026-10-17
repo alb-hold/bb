@@ -420,6 +420,7 @@ export {
   listActiveBackgroundTaskCountsByThreadIds,
   listContextWindowUsageRows,
   listCompletedTurnsByThreadIds,
+  getLatestTokenUsageRow,
   listEvents,
   listStoredConversationOutlineEventRows,
   listStoredRootConversationOutlineEventRows,

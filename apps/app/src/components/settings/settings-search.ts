@@ -15,6 +15,7 @@ export type SettingsSearchCondition =
   | "filePreferences"
   | "localhostLinkRewrite"
   | "performanceDiagnostics"
+  | "sidebarNavigations"
   | "sourceCodeRenderers"
   | "threadLists";
 
@@ -149,8 +150,13 @@ export const SETTINGS_SEARCH_INDEX: Record<
       { title: "Favicon color", keywords: ["icon", "tab"] },
       { title: "Fade inactive splits", keywords: ["dim", "panes", "focus"] },
       {
-        title: "Sidebar",
-        keywords: ["thread list", "plugin"],
+        title: "Navigation",
+        keywords: ["sidebar", "rail", "top list", "layout", "labels", "plugin"],
+        when: "sidebarNavigations",
+      },
+      {
+        title: "Sidebar thread list",
+        keywords: ["threads", "plugin"],
         when: "threadLists",
       },
       {
@@ -234,6 +240,7 @@ export const SETTINGS_SEARCH_INDEX: Record<
   experiments: {
     keywords: ["beta", "preview", "labs", "feature flags"],
     settings: [
+      { title: "Early adopter", keywords: ["beta", "opt in", "preview"] },
       { title: "Changelog preview", keywords: ["release notes", "updates"] },
       {
         title: "Server performance diagnostics",

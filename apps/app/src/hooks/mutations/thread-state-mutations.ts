@@ -30,7 +30,6 @@ import {
   settleArchiveThreadsTransaction,
   settleDeleteThreadTransaction,
   settleThreadListMembershipMutation,
-  settleThreadReadStateTransaction,
   settleThreadPatchTransaction,
   type ArchiveThreadsTransaction,
   type DeleteThreadTransaction,
@@ -119,8 +118,8 @@ export function updateThreadMutationOptions(
         transaction: context,
       });
     },
-    onSuccess: (thread) => {
-      applyThreadUpdateResult({ queryClient, thread });
+    onSuccess: (thread, request) => {
+      applyThreadUpdateResult({ queryClient, thread, request });
     },
     onSettled: (_data, _error, _variables, context) => {
       settleThreadPatchTransaction(context);
@@ -280,7 +279,7 @@ export function useRestoreThreadEnvironment() {
     mutationFn: ({ id }: ThreadMutationRequest): Promise<ThreadResponse> =>
       sdk.threads.restoreEnvironment({ threadId: id }),
     onSuccess: (thread) => {
-      applyThreadUpdateResult({ queryClient, thread });
+      settleThreadListMembershipMutation({ queryClient, threadId: thread.id });
     },
   });
 }
@@ -316,13 +315,16 @@ export function useDeleteThread() {
   });
 }
 
-export function markThreadReadMutationOptions(queryClient: QueryClient) {
+export function markThreadReadMutationOptions(
+  queryClient: QueryClient,
+  threadSdk = sdk.threads,
+) {
   return mutationOptions({
     meta: {
       errorMessage: "Failed to mark thread read.",
       showErrorToast: false,
     },
-    mutationFn: (input: ThreadReadMutationInput) => sdk.threads.markRead(input),
+    mutationFn: (input: ThreadReadMutationInput) => threadSdk.markRead(input),
     onMutate: (input): Promise<ThreadReadStateTransaction> =>
       beginThreadReadStateTransaction({
         lastReadAt: Date.now(),
@@ -339,9 +341,6 @@ export function markThreadReadMutationOptions(queryClient: QueryClient) {
     onSuccess: (thread) => {
       applyThreadReadStateResult({ queryClient, thread });
     },
-    onSettled: (_data, _error, _input, transaction) => {
-      settleThreadReadStateTransaction({ queryClient, transaction });
-    },
   });
 }
 
@@ -350,15 +349,17 @@ export function useMarkThreadRead() {
   return useMutation(markThreadReadMutationOptions(queryClient));
 }
 
-export function markThreadUnreadMutationOptions(queryClient: QueryClient) {
+export function markThreadUnreadMutationOptions(
+  queryClient: QueryClient,
+  threadSdk = sdk.threads,
+) {
   return mutationOptions({
     meta: {
       errorMessage: "Failed to mark thread unread.",
       showErrorToast: false,
     },
     mutationKey: MARK_THREAD_UNREAD_MUTATION_KEY,
-    mutationFn: (input: ThreadReadMutationInput) =>
-      sdk.threads.markUnread(input),
+    mutationFn: (input: ThreadReadMutationInput) => threadSdk.markUnread(input),
     onMutate: (input): Promise<ThreadReadStateTransaction> =>
       beginThreadReadStateTransaction({
         lastReadAt: null,
@@ -374,9 +375,6 @@ export function markThreadUnreadMutationOptions(queryClient: QueryClient) {
     },
     onSuccess: (thread) => {
       applyThreadReadStateResult({ queryClient, thread });
-    },
-    onSettled: (_data, _error, _input, transaction) => {
-      settleThreadReadStateTransaction({ queryClient, transaction });
     },
   });
 }

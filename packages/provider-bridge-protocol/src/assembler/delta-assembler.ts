@@ -614,6 +614,7 @@ export function createDeltaAssembler(
         status: shape.status,
         taskStatus: shape.taskStatus,
         skipTranscript: shape.skipTranscript,
+        foreground: shape.foreground ?? false,
         ...(shape.workflowName === undefined
           ? {}
           : { workflowName: shape.workflowName }),
@@ -1904,6 +1905,9 @@ export function createDeltaAssembler(
             total: { ...delta.total },
             last: { ...delta.last },
             modelContextWindow: delta.modelContextWindow,
+            ...(delta.promptCacheTtlMs === undefined
+              ? {}
+              : { promptCacheTtlMs: delta.promptCacheTtlMs }),
           },
         });
         return;

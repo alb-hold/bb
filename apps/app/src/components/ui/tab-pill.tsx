@@ -57,6 +57,7 @@ export function TabPill({
 }: TabPillProps) {
   return (
     <div
+      data-tab-pill=""
       onAuxClick={(event) => {
         if (event.button !== 1 || closeAction === null) {
           return;

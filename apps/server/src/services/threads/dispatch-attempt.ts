@@ -14,6 +14,7 @@ import {
   type RunningThreadRow,
 } from "@bb/db";
 import {
+  createStandaloneBuiltinCompactCommandInput,
   promptInputSchema,
   type PromptInput,
   type QueuedMessagePayload,
@@ -299,6 +300,12 @@ async function runDispatchAttempt(
     withChildThreadModel(deps, thread, payload),
     args.executionDefaults ?? { threadId: thread.id },
   );
+  if (payload.compactFirst) {
+    const { compactFirst, ...request } = payload;
+    await compactThreadContext(deps, thread);
+    payload = request;
+    args = { ...args, payload };
+  }
   let resolvedPayload = resolveExecutionIntoPayload(payload, execution);
   const queuedMessage: QueuedDispatchMessage = {
     input: resolvedPayload.input,
@@ -811,4 +818,36 @@ function resolveExecutionIntoPayload(
       permissionMode: "explicit",
     },
   };
+}
+
+export async function compactThreadContext(
+  deps: LoggedPendingInteractionWorkSessionDeps,
+  thread: Thread,
+): Promise<void> {
+  ensureThreadIsWritable(thread);
+  if (!deps.providerRegistry.supportsManualCompaction(thread.providerId)) {
+    throw new ApiError(
+      409,
+      "invalid_request",
+      `Provider "${thread.providerId}" does not support manual context compaction`,
+    );
+  }
+  if (thread.status !== "idle" && thread.status !== "error") {
+    throw new ApiError(
+      409,
+      "invalid_request",
+      "Context can only be compacted while the thread is idle or errored",
+    );
+  }
+
+  const environment = await requireThreadCommandEnvironment(deps, { thread });
+  await sendThreadMessage(deps, {
+    environment,
+    payload: {
+      input: createStandaloneBuiltinCompactCommandInput(),
+      mode: "start",
+    },
+    thread,
+    trigger: "user",
+  });
 }

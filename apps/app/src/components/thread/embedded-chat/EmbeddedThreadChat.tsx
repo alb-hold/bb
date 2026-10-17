@@ -50,7 +50,7 @@ import type {
   ExecutionControlsProps,
   ExecutionPermissionConfig,
 } from "@/components/promptbox/ExecutionControls";
-import { OverflowFade } from "@/components/ui/overflow-fade";
+import { OverflowFade } from "@bb/shared-ui/overflow-fade";
 import {
   ThreadTimelinePanelContent,
   ThreadTimelineSurface,
