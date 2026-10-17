@@ -342,10 +342,14 @@ describe("resolveNativeHarnessLaunch", () => {
   });
 
   it("launches codex fresh and asks for session discovery until an id is known, launch argv first", () => {
+    const codex = {
+      ...DISCOVERED_CLI,
+      launchArgs: ["--no-daemon", "--no-alt-screen"],
+    };
     expect(
       resolveNativeHarnessLaunch(
         spec({
-          cli: DISCOVERED_CLI,
+          cli: codex,
           nativeSessionId: null,
           initialPrompt: "go",
         }),
@@ -353,13 +357,13 @@ describe("resolveNativeHarnessLaunch", () => {
       ),
     ).toEqual({
       command: "codex",
-      args: ["--no-daemon", "go"],
+      args: ["--no-daemon", "--no-alt-screen", "go"],
       session: { kind: "discover" },
     });
     expect(
       resolveNativeHarnessLaunch(
         spec({
-          cli: DISCOVERED_CLI,
+          cli: codex,
           nativeSessionId: "abc-123",
           model: "gpt-6",
         }),
@@ -367,7 +371,14 @@ describe("resolveNativeHarnessLaunch", () => {
       ),
     ).toEqual({
       command: "codex",
-      args: ["--no-daemon", "-c", 'model="gpt-6"', "resume", "abc-123"],
+      args: [
+        "--no-daemon",
+        "--no-alt-screen",
+        "-c",
+        'model="gpt-6"',
+        "resume",
+        "abc-123",
+      ],
       session: { kind: "resume", id: "abc-123" },
     });
   });
@@ -398,14 +409,22 @@ describe("resolveNativeHarnessLaunch", () => {
 
     const codex = {
       ...DISCOVERED_CLI,
-      launchArgs: ["--no-daemon", "--dangerously-bypass-approvals-and-sandbox"],
+      launchArgs: [
+        "--no-daemon",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--no-alt-screen",
+      ],
     };
     for (const nativeSessionId of [null, "abc-123"]) {
       expect(
         resolveNativeHarnessLaunch(spec({ cli: codex, nativeSessionId }), {
           HOME: tempHome(),
-        }).args.slice(0, 2),
-      ).toEqual(["--no-daemon", "--dangerously-bypass-approvals-and-sandbox"]);
+        }).args.slice(0, 3),
+      ).toEqual([
+        "--no-daemon",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--no-alt-screen",
+      ]);
     }
   });
 });
