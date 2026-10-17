@@ -12,6 +12,7 @@ import {
   nextSharedTerminalSize,
   terminalDisplaySize,
 } from "./terminal-shared-size";
+import { fitTerminalGrid, resizeTerminalGrid } from "./terminal-grid";
 
 const FITTED_COLS = 40;
 const FITTED_ROWS = 12;
@@ -90,7 +91,12 @@ class FakeSocket implements TerminalBrowserSocket {
   onmessage: ((event: MessageEvent) => void) | null = null;
   onopen: ((event: Event) => void) | null = null;
   readyState = 1;
-  readonly resizes: Array<{ cols: number; rows: number; seq?: number }> = [];
+  readonly resizes: Array<{
+    claim?: true;
+    cols: number;
+    rows: number;
+    seq?: number;
+  }> = [];
 
   close(): void {
     this.readyState = 3;
@@ -114,8 +120,17 @@ class FakeSocket implements TerminalBrowserSocket {
         ...("seq" in parsed && typeof parsed.seq === "number"
           ? { seq: parsed.seq }
           : {}),
+        ...("claim" in parsed && parsed.claim === true
+          ? { claim: true as const }
+          : {}),
       });
     }
+  }
+
+  deliver(message: unknown): void {
+    this.onmessage?.(
+      new MessageEvent("message", { data: JSON.stringify(message) }),
+    );
   }
 }
 
@@ -204,6 +219,112 @@ describe("replay repaint nudge", () => {
       rows: FITTED_ROWS,
     });
     expect(screenText(terminal)).toBe(await cleanReferenceScreen());
+    transport.dispose();
+  });
+});
+
+describe("shared PTY grid", () => {
+  it("keeps the real xterm grid equal to the PTY dimensions and refreshes every resized row", () => {
+    const terminal = newTerminal();
+    const refresh = vi.spyOn(terminal, "refresh").mockImplementation(() => {});
+
+    expect(resizeTerminalGrid(terminal, { cols: 55, rows: 41 })).toBe(true);
+
+    expect({ cols: terminal.cols, rows: terminal.rows }).toEqual({
+      cols: 55,
+      rows: 41,
+    });
+    expect(refresh).toHaveBeenCalledWith(0, 40);
+    expect(resizeTerminalGrid(terminal, { cols: 55, rows: 41 })).toBe(false);
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("restores the phone PTY rows after a keyboard open and close cycle", async () => {
+    const terminal = newTerminal();
+    vi.spyOn(terminal, "refresh").mockImplementation(() => {});
+    const socket = new FakeSocket();
+    let ptySize = { cols: 55, rows: 41 };
+    let fittedRows = 41;
+    let ownsSize = false;
+    let applied = 0;
+    let transport: TerminalWebSocketTransport;
+    const receive = (message: unknown): void => socket.deliver(message);
+    const applySentSizes = (): void => {
+      for (const resize of socket.resizes.slice(applied)) {
+        if (resize.claim) {
+          ownsSize = true;
+        }
+        if (
+          ownsSize &&
+          (resize.cols !== ptySize.cols || resize.rows !== ptySize.rows)
+        ) {
+          ptySize = { cols: resize.cols, rows: resize.rows };
+          receive({
+            type: "session-updated",
+            session: session(ptySize.cols, ptySize.rows),
+          });
+        }
+        if (resize.seq !== undefined) {
+          receive({ type: "resize-applied", seq: resize.seq });
+        }
+      }
+      applied = socket.resizes.length;
+    };
+    transport = new TerminalWebSocketTransport({
+      createSocket: () => socket,
+      onMessage: (message) => {
+        if (message.type === "attached" || message.type === "session-updated") {
+          ptySize = { cols: message.session.cols, rows: message.session.rows };
+          fitTerminalGrid(
+            terminal,
+            { cols: 55, rows: fittedRows },
+            ptySize,
+            null,
+          );
+        }
+      },
+      shouldReconnect: () => false,
+      url: "ws://example.test/ws/terminals/term_1",
+    });
+
+    fitTerminalGrid(terminal, { cols: 55, rows: 41 }, null, transport);
+    transport.start();
+    socket.onopen?.(new Event("open"));
+    socket.deliver({ type: "features", resizeAcks: true });
+    transport.markLayoutSettled();
+    socket.deliver({
+      type: "attached",
+      session: session(55, 41),
+      replayStartSeq: 0,
+      nextSeq: 0,
+    });
+    transport.claimSize();
+    applySentSizes();
+
+    fittedRows = 16;
+    fitTerminalGrid(
+      terminal,
+      { cols: 55, rows: fittedRows },
+      ptySize,
+      transport,
+    );
+    applySentSizes();
+    expect(ptySize).toEqual({ cols: 55, rows: 16 });
+    expect({ cols: terminal.cols, rows: terminal.rows }).toEqual(ptySize);
+
+    fittedRows = 41;
+    fitTerminalGrid(
+      terminal,
+      { cols: 55, rows: fittedRows },
+      ptySize,
+      transport,
+    );
+    applySentSizes();
+    expect(ptySize).toEqual({ cols: 55, rows: 41 });
+    expect({ cols: terminal.cols, rows: terminal.rows }).toEqual(ptySize);
+    expect(socket.resizes.filter((resize) => resize.claim)).toEqual([
+      { cols: 55, rows: 41, claim: true },
+    ]);
     transport.dispose();
   });
 });

@@ -214,10 +214,9 @@ export async function shutdownHttpBeforePlugins(args: {
   let pluginStopTimer: ReturnType<typeof setTimeout> | undefined;
   try {
     const stopped = await Promise.race([
-      Promise.all([
-        args.stopPeriodicUpdateChecks?.(),
-        args.stopPlugins(),
-      ]).then(() => true),
+      Promise.all([args.stopPeriodicUpdateChecks?.(), args.stopPlugins()]).then(
+        () => true,
+      ),
       new Promise<false>((resolve) => {
         pluginStopTimer = setTimeout(
           () => resolve(false),
@@ -261,7 +260,9 @@ export async function shutdownServerRuntime(args: {
   if (result.pluginStopTimedOut) {
     args.logger.warn("Database close skipped because plugin stop timed out");
   } else if (!result.completedWithinBounds) {
-    args.logger.warn("Database close skipped because a shutdown step exceeded its bound");
+    args.logger.warn(
+      "Database close skipped because a shutdown step exceeded its bound",
+    );
   }
   return result;
 }
@@ -341,7 +342,13 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
           now: Date.now(),
         })
       : null;
-  const hub = new NotificationHub();
+  const hub = new NotificationHub((change) => {
+    logger.info({
+      component: "terminal",
+      type: "terminal.resize_owner",
+      ...change,
+    });
+  });
   const watchInterests = new WatchInterestCoordinator({ db, hub });
   const sharedPorts = new HostSharedPortCoordinator({ db, hub });
   const workspaceReadCaches = new WorkspaceReadCaches({ hub });
