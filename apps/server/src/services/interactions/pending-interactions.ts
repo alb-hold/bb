@@ -27,6 +27,7 @@ import {
   isPluginPendingInteraction,
   parseExtensionKind,
   pluginInteractionDescriptionSchema,
+  NATIVE_TERMINAL_QUESTION_REQUEST_PREFIX,
   type JsonValue,
   type PendingInteraction,
   type PluginInteractionDescription,
@@ -460,6 +461,33 @@ export class PendingInteractionLifecycle {
       });
       if (existing) {
         if (existing.status !== "pending" && existing.status !== "resolving") {
+          if (
+            existing.status === "interrupted" &&
+            existing.statusReason ===
+              DAEMON_RESTARTED_PENDING_INTERACTION_REASON &&
+            interaction.turnId === "native-terminal-turn" &&
+            interaction.providerRequestId.startsWith(
+              NATIVE_TERMINAL_QUESTION_REQUEST_PREFIX,
+            )
+          ) {
+            const revived = reviveInterruptedProviderInteraction(tx, {
+              interruptedProviderRequestId: interaction.providerRequestId,
+              interruptionReason: DAEMON_RESTARTED_PENDING_INTERACTION_REASON,
+              payload,
+              providerId: interaction.providerId,
+              providerRequestId: interaction.providerRequestId,
+              providerThreadId: interaction.providerThreadId,
+              threadId: interaction.threadId,
+              turnId: interaction.turnId,
+            });
+            if (revived) {
+              return {
+                outcome: "existing" as const,
+                row: revived,
+                revived: true,
+              };
+            }
+          }
           return {
             outcome: "rejected" as const,
             reason: `Provider request ${interaction.providerRequestId} was already handled and cannot be reused`,
