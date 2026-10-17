@@ -11,9 +11,13 @@ const sizeLimit = 10 * 1024 * 1024;
 const fileCount = 5;
 const lockWaitLimitMs = 500;
 const locklessPeriodMs = 5_000;
+const appendLockStaleMs = 2_000;
+const maxPendingBytes = 16 * 1024 * 1024;
 let locklessUntil = 0;
 const pendingChunks = [];
 let processing = false;
+let pendingBytes = 0;
+let inputPaused = false;
 const rotate = () => {
   const oldestPath = logPath + "." + fileCount;
   if (fs.existsSync(oldestPath)) fs.unlinkSync(oldestPath);
@@ -69,10 +73,19 @@ const appendSerialized = (chunk, done) => {
       try { fs.unlinkSync(appendLockPath); } catch {}
     }
     if (error.code === "EEXIST") {
-      if (!lockOwnerIsAlive(appendLockPath)) {
+      let stale;
+      try {
+        stale = Date.now() - fs.statSync(appendLockPath).mtimeMs > appendLockStaleMs;
+      } catch (statError) {
+        if (statError.code !== "ENOENT") {
+          done();
+          return;
+        }
+      }
+      if (stale || !lockOwnerIsAlive(appendLockPath)) {
         try { fs.unlinkSync(appendLockPath); } catch {}
       }
-      setTimeout(() => appendSerialized(chunk, done), 1);
+      setTimeout(() => appendSerialized(chunk, done), 10);
       return;
     }
     done();
@@ -138,6 +151,11 @@ const processNext = () => {
   if (processing) return;
   const chunk = pendingChunks.shift();
   if (chunk === undefined) return;
+  pendingBytes -= chunk.length;
+  if (inputPaused && pendingBytes < maxPendingBytes) {
+    inputPaused = false;
+    process.stdin.resume();
+  }
   processing = true;
   processChunk(chunk, Date.now(), () => {
     processing = false;
@@ -148,6 +166,11 @@ process.on("uncaughtException", () => {});
 process.stdin.on("error", () => {});
 process.stdin.on("data", (chunk) => {
   pendingChunks.push(chunk);
+  pendingBytes += chunk.length;
+  if (!inputPaused && pendingBytes >= maxPendingBytes) {
+    inputPaused = true;
+    process.stdin.pause();
+  }
   processNext();
 });
 `;

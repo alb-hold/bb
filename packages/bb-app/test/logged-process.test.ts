@@ -8,6 +8,7 @@ import {
   rmSync,
   statSync,
   symlinkSync,
+  utimesSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -170,6 +171,73 @@ describe("spawnLoggedProcess", () => {
           0,
         ),
       ).toBeLessThanOrEqual(6 * sizeLimit);
+    } finally {
+      if (child.exitCode === null) child.kill("SIGKILL");
+    }
+  });
+
+  it("expires a stale append lock held by a live unrelated process", async () => {
+    const logDir = scratchDir();
+    const logPath = join(logDir, "server-stdio.log");
+    const expectedSize = 25 * 1024 * 1024;
+    const sizeLimit = 10 * 1024 * 1024;
+    const appendLockPath = `${logPath}.append.lock`;
+    writeFileSync(appendLockPath, String(process.pid));
+    utimesSync(appendLockPath, new Date(0), new Date(0));
+    const child = spawnLoggedProcess({
+      command: process.execPath,
+      args: [
+        "-e",
+        `
+          const chunk = "x".repeat(64 * 1024);
+          let remaining = ${expectedSize};
+          const writeNext = () => {
+            const next = chunk.slice(0, Math.min(chunk.length, remaining));
+            process.stdout.write(next, (error) => {
+              if (error) process.exit(1);
+              remaining -= next.length;
+              if (remaining > 0) setImmediate(writeNext);
+              else process.stdout.end("LOCK_END\\n", () => process.exit(0));
+            });
+          };
+          writeNext();
+        `,
+      ],
+      env: process.env,
+      logDir,
+      logName: "server",
+    });
+    const childExit = waitForExit(child);
+    const logFiles = () =>
+      readdirSync(logDir)
+        .filter(
+          (name) =>
+            name === "server-stdio.log" ||
+            /^server-stdio\.log\.\d+$/.test(name),
+        )
+        .map((name) => join(logDir, name));
+
+    try {
+      await expect
+        .poll(
+          () =>
+            logFiles().reduce(
+              (total, filePath) => total + statSync(filePath).size,
+              0,
+            ),
+          { timeout: 4_000 },
+        )
+        .toBe(expectedSize + 9);
+      expect(await childExit).toBe(0);
+      const filePaths = logFiles();
+      expect(filePaths.length).toBeLessThanOrEqual(6);
+      expect(
+        filePaths.filter((filePath) => filePath !== logPath).length,
+      ).toBeLessThanOrEqual(5);
+      expect(
+        filePaths.every((filePath) => statSync(filePath).size <= sizeLimit),
+      ).toBe(true);
+      expect(readFileSync(logPath, "utf8")).toContain("LOCK_END\n");
     } finally {
       if (child.exitCode === null) child.kill("SIGKILL");
     }
