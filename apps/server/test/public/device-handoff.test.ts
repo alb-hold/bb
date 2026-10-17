@@ -142,6 +142,25 @@ function nextRealtimeMessage(
   });
 }
 
+function nextSocketMessage(
+  socket: WebSocket,
+  type: string,
+): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      socket.off("message", onMessage);
+      reject(new Error(`Timed out waiting for terminal websocket ${type}`));
+    }, 3_000);
+    const onMessage = (data: WebSocket.RawData) => {
+      const parsed = JSON.parse(data.toString()) as Record<string, unknown>;
+      if (parsed.type !== type) return;
+      clearTimeout(timer);
+      resolve(parsed);
+    };
+    socket.on("message", onMessage);
+  });
+}
+
 function sendRealtime(
   socket: WebSocket,
   message: Record<string, unknown>,
@@ -940,44 +959,17 @@ describe("device handoff websocket acknowledgement", () => {
       threadId: thread.id,
       title: "Handoff boundary terminal",
     });
-    const terminalMessages: Array<Record<string, unknown>> = [];
-    let resolveOutput: ((message: Record<string, unknown>) => void) | null =
-      null;
-    const terminalOutput = new Promise<Record<string, unknown>>((resolve) => {
-      resolveOutput = resolve;
+    let resolveDaemonAttach:
+      | ((message: Record<string, unknown>) => void)
+      | null = null;
+    const daemonAttach = new Promise<Record<string, unknown>>((resolve) => {
+      resolveDaemonAttach = resolve;
     });
-    const terminalSocket = {
-      close() {},
-      send(data: string) {
-        const message = JSON.parse(data) as Record<string, unknown>;
-        terminalMessages.push(message);
-        if (message.type === "output") resolveOutput?.(message);
-      },
-    };
     server.hub.registerDaemon(session.id, host.id, {
       close() {},
       send(data) {
         const frame = JSON.parse(data) as Record<string, unknown>;
-        if (frame.type !== "terminal.attach") return;
-        setTimeout(() => {
-          server.deps.terminalSessions.handleDaemonTerminalMessage({
-            hostId: host.id,
-            sessionId: session.id,
-            message: {
-              type: "terminal.replay",
-              requestId: frame.requestId as string,
-              terminalId: terminal.id,
-              chunks: [
-                {
-                  seq: 0,
-                  dataBase64: Buffer.from(`${payload}\n`).toString("base64"),
-                },
-              ],
-              replayStartSeq: 0,
-              nextSeq: 1,
-            },
-          });
-        }, 0);
+        if (frame.type === "terminal.attach") resolveDaemonAttach?.(frame);
       },
     });
     const port = new URL(server.baseUrl).port;
@@ -988,14 +980,6 @@ describe("device handoff websocket acknowledgement", () => {
       path: `/ws/terminals/${terminal.id}?sinceSeq=0`,
     });
     try {
-      terminalReader.close();
-      server.deps.terminalSessions.attachBrowserTerminal({
-        outputAcks: false,
-        resizeAcks: false,
-        socket: terminalSocket,
-        sinceSeq: 0,
-        terminalId: terminal.id,
-      });
       sendRealtime(viewer, {
         type: "subscribe",
         target: { kind: "thread-detail", threadId: thread.id },
@@ -1005,6 +989,30 @@ describe("device handoff websocket acknowledgement", () => {
         threadId: thread.id,
       });
       const handoff = nextRealtimeMessage(viewer, "device-handoff");
+      const terminalOutput = nextSocketMessage(terminalReader, "output");
+      const attach = await daemonAttach;
+      expect(attach).toMatchObject({
+        type: "terminal.attach",
+        terminalId: terminal.id,
+        sinceSeq: 0,
+      });
+      server.deps.terminalSessions.handleDaemonTerminalMessage({
+        hostId: host.id,
+        sessionId: session.id,
+        message: {
+          type: "terminal.replay",
+          requestId: attach.requestId as string,
+          terminalId: terminal.id,
+          chunks: [
+            {
+              seq: 0,
+              dataBase64: Buffer.from(`${payload}\n`).toString("base64"),
+            },
+          ],
+          replayStartSeq: 0,
+          nextSeq: 1,
+        },
+      });
       const response = await server.app.request("/api/v1/device-handoff", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -1019,18 +1027,17 @@ describe("device handoff websocket acknowledgement", () => {
         type: "device-handoff",
         request: { text: payload },
       });
-      await expect(terminalOutput).resolves.toMatchObject({
-        type: "output",
-        chunk: { dataBase64: Buffer.from(`${payload}\n`).toString("base64") },
-      });
-      expect(terminalMessages).toContainEqual(
-        expect.objectContaining({
-          type: "attached",
-          session: expect.objectContaining({ id: terminal.id }),
-        }),
-      );
+      const output = await terminalOutput;
+      expect(output.type).toBe("output");
+      expect(
+        Buffer.from(
+          (output.chunk as { dataBase64: string }).dataBase64,
+          "base64",
+        ).toString(),
+      ).toContain(payload);
     } finally {
       viewer.close();
+      terminalReader.close();
       server.hub.unregisterDaemon(session.id);
       await server.close();
     }
