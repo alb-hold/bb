@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import { getThread } from "@bb/db";
+import { getThread, updateThread } from "@bb/db";
 import {
   publicApiRoutes,
   typedRoutes,
@@ -53,6 +53,14 @@ export function registerDeviceHandoffRoutes(app: Hono, deps: AppDeps): void {
       256,
     );
     const delivered = deps.hub.notifyDeviceHandoff(request, originLabel);
+    if (delivered === 0) {
+      const attentionThreadId = thread?.id ?? terminal?.threadId;
+      if (attentionThreadId !== undefined && attentionThreadId !== null) {
+        updateThread(deps.db, deps.hub, attentionThreadId, {
+          latestAttentionAt: Date.now(),
+        });
+      }
+    }
     return context.json({ delivered });
   });
 }

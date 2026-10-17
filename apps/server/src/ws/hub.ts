@@ -324,19 +324,18 @@ export class NotificationHub implements DbNotifier {
     string,
     PendingThreadListEventsAppended
   >();
-  private readonly pendingDeviceHandoffs: Array<{
-    expiresAt: number;
-    payload: string;
-  }> = [];
+  private readonly pendingDeviceHandoffsByOrigin = new Map<
+    string,
+    Array<{
+      expiresAt: number;
+      origin: DeviceHandoffRequest["origin"];
+      payload: string;
+    }>
+  >();
 
   registerClient(socket: HubSocket): void {
     if (this.clientKeysBySocket.has(socket)) return;
     this.clientKeysBySocket.set(socket, new Set());
-    const now = Date.now();
-    this.prunePendingDeviceHandoffs(now);
-    for (const handoff of this.pendingDeviceHandoffs) {
-      socket.send(handoff.payload);
-    }
   }
 
   unregisterClient(socket: HubSocket): void {
@@ -400,6 +399,9 @@ export class NotificationHub implements DbNotifier {
     const state = this.terminalClientState(terminalId, socket, now);
     state.visible = visible;
     state.lastSeenAt = now;
+    if (visible) {
+      this.deliverPendingDeviceHandoffs({ terminalSessionId: terminalId }, now);
+    }
   }
 
   hasVisibleTerminalClient(terminalId: string, now: number): boolean {
@@ -697,6 +699,12 @@ export class NotificationHub implements DbNotifier {
       !this.threadTimelineTargetsByKey.has(key)
     ) {
       this.threadTimelineTargetsByKey.set(key, { ...target });
+    }
+    if (target.kind === "thread-detail") {
+      this.deliverPendingDeviceHandoffs(
+        { threadId: target.threadId },
+        Date.now(),
+      );
     }
   }
 
@@ -1158,59 +1166,131 @@ export class NotificationHub implements DbNotifier {
     });
     const payload = JSON.stringify(signal);
     this.prunePendingDeviceHandoffs(createdAt);
-    const expiresAt = createdAt + DEVICE_HANDOFF_TTL_MS;
-    this.pendingDeviceHandoffs.push({ expiresAt, payload });
-    if (this.pendingDeviceHandoffs.length > DEVICE_HANDOFF_PENDING_LIMIT) {
-      this.pendingDeviceHandoffs.splice(
-        0,
-        this.pendingDeviceHandoffs.length - DEVICE_HANDOFF_PENDING_LIMIT,
-      );
+    const recipients = this.deviceHandoffRecipients(request.origin, createdAt);
+    if (recipients.size > 0) {
+      for (const socket of recipients) socket.send(payload);
+      return recipients.size;
     }
+    const originKey = this.deviceHandoffOriginKey(request.origin);
+    const pending = this.pendingDeviceHandoffsByOrigin.get(originKey) ?? [];
+    pending.push({
+      expiresAt: signal.expiresAt,
+      origin: request.origin,
+      payload,
+    });
+    this.pendingDeviceHandoffsByOrigin.set(originKey, pending);
+    this.enforcePendingDeviceHandoffLimit();
+    return 0;
+  }
+
+  private prunePendingDeviceHandoffs(now: number): void {
+    for (const [originKey, handoffs] of this.pendingDeviceHandoffsByOrigin) {
+      const live = handoffs.filter((handoff) => handoff.expiresAt > now);
+      if (live.length === 0) {
+        this.pendingDeviceHandoffsByOrigin.delete(originKey);
+      } else if (live.length !== handoffs.length) {
+        this.pendingDeviceHandoffsByOrigin.set(originKey, live);
+      }
+    }
+  }
+
+  private deviceHandoffOriginKey(
+    origin: DeviceHandoffRequest["origin"],
+  ): string {
+    return `${origin.threadId ?? ""}\u0000${origin.terminalSessionId ?? ""}`;
+  }
+
+  private deviceHandoffRecipients(
+    origin: DeviceHandoffRequest["origin"],
+    now: number,
+  ): Set<HubSocket> {
     const recipients = new Set<HubSocket>();
-    if (request.origin.threadId !== undefined) {
+    if (origin.threadId !== undefined) {
       const key = subscriptionKey({
         kind: "thread-detail",
-        threadId: request.origin.threadId,
+        threadId: origin.threadId,
       });
       for (const socket of this.clientSocketsByKey.get(key) ?? []) {
         recipients.add(socket);
       }
     }
-    if (request.origin.terminalSessionId !== undefined) {
-      const terminalId = request.origin.terminalSessionId;
+    if (origin.terminalSessionId !== undefined) {
       for (const [socket, state] of this.terminalClientStateById.get(
-        terminalId,
+        origin.terminalSessionId,
       ) ?? []) {
         if (
           state.visible &&
           (!state.heartbeats ||
-            createdAt - state.lastSeenAt <= TERMINAL_CLIENT_STALE_MS)
+            now - state.lastSeenAt <= TERMINAL_CLIENT_STALE_MS)
         ) {
           recipients.add(socket);
         }
       }
     }
-    const targets =
-      recipients.size > 0 ? recipients : this.clientKeysBySocket.keys();
-    let delivered = 0;
-    for (const socket of targets) {
-      socket.send(payload);
-      delivered += 1;
-    }
-    return delivered;
+    return recipients;
   }
 
-  private prunePendingDeviceHandoffs(now: number): void {
-    for (
-      let index = this.pendingDeviceHandoffs.length - 1;
-      index >= 0;
-      index -= 1
-    ) {
-      const handoff = this.pendingDeviceHandoffs[index];
-      if (handoff === undefined || handoff.expiresAt <= now) {
-        this.pendingDeviceHandoffs.splice(index, 1);
+  private deliverPendingDeviceHandoffs(
+    openedOrigin: DeviceHandoffRequest["origin"],
+    now: number,
+  ): void {
+    this.prunePendingDeviceHandoffs(now);
+    const matchingOrigin = (origin: DeviceHandoffRequest["origin"]) =>
+      (openedOrigin.threadId !== undefined &&
+        origin.threadId === openedOrigin.threadId) ||
+      (openedOrigin.terminalSessionId !== undefined &&
+        origin.terminalSessionId === openedOrigin.terminalSessionId);
+    for (const [originKey, handoffs] of this.pendingDeviceHandoffsByOrigin) {
+      const ready = handoffs.filter((handoff) =>
+        matchingOrigin(handoff.origin),
+      );
+      if (ready.length === 0) continue;
+      for (const handoff of ready) {
+        const recipients = this.deviceHandoffRecipients(handoff.origin, now);
+        if (recipients.size === 0) continue;
+        for (const socket of recipients) socket.send(handoff.payload);
+      }
+      const remaining = handoffs.filter(
+        (handoff) => !matchingOrigin(handoff.origin),
+      );
+      if (remaining.length === 0) {
+        this.pendingDeviceHandoffsByOrigin.delete(originKey);
+      } else {
+        this.pendingDeviceHandoffsByOrigin.set(originKey, remaining);
       }
     }
+  }
+
+  private enforcePendingDeviceHandoffLimit(): void {
+    const entries: Array<{
+      originKey: string;
+      payload: string;
+      expiresAt: number;
+    }> = [];
+    for (const [originKey, handoffs] of this.pendingDeviceHandoffsByOrigin) {
+      handoffs.forEach((handoff) => {
+        entries.push({
+          originKey,
+          payload: handoff.payload,
+          expiresAt: handoff.expiresAt,
+        });
+      });
+    }
+    if (entries.length <= DEVICE_HANDOFF_PENDING_LIMIT) return;
+    entries
+      .sort((left, right) => left.expiresAt - right.expiresAt)
+      .slice(0, entries.length - DEVICE_HANDOFF_PENDING_LIMIT)
+      .forEach(({ originKey, payload }) => {
+        const handoffs = this.pendingDeviceHandoffsByOrigin.get(originKey);
+        if (!handoffs) return;
+        const index = handoffs.findIndex(
+          (handoff) => handoff.payload === payload,
+        );
+        if (index !== -1) handoffs.splice(index, 1);
+        if (handoffs.length === 0) {
+          this.pendingDeviceHandoffsByOrigin.delete(originKey);
+        }
+      });
   }
 
   private broadcastToAllClients(payload: string): number {

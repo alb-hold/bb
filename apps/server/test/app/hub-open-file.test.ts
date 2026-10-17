@@ -2,53 +2,136 @@ import { describe, expect, it } from "vitest";
 import { NotificationHub } from "../../src/ws/hub.js";
 import { createMockHubSocket } from "../helpers/mock-hub-socket.js";
 
-describe("NotificationHub.notifyThreadOpen", () => {
-  it("routes device handoffs to the thread viewer and falls back to all clients", () => {
+describe("NotificationHub device handoff routing", () => {
+  it("delivers bursts only to clients viewing the origin thread", () => {
     const hub = new NotificationHub();
     const viewing = createMockHubSocket();
     const other = createMockHubSocket();
     hub.subscribe(viewing, { kind: "thread-detail", threadId: "thr_1" });
     hub.subscribe(other, { kind: "thread-detail", threadId: "thr_2" });
-    const request = {
-      kind: "copy-text" as const,
-      text: "copy me",
-      origin: { threadId: "thr_1" },
-    };
 
-    expect(hub.notifyDeviceHandoff(request, "Thread one")).toBe(1);
-    expect(viewing.messages).toHaveLength(1);
+    expect(
+      hub.notifyDeviceHandoff(
+        { kind: "copy-text", text: "first", origin: { threadId: "thr_1" } },
+        "Thread one",
+      ),
+    ).toBe(1);
+    expect(
+      hub.notifyDeviceHandoff(
+        {
+          kind: "open-url",
+          url: "https://example.com/2",
+          origin: { threadId: "thr_1" },
+        },
+        "Thread one",
+      ),
+    ).toBe(1);
+    expect(
+      hub.notifyDeviceHandoff(
+        {
+          kind: "open-url",
+          url: "https://example.com/3",
+          origin: { threadId: "thr_1" },
+        },
+        "Thread one",
+      ),
+    ).toBe(1);
+    expect(
+      viewing.messages.map((message) => JSON.parse(message).request),
+    ).toEqual([
+      { kind: "copy-text", text: "first", origin: { threadId: "thr_1" } },
+      {
+        kind: "open-url",
+        url: "https://example.com/2",
+        origin: { threadId: "thr_1" },
+      },
+      {
+        kind: "open-url",
+        url: "https://example.com/3",
+        origin: { threadId: "thr_1" },
+      },
+    ]);
     expect(other.messages).toHaveLength(0);
-
-    const unscoped = new NotificationHub();
-    const first = createMockHubSocket();
-    const second = createMockHubSocket();
-    unscoped.registerClient(first);
-    unscoped.registerClient(second);
-    expect(unscoped.notifyDeviceHandoff(request, "Thread one")).toBe(2);
-    expect(first.messages).toHaveLength(1);
-    expect(second.messages).toHaveLength(1);
   });
 
-  it("replays recent handoffs to newly connected authenticated clients", () => {
+  it("queues an undelivered burst only for its origin thread", () => {
     const hub = new NotificationHub();
-    const sender = createMockHubSocket();
-    hub.registerClient(sender);
+    const unrelatedCurrent = createMockHubSocket();
+    hub.subscribe(unrelatedCurrent, {
+      kind: "thread-detail",
+      threadId: "thr_other",
+    });
     hub.notifyDeviceHandoff(
       {
         kind: "copy-text",
-        text: "copy me",
+        text: "first secret",
         origin: { threadId: "thr_1" },
       },
       "Thread one",
     );
-    const connectedLater = createMockHubSocket();
-    hub.registerClient(connectedLater);
+    hub.notifyDeviceHandoff(
+      {
+        kind: "open-url",
+        url: "https://example.com/login",
+        origin: { threadId: "thr_1" },
+      },
+      "Thread one",
+    );
 
-    expect(connectedLater.messages).toHaveLength(1);
-    expect(JSON.parse(connectedLater.messages[0]!)).toMatchObject({
-      type: "device-handoff",
-      originLabel: "Thread one",
-      request: { text: "copy me" },
+    const laterElsewhere = createMockHubSocket();
+    hub.registerClient(laterElsewhere);
+    hub.subscribe(laterElsewhere, {
+      kind: "thread-detail",
+      threadId: "thr_elsewhere",
+    });
+    expect(unrelatedCurrent.messages).toHaveLength(0);
+    expect(laterElsewhere.messages).toHaveLength(0);
+
+    const laterAtOrigin = createMockHubSocket();
+    hub.subscribe(laterAtOrigin, { kind: "thread-detail", threadId: "thr_1" });
+
+    expect(
+      laterAtOrigin.messages.map((message) => JSON.parse(message).request),
+    ).toEqual([
+      {
+        kind: "copy-text",
+        text: "first secret",
+        origin: { threadId: "thr_1" },
+      },
+      {
+        kind: "open-url",
+        url: "https://example.com/login",
+        origin: { threadId: "thr_1" },
+      },
+    ]);
+    expect(unrelatedCurrent.messages).toHaveLength(0);
+    expect(laterElsewhere.messages).toHaveLength(0);
+  });
+
+  it("delivers terminal-scoped handoffs when a matching terminal becomes visible", () => {
+    const hub = new NotificationHub();
+    const terminalViewer = createMockHubSocket();
+    hub.registerTerminalClient("term_1", terminalViewer);
+    expect(
+      hub.notifyDeviceHandoff(
+        {
+          kind: "copy-text",
+          text: "terminal copy",
+          origin: { terminalSessionId: "term_1" },
+        },
+        "Terminal one",
+      ),
+    ).toBe(0);
+    expect(terminalViewer.messages).toHaveLength(0);
+
+    hub.recordTerminalClientVisibility(
+      "term_1",
+      terminalViewer,
+      true,
+      Date.now(),
+    );
+    expect(JSON.parse(terminalViewer.messages[0]!).request).toMatchObject({
+      text: "terminal copy",
     });
   });
 
