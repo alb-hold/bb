@@ -10,15 +10,15 @@ import {
   ContextMenuItem,
   ContextMenuSeparator,
   ContextMenuTrigger,
-} from "@bb/shared-ui/context-menu";
+} from "@/components/ui/context-menu";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from "@bb/shared-ui/dropdown-menu";
-import { Icon } from "@bb/shared-ui/icon";
+} from "@/components/ui/dropdown-menu";
+import { Icon } from "@/components/ui/icon";
 import { NavigationBadgeMark } from "./badges.js";
 
 export type SidebarNavigationSurface = "rail" | "sidebar";

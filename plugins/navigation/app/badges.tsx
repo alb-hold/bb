@@ -2,7 +2,7 @@ import type {
   ExperimentalBadge,
   ExperimentalBadgeTone,
 } from "@get-bb/plugin-sdk/app";
-import { cn } from "@bb/shared-ui/lib/utils";
+import { cn } from "@/lib/utils";
 
 const RAIL_MAX_DRAWN_COUNT = 9;
 const LIST_MAX_DRAWN_COUNT = 99;
