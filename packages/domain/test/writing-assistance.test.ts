@@ -424,6 +424,43 @@ describe("resolveWritingEdits", () => {
     },
   );
 
+  it.each([
+    ["I want turkey for dinner.", "turkey", "Turkey"],
+    ["We flew to Turkey last week.", "Turkey", "turkey"],
+    ["Ask apple support about it.", "apple", "Apple"],
+    ["The build passed. we ship tomorrow.", "we ship", "WE ship"],
+  ])(
+    "only suggests a case change that is not a sentence start or I: %s",
+    (target, original, replacement) => {
+      const edits = resolveWritingEdits({
+        ...base,
+        target,
+        proposals: [
+          proposal(original, replacement, { category: "capitalization" }),
+        ],
+      });
+      expect(edits.map((edit) => edit.disposition)).toEqual(["suggest"]);
+    },
+  );
+
+  it.each([
+    ["i think the build passed.", "i think", "I think"],
+    ["Yes, i'm sure it passed.", "i'm", "I'm"],
+    ["It passed.\nwe ship tomorrow.", "we ship", "We ship"],
+  ])(
+    "auto-applies capitalizing a sentence start or I: %s",
+    (target, original, replacement) => {
+      const edits = resolveWritingEdits({
+        ...base,
+        target,
+        proposals: [
+          proposal(original, replacement, { category: "capitalization" }),
+        ],
+      });
+      expect(edits.map((edit) => edit.disposition)).toEqual(["apply"]);
+    },
+  );
+
   it("auto-applies capitalization in a sentence that already ends with a period", () => {
     const edits = resolveWritingEdits({
       ...base,

@@ -626,6 +626,33 @@ function inFinishedSentence(target: string, end: number): boolean {
   return /[.!?]$/u.test(rest);
 }
 
+function caseChangeIsSafe(
+  target: string,
+  change: { start: number; end: number; original: string; replacement: string },
+): boolean {
+  const before = change.original.replace(/[^\p{L}]/gu, "");
+  const after = change.replacement.replace(/[^\p{L}]/gu, "");
+  if (before === after || before.toLowerCase() !== after.toLowerCase()) {
+    return true;
+  }
+  const first = before[0] ?? "";
+  if (
+    after !== `${first.toUpperCase()}${before.slice(1)}` ||
+    first === first.toUpperCase()
+  ) {
+    return false;
+  }
+  let start = change.start;
+  while (start > 0 && isWordCharacter(target, start - 1)) start -= 1;
+  let end = change.end;
+  while (end < target.length && isWordCharacter(target, end)) end += 1;
+  if (!/^\p{L}/u.test(target.slice(change.start))) return false;
+  if (start !== change.start) return false;
+  const word = target.slice(start, end).toLowerCase().replaceAll("’", "'");
+  if (word === "i" || word.startsWith("i'")) return true;
+  return /(?:^|[.!?]\s+|\n\s*)$/u.test(target.slice(0, start));
+}
+
 export function resolveWritingEdits(
   args: ResolveWritingEditsArgs,
 ): WritingEdit[] {
@@ -666,6 +693,7 @@ export function resolveWritingEdits(
     const deterministicSafe =
       !inCodeLikeLine(args.target, change.start, change.end) &&
       (!surfaceOnly || inFinishedSentence(args.target, change.end)) &&
+      caseChangeIsSafe(args.target, change) &&
       (repeated ||
         (isMeaningInvariantChange(change.original, change.replacement) &&
           proposal.category !== "word-choice" &&

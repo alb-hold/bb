@@ -321,8 +321,10 @@ Settings (stored server-side; also `bb settings writing`):
 | `dailyDictationMinutes` | `60`        | Dictated minutes per UTC day before dictation stops; bb cloud also caps each account at $0.50 of AI usage per day, about 80 minutes of transcription |
 
 Automatic typing correction applies an edit by itself only when its meaning cannot
-change, whatever the AI service reports: capitalization and spacing inside a
-sentence that already ends with . ! or ?, removing a word typed twice with only spaces between (not a tab or line break)
+change, whatever the AI service reports: capitalizing the first word of a
+sentence or the pronoun I, and spacing, inside a sentence that already ends
+with . ! or ? (any other change of case, such as turkey to Turkey, is only
+suggested), removing a word typed twice with only spaces between (not a tab or line break)
 when it is one of these words, which never stand twice in a row: the, a, an, I, we, they, he, she, our, your, their, of, and, or, but, if, and the Portuguese o, os, a, as, um, uma, de, da, dos, das, em, na, nas, e, ou, eu, ele, ela, nós, por, com (any
 other repeat can be meant and is only suggested: very very, had had, that that, not not, her her as in
 tell her her access, in in as in log in in five minutes, para para, and a pair split by punctuation

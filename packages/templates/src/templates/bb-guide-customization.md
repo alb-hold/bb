@@ -94,8 +94,9 @@ the settings and today's usage (requests, dictated minutes, and a list-price
 cost estimate). `set` keys: `mode` (prompt, developer, natural, polished,
 verbatim, literal-code), `typing-correction` (automatic, suggest, off),
 `dictation-formatting` (on, off), `daily-correction-limit` (requests per UTC
-day, 0-5000), and `daily-dictation-minutes` (0-1440). Only capitalization
-and spacing inside a sentence that already ends with . ! or ?, removing a short
+day, 0-5000), and `daily-dictation-minutes` (0-1440). Only capitalizing
+a sentence's first word or I, and spacing, inside a sentence that already ends
+with . ! or ? (other case changes, such as turkey to Turkey, are suggestions), removing a short
 function word typed twice with only spaces between when it can never stand twice
 (such as the, a, I, we, of, and, de and o; any other repeat, such as very very,
 had had, not not, her her or log in in, or a pair split by punctuation, is only

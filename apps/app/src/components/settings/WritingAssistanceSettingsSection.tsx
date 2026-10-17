@@ -118,7 +118,7 @@ export function WritingAssistanceSettingsSection() {
         </SettingsWithControl>
         <SettingsWithControl
           label="Correct while typing"
-          description="Only capitalization and spacing inside a sentence that already ends with . ! or ?, removing a short function word typed twice with only spaces between (such as the, a, I, of or de; never very, had, that, is, her, in or a negation), swaps within is/are/am, isn't/aren't, hasn't/haven't, doesn't/don't or a/an, and accents on nao, voce, tambem, entao and amanha apply by themselves, never inside code, paths, identifiers or vocabulary terms. Everything else, including spelling, other punctuation and tense or plural changes, is a suggestion."
+          description="Only capitalizing a sentence's first word or I, and spacing, inside a sentence that already ends with . ! or ? (other case changes, such as turkey to Turkey, are suggestions), removing a short function word typed twice with only spaces between (such as the, a, I, of or de; never very, had, that, is, her, in or a negation), swaps within is/are/am, isn't/aren't, hasn't/haven't, doesn't/don't or a/an, and accents on nao, voce, tambem, entao and amanha apply by themselves, never inside code, paths, identifiers or vocabulary terms. Everything else, including spelling, other punctuation and tense or plural changes, is a suggestion."
         >
           <Select
             value={settings.typingCorrection}
