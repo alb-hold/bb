@@ -31,6 +31,8 @@ import {
 } from "./ipc-contract.js";
 
 const V = TERMINAL_DATA_PLANE_IPC_VERSION;
+const OUTPUT_BATCH_MAX_BYTES = 64 * 1024;
+const OUTPUT_BATCH_DELAY_MS = 10;
 
 export interface TerminalDataPlaneSocket {
   readonly bufferedAmount: number;
@@ -106,6 +108,13 @@ interface TerminalRoute {
   mode: TerminalDataPlaneRouteMode;
 }
 
+interface OutputBatch {
+  bytes: number;
+  chunks: TerminalOutputChunk[];
+  daemonSessionId: string;
+  timer: ReturnType<typeof setTimeout>;
+}
+
 interface InputWindow {
   attachId: string;
   bytes: number;
@@ -125,6 +134,7 @@ export class TerminalDataPlaneChild {
   private readonly daemonSockets = new Map<string, TerminalDataPlaneSocket>();
   private readonly routes = new Map<string, TerminalRoute>();
   private readonly inputWindows = new Map<string, InputWindow>();
+  private readonly outputBatches = new Map<string, OutputBatch>();
   private readonly lastInputActivityAt = new Map<string, number>();
   private readonly flow: TerminalOutputFlowControl;
   private readonly now: () => number;
@@ -173,6 +183,9 @@ export class TerminalDataPlaneChild {
   shutdown(): void {
     if (this.stopped) {
       return;
+    }
+    for (const terminalId of this.outputBatches.keys()) {
+      this.flushOutputBatch(terminalId);
     }
     this.stopped = true;
     if (this.statsTimer !== null) {
@@ -879,9 +892,9 @@ export class TerminalDataPlaneChild {
     }
     const route = this.routes.get(message.terminalId);
     if (
-      route === undefined ||
-      route.mode !== "data-socket" ||
-      route.daemonSessionId !== daemonSessionId
+      route !== undefined &&
+      (route.mode !== "data-socket" ||
+        route.daemonSessionId !== daemonSessionId)
     ) {
       this.droppedMisroutedFrames += 1;
       return;
@@ -891,7 +904,60 @@ export class TerminalDataPlaneChild {
       daemonSessionId,
       message.chunk.seq,
     );
-    this.deliverOutput(message.terminalId, message.chunk, daemonSessionId);
+    this.queueOutputBatch(message.terminalId, daemonSessionId, message.chunk);
+    if (route !== undefined) {
+      this.deliverOutput(message.terminalId, message.chunk, daemonSessionId);
+    }
+  }
+
+  private queueOutputBatch(
+    terminalId: string,
+    daemonSessionId: string,
+    chunk: TerminalOutputChunk,
+  ): void {
+    let batch = this.outputBatches.get(terminalId);
+    if (batch === undefined || batch.daemonSessionId !== daemonSessionId) {
+      if (batch !== undefined) {
+        this.flushOutputBatch(terminalId);
+      }
+      batch = {
+        bytes: 0,
+        chunks: [],
+        daemonSessionId,
+        timer: setTimeout(
+          () => this.flushOutputBatch(terminalId),
+          OUTPUT_BATCH_DELAY_MS,
+        ),
+      };
+      this.outputBatches.set(terminalId, batch);
+    }
+    batch.chunks.push(chunk);
+    batch.bytes += Buffer.byteLength(chunk.dataBase64, "base64");
+    if (batch.bytes >= OUTPUT_BATCH_MAX_BYTES) {
+      this.flushOutputBatch(terminalId);
+    }
+  }
+
+  private flushOutputBatch(terminalId: string): void {
+    const batch = this.outputBatches.get(terminalId);
+    if (batch === undefined) {
+      return;
+    }
+    this.outputBatches.delete(terminalId);
+    clearTimeout(batch.timer);
+    this.pendingIpcBytes += batch.bytes;
+    this.options.sendToMain(
+      {
+        v: V,
+        type: "terminal.output-batch",
+        terminalId,
+        daemonSessionId: batch.daemonSessionId,
+        chunks: batch.chunks,
+      },
+      () => {
+        this.pendingIpcBytes = Math.max(0, this.pendingIpcBytes - batch.bytes);
+      },
+    );
   }
 
   private handleDaemonClosed(
@@ -932,6 +998,7 @@ export class TerminalDataPlaneChild {
   }
 
   private unrouteTerminal(terminalId: string): void {
+    this.flushOutputBatch(terminalId);
     this.routes.delete(terminalId);
     this.syncTerminalFlowClients(terminalId);
     this.flow.forgetTerminal(terminalId);
