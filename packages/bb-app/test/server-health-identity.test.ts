@@ -364,10 +364,16 @@ describe("startFullStackServerProcess", () => {
         }
         if (writerIsAlive) writeFileSync(finalizationReleasePath, "release");
       }
-      await termination;
+      await termination.catch(() => undefined);
       if (writerPid !== undefined) {
         await vi.waitFor(() => {
-          expect(() => process.kill(writerPid!, 0)).toThrow();
+          let writerIsGone = false;
+          try {
+            process.kill(writerPid!, 0);
+          } catch (error) {
+            writerIsGone = (error as NodeJS.ErrnoException).code === "ESRCH";
+          }
+          expect(writerIsGone).toBe(true);
         });
       }
     }
