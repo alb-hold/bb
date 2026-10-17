@@ -496,6 +496,7 @@ function openBackgroundTask(session: Session, providerTurnId: string): void {
         status: "pending",
         taskStatus: "running",
         skipTranscript: false,
+        foreground: false,
       },
       providerTurnId,
     },
@@ -523,6 +524,7 @@ function settleBackgroundTasks(session: Session): void {
         status: "completed",
         taskStatus: "completed",
         skipTranscript: false,
+        foreground: false,
       },
     })),
   );

@@ -25,6 +25,7 @@ import type {
   ThreadLifecycleEvent,
   ThreadLifecycleNoopReason,
   ThreadOriginKind,
+  ThreadParentNotifications,
   ThreadSearchSourceKind,
   ThreadStatus,
   ThreadVisibility,
@@ -278,6 +279,7 @@ export interface CreateThreadInput {
   pluginMetadata?: { pluginId: string; metadata: JsonObject } | null;
   startupContext?: string;
   visibility?: ThreadVisibility;
+  parentNotifications?: ThreadParentNotifications;
 }
 
 export class InvalidLifecycleOwnerError extends Error {
@@ -344,6 +346,7 @@ export function createThread(
           originKind,
           originPluginId: input.originPluginId ?? null,
           visibility,
+          parentNotifications: input.parentNotifications ?? "auto",
           lastReadAt: now,
           latestAttentionAt: now,
           createdAt: now,
@@ -445,6 +448,7 @@ export interface ListThreadsOptions {
   sourceThreadId?: string;
   originKind?: ThreadOriginKind;
   originPluginId?: string;
+  threadIds?: readonly string[];
   limit?: number;
   offset?: number;
   includeHidden?: boolean;
@@ -708,6 +712,9 @@ function buildListThreadsFilters(options: ListThreadsOptions) {
       ? eq(threads.environmentId, options.environmentId)
       : undefined,
     options.hostId ? eq(environments.hostId, options.hostId) : undefined,
+    options.threadIds === undefined
+      ? undefined
+      : inArray(threads.id, [...options.threadIds]),
     options.sectionId ? eq(threads.sectionId, options.sectionId) : undefined,
     options.unsectioned ? isNull(threads.sectionId) : undefined,
     nonDeletedThreads(),
@@ -899,7 +906,7 @@ function normalizeThreadSearchHighlightText(text: string): {
   const originalStarts: number[] = [];
   const originalEnds: number[] = [];
 
-  for (let index = 0; index < text.length;) {
+  for (let index = 0; index < text.length; ) {
     const codePoint = text.codePointAt(index);
     if (codePoint === undefined) {
       break;
@@ -1407,16 +1414,40 @@ export function listArchivedThreadsPendingTeardown(
     id: threads.id,
     status: threads.status,
   };
-  const archived = and(isNotNull(threads.archivedAt), isNull(threads.deletedAt));
+  const archived = and(
+    isNotNull(threads.archivedAt),
+    isNull(threads.deletedAt),
+  );
   return db
     .select(selection)
     .from(threads)
-    .where(and(archived, inArray(threads.status, [...ARCHIVED_TEARDOWN_THREAD_STATUSES])))
+    .where(
+      and(
+        archived,
+        inArray(threads.status, [...ARCHIVED_TEARDOWN_THREAD_STATUSES]),
+      ),
+    )
     .union(
       db
         .select(selection)
         .from(threads)
-        .where(and(archived, inArray(threads.id, db.select({ threadId: terminalSessions.threadId }).from(terminalSessions).where(inArray(terminalSessions.status, NON_TERMINAL_SESSION_STATUSES))))),
+        .where(
+          and(
+            archived,
+            inArray(
+              threads.id,
+              db
+                .select({ threadId: terminalSessions.threadId })
+                .from(terminalSessions)
+                .where(
+                  inArray(
+                    terminalSessions.status,
+                    NON_TERMINAL_SESSION_STATUSES,
+                  ),
+                ),
+            ),
+          ),
+        ),
     )
     .all();
 }
@@ -1425,6 +1456,7 @@ export function listThreadsWithPendingInteractionState(
   db: DbConnection,
   options: ListThreadsOptions,
 ): ThreadWithPendingInteractionState[] {
+  if (options.threadIds?.length === 0) return [];
   let query = threadWithPendingInteractionBaseQuery(db)
     .where(and(...buildListThreadsFilters(options)))
     .orderBy(...buildListThreadsOrderBy(options))
@@ -1816,6 +1848,7 @@ export interface UpdateThreadInput {
   parentThreadId?: string | null;
   title?: string | null;
   visibility?: ThreadVisibility;
+  parentNotifications?: ThreadParentNotifications;
 }
 
 export function updateThread(
@@ -1834,6 +1867,12 @@ export function updateThread(
   if ("lastReadAt" in input) changes.push("read-state-changed");
   if ("latestAttentionAt" in input) changes.push("read-state-changed");
   if ("visibility" in input && input.visibility !== existing.visibility) {
+    changes.push("title-changed");
+  }
+  if (
+    "parentNotifications" in input &&
+    input.parentNotifications !== existing.parentNotifications
+  ) {
     changes.push("title-changed");
   }
   if (
@@ -1867,6 +1906,9 @@ export function updateThread(
   }
   if ("parentThreadId" in input) set.parentThreadId = input.parentThreadId;
   if ("visibility" in input) set.visibility = input.visibility;
+  if ("parentNotifications" in input) {
+    set.parentNotifications = input.parentNotifications;
+  }
 
   const updated = db
     .update(threads)
@@ -2193,7 +2235,11 @@ export function archiveThread(
       )
       .returning()
       .all();
-    markThreadPruningPolicyWork(tx, archived.map((thread) => thread.id), "rate-limits");
+    markThreadPruningPolicyWork(
+      tx,
+      archived.map((thread) => thread.id),
+      "rate-limits",
+    );
     return archived;
   });
   for (const thread of updated) {

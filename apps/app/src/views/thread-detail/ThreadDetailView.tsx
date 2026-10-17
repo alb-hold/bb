@@ -1,3 +1,4 @@
+import { BrowserTabIcon } from "@/components/secondary-panel/BrowserTabIcon";
 import { getPanelTabHistoryKey } from "@/components/secondary-panel/recentlyClosedPanelTabs";
 import { NativeThreadTerminalMain } from "@/components/thread/terminal/NativeThreadTerminalMain";
 import { useNativeTerminalThread } from "@/hooks/queries/native-terminal-queries";
@@ -298,7 +299,6 @@ import {
 } from "./threadSecondaryPanelSelection";
 import { useRouteState } from "@/hooks/useRouteState";
 import { useAppCommandHandler } from "@/components/commands/AppCommandProvider";
-import { useWindowRightPanel } from "@/components/layout/WindowRightPanelToggle";
 import { usePaneContext } from "./PaneContext";
 import { ThreadArchiveCommandHandler } from "./ThreadArchiveCommandHandler";
 
@@ -1542,7 +1542,15 @@ function ThreadDetailViewInternal(
   });
   useAppCommandHandler("file.quickOpen", () => {
     if (!isFocused) return false;
-    handleOpenNewTab();
+    if (
+      isSecondaryPanelOpen &&
+      pluginDetails.activePluginId === null &&
+      activeFixedSecondaryTab?.kind === "new-tab"
+    ) {
+      closeSecondaryPanel();
+    } else {
+      handleOpenNewTab();
+    }
     return true;
   });
   useEffect(() => {
@@ -1661,7 +1669,6 @@ function ThreadDetailViewInternal(
     toggleSecondaryPanel();
     return true;
   });
-  useWindowRightPanel({ isOpen: isSecondaryPanelOpen, enabled: isFocused });
   useAppCommandHandler("panel.fullScreen.toggle", () => {
     if (
       !isFocused ||
@@ -2811,10 +2818,9 @@ function ThreadDetailViewInternal(
             ...shared,
             label: browserLabel.length > 0 ? browserLabel : "Browser",
             leadingVisual: (
-              <Icon
-                name="Globe"
+              <BrowserTabIcon
+                tabId={tab.id}
                 className={COARSE_POINTER_COMPACT_ICON_SIZE_CLASS}
-                aria-hidden
               />
             ),
             statusLabel: null,

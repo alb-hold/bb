@@ -5,6 +5,7 @@ import {
   clientTurnRequestIdSchema,
   extensionKindSchema,
   jsonValueSchema,
+  promptCacheTtlMsSchema,
   providerErrorCategorySchema,
   providerErrorInfoSchema,
   providerRateLimitStateSchema,
@@ -64,6 +65,7 @@ export const deltaBackgroundTaskShapeSchema = z.object({
   status: threadEventItemStatusSchema,
   taskStatus: backgroundTaskStatusSchema,
   skipTranscript: z.boolean(),
+  foreground: z.boolean().optional(),
   workflowName: z.string().optional(),
   workflow: workflowProgressSnapshotSchema.optional(),
   usage: backgroundTaskUsageSchema.optional(),
@@ -318,6 +320,7 @@ export const threadDeltaSchema = z.discriminatedUnion("kind", [
     total: threadEventTokenUsageBreakdownSchema,
     last: threadEventTokenUsageBreakdownSchema,
     modelContextWindow: z.number().nullable(),
+    promptCacheTtlMs: promptCacheTtlMsSchema.optional(),
     providerTurnId: providerTurnIdSchema.optional(),
   }),
 

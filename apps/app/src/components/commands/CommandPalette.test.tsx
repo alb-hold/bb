@@ -11,7 +11,6 @@ import {
 } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { createStore, Provider } from "jotai";
-import { useRef, useState } from "react";
 import { paletteThreadLifecyclesAtom } from "@/lib/command-palette/palette-preferences";
 import { splitLayoutAtom } from "@/lib/split-layout/atoms";
 import { MAX_PANES, type SplitLayout } from "@/lib/split-layout";
@@ -47,9 +46,36 @@ import {
 } from "@/lib/plugin-thread-row-status";
 import { makePluginRegistrationSet } from "@/test/fixtures/plugins";
 import { collectPluginAppRegistrations } from "@get-bb/plugin-sdk/internal/plugin-app-collector";
+import { installTestPluginRuntime } from "@get-bb/plugin-sdk/testing/app";
 import { LocationProbe } from "@/test/location-probe";
+import { SidebarNavigationMoreMenu } from "../../../../../plugins/navigation/app/ItemMenus";
+
+const navigationMocks = vi.hoisted(() => ({
+  activate: null as
+    | ((
+        itemId: string,
+        options: { openInSplit: boolean; target?: EventTarget | null },
+      ) => void)
+    | null,
+}));
+
+vi.mock("@get-bb/plugin-sdk/app", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@get-bb/plugin-sdk/app")>();
+  return {
+    ...actual,
+    experimental_useSidebarNavigation: () => ({
+      actions: {
+        activate: (
+          ...args: Parameters<NonNullable<typeof navigationMocks.activate>>
+        ) => navigationMocks.activate?.(...args),
+      },
+    }),
+  };
+});
 
 beforeAll(async () => {
+  installTestPluginRuntime();
   await import("./ThreadSearchPaletteMode");
 });
 
@@ -302,6 +328,7 @@ function makeThread(
     originKind: null,
     originPluginId: null,
     visibility: "visible",
+    parentNotifications: "auto",
     archivedAt: null,
     pinnedAt: null,
     pinSortKey: null,
@@ -376,32 +403,31 @@ function renderPalette({
 }
 
 function ThreadSearchMoreLauncher() {
-  const [open, setOpen] = useState(false);
   const runner = useAppCommandRunner();
-  const terminalTargetRef = useRef<EventTarget | null>(null);
-  return open ? (
-    <button
-      type="button"
-      role="menuitem"
-      onClick={() => runner.dispatch("thread.search", terminalTargetRef.current)}
-    >
-      Search threads
-    </button>
-  ) : (
-    <button
-      type="button"
-      onPointerDown={() => {
-        const active = document.activeElement;
-        terminalTargetRef.current =
-          active instanceof HTMLElement &&
-          active.closest("[data-app-terminal]") !== null
-            ? active
-            : null;
-      }}
-      onClick={() => setOpen(true)}
-    >
-      More
-    </button>
+  navigationMocks.activate = (_itemId, options) =>
+    runner.dispatch("thread.search", options.target ?? null);
+  return (
+    <SidebarNavigationMoreMenu
+      trigger={<button type="button">More</button>}
+      hidden={[
+        {
+          id: "__bb__/search-threads",
+          label: "Search threads",
+          icon: { kind: "host", name: "search" },
+          action: { kind: "search-threads" },
+          isDisabled: false,
+          isVisible: false,
+          isLoading: false,
+          pluginId: null,
+          shortcut: null,
+          badge: null,
+        },
+      ]}
+      surface="rail"
+      side="right"
+      sideOffset={12}
+      testId="nav-rail-more-menu"
+    />
   );
 }
 
@@ -459,6 +485,7 @@ afterEach(() => {
   modeState.recentError = false;
   modeState.searchLoading = false;
   modeState.searchError = false;
+  navigationMocks.activate = null;
   routeNavigateMock.mockReset();
   openThreadInSplitMock.mockReset();
   window.localStorage.clear();
@@ -474,15 +501,21 @@ describe("CommandPalette", () => {
     terminalRoot.append(terminal);
     document.body.append(terminalRoot);
     const terminalKeys: string[] = [];
-    terminal.addEventListener("keydown", (event) => terminalKeys.push(event.key));
+    terminal.addEventListener("keydown", (event) =>
+      terminalKeys.push(event.key),
+    );
     terminal.focus();
 
     fireEvent.pointerDown(screen.getByRole("button", { name: "More" }));
     fireEvent.click(screen.getByRole("button", { name: "More" }));
-    fireEvent.click(await screen.findByRole("menuitem", { name: "Search threads" }));
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: "Search threads" }),
+    );
 
     await waitFor(() =>
-      expect(document.activeElement?.getAttribute("aria-label")).toBe("Search threads"),
+      expect(document.activeElement?.getAttribute("aria-label")).toBe(
+        "Search threads",
+      ),
     );
     const search = screen.getByRole("combobox", { name: "Search threads" });
     terminalKeys.length = 0;
@@ -490,7 +523,9 @@ describe("CommandPalette", () => {
 
     await waitFor(() =>
       expect(
-        document.querySelector('[data-persistent-drawer-content][data-state="closed"]'),
+        document.querySelector(
+          '[data-persistent-drawer-content][data-state="closed"]',
+        ),
       ).not.toBeNull(),
     );
     expect(terminalKeys).toEqual([]);

@@ -731,6 +731,7 @@ describe("events", () => {
       taskStatus: "running" as const,
       description: "Background command",
       skipTranscript: false,
+      foreground: false,
     };
     const completedBackgroundItem = {
       ...backgroundItem,
@@ -2126,6 +2127,7 @@ describe("events", () => {
           status,
           taskStatus: status === "pending" ? "running" : "completed",
           skipTranscript: false,
+          foreground: false,
         },
       });
     const progress = (sequence: number, itemId: string) => ({
@@ -3692,6 +3694,7 @@ describe("events", () => {
           status: "pending",
           taskStatus,
           skipTranscript: false,
+          foreground: false,
         },
       });
 
@@ -3759,6 +3762,7 @@ describe("events", () => {
           status: taskStatus === "completed" ? "completed" : "pending",
           taskStatus,
           skipTranscript: false,
+          foreground: false,
         },
       });
 
@@ -3826,6 +3830,7 @@ describe("events", () => {
           status: "pending",
           taskStatus: "running",
           skipTranscript: false,
+          foreground: false,
         },
       });
 
@@ -3883,6 +3888,7 @@ describe("events", () => {
           status: taskStatus === "completed" ? "completed" : "pending",
           taskStatus,
           skipTranscript: false,
+          foreground: false,
         },
       });
 
@@ -4018,6 +4024,7 @@ describe("events", () => {
           status: args.itemStatus,
           taskStatus: args.taskStatus,
           skipTranscript: false,
+          foreground: false,
         },
       });
 
@@ -4212,6 +4219,7 @@ describe("events", () => {
       taskStatus: string;
       taskType: string;
       skipTranscript?: boolean;
+      foreground?: boolean;
     }) =>
       JSON.stringify({
         item: {
@@ -4222,6 +4230,7 @@ describe("events", () => {
           status: args.itemStatus,
           taskStatus: args.taskStatus,
           skipTranscript: args.skipTranscript ?? false,
+          foreground: args.foreground ?? false,
         },
       });
 
@@ -4377,6 +4386,42 @@ describe("events", () => {
           taskType: LOCAL_SUBAGENT_TASK_TYPE,
         }),
       },
+      {
+        threadId: thread.id,
+        sequence: 11,
+        scope: turnScope("turn-1"),
+        type: "item/started",
+        itemId: "task:agent-foreground",
+        itemKind: "backgroundTask",
+        parentToolCallId: null,
+        data: taskData({
+          itemId: "task:agent-foreground",
+          itemStatus: "pending",
+          taskStatus: "running",
+          taskType: LOCAL_AGENT_TASK_TYPE,
+          foreground: true,
+        }),
+      },
+      {
+        threadId: thread.id,
+        sequence: 12,
+        scope: turnScope("turn-1"),
+        type: "item/started",
+        itemId: "task:legacy-agent",
+        itemKind: "backgroundTask",
+        parentToolCallId: null,
+        data: JSON.stringify({
+          item: {
+            id: "task:legacy-agent",
+            type: "backgroundTask",
+            taskType: LOCAL_AGENT_TASK_TYPE,
+            description: "stored before the foreground flag",
+            status: "pending",
+            taskStatus: "running",
+            skipTranscript: false,
+          },
+        }),
+      },
     ]);
 
     const countsByThreadId = new Map(
@@ -4388,7 +4433,7 @@ describe("events", () => {
     expect(countsByThreadId.get(thread.id)).toEqual({
       threadId: thread.id,
       activeWorkflowCount: 1,
-      activeBackgroundAgentCount: 2,
+      activeBackgroundAgentCount: 3,
       activeBackgroundCommandCount: 1,
     });
   });
@@ -4409,6 +4454,7 @@ describe("events", () => {
           status: "pending",
           taskStatus: "running",
           skipTranscript: false,
+          foreground: false,
         },
       });
 
@@ -4789,6 +4835,7 @@ describe("events", () => {
           status: taskStatus === "completed" ? "completed" : "pending",
           taskStatus,
           skipTranscript: false,
+          foreground: false,
         },
       });
 

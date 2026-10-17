@@ -118,11 +118,13 @@ export async function handleHostSessionOpened(
         hostId: args.hostId,
         reason: "host-daemon-restarted",
       });
-      settleDanglingBackgroundTasks(deps, {
-        exceptThreadIds: survivors,
-        hostId: args.hostId,
-      });
     }
+  }
+  if (!sameDaemonInstance) {
+    settleDanglingBackgroundTasks(deps, {
+      exceptThreadIds: survivors,
+      hostId: args.hostId,
+    });
   }
   clearDetachedThreads(deps.db, { hostId: args.hostId });
   closeItemsOrphanedByAdoption(deps, {
