@@ -438,6 +438,19 @@ describe("dictation segments", () => {
     });
   });
 
+  it("keeps the transcript when formatting turns a full-width exclamation into a question", async () => {
+    await withTestHarness({}, async (harness) => {
+      registerFakeAiService(harness.deps.aiServices, {
+        transcribe: async () => "Deploy！ Is it ready",
+        complete: async () => "Deploy? Is it ready.",
+      });
+      await expect((await postSegment(harness)).json()).resolves.toMatchObject({
+        text: "Deploy！ Is it ready",
+        formatted: false,
+      });
+    });
+  });
+
   it("keeps the transcript when formatting reorders spoken words", async () => {
     await withTestHarness({}, async (harness) => {
       registerFakeAiService(harness.deps.aiServices, {

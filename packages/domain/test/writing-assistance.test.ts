@@ -575,6 +575,8 @@ describe("validateFormattedTranscript", () => {
       "question",
     ],
     ["is it green? deploy it.", "Is it green? Deploy it?", "question"],
+    ["Deploy！ Is it ready", "Deploy? Is it ready.", "question"],
+    ["Deploy． Is it ready", "Deploy? Is it ready.", "question"],
     ["it works eh", "It works.", "dropped-words"],
   ])(
     "keeps the transcript when formatting turns a question into a statement: %s -> %s",

@@ -940,8 +940,8 @@ function questionWords(text: string): (boolean | null)[] {
   let pending = 0;
   for (const [piece] of text
     .toLowerCase()
-    .matchAll(/[\p{L}\p{N}'’]+|[.!?？。\n]/gu)) {
-    if (/^[.!?？。\n]$/u.test(piece)) {
+    .matchAll(/[\p{L}\p{N}'’]+|[.!?？。！．\n]/gu)) {
+    if (/^[.!?？。！．\n]$/u.test(piece)) {
       flags.fill(piece === "?" || piece === "？", flags.length - pending);
       pending = 0;
     } else {

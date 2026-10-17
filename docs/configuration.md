@@ -335,7 +335,7 @@ a similar term). The spoken words must also keep the order they were said in,
 and no word, accented or not, may appear more times than it was said ("nao"
 never becomes "Não não."). A question stays a question: a
 sentence the transcript ended with a question mark keeps it, one it ended with
-a period or exclamation mark is never turned into a question, and the tags né
+a period or exclamation mark (including the full-width forms) is never turned into a question, and the tags né
 and eh are kept ("vai funcionar, né?" never becomes "Vai funcionar."). Only
 speech the transcript left unpunctuated may be punctuated as a question.
 
