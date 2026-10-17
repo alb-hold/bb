@@ -204,6 +204,46 @@ export function markRetainedTerminalOutputExited(
     .run(now + TERMINAL_OUTPUT_RETENTION_MS, terminalSessionId, hostId);
 }
 
+export function dismissRetainedTerminalOutput(
+  db: DbConnection,
+  terminalSessionId: string,
+  hostId: string,
+  now: number,
+): void {
+  db.$client.transaction(() => {
+    db.$client
+      .prepare(
+        `DELETE FROM fork_terminal_tab_dismissals
+         WHERE host_id = ? AND expires_at <= ?
+           AND NOT EXISTS (
+             SELECT 1 FROM fork_terminal_output AS output
+             WHERE output.terminal_session_id = fork_terminal_tab_dismissals.terminal_session_id
+               AND output.host_id = fork_terminal_tab_dismissals.host_id
+               AND output.expires_at > ?
+           )`,
+      )
+      .run(hostId, now, now);
+    const retainedOutput = db.$client
+      .prepare(
+        `SELECT expires_at AS expiresAt FROM fork_terminal_output
+         WHERE terminal_session_id = ? AND host_id = ? AND expires_at > ?`,
+      )
+      .get(terminalSessionId, hostId, now) as { expiresAt: number } | undefined;
+    if (!retainedOutput) return;
+    db.$client
+      .prepare(
+        `INSERT INTO fork_terminal_tab_dismissals
+           (terminal_session_id, host_id, dismissed_at, expires_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(terminal_session_id) DO UPDATE SET
+           host_id = excluded.host_id,
+           dismissed_at = excluded.dismissed_at,
+           expires_at = excluded.expires_at`,
+      )
+      .run(terminalSessionId, hostId, now, retainedOutput.expiresAt);
+  })();
+}
+
 export function getRetainedTerminalOutput(
   db: DbConnection,
   args: { hostId: string; terminalSessionId: string; now: number },

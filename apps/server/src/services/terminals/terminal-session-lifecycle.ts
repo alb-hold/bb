@@ -8,6 +8,7 @@ import { Buffer } from "node:buffer";
 import { z } from "zod";
 import {
   createTerminalSession,
+  dismissRetainedTerminalOutput,
   appendRetainedTerminalOutputChunk,
   clearTerminalAttention,
   getTerminalAttention,
@@ -1260,6 +1261,14 @@ export class TerminalSessionLifecycle {
   ): Promise<TerminalSession> {
     const current = args.current;
     if (current.status === "exited") {
+      if (args.payload.reason === "user") {
+        dismissRetainedTerminalOutput(
+          this.options.db,
+          current.id,
+          current.hostId,
+          Date.now(),
+        );
+      }
       if (
         current.closeReason === "daemon-disconnect" &&
         args.payload.reason === "user"

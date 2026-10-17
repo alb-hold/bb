@@ -52,7 +52,7 @@ describe("pickActiveTerminalId", () => {
     ).toBe(true);
   });
 
-  it("keeps only a retained exited terminal visible in its thread", () => {
+  it("keeps server-listed exited terminals visible after a remount", () => {
     const exited = terminalSession({ id: "term_exited", status: "exited" });
 
     expect(
@@ -60,7 +60,7 @@ describe("pickActiveTerminalId", () => {
         retainedTerminalIds: new Set<string>(),
         session: exited,
       }),
-    ).toBe(false);
+    ).toBe(true);
     expect(
       shouldShowRetainedTerminalSession({
         retainedTerminalIds: new Set(["term_exited"]),
