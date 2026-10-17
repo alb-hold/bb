@@ -750,7 +750,9 @@ export function spawnLoggedProcess(
   });
   const writerExit = new Promise<void>((resolvePromise) => {
     logWriter.once("close", () => resolvePromise());
-    logWriter.once("error", () => resolvePromise());
+    logWriter.on("error", () => {
+      if (logWriter.pid === undefined) resolvePromise();
+    });
   });
   logWriter.unref();
   const child = spawn(args.command, args.args, {

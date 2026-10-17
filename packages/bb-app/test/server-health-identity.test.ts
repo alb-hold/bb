@@ -379,6 +379,67 @@ describe("startFullStackServerProcess", () => {
     }
   });
 
+  it("does not treat a stdio writer kill error as writer exit", async () => {
+    const serverPort = await reserveFreePort();
+    const entry = writeImmediateServerEntry();
+    const context = createStartContext({ serverEntry: entry, serverPort });
+    const processes: ManagedFullStackProcesses = {
+      daemonRun: null,
+      serverRun: null,
+    };
+    const finalizationEnteredPath = join(dirname(entry), "writer-finalizing");
+    const finalizationReleasePath = join(dirname(entry), "release-writer");
+    const serverRun = await startFullStackServerProcess({
+      context,
+      env: {
+        BB_SERVER_PORT: String(context.serverPort),
+        PATH: process.env.PATH,
+      },
+      processes,
+      testWriterBarrier: {
+        finalizationEnteredPath,
+        finalizationReleasePath,
+      },
+    });
+    const termination = serverRun.terminate("SIGTERM");
+    let writerPid: number | undefined;
+    let writerKill: ReturnType<typeof vi.spyOn> | undefined;
+
+    try {
+      await vi.waitFor(() =>
+        expect(existsSync(finalizationEnteredPath)).toBe(true),
+      );
+      writerPid = Number(readFileSync(finalizationEnteredPath, "utf8"));
+      expect(writerPid).toBeGreaterThan(0);
+      const realKill = ChildProcess.prototype.kill;
+      writerKill = vi
+        .spyOn(ChildProcess.prototype, "kill")
+        .mockImplementation(function (
+          this: ChildProcess,
+          signal?: number | NodeJS.Signals,
+        ) {
+          if (this.pid === writerPid && signal === "SIGKILL") {
+            const error = Object.assign(
+              new Error("simulated SIGKILL delivery failure"),
+              { code: "EPERM" },
+            );
+            this.emit("error", error);
+            return false;
+          }
+          return realKill.call(this, signal);
+        });
+
+      await expect(termination).rejects.toThrow(String(writerPid));
+      expect(() => process.kill(writerPid!, 0)).not.toThrow();
+    } finally {
+      writerKill?.mockRestore();
+      if (!existsSync(finalizationReleasePath)) {
+        writeFileSync(finalizationReleasePath, "release");
+      }
+      await serverRun.childProcess.writerExit;
+    }
+  });
+
   it.each([90_000, 150_000])(
     "does not kill a server whose database migration delays /health for %i ms",
     async (migrationMs) => {
