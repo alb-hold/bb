@@ -5,6 +5,7 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
 } from "@testing-library/react";
 import { createStore, Provider } from "jotai";
 import { MemoryRouter, useLocation } from "react-router-dom";
@@ -192,14 +193,14 @@ afterEach(() => {
 });
 
 describe("sidebar navigation providers", () => {
-  it("draws the bundled Rail when no other plugin provides navigation", () => {
+  it("draws the bundled Rail when no other plugin provides navigation", async () => {
     renderHost();
 
     expect(region().dataset.sidebarNavigationPlacement).toBe("rail");
-    expect(screen.getByTestId("app-nav-rail")).toBeDefined();
+    expect(await screen.findByTestId("app-nav-rail")).toBeDefined();
   });
 
-  it("lets an installed plugin draw the navigation above the thread list from the shared model", () => {
+  it("lets an installed plugin draw the navigation above the thread list from the shared model", async () => {
     registerPlugin((app) =>
       app.slots.experimental_sidebarNavigation({
         id: "nav",
@@ -210,6 +211,9 @@ describe("sidebar navigation providers", () => {
     renderHost();
 
     expect(region().dataset.sidebarNavigationPlacement).toBe("list");
+    await waitFor(() =>
+      expect(document.querySelector("[data-bb-plugin-root]")).not.toBeNull(),
+    );
     expect(screen.getByTestId("plugin-navigation").dataset.placement).toBe(
       "list",
     );

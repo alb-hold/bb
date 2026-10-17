@@ -1133,6 +1133,7 @@ function RootComposeSurface({
           onNativeFocus={onNativeFocus}
           threadId={ROOT_COMPOSE_FIXED_PANEL_STATE_ID}
           onUpdate={updateBrowserTab}
+          onOpenInNewTab={panelBrowser.open}
         />
       );
     },
@@ -1140,6 +1141,7 @@ function RootComposeSurface({
       panelBrowser.addressFocusRequest,
       browserTabs,
       panelBrowser.handleAddressFocusRequestConsumed,
+      panelBrowser.open,
       updateBrowserTab,
     ],
   );

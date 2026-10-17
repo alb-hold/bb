@@ -777,6 +777,7 @@ function ThreadDetailViewInternal(
           onNativeFocus={onNativeFocus}
           threadId={browserDeckThreadId}
           onUpdate={updateBrowserTab}
+          onOpenInNewTab={panelBrowser.open}
         />
       );
     },
@@ -787,6 +788,7 @@ function ThreadDetailViewInternal(
       browserDeckEnvironmentId,
       browserDeckThreadId,
       panelBrowser.handleAddressFocusRequestConsumed,
+      panelBrowser.open,
       updateBrowserTab,
     ],
   );
