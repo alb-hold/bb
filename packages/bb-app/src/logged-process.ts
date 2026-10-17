@@ -399,6 +399,16 @@ const scheduleRetry = (delayMs = retryDelayMs) => {
 const finishStream = () => {
   if (finalized) return;
   try {
+    if (writerBarrier?.finalizationEnteredPath !== undefined) {
+      fs.writeFileSync(writerBarrier.finalizationEnteredPath, String(process.pid));
+      while (
+        writerBarrier.finalizationReleasePath !== undefined &&
+        !fs.existsSync(writerBarrier.finalizationReleasePath)
+      ) {
+        const waitCell = new Int32Array(new SharedArrayBuffer(4));
+        Atomics.wait(waitCell, 0, 0, 10);
+      }
+    }
     if (pendingLossBytes > 0) writePendingLossMarker();
     closeActive(true);
     if (writerBarrier?.completionPath !== undefined) {
@@ -507,24 +517,34 @@ interface SpawnLoggedProcessArgs {
   ipc?: boolean;
   logDir: string;
   logName: "server" | "host-daemon";
-  testWriterBarrier?: {
-    enteredPath?: string;
-    releasePath?: string;
-    pauseAtBytes?: number;
-    failActiveOpenCount?: number;
-    failActiveWriteCount?: number;
-    identityFallbackMs?: number;
-    identityRecheckMs?: number;
-    recoveryIntervalMs?: number;
-    unreadableOwnerIdentityPids?: number[];
-    forcePsIdentity?: boolean;
-    writerEnv?: Pick<NodeJS.ProcessEnv, "LC_ALL" | "TZ">;
-    diagnosticPath?: string;
-    completionPath?: string;
-  };
+  testWriterBarrier?: StdioLogWriterTestBarrier;
 }
 
-export function spawnLoggedProcess(args: SpawnLoggedProcessArgs): ChildProcess {
+export interface LoggedChildProcess extends ChildProcess {
+  readonly writerExit: Promise<void>;
+}
+
+export interface StdioLogWriterTestBarrier {
+  enteredPath?: string;
+  releasePath?: string;
+  pauseAtBytes?: number;
+  failActiveOpenCount?: number;
+  failActiveWriteCount?: number;
+  identityFallbackMs?: number;
+  identityRecheckMs?: number;
+  recoveryIntervalMs?: number;
+  unreadableOwnerIdentityPids?: number[];
+  forcePsIdentity?: boolean;
+  writerEnv?: Pick<NodeJS.ProcessEnv, "LC_ALL" | "TZ">;
+  diagnosticPath?: string;
+  completionPath?: string;
+  finalizationEnteredPath?: string;
+  finalizationReleasePath?: string;
+}
+
+export function spawnLoggedProcess(
+  args: SpawnLoggedProcessArgs,
+): LoggedChildProcess {
   mkdirSync(args.logDir, { recursive: true });
   const logPath = join(args.logDir, `${args.logName}-stdio.log`);
   const logWriter = spawn(
@@ -553,6 +573,10 @@ export function spawnLoggedProcess(args: SpawnLoggedProcessArgs): ChildProcess {
       }
     }
   });
+  const writerExit = new Promise<void>((resolvePromise) => {
+    logWriter.once("close", () => resolvePromise());
+    logWriter.once("error", () => resolvePromise());
+  });
   logWriter.unref();
   const child = spawn(args.command, args.args, {
     cwd: process.cwd(),
@@ -563,5 +587,5 @@ export function spawnLoggedProcess(args: SpawnLoggedProcessArgs): ChildProcess {
         : ["ignore", logWriter.stdin, logWriter.stdin],
   });
   logWriter.stdin?.destroy();
-  return child;
+  return Object.assign(child, { writerExit });
 }

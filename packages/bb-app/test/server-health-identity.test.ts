@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import {
   createServer,
   type IncomingMessage,
@@ -206,6 +206,98 @@ describe("startFullStackServerProcess", () => {
       });
     } finally {
       await serverRun.terminate("SIGTERM");
+    }
+  });
+
+  it("waits for stdio log finalization before termination resolves", async () => {
+    const serverPort = await reserveFreePort();
+    const entry = writeImmediateServerEntry();
+    const context = createStartContext({ serverEntry: entry, serverPort });
+    const processes: ManagedFullStackProcesses = {
+      daemonRun: null,
+      serverRun: null,
+    };
+    const finalizationEnteredPath = join(dirname(entry), "writer-finalizing");
+    const finalizationReleasePath = join(dirname(entry), "release-writer");
+    const completionPath = join(dirname(entry), "writer-finished");
+    const serverRun = await startFullStackServerProcess({
+      context,
+      env: {
+        BB_SERVER_PORT: String(context.serverPort),
+        PATH: process.env.PATH,
+      },
+      processes,
+      testWriterBarrier: {
+        completionPath,
+        finalizationEnteredPath,
+        finalizationReleasePath,
+      },
+    });
+    let terminationResolved = false;
+    const termination = serverRun.terminate("SIGTERM").then(() => {
+      terminationResolved = true;
+    });
+
+    try {
+      await vi.waitFor(() =>
+        expect(existsSync(finalizationEnteredPath)).toBe(true),
+      );
+      expect(terminationResolved).toBe(false);
+      writeFileSync(finalizationReleasePath, "release");
+      await termination;
+      expect(existsSync(completionPath)).toBe(true);
+      expect(() =>
+        rmSync(context.logDir, { force: true, recursive: true }),
+      ).not.toThrow();
+    } finally {
+      if (!existsSync(finalizationReleasePath)) {
+        writeFileSync(finalizationReleasePath, "release");
+      }
+      await termination;
+      await vi.waitFor(() => expect(existsSync(completionPath)).toBe(true));
+    }
+  });
+
+  it("bounds termination when the stdio log writer does not finish", async () => {
+    const serverPort = await reserveFreePort();
+    const entry = writeImmediateServerEntry();
+    const context = createStartContext({ serverEntry: entry, serverPort });
+    const processes: ManagedFullStackProcesses = {
+      daemonRun: null,
+      serverRun: null,
+    };
+    const finalizationEnteredPath = join(dirname(entry), "writer-finalizing");
+    const finalizationReleasePath = join(dirname(entry), "release-writer");
+    const completionPath = join(dirname(entry), "writer-finished");
+    const serverRun = await startFullStackServerProcess({
+      context,
+      env: {
+        BB_SERVER_PORT: String(context.serverPort),
+        PATH: process.env.PATH,
+      },
+      processes,
+      testWriterBarrier: {
+        completionPath,
+        finalizationEnteredPath,
+        finalizationReleasePath,
+      },
+    });
+    const startedAt = Date.now();
+    const termination = serverRun.terminate("SIGTERM");
+
+    try {
+      await vi.waitFor(() =>
+        expect(existsSync(finalizationEnteredPath)).toBe(true),
+      );
+      await termination;
+      expect(Date.now() - startedAt).toBeGreaterThanOrEqual(1_500);
+      expect(Date.now() - startedAt).toBeLessThan(4_000);
+      expect(existsSync(completionPath)).toBe(false);
+    } finally {
+      if (!existsSync(finalizationReleasePath)) {
+        writeFileSync(finalizationReleasePath, "release");
+      }
+      await vi.waitFor(() => expect(existsSync(completionPath)).toBe(true));
     }
   });
 
