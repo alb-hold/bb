@@ -113,6 +113,7 @@ export class TerminalWebSocketTransport {
   private reconnectAttempt = 0;
   private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
   private layoutSettled = false;
+  private resizeReportedAfterLayoutSettle = false;
   private repaintRequestedWhileSettling = false;
   private ackedResizeSeq = 0;
   private nextResizeSeq = 0;
@@ -231,6 +232,9 @@ export class TerminalWebSocketTransport {
     const socket = this.socket;
     if (socket !== null && socket.readyState === SOCKET_OPEN) {
       this.trySend(socket, JSON.stringify({ type: "visibility", visible }));
+      if (visible && this.lastResize !== null && this.settleTimeout === null) {
+        this.sendResizeMessage(socket, this.lastResize);
+      }
     }
   }
 
@@ -249,9 +253,12 @@ export class TerminalWebSocketTransport {
       this.repaintNudgeInFlight = null;
       return;
     }
-    this.sendResizeMessage(socket, { cols, rows }, (seq) =>
+    const sent = this.sendResizeMessage(socket, { cols, rows }, (seq) =>
       this.setRepaintFinalSeq(seq),
     );
+    if (this.layoutSettled && sent) {
+      this.resizeReportedAfterLayoutSettle = true;
+    }
   }
 
   private setRepaintFinalSeq(seq: number | null): void {
@@ -270,16 +277,18 @@ export class TerminalWebSocketTransport {
     socket: TerminalBrowserSocket,
     size: { cols: number; rows: number },
     onSeq: (seq: number | null) => void = () => undefined,
-  ): void {
+  ): boolean {
     if (!this.resizeAcksConfirmed) {
       onSeq(null);
-      this.trySend(socket, JSON.stringify({ type: "resize", ...size }));
-      return;
+      return this.trySend(socket, JSON.stringify({ type: "resize", ...size }));
     }
     const seq = this.nextResizeSeq + 1;
     this.nextResizeSeq = seq;
     onSeq(seq);
-    this.trySend(socket, JSON.stringify({ type: "resize", ...size, seq }));
+    return this.trySend(
+      socket,
+      JSON.stringify({ type: "resize", ...size, seq }),
+    );
   }
 
   requestRepaint(): void {
@@ -395,6 +404,7 @@ export class TerminalWebSocketTransport {
     this.ackedResizeSeq = 0;
     this.nextResizeSeq = 0;
     this.resizeAcksConfirmed = false;
+    this.resizeReportedAfterLayoutSettle = false;
     this.repaintNudgeInFlight = null;
     socket.onopen = () => this.handleOpen(socket);
     socket.onmessage = (event) => this.handleMessage(socket, event.data);
@@ -422,6 +432,12 @@ export class TerminalWebSocketTransport {
     this.layoutSettled = true;
     if (this.settleTimeout !== null) {
       this.flushSettledResize();
+      return;
+    }
+    const socket = this.socket;
+    const size = this.lastResize;
+    if (socket !== null && socket.readyState === SOCKET_OPEN && size !== null) {
+      this.sendSettledResize(socket, size);
     }
   }
 
@@ -431,10 +447,7 @@ export class TerminalWebSocketTransport {
       return;
     }
     if (this.layoutSettled) {
-      this.trySend(
-        socket,
-        JSON.stringify({ type: "resize", ...this.lastResize }),
-      );
+      this.sendSettledResize(socket, this.lastResize);
       return;
     }
     this.settleTimeout = setTimeout(
@@ -460,10 +473,21 @@ export class TerminalWebSocketTransport {
     ) {
       return;
     }
-    this.sendResizeMessage(socket, settled);
+    this.sendSettledResize(socket, settled);
     if (repaintRequested) {
       this.requestRepaint();
     }
+  }
+
+  private sendSettledResize(
+    socket: TerminalBrowserSocket,
+    size: { cols: number; rows: number },
+  ): boolean {
+    if (this.resizeReportedAfterLayoutSettle) {
+      return true;
+    }
+    this.resizeReportedAfterLayoutSettle = this.sendResizeMessage(socket, size);
+    return this.resizeReportedAfterLayoutSettle;
   }
 
   private clearSettleTimeout(): void {

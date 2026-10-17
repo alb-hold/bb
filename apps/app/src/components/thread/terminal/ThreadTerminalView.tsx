@@ -1338,6 +1338,13 @@ export function ThreadTerminalView({
             return null;
           }
           const fitted = fitAddon?.proposeDimensions();
+          if (
+            fitted === undefined ||
+            !Number.isFinite(fitted.cols) ||
+            !Number.isFinite(fitted.rows)
+          ) {
+            return null;
+          }
           return `${rect.width}x${rect.height}:${fitted?.cols}x${fitted?.rows}`;
         },
         onSettled: () => {
