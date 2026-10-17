@@ -127,7 +127,7 @@ export function DeviceHandoffSheet({
                 ? "Text ready to copy"
                 : "URL ready to open"}
           </h2>
-          {count > 1 ? (
+          {count > 0 ? (
             <p className="text-sm text-muted-foreground">
               {position} of {count}
             </p>

@@ -233,6 +233,84 @@ describe("DeviceHandoffSheet", () => {
     expect(acknowledgeDeviceHandoff).not.toHaveBeenCalled();
   });
 
+  it("keeps handoffs partitioned while navigating from thread A to B and back", async () => {
+    const now = Date.now();
+    const firstA: DeviceHandoffSignal = {
+      type: "device-handoff",
+      id: "thread-a-copy",
+      createdAt: now,
+      expiresAt: now + 600_000,
+      originLabel: "Thread A terminal",
+      request: {
+        kind: "copy-text",
+        text: "thread A copied code",
+        origin: { threadId: "thread-a", terminalSessionId: "term-a1" },
+      },
+    };
+    const secondA: DeviceHandoffSignal = {
+      type: "device-handoff",
+      id: "thread-a-url",
+      createdAt: now + 1,
+      expiresAt: now + 600_001,
+      originLabel: "Thread A terminal",
+      request: {
+        kind: "open-url",
+        url: "https://thread-a.example/login",
+        origin: { threadId: "thread-a", terminalSessionId: "term-a2" },
+      },
+    };
+    const threadB: DeviceHandoffSignal = {
+      type: "device-handoff",
+      id: "thread-b-copy",
+      createdAt: now + 2,
+      expiresAt: now + 600_002,
+      originLabel: "Thread B terminal",
+      request: {
+        kind: "copy-text",
+        text: "thread B copied code",
+        origin: { threadId: "thread-b", terminalSessionId: "term-b" },
+      },
+    };
+    const view = render(
+      <DeviceHandoffQueueHarness activeThreadId="thread-a" />,
+    );
+    const listener = registerDeviceHandoff.mock.lastCall?.[0] as
+      | ((signal: DeviceHandoffSignal | DeviceHandoffExpiredSignal) => void)
+      | undefined;
+    expect(listener).toBeDefined();
+
+    act(() => {
+      listener?.(firstA);
+      listener?.(secondA);
+    });
+    view.rerender(<DeviceHandoffQueueHarness activeThreadId="thread-b" />);
+
+    expect(screen.queryByText("thread A copied code")).toBeNull();
+    expect(screen.queryByText("thread-a.example")).toBeNull();
+    expect(acknowledgeDeviceHandoff).not.toHaveBeenCalled();
+    expect(acknowledgeDeviceHandoff).not.toHaveBeenCalledWith(firstA.id);
+    expect(acknowledgeDeviceHandoff).not.toHaveBeenCalledWith(secondA.id);
+
+    const threadBListener = registerDeviceHandoff.mock.lastCall?.[0] as
+      | ((signal: DeviceHandoffSignal | DeviceHandoffExpiredSignal) => void)
+      | undefined;
+    act(() => threadBListener?.(threadB));
+    expect(await screen.findByText("thread B copied code")).toBeTruthy();
+    expect(screen.getByText("1 of 1")).toBeTruthy();
+    expect(screen.queryByText("thread A copied code")).toBeNull();
+    expect(screen.queryByText("thread-a.example")).toBeNull();
+
+    view.rerender(<DeviceHandoffQueueHarness activeThreadId="thread-a" />);
+    expect(await screen.findByText("thread A copied code")).toBeTruthy();
+    expect(screen.getByText("1 of 2")).toBeTruthy();
+    expect(screen.queryByText("thread B copied code")).toBeNull();
+    expect(screen.queryByText("thread-a.example")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+
+    expect(await screen.findByText("thread-a.example")).toBeTruthy();
+    expect(screen.getByText("2 of 2")).toBeTruthy();
+  });
+
   it("shows the payload-free notice when an expired handoff is delivered", async () => {
     render(<DeviceHandoffQueueHarness activeThreadId="thr_1" />);
     const listener = registerDeviceHandoff.mock.lastCall?.[0] as
