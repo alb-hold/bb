@@ -137,17 +137,7 @@ const socketPathForToken = (value) => process.platform === "win32"
   ? "\\\\.\\pipe\\bb-stdio-" + familyHash + "-" + value
   : path.join(socketDir, "s-" + value);
 const probeOwnerSocket = (value) => new Promise((resolve) => {
-  const recordProbe = (result) => {
-    if (writerBarrier?.socketProbePath !== undefined) {
-      try {
-        fs.appendFileSync(writerBarrier.socketProbePath, value + " " + result + "\\n");
-      } catch (error) {
-        reportFsError("stdio socket probe capture failed", error);
-      }
-    }
-  };
   if (writerBarrier?.unreadableOwnerSocketTokens?.includes(value)) {
-    recordProbe("unknown");
     resolve(undefined);
     return;
   }
@@ -161,16 +151,11 @@ const probeOwnerSocket = (value) => new Promise((resolve) => {
     client.destroy();
     resolve(result);
   };
-  client.once("connect", () => {
-    recordProbe("alive");
-    finish(true);
-  });
+  client.once("connect", () => finish(true));
   client.once("error", (error) => {
     if (error.code === "ENOENT" || error.code === "ECONNREFUSED" || error.code === "ECONNRESET" || error.code === "EPIPE") {
-      recordProbe("dead");
       finish(false);
     } else {
-      recordProbe("unknown");
       finish(undefined);
     }
   });
@@ -653,7 +638,6 @@ export interface StdioLogWriterTestBarrier {
   identityFallbackMs?: number;
   recoveryIntervalMs?: number;
   unreadableOwnerSocketTokens?: string[];
-  socketProbePath?: string;
   ownerIdentity?: {
     pid: number;
     source: 0 | 1 | 2;

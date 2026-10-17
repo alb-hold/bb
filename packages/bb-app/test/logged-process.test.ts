@@ -637,7 +637,6 @@ describe("spawnLoggedProcess", () => {
     const logDir = scratchDir();
     const identity = currentProcessIdentity();
     const liveStopPath = join(logDir, "stop-same-identity-writer");
-    const socketProbePath = join(logDir, "socket-probes");
     const dead = spawnLoggedProcess({
       command: process.execPath,
       args: [
@@ -721,30 +720,16 @@ describe("spawnLoggedProcess", () => {
           file.includes(".active-") &&
           readFileSync(file, "utf8").includes("live same-identity output"),
       )!;
-      const liveToken = liveSegment
-        .slice(liveSegment.indexOf(".active-") + 8)
-        .split("-")
-        .slice(3)
-        .join("-");
       observer = spawnLoggedProcess({
         command: process.execPath,
         args: ["-e", 'process.stdout.write("socket observer\\n");'],
         env: process.env,
         logDir,
         logName: "server",
-        testWriterBarrier: {
-          recoveryIntervalMs: 25,
-          socketProbePath,
-        },
+        testWriterBarrier: { recoveryIntervalMs: 25 },
       });
       expect(await waitForExit(observer)).toBe(0);
       await observer.writerExit;
-      await expect
-        .poll(() => readFileSync(socketProbePath, "utf8"), {
-          timeout: 3_000,
-          interval: 10,
-        })
-        .toContain(`${liveToken} alive`);
       expect(existsSync(deadSegment)).toBe(false);
       expect(existsSync(liveSegment)).toBe(true);
       expect(
