@@ -647,9 +647,7 @@ export function NativeTerminalPromptBar({
             className="size-9 shrink-0 rounded-full pointer-coarse:size-11"
             disabled={!canSend}
             aria-label={`Send to ${providerLabel}`}
-            onPointerDown={(event) => {
-              if (dictating) event.preventDefault();
-            }}
+            onMouseDown={(event) => event.preventDefault()}
           >
             <Icon name="ArrowUp" className="size-4" />
           </Button>

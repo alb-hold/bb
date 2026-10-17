@@ -160,6 +160,19 @@ describe("NativeTerminalPromptBar", () => {
     });
   });
 
+  it("keeps the composer focused when Send is pressed and sends on the click", async () => {
+    const { input, sendButton } = renderBar();
+    input.focus();
+    fireEvent.change(input, { target: { value: "ship it" } });
+    expect(fireEvent.mouseDown(sendButton)).toBe(false);
+    expect(document.activeElement).toBe(input);
+    fireEvent.click(sendButton);
+
+    await waitFor(() => expect(input.value).toBe(""));
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(document.activeElement).toBe(input);
+  });
+
   it("keeps Shift+Enter and IME composition as editing keys", () => {
     const { input } = renderBar();
     fireEvent.change(input, { target: { value: "line one" } });
