@@ -660,6 +660,80 @@ describe("Rail", () => {
     expect(mocks.dispatch).toHaveBeenCalledWith("thread.search", null);
   });
 
+  it("dispatches Search threads from More with terminal focus restored", async () => {
+    renderRail(THREAD_PATH);
+    const terminal = document.createElement("textarea");
+    terminal.className = "xterm-helper-textarea";
+    const terminalRoot = document.createElement("div");
+    terminalRoot.setAttribute("data-app-terminal", "");
+    terminalRoot.append(terminal);
+    document.body.append(terminalRoot);
+
+    terminal.focus();
+    fireEvent.pointerDown(railButton("More"));
+    fireEvent.click(railButton("More"));
+    const searchThreads = await screen.findByRole("menuitem", {
+      name: "Search threads",
+    });
+    fireEvent.click(searchThreads);
+
+    await waitFor(() =>
+      expect(mocks.dispatch).toHaveBeenCalledWith("thread.search", terminal),
+    );
+    terminalRoot.remove();
+  });
+
+  it("dispatches Search threads from the visible rail with terminal focus restored", async () => {
+    renderRail(THREAD_PATH, { visibleKeys: ["__bb__/search-threads"] });
+    const terminal = document.createElement("textarea");
+    terminal.className = "xterm-helper-textarea";
+    const terminalRoot = document.createElement("div");
+    terminalRoot.setAttribute("data-app-terminal", "");
+    terminalRoot.append(terminal);
+    document.body.append(terminalRoot);
+
+    terminal.focus();
+    const searchThreads = railButton("Search threads");
+    fireEvent.pointerDown(searchThreads);
+    fireEvent.click(searchThreads);
+
+    await waitFor(() =>
+      expect(mocks.dispatch).toHaveBeenCalledWith("thread.search", terminal),
+    );
+    terminalRoot.remove();
+  });
+
+  it("keeps the terminal target when the compact drawer trigger takes focus", async () => {
+    renderRail(THREAD_PATH, {
+      visibleKeys: ["__bb__/search-threads"],
+      isCompactViewport: true,
+      useLayout: true,
+    });
+    const terminal = document.createElement("textarea");
+    terminal.className = "xterm-helper-textarea";
+    const terminalRoot = document.createElement("div");
+    terminalRoot.setAttribute("data-app-terminal", "");
+    terminalRoot.append(terminal);
+    document.body.append(terminalRoot);
+
+    terminal.focus();
+    const trigger = screen.getByRole("button", { name: "Toggle Sidebar" });
+    fireEvent.pointerDown(trigger);
+    trigger.focus();
+    fireEvent.click(trigger);
+    await waitFor(() =>
+      expect(trigger.getAttribute("aria-expanded")).toBe("true"),
+    );
+    const searchThreads = railButton("Search threads");
+    fireEvent.pointerDown(searchThreads);
+    fireEvent.click(searchThreads);
+
+    await waitFor(() =>
+      expect(mocks.dispatch).toHaveBeenCalledWith("thread.search", terminal),
+    );
+    terminalRoot.remove();
+  });
+
   it("opens the customize sheet from More on a compact viewport", async () => {
     renderRail(THREAD_PATH, { isCompactViewport: true });
 

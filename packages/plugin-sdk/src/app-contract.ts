@@ -260,6 +260,7 @@ export interface ExperimentalSidebarNavigationItem {
 /** How the host should activate a sidebar navigation item. */
 export interface ExperimentalSidebarNavigationActivationOptions {
   openInSplit: boolean;
+  target?: EventTarget | null;
 }
 
 /**

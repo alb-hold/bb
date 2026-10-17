@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import {
   experimental_SidebarNavigationIcon as SidebarNavigationIcon,
   experimental_useSidebarNavigation,
@@ -182,20 +182,49 @@ export function SidebarNavigationMoreMenu({
   testId: string;
 }) {
   const { actions } = experimental_useSidebarNavigation();
+  const terminalTargetRef = useRef<HTMLElement | null>(null);
+  const searchingThreadsRef = useRef(false);
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
+      <DropdownMenuTrigger
+        asChild
+        onPointerDown={() => {
+          const active = document.activeElement;
+          terminalTargetRef.current =
+            active instanceof HTMLElement &&
+            active.closest("[data-app-terminal]") !== null
+              ? active
+              : null;
+        }}
+      >
+        {trigger}
+      </DropdownMenuTrigger>
       <DropdownMenuContent
         side={side}
         align="start"
         sideOffset={sideOffset}
         data-testid={testId}
+        onCloseAutoFocus={(event) => {
+          if (searchingThreadsRef.current) {
+            searchingThreadsRef.current = false;
+            event.preventDefault();
+          }
+        }}
       >
         {hidden.map((item) => (
           <DropdownMenuItem
             key={item.id}
             disabled={item.isDisabled || item.isLoading}
-            onSelect={() => actions.activate(item.id, { openInSplit: false })}
+            onSelect={() => {
+              searchingThreadsRef.current =
+                item.action.kind === "search-threads";
+              const terminalTarget = terminalTargetRef.current;
+              terminalTargetRef.current = null;
+              actions.activate(item.id, {
+                openInSplit: false,
+                target: terminalTarget?.isConnected ? terminalTarget : null,
+              });
+            }}
           >
             <SidebarNavigationIcon icon={item.icon} />
             {item.label}
