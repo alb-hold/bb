@@ -3,6 +3,7 @@ import { createMigratedConnection } from "@bb/db/testing";
 import {
   createConnection,
   createTerminalSession,
+  getDeviceHandoffAttentionMarker,
   getTerminalAttention,
   upsertTerminalAttention,
   getThread,
@@ -495,6 +496,125 @@ describe("terminal attention persistence", () => {
       await getTerminalApiAttention(restarted, threadId, terminalId),
     ).toBeNull();
   });
+
+  it("clears dropped handoff attention on restart without delivering the lost payload", async () => {
+    const original = await createTestAppHarness();
+    harnesses.push(original);
+    const { terminalId, threadId } = createAttentionTerminal(original);
+    expect(
+      original.hub.notifyDeviceHandoff(
+        {
+          kind: "copy-text",
+          text: "restart-private-copy",
+          origin: { threadId, terminalSessionId: terminalId },
+        },
+        "Build terminal",
+      ),
+    ).toBe(0);
+    expect(getTerminalAttention(original.db, terminalId)).toMatchObject({
+      body: "",
+      title: "Link waiting for this device",
+      clearedAt: null,
+    });
+    expect(getDeviceHandoffAttentionMarker(original.db, terminalId)).toEqual({
+      terminalSessionId: terminalId,
+      attentionSeq: 1,
+    });
+    expect(
+      JSON.stringify({
+        attention: getTerminalAttention(original.db, terminalId),
+        marker: getDeviceHandoffAttentionMarker(original.db, terminalId),
+      }),
+    ).not.toContain("restart-private-copy");
+
+    const restarted = await restartTestAppHarness(
+      original,
+      original.db.$client.serialize(),
+    );
+    expect(getTerminalAttention(restarted.db, terminalId)?.clearedAt).toEqual(
+      expect.any(Number),
+    );
+    expect(
+      getDeviceHandoffAttentionMarker(restarted.db, terminalId),
+    ).toBeNull();
+    const laterViewer = {
+      messages: [] as string[],
+      close() {},
+      send(message: string) {
+        this.messages.push(message);
+      },
+    };
+    restarted.hub.subscribe(laterViewer, { kind: "thread-detail", threadId });
+    restarted.hub.setDeviceHandoffView(laterViewer, threadId);
+    expect(laterViewer.messages).toHaveLength(0);
+    expect(
+      getDeviceHandoffAttentionMarker(restarted.db, terminalId),
+    ).toBeNull();
+  });
+
+  it("preserves a real OSC-9 attention that replaced a handoff before restart", async () => {
+    const original = await createTestAppHarness();
+    harnesses.push(original);
+    const { terminalId, threadId } = createAttentionTerminal(original);
+    original.deps.terminalSessions.setDeviceHandoffAttention(terminalId, true);
+    original.deps.terminalSessions.notifyTerminal({
+      terminalId,
+      payload: { body: "Tests passed", title: "Build finished" },
+    });
+    expect(getTerminalAttention(original.db, terminalId)).toMatchObject({
+      body: "Tests passed",
+      seq: 2,
+      title: "Build finished",
+    });
+
+    const restarted = await restartTestAppHarness(
+      original,
+      original.db.$client.serialize(),
+    );
+    expect(getTerminalAttention(restarted.db, terminalId)).toMatchObject({
+      body: "Tests passed",
+      clearedAt: null,
+      seq: 2,
+      title: "Build finished",
+    });
+    expect(
+      getDeviceHandoffAttentionMarker(restarted.db, terminalId),
+    ).toBeNull();
+    expect(
+      await getTerminalApiAttention(restarted, threadId, terminalId),
+    ).toMatchObject({ body: "Tests passed", title: "Build finished" });
+  });
+
+  it("clears only the handoff attention when its terminal exits", async () => {
+    const harness = await createTestAppHarness();
+    harnesses.push(harness);
+    const { daemonSessionId, hostId, terminalId, threadId } =
+      createAttentionTerminal(harness);
+    harness.deps.terminalSessions.setDeviceHandoffAttention(terminalId, true);
+    expect(getDeviceHandoffAttentionMarker(harness.db, terminalId)).toEqual({
+      terminalSessionId: terminalId,
+      attentionSeq: 1,
+    });
+
+    harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId,
+      sessionId: daemonSessionId,
+      message: {
+        type: "terminal.exited",
+        terminalId,
+        exitCode: 0,
+        closeReason: "process-exit",
+      },
+    });
+
+    expect(getTerminalAttention(harness.db, terminalId)?.clearedAt).toEqual(
+      expect.any(Number),
+    );
+    expect(getDeviceHandoffAttentionMarker(harness.db, terminalId)).toBeNull();
+    expect(
+      await getTerminalApiAttention(harness, threadId, terminalId),
+    ).toBeUndefined();
+  });
 });
 
 function createAttentionTerminal(harness: TestAppHarness): {
@@ -523,6 +643,21 @@ function createAttentionTerminal(harness: TestAppHarness): {
     terminalId: terminal.id,
     threadId: thread.id,
   };
+}
+
+async function restartTestAppHarness(
+  previous: TestAppHarness,
+  serializedDb: Buffer,
+): Promise<TestAppHarness> {
+  const previousIndex = harnesses.indexOf(previous);
+  if (previousIndex >= 0) harnesses.splice(previousIndex, 1);
+  await previous.cleanup();
+  previous.db.$client.close();
+  const restarted = await createTestAppHarness({
+    db: createConnection(serializedDb),
+  });
+  harnesses.push(restarted);
+  return restarted;
 }
 
 async function getTerminalApiAttention(

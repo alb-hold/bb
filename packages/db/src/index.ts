@@ -30,10 +30,16 @@ export {
 } from "./fork-thread-row-state.js";
 export {
   clearTerminalAttention,
+  clearPersistedDeviceHandoffAttention,
+  deleteDeviceHandoffAttentionMarker,
   ensureTerminalAttentionTable,
+  getDeviceHandoffAttentionMarker,
   getTerminalAttention,
+  listDeviceHandoffAttentionMarkers,
   listTerminalAttention,
+  setDeviceHandoffAttentionMarker,
   upsertTerminalAttention,
+  type DeviceHandoffAttentionMarker,
   type TerminalAttentionKind,
   type TerminalAttentionRecord,
 } from "./fork-terminal-attention.js";

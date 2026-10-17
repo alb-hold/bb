@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import {
   createTerminalSession,
+  getDeviceHandoffAttentionMarker,
   getTerminalAttention,
   getThread,
   hasActiveThreadAttention,
@@ -240,6 +241,9 @@ describe("device handoff pending attention", () => {
           body: "Version 42",
           clearedAt: null,
         });
+        expect(
+          getDeviceHandoffAttentionMarker(harness.db, terminal.id),
+        ).toBeNull();
       } finally {
         vi.useRealTimers();
       }
@@ -277,6 +281,10 @@ describe("device handoff pending attention", () => {
       expect(
         getTerminalAttention(harness.db, terminal.id)?.clearedAt,
       ).toBeNull();
+      expect(getDeviceHandoffAttentionMarker(harness.db, terminal.id)).toEqual({
+        terminalSessionId: terminal.id,
+        attentionSeq: 1,
+      });
 
       harness.deps.terminalSessions.handleDaemonTerminalMessage({
         hostId: host.id,
@@ -292,6 +300,9 @@ describe("device handoff pending attention", () => {
       expect(
         getTerminalAttention(harness.db, terminal.id)?.clearedAt,
       ).not.toBeNull();
+      expect(
+        getDeviceHandoffAttentionMarker(harness.db, terminal.id),
+      ).toBeNull();
       expect(
         harness.deps.terminalSessions.getTerminal({ terminalId: terminal.id })
           .attention,
@@ -344,6 +355,9 @@ describe("device handoff pending attention", () => {
         expect(
           getTerminalAttention(harness.db, terminal.id)?.clearedAt,
         ).not.toBeNull();
+        expect(
+          getDeviceHandoffAttentionMarker(harness.db, terminal.id),
+        ).toBeNull();
         expect(
           harness.deps.terminalSessions.getTerminal({ terminalId: terminal.id })
             .attention,
@@ -414,6 +428,9 @@ describe("device handoff pending attention", () => {
       expect(
         getTerminalAttention(harness.db, terminal.id)?.clearedAt,
       ).not.toBeNull();
+      expect(
+        getDeviceHandoffAttentionMarker(harness.db, terminal.id),
+      ).toBeNull();
       expect(
         viewer.messages.some((message) =>
           message.includes("device-handoff-expired"),

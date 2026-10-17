@@ -8,16 +8,20 @@ import { Buffer } from "node:buffer";
 import { z } from "zod";
 import {
   createTerminalSession,
+  clearPersistedDeviceHandoffAttention,
   dismissRetainedTerminalOutput,
   appendRetainedTerminalOutputChunk,
   clearTerminalAttention,
   getTerminalAttention,
+  getDeviceHandoffAttentionMarker,
+  deleteDeviceHandoffAttentionMarker,
   listTerminalAttention,
   getSessionById,
   getTerminalSession,
   getRetainedTerminalOutput,
   listTerminalSessions,
   markRetainedTerminalOutputExited,
+  setDeviceHandoffAttentionMarker,
   upsertTerminalAttention,
   updateTerminalSession,
   updateTerminalSessions,
@@ -578,10 +582,6 @@ function updateTerminalById(
 
 export class TerminalSessionLifecycle {
   private readonly lastThreadAttentionAt = new Map<string, number>();
-  private readonly deviceHandoffAttentionSeqByTerminalId = new Map<
-    string,
-    number
-  >();
   private readonly nativeTerminalRepaintsOnAttach = new Set<string>();
   private readonly pendingAttaches: PendingRpcRegistry<
     PendingTerminalAttachKey,
@@ -622,6 +622,7 @@ export class TerminalSessionLifecycle {
   private readonly outputFlow: TerminalOutputFlowControl;
 
   constructor(private readonly options: TerminalSessionLifecycleOptions) {
+    clearPersistedDeviceHandoffAttention(options.db, Date.now());
     this.outputFlow = new TerminalOutputFlowControl({
       sendDaemonMessage: (daemonSessionId, message) => {
         this.options.hub.sendDaemonSessionMessage(daemonSessionId, message);
@@ -830,16 +831,14 @@ export class TerminalSessionLifecycle {
     const session = getTerminalById(this.options.db, terminalId);
     if (!session || (pending && session.status !== "running")) return;
     if (pending) {
-      const seq = this.recordTerminalAttention({
+      this.recordTerminalAttention({
         source: "api",
         terminalId,
         kind: "osc-9",
         title: "Link waiting for this device",
         body: "",
+        deviceHandoff: true,
       });
-      if (seq !== null) {
-        this.deviceHandoffAttentionSeqByTerminalId.set(terminalId, seq);
-      }
       return;
     }
     this.clearDeviceHandoffAttention(terminalId);
@@ -850,10 +849,12 @@ export class TerminalSessionLifecycle {
       | (Omit<TerminalAttentionState, "at" | "seq"> & {
           at?: number;
           source: "api";
+          deviceHandoff?: boolean;
           terminalId: string;
         })
       | (Omit<TerminalAttentionState, "at"> & {
           at?: number;
+          deviceHandoff?: boolean;
           source: "daemon";
           terminalId: string;
         }),
@@ -867,7 +868,7 @@ export class TerminalSessionLifecycle {
       now,
     );
     const daemonSeq = source === "daemon" ? attention.seq : null;
-    const { terminalId, ...value } = attention;
+    const { deviceHandoff, terminalId, ...value } = attention;
     const previous = getTerminalAttention(this.options.db, terminalId);
     if (
       daemonSeq !== null &&
@@ -881,17 +882,26 @@ export class TerminalSessionLifecycle {
       daemonSeq !== null
         ? Math.max((previous?.seq ?? -1) + 1, daemonSeq)
         : (previous?.seq ?? 0) + 1;
-    upsertTerminalAttention(this.options.db, {
-      terminalSessionId: terminalId,
-      seq,
-      daemonSeq: daemonSeq ?? previous?.daemonSeq ?? null,
-      kind: value.kind,
-      title: value.title ?? null,
-      body: value.body ?? null,
-      attentionAt: now,
+    const persistAttention = this.options.db.$client.transaction(() => {
+      upsertTerminalAttention(this.options.db, {
+        terminalSessionId: terminalId,
+        seq,
+        daemonSeq: daemonSeq ?? previous?.daemonSeq ?? null,
+        kind: value.kind,
+        title: value.title ?? null,
+        body: value.body ?? null,
+        attentionAt: now,
+      });
+      if (deviceHandoff) {
+        setDeviceHandoffAttentionMarker(this.options.db, terminalId, seq);
+      }
     });
+    persistAttention();
     if (alreadyVisible) {
       clearTerminalAttention(this.options.db, terminalId, now);
+      if (deviceHandoff) {
+        deleteDeviceHandoffAttentionMarker(this.options.db, terminalId, seq);
+      }
     }
     if (session.threadId !== null) {
       if (!alreadyVisible) {
@@ -926,11 +936,20 @@ export class TerminalSessionLifecycle {
   }
 
   private clearDeviceHandoffAttention(terminalId: string): void {
-    const seq = this.deviceHandoffAttentionSeqByTerminalId.get(terminalId);
-    this.deviceHandoffAttentionSeqByTerminalId.delete(terminalId);
-    if (seq === undefined) return;
+    const marker = getDeviceHandoffAttentionMarker(this.options.db, terminalId);
+    if (marker === null) return;
     const attention = getTerminalAttention(this.options.db, terminalId);
-    if (attention?.seq !== seq || attention.clearedAt !== null) return;
+    deleteDeviceHandoffAttentionMarker(
+      this.options.db,
+      terminalId,
+      marker.attentionSeq,
+    );
+    if (
+      attention?.seq !== marker.attentionSeq ||
+      attention.clearedAt !== null
+    ) {
+      return;
+    }
     this.clearTerminalAttention(terminalId);
   }
 
@@ -2213,7 +2232,7 @@ export class TerminalSessionLifecycle {
               this.options.logger.warn(
                 { err: error, terminalId: current.id },
                 "Final terminal output replay failed after exit",
-          );
+              );
             })
             .finally(() => this.finalizeTerminalExit(args));
           return;
