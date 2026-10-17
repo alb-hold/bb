@@ -146,10 +146,12 @@ export class WebSocketManager {
       for (const subscription of this.subscriptions.values()) {
         this.sendMessage({ type: "subscribe", target: subscription.target });
       }
-      this.sendMessage({
-        type: "device-handoff-view",
-        threadId: this.activeDeviceHandoffThreadId,
-      });
+      if (this.activeDeviceHandoffThreadId !== null) {
+        this.sendMessage({
+          type: "device-handoff-view",
+          threadId: this.activeDeviceHandoffThreadId,
+        });
+      }
       const event: WebSocketConnectedEvent = reconnected
         ? { reconnected, disconnectedAt: disconnectedAt ?? Date.now() }
         : { reconnected };
@@ -505,7 +507,11 @@ export class WebSocketManager {
   }
 
   setDeviceHandoffView(threadId: string | null): void {
+    const previousThreadId = this.activeDeviceHandoffThreadId;
     this.activeDeviceHandoffThreadId = threadId;
+    if (threadId === null && previousThreadId === null) {
+      return;
+    }
     this.sendMessage({ type: "device-handoff-view", threadId });
   }
 
