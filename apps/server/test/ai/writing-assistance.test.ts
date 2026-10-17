@@ -495,6 +495,32 @@ describe("dictation segments", () => {
     });
   });
 
+  it("keeps the transcript when formatting drops the sign of a number", async () => {
+    await withTestHarness({}, async (harness) => {
+      registerFakeAiService(harness.deps.aiServices, {
+        transcribe: async () => "set the offset to -5",
+        complete: async () => "Set the offset to 5.",
+      });
+      await expect((await postSegment(harness)).json()).resolves.toMatchObject({
+        text: "set the offset to -5",
+        formatted: false,
+      });
+    });
+  });
+
+  it("keeps the transcript when a no-wait phrase is not a correction", async () => {
+    await withTestHarness({}, async (harness) => {
+      registerFakeAiService(harness.deps.aiServices, {
+        transcribe: async () => "no wait is required",
+        complete: async () => "Wait is required.",
+      });
+      await expect((await postSegment(harness)).json()).resolves.toMatchObject({
+        text: "no wait is required",
+        formatted: false,
+      });
+    });
+  });
+
   it("keeps the transcript when a self-correction drops more than it replaces", async () => {
     await withTestHarness({}, async (harness) => {
       registerFakeAiService(harness.deps.aiServices, {

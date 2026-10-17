@@ -743,6 +743,40 @@ describe("validateFormattedTranscript", () => {
     ).toEqual({ ok: true });
   });
 
+  it.each([
+    ["no wait is required", "Wait is required.", "negation"],
+    ["there is no wait time today", "There is wait time today.", "negation"],
+    ["actually it works", "It works.", "dropped-words"],
+  ])(
+    "only treats a correction phrase as one when it replaces words before it: %s",
+    (raw, formatted, reason) => {
+      expect(validateFormattedTranscript(raw, formatted)).toEqual({
+        ok: false,
+        reason,
+      });
+    },
+  );
+
+  it.each([
+    ["set the offset to -5", "Set the offset to 5.", "dropped-words"],
+    ["set the offset to 5", "Set the offset to -5.", "added-words"],
+    ["the delta is −2.5 now", "The delta is 2.5 now.", "dropped-words"],
+  ])("keeps the sign of a spoken number: %s", (raw, formatted, reason) => {
+    expect(validateFormattedTranscript(raw, formatted)).toEqual({
+      ok: false,
+      reason,
+    });
+  });
+
+  it("accepts a negative number that keeps its sign", () => {
+    expect(
+      validateFormattedTranscript(
+        "set the offset to -5 and the range to 1-3",
+        "Set the offset to -5 and the range to 1-3.",
+      ),
+    ).toEqual({ ok: true });
+  });
+
   it("allows a self-correction to replace the words just before it", () => {
     expect(
       validateFormattedTranscript(

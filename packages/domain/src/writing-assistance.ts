@@ -1023,6 +1023,31 @@ function spokenPositions(
   return positions;
 }
 
+function negativeNumbers(text: string): string[] {
+  return [...text.matchAll(/(?<![\p{L}\p{N}.,])[-−](\d+(?:[.,]\d+)*)/gu)]
+    .map((match) => match[1]!)
+    .sort();
+}
+
+function correctingMarkers(
+  tokens: readonly string[],
+  dropped: readonly boolean[],
+  spans: readonly CorrectionSpan[],
+): boolean[] {
+  const correcting = tokens.map(() => false);
+  for (const span of spans) {
+    let replaced = false;
+    for (let index = span.windowStart; index < span.markerStart; index += 1) {
+      if (dropped[index] && !FILLER_WORDS.has(tokens[index]!)) replaced = true;
+    }
+    if (!replaced) continue;
+    for (let index = span.markerStart; index < span.markerEnd; index += 1) {
+      correcting[index] = true;
+    }
+  }
+  return correcting;
+}
+
 export function validateFormattedTranscript(
   raw: string,
   formatted: string,
@@ -1052,6 +1077,17 @@ export function validateFormattedTranscript(
     if (!rawNumbers.has(number)) {
       return { ok: false, reason: "added-words" };
     }
+  }
+  const rawNegatives = negativeNumbers(raw);
+  const formattedNegatives = negativeNumbers(body);
+  if (rawNegatives.join(" ") !== formattedNegatives.join(" ")) {
+    return {
+      ok: false,
+      reason:
+        formattedNegatives.length > rawNegatives.length
+          ? "added-words"
+          : "dropped-words",
+    };
   }
   const bodyQuestions = questionWords(body);
   const pieces = wordTokens(body).map((token, index) => ({
@@ -1094,8 +1130,9 @@ export function validateFormattedTranscript(
         marker[index]! || window[index]! || rawTokens[index - 1] === token,
     ),
   );
+  const correcting = correctingMarkers(rawTokens, dropped, spans);
   const lostNegation = rawTokens.some(
-    (token, index) => dropped[index] && !marker[index] && isNegation(token),
+    (token, index) => dropped[index] && !correcting[index] && isNegation(token),
   );
   if (lostNegation) return { ok: false, reason: "negation" };
   if (replacesMoreThanSaid(rawTokens, dropped, spans)) {
@@ -1104,7 +1141,7 @@ export function validateFormattedTranscript(
   for (let index = 0; index < rawTokens.length; index += 1) {
     if (!dropped[index]) continue;
     const token = rawTokens[index]!;
-    if (marker[index] || window[index]) continue;
+    if (correcting[index] || window[index]) continue;
     if (FILLER_WORDS.has(token)) continue;
     if (options.literalCode && SPOKEN_SYMBOLS.has(token)) continue;
     if (
