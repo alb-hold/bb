@@ -1145,9 +1145,11 @@ export function validateFormattedTranscript(
   const bodySymbols = numberSymbols(body);
   for (const [number, forms] of bodySymbols) {
     const spoken = rawSymbols.get(number);
+    if (spoken === undefined) continue;
     for (const form of forms) {
-      if (form === " " && spoken !== undefined) continue;
-      if (!spoken?.has(form)) return { ok: false, reason: "added-words" };
+      if (form !== " " && !spoken.has(form)) {
+        return { ok: false, reason: "added-words" };
+      }
     }
   }
   for (const [number, forms] of rawSymbols) {
