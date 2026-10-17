@@ -749,7 +749,9 @@ export function spawnLoggedProcess(
     }
   });
   const writerExit = new Promise<void>((resolvePromise) => {
-    logWriter.once("close", () => resolvePromise());
+    logWriter.once("close", () => {
+      if (logWriter.pid !== undefined) resolvePromise();
+    });
     logWriter.on("error", () => {
       if (logWriter.pid === undefined) resolvePromise();
     });

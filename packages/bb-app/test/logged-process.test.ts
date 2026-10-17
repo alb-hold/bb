@@ -1535,4 +1535,40 @@ describe("spawnLoggedProcess", () => {
     });
     await expect(waitForExit(child)).rejects.toThrow("ENOENT");
   });
+
+  it("resolves writer exit promptly when the log writer cannot spawn", async () => {
+    const logDir = scratchDir();
+    const originalExecPath = Object.getOwnPropertyDescriptor(
+      process,
+      "execPath",
+    );
+    if (originalExecPath === undefined) throw new Error("Missing execPath");
+    let child: ReturnType<typeof spawnLoggedProcess>;
+    Object.defineProperty(process, "execPath", {
+      ...originalExecPath,
+      value: join(logDir, "missing-node"),
+    });
+    try {
+      child = spawnLoggedProcess({
+        command: String(originalExecPath.value),
+        args: ["-e", "process.exit(0)"],
+        env: process.env,
+        logDir,
+        logName: "server",
+      });
+    } finally {
+      Object.defineProperty(process, "execPath", originalExecPath);
+    }
+    expect(child.writerProcess.pid).toBeUndefined();
+    expect(await waitForExit(child)).toBe(0);
+    let timeout: NodeJS.Timeout | undefined;
+    const result = await Promise.race([
+      child.writerExit.then(() => "exited" as const),
+      new Promise<"timed-out">((resolvePromise) => {
+        timeout = setTimeout(() => resolvePromise("timed-out"), 500);
+      }),
+    ]);
+    if (timeout !== undefined) clearTimeout(timeout);
+    expect(result).toBe("exited");
+  });
 });
