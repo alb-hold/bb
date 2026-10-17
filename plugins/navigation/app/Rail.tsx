@@ -1,4 +1,4 @@
-import { forwardRef, type ComponentProps, type ReactNode } from "react";
+import { forwardRef, useRef, type ComponentProps, type ReactNode } from "react";
 import {
   experimental_SidebarNavigationIcon as SidebarNavigationIcon,
   experimental_useSidebarNavigation,
@@ -71,6 +71,7 @@ function RailItem({ item }: { item: ExperimentalSidebarNavigationItem }) {
   const { activeItemId, actions } = experimental_useSidebarNavigation();
   const split = experimental_useSidebarNavigationSplit(item.id);
   const label = navigationBadgeAccessibleLabel(item.label, item.badge);
+  const terminalTargetRef = useRef<HTMLElement | null>(null);
 
   return (
     <SidebarNavigationItemContextMenu
@@ -87,11 +88,22 @@ function RailItem({ item }: { item: ExperimentalSidebarNavigationItem }) {
           aria-keyshortcuts={item.shortcut?.ariaKeyShortcuts}
           className={cn(item.isLoading && "opacity-60")}
           {...split.splitProps}
-          onClick={(event) =>
+          onPointerDown={() => {
+            const active = document.activeElement;
+            terminalTargetRef.current =
+              active instanceof HTMLElement &&
+              active.closest("[data-app-terminal]") !== null
+                ? active
+                : null;
+          }}
+          onClick={(event) => {
+            const terminalTarget = terminalTargetRef.current;
+            terminalTargetRef.current = null;
             actions.activate(item.id, {
               openInSplit: event.metaKey || event.ctrlKey,
-            })
-          }
+              target: terminalTarget?.isConnected ? terminalTarget : null,
+            });
+          }}
         >
           <SidebarNavigationIcon icon={item.icon} className={RAIL_ICON_CLASS} />
           {item.badge ? (

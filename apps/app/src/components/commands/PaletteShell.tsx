@@ -20,6 +20,7 @@ export { PaletteShortcut } from "./PaletteShortcut";
 interface PaletteShellProps {
   activeDescendantId?: string;
   children: ReactNode;
+  autoFocus?: boolean;
   inputDescription: string;
   inputLabel: string;
   inputRef?: Ref<HTMLInputElement>;
@@ -37,6 +38,7 @@ interface PaletteShellProps {
 export function PaletteShell({
   activeDescendantId,
   children,
+  autoFocus = true,
   inputDescription,
   inputLabel,
   inputRef,
@@ -71,7 +73,7 @@ export function PaletteShell({
         {modeChip === undefined ? null : <PaletteModeChip {...modeChip} />}
         <input
           ref={inputRef}
-          autoFocus
+          autoFocus={autoFocus}
           role="combobox"
           aria-expanded
           aria-controls={listId}
