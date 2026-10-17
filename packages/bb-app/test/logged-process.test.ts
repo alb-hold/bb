@@ -272,17 +272,20 @@ describe("spawnLoggedProcess", () => {
       .toBe(true);
   });
 
-  it("keeps the child alive and resumes logging after a write error", async () => {
+  it("reports output lost after real open and append failures, then resumes logging", async () => {
     const logDir = scratchDir();
     const attemptedPath = join(logDir, "first-write-attempted");
     const laterPath = join(logDir, "later-write-completed");
+    const diagnosticPath = join(logDir, "writer-diagnostics");
+    const lostOutput = "unique child payload 61d";
+    writeFileSync(diagnosticPath, "");
     const child = spawnLoggedProcess({
       command: process.execPath,
       args: [
         "-e",
         `
           const fs = require("node:fs");
-          process.stdout.write("x".repeat(4 * 1024 * 1024), () => {
+          process.stdout.write(${JSON.stringify(lostOutput)}, () => {
             fs.writeFileSync(${JSON.stringify(attemptedPath)}, "attempted");
             setTimeout(() => {
               process.stdout.write("later output recovered\\n");
@@ -295,7 +298,11 @@ describe("spawnLoggedProcess", () => {
       env: process.env,
       logDir,
       logName: "server",
-      testWriterBarrier: { failFirstWrite: true },
+      testWriterBarrier: {
+        failActiveOpenCount: 4,
+        failActiveWriteCount: 1,
+        diagnosticPath,
+      },
     });
 
     await expect
@@ -306,13 +313,135 @@ describe("spawnLoggedProcess", () => {
     await expect
       .poll(
         () =>
-          uniqueFamilyFiles(logDir, "server")
-            .map((path) => readFileSync(path, "utf8"))
-            .join("")
-            .includes("later output recovered\n"),
+          (() => {
+            const output = uniqueFamilyFiles(logDir, "server")
+              .map((path) => readFileSync(path, "utf8"))
+              .join("");
+            return (
+              output.includes("later output recovered\n") &&
+              (output.includes(lostOutput) ||
+                output.includes(
+                  `[bb] ${Buffer.byteLength(lostOutput)} bytes of child output lost: EIO\n`,
+                ))
+            );
+          })(),
         { timeout: 5_000 },
       )
       .toBe(true);
+    const output = uniqueFamilyFiles(logDir, "server")
+      .map((path) => readFileSync(path, "utf8"))
+      .join("");
+    if (!output.includes(lostOutput)) {
+      expect(output).toContain(
+        `[bb] ${Buffer.byteLength(lostOutput)} bytes of child output lost: EIO\n`,
+      );
+      expect(readFileSync(diagnosticPath, "utf8")).toContain(
+        `${Buffer.byteLength(lostOutput)} bytes of child output lost: EIO`,
+      );
+    }
+    expect(readFileSync(diagnosticPath, "utf8")).toContain("stdio output retry");
+  });
+
+  it("recovers a dead writer segment during a survivor rotation", async () => {
+    const logDir = scratchDir();
+    const firstBytes = 1024 * 1024;
+    const secondBytes = 11 * 1024 * 1024;
+    const enteredPath = join(logDir, "survivor-before-write");
+    const releasePath = join(logDir, "release-survivor");
+    const first = spawnLoggedProcess({
+      command: process.execPath,
+      args: [
+        "-e",
+        `process.stdout.write(Buffer.alloc(${firstBytes}, 65)); setInterval(() => {}, 1000);`,
+      ],
+      env: process.env,
+      logDir,
+      logName: "server",
+    });
+    let survivor: ChildProcess | undefined;
+    let writerPid: number | undefined;
+    try {
+      await expect
+        .poll(
+          () =>
+            familyFiles(logDir, "server").some((path) =>
+              path.includes(".active-"),
+            ),
+          { timeout: 5_000, interval: 10 },
+        )
+        .toBe(true);
+      const firstSegment = familyFiles(logDir, "server").find((path) =>
+        path.includes(".active-"),
+      );
+      expect(firstSegment).toBeDefined();
+      writerPid = Number(firstSegment!.match(/\.active-(\d+)-/)?.[1]);
+      expect(Number.isInteger(writerPid)).toBe(true);
+      survivor = spawnLoggedProcess({
+        command: process.execPath,
+        args: ["-e", `process.stdout.write(Buffer.alloc(${secondBytes}, 66));`],
+        env: process.env,
+        logDir,
+        logName: "server",
+        testWriterBarrier: {
+          enteredPath,
+          releasePath,
+          pauseAtBytes: 9 * 1024 * 1024,
+        },
+      });
+      await expect
+        .poll(() => existsSync(enteredPath), { timeout: 5_000, interval: 10 })
+        .toBe(true);
+      process.kill(writerPid!, "SIGKILL");
+      await expect
+        .poll(
+          () => {
+            try {
+              process.kill(writerPid!, 0);
+              return false;
+            } catch (error) {
+              return (error as NodeJS.ErrnoException).code === "ESRCH";
+            }
+          },
+          { timeout: 5_000, interval: 10 },
+        )
+        .toBe(true);
+      writeFileSync(releasePath, "release");
+      expect(await waitForExit(survivor)).toBe(0);
+      await expect
+        .poll(
+          () =>
+            !familyFiles(logDir, "server").some((path) =>
+              path.includes(`.active-${writerPid}-`),
+            ),
+          { timeout: 5_000, interval: 10 },
+        )
+        .toBe(true);
+      const files = uniqueFamilyFiles(logDir, "server");
+      const backups = familyFiles(logDir, "server").filter((path) =>
+        path.includes(".backup-"),
+      );
+      expect(backups.length).toBeLessThanOrEqual(5);
+      expect(
+        familyFiles(logDir, "server").every(
+          (path) => statSync(path).size <= 10 * 1024 * 1024,
+        ),
+      ).toBe(true);
+      const output = Buffer.concat(files.map((path) => readFileSync(path)));
+      expect(output.length).toBe(firstBytes + secondBytes);
+      expect(output.filter((byte) => byte === 65).length).toBe(firstBytes);
+      expect(output.filter((byte) => byte === 66).length).toBe(secondBytes);
+    } finally {
+      if (!existsSync(releasePath)) writeFileSync(releasePath, "release");
+      if (writerPid !== undefined) {
+        try {
+          process.kill(writerPid, "SIGKILL");
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+        }
+      }
+      if (first.exitCode === null) first.kill("SIGKILL");
+      if (survivor?.exitCode === null) survivor.kill("SIGKILL");
+    }
   });
 
   it("rotates an oversized active log without discarding its contents", async () => {

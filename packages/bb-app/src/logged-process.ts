@@ -1,14 +1,18 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
 const stdioLogWriter = `
 const fs = require("node:fs");
 const crypto = require("node:crypto");
+const path = require("node:path");
 const logPath = process.argv[1];
 const writerBarrier = process.argv[2] ? JSON.parse(process.argv[2]) : null;
 const sizeLimit = 10 * 1024 * 1024;
 const retainedBackups = 5;
+const maxWriteAttempts = 3;
+const retryDelayMs = 10;
+const maxChunkRetryMs = 2_000;
 const token = process.pid + "-" + crypto.randomUUID();
 const familyPrefix = logPath + ".";
 const activePath = familyPrefix + "active-" + token;
@@ -16,70 +20,130 @@ let activeFd;
 let activeSize = 0;
 let aliasSequence = 0;
 let writerBarrierUsed = false;
-let failedInjectedWrite = false;
-let stopped = false;
+let initialized = false;
+let processing = false;
+let inputPaused = false;
+let inputEnded = false;
+let finalized = false;
+let retryTimer;
+let writeAttempts = 0;
+let chunkRetryStartedAt;
+let pendingOffset = 0;
+let pendingLossBytes = 0;
+let pendingLossErrno = "";
+let pendingLossMarker;
+let pendingLossMarkerOffset = 0;
+let finalizationAttempts = 0;
 const pendingChunks = [];
 let pendingBytes = 0;
 const maxPendingBytes = 16 * 1024 * 1024;
-let processing = false;
-let inputPaused = false;
 const backupPattern = /^.+\\.backup-[0-9]+-[0-9]+-[a-f0-9-]+$/;
 const activePattern = /^.+\\.active-[0-9]+-[a-f0-9-]+$/;
-const paths = () => fs.readdirSync(require("node:path").dirname(logPath)).map((name) => require("node:path").join(require("node:path").dirname(logPath), name));
+const paths = () => fs.readdirSync(path.dirname(logPath)).map((name) => path.join(path.dirname(logPath), name));
 const uniqueBackupPath = () => familyPrefix + "backup-" + Date.now() + "-" + token + "-" + crypto.randomUUID();
+const errorCode = (error) => typeof error?.code === "string" ? error.code : "UNKNOWN";
+const reportDiagnostic = (message) => {
+  try {
+    fs.writeSync(2, Buffer.from("[bb] " + message + "\\n"));
+  } catch (error) {
+    const diagnosticErrorCode = errorCode(error);
+    if (diagnosticErrorCode === "EPIPE") return;
+  }
+};
+const reportFsError = (operation, error) => reportDiagnostic(operation + ": " + errorCode(error));
+const makeInjectedFailure = (operation) => {
+  const error = new Error("injected stdio " + operation + " failure");
+  error.code = "EIO";
+  return error;
+};
+const openSync = fs.openSync;
+fs.openSync = (filePath, ...args) => {
+  if (filePath === activePath && writerBarrier !== null && writerBarrier.failActiveOpenCount > 0) {
+    writerBarrier.failActiveOpenCount -= 1;
+    throw makeInjectedFailure("active open");
+  }
+  return openSync(filePath, ...args);
+};
+const writeSync = fs.writeSync;
+fs.writeSync = (fd, ...args) => {
+  if (fd === activeFd && writerBarrier !== null && writerBarrier.failActiveWriteCount > 0) {
+    writerBarrier.failActiveWriteCount -= 1;
+    throw makeInjectedFailure("active append");
+  }
+  return writeSync(fd, ...args);
+};
 const publishAliasTo = (targetPath) => {
   const temporary = logPath + ".alias-" + token + "-" + (++aliasSequence);
   try {
     fs.linkSync(targetPath, temporary);
     try {
       fs.renameSync(temporary, logPath);
-    } catch {
-      try { fs.unlinkSync(logPath); } catch {}
-      fs.renameSync(temporary, logPath);
+    } catch (error) {
+      if (error.code !== "EEXIST" && error.code !== "EPERM") reportFsError("stdio alias replace failed", error);
+      try {
+        fs.unlinkSync(logPath);
+        fs.renameSync(temporary, logPath);
+      } catch (replaceError) {
+        reportFsError("stdio alias publish failed", replaceError);
+      }
     }
-  } catch {
-    try { fs.unlinkSync(temporary); } catch {}
+  } catch (error) {
+    reportFsError("stdio alias link failed", error);
+    try {
+      fs.unlinkSync(temporary);
+    } catch (cleanupError) {
+      if (cleanupError.code !== "ENOENT") reportFsError("stdio alias cleanup failed", cleanupError);
+    }
   }
 };
 const pruneBackups = () => {
+  let backups;
   try {
-    const backups = paths().filter((path) => path.startsWith(familyPrefix) && backupPattern.test(require("node:path").basename(path)));
+    backups = paths().filter((file) => file.startsWith(familyPrefix) && backupPattern.test(path.basename(file)));
     backups.sort((left, right) => fs.statSync(left).mtimeMs - fs.statSync(right).mtimeMs);
-    while (backups.length > retainedBackups) {
-      const oldest = backups.shift();
-      try {
-        const aliasStat = fs.statSync(logPath);
-        const oldestStat = fs.statSync(oldest);
-        if (aliasStat.dev === oldestStat.dev && aliasStat.ino === oldestStat.ino) {
-          const replacement = paths()
-            .filter((path) => path !== oldest && (activePattern.test(require("node:path").basename(path)) || backupPattern.test(require("node:path").basename(path))))
-            .sort((left, right) => fs.statSync(right).mtimeMs - fs.statSync(left).mtimeMs)[0];
-          if (replacement !== undefined) publishAliasTo(replacement);
-          else fs.unlinkSync(logPath);
-        }
-      } catch {}
-      try { fs.unlinkSync(oldest); } catch {}
+  } catch (error) {
+    reportFsError("stdio backup scan failed", error);
+    return;
+  }
+  while (backups.length > retainedBackups) {
+    const oldest = backups.shift();
+    try {
+      const aliasStat = fs.statSync(logPath);
+      const oldestStat = fs.statSync(oldest);
+      if (aliasStat.dev === oldestStat.dev && aliasStat.ino === oldestStat.ino) {
+        const replacement = paths()
+          .filter((file) => file !== oldest && (activePattern.test(path.basename(file)) || backupPattern.test(path.basename(file))))
+          .sort((left, right) => fs.statSync(right).mtimeMs - fs.statSync(left).mtimeMs)[0];
+        if (replacement !== undefined) publishAliasTo(replacement);
+        else fs.unlinkSync(logPath);
+      }
+    } catch (error) {
+      if (error.code !== "ENOENT") reportFsError("stdio alias retention update failed", error);
     }
-  } catch {}
+    try {
+      fs.unlinkSync(oldest);
+    } catch (error) {
+      if (error.code !== "ENOENT") reportFsError("stdio backup prune failed", error);
+    }
+  }
 };
 const migrateLegacyFiles = () => {
-  const baseName = require("node:path").basename(logPath);
-  const numberedBackups = paths().filter((path) => {
-    const name = require("node:path").basename(path);
+  const baseName = path.basename(logPath);
+  const numberedBackups = paths().filter((file) => {
+    const name = path.basename(file);
     const suffix = name.slice(baseName.length + 1);
     return name.startsWith(baseName + ".") && /^[1-9][0-9]*$/.test(suffix);
-  }).sort((left, right) => Number(require("node:path").basename(right).slice(baseName.length + 1)) - Number(require("node:path").basename(left).slice(baseName.length + 1)));
+  }).sort((left, right) => Number(path.basename(right).slice(baseName.length + 1)) - Number(path.basename(left).slice(baseName.length + 1)));
   const candidates = [...numberedBackups, logPath];
   for (const sourcePath of candidates) {
     if (!fs.existsSync(sourcePath)) continue;
     let sourceFd;
     let backupFd;
-    let backupPath;
     try {
       const sourceStat = fs.statSync(sourcePath);
-      const alreadySegmented = paths().some((path) => {
-        if (path === sourcePath || (!activePattern.test(require("node:path").basename(path)) && !backupPattern.test(require("node:path").basename(path))) || !fs.existsSync(path)) return false;
-        const candidateStat = fs.statSync(path);
+      const alreadySegmented = paths().some((file) => {
+        if (file === sourcePath || (!activePattern.test(path.basename(file)) && !backupPattern.test(path.basename(file))) || !fs.existsSync(file)) return false;
+        const candidateStat = fs.statSync(file);
         return candidateStat.dev === sourceStat.dev && candidateStat.ino === sourceStat.ino;
       });
       if (alreadySegmented || sourceStat.size === 0) continue;
@@ -90,7 +154,7 @@ const migrateLegacyFiles = () => {
       while (remaining > 0) {
         if (backupFd === undefined || segmentSize >= sizeLimit) {
           if (backupFd !== undefined) fs.closeSync(backupFd);
-          backupPath = uniqueBackupPath();
+          const backupPath = uniqueBackupPath();
           backupFd = fs.openSync(backupPath, "wx", 0o600);
           segmentSize = 0;
         }
@@ -107,88 +171,206 @@ const migrateLegacyFiles = () => {
       if (backupFd !== undefined) fs.closeSync(backupFd);
       backupFd = undefined;
       fs.unlinkSync(sourcePath);
-    } catch {
-      if (sourceFd !== undefined) { try { fs.closeSync(sourceFd); } catch {} }
-      if (backupFd !== undefined) { try { fs.closeSync(backupFd); } catch {} }
+    } catch (error) {
+      reportFsError("legacy stdio migration failed", error);
+      if (sourceFd !== undefined) {
+        try {
+          fs.closeSync(sourceFd);
+        } catch (closeError) {
+          reportFsError("legacy stdio source close failed", closeError);
+        }
+      }
+      if (backupFd !== undefined) {
+        try {
+          fs.closeSync(backupFd);
+        } catch (closeError) {
+          reportFsError("legacy stdio backup close failed", closeError);
+        }
+      }
+      throw error;
     }
   }
   pruneBackups();
 };
 const recoverClosedSegments = () => {
-  for (const path of paths()) {
-    const name = require("node:path").basename(path);
-    if (!path.startsWith(familyPrefix) || !activePattern.test(name)) continue;
+  for (const file of paths()) {
+    const name = path.basename(file);
+    if (!file.startsWith(familyPrefix) || file === activePath || !activePattern.test(name)) continue;
     const ownerPid = Number(name.slice(name.indexOf(".active-") + 8).split("-")[0]);
     if (!Number.isInteger(ownerPid) || ownerPid < 1) continue;
     try {
       process.kill(ownerPid, 0);
     } catch (error) {
-      if (error.code !== "ESRCH") continue;
-      try { fs.renameSync(path, uniqueBackupPath()); } catch {}
+      if (error.code !== "ESRCH") {
+        if (error.code !== "EPERM") reportFsError("stdio segment owner check failed", error);
+        continue;
+      }
+      try {
+        fs.renameSync(file, uniqueBackupPath());
+      } catch (renameError) {
+        if (renameError.code !== "ENOENT") reportFsError("orphan stdio segment recovery failed", renameError);
+      }
     }
   }
   pruneBackups();
 };
 const createActive = () => {
   activeFd = fs.openSync(activePath, "wx", 0o600);
-  activeSize = 0;
+  activeSize = fs.fstatSync(activeFd).size;
   publishAliasTo(activePath);
+};
+const ensureInitialized = () => {
+  if (initialized) return;
+  migrateLegacyFiles();
+  recoverClosedSegments();
+  createActive();
+  initialized = true;
 };
 const closeActive = (archive) => {
   if (activeFd !== undefined) {
-    try { fs.closeSync(activeFd); } catch {}
+    fs.closeSync(activeFd);
     activeFd = undefined;
   }
   if (archive && fs.existsSync(activePath)) {
-    try { fs.renameSync(activePath, uniqueBackupPath()); } catch {}
+    fs.renameSync(activePath, uniqueBackupPath());
     pruneBackups();
   }
 };
 const rotateOwnedSegment = () => {
   closeActive(true);
+  recoverClosedSegments();
   createActive();
 };
-const append = (chunk) => {
-  let offset = 0;
-  while (offset < chunk.length) {
+const appendBuffer = (buffer, startOffset, kind) => {
+  let offset = startOffset;
+  while (offset < buffer.length) {
+    ensureInitialized();
+    if (activeFd === undefined) createActive();
     if (activeSize >= sizeLimit) rotateOwnedSegment();
-    const length = Math.min(sizeLimit - activeSize, chunk.length - offset);
-    if (writerBarrier !== null && writerBarrier.failFirstWrite && !failedInjectedWrite) {
-      failedInjectedWrite = true;
-      const fullFd = fs.openSync("/dev/full", "w");
-      try { fs.writeSync(fullFd, chunk, offset, length); } finally { fs.closeSync(fullFd); }
-    }
-    if (writerBarrier !== null && !writerBarrierUsed && activeSize >= writerBarrier.pauseAtBytes) {
+    const length = Math.min(sizeLimit - activeSize, buffer.length - offset);
+    if (kind === "output" && writerBarrier !== null && !writerBarrierUsed && writerBarrier.pauseAtBytes !== undefined && activeSize >= writerBarrier.pauseAtBytes) {
       writerBarrierUsed = true;
       fs.writeFileSync(writerBarrier.enteredPath, "entered");
       const waitCell = new Int32Array(new SharedArrayBuffer(4));
       while (!fs.existsSync(writerBarrier.releasePath)) Atomics.wait(waitCell, 0, 0, 10);
     }
-    const written = fs.writeSync(activeFd, chunk, offset, length);
-    if (written <= 0) throw new Error("stdio segment write made no progress");
-    offset += written;
-    activeSize += written;
+    const startingSize = activeSize;
+    try {
+      const written = fs.writeSync(activeFd, buffer, offset, length);
+      if (written <= 0) throw new Error("stdio segment write made no progress");
+      offset += written;
+      activeSize += written;
+    } catch (error) {
+      try {
+        const observedSize = fs.fstatSync(activeFd).size;
+        const observedProgress = Math.max(0, observedSize - startingSize);
+        if (observedProgress <= length) {
+          activeSize = observedSize;
+          offset += observedProgress;
+        } else {
+          reportDiagnostic("stdio segment size changed unexpectedly during failed append");
+        }
+      } catch (statError) {
+        reportFsError("stdio segment size recovery failed", statError);
+      }
+      const failure = new Error("stdio " + kind + " append failed", { cause: error });
+      failure.code = errorCode(error);
+      failure.writerKind = kind;
+      failure.writerOffset = offset;
+      throw failure;
+    }
   }
+  return offset;
 };
-const processNext = () => {
-  if (processing || stopped) return;
-  const chunk = pendingChunks.shift();
-  if (chunk === undefined) return;
-  pendingBytes -= chunk.length;
+const writePendingLossMarker = () => {
+  if (pendingLossBytes === 0) return;
+  if (pendingLossMarker === undefined) pendingLossMarker = Buffer.from("[bb] " + pendingLossBytes + " bytes of child output lost: " + pendingLossErrno + "\\n");
+  pendingLossMarkerOffset = appendBuffer(pendingLossMarker, pendingLossMarkerOffset, "marker");
+  pendingLossBytes = 0;
+  pendingLossErrno = "";
+  pendingLossMarker = undefined;
+  pendingLossMarkerOffset = 0;
+};
+const resumeInputIfDrained = () => {
   if (inputPaused && pendingBytes < maxPendingBytes / 2) {
     inputPaused = false;
     process.stdin.resume();
   }
-  processing = true;
-  try { append(chunk); } catch {}
+};
+const dequeueChunk = (chunk) => {
+  pendingChunks.shift();
+  pendingBytes -= chunk.length;
+  pendingOffset = 0;
+  writeAttempts = 0;
+  chunkRetryStartedAt = undefined;
+  resumeInputIfDrained();
+};
+const scheduleRetry = (delayMs = retryDelayMs) => {
   processing = false;
-  setImmediate(processNext);
+  if (retryTimer !== undefined || finalized) return;
+  retryTimer = setTimeout(() => {
+    retryTimer = undefined;
+    processNext();
+  }, delayMs);
+};
+const finishStream = () => {
+  if (finalized) return;
+  try {
+    if (pendingLossBytes > 0) writePendingLossMarker();
+    closeActive(true);
+    finalized = true;
+  } catch (error) {
+    finalizationAttempts += 1;
+    reportFsError("stdio finalization retry " + finalizationAttempts + "/" + maxWriteAttempts, error);
+    scheduleRetry(Math.min(1_000, retryDelayMs * Math.max(1, finalizationAttempts)));
+  }
+};
+const processNext = () => {
+  if (processing || finalized) return;
+  const chunk = pendingChunks[0];
+  if (chunk === undefined) {
+    if (inputEnded) {
+      processing = true;
+      finishStream();
+      processing = false;
+    }
+    return;
+  }
+  processing = true;
+  if (chunkRetryStartedAt === undefined) chunkRetryStartedAt = Date.now();
+  try {
+    ensureInitialized();
+    writePendingLossMarker();
+    pendingOffset = appendBuffer(chunk, pendingOffset, "output");
+    dequeueChunk(chunk);
+    processing = false;
+    setImmediate(processNext);
+  } catch (error) {
+    const code = errorCode(error);
+    if (error.writerKind === "marker") pendingLossMarkerOffset = error.writerOffset;
+    if (error.writerKind === "output") pendingOffset = error.writerOffset;
+    writeAttempts += 1;
+    if (writeAttempts <= maxWriteAttempts) reportFsError("stdio output retry " + writeAttempts + "/" + maxWriteAttempts, error);
+    if (writeAttempts < maxWriteAttempts || Date.now() - chunkRetryStartedAt < maxChunkRetryMs) {
+      const delayMs = writeAttempts < maxWriteAttempts ? retryDelayMs : 100;
+      if (writeAttempts >= maxWriteAttempts) writeAttempts = 0;
+      scheduleRetry(delayMs);
+      return;
+    }
+    const lostBytes = Math.max(0, chunk.length - pendingOffset);
+    dequeueChunk(chunk);
+    pendingLossBytes += lostBytes;
+    pendingLossErrno = code;
+    if (lostBytes > 0) reportDiagnostic(lostBytes + " bytes of child output lost: " + code);
+    processing = false;
+    setImmediate(processNext);
+  }
 };
 try {
-  migrateLegacyFiles();
-  recoverClosedSegments();
-  createActive();
-} catch {}
+  ensureInitialized();
+} catch (error) {
+  reportFsError("stdio writer setup failed", error);
+}
 process.stdin.on("data", (chunk) => {
   pendingChunks.push(chunk);
   pendingBytes += chunk.length;
@@ -199,16 +381,23 @@ process.stdin.on("data", (chunk) => {
   processNext();
 });
 process.stdin.on("end", () => {
-  stopped = true;
-  while (pendingChunks.length > 0) {
-    const chunk = pendingChunks.shift();
-    pendingBytes -= chunk.length;
-    try { append(chunk); } catch {}
-  }
-  closeActive(true);
+  inputEnded = true;
+  processNext();
 });
-process.stdin.on("error", () => {});
-process.on("uncaughtException", () => {});
+process.stdin.on("error", (error) => {
+  reportFsError("stdio input stream failed", error);
+  inputEnded = true;
+  processNext();
+});
+process.stderr.on("error", (error) => {
+  const diagnosticErrorCode = errorCode(error);
+  if (diagnosticErrorCode !== "EPIPE") reportFsError("stdio diagnostic stream failed", error);
+});
+process.on("uncaughtException", (error) => {
+  reportFsError("uncaught stdio writer error", error);
+  processing = false;
+  scheduleRetry();
+});
 `;
 
 interface SpawnLoggedProcessArgs {
@@ -222,7 +411,9 @@ interface SpawnLoggedProcessArgs {
     enteredPath?: string;
     releasePath?: string;
     pauseAtBytes?: number;
-    failFirstWrite?: boolean;
+    failActiveOpenCount?: number;
+    failActiveWriteCount?: number;
+    diagnosticPath?: string;
   };
 }
 
@@ -237,8 +428,18 @@ export function spawnLoggedProcess(args: SpawnLoggedProcessArgs): ChildProcess {
       logPath,
       JSON.stringify(args.testWriterBarrier ?? null),
     ],
-    { detached: true, env: process.env, stdio: ["pipe", "ignore", "ignore"] },
+    { detached: true, env: process.env, stdio: ["pipe", "ignore", "pipe"] },
   );
+  logWriter.stderr?.on("data", (chunk: Buffer) => {
+    process.stderr.write(chunk);
+    if (args.testWriterBarrier?.diagnosticPath !== undefined) {
+      try {
+        appendFileSync(args.testWriterBarrier.diagnosticPath, chunk);
+      } catch (error) {
+        process.stderr.write(`[bb] could not capture stdio writer diagnostic: ${String(error)}\n`);
+      }
+    }
+  });
   logWriter.unref();
   const child = spawn(args.command, args.args, {
     cwd: process.cwd(),
