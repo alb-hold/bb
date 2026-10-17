@@ -144,14 +144,16 @@ describe("TerminalWebSocketTransport", () => {
     socket?.open();
     harness.transport.sendResize(51, 47);
     harness.transport.setVisible(false);
+    harness.transport.sendResize(39, 37);
     harness.transport.setVisible(true);
 
     expect(socket?.sent.map((payload) => JSON.parse(payload))).toEqual([
       { type: "visibility", visible: true },
       { type: "resize", cols: 51, rows: 47 },
       { type: "visibility", visible: false },
+      { type: "resize", cols: 39, rows: 37 },
       { type: "visibility", visible: true },
-      { type: "resize", cols: 51, rows: 47 },
+      { type: "resize", cols: 39, rows: 37 },
     ]);
     harness.transport.dispose();
   });
