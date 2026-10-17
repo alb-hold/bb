@@ -51,7 +51,9 @@ raises attention on its terminal. The SDK exposes the same operation as
 Device handoffs
 
 Agent commands and terminal shells can offer text to copy or an HTTP(S) URL to
-open on the device currently viewing bb:
+open on a device whose WebSocket is admitted by BB's browser request guard
+(the same Origin and Host boundary as every BB WebSocket) and is viewing the
+originating thread or terminal:
 
   bb device copy "text to copy"
   printf '%s' "text to copy" | bb device copy

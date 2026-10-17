@@ -29,6 +29,33 @@ async function connectRealtime(baseUrl: string): Promise<WebSocket> {
   return socket;
 }
 
+async function rejectedRealtimeStatus(
+  baseUrl: string,
+  options: { origin?: string; host?: string },
+): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const headers = options.host === undefined ? {} : { host: options.host };
+    const socket = new WebSocket(`${baseUrl.replace(/^http/, "ws")}/ws`, {
+      ...(options.origin === undefined ? {} : { origin: options.origin }),
+      headers,
+    });
+    socket.once("open", () => {
+      socket.close();
+      reject(new Error("WebSocket unexpectedly opened"));
+    });
+    socket.once("unexpected-response", (_request, response) => {
+      const status = response.statusCode;
+      response.resume();
+      if (status === undefined) {
+        reject(new Error("WebSocket rejection omitted an HTTP status"));
+        return;
+      }
+      resolve(status);
+    });
+    socket.once("error", () => {});
+  });
+}
+
 function nextRealtimeMessage(
   socket: WebSocket,
   type?: string,
@@ -406,6 +433,66 @@ describe("device handoff pending attention", () => {
 });
 
 describe("device handoff websocket acknowledgement", () => {
+  it("rejects guarded upgrades and delivers a queued handoff to an admitted viewer", async () => {
+    const server = await startTestServer();
+    const { thread } = seedThreadFixture(server);
+    const port = new URL(server.baseUrl).port;
+
+    try {
+      await expect(
+        rejectedRealtimeStatus(server.baseUrl, {
+          origin: "https://untrusted.example",
+        }),
+      ).resolves.toBe(403);
+      await expect(
+        rejectedRealtimeStatus(server.baseUrl, {
+          host: `untrusted.example:${port}`,
+        }),
+      ).resolves.toBe(403);
+
+      const admitted = await connectRealtime(server.baseUrl);
+      try {
+        sendRealtime(admitted, {
+          type: "subscribe",
+          target: { kind: "thread-detail", threadId: thread.id },
+        });
+        sendRealtime(admitted, {
+          type: "device-handoff-view",
+          threadId: null,
+        });
+        const hiddenViewReady = nextRealtimeMessage(admitted, "pong");
+        sendRealtime(admitted, { type: "ping" });
+        await hiddenViewReady;
+
+        const response = await server.app.request("/api/v1/device-handoff", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            kind: "copy-text",
+            text: "queued for admitted viewer",
+            origin: { threadId: thread.id },
+          }),
+        });
+        expect(response.status).toBe(200);
+        expect(await response.json()).toEqual({ delivered: 0 });
+
+        const pendingHandoff = nextRealtimeMessage(admitted, "device-handoff");
+        sendRealtime(admitted, {
+          type: "device-handoff-view",
+          threadId: thread.id,
+        });
+        await expect(pendingHandoff).resolves.toMatchObject({
+          type: "device-handoff",
+          request: { kind: "copy-text", text: "queued for admitted viewer" },
+        });
+      } finally {
+        admitted.close();
+      }
+    } finally {
+      await server.close();
+    }
+  });
+
   it("keeps a handoff pending for a subscribed hidden view until the shown item is acknowledged", async () => {
     const server = await startTestServer();
     const { thread } = seedThreadFixture(server);

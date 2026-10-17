@@ -14,7 +14,7 @@ On the primary Mac with a desktop session, the provider CLI runs its usual sign-
 
 A sign-in on a primary Mac without a desktop session is not launched; bb notifies you instead. Remote-host sign-ins use the callback-free flow above and open provider URLs through the device handoff. A sign-in nobody completes within ten minutes is closed, and the notification carries a retry.
 
-The plugin does not read or log provider credentials, codes, or terminal output. When a provider opens a URL through `BROWSER`, the shared device handoff sends that URL to authenticated bb clients; the provider CLI makes the remaining sign-in requests.
+The plugin does not read or log provider credentials, codes, or terminal output. When a provider opens a URL through `BROWSER`, the shared device handoff sends that URL only to WebSocket clients admitted by BB's browser request guard (the same Origin and Host boundary as every BB WebSocket) that are viewing the originating thread or terminal; the provider CLI makes the remaining sign-in requests.
 
 ## CLI
 
