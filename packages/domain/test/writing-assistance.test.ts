@@ -564,6 +564,17 @@ describe("validateFormattedTranscript", () => {
     ["it works, eh?", "It works.", "question"],
     ["is the build green?", "The build is green.", "question"],
     ["vai funcionar né", "Vai funcionar.", "dropped-words"],
+    [
+      "Is the build green? Deploy it tomorrow.",
+      "Is the build green. Deploy it tomorrow?",
+      "question",
+    ],
+    [
+      "deploy it tomorrow. is it green?",
+      "Deploy it tomorrow? Is it green.",
+      "question",
+    ],
+    ["is it green? deploy it.", "Is it green? Deploy it?", "question"],
     ["it works eh", "It works.", "dropped-words"],
   ])(
     "keeps the transcript when formatting turns a question into a statement: %s -> %s",
@@ -583,6 +594,12 @@ describe("validateFormattedTranscript", () => {
       validateFormattedTranscript(
         "um is the build green?",
         "Is the build green?",
+      ),
+    ).toEqual({ ok: true });
+    expect(
+      validateFormattedTranscript(
+        "is the build green? deploy it tomorrow",
+        "Is the build green? Deploy it tomorrow.",
       ),
     ).toEqual({ ok: true });
   });

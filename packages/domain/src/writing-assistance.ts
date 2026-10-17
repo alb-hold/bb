@@ -935,17 +935,36 @@ function questionMarks(text: string): number {
   return text.match(/[?？]/gu)?.length ?? 0;
 }
 
-function keepsSpokenOrder(
+function questionWords(text: string): (boolean | null)[] {
+  const flags: (boolean | null)[] = [];
+  let pending = 0;
+  for (const [piece] of text
+    .toLowerCase()
+    .matchAll(/[\p{L}\p{N}'’]+|[.!?？。\n]/gu)) {
+    if (/^[.!?？。\n]$/u.test(piece)) {
+      flags.fill(piece === "?" || piece === "？", flags.length - pending);
+      pending = 0;
+    } else {
+      flags.push(null);
+      pending += 1;
+    }
+  }
+  return flags;
+}
+
+function spokenPositions(
   tokens: readonly string[],
   rawTokens: readonly string[],
-): boolean {
+): number[] | null {
+  const positions: number[] = [];
   let next = 0;
   for (const token of tokens) {
     while (next < rawTokens.length && rawTokens[next] !== token) next += 1;
-    if (next === rawTokens.length) return false;
+    if (next === rawTokens.length) return null;
+    positions.push(next);
     next += 1;
   }
-  return true;
+  return positions;
 }
 
 export function validateFormattedTranscript(
@@ -978,13 +997,20 @@ export function validateFormattedTranscript(
       return { ok: false, reason: "added-words" };
     }
   }
-  const formattedTokens = wordTokens(body)
-    .flatMap((token) =>
+  const bodyQuestions = questionWords(body);
+  const pieces = wordTokens(body).map((token, index) => ({
+    parts:
       options.literalCode && !source.has(token)
         ? (splitJoinedToken(token, rawTokens) ?? [token])
         : [token],
-    )
+    question: bodyQuestions[index] === true,
+  }));
+  const formattedTokens = pieces
+    .flatMap((piece) => piece.parts)
     .map((token) => spokenSpelling(token, source));
+  const formattedQuestions = pieces.flatMap((piece) =>
+    piece.parts.map(() => piece.question),
+  );
   const unused = new Map<string, number>();
   for (const token of rawTokens) {
     unused.set(token, (unused.get(token) ?? 0) + 1);
@@ -994,9 +1020,14 @@ export function validateFormattedTranscript(
     if (count === 0) return { ok: false, reason: "added-words" };
     unused.set(token, count - 1);
   }
-  if (!keepsSpokenOrder(formattedTokens, rawTokens)) {
-    return { ok: false, reason: "reordered" };
-  }
+  const positions = spokenPositions(formattedTokens, rawTokens);
+  if (positions === null) return { ok: false, reason: "reordered" };
+  const rawQuestions = questionWords(raw);
+  const movedQuestion = positions.some((position, index) => {
+    const spoken = rawQuestions[position];
+    return spoken !== null && spoken !== formattedQuestions[index];
+  });
+  if (movedQuestion) return { ok: false, reason: "question" };
   let enumerated = 0;
   const { marker, window } = correctionCoverage(rawTokens);
   const dropped = droppedTokens(

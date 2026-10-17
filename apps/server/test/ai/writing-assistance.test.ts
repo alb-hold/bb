@@ -425,6 +425,19 @@ describe("dictation segments", () => {
     });
   });
 
+  it("keeps the transcript when formatting moves a question mark to another sentence", async () => {
+    await withTestHarness({}, async (harness) => {
+      registerFakeAiService(harness.deps.aiServices, {
+        transcribe: async () => "Is the build green? Deploy it tomorrow.",
+        complete: async () => "Is the build green. Deploy it tomorrow?",
+      });
+      await expect((await postSegment(harness)).json()).resolves.toMatchObject({
+        text: "Is the build green? Deploy it tomorrow.",
+        formatted: false,
+      });
+    });
+  });
+
   it("keeps the transcript when formatting reorders spoken words", async () => {
     await withTestHarness({}, async (harness) => {
       registerFakeAiService(harness.deps.aiServices, {
