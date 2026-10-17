@@ -348,6 +348,7 @@ describe("spawnLoggedProcess", () => {
     const secondBytes = 11 * 1024 * 1024;
     const enteredPath = join(logDir, "survivor-before-write");
     const releasePath = join(logDir, "release-survivor");
+    const completionPath = join(logDir, "survivor-writer-finished");
     const first = spawnLoggedProcess({
       command: process.execPath,
       args: [
@@ -386,6 +387,7 @@ describe("spawnLoggedProcess", () => {
           enteredPath,
           releasePath,
           pauseAtBytes: 9 * 1024 * 1024,
+          completionPath,
         },
       });
       await expect
@@ -407,6 +409,12 @@ describe("spawnLoggedProcess", () => {
         .toBe(true);
       writeFileSync(releasePath, "release");
       expect(await waitForExit(survivor)).toBe(0);
+      await expect
+        .poll(() => existsSync(completionPath), {
+          timeout: 5_000,
+          interval: 10,
+        })
+        .toBe(true);
       await expect
         .poll(
           () =>
