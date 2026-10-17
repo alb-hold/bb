@@ -98,6 +98,10 @@ function spawnFixture(
 }
 
 function waitForExit(child: ChildProcess, timeoutMs: number): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    if (child.pid !== undefined) activeChildren.delete(child.pid);
+    return Promise.resolve();
+  }
   return new Promise((resolve, reject) => {
     const timer = setTimeout(
       () => reject(new Error(`Process did not exit within ${timeoutMs}ms`)),
@@ -189,6 +193,17 @@ async function waitForProcessExitByPid(
 }
 
 describe("server process ownership", () => {
+  it("waits successfully when the child exited before the wait begins", async () => {
+    const child = spawn(process.execPath, ["-e", "process.exit(0)"], {
+      stdio: "ignore",
+    });
+    await new Promise<void>((resolve, reject) => {
+      child.once("error", reject);
+      child.once("exit", () => resolve());
+    });
+    await expect(waitForExit(child, 10)).resolves.toBeUndefined();
+  });
+
   it("ignores IPC disconnect while its launcher parent is alive", async () => {
     const dir = scratchDir();
     const marker = join(dir, "disconnect.log");
