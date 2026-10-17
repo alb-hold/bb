@@ -622,6 +622,7 @@ describe("native terminal threads", () => {
       launchArgs: [
         "--no-daemon",
         "--dangerously-bypass-approvals-and-sandbox",
+        "--no-alt-screen",
         "it's $HOME",
       ],
       reattachOnly: false,
@@ -640,6 +641,7 @@ describe("native terminal threads", () => {
       ).toEqual([
         "--no-daemon",
         "--dangerously-bypass-approvals-and-sandbox",
+        "--no-alt-screen",
         "it's $HOME",
         "",
       ]);
@@ -1748,6 +1750,7 @@ describe("native terminal threads", () => {
     expect(spec.cli.launchArgs).toEqual([
       "--no-daemon",
       "--dangerously-bypass-approvals-and-sandbox",
+      "--no-alt-screen",
     ]);
     expect(spec.cli.activity?.transcript?.prompt).toContainEqual({
       match: {
