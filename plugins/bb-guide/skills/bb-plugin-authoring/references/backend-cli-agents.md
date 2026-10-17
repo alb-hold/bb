@@ -291,8 +291,9 @@ bb.experimental_aiServices.register({
   self-correction phrase that replaces what was said before it, such as no in
   no wait) or a number's minus sign, or drops any word (even a hesitation sound such as uh) other
   than a spoken self-correction (no wait, quer dizer) with
-  the words just before it that it replaces (at most six, and no more than
-  were said after it; a phrase that replaces nothing is not a correction), a short function word said twice with only spaces between that can never
+  the phrase just before it that it replaces (one unbroken run of at most six
+  words ending at the correction, no longer than what was said after it,
+  starting with the same word, and nothing else near it left out; a phrase that replaces nothing is not a correction), a short function word said twice with only spaces between that can never
   stand twice (such as the, I, of or de; never very, had, that, is, her or in,
   and never across punctuation), spoken symbol
   names in literal-code mode, or a numbered list's spoken numbers and

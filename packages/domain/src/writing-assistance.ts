@@ -866,29 +866,28 @@ function correctionCoverage(tokens: readonly string[]): {
   return { marker, window, spans };
 }
 
-function replacesMoreThanSaid(
+function correctionAllowance(
   tokens: readonly string[],
   dropped: readonly boolean[],
   spans: readonly CorrectionSpan[],
-): boolean {
-  return spans.some((span, position) => {
+): boolean[] | null {
+  const allowed = tokens.map(() => false);
+  for (const [position, span] of spans.entries()) {
     const replacementEnd = spans[position + 1]?.markerStart ?? tokens.length;
-    let first = -1;
-    for (let index = span.windowStart; index < span.markerStart; index += 1) {
-      if (dropped[index] && !FILLER_WORDS.has(tokens[index]!)) {
-        first = index;
-        break;
-      }
+    let first = span.markerStart;
+    while (first > span.windowStart && dropped[first - 1]) first -= 1;
+    for (let index = span.windowStart; index < first; index += 1) {
+      if (dropped[index]) return null;
     }
-    if (first === -1) return false;
-    let replaced = 0;
-    for (let index = first; index < span.markerStart; index += 1) {
-      if (FILLER_WORDS.has(tokens[index]!)) continue;
-      if (!dropped[index]) return true;
-      replaced += 1;
+    const replaced = span.markerStart - first;
+    if (replaced === 0) continue;
+    if (replaced > replacementEnd - span.markerEnd) return null;
+    if (tokens[first] !== tokens[span.markerEnd]) return null;
+    for (let index = first; index < span.markerEnd; index += 1) {
+      allowed[index] = true;
     }
-    return replaced > replacementEnd - span.markerEnd;
-  });
+  }
+  return allowed;
 }
 
 function droppedTokens(
@@ -1074,25 +1073,6 @@ function negativeNumbers(text: string): string[] {
     .sort();
 }
 
-function correctingMarkers(
-  tokens: readonly string[],
-  dropped: readonly boolean[],
-  spans: readonly CorrectionSpan[],
-): boolean[] {
-  const correcting = tokens.map(() => false);
-  for (const span of spans) {
-    let replaced = false;
-    for (let index = span.windowStart; index < span.markerStart; index += 1) {
-      if (dropped[index] && !FILLER_WORDS.has(tokens[index]!)) replaced = true;
-    }
-    if (!replaced) continue;
-    for (let index = span.markerStart; index < span.markerEnd; index += 1) {
-      correcting[index] = true;
-    }
-  }
-  return correcting;
-}
-
 export function validateFormattedTranscript(
   raw: string,
   formatted: string,
@@ -1176,18 +1156,19 @@ export function validateFormattedTranscript(
         marker[index]! || window[index]! || rawTokens[index - 1] === token,
     ),
   );
-  const correcting = correctingMarkers(rawTokens, dropped, spans);
+  const allowed = correctionAllowance(rawTokens, dropped, spans);
   const lostNegation = rawTokens.some(
-    (token, index) => dropped[index] && !correcting[index] && isNegation(token),
+    (token, index) =>
+      dropped[index] &&
+      !(allowed?.[index] ?? marker[index]!) &&
+      isNegation(token),
   );
   if (lostNegation) return { ok: false, reason: "negation" };
-  if (replacesMoreThanSaid(rawTokens, dropped, spans)) {
-    return { ok: false, reason: "dropped-words" };
-  }
+  if (allowed === null) return { ok: false, reason: "dropped-words" };
   for (let index = 0; index < rawTokens.length; index += 1) {
     if (!dropped[index]) continue;
     const token = rawTokens[index]!;
-    if (correcting[index] || window[index]) continue;
+    if (allowed[index]) continue;
     if (options.literalCode && SPOKEN_SYMBOLS.has(token)) continue;
     if (repeats[index]) continue;
     const enumerator = ENUMERATOR_VALUES.get(token);

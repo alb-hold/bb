@@ -891,11 +891,33 @@ describe("validateFormattedTranscript", () => {
     ).toEqual({ ok: true });
     expect(
       validateFormattedTranscript(
-        "use the staging database quer dizer o banco de produção",
-        "Use o banco de produção.",
+        "usa o banco de staging quer dizer o banco de produção",
+        "Usa o banco de produção.",
       ),
     ).toEqual({ ok: true });
+    expect(
+      validateFormattedTranscript("call john actually call mary", "Call Mary."),
+    ).toEqual({ ok: true });
   });
+
+  it.each([
+    ["uh deploy it now no wait launch it", "Deploy it launch it."],
+    ["deploy it now no wait launch it", "Deploy it, launch it."],
+    [
+      "use the staging database quer dizer o banco de produção",
+      "Use o banco de produção.",
+    ],
+    ["monday no wait tuesday", "Tuesday."],
+    ["uh deploy on monday no wait on tuesday", "Deploy on Tuesday."],
+  ])(
+    "keeps the transcript unless a self-correction drops only the phrase it replaces: %s",
+    (raw, formatted) => {
+      expect(validateFormattedTranscript(raw, formatted)).toEqual({
+        ok: false,
+        reason: "dropped-words",
+      });
+    },
+  );
 
   it("rejects a fluent rewrite that loses a negation", () => {
     expect(
