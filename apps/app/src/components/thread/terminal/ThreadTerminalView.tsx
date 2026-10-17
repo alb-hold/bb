@@ -65,6 +65,7 @@ import {
 } from "./terminal-shared-size";
 import { handleTerminalFileDrop } from "./terminal-file-drop";
 import { terminalPromptLine } from "./terminal-shell-state";
+import { createTerminalOutputPipeline } from "./terminal-output-pipeline";
 import {
   attachTerminalPromptTracker,
   type TerminalPromptTrackerState,
@@ -441,6 +442,7 @@ interface TerminalOutputWriteArgs {
   onParsed: () => void;
   replayWriteState: TerminalReplayWriteState;
   terminal: XTermTerminal;
+  pipeline?: ReturnType<typeof createTerminalOutputPipeline>;
 }
 
 interface ForwardTerminalDataArgs {
@@ -484,6 +486,8 @@ interface HandleTerminalServerMessageArgs {
   replayWriteState: TerminalReplayWriteState;
   setReplayNextSeq: (nextSeq: number | null) => void;
   terminal: XTermTerminal;
+  pipeline?: ReturnType<typeof createTerminalOutputPipeline>;
+  allowAttachedGrid?: boolean;
 }
 
 function encodeBytesBase64(bytes: Uint8Array): string {
@@ -615,15 +619,23 @@ export async function writeRetainedTerminalOutput({
   lastNotice,
   session,
   terminal,
+  pipeline,
 }: {
   chunks: readonly Uint8Array[];
   lastNotice: TerminalSessionStatusNoticeRef;
   session: TerminalSession;
   terminal: XTermTerminal;
+  pipeline?: ReturnType<typeof createTerminalOutputPipeline>;
 }): Promise<void> {
-  for (const chunk of chunks) {
-    await new Promise<void>((resolve) => terminal.write(chunk, resolve));
-  }
+  await Promise.all(
+    chunks.map(
+      (chunk) =>
+        new Promise<void>((resolve) => {
+          if (pipeline) pipeline.push(chunk, resolve);
+          else terminal.write(chunk, resolve);
+        }),
+    ),
+  );
   writeTerminalSessionStatusNotice({ lastNotice, session, terminal });
   await new Promise<void>((resolve) => terminal.write("", resolve));
 }
@@ -654,14 +666,23 @@ export function writeTerminalOutput({
   onParsed,
   replayWriteState,
   terminal,
+  pipeline,
 }: TerminalOutputWriteArgs): void {
+  const write = (callback: () => void) => {
+    if (pipeline)
+      pipeline.push(
+        typeof data === "string" ? new TextEncoder().encode(data) : data,
+        callback,
+      );
+    else terminal.write(data, callback);
+  };
   if (!isReplay) {
-    terminal.write(data, onParsed);
+    write(onParsed);
     return;
   }
 
   replayWriteState.suppressedWriteCount += 1;
-  terminal.write(data, () => {
+  write(() => {
     replayWriteState.suppressedWriteCount -= 1;
     onParsed();
   });
@@ -676,9 +697,16 @@ export function handleTerminalServerMessage({
   replayWriteState,
   setReplayNextSeq,
   terminal,
+  pipeline,
+  allowAttachedGrid = true,
 }: HandleTerminalServerMessageArgs): void {
   switch (message.type) {
     case "attached":
+      if (allowAttachedGrid) {
+        if (pipeline)
+          pipeline.setGrid(message.session.cols, message.session.rows);
+        else terminal.resize(message.session.cols, message.session.rows);
+      }
       onSessionChange?.(message.session);
       setReplayNextSeq(message.nextSeq);
       if (message.replayStartSeq === message.nextSeq) {
@@ -709,6 +737,7 @@ export function handleTerminalServerMessage({
         },
         replayWriteState,
         terminal,
+        pipeline,
       });
       return;
     }
@@ -1003,6 +1032,9 @@ export function ThreadTerminalView({
     let stopObservingFonts: (() => void) | null = null;
     let stopWatchingLayout: (() => void) | null = null;
     let sharedSize: TerminalGridSize | null = null;
+    let markerGridActive = false;
+    let outputPipeline: ReturnType<typeof createTerminalOutputPipeline> | null =
+      null;
     let containerHasSize = hasVisibleTerminalSize({
       containerElement: container,
     });
@@ -1084,6 +1116,9 @@ export function ThreadTerminalView({
         terminal,
       });
       terminalRef.current = terminal;
+      outputPipeline = createTerminalOutputPipeline(terminal, () => {
+        markerGridActive = true;
+      });
       fitAddon = new LoadedFitAddon();
       terminal.loadAddon(fitAddon);
       terminal.loadAddon(new Unicode11Addon());
@@ -1147,9 +1182,14 @@ export function ThreadTerminalView({
         ) {
           return;
         }
-        const display = terminalDisplaySize(fitted, sharedSize);
-        if (terminal.cols !== display.cols || terminal.rows !== display.rows) {
-          terminal.resize(display.cols, display.rows);
+        if (!markerGridActive) {
+          const display = terminalDisplaySize(fitted, sharedSize);
+          if (
+            terminal.cols !== display.cols ||
+            terminal.rows !== display.rows
+          ) {
+            terminal.resize(display.cols, display.rows);
+          }
         }
         transport?.sendResize(fitted.cols, fitted.rows);
       };
@@ -1290,6 +1330,8 @@ export function ThreadTerminalView({
               replayNextSeq = nextSeq;
             },
             terminal: activeTerminal,
+            pipeline: outputPipeline ?? undefined,
+            allowAttachedGrid: !markerGridActive,
           });
         },
         onSequenceGap: () => {
@@ -1320,6 +1362,7 @@ export function ThreadTerminalView({
             lastNotice: lastStatusNoticeRef,
             session: sessionRef.current,
             terminal: activeTerminal,
+            pipeline: outputPipeline ?? undefined,
           });
         }
       } else {

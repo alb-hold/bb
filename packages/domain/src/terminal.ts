@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { stripTerminalGridMarkers } from "./terminal-grid.js";
 
 export const TERMINAL_COLS_MAX = 500;
 export const TERMINAL_ROWS_MAX = 200;
@@ -110,7 +111,8 @@ export function createTerminalOutputLineReader(): TerminalOutputLineReader {
 
 export function readTerminalOutputLines(text: string): string[] {
   const reader = createTerminalOutputLineReader();
-  return [...reader.push(text), ...reader.flush()];
+  const withoutGridMarkers = stripTerminalGridMarkers(text);
+  return [...reader.push(withoutGridMarkers), ...reader.flush()];
 }
 
 export const terminalColsSchema = z
