@@ -133,6 +133,27 @@ async function waitForProcessGroupExitWithTimeout(args: {
   }
 }
 
+async function killProcessGroupAndWait(args: {
+  processGroupId: number;
+  timeoutMs: number;
+}): Promise<void> {
+  if (processGroupHasLiveMembers(args.processGroupId)) {
+    try {
+      process.kill(-args.processGroupId, "SIGKILL");
+    } catch (error) {
+      if (
+        typeof error !== "object" ||
+        error === null ||
+        !("code" in error) ||
+        error.code !== "ESRCH"
+      ) {
+        throw error;
+      }
+    }
+  }
+  await waitForProcessGroupExitWithTimeout(args);
+}
+
 async function runAppImageBridgeSupervisor(
   bridgeRelativePathEnv: string,
   shutdownGraceMs: number,
@@ -447,6 +468,12 @@ export function startBbAppProcess(args: StartBbAppProcessArgs): BbAppProcess {
     pid,
     async stop(stopArgs) {
       if (hasProcessExited(childProcess)) {
+        if (args.runtime.kind === "appimage") {
+          await killProcessGroupAndWait({
+            processGroupId: pid,
+            timeoutMs: stopArgs.killTimeoutMs,
+          });
+        }
         return;
       }
       childProcess.kill(stopArgs.signal);
@@ -455,41 +482,30 @@ export function startBbAppProcess(args: StartBbAppProcessArgs): BbAppProcess {
         timeoutMs: stopArgs.timeoutMs,
       });
       if (gracefulResult === "exited") {
+        if (args.runtime.kind === "appimage") {
+          await killProcessGroupAndWait({
+            processGroupId: pid,
+            timeoutMs: stopArgs.killTimeoutMs,
+          });
+        }
         return;
       }
 
-      if (!hasProcessExited(childProcess)) {
-        if (args.runtime.kind === "appimage") {
-          try {
-            process.kill(-pid, stopArgs.killSignal);
-          } catch (error) {
-            if (
-              typeof error === "object" &&
-              error !== null &&
-              "code" in error &&
-              error.code === "ESRCH"
-            ) {
-              childProcess.kill(stopArgs.killSignal);
-            } else {
-              throw error;
-            }
-          }
-        } else {
-          childProcess.kill(stopArgs.killSignal);
-        }
-      }
       if (args.runtime.kind === "appimage") {
         await Promise.all([
           waitForProcessExitWithTimeout({
             childProcess,
             timeoutMs: stopArgs.killTimeoutMs,
           }),
-          waitForProcessGroupExitWithTimeout({
+          killProcessGroupAndWait({
             processGroupId: pid,
             timeoutMs: stopArgs.killTimeoutMs,
           }),
         ]);
       } else {
+        if (!hasProcessExited(childProcess)) {
+          childProcess.kill(stopArgs.killSignal);
+        }
         await waitForProcessExitWithTimeout({
           childProcess,
           timeoutMs: stopArgs.killTimeoutMs,

@@ -320,6 +320,83 @@ process.stdout.write(\`grandchild=\${grandchild.pid}\\n\`);
   );
 
   it.skipIf(process.platform !== "linux")(
+    "kills descendants when the AppImage supervisor has already exited",
+    async () => {
+      const script = await createTempScript({
+        contents: `
+import { spawn } from "node:child_process";
+const grandchild = spawn(
+  process.execPath,
+  ["--eval", "setInterval(() => undefined, 1000)"],
+  { stdio: "inherit" },
+);
+process.stdout.write("grandchild=" + grandchild.pid + "\\n");
+`,
+      });
+      const processEntry = startBbAppProcess({
+        bridgePath: script.path,
+        cwd: script.root,
+        env: {
+          ...process.env,
+          APPDIR: script.root,
+        },
+        logLineLimit: 20,
+        runtime: {
+          appDirPath: script.root,
+          executablePath: process.execPath,
+          kind: "appimage",
+          mode: "electron-node",
+        },
+      });
+      processes.push(processEntry);
+      await waitForLog({ process: processEntry, text: "grandchild=" });
+      const grandchildPid = Number(
+        processEntry.logs.text().match(/grandchild=(\d+)/u)?.[1],
+      );
+      expect(grandchildPid).toBeGreaterThan(0);
+
+      try {
+        processEntry.childProcess.kill("SIGKILL");
+        await processEntry.exit;
+        await processEntry.stop({
+          killSignal: "SIGKILL",
+          killTimeoutMs: 1_000,
+          signal: "SIGTERM",
+          timeoutMs: 5_000,
+        });
+
+        const stoppedGrandchild = await readLinuxProcessStat(
+          grandchildPid,
+        ).catch((error: unknown) => {
+          if (
+            error instanceof Error &&
+            "code" in error &&
+            (error.code === "ENOENT" || error.code === "ESRCH")
+          ) {
+            return null;
+          }
+          throw error;
+        });
+        expect(
+          stoppedGrandchild === null || stoppedGrandchild.state === "Z",
+        ).toBe(true);
+      } finally {
+        try {
+          process.kill(-processEntry.pid, "SIGKILL");
+        } catch (error) {
+          if (
+            !(error instanceof Error) ||
+            !("code" in error) ||
+            (error.code !== "ESRCH" && error.code !== "EPERM")
+          ) {
+            throw error;
+          }
+        }
+      }
+    },
+  );
+
+  it.skipIf(process.platform !== "linux")(
     "waits for live process-group members after the supervisor exits",
     async () => {
       const script = await createTempScript({
@@ -361,16 +438,16 @@ setInterval(() => undefined, 1000);
         signalGroupKill = resolvePromise;
       });
       const realKill = process.kill.bind(process);
-      const killSpy = vi.spyOn(process, "kill").mockImplementation(
-        (target, signal) => {
+      const killSpy = vi
+        .spyOn(process, "kill")
+        .mockImplementation((target, signal) => {
           if (target === -processEntry.pid && signal === "SIGKILL") {
             signalGroupKill();
             realKill(processEntry.pid, signal);
             return true;
           }
           return realKill(target, signal);
-        },
-      );
+        });
 
       let stopResolved = false;
       const stopPromise = processEntry
