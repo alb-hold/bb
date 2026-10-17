@@ -101,8 +101,10 @@ that service; foreground `bb-app host-daemon` runs leave it off unless you pass
 
 Service stdout and stderr are captured in `logs/server-stdio.log` and
 `logs/host-daemon-stdio.log` under the selected data directory, including
-startup errors. Each active file is capped at 10 MiB, with five rotated files
-retained and the oldest deleted. Follow them with `tail -F`.
+startup errors. Each writer owns separate log segments, each capped at 10 MiB;
+the five newest completed segments per log family are retained. The named `.log`
+file is a hard-link view of the newest writer segment. Follow that segment with
+`tail -F` and inspect matching `.backup-*` files for earlier output.
 
 Updates commands
 

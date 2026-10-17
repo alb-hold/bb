@@ -7,288 +7,188 @@ const fs = require("node:fs");
 const crypto = require("node:crypto");
 const logPath = process.argv[1];
 const writerBarrier = process.argv[2] ? JSON.parse(process.argv[2]) : null;
-const lockPath = logPath + ".lock";
-const appendLockPath = logPath + ".append.lock";
 const sizeLimit = 10 * 1024 * 1024;
-const fileCount = 5;
-const lockWaitLimitMs = 500;
-const locklessPeriodMs = 5_000;
-const appendLockStaleMs = 2_000;
-const maxPendingBytes = 16 * 1024 * 1024;
-let locklessUntil = 0;
-const pendingChunks = [];
-let processing = false;
-let pendingBytes = 0;
-let inputPaused = false;
+const retainedBackups = 5;
+const token = process.pid + "-" + crypto.randomUUID();
+const familyPrefix = logPath + ".";
+const activePath = familyPrefix + "active-" + token;
+let activeFd;
+let activeSize = 0;
+let aliasSequence = 0;
 let writerBarrierUsed = false;
-let writerAfterStatBarrierUsed = false;
-let writerAttemptPathUsed = false;
-const waitForFile = (path, lockToken) =>
-  new Promise((resolve) => {
-    const poll = () => {
-      if (fs.existsSync(path)) resolve();
-      else {
-        if (lockToken !== undefined) refreshLock(appendLockPath, lockToken);
-        setTimeout(poll, 10);
-      }
-    };
-    poll();
-  });
-const rotate = () => {
-  const oldestPath = logPath + "." + fileCount;
-  if (fs.existsSync(oldestPath)) fs.unlinkSync(oldestPath);
-  for (let index = fileCount - 1; index >= 1; index -= 1) {
-    const sourcePath = logPath + "." + index;
-    if (fs.existsSync(sourcePath)) fs.renameSync(sourcePath, logPath + "." + (index + 1));
-  }
-  if (fs.existsSync(logPath)) fs.renameSync(logPath, logPath + ".1");
-};
-const readLock = (path) => {
-  let stat;
+let failedInjectedWrite = false;
+let stopped = false;
+const pendingChunks = [];
+let pendingBytes = 0;
+const maxPendingBytes = 16 * 1024 * 1024;
+let processing = false;
+let inputPaused = false;
+const backupPattern = /^.+\\.backup-[0-9]+-[0-9]+-[a-f0-9-]+$/;
+const activePattern = /^.+\\.active-[0-9]+-[a-f0-9-]+$/;
+const paths = () => fs.readdirSync(require("node:path").dirname(logPath)).map((name) => require("node:path").join(require("node:path").dirname(logPath), name));
+const uniqueBackupPath = () => familyPrefix + "backup-" + Date.now() + "-" + token + "-" + crypto.randomUUID();
+const publishAliasTo = (targetPath) => {
+  const temporary = logPath + ".alias-" + token + "-" + (++aliasSequence);
   try {
-    stat = fs.statSync(path);
-  } catch {
-    return null;
-  }
-  let value;
-  try {
-    value = fs.readFileSync(path, "utf8");
-  } catch {
-    return { stat, pid: null, token: null };
-  }
-  try {
-    let lock;
+    fs.linkSync(targetPath, temporary);
     try {
-      lock = JSON.parse(value);
+      fs.renameSync(temporary, logPath);
     } catch {
-      lock = { pid: Number(value), token: null };
+      try { fs.unlinkSync(logPath); } catch {}
+      fs.renameSync(temporary, logPath);
     }
-    if (!Number.isInteger(lock.pid) || lock.pid < 1) return { stat, pid: null, token: null };
-    return { stat, pid: lock.pid, token: typeof lock.token === "string" ? lock.token : null };
   } catch {
-    return { stat, pid: null, token: null };
+    try { fs.unlinkSync(temporary); } catch {}
   }
 };
-const lockOwnerIsAlive = (owner) => {
-  if (owner === null || owner.pid === null) return true;
+const pruneBackups = () => {
   try {
-    process.kill(owner.pid, 0);
-    return true;
-  } catch (error) {
-    return error.code !== "ESRCH";
-  }
-};
-const ownsLock = (path, token) => {
-  const owner = readLock(path);
-  return owner !== null && owner.pid === process.pid && owner.token === token;
-};
-const refreshLock = (path, token) => {
-  if (!ownsLock(path, token)) return false;
-  try {
-    const now = new Date();
-    fs.utimesSync(path, now, now);
-  } catch {
-    return false;
-  }
-  return ownsLock(path, token);
-};
-const claimExpiredLock = (path, owner) => {
-  const claimedPath = path + ".reclaim-" + process.pid + "-" + crypto.randomUUID();
-  try {
-    fs.renameSync(path, claimedPath);
-  } catch {
-    return;
-  }
-  let claimed;
-  try {
-    claimed = readLock(claimedPath);
-    if (claimed === null || claimed.stat.ino !== owner.stat.ino || claimed.stat.dev !== owner.stat.dev) {
-      try { fs.renameSync(claimedPath, path); } catch {}
-      return;
+    const backups = paths().filter((path) => path.startsWith(familyPrefix) && backupPattern.test(require("node:path").basename(path)));
+    backups.sort((left, right) => fs.statSync(left).mtimeMs - fs.statSync(right).mtimeMs);
+    while (backups.length > retainedBackups) {
+      const oldest = backups.shift();
+      try {
+        const aliasStat = fs.statSync(logPath);
+        const oldestStat = fs.statSync(oldest);
+        if (aliasStat.dev === oldestStat.dev && aliasStat.ino === oldestStat.ino) {
+          const replacement = paths()
+            .filter((path) => path !== oldest && (activePattern.test(require("node:path").basename(path)) || backupPattern.test(require("node:path").basename(path))))
+            .sort((left, right) => fs.statSync(right).mtimeMs - fs.statSync(left).mtimeMs)[0];
+          if (replacement !== undefined) publishAliasTo(replacement);
+          else fs.unlinkSync(logPath);
+        }
+      } catch {}
+      try { fs.unlinkSync(oldest); } catch {}
     }
-    if (Date.now() - claimed.stat.mtimeMs <= appendLockStaleMs) {
-      try { fs.renameSync(claimedPath, path); } catch {}
-      return;
-    }
-    fs.unlinkSync(claimedPath);
   } catch {}
 };
-const createLock = (path) => {
-  const token = crypto.randomUUID();
-  let fd;
-  try {
-    fd = fs.openSync(path, "wx", 0o600);
-    fs.writeSync(fd, JSON.stringify({ pid: process.pid, token }));
-    return { fd, token };
-  } catch (error) {
-    if (fd !== undefined) {
-      try { fs.closeSync(fd); } catch {}
-      try { fs.unlinkSync(path); } catch {}
-    }
-    if (error.code !== "EEXIST") return -1;
-    const owner = readLock(path);
-    if (owner !== null && Date.now() - owner.stat.mtimeMs > appendLockStaleMs) {
-      claimExpiredLock(path, owner);
-    } else if (!lockOwnerIsAlive(owner)) {
-      claimExpiredLock(path, owner);
-    }
-    return null;
-  }
-};
-const appendWithLock = async (chunk, done, initialOffset, lockFd, lockToken) => {
-  let fd;
-  let offset = initialOffset;
-  let retrying = false;
-  if (writerBarrier !== null && writerBarrier.attemptPath && !writerAttemptPathUsed) {
-    writerAttemptPathUsed = true;
-    fs.writeFileSync(writerBarrier.attemptPath, "attempted");
-  }
-  const continueAfterLostLock = () => {
-    retrying = true;
-    if (fd !== undefined) {
-      try { fs.closeSync(fd); } catch {}
-      fd = undefined;
-    }
-    releaseLock(appendLockPath, lockFd, lockToken);
-  };
-  try {
-    while (offset < chunk.length) {
-      if (!refreshLock(appendLockPath, lockToken)) {
-        continueAfterLostLock();
-        return;
-      }
-      let size = fs.existsSync(logPath) ? fs.statSync(logPath).size : 0;
-      if (size >= sizeLimit) {
-        if (fd !== undefined) {
-          fs.closeSync(fd);
-          fd = undefined;
+const migrateLegacyFiles = () => {
+  const baseName = require("node:path").basename(logPath);
+  const numberedBackups = paths().filter((path) => {
+    const name = require("node:path").basename(path);
+    const suffix = name.slice(baseName.length + 1);
+    return name.startsWith(baseName + ".") && /^[1-9][0-9]*$/.test(suffix);
+  }).sort((left, right) => Number(require("node:path").basename(right).slice(baseName.length + 1)) - Number(require("node:path").basename(left).slice(baseName.length + 1)));
+  const candidates = [...numberedBackups, logPath];
+  for (const sourcePath of candidates) {
+    if (!fs.existsSync(sourcePath)) continue;
+    let sourceFd;
+    let backupFd;
+    let backupPath;
+    try {
+      const sourceStat = fs.statSync(sourcePath);
+      const alreadySegmented = paths().some((path) => {
+        if (path === sourcePath || (!activePattern.test(require("node:path").basename(path)) && !backupPattern.test(require("node:path").basename(path))) || !fs.existsSync(path)) return false;
+        const candidateStat = fs.statSync(path);
+        return candidateStat.dev === sourceStat.dev && candidateStat.ino === sourceStat.ino;
+      });
+      if (alreadySegmented || sourceStat.size === 0) continue;
+      sourceFd = fs.openSync(sourcePath, "r");
+      let remaining = sourceStat.size;
+      let segmentSize = 0;
+      const buffer = Buffer.alloc(64 * 1024);
+      while (remaining > 0) {
+        if (backupFd === undefined || segmentSize >= sizeLimit) {
+          if (backupFd !== undefined) fs.closeSync(backupFd);
+          backupPath = uniqueBackupPath();
+          backupFd = fs.openSync(backupPath, "wx", 0o600);
+          segmentSize = 0;
         }
-        if (!refreshLock(appendLockPath, lockToken)) {
-          continueAfterLostLock();
-          return;
-        }
-        rotate();
-        size = 0;
+        const length = Math.min(buffer.length, remaining, sizeLimit - segmentSize);
+        const read = fs.readSync(sourceFd, buffer, 0, length, null);
+        if (read <= 0) throw new Error("legacy stdio log ended during migration");
+        let offset = 0;
+        while (offset < read) offset += fs.writeSync(backupFd, buffer, offset, read - offset);
+        remaining -= read;
+        segmentSize += read;
       }
-      if (!refreshLock(appendLockPath, lockToken)) {
-        continueAfterLostLock();
-        return;
-      }
-      if (fd === undefined) fd = fs.openSync(logPath, "a", 0o600);
-      if (
-        writerBarrier !== null &&
-        writerBarrier.afterStatEnteredPath &&
-        !writerAfterStatBarrierUsed
-      ) {
-        writerAfterStatBarrierUsed = true;
-        fs.writeFileSync(
-          writerBarrier.afterStatEnteredPath,
-          JSON.stringify({ pid: process.pid, token: lockToken }),
-        );
-        await waitForFile(writerBarrier.afterStatReleasePath, lockToken);
-        if (!refreshLock(appendLockPath, lockToken)) {
-          continueAfterLostLock();
-          return;
-        }
-      }
-      const length = Math.min(sizeLimit - size, chunk.length - offset);
-      const written = fs.writeSync(fd, chunk, offset, length);
-      if (written === 0) break;
-      offset += written;
+      fs.closeSync(sourceFd);
+      sourceFd = undefined;
+      if (backupFd !== undefined) fs.closeSync(backupFd);
+      backupFd = undefined;
+      fs.unlinkSync(sourcePath);
+    } catch {
+      if (sourceFd !== undefined) { try { fs.closeSync(sourceFd); } catch {} }
+      if (backupFd !== undefined) { try { fs.closeSync(backupFd); } catch {} }
     }
-  } catch {}
-  finally {
-    if (fd !== undefined) {
-      try { fs.closeSync(fd); } catch {}
+  }
+  pruneBackups();
+};
+const recoverClosedSegments = () => {
+  for (const path of paths()) {
+    const name = require("node:path").basename(path);
+    if (!path.startsWith(familyPrefix) || !activePattern.test(name)) continue;
+    const ownerPid = Number(name.slice(name.indexOf(".active-") + 8).split("-")[0]);
+    if (!Number.isInteger(ownerPid) || ownerPid < 1) continue;
+    try {
+      process.kill(ownerPid, 0);
+    } catch (error) {
+      if (error.code !== "ESRCH") continue;
+      try { fs.renameSync(path, uniqueBackupPath()); } catch {}
     }
-    releaseLock(appendLockPath, lockFd, lockToken);
-    if (retrying) setTimeout(() => appendSerialized(chunk, done, offset), 10);
-    else done();
+  }
+  pruneBackups();
+};
+const createActive = () => {
+  activeFd = fs.openSync(activePath, "wx", 0o600);
+  activeSize = 0;
+  publishAliasTo(activePath);
+};
+const closeActive = (archive) => {
+  if (activeFd !== undefined) {
+    try { fs.closeSync(activeFd); } catch {}
+    activeFd = undefined;
+  }
+  if (archive && fs.existsSync(activePath)) {
+    try { fs.renameSync(activePath, uniqueBackupPath()); } catch {}
+    pruneBackups();
   }
 };
-const appendSerialized = (chunk, done, initialOffset = 0) => {
-  const reservation = createLock(appendLockPath);
-  if (reservation === null) {
-    setTimeout(() => appendSerialized(chunk, done, initialOffset), 10);
-    return;
-  }
-  if (reservation === -1) {
-    done();
-    return;
-  }
-  const append = () => appendWithLock(chunk, done, initialOffset, reservation.fd, reservation.token);
-  if (
-    writerBarrier !== null &&
-    writerBarrier.enteredPath &&
-    !writerBarrierUsed
-  ) {
-    writerBarrierUsed = true;
-    fs.writeFileSync(writerBarrier.enteredPath, JSON.stringify({ pid: process.pid, token: reservation.token }));
-    const waitForRelease = () => {
-      if (!fs.existsSync(writerBarrier.releasePath)) {
-        refreshLock(appendLockPath, reservation.token);
-        setTimeout(waitForRelease, 10);
-        return;
-      }
-      append();
-    };
-    waitForRelease();
-    return;
-  }
-  append();
+const rotateOwnedSegment = () => {
+  closeActive(true);
+  createActive();
 };
-const releaseLock = (path, fd, token) => {
-  try { fs.closeSync(fd); } catch {}
-  if (ownsLock(path, token)) {
-    try { fs.unlinkSync(path); } catch {}
-  }
-};
-const acquireLock = () => {
-  const reservation = createLock(lockPath);
-  if (reservation === null || reservation === -1) return reservation === -1 ? -1 : null;
-  return reservation;
-};
-const processChunk = (chunk, startedAt, done) => {
-  if (Date.now() < locklessUntil) {
-    appendSerialized(chunk, done);
-    return;
-  }
-  const lock = acquireLock();
-  if (lock === null) {
-    if (Date.now() - startedAt < lockWaitLimitMs) {
-      setTimeout(() => processChunk(chunk, startedAt, done), 10);
-      return;
+const append = (chunk) => {
+  let offset = 0;
+  while (offset < chunk.length) {
+    if (activeSize >= sizeLimit) rotateOwnedSegment();
+    const length = Math.min(sizeLimit - activeSize, chunk.length - offset);
+    if (writerBarrier !== null && writerBarrier.failFirstWrite && !failedInjectedWrite) {
+      failedInjectedWrite = true;
+      const fullFd = fs.openSync("/dev/full", "w");
+      try { fs.writeSync(fullFd, chunk, offset, length); } finally { fs.closeSync(fullFd); }
     }
-    locklessUntil = Date.now() + locklessPeriodMs;
-    appendSerialized(chunk, done);
-    return;
+    if (writerBarrier !== null && !writerBarrierUsed && activeSize >= writerBarrier.pauseAtBytes) {
+      writerBarrierUsed = true;
+      fs.writeFileSync(writerBarrier.enteredPath, "entered");
+      const waitCell = new Int32Array(new SharedArrayBuffer(4));
+      while (!fs.existsSync(writerBarrier.releasePath)) Atomics.wait(waitCell, 0, 0, 10);
+    }
+    const written = fs.writeSync(activeFd, chunk, offset, length);
+    if (written <= 0) throw new Error("stdio segment write made no progress");
+    offset += written;
+    activeSize += written;
   }
-  if (lock < 0) {
-    done();
-    return;
-  }
-  appendSerialized(chunk, () => {
-    releaseLock(lockPath, lock.fd, lock.token);
-    done();
-  });
 };
 const processNext = () => {
-  if (processing) return;
+  if (processing || stopped) return;
   const chunk = pendingChunks.shift();
   if (chunk === undefined) return;
   pendingBytes -= chunk.length;
-  if (inputPaused && pendingBytes < maxPendingBytes) {
+  if (inputPaused && pendingBytes < maxPendingBytes / 2) {
     inputPaused = false;
     process.stdin.resume();
   }
   processing = true;
-  processChunk(chunk, Date.now(), () => {
-    processing = false;
-    processNext();
-  });
+  try { append(chunk); } catch {}
+  processing = false;
+  setImmediate(processNext);
 };
-process.on("uncaughtException", () => {});
-process.stdin.on("error", () => {});
+try {
+  migrateLegacyFiles();
+  recoverClosedSegments();
+  createActive();
+} catch {}
 process.stdin.on("data", (chunk) => {
   pendingChunks.push(chunk);
   pendingBytes += chunk.length;
@@ -298,6 +198,17 @@ process.stdin.on("data", (chunk) => {
   }
   processNext();
 });
+process.stdin.on("end", () => {
+  stopped = true;
+  while (pendingChunks.length > 0) {
+    const chunk = pendingChunks.shift();
+    pendingBytes -= chunk.length;
+    try { append(chunk); } catch {}
+  }
+  closeActive(true);
+});
+process.stdin.on("error", () => {});
+process.on("uncaughtException", () => {});
 `;
 
 interface SpawnLoggedProcessArgs {
@@ -310,15 +221,13 @@ interface SpawnLoggedProcessArgs {
   testWriterBarrier?: {
     enteredPath?: string;
     releasePath?: string;
-    afterStatEnteredPath?: string;
-    afterStatReleasePath?: string;
-    attemptPath?: string;
+    pauseAtBytes?: number;
+    failFirstWrite?: boolean;
   };
 }
 
 export function spawnLoggedProcess(args: SpawnLoggedProcessArgs): ChildProcess {
   mkdirSync(args.logDir, { recursive: true });
-
   const logPath = join(args.logDir, `${args.logName}-stdio.log`);
   const logWriter = spawn(
     process.execPath,
@@ -328,14 +237,9 @@ export function spawnLoggedProcess(args: SpawnLoggedProcessArgs): ChildProcess {
       logPath,
       JSON.stringify(args.testWriterBarrier ?? null),
     ],
-    {
-      detached: true,
-      env: process.env,
-      stdio: ["pipe", "ignore", "ignore"],
-    },
+    { detached: true, env: process.env, stdio: ["pipe", "ignore", "ignore"] },
   );
   logWriter.unref();
-
   const child = spawn(args.command, args.args, {
     cwd: process.cwd(),
     env: args.env,

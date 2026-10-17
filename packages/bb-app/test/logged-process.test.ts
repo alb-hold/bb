@@ -7,9 +7,6 @@ import {
   readFileSync,
   rmSync,
   statSync,
-  symlinkSync,
-  utimesSync,
-  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -29,6 +26,33 @@ function scratchDir(): string {
   const dir = mkdtempSync(join(tmpdir(), "bb-logged-process-"));
   scratchDirs.push(dir);
   return dir;
+}
+
+function familyFiles(logDir: string, logName: string): string[] {
+  return readdirSync(logDir)
+    .filter(
+      (name) =>
+        name === `${logName}-stdio.log` ||
+        name.startsWith(`${logName}-stdio.log.active-`) ||
+        name.startsWith(`${logName}-stdio.log.backup-`),
+    )
+    .map((name) => join(logDir, name));
+}
+
+function uniqueFamilyFiles(logDir: string, logName: string): string[] {
+  const seen = new Set<string>();
+  return familyFiles(logDir, logName).filter((path) => {
+    let stat;
+    try {
+      stat = statSync(path);
+    } catch {
+      return false;
+    }
+    const key = `${stat.dev}:${stat.ino}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function waitForExit(
@@ -98,360 +122,108 @@ describe("spawnLoggedProcess", () => {
       });
       expect(await waitForExit(child)).toBe(1);
     }
-    const logPath = join(logDir, "server-stdio.log");
     await expect
       .poll(
         () =>
-          existsSync(logPath) &&
-          readFileSync(logPath, "utf8") === "first startup\nsecond startup\n",
+          (() => {
+            try {
+              const output = uniqueFamilyFiles(logDir, "server")
+                .map((path) => readFileSync(path, "utf8"))
+                .join("");
+              return (
+                output.includes("first startup\n") &&
+                output.includes("second startup\n")
+              );
+            } catch {
+              return false;
+            }
+          })(),
         { timeout: 5_000 },
       )
       .toBe(true);
   });
 
-  it("drains sustained output when a live unrelated process owns the log lock", async () => {
+  it("keeps a paused writer within its own segment while another writer rotates", async () => {
     const logDir = scratchDir();
-    const logPath = join(logDir, "server-stdio.log");
-    const expectedSize = 25 * 1024 * 1024;
-    const sizeLimit = 10 * 1024 * 1024;
-    writeFileSync(`${logPath}.lock`, String(process.pid));
-    const child = spawnLoggedProcess({
+    const enteredPath = join(logDir, "first-writer-before-write");
+    const releasePath = join(logDir, "release-first-writer");
+    const firstBytes = 9 * 1024 * 1024 + 64 * 1024;
+    const secondBytes = 11 * 1024 * 1024;
+    const first = spawnLoggedProcess({
       command: process.execPath,
-      args: [
-        "-e",
-        `
-          const chunk = "x".repeat(64 * 1024);
-          let remaining = ${expectedSize};
-          const writeNext = () => {
-            const next = chunk.slice(0, Math.min(chunk.length, remaining));
-            process.stdout.write(next, (error) => {
-              if (error) process.exit(1);
-              remaining -= next.length;
-              if (remaining > 0) setImmediate(writeNext);
-              else process.exit(0);
-            });
-          };
-          writeNext();
-        `,
-      ],
+      args: ["-e", `process.stdout.write(Buffer.alloc(${firstBytes}, 65));`],
       env: process.env,
       logDir,
       logName: "server",
-    });
-    const childExit = waitForExit(child);
-    const logFiles = () =>
-      readdirSync(logDir)
-        .filter(
-          (name) =>
-            name === "server-stdio.log" ||
-            /^server-stdio\.log\.\d+$/.test(name),
-        )
-        .map((name) => join(logDir, name));
-
-    try {
-      await expect
-        .poll(
-          () => {
-            return logFiles().reduce(
-              (total, filePath) => total + statSync(filePath).size,
-              0,
-            );
-          },
-          { timeout: 3_000 },
-        )
-        .toBe(expectedSize);
-      expect(await childExit).toBe(0);
-      const filePaths = logFiles();
-      expect(filePaths.length).toBeLessThanOrEqual(6);
-      expect(
-        filePaths.every((filePath) => statSync(filePath).size <= sizeLimit),
-      ).toBe(true);
-      expect(
-        filePaths.filter((filePath) => filePath !== logPath).length,
-      ).toBeLessThanOrEqual(5);
-      expect(
-        filePaths.reduce(
-          (total, filePath) => total + statSync(filePath).size,
-          0,
-        ),
-      ).toBeLessThanOrEqual(6 * sizeLimit);
-    } finally {
-      if (child.exitCode === null) child.kill("SIGKILL");
-    }
-  });
-
-  it("expires a stale append lock held by a live unrelated process", async () => {
-    const logDir = scratchDir();
-    const logPath = join(logDir, "server-stdio.log");
-    const expectedSize = 25 * 1024 * 1024;
-    const sizeLimit = 10 * 1024 * 1024;
-    const appendLockPath = `${logPath}.append.lock`;
-    writeFileSync(appendLockPath, String(process.pid));
-    utimesSync(appendLockPath, new Date(0), new Date(0));
-    const child = spawnLoggedProcess({
-      command: process.execPath,
-      args: [
-        "-e",
-        `
-          const chunk = "x".repeat(64 * 1024);
-          let remaining = ${expectedSize};
-          const writeNext = () => {
-            const next = chunk.slice(0, Math.min(chunk.length, remaining));
-            process.stdout.write(next, (error) => {
-              if (error) process.exit(1);
-              remaining -= next.length;
-              if (remaining > 0) setImmediate(writeNext);
-              else process.stdout.end("LOCK_END\\n", () => process.exit(0));
-            });
-          };
-          writeNext();
-        `,
-      ],
-      env: process.env,
-      logDir,
-      logName: "server",
-    });
-    const childExit = waitForExit(child);
-    const logFiles = () =>
-      readdirSync(logDir)
-        .filter(
-          (name) =>
-            name === "server-stdio.log" ||
-            /^server-stdio\.log\.\d+$/.test(name),
-        )
-        .map((name) => join(logDir, name));
-
-    try {
-      await expect
-        .poll(
-          () =>
-            logFiles().reduce(
-              (total, filePath) => total + statSync(filePath).size,
-              0,
-            ),
-          { timeout: 4_000 },
-        )
-        .toBe(expectedSize + 9);
-      expect(await childExit).toBe(0);
-      const filePaths = logFiles();
-      expect(filePaths.length).toBeLessThanOrEqual(6);
-      expect(
-        filePaths.filter((filePath) => filePath !== logPath).length,
-      ).toBeLessThanOrEqual(5);
-      expect(
-        filePaths.every((filePath) => statSync(filePath).size <= sizeLimit),
-      ).toBe(true);
-      expect(readFileSync(logPath, "utf8")).toContain("LOCK_END\n");
-    } finally {
-      if (child.exitCode === null) child.kill("SIGKILL");
-    }
-  });
-
-  it("reclaims an unreadable stale append lock", async () => {
-    const logDir = scratchDir();
-    const logPath = join(logDir, "server-stdio.log");
-    const appendLockPath = `${logPath}.append.lock`;
-    writeFileSync(
-      appendLockPath,
-      JSON.stringify({ pid: process.pid, token: "hidden" }),
-    );
-    chmodSync(appendLockPath, 0);
-    utimesSync(appendLockPath, new Date(0), new Date(0));
-    const child = spawnLoggedProcess({
-      command: process.execPath,
-      args: ["-e", 'process.stdout.end("after unreadable lock\\n");'],
-      env: process.env,
-      logDir,
-      logName: "server",
-    });
-
-    expect(await waitForExit(child)).toBe(0);
-    await expect
-      .poll(() => (existsSync(logPath) ? readFileSync(logPath, "utf8") : ""), {
-        timeout: 3_000,
-      })
-      .toBe("after unreadable lock\n");
-  });
-
-  it("fences a writer paused beyond the lease while contenders rotate", async () => {
-    if (process.platform !== "linux") return;
-    const logDir = scratchDir();
-    const logPath = join(logDir, "server-stdio.log");
-    const appendLockPath = `${logPath}.append.lock`;
-    const enteredPath = join(logDir, "writer-entered-barrier");
-    const releasePath = join(logDir, "writer-release-barrier");
-    const afterStatEnteredPath = join(logDir, "writer-after-stat-barrier");
-    const afterStatReleasePath = join(logDir, "writer-after-stat-release");
-    const attemptPath = join(logDir, "resumed-writer-attempted");
-    const sizeLimit = 10 * 1024 * 1024;
-    const seedSize = 9 * 1024 * 1024;
-    const outputSize = 24 * 1024 * 1024;
-    writeFileSync(logPath, Buffer.alloc(seedSize, "X"));
-
-    const makeWriter = (
-      letter: string,
-      testWriterBarrier?: {
-        enteredPath?: string;
-        releasePath?: string;
-        afterStatEnteredPath?: string;
-        afterStatReleasePath?: string;
-        attemptPath?: string;
+      testWriterBarrier: {
+        enteredPath,
+        releasePath,
+        pauseAtBytes: 9 * 1024 * 1024,
       },
-    ) =>
-      spawnLoggedProcess({
+    });
+    let second: ChildProcess | undefined;
+    try {
+      await expect
+        .poll(() => existsSync(enteredPath), { timeout: 5_000, interval: 10 })
+        .toBe(true);
+      second = spawnLoggedProcess({
         command: process.execPath,
-        args: [
-          "-e",
-          `
-            const chunk = Buffer.alloc(64 * 1024, ${JSON.stringify(letter)});
-            let remaining = ${outputSize};
-            const writeNext = () => {
-              const next = chunk.subarray(0, Math.min(chunk.length, remaining));
-              process.stdout.write(next, (error) => {
-                if (error) process.exit(1);
-                remaining -= next.length;
-                if (remaining > 0) setImmediate(writeNext);
-                else process.stdout.end(${JSON.stringify(letter + "_END")}, () => process.exit(0));
-              });
-            };
-            writeNext();
-          `,
-        ],
+        args: ["-e", `process.stdout.write(Buffer.alloc(${secondBytes}, 66));`],
         env: process.env,
         logDir,
         logName: "server",
-        testWriterBarrier,
       });
-    const first = makeWriter("A", { enteredPath, releasePath, attemptPath });
-    let pausedPid: number | undefined;
-    let second: ChildProcess | undefined;
-    let pausedOwner: { pid: number; token: string } | undefined;
-    try {
+      expect(await waitForExit(second)).toBe(0);
+      writeFileSync(releasePath, "release");
+      expect(await waitForExit(first)).toBe(0);
       await expect
         .poll(
           () => {
             try {
-              const owner = JSON.parse(readFileSync(enteredPath, "utf8")) as {
-                pid: number;
-                token: string;
-              };
-              process.kill(owner.pid, "SIGSTOP");
-              const status = readFileSync(`/proc/${owner.pid}/status`, "utf8");
-              const current = JSON.parse(
-                readFileSync(appendLockPath, "utf8"),
-              ) as {
-                pid: number;
-                token: string;
-              };
-              if (
-                /^State:\s+T/m.test(status) &&
-                current.pid === owner.pid &&
-                current.token === owner.token
-              ) {
-                pausedPid = owner.pid;
-                pausedOwner = owner;
-                return true;
-              }
-              process.kill(owner.pid, "SIGCONT");
-            } catch {}
-            return null;
+              return Buffer.concat(
+                uniqueFamilyFiles(logDir, "server").map((path) =>
+                  readFileSync(path),
+                ),
+              ).length;
+            } catch {
+              return 0;
+            }
           },
-          { timeout: 5_000, interval: 1 },
+          { timeout: 5_000, interval: 10 },
         )
-        .toBe(true);
-      expect(pausedOwner).toBeDefined();
-      if (pausedOwner === undefined || pausedPid === undefined)
-        throw new Error("Could not pause the append-lock owner");
-      expect(pausedOwner.token).toBeTruthy();
-      expect(pausedPid).toBe(pausedOwner.pid);
-      await expect
-        .poll(() => Date.now() - statSync(appendLockPath).mtimeMs > 2_100, {
-          timeout: 5_000,
-          interval: 20,
-        })
-        .toBe(true);
-
-      second = makeWriter("B", {
-        afterStatEnteredPath,
-        afterStatReleasePath,
-      });
-      await expect
-        .poll(() => existsSync(afterStatEnteredPath), {
-          timeout: 5_000,
-          interval: 10,
-        })
-        .toBe(true);
-      const afterStatOwner = JSON.parse(
-        readFileSync(afterStatEnteredPath, "utf8"),
-      ) as { pid: number; token: string };
-      const logFiles = () =>
-        readdirSync(logDir)
-          .filter(
-            (name) =>
-              name === "server-stdio.log" ||
-              /^server-stdio\.log\.\d+$/.test(name),
-          )
-          .map((name) => join(logDir, name));
-      writeFileSync(releasePath, "release");
-      process.kill(pausedPid, "SIGCONT");
-      pausedPid = undefined;
-      await expect
-        .poll(() => existsSync(attemptPath), {
-          timeout: 5_000,
-          interval: 10,
-        })
-        .toBe(true);
+        .toBe(firstBytes + secondBytes);
+      const files = uniqueFamilyFiles(logDir, "server");
+      const backups = familyFiles(logDir, "server").filter((path) =>
+        path.includes(".backup-"),
+      );
+      expect(backups.length).toBeLessThanOrEqual(5);
       expect(
-        (JSON.parse(readFileSync(appendLockPath, "utf8")) as { token: string })
-          .token,
-      ).toBe(afterStatOwner.token);
-      expect(
-        logFiles().some((path) =>
-          readFileSync(path).includes(Buffer.alloc(64 * 1024, "A")),
+        familyFiles(logDir, "server").every(
+          (path) => statSync(path).size <= 10 * 1024 * 1024,
         ),
-      ).toBe(false);
-      writeFileSync(afterStatReleasePath, "release");
-      expect(await waitForExit(first, 20_000)).toBe(0);
-      expect(await waitForExit(second, 20_000)).toBe(0);
-      await expect
-        .poll(
-          () => {
-            const output = logFiles()
-              .map((path) => readFileSync(path, "latin1"))
-              .join("");
-            return (
-              (output.match(/A/g)?.length ?? 0) >= outputSize &&
-              (output.match(/B/g)?.length ?? 0) >= outputSize &&
-              output.includes("A_END") &&
-              output.includes("B_END")
-            );
-          },
-          { timeout: 10_000, interval: 20 },
-        )
-        .toBe(true);
-      const paths = logFiles();
-      expect(paths.length).toBeLessThanOrEqual(6);
-      expect(
-        paths.filter((path) => path !== logPath).length,
-      ).toBeLessThanOrEqual(5);
-      const fileSizes = paths.map((path) => [path, statSync(path).size]);
-      expect(
-        fileSizes.every(
-          ([, size]) => typeof size === "number" && size <= sizeLimit,
-        ),
-        JSON.stringify(fileSizes),
       ).toBe(true);
-      const output = paths.map((path) => readFileSync(path, "latin1")).join("");
-      expect(output.match(/A/g)!.length).toBeGreaterThanOrEqual(outputSize);
-      expect(output.match(/B/g)!.length).toBeGreaterThanOrEqual(outputSize);
-      expect(output).toContain("A_END");
-      expect(output).toContain("B_END");
+      expect(
+        files.every((path) => statSync(path).size <= 10 * 1024 * 1024),
+      ).toBe(true);
+      const output = Buffer.concat(files.map((path) => readFileSync(path)));
+      expect(
+        output.length,
+        JSON.stringify(
+          files.map((path) => [
+            path,
+            statSync(path).size,
+            readFileSync(path).filter((byte) => byte === 65).length,
+            readFileSync(path).filter((byte) => byte === 66).length,
+          ]),
+        ),
+      ).toBe(firstBytes + secondBytes);
+      expect(output.filter((byte) => byte === 65).length).toBe(firstBytes);
+      expect(output.filter((byte) => byte === 66).length).toBe(secondBytes);
+      expect(
+        statSync(join(logDir, "server-stdio.log")).size,
+      ).toBeLessThanOrEqual(10 * 1024 * 1024);
     } finally {
-      if (pausedPid !== undefined) {
-        try {
-          process.kill(pausedPid, "SIGCONT");
-        } catch {}
-      }
+      if (!existsSync(releasePath)) writeFileSync(releasePath, "release");
       if (first.exitCode === null) first.kill("SIGKILL");
       if (second?.exitCode === null) second.kill("SIGKILL");
     }
@@ -502,10 +274,8 @@ describe("spawnLoggedProcess", () => {
 
   it("keeps the child alive and resumes logging after a write error", async () => {
     const logDir = scratchDir();
-    const logPath = join(logDir, "server-stdio.log");
     const attemptedPath = join(logDir, "first-write-attempted");
     const laterPath = join(logDir, "later-write-completed");
-    symlinkSync("/dev/full", logPath);
     const child = spawnLoggedProcess({
       command: process.execPath,
       args: [
@@ -525,19 +295,21 @@ describe("spawnLoggedProcess", () => {
       env: process.env,
       logDir,
       logName: "server",
+      testWriterBarrier: { failFirstWrite: true },
     });
 
     await expect
       .poll(() => existsSync(attemptedPath), { timeout: 5_000 })
       .toBe(true);
-    unlinkSync(logPath);
     expect(await waitForExit(child)).toBe(0);
     expect(existsSync(laterPath)).toBe(true);
     await expect
       .poll(
         () =>
-          existsSync(logPath) &&
-          readFileSync(logPath, "utf8").includes("later output recovered\n"),
+          uniqueFamilyFiles(logDir, "server")
+            .map((path) => readFileSync(path, "utf8"))
+            .join("")
+            .includes("later output recovered\n"),
         { timeout: 5_000 },
       )
       .toBe(true);
@@ -567,140 +339,18 @@ describe("spawnLoggedProcess", () => {
         { timeout: 5_000 },
       )
       .toBe(true);
-    expect(readFileSync(`${logPath}.1`, "utf8")).toContain("previous-active:");
-    for (let index = 1; index <= 4; index += 1) {
-      expect(readFileSync(`${logPath}.${index + 1}`, "utf8")).toBe(
-        `previous-${index}`,
-      );
-    }
-    expect(existsSync(`${logPath}.6`)).toBe(false);
-  });
-
-  it("preserves the size cap when two writers share a log path", async () => {
-    const logDir = scratchDir();
-    const children = ["a", "b"].map((marker) =>
-      spawnLoggedProcess({
-        command: process.execPath,
-        args: [
-          "-e",
-          `process.stdout.write(${JSON.stringify(marker)}.repeat(12 * 1024 * 1024));`,
-        ],
-        env: process.env,
-        logDir,
-        logName: "server",
-      }),
+    const backups = familyFiles(logDir, "server").filter((path) =>
+      path.includes(".backup-"),
     );
-
+    expect(backups.length).toBeLessThanOrEqual(5);
     expect(
-      await Promise.all(children.map((child) => waitForExit(child))),
-    ).toEqual([0, 0]);
-    const logPath = join(logDir, "server-stdio.log");
-    await expect
-      .poll(
-        () =>
-          [
-            logPath,
-            ...Array.from({ length: 5 }, (_, i) => `${logPath}.${i + 1}`),
-          ]
-            .filter(existsSync)
-            .reduce((total, filePath) => total + statSync(filePath).size, 0),
-        { timeout: 5_000 },
-      )
-      .toBe(24 * 1024 * 1024);
-    for (const filePath of [
-      logPath,
-      ...Array.from({ length: 5 }, (_, i) => `${logPath}.${i + 1}`),
-    ]) {
-      if (existsSync(filePath)) {
-        expect(statSync(filePath).size).toBeLessThanOrEqual(10 * 1024 * 1024);
-      }
-    }
-    expect(existsSync(`${logPath}.6`)).toBe(false);
-  });
-
-  it("keeps two lockless writers within the shared file-family bound", async () => {
-    const logDir = scratchDir();
-    const logPath = join(logDir, "server-stdio.log");
-    const expectedPerWriter = 13 * 1024 * 1024;
-    const expectedTotal = expectedPerWriter * 2 + 12;
-    const sizeLimit = 10 * 1024 * 1024;
-    writeFileSync(`${logPath}.lock`, String(process.pid));
-    const children = ["a", "b"].map((marker) =>
-      spawnLoggedProcess({
-        command: process.execPath,
-        args: [
-          "-e",
-          `
-            const chunk = ${JSON.stringify(marker)}.repeat(64 * 1024);
-            let remaining = ${expectedPerWriter};
-            const writeNext = () => {
-              const next = chunk.slice(0, Math.min(chunk.length, remaining));
-              process.stdout.write(next, (error) => {
-                if (error) process.exit(1);
-                remaining -= next.length;
-                if (remaining > 0) setImmediate(writeNext);
-                else process.stdout.end(${JSON.stringify(`${marker.toUpperCase()}_END\n`)}, () => process.exit(0));
-              });
-            };
-            writeNext();
-          `,
-        ],
-        env: process.env,
-        logDir,
-        logName: "server",
-      }),
-    );
-
-    try {
-      expect(
-        await Promise.all(children.map((child) => waitForExit(child))),
-      ).toEqual([0, 0]);
-      const familyPaths = () =>
-        readdirSync(logDir)
-          .filter(
-            (name) =>
-              name === "server-stdio.log" ||
-              /^server-stdio\.log\.\d+$/.test(name),
-          )
-          .map((name) => join(logDir, name));
-      await expect
-        .poll(
-          () =>
-            familyPaths().reduce(
-              (total, filePath) => total + statSync(filePath).size,
-              0,
-            ),
-          { timeout: 5_000 },
-        )
-        .toBe(expectedTotal);
-      const filePaths = familyPaths();
-      expect(filePaths.length).toBeLessThanOrEqual(6);
-      expect(
-        filePaths.filter((filePath) => filePath !== logPath).length,
-      ).toBeLessThanOrEqual(5);
-      expect(
-        filePaths.every((filePath) => statSync(filePath).size <= sizeLimit),
-      ).toBe(true);
-      expect(
-        filePaths.reduce(
-          (total, filePath) => total + statSync(filePath).size,
-          0,
-        ),
-      ).toBe(expectedTotal);
-      const activeOutput = readFileSync(logPath, "utf8");
-      expect(activeOutput).toMatch(/[AB]_END\n/);
-      const retainedOutput = filePaths
-        .map((filePath) => readFileSync(filePath, "utf8"))
-        .join("");
-      expect(retainedOutput.split("a").length - 1).toBe(expectedPerWriter);
-      expect(retainedOutput.split("b").length - 1).toBe(expectedPerWriter);
-      expect(retainedOutput).toContain("A_END\n");
-      expect(retainedOutput).toContain("B_END\n");
-    } finally {
-      for (const child of children) {
-        if (child.exitCode === null) child.kill("SIGKILL");
-      }
-    }
+      backups.some((path) =>
+        readFileSync(path, "utf8").includes("previous-active:"),
+      ),
+    ).toBe(true);
+    expect(
+      backups.every((path) => statSync(path).size <= 10 * 1024 * 1024),
+    ).toBe(true);
   });
 
   it.skipIf(process.platform === "win32")(
@@ -762,14 +412,17 @@ describe("spawnLoggedProcess", () => {
 
     expect(await waitForExit(child)).toBe(0);
     const currentPath = join(logDir, "server-stdio.log");
-    const rotatedPath = `${currentPath}.1`;
+    const backups = familyFiles(logDir, "server").filter((path) =>
+      path.includes(".backup-"),
+    );
+    expect(backups).toHaveLength(5);
     expect(statSync(currentPath).size).toBe(1024 * 1024);
-    expect(statSync(rotatedPath).size).toBe(10 * 1024 * 1024);
     expect(readFileSync(currentPath, "utf8")).toBe("x".repeat(1024 * 1024));
-    for (let index = 2; index <= 5; index += 1) {
-      expect(statSync(`${currentPath}.${index}`).size).toBe(10 * 1024 * 1024);
-    }
-    expect(existsSync(`${currentPath}.6`)).toBe(false);
+    expect(
+      familyFiles(logDir, "server").every(
+        (path) => statSync(path).size <= 10 * 1024 * 1024,
+      ),
+    ).toBe(true);
   });
 
   it("fails instead of falling back to terminal output when logs cannot be opened", () => {
