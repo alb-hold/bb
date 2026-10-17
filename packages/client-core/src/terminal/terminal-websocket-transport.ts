@@ -254,6 +254,21 @@ export class TerminalWebSocketTransport {
     );
   }
 
+  claimSize(): void {
+    const socket = this.socket;
+    if (
+      this.lastResize === null ||
+      socket === null ||
+      socket.readyState !== SOCKET_OPEN
+    ) {
+      return;
+    }
+    this.trySend(
+      socket,
+      JSON.stringify({ type: "resize", ...this.lastResize, claim: true }),
+    );
+  }
+
   private setRepaintFinalSeq(seq: number | null): void {
     const inFlight = this.repaintNudgeInFlight;
     if (inFlight === null) {

@@ -60,9 +60,10 @@ import {
 } from "./terminal-links";
 import {
   nextSharedTerminalSize,
-  terminalDisplaySize,
   type TerminalGridSize,
 } from "./terminal-shared-size";
+import { listenForTerminalSizeClaims } from "./terminal-size-claims";
+import { fitTerminalGrid } from "./terminal-grid";
 import { handleTerminalFileDrop } from "./terminal-file-drop";
 import { terminalPromptLine } from "./terminal-shell-state";
 import {
@@ -984,14 +985,19 @@ export function ThreadTerminalView({
     let shellOscDisposable: { dispose: () => void } | null = null;
     let stopObservingFonts: (() => void) | null = null;
     let stopWatchingLayout: (() => void) | null = null;
+    let sizeClaims: ReturnType<typeof listenForTerminalSizeClaims> | null =
+      null;
     let sharedSize: TerminalGridSize | null = null;
     let containerHasSize = hasVisibleTerminalSize({
       containerElement: container,
     });
     const reportDocumentVisibility = () => {
-      transport?.setVisible(
-        document.visibilityState === "visible" && containerHasSize,
-      );
+      const visible =
+        document.visibilityState === "visible" && containerHasSize;
+      transport?.setVisible(visible);
+      if (visible) {
+        sizeClaims?.claimIfFocused();
+      }
     };
 
     async function mountTerminal(
@@ -1127,11 +1133,7 @@ export function ThreadTerminalView({
         ) {
           return;
         }
-        const display = terminalDisplaySize(fitted, sharedSize);
-        if (terminal.cols !== display.cols || terminal.rows !== display.rows) {
-          terminal.resize(display.cols, display.rows);
-        }
-        transport?.sendResize(fitted.cols, fitted.rows);
+        fitTerminalGrid(terminal, fitted, sharedSize, transport);
       };
       const scheduleFit: TerminalFitScheduler = () => {
         if (resizeAnimationFrame !== null) {
@@ -1279,6 +1281,12 @@ export function ThreadTerminalView({
       transport = activeTransport;
       fitTerminal();
       reportDocumentVisibility();
+      sizeClaims = listenForTerminalSizeClaims({
+        claim: () => activeTransport.claimSize(),
+        element: containerElement,
+        textarea: activeTerminal.textarea,
+      });
+      sizeClaims.claimIfFocused();
       document.addEventListener("visibilitychange", reportDocumentVisibility);
       if (sessionRef.current.status === "exited") {
         const output = await sdk.terminals.output({
@@ -1413,6 +1421,8 @@ export function ThreadTerminalView({
       setTerminalSearchOpen(false);
       stopObservingFonts?.();
       stopWatchingLayout?.();
+      sizeClaims?.dispose();
+      sizeClaims = null;
       if (resizeAnimationFrame !== null) {
         window.cancelAnimationFrame(resizeAnimationFrame);
       }
