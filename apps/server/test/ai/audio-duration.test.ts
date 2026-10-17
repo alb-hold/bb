@@ -53,6 +53,7 @@ function opusBlock(toc: number[], flags = 0x80): number[] {
 
 describe("measureAudioSeconds", () => {
   it.each([
+    ["chromium-mediarecorder-3s.webm", 3],
     ["tone-3s.webm", 3],
     ["tone-3s.ogg", 3],
     ["tone-3s.m4a", 3],
