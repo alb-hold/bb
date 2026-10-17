@@ -25,6 +25,7 @@ import {
   TERMINAL_FONT_FAMILY,
   resolveTerminalFontFamily,
   writeTerminalOutput,
+  writeRetainedTerminalOutput,
   updateTerminalTouchFocusGesture,
 } from "./ThreadTerminalView";
 import {
@@ -267,6 +268,49 @@ describe("terminal touch focus", () => {
 });
 
 describe("terminal output encoding", () => {
+  it("writes the exit notice after all retained output has parsed", async () => {
+    const terminal = new Terminal({ cols: 80, rows: 24 });
+    const session = {
+      id: "term_1",
+      threadId: "thr_1",
+      environmentId: "env_1",
+      hostId: "host_1",
+      title: "Terminal",
+      initialCwd: "/workspace",
+      cols: 80,
+      rows: 24,
+      status: "exited",
+      exitCode: 0,
+      closeReason: null,
+      createdAt: 1,
+      updatedAt: 1,
+      lastUserInputAt: null,
+    } satisfies TerminalSession;
+
+    await writeRetainedTerminalOutput({
+      chunks: [
+        new TextEncoder().encode("CW-1\nCW-2\n"),
+        new TextEncoder().encode("CW-3\nCW-4\n"),
+      ],
+      lastNotice: { current: null },
+      session,
+      terminal,
+    });
+
+    const renderedText = Array.from(
+      { length: terminal.buffer.active.length },
+      (_, index) =>
+        terminal.buffer.active.getLine(index)?.translateToString() ?? "",
+    ).join("\n");
+    expect(renderedText.indexOf("CW-1")).toBeLessThan(
+      renderedText.indexOf("Terminal exited with code 0"),
+    );
+    expect(renderedText.indexOf("CW-4")).toBeLessThan(
+      renderedText.indexOf("Terminal exited with code 0"),
+    );
+    terminal.dispose();
+  });
+
   it("splits large paste input at the wire limit without losing UTF-8 bytes", () => {
     const input = `${"a".repeat(TERMINAL_DATA_MAX_BYTES - 1)}🙂tail`;
     const chunks = encodeTerminalInputChunks(input);

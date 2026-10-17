@@ -610,6 +610,24 @@ function writeTerminalSessionStatusNotice({
   }
 }
 
+export async function writeRetainedTerminalOutput({
+  chunks,
+  lastNotice,
+  session,
+  terminal,
+}: {
+  chunks: readonly Uint8Array[];
+  lastNotice: TerminalSessionStatusNoticeRef;
+  session: TerminalSession;
+  terminal: XTermTerminal;
+}): Promise<void> {
+  for (const chunk of chunks) {
+    await new Promise<void>((resolve) => terminal.write(chunk, resolve));
+  }
+  writeTerminalSessionStatusNotice({ lastNotice, session, terminal });
+  await new Promise<void>((resolve) => terminal.write("", resolve));
+}
+
 function openTerminalWebLink({
   onOpenLink,
   uri,
@@ -1107,11 +1125,13 @@ export function ThreadTerminalView({
           isPanelOpen: () => isPanelOpenRef.current,
         });
       }
-      writeTerminalSessionStatusNotice({
-        lastNotice: lastStatusNoticeRef,
-        session: sessionRef.current,
-        terminal,
-      });
+      if (sessionRef.current.status !== "exited") {
+        writeTerminalSessionStatusNotice({
+          lastNotice: lastStatusNoticeRef,
+          session: sessionRef.current,
+          terminal,
+        });
+      }
       const fitTerminal = () => {
         if (!fitAddon || !terminal) {
           return;
@@ -1286,9 +1306,14 @@ export function ThreadTerminalView({
           tailBytes: 64 * 1024,
         });
         if (!disposed) {
-          for (const chunk of output.chunks) {
-            activeTerminal.write(decodeBase64Bytes(chunk.dataBase64));
-          }
+          await writeRetainedTerminalOutput({
+            chunks: output.chunks.map((chunk) =>
+              decodeBase64Bytes(chunk.dataBase64),
+            ),
+            lastNotice: lastStatusNoticeRef,
+            session: sessionRef.current,
+            terminal: activeTerminal,
+          });
         }
       } else {
         activeTransport.start();
