@@ -5,6 +5,7 @@ import { join } from "node:path";
 const stdioLogWriter = `
 const fs = require("node:fs");
 const crypto = require("node:crypto");
+const { execFileSync } = require("node:child_process");
 const path = require("node:path");
 const logPath = process.argv[1];
 const writerBarrier = process.argv[2] ? JSON.parse(process.argv[2]) : null;
@@ -14,7 +15,58 @@ const maxWriteAttempts = 3;
 const retryDelayMs = 10;
 const maxChunkRetryMs = 2_000;
 const recoveryIntervalMs = writerBarrier?.recoveryIntervalMs ?? 1_000;
-const token = process.pid + "-" + crypto.randomUUID();
+const identityFallbackMs = writerBarrier?.identityFallbackMs ?? 10 * 60 * 1000;
+const identityRecheckMs = writerBarrier?.identityRecheckMs ?? 5_000;
+const processIdentityCache = new Map();
+const fingerprint = (value) => crypto.createHash("sha256").update(value).digest("hex").slice(0, 16);
+const readProcStartTime = (pid) => {
+  try {
+    const stat = fs.readFileSync("/proc/" + pid + "/stat", "utf8");
+    const close = stat.lastIndexOf(")");
+    if (close < 0) return undefined;
+    const startTime = stat.slice(close + 2).trim().split(/\\s+/)[19];
+    return /^\\d+$/.test(startTime) ? startTime : undefined;
+  } catch {
+    return undefined;
+  }
+};
+const readPsStartTime = (pid) => {
+  try {
+    const startTime = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8", timeout: 1_000 }).trim();
+    return startTime || undefined;
+  } catch {
+    return undefined;
+  }
+};
+const readProcessIdentity = (pid) => {
+  if (process.platform === "linux") {
+    const startTime = readProcStartTime(pid);
+    if (startTime !== undefined) return { source: 1, fingerprint: fingerprint(startTime) };
+  }
+  const startTime = readPsStartTime(pid);
+  if (startTime !== undefined) return { source: 2, fingerprint: fingerprint(startTime) };
+  return { source: 0, fingerprint: "0000000000000000" };
+};
+const cachedProcessFingerprint = (pid, source) => {
+  const key = pid + "-" + source;
+  const cached = processIdentityCache.get(key);
+  const now = Date.now();
+  if (cached !== undefined && now - cached.checkedAt < identityRecheckMs) return cached.fingerprint;
+  let value;
+  if (writerBarrier?.unreadableOwnerIdentityPids?.includes(pid)) {
+    value = undefined;
+  } else if (source === 1) {
+    const startTime = readProcStartTime(pid);
+    value = startTime === undefined ? undefined : fingerprint(startTime);
+  } else if (source === 2) {
+    const startTime = readPsStartTime(pid);
+    value = startTime === undefined ? undefined : fingerprint(startTime);
+  }
+  processIdentityCache.set(key, { fingerprint: value, checkedAt: now });
+  return value;
+};
+const ownerIdentity = readProcessIdentity(process.pid);
+const token = process.pid + "-" + ownerIdentity.source + "-" + ownerIdentity.fingerprint + "-" + crypto.randomUUID();
 const familyPrefix = logPath + ".";
 const activePath = familyPrefix + "active-" + token;
 let activeFd;
@@ -40,7 +92,7 @@ const pendingChunks = [];
 let pendingBytes = 0;
 const maxPendingBytes = 16 * 1024 * 1024;
 const backupPattern = /^.+\\.backup-[0-9]+-[0-9]+-[a-f0-9-]+$/;
-const activePattern = /^.+\\.active-[0-9]+-[a-f0-9-]+$/;
+const activePattern = /^.+\\.active-[0-9]+-[012]-[a-f0-9]{16}-[a-f0-9-]+$/;
 const paths = () => fs.readdirSync(path.dirname(logPath)).map((name) => path.join(path.dirname(logPath), name));
 const uniqueBackupPath = () => familyPrefix + "backup-" + Date.now() + "-" + token + "-" + crypto.randomUUID();
 const errorCode = (error) => typeof error?.code === "string" ? error.code : "UNKNOWN";
@@ -199,15 +251,37 @@ const recoverClosedSegments = () => {
   for (const file of paths()) {
     const name = path.basename(file);
     if (!file.startsWith(familyPrefix) || file === activePath || !activePattern.test(name)) continue;
-    const ownerPid = Number(name.slice(name.indexOf(".active-") + 8).split("-")[0]);
+    const ownerParts = name.slice(name.indexOf(".active-") + 8).split("-");
+    const ownerPid = Number(ownerParts[0]);
+    const ownerSource = Number(ownerParts[1]);
+    const ownerFingerprint = ownerParts[2];
     if (!Number.isInteger(ownerPid) || ownerPid < 1) continue;
+    let recover = false;
     try {
       process.kill(ownerPid, 0);
     } catch (error) {
-      if (error.code !== "ESRCH") {
-        if (error.code !== "EPERM") reportFsError("stdio segment owner check failed", error);
+      if (error.code === "ESRCH") {
+        recover = true;
+      } else if (error.code !== "EPERM") {
+        reportFsError("stdio segment owner check failed", error);
         continue;
       }
+    }
+    if (!recover) {
+      const currentFingerprint = ownerSource === 0 ? undefined : cachedProcessFingerprint(ownerPid, ownerSource);
+      if (currentFingerprint !== undefined) {
+        recover = currentFingerprint !== ownerFingerprint;
+      } else {
+        try {
+          recover = Date.now() - fs.statSync(file).mtimeMs > identityFallbackMs;
+        } catch (statError) {
+          if (statError.code !== "ENOENT") reportFsError("stdio segment idle check failed", statError);
+          continue;
+        }
+        if (recover) reportDiagnostic("stdio segment owner identity unavailable; recovering after idle bound");
+      }
+    }
+    if (recover) {
       try {
         pruneBackups(retainedBackups - 1);
         fs.renameSync(file, uniqueBackupPath());
@@ -410,6 +484,10 @@ process.on("uncaughtException", (error) => {
 recoveryTimer = setInterval(() => {
   if (finalized) return;
   try {
+    if (activeFd !== undefined) {
+      const now = new Date();
+      fs.futimesSync(activeFd, now, now);
+    }
     recoverClosedSegments();
   } catch (error) {
     reportFsError("stdio periodic segment recovery failed", error);
@@ -431,7 +509,10 @@ interface SpawnLoggedProcessArgs {
     pauseAtBytes?: number;
     failActiveOpenCount?: number;
     failActiveWriteCount?: number;
+    identityFallbackMs?: number;
+    identityRecheckMs?: number;
     recoveryIntervalMs?: number;
+    unreadableOwnerIdentityPids?: number[];
     diagnosticPath?: string;
     completionPath?: string;
   };
@@ -456,7 +537,9 @@ export function spawnLoggedProcess(args: SpawnLoggedProcessArgs): ChildProcess {
       try {
         appendFileSync(args.testWriterBarrier.diagnosticPath, chunk);
       } catch (error) {
-        process.stderr.write(`[bb] could not capture stdio writer diagnostic: ${String(error)}\n`);
+        process.stderr.write(
+          `[bb] could not capture stdio writer diagnostic: ${String(error)}\n`,
+        );
       }
     }
   });

@@ -7,6 +7,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -339,7 +340,9 @@ describe("spawnLoggedProcess", () => {
         `${Buffer.byteLength(lostOutput)} bytes of child output lost: EIO`,
       );
     }
-    expect(readFileSync(diagnosticPath, "utf8")).toContain("stdio output retry");
+    expect(readFileSync(diagnosticPath, "utf8")).toContain(
+      "stdio output retry",
+    );
   });
 
   it("recovers a dead writer segment during a survivor rotation", async () => {
@@ -449,6 +452,136 @@ describe("spawnLoggedProcess", () => {
       }
       if (first.exitCode === null) first.kill("SIGKILL");
       if (survivor?.exitCode === null) survivor.kill("SIGKILL");
+    }
+  });
+
+  it("recovers a segment when a live pid has a different recorded incarnation", async () => {
+    const logDir = scratchDir();
+    const stopPath = join(logDir, "stop-incarnation-survivor");
+    const completionPath = join(logDir, "incarnation-survivor-finished");
+    const source = process.platform === "linux" ? 1 : 2;
+    const mismatchedSegment = join(
+      logDir,
+      `server-stdio.log.active-${process.pid}-${source}-0000000000000000-deadbeef-dead-beef-dead-beefdeadbeef`,
+    );
+    const survivor = spawnLoggedProcess({
+      command: process.execPath,
+      args: [
+        "-e",
+        `const fs = require("node:fs"); process.stdout.write("incarnation-survivor-started\\n"); const timer = setInterval(() => { if (fs.existsSync(${JSON.stringify(stopPath)})) { clearInterval(timer); process.exit(0); } }, 10);`,
+      ],
+      env: process.env,
+      logDir,
+      logName: "server",
+      testWriterBarrier: {
+        completionPath,
+        identityRecheckMs: 25,
+        recoveryIntervalMs: 25,
+      },
+    });
+    try {
+      await expect
+        .poll(
+          () =>
+            familyFiles(logDir, "server").some((path) =>
+              path.includes(".active-"),
+            ),
+          { timeout: 5_000, interval: 10 },
+        )
+        .toBe(true);
+      writeFileSync(mismatchedSegment, "reused-pid-segment\\n");
+      await expect
+        .poll(() => !existsSync(mismatchedSegment), {
+          timeout: 3_000,
+          interval: 10,
+        })
+        .toBe(true);
+      const recovered = familyFiles(logDir, "server").find(
+        (path) =>
+          path.includes(".backup-") &&
+          readFileSync(path, "utf8").includes("reused-pid-segment\\n"),
+      );
+      expect(recovered).toBeDefined();
+      expect(survivor.exitCode).toBeNull();
+      writeFileSync(stopPath, "stop");
+      expect(await waitForExit(survivor)).toBe(0);
+      await expect
+        .poll(() => existsSync(completionPath), {
+          timeout: 3_000,
+          interval: 10,
+        })
+        .toBe(true);
+    } finally {
+      if (survivor.exitCode === null) survivor.kill("SIGKILL");
+    }
+  });
+
+  it("reclaims an unreadable live owner only after its segment exceeds the idle bound", async () => {
+    const logDir = scratchDir();
+    const stopPath = join(logDir, "stop-unreadable-owner-survivor");
+    const completionPath = join(logDir, "unreadable-owner-survivor-finished");
+    const identitySource = process.platform === "linux" ? 1 : 2;
+    const ownerPrefix = `server-stdio.log.active-${process.pid}-${identitySource}-0000000000000000-`;
+    const staleSegment = join(
+      logDir,
+      `${ownerPrefix}deadbeef-dead-beef-dead-beefdeadbeef`,
+    );
+    const freshSegment = join(
+      logDir,
+      `${ownerPrefix}feedface-feed-face-feed-facefeedface`,
+    );
+    const fallbackMs = 500;
+    const survivor = spawnLoggedProcess({
+      command: process.execPath,
+      args: [
+        "-e",
+        `const fs = require("node:fs"); process.stdout.write("unreadable-owner-survivor-started\\n"); const timer = setInterval(() => { if (fs.existsSync(${JSON.stringify(stopPath)})) { clearInterval(timer); process.exit(0); } }, 10);`,
+      ],
+      env: process.env,
+      logDir,
+      logName: "server",
+      testWriterBarrier: {
+        completionPath,
+        identityFallbackMs: fallbackMs,
+        identityRecheckMs: 25,
+        recoveryIntervalMs: 25,
+        unreadableOwnerIdentityPids: [process.pid],
+      },
+    });
+    try {
+      await expect
+        .poll(
+          () =>
+            familyFiles(logDir, "server").some((path) =>
+              path.includes(".active-"),
+            ),
+          { timeout: 5_000, interval: 10 },
+        )
+        .toBe(true);
+      writeFileSync(staleSegment, "stale-unreadable-segment\\n");
+      utimesSync(staleSegment, new Date(0), new Date(0));
+      writeFileSync(freshSegment, "fresh-unreadable-segment\\n");
+      await expect
+        .poll(() => !existsSync(staleSegment), { timeout: 2_000, interval: 10 })
+        .toBe(true);
+      expect(existsSync(freshSegment)).toBe(true);
+      expect(
+        familyFiles(logDir, "server").some(
+          (path) =>
+            path.includes(".backup-") &&
+            readFileSync(path, "utf8").includes("stale-unreadable-segment\\n"),
+        ),
+      ).toBe(true);
+      writeFileSync(stopPath, "stop");
+      expect(await waitForExit(survivor)).toBe(0);
+      await expect
+        .poll(() => existsSync(completionPath), {
+          timeout: 3_000,
+          interval: 10,
+        })
+        .toBe(true);
+    } finally {
+      if (survivor.exitCode === null) survivor.kill("SIGKILL");
     }
   });
 
