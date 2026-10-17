@@ -192,6 +192,15 @@ describe("resolveWritingEdits", () => {
     expect(distant.map((edit) => edit.disposition)).toEqual(["suggest"]);
   });
 
+  it.each([
+    ["He is working late tonight.", "He is", "He be"],
+    ["They be working late tonight.", "They be", "They are"],
+  ])("only suggests changing a form of be in %s", (target, from, to) => {
+    expect(
+      resolveWritingEdits({ ...base, target, proposals: [proposal(from, to)] }),
+    ).toEqual([expect.objectContaining({ disposition: "suggest" })]);
+  });
+
   it("never auto-applies a content-word swap even at high confidence", () => {
     const edits = resolveWritingEdits({
       ...base,

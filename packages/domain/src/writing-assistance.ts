@@ -331,7 +331,7 @@ function isInflection(a: string, b: string): boolean {
 }
 
 const MEANING_INVARIANT_GROUPS: readonly (readonly string[])[] = [
-  ["is", "are", "am", "be"],
+  ["is", "are", "am"],
   ["was", "were"],
   ["has", "have"],
   ["does", "do"],
