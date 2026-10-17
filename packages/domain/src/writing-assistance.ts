@@ -149,17 +149,6 @@ export type WritingCorrectionResponse = z.infer<
   typeof writingCorrectionResponseSchema
 >;
 
-export const dictationSegmentResponseSchema = z
-  .object({
-    raw: z.string(),
-    text: z.string(),
-    formatted: z.boolean(),
-  })
-  .strict();
-export type DictationSegmentResponse = z.infer<
-  typeof dictationSegmentResponseSchema
->;
-
 export const writingUsageSchema = z
   .object({
     day: z.string(),
