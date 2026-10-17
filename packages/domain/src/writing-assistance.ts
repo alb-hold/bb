@@ -876,9 +876,6 @@ function correctionAllowance(
     const replacementEnd = spans[position + 1]?.markerStart ?? tokens.length;
     let first = span.markerStart;
     while (first > span.windowStart && dropped[first - 1]) first -= 1;
-    for (let index = span.windowStart; index < first; index += 1) {
-      if (dropped[index]) return null;
-    }
     const replaced = span.markerStart - first;
     if (replaced === 0) continue;
     if (replaced > replacementEnd - span.markerEnd) return null;

@@ -383,6 +383,24 @@ describe("dictation segments", () => {
     });
   });
 
+  it.each([
+    ["deploy on staging on monday no wait on tuesday", "Deploy on Tuesday."],
+    ["uh deploy it now no wait launch it", "Deploy it launch it."],
+  ])(
+    "keeps the transcript when a self-correction drops more than the phrase it replaces: %s",
+    async (raw, formatted) => {
+      await withTestHarness({}, async (harness) => {
+        registerFakeAiService(harness.deps.aiServices, {
+          transcribe: async () => raw,
+          complete: async () => formatted,
+        });
+        await expect(
+          (await postSegment(harness)).json(),
+        ).resolves.toMatchObject({ raw, text: raw, formatted: false });
+      });
+    },
+  );
+
   it("keeps the transcript when a list drops a spoken quantity", async () => {
     await withTestHarness({}, async (harness) => {
       registerFakeAiService(harness.deps.aiServices, {
