@@ -332,12 +332,8 @@ function isInflection(a: string, b: string): boolean {
 
 const MEANING_INVARIANT_GROUPS: readonly (readonly string[])[] = [
   ["is", "are", "am"],
-  ["was", "were"],
-  ["has", "have"],
-  ["does", "do"],
   ["a", "an"],
   ["isn't", "aren't"],
-  ["wasn't", "weren't"],
   ["hasn't", "haven't"],
   ["doesn't", "don't"],
 ];
@@ -428,6 +424,17 @@ function findUniqueOccurrence(text: string, needle: string): number | null {
   return text.indexOf(needle, first + 1) < 0 ? first : null;
 }
 
+function isWordCharacter(text: string, index: number): boolean {
+  const letter = /[\p{L}\p{N}]/u;
+  const character = text[index] ?? "";
+  if (letter.test(character)) return true;
+  return (
+    (character === "'" || character === "’") &&
+    letter.test(text[index - 1] ?? "") &&
+    letter.test(text[index + 1] ?? "")
+  );
+}
+
 function minimalChange(
   start: number,
   original: string,
@@ -450,13 +457,10 @@ function minimalChange(
   ) {
     suffix += 1;
   }
-  while (prefix > 0 && /[\p{L}\p{N}]/u.test(original[prefix - 1]!)) {
+  while (prefix > 0 && isWordCharacter(original, prefix - 1)) {
     prefix -= 1;
   }
-  while (
-    suffix > 0 &&
-    /[\p{L}\p{N}]/u.test(original[original.length - suffix]!)
-  ) {
+  while (suffix > 0 && isWordCharacter(original, original.length - suffix)) {
     suffix -= 1;
   }
   return {

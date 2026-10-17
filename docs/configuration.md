@@ -323,9 +323,10 @@ sentence that already ends with . ! or ?, removing a word typed twice in a row (
 is, which can repeat on purpose, nor a negation from this fixed list: not, no, never, nothing, nobody, none, nor, neither, without, cannot,
 any word ending in n't, and the Portuguese não, nunca, nem, nada, ninguém,
 sem and jamais, with or without accents), verb or article
-agreement from a fixed list (is/are/am, was/were, has/have, does/do and their
-negated forms, a/an; be is never swapped by itself, since "He is working" and
-"He be working" can mean different things), and accents on a fixed list of Portuguese words that are
+agreement from a fixed list (is/are/am, isn't/aren't, hasn't/haven't,
+doesn't/don't and a/an; changes to or from be, was/were, has/have and does/do
+are only suggested, since a verb's mood can change the meaning: "He be working",
+"If he were there", "I insist that she have the key"), and accents on a fixed list of Portuguese words that are
 not words without them (nao, voce, tambem, entao, amanha). Spelling fixes, a
 missing final period, capitalization or spacing in text that does not end a
 sentence (such as a bare `return true`), other punctuation (commas, question marks), homophones such as its/it's, and tense or

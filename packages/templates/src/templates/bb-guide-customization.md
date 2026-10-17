@@ -100,8 +100,8 @@ typed twice in a row
 (never had, that, is, or a negation from this fixed list: not, no, never, nothing, nobody, none, nor, neither, without, cannot,
 any word ending in n't, and the Portuguese não, nunca, nem, nada, ninguém,
 sem and jamais, with or without accents), swaps within
-is/are/am (never be), was/were, has/have, does/do (and isn't/aren't, wasn't/weren't,
-hasn't/haven't, doesn't/don't) or a/an, and accents on nao, voce, tambem,
+is/are/am, isn't/aren't, hasn't/haven't, doesn't/don't or a/an (be, was/were,
+has/have and does/do, whose mood can change the meaning, are only suggested), and accents on nao, voce, tambem,
 entao and amanha apply by themselves, never inside code, paths, identifiers or
 vocabulary terms, nor on a line containing = ; { } ( ) < > [ ] $ ` | \ / # or --.
 Vocabulary terms are spelling hints for transcription and correction, not a

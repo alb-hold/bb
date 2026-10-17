@@ -195,10 +195,30 @@ describe("resolveWritingEdits", () => {
   it.each([
     ["He is working late tonight.", "He is", "He be"],
     ["They be working late tonight.", "They be", "They are"],
-  ])("only suggests changing a form of be in %s", (target, from, to) => {
+    ["If he was still there, we could reach him.", "he was", "he were"],
+    ["If it wasn't late, we would stay.", "it wasn't", "it weren't"],
+    ["It is essential that she have the key.", "she have", "she has"],
+    ["I insist that he do the review.", "he do", "he does"],
+  ])(
+    "only suggests a verb change that can carry mood in %s",
+    (target, from, to) => {
+      expect(
+        resolveWritingEdits({
+          ...base,
+          target,
+          proposals: [proposal(from, to)],
+        }),
+      ).toEqual([expect.objectContaining({ disposition: "suggest" })]);
+    },
+  );
+
+  it.each([
+    ["I is ready to deploy today.", "I is", "I am"],
+    ["They doesn't deploy on Fridays.", "They doesn't", "They don't"],
+  ])("auto-applies the agreement fix in %s", (target, from, to) => {
     expect(
       resolveWritingEdits({ ...base, target, proposals: [proposal(from, to)] }),
-    ).toEqual([expect.objectContaining({ disposition: "suggest" })]);
+    ).toEqual([expect.objectContaining({ disposition: "apply" })]);
   });
 
   it("never auto-applies a content-word swap even at high confidence", () => {
