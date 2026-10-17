@@ -561,7 +561,7 @@ function splitWordChanges(change: TextChangeSpan): TextChangeSpan[] {
   return pieces.length > 1 ? pieces : [change];
 }
 
-const CODE_CHARACTERS = /[=;{}()<>[\]$`|\\]/u;
+const CODE_CHARACTERS = /[=;{}()<>[\]$`|\\/#]|--/u;
 
 function inCodeLikeLine(target: string, start: number, end: number): boolean {
   const lineStart = start === 0 ? 0 : target.lastIndexOf("\n", start - 1) + 1;
@@ -780,12 +780,20 @@ function spokenSpelling(token: string, source: ReadonlySet<string>): string {
   return token;
 }
 
+interface CorrectionSpan {
+  windowStart: number;
+  markerStart: number;
+  markerEnd: number;
+}
+
 function correctionCoverage(tokens: readonly string[]): {
   marker: boolean[];
   window: boolean[];
+  spans: CorrectionSpan[];
 } {
   const marker = tokens.map(() => false);
   const window = tokens.map(() => false);
+  const spans: CorrectionSpan[] = [];
   let previousEnd = 0;
   for (let index = 0; index < tokens.length; index += 1) {
     const match = CORRECTION_MARKERS.find((phrase) =>
@@ -802,10 +810,40 @@ function correctionCoverage(tokens: readonly string[]): {
     ) {
       window[before] = true;
     }
+    spans.push({
+      windowStart: Math.max(previousEnd, index - CORRECTION_WINDOW),
+      markerStart: index,
+      markerEnd: index + match.length,
+    });
     previousEnd = index + match.length;
     index = previousEnd - 1;
   }
-  return { marker, window };
+  return { marker, window, spans };
+}
+
+function replacesMoreThanSaid(
+  tokens: readonly string[],
+  dropped: readonly boolean[],
+  spans: readonly CorrectionSpan[],
+): boolean {
+  return spans.some((span, position) => {
+    const replacementEnd = spans[position + 1]?.markerStart ?? tokens.length;
+    let first = -1;
+    for (let index = span.windowStart; index < span.markerStart; index += 1) {
+      if (dropped[index] && !FILLER_WORDS.has(tokens[index]!)) {
+        first = index;
+        break;
+      }
+    }
+    if (first === -1) return false;
+    let replaced = 0;
+    for (let index = first; index < span.markerStart; index += 1) {
+      if (FILLER_WORDS.has(tokens[index]!)) continue;
+      if (!dropped[index]) return true;
+      replaced += 1;
+    }
+    return replaced > replacementEnd - span.markerEnd;
+  });
 }
 
 function droppedTokens(
@@ -1047,7 +1085,7 @@ export function validateFormattedTranscript(
   });
   if (movedQuestion) return { ok: false, reason: "question" };
   let enumerated = 0;
-  const { marker, window } = correctionCoverage(rawTokens);
+  const { marker, window, spans } = correctionCoverage(rawTokens);
   const dropped = droppedTokens(
     rawTokens,
     formattedTokens,
@@ -1057,6 +1095,9 @@ export function validateFormattedTranscript(
     (token, index) => dropped[index] && !marker[index] && isNegation(token),
   );
   if (lostNegation) return { ok: false, reason: "negation" };
+  if (replacesMoreThanSaid(rawTokens, dropped, spans)) {
+    return { ok: false, reason: "dropped-words" };
+  }
   for (let index = 0; index < rawTokens.length; index += 1) {
     if (!dropped[index]) continue;
     const token = rawTokens[index]!;

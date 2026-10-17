@@ -47,7 +47,7 @@ const AUDIO_TYPES: Record<string, string> = {
 
 function parseCount(key: string, value: string, max: number): number {
   const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 0 || parsed > max) {
+  if (!/^\d+$/u.test(value) || parsed > max) {
     throw new Error(`${key} must be a whole number from 0 to ${max}`);
   }
   return parsed;

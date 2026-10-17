@@ -404,6 +404,9 @@ describe("resolveWritingEdits", () => {
     ["git push origin main", "git", "Git"],
     ["return  true", "return  true", "return true"],
     ["The build passed.\nreturn true", "return", "Return"],
+    ["return true // explanation.", "return", "Return"],
+    ["return true # explanation.", "return", "Return"],
+    ["return true -- explanation.", "return", "Return"],
   ])(
     "only suggests a case, spacing or period change in the unfinished sentence %j",
     (target, original, replacement) => {
@@ -693,6 +696,35 @@ describe("validateFormattedTranscript", () => {
       validateFormattedTranscript(
         "is the build green? deploy it tomorrow",
         "Is the build green? Deploy it tomorrow.",
+      ),
+    ).toEqual({ ok: true });
+  });
+
+  it.each([
+    ["deploy auth service at noon no wait at midnight", "Deploy at midnight."],
+    [
+      "run the unit tests on staging no wait on production",
+      "Run on production.",
+    ],
+    [
+      "deploy the api then the worker no wait the web app",
+      "Deploy the web app.",
+    ],
+  ])(
+    "keeps the transcript when a self-correction drops more than it replaces: %s",
+    (raw, formatted) => {
+      expect(validateFormattedTranscript(raw, formatted)).toEqual({
+        ok: false,
+        reason: "dropped-words",
+      });
+    },
+  );
+
+  it("allows a self-correction to replace the words just before it", () => {
+    expect(
+      validateFormattedTranscript(
+        "deploy auth service at noon no wait at midnight",
+        "Deploy auth service at midnight.",
       ),
     ).toEqual({ ok: true });
   });

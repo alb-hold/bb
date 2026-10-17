@@ -326,8 +326,8 @@ missing final period, capitalization or spacing in text that does not end a
 sentence (such as a bare `return true`), other punctuation (commas, question marks), homophones such as its/it's, and tense or
 plural changes are offered as suggestions. Code, paths, identifiers and
 vocabulary terms are never edited, and on a line containing any of
-= ; { } ( ) < > [ ] $ ` | \ every change, even capitalization, is only
-suggested. Dictation formatting follows the same rule:
+= ; { } ( ) < > [ ] $ ` | \ / # or -- every change, even capitalization, is
+only suggested. Dictation formatting follows the same rule:
 if the formatter changes a spoken word into another word, other than one of
 those accent restorations, the transcript is inserted
 as heard. Vocabulary terms are sent to transcription as hints, which make the
@@ -337,8 +337,8 @@ their case or punctuation
 misheard name cannot be told from a real word ("public" is never rewritten as
 a similar term). Formatting may leave out only fillers (um, uh, er, ah, hmm and
 similar), a spoken self-correction (no wait, I mean, scratch that, actually,
-quer dizer, na verdade and the like) together with up to six words before it
-that it replaces, a word said twice in a row, spoken symbol names in literal-code
+quer dizer, na verdade and the like) together with the words just before it
+that it replaces (at most six, and no more than were said after it), a word said twice in a row, spoken symbol names in literal-code
 mode, and the spoken numbers and connectors (and, then, next, finally, e,
 depois, então) of a numbered list; leaving out any other word, or a negation
 outside a self-correction phrase, inserts the transcript as heard. The spoken words must also keep the order they were said in,

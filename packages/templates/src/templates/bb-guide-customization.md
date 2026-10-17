@@ -103,7 +103,7 @@ sem and jamais, with or without accents), swaps within
 is/are/am/be, was/were, has/have, does/do (and isn't/aren't, wasn't/weren't,
 hasn't/haven't, doesn't/don't) or a/an, and accents on nao, voce, tambem,
 entao and amanha apply by themselves, never inside code, paths, identifiers or
-vocabulary terms, nor on a line containing = ; { } ( ) < > [ ] $ ` | or \.
+vocabulary terms, nor on a line containing = ; { } ( ) < > [ ] $ ` | \ / # or --.
 Vocabulary terms are spelling hints for transcription and correction, not a
 guarantee. Everything else, including spelling, other punctuation and
 tense or plural changes such as deploy/deployed, is offered as a suggestion. `correct` and `transcribe` run the

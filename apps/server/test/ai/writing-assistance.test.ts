@@ -482,6 +482,20 @@ describe("dictation segments", () => {
     });
   });
 
+  it("keeps the transcript when a self-correction drops more than it replaces", async () => {
+    await withTestHarness({}, async (harness) => {
+      registerFakeAiService(harness.deps.aiServices, {
+        transcribe: async () =>
+          "deploy auth service at noon no wait at midnight",
+        complete: async () => "Deploy at midnight.",
+      });
+      await expect((await postSegment(harness)).json()).resolves.toMatchObject({
+        text: "deploy auth service at noon no wait at midnight",
+        formatted: false,
+      });
+    });
+  });
+
   it("keeps the transcript when formatting reorders spoken words", async () => {
     await withTestHarness({}, async (harness) => {
       registerFakeAiService(harness.deps.aiServices, {

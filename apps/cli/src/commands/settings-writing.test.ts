@@ -52,6 +52,14 @@ describe("parseWritingSetting", () => {
     expect(() => parseWritingSetting("daily-correction-limit", "1.5")).toThrow(
       /whole number/,
     );
+    for (const value of ["", " ", "1e2", "0x10", " 5", "-1"]) {
+      expect(() =>
+        parseWritingSetting("daily-correction-limit", value),
+      ).toThrow(/whole number/);
+      expect(() =>
+        parseWritingSetting("daily-dictation-minutes", value),
+      ).toThrow(/whole number/);
+    }
     expect(() => parseWritingSetting("color", "red")).toThrow(
       /Unknown setting/,
     );
