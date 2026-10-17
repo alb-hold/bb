@@ -190,7 +190,7 @@ describe("NotificationHub", () => {
     expect(hub.terminalSharedSize("term-1", later)).toBeNull();
   });
 
-  it("reports terminal size owner and size changes without terminal content", () => {
+  it("logs keyboard resize dimensions for the current owner without terminal content", () => {
     const changes: unknown[] = [];
     const hub = new NotificationHub((change) => changes.push(change));
     const phone = createMockHubSocket();
@@ -198,25 +198,32 @@ describe("NotificationHub", () => {
     hub.recordTerminalClientSize(
       "term-private-output",
       phone,
-      { cols: 55, rows: 16 },
+      { cols: 55, rows: 41 },
       1_000_000,
       true,
     );
     hub.recordTerminalClientSize(
       "term-private-output",
       phone,
-      { cols: 55, rows: 41 },
+      { cols: 55, rows: 16 },
       1_000_001,
-      true,
     );
+    hub.recordTerminalClientSize("term-private-output", phone, { cols: 55, rows: 41 }, 1_000_002);
 
     expect(changes).toEqual([
       {
         terminalId: "term-private-output",
         clientId: "terminal-client-1",
         cols: 55,
-        rows: 16,
+        rows: 41,
         reason: "claimed",
+      },
+      {
+        terminalId: "term-private-output",
+        clientId: "terminal-client-1",
+        cols: 55,
+        rows: 16,
+        reason: "resized",
       },
       {
         terminalId: "term-private-output",
@@ -224,6 +231,40 @@ describe("NotificationHub", () => {
         cols: 55,
         rows: 41,
         reason: "resized",
+      },
+    ]);
+  });
+
+  it("logs when a focused terminal size owner disconnects", () => {
+    const changes: unknown[] = [];
+    const hub = new NotificationHub((change) => changes.push(change));
+    const phone = createMockHubSocket();
+    hub.registerTerminalClient("term-disconnect", phone);
+    hub.recordTerminalClientSize(
+      "term-disconnect",
+      phone,
+      { cols: 55, rows: 41 },
+      1_000_000,
+      true,
+    );
+
+    hub.unregisterTerminalClientSocket(phone);
+
+    expect(hub.terminalSharedSize("term-disconnect", 1_000_001)).toBeNull();
+    expect(changes).toEqual([
+      {
+        terminalId: "term-disconnect",
+        clientId: "terminal-client-1",
+        cols: 55,
+        rows: 41,
+        reason: "claimed",
+      },
+      {
+        terminalId: "term-disconnect",
+        clientId: "terminal-client-1",
+        cols: 55,
+        rows: 41,
+        reason: "disconnected",
       },
     ]);
   });

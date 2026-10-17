@@ -424,9 +424,9 @@ export class NotificationHub implements DbNotifier {
     const previousSize = state.size;
     state.size = size;
     state.lastSeenAt = now;
-    if (claim && state.visible) {
+    if (state.visible) {
       const currentOwner = this.terminalResizeOwnerById.get(terminalId);
-      if (currentOwner !== socket) {
+      if (claim && currentOwner !== socket) {
         this.terminalResizeOwnerById.set(terminalId, socket);
         this.onTerminalResizeOwnerChange({
           clientId: this.terminalClientId(socket),
@@ -436,8 +436,8 @@ export class NotificationHub implements DbNotifier {
           terminalId,
         });
       } else if (
-        previousSize?.cols !== size.cols ||
-        previousSize.rows !== size.rows
+        currentOwner === socket &&
+        (previousSize?.cols !== size.cols || previousSize?.rows !== size.rows)
       ) {
         this.onTerminalResizeOwnerChange({
           clientId: this.terminalClientId(socket),
