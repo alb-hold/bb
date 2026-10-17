@@ -87,6 +87,20 @@ export function gappedWebm(gapSeconds: number): Uint8Array {
   ]);
 }
 
+export function wavWithMetadata(
+  name: string,
+  metadataBytes: number,
+): Uint8Array {
+  const audio = audioFixture(name);
+  const bytes = new Uint8Array(audio.length + 8 + metadataBytes);
+  bytes.set(audio);
+  const view = new DataView(bytes.buffer);
+  bytes.set([0x4c, 0x49, 0x53, 0x54], audio.length);
+  view.setUint32(audio.length + 4, metadataBytes, true);
+  view.setUint32(4, bytes.length - 8, true);
+  return bytes;
+}
+
 const OGG_CRC = Array.from({ length: 256 }, (_, index) => {
   let crc = index << 24;
   for (let bit = 0; bit < 8; bit += 1) {

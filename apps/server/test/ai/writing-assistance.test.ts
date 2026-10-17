@@ -15,11 +15,12 @@ import { registerFakeAiService } from "../helpers/ai-services.js";
 import { gappedWebm } from "../helpers/audio-fixtures.js";
 import { withTestHarness, type TestAppHarness } from "../helpers/test-app.js";
 
-function wav(seconds: number, sampleRate = 1_000): File {
+function wav(seconds: number, sampleRate = 1_000, metadataBytes = 0): File {
   const data = Math.round(seconds * sampleRate);
-  const bytes = Buffer.alloc(44 + data, 0x80);
+  const trailer = metadataBytes > 0 ? 8 + metadataBytes : 0;
+  const bytes = Buffer.alloc(44 + data + trailer, 0x80);
   bytes.write("RIFF", 0, "ascii");
-  bytes.writeUInt32LE(36 + data, 4);
+  bytes.writeUInt32LE(36 + data + trailer, 4);
   bytes.write("WAVEfmt ", 8, "ascii");
   bytes.writeUInt32LE(16, 16);
   bytes.writeUInt16LE(1, 20);
@@ -30,6 +31,10 @@ function wav(seconds: number, sampleRate = 1_000): File {
   bytes.writeUInt16LE(8, 34);
   bytes.write("data", 36, "ascii");
   bytes.writeUInt32LE(data, 40);
+  if (metadataBytes > 0) {
+    bytes.write("LIST", 44 + data, "ascii");
+    bytes.writeUInt32LE(metadataBytes, 48 + data);
+  }
   return new File([bytes], "dictation-1.wav", { type: "audio/wav" });
 }
 
@@ -771,6 +776,26 @@ describe("dictation segments", () => {
         30.1,
       );
       expect(service.transcribeCalls).toHaveLength(1);
+    });
+  });
+
+  it("measures a WAV by its declared audio data, not the metadata chunk after it", async () => {
+    await withTestHarness({}, async (harness) => {
+      registerFakeAiService(harness.deps.aiServices, {
+        transcribe: async () => "hello there",
+      });
+      updateWritingAssistanceSettings(harness.deps.db, {
+        dictationFormatting: false,
+      });
+      expect(
+        (
+          await postSegment(harness, {
+            durationMs: "1000",
+            file: wav(2, 1_000, 200_000),
+          })
+        ).status,
+      ).toBe(200);
+      expect(getWritingUsage(harness.deps.db, utcDay()).audioSeconds).toBe(2);
     });
   });
 

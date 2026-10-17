@@ -7,6 +7,7 @@ import {
   mp4WithTimeline,
   oggWithLastGranule,
   opusBlock,
+  wavWithMetadata,
   webmWithClusters,
 } from "../helpers/audio-fixtures.js";
 
@@ -64,6 +65,12 @@ describe("measureAudioSeconds", () => {
         mp4WithTimeline("tone-3s-fragmented.mp4", "tfdt", 130),
       ),
     ).toBeGreaterThanOrEqual(130);
+  });
+
+  it("measures a WAV by its declared data chunk, not metadata after it", () => {
+    expect(
+      measureAudioSeconds(wavWithMetadata("tone-1s.wav", 200_000)),
+    ).toBeCloseTo(1, 5);
   });
 
   it("refuses laced blocks, other codecs, truncated files and unknown formats", () => {

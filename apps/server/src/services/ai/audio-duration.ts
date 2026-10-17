@@ -422,7 +422,10 @@ function wavSeconds(bytes: Uint8Array): number | null {
       bytesPerSecond = (sampleRate * channels * bits) / 8;
     }
     if (type === "data") {
-      return bytesPerSecond > 0 ? (bytes.length - body) / bytesPerSecond : null;
+      const present = bytes.length - body;
+      const streamed = size === 0 || size === 0xffffffff;
+      const audio = streamed ? present : Math.min(size, present);
+      return bytesPerSecond > 0 ? audio / bytesPerSecond : null;
     }
     offset = body + size + (size % 2);
   }

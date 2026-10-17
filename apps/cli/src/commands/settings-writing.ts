@@ -264,7 +264,7 @@ export function registerWritingSettingsCommands(
     )
     .requiredOption(
       "--seconds <n>",
-      "Length of the recording in seconds; the server counts the longer of this and the length it measures",
+      "Length of the recording in seconds; the server counts the longer of this and the length it measures from the audio, including gaps between its timestamps",
     )
     .option("--context <text>", "Text already in the message")
     .option("--json", "Print machine-readable JSON output")
