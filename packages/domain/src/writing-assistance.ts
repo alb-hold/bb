@@ -1089,7 +1089,10 @@ export function validateFormattedTranscript(
   const dropped = droppedTokens(
     rawTokens,
     formattedTokens,
-    rawTokens.map((_token, index) => marker[index]! || window[index]!),
+    rawTokens.map(
+      (token, index) =>
+        marker[index]! || window[index]! || rawTokens[index - 1] === token,
+    ),
   );
   const lostNegation = rawTokens.some(
     (token, index) => dropped[index] && !marker[index] && isNegation(token),
@@ -1104,7 +1107,13 @@ export function validateFormattedTranscript(
     if (marker[index] || window[index]) continue;
     if (FILLER_WORDS.has(token)) continue;
     if (options.literalCode && SPOKEN_SYMBOLS.has(token)) continue;
-    if (index > 0 && rawTokens[index - 1] === token) continue;
+    if (
+      index > 0 &&
+      rawTokens[index - 1] === token &&
+      !GRAMMATICAL_REPEATS.has(token)
+    ) {
+      continue;
+    }
     const enumerator = ENUMERATOR_VALUES.get(token);
     if (
       enumerator !== undefined &&

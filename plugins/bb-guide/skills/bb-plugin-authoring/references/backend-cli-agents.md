@@ -290,7 +290,7 @@ bb.experimental_aiServices.register({
   words, changes protected tokens, loses a negation, or drops any word other
   than a filler (um, uh), a spoken self-correction (no wait, quer dizer) with
   the words just before it that it replaces (at most six, and no more than
-  were said after it), a word said twice in a row, spoken symbol
+  were said after it), a word said twice in a row (never had, that or is), spoken symbol
   names in literal-code mode, or a numbered list's spoken numbers and
   connectors.
 - `transcribe(audio: File, { signal, hint })` returns a transcript. `hint` is

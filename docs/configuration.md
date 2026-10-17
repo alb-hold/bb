@@ -338,7 +338,7 @@ misheard name cannot be told from a real word ("public" is never rewritten as
 a similar term). Formatting may leave out only fillers (um, uh, er, ah, hmm and
 similar), a spoken self-correction (no wait, I mean, scratch that, actually,
 quer dizer, na verdade and the like) together with the words just before it
-that it replaces (at most six, and no more than were said after it), a word said twice in a row, spoken symbol names in literal-code
+that it replaces (at most six, and no more than were said after it), a word said twice in a row (never had, that or is), spoken symbol names in literal-code
 mode, and the spoken numbers and connectors (and, then, next, finally, e,
 depois, então) of a numbered list; leaving out any other word, or a negation
 outside a self-correction phrase, inserts the transcript as heard. The spoken words must also keep the order they were said in,

@@ -482,6 +482,19 @@ describe("dictation segments", () => {
     });
   });
 
+  it("keeps the transcript when formatting drops a repeat that can be meant", async () => {
+    await withTestHarness({}, async (harness) => {
+      registerFakeAiService(harness.deps.aiServices, {
+        transcribe: async () => "I had had enough of the flaky test",
+        complete: async () => "I had enough of the flaky test.",
+      });
+      await expect((await postSegment(harness)).json()).resolves.toMatchObject({
+        text: "I had had enough of the flaky test",
+        formatted: false,
+      });
+    });
+  });
+
   it("keeps the transcript when a self-correction drops more than it replaces", async () => {
     await withTestHarness({}, async (harness) => {
       registerFakeAiService(harness.deps.aiServices, {

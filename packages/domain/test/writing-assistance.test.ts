@@ -720,6 +720,29 @@ describe("validateFormattedTranscript", () => {
     },
   );
 
+  it.each([
+    ["I had had enough of the flaky test", "I had enough of the flaky test."],
+    ["I know that that test is flaky", "I know that test is flaky."],
+    ["what it is is a flaky test", "What it is a flaky test."],
+  ])(
+    "keeps the transcript when formatting drops a repeat that can be meant: %s",
+    (raw, formatted) => {
+      expect(validateFormattedTranscript(raw, formatted)).toEqual({
+        ok: false,
+        reason: "dropped-words",
+      });
+    },
+  );
+
+  it("allows formatting to drop a word said twice by accident", () => {
+    expect(
+      validateFormattedTranscript(
+        "check the the cache before the deploy",
+        "Check the cache before the deploy.",
+      ),
+    ).toEqual({ ok: true });
+  });
+
   it("allows a self-correction to replace the words just before it", () => {
     expect(
       validateFormattedTranscript(
