@@ -334,6 +334,89 @@ describe("spawnLoggedProcess", () => {
     expect(existsSync(`${logPath}.6`)).toBe(false);
   });
 
+  it("keeps two lockless writers within the shared file-family bound", async () => {
+    const logDir = scratchDir();
+    const logPath = join(logDir, "server-stdio.log");
+    const expectedPerWriter = 13 * 1024 * 1024;
+    const expectedTotal = expectedPerWriter * 2 + 12;
+    const sizeLimit = 10 * 1024 * 1024;
+    writeFileSync(`${logPath}.lock`, String(process.pid));
+    const children = ["a", "b"].map((marker) =>
+      spawnLoggedProcess({
+        command: process.execPath,
+        args: [
+          "-e",
+          `
+            const chunk = ${JSON.stringify(marker)}.repeat(64 * 1024);
+            let remaining = ${expectedPerWriter};
+            const writeNext = () => {
+              const next = chunk.slice(0, Math.min(chunk.length, remaining));
+              process.stdout.write(next, (error) => {
+                if (error) process.exit(1);
+                remaining -= next.length;
+                if (remaining > 0) setImmediate(writeNext);
+                else process.stdout.end(${JSON.stringify(`${marker.toUpperCase()}_END\n`)}, () => process.exit(0));
+              });
+            };
+            writeNext();
+          `,
+        ],
+        env: process.env,
+        logDir,
+        logName: "server",
+      }),
+    );
+
+    try {
+      expect(await Promise.all(children.map(waitForExit))).toEqual([0, 0]);
+      const familyPaths = () =>
+        readdirSync(logDir)
+          .filter(
+            (name) =>
+              name === "server-stdio.log" ||
+              /^server-stdio\.log\.\d+$/.test(name),
+          )
+          .map((name) => join(logDir, name));
+      await expect
+        .poll(
+          () =>
+            familyPaths().reduce(
+              (total, filePath) => total + statSync(filePath).size,
+              0,
+            ),
+          { timeout: 5_000 },
+        )
+        .toBe(expectedTotal);
+      const filePaths = familyPaths();
+      expect(filePaths.length).toBeLessThanOrEqual(6);
+      expect(
+        filePaths.filter((filePath) => filePath !== logPath).length,
+      ).toBeLessThanOrEqual(5);
+      expect(
+        filePaths.every((filePath) => statSync(filePath).size <= sizeLimit),
+      ).toBe(true);
+      expect(
+        filePaths.reduce(
+          (total, filePath) => total + statSync(filePath).size,
+          0,
+        ),
+      ).toBe(expectedTotal);
+      const activeOutput = readFileSync(logPath, "utf8");
+      expect(activeOutput).toMatch(/[AB]_END\n/);
+      const retainedOutput = filePaths
+        .map((filePath) => readFileSync(filePath, "utf8"))
+        .join("");
+      expect(retainedOutput.split("a").length - 1).toBe(expectedPerWriter);
+      expect(retainedOutput.split("b").length - 1).toBe(expectedPerWriter);
+      expect(retainedOutput).toContain("A_END\n");
+      expect(retainedOutput).toContain("B_END\n");
+    } finally {
+      for (const child of children) {
+        if (child.exitCode === null) child.kill("SIGKILL");
+      }
+    }
+  });
+
   it.skipIf(process.platform === "win32")(
     "passes the parent environment to the detached log writer",
     async () => {

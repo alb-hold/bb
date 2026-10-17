@@ -6,11 +6,14 @@ const stdioLogWriter = `
 const fs = require("node:fs");
 const logPath = process.argv[1];
 const lockPath = logPath + ".lock";
+const appendLockPath = logPath + ".append.lock";
 const sizeLimit = 10 * 1024 * 1024;
 const fileCount = 5;
 const lockWaitLimitMs = 500;
 const locklessPeriodMs = 5_000;
 let locklessUntil = 0;
+const pendingChunks = [];
+let processing = false;
 const rotate = () => {
   const oldestPath = logPath + "." + fileCount;
   if (fs.existsSync(oldestPath)) fs.unlinkSync(oldestPath);
@@ -20,15 +23,11 @@ const rotate = () => {
   }
   if (fs.existsSync(logPath)) fs.renameSync(logPath, logPath + ".1");
 };
-const releaseLock = (fd) => {
-  try { fs.closeSync(fd); } catch {}
-  try { fs.unlinkSync(lockPath); } catch {}
-};
-const lockOwnerIsAlive = () => {
+const lockOwnerIsAlive = (path) => {
   try {
-    const stat = fs.statSync(lockPath);
+    const stat = fs.statSync(path);
     if (stat.size === 0 && Date.now() - stat.mtimeMs > 1000) return false;
-    const ownerPid = Number(fs.readFileSync(lockPath, "utf8"));
+    const ownerPid = Number(fs.readFileSync(path, "utf8"));
     if (!Number.isInteger(ownerPid) || ownerPid < 1) return true;
     if (ownerPid === process.pid) return false;
     try {
@@ -53,87 +52,103 @@ const acquireLock = () => {
       try { fs.unlinkSync(lockPath); } catch {}
     }
     if (error.code !== "EEXIST") return -1;
-    if (!lockOwnerIsAlive()) {
+    if (!lockOwnerIsAlive(lockPath)) {
       try { fs.unlinkSync(lockPath); } catch {}
     }
     return null;
   }
 };
-const appendWithoutLock = (chunk) => {
+const appendSerialized = (chunk, done) => {
+  let lockFd;
+  try {
+    lockFd = fs.openSync(appendLockPath, "wx", 0o600);
+    fs.writeSync(lockFd, String(process.pid));
+  } catch (error) {
+    if (lockFd !== undefined) {
+      try { fs.closeSync(lockFd); } catch {}
+      try { fs.unlinkSync(appendLockPath); } catch {}
+    }
+    if (error.code === "EEXIST") {
+      if (!lockOwnerIsAlive(appendLockPath)) {
+        try { fs.unlinkSync(appendLockPath); } catch {}
+      }
+      setTimeout(() => appendSerialized(chunk, done), 1);
+      return;
+    }
+    done();
+    return;
+  }
   let fd;
   try {
-    let size = fs.existsSync(logPath) ? fs.statSync(logPath).size : 0;
-    if (size + chunk.length > sizeLimit) {
-      rotate();
-      size = 0;
+    let offset = 0;
+    while (offset < chunk.length) {
+      let size = fs.existsSync(logPath) ? fs.statSync(logPath).size : 0;
+      if (size >= sizeLimit) {
+        if (fd !== undefined) {
+          fs.closeSync(fd);
+          fd = undefined;
+        }
+        rotate();
+        size = 0;
+      }
+      if (fd === undefined) fd = fs.openSync(logPath, "a", 0o600);
+      const length = Math.min(sizeLimit - size, chunk.length - offset);
+      const written = fs.writeSync(fd, chunk, offset, length);
+      if (written === 0) break;
+      offset += written;
     }
-    fd = fs.openSync(logPath, "a", 0o600);
-    const length = Math.min(sizeLimit - size, chunk.length);
-    if (length > 0) fs.writeSync(fd, chunk, 0, length);
   } catch {}
   finally {
     if (fd !== undefined) {
       try { fs.closeSync(fd); } catch {}
     }
-    process.stdin.resume();
+    releaseLock(appendLockPath, lockFd);
+    done();
   }
 };
-const processChunk = (chunk, startedAt) => {
+const releaseLock = (path, fd) => {
+  try { fs.closeSync(fd); } catch {}
+  try { fs.unlinkSync(path); } catch {}
+};
+const processChunk = (chunk, startedAt, done) => {
   if (Date.now() < locklessUntil) {
-    appendWithoutLock(chunk);
+    appendSerialized(chunk, done);
     return;
   }
   const lockFd = acquireLock();
   if (lockFd === null) {
     if (Date.now() - startedAt < lockWaitLimitMs) {
-      setTimeout(() => processChunk(chunk, startedAt), 10);
+      setTimeout(() => processChunk(chunk, startedAt, done), 10);
       return;
     }
     locklessUntil = Date.now() + locklessPeriodMs;
-    appendWithoutLock(chunk);
+    appendSerialized(chunk, done);
     return;
   }
   if (lockFd < 0) {
-    process.stdin.resume();
+    done();
     return;
   }
-  let fd;
-  try {
-    let size = fs.existsSync(logPath) ? fs.statSync(logPath).size : 0;
-    if (size > sizeLimit) {
-      rotate();
-      size = 0;
-    }
-    fd = fs.openSync(logPath, "a", 0o600);
-    let offset = 0;
-    while (offset < chunk.length) {
-      if (size >= sizeLimit) {
-        fs.closeSync(fd);
-        fd = undefined;
-        rotate();
-        size = 0;
-        fd = fs.openSync(logPath, "a", 0o600);
-      }
-      const length = Math.min(sizeLimit - size, chunk.length - offset);
-      const written = fs.writeSync(fd, chunk, offset, length);
-      if (written === 0) break;
-      offset += written;
-      size += written;
-    }
-  } catch {}
-  finally {
-    if (fd !== undefined) {
-      try { fs.closeSync(fd); } catch {}
-    }
-    releaseLock(lockFd);
-    process.stdin.resume();
-  }
+  appendSerialized(chunk, () => {
+    releaseLock(lockPath, lockFd);
+    done();
+  });
+};
+const processNext = () => {
+  if (processing) return;
+  const chunk = pendingChunks.shift();
+  if (chunk === undefined) return;
+  processing = true;
+  processChunk(chunk, Date.now(), () => {
+    processing = false;
+    processNext();
+  });
 };
 process.on("uncaughtException", () => {});
 process.stdin.on("error", () => {});
 process.stdin.on("data", (chunk) => {
-  process.stdin.pause();
-  processChunk(chunk, Date.now());
+  pendingChunks.push(chunk);
+  processNext();
 });
 `;
 
