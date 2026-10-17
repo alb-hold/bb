@@ -1128,7 +1128,7 @@ describe("terminal data plane child", () => {
         rssBytes: 4096,
         browserSockets: 2,
         daemonSockets: 2,
-        droppedMisroutedFrames: 3,
+        droppedMisroutedFrames: 2,
       },
     ]);
     harness.child.shutdown();

@@ -98,6 +98,7 @@ interface Fixture {
   fallbackRouted: boolean[];
   fallbackUpgrades: string[];
   inputActivity: string[];
+  outputBatches: Array<{ chunks: Array<{ dataBase64: string; seq: number }>; daemonSessionId: string; terminalId: string }>;
   openSession(sessionId?: string): void;
   plane: TerminalDataPlane;
   port: number;
@@ -155,6 +156,7 @@ async function createFixture(mode: DaemonMode = "capable"): Promise<Fixture> {
   const detached: ChildTerminalSocket[] = [];
   const directOutput: Array<{ daemonSessionId: string; enabled: boolean }> = [];
   const inputActivity: string[] = [];
+  const outputBatches: Array<{ chunks: Array<{ dataBase64: string; seq: number }>; daemonSessionId: string; terminalId: string }> = [];
   const received: TerminalClientMessage[] = [];
   const tickets: string[] = [];
   const pendingConnects: Array<() => void> = [];
@@ -270,6 +272,8 @@ async function createFixture(mode: DaemonMode = "capable"): Promise<Fixture> {
       recordInputActivity: (terminalId) => {
         inputActivity.push(terminalId);
       },
+      recordOutputBatch: ({ chunks, daemonSessionId, terminalId }) =>
+        outputBatches.push({ chunks, daemonSessionId, terminalId }),
     },
     logger: {
       debug: () => undefined,
@@ -329,6 +333,7 @@ async function createFixture(mode: DaemonMode = "capable"): Promise<Fixture> {
     fallbackRouted,
     fallbackUpgrades,
     inputActivity,
+    outputBatches,
     openSession: (sessionId = "session_1") => {
       currentSessionId.value = sessionId;
       listener?.({ kind: "opened", hostId: "host_1", sessionId });
@@ -380,6 +385,39 @@ async function attachedFixture(): Promise<Fixture> {
 }
 
 describe("terminal data plane", () => {
+  it("forwards output from an attached daemon data socket with no browser watching", async () => {
+    const fixture = await attachedFixture();
+    const daemon = fixture.daemonSockets[0];
+    if (!daemon) {
+      throw new Error("The daemon data socket was not created");
+    }
+    for (let seq = 0; seq < 8; seq += 1) {
+      daemon.send(
+        JSON.stringify({
+          type: "terminal.output",
+          terminalId: "term_1",
+          chunk: { seq, dataBase64: base64(`R-${seq + 1}\n`) },
+        }),
+      );
+    }
+    await until(
+      () => fixture.outputBatches.reduce((total, batch) => total + batch.chunks.length, 0) === 8,
+      "the retained output batch",
+    );
+    expect(fixture.plane.attachedSocketCount).toBe(0);
+    expect(fixture.plane.isTerminalRouted("term_1")).toBe(false);
+    expect(fixture.outputBatches).toEqual([
+      {
+        terminalId: "term_1",
+        daemonSessionId: "session_1",
+        chunks: Array.from({ length: 8 }, (_, seq) => ({
+          seq,
+          dataBase64: base64(`R-${seq + 1}\n`),
+        })),
+      },
+    ]);
+  }, 120_000);
+
   it(
     "rolls a terminal's route back before the legacy fallback when the helper cannot take the browser, then recovers byte-exact",
     async () => {

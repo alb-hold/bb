@@ -71,6 +71,7 @@ function createFixture() {
     detach: vi.fn(),
     handleMessage: vi.fn(),
     recordInputActivity: vi.fn(),
+    recordOutputBatch: vi.fn(),
   };
   const onTerminalExited = vi.fn();
   const router = new TerminalDataPlaneRouter(
