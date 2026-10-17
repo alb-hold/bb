@@ -444,8 +444,12 @@ describe("dictation segments", () => {
   it.each([
     ["set the limit to 5", "Set the limit to 5%."],
     ["set the budget to 5", "Set the budget to $5."],
+    [
+      "set first limit to 5% and second to 5",
+      "Set first limit to 5 and second to 5%.",
+    ],
   ])(
-    "keeps the transcript when formatting adds a symbol to a spoken number: %s",
+    "keeps the transcript when formatting adds or moves a symbol on a spoken number: %s",
     async (raw, completion) => {
       await withTestHarness({}, async (harness) => {
         registerFakeAiService(harness.deps.aiServices, {

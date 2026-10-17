@@ -358,8 +358,9 @@ that replaces nothing, as in "no wait is required", is not a correction), one of
 mode, and the spoken numbers and connectors (and, then, next, finally, e,
 depois, então) of a numbered list; leaving out any other word, a negation
 outside a self-correction phrase, or the minus sign of a number ("-5" never
-becomes "5"), or adding or removing a symbol next to a number, such as
-%, $, €, °, #, + or ~ ("5" never becomes "5%"), inserts the transcript as heard. The spoken words must also keep the order they were said in,
+becomes "5"), or adding, removing or moving a symbol next to a number, such as
+%, $, €, °, #, + or ~ ("5" never becomes "5%", and "5% and 5" never becomes
+"5 and 5%"), inserts the transcript as heard. The spoken words must also keep the order they were said in,
 and no word, accented or not, may appear more times than it was said ("nao"
 never becomes "Não não."). A question stays a question: a
 sentence the transcript ended with a question mark keeps it, one it ended with

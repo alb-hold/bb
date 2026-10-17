@@ -876,8 +876,24 @@ describe("validateFormattedTranscript", () => {
     [
       "set the limit to 5% and the cap to 5",
       "Set the limit to 5% and the cap to 5%.",
+      "added-words",
+    ],
+    [
+      "set first limit to 5% and second to 5",
+      "Set first limit to 5 and second to 5%.",
       "dropped-words",
     ],
+    [
+      "set the limit to 5% no wait the limit to 5",
+      "Set the limit to 5%.",
+      "dropped-words",
+    ],
+    [
+      "set the limit to 5 no wait the limit to 5%",
+      "Set the limit to 5%.",
+      "dropped-words",
+    ],
+    ["ship 5 no wait ship 5 today", "Ship 5% today.", "added-words"],
   ])(
     "keeps the symbols spoken next to a number: %s -> %s",
     (raw, formatted, reason) => {
@@ -896,6 +912,8 @@ describe("validateFormattedTranscript", () => {
       "set the limit to 5% and the cap to 5",
       "Set the limit to 5% and the cap to 5.",
     ],
+    ["ship 5 no wait ship 5 today", "Ship 5 today."],
+    ["cut 5% no wait cut 5% today", "Cut 5% today."],
   ])("accepts a number that keeps its symbols: %s", (raw, formatted) => {
     expect(validateFormattedTranscript(raw, formatted)).toEqual({ ok: true });
   });

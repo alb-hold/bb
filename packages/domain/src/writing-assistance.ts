@@ -1098,16 +1098,32 @@ function negativeNumbers(text: string): string[] {
     .sort();
 }
 
-function numberSymbols(text: string): Map<string, Set<string>> {
-  const symbols = new Map<string, Set<string>>();
+function numberSymbols(text: string): Map<string, string[]> {
+  const symbols = new Map<string, string[]>();
   const pattern =
     /([%‰$€£¥₹¢₩₽₿°º#+×±~≈<>≤≥]*)(\d+(?:[.,]\d+)*)([%‰$€£¥₹¢₩₽₿°º#+×±~≈<>≤≥]*)/gu;
   for (const match of text.matchAll(pattern)) {
-    const forms = symbols.get(match[2]!) ?? new Set<string>();
-    forms.add(`${match[1]} ${match[3]}`);
+    const forms = symbols.get(match[2]!) ?? [];
+    forms.push(`${match[1]} ${match[3]}`);
     symbols.set(match[2]!, forms);
   }
   return symbols;
+}
+
+function symbolMismatch(
+  spoken: readonly string[],
+  written: readonly string[],
+): "added-words" | "dropped-words" | null {
+  if (spoken.length !== written.length && new Set(spoken).size > 1) {
+    return "dropped-words";
+  }
+  const expected =
+    spoken.length === written.length ? spoken : written.map(() => spoken[0]!);
+  const index = written.findIndex(
+    (form, position) => form !== expected[position],
+  );
+  if (index === -1) return null;
+  return written[index] === " " ? "dropped-words" : "added-words";
 }
 
 export function validateFormattedTranscript(
@@ -1143,21 +1159,11 @@ export function validateFormattedTranscript(
   }
   const rawSymbols = numberSymbols(raw);
   const bodySymbols = numberSymbols(body);
-  for (const [number, forms] of bodySymbols) {
+  for (const [number, written] of bodySymbols) {
     const spoken = rawSymbols.get(number);
     if (spoken === undefined) continue;
-    for (const form of forms) {
-      if (form !== " " && !spoken.has(form)) {
-        return { ok: false, reason: "added-words" };
-      }
-    }
-  }
-  for (const [number, forms] of rawSymbols) {
-    const written = bodySymbols.get(number);
-    if (written === undefined) continue;
-    for (const form of forms) {
-      if (!written.has(form)) return { ok: false, reason: "dropped-words" };
-    }
+    const mismatch = symbolMismatch(spoken, written);
+    if (mismatch !== null) return { ok: false, reason: mismatch };
   }
   const rawNegatives = negativeNumbers(raw);
   const formattedNegatives = negativeNumbers(body);
