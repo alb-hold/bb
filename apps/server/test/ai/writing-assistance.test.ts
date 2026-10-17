@@ -441,6 +441,24 @@ describe("dictation segments", () => {
     });
   });
 
+  it.each([
+    ["set the limit to 5", "Set the limit to 5%."],
+    ["set the budget to 5", "Set the budget to $5."],
+  ])(
+    "keeps the transcript when formatting adds a symbol to a spoken number: %s",
+    async (raw, completion) => {
+      await withTestHarness({}, async (harness) => {
+        registerFakeAiService(harness.deps.aiServices, {
+          transcribe: async () => raw,
+          complete: async () => completion,
+        });
+        await expect(
+          (await postSegment(harness)).json(),
+        ).resolves.toMatchObject({ raw, text: raw, formatted: false });
+      });
+    },
+  );
+
   it("keeps the transcript when formatting numbers a list nobody enumerated", async () => {
     await withTestHarness({}, async (harness) => {
       registerFakeAiService(harness.deps.aiServices, {

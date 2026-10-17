@@ -1098,6 +1098,18 @@ function negativeNumbers(text: string): string[] {
     .sort();
 }
 
+function numberSymbols(text: string): Map<string, Set<string>> {
+  const symbols = new Map<string, Set<string>>();
+  const pattern =
+    /([%‰$€£¥₹¢₩₽₿°º#+×±~≈<>≤≥]*)(\d+(?:[.,]\d+)*)([%‰$€£¥₹¢₩₽₿°º#+×±~≈<>≤≥]*)/gu;
+  for (const match of text.matchAll(pattern)) {
+    const forms = symbols.get(match[2]!) ?? new Set<string>();
+    forms.add(`${match[1]} ${match[3]}`);
+    symbols.set(match[2]!, forms);
+  }
+  return symbols;
+}
+
 export function validateFormattedTranscript(
   raw: string,
   formatted: string,
@@ -1127,6 +1139,22 @@ export function validateFormattedTranscript(
   for (const number of body.match(/\d+(?:[.,]\d+)*/gu) ?? []) {
     if (!rawNumbers.has(number)) {
       return { ok: false, reason: "added-words" };
+    }
+  }
+  const rawSymbols = numberSymbols(raw);
+  const bodySymbols = numberSymbols(body);
+  for (const [number, forms] of bodySymbols) {
+    const spoken = rawSymbols.get(number);
+    for (const form of forms) {
+      if (form === " " && spoken !== undefined) continue;
+      if (!spoken?.has(form)) return { ok: false, reason: "added-words" };
+    }
+  }
+  for (const [number, forms] of rawSymbols) {
+    const written = bodySymbols.get(number);
+    if (written === undefined) continue;
+    for (const form of forms) {
+      if (!written.has(form)) return { ok: false, reason: "dropped-words" };
     }
   }
   const rawNegatives = negativeNumbers(raw);

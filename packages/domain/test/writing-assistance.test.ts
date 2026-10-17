@@ -861,6 +861,45 @@ describe("validateFormattedTranscript", () => {
     });
   });
 
+  it.each([
+    ["set the limit to 5", "Set the limit to 5%.", "added-words"],
+    ["set the budget to 5", "Set the budget to $5.", "added-words"],
+    ["set the budget to 5", "Set the budget to €5.", "added-words"],
+    ["set the angle to 30", "Set the angle to 30°.", "added-words"],
+    ["open issue 42", "Open issue #42.", "added-words"],
+    ["call 5 and 6", "Call 5 and +6.", "added-words"],
+    ["keep about 5", "Keep about ~5.", "added-words"],
+    ["run it 5 times", "Run it 5x times.", "added-words"],
+    ["set the cap to 5", "Set the cap to 5k.", "added-words"],
+    ["set the limit to 5%", "Set the limit to 5.", "dropped-words"],
+    ["set the budget to $5", "Set the budget to 5.", "dropped-words"],
+    [
+      "set the limit to 5% and the cap to 5",
+      "Set the limit to 5% and the cap to 5%.",
+      "dropped-words",
+    ],
+  ])(
+    "keeps the symbols spoken next to a number: %s -> %s",
+    (raw, formatted, reason) => {
+      expect(validateFormattedTranscript(raw, formatted)).toEqual({
+        ok: false,
+        reason,
+      });
+    },
+  );
+
+  it.each([
+    ["set the limit to 5%", "Set the limit to 5%."],
+    ["set the budget to $5", "Set the budget to $5."],
+    ["ship 3 of 5", "Ship 3 of 5."],
+    [
+      "set the limit to 5% and the cap to 5",
+      "Set the limit to 5% and the cap to 5.",
+    ],
+  ])("accepts a number that keeps its symbols: %s", (raw, formatted) => {
+    expect(validateFormattedTranscript(raw, formatted)).toEqual({ ok: true });
+  });
+
   it("accepts a negative number that keeps its sign", () => {
     expect(
       validateFormattedTranscript(
