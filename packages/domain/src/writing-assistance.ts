@@ -571,6 +571,11 @@ function inCodeLikeLine(target: string, start: number, end: number): boolean {
   );
 }
 
+function inFinishedSentence(target: string, end: number): boolean {
+  const rest = target.slice(end).match(/^[^\n]*?[.!?](?=\s|$)|^[^\n]*/u)![0];
+  return /[.!?]$/u.test(rest);
+}
+
 export function resolveWritingEdits(
   args: ResolveWritingEditsArgs,
 ): WritingEdit[] {
@@ -607,8 +612,10 @@ export function resolveWritingEdits(
     const kind = repeated
       ? "surface"
       : classifyWritingChange(change.original, change.replacement);
+    const surfaceOnly = !repeated && kind === "surface";
     const deterministicSafe =
       !inCodeLikeLine(args.target, change.start, change.end) &&
+      (!surfaceOnly || inFinishedSentence(args.target, change.end)) &&
       (repeated ||
         (isMeaningInvariantChange(change.original, change.replacement) &&
           proposal.category !== "word-choice" &&

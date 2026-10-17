@@ -314,15 +314,16 @@ Settings (stored server-side; also `bb settings writing`):
 | `dailyDictationMinutes` | `60`        | Dictated minutes per UTC day before dictation stops; bb cloud also caps each account at $0.50 of AI usage per day, about 80 minutes of transcription |
 
 Automatic typing correction applies an edit by itself only when its meaning cannot
-change, whatever the AI service reports: capitalization and spacing, a period at
-the end of a sentence, removing a word typed twice in a row (never had, that or
+change, whatever the AI service reports: capitalization and spacing inside a
+sentence that already ends with . ! or ?, removing a word typed twice in a row (never had, that or
 is, which can repeat on purpose, nor a negation from this fixed list: not, no, never, nothing, nobody, none, nor, neither, without, cannot,
 any word ending in n't, and the Portuguese não, nunca, nem, nada, ninguém,
 sem and jamais, with or without accents), verb or article
 agreement from a fixed list (is/are/am/be, was/were, has/have, does/do and their
 negated forms, a/an), and accents on a fixed list of Portuguese words that are
-not words without them (nao, voce, tambem, entao, amanha). Spelling fixes, other
-punctuation (commas, question marks), homophones such as its/it's, and tense or
+not words without them (nao, voce, tambem, entao, amanha). Spelling fixes, a
+missing final period, capitalization or spacing in text that does not end a
+sentence (such as a bare `return true`), other punctuation (commas, question marks), homophones such as its/it's, and tense or
 plural changes are offered as suggestions. Code, paths, identifiers and
 vocabulary terms are never edited, and on a line containing any of
 = ; { } ( ) < > [ ] $ ` | \ every change, even capitalization, is only
@@ -334,7 +335,13 @@ expected spelling more likely but do not guarantee it; formatting may change
 their case or punctuation
 ("next js" to "Next.js") but never their letters, since without a dictionary a
 misheard name cannot be told from a real word ("public" is never rewritten as
-a similar term). The spoken words must also keep the order they were said in,
+a similar term). Formatting may leave out only fillers (um, uh, er, ah, hmm and
+similar), a spoken self-correction (no wait, I mean, scratch that, actually,
+quer dizer, na verdade and the like) together with up to six words before it
+that it replaces, a word said twice in a row, spoken symbol names in literal-code
+mode, and the spoken numbers and connectors (and, then, next, finally, e,
+depois, então) of a numbered list; leaving out any other word, or a negation
+outside a self-correction phrase, inserts the transcript as heard. The spoken words must also keep the order they were said in,
 and no word, accented or not, may appear more times than it was said ("nao"
 never becomes "Não não."). A question stays a question: a
 sentence the transcript ended with a question mark keeps it, one it ended with

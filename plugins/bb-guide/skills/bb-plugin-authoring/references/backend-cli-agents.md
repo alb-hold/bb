@@ -286,8 +286,12 @@ bb.experimental_aiServices.register({
   of up to about 70 words, and bb validates both. From an edit list cut off
   by the output limit bb keeps only the complete edits before the cut, each
   checked like any other edit; an unreadable list changes nothing. Dictation
-  keeps the transcript as heard when the formatted reply is unreadable, drops
-  or adds words, or changes protected tokens or negations.
+  keeps the transcript as heard when the formatted reply is unreadable, adds
+  words, changes protected tokens, loses a negation, or drops any word other
+  than a filler (um, uh), a spoken self-correction (no wait, quer dizer) with
+  the up to six words it replaces, a word said twice in a row, spoken symbol
+  names in literal-code mode, or a numbered list's spoken numbers and
+  connectors.
 - `transcribe(audio: File, { signal, hint })` returns a transcript. `hint` is
   vocabulary text or `null`. Declared services appear for voice input.
 - `status()` is optional. Its message shows beside the service in the picker.

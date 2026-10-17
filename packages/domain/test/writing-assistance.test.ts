@@ -365,18 +365,50 @@ describe("resolveWritingEdits", () => {
     ]);
   });
 
-  it("auto-applies capitalization and a sentence-final period", () => {
+  it("auto-applies capitalization in a sentence that already ends with a period", () => {
     const edits = resolveWritingEdits({
       ...base,
-      target: "we ship tomorrow",
+      target: "The build passed. we ship tomorrow.",
       proposals: [
-        proposal("we ship tomorrow", "We ship tomorrow.", {
-          category: "capitalization",
-        }),
+        proposal("we ship", "We ship", { category: "capitalization" }),
       ],
     });
-    expect(edits.length).toBeGreaterThan(0);
-    expect(edits.every((edit) => edit.disposition === "apply")).toBe(true);
+    expect(edits.map((edit) => [edit.replacement, edit.disposition])).toEqual([
+      ["We", "apply"],
+    ]);
+  });
+
+  it.each([
+    ["we ship tomorrow", "we ship tomorrow", "We ship tomorrow."],
+    ["return true", "return", "Return"],
+    ["return true", "return true", "return true."],
+    ["git push origin main", "git", "Git"],
+    ["return  true", "return  true", "return true"],
+    ["The build passed.\nreturn true", "return", "Return"],
+  ])(
+    "only suggests a case, spacing or period change in the unfinished sentence %j",
+    (target, original, replacement) => {
+      const edits = resolveWritingEdits({
+        ...base,
+        target,
+        proposals: [
+          proposal(original, replacement, { category: "capitalization" }),
+        ],
+      });
+      expect(edits.length).toBeGreaterThan(0);
+      expect(edits.map((edit) => edit.disposition)).not.toContain("apply");
+    },
+  );
+
+  it("still auto-applies agreement in an unfinished sentence", () => {
+    const edits = resolveWritingEdits({
+      ...base,
+      target: "the user are ready",
+      proposals: [proposal("user are", "user is")],
+    });
+    expect(edits.map((edit) => [edit.replacement, edit.disposition])).toEqual([
+      ["is", "apply"],
+    ]);
   });
 
   it("only auto-applies when the model reports no semantic impact", () => {
