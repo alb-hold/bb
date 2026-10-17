@@ -1224,6 +1224,7 @@ export function ThreadTerminalView({
 
       const activeTerminal = terminal;
       let reconnecting = false;
+      let repaintAfterReconnect = false;
       let reconnectingNoticeVisible = false;
       const clearConnectionNoticeTimeout = () => {
         if (connectionNoticeTimeout !== null) {
@@ -1244,6 +1245,7 @@ export function ThreadTerminalView({
             return;
           }
           if (state === "reconnecting") {
+            repaintAfterReconnect = true;
             if (reconnecting) {
               return;
             }
@@ -1304,7 +1306,12 @@ export function ThreadTerminalView({
               activeTransport.acknowledgeOutput(nextSeq),
             message,
             onReplayComplete: () => {
-              if (!disposed && sessionStatusRef.current === "running") {
+              if (
+                !disposed &&
+                sessionStatusRef.current === "running" &&
+                repaintAfterReconnect
+              ) {
+                repaintAfterReconnect = false;
                 activeTransport.requestRepaint();
               }
             },
