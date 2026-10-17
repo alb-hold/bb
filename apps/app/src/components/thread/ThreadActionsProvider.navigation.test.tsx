@@ -11,6 +11,8 @@ import {
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { systemConfigQueryKey } from "@/hooks/queries/query-keys";
+import { SidebarThreadEntriesProvider } from "@/lib/sidebar-thread-entries";
 import {
   RouteNavigationProvider,
   useRouteNavigate,
@@ -89,12 +91,17 @@ function navigateToT2(): void {
 
 function renderTree(children: ReactNode) {
   const queryClient = new QueryClient();
+  queryClient.setQueryData(systemConfigQueryKey(), {
+    generalSettings: { confirmThreadArchive: true },
+  });
   return render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={["/projects/p1/threads/t1"]}>
         <RouteNavigationProvider>
           <NavigationProbe />
-          {children}
+          <SidebarThreadEntriesProvider navigation={undefined}>
+            {children}
+          </SidebarThreadEntriesProvider>
         </RouteNavigationProvider>
       </MemoryRouter>
     </QueryClientProvider>,
