@@ -444,6 +444,163 @@ describe("spawnLoggedProcess", () => {
     }
   });
 
+  it("recovers a dead writer segment on a timer while a survivor stays below the rotation limit", async () => {
+    const logDir = scratchDir();
+    const deadStopPath = join(logDir, "stop-dead-child");
+    const survivorContinuePath = join(logDir, "continue-survivor");
+    const survivorStopPath = join(logDir, "stop-survivor");
+    const completionPath = join(logDir, "survivor-writer-finished");
+    const first = spawnLoggedProcess({
+      command: process.execPath,
+      args: [
+        "-e",
+        `const fs = require("node:fs"); process.stdout.write("dead-segment-output\\n"); const timer = setInterval(() => { if (fs.existsSync(${JSON.stringify(deadStopPath)})) { clearInterval(timer); process.exit(0); } }, 10);`,
+      ],
+      env: process.env,
+      logDir,
+      logName: "server",
+    });
+    let survivor: ChildProcess | undefined;
+    let writerPid: number | undefined;
+    let firstSegment: string | undefined;
+    let survivorSegment: string | undefined;
+    try {
+      await expect
+        .poll(
+          () =>
+            familyFiles(logDir, "server").find((path) =>
+              path.includes(".active-"),
+            ),
+          { timeout: 5_000, interval: 10 },
+        )
+        .toBeDefined();
+      firstSegment = familyFiles(logDir, "server").find((path) =>
+        path.includes(".active-"),
+      );
+      expect(firstSegment).toBeDefined();
+      writerPid = Number(firstSegment!.match(/\.active-(\d+)-/)?.[1]);
+      expect(Number.isInteger(writerPid)).toBe(true);
+      await expect
+        .poll(
+          () =>
+            readFileSync(firstSegment!, "utf8").includes(
+              "dead-segment-output\n",
+            ),
+          { timeout: 5_000, interval: 10 },
+        )
+        .toBe(true);
+      survivor = spawnLoggedProcess({
+        command: process.execPath,
+        args: [
+          "-e",
+          `const fs = require("node:fs"); let continued = false; process.stdout.write("survivor-started\\n"); const timer = setInterval(() => { if (!continued && fs.existsSync(${JSON.stringify(survivorContinuePath)})) { continued = true; process.stdout.write("survivor-after-recovery\\n"); } if (fs.existsSync(${JSON.stringify(survivorStopPath)})) { clearInterval(timer); process.exit(0); } }, 10);`,
+        ],
+        env: process.env,
+        logDir,
+        logName: "server",
+        testWriterBarrier: { recoveryIntervalMs: 25, completionPath },
+      });
+      await expect
+        .poll(
+          () =>
+            familyFiles(logDir, "server").find(
+              (path) => path.includes(".active-") && path !== firstSegment,
+            ),
+          { timeout: 5_000, interval: 10 },
+        )
+        .toBeDefined();
+      survivorSegment = familyFiles(logDir, "server").find(
+        (path) => path.includes(".active-") && path !== firstSegment,
+      );
+      expect(survivorSegment).toBeDefined();
+      expect(statSync(survivorSegment!).size).toBeLessThan(10 * 1024 * 1024);
+
+      process.kill(writerPid!, "SIGKILL");
+      await expect
+        .poll(
+          () => {
+            try {
+              process.kill(writerPid!, 0);
+              return false;
+            } catch (error) {
+              return (error as NodeJS.ErrnoException).code === "ESRCH";
+            }
+          },
+          { timeout: 5_000, interval: 10 },
+        )
+        .toBe(true);
+      await expect
+        .poll(() => !existsSync(firstSegment!), {
+          timeout: 3_000,
+          interval: 10,
+        })
+        .toBe(true);
+      expect(existsSync(survivorSegment!)).toBe(true);
+      expect(
+        familyFiles(logDir, "server").some((path) => path.includes(".active-")),
+      ).toBe(true);
+      expect(statSync(survivorSegment!).size).toBeLessThan(10 * 1024 * 1024);
+      expect(
+        uniqueFamilyFiles(logDir, "server").some(
+          (path) =>
+            path !== survivorSegment &&
+            readFileSync(path, "utf8").includes("dead-segment-output\n"),
+        ),
+      ).toBe(true);
+
+      writeFileSync(survivorContinuePath, "continue");
+      await expect
+        .poll(
+          () =>
+            readFileSync(survivorSegment!, "utf8").includes(
+              "survivor-after-recovery\n",
+            ),
+          { timeout: 3_000, interval: 10 },
+        )
+        .toBe(true);
+      expect(existsSync(survivorSegment!)).toBe(true);
+      expect(statSync(survivorSegment!).size).toBeLessThan(10 * 1024 * 1024);
+      writeFileSync(survivorStopPath, "stop");
+      expect(await waitForExit(survivor)).toBe(0);
+      await expect
+        .poll(() => existsSync(completionPath), {
+          timeout: 3_000,
+          interval: 10,
+        })
+        .toBe(true);
+      writeFileSync(deadStopPath, "stop");
+      expect(await waitForExit(first)).toBe(0);
+      const files = uniqueFamilyFiles(logDir, "server");
+      const backups = familyFiles(logDir, "server").filter((path) =>
+        path.includes(".backup-"),
+      );
+      expect(backups.length).toBeLessThanOrEqual(5);
+      expect(
+        familyFiles(logDir, "server").every(
+          (path) => statSync(path).size <= 10 * 1024 * 1024,
+        ),
+      ).toBe(true);
+      const output = Buffer.concat(files.map((path) => readFileSync(path)));
+      expect(output.toString()).toContain("dead-segment-output\n");
+      expect(output.toString()).toContain("survivor-started\n");
+      expect(output.toString()).toContain("survivor-after-recovery\n");
+    } finally {
+      writeFileSync(deadStopPath, "stop");
+      writeFileSync(survivorStopPath, "stop");
+      if (writerPid !== undefined) {
+        try {
+          process.kill(writerPid, "SIGKILL");
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+        }
+      }
+      if (first.exitCode === null)
+        await waitForExit(first).catch(() => undefined);
+      if (survivor?.exitCode === null)
+        await waitForExit(survivor).catch(() => undefined);
+    }
+  });
+
   it("rotates an oversized active log without discarding its contents", async () => {
     const logDir = scratchDir();
     const logPath = join(logDir, "server-stdio.log");

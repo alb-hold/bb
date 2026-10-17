@@ -13,6 +13,7 @@ const retainedBackups = 5;
 const maxWriteAttempts = 3;
 const retryDelayMs = 10;
 const maxChunkRetryMs = 2_000;
+const recoveryIntervalMs = writerBarrier?.recoveryIntervalMs ?? 1_000;
 const token = process.pid + "-" + crypto.randomUUID();
 const familyPrefix = logPath + ".";
 const activePath = familyPrefix + "active-" + token;
@@ -26,6 +27,7 @@ let inputPaused = false;
 let inputEnded = false;
 let finalized = false;
 let retryTimer;
+let recoveryTimer;
 let writeAttempts = 0;
 let chunkRetryStartedAt;
 let pendingOffset = 0;
@@ -325,6 +327,7 @@ const finishStream = () => {
       fs.writeFileSync(writerBarrier.completionPath, "done");
     }
     finalized = true;
+    clearInterval(recoveryTimer);
   } catch (error) {
     finalizationAttempts += 1;
     reportFsError("stdio finalization retry " + finalizationAttempts + "/" + maxWriteAttempts, error);
@@ -404,6 +407,15 @@ process.on("uncaughtException", (error) => {
   processing = false;
   scheduleRetry();
 });
+recoveryTimer = setInterval(() => {
+  if (finalized) return;
+  try {
+    recoverClosedSegments();
+  } catch (error) {
+    reportFsError("stdio periodic segment recovery failed", error);
+  }
+}, recoveryIntervalMs);
+recoveryTimer.unref();
 `;
 
 interface SpawnLoggedProcessArgs {
@@ -419,6 +431,7 @@ interface SpawnLoggedProcessArgs {
     pauseAtBytes?: number;
     failActiveOpenCount?: number;
     failActiveWriteCount?: number;
+    recoveryIntervalMs?: number;
     diagnosticPath?: string;
     completionPath?: string;
   };
