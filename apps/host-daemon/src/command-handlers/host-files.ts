@@ -70,7 +70,9 @@ export async function listHostFiles(
   try {
     const realRootPath = await resolveNonSymlinkDirectoryPath({
       description: "Path",
-      path: command.path,
+      path: command.followRootSymlink
+        ? await fs.realpath(command.path)
+        : command.path,
     });
 
     return await finalizeListedFiles({
@@ -269,6 +271,7 @@ export async function readHostRelativeFile(
   command: CommandOf<"host.read_file_relative">,
 ): Promise<HostDaemonOnlineRpcResult<"host.read_file_relative">> {
   return readRootRelativeFileForTransport({
+    followRootSymlink: command.followRootSymlink,
     rootPath: command.rootPath,
     relativePath: command.path,
     dotfiles: command.dotfiles,
