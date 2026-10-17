@@ -297,9 +297,12 @@ Writing assistance: the native terminal composer has a microphone and typing ass
 records phrase by phrase: each pause ends a short clip that is transcribed by the
 `voice` service and then punctuated and formatted by the `writing` service, so
 no recording is re-uploaded and raw audio is not kept. The server measures each
-clip from its encoded audio frames (WebM or Ogg with Opus, MP4 or M4A with AAC,
-MP3, or WAV) and counts the longer of that and the length the client reports
-against `dailyDictationMinutes`; a clip it cannot measure, or one longer than
+clip from its encoded audio (WebM or Ogg with Opus, MP4 or M4A with AAC, MP3, or
+WAV): the longer of its summed audio frames and the playback timeline its
+timestamps describe, so a gap between timestamps counts as recorded time (for
+WAV, only the declared audio data counts, not metadata after it). It counts the
+longer of that and the length the client reports against
+`dailyDictationMinutes`; a clip it cannot measure, or one longer than
 120 seconds, is refused before transcription. A formatted phrase that
 adds words the speaker did not say, changes a number, or drops a protected
 term is discarded in favor of the plain transcript. Typing assistance sends
@@ -319,10 +322,10 @@ Settings (stored server-side; also `bb settings writing`):
 
 Automatic typing correction applies an edit by itself only when its meaning cannot
 change, whatever the AI service reports: capitalization and spacing inside a
-sentence that already ends with . ! or ?, removing a word typed twice in a row (never had, that or
-is, which can repeat on purpose, nor a negation from this fixed list: not, no, never, nothing, nobody, none, nor, neither, without, cannot,
-any word ending in n't, and the Portuguese não, nunca, nem, nada, ninguém,
-sem and jamais, with or without accents), verb or article
+sentence that already ends with . ! or ?, removing a word typed twice in a row when it is one
+of these articles, pronouns, prepositions and conjunctions: the, a, an, I, we, you, he, she, it, they, me, us, him, them, my, our, your, his, her, their, to, of, in, on, at, for, with, from, by, and, or, but, if, and the Portuguese o, os, a, as, um, uma, de, do, da, dos, das, em, na, nos, nas, e, ou, eu, ele, ela, nós, para, por, com (any
+other repeat, such as very very, had had, that that or not not, can be meant and is only
+suggested), verb or article
 agreement from a fixed list (is/are/am, isn't/aren't, hasn't/haven't,
 doesn't/don't and a/an; changes to or from be, was/were, has/have and does/do
 are only suggested, since a verb's mood can change the meaning: "He be working",
@@ -345,7 +348,7 @@ a similar term). Formatting may leave out only fillers (um, uh, er, ah, hmm and
 similar), a spoken self-correction (no wait, I mean, scratch that, actually,
 quer dizer, na verdade and the like) together with the words just before it
 that it replaces (at most six, and no more than were said after it; a phrase
-that replaces nothing, as in "no wait is required", is not a correction), a word said twice in a row (never had, that or is), spoken symbol names in literal-code
+that replaces nothing, as in "no wait is required", is not a correction), one of those articles, pronouns, prepositions and conjunctions said twice in a row (never another word, such as very, had, that or is), spoken symbol names in literal-code
 mode, and the spoken numbers and connectors (and, then, next, finally, e,
 depois, então) of a numbered list; leaving out any other word, a negation
 outside a self-correction phrase, or the minus sign of a number ("-5" never

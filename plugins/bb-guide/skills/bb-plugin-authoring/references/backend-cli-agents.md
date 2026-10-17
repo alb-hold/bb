@@ -292,7 +292,8 @@ bb.experimental_aiServices.register({
   no wait) or a number's minus sign, or drops any word other
   than a filler (um, uh), a spoken self-correction (no wait, quer dizer) with
   the words just before it that it replaces (at most six, and no more than
-  were said after it; a phrase that replaces nothing is not a correction), a word said twice in a row (never had, that or is), spoken symbol
+  were said after it; a phrase that replaces nothing is not a correction), a short function word said twice in a row (an article, pronoun, preposition
+  or conjunction such as the, I, to or de; never very, had, that or is), spoken symbol
   names in literal-code mode, or a numbered list's spoken numbers and
   connectors.
 - `transcribe(audio: File, { signal, hint })` returns a transcript. `hint` is

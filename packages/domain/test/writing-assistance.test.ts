@@ -171,6 +171,9 @@ describe("resolveWritingEdits", () => {
     ["Isso nunca nunca roda.", "nunca nunca", "nunca"],
     ["We never never deploy on Fridays.", "never never", "never"],
     ["Check the the cache before the deploy.", "the the", "the?"],
+    ["This is very very important.", "very very", "very"],
+    ["It was a long long day.", "long long", "long"],
+    ["Isso é muito muito importante.", "muito muito", "muito"],
   ])(
     "only suggests removing the repeat in %s",
     (target, original, replacement) => {
@@ -753,6 +756,9 @@ describe("validateFormattedTranscript", () => {
     ["I had had enough of the flaky test", "I had enough of the flaky test."],
     ["I know that that test is flaky", "I know that test is flaky."],
     ["what it is is a flaky test", "What it is a flaky test."],
+    ["this is very very important", "This is very important."],
+    ["it was a long long day", "It was a long day."],
+    ["isso é muito muito importante", "Isso é muito importante."],
   ])(
     "keeps the transcript when formatting drops a repeat that can be meant: %s",
     (raw, formatted) => {
@@ -763,14 +769,19 @@ describe("validateFormattedTranscript", () => {
     },
   );
 
-  it("allows formatting to drop a word said twice by accident", () => {
-    expect(
-      validateFormattedTranscript(
-        "check the the cache before the deploy",
-        "Check the cache before the deploy.",
-      ),
-    ).toEqual({ ok: true });
-  });
+  it.each([
+    [
+      "check the the cache before the deploy",
+      "Check the cache before the deploy.",
+    ],
+    ["we we should deploy to to staging", "We should deploy to staging."],
+    ["eu eu vou rodar de de novo", "Eu vou rodar de novo."],
+  ])(
+    "allows formatting to drop a short function word said twice by accident: %s",
+    (raw, formatted) => {
+      expect(validateFormattedTranscript(raw, formatted)).toEqual({ ok: true });
+    },
+  );
 
   it.each([
     ["no wait is required", "Wait is required.", "negation"],

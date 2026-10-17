@@ -486,7 +486,64 @@ export interface ResolveWritingEditsArgs {
   complete: boolean;
 }
 
-const GRAMMATICAL_REPEATS: ReadonlySet<string> = new Set(["had", "that", "is"]);
+const ACCIDENTAL_REPEATS: ReadonlySet<string> = new Set([
+  "the",
+  "a",
+  "an",
+  "i",
+  "we",
+  "you",
+  "he",
+  "she",
+  "it",
+  "they",
+  "me",
+  "us",
+  "him",
+  "them",
+  "my",
+  "our",
+  "your",
+  "his",
+  "her",
+  "their",
+  "to",
+  "of",
+  "in",
+  "on",
+  "at",
+  "for",
+  "with",
+  "from",
+  "by",
+  "and",
+  "or",
+  "but",
+  "if",
+  "o",
+  "os",
+  "as",
+  "um",
+  "uma",
+  "de",
+  "do",
+  "da",
+  "dos",
+  "das",
+  "em",
+  "na",
+  "nos",
+  "nas",
+  "e",
+  "ou",
+  "eu",
+  "ele",
+  "ela",
+  "nós",
+  "para",
+  "por",
+  "com",
+]);
 
 function removesRepeatedWord(
   target: string,
@@ -502,11 +559,7 @@ function removesRepeatedWord(
     return false;
   }
   const removed = before[index];
-  if (
-    removed === undefined ||
-    GRAMMATICAL_REPEATS.has(removed) ||
-    isNegation(removed)
-  ) {
+  if (removed === undefined || !ACCIDENTAL_REPEATS.has(removed)) {
     return false;
   }
   if (removed !== before[index - 1] && removed !== before[index + 1]) {
@@ -1151,7 +1204,7 @@ export function validateFormattedTranscript(
     if (
       index > 0 &&
       rawTokens[index - 1] === token &&
-      !GRAMMATICAL_REPEATS.has(token)
+      ACCIDENTAL_REPEATS.has(token)
     ) {
       continue;
     }
