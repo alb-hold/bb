@@ -412,10 +412,18 @@ describe("spawnLoggedProcess", () => {
 
     expect(await waitForExit(child)).toBe(0);
     const currentPath = join(logDir, "server-stdio.log");
-    const backups = familyFiles(logDir, "server").filter((path) =>
-      path.includes(".backup-"),
-    );
-    expect(backups).toHaveLength(5);
+    const backups = () =>
+      familyFiles(logDir, "server").filter((path) => path.includes(".backup-"));
+    await expect
+      .poll(
+        () =>
+          existsSync(currentPath) &&
+          statSync(currentPath).size === 1024 * 1024 &&
+          backups().length === 5,
+        { timeout: 5_000, interval: 10 },
+      )
+      .toBe(true);
+    expect(backups()).toHaveLength(5);
     expect(statSync(currentPath).size).toBe(1024 * 1024);
     expect(readFileSync(currentPath, "utf8")).toBe("x".repeat(1024 * 1024));
     expect(
