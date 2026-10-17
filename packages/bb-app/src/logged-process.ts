@@ -96,7 +96,7 @@ const publishAliasTo = (targetPath) => {
     }
   }
 };
-const pruneBackups = () => {
+const pruneBackups = (maximum = retainedBackups) => {
   let backups;
   try {
     backups = paths().filter((file) => file.startsWith(familyPrefix) && backupPattern.test(path.basename(file)));
@@ -105,7 +105,7 @@ const pruneBackups = () => {
     reportFsError("stdio backup scan failed", error);
     return;
   }
-  while (backups.length > retainedBackups) {
+  while (backups.length > maximum) {
     const oldest = backups.shift();
     try {
       const aliasStat = fs.statSync(logPath);
@@ -154,6 +154,7 @@ const migrateLegacyFiles = () => {
       while (remaining > 0) {
         if (backupFd === undefined || segmentSize >= sizeLimit) {
           if (backupFd !== undefined) fs.closeSync(backupFd);
+          pruneBackups(retainedBackups - 1);
           const backupPath = uniqueBackupPath();
           backupFd = fs.openSync(backupPath, "wx", 0o600);
           segmentSize = 0;
@@ -206,6 +207,7 @@ const recoverClosedSegments = () => {
         continue;
       }
       try {
+        pruneBackups(retainedBackups - 1);
         fs.renameSync(file, uniqueBackupPath());
       } catch (renameError) {
         if (renameError.code !== "ENOENT") reportFsError("orphan stdio segment recovery failed", renameError);
@@ -232,6 +234,7 @@ const closeActive = (archive) => {
     activeFd = undefined;
   }
   if (archive && fs.existsSync(activePath)) {
+    pruneBackups(retainedBackups - 1);
     fs.renameSync(activePath, uniqueBackupPath());
     pruneBackups();
   }
