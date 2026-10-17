@@ -34,7 +34,7 @@ interface TwoClientRoom {
   delayReports: () => void;
   deliverReports: () => void;
   fit: (cols: number) => void;
-  peerResizes: (cols: number, rows: number) => void;
+  peerResizes: (cols: number, rows: number, claim?: boolean) => void;
   ptySize: () => { cols: number; rows: number };
   restoresSentByOwner: () => number;
   start: () => void;
