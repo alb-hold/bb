@@ -37,21 +37,47 @@ if [ "$SELF" = pbcopy ]; then
   exit "$real_status"
 fi
 
-case "$SELF" in
-  open) real=$(find_real open || true) ;;
-  xdg-open) real=$(find_real xdg-open || true) ;;
-  *)
-    real=$(find_real xdg-open || find_real open || find_real sensible-browser || true)
-    ;;
-esac
-
+has_url=0
+handoff_status=0
 for argument in "$@"; do
   case "$argument" in
     http://*|https://*)
-      "$SCRIPT_DIR/bb" device open "$argument" >/dev/null 2>&1 || true
+      has_url=1
+      "$SCRIPT_DIR/bb" device open "$argument" >/dev/null 2>&1
+      status=$?
+      if [ "$status" -ne 0 ]; then
+        handoff_status=$status
+      fi
       ;;
   esac
 done
+
+if [ "$has_url" -eq 1 ]; then
+  platform=$(uname -s 2>/dev/null || true)
+  if [ "$platform" = Darwin ]; then
+    real=$(find_real open || true)
+  elif [ -n "${DISPLAY-}${WAYLAND_DISPLAY-}" ]; then
+    real=$(find_real xdg-open || true)
+  else
+    real=
+  fi
+  if [ "$handoff_status" -eq 0 ]; then
+    if [ -n "$real" ]; then
+      "$real" "$@" >/dev/null 2>&1 || true
+    fi
+    exit 0
+  fi
+  if [ -n "$real" ]; then
+    exec "$real" "$@"
+  fi
+  exit "$handoff_status"
+fi
+
+case "$SELF" in
+  open) real=$(find_real open || true) ;;
+  xdg-open) real=$(find_real xdg-open || true) ;;
+  *) real=$(find_real xdg-open || find_real open || find_real sensible-browser || true) ;;
+esac
 
 if [ -n "$real" ]; then
   exec "$real" "$@"
