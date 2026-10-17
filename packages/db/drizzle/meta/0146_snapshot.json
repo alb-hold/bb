@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "3772fc1b-c9e0-4c0d-b4d5-6d5b9dcd233f",
+  "id": "e46ebca0-c0cd-475b-81d8-8c5998ef0e25",
   "prevId": "401b01d3-5ec4-4c35-82e1-7f7ab850f1f4",
   "tables": {
     "app_settings": {
@@ -1252,80 +1252,6 @@
         "fork_terminal_output_host_id_hosts_id_fk": {
           "name": "fork_terminal_output_host_id_hosts_id_fk",
           "tableFrom": "fork_terminal_output",
-          "tableTo": "hosts",
-          "columnsFrom": [
-            "host_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {}
-    },
-    "fork_terminal_tab_dismissals": {
-      "name": "fork_terminal_tab_dismissals",
-      "columns": {
-        "terminal_session_id": {
-          "name": "terminal_session_id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "host_id": {
-          "name": "host_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "dismissed_at": {
-          "name": "dismissed_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "expires_at": {
-          "name": "expires_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        }
-      },
-      "indexes": {
-        "fork_terminal_tab_dismissals_host_expiry_idx": {
-          "name": "fork_terminal_tab_dismissals_host_expiry_idx",
-          "columns": [
-            "host_id",
-            "expires_at"
-          ],
-          "isUnique": false
-        }
-      },
-      "foreignKeys": {
-        "fork_terminal_tab_dismissals_terminal_session_id_terminal_sessions_id_fk": {
-          "name": "fork_terminal_tab_dismissals_terminal_session_id_terminal_sessions_id_fk",
-          "tableFrom": "fork_terminal_tab_dismissals",
-          "tableTo": "terminal_sessions",
-          "columnsFrom": [
-            "terminal_session_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "fork_terminal_tab_dismissals_host_id_hosts_id_fk": {
-          "name": "fork_terminal_tab_dismissals_host_id_hosts_id_fk",
-          "tableFrom": "fork_terminal_tab_dismissals",
           "tableTo": "hosts",
           "columnsFrom": [
             "host_id"
@@ -5075,6 +5001,14 @@
           "notNull": true,
           "autoincrement": false,
           "default": "'visible'"
+        },
+        "parent_notifications": {
+          "name": "parent_notifications",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'auto'"
         },
         "archived_at": {
           "name": "archived_at",

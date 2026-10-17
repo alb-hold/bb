@@ -178,6 +178,7 @@
       "total": "required",
       "last": "required",
       "modelContextWindow": "required",
+      "promptCacheTtlMs": "optional",
       "providerTurnId": "optional"
     }
   },
@@ -194,6 +195,7 @@
       "status": "required",
       "taskStatus": "required",
       "skipTranscript": "required",
+      "foreground": "optional",
       "workflowName": "optional",
       "workflow": "optional",
       "usage": "optional",
