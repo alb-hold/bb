@@ -42,7 +42,6 @@ const AUDIO_TYPES: Record<string, string> = {
   ".mp4": "audio/mp4",
   ".mp3": "audio/mpeg",
   ".wav": "audio/wav",
-  ".flac": "audio/flac",
 };
 
 function parseCount(key: string, value: string, max: number): number {
@@ -263,7 +262,10 @@ export function registerWritingSettingsCommands(
     .description(
       "Transcribe and format one dictation clip the way the composer does",
     )
-    .requiredOption("--seconds <n>", "Length of the recording in seconds")
+    .requiredOption(
+      "--seconds <n>",
+      "Length of the recording in seconds; the server counts the longer of this and the length it measures",
+    )
     .option("--context <text>", "Text already in the message")
     .option("--json", "Print machine-readable JSON output")
     .action(

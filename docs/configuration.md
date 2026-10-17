@@ -296,7 +296,11 @@ refuses them.
 Writing assistance: the native terminal composer has a microphone and typing assistance. Dictation
 records phrase by phrase: each pause ends a short clip that is transcribed by the
 `voice` service and then punctuated and formatted by the `writing` service, so
-no recording is re-uploaded and raw audio is not kept. A formatted phrase that
+no recording is re-uploaded and raw audio is not kept. The server measures each
+clip from its encoded audio frames (WebM or Ogg with Opus, MP4 or M4A with AAC,
+MP3, or WAV) and counts the longer of that and the length the client reports
+against `dailyDictationMinutes`; a clip it cannot measure, or one longer than
+120 seconds, is refused before transcription. A formatted phrase that
 adds words the speaker did not say, changes a number, or drops a protected
 term is discarded in favor of the plain transcript. Typing assistance sends
 only finished sentences that changed, with up to 500 characters of preceding
@@ -319,8 +323,9 @@ sentence that already ends with . ! or ?, removing a word typed twice in a row (
 is, which can repeat on purpose, nor a negation from this fixed list: not, no, never, nothing, nobody, none, nor, neither, without, cannot,
 any word ending in n't, and the Portuguese não, nunca, nem, nada, ninguém,
 sem and jamais, with or without accents), verb or article
-agreement from a fixed list (is/are/am/be, was/were, has/have, does/do and their
-negated forms, a/an), and accents on a fixed list of Portuguese words that are
+agreement from a fixed list (is/are/am, was/were, has/have, does/do and their
+negated forms, a/an; be is never swapped by itself, since "He is working" and
+"He be working" can mean different things), and accents on a fixed list of Portuguese words that are
 not words without them (nao, voce, tambem, entao, amanha). Spelling fixes, a
 missing final period, capitalization or spacing in text that does not end a
 sentence (such as a bare `return true`), other punctuation (commas, question marks), homophones such as its/it's, and tense or

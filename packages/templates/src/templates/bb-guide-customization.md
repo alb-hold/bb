@@ -100,14 +100,16 @@ typed twice in a row
 (never had, that, is, or a negation from this fixed list: not, no, never, nothing, nobody, none, nor, neither, without, cannot,
 any word ending in n't, and the Portuguese não, nunca, nem, nada, ninguém,
 sem and jamais, with or without accents), swaps within
-is/are/am/be, was/were, has/have, does/do (and isn't/aren't, wasn't/weren't,
+is/are/am (never be), was/were, has/have, does/do (and isn't/aren't, wasn't/weren't,
 hasn't/haven't, doesn't/don't) or a/an, and accents on nao, voce, tambem,
 entao and amanha apply by themselves, never inside code, paths, identifiers or
 vocabulary terms, nor on a line containing = ; { } ( ) < > [ ] $ ` | \ / # or --.
 Vocabulary terms are spelling hints for transcription and correction, not a
 guarantee. Everything else, including spelling, other punctuation and
 tense or plural changes such as deploy/deployed, is offered as a suggestion. `correct` and `transcribe` run the
-same pipeline as the composer. Settings → General → Writing assistance has the
+same pipeline as the composer. `transcribe` accepts WebM or Ogg with Opus,
+MP4 or M4A with AAC, MP3 and WAV; the server measures the clip and counts the
+longer of that and `--seconds` against the daily minutes. Settings → General → Writing assistance has the
 same controls; Cmd/Ctrl+Shift+D starts and stops dictation
 (`composer.dictation.toggle` in Settings → Keyboard).
 

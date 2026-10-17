@@ -25,6 +25,7 @@ import {
 import type { LoggedWorkSessionDeps } from "../../types.js";
 import { ApiError } from "../../errors.js";
 import { isAiTaskAvailable, runAiTask } from "./ai-tasks.js";
+import { measureAudioSeconds } from "./audio-duration.js";
 import { transcribeVoiceInput } from "./voice-transcription.js";
 
 type WritingDeps = LoggedWorkSessionDeps;
@@ -35,6 +36,7 @@ const MAX_FORMATTED_WORDS = 70;
 const DICTATION_CONTEXT_CHARS = 400;
 const HINT_MAX_CHARS = 900;
 const MAX_SEGMENT_DURATION_MS = 120_000;
+const MEASURED_DURATION_SLACK_SECONDS = 1;
 const TRANSCRIPTION_MICROS_PER_SECOND = 100;
 const TEXT_INPUT_MICROS_PER_CHAR = 0.1;
 const TEXT_OUTPUT_MICROS_PER_CHAR = 0.4;
@@ -398,9 +400,30 @@ export async function transcribeDictationSegment(
       `durationMs must be between 1 and ${MAX_SEGMENT_DURATION_MS}`,
     );
   }
+  const measured = measureAudioSeconds(
+    new Uint8Array(await args.file.arrayBuffer()),
+  );
+  if (measured === null) {
+    throw new ApiError(
+      400,
+      "invalid_request",
+      "Unsupported or unreadable audio. Send WebM or Ogg with Opus, MP4 or M4A with AAC, MP3, or WAV.",
+    );
+  }
+  if (
+    measured >
+    MAX_SEGMENT_DURATION_MS / 1000 + MEASURED_DURATION_SLACK_SECONDS
+  ) {
+    throw new ApiError(
+      400,
+      "invalid_request",
+      `Audio is ${Math.round(measured)} seconds long; a dictation segment can be at most ${MAX_SEGMENT_DURATION_MS / 1000} seconds`,
+    );
+  }
   const settings = getWritingAssistanceSettings(deps.db);
   const day = utcDay();
-  const seconds = Math.ceil(args.durationMs / 100) / 10;
+  const seconds =
+    Math.ceil(Math.max(args.durationMs, measured * 1000) / 100) / 10;
   const reserved = reserveWritingUsage(
     deps.db,
     day,

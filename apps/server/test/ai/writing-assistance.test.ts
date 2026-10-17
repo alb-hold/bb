@@ -14,18 +14,30 @@ import {
 import { registerFakeAiService } from "../helpers/ai-services.js";
 import { withTestHarness, type TestAppHarness } from "../helpers/test-app.js";
 
-function audio(): File {
-  return new File([Buffer.alloc(64, 1)], "dictation-1.webm", {
-    type: "audio/webm",
-  });
+function wav(seconds: number, sampleRate = 1_000): File {
+  const data = Math.round(seconds * sampleRate);
+  const bytes = Buffer.alloc(44 + data, 0x80);
+  bytes.write("RIFF", 0, "ascii");
+  bytes.writeUInt32LE(36 + data, 4);
+  bytes.write("WAVEfmt ", 8, "ascii");
+  bytes.writeUInt32LE(16, 16);
+  bytes.writeUInt16LE(1, 20);
+  bytes.writeUInt16LE(1, 22);
+  bytes.writeUInt32LE(sampleRate, 24);
+  bytes.writeUInt32LE(sampleRate, 28);
+  bytes.writeUInt16LE(1, 32);
+  bytes.writeUInt16LE(8, 34);
+  bytes.write("data", 36, "ascii");
+  bytes.writeUInt32LE(data, 40);
+  return new File([bytes], "dictation-1.wav", { type: "audio/wav" });
 }
 
 async function postSegment(
   harness: TestAppHarness,
-  fields: { durationMs?: string; context?: string } = {},
+  fields: { durationMs?: string; context?: string; file?: File } = {},
 ): Promise<Response> {
   const form = new FormData();
-  form.set("file", audio());
+  form.set("file", fields.file ?? wav(0.5));
   form.set("durationMs", fields.durationMs ?? "4000");
   form.set("context", fields.context ?? "");
   return harness.app.request("/api/v1/writing-assistance/dictation-segments", {
@@ -696,6 +708,62 @@ describe("dictation segments", () => {
         audioSeconds: 10,
         dictationSegments: 0,
       });
+    });
+  });
+
+  it("reserves the measured length of a clip whose claimed duration is shorter", async () => {
+    await withTestHarness({}, async (harness) => {
+      const service = registerFakeAiService(harness.deps.aiServices, {
+        transcribe: async () => "hello there",
+      });
+      updateWritingAssistanceSettings(harness.deps.db, {
+        dailyDictationMinutes: 2,
+        dictationFormatting: false,
+      });
+      expect(
+        (await postSegment(harness, { durationMs: "1000", file: wav(60) }))
+          .status,
+      ).toBe(200);
+      expect(getWritingUsage(harness.deps.db, utcDay())).toMatchObject({
+        audioSeconds: 60,
+        dictationSegments: 1,
+      });
+      addWritingUsage(harness.deps.db, utcDay(), { audioSeconds: 10 });
+      const refused = await postSegment(harness, {
+        durationMs: "1000",
+        file: wav(60),
+      });
+      expect(refused.status).toBe(429);
+      await expect(refused.json()).resolves.toMatchObject({
+        code: "budget_exhausted",
+      });
+      expect(getWritingUsage(harness.deps.db, utcDay()).audioSeconds).toBe(70);
+      expect(service.transcribeCalls).toHaveLength(1);
+    });
+  });
+
+  it("refuses audio longer than a segment or that it cannot measure, without reserving", async () => {
+    await withTestHarness({}, async (harness) => {
+      const service = registerFakeAiService(harness.deps.aiServices);
+      const tooLong = await postSegment(harness, {
+        durationMs: "1000",
+        file: wav(130),
+      });
+      expect(tooLong.status).toBe(400);
+      await expect(tooLong.json()).resolves.toMatchObject({
+        message: expect.stringContaining("at most 120 seconds"),
+      });
+      const unreadable = await postSegment(harness, {
+        file: new File([Buffer.alloc(64, 1)], "dictation-1.webm", {
+          type: "audio/webm",
+        }),
+      });
+      expect(unreadable.status).toBe(400);
+      await expect(unreadable.json()).resolves.toMatchObject({
+        message: expect.stringContaining("Unsupported or unreadable audio"),
+      });
+      expect(service.transcribeCalls).toHaveLength(0);
+      expect(getWritingUsage(harness.deps.db, utcDay()).audioSeconds).toBe(0);
     });
   });
 

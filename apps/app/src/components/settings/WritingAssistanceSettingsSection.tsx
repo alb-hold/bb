@@ -118,7 +118,7 @@ export function WritingAssistanceSettingsSection() {
         </SettingsWithControl>
         <SettingsWithControl
           label="Correct while typing"
-          description="Only capitalization, spacing, a sentence-final period, removing a word typed twice in a row (never had, that, is, or a negation on the fixed list in the bb guide, such as not, never or nunca), swaps within is/are/am/be, was/were, has/have, does/do (and their negated forms) or a/an, and accents on nao, voce, tambem, entao and amanha apply by themselves, never inside code, paths, identifiers or vocabulary terms. Everything else, including spelling, other punctuation and tense or plural changes, is a suggestion."
+          description="Only capitalization and spacing inside a sentence that already ends with . ! or ?, removing a word typed twice in a row (never had, that, is, or a negation on the fixed list in the bb guide, such as not, never or nunca), swaps within is/are/am (never be), was/were, has/have, does/do (and their negated forms) or a/an, and accents on nao, voce, tambem, entao and amanha apply by themselves, never inside code, paths, identifiers or vocabulary terms. Everything else, including spelling, other punctuation and tense or plural changes, is a suggestion."
         >
           <Select
             value={settings.typingCorrection}
