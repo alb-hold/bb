@@ -286,8 +286,10 @@ describe("terminal output encoding", () => {
       updatedAt: 1,
       lastUserInputAt: null,
     } satisfies TerminalSession;
-    const chunks = Array.from({ length: 1_024 }, () =>
-      new TextEncoder().encode("x"),
+    const chunks = Array.from({ length: 1_024 }, (_, index) =>
+      new TextEncoder().encode(
+        index === 1_023 ? "xFINAL-RETAINED-CHUNK" : "x",
+      ),
     );
 
     await writeRetainedTerminalOutput({
@@ -303,6 +305,9 @@ describe("terminal output encoding", () => {
         terminal.buffer.active.getLine(index)?.translateToString() ?? "",
     ).join("");
     expect(renderedText).toContain("Terminal exited with code 0");
+    expect(renderedText.indexOf("FINAL-RETAINED-CHUNK")).toBeLessThan(
+      renderedText.indexOf("Terminal exited with code 0"),
+    );
     expect(
       renderedText.replace("Terminal exited with code 0", "").match(/x/g),
     ).toHaveLength(chunks.length);
