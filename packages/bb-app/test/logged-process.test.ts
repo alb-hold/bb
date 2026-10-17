@@ -516,6 +516,104 @@ describe("spawnLoggedProcess", () => {
     }
   });
 
+  it("keeps live segments when writers use different locale environments", async () => {
+    const logDir = scratchDir();
+    const firstStopPath = join(logDir, "stop-locale-writer-one");
+    const secondStopPath = join(logDir, "stop-locale-writer-two");
+    const firstCompletionPath = join(logDir, "locale-writer-one-finished");
+    const secondCompletionPath = join(logDir, "locale-writer-two-finished");
+    const makeArgs = (label: string, stopPath: string) => [
+      "-e",
+      `const fs = require("node:fs"); process.stdout.write(${JSON.stringify(label)}); const timer = setInterval(() => { if (fs.existsSync(${JSON.stringify(stopPath)})) { clearInterval(timer); process.exit(0); } }, 10);`,
+    ];
+    const first = spawnLoggedProcess({
+      command: process.execPath,
+      args: makeArgs("locale-writer-one", firstStopPath),
+      env: { ...process.env, LC_ALL: "C", TZ: "UTC" },
+      logDir,
+      logName: "server",
+      testWriterBarrier: {
+        completionPath: firstCompletionPath,
+        forcePsIdentity: true,
+        recoveryIntervalMs: 60_000,
+        writerEnv: { LC_ALL: "C", TZ: "UTC" },
+      },
+    });
+    let second: ChildProcess | undefined;
+    try {
+      await expect
+        .poll(
+          () =>
+            familyFiles(logDir, "server").some(
+              (path) =>
+                path.includes(".active-") &&
+                readFileSync(path, "utf8").includes("locale-writer-one"),
+            ),
+          { timeout: 5_000, interval: 10 },
+        )
+        .toBe(true);
+      const firstActivePath = familyFiles(logDir, "server").find(
+        (path) =>
+          path.includes(".active-") &&
+          readFileSync(path, "utf8").includes("locale-writer-one"),
+      )!;
+      second = spawnLoggedProcess({
+        command: process.execPath,
+        args: makeArgs("locale-writer-two", secondStopPath),
+        env: { ...process.env, LC_ALL: "C.utf8", TZ: "Pacific/Honolulu" },
+        logDir,
+        logName: "server",
+        testWriterBarrier: {
+          completionPath: secondCompletionPath,
+          forcePsIdentity: true,
+          recoveryIntervalMs: 60_000,
+          writerEnv: { LC_ALL: "C.utf8", TZ: "Pacific/Honolulu" },
+        },
+      });
+      await expect
+        .poll(
+          () =>
+            familyFiles(logDir, "server").some(
+              (path) => path.includes(".active-") && path !== firstActivePath,
+            ),
+          { timeout: 5_000, interval: 10 },
+        )
+        .toBe(true);
+      const secondActivePath = familyFiles(logDir, "server").find(
+        (path) => path.includes(".active-") && path !== firstActivePath,
+      )!;
+      expect(existsSync(firstActivePath)).toBe(true);
+      expect(existsSync(secondActivePath)).toBe(true);
+      expect(
+        readFileSync(firstActivePath, "utf8").includes("locale-writer-one"),
+      ).toBe(true);
+      expect(
+        readFileSync(secondActivePath, "utf8").includes("locale-writer-two"),
+      ).toBe(true);
+      writeFileSync(firstStopPath, "stop");
+      writeFileSync(secondStopPath, "stop");
+      expect(await waitForExit(first)).toBe(0);
+      expect(await waitForExit(second)).toBe(0);
+      await expect
+        .poll(
+          () =>
+            existsSync(firstCompletionPath) && existsSync(secondCompletionPath),
+          { timeout: 3_000, interval: 10 },
+        )
+        .toBe(true);
+      const output = uniqueFamilyFiles(logDir, "server")
+        .map((path) => readFileSync(path, "utf8"))
+        .join("");
+      expect(output).toContain("locale-writer-one");
+      expect(output).toContain("locale-writer-two");
+    } finally {
+      if (!existsSync(firstStopPath)) writeFileSync(firstStopPath, "stop");
+      if (!existsSync(secondStopPath)) writeFileSync(secondStopPath, "stop");
+      if (first.exitCode === null) first.kill("SIGKILL");
+      if (second?.exitCode === null) second.kill("SIGKILL");
+    }
+  });
+
   it("reclaims an unreadable live owner only after its segment exceeds the idle bound", async () => {
     const logDir = scratchDir();
     const stopPath = join(logDir, "stop-unreadable-owner-survivor");

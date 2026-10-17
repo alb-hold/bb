@@ -32,14 +32,18 @@ const readProcStartTime = (pid) => {
 };
 const readPsStartTime = (pid) => {
   try {
-    const startTime = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8", timeout: 1_000 }).trim();
+    const startTime = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+      encoding: "utf8",
+      env: { ...process.env, LC_ALL: "C", TZ: "UTC" },
+      timeout: 1_000,
+    }).trim();
     return startTime || undefined;
   } catch {
     return undefined;
   }
 };
 const readProcessIdentity = (pid) => {
-  if (process.platform === "linux") {
+  if (process.platform === "linux" && writerBarrier?.forcePsIdentity !== true) {
     const startTime = readProcStartTime(pid);
     if (startTime !== undefined) return { source: 1, fingerprint: fingerprint(startTime) };
   }
@@ -513,6 +517,8 @@ interface SpawnLoggedProcessArgs {
     identityRecheckMs?: number;
     recoveryIntervalMs?: number;
     unreadableOwnerIdentityPids?: number[];
+    forcePsIdentity?: boolean;
+    writerEnv?: Pick<NodeJS.ProcessEnv, "LC_ALL" | "TZ">;
     diagnosticPath?: string;
     completionPath?: string;
   };
@@ -529,7 +535,11 @@ export function spawnLoggedProcess(args: SpawnLoggedProcessArgs): ChildProcess {
       logPath,
       JSON.stringify(args.testWriterBarrier ?? null),
     ],
-    { detached: true, env: process.env, stdio: ["pipe", "ignore", "pipe"] },
+    {
+      detached: true,
+      env: { ...process.env, ...args.testWriterBarrier?.writerEnv },
+      stdio: ["pipe", "ignore", "pipe"],
+    },
   );
   logWriter.stderr?.on("data", (chunk: Buffer) => {
     process.stderr.write(chunk);
