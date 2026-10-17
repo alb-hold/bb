@@ -422,6 +422,19 @@ describe("validateFormattedTranscript", () => {
     },
   );
 
+  it.each([
+    ["first check auth second run tests", "1. Check auth tests.\n2. Run."],
+    ["first check auth second run tests", "1. Auth check.\n2. Run tests."],
+  ])(
+    "keeps the transcript when list items do not keep the words spoken for them: %s -> %s",
+    (raw, formatted) => {
+      expect(validateFormattedTranscript(raw, formatted)).toEqual({
+        ok: false,
+        reason: "list-numbers",
+      });
+    },
+  );
+
   it("formats a list whose items share a first word when each keeps its own words", () => {
     expect(
       validateFormattedTranscript(
