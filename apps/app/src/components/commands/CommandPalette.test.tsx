@@ -26,7 +26,11 @@ import {
 import type { ThreadSearchResponse } from "@bb/server-contract";
 import type { ThreadArchiveFilter } from "@/lib/thread-lifecycle-filter";
 import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
-import { AppCommandProvider, useAppCommandHandler } from "./AppCommandProvider";
+import {
+  AppCommandProvider,
+  useAppCommandHandler,
+  useAppCommandRunner,
+} from "./AppCommandProvider";
 import {
   removePluginSlotRegistrations,
   setPluginSlotRegistrations,
@@ -42,9 +46,36 @@ import {
 } from "@/lib/plugin-thread-row-status";
 import { makePluginRegistrationSet } from "@/test/fixtures/plugins";
 import { collectPluginAppRegistrations } from "@get-bb/plugin-sdk/internal/plugin-app-collector";
+import { installTestPluginRuntime } from "@get-bb/plugin-sdk/testing/app";
 import { LocationProbe } from "@/test/location-probe";
+import { SidebarNavigationMoreMenu } from "../../../../../plugins/navigation/app/ItemMenus";
+
+const navigationMocks = vi.hoisted(() => ({
+  activate: null as
+    | ((
+        itemId: string,
+        options: { openInSplit: boolean; target?: EventTarget | null },
+      ) => void)
+    | null,
+}));
+
+vi.mock("@get-bb/plugin-sdk/app", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@get-bb/plugin-sdk/app")>();
+  return {
+    ...actual,
+    experimental_useSidebarNavigation: () => ({
+      actions: {
+        activate: (
+          ...args: Parameters<NonNullable<typeof navigationMocks.activate>>
+        ) => navigationMocks.activate?.(...args),
+      },
+    }),
+  };
+});
 
 beforeAll(async () => {
+  installTestPluginRuntime();
   await import("./ThreadSearchPaletteMode");
 });
 
@@ -333,10 +364,12 @@ function renderPalette({
   compact = false,
   layout = null,
   lifecycles = ["active"],
+  withMoreMenu = false,
 }: {
   compact?: boolean;
   layout?: SplitLayout | null;
   lifecycles?: ThreadArchiveFilter[];
+  withMoreMenu?: boolean;
 } = {}) {
   const store = createStore();
   store.set(splitLayoutAtom, layout);
@@ -356,6 +389,7 @@ function renderPalette({
             <Handler command="terminal.open" />
             <Handler command="composer.focus" />
             <Handler command="browser.reload" />
+            {withMoreMenu ? <ThreadSearchMoreLauncher /> : null}
             <CommandPalette threadId={null} projectId={null} />
             <LocationProbe />
           </AppCommandProvider>
@@ -366,6 +400,35 @@ function renderPalette({
   const result = render(tree());
   screen.getByTestId("origin").focus();
   return { ...result, store, rerenderPalette: () => result.rerender(tree()) };
+}
+
+function ThreadSearchMoreLauncher() {
+  const runner = useAppCommandRunner();
+  navigationMocks.activate = (_itemId, options) =>
+    runner.dispatch("thread.search", options.target ?? null);
+  return (
+    <SidebarNavigationMoreMenu
+      trigger={<button type="button">More</button>}
+      hidden={[
+        {
+          id: "__bb__/search-threads",
+          label: "Search threads",
+          icon: { kind: "host", name: "search" },
+          action: { kind: "search-threads" },
+          isDisabled: false,
+          isVisible: false,
+          isLoading: false,
+          pluginId: null,
+          shortcut: null,
+          badge: null,
+        },
+      ]}
+      surface="rail"
+      side="right"
+      sideOffset={12}
+      testId="nav-rail-more-menu"
+    />
+  );
 }
 
 function openPalette(): KeyboardEvent {
@@ -422,12 +485,90 @@ afterEach(() => {
   modeState.recentError = false;
   modeState.searchLoading = false;
   modeState.searchError = false;
+  navigationMocks.activate = null;
   routeNavigateMock.mockReset();
   openThreadInSplitMock.mockReset();
   window.localStorage.clear();
 });
 
 describe("CommandPalette", () => {
+  it("closes direct thread search on Escape and restores terminal focus", async () => {
+    const { unmount } = renderPalette({ compact: true, withMoreMenu: true });
+    const terminalRoot = document.createElement("div");
+    terminalRoot.setAttribute("data-app-terminal", "");
+    const terminal = document.createElement("textarea");
+    terminal.className = "xterm-helper-textarea";
+    terminalRoot.append(terminal);
+    document.body.append(terminalRoot);
+    const terminalKeys: string[] = [];
+    terminal.addEventListener("keydown", (event) =>
+      terminalKeys.push(event.key),
+    );
+    terminal.focus();
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: "More" }));
+    fireEvent.click(screen.getByRole("button", { name: "More" }));
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: "Search threads" }),
+    );
+
+    await waitFor(() =>
+      expect(document.activeElement?.getAttribute("aria-label")).toBe(
+        "Search threads",
+      ),
+    );
+    const search = screen.getByRole("combobox", { name: "Search threads" });
+    terminalKeys.length = 0;
+    fireEvent.keyDown(search, { key: "Escape" });
+
+    await waitFor(() =>
+      expect(
+        document.querySelector(
+          '[data-persistent-drawer-content][data-state="closed"]',
+        ),
+      ).not.toBeNull(),
+    );
+    expect(terminalKeys).toEqual([]);
+    expect(document.activeElement).toBe(terminal);
+
+    terminalRoot.remove();
+    unmount();
+  });
+
+  it("moves terminal focus into thread search and restores it after Escape", async () => {
+    const { unmount } = renderPalette();
+    const terminal = document.createElement("textarea");
+    terminal.className = "xterm-helper-textarea";
+    document.body.append(terminal);
+    const terminalKeys: string[] = [];
+    terminal.addEventListener("keydown", (event) => {
+      terminalKeys.push(event.key);
+    });
+    terminal.focus();
+
+    openThreadSearch();
+    await screen.findByRole("combobox", { name: "Search threads" });
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByRole("combobox", { name: "Search threads" }),
+      ),
+    );
+    const search = screen.getByRole("combobox", { name: "Search threads" });
+    terminalKeys.length = 0;
+
+    fireEvent.keyDown(search, { key: "Escape" });
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("combobox", { name: "Search threads" }),
+      ).toBeNull(),
+    );
+    expect(terminalKeys).toEqual([]);
+    expect(document.activeElement).toBe(terminal);
+
+    terminal.remove();
+    unmount();
+  });
+
   const splitLayout: SplitLayout = {
     root: {
       type: "pane",
@@ -833,7 +974,7 @@ describe("CommandPalette", () => {
     expectClasses(searchThreadsRow, "bg-state-hover", "text-foreground");
   });
 
-  it("enters thread mode from its existing command and pops one level per Escape", async () => {
+  it("enters thread mode from its existing command and closes it on Escape", async () => {
     modeState.activeRecents = [makeThread("selected")];
     renderPalette();
     const event = openThreadSearch();
@@ -862,19 +1003,32 @@ describe("CommandPalette", () => {
     expect(threadDescriptionId).not.toBeNull();
     expectText(
       document.getElementById(threadDescriptionId ?? ""),
-      "Use Escape to return to commands.",
+      "Use Backspace to return to commands.",
     );
 
     fireEvent.keyDown(screen.getByRole("combobox"), { key: "Escape" });
     await waitFor(() =>
-      expect(
-        screen.getByRole("combobox", { name: "Search commands" }),
-      ).toBeTruthy(),
+      expect(screen.queryByTestId("command-palette")).toBeNull(),
     );
-    expect(screen.queryByRole("button", { name: "Thread scope" })).toBeNull();
+    expect(screen.queryByRole("combobox")).toBeNull();
+  });
 
-    fireEvent.keyDown(screen.getByRole("combobox"), { key: "Escape" });
-    await waitFor(() => expect(screen.queryByRole("combobox")).toBeNull());
+  it("returns to root commands when Escape exits thread search entered from root", async () => {
+    renderPalette();
+    openPalette();
+    await waitFor(() => expect(searchField()).toBeTruthy());
+    const searchThreads = within(bucketGroup("Threads"))
+      .getAllByRole("option")
+      .find((row) => row.textContent?.includes("Search threads"));
+    fireEvent.click(searchThreads as HTMLElement);
+
+    const threadSearch = await screen.findByRole("combobox", {
+      name: "Search threads",
+    });
+    fireEvent.keyDown(threadSearch, { key: "Escape" });
+
+    await screen.findByRole("combobox", { name: "Search commands" });
+    expect(screen.getByTestId("command-palette")).toBeTruthy();
   });
 
   it("uses the shared tab-pill clear affordance without running the mode command", async () => {
