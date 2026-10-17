@@ -26,6 +26,7 @@ import { openPluginDetailsInWorkspace } from "@/components/plugin/plugin-detail-
 import { useSetPluginEnabled } from "@/components/plugin/useSetPluginEnabled";
 import { getPluginNavPanelKey } from "@/components/plugin/pluginNavSidebarOrder";
 import { appToast } from "@/components/ui/app-toast";
+import { useSidebar } from "@/components/ui/sidebar.js";
 import { invalidatePluginList } from "@/hooks/cache-owners/plugin-cache-owner";
 import { appQueryClient } from "@/lib/app-query-client";
 import { usePluginNavPanelChrome } from "@/lib/plugin-nav-panel-chrome";
@@ -145,6 +146,43 @@ export function SidebarNavigationModelProvider({
   children,
   ...host
 }: SidebarNavigationHostOptions & { children: ReactNode }) {
+  const { isCompactViewport, openMobile } = useSidebar();
+  const drawerTerminalTargetRef = useRef<HTMLElement | null>(null);
+  const blurredTerminalTargetRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    const handlePointerDown = (event: PointerEvent) => {
+      if (
+        !isCompactViewport ||
+        !(event.target instanceof Element) ||
+        event.target.closest('[data-sidebar="trigger"]') === null
+      ) {
+        return;
+      }
+      const active = document.activeElement;
+      if (
+        active instanceof HTMLElement &&
+        active.closest("[data-app-terminal]") !== null
+      ) {
+        blurredTerminalTargetRef.current = active;
+      }
+    };
+    document.addEventListener("pointerdown", handlePointerDown, true);
+    return () =>
+      document.removeEventListener("pointerdown", handlePointerDown, true);
+  }, [isCompactViewport]);
+  useEffect(() => {
+    if (isCompactViewport && openMobile) {
+      const active = document.activeElement;
+      drawerTerminalTargetRef.current =
+        active instanceof HTMLElement &&
+        active.closest("[data-app-terminal]") !== null
+          ? active
+          : blurredTerminalTargetRef.current;
+      return;
+    }
+    drawerTerminalTargetRef.current = null;
+    blurredTerminalTargetRef.current = null;
+  }, [isCompactViewport, openMobile]);
   const panelEntries = usePluginNavPanelChrome();
   const rows = useMemo(
     () => createSidebarNavigationRows(panelEntries),
@@ -292,7 +330,10 @@ export function SidebarNavigationModelProvider({
             return;
           case "search-threads":
             current.host.onSearchThreads?.();
-            current.commandRunner.dispatch("thread.search", null);
+            current.commandRunner.dispatch(
+              "thread.search",
+              options.target ?? drawerTerminalTargetRef.current,
+            );
             return;
           case "open-extensions":
           case "open-skills": {

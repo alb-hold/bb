@@ -1673,7 +1673,10 @@ Appearance → Navigation picker reads the same registrations.
 **Audit before stabilizing.**
 
 1. **Semantic items.** Confirm the action and icon variants cover current
-   navigation without exposing routes or host elements.
+   navigation without exposing routes or host elements. Review the optional
+   activation target for Search threads, which lets the host restore focus to
+   the control that opened the palette without adding host-specific behavior to
+   a provider's action path.
 2. **Home.** Confirm `isHomeActive` and `goHome()` are the right Home contract
    for rail providers, including after Settings closes the compact drawer.
 3. **Order semantics.** Confirm `setOrder`'s partial-order rule works for
