@@ -142,6 +142,7 @@ export function ThreadTimelineSurface({
   canSpawnChild,
   contextBoundarySeq,
   hasOlderTimelineRows = false,
+  hasUnseenTimelineEvents = false,
   hostConnectionNotice,
   isCatchingUpTimeline = false,
   isLoadingOlderTimelineRows = false,
@@ -248,6 +249,7 @@ export function ThreadTimelineSurface({
             resolveMentionLink={resolveMentionLink}
             resolveUserAttachmentImageSrc={toUserAttachmentImageSrc}
             hasOlderTimelineRows={hasOlderTimelineRows}
+            hasUnseenTimelineEvents={hasUnseenTimelineEvents}
             isLoadingOlderTimelineRows={isLoadingOlderTimelineRows}
             onLoadOlderRows={onLoadOlderRows}
             timelineRows={timelineRowsWithPendingStop}
