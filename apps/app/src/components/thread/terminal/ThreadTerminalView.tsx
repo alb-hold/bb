@@ -1616,6 +1616,7 @@ export function ThreadTerminalView({
         <TerminalMobileControls
           controlActive={controlActive}
           disabled={!terminalReady || session.status !== "running"}
+          readOnlyDisabled={!terminalReady}
           onControlChange={(active) => {
             changeControlActive(active);
             if (active) terminalRef.current?.focus();

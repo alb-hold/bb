@@ -21,7 +21,7 @@ export function shouldShowRetainedTerminalSession({
     isActiveTerminalSessionStatus(session.status) ||
     (session.status === "disconnected" &&
       retainedTerminalIds.has(session.id)) ||
-    (session.status === "exited" && retainedTerminalIds.has(session.id))
+    session.status === "exited"
   );
 }
 

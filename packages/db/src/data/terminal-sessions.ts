@@ -6,6 +6,7 @@ import {
   gt,
   inArray,
   isNull,
+  notExists,
   or,
   type SQL,
 } from "drizzle-orm";
@@ -15,7 +16,11 @@ import type {
 } from "@bb/domain";
 import type { DbConnection, DbTransaction } from "../connection.js";
 import { createTerminalSessionId } from "../ids.js";
-import { forkTerminalOutput, terminalSessions } from "../schema.js";
+import {
+  forkTerminalOutput,
+  forkTerminalTabDismissals,
+  terminalSessions,
+} from "../schema.js";
 
 type TerminalSessionConnection = DbConnection | DbTransaction;
 
@@ -249,6 +254,26 @@ export function listTerminalSessions(
                           terminalSessions.id,
                         ),
                         gt(forkTerminalOutput.expiresAt, Date.now()),
+                      ),
+                    ),
+                ),
+                notExists(
+                  db
+                    .select({
+                      terminalSessionId:
+                        forkTerminalTabDismissals.terminalSessionId,
+                    })
+                    .from(forkTerminalTabDismissals)
+                    .where(
+                      and(
+                        eq(
+                          forkTerminalTabDismissals.terminalSessionId,
+                          terminalSessions.id,
+                        ),
+                        eq(
+                          forkTerminalTabDismissals.hostId,
+                          terminalSessions.hostId,
+                        ),
                       ),
                     ),
                 ),
