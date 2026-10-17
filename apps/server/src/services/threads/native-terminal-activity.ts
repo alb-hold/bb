@@ -31,6 +31,24 @@ type NativeTerminalActivityDeps = LoggedPendingInteractionWorkSessionDeps &
   Pick<AppDeps, "db" | "hub" | "logger" | "terminalSessions">;
 
 const activeNativeThreads = new WeakMap<AppDeps["hub"], Set<string>>();
+const rejectedNativeQuestions = new WeakMap<
+  AppDeps["hub"],
+  Map<string, Set<string>>
+>();
+
+function rejectedQuestions(deps: Pick<AppDeps, "hub">, threadId: string) {
+  let byThread = rejectedNativeQuestions.get(deps.hub);
+  if (byThread === undefined) {
+    byThread = new Map();
+    rejectedNativeQuestions.set(deps.hub, byThread);
+  }
+  let questions = byThread.get(threadId);
+  if (questions === undefined) {
+    questions = new Set();
+    byThread.set(threadId, questions);
+  }
+  return questions;
+}
 
 function activeThreads(deps: Pick<AppDeps, "hub">): Set<string> {
   let threads = activeNativeThreads.get(deps.hub);
@@ -128,10 +146,18 @@ function reconcileNativeQuestions(
   },
 ): void {
   const wanted = new Map(
-    args.questions.map((question) => [
-      `${NATIVE_QUESTION_REQUEST_PREFIX}${question.id}`,
-      question,
-    ]),
+    args.questions
+      .map(
+        (question) =>
+          [
+            `${NATIVE_QUESTION_REQUEST_PREFIX}${question.id}`,
+            question,
+          ] as const,
+      )
+      .filter(
+        ([providerRequestId]) =>
+          !rejectedQuestions(deps, args.thread.id).has(providerRequestId),
+      ),
   );
   interruptNativeTerminalQuestions(
     deps,
@@ -160,6 +186,7 @@ function reconcileNativeQuestions(
       },
     });
     if (registered.outcome === "rejected") {
+      rejectedQuestions(deps, args.thread.id).add(providerRequestId);
       deps.logger.warn(
         { reason: registered.reason, threadId: args.thread.id },
         "Native terminal question was not registered",
