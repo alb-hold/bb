@@ -67,6 +67,7 @@ export type TerminalSessionMutation =
       closeReason: TerminalSessionCloseReason;
       exitCode?: number | null;
       kind: "exit";
+      retainDaemonSession?: boolean;
     }
   | {
       cols: number;
@@ -166,7 +167,7 @@ function mutationValues(
     case "exit":
       return {
         closeReason: update.closeReason,
-        daemonSessionId: null,
+        ...(update.retainDaemonSession ? {} : { daemonSessionId: null }),
         ...(update.exitCode === undefined ? {} : { exitCode: update.exitCode }),
         status: "exited",
         updatedAt: now,

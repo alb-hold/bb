@@ -134,6 +134,9 @@ export function startTerminalDataPlane(
     onMessage: (message) => {
       router.handleChildMessage(message);
       dataSockets.handleChildMessage(message);
+      if (message.type === "terminal.output-batch") {
+        options.lifecycle.recordOutputBatch(message);
+      }
     },
     onReady: () => dataSockets.handleChildReady(),
     spawn: options.spawn,
