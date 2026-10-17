@@ -182,6 +182,7 @@ describe("spawnLoggedProcess", () => {
             readFileSync(file, "utf8").includes("no-endpoint-first-"),
         )!;
         expect(firstSegment).toContain("-n-");
+        chmodSync(socketDir, 0o700);
 
         observer = spawnLoggedProcess({
           command: process.execPath,
@@ -207,7 +208,7 @@ describe("spawnLoggedProcess", () => {
             file.includes(".active-") &&
             readFileSync(file, "utf8").includes("no-endpoint-observer-"),
         )!;
-        expect(observerSegment).toContain("-n-");
+        expect(observerSegment).toContain("-e-");
         await expect
           .poll(
             () => {
@@ -230,7 +231,7 @@ describe("spawnLoggedProcess", () => {
           readFileSync(firstSegment, "utf8").match(/no-endpoint-first-/gu)
             ?.length ?? 0,
         ).toBeGreaterThanOrEqual(3);
-        expect(statSync(socketDir).mode & 0o777).toBe(0o755);
+        expect(statSync(socketDir).mode & 0o777).toBe(0o700);
         expect(readFileSync(diagnosticPath, "utf8")).toContain(
           "stdio liveness directory rejected: EACCES",
         );
