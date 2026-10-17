@@ -202,13 +202,12 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       },
     );
     const originalProposeDimensions = FitAddon.prototype.proposeDimensions;
-    const unavailableMeasurements: ReturnType<FitAddon["proposeDimensions"]>[] =
-      Array.from({ length: 16 }, () => undefined);
+    let fitDimensionsAvailable = false;
     vi.spyOn(FitAddon.prototype, "proposeDimensions").mockImplementation(
       function proposeDimensions(this: FitAddon) {
-        return unavailableMeasurements.length > 0
-          ? unavailableMeasurements.shift()
-          : originalProposeDimensions.call(this);
+        return fitDimensionsAvailable
+          ? originalProposeDimensions.call(this)
+          : undefined;
       },
     );
 
@@ -228,6 +227,18 @@ describe("ThreadTerminalView terminal focus boundary", () => {
         </AppCommandProvider>
       </MemoryRouter>,
     );
+
+    await waitFor(() => {
+      expect(
+        testState.socketMessages.map((message) => JSON.parse(message)),
+      ).toContainEqual({ type: "visibility", visible: true });
+    });
+    expect(
+      testState.socketMessages
+        .map((message) => JSON.parse(message) as { type?: string })
+        .some((message) => message.type === "resize"),
+    ).toBe(false);
+    fitDimensionsAvailable = true;
 
     await waitFor(() => {
       const resize = testState.socketMessages
