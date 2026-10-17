@@ -578,6 +578,10 @@ function updateTerminalById(
 
 export class TerminalSessionLifecycle {
   private readonly lastThreadAttentionAt = new Map<string, number>();
+  private readonly deviceHandoffAttentionSeqByTerminalId = new Map<
+    string,
+    number
+  >();
   private readonly nativeTerminalRepaintsOnAttach = new Set<string>();
   private readonly pendingAttaches: PendingRpcRegistry<
     PendingTerminalAttachKey,
@@ -826,16 +830,19 @@ export class TerminalSessionLifecycle {
     const session = getTerminalById(this.options.db, terminalId);
     if (!session || (pending && session.status !== "running")) return;
     if (pending) {
-      this.recordTerminalAttention({
+      const seq = this.recordTerminalAttention({
         source: "api",
         terminalId,
         kind: "osc-9",
         title: "Link waiting for this device",
         body: "",
       });
+      if (seq !== null) {
+        this.deviceHandoffAttentionSeqByTerminalId.set(terminalId, seq);
+      }
       return;
     }
-    this.clearTerminalAttention(terminalId);
+    this.clearDeviceHandoffAttention(terminalId);
   }
 
   private recordTerminalAttention(
@@ -850,9 +857,9 @@ export class TerminalSessionLifecycle {
           source: "daemon";
           terminalId: string;
         }),
-  ): void {
+  ): number | null {
     const session = getTerminalById(this.options.db, attention.terminalId);
-    if (!session || session.status !== "running") return;
+    if (!session || session.status !== "running") return null;
     const now = attention.at ?? Date.now();
     const source = attention.source;
     const alreadyVisible = this.options.hub.hasVisibleTerminalClient(
@@ -868,7 +875,7 @@ export class TerminalSessionLifecycle {
       previous?.daemonSeq !== undefined &&
       daemonSeq <= previous.daemonSeq
     ) {
-      return;
+      return null;
     }
     const seq =
       daemonSeq !== null
@@ -898,6 +905,7 @@ export class TerminalSessionLifecycle {
       }
       this.options.hub.notifyThread(session.threadId, ["terminals-changed"]);
     }
+    return alreadyVisible ? null : seq;
   }
 
   private clearTerminalAttention(terminalId: string): void {
@@ -915,6 +923,15 @@ export class TerminalSessionLifecycle {
     if (session?.threadId !== null && session?.threadId !== undefined) {
       this.options.hub.notifyThread(session.threadId, ["terminals-changed"]);
     }
+  }
+
+  private clearDeviceHandoffAttention(terminalId: string): void {
+    const seq = this.deviceHandoffAttentionSeqByTerminalId.get(terminalId);
+    this.deviceHandoffAttentionSeqByTerminalId.delete(terminalId);
+    if (seq === undefined) return;
+    const attention = getTerminalAttention(this.options.db, terminalId);
+    if (attention?.seq !== seq || attention.clearedAt !== null) return;
+    this.clearTerminalAttention(terminalId);
   }
 
   async createTerminal(args: CreateTerminalArgs): Promise<TerminalSession> {
@@ -2314,7 +2331,7 @@ export class TerminalSessionLifecycle {
     if (!exited) {
       return;
     }
-    this.clearTerminalAttention(exited.id);
+    this.clearDeviceHandoffAttention(exited.id);
     this.forwardedNextSeqByTerminalId.delete(exited.id);
     this.outputFlow.forgetTerminal(exited.id);
     markRetainedTerminalOutputExited(
@@ -2441,7 +2458,7 @@ export class TerminalSessionLifecycle {
   private notifyExitedTerminalSession(
     args: NotifyExitedTerminalSessionArgs,
   ): void {
-    this.clearTerminalAttention(args.session.id);
+    this.clearDeviceHandoffAttention(args.session.id);
     markRetainedTerminalOutputExited(
       this.options.db,
       args.session.id,

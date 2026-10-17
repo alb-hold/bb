@@ -144,6 +144,108 @@ describe("device handoff route validation", () => {
 });
 
 describe("device handoff pending attention", () => {
+  it("preserves an OSC-9 notification when the terminal exits", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps);
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+      });
+      const thread = seedThread(harness.deps, { projectId: project.id });
+      const terminal = createTerminalSession(harness.db, {
+        cols: 80,
+        environmentId: null,
+        hostId: host.id,
+        daemonSessionId: session.id,
+        initialCwd: "/tmp",
+        rows: 24,
+        status: "running",
+        threadId: thread.id,
+        title: "OSC-9 exit terminal",
+      });
+
+      harness.deps.terminalSessions.notifyTerminal({
+        terminalId: terminal.id,
+        payload: { title: "Build done", body: "The build completed" },
+      });
+      const beforeExit = getTerminalAttention(harness.db, terminal.id);
+      expect(beforeExit).toMatchObject({
+        title: "Build done",
+        body: "The build completed",
+        clearedAt: null,
+      });
+
+      harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        hostId: host.id,
+        sessionId: session.id,
+        message: {
+          type: "terminal.exited",
+          terminalId: terminal.id,
+          exitCode: 0,
+          closeReason: "process-exit",
+        },
+      });
+
+      expect(getTerminalAttention(harness.db, terminal.id)).toMatchObject({
+        seq: beforeExit?.seq,
+        title: "Build done",
+        body: "The build completed",
+        clearedAt: null,
+      });
+    });
+  });
+
+  it("preserves a newer OSC-9 notification when a handoff expires", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps);
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+      });
+      const thread = seedThread(harness.deps, { projectId: project.id });
+      const terminal = createTerminalSession(harness.db, {
+        cols: 80,
+        environmentId: null,
+        hostId: host.id,
+        daemonSessionId: session.id,
+        initialCwd: "/tmp",
+        rows: 24,
+        status: "running",
+        threadId: thread.id,
+        title: "OSC-9 expiry terminal",
+      });
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(Date.now());
+        const response = await harness.app.request("/api/v1/device-handoff", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            kind: "copy-text",
+            text: "private handoff text",
+            origin: { threadId: thread.id, terminalSessionId: terminal.id },
+          }),
+        });
+        expect(response.status).toBe(200);
+
+        harness.deps.terminalSessions.notifyTerminal({
+          terminalId: terminal.id,
+          payload: { title: "Deployment ready", body: "Version 42" },
+        });
+        const notification = getTerminalAttention(harness.db, terminal.id);
+
+        await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
+
+        expect(getTerminalAttention(harness.db, terminal.id)).toMatchObject({
+          seq: notification?.seq,
+          title: "Deployment ready",
+          body: "Version 42",
+          clearedAt: null,
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
   it("clears terminal attention when its originating terminal exits", async () => {
     await withTestHarness(async (harness) => {
       const { host, session } = seedHostSession(harness.deps);
@@ -542,6 +644,76 @@ describe("device handoff pending attention", () => {
 });
 
 describe("device handoff websocket acknowledgement", () => {
+  it("delivers a terminal handoff after the command exits", async () => {
+    const server = await startTestServer();
+    const { host, session } = seedHostSession(server.deps);
+    const { project } = seedProjectWithSource(server.deps, {
+      hostId: host.id,
+    });
+    const thread = seedThread(server.deps, { projectId: project.id });
+    const terminal = createTerminalSession(server.db, {
+      cols: 80,
+      environmentId: null,
+      hostId: host.id,
+      daemonSessionId: session.id,
+      initialCwd: "/tmp",
+      rows: 24,
+      status: "running",
+      threadId: thread.id,
+      title: "Immediate exit handoff",
+    });
+    const socket = await connectRealtime(server.baseUrl);
+    try {
+      sendRealtime(socket, {
+        type: "subscribe",
+        target: { kind: "thread-detail", threadId: thread.id },
+      });
+      sendRealtime(socket, { type: "device-handoff-view", threadId: null });
+      const ready = nextRealtimeMessage(socket, "pong");
+      sendRealtime(socket, { type: "ping" });
+      await ready;
+
+      const response = await server.app.request("/api/v1/device-handoff", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          kind: "open-url",
+          url: "https://example.com/immediate-exit",
+          origin: { threadId: thread.id, terminalSessionId: terminal.id },
+        }),
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ delivered: 0 });
+
+      server.deps.terminalSessions.handleDaemonTerminalMessage({
+        hostId: host.id,
+        sessionId: session.id,
+        message: {
+          type: "terminal.exited",
+          terminalId: terminal.id,
+          exitCode: 0,
+          closeReason: "process-exit",
+        },
+      });
+
+      const pending = nextRealtimeMessage(socket, "device-handoff");
+      sendRealtime(socket, {
+        type: "device-handoff-view",
+        threadId: thread.id,
+      });
+      expect(await pending).toMatchObject({
+        type: "device-handoff",
+        request: {
+          kind: "open-url",
+          url: "https://example.com/immediate-exit",
+        },
+      });
+    } finally {
+      socket.close();
+      await server.close();
+    }
+  });
+
   it("rejects guarded upgrades and delivers a queued handoff to an admitted viewer", async () => {
     const server = await startTestServer();
     const { thread } = seedThreadFixture(server);
