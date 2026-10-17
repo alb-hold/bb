@@ -1188,7 +1188,6 @@ export function validateFormattedTranscript(
     if (!dropped[index]) continue;
     const token = rawTokens[index]!;
     if (correcting[index] || window[index]) continue;
-    if (FILLER_WORDS.has(token)) continue;
     if (options.literalCode && SPOKEN_SYMBOLS.has(token)) continue;
     if (repeats[index]) continue;
     const enumerator = ENUMERATOR_VALUES.get(token);

@@ -729,7 +729,7 @@ describe("validateFormattedTranscript", () => {
     expect(
       validateFormattedTranscript(
         "uh is the build green?",
-        "Is the build green?",
+        "Uh, is the build green?",
       ),
     ).toEqual({ ok: true });
     expect(
@@ -868,19 +868,25 @@ describe("validateFormattedTranscript", () => {
   });
 
   it.each(["uh", "uhh", "uhm", "umm", "er", "erm"])(
-    "allows formatting to drop the hesitation sound %s",
+    "keeps the transcript when formatting drops the hesitation sound %s",
     (filler) => {
       expect(
         validateFormattedTranscript(`${filler} ship it`, "Ship it."),
+      ).toEqual({ ok: false, reason: "dropped-words" });
+      expect(
+        validateFormattedTranscript(
+          `${filler} ship it`,
+          `${filler[0]!.toUpperCase()}${filler.slice(1)}, ship it.`,
+        ),
       ).toEqual({ ok: true });
     },
   );
 
-  it("allows filler removal and self-corrections", () => {
+  it("allows self-corrections", () => {
     expect(
       validateFormattedTranscript(
         "uh we should deploy on monday no wait on tuesday",
-        "We should deploy on Tuesday.",
+        "Uh, we should deploy on Tuesday.",
       ),
     ).toEqual({ ok: true });
     expect(
@@ -994,7 +1000,7 @@ describe("validateFormattedTranscript", () => {
         "first uh check auth and then second run the tests",
         "1. Check auth.\n2. Run the tests.",
       ),
-    ).toEqual({ ok: true });
+    ).toEqual({ ok: false, reason: "dropped-words" });
   });
 
   it("drops list connectors and repeated words only when safe", () => {
