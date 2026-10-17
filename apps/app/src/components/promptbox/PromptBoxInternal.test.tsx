@@ -134,6 +134,27 @@ const promptActions: readonly PromptBoxAction[] = [
   },
 ];
 
+function createVoiceConfig(
+  overrides: Partial<PromptVoiceConfig> = {},
+): PromptVoiceConfig {
+  return {
+    state: "idle",
+    delivery: "insert",
+    microphoneWarning: null,
+    isSupported: true,
+    stream: null,
+    failedRecordings: [],
+    start: vi.fn(),
+    stop: vi.fn(),
+    send: vi.fn(),
+    retry: vi.fn(),
+    discard: vi.fn(),
+    download: vi.fn(),
+    cancel: vi.fn(),
+    ...overrides,
+  };
+}
+
 function createPromptBoxProps(
   overrides: Partial<PromptBoxProps> = {},
 ): PromptBoxProps {
@@ -1703,16 +1724,7 @@ describe("PromptBoxInternal controlled value sync", () => {
         <PromptBoxInternal
           {...createPromptBoxProps({
             promptBoxRef,
-            voice: {
-              state: "idle",
-              microphoneWarning: null,
-              isSupported: true,
-              stream: null,
-              start,
-              stop: vi.fn(),
-              send: vi.fn(),
-              cancel: vi.fn(),
-            },
+            voice: createVoiceConfig({ start }),
           })}
         />,
       );
@@ -2691,16 +2703,7 @@ describe("PromptBoxInternal plugin composer actions", () => {
     render(
       <PromptBoxInternal
         {...createPromptBoxProps({
-          voice: {
-            state: "idle",
-            microphoneWarning: null,
-            isSupported: true,
-            stream: null,
-            start: vi.fn(),
-            stop: vi.fn(),
-            send: vi.fn(),
-            cancel: vi.fn(),
-          },
+          voice: createVoiceConfig(),
         })}
       />,
     );
@@ -3039,16 +3042,7 @@ describe("PromptBoxInternal compact layout", () => {
               isCompact: true,
               placeholder: "Ask a follow-up",
             },
-            voice: {
-              state: "idle",
-              microphoneWarning: null,
-              isSupported: true,
-              stream: null,
-              start: vi.fn(),
-              stop: vi.fn(),
-              send: vi.fn(),
-              cancel: vi.fn(),
-            },
+            voice: createVoiceConfig(),
           })}
         />,
       );
@@ -3152,16 +3146,7 @@ describe("PromptBoxInternal compact layout", () => {
   });
 
   it("keeps the one-line editor, voice input, and submit action", () => {
-    const voice: PromptVoiceConfig = {
-      state: "idle",
-      microphoneWarning: null,
-      isSupported: true,
-      stream: null,
-      start: vi.fn(),
-      stop: vi.fn(),
-      send: vi.fn(),
-      cancel: vi.fn(),
-    };
+    const voice = createVoiceConfig();
 
     render(
       <PromptBoxInternal
@@ -3258,16 +3243,7 @@ describe("PromptBoxInternal compact layout", () => {
               isCompact: true,
               placeholder: "Ask a follow-up",
             },
-            voice: {
-              state: "idle",
-              microphoneWarning: null,
-              isSupported: true,
-              stream: null,
-              start,
-              stop: vi.fn(),
-              send: vi.fn(),
-              cancel: vi.fn(),
-            },
+            voice: createVoiceConfig({ start }),
           })}
         />,
       );
@@ -3309,16 +3285,7 @@ describe("PromptBoxInternal compact layout", () => {
             {...createPromptBoxProps({
               submission: { isRunning: true, onStop },
               compact: { isCompact, placeholder: "Ask a follow-up" },
-              voice: {
-                state: "idle",
-                microphoneWarning: null,
-                isSupported: true,
-                stream: null,
-                start,
-                stop: vi.fn(),
-                send: vi.fn(),
-                cancel: vi.fn(),
-              },
+              voice: createVoiceConfig({ start }),
             })}
           />,
         );
@@ -3362,16 +3329,7 @@ describe("PromptBoxInternal compact layout", () => {
               onSubmit,
               submission: { isRunning, onStop: vi.fn() },
               compact: { isCompact: true, placeholder: "Ask a follow-up" },
-              voice: {
-                state: "idle",
-                microphoneWarning: null,
-                isSupported: true,
-                stream: null,
-                start,
-                stop: vi.fn(),
-                send: vi.fn(),
-                cancel: vi.fn(),
-              },
+              voice: createVoiceConfig({ start }),
             })}
           />,
         );
@@ -3402,16 +3360,7 @@ describe("PromptBoxInternal compact layout", () => {
     const restoreMatchMedia = mockPointerCoarse(true);
     try {
       const start = vi.fn();
-      const voice = {
-        state: "idle" as const,
-        microphoneWarning: null,
-        isSupported: true,
-        stream: null,
-        start,
-        stop: vi.fn(),
-        send: vi.fn(),
-        cancel: vi.fn(),
-      };
+      const voice = createVoiceConfig({ start });
       const onSubmit = vi.fn();
       const { rerender } = render(
         <PromptBoxInternal
@@ -3547,16 +3496,7 @@ describe("PromptBoxInternal compact layout", () => {
         <PromptBoxInternal
           {...createPromptBoxProps({
             compact: { isCompact: true, placeholder: "Ask a follow-up" },
-            voice: {
-              state: "idle",
-              microphoneWarning: null,
-              isSupported: true,
-              stream: null,
-              start,
-              stop: vi.fn(),
-              send: vi.fn(),
-              cancel: vi.fn(),
-            },
+            voice: createVoiceConfig({ start }),
           })}
         />,
       );
@@ -3588,16 +3528,7 @@ describe("PromptBoxInternal compact layout", () => {
         <PromptBoxInternal
           {...createPromptBoxProps({
             compact: { isCompact: true, placeholder: "Ask a follow-up" },
-            voice: {
-              state: "idle",
-              microphoneWarning: null,
-              isSupported: true,
-              stream: null,
-              start,
-              stop: vi.fn(),
-              send: vi.fn(),
-              cancel: vi.fn(),
-            },
+            voice: createVoiceConfig({ start }),
           })}
         />,
       );
@@ -3957,16 +3888,7 @@ describe("PromptBoxInternal compact layout", () => {
     render(
       <PromptBoxInternal
         {...createPromptBoxProps({
-          voice: {
-            state: "idle",
-            microphoneWarning: null,
-            isSupported: true,
-            stream: null,
-            start: vi.fn(),
-            stop: vi.fn(),
-            send: vi.fn(),
-            cancel: vi.fn(),
-          },
+          voice: createVoiceConfig(),
         })}
       />,
     );
@@ -3981,16 +3903,7 @@ describe("PromptBoxInternal compact layout", () => {
 
   it("keeps the existing prompt content when voice recording activates", () => {
     const onChange = vi.fn();
-    const voice = {
-      state: "idle" as const,
-      microphoneWarning: null,
-      isSupported: true,
-      stream: null,
-      start: vi.fn(),
-      stop: vi.fn(),
-      send: vi.fn(),
-      cancel: vi.fn(),
-    };
+    const voice = createVoiceConfig();
     const view = render(
       <PromptBoxInternal
         {...createPromptBoxProps({
@@ -4033,16 +3946,7 @@ describe("PromptBoxInternal compact layout", () => {
           {...createPromptBoxProps({
             value: "Keep this prompt unchanged",
             onChange,
-            voice: {
-              state,
-              microphoneWarning: null,
-              isSupported: true,
-              stream: null,
-              start: vi.fn(),
-              stop: vi.fn(),
-              send: vi.fn(),
-              cancel: vi.fn(),
-            },
+            voice: createVoiceConfig({ state }),
           })}
         />,
       );
@@ -4078,7 +3982,7 @@ describe("PromptBoxInternal compact layout", () => {
     },
   );
 
-  it("sends the complete updated draft through the primary submit action once after voice completion", async () => {
+  it("submits the updated draft in the same commit as the voice transcript, before voice state settles", () => {
     const promptBoxRef = createRef<PromptBoxHandle>();
     const onSubmit = vi.fn();
     function Harness() {
@@ -4093,16 +3997,7 @@ describe("PromptBoxInternal compact layout", () => {
               value,
               onChange: (next) => setValue(next),
               onSubmit: () => onSubmit(value),
-              voice: {
-                state,
-                microphoneWarning: null,
-                isSupported: true,
-                stream: null,
-                start: vi.fn(),
-                stop: vi.fn(),
-                send: vi.fn(),
-                cancel: vi.fn(),
-              },
+              voice: createVoiceConfig({ state }),
             })}
             promptBoxRef={promptBoxRef}
           />
@@ -4114,15 +4009,13 @@ describe("PromptBoxInternal compact layout", () => {
     }
     render(<Harness />);
     act(() => promptBoxRef.current?.sendVoiceTranscript("more words"));
-    expect(onSubmit).not.toHaveBeenCalled();
+    expect(onSubmit).toHaveBeenCalledExactlyOnceWith(
+      "Existing prompt more words",
+    );
     fireEvent.click(
       screen.getByRole("button", { name: "Finish transcription" }),
     );
-    await waitFor(() =>
-      expect(onSubmit).toHaveBeenCalledExactlyOnceWith(
-        "Existing prompt more words",
-      ),
-    );
+    expect(onSubmit).toHaveBeenCalledOnce();
   });
 
   it("keeps the transcribed draft without submitting when primary submission is unavailable", async () => {
@@ -4141,16 +4034,7 @@ describe("PromptBoxInternal compact layout", () => {
               onChange: (next) => setValue(next),
               onSubmit,
               submission: { disabled: true },
-              voice: {
-                state,
-                microphoneWarning: null,
-                isSupported: true,
-                stream: null,
-                start: vi.fn(),
-                stop: vi.fn(),
-                send: vi.fn(),
-                cancel: vi.fn(),
-              },
+              voice: createVoiceConfig({ state }),
             })}
             promptBoxRef={promptBoxRef}
           />
@@ -4178,16 +4062,7 @@ describe("PromptBoxInternal compact layout", () => {
     (state) => {
       const props = createPromptBoxProps({
         compact: { isCompact: true, placeholder: "Ask a follow-up" },
-        voice: {
-          state,
-          microphoneWarning: null,
-          isSupported: true,
-          stream: null,
-          start: vi.fn(),
-          stop: vi.fn(),
-          send: vi.fn(),
-          cancel: vi.fn(),
-        },
+        voice: createVoiceConfig({ state }),
       });
       const view = render(<PromptBoxInternal {...props} />);
       const form = document.querySelector("[data-promptbox]");
@@ -4229,16 +4104,7 @@ describe("PromptBoxInternal compact layout", () => {
       <PromptBoxInternal
         {...createPromptBoxProps({
           value: "Keep this prompt visible while I dictate",
-          voice: {
-            state: "recording",
-            microphoneWarning: null,
-            isSupported: true,
-            stream: null,
-            start: vi.fn(),
-            stop,
-            send,
-            cancel,
-          },
+          voice: createVoiceConfig({ state: "recording", stop, send, cancel }),
         })}
       />,
     );
@@ -4296,16 +4162,7 @@ describe("PromptBoxInternal compact layout", () => {
         pendingFrames.delete(frameId);
       });
     try {
-      const idleVoice: PromptVoiceConfig = {
-        state: "idle",
-        microphoneWarning: null,
-        isSupported: true,
-        stream: null,
-        start: vi.fn(),
-        stop: vi.fn(),
-        send: vi.fn(),
-        cancel: vi.fn(),
-      };
+      const idleVoice = createVoiceConfig();
       const view = render(
         <PromptBoxInternal {...createPromptBoxProps({ voice: idleVoice })} />,
       );
@@ -4347,16 +4204,7 @@ describe("PromptBoxInternal compact layout", () => {
           {...createPromptBoxProps({
             promptBoxRef,
             value: "Existing draft",
-            voice: {
-              state: "transcribing",
-              microphoneWarning: null,
-              isSupported: true,
-              stream: null,
-              start: vi.fn(),
-              stop: vi.fn(),
-              send: vi.fn(),
-              cancel: vi.fn(),
-            },
+            voice: createVoiceConfig({ state: "transcribing" }),
           })}
         />,
       );
@@ -4407,16 +4255,7 @@ describe("PromptBoxInternal compact layout", () => {
     vi.useFakeTimers();
     try {
       const cancel = vi.fn();
-      const recordingVoice: PromptVoiceConfig = {
-        state: "recording",
-        microphoneWarning: null,
-        isSupported: true,
-        stream: null,
-        start: vi.fn(),
-        stop: vi.fn(),
-        send: vi.fn(),
-        cancel,
-      };
+      const recordingVoice = createVoiceConfig({ state: "recording", cancel });
       const view = render(
         <PromptBoxInternal
           {...createPromptBoxProps({ voice: recordingVoice })}
@@ -4479,16 +4318,7 @@ describe("PromptBoxInternal compact layout", () => {
         <PromptBoxInternal
           {...createPromptBoxProps({
             promptBoxRef,
-            voice: {
-              state: "transcribing",
-              microphoneWarning: null,
-              isSupported: true,
-              stream: null,
-              start: vi.fn(),
-              stop: vi.fn(),
-              send: vi.fn(),
-              cancel: vi.fn(),
-            },
+            voice: createVoiceConfig({ state: "transcribing" }),
           })}
         />,
       );
@@ -4527,16 +4357,7 @@ describe("PromptBoxInternal compact layout", () => {
         <PromptBoxInternal
           {...createPromptBoxProps({
             promptBoxRef,
-            voice: {
-              state: "transcribing",
-              microphoneWarning: null,
-              isSupported: true,
-              stream: null,
-              start: vi.fn(),
-              stop: vi.fn(),
-              send: vi.fn(),
-              cancel: vi.fn(),
-            },
+            voice: createVoiceConfig({ state: "transcribing" }),
           })}
         />,
       );
@@ -6311,17 +6132,7 @@ describe("voice recording escape", () => {
   function voiceConfig(
     overrides: Partial<PromptVoiceConfig> = {},
   ): PromptVoiceConfig {
-    return {
-      state: "recording",
-      microphoneWarning: null,
-      isSupported: true,
-      stream: null,
-      start: vi.fn(),
-      stop: vi.fn(),
-      send: vi.fn(),
-      cancel: vi.fn(),
-      ...overrides,
-    };
+    return createVoiceConfig({ state: "recording", ...overrides });
   }
 
   function pressEscape(): KeyboardEvent {

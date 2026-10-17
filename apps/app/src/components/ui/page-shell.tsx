@@ -3,7 +3,8 @@ import { BottomAnchoredScrollBody } from "./bottom-anchored-scroll-body.js";
 import { PAGE_SHELL_CONTENT_STYLE } from "./page-shell-content-style.js";
 import { CONTENT_MEASURE_MAX_WIDTH_CLASS } from "@/lib/content-measure";
 import { cn } from "@bb/shared-ui/lib/utils";
-import { OverflowFade } from "./overflow-fade.js";
+import { OverflowFade } from "@bb/shared-ui/overflow-fade";
+import { TitleBarScrollFade } from "./title-bar-scroll-fade.js";
 
 type PageShellScrollBehavior = "bottom-anchor" | "static";
 
@@ -93,6 +94,7 @@ export function PageShell({
   return (
     <div className={cn(SHELL_BLEED_CLASS, shellClassName)}>
       <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+        <TitleBarScrollFade tone="background" />
         <div
           data-page-scroll-viewport=""
           className={cn(

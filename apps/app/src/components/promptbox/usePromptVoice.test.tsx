@@ -18,6 +18,7 @@ vi.mock("@/hooks/useVoiceInput", () => ({
 
 const voiceInput = {
   state: "transcribing" as const,
+  delivery: "insert" as const,
   microphoneWarning: null,
   isSupported: true,
   unsupportedReason: null,
@@ -25,6 +26,10 @@ const voiceInput = {
   start: vi.fn(),
   stop: vi.fn(),
   cancel: vi.fn(),
+  failedRecordings: [],
+  retry: vi.fn(),
+  discard: vi.fn(),
+  download: vi.fn(),
 };
 
 afterEach(() => {
@@ -33,7 +38,7 @@ afterEach(() => {
 });
 
 describe("usePromptVoice", () => {
-  it("waits for the completion transition after transcription resolves", async () => {
+  it("returns the transcript without delivering it from the transcription callback", async () => {
     vi.mocked(useVoiceInput).mockReturnValue({
       ...voiceInput,
       isRecording: false,
@@ -42,13 +47,7 @@ describe("usePromptVoice", () => {
     });
     vi.mocked(transcribeVoiceInput).mockResolvedValue({ text: "Transcript" });
 
-    let finishTransition: (() => void) | undefined;
-    const playVoiceCompletionTransition = vi.fn(
-      () =>
-        new Promise<void>((resolve) => {
-          finishTransition = resolve;
-        }),
-    );
+    const playVoiceCompletionTransition = vi.fn();
     const insertTextAtCursor = vi.fn();
     const promptBoxRef = {
       current: {
@@ -62,26 +61,14 @@ describe("usePromptVoice", () => {
       } satisfies PromptBoxHandle,
     };
 
-    renderHook(() => usePromptVoice(promptBoxRef));
+    renderHook(() => usePromptVoice(promptBoxRef, undefined, null));
     const options = vi.mocked(useVoiceInput).mock.calls[0]?.[0];
     const transcription = options?.onTranscribe({
       file: new File([], "recording.webm", { type: "audio/webm" }),
     });
 
-    await act(async () => {
-      await Promise.resolve();
-    });
-    expect(playVoiceCompletionTransition).toHaveBeenCalledOnce();
-
-    let settled = false;
-    void transcription?.then(() => {
-      settled = true;
-    });
-    await Promise.resolve();
-    expect(settled).toBe(false);
-
-    finishTransition?.();
     await expect(transcription).resolves.toBe("Transcript");
+    expect(playVoiceCompletionTransition).not.toHaveBeenCalled();
     expect(insertTextAtCursor).not.toHaveBeenCalled();
   });
 
@@ -106,27 +93,27 @@ describe("usePromptVoice", () => {
         playVoiceCompletionTransition: vi.fn(),
       } satisfies PromptBoxHandle,
     };
-    const { result } = renderHook(() => usePromptVoice(promptBoxRef));
+    const { result } = renderHook(() => usePromptVoice(promptBoxRef, undefined, null));
     const options = vi.mocked(useVoiceInput).mock.calls[0]?.[0];
     act(() => {
       result.current.send();
       result.current.send();
     });
-    expect(voiceInput.stop).toHaveBeenCalledOnce();
-    act(() => options?.onTranscript("first transcript"));
+    expect(voiceInput.stop).toHaveBeenCalledTimes(2);
+    act(() => options?.onTranscript("first transcript", "send"));
     expect(sendVoiceTranscript).toHaveBeenCalledExactlyOnceWith(
       "first transcript",
     );
     act(() => {
       result.current.send();
       result.current.cancel();
-      options?.onTranscript("cancelled transcript");
+      options?.onTranscript("cancelled transcript", "insert");
     });
     expect(sendVoiceTranscript).toHaveBeenCalledOnce();
     expect(insertTextAtCursor).toHaveBeenCalledWith("cancelled transcript");
     act(() => {
       result.current.stop();
-      options?.onTranscript("draft transcript");
+      options?.onTranscript("draft transcript", "insert");
     });
     expect(insertTextAtCursor).toHaveBeenCalledWith("draft transcript");
     expect(sendVoiceTranscript).toHaveBeenCalledOnce();
@@ -154,14 +141,14 @@ describe("usePromptVoice", () => {
         playVoiceCompletionTransition: vi.fn(),
       } satisfies PromptBoxHandle,
     };
-    const { result, rerender } = renderHook(() => usePromptVoice(promptBoxRef));
+    const { result, rerender } = renderHook(() => usePromptVoice(promptBoxRef, undefined, null));
     const options = vi.mocked(useVoiceInput).mock.calls[0]?.[0];
     act(() => result.current.send());
     state = "error";
     rerender();
     state = "recording";
     rerender();
-    act(() => options?.onTranscript("later transcript"));
+    act(() => options?.onTranscript("later transcript", "insert"));
     expect(sendVoiceTranscript).not.toHaveBeenCalled();
     expect(insertTextAtCursor).toHaveBeenCalledExactlyOnceWith(
       "later transcript",
@@ -188,11 +175,11 @@ describe("usePromptVoice", () => {
         playVoiceCompletionTransition: vi.fn(),
       } satisfies PromptBoxHandle,
     };
-    const { result, unmount } = renderHook(() => usePromptVoice(promptBoxRef));
+    const { result, unmount } = renderHook(() => usePromptVoice(promptBoxRef, undefined, null));
     const options = vi.mocked(useVoiceInput).mock.calls[0]?.[0];
     act(() => result.current.send());
     unmount();
-    options?.onTranscript("late transcript");
+    options?.onTranscript("late transcript", "send");
     expect(sendVoiceTranscript).not.toHaveBeenCalled();
   });
   it.each(["send", "stop"] as const)(
@@ -233,13 +220,13 @@ describe("usePromptVoice", () => {
         submit,
       };
       const { result, unmount } = renderHook(() =>
-        usePromptVoice(promptBoxRef, origin),
+        usePromptVoice(promptBoxRef, origin, null),
       );
       const options = vi.mocked(useVoiceInput).mock.calls[0]?.[0];
       act(() => result.current[action]());
       unmount();
       draft = { ...draft, text: "Existing and later edits" };
-      await options?.onTranscript("late transcript");
+      await options?.onTranscript("late transcript", action === "send" ? "send" : "insert");
       expect(draft.text).toBe("Existing and later edits late transcript");
       expect(sendVoiceTranscript).not.toHaveBeenCalled();
       expect(promptBoxRef.current.insertTextAtCursor).not.toHaveBeenCalled();
@@ -264,10 +251,10 @@ describe("usePromptVoice", () => {
     const setDraft = vi.fn((next: PromptDraftState) => {
       draft = next;
     });
-    renderHook(() => usePromptVoice(promptBoxRef, { getCurrent, setDraft }));
+    renderHook(() => usePromptVoice(promptBoxRef, { getCurrent, setDraft }, null));
     const options = vi.mocked(useVoiceInput).mock.calls[0]?.[0];
     draft = { ...draft, text: "Existing and later edits" };
-    options?.onTranscript("new words");
+    options?.onTranscript("new words", "insert");
     expect(draft).toEqual({
       text: "Existing and later edits new words",
       mentions: [],
