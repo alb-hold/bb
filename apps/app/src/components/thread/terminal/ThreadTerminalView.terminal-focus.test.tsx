@@ -238,6 +238,70 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       expect(resize).toBeDefined();
       expect(resize?.cols).toBeLessThan(120);
     });
+
+    const resizeFrames = () =>
+      testState.socketMessages
+        .map(
+          (message) =>
+            JSON.parse(message) as {
+              cols?: number;
+              rows?: number;
+              type?: string;
+            },
+        )
+        .filter((message) => message.type === "resize");
+    const fittedSize = resizeFrames()[0];
+    if (fittedSize?.cols === undefined || fittedSize.rows === undefined) {
+      throw new Error("Expected a fitted terminal size");
+    }
+    const visibilityState = vi.spyOn(document, "visibilityState", "get");
+    visibilityState.mockReturnValue("hidden");
+    document.dispatchEvent(new Event("visibilitychange"));
+    await waitFor(() => {
+      expect(
+        testState.socketMessages.map((message) => JSON.parse(message)),
+      ).toContainEqual({ type: "visibility", visible: false });
+    });
+
+    visibilityState.mockReturnValue("visible");
+    document.dispatchEvent(new Event("visibilitychange"));
+    window.dispatchEvent(new Event("focus"));
+    await waitFor(() => {
+      const messages = testState.socketMessages.map(
+        (message) =>
+          JSON.parse(message) as {
+            cols?: number;
+            rows?: number;
+            type?: string;
+            visible?: boolean;
+          },
+      );
+      const hiddenIndex = messages.findIndex(
+        (message) => message.type === "visibility" && !message.visible,
+      );
+      const visibleIndex = messages.findIndex(
+        (message, index) =>
+          index > hiddenIndex &&
+          message.type === "visibility" &&
+          message.visible,
+      );
+      expect(hiddenIndex).toBeGreaterThanOrEqual(0);
+      expect(visibleIndex).toBeGreaterThan(hiddenIndex);
+      expect(
+        messages
+          .slice(visibleIndex + 1)
+          .find(
+            (message) =>
+              message.type === "resize" &&
+              message.cols === fittedSize.cols &&
+              message.rows === fittedSize.rows,
+          ),
+      ).toEqual({
+        type: "resize",
+        cols: fittedSize.cols,
+        rows: fittedSize.rows,
+      });
+    });
   });
 
   it("suppresses terminal-scoped shortcuts from the real xterm input", async () => {

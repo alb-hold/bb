@@ -135,6 +135,27 @@ describe("TerminalWebSocketTransport", () => {
     harness.transport.dispose();
   });
 
+  it("reasserts the unchanged fit when a hidden terminal becomes visible", () => {
+    const harness = createHarness();
+    harness.transport.setVisible(true);
+    harness.transport.markLayoutSettled();
+    harness.transport.start();
+    const socket = harness.sockets[0];
+    socket?.open();
+    harness.transport.sendResize(51, 47);
+    harness.transport.setVisible(false);
+    harness.transport.setVisible(true);
+
+    expect(socket?.sent.map((payload) => JSON.parse(payload))).toEqual([
+      { type: "visibility", visible: true },
+      { type: "resize", cols: 51, rows: 47 },
+      { type: "visibility", visible: false },
+      { type: "visibility", visible: true },
+      { type: "resize", cols: 51, rows: 47 },
+    ]);
+    harness.transport.dispose();
+  });
+
   it("queues input before open and preserves it across reconnect", () => {
     vi.useFakeTimers();
     const harness = createHarness();
@@ -583,16 +604,17 @@ describe("TerminalWebSocketTransport", () => {
         JSON.stringify({ type: "resize", cols: 100, rows: 30 }),
       );
       vi.advanceTimersByTime(5000);
-      expect(
-        socket.sent.filter((m) => m.includes('"cols":100')),
-      ).toHaveLength(2);
+      expect(socket.sent.filter((m) => m.includes('"cols":100'))).toHaveLength(
+        2,
+      );
       harness.transport.dispose();
     });
 
     function openAckedHarness(
       cols: number,
       rows: number,
-      released: (size: { cols: number; rows: number }) => void = () => undefined,
+      released: (size: { cols: number; rows: number }) => void = () =>
+        undefined,
     ) {
       const opened = openHarness(cols, rows, {
         onRepaintNudgeSizeReleased: released,
@@ -873,7 +895,9 @@ describe("TerminalWebSocketTransport", () => {
 
         const sizes = socket.sent
           .filter((message) => message.includes('"resize"'))
-          .map((message) => JSON.parse(message) as { cols: number; rows: number });
+          .map(
+            (message) => JSON.parse(message) as { cols: number; rows: number },
+          );
         expect(sizes.length).toBeGreaterThan(0);
         for (const size of sizes) {
           expect(size.cols).toBeLessThanOrEqual(cols);

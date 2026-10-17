@@ -232,6 +232,9 @@ export class TerminalWebSocketTransport {
     const socket = this.socket;
     if (socket !== null && socket.readyState === SOCKET_OPEN) {
       this.trySend(socket, JSON.stringify({ type: "visibility", visible }));
+      if (visible && this.lastResize !== null && this.settleTimeout === null) {
+        this.sendResizeMessage(socket, this.lastResize);
+      }
     }
   }
 
