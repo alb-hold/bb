@@ -48,6 +48,7 @@ import {
 } from "@/lib/thread-actions/thread-action-registry";
 import { makePluginRegistrationSet } from "@/test/fixtures/plugins";
 import { usePublishThreadPanelOpener } from "@/components/plugin/plugin-thread-panel-navigation";
+import { SidebarThreadEntriesTestProvider } from "@/test/sidebarThreadEntriesTestProvider";
 import {
   ThreadActionsContextMenu,
   ThreadActionsMenu,
@@ -339,13 +340,15 @@ function renderSurface(
     <QueryClientProvider client={queryClient}>
       <Provider store={store}>
         <MemoryRouter initialEntries={[route]}>
-          <CompactViewportOverrideProvider isCompactViewport={surface.compact}>
-            <ThreadActionCollectors
-              coreRegistrations={CORE_THREAD_ACTIONS}
-              requestRename={defaultRequestRename}
-            />
-            {surface.render(options)}
-          </CompactViewportOverrideProvider>
+          <SidebarThreadEntriesTestProvider>
+            <CompactViewportOverrideProvider isCompactViewport={surface.compact}>
+              <ThreadActionCollectors
+                coreRegistrations={CORE_THREAD_ACTIONS}
+                requestRename={defaultRequestRename}
+              />
+              {surface.render(options)}
+            </CompactViewportOverrideProvider>
+          </SidebarThreadEntriesTestProvider>
         </MemoryRouter>
       </Provider>
     </QueryClientProvider>,
