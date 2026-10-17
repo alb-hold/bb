@@ -37,6 +37,7 @@ import {
   threadTimelinePendingTodosSchema,
   threadExecutionReportSchema,
   threadEventTypeValues,
+  threadParentNotificationsSchema,
   threadVisibilitySchema,
   threadWithRuntimeSchema,
 } from "@bb/domain";
@@ -114,9 +115,8 @@ export const createThreadRequestSchema = z
     executionInputSources: createExecutionInputSourcesSchema.optional(),
     environment: createThreadEnvironmentArgsSchema,
     parentThreadId: z.string().min(1).optional(),
-    // The thread an agent spawned this one from (the CLI sends BB_THREAD_ID),
-    // recorded even when it is not the parent: such a thread is a child agent.
     spawnedByThreadId: z.string().min(1).optional(),
+    parentNotifications: threadParentNotificationsSchema.optional(),
     sectionId: z.string().min(1).nullable().optional(),
     pinned: z.boolean().optional(),
     sourceThreadId: z.string().min(1).optional(),
@@ -274,7 +274,7 @@ export const forkThreadRequestSchema = z
   });
 export type ForkThreadRequest = z.infer<typeof forkThreadRequestSchema>;
 
-const sendMessageRequestBaseSchema = z.object({
+const sendMessageRequestFieldsSchema = z.object({
   input: z.array(promptInputSchema).min(1),
   model: z.string().optional(),
   serviceTier: serviceTierSchema.optional(),
@@ -287,9 +287,10 @@ const sendMessageRequestBaseSchema = z.object({
   pluginSubmission: z
     .object({ pluginId: pluginIdSchema, data: jsonValueSchema })
     .optional(),
+  compactFirst: z.literal(true).optional(),
 });
 
-export const sendMessageRequestSchema = sendMessageRequestBaseSchema;
+export const sendMessageRequestSchema = sendMessageRequestFieldsSchema;
 export type SendMessageRequest = z.infer<typeof sendMessageRequestSchema>;
 
 export const threadExecutionProfileResponseSchema = z.object({
@@ -327,8 +328,13 @@ export const sendMessageResponseSchema = z.discriminatedUnion("delivery", [
 ]);
 export type SendMessageResponse = z.infer<typeof sendMessageResponseSchema>;
 
-export const editMessageRequestSchema = sendMessageRequestBaseSchema
-  .omit({ mode: true, sendAt: true, pluginSubmission: true })
+export const editMessageRequestSchema = sendMessageRequestFieldsSchema
+  .omit({
+    mode: true,
+    sendAt: true,
+    pluginSubmission: true,
+    compactFirst: true,
+  })
   .extend({
     operationId: z.string().min(1),
     expectedRequestSequence: z.number().int().nonnegative().optional(),
@@ -773,10 +779,12 @@ export const updateThreadRequestSchema = z
       sessionOptionValueSchema.nullable(),
     ),
     visibility: threadVisibilitySchema,
+    parentNotifications: threadParentNotificationsSchema,
   })
   .partial()
   .refine(
     (value) =>
+      value.parentNotifications !== undefined ||
       value.title !== undefined ||
       value.projectId !== undefined ||
       value.sectionId !== undefined ||
@@ -906,6 +914,16 @@ export type ThreadArchiveAllResponse = z.infer<
   typeof threadArchiveAllResponseSchema
 >;
 
+export const THREAD_LIST_MAX_IDS = 200;
+
+/**
+ * Reads the `threadIds` list filter. The empty string is the empty set, so a
+ * caller with no IDs gets no threads instead of every thread.
+ */
+export function parseThreadListThreadIds(value: string): string[] {
+  return value === "" ? [] : value.split(",");
+}
+
 export const threadListQuerySchema = z.object({
   projectId: z.string().min(1).optional(),
   environmentId: z.string().min(1).optional(),
@@ -919,6 +937,20 @@ export const threadListQuerySchema = z.object({
   originKind: threadOriginKindSchema.optional(),
   originPluginId: z.string().min(1).optional(),
   includeHidden: z.enum(["true", "false"]).optional(),
+  threadIds: z
+    .string()
+    .refine(
+      (value) => {
+        const ids = parseThreadListThreadIds(value);
+        return (
+          ids.length <= THREAD_LIST_MAX_IDS && ids.every((id) => id.length > 0)
+        );
+      },
+      {
+        message: `threadIds must be at most ${THREAD_LIST_MAX_IDS} comma-separated thread IDs`,
+      },
+    )
+    .optional(),
   limit: z.string().regex(/^\d+$/).optional(),
   offset: z.string().regex(/^\d+$/).optional(),
 });

@@ -27,6 +27,12 @@ import {
   type ComposerSubmitOptions,
   type ComposerView,
   type ExperimentalAppOverlayRegistration,
+  type ExperimentalSidebarNavigationActions,
+  type ExperimentalSidebarNavigationIconProps,
+  type ExperimentalSidebarNavigationItem,
+  type ExperimentalSidebarNavigationRegistration,
+  type ExperimentalSidebarNavigationSplit,
+  type ExperimentalSidebarNavigationState,
   type ExperimentalQuestionFormHost,
   type PluginAppDefinition,
   type PluginAppSetup,
@@ -294,6 +300,8 @@ interface SlotEnv {
   sidebarActions: PluginSidebarThreadActions;
   sidebarProjectActions: PluginSidebarProjectActions;
   sidebarActionCalls: SidebarActionCall[];
+  sidebarNavigation: ExperimentalSidebarNavigationState;
+  sidebarNavigationCalls: SidebarNavigationCall[];
   environmentArchiveCalls: string[];
   threadActions: TestThreadActionsResolver;
   threadActionRegistrations: readonly PluginThreadActionRegistrationInfo[];
@@ -346,6 +354,33 @@ export interface SidebarActionCall {
   title?: string;
   pinned?: boolean;
   read?: boolean;
+}
+
+/**
+ * One recorded `experimental_useSidebarNavigation()` action, or a split drag
+ * started from `experimental_useSidebarNavigationSplit()` (`beginSplitDrag`).
+ */
+export interface SidebarNavigationCall {
+  method: keyof ExperimentalSidebarNavigationActions | "beginSplitDrag";
+  itemId?: string;
+  itemIds?: string[];
+  isVisible?: boolean;
+  openInSplit?: boolean;
+}
+
+function TestSidebarNavigationIcon({
+  icon,
+  className,
+}: ExperimentalSidebarNavigationIconProps) {
+  return (
+    <span
+      aria-hidden="true"
+      className={className}
+      data-sidebar-navigation-icon={
+        icon.kind === "host" ? icon.name : `${icon.pluginId}/${icon.icon ?? ""}`
+      }
+    />
+  );
 }
 
 function testComposerKey(scope: PluginComposerScope): string {
@@ -1181,7 +1216,9 @@ function TestDiff({
   );
 }
 
-type TestClipboard = (content: ExperimentalClipboardContent) => Promise<boolean>;
+type TestClipboard = (
+  content: ExperimentalClipboardContent,
+) => Promise<boolean>;
 
 let activeClipboard: TestClipboard | null = null;
 
@@ -1395,6 +1432,31 @@ const testPluginSdkApp = {
   experimental_ThreadActionsMenu: TestThreadActionsMenu,
   experimental_ThreadActionsContextMenu: TestThreadActionsContextMenu,
   experimental_THREAD_ACTION_GROUPS,
+  experimental_useSidebarNavigation(): ExperimentalSidebarNavigationState {
+    return useSlotEnv("experimental_useSidebarNavigation").sidebarNavigation;
+  },
+  experimental_useSidebarNavigationSplit(
+    itemId,
+    _options,
+  ): ExperimentalSidebarNavigationSplit {
+    const env = useSlotEnv("experimental_useSidebarNavigationSplit");
+    return useMemo(
+      () => ({
+        splitProps: {
+          onPointerDown: () => {
+            env.sidebarNavigationCalls.push({
+              method: "beginSplitDrag",
+              itemId,
+            });
+          },
+        },
+        isAvailable: true,
+        layout: null,
+      }),
+      [env, itemId],
+    );
+  },
+  experimental_SidebarNavigationIcon: TestSidebarNavigationIcon,
   experimental_useSidebarThreadSplit(threadId): PluginSidebarThreadSplit {
     const env = useSlotEnv("experimental_useSidebarThreadSplit");
     return useMemo(
@@ -1517,6 +1579,7 @@ export interface CapturedPluginApp {
   sidebarFooterActions: PluginSidebarFooterActionRegistration[];
   experimentalSidebarFooterItems: CollectedExperimentalSidebarFooterItem[];
   threadLists: PluginThreadListRegistration[];
+  experimentalSidebarNavigations: ExperimentalSidebarNavigationRegistration[];
   threadHeaderActions: PluginThreadHeaderActionRegistration[];
   threadActions: PluginThreadActionRegistration<unknown>[];
   browserToolbarActions: ExperimentalPluginBrowserToolbarActionRegistration[];
@@ -1814,6 +1877,17 @@ export interface RenderSlotOptions<
     Pick<PluginSidebarProjectActions, "isAvailable" | "isCreating">
   >;
   /**
+   * Items and the active item `experimental_useSidebarNavigation()` reports.
+   * Omitted → no items. Actions are recorded in `sidebarNavigationCalls` and
+   * do not change the items.
+   */
+  sidebarNavigation?: {
+    items?: readonly ExperimentalSidebarNavigationItem[];
+    activeItemId?: string | null;
+    isHomeActive?: boolean;
+    isShortcutModifierHeld?: boolean;
+  };
+  /**
    * What `experimental_useThreadActions()` reports for a thread, in menu
    * order. Omitted → an empty list.
    */
@@ -1889,6 +1963,11 @@ export interface RenderedSlotInspectionState {
   readonly experimental_fixedTabOpenCalls: ExperimentalFixedTabOpenCall[];
   /** @internal Every `experimental_useSidebarThreadActions()` call, in order; kept for plugins built against older SDKs. */
   readonly sidebarActionCalls: SidebarActionCall[];
+  /**
+   * Every `experimental_useSidebarNavigation()` action and navigation split
+   * drag, in order.
+   */
+  readonly sidebarNavigationCalls: SidebarNavigationCall[];
   /**
    * The environment id of every `experimental_useArchiveEnvironmentThreads()`
    * call, in order.
@@ -2086,6 +2165,48 @@ export function renderSlot<
     },
   };
   const sidebarActionCalls: SidebarActionCall[] = [];
+  const sidebarNavigationCalls: SidebarNavigationCall[] = [];
+  const sidebarNavigation: ExperimentalSidebarNavigationState = {
+    items: options.sidebarNavigation?.items ?? [],
+    activeItemId: options.sidebarNavigation?.activeItemId ?? null,
+    isHomeActive: options.sidebarNavigation?.isHomeActive ?? true,
+    isShortcutModifierHeld:
+      options.sidebarNavigation?.isShortcutModifierHeld ?? false,
+    actions: {
+      activate(itemId, activationOptions) {
+        sidebarNavigationCalls.push({
+          method: "activate",
+          itemId,
+          openInSplit: activationOptions.openInSplit,
+        });
+      },
+      goHome() {
+        sidebarNavigationCalls.push({ method: "goHome" });
+      },
+      setVisible(itemId, isVisible) {
+        sidebarNavigationCalls.push({
+          method: "setVisible",
+          itemId,
+          isVisible,
+        });
+      },
+      setOrder(itemIds) {
+        sidebarNavigationCalls.push({
+          method: "setOrder",
+          itemIds: [...itemIds],
+        });
+      },
+      openCustomize() {
+        sidebarNavigationCalls.push({ method: "openCustomize" });
+      },
+      openDetails(itemId) {
+        sidebarNavigationCalls.push({ method: "openDetails", itemId });
+      },
+      async disablePlugin(itemId) {
+        sidebarNavigationCalls.push({ method: "disablePlugin", itemId });
+      },
+    },
+  };
   const environmentArchiveCalls: string[] = [];
   const sidebarPullRequests = new Map(
     Object.entries(options.sidebarPullRequests ?? {}),
@@ -2523,6 +2644,8 @@ export function renderSlot<
     sidebarActions,
     sidebarProjectActions,
     sidebarActionCalls,
+    sidebarNavigation,
+    sidebarNavigationCalls,
     environmentArchiveCalls,
     threadActions: options.threadActions ?? NO_THREAD_ACTIONS,
     threadActionRegistrations:
@@ -2622,6 +2745,7 @@ export function renderSlot<
     navigateCalls,
     experimental_fixedTabOpenCalls,
     sidebarActionCalls,
+    sidebarNavigationCalls,
     experimental_environmentArchiveCalls: environmentArchiveCalls,
     sdkCalls,
     experimental_clipboardWrites,
@@ -2637,6 +2761,7 @@ export function renderSlot<
       navigateCalls,
       experimental_fixedTabOpenCalls,
       sidebarActionCalls,
+      sidebarNavigationCalls,
       experimental_environmentArchiveCalls: environmentArchiveCalls,
       sdkCalls,
       experimental_clipboardWrites,

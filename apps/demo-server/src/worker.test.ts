@@ -99,41 +99,50 @@ it("serves the shell, deep links, and its JavaScript and styles", async () => {
 });
 
 it("serves the sidebar plugin frontends and sample conversation in current contract shape", async () => {
-  const [catalogResponse, bootstrapResponse] = await Promise.all([
-    fetch(`${origin}/api/v1/plugins`),
-    fetch(`${origin}/api/v1/sidebar-bootstrap`),
-  ]);
+  const catalogResponse = await fetch(`${origin}/api/v1/plugins`);
   const catalog = pluginListResponseSchema.parse(await catalogResponse.json());
-  const bootstrap = sidebarBootstrapResponseSchema.parse(
-    await bootstrapResponse.json(),
+  expect(catalog.plugins.map((plugin) => plugin.id)).toEqual([
+    "navigation",
+    "thread-list",
+  ]);
+  await Promise.all(
+    catalog.plugins.flatMap((plugin) => {
+      if (plugin.app.bundle === null)
+        throw new Error("Missing sidebar frontend");
+      return [plugin.app.bundle.jsUrl, plugin.app.bundle.cssUrl].map(
+        async (path) => {
+          if (path === null) throw new Error("Missing sidebar asset URL");
+          const asset = await fetch(new URL(path, origin));
+          expect(asset.status, path).toBe(200);
+          expect(asset.headers.get("content-type"), path).not.toContain(
+            "text/html",
+          );
+          expect((await asset.arrayBuffer()).byteLength, path).toBeGreaterThan(
+            0,
+          );
+        },
+      );
+    }),
   );
-  expect(catalog.plugins.map((plugin) => plugin.id)).toEqual(["thread-list"]);
-  const pluginAssetPaths = catalog.plugins.flatMap((plugin) => {
-    const bundle = plugin.app.bundle;
-    if (bundle === null) throw new Error("Missing sidebar frontend");
-    if (bundle.jsUrl === null || bundle.cssUrl === null)
-      throw new Error("Missing sidebar asset URL");
-    return [bundle.jsUrl, bundle.cssUrl];
-  });
   const providerLogoPaths = PROVIDERS.map((provider) => {
     if (provider.logoUrl === null)
       throw new Error("Missing demo provider logo URL");
     return provider.logoUrl;
   });
-  const [pluginAssets, providerLogos] = await Promise.all([
-    Promise.all(pluginAssetPaths.map((path) => fetch(new URL(path, origin)))),
-    Promise.all(providerLogoPaths.map((path) => fetch(new URL(path, origin)))),
-  ]);
-  for (const asset of pluginAssets) {
-    expect(asset.status).toBe(200);
-    expect(asset.headers.get("content-type")).not.toContain("text/html");
-    expect((await asset.arrayBuffer()).byteLength).toBeGreaterThan(0);
-  }
+  const providerLogos = await Promise.all(
+    providerLogoPaths.map((path) => fetch(new URL(path, origin))),
+  );
   for (const logo of providerLogos) {
     expect(logo.status).toBe(200);
     expect(logo.headers.get("content-type")).toContain("image/svg+xml");
     expect(await logo.text()).toContain("<svg");
   }
+}, 15_000);
+
+it("serves the sample conversation in current contract shape", async () => {
+  const bootstrap = sidebarBootstrapResponseSchema.parse(
+    await (await fetch(`${origin}/api/v1/sidebar-bootstrap`)).json(),
+  );
   expect(bootstrap.projects[0].threads).toHaveLength(3);
   const thread = bootstrap.projects[0].threads[0];
   const [timelineResponse, rpcResponse, updateStatusResponse] =
