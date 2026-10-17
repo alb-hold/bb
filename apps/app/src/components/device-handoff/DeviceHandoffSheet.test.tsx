@@ -6,6 +6,7 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -91,7 +92,7 @@ describe("DeviceHandoffSheet", () => {
 
     expect(copied).not.toHaveBeenCalled();
     const copyButton = await screen.findByRole("button", { name: "Copy" });
-    expect(onShown).toHaveBeenCalledWith("handoff-1");
+    await waitFor(() => expect(onShown).toHaveBeenCalledWith("handoff-1"));
     expect(copied).not.toHaveBeenCalled();
     fireEvent.click(copyButton);
     expect(copied).toHaveBeenCalledWith("secret-free test text", {
@@ -189,7 +190,9 @@ describe("DeviceHandoffSheet", () => {
 
     expect(acknowledgeDeviceHandoff).not.toHaveBeenCalled();
     expect(await screen.findByText("first copied code")).toBeTruthy();
-    expect(acknowledgeDeviceHandoff).toHaveBeenCalledWith("handoff-first");
+    await waitFor(() =>
+      expect(acknowledgeDeviceHandoff).toHaveBeenCalledWith("handoff-first"),
+    );
     expect(screen.getByText("1 of 3")).toBeTruthy();
     expect(screen.queryByText("second.example")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
