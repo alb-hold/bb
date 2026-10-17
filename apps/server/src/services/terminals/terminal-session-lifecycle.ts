@@ -89,6 +89,7 @@ const TERMINAL_OUTPUT_NOT_RUNNING_MESSAGE =
   "Terminal output is unavailable because the session is not running";
 const TERMINAL_OUTPUT_DISCARDED_MESSAGE = `The server no longer has the retained output of this exited terminal. The server keeps terminal output for ${TERMINAL_EXIT_RETENTION_MINUTES} minutes after a terminal exits, so read it sooner or run the command again.`;
 const TERMINAL_ATTACH_CANCELLED = new Error("Terminal attach cancelled");
+const REOPEN_NATIVE_TERMINAL_REPAINT_DELAY_MS = 1_500;
 const DAEMON_OWNED_TERMINAL_STATUSES = ["starting", "running"] as const;
 const NON_TERMINAL_SESSION_STATUSES = [
   ...DAEMON_OWNED_TERMINAL_STATUSES,
@@ -305,6 +306,7 @@ interface ListTerminalsArgs {
 }
 
 interface CreateTerminalArgs {
+  onTerminalStarted?: (terminalId: string) => void;
   payload: CreateTerminalRequest;
   extraContributedEnv?: HostDaemonContributedEnvEntry[];
 }
@@ -323,6 +325,7 @@ interface TerminalCreatePayload {
 
 interface CreateTerminalForTargetArgs {
   extraContributedEnv: HostDaemonContributedEnvEntry[];
+  onTerminalStarted?: (terminalId: string) => void;
   payload: TerminalCreatePayload;
   target: TerminalLaunchTarget;
   threadId: string | null;
@@ -575,6 +578,7 @@ function updateTerminalById(
 
 export class TerminalSessionLifecycle {
   private readonly lastThreadAttentionAt = new Map<string, number>();
+  private readonly nativeTerminalRepaintsOnAttach = new Set<string>();
   private readonly pendingAttaches: PendingRpcRegistry<
     PendingTerminalAttachKey,
     TerminalReplayMessage
@@ -906,6 +910,9 @@ export class TerminalSessionLifecycle {
         : target;
     return this.createTerminalForTarget({
       extraContributedEnv: args.extraContributedEnv ?? [],
+      ...(args.onTerminalStarted === undefined
+        ? {}
+        : { onTerminalStarted: args.onTerminalStarted }),
       payload: args.payload,
       target: launchTarget,
       threadId: target.kind === "thread" ? target.threadId : null,
@@ -1098,6 +1105,7 @@ export class TerminalSessionLifecycle {
         "Terminal session was cancelled before it opened",
       );
     }
+    args.onTerminalStarted?.(runningSession.id);
     this.notifyTerminalSessionChanged(runningSession);
     return this.toTerminalSession(runningSession);
   }
@@ -2016,6 +2024,12 @@ export class TerminalSessionLifecycle {
     });
   }
 
+  sharedBrowserTerminalSize(
+    terminalId: string,
+  ): { cols: number; rows: number } | null {
+    return this.options.hub.terminalSharedSize(terminalId, Date.now());
+  }
+
   handleBrowserTerminalMessage(args: HandleBrowserTerminalMessageArgs): void {
     switch (args.message.type) {
       case "ping":
@@ -2131,6 +2145,7 @@ export class TerminalSessionLifecycle {
         );
         return;
       case "terminal.exited":
+        this.nativeTerminalRepaintsOnAttach.delete(args.message.terminalId);
         const current = getTerminalById(
           this.options.db,
           args.message.terminalId,
@@ -2831,6 +2846,44 @@ export class TerminalSessionLifecycle {
         chunk: toTerminalOutputChunk(chunk),
       });
     }
+    this.repaintReopenedNativeTerminal(current);
+  }
+
+  requestNativeTerminalRepaintOnNextAttach(terminalId: string): void {
+    this.nativeTerminalRepaintsOnAttach.add(terminalId);
+  }
+
+  private repaintReopenedNativeTerminal(current: TerminalSessionRow): void {
+    if (!this.nativeTerminalRepaintsOnAttach.delete(current.id)) {
+      return;
+    }
+    if (current.status !== "running" || current.daemonSessionId === null) {
+      return;
+    }
+    const daemonSessionId = current.daemonSessionId;
+    setTimeout(() => {
+      const latest = getTerminalById(this.options.db, current.id);
+      if (
+        !latest ||
+        latest.status !== "running" ||
+        latest.daemonSessionId !== daemonSessionId
+      ) {
+        return;
+      }
+      const nudgeRows = latest.rows === 1 ? latest.rows + 1 : latest.rows - 1;
+      this.options.hub.sendDaemonSessionMessage(daemonSessionId, {
+        type: "terminal.resize",
+        terminalId: latest.id,
+        cols: latest.cols,
+        rows: nudgeRows,
+      });
+      this.options.hub.sendDaemonSessionMessage(daemonSessionId, {
+        type: "terminal.resize",
+        terminalId: latest.id,
+        cols: latest.cols,
+        rows: latest.rows,
+      });
+    }, REOPEN_NATIVE_TERMINAL_REPAINT_DELAY_MS);
   }
 
   private addOutputFlowClient(
