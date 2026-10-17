@@ -309,7 +309,7 @@ Settings (stored server-side; also `bb settings writing`):
 | `mode`                  | `prompt`    | `prompt`, `developer`, `natural`, `polished`, `verbatim`, `literal-code`                                                                             |
 | `typingCorrection`      | `automatic` | `automatic` applies only the fixes listed below and suggests the rest; `suggest`; `off`                                                              |
 | `dictationFormatting`   | `true`      | Format dictated phrases; off inserts transcripts as heard                                                                                            |
-| `vocabulary`            | `[]`        | Up to 200 terms to spell exactly; sent with each request                                                                                             |
+| `vocabulary`            | `[]`        | Up to 200 terms sent as spelling hints with each request                                                                                             |
 | `dailyCorrectionLimit`  | `300`       | Writing requests per UTC day before assistance pauses                                                                                                |
 | `dailyDictationMinutes` | `60`        | Dictated minutes per UTC day before dictation stops; bb cloud also caps each account at $0.50 of AI usage per day, about 80 minutes of transcription |
 
@@ -324,11 +324,14 @@ negated forms, a/an), and accents on a fixed list of Portuguese words that are
 not words without them (nao, voce, tambem, entao, amanha). Spelling fixes, other
 punctuation (commas, question marks), homophones such as its/it's, and tense or
 plural changes are offered as suggestions. Code, paths, identifiers and
-vocabulary terms are never edited. Dictation formatting follows the same rule:
+vocabulary terms are never edited, and on a line containing any of
+= ; { } ( ) < > [ ] $ ` | \ every change, even capitalization, is only
+suggested. Dictation formatting follows the same rule:
 if the formatter changes a spoken word into another word, other than one of
 those accent restorations, the transcript is inserted
-as heard. Vocabulary terms are sent to transcription as hints, so the
-transcript spells them; formatting may change their case or punctuation
+as heard. Vocabulary terms are sent to transcription as hints, which make the
+expected spelling more likely but do not guarantee it; formatting may change
+their case or punctuation
 ("next js" to "Next.js") but never their letters, since without a dictionary a
 misheard name cannot be told from a real word ("public" is never rewritten as
 a similar term). The spoken words must also keep the order they were said in,

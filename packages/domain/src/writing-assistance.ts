@@ -561,6 +561,16 @@ function splitWordChanges(change: TextChangeSpan): TextChangeSpan[] {
   return pieces.length > 1 ? pieces : [change];
 }
 
+const CODE_CHARACTERS = /[=;{}()<>[\]$`|\\]/u;
+
+function inCodeLikeLine(target: string, start: number, end: number): boolean {
+  const lineStart = start === 0 ? 0 : target.lastIndexOf("\n", start - 1) + 1;
+  const lineEnd = target.indexOf("\n", end);
+  return CODE_CHARACTERS.test(
+    target.slice(lineStart, lineEnd === -1 ? target.length : lineEnd),
+  );
+}
+
 export function resolveWritingEdits(
   args: ResolveWritingEditsArgs,
 ): WritingEdit[] {
@@ -598,10 +608,11 @@ export function resolveWritingEdits(
       ? "surface"
       : classifyWritingChange(change.original, change.replacement);
     const deterministicSafe =
-      repeated ||
-      (isMeaningInvariantChange(change.original, change.replacement) &&
-        proposal.category !== "word-choice" &&
-        proposal.category !== "speech-recognition");
+      !inCodeLikeLine(args.target, change.start, change.end) &&
+      (repeated ||
+        (isMeaningInvariantChange(change.original, change.replacement) &&
+          proposal.category !== "word-choice" &&
+          proposal.category !== "speech-recognition"));
     const apply =
       args.behavior === "automatic" &&
       args.complete &&

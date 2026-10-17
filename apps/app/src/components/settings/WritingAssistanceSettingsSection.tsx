@@ -154,7 +154,7 @@ export function WritingAssistanceSettingsSection() {
         </SettingsWithControl>
         <SettingsWithControl
           label="Vocabulary"
-          description="Names and terms to spell exactly, one per line. They are sent with each request."
+          description="Names and terms sent as spelling hints with each request, one per line. Transcription may still mishear them."
           controlPlacement="trailing"
         >
           <Textarea

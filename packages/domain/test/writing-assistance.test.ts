@@ -325,6 +325,46 @@ describe("resolveWritingEdits", () => {
     },
   );
 
+  it.each([
+    ["const x = 1;", "const", "Const", "capitalization"],
+    ["if (ready) return true", "return", "Return", "capitalization"],
+    ["let items = [a, b]", "items", "Items", "capitalization"],
+    ["echo $HOME | grep user", "user", "User", "capitalization"],
+    ["return return value;", "return return", "return", "grammar"],
+    ["if (users are ready)", "are", "is", "grammar"],
+  ])(
+    "never auto-applies an edit on the code-like line %s",
+    (target, original, replacement, category) => {
+      const edits = resolveWritingEdits({
+        ...base,
+        target,
+        proposals: [
+          proposal(original, replacement, {
+            category: category as ProposedWritingEdit["category"],
+          }),
+        ],
+      });
+      expect(edits.length).toBeGreaterThan(0);
+      expect(edits.map((edit) => edit.disposition)).not.toContain("apply");
+    },
+  );
+
+  it("still auto-applies on a prose line below a code line", () => {
+    const target = "const x = 1;\nthe user are ready";
+    const edits = resolveWritingEdits({
+      ...base,
+      target,
+      proposals: [
+        proposal("const", "Const", { category: "capitalization" }),
+        proposal("user are", "user is"),
+      ],
+    });
+    expect(edits.map((edit) => [edit.replacement, edit.disposition])).toEqual([
+      ["Const", "suggest"],
+      ["is", "apply"],
+    ]);
+  });
+
   it("auto-applies capitalization and a sentence-final period", () => {
     const edits = resolveWritingEdits({
       ...base,

@@ -177,7 +177,9 @@ export function registerWritingSettingsCommands(
 
   const vocabulary = writing
     .command("vocabulary")
-    .description("Terms that dictation and correction must spell exactly");
+    .description(
+      "Terms sent to transcription and correction as spelling hints",
+    );
   vocabulary
     .command("add <terms...>")
     .description("Add terms")
