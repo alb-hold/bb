@@ -1334,6 +1334,143 @@ describe("spawnLoggedProcess", () => {
     }
   });
 
+  it("uses the idle bound only when a live owner's identity is unreadable", async () => {
+    const logDir = scratchDir();
+    const ownerStopPath = join(logDir, "stop-unreadable-identity-owner");
+    const observerStopPath = join(logDir, "stop-unreadable-identity-observer");
+    const ownerCompletionPath = join(
+      logDir,
+      "unreadable-identity-owner-finished",
+    );
+    const observerCompletionPath = join(
+      logDir,
+      "unreadable-identity-observer-finished",
+    );
+    const fallbackMs = 1_500;
+    const owner = spawnLoggedProcess({
+      command: process.execPath,
+      args: [
+        "-e",
+        `const fs = require("node:fs"); process.stdout.write("unreadable-identity-owner-output\\n"); const timer = setInterval(() => { if (fs.existsSync(${JSON.stringify(ownerStopPath)})) { clearInterval(timer); process.exit(0); } }, 10);`,
+      ],
+      env: process.env,
+      logDir,
+      logName: "server",
+      testWriterBarrier: {
+        completionPath: ownerCompletionPath,
+        recoveryIntervalMs: 10_000,
+      },
+    });
+    let observer: ReturnType<typeof spawnLoggedProcess> | undefined;
+    try {
+      await expect
+        .poll(
+          () =>
+            familyFiles(logDir, "server").some(
+              (file) =>
+                file.includes(".active-") &&
+                readFileSync(file, "utf8").includes(
+                  "unreadable-identity-owner-output",
+                ),
+            ),
+          { timeout: 5_000, interval: 10 },
+        )
+        .toBe(true);
+      const ownerSegment = familyFiles(logDir, "server").find(
+        (file) =>
+          file.includes(".active-") &&
+          readFileSync(file, "utf8").includes(
+            "unreadable-identity-owner-output",
+          ),
+      );
+      expect(ownerSegment).toBeDefined();
+      expect(ownerSegment).toContain("-e-");
+      const ownerParts = ownerSegment!
+        .slice(ownerSegment!.indexOf(".active-") + 8)
+        .split("-");
+      const ownerToken = ownerParts.slice(4).join("-");
+      const originalPath = process.env.PATH;
+      process.env.PATH = "";
+      try {
+        observer = spawnLoggedProcess({
+          command: process.execPath,
+          args: [
+            "-e",
+            `const fs = require("node:fs"); process.stdout.write("unreadable-identity-observer-output\\n"); const timer = setInterval(() => { if (fs.existsSync(${JSON.stringify(observerStopPath)})) { clearInterval(timer); process.exit(0); } }, 10);`,
+          ],
+          env: process.env,
+          logDir,
+          logName: "server",
+          testWriterBarrier: {
+            completionPath: observerCompletionPath,
+            forcePsIdentity: true,
+            identityFallbackMs: fallbackMs,
+            recoveryIntervalMs: 25,
+            unreadableOwnerSocketTokens: [ownerToken],
+          },
+        });
+      } finally {
+        if (originalPath === undefined) delete process.env.PATH;
+        else process.env.PATH = originalPath;
+      }
+      await expect
+        .poll(
+          () =>
+            familyFiles(logDir, "server").some(
+              (file) =>
+                file.includes(".active-") &&
+                readFileSync(file, "utf8").includes(
+                  "unreadable-identity-observer-output",
+                ),
+            ),
+          { timeout: 5_000, interval: 10 },
+        )
+        .toBe(true);
+      expect(existsSync(ownerSegment!)).toBe(true);
+      await new Promise<void>((resolvePromise) =>
+        setTimeout(resolvePromise, 200),
+      );
+      expect(existsSync(ownerSegment!)).toBe(true);
+      utimesSync(ownerSegment!, new Date(0), new Date(0));
+      await expect
+        .poll(() => !existsSync(ownerSegment!), {
+          timeout: 3_000,
+          interval: 10,
+        })
+        .toBe(true);
+      expect(
+        familyFiles(logDir, "server").some(
+          (file) =>
+            file.includes(".backup-") &&
+            readFileSync(file, "utf8").includes(
+              "unreadable-identity-owner-output",
+            ),
+        ),
+      ).toBe(true);
+      writeFileSync(observerStopPath, "stop");
+      expect(await waitForExit(observer)).toBe(0);
+      await observer.writerExit;
+      writeFileSync(ownerStopPath, "stop");
+      expect(await waitForExit(owner)).toBe(0);
+      await expect
+        .poll(() => existsSync(ownerCompletionPath), {
+          timeout: 3_000,
+          interval: 10,
+        })
+        .toBe(true);
+      await expect
+        .poll(() => existsSync(observerCompletionPath), {
+          timeout: 3_000,
+          interval: 10,
+        })
+        .toBe(true);
+    } finally {
+      if (observer !== undefined && observer.exitCode === null)
+        observer.kill("SIGKILL");
+      if (owner.exitCode === null) owner.kill("SIGKILL");
+    }
+  });
+
   it("recovers a dead writer segment on a timer while a survivor stays below the rotation limit", async () => {
     const logDir = scratchDir();
     const deadStopPath = join(logDir, "stop-dead-child");
