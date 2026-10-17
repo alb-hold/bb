@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
 import {
+  deviceHandoffExpiredSignalLenientSchema,
   deviceHandoffSignalLenientSchema,
+  type DeviceHandoffExpiredSignal,
   type DeviceHandoffSignal,
 } from "@bb/server-contract";
 import { wsManager } from "@/lib/ws";
 
 interface DeviceHandoffQueueState {
-  signals: DeviceHandoffSignal[];
+  signals: Array<DeviceHandoffSignal | DeviceHandoffExpiredSignal>;
   position: number;
   total: number;
 }
@@ -22,10 +24,12 @@ function pruneExpiredQueue(
   now: number,
 ): DeviceHandoffQueueState {
   const firstLiveIndex = queue.signals.findIndex(
-    (item) => item.expiresAt > now,
+    (item) => item.type !== "device-handoff" || item.expiresAt > now,
   );
   if (firstLiveIndex === -1) return emptyQueue;
-  const signals = queue.signals.filter((item) => item.expiresAt > now);
+  const signals = queue.signals.filter(
+    (item) => item.type !== "device-handoff" || item.expiresAt > now,
+  );
   const expiredBeforeCurrent = firstLiveIndex;
   const expiredAfterCurrent =
     queue.signals.length - signals.length - expiredBeforeCurrent;
@@ -39,18 +43,21 @@ function pruneExpiredQueue(
 
 export function useDeviceHandoffQueue() {
   const [queue, setQueue] = useState<DeviceHandoffQueueState>(emptyQueue);
-  const enqueue = useCallback((signal: DeviceHandoffSignal) => {
-    const now = Date.now();
-    if (signal.expiresAt <= now) return;
-    setQueue((current) => {
-      const live = pruneExpiredQueue(current, now);
-      return {
-        signals: [...live.signals, signal],
-        position: live.signals.length === 0 ? 1 : live.position,
-        total: live.signals.length === 0 ? 1 : live.total + 1,
-      };
-    });
-  }, []);
+  const enqueue = useCallback(
+    (signal: DeviceHandoffSignal | DeviceHandoffExpiredSignal) => {
+      const now = Date.now();
+      if (signal.type === "device-handoff" && signal.expiresAt <= now) return;
+      setQueue((current) => {
+        const live = pruneExpiredQueue(current, now);
+        return {
+          signals: [...live.signals, signal],
+          position: live.signals.length === 0 ? 1 : live.position,
+          total: live.signals.length === 0 ? 1 : live.total + 1,
+        };
+      });
+    },
+    [],
+  );
 
   useEffect(() => {
     const unsubscribe = wsManager.onDeviceHandoff(enqueue);
@@ -58,6 +65,10 @@ export function useDeviceHandoffQueue() {
       if (!(event instanceof CustomEvent)) return;
       const parsed = deviceHandoffSignalLenientSchema.safeParse(event.detail);
       if (parsed.success) enqueue(parsed.data);
+      const expired = deviceHandoffExpiredSignalLenientSchema.safeParse(
+        event.detail,
+      );
+      if (expired.success) enqueue(expired.data);
     };
     window.addEventListener("bb-device-handoff", handleDeviceHandoff);
     return () => {
@@ -68,7 +79,11 @@ export function useDeviceHandoffQueue() {
 
   useEffect(() => {
     if (queue.signals.length === 0) return;
-    const expiresAt = Math.min(...queue.signals.map((item) => item.expiresAt));
+    const expiring = queue.signals.filter(
+      (item): item is DeviceHandoffSignal => item.type === "device-handoff",
+    );
+    if (expiring.length === 0) return;
+    const expiresAt = Math.min(...expiring.map((item) => item.expiresAt));
     const timer = window.setTimeout(
       () => {
         setQueue((current) => pruneExpiredQueue(current, Date.now()));

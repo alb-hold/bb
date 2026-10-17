@@ -8,7 +8,10 @@ import {
   screen,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { DeviceHandoffSignal } from "@bb/server-contract";
+import type {
+  DeviceHandoffExpiredSignal,
+  DeviceHandoffSignal,
+} from "@bb/server-contract";
 import { DeviceHandoffSheet } from "./DeviceHandoffSheet";
 import { useDeviceHandoffQueue } from "./useDeviceHandoffQueue";
 
@@ -54,7 +57,7 @@ describe("DeviceHandoffSheet", () => {
       type: "device-handoff",
       id: "handoff-1",
       createdAt: Date.now(),
-      expiresAt: Date.now() + 120_000,
+      expiresAt: Date.now() + 600_000,
       originLabel: "Terminal",
       request: {
         kind: "copy-text",
@@ -87,7 +90,7 @@ describe("DeviceHandoffSheet", () => {
         type: "device-handoff",
         id: "handoff-first",
         createdAt: now,
-        expiresAt: now + 120_000,
+        expiresAt: now + 600_000,
         originLabel: "Terminal",
         request: {
           kind: "copy-text",
@@ -99,7 +102,7 @@ describe("DeviceHandoffSheet", () => {
         type: "device-handoff",
         id: "handoff-second",
         createdAt: now + 1,
-        expiresAt: now + 120_001,
+        expiresAt: now + 600_001,
         originLabel: "Terminal",
         request: {
           kind: "open-url",
@@ -111,7 +114,7 @@ describe("DeviceHandoffSheet", () => {
         type: "device-handoff",
         id: "handoff-third",
         createdAt: now + 2,
-        expiresAt: now + 120_002,
+        expiresAt: now + 600_002,
         originLabel: "Terminal",
         request: {
           kind: "copy-text",
@@ -144,5 +147,28 @@ describe("DeviceHandoffSheet", () => {
     expect(screen.getByText("3 of 3")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
     expect(screen.queryByText("third copied code")).toBeNull();
+  });
+
+  it("shows the payload-free notice when an expired handoff is delivered", async () => {
+    render(<DeviceHandoffQueueHarness />);
+    const listener = registerDeviceHandoff.mock.lastCall?.[0] as
+      | ((signal: DeviceHandoffSignal | DeviceHandoffExpiredSignal) => void)
+      | undefined;
+
+    act(() => {
+      listener?.({
+        type: "device-handoff-expired",
+        id: "expired-1",
+        threadId: "thr_1",
+      });
+    });
+
+    expect(
+      await screen.findByText(
+        "A link or copied text from this terminal expired before you opened it. Run the command again.",
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Open" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Copy" })).toBeNull();
   });
 });

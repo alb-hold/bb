@@ -76,3 +76,21 @@ export const deviceHandoffSignalLenientSchema = z.object({
   request: deviceHandoffRequestSchema,
   originLabel: z.string(),
 });
+
+export const deviceHandoffExpiredSignalSchema = z
+  .object({
+    type: z.literal("device-handoff-expired"),
+    id: z.string().min(1),
+    threadId: z.string().min(1),
+  })
+  .strict();
+
+export type DeviceHandoffExpiredSignal = z.infer<
+  typeof deviceHandoffExpiredSignalSchema
+>;
+
+export const deviceHandoffExpiredSignalLenientSchema = z.object({
+  type: z.literal("device-handoff-expired"),
+  id: z.string(),
+  threadId: z.string(),
+});

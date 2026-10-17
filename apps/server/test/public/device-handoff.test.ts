@@ -1,11 +1,22 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { getThread, hasActiveThreadAttention, updateThread } from "@bb/db";
+import {
+  createTerminalSession,
+  getTerminalAttention,
+  getThread,
+  hasActiveThreadAttention,
+  updateThread,
+} from "@bb/db";
 import {
   createTestAppHarness,
   type TestAppHarness,
   withTestHarness,
 } from "../helpers/test-app.js";
-import { seedThreadFixture } from "../helpers/seed.js";
+import {
+  seedHostSession,
+  seedProjectWithSource,
+  seedThread,
+  seedThreadFixture,
+} from "../helpers/seed.js";
 
 describe("device handoff route validation", () => {
   let harness: TestAppHarness | null = null;
@@ -68,6 +79,129 @@ describe("device handoff route validation", () => {
 });
 
 describe("device handoff pending attention", () => {
+  it("raises fixed, payload-free terminal attention and clears it on delivery", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps);
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+      });
+      const thread = seedThread(harness.deps, { projectId: project.id });
+      const terminal = createTerminalSession(harness.db, {
+        cols: 80,
+        environmentId: null,
+        hostId: host.id,
+        daemonSessionId: session.id,
+        initialCwd: "/tmp",
+        rows: 24,
+        status: "running",
+        threadId: thread.id,
+        title: "Handoff terminal",
+      });
+      const response = await harness.app.request("/api/v1/device-handoff", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          kind: "open-url",
+          url: "https://login.example.com/private-code",
+          origin: { threadId: thread.id, terminalSessionId: terminal.id },
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(getTerminalAttention(harness.db, terminal.id)).toMatchObject({
+        body: "",
+        kind: "osc-9",
+        title: "Link waiting for this device",
+        clearedAt: null,
+      });
+      expect(
+        JSON.stringify(getTerminalAttention(harness.db, terminal.id)),
+      ).not.toContain("private-code");
+
+      const viewer = {
+        messages: [] as string[],
+        close() {},
+        send(data: string) {
+          this.messages.push(data);
+        },
+      };
+      harness.hub.subscribe(viewer, {
+        kind: "thread-detail",
+        threadId: thread.id,
+      });
+
+      expect(getTerminalAttention(harness.db, terminal.id)?.clearedAt).not.toBe(
+        null,
+      );
+      expect(
+        viewer.messages.some((message) =>
+          message.includes("device-handoff-expired"),
+        ),
+      ).toBe(false);
+    });
+  });
+
+  it("queues a payload-free expiry notice for the originating thread only", async () => {
+    await withTestHarness(async (harness) => {
+      const { thread } = seedThreadFixture(harness);
+      const { thread: unrelatedThread } = seedThreadFixture(harness);
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(Date.now());
+        const response = await harness.app.request("/api/v1/device-handoff", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            kind: "copy-text",
+            text: "private expired text",
+            origin: { threadId: thread.id },
+          }),
+        });
+        expect(response.status).toBe(200);
+        const unrelated = {
+          messages: [] as string[],
+          close() {},
+          send(data: string) {
+            this.messages.push(data);
+          },
+        };
+        harness.hub.subscribe(unrelated, {
+          kind: "thread-detail",
+          threadId: unrelatedThread.id,
+        });
+
+        await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
+        const originViewer = {
+          messages: [] as string[],
+          close() {},
+          send(data: string) {
+            this.messages.push(data);
+          },
+        };
+        harness.hub.subscribe(originViewer, {
+          kind: "thread-detail",
+          threadId: thread.id,
+        });
+
+        const notice = originViewer.messages.find((message) =>
+          message.includes("device-handoff-expired"),
+        );
+        expect(notice).toBeDefined();
+        expect(Object.keys(JSON.parse(notice!)).sort()).toEqual([
+          "id",
+          "threadId",
+          "type",
+        ]);
+        expect(notice).not.toContain("private expired text");
+        expect(unrelated.messages.join("\n")).not.toContain(
+          "device-handoff-expired",
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
   it("marks the source thread unread when no client is viewing it", async () => {
     await withTestHarness(async (harness) => {
       const { thread } = seedThreadFixture(harness, {
@@ -210,7 +344,7 @@ describe("device handoff pending attention", () => {
           getThread(harness.db, thread.id)?.latestAttentionAt,
         ).toBeGreaterThan(1);
 
-        await vi.advanceTimersByTimeAsync(2 * 60 * 1000);
+        await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
 
         expect(getThread(harness.db, thread.id)?.latestAttentionAt).toBe(1);
       } finally {

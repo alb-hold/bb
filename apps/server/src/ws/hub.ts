@@ -29,6 +29,7 @@ import {
   threadOpenSignalSchema,
   threadPaneActionSignalSchema,
   deviceHandoffSignalSchema,
+  deviceHandoffExpiredSignalSchema,
   type DeviceHandoffRequest,
   type ThreadTimelineSignal,
   type ThreadPaneAction,
@@ -41,7 +42,7 @@ const TERMINAL_SOCKET_HIGH_WATER_BYTES = 1024 * 1024;
 const TERMINAL_SOCKET_MAX_QUEUE_BYTES = 32 * 1024 * 1024;
 const TERMINAL_SOCKET_DRAIN_POLL_MS = 10;
 const THREAD_LIST_EVENTS_APPENDED_COALESCE_MS = 1_000;
-const DEVICE_HANDOFF_TTL_MS = 2 * 60 * 1000;
+const DEVICE_HANDOFF_TTL_MS = 10 * 60 * 1000;
 const DEVICE_HANDOFF_PENDING_LIMIT = 100;
 const LIST_RELEVANT_THREAD_EVENT_TYPES: ReadonlySet<ThreadEventType> =
   new Set<ThreadEventType>(["client/turn/requested", "turn/completed"]);
@@ -59,6 +60,7 @@ type DaemonSessionChange =
 type DaemonSessionListener = (change: DaemonSessionChange) => void;
 type DeviceHandoffAttentionListener = (
   threadId: string,
+  terminalSessionId: string | null,
   pending: boolean,
 ) => void;
 
@@ -310,6 +312,11 @@ export class NotificationHub implements DbNotifier {
     string,
     number
   >();
+  private readonly pendingDeviceHandoffCountsByTerminal = new Map<
+    string,
+    number
+  >();
+  private readonly expiredDeviceHandoffThreads = new Set<string>();
   private readonly terminalClientSocketsById = new Map<
     string,
     Set<HubSocket>
@@ -724,6 +731,7 @@ export class NotificationHub implements DbNotifier {
         { threadId: target.threadId },
         Date.now(),
       );
+      this.deliverExpiredDeviceHandoffNotice(socket, target.threadId);
     }
   }
 
@@ -1202,7 +1210,25 @@ export class NotificationHub implements DbNotifier {
         previousCount + 1,
       );
       if (previousCount === 0) {
-        this.emitDeviceHandoffAttentionChange(scopedAttentionThreadId, true);
+        this.emitDeviceHandoffAttentionChange(
+          scopedAttentionThreadId,
+          null,
+          true,
+        );
+      }
+    }
+    const terminalId = request.origin.terminalSessionId;
+    if (terminalId !== undefined) {
+      const previousCount =
+        this.pendingDeviceHandoffCountsByTerminal.get(terminalId) ?? 0;
+      this.pendingDeviceHandoffCountsByTerminal.set(
+        terminalId,
+        previousCount + 1,
+      );
+      if (previousCount === 0) {
+        for (const listener of this.deviceHandoffAttentionListeners) {
+          listener(scopedAttentionThreadId ?? "", terminalId, true);
+        }
       }
     }
     const pending = this.pendingDeviceHandoffsByOrigin.get(originKey) ?? [];
@@ -1229,7 +1255,11 @@ export class NotificationHub implements DbNotifier {
       for (const handoff of handoffs) {
         if (handoff.expiresAt <= now) {
           clearTimeout(handoff.timeout);
-          this.decrementDeviceHandoffAttention(handoff.attentionThreadId);
+          this.markDeviceHandoffExpired(handoff.attentionThreadId);
+          this.decrementDeviceHandoffAttention(
+            handoff.attentionThreadId,
+            handoff.origin.terminalSessionId ?? null,
+          );
         }
       }
       if (live.length === 0) {
@@ -1296,7 +1326,10 @@ export class NotificationHub implements DbNotifier {
         if (recipients.size === 0) continue;
         for (const socket of recipients) socket.send(handoff.payload);
         clearTimeout(handoff.timeout);
-        this.decrementDeviceHandoffAttention(handoff.attentionThreadId);
+        this.decrementDeviceHandoffAttention(
+          handoff.attentionThreadId,
+          handoff.origin.terminalSessionId ?? null,
+        );
       }
       const remaining = handoffs.filter(
         (handoff) => !matchingOrigin(handoff.origin),
@@ -1307,6 +1340,22 @@ export class NotificationHub implements DbNotifier {
         this.pendingDeviceHandoffsByOrigin.set(originKey, remaining);
       }
     }
+  }
+
+  private deliverExpiredDeviceHandoffNotice(
+    socket: HubSocket,
+    threadId: string,
+  ): void {
+    if (!this.expiredDeviceHandoffThreads.delete(threadId)) return;
+    socket.send(
+      JSON.stringify(
+        deviceHandoffExpiredSignalSchema.parse({
+          type: "device-handoff-expired",
+          id: randomUUID(),
+          threadId,
+        }),
+      ),
+    );
   }
 
   private enforcePendingDeviceHandoffLimit(): void {
@@ -1338,8 +1387,12 @@ export class NotificationHub implements DbNotifier {
         );
         if (index !== -1) {
           clearTimeout(handoffs[index]?.timeout);
+          this.markDeviceHandoffExpired(
+            handoffs[index]?.attentionThreadId ?? null,
+          );
           this.decrementDeviceHandoffAttention(
             handoffs[index]?.attentionThreadId ?? null,
+            handoffs[index]?.origin.terminalSessionId ?? null,
           );
           handoffs.splice(index, 1);
         }
@@ -1373,7 +1426,13 @@ export class NotificationHub implements DbNotifier {
     const remaining = handoffs.filter((handoff) => handoff.payload !== payload);
     if (remaining.length === handoffs.length) return;
     const removed = handoffs.find((handoff) => handoff.payload === payload);
-    this.decrementDeviceHandoffAttention(removed?.attentionThreadId ?? null);
+    this.decrementDeviceHandoffAttention(
+      removed?.attentionThreadId ?? null,
+      removed?.origin.terminalSessionId ?? null,
+    );
+    if (removed?.attentionThreadId) {
+      this.markDeviceHandoffExpired(removed.attentionThreadId);
+    }
     if (remaining.length === 0) {
       this.pendingDeviceHandoffsByOrigin.delete(originKey);
     } else {
@@ -1381,7 +1440,25 @@ export class NotificationHub implements DbNotifier {
     }
   }
 
-  private decrementDeviceHandoffAttention(threadId: string | null): void {
+  private decrementDeviceHandoffAttention(
+    threadId: string | null,
+    terminalId: string | null,
+  ): void {
+    if (terminalId !== null) {
+      const terminalRemaining =
+        (this.pendingDeviceHandoffCountsByTerminal.get(terminalId) ?? 1) - 1;
+      if (terminalRemaining > 0) {
+        this.pendingDeviceHandoffCountsByTerminal.set(
+          terminalId,
+          terminalRemaining,
+        );
+      } else {
+        this.pendingDeviceHandoffCountsByTerminal.delete(terminalId);
+        for (const listener of this.deviceHandoffAttentionListeners) {
+          listener(threadId ?? "", terminalId, false);
+        }
+      }
+    }
     if (threadId === null) return;
     const remaining =
       (this.pendingDeviceHandoffCountsByThread.get(threadId) ?? 1) - 1;
@@ -1390,15 +1467,29 @@ export class NotificationHub implements DbNotifier {
       return;
     }
     this.pendingDeviceHandoffCountsByThread.delete(threadId);
-    this.emitDeviceHandoffAttentionChange(threadId, false);
+    this.emitDeviceHandoffAttentionChange(threadId, null, false);
+  }
+
+  private markDeviceHandoffExpired(threadId: string | null): void {
+    if (threadId === null) return;
+    this.expiredDeviceHandoffThreads.delete(threadId);
+    this.expiredDeviceHandoffThreads.add(threadId);
+    while (
+      this.expiredDeviceHandoffThreads.size > DEVICE_HANDOFF_PENDING_LIMIT
+    ) {
+      const oldest = this.expiredDeviceHandoffThreads.values().next().value;
+      if (oldest === undefined) break;
+      this.expiredDeviceHandoffThreads.delete(oldest);
+    }
   }
 
   private emitDeviceHandoffAttentionChange(
     threadId: string,
+    terminalId: string | null,
     pending: boolean,
   ): void {
     for (const listener of this.deviceHandoffAttentionListeners) {
-      listener(threadId, pending);
+      listener(threadId, terminalId, pending);
     }
   }
 

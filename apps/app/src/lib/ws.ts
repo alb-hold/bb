@@ -7,6 +7,7 @@ import {
   threadOpenSignalLenientSchema,
   threadPaneActionSignalLenientSchema,
   deviceHandoffSignalLenientSchema,
+  deviceHandoffExpiredSignalLenientSchema,
   threadTimelineSignalLenientSchema,
 } from "@bb/server-contract";
 import type {
@@ -19,6 +20,7 @@ import type {
   ThreadPaneActionSignal,
   ThreadTimelineSignal,
   DeviceHandoffSignal,
+  DeviceHandoffExpiredSignal,
 } from "@bb/server-contract";
 import { buildBrowserWebSocketUrl } from "./dev-websocket-url";
 import {
@@ -31,7 +33,9 @@ type ThreadOpenCallback = (signal: ThreadOpenSignal) => void;
 type ThreadPaneActionCallback = (signal: ThreadPaneActionSignal) => void;
 type PluginSignalCallback = (signal: PluginSignal) => void;
 type ThreadTimelineCallback = (signal: ThreadTimelineSignal) => void;
-type DeviceHandoffCallback = (signal: DeviceHandoffSignal) => void;
+type DeviceHandoffCallback = (
+  signal: DeviceHandoffSignal | DeviceHandoffExpiredSignal,
+) => void;
 export type WebSocketConnectedEvent =
   | { reconnected: false }
   | {
@@ -360,6 +364,15 @@ export class WebSocketManager {
     if (deviceHandoff.success) {
       if (deviceHandoff.data.expiresAt > Date.now()) {
         for (const cb of this.deviceHandoffCallbacks) cb(deviceHandoff.data);
+      }
+      return;
+    }
+
+    const deviceHandoffExpired =
+      deviceHandoffExpiredSignalLenientSchema.safeParse(parsed);
+    if (deviceHandoffExpired.success) {
+      for (const cb of this.deviceHandoffCallbacks) {
+        cb(deviceHandoffExpired.data);
       }
       return;
     }

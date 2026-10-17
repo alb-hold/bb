@@ -14,7 +14,11 @@ export function registerDeviceHandoffRoutes(app: Hono, deps: AppDeps): void {
     string,
     { markerAt: number; previousAttentionAt: number }
   >();
-  deps.hub.onDeviceHandoffAttentionChange((threadId, pending) => {
+  deps.hub.onDeviceHandoffAttentionChange((threadId, terminalId, pending) => {
+    if (terminalId !== null) {
+      deps.terminalSessions.setDeviceHandoffAttention(terminalId, pending);
+      return;
+    }
     const marker = attentionMarkers.get(threadId);
     if (pending) {
       if (marker) return;

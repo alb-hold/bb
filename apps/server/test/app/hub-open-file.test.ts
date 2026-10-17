@@ -148,7 +148,7 @@ describe("NotificationHub device handoff routing", () => {
         },
         "Thread one",
       );
-      vi.advanceTimersByTime(2 * 60 * 1000);
+      vi.advanceTimersByTime(10 * 60 * 1000);
 
       const laterAtOrigin = createMockHubSocket();
       hub.subscribe(laterAtOrigin, {
@@ -156,6 +156,46 @@ describe("NotificationHub device handoff routing", () => {
         threadId: "thr_1",
       });
       expect(laterAtOrigin.messages).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps an undelivered item available for the ten-minute sign-in window", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(1_000_000);
+      const hub = new NotificationHub();
+      hub.notifyDeviceHandoff(
+        {
+          kind: "open-url",
+          url: "https://login.example.com/device",
+          origin: { threadId: "thr_1" },
+        },
+        "Thread one",
+      );
+      vi.advanceTimersByTime(3 * 60 * 1000);
+
+      const laterAtOrigin = createMockHubSocket();
+      hub.subscribe(laterAtOrigin, {
+        kind: "thread-detail",
+        threadId: "thr_1",
+      });
+
+      expect(
+        laterAtOrigin.messages.map((message) => JSON.parse(message).request),
+      ).toEqual([
+        {
+          kind: "open-url",
+          url: "https://login.example.com/device",
+          origin: { threadId: "thr_1" },
+        },
+      ]);
+      expect(
+        laterAtOrigin.messages.some((message) =>
+          message.includes("device-handoff-expired"),
+        ),
+      ).toBe(false);
     } finally {
       vi.useRealTimers();
     }
