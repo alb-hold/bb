@@ -89,6 +89,7 @@ const TERMINAL_OUTPUT_NOT_RUNNING_MESSAGE =
   "Terminal output is unavailable because the session is not running";
 const TERMINAL_OUTPUT_DISCARDED_MESSAGE = `The server no longer has the retained output of this exited terminal. The server keeps terminal output for ${TERMINAL_EXIT_RETENTION_MINUTES} minutes after a terminal exits, so read it sooner or run the command again.`;
 const TERMINAL_ATTACH_CANCELLED = new Error("Terminal attach cancelled");
+const REOPEN_NATIVE_TERMINAL_REPAINT_DELAY_MS = 1_500;
 const DAEMON_OWNED_TERMINAL_STATUSES = ["starting", "running"] as const;
 const NON_TERMINAL_SESSION_STATUSES = [
   ...DAEMON_OWNED_TERMINAL_STATUSES,
@@ -2795,19 +2796,30 @@ export class TerminalSessionLifecycle {
     if (current.status !== "running" || current.daemonSessionId === null) {
       return;
     }
-    const nudgeRows = current.rows === 1 ? current.rows + 1 : current.rows - 1;
-    this.options.hub.sendDaemonSessionMessage(current.daemonSessionId, {
-      type: "terminal.resize",
-      terminalId: current.id,
-      cols: current.cols,
-      rows: nudgeRows,
-    });
-    this.options.hub.sendDaemonSessionMessage(current.daemonSessionId, {
-      type: "terminal.resize",
-      terminalId: current.id,
-      cols: current.cols,
-      rows: current.rows,
-    });
+    const daemonSessionId = current.daemonSessionId;
+    setTimeout(() => {
+      const latest = getTerminalById(this.options.db, current.id);
+      if (
+        !latest ||
+        latest.status !== "running" ||
+        latest.daemonSessionId !== daemonSessionId
+      ) {
+        return;
+      }
+      const nudgeRows = latest.rows === 1 ? latest.rows + 1 : latest.rows - 1;
+      this.options.hub.sendDaemonSessionMessage(daemonSessionId, {
+        type: "terminal.resize",
+        terminalId: latest.id,
+        cols: latest.cols,
+        rows: nudgeRows,
+      });
+      this.options.hub.sendDaemonSessionMessage(daemonSessionId, {
+        type: "terminal.resize",
+        terminalId: latest.id,
+        cols: latest.cols,
+        rows: latest.rows,
+      });
+    }, REOPEN_NATIVE_TERMINAL_REPAINT_DELAY_MS);
   }
 
   private addOutputFlowClient(

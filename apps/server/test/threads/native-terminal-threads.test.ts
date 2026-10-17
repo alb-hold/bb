@@ -436,53 +436,93 @@ describe("native terminal threads", () => {
       close() {},
       send() {},
     };
-    restarted.deps.terminalSessions.attachBrowserTerminal({
-      outputAcks: false,
-      resizeAcks: false,
-      socket: attachedSocket,
-      sinceSeq: 0,
-      terminalId: reopen.terminalId,
-    });
-    const attach = daemonMessages(daemonSocket).find(
-      (message) =>
-        message.type === "terminal.attach" &&
-        message.terminalId === reopen.terminalId,
-    );
-    if (attach?.type !== "terminal.attach") {
-      throw new Error("Expected terminal.attach after browser client connects");
-    }
-    restarted.deps.terminalSessions.handleDaemonTerminalMessage({
-      hostId: fixture.hostId,
-      sessionId: fixture.sessionId,
-      message: {
-        type: "terminal.replay",
-        requestId: attach.requestId,
+    const originalSetTimeout = globalThis.setTimeout;
+    const scheduledRepaints: { delay: number; run: () => void }[] = [];
+    const timeoutSpy = vi
+      .spyOn(globalThis, "setTimeout")
+      .mockImplementation((callback, delay, ...args) => {
+        if (delay === 0 || delay === 1_500) {
+          scheduledRepaints.push({
+            delay,
+            run: () => callback(...args),
+          });
+          return { unref() {} } as ReturnType<typeof setTimeout>;
+        }
+        return originalSetTimeout(callback, delay, ...args);
+      });
+    try {
+      restarted.deps.terminalSessions.attachBrowserTerminal({
+        outputAcks: false,
+        resizeAcks: false,
+        socket: attachedSocket,
+        sinceSeq: 0,
         terminalId: reopen.terminalId,
-        chunks: [],
-        replayStartSeq: 0,
-        nextSeq: 0,
-      },
-    });
-    expect(
-      daemonMessages(daemonSocket).filter(
+      });
+      const attach = daemonMessages(daemonSocket).find(
         (message) =>
-          message.type === "terminal.resize" &&
+          message.type === "terminal.attach" &&
           message.terminalId === reopen.terminalId,
-      ),
-    ).toEqual([
-      {
-        type: "terminal.resize",
-        terminalId: reopen.terminalId,
-        cols: 52,
-        rows: 40,
-      },
-      {
-        type: "terminal.resize",
-        terminalId: reopen.terminalId,
-        cols: 52,
-        rows: 41,
-      },
-    ]);
+      );
+      if (attach?.type !== "terminal.attach") {
+        throw new Error(
+          "Expected terminal.attach after browser client connects",
+        );
+      }
+      restarted.deps.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.hostId,
+        sessionId: fixture.sessionId,
+        message: {
+          type: "terminal.replay",
+          requestId: attach.requestId,
+          terminalId: reopen.terminalId,
+          chunks: [],
+          replayStartSeq: 0,
+          nextSeq: 0,
+        },
+      });
+      expect(
+        daemonMessages(daemonSocket).filter(
+          (message) =>
+            message.type === "terminal.resize" &&
+            message.terminalId === reopen.terminalId,
+        ),
+      ).toEqual([]);
+
+      expect(scheduledRepaints.map(({ delay }) => delay)).toEqual([1_500]);
+      expect(
+        daemonMessages(daemonSocket).filter(
+          (message) =>
+            message.type === "terminal.resize" &&
+            message.terminalId === reopen.terminalId,
+        ),
+      ).toEqual([]);
+
+      const repaint = scheduledRepaints[0];
+      if (!repaint) throw new Error("Expected one delayed terminal repaint");
+      repaint.run();
+      expect(
+        daemonMessages(daemonSocket).filter(
+          (message) =>
+            message.type === "terminal.resize" &&
+            message.terminalId === reopen.terminalId,
+        ),
+      ).toEqual([
+        {
+          type: "terminal.resize",
+          terminalId: reopen.terminalId,
+          cols: 52,
+          rows: 40,
+        },
+        {
+          type: "terminal.resize",
+          terminalId: reopen.terminalId,
+          cols: 52,
+          rows: 41,
+        },
+      ]);
+    } finally {
+      timeoutSpy.mockRestore();
+    }
 
     restarted.deps.terminalSessions.attachBrowserTerminal({
       outputAcks: false,
