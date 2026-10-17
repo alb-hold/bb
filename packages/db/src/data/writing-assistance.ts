@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq, like, lt, or } from "drizzle-orm";
 import {
   defaultWritingAssistanceSettings,
   writingAssistanceSettingsSchema,
@@ -11,7 +11,18 @@ import type { DbConnection, DbQueryConnection } from "../connection.js";
 import { appSettingsValues } from "../schema.js";
 
 const WRITING_SETTINGS_KEY = "writingAssistanceSettings";
-const WRITING_USAGE_KEY = "writingAssistanceUsage";
+const LEGACY_WRITING_USAGE_KEY = "writingAssistanceUsage";
+const WRITING_USAGE_PREFIX = "writingAssistanceUsage:";
+
+function usageKey(day: string): string {
+  return `${WRITING_USAGE_PREFIX}${day}`;
+}
+
+function previousDay(day: string): string {
+  return new Date(Date.parse(`${day}T00:00:00Z`) - 86_400_000)
+    .toISOString()
+    .slice(0, 10);
+}
 
 function readValue(db: DbQueryConnection, key: string): unknown {
   const row = db
@@ -81,10 +92,11 @@ export function emptyWritingUsage(day: string): WritingUsage {
 }
 
 export function getWritingUsage(db: DbQueryConnection, day: string): WritingUsage {
-  const parsed = writingUsageSchema.safeParse(readValue(db, WRITING_USAGE_KEY));
-  return parsed.success && parsed.data.day === day
-    ? parsed.data
-    : emptyWritingUsage(day);
+  for (const key of [usageKey(day), LEGACY_WRITING_USAGE_KEY]) {
+    const parsed = writingUsageSchema.safeParse(readValue(db, key));
+    if (parsed.success && parsed.data.day === day) return parsed.data;
+  }
+  return emptyWritingUsage(day);
 }
 
 export function addWritingUsage(
@@ -118,7 +130,18 @@ export function reserveWritingUsage(
       estimatedCostMicros:
         current.estimatedCostMicros + (delta.estimatedCostMicros ?? 0),
     };
-    writeValue(tx, WRITING_USAGE_KEY, next);
+    writeValue(tx, usageKey(day), next);
+    tx.delete(appSettingsValues)
+      .where(
+        or(
+          eq(appSettingsValues.key, LEGACY_WRITING_USAGE_KEY),
+          and(
+            like(appSettingsValues.key, `${WRITING_USAGE_PREFIX}%`),
+            lt(appSettingsValues.key, usageKey(previousDay(day))),
+          ),
+        ),
+      )
+      .run();
     return next;
   });
 }
