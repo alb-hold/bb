@@ -206,6 +206,7 @@ Read the installed declarations for exact current signatures.
 - `ExperimentalCodeFenceStatus`
 - `PluginNavPanelProps`
 - `PluginNavPanelRegistration`
+- `ExperimentalBadge`
 - `PluginNewThreadPanelActionContext`
 - `PluginNewThreadPanelActionRegistration`
 - `PluginNewThreadPanelProps`

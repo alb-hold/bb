@@ -6,6 +6,7 @@ import {
   type GitBranchSelection,
   type EnvironmentMachineSelection,
   type Thread,
+  type ThreadParentNotifications,
   type JsonValue,
 } from "@bb/domain";
 import type { CreateThreadEnvironmentArgs } from "@bb/server-contract";
@@ -37,8 +38,10 @@ import {
   parsePermissionMode,
   buildPromptInputs,
   uploadClientAttachmentInputs,
+  PARENT_NOTIFICATIONS_HELP,
   PERMISSION_MODE_HELP,
   PLAN_HELP,
+  parseParentNotifications,
   parseServiceTier,
   SERVICE_TIER_HELP,
 } from "./helpers.js";
@@ -81,6 +84,7 @@ interface ThreadSpawnCommandOptions {
   sourceThread?: string;
   sourceSeqEnd?: string;
   visibility?: string;
+  parentNotifications?: string;
   sendAt?: string;
   pluginCreateData?: string;
   native?: boolean;
@@ -410,6 +414,7 @@ export function registerSpawnCommand(
       "--visibility <visibility>",
       "Thread visibility: visible or hidden (a child inherits its parent)",
     )
+    .option("--parent-notifications <value>", PARENT_NOTIFICATIONS_HELP)
     .option(
       "--environment-provider <id>",
       "Run on an environment provider by id (list them with `bb environment providers`)",
@@ -575,6 +580,9 @@ export function registerSpawnCommand(
           opts.visibility === undefined
             ? undefined
             : threadVisibilitySchema.parse(opts.visibility);
+        const parentNotifications = parseParentNotifications(
+          opts.parentNotifications,
+        );
         const parentThreadId = resolveSpawnParentThreadId({
           parentSelf: opts.parentSelf,
           parentThread: opts.parentThread,
@@ -645,6 +653,7 @@ export function registerSpawnCommand(
             ...(spawnedByThreadId && !parentThreadId
               ? { spawnedByThreadId }
               : {}),
+            ...(parentNotifications ? { parentNotifications } : {}),
             ...(opts.lifecycleOwnerThread !== undefined
               ? { lifecycleOwnerThreadId: opts.lifecycleOwnerThread }
               : {}),
@@ -672,11 +681,24 @@ export function registerSpawnCommand(
           thread.parentThreadId &&
           thread.parentThreadId === resolveContextThreadId()
         ) {
-          console.log("You will be notified when this thread is done.");
+          console.log(parentNotificationsPromise(thread.parentNotifications));
         }
         printThread(thread);
       }),
     );
+}
+
+function parentNotificationsPromise(
+  parentNotifications: ThreadParentNotifications,
+): string {
+  switch (parentNotifications) {
+    case "auto":
+      return "You will be notified when this thread is done.";
+    case "stuck":
+      return "You will be notified only if this thread fails, is interrupted, or is blocked.";
+    case "off":
+      return "You will not be notified about this thread.";
+  }
 }
 
 function printThread(thread: Thread): void {

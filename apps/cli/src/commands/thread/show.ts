@@ -803,6 +803,7 @@ function printThreadStatus(
   console.log(`  Project: ${thread.projectId}`);
   if (thread.parentThreadId) {
     console.log(`  Parent: ${thread.parentThreadId}`);
+    console.log(`  Parent notifications: ${thread.parentNotifications}`);
   }
   if (thread.archivedAt !== null) {
     console.log(`  Archived: ${new Date(thread.archivedAt).toLocaleString()}`);

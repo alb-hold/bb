@@ -720,6 +720,7 @@ describe("thread runtime stop", () => {
             status: "pending",
             taskStatus: "running",
             skipTranscript: false,
+            foreground: false,
           },
         },
       });
@@ -805,6 +806,7 @@ describe("thread runtime stop", () => {
             status: "pending",
             taskStatus: "running",
             skipTranscript: false,
+            foreground: false,
           },
         },
       });

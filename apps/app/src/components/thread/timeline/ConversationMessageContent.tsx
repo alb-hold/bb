@@ -494,7 +494,11 @@ function UserConversationMessage({
             alignment="end"
             mobileActionDisplay={mobileActionDisplay}
             addToChatAttachments={addToChatAttachments}
-            copyImageUrl={attachmentItems.imageItems[0]?.src}
+            copyImageUrl={
+              attachmentItems.imageItems.find(
+                (item) => item.mediaType !== "video",
+              )?.src
+            }
             onAddToChat={onAddToChat}
             onCopyLink={onCopyLink}
             onEdit={onEdit}
@@ -681,7 +685,11 @@ function AssistantConversationMessage({
           alignment="start"
           mobileActionDisplay={mobileActionDisplay}
           addToChatAttachments={addToChatAttachments}
-          copyImageUrl={attachmentItems.imageItems[0]?.src}
+          copyImageUrl={
+            attachmentItems.imageItems.find(
+              (item) => item.mediaType !== "video",
+            )?.src
+          }
           onAddToChat={onAddToChat}
           onCopyLink={onCopyLink}
           onFork={onFork}

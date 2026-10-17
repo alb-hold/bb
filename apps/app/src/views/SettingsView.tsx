@@ -14,6 +14,7 @@ import {
   defaultAppSettings,
   defaultAppTheme,
   defaultExperiments,
+  earlyAdopterExperiments,
   experimentKeys,
   managedBranchPrefixSchema,
   type AppTheme,
@@ -54,6 +55,7 @@ import { useAppThemePreview } from "@/hooks/useAppThemePreview";
 import { ProvidersSettingsSection } from "@/components/settings/ProvidersSettingsSection";
 import { CodeRendererSettings } from "@/components/settings/CodeRendererSettings";
 import { SidebarThreadListSetting } from "@/components/settings/SidebarThreadListSetting";
+import { SidebarNavigationProviderSetting } from "@/components/settings/SidebarNavigationProviderSetting";
 import { SidebarFooterSettings } from "@/components/settings/SidebarFooterSettings";
 import { SplitDimmingSetting } from "@/components/settings/SplitDimmingSetting";
 import { useSettingsNavState } from "@/components/settings/settings-nav";
@@ -174,6 +176,8 @@ interface GeneralSettingsSectionProps {
   onConfirmThreadArchiveChange: (enabled: boolean) => void;
   keepHistoryAfterContextClear: boolean;
   onKeepHistoryAfterContextClearChange: (enabled: boolean) => void;
+  summarizeShellCommands: boolean;
+  onSummarizeShellCommandsChange: (enabled: boolean) => void;
   desktopBrowserAvailable: boolean;
   generalSettingsDisabled: boolean;
   managedBranchPrefix: string;
@@ -214,6 +218,8 @@ function appPaletteLabel(
 interface ExperimentsSettingsSectionProps {
   performanceDiagnosticsAvailable: boolean;
   disabled: boolean;
+  earlyAdopter: boolean;
+  onEarlyAdopterChange: (enabled: boolean) => void;
   experiments: Experiments;
   onExperimentChange: (key: ExperimentKey, enabled: boolean) => void;
 }
@@ -844,6 +850,7 @@ export function AppearanceSettingsSection({
       </SettingsSection>
       <SettingsSection title="Interface">
         <div className="space-y-5">
+          <SidebarNavigationProviderSetting />
           <SidebarThreadListSetting />
           <CodeRendererSettings />
           <SidebarFooterSettings />
@@ -860,6 +867,8 @@ export function GeneralSettingsSection({
   onConfirmThreadArchiveChange,
   keepHistoryAfterContextClear,
   onKeepHistoryAfterContextClearChange,
+  summarizeShellCommands,
+  onSummarizeShellCommandsChange,
   desktopBrowserAvailable,
   generalSettingsDisabled,
   managedBranchPrefix,
@@ -977,6 +986,18 @@ export function GeneralSettingsSection({
               disabled={generalSettingsDisabled}
               onCheckedChange={onKeepHistoryAfterContextClearChange}
               aria-label="Show messages from before a context clear"
+            />
+          </SettingsWithControl>
+
+          <SettingsWithControl
+            label="Summarize shell commands"
+            description="Show short summaries for commands that read, list, or search files. Turn off to show command text and let you expand each command to view its output."
+          >
+            <Switch
+              checked={summarizeShellCommands}
+              disabled={generalSettingsDisabled}
+              onCheckedChange={onSummarizeShellCommandsChange}
+              aria-label="Summarize shell commands"
             />
           </SettingsWithControl>
 
@@ -1105,6 +1126,11 @@ const EXPERIMENT_DEFINITIONS: Record<
     description:
       "Show the latest release notes as a compact preview on the Updates page.",
   },
+  compactExpiredCache: {
+    label: "Compact before resuming expired sessions",
+    description:
+      "When an idle thread holds at least 100k tokens and its prompt cache has expired, the composer offers to compact before your next send. Works with supported providers (e.g. Claude Code, Pi).",
+  },
   performanceDiagnostics: {
     label: "Server performance diagnostics",
     description:
@@ -1131,9 +1157,13 @@ export function visibleExperimentKeys(
   );
 }
 
+const EARLY_ADOPTER_LABEL = "Early adopter";
+
 export function ExperimentsSettingsSection({
   performanceDiagnosticsAvailable,
   disabled,
+  earlyAdopter,
+  onEarlyAdopterChange,
   experiments,
   onExperimentChange,
 }: ExperimentsSettingsSectionProps) {
@@ -1142,6 +1172,37 @@ export function ExperimentsSettingsSection({
       <SettingsSection
         title="Experiments"
         description="Early features that are off by default. Opt in to try them."
+        banner={
+          <section
+            data-settings-anchor={EARLY_ADOPTER_LABEL}
+            aria-label={EARLY_ADOPTER_LABEL}
+            className="flex scroll-mt-4 items-start gap-3 rounded-lg border border-border bg-accent px-4 py-3.5"
+          >
+            <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-background">
+              <Icon
+                name="Beaker"
+                className="size-4 text-foreground"
+                aria-hidden
+              />
+            </div>
+            <div className="min-w-0 flex-1">
+              <h3 className="text-sm font-semibold text-foreground">
+                Become an early adopter
+              </h3>
+              <p className="mt-0.5 text-xs leading-snug text-subtle-foreground">
+                Get new experiments turned on by default sooner and help us try
+                out features before they reach everyone. Turn this off anytime;
+                experiments you switch yourself keep your choice.
+              </p>
+            </div>
+            <Switch
+              checked={earlyAdopter}
+              disabled={disabled}
+              onCheckedChange={onEarlyAdopterChange}
+              aria-label={EARLY_ADOPTER_LABEL}
+            />
+          </section>
+        }
       >
         <div className="space-y-5">
           {visibleExperimentKeys(performanceDiagnosticsAvailable).map(
@@ -1151,6 +1212,11 @@ export function ExperimentsSettingsSection({
                 <SettingsWithControl
                   key={experimentKey}
                   label={definition.label}
+                  labelBadge={
+                    earlyAdopterExperiments[experimentKey]
+                      ? EARLY_ADOPTER_LABEL
+                      : undefined
+                  }
                   description={definition.description}
                 >
                   <Switch
@@ -1229,9 +1295,7 @@ export function SettingsView() {
   } else if (activeSection === "providers") {
     content = (
       <ProvidersSettingsSection
-        disabled={
-          systemConfigQuery.data === undefined
-        }
+        disabled={systemConfigQuery.data === undefined}
         generalSettings={generalSettings}
         onGeneralSettingsChange={(next) =>
           updateGeneralSettingsMutation.mutateAsync(next)
@@ -1322,8 +1386,10 @@ export function SettingsView() {
   } else if (activeSection === "experiments") {
     content = (
       <ExperimentsSettingsSection
-        disabled={
-          systemConfigQuery.data === undefined
+        disabled={systemConfigQuery.data === undefined}
+        earlyAdopter={generalSettings.earlyAdopter}
+        onEarlyAdopterChange={(enabled) =>
+          updateGeneralSettingsMutation.mutate({ earlyAdopter: enabled })
         }
         experiments={experiments}
         performanceDiagnosticsAvailable={
@@ -1365,6 +1431,12 @@ export function SettingsView() {
               keepHistoryAfterContextClear: enabled,
             })
           }
+          summarizeShellCommands={generalSettings.summarizeShellCommands}
+          onSummarizeShellCommandsChange={(enabled) =>
+            updateGeneralSettingsMutation.mutate({
+              summarizeShellCommands: enabled,
+            })
+          }
           onReplaySetupGuide={() =>
             updateGeneralSettingsMutation.mutate({
               ...generalSettings,
@@ -1372,9 +1444,7 @@ export function SettingsView() {
             })
           }
           desktopBrowserAvailable={desktopBrowserAvailable}
-          generalSettingsDisabled={
-            systemConfigQuery.data === undefined
-          }
+          generalSettingsDisabled={systemConfigQuery.data === undefined}
           managedBranchPrefix={generalSettings.managedBranchPrefix}
           onManagedBranchPrefixChange={async (prefix) => {
             await updateGeneralSettingsMutation.mutateAsync({
@@ -1411,9 +1481,7 @@ export function SettingsView() {
             })
           }
           enabled={generalSettings.showDiagnosticEvents}
-          disabled={
-            systemConfigQuery.data === undefined
-          }
+          disabled={systemConfigQuery.data === undefined}
           onEnabledChange={(enabled) =>
             updateGeneralSettingsMutation.mutate({
               showDiagnosticEvents: enabled,

@@ -1961,6 +1961,7 @@ describe("delta assembler background tasks and progress policy", () => {
       status: "pending",
       taskStatus: "running",
       skipTranscript: false,
+      foreground: false,
       ...overrides,
     };
   }
