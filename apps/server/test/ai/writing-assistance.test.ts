@@ -350,6 +350,19 @@ describe("dictation segments", () => {
     });
   });
 
+  it("keeps the transcript when formatting swaps list items that share a first word", async () => {
+    await withTestHarness({}, async (harness) => {
+      registerFakeAiService(harness.deps.aiServices, {
+        transcribe: async () => "first check auth second check tokens",
+        complete: async () => "1. Check tokens.\n2. Check auth.",
+      });
+      await expect((await postSegment(harness)).json()).resolves.toMatchObject({
+        text: "first check auth second check tokens",
+        formatted: false,
+      });
+    });
+  });
+
   it("formats a numbered list built from spoken ordinals", async () => {
     await withTestHarness({}, async (harness) => {
       registerFakeAiService(harness.deps.aiServices, {

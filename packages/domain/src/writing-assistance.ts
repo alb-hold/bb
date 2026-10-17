@@ -877,13 +877,13 @@ function splitJoinedToken(
   return null;
 }
 
-function listItemStarts(formatted: string): Map<number, string> {
-  const starts = new Map<number, string>();
+function listItems(formatted: string): Map<number, string[]> {
+  const items = new Map<number, string[]>();
   for (const match of formatted.matchAll(/^\s*(\d{1,2})[.)]\s+(.*)$/gmu)) {
-    const first = wordTokens(match[2] ?? "")[0];
-    if (first !== undefined) starts.set(Number(match[1]), first);
+    const tokens = wordTokens(match[2] ?? "");
+    if (tokens.length > 0) items.set(Number(match[1]), tokens);
   }
-  return starts;
+  return items;
 }
 
 function nextSpokenWord(
@@ -897,27 +897,39 @@ function nextSpokenWord(
   return undefined;
 }
 
-function spokenEnumeration(tokens: readonly string[]): Map<number, string> {
-  const spoken = new Map<number, string>();
+function spokenEnumeration(tokens: readonly string[]): Map<number, number> {
+  const spoken = new Map<number, number>();
   for (let index = 0; index < tokens.length; index += 1) {
     const value = ENUMERATOR_VALUES.get(tokens[index]!);
-    const next = nextSpokenWord(tokens, index);
-    if (value !== undefined && next !== undefined && !spoken.has(value)) {
-      spoken.set(value, next);
+    if (
+      value !== undefined &&
+      nextSpokenWord(tokens, index) !== undefined &&
+      !spoken.has(value)
+    ) {
+      spoken.set(value, index);
     }
   }
   return spoken;
 }
 
 function listMatchesSpeech(
-  itemStarts: ReadonlyMap<number, string>,
+  items: ReadonlyMap<number, readonly string[]>,
   rawTokens: readonly string[],
 ): boolean {
   const spoken = spokenEnumeration(rawTokens);
-  return [...itemStarts].every(
-    ([number, first], position) =>
-      number === position + 1 && spoken.get(number) === first,
-  );
+  const positions = [...spoken.values()];
+  const source = new Set(rawTokens);
+  return [...items].every(([number, tokens], position) => {
+    const at = spoken.get(number);
+    if (number !== position + 1 || at === undefined) return false;
+    if (nextSpokenWord(rawTokens, at) !== tokens[0]) return false;
+    const end = Math.min(
+      rawTokens.length,
+      ...positions.filter((other) => other > at),
+    );
+    const segment = new Set(rawTokens.slice(at + 1, end));
+    return tokens.every((token) => segment.has(token) || !source.has(token));
+  });
 }
 
 export function validateFormattedTranscript(
@@ -938,9 +950,9 @@ export function validateFormattedTranscript(
   const vocabularyTokens = new Set(
     vocabulary.flatMap((term) => wordTokens(term)),
   );
-  const itemStarts = listItemStarts(formatted);
-  const list = itemStarts.size > 0;
-  if (list && !listMatchesSpeech(itemStarts, rawTokens)) {
+  const items = listItems(formatted);
+  const list = items.size > 0;
+  if (list && !listMatchesSpeech(items, rawTokens)) {
     return { ok: false, reason: "list-numbers" };
   }
   const body = formatted.replace(/^(\s*)\d{1,2}[.)]\s+/gmu, "$1");
@@ -983,7 +995,7 @@ export function validateFormattedTranscript(
     if (
       enumerator !== undefined &&
       enumerator === enumerated + 1 &&
-      itemStarts.has(enumerator)
+      items.has(enumerator)
     ) {
       enumerated = enumerator;
       continue;

@@ -160,13 +160,23 @@ describe("resolveWritingEdits", () => {
     ]);
   });
 
-  it("only suggests removing a repeat that can be grammatical or is not adjacent", () => {
-    const grammatical = resolveWritingEdits({
-      ...base,
-      target: "I had had enough of the flaky test.",
-      proposals: [proposal("had had", "had")],
-    });
-    expect(grammatical.map((edit) => edit.disposition)).toEqual(["suggest"]);
+  it.each([
+    ["I had had enough of the flaky test.", "had had", "had"],
+    ["I know that that test is flaky.", "that that", "that"],
+    ["What it is is a flaky test.", "is is", "is"],
+  ])(
+    "only suggests removing the repeat in %s",
+    (target, original, replacement) => {
+      const edits = resolveWritingEdits({
+        ...base,
+        target,
+        proposals: [proposal(original, replacement)],
+      });
+      expect(edits.map((edit) => edit.disposition)).toEqual(["suggest"]);
+    },
+  );
+
+  it("only suggests removing a repeat that is not adjacent", () => {
     const distant = resolveWritingEdits({
       ...base,
       target: "Check the cache before the deploy.",
@@ -394,6 +404,14 @@ describe("validateFormattedTranscript", () => {
     ["first check auth second run tests", "1. Run tests.\n2. Check auth."],
     ["first check auth third run tests", "1. Check auth.\n3. Run tests."],
     ["second run tests first check auth", "2. Run tests.\n1. Check auth."],
+    [
+      "first check auth second check tokens",
+      "1. Check tokens.\n2. Check auth.",
+    ],
+    [
+      "primeiro verificar auth segundo verificar tokens",
+      "1. Verificar tokens.\n2. Verificar auth.",
+    ],
   ])(
     "keeps the transcript when list numbers do not match the spoken enumeration: %s -> %s",
     (raw, formatted) => {
@@ -404,11 +422,20 @@ describe("validateFormattedTranscript", () => {
     },
   );
 
+  it("formats a list whose items share a first word when each keeps its own words", () => {
+    expect(
+      validateFormattedTranscript(
+        "first check auth second check tokens",
+        "1. Check auth.\n2. Check tokens.",
+      ),
+    ).toEqual({ ok: true });
+  });
+
   it("keeps the transcript when a spoken enumerator numbers no list item", () => {
     expect(
       validateFormattedTranscript(
         "first check auth second run tests",
-        "1. Check auth. Run tests.",
+        "1. Check auth.\nRun tests.",
       ),
     ).toEqual({ ok: false, reason: "dropped-words" });
   });
