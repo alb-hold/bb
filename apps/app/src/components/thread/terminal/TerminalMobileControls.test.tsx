@@ -4,6 +4,11 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TerminalMobileControls } from "./TerminalMobileControls";
 
+function buttonDisabled(label: string): boolean {
+  return (screen.getByRole("button", { name: label }) as HTMLButtonElement)
+    .disabled;
+}
+
 afterEach(cleanup);
 
 function renderControls() {
@@ -54,7 +59,39 @@ describe("TerminalMobileControls", () => {
 
   it("opens terminal output search from the touch controls", () => {
     const { onSearch } = renderControls();
-    fireEvent.click(screen.getByRole("button", { name: "Search terminal output" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Search terminal output" }),
+    );
     expect(onSearch).toHaveBeenCalledOnce();
+  });
+
+  it("keeps read-only controls enabled when the terminal has exited", () => {
+    render(
+      <TerminalMobileControls
+        controlActive={false}
+        disabled
+        readOnlyDisabled={false}
+        onArrow={vi.fn()}
+        onControlChange={vi.fn()}
+        onInput={vi.fn()}
+        onKeyboardToggle={vi.fn()}
+        onPaste={vi.fn()}
+        onPreviousPrompt={vi.fn()}
+        onNextPrompt={vi.fn()}
+        onSearch={vi.fn()}
+        onSelectText={vi.fn()}
+      />,
+    );
+
+    expect(buttonDisabled("Search terminal output")).toBe(false);
+    expect(buttonDisabled("Previous prompt")).toBe(false);
+    expect(buttonDisabled("Next prompt")).toBe(false);
+    expect(buttonDisabled("Select terminal text")).toBe(false);
+    expect(buttonDisabled("Escape")).toBe(true);
+    expect(buttonDisabled("Tab")).toBe(true);
+    expect(buttonDisabled("Control for next key")).toBe(true);
+    expect(buttonDisabled("Arrow left")).toBe(true);
+    expect(buttonDisabled("Enter")).toBe(true);
+    expect(buttonDisabled("More terminal keys")).toBe(true);
   });
 });

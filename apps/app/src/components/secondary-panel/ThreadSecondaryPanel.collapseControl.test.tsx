@@ -20,6 +20,7 @@ import { SidebarProvider } from "@/components/ui/sidebar";
 import {
   createGitDiffFixedPanelTab,
   createPluginPageFixedPanelTab,
+  createTerminalFixedPanelTab,
   createThreadInfoFixedPanelTab,
   createWorkspaceFilePreviewFixedPanelTab,
   type SecondaryFileFixedPanelTab,
@@ -97,11 +98,13 @@ function createTestRenderableTab(
 }
 
 function renderPanel(args: {
+  activeTab?: SecondaryPanelRenderableTab["tab"];
   isConversationCollapsed: boolean;
   onToggleConversationCollapse: () => void;
   renderAsDrawer?: boolean;
   showFullScreenShortcut?: boolean;
   splitPanelStateId?: string;
+  tabs?: readonly SecondaryPanelRenderableTab[];
 }) {
   const { wrapper: Wrapper } = createQueryClientTestHarness();
   return render(
@@ -109,10 +112,10 @@ function renderPanel(args: {
       <TooltipProvider>
         <PanelGroup direction="horizontal">
           <ThreadSecondaryPanel
-            activeTab={createThreadInfoFixedPanelTab()}
+            activeTab={args.activeTab ?? createThreadInfoFixedPanelTab()}
             canUseGitUi={false}
             fixedTabs={infoFixedTabs}
-            tabs={[]}
+            tabs={args.tabs ?? []}
             isOpen
             metadataContent={null}
             onClose={noop}
@@ -128,6 +131,31 @@ function renderPanel(args: {
     </Wrapper>,
   );
 }
+
+describe("ThreadSecondaryPanel phone terminal status", () => {
+  it("shows the exited marker on a terminal tab in the drawer", () => {
+    const tab = createTerminalFixedPanelTab({ terminalId: "term_exited" });
+    const terminalTab: SecondaryPanelRenderableTab = {
+      label: "cmux3-walk-project",
+      leadingVisual: null,
+      onClose: noop,
+      onSelect: noop,
+      renderContent: () => null,
+      statusLabel: "exited",
+      tab,
+    };
+
+    renderPanel({
+      activeTab: tab,
+      isConversationCollapsed: false,
+      onToggleConversationCollapse: noop,
+      renderAsDrawer: true,
+      tabs: [terminalTab],
+    });
+
+    expect(screen.getByText("(exited)")).toBeTruthy();
+  });
+});
 
 function renderFixedTabSplit() {
   const { wrapper: Wrapper } = createQueryClientTestHarness();
