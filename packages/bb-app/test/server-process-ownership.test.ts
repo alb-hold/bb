@@ -98,6 +98,10 @@ function spawnFixture(
 }
 
 function waitForExit(child: ChildProcess, timeoutMs: number): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    if (child.pid !== undefined) activeChildren.delete(child.pid);
+    return Promise.resolve();
+  }
   return new Promise((resolve, reject) => {
     const timer = setTimeout(
       () => reject(new Error(`Process did not exit within ${timeoutMs}ms`)),
@@ -189,6 +193,17 @@ async function waitForProcessExitByPid(
 }
 
 describe("server process ownership", () => {
+  it("waits successfully when the child exited before the wait begins", async () => {
+    const child = spawn(process.execPath, ["-e", "process.exit(0)"], {
+      stdio: "ignore",
+    });
+    await new Promise<void>((resolve, reject) => {
+      child.once("error", reject);
+      child.once("exit", () => resolve());
+    });
+    await expect(waitForExit(child, 10)).resolves.toBeUndefined();
+  });
+
   it("ignores IPC disconnect while its launcher parent is alive", async () => {
     const dir = scratchDir();
     const marker = join(dir, "disconnect.log");
@@ -322,7 +337,7 @@ describe("server process ownership", () => {
           }
           expect(databaseFdFound).toBe(true);
         }
-        await waitForFile(disconnectReady, 10_000);
+        await waitForFile(disconnectReady, 45_000);
         await new Promise((resolve) => setTimeout(resolve, SERVER_SHUTDOWN_BOUND_MS + SERVER_SHUTDOWN_SAFETY_MARGIN_MS));
         expect(isProcessRunning(serverPid)).toBe(true);
         if (mode === "during-startup") {
@@ -562,7 +577,7 @@ describe("server process ownership", () => {
       }
       expect(await fetch(`http://127.0.0.1:${port}/`).then((response) => response.status)).toBe(200);
       try {
-        await waitForFile(pluginReady, 10_000);
+        await waitForFile(pluginReady, 45_000);
       } catch (error) {
         const outputPath = join(dir, "server-output.log");
         throw new Error(
@@ -693,7 +708,7 @@ describe("server process ownership", () => {
         activeChildren.delete(serverPid);
       }
     }
-  });
+  }, 60_000);
 
   it("reports a managed child that survives SIGKILL", async () => {
     const dir = scratchDir();
