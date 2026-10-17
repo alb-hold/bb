@@ -44,9 +44,19 @@ const rotate = () => {
   if (fs.existsSync(logPath)) fs.renameSync(logPath, logPath + ".1");
 };
 const readLock = (path) => {
+  let stat;
   try {
-    const stat = fs.statSync(path);
-    const value = fs.readFileSync(path, "utf8");
+    stat = fs.statSync(path);
+  } catch {
+    return null;
+  }
+  let value;
+  try {
+    value = fs.readFileSync(path, "utf8");
+  } catch {
+    return { stat, pid: null, token: null };
+  }
+  try {
     let lock;
     try {
       lock = JSON.parse(value);
@@ -56,7 +66,7 @@ const readLock = (path) => {
     if (!Number.isInteger(lock.pid) || lock.pid < 1) return { stat, pid: null, token: null };
     return { stat, pid: lock.pid, token: typeof lock.token === "string" ? lock.token : null };
   } catch {
-    return null;
+    return { stat, pid: null, token: null };
   }
 };
 const lockOwnerIsAlive = (owner) => {

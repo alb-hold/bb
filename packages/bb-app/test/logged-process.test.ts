@@ -247,6 +247,32 @@ describe("spawnLoggedProcess", () => {
     }
   });
 
+  it("reclaims an unreadable stale append lock", async () => {
+    const logDir = scratchDir();
+    const logPath = join(logDir, "server-stdio.log");
+    const appendLockPath = `${logPath}.append.lock`;
+    writeFileSync(
+      appendLockPath,
+      JSON.stringify({ pid: process.pid, token: "hidden" }),
+    );
+    chmodSync(appendLockPath, 0);
+    utimesSync(appendLockPath, new Date(0), new Date(0));
+    const child = spawnLoggedProcess({
+      command: process.execPath,
+      args: ["-e", 'process.stdout.end("after unreadable lock\\n");'],
+      env: process.env,
+      logDir,
+      logName: "server",
+    });
+
+    expect(await waitForExit(child)).toBe(0);
+    await expect
+      .poll(() => (existsSync(logPath) ? readFileSync(logPath, "utf8") : ""), {
+        timeout: 3_000,
+      })
+      .toBe("after unreadable lock\n");
+  });
+
   it("fences a writer paused beyond the lease while contenders rotate", async () => {
     if (process.platform !== "linux") return;
     const logDir = scratchDir();
