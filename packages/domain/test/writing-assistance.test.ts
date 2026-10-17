@@ -166,6 +166,10 @@ describe("resolveWritingEdits", () => {
     ["What it is is a flaky test.", "is is", "is"],
     ["Do not not run the migration.", "not not", "not"],
     ["We don't don't ship on Fridays.", "don't don't", "don't"],
+    ["Eu não não vou rodar a migração.", "não não", "não"],
+    ["Eu nao nao vou rodar a migracao.", "nao nao", "nao"],
+    ["Isso nunca nunca roda.", "nunca nunca", "nunca"],
+    ["We never never deploy on Fridays.", "never never", "never"],
     ["Check the the cache before the deploy.", "the the", "the?"],
   ])(
     "only suggests removing the repeat in %s",
@@ -471,6 +475,19 @@ describe("validateFormattedTranscript", () => {
       ),
     ).toEqual({ ok: false, reason: "dropped-words" });
   });
+
+  it.each([
+    ["run the migration", "Not run the migration.", ["not"]],
+    ["deploy the build", "Deploy the Kubernetes build.", ["Kubernetes"]],
+  ])(
+    "keeps the transcript when a vocabulary term was not spoken: %s -> %s",
+    (raw, formatted, vocabulary) => {
+      expect(validateFormattedTranscript(raw, formatted, vocabulary)).toEqual({
+        ok: false,
+        reason: "added-words",
+      });
+    },
+  );
 
   it("accepts vocabulary spellings and accent restorations of spoken words", () => {
     expect(

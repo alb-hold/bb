@@ -556,6 +556,51 @@ describe(
       expect(input.value).toBe("The user are here. ");
     });
 
+    it("keeps the caret where the user left it through a fix and its Undo", async () => {
+      correct.mockImplementation(async (request: { target: string }) => ({
+        status: "ok",
+        edits:
+          request.target === "The user are here."
+            ? [edit({ start: 9, end: 12, original: "are", replacement: "is" })]
+            : [],
+      }));
+      const { input } = await renderWithAssistance();
+      const typed = "Check the logs now. The user are here. ";
+      input.focus();
+      fireEvent.change(input, { target: { value: typed } });
+      input.setSelectionRange(4, 4);
+      await waitFor(
+        () =>
+          expect(input.value).toBe("Check the logs now. The user is here. "),
+        { timeout: 8_000 },
+      );
+      expect([input.selectionStart, input.selectionEnd]).toEqual([4, 4]);
+      fireEvent.click(screen.getByRole("button", { name: /Undo/ }));
+      expect(input.value).toBe(typed);
+      expect([input.selectionStart, input.selectionEnd]).toEqual([4, 4]);
+    });
+
+    it("moves the caret by the size of a fix made before it and back on Undo", async () => {
+      correct.mockResolvedValue({
+        status: "ok",
+        edits: [
+          edit({ start: 9, end: 12, original: "are", replacement: "is" }),
+        ],
+      });
+      const { input } = await renderWithAssistance();
+      const typed = "The user are here. ";
+      input.focus();
+      fireEvent.change(input, { target: { value: typed } });
+      input.setSelectionRange(typed.length, typed.length);
+      await waitFor(() => expect(input.value).toBe("The user is here. "), {
+        timeout: 8_000,
+      });
+      expect(input.selectionStart).toBe(typed.length - 1);
+      fireEvent.click(screen.getByRole("button", { name: /Undo/ }));
+      expect(input.value).toBe(typed);
+      expect(input.selectionStart).toBe(typed.length);
+    });
+
     it("does not send a corrected sentence back for another correction", async () => {
       correct.mockImplementation(async (request: { target: string }) => ({
         status: "ok",

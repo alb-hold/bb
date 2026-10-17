@@ -1000,7 +1000,13 @@ export function validateFormattedTranscript(
       : [token],
   );
   for (const token of formattedTokens) {
-    if (source.has(token) || vocabularyTokens.has(token)) continue;
+    if (source.has(token)) continue;
+    if (
+      vocabularyTokens.has(token) &&
+      rawTokens.some((word) => nearVariant(word, token))
+    ) {
+      continue;
+    }
     if (allowedNovelToken(token, source)) continue;
     return { ok: false, reason: "added-words" };
   }

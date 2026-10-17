@@ -101,6 +101,7 @@ export function NativeTerminalPromptBar({
   const composingRef = useRef(false);
   const lastChangeRef = useRef<TextChange | null>(null);
   const anchorRef = useRef<number | null>(null);
+  const pendingSelectionRef = useRef<readonly [number, number] | null>(null);
   const dictatedStartRef = useRef<number | null>(null);
   const sendAfterDictationRef = useRef(false);
   const pressRef = useRef<{
@@ -183,10 +184,21 @@ export function NativeTerminalPromptBar({
         }
         element.setSelectionRange(selectionStart, selectionEnd);
       }
+      const selection =
+        element !== null && document.activeElement === element
+          ? ([element.selectionStart, element.selectionEnd] as const)
+          : null;
       applyValue(
         `${current.slice(0, start)}${replacement}${current.slice(end)}`,
         true,
       );
+      const change = lastChangeRef.current;
+      if (selection !== null && change !== null) {
+        pendingSelectionRef.current = [
+          mapOffset(change, selection[0], "after"),
+          mapOffset(change, selection[1], "after"),
+        ];
+      }
     },
     [applyValue],
   );
@@ -440,6 +452,20 @@ export function NativeTerminalPromptBar({
     event.preventDefault();
     attachFiles(files);
   };
+
+  useLayoutEffect(() => {
+    const selection = pendingSelectionRef.current;
+    const element = textareaRef.current;
+    pendingSelectionRef.current = null;
+    if (
+      selection === null ||
+      element === null ||
+      document.activeElement !== element
+    ) {
+      return;
+    }
+    element.setSelectionRange(selection[0], selection[1]);
+  }, [text]);
 
   useLayoutEffect(() => {
     const element = textareaRef.current;

@@ -376,6 +376,22 @@ describe("dictation segments", () => {
     });
   });
 
+  it("keeps the transcript when formatting inserts an unspoken vocabulary term", async () => {
+    await withTestHarness({}, async (harness) => {
+      updateWritingAssistanceSettings(harness.deps.db, {
+        vocabulary: ["not"],
+      });
+      registerFakeAiService(harness.deps.aiServices, {
+        transcribe: async () => "run the migration",
+        complete: async () => "Not run the migration.",
+      });
+      await expect((await postSegment(harness)).json()).resolves.toMatchObject({
+        text: "run the migration",
+        formatted: false,
+      });
+    });
+  });
+
   it("formats a numbered list built from spoken ordinals", async () => {
     await withTestHarness({}, async (harness) => {
       registerFakeAiService(harness.deps.aiServices, {

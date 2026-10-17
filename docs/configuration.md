@@ -325,7 +325,9 @@ plural changes are offered as suggestions. Code, paths, identifiers and
 vocabulary terms are never edited. Dictation formatting follows the same rule:
 if the formatter changes a spoken word into another word, other than a
 vocabulary term or one of those accent restorations, the transcript is inserted
-as heard.
+as heard. A vocabulary term counts only as the spelling of a word that was
+spoken ("hermez" written as "Hermes"), never as a word added to what was said,
+and the spoken words must keep the order they were said in.
 
 Usage counts and the cost estimate use list prices and are not a bill: bb
 cloud has its own daily limit, and Codex uses the primary machine's Codex
