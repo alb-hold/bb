@@ -250,6 +250,15 @@ export const terminalDataPlaneChildMessageSchema = z.discriminatedUnion(
     z
       .object({
         v: versionSchema,
+        type: z.literal("terminal.output-batch"),
+        terminalId: idSchema,
+        daemonSessionId: idSchema,
+        chunks: z.array(terminalOutputChunkSchema).min(1),
+      })
+      .strict(),
+    z
+      .object({
+        v: versionSchema,
         type: z.literal("terminal.input"),
         attachId: idSchema,
         terminalId: idSchema,
