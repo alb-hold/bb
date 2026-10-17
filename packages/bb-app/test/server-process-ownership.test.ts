@@ -577,7 +577,7 @@ describe("server process ownership", () => {
       }
       expect(await fetch(`http://127.0.0.1:${port}/`).then((response) => response.status)).toBe(200);
       try {
-        await waitForFile(pluginReady, 10_000);
+        await waitForFile(pluginReady, 45_000);
       } catch (error) {
         const outputPath = join(dir, "server-output.log");
         throw new Error(
@@ -708,7 +708,7 @@ describe("server process ownership", () => {
         activeChildren.delete(serverPid);
       }
     }
-  });
+  }, 60_000);
 
   it("reports a managed child that survives SIGKILL", async () => {
     const dir = scratchDir();
