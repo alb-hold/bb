@@ -108,9 +108,9 @@ describe("TerminalSearch shortcuts and closed controls", () => {
     const commandFind = sendKey("f", { metaKey: true });
     expect.soft(commandFind.defaultPrevented).toBe(false);
     terminalKeys.stop();
-    expect.soft(
-      screen.queryByRole("search", { name: "Search terminal output" }),
-    ).toBeNull();
+    expect
+      .soft(screen.queryByRole("search", { name: "Search terminal output" }))
+      .toBeNull();
 
     render(
       <TerminalMobileControls
@@ -129,11 +129,13 @@ describe("TerminalSearch shortcuts and closed controls", () => {
     const mobileControls = document.querySelector(
       "[data-terminal-mobile-controls]",
     );
-    expect.soft(
-      mobileControls?.querySelector(
-        'button[aria-label="Search terminal output"]',
-      ),
-    ).toBeNull();
+    expect
+      .soft(
+        mobileControls?.querySelector(
+          'button[aria-label="Search terminal output"]',
+        ),
+      )
+      .toBeNull();
     const closedSearchButton = screen.queryByRole("button", {
       name: "Search terminal output",
     }) as HTMLButtonElement | null;
@@ -164,7 +166,8 @@ describe("TerminalSearch shortcuts and closed controls", () => {
       true,
     );
     expect(
-      sendKey("g", { metaKey: true, shiftKey: true }, textarea).defaultPrevented,
+      sendKey("g", { metaKey: true, shiftKey: true }, textarea)
+        .defaultPrevented,
     ).toBe(true);
   });
 
@@ -244,6 +247,18 @@ describe("TerminalSearch shortcuts and closed controls", () => {
     expect(
       screen.getByRole("search", { name: "Search terminal output" }),
     ).toBeTruthy();
+  });
+
+  it("leaves Escape in its terminal unprevented when search is closed", () => {
+    const { textarea } = renderSearch(false);
+    textarea.focus();
+    const terminalKeys = watchTerminalKeys(textarea);
+
+    const escape = sendKey("Escape", {}, textarea);
+    terminalKeys.stop();
+
+    expect(escape.defaultPrevented).toBe(false);
+    expect(terminalKeys.keys).toEqual(["Escape"]);
   });
 
   it("does not let one pane consume another pane's Escape or Cmd+G", () => {

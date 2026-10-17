@@ -52,7 +52,9 @@ function NavButton({ item }: { item: ExperimentalSidebarNavigationItem }) {
   return (
     <button
       type="button"
-      aria-label={item.badge ? `${item.label}, ${item.badge.label}` : item.label}
+      aria-label={
+        item.badge ? `${item.label}, ${item.badge.label}` : item.label
+      }
       aria-current={item.id === activeItemId ? "page" : undefined}
       disabled={item.isDisabled || item.isLoading}
       {...split.splitProps}
@@ -76,6 +78,10 @@ over when the user switches providers. `openCustomize()` opens bb's editor in
 a popover beside your navigation once any open menu closes, and returns focus
 to the control that opened it. Actions called after your component unmounts
 do nothing.
+
+When activating Search threads, navigation controls may pass an optional
+`target` in the activation options. The host uses it as the palette's focus
+return target when the palette closes.
 
 `experimental_useSidebarNavigationSplit(id, options?)` works like
 `experimental_useSidebarThreadSplit`: spread `splitProps` onto the item, gate

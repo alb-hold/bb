@@ -121,6 +121,7 @@ export function CommandPalette({ threadId, projectId }: CommandPaletteProps) {
     return true;
   });
   const openTargetRef = useRef<EventTarget | null>(null);
+  const threadSearchFromPaletteRef = useRef(false);
   const pendingRunRef = useRef<(() => void) | null>(null);
 
   const buildActions = useCallback(
@@ -178,6 +179,7 @@ export function CommandPalette({ threadId, projectId }: CommandPaletteProps) {
   useAppCommandHandler("palette.open", (invocation) => {
     const target = invocationTarget(invocation);
     prepareOpen(target);
+    threadSearchFromPaletteRef.current = false;
     setSearchingThreads(false);
     setOpen(true);
     return true;
@@ -187,6 +189,7 @@ export function CommandPalette({ threadId, projectId }: CommandPaletteProps) {
     "thread.search",
     (invocation) => {
       const target = invocationTarget(invocation);
+      threadSearchFromPaletteRef.current = false;
       prepareOpen(target);
       setSearchingThreads(true);
       setOpen(true);
@@ -213,6 +216,7 @@ export function CommandPalette({ threadId, projectId }: CommandPaletteProps) {
     setRecents((current) => recordPaletteRecent(current, action.id));
     if (action.id === THREAD_SEARCH_ACTION_ID) {
       action.run();
+      threadSearchFromPaletteRef.current = true;
       return;
     }
     pendingRunRef.current = action.run;
@@ -237,12 +241,14 @@ export function CommandPalette({ threadId, projectId }: CommandPaletteProps) {
   const handleOpenChange = useCallback((nextOpen: boolean) => {
     setOpen(nextOpen);
     if (!nextOpen) {
+      threadSearchFromPaletteRef.current = false;
       setSearchingThreads(false);
       setQuery("");
     }
   }, []);
 
   const exitMode = () => {
+    threadSearchFromPaletteRef.current = false;
     setSearchingThreads(false);
     setQuery("");
   };
@@ -254,7 +260,21 @@ export function CommandPalette({ threadId, projectId }: CommandPaletteProps) {
         aria-describedby={undefined}
         compactContentClassName="h-[min(32rem,80dvh)]"
         className={`top-[12%] max-w-[640px] translate-y-0 gap-0 p-0 shadow-lg sm:rounded-xl ${isCompact ? "min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)]" : ""}`}
+        onOpenAutoFocus={(event) => {
+          if (!searchingThreads) return;
+          event.preventDefault();
+          const content = event.currentTarget;
+          if (!(content instanceof HTMLElement)) return;
+          content
+            .querySelector<HTMLInputElement>('[aria-label="Search threads"]')
+            ?.focus();
+        }}
         onAfterCloseAutoFocus={handleAfterCloseAutoFocus}
+        onEscapeKeyDown={(event) => {
+          if (searchingThreads && threadSearchFromPaletteRef.current) {
+            event.preventDefault();
+          }
+        }}
         onKeyDownCapture={(event) => {
           if (
             !open ||
@@ -277,12 +297,6 @@ export function CommandPalette({ threadId, projectId }: CommandPaletteProps) {
           const action = shortcutActions.get(command);
           if (action) chooseAction(action);
         }}
-        onEscapeKeyDown={(event) => {
-          if (searchingThreads) {
-            event.preventDefault();
-            exitMode();
-          }
-        }}
         data-testid="command-palette"
       >
         <DialogTitle className="sr-only">Quick palette</DialogTitle>
@@ -301,6 +315,13 @@ export function CommandPalette({ threadId, projectId }: CommandPaletteProps) {
             query={query}
             onQueryChange={setQuery}
             onExit={exitMode}
+            onClose={() => {
+              if (threadSearchFromPaletteRef.current) {
+                exitMode();
+                return;
+              }
+              handleOpenChange(false);
+            }}
             runAfterClose={runAfterClose}
           />
         )}

@@ -33,10 +33,12 @@ export function ThreadSearchPalettePlaceholder({
   query,
   onQueryChange,
   onExit,
+  onClose,
 }: {
   query: string;
   onQueryChange: (query: string) => void;
   onExit: () => void;
+  onClose: () => void;
 }) {
   const listId = useId();
   const isCompact = useIsCompactViewport();
@@ -45,7 +47,6 @@ export function ThreadSearchPalettePlaceholder({
       <PaletteInputBand>
         <PaletteModeChip {...threadSearchModeChip(onExit, isCompact)} />
         <input
-          autoFocus
           role="combobox"
           aria-expanded
           aria-controls={listId}
@@ -56,10 +57,11 @@ export function ThreadSearchPalettePlaceholder({
           onChange={(event) => onQueryChange(event.target.value)}
           onKeyDown={(event) => {
             if (event.nativeEvent.isComposing) return;
-            if (
-              event.key === "Escape" ||
-              (event.key === "Backspace" && query.length === 0)
-            ) {
+            if (event.key === "Escape") {
+              event.preventDefault();
+              event.stopPropagation();
+              onClose();
+            } else if (event.key === "Backspace" && query.length === 0) {
               event.preventDefault();
               event.stopPropagation();
               onExit();
