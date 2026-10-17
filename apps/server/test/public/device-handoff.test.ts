@@ -116,6 +116,17 @@ describe("device handoff pending attention", () => {
 
       expect(response.status).toBe(200);
       expect(await response.json()).toEqual({ delivered: 0 });
+      const urlResponse = await harness.app.request("/api/v1/device-handoff", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          kind: "open-url",
+          url: "https://login.example.com/device?code=private-url",
+          origin: { threadId: thread.id },
+        }),
+      });
+      expect(urlResponse.status).toBe(200);
+      expect(await urlResponse.json()).toEqual({ delivered: 0 });
       expect(
         getThread(harness.db, thread.id)?.latestAttentionAt,
       ).toBeGreaterThan(1);
@@ -135,6 +146,9 @@ describe("device handoff pending attention", () => {
       expect(attentionObserver.messages.join("\n")).not.toContain(
         "private copy payload",
       );
+      expect(attentionObserver.messages.join("\n")).not.toContain(
+        "private-url",
+      );
 
       const originViewer = {
         messages: [] as string[],
@@ -151,8 +165,11 @@ describe("device handoff pending attention", () => {
       const handoffMessages = originViewer.messages.filter(
         (message) => JSON.parse(message).type === "device-handoff",
       );
-      expect(handoffMessages).toHaveLength(1);
+      expect(handoffMessages).toHaveLength(2);
       expect(handoffMessages[0]).toContain("private copy payload");
+      expect(handoffMessages[1]).toContain(
+        "https://login.example.com/device?code=private-url",
+      );
       expect(getThread(harness.db, thread.id)?.latestAttentionAt).toBe(1);
       expect(markerAt).toBeGreaterThan(1);
       expect(unrelatedViewer.messages.join("\n")).not.toContain(
@@ -160,6 +177,9 @@ describe("device handoff pending attention", () => {
       );
       expect(attentionObserver.messages.join("\n")).not.toContain(
         "private copy payload",
+      );
+      expect(attentionObserver.messages.join("\n")).not.toContain(
+        "private-url",
       );
     });
   });
