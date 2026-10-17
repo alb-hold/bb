@@ -233,6 +233,7 @@ describe("ThreadTerminalView terminal focus boundary", () => {
         testState.socketMessages.map((message) => JSON.parse(message)),
       ).toContainEqual({ type: "visibility", visible: true });
     });
+    await new Promise((resolve) => setTimeout(resolve, 300));
     expect(
       testState.socketMessages
         .map((message) => JSON.parse(message) as { type?: string })
