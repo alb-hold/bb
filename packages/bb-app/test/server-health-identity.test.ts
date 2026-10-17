@@ -389,6 +389,7 @@ describe("startFullStackServerProcess", () => {
     };
     const finalizationEnteredPath = join(dirname(entry), "writer-finalizing");
     const finalizationReleasePath = join(dirname(entry), "release-writer");
+    const completionPath = join(dirname(entry), "writer-finished");
     const serverRun = await startFullStackServerProcess({
       context,
       env: {
@@ -397,6 +398,7 @@ describe("startFullStackServerProcess", () => {
       },
       processes,
       testWriterBarrier: {
+        completionPath,
         finalizationEnteredPath,
         finalizationReleasePath,
       },
@@ -436,7 +438,18 @@ describe("startFullStackServerProcess", () => {
       if (!existsSync(finalizationReleasePath)) {
         writeFileSync(finalizationReleasePath, "release");
       }
-      await serverRun.childProcess.writerExit;
+      await vi.waitFor(() => expect(existsSync(completionPath)).toBe(true));
+      if (writerPid !== undefined) {
+        await vi.waitFor(() => {
+          let writerIsGone = false;
+          try {
+            process.kill(writerPid!, 0);
+          } catch (error) {
+            writerIsGone = (error as NodeJS.ErrnoException).code === "ESRCH";
+          }
+          expect(writerIsGone).toBe(true);
+        });
+      }
     }
   });
 
