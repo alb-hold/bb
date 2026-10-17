@@ -845,12 +845,16 @@ describe("validateFormattedTranscript", () => {
   it.each([
     ["quero um, não dois", "Quero, não dois."],
     ["um is the build green?", "Is the build green?"],
-  ])("keeps um, which is also the Portuguese for one: %s", (raw, formatted) => {
-    expect(validateFormattedTranscript(raw, formatted)).toEqual({
-      ok: false,
-      reason: "dropped-words",
-    });
-  });
+    ["quero hum, não dois", "Quero, não dois."],
+  ])(
+    "keeps um and hum, which can also be the Portuguese for one: %s",
+    (raw, formatted) => {
+      expect(validateFormattedTranscript(raw, formatted)).toEqual({
+        ok: false,
+        reason: "dropped-words",
+      });
+    },
+  );
 
   it("allows filler removal and self-corrections", () => {
     expect(
