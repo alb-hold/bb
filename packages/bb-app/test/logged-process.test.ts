@@ -573,7 +573,7 @@ describe("spawnLoggedProcess", () => {
     }
   });
 
-  it("recovers a segment when a live pid has a different recorded incarnation", async () => {
+  it("recovers a segment with no owner endpoint while its pid is live", async () => {
     const logDir = scratchDir();
     const stopPath = join(logDir, "stop-incarnation-survivor");
     const completionPath = join(logDir, "incarnation-survivor-finished");
