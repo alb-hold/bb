@@ -274,7 +274,6 @@ export function listTerminalSessions(
                           forkTerminalTabDismissals.hostId,
                           terminalSessions.hostId,
                         ),
-                        gt(forkTerminalTabDismissals.expiresAt, Date.now()),
                       ),
                     ),
                 ),
