@@ -408,6 +408,24 @@ describe("TerminalWebSocketTransport", () => {
     harness.transport.dispose();
   });
 
+  it("reports the settled fit on first attach without another size change", () => {
+    vi.useFakeTimers();
+    const harness = createHarness();
+    harness.transport.start();
+    const socket = harness.sockets[0]!;
+    socket.open();
+    harness.transport.sendResize(128, 43);
+    harness.transport.markLayoutSettled();
+
+    expect(
+      socket.sent.filter((message) => message.includes('"resize"')),
+    ).toEqual([
+      JSON.stringify({ type: "resize", cols: 128, rows: 43 }),
+      JSON.stringify({ type: "resize", cols: 128, rows: 43 }),
+    ]);
+    harness.transport.dispose();
+  });
+
   describe("attach resize settling", () => {
     function openUnsettled(cols: number, rows: number) {
       vi.useFakeTimers();

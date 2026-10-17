@@ -304,6 +304,7 @@ interface ListTerminalsArgs {
 }
 
 interface CreateTerminalArgs {
+  onTerminalStarted?: (terminalId: string) => void;
   payload: CreateTerminalRequest;
   extraContributedEnv?: HostDaemonContributedEnvEntry[];
 }
@@ -322,6 +323,7 @@ interface TerminalCreatePayload {
 
 interface CreateTerminalForTargetArgs {
   extraContributedEnv: HostDaemonContributedEnvEntry[];
+  onTerminalStarted?: (terminalId: string) => void;
   payload: TerminalCreatePayload;
   target: TerminalLaunchTarget;
   threadId: string | null;
@@ -574,6 +576,7 @@ function updateTerminalById(
 
 export class TerminalSessionLifecycle {
   private readonly lastThreadAttentionAt = new Map<string, number>();
+  private readonly nativeTerminalRepaintsOnAttach = new Set<string>();
   private readonly pendingAttaches: PendingRpcRegistry<
     PendingTerminalAttachKey,
     TerminalReplayMessage
@@ -905,6 +908,9 @@ export class TerminalSessionLifecycle {
         : target;
     return this.createTerminalForTarget({
       extraContributedEnv: args.extraContributedEnv ?? [],
+      ...(args.onTerminalStarted === undefined
+        ? {}
+        : { onTerminalStarted: args.onTerminalStarted }),
       payload: args.payload,
       target: launchTarget,
       threadId: target.kind === "thread" ? target.threadId : null,
@@ -1097,6 +1103,7 @@ export class TerminalSessionLifecycle {
         "Terminal session was cancelled before it opened",
       );
     }
+    args.onTerminalStarted?.(runningSession.id);
     this.notifyTerminalSessionChanged(runningSession);
     return this.toTerminalSession(runningSession);
   }
@@ -2091,6 +2098,7 @@ export class TerminalSessionLifecycle {
         );
         return;
       case "terminal.exited":
+        this.nativeTerminalRepaintsOnAttach.delete(args.message.terminalId);
         const current = getTerminalById(
           this.options.db,
           args.message.terminalId,
@@ -2764,6 +2772,33 @@ export class TerminalSessionLifecycle {
         chunk: toTerminalOutputChunk(chunk),
       });
     }
+    this.repaintReopenedNativeTerminal(current);
+  }
+
+  requestNativeTerminalRepaintOnNextAttach(terminalId: string): void {
+    this.nativeTerminalRepaintsOnAttach.add(terminalId);
+  }
+
+  private repaintReopenedNativeTerminal(current: TerminalSessionRow): void {
+    if (!this.nativeTerminalRepaintsOnAttach.delete(current.id)) {
+      return;
+    }
+    if (current.status !== "running" || current.daemonSessionId === null) {
+      return;
+    }
+    const nudgeRows = current.rows === 1 ? current.rows + 1 : current.rows - 1;
+    this.options.hub.sendDaemonSessionMessage(current.daemonSessionId, {
+      type: "terminal.resize",
+      terminalId: current.id,
+      cols: current.cols,
+      rows: nudgeRows,
+    });
+    this.options.hub.sendDaemonSessionMessage(current.daemonSessionId, {
+      type: "terminal.resize",
+      terminalId: current.id,
+      cols: current.cols,
+      rows: current.rows,
+    });
   }
 
   private addOutputFlowClient(

@@ -424,6 +424,102 @@ describe("native terminal threads", () => {
         terminalId: reopen.terminalId,
       }),
     ).toMatchObject({ cols: 52, rows: 41, status: "running" });
+    expect(
+      daemonMessages(daemonSocket).filter(
+        (message) =>
+          message.type === "terminal.resize" &&
+          message.terminalId === reopen.terminalId,
+      ),
+    ).toEqual([]);
+
+    const attachedSocket = {
+      close() {},
+      send() {},
+    };
+    restarted.deps.terminalSessions.attachBrowserTerminal({
+      outputAcks: false,
+      resizeAcks: false,
+      socket: attachedSocket,
+      sinceSeq: 0,
+      terminalId: reopen.terminalId,
+    });
+    const attach = daemonMessages(daemonSocket).find(
+      (message) =>
+        message.type === "terminal.attach" &&
+        message.terminalId === reopen.terminalId,
+    );
+    if (attach?.type !== "terminal.attach") {
+      throw new Error("Expected terminal.attach after browser client connects");
+    }
+    restarted.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.hostId,
+      sessionId: fixture.sessionId,
+      message: {
+        type: "terminal.replay",
+        requestId: attach.requestId,
+        terminalId: reopen.terminalId,
+        chunks: [],
+        replayStartSeq: 0,
+        nextSeq: 0,
+      },
+    });
+    expect(
+      daemonMessages(daemonSocket).filter(
+        (message) =>
+          message.type === "terminal.resize" &&
+          message.terminalId === reopen.terminalId,
+      ),
+    ).toEqual([
+      {
+        type: "terminal.resize",
+        terminalId: reopen.terminalId,
+        cols: 52,
+        rows: 40,
+      },
+      {
+        type: "terminal.resize",
+        terminalId: reopen.terminalId,
+        cols: 52,
+        rows: 41,
+      },
+    ]);
+
+    restarted.deps.terminalSessions.attachBrowserTerminal({
+      outputAcks: false,
+      resizeAcks: false,
+      socket: attachedSocket,
+      sinceSeq: 0,
+      terminalId: reopen.terminalId,
+    });
+    const secondAttach = daemonMessages(daemonSocket).filter(
+      (message) =>
+        message.type === "terminal.attach" &&
+        message.terminalId === reopen.terminalId,
+    )[1];
+    if (secondAttach?.type !== "terminal.attach") {
+      throw new Error(
+        "Expected second terminal.attach after browser reconnect",
+      );
+    }
+    restarted.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.hostId,
+      sessionId: fixture.sessionId,
+      message: {
+        type: "terminal.replay",
+        requestId: secondAttach.requestId,
+        terminalId: reopen.terminalId,
+        chunks: [],
+        replayStartSeq: 0,
+        nextSeq: 0,
+      },
+    });
+    expect(
+      daemonMessages(daemonSocket).filter(
+        (message) =>
+          message.type === "terminal.resize" &&
+          message.terminalId === reopen.terminalId,
+      ),
+    ).toHaveLength(2);
     restarted.db
       .update(terminalSessions)
       .set({ closeReason: "user", status: "exited" })
