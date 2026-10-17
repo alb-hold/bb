@@ -321,6 +321,9 @@ const finishStream = () => {
   try {
     if (pendingLossBytes > 0) writePendingLossMarker();
     closeActive(true);
+    if (writerBarrier?.completionPath !== undefined) {
+      fs.writeFileSync(writerBarrier.completionPath, "done");
+    }
     finalized = true;
   } catch (error) {
     finalizationAttempts += 1;
@@ -417,6 +420,7 @@ interface SpawnLoggedProcessArgs {
     failActiveOpenCount?: number;
     failActiveWriteCount?: number;
     diagnosticPath?: string;
+    completionPath?: string;
   };
 }
 

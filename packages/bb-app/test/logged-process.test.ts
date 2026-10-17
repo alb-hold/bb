@@ -447,6 +447,7 @@ describe("spawnLoggedProcess", () => {
   it("rotates an oversized active log without discarding its contents", async () => {
     const logDir = scratchDir();
     const logPath = join(logDir, "server-stdio.log");
+    const writerFinishedPath = join(logDir, "writer-finished");
     writeFileSync(logPath, `previous-active:${"x".repeat(11 * 1024 * 1024)}`);
     for (let index = 1; index <= 5; index += 1) {
       writeFileSync(`${logPath}.${index}`, `previous-${index}`);
@@ -457,9 +458,13 @@ describe("spawnLoggedProcess", () => {
       env: process.env,
       logDir,
       logName: "server",
+      testWriterBarrier: { completionPath: writerFinishedPath },
     });
 
     expect(await waitForExit(child)).toBe(0);
+    await expect
+      .poll(() => existsSync(writerFinishedPath), { timeout: 5_000 })
+      .toBe(true);
     await expect
       .poll(
         () =>
@@ -531,15 +536,20 @@ describe("spawnLoggedProcess", () => {
 
   it("rotates stdio output at the log size limit", async () => {
     const logDir = scratchDir();
+    const writerFinishedPath = join(logDir, "writer-finished");
     const child = spawnLoggedProcess({
       command: process.execPath,
       args: ["-e", `process.stdout.write("x".repeat(61 * 1024 * 1024));`],
       env: process.env,
       logDir,
       logName: "server",
+      testWriterBarrier: { completionPath: writerFinishedPath },
     });
 
     expect(await waitForExit(child)).toBe(0);
+    await expect
+      .poll(() => existsSync(writerFinishedPath), { timeout: 5_000 })
+      .toBe(true);
     const currentPath = join(logDir, "server-stdio.log");
     const backups = () =>
       familyFiles(logDir, "server").filter((path) => path.includes(".backup-"));
