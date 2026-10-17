@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { getThread, hasActiveThreadAttention, updateThread } from "@bb/db";
 import {
   createTestAppHarness,
@@ -73,9 +73,27 @@ describe("device handoff pending attention", () => {
       const { thread } = seedThreadFixture(harness, {
         thread: { title: "Pending handoff source" },
       });
+      const { thread: unrelatedThread } = seedThreadFixture(harness, {
+        thread: { title: "Unrelated thread" },
+      });
       updateThread(harness.db, harness.hub, thread.id, {
         lastReadAt: 1,
         latestAttentionAt: 1,
+      });
+      updateThread(harness.db, harness.hub, unrelatedThread.id, {
+        lastReadAt: 1,
+        latestAttentionAt: 1,
+      });
+      const unrelatedViewer = {
+        messages: [] as string[],
+        close() {},
+        send(data: string) {
+          this.messages.push(data);
+        },
+      };
+      harness.hub.subscribe(unrelatedViewer, {
+        kind: "thread-detail",
+        threadId: unrelatedThread.id,
       });
 
       const response = await harness.app.request("/api/v1/device-handoff", {
@@ -93,7 +111,72 @@ describe("device handoff pending attention", () => {
       expect(
         getThread(harness.db, thread.id)?.latestAttentionAt,
       ).toBeGreaterThan(1);
+      const markerAt = getThread(harness.db, thread.id)?.latestAttentionAt;
+      expect(getThread(harness.db, unrelatedThread.id)?.latestAttentionAt).toBe(
+        1,
+      );
       expect(hasActiveThreadAttention(harness.db)).toBe(true);
+      expect(unrelatedViewer.messages.join("\n")).not.toContain(
+        "private copy payload",
+      );
+
+      const originViewer = {
+        messages: [] as string[],
+        close() {},
+        send(data: string) {
+          this.messages.push(data);
+        },
+      };
+      harness.hub.subscribe(originViewer, {
+        kind: "thread-detail",
+        threadId: thread.id,
+      });
+
+      const handoffMessages = originViewer.messages.filter(
+        (message) => JSON.parse(message).type === "device-handoff",
+      );
+      expect(handoffMessages).toHaveLength(1);
+      expect(handoffMessages[0]).toContain("private copy payload");
+      expect(getThread(harness.db, thread.id)?.latestAttentionAt).toBe(1);
+      expect(markerAt).toBeGreaterThan(1);
+      expect(unrelatedViewer.messages.join("\n")).not.toContain(
+        "private copy payload",
+      );
+    });
+  });
+
+  it("clears its attention marker when an undelivered handoff expires", async () => {
+    await withTestHarness(async (harness) => {
+      const { thread } = seedThreadFixture(harness, {
+        thread: { title: "Expiring handoff source" },
+      });
+      updateThread(harness.db, harness.hub, thread.id, {
+        lastReadAt: 1,
+        latestAttentionAt: 1,
+      });
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(Date.now());
+        const response = await harness.app.request("/api/v1/device-handoff", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            kind: "copy-text",
+            text: "expire me",
+            origin: { threadId: thread.id },
+          }),
+        });
+        expect(response.status).toBe(200);
+        expect(
+          getThread(harness.db, thread.id)?.latestAttentionAt,
+        ).toBeGreaterThan(1);
+
+        await vi.advanceTimersByTimeAsync(2 * 60 * 1000);
+
+        expect(getThread(harness.db, thread.id)?.latestAttentionAt).toBe(1);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 });

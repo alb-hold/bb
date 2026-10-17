@@ -10,6 +10,35 @@ import { ApiError } from "../errors.js";
 import type { AppDeps } from "../types.js";
 
 export function registerDeviceHandoffRoutes(app: Hono, deps: AppDeps): void {
+  const attentionMarkers = new Map<
+    string,
+    { markerAt: number; previousAttentionAt: number }
+  >();
+  deps.hub.onDeviceHandoffAttentionChange((threadId, pending) => {
+    const marker = attentionMarkers.get(threadId);
+    if (pending) {
+      if (marker) return;
+      const thread = getThread(deps.db, threadId);
+      if (!thread) return;
+      const markerAt = Math.max(Date.now(), thread.latestAttentionAt + 1);
+      attentionMarkers.set(threadId, {
+        markerAt,
+        previousAttentionAt: thread.latestAttentionAt,
+      });
+      updateThread(deps.db, deps.hub, threadId, {
+        latestAttentionAt: markerAt,
+      });
+      return;
+    }
+    if (!marker) return;
+    attentionMarkers.delete(threadId);
+    const thread = getThread(deps.db, threadId);
+    if (thread?.latestAttentionAt === marker.markerAt) {
+      updateThread(deps.db, deps.hub, threadId, {
+        latestAttentionAt: marker.previousAttentionAt,
+      });
+    }
+  });
   const { post } = typedRoutes<PublicApiSchema>(app, {
     onValidationError: (message) =>
       new ApiError(
@@ -52,15 +81,11 @@ export function registerDeviceHandoffRoutes(app: Hono, deps: AppDeps): void {
       0,
       256,
     );
-    const delivered = deps.hub.notifyDeviceHandoff(request, originLabel);
-    if (delivered === 0) {
-      const attentionThreadId = thread?.id ?? terminal?.threadId;
-      if (attentionThreadId !== undefined && attentionThreadId !== null) {
-        updateThread(deps.db, deps.hub, attentionThreadId, {
-          latestAttentionAt: Date.now(),
-        });
-      }
-    }
+    const delivered = deps.hub.notifyDeviceHandoff(
+      request,
+      originLabel,
+      thread?.id ?? terminal?.threadId,
+    );
     return context.json({ delivered });
   });
 }

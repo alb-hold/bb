@@ -57,6 +57,10 @@ type DaemonSessionChange =
   | { kind: "closed"; sessionId: string };
 
 type DaemonSessionListener = (change: DaemonSessionChange) => void;
+type DeviceHandoffAttentionListener = (
+  threadId: string,
+  pending: boolean,
+) => void;
 
 interface TerminalSize {
   cols: number;
@@ -300,6 +304,12 @@ export class NotificationHub implements DbNotifier {
     ReturnType<typeof setTimeout>
   >();
   private readonly daemonSessionListeners = new Set<DaemonSessionListener>();
+  private readonly deviceHandoffAttentionListeners =
+    new Set<DeviceHandoffAttentionListener>();
+  private readonly pendingDeviceHandoffCountsByThread = new Map<
+    string,
+    number
+  >();
   private readonly terminalClientSocketsById = new Map<
     string,
     Set<HubSocket>
@@ -330,6 +340,7 @@ export class NotificationHub implements DbNotifier {
       expiresAt: number;
       origin: DeviceHandoffRequest["origin"];
       payload: string;
+      attentionThreadId: string | null;
       timeout: ReturnType<typeof setTimeout>;
     }>
   >();
@@ -366,6 +377,13 @@ export class NotificationHub implements DbNotifier {
     return () => {
       this.changedMessageListeners.delete(listener);
     };
+  }
+
+  onDeviceHandoffAttentionChange(
+    listener: DeviceHandoffAttentionListener,
+  ): () => void {
+    this.deviceHandoffAttentionListeners.add(listener);
+    return () => this.deviceHandoffAttentionListeners.delete(listener);
   }
 
   registerTerminalClient(terminalId: string, socket: HubSocket): void {
@@ -1155,6 +1173,7 @@ export class NotificationHub implements DbNotifier {
   notifyDeviceHandoff(
     request: DeviceHandoffRequest,
     originLabel: string,
+    attentionThreadId?: string | null,
   ): number {
     const createdAt = Date.now();
     const signal = deviceHandoffSignalSchema.parse({
@@ -1173,11 +1192,25 @@ export class NotificationHub implements DbNotifier {
       return recipients.size;
     }
     const originKey = this.deviceHandoffOriginKey(request.origin);
+    const scopedAttentionThreadId = attentionThreadId ?? null;
+    if (scopedAttentionThreadId !== null) {
+      const previousCount =
+        this.pendingDeviceHandoffCountsByThread.get(scopedAttentionThreadId) ??
+        0;
+      this.pendingDeviceHandoffCountsByThread.set(
+        scopedAttentionThreadId,
+        previousCount + 1,
+      );
+      if (previousCount === 0) {
+        this.emitDeviceHandoffAttentionChange(scopedAttentionThreadId, true);
+      }
+    }
     const pending = this.pendingDeviceHandoffsByOrigin.get(originKey) ?? [];
     const handoff = {
       expiresAt: signal.expiresAt,
       origin: request.origin,
       payload,
+      attentionThreadId: scopedAttentionThreadId,
       timeout: setTimeout(
         () => this.removePendingDeviceHandoff(originKey, payload),
         Math.max(0, signal.expiresAt - Date.now()),
@@ -1194,7 +1227,10 @@ export class NotificationHub implements DbNotifier {
     for (const [originKey, handoffs] of this.pendingDeviceHandoffsByOrigin) {
       const live = handoffs.filter((handoff) => handoff.expiresAt > now);
       for (const handoff of handoffs) {
-        if (handoff.expiresAt <= now) clearTimeout(handoff.timeout);
+        if (handoff.expiresAt <= now) {
+          clearTimeout(handoff.timeout);
+          this.decrementDeviceHandoffAttention(handoff.attentionThreadId);
+        }
       }
       if (live.length === 0) {
         this.pendingDeviceHandoffsByOrigin.delete(originKey);
@@ -1260,6 +1296,7 @@ export class NotificationHub implements DbNotifier {
         if (recipients.size === 0) continue;
         for (const socket of recipients) socket.send(handoff.payload);
         clearTimeout(handoff.timeout);
+        this.decrementDeviceHandoffAttention(handoff.attentionThreadId);
       }
       const remaining = handoffs.filter(
         (handoff) => !matchingOrigin(handoff.origin),
@@ -1277,6 +1314,7 @@ export class NotificationHub implements DbNotifier {
       originKey: string;
       payload: string;
       expiresAt: number;
+      attentionThreadId: string | null;
     }> = [];
     for (const [originKey, handoffs] of this.pendingDeviceHandoffsByOrigin) {
       handoffs.forEach((handoff) => {
@@ -1284,6 +1322,7 @@ export class NotificationHub implements DbNotifier {
           originKey,
           payload: handoff.payload,
           expiresAt: handoff.expiresAt,
+          attentionThreadId: handoff.attentionThreadId,
         });
       });
     }
@@ -1299,6 +1338,9 @@ export class NotificationHub implements DbNotifier {
         );
         if (index !== -1) {
           clearTimeout(handoffs[index]?.timeout);
+          this.decrementDeviceHandoffAttention(
+            handoffs[index]?.attentionThreadId ?? null,
+          );
           handoffs.splice(index, 1);
         }
         if (handoffs.length === 0) {
@@ -1330,10 +1372,33 @@ export class NotificationHub implements DbNotifier {
     if (!handoffs) return;
     const remaining = handoffs.filter((handoff) => handoff.payload !== payload);
     if (remaining.length === handoffs.length) return;
+    const removed = handoffs.find((handoff) => handoff.payload === payload);
+    this.decrementDeviceHandoffAttention(removed?.attentionThreadId ?? null);
     if (remaining.length === 0) {
       this.pendingDeviceHandoffsByOrigin.delete(originKey);
     } else {
       this.pendingDeviceHandoffsByOrigin.set(originKey, remaining);
+    }
+  }
+
+  private decrementDeviceHandoffAttention(threadId: string | null): void {
+    if (threadId === null) return;
+    const remaining =
+      (this.pendingDeviceHandoffCountsByThread.get(threadId) ?? 1) - 1;
+    if (remaining > 0) {
+      this.pendingDeviceHandoffCountsByThread.set(threadId, remaining);
+      return;
+    }
+    this.pendingDeviceHandoffCountsByThread.delete(threadId);
+    this.emitDeviceHandoffAttentionChange(threadId, false);
+  }
+
+  private emitDeviceHandoffAttentionChange(
+    threadId: string,
+    pending: boolean,
+  ): void {
+    for (const listener of this.deviceHandoffAttentionListeners) {
+      listener(threadId, pending);
     }
   }
 
