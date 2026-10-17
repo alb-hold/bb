@@ -564,6 +564,156 @@ describe("public terminal routes", () => {
     ]);
   });
 
+  it("keeps a retained exited terminal listed until a tab close dismisses it", async () => {
+    const fixture = await createTerminalRouteFixture();
+    harnesses.push(fixture.harness);
+    const session = createTerminalSession(fixture.harness.db, {
+      cols: 120,
+      daemonSessionId: fixture.session.id,
+      environmentId: fixture.environment.id,
+      hostId: fixture.host.id,
+      initialCwd: fixture.environment.path ?? "/tmp/terminal-workspace",
+      rows: 32,
+      status: "running",
+      threadId: fixture.thread.id,
+      title: "Retained tab",
+    });
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.host.id,
+      sessionId: fixture.session.id,
+      message: {
+        type: "terminal.output",
+        terminalId: session.id,
+        chunk: {
+          seq: 0,
+          dataBase64: Buffer.from("retained tab output\n").toString("base64"),
+        },
+      },
+    });
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.host.id,
+      sessionId: fixture.session.id,
+      message: {
+        type: "terminal.exited",
+        terminalId: session.id,
+        exitCode: 0,
+        closeReason: "process-exit",
+      },
+    });
+
+    const listUrl = `/api/v1/terminals?threadId=${encodeURIComponent(fixture.thread.id)}`;
+    const listed = terminalListResponseSchema.parse(
+      await readJson(await fixture.harness.app.request(listUrl)),
+    );
+    expect(listed.sessions).toContainEqual(
+      expect.objectContaining({ id: session.id, status: "exited" }),
+    );
+
+    const closeResponse = await fixture.harness.app.request(
+      `/api/v1/terminals/${session.id}/close`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ mode: "force", reason: "user" }),
+      },
+    );
+    expect(closeResponse.status).toBe(200);
+
+    const afterClose = terminalListResponseSchema.parse(
+      await readJson(await fixture.harness.app.request(listUrl)),
+    );
+    expect(afterClose.sessions).not.toContainEqual(
+      expect.objectContaining({ id: session.id }),
+    );
+  });
+
+  it("keeps a dismissed terminal hidden until its retained output expires", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const now = new Date("2026-10-17T00:00:00.000Z").getTime();
+    vi.setSystemTime(now);
+    try {
+      const fixture = await createTerminalRouteFixture();
+      harnesses.push(fixture.harness);
+      const session = createTerminalSession(fixture.harness.db, {
+        cols: 120,
+        daemonSessionId: fixture.session.id,
+        environmentId: fixture.environment.id,
+        hostId: fixture.host.id,
+        initialCwd: fixture.environment.path ?? "/tmp/terminal-workspace",
+        rows: 32,
+        status: "running",
+        threadId: fixture.thread.id,
+        title: "Long retained output",
+      });
+      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.host.id,
+        sessionId: fixture.session.id,
+        message: {
+          type: "terminal.output",
+          terminalId: session.id,
+          chunk: {
+            seq: 0,
+            dataBase64: Buffer.from("retained until expiry\n").toString(
+              "base64",
+            ),
+          },
+        },
+      });
+      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.host.id,
+        sessionId: fixture.session.id,
+        message: {
+          type: "terminal.exited",
+          terminalId: session.id,
+          exitCode: 0,
+          closeReason: "process-exit",
+        },
+      });
+
+      const outputExpiresAt = now + 60 * 60_000;
+      fixture.harness.db.$client
+        .prepare(
+          "UPDATE fork_terminal_output SET expires_at = ? WHERE terminal_session_id = ? AND host_id = ?",
+        )
+        .run(outputExpiresAt, session.id, fixture.host.id);
+      const closeResponse = await fixture.harness.app.request(
+        `/api/v1/terminals/${session.id}/close`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ mode: "force", reason: "user" }),
+        },
+      );
+      expect(closeResponse.status).toBe(200);
+
+      const listUrl = `/api/v1/terminals?threadId=${encodeURIComponent(fixture.thread.id)}`;
+      const listIds = async () => {
+        const response = await fixture.harness.app.request(listUrl);
+        expect(response.status).toBe(200);
+        return terminalListResponseSchema
+          .parse(await readJson(response))
+          .sessions.map(({ id }) => id);
+      };
+      expect(await listIds()).not.toContain(session.id);
+
+      vi.setSystemTime(now + 31 * 60_000);
+      expect(await listIds()).not.toContain(session.id);
+
+      vi.setSystemTime(outputExpiresAt + 1);
+      expect(await listIds()).not.toContain(session.id);
+
+      const dismissal = fixture.harness.db.$client
+        .prepare(
+          `SELECT expires_at AS expiresAt FROM fork_terminal_tab_dismissals
+           WHERE terminal_session_id = ? AND host_id = ?`,
+        )
+        .get(session.id, fixture.host.id) as { expiresAt: number } | undefined;
+      expect(dismissal?.expiresAt).toBe(outputExpiresAt);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("records daemon attention on the existing thread unread timestamp and clears terminal state when visible", async () => {
     const fixture = await createTerminalRouteFixture();
     harnesses.push(fixture.harness);

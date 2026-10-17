@@ -356,6 +356,218 @@ function composerScreen(pasted: string): string {
 }
 
 describe("native terminal threads", () => {
+  it("applies a reconnecting client's size after a native terminal reopens", async () => {
+    const fixture = await createMigratedMemoryFixture();
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "claude-code",
+    });
+    fixture.harness.db
+      .update(terminalSessions)
+      .set({ closeReason: "daemon-disconnect", status: "disconnected" })
+      .where(eq(terminalSessions.id, open.terminalId))
+      .run();
+
+    const restarted = await createTestAppHarness({ db: fixture.harness.db });
+    harnesses.push(restarted);
+    const daemonSocket = createFakeDaemonSocket();
+    restarted.hub.registerDaemon(
+      fixture.sessionId,
+      fixture.hostId,
+      daemonSocket,
+    );
+    const browserSocket = { close() {}, send() {} };
+    restarted.deps.terminalSessions.attachBrowserTerminal({
+      outputAcks: false,
+      resizeAcks: false,
+      socket: browserSocket,
+      sinceSeq: 0,
+      terminalId: open.terminalId,
+    });
+    restarted.deps.terminalSessions.handleBrowserTerminalMessage({
+      terminalId: open.terminalId,
+      socket: browserSocket,
+      message: { type: "visibility", visible: true },
+    });
+    restarted.deps.terminalSessions.handleBrowserTerminalMessage({
+      terminalId: open.terminalId,
+      socket: browserSocket,
+      message: { type: "resize", cols: 52, rows: 41 },
+    });
+
+    expect(
+      getTerminalSession(restarted.db, {
+        kind: "terminal",
+        terminalId: open.terminalId,
+      }),
+    ).toMatchObject({ cols: 120, rows: 36, status: "disconnected" });
+
+    const reopening = reopenNativeTerminalsAfterDaemonReconnect(
+      restarted.deps,
+      { hostId: fixture.hostId, threadIds: [thread.id] },
+    );
+    const reopen = await waitForTerminalOpen(daemonSocket);
+    expect(reopen).toMatchObject({ cols: 52, rows: 41 });
+    acknowledgeOpen(
+      { ...fixture, harness: restarted, socket: daemonSocket },
+      reopen,
+    );
+    await reopening;
+
+    const reopenedTerminalId = getNativeTerminalThread(
+      restarted.db,
+      thread.id,
+    )?.terminalSessionId;
+    expect(reopenedTerminalId).toBe(reopen.terminalId);
+    expect(
+      getTerminalSession(restarted.db, {
+        kind: "terminal",
+        terminalId: reopen.terminalId,
+      }),
+    ).toMatchObject({ cols: 52, rows: 41, status: "running" });
+    expect(
+      daemonMessages(daemonSocket).filter(
+        (message) =>
+          message.type === "terminal.resize" &&
+          message.terminalId === reopen.terminalId,
+      ),
+    ).toEqual([]);
+
+    const attachedSocket = {
+      close() {},
+      send() {},
+    };
+    const originalSetTimeout = globalThis.setTimeout;
+    const scheduledRepaints: { delay: number; run: () => void }[] = [];
+    const timeoutSpy = vi
+      .spyOn(globalThis, "setTimeout")
+      .mockImplementation((callback, delay, ...args) => {
+        if (delay === 0 || delay === 1_500) {
+          scheduledRepaints.push({
+            delay,
+            run: () => callback(...args),
+          });
+          return { unref() {} } as ReturnType<typeof setTimeout>;
+        }
+        return originalSetTimeout(callback, delay, ...args);
+      });
+    try {
+      restarted.deps.terminalSessions.attachBrowserTerminal({
+        outputAcks: false,
+        resizeAcks: false,
+        socket: attachedSocket,
+        sinceSeq: 0,
+        terminalId: reopen.terminalId,
+      });
+      const attach = daemonMessages(daemonSocket).find(
+        (message) =>
+          message.type === "terminal.attach" &&
+          message.terminalId === reopen.terminalId,
+      );
+      if (attach?.type !== "terminal.attach") {
+        throw new Error(
+          "Expected terminal.attach after browser client connects",
+        );
+      }
+      restarted.deps.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.hostId,
+        sessionId: fixture.sessionId,
+        message: {
+          type: "terminal.replay",
+          requestId: attach.requestId,
+          terminalId: reopen.terminalId,
+          chunks: [],
+          replayStartSeq: 0,
+          nextSeq: 0,
+        },
+      });
+      expect(
+        daemonMessages(daemonSocket).filter(
+          (message) =>
+            message.type === "terminal.resize" &&
+            message.terminalId === reopen.terminalId,
+        ),
+      ).toEqual([]);
+
+      expect(scheduledRepaints.map(({ delay }) => delay)).toEqual([1_500]);
+      expect(
+        daemonMessages(daemonSocket).filter(
+          (message) =>
+            message.type === "terminal.resize" &&
+            message.terminalId === reopen.terminalId,
+        ),
+      ).toEqual([]);
+
+      const repaint = scheduledRepaints[0];
+      if (!repaint) throw new Error("Expected one delayed terminal repaint");
+      repaint.run();
+      expect(
+        daemonMessages(daemonSocket).filter(
+          (message) =>
+            message.type === "terminal.resize" &&
+            message.terminalId === reopen.terminalId,
+        ),
+      ).toEqual([
+        {
+          type: "terminal.resize",
+          terminalId: reopen.terminalId,
+          cols: 52,
+          rows: 40,
+        },
+        {
+          type: "terminal.resize",
+          terminalId: reopen.terminalId,
+          cols: 52,
+          rows: 41,
+        },
+      ]);
+    } finally {
+      timeoutSpy.mockRestore();
+    }
+
+    restarted.deps.terminalSessions.attachBrowserTerminal({
+      outputAcks: false,
+      resizeAcks: false,
+      socket: attachedSocket,
+      sinceSeq: 0,
+      terminalId: reopen.terminalId,
+    });
+    const secondAttach = daemonMessages(daemonSocket).filter(
+      (message) =>
+        message.type === "terminal.attach" &&
+        message.terminalId === reopen.terminalId,
+    )[1];
+    if (secondAttach?.type !== "terminal.attach") {
+      throw new Error(
+        "Expected second terminal.attach after browser reconnect",
+      );
+    }
+    restarted.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.hostId,
+      sessionId: fixture.sessionId,
+      message: {
+        type: "terminal.replay",
+        requestId: secondAttach.requestId,
+        terminalId: reopen.terminalId,
+        chunks: [],
+        replayStartSeq: 0,
+        nextSeq: 0,
+      },
+    });
+    expect(
+      daemonMessages(daemonSocket).filter(
+        (message) =>
+          message.type === "terminal.resize" &&
+          message.terminalId === reopen.terminalId,
+      ),
+    ).toHaveLength(2);
+    restarted.db
+      .update(terminalSessions)
+      .set({ closeReason: "user", status: "exited" })
+      .where(eq(terminalSessions.id, reopen.terminalId))
+      .run();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  });
+
   it("runs the bb wrapper when BB_CLI supports it and the bare harness otherwise", async () => {
     const fixture = await createFixture();
     const { open, thread } = await openRunningNativeThread(fixture, {

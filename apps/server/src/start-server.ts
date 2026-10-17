@@ -644,6 +644,8 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
               onTerminalSocketParsedMessage({ terminalSessions }, args),
             recordInputActivity: (terminalId) =>
               terminalSessions.recordDirectTerminalInput(terminalId),
+            recordOutputBatch: (args) =>
+              terminalSessions.recordDirectTerminalOutputBatch(args),
           },
           logger,
           resolveTerminal: (terminalId) =>

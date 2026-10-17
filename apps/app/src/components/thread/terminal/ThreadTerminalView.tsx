@@ -610,6 +610,24 @@ function writeTerminalSessionStatusNotice({
   }
 }
 
+export async function writeRetainedTerminalOutput({
+  chunks,
+  lastNotice,
+  session,
+  terminal,
+}: {
+  chunks: readonly Uint8Array[];
+  lastNotice: TerminalSessionStatusNoticeRef;
+  session: TerminalSession;
+  terminal: XTermTerminal;
+}): Promise<void> {
+  for (const chunk of chunks) {
+    await new Promise<void>((resolve) => terminal.write(chunk, resolve));
+  }
+  writeTerminalSessionStatusNotice({ lastNotice, session, terminal });
+  await new Promise<void>((resolve) => terminal.write("", resolve));
+}
+
 function openTerminalWebLink({
   onOpenLink,
   uri,
@@ -1107,11 +1125,13 @@ export function ThreadTerminalView({
           isPanelOpen: () => isPanelOpenRef.current,
         });
       }
-      writeTerminalSessionStatusNotice({
-        lastNotice: lastStatusNoticeRef,
-        session: sessionRef.current,
-        terminal,
-      });
+      if (sessionRef.current.status !== "exited") {
+        writeTerminalSessionStatusNotice({
+          lastNotice: lastStatusNoticeRef,
+          session: sessionRef.current,
+          terminal,
+        });
+      }
       const fitTerminal = () => {
         if (!fitAddon || !terminal) {
           return;
@@ -1172,6 +1192,7 @@ export function ThreadTerminalView({
 
       const activeTerminal = terminal;
       let reconnecting = false;
+      let repaintAfterReconnect = false;
       let reconnectingNoticeVisible = false;
       const clearConnectionNoticeTimeout = () => {
         if (connectionNoticeTimeout !== null) {
@@ -1192,6 +1213,7 @@ export function ThreadTerminalView({
             return;
           }
           if (state === "reconnecting") {
+            repaintAfterReconnect = true;
             if (reconnecting) {
               return;
             }
@@ -1252,7 +1274,12 @@ export function ThreadTerminalView({
               activeTransport.acknowledgeOutput(nextSeq),
             message,
             onReplayComplete: () => {
-              if (!disposed && sessionStatusRef.current === "running") {
+              if (
+                !disposed &&
+                sessionStatusRef.current === "running" &&
+                repaintAfterReconnect
+              ) {
+                repaintAfterReconnect = false;
                 activeTransport.requestRepaint();
               }
             },
@@ -1286,9 +1313,14 @@ export function ThreadTerminalView({
           tailBytes: 64 * 1024,
         });
         if (!disposed) {
-          for (const chunk of output.chunks) {
-            activeTerminal.write(decodeBase64Bytes(chunk.dataBase64));
-          }
+          await writeRetainedTerminalOutput({
+            chunks: output.chunks.map((chunk) =>
+              decodeBase64Bytes(chunk.dataBase64),
+            ),
+            lastNotice: lastStatusNoticeRef,
+            session: sessionRef.current,
+            terminal: activeTerminal,
+          });
         }
       } else {
         activeTransport.start();
@@ -1306,6 +1338,13 @@ export function ThreadTerminalView({
             return null;
           }
           const fitted = fitAddon?.proposeDimensions();
+          if (
+            fitted === undefined ||
+            !Number.isFinite(fitted.cols) ||
+            !Number.isFinite(fitted.rows)
+          ) {
+            return null;
+          }
           return `${rect.width}x${rect.height}:${fitted?.cols}x${fitted?.rows}`;
         },
         onSettled: () => {
@@ -1606,6 +1645,7 @@ export function ThreadTerminalView({
         <TerminalMobileControls
           controlActive={controlActive}
           disabled={!terminalReady || session.status !== "running"}
+          readOnlyDisabled={!terminalReady}
           onControlChange={(active) => {
             changeControlActive(active);
             if (active) terminalRef.current?.focus();

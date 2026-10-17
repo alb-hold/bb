@@ -7,6 +7,7 @@ import type { TerminalNavigationKey } from "./terminal-mobile-input";
 interface TerminalMobileControlsProps {
   controlActive: boolean;
   disabled: boolean;
+  readOnlyDisabled?: boolean;
   onArrow: (key: TerminalNavigationKey) => void;
   onControlChange: (active: boolean) => void;
   onInput: (data: string) => void;
@@ -63,6 +64,7 @@ function Key({
 export function TerminalMobileControls({
   controlActive,
   disabled,
+  readOnlyDisabled = disabled,
   onArrow,
   onControlChange,
   onInput,
@@ -76,6 +78,8 @@ export function TerminalMobileControls({
 }: TerminalMobileControlsProps) {
   const [expanded, setExpanded] = useState(false);
   const keyProps = { disabled };
+  const readOnlyKeyProps = { disabled: readOnlyDisabled };
+  const readOnlyExited = disabled && !readOnlyDisabled;
   return (
     <div
       role="group"
@@ -87,7 +91,7 @@ export function TerminalMobileControls({
         <div className="mb-1 flex gap-1">
           {onPreviousPrompt ? (
             <Key
-              {...keyProps}
+              {...readOnlyKeyProps}
               label="Previous prompt"
               onPress={onPreviousPrompt}
             >
@@ -95,7 +99,11 @@ export function TerminalMobileControls({
             </Key>
           ) : null}
           {onNextPrompt ? (
-            <Key {...keyProps} label="Next prompt" onPress={onNextPrompt}>
+            <Key
+              {...readOnlyKeyProps}
+              label="Next prompt"
+              onPress={onNextPrompt}
+            >
               ↓ Prompt
             </Key>
           ) : null}
@@ -131,6 +139,27 @@ export function TerminalMobileControls({
             PgDn
           </Key>
         </div>
+      ) : readOnlyExited && (onPreviousPrompt || onNextPrompt) ? (
+        <div className="mb-1 flex gap-1">
+          {onPreviousPrompt ? (
+            <Key
+              {...readOnlyKeyProps}
+              label="Previous prompt"
+              onPress={onPreviousPrompt}
+            >
+              ↑ Prompt
+            </Key>
+          ) : null}
+          {onNextPrompt ? (
+            <Key
+              {...readOnlyKeyProps}
+              label="Next prompt"
+              onPress={onNextPrompt}
+            >
+              ↓ Prompt
+            </Key>
+          ) : null}
+        </div>
       ) : null}
       {expanded ? (
         <div className="mb-1 flex gap-1">
@@ -144,7 +173,7 @@ export function TerminalMobileControls({
             Paste
           </Key>
           <Key
-            disabled={false}
+            {...readOnlyKeyProps}
             label="Select terminal text"
             onPress={onSelectText}
           >
@@ -158,13 +187,27 @@ export function TerminalMobileControls({
             <Icon name="Keyboard" className="size-4" />
           </Key>
         </div>
+      ) : readOnlyExited ? (
+        <div className="mb-1 flex gap-1">
+          <Key
+            {...readOnlyKeyProps}
+            label="Select terminal text"
+            onPress={onSelectText}
+          >
+            Select
+          </Key>
+        </div>
       ) : null}
       <div className="flex gap-1">
         <Key {...keyProps} label="Escape" onPress={() => onInput("\x1b")}>
           Esc
         </Key>
         {searchAvailable ? (
-          <Key {...keyProps} label="Search terminal output" onPress={onSearch}>
+          <Key
+            {...readOnlyKeyProps}
+            label="Search terminal output"
+            onPress={onSearch}
+          >
             <Icon name="Search" className="size-4" />
           </Key>
         ) : null}
