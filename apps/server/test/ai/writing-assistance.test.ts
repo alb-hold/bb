@@ -12,6 +12,7 @@ import {
   utcDay,
 } from "../../src/services/ai/writing-assistance.js";
 import { registerFakeAiService } from "../helpers/ai-services.js";
+import { gappedWebm } from "../helpers/audio-fixtures.js";
 import { withTestHarness, type TestAppHarness } from "../helpers/test-app.js";
 
 function wav(seconds: number, sampleRate = 1_000): File {
@@ -738,6 +739,37 @@ describe("dictation segments", () => {
         code: "budget_exhausted",
       });
       expect(getWritingUsage(harness.deps.db, utcDay()).audioSeconds).toBe(70);
+      expect(service.transcribeCalls).toHaveLength(1);
+    });
+  });
+
+  it("reserves the timeline of a WebM whose timestamps leave a gap and refuses one past the segment cap", async () => {
+    await withTestHarness({}, async (harness) => {
+      const service = registerFakeAiService(harness.deps.aiServices, {
+        transcribe: async () => "hello there",
+      });
+      updateWritingAssistanceSettings(harness.deps.db, {
+        dictationFormatting: false,
+      });
+      const webm = (seconds: number) =>
+        new File([Buffer.from(gappedWebm(seconds))], "dictation-1.webm", {
+          type: "audio/webm",
+        });
+      expect(
+        (await postSegment(harness, { durationMs: "1000", file: webm(30) }))
+          .status,
+      ).toBe(200);
+      expect(getWritingUsage(harness.deps.db, utcDay()).audioSeconds).toBe(
+        30.1,
+      );
+      const tooLong = await postSegment(harness, {
+        durationMs: "1000",
+        file: webm(130),
+      });
+      expect(tooLong.status).toBe(400);
+      expect(getWritingUsage(harness.deps.db, utcDay()).audioSeconds).toBe(
+        30.1,
+      );
       expect(service.transcribeCalls).toHaveLength(1);
     });
   });

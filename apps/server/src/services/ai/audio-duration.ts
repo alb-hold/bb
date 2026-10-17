@@ -6,8 +6,12 @@ const WEBM_SIMPLE_BLOCK = 0xa3;
 const WEBM_TRACKS = 0x1654ae6b;
 const WEBM_TRACK_ENTRY = 0xae;
 const WEBM_CODEC_ID = 0x86;
+const WEBM_INFO = 0x1549a966;
+const WEBM_TIMECODE_SCALE = 0x2ad7b1;
+const WEBM_CLUSTER_TIMECODE = 0xe7;
 const WEBM_CONTAINERS = new Set([
   WEBM_SEGMENT,
+  WEBM_INFO,
   WEBM_CLUSTER,
   WEBM_BLOCK_GROUP,
   WEBM_TRACKS,
@@ -22,6 +26,8 @@ const MP4_CONTAINERS = new Set([
   "stbl",
   "moof",
   "traf",
+  "edts",
+  "mvex",
 ]);
 
 const AAC_SAMPLE_RATES = [
@@ -86,11 +92,23 @@ function readVint(
   return { value, length, unknown: !keepMarker && allOnes };
 }
 
+function readUintBE(bytes: Uint8Array, start: number, length: number): number {
+  let value = 0;
+  for (let index = 0; index < length; index += 1) {
+    value = value * 256 + bytes[start + index]!;
+  }
+  return value;
+}
+
 function webmSeconds(bytes: Uint8Array): number | null {
   let offset = 0;
   let seconds = 0;
   let opus = false;
   let blocks = 0;
+  let timecodeScale = 1_000_000;
+  let clusterTimecode = 0;
+  let firstStart = 0;
+  let lastEnd = 0;
   while (offset < bytes.length) {
     const id = readVint(bytes, offset, true);
     if (id === null) return null;
@@ -107,6 +125,19 @@ function webmSeconds(bytes: Uint8Array): number | null {
       if (ascii(bytes, start, size.value) !== "A_OPUS") return null;
       opus = true;
     }
+    if (
+      id.value === WEBM_TIMECODE_SCALE ||
+      id.value === WEBM_CLUSTER_TIMECODE
+    ) {
+      if (size.value > 8) return null;
+      const value = readUintBE(bytes, start, size.value);
+      if (id.value === WEBM_TIMECODE_SCALE) {
+        if (value === 0) return null;
+        timecodeScale = value;
+      } else {
+        clusterTimecode = value;
+      }
+    }
     if (id.value === WEBM_SIMPLE_BLOCK || id.value === WEBM_BLOCK) {
       const track = readVint(bytes, start, false);
       if (track === null) return null;
@@ -116,12 +147,16 @@ function webmSeconds(bytes: Uint8Array): number | null {
         bytes.subarray(start + track.length + 3, end),
       );
       if (packet === null) return null;
+      const relative = (readUintBE(bytes, start + track.length, 2) << 16) >> 16;
+      const at = ((clusterTimecode + relative) * timecodeScale) / 1e9;
+      firstStart = Math.min(firstStart, at);
+      lastEnd = Math.max(lastEnd, at + packet);
       seconds += packet;
       blocks += 1;
     }
     offset = end;
   }
-  return opus && blocks > 0 ? seconds : null;
+  return opus && blocks > 0 ? Math.max(seconds, lastEnd - firstStart) : null;
 }
 
 function oggSeconds(bytes: Uint8Array): number | null {
@@ -129,6 +164,7 @@ function oggSeconds(bytes: Uint8Array): number | null {
   let packets = 0;
   let seconds = 0;
   let current: number[] = [];
+  let lastGranule = 0;
   const finish = (packet: Uint8Array): boolean => {
     packets += 1;
     if (packets === 1) return ascii(packet, 0, 8) === "OpusHead";
@@ -141,6 +177,14 @@ function oggSeconds(bytes: Uint8Array): number | null {
   while (offset < bytes.length) {
     if (offset + 27 > bytes.length || ascii(bytes, offset, 4) !== "OggS") {
       return null;
+    }
+    const granuleLow = readUint32LE(bytes, offset + 6);
+    const granuleHigh = readUint32LE(bytes, offset + 10);
+    if (granuleLow !== 0xffffffff || granuleHigh !== 0xffffffff) {
+      lastGranule = Math.max(
+        lastGranule,
+        granuleHigh * 0x100000000 + granuleLow,
+      );
     }
     const segments = bytes[offset + 26]!;
     const tableEnd = offset + 27 + segments;
@@ -160,7 +204,15 @@ function oggSeconds(bytes: Uint8Array): number | null {
     }
     offset = dataOffset;
   }
-  return packets > 2 ? seconds : null;
+  return packets > 2 ? Math.max(seconds, lastGranule / 48_000) : null;
+}
+
+function readUint32LE(bytes: Uint8Array, offset: number): number {
+  return (
+    bytes[offset]! +
+    ((bytes[offset + 1]! << 8) | (bytes[offset + 2]! << 16)) +
+    bytes[offset + 3]! * 0x1000000
+  );
 }
 
 function readUint32(bytes: Uint8Array, offset: number): number {
@@ -214,6 +266,22 @@ function aacSampleRate(esds: Uint8Array): number | null {
 function mp4Seconds(bytes: Uint8Array): number | null {
   const found: { samples: number; sampleRate: number | null; tracks: number } =
     { samples: 0, sampleRate: null, tracks: 0 };
+  const time = {
+    movieScale: 0,
+    movieDuration: 0,
+    editDuration: 0,
+    mediaScale: 0,
+    mediaDuration: 0,
+    sampleTable: 0,
+    defaultDuration: 0,
+    fragmentDefault: 0,
+    fragmentTime: 0,
+    fragmentEnd: 0,
+  };
+  const readTime = (at: number, version: number): number =>
+    version === 1
+      ? readUint32(bytes, at) * 0x100000000 + readUint32(bytes, at + 4)
+      : readUint32(bytes, at);
   const walk = (start: number, end: number): boolean => {
     let offset = start;
     while (offset < end) {
@@ -233,9 +301,56 @@ function mp4Seconds(bytes: Uint8Array): number | null {
       if (size < header || offset + size > end) return false;
       const body = offset + header;
       const boxEnd = offset + size;
+      const version = bytes[body] ?? 0;
+      const flags = body + 4 <= boxEnd ? readUint32(bytes, body) & 0xffffff : 0;
       if (MP4_CONTAINERS.has(type)) {
         if (type === "trak") found.tracks += 1;
+        if (type === "traf") {
+          time.fragmentDefault = time.defaultDuration;
+          time.fragmentTime = 0;
+        }
         if (!walk(body, boxEnd)) return false;
+      } else if (type === "mvhd" || type === "mdhd") {
+        const scaleAt = body + (version === 1 ? 20 : 12);
+        if (scaleAt + (version === 1 ? 12 : 8) > boxEnd) return false;
+        const scale = readUint32(bytes, scaleAt);
+        const duration = readTime(scaleAt + 4, version);
+        const known = duration !== 0xffffffff && duration !== 2 ** 64 - 1;
+        if (type === "mvhd") {
+          time.movieScale = scale;
+          time.movieDuration = known ? duration : 0;
+        } else {
+          time.mediaScale = scale;
+          time.mediaDuration = known ? duration : 0;
+        }
+      } else if (type === "elst") {
+        if (body + 8 > boxEnd) return false;
+        const entry = version === 1 ? 20 : 12;
+        const count = readUint32(bytes, body + 4);
+        if (body + 8 + count * entry > boxEnd) return false;
+        for (let index = 0; index < count; index += 1) {
+          time.editDuration += readTime(body + 8 + index * entry, version);
+        }
+      } else if (type === "stts") {
+        if (body + 8 > boxEnd) return false;
+        const count = readUint32(bytes, body + 4);
+        if (body + 8 + count * 8 > boxEnd) return false;
+        for (let index = 0; index < count; index += 1) {
+          const at = body + 8 + index * 8;
+          time.sampleTable += readUint32(bytes, at) * readUint32(bytes, at + 4);
+        }
+      } else if (type === "trex") {
+        if (body + 16 > boxEnd) return false;
+        time.defaultDuration = readUint32(bytes, body + 12);
+      } else if (type === "tfhd") {
+        const at = body + 8 + (flags & 0x01 ? 8 : 0) + (flags & 0x02 ? 4 : 0);
+        if (flags & 0x08) {
+          if (at + 4 > boxEnd) return false;
+          time.fragmentDefault = readUint32(bytes, at);
+        }
+      } else if (type === "tfdt") {
+        if (body + (version === 1 ? 12 : 8) > boxEnd) return false;
+        time.fragmentTime = readTime(body + 4, version);
       } else if (type === "stsd") {
         if (!walk(body + 8, boxEnd)) return false;
       } else if (type === "mp4a") {
@@ -251,7 +366,18 @@ function mp4Seconds(bytes: Uint8Array): number | null {
         found.samples += readUint32(bytes, body + 8);
       } else if (type === "trun") {
         if (body + 8 > boxEnd) return false;
-        found.samples += readUint32(bytes, body + 4);
+        const count = readUint32(bytes, body + 4);
+        found.samples += count;
+        let at = body + 8 + (flags & 0x01 ? 4 : 0) + (flags & 0x04 ? 4 : 0);
+        const entry =
+          [0x100, 0x200, 0x400, 0x800].filter((bit) => flags & bit).length * 4;
+        if (at + count * entry > boxEnd) return false;
+        for (let index = 0; index < count; index += 1) {
+          time.fragmentTime +=
+            flags & 0x100 ? readUint32(bytes, at) : time.fragmentDefault;
+          at += entry;
+        }
+        time.fragmentEnd = Math.max(time.fragmentEnd, time.fragmentTime);
       }
       offset = boxEnd;
     }
@@ -259,7 +385,16 @@ function mp4Seconds(bytes: Uint8Array): number | null {
   };
   if (!walk(0, bytes.length) || found.tracks !== 1) return null;
   if (found.sampleRate === null || found.samples === 0) return null;
-  return (found.samples * 1024) / found.sampleRate;
+  const movie =
+    time.movieScale > 0
+      ? Math.max(time.movieDuration, time.editDuration) / time.movieScale
+      : 0;
+  const media =
+    time.mediaScale > 0
+      ? Math.max(time.mediaDuration, time.sampleTable, time.fragmentEnd) /
+        time.mediaScale
+      : 0;
+  return Math.max((found.samples * 1024) / found.sampleRate, movie, media);
 }
 
 function wavSeconds(bytes: Uint8Array): number | null {

@@ -1,55 +1,14 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { measureAudioSeconds } from "../../src/services/ai/audio-duration.js";
-
-function fixture(name: string): Uint8Array {
-  return new Uint8Array(
-    readFileSync(new URL(`../fixtures/audio/${name}`, import.meta.url)),
-  );
-}
-
-function element(
-  id: number[],
-  payload: number[],
-  unknownSize = false,
-): number[] {
-  const size = unknownSize
-    ? [0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]
-    : [
-        0x10 | (payload.length >> 24),
-        (payload.length >> 16) & 0xff,
-        (payload.length >> 8) & 0xff,
-        payload.length & 0xff,
-      ];
-  return [...id, ...size, ...payload];
-}
-
-function liveWebm(blocks: number[][], codec = "A_OPUS"): Uint8Array {
-  const codecId = [...codec].map((char) => char.charCodeAt(0));
-  const tracks = element(
-    [0x16, 0x54, 0xae, 0x6b],
-    element([0xae], element([0x86], codecId)),
-  );
-  const cluster = element(
-    [0x1f, 0x43, 0xb6, 0x75],
-    [
-      ...element([0xe7], [0x00]),
-      ...blocks.flatMap((block) => element([0xa3], block)),
-    ],
-    true,
-  );
-  return Uint8Array.from([
-    ...element(
-      [0x1a, 0x45, 0xdf, 0xa3],
-      element([0x42, 0x82], [0x77, 0x65, 0x62, 0x6d]),
-    ),
-    ...element([0x18, 0x53, 0x80, 0x67], [...tracks, ...cluster], true),
-  ]);
-}
-
-function opusBlock(toc: number[], flags = 0x80): number[] {
-  return [0x81, 0x00, 0x00, flags, ...toc, 0x00, 0x00];
-}
+import {
+  audioFixture as fixture,
+  gappedWebm,
+  liveWebm,
+  mp4WithTimeline,
+  oggWithLastGranule,
+  opusBlock,
+  webmWithClusters,
+} from "../helpers/audio-fixtures.js";
 
 describe("measureAudioSeconds", () => {
   it.each([
@@ -81,6 +40,30 @@ describe("measureAudioSeconds", () => {
     expect(
       measureAudioSeconds(liveWebm(Array(10).fill(twoFrames))),
     ).toBeCloseTo(0.4, 5);
+  });
+
+  it("measures the timeline a decoder plays when timestamps leave gaps between packets", () => {
+    expect(measureAudioSeconds(gappedWebm(130))).toBeCloseTo(130.02, 5);
+    const farBlock = opusBlock([0xf8], 0x80, 32_000);
+    expect(
+      measureAudioSeconds(
+        webmWithClusters([[0, [opusBlock([0xf8]), farBlock]]]),
+      ),
+    ).toBeCloseTo(32.02, 5);
+    expect(
+      measureAudioSeconds(oggWithLastGranule("tone-3s.ogg", 130 * 48_000)),
+    ).toBeCloseTo(130, 5);
+    expect(
+      measureAudioSeconds(mp4WithTimeline("tone-3s.m4a", "mvhd", 130)),
+    ).toBeGreaterThanOrEqual(130);
+    expect(
+      measureAudioSeconds(mp4WithTimeline("tone-3s.m4a", "stts", 130)),
+    ).toBeGreaterThanOrEqual(130);
+    expect(
+      measureAudioSeconds(
+        mp4WithTimeline("tone-3s-fragmented.mp4", "tfdt", 130),
+      ),
+    ).toBeGreaterThanOrEqual(130);
   });
 
   it("refuses laced blocks, other codecs, truncated files and unknown formats", () => {
