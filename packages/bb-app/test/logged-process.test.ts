@@ -1160,28 +1160,21 @@ describe("spawnLoggedProcess", () => {
     }
   });
 
-  it("does not reclaim a matching live owner with an unavailable endpoint", async () => {
+  it("does not reclaim a matching live owner when its endpoint probe is unknown", async () => {
     const logDir = scratchDir();
-    const socketDir = livenessDirectory(logDir, "server");
-    const ownerStopPath = join(logDir, "stop-unavailable-endpoint-owner");
-    const observerStopPath = join(logDir, "stop-unavailable-endpoint-observer");
-    const ownerCompletionPath = join(
-      logDir,
-      "unavailable-endpoint-owner-finished",
-    );
+    const ownerStopPath = join(logDir, "stop-unknown-endpoint-owner");
+    const observerStopPath = join(logDir, "stop-unknown-endpoint-observer");
+    const ownerCompletionPath = join(logDir, "unknown-endpoint-owner-finished");
     const observerCompletionPath = join(
       logDir,
-      "unavailable-endpoint-observer-finished",
+      "unknown-endpoint-observer-finished",
     );
-    mkdirSync(socketDir, { mode: 0o755 });
-    scratchDirs.push(socketDir);
-    chmodSync(socketDir, 0o755);
     const fallbackMs = 100;
     const owner = spawnLoggedProcess({
       command: process.execPath,
       args: [
         "-e",
-        `const fs = require("node:fs"); process.stdout.write("unavailable-endpoint-owner-started\\n"); const timer = setInterval(() => { if (fs.existsSync(${JSON.stringify(ownerStopPath)})) { clearInterval(timer); process.exit(0); } }, 10);`,
+        `const fs = require("node:fs"); process.stdout.write("unknown-endpoint-owner-started\\n"); const timer = setInterval(() => { if (fs.existsSync(${JSON.stringify(ownerStopPath)})) { clearInterval(timer); process.exit(0); } }, 10);`,
       ],
       env: process.env,
       logDir,
@@ -1201,7 +1194,7 @@ describe("spawnLoggedProcess", () => {
               (path) =>
                 path.includes(".active-") &&
                 readFileSync(path, "utf8").includes(
-                  "unavailable-endpoint-owner-started",
+                  "unknown-endpoint-owner-started",
                 ),
             ),
           { timeout: 5_000, interval: 10 },
@@ -1210,18 +1203,20 @@ describe("spawnLoggedProcess", () => {
       const ownerSegment = familyFiles(logDir, "server").find(
         (path) =>
           path.includes(".active-") &&
-          readFileSync(path, "utf8").includes(
-            "unavailable-endpoint-owner-started",
-          ),
+          readFileSync(path, "utf8").includes("unknown-endpoint-owner-started"),
       );
       expect(ownerSegment).toBeDefined();
-      expect(ownerSegment).toContain("-n-");
+      expect(ownerSegment).toContain("-e-");
+      const ownerParts = ownerSegment!
+        .slice(ownerSegment!.indexOf(".active-") + 8)
+        .split("-");
+      const ownerToken = ownerParts.slice(4).join("-");
       utimesSync(ownerSegment!, new Date(0), new Date(0));
       observer = spawnLoggedProcess({
         command: process.execPath,
         args: [
           "-e",
-          `const fs = require("node:fs"); process.stdout.write("unavailable-endpoint-observer-started\\n"); const timer = setInterval(() => { if (fs.existsSync(${JSON.stringify(observerStopPath)})) { clearInterval(timer); process.exit(0); } }, 10);`,
+          `const fs = require("node:fs"); process.stdout.write("unknown-endpoint-observer-started\\n"); const timer = setInterval(() => { if (fs.existsSync(${JSON.stringify(observerStopPath)})) { clearInterval(timer); process.exit(0); } }, 10);`,
         ],
         env: process.env,
         logDir,
@@ -1230,6 +1225,7 @@ describe("spawnLoggedProcess", () => {
           completionPath: observerCompletionPath,
           identityFallbackMs: fallbackMs,
           recoveryIntervalMs: 25,
+          unreadableOwnerSocketTokens: [ownerToken],
         },
       });
       await expect
@@ -1239,7 +1235,7 @@ describe("spawnLoggedProcess", () => {
               (path) =>
                 path.includes(".active-") &&
                 readFileSync(path, "utf8").includes(
-                  "unavailable-endpoint-observer-started",
+                  "unknown-endpoint-observer-started",
                 ),
             ),
           { timeout: 5_000, interval: 10 },
@@ -1250,7 +1246,7 @@ describe("spawnLoggedProcess", () => {
       );
       expect(existsSync(ownerSegment!)).toBe(true);
       expect(readFileSync(ownerSegment!, "utf8")).toContain(
-        "unavailable-endpoint-owner-started",
+        "unknown-endpoint-owner-started",
       );
       writeFileSync(observerStopPath, "stop");
       expect(await waitForExit(observer)).toBe(0);
@@ -1276,7 +1272,7 @@ describe("spawnLoggedProcess", () => {
     }
   });
 
-  it("reclaims a dead owner with an unavailable endpoint", async () => {
+  it("reclaims a dead endpoint-backed owner when its probe is unknown", async () => {
     const logDir = scratchDir();
     const stopPath = join(logDir, "stop-dead-owner-observer");
     const completionPath = join(logDir, "dead-owner-observer-finished");
@@ -1285,7 +1281,7 @@ describe("spawnLoggedProcess", () => {
     const token = "deadcafe-dead-cafe-dead-cafedeadcafe";
     const deadSegment = join(
       logDir,
-      `server-stdio.log.active-${deadPid}-${identity.source}-${identity.fingerprint}-n-${token}`,
+      `server-stdio.log.active-${deadPid}-${identity.source}-${identity.fingerprint}-e-${token}`,
     );
     const observer = spawnLoggedProcess({
       command: process.execPath,
@@ -1296,7 +1292,11 @@ describe("spawnLoggedProcess", () => {
       env: process.env,
       logDir,
       logName: "server",
-      testWriterBarrier: { completionPath, recoveryIntervalMs: 25 },
+      testWriterBarrier: {
+        completionPath,
+        recoveryIntervalMs: 25,
+        unreadableOwnerSocketTokens: [token],
+      },
     });
     try {
       await expect

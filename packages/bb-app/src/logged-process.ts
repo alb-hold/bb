@@ -378,11 +378,13 @@ const recoverClosedSegments = async () => {
         }
       }
       if (!recover) {
+        let socketAlive;
         if (endpointAvailable) {
-          const socketAlive = await probeOwnerSocket(ownerUuid);
+          socketAlive = await probeOwnerSocket(ownerUuid);
           if (socketAlive === true) continue;
           if (socketAlive === false) recover = true;
-        } else {
+        }
+        if (!recover && (!endpointAvailable || socketAlive === undefined)) {
           const currentIdentity = readProcessIdentity(ownerPid);
           if (ownerSource > 0 && currentIdentity.source > 0) {
             if (
