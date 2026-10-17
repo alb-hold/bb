@@ -3,16 +3,19 @@ import { createHash } from "node:crypto";
 import {
   existsSync,
   chmodSync,
+  lstatSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { spawnLoggedProcess } from "../src/logged-process.js";
 
@@ -28,6 +31,21 @@ function scratchDir(): string {
   const dir = mkdtempSync(join(tmpdir(), "bb-logged-process-"));
   scratchDirs.push(dir);
   return dir;
+}
+
+function livenessDirectory(logDir: string, logName: string): string {
+  const logPath = join(logDir, `${logName}-stdio.log`);
+  const user = process.getuid?.() ?? process.env.USERNAME ?? "";
+  const hash = createHash("sha256")
+    .update(`${resolve(logPath)}-${user}`)
+    .digest("hex")
+    .slice(0, 12);
+  const name = `.bb-stdio-${hash}`;
+  const perUserDir = join(tmpdir(), name);
+  const sampleSocketPath = join(perUserDir, `s-${"0".repeat(36)}`);
+  return Buffer.byteLength(sampleSocketPath) <= 103
+    ? perUserDir
+    : join("/tmp", name);
 }
 
 function familyFiles(logDir: string, logName: string): string[] {
@@ -122,6 +140,152 @@ function waitForExit(
 }
 
 describe("spawnLoggedProcess", () => {
+  it.skipIf(process.platform === "win32")(
+    "keeps a live segment when its endpoint directory has unsafe permissions",
+    async () => {
+      const logDir = scratchDir();
+      const socketDir = livenessDirectory(logDir, "server");
+      const stopFirstPath = join(logDir, "stop-no-endpoint-first");
+      const stopObserverPath = join(logDir, "stop-no-endpoint-observer");
+      const diagnosticPath = join(logDir, "unsafe-directory-diagnostic");
+      mkdirSync(socketDir, { mode: 0o755 });
+      scratchDirs.push(socketDir);
+      chmodSync(socketDir, 0o755);
+      const childArgs = (label: string, stopPath: string) => [
+        "-e",
+        `const fs = require("node:fs"); let count = 0; const timer = setInterval(() => { process.stdout.write(${JSON.stringify(label)} + "-" + (++count) + "\\n"); if (fs.existsSync(${JSON.stringify(stopPath)})) { clearInterval(timer); process.exit(0); } }, 10);`,
+      ];
+      const first = spawnLoggedProcess({
+        command: process.execPath,
+        args: childArgs("no-endpoint-first", stopFirstPath),
+        env: process.env,
+        logDir,
+        logName: "server",
+        testWriterBarrier: { diagnosticPath },
+      });
+      let observer: ReturnType<typeof spawnLoggedProcess> | undefined;
+      try {
+        await expect
+          .poll(
+            () =>
+              familyFiles(logDir, "server").find(
+                (file) =>
+                  file.includes(".active-") &&
+                  readFileSync(file, "utf8").includes("no-endpoint-first-"),
+              ),
+            { timeout: 5_000, interval: 10 },
+          )
+          .toBeDefined();
+        const firstSegment = familyFiles(logDir, "server").find(
+          (file) =>
+            file.includes(".active-") &&
+            readFileSync(file, "utf8").includes("no-endpoint-first-"),
+        )!;
+        expect(firstSegment).toContain("-n-");
+
+        observer = spawnLoggedProcess({
+          command: process.execPath,
+          args: childArgs("no-endpoint-observer", stopObserverPath),
+          env: process.env,
+          logDir,
+          logName: "server",
+          testWriterBarrier: { recoveryIntervalMs: 25 },
+        });
+        await expect
+          .poll(
+            () =>
+              familyFiles(logDir, "server").some(
+                (file) =>
+                  file.includes(".active-") &&
+                  readFileSync(file, "utf8").includes("no-endpoint-observer-"),
+              ),
+            { timeout: 5_000, interval: 10 },
+          )
+          .toBe(true);
+        await expect
+          .poll(
+            () => {
+              const segment = familyFiles(logDir, "server").find(
+                (file) =>
+                  file.includes(".active-") &&
+                  readFileSync(file, "utf8").includes("no-endpoint-observer-"),
+              );
+              return segment === undefined
+                ? 0
+                : (readFileSync(segment, "utf8").match(
+                    /no-endpoint-observer-/gu,
+                  )?.length ?? 0);
+            },
+            { timeout: 3_000, interval: 10 },
+          )
+          .toBeGreaterThanOrEqual(10);
+        expect(existsSync(firstSegment)).toBe(true);
+        expect(
+          readFileSync(firstSegment, "utf8").match(/no-endpoint-first-/gu)
+            ?.length ?? 0,
+        ).toBeGreaterThanOrEqual(3);
+        expect(statSync(socketDir).mode & 0o777).toBe(0o755);
+        expect(readFileSync(diagnosticPath, "utf8")).toContain(
+          "stdio liveness directory rejected: EACCES",
+        );
+
+        writeFileSync(stopFirstPath, "stop");
+        writeFileSync(stopObserverPath, "stop");
+        expect(await waitForExit(first)).toBe(0);
+        expect(await waitForExit(observer)).toBe(0);
+        await Promise.all([first.writerExit, observer.writerExit]);
+        expect(
+          uniqueFamilyFiles(logDir, "server")
+            .map((file) => readFileSync(file, "utf8"))
+            .join(""),
+        ).toContain("no-endpoint-first-");
+      } finally {
+        if (!existsSync(stopFirstPath)) writeFileSync(stopFirstPath, "stop");
+        if (!existsSync(stopObserverPath))
+          writeFileSync(stopObserverPath, "stop");
+        if (first.exitCode === null) first.kill("SIGKILL");
+        if (observer?.exitCode === null) observer.kill("SIGKILL");
+        await Promise.all([
+          first.writerExit,
+          ...(observer ? [observer.writerExit] : []),
+        ]);
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "refuses a symlink as the liveness directory and keeps logging",
+    async () => {
+      const logDir = scratchDir();
+      const socketDir = livenessDirectory(logDir, "server");
+      const targetDir = join(scratchDir(), "socket-target");
+      const diagnosticPath = join(logDir, "symlink-directory-diagnostic");
+      mkdirSync(targetDir, { mode: 0o700 });
+      symlinkSync(targetDir, socketDir, "dir");
+      scratchDirs.push(socketDir);
+      const child = spawnLoggedProcess({
+        command: process.execPath,
+        args: ["-e", 'process.stdout.write("symlink setup output\\n");'],
+        env: process.env,
+        logDir,
+        logName: "server",
+        testWriterBarrier: { diagnosticPath },
+      });
+      expect(await waitForExit(child)).toBe(0);
+      await child.writerExit;
+      expect(
+        uniqueFamilyFiles(logDir, "server")
+          .map((file) => readFileSync(file, "utf8"))
+          .join(""),
+      ).toContain("symlink setup output\n");
+      expect(lstatSync(socketDir).isSymbolicLink()).toBe(true);
+      expect(readdirSync(targetDir)).toEqual([]);
+      expect(readFileSync(diagnosticPath, "utf8")).toContain(
+        "stdio liveness directory rejected: EACCES",
+      );
+    },
+  );
+
   it.each(["server", "host-daemon"] as const)(
     "captures %s stdout and stderr bursts while draining child pipes",
     async (logName) => {
@@ -861,8 +1025,8 @@ describe("spawnLoggedProcess", () => {
     const logDir = scratchDir();
     const stopPath = join(logDir, "stop-unreadable-owner-survivor");
     const completionPath = join(logDir, "unreadable-owner-survivor-finished");
-    const identitySource = process.platform === "linux" ? 1 : 2;
-    const ownerPrefix = `server-stdio.log.active-${process.pid}-${identitySource}-0000000000000000-`;
+    const identity = currentProcessIdentity();
+    const ownerPrefix = `server-stdio.log.active-${identity.pid}-${identity.source}-${identity.fingerprint}-e-`;
     const staleToken = "deadbeef-dead-beef-dead-beefdeadbeef";
     const freshToken = "feedface-feed-face-feed-facefeedface";
     const staleSegment = join(logDir, `${ownerPrefix}${staleToken}`);

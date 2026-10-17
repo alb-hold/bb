@@ -7,6 +7,7 @@ const fs = require("node:fs");
 const crypto = require("node:crypto");
 const net = require("node:net");
 const { execFileSync } = require("node:child_process");
+const os = require("node:os");
 const path = require("node:path");
 const logPath = process.argv[1];
 const writerBarrier = process.argv[2] ? JSON.parse(process.argv[2]) : null;
@@ -64,22 +65,57 @@ const ownerIdentity = writerBarrier?.ownerIdentity ?? readProcessIdentity(proces
 const ownerPid = writerBarrier?.ownerIdentity?.pid ?? process.pid;
 const token = ownerPid + "-" + ownerIdentity.source + "-" + ownerIdentity.fingerprint + "-" + crypto.randomUUID();
 const familyPrefix = logPath + ".";
-const activePath = familyPrefix + "active-" + token;
 const socketToken = token.split("-").slice(3).join("-");
 const familyHash = crypto.createHash("sha256").update(path.resolve(logPath) + "-" + (process.getuid?.() ?? process.env.USERNAME ?? "")).digest("hex").slice(0, 12);
-const socketDir = path.join("/tmp", ".bb-stdio-" + familyHash);
-const socketPath = process.platform === "win32"
-  ? "\\\\.\\pipe\\bb-stdio-" + familyHash + "-" + socketToken
-  : path.join(socketDir, "s-" + socketToken);
-let socketDirectoryAvailable = true;
+const socketPathLimit = 103;
+const socketDirName = ".bb-stdio-" + familyHash;
+let socketDir;
+let socketPath;
+let socketDirectoryAvailable = process.platform === "win32";
+let livenessEndpointAvailable = false;
+let activePath;
+const rejectSocketDirectory = (message) => {
+  const error = new Error(message);
+  error.code = "EACCES";
+  throw error;
+};
 if (process.platform !== "win32") {
-  try {
-    fs.mkdirSync(socketDir, { recursive: true, mode: 0o700 });
-    fs.chmodSync(socketDir, 0o700);
-  } catch (error) {
-    socketDirectoryAvailable = false;
-    reportFsError("stdio liveness directory setup failed", error);
+  const bases = [...new Set([os.tmpdir(), "/tmp"])];
+  for (const base of bases) {
+    const candidateDir = path.join(base, socketDirName);
+    const candidateSocketPath = path.join(candidateDir, "s-" + socketToken);
+    if (Buffer.byteLength(candidateSocketPath) > socketPathLimit) continue;
+    try {
+      try {
+        fs.mkdirSync(candidateDir, { mode: 0o700 });
+      } catch (error) {
+        if (error.code !== "EEXIST") throw error;
+      }
+      const stat = fs.lstatSync(candidateDir);
+      if (
+        stat.isSymbolicLink() ||
+        !stat.isDirectory() ||
+        process.getuid === undefined ||
+        stat.uid !== process.getuid() ||
+        (stat.mode & 0o7777) !== 0o700
+      ) {
+        rejectSocketDirectory("stdio liveness directory is not an owned 0700 directory");
+      }
+      socketDir = candidateDir;
+      socketPath = candidateSocketPath;
+      socketDirectoryAvailable = true;
+      break;
+    } catch (error) {
+      reportFsError("stdio liveness directory rejected", error);
+      break;
+    }
   }
+  if (!socketDirectoryAvailable) {
+    reportDiagnostic("stdio liveness endpoint unavailable; using process identity and idle recovery");
+  }
+}
+if (process.platform === "win32") {
+  socketPath = "\\\\.\\pipe\\bb-stdio-" + familyHash + "-" + socketToken;
 }
 const livenessServer = net.createServer((connection) => connection.destroy());
 const livenessReady = new Promise((resolve) => {
@@ -89,6 +125,7 @@ const livenessReady = new Promise((resolve) => {
   }
   const onListenError = (error) => {
     socketDirectoryAvailable = false;
+    livenessEndpointAvailable = false;
     reportFsError("stdio liveness endpoint setup failed", error);
     resolve();
   };
@@ -96,9 +133,20 @@ const livenessReady = new Promise((resolve) => {
   try {
     livenessServer.listen(socketPath, () => {
       livenessServer.off("error", onListenError);
+      livenessEndpointAvailable = true;
       livenessServer.on("error", (error) => {
-        socketDirectoryAvailable = false;
         reportFsError("stdio liveness endpoint failed", error);
+        if (!livenessServer.listening) {
+          livenessEndpointAvailable = false;
+          try {
+            if (activeFd !== undefined || (activePath !== undefined && fs.existsSync(activePath))) {
+              closeActive(true);
+            }
+            if (initialized) createActive();
+          } catch (recoveryError) {
+            reportFsError("stdio liveness endpoint recovery failed", recoveryError);
+          }
+        }
       });
       resolve();
     });
@@ -131,17 +179,22 @@ const pendingChunks = [];
 let pendingBytes = 0;
 const maxPendingBytes = 16 * 1024 * 1024;
 const backupPattern = /^.+\\.backup-[0-9]+-[0-9]+-[a-f0-9-]+$/;
-const activePattern = /^.+\\.active-[0-9]+-[012]-[a-f0-9]{16}-[a-f0-9-]+$/;
+const activePattern = /^.+\\.active-[0-9]+-[012]-[a-f0-9]{16}-(?:[en]-)?[a-f0-9-]+$/;
 const paths = () => fs.readdirSync(path.dirname(logPath)).map((name) => path.join(path.dirname(logPath), name));
 const socketPathForToken = (value) => process.platform === "win32"
   ? "\\\\.\\pipe\\bb-stdio-" + familyHash + "-" + value
-  : path.join(socketDir, "s-" + value);
+  : socketDir === undefined ? undefined : path.join(socketDir, "s-" + value);
 const probeOwnerSocket = (value) => new Promise((resolve) => {
+  const ownerSocketPath = socketPathForToken(value);
+  if (ownerSocketPath === undefined) {
+    resolve(undefined);
+    return;
+  }
   if (writerBarrier?.unreadableOwnerSocketTokens?.includes(value)) {
     resolve(undefined);
     return;
   }
-  const client = net.createConnection(socketPathForToken(value));
+  const client = net.createConnection(ownerSocketPath);
   let settled = false;
   const timer = setTimeout(() => finish(undefined), 500);
   const finish = (result) => {
@@ -153,7 +206,7 @@ const probeOwnerSocket = (value) => new Promise((resolve) => {
   };
   client.once("connect", () => finish(true));
   client.once("error", (error) => {
-    if (error.code === "ENOENT" || error.code === "ECONNREFUSED" || error.code === "ECONNRESET" || error.code === "EPIPE") {
+    if (error.code === "ENOENT" || error.code === "ECONNREFUSED") {
       finish(false);
     } else {
       finish(undefined);
@@ -312,7 +365,11 @@ const recoverClosedSegments = async () => {
       if (!file.startsWith(familyPrefix) || file === activePath || !activePattern.test(name)) continue;
       const ownerParts = name.slice(name.indexOf(".active-") + 8).split("-");
       const ownerPid = Number(ownerParts[0]);
-      const ownerUuid = ownerParts.slice(3).join("-");
+      const ownerSource = Number(ownerParts[1]);
+      const ownerFingerprint = ownerParts[2];
+      const hasEndpointFlag = ownerParts[3] === "e" || ownerParts[3] === "n";
+      const endpointAvailable = hasEndpointFlag && ownerParts[3] === "e";
+      const ownerUuid = ownerParts.slice(hasEndpointFlag ? 4 : 3).join("-");
       if (!Number.isInteger(ownerPid) || ownerPid < 1 || ownerUuid.length === 0) continue;
       let recover = false;
       try {
@@ -326,10 +383,21 @@ const recoverClosedSegments = async () => {
         }
       }
       if (!recover) {
-        const socketAlive = await probeOwnerSocket(ownerUuid);
-        if (socketAlive === false) {
-          recover = true;
-        } else if (socketAlive === undefined) {
+        if (endpointAvailable) {
+          const socketAlive = await probeOwnerSocket(ownerUuid);
+          if (socketAlive === true) continue;
+          if (socketAlive === false) recover = true;
+        } else {
+          const currentIdentity = readProcessIdentity(ownerPid);
+          if (
+            ownerSource > 0 &&
+            currentIdentity.source === ownerSource &&
+            currentIdentity.fingerprint !== ownerFingerprint
+          ) {
+            recover = true;
+          }
+        }
+        if (!recover) {
           try {
             recover = Date.now() - fs.statSync(file).mtimeMs > identityFallbackMs;
           } catch (statError) {
@@ -344,7 +412,8 @@ const recoverClosedSegments = async () => {
           pruneBackups(retainedBackups - 1);
           fs.renameSync(file, uniqueBackupPath());
           try {
-            fs.unlinkSync(socketPathForToken(ownerUuid));
+            const staleSocketPath = socketPathForToken(ownerUuid);
+            if (staleSocketPath !== undefined) fs.unlinkSync(staleSocketPath);
           } catch (socketError) {
             if (socketError.code !== "ENOENT") reportFsError("stale stdio owner socket cleanup failed", socketError);
           }
@@ -360,6 +429,8 @@ const recoverClosedSegments = async () => {
   return recoveryPromise;
 };
 const createActive = () => {
+  const endpointFlag = livenessEndpointAvailable ? "e" : "n";
+  activePath = familyPrefix + "active-" + ownerPid + "-" + ownerIdentity.source + "-" + ownerIdentity.fingerprint + "-" + endpointFlag + "-" + socketToken;
   activeFd = fs.openSync(activePath, "wx", 0o600);
   activeSize = fs.fstatSync(activeFd).size;
   publishAliasTo(activePath);
@@ -383,7 +454,7 @@ const closeActive = (archive) => {
     fs.closeSync(activeFd);
     activeFd = undefined;
   }
-  if (archive && fs.existsSync(activePath)) {
+  if (archive && activePath !== undefined && fs.existsSync(activePath)) {
     pruneBackups(retainedBackups - 1);
     fs.renameSync(activePath, uniqueBackupPath());
     pruneBackups();
@@ -391,7 +462,7 @@ const closeActive = (archive) => {
 };
 const closeLivenessServer = () => new Promise((resolve, reject) => {
   const cleanup = () => {
-    if (process.platform === "win32") {
+    if (process.platform === "win32" || socketDir === undefined || socketPath === undefined) {
       resolve();
       return;
     }
