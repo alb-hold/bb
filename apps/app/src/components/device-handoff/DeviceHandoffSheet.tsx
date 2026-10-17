@@ -16,6 +16,7 @@ interface DeviceHandoffSheetProps {
   position: number;
   count: number;
   onDismiss(): void;
+  onShown(id: string): void;
 }
 
 export function DeviceHandoffSheet({
@@ -23,9 +24,15 @@ export function DeviceHandoffSheet({
   position,
   count,
   onDismiss,
+  onShown,
 }: DeviceHandoffSheetProps) {
   const open = signal !== null;
   const { isContentRealized } = useResponsiveDrawerRealization({ open });
+  useEffect(() => {
+    if (isContentRealized && signal?.type === "device-handoff") {
+      onShown(signal.id);
+    }
+  }, [isContentRealized, onShown, signal]);
   useEffect(() => {
     if (signal === null || signal.type !== "device-handoff") return;
     const timer = window.setTimeout(

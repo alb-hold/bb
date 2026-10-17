@@ -41,14 +41,33 @@ function pruneExpiredQueue(
   };
 }
 
-export function useDeviceHandoffQueue() {
+export function useDeviceHandoffQueue(activeThreadId: string | null) {
   const [queue, setQueue] = useState<DeviceHandoffQueueState>(emptyQueue);
   const enqueue = useCallback(
-    (signal: DeviceHandoffSignal | DeviceHandoffExpiredSignal) => {
+    (
+      signal: DeviceHandoffSignal | DeviceHandoffExpiredSignal,
+      localTerminalEvent = false,
+    ) => {
       const now = Date.now();
       if (signal.type === "device-handoff" && signal.expiresAt <= now) return;
+      if (
+        signal.type === "device-handoff" &&
+        !localTerminalEvent &&
+        signal.request.origin.threadId !== undefined &&
+        signal.request.origin.threadId !== activeThreadId
+      ) {
+        return;
+      }
+      if (
+        signal.type === "device-handoff-expired" &&
+        !localTerminalEvent &&
+        signal.threadId !== activeThreadId
+      ) {
+        return;
+      }
       setQueue((current) => {
         const live = pruneExpiredQueue(current, now);
+        if (live.signals.some((item) => item.id === signal.id)) return live;
         return {
           signals: [...live.signals, signal],
           position: live.signals.length === 0 ? 1 : live.position,
@@ -56,26 +75,45 @@ export function useDeviceHandoffQueue() {
         };
       });
     },
-    [],
+    [activeThreadId],
   );
 
   useEffect(() => {
-    const unsubscribe = wsManager.onDeviceHandoff(enqueue);
+    wsManager.setDeviceHandoffView(activeThreadId);
+    const unsubscribe = wsManager.onDeviceHandoff((signal) => {
+      if (signal.type === "device-handoff-acknowledged") {
+        setQueue((current) => {
+          const signals = current.signals.filter(
+            (item) => item.type !== "device-handoff" || item.id !== signal.id,
+          );
+          if (signals.length === current.signals.length) return current;
+          if (signals.length === 0) return emptyQueue;
+          return {
+            signals,
+            position: Math.min(current.position, signals.length),
+            total: Math.max(signals.length, current.total - 1),
+          };
+        });
+        return;
+      }
+      enqueue(signal);
+    });
     const handleDeviceHandoff = (event: Event) => {
       if (!(event instanceof CustomEvent)) return;
       const parsed = deviceHandoffSignalLenientSchema.safeParse(event.detail);
-      if (parsed.success) enqueue(parsed.data);
+      if (parsed.success) enqueue(parsed.data, true);
       const expired = deviceHandoffExpiredSignalLenientSchema.safeParse(
         event.detail,
       );
-      if (expired.success) enqueue(expired.data);
+      if (expired.success) enqueue(expired.data, true);
     };
     window.addEventListener("bb-device-handoff", handleDeviceHandoff);
     return () => {
       unsubscribe();
       window.removeEventListener("bb-device-handoff", handleDeviceHandoff);
+      wsManager.setDeviceHandoffView(null);
     };
-  }, [enqueue]);
+  }, [activeThreadId, enqueue]);
 
   useEffect(() => {
     if (queue.signals.length === 0) return;
@@ -106,10 +144,14 @@ export function useDeviceHandoffQueue() {
       };
     });
   }, []);
+  const acknowledgeShown = useCallback((id: string) => {
+    wsManager.acknowledgeDeviceHandoff(id);
+  }, []);
   return {
     signal: queue.signals[0] ?? null,
     position: queue.position,
     count: queue.total,
     dismiss,
+    acknowledgeShown,
   };
 }

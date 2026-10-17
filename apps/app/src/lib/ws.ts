@@ -8,6 +8,7 @@ import {
   threadPaneActionSignalLenientSchema,
   deviceHandoffSignalLenientSchema,
   deviceHandoffExpiredSignalLenientSchema,
+  deviceHandoffAcknowledgedSignalLenientSchema,
   threadTimelineSignalLenientSchema,
 } from "@bb/server-contract";
 import type {
@@ -21,6 +22,7 @@ import type {
   ThreadTimelineSignal,
   DeviceHandoffSignal,
   DeviceHandoffExpiredSignal,
+  DeviceHandoffAcknowledgedSignal,
 } from "@bb/server-contract";
 import { buildBrowserWebSocketUrl } from "./dev-websocket-url";
 import {
@@ -34,7 +36,10 @@ type ThreadPaneActionCallback = (signal: ThreadPaneActionSignal) => void;
 type PluginSignalCallback = (signal: PluginSignal) => void;
 type ThreadTimelineCallback = (signal: ThreadTimelineSignal) => void;
 type DeviceHandoffCallback = (
-  signal: DeviceHandoffSignal | DeviceHandoffExpiredSignal,
+  signal:
+    | DeviceHandoffSignal
+    | DeviceHandoffExpiredSignal
+    | DeviceHandoffAcknowledgedSignal,
 ) => void;
 export type WebSocketConnectedEvent =
   | { reconnected: false }
@@ -93,6 +98,7 @@ export class WebSocketManager {
   private pluginSignalCallbacks = new Set<PluginSignalCallback>();
   private threadTimelineCallbacks = new Set<ThreadTimelineCallback>();
   private deviceHandoffCallbacks = new Set<DeviceHandoffCallback>();
+  private activeDeviceHandoffThreadId: string | null = null;
   private pendingOpenFileByThreadId = new Map<string, ThreadOpenFile>();
   private connectedCallbacks = new Set<ConnectedCallback>();
   private connectionStateCallbacks = new Set<ConnectionStateCallback>();
@@ -140,6 +146,10 @@ export class WebSocketManager {
       for (const subscription of this.subscriptions.values()) {
         this.sendMessage({ type: "subscribe", target: subscription.target });
       }
+      this.sendMessage({
+        type: "device-handoff-view",
+        threadId: this.activeDeviceHandoffThreadId,
+      });
       const event: WebSocketConnectedEvent = reconnected
         ? { reconnected, disconnectedAt: disconnectedAt ?? Date.now() }
         : { reconnected };
@@ -377,6 +387,15 @@ export class WebSocketManager {
       return;
     }
 
+    const deviceHandoffAcknowledged =
+      deviceHandoffAcknowledgedSignalLenientSchema.safeParse(parsed);
+    if (deviceHandoffAcknowledged.success) {
+      for (const cb of this.deviceHandoffCallbacks) {
+        cb(deviceHandoffAcknowledged.data);
+      }
+      return;
+    }
+
     const threadOpen = threadOpenSignalLenientSchema.safeParse(parsed);
     if (threadOpen.success) {
       if (threadOpen.data.file !== null) {
@@ -483,6 +502,15 @@ export class WebSocketManager {
   onDeviceHandoff(callback: DeviceHandoffCallback): () => void {
     this.deviceHandoffCallbacks.add(callback);
     return () => this.deviceHandoffCallbacks.delete(callback);
+  }
+
+  setDeviceHandoffView(threadId: string | null): void {
+    this.activeDeviceHandoffThreadId = threadId;
+    this.sendMessage({ type: "device-handoff-view", threadId });
+  }
+
+  acknowledgeDeviceHandoff(id: string): void {
+    this.sendMessage({ type: "device-handoff-ack", id });
   }
 
   onThreadOpen(callback: ThreadOpenCallback): () => void {

@@ -19,6 +19,7 @@ const copied = vi.hoisted(() => vi.fn());
 const registerDeviceHandoff = vi.hoisted(() =>
   vi.fn((_callback: unknown) => () => {}),
 );
+const acknowledgeDeviceHandoff = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/clipboard", () => ({
   copyToClipboardWithToast: copied,
@@ -29,23 +30,33 @@ vi.mock("@/lib/url-open-routing", () => ({
 }));
 
 vi.mock("@/lib/ws", () => ({
-  wsManager: { onDeviceHandoff: registerDeviceHandoff },
+  wsManager: {
+    onDeviceHandoff: registerDeviceHandoff,
+    setDeviceHandoffView: vi.fn(),
+    acknowledgeDeviceHandoff,
+  },
 }));
 
 afterEach(() => {
   cleanup();
   copied.mockReset();
   registerDeviceHandoff.mockClear();
+  acknowledgeDeviceHandoff.mockClear();
 });
 
-function DeviceHandoffQueueHarness() {
-  const queue = useDeviceHandoffQueue();
+function DeviceHandoffQueueHarness({
+  activeThreadId = null,
+}: {
+  activeThreadId?: string | null;
+}) {
+  const queue = useDeviceHandoffQueue(activeThreadId);
   return (
     <DeviceHandoffSheet
       signal={queue.signal}
       position={queue.position}
       count={queue.count}
       onDismiss={queue.dismiss}
+      onShown={queue.acknowledgeShown}
     />
   );
 }
@@ -66,17 +77,22 @@ describe("DeviceHandoffSheet", () => {
       },
     };
     const onDismiss = vi.fn();
+    const onShown = vi.fn();
     render(
       <DeviceHandoffSheet
         signal={signal}
         position={1}
         count={1}
         onDismiss={onDismiss}
+        onShown={onShown}
       />,
     );
 
     expect(copied).not.toHaveBeenCalled();
-    fireEvent.click(await screen.findByRole("button", { name: "Copy" }));
+    const copyButton = await screen.findByRole("button", { name: "Copy" });
+    expect(onShown).toHaveBeenCalledWith("handoff-1");
+    expect(copied).not.toHaveBeenCalled();
+    fireEvent.click(copyButton);
     expect(copied).toHaveBeenCalledWith("secret-free test text", {
       successMessage: "Copied on this device",
       errorMessage: "Could not copy text",
@@ -125,7 +141,7 @@ describe("DeviceHandoffSheet", () => {
     ];
     render(<DeviceHandoffQueueHarness />);
     const listener = registerDeviceHandoff.mock.lastCall?.[0] as
-      | ((signal: DeviceHandoffSignal) => void)
+      | ((signal: DeviceHandoffSignal | DeviceHandoffExpiredSignal) => void)
       | undefined;
     expect(listener).toBeDefined();
 
@@ -133,7 +149,9 @@ describe("DeviceHandoffSheet", () => {
       for (const handoff of handoffs) listener?.(handoff);
     });
 
+    expect(acknowledgeDeviceHandoff).not.toHaveBeenCalled();
     expect(await screen.findByText("first copied code")).toBeTruthy();
+    expect(acknowledgeDeviceHandoff).toHaveBeenCalledWith("handoff-first");
     expect(screen.getByText("1 of 3")).toBeTruthy();
     expect(screen.queryByText("second.example")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
@@ -149,8 +167,33 @@ describe("DeviceHandoffSheet", () => {
     expect(screen.queryByText("third copied code")).toBeNull();
   });
 
+  it("does not show or acknowledge a handoff while displaying another thread", () => {
+    const signal: DeviceHandoffSignal = {
+      type: "device-handoff",
+      id: "hidden-handoff",
+      createdAt: Date.now(),
+      expiresAt: Date.now() + 600_000,
+      originLabel: "Source thread",
+      request: {
+        kind: "copy-text",
+        text: "hidden payload",
+        origin: { threadId: "thr_source" },
+      },
+    };
+    render(<DeviceHandoffQueueHarness activeThreadId="thr_elsewhere" />);
+    const listener = registerDeviceHandoff.mock.lastCall?.[0] as
+      | ((signal: DeviceHandoffSignal | DeviceHandoffExpiredSignal) => void)
+      | undefined;
+
+    act(() => listener?.(signal));
+
+    expect(screen.queryByText("hidden payload")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Copy" })).toBeNull();
+    expect(acknowledgeDeviceHandoff).not.toHaveBeenCalled();
+  });
+
   it("shows the payload-free notice when an expired handoff is delivered", async () => {
-    render(<DeviceHandoffQueueHarness />);
+    render(<DeviceHandoffQueueHarness activeThreadId="thr_1" />);
     const listener = registerDeviceHandoff.mock.lastCall?.[0] as
       | ((signal: DeviceHandoffSignal | DeviceHandoffExpiredSignal) => void)
       | undefined;

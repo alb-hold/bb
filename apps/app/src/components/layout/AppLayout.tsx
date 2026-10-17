@@ -462,7 +462,6 @@ export function AppLayout({ children }: AppLayoutProps) {
   const isCompactViewport = useIsCompactViewport();
   const store = useStore();
   const [contentShell, setContentShell] = useState<HTMLDivElement | null>(null);
-  const deviceHandoffQueue = useDeviceHandoffQueue();
   const restoreIOSViewportOnKeyboardDismissal = useMemo(
     () => isIOSWebKit(navigator),
     [],
@@ -475,6 +474,9 @@ export function AppLayout({ children }: AppLayoutProps) {
   const location = useLocation();
   const { projectId, threadId, isThreadView, isArchivedView, isRootView } =
     useRouteState();
+  const deviceHandoffQueue = useDeviceHandoffQueue(
+    isThreadView ? (threadId ?? null) : null,
+  );
   const [resourceRouteLabel, setResourceRouteLabel] = useAtom(
     resourceRouteLabelAtom,
   );
@@ -912,6 +914,7 @@ export function AppLayout({ children }: AppLayoutProps) {
                 position={deviceHandoffQueue.position}
                 count={deviceHandoffQueue.count}
                 onDismiss={deviceHandoffQueue.dismiss}
+                onShown={deviceHandoffQueue.acknowledgeShown}
               />
               {quickCreateProject.projectPathDialog.target === null ? null : (
                 <Suspense fallback={null}>

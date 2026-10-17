@@ -94,3 +94,19 @@ export const deviceHandoffExpiredSignalLenientSchema = z.object({
   id: z.string(),
   threadId: z.string(),
 });
+
+export const deviceHandoffAcknowledgedSignalSchema = z
+  .object({
+    type: z.literal("device-handoff-acknowledged"),
+    id: z.string().min(1),
+  })
+  .strict();
+
+export const deviceHandoffAcknowledgedSignalLenientSchema = z.object({
+  type: z.literal("device-handoff-acknowledged"),
+  id: z.string(),
+});
+
+export type DeviceHandoffAcknowledgedSignal = z.infer<
+  typeof deviceHandoffAcknowledgedSignalSchema
+>;

@@ -9,6 +9,8 @@ describe("NotificationHub device handoff routing", () => {
     const other = createMockHubSocket();
     hub.subscribe(viewing, { kind: "thread-detail", threadId: "thr_1" });
     hub.subscribe(other, { kind: "thread-detail", threadId: "thr_2" });
+    hub.setDeviceHandoffView(viewing, "thr_1");
+    hub.setDeviceHandoffView(other, "thr_2");
 
     expect(
       hub.notifyDeviceHandoff(
@@ -89,6 +91,7 @@ describe("NotificationHub device handoff routing", () => {
 
     const laterAtOrigin = createMockHubSocket();
     hub.subscribe(laterAtOrigin, { kind: "thread-detail", threadId: "thr_1" });
+    hub.setDeviceHandoffView(laterAtOrigin, "thr_1");
 
     expect(
       laterAtOrigin.messages.map((message) => JSON.parse(message).request),
@@ -155,6 +158,7 @@ describe("NotificationHub device handoff routing", () => {
         kind: "thread-detail",
         threadId: "thr_1",
       });
+      hub.setDeviceHandoffView(laterAtOrigin, "thr_1");
       expect(laterAtOrigin.messages).toHaveLength(0);
     } finally {
       vi.useRealTimers();
@@ -181,6 +185,7 @@ describe("NotificationHub device handoff routing", () => {
         kind: "thread-detail",
         threadId: "thr_1",
       });
+      hub.setDeviceHandoffView(laterAtOrigin, "thr_1");
 
       expect(
         laterAtOrigin.messages.map((message) => JSON.parse(message).request),
