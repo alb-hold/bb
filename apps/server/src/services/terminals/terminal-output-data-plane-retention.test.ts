@@ -151,6 +151,7 @@ async function setup(args: { holdOutputBatches?: boolean } = {}) {
     childMessages,
     daemonSocket,
     db: harness.db,
+    harness,
     heldOutputBatches,
     host,
     hub: harness.hub,
@@ -290,10 +291,15 @@ describe("terminal output retained from the data plane", () => {
     fixture.hub.unregisterDaemon(fixture.session.id);
   });
 
-  it("retains a held data-plane batch released after exit and an empty replay", async () => {
+  it("retains only the matching held batch released after exit", async () => {
     const fixture = await setup({ holdOutputBatches: true });
     fixture.terminalSessions.setDaemonSessionDirectOutput({
       daemonSessionId: fixture.session.id,
+      enabled: true,
+    });
+    const { session: otherSession } = seedHostSession(fixture.harness.deps);
+    fixture.terminalSessions.setDaemonSessionDirectOutput({
+      daemonSessionId: otherSession.id,
       enabled: true,
     });
     fixture.hub.registerDaemon(fixture.session.id, fixture.host.id, {
@@ -357,6 +363,12 @@ describe("terminal output retained from the data plane", () => {
       ).toBe("exited");
     });
     expect(
+      getTerminalSession(fixture.db, {
+        kind: "terminal",
+        terminalId: fixture.terminal.id,
+      })?.daemonSessionId,
+    ).toBe(fixture.session.id);
+    expect(
       getRetainedTerminalOutput(fixture.db, {
         hostId: fixture.host.id,
         terminalSessionId: fixture.terminal.id,
@@ -378,6 +390,30 @@ describe("terminal output retained from the data plane", () => {
       query: {},
     });
     expect(textFrom(output.chunks)).toBe(
+      "R-1\nR-2\nR-3\nR-4\nR-5\nR-6\nR-7\nR-8\n",
+    );
+
+    fixture.terminalSessions.recordDirectTerminalOutputBatch({
+      daemonSessionId: otherSession.id,
+      terminalId: fixture.terminal.id,
+      chunks: Array.from({ length: 8 }, (_, index) => ({
+        seq: index + 8,
+        dataBase64: Buffer.from(`B-${index + 1}\n`).toString("base64"),
+      })),
+    });
+    expect(
+      getRetainedTerminalOutput(fixture.db, {
+        hostId: fixture.host.id,
+        terminalSessionId: fixture.terminal.id,
+        now: Date.now(),
+      }),
+    ).toEqual(outputChunks());
+    const outputAfterOtherSession =
+      await fixture.terminalSessions.readTerminalOutput({
+        terminalId: fixture.terminal.id,
+        query: {},
+      });
+    expect(textFrom(outputAfterOtherSession.chunks)).toBe(
       "R-1\nR-2\nR-3\nR-4\nR-5\nR-6\nR-7\nR-8\n",
     );
     fixture.child.shutdown();

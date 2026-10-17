@@ -1824,7 +1824,8 @@ export class TerminalSessionLifecycle {
       (current.status === "running" &&
         current.daemonSessionId !== args.daemonSessionId) ||
       (current.status === "exited" &&
-        !this.directOutputSessionIds.has(args.daemonSessionId))
+        (current.daemonSessionId !== args.daemonSessionId ||
+          !this.directOutputSessionIds.has(args.daemonSessionId)))
     ) {
       return;
     }
@@ -2276,6 +2277,7 @@ export class TerminalSessionLifecycle {
         closeReason: args.message.closeReason,
         exitCode: args.message.exitCode,
         kind: "exit",
+        retainDaemonSession: this.directOutputSessionIds.has(args.sessionId),
       },
     });
     if (!exited) {
