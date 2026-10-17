@@ -316,7 +316,7 @@ Settings (stored server-side; also `bb settings writing`):
 Automatic typing correction applies an edit by itself only when its meaning cannot
 change, whatever the AI service reports: capitalization and spacing, a period at
 the end of a sentence, removing a word typed twice in a row (never had, that or
-is, which can repeat on purpose), verb or article
+is, which can repeat on purpose, nor a negation such as not), verb or article
 agreement from a fixed list (is/are/am/be, was/were, has/have, does/do and their
 negated forms, a/an), and accents on a fixed list of Portuguese words that are
 not words without them (nao, voce, tambem, entao, amanha). Spelling fixes, other
