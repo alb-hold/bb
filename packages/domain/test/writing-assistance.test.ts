@@ -491,6 +491,28 @@ describe("validateFormattedTranscript", () => {
     },
   );
 
+  it.each([
+    ["nao", "Não não."],
+    ["eu nao vou", "Eu não vou, não."],
+    ["voce precisa", "Você, você precisa."],
+    ["run the migration", "Run the migration, run."],
+    ["do not delete it", "Do not delete it, not."],
+  ])(
+    "keeps the transcript when formatting repeats a word spoken once: %s -> %s",
+    (raw, formatted) => {
+      expect(validateFormattedTranscript(raw, formatted)).toEqual({
+        ok: false,
+        reason: "added-words",
+      });
+    },
+  );
+
+  it("accepts an accent restoration for each time the word was spoken", () => {
+    expect(validateFormattedTranscript("nao foi nao", "Não foi não.")).toEqual({
+      ok: true,
+    });
+  });
+
   it("accepts transcribed vocabulary terms and accent restorations of spoken words", () => {
     expect(
       validateFormattedTranscript(

@@ -755,14 +755,12 @@ function isNegation(token: string): boolean {
   return NEGATIONS.has(token) || /n['’]t$/u.test(token);
 }
 
-function allowedNovelToken(
-  token: string,
-  source: ReadonlySet<string>,
-): boolean {
+function spokenSpelling(token: string, source: ReadonlySet<string>): string {
+  if (source.has(token)) return token;
   for (const word of source) {
-    if (NON_WORD_RESTORATIONS.get(word) === token) return true;
+    if (NON_WORD_RESTORATIONS.get(word) === token) return word;
   }
-  return false;
+  return token;
 }
 
 function correctionCoverage(tokens: readonly string[]): {
@@ -802,8 +800,6 @@ function droppedTokens(
   for (const token of formattedTokens) {
     remaining.set(token, (remaining.get(token) ?? 0) + 1);
   }
-  const rawSet = new Set(rawTokens);
-  const novel = formattedTokens.filter((token) => !rawSet.has(token));
   const dropped = rawTokens.map(() => false);
   const order = rawTokens
     .map((_token, index) => index)
@@ -815,9 +811,7 @@ function droppedTokens(
       remaining.set(token, count - 1);
       continue;
     }
-    dropped[index] = !novel.some(
-      (candidate) => NON_WORD_RESTORATIONS.get(token) === candidate,
-    );
+    dropped[index] = true;
   }
   return dropped;
 }
@@ -941,11 +935,9 @@ function listMatchesSpeech(
 function keepsSpokenOrder(
   tokens: readonly string[],
   rawTokens: readonly string[],
-  source: ReadonlySet<string>,
 ): boolean {
   let next = 0;
   for (const token of tokens) {
-    if (!source.has(token)) continue;
     while (next < rawTokens.length && rawTokens[next] !== token) next += 1;
     if (next === rawTokens.length) return false;
     next += 1;
@@ -980,17 +972,23 @@ export function validateFormattedTranscript(
       return { ok: false, reason: "added-words" };
     }
   }
-  const formattedTokens = wordTokens(body).flatMap((token) =>
-    options.literalCode && !source.has(token)
-      ? (splitJoinedToken(token, rawTokens) ?? [token])
-      : [token],
-  );
-  for (const token of formattedTokens) {
-    if (source.has(token)) continue;
-    if (allowedNovelToken(token, source)) continue;
-    return { ok: false, reason: "added-words" };
+  const formattedTokens = wordTokens(body)
+    .flatMap((token) =>
+      options.literalCode && !source.has(token)
+        ? (splitJoinedToken(token, rawTokens) ?? [token])
+        : [token],
+    )
+    .map((token) => spokenSpelling(token, source));
+  const unused = new Map<string, number>();
+  for (const token of rawTokens) {
+    unused.set(token, (unused.get(token) ?? 0) + 1);
   }
-  if (!keepsSpokenOrder(formattedTokens, rawTokens, source)) {
+  for (const token of formattedTokens) {
+    const count = unused.get(token) ?? 0;
+    if (count === 0) return { ok: false, reason: "added-words" };
+    unused.set(token, count - 1);
+  }
+  if (!keepsSpokenOrder(formattedTokens, rawTokens)) {
     return { ok: false, reason: "reordered" };
   }
   let enumerated = 0;

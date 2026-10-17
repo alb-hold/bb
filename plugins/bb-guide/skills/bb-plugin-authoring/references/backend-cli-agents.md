@@ -283,8 +283,11 @@ bb.experimental_aiServices.register({
   prompt and cleans the reply (think blocks, quotes, labels, extra lines), so
   return the text as-is. Declared services appear for titles, commits, and
   writing. Writing prompts ask for JSON edit proposals or formatted dictation
-  of up to about 70 words; bb validates both and keeps the user's text when a
-  reply is malformed, truncated, or changes protected tokens or negations.
+  of up to about 70 words, and bb validates both. From an edit list cut off
+  by the output limit bb keeps only the complete edits before the cut, each
+  checked like any other edit; an unreadable list changes nothing. Dictation
+  keeps the transcript as heard when the formatted reply is unreadable, drops
+  or adds words, or changes protected tokens or negations.
 - `transcribe(audio: File, { signal, hint })` returns a transcript. `hint` is
   vocabulary text or `null`. Declared services appear for voice input.
 - `status()` is optional. Its message shows beside the service in the picker.

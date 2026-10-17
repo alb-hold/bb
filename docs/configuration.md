@@ -331,7 +331,9 @@ as heard. Vocabulary terms are sent to transcription as hints, so the
 transcript spells them; formatting may change their case or punctuation
 ("next js" to "Next.js") but never their letters, since without a dictionary a
 misheard name cannot be told from a real word ("public" is never rewritten as
-a similar term). The spoken words must also keep the order they were said in.
+a similar term). The spoken words must also keep the order they were said in,
+and no word, accented or not, may appear more times than it was said ("nao"
+never becomes "Não não.").
 
 Usage counts and the cost estimate use list prices and are not a bill: bb
 cloud has its own daily limit, and Codex uses the primary machine's Codex

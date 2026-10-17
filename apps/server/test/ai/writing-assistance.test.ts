@@ -110,6 +110,42 @@ describe("writing assistance corrections", () => {
     });
   });
 
+  it("returns only the complete edits of a reply cut off by the output limit", async () => {
+    await withTestHarness({}, async (harness) => {
+      const complete = JSON.stringify({
+        original: "user are",
+        replacement: "user is",
+        category: "grammar",
+        confidence: "high",
+        semanticImpact: "none",
+        explanation: null,
+      });
+      const replies = [
+        `{"edits":[${complete},{"original":"talking","replacement":"tok`,
+        '{"edits":[{"original":"user are","repla',
+      ];
+      registerFakeAiService(harness.deps.aiServices, {
+        complete: async () => replies.shift() ?? "",
+      });
+      const target = "The user are sure the talking expires.";
+      await expect(
+        (await postCorrection(harness, { target })).json(),
+      ).resolves.toEqual({
+        status: "ok",
+        edits: [
+          expect.objectContaining({
+            original: "are",
+            replacement: "is",
+            disposition: "apply",
+          }),
+        ],
+      });
+      await expect(
+        (await postCorrection(harness, { target })).json(),
+      ).resolves.toEqual({ status: "ok", edits: [] });
+    });
+  });
+
   it("degrades to a skipped result instead of failing the composer", async () => {
     await withTestHarness({}, async (harness) => {
       const none = await (
@@ -358,6 +394,19 @@ describe("dictation segments", () => {
       });
       await expect((await postSegment(harness)).json()).resolves.toMatchObject({
         text: "first check auth second check tokens",
+        formatted: false,
+      });
+    });
+  });
+
+  it("keeps the transcript when formatting repeats an accent-restored negation", async () => {
+    await withTestHarness({}, async (harness) => {
+      registerFakeAiService(harness.deps.aiServices, {
+        transcribe: async () => "nao",
+        complete: async () => "Não não.",
+      });
+      await expect((await postSegment(harness)).json()).resolves.toMatchObject({
+        text: "nao",
         formatted: false,
       });
     });
