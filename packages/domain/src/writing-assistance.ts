@@ -488,10 +488,9 @@ function removesRepeatedWord(
   target: string,
   change: { start: number; end: number; replacement: string },
 ): boolean {
+  const edited = `${target.slice(0, change.start)}${change.replacement}${target.slice(change.end)}`;
   const before = wordTokens(target);
-  const after = wordTokens(
-    `${target.slice(0, change.start)}${change.replacement}${target.slice(change.end)}`,
-  );
+  const after = wordTokens(edited);
   if (before.length !== after.length + 1) return false;
   let index = 0;
   while (index < after.length && before[index] === after[index]) index += 1;
@@ -499,8 +498,36 @@ function removesRepeatedWord(
     return false;
   }
   const removed = before[index];
-  if (removed === undefined || GRAMMATICAL_REPEATS.has(removed)) return false;
-  return removed === before[index - 1] || removed === before[index + 1];
+  if (
+    removed === undefined ||
+    GRAMMATICAL_REPEATS.has(removed) ||
+    isNegation(removed)
+  ) {
+    return false;
+  }
+  if (removed !== before[index - 1] && removed !== before[index + 1]) {
+    return false;
+  }
+  return removesOnlyTheWord(target, edited);
+}
+
+function removesOnlyTheWord(target: string, edited: string): boolean {
+  for (const match of target.matchAll(/[\p{L}\p{N}'’]+/gu)) {
+    const start = match.index;
+    const end = start + match[0].length;
+    const following = /^\s+/u.exec(target.slice(end))?.[0].length ?? 0;
+    const preceding = /\s+$/u.exec(target.slice(0, start))?.[0].length ?? 0;
+    if (
+      (following > 0 &&
+        `${target.slice(0, start)}${target.slice(end + following)}` ===
+          edited) ||
+      (preceding > 0 &&
+        `${target.slice(0, start - preceding)}${target.slice(end)}` === edited)
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 interface TextChangeSpan {
@@ -648,6 +675,7 @@ export type FormattedTranscriptVerdict =
         | "dropped-words"
         | "negation"
         | "list-numbers"
+        | "reordered"
         | "empty";
     };
 
@@ -921,6 +949,21 @@ function listMatchesSpeech(
   });
 }
 
+function keepsSpokenOrder(
+  tokens: readonly string[],
+  rawTokens: readonly string[],
+  source: ReadonlySet<string>,
+): boolean {
+  let next = 0;
+  for (const token of tokens) {
+    if (!source.has(token)) continue;
+    while (next < rawTokens.length && rawTokens[next] !== token) next += 1;
+    if (next === rawTokens.length) return false;
+    next += 1;
+  }
+  return true;
+}
+
 export function validateFormattedTranscript(
   raw: string,
   formatted: string,
@@ -960,6 +1003,9 @@ export function validateFormattedTranscript(
     if (source.has(token) || vocabularyTokens.has(token)) continue;
     if (allowedNovelToken(token, source)) continue;
     return { ok: false, reason: "added-words" };
+  }
+  if (!keepsSpokenOrder(formattedTokens, rawTokens, source)) {
+    return { ok: false, reason: "reordered" };
   }
   let enumerated = 0;
   const { marker, window } = correctionCoverage(rawTokens);

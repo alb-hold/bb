@@ -164,6 +164,9 @@ describe("resolveWritingEdits", () => {
     ["I had had enough of the flaky test.", "had had", "had"],
     ["I know that that test is flaky.", "that that", "that"],
     ["What it is is a flaky test.", "is is", "is"],
+    ["Do not not run the migration.", "not not", "not"],
+    ["We don't don't ship on Fridays.", "don't don't", "don't"],
+    ["Check the the cache before the deploy.", "the the", "the?"],
   ])(
     "only suggests removing the repeat in %s",
     (target, original, replacement) => {
@@ -443,6 +446,22 @@ describe("validateFormattedTranscript", () => {
       ),
     ).toEqual({ ok: true });
   });
+
+  it.each([
+    ["validate config before deploy", "Validate deploy before config."],
+    [
+      "first validate config before deploy second run tests",
+      "1. Validate deploy before config.\n2. Run tests.",
+    ],
+  ])(
+    "keeps the transcript when formatting reorders spoken words: %s -> %s",
+    (raw, formatted) => {
+      expect(validateFormattedTranscript(raw, formatted)).toEqual({
+        ok: false,
+        reason: "reordered",
+      });
+    },
+  );
 
   it("keeps the transcript when a spoken enumerator numbers no list item", () => {
     expect(

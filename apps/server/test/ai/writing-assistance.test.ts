@@ -363,6 +363,19 @@ describe("dictation segments", () => {
     });
   });
 
+  it("keeps the transcript when formatting reorders spoken words", async () => {
+    await withTestHarness({}, async (harness) => {
+      registerFakeAiService(harness.deps.aiServices, {
+        transcribe: async () => "validate config before deploy",
+        complete: async () => "Validate deploy before config.",
+      });
+      await expect((await postSegment(harness)).json()).resolves.toMatchObject({
+        text: "validate config before deploy",
+        formatted: false,
+      });
+    });
+  });
+
   it("formats a numbered list built from spoken ordinals", async () => {
     await withTestHarness({}, async (harness) => {
       registerFakeAiService(harness.deps.aiServices, {
