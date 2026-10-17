@@ -1,4 +1,4 @@
-import { and, eq, like, lt, or } from "drizzle-orm";
+import { and, eq, like, lt } from "drizzle-orm";
 import {
   defaultWritingAssistanceSettings,
   writingAssistanceSettingsSchema,
@@ -11,7 +11,6 @@ import type { DbConnection, DbQueryConnection } from "../connection.js";
 import { appSettingsValues } from "../schema.js";
 
 const WRITING_SETTINGS_KEY = "writingAssistanceSettings";
-const LEGACY_WRITING_USAGE_KEY = "writingAssistanceUsage";
 const WRITING_USAGE_PREFIX = "writingAssistanceUsage:";
 
 function usageKey(day: string): string {
@@ -92,10 +91,8 @@ export function emptyWritingUsage(day: string): WritingUsage {
 }
 
 export function getWritingUsage(db: DbQueryConnection, day: string): WritingUsage {
-  for (const key of [usageKey(day), LEGACY_WRITING_USAGE_KEY]) {
-    const parsed = writingUsageSchema.safeParse(readValue(db, key));
-    if (parsed.success && parsed.data.day === day) return parsed.data;
-  }
+  const parsed = writingUsageSchema.safeParse(readValue(db, usageKey(day)));
+  if (parsed.success && parsed.data.day === day) return parsed.data;
   return emptyWritingUsage(day);
 }
 
@@ -133,12 +130,9 @@ export function reserveWritingUsage(
     writeValue(tx, usageKey(day), next);
     tx.delete(appSettingsValues)
       .where(
-        or(
-          eq(appSettingsValues.key, LEGACY_WRITING_USAGE_KEY),
-          and(
-            like(appSettingsValues.key, `${WRITING_USAGE_PREFIX}%`),
-            lt(appSettingsValues.key, usageKey(previousDay(day))),
-          ),
+        and(
+          like(appSettingsValues.key, `${WRITING_USAGE_PREFIX}%`),
+          lt(appSettingsValues.key, usageKey(previousDay(day))),
         ),
       )
       .run();

@@ -384,26 +384,14 @@ export async function transcribeDictationSegment(
   deps: WritingDeps,
   args: {
     file: File;
-    durationMs: number;
     context: string;
     signal: AbortSignal;
   },
 ): Promise<DictationSegmentResponse> {
-  if (
-    !Number.isFinite(args.durationMs) ||
-    args.durationMs <= 0 ||
-    args.durationMs > MAX_SEGMENT_DURATION_MS
-  ) {
-    throw new ApiError(
-      400,
-      "invalid_request",
-      `durationMs must be between 1 and ${MAX_SEGMENT_DURATION_MS}`,
-    );
-  }
   const measured = measureAudioSeconds(
     new Uint8Array(await args.file.arrayBuffer()),
   );
-  if (measured === null) {
+  if (measured === null || measured <= 0) {
     throw new ApiError(
       400,
       "invalid_request",
@@ -422,8 +410,7 @@ export async function transcribeDictationSegment(
   }
   const settings = getWritingAssistanceSettings(deps.db);
   const day = utcDay();
-  const seconds =
-    Math.ceil(Math.max(args.durationMs, measured * 1000) / 100) / 10;
+  const seconds = Math.ceil(measured * 10) / 10;
   const reserved = reserveWritingUsage(
     deps.db,
     day,

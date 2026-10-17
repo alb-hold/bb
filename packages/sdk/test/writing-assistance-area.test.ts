@@ -46,7 +46,6 @@ describe("writingAssistance SDK area", () => {
     await expect(
       sdk.writingAssistance.transcribeDictationSegment({
         file: new File([audio], "segment.wav", { type: "audio/wav" }),
-        durationMs: 1234.6,
         context: "Earlier text",
       }),
     ).resolves.toEqual({
@@ -63,7 +62,7 @@ describe("writingAssistance SDK area", () => {
       /^multipart\/form-data; boundary=/u,
     );
     const form = await request!.formData();
-    expect(form.get("durationMs")).toBe("1235");
+    expect(form.has("durationMs")).toBe(false);
     expect(form.get("context")).toBe("Earlier text");
     const file = form.get("file");
     if (!(file instanceof File)) throw new Error("Expected an uploaded file");
@@ -82,7 +81,6 @@ describe("writingAssistance SDK area", () => {
     const error = await sdk.writingAssistance
       .transcribeDictationSegment({
         file: new File([audio], "segment.wav", { type: "audio/wav" }),
-        durationMs: 1000,
         context: "",
       })
       .catch((caught: unknown) => caught);
@@ -95,14 +93,12 @@ describe("writingAssistance SDK area", () => {
     await expect(
       sdk.writingAssistance.transcribeDictationSegment({
         file: new File([audio], "segment.wav", { type: "audio/wav" }),
-        durationMs: 1000,
         context: "",
       }),
     ).rejects.toThrow();
     await expect(
       sdk.writingAssistance.transcribeDictationSegment({
         file: new File([], "empty.wav", { type: "audio/wav" }),
-        durationMs: 1000,
         context: "",
       }),
     ).rejects.toThrow("Audio file must not be empty");

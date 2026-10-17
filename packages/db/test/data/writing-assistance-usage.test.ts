@@ -52,31 +52,6 @@ describe("writing assistance usage", () => {
     });
   });
 
-  it("carries today's usage stored under the old single key and then removes that key", () => {
-    db.$client
-      .prepare(
-        "INSERT INTO app_settings_values (key, value, updated_at) VALUES (?, ?, ?)",
-      )
-      .run(
-        "writingAssistanceUsage",
-        JSON.stringify({
-          day: "2026-10-17",
-          corrections: 3,
-          formattings: 0,
-          dictationSegments: 0,
-          audioSeconds: 0,
-          inputChars: 0,
-          outputChars: 0,
-          estimatedCostMicros: 0,
-        }),
-        Date.now(),
-      );
-    expect(getWritingUsage(db, "2026-10-17").corrections).toBe(3);
-    reserveWritingUsage(db, "2026-10-17", { corrections: 1 }, () => true);
-    expect(getWritingUsage(db, "2026-10-17").corrections).toBe(4);
-    expect(storedUsageKeys(db)).toEqual(["writingAssistanceUsage:2026-10-17"]);
-  });
-
   it("keeps the previous day and drops older days when usage is recorded", () => {
     for (const day of ["2026-10-14", "2026-10-15", "2026-10-16", "2026-10-17"]) {
       addWritingUsage(db, day, { corrections: 1 });

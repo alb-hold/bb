@@ -44,7 +44,8 @@ async function postSegment(
 ): Promise<Response> {
   const form = new FormData();
   form.set("file", fields.file ?? wav(0.5));
-  form.set("durationMs", fields.durationMs ?? "4000");
+  if (fields.durationMs !== undefined)
+    form.set("durationMs", fields.durationMs);
   form.set("context", fields.context ?? "");
   return harness.app.request("/api/v1/writing-assistance/dictation-segments", {
     body: form,
@@ -329,7 +330,7 @@ describe("dictation segments", () => {
       const usage = getWritingUsage(harness.deps.db, utcDay());
       expect(usage).toMatchObject({
         dictationSegments: 1,
-        audioSeconds: 4,
+        audioSeconds: 0.5,
         formattings: 1,
       });
       expect(usage.estimatedCostMicros).toBeGreaterThan(0);
@@ -656,10 +657,8 @@ describe("dictation segments", () => {
         dailyDictationMinutes: 1,
       });
       addWritingUsage(harness.deps.db, utcDay(), { audioSeconds: 50 });
-      expect((await postSegment(harness, { durationMs: "4000" })).status).toBe(
-        200,
-      );
-      const refused = await postSegment(harness, { durationMs: "8000" });
+      expect((await postSegment(harness, { file: wav(4) })).status).toBe(200);
+      const refused = await postSegment(harness, { file: wav(8) });
       expect(refused.status).toBe(429);
       await expect(refused.json()).resolves.toMatchObject({
         code: "budget_exhausted",
@@ -682,9 +681,9 @@ describe("dictation segments", () => {
         dictationFormatting: false,
       });
       addWritingUsage(harness.deps.db, utcDay(), { audioSeconds: 50 });
-      const first = postSegment(harness, { durationMs: "6000" });
+      const first = postSegment(harness, { file: wav(6) });
       await vi.waitFor(() => expect(service.transcribeCalls).toHaveLength(1));
-      const second = await postSegment(harness, { durationMs: "6000" });
+      const second = await postSegment(harness, { file: wav(6) });
       expect(second.status).toBe(429);
       await expect(second.json()).resolves.toMatchObject({
         code: "budget_exhausted",
@@ -707,9 +706,7 @@ describe("dictation segments", () => {
         },
       });
       addWritingUsage(harness.deps.db, utcDay(), { audioSeconds: 10 });
-      expect((await postSegment(harness, { durationMs: "4000" })).status).toBe(
-        502,
-      );
+      expect((await postSegment(harness, { file: wav(4) })).status).toBe(502);
       expect(getWritingUsage(harness.deps.db, utcDay())).toMatchObject({
         audioSeconds: 10,
         dictationSegments: 0,
@@ -717,7 +714,7 @@ describe("dictation segments", () => {
     });
   });
 
-  it("reserves the measured length of a clip whose claimed duration is shorter", async () => {
+  it("charges the measured length of a clip, whatever length the request claims", async () => {
     await withTestHarness({}, async (harness) => {
       const service = registerFakeAiService(harness.deps.aiServices, {
         transcribe: async () => "hello there",
@@ -727,24 +724,31 @@ describe("dictation segments", () => {
         dictationFormatting: false,
       });
       expect(
+        (await postSegment(harness, { durationMs: "120000", file: wav(0.5) }))
+          .status,
+      ).toBe(200);
+      expect(getWritingUsage(harness.deps.db, utcDay())).toMatchObject({
+        audioSeconds: 0.5,
+        dictationSegments: 1,
+      });
+      expect(
         (await postSegment(harness, { durationMs: "1000", file: wav(60) }))
           .status,
       ).toBe(200);
       expect(getWritingUsage(harness.deps.db, utcDay())).toMatchObject({
-        audioSeconds: 60,
-        dictationSegments: 1,
+        audioSeconds: 60.5,
+        dictationSegments: 2,
       });
       addWritingUsage(harness.deps.db, utcDay(), { audioSeconds: 10 });
-      const refused = await postSegment(harness, {
-        durationMs: "1000",
-        file: wav(60),
-      });
+      const refused = await postSegment(harness, { file: wav(60) });
       expect(refused.status).toBe(429);
       await expect(refused.json()).resolves.toMatchObject({
         code: "budget_exhausted",
       });
-      expect(getWritingUsage(harness.deps.db, utcDay()).audioSeconds).toBe(70);
-      expect(service.transcribeCalls).toHaveLength(1);
+      expect(getWritingUsage(harness.deps.db, utcDay()).audioSeconds).toBe(
+        70.5,
+      );
+      expect(service.transcribeCalls).toHaveLength(2);
     });
   });
 
@@ -760,17 +764,11 @@ describe("dictation segments", () => {
         new File([Buffer.from(gappedWebm(seconds))], "dictation-1.webm", {
           type: "audio/webm",
         });
-      expect(
-        (await postSegment(harness, { durationMs: "1000", file: webm(30) }))
-          .status,
-      ).toBe(200);
+      expect((await postSegment(harness, { file: webm(30) })).status).toBe(200);
       expect(getWritingUsage(harness.deps.db, utcDay()).audioSeconds).toBe(
         30.1,
       );
-      const tooLong = await postSegment(harness, {
-        durationMs: "1000",
-        file: webm(130),
-      });
+      const tooLong = await postSegment(harness, { file: webm(130) });
       expect(tooLong.status).toBe(400);
       expect(getWritingUsage(harness.deps.db, utcDay()).audioSeconds).toBe(
         30.1,
@@ -790,7 +788,6 @@ describe("dictation segments", () => {
       expect(
         (
           await postSegment(harness, {
-            durationMs: "1000",
             file: wav(2, 1_000, 200_000),
           })
         ).status,
@@ -799,13 +796,10 @@ describe("dictation segments", () => {
     });
   });
 
-  it("refuses audio longer than a segment or that it cannot measure, without reserving", async () => {
+  it("refuses audio longer than a segment, empty, or that it cannot measure, without reserving", async () => {
     await withTestHarness({}, async (harness) => {
       const service = registerFakeAiService(harness.deps.aiServices);
-      const tooLong = await postSegment(harness, {
-        durationMs: "1000",
-        file: wav(130),
-      });
+      const tooLong = await postSegment(harness, { file: wav(130) });
       expect(tooLong.status).toBe(400);
       await expect(tooLong.json()).resolves.toMatchObject({
         message: expect.stringContaining("at most 120 seconds"),
@@ -819,20 +813,10 @@ describe("dictation segments", () => {
       await expect(unreadable.json()).resolves.toMatchObject({
         message: expect.stringContaining("Unsupported or unreadable audio"),
       });
+      const empty = await postSegment(harness, { file: wav(0) });
+      expect(empty.status).toBe(400);
       expect(service.transcribeCalls).toHaveLength(0);
       expect(getWritingUsage(harness.deps.db, utcDay()).audioSeconds).toBe(0);
-    });
-  });
-
-  it("validates the segment duration", async () => {
-    await withTestHarness({}, async (harness) => {
-      registerFakeAiService(harness.deps.aiServices);
-      expect((await postSegment(harness, { durationMs: "abc" })).status).toBe(
-        400,
-      );
-      expect(
-        (await postSegment(harness, { durationMs: "999999" })).status,
-      ).toBe(400);
     });
   });
 });

@@ -53,18 +53,6 @@ function wordErrorRate(hypothesis, reference) {
   return r.length === 0 ? 0 : row[h.length] / r.length;
 }
 
-function wavDurationMs(buffer) {
-  const byteRate = buffer.readUInt32LE(28);
-  let offset = 12;
-  while (offset + 8 <= buffer.length) {
-    const id = buffer.toString("ascii", offset, offset + 4);
-    const size = buffer.readUInt32LE(offset + 4);
-    if (id === "data") return Math.round((size / byteRate) * 1000);
-    offset += 8 + size + (size % 2);
-  }
-  throw new Error("WAV file has no data chunk");
-}
-
 function percentile(list, fraction) {
   if (list.length === 0) return null;
   const sorted = [...list].sort((a, b) => a - b);
@@ -97,7 +85,6 @@ async function runDictation(audioDir) {
       "file",
       new File([audio], `${item.id}.wav`, { type: "audio/wav" }),
     );
-    form.set("durationMs", String(wavDurationMs(audio)));
     form.set("context", "");
     const { status, body, ms } = await post(
       "/writing-assistance/dictation-segments",

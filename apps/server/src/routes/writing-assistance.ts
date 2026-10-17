@@ -43,11 +43,9 @@ export function registerWritingAssistanceRoutes(
     if (!(file instanceof File)) {
       throw new ApiError(400, "invalid_request", "Audio file is required");
     }
-    const durationMs = Number(formString(formData.get("durationMs")));
     return context.json(
       await transcribeDictationSegment(deps, {
         file,
-        durationMs,
         context: formString(formData.get("context")),
         signal: context.req.raw.signal,
       }),

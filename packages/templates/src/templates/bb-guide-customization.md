@@ -65,7 +65,7 @@ Settings stored server-side apply to every window and survive restarts.
   bb settings writing set <key> <value>
   bb settings writing vocabulary add|remove <terms...>
   bb settings writing correct <text> [--context <text>] [--partial]
-  bb settings writing transcribe <audio-file> --seconds <n> [--context <text>]
+  bb settings writing transcribe <audio-file> [--context <text>]
   bb settings general <key> <value>
   bb settings replay-onboarding
   bb settings completed-turns [provider-id] [collapse|flat|default]
@@ -96,9 +96,10 @@ verbatim, literal-code), `typing-correction` (automatic, suggest, off),
 `dictation-formatting` (on, off), `daily-correction-limit` (requests per UTC
 day, 0-5000), and `daily-dictation-minutes` (0-1440). Only capitalization
 and spacing inside a sentence that already ends with . ! or ?, removing a short
-function word typed twice in a row (articles, pronouns, prepositions and
-conjunctions such as the, a, I, to, and, de and o; any other repeat, such as
-very very, had had or not not, is only suggested), swaps within
+function word typed twice with only spaces between when it can never stand twice
+(such as the, a, I, we, of, and, de and o; any other repeat, such as very very,
+had had, not not, her her or log in in, or a pair split by punctuation, is only
+suggested), swaps within
 is/are/am, isn't/aren't, hasn't/haven't, doesn't/don't or a/an (be, was/were,
 has/have and does/do, whose mood can change the meaning, are only suggested), and accents on nao, voce, tambem,
 entao and amanha apply by themselves, never inside code, paths, identifiers or
@@ -108,8 +109,8 @@ guarantee. Everything else, including spelling, other punctuation and
 tense or plural changes such as deploy/deployed, is offered as a suggestion. `correct` and `transcribe` run the
 same pipeline as the composer. `transcribe` accepts WebM or Ogg with Opus,
 MP4 or M4A with AAC, MP3 and WAV; the server measures the clip, counting gaps
-between its timestamps as recorded time, and counts the longer of that and
-`--seconds` against the daily minutes. Settings → General → Writing assistance has the
+between its timestamps as recorded time, and counts only that measured
+length against the daily minutes. Settings → General → Writing assistance has the
 same controls; Cmd/Ctrl+Shift+D starts and stops dictation
 (`composer.dictation.toggle` in Settings → Keyboard).
 

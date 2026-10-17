@@ -18,7 +18,6 @@ interface JsonOptions {
 }
 
 interface TranscribeOptions extends JsonOptions {
-  seconds: string;
   context?: string;
 }
 
@@ -262,18 +261,10 @@ export function registerWritingSettingsCommands(
     .description(
       "Transcribe and format one dictation clip the way the composer does",
     )
-    .requiredOption(
-      "--seconds <n>",
-      "Length of the recording in seconds; the server counts the longer of this and the length it measures from the audio, including gaps between its timestamps",
-    )
     .option("--context <text>", "Text already in the message")
     .option("--json", "Print machine-readable JSON output")
     .action(
       action(async (path: string, opts: TranscribeOptions) => {
-        const seconds = Number(opts.seconds);
-        if (!Number.isFinite(seconds) || seconds <= 0 || seconds > 120) {
-          throw new Error("--seconds must be between 0 and 120");
-        }
         const type = AUDIO_TYPES[extname(path).toLowerCase()];
         if (type === undefined) {
           throw new Error(
@@ -285,7 +276,6 @@ export function registerWritingSettingsCommands(
           getUrl(),
         ).writingAssistance.transcribeDictationSegment({
           file,
-          durationMs: seconds * 1_000,
           context: opts.context ?? "",
         });
         if (outputJson(opts, result)) return;

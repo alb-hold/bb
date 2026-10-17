@@ -248,12 +248,11 @@ export function NativeTerminalPromptBar({
   const submitRef = useRef<() => void>(() => {});
 
   const dictation = useSegmentedDictation({
-    transcribe: ({ file, durationMs, signal }) => {
+    transcribe: ({ file, signal }) => {
       const anchor = anchorRef.current ?? textRef.current.length;
       return sdk.writingAssistance
         .transcribeDictationSegment({
           file,
-          durationMs,
           context: textRef.current.slice(
             Math.max(0, anchor - DICTATION_CONTEXT_CHARS),
             anchor,

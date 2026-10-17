@@ -22,7 +22,6 @@ export interface WritingAssistanceCorrectArgs extends WritingCorrectionRequest {
 
 export interface WritingAssistanceDictationSegmentArgs {
   file: File;
-  durationMs: number;
   context: string;
   signal?: AbortSignal;
 }
@@ -81,7 +80,6 @@ export function createWritingAssistanceArea(
       }
       const form = new FormData();
       form.set("file", input.file);
-      form.set("durationMs", String(Math.round(input.durationMs)));
       form.set("context", input.context);
       const baseUrl = transport.baseUrl.replace(/\/$/u, "");
       const response = await transport.resolve(

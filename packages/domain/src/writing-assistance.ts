@@ -492,30 +492,13 @@ const ACCIDENTAL_REPEATS: ReadonlySet<string> = new Set([
   "an",
   "i",
   "we",
-  "you",
+  "they",
   "he",
   "she",
-  "it",
-  "they",
-  "me",
-  "us",
-  "him",
-  "them",
-  "my",
   "our",
   "your",
-  "his",
-  "her",
   "their",
-  "to",
   "of",
-  "in",
-  "on",
-  "at",
-  "for",
-  "with",
-  "from",
-  "by",
   "and",
   "or",
   "but",
@@ -526,13 +509,11 @@ const ACCIDENTAL_REPEATS: ReadonlySet<string> = new Set([
   "um",
   "uma",
   "de",
-  "do",
   "da",
   "dos",
   "das",
   "em",
   "na",
-  "nos",
   "nas",
   "e",
   "ou",
@@ -540,10 +521,27 @@ const ACCIDENTAL_REPEATS: ReadonlySet<string> = new Set([
   "ele",
   "ela",
   "nós",
-  "para",
   "por",
   "com",
 ]);
+
+function accidentalRepeatPairs(text: string): boolean[] {
+  const matches = [...text.matchAll(/[\p{L}\p{N}'’]+/gu)];
+  return matches.map((match, index) => {
+    const previous = matches[index - 1];
+    if (previous === undefined) return false;
+    const token = match[0].toLowerCase();
+    const between = text.slice(
+      previous.index + previous[0].length,
+      match.index,
+    );
+    return (
+      previous[0].toLowerCase() === token &&
+      ACCIDENTAL_REPEATS.has(token) &&
+      /^[^\S\n]+$/u.test(between)
+    );
+  });
+}
 
 function removesRepeatedWord(
   target: string,
@@ -558,13 +556,8 @@ function removesRepeatedWord(
   if (before.slice(index + 1).join(" ") !== after.slice(index).join(" ")) {
     return false;
   }
-  const removed = before[index];
-  if (removed === undefined || !ACCIDENTAL_REPEATS.has(removed)) {
-    return false;
-  }
-  if (removed !== before[index - 1] && removed !== before[index + 1]) {
-    return false;
-  }
+  const pairs = accidentalRepeatPairs(target);
+  if (!pairs[index] && !pairs[index + 1]) return false;
   return removesOnlyTheWord(target, edited);
 }
 
@@ -1122,6 +1115,7 @@ export function validateFormattedTranscript(
     }
   }
   const rawTokens = wordTokens(raw);
+  const repeats = accidentalRepeatPairs(raw);
   const source = new Set(rawTokens);
   const items = listItems(formatted);
   const list = items.size > 0;
@@ -1201,13 +1195,7 @@ export function validateFormattedTranscript(
     if (correcting[index] || window[index]) continue;
     if (FILLER_WORDS.has(token)) continue;
     if (options.literalCode && SPOKEN_SYMBOLS.has(token)) continue;
-    if (
-      index > 0 &&
-      rawTokens[index - 1] === token &&
-      ACCIDENTAL_REPEATS.has(token)
-    ) {
-      continue;
-    }
+    if (repeats[index]) continue;
     const enumerator = ENUMERATOR_VALUES.get(token);
     if (
       enumerator !== undefined &&

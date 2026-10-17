@@ -174,6 +174,13 @@ describe("resolveWritingEdits", () => {
     ["This is very very important.", "very very", "very"],
     ["It was a long long day.", "long long", "long"],
     ["Isso é muito muito importante.", "muito muito", "muito"],
+    ["Tell her her access expires tonight.", "her her", "her"],
+    ["Log in in five minutes.", "in in", "in"],
+    ["Turn it on on Monday.", "on on", "on"],
+    ["O carro para para deixar passar.", "para para", "para"],
+    ["Do do come in.", "Do do", "Do"],
+    ["So did I. I left early.", "I. I", "I"],
+    ["We\nwe deploy on Fridays.", "We\nwe", "We"],
   ])(
     "only suggests removing the repeat in %s",
     (target, original, replacement) => {
@@ -759,6 +766,10 @@ describe("validateFormattedTranscript", () => {
     ["this is very very important", "This is very important."],
     ["it was a long long day", "It was a long day."],
     ["isso é muito muito importante", "Isso é muito importante."],
+    ["tell her her access expires tonight", "Tell her access expires tonight."],
+    ["log in in five minutes", "Log in five minutes."],
+    ["o carro para para deixar passar", "O carro para deixar passar."],
+    ["so did i. i left early", "So did I left early."],
   ])(
     "keeps the transcript when formatting drops a repeat that can be meant: %s",
     (raw, formatted) => {
@@ -774,7 +785,10 @@ describe("validateFormattedTranscript", () => {
       "check the the cache before the deploy",
       "Check the cache before the deploy.",
     ],
-    ["we we should deploy to to staging", "We should deploy to staging."],
+    [
+      "we we should deploy the build of of staging",
+      "We should deploy the build of staging.",
+    ],
     ["eu eu vou rodar de de novo", "Eu vou rodar de novo."],
   ])(
     "allows formatting to drop a short function word said twice by accident: %s",
