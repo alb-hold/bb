@@ -95,6 +95,14 @@ describe("device handoff pending attention", () => {
         kind: "thread-detail",
         threadId: unrelatedThread.id,
       });
+      const attentionObserver = {
+        messages: [] as string[],
+        close() {},
+        send(data: string) {
+          this.messages.push(data);
+        },
+      };
+      harness.hub.subscribe(attentionObserver, { kind: "thread-list" });
 
       const response = await harness.app.request("/api/v1/device-handoff", {
         method: "POST",
@@ -119,6 +127,14 @@ describe("device handoff pending attention", () => {
       expect(unrelatedViewer.messages.join("\n")).not.toContain(
         "private copy payload",
       );
+      expect(
+        attentionObserver.messages.some((message) =>
+          message.includes(thread.id),
+        ),
+      ).toBe(true);
+      expect(attentionObserver.messages.join("\n")).not.toContain(
+        "private copy payload",
+      );
 
       const originViewer = {
         messages: [] as string[],
@@ -140,6 +156,9 @@ describe("device handoff pending attention", () => {
       expect(getThread(harness.db, thread.id)?.latestAttentionAt).toBe(1);
       expect(markerAt).toBeGreaterThan(1);
       expect(unrelatedViewer.messages.join("\n")).not.toContain(
+        "private copy payload",
+      );
+      expect(attentionObserver.messages.join("\n")).not.toContain(
         "private copy payload",
       );
     });
