@@ -75,6 +75,18 @@ describe("terminalPanelTabs", () => {
     ]);
   });
 
+  it("restores an exited terminal tab from server state after a remount", () => {
+    const tabs = buildTerminalSyncedSecondaryFileTabs({
+      orderedTabs: [],
+      retainedTerminalIds: new Set<string>(),
+      terminalSessions: [
+        terminalSession({ id: "term_exited", status: "exited" }),
+      ],
+    });
+
+    expect(tabIds(tabs)).toEqual(["terminal:term_exited:none"]);
+  });
+
   it("preserves local terminal tab order when sessions still exist", () => {
     const localTerminal2 = createTerminalFixedPanelTab({
       terminalId: "term_2",
