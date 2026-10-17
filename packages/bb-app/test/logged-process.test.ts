@@ -31,12 +31,16 @@ function scratchDir(): string {
   return dir;
 }
 
-function waitForExit(child: ChildProcess): Promise<number | null> {
+function waitForExit(
+  child: ChildProcess,
+  timeoutMs = 5_000,
+): Promise<number | null> {
+  if (child.exitCode !== null) return Promise.resolve(child.exitCode);
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
       reject(new Error("Child stalled while writing logs"));
-    }, 5_000);
+    }, timeoutMs);
     child.once("error", (error) => {
       clearTimeout(timer);
       reject(error);
@@ -243,6 +247,190 @@ describe("spawnLoggedProcess", () => {
     }
   });
 
+  it("fences a writer paused beyond the lease while contenders rotate", async () => {
+    if (process.platform !== "linux") return;
+    const logDir = scratchDir();
+    const logPath = join(logDir, "server-stdio.log");
+    const appendLockPath = `${logPath}.append.lock`;
+    const enteredPath = join(logDir, "writer-entered-barrier");
+    const releasePath = join(logDir, "writer-release-barrier");
+    const afterStatEnteredPath = join(logDir, "writer-after-stat-barrier");
+    const afterStatReleasePath = join(logDir, "writer-after-stat-release");
+    const attemptPath = join(logDir, "resumed-writer-attempted");
+    const sizeLimit = 10 * 1024 * 1024;
+    const seedSize = 9 * 1024 * 1024;
+    const outputSize = 24 * 1024 * 1024;
+    writeFileSync(logPath, Buffer.alloc(seedSize, "X"));
+
+    const makeWriter = (
+      letter: string,
+      testWriterBarrier?: {
+        enteredPath?: string;
+        releasePath?: string;
+        afterStatEnteredPath?: string;
+        afterStatReleasePath?: string;
+        attemptPath?: string;
+      },
+    ) =>
+      spawnLoggedProcess({
+        command: process.execPath,
+        args: [
+          "-e",
+          `
+            const chunk = Buffer.alloc(64 * 1024, ${JSON.stringify(letter)});
+            let remaining = ${outputSize};
+            const writeNext = () => {
+              const next = chunk.subarray(0, Math.min(chunk.length, remaining));
+              process.stdout.write(next, (error) => {
+                if (error) process.exit(1);
+                remaining -= next.length;
+                if (remaining > 0) setImmediate(writeNext);
+                else process.stdout.end(${JSON.stringify(letter + "_END")}, () => process.exit(0));
+              });
+            };
+            writeNext();
+          `,
+        ],
+        env: process.env,
+        logDir,
+        logName: "server",
+        testWriterBarrier,
+      });
+    const first = makeWriter("A", { enteredPath, releasePath, attemptPath });
+    let pausedPid: number | undefined;
+    let second: ChildProcess | undefined;
+    let pausedOwner: { pid: number; token: string } | undefined;
+    try {
+      await expect
+        .poll(
+          () => {
+            try {
+              const owner = JSON.parse(readFileSync(enteredPath, "utf8")) as {
+                pid: number;
+                token: string;
+              };
+              process.kill(owner.pid, "SIGSTOP");
+              const status = readFileSync(`/proc/${owner.pid}/status`, "utf8");
+              const current = JSON.parse(
+                readFileSync(appendLockPath, "utf8"),
+              ) as {
+                pid: number;
+                token: string;
+              };
+              if (
+                /^State:\s+T/m.test(status) &&
+                current.pid === owner.pid &&
+                current.token === owner.token
+              ) {
+                pausedPid = owner.pid;
+                pausedOwner = owner;
+                return true;
+              }
+              process.kill(owner.pid, "SIGCONT");
+            } catch {}
+            return null;
+          },
+          { timeout: 5_000, interval: 1 },
+        )
+        .toBe(true);
+      expect(pausedOwner).toBeDefined();
+      if (pausedOwner === undefined || pausedPid === undefined)
+        throw new Error("Could not pause the append-lock owner");
+      expect(pausedOwner.token).toBeTruthy();
+      expect(pausedPid).toBe(pausedOwner.pid);
+      await expect
+        .poll(() => Date.now() - statSync(appendLockPath).mtimeMs > 2_100, {
+          timeout: 5_000,
+          interval: 20,
+        })
+        .toBe(true);
+
+      second = makeWriter("B", {
+        afterStatEnteredPath,
+        afterStatReleasePath,
+      });
+      await expect
+        .poll(() => existsSync(afterStatEnteredPath), {
+          timeout: 5_000,
+          interval: 10,
+        })
+        .toBe(true);
+      const afterStatOwner = JSON.parse(
+        readFileSync(afterStatEnteredPath, "utf8"),
+      ) as { pid: number; token: string };
+      const logFiles = () =>
+        readdirSync(logDir)
+          .filter(
+            (name) =>
+              name === "server-stdio.log" ||
+              /^server-stdio\.log\.\d+$/.test(name),
+          )
+          .map((name) => join(logDir, name));
+      writeFileSync(releasePath, "release");
+      process.kill(pausedPid, "SIGCONT");
+      pausedPid = undefined;
+      await expect
+        .poll(() => existsSync(attemptPath), {
+          timeout: 5_000,
+          interval: 10,
+        })
+        .toBe(true);
+      expect(
+        (JSON.parse(readFileSync(appendLockPath, "utf8")) as { token: string })
+          .token,
+      ).toBe(afterStatOwner.token);
+      expect(
+        logFiles().some((path) =>
+          readFileSync(path).includes(Buffer.alloc(64 * 1024, "A")),
+        ),
+      ).toBe(false);
+      writeFileSync(afterStatReleasePath, "release");
+      expect(await waitForExit(first, 20_000)).toBe(0);
+      expect(await waitForExit(second, 20_000)).toBe(0);
+      await expect
+        .poll(
+          () => {
+            const output = logFiles()
+              .map((path) => readFileSync(path, "latin1"))
+              .join("");
+            return (
+              (output.match(/A/g)?.length ?? 0) >= outputSize &&
+              (output.match(/B/g)?.length ?? 0) >= outputSize &&
+              output.includes("A_END") &&
+              output.includes("B_END")
+            );
+          },
+          { timeout: 10_000, interval: 20 },
+        )
+        .toBe(true);
+      const paths = logFiles();
+      expect(paths.length).toBeLessThanOrEqual(6);
+      expect(
+        paths.filter((path) => path !== logPath).length,
+      ).toBeLessThanOrEqual(5);
+      const fileSizes = paths.map((path) => [path, statSync(path).size]);
+      expect(
+        fileSizes.every(
+          ([, size]) => typeof size === "number" && size <= sizeLimit,
+        ),
+        JSON.stringify(fileSizes),
+      ).toBe(true);
+      const output = paths.map((path) => readFileSync(path, "latin1")).join("");
+      expect(output.match(/A/g)!.length).toBeGreaterThanOrEqual(outputSize);
+      expect(output.match(/B/g)!.length).toBeGreaterThanOrEqual(outputSize);
+      expect(output).toContain("A_END");
+      expect(output).toContain("B_END");
+    } finally {
+      if (pausedPid !== undefined) {
+        try {
+          process.kill(pausedPid, "SIGCONT");
+        } catch {}
+      }
+      if (first.exitCode === null) first.kill("SIGKILL");
+      if (second?.exitCode === null) second.kill("SIGKILL");
+    }
+  });
+
   it("keeps the child alive and logging after its parent exits", async () => {
     const logDir = scratchDir();
     const markerPath = join(logDir, "child-alive");
@@ -377,7 +565,9 @@ describe("spawnLoggedProcess", () => {
       }),
     );
 
-    expect(await Promise.all(children.map(waitForExit))).toEqual([0, 0]);
+    expect(
+      await Promise.all(children.map((child) => waitForExit(child))),
+    ).toEqual([0, 0]);
     const logPath = join(logDir, "server-stdio.log");
     await expect
       .poll(
@@ -436,7 +626,9 @@ describe("spawnLoggedProcess", () => {
     );
 
     try {
-      expect(await Promise.all(children.map(waitForExit))).toEqual([0, 0]);
+      expect(
+        await Promise.all(children.map((child) => waitForExit(child))),
+      ).toEqual([0, 0]);
       const familyPaths = () =>
         readdirSync(logDir)
           .filter(

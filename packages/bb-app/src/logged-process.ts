@@ -4,7 +4,9 @@ import { join } from "node:path";
 
 const stdioLogWriter = `
 const fs = require("node:fs");
+const crypto = require("node:crypto");
 const logPath = process.argv[1];
+const writerBarrier = process.argv[2] ? JSON.parse(process.argv[2]) : null;
 const lockPath = logPath + ".lock";
 const appendLockPath = logPath + ".append.lock";
 const sizeLimit = 10 * 1024 * 1024;
@@ -18,6 +20,20 @@ const pendingChunks = [];
 let processing = false;
 let pendingBytes = 0;
 let inputPaused = false;
+let writerBarrierUsed = false;
+let writerAfterStatBarrierUsed = false;
+let writerAttemptPathUsed = false;
+const waitForFile = (path, lockToken) =>
+  new Promise((resolve) => {
+    const poll = () => {
+      if (fs.existsSync(path)) resolve();
+      else {
+        if (lockToken !== undefined) refreshLock(appendLockPath, lockToken);
+        setTimeout(poll, 10);
+      }
+    };
+    poll();
+  });
 const rotate = () => {
   const oldestPath = logPath + "." + fileCount;
   if (fs.existsSync(oldestPath)) fs.unlinkSync(oldestPath);
@@ -27,84 +43,144 @@ const rotate = () => {
   }
   if (fs.existsSync(logPath)) fs.renameSync(logPath, logPath + ".1");
 };
-const lockOwnerIsAlive = (path) => {
+const readLock = (path) => {
   try {
     const stat = fs.statSync(path);
-    if (stat.size === 0 && Date.now() - stat.mtimeMs > 1000) return false;
-    const ownerPid = Number(fs.readFileSync(path, "utf8"));
-    if (!Number.isInteger(ownerPid) || ownerPid < 1) return true;
-    if (ownerPid === process.pid) return false;
+    const value = fs.readFileSync(path, "utf8");
+    let lock;
     try {
-      process.kill(ownerPid, 0);
-      return true;
-    } catch (error) {
-      return error.code !== "ESRCH";
+      lock = JSON.parse(value);
+    } catch {
+      lock = { pid: Number(value), token: null };
     }
+    if (!Number.isInteger(lock.pid) || lock.pid < 1) return { stat, pid: null, token: null };
+    return { stat, pid: lock.pid, token: typeof lock.token === "string" ? lock.token : null };
   } catch {
-    return true;
+    return null;
   }
 };
-const acquireLock = () => {
+const lockOwnerIsAlive = (owner) => {
+  if (owner === null || owner.pid === null) return true;
+  try {
+    process.kill(owner.pid, 0);
+    return true;
+  } catch (error) {
+    return error.code !== "ESRCH";
+  }
+};
+const ownsLock = (path, token) => {
+  const owner = readLock(path);
+  return owner !== null && owner.pid === process.pid && owner.token === token;
+};
+const refreshLock = (path, token) => {
+  if (!ownsLock(path, token)) return false;
+  try {
+    const now = new Date();
+    fs.utimesSync(path, now, now);
+  } catch {
+    return false;
+  }
+  return ownsLock(path, token);
+};
+const claimExpiredLock = (path, owner) => {
+  const claimedPath = path + ".reclaim-" + process.pid + "-" + crypto.randomUUID();
+  try {
+    fs.renameSync(path, claimedPath);
+  } catch {
+    return;
+  }
+  let claimed;
+  try {
+    claimed = readLock(claimedPath);
+    if (claimed === null || claimed.stat.ino !== owner.stat.ino || claimed.stat.dev !== owner.stat.dev) {
+      try { fs.renameSync(claimedPath, path); } catch {}
+      return;
+    }
+    if (Date.now() - claimed.stat.mtimeMs <= appendLockStaleMs) {
+      try { fs.renameSync(claimedPath, path); } catch {}
+      return;
+    }
+    fs.unlinkSync(claimedPath);
+  } catch {}
+};
+const createLock = (path) => {
+  const token = crypto.randomUUID();
   let fd;
   try {
-    fd = fs.openSync(lockPath, "wx", 0o600);
-    fs.writeSync(fd, String(process.pid));
-    return fd;
+    fd = fs.openSync(path, "wx", 0o600);
+    fs.writeSync(fd, JSON.stringify({ pid: process.pid, token }));
+    return { fd, token };
   } catch (error) {
     if (fd !== undefined) {
       try { fs.closeSync(fd); } catch {}
-      try { fs.unlinkSync(lockPath); } catch {}
+      try { fs.unlinkSync(path); } catch {}
     }
     if (error.code !== "EEXIST") return -1;
-    if (!lockOwnerIsAlive(lockPath)) {
-      try { fs.unlinkSync(lockPath); } catch {}
+    const owner = readLock(path);
+    if (owner !== null && Date.now() - owner.stat.mtimeMs > appendLockStaleMs) {
+      claimExpiredLock(path, owner);
+    } else if (!lockOwnerIsAlive(owner)) {
+      claimExpiredLock(path, owner);
     }
     return null;
   }
 };
-const appendSerialized = (chunk, done) => {
-  let lockFd;
-  try {
-    lockFd = fs.openSync(appendLockPath, "wx", 0o600);
-    fs.writeSync(lockFd, String(process.pid));
-  } catch (error) {
-    if (lockFd !== undefined) {
-      try { fs.closeSync(lockFd); } catch {}
-      try { fs.unlinkSync(appendLockPath); } catch {}
-    }
-    if (error.code === "EEXIST") {
-      let stale;
-      try {
-        stale = Date.now() - fs.statSync(appendLockPath).mtimeMs > appendLockStaleMs;
-      } catch (statError) {
-        if (statError.code !== "ENOENT") {
-          done();
-          return;
-        }
-      }
-      if (stale || !lockOwnerIsAlive(appendLockPath)) {
-        try { fs.unlinkSync(appendLockPath); } catch {}
-      }
-      setTimeout(() => appendSerialized(chunk, done), 10);
-      return;
-    }
-    done();
-    return;
-  }
+const appendWithLock = async (chunk, done, initialOffset, lockFd, lockToken) => {
   let fd;
+  let offset = initialOffset;
+  let retrying = false;
+  if (writerBarrier !== null && writerBarrier.attemptPath && !writerAttemptPathUsed) {
+    writerAttemptPathUsed = true;
+    fs.writeFileSync(writerBarrier.attemptPath, "attempted");
+  }
+  const continueAfterLostLock = () => {
+    retrying = true;
+    if (fd !== undefined) {
+      try { fs.closeSync(fd); } catch {}
+      fd = undefined;
+    }
+    releaseLock(appendLockPath, lockFd, lockToken);
+  };
   try {
-    let offset = 0;
     while (offset < chunk.length) {
+      if (!refreshLock(appendLockPath, lockToken)) {
+        continueAfterLostLock();
+        return;
+      }
       let size = fs.existsSync(logPath) ? fs.statSync(logPath).size : 0;
       if (size >= sizeLimit) {
         if (fd !== undefined) {
           fs.closeSync(fd);
           fd = undefined;
         }
+        if (!refreshLock(appendLockPath, lockToken)) {
+          continueAfterLostLock();
+          return;
+        }
         rotate();
         size = 0;
       }
+      if (!refreshLock(appendLockPath, lockToken)) {
+        continueAfterLostLock();
+        return;
+      }
       if (fd === undefined) fd = fs.openSync(logPath, "a", 0o600);
+      if (
+        writerBarrier !== null &&
+        writerBarrier.afterStatEnteredPath &&
+        !writerAfterStatBarrierUsed
+      ) {
+        writerAfterStatBarrierUsed = true;
+        fs.writeFileSync(
+          writerBarrier.afterStatEnteredPath,
+          JSON.stringify({ pid: process.pid, token: lockToken }),
+        );
+        await waitForFile(writerBarrier.afterStatReleasePath, lockToken);
+        if (!refreshLock(appendLockPath, lockToken)) {
+          continueAfterLostLock();
+          return;
+        }
+      }
       const length = Math.min(sizeLimit - size, chunk.length - offset);
       const written = fs.writeSync(fd, chunk, offset, length);
       if (written === 0) break;
@@ -115,21 +191,60 @@ const appendSerialized = (chunk, done) => {
     if (fd !== undefined) {
       try { fs.closeSync(fd); } catch {}
     }
-    releaseLock(appendLockPath, lockFd);
-    done();
+    releaseLock(appendLockPath, lockFd, lockToken);
+    if (retrying) setTimeout(() => appendSerialized(chunk, done, offset), 10);
+    else done();
   }
 };
-const releaseLock = (path, fd) => {
+const appendSerialized = (chunk, done, initialOffset = 0) => {
+  const reservation = createLock(appendLockPath);
+  if (reservation === null) {
+    setTimeout(() => appendSerialized(chunk, done, initialOffset), 10);
+    return;
+  }
+  if (reservation === -1) {
+    done();
+    return;
+  }
+  const append = () => appendWithLock(chunk, done, initialOffset, reservation.fd, reservation.token);
+  if (
+    writerBarrier !== null &&
+    writerBarrier.enteredPath &&
+    !writerBarrierUsed
+  ) {
+    writerBarrierUsed = true;
+    fs.writeFileSync(writerBarrier.enteredPath, JSON.stringify({ pid: process.pid, token: reservation.token }));
+    const waitForRelease = () => {
+      if (!fs.existsSync(writerBarrier.releasePath)) {
+        refreshLock(appendLockPath, reservation.token);
+        setTimeout(waitForRelease, 10);
+        return;
+      }
+      append();
+    };
+    waitForRelease();
+    return;
+  }
+  append();
+};
+const releaseLock = (path, fd, token) => {
   try { fs.closeSync(fd); } catch {}
-  try { fs.unlinkSync(path); } catch {}
+  if (ownsLock(path, token)) {
+    try { fs.unlinkSync(path); } catch {}
+  }
+};
+const acquireLock = () => {
+  const reservation = createLock(lockPath);
+  if (reservation === null || reservation === -1) return reservation === -1 ? -1 : null;
+  return reservation;
 };
 const processChunk = (chunk, startedAt, done) => {
   if (Date.now() < locklessUntil) {
     appendSerialized(chunk, done);
     return;
   }
-  const lockFd = acquireLock();
-  if (lockFd === null) {
+  const lock = acquireLock();
+  if (lock === null) {
     if (Date.now() - startedAt < lockWaitLimitMs) {
       setTimeout(() => processChunk(chunk, startedAt, done), 10);
       return;
@@ -138,12 +253,12 @@ const processChunk = (chunk, startedAt, done) => {
     appendSerialized(chunk, done);
     return;
   }
-  if (lockFd < 0) {
+  if (lock < 0) {
     done();
     return;
   }
   appendSerialized(chunk, () => {
-    releaseLock(lockPath, lockFd);
+    releaseLock(lockPath, lock.fd, lock.token);
     done();
   });
 };
@@ -182,17 +297,33 @@ interface SpawnLoggedProcessArgs {
   ipc?: boolean;
   logDir: string;
   logName: "server" | "host-daemon";
+  testWriterBarrier?: {
+    enteredPath?: string;
+    releasePath?: string;
+    afterStatEnteredPath?: string;
+    afterStatReleasePath?: string;
+    attemptPath?: string;
+  };
 }
 
 export function spawnLoggedProcess(args: SpawnLoggedProcessArgs): ChildProcess {
   mkdirSync(args.logDir, { recursive: true });
 
   const logPath = join(args.logDir, `${args.logName}-stdio.log`);
-  const logWriter = spawn(process.execPath, ["-e", stdioLogWriter, logPath], {
-    detached: true,
-    env: process.env,
-    stdio: ["pipe", "ignore", "ignore"],
-  });
+  const logWriter = spawn(
+    process.execPath,
+    [
+      "-e",
+      stdioLogWriter,
+      logPath,
+      JSON.stringify(args.testWriterBarrier ?? null),
+    ],
+    {
+      detached: true,
+      env: process.env,
+      stdio: ["pipe", "ignore", "ignore"],
+    },
+  );
   logWriter.unref();
 
   const child = spawn(args.command, args.args, {
