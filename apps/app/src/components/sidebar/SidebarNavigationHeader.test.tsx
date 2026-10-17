@@ -1,7 +1,13 @@
 // @vitest-environment jsdom
 
 import { useState } from "react";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { createStore, Provider } from "jotai";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -94,14 +100,17 @@ describe("SidebarNavigationHeader", () => {
     expect(screen.queryByTestId("sidebar-header-slot")).toBeNull();
   });
 
-  it("mounts the navigation's header with the control size", () => {
+  it("mounts the navigation's header with the control size", async () => {
     renderHeader(navigationSlot(HeaderFixture));
 
+    await waitFor(() =>
+      expect(document.querySelector("[data-bb-plugin-root]")).not.toBeNull(),
+    );
     expect(screen.getByTestId("header-fixture")).toBeDefined();
     expect(screen.getByTestId("header-size").textContent).toBe("0/28");
   });
 
-  it("renders a new width in the same frame the slot resizes", () => {
+  it("renders a new width in the same frame the slot resizes", async () => {
     vi.stubGlobal(
       "ResizeObserver",
       class {
@@ -114,6 +123,9 @@ describe("SidebarNavigationHeader", () => {
       },
     );
     renderHeader(navigationSlot(HeaderFixture));
+    await waitFor(() =>
+      expect(document.querySelector("[data-bb-plugin-root]")).not.toBeNull(),
+    );
 
     for (const callback of resizeCallbacks) {
       callback(
@@ -125,10 +137,13 @@ describe("SidebarNavigationHeader", () => {
     expect(screen.getByTestId("header-size").textContent).toBe("132/28");
   });
 
-  it("drops a crashing provider and reports it once", () => {
+  it("drops a crashing provider and reports it once", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
     renderHeader(navigationSlot(HeaderFixture));
+    await waitFor(() =>
+      expect(document.querySelector("[data-bb-plugin-root]")).not.toBeNull(),
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "Crash header" }));
 
@@ -141,10 +156,13 @@ describe("SidebarNavigationHeader", () => {
     ]);
   });
 
-  it("draws the bundled header for the same placement when a provider crashes", () => {
+  it("draws the bundled header for the same placement when a provider crashes", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
     renderHeader(navigationSlot(HeaderFixture), BUNDLED_RAIL);
+    await waitFor(() =>
+      expect(document.querySelector("[data-bb-plugin-root]")).not.toBeNull(),
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "Crash header" }));
 

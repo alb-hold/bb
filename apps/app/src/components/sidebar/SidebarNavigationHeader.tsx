@@ -1,8 +1,14 @@
-import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import {
+  lazy,
+  Suspense,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { flushSync } from "react-dom";
 import type { ExperimentalSidebarHeaderProps } from "@get-bb/plugin-sdk";
 import { cn } from "@bb/shared-ui/lib/utils";
-import { PluginReplacementSlot } from "@/components/plugin/PluginReplacementSlot";
 import { appToast } from "@/components/ui/app-toast";
 import { useSidebar } from "@/components/ui/sidebar";
 import type { ExperimentalSidebarNavigationSlot } from "@/lib/plugin-slots";
@@ -10,7 +16,12 @@ import { useSidebarHeaderControlAxisClass } from "./SidebarChrome";
 import type { ResolvedSidebarNavigation } from "./sidebarNavigationProvider";
 
 const SIDEBAR_HEADER_SLOT_KIND = "sidebarHeader";
+const BUILTIN_NAVIGATION_PLUGIN_ID = "navigation";
 const DEFAULT_CONTROL_SIZE = 28;
+const LazyPluginReplacementSlot = lazy(async () => {
+  const module = await import("@/components/plugin/PluginReplacementSlot");
+  return { default: module.PluginReplacementSlot };
+});
 
 function readControlSize(element: HTMLElement): number {
   const value = Number.parseFloat(
@@ -45,14 +56,23 @@ function HeaderSlot({
   const Header = slot.headerComponent;
   if (Header === undefined) return original;
   return (
-    <PluginReplacementSlot
-      replacement={{ kind: "plugin", registration: slot }}
-      original={original}
-      slotKind={SIDEBAR_HEADER_SLOT_KIND}
-      {...(onCrash === undefined ? {} : { onCrash })}
+    <Suspense
+      fallback={
+        original ??
+        (slot.pluginId === BUILTIN_NAVIGATION_PLUGIN_ID ? (
+          <Header {...props} />
+        ) : null)
+      }
     >
-      {() => <Header {...props} />}
-    </PluginReplacementSlot>
+      <LazyPluginReplacementSlot
+        replacement={{ kind: "plugin", registration: slot }}
+        original={original}
+        slotKind={SIDEBAR_HEADER_SLOT_KIND}
+        {...(onCrash === undefined ? {} : { onCrash })}
+      >
+        {() => <Header {...props} />}
+      </LazyPluginReplacementSlot>
+    </Suspense>
   );
 }
 
