@@ -192,6 +192,7 @@ export interface ThreadTimelineRowsProps {
   threadIsActive?: boolean;
   threadRuntimeDisplayStatus: ThreadRuntimeDisplayStatus;
   unreadDividerPlacement?: ThreadTimelineUnreadDividerPlacement | null;
+  unreadDividerAutoScroll?: boolean;
   workspaceRootPath: string | undefined;
 }
 
@@ -245,6 +246,7 @@ interface TimelineRowsListProps {
   spacing: TimelineRowsListSpacing;
   className?: string;
   unreadDividerPlacement: ThreadTimelineUnreadDividerPlacement | null;
+  unreadDividerAutoScroll?: boolean;
 }
 
 interface TimelineRowViewProps {
@@ -1219,9 +1221,25 @@ const ConversationRowContent = memo(function ConversationRowContent({
   );
 });
 
-function TimelineUnreadDivider() {
+function TimelineUnreadDivider({ autoScroll }: { autoScroll: boolean }) {
+  const bottomAnchor = useBottomAnchoredScroll();
+  const dividerRef = useRef<HTMLDivElement>(null);
+  const hasScrolledRef = useRef(false);
+
+  useEffect(() => {
+    if (!autoScroll || !bottomAnchor || hasScrolledRef.current) return;
+    const timeoutId = window.setTimeout(() => {
+      const divider = dividerRef.current;
+      if (!divider) return;
+      hasScrolledRef.current = true;
+      bottomAnchor.scrollElementIntoView({ element: divider });
+    }, 0);
+    return () => window.clearTimeout(timeoutId);
+  }, [autoScroll, bottomAnchor]);
+
   return (
     <div
+      ref={dividerRef}
       role="separator"
       aria-label="New messages"
       className={cn(
@@ -2216,6 +2234,7 @@ function TimelineRowsList({
   showAssistantMessageActions,
   spacing,
   className,
+  unreadDividerAutoScroll = false,
   unreadDividerPlacement,
 }: TimelineRowsListProps) {
   const { threadId } = useTimelineRendererStaticContext();
@@ -2352,7 +2371,7 @@ function TimelineRowsList({
                     data-timeline-window-key={`divider:${item.id}`}
                     style={windowedState.itemStyle}
                   >
-                    <TimelineUnreadDivider />
+                    <TimelineUnreadDivider autoScroll={unreadDividerAutoScroll} />
                   </div>
                 );
               }
@@ -2516,6 +2535,8 @@ function ThreadTimelineRowsForTimelineView(props: ThreadTimelineRowsProps) {
   const dismissSelection = useCallback(() => {
     setActiveSelection(null);
   }, []);
+  const [selectionMenuLayer, setSelectionMenuLayer] =
+    useState<HTMLDivElement | null>(null);
   const handleSelectionAddToChat = useCallback(
     (
       text: string,
@@ -2650,40 +2671,51 @@ function ThreadTimelineRowsForTimelineView(props: ThreadTimelineRowsProps) {
                       <TimelineWindowingMeasurementsContext.Provider
                         value={windowingMeasurements}
                       >
-                        <AutoHeightContainer
-                          snapRevision={heightSnapRevision}
-                          animateGrowth={!scopeActive}
-                        >
-                          <TimelineRowsList
-                            hasOlderTimelineRows={props.hasOlderTimelineRows}
-                            isLoadingOlderTimelineRows={
-                              props.isLoadingOlderTimelineRows
-                            }
-                            navigationTargetRowId={
-                              props.timelineNavigationTargetRowId
-                            }
-                            onLoadOlderRows={props.onLoadOlderRows}
-                            rows={rows}
-                            flatTurnTokenSummaryThreadId={props.threadId}
-                            flatTurnTokenSummaryExcludedTurnId={
-                              shouldExcludeActiveTurnTokenSummary
-                                ? rows.some((row) => row.kind === "turn")
-                                  ? (findActiveTurnId(
-                                      rows,
-                                      streamingAssistantMessageId,
-                                    ) ?? findNewestTurnId(rows))
-                                  : findNewestTurnId(rows)
-                                : undefined
-                            }
-                            scopeActive={scopeActive}
-                            showAssistantMessageActions={true}
-                            compactActivityIntents={false}
-                            spacing="top-level"
-                            unreadDividerPlacement={
-                              props.unreadDividerPlacement ?? null
-                            }
-                          />
-                        </AutoHeightContainer>
+                        <div className="relative">
+                          <AutoHeightContainer
+                            snapRevision={heightSnapRevision}
+                            animateGrowth={!scopeActive}
+                          >
+                            <TimelineRowsList
+                              hasOlderTimelineRows={props.hasOlderTimelineRows}
+                              isLoadingOlderTimelineRows={
+                                props.isLoadingOlderTimelineRows
+                              }
+                              navigationTargetRowId={
+                                props.timelineNavigationTargetRowId
+                              }
+                              onLoadOlderRows={props.onLoadOlderRows}
+                              rows={rows}
+                              flatTurnTokenSummaryThreadId={props.threadId}
+                              flatTurnTokenSummaryExcludedTurnId={
+                                shouldExcludeActiveTurnTokenSummary
+                                  ? rows.some((row) => row.kind === "turn")
+                                    ? (findActiveTurnId(
+                                        rows,
+                                        streamingAssistantMessageId,
+                                      ) ?? findNewestTurnId(rows))
+                                    : findNewestTurnId(rows)
+                                  : undefined
+                              }
+                              scopeActive={scopeActive}
+                              showAssistantMessageActions={true}
+                              compactActivityIntents={false}
+                              spacing="top-level"
+                              unreadDividerAutoScroll={
+                                props.unreadDividerAutoScroll ?? true
+                              }
+                              unreadDividerPlacement={
+                                props.unreadDividerPlacement ?? null
+                              }
+                            />
+                          </AutoHeightContainer>
+                          {hasSelectionActions ? (
+                            <div
+                              ref={setSelectionMenuLayer}
+                              className="pointer-events-none absolute inset-0 z-10 [contain:layout]"
+                            />
+                          ) : null}
+                        </div>
                       </TimelineWindowingMeasurementsContext.Provider>
                       {hasSelectionActions ? (
                         <TimelineSelectionMenu
@@ -2691,6 +2723,7 @@ function ThreadTimelineRowsForTimelineView(props: ThreadTimelineRowsProps) {
                           onAddToChat={selectionAddToChatHandler}
                           pluginActions={selectionPluginActions}
                           onDismiss={dismissSelection}
+                          container={selectionMenuLayer}
                         />
                       ) : null}
                     </TimelineTurnStateContext.Provider>

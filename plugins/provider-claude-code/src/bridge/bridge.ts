@@ -57,7 +57,11 @@ import {
   buildClaudeTurnParams,
   type ClaudeCodeSkillRoot,
 } from "../session-params.js";
-import { SdkSession, type SdkSessionOptions } from "./sdk-session.js";
+import {
+  isBypassPermissionsAvailable,
+  SdkSession,
+  type SdkSessionOptions,
+} from "./sdk-session.js";
 import { MissingClaudeCliError } from "./missing-cli-error.js";
 import {
   UNSHARED_CLAUDE_CODE_MODEL_CATALOG,
@@ -2238,7 +2242,10 @@ function createCanUseTool(threadIdRef: ThreadIdRef): CanUseTool {
       };
     }
 
-    if (threadSession.attachment.permissionMode === "bypassPermissions") {
+    if (
+      threadSession.attachment.permissionMode === "bypassPermissions" &&
+      !isBypassPermissionsAvailable()
+    ) {
       return {
         behavior: "allow",
         updatedInput: input,

@@ -114,6 +114,7 @@ import { ApiError } from "../../errors.js";
 import { roundDurationMs } from "@bb/process-utils";
 import { runEventLoopWorkSync } from "../system/event-loop-work.js";
 import { parseStoredEvent } from "./thread-data.js";
+import { withCompactionOffer } from "./compaction-offer.js";
 import { decodeStoredEventRowCached } from "./stored-event-decode-cache.js";
 import {
   selectTimelineWindowStart,
@@ -164,10 +165,15 @@ export function resolveThreadTimelineSurface(
     threadName,
     workspaceRoot,
     options.completedTurnDisplay,
+    options.summarizeShellCommands,
   ]);
   return {
     cursorKey,
-    cacheKey: JSON.stringify([cursorKey, options.planCommand ?? null]),
+    cacheKey: JSON.stringify([
+      cursorKey,
+      options.planCommand ?? null,
+      options.compactionOfferEnabled,
+    ]),
     threadName,
     workspaceRoot,
   };
@@ -190,6 +196,7 @@ interface FilterExactEventRowsForRequestedTurnArgs {
 }
 
 export interface ThreadTimelineSurfaceOptions {
+  compactionOfferEnabled: boolean;
   completedTurnDisplay: CompletedTurnDisplay;
   deferContent?: boolean;
   includeClearedContextHistory: boolean;
@@ -198,6 +205,7 @@ export interface ThreadTimelineSurfaceOptions {
   maxInlineOutputChars: InlineOutputCharLimit;
   providerDisplayName?: string;
   planCommand?: ProviderComposerCommand | null;
+  summarizeShellCommands: boolean;
 }
 
 interface ThreadTimelineSurface {
@@ -221,6 +229,7 @@ interface BuildTimelineTurnSummaryDetailsOptions extends TimelineTurnSummarySele
   itemId: string | null;
   completedTurnDisplay: CompletedTurnDisplay;
   includeDiagnosticOperations: boolean;
+  summarizeShellCommands: boolean;
   providerDisplayName?: string;
 }
 
@@ -416,6 +425,9 @@ function tryReadClientTurnRequestedRequestId(
   row: StoredEventRow,
   decode: StoredEventDecoder = parseStoredEvent,
 ): ClientTurnRequestId | null {
+  if (row.type !== "client/turn/requested") {
+    return null;
+  }
   const event = decode(row);
   if (event.type !== "client/turn/requested") {
     return null;
@@ -1547,6 +1559,7 @@ function buildThreadTimelineInternal(
     isLatestPage: options.page.kind === "latest",
     providerDisplayName: options.providerDisplayName,
     planCommand: options.planCommand,
+    summarizeShellCommands: options.summarizeShellCommands,
     threadStatus: snapshot.status,
     threadName: surface.threadName,
     workspaceRoot: surface.workspaceRoot,
@@ -1646,8 +1659,13 @@ function buildThreadTimelineInternal(
     modelFallback:
       options.page.kind === "latest" ? timeline.modelFallback : null,
     contextWindowUsage:
-      options.page.kind === "latest"
-        ? (timeline.contextWindowUsage ?? undefined)
+      options.page.kind === "latest" && timeline.contextWindowUsage
+        ? withCompactionOffer(db, {
+            enabled: options.compactionOfferEnabled,
+            sequenceStart: contextBoundarySeq ?? 0,
+            threadId: thread.id,
+            usage: timeline.contextWindowUsage,
+          })
         : undefined,
     timelinePage: {
       returnedSegmentCount: paginatedTimeline.returnedSegmentCount,
@@ -1841,6 +1859,7 @@ function buildThreadConversationRows(
         isLatestPage: true,
         providerDisplayName: options.providerDisplayName,
         providerId: thread.providerId,
+        summarizeShellCommands: true,
         threadName: thread.title ?? thread.titleFallback ?? "",
         threadStatus: thread.status,
         workspaceRoot: resolveThreadWorkspaceRoot(db, thread),
@@ -1906,6 +1925,7 @@ function selectThreadConversationOutline(
           isLatestPage: true,
           providerDisplayName: options.providerDisplayName,
           providerId: thread.providerId,
+          summarizeShellCommands: true,
           threadName: thread.title ?? thread.titleFallback ?? "",
           threadStatus: thread.status,
           workspaceRoot: resolveThreadWorkspaceRoot(db, thread),
@@ -2267,6 +2287,7 @@ function buildTimelineTurnSummaryDetailsPage(
       thread.title ?? thread.titleFallback ?? "",
       resolveThreadWorkspaceRoot(db, thread),
       options.completedTurnDisplay,
+      options.summarizeShellCommands,
     ]),
   );
   const contentCursor = readTimelineContentCursor(detailsPage);
@@ -2404,6 +2425,7 @@ function buildTimelineTurnSummaryDetailsPage(
       completedTurnDisplay: options.completedTurnDisplay,
       includeDiagnosticOperations,
       sourceSeqStart: options.sourceSeqStart,
+      summarizeShellCommands: options.summarizeShellCommands,
       turnId: options.turnId,
       providerDisplayName: options.providerDisplayName,
       threadStatus: snapshot.status,

@@ -21,6 +21,7 @@ import { toast } from "sonner";
 import type { SidebarThread } from "../model/sidebar-thread.js";
 import {
   experimental_useSidebarProjectActions,
+  experimental_useProviders,
   useBbNavigate,
   useSdk,
 } from "@get-bb/plugin-sdk/app";
@@ -31,6 +32,7 @@ import {
 } from "../rows/SidebarInlineRename.js";
 import { useDialogState } from "@/components/ui/use-dialog-state";
 import { ThreadRowNavigationProvider } from "../rows/threadRowNavigation.js";
+import { SidebarProvidersContext } from "../rows/ThreadRow.js";
 import {
   buildProjectThreadGroups,
   buildSectionThreadList,
@@ -123,6 +125,7 @@ import { useSidebarModeSectionOrder } from "./useSidebarModeSectionOrder.js";
 import { useReadStatusGrouping } from "./useReadStatusGrouping.js";
 import { haveSameOrder } from "../model/stored-order.js";
 import {
+  SidebarProjectsContext,
   useSidebarData,
   useSidebarMachineHosts,
   type SidebarProject,
@@ -1339,6 +1342,7 @@ function ProjectListComponent({
 }: ProjectListProps) {
   const sdk = useSdk();
   const navigate = useBbNavigate();
+  const { providers } = experimental_useProviders();
   const {
     status,
     sections: loadedSections,
@@ -1826,7 +1830,7 @@ function ProjectListComponent({
     );
   }
 
-  return (
+  const content = (
     <SidebarHeaderActionsProvider
       value={{
         onNewProject: projectActions.isAvailable
@@ -1941,6 +1945,13 @@ function ProjectListComponent({
       {sectionCreateDialog}
       {sectionDeleteDialogContent}
     </SidebarHeaderActionsProvider>
+  );
+  return (
+    <SidebarProjectsContext.Provider value={projects}>
+      <SidebarProvidersContext.Provider value={providers}>
+        {content}
+      </SidebarProvidersContext.Provider>
+    </SidebarProjectsContext.Provider>
   );
 }
 
