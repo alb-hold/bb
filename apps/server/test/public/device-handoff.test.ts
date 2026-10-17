@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import http from "node:http";
 import WebSocket from "ws";
 import {
   createTerminalSession,
@@ -22,13 +23,77 @@ import {
   seedThreadFixture,
 } from "../helpers/seed.js";
 
-async function connectRealtime(baseUrl: string): Promise<WebSocket> {
-  const socket = new WebSocket(`${baseUrl.replace(/^http/, "ws")}/ws`);
+async function connectRealtime(
+  baseUrl: string,
+  options: { origin?: string; path?: string } = {},
+): Promise<WebSocket> {
+  const socket = new WebSocket(
+    `${baseUrl.replace(/^http/, "ws")}${options.path ?? "/ws"}`,
+    options.origin === undefined ? {} : { origin: options.origin },
+  );
   await new Promise<void>((resolve, reject) => {
     socket.once("open", resolve);
     socket.once("error", reject);
   });
   return socket;
+}
+
+function rejectedRealtimeResponse(
+  baseUrl: string,
+  options: { origin?: string; host?: string },
+): Promise<{ body: string; status: number }> {
+  return new Promise((resolve, reject) => {
+    const headers = options.host === undefined ? {} : { host: options.host };
+    const socket = new WebSocket(`${baseUrl.replace(/^http/, "ws")}/ws`, {
+      ...(options.origin === undefined ? {} : { origin: options.origin }),
+      headers,
+    });
+    socket.once("open", () => {
+      socket.close();
+      reject(new Error("WebSocket unexpectedly opened"));
+    });
+    socket.once("unexpected-response", (_request, response) => {
+      let body = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk: string) => {
+        body += chunk;
+      });
+      response.once("end", () => {
+        resolve({ body, status: response.statusCode ?? 0 });
+      });
+    });
+    socket.once("error", () => {});
+  });
+}
+
+function statusWithRawHost(
+  baseUrl: string,
+  headers: Record<string, string>,
+  path = "/health",
+): Promise<{ body: string; status: number }> {
+  const url = new URL(path, baseUrl);
+  return new Promise((resolve, reject) => {
+    const request = http.request(
+      {
+        host: url.hostname,
+        port: url.port,
+        path: url.pathname,
+        headers,
+      },
+      (response) => {
+        let body = "";
+        response.setEncoding("utf8");
+        response.on("data", (chunk: string) => {
+          body += chunk;
+        });
+        response.once("end", () => {
+          resolve({ body, status: response.statusCode ?? 0 });
+        });
+      },
+    );
+    request.once("error", reject);
+    request.end();
+  });
 }
 
 async function rejectedRealtimeStatus(
@@ -787,6 +852,186 @@ describe("device handoff websocket acknowledgement", () => {
         admitted.close();
       }
     } finally {
+      await server.close();
+    }
+  });
+
+  it("keeps handoffs inside the existing WebSocket Host and Origin request boundary", async () => {
+    const server = await startTestServer();
+    const { thread } = seedThreadFixture(server);
+    const port = new URL(server.baseUrl).port;
+    const foreignHost = await rejectedRealtimeResponse(server.baseUrl, {
+      host: `evil.example:${port}`,
+    });
+    expect(foreignHost.status).toBe(403);
+    const hostGuardResponse = await statusWithRawHost(server.baseUrl, {
+      host: `evil.example:${port}`,
+    });
+    expect(hostGuardResponse.status).toBe(403);
+    expect(JSON.parse(hostGuardResponse.body)).toMatchObject({
+      code: "forbidden_host",
+    });
+
+    const foreignOrigin = await rejectedRealtimeResponse(server.baseUrl, {
+      host: `127.0.0.1:${port}`,
+      origin: "https://evil.example",
+    });
+    expect(foreignOrigin.status).toBe(403);
+    const originGuardResponse = await statusWithRawHost(
+      server.baseUrl,
+      {
+        host: `127.0.0.1:${port}`,
+        origin: "https://evil.example",
+      },
+      "/api/v1/threads",
+    );
+    expect(originGuardResponse.status).toBe(403);
+    expect(JSON.parse(originGuardResponse.body)).toMatchObject({
+      code: "forbidden_origin",
+    });
+
+    const admitted = await connectRealtime(server.baseUrl, {
+      origin: `http://127.0.0.1:${port}`,
+    });
+    try {
+      sendRealtime(admitted, {
+        type: "subscribe",
+        target: { kind: "thread-detail", threadId: thread.id },
+      });
+      sendRealtime(admitted, {
+        type: "device-handoff-view",
+        threadId: thread.id,
+      });
+      const received = nextRealtimeMessage(admitted, "device-handoff");
+      const response = await server.app.request("/api/v1/device-handoff", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          kind: "copy-text",
+          text: "only admitted viewers receive this",
+          origin: { threadId: thread.id },
+        }),
+      });
+      expect(response.status).toBe(200);
+      await expect(received).resolves.toMatchObject({
+        type: "device-handoff",
+        request: { text: "only admitted viewers receive this" },
+      });
+    } finally {
+      admitted.close();
+      await server.close();
+    }
+  });
+
+  it("exposes no more through a handoff than an admitted terminal-output reader can read", async () => {
+    const server = await startTestServer();
+    const { host, session } = seedHostSession(server.deps);
+    const { project } = seedProjectWithSource(server.deps, { hostId: host.id });
+    const thread = seedThread(server.deps, { projectId: project.id });
+    const payload = "same data in terminal output and device handoff";
+    const terminal = createTerminalSession(server.db, {
+      cols: 80,
+      environmentId: null,
+      hostId: host.id,
+      daemonSessionId: session.id,
+      initialCwd: "/tmp",
+      rows: 24,
+      status: "running",
+      threadId: thread.id,
+      title: "Handoff boundary terminal",
+    });
+    const terminalMessages: Array<Record<string, unknown>> = [];
+    let resolveOutput: ((message: Record<string, unknown>) => void) | null =
+      null;
+    const terminalOutput = new Promise<Record<string, unknown>>((resolve) => {
+      resolveOutput = resolve;
+    });
+    const terminalSocket = {
+      close() {},
+      send(data: string) {
+        const message = JSON.parse(data) as Record<string, unknown>;
+        terminalMessages.push(message);
+        if (message.type === "output") resolveOutput?.(message);
+      },
+    };
+    server.hub.registerDaemon(session.id, host.id, {
+      close() {},
+      send(data) {
+        const frame = JSON.parse(data) as Record<string, unknown>;
+        if (frame.type !== "terminal.attach") return;
+        setTimeout(() => {
+          server.deps.terminalSessions.handleDaemonTerminalMessage({
+            hostId: host.id,
+            sessionId: session.id,
+            message: {
+              type: "terminal.replay",
+              requestId: frame.requestId as string,
+              terminalId: terminal.id,
+              chunks: [
+                {
+                  seq: 0,
+                  dataBase64: Buffer.from(`${payload}\n`).toString("base64"),
+                },
+              ],
+              replayStartSeq: 0,
+              nextSeq: 1,
+            },
+          });
+        }, 0);
+      },
+    });
+    const port = new URL(server.baseUrl).port;
+    const origin = `http://127.0.0.1:${port}`;
+    const viewer = await connectRealtime(server.baseUrl, { origin });
+    const terminalReader = await connectRealtime(server.baseUrl, {
+      origin,
+      path: `/ws/terminals/${terminal.id}?sinceSeq=0`,
+    });
+    try {
+      terminalReader.close();
+      server.deps.terminalSessions.attachBrowserTerminal({
+        outputAcks: false,
+        resizeAcks: false,
+        socket: terminalSocket,
+        sinceSeq: 0,
+        terminalId: terminal.id,
+      });
+      sendRealtime(viewer, {
+        type: "subscribe",
+        target: { kind: "thread-detail", threadId: thread.id },
+      });
+      sendRealtime(viewer, {
+        type: "device-handoff-view",
+        threadId: thread.id,
+      });
+      const handoff = nextRealtimeMessage(viewer, "device-handoff");
+      const response = await server.app.request("/api/v1/device-handoff", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          kind: "copy-text",
+          text: payload,
+          origin: { threadId: thread.id, terminalSessionId: terminal.id },
+        }),
+      });
+      expect(response.status).toBe(200);
+      await expect(handoff).resolves.toMatchObject({
+        type: "device-handoff",
+        request: { text: payload },
+      });
+      await expect(terminalOutput).resolves.toMatchObject({
+        type: "output",
+        chunk: { dataBase64: Buffer.from(`${payload}\n`).toString("base64") },
+      });
+      expect(terminalMessages).toContainEqual(
+        expect.objectContaining({
+          type: "attached",
+          session: expect.objectContaining({ id: terminal.id }),
+        }),
+      );
+    } finally {
+      viewer.close();
+      server.hub.unregisterDaemon(session.id);
       await server.close();
     }
   });
