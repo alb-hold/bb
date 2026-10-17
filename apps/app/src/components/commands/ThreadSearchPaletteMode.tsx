@@ -89,11 +89,13 @@ export function ThreadSearchPaletteMode({
   query,
   onQueryChange: setQuery,
   onExit,
+  onClose,
   runAfterClose,
 }: {
   query: string;
   onQueryChange: (query: string) => void;
   onExit: () => void;
+  onClose: () => void;
   runAfterClose: (run: () => void) => void;
 }) {
   const listId = useId();
@@ -123,6 +125,9 @@ export function ThreadSearchPaletteMode({
   const [shownCounts, setShownCounts] = useState<
     Partial<Record<ThreadArchiveFilter, number>>
   >({});
+  useLayoutEffect(() => {
+    inputRef.current?.focus();
+  }, []);
   const filterKey = `${lifecycles.join(",")}:${sort}:${sortDirection}`;
   const [previousFilterKey, setPreviousFilterKey] = useState(filterKey);
   if (previousFilterKey !== filterKey) {
@@ -342,7 +347,7 @@ export function ThreadSearchPaletteMode({
       if (event.key === "Escape") {
         event.preventDefault();
         event.stopPropagation();
-        onExit();
+        onClose();
         return;
       }
       if (options.length === 0) return;
@@ -371,7 +376,15 @@ export function ThreadSearchPaletteMode({
         selectOption(option, activeIndex, event.metaKey || event.ctrlKey);
       }
     },
-    [activeIndex, highlightOption, onExit, options, query.length, selectOption],
+    [
+      activeIndex,
+      highlightOption,
+      onClose,
+      onExit,
+      options,
+      query.length,
+      selectOption,
+    ],
   );
 
   const focusInputAfterMenuClose = (event: Event) => {
@@ -403,10 +416,11 @@ export function ThreadSearchPaletteMode({
   return (
     <PaletteShell
       activeDescendantId={activeDescendantId}
+      autoFocus={false}
       inputDescription={
         canSplit
-          ? `Use ${splitModifier}+Enter to open in split. Use Escape to return to commands.`
-          : "Use Escape to return to commands."
+          ? `Use ${splitModifier}+Enter to open in split. Use Backspace to return to commands.`
+          : "Use Backspace to return to commands."
       }
       inputLabel={THREAD_SEARCH_INPUT.label}
       inputAccessory={
