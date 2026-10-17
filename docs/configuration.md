@@ -316,18 +316,22 @@ Settings (stored server-side; also `bb settings writing`):
 Automatic typing correction applies an edit by itself only when its meaning cannot
 change, whatever the AI service reports: capitalization and spacing, a period at
 the end of a sentence, removing a word typed twice in a row (never had, that or
-is, which can repeat on purpose, nor a negation such as not), verb or article
+is, which can repeat on purpose, nor a negation from this fixed list: not, no, never, nothing, nobody, none, nor, neither, without, cannot,
+any word ending in n't, and the Portuguese não, nunca, nem, nada, ninguém,
+sem and jamais, with or without accents), verb or article
 agreement from a fixed list (is/are/am/be, was/were, has/have, does/do and their
 negated forms, a/an), and accents on a fixed list of Portuguese words that are
 not words without them (nao, voce, tambem, entao, amanha). Spelling fixes, other
 punctuation (commas, question marks), homophones such as its/it's, and tense or
 plural changes are offered as suggestions. Code, paths, identifiers and
 vocabulary terms are never edited. Dictation formatting follows the same rule:
-if the formatter changes a spoken word into another word, other than a
-vocabulary term or one of those accent restorations, the transcript is inserted
-as heard. A vocabulary term counts only as the spelling of a word that was
-spoken ("hermez" written as "Hermes"), never as a word added to what was said,
-and the spoken words must keep the order they were said in.
+if the formatter changes a spoken word into another word, other than one of
+those accent restorations, the transcript is inserted
+as heard. Vocabulary terms are sent to transcription as hints, so the
+transcript spells them; formatting may change their case or punctuation
+("next js" to "Next.js") but never their letters, since without a dictionary a
+misheard name cannot be told from a real word ("public" is never rewritten as
+a similar term). The spoken words must also keep the order they were said in.
 
 Usage counts and the cost estimate use list prices and are not a bill: bb
 cloud has its own daily limit, and Codex uses the primary machine's Codex

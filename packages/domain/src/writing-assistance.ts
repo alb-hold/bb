@@ -755,14 +755,6 @@ function isNegation(token: string): boolean {
   return NEGATIONS.has(token) || /n['’]t$/u.test(token);
 }
 
-function nearVariant(word: string, token: string): boolean {
-  const longest = Math.max(word.length, token.length);
-  if (longest < 4) return false;
-  if (isInflection(word, token) || isAgreementSwap(word, token)) return true;
-  const distance = damerauLevenshtein(word, token, 2);
-  return distance <= 2 && distance / longest <= 0.34;
-}
-
 function allowedNovelToken(
   token: string,
   source: ReadonlySet<string>,
@@ -805,7 +797,6 @@ function droppedTokens(
   rawTokens: readonly string[],
   formattedTokens: readonly string[],
   deferred: readonly boolean[],
-  vocabularyTokens: ReadonlySet<string>,
 ): boolean[] {
   const remaining = new Map<string, number>();
   for (const token of formattedTokens) {
@@ -825,9 +816,7 @@ function droppedTokens(
       continue;
     }
     dropped[index] = !novel.some(
-      (candidate) =>
-        NON_WORD_RESTORATIONS.get(token) === candidate ||
-        (vocabularyTokens.has(candidate) && nearVariant(token, candidate)),
+      (candidate) => NON_WORD_RESTORATIONS.get(token) === candidate,
     );
   }
   return dropped;
@@ -979,9 +968,6 @@ export function validateFormattedTranscript(
   }
   const rawTokens = wordTokens(raw);
   const source = new Set(rawTokens);
-  const vocabularyTokens = new Set(
-    vocabulary.flatMap((term) => wordTokens(term)),
-  );
   const items = listItems(formatted);
   const list = items.size > 0;
   if (list && !listMatchesSpeech(items, rawTokens)) {
@@ -1001,12 +987,6 @@ export function validateFormattedTranscript(
   );
   for (const token of formattedTokens) {
     if (source.has(token)) continue;
-    if (
-      vocabularyTokens.has(token) &&
-      rawTokens.some((word) => nearVariant(word, token))
-    ) {
-      continue;
-    }
     if (allowedNovelToken(token, source)) continue;
     return { ok: false, reason: "added-words" };
   }
@@ -1019,7 +999,6 @@ export function validateFormattedTranscript(
     rawTokens,
     formattedTokens,
     rawTokens.map((_token, index) => marker[index]! || window[index]!),
-    vocabularyTokens,
   );
   const lostNegation = rawTokens.some(
     (token, index) => dropped[index] && !marker[index] && isNegation(token),

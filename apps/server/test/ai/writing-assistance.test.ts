@@ -392,6 +392,22 @@ describe("dictation segments", () => {
     });
   });
 
+  it("keeps the transcript when formatting swaps a spoken word for a similar vocabulary term", async () => {
+    await withTestHarness({}, async (harness) => {
+      updateWritingAssistanceSettings(harness.deps.db, {
+        vocabulary: ["pubic"],
+      });
+      registerFakeAiService(harness.deps.aiServices, {
+        transcribe: async () => "make the endpoint public",
+        complete: async () => "Make the endpoint pubic.",
+      });
+      await expect((await postSegment(harness)).json()).resolves.toMatchObject({
+        text: "make the endpoint public",
+        formatted: false,
+      });
+    });
+  });
+
   it("formats a numbered list built from spoken ordinals", async () => {
     await withTestHarness({}, async (harness) => {
       registerFakeAiService(harness.deps.aiServices, {

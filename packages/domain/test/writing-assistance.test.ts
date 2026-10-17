@@ -479,8 +479,10 @@ describe("validateFormattedTranscript", () => {
   it.each([
     ["run the migration", "Not run the migration.", ["not"]],
     ["deploy the build", "Deploy the Kubernetes build.", ["Kubernetes"]],
+    ["make the endpoint public", "Make the endpoint pubic.", ["pubic"]],
+    ["ask hermez about it", "Ask Hermes about it.", ["Hermes"]],
   ])(
-    "keeps the transcript when a vocabulary term was not spoken: %s -> %s",
+    "keeps the transcript when formatting writes a vocabulary term that was not transcribed: %s -> %s",
     (raw, formatted, vocabulary) => {
       expect(validateFormattedTranscript(raw, formatted, vocabulary)).toEqual({
         ok: false,
@@ -489,12 +491,12 @@ describe("validateFormattedTranscript", () => {
     },
   );
 
-  it("accepts vocabulary spellings and accent restorations of spoken words", () => {
+  it("accepts transcribed vocabulary terms and accent restorations of spoken words", () => {
     expect(
       validateFormattedTranscript(
-        "ask hermez about it",
-        "Ask Hermes about it.",
-        ["Hermes"],
+        "ask hermes about next js",
+        "Ask Hermes about Next.js.",
+        ["Hermes", "Next.js"],
       ),
     ).toEqual({ ok: true });
     expect(

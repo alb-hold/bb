@@ -96,7 +96,9 @@ verbatim, literal-code), `typing-correction` (automatic, suggest, off),
 `dictation-formatting` (on, off), `daily-correction-limit` (requests per UTC
 day, 0-5000), and `daily-dictation-minutes` (0-1440). Only capitalization,
 spacing, a sentence-final period, removing a word typed twice in a row
-(never had, that, is or a negation such as not), swaps within
+(never had, that, is, or a negation from this fixed list: not, no, never, nothing, nobody, none, nor, neither, without, cannot,
+any word ending in n't, and the Portuguese não, nunca, nem, nada, ninguém,
+sem and jamais, with or without accents), swaps within
 is/are/am/be, was/were, has/have, does/do (and isn't/aren't, wasn't/weren't,
 hasn't/haven't, doesn't/don't) or a/an, and accents on nao, voce, tambem,
 entao and amanha apply by themselves, never inside code, paths, identifiers or
