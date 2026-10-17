@@ -24,17 +24,25 @@ find_real() {
 
 if [ "$SELF" = pbcopy ]; then
   umask 077
-  temporary=$(mktemp "${TMPDIR:-/tmp}/bb-pbcopy.XXXXXX") || exit 0
+  temporary=$(mktemp "${TMPDIR:-/tmp}/bb-pbcopy.XXXXXX") || exit 1
   trap 'rm -f "$temporary"' EXIT HUP INT TERM
-  cat > "$temporary" || exit 0
+  cat > "$temporary" || exit 1
   real=$(find_real pbcopy || true)
   real_status=0
   if [ -n "$real" ]; then
     "$real" < "$temporary"
     real_status=$?
   fi
-  "$SCRIPT_DIR/bb" device copy < "$temporary" >/dev/null 2>&1 || true
-  exit "$real_status"
+  "$SCRIPT_DIR/bb" device copy < "$temporary" >/dev/null 2>&1
+  handoff_status=$?
+  if [ "$handoff_status" -eq 0 ]; then
+    exit 0
+  fi
+  if [ -n "$real" ]; then
+    exit "$real_status"
+  fi
+  printf '%s\n' 'bb device copy failed and no native pbcopy is available' >&2
+  exit "$handoff_status"
 fi
 
 has_url=0
@@ -70,6 +78,7 @@ if [ "$has_url" -eq 1 ]; then
   if [ -n "$real" ]; then
     exec "$real" "$@"
   fi
+  printf '%s\n' 'bb device open failed and no native URL opener is available' >&2
   exit "$handoff_status"
 fi
 

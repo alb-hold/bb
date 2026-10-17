@@ -60,7 +60,7 @@ open on the device currently viewing bb:
 The SDK exposes `sdk.device.request({ kind: "copy-text", text, origin })` and
 `sdk.device.request({ kind: "open-url", url, origin })`. On the host, `pbcopy`,
 `open`, `xdg-open`, and `$BROWSER` preserve their local behavior and also offer
-supported text or URLs to the viewing device. Handoffs expire after two minutes
+supported text or URLs to the viewing device. Handoffs expire after ten minutes
 and never copy or open anything until the user taps the offered action.
 
   bb terminal show <terminal-id>
