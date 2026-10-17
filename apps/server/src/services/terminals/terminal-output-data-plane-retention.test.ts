@@ -1,6 +1,10 @@
 import { Socket } from "node:net";
-import { afterEach, describe, expect, it } from "vitest";
-import { createTerminalSession, getRetainedTerminalOutput } from "@bb/db";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  createTerminalSession,
+  getRetainedTerminalOutput,
+  getTerminalSession,
+} from "@bb/db";
 import { createMigratedConnection } from "@bb/db/testing";
 import {
   TerminalDataPlaneChild,
@@ -78,7 +82,7 @@ function textFrom(chunks: Array<{ dataBase64: string }>): string {
   ).toString("utf8");
 }
 
-async function setup() {
+async function setup(args: { holdOutputBatches?: boolean } = {}) {
   const harness = await createTestAppHarness({
     db: createMigratedConnection(),
   });
@@ -99,12 +103,23 @@ async function setup() {
   });
   const daemonSocket = new FakeSocket();
   const childMessages: TerminalDataPlaneChildMessage[] = [];
+  const heldOutputBatches: Array<{
+    message: Extract<
+      TerminalDataPlaneChildMessage,
+      { type: "terminal.output-batch" }
+    >;
+    onSent: () => void;
+  }> = [];
   const child = new TerminalDataPlaneChild({
     exit: () => undefined,
     rssBytes: () => 1,
     sendToMain: (message, onSent) => {
       childMessages.push(message);
       if (message.type === "terminal.output-batch") {
+        if (args.holdOutputBatches) {
+          heldOutputBatches.push({ message, onSent });
+          return;
+        }
         harness.deps.terminalSessions.recordDirectTerminalOutputBatch(message);
       }
       onSent();
@@ -136,12 +151,19 @@ async function setup() {
     childMessages,
     daemonSocket,
     db: harness.db,
+    heldOutputBatches,
     host,
     hub: harness.hub,
     sendMain,
     session,
     terminal,
     terminalSessions: harness.deps.terminalSessions,
+    releaseOutputBatches() {
+      for (const { message, onSent } of heldOutputBatches.splice(0)) {
+        harness.deps.terminalSessions.recordDirectTerminalOutputBatch(message);
+        onSent();
+      }
+    },
   };
 }
 
@@ -256,6 +278,100 @@ describe("terminal output retained from the data plane", () => {
       type: "terminal.unroute",
       terminalId: fixture.terminal.id,
     });
+
+    const output = await fixture.terminalSessions.readTerminalOutput({
+      terminalId: fixture.terminal.id,
+      query: {},
+    });
+    expect(textFrom(output.chunks)).toBe(
+      "R-1\nR-2\nR-3\nR-4\nR-5\nR-6\nR-7\nR-8\n",
+    );
+    fixture.child.shutdown();
+    fixture.hub.unregisterDaemon(fixture.session.id);
+  });
+
+  it("retains a held data-plane batch released after exit and an empty replay", async () => {
+    const fixture = await setup({ holdOutputBatches: true });
+    fixture.terminalSessions.setDaemonSessionDirectOutput({
+      daemonSessionId: fixture.session.id,
+      enabled: true,
+    });
+    fixture.hub.registerDaemon(fixture.session.id, fixture.host.id, {
+      close() {},
+      send(data: string) {
+        const message = JSON.parse(data) as {
+          requestId: string;
+          terminalId: string;
+          type: string;
+        };
+        if (message.type !== "terminal.attach") {
+          return;
+        }
+        fixture.terminalSessions.handleDaemonTerminalMessage({
+          hostId: fixture.host.id,
+          sessionId: fixture.session.id,
+          message: {
+            type: "terminal.replay",
+            requestId: message.requestId,
+            terminalId: fixture.terminal.id,
+            replayStartSeq: 0,
+            nextSeq: 0,
+            chunks: [],
+          },
+        });
+      },
+    });
+
+    for (const chunk of outputChunks()) {
+      fixture.daemonSocket.receive({
+        type: "terminal.output",
+        terminalId: fixture.terminal.id,
+        chunk,
+      });
+    }
+    fixture.sendMain({
+      v: V,
+      type: "terminal.unroute",
+      terminalId: fixture.terminal.id,
+    });
+
+    expect(fixture.heldOutputBatches).toHaveLength(1);
+    expect(fixture.heldOutputBatches[0]?.message.chunks).toEqual(outputChunks());
+
+    fixture.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.host.id,
+      sessionId: fixture.session.id,
+      message: {
+        type: "terminal.exited",
+        terminalId: fixture.terminal.id,
+        exitCode: 0,
+        closeReason: "process-exit",
+      },
+    });
+    await vi.waitFor(() => {
+      expect(
+        getTerminalSession(fixture.db, {
+          kind: "terminal",
+          terminalId: fixture.terminal.id,
+        })?.status,
+      ).toBe("exited");
+    });
+    expect(
+      getRetainedTerminalOutput(fixture.db, {
+        hostId: fixture.host.id,
+        terminalSessionId: fixture.terminal.id,
+        now: Date.now(),
+      }),
+    ).toBeNull();
+
+    fixture.releaseOutputBatches();
+    expect(
+      getRetainedTerminalOutput(fixture.db, {
+        hostId: fixture.host.id,
+        terminalSessionId: fixture.terminal.id,
+        now: Date.now(),
+      }),
+    ).not.toBeNull();
 
     const output = await fixture.terminalSessions.readTerminalOutput({
       terminalId: fixture.terminal.id,

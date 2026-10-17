@@ -1820,18 +1820,31 @@ export class TerminalSessionLifecycle {
     const current = getTerminalById(this.options.db, args.terminalId);
     if (
       !current ||
-      current.status !== "running" ||
-      current.daemonSessionId !== args.daemonSessionId
+      (current.status !== "running" && current.status !== "exited") ||
+      (current.status === "running" &&
+        current.daemonSessionId !== args.daemonSessionId) ||
+      (current.status === "exited" &&
+        !this.directOutputSessionIds.has(args.daemonSessionId))
     ) {
       return;
     }
     for (const chunk of args.chunks) {
-      this.outputFlow.recordOutput(
-        args.terminalId,
-        args.daemonSessionId,
-        chunk.seq,
-      );
+      if (current.status === "running") {
+        this.outputFlow.recordOutput(
+          args.terminalId,
+          args.daemonSessionId,
+          chunk.seq,
+        );
+      }
       this.retainTerminalOutput(current, chunk);
+    }
+    if (current.status === "exited") {
+      markRetainedTerminalOutputExited(
+        this.options.db,
+        current.id,
+        current.hostId,
+        Date.now(),
+      );
     }
   }
 
