@@ -10,11 +10,15 @@ import { openUrlInExternalBrowser } from "@/lib/url-open-routing";
 
 interface DeviceHandoffSheetProps {
   signal: DeviceHandoffSignal | null;
+  position: number;
+  count: number;
   onDismiss(): void;
 }
 
 export function DeviceHandoffSheet({
   signal,
+  position,
+  count,
   onDismiss,
 }: DeviceHandoffSheetProps) {
   const open = signal !== null;
@@ -92,6 +96,11 @@ export function DeviceHandoffSheet({
               ? "Text ready to copy"
               : "URL ready to open"}
           </h2>
+          {count > 1 ? (
+            <p className="text-sm text-muted-foreground">
+              {position} of {count}
+            </p>
+          ) : null}
           {content}
         </section>
       ) : null}

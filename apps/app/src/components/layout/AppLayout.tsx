@@ -19,10 +19,6 @@ import {
   useNavigate,
 } from "react-router-dom";
 import type { ProjectResponse } from "@bb/server-contract";
-import {
-  deviceHandoffSignalLenientSchema,
-  type DeviceHandoffSignal,
-} from "@bb/server-contract";
 import { Icon } from "@bb/shared-ui/icon";
 import { TooltipProvider } from "@bb/shared-ui/tooltip";
 import { RESOURCE_ROUTE_LABEL_EVENT } from "@bb/shared-ui/resource-route-label";
@@ -42,6 +38,7 @@ import { AppCommandShortcutHint } from "@/components/commands/AppCommandShortcut
 import { CommandPalette } from "@/components/commands/CommandPalette";
 import { NotificationCenter } from "@/components/notifications/NotificationCenter";
 import { DeviceHandoffSheet } from "@/components/device-handoff/DeviceHandoffSheet";
+import { useDeviceHandoffQueue } from "@/components/device-handoff/useDeviceHandoffQueue";
 import {
   resolveAutomationBreadcrumbs,
   resolvePluginsWorkspaceHeaderMeta,
@@ -465,24 +462,7 @@ export function AppLayout({ children }: AppLayoutProps) {
   const isCompactViewport = useIsCompactViewport();
   const store = useStore();
   const [contentShell, setContentShell] = useState<HTMLDivElement | null>(null);
-  const [deviceHandoffSignal, setDeviceHandoffSignal] =
-    useState<DeviceHandoffSignal | null>(null);
-  const dismissDeviceHandoff = useCallback(() => {
-    setDeviceHandoffSignal(null);
-  }, []);
-  useEffect(() => wsManager.onDeviceHandoff(setDeviceHandoffSignal), []);
-  useEffect(() => {
-    const handleDeviceHandoff = (event: Event) => {
-      if (!(event instanceof CustomEvent)) return;
-      const parsed = deviceHandoffSignalLenientSchema.safeParse(event.detail);
-      if (parsed.success && parsed.data.expiresAt > Date.now()) {
-        setDeviceHandoffSignal(parsed.data);
-      }
-    };
-    window.addEventListener("bb-device-handoff", handleDeviceHandoff);
-    return () =>
-      window.removeEventListener("bb-device-handoff", handleDeviceHandoff);
-  }, []);
+  const deviceHandoffQueue = useDeviceHandoffQueue();
   const restoreIOSViewportOnKeyboardDismissal = useMemo(
     () => isIOSWebKit(navigator),
     [],
@@ -928,8 +908,10 @@ export function AppLayout({ children }: AppLayoutProps) {
               />
               <NotificationCenter />
               <DeviceHandoffSheet
-                signal={deviceHandoffSignal}
-                onDismiss={dismissDeviceHandoff}
+                signal={deviceHandoffQueue.signal}
+                position={deviceHandoffQueue.position}
+                count={deviceHandoffQueue.count}
+                onDismiss={deviceHandoffQueue.dismiss}
               />
               {quickCreateProject.projectPathDialog.target === null ? null : (
                 <Suspense fallback={null}>
