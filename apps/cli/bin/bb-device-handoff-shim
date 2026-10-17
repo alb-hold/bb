@@ -1,0 +1,59 @@
+#!/bin/sh
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+SELF=$1
+shift
+
+find_real() {
+  wanted=$1
+  old_ifs=$IFS
+  IFS=:
+  for directory in ${PATH-}; do
+    [ -n "$directory" ] || directory=.
+    resolved_directory=$(CDPATH= cd -- "$directory" 2>/dev/null && pwd)
+    [ "$resolved_directory" = "$SCRIPT_DIR" ] && continue
+    candidate=$directory/$wanted
+    if [ -f "$candidate" ] && [ -x "$candidate" ]; then
+      IFS=$old_ifs
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  IFS=$old_ifs
+  return 1
+}
+
+if [ "$SELF" = pbcopy ]; then
+  umask 077
+  temporary=$(mktemp "${TMPDIR:-/tmp}/bb-pbcopy.XXXXXX") || exit 0
+  trap 'rm -f "$temporary"' EXIT HUP INT TERM
+  cat > "$temporary" || exit 0
+  real=$(find_real pbcopy || true)
+  real_status=0
+  if [ -n "$real" ]; then
+    "$real" < "$temporary"
+    real_status=$?
+  fi
+  "$SCRIPT_DIR/bb" device copy < "$temporary" >/dev/null 2>&1 || true
+  exit "$real_status"
+fi
+
+case "$SELF" in
+  open) real=$(find_real open || true) ;;
+  xdg-open) real=$(find_real xdg-open || true) ;;
+  *)
+    real=$(find_real xdg-open || find_real open || find_real sensible-browser || true)
+    ;;
+esac
+
+for argument in "$@"; do
+  case "$argument" in
+    http://*|https://*)
+      "$SCRIPT_DIR/bb" device open "$argument" >/dev/null 2>&1 || true
+      ;;
+  esac
+done
+
+if [ -n "$real" ]; then
+  exec "$real" "$@"
+fi
+exit 127

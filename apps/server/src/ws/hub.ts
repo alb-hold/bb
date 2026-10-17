@@ -1,5 +1,6 @@
 import { emitPluginThreadEvents } from "../services/plugins/plugin-thread-events.js";
 import { Buffer } from "node:buffer";
+import { randomUUID } from "node:crypto";
 import {
   realtimeSubscriptionTargetKey as subscriptionKey,
   type RealtimeSubscriptionTarget,
@@ -27,6 +28,8 @@ import {
   terminalServerMessageSchema,
   threadOpenSignalSchema,
   threadPaneActionSignalSchema,
+  deviceHandoffSignalSchema,
+  type DeviceHandoffRequest,
   type ThreadTimelineSignal,
   type ThreadPaneAction,
   type ThreadOpenFile,
@@ -38,6 +41,8 @@ const TERMINAL_SOCKET_HIGH_WATER_BYTES = 1024 * 1024;
 const TERMINAL_SOCKET_MAX_QUEUE_BYTES = 32 * 1024 * 1024;
 const TERMINAL_SOCKET_DRAIN_POLL_MS = 10;
 const THREAD_LIST_EVENTS_APPENDED_COALESCE_MS = 1_000;
+const DEVICE_HANDOFF_TTL_MS = 2 * 60 * 1000;
+const DEVICE_HANDOFF_PENDING_LIMIT = 100;
 const LIST_RELEVANT_THREAD_EVENT_TYPES: ReadonlySet<ThreadEventType> =
   new Set<ThreadEventType>(["client/turn/requested", "turn/completed"]);
 
@@ -319,10 +324,18 @@ export class NotificationHub implements DbNotifier {
     string,
     PendingThreadListEventsAppended
   >();
+  private readonly pendingDeviceHandoffs: Array<{
+    expiresAt: number;
+    payload: string;
+  }> = [];
 
   registerClient(socket: HubSocket): void {
-    if (!this.clientKeysBySocket.has(socket)) {
-      this.clientKeysBySocket.set(socket, new Set());
+    if (this.clientKeysBySocket.has(socket)) return;
+    this.clientKeysBySocket.set(socket, new Set());
+    const now = Date.now();
+    this.prunePendingDeviceHandoffs(now);
+    for (const handoff of this.pendingDeviceHandoffs) {
+      socket.send(handoff.payload);
     }
   }
 
@@ -1128,6 +1141,76 @@ export class NotificationHub implements DbNotifier {
         }),
       ),
     );
+  }
+
+  notifyDeviceHandoff(
+    request: DeviceHandoffRequest,
+    originLabel: string,
+  ): number {
+    const createdAt = Date.now();
+    const signal = deviceHandoffSignalSchema.parse({
+      type: "device-handoff",
+      id: randomUUID(),
+      createdAt,
+      expiresAt: createdAt + DEVICE_HANDOFF_TTL_MS,
+      request,
+      originLabel,
+    });
+    const payload = JSON.stringify(signal);
+    this.prunePendingDeviceHandoffs(createdAt);
+    const expiresAt = createdAt + DEVICE_HANDOFF_TTL_MS;
+    this.pendingDeviceHandoffs.push({ expiresAt, payload });
+    if (this.pendingDeviceHandoffs.length > DEVICE_HANDOFF_PENDING_LIMIT) {
+      this.pendingDeviceHandoffs.splice(
+        0,
+        this.pendingDeviceHandoffs.length - DEVICE_HANDOFF_PENDING_LIMIT,
+      );
+    }
+    const recipients = new Set<HubSocket>();
+    if (request.origin.threadId !== undefined) {
+      const key = subscriptionKey({
+        kind: "thread-detail",
+        threadId: request.origin.threadId,
+      });
+      for (const socket of this.clientSocketsByKey.get(key) ?? []) {
+        recipients.add(socket);
+      }
+    }
+    if (request.origin.terminalSessionId !== undefined) {
+      const terminalId = request.origin.terminalSessionId;
+      for (const [socket, state] of this.terminalClientStateById.get(
+        terminalId,
+      ) ?? []) {
+        if (
+          state.visible &&
+          (!state.heartbeats ||
+            createdAt - state.lastSeenAt <= TERMINAL_CLIENT_STALE_MS)
+        ) {
+          recipients.add(socket);
+        }
+      }
+    }
+    const targets =
+      recipients.size > 0 ? recipients : this.clientKeysBySocket.keys();
+    let delivered = 0;
+    for (const socket of targets) {
+      socket.send(payload);
+      delivered += 1;
+    }
+    return delivered;
+  }
+
+  private prunePendingDeviceHandoffs(now: number): void {
+    for (
+      let index = this.pendingDeviceHandoffs.length - 1;
+      index >= 0;
+      index -= 1
+    ) {
+      const handoff = this.pendingDeviceHandoffs[index];
+      if (handoff === undefined || handoff.expiresAt <= now) {
+        this.pendingDeviceHandoffs.splice(index, 1);
+      }
+    }
   }
 
   private broadcastToAllClients(payload: string): number {

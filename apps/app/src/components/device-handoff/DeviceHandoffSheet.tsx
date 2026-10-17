@@ -1,0 +1,100 @@
+import { useEffect } from "react";
+import type { DeviceHandoffSignal } from "@bb/server-contract";
+import { Button } from "@bb/shared-ui/button";
+import {
+  PersistentResponsiveDrawerShell,
+  useResponsiveDrawerRealization,
+} from "@bb/shared-ui/responsive-overlay";
+import { copyToClipboardWithToast } from "@/lib/clipboard";
+import { openUrlInExternalBrowser } from "@/lib/url-open-routing";
+
+interface DeviceHandoffSheetProps {
+  signal: DeviceHandoffSignal | null;
+  onDismiss(): void;
+}
+
+export function DeviceHandoffSheet({
+  signal,
+  onDismiss,
+}: DeviceHandoffSheetProps) {
+  const open = signal !== null;
+  const { isContentRealized } = useResponsiveDrawerRealization({ open });
+  useEffect(() => {
+    if (signal === null) return;
+    const timer = window.setTimeout(
+      onDismiss,
+      Math.max(0, signal.expiresAt - Date.now()),
+    );
+    return () => window.clearTimeout(timer);
+  }, [onDismiss, signal]);
+
+  const copy = () => {
+    if (signal?.request.kind !== "copy-text") return;
+    void copyToClipboardWithToast(signal.request.text, {
+      successMessage: "Copied on this device",
+      errorMessage: "Could not copy text",
+    }).then((copied) => {
+      if (copied) onDismiss();
+    });
+  };
+
+  const openUrl = () => {
+    if (signal?.request.kind !== "open-url") return;
+    openUrlInExternalBrowser(signal.request.url);
+    onDismiss();
+  };
+
+  const content =
+    signal?.request.kind === "copy-text" ? (
+      <>
+        <p className="text-sm text-muted-foreground">{signal.originLabel}</p>
+        <pre className="max-h-48 overflow-auto rounded-md bg-muted p-3 text-sm whitespace-pre-wrap break-words">
+          {signal.request.text.slice(0, 1_000)}
+          {signal.request.text.length > 1_000 ? "…" : ""}
+        </pre>
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="ghost" onClick={onDismiss}>
+            Dismiss
+          </Button>
+          <Button type="button" onClick={copy}>
+            Copy
+          </Button>
+        </div>
+      </>
+    ) : signal?.request.kind === "open-url" ? (
+      <>
+        <p className="text-sm text-muted-foreground">{signal.originLabel}</p>
+        <p className="break-all text-sm">{new URL(signal.request.url).host}</p>
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="ghost" onClick={onDismiss}>
+            Dismiss
+          </Button>
+          <Button type="button" onClick={openUrl}>
+            Open
+          </Button>
+        </div>
+      </>
+    ) : null;
+
+  return (
+    <PersistentResponsiveDrawerShell
+      contentClassName="max-h-[min(80dvh,42rem)]"
+      open={open}
+      onOpenChange={(next) => {
+        if (!next) onDismiss();
+      }}
+      srLabel="Device handoff"
+    >
+      {isContentRealized && signal !== null ? (
+        <section className="flex max-h-[min(80dvh,42rem)] flex-col gap-3 overflow-y-auto px-4 pb-4">
+          <h2 className="text-base font-semibold">
+            {signal.request.kind === "copy-text"
+              ? "Text ready to copy"
+              : "URL ready to open"}
+          </h2>
+          {content}
+        </section>
+      ) : null}
+    </PersistentResponsiveDrawerShell>
+  );
+}

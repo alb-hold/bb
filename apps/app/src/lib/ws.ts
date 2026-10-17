@@ -6,6 +6,7 @@ import {
   realtimeSubscriptionTargetKey,
   threadOpenSignalLenientSchema,
   threadPaneActionSignalLenientSchema,
+  deviceHandoffSignalLenientSchema,
   threadTimelineSignalLenientSchema,
 } from "@bb/server-contract";
 import type {
@@ -17,6 +18,7 @@ import type {
   ThreadOpenSignal,
   ThreadPaneActionSignal,
   ThreadTimelineSignal,
+  DeviceHandoffSignal,
 } from "@bb/server-contract";
 import { buildBrowserWebSocketUrl } from "./dev-websocket-url";
 import {
@@ -29,6 +31,7 @@ type ThreadOpenCallback = (signal: ThreadOpenSignal) => void;
 type ThreadPaneActionCallback = (signal: ThreadPaneActionSignal) => void;
 type PluginSignalCallback = (signal: PluginSignal) => void;
 type ThreadTimelineCallback = (signal: ThreadTimelineSignal) => void;
+type DeviceHandoffCallback = (signal: DeviceHandoffSignal) => void;
 export type WebSocketConnectedEvent =
   | { reconnected: false }
   | {
@@ -85,6 +88,7 @@ export class WebSocketManager {
   private threadPaneActionCallbacks = new Set<ThreadPaneActionCallback>();
   private pluginSignalCallbacks = new Set<PluginSignalCallback>();
   private threadTimelineCallbacks = new Set<ThreadTimelineCallback>();
+  private deviceHandoffCallbacks = new Set<DeviceHandoffCallback>();
   private pendingOpenFileByThreadId = new Map<string, ThreadOpenFile>();
   private connectedCallbacks = new Set<ConnectedCallback>();
   private connectionStateCallbacks = new Set<ConnectionStateCallback>();
@@ -352,6 +356,14 @@ export class WebSocketManager {
       return;
     }
 
+    const deviceHandoff = deviceHandoffSignalLenientSchema.safeParse(parsed);
+    if (deviceHandoff.success) {
+      if (deviceHandoff.data.expiresAt > Date.now()) {
+        for (const cb of this.deviceHandoffCallbacks) cb(deviceHandoff.data);
+      }
+      return;
+    }
+
     const threadOpen = threadOpenSignalLenientSchema.safeParse(parsed);
     if (threadOpen.success) {
       if (threadOpen.data.file !== null) {
@@ -453,6 +465,11 @@ export class WebSocketManager {
     return () => {
       this.threadTimelineCallbacks.delete(callback);
     };
+  }
+
+  onDeviceHandoff(callback: DeviceHandoffCallback): () => void {
+    this.deviceHandoffCallbacks.add(callback);
+    return () => this.deviceHandoffCallbacks.delete(callback);
   }
 
   onThreadOpen(callback: ThreadOpenCallback): () => void {

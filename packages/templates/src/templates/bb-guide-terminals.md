@@ -48,6 +48,21 @@ From inside a bb terminal, `bb terminal notify --title "Build" --body "Finished"
 raises attention on its terminal. The SDK exposes the same operation as
 `sdk.terminals.notify({ terminalId, title, body })`.
 
+Device handoffs
+
+Agent commands and terminal shells can offer text to copy or an HTTP(S) URL to
+open on the device currently viewing bb:
+
+  bb device copy "text to copy"
+  printf '%s' "text to copy" | bb device copy
+  bb device open https://example.com/login
+
+The SDK exposes `sdk.device.request({ kind: "copy-text", text, origin })` and
+`sdk.device.request({ kind: "open-url", url, origin })`. On the host, `pbcopy`,
+`open`, `xdg-open`, and `$BROWSER` preserve their local behavior and also offer
+supported text or URLs to the viewing device. Handoffs expire after two minutes
+and never copy or open anything until the user taps the offered action.
+
   bb terminal show <terminal-id>
   bb terminal attach <terminal-id>        Ctrl-B d detaches
   bb terminal send <terminal-id> --text <text> [--enter]

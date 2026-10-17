@@ -64,7 +64,10 @@ import {
   type TerminalGridSize,
 } from "./terminal-shared-size";
 import { handleTerminalFileDrop } from "./terminal-file-drop";
-import { terminalPromptLine } from "./terminal-shell-state";
+import {
+  registerTerminalOsc52Handler,
+  terminalPromptLine,
+} from "./terminal-shell-state";
 import {
   attachTerminalPromptTracker,
   type TerminalPromptTrackerState,
@@ -982,6 +985,7 @@ export function ThreadTerminalView({
     let resizeObserver: ResizeObserver | null = null;
     let selectionChangeDisposable: { dispose: () => void } | null = null;
     let shellOscDisposable: { dispose: () => void } | null = null;
+    let osc52Disposable: { dispose: () => void } | null = null;
     let stopObservingFonts: (() => void) | null = null;
     let stopWatchingLayout: (() => void) | null = null;
     let sharedSize: TerminalGridSize | null = null;
@@ -1066,6 +1070,34 @@ export function ThreadTerminalView({
         terminal,
       });
       terminalRef.current = terminal;
+      osc52Disposable = registerTerminalOsc52Handler(
+        { parser: terminal.parser },
+        (text) => {
+          const now = Date.now();
+          window.dispatchEvent(
+            new CustomEvent("bb-device-handoff", {
+              detail: {
+                type: "device-handoff",
+                id: `${now}-${Math.random()}`,
+                createdAt: now,
+                expiresAt: now + 120_000,
+                originLabel: session.title,
+                request: {
+                  kind: "copy-text",
+                  text,
+                  origin: {
+                    ...(session.threadId === null
+                      ? {}
+                      : { threadId: session.threadId }),
+                    terminalSessionId: session.id,
+                  },
+                },
+              },
+            }),
+          );
+        },
+        () => replayWriteState.suppressedWriteCount > 0,
+      );
       fitAddon = new LoadedFitAddon();
       terminal.loadAddon(fitAddon);
       terminal.loadAddon(new Unicode11Addon());
@@ -1423,6 +1455,7 @@ export function ThreadTerminalView({
       resizeObserver?.disconnect();
       selectionChangeDisposable?.dispose();
       shellOscDisposable?.dispose();
+      osc52Disposable?.dispose();
       terminalInteractions?.dispose();
       handleFileDropRef.current = null;
       document.removeEventListener(
