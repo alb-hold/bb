@@ -755,9 +755,6 @@ const FILLER_WORDS: ReadonlySet<string> = new Set([
   "uhh",
   "er",
   "erm",
-  "ah",
-  "ahn",
-  "hmm",
 ]);
 
 const LIST_CONNECTORS: ReadonlySet<string> = new Set([

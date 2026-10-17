@@ -290,7 +290,7 @@ bb.experimental_aiServices.register({
   words, changes protected tokens, loses a negation (other than the words of a
   self-correction phrase that replaces what was said before it, such as no in
   no wait) or a number's minus sign, or drops any word other
-  than a filler (uh, umm; never um or hum, which can also be Portuguese for one), a spoken self-correction (no wait, quer dizer) with
+  than a hesitation sound (uh, uhh, uhm, umm, er, erm; never um, hum, ah, ahn or hmm), a spoken self-correction (no wait, quer dizer) with
   the words just before it that it replaces (at most six, and no more than
   were said after it; a phrase that replaces nothing is not a correction), a short function word said twice with only spaces between that can never
   stand twice (such as the, I, of or de; never very, had, that, is, her or in,

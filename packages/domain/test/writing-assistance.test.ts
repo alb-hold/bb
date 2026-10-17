@@ -856,6 +856,26 @@ describe("validateFormattedTranscript", () => {
     },
   );
 
+  it.each([
+    ["ah, entendi", "Entendi."],
+    ["ahn, deploy agora", "Deploy agora."],
+    ["hmm, ship it", "Ship it."],
+  ])("keeps interjections that can carry meaning: %s", (raw, formatted) => {
+    expect(validateFormattedTranscript(raw, formatted)).toEqual({
+      ok: false,
+      reason: "dropped-words",
+    });
+  });
+
+  it.each(["uh", "uhh", "uhm", "umm", "er", "erm"])(
+    "allows formatting to drop the hesitation sound %s",
+    (filler) => {
+      expect(
+        validateFormattedTranscript(`${filler} ship it`, "Ship it."),
+      ).toEqual({ ok: true });
+    },
+  );
+
   it("allows filler removal and self-corrections", () => {
     expect(
       validateFormattedTranscript(

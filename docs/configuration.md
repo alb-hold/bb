@@ -345,8 +345,9 @@ expected spelling more likely but do not guarantee it; formatting may change
 their case or punctuation
 ("next js" to "Next.js") but never their letters, since without a dictionary a
 misheard name cannot be told from a real word ("public" is never rewritten as
-a similar term). Formatting may leave out only fillers (uh, umm, er, ah, hmm and
-similar; never um or hum, which can also be Portuguese for one or a), a spoken self-correction (no wait, I mean, scratch that, actually,
+a similar term). Formatting may leave out only the hesitation sounds uh, uhh, uhm, umm, er
+and erm (never um or hum, which can also be Portuguese for one or a, nor an
+interjection such as ah, ahn or hmm, which can carry meaning), a spoken self-correction (no wait, I mean, scratch that, actually,
 quer dizer, na verdade and the like) together with the words just before it
 that it replaces (at most six, and no more than were said after it; a phrase
 that replaces nothing, as in "no wait is required", is not a correction), one of those words said twice with only spaces between (never another word, such as very, had, that, is, her or in, and never across punctuation), spoken symbol names in literal-code
