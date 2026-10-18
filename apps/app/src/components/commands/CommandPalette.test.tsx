@@ -421,6 +421,7 @@ describe("CommandPalette", () => {
         makeThread("first"),
         makeThread("second", { updatedAt: 1 }),
       ];
+      await import("./ThreadSearchPaletteMode");
       renderPalette({ layout: splitLayout });
       openThreadSearch();
       await screen.findByRole("option", { name: /Title first/ });

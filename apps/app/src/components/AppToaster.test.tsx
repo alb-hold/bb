@@ -15,9 +15,10 @@ import { AppToaster } from "./AppToaster";
 import { ArchivedThreadToastDescription } from "./thread/ArchivedThreadToastDescription";
 import { AppToastContent } from "./ui/app-toast";
 
-afterEach(() => {
-  toast.dismiss();
+afterEach(async () => {
   cleanup();
+  toast.dismiss();
+  await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
 });
 
 async function renderToaster(isCompactViewport: boolean) {
