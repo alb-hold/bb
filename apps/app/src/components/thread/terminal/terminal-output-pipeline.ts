@@ -18,11 +18,15 @@ type Operation =
 
 export function createTerminalOutputPipeline(
   terminal: TerminalWriter,
-  onGrid?: () => void,
+  onGrid?: (grid: TerminalGrid, apply: boolean) => void,
   onResize?: (cols: number, rows: number) => void,
   options: { resizeMarkerGrids?: boolean } = {},
 ): {
-  push(bytes: Uint8Array, callback: () => void): void;
+  push(
+    bytes: Uint8Array,
+    callback: () => void,
+    applyMarkerGrids?: boolean,
+  ): void;
   setGrid(cols: number, rows: number, callback?: () => void): void;
 } {
   const scanner = createTerminalGridByteMarkerScanner();
@@ -30,6 +34,7 @@ export function createTerminalOutputPipeline(
   const callbacksHeldForMarker: Array<() => void> = [];
   let draining = false;
   let pendingWrites: Promise<void>[] = [];
+  let pendingMarkerGridsApply = true;
 
   const enqueue = (operation: Operation) => {
     const previous = operations.at(-1);
@@ -79,17 +84,23 @@ export function createTerminalOutputPipeline(
   };
 
   return {
-    push(bytes, callback) {
+    push(bytes, callback, applyMarkerGrids = true) {
       const result = scanner.pushOperations(bytes);
+      const applyScannedMarkerGrids =
+        applyMarkerGrids && pendingMarkerGridsApply;
+      pendingMarkerGridsApply = result.hasPending
+        ? applyScannedMarkerGrids
+        : true;
       for (const operation of result.operations) {
         if (operation.type === "bytes" && operation.bytes.length > 0) {
           enqueue({ type: "write", bytes: operation.bytes });
         } else if (operation.type === "grid") {
-          onGrid?.();
+          onGrid?.(operation.grid, applyScannedMarkerGrids);
           enqueue({
             type: "grid",
             grid: operation.grid,
-            resize: options.resizeMarkerGrids ?? true,
+            resize:
+              applyScannedMarkerGrids && (options.resizeMarkerGrids ?? true),
           });
         }
       }

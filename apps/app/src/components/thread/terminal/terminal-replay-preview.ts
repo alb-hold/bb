@@ -1,5 +1,11 @@
 import type { Terminal as XTermTerminal } from "@xterm/xterm";
 import { createTerminalOutputPipeline } from "./terminal-output-pipeline";
+import {
+  applyTerminalSurfaceScale,
+  attachTerminalScalePointerCoordinates,
+  canRevealTerminalSurface,
+  terminalSurfaceScale,
+} from "./terminal-grid-presentation";
 
 export const TERMINAL_REPLAY_PREVIEW_FALLBACK_MS = 1_500;
 
@@ -38,47 +44,70 @@ export function mountTerminalReplayPreview({
   container.style.opacity = "0";
   parent.append(preview);
   terminal.open(preview);
-  const outputPipeline = createTerminalOutputPipeline({
-    resize: (cols, rows) => terminal.resize(cols, rows),
-    write: (bytes, callback) => terminal.write(bytes, callback),
-  }, undefined, undefined, { resizeMarkerGrids: false });
+  let fitGrid = initialFitGrid;
+  let latestPtyGrid = { cols: terminal.cols, rows: terminal.rows };
+  let surfaceScale = terminalSurfaceScale(latestPtyGrid, fitGrid);
+  const detachPointerCoordinates = terminal.element
+    ? attachTerminalScalePointerCoordinates(
+        terminal.element,
+        () => surfaceScale,
+      )
+    : () => undefined;
+  const updateSurfaceScale = () => {
+    surfaceScale = terminalSurfaceScale(latestPtyGrid, fitGrid);
+    if (terminal.element) {
+      applyTerminalSurfaceScale(terminal.element, surfaceScale);
+    }
+  };
+  updateSurfaceScale();
+  const outputPipeline = createTerminalOutputPipeline(
+    {
+      resize: (cols, rows) => terminal.resize(cols, rows),
+      write: (bytes, callback) => terminal.write(bytes, callback),
+    },
+    undefined,
+    undefined,
+    { resizeMarkerGrids: false },
+  );
 
   let disposed = false;
-  let fitGrid = initialFitGrid;
   let fallbackElapsed = false;
-  let fallbackResizePending = false;
+  let fallbackTimeout: ReturnType<typeof setTimeout> | null = null;
+  const scheduleFallback = () => {
+    if (fallbackTimeout !== null) clearTimeout(fallbackTimeout);
+    fallbackElapsed = false;
+    fallbackTimeout = setTimeout(() => {
+      fallbackTimeout = null;
+      fallbackElapsed = true;
+      updateVisibility();
+    }, TERMINAL_REPLAY_PREVIEW_FALLBACK_MS);
+  };
   const updateVisibility = () => {
-    const matchesFit =
-      terminal.cols === fitGrid.cols && terminal.rows === fitGrid.rows;
     const canShowFallback = fallbackElapsed && canShowMismatchedFallback();
-    if (canShowFallback && !matchesFit) {
-      if (!fallbackResizePending) {
-        fallbackResizePending = true;
-        outputPipeline.setGrid(fitGrid.cols, fitGrid.rows, () => {
-          fallbackResizePending = false;
-          preview.dataset.gridCols = String(fitGrid.cols);
-          preview.dataset.gridRows = String(fitGrid.rows);
-          updateVisibility();
-        });
-      }
-      return;
-    }
-    preview.style.visibility =
-      matchesFit || canShowFallback ? "visible" : "hidden";
+    updateSurfaceScale();
+    preview.style.visibility = canRevealTerminalSurface({
+      fallbackElapsed: canShowFallback,
+      fitGrid,
+      isOwner: !canShowMismatchedFallback(),
+      ptyGrid: latestPtyGrid,
+      rendererGrid: { cols: terminal.cols, rows: terminal.rows },
+    })
+      ? "visible"
+      : "hidden";
   };
   const refreshVisibility = () => updateVisibility();
   document.addEventListener("focusin", refreshVisibility);
   document.addEventListener("focusout", refreshVisibility);
   window.addEventListener("focus", refreshVisibility);
   window.addEventListener("blur", refreshVisibility);
-  const fallbackTimeout = setTimeout(() => {
-    fallbackElapsed = true;
-    updateVisibility();
-  }, TERMINAL_REPLAY_PREVIEW_FALLBACK_MS);
+  scheduleFallback();
   updateVisibility();
   return {
     resize(cols, rows) {
       if (disposed) return Promise.resolve();
+      latestPtyGrid = { cols, rows };
+      scheduleFallback();
+      updateVisibility();
       return new Promise((resolve) => {
         outputPipeline.setGrid(cols, rows, () => {
           if (!disposed) {
@@ -93,6 +122,8 @@ export function mountTerminalReplayPreview({
     setFitGrid(cols, rows) {
       if (disposed) return;
       fitGrid = { cols, rows };
+      scheduleFallback();
+      updateSurfaceScale();
       updateVisibility();
     },
     push(bytes, callback) {
@@ -102,11 +133,12 @@ export function mountTerminalReplayPreview({
     dispose() {
       if (disposed) return;
       disposed = true;
-      clearTimeout(fallbackTimeout);
+      if (fallbackTimeout !== null) clearTimeout(fallbackTimeout);
       document.removeEventListener("focusin", refreshVisibility);
       document.removeEventListener("focusout", refreshVisibility);
       window.removeEventListener("focus", refreshVisibility);
       window.removeEventListener("blur", refreshVisibility);
+      detachPointerCoordinates();
       terminal.dispose();
       preview.remove();
       container.style.opacity = previousOpacity;

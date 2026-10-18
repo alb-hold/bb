@@ -53,9 +53,8 @@ describe("terminal replay preview", () => {
     expect(historyContainer.style.opacity).toBe("0");
     expect(getComputedStyle(historyContainer).opacity).toBe("0");
     expect(
-      getComputedStyle(
-        parent.querySelector("[data-terminal-replay-preview]")!,
-      ).visibility,
+      getComputedStyle(parent.querySelector("[data-terminal-replay-preview]")!)
+        .visibility,
     ).toBe("visible");
     expect(preview.cols).toBe(120);
     expect(preview.rows).toBe(36);
@@ -87,14 +86,12 @@ describe("terminal replay preview", () => {
     cover.setFitGrid(51, 47);
     await cover.resize(51, 47);
     expect(
-      getComputedStyle(
-        parent.querySelector("[data-terminal-replay-preview]")!,
-      ).visibility,
+      getComputedStyle(parent.querySelector("[data-terminal-replay-preview]")!)
+        .visibility,
     ).toBe("visible");
     expect(
-      getComputedStyle(
-        parent.querySelector("[data-terminal-replay-preview]")!,
-      ).visibility,
+      getComputedStyle(parent.querySelector("[data-terminal-replay-preview]")!)
+        .visibility,
     ).toBe("visible");
     expect({ cols: preview.cols, rows: preview.rows }).toEqual({
       cols: 51,
@@ -223,7 +220,7 @@ describe("terminal replay preview", () => {
     vi.useRealTimers();
   });
 
-  it("reveals the current replay frame at the fitted grid after fallback for a non-owner", async () => {
+  it("reveals the current replay frame at the PTY grid after fallback for a non-owner", async () => {
     vi.useFakeTimers();
     const context = new Proxy(
       {
@@ -275,12 +272,13 @@ describe("terminal replay preview", () => {
     await vi.advanceTimersByTimeAsync(TERMINAL_REPLAY_PREVIEW_FALLBACK_MS);
     await vi.advanceTimersByTimeAsync(100);
     expect(getComputedStyle(previewElement).visibility).toBe("visible");
-    expect(previewElement.getAttribute("data-grid-cols")).toBe("51");
-    expect(previewElement.getAttribute("data-grid-rows")).toBe("47");
+    expect(previewElement.getAttribute("data-grid-cols")).toBe("135");
+    expect(previewElement.getAttribute("data-grid-rows")).toBe("56");
     expect({ cols: preview.cols, rows: preview.rows }).toEqual({
-      cols: 51,
-      rows: 47,
+      cols: 135,
+      rows: 56,
     });
+    expect(preview.element?.style.transform).toBe("scale(0.37777777777777777)");
     expect(
       Array.from({ length: preview.buffer.active.length }, (_, index) =>
         preview.buffer.active.getLine(index)?.translateToString(),
@@ -289,7 +287,7 @@ describe("terminal replay preview", () => {
 
     nonOwner = false;
     document.dispatchEvent(new Event("focusin"));
-    expect(getComputedStyle(previewElement).visibility).toBe("visible");
+    expect(getComputedStyle(previewElement).visibility).toBe("hidden");
 
     cover.dispose();
     parent.remove();

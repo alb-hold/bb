@@ -377,6 +377,40 @@ describe("terminal output encoding", () => {
     }
   });
 
+  it("strips historical grid markers without resizing the live renderer", async () => {
+    const terminal = new Terminal({ cols: 51, rows: 47 });
+    const onGrid = vi.fn();
+    const pipeline = createTerminalOutputPipeline(terminal, onGrid);
+    const marker = Buffer.from(
+      createTerminalGridMarker({ cols: 135, rows: 56 }),
+    );
+    const splitAt = Math.floor(marker.length / 2);
+
+    pipeline.push(marker.subarray(0, splitAt), vi.fn(), false);
+    await new Promise<void>((resolve) =>
+      pipeline.push(
+        Buffer.concat([
+          marker.subarray(splitAt),
+          Buffer.from("retained output"),
+        ]),
+        resolve,
+        true,
+      ),
+    );
+
+    expect({ cols: terminal.cols, rows: terminal.rows }).toEqual({
+      cols: 51,
+      rows: 47,
+    });
+    expect(onGrid).toHaveBeenCalledWith({ cols: 135, rows: 56 }, false);
+    expect(
+      Array.from({ length: terminal.buffer.active.length }, (_, index) =>
+        terminal.buffer.active.getLine(index)?.translateToString(true),
+      ).join("\n"),
+    ).toContain("retained output");
+    terminal.dispose();
+  });
+
   it("keeps a newer grid when xterm parses it inside an earlier resize", async () => {
     const terminal = new Terminal({ cols: 30, rows: 6 });
     const pipeline = createTerminalOutputPipeline(terminal);
@@ -451,9 +485,7 @@ describe("terminal output encoding", () => {
     expect(resize).not.toHaveBeenCalled();
     expect(writeCallbacks).toHaveLength(1);
     writeCallbacks.shift()?.();
-    await vi.waitFor(() =>
-      expect(resize).toHaveBeenCalledWith(51, 12),
-    );
+    await vi.waitFor(() => expect(resize).toHaveBeenCalledWith(51, 12));
     expect(writeCallbacks).toHaveLength(1);
     writeCallbacks.shift()?.();
     await finished;

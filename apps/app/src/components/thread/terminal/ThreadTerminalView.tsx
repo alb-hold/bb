@@ -60,13 +60,18 @@ import {
 } from "./terminal-links";
 import {
   nextSharedTerminalSize,
-  terminalDisplaySize,
   type TerminalGridSize,
 } from "./terminal-shared-size";
 import { handleTerminalFileDrop } from "./terminal-file-drop";
 import { terminalPromptLine } from "./terminal-shell-state";
 import { createTerminalOutputPipeline } from "./terminal-output-pipeline";
 import { mountTerminalReplayPreview } from "./terminal-replay-preview";
+import {
+  applyTerminalSurfaceScale,
+  attachTerminalScalePointerCoordinates,
+  canRevealTerminalSurface,
+  terminalSurfaceScale,
+} from "./terminal-grid-presentation";
 import {
   attachTerminalPromptTracker,
   type TerminalPromptTrackerState,
@@ -444,7 +449,10 @@ interface TerminalOutputWriteArgs {
   replayWriteState: TerminalReplayWriteState;
   terminal: XTermTerminal;
   pipeline?: ReturnType<typeof createTerminalOutputPipeline>;
-  replayPipeline?: Pick<ReturnType<typeof createTerminalOutputPipeline>, "push">;
+  replayPipeline?: Pick<
+    ReturnType<typeof createTerminalOutputPipeline>,
+    "push"
+  >;
 }
 
 interface ForwardTerminalDataArgs {
@@ -489,7 +497,10 @@ interface HandleTerminalServerMessageArgs {
   setReplayNextSeq: (nextSeq: number | null) => void;
   terminal: XTermTerminal;
   pipeline?: ReturnType<typeof createTerminalOutputPipeline>;
-  replayPipeline?: Pick<ReturnType<typeof createTerminalOutputPipeline>, "push">;
+  replayPipeline?: Pick<
+    ReturnType<typeof createTerminalOutputPipeline>,
+    "push"
+  >;
   allowAttachedGrid?: boolean;
   onReplayStart?: (session: TerminalSession) => void;
 }
@@ -673,14 +684,14 @@ export function writeTerminalOutput({
   pipeline,
   replayPipeline,
 }: TerminalOutputWriteArgs): void {
-  const bytes = typeof data === "string" ? new TextEncoder().encode(data) : data;
-  const write = (callback: () => void) => {
-    if (pipeline)
-      pipeline.push(bytes, callback);
+  const bytes =
+    typeof data === "string" ? new TextEncoder().encode(data) : data;
+  const write = (callback: () => void, applyMarkerGrids: boolean) => {
+    if (pipeline) pipeline.push(bytes, callback, applyMarkerGrids);
     else terminal.write(data, callback);
   };
   if (!isReplay) {
-    write(onParsed);
+    write(onParsed, true);
     return;
   }
 
@@ -695,7 +706,7 @@ export function writeTerminalOutput({
       replayWriteState.suppressedWriteCount -= 1;
       onParsed();
     });
-  });
+  }, false);
 }
 
 export function handleTerminalServerMessage({
@@ -1050,6 +1061,13 @@ export function ThreadTerminalView({
     let sharedSize: TerminalGridSize | null = null;
     let markerGridActive = false;
     let localFitGrid: TerminalGridSize | null = null;
+    let latestPtyGrid: TerminalGridSize = {
+      cols: session.cols,
+      rows: session.rows,
+    };
+    let fallbackElapsed = false;
+    let detachPointerCoordinates: (() => void) | null = null;
+    let detachGridVisibilityListeners: (() => void) | null = null;
     let replayPreview: {
       dispose(): void;
       resize(cols: number, rows: number): Promise<void>;
@@ -1076,11 +1094,28 @@ export function ThreadTerminalView({
         if (terminal === null || replayPreview !== null) {
           return;
         }
-        if (
-          localFitGrid === null ||
-          (terminal.cols === localFitGrid.cols &&
-            terminal.rows === localFitGrid.rows)
-        ) {
+        const ownsTerminal =
+          document.hasFocus() &&
+          terminal.element?.contains(document.activeElement) === true;
+        const canReveal =
+          localFitGrid !== null &&
+          canRevealTerminalSurface({
+            fallbackElapsed,
+            fitGrid: localFitGrid,
+            isOwner: ownsTerminal,
+            ptyGrid: latestPtyGrid,
+            rendererGrid: { cols: terminal.cols, rows: terminal.rows },
+          });
+        const scale =
+          !ownsTerminal && localFitGrid !== null
+            ? terminalSurfaceScale(latestPtyGrid, localFitGrid)
+            : 1;
+        if (terminal.element) {
+          applyTerminalSurfaceScale(terminal.element, scale);
+        }
+        containerElement.dataset.ptyGridCols = String(latestPtyGrid.cols);
+        containerElement.dataset.ptyGridRows = String(latestPtyGrid.rows);
+        if (canReveal) {
           if (mismatchedGridFallbackTimeout !== null) {
             clearTimeout(mismatchedGridFallbackTimeout);
             mismatchedGridFallbackTimeout = null;
@@ -1089,27 +1124,11 @@ export function ThreadTerminalView({
           return;
         }
         containerElement.style.opacity = "0";
-        if (mismatchedGridFallbackTimeout !== null) {
-          clearTimeout(mismatchedGridFallbackTimeout);
-        }
+        if (mismatchedGridFallbackTimeout !== null || fallbackElapsed) return;
         mismatchedGridFallbackTimeout = setTimeout(() => {
           mismatchedGridFallbackTimeout = null;
-          if (
-            !document.hasFocus() ||
-            !terminal?.element?.contains(document.activeElement)
-          ) {
-            if (localFitGrid !== null && outputPipeline !== null) {
-              outputPipeline.setGrid(
-                localFitGrid.cols,
-                localFitGrid.rows,
-                () => {
-                  containerElement.style.opacity = "";
-                },
-              );
-            } else {
-              containerElement.style.opacity = "";
-            }
-          }
+          fallbackElapsed = true;
+          updateGridVisibility();
         }, 1_500);
       };
       const requiredModulesPromise = Promise.all([
@@ -1183,8 +1202,10 @@ export function ThreadTerminalView({
       terminalRef.current = terminal;
       outputPipeline = createTerminalOutputPipeline(
         terminal,
-        () => {
+        (grid, apply) => {
           markerGridActive = true;
+          if (apply) latestPtyGrid = grid;
+          updateGridVisibility();
         },
         (cols, rows) => {
           containerElement.dataset.renderGridCols = String(cols);
@@ -1215,6 +1236,22 @@ export function ThreadTerminalView({
         ),
       );
       terminal.open(containerElement);
+      document.addEventListener("focusin", updateGridVisibility);
+      document.addEventListener("focusout", updateGridVisibility);
+      window.addEventListener("focus", updateGridVisibility);
+      window.addEventListener("blur", updateGridVisibility);
+      detachGridVisibilityListeners = () => {
+        document.removeEventListener("focusin", updateGridVisibility);
+        document.removeEventListener("focusout", updateGridVisibility);
+        window.removeEventListener("focus", updateGridVisibility);
+        window.removeEventListener("blur", updateGridVisibility);
+      };
+      if (terminal.element) {
+        detachPointerCoordinates = attachTerminalScalePointerCoordinates(
+          terminal.element,
+          () => Number(terminal?.element?.dataset.surfaceScale ?? "1"),
+        );
+      }
       containerElement.dataset.renderGridCols = String(terminal.cols);
       containerElement.dataset.renderGridRows = String(terminal.rows);
       if (searchAddonModule !== null) {
@@ -1261,17 +1298,6 @@ export function ThreadTerminalView({
         containerElement.dataset.fitGridCols = String(fitted.cols);
         containerElement.dataset.fitGridRows = String(fitted.rows);
         replayPreview?.setFitGrid(fitted.cols, fitted.rows);
-        if (!markerGridActive) {
-          const display = terminalDisplaySize(fitted, sharedSize);
-          if (
-            terminal.cols !== display.cols ||
-            terminal.rows !== display.rows
-          ) {
-            terminal.resize(display.cols, display.rows);
-            containerElement.dataset.renderGridCols = String(display.cols);
-            containerElement.dataset.renderGridRows = String(display.rows);
-          }
-        }
         updateGridVisibility();
         transport?.sendResize(fitted.cols, fitted.rows);
       };
@@ -1327,6 +1353,14 @@ export function ThreadTerminalView({
           const nextSize = nextSharedTerminalSize(sharedSize, size, false);
           if (nextSize !== null) {
             sharedSize = nextSize;
+            if (!markerGridActive) {
+              latestPtyGrid = nextSize;
+              outputPipeline?.setGrid(
+                nextSize.cols,
+                nextSize.rows,
+                updateGridVisibility,
+              );
+            }
             scheduleFit();
           }
         },
@@ -1380,37 +1414,18 @@ export function ThreadTerminalView({
             message.type === "session-updated"
           ) {
             const { cols, rows } = message.session;
-            if (
-              localFitGrid !== null &&
-              (cols !== localFitGrid.cols || rows !== localFitGrid.rows)
-            ) {
-              containerElement.style.opacity = "0";
-              if (mismatchedGridFallbackTimeout !== null) {
-                clearTimeout(mismatchedGridFallbackTimeout);
-              }
-              mismatchedGridFallbackTimeout = setTimeout(() => {
-                mismatchedGridFallbackTimeout = null;
-                if (
-                  !document.hasFocus() ||
-                  !activeTerminal.element?.contains(document.activeElement)
-                ) {
-                  if (localFitGrid !== null && outputPipeline !== null) {
-                    outputPipeline.setGrid(
-                      localFitGrid.cols,
-                      localFitGrid.rows,
-                      () => {
-                        containerElement.style.opacity = "";
-                      },
-                    );
-                  } else {
-                    containerElement.style.opacity = "";
-                  }
-                }
-              }, 1_500);
-            }
             const isOwnNudgeEcho =
               message.type === "session-updated" &&
               activeTransport.consumeRepaintNudgeEcho({ cols, rows });
+            if (!isOwnNudgeEcho) {
+              latestPtyGrid = { cols, rows };
+              fallbackElapsed = false;
+              if (mismatchedGridFallbackTimeout !== null) {
+                clearTimeout(mismatchedGridFallbackTimeout);
+                mismatchedGridFallbackTimeout = null;
+              }
+              updateGridVisibility();
+            }
             const nextSize = nextSharedTerminalSize(
               sharedSize,
               { cols, rows },
@@ -1420,11 +1435,15 @@ export function ThreadTerminalView({
               sharedSize = nextSize;
               replayPreview?.resize(nextSize.cols, nextSize.rows);
               scheduleFit();
-            } else if (
-              message.type === "session-updated" &&
-              !isOwnNudgeEcho
-            ) {
+            } else if (message.type === "session-updated" && !isOwnNudgeEcho) {
               replayPreview?.resize(cols, rows);
+            }
+            if (
+              message.type === "session-updated" &&
+              !isOwnNudgeEcho &&
+              !markerGridActive
+            ) {
+              outputPipeline?.setGrid(cols, rows, updateGridVisibility);
             }
           }
           handleTerminalServerMessage({
@@ -1434,15 +1453,11 @@ export function ThreadTerminalView({
             onReplayComplete: () => {
               replayPreview?.dispose();
               replayPreview = null;
-              if (markerGridActive && localFitGrid !== null) {
-                outputPipeline?.setGrid(
-                  localFitGrid.cols,
-                  localFitGrid.rows,
-                  updateGridVisibility,
-                );
-              } else {
-                updateGridVisibility();
-              }
+              outputPipeline?.setGrid(
+                latestPtyGrid.cols,
+                latestPtyGrid.rows,
+                updateGridVisibility,
+              );
               if (
                 !disposed &&
                 sessionStatusRef.current === "running" &&
@@ -1660,6 +1675,10 @@ export function ThreadTerminalView({
         clearTimeout(mismatchedGridFallbackTimeout);
         mismatchedGridFallbackTimeout = null;
       }
+      detachPointerCoordinates?.();
+      detachPointerCoordinates = null;
+      detachGridVisibilityListeners?.();
+      detachGridVisibilityListeners = null;
       selectionChangeDisposable?.dispose();
       shellOscDisposable?.dispose();
       terminalInteractions?.dispose();
