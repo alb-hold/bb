@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { Terminal } from "@xterm/xterm";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createTerminalGridMarker } from "@bb/domain";
 import { createTerminalOutputPipeline } from "./terminal-output-pipeline";
 import { mountTerminalReplayPreview } from "./terminal-replay-preview";
@@ -43,14 +43,21 @@ describe("terminal replay preview", () => {
     const cover = mountTerminalReplayPreview({
       container: historyContainer,
       initialFitGrid: { cols: 120, rows: 36 },
+      sourceTerminal: history,
       terminal: preview,
     });
+    await vi.waitFor(() =>
+      expect(
+        getComputedStyle(
+          parent.querySelector("[data-terminal-replay-preview]")!,
+        ).visibility,
+      ).toBe("visible"),
+    );
     expect(historyContainer.style.opacity).toBe("0");
     expect(getComputedStyle(historyContainer).opacity).toBe("0");
     expect(
-      getComputedStyle(
-        parent.querySelector("[data-terminal-replay-preview]")!,
-      ).visibility,
+      getComputedStyle(parent.querySelector("[data-terminal-replay-preview]")!)
+        .visibility,
     ).toBe("visible");
     expect(preview.cols).toBe(120);
     expect(preview.rows).toBe(36);
@@ -81,15 +88,20 @@ describe("terminal replay preview", () => {
 
     cover.setFitGrid(51, 47);
     cover.resize(51, 47);
+    await vi.waitFor(() =>
+      expect(
+        getComputedStyle(
+          parent.querySelector("[data-terminal-replay-preview]")!,
+        ).visibility,
+      ).toBe("visible"),
+    );
     expect(
-      getComputedStyle(
-        parent.querySelector("[data-terminal-replay-preview]")!,
-      ).visibility,
+      getComputedStyle(parent.querySelector("[data-terminal-replay-preview]")!)
+        .visibility,
     ).toBe("visible");
     expect(
-      getComputedStyle(
-        parent.querySelector("[data-terminal-replay-preview]")!,
-      ).visibility,
+      getComputedStyle(parent.querySelector("[data-terminal-replay-preview]")!)
+        .visibility,
     ).toBe("visible");
     expect({ cols: preview.cols, rows: preview.rows }).toEqual({
       cols: 51,
@@ -114,7 +126,7 @@ describe("terminal replay preview", () => {
     parent.remove();
   });
 
-  it("keeps a phone preview hidden until the PTY grid matches its fit", () => {
+  it("keeps a phone preview hidden until the PTY grid matches its fit", async () => {
     const context = new Proxy(
       {
         measureText: (text: string) => ({ width: text.length * 8 }),
@@ -141,10 +153,17 @@ describe("terminal replay preview", () => {
 
     const history = new Terminal({ cols: 135, rows: 56 });
     history.open(historyContainer);
+    await new Promise<void>((resolve) =>
+      history.write(
+        `${"\r\n".repeat(55)}phone frame at its fitted grid`,
+        resolve,
+      ),
+    );
     const preview = new Terminal({ cols: 135, rows: 56 });
     const cover = mountTerminalReplayPreview({
       container: historyContainer,
       initialFitGrid: { cols: 51, rows: 47 },
+      sourceTerminal: history,
       terminal: preview,
     });
     const previewElement = parent.querySelector(
@@ -156,11 +175,102 @@ describe("terminal replay preview", () => {
     expect(previewElement.getAttribute("data-grid-cols")).toBe("135");
 
     cover.resize(51, 47);
+    await vi.waitFor(() =>
+      expect(getComputedStyle(previewElement).visibility).toBe("visible"),
+    );
 
     expect(preview.cols).toBe(51);
     expect(preview.rows).toBe(47);
     expect(getComputedStyle(previewElement).visibility).toBe("visible");
     expect(previewElement.getAttribute("data-grid-cols")).toBe("51");
+    const previewText = Array.from(
+      { length: preview.rows },
+      (_, index) =>
+        preview.buffer.active
+          .getLine(preview.buffer.active.viewportY + index)
+          ?.translateToString(true) ?? "",
+    ).join("\n");
+    expect(previewText).toContain("phone frame at its fitted grid");
+
+    cover.dispose();
+    history.dispose();
+    parent.remove();
+  });
+
+  it("shows a fitted-size snapshot after a non-owner fallback", async () => {
+    const context = new Proxy(
+      {
+        measureText: (text: string) => ({ width: text.length * 8 }),
+        getImageData: () => ({ data: new Uint8ClampedArray(4) }),
+        createImageData: () => ({ data: new Uint8ClampedArray(4) }),
+      } as Record<string, unknown>,
+      {
+        get(target, property) {
+          const value = target[property as string];
+          return value ?? (() => undefined);
+        },
+        set(target, property, value) {
+          target[property as string] = value;
+          return true;
+        },
+      },
+    );
+    HTMLCanvasElement.prototype.getContext = (() =>
+      context) as unknown as typeof HTMLCanvasElement.prototype.getContext;
+    const parent = document.createElement("div");
+    const historyContainer = document.createElement("div");
+    parent.append(historyContainer);
+    document.body.append(parent);
+
+    const history = new Terminal({ cols: 135, rows: 56 });
+    history.open(historyContainer);
+    await new Promise<void>((resolve) =>
+      history.write(
+        `${"\r\n".repeat(55)}snapshot content from the current frame`,
+        resolve,
+      ),
+    );
+    const sourceText = Array.from(
+      { length: history.rows },
+      (_, index) =>
+        history.buffer.active
+          .getLine(history.buffer.active.viewportY + index)
+          ?.translateToString(true) ?? "",
+    ).join("\n");
+    expect(sourceText).toContain("snapshot content from the current frame");
+    const preview = new Terminal({ cols: 135, rows: 56 });
+    const cover = mountTerminalReplayPreview({
+      container: historyContainer,
+      initialFitGrid: { cols: 51, rows: 47 },
+      sourceTerminal: history,
+      terminal: preview,
+    });
+    const previewElement = parent.querySelector(
+      "[data-terminal-replay-preview]",
+    )!;
+
+    expect(getComputedStyle(previewElement).visibility).toBe("hidden");
+    cover.resize(135, 56);
+    await new Promise((resolve) => setTimeout(resolve, 1550));
+    await vi.waitFor(() =>
+      expect(getComputedStyle(previewElement).visibility).toBe("visible"),
+    );
+
+    expect(getComputedStyle(previewElement).visibility).toBe("visible");
+    expect(previewElement.getAttribute("data-preview-mode")).toBe("snapshot");
+    expect(previewElement.getAttribute("data-grid-cols")).toBe("51");
+    expect({ cols: preview.cols, rows: preview.rows }).toEqual({
+      cols: 51,
+      rows: 47,
+    });
+    const previewText = Array.from(
+      { length: preview.rows },
+      (_, index) =>
+        preview.buffer.active
+          .getLine(preview.buffer.active.viewportY + index)
+          ?.translateToString(true) ?? "",
+    ).join("\n");
+    expect(previewText).toContain("snapshot content from the current frame");
 
     cover.dispose();
     history.dispose();

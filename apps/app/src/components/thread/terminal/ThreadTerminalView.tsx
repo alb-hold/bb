@@ -490,6 +490,7 @@ interface HandleTerminalServerMessageArgs {
   pipeline?: ReturnType<typeof createTerminalOutputPipeline>;
   allowAttachedGrid?: boolean;
   onReplayStart?: (session: TerminalSession) => void;
+  onOutputParsed?: () => void;
 }
 
 function encodeBytesBase64(bytes: Uint8Array): string {
@@ -702,6 +703,7 @@ export function handleTerminalServerMessage({
   pipeline,
   allowAttachedGrid = true,
   onReplayStart,
+  onOutputParsed,
 }: HandleTerminalServerMessageArgs): void {
   switch (message.type) {
     case "attached":
@@ -731,6 +733,7 @@ export function handleTerminalServerMessage({
         data: decodeBase64Bytes(message.chunk.dataBase64),
         isReplay: replayNextSeq !== null && message.chunk.seq < replayNextSeq,
         onParsed: () => {
+          onOutputParsed?.();
           acknowledgeOutput(nextSeq);
           if (
             replayNextSeq !== null &&
@@ -1042,6 +1045,7 @@ export function ThreadTerminalView({
     let localFitGrid: TerminalGridSize | null = null;
     let replayPreview: {
       dispose(): void;
+      refresh(): void;
       resize(cols: number, rows: number): void;
       setFitGrid(cols: number, rows: number): void;
     } | null = null;
@@ -1324,10 +1328,7 @@ export function ThreadTerminalView({
               sharedSize = nextSize;
               replayPreview?.resize(nextSize.cols, nextSize.rows);
               scheduleFit();
-            } else if (
-              message.type === "session-updated" &&
-              !isOwnNudgeEcho
-            ) {
+            } else if (message.type === "session-updated" && !isOwnNudgeEcho) {
               replayPreview?.resize(cols, rows);
             }
           }
@@ -1347,6 +1348,7 @@ export function ThreadTerminalView({
                 activeTransport.requestRepaint();
               }
             },
+            onOutputParsed: () => replayPreview?.refresh(),
             onSessionChange: onSessionChangeRef.current,
             replayNextSeq,
             replayWriteState,
@@ -1365,6 +1367,7 @@ export function ThreadTerminalView({
                   cols: session.cols,
                   rows: session.rows,
                 },
+                sourceTerminal: activeTerminal,
                 terminal: previewTerminal,
               });
             },
