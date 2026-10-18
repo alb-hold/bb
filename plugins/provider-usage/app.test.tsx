@@ -69,6 +69,9 @@ function threadOnMachine(
 }
 
 async function setupUsageDisclosure() {
+  localStorage.removeItem(
+    "bb.bb--provider-usage.selected-machine.v1",
+  );
   const pooledAccounts: UsageProvider[] = (
     [
       ["claude-code", "Claude Code", "claude-team@example.com", 97],
@@ -264,6 +267,7 @@ async function setupUsageDisclosure() {
       ),
   );
   vi.stubGlobal("fetch", fetchMock);
+  vi.resetModules();
   const app = await loadPluginApp(() => import("./app"));
   const mounted = await mountPluginContentScripts(app, {
     pluginId: "bb--provider-usage",
@@ -286,6 +290,11 @@ async function setupUsageDisclosure() {
         threads: [threadOnMachine("host-m5", "M5")],
       },
     },
+  );
+  await waitFor(() =>
+    expect(
+      slot.getByRole("button", { name: "Usage machine: Account Pooler" }),
+    ).toBeTruthy(),
   );
   return { item, slot, dismiss, fetchMock };
 }
