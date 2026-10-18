@@ -75,7 +75,7 @@ it("fetches all providers only in the selected source and keeps grouped accounts
     {},
     { rpc: { getUsage: () => result } },
   );
-  await slot.findByLabelText("Reload usage data");
+  await slot.findByText("local@example.com");
   expect(
     slot.getByRole("button", { name: "Usage source" }).textContent,
   ).toContain("Combined");
@@ -84,7 +84,7 @@ it("fetches all providers only in the selected source and keeps grouped accounts
   expect(slot.queryByText("first@example.com")).toBeNull();
   fireEvent.pointerDown(slot.getByRole("button", { name: "Usage source" }));
   fireEvent.click(screen.getByRole("menuitem", { name: /Account Pooler/ }));
-  await slot.findByLabelText("Reload usage data");
+  await slot.findByText("first@example.com");
   expect(slot.getAllByRole("heading", { name: "Codex" })).toHaveLength(2);
   expect(slot.getByText("first@example.com")).toBeTruthy();
   expect(slot.getByText("second@example.com")).toBeTruthy();
