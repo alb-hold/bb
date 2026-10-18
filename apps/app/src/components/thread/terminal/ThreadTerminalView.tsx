@@ -1094,6 +1094,8 @@ export function ThreadTerminalView({
         if (terminal === null || replayPreview !== null) {
           return;
         }
+        containerElement.dataset.renderGridCols = String(terminal.cols);
+        containerElement.dataset.renderGridRows = String(terminal.rows);
         const ownsTerminal =
           document.hasFocus() &&
           terminal.element?.contains(document.activeElement) === true;
@@ -1417,15 +1419,13 @@ export function ThreadTerminalView({
             const isOwnNudgeEcho =
               message.type === "session-updated" &&
               activeTransport.consumeRepaintNudgeEcho({ cols, rows });
-            if (!isOwnNudgeEcho) {
-              latestPtyGrid = { cols, rows };
-              fallbackElapsed = false;
-              if (mismatchedGridFallbackTimeout !== null) {
-                clearTimeout(mismatchedGridFallbackTimeout);
-                mismatchedGridFallbackTimeout = null;
-              }
-              updateGridVisibility();
+            latestPtyGrid = { cols, rows };
+            fallbackElapsed = false;
+            if (mismatchedGridFallbackTimeout !== null) {
+              clearTimeout(mismatchedGridFallbackTimeout);
+              mismatchedGridFallbackTimeout = null;
             }
+            updateGridVisibility();
             const nextSize = nextSharedTerminalSize(
               sharedSize,
               { cols, rows },
@@ -1435,14 +1435,10 @@ export function ThreadTerminalView({
               sharedSize = nextSize;
               replayPreview?.resize(nextSize.cols, nextSize.rows);
               scheduleFit();
-            } else if (message.type === "session-updated" && !isOwnNudgeEcho) {
+            } else {
               replayPreview?.resize(cols, rows);
             }
-            if (
-              message.type === "session-updated" &&
-              !isOwnNudgeEcho &&
-              !markerGridActive
-            ) {
+            if (message.type === "session-updated" && !markerGridActive) {
               outputPipeline?.setGrid(cols, rows, updateGridVisibility);
             }
           }
@@ -1453,6 +1449,7 @@ export function ThreadTerminalView({
             onReplayComplete: () => {
               replayPreview?.dispose();
               replayPreview = null;
+              containerElement.style.opacity = "0";
               outputPipeline?.setGrid(
                 latestPtyGrid.cols,
                 latestPtyGrid.rows,
@@ -1470,11 +1467,12 @@ export function ThreadTerminalView({
             onSessionChange: onSessionChangeRef.current,
             replayNextSeq,
             replayWriteState,
-            onReplayStart: (session) => {
+            onReplayStart: () => {
               replayPreview?.dispose();
+              const replayGrid = latestPtyGrid;
               const previewTerminal = new Terminal({
-                cols: session.cols,
-                rows: session.rows,
+                cols: replayGrid.cols,
+                rows: replayGrid.rows,
                 fontFamily: readTerminalFontFamily(),
                 fontSize: 12,
                 theme: buildTerminalTheme(),
@@ -1482,8 +1480,8 @@ export function ThreadTerminalView({
               replayPreview = mountTerminalReplayPreview({
                 container: containerElement,
                 initialFitGrid: localFitGrid ?? {
-                  cols: session.cols,
-                  rows: session.rows,
+                  cols: replayGrid.cols,
+                  rows: replayGrid.rows,
                 },
                 canShowMismatchedFallback: () =>
                   !document.hasFocus() ||
