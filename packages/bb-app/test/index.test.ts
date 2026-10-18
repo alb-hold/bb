@@ -2425,6 +2425,7 @@ describe("bb-app launcher", () => {
           code: 0,
           signal: null,
         });
+        await child.writerExit;
         await expect
           .poll(
             () => {

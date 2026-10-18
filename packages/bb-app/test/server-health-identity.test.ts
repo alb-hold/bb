@@ -1,4 +1,5 @@
 import {
+  chmodSync,
   existsSync,
   mkdtempSync,
   readdirSync,
@@ -332,6 +333,120 @@ describe("startFullStackServerProcess", () => {
       await vi.waitFor(() => expect(existsSync(completionPath)).toBe(true));
     }
   });
+
+  it.skipIf(process.platform === "win32")(
+    "does not wait for inherited stdio handles after the writer process exits",
+    async () => {
+      const realExecPath = process.execPath;
+      const serverPort = await reserveFreePort();
+      const entry = writeImmediateServerEntry();
+      const context = createStartContext({ serverEntry: entry, serverPort });
+      const processes: ManagedFullStackProcesses = {
+        daemonRun: null,
+        serverRun: null,
+      };
+      const holderPidPath = join(dirname(entry), "writer-pipe-holder-pid");
+      const wrapperPath = join(dirname(entry), "writer-exec");
+      writeFileSync(
+        wrapperPath,
+        `#!/bin/sh\n"${realExecPath}" "$@"\nstatus=$?\n"${realExecPath}" -e 'setTimeout(() => {}, 10000)' &\necho $! > "${holderPidPath}"\nexit "$status"\n`,
+      );
+      chmodSync(wrapperPath, 0o700);
+      const originalExecPath = Object.getOwnPropertyDescriptor(
+        process,
+        "execPath",
+      );
+      if (originalExecPath === undefined) throw new Error("Missing execPath");
+      let execPathReads = 0;
+      Object.defineProperty(process, "execPath", {
+        configurable: true,
+        enumerable: originalExecPath.enumerable,
+        get: () => {
+          execPathReads += 1;
+          return execPathReads === 1 ? realExecPath : wrapperPath;
+        },
+      });
+      let serverRun: ManagedProcessRun | undefined;
+      let holderPid: number | undefined;
+      try {
+        serverRun = await startFullStackServerProcess({
+          context,
+          env: {
+            BB_SERVER_PORT: String(context.serverPort),
+            PATH: process.env.PATH,
+          },
+          processes,
+        });
+        const termination = serverRun.terminate("SIGTERM");
+        await vi.waitFor(() => expect(existsSync(holderPidPath)).toBe(true));
+        holderPid = Number(readFileSync(holderPidPath, "utf8"));
+        expect(holderPid).toBeGreaterThan(0);
+        const writerProcess = processes.serverRun?.childProcess.writerProcess;
+        expect(writerProcess).toBeDefined();
+        const writerPid = writerProcess?.pid;
+        expect(writerPid).toBeGreaterThan(0);
+        let closeObserved = false;
+        writerProcess?.once("close", () => {
+          closeObserved = true;
+        });
+        await vi.waitFor(() => expect(writerProcess?.exitCode).toBe(0));
+        expect(() => process.kill(writerPid!, 0)).toThrow(
+          expect.objectContaining({ code: "ESRCH" }),
+        );
+        expect(closeObserved).toBe(false);
+        let timeout: NodeJS.Timeout | undefined;
+        const result = await Promise.race([
+          termination.then(
+            () => "resolved" as const,
+            () => "rejected" as const,
+          ),
+          new Promise<"timed-out">((resolvePromise) => {
+            timeout = setTimeout(() => resolvePromise("timed-out"), 4_000);
+          }),
+        ]);
+        if (timeout !== undefined) clearTimeout(timeout);
+        expect(result).toBe("resolved");
+        expect(execPathReads).toBe(2);
+        expect(closeObserved).toBe(false);
+        const snapshot = readdirSync(context.logDir)
+          .sort()
+          .map((name) => {
+            const info = statSync(join(context.logDir, name));
+            return [name, info.ino, info.size, info.mtimeMs];
+          });
+        await new Promise<void>((resolvePromise) => {
+          setTimeout(resolvePromise, 50);
+        });
+        expect(
+          readdirSync(context.logDir)
+            .sort()
+            .map((name) => {
+              const info = statSync(join(context.logDir, name));
+              return [name, info.ino, info.size, info.mtimeMs];
+            }),
+        ).toEqual(snapshot);
+      } finally {
+        Object.defineProperty(process, "execPath", originalExecPath);
+        if (holderPid === undefined && existsSync(holderPidPath)) {
+          holderPid = Number(readFileSync(holderPidPath, "utf8"));
+        }
+        if (holderPid !== undefined) {
+          try {
+            process.kill(holderPid, "SIGKILL");
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+          }
+          await vi.waitFor(() =>
+            expect(() => process.kill(holderPid!, 0)).toThrow(
+              expect.objectContaining({ code: "ESRCH" }),
+            ),
+          );
+        }
+        if (serverRun !== undefined)
+          await serverRun.terminate("SIGTERM").catch(() => undefined);
+      }
+    },
+  );
 
   it("bounds termination when the stdio log writer does not finish", async () => {
     const serverPort = await reserveFreePort();
