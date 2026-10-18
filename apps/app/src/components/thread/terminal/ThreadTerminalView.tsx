@@ -1061,6 +1061,7 @@ export function ThreadTerminalView({
     let stopWatchingLayout: (() => void) | null = null;
     let sharedSize: TerminalGridSize | null = null;
     let markerGridActive = false;
+    let replayCompleted = false;
     let localFitGrid: TerminalGridSize | null = null;
     let latestPtyGrid: TerminalGridSize = {
       cols: sessionRef.current.cols,
@@ -1090,7 +1091,7 @@ export function ThreadTerminalView({
       containerElement: HTMLDivElement,
     ): Promise<void> {
       const updateGridVisibility = () => {
-        if (terminal === null || replayPreview !== null) {
+        if (terminal === null || (replayPreview !== null && !replayCompleted)) {
           return;
         }
         containerElement.dataset.renderGridCols = String(terminal.cols);
@@ -1118,6 +1119,10 @@ export function ThreadTerminalView({
         containerElement.dataset.ptyGridRows = String(latestPtyGrid.rows);
         if (canReveal) {
           containerElement.style.opacity = "";
+          if (replayCompleted && replayPreview !== null) {
+            replayPreview.dispose();
+            replayPreview = null;
+          }
           return;
         }
         containerElement.style.opacity = "0";
@@ -1431,9 +1436,7 @@ export function ThreadTerminalView({
               activeTransport.acknowledgeOutput(nextSeq),
             message,
             onReplayComplete: () => {
-              replayPreview?.dispose();
-              replayPreview = null;
-              containerElement.style.opacity = "0";
+              replayCompleted = true;
               outputPipeline?.setGrid(
                 latestPtyGrid.cols,
                 latestPtyGrid.rows,
@@ -1453,6 +1456,7 @@ export function ThreadTerminalView({
             replayWriteState,
             onReplayStart: () => {
               replayPreview?.dispose();
+              replayCompleted = false;
               const replayGrid = latestPtyGrid;
               const previewTerminal = new Terminal({
                 cols: replayGrid.cols,
