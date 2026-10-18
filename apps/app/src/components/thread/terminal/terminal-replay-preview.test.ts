@@ -3,7 +3,10 @@ import { Terminal } from "@xterm/xterm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createTerminalGridMarker } from "@bb/domain";
 import { createTerminalOutputPipeline } from "./terminal-output-pipeline";
-import { mountTerminalReplayPreview } from "./terminal-replay-preview";
+import {
+  mountTerminalReplayPreview,
+  updateTerminalReplayPreviewPtyGrid,
+} from "./terminal-replay-preview";
 
 const originalGetContext = HTMLCanvasElement.prototype.getContext;
 
@@ -214,6 +217,70 @@ describe("terminal replay preview", () => {
     expect(getComputedStyle(previewElement).visibility).toBe("visible");
     expect(preview.element?.style.transform).toBe(`scale(${scale})`);
     expect(135 * scale).toBe(51);
+
+    cover.dispose();
+    parent.remove();
+  });
+
+  it("hides a visible preview as soon as a newer PTY marker arrives", async () => {
+    const context = new Proxy(
+      {
+        measureText: (text: string) => ({ width: text.length * 8 }),
+        getImageData: () => ({ data: new Uint8ClampedArray(4) }),
+        createImageData: () => ({ data: new Uint8ClampedArray(4) }),
+      } as Record<string, unknown>,
+      {
+        get(target, property) {
+          const value = target[property as string];
+          return value ?? (() => undefined);
+        },
+        set(target, property, value) {
+          target[property as string] = value;
+          return true;
+        },
+      },
+    );
+    HTMLCanvasElement.prototype.getContext = (() =>
+      context) as unknown as typeof HTMLCanvasElement.prototype.getContext;
+    const parent = document.createElement("div");
+    const container = document.createElement("div");
+    parent.append(container);
+    document.body.append(parent);
+
+    const preview = new Terminal({ cols: 135, rows: 56 });
+    const cover = mountTerminalReplayPreview({
+      container,
+      initialFitGrid: { cols: 51, rows: 47 },
+      isOwner: () => false,
+      terminal: preview,
+    });
+    const previewElement = parent.querySelector(
+      "[data-terminal-replay-preview]",
+    )!;
+    expect(getComputedStyle(previewElement).visibility).toBe("visible");
+
+    const markerPipeline = createTerminalOutputPipeline(
+      {
+        resize: () => undefined,
+        write: (_bytes, callback) => callback(),
+      },
+      (grid, apply) =>
+        updateTerminalReplayPreviewPtyGrid(cover, grid, apply),
+    );
+    const newGrid = { cols: 51, rows: 47 };
+    markerPipeline.push(
+      Buffer.from(createTerminalGridMarker(newGrid)),
+      () => undefined,
+    );
+
+    expect(getComputedStyle(previewElement).visibility).toBe("hidden");
+    expect(previewElement.getAttribute("data-grid-cols")).toBe("135");
+
+    await cover.resize(newGrid.cols, newGrid.rows);
+
+    expect(preview.cols).toBe(51);
+    expect(preview.rows).toBe(47);
+    expect(getComputedStyle(previewElement).visibility).toBe("visible");
 
     cover.dispose();
     parent.remove();

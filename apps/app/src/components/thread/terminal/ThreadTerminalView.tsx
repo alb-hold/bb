@@ -65,7 +65,10 @@ import {
 import { handleTerminalFileDrop } from "./terminal-file-drop";
 import { terminalPromptLine } from "./terminal-shell-state";
 import { createTerminalOutputPipeline } from "./terminal-output-pipeline";
-import { mountTerminalReplayPreview } from "./terminal-replay-preview";
+import {
+  mountTerminalReplayPreview,
+  updateTerminalReplayPreviewPtyGrid,
+} from "./terminal-replay-preview";
 import {
   applyTerminalSurfaceScale,
   attachTerminalScalePointerCoordinates,
@@ -1074,6 +1077,7 @@ export function ThreadTerminalView({
       dispose(): void;
       resize(cols: number, rows: number): Promise<void>;
       setFitGrid(cols: number, rows: number): void;
+      setPtyGrid(cols: number, rows: number): void;
       push(bytes: Uint8Array, callback: () => void): void;
     } | null = null;
     let outputPipeline: ReturnType<typeof createTerminalOutputPipeline> | null =
@@ -1200,7 +1204,10 @@ export function ThreadTerminalView({
         terminal,
         (grid, apply) => {
           markerGridActive = true;
-          if (apply) latestPtyGrid = grid;
+          if (apply) {
+            latestPtyGrid = grid;
+          }
+          updateTerminalReplayPreviewPtyGrid(replayPreview, grid, apply);
           updateGridVisibility();
         },
         (cols, rows) => {

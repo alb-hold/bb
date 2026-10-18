@@ -1,4 +1,5 @@
 import type { Terminal as XTermTerminal } from "@xterm/xterm";
+import type { TerminalGrid } from "@bb/domain";
 import { createTerminalOutputPipeline } from "./terminal-output-pipeline";
 import {
   applyTerminalSurfaceScale,
@@ -6,6 +7,14 @@ import {
   canRevealTerminalSurface,
   terminalSurfaceScale,
 } from "./terminal-grid-presentation";
+
+export function updateTerminalReplayPreviewPtyGrid(
+  preview: { setPtyGrid(cols: number, rows: number): void } | null,
+  grid: TerminalGrid,
+  apply: boolean,
+): void {
+  if (apply) preview?.setPtyGrid(grid.cols, grid.rows);
+}
 
 export function mountTerminalReplayPreview({
   container,
@@ -20,6 +29,7 @@ export function mountTerminalReplayPreview({
 }): {
   dispose(): void;
   resize(cols: number, rows: number): Promise<void>;
+  setPtyGrid(cols: number, rows: number): void;
   setFitGrid(cols: number, rows: number): void;
   push(bytes: Uint8Array, callback: () => void): void;
 } {
@@ -90,11 +100,15 @@ export function mountTerminalReplayPreview({
   window.addEventListener("focus", refreshVisibility);
   window.addEventListener("blur", refreshVisibility);
   updateVisibility();
+  const setPtyGrid = (cols: number, rows: number) => {
+    if (disposed) return;
+    latestPtyGrid = { cols, rows };
+    updateVisibility();
+  };
   return {
     resize(cols, rows) {
       if (disposed) return Promise.resolve();
-      latestPtyGrid = { cols, rows };
-      updateVisibility();
+      setPtyGrid(cols, rows);
       return new Promise((resolve) => {
         outputPipeline.setGrid(cols, rows, () => {
           if (!disposed) {
@@ -106,6 +120,7 @@ export function mountTerminalReplayPreview({
         });
       });
     },
+    setPtyGrid,
     setFitGrid(cols, rows) {
       if (disposed) return;
       fitGrid = { cols, rows };
