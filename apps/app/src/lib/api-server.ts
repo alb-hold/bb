@@ -9,10 +9,10 @@ const BASE_URL =
 const turnSubmissionPath =
   /^\/api\/v1\/(?:threads\/[^/]+\/(?:send|edit-message|retry|steer|queued-messages(?:\/[^/]+\/send)?))$/u;
 
-export function fetchWithDeviceHandoffSubmission(
+export async function fetchWithDeviceHandoffSubmission(
   input: Parameters<typeof fetch>[0],
   init?: RequestInit,
-): ReturnType<typeof fetch> {
+): Promise<Response> {
   const url = new URL(
     input instanceof Request ? input.url : String(input),
     BASE_URL,
@@ -25,19 +25,17 @@ export function fetchWithDeviceHandoffSubmission(
     method === "POST" &&
     turnSubmissionPath.test(url.pathname)
   ) {
-    const token = wsManager.getDeviceHandoffClientToken();
-    if (token !== null) {
-      const headers = new Headers(
-        input instanceof Request ? input.headers : undefined,
-      );
-      new Headers(init?.headers).forEach((value, key) =>
-        headers.set(key, value),
-      );
-      headers.set(DEVICE_HANDOFF_CLIENT_TOKEN_HEADER, token);
-      init = { ...init, headers };
-    }
+    const token = await wsManager.waitForDeviceHandoffClientToken();
+    const headers = new Headers(
+      input instanceof Request ? input.headers : undefined,
+    );
+    new Headers(init?.headers).forEach((value, key) =>
+      headers.set(key, value),
+    );
+    headers.set(DEVICE_HANDOFF_CLIENT_TOKEN_HEADER, token);
+    init = { ...init, headers };
   }
-  return fetchWithAppSurface(input, init);
+  return await fetchWithAppSurface(input, init);
 }
 
 const client = createApiClient(BASE_URL, {

@@ -346,6 +346,43 @@ describe("WebSocketManager device handoff attachment token", () => {
     expect(callback).toHaveBeenCalledWith("0123456789abcdefghij_-");
   });
 
+  it("waits for a server-confirmed identity on cold connect and reconnect", async () => {
+    const manager = new WebSocketManager();
+    const firstIdentity = manager.waitForDeviceHandoffClientToken();
+    const firstSocket = getOnlySocket();
+    firstSocket.open();
+    expect(firstSocket.sentMessages[0]).toContain('"token":null');
+    manager.handleIncomingMessage(
+      JSON.stringify({
+        type: "device-handoff-client-token",
+        token: "0123456789abcdefghij_-",
+      }),
+    );
+    await expect(firstIdentity).resolves.toBe("0123456789abcdefghij_-");
+
+    manager.disconnect();
+    const afterReconnect = manager.waitForDeviceHandoffClientToken();
+    const secondSocket = fakeSocketState.instances[1];
+    if (!secondSocket) throw new Error("Expected reconnect socket");
+    secondSocket.open();
+    manager.handleIncomingMessage(
+      JSON.stringify({
+        type: "device-handoff-client-token",
+        token: "abcdefghij_0123456789a",
+      }),
+    );
+    await expect(afterReconnect).resolves.toBe("abcdefghij_0123456789a");
+    manager.disconnect();
+  });
+
+  it("fails a turn identity wait within its configured deadline", async () => {
+    const manager = new WebSocketManager();
+    await expect(manager.waitForDeviceHandoffClientToken(5)).rejects.toThrow(
+      "Could not confirm this device with the server before submitting",
+    );
+    manager.disconnect();
+  });
+
   it("replays the current token to a terminal view that subscribes late", () => {
     const manager = new WebSocketManager();
     const token = "0123456789abcdefghij_-";

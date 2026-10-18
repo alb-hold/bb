@@ -122,7 +122,11 @@ export class WebSocketManager {
   private threadTimelineCallbacks = new Set<ThreadTimelineCallback>();
   private deviceHandoffCallbacks = new Set<DeviceHandoffCallback>();
   private deviceHandoffClientToken: string | null = readStoredDeviceHandoffId();
+  private deviceHandoffClientTokenReady = false;
   private deviceHandoffClientTokenCallbacks = new Set<
+    (token: string) => void
+  >();
+  private deviceHandoffClientTokenReadyCallbacks = new Set<
     (token: string) => void
   >();
   private activeDeviceHandoffView = {
@@ -166,6 +170,7 @@ export class WebSocketManager {
     this.socket = socket;
 
     socket.onopen = () => {
+      this.deviceHandoffClientTokenReady = false;
       const disconnectedAt = this.disconnectedAt;
       this.disconnectedAt = null;
       this.lastServerActivityAt = Date.now();
@@ -204,6 +209,7 @@ export class WebSocketManager {
     };
 
     socket.onclose = () => {
+      this.deviceHandoffClientTokenReady = false;
       if (this.pongTimer !== null) {
         this.replaceSocket(this.lastServerActivityAt);
         return;
@@ -382,6 +388,7 @@ export class WebSocketManager {
 
   private markSocketLost(at: number): void {
     this.stopPingLoop();
+    this.deviceHandoffClientTokenReady = false;
     if (this.hasConnected && this.disconnectedAt === null) {
       this.disconnectedAt = at;
     }
@@ -405,8 +412,11 @@ export class WebSocketManager {
       deviceHandoffClientTokenSignalLenientSchema.safeParse(parsed);
     if (clientToken.success) {
       this.deviceHandoffClientToken = clientToken.data.token;
+      this.deviceHandoffClientTokenReady = true;
       storeDeviceHandoffId(clientToken.data.token);
       for (const callback of this.deviceHandoffClientTokenCallbacks)
+        callback(clientToken.data.token);
+      for (const callback of this.deviceHandoffClientTokenReadyCallbacks)
         callback(clientToken.data.token);
       return;
     }
@@ -488,6 +498,7 @@ export class WebSocketManager {
 
   disconnect(): void {
     this.stopPingLoop();
+    this.deviceHandoffClientTokenReady = false;
     if (this.hasConnected && this.disconnectedAt === null) {
       this.disconnectedAt = Date.now();
     }
@@ -555,6 +566,42 @@ export class WebSocketManager {
 
   getDeviceHandoffClientToken(): string | null {
     return this.deviceHandoffClientToken;
+  }
+
+  waitForDeviceHandoffClientToken(timeoutMs = 60_000): Promise<string> {
+    if (
+      this.deviceHandoffClientTokenReady &&
+      this.deviceHandoffClientToken !== null
+    ) {
+      return Promise.resolve(this.deviceHandoffClientToken);
+    }
+    this.connect();
+    return new Promise((resolve, reject) => {
+      const finish = (callback: () => void) => {
+        clearTimeout(timeout);
+        this.deviceHandoffClientTokenReadyCallbacks.delete(onReady);
+        callback();
+      };
+      const onReady = (token: string) => finish(() => resolve(token));
+      const timeout = setTimeout(
+        () =>
+          finish(() =>
+            reject(
+              new Error(
+                "Could not confirm this device with the server before submitting. Check the connection and try again.",
+              ),
+            ),
+          ),
+        timeoutMs,
+      );
+      this.deviceHandoffClientTokenReadyCallbacks.add(onReady);
+      if (
+        this.deviceHandoffClientTokenReady &&
+        this.deviceHandoffClientToken !== null
+      ) {
+        onReady(this.deviceHandoffClientToken);
+      }
+    });
   }
 
   onDeviceHandoffClientToken(callback: (token: string) => void): () => void {
