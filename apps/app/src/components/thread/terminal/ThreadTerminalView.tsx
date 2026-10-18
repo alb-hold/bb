@@ -1045,6 +1045,8 @@ export function ThreadTerminalView({
       resize(cols: number, rows: number): void;
       setFitGrid(cols: number, rows: number): void;
     } | null = null;
+    let mismatchedGridFallbackTimeout: ReturnType<typeof setTimeout> | null =
+      null;
     let outputPipeline: ReturnType<typeof createTerminalOutputPipeline> | null =
       null;
     let containerHasSize = hasVisibleTerminalSize({
@@ -1059,6 +1061,36 @@ export function ThreadTerminalView({
     async function mountTerminal(
       containerElement: HTMLDivElement,
     ): Promise<void> {
+      const updateGridVisibility = () => {
+        if (terminal === null || replayPreview !== null) {
+          return;
+        }
+        if (
+          localFitGrid === null ||
+          (terminal.cols === localFitGrid.cols &&
+            terminal.rows === localFitGrid.rows)
+        ) {
+          if (mismatchedGridFallbackTimeout !== null) {
+            clearTimeout(mismatchedGridFallbackTimeout);
+            mismatchedGridFallbackTimeout = null;
+          }
+          containerElement.style.opacity = "";
+          return;
+        }
+        containerElement.style.opacity = "0";
+        if (mismatchedGridFallbackTimeout !== null) {
+          clearTimeout(mismatchedGridFallbackTimeout);
+        }
+        mismatchedGridFallbackTimeout = setTimeout(() => {
+          mismatchedGridFallbackTimeout = null;
+          if (
+            !document.hasFocus() ||
+            !terminal?.element?.contains(document.activeElement)
+          ) {
+            containerElement.style.opacity = "";
+          }
+        }, 1_500);
+      };
       const requiredModulesPromise = Promise.all([
         import("@xterm/xterm"),
         import("@xterm/addon-fit"),
@@ -1195,6 +1227,8 @@ export function ThreadTerminalView({
           return;
         }
         localFitGrid = { cols: fitted.cols, rows: fitted.rows };
+        containerElement.dataset.fitGridCols = String(fitted.cols);
+        containerElement.dataset.fitGridRows = String(fitted.rows);
         replayPreview?.setFitGrid(fitted.cols, fitted.rows);
         if (!markerGridActive) {
           const display = terminalDisplaySize(fitted, sharedSize);
@@ -1205,6 +1239,7 @@ export function ThreadTerminalView({
             terminal.resize(display.cols, display.rows);
           }
         }
+        updateGridVisibility();
         transport?.sendResize(fitted.cols, fitted.rows);
       };
       const scheduleFit: TerminalFitScheduler = () => {
@@ -1312,6 +1347,24 @@ export function ThreadTerminalView({
             message.type === "session-updated"
           ) {
             const { cols, rows } = message.session;
+            if (
+              localFitGrid !== null &&
+              (cols !== localFitGrid.cols || rows !== localFitGrid.rows)
+            ) {
+              containerElement.style.opacity = "0";
+              if (mismatchedGridFallbackTimeout !== null) {
+                clearTimeout(mismatchedGridFallbackTimeout);
+              }
+              mismatchedGridFallbackTimeout = setTimeout(() => {
+                mismatchedGridFallbackTimeout = null;
+                if (
+                  !document.hasFocus() ||
+                  !activeTerminal.element?.contains(document.activeElement)
+                ) {
+                  containerElement.style.opacity = "";
+                }
+              }, 1_500);
+            }
             const isOwnNudgeEcho =
               message.type === "session-updated" &&
               activeTransport.consumeRepaintNudgeEcho({ cols, rows });
@@ -1338,6 +1391,15 @@ export function ThreadTerminalView({
             onReplayComplete: () => {
               replayPreview?.dispose();
               replayPreview = null;
+              if (markerGridActive && localFitGrid !== null) {
+                outputPipeline?.setGrid(
+                  localFitGrid.cols,
+                  localFitGrid.rows,
+                  updateGridVisibility,
+                );
+              } else {
+                updateGridVisibility();
+              }
               if (
                 !disposed &&
                 sessionStatusRef.current === "running" &&
@@ -1550,6 +1612,10 @@ export function ThreadTerminalView({
       resizeObserver?.disconnect();
       replayPreview?.dispose();
       replayPreview = null;
+      if (mismatchedGridFallbackTimeout !== null) {
+        clearTimeout(mismatchedGridFallbackTimeout);
+        mismatchedGridFallbackTimeout = null;
+      }
       selectionChangeDisposable?.dispose();
       shellOscDisposable?.dispose();
       terminalInteractions?.dispose();

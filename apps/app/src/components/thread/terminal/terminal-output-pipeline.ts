@@ -8,7 +8,7 @@ type TerminalWriter = {
 
 type Operation =
   | { type: "write"; bytes: Uint8Array }
-  | { type: "grid"; grid: TerminalGrid }
+  | { type: "grid"; grid: TerminalGrid; callback?: () => void }
   | { type: "ack"; callback: () => void };
 
 export function createTerminalOutputPipeline(
@@ -16,7 +16,7 @@ export function createTerminalOutputPipeline(
   onGrid?: () => void,
 ): {
   push(bytes: Uint8Array, callback: () => void): void;
-  setGrid(cols: number, rows: number): void;
+  setGrid(cols: number, rows: number, callback?: () => void): void;
 } {
   const scanner = createTerminalGridByteMarkerScanner();
   const operations: Operation[] = [];
@@ -56,6 +56,7 @@ export function createTerminalOutputPipeline(
         if (operation.type === "grid") {
           await Promise.all(pendingWrites);
           terminal.resize(operation.grid.cols, operation.grid.rows);
+          operation.callback?.();
           continue;
         }
         const writeBarrier = [...pendingWrites];
@@ -90,8 +91,8 @@ export function createTerminalOutputPipeline(
         });
       }
     },
-    setGrid(cols, rows) {
-      enqueue({ type: "grid", grid: { cols, rows } });
+    setGrid(cols, rows, callback) {
+      enqueue({ type: "grid", grid: { cols, rows }, callback });
     },
   };
 }
