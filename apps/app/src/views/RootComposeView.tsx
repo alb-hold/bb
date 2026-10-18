@@ -3,7 +3,7 @@ import { getPanelTabHistoryKey } from "@/components/secondary-panel/recentlyClos
 import { appendQuoteAndAttachmentsToDraft } from "@bb/client-core";
 import type { ComposerAttachment } from "@get-bb/plugin-sdk";
 import { createCoreComposerActions } from "@/lib/plugin-composer-handle";
-import { setActiveDeviceHandoffTerminal } from "@/components/device-handoff/device-handoff-view";
+import { useActiveDeviceHandoffTerminalView } from "@/components/device-handoff/device-handoff-view";
 
 import {
   readThreadCreationPlacement,
@@ -903,16 +903,12 @@ function RootComposeSurface({
       ? terminalsById.get(activeFixedSecondaryTab.terminalId)
       : undefined;
   const activeTerminalSessionId = activeTerminalSession?.id;
-  useEffect(() => {
-    const terminalId =
-      isFocusedPane && isSecondaryPanelOpen
-        ? (activeTerminalSessionId ?? null)
-        : null;
-    setActiveDeviceHandoffTerminal(terminalId);
-    return () => {
-      setActiveDeviceHandoffTerminal(null);
-    };
-  }, [activeTerminalSessionId, isFocusedPane, isSecondaryPanelOpen]);
+  useActiveDeviceHandoffTerminalView({
+    ownerId: `root-compose:${paneContext?.paneId ?? "root"}`,
+    terminalId: activeTerminalSessionId ?? null,
+    isFocused: isFocusedPane,
+    isOpen: isSecondaryPanelOpen,
+  });
   const activeTerminalInitialCwd = activeTerminalSession?.initialCwd;
   const getActiveTerminalSpawnCwd = useCallback(
     () =>

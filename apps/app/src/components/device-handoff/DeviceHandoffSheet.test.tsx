@@ -16,12 +16,18 @@ import type {
 import { DeviceHandoffSheet } from "./DeviceHandoffSheet";
 import { useDeviceHandoffQueue } from "./useDeviceHandoffQueue";
 import { openUrlInExternalBrowser } from "@/lib/url-open-routing";
+import {
+  useActiveDeviceHandoffTerminal,
+  useActiveDeviceHandoffTerminalView,
+} from "./device-handoff-view";
+import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
 
 const copied = vi.hoisted(() => vi.fn());
 const registerDeviceHandoff = vi.hoisted(() =>
   vi.fn((_callback: unknown) => () => {}),
 );
 const acknowledgeDeviceHandoff = vi.hoisted(() => vi.fn());
+const setDeviceHandoffView = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/clipboard", () => ({
   copyToClipboardWithToast: copied,
@@ -34,7 +40,7 @@ vi.mock("@/lib/url-open-routing", () => ({
 vi.mock("@/lib/ws", () => ({
   wsManager: {
     onDeviceHandoff: registerDeviceHandoff,
-    setDeviceHandoffView: vi.fn(),
+    setDeviceHandoffView,
     acknowledgeDeviceHandoff,
   },
 }));
@@ -44,6 +50,7 @@ afterEach(() => {
   copied.mockReset();
   vi.mocked(openUrlInExternalBrowser).mockClear();
   registerDeviceHandoff.mockClear();
+  setDeviceHandoffView.mockClear();
   acknowledgeDeviceHandoff.mockClear();
 });
 
@@ -66,6 +73,99 @@ function DeviceHandoffQueueHarness({
   );
 }
 
+function ActiveTerminalPane({
+  ownerId,
+  terminalId,
+  isFocused,
+  isOpen,
+}: {
+  ownerId: string;
+  terminalId: string;
+  isFocused: boolean;
+  isOpen: boolean;
+}) {
+  useActiveDeviceHandoffTerminalView({
+    ownerId,
+    terminalId,
+    isFocused,
+    isOpen,
+  });
+  return null;
+}
+
+function ActiveTerminalReadout() {
+  const terminalId = useActiveDeviceHandoffTerminal();
+  return (
+    <output data-testid="active-terminal-id">{terminalId ?? "none"}</output>
+  );
+}
+
+function ThreadViewHandoffQueueHarness() {
+  const terminalId = useActiveDeviceHandoffTerminal();
+  const queue = useDeviceHandoffQueue("thread-1", terminalId);
+  return (
+    <>
+      <output data-testid="active-terminal-id">{terminalId ?? "none"}</output>
+      <DeviceHandoffSheet
+        signal={queue.signal}
+        position={queue.position}
+        count={queue.count}
+        onDismiss={queue.dismiss}
+        onAcknowledge={queue.acknowledge}
+      />
+    </>
+  );
+}
+
+function MobileRootPanelHandoffHarness({
+  isOpen,
+  focusedTerminalId,
+  includeUnfocusedTerminal,
+}: {
+  isOpen: boolean;
+  focusedTerminalId: string;
+  includeUnfocusedTerminal: boolean;
+}) {
+  const activeTerminalId = useActiveDeviceHandoffTerminal();
+  const queue = useDeviceHandoffQueue(null, activeTerminalId);
+  return (
+    <CompactViewportOverrideProvider isCompactViewport>
+      <div
+        data-testid="home-right-panel-drawer"
+        data-state={isOpen ? "open" : "closed"}
+      >
+        <button aria-pressed="true">
+          Device Handoff Standalone {focusedTerminalId}
+        </button>
+        <ActiveTerminalPane
+          ownerId={`root-compose:${focusedTerminalId}`}
+          terminalId={focusedTerminalId}
+          isFocused
+          isOpen={isOpen}
+        />
+        <output data-testid="active-terminal-id">
+          {activeTerminalId ?? "none"}
+        </output>
+        {includeUnfocusedTerminal ? (
+          <ActiveTerminalPane
+            ownerId="root-compose:unfocused-pane"
+            terminalId="term-unfocused"
+            isFocused={false}
+            isOpen
+          />
+        ) : null}
+        <DeviceHandoffSheet
+          signal={queue.signal}
+          position={queue.position}
+          count={queue.count}
+          onDismiss={queue.dismiss}
+          onAcknowledge={queue.acknowledge}
+        />
+      </div>
+    </CompactViewportOverrideProvider>
+  );
+}
+
 async function settleDrawerRealization() {
   await act(async () => {
     await new Promise<void>((resolve) => {
@@ -75,6 +175,179 @@ async function settleDrawerRealization() {
 }
 
 describe("DeviceHandoffSheet", () => {
+  it("shows queued and live standalone handoffs in the focused phone drawer", async () => {
+    const now = Date.now();
+    const queued: DeviceHandoffSignal = {
+      type: "device-handoff",
+      id: "queued-mobile-copy",
+      createdAt: now,
+      expiresAt: now + 600_000,
+      originLabel: "Device Handoff Standalone A",
+      request: {
+        kind: "copy-text",
+        text: "queued phone copy",
+        origin: { terminalSessionId: "term-a" },
+      },
+    };
+    const live: DeviceHandoffSignal = {
+      ...queued,
+      id: "live-mobile-copy",
+      request: {
+        kind: "copy-text",
+        text: "live phone copy",
+        origin: { terminalSessionId: "term-a" },
+      },
+    };
+
+    const { rerender } = render(
+      <MobileRootPanelHandoffHarness
+        isOpen
+        focusedTerminalId="term-a"
+        includeUnfocusedTerminal
+      />,
+    );
+    expect(screen.getByTestId("home-right-panel-drawer").dataset.state).toBe(
+      "open",
+    );
+    expect(
+      screen
+        .getByRole("button", { name: /Standalone term-a/u })
+        .getAttribute("aria-pressed"),
+    ).toBe("true");
+    await waitFor(() =>
+      expect(setDeviceHandoffView).toHaveBeenLastCalledWith(null, "term-a"),
+    );
+
+    const listener = registerDeviceHandoff.mock.lastCall?.[0] as
+      | ((signal: DeviceHandoffSignal | DeviceHandoffExpiredSignal) => void)
+      | undefined;
+    expect(listener).toBeDefined();
+    act(() => listener?.(queued));
+    expect(await screen.findByText("queued phone copy")).toBeTruthy();
+    expect(screen.getByText("1 of 1")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    act(() => listener?.(live));
+    expect(await screen.findByText("live phone copy")).toBeTruthy();
+    expect(screen.getByText("1 of 1")).toBeTruthy();
+    expect(acknowledgeDeviceHandoff).toHaveBeenLastCalledWith(
+      "queued-mobile-copy",
+    );
+
+    rerender(
+      <MobileRootPanelHandoffHarness
+        isOpen={false}
+        focusedTerminalId="term-a"
+        includeUnfocusedTerminal
+      />,
+    );
+    await waitFor(() =>
+      expect(setDeviceHandoffView).toHaveBeenLastCalledWith(null, null),
+    );
+    expect(screen.getByTestId("active-terminal-id").textContent).toBe("none");
+    expect(screen.queryByText("live phone copy")).toBeNull();
+
+    rerender(
+      <MobileRootPanelHandoffHarness
+        isOpen
+        focusedTerminalId="term-a"
+        includeUnfocusedTerminal
+      />,
+    );
+    await waitFor(() =>
+      expect(setDeviceHandoffView).toHaveBeenLastCalledWith(null, "term-a"),
+    );
+    expect(await screen.findByText("live phone copy")).toBeTruthy();
+
+    rerender(
+      <MobileRootPanelHandoffHarness
+        isOpen
+        focusedTerminalId="term-b"
+        includeUnfocusedTerminal
+      />,
+    );
+    await waitFor(() =>
+      expect(setDeviceHandoffView).toHaveBeenLastCalledWith(null, "term-b"),
+    );
+    expect(screen.getByTestId("active-terminal-id").textContent).toBe("term-b");
+    expect(screen.queryByText("live phone copy")).toBeNull();
+  });
+
+  it("reports focused desktop, thread and split-pane terminal views only", async () => {
+    const { rerender } = render(
+      <>
+        <ActiveTerminalPane
+          ownerId="root-compose:desktop"
+          terminalId="desktop-terminal"
+          isFocused
+          isOpen
+        />
+        <ActiveTerminalPane
+          ownerId="thread:thread-1:pane-a"
+          terminalId="thread-terminal"
+          isFocused={false}
+          isOpen
+        />
+        <ActiveTerminalReadout />
+      </>,
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("active-terminal-id").textContent).toBe(
+        "desktop-terminal",
+      ),
+    );
+
+    rerender(
+      <>
+        <ActiveTerminalPane
+          ownerId="root-compose:desktop"
+          terminalId="desktop-terminal"
+          isFocused={false}
+          isOpen
+        />
+        <ActiveTerminalPane
+          ownerId="thread:thread-1:pane-a"
+          terminalId="thread-terminal"
+          isFocused
+          isOpen
+        />
+        <ThreadViewHandoffQueueHarness />
+      </>,
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("active-terminal-id").textContent).toBe(
+        "thread-terminal",
+      ),
+    );
+    expect(setDeviceHandoffView).toHaveBeenLastCalledWith(
+      "thread-1",
+      "thread-terminal",
+    );
+
+    rerender(
+      <>
+        <ActiveTerminalPane
+          ownerId="root-compose:pane-a"
+          terminalId="split-a"
+          isFocused={false}
+          isOpen
+        />
+        <ActiveTerminalPane
+          ownerId="root-compose:pane-b"
+          terminalId="split-b"
+          isFocused
+          isOpen
+        />
+        <ActiveTerminalReadout />
+      </>,
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("active-terminal-id").textContent).toBe(
+        "split-b",
+      ),
+    );
+  });
+
   it("copies text only after the user taps Copy", async () => {
     copied.mockResolvedValue(true);
     const signal: DeviceHandoffSignal = {
