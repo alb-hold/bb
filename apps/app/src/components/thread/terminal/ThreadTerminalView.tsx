@@ -1178,6 +1178,7 @@ export function ThreadTerminalView({
         (cols, rows) => {
           containerElement.dataset.renderGridCols = String(cols);
           containerElement.dataset.renderGridRows = String(rows);
+          updateGridVisibility();
         },
       );
       fitAddon = new LoadedFitAddon();
