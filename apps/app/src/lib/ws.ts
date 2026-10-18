@@ -10,8 +10,6 @@ import {
   deviceHandoffExpiredSignalLenientSchema,
   deviceHandoffAcknowledgedSignalLenientSchema,
   deviceHandoffClientTokenSignalLenientSchema,
-  deviceHandoffNoticeSignalLenientSchema,
-  deviceHandoffShownSignalLenientSchema,
   threadTimelineSignalLenientSchema,
 } from "@bb/server-contract";
 import type {
@@ -26,8 +24,6 @@ import type {
   DeviceHandoffSignal,
   DeviceHandoffExpiredSignal,
   DeviceHandoffAcknowledgedSignal,
-  DeviceHandoffNoticeSignal,
-  DeviceHandoffShownSignal,
 } from "@bb/server-contract";
 import { buildBrowserWebSocketUrl } from "./dev-websocket-url";
 import {
@@ -44,9 +40,7 @@ type DeviceHandoffCallback = (
   signal:
     | DeviceHandoffSignal
     | DeviceHandoffExpiredSignal
-    | DeviceHandoffAcknowledgedSignal
-    | DeviceHandoffNoticeSignal
-    | DeviceHandoffShownSignal,
+    | DeviceHandoffAcknowledgedSignal,
 ) => void;
 export type WebSocketConnectedEvent =
   | { reconnected: false }
@@ -66,6 +60,28 @@ export const REALTIME_PING_INTERVAL_MS = 25_000;
 export const REALTIME_PONG_TIMEOUT_MS = 5_000;
 export const REALTIME_RESUME_PONG_TIMEOUT_MS = 1_500;
 export const REALTIME_RESUME_HIDDEN_THRESHOLD_MS = 5_000;
+const DEVICE_HANDOFF_DEVICE_STORAGE_KEY = "bb-device-handoff-device-id";
+
+function readStoredDeviceHandoffId(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const token = window.localStorage.getItem(
+      DEVICE_HANDOFF_DEVICE_STORAGE_KEY,
+    );
+    return token !== null && /^[A-Za-z0-9_-]{22}$/u.test(token) ? token : null;
+  } catch {
+    return null;
+  }
+}
+
+function storeDeviceHandoffId(token: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(DEVICE_HANDOFF_DEVICE_STORAGE_KEY, token);
+  } catch {
+    return;
+  }
+}
 export const REALTIME_MIN_RECONNECTION_DELAY_MS = 250;
 export const REALTIME_RECONNECTION_DELAY_JITTER_MS = 250;
 
@@ -105,7 +121,7 @@ export class WebSocketManager {
   private pluginSignalCallbacks = new Set<PluginSignalCallback>();
   private threadTimelineCallbacks = new Set<ThreadTimelineCallback>();
   private deviceHandoffCallbacks = new Set<DeviceHandoffCallback>();
-  private deviceHandoffClientToken: string | null = null;
+  private deviceHandoffClientToken: string | null = readStoredDeviceHandoffId();
   private deviceHandoffClientTokenCallbacks = new Set<
     (token: string) => void
   >();
@@ -157,6 +173,10 @@ export class WebSocketManager {
       this.hasConnected = true;
       this.setConnectionState("connected");
       this.startPingLoop();
+      this.sendMessage({
+        type: "device-handoff-device",
+        token: this.deviceHandoffClientToken,
+      });
       for (const subscription of this.subscriptions.values()) {
         this.sendMessage({ type: "subscribe", target: subscription.target });
       }
@@ -385,6 +405,7 @@ export class WebSocketManager {
       deviceHandoffClientTokenSignalLenientSchema.safeParse(parsed);
     if (clientToken.success) {
       this.deviceHandoffClientToken = clientToken.data.token;
+      storeDeviceHandoffId(clientToken.data.token);
       for (const callback of this.deviceHandoffClientTokenCallbacks)
         callback(clientToken.data.token);
       return;
@@ -403,23 +424,6 @@ export class WebSocketManager {
       if (deviceHandoff.data.expiresAt > Date.now()) {
         for (const cb of this.deviceHandoffCallbacks) cb(deviceHandoff.data);
       }
-      return;
-    }
-
-    const deviceHandoffNotice =
-      deviceHandoffNoticeSignalLenientSchema.safeParse(parsed);
-    if (deviceHandoffNotice.success) {
-      if (deviceHandoffNotice.data.expiresAt > Date.now()) {
-        for (const cb of this.deviceHandoffCallbacks)
-          cb(deviceHandoffNotice.data);
-      }
-      return;
-    }
-
-    const deviceHandoffShown =
-      deviceHandoffShownSignalLenientSchema.safeParse(parsed);
-    if (deviceHandoffShown.success) {
-      for (const cb of this.deviceHandoffCallbacks) cb(deviceHandoffShown.data);
       return;
     }
 

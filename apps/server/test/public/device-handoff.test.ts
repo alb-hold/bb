@@ -11,6 +11,7 @@ import {
   updateTerminalSession,
 } from "@bb/db";
 import { DEVICE_HANDOFF_CLIENT_TOKEN_HEADER } from "@bb/server-contract";
+import { createNodeBbSdk } from "@bb/sdk/node";
 import {
   createTestAppHarness,
   startTestServer,
@@ -48,16 +49,20 @@ async function connectRealtime(
 
 async function connectRealtimeWithToken(
   baseUrl: string,
-  options: { origin?: string; path?: string } = {},
+  options: { origin?: string; path?: string; deviceId?: string } = {},
 ): Promise<{ socket: WebSocket; token: string }> {
   const socket = new WebSocket(
     `${baseUrl.replace(/^http/, "ws")}${options.path ?? "/ws"}`,
     options.origin === undefined ? {} : { origin: options.origin },
   );
-  const token = nextRealtimeMessage(socket, "device-handoff-client-token");
   await new Promise<void>((resolve, reject) => {
     socket.once("open", resolve);
     socket.once("error", reject);
+  });
+  const token = nextRealtimeMessage(socket, "device-handoff-client-token");
+  sendRealtime(socket, {
+    type: "device-handoff-device",
+    token: options.deviceId ?? null,
   });
   const signal = await token;
   return { socket, token: signal.token as string };
@@ -191,6 +196,22 @@ function sendRealtime(
   message: Record<string, unknown>,
 ): void {
   socket.send(JSON.stringify(message));
+}
+
+function recordThreadHandoffSubmitter(
+  hub: TestAppHarness["hub"],
+  threadId: string,
+): ReturnType<typeof createMockHubSocket> {
+  const socket = createMockHubSocket();
+  const token = hub.issueDeviceHandoffClientToken(socket);
+  expect(
+    hub.recordDeviceHandoffTurnSubmitter(
+      token,
+      threadId,
+      `test-request-${threadId}-${Math.random()}`,
+    ),
+  ).toBe(true);
+  return socket;
 }
 
 async function connectLinkedTerminalAttachment(
@@ -640,6 +661,7 @@ describe("device handoff pending attention", () => {
     await withTestHarness(async (harness) => {
       const { thread } = seedThreadFixture(harness);
       const { thread: unrelatedThread } = seedThreadFixture(harness);
+      const submitter = recordThreadHandoffSubmitter(harness.hub, thread.id);
       vi.useFakeTimers();
       try {
         vi.setSystemTime(Date.now());
@@ -666,13 +688,7 @@ describe("device handoff pending attention", () => {
         });
 
         await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
-        const originViewer = {
-          messages: [] as string[],
-          close() {},
-          send(data: string) {
-            this.messages.push(data);
-          },
-        };
+        const originViewer = submitter;
         harness.hub.subscribe(originViewer, {
           kind: "thread-detail",
           threadId: thread.id,
@@ -707,6 +723,7 @@ describe("device handoff pending attention", () => {
       const { thread: unrelatedThread } = seedThreadFixture(harness, {
         thread: { title: "Unrelated thread" },
       });
+      const submitter = recordThreadHandoffSubmitter(harness.hub, thread.id);
       updateThread(harness.db, harness.hub, thread.id, {
         lastReadAt: 1,
         latestAttentionAt: 1,
@@ -781,13 +798,7 @@ describe("device handoff pending attention", () => {
         "private-url",
       );
 
-      const originViewer = {
-        messages: [] as string[],
-        close() {},
-        send(data: string) {
-          this.messages.push(data);
-        },
-      };
+      const originViewer = submitter;
       harness.hub.subscribe(originViewer, {
         kind: "thread-detail",
         threadId: thread.id,
@@ -795,11 +806,11 @@ describe("device handoff pending attention", () => {
       harness.hub.setDeviceHandoffView(originViewer, thread.id);
 
       const handoffMessages = originViewer.messages.filter(
-        (message) => JSON.parse(message).type === "device-handoff-notice",
+        (message) => JSON.parse(message).type === "device-handoff",
       );
       expect(handoffMessages).toHaveLength(2);
-      expect(handoffMessages.join("\n")).not.toContain("private copy payload");
-      expect(handoffMessages.join("\n")).not.toContain("private-url");
+      expect(handoffMessages.join("\n")).toContain("private copy payload");
+      expect(handoffMessages.join("\n")).toContain("private-url");
       expect(getThread(harness.db, thread.id)?.latestAttentionAt).toBe(
         markerAt,
       );
@@ -821,6 +832,7 @@ describe("device handoff pending attention", () => {
       const { thread } = seedThreadFixture(harness, {
         thread: { title: "Expiring handoff source" },
       });
+      recordThreadHandoffSubmitter(harness.hub, thread.id);
       updateThread(harness.db, harness.hub, thread.id, {
         lastReadAt: 1,
         latestAttentionAt: 1,
@@ -1241,22 +1253,12 @@ describe("device handoff websocket acknowledgement", () => {
             origin: { threadId: thread.id },
           }),
         });
-        expect(response.status).toBe(200);
-        expect(await response.json()).toEqual({ delivered: 0 });
-
-        const pendingHandoff = nextRealtimeMessage(
-          admitted,
-          "device-handoff-notice",
+        expect(response.status).toBe(409);
+        const body = await response.json();
+        expect(body).toMatchObject({ code: "device_handoff_no_recipient" });
+        expect(JSON.stringify(body)).toContain(
+          "No device has sent a message in this thread yet",
         );
-        sendRealtime(admitted, {
-          type: "device-handoff-view",
-          threadId: thread.id,
-          terminalSessionId: null,
-        });
-        await expect(pendingHandoff).resolves.toMatchObject({
-          type: "device-handoff-notice",
-          kind: "copy-text",
-        });
       } finally {
         admitted.close();
       }
@@ -1299,9 +1301,12 @@ describe("device handoff websocket acknowledgement", () => {
       code: "forbidden_origin",
     });
 
-    const admitted = await connectRealtime(server.baseUrl, {
-      origin: `http://127.0.0.1:${port}`,
-    });
+    const { socket: admitted, token } = await connectRealtimeWithToken(
+      server.baseUrl,
+      {
+        origin: `http://127.0.0.1:${port}`,
+      },
+    );
     try {
       sendRealtime(admitted, {
         type: "subscribe",
@@ -1312,7 +1317,14 @@ describe("device handoff websocket acknowledgement", () => {
         threadId: thread.id,
         terminalSessionId: null,
       });
-      const received = nextRealtimeMessage(admitted, "device-handoff-notice");
+      expect(
+        server.hub.recordDeviceHandoffTurnSubmitter(
+          token,
+          thread.id,
+          "origin-request",
+        ),
+      ).toBe(true);
+      const received = nextRealtimeMessage(admitted, "device-handoff");
       const response = await server.app.request("/api/v1/device-handoff", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -1324,8 +1336,11 @@ describe("device handoff websocket acknowledgement", () => {
       });
       expect(response.status).toBe(200);
       await expect(received).resolves.toMatchObject({
-        type: "device-handoff-notice",
-        kind: "copy-text",
+        type: "device-handoff",
+        request: {
+          kind: "copy-text",
+          text: "only admitted viewers receive this",
+        },
       });
     } finally {
       admitted.close();
@@ -1333,12 +1348,14 @@ describe("device handoff websocket acknowledgement", () => {
     }
   });
 
-  it("sends a thread-only fallback notice once to subscribed sockets viewing its thread", async () => {
+  it("sends thread-only handoffs only to the submitting device despite forged view claims", async () => {
     const server = await startTestServer();
     const { thread: originThread } = seedThreadFixture(server);
-    const { thread: otherThread } = seedThreadFixture(server);
     const origin = `http://127.0.0.1:${new URL(server.baseUrl).port}`;
-    const viewer = await connectRealtime(server.baseUrl, { origin });
+    const { socket: viewer, token } = await connectRealtimeWithToken(
+      server.baseUrl,
+      { origin },
+    );
     const subscribedElsewhere = await connectRealtime(server.baseUrl, {
       origin,
     });
@@ -1349,7 +1366,7 @@ describe("device handoff websocket acknowledgement", () => {
     const countViewerHandoff = (data: WebSocket.RawData) => {
       if (
         (JSON.parse(data.toString()) as { type?: string }).type ===
-        "device-handoff-notice"
+        "device-handoff"
       ) {
         viewerHandoffCount += 1;
       }
@@ -1371,7 +1388,7 @@ describe("device handoff websocket acknowledgement", () => {
       });
       sendRealtime(subscribedElsewhere, {
         type: "device-handoff-view",
-        threadId: otherThread.id,
+        threadId: originThread.id,
         terminalSessionId: null,
       });
       sendRealtime(viewingWithoutSubscription, {
@@ -1390,7 +1407,14 @@ describe("device handoff websocket acknowledgement", () => {
       sendRealtime(viewingWithoutSubscription, { type: "ping" });
       await Promise.all([viewerReady, elsewhereReady, unsubscribedReady]);
 
-      const received = nextRealtimeMessage(viewer, "device-handoff-notice");
+      expect(
+        server.hub.recordDeviceHandoffTurnSubmitter(
+          token,
+          originThread.id,
+          "view-bound-request",
+        ),
+      ).toBe(true);
+      const received = nextRealtimeMessage(viewer, "device-handoff");
       const response = await server.app.request("/api/v1/device-handoff", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -1404,29 +1428,14 @@ describe("device handoff websocket acknowledgement", () => {
       expect(response.status).toBe(200);
       expect(await response.json()).toEqual({ delivered: 1 });
       await expect(received).resolves.toMatchObject({
-        type: "device-handoff-notice",
-        kind: "copy-text",
+        type: "device-handoff",
+        request: { kind: "copy-text", text: "thread-only origin payload" },
       });
-      expect(JSON.stringify(await received)).not.toContain(
-        "thread-only origin payload",
-      );
-      sendRealtime(viewer, {
-        type: "device-handoff-view",
-        threadId: originThread.id,
-        terminalSessionId: null,
-      });
-      sendRealtime(viewer, {
-        type: "subscribe",
-        target: { kind: "thread-detail", threadId: originThread.id },
-      });
-      const viewerReconfirmed = nextRealtimeMessage(viewer, "pong");
-      sendRealtime(viewer, { type: "ping" });
-      await viewerReconfirmed;
       expect(viewerHandoffCount).toBe(1);
       await expectNoRealtimeMessage(subscribedElsewhere, "device-handoff");
       await expectNoRealtimeMessage(
         subscribedElsewhere,
-        "device-handoff-notice",
+        "device-handoff-expired",
       );
       await expectNoRealtimeMessage(
         viewingWithoutSubscription,
@@ -1434,7 +1443,7 @@ describe("device handoff websocket acknowledgement", () => {
       );
       await expectNoRealtimeMessage(
         viewingWithoutSubscription,
-        "device-handoff-notice",
+        "device-handoff-expired",
       );
     } finally {
       viewer.off("message", countViewerHandoff);
@@ -1554,133 +1563,105 @@ describe("device handoff websocket acknowledgement", () => {
     }
   });
 
-  it("redelivers a fallback notice until the viewer explicitly claims it", async () => {
+  it("delivers a pending shell handoff to the submitting device after reconnect", async () => {
     const server = await startTestServer();
     const { thread } = seedThreadFixture(server);
-    const { socket, token } = await connectRealtimeWithToken(server.baseUrl);
+    const origin = `http://127.0.0.1:${new URL(server.baseUrl).port}`;
+    const { socket: submitter, token } = await connectRealtimeWithToken(
+      server.baseUrl,
+      { origin },
+    );
+    const forged = await connectRealtimeWithToken(server.baseUrl, { origin });
     try {
-      sendRealtime(socket, {
+      expect(
+        server.hub.recordDeviceHandoffTurnSubmitter(
+          token,
+          thread.id,
+          "shell-turn-request",
+        ),
+      ).toBe(true);
+      sendRealtime(submitter, {
         type: "subscribe",
         target: { kind: "thread-detail", threadId: thread.id },
       });
-      sendRealtime(socket, {
+      sendRealtime(submitter, {
         type: "device-handoff-view",
-        threadId: null,
+        threadId: thread.id,
         terminalSessionId: null,
       });
-      const hiddenReady = nextRealtimeMessage(socket, "pong");
-      sendRealtime(socket, { type: "ping" });
-      await hiddenReady;
+      sendRealtime(forged.socket, {
+        type: "subscribe",
+        target: { kind: "thread-detail", threadId: thread.id },
+      });
+      sendRealtime(forged.socket, {
+        type: "device-handoff-view",
+        threadId: thread.id,
+        terminalSessionId: null,
+      });
+      const submitterReady = nextRealtimeMessage(submitter, "pong");
+      const forgedReady = nextRealtimeMessage(forged.socket, "pong");
+      sendRealtime(submitter, { type: "ping" });
+      sendRealtime(forged.socket, { type: "ping" });
+      await Promise.all([submitterReady, forgedReady]);
+      submitter.close();
+      await new Promise<void>((resolve) =>
+        submitter.once("close", () => resolve()),
+      );
+
       const response = await server.app.request("/api/v1/device-handoff", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           kind: "copy-text",
-          text: "pending until shown",
+          text: "pending until same device returns",
           origin: { threadId: thread.id },
         }),
       });
-
       expect(response.status).toBe(200);
       expect(await response.json()).toEqual({ delivered: 0 });
-      const raisedAttentionAt = getThread(
-        server.db,
-        thread.id,
-      )?.latestAttentionAt;
-      expect(raisedAttentionAt).toBeGreaterThan(0);
+      await expectNoRealtimeMessage(forged.socket, "device-handoff");
 
-      const handoff = nextRealtimeMessage(socket, "device-handoff-notice");
-      sendRealtime(socket, {
-        type: "device-handoff-view",
-        threadId: thread.id,
-        terminalSessionId: null,
+      const reconnected = await connectRealtimeWithToken(server.baseUrl, {
+        origin,
+        deviceId: token,
       });
-      const signal = await handoff;
-      expect(signal).toMatchObject({
-        type: "device-handoff-notice",
-        kind: "copy-text",
-      });
-      expect(getThread(server.db, thread.id)?.latestAttentionAt).toBe(
-        raisedAttentionAt,
-      );
-
-      sendRealtime(socket, {
-        type: "device-handoff-view",
-        threadId: null,
-        terminalSessionId: null,
-      });
-      const returnedHandoff = nextRealtimeMessage(
-        socket,
-        "device-handoff-notice",
-      );
-      sendRealtime(socket, {
-        type: "device-handoff-view",
-        threadId: thread.id,
-        terminalSessionId: null,
-      });
-      expect(await returnedHandoff).toMatchObject({
-        id: signal.id,
-        type: "device-handoff-notice",
-        kind: "copy-text",
-      });
-      const claim = await server.app.request("/api/v1/device-handoff/claim", {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-bb-device-handoff-client-token": token,
-        },
-        body: JSON.stringify({ id: signal.id }),
-      });
-      expect(claim.status).toBe(200);
-      const shownPayload = (await claim.json()) as Record<string, unknown>;
-      expect(shownPayload).toMatchObject({
-        type: "device-handoff",
-        request: { kind: "copy-text", text: "pending until shown" },
-      });
-      expect(getThread(server.db, thread.id)?.latestAttentionAt).toBe(
-        raisedAttentionAt,
-      );
-
-      sendRealtime(socket, {
-        type: "device-handoff-ack",
-        id: signal.id as string,
-      });
-      const pong = nextRealtimeMessage(socket, "pong");
-      sendRealtime(socket, { type: "ping" });
-      expect(await pong).toEqual({ type: "pong" });
-      expect(getThread(server.db, thread.id)?.latestAttentionAt).toBeLessThan(
-        raisedAttentionAt!,
-      );
-
-      const later = await connectRealtime(server.baseUrl);
       try {
-        sendRealtime(later, {
+        sendRealtime(reconnected.socket, {
           type: "subscribe",
           target: { kind: "thread-detail", threadId: thread.id },
         });
-        const unexpected = nextRealtimeMessage(later, "device-handoff");
-        sendRealtime(later, {
+        sendRealtime(reconnected.socket, {
           type: "device-handoff-view",
           threadId: thread.id,
           terminalSessionId: null,
         });
-        await expect(unexpected).rejects.toThrow(
-          "Timed out waiting for realtime message",
-        );
+        await expect(
+          nextRealtimeMessage(reconnected.socket, "device-handoff"),
+        ).resolves.toMatchObject({
+          request: { text: "pending until same device returns" },
+        });
+        await expectNoRealtimeMessage(forged.socket, "device-handoff");
       } finally {
-        later.close();
+        reconnected.socket.close();
       }
     } finally {
-      socket.close();
+      forged.socket.close();
       await server.close();
     }
   });
 
-  it("keeps an unacknowledged websocket item until it expires into a payload-free notice", async () => {
+  it("delivers and expires an unacknowledged handoff only on its bound device", async () => {
     const server = await startTestServer();
     const { thread } = seedThreadFixture(server);
-    const socket = await connectRealtime(server.baseUrl);
+    const { socket, token } = await connectRealtimeWithToken(server.baseUrl);
     try {
+      expect(
+        server.hub.recordDeviceHandoffTurnSubmitter(
+          token,
+          thread.id,
+          "expiring-turn-request",
+        ),
+      ).toBe(true);
       sendRealtime(socket, {
         type: "subscribe",
         target: { kind: "thread-detail", threadId: thread.id },
@@ -1701,9 +1682,9 @@ describe("device handoff websocket acknowledgement", () => {
           origin: { threadId: thread.id },
         }),
       });
-      const queuedNotice = nextRealtimeMessage(socket, "device-handoff-notice");
+      const queuedHandoff = nextRealtimeMessage(socket, "device-handoff");
       expect(response.status).toBe(200);
-      const queued = await queuedNotice;
+      const queued = await queuedHandoff;
       await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
       const notice = nextRealtimeMessage(socket, "device-handoff-expired");
       sendRealtime(socket, {
@@ -2257,134 +2238,218 @@ describe("device handoff websocket acknowledgement", () => {
     }
   });
 
-  it("requires an explicit claim to reveal a thread-only fallback handoff", async () => {
+  it("fails closed for a thread-only handoff when no device has submitted a turn", async () => {
     const server = await startTestServer();
     const { thread } = seedThreadFixture(server);
     const origin = `http://127.0.0.1:${new URL(server.baseUrl).port}`;
-    const showing = await connectRealtimeWithToken(server.baseUrl, { origin });
-    const other = await connectRealtimeWithToken(server.baseUrl, { origin });
-    const nonViewer = await connectRealtimeWithToken(server.baseUrl, { origin });
+    const forged = await connectRealtimeWithToken(server.baseUrl, { origin });
     try {
-      for (const socket of [showing.socket, other.socket, nonViewer.socket]) {
-        sendRealtime(socket, {
-          type: "subscribe",
-          target: { kind: "thread-detail", threadId: thread.id },
-        });
-        sendRealtime(socket, {
-          type: "device-handoff-view",
-          threadId: socket === nonViewer.socket ? null : thread.id,
-          terminalSessionId: null,
-        });
-        const ready = nextRealtimeMessage(socket, "pong");
-        sendRealtime(socket, { type: "ping" });
-        await ready;
-      }
+      const disconnected = createMockHubSocket();
+      const disconnectedToken =
+        server.hub.issueDeviceHandoffClientToken(disconnected);
+      server.hub.unregisterClient(disconnected);
       expect(
         server.hub.recordDeviceHandoffTurnSubmitter(
-          "foreign-socket-token",
+          disconnectedToken,
+          thread.id,
+          "disconnected-turn-request",
+        ),
+      ).toBe(false);
+      sendRealtime(forged.socket, {
+        type: "subscribe",
+        target: { kind: "thread-detail", threadId: thread.id },
+      });
+      sendRealtime(forged.socket, {
+        type: "device-handoff-view",
+        threadId: thread.id,
+        terminalSessionId: null,
+      });
+      const ready = nextRealtimeMessage(forged.socket, "pong");
+      sendRealtime(forged.socket, { type: "ping" });
+      await ready;
+      expect(
+        server.hub.recordDeviceHandoffTurnSubmitter(
+          "foreign-device-token",
           thread.id,
           "foreign-turn-request",
         ),
       ).toBe(false);
-      const firstNotice = nextRealtimeMessage(
-        showing.socket,
-        "device-handoff-notice",
-      );
-      const otherNotice = nextRealtimeMessage(
-        other.socket,
-        "device-handoff-notice",
-      );
-      expect(
-        server.hub.notifyDeviceHandoff(
-          {
-            kind: "open-url",
-            url: "https://example.com/private-code",
-            origin: { threadId: thread.id, turnId: "foreign-turn" },
-          },
-          thread.title ?? "Thread",
-          thread.id,
-          "foreign-turn-request",
-          "Host A",
-        ),
-      ).toBe(2);
-      const notices = await Promise.all([firstNotice, otherNotice]);
-      for (const notice of notices) {
-        expect(notice).toMatchObject({
-          type: "device-handoff-notice",
-          kind: "open-url",
-          hostLabel: "Host A",
-          threadId: thread.id,
-        });
-        expect(JSON.stringify(notice)).not.toContain("private-code");
-        expect(JSON.stringify(notice)).not.toContain("example.com");
-      }
-      const id = notices[0]!.id as string;
-      const foreignClaim = await server.app.request(
-        "/api/v1/device-handoff/claim",
-        {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            "x-bb-device-handoff-client-token": "foreign-socket-token",
-          },
-          body: JSON.stringify({ id }),
-        },
-      );
-      expect(foreignClaim.status).toBe(403);
-      const nonViewerClaim = await server.app.request(
-        "/api/v1/device-handoff/claim",
-        {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            "x-bb-device-handoff-client-token": nonViewer.token,
-          },
-          body: JSON.stringify({ id }),
-        },
-      );
-      expect(nonViewerClaim.status).toBe(403);
-      const shown = nextRealtimeMessage(other.socket, "device-handoff-shown");
-      const claim = await server.app.request("/api/v1/device-handoff/claim", {
+      const response = await server.app.request("/api/v1/device-handoff", {
         method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-bb-device-handoff-client-token": showing.token,
-        },
-        body: JSON.stringify({ id }),
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          kind: "open-url",
+          url: "https://example.com/private-code",
+          origin: { threadId: thread.id },
+        }),
       });
-      expect(claim.status).toBe(200);
-      await expect(claim.json()).resolves.toMatchObject({
-        type: "device-handoff",
-        request: { url: "https://example.com/private-code" },
-      });
-      await expect(shown).resolves.toMatchObject({
-        type: "device-handoff-shown",
-        id,
-        deviceLabel: "this device",
-      });
-      sendRealtime(showing.socket, {
-        type: "device-handoff-ack",
-        id,
-      });
-      const acked = nextRealtimeMessage(showing.socket, "pong");
-      sendRealtime(showing.socket, { type: "ping" });
-      await acked;
-      const secondClaim = await server.app.request(
-        "/api/v1/device-handoff/claim",
-        {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            "x-bb-device-handoff-client-token": other.token,
-          },
-          body: JSON.stringify({ id }),
-        },
+      expect(response.status).toBe(409);
+      expect(await response.text()).toContain(
+        "No device has sent a message in this thread yet",
       );
-      expect(secondClaim.status).toBe(409);
+      await expectNoRealtimeMessage(forged.socket, "device-handoff");
+      await expectNoRealtimeMessage(forged.socket, "device-handoff-expired");
     } finally {
-      showing.socket.close();
-      other.socket.close();
-      nonViewer.socket.close();
+      forged.socket.close();
+      await server.close();
+    }
+  });
+
+  it("delivers SDK handoffs to the latest submitter and surfaces no-submitter errors", async () => {
+    const server = await startTestServer();
+    const { thread } = seedThreadFixture(server);
+    const origin = `http://127.0.0.1:${new URL(server.baseUrl).port}`;
+    const noSubmitterSdk = createNodeBbSdk({ baseUrl: server.baseUrl });
+    await expect(
+      noSubmitterSdk.device.request({
+        kind: "open-url",
+        url: "https://example.com/no-submitter",
+        origin: { threadId: thread.id },
+      }),
+    ).rejects.toMatchObject({
+      code: "device_handoff_no_recipient",
+      status: 409,
+    });
+
+    const { socket, token } = await connectRealtimeWithToken(server.baseUrl, {
+      origin,
+    });
+    try {
+      sendRealtime(socket, {
+        type: "subscribe",
+        target: { kind: "thread-detail", threadId: thread.id },
+      });
+      sendRealtime(socket, {
+        type: "device-handoff-view",
+        threadId: thread.id,
+        terminalSessionId: null,
+      });
+      const ready = nextRealtimeMessage(socket, "pong");
+      sendRealtime(socket, { type: "ping" });
+      await ready;
+      expect(
+        server.hub.recordDeviceHandoffTurnSubmitter(
+          token,
+          thread.id,
+          "sdk-device-turn-request",
+        ),
+      ).toBe(true);
+      const sdk = createNodeBbSdk({
+        baseUrl: server.baseUrl,
+        fetch: (input, init) => {
+          const headers = new Headers(
+            input instanceof Request ? input.headers : undefined,
+          );
+          new Headers(init?.headers).forEach((value, key) =>
+            headers.set(key, value),
+          );
+          headers.set(DEVICE_HANDOFF_CLIENT_TOKEN_HEADER, token);
+          return fetch(input, { ...init, headers });
+        },
+      });
+      const received = nextRealtimeMessage(socket, "device-handoff");
+      await expect(
+        sdk.device.request({
+          kind: "copy-text",
+          text: "SDK handoff to the latest submitter",
+          origin: { threadId: thread.id },
+        }),
+      ).resolves.toEqual({ delivered: 1 });
+      await expect(received).resolves.toMatchObject({
+        type: "device-handoff",
+        request: { text: "SDK handoff to the latest submitter" },
+      });
+    } finally {
+      socket.close();
+      await server.close();
+    }
+  });
+
+  it("delivers a pending shell handoff only to the submitting device after reconnect", async () => {
+    const server = await startTestServer();
+    const { thread } = seedThreadFixture(server);
+    const origin = `http://127.0.0.1:${new URL(server.baseUrl).port}`;
+    const submitter = await connectRealtimeWithToken(server.baseUrl, {
+      origin,
+    });
+    const forged = await connectRealtimeWithToken(server.baseUrl, { origin });
+    const forgedFrames: Record<string, unknown>[] = [];
+    forged.socket.on("message", (data) =>
+      forgedFrames.push(JSON.parse(data.toString()) as Record<string, unknown>),
+    );
+    try {
+      expect(
+        server.hub.recordDeviceHandoffTurnSubmitter(
+          submitter.token,
+          thread.id,
+          "shell-origin-request",
+          "shell-origin-turn",
+        ),
+      ).toBe(true);
+      for (const socket of [submitter.socket, forged.socket]) {
+        sendRealtime(socket, {
+          type: "subscribe",
+          target: { kind: "thread-detail", threadId: thread.id },
+        });
+      }
+      sendRealtime(forged.socket, {
+        type: "device-handoff-view",
+        threadId: thread.id,
+        terminalSessionId: null,
+      });
+      const forgedReady = nextRealtimeMessage(forged.socket, "pong");
+      sendRealtime(forged.socket, { type: "ping" });
+      await forgedReady;
+      const closed = new Promise<void>((resolve) =>
+        submitter.socket.once("close", () => resolve()),
+      );
+      submitter.socket.close();
+      await closed;
+
+      const response = await server.app.request("/api/v1/device-handoff", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          kind: "copy-text",
+          text: "queued for the submitting device",
+          origin: { threadId: thread.id },
+        }),
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ delivered: 0 });
+      await expectNoRealtimeMessage(forged.socket, "device-handoff");
+
+      const reconnected = await connectRealtimeWithToken(server.baseUrl, {
+        origin,
+        deviceId: submitter.token,
+      });
+      try {
+        const received = nextRealtimeMessage(
+          reconnected.socket,
+          "device-handoff",
+        );
+        sendRealtime(reconnected.socket, {
+          type: "subscribe",
+          target: { kind: "thread-detail", threadId: thread.id },
+        });
+        sendRealtime(reconnected.socket, {
+          type: "device-handoff-view",
+          threadId: thread.id,
+          terminalSessionId: null,
+        });
+        await expect(received).resolves.toMatchObject({
+          type: "device-handoff",
+          request: { text: "queued for the submitting device" },
+        });
+        expect(
+          forgedFrames.filter((frame) => frame.type === "device-handoff"),
+        ).toHaveLength(0);
+      } finally {
+        reconnected.socket.close();
+      }
+    } finally {
+      submitter.socket.close();
+      forged.socket.close();
       await server.close();
     }
   });
@@ -2507,7 +2572,7 @@ describe("device handoff websocket acknowledgement", () => {
     }
   });
 
-  it("shows a payload-free expiry notice to a viewer after the payload recipient disconnects", async () => {
+  it("delivers expiry only to the submitting device after it reconnects", async () => {
     const server = await startTestServer();
     const { thread } = seedThreadFixture(server);
     const origin = `http://127.0.0.1:${new URL(server.baseUrl).port}`;
@@ -2517,12 +2582,12 @@ describe("device handoff websocket acknowledgement", () => {
     const otherViewer = await connectRealtimeWithToken(server.baseUrl, {
       origin,
     });
-    const otherViewerFrames: Record<string, unknown>[] = [];
-    otherViewer.socket.on("message", (data) =>
-      otherViewerFrames.push(
-        JSON.parse(data.toString()) as Record<string, unknown>,
-      ),
-    );
+    const forgedExpiryFrames: Record<string, unknown>[] = [];
+    otherViewer.socket.on("message", (data: WebSocket.RawData) => {
+      const frame = JSON.parse(data.toString()) as Record<string, unknown>;
+      if (frame.type === "device-handoff-expired")
+        forgedExpiryFrames.push(frame);
+    });
     try {
       for (const socket of [submitter.socket, otherViewer.socket]) {
         sendRealtime(socket, {
@@ -2542,8 +2607,8 @@ describe("device handoff websocket acknowledgement", () => {
         server.hub.recordDeviceHandoffTurnSubmitter(
           submitter.token,
           thread.id,
-          "turn-request-disconnected-expiry",
-          "turn-disconnected-expiry",
+          "turn-request-reconnect-expiry",
+          "turn-reconnect-expiry",
         ),
       ).toBe(true);
       vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
@@ -2554,23 +2619,17 @@ describe("device handoff websocket acknowledgement", () => {
           {
             kind: "copy-text",
             text: "private payload for the phone",
-            origin: {
-              threadId: thread.id,
-              turnId: "turn-disconnected-expiry",
-            },
+            origin: { threadId: thread.id, turnId: "turn-reconnect-expiry" },
           },
           thread.title ?? "Thread",
           thread.id,
-          "turn-request-disconnected-expiry",
+          "turn-request-reconnect-expiry",
         ),
       ).toBe(1);
-      expect((await payload).request).toMatchObject({
-        text: "private payload for the phone",
+      await expect(payload).resolves.toMatchObject({
+        type: "device-handoff",
+        request: { text: "private payload for the phone" },
       });
-      expect(
-        otherViewerFrames.some((frame) => frame.type === "device-handoff"),
-      ).toBe(false);
-
       const submitterClosed = new Promise<void>((resolve) => {
         submitter.socket.once("close", () => resolve());
       });
@@ -2578,30 +2637,38 @@ describe("device handoff websocket acknowledgement", () => {
       await submitterClosed;
       await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
 
-      const expiredNotice = nextRealtimeMessage(
-        otherViewer.socket,
-        "device-handoff-expired",
-      );
-      sendRealtime(otherViewer.socket, {
-        type: "device-handoff-view",
-        threadId: thread.id,
-        terminalSessionId: null,
+      expect(forgedExpiryFrames).toHaveLength(0);
+      const reconnected = await connectRealtimeWithToken(server.baseUrl, {
+        origin,
+        deviceId: submitter.token,
       });
-      const expired = await expiredNotice;
-      expect(expired).toMatchObject({
-        type: "device-handoff-expired",
-        threadId: thread.id,
-        terminalSessionId: null,
-      });
-      expect(Object.keys(expired).sort()).toEqual([
-        "id",
-        "terminalSessionId",
-        "threadId",
-        "type",
-      ]);
-      expect(JSON.stringify(expired)).not.toContain(
-        "private payload for the phone",
-      );
+      try {
+        const expired = nextRealtimeMessage(
+          reconnected.socket,
+          "device-handoff-expired",
+        );
+        sendRealtime(reconnected.socket, {
+          type: "subscribe",
+          target: { kind: "thread-detail", threadId: thread.id },
+        });
+        sendRealtime(reconnected.socket, {
+          type: "device-handoff-view",
+          threadId: thread.id,
+          terminalSessionId: null,
+        });
+        const notice = await expired;
+        expect(notice).toMatchObject({
+          type: "device-handoff-expired",
+          threadId: thread.id,
+          terminalSessionId: null,
+        });
+        expect(JSON.stringify(notice)).not.toContain(
+          "private payload for the phone",
+        );
+        expect(forgedExpiryFrames).toHaveLength(0);
+      } finally {
+        reconnected.socket.close();
+      }
     } finally {
       vi.useRealTimers();
       submitter.socket.close();

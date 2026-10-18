@@ -11,8 +11,6 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   DeviceHandoffExpiredSignal,
-  DeviceHandoffNoticeSignal,
-  DeviceHandoffShownSignal,
   DeviceHandoffSignal,
 } from "@bb/server-contract";
 import { DeviceHandoffSheet } from "./DeviceHandoffSheet";
@@ -77,7 +75,6 @@ function DeviceHandoffQueueHarness({
       count={queue.count}
       onDismiss={queue.dismiss}
       onAcknowledge={queue.acknowledge}
-      shownOn={queue.shownOn}
     />
   );
 }
@@ -257,13 +254,7 @@ describe("DeviceHandoffSheet", () => {
     );
 
     const listener = registerDeviceHandoff.mock.lastCall?.[0] as
-      | ((
-          signal:
-            | DeviceHandoffSignal
-            | DeviceHandoffExpiredSignal
-            | DeviceHandoffNoticeSignal
-            | DeviceHandoffShownSignal,
-        ) => void)
+      | ((signal: DeviceHandoffSignal | DeviceHandoffExpiredSignal) => void)
       | undefined;
     expect(listener).toBeDefined();
     act(() => listener?.(queued));
@@ -478,37 +469,6 @@ describe("DeviceHandoffSheet", () => {
     windowOpen.mockRestore();
   });
 
-  it("shows only fallback metadata until the user taps Show here", async () => {
-    const notice: DeviceHandoffNoticeSignal = {
-      type: "device-handoff-notice",
-      id: "fallback-handoff",
-      createdAt: Date.now(),
-      expiresAt: Date.now() + 600_000,
-      kind: "open-url",
-      threadId: "thread-1",
-      hostLabel: "Development host",
-    };
-    const onShowHere = vi.fn();
-    const onDismiss = vi.fn();
-    render(
-      <DeviceHandoffSheet
-        signal={notice}
-        position={1}
-        count={1}
-        onDismiss={onDismiss}
-        onAcknowledge={vi.fn()}
-        onShowHere={onShowHere}
-      />,
-    );
-
-    expect(await screen.findByText("Link waiting")).toBeTruthy();
-    expect(screen.getByText(/Development host is waiting/)).toBeTruthy();
-    expect(screen.queryByText(/example\.com|secret-url/)).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Show here" }));
-    expect(onShowHere).toHaveBeenCalledExactlyOnceWith("fallback-handoff");
-    expect(onDismiss).not.toHaveBeenCalled();
-  });
-
   it("shows queued handoffs in arrival order and acknowledges only explicit actions", async () => {
     copied.mockResolvedValue(true);
     const now = Date.now();
@@ -697,48 +657,8 @@ describe("DeviceHandoffSheet", () => {
   it("silently clears a non-recipient notice on expiry and shows expiry only to the recipient", async () => {
     render(<DeviceHandoffQueueHarness activeThreadId="thr_1" />);
     const listener = registerDeviceHandoff.mock.lastCall?.[0] as
-      | ((
-          signal:
-            | DeviceHandoffSignal
-            | DeviceHandoffExpiredSignal
-            | DeviceHandoffNoticeSignal
-            | DeviceHandoffShownSignal,
-        ) => void)
+      | ((signal: DeviceHandoffSignal | DeviceHandoffExpiredSignal) => void)
       | undefined;
-
-    act(() => {
-      listener?.({
-        type: "device-handoff-notice",
-        id: "handoff-1",
-        createdAt: Date.now(),
-        expiresAt: Date.now() + 600_000,
-        kind: "open-url",
-        threadId: "thr_1",
-        hostLabel: "BB",
-      });
-      listener?.({
-        type: "device-handoff-shown",
-        id: "handoff-1",
-        deviceLabel: "Phone",
-      });
-    });
-    expect(await screen.findByText(/Shown on Phone/)).toBeTruthy();
-    act(() => {
-      listener?.({
-        type: "device-handoff-expired",
-        id: "handoff-1",
-        threadId: "thr_1",
-        terminalSessionId: null,
-      });
-    });
-
-    expect(screen.queryByText(/Handoff expired/)).toBeNull();
-    expect(screen.queryByText(/Shown on Phone/)).toBeNull();
-    expect(screen.queryByRole("dialog")).toBeNull();
-    expect(screen.queryByRole("alert")).toBeNull();
-    expect(screen.queryByRole("status")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Open" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Copy" })).toBeNull();
 
     act(() => {
       listener?.({
@@ -914,7 +834,8 @@ describe("DeviceHandoffSheet", () => {
         terminalSessionId: "term-a",
       });
     });
-    const notice = "A link or copied text from this terminal expired before you opened it. Run the command again.";
+    const notice =
+      "A link or copied text from this terminal expired before you opened it. Run the command again.";
     expect(screen.queryByText(notice)).toBeNull();
 
     view.rerender(

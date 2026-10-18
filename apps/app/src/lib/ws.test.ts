@@ -101,9 +101,9 @@ function installOpenWebSocketConstructor(): void {
 }
 
 function readClientMessages(socket: FakeSocket): readonly ClientMessage[] {
-  return socket.sentMessages.map((message) =>
-    clientMessageSchema.parse(JSON.parse(message)),
-  );
+  return socket.sentMessages
+    .map((message) => clientMessageSchema.parse(JSON.parse(message)))
+    .filter((message) => message.type !== "device-handoff-device");
 }
 
 function getOnlySocket(): FakeSocket {
@@ -270,6 +270,66 @@ describe("WebSocketManager subscriptions", () => {
 });
 
 describe("WebSocketManager device handoff attachment token", () => {
+  beforeEach(() => {
+    fakeSocketState.instances.length = 0;
+    installOpenWebSocketConstructor();
+  });
+
+  afterEach(() => {
+    Object.defineProperty(globalThis, "WebSocket", {
+      configurable: true,
+      value: originalWebSocket,
+    });
+  });
+
+  const originalWebSocket = globalThis.WebSocket;
+
+  it("presents the saved device id on every WebSocket connection", () => {
+    const storageKey = "bb-device-handoff-device-id";
+    if (typeof window !== "undefined")
+      window.localStorage.removeItem(storageKey);
+    const manager = new WebSocketManager();
+    manager.connect();
+    const socket = getOnlySocket();
+    socket.open();
+    expect(JSON.parse(socket.sentMessages[0] ?? "{}")).toEqual({
+      type: "device-handoff-device",
+      token: null,
+    });
+    manager.handleIncomingMessage(
+      JSON.stringify({
+        type: "device-handoff-client-token",
+        token: "0123456789abcdefghij_-",
+      }),
+    );
+    socket.sentMessages.length = 0;
+    socket.close();
+    socket.open();
+    expect(JSON.parse(socket.sentMessages[0] ?? "{}")).toEqual({
+      type: "device-handoff-device",
+      token: "0123456789abcdefghij_-",
+    });
+    manager.disconnect();
+    if (typeof window !== "undefined")
+      window.localStorage.removeItem(storageKey);
+  });
+
+  it("ignores a malformed saved device id and asks the server for a new one", () => {
+    const storageKey = "bb-device-handoff-device-id";
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(storageKey, "malformed-device-id");
+    const manager = new WebSocketManager();
+    manager.connect();
+    const socket = getOnlySocket();
+    socket.open();
+    expect(JSON.parse(socket.sentMessages[0] ?? "{}")).toEqual({
+      type: "device-handoff-device",
+      token: null,
+    });
+    manager.disconnect();
+    window.localStorage.removeItem(storageKey);
+  });
+
   it("stores a token delivered by the server and notifies terminal views", () => {
     const manager = new WebSocketManager();
     const callback = vi.fn();

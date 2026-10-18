@@ -9,11 +9,13 @@ describe("device handoff submission headers", () => {
     vi.unstubAllGlobals();
   });
 
-  it("binds turn submissions and handoff claims to the current app socket", async () => {
+  it("binds turn submissions to the current app device", async () => {
     vi.spyOn(wsManager, "getDeviceHandoffClientToken").mockReturnValue(
       "0123456789abcdefghijk_",
     );
-    const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response("{}"));
+    const fetch = vi.fn<typeof globalThis.fetch>(
+      async () => new Response("{}"),
+    );
     vi.stubGlobal("fetch", fetch);
 
     await fetchWithDeviceHandoffSubmission(
@@ -25,7 +27,7 @@ describe("device handoff submission headers", () => {
       { method: "POST" },
     );
     await fetchWithDeviceHandoffSubmission(
-      "http://localhost/api/v1/device-handoff/claim",
+      "http://localhost/api/v1/threads/thr_test/steer",
       { method: "POST" },
     );
 
@@ -41,7 +43,9 @@ describe("device handoff submission headers", () => {
     vi.spyOn(wsManager, "getDeviceHandoffClientToken").mockReturnValue(
       "0123456789abcdefghijk_",
     );
-    const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response("{}"));
+    const fetch = vi.fn<typeof globalThis.fetch>(
+      async () => new Response("{}"),
+    );
     vi.stubGlobal("fetch", fetch);
 
     await fetchWithDeviceHandoffSubmission(

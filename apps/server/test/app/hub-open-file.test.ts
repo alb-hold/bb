@@ -8,6 +8,15 @@ describe("NotificationHub device handoff routing", () => {
     const hub = new NotificationHub();
     const viewing = createMockHubSocket();
     const other = createMockHubSocket();
+    const deviceToken = hub.issueDeviceHandoffClientToken(viewing);
+    viewing.messages.length = 0;
+    expect(
+      hub.recordDeviceHandoffTurnSubmitter(
+        deviceToken,
+        "thr_1",
+        "turn-request-1",
+      ),
+    ).toBe(true);
     hub.subscribe(viewing, { kind: "thread-detail", threadId: "thr_1" });
     hub.subscribe(other, { kind: "thread-detail", threadId: "thr_2" });
     hub.setDeviceHandoffView(viewing, "thr_1");
@@ -39,80 +48,41 @@ describe("NotificationHub device handoff routing", () => {
         "Thread one",
       ),
     ).toBe(1);
-    const notices = viewing.messages.map((message) => JSON.parse(message));
-    expect(notices).toHaveLength(3);
-    expect(notices.map((notice) => [notice.type, notice.kind])).toEqual([
-      ["device-handoff-notice", "copy-text"],
-      ["device-handoff-notice", "open-url"],
-      ["device-handoff-notice", "open-url"],
+    const handoffs = viewing.messages.map((message) => JSON.parse(message));
+    expect(handoffs).toHaveLength(3);
+    expect(
+      handoffs.map((handoff) => [handoff.type, handoff.request.kind]),
+    ).toEqual([
+      ["device-handoff", "copy-text"],
+      ["device-handoff", "open-url"],
+      ["device-handoff", "open-url"],
     ]);
-    for (const notice of notices) {
-      expect(notice).toMatchObject({
-        threadId: "thr_1",
-        hostLabel: "BB",
-      });
-      expect(notice).not.toHaveProperty("request");
-      expect(notice).not.toHaveProperty("text");
-      expect(notice).not.toHaveProperty("url");
-    }
     expect(other.messages).toHaveLength(0);
   });
 
-  it("queues an undelivered burst only for its origin thread", () => {
+  it("fails closed for a thread-only handoff without a prior submitter", () => {
     const hub = new NotificationHub();
     const unrelatedCurrent = createMockHubSocket();
+    const forgedViewer = createMockHubSocket();
     hub.subscribe(unrelatedCurrent, {
-      kind: "thread-detail",
-      threadId: "thr_other",
-    });
-    hub.notifyDeviceHandoff(
-      {
-        kind: "copy-text",
-        text: "first secret",
-        origin: { threadId: "thr_1" },
-      },
-      "Thread one",
-    );
-    hub.notifyDeviceHandoff(
-      {
-        kind: "open-url",
-        url: "https://example.com/login",
-        origin: { threadId: "thr_1" },
-      },
-      "Thread one",
-    );
-
-    const laterElsewhere = createMockHubSocket();
-    hub.registerClient(laterElsewhere);
-    hub.subscribe(laterElsewhere, {
       kind: "thread-detail",
       threadId: "thr_elsewhere",
     });
-    expect(unrelatedCurrent.messages).toHaveLength(0);
-    expect(laterElsewhere.messages).toHaveLength(0);
+    hub.subscribe(forgedViewer, { kind: "thread-detail", threadId: "thr_1" });
+    hub.setDeviceHandoffView(forgedViewer, "thr_1");
 
-    const laterAtOrigin = createMockHubSocket();
-    hub.subscribe(laterAtOrigin, { kind: "thread-detail", threadId: "thr_1" });
-    hub.setDeviceHandoffView(laterAtOrigin, "thr_1");
-
-    const notices = laterAtOrigin.messages.map((message) =>
-      JSON.parse(message),
-    );
-    expect(notices.map((notice) => [notice.type, notice.kind])).toEqual([
-      ["device-handoff-notice", "copy-text"],
-      ["device-handoff-notice", "open-url"],
-    ]);
-    for (const notice of notices) {
-      expect(notice).toMatchObject({
-        threadId: "thr_1",
-        hostLabel: "BB",
-      });
-      expect(notice).not.toHaveProperty("request");
-      expect(notice).not.toHaveProperty("text");
-      expect(notice).not.toHaveProperty("url");
-    }
+    expect(() =>
+      hub.notifyDeviceHandoff(
+        {
+          kind: "copy-text",
+          text: "first secret",
+          origin: { threadId: "thr_1" },
+        },
+        "Thread one",
+      ),
+    ).toThrow("No device has sent a message in this thread yet");
     expect(unrelatedCurrent.messages).toHaveLength(0);
-    expect(laterElsewhere.messages).toHaveLength(0);
+    expect(forgedViewer.messages).toHaveLength(0);
   });
 
   it("delivers terminal-scoped handoffs to the app view, not its terminal data socket", () => {
@@ -232,11 +202,23 @@ describe("NotificationHub device handoff routing", () => {
     ).toBe(false);
   });
 
-  it("expires undelivered origin-scoped payloads", () => {
+  it("routes a thread-only expiry only to its bound device", () => {
     vi.useFakeTimers();
     try {
       vi.setSystemTime(1_000_000);
       const hub = new NotificationHub();
+      const laterAtOrigin = createMockHubSocket();
+      const token = hub.issueDeviceHandoffClientToken(laterAtOrigin);
+      laterAtOrigin.messages.length = 0;
+      expect(
+        hub.recordDeviceHandoffTurnSubmitter(token, "thr_1", "turn-1"),
+      ).toBe(true);
+      hub.subscribe(laterAtOrigin, {
+        kind: "thread-detail",
+        threadId: "thr_1",
+      });
+      hub.setDeviceHandoffView(laterAtOrigin, "thr_1");
+      hub.setDeviceHandoffView(laterAtOrigin, null);
       hub.notifyDeviceHandoff(
         {
           kind: "copy-text",
@@ -246,29 +228,26 @@ describe("NotificationHub device handoff routing", () => {
         "Thread one",
       );
       vi.advanceTimersByTime(10 * 60 * 1000);
-
-      const laterAtOrigin = createMockHubSocket();
-      hub.subscribe(laterAtOrigin, {
-        kind: "thread-detail",
-        threadId: "thr_1",
-      });
       hub.setDeviceHandoffView(laterAtOrigin, "thr_1");
-      expect(laterAtOrigin.messages).toHaveLength(1);
-      expect(JSON.parse(laterAtOrigin.messages[0]!)).toMatchObject({
-        type: "device-handoff-expired",
-        threadId: "thr_1",
-        terminalSessionId: null,
-      });
+      expect(
+        laterAtOrigin.messages.map((message) => JSON.parse(message)),
+      ).toMatchObject([{ type: "device-handoff-expired", threadId: "thr_1" }]);
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it("keeps an undelivered item available for the ten-minute sign-in window", () => {
+  it("keeps a pending handoff available to its bound device for the ten-minute sign-in window", () => {
     vi.useFakeTimers();
     try {
       vi.setSystemTime(1_000_000);
       const hub = new NotificationHub();
+      const laterAtOrigin = createMockHubSocket();
+      const token = hub.issueDeviceHandoffClientToken(laterAtOrigin);
+      laterAtOrigin.messages.length = 0;
+      expect(
+        hub.recordDeviceHandoffTurnSubmitter(token, "thr_1", "turn-1"),
+      ).toBe(true);
       hub.notifyDeviceHandoff(
         {
           kind: "open-url",
@@ -278,8 +257,6 @@ describe("NotificationHub device handoff routing", () => {
         "Thread one",
       );
       vi.advanceTimersByTime(3 * 60 * 1000);
-
-      const laterAtOrigin = createMockHubSocket();
       hub.subscribe(laterAtOrigin, {
         kind: "thread-detail",
         threadId: "thr_1",
@@ -289,20 +266,10 @@ describe("NotificationHub device handoff routing", () => {
       expect(
         laterAtOrigin.messages.map((message) => JSON.parse(message)),
       ).toHaveLength(1);
-      const notice = JSON.parse(laterAtOrigin.messages[0]!);
-      expect(notice).toMatchObject({
-        type: "device-handoff-notice",
-        kind: "open-url",
-        hostLabel: "BB",
-        threadId: "thr_1",
+      expect(JSON.parse(laterAtOrigin.messages[0]!)).toMatchObject({
+        type: "device-handoff",
+        request: { kind: "open-url", url: "https://login.example.com/device" },
       });
-      expect(notice).not.toHaveProperty("request");
-      expect(notice).not.toHaveProperty("url");
-      expect(
-        laterAtOrigin.messages.some((message) =>
-          message.includes("device-handoff-expired"),
-        ),
-      ).toBe(false);
     } finally {
       vi.useRealTimers();
     }

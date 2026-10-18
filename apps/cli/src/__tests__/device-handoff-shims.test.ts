@@ -46,7 +46,7 @@ async function createFixture(): Promise<{
   }
   await writeFile(
     join(shimBin, "bb"),
-    '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$BB_HANDOFF_LOG"\nexit "${BB_HANDOFF_STATUS:-0}"\n',
+    '#!/bin/sh\nif [ -n "${BB_HANDOFF_LOG-}" ]; then printf \'%s\\n\' "$*" >> "$BB_HANDOFF_LOG"; fi\nif [ -n "${BB_HANDOFF_ERROR-}" ]; then printf \'%s\\n\' "$BB_HANDOFF_ERROR" >&2; fi\nexit "${BB_HANDOFF_STATUS:-0}"\n',
     { mode: 0o755 },
   );
   return { directory, shimBin, realBin };
@@ -108,6 +108,49 @@ describe("device handoff command shims", () => {
 
     expect(result.status).toBe(0);
     expect(await readFile(copiedPath, "utf8")).toBe("clipboard fixture");
+  });
+
+  it("fails pbcopy with the no-submitter error even when native pbcopy succeeds", async () => {
+    const { directory, shimBin, realBin } = await createFixture();
+    await writeOpener(
+      join(realBin, "pbcopy"),
+      join(directory, "pbcopy-log"),
+      0,
+    );
+    const result = spawnSync(join(shimBin, "pbcopy"), [], {
+      env: {
+        ...process.env,
+        PATH: `${shimBin}:${realBin}:/usr/bin:/bin`,
+        BB_HANDOFF_STATUS: "1",
+        BB_HANDOFF_ERROR:
+          "No device has sent a message in this thread yet; open the thread on your phone and send a message, then run the command again.",
+      },
+      input: "clipboard fixture",
+    });
+    expect(result.status).toBe(75);
+    expect(result.stderr.toString()).toContain(
+      "No device has sent a message in this thread yet",
+    );
+  });
+
+  it("fails an open shim with the no-submitter error despite native opener success", async () => {
+    const { directory, shimBin, realBin } = await createFixture();
+    await writeUname(realBin, "Darwin");
+    await writeOpener(join(realBin, "open"), join(directory, "open-log"), 0);
+    const result = runShim({
+      shimBin,
+      realBin,
+      name: "open",
+      env: {
+        BB_HANDOFF_STATUS: "1",
+        BB_HANDOFF_ERROR:
+          "No device has sent a message in this thread yet; open the thread on your phone and send a message, then run the command again.",
+      },
+    });
+    expect(result.status).toBe(75);
+    expect(result.stderr.toString()).toContain(
+      "No device has sent a message in this thread yet",
+    );
   });
 
   it("uses native pbcopy status when delivery fails", async () => {
@@ -292,7 +335,9 @@ describe("device handoff command shims", () => {
     });
 
     expect(result.status).toBe(0);
-    expect(await readFile(openLog, "utf8")).toContain("https://example.com/path");
+    expect(await readFile(openLog, "utf8")).toContain(
+      "https://example.com/path",
+    );
   });
 
   it.each(["open", "xdg-open", "bb-browser"])(
@@ -328,7 +373,7 @@ describe("device handoff command shims", () => {
       const { directory, shimBin, realBin } = await createFixture();
       await writeUname(realBin, "Linux");
       const dirnamePath = join(realBin, "dirname");
-      await writeFile(dirnamePath, "#!/bin/sh\nexec /usr/bin/dirname \"$@\"\n", {
+      await writeFile(dirnamePath, '#!/bin/sh\nexec /usr/bin/dirname "$@"\n', {
         mode: 0o755,
       });
       await chmod(dirnamePath, 0o755);
@@ -338,7 +383,6 @@ describe("device handoff command shims", () => {
         realBin,
         name,
         env: {
-          PATH: `${shimBin}:${realBin}`,
           DISPLAY: "",
           WAYLAND_DISPLAY: "",
           BB_HANDOFF_STATUS: "7",

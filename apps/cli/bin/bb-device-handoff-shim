@@ -3,6 +3,20 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 SELF=$1
 shift
 
+run_device_handoff() {
+  umask 077
+  output=$(mktemp "${TMPDIR:-/tmp}/bb-device-handoff-error.XXXXXX") || return 1
+  "$SCRIPT_DIR/bb" "$@" >"$output" 2>&1
+  status=$?
+  if grep -Fq 'No device has sent a message in this thread yet' "$output"; then
+    cat "$output" >&2
+    rm -f "$output"
+    return 75
+  fi
+  rm -f "$output"
+  return "$status"
+}
+
 find_real() {
   wanted=$1
   old_ifs=$IFS
@@ -33,8 +47,11 @@ if [ "$SELF" = pbcopy ]; then
     "$real" < "$temporary"
     real_status=$?
   fi
-  "$SCRIPT_DIR/bb" device copy < "$temporary" >/dev/null 2>&1
+  run_device_handoff device copy < "$temporary"
   handoff_status=$?
+  if [ "$handoff_status" -eq 75 ]; then
+    exit 75
+  fi
   if [ "$handoff_status" -eq 0 ]; then
     exit 0
   fi
@@ -51,8 +68,11 @@ for argument in "$@"; do
   case "$argument" in
     http://*|https://*)
       has_url=1
-      "$SCRIPT_DIR/bb" device open "$argument" >/dev/null 2>&1
+      run_device_handoff device open "$argument"
       status=$?
+      if [ "$status" -eq 75 ]; then
+        exit 75
+      fi
       if [ "$status" -ne 0 ]; then
         handoff_status=$status
       fi

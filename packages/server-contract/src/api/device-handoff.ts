@@ -93,48 +93,6 @@ export const deviceHandoffSignalLenientSchema = z.object({
   originLabel: z.string(),
 });
 
-export const deviceHandoffNoticeSignalSchema = z
-  .object({
-    type: z.literal("device-handoff-notice"),
-    id: z.string().min(1),
-    createdAt: z.number().int().nonnegative(),
-    expiresAt: z.number().int().nonnegative(),
-    kind: z.enum(["copy-text", "open-url"]),
-    threadId: z.string().min(1),
-    hostLabel: z.string().max(256),
-  })
-  .strict();
-
-export type DeviceHandoffNoticeSignal = z.infer<
-  typeof deviceHandoffNoticeSignalSchema
->;
-
-export const deviceHandoffNoticeSignalLenientSchema =
-  deviceHandoffNoticeSignalSchema;
-
-export const deviceHandoffShownSignalSchema = z
-  .object({
-    type: z.literal("device-handoff-shown"),
-    id: z.string().min(1),
-    deviceLabel: z.string().min(1).max(64),
-  })
-  .strict();
-
-export type DeviceHandoffShownSignal = z.infer<
-  typeof deviceHandoffShownSignalSchema
->;
-
-export const deviceHandoffShownSignalLenientSchema =
-  deviceHandoffShownSignalSchema;
-
-export const deviceHandoffClaimRequestSchema = z
-  .object({ id: z.string().min(1) })
-  .strict();
-
-export type DeviceHandoffClaimRequest = z.infer<
-  typeof deviceHandoffClaimRequestSchema
->;
-
 export const deviceHandoffExpiredSignalSchema = z
   .object({
     type: z.literal("device-handoff-expired"),

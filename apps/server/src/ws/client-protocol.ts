@@ -14,7 +14,7 @@ export function onClientSocketOpen(
   hub: NotificationHub,
   socket: ClientSocket,
 ): void {
-  hub.issueDeviceHandoffClientToken(socket);
+  hub.registerClient(socket);
 }
 
 export function onClientSocketMessage(
@@ -34,6 +34,9 @@ export function onClientSocketMessage(
   }
 
   switch (parsed.type) {
+    case "device-handoff-device":
+      deps.hub.issueDeviceHandoffClientToken(socket, parsed.token);
+      break;
     case "subscribe":
       deps.hub.subscribe(socket, parsed.target);
       deps.watchInterests.subscribe(socket, parsed.target);

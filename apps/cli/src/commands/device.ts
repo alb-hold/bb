@@ -48,7 +48,11 @@ export function registerDeviceCommands(
 ): void {
   const device = program
     .command("device")
-    .description("Hand off text and URLs to the device viewing bb");
+    .description("Hand off text and URLs to a device viewing the origin")
+    .addHelpText(
+      "after",
+      "Thread-only handoffs go to the device that most recently sent a message in that thread. If no device has sent one, open the thread on the target device, send a message, then run the command again. A disconnected device can receive its pending handoffs after reconnecting.",
+    );
 
   device
     .command("copy [text]")

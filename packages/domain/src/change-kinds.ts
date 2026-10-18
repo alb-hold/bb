@@ -162,6 +162,16 @@ export const pingMessageSchema = z.object({
 const deviceHandoffClientMessageSchema = z.discriminatedUnion("type", [
   z
     .object({
+      type: z.literal("device-handoff-device"),
+      token: z
+        .string()
+        .length(22)
+        .regex(/^[A-Za-z0-9_-]+$/u)
+        .nullable(),
+    })
+    .strict(),
+  z
+    .object({
       type: z.literal("device-handoff-view"),
       threadId: z.string().min(1).nullable(),
       terminalSessionId: z.string().min(1).nullable().default(null),
@@ -178,6 +188,7 @@ export const clientMessageSchema = z.discriminatedUnion("type", [
   pingMessageSchema,
   deviceHandoffClientMessageSchema.options[0],
   deviceHandoffClientMessageSchema.options[1],
+  deviceHandoffClientMessageSchema.options[2],
 ]);
 export type ClientMessage = z.infer<typeof clientMessageSchema>;
 

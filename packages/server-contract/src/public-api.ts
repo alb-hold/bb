@@ -22,11 +22,8 @@ import {
   type TestAiServiceResponse,
 } from "./api/system.js";
 import {
-  deviceHandoffClaimRequestSchema,
   deviceHandoffRequestSchema,
-  type DeviceHandoffClaimRequest,
   type DeviceHandoffRequest,
-  type DeviceHandoffSignal,
 } from "./api/device-handoff.js";
 import {
   desktopBrowserHostRequestSchema,
@@ -495,14 +492,6 @@ export const publicApiRoutes = {
         deviceHandoffRequestSchema,
       ),
       response: jsonResponse<{ delivered: number }>(),
-    }),
-    claim: defineRoute({
-      path: "/device-handoff/claim",
-      method: "post",
-      request: jsonRequest<EmptyInput, DeviceHandoffClaimRequest>(
-        deviceHandoffClaimRequestSchema,
-      ),
-      response: jsonResponse<DeviceHandoffSignal>(),
     }),
   },
   promptHistory: {
