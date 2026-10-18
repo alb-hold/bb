@@ -614,10 +614,12 @@ function splitWordChanges(change: TextChangeSpan): TextChangeSpan[] {
 const CODE_CHARACTERS = /[=;{}()<>[\]$`|\\/#"]|--|:\S/u;
 const CONFIG_LINE = /^(?: {4}|\t)|^\s*(?:-\s+)?['"]?[\w.-]+['"]?\s*:(?:\s|$)/u;
 
+const FENCE_LINE = /^\s*(?:`{3,}|~{3,})/u;
+
 function insideFence(text: string): boolean {
   let open: string | null = null;
   for (const line of text.split("\n")) {
-    const fence = line.match(/^\s*(`{3,}|~{3,})/u)?.[1];
+    const fence = line.match(FENCE_LINE)?.[0].trim();
     if (fence === undefined) continue;
     if (open === null) {
       open = fence;
@@ -641,6 +643,7 @@ function inCodeLikeLine(target: string, start: number, end: number): boolean {
   );
   return (
     insideFence(target.slice(0, lineStart)) ||
+    FENCE_LINE.test(line) ||
     CODE_CHARACTERS.test(line) ||
     CONFIG_LINE.test(line)
   );

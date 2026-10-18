@@ -418,6 +418,21 @@ describe("resolveWritingEdits", () => {
   });
 
   it.each([
+    "~~~text the the\nprint('ok')\n~~~",
+    "~~~~ the the\nprint('ok')\n~~~~",
+    "  ~~~text the the\nprint('ok')\n~~~",
+    "Notes for the release\n~~~text the the",
+  ])("only suggests an edit on a fence line: %s", (target) => {
+    const edits = resolveWritingEdits({
+      ...base,
+      target,
+      proposals: [proposal("the the", "the")],
+    });
+    expect(edits.length).toBeGreaterThan(0);
+    expect(edits.map((edit) => edit.disposition)).not.toContain("apply");
+  });
+
+  it.each([
     "```\nconst x = 1;\n```\nthe user are ready",
     "~~~\nconst x = 1;\n~~~\nthe user are ready",
     "````\nconst x = 1;\n`````\nthe user are ready",
