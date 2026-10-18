@@ -614,6 +614,24 @@ function splitWordChanges(change: TextChangeSpan): TextChangeSpan[] {
 const CODE_CHARACTERS = /[=;{}()<>[\]$`|\\/#"]|--|:\S/u;
 const CONFIG_LINE = /^(?: {4}|\t)|^\s*(?:-\s+)?['"]?[\w.-]+['"]?\s*:(?:\s|$)/u;
 
+function insideFence(text: string): boolean {
+  let open: string | null = null;
+  for (const line of text.split("\n")) {
+    const fence = line.match(/^\s*(`{3,}|~{3,})/u)?.[1];
+    if (fence === undefined) continue;
+    if (open === null) {
+      open = fence;
+    } else if (
+      fence[0] === open[0] &&
+      fence.length >= open.length &&
+      /^\s*(?:`+|~+)\s*$/u.test(line)
+    ) {
+      open = null;
+    }
+  }
+  return open !== null;
+}
+
 function inCodeLikeLine(target: string, start: number, end: number): boolean {
   const lineStart = start === 0 ? 0 : target.lastIndexOf("\n", start - 1) + 1;
   const lineEnd = target.indexOf("\n", end);
@@ -621,9 +639,8 @@ function inCodeLikeLine(target: string, start: number, end: number): boolean {
     lineStart,
     lineEnd === -1 ? target.length : lineEnd,
   );
-  const fences = target.slice(0, lineStart).match(/^\s*(?:```|~~~)/gmu) ?? [];
   return (
-    fences.length % 2 === 1 ||
+    insideFence(target.slice(0, lineStart)) ||
     CODE_CHARACTERS.test(line) ||
     CONFIG_LINE.test(line)
   );

@@ -381,6 +381,10 @@ describe("resolveWritingEdits", () => {
     ["    the user are ready", "are", "is", "grammar"],
     ["\tthe user are ready", "are", "is", "grammar"],
     ["~~~yaml\nthe user are ready", "are", "is", "grammar"],
+    ["~~~~\n~~~\nthe user are ready", "are", "is", "grammar"],
+    ["~~~\n~~~yaml\nthe user are ready", "are", "is", "grammar"],
+    ["````\n```\nthe user are ready", "are", "is", "grammar"],
+    ["```\n```js\nthe user are ready", "are", "is", "grammar"],
   ])(
     "never auto-applies an edit on the code-like line %s",
     (target, original, replacement, category) => {
@@ -399,7 +403,25 @@ describe("resolveWritingEdits", () => {
   );
 
   it.each([
+    "```\nthe user are ready\n```",
+    "~~~\nthe user are ready\n~~~",
+    "````\nthe user are ready\n````",
+    "```yaml\n~~~\nthe user are ready",
+    "~~~\n```\nthe user are ready",
+  ])("never auto-applies inside a fence: %s", (target) => {
+    const edits = resolveWritingEdits({
+      ...base,
+      target,
+      proposals: [proposal("user are", "user is")],
+    });
+    expect(edits.map((edit) => edit.disposition)).not.toContain("apply");
+  });
+
+  it.each([
     "```\nconst x = 1;\n```\nthe user are ready",
+    "~~~\nconst x = 1;\n~~~\nthe user are ready",
+    "````\nconst x = 1;\n`````\nthe user are ready",
+    "```\n~~~\n```\nthe user are ready",
     "We met at noon: the user are ready",
     "  the user are ready",
   ])("still auto-applies on a prose line: %s", (target) => {
