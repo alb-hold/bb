@@ -679,6 +679,21 @@ export class PoolOperations {
     return false;
   }
 
+  async hasReadyAccount(provider: PoolProvider): Promise<boolean> {
+    if (!(await this.isRoutingEnabled(provider))) return false;
+    const { accounts } = await this.hub.status();
+    for (const account of accounts) {
+      if (account.provider !== provider || account.status !== "ready") continue;
+      try {
+        const secret = await this.accounts.readSecret(account.id);
+        if (carriesCredential(secret)) return true;
+      } catch {
+        continue;
+      }
+    }
+    return false;
+  }
+
   async routesOnlyApiKeys(provider: PoolProvider): Promise<boolean> {
     let usable = false;
     for (const account of await this.accounts.list()) {
@@ -737,4 +752,10 @@ export class PoolOperations {
       ];
     });
   }
+}
+
+function carriesCredential(secret: AccountSecret): boolean {
+  return secret.kind === "oauth"
+    ? secret.accessToken.length > 0 && secret.refreshToken.length > 0
+    : secret.apiKey.length > 0;
 }
