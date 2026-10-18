@@ -66,6 +66,14 @@ function DeviceHandoffQueueHarness({
   );
 }
 
+async function settleDrawerRealization() {
+  await act(async () => {
+    await new Promise<void>((resolve) => {
+      window.setTimeout(resolve, 140);
+    });
+  });
+}
+
 describe("DeviceHandoffSheet", () => {
   it("copies text only after the user taps Copy", async () => {
     copied.mockResolvedValue(true);
@@ -385,11 +393,13 @@ describe("DeviceHandoffSheet", () => {
       homeListener?.(first);
       homeListener?.(second);
     });
+    await settleDrawerRealization();
     expect(screen.queryByText("terminal A first copy")).toBeNull();
 
     view.rerender(
       <DeviceHandoffQueueHarness activeTerminalSessionId="term-b" />,
     );
+    await settleDrawerRealization();
     expect(screen.queryByText("terminal A first copy")).toBeNull();
     expect(screen.queryByText("terminal A second copy")).toBeNull();
     expect(acknowledgeDeviceHandoff).not.toHaveBeenCalled();
