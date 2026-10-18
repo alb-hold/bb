@@ -3,15 +3,12 @@ import type { Terminal as XTermTerminal } from "@xterm/xterm";
 export function mountTerminalReplayPreview({
   container,
   terminal,
-  visible = true,
 }: {
   container: HTMLDivElement;
   terminal: XTermTerminal;
-  visible?: boolean;
 }): {
   dispose(): void;
   resize(cols: number, rows: number): void;
-  setVisible(visible: boolean): void;
 } {
   const parent = container.parentElement;
   if (!parent) throw new Error("Terminal replay preview requires a parent");
@@ -29,7 +26,6 @@ export function mountTerminalReplayPreview({
     pointerEvents: "none",
     zIndex: "5",
   });
-  preview.style.visibility = visible ? "visible" : "hidden";
   container.style.opacity = "0";
   parent.append(preview);
   terminal.open(preview);
@@ -41,10 +37,6 @@ export function mountTerminalReplayPreview({
       terminal.resize(cols, rows);
       preview.dataset.gridCols = String(cols);
       preview.dataset.gridRows = String(rows);
-    },
-    setVisible(nextVisible) {
-      if (disposed) return;
-      preview.style.visibility = nextVisible ? "visible" : "hidden";
     },
     dispose() {
       if (disposed) return;

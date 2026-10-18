@@ -12,7 +12,7 @@ afterEach(() => {
 });
 
 describe("terminal replay preview", () => {
-  it("keeps historical grids hidden until the confirmed final grid is ready", async () => {
+  it("keeps the attached grid visible while replay hides historical grids", async () => {
     const context = new Proxy(
       {
         measureText: (text: string) => ({ width: text.length * 8 }),
@@ -43,7 +43,6 @@ describe("terminal replay preview", () => {
     const cover = mountTerminalReplayPreview({
       container: historyContainer,
       terminal: preview,
-      visible: false,
     });
     expect(historyContainer.style.opacity).toBe("0");
     expect(getComputedStyle(historyContainer).opacity).toBe("0");
@@ -51,7 +50,7 @@ describe("terminal replay preview", () => {
       getComputedStyle(
         parent.querySelector("[data-terminal-replay-preview]")!,
       ).visibility,
-    ).toBe("hidden");
+    ).toBe("visible");
     expect(preview.cols).toBe(120);
     expect(preview.rows).toBe(36);
 
@@ -80,7 +79,11 @@ describe("terminal replay preview", () => {
     }
 
     cover.resize(51, 47);
-    cover.setVisible(true);
+    expect(
+      getComputedStyle(
+        parent.querySelector("[data-terminal-replay-preview]")!,
+      ).visibility,
+    ).toBe("visible");
     expect(
       getComputedStyle(
         parent.querySelector("[data-terminal-replay-preview]")!,
