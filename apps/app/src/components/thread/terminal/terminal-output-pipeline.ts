@@ -14,6 +14,7 @@ type Operation =
 export function createTerminalOutputPipeline(
   terminal: TerminalWriter,
   onGrid?: () => void,
+  onResize?: (cols: number, rows: number) => void,
 ): {
   push(bytes: Uint8Array, callback: () => void): void;
   setGrid(cols: number, rows: number, callback?: () => void): void;
@@ -56,6 +57,7 @@ export function createTerminalOutputPipeline(
         if (operation.type === "grid") {
           await Promise.all(pendingWrites);
           terminal.resize(operation.grid.cols, operation.grid.rows);
+          onResize?.(operation.grid.cols, operation.grid.rows);
           operation.callback?.();
           continue;
         }

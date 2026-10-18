@@ -1160,9 +1160,16 @@ export function ThreadTerminalView({
         terminal,
       });
       terminalRef.current = terminal;
-      outputPipeline = createTerminalOutputPipeline(terminal, () => {
-        markerGridActive = true;
-      });
+      outputPipeline = createTerminalOutputPipeline(
+        terminal,
+        () => {
+          markerGridActive = true;
+        },
+        (cols, rows) => {
+          containerElement.dataset.renderGridCols = String(cols);
+          containerElement.dataset.renderGridRows = String(rows);
+        },
+      );
       fitAddon = new LoadedFitAddon();
       terminal.loadAddon(fitAddon);
       terminal.loadAddon(new Unicode11Addon());
@@ -1186,6 +1193,8 @@ export function ThreadTerminalView({
         ),
       );
       terminal.open(containerElement);
+      containerElement.dataset.renderGridCols = String(terminal.cols);
+      containerElement.dataset.renderGridRows = String(terminal.rows);
       if (searchAddonModule !== null) {
         const searchAddon = new searchAddonModule.SearchAddon();
         terminal.loadAddon(searchAddon);
@@ -1237,6 +1246,8 @@ export function ThreadTerminalView({
             terminal.rows !== display.rows
           ) {
             terminal.resize(display.cols, display.rows);
+            containerElement.dataset.renderGridCols = String(display.cols);
+            containerElement.dataset.renderGridRows = String(display.rows);
           }
         }
         updateGridVisibility();
