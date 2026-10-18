@@ -1112,6 +1112,7 @@ export function ThreadTerminalView({
             ptyGrid: latestPtyGrid,
             rendererGrid: { cols: terminal.cols, rows: terminal.rows },
           });
+        containerElement.style.opacity = "0";
         const scale =
           localFitGrid !== null
             ? terminalSurfaceScaleToWidth(
@@ -1124,9 +1125,16 @@ export function ThreadTerminalView({
         if (terminal.element) {
           applyTerminalSurfaceScale(terminal.element, scale);
         }
+        const rendererWidth = containerElement.getBoundingClientRect().width;
+        const paintedWidth =
+          terminal.element
+            ?.querySelector<HTMLElement>(".xterm-screen")
+            ?.getBoundingClientRect().width ?? 0;
+        const widthFits =
+          rendererWidth > 0 && paintedWidth <= rendererWidth + 1;
         containerElement.dataset.ptyGridCols = String(latestPtyGrid.cols);
         containerElement.dataset.ptyGridRows = String(latestPtyGrid.rows);
-        if (canReveal) {
+        if (canReveal && widthFits) {
           containerElement.style.opacity = "";
           if (replayCompleted && replayPreview !== null) {
             replayPreview.dispose();
@@ -1134,7 +1142,6 @@ export function ThreadTerminalView({
           }
           return;
         }
-        containerElement.style.opacity = "0";
       };
       const requiredModulesPromise = Promise.all([
         import("@xterm/xterm"),

@@ -71,6 +71,8 @@ export function mountTerminalReplayPreview({
     : () => undefined;
   const updateSurfaceScale = () => {
     if (fitGrid === null) return;
+    const wasVisible = preview.style.visibility === "visible";
+    preview.style.visibility = "hidden";
     surfaceScale = terminalSurfaceScaleToWidth(
       latestPtyGrid,
       fitGrid,
@@ -79,6 +81,14 @@ export function mountTerminalReplayPreview({
     );
     if (terminal.element) {
       applyTerminalSurfaceScale(terminal.element, surfaceScale);
+    }
+    const rendererWidth = container.getBoundingClientRect().width;
+    const paintedWidth =
+      terminal.element
+        ?.querySelector<HTMLElement>(".xterm-screen")
+        ?.getBoundingClientRect().width ?? 0;
+    if (wasVisible && rendererWidth > 0 && paintedWidth <= rendererWidth + 1) {
+      preview.style.visibility = "visible";
     }
   };
   updateSurfaceScale();
