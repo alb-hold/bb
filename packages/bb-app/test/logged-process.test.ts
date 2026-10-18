@@ -2588,6 +2588,70 @@ fs.renameSync = function (source, destination) {
     }
   });
 
+  it("returns from backup pruning when the log directory disappears", async () => {
+    const root = scratchDir();
+    const logDir = join(root, "logs");
+    const movedLogDir = join(root, "logs-moved");
+    mkdirSync(logDir);
+    const logPath = join(logDir, "server-stdio.log");
+    const pruneSnapshotEnteredPath = join(root, "prune-snapshot-entered");
+    const pruneSnapshotReleasePath = join(root, "release-prune-snapshot");
+    const writerFinishedPath = join(root, "writer-finished");
+    const diagnosticPath = join(root, "writer-diagnostics");
+    writeFileSync(diagnosticPath, "");
+    for (let index = 0; index < 5; index += 1) {
+      const backupPath = `${logPath}.backup-${index + 1}-1-${String(index + 1).padStart(8, "0")}`;
+      writeFileSync(backupPath, `old-backup-${index}\n`);
+      const timestamp = new Date(1_700_000_000_000 + index * 1_000);
+      utimesSync(backupPath, timestamp, timestamp);
+    }
+    const writer = spawnLoggedProcess({
+      command: process.execPath,
+      args: ["-e", `process.stdout.write(Buffer.alloc(10 * 1024 * 1024, 65));`],
+      env: process.env,
+      logDir,
+      logName: "server",
+      testWriterBarrier: {
+        diagnosticPath,
+        completionPath: writerFinishedPath,
+        pruneSnapshotEnteredPath,
+        pruneSnapshotReleasePath,
+      },
+    });
+
+    try {
+      expect(await waitForExit(writer)).toBe(0);
+      await expect
+        .poll(() => existsSync(pruneSnapshotEnteredPath), {
+          timeout: 5_000,
+          interval: 10,
+        })
+        .toBe(true);
+      expect(readFileSync(pruneSnapshotEnteredPath, "utf8")).toBe("6");
+      renameSync(logDir, movedLogDir);
+      writeFileSync(pruneSnapshotReleasePath, "release");
+      await expect
+        .poll(() => existsSync(writerFinishedPath), {
+          timeout: 3_000,
+          interval: 10,
+        })
+        .toBe(true);
+      await writer.writerExit;
+      expect(readFileSync(diagnosticPath, "utf8")).toContain(
+        "stdio backup scan failed: ENOENT",
+      );
+      expect(
+        familyFiles(movedLogDir, "server").some((file) =>
+          file.includes(".backup-"),
+        ),
+      ).toBe(true);
+    } finally {
+      writeFileSync(pruneSnapshotReleasePath, "release");
+      if (writer.writerProcess.exitCode === null) writer.writerProcess.kill("SIGKILL");
+      await writer.writerExit;
+    }
+  });
+
   it("fails instead of falling back to terminal output when logs cannot be opened", () => {
     const logDir = scratchDir();
     const blockedPath = join(logDir, "not-a-directory");

@@ -530,16 +530,38 @@ const publishAliasTo = (targetPath) => {
   }
 };
 const pruneBackups = () => {
+  let noProgressScans = 0;
+  const rescanWithoutProgress = () => {
+    noProgressScans += 1;
+    if (noProgressScans < 32) return true;
+    reportDiagnostic("stdio backup prune made no progress");
+    return false;
+  };
   while (true) {
-    let backups;
+    let backupPaths;
     try {
-      backups = paths().filter((file) => file.startsWith(familyPrefix) && backupPattern.test(path.basename(file)));
-      backups.sort((left, right) => fs.statSync(left).mtimeMs - fs.statSync(right).mtimeMs);
+      backupPaths = paths().filter((file) => file.startsWith(familyPrefix) && backupPattern.test(path.basename(file)));
     } catch (error) {
-      if (error.code === "ENOENT") continue;
+      if (error.code === "ENOENT" || error.code === "ENOTDIR") {
+        reportFsError("stdio backup scan failed", error);
+        return;
+      }
       reportFsError("stdio backup scan failed", error);
       return;
     }
+    let backups;
+    try {
+      backups = backupPaths.map((file) => ({ file, mtimeMs: fs.statSync(file).mtimeMs }));
+    } catch (error) {
+      if (error.code === "ENOENT") {
+        if (!rescanWithoutProgress()) return;
+        continue;
+      }
+      reportFsError("stdio backup scan failed", error);
+      return;
+    }
+    backups.sort((left, right) => left.mtimeMs - right.mtimeMs);
+    backups = backups.map(({ file }) => file);
     if (pruneSnapshotBarrierUsed && writerBarrier?.pruneObservedCountsPath !== undefined) {
       fs.appendFileSync(writerBarrier.pruneObservedCountsPath, String(backups.length) + "\\n");
     }
@@ -574,10 +596,14 @@ const pruneBackups = () => {
     try {
       fs.unlinkSync(oldest);
     } catch (error) {
-      if (error.code === "ENOENT") continue;
+      if (error.code === "ENOENT") {
+        if (!rescanWithoutProgress()) return;
+        continue;
+      }
       reportFsError("stdio backup prune failed", error);
       return;
     }
+    noProgressScans = 0;
   }
 };
 const migrateLegacyFiles = () => {
