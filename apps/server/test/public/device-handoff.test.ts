@@ -1687,7 +1687,7 @@ describe("device handoff websocket acknowledgement", () => {
       });
       sendRealtime(socket, {
         type: "device-handoff-view",
-        threadId: null,
+        threadId: thread.id,
         terminalSessionId: null,
       });
       vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
@@ -1701,7 +1701,9 @@ describe("device handoff websocket acknowledgement", () => {
           origin: { threadId: thread.id },
         }),
       });
+      const queuedNotice = nextRealtimeMessage(socket, "device-handoff-notice");
       expect(response.status).toBe(200);
+      const queued = await queuedNotice;
       await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
       const notice = nextRealtimeMessage(socket, "device-handoff-expired");
       sendRealtime(socket, {
@@ -1712,6 +1714,7 @@ describe("device handoff websocket acknowledgement", () => {
       const expired = await notice;
       expect(expired).toMatchObject({
         type: "device-handoff-expired",
+        id: queued.id,
         threadId: thread.id,
       });
       expect(Object.keys(expired).sort()).toEqual([

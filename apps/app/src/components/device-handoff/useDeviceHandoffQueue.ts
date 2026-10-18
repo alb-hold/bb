@@ -104,20 +104,40 @@ function pruneExpiredQueue(
   now: number,
 ): DeviceHandoffQueueState {
   const allEntries = Object.values(queue.partitions).flat();
-  const live = allEntries.filter(
-    ({ signal }) =>
-      (signal.type !== "device-handoff" &&
-        signal.type !== "device-handoff-notice") ||
-      signal.expiresAt > now,
+  const normalized = allEntries.map((entry) =>
+    entry.signal.type === "device-handoff" && entry.signal.expiresAt <= now
+      ? {
+          ...entry,
+          signal: {
+            type: "device-handoff-expired" as const,
+            id: entry.signal.id,
+            threadId: entry.threadId,
+            terminalSessionId: entry.terminalSessionId,
+          },
+        }
+      : entry,
   );
-  if (live.length === allEntries.length) return queue;
+  const live = normalized.filter(
+    ({ signal }) =>
+      signal.type !== "device-handoff-notice" || signal.expiresAt > now,
+  );
+  if (
+    live.length === allEntries.length &&
+    normalized.every((entry, index) => entry === allEntries[index])
+  )
+    return queue;
 
   const liveIds = new Set(live.map(({ signal }) => signal.id));
+  const normalizedById = new Map(
+    normalized.map((entry) => [entry.signal.id, entry]),
+  );
   const partitions = Object.fromEntries(
     Object.entries(queue.partitions)
       .map(([key, entries]) => [
         key,
-        entries.filter(({ signal }) => liveIds.has(signal.id)),
+        entries
+          .filter(({ signal }) => liveIds.has(signal.id))
+          .map((entry) => normalizedById.get(entry.signal.id) ?? entry),
       ])
       .filter(([, entries]) => entries.length > 0),
   );
@@ -204,6 +224,27 @@ export function useDeviceHandoffQueue(
   activeTerminalSessionId: string | null,
 ) {
   const [queue, setQueue] = useState<DeviceHandoffQueueState>(emptyQueue);
+  const expire = useCallback((signal: DeviceHandoffExpiredSignal) => {
+    setQueue((current) => {
+      const matching = Object.values(current.partitions)
+        .flat()
+        .find((entry) => entry.signal.id === signal.id);
+      if (!matching) return current;
+      if (matching.signal.type === "device-handoff-expired") return current;
+      if (matching.signal.type !== "device-handoff") {
+        return removeSignal(current, signal.id);
+      }
+      const partitions = Object.fromEntries(
+        Object.entries(current.partitions).map(([key, entries]) => [
+          key,
+          entries.map((entry) =>
+            entry.signal.id === signal.id ? { ...entry, signal } : entry,
+          ),
+        ]),
+      );
+      return { ...current, partitions };
+    });
+  }, []);
   const enqueue = useCallback(
     (signal: DeviceHandoffQueueSignal | DeviceHandoffShownSignal) => {
       if (signal.type === "device-handoff-shown") {
@@ -291,6 +332,10 @@ export function useDeviceHandoffQueue(
         enqueue(signal);
         return;
       }
+      if (signal.type === "device-handoff-expired") {
+        expire(signal);
+        return;
+      }
       enqueue(signal);
     });
     const handleDeviceHandoff = (event: Event) => {
@@ -300,7 +345,7 @@ export function useDeviceHandoffQueue(
       const expired = deviceHandoffExpiredSignalLenientSchema.safeParse(
         event.detail,
       );
-      if (expired.success) enqueue(expired.data);
+      if (expired.success) expire(expired.data);
     };
     window.addEventListener("bb-device-handoff", handleDeviceHandoff);
     return () => {
@@ -308,7 +353,7 @@ export function useDeviceHandoffQueue(
       window.removeEventListener("bb-device-handoff", handleDeviceHandoff);
       wsManager.setDeviceHandoffView(null, null);
     };
-  }, [activeThreadId, activeTerminalSessionId, enqueue]);
+  }, [activeThreadId, activeTerminalSessionId, enqueue, expire]);
 
   useEffect(() => {
     const expiring = Object.values(queue.partitions)

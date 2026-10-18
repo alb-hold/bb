@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   DeviceHandoffExpiredSignal,
   DeviceHandoffNoticeSignal,
+  DeviceHandoffShownSignal,
   DeviceHandoffSignal,
 } from "@bb/server-contract";
 import { DeviceHandoffSheet } from "./DeviceHandoffSheet";
@@ -76,6 +77,7 @@ function DeviceHandoffQueueHarness({
       count={queue.count}
       onDismiss={queue.dismiss}
       onAcknowledge={queue.acknowledge}
+      shownOn={queue.shownOn}
     />
   );
 }
@@ -255,7 +257,13 @@ describe("DeviceHandoffSheet", () => {
     );
 
     const listener = registerDeviceHandoff.mock.lastCall?.[0] as
-      | ((signal: DeviceHandoffSignal | DeviceHandoffExpiredSignal) => void)
+      | ((
+          signal:
+            | DeviceHandoffSignal
+            | DeviceHandoffExpiredSignal
+            | DeviceHandoffNoticeSignal
+            | DeviceHandoffShownSignal,
+        ) => void)
       | undefined;
     expect(listener).toBeDefined();
     act(() => listener?.(queued));
@@ -686,30 +694,113 @@ describe("DeviceHandoffSheet", () => {
     expect(screen.getByText("2 of 2")).toBeTruthy();
   });
 
-  it("shows an accurate payload-free expiry notice to a non-recipient viewer", async () => {
+  it("silently clears a non-recipient notice on expiry and shows expiry only to the recipient", async () => {
     render(<DeviceHandoffQueueHarness activeThreadId="thr_1" />);
     const listener = registerDeviceHandoff.mock.lastCall?.[0] as
-      | ((signal: DeviceHandoffSignal | DeviceHandoffExpiredSignal) => void)
+      | ((
+          signal:
+            | DeviceHandoffSignal
+            | DeviceHandoffExpiredSignal
+            | DeviceHandoffNoticeSignal
+            | DeviceHandoffShownSignal,
+        ) => void)
       | undefined;
 
     act(() => {
       listener?.({
+        type: "device-handoff-notice",
+        id: "handoff-1",
+        createdAt: Date.now(),
+        expiresAt: Date.now() + 600_000,
+        kind: "open-url",
+        threadId: "thr_1",
+        hostLabel: "BB",
+      });
+      listener?.({
+        type: "device-handoff-shown",
+        id: "handoff-1",
+        deviceLabel: "Phone",
+      });
+    });
+    expect(await screen.findByText(/Shown on Phone/)).toBeTruthy();
+    act(() => {
+      listener?.({
         type: "device-handoff-expired",
-        id: "expired-1",
+        id: "handoff-1",
         threadId: "thr_1",
         terminalSessionId: null,
       });
     });
 
-    expect(
-      await screen.findByText(
-        "A handoff expired before it was acknowledged.",
-      ),
-    ).toBeTruthy();
-    expect(screen.queryByText(/Run the command again/)).toBeNull();
-    expect(screen.queryByText(/copied text from this terminal/)).toBeNull();
+    expect(screen.queryByText(/Handoff expired/)).toBeNull();
+    expect(screen.queryByText(/Shown on Phone/)).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByRole("status")).toBeNull();
     expect(screen.queryByRole("button", { name: "Open" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Copy" })).toBeNull();
+
+    act(() => {
+      listener?.({
+        type: "device-handoff",
+        id: "recipient-handoff",
+        createdAt: Date.now(),
+        expiresAt: Date.now() + 600_000,
+        originLabel: "Thread terminal",
+        request: {
+          kind: "copy-text",
+          text: "private payload",
+          origin: { threadId: "thr_1" },
+        },
+      });
+    });
+    expect(await screen.findByText("private payload")).toBeTruthy();
+    act(() => {
+      listener?.({
+        type: "device-handoff-expired",
+        id: "recipient-handoff",
+        threadId: "thr_1",
+        terminalSessionId: null,
+      });
+    });
+    expect(await screen.findByText("Handoff expired")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "A link or copied text from this terminal expired before you opened it. Run the command again.",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("keeps the recipient expiry prompt if the local TTL fires before the server signal", async () => {
+    const now = Date.now();
+    render(<DeviceHandoffQueueHarness activeThreadId="thr_1" />);
+    const listener = registerDeviceHandoff.mock.lastCall?.[0] as
+      | ((signal: DeviceHandoffSignal | DeviceHandoffExpiredSignal) => void)
+      | undefined;
+    act(() =>
+      listener?.({
+        type: "device-handoff",
+        id: "recipient-expiry-race",
+        createdAt: now,
+        expiresAt: now + 5_000,
+        originLabel: "Thread terminal",
+        request: {
+          kind: "copy-text",
+          text: "short-lived code",
+          origin: { threadId: "thr_1" },
+        },
+      }),
+    );
+    expect(await screen.findByText("short-lived code")).toBeTruthy();
+    expect(
+      await screen.findByText("Handoff expired", {}, { timeout: 7_000 }),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(
+        "A link or copied text from this terminal expired before you opened it. Run the command again.",
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText("short-lived code")).toBeNull();
   });
 
   it("shows standalone terminal handoffs only while their terminal is active", async () => {
@@ -798,20 +889,32 @@ describe("DeviceHandoffSheet", () => {
     expect(screen.queryByText("selected terminal copy")).toBeNull();
   });
 
-  it("shows a threadless expiry notice only on its originating terminal", async () => {
+  it("shows a recipient expiry only on its originating terminal", async () => {
     const view = render(<DeviceHandoffQueueHarness />);
     const homeListener = registerDeviceHandoff.mock.lastCall?.[0] as
       | ((signal: DeviceHandoffSignal | DeviceHandoffExpiredSignal) => void)
       | undefined;
-    act(() =>
+    act(() => {
+      homeListener?.({
+        type: "device-handoff",
+        id: "terminal-expired-1",
+        createdAt: Date.now(),
+        expiresAt: Date.now() + 600_000,
+        originLabel: "Standalone A",
+        request: {
+          kind: "copy-text",
+          text: "terminal payload",
+          origin: { terminalSessionId: "term-a" },
+        },
+      });
       homeListener?.({
         type: "device-handoff-expired",
         id: "terminal-expired-1",
         threadId: null,
         terminalSessionId: "term-a",
-      }),
-    );
-    const notice = "A handoff expired before it was acknowledged.";
+      });
+    });
+    const notice = "A link or copied text from this terminal expired before you opened it. Run the command again.";
     expect(screen.queryByText(notice)).toBeNull();
 
     view.rerender(

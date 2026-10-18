@@ -1,4 +1,3 @@
-import { useEffect } from "react";
 import type {
   DeviceHandoffExpiredSignal,
   DeviceHandoffNoticeSignal,
@@ -37,19 +36,6 @@ export function DeviceHandoffSheet({
 }: DeviceHandoffSheetProps) {
   const open = signal !== null;
   const { isContentRealized } = useResponsiveDrawerRealization({ open });
-  useEffect(() => {
-    if (
-      signal === null ||
-      (signal.type !== "device-handoff" &&
-        signal.type !== "device-handoff-notice")
-    )
-      return;
-    const timer = window.setTimeout(
-      onDismiss,
-      Math.max(0, signal.expiresAt - Date.now()),
-    );
-    return () => window.clearTimeout(timer);
-  }, [onDismiss, signal]);
 
   const copy = () => {
     if (
@@ -85,7 +71,8 @@ export function DeviceHandoffSheet({
     signal?.type === "device-handoff-expired" ? (
       <>
         <p className="text-sm text-muted-foreground">
-          A handoff expired before it was acknowledged.
+          A link or copied text from this terminal expired before you opened it.
+          Run the command again.
         </p>
         <div className="flex justify-end">
           <Button type="button" onClick={onDismiss}>

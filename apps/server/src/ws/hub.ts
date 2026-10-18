@@ -324,6 +324,7 @@ export class NotificationHub implements DbNotifier {
   private readonly expiredDeviceHandoffs = new Map<
     string,
     {
+      id: string;
       origin: DeviceHandoffRequest["origin"];
       submittedSocket: HubSocket | null;
     }
@@ -1655,6 +1656,7 @@ export class NotificationHub implements DbNotifier {
         if (handoff.expiresAt <= now) {
           clearTimeout(handoff.timeout);
           this.markDeviceHandoffExpired(
+            handoff.id,
             handoff.origin,
             handoff.deliveryMode === "submitted-turn"
               ? handoff.submittedSocket
@@ -1821,7 +1823,7 @@ export class NotificationHub implements DbNotifier {
     socket: HubSocket,
     openedOrigin: DeviceHandoffRequest["origin"],
   ): void {
-    for (const [key, expired] of this.expiredDeviceHandoffs) {
+    for (const [id, expired] of this.expiredDeviceHandoffs) {
       const { origin } = expired;
       const matches =
         (openedOrigin.threadId !== undefined &&
@@ -1841,12 +1843,12 @@ export class NotificationHub implements DbNotifier {
       ) {
         continue;
       }
-      this.expiredDeviceHandoffs.delete(key);
+      this.expiredDeviceHandoffs.delete(id);
       socket.send(
         JSON.stringify(
           deviceHandoffExpiredSignalSchema.parse({
             type: "device-handoff-expired",
-            id: randomUUID(),
+            id: expired.id,
             threadId: origin.threadId ?? null,
             terminalSessionId: origin.terminalSessionId ?? null,
           }),
@@ -1887,6 +1889,7 @@ export class NotificationHub implements DbNotifier {
           clearTimeout(handoffs[index]?.timeout);
           if (handoffs[index]) {
             this.markDeviceHandoffExpired(
+              handoffs[index].id,
               handoffs[index].origin,
               handoffs[index].deliveryMode === "submitted-turn"
                 ? handoffs[index].submittedSocket
@@ -1939,6 +1942,7 @@ export class NotificationHub implements DbNotifier {
     );
     if (expired && removed) {
       this.markDeviceHandoffExpired(
+        removed.id,
         removed.origin,
         removed.deliveryMode === "submitted-turn"
           ? removed.submittedSocket
@@ -1983,12 +1987,12 @@ export class NotificationHub implements DbNotifier {
   }
 
   private markDeviceHandoffExpired(
+    id: string,
     origin: DeviceHandoffRequest["origin"],
     submittedSocket: HubSocket | null = null,
   ): void {
-    const key = this.deviceHandoffOriginKey(origin);
-    this.expiredDeviceHandoffs.delete(key);
-    this.expiredDeviceHandoffs.set(key, { origin, submittedSocket });
+    this.expiredDeviceHandoffs.delete(id);
+    this.expiredDeviceHandoffs.set(id, { id, origin, submittedSocket });
     while (this.expiredDeviceHandoffs.size > DEVICE_HANDOFF_PENDING_LIMIT) {
       const oldest = this.expiredDeviceHandoffs.keys().next().value;
       if (oldest === undefined) break;
