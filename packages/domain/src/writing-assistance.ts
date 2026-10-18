@@ -1064,6 +1064,18 @@ function spokenEnumeration(tokens: readonly string[]): Map<number, number> {
   return spoken;
 }
 
+function joinsItems(
+  tokens: readonly string[],
+  index: number,
+  boundaries: ReadonlySet<number>,
+): boolean {
+  let next = index + 1;
+  while (next < tokens.length && LIST_CONNECTORS.has(tokens[next]!)) {
+    next += 1;
+  }
+  return boundaries.has(next);
+}
+
 function listMatchesSpeech(
   items: ReadonlyMap<number, readonly string[]>,
   rawTokens: readonly string[],
@@ -1277,12 +1289,21 @@ export function validateFormattedTranscript(
   if (movedQuestion) return { ok: false, reason: "question" };
   let enumerated = 0;
   const { marker, window, spans } = correctionCoverage(rawTokens);
+  const boundaries = new Set(
+    [...spokenEnumeration(rawTokens)]
+      .filter(([value]) => items.has(value))
+      .map(([, index]) => index),
+  );
   const dropped = droppedTokens(
     rawTokens,
     formattedTokens,
     rawTokens.map(
       (token, index) =>
-        marker[index]! || window[index]! || rawTokens[index - 1] === token,
+        marker[index]! ||
+        window[index]! ||
+        rawTokens[index - 1] === token ||
+        (LIST_CONNECTORS.has(token) &&
+          joinsItems(rawTokens, index, boundaries)),
     ),
   );
   const allowed = correctionAllowance(rawTokens, dropped, spans);
@@ -1308,7 +1329,12 @@ export function validateFormattedTranscript(
       enumerated = enumerator;
       continue;
     }
-    if (LIST_CONNECTORS.has(token) && list) continue;
+    if (
+      LIST_CONNECTORS.has(token) &&
+      joinsItems(rawTokens, index, boundaries)
+    ) {
+      continue;
+    }
     return { ok: false, reason: "dropped-words" };
   }
   return { ok: true };

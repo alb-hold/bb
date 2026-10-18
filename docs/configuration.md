@@ -359,8 +359,8 @@ that it replaces (one unbroken run of at most six words ending at the
 correction, no longer than what was said after it and starting with the same
 word (on monday no wait on tuesday), with nothing else near it left out; a phrase
 that replaces nothing, as in "no wait is required", is not a correction), spoken symbol names in literal-code
-mode, and the spoken numbers and connectors (and, then, next, finally, e,
-depois, então) of a numbered list; leaving out any other word, a negation
+mode, and the spoken numbers of a numbered list with the connectors (and, then, next, finally, e,
+depois, então) said just before an item number, as in "and then second"; a connector inside an item ("users and groups") always stays; leaving out any other word, a negation
 outside a self-correction phrase, or the minus sign of a number ("-5" never
 becomes "5"), or adding, removing or moving a symbol next to a number, such as
 %, $, €, °, #, + or ~ ("5" never becomes "5%", and "5% and 5" never becomes

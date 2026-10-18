@@ -555,6 +555,21 @@ describe("dictation segments", () => {
     });
   });
 
+  it("keeps the transcript when a list drops a connector inside an item", async () => {
+    await withTestHarness({}, async (harness) => {
+      registerFakeAiService(harness.deps.aiServices, {
+        transcribe: async () =>
+          "first add users and groups second remove keys and secrets",
+        complete: async () => "1. Add users groups.\n2. Remove keys secrets.",
+      });
+      await expect((await postSegment(harness)).json()).resolves.toMatchObject({
+        raw: "first add users and groups second remove keys and secrets",
+        text: "first add users and groups second remove keys and secrets",
+        formatted: false,
+      });
+    });
+  });
+
   it("keeps the transcript when formatting drops a word said twice", async () => {
     await withTestHarness({}, async (harness) => {
       registerFakeAiService(harness.deps.aiServices, {

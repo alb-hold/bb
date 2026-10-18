@@ -1175,6 +1175,49 @@ describe("validateFormattedTranscript", () => {
     ).toEqual({ ok: false, reason: "negation" });
   });
 
+  it.each([
+    [
+      "first add users and groups second remove keys and secrets",
+      "1. Add users groups.\n2. Remove keys secrets.",
+    ],
+    [
+      "first add users and groups second remove keys and secrets",
+      "1. Add users and groups.\n2. Remove keys secrets.",
+    ],
+    [
+      "first check auth then run tests second deploy",
+      "1. Check auth run tests.\n2. Deploy.",
+    ],
+    [
+      "first check auth second run tests and then",
+      "1. Check auth.\n2. Run tests.",
+    ],
+  ])(
+    "keeps the transcript when a list drops a connector inside an item: %s -> %s",
+    (raw, formatted) => {
+      expect(validateFormattedTranscript(raw, formatted)).toEqual({
+        ok: false,
+        reason: "dropped-words",
+      });
+    },
+  );
+
+  it.each([
+    [
+      "first add users and groups and then second remove keys and secrets",
+      "1. Add users and groups.\n2. Remove keys and secrets.",
+    ],
+    [
+      "primeiro verificar o login e depois segundo rodar os testes",
+      "1. Verificar o login.\n2. Rodar os testes.",
+    ],
+  ])(
+    "drops only the connectors that lead into the next item: %s",
+    (raw, formatted) => {
+      expect(validateFormattedTranscript(raw, formatted)).toEqual({ ok: true });
+    },
+  );
+
   it("only drops number words that enumerate the list in order", () => {
     expect(
       validateFormattedTranscript(
