@@ -7,12 +7,11 @@ import {
   type ThreadEventType,
 } from "@bb/domain";
 import {
+  advanceThreadPruning,
   createThread,
   deleteThreadEventSuffixInTransaction,
   getLatestThreadSequence,
   noopNotifier,
-  pruneContextWindowUsageEvents,
-  pruneResolvedItemDeltas,
 } from "@bb/db";
 import { pruneThreadEventHistory } from "../../../src/services/system/event-pruning.js";
 import {
@@ -193,6 +192,7 @@ function workflowTask(id: string, completed: boolean) {
     description: "workflow",
     id,
     skipTranscript: false,
+    foreground: false,
     status: completed ? "completed" : "pending",
     taskStatus: completed ? "completed" : "running",
     taskType: LOCAL_WORKFLOW_TASK_TYPE,
@@ -562,7 +562,8 @@ function walkOlderPages(
   let page = latest;
   for (let depth = 0; depth < 10; depth += 1) {
     const cursor = page.response.timelinePage.olderCursor;
-    if (!page.response.timelinePage.hasOlderRows || cursor === null) return;
+    if (page.response.timelinePage.olderCursor === null || cursor === null)
+      return;
     page = expectWarmEqualsCold(
       testThread,
       {
@@ -642,6 +643,16 @@ function planStepsRow(turnId: string, id: string, step: string): RowSpec {
   });
 }
 
+function pruneUsageSnapshots(testThread: TestThread): void {
+  for (let pass = 0; pass < 100; pass += 1) {
+    if (
+      advanceThreadPruning(testThread.db, "usage").action === "cycle-complete"
+    )
+      return;
+  }
+  throw new Error("Usage pruning did not finish a cycle");
+}
+
 describe("latest timeline selection memo", () => {
   it("matches a cold build over randomized streaming, out-of-order deltas, rewrites, prunes and context clears", () => {
     let reused = 0;
@@ -675,9 +686,7 @@ describe("latest timeline selection memo", () => {
               { db: testThread.db },
               { mode: "active", threadId: testThread.thread.id },
             );
-            pruneContextWindowUsageEvents(testThread.db, {
-              threadId: testThread.thread.id,
-            });
+            pruneUsageSnapshots(testThread);
           } else {
             append(testThread, randomSessionRows(state, random));
           }
@@ -1012,9 +1021,7 @@ describe("latest timeline selection memo", () => {
     {
       name: "resolved deltas are pruned",
       rewrite: (testThread: TestThread) =>
-        pruneResolvedItemDeltas(testThread.db, {
-          threadId: testThread.thread.id,
-        }),
+        advanceThreadPruning(testThread.db, "resolved-items").removed,
     },
     {
       name: "another connection deletes a delta",

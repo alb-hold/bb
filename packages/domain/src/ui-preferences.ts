@@ -18,14 +18,8 @@ const sidebarChronologicalSortSchema = z.enum([
   "alpha",
   "none",
 ]);
-export type SidebarChronologicalSort = z.infer<
-  typeof sidebarChronologicalSortSchema
->;
 
 const sidebarThreadGroupingSchema = z.union([z.literal("auto"), z.boolean()]);
-export type SidebarThreadGrouping = z.infer<typeof sidebarThreadGroupingSchema>;
-
-const collapsibleSidebarSectionIdSchema = z.enum(["pinned", "threads"]);
 
 const uiPreferenceStringSchema = z
   .string()
@@ -48,18 +42,13 @@ export const UI_PREFERENCE_KEYS = [
   "sidebar.manualSectionOrder",
   "sidebar.machineSectionOrder",
   "sidebar.hiddenGroups",
-  "sidebar.collapsedSections",
-  "sidebar.collapsedProjects",
-  "sidebar.collapsedThreads",
-  "sidebar.collapsedEnvironments",
-  "sidebar.collapsedThreadSections",
-  "sidebar.collapsedMachines",
   "sidebar.footerOrder",
   "sidebar.hiddenFooterItems",
   "sidebar.pluginPanelOrder",
   "sidebar.visiblePluginPanels",
   "sidebar.navigationProvider",
   "sidebar.threadListProvider",
+  "infoPanel.collapsedSections",
 ] as const;
 export type UiPreferenceKey = (typeof UI_PREFERENCE_KEYS)[number];
 const uiPreferenceKeySchema = z.enum(UI_PREFERENCE_KEYS);
@@ -86,7 +75,7 @@ export const uiPreferenceDefinitions = {
   "sidebar.organizationMode": defineUiPreference(
     sidebarOrganizationModeSchema,
     "chronological",
-    "How the sidebar groups threads: by project, Custom (chronological), or by machine. Defaults to Custom when unset.",
+    "How the sidebar groups threads: by project, Custom (chronological), or by machine. New installations default to Custom; migrated installations with existing work or preferences fall back to By project.",
   ),
   "sidebar.threadGrouping.environment": defineUiPreference(
     sidebarThreadGroupingSchema,
@@ -123,38 +112,6 @@ export const uiPreferenceDefinitions = {
     [],
     "Project, custom section, and machine groups moved into More, using project:<id>, section:<id>, or machine:<id>. Setting this list replaces the hidden groups across all sidebar organizations; reset shows every group.",
   ),
-  "sidebar.collapsedSections": defineUiPreference(
-    z
-      .array(collapsibleSidebarSectionIdSchema)
-      .max(UI_PREFERENCE_LIST_MAX_LENGTH),
-    [],
-    "Built-in sidebar sections that are collapsed.",
-  ),
-  "sidebar.collapsedProjects": defineUiPreference(
-    uiPreferenceStringListSchema,
-    [],
-    "Project ids whose sidebar rows are collapsed.",
-  ),
-  "sidebar.collapsedThreads": defineUiPreference(
-    uiPreferenceStringListSchema,
-    [],
-    "Thread ids whose child threads are collapsed in the sidebar.",
-  ),
-  "sidebar.collapsedEnvironments": defineUiPreference(
-    uiPreferenceStringListSchema,
-    [],
-    "Environment ids whose sidebar rows are collapsed.",
-  ),
-  "sidebar.collapsedThreadSections": defineUiPreference(
-    uiPreferenceStringListSchema,
-    [],
-    "Thread section ids that are collapsed in the sidebar.",
-  ),
-  "sidebar.collapsedMachines": defineUiPreference(
-    uiPreferenceStringListSchema,
-    [],
-    "Machine ids whose sidebar rows are collapsed.",
-  ),
   "sidebar.footerOrder": defineUiPreference(
     uiPreferenceStringListSchema,
     [],
@@ -168,22 +125,33 @@ export const uiPreferenceDefinitions = {
   "sidebar.pluginPanelOrder": defineUiPreference(
     uiPreferenceStringListSchema,
     [],
-    "Order of navigation entries in the sidebar navigation strip.",
+    "Order of sidebar navigation destinations.",
   ),
   "sidebar.visiblePluginPanels": defineUiPreference(
     uiPreferenceStringListSchema.nullable(),
     null,
-    "Navigation entries shown in the sidebar navigation strip; null shows every entry.",
+    "Sidebar navigation destinations shown; null shows every destination.",
   ),
   "sidebar.navigationProvider": defineUiPreference(
-    uiPreferenceStringSchema,
+    uiPreferenceStringSchema.transform((value) =>
+      value === "__builtin__" || value === "navigation/navigation"
+        ? "__automatic__"
+        : value,
+    ),
     "__automatic__",
-    "Plugin that renders the sidebar navigation, or __automatic__ / __builtin__.",
+    "Plugin that draws the sidebar navigation: navigation/rail (the bundled Navigation plugin's icon rail on the sidebar's left edge), navigation/top-list (its labeled rows above the thread list), another plugin key, or __automatic__ for the first navigation from a plugin other than the bundled one, falling back to navigation/rail. Legacy __builtin__ and navigation/navigation resolve to __automatic__.",
   ),
   "sidebar.threadListProvider": defineUiPreference(
-    uiPreferenceStringSchema,
+    uiPreferenceStringSchema.transform((value) =>
+      value === "__builtin__" ? "thread-list/thread-list" : value,
+    ),
     "__automatic__",
-    "Plugin that renders the sidebar thread list, or __automatic__ / __builtin__.",
+    "Plugin that renders the sidebar thread list, or __automatic__ for the first installed thread list plugin other than the bundled thread-list/thread-list, falling back to it. Legacy __builtin__ resolves to thread-list/thread-list.",
+  ),
+  "infoPanel.collapsedSections": defineUiPreference(
+    uiPreferenceStringListSchema,
+    [],
+    "Thread Info panel section ids that are collapsed, such as commits, uncommittedChanges, forks, or threadStorage.",
   ),
 } as const satisfies Record<UiPreferenceKey, UiPreferenceDefinition>;
 

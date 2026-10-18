@@ -18,10 +18,10 @@ desktop app is published at the same version (see "Publish The Desktop App").
 The automated nightly channel is the exception to the manual stable flow. The
 scheduled path in `publish-bb-app.yml` derives a unique next-patch prerelease,
 publishes it under npm's `nightly` dist-tag, then builds the separately
-installable `bb Nightly` app for macOS and Linux and publishes both at
-`desktop-nightly`. It does not commit the generated version or move either
+installable `bb Nightly` app for macOS, Linux, and Windows and publishes all
+three at `desktop-nightly`. It does not commit the generated version or move either
 stable `latest` pointer. Each platform job derives the nightly version from the
-run ID, so the two jobs agree without sharing state. If the
+run ID, so the jobs agree without sharing state. If the
 `npm-release` GitHub environment requires approval, scheduled runs will wait
 for that approval; remove the reviewer gate only if fully unattended nightly
 publishing is intended.
@@ -69,7 +69,7 @@ Before changing files, resolve these inputs from the user request:
 | Input                   | Default  | Notes                                                             |
 | ----------------------- | -------- | ----------------------------------------------------------------- |
 | Package                 | `bb-app` | This runbook does not publish other packages.                     |
-| Version bump            | `patch`  | Example: `0.0.1` to `0.0.2`.                                      |
+| Version bump            | `minor`  | Example: `0.46.0` to `0.47.0`. Use `patch` only when asked.       |
 | npm dist-tag            | `latest` | This is the tag plain `npx bb-app` uses.                          |
 | Allow prerelease latest | `false`  | Set to `true` only for an explicit prerelease-on-latest decision. |
 | Publish dry run         | `false`  | Use `true` only when testing the workflow itself.                 |
@@ -94,11 +94,13 @@ If any input is unclear, ask before bumping the version.
 
 3. Bump the lockstep release versions.
 
-   For the normal stable loop:
+   Prefer a minor release for the normal stable loop:
 
    ```bash
-   node scripts/bump-version.mjs --patch
+   node scripts/bump-version.mjs --minor
    ```
+
+   Use `--patch` only when the user asks for a patch release.
 
    When promoting from a prerelease to the first stable version, set the exact
    version instead:
@@ -202,15 +204,16 @@ Report:
 ## Publish The Desktop App
 
 The npm publish does not build or publish the desktop app. The desktop release
-is a separate workflow. It builds the signed and notarized macOS app and the
-Linux x64 AppImage in parallel jobs, then one publish job creates the immutable
-`desktop-v<version>` GitHub release and moves the `desktop-latest` release with
-both auto-update feeds: `desktop-version.json` for macOS and
-`desktop-version-linux.json` for Linux. Run it from the same pushed `main`
+is a separate workflow. It builds the signed and notarized macOS app, the
+Linux x64 AppImage, and the Windows x64 installer in parallel jobs, then one
+publish job creates the immutable `desktop-v<version>` GitHub release and moves
+the `desktop-latest` release with every auto-update feed:
+`desktop-version.json` for macOS, `desktop-version-linux.json` for Linux, and
+`desktop-version-windows.json` for Windows. Run it from the same pushed `main`
 commit, at the same version, for every stable release.
 
-A failure in either platform job stops the publish job, so no release can ship
-one platform's binaries against the other platform's stale feed.
+A failure in any platform job stops the publish job, so no release can ship
+one platform's binaries against another platform's stale feed.
 
 ```bash
 gh workflow run build-desktop.yml \
@@ -224,9 +227,13 @@ gh workflow run build-desktop.yml \
 - Only a non-prerelease version is published. The workflow refuses to publish a
   prerelease (`X.Y.Z-...`) to `desktop-latest`.
 - macOS signing/notarization secrets must be configured, or the workflow
-  withholds the unsigned `.dmg`/`.zip` and publishes both version feeds plus the
-  Linux AppImage. Linux has no notarization equivalent, so it never waits on the
-  Apple secrets.
+  withholds the unsigned `.dmg`/`.zip` and publishes every version feed plus the
+  Linux AppImage and the Windows installer. Linux has no notarization
+  equivalent, so it never waits on the Apple secrets.
+- The Windows installer is signed when the `WINDOWS_CERTIFICATE_PFX` and
+  `WINDOWS_CERTIFICATE_PASSWORD` secrets are both set. Without them it publishes
+  unsigned and Windows SmartScreen warns before running it. Setting only one of
+  the two fails the Windows job.
 - The `desktop-v<version>` release is immutable: if it already exists the
   workflow fails. Bump to a new version rather than re-running the same one.
 - The immutable `desktop-v<version>` release owns GitHub's repository-wide
@@ -246,11 +253,14 @@ gh release view desktop-latest --json tagName,assets \
 gh release list --limit 10 --json tagName,isLatest \
   -q '.[] | select(.isLatest) | .tagName'
 curl -fsSL https://github.com/get-bb/bb/releases/download/desktop-latest/desktop-version.json
+curl -fsSL https://github.com/get-bb/bb/releases/download/desktop-latest/desktop-version-linux.json
+curl -fsSL https://github.com/get-bb/bb/releases/download/desktop-latest/desktop-version-windows.json
 ```
 
-Confirm `desktop-version.json` reports the released version and that the
-`desktop-v<version>` release exists with the expected `.dmg`/`.zip` assets and
-is the release reported as GitHub's **Latest**.
+Confirm each feed reports the released version and that the
+`desktop-v<version>` release exists with the expected `.dmg`/`.zip`,
+`.AppImage`, and `.exe` assets and is the release reported as GitHub's
+**Latest**.
 
 Add to the report from "Verify The Release":
 
@@ -290,49 +300,22 @@ enforces that on every PR from the `checks` job in `ci.yml`:
 | Version published, packed package differs   | Fail — run `node scripts/bump-plugin-sdk.mjs --patch`.               |
 | Registry unreachable, or local pack failed  | Exit 2; CI logs a warning and continues (infrastructure, not a bug). |
 
-The comparison covers the whole package, not just the declarations: a
-runtime-only change (different `dist/` output, an edited exports entry, a
-widened peer range) leaves `bundled-types/` identical, and publish-if-missing
-would then never ship it. The guard builds the SDK through turbo, runs
-`npm pack` to get exactly what publish would upload, and diffs that against the
-published tarball for the current version:
-
-- every packed file — `bundled-types/*`, `dist/*`, `README.md` — normalizing
-  line endings and end-of-file whitespace
-- the manifest fields consumers resolve against: `exports`, `files`, `main`,
-  `peerDependencies`, `peerDependenciesMeta`, `publishConfig`, `repository`,
-  `types` (compared by value, so key order is not drift)
-
-Comparing `dist/` content is safe because the esbuild bundles are reproducible:
-they embed no timestamps, paths, or hashes, so repeated builds of the same
-commit are byte-identical. Run the guard locally the same way CI does:
+The guard packs the SDK exactly as publish would and compares every packed
+file and the consumer-facing manifest fields with the published tarball, so a
+runtime-only change also needs a version bump. Run it locally the same way CI
+does:
 
 ```bash
 node packages/plugin-sdk/scripts/check-npm-version-guard.mjs
 ```
 
-### One-Time Bootstrap
+### Trusted publishing configuration
 
-npm trusted publishing cannot create a package that does not exist yet, so the
-first release is manual:
-
-1. Publish `@get-bb/plugin-sdk` once by hand from `packages/plugin-sdk` with
-   normal npm authentication (`npm publish`; `publishConfig.access` is already
-   `public`).
-2. On GitHub, restrict the `npm-release` environment to `main` (Settings →
-   Environments → `npm-release` → deployment branches → selected branches,
-   `main` only). `workflow_dispatch` accepts any branch, and the environment is
-   what npm's trusted publisher trusts: without a branch policy, a run from any
-   branch could request the same OIDC identity. The in-file "Require main
-   branch" step is a convenience check that a workflow edit could remove; the
-   environment policy is the control that holds.
-3. On npmjs.com, add a trusted publisher for the package pointing at this
-   repository, the workflow file `.github/workflows/publish-bb-app.yml`, and the
-   `npm-release` environment — the same values `bb-app` uses.
-
-Until all three steps are done, the `publish-plugin-sdk` job fails at
-`npm publish`. That failure is expected and isolated; the bb-app and desktop
-jobs are unaffected.
+The `npm-release` GitHub environment is restricted to `main`; that branch
+policy, not the workflow's "Require main branch" step, is what stops other
+branches from obtaining the publishing OIDC identity. Each package's npm
+trusted publisher points at this repository,
+`.github/workflows/publish-bb-app.yml`, and the `npm-release` environment.
 
 ## Failure Handling
 
@@ -352,7 +335,8 @@ jobs are unaffected.
 - If the desktop workflow fails because `desktop-v<version>` already exists, do
   not delete the immutable release. Bump to the next version, re-run the npm
   publish, then re-run the desktop workflow.
-- If the desktop workflow withholds the macOS binaries (feeds and the Linux
-  AppImage still publish), the macOS signing secrets are missing or incomplete.
+- If the desktop workflow withholds the macOS binaries (feeds, the Linux
+  AppImage, and the Windows installer still publish), the macOS signing secrets
+  are missing or incomplete.
   Fix the secrets and re-run; do not hand-upload unsigned macOS binaries to
   `desktop-latest`.

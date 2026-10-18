@@ -1,13 +1,22 @@
 import { useSyncExternalStore } from "react";
 
-export type CompactSecondaryPanelPresentation = "closed" | "shelf" | "full";
+export type CompactSecondaryPanelPresentation = "closed" | "full";
 
 export const COMPACT_SHELF_HIDDEN_FIXED_CHROME_CLASS =
-  "data-[panel-shelf=shelf]:invisible data-[panel-shelf=full]:invisible";
+  "data-[panel-shelf=full]:invisible";
 
 let compactSecondaryPanelPresentation: CompactSecondaryPanelPresentation =
   "closed";
+let compactSecondaryPanelSwipeOpening = false;
 const listeners = new Set<() => void>();
+
+export function isCompactSecondaryPanelSwipeOpening(): boolean {
+  return compactSecondaryPanelSwipeOpening;
+}
+
+export function setCompactSecondaryPanelSwipeOpening(opening: boolean): void {
+  compactSecondaryPanelSwipeOpening = opening;
+}
 
 export function getCompactSecondaryPanelPresentation(): CompactSecondaryPanelPresentation {
   return compactSecondaryPanelPresentation;

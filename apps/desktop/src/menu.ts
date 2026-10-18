@@ -1,10 +1,13 @@
 import {
   app,
   Menu,
+  shell,
   type BaseWindow,
   type MenuItemConstructorOptions,
 } from "electron";
+import type { BbDesktopZoomCommand } from "@bb/desktop-contract";
 import type { ApplicationMenuAccelerators } from "./desktop-menu-shortcuts.js";
+import { builtinServerName } from "./server-target.js";
 import type { ConnectServerSyncSkipReason } from "./connect-server-sync.js";
 
 const SERVER_DAEMON_LOGS_MENU_LABEL = "Server & Daemon Logs";
@@ -14,22 +17,28 @@ const NEW_THREAD_MENU_LABEL = "New Thread";
 const NEW_WINDOW_MENU_LABEL = "New Window";
 const CLOSE_WINDOW_MENU_LABEL = "Close Window";
 const OPEN_SETTINGS_MENU_LABEL = "Settings…";
+const VIEW_LICENSE_MENU_LABEL = "View License";
+const LICENSE_URL = "https://github.com/get-bb/bb/blob/main/LICENSE";
+const UNINSTALL_MENU_LABEL = "How to Uninstall bb";
+const UNINSTALL_URL = "https://getbb.app/uninstall";
 const TOGGLE_DEVELOPER_TOOLS_MENU_LABEL = "Toggle Developer Tools";
 const TOGGLE_DEVELOPER_TOOLS_ACCELERATOR = "Command+Option+I";
 const RELOAD_ACCELERATOR = "CommandOrControl+R";
 const FORCE_RELOAD_ACCELERATOR = "CommandOrControl+Shift+R";
+const DESKTOP_SETTINGS_MENU_LABEL = "Desktop Settings";
 const SERVER_MENU_LABEL = "Server";
-const SERVER_MENU_ITEM_ID = "bb-server-menu";
-export const SET_SERVER_URL_MENU_LABEL = "Set Server URL…";
-export const CONNECT_SERVERS_SKIPPED_MENU_LABELS: Record<
-  ConnectServerSyncSkipReason,
-  string
+const DESKTOP_SETTINGS_SERVER_MENU_ITEM_ID = "bb-desktop-settings-server-menu";
+const WINDOW_SERVER_MENU_ITEM_ID = "bb-server-menu";
+const SERVER_MENU_ITEM_IDS = [
+  DESKTOP_SETTINGS_SERVER_MENU_ITEM_ID,
+  WINDOW_SERVER_MENU_ITEM_ID,
+];
+export const SET_SERVER_URL_MENU_LABEL = "Edit Server…";
+const CONNECT_SIGN_IN_MENU_LABELS: Partial<
+  Record<ConnectServerSyncSkipReason, string>
 > = {
-  "no-credential": "No Connect servers — sign in to bb Connect",
-  "not-paired": "No Connect servers — Connect not paired on This Mac",
-  "plugin-disabled": "No Connect servers — Connect plugin disabled",
-  unauthorized: "No Connect servers — sign in to bb Connect again",
-  unavailable: "No Connect servers — could not reach bb Connect",
+  "no-credential": "Sign in to bb Connect…",
+  unauthorized: "Sign in to bb Connect again…",
 };
 
 interface ApplicationMenuServerItem {
@@ -41,6 +50,8 @@ interface ApplicationMenuServerItem {
 export interface InstallApplicationMenuArgs {
   accelerators: ApplicationMenuAccelerators;
   isMac: boolean;
+  showBuiltinServer: boolean;
+  toggleBuiltinServer(): void;
   openAbout(): void;
   openNewTab(): void;
   openNewThread(): void;
@@ -50,11 +61,13 @@ export interface InstallApplicationMenuArgs {
     browserWindow: BaseWindow | undefined,
     ignoreCache: boolean,
   ): void;
+  zoomFocusedPage(command: BbDesktopZoomCommand): void;
   closeWindowOrSideTab(browserWindow: BaseWindow | undefined): void;
   createNewWindow(): void;
   openServerDaemonLogs(): void;
   selectServer(serverId: string): void;
   setServerUrl(): void;
+  signInToConnect(): void;
   addServer(): void;
   onServerMenuWillShow?: () => void;
   serverDaemonLogsMenuEnabled: boolean;
@@ -77,8 +90,21 @@ function createServerDaemonLogsMenuItems(
   ];
 }
 
-function createServerMenuItems(
-  args: InstallApplicationMenuArgs,
+export type ServerMenuArgs = Pick<
+  InstallApplicationMenuArgs,
+  | "isMac"
+  | "showBuiltinServer"
+  | "toggleBuiltinServer"
+  | "addServer"
+  | "connectServersSkipReason"
+  | "selectServer"
+  | "servers"
+  | "setServerUrl"
+  | "signInToConnect"
+>;
+
+export function createServerMenuItems(
+  args: ServerMenuArgs,
 ): MenuItemConstructorOptions[] {
   const serverItems: MenuItemConstructorOptions[] = args.servers.map(
     (server) => ({
@@ -90,18 +116,23 @@ function createServerMenuItems(
       type: "radio" as const,
     }),
   );
-  const skipReason = args.connectServersSkipReason;
+  const signInLabel =
+    args.connectServersSkipReason === null
+      ? undefined
+      : CONNECT_SIGN_IN_MENU_LABELS[args.connectServersSkipReason];
   return [
     ...serverItems,
-    ...(skipReason === null
+    { type: "separator" },
+    ...(signInLabel === undefined
       ? []
       : [
           {
-            enabled: false,
-            label: CONNECT_SERVERS_SKIPPED_MENU_LABELS[skipReason],
+            label: signInLabel,
+            click() {
+              args.signInToConnect();
+            },
           },
         ]),
-    { type: "separator" },
     {
       label: "Add Server…",
       click() {
@@ -109,9 +140,26 @@ function createServerMenuItems(
       },
     },
     {
+      enabled: args.servers.some(
+        (server) =>
+          server.checked &&
+          (server.id.startsWith("custom:") || server.id.startsWith("connect:")),
+      ),
       label: SET_SERVER_URL_MENU_LABEL,
       click() {
         args.setServerUrl();
+      },
+    },
+    { type: "separator" },
+    {
+      checked: args.showBuiltinServer,
+      enabled: !args.servers.some(
+        (server) => server.id === "builtin" && server.checked,
+      ),
+      label: `Show ${builtinServerName(args.isMac ? "darwin" : "linux")}`,
+      type: "checkbox",
+      click() {
+        args.toggleBuiltinServer();
       },
     },
   ];
@@ -137,6 +185,16 @@ export function buildApplicationMenuTemplate(
             args.openSettings();
           },
           label: OPEN_SETTINGS_MENU_LABEL,
+        },
+        {
+          label: DESKTOP_SETTINGS_MENU_LABEL,
+          submenu: [
+            {
+              id: DESKTOP_SETTINGS_SERVER_MENU_ITEM_ID,
+              label: SERVER_MENU_LABEL,
+              submenu: createServerMenuItems(args),
+            },
+          ],
         },
         { type: "separator" },
         ...(args.isMac
@@ -238,9 +296,27 @@ export function buildApplicationMenuTemplate(
           role: "toggleDevTools",
         },
         { type: "separator" },
-        { role: "resetZoom" },
-        { role: "zoomIn" },
-        { role: "zoomOut" },
+        {
+          accelerator: "CommandOrControl+0",
+          label: "Actual Size",
+          click() {
+            args.zoomFocusedPage("reset");
+          },
+        },
+        {
+          accelerator: "CommandOrControl+Plus",
+          label: "Zoom In",
+          click() {
+            args.zoomFocusedPage("in");
+          },
+        },
+        {
+          accelerator: "CommandOrControl+-",
+          label: "Zoom Out",
+          click() {
+            args.zoomFocusedPage("out");
+          },
+        },
         ...createServerDaemonLogsMenuItems(args),
       ],
     },
@@ -251,13 +327,30 @@ export function buildApplicationMenuTemplate(
         ...(args.isMac ? [{ role: "zoom" as const }] : []),
         { type: "separator" },
         {
-          id: SERVER_MENU_ITEM_ID,
+          id: WINDOW_SERVER_MENU_ITEM_ID,
           label: SERVER_MENU_LABEL,
           submenu: createServerMenuItems(args),
         },
         ...(args.isMac
           ? [{ type: "separator" as const }, { role: "front" as const }]
           : []),
+      ],
+    },
+    {
+      role: "help",
+      submenu: [
+        {
+          label: VIEW_LICENSE_MENU_LABEL,
+          click: () => {
+            void shell.openExternal(LICENSE_URL);
+          },
+        },
+        {
+          label: UNINSTALL_MENU_LABEL,
+          click: () => {
+            void shell.openExternal(UNINSTALL_URL);
+          },
+        },
       ],
     },
   ];
@@ -267,11 +360,11 @@ export function installApplicationMenu(args: InstallApplicationMenuArgs): void {
   const menu = Menu.buildFromTemplate(buildApplicationMenuTemplate(args));
   const onServerMenuWillShow = args.onServerMenuWillShow;
   if (onServerMenuWillShow !== undefined) {
-    menu
-      .getMenuItemById(SERVER_MENU_ITEM_ID)
-      ?.submenu?.on("menu-will-show", () => {
+    for (const id of SERVER_MENU_ITEM_IDS) {
+      menu.getMenuItemById(id)?.submenu?.on("menu-will-show", () => {
         onServerMenuWillShow();
       });
+    }
   }
   Menu.setApplicationMenu(menu);
 }

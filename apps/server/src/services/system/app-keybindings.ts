@@ -150,6 +150,8 @@ const splitWithoutModal = {
 } as const;
 
 export const DEFAULT_APP_KEYBINDINGS: AppDefaultKeybindings = [
+  binding("history.back", "[", { mod: true }, mainWithoutModal),
+  binding("history.forward", "]", { mod: true }, mainWithoutModal),
   binding("palette.open", "p", { mod: true, shift: true }, mainWithoutModal),
   binding("thread.new", "o", { mod: true, shift: true }, mainWithoutModal),
   binding(
@@ -168,6 +170,9 @@ export const DEFAULT_APP_KEYBINDINGS: AppDefaultKeybindings = [
   binding("settings.open", ",", { mod: true }, mainWithoutModal),
   binding("sidebar.toggle", "\\", { mod: true }, mainWithoutModal),
   unassignedBinding("notifications.open", mainWithoutModal),
+  unassignedBinding("plugins.enterSafeMode", mainWithoutModal),
+  unassignedBinding("plugins.exitSafeMode", mainWithoutModal),
+  unassignedBinding("plugins.pruneCache", mainWithoutModal),
   binding(
     "thread.previous",
     "[",
@@ -198,7 +203,12 @@ export const DEFAULT_APP_KEYBINDINGS: AppDefaultKeybindings = [
       desktopOnly: true,
     },
   ),
-  binding("thread.openBeside", "b", { mod: true, shift: true }, mainWithoutModal),
+  binding(
+    "thread.openBeside",
+    "b",
+    { mod: true, shift: true },
+    mainWithoutModal,
+  ),
   ...numberedChatBindings(THREAD_JUMP_APP_COMMAND_IDS, mainWithoutModal),
   ...(
     [
@@ -208,7 +218,12 @@ export const DEFAULT_APP_KEYBINDINGS: AppDefaultKeybindings = [
       ["pane.focus.down", "ArrowDown"],
     ] as const
   ).flatMap(([command, key]) =>
-    macArrowBindings(command, key, { mod: true, shift: true }, splitWithoutModal),
+    macArrowBindings(
+      command,
+      key,
+      { mod: true, control: true, shift: true },
+      splitWithoutModal,
+    ),
   ),
   unassignedBinding("pane.focus.previous", splitWithoutModal),
   unassignedBinding("pane.focus.next", splitWithoutModal),
@@ -256,6 +271,7 @@ export const DEFAULT_APP_KEYBINDINGS: AppDefaultKeybindings = [
   ),
   binding("panel.close", "w", { mod: true }, mainWithoutModal),
   binding("panel.toggle", "j", { mod: true }, mainWithoutModal),
+  unassignedBinding("panel.fullScreen.toggle", mainWithoutModal),
   binding("file.quickOpen", "p", { mod: true }, mainWithoutModal),
   binding(
     "diff.toggle",
@@ -273,9 +289,21 @@ export const DEFAULT_APP_KEYBINDINGS: AppDefaultKeybindings = [
     mainWithoutModal,
   ),
   binding(
+    "terminal.attention.next",
+    "n",
+    { alt: true, shift: true },
+    mainWithoutModal,
+  ),
+  binding(
     "composer.focus",
     "c",
     { mod: true, shift: true },
+    composerWithoutModal,
+  ),
+  binding(
+    "composer.searchPromptHistory",
+    "r",
+    { control: true },
     composerWithoutModal,
   ),
   binding(
@@ -372,6 +400,16 @@ export const DEFAULT_APP_KEYBINDINGS: AppDefaultKeybindings = [
       none: ["modalOpen"],
     },
   ),
+  binding(
+    "window.find",
+    "f",
+    { mod: true },
+    {
+      all: ["mainSurface"],
+      desktopOnly: true,
+      none: ["modalOpen", "browserFocus"],
+    },
+  ),
   binding("workspace.openPreferred", "o", { mod: true }, mainWithoutModal),
   ...QUESTION_SELECT_APP_COMMAND_IDS.map((command, index) =>
     binding(
@@ -395,6 +433,16 @@ export const DEFAULT_APP_KEYBINDINGS: AppDefaultKeybindings = [
   ),
   unassignedBinding("logs.openServerDaemon", {
     all: ["mainSurface", "macPlatform"],
+    desktopOnly: true,
+    none: ["modalOpen"],
+  }),
+  unassignedBinding("window.reload", {
+    all: ["mainSurface"],
+    desktopOnly: true,
+    none: ["modalOpen"],
+  }),
+  unassignedBinding("dataDirectory.open", {
+    all: ["mainSurface"],
     desktopOnly: true,
     none: ["modalOpen"],
   }),

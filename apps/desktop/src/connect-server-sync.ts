@@ -2,6 +2,8 @@ import { z } from "zod";
 import {
   ConnectListError,
   listAccountServers,
+  listAccountServersWithSession,
+  type ConnectAccountSession,
   type ConnectCredential,
 } from "@bb/connect-client";
 
@@ -22,9 +24,10 @@ const connectListAccountServersResultSchema = z
   })
   .strict();
 
-type ConnectListAccountServersResult = z.infer<
-  typeof connectListAccountServersResultSchema
->;
+type ConnectListAccountServersResult = {
+  servers: ConnectAccountServer[];
+  selfHandle: string | null;
+};
 
 const rpcSuccessSchema = z
   .object({
@@ -116,13 +119,14 @@ export async function fetchConnectAccountServers(
   return { ok: false, reason: "unavailable" };
 }
 
-export function selectTargetableConnectServers(
+function selectTargetableConnectServers(
   result: ConnectListAccountServersResult,
 ): ConnectAccountServer[] {
   return result.servers.filter((server) => server.handle !== result.selfHandle);
 }
 
 interface CreateConnectServerSyncArgs {
+  getAccountSession: () => Promise<ConnectAccountSession | null>;
   getCredential: () => ConnectCredential | null;
   getLocalServerUrl: () => string | null;
   onServers: (servers: ConnectAccountServer[]) => void;
@@ -157,18 +161,9 @@ export function createConnectServerSync(
   let inFlight: Promise<void> | null = null;
   let loggedSkipReason: ConnectServerSyncSkipReason | null = null;
 
-  async function fetchServers(): Promise<FetchConnectAccountServersResult> {
-    const serverUrl = args.getLocalServerUrl();
-    if (serverUrl !== null) {
-      return fetchConnectAccountServers({
-        serverUrl,
-        fetchImpl: args.fetchImpl,
-      });
-    }
-    const credential = args.getCredential();
-    if (credential === null) {
-      return { ok: false, reason: "no-credential" };
-    }
+  async function fetchWithCredential(
+    credential: ConnectCredential,
+  ): Promise<FetchConnectAccountServersResult> {
     try {
       const result = await listAccountServers(credential, args.gateFetchImpl);
       return { ok: true, result };
@@ -179,6 +174,52 @@ export function createConnectServerSync(
       }
       return { ok: false, reason: "unavailable" };
     }
+  }
+
+  async function fetchWithAccountSession(
+    session: ConnectAccountSession,
+  ): Promise<FetchConnectAccountServersResult> {
+    try {
+      const servers = await listAccountServersWithSession(
+        session,
+        args.gateFetchImpl,
+      );
+      return { ok: true, result: { servers, selfHandle: null } };
+    } catch (error) {
+      if (error instanceof ConnectListError && error.code === "unauthorized") {
+        return { ok: false, reason: "unauthorized" };
+      }
+      return { ok: false, reason: "unavailable" };
+    }
+  }
+
+  async function fetchServers(): Promise<FetchConnectAccountServersResult> {
+    let firstFailure: FetchConnectAccountServersResult | null = null;
+    const serverUrl = args.getLocalServerUrl();
+    if (serverUrl !== null) {
+      const outcome = await fetchConnectAccountServers({
+        serverUrl,
+        fetchImpl: args.fetchImpl,
+      });
+      if (outcome.ok) return outcome;
+      firstFailure = outcome;
+    }
+    const credential = args.getCredential();
+    if (credential !== null) {
+      const outcome = await fetchWithCredential(credential);
+      if (outcome.ok) return outcome;
+      firstFailure ??= outcome;
+    }
+    const session = await args.getAccountSession();
+    if (session !== null) {
+      const outcome = await fetchWithAccountSession(session);
+      if (outcome.ok) return outcome;
+      firstFailure ??= outcome;
+    }
+    if (credential === null && session === null) {
+      return { ok: false, reason: "no-credential" };
+    }
+    return firstFailure ?? { ok: false, reason: "no-credential" };
   }
 
   async function runSync(): Promise<void> {

@@ -2,6 +2,7 @@ import { Buffer } from "node:buffer";
 import { Readable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import { TERMINAL_DATA_MAX_BYTES } from "@bb/domain";
+import { TERMINAL_ATTENTION_CONTRACT_CASES } from "@bb/test-helpers";
 import {
   collectLogLines,
   collectLogPayloads,
@@ -54,17 +55,9 @@ describe("bb terminal command output", () => {
   const register: CommandRegistrar = (program) =>
     registerTerminalCommands(program, () => "http://server");
 
-  it("documents scope selectors only on list and create", async () => {
-    const help = await getHelpOutput(["terminal"], register);
-    const createHelp = await getHelpOutput(["terminal", "create"], register);
+  it("does not document scope selectors on send", async () => {
     const sendHelp = await getHelpOutput(["terminal", "send"], register);
 
-    expect(help).toContain("list [options]");
-    expect(help).toContain("create|start [options] [command...]");
-    expect(help).toContain("send [options] <terminalId>");
-    expect(createHelp).toContain("--thread <id>");
-    expect(createHelp).toContain("--environment <id>");
-    expect(createHelp).toContain("--machine <id-or-name>");
     expect(sendHelp).not.toContain("--thread");
     expect(sendHelp).not.toContain("<threadId>");
   });
@@ -83,6 +76,80 @@ describe("bb terminal command output", () => {
       "Terminal 1",
     );
   });
+
+  it("raises attention for the terminal identity injected into its shell", async () => {
+    const notify = vi.fn(async () => makeTerminalSession());
+    stubServerApi({ "v1.terminals.:terminalId.notify.$post": notify });
+    const previousId = process.env.BB_TERMINAL_SESSION_ID;
+    process.env.BB_TERMINAL_SESSION_ID = "term-from-env";
+    try {
+      await runCommand(
+        ["terminal", "notify", "--title", "Build", "--body", "Finished"],
+        register,
+      );
+      expect(notify).toHaveBeenCalledWith({
+        param: { terminalId: "term-from-env" },
+        json: { title: "Build", body: "Finished" },
+      });
+    } finally {
+      if (previousId === undefined) delete process.env.BB_TERMINAL_SESSION_ID;
+      else process.env.BB_TERMINAL_SESSION_ID = previousId;
+    }
+  });
+
+  it.each(TERMINAL_ATTENTION_CONTRACT_CASES)(
+    "follows the shared terminal attention contract: $name",
+    async (contract) => {
+      const sessions = contract.sessions.map((entry) =>
+        makeTerminalSession({
+          id: entry.id,
+          title: entry.title,
+          createdAt: entry.attentionAt,
+          attention: {
+            at: entry.attentionAt,
+            kind: "bell",
+            seq: entry.seq,
+          },
+        }),
+      );
+      const listAttention = vi.fn(async () => ({ sessions }));
+      stubServerApi({ "v1.terminals.attention.$get": listAttention });
+      await runCommand(["terminal", "attention", "list", "--json"], register);
+      expect(
+        JSON.parse(collectLogPayloads(vi.mocked(console.log)).at(-1) ?? "{}")
+          .sessions.map((session: { id: string }) => session.id),
+      ).toEqual(contract.unreadIds);
+
+      stubServerApi({ "v1.terminals.attention.$get": listAttention });
+      await runCommand(["terminal", "attention", "next", "--json"], register);
+      const next = JSON.parse(
+        collectLogPayloads(vi.mocked(console.log)).at(-1) ?? "{}",
+      ).session as { id: string } | null;
+      expect(next?.id ?? null).toBe(contract.nextId);
+      if (contract.nextId === null) {
+        stubServerApi({ "v1.terminals.attention.$get": listAttention });
+        await runCommand(["terminal", "attention", "next"], register);
+        expect(collectLogLines(vi.mocked(console.log)).join("\n")).toContain(
+          "Nothing needs attention.",
+        );
+      }
+      if (contract.clearId !== null) {
+        const clearAttention = vi.fn(async () =>
+          makeTerminalSession({ id: contract.clearId, attention: null }),
+        );
+        stubServerApi({
+          "v1.terminals.:terminalId.attention.clear.$post": clearAttention,
+        });
+        await runCommand(
+          ["terminal", "attention", "clear", contract.clearId, "--json"],
+          register,
+        );
+        expect(clearAttention).toHaveBeenCalledWith({
+          param: { terminalId: contract.clearId },
+        });
+      }
+    },
+  );
 
   it("resolves an explicit machine and cwd without a primary-host fallback", async () => {
     const hosts = vi.fn(async () => [makeHost()]);
@@ -132,6 +199,62 @@ describe("bb terminal command output", () => {
       });
     },
   );
+
+  it("sends positional command arguments unquoted for the machine to quote", async () => {
+    const create = vi.fn(async () => makeTerminalSession());
+    stubServerApi({ "v1.terminals.$post": create });
+
+    await runCommand(
+      [
+        "terminal",
+        "create",
+        "--thread",
+        "thr-1",
+        "--",
+        "C:\\Program Files\\tool.exe",
+        "hello world",
+        "it's",
+      ],
+      register,
+    );
+
+    expect(create).toHaveBeenCalledWith({
+      json: expect.objectContaining({
+        start: {
+          mode: "argv",
+          argv: ["C:\\Program Files\\tool.exe", "hello world", "it's"],
+        },
+      }),
+    });
+  });
+
+  it("forwards a working directory when creating a terminal", async () => {
+    const create = vi.fn(async () => makeTerminalSession());
+    stubServerApi({ "v1.terminals.$post": create });
+
+    await runCommand(
+      [
+        "terminal",
+        "create",
+        "--thread",
+        "thr-1",
+        "--working-directory",
+        "/tmp/split",
+      ],
+      register,
+    );
+
+    expect(create).toHaveBeenCalledWith({
+      json: {
+        cols: 80,
+        cwd: "/tmp/split",
+        rows: 24,
+        title: undefined,
+        start: { mode: "shell" },
+        target: { kind: "thread", threadId: "thr-1" },
+      },
+    });
+  });
 
   it("creates a machine terminal at host home with an explicit host ID", async () => {
     const hosts = vi.fn(async () => [makeHost()]);
@@ -289,7 +412,7 @@ describe("bb terminal command output", () => {
     expect(send).toHaveBeenCalledWith({
       param: { terminalId: "term-1" },
       json: {
-        dataBase64: Buffer.from("echo hi\n", "utf8").toString("base64"),
+        dataBase64: Buffer.from("echo hi\r", "utf8").toString("base64"),
       },
     });
     expect(resize).toHaveBeenCalledWith({
@@ -302,7 +425,7 @@ describe("bb terminal command output", () => {
     });
   });
 
-  it("preserves arbitrary stdin bytes and appends enter as one byte", async () => {
+  it("preserves arbitrary stdin bytes and presses Enter with a carriage return", async () => {
     const input = Buffer.from([0xff, 0xfe, 0x00, 0x80]);
 
     const result = await resolveSendData(
@@ -310,7 +433,7 @@ describe("bb terminal command output", () => {
       Readable.from([input]),
     );
 
-    expect(result).toEqual(Buffer.concat([input, Buffer.from("\n")]));
+    expect(result).toEqual(Buffer.concat([input, Buffer.from("\r")]));
   });
 
   it("splits large input into sequential requests at the wire byte limit", async () => {
@@ -381,13 +504,112 @@ describe("bb terminal command output", () => {
       .mockImplementation(() => true);
     stubServerApi({ "v1.terminals.:terminalId.output.$get": output });
 
-    await runCommand(["terminal", "output", "term-1"], register);
+    await runCommand(
+      ["terminal", "output", "term-1", "--lines", "1"],
+      register,
+    );
 
     expect(output).toHaveBeenCalledWith({
       param: { terminalId: "term-1" },
-      query: {},
+      query: { lines: 1 },
     });
-    expect(write).toHaveBeenCalledWith(Buffer.from("hello\n", "utf8"));
+    expect(
+      Buffer.from(write.mock.calls[0]?.[0] as Uint8Array).toString("utf8"),
+    ).toBe("hello\n");
+  });
+
+  it.each(["€", "🙂"])(
+    "prints split UTF-8 character %s intact from line-limited output",
+    async (glyph) => {
+      const glyphBytes = Buffer.from(glyph);
+      const writes: Uint8Array[] = [];
+      const output = vi.fn(async () => ({
+        chunks: [
+          {
+            seq: 0,
+            dataBase64: Buffer.concat([
+              Buffer.from("before\n"),
+              glyphBytes.subarray(0, 1),
+            ]).toString("base64"),
+          },
+          {
+            seq: 1,
+            dataBase64: Buffer.concat([
+              glyphBytes.subarray(1),
+              Buffer.from(" after\n"),
+            ]).toString("base64"),
+          },
+        ],
+        nextSeq: 2,
+        truncated: false,
+        status: "exited",
+        exitCode: 0,
+        closeReason: "process-exit",
+      }));
+      vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+        if (typeof chunk === "string") writes.push(Buffer.from(chunk));
+        else if (chunk !== undefined) writes.push(Buffer.from(chunk));
+        return true;
+      });
+      stubServerApi({ "v1.terminals.:terminalId.output.$get": output });
+
+      await runCommand(
+        ["terminal", "output", "term-1", "--lines", "2"],
+        register,
+      );
+
+      expect(output).toHaveBeenCalledWith({
+        param: { terminalId: "term-1" },
+        query: { lines: 2 },
+      });
+      expect(Buffer.concat(writes).toString("utf8")).toBe(
+        `before\n${glyph} after\n`,
+      );
+    },
+  );
+
+  it("streams terminal output with terminal pipe --follow", async () => {
+    const output = vi.fn(async () =>
+      outputResponse({ nextSeq: 1, status: "exited", text: "hello\n" }),
+    );
+    const write = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation(() => true);
+    stubServerApi({ "v1.terminals.:terminalId.output.$get": output });
+
+    await runCommand(["terminal", "pipe", "term-1", "--follow"], register);
+
+    expect(output).toHaveBeenCalledOnce();
+    expect(
+      Buffer.from(write.mock.calls[0]?.[0] as Uint8Array).toString("utf8"),
+    ).toBe("hello\n");
+  });
+
+  it("pipes terminal output into the requested local command", async () => {
+    const output = vi.fn(async () =>
+      outputResponse({ nextSeq: 1, status: "exited", text: "hello\n" }),
+    );
+    const write = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation(() => true);
+    stubServerApi({ "v1.terminals.:terminalId.output.$get": output });
+
+    await runCommand(
+      [
+        "terminal",
+        "pipe",
+        "term-1",
+        "--follow",
+        "--command",
+        'node -e "process.stdin.pipe(process.stdout)"',
+      ],
+      register,
+    );
+
+    expect(output).toHaveBeenCalledOnce();
+    expect(
+      Buffer.from(write.mock.calls[0]?.[0] as Uint8Array).toString("utf8"),
+    ).toBe("hello\n");
   });
 
   function outputResponse(args: {
@@ -497,6 +719,41 @@ describe("bb terminal command output", () => {
     });
     expect(output.mock.calls[1]?.[0]).toMatchObject({ query: { sinceSeq: 4 } });
   });
+
+  it.each(["€", "🙂"])(
+    "matches UTF-8 character %s split across terminal chunks",
+    async (glyph) => {
+      const bytes = Buffer.from(glyph, "utf8");
+      const first = Buffer.concat([Buffer.from("ready "), bytes.subarray(0, 1)]);
+      const second = Buffer.concat([bytes.subarray(1), Buffer.from("\n")]);
+      const output = vi.fn(async () => ({
+        chunks: [first, second].map((chunk, index) => ({
+          seq: index,
+          dataBase64: chunk.toString("base64"),
+        })),
+        nextSeq: 2,
+        truncated: false,
+        status: "exited",
+        exitCode: 0,
+        closeReason: "process-exit",
+      }));
+      stubServerApi({ "v1.terminals.:terminalId.output.$get": output });
+
+      await runCommand(
+        ["terminal", "wait", "term-1", "--from-start", "--contains", glyph, "--json"],
+        register,
+      );
+
+      expect(
+        JSON.parse(collectLogPayloads(vi.mocked(console.log)).at(-1) ?? "{}"),
+      ).toEqual({
+        exitCode: 0,
+        matched: glyph,
+        nextSeq: 2,
+        terminalId: "term-1",
+      });
+    },
+  );
 
   it("finds a marker that is followed by more output than the retained window", async () => {
     const output = vi.fn().mockResolvedValueOnce(

@@ -2,20 +2,18 @@ import { createHash, randomBytes } from "node:crypto";
 import {
   chmod,
   mkdir,
-  mkdtemp,
   readdir,
   readFile,
-  rm,
   stat,
   symlink,
   writeFile,
 } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { gzipSync } from "node:zlib";
 import { Header } from "tar/header";
 import type { EntryTypeName } from "tar/types";
-import { afterEach, describe, expect, it } from "vitest";
+import { makeTempDir } from "@bb/test-helpers";
+import { describe, expect, it, vi } from "vitest";
 import {
   extractServerArchive,
   SERVER_ARCHIVE_VERSION,
@@ -26,20 +24,60 @@ import {
   writeServerArchive,
 } from "../src/index.js";
 
-const tempDirs: string[] = [];
+const writeStreamOpen = vi.hoisted(() => ({ delayMs: 0 }));
 
-async function makeTempDir(): Promise<string> {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "bb-server-archive-"));
-  tempDirs.push(tempDir);
-  return tempDir;
-}
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  const open = (
+    path: import("node:fs").PathLike,
+    flags: import("node:fs").OpenMode,
+    mode: import("node:fs").Mode,
+    callback: (error: NodeJS.ErrnoException | null, fd: number) => void,
+  ) => {
+    setTimeout(
+      () => actual.open(path, flags, mode, callback),
+      writeStreamOpen.delayMs,
+    );
+  };
+  return {
+    ...actual,
+    createWriteStream: (
+      path: import("node:fs").PathLike,
+      options: Exclude<
+        Parameters<typeof actual.createWriteStream>[1],
+        string | undefined
+      >,
+    ) =>
+      actual.createWriteStream(path, {
+        ...options,
+        fs: {
+          open,
+          write: actual.write,
+          writev: actual.writev,
+          close: actual.close,
+        },
+      }),
+  };
+});
 
-afterEach(async () => {
-  await Promise.all(
-    tempDirs
-      .splice(0)
-      .map((tempDir) => rm(tempDir, { force: true, recursive: true })),
-  );
+const sourceOpens = vi.hoisted(() => ({ allowed: new Map<string, number>() }));
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...actual,
+    open: async (...args: Parameters<typeof actual.open>) => {
+      const opened = String(args[0]);
+      const allowed = sourceOpens.allowed.get(opened);
+      if (allowed === 0) {
+        throw Object.assign(new Error(`EIO: i/o error, open '${opened}'`), {
+          code: "EIO",
+        });
+      }
+      if (allowed !== undefined) sourceOpens.allowed.set(opened, allowed - 1);
+      return actual.open(...args);
+    },
+  };
 });
 
 const MANIFEST_INPUT: ServerArchiveManifestInput = {
@@ -73,6 +111,11 @@ async function createSourceTree(): Promise<SourceTree> {
       archivePath: `plugins/npm/${longSegment}/${longSegment}/${longSegment}/bin/tool`,
       body: Buffer.from("#!/bin/sh\necho hi\n"),
       mode: 0o755,
+    },
+    {
+      archivePath: `attachments/proj_test/${"long-attachment-name-".repeat(6)}.svg`,
+      body: Buffer.from("<svg/>"),
+      mode: 0o644,
     },
     {
       archivePath: "attachments/café/übersicht.txt",
@@ -223,7 +266,9 @@ describe("writeServerArchive and extractServerArchive", () => {
     expect(archiveBytes.subarray(0, 2)).toEqual(Buffer.from([0x1f, 0x8b]));
     expect(written.sizeBytes).toBe(archiveBytes.length);
     expect(written.sha256).toBe(sha256(archiveBytes));
-    expect((await stat(outPath)).mode & 0o777).toBe(0o600);
+    if (process.platform !== "win32") {
+      expect((await stat(outPath)).mode & 0o777).toBe(0o600);
+    }
     expect(await readdir(path.dirname(outPath))).toEqual(["server.tar.gz"]);
     expect(written.manifest.entries).toEqual(
       tree.files.map((file) => {
@@ -249,7 +294,9 @@ describe("writeServerArchive and extractServerArchive", () => {
       "files",
       ...(tree.files[3]?.archivePath ?? "").split("/"),
     );
-    expect((await stat(toolPath)).mode & 0o100).toBe(0o100);
+    if (process.platform !== "win32") {
+      expect((await stat(toolPath)).mode & 0o100).toBe(0o100);
+    }
   });
 
   it("refuses symbolic link sources and unsafe or conflicting archive paths", async () => {
@@ -330,6 +377,58 @@ describe("writeServerArchive and extractServerArchive", () => {
       extractServerArchive({ archivePath: truncatedPath, destinationDir }),
       ["corrupt"],
     );
+    expect(await readdir(destinationDir)).toEqual([]);
+  });
+
+  it("leaves no temporary archive when a source read fails before the archive file is open", async () => {
+    const tree = await createSourceTree();
+    const outDir = path.join(tree.root, "out");
+    await mkdir(outDir);
+    sourceOpens.allowed.set(tree.files[0]!.sourcePath, 1);
+    writeStreamOpen.delayMs = 100;
+    try {
+      await expect(
+        writeServerArchive({
+          outPath: path.join(outDir, "server.tar.gz"),
+          files: tree.files,
+          manifest: MANIFEST_INPUT,
+        }),
+      ).rejects.toThrow("EIO");
+    } finally {
+      writeStreamOpen.delayMs = 0;
+      sourceOpens.allowed.clear();
+    }
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    expect(await readdir(outDir)).toEqual([]);
+  });
+
+  it("leaves nothing in the destination when an entry fails before its file is open", async () => {
+    const tree = await createSourceTree();
+    const outPath = path.join(tree.root, "server.tar.gz");
+    await writeServerArchive({
+      outPath,
+      files: tree.files,
+      manifest: MANIFEST_INPUT,
+    });
+    const bytes = await readFile(outPath);
+    const truncatedPath = path.join(tree.root, "truncated.tar.gz");
+    await writeFile(
+      truncatedPath,
+      bytes.subarray(0, Math.floor(bytes.length / 2)),
+    );
+    const destinationDir = path.join(tree.root, "staging");
+    writeStreamOpen.delayMs = 100;
+    try {
+      await expectArchiveError(
+        extractServerArchive({ archivePath: truncatedPath, destinationDir }),
+        ["corrupt"],
+      );
+    } finally {
+      writeStreamOpen.delayMs = 0;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
     expect(await readdir(destinationDir)).toEqual([]);
   });
 });

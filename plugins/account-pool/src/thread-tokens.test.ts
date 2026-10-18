@@ -1,0 +1,2234 @@
+import fs from "node:fs/promises";
+import { createHash } from "node:crypto";
+import path from "node:path";
+import { tmpdir } from "node:os";
+import { afterEach, expect, it, vi } from "vitest";
+import { z } from "zod";
+import { HubTokenStore } from "./store.js";
+import {
+  DURABLE_PRIOR_MAX_AGE_MS,
+  MAX_PRIOR_CREDENTIALS,
+  PROCESS_CREDENTIAL_CLOCK_SKEW_MS,
+  PROCESS_CREDENTIAL_MAX_AGE_MS,
+  ThreadTokenStore,
+  type ThreadLookup,
+} from "./thread-tokens.js";
+
+const directories: string[] = [];
+afterEach(async () => {
+  for (const directory of directories.splice(0))
+    await fs.rm(directory, { recursive: true, force: true });
+});
+
+async function fixture() {
+  const directory = await fs.mkdtemp(path.join(tmpdir(), "bb-thread-token-"));
+  directories.push(directory);
+  let now = 1_000_000;
+  const hosts = new HubTokenStore(directory, () => now);
+  await hosts.initialize();
+  const threads = new ThreadTokenStore(directory, hosts);
+  await threads.initialize(["host-one"]);
+  const route = {
+    hostId: "host-one",
+    threadId: "thr_one",
+    provider: "claude" as const,
+    accountId: null,
+  };
+  const hostToken = await hosts.forHost(route.hostId);
+  return {
+    directory,
+    hosts,
+    threads,
+    route,
+    hostToken,
+    advance: (milliseconds: number) => {
+      now += milliseconds;
+    },
+  };
+}
+
+it("keeps process credentials scoped, revocable, and valid after a restart without storing the plaintext", async () => {
+  const { directory, hosts, threads, route, hostToken } = await fixture();
+  const token = await threads.forThread(route, hostToken, "process");
+  const nested = await threads.forNested(
+    { hostId: route.hostId, threadId: route.threadId },
+    hostToken,
+    "process",
+  );
+  expect((await threads.forThread(route, hostToken, "process")) === token).toBe(
+    true,
+  );
+  expect(await threads.authenticate(token, "claude")).toEqual(route);
+  expect(await threads.authenticate(token, "codex")).toBeNull();
+  expect(await threads.authenticateNested(nested)).toEqual({
+    hostId: route.hostId,
+    threadId: route.threadId,
+  });
+  const restarted = new ThreadTokenStore(directory, hosts);
+  await restarted.initialize([route.hostId]);
+  expect(await restarted.authenticate(token, "claude")).toEqual(route);
+  expect(await restarted.authenticate(token, "codex")).toBeNull();
+  expect(restarted.isProcessCredential(token)).toBe(true);
+  expect(await restarted.authenticateNested(nested)).toEqual({
+    hostId: route.hostId,
+    threadId: route.threadId,
+  });
+  expect(await restarted.authenticate(`${token.slice(0, -1)}_`)).toBeNull();
+  for (const name of await fs.readdir(directory)) {
+    const content = await fs.readFile(path.join(directory, name), "utf8");
+    expect(content.includes(token)).toBe(false);
+    expect(content.includes(nested)).toBe(false);
+  }
+  await restarted.removeThread(route.threadId);
+  expect(await restarted.authenticate(token)).toBeNull();
+  expect(await restarted.authenticateNested(nested)).toBeNull();
+  const afterArchive = new ThreadTokenStore(directory, hosts);
+  await afterArchive.initialize([route.hostId]);
+  expect(await afterArchive.authenticate(token)).toBeNull();
+  expect(await afterArchive.authenticateNested(nested)).toBeNull();
+  await threads.removeThread(route.threadId);
+  expect(await threads.authenticate(token)).toBeNull();
+  expect(await threads.authenticateNested(nested)).toBeNull();
+  await expect(threads.forThread(route, hostToken, "process")).rejects.toThrow(
+    "deleted thread",
+  );
+});
+
+const processFilesOf = async (directory: string) =>
+  (await fs.readdir(directory)).filter(
+    (name) => name.startsWith("scoped-process-") && name.endsWith(".json"),
+  );
+
+async function restartOf(
+  directory: string,
+  hosts: HubTokenStore,
+  route: { hostId: string },
+  clock: () => number = Date.now,
+) {
+  const restarted = new ThreadTokenStore(directory, hosts, clock);
+  await restarted.initialize([route.hostId]);
+  return restarted;
+}
+
+it("keeps a restored process credential valid after a reissue, so a surviving CLI keeps authenticating", async () => {
+  const { directory, hosts, threads, route, hostToken } = await fixture();
+  const nestedRoute = { hostId: route.hostId, threadId: route.threadId };
+  const oldToken = await threads.forThread(route, hostToken, "process");
+  const oldNested = await threads.forNested(nestedRoute, hostToken, "process");
+  expect(await processFilesOf(directory)).toHaveLength(2);
+  const restarted = await restartOf(directory, hosts, route);
+  const newToken = await restarted.forThread(route, hostToken, "process");
+  const newNested = await restarted.forNested(
+    nestedRoute,
+    hostToken,
+    "process",
+  );
+  expect(newToken).not.toBe(oldToken);
+  expect(newNested).not.toBe(oldNested);
+  expect(await restarted.authenticate(oldToken, "claude")).toEqual(route);
+  expect(await restarted.authenticateNested(oldNested)).toEqual(nestedRoute);
+  expect(await restarted.authenticate(newToken, "claude")).toEqual(route);
+  expect(await restarted.authenticateNested(newNested)).toEqual(nestedRoute);
+  expect(restarted.isProcessCredential(oldToken)).toBe(true);
+  expect(restarted.isProcessCredential(newToken)).toBe(true);
+  expect(await restarted.forThread(route, hostToken, "process")).toBe(newToken);
+  expect(await processFilesOf(directory)).toHaveLength(2);
+  const again = await restartOf(directory, hosts, route);
+  expect(await again.authenticate(oldToken)).toEqual(route);
+  expect(await again.authenticateNested(oldNested)).toEqual(nestedRoute);
+  expect(await again.authenticate(newToken)).toEqual(route);
+  for (const name of await fs.readdir(directory)) {
+    const content = await fs.readFile(path.join(directory, name), "utf8");
+    for (const token of [oldToken, oldNested, newToken, newNested])
+      expect(content.includes(token)).toBe(false);
+  }
+});
+
+it("keeps both an idle relaunched CLI and a long-lived survivor valid across relaunch-all swaps", async () => {
+  const { directory, hosts, threads, route, hostToken } = await fixture();
+  const nestedRoute = { hostId: route.hostId, threadId: route.threadId };
+  const survivor = await threads.forThread(route, hostToken, "process");
+  const survivorNested = await threads.forNested(
+    nestedRoute,
+    hostToken,
+    "process",
+  );
+  expect(await threads.authenticate(survivor)).toEqual(route);
+  expect(await threads.authenticateNested(survivorNested)).toEqual(nestedRoute);
+  const issued: string[] = [];
+  const issuedNested: string[] = [];
+  let store = threads;
+  for (let swap = 1; swap <= 2; swap += 1) {
+    store = await restartOf(directory, hosts, route);
+    issued.push(await store.forThread(route, hostToken, "process"));
+    issuedNested.push(await store.forNested(nestedRoute, hostToken, "process"));
+    expect(await store.forThread(route, hostToken, "process")).toBe(
+      issued[swap - 1],
+    );
+  }
+  expect(await store.authenticate(survivor)).toEqual(route);
+  expect(await store.authenticateNested(survivorNested)).toEqual(nestedRoute);
+  const idleSwapOne = issued[0] ?? "";
+  expect(await store.authenticate(idleSwapOne)).toEqual(route);
+  store = await restartOf(directory, hosts, route);
+  issued.push(await store.forThread(route, hostToken, "process"));
+  issuedNested.push(await store.forNested(nestedRoute, hostToken, "process"));
+  expect(await store.authenticate(survivor)).toEqual(route);
+  expect(await store.authenticateNested(survivorNested)).toEqual(nestedRoute);
+  expect(await store.authenticate(issued[1] ?? "")).toEqual(route);
+  expect(await store.authenticateNested(issuedNested[1] ?? "")).toEqual(
+    nestedRoute,
+  );
+  expect(await store.authenticate(issued[2] ?? "")).toEqual(route);
+  expect(await processFilesOf(directory)).toHaveLength(2);
+});
+
+it("at the fourth reissue evicts the oldest idle digest and keeps the presented survivor and the latest idle one, for thread and nested credentials", async () => {
+  const { directory, hosts, threads, route, hostToken } = await fixture();
+  const nestedRoute = { hostId: route.hostId, threadId: route.threadId };
+  const threadTokens = [await threads.forThread(route, hostToken, "process")];
+  const nestedTokens = [
+    await threads.forNested(nestedRoute, hostToken, "process"),
+  ];
+  expect(await threads.authenticate(threadTokens[0])).toEqual(route);
+  expect(await threads.authenticateNested(nestedTokens[0])).toEqual(
+    nestedRoute,
+  );
+  let store = threads;
+  for (let swap = 1; swap <= 4; swap += 1) {
+    store = await restartOf(directory, hosts, route);
+    threadTokens.push(await store.forThread(route, hostToken, "process"));
+    nestedTokens.push(await store.forNested(nestedRoute, hostToken, "process"));
+  }
+  expect(await store.authenticate(threadTokens[1])).toBeNull();
+  expect(await store.authenticateNested(nestedTokens[1])).toBeNull();
+  expect(await store.authenticate(threadTokens[0])).toEqual(route);
+  expect(await store.authenticateNested(nestedTokens[0])).toEqual(nestedRoute);
+  expect(await store.authenticate(threadTokens[2])).toEqual(route);
+  expect(await store.authenticateNested(nestedTokens[2])).toEqual(nestedRoute);
+  expect(await store.authenticate(threadTokens[3])).toEqual(route);
+  expect(await store.authenticateNested(nestedTokens[3])).toEqual(nestedRoute);
+  expect(await store.authenticate(threadTokens[4])).toEqual(route);
+  expect(await store.authenticateNested(nestedTokens[4])).toEqual(nestedRoute);
+  const reloaded = await restartOf(directory, hosts, route);
+  expect(await reloaded.authenticate(threadTokens[1])).toBeNull();
+  expect(await reloaded.authenticate(threadTokens[0])).toEqual(route);
+  expect(await reloaded.authenticateNested(nestedTokens[1])).toBeNull();
+  expect(await reloaded.authenticateNested(nestedTokens[0])).toEqual(
+    nestedRoute,
+  );
+});
+
+it("holds at most MAX_PRIOR_CREDENTIALS prior digests per route, evicting the oldest never-presented reissue first and never the launch credential", async () => {
+  const { directory, hosts, threads, route, hostToken } = await fixture();
+  const tokens = [await threads.forThread(route, hostToken, "process")];
+  let store = threads;
+  for (let swap = 1; swap <= MAX_PRIOR_CREDENTIALS + 1; swap += 1) {
+    store = await restartOf(directory, hosts, route);
+    tokens.push(await store.forThread(route, hostToken, "process"));
+  }
+  const latest = tokens.length - 1;
+  expect(await store.authenticate(tokens[latest])).toEqual(route);
+  expect(await store.authenticate(tokens[1])).toBeNull();
+  expect(await store.authenticate(tokens[0])).toEqual(route);
+  for (let index = 2; index < latest; index += 1)
+    expect(await store.authenticate(tokens[index])).toEqual(route);
+  const stored = await storedPriors(directory);
+  expect(stored).toHaveLength(MAX_PRIOR_CREDENTIALS);
+});
+
+it("evicts the oldest presented reissue, never the launch credential, when every retained digest was presented", async () => {
+  const { directory, hosts, threads, route, hostToken } = await fixture();
+  const tokens = [await threads.forThread(route, hostToken, "process")];
+  expect(await threads.authenticate(tokens[0])).toEqual(route);
+  let store = threads;
+  for (let swap = 1; swap <= MAX_PRIOR_CREDENTIALS + 1; swap += 1) {
+    store = await restartOf(directory, hosts, route);
+    const token = await store.forThread(route, hostToken, "process");
+    tokens.push(token);
+    expect(await store.authenticate(token)).toEqual(route);
+  }
+  expect(await store.authenticate(tokens[1])).toBeNull();
+  expect(await store.authenticate(tokens[0])).toEqual(route);
+  for (let index = 2; index < tokens.length; index += 1)
+    expect(await store.authenticate(tokens[index])).toEqual(route);
+  expect(await storedPriors(directory)).toHaveLength(MAX_PRIOR_CREDENTIALS);
+});
+
+async function storedPriors(directory: string) {
+  const files = (await processFilesOf(directory)).filter((name) =>
+    name.startsWith("scoped-process-route-"),
+  );
+  expect(files).toHaveLength(1);
+  const stored = z
+    .object({
+      priors: z
+        .array(z.object({ tokenDigest: z.string() }).passthrough())
+        .optional(),
+    })
+    .passthrough()
+    .parse(
+      JSON.parse(
+        await fs.readFile(path.join(directory, files[0] ?? ""), "utf8"),
+      ),
+    );
+  return stored.priors ?? [];
+}
+
+const LAUNCH_CYCLES = MAX_PRIOR_CREDENTIALS + 3;
+
+async function reissueAcrossRestarts(
+  f: Awaited<ReturnType<typeof fixture>>,
+  provider: "claude" | "codex",
+  options: { presentLaunch: boolean },
+) {
+  const route = { ...f.route, provider };
+  const nestedRoute = { hostId: route.hostId, threadId: route.threadId };
+  const threadTokens = [
+    await f.threads.forThread(route, f.hostToken, "process"),
+  ];
+  const nestedTokens = [
+    await f.threads.forNested(nestedRoute, f.hostToken, "process"),
+  ];
+  if (options.presentLaunch) {
+    expect(await f.threads.authenticate(threadTokens[0])).toEqual(route);
+    expect(await f.threads.authenticateNested(nestedTokens[0])).toEqual(
+      nestedRoute,
+    );
+  }
+  let store = f.threads;
+  for (let swap = 1; swap <= LAUNCH_CYCLES; swap += 1) {
+    store = await restartOf(f.directory, f.hosts, route);
+    threadTokens.push(await store.forThread(route, f.hostToken, "process"));
+    nestedTokens.push(
+      await store.forNested(nestedRoute, f.hostToken, "process"),
+    );
+  }
+  return { route, nestedRoute, threadTokens, nestedTokens, store };
+}
+
+it.each([
+  { provider: "claude" as const, presentLaunch: false },
+  { provider: "claude" as const, presentLaunch: true },
+  { provider: "codex" as const, presentLaunch: false },
+  { provider: "codex" as const, presentLaunch: true },
+])(
+  "keeps the launch credential of a $provider CLI valid across repeated restarts (launch presented: $presentLaunch)",
+  async ({ provider, presentLaunch }) => {
+    const f = await fixture();
+    const { route, nestedRoute, threadTokens, nestedTokens, store } =
+      await reissueAcrossRestarts(f, provider, { presentLaunch });
+    expect(await store.authenticate(threadTokens[0], provider)).toEqual(route);
+    expect(await store.authenticateNested(nestedTokens[0])).toEqual(
+      nestedRoute,
+    );
+    const reloaded = await restartOf(f.directory, f.hosts, route);
+    expect(await reloaded.authenticate(threadTokens[0], provider)).toEqual(
+      route,
+    );
+    expect(await reloaded.authenticateNested(nestedTokens[0])).toEqual(
+      nestedRoute,
+    );
+  },
+);
+
+it("still bounds the reissues no CLI ever presented: the launch credential, the two latest priors and the current token are the only survivors", async () => {
+  const f = await fixture();
+  const { route, nestedRoute, threadTokens, nestedTokens, store } =
+    await reissueAcrossRestarts(f, "claude", { presentLaunch: false });
+  const last = threadTokens.length - 1;
+  const survivors = new Set([0, last - 2, last - 1, last]);
+  for (let index = 0; index <= last; index += 1) {
+    expect(await store.authenticate(threadTokens[index])).toEqual(
+      survivors.has(index) ? route : null,
+    );
+    expect(await store.authenticateNested(nestedTokens[index])).toEqual(
+      survivors.has(index) ? nestedRoute : null,
+    );
+  }
+  expect(await storedPriors(f.directory)).toHaveLength(MAX_PRIOR_CREDENTIALS);
+});
+
+it("refuses the launch credential after removal, after a dead host generation is reclaimed, and at its own expiry", async () => {
+  const removed = await fixture();
+  const first = await reissueAcrossRestarts(removed, "claude", {
+    presentLaunch: false,
+  });
+  expect(await first.store.authenticate(first.threadTokens[0])).toEqual(
+    first.route,
+  );
+  await first.store.removeThread(first.route.threadId);
+  for (const token of first.threadTokens)
+    expect(await first.store.authenticate(token)).toBeNull();
+  for (const token of first.nestedTokens)
+    expect(await first.store.authenticateNested(token)).toBeNull();
+  const afterRemoval = await restartOf(
+    removed.directory,
+    removed.hosts,
+    first.route,
+  );
+  expect(await afterRemoval.authenticate(first.threadTokens[0])).toBeNull();
+  expect(
+    await afterRemoval.authenticateNested(first.nestedTokens[0]),
+  ).toBeNull();
+
+  const rotated = await fixture();
+  const second = await reissueAcrossRestarts(rotated, "claude", {
+    presentLaunch: false,
+  });
+  expect(await second.store.authenticate(second.threadTokens[0])).toEqual(
+    second.route,
+  );
+  await rotated.hosts.rotate(second.route.hostId);
+  const nextHostToken = await rotated.hosts.forHost(second.route.hostId);
+  rotated.advance(10 * 60_000 + 1);
+  await second.store.forThread(second.route, nextHostToken, "process");
+  expect(await second.store.authenticate(second.threadTokens[0])).toBeNull();
+  expect(second.store.isProcessCredential(second.threadTokens[0])).toBe(false);
+
+  const expiring = await fixture();
+  let clock = 5_000_000;
+  const route = expiring.route;
+  const launch = await (
+    await restartOf(expiring.directory, expiring.hosts, route, () => clock)
+  ).forThread(route, expiring.hostToken, "process");
+  let store = expiring.threads;
+  const reissued: string[] = [];
+  for (let swap = 1; swap <= LAUNCH_CYCLES; swap += 1) {
+    clock += 60_000;
+    store = await restartOf(
+      expiring.directory,
+      expiring.hosts,
+      route,
+      () => clock,
+    );
+    reissued.push(await store.forThread(route, expiring.hostToken, "process"));
+  }
+  clock += PROCESS_CREDENTIAL_MAX_AGE_MS - LAUNCH_CYCLES * 60_000 - 1;
+  expect(await store.authenticate(launch)).toEqual(route);
+  clock += 1;
+  expect(await store.authenticate(launch)).toBeNull();
+  expect(store.isProcessCredential(launch)).toBe(false);
+  expect(await store.authenticate(reissued[reissued.length - 1] ?? "")).toEqual(
+    route,
+  );
+});
+
+it("keeps a relaunched CLI's launch token valid across restarts that reattach without minting, and holds at most four credentials", async () => {
+  const f = await fixture();
+  const first = await reissueAcrossRestarts(f, "claude", {
+    presentLaunch: false,
+  });
+  const relaunched = await restartOf(f.directory, f.hosts, first.route);
+  const nestedRoute = first.nestedRoute;
+  const relaunchToken = await relaunched.forThread(
+    first.route,
+    f.hostToken,
+    "process",
+  );
+  const relaunchNested = await relaunched.forNested(
+    nestedRoute,
+    f.hostToken,
+    "process",
+  );
+  let store = relaunched;
+  for (let restart = 1; restart <= LAUNCH_CYCLES; restart += 1) {
+    store = await restartOf(f.directory, f.hosts, first.route);
+    expect(await store.authenticate(relaunchToken)).toEqual(first.route);
+    expect(await store.authenticateNested(relaunchNested)).toEqual(nestedRoute);
+  }
+  let valid = 0;
+  for (const token of [...first.threadTokens, relaunchToken])
+    if ((await store.authenticate(token)) !== null) valid += 1;
+  expect(valid).toBeLessThanOrEqual(MAX_PRIOR_CREDENTIALS + 1);
+  expect(await storedPriors(f.directory)).toHaveLength(MAX_PRIOR_CREDENTIALS);
+});
+
+it("refuses every retained digest at once after removal, across a restart", async () => {
+  const { directory, hosts, threads, route, hostToken } = await fixture();
+  const nestedRoute = { hostId: route.hostId, threadId: route.threadId };
+  const tokens = [await threads.forThread(route, hostToken, "process")];
+  const nested = [await threads.forNested(nestedRoute, hostToken, "process")];
+  let store = threads;
+  for (let swap = 1; swap <= MAX_PRIOR_CREDENTIALS; swap += 1) {
+    store = await restartOf(directory, hosts, route);
+    tokens.push(await store.forThread(route, hostToken, "process"));
+    nested.push(await store.forNested(nestedRoute, hostToken, "process"));
+  }
+  expect(await store.authenticate(tokens[0])).toEqual(route);
+  await store.removeThread(route.threadId);
+  for (const token of tokens)
+    expect(await store.authenticate(token)).toBeNull();
+  for (const token of nested)
+    expect(await store.authenticateNested(token)).toBeNull();
+  expect(await processFilesOf(directory)).toEqual([]);
+  const after = await restartOf(directory, hosts, route);
+  for (const token of tokens)
+    expect(await after.authenticate(token)).toBeNull();
+  for (const token of nested)
+    expect(await after.authenticateNested(token)).toBeNull();
+});
+
+it("refuses the prior when a restored thread is swept as gone", async () => {
+  const { directory, hosts, threads, route, hostToken } = await fixture();
+  const oldToken = await threads.forThread(route, hostToken, "process");
+  const restarted = await restartOf(directory, hosts, route);
+  const newToken = await restarted.forThread(route, hostToken, "process");
+  expect(await restarted.authenticate(oldToken)).toEqual(route);
+  expect(await restarted.sweepThreads(async () => "gone")).toMatchObject({
+    revoked: 1,
+  });
+  expect(await restarted.authenticate(oldToken)).toBeNull();
+  expect(await restarted.authenticate(newToken)).toBeNull();
+});
+
+it("refuses the prior once its own expiry passes, while the reissued token stays valid", async () => {
+  const { directory, hosts, route, hostToken } = await fixture();
+  let clock = 5_000_000;
+  const minting = await restartOf(directory, hosts, route, () => clock);
+  const oldToken = await minting.forThread(route, hostToken, "process");
+  clock += 60_000;
+  const restarted = await restartOf(directory, hosts, route, () => clock);
+  const newToken = await restarted.forThread(route, hostToken, "process");
+  clock += PROCESS_CREDENTIAL_MAX_AGE_MS - 60_001;
+  expect(await restarted.authenticate(oldToken)).toEqual(route);
+  const reloaded = await restartOf(directory, hosts, route, () => clock);
+  expect(await reloaded.authenticate(oldToken)).toEqual(route);
+  clock += 1;
+  expect(await restarted.authenticate(oldToken)).toBeNull();
+  expect(restarted.isProcessCredential(oldToken)).toBe(false);
+  expect(await restarted.authenticate(newToken)).toEqual(route);
+  const afterExpiry = await restartOf(directory, hosts, route, () => clock);
+  expect(await afterExpiry.authenticate(oldToken)).toBeNull();
+  expect(await afterExpiry.authenticate(newToken)).toEqual(route);
+});
+
+it("drops the prior when a later mint reclaims credentials of a dead host generation", async () => {
+  const { directory, hosts, route, hostToken, advance } = await fixture();
+  const minting = await restartOf(directory, hosts, route);
+  const oldToken = await minting.forThread(route, hostToken, "process");
+  const restarted = await restartOf(directory, hosts, route);
+  const newToken = await restarted.forThread(route, hostToken, "process");
+  expect(restarted.isProcessCredential(oldToken)).toBe(true);
+  expect(restarted.isProcessCredential(newToken)).toBe(true);
+  await hosts.rotate(route.hostId);
+  const nextHostToken = await hosts.forHost(route.hostId);
+  advance(10 * 60_000 + 1);
+  const replacement = await restarted.forThread(
+    route,
+    nextHostToken,
+    "process",
+  );
+  expect(await restarted.authenticate(replacement)).toEqual(route);
+  expect(restarted.isProcessCredential(oldToken)).toBe(false);
+  expect(restarted.isProcessCredential(newToken)).toBe(false);
+  expect(await processFilesOf(directory)).toHaveLength(1);
+});
+
+it("keeps a restored durable credential valid after a re-mint until its successor is presented, for thread and nested routes", async () => {
+  const { directory, hosts, threads, route, hostToken } = await fixture();
+  const nestedRoute = { hostId: route.hostId, threadId: route.threadId };
+  const oldToken = await threads.forThread(route, hostToken);
+  const oldNested = await threads.forNested(nestedRoute, hostToken);
+  const restarted = await restartOf(directory, hosts, route);
+  const newToken = await restarted.forThread(route, hostToken);
+  const newNested = await restarted.forNested(nestedRoute, hostToken);
+  expect(newToken).not.toBe(oldToken);
+  expect(await restarted.authenticate(oldToken)).toEqual(route);
+  expect(await restarted.authenticateNested(oldNested)).toEqual(nestedRoute);
+  const reloaded = await restartOf(directory, hosts, route);
+  expect(await reloaded.authenticate(oldToken)).toEqual(route);
+  expect(await reloaded.authenticateNested(oldNested)).toEqual(nestedRoute);
+  expect(await reloaded.authenticate(newToken)).toEqual(route);
+  expect(await reloaded.authenticate(oldToken)).toBeNull();
+  expect(await reloaded.authenticateNested(newNested)).toEqual(nestedRoute);
+  expect(await reloaded.authenticateNested(oldNested)).toBeNull();
+  const final = await restartOf(directory, hosts, route);
+  expect(await final.authenticate(oldToken)).toBeNull();
+  expect(await final.authenticateNested(oldNested)).toBeNull();
+  expect(await final.authenticate(newToken)).toEqual(route);
+});
+
+async function durablePendingFixture() {
+  const base = await fixture();
+  const directory = await fs.mkdtemp(path.join(tmpdir(), "bb-thread-token-"));
+  directories.push(directory);
+  const { hosts, route, hostToken } = base;
+  const threads = new ThreadTokenStore(directory, hosts);
+  await threads.initialize([route.hostId]);
+  const nestedRoute = { hostId: route.hostId, threadId: route.threadId };
+  const oldToken = await threads.forThread(route, hostToken);
+  const oldNested = await threads.forNested(nestedRoute, hostToken);
+  const restarted = await restartOf(directory, hosts, route);
+  const newToken = await restarted.forThread(route, hostToken);
+  const newNested = await restarted.forNested(nestedRoute, hostToken);
+  const failWrites = () => fs.chmod(directory, 0o500);
+  const allowWrites = () => fs.chmod(directory, 0o700);
+  return {
+    ...base,
+    directory,
+    nestedRoute,
+    oldToken,
+    oldNested,
+    restarted,
+    newToken,
+    newNested,
+    failWrites,
+    allowWrites,
+  };
+}
+
+it("refuses the old durable digest at once when persisting its drop fails, and retries the write on the next authentication", async () => {
+  const f = await durablePendingFixture();
+  await f.failWrites();
+  expect(await f.restarted.authenticate(f.newToken)).toEqual(f.route);
+  expect(await f.restarted.authenticate(f.oldToken)).toBeNull();
+  expect(await f.restarted.authenticateNested(f.newNested)).toEqual(
+    f.nestedRoute,
+  );
+  expect(await f.restarted.authenticateNested(f.oldNested)).toBeNull();
+  await f.allowWrites();
+  expect(await f.restarted.authenticate(f.newToken)).toEqual(f.route);
+  expect(await f.restarted.authenticateNested(f.newNested)).toEqual(
+    f.nestedRoute,
+  );
+  const reloaded = await restartOf(f.directory, f.hosts, f.route);
+  expect(await reloaded.authenticate(f.oldToken)).toBeNull();
+  expect(await reloaded.authenticateNested(f.oldNested)).toBeNull();
+  expect(await reloaded.authenticate(f.newToken)).toEqual(f.route);
+});
+
+it("documents the residual: a restart before any successful retry restores the old durable digest until the new one is presented again", async () => {
+  const f = await durablePendingFixture();
+  await f.failWrites();
+  expect(await f.restarted.authenticate(f.newToken)).toEqual(f.route);
+  expect(await f.restarted.authenticate(f.oldToken)).toBeNull();
+  await f.allowWrites();
+  const reloaded = await restartOf(f.directory, f.hosts, f.route);
+  expect(await reloaded.authenticate(f.oldToken)).toEqual(f.route);
+  expect(await reloaded.authenticate(f.newToken)).toEqual(f.route);
+  expect(await reloaded.authenticate(f.oldToken)).toBeNull();
+  const final = await restartOf(f.directory, f.hosts, f.route);
+  expect(await final.authenticate(f.oldToken)).toBeNull();
+});
+
+it("refuses a durable prior 24 hours after its re-mint when the successor is never presented, live and after a restart", async () => {
+  const { directory, hosts, route, hostToken } = await fixture();
+  const nestedRoute = { hostId: route.hostId, threadId: route.threadId };
+  let clock = 9_000_000;
+  const minting = await restartOf(directory, hosts, route, () => clock);
+  const oldToken = await minting.forThread(route, hostToken);
+  const oldNested = await minting.forNested(nestedRoute, hostToken);
+  const restarted = await restartOf(directory, hosts, route, () => clock);
+  await restarted.forThread(route, hostToken);
+  await restarted.forNested(nestedRoute, hostToken);
+  const remintedAt = clock;
+  clock = remintedAt + DURABLE_PRIOR_MAX_AGE_MS - 60_000;
+  expect(await restarted.authenticate(oldToken)).toEqual(route);
+  expect(await restarted.authenticateNested(oldNested)).toEqual(nestedRoute);
+  const justBefore = await restartOf(directory, hosts, route, () => clock);
+  expect(await justBefore.authenticate(oldToken)).toEqual(route);
+  expect(await justBefore.authenticateNested(oldNested)).toEqual(nestedRoute);
+  clock = remintedAt + DURABLE_PRIOR_MAX_AGE_MS + 60_000;
+  expect(await restarted.authenticate(oldToken)).toBeNull();
+  expect(await restarted.authenticateNested(oldNested)).toBeNull();
+  expect(await justBefore.authenticate(oldToken)).toBeNull();
+  const afterExpiry = await restartOf(directory, hosts, route, () => clock);
+  expect(await afterExpiry.authenticate(oldToken)).toBeNull();
+  expect(await afterExpiry.authenticateNested(oldNested)).toBeNull();
+});
+
+it("drops every digest of a durable route on revocation", async () => {
+  const { directory, hosts, threads, route, hostToken } = await fixture();
+  const nestedRoute = { hostId: route.hostId, threadId: route.threadId };
+  const oldToken = await threads.forThread(route, hostToken);
+  const oldNested = await threads.forNested(nestedRoute, hostToken);
+  const restarted = await restartOf(directory, hosts, route);
+  const newToken = await restarted.forThread(route, hostToken);
+  const newNested = await restarted.forNested(nestedRoute, hostToken);
+  await restarted.removeThread(route.threadId);
+  for (const token of [oldToken, newToken])
+    expect(await restarted.authenticate(token)).toBeNull();
+  for (const token of [oldNested, newNested])
+    expect(await restarted.authenticateNested(token)).toBeNull();
+});
+
+it("expires process credentials a fixed time after mint and removes expired records on initialize", async () => {
+  const { directory, hosts, route, hostToken } = await fixture();
+  const nestedRoute = { hostId: route.hostId, threadId: route.threadId };
+  let clock = 5_000_000;
+  const minting = new ThreadTokenStore(directory, hosts, () => clock);
+  await minting.initialize([route.hostId]);
+  const token = await minting.forThread(route, hostToken, "process");
+  const nested = await minting.forNested(nestedRoute, hostToken, "process");
+  const durable = await minting.forThread(
+    { ...route, threadId: "thr_durable" },
+    hostToken,
+  );
+  clock += PROCESS_CREDENTIAL_MAX_AGE_MS - 1;
+  expect(await minting.authenticate(token)).toEqual(route);
+  const justBefore = new ThreadTokenStore(directory, hosts, () => clock);
+  await justBefore.initialize([route.hostId]);
+  expect(await justBefore.authenticate(token)).toEqual(route);
+  expect(await justBefore.authenticateNested(nested)).toEqual(nestedRoute);
+  clock += 1;
+  expect(await justBefore.authenticate(token)).toBeNull();
+  expect(await justBefore.authenticateNested(nested)).toBeNull();
+  expect(justBefore.isProcessCredential(token)).toBe(false);
+  const reissued = await justBefore.forThread(route, hostToken, "process");
+  expect(reissued).not.toBe(token);
+  expect(await justBefore.authenticate(reissued)).toEqual(route);
+  clock += 1;
+  const afterExpiry = new ThreadTokenStore(directory, hosts, () => clock);
+  await afterExpiry.initialize([route.hostId]);
+  expect(await afterExpiry.authenticate(token)).toBeNull();
+  expect(await afterExpiry.authenticateNested(nested)).toBeNull();
+  expect(await afterExpiry.authenticate(reissued)).toEqual(route);
+  expect(
+    (await fs.readdir(directory)).filter((name) =>
+      name.startsWith("scoped-process-nested-route-"),
+    ),
+  ).toEqual([]);
+  expect(await afterExpiry.authenticate(durable)).toEqual({
+    ...route,
+    threadId: "thr_durable",
+  });
+});
+
+it("stores a process credential as an owner-only record with digests, an expiry and no token field", async () => {
+  const { directory, hosts, route, hostToken } = await fixture();
+  const clock = 7_000_000;
+  const store = new ThreadTokenStore(directory, hosts, () => clock);
+  await store.initialize([route.hostId]);
+  const token = await store.forThread(route, hostToken, "process");
+  await store.forNested(
+    { hostId: route.hostId, threadId: route.threadId },
+    hostToken,
+    "process",
+  );
+  const names = (await fs.readdir(directory)).filter((name) =>
+    name.startsWith("scoped-process-"),
+  );
+  expect(names).toHaveLength(2);
+  expect((await fs.stat(directory)).mode & 0o777).toBe(0o700);
+  const keys: string[][] = [];
+  for (const name of names) {
+    const file = path.join(directory, name);
+    expect((await fs.stat(file)).mode & 0o777).toBe(0o600);
+    const stored = z
+      .record(z.string(), z.unknown())
+      .parse(JSON.parse(await fs.readFile(file, "utf8")));
+    keys.push(Object.keys(stored).sort());
+    expect(stored.tokenDigest).toMatch(/^[a-f0-9]{64}$/u);
+    expect(stored.expiresAt).toBe(clock + PROCESS_CREDENTIAL_MAX_AGE_MS);
+    expect(JSON.stringify(stored).includes(token)).toBe(false);
+  }
+  expect(keys.sort()).toEqual([
+    [
+      "accountId",
+      "expiresAt",
+      "hostId",
+      "hostTokenDigest",
+      "issuedAt",
+      "provider",
+      "threadId",
+      "tokenDigest",
+    ],
+    [
+      "expiresAt",
+      "hostId",
+      "hostTokenDigest",
+      "issuedAt",
+      "threadId",
+      "tokenDigest",
+    ],
+  ]);
+});
+
+it("removes a surviving process credential when the sweep finds the thread gone", async () => {
+  const { directory, hosts, threads, route, hostToken } = await fixture();
+  const token = await threads.forThread(route, hostToken, "process");
+  const nested = await threads.forNested(
+    { hostId: route.hostId, threadId: route.threadId },
+    hostToken,
+    "process",
+  );
+  const restarted = new ThreadTokenStore(directory, hosts);
+  await restarted.initialize([route.hostId]);
+  expect(await restarted.sweepThreads(async () => "live")).toMatchObject({
+    revoked: 0,
+  });
+  expect(await restarted.authenticate(token)).toEqual(route);
+  expect(await restarted.sweepThreads(async () => "gone")).toMatchObject({
+    revoked: 1,
+    failed: 0,
+  });
+  expect(await restarted.authenticate(token)).toBeNull();
+  expect(await restarted.authenticateNested(nested)).toBeNull();
+  expect(
+    (await fs.readdir(directory)).filter((name) =>
+      name.startsWith("scoped-process-"),
+    ),
+  ).toEqual([]);
+  const again = new ThreadTokenStore(directory, hosts);
+  await again.initialize([route.hostId]);
+  expect(await again.authenticate(token)).toBeNull();
+});
+
+it.each([
+  ["missing", (_stored: Record<string, unknown>) => undefined],
+  ["malformed", (_stored: Record<string, unknown>) => "soon"],
+  ["not an integer", (_stored: Record<string, unknown>) => 1.5],
+  ["zero", (_stored: Record<string, unknown>) => 0],
+  [
+    "further out than mint plus the maximum",
+    (_stored: Record<string, unknown>) =>
+      8_000_000 + PROCESS_CREDENTIAL_MAX_AGE_MS + 1,
+  ],
+])(
+  "discards a restored process record whose expiry is %s and removes its file",
+  async (_label, expiry) => {
+    const { directory, hosts, route, hostToken } = await fixture();
+    const clock = 8_000_000;
+    const minting = new ThreadTokenStore(directory, hosts, () => clock);
+    await minting.initialize([route.hostId]);
+    const nestedRoute = { hostId: route.hostId, threadId: route.threadId };
+    const token = await minting.forThread(route, hostToken, "process");
+    const nested = await minting.forNested(nestedRoute, hostToken, "process");
+    const names = (await fs.readdir(directory)).filter((name) =>
+      name.startsWith("scoped-process-"),
+    );
+    expect(names).toHaveLength(2);
+    for (const name of names) {
+      const file = path.join(directory, name);
+      const stored = z
+        .record(z.string(), z.unknown())
+        .parse(JSON.parse(await fs.readFile(file, "utf8")));
+      const value = expiry(stored);
+      if (value === undefined) delete stored.expiresAt;
+      else stored.expiresAt = value;
+      await fs.writeFile(file, JSON.stringify(stored));
+    }
+    const restored = new ThreadTokenStore(directory, hosts, () => clock);
+    await restored.initialize([route.hostId]);
+    expect(await restored.authenticate(token)).toBeNull();
+    expect(await restored.authenticateNested(nested)).toBeNull();
+    expect(restored.isProcessCredential(token)).toBe(false);
+    expect(
+      (await fs.readdir(directory)).filter((name) =>
+        name.startsWith("scoped-process-"),
+      ),
+    ).toEqual([]);
+  },
+);
+
+it("accepts a restored process record whose expiry is exactly mint plus the maximum", async () => {
+  const { directory, hosts, route, hostToken } = await fixture();
+  const clock = 9_000_000;
+  const minting = new ThreadTokenStore(directory, hosts, () => clock);
+  await minting.initialize([route.hostId]);
+  const token = await minting.forThread(route, hostToken, "process");
+  const restored = new ThreadTokenStore(directory, hosts, () => clock);
+  await restored.initialize([route.hostId]);
+  expect(await restored.authenticate(token)).toEqual(route);
+});
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+it.each([
+  [
+    "an overlong lifetime of mint plus 40 days, restored on day 10",
+    (stored: Record<string, unknown>, issuedAt: number) => {
+      stored.expiresAt = issuedAt + 40 * DAY_MS;
+    },
+    10 * DAY_MS,
+  ],
+  [
+    "a missing issuedAt",
+    (stored: Record<string, unknown>) => {
+      delete stored.issuedAt;
+    },
+    DAY_MS,
+  ],
+  [
+    "an issuedAt in the future beyond the clock skew allowance",
+    (stored: Record<string, unknown>, issuedAt: number) => {
+      stored.issuedAt = issuedAt + 2 * DAY_MS;
+      stored.expiresAt = issuedAt + 2 * DAY_MS + 1000;
+    },
+    DAY_MS,
+  ],
+  [
+    "an issuedAt one millisecond beyond the clock skew allowance",
+    (stored: Record<string, unknown>, issuedAt: number) => {
+      stored.issuedAt = issuedAt + DAY_MS + 60_001;
+      stored.expiresAt = issuedAt + DAY_MS + 60_001 + 1000;
+    },
+    DAY_MS,
+  ],
+  [
+    "an expiresAt equal to issuedAt",
+    (stored: Record<string, unknown>) => {
+      stored.expiresAt = stored.issuedAt;
+    },
+    0,
+  ],
+  [
+    "an expiresAt before issuedAt",
+    (stored: Record<string, unknown>, issuedAt: number) => {
+      stored.expiresAt = issuedAt - 1;
+    },
+    0,
+  ],
+])(
+  "discards a restored process record with %s and removes its file",
+  async (_label, mutate, advance) => {
+    const { directory, hosts, route, hostToken } = await fixture();
+    const issuedAt = 20_000_000;
+    let clock = issuedAt;
+    const minting = new ThreadTokenStore(directory, hosts, () => clock);
+    await minting.initialize([route.hostId]);
+    const token = await minting.forThread(route, hostToken, "process");
+    const nested = await minting.forNested(
+      { hostId: route.hostId, threadId: route.threadId },
+      hostToken,
+      "process",
+    );
+    for (const name of await fs.readdir(directory)) {
+      if (!name.startsWith("scoped-process-")) continue;
+      const file = path.join(directory, name);
+      const stored = z
+        .record(z.string(), z.unknown())
+        .parse(JSON.parse(await fs.readFile(file, "utf8")));
+      mutate(stored, issuedAt);
+      await fs.writeFile(file, JSON.stringify(stored));
+    }
+    clock += advance;
+    const restored = new ThreadTokenStore(directory, hosts, () => clock);
+    await restored.initialize([route.hostId]);
+    expect(await restored.authenticate(token)).toBeNull();
+    expect(await restored.authenticateNested(nested)).toBeNull();
+    expect(restored.isProcessCredential(token)).toBe(false);
+    expect(
+      (await fs.readdir(directory)).filter((name) =>
+        name.startsWith("scoped-process-"),
+      ),
+    ).toEqual([]);
+  },
+);
+
+it("accepts a record minted at the clock skew allowance and one of exactly mint plus 30 days restored on day 29", async () => {
+  const { directory, hosts, route, hostToken } = await fixture();
+  const issuedAt = 30_000_000;
+  let clock = issuedAt;
+  const minting = new ThreadTokenStore(directory, hosts, () => clock);
+  await minting.initialize([route.hostId]);
+  const token = await minting.forThread(route, hostToken, "process");
+  for (const name of await fs.readdir(directory)) {
+    if (!name.startsWith("scoped-process-")) continue;
+    const stored = z
+      .record(z.string(), z.unknown())
+      .parse(JSON.parse(await fs.readFile(path.join(directory, name), "utf8")));
+    expect(stored.issuedAt).toBe(issuedAt);
+    expect(stored.expiresAt).toBe(issuedAt + PROCESS_CREDENTIAL_MAX_AGE_MS);
+  }
+  clock += 29 * DAY_MS;
+  const restored = new ThreadTokenStore(directory, hosts, () => clock);
+  await restored.initialize([route.hostId]);
+  expect(await restored.authenticate(token)).toEqual(route);
+  clock = issuedAt + PROCESS_CREDENTIAL_MAX_AGE_MS;
+  expect(await restored.authenticate(token)).toBeNull();
+  const skewed = new ThreadTokenStore(
+    directory,
+    hosts,
+    () => issuedAt - PROCESS_CREDENTIAL_CLOCK_SKEW_MS,
+  );
+  await skewed.initialize([route.hostId]);
+  expect(await skewed.authenticate(token)).toEqual(route);
+});
+
+it("derives expiry from a single clock read and refuses the token at mint plus the maximum before and after restore", async () => {
+  const { directory, hosts, route, hostToken } = await fixture();
+  let clock = 40_000_000;
+  let step = 1;
+  const now = () => {
+    const value = clock;
+    clock += step;
+    return value;
+  };
+  const minting = new ThreadTokenStore(directory, hosts, now);
+  await minting.initialize([route.hostId]);
+  const nestedRoute = { hostId: route.hostId, threadId: route.threadId };
+  const token = await minting.forThread(route, hostToken, "process");
+  const nested = await minting.forNested(nestedRoute, hostToken, "process");
+  const issued: Record<string, number> = {};
+  for (const name of await fs.readdir(directory)) {
+    if (!name.startsWith("scoped-process-")) continue;
+    const stored = z
+      .record(z.string(), z.unknown())
+      .parse(JSON.parse(await fs.readFile(path.join(directory, name), "utf8")));
+    const issuedAt = z.number().parse(stored.issuedAt);
+    expect(z.number().parse(stored.expiresAt) - issuedAt).toBe(
+      PROCESS_CREDENTIAL_MAX_AGE_MS,
+    );
+    issued[name.startsWith("scoped-process-nested-") ? "nested" : "route"] =
+      issuedAt;
+  }
+  const routeIssued = z.number().parse(issued.route);
+  const nestedIssued = z.number().parse(issued.nested);
+  step = 0;
+  const check = async (
+    store: ThreadTokenStore,
+    offset: number,
+    accepted: boolean,
+  ) => {
+    clock = routeIssued + offset;
+    expect(await store.authenticate(token)).toEqual(accepted ? route : null);
+    clock = nestedIssued + offset;
+    expect(await store.authenticateNested(nested)).toEqual(
+      accepted ? nestedRoute : null,
+    );
+  };
+  await check(minting, PROCESS_CREDENTIAL_MAX_AGE_MS - 1, true);
+  await check(minting, PROCESS_CREDENTIAL_MAX_AGE_MS, false);
+  clock = routeIssued;
+  const restored = new ThreadTokenStore(directory, hosts, now);
+  await restored.initialize([route.hostId]);
+  await check(restored, PROCESS_CREDENTIAL_MAX_AGE_MS - 1, true);
+  await check(restored, PROCESS_CREDENTIAL_MAX_AGE_MS, false);
+});
+
+it("scrubs existing raw provider and nested tokens to hashes without losing authentication", async () => {
+  const { directory, hosts, threads, route, hostToken } = await fixture();
+  const tokens = [
+    await threads.forThread(route, hostToken),
+    await threads.forThread({ ...route, provider: "codex" }, hostToken),
+    await threads.forNested(
+      { hostId: route.hostId, threadId: route.threadId },
+      hostToken,
+    ),
+  ];
+  for (const name of await fs.readdir(directory)) {
+    if (!name.startsWith("scoped-")) continue;
+    const file = path.join(directory, name);
+    const stored = z
+      .record(z.string(), z.unknown())
+      .parse(JSON.parse(await fs.readFile(file, "utf8")));
+    const token =
+      typeof stored.token === "string"
+        ? stored.token
+        : tokens.find(
+            (candidate) =>
+              createHash("sha256").update(candidate).digest("hex") ===
+              stored.tokenDigest,
+          );
+    if (token === undefined) throw new Error("Missing fixture credential.");
+    const { tokenDigest, ...legacy } = stored;
+    await fs.writeFile(file, JSON.stringify({ ...legacy, token }));
+  }
+  const restarted = new ThreadTokenStore(directory, hosts);
+  await restarted.initialize([route.hostId]);
+  expect(await restarted.authenticate(tokens[0] ?? "", "claude")).toEqual(
+    route,
+  );
+  expect(await restarted.authenticate(tokens[1] ?? "", "codex")).toEqual({
+    ...route,
+    provider: "codex",
+  });
+  expect(await restarted.authenticateNested(tokens[2] ?? "")).toEqual({
+    threadId: route.threadId,
+    hostId: route.hostId,
+  });
+  const files = await Promise.all(
+    (await fs.readdir(directory)).map((name) =>
+      fs.readFile(path.join(directory, name)),
+    ),
+  );
+  expect(
+    files.some((content) => tokens.some((token) => content.includes(token))),
+  ).toBe(false);
+  const twice = new ThreadTokenStore(directory, hosts);
+  await twice.initialize([route.hostId]);
+  expect(await twice.authenticate(tokens[0] ?? "", "claude")).toEqual(route);
+  await twice.removeThread(route.threadId);
+  expect(await twice.authenticate(tokens[0] ?? "")).toBeNull();
+});
+
+it("reruns an interrupted conversion atomically and reissues a scoped credential", async () => {
+  const { directory, hosts, threads, route, hostToken } = await fixture();
+  const token = await threads.forThread(route, hostToken);
+  const name = (await fs.readdir(directory)).find((entry) =>
+    entry.startsWith("scoped-route-"),
+  );
+  if (name === undefined) throw new Error("Missing fixture credential file.");
+  const file = path.join(directory, name);
+  const stored = z
+    .record(z.string(), z.unknown())
+    .parse(JSON.parse(await fs.readFile(file, "utf8")));
+  const { tokenDigest, ...legacy } = stored;
+  await fs.writeFile(file, JSON.stringify({ ...legacy, token }));
+  const rename = vi
+    .spyOn(fs, "rename")
+    .mockRejectedValueOnce(new Error("Interrupted before rename"));
+  try {
+    const interrupted = new ThreadTokenStore(directory, hosts);
+    await expect(interrupted.initialize([route.hostId])).rejects.toThrow(
+      "could not remove a persisted scoped credential",
+    );
+  } finally {
+    rename.mockRestore();
+  }
+  expect((await fs.readFile(file)).includes(token)).toBe(true);
+  expect(
+    (await fs.readdir(directory)).some(
+      (entry) => entry.endsWith(".tmp") || entry.endsWith(".bak"),
+    ),
+  ).toBe(false);
+  const restarted = new ThreadTokenStore(directory, hosts);
+  await restarted.initialize([route.hostId]);
+  expect((await fs.readFile(file)).includes(token)).toBe(false);
+  expect((await fs.stat(file)).mode & 0o777).toBe(0o600);
+  expect((await fs.stat(directory)).mode & 0o777).toBe(0o700);
+  expect(await restarted.authenticate(token)).toEqual(route);
+  const current = await restarted.forThread(route, hostToken);
+  expect(await restarted.authenticate(current)).toEqual(route);
+  expect((await fs.readFile(file)).includes(current)).toBe(false);
+  const again = new ThreadTokenStore(directory, hosts);
+  await again.initialize([route.hostId]);
+  expect(await again.authenticate(current)).toEqual(route);
+});
+
+it("binds credentials to a thread, provider, and account snapshot and removes them on deletion", async () => {
+  const { directory, threads, route, hostToken } = await fixture();
+  const [first, same] = await Promise.all([
+    threads.forThread(route, hostToken),
+    threads.forThread(route, hostToken),
+  ]);
+  expect(first === same).toBe(true);
+  const selected = {
+    ...route,
+    accountId: "11111111-1111-4111-8111-111111111111",
+  };
+  const second = await threads.forThread(selected, hostToken);
+  expect(second === first).toBe(false);
+  expect(await threads.authenticate(first, "codex")).toBeNull();
+  expect(await threads.authenticate(second, "claude")).toEqual(selected);
+  expect(await threads.authenticate(first, "claude")).toEqual(route);
+  for (const file of (await fs.readdir(directory)).filter((name) =>
+    name.startsWith("scoped-route-"),
+  )) {
+    expect((await fs.stat(path.join(directory, file))).mode & 0o777).toBe(
+      0o600,
+    );
+  }
+  await threads.removeThread(route.threadId);
+  expect(await threads.authenticate(first)).toBeNull();
+  expect(await threads.authenticate(second)).toBeNull();
+});
+
+it("issues nested credentials per thread, apart from provider credentials", async () => {
+  const { directory, threads, route, hostToken } = await fixture();
+  const nestedRoute = { hostId: route.hostId, threadId: route.threadId };
+  const [first, same] = await Promise.all([
+    threads.forNested(nestedRoute, hostToken),
+    threads.forNested(nestedRoute, hostToken),
+  ]);
+  expect(first).toBe(same);
+  expect(first).toMatch(/^[A-Za-z0-9_-]{43}$/u);
+  const other = await threads.forNested(
+    { ...nestedRoute, threadId: "thr_two" },
+    hostToken,
+  );
+  expect(other).not.toBe(first);
+  const provider = await threads.forThread(route, hostToken);
+  expect(await threads.authenticateNested(first)).toEqual(nestedRoute);
+  expect(await threads.authenticateNested(provider)).toBeNull();
+  expect(await threads.authenticate(first)).toBeNull();
+  expect(await threads.authenticateNested(hostToken)).toBeNull();
+  expect(await threads.authenticateNested(null)).toBeNull();
+  expect(await threads.authenticateNested("A".repeat(43))).toBeNull();
+  const files = (await fs.readdir(directory)).filter((name) =>
+    name.startsWith("scoped-nested-route-"),
+  );
+  expect(files).toHaveLength(2);
+  for (const file of files) {
+    expect((await fs.stat(path.join(directory, file))).mode & 0o777).toBe(
+      0o600,
+    );
+  }
+  await threads.removeThread(route.threadId);
+  expect(await threads.authenticateNested(first)).toBeNull();
+  expect(await threads.authenticate(provider)).toBeNull();
+  expect(await threads.authenticateNested(other)).toEqual({
+    ...nestedRoute,
+    threadId: "thr_two",
+  });
+  expect(
+    (await fs.readdir(directory)).filter((name) =>
+      name.startsWith("scoped-nested-route-"),
+    ),
+  ).toHaveLength(1);
+});
+
+it("writes provider and nested credentials under rollback-safe prefixes", async () => {
+  const { directory, threads, route, hostToken } = await fixture();
+  await threads.forThread(route, hostToken);
+  await threads.forNested(
+    { hostId: route.hostId, threadId: route.threadId },
+    hostToken,
+  );
+  const [file] = (await fs.readdir(directory)).filter((name) =>
+    name.startsWith("scoped-route-"),
+  );
+  const record: unknown = JSON.parse(
+    await fs.readFile(path.join(directory, file ?? ""), "utf8"),
+  );
+  expect(
+    Object.keys(z.record(z.string(), z.unknown()).parse(record)).sort(),
+  ).toEqual([
+    "accountId",
+    "hostId",
+    "hostTokenDigest",
+    "provider",
+    "threadId",
+    "tokenDigest",
+  ]);
+  const nestedFile = (await fs.readdir(directory)).find((name) =>
+    name.startsWith("scoped-nested-route-"),
+  );
+  expect(nestedFile).toBeDefined();
+  expect(nestedFile?.startsWith("scoped-route-")).toBe(false);
+  expect(nestedFile?.startsWith("thread-route-")).toBe(false);
+  expect(nestedFile?.startsWith("nested-route-")).toBe(false);
+});
+
+it("reads legacy provider files while new provider files use a rollback-safe prefix", async () => {
+  const { directory, hosts, threads, route, hostToken } = await fixture();
+  const token = await threads.forThread(route, hostToken);
+  const [currentName] = (await fs.readdir(directory)).filter((name) =>
+    name.startsWith("scoped-route-"),
+  );
+  expect(currentName).toBeDefined();
+  expect(currentName?.startsWith("thread-route-")).toBe(false);
+  const legacyName = currentName
+    ?.replace(/^scoped-route-/u, "thread-route-")
+    .replace(/-v0\.json$/u, ".json");
+  expect(legacyName).toBeDefined();
+  await fs.rename(
+    path.join(directory, currentName ?? ""),
+    path.join(directory, legacyName ?? ""),
+  );
+  const reloaded = new ThreadTokenStore(directory, hosts);
+  await reloaded.initialize([route.hostId]);
+  expect(await reloaded.authenticate(token)).toEqual(route);
+});
+
+it("reads legacy nested files while new nested files use a rollback-safe prefix", async () => {
+  const { directory, hosts, threads, route, hostToken } = await fixture();
+  const nestedRoute = { hostId: route.hostId, threadId: route.threadId };
+  const token = await threads.forNested(nestedRoute, hostToken);
+  const [currentName] = (await fs.readdir(directory)).filter((name) =>
+    name.startsWith("scoped-nested-route-"),
+  );
+  expect(currentName).toBeDefined();
+  const legacyName = currentName
+    ?.replace(/^scoped-nested-route-/u, "nested-route-")
+    .replace(/-v0\.json$/u, ".json");
+  await fs.rename(
+    path.join(directory, currentName ?? ""),
+    path.join(directory, legacyName ?? ""),
+  );
+  const reloaded = new ThreadTokenStore(directory, hosts);
+  await reloaded.initialize([route.hostId]);
+  expect(await reloaded.authenticateNested(token)).toEqual(nestedRoute);
+});
+
+it("removes legacy provider and nested credential files when archiving", async () => {
+  const { directory, threads, route, hostToken } = await fixture();
+  await threads.forThread(route, hostToken);
+  await threads.forNested(
+    { hostId: route.hostId, threadId: route.threadId },
+    hostToken,
+  );
+  const names = await fs.readdir(directory);
+  for (const name of names.filter(
+    (entry) =>
+      entry.startsWith("scoped-route-") ||
+      entry.startsWith("scoped-nested-route-"),
+  )) {
+    const legacy = name
+      .replace(/^scoped-route-/u, "thread-route-")
+      .replace(/^scoped-nested-route-/u, "nested-route-")
+      .replace(/-v0\.json$/u, ".json");
+    await fs.rename(path.join(directory, name), path.join(directory, legacy));
+  }
+  await threads.removeThread(route.threadId);
+  expect(
+    (await fs.readdir(directory)).filter(
+      (name) =>
+        name.startsWith("thread-route-") || name.startsWith("nested-route-"),
+    ),
+  ).toEqual([]);
+});
+
+it("does not quarantine a legacy nested file whose host and thread split is ambiguous", async () => {
+  const { directory, hosts, threads } = await fixture();
+  const hostToken = await hosts.forHost("h-a");
+  await hosts.forHost("h");
+  await threads.forNested({ hostId: "h-a", threadId: "b" }, hostToken);
+  const [currentName] = (await fs.readdir(directory)).filter((name) =>
+    name.startsWith("scoped-nested-route-h-a-b-"),
+  );
+  const legacyName = currentName
+    ?.replace(/^scoped-nested-route-/u, "nested-route-")
+    .replace(/-v0\.json$/u, ".json");
+  await fs.rename(
+    path.join(directory, currentName ?? ""),
+    path.join(directory, legacyName ?? ""),
+  );
+  const unreadable = new ThreadTokenStore(directory, hosts);
+  const originalReadFile = fs.readFile.bind(fs);
+  const readFile = vi
+    .spyOn(fs, "readFile")
+    .mockImplementation((file, options) => {
+      if (String(file) === path.join(directory, legacyName ?? ""))
+        return Promise.reject(Object.assign(new Error("EIO"), { code: "EIO" }));
+      return originalReadFile(file, options);
+    });
+  try {
+    await unreadable.initialize(["h-a", "h"]);
+  } finally {
+    readFile.mockRestore();
+  }
+  await unreadable.removeThread("a-b");
+  expect(await fs.readdir(directory)).toContain(legacyName);
+});
+
+it("quarantines only the exact legacy nested thread id", async () => {
+  const { directory, hosts, threads, hostToken } = await fixture();
+  await threads.forNested({ hostId: "host-one", threadId: "a-b" }, hostToken);
+  const [currentName] = (await fs.readdir(directory)).filter((name) =>
+    name.startsWith("scoped-nested-route-host-one-a-b-"),
+  );
+  const legacyName = currentName
+    ?.replace(/^scoped-nested-route-/u, "nested-route-")
+    .replace(/-v0\.json$/u, ".json");
+  await fs.rename(
+    path.join(directory, currentName ?? ""),
+    path.join(directory, legacyName ?? ""),
+  );
+  const unreadable = new ThreadTokenStore(directory, hosts);
+  const originalReadFile = fs.readFile.bind(fs);
+  const readFile = vi
+    .spyOn(fs, "readFile")
+    .mockImplementation((file, options) => {
+      if (String(file) === path.join(directory, legacyName ?? ""))
+        return Promise.reject(Object.assign(new Error("EIO"), { code: "EIO" }));
+      return originalReadFile(file, options);
+    });
+  try {
+    await unreadable.initialize(["host-one"]);
+  } finally {
+    readFile.mockRestore();
+  }
+  await unreadable.removeThread("a");
+  expect(await fs.readdir(directory)).toContain(legacyName);
+  await unreadable.removeThread("a-b");
+  expect(await fs.readdir(directory)).not.toContain(legacyName);
+  expect(
+    (await fs.readdir(directory)).some((name) =>
+      name.startsWith("revoked-route-"),
+    ),
+  ).toBe(true);
+});
+
+it("sweeps dead and unenrolled credentials on startup and leaves other secrets alone", async () => {
+  const { directory, hosts, threads, route, hostToken, advance } =
+    await fixture();
+  const nestedRoute = { hostId: route.hostId, threadId: route.threadId };
+  const staleProvider = await threads.forThread(route, hostToken);
+  const staleNested = await threads.forNested(nestedRoute, hostToken);
+  const goneHostToken = await hosts.forHost("host-gone");
+  await threads.forNested(
+    { hostId: "host-gone", threadId: route.threadId },
+    goneHostToken,
+  );
+  await hosts.rotate(route.hostId);
+  const currentHostToken = await hosts.forHost(route.hostId);
+  const currentProvider = await threads.forThread(route, currentHostToken);
+  const currentNested = await threads.forNested(nestedRoute, currentHostToken);
+  await fs.writeFile(path.join(directory, "account-keep.json"), "{}");
+  const credentialFiles = async (prefix: string) =>
+    (await fs.readdir(directory)).filter((name) => name.startsWith(prefix));
+  expect(await credentialFiles("scoped-nested-route-")).toHaveLength(3);
+  const lastUsedBefore = (await hosts.list()).map(
+    (summary) => summary.lastUsedAt,
+  );
+  const withinGrace = new ThreadTokenStore(directory, hosts);
+  await withinGrace.initialize([route.hostId]);
+  expect(await credentialFiles("scoped-nested-route-")).toHaveLength(2);
+  expect((await hosts.list()).map((summary) => summary.lastUsedAt)).toEqual(
+    lastUsedBefore,
+  );
+  expect(await withinGrace.authenticate(staleProvider)).toEqual(route);
+  expect(await withinGrace.authenticateNested(staleNested)).toEqual(
+    nestedRoute,
+  );
+  advance(10 * 60_000 + 1);
+  const reloaded = new ThreadTokenStore(directory, hosts);
+  await reloaded.initialize([route.hostId]);
+  expect(await reloaded.authenticate(staleProvider)).toBeNull();
+  expect(await reloaded.authenticateNested(staleNested)).toBeNull();
+  expect(await reloaded.authenticate(currentProvider)).toEqual(route);
+  expect(await reloaded.authenticateNested(currentNested)).toEqual(nestedRoute);
+  expect(await credentialFiles("scoped-route-")).toHaveLength(1);
+  expect(await credentialFiles("scoped-nested-route-")).toHaveLength(1);
+  expect(await credentialFiles("account-keep")).toHaveLength(1);
+  expect(await credentialFiles("hub-token-")).toHaveLength(2);
+});
+
+it("revokes restored process credentials once their machine generation expires or the machine is unenrolled", async () => {
+  const { directory, hosts, threads, route, hostToken, advance } =
+    await fixture();
+  const token = await threads.forThread(route, hostToken, "process");
+  const nested = await threads.forNested(
+    { hostId: route.hostId, threadId: route.threadId },
+    hostToken,
+    "process",
+  );
+  await hosts.rotate(route.hostId);
+  const withinGrace = new ThreadTokenStore(directory, hosts);
+  await withinGrace.initialize([route.hostId]);
+  expect(await withinGrace.authenticate(token)).toEqual(route);
+  advance(10 * 60_000 + 1);
+  const expired = new ThreadTokenStore(directory, hosts);
+  await expired.initialize([route.hostId]);
+  expect(await expired.authenticate(token)).toBeNull();
+  expect(await expired.authenticateNested(nested)).toBeNull();
+  expect(
+    (await fs.readdir(directory)).filter((name) =>
+      name.startsWith("scoped-process-"),
+    ),
+  ).toEqual([]);
+
+  const other = await fixture();
+  const otherToken = await other.threads.forThread(
+    other.route,
+    other.hostToken,
+    "process",
+  );
+  const unenrolled = new ThreadTokenStore(other.directory, other.hosts);
+  await unenrolled.initialize(["host-other"]);
+  expect(await unenrolled.authenticate(otherToken)).toBeNull();
+});
+
+it("preserves machine rotation grace and revokes expired or unenrolled credentials after reload", async () => {
+  const { directory, hosts, threads, route, hostToken, advance } =
+    await fixture();
+  const old = await threads.forThread(route, hostToken);
+  await hosts.rotate(route.hostId);
+  const current = await threads.forThread(
+    route,
+    await hosts.forHost(route.hostId),
+  );
+  expect(await threads.authenticate(old)).toEqual(route);
+  advance(10 * 60_000 + 1);
+  const reloaded = new ThreadTokenStore(directory, hosts);
+  await reloaded.initialize([route.hostId]);
+  expect(await reloaded.authenticate(old)).toBeNull();
+  expect(await reloaded.authenticate(current)).toEqual(route);
+  await hosts.prune([]);
+  expect(await reloaded.authenticate(current)).toBeNull();
+});
+
+it("loads past unreadable or unrecognised credential files and discards them", async () => {
+  const { directory, hosts, threads, route, hostToken } = await fixture();
+  const nestedRoute = { hostId: route.hostId, threadId: route.threadId };
+  const provider = await threads.forThread(route, hostToken);
+  const nested = await threads.forNested(nestedRoute, hostToken);
+  const [validNested] = (await fs.readdir(directory)).filter((name) =>
+    name.startsWith("scoped-nested-route-"),
+  );
+  const newerNested = {
+    ...z
+      .record(z.string(), z.unknown())
+      .parse(
+        JSON.parse(
+          await fs.readFile(path.join(directory, validNested ?? ""), "utf8"),
+        ),
+      ),
+    addedLater: true,
+  };
+  const damaged = [
+    ["thread-route-empty.json", ""],
+    ["thread-route-garbage.json", "{not json"],
+    ["thread-route-wrong-shape.json", JSON.stringify({ hostId: 7 })],
+    ["nested-route-empty.json", ""],
+    ["nested-route-newer.json", JSON.stringify(newerNested)],
+  ] as const;
+  for (const [name, content] of damaged)
+    await fs.writeFile(path.join(directory, name), content);
+  await fs.writeFile(path.join(directory, "account-keep.json"), "{}");
+  const reloaded = new ThreadTokenStore(directory, hosts);
+  await expect(reloaded.initialize([route.hostId])).resolves.toBeUndefined();
+  const remaining = await fs.readdir(directory);
+  for (const [name] of damaged) expect(remaining).not.toContain(name);
+  expect(remaining).toContain("account-keep.json");
+  expect(await reloaded.authenticate(provider)).toEqual(route);
+  expect(await reloaded.authenticateNested(nested)).toEqual(nestedRoute);
+});
+
+it("starts even when a credential entry cannot be read or removed", async () => {
+  const { directory, hosts, threads, route, hostToken } = await fixture();
+  const nestedRoute = { hostId: route.hostId, threadId: route.threadId };
+  const provider = await threads.forThread(route, hostToken);
+  const nested = await threads.forNested(nestedRoute, hostToken);
+  await fs.mkdir(path.join(directory, "thread-route-folder.json"));
+  await fs.mkdir(path.join(directory, "nested-route-folder.json"));
+  const reloaded = new ThreadTokenStore(directory, hosts);
+  await expect(reloaded.initialize([route.hostId])).resolves.toBeUndefined();
+  expect(await reloaded.authenticate(provider)).toEqual(route);
+  expect(await reloaded.authenticateNested(nested)).toEqual(nestedRoute);
+});
+
+it.skipIf(process.getuid?.() === 0)(
+  "keeps a credential file it could not read instead of deleting it",
+  async () => {
+    const { directory, hosts, threads, route, hostToken } = await fixture();
+    const provider = await threads.forThread(route, hostToken);
+    const [name] = (await fs.readdir(directory)).filter((entry) =>
+      entry.startsWith("scoped-route-"),
+    );
+    const file = path.join(directory, name ?? "");
+    await fs.chmod(file, 0o000);
+    const blocked = new ThreadTokenStore(directory, hosts);
+    await expect(blocked.initialize([route.hostId])).resolves.toBeUndefined();
+    expect(await blocked.authenticate(provider)).toBeNull();
+    await fs.chmod(file, 0o600);
+    const reloaded = new ThreadTokenStore(directory, hosts);
+    await reloaded.initialize([route.hostId]);
+    expect(await reloaded.authenticate(provider)).toEqual(route);
+  },
+);
+
+it("does not reload an unreadable credential after its thread is archived", async () => {
+  const { directory, hosts, threads, route, hostToken } = await fixture();
+  const token = await threads.forThread(route, hostToken);
+  const [currentName] = (await fs.readdir(directory)).filter((name) =>
+    name.startsWith("scoped-route-"),
+  );
+  const legacyName = currentName
+    ?.replace(/^scoped-route-/u, "thread-route-")
+    .replace(/-v0\.json$/u, ".json");
+  await fs.rename(
+    path.join(directory, currentName ?? ""),
+    path.join(directory, legacyName ?? ""),
+  );
+  const unreadable = new ThreadTokenStore(directory, hosts);
+  const readFile = vi.spyOn(fs, "readFile").mockRejectedValue(new Error("EIO"));
+  try {
+    await unreadable.initialize([route.hostId]);
+  } finally {
+    readFile.mockRestore();
+  }
+  await unreadable.removeThread(route.threadId);
+  const reloaded = new ThreadTokenStore(directory, hosts);
+  await reloaded.initialize([route.hostId]);
+  expect(await reloaded.authenticate(token)).toBeNull();
+  expect(
+    (await fs.readdir(directory)).filter(
+      (name) =>
+        name.startsWith("scoped-route-") || name.startsWith("thread-route-"),
+    ),
+  ).toEqual([]);
+});
+
+it("keeps a deletion across restart and restores it at no archive generation", async () => {
+  const { directory, hosts, threads, route, hostToken } = await fixture();
+  const token = await threads.forThread(route, hostToken);
+  const staleVersion = threads.archiveVersion(route.threadId);
+  await threads.removeThread(route.threadId);
+  await expect(threads.forThread(route, hostToken)).rejects.toThrow(
+    "Cannot mint a credential for a deleted thread.",
+  );
+  expect(await threads.restoreThread(route.threadId, staleVersion)).toBeNull();
+  expect(
+    await threads.restoreThread(
+      route.threadId,
+      threads.archiveVersion(route.threadId),
+    ),
+  ).toBeNull();
+  await expect(threads.forThread(route, hostToken)).rejects.toThrow(
+    "Cannot mint a credential for a deleted thread.",
+  );
+  const reloaded = new ThreadTokenStore(directory, hosts);
+  await reloaded.initialize([route.hostId]);
+  expect(await reloaded.authenticate(token)).toBeNull();
+  expect(
+    await reloaded.restoreThread(
+      route.threadId,
+      reloaded.archiveVersion(route.threadId),
+    ),
+  ).toBeNull();
+  await expect(reloaded.forThread(route, hostToken)).rejects.toThrow(
+    "Cannot mint a credential for a deleted thread.",
+  );
+});
+
+it("keeps an evicted token revoked after failed file cleanup and restoration", async () => {
+  const { directory, threads, route, hostToken } = await fixture();
+  const oldToken = await threads.forThread(route, hostToken);
+  const [routeName] = (await fs.readdir(directory)).filter((name) =>
+    name.startsWith("scoped-route-"),
+  );
+  const routeFile = path.join(directory, routeName ?? "");
+  const originalRemove = fs.rm.bind(fs);
+  const remove = vi.spyOn(fs, "rm").mockImplementation((file, options) => {
+    if (String(file) === routeFile)
+      return Promise.reject(Object.assign(new Error("EIO"), { code: "EIO" }));
+    return originalRemove(file, options);
+  });
+  const originalRename = fs.rename.bind(fs);
+  const rename = vi.spyOn(fs, "rename").mockImplementation((from, to) => {
+    if (String(from) === routeFile && String(to).includes("revoked-route-"))
+      return Promise.reject(Object.assign(new Error("EIO"), { code: "EIO" }));
+    return originalRename(from, to);
+  });
+  try {
+    await threads.removeThread(route.threadId);
+  } finally {
+    remove.mockRestore();
+    rename.mockRestore();
+  }
+  expect(await fs.readdir(directory)).toContain(routeName);
+  expect(await threads.authenticate(oldToken)).toBeNull();
+  await threads.restoreThread(
+    route.threadId,
+    threads.archiveVersion(route.threadId),
+  );
+  expect(await threads.authenticate(oldToken)).toBeNull();
+});
+
+it("does not persist archive markers for threads without credentials", async () => {
+  const { directory, threads } = await fixture();
+  await threads.removeThread("thr_empty");
+  expect(
+    (await fs.readdir(directory)).filter((name) =>
+      name.startsWith("archived-thread-"),
+    ),
+  ).toEqual([]);
+});
+
+it("persists revocation when the credential directory cannot be read", async () => {
+  const { directory, hosts, threads, route, hostToken } = await fixture();
+  const oldToken = await threads.forThread(route, hostToken);
+  const archiveOnly = new ThreadTokenStore(directory, hosts);
+  expect(
+    (await fs.readdir(directory)).filter((name) =>
+      name.startsWith("archived-thread-"),
+    ),
+  ).toEqual([]);
+  const readDir = vi
+    .spyOn(fs, "readdir")
+    .mockRejectedValueOnce(Object.assign(new Error("EIO"), { code: "EIO" }));
+  try {
+    await archiveOnly.removeThread(route.threadId);
+  } finally {
+    readDir.mockRestore();
+  }
+  const markerName = (await fs.readdir(directory)).find((name) =>
+    name.startsWith("archived-thread-"),
+  );
+  expect(markerName).toBeDefined();
+  const marker = JSON.parse(
+    await fs.readFile(path.join(directory, markerName ?? ""), "utf8"),
+  ) as { threadId: string; epoch: number; archived: boolean };
+  expect(marker).toEqual({
+    threadId: route.threadId,
+    epoch: 1,
+    archived: true,
+    deleted: true,
+  });
+  const reloaded = new ThreadTokenStore(directory, hosts);
+  await reloaded.initialize([route.hostId]);
+  expect(await reloaded.authenticate(oldToken)).toBeNull();
+});
+
+it("does not scan credential files when restoring a never-archived thread", async () => {
+  const { threads } = await fixture();
+  const readdir = vi.spyOn(fs, "readdir");
+  await threads.restoreThread("thr_never_archived", 0);
+  expect(readdir).not.toHaveBeenCalled();
+  readdir.mockRestore();
+});
+
+it("keeps a deletion when the archive marker cannot be read on restart", async () => {
+  const { directory, hosts, threads, route, hostToken } = await fixture();
+  const oldToken = await threads.forThread(route, hostToken);
+  await threads.removeThread(route.threadId);
+  const reloaded = new ThreadTokenStore(directory, hosts);
+  const readFile = vi
+    .spyOn(fs, "readFile")
+    .mockRejectedValue(Object.assign(new Error("EIO"), { code: "EIO" }));
+  try {
+    await reloaded.initialize([route.hostId]);
+  } finally {
+    readFile.mockRestore();
+  }
+  expect(
+    await reloaded.restoreThread(
+      route.threadId,
+      reloaded.archiveVersion(route.threadId),
+    ),
+  ).toBeNull();
+  await expect(reloaded.forThread(route, hostToken)).rejects.toThrow(
+    "Cannot mint a credential for a deleted thread.",
+  );
+  expect(await reloaded.authenticate(oldToken)).toBeNull();
+});
+
+it("preserves a credential when its archive marker has a transient read error", async () => {
+  const { directory, hosts, threads, route, hostToken } = await fixture();
+  const oldToken = await threads.forThread(route, hostToken);
+  const [name] = (await fs.readdir(directory)).filter((entry) =>
+    entry.startsWith("scoped-route-"),
+  );
+  await threads.suspendThread(route.threadId);
+  const reloaded = new ThreadTokenStore(directory, hosts);
+  const originalReadFile = fs.readFile.bind(fs);
+  const readFile = vi
+    .spyOn(fs, "readFile")
+    .mockImplementation((file, options) => {
+      if (String(file).includes("archived-thread-"))
+        return Promise.reject(Object.assign(new Error("EIO"), { code: "EIO" }));
+      return originalReadFile(file, options);
+    });
+  try {
+    await reloaded.initialize([route.hostId]);
+  } finally {
+    readFile.mockRestore();
+  }
+  expect(await fs.readdir(directory)).toContain(name);
+  expect(await reloaded.authenticate(oldToken)).toBeNull();
+  await reloaded.restoreThread(
+    route.threadId,
+    reloaded.archiveVersion(route.threadId),
+  );
+  expect(await reloaded.authenticate(oldToken)).toEqual(route);
+});
+
+it("recovers an active thread from a corrupt archive marker", async () => {
+  const { directory, hosts, threads, route, hostToken } = await fixture();
+  const oldToken = await threads.forThread(route, hostToken);
+  await threads.suspendThread(route.threadId);
+  const marker = (await fs.readdir(directory)).find((name) =>
+    name.startsWith("archived-thread-"),
+  );
+  expect(marker).toBeDefined();
+  await fs.writeFile(path.join(directory, marker ?? ""), "{broken");
+  const reloaded = new ThreadTokenStore(directory, hosts);
+  await reloaded.initialize([route.hostId]);
+  expect(await reloaded.authenticate(oldToken)).toBeNull();
+  await reloaded.restoreThread(
+    route.threadId,
+    reloaded.archiveVersion(route.threadId),
+  );
+  expect(await reloaded.authenticate(oldToken)).toEqual(route);
+  const newToken = await reloaded.forThread(route, hostToken);
+  expect(await reloaded.authenticate(newToken)).toEqual(route);
+  const afterRestart = new ThreadTokenStore(directory, hosts);
+  await afterRestart.initialize([route.hostId]);
+  expect(await afterRestart.authenticate(newToken)).toEqual(route);
+});
+
+it("quarantines unreadable legacy entries and sweeps their token material", async () => {
+  const { directory, hosts, threads, route, hostToken } = await fixture();
+  await threads.forThread(route, hostToken);
+  const [currentName] = (await fs.readdir(directory)).filter((name) =>
+    name.startsWith("scoped-route-"),
+  );
+  const legacyName = currentName
+    ?.replace(/^scoped-route-/u, "thread-route-")
+    .replace(/-v0\.json$/u, ".json");
+  await fs.rename(
+    path.join(directory, currentName ?? ""),
+    path.join(directory, legacyName ?? ""),
+  );
+  const unreadable = new ThreadTokenStore(directory, hosts);
+  const originalReadFile = fs.readFile.bind(fs);
+  const readFile = vi
+    .spyOn(fs, "readFile")
+    .mockImplementation((file, options) => {
+      if (String(file) === path.join(directory, legacyName ?? ""))
+        return Promise.reject(Object.assign(new Error("EIO"), { code: "EIO" }));
+      return originalReadFile(file, options);
+    });
+  try {
+    await unreadable.initialize([route.hostId]);
+  } finally {
+    readFile.mockRestore();
+  }
+  await unreadable.removeThread(route.threadId);
+  const quarantine = (await fs.readdir(directory)).filter((name) =>
+    name.startsWith("revoked-route-"),
+  );
+  expect(quarantine).toHaveLength(1);
+  const reloaded = new ThreadTokenStore(directory, hosts);
+  await reloaded.initialize([route.hostId]);
+  expect(
+    (await fs.readdir(directory)).some((name) =>
+      name.startsWith("revoked-route-"),
+    ),
+  ).toBe(false);
+});
+
+it("uses a fallback archive marker when the primary marker cannot be written", async () => {
+  const { directory, hosts, threads, route, hostToken } = await fixture();
+  const oldToken = await threads.forThread(route, hostToken);
+  const [routeName] = (await fs.readdir(directory)).filter((name) =>
+    name.startsWith("scoped-route-"),
+  );
+  const writeFile = vi
+    .spyOn(fs, "open")
+    .mockRejectedValueOnce(new Error("EIO"));
+  try {
+    await expect(
+      threads.suspendThread(route.threadId),
+    ).resolves.toBeUndefined();
+  } finally {
+    writeFile.mockRestore();
+  }
+  expect(await threads.authenticate(oldToken)).toBeNull();
+  expect(
+    (await fs.readdir(directory)).some((name) =>
+      name.startsWith("archive-revocation-"),
+    ),
+  ).toBe(true);
+  expect((await fs.readdir(directory)).some((name) => name === routeName)).toBe(
+    true,
+  );
+  const restoreWrite = vi
+    .spyOn(fs, "open")
+    .mockRejectedValueOnce(new Error("EIO"));
+  try {
+    await expect(
+      threads.restoreThread(
+        route.threadId,
+        threads.archiveVersion(route.threadId),
+      ),
+    ).resolves.not.toBeNull();
+  } finally {
+    restoreWrite.mockRestore();
+  }
+  expect(await threads.authenticate(oldToken)).toEqual(route);
+  const unconfirmed = new ThreadTokenStore(directory, hosts);
+  await unconfirmed.initialize([route.hostId]);
+  expect(await unconfirmed.authenticate(oldToken)).toBeNull();
+  const reloaded = new ThreadTokenStore(
+    directory,
+    hosts,
+    Date.now,
+    async () => "live",
+  );
+  await reloaded.initialize([route.hostId]);
+  expect(await reloaded.authenticate(oldToken)).toEqual(route);
+  expect(
+    (await fs.readdir(directory)).filter((name) =>
+      name.startsWith("revoked-route-"),
+    ),
+  ).toEqual([]);
+});
+
+it("keeps revocation across restart when primary marker and route cleanup fail", async () => {
+  const { directory, hosts, threads, route, hostToken } = await fixture();
+  const oldToken = await threads.forThread(route, hostToken);
+  const [routeName] = (await fs.readdir(directory)).filter((name) =>
+    name.startsWith("scoped-route-"),
+  );
+  const routeFile = path.join(directory, routeName ?? "");
+  const originalWriteFile = fs.open.bind(fs);
+  const writeFile = vi.spyOn(fs, "open").mockImplementation((file, ...args) => {
+    if (String(file).includes("archived-thread-"))
+      return Promise.reject(Object.assign(new Error("EIO"), { code: "EIO" }));
+    return originalWriteFile(file, ...args);
+  });
+  const originalRemove = fs.rm.bind(fs);
+  const remove = vi.spyOn(fs, "rm").mockImplementation((file, options) => {
+    if (String(file) === routeFile)
+      return Promise.reject(Object.assign(new Error("EIO"), { code: "EIO" }));
+    return originalRemove(file, options);
+  });
+  const originalRename = fs.rename.bind(fs);
+  const rename = vi.spyOn(fs, "rename").mockImplementation((from, to) => {
+    if (String(from) === routeFile && String(to).includes("revoked-route-"))
+      return Promise.reject(Object.assign(new Error("EIO"), { code: "EIO" }));
+    return originalRename(from, to);
+  });
+  try {
+    await threads.removeThread(route.threadId);
+  } finally {
+    writeFile.mockRestore();
+    remove.mockRestore();
+    rename.mockRestore();
+  }
+  expect(await fs.readdir(directory)).toContain(routeName);
+  expect(await threads.authenticate(oldToken)).toBeNull();
+  expect(
+    (await fs.readdir(directory)).some((name) =>
+      name.startsWith("archive-revocation-"),
+    ),
+  ).toBe(true);
+
+  const reloaded = new ThreadTokenStore(directory, hosts);
+  await reloaded.initialize([route.hostId]);
+  expect(await reloaded.authenticate(oldToken)).toBeNull();
+  expect(await fs.readdir(directory)).not.toContain(routeName);
+});
+
+it("does not revive an unreadable credential of a deleted thread", async () => {
+  const { directory, hosts, threads, route, hostToken } = await fixture();
+  const oldToken = await threads.forThread(route, hostToken);
+  const unreadable = new ThreadTokenStore(directory, hosts);
+  const readFile = vi.spyOn(fs, "readFile").mockRejectedValue(new Error("EIO"));
+  try {
+    await unreadable.initialize([route.hostId]);
+  } finally {
+    readFile.mockRestore();
+  }
+  await unreadable.removeThread(route.threadId);
+  expect(
+    await unreadable.restoreThread(
+      route.threadId,
+      unreadable.archiveVersion(route.threadId),
+    ),
+  ).toBeNull();
+  const reloaded = new ThreadTokenStore(directory, hosts);
+  await reloaded.initialize([route.hostId]);
+  expect(await reloaded.authenticate(oldToken)).toBeNull();
+  await expect(reloaded.forThread(route, hostToken)).rejects.toThrow(
+    "Cannot mint a credential for a deleted thread.",
+  );
+  expect(
+    (await fs.readdir(directory)).filter((name) =>
+      name.startsWith("scoped-route-"),
+    ),
+  ).toEqual([]);
+});
+
+it("mints even when an expired-generation record cannot be removed", async () => {
+  const { directory, hosts, threads, route, hostToken, advance } =
+    await fixture();
+  await threads.forThread(route, hostToken);
+  await threads.forNested(
+    { hostId: route.hostId, threadId: route.threadId },
+    hostToken,
+  );
+  const stale = (await fs.readdir(directory)).filter(
+    (entry) =>
+      entry.startsWith("scoped-route-") ||
+      entry.startsWith("thread-route-") ||
+      entry.startsWith("scoped-nested-route-"),
+  );
+  expect(stale).toHaveLength(2);
+  await hosts.rotate(route.hostId);
+  const nextHostToken = await hosts.forHost(route.hostId);
+  advance(10 * 60_000 + 1);
+  for (const entry of stale) {
+    await fs.rm(path.join(directory, entry));
+    await fs.mkdir(path.join(directory, entry));
+  }
+  const current = await threads.forThread(route, nextHostToken);
+  expect(await threads.authenticate(current)).toEqual(route);
+});
+
+it("keeps routes apart when identifiers contain the separator", async () => {
+  const { directory, hosts, threads } = await fixture();
+  const first = { hostId: "host-a", threadId: "b-c" };
+  const second = { hostId: "host-a-b", threadId: "c" };
+  const firstNested = await threads.forNested(
+    first,
+    await hosts.forHost(first.hostId),
+  );
+  const secondNested = await threads.forNested(
+    second,
+    await hosts.forHost(second.hostId),
+  );
+  expect(firstNested).not.toBe(secondNested);
+  expect(await threads.authenticateNested(firstNested)).toEqual(first);
+  expect(await threads.authenticateNested(secondNested)).toEqual(second);
+  expect(
+    (await fs.readdir(directory)).filter((name) =>
+      name.startsWith("scoped-nested-route-"),
+    ),
+  ).toHaveLength(2);
+  await threads.removeThread("c");
+  expect(await threads.authenticateNested(secondNested)).toBeNull();
+  expect(await threads.authenticateNested(firstNested)).toEqual(first);
+});
+
+it("reclaims expired-generation credentials for a thread when minting, and keeps live ones", async () => {
+  const { directory, hosts, threads, route, hostToken, advance } =
+    await fixture();
+  const nestedRoute = { hostId: route.hostId, threadId: route.threadId };
+  const otherNested = { hostId: route.hostId, threadId: "thr_two" };
+  await threads.forThread(route, hostToken);
+  await threads.forNested(nestedRoute, hostToken);
+  await threads.forNested(otherNested, hostToken);
+  await hosts.rotate(route.hostId);
+  const nextHostToken = await hosts.forHost(route.hostId);
+  const credentialFiles = async (prefix: string) =>
+    (await fs.readdir(directory)).filter((name) => name.startsWith(prefix));
+  await threads.forNested(nestedRoute, nextHostToken);
+  expect(await credentialFiles("scoped-nested-route-")).toHaveLength(3);
+  expect(await credentialFiles("scoped-route-")).toHaveLength(1);
+  advance(10 * 60_000 + 1);
+  const current = await threads.forThread(route, nextHostToken);
+  expect(await credentialFiles("scoped-route-")).toHaveLength(1);
+  expect(await credentialFiles("scoped-nested-route-")).toHaveLength(2);
+  expect(await threads.authenticate(current)).toEqual(route);
+  const reloaded = new ThreadTokenStore(directory, hosts);
+  await reloaded.initialize([route.hostId]);
+  expect(await credentialFiles("scoped-route-")).toHaveLength(1);
+  expect(await credentialFiles("scoped-nested-route-")).toHaveLength(1);
+  await hosts.rotate(route.hostId);
+  const thirdHostToken = await hosts.forHost(route.hostId);
+  advance(10 * 60_000 + 1);
+  const nextNested = await threads.forNested(nestedRoute, thirdHostToken);
+  expect(await credentialFiles("scoped-route-")).toHaveLength(0);
+  expect(await credentialFiles("scoped-nested-route-")).toHaveLength(1);
+  expect(await threads.authenticateNested(nextNested)).toEqual(nestedRoute);
+});
+
+async function downgradeToLegacy(directory: string): Promise<void> {
+  for (const name of await fs.readdir(directory)) {
+    const legacy = name
+      .replace(/^scoped-route-/u, "thread-route-")
+      .replace(/^scoped-nested-route-/u, "nested-route-")
+      .replace(/-v0\.json$/u, ".json");
+    if (legacy !== name)
+      await fs.rename(path.join(directory, name), path.join(directory, legacy));
+  }
+}
+
+async function legacyFixture(threadIds: readonly string[]) {
+  const base = await fixture();
+  const tokens = new Map<string, { provider: string; nested: string }>();
+  for (const threadId of threadIds) {
+    tokens.set(threadId, {
+      provider: await base.threads.forThread(
+        { ...base.route, threadId },
+        base.hostToken,
+      ),
+      nested: await base.threads.forNested(
+        { hostId: base.route.hostId, threadId },
+        base.hostToken,
+      ),
+    });
+  }
+  await downgradeToLegacy(base.directory);
+  const reloaded = new ThreadTokenStore(base.directory, base.hosts);
+  await reloaded.initialize([base.route.hostId]);
+  const tokenOf = (threadId: string) => {
+    const found = tokens.get(threadId);
+    if (found === undefined) throw new Error("unknown thread");
+    return found;
+  };
+  return { ...base, threads: reloaded, tokenOf };
+}
+
+it("revokes legacy credentials of an archived thread that never had a marker and keeps an active thread's", async () => {
+  const { threads, route, tokenOf } = await legacyFixture([
+    "thr_archived",
+    "thr_active",
+  ]);
+  const archived = tokenOf("thr_archived");
+  const active = tokenOf("thr_active");
+  expect((await threads.authenticate(archived.provider))?.threadId).toBe(
+    "thr_archived",
+  );
+  expect(await threads.authenticateNested(archived.nested)).not.toBeNull();
+  const lookup = vi.fn(async (threadId: string) =>
+    threadId === "thr_archived" ? ("gone" as const) : ("live" as const),
+  );
+  expect(await threads.sweepThreads(lookup)).toEqual({
+    checked: 2,
+    revoked: 1,
+    failed: 0,
+  });
+  expect(await threads.authenticate(archived.provider)).toBeNull();
+  expect(await threads.authenticateNested(archived.nested)).toBeNull();
+  expect(await threads.authenticate(active.provider)).toEqual({
+    ...route,
+    threadId: "thr_active",
+  });
+  expect(await threads.authenticateNested(active.nested)).toEqual({
+    hostId: route.hostId,
+    threadId: "thr_active",
+  });
+});
+
+it("keeps every credential and does not throw when the thread lookup fails", async () => {
+  const { threads, tokenOf } = await legacyFixture(["thr_a", "thr_b"]);
+  const failed = await threads.sweepThreads(async (threadId) => {
+    if (threadId === "thr_a") throw new Error("lookup failed");
+    return "live";
+  });
+  expect(failed).toEqual({ checked: 2, revoked: 0, failed: 1 });
+  expect(await threads.authenticate(tokenOf("thr_a").provider)).not.toBeNull();
+  expect(await threads.authenticate(tokenOf("thr_b").provider)).not.toBeNull();
+  const allFail = await threads.sweepThreads(async () => {
+    throw new Error("lookup failed");
+  });
+  expect(allFail).toEqual({ checked: 2, revoked: 0, failed: 2 });
+  expect(await threads.authenticate(tokenOf("thr_a").provider)).not.toBeNull();
+  expect(
+    await threads.authenticateNested(tokenOf("thr_b").nested),
+  ).not.toBeNull();
+});
+
+it("keeps a revoked legacy credential revoked after a reload, even if its file reappears", async () => {
+  const { directory, hosts, route, threads, tokenOf } = await legacyFixture([
+    "thr_archived",
+  ]);
+  const token = tokenOf("thr_archived");
+  const legacyFiles = await Promise.all(
+    (await fs.readdir(directory))
+      .filter(
+        (name) =>
+          name.startsWith("thread-route-") || name.startsWith("nested-route-"),
+      )
+      .map(async (name) => ({
+        name,
+        text: await fs.readFile(path.join(directory, name), "utf8"),
+      })),
+  );
+  expect(legacyFiles.length).toBe(2);
+  await threads.sweepThreads(async () => "gone");
+  expect(
+    (await fs.readdir(directory)).some((name) =>
+      name.startsWith("archived-thread-"),
+    ),
+  ).toBe(true);
+  for (const file of legacyFiles)
+    await fs.writeFile(path.join(directory, file.name), file.text);
+  const reloaded = new ThreadTokenStore(directory, hosts);
+  await reloaded.initialize([route.hostId]);
+  expect(await reloaded.authenticate(token.provider)).toBeNull();
+  expect(await reloaded.authenticateNested(token.nested)).toBeNull();
+  expect(
+    (await fs.readdir(directory)).filter(
+      (name) =>
+        name.startsWith("thread-route-") || name.startsWith("nested-route-"),
+    ),
+  ).toEqual([]);
+});
+
+it("counts a thread archived by its event during the lookup as revoked without a second removal", async () => {
+  const { threads, tokenOf } = await legacyFixture(["thr_racing"]);
+  const result = await threads.sweepThreads(async (threadId) => {
+    await threads.removeThread(threadId);
+    return "gone";
+  });
+  expect(result.failed).toBe(0);
+  expect(await threads.authenticate(tokenOf("thr_racing").provider)).toBeNull();
+});
+
+it("gives up on a lookup that never settles once the sweep deadline passes and keeps the credential", async () => {
+  const { threads, tokenOf } = await legacyFixture(["thr_hung"]);
+  const result = await threads.sweepThreads(
+    () => new Promise<never>(() => undefined),
+    { signal: AbortSignal.timeout(30) },
+  );
+  expect(result).toEqual({ checked: 1, revoked: 0, failed: 1 });
+  expect(
+    await threads.authenticate(tokenOf("thr_hung").provider),
+  ).not.toBeNull();
+});
+
+async function loadOrder(
+  directory: string,
+  threadIds: readonly string[],
+): Promise<string[]> {
+  const order: string[] = [];
+  for (const name of await fs.readdir(directory)) {
+    if (!name.startsWith("thread-route-")) continue;
+    const threadId = threadIds.find((candidate) => name.includes(candidate));
+    if (threadId !== undefined && !order.includes(threadId))
+      order.push(threadId);
+  }
+  return order;
+}
+
+it("does not let threads whose lookups hang starve a later archived thread, and bounds every sweep", async () => {
+  const names = ["thr_one", "thr_two", "thr_three"];
+  const { directory, threads, tokenOf } = await legacyFixture(names);
+  const [hangA, hangB, archived] = await loadOrder(directory, names);
+  if (hangA === undefined || hangB === undefined || archived === undefined)
+    throw new Error("missing thread");
+  const lookup: ThreadLookup = (threadId) =>
+    threadId === archived
+      ? Promise.resolve("gone")
+      : new Promise<never>(() => undefined);
+  const started = Date.now();
+  const sweepOptions = () => ({
+    signal: AbortSignal.timeout(60),
+    lookupTimeoutMs: 50,
+  });
+  const one = await threads.sweepThreads(lookup, sweepOptions());
+  expect(Date.now() - started).toBeLessThan(2_000);
+  expect(one).toEqual({ checked: 3, revoked: 0, failed: 3 });
+  const two = await threads.sweepThreads(lookup, sweepOptions());
+  expect(two).toEqual({ checked: 3, revoked: 1, failed: 2 });
+  expect(await threads.authenticate(tokenOf(archived).provider)).toBeNull();
+  expect(await threads.authenticate(tokenOf(hangA).provider)).not.toBeNull();
+  expect(await threads.authenticate(tokenOf(hangB).provider)).not.toBeNull();
+});
+
+it("checks later threads when an earlier lookup times out on its own", async () => {
+  const names = ["thr_one", "thr_two"];
+  const { directory, threads, tokenOf } = await legacyFixture(names);
+  const [hang, archived] = await loadOrder(directory, names);
+  if (hang === undefined || archived === undefined)
+    throw new Error("missing thread");
+  const result = await threads.sweepThreads(
+    (threadId) =>
+      threadId === archived
+        ? Promise.resolve("gone")
+        : new Promise<never>(() => undefined),
+    { signal: AbortSignal.timeout(5_000), lookupTimeoutMs: 30 },
+  );
+  expect(result).toEqual({ checked: 2, revoked: 1, failed: 1 });
+  expect(await threads.authenticate(tokenOf(archived).provider)).toBeNull();
+  expect(await threads.authenticate(tokenOf(hang).provider)).not.toBeNull();
+});
+
+it("revokes a later archived thread even when every thread failed a prior sweep and the earlier ones keep hanging", async () => {
+  const names = ["thr_one", "thr_two", "thr_three"];
+  const { directory, threads, tokenOf } = await legacyFixture(names);
+  const [hangA, hangB, archived] = await loadOrder(directory, names);
+  if (hangA === undefined || hangB === undefined || archived === undefined)
+    throw new Error("missing thread");
+  let archivedRecovered = false;
+  const lookup: ThreadLookup = (threadId) =>
+    threadId === archived && archivedRecovered
+      ? Promise.resolve("gone")
+      : new Promise<never>(() => undefined);
+  const allFailed = await threads.sweepThreads(lookup, {
+    signal: AbortSignal.timeout(5_000),
+    lookupTimeoutMs: 20,
+  });
+  expect(allFailed).toEqual({ checked: 3, revoked: 0, failed: 3 });
+  archivedRecovered = true;
+  let revoked = 0;
+  for (let sweeps = 0; revoked === 0 && sweeps < 4; sweeps += 1)
+    revoked += (
+      await threads.sweepThreads(lookup, {
+        signal: AbortSignal.timeout(40),
+        lookupTimeoutMs: 30,
+      })
+    ).revoked;
+  expect(revoked).toBe(1);
+  expect(await threads.authenticate(tokenOf(archived).provider)).toBeNull();
+  expect(await threads.authenticate(tokenOf(hangA).provider)).not.toBeNull();
+  expect(await threads.authenticate(tokenOf(hangB).provider)).not.toBeNull();
+});

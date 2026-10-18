@@ -11,7 +11,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { toast } from "sonner";
 import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
-import { AppToaster } from "./AppToaster";
+import { AppToasterView } from "./AppToasterView";
 import { ArchivedThreadToastDescription } from "./thread/ArchivedThreadToastDescription";
 import { AppToastContent } from "./ui/app-toast";
 
@@ -30,7 +30,7 @@ afterEach(async () => {
 async function renderToaster(isCompactViewport: boolean) {
   render(
     <CompactViewportOverrideProvider isCompactViewport={isCompactViewport}>
-      <AppToaster />
+      <AppToasterView />
     </CompactViewportOverrideProvider>,
   );
 
@@ -255,7 +255,7 @@ describe("AppToaster", () => {
     const onOpenThread = vi.fn();
     render(
       <CompactViewportOverrideProvider isCompactViewport>
-        <AppToaster />
+        <AppToasterView />
       </CompactViewportOverrideProvider>,
     );
     act(() => {
@@ -271,7 +271,7 @@ describe("AppToaster", () => {
               />
             }
             id={id}
-            title="Thread Archived"
+            title="Thread archived"
             tone="success"
           />
         ),
@@ -319,7 +319,7 @@ describe("AppToaster", () => {
     const onDismissC = vi.fn();
     render(
       <CompactViewportOverrideProvider isCompactViewport>
-        <AppToaster />
+        <AppToasterView />
       </CompactViewportOverrideProvider>,
     );
     act(() => {

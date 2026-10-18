@@ -10,7 +10,6 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import type { PromptTextMention, ThreadListEntry } from "@bb/domain";
-import type { TimelineTitleLink } from "@bb/thread-view";
 import { ConversationMessageContent } from "./ConversationMessageContent";
 import { ThreadTitleMentionResourcesProvider } from "@/components/thread/ThreadTitleMentions";
 import { RouteNavigationProvider } from "@/components/ui/app-route-anchor";
@@ -19,12 +18,6 @@ import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import { makeThreadListEntry as makeThreadListEntryFixture } from "@bb/test-helpers/domain-fixtures";
 import { GENERATED_MESSAGE_COLLAPSED_PREVIEW_CHAR_CAP } from "@bb/client-core";
 import { generatedConversationCollapsedPreview } from "./GeneratedConversationMessage";
-
-function resolveThreadLink(link: TimelineTitleLink): string | null {
-  return link.kind === "thread"
-    ? `/projects/proj_demo/threads/${link.threadId}`
-    : null;
-}
 
 const MARKDOWN_BODY = [
   "# Final report",
@@ -59,10 +52,8 @@ function renderChildCompleted(text = MARKDOWN_BODY) {
         <ConversationMessageContent
           role="user"
           initiator="system"
-          originKind={null}
           senderThreadId={null}
           senderThreadTitle={null}
-          resolveSegmentLinkHref={resolveThreadLink}
           systemMessageKind="child-completed"
           systemMessageSubject={{
             kind: "thread",
@@ -72,6 +63,7 @@ function renderChildCompleted(text = MARKDOWN_BODY) {
           attachments={null}
           mentions={mentions}
           text={text}
+          timestamp={0}
           threadId="thr_parent"
           turnRequest={{ kind: "message", status: "accepted" }}
           workspaceRootPath="/workspace"
@@ -93,10 +85,50 @@ describe("GeneratedConversationMessage images", () => {
     renderChildCompleted("![report](reports/result.png)");
 
     expect(
-      screen.getByRole("img", { name: "report" }).getAttribute("data-markdown-image-src"),
+      screen.getByRole("img", { name: "report" }).getAttribute("src"),
     ).toBe(
-      "/api/v1/threads/thr_parent/host-files/content?path=%2Fworkspace%2Freports%2Fresult.png",
+      "/api/v1/threads/thr_parent/host-files/workspace/reports/result.png",
     );
+  });
+});
+
+describe("GeneratedConversationMessage child completion", () => {
+  it("previews the final response and expands the complete markdown", () => {
+    renderChildCompleted(
+      [
+        "[bb system]",
+        "",
+        "@thread:thr_child completed:",
+        "",
+        "# Final report",
+        "",
+        "The child finished with a useful result.",
+        "",
+        "- First detail",
+        "- Expanded detail line.",
+      ].join("\n"),
+    );
+
+    expect(screen.getByText("Final report")).toBeTruthy();
+    expect(screen.queryByText(/@thread:thr_child completed:/u)).toBeNull();
+
+    fireEvent.click(screen.getByText("Final report"));
+
+    expect(screen.getByText("Expanded detail line.")).toBeTruthy();
+  });
+
+  it("keeps the child title and completion status on one shared baseline", () => {
+    renderChildCompleted();
+
+    const status = screen.getByText("finished");
+    const titleLine = status.closest(".items-baseline");
+    const title = screen.getByText("Rebuild comments").closest("a");
+
+    expect(titleLine).not.toBeNull();
+    expect(status.classList.contains("leading-5")).toBe(true);
+    expect(title?.classList.contains("leading-5")).toBe(true);
+    expect(title?.classList.contains("inline-flex")).toBe(true);
+    expect(title?.classList.contains("items-baseline")).toBe(true);
   });
 });
 
@@ -175,17 +207,16 @@ function renderAgentMessage(
           <ConversationMessageContent
             role="user"
             initiator="agent"
-            originKind={null}
             senderThreadId="thr_agent"
             senderThreadTitle={senderThreadTitle}
             senderIsPluginSideChat={senderIsPluginSideChat}
             onTitleAction={onTitleAction}
-            resolveSegmentLinkHref={resolveThreadLink}
             systemMessageKind="unlabeled"
             systemMessageSubject={null}
             attachments={null}
             mentions={mentions}
             text={text}
+            timestamp={0}
             turnRequest={{ kind: "message", status: "accepted" }}
             projectId="proj_demo"
           />
@@ -292,9 +323,7 @@ describe("GeneratedConversationMessage markdown body", () => {
     expect(sourcePill?.querySelector('[data-icon="UserRound"]')).not.toBeNull();
     expect(sourcePill?.querySelector('[data-icon="MessageSquare"]')).toBeNull();
     expect(sourcePill?.tagName).toBe("A");
-    expect(sourcePill?.getAttribute("href")).toBe(
-      "/projects/proj_demo/threads/thr_agent",
-    );
+    expect(sourcePill?.getAttribute("href")).toBe("/threads/thr_agent");
   });
 
   it("renders agent Markdown and its offset-based path mention", () => {
@@ -578,7 +607,7 @@ describe("GeneratedConversationMessage markdown body", () => {
     expect(screen.queryByText("**Ready** to merge.")).toBeNull();
 
     const toggle = screen.getByRole("button", {
-      name: /Replying to side chat/u,
+      name: /Message from side chat/u,
     });
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
 
@@ -598,7 +627,7 @@ describe("GeneratedConversationMessage markdown body", () => {
     ).not.toBeNull();
 
     fireEvent.click(
-      screen.getByRole("button", { name: /Replying to side chat/u }),
+      screen.getByRole("button", { name: /Message from side chat/u }),
     );
 
     expect(

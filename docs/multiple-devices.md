@@ -19,10 +19,10 @@ machine cannot be removed.
 
 ## Open bb from another browser
 
-The simplest managed route is **bb connect**. Pair the server from Settings →
-Connect (or `bb connect --code ... --server
-...`), then open its getbb.app URL. The server owns the tunnel and reconnects
-after restart.
+The simplest managed route is **bb connect**. Sign the server in to your bb
+account from Settings → bb connect (or `bb account login`, or
+`bb connect --code ...` with a dashboard code), then open its getbb.app URL.
+The server owns the tunnel and reconnects after restart.
 
 For a private tailnet route, keep bb on its loopback default and publish it
 through Tailscale Serve:
@@ -98,59 +98,32 @@ bb connect it pairs the same way the desktop app does: the phone enrolls as a
 connect machine with its own credential, which the getbb.app dashboard lists
 and can revoke.
 
-1. Pair the bb server with bb connect first (Settings → Remote access, or
-   `bb connect --code … --server …`).
-2. Turn on the **Mobile app** experiment (Settings → Experiments, or
-   `bb settings experiment mobileApp true`). Mobile pairing stays hidden
-   without it while the app is in early access.
-3. Mint a pairing code for the phone: Settings → Remote access → **Add mobile
-   device** (QR code plus the code as text, with a countdown), or run
+1. Sign the bb server in to your bb account first (Settings → bb account, `bb account login`, or `bb connect --code …`).
+2. Mint a pairing code for the phone: Settings → Mobile → **Add mobile device** (QR code plus the code as text, with a countdown), or run
    `bb connect machine-code` (`--json` prints
    `{code, serverUrl, apex, expiresAt}`).
-4. In the mobile app, add a server over bb connect and scan the QR code or type
+3. In the mobile app, add a server over bb connect and scan the QR code or type
    the code. Codes last 10 minutes and work once.
 
-The phone keeps its credential in the device keychain and mints short-lived
-sessions from it; it never holds the server's pairing secret. To cut a phone
-off, revoke it in the getbb.app dashboard machine list. Every phone takes one of
+The phone keeps its credential in the device keychain and mints sessions from
+it; it never holds the server's pairing secret. A session lasts seven days and
+renews while the phone is in use. To cut a phone off, revoke it in the
+getbb.app dashboard machine list; its session stops working within about 20
+seconds. Every phone takes one of
 the account's machine slots, so a machine-limit error means an unused device
 should be revoked first. On a trusted network the app can also use a direct
 server URL (Tailscale Serve or `--server-bind-host 0.0.0.0`) with the same
-caveats as a browser. Platforms (iOS first) and what the phone cannot do are
-listed in [platform-support.md](platform-support.md).
+caveats as a browser. What the phone cannot do is listed in
+[platform-support.md](platform-support.md#mobile-app).
 
 ### Push notifications on a self-hosted server
 
-The built-in Push notifications plugin sends messages through Expo. A
-self-hosted server must reach `https://exp.host`. The server needs no Apple or
-Google key.
-
-An Expo push token lets its holder send a notification to one app installation.
-The token cannot read notifications. It cannot access the phone or authenticate
-to the bb server. Treat the token as private because a leak can cause unwanted
-notifications.
-
-The server sends a thread title and a short preview. Use these commands to
-manage device registrations and inspect the sender:
-
-```bash
-bb push-notifications list
-bb push-notifications add --token <expo-push-token> --platform ios --label <device-name>
-bb push-notifications remove <id>
-bb push-notifications status
-```
-
-Turn delivery off with `bb plugin disable push-notifications`. The plugin keeps
-registrations in its private storage. Enable the plugin to resume delivery.
-
-The `expoPushUrl` plugin setting changes the Expo endpoint. Use it only for a
-controlled test service or a compatible relay:
-
-```bash
-bb plugin config push-notifications set expoPushUrl <url>
-```
-
-The Expo request supports `HTTPS_PROXY` and `NO_PROXY`.
+The built-in Push notifications plugin sends each notification's thread title
+and a short plain-text preview through Expo, so a self-hosted server must reach
+`https://exp.host`; it needs no Apple or Google key. An Expo push token can only
+send notifications to one app installation, but treat it as private. Device
+commands are in the `push-notifications` plugin skill; the relay URL and proxy
+settings are in [configuration.md](configuration.md).
 
 ## Point the desktop app at another bb
 
@@ -173,7 +146,9 @@ them when it starts, when it becomes active, and every five minutes.
 
 Open Settings → Machines and choose Add a machine. Run the generated one-line
 installer on the computer that should
-execute work. It installs and enrolls a host daemon; when bb connect is paired,
+execute work. Choose Windows in the dialog for a PowerShell command; a Windows
+machine needs Node.js 22.19 or newer and Git for Windows, and its daemon starts
+when you sign in to Windows. It installs and enrolls a host daemon; when bb connect is paired,
 the installer also configures the machine credential used to reach the server
 through the account gate. Without bb connect, open the server through a
 Tailscale Serve URL before generating the installer; the loopback listener is
@@ -184,17 +159,14 @@ machines should use. Once access is ready, the dialog also names the server
 machine the new machine will depend on.
 
 The installer always installs the exact host-only `bb-app` package exposed by
-that server at `/install/bb-app.tgz`. The package contains the host daemon,
-provider/plugin workers, native host dependencies, and bundled `bb` CLI, but no
-web app or server. A `bb-app` already on PATH is reused, and the npm registry
-consulted, only when the server provides no package. Version strings cannot
-distinguish unpublished builds, so the route also publishes a SHA-256 digest.
-The installer verifies that digest and uses a conditional request on later runs
-to skip an identical installed artifact. The package route is public like
-`/install.sh`: `bb-app` is public software, and exposing an unpublished build
-slightly early through a paired tunnel is an accepted tradeoff. npm installs
-the package into the machine's bb data directory, not its system-wide global
-prefix, so enrollment needs neither `sudo` nor a PATH change.
+that server at `/install/bb-app.tgz`: the host daemon, provider/plugin workers,
+native host dependencies, and bundled `bb` CLI, but no web app or server. A
+`bb-app` already on PATH, or the npm registry, is used only when the server
+provides no package. The installer verifies the route's SHA-256 digest and
+skips reinstalling an identical artifact. Like `/install.sh`, the package route
+is public. npm installs the package into the machine's bb data directory, not
+its system-wide global prefix, so enrollment needs neither `sudo` nor a PATH
+change.
 
 Each joined server gets its own daemon instance, data directory
 (`~/.bb-machines/<server-host>`, override with `BB_DATA_DIR` when running the
@@ -206,13 +178,21 @@ install's `~/.bb`. Each instance keeps its own `bb-app` under that data
 directory and self-updates against its own server, so servers running different
 bb versions on one machine remain isolated.
 
+On Linux, the installer uses the current user's systemd manager (or a system
+unit when run as root on a non-container systemd host). If the user bus is
+unavailable on a systemd host, installation fails before enrolling or creating
+a unit; rerun it from a systemd user session. In containers and on machines without systemd
+as init, the installer runs a detached daemon instead. Set
+`BB_INSTALL_SKIP_SERVICE=1` only when a detached daemon is acceptable: no
+service starts it after a reboot. The temporary daemon used
+for a first join is not supervised. When the installer starts a previously
+joined daemon without a service, its launcher restarts it after crashes and
+self-updates while the launcher remains running.
+
 The installed launchd/systemd service enables `--auto-update`. If session open
 reports a newer server protocol, the daemon downloads the server artifact,
 verifies its SHA-256 digest, updates its private install, then exits so the
-service manager restarts it. If the identical artifact is already installed,
-the server returns `304` and the daemon restarts without downloading or running
-npm again.
-Failed attempts fall back to normal reconnect behavior with a persisted
+service manager restarts it. Failed attempts fall back to normal reconnect behavior with a persisted
 exponential retry backoff from 5 seconds to 5 minutes. Settings → Machines and
 `bb machine retry-update <id-or-name>` can bypass the current backoff. A daemon
 never downgrades itself to an older server protocol. To opt out, remove

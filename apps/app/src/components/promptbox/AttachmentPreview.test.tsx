@@ -54,6 +54,31 @@ describe("AttachmentPreview", () => {
     expect(revoked).toEqual(["blob:local-1"]);
   });
 
+  it("shows an uploading file in the file pill row so finishing does not move it", () => {
+    const { getByRole } = render(
+      <AttachmentPreview
+        attachments={[
+          { type: "localFile", path: "uploads/notes.txt", name: "notes.txt" },
+        ]}
+        pendingUploads={[
+          {
+            id: "upload-1",
+            file: new File(["log"], "Pasted text.txt", { type: "text/plain" }),
+          },
+        ]}
+        expandedImageIndex={null}
+        onExpandedImageIndexChange={vi.fn()}
+        onRemoveAttachment={vi.fn()}
+      />,
+    );
+
+    const uploading = getByRole("status", { name: "Uploading Pasted text.txt" });
+    const finishedPill = getByRole("button", { name: "Remove notes.txt" })
+      .parentElement?.parentElement;
+    expect(uploading.parentElement).toBe(finishedPill?.parentElement);
+    expect(uploading.className).toBe(finishedPill?.className);
+  });
+
   it("keeps upload feedback in the collapsed composer and releases previews on unmount", () => {
     const props = {
       attachments: [],
@@ -102,6 +127,7 @@ describe("AttachmentPreview", () => {
           {
             type: "localImage",
             path: "restored-2-def.png",
+            sourceProjectId: "proj_source",
             name: "restored.png",
             mimeType: "image/png",
             sizeBytes: 3,
@@ -115,7 +141,7 @@ describe("AttachmentPreview", () => {
     const images = getAllByRole("img");
     expect(images.map((image) => image.getAttribute("src"))).toEqual([
       "blob:local-1",
-      "/api/v1/projects/proj_1/attachments/content?path=restored-2-def.png",
+      "/api/v1/projects/proj_source/attachments/content?path=restored-2-def.png",
     ]);
     expect(
       images.every((image) => image.getAttribute("decoding") === "async"),
@@ -124,6 +150,43 @@ describe("AttachmentPreview", () => {
     fireEvent.click(getByLabelText("Remove photo.png"));
     expect(onRemoveAttachment).toHaveBeenCalledWith("photo-1-abc.png");
     expect(revoked).toEqual(["blob:local-1"]);
+  });
+
+  it("keeps composer focus when a touch on remove synthesizes mousedown", () => {
+    const onRemoveAttachment = vi.fn();
+    const { getByRole } = render(
+      <AttachmentPreview
+        attachments={[
+          {
+            type: "localImage",
+            path: "screenshot.png",
+            name: "screenshot.png",
+            mimeType: "image/png",
+            sizeBytes: 3,
+          },
+          {
+            type: "localFile",
+            path: "diff.patch",
+            name: "diff.patch",
+            mimeType: "text/plain",
+            sizeBytes: 3,
+          },
+        ]}
+        expandedImageIndex={null}
+        onExpandedImageIndexChange={() => {}}
+        onRemoveAttachment={onRemoveAttachment}
+      />,
+    );
+
+    for (const name of ["Remove screenshot.png", "Remove diff.patch"]) {
+      const removeButton = getByRole("button", { name });
+      expect(fireEvent.mouseDown(removeButton, { button: 0 })).toBe(false);
+      fireEvent.click(removeButton, { detail: 1 });
+    }
+    expect(onRemoveAttachment.mock.calls).toEqual([
+      ["screenshot.png"],
+      ["diff.patch"],
+    ]);
   });
 
   it("separates compact touch targets from attachment remove visuals", () => {

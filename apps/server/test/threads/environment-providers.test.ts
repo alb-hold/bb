@@ -161,7 +161,7 @@ function installEnvironmentIntentProbe(): PluginDispatchEnvironmentIntent[] {
   const environmentIntents: PluginDispatchEnvironmentIntent[] = [];
   const registry: {
     [K in PluginHookName]: PluginHookRegistration<K>[];
-  } = { "message.dispatch": [] };
+  } = { "experimental_thread.configure": [], "message.dispatch": [] };
   registry["message.dispatch"].push({
     pluginId: "observer",
     handler: (context) => {
@@ -463,7 +463,7 @@ describe("machine and environment provider composition", () => {
     });
   });
 
-  it("creates the environment before its machine and mirrors machine failure", async () => {
+  it("creates the environment before its machine and cleans up after machine failure", async () => {
     await withTestHarness(async (harness) => {
       const { host } = seedHostSession(harness.deps, {
         id: "composition-environment-first",
@@ -567,17 +567,34 @@ describe("machine and environment provider composition", () => {
         phase: "creating",
         statusMessage: "Booting cloud machine",
       });
-      expect(getPreparingEnvironment(harness.db, thread.id)?.hostId).toBe(
-        machineHost?.id,
-      );
-
-      release.resolve();
-      await expect
-        .poll(() => getPreparingEnvironment(harness.db, thread.id))
-        .toMatchObject({
-          status: "error",
+      const environment = getPreparingEnvironment(harness.db, thread.id);
+      expect(environment?.hostId).toBe(machineHost?.id);
+      if (environment === null)
+        throw new Error("Missing preparing environment");
+      const destroyed = createDeferredPromise<void>();
+      const socket = {
+        close() {},
+        send() {
+          if (
+            getEnvironment(harness.db, environment.id)?.status === "destroyed"
+          )
+            destroyed.resolve();
+        },
+      };
+      harness.hub.subscribe(socket, {
+        kind: "environment-detail",
+        environmentId: environment.id,
+      });
+      try {
+        release.resolve();
+        await destroyed.promise;
+        expect(getPreparingEnvironment(harness.db, thread.id)).toMatchObject({
+          status: "destroyed",
           statusMessage: "Cloud quota exceeded",
         });
+      } finally {
+        harness.hub.unregisterClient(socket);
+      }
     });
   });
 });
@@ -752,12 +769,14 @@ describe("shared machine preparation retention", () => {
             );
             release.resolve();
             await expect
-              .poll(() => getPreparingEnvironment(harness.db, next.id)?.status)
+              .poll(() => getThread(harness.db, next.id)?.status)
               .toBe("error");
-            await advanceThreadProvisioning(harness.deps, {
-              threadId: next.id,
-            });
-            expect(getThread(harness.db, next.id)?.status).toBe("error");
+            await expect
+              .poll(
+                () =>
+                  getPreparingEnvironment(harness.db, next.id)?.teardownStatus,
+              )
+              .toBe("removed");
           }
           await sweepProviderMachine(harness.deps, host.id);
           expect(remove).toHaveBeenCalledTimes(1);
@@ -969,19 +988,25 @@ describe("environment providers are asked inside provisioning", () => {
         inputs: z.string().transform(Number),
         provision: (context) => {
           inputs.push(context.inputs);
-          return { action: "wait", reason: "Starting container…" };
+          return { action: "reject", message: "Observed transformed inputs" };
         },
       });
+      const create = vi.spyOn(listEnvironmentProviders()[0].provider, "create");
       const { project } = seedTargetFixture(
         harness,
         "host-target-transformed-inputs",
       );
-      await createTargetThread(harness, {
+      const thread = await createTargetThread(harness, {
         projectId: project.id,
         inputs: "2",
       });
 
-      await expect.poll(() => inputs).toEqual([2]);
+      await expect
+        .poll(() => getThread(harness.db, thread.id)?.status)
+        .toBe("error");
+      expect(create).toHaveBeenCalledOnce();
+      expect(create.mock.calls[0]?.[0].inputs).toBe(2);
+      expect(inputs).toEqual([2]);
     });
   });
 
@@ -2699,36 +2724,6 @@ describe("a provider-produced environment over its life", () => {
     });
   });
 
-  it("generates the instance key from the core launch path key", async () => {
-    await withTestHarness(async (harness) => {
-      const { host, project } = seedTargetFixture(
-        harness,
-        "host-target-no-key",
-      );
-      installTarget({
-        provision: () => ({
-          action: "ready",
-          environment: {
-            type: "host",
-            hostId: host.id,
-            path: "/tmp/environment-providers-unkeyed",
-          },
-        }),
-      });
-      const created = await createTargetThread(harness, {
-        projectId: project.id,
-      });
-      await vi.waitFor(() =>
-        expect(getThread(harness.db, created.id)?.environmentId).not.toBeNull(),
-      );
-      const environmentId = getThread(harness.db, created.id)?.environmentId;
-      expect(
-        getEnvironment(harness.db, environmentId ?? "")
-          ?.environmentProviderInstanceKey,
-      ).toBe(created.id);
-    });
-  });
-
   it("aborts create and asks the provider to remove by path key when stopped", async () => {
     await withTestHarness(async (harness) => {
       const cancelled: string[] = [];
@@ -2805,6 +2800,8 @@ describe("a provider-produced environment over its life", () => {
       setPluginThreadEventEmitter({
         emitThreadEvents: () => {},
         emitTerminalInput: () => {},
+        emitHostDeleted: () => {},
+        emitEnvironmentRemoved: () => {},
         emitThreadCreated: () => {},
         emitThreadActive: () => {},
         emitThreadIdle: () => {},
@@ -2813,6 +2810,7 @@ describe("a provider-produced environment over its life", () => {
         emitThreadUnarchived: (thread) => {
           unarchived.push(thread.id);
         },
+        emitThreadParentChanged: () => {},
         emitThreadDeleted: () => {},
         emitMessageQueued: () => {},
         emitMessageDispatched: () => {},

@@ -25,6 +25,7 @@ import {
   type ServerConnectionOptions,
 } from "./server-connection-support.js";
 import { isLikelySystemSuspensionDelay } from "@bb/process-utils";
+import { sliceUtf16Head } from "@bb/text-utils";
 import { normalizeCaughtError, runtimeErrorLogFields } from "./error-utils.js";
 import { ServerResponseError } from "./server-client.js";
 
@@ -139,6 +140,8 @@ function recoverableMessageKey(
       return `environment-change\u0000${message.environmentId}\u0000${message.change}`;
     case "environment-metadata-change":
       return `environment-metadata-change\u0000${message.environmentId}`;
+    case "terminal.exited":
+      return `terminal.exited\u0000${message.terminalId}`;
     default:
       return null;
   }
@@ -164,13 +167,16 @@ function isTerminalDaemonLifecycleMessage(
   }
 }
 
+import { redactWirePayload } from "./redact-wire-payload.js";
+
 function summarizeServerMessagePayload(
   data: unknown,
 ): ServerMessagePayloadSummary {
-  const text = decodeWebSocketMessageData(data);
+  const raw = decodeWebSocketMessageData(data);
+  const text = redactWirePayload(raw);
   return {
-    payloadLength: text.length,
-    payloadPreview: text.slice(0, SERVER_MESSAGE_PAYLOAD_PREVIEW_CHARS),
+    payloadLength: raw.length,
+    payloadPreview: sliceUtf16Head(text, SERVER_MESSAGE_PAYLOAD_PREVIEW_CHARS),
     payloadTruncated: text.length > SERVER_MESSAGE_PAYLOAD_PREVIEW_CHARS,
   };
 }
@@ -394,6 +400,8 @@ export class ServerConnection {
         dataDir: this.options.dataDir,
         localApiPort: this.options.localApiPort,
         activeThreads: this.options.getActiveThreads?.() ?? [],
+        undeliveredEventThreadIds:
+          this.options.getUndeliveredEventThreadIds?.() ?? [],
         loadedEnvironments: this.options.getLoadedEnvironments?.() ?? [],
         adoptedThreads: this.options.getAdoptedThreads?.() ?? [],
       });
@@ -738,6 +746,11 @@ export class ServerConnection {
           );
         },
       );
+      return;
+    }
+
+    if (message.data.type === "host-rpc.cancel") {
+      this.options.onHostRpcCancel?.(message.data);
       return;
     }
 

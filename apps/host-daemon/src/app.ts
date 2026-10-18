@@ -1,3 +1,4 @@
+import { HOST_DAEMON_RESTART_EXIT_CODE } from "@bb/config/machine-service";
 import { startDesktopBrowserBroker } from "./desktop-browser-broker.js";
 import { MachineEnvironment } from "./machine-environment.js";
 import { CommandRouter } from "./command-router.js";
@@ -25,6 +26,7 @@ import {
 } from "./runtime-manager.js";
 import { WatchManager } from "./watch-manager.js";
 import { ConnectTunnelClient } from "./connect-tunnel/index.js";
+import { TerminalDataSocket } from "./terminals/terminal-data-socket.js";
 import { TerminalManager } from "./terminals/terminal-manager.js";
 import {
   createServerClient,
@@ -43,6 +45,7 @@ import {
 } from "./server-connection.js";
 import { runtimeErrorLogFields, summarizeError } from "./error-utils.js";
 import { ensureThreadStorageRoot } from "./thread-storage-root.js";
+import { createRuntimeShellEnvCache } from "./runtime-shell-env-cache.js";
 import type { AgentRuntime, AgentRuntimeOptions } from "@bb/agent-runtime";
 import { createProtocolSelfUpdater } from "./protocol-self-update.js";
 import {
@@ -61,16 +64,10 @@ interface SessionState {
 }
 
 const INTERACTIVE_INTERRUPT_RETRY_DELAY_MS = 1_000;
+const INTERACTIVE_INTERRUPT_MAX_RETRY_DELAY_MS = 60_000;
 const IDLE_PROVIDER_SESSION_REAP_AFTER_MS = 30 * 60 * 1000;
 const IDLE_PROVIDER_SESSION_REAP_INTERVAL_MS = 5 * 60 * 1000;
 const RUNTIME_SHELL_ENV_REFRESH_TTL_MS = 10_000;
-
-type RuntimeShellEnv = NonNullable<AgentRuntimeOptions["shellEnv"]>;
-
-interface RuntimeShellEnvRefreshEntry {
-  expiresAtMs: number;
-  promise: Promise<RuntimeShellEnv>;
-}
 
 interface IdleProviderSessionReaperTimer {
   clear(): void;
@@ -112,6 +109,7 @@ interface CreateHostDaemonAppOptions {
   logger: HostDaemonLogger;
   serverHeaders?: Record<string, string>;
   autoUpdate?: boolean;
+  supervised?: boolean;
   releaseLock: () => Promise<void>;
   localApiConfig: HostDaemonLocalApiConfig | null;
   createRuntime?: RuntimeManagerOptions["createRuntime"];
@@ -236,6 +234,7 @@ export async function createHostDaemonApp(
   let flushPendingInteractiveInterruptsPromise: Promise<void> | null = null;
   let interactiveInterruptRetryTimeout: ReturnType<typeof setTimeout> | null =
     null;
+  let interactiveInterruptRetryDelayMs = INTERACTIVE_INTERRUPT_RETRY_DELAY_MS;
   let eventSink: EventSink;
   let handleServerSessionInvalidated = (
     _args: HandleServerSessionInvalidatedArgs,
@@ -320,10 +319,23 @@ export async function createHostDaemonApp(
       return;
     }
 
+    const delayMs = interactiveInterruptRetryDelayMs;
+    interactiveInterruptRetryDelayMs = Math.min(
+      delayMs * 2,
+      INTERACTIVE_INTERRUPT_MAX_RETRY_DELAY_MS,
+    );
     interactiveInterruptRetryTimeout = setTimeout(() => {
       interactiveInterruptRetryTimeout = null;
-      void flushPendingInteractiveInterrupts();
-    }, INTERACTIVE_INTERRUPT_RETRY_DELAY_MS);
+      flushPendingInteractiveInterruptsSafely();
+    }, delayMs);
+  }
+
+  function isRejectedInteractiveInterrupt(error: unknown): boolean {
+    return (
+      error instanceof ServerResponseError &&
+      !error.retryable &&
+      error.code !== "inactive_session"
+    );
   }
 
   async function flushPendingInteractiveInterrupts(): Promise<void> {
@@ -348,13 +360,24 @@ export async function createHostDaemonApp(
             request: () => serverClient.interruptInteractiveRequests(request),
           });
           pendingInteractiveInterrupts.delete(key);
+          interactiveInterruptRetryDelayMs =
+            INTERACTIVE_INTERRUPT_RETRY_DELAY_MS;
         } catch (error) {
+          const logFields = {
+            providerId: request.providerId,
+            threadIds: request.threadIds,
+            ...runtimeErrorLogFields(error),
+          };
+          if (isRejectedInteractiveInterrupt(error)) {
+            pendingInteractiveInterrupts.delete(key);
+            options.logger.warn(
+              logFields,
+              "Dropped pending interactive interrupt request the server rejected",
+            );
+            continue;
+          }
           options.logger.warn(
-            {
-              providerId: request.providerId,
-              threadIds: request.threadIds,
-              ...runtimeErrorLogFields(error),
-            },
+            logFields,
             "Failed to flush pending interactive interrupt request",
           );
           scheduleInteractiveInterruptRetry();
@@ -370,6 +393,15 @@ export async function createHostDaemonApp(
     }
   }
 
+  function flushPendingInteractiveInterruptsSafely(): void {
+    void flushPendingInteractiveInterrupts().catch((error) => {
+      options.logger.warn(
+        runtimeErrorLogFields(error),
+        "Failed to flush pending interactive interrupt requests",
+      );
+    });
+  }
+
   function enqueueInteractiveInterrupt(
     request: PendingInteractiveInterruptRequest,
   ): void {
@@ -377,7 +409,9 @@ export async function createHostDaemonApp(
       buildInteractiveInterruptKey(request),
       request,
     );
-    void flushPendingInteractiveInterrupts();
+    if (interactiveInterruptRetryTimeout === null) {
+      flushPendingInteractiveInterruptsSafely();
+    }
   }
 
   eventSink = createEventSink({
@@ -652,53 +686,28 @@ export async function createHostDaemonApp(
     threadStorageRootPath,
   });
   const nowMs = options.nowMs ?? Date.now;
-  let runtimeShellEnvRefreshEntry: RuntimeShellEnvRefreshEntry | null =
-    options.runtimeShellEnvResolvedAtMs === undefined
-      ? null
-      : {
-          expiresAtMs:
-            options.runtimeShellEnvResolvedAtMs +
-            RUNTIME_SHELL_ENV_REFRESH_TTL_MS,
-          promise: Promise.resolve(runtimeManager.getShellEnv()),
-        };
-  const refreshRuntimeShellEnv = async () => {
-    if (!options.resolveRuntimeShellEnv) {
-      return runtimeManager.getShellEnv();
-    }
-    const now = nowMs();
-    if (
-      runtimeShellEnvRefreshEntry &&
-      runtimeShellEnvRefreshEntry.expiresAtMs > now
-    ) {
-      return runtimeShellEnvRefreshEntry.promise;
-    }
-
-    const promise = (async () => {
-      const shellEnv = await options.resolveRuntimeShellEnv?.();
-      if (shellEnv === undefined) {
-        return runtimeManager.getShellEnv();
-      }
-      await runtimeManager.replaceBaseShellEnv(shellEnv);
-      return runtimeManager.getShellEnv();
-    })();
-    const entry = {
-      expiresAtMs: now + RUNTIME_SHELL_ENV_REFRESH_TTL_MS,
-      promise,
-    };
-    runtimeShellEnvRefreshEntry = entry;
-    try {
-      return await promise;
-    } catch (error) {
-      if (runtimeShellEnvRefreshEntry === entry) {
-        runtimeShellEnvRefreshEntry = null;
-      }
-      throw error;
-    }
-  };
+  const runtimeShellEnvCache = createRuntimeShellEnvCache({
+    applyShellEnv: (shellEnv) => runtimeManager.replaceBaseShellEnv(shellEnv),
+    now: nowMs,
+    onRefreshError: (error) => {
+      options.logger.warn(
+        { err: error },
+        "Background login-shell environment refresh failed",
+      );
+    },
+    readShellEnv: () => runtimeManager.getShellEnv(),
+    ttlMs: RUNTIME_SHELL_ENV_REFRESH_TTL_MS,
+    ...(options.resolveRuntimeShellEnv
+      ? { resolveShellEnv: options.resolveRuntimeShellEnv }
+      : {}),
+    ...(options.runtimeShellEnvResolvedAtMs === undefined
+      ? {}
+      : { resolvedAtMs: options.runtimeShellEnvResolvedAtMs }),
+  });
   const withMaintenanceRuntime = async <TResult>(
     request: (runtime: AgentRuntime) => Promise<TResult>,
   ): Promise<TResult> => {
-    await refreshRuntimeShellEnv();
+    await runtimeShellEnvCache.refresh({ allowStale: false });
     return runtimeManager.withProviderMaintenanceRuntime(
       { dataDir: options.dataDir },
       request,
@@ -720,10 +729,29 @@ export async function createHostDaemonApp(
       };
     },
   });
-  const terminalManager = new TerminalManager({
+  const terminalManager: TerminalManager = new TerminalManager({
     logger: options.logger,
     runtimeManager,
-    sendMessage: (message) => sendServerMessage(message),
+    sendMessage: (message) =>
+      (message.type === "terminal.output" &&
+        terminalDataSocket.sendOutput(message)) ||
+      sendServerMessage(message),
+  });
+  const terminalDataSocket = new TerminalDataSocket({
+    hostKey: options.hostKey,
+    logger: options.logger,
+    onAttached: () => terminalManager.releaseOutputFlowControl(),
+    onDetached: () => terminalManager.releaseOutputFlowControl(),
+    onMessage: (message) => {
+      void terminalManager.handleMessage(message).catch((error: unknown) => {
+        options.logger.warn(
+          { terminalId: message.terminalId, ...runtimeErrorLogFields(error) },
+          "Failed to handle a terminal data socket message",
+        );
+      });
+    },
+    serverHeaders: options.serverHeaders ?? {},
+    serverUrl: options.serverUrl,
   });
   const pluginHostManager = new PluginHostManager({
     dataDir: options.dataDir,
@@ -752,6 +780,7 @@ export async function createHostDaemonApp(
   const desktopBrowserBroker = await startDesktopBrowserBroker({
     dataDir: options.dataDir,
     hostId: options.hostId,
+    logger: options.logger,
     serverUrl: options.serverUrl,
     onChanged: (event) => sendServerMessage(event),
   });
@@ -769,6 +798,7 @@ export async function createHostDaemonApp(
     serverHeaders: options.serverHeaders ?? {},
     hostDaemonPort: options.localApiConfig?.port ?? null,
     autoUpdate: options.autoUpdate ?? false,
+    supervised: options.supervised ?? false,
     logger: options.logger,
     ...(options.fetchFn === undefined ? {} : { fetchFn: options.fetchFn }),
     isServerSessionOpen: () => sessionState.value !== null,
@@ -783,6 +813,7 @@ export async function createHostDaemonApp(
   const router = new CommandRouter({
     emitEnvironmentHookProgress: (message) => sendServerMessage(message),
     desktopBrowserBroker,
+    terminalDataSocket,
     dataDir: options.dataDir,
     fetchProjectAttachment: (args) =>
       runSessionRequest({
@@ -814,8 +845,8 @@ export async function createHostDaemonApp(
       withMaintenanceRuntime((runtime) =>
         runtime.providerInstallationRun(args),
       ),
-    refreshShellEnv: async () => {
-      await refreshRuntimeShellEnv();
+    refreshShellEnv: async (args) => {
+      await runtimeShellEnvCache.refresh(args);
     },
     resolveInteractiveRequest: async (request) => {
       interactiveRequestRegistry.resolve(request);
@@ -857,12 +888,14 @@ export async function createHostDaemonApp(
     createWebSocket: options.createWebSocket,
     getActiveThreads: () => runtimeManager.listActiveThreads(),
     hasOpenBackgroundWork: () => runtimeManager.hasOpenBackgroundWork(),
+    getUndeliveredEventThreadIds: () => eventSink.listUndeliveredThreadIds(),
     getLoadedEnvironments: () => runtimeManager.listLoadedEnvironments(),
     getAdoptedThreads: () => runtimeManager.listAdoptedBridgeThreads(),
     onHostRpcRequest: async (message) => {
       const response = await router.handleOnlineRpcRequest(message);
       sendServerMessage(response);
     },
+    onHostRpcCancel: (message) => router.cancelOnlineRpcRequest(message),
     onWatchSetReplace: async (message) => {
       await watchManager.replaceWatchSet({
         generation: message.generation,
@@ -878,6 +911,9 @@ export async function createHostDaemonApp(
     },
     onTerminalMessage: (message) => terminalManager.handleMessage(message),
     onSessionOpened: async (session) => {
+      if (sessionState.value !== session.sessionId) {
+        terminalDataSocket.close();
+      }
       sessionState.value = session.sessionId;
       connectTunnel.replaceAuthoritativeShareSet(session.connectShares);
       await pluginHostManager.reconcileGenerations(
@@ -907,13 +943,16 @@ export async function createHostDaemonApp(
           "Failed to flush pending daemon events after session opened",
         );
       });
-      void flushPendingInteractiveInterrupts();
+      flushPendingInteractiveInterruptsSafely();
     },
     setSession: (session) => {
       sessionState.value = session?.sessionId ?? null;
       desktopBrowserBroker.setConnected(session !== null);
       if (session === null) {
+        terminalDataSocket.close();
+        terminalManager.releaseOutputFlowControl();
         clearInteractiveInterruptRetry();
+        interactiveInterruptRetryDelayMs = INTERACTIVE_INTERRUPT_RETRY_DELAY_MS;
         return;
       }
       void runtimeManager
@@ -936,6 +975,7 @@ export async function createHostDaemonApp(
     ? await startLocalApiServer({
         dataDir: options.dataDir,
         hostId: options.hostId,
+        logger: options.logger,
         localApiConfig: options.localApiConfig,
         serverUrl: options.serverUrl,
         serverPort: Number(new URL(options.serverUrl).port) || 0,
@@ -997,6 +1037,7 @@ export async function createHostDaemonApp(
       connectTunnel.shutdown();
       await watchManager.shutdown();
       disposeParcelWatcherBackend();
+      terminalDataSocket.close();
       await terminalManager.shutdownAll();
       terminalManager.dispose();
       machineEnvironment.replace([]);
@@ -1012,9 +1053,11 @@ export async function createHostDaemonApp(
   });
   requestDaemonRestart = () => {
     sendServerMessage({ type: "daemon.restarting" });
-    void daemon.shutdown("self-update", 0).catch((error) => {
-      options.logger.error({ err: error }, "Self-update shutdown failed");
-    });
+    void daemon
+      .shutdown("self-update", HOST_DAEMON_RESTART_EXIT_CODE)
+      .catch((error) => {
+        options.logger.error({ err: error }, "Self-update shutdown failed");
+      });
   };
   requestMachineShutdown = async () => {
     await writeMachineSuspensionMarker(options.dataDir);

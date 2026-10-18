@@ -1,5 +1,4 @@
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -7,10 +6,12 @@ import {
   resolveInheritedDevSkillsRootPaths,
   toDevProcessEnv,
 } from "@bb/config/runtime";
+import { makeTempDir } from "@bb/test-helpers";
 import {
-  createDevTurboCommand,
   createStartWorktreeCommand,
+  resolveDevCloud,
   resolveDevLaunchMode,
+  STAGING_CLOUD_URL,
   toDevLaunchProcessEnv,
 } from "../src/commands/run-dev.js";
 import { migrateLegacyDevData } from "../src/lib/legacy-dev-data-migration.js";
@@ -20,14 +21,6 @@ import {
   expectedDevPorts,
   expectedDevServerUrl,
 } from "./dev-instance-expectations.js";
-
-const tempDirs: string[] = [];
-
-async function makeTempDir(prefix: string): Promise<string> {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
-  tempDirs.push(dir);
-  return dir;
-}
 
 async function pathExists(pathToCheck: string): Promise<boolean> {
   try {
@@ -41,13 +34,8 @@ async function pathExists(pathToCheck: string): Promise<boolean> {
   }
 }
 
-afterEach(async () => {
+afterEach(() => {
   vi.restoreAllMocks();
-  await Promise.all(
-    tempDirs
-      .splice(0)
-      .map((dir) => fs.rm(dir, { recursive: true, force: true })),
-  );
 });
 
 describe("run-dev", () => {
@@ -139,17 +127,19 @@ describe("run-dev", () => {
   });
 
   it("inherits parent bb skills for managed worktree dev apps", () => {
-    const homeDir = "/Users/tester";
-    const repoRoot =
-      "/Users/tester/.bb-dev/code-bb-abc123/worktrees/env_feature/bb";
+    const homeDir = path.resolve("/Users/tester");
+    const repoRoot = path.join(
+      homeDir,
+      ".bb-dev/code-bb-abc123/worktrees/env_feature/bb",
+    );
     const config = resolveDevInstanceConfig({
       homeDir,
       repoRoot,
     });
 
     const inheritedSkillsRootPaths = [
-      "/Users/tester/.bb-dev/code-bb-abc123/skills",
-      "/Users/tester/.bb/skills",
+      path.join(homeDir, ".bb-dev", "code-bb-abc123", "skills"),
+      path.join(homeDir, ".bb", "skills"),
     ];
     expect(resolveInheritedDevSkillsRootPaths({ homeDir, repoRoot })).toEqual(
       inheritedSkillsRootPaths,
@@ -160,34 +150,34 @@ describe("run-dev", () => {
   });
 
   it("dedupes inherited bb skills for prod-managed worktree dev apps", () => {
-    const homeDir = "/Users/tester";
-    const repoRoot = "/Users/tester/.bb/worktrees/env_feature/bb";
+    const homeDir = path.resolve("/Users/tester");
+    const repoRoot = path.join(homeDir, ".bb/worktrees/env_feature/bb");
     const config = resolveDevInstanceConfig({
       homeDir,
       repoRoot,
     });
 
     expect(resolveInheritedDevSkillsRootPaths({ homeDir, repoRoot })).toEqual([
-      "/Users/tester/.bb/skills",
+      path.join(homeDir, ".bb", "skills"),
     ]);
     expect(toDevProcessEnv({ baseEnv: {}, config })).toMatchObject({
-      BB_INHERITED_SKILLS_ROOTS: "/Users/tester/.bb/skills",
+      BB_INHERITED_SKILLS_ROOTS: path.join(homeDir, ".bb", "skills"),
     });
   });
 
   it("inherits prod bb skills for ordinary checkout dev apps", () => {
-    const homeDir = "/Users/tester";
-    const repoRoot = "/Users/tester/src/bb";
+    const homeDir = path.resolve("/Users/tester");
+    const repoRoot = path.join(homeDir, "src", "bb");
     const config = resolveDevInstanceConfig({
       homeDir,
       repoRoot,
     });
 
     expect(resolveInheritedDevSkillsRootPaths({ homeDir, repoRoot })).toEqual([
-      "/Users/tester/.bb/skills",
+      path.join(homeDir, ".bb", "skills"),
     ]);
     expect(toDevProcessEnv({ baseEnv: {}, config })).toMatchObject({
-      BB_INHERITED_SKILLS_ROOTS: "/Users/tester/.bb/skills",
+      BB_INHERITED_SKILLS_ROOTS: path.join(homeDir, ".bb", "skills"),
     });
   });
 
@@ -235,28 +225,11 @@ describe("run-dev", () => {
     expect(env.BB_SERVER_URL).toBe(config.serverUrl);
   });
 
-  it("runs the same persistent dev tasks as pnpm dev", () => {
-    expect(createDevTurboCommand()).toEqual({
-      args: [
-        "exec",
-        "turbo",
-        "run",
-        "dev",
-        "--filter=@bb/app",
-        "--filter=@bb/server",
-        "--filter=@bb/host-daemon",
-        "--ui",
-        "tui",
-        "--concurrency",
-        "20",
-        "--no-update-notifier",
-      ],
-      command: "pnpm",
-    });
-  });
-
   it("runs the production-style source launcher for worktree start", () => {
     const command = createStartWorktreeCommand();
+    expect(createStartWorktreeCommand(false, true).args).toContain(
+      "--perf-diagnostics",
+    );
 
     expect(command.command).toBe(process.execPath);
     expect(command.args).toEqual([
@@ -272,9 +245,56 @@ describe("run-dev", () => {
     expect(resolveDevLaunchMode([])).toBe("vite");
     expect(resolveDevLaunchMode(["--worktree"])).toBe("worktree");
     expect(() => resolveDevLaunchMode(["--watch"])).toThrow(
-      "Expected no arguments or --worktree",
+      "Expected no arguments, --staging, or --worktree",
     );
   });
+
+  it("points bb account and Connect at staging only for pnpm dev --staging", () => {
+    const config = resolveDevInstanceConfig({
+      homeDir: "/Users/tester",
+      repoRoot: "/Users/tester/src/bb",
+    });
+
+    expect(resolveDevCloud({ staging: false, mode: "vite" })).toBe("local");
+    expect(resolveDevCloud({ staging: true, mode: "vite" })).toBe("staging");
+    expect(() => resolveDevCloud({ staging: true, mode: "worktree" })).toThrow(
+      "--staging is supported by pnpm dev only",
+    );
+    expect(
+      toDevLaunchProcessEnv({
+        baseEnv: {},
+        cloud: "staging",
+        config,
+        mode: "vite",
+      }).BB_DEV_CONNECT_BASE_URL,
+    ).toBe(STAGING_CLOUD_URL);
+    expect(
+      toDevLaunchProcessEnv({
+        baseEnv: { BB_DEV_CONNECT_BASE_URL: STAGING_CLOUD_URL },
+        cloud: "local",
+        config,
+        mode: "vite",
+      }).BB_DEV_CONNECT_BASE_URL,
+    ).toBe(`http://bb.localhost:${config.ports.cloudPort}`);
+  });
+
+  it.each(["vite", "worktree"] as const)(
+    "preserves an explicit onboarding override in %s mode",
+    (mode) => {
+      const config = resolveDevInstanceConfig({
+        homeDir: "/Users/tester",
+        repoRoot: "/Users/tester/src/bb",
+      });
+      const env = toDevLaunchProcessEnv({
+        baseEnv: { BB_SKIP_ONBOARDING: "0" },
+        cloud: "local",
+        config,
+        mode,
+      });
+
+      expect(env.BB_SKIP_ONBOARDING).toBe("0");
+    },
+  );
 
   it("uses production serving with checkout-specific dev selectors", () => {
     const config = resolveDevInstanceConfig({
@@ -290,6 +310,7 @@ describe("run-dev", () => {
         NODE_ENV: "development",
         OPENAI_API_KEY: "test-key",
       },
+      cloud: "local",
       config,
       mode: "worktree",
     });
@@ -299,6 +320,7 @@ describe("run-dev", () => {
       BB_HOST_DAEMON_PORT: String(config.ports.hostDaemonPort),
       BB_SERVER_PORT: String(config.ports.serverPort),
       BB_SERVER_URL: config.serverUrl,
+      BB_SKIP_ONBOARDING: "1",
       BB_TELEMETRY: "false",
       NODE_ENV: "production",
       OPENAI_API_KEY: "test-key",

@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { networkInterfaces } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { getAppSettings, setAppSettings } from "@bb/db";
 import type { PendingInteraction } from "@bb/domain";
 import { createIntegrationHarness } from "../helpers/harness.js";
 import type { IntegrationHarness } from "../helpers/harness.js";
@@ -147,8 +148,7 @@ const LONG_MARKDOWN_MESSAGE = [
   "",
   "## Reference",
   "",
-  "See the [bb docs](https://docs.getbb.app) for the server contract and the",
-  "plan in `plans/bb-mobile-expo.md` for the phase breakdown.",
+  "See `apps/mobile/README.md` for the mobile client and E2E harness.",
   "",
   "## Notes",
   "",
@@ -195,6 +195,11 @@ async function main(): Promise<void> {
   };
   process.on("SIGINT", () => void shutdown("SIGINT"));
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
+
+  setAppSettings(harness.db, {
+    ...getAppSettings(harness.db),
+    onboardingCompletedAt: new Date().toISOString(),
+  });
 
   const project = await createProjectFixture(harness, {
     name: "Mobile E2E Project",

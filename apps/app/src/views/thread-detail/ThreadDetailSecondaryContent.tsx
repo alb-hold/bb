@@ -16,6 +16,7 @@ import {
 import { DETAIL_GRID_CLASS } from "@/components/ui/detail-card.js";
 import { useThreads } from "@/hooks/queries/thread-queries";
 import { ThreadTimelinePane } from "./ThreadTimelinePane";
+import { useOptionalPaneContext } from "./PaneContext";
 
 type ThreadTimelinePaneProps = Omit<
   ComponentProps<typeof ThreadTimelinePane>,
@@ -41,6 +42,7 @@ type ThreadSecondaryPanelProps = Omit<
 interface ThreadDetailSecondaryContentProps {
   footer: ReactNode;
   header: ReactNode;
+  nativeTerminalMain: ReactNode | null;
   isMetadataLoading: boolean;
   isSecondaryPanelOpen: boolean;
   isConversationCollapsed: boolean;
@@ -66,6 +68,7 @@ export function ThreadDetailSecondaryContent(
 function ThreadDetailSecondaryContentBody({
   footer,
   header,
+  nativeTerminalMain,
   isMetadataLoading,
   isSecondaryPanelOpen,
   isConversationCollapsed,
@@ -77,6 +80,7 @@ function ThreadDetailSecondaryContentBody({
   secondaryPanel,
   timeline,
 }: ThreadDetailSecondaryContentProps) {
+  const paneContext = useOptionalPaneContext();
   const composerHost = usePluginComposerHost();
   const { renderBrowserDeck, ...threadSecondaryPanelProps } = secondaryPanel;
 
@@ -116,6 +120,7 @@ function ThreadDetailSecondaryContentBody({
       <SecondaryPanelLayout
         open={isSecondaryPanelOpen}
         onToggle={onToggleSecondaryPanel}
+        onSwipeOpen={onToggleSecondaryPanel}
         onClose={threadSecondaryPanelProps.onClose}
         panelGroupKey="thread-detail"
         resetKey={timeline.threadId}
@@ -124,13 +129,16 @@ function ThreadDetailSecondaryContentBody({
         drawerFallback={<ThreadMetadataLoadingSkeleton />}
         mainPanelId="thread-detail-timeline-panel"
         mainHeader={header}
-        main={<ThreadTimelinePane {...timeline} footer={footer} />}
+        main={
+          nativeTerminalMain ?? (
+            <ThreadTimelinePane {...timeline} footer={footer} />
+          )
+        }
         collapse={{
           active: isConversationCollapsed,
           onToggle: onToggleConversationCollapse,
         }}
         composerHost={composerHost}
-        compactPresentation="full"
         renderHostedPanel={renderHostedPanel}
         renderPanel={({
           presentation,
@@ -156,10 +164,8 @@ function ThreadDetailSecondaryContentBody({
               presentation === "inline" && isMainCollapsed
             }
             onToggleConversationCollapse={onToggleMainCollapse}
-            {...(presentation === "inline"
-              ? { inlinePanelToggle: "button" as const }
-              : {})}
             resizablePanelId={resizablePanelId}
+            isAtWindowTop={paneContext?.isTopRow !== false}
             metadataContent={metadataContent}
           />
         )}

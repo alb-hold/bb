@@ -31,14 +31,15 @@ function makeResponse(rowCount: number): ThreadTimelineResponse {
     activeBackgroundCommands: [],
     pendingTodos: null,
     goal: null,
+    providerCommands: null,
+    sessionOptions: null,
     modelFallback: null,
     maxSeq: 0,
     timelinePage: {
-      kind: "latest",
-      segmentLimit: 20,
       returnedSegmentCount: 0,
-      hasOlderRows: false,
       olderCursor: null,
+      historySnapshot: "",
+      olderRowsSourceSeqEnd: null,
     },
   };
 }
@@ -52,12 +53,9 @@ const baseKeyArgs: ThreadTimelineCacheKeyArgs = {
   threadId: "thr_x",
   maxSeq: 10,
   status: "idle",
-  environmentId: null,
+  surface: "surface-a",
   page: latestPage,
-  includeNestedRows: false,
   summaryOnly: false,
-  includeDiagnosticOperations: false,
-  completedTurnDisplay: "collapse",
 };
 
 describe("createThreadTimelineCache", () => {
@@ -71,16 +69,6 @@ describe("createThreadTimelineCache", () => {
     expect(build).toHaveBeenCalledTimes(1);
     expect(second).toBe(first);
     expect(cache.size).toBe(1);
-  });
-
-  it("rebuilds when the key changes (e.g. new maxSeq)", () => {
-    const cache = createThreadTimelineCache();
-    const build = vi.fn(() => makeResponse(3));
-
-    cache.getOrBuild("thr_x", "k1", build);
-    cache.getOrBuild("thr_x", "k2", build);
-
-    expect(build).toHaveBeenCalledTimes(2);
   });
 
   it("does not cache responses above the row cap (streaming expanded turns)", () => {
@@ -131,11 +119,8 @@ describe("buildThreadTimelineCacheKey", () => {
     const variants: ThreadTimelineCacheKeyArgs[] = [
       { ...baseKeyArgs, maxSeq: 11 },
       { ...baseKeyArgs, status: "active" },
-      { ...baseKeyArgs, environmentId: "env_1" },
-      { ...baseKeyArgs, includeNestedRows: true },
+      { ...baseKeyArgs, surface: "surface-b" },
       { ...baseKeyArgs, summaryOnly: true },
-      { ...baseKeyArgs, includeDiagnosticOperations: true },
-      { ...baseKeyArgs, completedTurnDisplay: "flat" },
       {
         ...baseKeyArgs,
         page: {

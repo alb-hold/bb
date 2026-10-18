@@ -37,6 +37,7 @@ const iconTintSchema = z.strictObject({
 export const usageProviderSchema = z.strictObject({
   id: nonemptyStringSchema,
   providerId: nonemptyStringSchema,
+  accountKey: z.optional(z.nullable(nonemptyStringSchema)),
   accountLabel: z.nullable(nonemptyStringSchema),
   displayName: nonemptyStringSchema,
   logoUrl: z.nullable(nonemptyStringSchema),
@@ -45,6 +46,18 @@ export const usageProviderSchema = z.strictObject({
   signInHint: nonemptyStringSchema,
   expiredHint: nonemptyStringSchema,
   usage: z.nullable(providerUsageSchema),
+  accountPool: z.optional(
+    z.nullable(
+      z.strictObject({
+        active: z.boolean(),
+        enabled: z.boolean(),
+        status: z.enum(["disabled", "ready", "held", "exhausted", "error"]),
+        heldUntil: z.nullable(z.number()),
+        error: z.nullable(nonemptyStringSchema),
+        extraUsage: z.nullable(z.enum(["allowed", "rejected"])),
+      }),
+    ),
+  ),
 });
 
 export const usageMachineSchema = z.strictObject({

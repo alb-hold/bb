@@ -1,7 +1,18 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveAppServerLaunch } from "./bridge.js";
 
-afterEach(() => vi.unstubAllEnvs());
+let configHome: string;
+beforeEach(() => {
+  configHome = mkdtempSync(path.join(os.tmpdir(), "bb-codex-launch-"));
+  vi.stubEnv("CODEX_HOME", configHome);
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+  rmSync(configHome, { recursive: true, force: true });
+});
 
 describe("Codex Account Pool launch", () => {
   it("adds an in-memory base URL and environment-backed hub header", () => {
@@ -14,11 +25,54 @@ describe("Codex Account Pool launch", () => {
     );
     expect(launch.args).toContain('model_provider="bb-account-pool"');
     expect(launch.args).toContain(
+      "model_providers.bb-account-pool.request_max_retries=11",
+    );
+    expect(launch.args).toContain(
+      "model_providers.bb-account-pool.stream_max_retries=11",
+    );
+    for (const setting of [
+      "model_providers.bb-account-pool.request_max_retries=11",
+      "model_providers.bb-account-pool.stream_max_retries=11",
+    ]) {
+      expect(launch.args[launch.args.indexOf(setting) - 1]).toBe("-c");
+    }
+    const streamRetries = Number(
+      launch.args.find((arg) =>
+        arg.startsWith("model_providers.bb-account-pool.stream_max_retries="),
+      )?.split("=")[1],
+    );
+    const requestRetries = Number(
+      launch.args.find((arg) =>
+        arg.startsWith("model_providers.bb-account-pool.request_max_retries="),
+      )?.split("=")[1],
+    );
+    const retryCount = 11;
+    const retryDelaysMs = Array.from(
+      { length: retryCount },
+      (_, retry) => 200 * 2 ** retry,
+    );
+    const minimumRetryBudgetMs = retryDelaysMs.reduce(
+      (total, delay) => total + delay * 0.9,
+      0,
+    );
+    const maximumRetryBudgetMs = retryDelaysMs.reduce(
+      (total, delay) => total + delay * 1.1,
+      0,
+    );
+    expect(streamRetries).toBe(retryCount);
+    expect(requestRetries).toBe(retryCount);
+    expect(minimumRetryBudgetMs).toBeGreaterThanOrEqual(180_000);
+    expect(maximumRetryBudgetMs).toBeLessThanOrEqual(600_000);
+    expect(launch.args).toContain(
       'model_providers.bb-account-pool.env_http_headers.x-bb-account-pool-token="CODEX_POOL_AUTH_TOKEN"',
     );
     expect(launch.args).toContain(
       "model_providers.bb-account-pool.supports_websockets=false",
     );
+    expect(launch.args).toContain(
+      'shell_environment_policy.filters={"CODEX_*POOL*"="exclude","BB_ACCOUNT_POOL_*"="exclude","CODEX_OPENAI_BASE_URL"="exclude"}',
+    );
+
     expect(JSON.stringify(launch.args)).not.toContain("secret-machine-token");
   });
 

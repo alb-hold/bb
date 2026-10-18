@@ -10,11 +10,11 @@ import {
 } from "@bb/server-archive";
 import { describe, expect, it } from "vitest";
 import { writeIncomingMoveState } from "./move-state.js";
-import { isProcessGroupAlive } from "./pending-server.js";
 import {
   ACTIVATION_TOKEN,
   createFixture,
   exists,
+  hasPendingServerExited,
   freePort,
   HOST_KEY,
   LAUNCHER_ENTRY_PATH,
@@ -68,7 +68,7 @@ describe("ServerMoveService.prepare", () => {
       localServerUrl: `http://127.0.0.1:${command.serverPort}`,
       pid: expect.any(Number),
     });
-    expect(isProcessGroupAlive(result.pid)).toBe(true);
+    expect(fixture.isPendingServerRunning(result.pid)).toBe(true);
     expect(installed.map((bytes) => bytes.toString("utf8"))).toEqual([
       "full bb-app package",
     ]);
@@ -208,7 +208,7 @@ describe("ServerMoveService.prepare", () => {
       fixture.service.abort({ type: "server_move.abort", moveId: MOVE_ID }),
     ).resolves.toEqual({ ok: true });
 
-    expect(isProcessGroupAlive(result.pid)).toBe(false);
+    expect(await hasPendingServerExited(result.pid)).toBe(true);
     expect(await readJson(join(fixture.dataDir, "config.json"))).toEqual(
       originalConfig,
     );
@@ -274,7 +274,10 @@ describe("ServerMoveService.prepare", () => {
     const stopped = await createFixture({
       processOps: {
         isRunning: () => false,
-        readCommand: async () => `node ${LAUNCHER_ENTRY_PATH} start`,
+        readIdentity: async () => ({
+          command: `node ${LAUNCHER_ENTRY_PATH} start`,
+          startedAt: null,
+        }),
       },
     });
     await writeFileWithDirs(
@@ -317,7 +320,10 @@ describe("ServerMoveService in launcher-managed moved mode", () => {
       name: "the launcher pid is not running",
       processOps: {
         isRunning: () => false,
-        readCommand: async () => `node ${LAUNCHER_ENTRY_PATH} start`,
+        readIdentity: async () => ({
+          command: `node ${LAUNCHER_ENTRY_PATH} start`,
+          startedAt: null,
+        }),
       },
       movedFile: true,
     },
@@ -325,7 +331,10 @@ describe("ServerMoveService in launcher-managed moved mode", () => {
       name: "the recorded pid is not bb-app",
       processOps: {
         isRunning: () => true,
-        readCommand: async () => "/usr/bin/python3 http.server 38886",
+        readIdentity: async () => ({
+          command: "/usr/bin/python3 http.server 38886",
+          startedAt: null,
+        }),
       },
       movedFile: true,
     },
@@ -821,7 +830,6 @@ describe("ServerMoveService.inspect and probe", () => {
       timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       bbAppVersion: "1.2.3",
       serverEntryAvailable: true,
-      serviceManager: "none",
       existingServerData: { path: join(fixture.homeDir, ".bb"), sizeBytes: 5 },
       dataDirHasServerData: false,
       portAvailable: true,

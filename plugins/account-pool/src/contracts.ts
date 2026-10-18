@@ -1,5 +1,8 @@
 import { z } from "zod";
 
+export const CLAUDE_OAUTH_REDIRECT_URI =
+  "https://console.anthropic.com/oauth/code/callback";
+
 export const DEFAULT_ACCOUNT_POOL_CONFIG = {
   anthropicUpstreamBaseUrl: "https://api.anthropic.com",
   codexUpstreamBaseUrl: "https://chatgpt.com/backend-api/codex",
@@ -22,7 +25,6 @@ const switchThresholdSchema = z
   .max(1, "Must be at most 1.");
 
 export const parentModeSchema = z.enum(["proxy", "isolate"]);
-export type ParentMode = z.infer<typeof parentModeSchema>;
 
 export const accountPoolConfigSchema = z
   .object({
@@ -131,6 +133,30 @@ export const limitWindowSchema = z
 
 export type LimitWindow = z.infer<typeof limitWindowSchema>;
 
+export const threadSelectionInputSchema = z
+  .object({
+    threadId: z.string().regex(/^thr_[A-Za-z0-9]+$/u),
+    provider: providerSchema,
+  })
+  .strict();
+
+export const threadSelectionSchema = z
+  .object({
+    accountId: z.string().uuid().nullable(),
+  })
+  .strict();
+
+export const threadSelectionSetSchema = threadSelectionInputSchema.extend(
+  threadSelectionSchema.shape,
+);
+
+export const draftSelectionSchema = z
+  .object({
+    provider: providerSchema,
+    accountId: z.string().uuid(),
+  })
+  .strict();
+
 export const accountSchema = z
   .object({
     id: z.string().uuid(),
@@ -176,7 +202,20 @@ export const accountSecretSchema = z.discriminatedUnion("kind", [
 
 export type AccountSecret = z.infer<typeof accountSecretSchema>;
 
+export const extraUsageSchema = z
+  .object({
+    status: z.enum(["allowed", "rejected"]),
+    observedAt: z.number().int(),
+    source: z.enum(["header", "usage"]),
+  })
+  .strict();
+
 const quotaFieldsShape = {
+  usageRestriction: z
+    .object({ reason: z.string().min(1), resetAt: z.number().int().nullable() })
+    .strict()
+    .nullable(),
+  extraUsage: extraUsageSchema.nullable(),
   fiveHourUtilization: z.number().nullable(),
   fiveHourResetAt: z.number().int().nullable(),
   fiveHourStatus: z.string().nullable(),
@@ -200,11 +239,86 @@ export const quotaSchema = z
 
 export type AccountQuota = z.infer<typeof quotaSchema>;
 
+export const balanceWindowSchema = z
+  .object({
+    kind: z.enum(["five-hour", "weekly", "family", "limit"]),
+    key: z.string().min(1),
+    family: modelFamilySchema.nullable(),
+    utilization: z.number().nonnegative().nullable(),
+    headroom: z.number().min(0).max(1).nullable(),
+    resetAt: z.number().int().nullable(),
+    hoursUntilReset: z.number().nonnegative().nullable(),
+    resetRecoveryPerHour: z.number().nonnegative().nullable(),
+  })
+  .strict();
+
+export const accountBalanceSchema = z
+  .object({
+    bindingWindow: z.string().min(1).nullable(),
+    bindingHeadroom: z.number().min(0).max(1).nullable(),
+    resetRecoveryPerHour: z.number().nonnegative().nullable(),
+    windows: z.array(balanceWindowSchema),
+  })
+  .strict();
+
+export const lastAutomaticChoiceSchema = z
+  .object({
+    chosenAt: z.number().int().nonnegative(),
+    reason: z.string().min(1),
+    family: modelFamilySchema,
+    balance: accountBalanceSchema,
+  })
+  .strict();
+
+export type BalanceWindow = z.infer<typeof balanceWindowSchema>;
+export type AccountBalance = z.infer<typeof accountBalanceSchema>;
+export type LastAutomaticChoice = z.infer<typeof lastAutomaticChoiceSchema>;
+
+export const routingBindingGetInputSchema = z
+  .object({
+    threadId: z.string().regex(/^thr_[A-Za-z0-9_-]+$/u),
+    provider: z.literal("claude"),
+  })
+  .strict();
+
+export const routingBindingNextInputSchema = z
+  .object({ provider: z.literal("claude") })
+  .strict();
+
+export const routingBindingHeadroomSchema = z
+  .object({
+    accountId: z.string().uuid(),
+    balance: accountBalanceSchema,
+    eligible: z.boolean(),
+  })
+  .strict();
+
+export const routingBindingGetSchema = z
+  .object({
+    boundAccountId: z.string().uuid().nullable(),
+    nextAccountId: z.string().uuid().nullable(),
+    reason: z.string().min(1),
+    headroom: z.array(routingBindingHeadroomSchema),
+  })
+  .strict();
+
+export const routingBindingNextSchema = z
+  .object({
+    nextAccountId: z.string().uuid().nullable(),
+    reason: z.string().min(1),
+  })
+  .strict();
+
 export const accountSummarySchema = accountSchema.extend({
   lastUsedHostName: z.string().min(1).nullable(),
+  active: z.boolean().default(false),
+  balance: accountBalanceSchema,
+  lastAutomaticChoice: lastAutomaticChoiceSchema.nullable(),
   ...quotaFieldsShape,
   inFlight: z.number().int().nonnegative(),
   status: z.enum(["disabled", "ready", "held", "exhausted", "error"]),
+  signInExpired: z.boolean(),
+  organizationUuid: z.string().uuid().nullable(),
 });
 
 export type AccountSummary = z.infer<typeof accountSummarySchema>;
@@ -271,12 +385,19 @@ export const accountAddInputSchema = z
         .object({ kind: z.literal("api-key"), apiKey: z.string().min(1) })
         .strict(),
     ]),
-    label: z.string().min(1).nullable(),
-    priority: z.number().int(),
+    label: z.string().trim().min(1).nullable(),
+    priority: z.number().int().optional(),
   })
   .strict();
 
 export type AccountAddInput = z.infer<typeof accountAddInputSchema>;
+
+export const loginStartInputSchema = z
+  .object({ accountId: z.string().uuid() })
+  .strict()
+  .nullable();
+
+export type LoginStartInput = z.infer<typeof loginStartInputSchema>;
 
 export const loginStartSchema = z
   .object({
@@ -285,10 +406,24 @@ export const loginStartSchema = z
   })
   .strict();
 
+export const localLoginSchema = z
+  .object({
+    providerId: z.string().min(1),
+    displayName: z.string().min(1),
+    email: z.string().nullable(),
+    planLabel: z.string().min(1).nullable(),
+    status: z.enum(["ready", "expired"]),
+    poolProvider: providerSchema.nullable(),
+  })
+  .strict();
+
+export type LocalLogin = z.infer<typeof localLoginSchema>;
+
 export const loginCompleteInputSchema = z
   .object({
     sessionId: z.string().uuid(),
     pasted: z.string().trim().min(1),
+    label: z.string().trim().min(1).max(120).optional(),
   })
   .strict();
 
@@ -303,7 +438,10 @@ export const codexLoginStartSchema = z
   .strict();
 
 export const codexLoginPollInputSchema = z
-  .object({ sessionId: z.string().uuid() })
+  .object({
+    sessionId: z.string().uuid(),
+    label: z.string().trim().min(1).max(120).optional(),
+  })
   .strict();
 
 export const codexLoginCancelSchema = z
@@ -320,6 +458,17 @@ export const codexLoginPollSchema = z.discriminatedUnion("status", [
 
 export const accountIdInputSchema = z
   .object({ id: z.string().uuid() })
+  .strict();
+
+export const accountDisableSubscriptionInputSchema = z
+  .object({
+    id: z.string().uuid(),
+    expectedIds: z.array(z.string().uuid()).optional(),
+  })
+  .strict();
+
+export const accountRenameInputSchema = z
+  .object({ id: z.string().uuid(), label: z.string().trim().min(1).max(120) })
   .strict();
 
 export const accountPriorityInputSchema = z
@@ -343,4 +492,8 @@ export const tokenRotateInputSchema = z
 
 export const bypassInputSchema = z
   .object({ threadId: z.string().min(1), bypassed: z.boolean() })
+  .strict();
+
+export const bypassGetInputSchema = z
+  .object({ threadId: z.string().min(1) })
   .strict();

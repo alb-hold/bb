@@ -1,7 +1,5 @@
 import {
-  getAppSettings,
   getStoredProviderModelCatalog,
-  setAppSettings,
   updateHost,
 } from "@bb/db";
 import type { JsonValue, ProviderFork } from "@bb/domain";
@@ -43,6 +41,14 @@ const BASE_NOW = 1_800_000_000_000;
 const SECOND = 1_000;
 const MINUTE = 60 * SECOND;
 const SETTLED = "Provider model catalog refresh settled";
+const CLAUDE_CODE_FALLBACK_MODEL_IDS = [
+  "claude-fable-5-1",
+  "claude-opus-5-5[1m]",
+  "claude-opus-5[1m]",
+  "claude-opus-4-8[1m]",
+  "claude-opus-4-7[1m]",
+  "claude-sonnet-5",
+];
 
 type ListModelsCommand = Extract<
   HostDaemonOnlineRpcRequestMessage["command"],
@@ -126,14 +132,6 @@ function setupCatalogHost(
 
 function modelIds(response: { models: readonly { model: string }[] }) {
   return response.models.map((model) => model.model);
-}
-
-function fallbackModelIds(harness: TestAppHarness, providerId: string) {
-  const ids = requireRegistration(harness, providerId).fallbackModels.map(
-    (model) => model.model,
-  );
-  expect(ids.length).toBeGreaterThan(0);
-  return ids;
 }
 
 function registerCatalogProbe(
@@ -224,10 +222,9 @@ describe("provider model catalog store", () => {
       expect(response.modelLoadError).toEqual({
         providerId: "claude-code",
         code: "failed",
+        detail: "model list command_failed",
       });
-      expect(modelIds(response)).toEqual(
-        fallbackModelIds(harness, "claude-code"),
-      );
+      expect(modelIds(response)).toEqual(CLAUDE_CODE_FALLBACK_MODEL_IDS);
       expect(host.listRequests()).toHaveLength(2);
     });
   });
@@ -409,6 +406,7 @@ describe("provider model catalog store", () => {
       expect(surfaced.modelLoadError).toEqual({
         providerId: "codex",
         code: "auth_required",
+        detail: "model list auth_required",
       });
       expect(surfaced.models).toEqual([]);
     });
@@ -531,6 +529,42 @@ describe("provider model catalog store", () => {
     });
   });
 
+  it("reads a workspace-scoped catalog in the project's checkout on the machine when a new thread names its project", async () => {
+    await withTestHarness(async (harness) => {
+      const host = setupCatalogHost(harness, { id: "host-catalog-project" });
+      const other = seedHostSession(harness.deps, {
+        id: "host-catalog-project-elsewhere",
+      });
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.hostId,
+        path: "/tmp/catalog-project-checkout",
+      });
+      const { project: elsewhere } = seedProjectWithSource(harness.deps, {
+        hostId: other.host.id,
+        path: "/tmp/catalog-project-elsewhere",
+      });
+      const read = (providerId: string, projectId: string) =>
+        resolveSystemExecutionOptions(harness.deps, {
+          hostId: host.hostId,
+          projectId,
+          providerId,
+        });
+
+      await read("pi", project.id);
+      await read("pi", elsewhere.id);
+      await read("claude-code", project.id);
+
+      expect(host.listRequests().map((command) => command.cwd)).toEqual([
+        "/tmp/catalog-project-checkout",
+        undefined,
+        undefined,
+      ]);
+      await expect(read("pi", "proj_missing")).rejects.toMatchObject({
+        status: 404,
+      });
+    });
+  });
+
   it("records no failure and sends no push when a refresh fails after its daemon session changed or because the host is not active", async () => {
     await withTestHarness(async (harness) => {
       const logLines = captureLogLines(harness);
@@ -572,14 +606,14 @@ describe("provider model catalog store", () => {
       lateFailure.resolve();
       const failed = await pending;
       expect(failed.modelLoadError?.code).toBe("failed");
-      expect(modelIds(failed)).toEqual(
-        fallbackModelIds(harness, "claude-code"),
-      );
+      expect(failed.modelLoadError?.detail).toBe("Runtime shutting down");
+      expect(modelIds(failed)).toEqual(CLAUDE_CODE_FALLBACK_MODEL_IDS);
 
       updateHost(harness.db, harness.hub, host.hostId, { phase: "creating" });
-      expect((await host.read("claude-code")).modelLoadError?.code).toBe(
-        "failed",
-      );
+      expect((await host.read("claude-code")).modelLoadError).toMatchObject({
+        code: "failed",
+        detail: "Host is not connected",
+      });
       updateHost(harness.db, harness.hub, host.hostId, { phase: "active" });
       expect(modelIds(await host.read("claude-code"))).toEqual([
         "claude-code-model",
@@ -594,6 +628,23 @@ describe("provider model catalog store", () => {
         ["host_unavailable", "host_unavailable"],
         ["success", undefined],
       ]);
+    });
+  });
+
+  it("collapses and truncates a long failure message before serving it to the picker", async () => {
+    await withTestHarness(async (harness) => {
+      const host = setupCatalogHost(harness, { id: "host-catalog-detail" });
+      host.setAnswer(() => ({
+        ok: false,
+        errorCode: "command_failed",
+        errorMessage: `codex stderr:\n${"x".repeat(400)}`,
+      }));
+
+      const response = await host.read("claude-code");
+      expect(response.modelLoadError?.detail).toBe(
+        `codex stderr: ${"x".repeat(285)}\u2026`,
+      );
+      expect(response.modelLoadError?.detail).toHaveLength(300);
     });
   });
 
@@ -677,10 +728,6 @@ describe("provider model catalog store", () => {
     await withTestHarness(async (harness) => {
       const host = setupCatalogHost(harness, {
         id: "host-catalog-machine-environment",
-      });
-      setAppSettings(harness.db, {
-        ...getAppSettings(harness.db),
-        machineGitCredentialsEnabled: false,
       });
       const held = createDeferredPromise<HostRpcHandlerResult>();
       let saved = false;

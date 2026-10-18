@@ -11,6 +11,7 @@ import {
   type ThreadQueuedMessage,
   type ThreadTurnInitiator,
 } from "@bb/domain";
+import { sliceUtf16Head } from "@bb/text-utils";
 import type {
   ExecutionInputFieldSource,
   ThreadResponse,
@@ -209,6 +210,30 @@ function messageDispatchHookFailure(
   );
 }
 
+function threadConfigurationRejected(
+  pluginId: string,
+  detail: string,
+): ApiError {
+  return new ApiError(
+    400,
+    "thread_configuration_rejected",
+    `The "${pluginId}" plugin's experimental_thread.configure hook rejected the thread configuration: ${detail}`,
+    { details: { pluginId } },
+  );
+}
+
+function threadConfigurationHookFailure(
+  pluginId: string,
+  detail: string,
+): ApiError {
+  return new ApiError(
+    502,
+    "thread_configuration_hook_failed",
+    `The "${pluginId}" plugin's experimental_thread.configure hook failed: ${detail}`,
+    { details: { pluginId } },
+  );
+}
+
 function dispatchRejection(pluginId: string, message: string): ApiError {
   return new ApiError(409, "dispatch_rejected", message, {
     details: { pluginId },
@@ -267,7 +292,7 @@ export function dispatchEnvironmentAndHost(
   // The same DTO `GET /threads/:id?include=host` serves, so a handler reading
   // `host.status` sees the live connection state rather than a stored row.
   return {
-    environment: toEnvironmentResponse(environment),
+    environment: toEnvironmentResponse(deps.db, environment),
     host: getNonDestroyedHostWithStatus(deps, environment.hostId),
   };
 }
@@ -456,6 +481,48 @@ export async function runMessageDispatchHookPass(
   });
 }
 
+export async function configureThreadPlugins(
+  thread: Pick<ThreadResponse, "id" | "providerId">,
+  data: Record<string, import("@get-bb/plugin-sdk").JsonValue> | undefined,
+): Promise<void> {
+  if (data === undefined || Object.keys(data).length === 0) return;
+  const provider = pluginHookProvider();
+  const hooks = provider?.listHooks("experimental_thread.configure") ?? [];
+  for (const pluginId of Object.keys(data)) {
+    if (!hooks.some((hook) => hook.pluginId === pluginId)) {
+      throw new ApiError(
+        400,
+        "plugin_configuration_unavailable",
+        `Plugin ${pluginId} cannot configure this conversation.`,
+      );
+    }
+  }
+  if (provider === undefined) return;
+  for (const hook of hooks) {
+    if (!Object.hasOwn(data, hook.pluginId)) continue;
+    const ownData = data[hook.pluginId];
+    if (ownData === undefined) continue;
+    const invocation = await provider.invokeHook(
+      hook.pluginId,
+      "thread configuration",
+      () =>
+        decideWithinBox(
+          async () => hook.handler({ thread, data: ownData }),
+          provider.decisionTimeoutMs,
+        ),
+    );
+    if (!invocation.ok)
+      throw threadConfigurationHookFailure(hook.pluginId, invocation.error);
+    if (!invocation.value.ok)
+      throw threadConfigurationRejected(hook.pluginId, invocation.value.error);
+    if (invocation.value.value !== null)
+      throw threadConfigurationRejected(
+        hook.pluginId,
+        "returned an invalid configuration result",
+      );
+  }
+}
+
 /**
  * The wait reason for a pass, naming every plugin that voted to wait. The
  * first waiter owns the row, so its reason leads; the rest are appended so the
@@ -472,7 +539,7 @@ export function dispatchWaitReasonForPass(
       ? outcome.waiter.reason
       : `${outcome.waiter.reason} (also waiting on ${extra})`;
   return reason.length > QUEUED_MESSAGE_WAIT_REASON_MAX_LENGTH
-    ? `${reason.slice(0, QUEUED_MESSAGE_WAIT_REASON_MAX_LENGTH - 1)}…`
+    ? `${sliceUtf16Head(reason, QUEUED_MESSAGE_WAIT_REASON_MAX_LENGTH - 1)}…`
     : reason;
 }
 

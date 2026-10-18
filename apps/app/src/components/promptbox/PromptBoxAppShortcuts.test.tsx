@@ -35,32 +35,6 @@ vi.mock("@/hooks/queries/system-queries", () => ({
       generalSettings: { ...defaultAppSettings },
       keybindings: [
         {
-          command: "thread.previous" as const,
-          desktopOnly: false,
-          shortcut: {
-            key: "ArrowUp",
-            mod: true,
-            meta: false,
-            control: false,
-            alt: false,
-            shift: true,
-          },
-          when: { all: ["mainSurface" as const], none: [] },
-        },
-        {
-          command: "thread.next" as const,
-          desktopOnly: false,
-          shortcut: {
-            key: "ArrowDown",
-            mod: true,
-            meta: false,
-            control: false,
-            alt: false,
-            shift: true,
-          },
-          when: { all: ["mainSurface" as const], none: [] },
-        },
-        {
           command: "sidebar.toggle" as const,
           desktopOnly: false,
           shortcut: testState.sidebarShortcut,
@@ -88,18 +62,6 @@ function SidebarToggleHandler() {
   return null;
 }
 
-function ThreadNavigationHandlers() {
-  useAppCommandHandler("thread.previous", () => {
-    testState.calls.push("thread.previous");
-    return true;
-  });
-  useAppCommandHandler("thread.next", () => {
-    testState.calls.push("thread.next");
-    return true;
-  });
-  return null;
-}
-
 function ShortcutHintState() {
   return (
     <span>{useIsAppCommandModifierHeld() ? "hint-held" : "hint-released"}</span>
@@ -122,6 +84,7 @@ function renderComposer(extra: React.ReactNode = null) {
             mention: {
               results: EMPTY_ORDERED_MENTION_SUGGESTIONS,
               isLoading: false,
+              isRefreshing: false,
               isError: false,
               onQueryChange: vi.fn(),
             },
@@ -169,24 +132,6 @@ afterEach(() => {
 });
 
 describe("prompt editor app shortcuts", () => {
-  it.each([
-    ["ArrowUp", "thread.previous"],
-    ["ArrowDown", "thread.next"],
-  ])("runs the configured Meta+Shift+%s app shortcut", (key, command) => {
-    vi.spyOn(navigator, "platform", "get").mockReturnValue("MacIntel");
-    const editor = renderComposer(<ThreadNavigationHandlers />);
-
-    const event = pressInEditor(editor, {
-      key,
-      metaKey: true,
-      shiftKey: true,
-    });
-
-    expect(event.defaultPrevented).toBe(true);
-    expect(testState.calls).toEqual([command]);
-    expect(document.activeElement).toBe(editor);
-  });
-
   it("runs the sidebar shortcut while the composer has focus", () => {
     const editor = renderComposer();
 
@@ -211,19 +156,11 @@ describe("prompt editor app shortcuts", () => {
       code: "KeyB",
       ctrlKey: true,
       key: "B",
+      keyCode: 66,
       shiftKey: true,
     });
 
     expect(testState.calls).toEqual(["sidebar.toggle"]);
-  });
-
-  it("releases composer focus on Escape", () => {
-    const editor = renderComposer();
-    expect(document.activeElement).toBe(editor);
-
-    pressInEditor(editor, { key: "Escape" });
-
-    expect(document.activeElement).not.toBe(editor);
   });
 
   it("offers a declined chord to the handlers only once", () => {
@@ -236,7 +173,7 @@ describe("prompt editor app shortcuts", () => {
     expect(event.defaultPrevented).toBe(false);
   });
 
-  it("clears the keyboard hint when the composer runs a shortcut", () => {
+  it("keeps the keyboard hint until modifier release when the composer runs a shortcut", () => {
     vi.useFakeTimers();
     try {
       const editor = renderComposer(<ShortcutHintState />);
@@ -251,6 +188,10 @@ describe("prompt editor app shortcuts", () => {
       });
 
       expect(testState.calls).toEqual(["sidebar.toggle"]);
+      expect(screen.getByText("hint-held")).toBeDefined();
+      act(() => {
+        window.dispatchEvent(new KeyboardEvent("keyup", { key: "Control" }));
+      });
       expect(screen.getByText("hint-released")).toBeDefined();
     } finally {
       vi.useRealTimers();

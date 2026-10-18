@@ -26,7 +26,7 @@ describe("experimental_scanPublicSdkOnly", () => {
   it("walks the package, skipping node_modules and dist, and accepts the published SDK surface", () => {
     plant({
       "server.ts": `import { z } from "zod";\nimport type { BbPluginApi } from "@get-bb/plugin-sdk";\nimport { join } from "node:path";\nimport { helper } from "./src/helper.js";\n`,
-      "src/helper.ts": `import "@get-bb/plugin-sdk/provider-bridge";\nimport "@get-bb/plugin-sdk/provider-bridge/acp";\nimport "@get-bb/plugin-sdk/host";\nimport "@get-bb/plugin-sdk/ai-services";\nexport const helper = 1;\n`,
+      "src/helper.ts": `import "@get-bb/plugin-sdk/provider-bridge";\nimport "@get-bb/plugin-sdk/provider-bridge/acp";\nimport "@get-bb/plugin-sdk/host";\nexport const helper = 1;\n`,
       "app.tsx": `import "@get-bb/plugin-sdk/app";\n`,
       "server.test.ts": `import { it } from "vitest";\nimport "@get-bb/plugin-sdk/testing";\nimport "@get-bb/plugin-sdk/provider-bridge/testing";\n`,
       "node_modules/dep/index.js": `require("@bb/domain");\n`,
@@ -117,6 +117,96 @@ describe("experimental_scanPublicSdkOnly", () => {
         reason: "dynamic-specifier",
       },
       { file: "server.ts", specifier: "spec", reason: "dynamic-specifier" },
+    ]);
+  });
+
+  it("reads imports from syntax, not from method names, property calls, comments, strings, or JSX text", () => {
+    plant({
+      "server.ts": [
+        "const f = { import(includeUncertain = false) { return includeUncertain; } };",
+        "class Store { async require(path: string): Promise<void> {} }",
+        "interface Importer { import(estimate: number): void; }",
+        "f.import(estimate);",
+        'f.import("@bb/db");',
+        "store?.require(path);",
+        'const label = { import: "@bb/db", export: 1 };',
+        "const pattern = /from [\"']@bb\\/db[\"']/u;",
+        '// import("@bb/db") or require(name)',
+        '/* export * from "@bb/db"; */',
+        "const text = \"import('@bb/db')\";",
+        'const doc = `require(name) from "@bb/db"`;',
+        "const url = import.meta.url;",
+        "",
+      ].join("\n"),
+      "server.test.ts": [
+        'import { it } from "vitest";',
+        'it("after a confirmed import", () => {});',
+        'it("next test", () => {});',
+        "",
+      ].join("\n"),
+      "app.tsx": [
+        'import "@get-bb/plugin-sdk/app";',
+        "export function Panel<T,>(props: { items: T[] }) {",
+        "  return (",
+        '    <section title="don\'t import">',
+        '      <p>Can\'t import (beta) from "@bb/db" // or require(it)</p>',
+        "      {props.items.length > 0 ? <List items={props.items} /> : null}",
+        "      <>{/* import(name) */}</>",
+        "    </section>",
+        "  );",
+        "}",
+        "",
+      ].join("\n"),
+    });
+    expect(scanPublicSdkOnly(packageRoot).violations).toEqual([]);
+  });
+
+  it("still reports every real import form, including ones the old text scan read", () => {
+    plant({
+      "server.ts": [
+        'import type { Event } from "@bb/domain";',
+        'import defaultThing, { named } from "yaml";',
+        'import * as ns from "@bb/sdk";',
+        'import "side-effect";',
+        'import legacy = require("@bb/legacy");',
+        'export { thing } from "@bb/reexport";',
+        'export * as all from "@bb/star";',
+        'export type { Shape } from "@bb/types";',
+        'type Lazy = typeof import("@bb/lazy-type");',
+        "const lazy = cond ? import(spec) : null;",
+        'const nested = `${await import("@bb/in-template")}`;',
+        'const viaRequire = [require("@bb/required")];',
+        "",
+      ].join("\n"),
+      "app.tsx": [
+        "export const View = () => (",
+        '  <div onClick={() => import("@bb/from-jsx")}>{require(name)}</div>',
+        ");",
+        "",
+      ].join("\n"),
+    });
+    const violations = scanPublicSdkOnly(packageRoot).violations;
+    const reported = (file: string) =>
+      violations
+        .filter((violation) => violation.file === file)
+        .map(({ specifier, reason }) => `${reason} ${specifier}`);
+    expect(reported("app.tsx")).toEqual([
+      "private-package @bb/from-jsx",
+      "dynamic-specifier name",
+    ]);
+    expect(reported("server.ts")).toEqual([
+      "private-package @bb/domain",
+      "outside-allowlist yaml",
+      "private-package @bb/sdk",
+      "outside-allowlist side-effect",
+      "private-package @bb/legacy",
+      "private-package @bb/reexport",
+      "private-package @bb/star",
+      "private-package @bb/types",
+      "private-package @bb/lazy-type",
+      "dynamic-specifier spec",
+      "private-package @bb/in-template",
+      "private-package @bb/required",
     ]);
   });
 

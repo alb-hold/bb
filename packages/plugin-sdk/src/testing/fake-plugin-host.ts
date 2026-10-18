@@ -15,7 +15,6 @@ import {
   adoptHttpRouteResponse,
   aiServiceAlreadyRegisteredMessage,
   pluginHookAlreadyRegisteredMessage,
-  assertAiServiceRegistrable,
   coerceStoredPluginSettingValue,
   enforcePluginCliOutputLimit,
   isStandardSchema,
@@ -111,6 +110,8 @@ import type {
   PluginThreadEventPayloads,
   PluginUi,
   PluginRpcError,
+  ExperimentalPluginRpcCaller,
+  ExperimentalPluginRpcHandlerContext,
   StandardSchemaV1,
   JsonValue,
 } from "@get-bb/plugin-sdk";
@@ -373,9 +374,16 @@ export interface FakePluginBehaviorDrivers {
   /**
    * Invoke a registered rpc method with host semantics: input/output schemas,
    * strict JSON result normalization, and structured failure codes. Rejects
-   * with the same message/code/issues the frontend client surfaces.
+   * with the same message/code/issues the frontend client surfaces. The
+   * handler sees `options.experimental_caller` as its caller, `{ kind:
+   * "client" }` by default; pass `{ kind: "plugin", pluginId }` to act as
+   * another plugin calling through `bb.sdk.plugins.callRpc`.
    */
-  callRpc(method: string, input?: unknown): Promise<unknown>;
+  callRpc(
+    method: string,
+    input?: unknown,
+    options?: { experimental_caller?: ExperimentalPluginRpcCaller },
+  ): Promise<unknown>;
   /**
    * Invoke the plugin's CLI command with host semantics: the result's
    * exitCode must be a number, stdout/stderr default to "", and a throwing
@@ -472,6 +480,12 @@ export interface FakePluginLifecycleControls {
    * PluginContextStaleError). Idempotent.
    */
   dispose(): Promise<void>;
+  /**
+   * Run every handler registered with `bb.onInstall`, in
+   * registration order, as bb does right after a fresh install. A handler
+   * that throws is logged at warn level and the rest still run.
+   */
+  install(): Promise<void>;
 }
 
 /**
@@ -522,10 +536,8 @@ export interface CreateFakePluginHostOptions {
   sharedPortTunnelIdentities?: Record<string, PluginSharedPortTunnelIdentity>;
   /**
    * Whether the plugin's manifest declares a `bb.host` entry. Production
-   * refuses `bb.providers.register` (the provider would have no bridge to
-   * run on) and `experimental_aiServices.register` (the service would have
-   * nothing to run on) without one; the fake applies the same rules.
-   * Defaults to true.
+   * refuses `bb.providers.register` without one (the provider would have no
+   * bridge to run on); the fake applies the same rule. Defaults to true.
    */
   experimental_hostEntry?: boolean;
   /**
@@ -589,7 +601,10 @@ interface FakeRpcRecord {
   publication: ReturnType<typeof publishRpcMethod>;
   inputSchema: StandardSchemaV1;
   outputSchema: StandardSchemaV1;
-  handler: (input: never) => unknown;
+  handler: (
+    input: never,
+    context: ExperimentalPluginRpcHandlerContext,
+  ) => unknown;
 }
 
 type FakeHostWorkerExitSubscription = (event: {
@@ -976,25 +991,28 @@ function createFakePluginHostInternal(
     register(declaration) {
       assertLive();
       const normalized = validatePluginAiServiceDeclaration(declaration);
-      // The same refusals production makes at the register call. The fake
-      // host builds no artifact; the declared entry stands in for it.
-      assertAiServiceRegistrable({
-        id: normalized.id,
-        hostArtifact:
-          options.experimental_hostEntry === false ? null : "declared",
-        hostArtifactProblem: null,
-      });
       if (
         aiServiceRegistrations.some((existing) => existing.id === normalized.id)
       ) {
         throw new Error(aiServiceAlreadyRegisteredMessage(normalized.id));
       }
-      aiServiceRegistrations.push(normalized);
+      const registration: PluginAiServiceDeclaration = Object.freeze({
+        id: normalized.id,
+        displayName: normalized.displayName,
+        ...(normalized.complete === null
+          ? {}
+          : { complete: normalized.complete }),
+        ...(normalized.transcribe === null
+          ? {}
+          : { transcribe: normalized.transcribe }),
+        ...(normalized.status === null ? {} : { status: normalized.status }),
+      });
+      aiServiceRegistrations.push(registration);
       let disposed = false;
       const dispose = (): void => {
         if (disposed) return;
         disposed = true;
-        const index = aiServiceRegistrations.indexOf(normalized);
+        const index = aiServiceRegistrations.indexOf(registration);
         if (index !== -1) aiServiceRegistrations.splice(index, 1);
       };
       disposeHooks.push(dispose);
@@ -1111,7 +1129,10 @@ function createFakePluginHostInternal(
     [E in PluginThreadEventName]: Array<PluginThreadEventHandler<E>>;
   } = {
     "experimental_thread.events": [],
+    "experimental_thread.parentChanged": [],
     "experimental_terminal.input": [],
+    "experimental_host.deleted": [],
+    "experimental_environment.removed": [],
     "thread.created": [],
     "thread.active": [],
     "thread.idle": [],
@@ -1128,6 +1149,7 @@ function createFakePluginHostInternal(
   const hooks: {
     [K in PluginHookName]: PluginHookHandler<K> | null;
   } = {
+    "experimental_thread.configure": null,
     "message.dispatch": null,
   };
   const environmentCompositions = new Map<
@@ -1144,6 +1166,7 @@ function createFakePluginHostInternal(
     import("../backend-contract.js").ServerAccessProviderDeclaration
   >();
   const disposeHooks: Array<() => void | Promise<void>> = [];
+  const installHandlers: Array<() => void | Promise<void>> = [];
   const serviceControllers: AbortController[] = [];
   let nextInteractionId = 1;
   const pendingInteractions = new Map<
@@ -1522,6 +1545,13 @@ function createFakePluginHostInternal(
       assertLive();
       disposeHooks.push(hook);
     },
+    onInstall(handler) {
+      assertLive();
+      if (typeof handler !== "function") {
+        throw new Error("onInstall expects a function");
+      }
+      installHandlers.push(handler);
+    },
   };
 
   async function disposeHost(cleanupStorage: boolean): Promise<void> {
@@ -1608,8 +1638,14 @@ function createFakePluginHostInternal(
         return {
           "experimental_thread.events":
             threadEventHandlers["experimental_thread.events"].length,
+          "experimental_thread.parentChanged":
+            threadEventHandlers["experimental_thread.parentChanged"].length,
           "experimental_terminal.input":
             threadEventHandlers["experimental_terminal.input"].length,
+          "experimental_environment.removed":
+            threadEventHandlers["experimental_environment.removed"].length,
+          "experimental_host.deleted":
+            threadEventHandlers["experimental_host.deleted"].length,
           "thread.created": threadEventHandlers["thread.created"].length,
           "thread.active": threadEventHandlers["thread.active"].length,
           "thread.idle": threadEventHandlers["thread.idle"].length,
@@ -1745,7 +1781,7 @@ function createFakePluginHostInternal(
       await setSettingsValues(values);
     },
 
-    async callRpc(method, input) {
+    async callRpc(method, input, options = {}) {
       const record = rpcHandlers.get(method);
       if (!record) {
         return throwRpcError({
@@ -1765,7 +1801,11 @@ function createFakePluginHostInternal(
       );
       let result: unknown;
       try {
-        result = await record.handler(validatedInput as never);
+        result = await record.handler(validatedInput as never, {
+          experimental_caller: options.experimental_caller ?? {
+            kind: "client",
+          },
+        });
       } catch (error) {
         return throwRpcError({
           code: "handler_error",
@@ -2111,6 +2151,17 @@ function createFakePluginHostInternal(
 
     async dispose() {
       await disposeHost(true);
+    },
+
+    async install() {
+      assertLive();
+      for (const handler of [...installHandlers]) {
+        try {
+          await handler();
+        } catch (error) {
+          emitLog("warn", `install handler failed: ${errorMessage(error)}`);
+        }
+      }
     },
   };
 

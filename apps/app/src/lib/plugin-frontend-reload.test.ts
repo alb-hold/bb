@@ -36,7 +36,7 @@ import {
 } from "./plugin-thread-row-status";
 import { PluginSlotMount } from "@/components/plugin/PluginSlotMount";
 import { PLUGIN_PANEL_ROUTE_PATH } from "./route-paths";
-import { applyAppThemeCss } from "./themes";
+import { applyAppThemeCss } from "./app-theme-css";
 import { PluginPanelView } from "@/views/PluginPanelView";
 import { makeInstalledPlugin } from "@/test/fixtures/plugins";
 
@@ -546,6 +546,27 @@ describe("reconcilePluginFrontends", () => {
     expect(state.appliedHashes.has("hello")).toBe(false);
   });
 
+  it("uses a fresh module URL when retrying a failed unchanged bundle", async () => {
+    const state = createPluginFrontendReconcileState();
+    const deps = makeDeps([candidate("hello", "v1")]);
+    deps.importModule.mockRejectedValueOnce(new Error("blocked by client"));
+
+    await reconcilePluginFrontends(state, deps);
+    await reconcilePluginFrontends(state, deps);
+    await reconcilePluginFrontends(state, deps);
+
+    expect(deps.importModule).toHaveBeenCalledTimes(2);
+    expect(deps.importModule).toHaveBeenNthCalledWith(
+      1,
+      "/api/v1/plugins/hello/assets/app.js?h=v1",
+    );
+    expect(deps.importModule).toHaveBeenNthCalledWith(
+      2,
+      "/api/v1/plugins/hello/assets/app.js?h=v1&bb_retry=1",
+    );
+    expect(state.records.get("hello")?.status).toBe("loaded");
+  });
+
   it("mounts once, skips repeated reconciliation, and disposes exactly once on reload and removal", async () => {
     const state = createPluginFrontendReconcileState();
     const deps = makeDeps([candidate("hello", "v1")]);
@@ -821,6 +842,40 @@ describe("reconcilePluginFrontends", () => {
         message: "candidate exploded",
       },
     });
+  });
+
+  it("activates a plugin that still passes experimental_sidebarAccessory and warns about it", async () => {
+    const state = createPluginFrontendReconcileState();
+    const deps = makeDeps([candidate("hello", "v1")]);
+    function Panel() {
+      return null;
+    }
+    deps.importModule.mockResolvedValueOnce({
+      default: definePluginApp((app) => {
+        app.slots.navPanel({
+          id: "board",
+          title: "Board",
+          icon: "Columns",
+          path: "board",
+          component: Panel,
+          experimental_sidebarAccessory: Panel,
+        } as never);
+      }),
+    });
+
+    await reconcilePluginFrontends(state, deps);
+
+    expect(state.appliedHashes.has("hello")).toBe(true);
+    expect(state.diagnostics.get("hello")?.lastFailure).toBeNull();
+    expect(deps.setRegistrations).toHaveBeenCalledWith(
+      "hello",
+      expect.objectContaining({
+        navPanels: [expect.objectContaining({ id: "board" })],
+      }),
+    );
+    expect(deps.warn).toHaveBeenCalledWith(
+      '[plugin:hello] slots.navPanel: "experimental_sidebarAccessory" is ignored: it was replaced by "experimental_useBadge", a hook returning a badge value, in SDK 0.6.53',
+    );
   });
 
   it("contains a throwing replacement setup and deactivates the stale generation", async () => {
@@ -1153,41 +1208,6 @@ describe("applyPluginCss", () => {
       ),
     ];
   }
-
-  it("keeps the old link until the new one loads, then removes it (no unstyled flash)", () => {
-    retainPluginCss("hello");
-    applyPluginCss("hello", "/assets/app.css?h=aaa");
-    expect(links("hello")).toHaveLength(1);
-    links("hello")[0]?.dispatchEvent(new Event("load"));
-
-    applyPluginCss("hello", "/assets/app.css?h=bbb");
-    const during = links("hello");
-    expect(during.map((l) => l.getAttribute("href"))).toEqual([
-      "/assets/app.css?h=aaa",
-      "/assets/app.css?h=bbb",
-    ]);
-
-    during[1]?.dispatchEvent(new Event("load"));
-    const after = links("hello");
-    expect(after).toHaveLength(1);
-    expect(after[0]?.getAttribute("href")).toBe("/assets/app.css?h=bbb");
-  });
-
-  it("on load error, drops the new link and keeps the old sheet working", () => {
-    retainPluginCss("hello");
-    applyPluginCss("hello", "/assets/app.css?h=aaa");
-    links("hello")[0]?.dispatchEvent(new Event("load"));
-    applyPluginCss("hello", "/assets/app.css?h=bbb");
-    const fresh = links("hello")[1];
-
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    fresh?.dispatchEvent(new Event("error"));
-    warn.mockRestore();
-
-    const after = links("hello");
-    expect(after).toHaveLength(1);
-    expect(after[0]?.getAttribute("href")).toBe("/assets/app.css?h=aaa");
-  });
 
   it("keeps the same element for an unchanged URL and removes it on null", () => {
     retainPluginCss("hello");

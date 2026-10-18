@@ -214,6 +214,43 @@ describe("fuzzyMatchPaths", () => {
     );
   });
 
+  it("ranks the shortest matching leaf for a structured prefix query", () => {
+    const matches = fuzzyMatchPaths({
+      items: [
+        "apps/cli/src/commands/machine-enrollment.test.ts",
+        "apps/cli/src/commands/machine-enrollment.ts",
+        "apps/cli/src/commands/machine-environment.ts",
+        "apps/cli/src/commands/machine.ts",
+      ],
+      query: "commands/machine",
+      getPath: (path) => path,
+      limit: 8,
+    });
+
+    expect(matches.map((match) => match.item)).toEqual([
+      "apps/cli/src/commands/machine.ts",
+      "apps/cli/src/commands/machine-enrollment.ts",
+      "apps/cli/src/commands/machine-environment.ts",
+      "apps/cli/src/commands/machine-enrollment.test.ts",
+    ]);
+    expect(matches[0].score).toBeGreaterThan(matches[1].score);
+  });
+
+  it("prefers the shorter path when structured match scores tie", () => {
+    const matches = fuzzyMatchPaths({
+      items: ["src/a/extra/file.ts", "src/a/file.ts"],
+      query: "src/file",
+      getPath: (path) => path,
+      limit: 8,
+    });
+
+    expect(matches.map((match) => match.item)).toEqual([
+      "src/a/file.ts",
+      "src/a/extra/file.ts",
+    ]);
+    expect(matches[0].score).toBe(matches[1].score);
+  });
+
   it("merges exact-prefix and structured path matches", () => {
     const matches = fuzzyMatchPaths({
       items: ["src/test/test/file.ts", "src/test/file.ts", "test/src/file.ts"],
@@ -284,6 +321,54 @@ describe("fuzzyMatchPaths", () => {
     });
 
     expect(matches[0].item).toBe("docs/café.md");
+  });
+
+  it("keeps accented paths for unaccented queries", () => {
+    const matches = fuzzyMatchPaths({
+      items: ["docs/café.md", "docs/notes.md"],
+      query: "cafe",
+      getPath: (path) => path,
+      limit: 10,
+    });
+
+    expect(matches.map((match) => match.item)).toEqual(["docs/café.md"]);
+  });
+
+  it("matches mixed-case paths for lowercase and uppercase queries", () => {
+    const paths = [
+      "apps/app/src/components/PromptBox.tsx",
+      "apps/app/src/components/Button.tsx",
+    ];
+
+    for (const query of ["promptbox", "PromptBox", "components/Prompt"]) {
+      expect(
+        fuzzyMatchPaths({
+          items: paths,
+          query,
+          getPath: (path) => path,
+          limit: 10,
+        })[0]?.item,
+      ).toBe("apps/app/src/components/PromptBox.tsx");
+    }
+  });
+
+  it("drops paths missing a query character without changing the ranking of the rest", () => {
+    const candidates = [
+      "src/components/prompt/PromptBox.tsx",
+      "src/prompt.ts",
+      "apps/app/src/components/promptbox/index.ts",
+    ];
+    const rankCandidates = (items: readonly string[]) =>
+      fuzzyMatchPaths({
+        items,
+        query: "prompt",
+        getPath: (path) => path,
+        limit: 10,
+      }).map((match) => [match.item, match.score, match.positions]);
+
+    expect(
+      rankCandidates([...candidates, "src/button.ts", "docs/readme.md"]),
+    ).toEqual(rankCandidates(candidates));
   });
 
   it("rejects overlong queries before running path matching", () => {

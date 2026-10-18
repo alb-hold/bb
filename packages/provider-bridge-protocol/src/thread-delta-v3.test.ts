@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  BRIDGE_NOTIFICATION_METHODS,
   bridgeCapabilitiesSchema,
   initializeParamsSchema,
   initializeResultSchema,
@@ -201,6 +200,7 @@ describe("thread delta grammar v3", () => {
           status: "pending",
           taskStatus: "running",
           skipTranscript: false,
+          foreground: false,
         },
       }).success,
     ).toBe(true);
@@ -270,12 +270,6 @@ describe("handshake v3 capabilities", () => {
 });
 
 describe("provider/recovery notification", () => {
-  it("is a registered bridge notification method", () => {
-    expect(BRIDGE_NOTIFICATION_METHODS.providerRecovery).toBe(
-      "provider/recovery",
-    );
-  });
-
   it("parses every recovery kind with and without a thread", () => {
     for (const kind of [
       "sessionArchived",

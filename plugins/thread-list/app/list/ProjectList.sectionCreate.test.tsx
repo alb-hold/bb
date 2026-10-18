@@ -1,0 +1,528 @@
+// @vitest-environment jsdom
+
+import type { ReactNode } from "react";
+import { act, cleanup, fireEvent, screen } from "@testing-library/react";
+import { createStore, Provider } from "jotai";
+import { afterEach, describe, expect, it } from "vitest";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import {
+  installTestPluginRuntime,
+  renderSlot,
+} from "@get-bb/plugin-sdk/testing/app";
+import {
+  makePluginProject,
+  makeSidebarThread,
+  sdkResult,
+} from "../model/fixtures.js";
+import { preferencesReadyAtom } from "../preferences/preferences-sync.js";
+import type { OrganizationMode } from "../../shared/preferences.js";
+import {
+  sidebarHiddenGroupsAtom,
+  sidebarManualSectionOrderAtom,
+  sidebarMachineSectionOrderAtom,
+  sidebarOrganizationModeAtom,
+  sidebarSectionOrderAtom,
+} from "../preferences/atoms.js";
+
+installTestPluginRuntime();
+const { ProjectList } = await import("./ProjectList.js");
+const { resetSidebarDataCacheForTest } =
+  await import("../model/use-sidebar-data.js");
+
+const ALEXANDRE_PROJECT_IDS = [
+  "proj_qryjzqk9q5",
+  "proj_d7xhqan8mu",
+  "proj_jar2yhj7rg",
+  "proj_mzwjz6w964",
+  "proj_vqpdy6v2fk",
+  "proj_x7jn4qukp5",
+  "proj_wxxgc32efp",
+  "proj_7ev9icuvv4",
+  "proj_mbwbcuricd",
+  "proj_vc7ja7zcxd",
+  "proj_ukf2dmbsdx",
+  "proj_gm6ymj27nh",
+  "proj_bx4a8g8s2w",
+  "proj_mwske3musv",
+  "proj_gnvrunrxvq",
+  "proj_4y7pccahv4",
+];
+
+function alexandreProjects(count = 4) {
+  return ALEXANDRE_PROJECT_IDS.slice(0, count).map((id, index) =>
+    makePluginProject({ id, name: `Project ${index}` }),
+  );
+}
+
+afterEach(() => {
+  cleanup();
+  resetSidebarDataCacheForTest();
+});
+
+function Harness({
+  children,
+  store,
+}: {
+  children: ReactNode;
+  store: ReturnType<typeof createStore>;
+}) {
+  return (
+    <TooltipProvider>
+      <Provider store={store}>{children}</Provider>
+    </TooltipProvider>
+  );
+}
+
+function makeSection(id: string, name: string) {
+  return { id, name, createdAt: 1, updatedAt: 1 };
+}
+
+function pendingSectionList() {
+  return () => new Promise<ReturnType<typeof makeSection>[]>(() => {});
+}
+
+function renderCustomSections(
+  pinned = false,
+  mode: OrganizationMode = "chronological",
+  looseThread = false,
+  listSections: () => Promise<ReturnType<typeof makeSection>[]> = sdkResult([
+    makeSection("sec_a", "Alpha"),
+    makeSection("sec_b", "Beta"),
+    makeSection("sec_created", "Gamma"),
+  ]),
+  projects = [makePluginProject()],
+  alexandrePreferences = false,
+  sections = [makeSection("sec_a", "Alpha"), makeSection("sec_b", "Beta")],
+  threadList?: ReturnType<typeof makeSidebarThread>[],
+) {
+  const store = createStore();
+  store.set(preferencesReadyAtom(), true);
+  store.set(sidebarOrganizationModeAtom, mode);
+  if (alexandrePreferences) {
+    store.set(sidebarSectionOrderAtom, [
+      "pinned",
+      "project:proj_qryjzqk9q5",
+      "project:proj_d7xhqan8mu",
+      "project:proj_jar2yhj7rg",
+      "project:proj_mzwjz6w964",
+      "project:proj_vqpdy6v2fk",
+      "project:proj_x7jn4qukp5",
+      "project:proj_wxxgc32efp",
+      "project:proj_7ev9icuvv4",
+      "project:proj_mbwbcuricd",
+      "threads",
+      "project:proj_vc7ja7zcxd",
+      "project:proj_ukf2dmbsdx",
+      "project:proj_gm6ymj27nh",
+      "project:proj_bx4a8g8s2w",
+      "project:proj_mwske3musv",
+      "project:proj_gnvrunrxvq",
+      "project:proj_4y7pccahv4",
+    ]);
+    store.set(sidebarManualSectionOrderAtom, [
+      "pinned",
+      "section:sec_pcm9ngh7cx",
+      "section:sec_29ztuf93jc",
+      "section:sec_evxvad77wg",
+      "threads",
+    ]);
+    store.set(sidebarMachineSectionOrderAtom, [
+      "pinned",
+      "machines",
+      "threads",
+    ]);
+    store.set(sidebarHiddenGroupsAtom, ["project:proj_mzwjz6w964"]);
+  }
+  const rendered = renderSlot(
+    { component: Harness },
+    { children: <ProjectList activeThreadId={null} />, store },
+    {
+      sidebarThreads: {
+        threads: threadList ?? [
+          makeSidebarThread({
+            id: "thr_alpha",
+            projectId: projects[0]?.id ?? "proj_test",
+            sectionId: pinned ? null : "sec_a",
+            pinnedAt: pinned ? 1 : null,
+          }),
+          ...(looseThread
+            ? [makeSidebarThread({ id: "thr_loose", title: "Project thread" })]
+            : []),
+        ],
+        projects,
+        sections,
+      },
+      sdk: {
+        threads: {
+          update: sdkResult({ ok: true }),
+        },
+        threadSections: {
+          create: sdkResult(makeSection("sec_created", "Gamma")),
+          delete: sdkResult({ ok: true }),
+          list: listSections,
+        },
+      },
+    },
+  );
+  return { ...rendered, store };
+}
+
+async function createSectionFrom(actionsLabel: string) {
+  await act(async () => {
+    fireEvent.pointerDown(screen.getByRole("button", { name: actionsLabel }), {
+      button: 0,
+    });
+    await Promise.resolve();
+  });
+  await act(async () => {
+    fireEvent.click(screen.getByRole("menuitem", { name: "New section" }));
+    await Promise.resolve();
+  });
+  await act(async () => {
+    fireEvent.change(screen.getByRole("textbox", { name: "Section name" }), {
+      target: { value: "Gamma" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create section" }));
+    await Promise.resolve();
+  });
+  expect(
+    screen.getByRole("button", { name: "New thread in Gamma section" }),
+  ).toBeTruthy();
+}
+
+describe("creating a sidebar section", () => {
+  it.each(["chronological", "project", "machine"] as const)(
+    "places both empty sections after Pinned and before %s groups with Alexandre’s preferences",
+    (mode) => {
+      const sections = [
+        makeSection("sec_29ztuf93jc", "discovery"),
+        makeSection("sec_evxvad77wg", "rais3"),
+      ];
+      const threads = [
+        makeSidebarThread({
+          id: "thr_many_pinned",
+          projectId: ALEXANDRE_PROJECT_IDS[0],
+          pinnedAt: 1,
+        }),
+        ...Array.from({ length: 4 }, (_, index) =>
+          makeSidebarThread({
+            id: `thr_many_${index}`,
+            projectId:
+              ALEXANDRE_PROJECT_IDS[index % ALEXANDRE_PROJECT_IDS.length],
+            title: `Thread ${index}`,
+            sectionId: null,
+            host: {
+              id: `host_${index % 3}`,
+              name: `Machine ${index % 3}`,
+            },
+          }),
+        ),
+      ];
+      renderCustomSections(
+        true,
+        mode,
+        false,
+        sdkResult(sections),
+        alexandreProjects(),
+        true,
+        sections,
+        threads,
+      );
+
+      const pinned = screen.getByRole("button", {
+        name: "New thread in Pinned",
+      });
+      const discovery = screen.getByRole("button", {
+        name: "New thread in discovery section",
+      });
+      const rais3 = screen.getByRole("button", {
+        name: "New thread in rais3 section",
+      });
+      const firstModeGroup = screen.getByText(
+        mode === "project"
+          ? "Project 0"
+          : mode === "machine"
+            ? "Machine 0"
+            : "Threads",
+        { exact: true },
+      );
+      const follows = (earlier: Element, later: Element) =>
+        Boolean(
+          earlier.compareDocumentPosition(later) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+        );
+
+      expect(follows(pinned, discovery)).toBe(true);
+      expect(follows(discovery, rais3)).toBe(true);
+      expect(follows(rais3, firstModeGroup)).toBe(true);
+      if (mode === "project") {
+        expect(screen.queryByText("Project 3", { exact: true })).toBeNull();
+      }
+    },
+  );
+
+  it.each(["project", "machine"] as const)(
+    "keeps an empty custom section discoverable ahead of %s groups with Alexandre’s saved preferences",
+    async (mode) => {
+      renderCustomSections(
+        true,
+        mode,
+        false,
+        sdkResult([
+          makeSection("sec_29ztuf93jc", "discovery"),
+          makeSection("sec_evxvad77wg", "rais3"),
+        ]),
+        alexandreProjects(),
+        true,
+        [
+          makeSection("sec_29ztuf93jc", "discovery"),
+          makeSection("sec_evxvad77wg", "rais3"),
+        ],
+      );
+
+      const emptySection = screen.getByRole("button", {
+        name: "New thread in rais3 section",
+      });
+      const pinnedSection = screen.getByRole("button", {
+        name: "New thread in Pinned",
+      });
+      const firstModeGroup = screen.getByText(
+        mode === "project" ? "Project 0" : "Threads",
+        { exact: true },
+      );
+      expect(
+        Boolean(
+          pinnedSection.compareDocumentPosition(emptySection) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+        ),
+      ).toBe(true);
+      expect(
+        Boolean(
+          emptySection.compareDocumentPosition(firstModeGroup) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+        ),
+      ).toBe(true);
+    },
+  );
+
+  it.each(["chronological", "project", "machine"] as const)(
+    "shows a newly created empty section immediately in %s mode with Alexandre’s saved preferences",
+    async (mode) => {
+      renderCustomSections(
+        true,
+        mode,
+        true,
+        pendingSectionList(),
+        alexandreProjects(),
+        true,
+        [
+          makeSection("sec_29ztuf93jc", "discovery"),
+          makeSection("sec_evxvad77wg", "rais3"),
+        ],
+      );
+
+      await createSectionFrom("rais3 section actions");
+
+      const createdSection = screen.getByRole("button", {
+        name: "New thread in Gamma section",
+      });
+      expect(createdSection).toBeTruthy();
+      const pinnedSection = screen.getByRole("button", {
+        name: "New thread in Pinned",
+      });
+      expect(
+        Boolean(
+          pinnedSection.compareDocumentPosition(createdSection) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+        ),
+      ).toBe(true);
+      if (mode !== "chronological") {
+        const firstModeGroup = screen.getByText(
+          mode === "project" ? "Project 0" : "Threads",
+          { exact: true },
+        );
+        expect(
+          Boolean(
+            createdSection.compareDocumentPosition(firstModeGroup) &
+            Node.DOCUMENT_POSITION_FOLLOWING,
+          ),
+        ).toBe(true);
+      }
+    },
+  );
+
+  it.each(["chronological", "project", "machine"] as const)(
+    "renders the returned empty section immediately in %s mode",
+    async (mode) => {
+      renderCustomSections(false, mode, true, pendingSectionList());
+      await createSectionFrom(
+        mode === "project"
+          ? "Test project actions"
+          : mode === "machine"
+            ? "No machine actions"
+            : "Threads actions",
+      );
+
+      expect(
+        screen.getByRole("button", {
+          name: "New thread in Gamma section",
+        }),
+      ).toBeTruthy();
+    },
+  );
+
+  it("removes a created section when the authoritative read sees another client's deletion", async () => {
+    let resolveList!: (sections: ReturnType<typeof makeSection>[]) => void;
+    const listSections = () =>
+      new Promise<ReturnType<typeof makeSection>[]>((resolve) => {
+        resolveList = resolve;
+      });
+    renderCustomSections(false, "project", true, listSections);
+    await createSectionFrom("Test project actions");
+
+    expect(
+      screen.getByRole("button", {
+        name: "New thread in Gamma section",
+      }),
+    ).toBeTruthy();
+
+    await act(async () => {
+      resolveList([
+        makeSection("sec_a", "Alpha"),
+        makeSection("sec_b", "Beta"),
+      ]);
+      await Promise.resolve();
+    });
+    expect(
+      screen.queryByRole("button", { name: "New thread in Gamma section" }),
+    ).toBeNull();
+  });
+
+  it("removes an optimistic section after a successful delete", async () => {
+    renderCustomSections(false, "project", true);
+    await createSectionFrom("Test project actions");
+    expect(
+      screen.getByRole("button", {
+        name: "New thread in Gamma section",
+      }),
+    ).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.pointerDown(
+        screen.getByRole("button", { name: "Gamma section actions" }),
+        { button: 0 },
+      );
+      await Promise.resolve();
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("menuitem", { name: "Remove" }));
+      await Promise.resolve();
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Remove section" }));
+      await Promise.resolve();
+    });
+
+    expect(
+      screen.queryByRole("button", { name: "New thread in Gamma section" }),
+    ).toBeNull();
+  });
+
+  it.each(["project", "machine"] as const)(
+    "keeps custom sections visible while creating from %s mode",
+    async (mode) => {
+      const { inspection } = renderCustomSections(
+        false,
+        mode,
+        true,
+        pendingSectionList(),
+      );
+      expect(
+        screen.getByRole("button", {
+          name: "New thread in Alpha section",
+        }),
+      ).toBeTruthy();
+      await createSectionFrom(
+        mode === "project" ? "Test project actions" : "No machine actions",
+      );
+
+      expect(
+        screen.getByRole("button", { name: "New thread in Gamma section" }),
+      ).toBeTruthy();
+      expect(
+        screen.queryByRole("textbox", { name: "Section name" }),
+      ).toBeNull();
+      expect(inspection.sdkCalls).toContainEqual({
+        method: "threadSections.create",
+        args: [{ name: "Gamma" }],
+      });
+    },
+  );
+
+  it("pins new threads from the Pinned header", async () => {
+    const { inspection } = renderCustomSections(true);
+    fireEvent.click(
+      screen.getByRole("button", { name: "New thread in Pinned" }),
+    );
+    expect(inspection.navigateCalls).toContainEqual({
+      method: "toCompose",
+      options: {
+        focusPrompt: true,
+        placement: { sectionId: null, pinned: true },
+      },
+    });
+  });
+
+  it("keeps the composer project when starting a thread in a section", async () => {
+    const { inspection } = renderCustomSections();
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "New thread in Alpha section",
+      }),
+    );
+
+    expect(inspection.navigateCalls).toContainEqual({
+      method: "toCompose",
+      options: {
+        placement: { sectionId: "sec_a", pinned: false },
+        focusPrompt: true,
+      },
+    });
+  });
+
+  it("shows one divider before the built-in section visibility actions", async () => {
+    renderCustomSections();
+    fireEvent.pointerDown(
+      screen.getByRole("button", { name: "Threads actions" }),
+      { button: 0 },
+    );
+    const menu = screen
+      .getByRole("menuitem", { name: "Hide from list" })
+      .closest('[role="menu"]');
+    expect(menu?.querySelectorAll('[role="separator"]')).toHaveLength(2);
+  });
+
+  it("places the new section directly below the section it was created from", async () => {
+    const { store } = renderCustomSections();
+    await createSectionFrom("Alpha section actions");
+    expect(store.get(sidebarManualSectionOrderAtom)).toEqual([
+      "pinned",
+      "section:sec_a",
+      "section:sec_created",
+      "section:sec_b",
+      "threads",
+    ]);
+  });
+
+  it("places the new section directly below a built-in section", async () => {
+    const { store } = renderCustomSections();
+    await createSectionFrom("Threads actions");
+    expect(store.get(sidebarManualSectionOrderAtom)).toEqual([
+      "pinned",
+      "section:sec_a",
+      "section:sec_b",
+      "threads",
+      "section:sec_created",
+    ]);
+  });
+});

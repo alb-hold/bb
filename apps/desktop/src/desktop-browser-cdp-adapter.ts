@@ -7,6 +7,10 @@ import type {
   DesktopBrowserCdpScope,
 } from "./desktop-browser-cdp.js";
 import type { DesktopBrowserViewManager } from "./desktop-browser-view.js";
+import {
+  getDesktopBrowserThrottling,
+  setDesktopBrowserThrottling,
+} from "./desktop-browser-throttling.js";
 
 const cdpObjectSchema = z.record(z.string(), z.json());
 const cdpMessageSchema = z.object({
@@ -23,6 +27,7 @@ interface CreateDesktopBrowserCdpAdapterArgs {
 }
 
 function createPage(
+  manager: DesktopBrowserViewManager,
   tabId: string,
   webContents: WebContents,
   isCurrent: () => boolean,
@@ -44,8 +49,9 @@ function createPage(
     ownsAttachment = false;
     generation += 1;
     attachmentReady = null;
+    manager.setAutomationControlled(webContents, false);
     if (previousBackgroundThrottling !== null && !webContents.isDestroyed())
-      webContents.setBackgroundThrottling(previousBackgroundThrottling);
+      setDesktopBrowserThrottling(webContents, previousBackgroundThrottling);
     previousBackgroundThrottling = null;
     invalidateInputReadiness();
     webContents.off("did-start-navigation", invalidateInputReadiness);
@@ -83,8 +89,9 @@ function createPage(
       }
       nativeDebugger.attach("1.3");
       ownsAttachment = true;
-      previousBackgroundThrottling = webContents.getBackgroundThrottling();
-      webContents.setBackgroundThrottling(false);
+      manager.setAutomationControlled(webContents, true);
+      previousBackgroundThrottling = getDesktopBrowserThrottling(webContents);
+      setDesktopBrowserThrottling(webContents, false);
       generation += 1;
       nativeDebugger.on("detach", releaseOwnership);
       webContents.on("did-start-navigation", invalidateInputReadiness);
@@ -211,7 +218,7 @@ export function createDesktopBrowserCdpAdapter(
           let page = pages.get(webContents);
           if (page === undefined) {
             const owningScope = { ...scope };
-            page = createPage(tabId, webContents, () =>
+            page = createPage(args.manager, tabId, webContents, () =>
               args.manager
                 .getAutomationTabs(owningScope)
                 .some(

@@ -11,6 +11,7 @@ import {
 
 afterEach(() => {
   cleanup();
+  localStorage.clear();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -24,11 +25,17 @@ function threadOnMachine(
     projectId: "project-one",
     title: "Active thread",
     titleFallback: null,
+    displayTitle: "Active thread",
     parentThreadId: null,
+    lifecycleOwnerThreadId: null,
+    sourceThreadId: null,
     sectionId: null,
     originKind: null,
     originPluginId: null,
     providerId: "codex",
+    status: "idle",
+    runtimeStatus: "idle",
+    queuedWork: "none",
     hasPendingInteraction: false,
     activity: {
       workflows: 0,
@@ -41,7 +48,12 @@ function threadOnMachine(
     indicatorLabel: null,
     isUnread: false,
     isPinned: false,
+    pinnedAt: null,
+    pinSortKey: null,
     isArchived: false,
+    archivedAt: null,
+    href: "/projects/project-one/threads/thread-active",
+    isHidden: false,
     environment: null,
     host: { id: hostId, name: hostName },
     createdAt: 1,
@@ -55,32 +67,69 @@ describe("provider usage footer disclosure", () => {
   it("aggregates every machine and keeps machine and provider selection local to the card", async () => {
     const pooledAccounts: UsageProvider[] = (
       [
-        ["codex", "Codex", "team@example.com", 46],
-        ["codex", "Codex", "personal@example.com", 82],
         ["claude-code", "Claude Code", "claude-team@example.com", 97],
+        ["claude-code", "Claude Code", "claude-backup@example.com", 54],
       ] as const
     ).map(([providerId, displayName, email, usedPercent]) => ({
       id: email,
       providerId: providerId,
-      accountLabel: email,
+      accountLabel:
+        providerId === "claude-code"
+          ? email === "claude-team@example.com"
+            ? "Claude Principal"
+            : "Claude Secondary"
+          : email,
       displayName: displayName,
       logoUrl: `/api/v1/system/providers/${providerId}/logo`,
       icon: null,
       strings: { iconTint: null },
       signInHint: "Sign in.",
       expiredHint: "Sign in again.",
+      accountPool:
+        providerId !== "claude-code"
+          ? null
+          : email === "claude-team@example.com"
+            ? {
+                active: true,
+                enabled: true,
+                status: "ready",
+                heldUntil: null,
+                error: null,
+                extraUsage: "allowed",
+              }
+            : {
+                active: false,
+                enabled: true,
+                status: "held",
+                heldUntil: Date.now() + 30 * 60_000,
+                error: null,
+                extraUsage: "rejected",
+              },
       usage: {
         status: "ok",
         accountEmail: email,
         planLabel: "Pro",
         windows: [
+          ...(providerId === "claude-code"
+            ? [
+                {
+                  label: "Five-hour limit",
+                  usedPercent: 12,
+                  resetsAt: null,
+                  cost: null,
+                },
+                {
+                  label: "Weekly · Fable",
+                  usedPercent: 91,
+                  resetsAt: null,
+                  cost: null,
+                },
+              ]
+            : []),
           {
             label: "Weekly limit",
             usedPercent: usedPercent,
-            resetsAt:
-              email === "personal@example.com"
-                ? new Date(Date.now() + 51 * 60 * 60_000).toISOString()
-                : null,
+            resetsAt: null,
             cost: null,
           },
         ],
@@ -141,6 +190,12 @@ describe("provider usage footer disclosure", () => {
                         accountEmail: "codex@example.com",
                         planLabel: "Plus",
                         windows: [
+                          {
+                            label: "Five-hour limit",
+                            usedPercent: 21,
+                            resetsAt: null,
+                            cost: null,
+                          },
                           {
                             label: "Weekly limit",
                             usedPercent: 37,
@@ -207,7 +262,7 @@ describe("provider usage footer disclosure", () => {
     vi.stubGlobal("fetch", fetchMock);
     const app = await loadPluginApp(() => import("./app"));
     const mounted = await mountPluginContentScripts(app, {
-      pluginId: "provider-usage",
+      pluginId: "bb--provider-usage",
     });
     const item = app.experimentalSidebarFooterItems[0];
     expect(item).toMatchObject({
@@ -220,14 +275,14 @@ describe("provider usage footer disclosure", () => {
 
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
-        "/api/v1/plugins/provider-usage/rpc/getUsage",
+        "/api/v1/plugins/bb--provider-usage/rpc/getUsage",
         expect.objectContaining({
           method: "POST",
           body: JSON.stringify({
             force: false,
             machineIds: null,
             maxAgeMs: 30 * 60_000,
-            providerId: null,
+            providerIds: [],
           }),
         }),
       ),
@@ -237,6 +292,7 @@ describe("provider usage footer disclosure", () => {
       item,
       { dismiss },
       {
+        pluginId: "bb--provider-usage",
         context: { threadId: "thread-active" },
         sidebarThreads: {
           threads: [threadOnMachine("host-m5", "M5")],
@@ -247,8 +303,38 @@ describe("provider usage footer disclosure", () => {
       slot.getByRole("button", { name: "Usage machine: Account Pooler" }),
     ).toBeTruthy();
     expect(
-      slot.getByRole("heading", { name: "personal@example.com" }),
-    ).toBeTruthy();
+      slot
+        .getByRole("tab", { name: "All accounts" })
+        .getAttribute("aria-selected"),
+    ).toBe("true");
+    expect(
+      slot.getAllByRole("region").map((row) => row.getAttribute("aria-label")),
+    ).toEqual([
+      "Claude Code Claude Principal",
+      "Claude Code Claude Secondary",
+      "Codex codex@example.com",
+    ]);
+    expect(slot.getAllByText("Active")).toHaveLength(1);
+    expect(slot.getByText("Extra usage allowed")).toBeTruthy();
+    expect(slot.getByText("Enabled · held")).toBeTruthy();
+    expect(slot.getByText("Extra usage rejected")).toBeTruthy();
+    await waitFor(() =>
+      expect(fetchMock.mock.calls).toEqual(
+        expect.arrayContaining([
+          [
+            "/api/v1/plugins/bb--provider-usage/rpc/getUsage",
+            expect.objectContaining({
+              body: JSON.stringify({
+                force: false,
+                machineIds: ["source:account-pool", "host-m4"],
+                maxAgeMs: 2 * 60_000,
+                providerIds: ["claude-code", "codex"],
+              }),
+            }),
+          ],
+        ]),
+      ),
+    );
     fireEvent.pointerDown(
       slot.getByRole("button", { name: "Usage machine: Account Pooler" }),
       { button: 0 },
@@ -257,14 +343,21 @@ describe("provider usage footer disclosure", () => {
     const machinePicker = slot.getByRole("button", {
       name: "Usage machine: M5",
     });
-    expect(slot.getByRole("heading", { name: "Codex" })).toBeTruthy();
-    expect(slot.getByText("codex@example.com")).toBeTruthy();
+    expect(
+      slot.getByRole("heading", { name: "codex@example.com" }),
+    ).toBeTruthy();
     expect(slot.getByText("97%")).toBeTruthy();
+    expect(
+      localStorage.getItem("bb.bb--provider-usage.selected-machine.v1"),
+    ).toBe("host-m5");
 
     fireEvent.pointerDown(machinePicker, { button: 0 });
     fireEvent.click(slot.getByRole("menuitemradio", { name: "M4" }));
+    const allTab = slot.getByRole("tab", { name: "All accounts" });
     const claudeTab = slot.getByRole("tab", { name: "Claude Code" });
     const codexTab = slot.getByRole("tab", { name: "Codex" });
+    fireEvent.keyDown(allTab, { key: "ArrowRight" });
+    expect(claudeTab.getAttribute("aria-selected")).toBe("true");
     expect(
       slot
         .getByRole("button", { name: "Usage machine: M4" })
@@ -276,13 +369,15 @@ describe("provider usage footer disclosure", () => {
     expect(
       codexTab.querySelector("[data-provider-logo*='/codex/']"),
     ).not.toBeNull();
-    expect(slot.getByRole("heading", { name: "Claude Code" })).toBeTruthy();
-    expect(slot.getByText("claude@example.com")).toBeTruthy();
+    expect(
+      slot.getByRole("heading", { name: "claude@example.com" }),
+    ).toBeTruthy();
     expect(slot.getByText("82%")).toBeTruthy();
 
     fireEvent.click(codexTab);
-    expect(slot.getByRole("heading", { name: "Codex" })).toBeTruthy();
-    expect(slot.getByText("codex@example.com")).toBeTruthy();
+    expect(
+      slot.getByRole("heading", { name: "codex@example.com" }),
+    ).toBeTruthy();
     expect(slot.getByText("37%")).toBeTruthy();
     fireEvent.keyDown(codexTab, { key: "ArrowLeft" });
     expect(claudeTab.getAttribute("aria-selected")).toBe("true");
@@ -316,7 +411,7 @@ describe("provider usage footer disclosure", () => {
           force: true,
           machineIds: ["host-intel"],
           maxAgeMs: 0,
-          providerId: null,
+          providerIds: [],
         }),
       }),
     );
@@ -327,18 +422,27 @@ describe("provider usage footer disclosure", () => {
     const callsBeforeFocus = fetchMock.mock.calls.length;
     window.dispatchEvent(new Event("focus"));
     await waitFor(() =>
-      expect(fetchMock).toHaveBeenCalledTimes(callsBeforeFocus + 1),
+      expect(fetchMock).toHaveBeenCalledTimes(callsBeforeFocus + 3),
     );
-    expect(fetchMock.mock.calls.at(-1)?.[1]).toEqual(
+    const focusCalls = fetchMock.mock.calls.slice(callsBeforeFocus);
+    expect(focusCalls[0]?.[1]).toEqual(
       expect.objectContaining({
         body: JSON.stringify({
           force: false,
           machineIds: null,
           maxAgeMs: 5 * 60_000,
-          providerId: null,
+          providerIds: [],
         }),
       }),
     );
+    expect(
+      focusCalls
+        .slice(1)
+        .map(([, options]) => JSON.parse(options!.body as string)),
+    ).toEqual([
+      expect.objectContaining({ providerIds: ["claude-code"] }),
+      expect.objectContaining({ providerIds: ["codex"] }),
+    ]);
 
     now.mockRestore();
     fireEvent.pointerDown(
@@ -348,28 +452,38 @@ describe("provider usage footer disclosure", () => {
     fireEvent.click(
       slot.getByRole("menuitemradio", { name: "Account Pooler" }),
     );
-    expect(slot.getAllByRole("tab")).toHaveLength(2);
+    expect(slot.getAllByRole("tab")).toHaveLength(3);
     const poolCodexTab = slot.getByRole("tab", { name: "Codex" });
+    expect(
+      slot.container.querySelector("[data-provider-usage-tone]"),
+    ).toBeNull();
+    fireEvent.click(poolCodexTab);
     expect(
       poolCodexTab.querySelector("[data-provider-logo*='/codex/']"),
     ).not.toBeNull();
+    expect(poolCodexTab.querySelector("[data-provider-usage-tone]")).toBeNull();
     expect(
-      poolCodexTab.querySelector('[data-provider-usage-tone="warning"]'),
+      slot
+        .getByRole("tab", { name: "Claude Code" })
+        .querySelector('[data-provider-usage-tone="critical"]'),
     ).not.toBeNull();
-    expect(slot.getAllByText("team@example.com")).toHaveLength(1);
-    expect(slot.getAllByText("personal@example.com")).toHaveLength(1);
-    expect(slot.getByText("46%")).toBeTruthy();
-    expect(slot.getByText("2d 3h")).toBeTruthy();
+    expect(slot.getByRole("heading", { name: "codex@example.com" })).toBeTruthy();
+    expect(slot.getByText("37%")).toBeTruthy();
     expect(
       slot.getAllByRole("heading").map((heading) => heading.textContent),
-    ).toEqual(["team@example.com", "personal@example.com"]);
+    ).toEqual(["codex@example.com"]);
+    expect(
+      slot.getByRole("button", {
+        name: "Five-hour limit: 21% used. Reset time not reported",
+      }),
+    ).toBeTruthy();
     const windowButton = slot.getByRole("button", {
-      name: "Weekly limit: 46% used. Reset time not reported",
+      name: "Weekly limit: 37% used. Reset time not reported",
     });
     fireEvent.click(windowButton);
     expect(slot.getByText("Reset time not reported.")).toBeTruthy();
-    expect(slot.getByText("82%")).toBeTruthy();
     fireEvent.click(slot.getByRole("tab", { name: "Claude Code" }));
+    expect(slot.getByText("Claude Principal")).toBeTruthy();
     expect(slot.getByText("claude-team@example.com")).toBeTruthy();
     expect(slot.queryByText("personal@example.com")).toBeNull();
     const diagnostics = vi
@@ -393,9 +507,7 @@ describe("provider usage footer disclosure", () => {
       );
       await waitFor(() =>
         expect(
-          slot.getByText(
-            "Couldn’t refresh usage. Showing the last available update.",
-          ),
+          slot.getByText("Couldn’t refresh. Showing last update."),
         ).toBeTruthy(),
       );
       expect(slot.getByText("claude-team@example.com")).toBeTruthy();
@@ -407,9 +519,7 @@ describe("provider usage footer disclosure", () => {
       );
       await waitFor(() =>
         expect(
-          slot.queryByText(
-            "Couldn’t refresh usage. Showing the last available update.",
-          ),
+          slot.queryByText("Couldn’t refresh. Showing last update."),
         ).toBeNull(),
       );
     }
@@ -426,10 +536,7 @@ it.each([
     "Sign in to this account in the source plugin’s settings.",
   ],
   ["no-limits", "No usage limits reported for this plan."],
-  [
-    "source-error",
-    "Couldn’t refresh usage. Showing the last available update.",
-  ],
+  ["source-error", "Couldn’t refresh. Showing last update."],
 ] as const)("renders the %s shared-source state", async (state, expected) => {
   const usage: UsageProvider["usage"] =
     state === "expired" || state === "unauthenticated"
@@ -483,11 +590,15 @@ it.each([
   );
   const app = await loadPluginApp(() => import("./app"));
   const mounted = await mountPluginContentScripts(app, {
-    pluginId: "provider-usage",
+    pluginId: "bb--provider-usage",
   });
   const item = app.experimentalSidebarFooterItems[0];
   if (item?.kind !== "disclosure") throw new Error("missing disclosure");
-  const slot = renderSlot(item, { dismiss: vi.fn() });
+  const slot = renderSlot(
+    item,
+    { dismiss: vi.fn() },
+    { pluginId: "bb--provider-usage" },
+  );
   await waitFor(() =>
     expect(slot.getByText(expected, { exact: false })).toBeTruthy(),
   );
@@ -498,5 +609,95 @@ it.each([
       slot.queryByRole("button", { name: "Retry usage refresh" }),
     ).toBeNull();
   }
+  await mounted.lifecycle.dispose();
+});
+
+it("keeps a measured refresh when an older snapshot response arrives late", async () => {
+  const account = (usage: UsageProvider["usage"]): UsageProvider => ({
+    id: "account",
+    providerId: "codex",
+    accountLabel: "review@example.com",
+    displayName: "Codex",
+    logoUrl: null,
+    icon: null,
+    strings: { iconTint: null },
+    signInHint: "Sign in.",
+    expiredHint: "Sign in again.",
+    usage,
+  });
+  const snapshot = (usage: UsageProvider["usage"]) =>
+    Response.json({
+      ok: true,
+      result: {
+        machines: [
+          {
+            id: "source:pool",
+            displayName: "Review pool",
+            status: "connected",
+            providers: [account(usage)],
+            error: null,
+          },
+        ],
+      },
+    });
+  let releaseInventory: (() => void) | null = null;
+  const fetchMock = vi.fn(
+    async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const { providerIds } = JSON.parse(String(init?.body)) as {
+        providerIds: string[];
+      };
+      if (providerIds.length > 0)
+        return snapshot({
+          status: "ok",
+          accountEmail: "review@example.com",
+          planLabel: null,
+          windows: [
+            {
+              label: "Weekly limit",
+              usedPercent: 37,
+              resetsAt: null,
+              cost: null,
+            },
+          ],
+        });
+      if (fetchMock.mock.calls.length === 1) return snapshot(null);
+      await new Promise<void>((resolve) => {
+        releaseInventory = resolve;
+      });
+      return snapshot(null);
+    },
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  const app = await loadPluginApp(() => import("./app"));
+  const mounted = await mountPluginContentScripts(app, {
+    pluginId: "bb--provider-usage",
+  });
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+  const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
+  window.dispatchEvent(new Event("blur"));
+  now.mockReturnValue(5 * 60_000 + 1_001);
+  window.dispatchEvent(new Event("focus"));
+  await waitFor(() => expect(releaseInventory).not.toBeNull());
+  now.mockRestore();
+
+  const item = app.experimentalSidebarFooterItems[0];
+  if (item?.kind !== "disclosure") throw new Error("missing disclosure");
+  const slot = renderSlot(
+    item,
+    { dismiss: vi.fn() },
+    { pluginId: "bb--provider-usage" },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  releaseInventory!();
+  await waitFor(() => expect(slot.getByText("37%")).toBeTruthy());
+  await waitFor(() =>
+    expect(
+      slot
+        .getByRole("button", { name: "Reload provider usage" })
+        .hasAttribute("disabled"),
+    ).toBe(false),
+  );
+  expect(slot.queryByText("Usage not reported.")).toBeNull();
+  expect(slot.getByText("37%")).toBeTruthy();
   await mounted.lifecycle.dispose();
 });

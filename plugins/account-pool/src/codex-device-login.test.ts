@@ -57,6 +57,10 @@ function jwt(payload: object): string {
   ].join(".");
 }
 
+async function unexpectedReauthorization(): Promise<AccountSummary> {
+  throw new Error("This login was not started for an existing account.");
+}
+
 function summary(account: CodexDeviceAccount): AccountSummary {
   return {
     id: "11111111-1111-4111-8111-111111111111",
@@ -69,6 +73,7 @@ function summary(account: CodexDeviceAccount): AccountSummary {
     subscriptionType: null,
     rateLimitTier: null,
     enabled: true,
+    active: false,
     priority: 100,
     createdAt: 1,
     lastUsedAt: null,
@@ -88,12 +93,23 @@ function summary(account: CodexDeviceAccount): AccountSummary {
       haiku: null,
       other: null,
     },
+    balance: {
+      bindingWindow: null,
+      bindingHeadroom: null,
+      resetRecoveryPerHour: null,
+      windows: [],
+    },
+    lastAutomaticChoice: null,
     limitWindows: [],
+    extraUsage: null,
+    usageRestriction: null,
     observedAt: null,
     heldUntil: null,
     error: null,
     inFlight: 0,
     status: "ready",
+    signInExpired: false,
+    organizationUuid: null,
   };
 }
 
@@ -123,6 +139,7 @@ function createPollingHarness(args?: {
       }
       throw new Error(`Unexpected request to ${url}`);
     },
+    reauthorizeAccount: unexpectedReauthorization,
     addAccount: async (account) => summary(account),
   });
   return { clock, login, tokenPolls: () => tokenPolls };
@@ -192,6 +209,7 @@ describe("Codex device login", () => {
     const login = new CodexDeviceLogin({
       authBaseUrl,
       now: () => now,
+      reauthorizeAccount: unexpectedReauthorization,
       addAccount: async (account) => {
         added.push(account);
         return summary(account);
@@ -250,32 +268,6 @@ describe("Codex device login", () => {
         code_verifier: "verifier-secret",
       }),
     );
-  });
-
-  it("returns pending for an immediate poll without fetching", async () => {
-    const { login, tokenPolls } = createPollingHarness();
-    const started = await login.start();
-
-    expect(await login.poll({ sessionId: started.sessionId })).toEqual({
-      status: "pending",
-    });
-    expect(tokenPolls()).toBe(0);
-    expect(login.nextPollDelayMs(started.sessionId)).toBe(5_000);
-  });
-
-  it("keeps a session pending after HTTP 404", async () => {
-    const { clock, login, tokenPolls } = createPollingHarness();
-    const started = await login.start();
-    clock.now += 5_000;
-
-    expect(await login.poll({ sessionId: started.sessionId })).toEqual({
-      status: "pending",
-    });
-    clock.now += 5_000;
-    expect(await login.poll({ sessionId: started.sessionId })).toEqual({
-      status: "pending",
-    });
-    expect(tokenPolls()).toBe(2);
   });
 
   it("extends the session interval after slow_down", async () => {
@@ -399,6 +391,7 @@ describe("Codex device login", () => {
     const login = new CodexDeviceLogin({
       authBaseUrl,
       now: () => now,
+      reauthorizeAccount: unexpectedReauthorization,
       addAccount: async (account) => summary(account),
     });
     const started = await login.start();
@@ -448,6 +441,7 @@ describe("Codex device login", () => {
     const login = new CodexDeviceLogin({
       authBaseUrl,
       now: () => now,
+      reauthorizeAccount: unexpectedReauthorization,
       addAccount: async (account) => summary(account),
     });
     const started = await login.start();

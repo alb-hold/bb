@@ -42,6 +42,7 @@ import {
   BB_DESKTOP_APP_COMMAND_CHANNEL,
   BB_DESKTOP_CLOSE_WINDOW_REQUEST_CHANNEL,
   BB_DESKTOP_CLOSE_WINDOW_RESPONSE_CHANNEL,
+  BB_DESKTOP_FOCUS_WINDOW_CHANNEL,
   BB_DESKTOP_GET_WINDOW_STATE_CHANNEL,
   BB_DESKTOP_OPEN_NEW_TAB_CHANNEL,
   BB_DESKTOP_OPEN_SERVER_DAEMON_LOGS_CHANNEL,
@@ -109,8 +110,12 @@ const electronMock = vi.hoisted(() => {
       },
     },
     ipcRenderer: {
-      invoke(channel: string): Promise<BbDesktopInfo | BbDesktopWindowState> {
+      invoke(channel: string): Promise<unknown> {
         invokeCalls.push(channel);
+        if (channel === "bb-desktop:get-server-choices")
+          return Promise.resolve([
+            { id: "builtin", name: "Local", active: true },
+          ]);
         if (channel === "bb-desktop:get-window-state") {
           return Promise.resolve(desktopWindowState);
         }
@@ -171,6 +176,39 @@ describe("desktop preload browser API", () => {
   beforeEach(async () => {
     api = await loadPreload();
   }, 30_000);
+
+  it("validates server updates and unsubscribes while sending only opaque selection IDs", async () => {
+    expect(await api.getServerChoices?.()).toEqual([
+      { id: "builtin", name: "Local", active: true },
+    ]);
+    const updates = vi.fn();
+    const stop = api.onServerChoicesChange?.(updates);
+    emitIpcPayload({
+      channel: "bb-desktop:server-choices-changed",
+      payload: [
+        { id: "remote", name: "Remote", active: false, url: "private" },
+      ],
+    });
+    expect(updates).not.toHaveBeenCalled();
+    emitIpcPayload({
+      channel: "bb-desktop:server-choices-changed",
+      payload: [{ id: "remote", name: "Remote", active: false }],
+    });
+    expect(updates).toHaveBeenCalledWith([
+      { id: "remote", name: "Remote", active: false },
+    ]);
+    stop?.();
+    emitIpcPayload({
+      channel: "bb-desktop:server-choices-changed",
+      payload: [],
+    });
+    expect(updates).toHaveBeenCalledTimes(1);
+    api.selectServer?.("remote");
+    expect(electronMock.sendCalls).toContainEqual({
+      channel: "bb-desktop:select-server",
+      payload: "remote",
+    });
+  });
 
   it("exposes only the typed browser commands and forwards them over fixed channels", async () => {
     const attachRequest = {
@@ -251,6 +289,8 @@ describe("desktop preload browser API", () => {
     api.browser.setVisibleWithoutFocus?.(visibleRequest);
     api.browser.findInPage?.(findRequest);
     api.browser.stopFindInPage?.(stopFindRequest);
+    expect(api.focusWindow).toBeTypeOf("function");
+    api.focusWindow?.();
     api.setTheme("dark");
     await api.checkForUpdates();
     await expect(api.getWindowState?.()).resolves.toEqual({
@@ -308,6 +348,7 @@ describe("desktop preload browser API", () => {
         channel: BB_DESKTOP_BROWSER_STOP_FIND_IN_PAGE_CHANNEL,
         payload: stopFindRequest,
       },
+      { channel: BB_DESKTOP_FOCUS_WINDOW_CHANNEL, payload: undefined },
       { channel: BB_DESKTOP_SET_THEME_CHANNEL, payload: "dark" },
     ]);
     expect(electronMock.invokeCalls).toContain(BB_DESKTOP_GET_INFO_CHANNEL);
@@ -356,6 +397,53 @@ describe("desktop preload browser API", () => {
         },
       },
     ]);
+  });
+
+  it("replays the latest validated tab state after listeners remount and bounds retained tabs", () => {
+    const state: BbDesktopBrowserState = {
+      tabId: "browser:0",
+      url: "https://example.com",
+      title: null,
+      faviconUrl: "https://example.com/icon.png",
+      isLoading: false,
+      canGoBack: false,
+      canGoForward: false,
+      errorText: null,
+    };
+    const first = vi.fn();
+    const unsubscribe = api.browser.onState(first);
+    emitIpcPayload({
+      channel: BB_DESKTOP_BROWSER_STATE_CHANNEL,
+      payload: state,
+    });
+    unsubscribe();
+    emitIpcPayload({
+      channel: BB_DESKTOP_BROWSER_STATE_CHANNEL,
+      payload: { ...state, faviconUrl: null },
+    });
+    emitIpcPayload({
+      channel: BB_DESKTOP_BROWSER_STATE_CHANNEL,
+      payload: { ...state, extra: true },
+    });
+    const restored = vi.fn();
+    const stop = api.browser.onState(restored);
+    expect(restored).toHaveBeenCalledExactlyOnceWith({
+      ...state,
+      faviconUrl: null,
+    });
+    expect(first).toHaveBeenCalledExactlyOnceWith(state);
+    stop();
+    for (let index = 1; index <= 100; index++) {
+      emitIpcPayload({
+        channel: BB_DESKTOP_BROWSER_STATE_CHANNEL,
+        payload: { ...state, tabId: `browser:${index}` },
+      });
+    }
+    const retained: BbDesktopBrowserState[] = [];
+    api.browser.onState((value) => retained.push(value))();
+    expect(retained).toHaveLength(100);
+    expect(retained.some((value) => value.tabId === "browser:0")).toBe(false);
+    expect(retained.at(-1)?.tabId).toBe("browser:100");
   });
 
   it("validates browser event payloads before notifying renderer listeners", () => {

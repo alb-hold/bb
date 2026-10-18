@@ -1,12 +1,19 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from "@testing-library/react";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import {
   ExecutionControls,
   type ExecutionControlsProps,
 } from "./ExecutionControls";
+import { ModelReasoningMenu } from "@/components/pickers/ModelReasoningMenuSplit";
 
 function makeExecutionControlsProps(
   providerOnChange?: (value: string) => void,
@@ -44,12 +51,53 @@ function renderExecutionControls(props: ExecutionControlsProps) {
   return render(<ExecutionControls {...props} />, { wrapper });
 }
 
+beforeAll(() => ModelReasoningMenu.preload());
+
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
 });
 
 describe("ExecutionControls", () => {
+  it("shows whether the thread runs in chat or its terminal and switches between them", () => {
+    const onChange = vi.fn();
+    const { rerender } = renderExecutionControls({
+      ...makeExecutionControlsProps(),
+      nativeTerminal: { enabled: false, onChange },
+    });
+
+    const group = screen.getByRole("radiogroup", { name: "Run this thread in" });
+    const chat = within(group).getByRole("radio", { name: "Chat" });
+    const terminal = within(group).getByRole("radio", { name: "Terminal" });
+    expect(chat.getAttribute("aria-checked")).toBe("true");
+    expect(terminal.getAttribute("aria-checked")).toBe("false");
+    fireEvent.click(chat);
+    expect(onChange).not.toHaveBeenCalled();
+    fireEvent.click(terminal);
+    expect(onChange).toHaveBeenCalledWith(true);
+
+    rerender(
+      <ExecutionControls
+        {...makeExecutionControlsProps()}
+        nativeTerminal={{ enabled: true, onChange }}
+      />,
+    );
+    expect(
+      screen
+        .getByRole("radio", { name: "Terminal" })
+        .getAttribute("aria-checked"),
+    ).toBe("true");
+    fireEvent.click(screen.getByRole("radio", { name: "Terminal" }));
+    expect(onChange).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("radio", { name: "Chat" }));
+    expect(onChange).toHaveBeenLastCalledWith(false);
+
+    rerender(<ExecutionControls {...makeExecutionControlsProps()} />);
+    expect(
+      screen.queryByRole("radiogroup", { name: "Run this thread in" }),
+    ).toBeNull();
+  });
+
   it("hides provider tabs when the provider is locked", () => {
     renderExecutionControls(makeExecutionControlsProps());
 
@@ -84,7 +132,7 @@ describe("ExecutionControls", () => {
         active: { model: "o4-mini" },
         options: [],
         loadFailed: true,
-        loadError: { providerId: "codex", code: "failed" },
+        loadError: { providerId: "codex", code: "failed", detail: null },
       },
     });
 
@@ -94,26 +142,5 @@ describe("ExecutionControls", () => {
 
     expect(trigger.textContent).toContain("o4-mini");
     expect(trigger.textContent).not.toContain("Failed to load models");
-  });
-
-  it("maps disabled fast mode to the explicit default service tier", () => {
-    const onServiceTierChange = vi.fn();
-    renderExecutionControls({
-      ...makeExecutionControlsProps(),
-      serviceTier: {
-        value: "fast",
-        onChange: onServiceTierChange,
-        supported: true,
-      },
-    });
-
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: "Provider, model and reasoning",
-      }),
-    );
-    fireEvent.click(screen.getByRole("switch", { name: "Fast mode" }));
-
-    expect(onServiceTierChange).toHaveBeenCalledWith("default");
   });
 });

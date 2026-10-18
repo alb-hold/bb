@@ -1,4 +1,4 @@
-import { chmod, copyFile, mkdir, rm, stat } from "node:fs/promises";
+import { chmod, copyFile, mkdir, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
@@ -9,6 +9,7 @@ import {
   finalizeSplitOutput,
   splitOutputOptions,
 } from "../../../scripts/build-utils.mjs";
+import { zodLocaleStubPlugin } from "../../../packages/plugin-build/src/zod-locale-stub.mjs";
 
 const scriptsDir = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(scriptsDir, "..");
@@ -38,6 +39,7 @@ async function main() {
       format: "esm",
       legalComments: "none",
       minify: true,
+      plugins: [zodLocaleStubPlugin()],
       ...(split ? split.esbuild : { outfile: target.outfile }),
       platform: "node",
       sourcemap: false,
@@ -63,6 +65,10 @@ async function main() {
   const outputTitleCommandPath = resolve(packageRoot, "dist", "title");
   await copyFile(titleCommandPath, outputTitleCommandPath);
   await chmod(outputTitleCommandPath, 0o755);
+  await writeFile(
+    resolve(packageRoot, "dist", "bb.cmd"),
+    '@echo off\r\nnode "%~dp0bb" %*\r\n',
+  );
 }
 
 void main().catch((error) => {

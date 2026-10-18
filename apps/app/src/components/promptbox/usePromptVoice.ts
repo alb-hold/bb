@@ -1,7 +1,12 @@
-import { useCallback, useMemo, type RefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, type RefObject } from "react";
 import { useVoiceInput } from "@/hooks/useVoiceInput";
 import { transcribeVoiceInput } from "@/lib/api";
+import type { VoiceDelivery } from "@/lib/voice-recording-store";
 import type { PromptBoxHandle, PromptVoiceConfig } from "./PromptBoxInternal";
+import {
+  deliverPromptVoiceTranscript,
+  type PromptVoiceDraftTarget,
+} from "./prompt-voice-intent";
 
 async function requestVoiceTranscription({
   file,
@@ -16,18 +21,27 @@ async function requestVoiceTranscription({
   return transcription.text;
 }
 
-function createVoiceAbortError(): DOMException {
-  return new DOMException("Voice transcription was cancelled", "AbortError");
-}
-
 export function usePromptVoice(
   promptBoxRef: RefObject<PromptBoxHandle | null>,
+  draft: PromptVoiceDraftTarget | undefined,
+  recordingKey: string | null,
 ): PromptVoiceConfig {
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
   const onTranscript = useCallback(
-    (text: string) => {
-      promptBoxRef.current?.insertTextAtCursor(text);
-    },
-    [promptBoxRef],
+    (text: string, delivery: VoiceDelivery) =>
+      deliverPromptVoiceTranscript(text, delivery, {
+        mounted: mountedRef.current,
+        promptBox: promptBoxRef.current,
+        draft,
+      }),
+    [draft, promptBoxRef],
   );
 
   const getPromptContext = useCallback(
@@ -35,39 +49,52 @@ export function usePromptVoice(
     [promptBoxRef],
   );
 
-  const transcribeAfterCompletionTransition = useCallback(
-    async (args: Parameters<typeof requestVoiceTranscription>[0]) => {
-      const text = await requestVoiceTranscription(args);
-      await promptBoxRef.current?.playVoiceCompletionTransition();
-      if (args.signal?.aborted) {
-        throw createVoiceAbortError();
-      }
-      return text;
-    },
+  const playCompletionTransition = useCallback(
+    () => promptBoxRef.current?.playVoiceCompletionTransition(),
     [promptBoxRef],
   );
 
   const voiceInput = useVoiceInput({
+    recordingKey,
     onTranscript,
-    onTranscribe: transcribeAfterCompletionTransition,
+    onTranscribe: requestVoiceTranscription,
     getPromptContext,
+    playCompletionTransition,
   });
+
+  const { stop: stopVoiceInput } = voiceInput;
+  const stop = useCallback(() => stopVoiceInput("insert"), [stopVoiceInput]);
+  const send = useCallback(() => stopVoiceInput("send"), [stopVoiceInput]);
 
   return useMemo<PromptVoiceConfig>(
     () => ({
       state: voiceInput.state,
+      delivery: voiceInput.delivery,
+      microphoneWarning: voiceInput.microphoneWarning,
       isSupported: voiceInput.isSupported,
       stream: voiceInput.stream,
+      failedRecordings: voiceInput.failedRecordings,
       start: voiceInput.start,
-      stop: voiceInput.stop,
+      stop,
+      send,
+      retry: voiceInput.retry,
+      discard: voiceInput.discard,
+      download: voiceInput.download,
       cancel: voiceInput.cancel,
     }),
     [
       voiceInput.state,
+      voiceInput.delivery,
+      voiceInput.microphoneWarning,
       voiceInput.isSupported,
       voiceInput.stream,
+      voiceInput.failedRecordings,
       voiceInput.start,
-      voiceInput.stop,
+      stop,
+      send,
+      voiceInput.retry,
+      voiceInput.discard,
+      voiceInput.download,
       voiceInput.cancel,
     ],
   );

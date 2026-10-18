@@ -1,7 +1,14 @@
 // @vitest-environment jsdom
 
+import { resolve } from "node:path";
 import { useEffect, useState } from "react";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PluginPendingInteraction } from "@bb/domain";
@@ -12,6 +19,11 @@ import {
   type PluginRegistrationSet,
 } from "@/lib/plugin-slots";
 import {
+  collectPluginAppRegistrations,
+  isPluginAppDefinition,
+} from "@/lib/plugin-app-definition";
+import { installPluginRuntime } from "@/lib/plugin-frontend";
+import {
   markPluginFrontendsSettled,
   resetPluginFrontendBootStateForTest,
 } from "@/lib/plugin-frontend-boot-state";
@@ -21,11 +33,44 @@ import {
 } from "@/lib/plugin-logos";
 import { resetAllCrashedPluginSlotsForTest } from "./PluginSlotMount";
 import { PluginPendingInteractionComposer } from "./PluginPendingInteractionComposer";
+import { InlinePendingInteractionContext } from "@/components/thread/pending-interactions/PendingInteractionShell";
 import { makePluginRegistrationSet } from "@/test/fixtures/plugins";
+import { AppCommandProvider } from "@/components/commands/AppCommandProvider";
+import { sdk } from "@/lib/sdk";
+
+vi.mock(
+  "@/hooks/queries/system-queries",
+  () => import("@/test/question-shortcuts-system-queries-mock"),
+);
+vi.mock("@/lib/bb-desktop", () => ({ getBbDesktopInfo: () => null }));
+const pane = vi.hoisted(() => ({ isFocused: true }));
+vi.mock("@/views/thread-detail/PaneContext", () => ({
+  useOptionalPaneContext: () => pane,
+}));
+
+const PI_APP_MODULE = resolve(
+  __dirname,
+  "../../../../../plugins/provider-pi/app.tsx",
+);
+
+async function loadPiPendingInteractions(): Promise<
+  NonNullable<PluginRegistrationSet["pendingInteractions"]>
+> {
+  installPluginRuntime();
+  const module: { default?: unknown } = await import(
+    /* @vite-ignore */ PI_APP_MODULE
+  );
+  if (!isPluginAppDefinition(module.default)) {
+    throw new Error("provider-pi's app.tsx exports no plugin app definition");
+  }
+  return collectPluginAppRegistrations(module.default).pendingInteractions;
+}
 
 function renderComposer(ui: React.ReactElement) {
   return render(
-    <QueryClientProvider client={new QueryClient()}>{ui}</QueryClientProvider>,
+    <QueryClientProvider client={new QueryClient()}>
+      <AppCommandProvider>{ui}</AppCommandProvider>
+    </QueryClientProvider>,
   );
 }
 
@@ -96,6 +141,7 @@ describe("PluginPendingInteractionComposer", () => {
     const title = String.raw`Review /workspace/deep/path\.env.local`;
     renderComposer(
       <PluginPendingInteractionComposer
+        collapsedByDefault={false}
         interaction={interaction}
         request={{
           pluginId: "secrets",
@@ -134,6 +180,7 @@ describe("PluginPendingInteractionComposer", () => {
     );
     renderComposer(
       <PluginPendingInteractionComposer
+        collapsedByDefault={false}
         interaction={interaction}
         request={{
           pluginId: "secrets",
@@ -194,6 +241,7 @@ describe("PluginPendingInteractionComposer", () => {
     const composer = (id: string) => (
       <QueryClientProvider client={client}>
         <PluginPendingInteractionComposer
+          collapsedByDefault={false}
           interaction={{ ...interaction, id }}
           request={{
             pluginId: "secrets",
@@ -219,6 +267,104 @@ describe("PluginPendingInteractionComposer", () => {
     ).toBe("true");
   });
 
+  it("submits a numbered pi selection through the shared question form", async () => {
+    setPluginSlotRegistrations(
+      "provider-pi",
+      registrations(await loadPiPendingInteractions()),
+    );
+    const data = {
+      requestId: "ui-1",
+      method: "select" as const,
+      options: ["Allow once", "Deny"],
+    };
+    const respond = vi
+      .spyOn(sdk.threads.interactions, "respond")
+      .mockRejectedValue(new Error("test response"));
+    renderComposer(
+      <PluginPendingInteractionComposer
+        collapsedByDefault={false}
+        interaction={{
+          id: "pint_provider",
+          threadId: "thr_test",
+          createdAt: 1,
+          expiresAt: 2,
+        }}
+        request={{
+          pluginId: "provider-pi",
+          rendererId: "extension-ui",
+          title: "Allow access?",
+          data,
+        }}
+        origin="provider"
+      />,
+    );
+
+    expect(screen.getByText("1", { selector: "kbd" })).toBeDefined();
+    expect(screen.getByText("2", { selector: "kbd" })).toBeDefined();
+    fireEvent.keyDown(window, { key: "2" });
+    expect(
+      screen.getByRole("button", { name: "Deny" }).getAttribute("aria-pressed"),
+    ).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "Submit answer" }));
+    await vi.waitFor(() =>
+      expect(respond).toHaveBeenCalledWith({
+        interactionId: "pint_provider",
+        threadId: "thr_test",
+        value: "Deny",
+      }),
+    );
+  });
+
+  it.each([
+    ["submit", "respond"],
+    ["cancel", "cancel"],
+  ] as const)(
+    "keeps the plugin form disabled after a successful %s and re-enables it after a failure",
+    async (action, sdkMethod) => {
+      function Renderer({ submit, cancel }: PluginPendingInteractionProps) {
+        return (
+          <button
+            type="button"
+            onClick={() =>
+              void (action === "submit" ? submit("value") : cancel()).catch(
+                () => {},
+              )
+            }
+          >
+            Send
+          </button>
+        );
+      }
+      setPluginSlotRegistrations(
+        "secrets",
+        registrations([{ id: "secret-request", component: Renderer }]),
+      );
+      const call = vi
+        .spyOn(sdk.threads.interactions, sdkMethod)
+        .mockRejectedValueOnce(new Error("offline"))
+        .mockResolvedValueOnce(undefined as never);
+      renderComposer(
+        <PluginPendingInteractionComposer
+          collapsedByDefault={false}
+          interaction={interaction}
+          request={secretsRequest}
+          origin="plugin"
+        />,
+      );
+      const send = () =>
+        screen.getByRole("button", { name: "Send" }) as HTMLButtonElement;
+
+      fireEvent.click(send());
+      await vi.waitFor(() => expect(screen.getByText("offline")).toBeDefined());
+      expect(send().matches(":disabled")).toBe(false);
+
+      fireEvent.click(send());
+      await vi.waitFor(() => expect(call).toHaveBeenCalledTimes(2));
+      await act(async () => {});
+      expect(send().matches(":disabled")).toBe(true);
+    },
+  );
+
   it("mounts only the renderer registered by the interaction's plugin", () => {
     function WrongRenderer() {
       return <div>wrong plugin renderer</div>;
@@ -239,6 +385,7 @@ describe("PluginPendingInteractionComposer", () => {
 
     renderComposer(
       <PluginPendingInteractionComposer
+        collapsedByDefault={false}
         interaction={interaction}
         request={{
           pluginId: "secrets",
@@ -254,24 +401,6 @@ describe("PluginPendingInteractionComposer", () => {
     expect(screen.queryByText("wrong plugin renderer")).toBeNull();
   });
 
-  it("keeps a host-owned cancel fallback when the renderer is missing", () => {
-    markPluginFrontendsSettled();
-    renderComposer(
-      <PluginPendingInteractionComposer
-        interaction={interaction}
-        request={{
-          pluginId: "secrets",
-          rendererId: "secret-request",
-          title: interaction.payload.title,
-          data: interaction.payload.data,
-        }}
-        origin="plugin"
-      />,
-    );
-    expect(screen.getByText(/form is unavailable/i)).toBeDefined();
-    expect(screen.getByRole("button", { name: "Cancel" })).toBeDefined();
-  });
-
   it("resolves the form through the slot store once the renderer registers", () => {
     markPluginFrontendsSettled();
     function Renderer({ interaction: view }: PluginPendingInteractionProps) {
@@ -285,6 +414,7 @@ describe("PluginPendingInteractionComposer", () => {
     };
     const { rerender } = renderComposer(
       <PluginPendingInteractionComposer
+        collapsedByDefault={false}
         interaction={interaction}
         request={request}
         origin="provider"
@@ -299,6 +429,7 @@ describe("PluginPendingInteractionComposer", () => {
     rerender(
       <QueryClientProvider client={new QueryClient()}>
         <PluginPendingInteractionComposer
+          collapsedByDefault={false}
           interaction={interaction}
           request={request}
           origin="provider"
@@ -320,6 +451,7 @@ describe("PluginPendingInteractionComposer", () => {
     };
     const composer = (
       <PluginPendingInteractionComposer
+        collapsedByDefault={false}
         interaction={interaction}
         request={request}
         origin="plugin"
@@ -355,6 +487,7 @@ describe("PluginPendingInteractionComposer", () => {
     };
     const composer = (
       <PluginPendingInteractionComposer
+        collapsedByDefault={false}
         interaction={interaction}
         request={request}
         origin="plugin"
@@ -380,6 +513,7 @@ describe("PluginPendingInteractionComposer", () => {
     markPluginFrontendsSettled();
     renderComposer(
       <PluginPendingInteractionComposer
+        collapsedByDefault={false}
         interaction={interaction}
         request={secretsRequest}
         origin="plugin"
@@ -389,10 +523,29 @@ describe("PluginPendingInteractionComposer", () => {
     expect(screen.queryByText(/\bsecret-request\b/)).toBeNull();
   });
 
+  it("drops the attribution line inside the child threads banner", () => {
+    registerSecretsBranding("Secrets");
+    markPluginFrontendsSettled();
+    renderComposer(
+      <InlinePendingInteractionContext.Provider
+        value={{ promptShownAbove: "Choose a secret", close: () => {} }}
+      >
+        <PluginPendingInteractionComposer
+          collapsedByDefault={false}
+          interaction={interaction}
+          request={secretsRequest}
+          origin="plugin"
+        />
+      </InlinePendingInteractionContext.Provider>,
+    );
+    expect(screen.queryByText("Requested by Secrets")).toBeNull();
+  });
+
   it("falls back to the plugin id when no display name is registered", () => {
     markPluginFrontendsSettled();
     renderComposer(
       <PluginPendingInteractionComposer
+        collapsedByDefault={false}
         interaction={interaction}
         request={secretsRequest}
         origin="plugin"
@@ -406,6 +559,7 @@ describe("PluginPendingInteractionComposer", () => {
     markPluginFrontendsSettled();
     renderComposer(
       <PluginPendingInteractionComposer
+        collapsedByDefault={false}
         interaction={interaction}
         request={secretsRequest}
         origin="provider"
@@ -430,6 +584,7 @@ describe("PluginPendingInteractionComposer", () => {
     );
     renderComposer(
       <PluginPendingInteractionComposer
+        collapsedByDefault={false}
         interaction={interaction}
         request={{
           pluginId: "secrets",

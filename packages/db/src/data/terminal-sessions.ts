@@ -1,11 +1,26 @@
-import { and, asc, eq, inArray, isNull, type SQL } from "drizzle-orm";
+import {
+  and,
+  asc,
+  eq,
+  exists,
+  gt,
+  inArray,
+  isNull,
+  notExists,
+  or,
+  type SQL,
+} from "drizzle-orm";
 import type {
   TerminalSessionCloseReason,
   TerminalSessionStatus,
 } from "@bb/domain";
 import type { DbConnection, DbTransaction } from "../connection.js";
 import { createTerminalSessionId } from "../ids.js";
-import { terminalSessions } from "../schema.js";
+import {
+  forkTerminalOutput,
+  forkTerminalTabDismissals,
+  terminalSessions,
+} from "../schema.js";
 
 type TerminalSessionConnection = DbConnection | DbTransaction;
 
@@ -35,32 +50,24 @@ export type TerminalSessionScope = TerminalStatusScope &
     | { environmentId: string; kind: "environment" }
     | { hostId: string; kind: "host" }
     | { kind: "terminal"; terminalId: string }
-    | { kind: "thread"; terminalId?: string; threadId: string }
-    | {
-        environmentId: string;
-        kind: "threadless-environment";
-        terminalId?: string;
-      }
+    | { kind: "thread"; threadId: string }
+    | { environmentId: string; kind: "threadless-environment" }
   );
 
 export type TerminalSessionSingleScope = TerminalStatusScope &
   (
     | { daemonSessionId: string; kind: "daemon"; terminalId: string }
     | { kind: "terminal"; terminalId: string }
-    | { kind: "thread"; terminalId: string; threadId: string }
-    | {
-        environmentId: string;
-        kind: "threadless-environment";
-        terminalId: string;
-      }
   );
 
 export type TerminalSessionMutation =
-  | { kind: "disconnect" }
+  | { kind: "disconnect"; retainDaemonSession: boolean }
+  | { daemonSessionId: string; kind: "reconnect" }
   | {
       closeReason: TerminalSessionCloseReason;
       exitCode?: number | null;
       kind: "exit";
+      retainDaemonSession?: boolean;
     }
   | {
       cols: number;
@@ -86,12 +93,11 @@ export interface UpdateTerminalSessionArgs {
 }
 
 export interface UpdateTerminalSessionsArgs {
-  now?: number;
   scope: TerminalSessionScope;
   update: TerminalSessionMutation;
 }
 
-const NON_TERMINAL_SESSION_STATUSES: TerminalSessionStatus[] = [
+export const NON_TERMINAL_SESSION_STATUSES: TerminalSessionStatus[] = [
   "starting",
   "running",
   "disconnected",
@@ -123,20 +129,12 @@ function terminalScope(
       scoped = eq(terminalSessions.id, scope.terminalId);
       break;
     case "thread":
-      scoped = and(
-        eq(terminalSessions.threadId, scope.threadId),
-        scope.terminalId
-          ? eq(terminalSessions.id, scope.terminalId)
-          : undefined,
-      );
+      scoped = eq(terminalSessions.threadId, scope.threadId);
       break;
     case "threadless-environment":
       scoped = and(
         eq(terminalSessions.environmentId, scope.environmentId),
         isNull(terminalSessions.threadId),
-        scope.terminalId
-          ? eq(terminalSessions.id, scope.terminalId)
-          : undefined,
       );
       break;
   }
@@ -155,11 +153,21 @@ function mutationValues(
 ): Partial<typeof terminalSessions.$inferInsert> {
   switch (update.kind) {
     case "disconnect":
-      return { daemonSessionId: null, status: "disconnected", updatedAt: now };
+      return {
+        ...(update.retainDaemonSession ? {} : { daemonSessionId: null }),
+        status: "disconnected",
+        updatedAt: now,
+      };
+    case "reconnect":
+      return {
+        daemonSessionId: update.daemonSessionId,
+        status: "running",
+        updatedAt: now,
+      };
     case "exit":
       return {
         closeReason: update.closeReason,
-        daemonSessionId: null,
+        ...(update.retainDaemonSession ? {} : { daemonSessionId: null }),
         ...(update.exitCode === undefined ? {} : { exitCode: update.exitCode }),
         status: "exited",
         updatedAt: now,
@@ -230,7 +238,48 @@ export function listTerminalSessions(
       terminalScope(
         args.scope,
         args.visible
-          ? inArray(terminalSessions.status, NON_TERMINAL_SESSION_STATUSES)
+          ? or(
+              inArray(terminalSessions.status, NON_TERMINAL_SESSION_STATUSES),
+              and(
+                eq(terminalSessions.status, "exited"),
+                exists(
+                  db
+                    .select({
+                      terminalSessionId: forkTerminalOutput.terminalSessionId,
+                    })
+                    .from(forkTerminalOutput)
+                    .where(
+                      and(
+                        eq(
+                          forkTerminalOutput.terminalSessionId,
+                          terminalSessions.id,
+                        ),
+                        gt(forkTerminalOutput.expiresAt, Date.now()),
+                      ),
+                    ),
+                ),
+                notExists(
+                  db
+                    .select({
+                      terminalSessionId:
+                        forkTerminalTabDismissals.terminalSessionId,
+                    })
+                    .from(forkTerminalTabDismissals)
+                    .where(
+                      and(
+                        eq(
+                          forkTerminalTabDismissals.terminalSessionId,
+                          terminalSessions.id,
+                        ),
+                        eq(
+                          forkTerminalTabDismissals.hostId,
+                          terminalSessions.hostId,
+                        ),
+                      ),
+                    ),
+                ),
+              ),
+            )
           : undefined,
       ),
     )
@@ -242,7 +291,9 @@ export function getTerminalSession(
   db: TerminalSessionConnection,
   scope: TerminalSessionSingleScope,
 ): TerminalSessionRow | null {
-  return db.select().from(terminalSessions).where(terminalScope(scope)).get() ?? null;
+  return (
+    db.select().from(terminalSessions).where(terminalScope(scope)).get() ?? null
+  );
 }
 
 export function updateTerminalSession(
@@ -265,7 +316,7 @@ export function updateTerminalSessions(
 ): TerminalSessionRow[] {
   return db
     .update(terminalSessions)
-    .set(mutationValues(args.update, args.now ?? Date.now()))
+    .set(mutationValues(args.update, Date.now()))
     .where(terminalScope(args.scope, mutationWhere(args.update)))
     .returning()
     .all();

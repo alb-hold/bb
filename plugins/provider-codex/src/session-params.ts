@@ -1,5 +1,6 @@
 import {
   jsonValueSchema,
+  removeCommandMentionsFromPromptInput,
   type PermissionEscalation,
   type PromptInput,
   type ReasoningLevel,
@@ -19,9 +20,11 @@ import type { UserInput as CodexUserInput } from "./generated/codex-app-server/s
 import type { AskForApproval } from "./generated/codex-app-server/schema/v2/AskForApproval.js";
 import type { ApprovalsReviewer } from "./generated/codex-app-server/schema/v2/ApprovalsReviewer.js";
 import { mapBbReasoningLevelToCodex } from "./models.js";
+import { isCodexPoolEnvironmentVariable } from "./pool-launch.js";
 
 export type CodexSessionOptions = {
   model?: string;
+  promptMode?: "plan";
   serviceTier?: ServiceTier;
   reasoningLevel?: ReasoningLevel;
   memoryEnabled?: boolean;
@@ -46,6 +49,7 @@ export interface CodexThreadPermissionSettings {
 export type BbThreadStartParams = ThreadStartParams & {
   experimentalRawEvents?: boolean;
   dynamicTools?: DynamicToolSpec[];
+  daybreakEnabled?: boolean;
 };
 
 export type BbThreadForkParams = {
@@ -486,7 +490,7 @@ export function gitWritableRootsForWorkspace(
   return [...new Set(writableRoots)];
 }
 
-export function combineWorkspaceWriteRoots(
+function combineWorkspaceWriteRoots(
   roots: readonly string[],
   additionalRoots: readonly string[],
 ): string[] {
@@ -544,11 +548,11 @@ export function toCodexPermissionSettings(
 
 export function toCodexServiceTier(
   tier: ServiceTier | undefined,
-): "fast" | null | undefined {
+): string | null | undefined {
   return tier === "default" ? null : tier;
 }
 
-export function toCodexReasoningEffort(
+function toCodexReasoningEffort(
   reasoningLevel: ReasoningLevel,
 ): CodexReasoningEffort {
   const codexEffort = mapBbReasoningLevelToCodex(reasoningLevel);
@@ -558,6 +562,64 @@ export function toCodexReasoningEffort(
     );
   }
   return codexEffort;
+}
+
+export type CodexCollaborationModeKind = "plan" | "default";
+
+export interface CodexCollaborationMode {
+  mode: CodexCollaborationModeKind;
+  settings: {
+    model: string;
+    reasoning_effort: CodexReasoningEffort | null;
+    developer_instructions: null;
+  };
+}
+
+export function nextCodexCollaborationMode(args: {
+  options: CodexSessionOptions;
+  current: CodexCollaborationModeKind | null;
+  threadModel: string | null;
+}): CodexCollaborationMode | null {
+  const mode: CodexCollaborationModeKind =
+    args.options.promptMode === "plan" ? "plan" : "default";
+  if (mode === args.current) {
+    return null;
+  }
+  const model = args.options.model ?? args.threadModel;
+  if (model === null) {
+    if (mode === "default" && args.current === null) {
+      return null;
+    }
+    throw new Error(
+      `Codex has not reported this thread's model, so bb cannot switch it to ${mode} mode.`,
+    );
+  }
+  const effort =
+    args.options.reasoningLevel === undefined
+      ? null
+      : mapBbReasoningLevelToCodex(args.options.reasoningLevel);
+  return {
+    mode,
+    settings: {
+      model,
+      reasoning_effort: effort,
+      developer_instructions: null,
+    },
+  };
+}
+
+export function toCodexTurnInput(
+  input: readonly PromptInput[],
+  options: CodexSessionOptions,
+): CodexUserInput[] {
+  return toCodexUserInput(
+    options.promptMode === "plan"
+      ? removeCommandMentionsFromPromptInput(input, {
+          trigger: "/",
+          name: "plan",
+        })
+      : [...input],
+  );
 }
 
 export function toCodexUserInput(input: PromptInput[]): CodexUserInput[] {
@@ -572,7 +634,9 @@ export function toCodexUserInput(input: PromptInput[]): CodexUserInput[] {
       case "localFile":
         return {
           type: "text",
-          text: `[Attached file: ${chunk.path}]`,
+          text: chunk.name
+            ? `[Attached file "${chunk.name}": ${chunk.path}]`
+            : `[Attached file: ${chunk.path}]`,
           text_elements: [],
         };
     }
@@ -587,6 +651,7 @@ function buildShellEnvironmentPolicyConfig(
   }
   const config: Record<string, string> = {};
   for (const [key, value] of Object.entries(buildShellEnvOverrides(envVars))) {
+    if (isCodexPoolEnvironmentVariable(key)) continue;
     config[`shell_environment_policy.set.${key}`] = value;
   }
   return Object.keys(config).length > 0 ? config : undefined;
@@ -610,7 +675,6 @@ export function buildCodexConfig(
       args.options.reasoningLevel,
     );
   }
-  config["features.default_mode_request_user_input"] = false;
   if (args.options?.providerSubagentsEnabled === false) {
     config["features.multi_agent"] = false;
     config["features.multi_agent_v2.max_concurrent_threads_per_session"] = 1;

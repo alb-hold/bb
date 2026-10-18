@@ -160,7 +160,10 @@ function expandHomeDirectory(pathValue: string, homeDir: string): string {
     return homeDir;
   }
 
-  if (pathValue.startsWith("~/")) {
+  if (
+    pathValue.startsWith("~/") ||
+    (process.platform === "win32" && pathValue.startsWith("~\\"))
+  ) {
     return resolve(homeDir, pathValue.slice(2));
   }
 
@@ -303,6 +306,8 @@ export function resolvePortFromEnv(args: ResolvePortFromEnvArgs): number {
     rawPort,
   });
 }
+
+export { stripInheritedAgentSessionEnv } from "@bb/process-utils";
 
 export function stripThreadContextEnv(
   baseEnv: NodeJS.ProcessEnv,

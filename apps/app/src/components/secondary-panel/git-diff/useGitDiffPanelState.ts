@@ -28,6 +28,9 @@ export function useGitDiffPanelState({
 }: UseGitDiffPanelStateParams) {
   const [selectedGitDiffSelection, setSelectedGitDiffSelection] =
     useState<GitDiffSelectionValue>(null);
+  const [gitDiffFileFilter, setGitDiffFileFilter] = useState<string | null>(
+    null,
+  );
 
   const gitDiffTarget = useMemo(
     () =>
@@ -51,11 +54,13 @@ export function useGitDiffPanelState({
 
   useEffect(() => {
     setSelectedGitDiffSelection(null);
+    setGitDiffFileFilter(null);
   }, [environmentId]);
 
   useEffect(() => {
     if (pendingGitDiffScrollPath) {
       setSelectedGitDiffSelection(null);
+      setGitDiffFileFilter(null);
     }
   }, [pendingGitDiffScrollPath]);
 
@@ -67,7 +72,7 @@ export function useGitDiffPanelState({
   }, [onClearPendingGitDiffIntent, pendingGitDiffCommitSha]);
 
   const hasUncommittedChanges =
-    (workspaceStatus?.workingTree.files.length ?? 0) > 0;
+    (workspaceStatus?.workingTree.fileCount ?? 0) > 0;
 
   useEffect(() => {
     if (
@@ -102,9 +107,11 @@ export function useGitDiffPanelState({
   }, []);
 
   return {
+    gitDiffFileFilter,
     gitDiffTarget,
     gitDiffSelectOptions,
     gitDiffSelectValue,
     onGitDiffSelectionChange,
+    setGitDiffFileFilter,
   };
 }

@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, it, onTestFinished } from "vitest";
+import { isMap, isSeq, parseDocument } from "yaml";
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(testDir, "..", "..", "..");
@@ -20,12 +21,22 @@ it("limits concurrent Turbo test tasks to the CI runner CPU count", () => {
     resolve(repoRoot, ".github", "workflows", "ci.yml"),
     "utf8",
   );
-  const testStep = /- name: Test\n\s+run: ([^\n]+)/u.exec(workflow)?.[1];
+  const steps = parseDocument(workflow).getIn(["jobs", "tests", "steps"]);
+  const testStep = isSeq(steps)
+    ? steps.items.find((step) => isMap(step) && step.get("name") === "Test")
+    : undefined;
+  if (!isMap(testStep)) throw new Error("Linux test step is missing");
 
-  expect(testStep).toContain("--concurrency=4");
+  expect(testStep.get("run")).toContain("--concurrency=4");
 });
 
-it("rejects a pnpm version that disagrees with the root manifest", () => {
+it("rejects a pnpm version that disagrees with the root manifest", ({
+  skip,
+}) => {
+  skip(
+    process.platform === "win32",
+    "install-pnpm.sh runs only on Linux and macOS CI runners",
+  );
   const fixture = mkdtempSync(join(tmpdir(), "bb-pnpm-version-"));
   onTestFinished(() => rmSync(fixture, { force: true, recursive: true }));
   const fakeBin = resolve(fixture, "bin");

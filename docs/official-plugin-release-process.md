@@ -1,13 +1,10 @@
 # Releasing BB Official plugins
 
 Official plugins ship **bundled inside the BB app**. There is no separate
-publish pipeline. Each plugin runs the internal `bb-plugin-build prepare-bundled`
-command through its Turbo-cached `prepare:bundled` task. The shared tool compiles
-one plugin into its `.bundled-runtime` directory. `@bb/bundled-plugins` assembles
-the registered plugins, and app packaging copies the collection into
-`<server dist>/builtin-plugins/<name>`. The app in
-Plugins → Browse plugins installs official plugins from that local bundled copy;
-no network is involved.
+publish pipeline: app packaging builds each plugin through its Turbo-cached
+`prepare:bundled` task and copies the collection into
+`<server dist>/builtin-plugins/<name>`. Plugins → Browse plugins installs
+official plugins from that local bundled copy; no network is involved.
 
 Every bundled plugin lives in `plugins/<name>`. The directory does not record
 the install policy. `autoInstall` in the registry does: `BUILTIN_PLUGINS`
@@ -40,7 +37,12 @@ Never check in `plugins/*/dist` or `plugins/*/.bundled-runtime`; they are genera
 ## Adding a new official plugin
 
 1. Create the plugin under `plugins/<name>` with a `bb` manifest
-   block (`server`, optional `app`, `branding`, optional `skills`).
+   block (`server`, optional `app`, `branding`, optional `skills`). Name the
+   package `bb-plugin-bb--<name>` so its plugin id is `bb--<name>`. BB refuses
+   non-bundled installs of `bb--` ids and the marketplace rejects them, so a
+   new bundled plugin cannot collide with a community plugin. The ids bundled
+   before this rule are frozen in
+   `apps/server/test/services/plugins/builtin-registry.test.ts`.
 2. Add an entry to `OFFICIAL_PLUGINS` in
    `apps/server/src/services/plugins/builtin-registry.ts` with the store
    `name`, the derived `pluginId`, `defaultEnabled`, and a `category` for the

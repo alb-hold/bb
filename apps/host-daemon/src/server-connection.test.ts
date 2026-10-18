@@ -8,6 +8,7 @@ import { ServerConnection } from "./server-connection.js";
 import type {
   CreateReconnectingWebSocket,
   ReconnectingWebSocketLike,
+  ServerConnectionOptions,
   ServerMovedNotice,
 } from "./server-connection-support.js";
 
@@ -32,6 +33,7 @@ interface ConnectionFixtureArgs extends CreateServerClientFixtureArgs {
   onMachineEnvironment?: (
     environment: HostDaemonSessionOpenResponse["machineEnvironment"],
   ) => void;
+  onHostRpcCancel?: ServerConnectionOptions["onHostRpcCancel"];
   startupTimeoutMs?: number;
 }
 
@@ -191,6 +193,7 @@ function createConnectionFixture(args: ConnectionFixtureArgs = {}) {
     onMachineShutdown: args.onMachineShutdown,
     onServerMoved: args.onServerMoved,
     onMachineEnvironment: args.onMachineEnvironment,
+    onHostRpcCancel: args.onHostRpcCancel,
     startupTimeoutMs: args.startupTimeoutMs,
     setSession,
     createWebSocket: webSocket.createWebSocket,
@@ -529,6 +532,42 @@ describe("ServerConnection", () => {
     }
   });
 
+  it("never logs a native tool credential from an invalid terminal.open frame", async () => {
+    const secret = "native-credential-value-1234567890";
+    const { connection, logger, webSocket } = createConnectionFixture({});
+    try {
+      await connection.start();
+      const socket = webSocket.sockets[0];
+      if (!socket) {
+        throw new Error("Expected test socket");
+      }
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: "terminal.open",
+          contributedEnv: [
+            {
+              name: "BB_NATIVE_TOOL_CREDENTIAL",
+              value: secret,
+              source: { plugin: "claude-code" },
+              reason: "r",
+            },
+          ],
+          terminalId: 7,
+        }),
+      });
+      const logged = JSON.stringify([
+        ...logger.error.mock.calls,
+        ...logger.warn.mock.calls,
+        ...logger.info.mock.calls,
+        ...logger.debug.mock.calls,
+      ]);
+      expect(logged).toContain("Invalid server websocket message");
+      expect(logged).not.toContain(secret);
+    } finally {
+      await connection.shutdown();
+    }
+  });
+
   it("grants a fresh acknowledgement lease after a shorter heartbeat delay", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
@@ -638,6 +677,36 @@ describe("ServerConnection", () => {
     }
   });
 
+  it("delivers a terminal exit that happened while disconnected once the socket reopens", async () => {
+    const { connection, webSocket } = createConnectionFixture({
+      sessionIds: ["first", "second"],
+    });
+    try {
+      await connection.start();
+      const socket = webSocket.sockets[0];
+      if (!socket) {
+        throw new Error("Expected test socket");
+      }
+      const exited = {
+        type: "terminal.exited" as const,
+        terminalId: "term-1",
+        exitCode: 0,
+        closeReason: "process-exit" as const,
+      };
+
+      socket.reconnect();
+      expect(connection.sendMessage(exited)).toBe(false);
+      expect(socket.send).not.toHaveBeenCalled();
+
+      await vi.waitFor(() => expect(connection.sessionId).toBe("second"));
+      await vi.waitFor(() =>
+        expect(socket.send).toHaveBeenCalledWith(JSON.stringify(exited)),
+      );
+    } finally {
+      await connection.shutdown();
+    }
+  });
+
   it("closes the connection when a terminal websocket send throws", async () => {
     const { connection, webSocket } = createConnectionFixture();
     try {
@@ -661,6 +730,34 @@ describe("ServerConnection", () => {
         }),
       ).toBe(false);
       expect(socket.close).toHaveBeenCalledWith(1013, "send-failed");
+    } finally {
+      await connection.shutdown();
+    }
+  });
+
+  it("forwards host RPC cancellations to the cancel handler", async () => {
+    const onHostRpcCancel = vi.fn();
+    const { connection, webSocket } = createConnectionFixture({
+      onHostRpcCancel,
+    });
+    try {
+      await connection.start();
+      const socket = webSocket.sockets[0];
+      if (!socket) {
+        throw new Error("Expected test socket");
+      }
+
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: "host-rpc.cancel",
+          requestId: "rpc-cancelled",
+        }),
+      });
+
+      expect(onHostRpcCancel).toHaveBeenCalledWith({
+        type: "host-rpc.cancel",
+        requestId: "rpc-cancelled",
+      });
     } finally {
       await connection.shutdown();
     }

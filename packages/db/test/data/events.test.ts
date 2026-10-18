@@ -10,6 +10,7 @@ import {
   threadScope,
   turnScope,
   type PromptInput,
+  type ThreadEventType,
 } from "@bb/domain";
 import { noopNotifier } from "../../src/notifier.js";
 import type { DbNotifier } from "../../src/notifier.js";
@@ -50,21 +51,30 @@ import {
   listStoredTurnRejectedRowsByClientRequestIds,
   listStoredTurnCompletedKeys,
   MissingStoredTurnStartedError,
+  ACTIVE_BACKGROUND_TASK_COUNT_CACHE_LIMIT,
+  deleteThreadEventSuffixInTransaction,
+  getActiveBackgroundTaskCountCacheSize,
   listActiveBackgroundTaskCountsByThreadIds,
   listLatestBackgroundTaskStateRowsByItemIds,
   listOpenBackgroundTaskItemRowsForHost,
   listThreadTurnInterruptionEventStates,
-  pruneBackgroundTaskProgressEvents,
-  pruneContextWindowUsageEvents,
-  pruneTokenUsageEvents,
-  pruneResolvedItemDeltas,
-  pruneThreadEventsBeforeSequence,
   listLatestOpenBackgroundTaskStateRowsForThread,
 } from "../../src/data/events.js";
-import { createEnvironment } from "../../src/data/environments.js";
-import { createProject } from "../../src/data/projects.js";
+import type { ListStoredEventRowsArgs } from "../../src/data/events.js";
 import {
+  advanceThreadPruning,
+  type ThreadPruningPolicy,
+} from "../../src/data/thread-pruning.js";
+import { createEnvironment } from "../../src/data/environments.js";
+import { createProject, deleteProject } from "../../src/data/projects.js";
+import {
+  bumpBackgroundTaskAppendGeneration,
+  getBackgroundTaskAppendGenerationCount,
+} from "../../src/data/event-rewrite-generation.js";
+import {
+  archiveThread,
   createThread,
+  deleteThread,
   searchThreadsWithPendingInteractionState,
 } from "../../src/data/threads.js";
 import type {
@@ -72,8 +82,12 @@ import type {
   InsertEventInput,
 } from "../../src/data/events.js";
 import { upsertHost } from "../../src/data/hosts.js";
-import type { DbConnection } from "../../src/connection.js";
-import { createMigratedConnection } from "../helpers/migrated-connection.js";
+import type {
+  DbConnection,
+  DbQueryConnection,
+} from "../../src/connection.js";
+import { createMigratedConnection } from "../../src/testing.js";
+import { migrate } from "../../src/migrate.js";
 
 function setup() {
   const db = createMigratedConnection();
@@ -89,6 +103,19 @@ function setup() {
     providerId: "codex",
   });
   return { db, project, thread };
+}
+
+function pruneThreadEvents(
+  db: DbConnection,
+  policy: ThreadPruningPolicy,
+): number {
+  let removed = 0;
+  for (let pass = 0; pass < 100; pass += 1) {
+    const result = advanceThreadPruning(db, policy);
+    removed += result.removed;
+    if (result.action === "cycle-complete") return removed;
+  }
+  throw new Error("Pruning did not finish a cycle");
 }
 
 const emptyItemFields = {
@@ -360,34 +387,6 @@ describe("events", () => {
       });
     });
     db.$client.close();
-  });
-
-  it("inserts events and returns count", () => {
-    const { db, thread } = setup();
-
-    const result = insertEvents(db, noopNotifier, [
-      {
-        threadId: thread.id,
-        sequence: 1,
-        type: "system/error",
-        ...threadEventFields,
-        data: JSON.stringify({ message: "test" }),
-      },
-      {
-        threadId: thread.id,
-        sequence: 2,
-        type: "system/error",
-        ...threadEventFields,
-        data: JSON.stringify({ message: "test2" }),
-      },
-    ]);
-
-    expect(result).toEqual({
-      insertedCount: 2,
-      insertedInputIndexes: [0, 1],
-    });
-    const all = listEvents(db, { threadId: thread.id });
-    expect(all).toHaveLength(2);
   });
 
   it("stores derived item columns when provided", () => {
@@ -732,6 +731,7 @@ describe("events", () => {
       taskStatus: "running" as const,
       description: "Background command",
       skipTranscript: false,
+      foreground: false,
     };
     const completedBackgroundItem = {
       ...backgroundItem,
@@ -1323,6 +1323,53 @@ describe("events", () => {
     });
   });
 
+  it("returns the same type-filtered rows with and without a limit", () => {
+    const { db, thread } = setup();
+    const types = [
+      "turn/started",
+      "turn/completed",
+      "system/error",
+    ] as const satisfies readonly ThreadEventType[];
+    const rotation = [...types, "thread/compacted"] as const;
+    insertEvents(
+      db,
+      noopNotifier,
+      Array.from({ length: 24 }, (_, index) => ({
+        threadId: thread.id,
+        sequence: index + 1,
+        type: rotation[index % rotation.length],
+        ...threadEventFields,
+        data: "{}",
+      })),
+    );
+
+    expect(
+      listStoredEventRows(db, {
+        threadId: thread.id,
+        types: [...types],
+      }).map((row) => row.sequence),
+    ).toEqual(
+      Array.from({ length: 24 }, (_, index) => index + 1).filter(
+        (sequence) => sequence % rotation.length !== 0,
+      ),
+    );
+    for (const args of [
+      { threadId: thread.id, types: [...types, ...types], order: "desc" },
+      {
+        threadId: thread.id,
+        types: [...types],
+        afterSequence: 3,
+        beforeSequence: 20,
+      },
+    ] satisfies ListStoredEventRowsArgs[]) {
+      const unlimited = listStoredEventRows(db, args);
+      expect(unlimited.length).toBeGreaterThan(0);
+      expect(listStoredEventRows(db, { ...args, limit: 100 })).toEqual(
+        unlimited,
+      );
+    }
+  });
+
   it("finds the latest output event row without scanning unrelated event types", () => {
     const { db, thread } = setup();
 
@@ -1408,47 +1455,6 @@ describe("events", () => {
     });
   });
 
-  it("lists stored event rows by range and exclusion filters", () => {
-    const { db, thread } = setup();
-
-    insertEvents(db, noopNotifier, [
-      {
-        threadId: thread.id,
-        sequence: 1,
-        type: "system/error",
-        ...threadEventFields,
-        data: JSON.stringify({ message: "first" }),
-      },
-      {
-        threadId: thread.id,
-        sequence: 2,
-        type: "thread/contextWindowUsage/updated",
-        ...createTurnEventFields({ turnId: "turn-1" }),
-        data: createContextWindowUsageData({
-          modelContextWindow: 16_000,
-          usedTokens: 100,
-        }),
-      },
-      {
-        threadId: thread.id,
-        sequence: 3,
-        type: "thread/contextWindowUsage/updated",
-        ...createTurnEventFields({ turnId: "turn-1" }),
-        data: createContextWindowUsageData({
-          modelContextWindow: null,
-          usedTokens: 200,
-        }),
-      },
-    ]);
-
-    expect(
-      listContextWindowUsageRows(db, {
-        sequenceStart: 0,
-        threadId: thread.id,
-      }).map((row) => row.sequence),
-    ).toEqual([2, 3]);
-  });
-
   it("keeps nested-turn context usage from replacing the root turn report", () => {
     const { db, thread } = setup();
 
@@ -1506,6 +1512,65 @@ describe("events", () => {
         threadId: thread.id,
       }).map((row) => row.sequence),
     ).toEqual([2, 5]);
+  });
+
+  it("includes the latest snapshot or invalidation in bounded context reads", () => {
+    const { db, thread } = setup();
+    const appendUsage = (sequence: number, contextWindowUsage: object) => {
+      insertEvents(db, noopNotifier, [
+        {
+          threadId: thread.id,
+          sequence,
+          type: "thread/contextWindowUsage/updated",
+          ...threadEventFields,
+          data: JSON.stringify({ contextWindowUsage }),
+        },
+      ]);
+    };
+    const readSequences = (sequenceStart = 0) =>
+      listContextWindowUsageRows(db, {
+        threadId: thread.id,
+        sequenceStart,
+      }).map((row) => row.sequence);
+    appendUsage(1, {
+      usedTokens: 128_000,
+      modelContextWindow: 256_000,
+      estimated: true,
+      snapshot: {
+        capturedAt: "2026-09-11T12:00:00.000Z",
+        providerSessionId: "session-1",
+        providerTurnId: null,
+        model: "claude-test",
+        usedTokens: 128_000,
+        contextWindowTokens: 256_000,
+        autoCompactAtTokens: 230_000,
+        estimated: true,
+        categories: [],
+      },
+    });
+    appendUsage(2, {
+      usedTokens: 140_000,
+      modelContextWindow: 1_000_000,
+      estimated: true,
+    });
+    appendUsage(3, {
+      usedTokens: 150_000,
+      modelContextWindow: 1_000_000,
+      estimated: true,
+    });
+    expect(readSequences()).toEqual([1, 3]);
+    expect(readSequences(2)).toEqual([3]);
+    appendUsage(4, {
+      usedTokens: null,
+      modelContextWindow: null,
+      estimated: true,
+    });
+    appendUsage(5, {
+      usedTokens: 160_000,
+      modelContextWindow: 1_000_000,
+      estimated: true,
+    });
+    expect(readSequences()).toEqual([4, 5]);
   });
 
   it("lists bounded request-position hints without interpreting input", () => {
@@ -1926,6 +1991,63 @@ describe("events", () => {
     },
   );
 
+  it("updates the parented boundary when nested history appears or is removed", () => {
+    const { db, thread } = setup();
+    insertEvents(db, noopNotifier, [
+      {
+        threadId: thread.id,
+        sequence: 1,
+        type: "turn/started",
+        ...createTurnEventFields({ turnId: "root" }),
+        data: "{}",
+      },
+      {
+        threadId: thread.id,
+        sequence: 2,
+        type: "item/started",
+        ...createTurnEventFields({ turnId: "root" }),
+        itemId: "parent",
+        itemKind: "toolCall",
+        data: "{}",
+      },
+      {
+        threadId: thread.id,
+        sequence: 3,
+        type: "client/turn/requested",
+        ...threadEventFields,
+        data: JSON.stringify({
+          initiator: "user",
+          input: textInput("next request"),
+          target: { kind: "new-turn" },
+        }),
+      },
+    ]);
+    const read = (maxSeq: number) =>
+      getFirstParentedTimelineBoundarySequence(db, {
+        threadId: thread.id,
+        sequenceStart: 0,
+        maxSeq,
+      });
+    expect(read(3)).toBeNull();
+    insertEvents(db, noopNotifier, [
+      {
+        threadId: thread.id,
+        sequence: 4,
+        type: "turn/started",
+        ...createTurnEventFields({ turnId: "child" }),
+        parentToolCallId: "parent",
+        data: JSON.stringify({ parentToolCallId: "parent" }),
+      },
+    ]);
+    expect(read(3)).toBeNull();
+    expect(read(4)).toBe(3);
+    db.$client
+      .prepare("DELETE FROM events WHERE thread_id = ? AND sequence = 4")
+      .run(thread.id);
+    expect(read(4)).toBeNull();
+    db.$client.close();
+  });
+
   it("loads timeline event windows with sequence bounds and exclusions", () => {
     const { db, thread } = setup();
 
@@ -2005,6 +2127,7 @@ describe("events", () => {
           status,
           taskStatus: status === "pending" ? "running" : "completed",
           skipTranscript: false,
+          foreground: false,
         },
       });
     const progress = (sequence: number, itemId: string) => ({
@@ -2378,6 +2501,14 @@ describe("events", () => {
       projectId: project.id,
       providerId: "codex",
     });
+    const unrelatedStateThread = createThread(db, noopNotifier, {
+      projectId: project.id,
+      providerId: "codex",
+    });
+    const noStateThread = createThread(db, noopNotifier, {
+      projectId: project.id,
+      providerId: "codex",
+    });
 
     insertEvents(db, noopNotifier, [
       {
@@ -2441,11 +2572,25 @@ describe("events", () => {
         providerThreadId: "provider-thread-2",
         data: JSON.stringify({ kind: "other-plugin/widget", payload: {} }),
       },
+      {
+        threadId: unrelatedStateThread.id,
+        sequence: 1,
+        type: "thread/extensionState/updated",
+        ...threadEventFields,
+        providerThreadId: "provider-thread-3",
+        data: JSON.stringify({ kind: "other-plugin/widget", payload: {} }),
+      },
     ]);
 
     const rowsByThreadId = new Map(
       listLatestThreadStateEventRowsByThreadIds(db, {
-        threadIds: [thread.id, otherThread.id, thread.id],
+        threadIds: [
+          thread.id,
+          otherThread.id,
+          unrelatedStateThread.id,
+          noStateThread.id,
+          thread.id,
+        ],
         kind: "provider-codex/goal",
       }).map((row) => [row.threadId, row]),
     );
@@ -2456,21 +2601,52 @@ describe("events", () => {
       "thread/extensionState/updated",
     );
     expect(rowsByThreadId.get(otherThread.id)?.sequence).toBe(2);
-  });
-
-  it("batches latest goal lookups above the SQLite variable limit", () => {
-    const { db } = setup();
-    const threadIds = Array.from(
-      { length: 32_767 },
-      (_, index) => `thr_missing_goal_${index}`,
-    );
-
+    expect(rowsByThreadId.has(unrelatedStateThread.id)).toBe(false);
+    expect(rowsByThreadId.has(noStateThread.id)).toBe(false);
     expect(
       listLatestThreadStateEventRowsByThreadIds(db, {
-        threadIds,
+        threadIds: [],
         kind: "provider-codex/goal",
       }),
     ).toEqual([]);
+  });
+
+  it("batches latest goal lookups above the SQLite variable limit", () => {
+    const { db, project, thread } = setup();
+    const finalBatchThread = createThread(db, noopNotifier, {
+      projectId: project.id,
+      providerId: "codex",
+    });
+    insertEvents(db, noopNotifier, [
+      {
+        threadId: thread.id,
+        sequence: 1,
+        type: "thread/goal/updated",
+        ...threadEventFields,
+        data: JSON.stringify({ objective: "First batch goal" }),
+      },
+      {
+        threadId: finalBatchThread.id,
+        sequence: 1,
+        type: "thread/goal/updated",
+        ...threadEventFields,
+        data: JSON.stringify({ objective: "Final batch goal" }),
+      },
+    ]);
+    const threadIds = Array.from({ length: 32_767 }, (_, index) => {
+      if (index === 0) return thread.id;
+      if (index === 32_766) return finalBatchThread.id;
+      return `thr_missing_goal_${index}`;
+    });
+
+    const rows = listLatestThreadStateEventRowsByThreadIds(db, {
+      threadIds,
+      kind: "provider-codex/goal",
+    });
+
+    expect(rows.map((row) => row.threadId).sort()).toEqual(
+      [thread.id, finalBatchThread.id].sort(),
+    );
   });
 
   it("lists only open accepted turn inputs after the latest interruption", () => {
@@ -3364,42 +3540,6 @@ describe("events", () => {
     ]);
   });
 
-  it("returns high-water marks per thread", () => {
-    const { db, project, thread } = setup();
-    const thread2 = createThread(db, noopNotifier, {
-      projectId: project.id,
-      providerId: "codex",
-    });
-
-    insertEvents(db, noopNotifier, [
-      {
-        threadId: thread.id,
-        sequence: 1,
-        type: "system/error",
-        ...threadEventFields,
-        data: "{}",
-      },
-      {
-        threadId: thread.id,
-        sequence: 5,
-        type: "system/error",
-        ...threadEventFields,
-        data: "{}",
-      },
-      {
-        threadId: thread2.id,
-        sequence: 3,
-        type: "system/error",
-        ...threadEventFields,
-        data: "{}",
-      },
-    ]);
-
-    const hwm = getHighWaterMarks(db);
-    expect(hwm[thread.id]).toBe(5);
-    expect(hwm[thread2.id]).toBe(3);
-  });
-
   it("returns high-water marks for specific threads", () => {
     const { db, project, thread } = setup();
     const thread2 = createThread(db, noopNotifier, {
@@ -3444,39 +3584,7 @@ describe("events", () => {
     expect(getHighWaterMarks(db, [thread.id, ...missing, thread.id])).toEqual({
       [thread.id]: 10,
     });
-    expect(getHighWaterMarks(db, [])).toEqual(getHighWaterMarks(db));
-  });
-
-  it("lists events after a given sequence", () => {
-    const { db, thread } = setup();
-
-    insertEvents(db, noopNotifier, [
-      {
-        threadId: thread.id,
-        sequence: 1,
-        type: "system/error",
-        ...threadEventFields,
-        data: "{}",
-      },
-      {
-        threadId: thread.id,
-        sequence: 2,
-        type: "system/error",
-        ...threadEventFields,
-        data: "{}",
-      },
-      {
-        threadId: thread.id,
-        sequence: 3,
-        type: "system/error",
-        ...threadEventFields,
-        data: "{}",
-      },
-    ]);
-
-    const after1 = listEvents(db, { threadId: thread.id, afterSequence: 1 });
-    expect(after1).toHaveLength(2);
-    expect(after1[0]!.sequence).toBe(2);
+    expect(getHighWaterMarks(db, [])).toEqual({});
   });
 
   it("returns the latest sequence for a thread", () => {
@@ -3500,822 +3608,6 @@ describe("events", () => {
     ]);
 
     expect(getLatestThreadSequence(db, { threadId: thread.id })).toBe(5);
-  });
-
-  it("prunes event types before a sequence cutoff and keeps recent rows", () => {
-    const { db, thread } = setup();
-
-    insertEvents(db, noopNotifier, [
-      {
-        threadId: thread.id,
-        sequence: 1,
-        type: "thread/tokenUsage/updated",
-        ...createTurnEventFields({ turnId: "turn-1" }),
-        data: "{}",
-      },
-      {
-        threadId: thread.id,
-        sequence: 2,
-        type: "thread/tokenUsage/updated",
-        ...createTurnEventFields({ turnId: "turn-1" }),
-        data: "{}",
-      },
-      {
-        threadId: thread.id,
-        sequence: 3,
-        type: "thread/tokenUsage/updated",
-        ...createTurnEventFields({ turnId: "turn-1" }),
-        data: "{}",
-      },
-      {
-        threadId: thread.id,
-        sequence: 4,
-        type: "thread/tokenUsage/updated",
-        ...createTurnEventFields({ turnId: "turn-1" }),
-        data: "{}",
-      },
-      {
-        threadId: thread.id,
-        sequence: 5,
-        type: "thread/tokenUsage/updated",
-        ...createTurnEventFields({ turnId: "turn-1" }),
-        data: "{}",
-      },
-    ]);
-
-    const latestSequence = getLatestThreadSequence(db, { threadId: thread.id });
-    const removed = pruneThreadEventsBeforeSequence(db, {
-      threadId: thread.id,
-      sequenceCutoff: latestSequence - 2,
-      types: ["thread/tokenUsage/updated"],
-    });
-
-    expect(removed).toBe(3);
-    expect(
-      listEvents(db, { threadId: thread.id }).map((event) => event.sequence),
-    ).toEqual([4, 5]);
-  });
-
-  it("keeps only the latest root token-usage snapshot", () => {
-    const { db, thread } = setup();
-
-    insertEvents(db, noopNotifier, [
-      {
-        threadId: thread.id,
-        sequence: 1,
-        type: "thread/tokenUsage/updated",
-        ...createTurnEventFields({ turnId: "turn-1" }),
-        data: createTokenUsageData({
-          totalTokens: 10,
-          modelContextWindow: 200_000,
-        }),
-      },
-      {
-        threadId: thread.id,
-        sequence: 2,
-        type: "thread/tokenUsage/updated",
-        ...createTurnEventFields({ turnId: "turn-1" }),
-        data: createTokenUsageData({
-          totalTokens: 20,
-          modelContextWindow: null,
-        }),
-      },
-      {
-        threadId: thread.id,
-        sequence: 3,
-        type: "thread/tokenUsage/updated",
-        ...createTurnEventFields({ turnId: "turn-1" }),
-        data: createTokenUsageData({
-          totalTokens: 30,
-          modelContextWindow: null,
-        }),
-      },
-      {
-        threadId: thread.id,
-        sequence: 4,
-        type: "thread/tokenUsage/updated",
-        ...createTurnEventFields({ turnId: "turn-1" }),
-        data: createTokenUsageData({
-          totalTokens: 40,
-          modelContextWindow: null,
-        }),
-      },
-    ]);
-
-    const removed = pruneTokenUsageEvents(db, {
-      threadId: thread.id,
-    });
-
-    expect(removed).toBe(3);
-    expect(
-      listEvents(db, { threadId: thread.id }).map((event) => event.sequence),
-    ).toEqual([4]);
-  });
-
-  it("preserves root token usage instead of a newer nested-turn report while pruning", () => {
-    const { db, thread } = setup();
-
-    insertEvents(db, noopNotifier, [
-      {
-        threadId: thread.id,
-        sequence: 1,
-        type: "thread/tokenUsage/updated",
-        ...createTurnEventFields({ turnId: "turn-root" }),
-        data: createTokenUsageData({
-          totalTokens: 80_000,
-          modelContextWindow: 200_000,
-        }),
-      },
-      {
-        threadId: thread.id,
-        sequence: 2,
-        type: "thread/tokenUsage/updated",
-        ...createTurnEventFields({ turnId: "turn-root" }),
-        data: createTokenUsageData({
-          totalTokens: 90_000,
-          modelContextWindow: null,
-        }),
-      },
-      {
-        threadId: thread.id,
-        sequence: 3,
-        type: "turn/started",
-        ...createTurnEventFields({ turnId: "turn-subagent" }),
-        parentToolCallId: "call-subagent",
-        data: JSON.stringify({ parentToolCallId: "call-subagent" }),
-      },
-      {
-        threadId: thread.id,
-        sequence: 4,
-        type: "thread/tokenUsage/updated",
-        ...createTurnEventFields({ turnId: "turn-subagent" }),
-        data: createTokenUsageData({
-          totalTokens: 15_000,
-          modelContextWindow: 200_000,
-        }),
-      },
-      {
-        threadId: thread.id,
-        sequence: 5,
-        type: "turn/completed",
-        ...createTurnEventFields({ turnId: "turn-subagent" }),
-        data: "{}",
-      },
-    ]);
-
-    const removed = pruneTokenUsageEvents(db, {
-      threadId: thread.id,
-    });
-
-    expect(removed).toBe(2);
-    expect(
-      listEvents(db, { threadId: thread.id }).map((event) => event.sequence),
-    ).toEqual([2, 3, 5]);
-  });
-
-  it("prunes context-window rows but keeps the latest usage row and latest context row", () => {
-    const { db, thread } = setup();
-
-    insertEvents(db, noopNotifier, [
-      {
-        threadId: thread.id,
-        sequence: 1,
-        type: "thread/contextWindowUsage/updated",
-        ...createTurnEventFields({ turnId: "turn-1" }),
-        data: createContextWindowUsageData({
-          usedTokens: 10,
-          modelContextWindow: 200_000,
-        }),
-      },
-      {
-        threadId: thread.id,
-        sequence: 2,
-        type: "thread/contextWindowUsage/updated",
-        ...createTurnEventFields({ turnId: "turn-1" }),
-        data: createContextWindowUsageData({
-          usedTokens: 20,
-          modelContextWindow: null,
-        }),
-      },
-      {
-        threadId: thread.id,
-        sequence: 3,
-        type: "thread/contextWindowUsage/updated",
-        ...createTurnEventFields({ turnId: "turn-1" }),
-        data: createContextWindowUsageData({
-          usedTokens: 30,
-          modelContextWindow: null,
-        }),
-      },
-      {
-        threadId: thread.id,
-        sequence: 4,
-        type: "thread/contextWindowUsage/updated",
-        ...createTurnEventFields({ turnId: "turn-1" }),
-        data: createContextWindowUsageData({
-          usedTokens: 40,
-          modelContextWindow: null,
-        }),
-      },
-    ]);
-
-    const removed = pruneContextWindowUsageEvents(db, {
-      threadId: thread.id,
-    });
-
-    expect(removed).toBe(2);
-    expect(
-      listEvents(db, { threadId: thread.id }).map((event) => event.sequence),
-    ).toEqual([1, 4]);
-  });
-
-  it("prunes resolved assistant deltas but preserves the first delta row", () => {
-    const { db, thread } = setup();
-
-    insertEvents(db, noopNotifier, [
-      {
-        threadId: thread.id,
-        sequence: 1,
-        scope: turnScope("turn-1"),
-        type: "item/agentMessage/delta",
-        itemId: "msg-1",
-        itemKind: null,
-        parentToolCallId: null,
-        data: JSON.stringify({ itemId: "msg-1", delta: "Hel" }),
-      },
-      {
-        threadId: thread.id,
-        sequence: 2,
-        scope: turnScope("turn-1"),
-        type: "item/agentMessage/delta",
-        itemId: "msg-1",
-        itemKind: null,
-        parentToolCallId: null,
-        data: JSON.stringify({ itemId: "msg-1", delta: "lo" }),
-      },
-      {
-        threadId: thread.id,
-        sequence: 3,
-        scope: turnScope("turn-1"),
-        type: "item/agentMessage/delta",
-        itemId: "msg-1",
-        itemKind: null,
-        parentToolCallId: null,
-        data: JSON.stringify({ itemId: "msg-1", delta: "!" }),
-      },
-      {
-        threadId: thread.id,
-        sequence: 4,
-        scope: turnScope("turn-1"),
-        type: "item/completed",
-        itemId: "msg-1",
-        itemKind: "agentMessage",
-        parentToolCallId: null,
-        data: JSON.stringify({
-          item: {
-            id: "msg-1",
-            type: "agentMessage",
-            text: "Hello!",
-          },
-        }),
-      },
-    ]);
-
-    const removed = pruneResolvedItemDeltas(db, {
-      threadId: thread.id,
-    });
-
-    expect(removed).toBe(2);
-    expect(
-      listEvents(db, { threadId: thread.id }).map((event) => event.sequence),
-    ).toEqual([1, 4]);
-  });
-
-  it("bounds each resolved delta prune pass", () => {
-    const { db, thread } = setup();
-    const deltas = Array.from({ length: 502 }, (_, index) => ({
-      threadId: thread.id,
-      sequence: index + 1,
-      scope: turnScope("turn-bounded-prune"),
-      type: "item/agentMessage/delta" as const,
-      itemId: "msg-bounded-prune",
-      itemKind: null,
-      parentToolCallId: null,
-      data: JSON.stringify({
-        itemId: "msg-bounded-prune",
-        delta: `chunk-${index}`,
-      }),
-    }));
-    insertEvents(db, noopNotifier, [
-      ...deltas,
-      {
-        threadId: thread.id,
-        sequence: 503,
-        scope: turnScope("turn-bounded-prune"),
-        type: "item/completed",
-        itemId: "msg-bounded-prune",
-        itemKind: "agentMessage",
-        parentToolCallId: null,
-        data: JSON.stringify({
-          item: {
-            id: "msg-bounded-prune",
-            type: "agentMessage",
-            text: "Complete response",
-          },
-        }),
-      },
-    ]);
-
-    let removed = pruneResolvedItemDeltas(db, { threadId: thread.id });
-    expect(removed).toBeGreaterThan(0);
-    expect(removed).toBeLessThanOrEqual(500);
-    for (let i = 0; i < 4; i++)
-      removed += pruneResolvedItemDeltas(db, { threadId: thread.id });
-    expect(removed).toBe(501);
-    expect(
-      listEvents(db, { threadId: thread.id }).map((event) => event.sequence),
-    ).toEqual([1, 503]);
-  });
-
-  it("keeps unresolved assistant deltas", () => {
-    const { db, thread } = setup();
-
-    insertEvents(db, noopNotifier, [
-      {
-        threadId: thread.id,
-        sequence: 1,
-        scope: turnScope("turn-1"),
-        type: "item/agentMessage/delta",
-        itemId: "msg-1",
-        itemKind: null,
-        parentToolCallId: null,
-        data: JSON.stringify({ itemId: "msg-1", delta: "Hel" }),
-      },
-      {
-        threadId: thread.id,
-        sequence: 2,
-        scope: turnScope("turn-1"),
-        type: "item/agentMessage/delta",
-        itemId: "msg-1",
-        itemKind: null,
-        parentToolCallId: null,
-        data: JSON.stringify({ itemId: "msg-1", delta: "lo" }),
-      },
-    ]);
-
-    const removed = pruneResolvedItemDeltas(db, {
-      threadId: thread.id,
-    });
-
-    expect(removed).toBe(0);
-    expect(
-      listEvents(db, { threadId: thread.id }).map((event) => event.sequence),
-    ).toEqual([1, 2]);
-  });
-
-  it("does not prune later-turn assistant deltas when the same item id is reused", () => {
-    const { db, thread } = setup();
-
-    insertEvents(db, noopNotifier, [
-      {
-        threadId: thread.id,
-        sequence: 1,
-        scope: turnScope("turn-1"),
-        type: "item/agentMessage/delta",
-        itemId: "msg-1",
-        itemKind: null,
-        parentToolCallId: null,
-        data: JSON.stringify({ itemId: "msg-1", delta: "Hel" }),
-      },
-      {
-        threadId: thread.id,
-        sequence: 2,
-        scope: turnScope("turn-1"),
-        type: "item/agentMessage/delta",
-        itemId: "msg-1",
-        itemKind: null,
-        parentToolCallId: null,
-        data: JSON.stringify({ itemId: "msg-1", delta: "lo" }),
-      },
-      {
-        threadId: thread.id,
-        sequence: 3,
-        scope: turnScope("turn-1"),
-        type: "item/completed",
-        itemId: "msg-1",
-        itemKind: "agentMessage",
-        parentToolCallId: null,
-        data: JSON.stringify({
-          item: {
-            id: "msg-1",
-            type: "agentMessage",
-            text: "Hello",
-          },
-        }),
-      },
-      {
-        threadId: thread.id,
-        sequence: 4,
-        scope: turnScope("turn-2"),
-        type: "item/agentMessage/delta",
-        itemId: "msg-1",
-        itemKind: null,
-        parentToolCallId: null,
-        data: JSON.stringify({ itemId: "msg-1", delta: "New " }),
-      },
-      {
-        threadId: thread.id,
-        sequence: 5,
-        scope: turnScope("turn-2"),
-        type: "item/agentMessage/delta",
-        itemId: "msg-1",
-        itemKind: null,
-        parentToolCallId: null,
-        data: JSON.stringify({ itemId: "msg-1", delta: "answer" }),
-      },
-    ]);
-
-    const removed = pruneResolvedItemDeltas(db, {
-      threadId: thread.id,
-    });
-
-    expect(removed).toBe(1);
-    expect(
-      listEvents(db, { threadId: thread.id }).map((event) => event.sequence),
-    ).toEqual([1, 3, 4, 5]);
-  });
-
-  it("does not prune same-turn assistant deltas for a different parent tool call", () => {
-    const { db, thread } = setup();
-
-    insertEvents(db, noopNotifier, [
-      {
-        threadId: thread.id,
-        sequence: 1,
-        scope: turnScope("turn-1"),
-        type: "item/agentMessage/delta",
-        itemId: "msg-1",
-        itemKind: null,
-        parentToolCallId: "tool-1",
-        data: JSON.stringify({
-          itemId: "msg-1",
-          parentToolCallId: "tool-1",
-          delta: "Hel",
-        }),
-      },
-      {
-        threadId: thread.id,
-        sequence: 2,
-        scope: turnScope("turn-1"),
-        type: "item/agentMessage/delta",
-        itemId: "msg-1",
-        itemKind: null,
-        parentToolCallId: "tool-1",
-        data: JSON.stringify({
-          itemId: "msg-1",
-          parentToolCallId: "tool-1",
-          delta: "lo",
-        }),
-      },
-      {
-        threadId: thread.id,
-        sequence: 3,
-        scope: turnScope("turn-1"),
-        type: "item/completed",
-        itemId: "msg-1",
-        itemKind: "agentMessage",
-        parentToolCallId: "tool-1",
-        data: JSON.stringify({
-          item: {
-            id: "msg-1",
-            type: "agentMessage",
-            text: "Hello",
-            parentToolCallId: "tool-1",
-          },
-        }),
-      },
-      {
-        threadId: thread.id,
-        sequence: 4,
-        scope: turnScope("turn-1"),
-        type: "item/agentMessage/delta",
-        itemId: "msg-1",
-        itemKind: null,
-        parentToolCallId: "tool-2",
-        data: JSON.stringify({
-          itemId: "msg-1",
-          parentToolCallId: "tool-2",
-          delta: "New ",
-        }),
-      },
-      {
-        threadId: thread.id,
-        sequence: 5,
-        scope: turnScope("turn-1"),
-        type: "item/agentMessage/delta",
-        itemId: "msg-1",
-        itemKind: null,
-        parentToolCallId: "tool-2",
-        data: JSON.stringify({
-          itemId: "msg-1",
-          parentToolCallId: "tool-2",
-          delta: "answer",
-        }),
-      },
-    ]);
-
-    const removed = pruneResolvedItemDeltas(db, {
-      threadId: thread.id,
-    });
-
-    expect(removed).toBe(1);
-    expect(
-      listEvents(db, { threadId: thread.id }).map((event) => event.sequence),
-    ).toEqual([1, 3, 4, 5]);
-  });
-
-  it("prunes resolved command output deltas but preserves the first delta row", () => {
-    const { db, thread } = setup();
-
-    insertEvents(db, noopNotifier, [
-      {
-        threadId: thread.id,
-        sequence: 1,
-        scope: turnScope("turn-1"),
-        type: "item/commandExecution/outputDelta",
-        itemId: "cmd-1",
-        itemKind: null,
-        parentToolCallId: null,
-        data: JSON.stringify({ itemId: "cmd-1", delta: "Hel" }),
-      },
-      {
-        threadId: thread.id,
-        sequence: 2,
-        scope: turnScope("turn-1"),
-        type: "item/commandExecution/outputDelta",
-        itemId: "cmd-1",
-        itemKind: null,
-        parentToolCallId: null,
-        data: JSON.stringify({ itemId: "cmd-1", delta: "lo" }),
-      },
-      {
-        threadId: thread.id,
-        sequence: 3,
-        scope: turnScope("turn-1"),
-        type: "item/completed",
-        itemId: "cmd-1",
-        itemKind: "commandExecution",
-        parentToolCallId: null,
-        data: JSON.stringify({
-          item: {
-            id: "cmd-1",
-            type: "commandExecution",
-            command: "printf hello",
-            cwd: "/workspace",
-            status: "completed",
-            approvalStatus: null,
-            aggregatedOutput: "Hello",
-            exitCode: 0,
-          },
-        }),
-      },
-    ]);
-
-    const removed = pruneResolvedItemDeltas(db, {
-      threadId: thread.id,
-    });
-
-    expect(removed).toBe(1);
-    expect(
-      listEvents(db, { threadId: thread.id }).map((event) => event.sequence),
-    ).toEqual([1, 3]);
-  });
-
-  it("keeps command output deltas when completion has no aggregated output", () => {
-    const { db, thread } = setup();
-
-    insertEvents(db, noopNotifier, [
-      {
-        threadId: thread.id,
-        sequence: 1,
-        scope: turnScope("turn-1"),
-        type: "item/commandExecution/outputDelta",
-        itemId: "cmd-1",
-        itemKind: null,
-        parentToolCallId: null,
-        data: JSON.stringify({ itemId: "cmd-1", delta: "Hel" }),
-      },
-      {
-        threadId: thread.id,
-        sequence: 2,
-        scope: turnScope("turn-1"),
-        type: "item/commandExecution/outputDelta",
-        itemId: "cmd-1",
-        itemKind: null,
-        parentToolCallId: null,
-        data: JSON.stringify({ itemId: "cmd-1", delta: "lo" }),
-      },
-      {
-        threadId: thread.id,
-        sequence: 3,
-        scope: turnScope("turn-1"),
-        type: "item/completed",
-        itemId: "cmd-1",
-        itemKind: "commandExecution",
-        parentToolCallId: null,
-        data: JSON.stringify({
-          item: {
-            id: "cmd-1",
-            type: "commandExecution",
-            command: "printf hello",
-            cwd: "/workspace",
-            status: "completed",
-            approvalStatus: null,
-            exitCode: 0,
-          },
-        }),
-      },
-    ]);
-
-    const removed = pruneResolvedItemDeltas(db, {
-      threadId: thread.id,
-    });
-
-    expect(removed).toBe(0);
-    expect(
-      listEvents(db, { threadId: thread.id }).map((event) => event.sequence),
-    ).toEqual([1, 2, 3]);
-  });
-
-  it("does not prune later-turn command deltas when the same item id is reused", () => {
-    const { db, thread } = setup();
-
-    insertEvents(db, noopNotifier, [
-      {
-        threadId: thread.id,
-        sequence: 1,
-        scope: turnScope("turn-1"),
-        type: "item/commandExecution/outputDelta",
-        itemId: "cmd-1",
-        itemKind: null,
-        parentToolCallId: null,
-        data: JSON.stringify({ itemId: "cmd-1", delta: "Hel" }),
-      },
-      {
-        threadId: thread.id,
-        sequence: 2,
-        scope: turnScope("turn-1"),
-        type: "item/commandExecution/outputDelta",
-        itemId: "cmd-1",
-        itemKind: null,
-        parentToolCallId: null,
-        data: JSON.stringify({ itemId: "cmd-1", delta: "lo" }),
-      },
-      {
-        threadId: thread.id,
-        sequence: 3,
-        scope: turnScope("turn-1"),
-        type: "item/completed",
-        itemId: "cmd-1",
-        itemKind: "commandExecution",
-        parentToolCallId: null,
-        data: JSON.stringify({
-          item: {
-            id: "cmd-1",
-            type: "commandExecution",
-            command: "printf hello",
-            cwd: "/workspace",
-            status: "completed",
-            approvalStatus: null,
-            aggregatedOutput: "Hello",
-            exitCode: 0,
-          },
-        }),
-      },
-      {
-        threadId: thread.id,
-        sequence: 4,
-        scope: turnScope("turn-2"),
-        type: "item/commandExecution/outputDelta",
-        itemId: "cmd-1",
-        itemKind: null,
-        parentToolCallId: null,
-        data: JSON.stringify({ itemId: "cmd-1", delta: "New " }),
-      },
-      {
-        threadId: thread.id,
-        sequence: 5,
-        scope: turnScope("turn-2"),
-        type: "item/commandExecution/outputDelta",
-        itemId: "cmd-1",
-        itemKind: null,
-        parentToolCallId: null,
-        data: JSON.stringify({ itemId: "cmd-1", delta: "output" }),
-      },
-    ]);
-
-    const removed = pruneResolvedItemDeltas(db, {
-      threadId: thread.id,
-    });
-
-    expect(removed).toBe(1);
-    expect(
-      listEvents(db, { threadId: thread.id }).map((event) => event.sequence),
-    ).toEqual([1, 3, 4, 5]);
-  });
-
-  it("does not prune same-turn command deltas for a different parent tool call", () => {
-    const { db, thread } = setup();
-
-    insertEvents(db, noopNotifier, [
-      {
-        threadId: thread.id,
-        sequence: 1,
-        scope: turnScope("turn-1"),
-        type: "item/commandExecution/outputDelta",
-        itemId: "cmd-1",
-        itemKind: null,
-        parentToolCallId: "tool-1",
-        data: JSON.stringify({
-          itemId: "cmd-1",
-          parentToolCallId: "tool-1",
-          delta: "Hel",
-        }),
-      },
-      {
-        threadId: thread.id,
-        sequence: 2,
-        scope: turnScope("turn-1"),
-        type: "item/commandExecution/outputDelta",
-        itemId: "cmd-1",
-        itemKind: null,
-        parentToolCallId: "tool-1",
-        data: JSON.stringify({
-          itemId: "cmd-1",
-          parentToolCallId: "tool-1",
-          delta: "lo",
-        }),
-      },
-      {
-        threadId: thread.id,
-        sequence: 3,
-        scope: turnScope("turn-1"),
-        type: "item/completed",
-        itemId: "cmd-1",
-        itemKind: "commandExecution",
-        parentToolCallId: "tool-1",
-        data: JSON.stringify({
-          item: {
-            id: "cmd-1",
-            type: "commandExecution",
-            command: "printf hello",
-            cwd: "/workspace",
-            status: "completed",
-            approvalStatus: null,
-            aggregatedOutput: "Hello",
-            exitCode: 0,
-            parentToolCallId: "tool-1",
-          },
-        }),
-      },
-      {
-        threadId: thread.id,
-        sequence: 4,
-        scope: turnScope("turn-1"),
-        type: "item/commandExecution/outputDelta",
-        itemId: "cmd-1",
-        itemKind: null,
-        parentToolCallId: "tool-2",
-        data: JSON.stringify({
-          itemId: "cmd-1",
-          parentToolCallId: "tool-2",
-          delta: "New ",
-        }),
-      },
-      {
-        threadId: thread.id,
-        sequence: 5,
-        scope: turnScope("turn-1"),
-        type: "item/commandExecution/outputDelta",
-        itemId: "cmd-1",
-        itemKind: null,
-        parentToolCallId: "tool-2",
-        data: JSON.stringify({
-          itemId: "cmd-1",
-          parentToolCallId: "tool-2",
-          delta: "output",
-        }),
-      },
-    ]);
-
-    const removed = pruneResolvedItemDeltas(db, {
-      threadId: thread.id,
-    });
-
-    expect(removed).toBe(1);
-    expect(
-      listEvents(db, { threadId: thread.id }).map((event) => event.sequence),
-    ).toEqual([1, 3, 4, 5]);
   });
 
   it("prunes resolved reasoning deltas but preserves the first delta row per stream type", () => {
@@ -4381,50 +3673,12 @@ describe("events", () => {
       },
     ]);
 
-    const removed = pruneResolvedItemDeltas(db, {
-      threadId: thread.id,
-    });
+    const removed = pruneThreadEvents(db, "resolved-items");
 
     expect(removed).toBe(2);
     expect(
       listEvents(db, { threadId: thread.id }).map((event) => event.sequence),
     ).toEqual([1, 3, 5]);
-  });
-
-  it("keeps unresolved reasoning deltas", () => {
-    const { db, thread } = setup();
-
-    insertEvents(db, noopNotifier, [
-      {
-        threadId: thread.id,
-        sequence: 1,
-        scope: turnScope("turn-1"),
-        type: "item/reasoning/textDelta",
-        itemId: "reasoning-1",
-        itemKind: null,
-        parentToolCallId: null,
-        data: JSON.stringify({ itemId: "reasoning-1", delta: "raw " }),
-      },
-      {
-        threadId: thread.id,
-        sequence: 2,
-        scope: turnScope("turn-1"),
-        type: "item/reasoning/textDelta",
-        itemId: "reasoning-1",
-        itemKind: null,
-        parentToolCallId: null,
-        data: JSON.stringify({ itemId: "reasoning-1", delta: "content" }),
-      },
-    ]);
-
-    const removed = pruneResolvedItemDeltas(db, {
-      threadId: thread.id,
-    });
-
-    expect(removed).toBe(0);
-    expect(
-      listEvents(db, { threadId: thread.id }).map((event) => event.sequence),
-    ).toEqual([1, 2]);
   });
 
   it("keeps only the latest backgroundTask progress row while the task runs", () => {
@@ -4440,6 +3694,7 @@ describe("events", () => {
           status: "pending",
           taskStatus,
           skipTranscript: false,
+          foreground: false,
         },
       });
 
@@ -4486,9 +3741,7 @@ describe("events", () => {
       },
     ]);
 
-    const removed = pruneBackgroundTaskProgressEvents(db, {
-      threadId: thread.id,
-    });
+    const removed = pruneThreadEvents(db, "resolved-items");
 
     expect(removed).toBe(2);
     expect(
@@ -4509,6 +3762,7 @@ describe("events", () => {
           status: taskStatus === "completed" ? "completed" : "pending",
           taskStatus,
           skipTranscript: false,
+          foreground: false,
         },
       });
 
@@ -4555,9 +3809,7 @@ describe("events", () => {
       },
     ]);
 
-    const removed = pruneBackgroundTaskProgressEvents(db, {
-      threadId: thread.id,
-    });
+    const removed = pruneThreadEvents(db, "resolved-items");
 
     expect(removed).toBe(2);
     expect(
@@ -4578,6 +3830,7 @@ describe("events", () => {
           status: "pending",
           taskStatus: "running",
           skipTranscript: false,
+          foreground: false,
         },
       });
 
@@ -4614,9 +3867,7 @@ describe("events", () => {
       },
     ]);
 
-    const removed = pruneBackgroundTaskProgressEvents(db, {
-      threadId: thread.id,
-    });
+    const removed = pruneThreadEvents(db, "resolved-items");
 
     expect(removed).toBe(1);
     expect(
@@ -4637,6 +3888,7 @@ describe("events", () => {
           status: taskStatus === "completed" ? "completed" : "pending",
           taskStatus,
           skipTranscript: false,
+          foreground: false,
         },
       });
 
@@ -4691,11 +3943,31 @@ describe("events", () => {
         parentToolCallId: null,
         data: taskData("task:wf-other", "running"),
       },
+      {
+        threadId: thread.id,
+        sequence: 6,
+        scope: threadScope(),
+        providerThreadId: "provider-thread-1",
+        type: "item/delegation/completed",
+        itemId: "delegation-1",
+        itemKind: "delegation",
+        parentToolCallId: null,
+        data: JSON.stringify({
+          item: {
+            type: "delegation",
+            id: "delegation-1",
+            childRef: "agent-1",
+            label: "Background audit",
+            status: "completed",
+            background: true,
+          },
+        }),
+      },
     ]);
 
     const rows = listLatestBackgroundTaskStateRowsByItemIds(db, {
       threadId: thread.id,
-      itemIds: ["task:wf-1", "task:wf-2"],
+      itemIds: ["task:wf-1", "task:wf-2", "delegation-1"],
     });
 
     expect(
@@ -4714,6 +3986,11 @@ describe("events", () => {
         itemId: "task:wf-1",
         sequence: 4,
         type: "item/backgroundTask/completed",
+      },
+      {
+        itemId: "delegation-1",
+        sequence: 6,
+        type: "item/delegation/completed",
       },
     ]);
 
@@ -4747,6 +4024,7 @@ describe("events", () => {
           status: args.itemStatus,
           taskStatus: args.taskStatus,
           skipTranscript: false,
+          foreground: false,
         },
       });
 
@@ -4941,6 +4219,7 @@ describe("events", () => {
       taskStatus: string;
       taskType: string;
       skipTranscript?: boolean;
+      foreground?: boolean;
     }) =>
       JSON.stringify({
         item: {
@@ -4951,6 +4230,7 @@ describe("events", () => {
           status: args.itemStatus,
           taskStatus: args.taskStatus,
           skipTranscript: args.skipTranscript ?? false,
+          foreground: args.foreground ?? false,
         },
       });
 
@@ -5106,6 +4386,42 @@ describe("events", () => {
           taskType: LOCAL_SUBAGENT_TASK_TYPE,
         }),
       },
+      {
+        threadId: thread.id,
+        sequence: 11,
+        scope: turnScope("turn-1"),
+        type: "item/started",
+        itemId: "task:agent-foreground",
+        itemKind: "backgroundTask",
+        parentToolCallId: null,
+        data: taskData({
+          itemId: "task:agent-foreground",
+          itemStatus: "pending",
+          taskStatus: "running",
+          taskType: LOCAL_AGENT_TASK_TYPE,
+          foreground: true,
+        }),
+      },
+      {
+        threadId: thread.id,
+        sequence: 12,
+        scope: turnScope("turn-1"),
+        type: "item/started",
+        itemId: "task:legacy-agent",
+        itemKind: "backgroundTask",
+        parentToolCallId: null,
+        data: JSON.stringify({
+          item: {
+            id: "task:legacy-agent",
+            type: "backgroundTask",
+            taskType: LOCAL_AGENT_TASK_TYPE,
+            description: "stored before the foreground flag",
+            status: "pending",
+            taskStatus: "running",
+            skipTranscript: false,
+          },
+        }),
+      },
     ]);
 
     const countsByThreadId = new Map(
@@ -5117,21 +4433,9 @@ describe("events", () => {
     expect(countsByThreadId.get(thread.id)).toEqual({
       threadId: thread.id,
       activeWorkflowCount: 1,
-      activeBackgroundAgentCount: 2,
+      activeBackgroundAgentCount: 3,
       activeBackgroundCommandCount: 1,
     });
-  });
-
-  it("chunks thread IDs before SQLite reaches its variable limit", () => {
-    const { db } = setup();
-    const threadIds = Array.from(
-      { length: 32_753 },
-      (_, index) => `thr_missing_${index}`,
-    );
-
-    expect(
-      listActiveBackgroundTaskCountsByThreadIds(db, { threadIds }),
-    ).toEqual([]);
   });
 
   it("returns the same counts from chunked and unchunked thread IDs", () => {
@@ -5150,6 +4454,7 @@ describe("events", () => {
           status: "pending",
           taskStatus: "running",
           skipTranscript: false,
+          foreground: false,
         },
       });
 
@@ -5183,11 +4488,321 @@ describe("events", () => {
       { length: 32_751 },
       (_, index) => `thr_missing_${index}`,
     );
-    const chunkedRows = listActiveBackgroundTaskCountsByThreadIds(db, {
-      threadIds: [thread.id, ...missingThreadIds, otherThread.id],
+    const chunkedRows = db.transaction((tx) =>
+      listActiveBackgroundTaskCountsByThreadIds(tx, {
+        threadIds: [thread.id, ...missingThreadIds, otherThread.id],
+      }),
+    );
+
+    expect(unchunkedRows.map((row) => row.threadId).sort()).toEqual(
+      [thread.id, otherThread.id].sort(),
+    );
+    expect(chunkedRows).toEqual(unchunkedRows);
+  });
+
+  describe("active background-task count reuse", () => {
+    const backgroundTaskEvent = (
+      threadId: string,
+      sequence: number,
+      type: "item/started" | "item/backgroundTask/completed",
+    ) => ({
+      threadId,
+      sequence,
+      scope: turnScope("turn-1"),
+      type,
+      itemId: "task:command",
+      itemKind: "backgroundTask" as const,
+      parentToolCallId: null,
+      data: JSON.stringify({
+        item: {
+          id: "task:command",
+          type: "backgroundTask",
+          taskType: LOCAL_BASH_TASK_TYPE,
+          description: "fixture background task",
+          status: type === "item/started" ? "pending" : "completed",
+          taskStatus: type === "item/started" ? "running" : "completed",
+          skipTranscript: false,
+        },
+      }),
+    });
+    const countQueriesDuring = (db: DbConnection, run: () => void): number => {
+      let count = 0;
+      const raw = db.$client;
+      const originalPrepare = raw.prepare.bind(raw);
+      Object.defineProperty(raw, "prepare", {
+        configurable: true,
+        writable: true,
+        value: (source: string) => {
+          if (source.includes("latest_background_task_state")) {
+            count += 1;
+          }
+          return originalPrepare(source);
+        },
+      });
+      try {
+        run();
+      } finally {
+        Object.defineProperty(raw, "prepare", {
+          configurable: true,
+          writable: true,
+          value: originalPrepare,
+        });
+      }
+      return count;
+    };
+    const commandCount = (db: DbQueryConnection, threadId: string): number =>
+      listActiveBackgroundTaskCountsByThreadIds(db, { threadIds: [threadId] })[0]
+        ?.activeBackgroundCommandCount ?? 0;
+
+    it("reads events once per thread until a background task event is appended", () => {
+      const { db, project, thread } = setup();
+      const idleThread = createThread(db, noopNotifier, {
+        projectId: project.id,
+        providerId: "codex",
+      });
+      insertEvents(db, noopNotifier, [
+        backgroundTaskEvent(thread.id, 1, "item/started"),
+      ]);
+      const threadIds = [thread.id, idleThread.id];
+
+      const first = listActiveBackgroundTaskCountsByThreadIds(db, {
+        threadIds,
+      });
+      expect(first.map((row) => row.threadId)).toEqual([thread.id]);
+      expect(first[0]?.activeBackgroundCommandCount).toBe(1);
+
+      expect(
+        countQueriesDuring(db, () => {
+          expect(
+            listActiveBackgroundTaskCountsByThreadIds(db, { threadIds }),
+          ).toEqual(first);
+        }),
+      ).toBe(0);
+
+      insertEvents(db, noopNotifier, [
+        {
+          threadId: idleThread.id,
+          sequence: 1,
+          scope: turnScope("turn-2"),
+          type: "turn/started",
+          itemId: null,
+          itemKind: null,
+          parentToolCallId: null,
+          data: JSON.stringify({}),
+        },
+      ]);
+      expect(
+        countQueriesDuring(db, () => {
+          expect(
+            listActiveBackgroundTaskCountsByThreadIds(db, { threadIds }),
+          ).toEqual(first);
+        }),
+      ).toBe(0);
+
+      insertEvents(db, noopNotifier, [
+        backgroundTaskEvent(thread.id, 2, "item/backgroundTask/completed"),
+      ]);
+      expect(
+        countQueriesDuring(db, () => {
+          expect(
+            listActiveBackgroundTaskCountsByThreadIds(db, { threadIds }),
+          ).toEqual([]);
+        }),
+      ).toBe(1);
     });
 
-    expect(chunkedRows).toEqual(unchunkedRows);
+    it("does not let a caller change the remembered counts", () => {
+      const { db, thread } = setup();
+      insertEvents(db, noopNotifier, [
+        backgroundTaskEvent(thread.id, 1, "item/started"),
+      ]);
+
+      const [row] = listActiveBackgroundTaskCountsByThreadIds(db, {
+        threadIds: [thread.id],
+      });
+      if (!row) {
+        throw new Error("Expected an active background-task count row");
+      }
+      row.activeBackgroundCommandCount = 99;
+
+      expect(commandCount(db, thread.id)).toBe(1);
+    });
+
+    it("re-reads events after a thread's events are deleted", () => {
+      const { db, thread } = setup();
+      insertEvents(db, noopNotifier, [
+        backgroundTaskEvent(thread.id, 1, "item/started"),
+      ]);
+      expect(commandCount(db, thread.id)).toBe(1);
+
+      db.transaction((tx) => {
+        deleteThreadEventSuffixInTransaction(tx, {
+          cutoffSequence: 1,
+          oldMaxSequence: 1,
+          threadId: thread.id,
+        });
+      });
+
+      expect(commandCount(db, thread.id)).toBe(0);
+    });
+
+    it("keeps counts read inside a rolled-back transaction out of later reads", () => {
+      const { db, thread } = setup();
+      expect(commandCount(db, thread.id)).toBe(0);
+
+      expect(() =>
+        db.transaction((tx) => {
+          insertEvents(db, noopNotifier, [
+            backgroundTaskEvent(thread.id, 1, "item/started"),
+          ]);
+          expect(commandCount(db, thread.id)).toBe(1);
+          expect(commandCount(tx, thread.id)).toBe(1);
+          throw new Error("roll back");
+        }),
+      ).toThrow("roll back");
+
+      expect(commandCount(db, thread.id)).toBe(0);
+    });
+
+    const freshCounts = (db: DbConnection, threadIds: string[]) =>
+      db.transaction((tx) =>
+        listActiveBackgroundTaskCountsByThreadIds(tx, { threadIds }),
+      );
+
+    it("returns no row for a thread deleted on the same connection", () => {
+      const { db, thread } = setup();
+      insertEvents(db, noopNotifier, [
+        backgroundTaskEvent(thread.id, 1, "item/started"),
+      ]);
+      expect(commandCount(db, thread.id)).toBe(1);
+
+      expect(deleteThread(db, noopNotifier, thread.id)).toBe(true);
+
+      expect(
+        listActiveBackgroundTaskCountsByThreadIds(db, {
+          threadIds: [thread.id],
+        }),
+      ).toEqual([]);
+    });
+
+    it("returns no row for a thread removed with its project", () => {
+      const { db, project, thread } = setup();
+      insertEvents(db, noopNotifier, [
+        backgroundTaskEvent(thread.id, 1, "item/started"),
+      ]);
+      expect(commandCount(db, thread.id)).toBe(1);
+
+      expect(deleteProject(db, noopNotifier, project.id)).toBe(true);
+
+      expect(
+        listActiveBackgroundTaskCountsByThreadIds(db, {
+          threadIds: [thread.id],
+        }),
+      ).toEqual([]);
+    });
+
+    it("matches a fresh read after pruning removes background-task rows", () => {
+      const { db, thread } = setup();
+      const progress = {
+        ...backgroundTaskEvent(thread.id, 2, "item/started"),
+        type: "item/backgroundTask/progress" as const,
+      };
+      insertEvents(db, noopNotifier, [
+        backgroundTaskEvent(thread.id, 1, "item/started"),
+        progress,
+        { ...progress, sequence: 3 },
+        backgroundTaskEvent(thread.id, 4, "item/backgroundTask/completed"),
+        {
+          ...backgroundTaskEvent(thread.id, 5, "item/started"),
+          itemId: "task:still-running",
+        },
+      ]);
+      expect(commandCount(db, thread.id)).toBe(1);
+
+      expect(pruneThreadEvents(db, "resolved-items")).toBeGreaterThan(0);
+
+      expect(
+        listActiveBackgroundTaskCountsByThreadIds(db, {
+          threadIds: [thread.id],
+        }),
+      ).toEqual(freshCounts(db, [thread.id]));
+      expect(commandCount(db, thread.id)).toBe(1);
+    });
+
+    it("re-reads events after migrations run on a connection that already remembered counts", () => {
+      const { db, thread } = setup();
+      insertEvents(db, noopNotifier, [
+        backgroundTaskEvent(thread.id, 1, "item/started"),
+      ]);
+      expect(commandCount(db, thread.id)).toBe(1);
+      db.$client
+        .prepare(
+          "UPDATE events SET data = json_set(data, '$.item.status', 'completed') WHERE thread_id = ?",
+        )
+        .run(thread.id);
+
+      migrate(db);
+
+      expect(
+        listActiveBackgroundTaskCountsByThreadIds(db, {
+          threadIds: [thread.id],
+        }),
+      ).toEqual(freshCounts(db, [thread.id]));
+      expect(commandCount(db, thread.id)).toBe(0);
+    });
+
+    it("matches a fresh read after a thread is archived", () => {
+      const { db, thread } = setup();
+      insertEvents(db, noopNotifier, [
+        backgroundTaskEvent(thread.id, 1, "item/started"),
+      ]);
+      expect(commandCount(db, thread.id)).toBe(1);
+
+      archiveThread(db, noopNotifier, thread.id);
+
+      expect(
+        listActiveBackgroundTaskCountsByThreadIds(db, {
+          threadIds: [thread.id],
+        }),
+      ).toEqual(freshCounts(db, [thread.id]));
+    });
+
+    it("keeps remembered counts and append generations bounded", () => {
+      const { db, thread } = setup();
+      insertEvents(db, noopNotifier, [
+        backgroundTaskEvent(thread.id, 1, "item/started"),
+      ]);
+      const batches = 3;
+      for (let batch = 0; batch < batches; batch += 1) {
+        listActiveBackgroundTaskCountsByThreadIds(db, {
+          threadIds: Array.from(
+            { length: ACTIVE_BACKGROUND_TASK_COUNT_CACHE_LIMIT / 2 + 1 },
+            (_, index) => `thr_unknown_${batch}_${index}`,
+          ),
+        });
+        expect(getActiveBackgroundTaskCountCacheSize(db)).toBeLessThanOrEqual(
+          ACTIVE_BACKGROUND_TASK_COUNT_CACHE_LIMIT,
+        );
+      }
+      listActiveBackgroundTaskCountsByThreadIds(db, {
+        threadIds: Array.from(
+          { length: ACTIVE_BACKGROUND_TASK_COUNT_CACHE_LIMIT + 1 },
+          (_, index) => `thr_oversized_${index}`,
+        ),
+      });
+      expect(getActiveBackgroundTaskCountCacheSize(db)).toBeLessThanOrEqual(
+        ACTIVE_BACKGROUND_TASK_COUNT_CACHE_LIMIT,
+      );
+      expect(commandCount(db, thread.id)).toBe(1);
+
+      for (let index = 0; index < 50_010; index += 1) {
+        bumpBackgroundTaskAppendGeneration(`thr_generation_${index}`);
+      }
+      expect(getBackgroundTaskAppendGenerationCount()).toBeLessThanOrEqual(
+        50_000,
+      );
+      expect(commandCount(db, thread.id)).toBe(1);
+    });
   });
 
   it("lists the latest lifecycle row per open backgroundTask item on a host", () => {
@@ -5220,6 +4835,7 @@ describe("events", () => {
           status: taskStatus === "completed" ? "completed" : "pending",
           taskStatus,
           skipTranscript: false,
+          foreground: false,
         },
       });
 
@@ -5302,59 +4918,6 @@ describe("events", () => {
     ).toEqual([]);
   });
 
-  it("pruning is scoped to the target thread", () => {
-    const { db, project, thread } = setup();
-    const thread2 = createThread(db, noopNotifier, {
-      projectId: project.id,
-      providerId: "codex",
-    });
-
-    insertEvents(db, noopNotifier, [
-      {
-        threadId: thread.id,
-        sequence: 1,
-        type: "thread/tokenUsage/updated",
-        ...createTurnEventFields({ turnId: "turn-1" }),
-        data: "{}",
-      },
-      {
-        threadId: thread.id,
-        sequence: 2,
-        type: "thread/tokenUsage/updated",
-        ...createTurnEventFields({ turnId: "turn-1" }),
-        data: "{}",
-      },
-      {
-        threadId: thread2.id,
-        sequence: 1,
-        type: "thread/tokenUsage/updated",
-        ...createTurnEventFields({ turnId: "turn-1" }),
-        data: "{}",
-      },
-      {
-        threadId: thread2.id,
-        sequence: 2,
-        type: "thread/tokenUsage/updated",
-        ...createTurnEventFields({ turnId: "turn-1" }),
-        data: "{}",
-      },
-    ]);
-
-    const removed = pruneThreadEventsBeforeSequence(db, {
-      threadId: thread.id,
-      sequenceCutoff: 1,
-      types: ["thread/tokenUsage/updated"],
-    });
-
-    expect(removed).toBe(1);
-    expect(
-      listEvents(db, { threadId: thread.id }).map((event) => event.sequence),
-    ).toEqual([2]);
-    expect(
-      listEvents(db, { threadId: thread2.id }).map((event) => event.sequence),
-    ).toEqual([1, 2]);
-  });
-
   it("notifies on events-appended per thread", () => {
     const { db, project, thread } = setup();
     const thread2 = createThread(db, noopNotifier, {
@@ -5399,6 +4962,7 @@ describe("events", () => {
       ["events-appended"],
       {
         eventTypes: ["system/error", "client/turn/requested"],
+        timelineSequence: 2,
       },
     );
     expect(spy.notifyThread).toHaveBeenCalledWith(
@@ -5406,6 +4970,7 @@ describe("events", () => {
       ["events-appended"],
       {
         eventTypes: ["system/error"],
+        timelineSequence: 1,
       },
     );
     expect(spy.notifyThread).toHaveBeenCalledTimes(2);

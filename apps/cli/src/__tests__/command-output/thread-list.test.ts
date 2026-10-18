@@ -9,6 +9,7 @@ import {
 import type { CommandRegistrar } from "../helpers/command-output-harness.js";
 import * as fixtures from "../helpers/command-output-fixtures.js";
 import { registerThreadCommands } from "../../commands/thread/index.js";
+import { formatThreadListIndicator } from "../../commands/thread/list.js";
 
 describe("bb thread list command output", () => {
   setupCommandOutputTestEnvironment();
@@ -38,6 +39,37 @@ describe("bb thread list command output", () => {
         parentThreadId: "thread-manager-1",
       },
     });
+  });
+
+  it("bb thread list narrows to repeated --thread IDs", async () => {
+    const list = vi.fn(async () => []);
+    stubServerApi({ "v1.threads.$get": list });
+
+    await runCommand(
+      ["thread", "list", "--thread", "thr_a", "--thread", "thr_b", "--json"],
+      register,
+    );
+
+    expect(list).toHaveBeenCalledWith({
+      query: { threadIds: "thr_a,thr_b" },
+    });
+  });
+
+  it("bb thread list accepts a removed machine ID without looking it up among active machines", async () => {
+    const list = vi.fn(async () => []);
+    const hosts = vi.fn(async () => []);
+    stubServerApi({
+      "v1.threads.$get": list,
+      "v1.hosts.$get": hosts,
+    });
+
+    await runCommand(
+      ["thread", "list", "--machine", "host_removed123", "--json"],
+      register,
+    );
+
+    expect(list).toHaveBeenCalledWith({ query: { hostId: "host_removed123" } });
+    expect(hosts).not.toHaveBeenCalled();
   });
 
   it("bb thread list opts into hidden threads explicitly", async () => {
@@ -75,58 +107,50 @@ describe("bb thread list command output", () => {
     expect(list).not.toHaveBeenCalled();
   });
 
-  it("bb thread list renders archived status in the shared borderless table", async () => {
-    const list = vi.fn(async () => [
-      fixtures.makeThread({
-        id: "thread-archived-1",
-        projectId: "proj-1",
-        providerId: "codex",
-        status: "idle",
-        archivedAt: 1,
-        createdAt: 1,
-        updatedAt: 1,
-      }),
-    ]);
-    stubServerApi({
-      "v1.threads.$get": list,
-      "v1.projects.$get": async () => [{ id: "proj-1", name: "Alpha" }],
-    });
+  it.each([
+    {
+      flag: "archived",
+      stamp: { archivedAt: 1 },
+      table:
+        "ID                 Title  Project  Status           Needs you \n-----------------  -----  -------  ---------------  ----------\nthread-archived-1  -      Alpha    idle (archived)  -         ",
+    },
+    {
+      flag: "pinned",
+      stamp: { pinnedAt: 1 },
+      table:
+        "ID               Title  Project  Status         Needs you \n---------------  -----  -------  -------------  ----------\nthread-pinned-1  -      Alpha    idle (pinned)  -         ",
+    },
+  ])(
+    "bb thread list renders $flag status in the shared borderless table",
+    async ({ flag, stamp, table }) => {
+      const list = vi.fn(async () => [
+        fixtures.makeThread({
+          id: `thread-${flag}-1`,
+          projectId: "proj-1",
+          providerId: "codex",
+          status: "idle",
+          createdAt: 1,
+          updatedAt: 1,
+          ...stamp,
+        }),
+      ]);
+      stubServerApi({
+        "v1.threads.$get": list,
+        "v1.projects.$get": async () => [{ id: "proj-1", name: "Alpha" }],
+      });
 
-    await runCommand(["thread", "list"], register);
+      await runCommand(["thread", "list"], register);
 
-    expect(list).toHaveBeenCalledWith({
-      query: {},
-    });
-    expect(collectLogPayloads(vi.mocked(console.log))).toEqual([
-      "",
-      "ID                 Title  Project  Status         \n-----------------  -----  -------  ---------------\nthread-archived-1  -      Alpha    idle (archived)",
-      "",
-    ]);
-  });
-
-  it("bb thread list renders pinned status in the shared borderless table", async () => {
-    const list = vi.fn(async () => [
-      fixtures.makeThread({
-        id: "thread-pinned-1",
-        projectId: "proj-1",
-        providerId: "codex",
-        status: "idle",
-        pinnedAt: 1,
-        createdAt: 1,
-        updatedAt: 1,
-      }),
-    ]);
-    stubServerApi({
-      "v1.threads.$get": list,
-      "v1.projects.$get": async () => [],
-    });
-
-    await runCommand(["thread", "list"], register);
-
-    expect(collectLogPayloads(vi.mocked(console.log)).join("\n")).toContain(
-      "idle (pinned)",
-    );
-  });
+      expect(list).toHaveBeenCalledWith({
+        query: {},
+      });
+      expect(collectLogPayloads(vi.mocked(console.log))).toEqual([
+        "",
+        table,
+        "",
+      ]);
+    },
+  );
 
   it("bb thread list hides the personal project label", async () => {
     const list = vi.fn(async () => [
@@ -152,7 +176,7 @@ describe("bb thread list command output", () => {
     });
     expect(collectLogPayloads(vi.mocked(console.log))).toEqual([
       "",
-      "ID                 Title  Project  Status      \n-----------------  -----  -------  ------------\nthread-personal-1  -      -        idle        ",
+      "ID                 Title  Project  Status        Needs you \n-----------------  -----  -------  ------------  ----------\nthread-personal-1  -      -        idle          -         ",
       "",
     ]);
   });
@@ -223,16 +247,38 @@ describe("bb thread list command output", () => {
     expect(projects).not.toHaveBeenCalled();
   });
 
-  it("bb thread list ignores BB_PROJECT_ID when --project is omitted", async () => {
-    const list = vi.fn(async () => []);
-    stubServerApi({ "v1.threads.$get": list });
+  it.each([
+    ["needs-input", "Needs input"],
+    ["working", "Working"],
+    ["woke", "Woke"],
+    ["done-unread", "Done"],
+    ["none", "-"],
+  ] as const)(
+    "renders %s as %s in the Needs you column",
+    (listIndicator, label) => {
+      expect(
+        formatThreadListIndicator(
+          { id: "thread-status", listIndicator },
+          new Set(listIndicator === "woke" ? ["thread-status"] : []),
+        ),
+      ).toBe(label);
+    },
+  );
 
-    vi.stubEnv("BB_PROJECT_ID", "proj-env");
-    await runCommand(["thread", "list"], register);
-
-    expect(list).toHaveBeenCalledWith({
-      query: {},
-    });
+  it("keeps Working and Needs input ahead of the Woke overlay", () => {
+    const wokeThreadIds = new Set(["thread-status"]);
+    expect(
+      formatThreadListIndicator(
+        { id: "thread-status", listIndicator: "working" },
+        wokeThreadIds,
+      ),
+    ).toBe("Working");
+    expect(
+      formatThreadListIndicator(
+        { id: "thread-status", listIndicator: "needs-input" },
+        wokeThreadIds,
+      ),
+    ).toBe("Needs input");
   });
 
   it("bb thread list does not infer parent-thread from BB_THREAD_ID", async () => {

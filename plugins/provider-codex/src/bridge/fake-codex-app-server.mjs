@@ -1,34 +1,12 @@
 #!/usr/bin/env node
 
-/**
- * Minimal scripted `codex app-server` for hermetic codex-bridge tests.
- *
- * Speaks the subset of the app-server dialect the bridge drives: initialize,
- * thread/start|resume|fork returning a thread identity (plus the
- * thread/started notification a real app-server emits), and turn/start
- * answering with a full scripted turn. The scripted turn is deliberately
- * DELTA-FIRST — `item/agentMessage/delta` arrives before any `item/started`
- * for that item — so the bridge's item-opening synthesis is exercised for
- * real by the conformance kit's item/opens-before-delta rule.
- *
- * An optional argv[2] script file replaces that hardcoded turn:
- * `{ "turns": [[{ "method", "params" }, …], …] }`, where the Nth accepted
- * `turn/start` emits the Nth turn's notifications verbatim. It exists so the
- * dual-path calibration suite can drive this process and the legacy adapter
- * from ONE script. An entry marked `"kind": "request"` is sent as a JSON-RPC
- * *request* toward the client (an approval) and blocks the rest of the turn
- * until the client answers, exactly as a real app-server does. Every
- * `threadId` in the script is rewritten to the thread id this process minted,
- * because only this process knows it. Without the argument the hardcoded
- * behavior below is unchanged.
- */
-
 import {
   appendFileSync,
   closeSync,
   existsSync,
   openSync,
   readFileSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { createInterface } from "node:readline";
@@ -56,7 +34,6 @@ function respondError(id, code, message) {
   send({ jsonrpc: "2.0", id, error: { code, message } });
 }
 
-/** The prompt the kit's turn/settles-without-activity scenario sends. */
 const ZERO_WORK_PROMPT_TEXT = "/clear";
 
 const COMPACTION_TURN_DELAY_MS = Number(
@@ -78,15 +55,8 @@ const STEER_INTO_ACTIVE_PROMPT_TEXT = "/steer-into-active";
 
 const INTERRUPT_BEFORE_START_PROMPT_TEXT = "/interrupt-before-start";
 
-/** A prompt that stays open until the client sends turn/interrupt. */
 const INTERRUPTIBLE_PROMPT_TEXT = "/wait-for-interrupt";
 
-/**
- * A prompt that spawns a native subagent (open thread work) and then dies with
- * the subagent still running — the crash/OOM shape. The bridge has to settle
- * the open turn AND retract the open-work claim, or the runtime never reaps
- * the thread.
- */
 const SUBAGENT_THEN_CRASH_PROMPT_TEXT = "/subagent-then-crash";
 
 function firstInputText(input) {
@@ -147,6 +117,10 @@ function runCompaction(threadId) {
       turnId,
       item: { type: "contextCompaction", id: itemId },
     });
+    if (COMPACTION_MODE === "wait-for-interrupt") {
+      openTurnIdsByThreadId.set(threadId, turnId);
+      return;
+    }
     notify("item/completed", {
       threadId,
       turnId,
@@ -197,8 +171,7 @@ function runScriptedTurn(threadId, presetTurnId) {
       },
     });
   }
-  // Delta-first: no item/started for the agent message. The bridge must
-  // synthesize the opening event.
+
   notify("item/agentMessage/delta", { threadId, turnId, itemId, delta: text });
   notify("item/completed", {
     threadId,
@@ -206,8 +179,6 @@ function runScriptedTurn(threadId, presetTurnId) {
     item: { type: "agentMessage", id: itemId, text },
   });
   if (String(threadId).startsWith("usage-replay-")) {
-    // Usage-replay threads also report the turn's own usage, like the real
-    // app-server, so tests can tell a replay from live turn usage (#1727).
     notify("thread/tokenUsage/updated", {
       threadId,
       turnId,
@@ -221,8 +192,6 @@ function runScriptedTurn(threadId, presetTurnId) {
   openTurnIdsByThreadId.delete(threadId);
 }
 
-// argv, not an env var: the bridge builds its child's environment from an
-// allowlist, so an env var set by a test never reaches this process.
 function scriptPathFromArgs(args) {
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
@@ -240,31 +209,22 @@ const scriptPath = scriptPathFromArgs(process.argv.slice(2));
 const script = scriptPath ? JSON.parse(readFileSync(scriptPath, "utf8")) : null;
 const scriptedTurns = script?.turns ?? null;
 const requestLogPath = script?.requestLogPath ?? null;
+const resumeRecordedModel = script?.resumeRecordedModel ?? null;
+const responseLogPath = script?.responseLogPath ?? null;
 const modelListFailOnceMarkerPath = script?.modelListFailOnceMarkerPath ?? null;
-/**
- * `archiveStatePath`: a JSON file of archived thread ids shared by every fake
- * child the bridge spawns from one script. The real app-server keeps archive
- * state on disk (the rollout moves to an archived dir), so an archive seen by
- * one child must refuse a resume in the next — the bridge kills a thread's
- * child on archive and resumes on a fresh one.
- */
+
 const archiveStatePath = script?.archiveStatePath ?? null;
-/**
- * `renameEmptyRolloutFailures`: how many `thread/name/set` calls fail with the
- * real app-server's "rollout … is empty" error before one succeeds — the
- * window between a rollout file's creation and its first record.
- */
+
 let renameEmptyRolloutFailuresLeft = script?.renameEmptyRolloutFailures ?? 0;
 const archivedThreadIds = new Set();
-/**
- * `processLogPath`: one line per child lifecycle step (`spawn:<pid>:<ppid>`,
- * `exit:<pid>:<ppid>`), so a test can count how many app-server children the
- * bridge runs, how many bridge processes spawned them (distinct ppids), and
- * see the children die on release, archive, and bridge shutdown.
- */
+
 const processLogPath = script?.processLogPath ?? null;
 const stallThreadStart = script?.stallThreadStart ?? false;
+const writerLockPath = script?.writerLockPath ?? null;
 const sigtermDelayMs = script?.sigtermDelayMs ?? 0;
+const stdinCloseDelayMs = script?.stdinCloseDelayMs ?? 0;
+let ownsWriterLock = false;
+let servesThread = false;
 
 function logProcessStep(step) {
   if (processLogPath === null) {
@@ -273,13 +233,59 @@ function logProcessStep(step) {
   appendFileSync(processLogPath, `${step}:${process.pid}:${process.ppid}\n`);
 }
 
+function releaseWriterLock() {
+  if (!ownsWriterLock || writerLockPath === null) {
+    return;
+  }
+  ownsWriterLock = false;
+  if (
+    existsSync(writerLockPath) &&
+    readFileSync(writerLockPath, "utf8") === String(process.pid)
+  ) {
+    unlinkSync(writerLockPath);
+  }
+}
+
+function acquireWriterLock() {
+  if (writerLockPath === null || ownsWriterLock) {
+    return true;
+  }
+  try {
+    writeFileSync(writerLockPath, String(process.pid), { flag: "wx" });
+    ownsWriterLock = true;
+    return true;
+  } catch (error) {
+    if (!error || typeof error !== "object" || error.code !== "EEXIST") {
+      throw error;
+    }
+    const ownerPid = Number(readFileSync(writerLockPath, "utf8"));
+    try {
+      process.kill(ownerPid, 0);
+      return false;
+    } catch (ownerError) {
+      if (
+        !ownerError ||
+        typeof ownerError !== "object" ||
+        ownerError.code !== "ESRCH"
+      ) {
+        throw ownerError;
+      }
+      unlinkSync(writerLockPath);
+      return acquireWriterLock();
+    }
+  }
+}
+
 function exitCleanly() {
+  releaseWriterLock();
   logProcessStep("exit");
   process.exit(0);
 }
 
+process.on("exit", releaseWriterLock);
 process.on("SIGTERM", () => {
-  if (sigtermDelayMs > 0) {
+  logProcessStep("sigterm");
+  if (sigtermDelayMs > 0 && servesThread) {
     setTimeout(exitCleanly, sigtermDelayMs);
     return;
   }
@@ -330,7 +336,6 @@ function shouldFailThisModelList() {
   }
 }
 
-/** Rewrite every `threadId` to the id this process minted for the session. */
 function withThreadId(value, threadId) {
   if (Array.isArray(value)) {
     return value.map((entry) => withThreadId(entry, threadId));
@@ -348,12 +353,6 @@ function withThreadId(value, threadId) {
   return rewritten;
 }
 
-/**
- * Requests this process originates toward its client (approvals). A real
- * app-server blocks the turn until the client answers, so the scripted turn
- * does too — an entry marked `"kind": "request"` is sent as a JSON-RPC request
- * rather than a notification.
- */
 let outboundRequestCounter = 0;
 const pendingOutboundRequests = new Map();
 
@@ -366,12 +365,6 @@ function requestFromClient(method, params) {
   });
 }
 
-/**
- * `turnCursorPath`: persists the scripted-turn cursor across child processes,
- * so a script whose Nth turn must run on a REBUILT child (the bridge replaces
- * a thread's app-server after a terminal account error) keeps counting where
- * the previous child stopped.
- */
 const turnCursorPath = script?.turnCursorPath ?? null;
 
 function takeScriptedTurnIndex() {
@@ -392,7 +385,13 @@ async function runScriptFileTurn(threadId) {
   for (const entry of turn) {
     const params = withThreadId(entry.params ?? {}, threadId);
     if (entry.kind === "request") {
-      await requestFromClient(entry.method, params);
+      const response = await requestFromClient(entry.method, params);
+      if (requestLogPath !== null) {
+        appendFileSync(
+          requestLogPath,
+          `${JSON.stringify({ method: `response:${entry.method}`, params: response })}\n`,
+        );
+      }
       continue;
     }
     if (entry.method === "turn/started") {
@@ -441,11 +440,27 @@ async function handleRequest(message) {
       respond(id, {});
       return;
     case "account/rateLimits/read":
+      if (script?.rateLimitRead) {
+        if (script.rateLimitRead.hang) return;
+        setTimeout(() => {
+          if (script.rateLimitRead.error)
+            respondError(id, -32603, "Quota read unavailable");
+          else respond(id, script.rateLimitRead.result);
+        }, script.rateLimitRead.delayMs ?? 0);
+        return;
+      }
       respond(id, { rateLimits: {} });
       return;
     case "model/list":
       if (shouldFailThisModelList()) {
         respond(id, { data: [] });
+        return;
+      }
+      if (script?.modelList) {
+        setTimeout(
+          () => respond(id, script.modelList),
+          script.modelListDelayMs ?? 0,
+        );
         return;
       }
       respond(id, {
@@ -464,23 +479,42 @@ async function handleRequest(message) {
         ],
       });
       return;
+    case "config/read":
+      if (script?.configReadError) {
+        respondError(id, -32601, "Configuration read unavailable");
+      } else {
+        respond(id, script?.configRead ?? { config: { model: null } });
+      }
+      return;
     case "skills/extraRoots/set":
       respond(id, {});
       return;
     case "thread/start": {
+      servesThread = true;
       if (stallThreadStart) {
         await new Promise(() => undefined);
       }
       threadCounter += 1;
-      const threadId = `codex-fx-${process.pid}-${threadCounter}`;
+      const threadId = `codex-fx-${processInstanceId}-${threadCounter}`;
       notify("thread/started", { thread: { id: threadId } });
-      respond(id, { thread: { id: threadId }, ...resolvedSessionSettings(params) });
+      respond(id, {
+        thread: { id: threadId },
+        ...resolvedSessionSettings(params),
+      });
       return;
     }
     case "thread/resume": {
-      // Scripted archived-session rejection: the real app-server refuses to
-      // resume an archived thread with an error naming the session. Tests use
-      // an `archived-` provider-thread-id prefix to trigger it.
+      servesThread = true;
+      if (!acquireWriterLock()) {
+        logProcessStep("writer-conflict");
+        respondError(
+          id,
+          -32603,
+          `thread ${params.threadId} already has an active writer`,
+        );
+        return;
+      }
+
       if (
         String(params.threadId).startsWith("archived-") ||
         isThreadArchived(params.threadId)
@@ -492,22 +526,41 @@ async function handleRequest(message) {
         );
         return;
       }
-      // Mirror the real app-server (codex-cli 0.147.0, observed live for
-      // #1727): thread/resume replays the rollout's last-turn token usage,
-      // scoped to that PREVIOUS turn's id, before any new turn is started.
-      // Opt-in via a `usage-replay-` provider-thread-id prefix.
+
       if (String(params.threadId).startsWith("usage-replay-")) {
         replayLastTurnUsage(params.threadId);
       }
+      if (
+        resumeRecordedModel !== null &&
+        params.model !== undefined &&
+        params.model !== resumeRecordedModel
+      ) {
+        notify("warning", {
+          threadId: params.threadId,
+          message: `This session was recorded with model \`${resumeRecordedModel}\` but is resuming with \`${params.model}\`. Consider switching back to \`${resumeRecordedModel}\` as it may affect Codex performance.`,
+        });
+      }
       respond(id, {
-        thread: { id: params.threadId },
+        thread: {
+          id: params.threadId,
+          ...(script?.resumedDaybreakEnabled === undefined
+            ? {}
+            : { daybreakEnabled: script.resumedDaybreakEnabled }),
+        },
         ...resolvedSessionSettings(params),
       });
       return;
     }
+    case "thread/metadata/update":
+      if (script?.metadataUpdateError) {
+        respondError(id, -32603, "Thread metadata is unavailable");
+      } else {
+        respond(id, { thread: { id: params.threadId } });
+      }
+      return;
     case "thread/fork": {
-      // The real app-server reads the source rollout; an archived source is
-      // refused with the same wording a resume gets.
+      servesThread = true;
+
       if (
         String(params.threadId).startsWith("archived-") ||
         isThreadArchived(params.threadId)
@@ -522,21 +575,18 @@ async function handleRequest(message) {
       threadCounter += 1;
       const replaysUsage = String(params.threadId).startsWith("usage-replay-");
       const threadId = replaysUsage
-        ? `usage-replay-fork-${process.pid}-${threadCounter}`
-        : `codex-fx-${process.pid}-fork-${threadCounter}`;
-      respond(id, { thread: { id: threadId }, ...resolvedSessionSettings(params) });
-      // thread/fork replays the source rollout's last-turn usage the same way,
-      // after the response, under the NEW thread id but the SOURCE turn id
-      // (#1727).
+        ? `usage-replay-fork-${processInstanceId}-${threadCounter}`
+        : `codex-fx-${processInstanceId}-fork-${threadCounter}`;
+      respond(id, {
+        thread: { id: threadId },
+        ...resolvedSessionSettings(params),
+      });
       if (replaysUsage) {
         replayLastTurnUsage(threadId);
       }
       return;
     }
     case "turn/start": {
-      // A prompt the provider handles locally: accepted and answered, but with
-      // no turn/started and no turn/completed, so nothing in the child's
-      // output can open or settle a bb turn (#1431).
       if (firstInputText(params.input) === ZERO_WORK_PROMPT_TEXT) {
         respond(id, {});
         return;
@@ -625,7 +675,7 @@ async function handleRequest(message) {
           threadId: params.threadId,
           turn: { id: turnId, status: "inProgress" },
         });
-        respond(id, {});
+        setTimeout(() => respond(id, {}), script?.startResponseDelayMs ?? 0);
         return;
       }
       if (scriptedTurns) {
@@ -697,8 +747,6 @@ async function handleRequest(message) {
       return;
     }
     case "thread/archive":
-      // The real app-server moves the rollout into its archived dir, so a
-      // second archive finds no live rollout; the reverse holds for unarchive.
       if (isThreadArchived(params.threadId)) {
         respondError(
           id,
@@ -762,6 +810,13 @@ async function handleRequest(message) {
       respond(id, {});
       runCompaction(params.threadId);
       return;
+    case "config/mcpServer/reload":
+      if (script?.mcpReloadError) {
+        respondError(id, -32603, "MCP reload unavailable");
+        return;
+      }
+      respond(id, {});
+      return;
     case "thread/goal/clear":
       respond(id, {});
       return;
@@ -790,14 +845,21 @@ stdinLines.on("line", (line) => {
     return;
   }
   if (parsed.id !== undefined) {
-    // A response to a request this process originated (an approval answer).
     const resolve = pendingOutboundRequests.get(parsed.id);
     if (resolve) {
       pendingOutboundRequests.delete(parsed.id);
+      if (responseLogPath !== null) {
+        appendFileSync(responseLogPath, `${JSON.stringify(parsed)}\n`);
+      }
       resolve(parsed);
     }
   }
 });
 stdinLines.on("close", () => {
+  logProcessStep("stdin-close");
+  if (stdinCloseDelayMs > 0 && servesThread) {
+    setTimeout(exitCleanly, stdinCloseDelayMs);
+    return;
+  }
   exitCleanly();
 });

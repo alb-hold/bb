@@ -40,6 +40,10 @@ provider, and directive are all Docs.
 - **Images:** paste or drop PNG, JPEG, GIF, WebP, or SVG files into a document.
   Attachments are stored beside it under `_attachments/` and serialized as
   portable relative Markdown image links.
+- **Raw HTML:** Docs never strips HTML. Blocks you do not edit are saved
+  byte for byte. Inline tags Docs renders, such as `<strong>` and `<a>`, show
+  as formatting; other HTML shows as editable text and is saved as typed,
+  including tags you type. HTML is not executed in the editor.
 - **Embedded HTML:** a Markdown block directive renders a sibling HTML file in
   an opaque-origin iframe:
 
@@ -57,7 +61,10 @@ provider, and directive are all Docs.
   the selected vault root. HTML responses use `sandbox allow-scripts`, and the
   iframe never receives `allow-same-origin`.
 - **Chat mentions:** `@` searches every vault's titles, previews, filenames,
-  and folders. A selected document resolves to its latest content at send time.
+  and folders. Searches share in-flight reads and cache summaries for up to
+  ten seconds. Docs edits and local filesystem notifications invalidate the
+  affected vault's cache. A selected document resolves to its latest content
+  at send time.
 - **Thread documents:** Markdown cards are editable and autosave directly in
   the timeline. Open in tab opens the same document with shared editing state.
   Pending agent proposals show live inline additions and deletions, with compact

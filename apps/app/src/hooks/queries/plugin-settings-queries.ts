@@ -1,12 +1,18 @@
 import type {
   InstalledPlugin,
+  PluginCachePruneResponse,
+  PluginSafeModeUpdateResponse,
   PluginSettingDescriptor,
   PluginSettingsResponse,
 } from "@bb/server-contract";
 import { pluginSettingsUpdateRequestSchema } from "@bb/server-contract";
 import { queryOptions, useQuery } from "@tanstack/react-query";
 import { createPluginsClient } from "./plugin-client";
-import { pluginListQueryKey, pluginSettingsViewQueryKey } from "./query-keys";
+import {
+  pluginListQueryKey,
+  pluginSafeModeQueryKey,
+  pluginSettingsViewQueryKey,
+} from "./query-keys";
 
 type FetchLike = typeof fetch;
 
@@ -200,6 +206,29 @@ export async function removePlugin(
   await createPluginsClient(fetchImpl).remove({ pluginId });
 }
 
+export async function setPluginSafeMode(
+  fetchImpl: FetchLike,
+  enabled: boolean,
+): Promise<PluginSafeModeUpdateResponse> {
+  return createPluginsClient(fetchImpl).experimental_setSafeMode({ enabled });
+}
+
+export async function prunePluginCache(
+  fetchImpl: FetchLike,
+): Promise<PluginCachePruneResponse> {
+  return createPluginsClient(fetchImpl).experimental_pruneCache();
+}
+
+export function usePluginSafeMode() {
+  return useQuery({
+    queryKey: pluginSafeModeQueryKey(),
+    queryFn: async ({ signal }) =>
+      (await createPluginsClient(fetch).experimental_getSafeMode({ signal }))
+        .enabled,
+    staleTime: 30_000,
+  });
+}
+
 export function pluginListQueryOptions(args: { enabled: boolean }) {
   return queryOptions({
     queryKey: pluginListQueryKey(args.enabled),
@@ -218,14 +247,20 @@ export function usePluginList(args: { enabled: boolean }) {
   });
 }
 
+export function pluginSettingsViewQueryOptions(pluginId: string) {
+  return queryOptions({
+    queryKey: pluginSettingsViewQueryKey(pluginId),
+    queryFn: () => fetchPluginSettingsView(fetch, pluginId),
+    staleTime: 30_000,
+  });
+}
+
 export function usePluginSettingsView(
   pluginId: string,
   options: { enabled: boolean },
 ) {
   return useQuery({
-    queryKey: pluginSettingsViewQueryKey(pluginId),
-    queryFn: () => fetchPluginSettingsView(fetch, pluginId),
+    ...pluginSettingsViewQueryOptions(pluginId),
     enabled: options.enabled,
-    staleTime: 30_000,
   });
 }

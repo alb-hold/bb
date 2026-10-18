@@ -1,6 +1,7 @@
 import { type BbPluginApi } from "@get-bb/plugin-sdk";
 import type { AccountSummary } from "./contracts.js";
 import type { AccountPoolHub } from "./hub.js";
+import { foldSubscriptions } from "./subscriptions.js";
 import {
   usageSourceRpcContract,
   usageListMethod,
@@ -42,22 +43,44 @@ function accountKey(account: AccountSummary): string | null {
       : null;
 }
 
-export function registerUsageSource(bb: BbPluginApi, hub: AccountPoolHub) {
+export function registerUsageSource(
+  bb: BbPluginApi,
+  hub: AccountPoolHub,
+  isRoutingEnabled: (provider: AccountSummary["provider"]) => Promise<boolean>,
+) {
   bb.rpc.register(
     usageSourceRpcContract,
     {
       async [usageListMethod]() {
-        const { accounts } = await hub.status();
+        const status = await hub.status();
+        const routed = await Promise.all(
+          status.accounts.map(async (account) => ({
+            account,
+            enabled: await isRoutingEnabled(account.provider),
+          })),
+        );
+        const accounts = foldSubscriptions(
+          routed
+            .filter(({ account, enabled }) => enabled && account.enabled)
+            .map(({ account }) => account)
+            .sort((left, right) => left.priority - right.priority),
+        );
         return {
-          label: "Account Pooler",
+          ...(accounts.length > 0 ? { label: "Account Pooler" } : {}),
           resources: accounts.map((account) => ({
             id: account.id,
             accountKey: accountKey(account),
             providerId: account.provider === "claude" ? "claude-code" : "codex",
-            label:
-              account.email ??
-              (account.provider === "claude" ? "Claude Code" : "Codex"),
+            label: account.label,
             scope: { kind: "shared" as const },
+            accountPool: {
+              active: account.active,
+              enabled: account.enabled,
+              status: account.status,
+              heldUntil: account.heldUntil,
+              error: account.error,
+              extraUsage: account.extraUsage?.status ?? null,
+            },
           })),
         };
       },
@@ -68,7 +91,8 @@ export function registerUsageSource(bb: BbPluginApi, hub: AccountPoolHub) {
           )
         )
           throw new Error("Usage resource no longer exists.");
-        await hub.refreshUsage(resourceId, refresh);
+        if (!(await hub.refreshUsage(resourceId, refresh)) && refresh)
+          throw new Error("Could not refresh account usage. Try again.");
         const { accounts: allAccounts } = await hub.status();
         const accounts = allAccounts.filter(
           (account) => account.id === resourceId,
@@ -80,6 +104,7 @@ export function registerUsageSource(bb: BbPluginApi, hub: AccountPoolHub) {
             UsageResource["usage"],
             { status: "ok" }
           >["windows"] = [];
+          let expiredWindows = 0;
           const add = (
             id: string,
             label: string,
@@ -88,6 +113,10 @@ export function registerUsageSource(bb: BbPluginApi, hub: AccountPoolHub) {
             model: string | null,
           ) => {
             if (utilization === null) return;
+            if (reset !== null && reset <= Date.now()) {
+              expiredWindows += 1;
+              return;
+            }
             windows.push({
               kind:
                 label === "Five-hour limit"
@@ -159,7 +188,9 @@ export function registerUsageSource(bb: BbPluginApi, hub: AccountPoolHub) {
               : "Usage could not be collected for this account. Try refreshing usage.") ??
             (account.observedAt === null
               ? "Usage has not been observed for this account."
-              : null);
+              : expiredWindows > 0 && windows.length === 0
+                ? "Usage data is stale. Refresh usage."
+                : null);
           return {
             id: account.id,
             accountKey: accountKey(account),

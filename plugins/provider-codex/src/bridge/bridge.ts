@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import {
   isStandaloneBuiltinCompactCommand,
   approvalInteractionOutcomeSchema,
+  userQuestionInteractionOutcomeSchema,
   type DynamicTool,
   type PromptInput,
   type ThreadDelta,
+  type ProviderRateLimitState,
   sanitizeInheritedChildProcessEnv,
   BRIDGE_INBOUND_REQUEST_METHODS,
   BRIDGE_JSON_RPC_ERRORS,
@@ -42,32 +45,51 @@ import {
   type BridgeJsonRpcResponse,
   type DecodedInteractiveRequest,
   type PreparedProviderCommandDispatch,
-  type ProviderPostInitializeRequest,
   type ProviderRuntimeEvent,
   experimental_defineProviderBridge,
+  experimental_runMcpElicitation,
   type ProviderRecoveryHint,
 } from "@get-bb/plugin-sdk/provider-bridge";
 import { z } from "zod";
+import {
+  CODEX_POOL_BASE_URL_ENV,
+  CODEX_POOL_AUTH_TOKEN_ENV,
+  codexPoolLaunchArgs,
+} from "../pool-launch.js";
 import {
   CODEX_MACOS_PERMISSION_EXTENSION_KIND,
   summarizeCodexMacOsPermissions,
 } from "../extension-kinds.js";
 import {
   buildCodexInteractiveResponse,
+  buildCodexUserInputResponse,
+  codexUserInputQuestionIds,
   decodeCodexInteractiveRequest,
   extractCodexMacOsPermissionRequest,
   type CodexMacOsPermissionRequest,
 } from "../interactive-requests.js";
 import { toCodexExecutionDelta } from "../execution-report.js";
-import { parseModelsResponse } from "../models.js";
+import {
+  CODEX_DAYBREAK_OPTION_ID,
+  codexDaybreakOption,
+  cyberProgramForTurn,
+  parseModelCatalog,
+  type CodexCyberProgram,
+  type CodexModelCatalog,
+} from "../models.js";
 import { macOsPermissionPresentation } from "../presentation.js";
-import { codexTurnSchema } from "../schemas.js";
+import {
+  codexTurnSchema,
+  codexRateLimitReadResponseSchema,
+} from "../schemas.js";
 import {
   resolveCodexInstructionOverrides,
   toCodexDynamicTools,
   toCodexPermissionSettings,
   toCodexServiceTier,
   toCodexThreadPermissionSettings,
+  nextCodexCollaborationMode,
+  toCodexTurnInput,
   toCodexUserInput,
   type BbThreadForkParams,
   type BbThreadStartParams,
@@ -92,6 +114,7 @@ import {
   getCodexProviderInstallationStatus,
   getCodexProviderUsage,
 } from "./provider-maintenance.js";
+import { codexMcpConfigSignature } from "./mcp-config-signature.js";
 
 type BbThreadResumeParams = ThreadResumeParams & { excludeTurns: boolean };
 
@@ -272,8 +295,6 @@ function sendRuntimeRequest(
 
 const CODEX_APP_SERVER_COMMAND_ENV = "BB_CODEX_BRIDGE_APP_SERVER_COMMAND";
 const CODEX_APP_SERVER_ARGS_ENV = "BB_CODEX_BRIDGE_APP_SERVER_ARGS";
-const CODEX_POOL_BASE_URL_ENV = "CODEX_OPENAI_BASE_URL";
-const CODEX_POOL_AUTH_TOKEN_ENV = "CODEX_POOL_AUTH_TOKEN";
 
 const CODEX_INITIALIZE_PARAMS = {
   clientInfo: { name: "bb", version: "1.0.0", title: null },
@@ -281,9 +302,15 @@ const CODEX_INITIALIZE_PARAMS = {
 };
 
 const CHILD_REQUEST_TIMEOUT_MS = 60_000;
+const RATE_LIMIT_RECOVERY_TIMEOUT_MS = 5_000;
+const MCP_RELOAD_TIMEOUT_MS = 10_000;
+const MCP_CONFIG_HASH_DEADLINE_MS = 2_000;
 const INTERRUPT_SETTLEMENT_TIMEOUT_MS = 5_000;
 const CODEX_ARCHIVED_SESSION_ERROR_PATTERN =
   /\b(?:session|thread)\s+\S+\s+is archived\b/i;
+const CODEX_ACTIVE_WRITER_ERROR_PATTERN =
+  /\bthread\s+\S+\s+already has an active writer\b/i;
+const CODEX_ACTIVE_WRITER_RETRY_DELAYS_MS = [100, 400, 1_000] as const;
 const CODEX_ALREADY_ARCHIVED_ERROR_PATTERN =
   /\bno rollout found for thread id\b/i;
 const CODEX_NOT_ARCHIVED_ERROR_PATTERN =
@@ -334,7 +361,10 @@ async function delay(ms: number): Promise<void> {
 const MISSING_CODEX_CLI_GUIDANCE =
   "bb could not find the Codex CLI on this machine. Install Codex (https://developers.openai.com/codex/cli) or put `codex` on PATH, then retry.";
 
-export function resolveAppServerLaunch(env: NodeJS.ProcessEnv = process.env): {
+export function resolveAppServerLaunch(
+  env: NodeJS.ProcessEnv = process.env,
+  cwd: string = process.cwd(),
+): {
   command: string;
   args: string[];
 } {
@@ -345,30 +375,9 @@ export function resolveAppServerLaunch(env: NodeJS.ProcessEnv = process.env): {
       ? z.array(z.string()).parse(JSON.parse(rawArgs))
       : []
     : ["app-server"];
-  const poolBaseUrl = env[CODEX_POOL_BASE_URL_ENV];
-  const poolToken = env[CODEX_POOL_AUTH_TOKEN_ENV];
-  if (!poolBaseUrl || !poolToken) return { command: command ?? "codex", args };
   return {
     command: command ?? "codex",
-    args: [
-      ...args,
-      "-c",
-      `openai_base_url=${JSON.stringify(poolBaseUrl)}`,
-      "-c",
-      'model_provider="bb-account-pool"',
-      "-c",
-      'model_providers.bb-account-pool.name="OpenAI"',
-      "-c",
-      `model_providers.bb-account-pool.base_url=${JSON.stringify(poolBaseUrl)}`,
-      "-c",
-      'model_providers.bb-account-pool.wire_api="responses"',
-      "-c",
-      "model_providers.bb-account-pool.requires_openai_auth=true",
-      "-c",
-      "model_providers.bb-account-pool.supports_websockets=false",
-      "-c",
-      'model_providers.bb-account-pool.env_http_headers.x-bb-account-pool-token="CODEX_POOL_AUTH_TOKEN"',
-    ],
+    args: [...args, ...codexPoolLaunchArgs(env, cwd)],
   };
 }
 
@@ -398,8 +407,12 @@ function buildAppServerEnv(
   );
 }
 
+function isCodexSpawnFailure(error: unknown): boolean {
+  return error instanceof CodexAppServerExitedError && error.spawnFailed;
+}
+
 function describeCodexLaunchError(error: unknown): string {
-  if (error instanceof CodexAppServerExitedError && error.spawnFailed) {
+  if (isCodexSpawnFailure(error)) {
     return MISSING_CODEX_CLI_GUIDANCE;
   }
   return error instanceof Error ? error.message : String(error);
@@ -452,14 +465,24 @@ interface CodexBridgeSession {
   translator: CodexEventTranslator;
   construction: CodexSessionConstruction;
   constructionSignature: string;
+  turnPermissionSettings: ReturnType<typeof toCodexPermissionSettings>;
   openCodexTurnIds: Set<string>;
   responseOpenedTurns: Map<string, ResponseOpenedTurn>;
   unopenedCompactionDispatches: PendingCompactionDispatch[];
+  collaborationMode: "plan" | "default" | null;
+  model: string | null;
+  mcpConfigSignature: string;
   turnSettledWaiters: Map<string, Array<() => void>>;
   awaitingReplayedUsage: boolean;
   identityAnnounced: boolean;
   pendingPreIdentityDeltas: ThreadDelta[];
+  turnRateLimits: ProviderRateLimitState | null;
+  quotaRecoveryAttempted: boolean;
+  quotaRecoveryAllowed: boolean;
   rebuildBeforeNextTurnReason: string | null;
+  daybreakEnabled: boolean | null;
+  modelCatalog: Promise<CodexModelCatalog | null> | null;
+  publishedSessionOptions: string | null;
   closing: boolean;
   previousChildExit: Promise<void> | null;
   releasePromise: Promise<void> | null;
@@ -523,6 +546,7 @@ const codexProviderOptionsSchema = z
 interface DecodedCodexOptions {
   sessionOptions: CodexSessionOptions;
   additionalWorkspaceWriteRoots: string[];
+  daybreak: boolean | null;
 }
 
 function decodeCodexOptions(
@@ -542,14 +566,19 @@ function decodeCodexOptions(
         : {}),
     },
     additionalWorkspaceWriteRoots: decoded.additionalWorkspaceWriteRoots ?? [],
+    daybreak: requestedDaybreak(options),
   };
+}
+
+function requestedDaybreak(options: BridgeExecutionOptions): boolean | null {
+  const requested = options.sessionOptions?.[CODEX_DAYBREAK_OPTION_ID];
+  return typeof requested === "boolean" ? requested : null;
 }
 
 function constructionSignature(
   cwd: string,
   sessionOptions: CodexSessionOptions,
 ): string {
-  const permissionSettings = toCodexThreadPermissionSettings(sessionOptions);
   const poolBaseUrl = sessionOptions.envVars?.[CODEX_POOL_BASE_URL_ENV];
   const poolToken = sessionOptions.envVars?.[CODEX_POOL_AUTH_TOKEN_ENV];
   return JSON.stringify({
@@ -557,9 +586,6 @@ function constructionSignature(
     reasoningLevel: sessionOptions.reasoningLevel ?? null,
     memoryEnabled: sessionOptions.memoryEnabled ?? null,
     providerSubagentsEnabled: sessionOptions.providerSubagentsEnabled ?? null,
-    approvalPolicy: permissionSettings.approvalPolicy,
-    approvalsReviewer: permissionSettings.approvalsReviewer,
-    sandbox: permissionSettings.sandbox,
     poolRoute:
       poolBaseUrl === undefined || poolToken === undefined
         ? null
@@ -585,7 +611,13 @@ function sendThreadDeltas(
           (dispatch) => dispatch.clientRequestId !== delta.clientRequestId,
         );
     }
+    if (delta.kind === "provider.rateLimits") {
+      session.turnRateLimits = delta.rateLimits;
+    }
     if (delta.kind === "turn.open") {
+      session.translator.resetRateLimits();
+      session.turnRateLimits = null;
+      session.quotaRecoveryAttempted = false;
       session.awaitingReplayedUsage = false;
       if (delta.providerTurnId !== undefined) {
         session.openCodexTurnIds.add(delta.providerTurnId);
@@ -660,12 +692,12 @@ function toProviderRuntimeEvent(
   } as ProviderRuntimeEvent;
 }
 
-function handleChildNotification(
+async function handleChildNotification(
   bbThreadId: string,
   serial: number,
   method: string,
   params: unknown,
-): void {
+): Promise<void> {
   const session = currentSession(bbThreadId, serial);
   if (!session) {
     return;
@@ -688,6 +720,47 @@ function handleChildNotification(
   const deltas = session.translator.translateEvent(
     toProviderRuntimeEvent(method, params),
   );
+  const quotaFailure = deltas.some(
+    (delta) =>
+      delta.kind === "provider.error" &&
+      delta.willRetry !== true &&
+      delta.errorInfo?.category === "rate-limit",
+  );
+  const quota = session.turnRateLimits;
+  const blockedWindows =
+    quota?.windows.filter((window) => window.status === "blocked") ?? [];
+  const quotaExplainsFailure =
+    quota?.status === "blocked" &&
+    (quota.kind !== "subscription-window" ||
+      (blockedWindows.length > 0 &&
+        blockedWindows.every(
+          (window) =>
+            window.resetsAtMs !== null && window.resetsAtMs > Date.now(),
+        )));
+  if (
+    quotaFailure &&
+    !quotaExplainsFailure &&
+    !session.quotaRecoveryAttempted
+  ) {
+    session.quotaRecoveryAttempted = true;
+    try {
+      const snapshot =
+        session.quotaRecoveryAllowed && session.connection !== null
+          ? await session.connection.request({
+              method: "account/rateLimits/read",
+              params: { excludeResetCreditDetails: true },
+              resultSchema: codexRateLimitReadResponseSchema,
+              timeoutMs: RATE_LIMIT_RECOVERY_TIMEOUT_MS,
+            })
+          : null;
+      if (currentSession(bbThreadId, serial) !== session) return;
+      sendThreadDeltas(session, session.translator.recoverRateLimits(snapshot));
+    } catch {
+      if (currentSession(bbThreadId, serial) !== session) return;
+      sendThreadDeltas(session, session.translator.recoverRateLimits(null));
+    }
+    if (currentSession(bbThreadId, serial) !== session) return;
+  }
   sendThreadDeltas(session, deltas);
   for (const delta of deltas) {
     if (delta.kind === "provider.error" && delta.willRetry !== true) {
@@ -771,6 +844,11 @@ function handleChildRequest(
     return;
   }
 
+  if (method === CODEX_MCP_ELICITATION_METHOD) {
+    handleCodexMcpElicitation(session, params, responder);
+    return;
+  }
+
   const macOsPermission = extractCodexMacOsPermissionRequest({
     id: 0,
     method,
@@ -807,11 +885,88 @@ function handleChildRequest(
     providerNativeIds: true,
   })
     .then((result) => {
+      if (request.payload.kind === "user_question") {
+        responder.result(
+          buildCodexUserInputResponse({
+            outcome: userQuestionInteractionOutcomeSchema.parse({
+              payload: request.payload,
+              resolution: result,
+            }),
+            codexQuestionIds: codexUserInputQuestionIds(params),
+          }),
+        );
+        return;
+      }
       const outcome = approvalInteractionOutcomeSchema.parse({
         payload: request.payload,
         resolution: result,
       });
       responder.result(buildCodexInteractiveResponse(outcome));
+    })
+    .catch((error: unknown) => {
+      responder.error(
+        BRIDGE_JSON_RPC_ERRORS.BRIDGE_ERROR,
+        error instanceof Error ? error.message : String(error),
+      );
+    });
+}
+
+const CODEX_MCP_ELICITATION_METHOD = "mcpServer/elicitation/request";
+
+const codexMcpElicitationParamsSchema = z
+  .object({
+    threadId: z.string(),
+    turnId: z.string().min(1).nullable().optional(),
+    serverName: z.string(),
+    mode: z.string(),
+    message: z.string().optional(),
+    requestedSchema: z.unknown().optional(),
+  })
+  .passthrough();
+
+function handleCodexMcpElicitation(
+  session: CodexBridgeSession,
+  params: unknown,
+  responder: CodexAppServerRequestResponder,
+): void {
+  const parsed = codexMcpElicitationParamsSchema.safeParse(params);
+  if (!parsed.success) {
+    responder.error(
+      BRIDGE_JSON_RPC_ERRORS.INVALID_PARAMS,
+      `Invalid codex MCP elicitation params: ${parsed.error.message}`,
+    );
+    return;
+  }
+  const request = parsed.data;
+  void experimental_runMcpElicitation({
+    request: {
+      serverName: request.serverName,
+      message: request.message ?? "",
+      mode: request.mode,
+      requestedSchema: request.requestedSchema,
+    },
+    ask: (payload) =>
+      sendRuntimeRequest(BRIDGE_INBOUND_REQUEST_METHODS.interactionRequest, {
+        providerThreadId: session.codexThreadId ?? request.threadId,
+        threadId: session.bbThreadId,
+        turnId: request.turnId ?? null,
+        payload,
+        providerNativeIds: true,
+      }),
+  })
+    .then((result) => {
+      if (result.action === "accept") {
+        responder.result({
+          action: "accept",
+          content: result.content,
+          _meta: null,
+        });
+        return;
+      }
+      process.stderr.write(
+        `codex MCP elicitation from ${request.serverName} ended with ${result.action}: ${result.reason}\n`,
+      );
+      responder.result({ action: result.action, content: null, _meta: null });
     })
     .catch((error: unknown) => {
       responder.error(
@@ -895,6 +1050,7 @@ function handleChildExit(
 }
 
 function spawnChildConnection(callbacks: {
+  cwd?: string;
   envVars?: Readonly<Record<string, string>>;
   recordThreadId: string | null;
   onNotification: (method: string, params: unknown) => void;
@@ -906,8 +1062,11 @@ function spawnChildConnection(callbacks: {
   onExit: (info: CodexAppServerExitInfo) => void;
 }): CodexAppServerConnection {
   const env = buildAppServerEnv(callbacks.envVars);
-  const launch = resolveAppServerLaunch(appServerLaunchEnv(callbacks.envVars));
-  const { envVars: _envVars, ...connectionCallbacks } = callbacks;
+  const launch = resolveAppServerLaunch(
+    appServerLaunchEnv(callbacks.envVars),
+    callbacks.cwd,
+  );
+  const { envVars: _envVars, cwd: _cwd, ...connectionCallbacks } = callbacks;
   return createCodexAppServerConnection({
     command: launch.command,
     args: launch.args,
@@ -921,7 +1080,6 @@ const ignoredChildResultSchema = z.unknown();
 
 async function initializeChild(
   connection: CodexAppServerConnection,
-  postInitializeRequests?: readonly ProviderPostInitializeRequest[],
 ): Promise<void> {
   await connection.request({
     method: "initialize",
@@ -929,23 +1087,6 @@ async function initializeChild(
     resultSchema: ignoredChildResultSchema,
     timeoutMs: CHILD_REQUEST_TIMEOUT_MS,
   });
-  for (const request of postInitializeRequests ?? []) {
-    try {
-      const result = await connection.request({
-        method: request.plan.method,
-        ...("params" in request.plan && request.plan.params !== undefined
-          ? { params: request.plan.params }
-          : {}),
-        resultSchema: ignoredChildResultSchema,
-        timeoutMs: CHILD_REQUEST_TIMEOUT_MS,
-      });
-      request.onResult(result);
-    } catch (error) {
-      if (request.required) {
-        throw error;
-      }
-    }
-  }
   if (configuredSkillExtraRoots !== null) {
     await connection.request({
       method: "skills/extraRoots/set",
@@ -957,8 +1098,143 @@ async function initializeChild(
 }
 
 const codexThreadIdentityResultSchema = z
-  .object({ thread: z.object({ id: z.string().min(1) }).passthrough() })
+  .object({
+    thread: z
+      .object({
+        id: z.string().min(1),
+        daybreakEnabled: z.boolean().nullish().catch(null),
+      })
+      .passthrough(),
+  })
   .passthrough();
+
+const SESSION_OPTIONS_STATE_KIND = "bb/session-options";
+const SESSION_MODEL_CATALOG_TIMEOUT_MS = 10_000;
+
+function loadSessionModelCatalog(
+  connection: CodexAppServerConnection,
+): Promise<CodexModelCatalog | null> {
+  return connection
+    .request({
+      method: "model/list",
+      params: {},
+      resultSchema: ignoredChildResultSchema,
+      timeoutMs: SESSION_MODEL_CATALOG_TIMEOUT_MS,
+    })
+    .then(parseModelCatalog)
+    .catch(() => null);
+}
+
+function publishDaybreakState(
+  session: CodexBridgeSession,
+  catalog: CodexModelCatalog | null,
+): void {
+  if (session.closing || catalog === null || !catalog.daybreakAvailable) {
+    return;
+  }
+  const payload = {
+    options: [codexDaybreakOption(session.daybreakEnabled ?? false)],
+  };
+  const serialized = JSON.stringify(payload);
+  if (session.publishedSessionOptions === serialized) {
+    return;
+  }
+  session.publishedSessionOptions = serialized;
+  sendThreadDeltas(session, [
+    {
+      kind: "extension.state",
+      extensionKind: SESSION_OPTIONS_STATE_KIND,
+      payload,
+    },
+  ]);
+}
+
+async function saveDaybreakChoice(
+  session: CodexBridgeSession,
+  connection: CodexAppServerConnection,
+  codexThreadId: string,
+  daybreakEnabled: boolean,
+): Promise<void> {
+  session.daybreakEnabled = daybreakEnabled;
+  await connection
+    .request({
+      method: "thread/metadata/update",
+      params: { threadId: codexThreadId, daybreakEnabled },
+      resultSchema: ignoredChildResultSchema,
+      timeoutMs: CHILD_REQUEST_TIMEOUT_MS,
+    })
+    .catch((error: unknown) => {
+      process.stderr.write(
+        `codex thread/metadata/update could not save the Daybreak choice: ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+    });
+}
+
+async function resolveTurnCyberAccessProgram(
+  session: CodexBridgeSession,
+  connection: CodexAppServerConnection,
+  codexThreadId: string,
+  decoded: DecodedCodexOptions,
+): Promise<CodexCyberProgram | null> {
+  if (
+    decoded.daybreak !== null &&
+    decoded.daybreak !== session.daybreakEnabled
+  ) {
+    await saveDaybreakChoice(
+      session,
+      connection,
+      codexThreadId,
+      decoded.daybreak,
+    );
+  }
+  if (session.daybreakEnabled === null) {
+    return null;
+  }
+  const catalog = await session.modelCatalog;
+  publishDaybreakState(session, catalog);
+  const model = decoded.sessionOptions.model;
+  if (catalog === null || !catalog.daybreakAvailable || model === undefined) {
+    return null;
+  }
+  return cyberProgramForTurn(
+    catalog.cyberProgramsByModel.get(model) ?? [],
+    session.daybreakEnabled,
+  );
+}
+
+async function requestThreadConstructionWithWriterRetry(
+  connection: CodexAppServerConnection,
+  method: string,
+  params: BbThreadStartParams | BbThreadResumeParams | BbThreadForkParams,
+): Promise<z.infer<typeof codexThreadIdentityResultSchema>> {
+  const sendOnce = (): Promise<
+    z.infer<typeof codexThreadIdentityResultSchema>
+  > =>
+    connection.request({
+      method,
+      params,
+      resultSchema: codexThreadIdentityResultSchema,
+      timeoutMs: CHILD_REQUEST_TIMEOUT_MS,
+    });
+  for (const [
+    retryIndex,
+    retryDelayMs,
+  ] of CODEX_ACTIVE_WRITER_RETRY_DELAYS_MS.entries()) {
+    try {
+      return await sendOnce();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!CODEX_ACTIVE_WRITER_ERROR_PATTERN.test(message)) {
+        throw error;
+      }
+      process.stderr.write(
+        `codex ${method} found an active rollout writer; retrying in ${retryDelayMs}ms (${retryIndex + 1}/${CODEX_ACTIVE_WRITER_RETRY_DELAYS_MS.length}).\n`,
+      );
+      await delay(retryDelayMs);
+    }
+  }
+  return await sendOnce();
+}
 
 type CodexSessionConstructionRequest =
   | { kind: "start" }
@@ -992,6 +1268,14 @@ async function constructThreadSession(
   const serial = sessionSerialCounter;
   const translator = createCodexEventTranslator({
     additionalWorkspaceWriteRoots: decoded.additionalWorkspaceWriteRoots,
+    ...(args.request.kind === "resume"
+      ? {
+          resumeProviderThreadId: args.request.providerThreadId,
+          ...(decoded.sessionOptions.model !== undefined
+            ? { resumeModel: decoded.sessionOptions.model }
+            : {}),
+        }
+      : {}),
   });
   translator.configureInjectedTools(
     (args.dynamicTools ?? []).map((tool) => ({
@@ -1001,6 +1285,12 @@ async function constructThreadSession(
         : { presentation: tool.presentation }),
     })),
   );
+  const launchEnv = appServerLaunchEnv(decoded.sessionOptions.envVars);
+  const mcpConfigSignature = await codexMcpConfigSignature({
+    cwd: args.cwd,
+    env: launchEnv,
+    deadlineMs: MCP_CONFIG_HASH_DEADLINE_MS,
+  });
   const session: CodexBridgeSession = {
     bbThreadId: args.threadId,
     codexThreadId:
@@ -1017,14 +1307,30 @@ async function constructThreadSession(
       args.cwd,
       decoded.sessionOptions,
     ),
+    turnPermissionSettings: toCodexPermissionSettings({
+      additionalWorkspaceWriteRoots: decoded.additionalWorkspaceWriteRoots,
+      gitWritableRoots: [],
+      options: decoded.sessionOptions,
+    }),
     openCodexTurnIds: new Set(),
     responseOpenedTurns: new Map(),
     unopenedCompactionDispatches: [],
+    collaborationMode: args.request.kind === "start" ? "default" : null,
+    model: null,
+    mcpConfigSignature,
     turnSettledWaiters: new Map(),
     awaitingReplayedUsage: args.request.kind !== "start",
     identityAnnounced: false,
     pendingPreIdentityDeltas: [],
+    turnRateLimits: null,
+    quotaRecoveryAttempted: false,
+    quotaRecoveryAllowed: !(
+      launchEnv[CODEX_POOL_BASE_URL_ENV] && launchEnv[CODEX_POOL_AUTH_TOKEN_ENV]
+    ),
     rebuildBeforeNextTurnReason: null,
+    daybreakEnabled: null,
+    modelCatalog: null,
+    publishedSessionOptions: existing?.publishedSessionOptions ?? null,
     closing: false,
     previousChildExit: null,
     releasePromise: null,
@@ -1050,19 +1356,35 @@ async function constructThreadSession(
   }
   sendThreadDeltas(session, [{ kind: "session.reset" }]);
 
+  let notifications = Promise.resolve();
   const connection = spawnChildConnection({
     envVars: decoded.sessionOptions.envVars,
+    cwd: args.cwd,
     recordThreadId: args.threadId,
-    onNotification: (method, params) =>
-      handleChildNotification(args.threadId, serial, method, params),
+    onNotification: (method, params) => {
+      notifications = notifications
+        .then(() =>
+          handleChildNotification(args.threadId, serial, method, params),
+        )
+        .catch((error: unknown) => {
+          sendNotification(BRIDGE_NOTIFICATION_METHODS.error, {
+            threadId: args.threadId,
+            message: describeCodexLaunchError(error),
+          });
+        });
+    },
     onRequest: (method, params, responder) =>
       handleChildRequest(args.threadId, serial, method, params, responder),
-    onExit: (info) => handleChildExit(args.threadId, serial, info),
+    onExit: (info) => {
+      void notifications.then(() =>
+        handleChildExit(args.threadId, serial, info),
+      );
+    },
   });
   session.connection = connection;
 
   try {
-    await initializeChild(connection, translator.buildPostInitializeRequests());
+    await initializeChild(connection);
 
     const preparedGitRoots = translator.prepareWorkspaceWriteGitRoots({
       command: {
@@ -1097,6 +1419,9 @@ async function constructThreadSession(
           model: decoded.sessionOptions.model ?? undefined,
           ephemeral: false,
           experimentalRawEvents: true,
+          ...(decoded.daybreak === null
+            ? {}
+            : { daybreakEnabled: decoded.daybreak }),
         };
         params = startParams;
         break;
@@ -1107,6 +1432,7 @@ async function constructThreadSession(
           threadId: args.request.providerThreadId,
           excludeTurns: true,
           ...sharedConstructionParams,
+          model: decoded.sessionOptions.model ?? undefined,
         };
         params = resumeParams;
         break;
@@ -1130,23 +1456,45 @@ async function constructThreadSession(
       }
     }
 
-    const result = await connection.request({
+    const result = await requestThreadConstructionWithWriterRetry(
+      connection,
       method,
       params,
-      resultSchema: codexThreadIdentityResultSchema,
-      timeoutMs: CHILD_REQUEST_TIMEOUT_MS,
-    });
+    );
     const codexThreadId = result.thread.id;
     session.codexThreadId = codexThreadId;
     translator.activateThreadGitWritableRoots({
       providerThreadId: codexThreadId,
       threadId: args.threadId,
     });
+    session.turnPermissionSettings = toCodexPermissionSettings({
+      additionalWorkspaceWriteRoots: decoded.additionalWorkspaceWriteRoots,
+      gitWritableRoots: translator.getThreadGitWritableRoots(args.threadId),
+      options: decoded.sessionOptions,
+    });
     announceSessionIdentity(session, codexThreadId);
     const executionDelta = toCodexExecutionDelta(result);
     if (executionDelta !== null) {
+      session.model = executionDelta.execution.model;
       sendThreadDeltas(session, [executionDelta]);
     }
+    session.daybreakEnabled = result.thread.daybreakEnabled ?? null;
+    if (args.request.kind === "start" && decoded.daybreak !== null) {
+      session.daybreakEnabled = decoded.daybreak;
+    } else if (
+      decoded.daybreak !== null &&
+      decoded.daybreak !== session.daybreakEnabled
+    ) {
+      await saveDaybreakChoice(
+        session,
+        connection,
+        codexThreadId,
+        decoded.daybreak,
+      );
+    }
+    const modelCatalog = loadSessionModelCatalog(connection);
+    session.modelCatalog = modelCatalog;
+    void modelCatalog.then((catalog) => publishDaybreakState(session, catalog));
     return { session, codexThreadId };
   } catch (error) {
     const released = session.closing;
@@ -1182,14 +1530,24 @@ function registerResumableSession(session: CodexBridgeSession): void {
     translator: session.translator,
     construction: session.construction,
     constructionSignature: session.constructionSignature,
+    turnPermissionSettings: session.turnPermissionSettings,
     openCodexTurnIds: new Set(),
     responseOpenedTurns: new Map(),
     unopenedCompactionDispatches: [],
+    collaborationMode: null,
+    model: session.model,
+    mcpConfigSignature: session.mcpConfigSignature,
     turnSettledWaiters: new Map(),
     awaitingReplayedUsage: true,
     identityAnnounced: session.identityAnnounced,
     pendingPreIdentityDeltas: [],
+    turnRateLimits: null,
+    quotaRecoveryAttempted: false,
+    quotaRecoveryAllowed: session.quotaRecoveryAllowed,
     rebuildBeforeNextTurnReason: null,
+    daybreakEnabled: session.daybreakEnabled,
+    modelCatalog: null,
+    publishedSessionOptions: session.publishedSessionOptions,
     closing: false,
     previousChildExit: null,
     releasePromise: null,
@@ -1361,9 +1719,26 @@ async function handleModelList(id: string | number): Promise<void> {
       resultSchema: ignoredChildResultSchema,
       timeoutMs: CHILD_REQUEST_TIMEOUT_MS,
     });
+    const { models, selectedOnlyModels } = parseModelCatalog(result);
+    const configuredModel = await connection
+      .request({
+        method: "config/read",
+        params: {},
+        resultSchema: z.object({
+          config: z.object({ model: z.string().nullish() }),
+        }),
+        timeoutMs: CHILD_REQUEST_TIMEOUT_MS,
+      })
+      .then((configResult) => configResult.config.model)
+      .catch(() => null);
+    if (models.some((model) => model.model === configuredModel)) {
+      for (const model of models) {
+        model.isDefault = model.model === configuredModel;
+      }
+    }
     sendResult(id, {
-      models: parseModelsResponse(result),
-      selectedOnlyModels: [],
+      models,
+      selectedOnlyModels,
     });
   } catch (error) {
     if (connection !== null) {
@@ -1371,7 +1746,9 @@ async function handleModelList(id: string | number): Promise<void> {
     }
     sendError(
       id,
-      BRIDGE_JSON_RPC_ERRORS.BRIDGE_ERROR,
+      isCodexSpawnFailure(error)
+        ? BRIDGE_JSON_RPC_ERRORS.MISSING_EXECUTABLE
+        : BRIDGE_JSON_RPC_ERRORS.BRIDGE_ERROR,
       describeCodexLaunchError(error),
     );
   }
@@ -1692,6 +2069,33 @@ function settleCompactionDispatchesWhenCodexIsNotRunning(
   }
 }
 
+async function reloadMcpServersIfConfigChanged(args: {
+  session: CodexBridgeSession;
+  connection: CodexAppServerConnection;
+  env: NodeJS.ProcessEnv;
+}): Promise<void> {
+  const signature = await codexMcpConfigSignature({
+    cwd: args.session.construction.cwd,
+    env: args.env,
+    deadlineMs: MCP_CONFIG_HASH_DEADLINE_MS,
+  });
+  if (signature === args.session.mcpConfigSignature) {
+    return;
+  }
+  try {
+    await args.connection.request({
+      method: "config/mcpServer/reload",
+      resultSchema: ignoredChildResultSchema,
+      timeoutMs: MCP_RELOAD_TIMEOUT_MS,
+    });
+    args.session.mcpConfigSignature = signature;
+  } catch (error) {
+    process.stderr.write(
+      `codex MCP config changed but reloading its MCP servers failed: ${error instanceof Error ? error.message : String(error)}\n`,
+    );
+  }
+}
+
 async function handleTurnStart(
   id: string | number,
   params: TurnStartParamsShape,
@@ -1716,6 +2120,11 @@ async function handleTurnStart(
 
   const input: PromptInput[] = params.input;
   const decoded = decodeCodexOptions(params.options);
+  await reloadMcpServersIfConfigChanged({
+    session,
+    connection,
+    env: appServerLaunchEnv(decoded.sessionOptions.envVars),
+  });
 
   const prepared = session.translator.prepareTurnStart({
     clientRequestId: params.clientRequestId,
@@ -1745,20 +2154,48 @@ async function handleTurnStart(
         ),
         options: decoded.sessionOptions,
       });
-      result = await connection.request({
-        method: "turn/start",
-        params: {
-          threadId: codexThreadId,
-          input: toCodexUserInput(input),
-          approvalPolicy: permissionSettings.approvalPolicy,
-          approvalsReviewer: permissionSettings.approvalsReviewer,
-          sandboxPolicy: permissionSettings.sandboxPolicy,
-          model: decoded.sessionOptions.model ?? undefined,
-          serviceTier: toCodexServiceTier(decoded.sessionOptions.serviceTier),
-        },
-        resultSchema: ignoredChildResultSchema,
-        timeoutMs: CHILD_REQUEST_TIMEOUT_MS,
+      const collaborationMode = nextCodexCollaborationMode({
+        options: decoded.sessionOptions,
+        current: session.collaborationMode,
+        threadModel: session.model,
       });
+      const cyberAccessProgram = await resolveTurnCyberAccessProgram(
+        session,
+        connection,
+        codexThreadId,
+        decoded,
+      );
+      const previousPermissions = session.turnPermissionSettings;
+      session.turnPermissionSettings = permissionSettings;
+      result = await connection
+        .request({
+          method: "turn/start",
+          params: {
+            threadId: codexThreadId,
+            input: toCodexTurnInput(input, decoded.sessionOptions),
+            approvalPolicy: permissionSettings.approvalPolicy,
+            approvalsReviewer: permissionSettings.approvalsReviewer,
+            sandboxPolicy: permissionSettings.sandboxPolicy,
+            model: decoded.sessionOptions.model ?? undefined,
+            serviceTier: toCodexServiceTier(decoded.sessionOptions.serviceTier),
+            ...(collaborationMode === null ? {} : { collaborationMode }),
+            ...(cyberAccessProgram === null ? {} : { cyberAccessProgram }),
+          },
+          resultSchema: ignoredChildResultSchema,
+          timeoutMs: CHILD_REQUEST_TIMEOUT_MS,
+        })
+        .catch((error: unknown) => {
+          if (session.turnPermissionSettings === permissionSettings) {
+            session.turnPermissionSettings = previousPermissions;
+          }
+          throw error;
+        });
+      if (collaborationMode !== null) {
+        session.collaborationMode = collaborationMode.mode;
+      }
+      if (decoded.sessionOptions.model !== undefined) {
+        session.model = decoded.sessionOptions.model;
+      }
     }
     sendResult(id, { threadId: params.threadId });
     settleAcceptedDispatch({
@@ -1802,6 +2239,39 @@ async function handleTurnSteer(
     return;
   }
   try {
+    const decoded = decodeCodexOptions(params.options);
+    const permissionSettings = toCodexPermissionSettings({
+      additionalWorkspaceWriteRoots: decoded.additionalWorkspaceWriteRoots,
+      gitWritableRoots: session.translator.getThreadGitWritableRoots(
+        params.threadId,
+      ),
+      options: decoded.sessionOptions,
+    });
+    if (
+      !isDeepStrictEqual(session.turnPermissionSettings, permissionSettings)
+    ) {
+      if (!session.openCodexTurnIds.has(params.expectedTurnId)) {
+        throw new Error("The turn to steer is no longer active");
+      }
+      const failure = await interruptCodexTurn(
+        session,
+        session.codexThreadId,
+        params.expectedTurnId,
+      );
+      if (failure !== null) throw failure;
+      const settled = await waitForCodexTurnSettlement(
+        session,
+        params.expectedTurnId,
+        INTERRUPT_SETTLEMENT_TIMEOUT_MS,
+      );
+      if (!settled) {
+        throw new Error(
+          "Codex did not stop the active turn before applying new permissions",
+        );
+      }
+      await handleTurnStart(id, params);
+      return;
+    }
     await session.connection.request({
       method: "turn/steer",
       params: {
@@ -2114,7 +2584,10 @@ async function handleRequest(
     case "provider/installation/status":
       sendResult(
         request.id,
-        await getCodexProviderInstallationStatus(request.params.requirement),
+        await getCodexProviderInstallationStatus(
+          request.params.requirement,
+          request.params.checkUpdates,
+        ),
       );
       break;
     case "provider/installation/run":

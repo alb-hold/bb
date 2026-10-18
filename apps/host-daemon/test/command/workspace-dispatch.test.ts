@@ -1,20 +1,17 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { GitHostPullRequest } from "@bb/domain";
-import { afterEach, describe, expect, it } from "vitest";
+import { makeTempDir } from "@bb/test-helpers";
+import { describe, expect, it } from "vitest";
 import {
   dispatchCommand,
   dispatchOnlineRpcCommand,
 } from "../../src/command-dispatch.js";
 import {
-  cleanupTempDirs,
   createFakeWorkspace,
   createHarness,
-  makeTempDir,
   runGitCommand,
 } from "./dispatch-helpers.js";
-
-afterEach(cleanupTempDirs);
 
 describe("workspace command dispatch", () => {
   it("covers workspace git commands", async () => {
@@ -27,6 +24,7 @@ describe("workspace command dispatch", () => {
     const statusResult = await dispatchOnlineRpcCommand(
       {
         type: "workspace.status",
+        maxFiles: 200,
         environmentId: "env-1",
         maxUntrackedLineStatFiles: 50,
         maxUntrackedLineStatBytes: 8 * 1024 * 1024,
@@ -36,6 +34,7 @@ describe("workspace command dispatch", () => {
         mergeBaseBranch: "main",
       },
       harness.dispatchOptions(),
+      new AbortController().signal,
     );
     const diffResult = await dispatchOnlineRpcCommand(
       {
@@ -50,6 +49,7 @@ describe("workspace command dispatch", () => {
         maxUntrackedFiles: 5000,
       },
       harness.dispatchOptions(),
+      new AbortController().signal,
     );
     const commitResult = await dispatchCommand(
       {
@@ -95,6 +95,7 @@ describe("workspace command dispatch", () => {
     const result = await dispatchOnlineRpcCommand(
       {
         type: "workspace.status",
+        maxFiles: 200,
         environmentId: "env-late-git",
         maxUntrackedLineStatFiles: 50,
         maxUntrackedLineStatBytes: 8 * 1024 * 1024,
@@ -103,6 +104,7 @@ describe("workspace command dispatch", () => {
         },
       },
       harness.dispatchOptions(),
+      new AbortController().signal,
     );
 
     expect(result.outcome).toBe("available");
@@ -129,6 +131,8 @@ describe("workspace command dispatch", () => {
       baseRefName: "main",
       headRefName: "bb/timeline-polish",
       updatedAt: "2026-06-16T12:30:00Z",
+      autoMerge: false,
+      inMergeQueue: false,
       checks: [],
       reviewDecision: null,
       reviewRequestCount: 0,
@@ -146,6 +150,7 @@ describe("workspace command dispatch", () => {
         },
       },
       harness.dispatchOptions(),
+      new AbortController().signal,
     );
     expect(presentResult).toEqual({ outcome: "available", pullRequest });
     expect(harness.workspaceState.pullRequestLookupShellPath).toBe(
@@ -162,6 +167,7 @@ describe("workspace command dispatch", () => {
         },
       },
       harness.dispatchOptions(),
+      new AbortController().signal,
     );
     expect(absentResult).toEqual({ outcome: "absent" });
 
@@ -176,6 +182,7 @@ describe("workspace command dispatch", () => {
         },
       },
       harness.dispatchOptions(),
+      new AbortController().signal,
     );
     expect(unavailableResult).toEqual({
       outcome: "unavailable",
@@ -195,6 +202,8 @@ describe("workspace command dispatch", () => {
       baseRefName: "main",
       headRefName: "bb/hidden-pr",
       updatedAt: "2026-06-16T12:30:00Z",
+      autoMerge: false,
+      inMergeQueue: false,
       checks: [],
       reviewDecision: null,
       reviewRequestCount: 0,
@@ -215,6 +224,7 @@ describe("workspace command dispatch", () => {
         },
       },
       harness.dispatchOptions(),
+      new AbortController().signal,
     );
 
     expect(result).toEqual({ outcome: "absent" });
@@ -293,6 +303,7 @@ describe("workspace command dispatch", () => {
     const result = await dispatchOnlineRpcCommand(
       {
         type: "workspace.status",
+        maxFiles: 200,
         environmentId: "env-rehydrate",
         maxUntrackedLineStatFiles: 50,
         maxUntrackedLineStatBytes: 8 * 1024 * 1024,
@@ -301,6 +312,7 @@ describe("workspace command dispatch", () => {
         },
       },
       harness.dispatchOptions(),
+      new AbortController().signal,
     );
 
     expect(result.outcome).toBe("available");
@@ -327,6 +339,7 @@ describe("workspace command dispatch", () => {
     const statusResult = await dispatchOnlineRpcCommand(
       {
         type: "workspace.status",
+        maxFiles: 200,
         environmentId: "env-non-git",
         maxUntrackedLineStatFiles: 50,
         maxUntrackedLineStatBytes: 8 * 1024 * 1024,
@@ -335,6 +348,7 @@ describe("workspace command dispatch", () => {
         },
       },
       harness.dispatchOptions(),
+      new AbortController().signal,
     );
     const diffResult = await dispatchOnlineRpcCommand(
       {
@@ -349,6 +363,7 @@ describe("workspace command dispatch", () => {
         maxUntrackedFiles: 5000,
       },
       harness.dispatchOptions(),
+      new AbortController().signal,
     );
 
     expect(statusResult).toEqual({
@@ -374,6 +389,7 @@ describe("workspace command dispatch", () => {
     const result = await dispatchOnlineRpcCommand(
       {
         type: "host.list_files",
+        followRootSymlink: false,
         path: tempDir,
         limit: 1000,
         includeHidden: false,
@@ -381,17 +397,21 @@ describe("workspace command dispatch", () => {
         excludeNames: [],
       },
       harness.dispatchOptions(),
+      new AbortController().signal,
     );
 
     const paths = result.files.map((file) => file.path).sort();
-    expect(paths).toEqual(["notes.md", path.join("notes", "todo.md")]);
+    expect(paths).toEqual(["notes.md", "notes/todo.md"]);
     expect(result.truncated).toBe(false);
   });
 
   it("covers host.list_paths with directories included", async () => {
     const tempDir = await makeTempDir("bb-dispatch-host-list-paths-");
-    await fs.mkdir(path.join(tempDir, "notes"));
-    await fs.writeFile(path.join(tempDir, "notes", "todo.md"), "world");
+    await fs.mkdir(path.join(tempDir, "notes", "daily"), { recursive: true });
+    await fs.writeFile(
+      path.join(tempDir, "notes", "daily", "todo.md"),
+      "world",
+    );
 
     const harness = createHarness();
     const result = await dispatchOnlineRpcCommand(
@@ -406,6 +426,7 @@ describe("workspace command dispatch", () => {
         includeDirectories: true,
       },
       harness.dispatchOptions(),
+      new AbortController().signal,
     );
 
     expect(
@@ -418,7 +439,8 @@ describe("workspace command dispatch", () => {
         .sort((left, right) => left.path.localeCompare(right.path)),
     ).toEqual([
       { kind: "directory", path: "notes", name: "notes" },
-      { kind: "file", path: path.join("notes", "todo.md"), name: "todo.md" },
+      { kind: "directory", path: "notes/daily", name: "daily" },
+      { kind: "file", path: "notes/daily/todo.md", name: "todo.md" },
     ]);
     expect(result.truncated).toBe(false);
   });
@@ -431,6 +453,7 @@ describe("workspace command dispatch", () => {
     const result = await dispatchOnlineRpcCommand(
       {
         type: "host.list_files",
+        followRootSymlink: false,
         path: missingPath,
         limit: 1000,
         includeHidden: false,
@@ -438,6 +461,7 @@ describe("workspace command dispatch", () => {
         excludeNames: [],
       },
       harness.dispatchOptions(),
+      new AbortController().signal,
     );
 
     expect(result.files).toEqual([]);
@@ -461,6 +485,7 @@ describe("workspace command dispatch", () => {
         includeDirectories: true,
       },
       harness.dispatchOptions(),
+      new AbortController().signal,
     );
 
     expect(result.paths).toEqual([]);
@@ -481,6 +506,7 @@ describe("workspace command dispatch", () => {
       dispatchOnlineRpcCommand(
         {
           type: "host.list_files",
+          followRootSymlink: false,
           path: symlinkRoot,
           limit: 1000,
           includeHidden: false,
@@ -488,6 +514,7 @@ describe("workspace command dispatch", () => {
           excludeNames: [],
         },
         harness.dispatchOptions(),
+        new AbortController().signal,
       ),
     ).rejects.toMatchObject({
       code: "invalid_path",
@@ -495,69 +522,73 @@ describe("workspace command dispatch", () => {
     });
   });
 
-  it("covers host.read_file", async () => {
-    const tempDir = await makeTempDir("bb-dispatch-host-read-file-");
-    const filePath = path.join(tempDir, "notes.md");
-    await fs.writeFile(filePath, "durable thread notes");
-
+  it("reads and lists a linked skill while confining files to its resolved root", async () => {
+    const tempDir = await makeTempDir("bb-dispatch-linked-skill-");
+    const skillRoot = path.join(tempDir, "shared", "research");
+    const linkedRoot = path.join(tempDir, "research");
+    await fs.mkdir(path.join(skillRoot, "references"), { recursive: true });
+    await fs.writeFile(path.join(skillRoot, "SKILL.md"), "# Research");
+    await fs.writeFile(
+      path.join(skillRoot, "references", "guide.md"),
+      "# Guide",
+    );
+    await fs.writeFile(path.join(skillRoot, ".env"), "hidden");
+    await fs.writeFile(path.join(tempDir, "outside.md"), "outside");
+    await fs.symlink(skillRoot, linkedRoot, "dir");
+    await fs.symlink(
+      path.join(tempDir, "outside.md"),
+      path.join(skillRoot, "escape.md"),
+    );
     const harness = createHarness();
-    const result = await dispatchOnlineRpcCommand(
+    const signal = new AbortController().signal;
+
+    const files = await dispatchOnlineRpcCommand(
       {
-        type: "host.read_file",
-        path: filePath,
-        rootPath: tempDir,
+        type: "host.list_files",
+        followRootSymlink: true,
+        path: linkedRoot,
+        limit: 200,
+        includeHidden: false,
+        respectGitIgnore: false,
+        excludeNames: [],
       },
       harness.dispatchOptions(),
+      signal,
     );
+    expect(files.files.map((file) => file.path).sort()).toEqual([
+      "SKILL.md",
+      "references/guide.md",
+    ]);
 
-    expect(result.path).toBe(filePath);
-    expect("content" in result ? result.content : undefined).toBe(
-      "durable thread notes",
-    );
-    expect(result.contentEncoding).toBe("utf8");
-    expect(result.sizeBytes).toBe("durable thread notes".length);
-  });
+    const read = (relativePath: string) =>
+      dispatchOnlineRpcCommand(
+        {
+          type: "host.read_file_relative",
+          followRootSymlink: true,
+          rootPath: linkedRoot,
+          path: relativePath,
+          dotfiles: "deny",
+        },
+        harness.dispatchOptions(),
+        signal,
+      );
+    await expect(read("SKILL.md")).resolves.toMatchObject({
+      content: "# Research",
+    });
+    await expect(read("references/guide.md")).resolves.toMatchObject({
+      content: "# Guide",
+    });
+    await expect(read("escape.md")).rejects.toMatchObject({
+      code: "invalid_path",
+      message: expect.stringContaining("escapes read root"),
+    });
+    await expect(read("../outside.md")).rejects.toMatchObject({
+      code: "invalid_path",
+    });
+    await expect(read(".env")).rejects.toMatchObject({ code: "ENOENT" });
 
-  it("covers rootless host.read_file for explicit disk paths", async () => {
-    const tempDir = await makeTempDir("bb-dispatch-host-read-file-rootless-");
-    const filePath = path.join(tempDir, "notes.md");
-    await fs.writeFile(filePath, "explicit host notes");
-
-    const harness = createHarness();
-    const result = await dispatchOnlineRpcCommand(
-      {
-        type: "host.read_file",
-        path: filePath,
-      },
-      harness.dispatchOptions(),
-    );
-
-    expect(result.path).toBe(filePath);
-    expect("content" in result ? result.content : undefined).toBe(
-      "explicit host notes",
-    );
-    expect(result.contentEncoding).toBe("utf8");
-    expect(result.sizeBytes).toBe("explicit host notes".length);
-  });
-
-  it("covers host.file_metadata", async () => {
-    const tempDir = await makeTempDir("bb-dispatch-host-file-metadata-");
-    const filePath = path.join(tempDir, "notes.md");
-    await fs.writeFile(filePath, "durable thread notes");
-
-    const harness = createHarness();
-    const result = await dispatchOnlineRpcCommand(
-      {
-        type: "host.file_metadata",
-        path: filePath,
-        rootPath: tempDir,
-      },
-      harness.dispatchOptions(),
-    );
-
-    expect(result.path).toBe(filePath);
-    expect(result.sizeBytes).toBe("durable thread notes".length);
-    expect(result.modifiedAtMs).toBeGreaterThan(0);
+    await fs.rm(skillRoot, { recursive: true });
+    await expect(read("SKILL.md")).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("returns base64 for image files", async () => {
@@ -574,6 +605,7 @@ describe("workspace command dispatch", () => {
         rootPath: tempDir,
       },
       harness.dispatchOptions(),
+      new AbortController().signal,
     );
 
     expect(result.path).toBe(imagePath);
@@ -597,11 +629,13 @@ describe("workspace command dispatch", () => {
     const result = await dispatchOnlineRpcCommand(
       {
         type: "host.read_file_relative",
+        followRootSymlink: false,
         rootPath: tempDir,
         path: "assets/logo.png",
         dotfiles: "deny",
       },
       harness.dispatchOptions(),
+      new AbortController().signal,
     );
 
     expect(result.path).toBe("assets/logo.png");
@@ -621,11 +655,13 @@ describe("workspace command dispatch", () => {
     const result = await dispatchOnlineRpcCommand(
       {
         type: "host.read_file_relative",
+        followRootSymlink: false,
         rootPath: tempDir,
         path: "large.png",
         dotfiles: "deny",
       },
       harness.dispatchOptions(),
+      new AbortController().signal,
     );
 
     expect(result.path).toBe("large.png");
@@ -641,11 +677,13 @@ describe("workspace command dispatch", () => {
       dispatchOnlineRpcCommand(
         {
           type: "host.read_file_relative",
+          followRootSymlink: false,
           rootPath: tempDir,
           path: "../secrets.txt",
           dotfiles: "deny",
         },
         harness.dispatchOptions(),
+        new AbortController().signal,
       ),
     ).rejects.toMatchObject({
       code: "invalid_path",
@@ -664,11 +702,13 @@ describe("workspace command dispatch", () => {
       dispatchOnlineRpcCommand(
         {
           type: "host.read_file_relative",
+          followRootSymlink: false,
           rootPath: tempDir,
           path: ".env",
           dotfiles: "deny",
         },
         harness.dispatchOptions(),
+        new AbortController().signal,
       ),
     ).rejects.toMatchObject({
       code: "ENOENT",
@@ -689,11 +729,13 @@ describe("workspace command dispatch", () => {
       dispatchOnlineRpcCommand(
         {
           type: "host.read_file_relative",
+          followRootSymlink: false,
           rootPath: tempDir,
           path: "outside-link.txt",
           dotfiles: "deny",
         },
         harness.dispatchOptions(),
+        new AbortController().signal,
       ),
     ).rejects.toMatchObject({
       code: "invalid_path",
@@ -717,87 +759,17 @@ describe("workspace command dispatch", () => {
       dispatchOnlineRpcCommand(
         {
           type: "host.read_file_relative",
+          followRootSymlink: false,
           rootPath: symlinkRoot,
           path: "index.html",
           dotfiles: "deny",
         },
         harness.dispatchOptions(),
+        new AbortController().signal,
       ),
     ).rejects.toMatchObject({
       code: "invalid_path",
       message: expect.stringContaining("must not be a symlink"),
-    });
-  });
-
-  it("rejects host.read_file with a relative path", async () => {
-    const harness = createHarness();
-
-    await expect(
-      dispatchOnlineRpcCommand(
-        {
-          type: "host.read_file",
-          path: "notes.md",
-          rootPath: "/tmp",
-        },
-        harness.dispatchOptions(),
-      ),
-    ).rejects.toThrow("Path must be absolute");
-  });
-
-  it("normalizes missing host.read_file paths to ENOENT", async () => {
-    const tempDir = await makeTempDir("bb-dispatch-host-read-missing-");
-    const harness = createHarness();
-
-    await expect(
-      dispatchOnlineRpcCommand(
-        {
-          type: "host.read_file",
-          path: path.join(tempDir, "missing.md"),
-          rootPath: tempDir,
-        },
-        harness.dispatchOptions(),
-      ),
-    ).rejects.toMatchObject({
-      code: "ENOENT",
-      message: expect.stringContaining("Path does not exist"),
-    });
-  });
-
-  it("normalizes missing rootless host.read_file paths to ENOENT", async () => {
-    const tempDir = await makeTempDir(
-      "bb-dispatch-host-read-rootless-missing-",
-    );
-    const harness = createHarness();
-
-    await expect(
-      dispatchOnlineRpcCommand(
-        {
-          type: "host.read_file",
-          path: path.join(tempDir, "missing.md"),
-        },
-        harness.dispatchOptions(),
-      ),
-    ).rejects.toMatchObject({
-      code: "ENOENT",
-      message: expect.stringContaining("Path does not exist"),
-    });
-  });
-
-  it("rejects rootless host.read_file directory paths", async () => {
-    const tempDir = await makeTempDir("bb-dispatch-host-read-rootless-dir-");
-    const harness = createHarness();
-
-    await expect(
-      dispatchOnlineRpcCommand(
-        {
-          type: "host.read_file",
-          path: tempDir,
-        },
-        harness.dispatchOptions(),
-      ),
-    ).rejects.toMatchObject({
-      code: "invalid_path",
-      message: "Path is a directory, not a file",
     });
   });
 
@@ -820,6 +792,7 @@ describe("workspace command dispatch", () => {
           rootPath: tempDir,
         },
         harness.dispatchOptions(),
+        new AbortController().signal,
       ),
     ).rejects.toMatchObject({
       code: "invalid_path",
@@ -846,6 +819,7 @@ describe("workspace command dispatch", () => {
           rootPath: symlinkRoot,
         },
         harness.dispatchOptions(),
+        new AbortController().signal,
       ),
     ).rejects.toMatchObject({
       code: "invalid_path",
@@ -868,6 +842,7 @@ describe("workspace command dispatch", () => {
           rootPath: tempDir,
         },
         harness.dispatchOptions(),
+        new AbortController().signal,
       ),
     ).rejects.toMatchObject({
       code: "file_too_large",
@@ -890,6 +865,7 @@ describe("workspace command dispatch", () => {
           rootPath: tempDir,
         },
         harness.dispatchOptions(),
+        new AbortController().signal,
       ),
     ).rejects.toMatchObject({
       code: "file_too_large",
@@ -911,6 +887,7 @@ describe("workspace command dispatch", () => {
         rootPath: tempDir,
       },
       harness.dispatchOptions(),
+      new AbortController().signal,
     );
 
     expect(result.mimeType).toBe("image/svg+xml");
@@ -932,6 +909,7 @@ describe("workspace command dispatch", () => {
         rootPath: tempDir,
       },
       harness.dispatchOptions(),
+      new AbortController().signal,
     );
 
     expect(result.mimeType).toBe("text/plain");

@@ -34,8 +34,7 @@ every command the behavior agents rely on: `--help` at every level with exit
 0, `unknown option '--x' (Did you mean --y?)`, every missing required option
 in one error, typed value errors, and with `--json` a
 `{"ok": false, "error": {"code", "message", "hint"}}` envelope on stdout while
-stderr keeps the readable text. Hand-written parsers have silently ignored
-unknown flags and lost user data.
+stderr keeps the readable text.
 
 ```ts
 import { PluginCliError, cliCommand, defineCli } from "@get-bb/plugin-sdk";
@@ -91,7 +90,11 @@ Command keys are invocation paths, so `"account add"` declares
 `bb weather account add`. Put every spelling an agent might guess in an
 option's hidden `aliases`, state limits in each `description` because they
 show in `--help`, and express "exactly one of" and "X requires Y" with
-`constraints`. Keep a required ID strict, but when `ctx.projectId` or
+`constraints`. Set `stdin: true` on a secret-bearing string option so
+callers can pipe it: the `bb` CLI reads exactly one non-empty line (at most
+16 KiB) from piped stdin for `--<name>-stdin` and passes it to the plugin as
+`--<name> <value>`, keeping the value out of process arguments. Keep a
+required ID strict, but when `ctx.projectId` or
 `ctx.threadId` holds the value, throw an `PluginCliError` whose `hint`
 prints the exact flag to add. A registration built this way sets
 `rendersHelp`, so `bb weather today --help` reaches the plugin and
@@ -130,7 +133,8 @@ Use `bb.ui.requestInput({ threadId, rendererId, title, payload, timeoutMs? },
 { signal? })` for sensitive or structured user input. Pair `rendererId` with a
 frontend `pendingInteraction` slot. The promise resolves to
 `{ outcome: "submitted", value }` or `{ outcome: "cancelled", reason }`.
-Payloads and responses are JSON values capped at 64 KiB.
+Payloads and responses are JSON values capped at 64 KiB. `timeoutMs` defaults
+to ten minutes and is capped at seven days.
 
 Two optional fields control the form's timeline row:
 
@@ -159,8 +163,9 @@ aborts it. For tools that never open a form, request cancellation still aborts
 
 To give agents standing knowledge (conventions, workflows), ship a
 `skills/` directory. For schema'd capabilities, register a native tool.
-For a short, per-resolution instruction block (e.g. "the user is viewing
-bb remotely — share tunnel URLs"), use `contributeInstructions`:
+For a short instruction block that must reflect live plugin state (e.g. "the
+user is viewing bb remotely — share tunnel URLs"), use
+`contributeInstructions`:
 
 ```ts
 import { z } from "zod"; // runtime import — declare zod as a plugin dependency
@@ -168,9 +173,6 @@ bb.agents.registerTool({
   name: "docs_search", // [a-zA-Z0-9_-]+, unique ACROSS plugins
   description: "Search the bundled docs.",
   instructions: "Prefer docs_search over guessing conventions.", // optional, appended to thread instructions
-  // Optional row presentation (grammar v3). Without it, BB shows its normal
-  // tool name and the plugin's branding glyph. Errors/interruptions keep
-  // that standard rendering so the failing tool remains identifiable.
   presentation: {
     label: {
       pending: "Searching bundled docs",
@@ -191,11 +193,7 @@ bb.agents.configure((context) => ({
   instructions: `Docs selection resolved for ${context.project.name}.`,
 }));
 
-// Dynamic section evaluated at thread.start / turn.submit (sync, fast).
-// Return null to contribute nothing for that resolution. Duplicate factory
-// registrations are rejected. Output is capped at 4096
-// characters; a throw is logged and contributes nothing. Side-chat
-// threads never receive plugin instructions.
+// Return null to contribute nothing for that resolution.
 bb.agents.contributeInstructions(({ threadId, projectId }) => {
   if (!shouldAdviseRemoteUrls()) return null;
   return "The user is viewing bb remotely — share tunnel URLs, not localhost.";
@@ -204,122 +202,99 @@ bb.agents.contributeInstructions(({ threadId, projectId }) => {
 
 `parameters` is a zod schema (zod 4; validated per call — bad model args
 become a tool error, not a plugin crash) or a plain JSON-schema object
-(execute then receives raw `unknown`). Tool-set changes apply on the NEXT
-session start, not mid-session. Name collisions: within one factory execution
-duplicate registrations are rejected; across plugins the earlier plugin wins
-and yours is dropped with the reason in your status detail.
+(execute then receives raw `unknown`). Name collisions: within one factory
+execution duplicate registrations are rejected; across plugins the earlier
+plugin wins and yours is dropped with the reason in your status detail.
 
-`presentation` is optional: `label` supplies static, concise
-titles for the pending and completed states (each limited to 80 characters;
-a longer label rejects the registration), `icon` a host glyph name or one of
-this plugin's declared icons as `{ glyph: "<pluginId>/<name>" }` (see
-`bb.branding.experimental_icons`; another plugin's id or an undeclared name
-rejects the registration), `suppress` collapses low-value rows by default,
-and `tint` accents the row per theme. The server resolves one full presentation per tool and the
-provider bridge stamps it on every call's timeline row (the row's glyph is
-checked at ingest against this plugin's declared icons, whichever plugin
-provides the thread); it is not a frontend
-bundle hook. A state with no label — error, interrupted, or awaiting
-approval — falls back to BB's standard `Running tool …` / `Ran tool …`
-wording, as does omitting the field entirely.
+`presentation` is optional: `label` supplies static, concise titles for the
+pending and completed states (each limited to 80 characters; a longer label
+rejects the registration), `icon` a host glyph name or one of this plugin's
+declared icons as `{ glyph: "<pluginId>/<name>" }` (see
+`bb.branding.experimental_icons` in quickstart.md; another plugin's id or an
+undeclared name rejects the registration), `suppress` collapses low-value rows
+by default, and `tint` accents the row per theme. BB stamps it on every call's
+timeline row, whichever provider runs the thread; it needs no frontend bundle.
+Without it, and in any state with no label — error, interrupted, or awaiting
+approval — rows use BB's standard `Running tool …` / `Ran tool …` wording and
+the plugin's branding glyph.
 
-`contributeInstructions` is synchronous. It runs on `thread.start` and
-`turn.submit`, so keep it fast. Prefer `skills/` for standing knowledge. Use
-this callback only when the text must reflect live plugin state.
+`configure` and `contributeInstructions` are synchronous, may each be
+registered once per factory execution, and run whenever BB resolves a
+thread's configuration (`thread.start` and `turn.submit`), so keep them fast.
+Prefer `skills/` for standing knowledge. Resolved tools and instructions take
+effect only when the provider session is next constructed; BB never
+hot-mutates a running session. A busy environment keeps its current staged
+skill catalog until a safe relaunch. Side chats also run both callbacks.
 
-Ordering is standard BB instructions, selected tools' static snippets,
-`contributeInstructions` output, `configure` dynamic instructions, data-dir
-user instructions, then workspace instructions. Tool snippets are rejected at
-registration above 4096 characters; each legacy/dynamic callback contribution
-is truncated to 4096 characters.
-
-`configure` is also synchronous and may be registered only once per factory
-execution. Its context has required, plain-data `thread`, `project`,
+`configure`'s context has required, plain-data `thread`, `project`,
 `environment`, `host`, and `provider` objects. The `provider` object includes
 `id`, `model`, and declared capabilities. The `origin` object has `kind` and
 `pluginId`; genuinely absent values are `null`, not omitted. A side chat has
-`origin: { kind: "fork", pluginId: "side-chat" }`. `tools` names and `skills`
-frontmatter names may select only this plugin's static registrations. A
-`tools` entry may instead be
+`origin: { kind: "fork", pluginId: "side-chat" }`; `contributeInstructions`
+gets only `threadId` and `projectId`, so use `configure` when a contribution
+must recognize side chats. `context.pluginMetadata` is described in
+backend-sdk.md. `tools` names and `skills` frontmatter names may select only
+this plugin's static registrations. A `tools` entry may instead be
 `{ name, parameters }` to override the parameter schema advertised to the
 provider for that resolution only — `parameters` must be a JSON-serializable
 JSON-schema object with root `type: "object"`, at most 128 KiB serialized, and
 should only narrow what the registered schema accepts, since execution-side
 validation still runs the registered parameters. Unknown or duplicate ids,
 malformed output, an invalid override, more than 256 ids in either array, or a
-throwing callback fail closed for that plugin only. Dynamic `instructions` are
-truncated to 4096 characters.
+throwing callback fail closed for that plugin only.
 
-Resolution happens for `thread.start` and `turn.submit`. A selected tool set
-takes effect only when the provider session is next started/resumed; BB never
-hot-mutates a running provider session. Instructions follow the same rule: a
-live provider session keeps the instructions it was constructed with, and
-changed instructions apply when the session is next constructed.
-Skill catalog changes follow the daemon's established runtime policy. A busy
-environment keeps its current staged catalog until a safe relaunch. Side chats
-also evaluate `configure`; inspect `origin` to identify them. Returned tools,
-skills, and dynamic instructions use the same boundaries. The legacy
-`contributeInstructions` also runs for side chats, but its legacy context has
-only `threadId` and `projectId`. Use `configure` when the contribution must
-inspect the side-chat origin.
+Instruction ordering is standard BB instructions, selected tools' static
+snippets, `contributeInstructions` output, `configure` dynamic instructions,
+data-dir user instructions, then workspace instructions. Tool snippets above
+4096 characters reject the registration; each callback contribution is
+truncated to 4096 characters, and a throwing `contributeInstructions` is
+logged and contributes nothing.
 
-### bb.experimental_aiServices — helper inference and voice transcription
+### bb.experimental_aiServices — titles, commit messages, and voice
 
-bb's own AI services — the server-side helper completions behind thread
-titles and commit messages, and voice transcription — are served by plugins.
-Register a service in `server.ts` and implement the shared contract in the
-plugin's `bb.host` entry; the user selects it with `BB_INFERENCE` /
-`BB_TRANSCRIPTION` set to `<id>/<model>` (`bb settings ai-services` lists
-the options). The server reserves `openai` and every direct inference provider
-id in its current provider registry. This includes `anthropic`, `google`,
-`openrouter`, and their regional or gateway variants. Registration rejects
-every reserved id. An id from another loaded plugin also fails your plugin
-load:
+bb's helper tasks are served by plugins: thread titles (branch names follow the
+title), commit messages, and voice transcripts. Register plain functions in
+`server.ts`. The user picks a service per task in Settings → AI services or
+with `bb settings ai-services set <task> <service-id>`:
 
 ```ts
-// server.ts
 bb.experimental_aiServices.register({
   id: "acme",
   displayName: "Acme AI",
-  kinds: ["inference", "voice"],
-});
-```
-
-```ts
-// host.ts
-import { experimental_aiServicesHostContract } from "@get-bb/plugin-sdk/ai-services";
-import { experimental_defineHostEntry } from "@get-bb/plugin-sdk/host";
-
-export default experimental_defineHostEntry({
-  contract: experimental_aiServicesHostContract,
-  handlers: {
-    "ai.inference.complete": async (input) => {
-      const value = await completeStructured(input);
-      return { ok: true, model: input.model, value };
-    },
-    "ai.voice.transcribe": async (input) => {
-      // input.audioBase64, input.mimeType, input.filename, input.prompt
-      return { ok: true, model: input.model, text: await transcribe(input) };
-    },
+  complete: async (prompt, { signal }) => {
+    const response = await fetch("https://api.acme.test/v1/chat/completions", {
+      method: "POST",
+      signal,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ messages: [{ role: "user", content: prompt }] }),
+    });
+    const body = await response.json();
+    return body.choices[0].message.content;
   },
+  transcribe: async (audio, { signal, hint }) =>
+    transcribeWithAcme(audio, hint, signal),
+  status: async () =>
+    apiKey ? { ready: true } : { ready: false, message: "Add an API key" },
 });
 ```
 
-Report failures in the result, not by throwing: `{ ok: false, code, message }`
-with `code` one of `timeout`, `rate_limited`, `service_unavailable`,
-`auth_required`, `request_failed`, `invalid_response`. Generic inference
-retries the first three codes and then uses `BB_INFERENCE_FALLBACK`. Voice
-retries the configured `BB_TRANSCRIPTION` model. Exhausted voice timeouts map
-to `transcription_timeout`. Exhausted rate-limit or availability failures map
-to `transcription_unavailable`. Every call carries `serviceId`, so one host
-entry may serve several registered ids. The registration needs a `bb.host`
-entry; without one the plugin fails to load. A host artifact may export a provider bridge
-(`experimental_providerBridge`) and default-export the host entry at the same
-time.
-
-Inference input includes `serviceId`, `model`, `reasoningEffort: "none"`,
-`prompt`, `outputSchema`, and `timeoutMs`. Plugin-served voice input has a
-5 MiB limit. The server rejects a larger file before a host call. Voice input
-includes `serviceId`, `model`, `audioBase64`, `mimeType`, `filename`, `prompt`,
-and `timeoutMs`. The inference success value must be a JSON object. Voice
-`prompt` can be `null`.
+- `complete(prompt, { signal })` returns the model's text. bb writes the
+  prompt and cleans the reply (think blocks, quotes, labels, extra lines), so
+  return the text as-is. Declared services appear for titles and commits.
+- `transcribe(audio: File, { signal, hint })` returns a transcript. `hint` is
+  vocabulary text or `null`. Declared services appear for voice input.
+- `status()` is optional. Its message shows beside the service in the picker.
+  A service that is not ready is skipped by Automatic and hides the
+  microphone. bb caches the result for about 10 seconds.
+- The plugin owns everything behind the function: model, API, retries. Failure
+  is a rejected promise. bb aborts `signal` after 5 seconds for text and 10
+  seconds for voice.
+- The functions run in the server process. To use host-local state (a login
+  file, a local model), call your own `bb.host` entry through
+  `bb.hosts.experimental_client`, as the Codex plugin does.
+- Automatic tries bb cloud first, then other compatible registered services
+  by plugin id and service id in lexicographic order. Third-party services
+  participate automatically; explicit selection uses only that service.
+- bb identifies a service by plugin id and service id, so ids only need to be
+  unique within your plugin; registering one id twice fails your plugin's
+  load. `automatic` and `off` are reserved.

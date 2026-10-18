@@ -1,17 +1,29 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, renderHook } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  act,
+  cleanup,
+  renderHook,
+  type RenderHookOptions,
+} from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
+import { USER_ACTIVITY_WINDOW_MS } from "@/lib/user-activity";
 import { useThreadReadTracking } from "./useThreadReadTracking";
+
+function renderTrackingHook<Result, Props>(
+  callback: (props: Props) => Result,
+  options?: RenderHookOptions<Props>,
+) {
+  return renderHook(callback, {
+    ...options,
+    wrapper: createQueryClientTestHarness().wrapper,
+  });
+}
 
 type MarkThreadReadMutation = Parameters<
   typeof useThreadReadTracking
 >[0]["markThreadRead"];
-type TestThread = {
-  id: string;
-  lastReadAt: number | null;
-  latestAttentionAt: number;
-};
 
 function makeMarkThreadRead() {
   return {
@@ -37,16 +49,43 @@ function setDocumentVisibilityState(
   });
 }
 
+function hideDocument(): void {
+  act(() => {
+    setDocumentVisibilityState("hidden");
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+}
+
+function pressKey(): void {
+  act(() => {
+    window.dispatchEvent(new KeyboardEvent("keydown"));
+  });
+}
+
+function pressKeyWithFakeTimers(): void {
+  hideDocument();
+  setDocumentVisibilityState("visible");
+  vi.useFakeTimers();
+  pressKey();
+}
+
 describe("useThreadReadTracking", () => {
+  beforeEach(() => {
+    pressKey();
+  });
+
   afterEach(() => {
     cleanup();
+    hideDocument();
     setDocumentVisibilityState("visible");
+    vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
   it("does not mark read without a visible thread", () => {
     const markThreadRead = makeMarkThreadRead();
 
-    renderHook(() =>
+    renderTrackingHook(() =>
       useThreadReadTracking({
         markThreadRead,
         thread: undefined,
@@ -56,11 +95,11 @@ describe("useThreadReadTracking", () => {
     expect(markThreadRead.mutateAsync).not.toHaveBeenCalled();
   });
 
-  it("marks an unread thread read after a mobile pageshow restore", () => {
-    setDocumentVisibilityState("hidden");
+  it("marks a thread restored by a mobile pageshow read on the next touch", () => {
+    hideDocument();
     const markThreadRead = makeMarkThreadRead();
 
-    renderHook(() =>
+    renderTrackingHook(() =>
       useThreadReadTracking({
         markThreadRead,
         thread: {
@@ -78,6 +117,12 @@ describe("useThreadReadTracking", () => {
       window.dispatchEvent(new Event("pageshow"));
     });
 
+    expect(markThreadRead.mutateAsync).not.toHaveBeenCalled();
+
+    act(() => {
+      window.dispatchEvent(new Event("touchstart"));
+    });
+
     expect(markThreadRead.mutateAsync).toHaveBeenCalledTimes(1);
     expect(markThreadRead.mutateAsync).toHaveBeenLastCalledWith(
       expect.objectContaining({ threadId: "thr_mobile_restore" }),
@@ -86,7 +131,7 @@ describe("useThreadReadTracking", () => {
 
   it("marks an unread thread once per attention timestamp", () => {
     const markThreadRead = makeMarkThreadRead();
-    const { rerender } = renderHook(
+    const { rerender } = renderTrackingHook(
       ({ latestAttentionAt }: { latestAttentionAt: number }) =>
         useThreadReadTracking({
           markThreadRead,
@@ -111,10 +156,36 @@ describe("useThreadReadTracking", () => {
     expect(markThreadRead.mutateAsync).toHaveBeenCalledTimes(2);
   });
 
+  it("waits until an unread split pane receives focus before marking it read", () => {
+    const markThreadRead = makeMarkThreadRead();
+    const { rerender } = renderTrackingHook(
+      ({ isFocused }: { isFocused: boolean }) =>
+        useThreadReadTracking({
+          isFocused,
+          markThreadRead,
+          thread: {
+            id: "thr_unfocused_split",
+            lastReadAt: 10,
+            latestAttentionAt: 20,
+          },
+        }),
+      { initialProps: { isFocused: false } },
+    );
+
+    expect(markThreadRead.mutateAsync).not.toHaveBeenCalled();
+
+    rerender({ isFocused: true });
+
+    expect(markThreadRead.mutateAsync).toHaveBeenCalledOnce();
+    expect(markThreadRead.mutateAsync).toHaveBeenLastCalledWith(
+      expect.objectContaining({ threadId: "thr_unfocused_split" }),
+    );
+  });
+
   it("retries a failed read after pageshow while already visible", async () => {
     const markThreadRead = makeMarkThreadRead();
     markThreadRead.mutateAsync.mockRejectedValueOnce(new Error("Failed"));
-    renderHook(() =>
+    renderTrackingHook(() =>
       useThreadReadTracking({
         markThreadRead,
         thread: {
@@ -132,35 +203,45 @@ describe("useThreadReadTracking", () => {
     expect(markThreadRead.mutateAsync).toHaveBeenCalledTimes(2);
   });
 
-  it("does not immediately undo marking the visible thread unread", () => {
+  it("retries a read that fails after the page was shown again during the request", async () => {
     const markThreadRead = makeMarkThreadRead();
-    type VisibleThreadProps = { lastReadAt: number | null };
-    const initialProps: VisibleThreadProps = { lastReadAt: 20 };
-    const { rerender } = renderHook(
-      ({ lastReadAt }: VisibleThreadProps) =>
-        useThreadReadTracking({
-          markThreadRead,
-          thread: {
-            id: "thr_side_chat",
-            lastReadAt,
-            latestAttentionAt: 20,
-          },
+    let failFirstRead: (error: Error) => void = () => undefined;
+    markThreadRead.mutateAsync.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          failFirstRead = reject;
         }),
-      { initialProps },
     );
+    const thread = {
+      id: "thr_side_chat",
+      lastReadAt: 10,
+      latestAttentionAt: 20,
+    };
+    const { rerender } = renderTrackingHook(
+      ({ mutation }: { mutation: MarkThreadReadMutation }) =>
+        useThreadReadTracking({ markThreadRead: mutation, thread }),
+      { initialProps: { mutation: markThreadRead } },
+    );
+    expect(markThreadRead.mutateAsync).toHaveBeenCalledTimes(1);
 
-    expect(markThreadRead.mutateAsync).not.toHaveBeenCalled();
+    act(() => {
+      window.dispatchEvent(new Event("pageshow"));
+    });
+    expect(markThreadRead.mutateAsync).toHaveBeenCalledTimes(1);
 
-    rerender({ lastReadAt: null });
+    await act(async () => {
+      failFirstRead(new Error("Failed"));
+    });
+    rerender({ mutation: { mutateAsync: markThreadRead.mutateAsync } });
 
-    expect(markThreadRead.mutateAsync).not.toHaveBeenCalled();
+    expect(markThreadRead.mutateAsync).toHaveBeenCalledTimes(2);
   });
 
   it("does not undo marking the visible thread unread after tab refocus", () => {
     const markThreadRead = makeMarkThreadRead();
     type VisibleThreadProps = { lastReadAt: number | null };
     const initialProps: VisibleThreadProps = { lastReadAt: 20 };
-    const { rerender } = renderHook(
+    const { rerender } = renderTrackingHook(
       ({ lastReadAt }: VisibleThreadProps) =>
         useThreadReadTracking({
           markThreadRead,
@@ -188,32 +269,6 @@ describe("useThreadReadTracking", () => {
     expect(markThreadRead.mutateAsync).not.toHaveBeenCalled();
   });
 
-  it("marks a manually unread thread read when it is opened again", () => {
-    const markThreadRead = makeMarkThreadRead();
-    const unreadThread: TestThread = {
-      id: "thr_side_chat",
-      lastReadAt: null,
-      latestAttentionAt: 20,
-    };
-    type ThreadProps = { thread: TestThread | undefined };
-    const initialProps: ThreadProps = { thread: undefined };
-    const { rerender } = renderHook(
-      ({ thread }: ThreadProps) =>
-        useThreadReadTracking({
-          markThreadRead,
-          thread,
-        }),
-      { initialProps },
-    );
-
-    rerender({ thread: unreadThread });
-
-    expect(markThreadRead.mutateAsync).toHaveBeenCalledTimes(1);
-    expect(markThreadRead.mutateAsync).toHaveBeenLastCalledWith(
-      expect.objectContaining({ threadId: "thr_side_chat" }),
-    );
-  });
-
   it("marks a previously auto-read thread read when reopened after manual unread", async () => {
     const markThreadRead = makeMarkThreadRead();
     type ReopenThreadProps = {
@@ -224,7 +279,7 @@ describe("useThreadReadTracking", () => {
       lastReadAt: 10,
       visible: true,
     };
-    const { rerender } = renderHook(
+    const { rerender } = renderTrackingHook(
       ({ lastReadAt, visible }: ReopenThreadProps) =>
         useThreadReadTracking({
           markThreadRead,
@@ -252,48 +307,100 @@ describe("useThreadReadTracking", () => {
     expect(markThreadRead.mutateAsync).toHaveBeenCalledTimes(2);
   });
 
-  it("cancels a pending read when switching threads and retries when reopened", async () => {
+  it("waits for input when the window is visible but not focused", () => {
+    hideDocument();
+    setDocumentVisibilityState("visible");
+    vi.spyOn(document, "hasFocus").mockReturnValue(false);
     const markThreadRead = makeMarkThreadRead();
-    type ThreadProps = { thread: TestThread };
-    const { rerender } = renderHook(
-      ({ thread }: ThreadProps) =>
-        useThreadReadTracking({ markThreadRead, thread }),
-      {
-        initialProps: {
+
+    renderTrackingHook(() =>
+      useThreadReadTracking({
+        markThreadRead,
+        thread: { id: "thr_unfocused", lastReadAt: 10, latestAttentionAt: 20 },
+      }),
+    );
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+      window.dispatchEvent(new WheelEvent("wheel"));
+    });
+
+    expect(markThreadRead.mutateAsync).not.toHaveBeenCalled();
+
+    act(() => {
+      window.dispatchEvent(new Event("pointerdown"));
+    });
+
+    expect(markThreadRead.mutateAsync).toHaveBeenCalledTimes(1);
+  });
+
+  it("waits for input when attention arrives after the user went idle", () => {
+    pressKeyWithFakeTimers();
+    const markThreadRead = makeMarkThreadRead();
+    const { rerender } = renderTrackingHook(
+      ({ latestAttentionAt }: { latestAttentionAt: number }) =>
+        useThreadReadTracking({
+          markThreadRead,
+          thread: { id: "thr_idle", lastReadAt: 20, latestAttentionAt },
+        }),
+      { initialProps: { latestAttentionAt: 20 } },
+    );
+
+    act(() => {
+      vi.advanceTimersByTime(USER_ACTIVITY_WINDOW_MS);
+    });
+    rerender({ latestAttentionAt: 30 });
+
+    expect(markThreadRead.mutateAsync).not.toHaveBeenCalled();
+
+    pressKey();
+
+    expect(markThreadRead.mutateAsync).toHaveBeenCalledTimes(1);
+  });
+
+  it("goes idle when the window loses focus", () => {
+    pressKeyWithFakeTimers();
+    const markThreadRead = makeMarkThreadRead();
+    const { rerender } = renderTrackingHook(
+      ({ latestAttentionAt }: { latestAttentionAt: number }) =>
+        useThreadReadTracking({
+          markThreadRead,
+          thread: { id: "thr_blurred", lastReadAt: 20, latestAttentionAt },
+        }),
+      { initialProps: { latestAttentionAt: 20 } },
+    );
+
+    vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    act(() => {
+      window.dispatchEvent(new Event("blur"));
+      vi.advanceTimersByTime(0);
+    });
+    rerender({ latestAttentionAt: 30 });
+
+    expect(markThreadRead.mutateAsync).not.toHaveBeenCalled();
+  });
+
+  it("keeps a thread marked unread elsewhere while the user is idle", () => {
+    pressKeyWithFakeTimers();
+    const markThreadRead = makeMarkThreadRead();
+    const { rerender } = renderTrackingHook(
+      ({ lastReadAt }: { lastReadAt: number | null }) =>
+        useThreadReadTracking({
+          markThreadRead,
           thread: {
-            id: "thr_first",
-            lastReadAt: 10,
+            id: "thr_remote_unread",
+            lastReadAt,
             latestAttentionAt: 20,
           },
-        },
-      },
+        }),
+      { initialProps: { lastReadAt: 20 as number | null } },
     );
 
-    const firstInput = markThreadRead.mutateAsync.mock.calls[0]?.[0];
-    expect(firstInput?.signal?.aborted).toBe(false);
-
-    rerender({
-      thread: {
-        id: "thr_second",
-        lastReadAt: 20,
-        latestAttentionAt: 20,
-      },
+    act(() => {
+      vi.advanceTimersByTime(USER_ACTIVITY_WINDOW_MS);
     });
+    rerender({ lastReadAt: null });
+    pressKey();
 
-    expect(firstInput?.signal?.aborted).toBe(true);
-    await act(async () => {});
-
-    rerender({
-      thread: {
-        id: "thr_first",
-        lastReadAt: 10,
-        latestAttentionAt: 20,
-      },
-    });
-
-    expect(markThreadRead.mutateAsync).toHaveBeenCalledTimes(2);
-    expect(markThreadRead.mutateAsync).toHaveBeenLastCalledWith(
-      expect.objectContaining({ threadId: "thr_first" }),
-    );
+    expect(markThreadRead.mutateAsync).not.toHaveBeenCalled();
   });
 });

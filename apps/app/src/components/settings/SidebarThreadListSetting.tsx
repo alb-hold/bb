@@ -6,10 +6,9 @@ export function SidebarThreadListSetting() {
   const { threadLists } = usePluginSlots();
   return (
     <ReplacementProviderSetting
-      label="Sidebar"
+      label="Sidebar thread list"
       triggerAriaLabel="Sidebar thread list"
-      description="Choose automatic activation, BB's list, or a specific plugin on this device."
-      builtInDescription="Projects, sections, and nested threads."
+      description="Which plugin draws your threads in the sidebar."
       preferenceAtom={threadListProviderAtom}
       slots={threadLists}
     />

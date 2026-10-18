@@ -3,16 +3,20 @@ import {
   useRpc,
   experimental_ProviderIcon as ProviderIcon,
 } from "@get-bb/plugin-sdk/app";
-import { Button } from "@bb/shared-ui/button";
-import { Icon } from "@bb/shared-ui/icon";
+import { Button } from "@/components/ui/button";
+import { Icon } from "@/components/ui/icon";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
-} from "@bb/shared-ui/dropdown-menu";
-import { cn } from "@bb/shared-ui/lib/utils";
-import type { providerUsageRpcContract } from "./server.js";
+} from "@/components/ui/dropdown-menu";
+import { cn } from "@/lib/utils";
+import type { providerUsageRpcContract, UsageRequest } from "./server.js";
+import {
+  combinedUsageMachine,
+  usageTargetsToRefresh,
+} from "./combined-usage.js";
 import {
   emptyUsageMessage,
   hasReportedUsage,
@@ -25,6 +29,7 @@ import {
   type UsageMachine,
   type UsageProvider,
   type ProviderUsage,
+  type UsageSnapshot,
   type UsageWindow,
 } from "./usage-schema.js";
 function SettingsBadge({ children }: { children: ReactNode }) {
@@ -82,8 +87,8 @@ function formatReset(resetsAt: string | null): string | null {
   const withinWeek = diffMs < 7 * 24 * 60 * 60_000;
   const formatted = reset.toLocaleString(undefined, {
     weekday: withinWeek ? "short" : undefined,
-    month: withinWeek ? undefined : "short",
-    day: withinWeek ? undefined : "numeric",
+    month: "short",
+    day: "numeric",
     hour: "numeric",
     minute: "2-digit",
   });
@@ -134,7 +139,8 @@ function UsageWindowRow({ window }: { window: UsageWindow }) {
 }
 
 interface ProviderUsageBlockProps {
-  accountLabel?: string;
+  accountName?: string;
+  accountEmail?: string;
   config: ProviderConfig;
   usage: ProviderUsage | undefined;
   isLoading: boolean;
@@ -146,6 +152,37 @@ interface UsageLocation {
   name: string;
   kind: "host" | "source";
   disabled: boolean;
+}
+
+const combinedLocationId = "combined";
+
+function isSource(machine: UsageMachine): boolean {
+  return machine.id.startsWith("source:");
+}
+
+function mergeUsageMachines(
+  current: UsageMachine[],
+  updated: UsageMachine[],
+  machineId: string,
+  providerIds: readonly string[],
+): UsageMachine[] {
+  const byId = new Map(current.map((machine) => [machine.id, machine]));
+  const fresh = updated.find((machine) => machine.id === machineId);
+  if (fresh !== undefined) {
+    const previous = byId.get(machineId);
+    byId.set(machineId, {
+      ...fresh,
+      providers: [
+        ...(previous?.providers.filter(
+          (provider) => !providerIds.includes(provider.providerId),
+        ) ?? []),
+        ...fresh.providers.filter((provider) =>
+          providerIds.includes(provider.providerId),
+        ),
+      ],
+    });
+  }
+  return [...byId.values()];
 }
 
 function UsageLocationPicker({
@@ -168,7 +205,7 @@ function UsageLocationPicker({
           type="button"
           variant="outline"
           size="sm"
-          className="max-w-48 gap-1.5"
+          className="max-w-48 min-w-0 gap-1.5 pointer-coarse:min-h-11"
           aria-label="Usage source"
         >
           <Icon
@@ -208,15 +245,18 @@ function UsageLocationPicker({
 }
 
 function ProviderUsageBlock({
-  accountLabel,
+  accountName,
+  accountEmail: providedAccountEmail,
   config,
   usage,
   isLoading,
   isError,
 }: ProviderUsageBlockProps) {
   const planLabel = usage?.status === "ok" ? usage.planLabel : null;
+  const name = accountName ?? config.name;
   const accountEmail =
-    accountLabel ?? (usage?.status === "ok" ? usage.accountEmail : null);
+    providedAccountEmail ??
+    (usage?.status === "ok" ? usage.accountEmail : null);
   const headingId = useId();
   const showsUsageWindows =
     !isError && usage?.status === "ok" && usage.windows.length > 0;
@@ -240,9 +280,9 @@ function ProviderUsageBlock({
               id={headingId}
               className="text-sm font-semibold text-foreground"
             >
-              {config.name}
+              {name}
             </h3>
-            {accountEmail && accountEmail !== config.name ? (
+            {accountEmail && accountEmail !== name ? (
               <p className="truncate text-xs text-muted-foreground">
                 {accountEmail}
               </p>
@@ -289,15 +329,23 @@ function UsageResourceGroup({
   return (
     <div className="py-3.5 first:pt-0 last:pb-0">
       {resources.map((resource) => {
-        const email =
-          resource.usage?.status === "ok"
-            ? (resource.usage.accountEmail ?? resource.accountLabel)
-            : resource.accountLabel;
         const usage = resource.usage ?? undefined;
+        const pooledClaude =
+          resource.providerId === "claude-code" && resource.accountPool != null;
+        const accountEmail =
+          usage?.status === "ok"
+            ? (usage.accountEmail ??
+              (pooledClaude ? null : resource.accountLabel))
+            : pooledClaude
+              ? null
+              : resource.accountLabel;
         return (
           <ProviderUsageBlock
             key={resource.id}
-            accountLabel={email ?? undefined}
+            accountName={
+              pooledClaude ? (resource.accountLabel ?? undefined) : undefined
+            }
+            accountEmail={accountEmail ?? undefined}
             config={config}
             usage={usage}
             isLoading={isLoading}
@@ -371,6 +419,7 @@ export function UsageSettingsContent({
   selectedId,
   loading,
   error,
+  sourceErrors = false,
   onSelect,
   onRefresh,
 }: {
@@ -378,10 +427,14 @@ export function UsageSettingsContent({
   selectedId: string | null;
   loading: boolean;
   error: boolean;
+  sourceErrors?: boolean;
   onSelect: (machineId: string) => void;
   onRefresh: () => void;
 }) {
-  const selected = selectUsageMachine(machines, selectedId, null);
+  const selected =
+    selectedId === null || selectedId === combinedLocationId
+      ? combinedUsageMachine(machines)
+      : selectUsageMachine(machines, selectedId, null);
   const groups = new Map<string, UsageProvider[]>();
   for (const provider of selected?.providers ?? []) {
     if (provider.usage?.status === "not_installed") continue;
@@ -404,8 +457,14 @@ export function UsageSettingsContent({
             ? emptyUsageMessage(selected)
             : null;
   return (
-    <section className="space-y-3">
-      <div className="flex flex-col gap-3 sm:flex-row sm:justify-between sm:gap-4 sm:items-start">
+    <section className="@container/usage-settings space-y-3">
+      <div
+        className={cn(
+          machines.length > 1
+            ? "flex min-w-0 flex-col gap-3 @min-[36rem]/usage-settings:flex-row @min-[36rem]/usage-settings:justify-between @min-[36rem]/usage-settings:gap-4 @min-[36rem]/usage-settings:items-start"
+            : "flex min-w-0 flex-row items-start justify-between gap-4",
+        )}
+      >
         <div className="min-w-0">
           <div className="flex min-w-0 items-center gap-1.5">
             <h2 className="min-w-0 text-sm font-semibold text-foreground">
@@ -416,24 +475,34 @@ export function UsageSettingsContent({
             Your provider subscription usage.
           </p>
         </div>
-        <div className="shrink-0 self-start">
-          <div className="flex items-center gap-1">
-            {machines.length > 1 ? (
+        <div className="min-w-0 self-start sm:shrink-0">
+          <div className="flex min-w-0 items-center gap-1">
+            {machines.length > 0 ? (
               <UsageLocationPicker
-                locations={machines.map((machine) => ({
-                  id: machine.id,
-                  name: machine.displayName,
-                  kind: machine.id.startsWith("source:") ? "source" : "host",
-                  disabled: machine.status !== "connected",
-                }))}
-                selectedLocationId={selected?.id ?? null}
+                locations={[
+                  {
+                    id: combinedLocationId,
+                    name: "Combined",
+                    kind: "source",
+                    disabled: false,
+                  },
+                  ...machines.map((machine) => ({
+                    id: machine.id,
+                    name: machine.displayName,
+                    kind: isSource(machine)
+                      ? ("source" as const)
+                      : ("host" as const),
+                    disabled: machine.status !== "connected",
+                  })),
+                ]}
+                selectedLocationId={selected?.id ?? combinedLocationId}
                 onSelectLocation={onSelect}
               />
             ) : null}
             <Button
               variant="ghost"
               size="icon"
-              className="size-7 text-muted-foreground hover:text-foreground"
+              className="size-7 text-muted-foreground hover:text-foreground pointer-coarse:min-h-11 pointer-coarse:min-w-11"
               disabled={loading}
               onClick={onRefresh}
               aria-label={
@@ -448,6 +517,9 @@ export function UsageSettingsContent({
           </div>
         </div>
       </div>
+      {sourceErrors ? (
+        <UsageFeedback message="Some usage sources could not be refreshed. Showing available results." />
+      ) : null}
       <div className="rounded-lg border border-border bg-card px-4 py-3.5">
         {notice ? (
           <UsageFeedback
@@ -481,12 +553,87 @@ export function UsageSettingsContent({
   );
 }
 
+interface UsageLoadTarget {
+  disposed: () => boolean;
+  setMachines: (
+    update: UsageMachine[] | ((current: UsageMachine[]) => UsageMachine[]),
+  ) => void;
+  setError: (error: boolean) => void;
+  setSourceErrors: (sourceErrors: boolean) => void;
+}
+
+export async function loadUsage(
+  getUsage: (input: UsageRequest) => Promise<UsageSnapshot>,
+  selectedId: string | null,
+  force: boolean,
+  target: UsageLoadTarget,
+): Promise<void> {
+  target.setError(false);
+  try {
+    const inventory = await getUsage({
+      force: false,
+      machineIds: null,
+      providerIds: [],
+      maxAgeMs: 60_000,
+    });
+    if (target.disposed()) return;
+    target.setMachines(inventory.machines);
+    const targets = usageTargetsToRefresh(inventory.machines, selectedId)
+      .filter(({ machine }) => machine.status === "connected")
+      .map(({ machine, providerIds }) => ({
+        machine,
+        providerIds: providerIds.filter((providerId) =>
+          machine.providers.some(
+            (provider) =>
+              provider.providerId === providerId &&
+              provider.usage?.status !== "not_installed",
+          ),
+        ),
+      }))
+      .filter(({ providerIds }) => providerIds.length > 0);
+    const results = await Promise.allSettled(
+      targets.map(({ machine, providerIds }) =>
+        getUsage({
+          force,
+          machineIds: [machine.id],
+          providerIds,
+          maxAgeMs: 60_000,
+        }),
+      ),
+    );
+    if (target.disposed()) return;
+    target.setSourceErrors(
+      results.some(
+        (result) =>
+          result.status === "rejected" ||
+          result.value.machines.some((machine) => machine.error !== null),
+      ),
+    );
+    for (const [index, result] of results.entries()) {
+      if (result.status === "fulfilled") {
+        const refreshed = targets[index]!;
+        target.setMachines((current) =>
+          mergeUsageMachines(
+            current,
+            result.value.machines,
+            refreshed.machine.id,
+            refreshed.providerIds,
+          ),
+        );
+      }
+    }
+  } catch {
+    if (!target.disposed()) target.setError(true);
+  }
+}
+
 export function UsageSettings() {
   const rpc = useRpc<typeof providerUsageRpcContract>();
   const [machines, setMachines] = useState<UsageMachine[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  const [sourceErrors, setSourceErrors] = useState(false);
   const [refresh, setRefresh] = useState(0);
   const forceGeneration = useRef(0);
   useEffect(() => {
@@ -498,37 +645,13 @@ export function UsageSettings() {
       if (running) return;
       running = true;
       setLoading(true);
-      setError(false);
       try {
-        const inventory = await rpc.call("getUsage", {
-          force: false,
-          machineIds: null,
-          providerId: null,
-          maxAgeMs: 60_000,
-        });
-        if (disposed) return;
-        setMachines(inventory.machines);
-        const selected = selectUsageMachine(
-          inventory.machines,
+        await loadUsage(
+          (input) => rpc.call("getUsage", input),
           selectedId,
-          null,
+          force,
+          { disposed: () => disposed, setMachines, setError, setSourceErrors },
         );
-        if (selected && selected.status === "connected") {
-          for (const providerId of new Set(
-            selected.providers.map((provider) => provider.providerId),
-          )) {
-            const result = await rpc.call("getUsage", {
-              force,
-              machineIds: [selected.id],
-              providerId,
-              maxAgeMs: 60_000,
-            });
-            if (disposed) return;
-            setMachines(result.machines);
-          }
-        }
-      } catch {
-        if (!disposed) setError(true);
       } finally {
         running = false;
         if (!disposed) setLoading(false);
@@ -549,6 +672,7 @@ export function UsageSettings() {
       selectedId={selectedId}
       loading={loading}
       error={error}
+      sourceErrors={sourceErrors}
       onSelect={setSelectedId}
       onRefresh={() => setRefresh((value) => value + 1)}
     />

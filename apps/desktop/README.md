@@ -1,6 +1,6 @@
 # @bb/desktop
 
-macOS and Linux Electron shell for bb. The desktop app loads the existing bb
+macOS, Linux, and Windows Electron shell for bb. The desktop app loads the existing bb
 web UI and uses the packaged `bb-app` launcher for server and host-daemon
 lifecycle.
 
@@ -52,7 +52,33 @@ binaries work with Electron without an ABI-specific rebuild. The packaging
 hook opens an in-memory database with Electron before accepting the packaged
 SQLite module; older ABI-specific modules still use the prebuild fallback.
 
+macOS notifications require a signed application. Unsigned local and CI artifact
+builds cannot display macOS notifications. Published releases use the existing
+signing and notarization workflow.
+
+The shipped Linux x64 SQLite prebuild requires glibc 2.34 or newer and
+libstdc++ with `GLIBCXX_3.4.29` support (GCC 11 or newer).
+
+The AppImage packaging patch exposes its bundled legacy `libnotify` only as
+`libnotify.so`. Electron first tries the system's versioned library names, so
+libnotify 0.7.10 or newer can supply notification activation tokens on Wayland.
+If no versioned system library loads, Electron can still use the bundled
+unversioned fallback for notifications. Older libraries keep their existing
+notification behavior but cannot forward activation tokens.
+
+Electron downloads its development runtime lazily; the desktop test command
+installs it before starting parallel workers.
+
+The macOS bundle declares macOS 13 as its minimum. The release feed generator
+writes the corresponding Darwin kernel minimum, 22.0.0, into both JSON and YAML
+update feeds. Run it before publishing release artifacts so older Macs reject
+incompatible updates.
+
 ## Validation
+
+The built-in browser allows file downloads using Electron's native save dialog.
+Files are saved on the machine running the desktop app, including downloads
+initiated in desktop browser automation tabs.
 
 ```bash
 pnpm exec turbo run typecheck --filter=@bb/desktop --filter=bb-app
@@ -60,6 +86,10 @@ pnpm exec turbo run build --filter=@bb/desktop
 pnpm exec turbo run test --filter=@bb/desktop --filter=bb-app --force
 pnpm exec turbo run dev --filter=@bb/desktop
 ```
+
+The desktop tests include an Electron startup smoke that opens a real window.
+On Linux it runs only when `DISPLAY` is set; on a headless host, wrap the test
+command in `xvfb-run -a`, as CI does.
 
 ## Packaging
 
@@ -117,6 +147,37 @@ before and after to reject bundle mutations. Fixtures are removed afterward.
 The bb-app tarball smoke covers a different packaging pipeline and cannot
 detect Electron artifact omissions. A source build or `npm --version` alone
 does not verify a desktop plugin dependency install.
+
+### Windows (NSIS, x64)
+
+Windows packaging needs a Windows x64 host; `afterPack` refuses to cross-build
+because it verifies the packaged native modules by loading them. From the repo
+root, install with `pnpm install --frozen-lockfile --ignore-scripts`, then build
+an unpacked app, an installer, or smoke test the current packaged output with:
+
+```powershell
+pnpm exec turbo run package:win --filter=@bb/desktop
+pnpm exec turbo run desktop:build:win --filter=@bb/desktop
+pnpm exec turbo run smoke:packaged --filter=@bb/desktop
+```
+
+`desktop:build:win` writes `release/bb-<version>-x64.exe`, a one-click per-user
+NSIS installer that installs to `%LOCALAPPDATA%\Programs\bb` (`bb-nightly` on
+the nightly channel) without elevation, plus `latest.yml` for electron-updater.
+Without a signing certificate the installer is unsigned, so Windows SmartScreen
+warns before running it. electron-builder signs it when `WIN_CSC_LINK` (a
+base64 `.pfx`) and `WIN_CSC_KEY_PASSWORD` are set; the release workflows pass
+them from the `WINDOWS_CERTIFICATE_PFX` and `WINDOWS_CERTIFICATE_PASSWORD`
+secrets.
+
+`afterPack` copies `@parcel/watcher-win32-x64` into the package when
+electron-builder leaves it out and loads it with the packaged Electron; without
+it the file watcher cannot start.
+
+Windows builds check `desktop-version-windows.json` for new versions and
+install them with electron-updater from `latest.yml` (`nightly.yml` on the
+nightly channel). The update downloads in the background and the installer runs
+silently when the app quits or when the user chooses Relaunch.
 
 ### Linux (AppImage, x64)
 
@@ -207,20 +268,22 @@ release; use `scripts/bump-version.mjs` so both files move together.
 The desktop release tag uses the locked version: `desktop-v<version>` for
 immutable releases and `desktop-latest` for the moving pointer.
 
-`build-desktop.yml` builds macOS and Linux in parallel jobs, then publishes
-both from one job. The moving release resets all of its assets on each publish,
-so a single publisher is what keeps one platform from deleting the other's
-binaries. Each platform has its own update feed file inside the same release
+`build-desktop.yml` builds macOS, Linux, and Windows in parallel jobs, then
+publishes all three from one job. The moving release resets all of its assets
+on each publish, so a single publisher is what keeps one platform from deleting
+another's binaries. Each platform has its own update feed file inside the same release
 tag:
 
-| Platform | Artifacts              | electron-updater metadata | Version feed                 |
-| -------- | ---------------------- | ------------------------- | ---------------------------- |
-| macOS    | `.dmg`, `.zip` (arm64) | `latest-mac.yml`          | `desktop-version.json`       |
-| Linux    | `.AppImage` (x64)      | `latest-linux.yml`        | `desktop-version-linux.json` |
+| Platform | Artifacts              | electron-updater metadata | Version feed                   |
+| -------- | ---------------------- | ------------------------- | ------------------------------ |
+| macOS    | `.dmg`, `.zip` (arm64) | `latest-mac.yml`          | `desktop-version.json`         |
+| Linux    | `.AppImage` (x64)      | `latest-linux.yml`        | `desktop-version-linux.json`   |
+| Windows  | `.exe` installer (x64) | `latest.yml`              | `desktop-version-windows.json` |
 
 macOS keeps the unsuffixed feed name because released macOS builds already
-request it. Linux artifacts are unsigned; only the macOS binaries wait on the
-Apple signing secrets.
+request it. Linux artifacts are unsigned, and the Windows installer is unsigned
+unless the Windows certificate secrets are configured; only the macOS binaries
+wait on the Apple signing secrets.
 
 ## Nightly channel
 
@@ -245,9 +308,12 @@ The nightly desktop is a separate installation:
 - bundle identifier: `dev.bb.desktop.nightly`
 - Linux binary name: `bb-nightly`, so it never shadows stable `bb` on PATH
 - app/update release: `desktop-nightly`
-- update metadata: `nightly-mac.yml` and `nightly-linux.yml`
-- version feeds: `desktop-version.json` (macOS) and
-  `desktop-version-linux.json` (Linux)
+- Windows install directory: `%LOCALAPPDATA%\Programs\bb-nightly`
+- update metadata: `nightly-mac.yml`, `nightly-linux.yml`, and `nightly.yml`
+  (Windows)
+- version feeds: `desktop-version.json` (macOS),
+  `desktop-version-linux.json` (Linux), and `desktop-version-windows.json`
+  (Windows)
 - icon: `assets/icon-nightly.icns` and `assets/icon-nightly.png`
 
 Download it from
@@ -366,31 +432,108 @@ recovery path for those cases.
 
 ### Saved servers
 
-Use **Window → Server → Add Server…** to save and switch to another machine's
-HTTP(S) bb server URL. Saved URLs remain in the menu across restarts; adding an
-existing URL selects it without creating a duplicate. **This Mac** switches back
-to the built-in server without removing saved entries.
+Use **bb → Desktop Settings → Server → Add Server…** to save and switch to
+another machine's HTTP(S) bb server URL. **Window → Server** opens the same
+menu. Both native dialogs accept an optional friendly name (up to 64 characters).
+The menu shows that name, or the URL hostname and port when unnamed. Saved URLs
+remain in the menu across restarts; adding an existing URL
+selects it without creating a duplicate. **This Mac** on macOS or **This
+Computer** on Linux switches back to the built-in server without removing
+saved entries.
 
-**Set Server URL…** edits the last selected custom server. Clearing its URL removes
-that entry and switches an active custom target to This Mac. Other saved servers
-and Connect discovery remain available. Existing single-server preferences are
+**Edit Server…** edits the currently selected custom or Connect server and is
+disabled for **This Mac** / **This Computer**. For a Connect server it changes
+only the name; the address comes from the bb account and is read-only. For a
+custom server, clearing its URL removes
+that entry and, with Show This Mac/Computer checked, switches an active custom
+target to the built-in server. Other
+saved servers and Connect discovery remain available. Existing single-server preferences are
 loaded automatically into the saved list in `<userData>/server-target.json`.
+
+Changing only the name refreshes the menu without switching servers or reloading
+windows, even when another target is active. Clearing the name restores the
+hostname fallback. Editing a URL keeps the entry's position and supplied name.
+Editing into an already saved URL removes the old entry and selects the existing
+entry, preserving the destination's name and position. Adding an existing URL
+with no name keeps its name; supplying a name updates it.
+
+Names are stored alongside the saved URLs in
+`<userData>/server-target.json` as `customServerNames`, keyed by normalized URL.
+Existing unnamed saved servers still load. The name field is omitted when no
+saved server has a name, keeping unnamed settings compatible with older builds.
+Builds with tolerant saved-server parsing (#5286) load the URLs but drop names when rewriting preferences; older
+builds with strict parsing can reject the added field on rollback. Invalid names
+do not discard saved URLs, and names for absent URLs are ignored and pruned on
+the next save.
+
+Connect servers owned by your bb account appear in the menu by name, or by
+URL hostname when unnamed, like custom servers. Their names are stored in `server-target.json` as
+`connectServerNames`, keyed by handle, and are kept while discovery is
+unavailable. A saved custom URL that is an account server's address is replaced
+by that account server at startup, after discovery, and after Add/Edit Server.
+Its name moves to the account server unless that server is already named. If
+the replaced URL was selected, the app switches to the account server and
+reloads its windows once.
+
+Connect discovery tries the built-in server, then a stored machine credential,
+then the bb account sign-in. When none of these load the servers and the app
+has no credential or account sign-in, the Server menu offers **Sign in to bb
+Connect…** above **Add Server…**. If bb Connect rejected the credentials, the
+item is **Sign in to bb Connect again…**. Other failures add no menu row; the
+menu keeps the servers from the last successful load, and the app logs the
+reason as `connect server sync skipped (<reason>)`. The sign-in item opens
+bb account sign-in in a desktop window, the same window as **Reconnect** below,
+from any selected server, including **This Mac** / **This Computer**. Once the
+new account session arrives, the window closes and the app reloads the
+account's servers into the menu. Without a known Connect server, the app signs
+in at `https://getbb.app`. Development builds use `BB_DEV_CONNECT_BASE_URL`
+when it is valid.
+
+The app command palette lists **Switch to <server>** for each inactive choice
+from this same Server menu, including Connect discovery. Palette list requests
+use the menu's discovery refresh policy (at most once per minute, with the
+existing ten-minute background refresh). The optional `window.bbDesktop`
+`getServerChoices`, `onServerChoicesChange`, and `selectServer` methods expose
+only `{id, name, active}`; custom server IDs are opaque hashes. Selection is
+validated against native choices and runs the menu's existing authentication,
+window navigation, and runtime lifecycle. Older desktop shells omit these actions.
+
+Desktop Settings → Server → **Show This Mac** (or **Show This Computer** off macOS)
+defaults to checked and is disabled while This Mac/Computer is selected.
+Unchecking hides the built-in server from server choices
+while another server is active and alternatives exist. It stays listed when
+active or when it is the only choice. This setting does not stop the local
+runtime or change the active server.
+
+The desktop stores `showBuiltinServer: false` in `<userData>/server-target.json`;
+missing means shown, and saving the default omits the field. Other top-level
+metadata is preserved. This is a desktop-local preference, with no server
+settings CLI/SDK endpoint. Builds with tolerant readers ignore the field and
+may drop it on save; older strict readers can reject the whole file, so keep a
+backup before rolling back to a build predating the tolerant-reader fix #5286.
+
+When a custom URL is removed while the built-in server is hidden, an active
+custom target switches to the first remaining custom URL in saved order, then
+the saved Connect server, then a discovered Connect server in handle order,
+and finally the built-in server if no alternative exists. With the checkbox
+checked, removing an active custom target still switches to the built-in server.
+The native menus, renderer Server popup, and app palette use the same choices.
 
 ### Server moves
 
 After `bb server move`, the old computer's data dir (`~/.bb` or
 `$BB_DATA_DIR`) contains `server-moved.json`. The desktop app reads it at
-startup, whenever the "This Mac" target loads, and while that target is active.
+startup, whenever the built-in server target loads, and while that target is active.
 While the target is active, the app watches the data dir. If `fs.watch` fails,
 for example with `ENOSPC`, the app checks the file every 2 seconds instead
 (`src/server-moved.ts`). The server writes the lock before the new machine
 takes over and removes it if the move is rolled back, so the app acts only on a
 committed move. A move is committed when the local server address answers
 `/health` with 410 `code: "server_moved"`, or when nothing listens there and no
-launcher process is alive. The app checks once when it starts or loads "This
-Mac". When a move finishes while the app is open, the app checks every second
-for up to 120 seconds. It stops if the lock disappears. A committed lock
-switches the server target:
+launcher process is alive. The app checks once when it starts or loads the
+built-in server. When a move finishes while the app is open, the app checks every
+second for up to 120 seconds. It stops if the lock disappears. The first time the app
+sees a committed lock for a `moveId`, it switches the server target once:
 
 - `mode: "connect"` selects `connectHandle` with `serverUrl`.
 - `mode: "direct"` sets the custom server URL. When a move finishes while
@@ -404,3 +547,23 @@ runs this computer as a regular machine, and quitting the app stops it. If the
 app has no stored bb Connect credential, it signs in to a connect target with
 the `x-bb-connect-machine` header that the move wrote to the data dir's
 `config.json`. The app logs a warning and ignores an invalid lock.
+
+On startup, a saved built-in server choice also switches to the moved server;
+it never starts the old copy automatically. A different saved remote server
+choice remains selected. Explicitly picking the built-in server while the move
+lock exists shows "bb moved to <toHostName>" with **Open <toHostName>** and
+**Choose server…**. The screen explains whether the old copy is locked or was
+deleted. Selecting the built-in server does not unlock the old copy or remove
+its background machine service.
+
+Startup error screens list their actions as buttons. Any screen where
+retrying can help shows **Try again**. **Choose server…** opens the Server menu,
+where the user can select the built-in server if needed. A bb Connect
+`unauthorized` error has no **Try again**, because the same credential fails
+the same way. **Reconnect** opens account sign-in in a desktop
+window. The app clears its old account sign-in, waits for a new session, then
+retries the selected server. A valid account session can mint and renew the
+desktop session when a machine credential is rejected. Closing the sign-in
+window leaves the error screen available. Fatal errors have no buttons. The renderer sends the chosen
+action on `bb-desktop:startup-action`. The main process accepts only actions
+from the error page that is currently loaded in an app window's main frame.

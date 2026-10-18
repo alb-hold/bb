@@ -1,12 +1,25 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  waitFor,
+  within,
+} from "@testing-library/react";
+import { useEffect } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
+import { useComposer } from "@get-bb/plugin-sdk/app";
+import type { PluginComposerApi } from "@get-bb/plugin-sdk";
 import type {
   AccountPoolConfig,
   AccountSummary,
   PoolStatus,
 } from "./src/contracts.js";
+import {
+  ACCOUNT_POOL_ACCOUNTS_CHANGED,
+  ACCOUNT_POOL_CONFIG_CHANGED,
+} from "./src/realtime.js";
 
 const app = await loadPluginApp(() => import("./app"));
 afterEach(() => {
@@ -59,6 +72,7 @@ function account(overrides: Partial<AccountSummary> = {}): AccountSummary {
     subscriptionType: "Max",
     rateLimitTier: "default_claude_max_5x",
     enabled: true,
+    active: false,
     priority: 100,
     createdAt: 1,
     lastUsedAt: 2,
@@ -78,12 +92,23 @@ function account(overrides: Partial<AccountSummary> = {}): AccountSummary {
       haiku: null,
       other: null,
     },
+    balance: {
+      bindingWindow: null,
+      bindingHeadroom: null,
+      resetRecoveryPerHour: null,
+      windows: [],
+    },
+    lastAutomaticChoice: null,
     limitWindows: [],
+    extraUsage: null,
+    usageRestriction: null,
     observedAt: 1,
     heldUntil: null,
     error: null,
     inFlight: 0,
     status: "ready",
+    signInExpired: false,
+    organizationUuid: null,
     ...overrides,
   };
 }
@@ -116,6 +141,7 @@ function config(overrides: Partial<AccountPoolConfig> = {}): AccountPoolConfig {
 function render(
   accounts = [account()],
   extraRpc: Record<string, () => object | null | Promise<object | null>> = {},
+  copyToClipboard?: () => Promise<boolean>,
 ) {
   return renderSlot(
     app.settingsSections[0]!,
@@ -127,20 +153,364 @@ function render(
         ...extraRpc,
       },
       openUrl: () => true,
+      experimental_copyToClipboard: copyToClipboard,
     },
   );
 }
 
+describe("Subscription picker", () => {
+  const Component = (() => {
+    const component = app.composerCustomizations[0]?.experimental_modelPicker;
+    if (component === undefined)
+      throw new Error("Subscription picker registration is missing.");
+    return component;
+  })();
+
+  const accounts = [
+    account({
+      label: "Max 20x",
+      rateLimitTier: "default_claude_max_20x",
+      sevenDayUtilization: 0.98,
+      organizationUuid: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    }),
+    account({
+      id: "22222222-2222-4222-8222-222222222222",
+      label: "Max 5x",
+      sevenDayUtilization: 0.05,
+      organizationUuid: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    }),
+    account({
+      id: "33333333-3333-4333-8333-333333333333",
+      label: "Previous login",
+      enabled: false,
+    }),
+  ];
+
+  it("shows separate statistics for two organizations on one email and folds a second record of the same login", async () => {
+    const slot = renderSlot(
+      { component: Component },
+      { providerId: "claude-code" },
+      {
+        pluginId: "account-pool",
+        composer: { selection: { providerId: "claude-code" } },
+        rpc: { "status.get": () => status(accounts) },
+      },
+    );
+    expect(
+      await slot.findByRole("option", { name: /Max 20x.*weekly 98%/ }),
+    ).toBeTruthy();
+    expect(
+      slot.getByRole("option", { name: /Max 5x.*weekly 5%/ }),
+    ).toBeTruthy();
+    expect(slot.queryByRole("option", { name: /Previous login/ })).toBeNull();
+    expect(
+      (
+        slot.getByRole("combobox", {
+          name: "Subscription",
+        }) as HTMLSelectElement
+      ).value,
+    ).toBe("automatic");
+  });
+
+  it("retains a new draft's choice after menu unmount and clears it for Automatic", async () => {
+    let composer: PluginComposerApi | undefined;
+    function Capture() {
+      const current = useComposer();
+      useEffect(() => {
+        composer = current;
+      }, [current]);
+      return <Component providerId="claude-code" />;
+    }
+    const slot = renderSlot(
+      { component: Capture },
+      {},
+      {
+        pluginId: "account-pool",
+        composer: { selection: { providerId: "claude-code" } },
+        rpc: { "status.get": () => status(accounts) },
+      },
+    );
+    const select = await slot.findByRole("combobox", { name: "Subscription" });
+    await waitFor(() => expect(select.hasAttribute("disabled")).toBe(false));
+    fireEvent.change(select, { target: { value: accounts[1]!.id } });
+    await waitFor(() =>
+      expect(composer?.experimental_createData).toEqual({
+        provider: "claude",
+        accountId: accounts[1]!.id,
+      }),
+    );
+    slot.rerender(<div />);
+    slot.rerender(<Capture />);
+    await waitFor(() =>
+      expect(
+        (
+          slot.getByRole("combobox", {
+            name: "Subscription",
+          }) as HTMLSelectElement
+        ).value,
+      ).toBe(accounts[1]!.id),
+    );
+    fireEvent.change(slot.getByRole("combobox"), {
+      target: { value: "automatic" },
+    });
+    await waitFor(() => expect(composer?.experimental_createData).toBeNull());
+  });
+
+  it.each(["routing-off", "parent-proxy"] as const)(
+    "explains that a new pinned conversation cannot be sent while %s is active",
+    async (inactiveMode) => {
+      let currentStatus = status(accounts);
+      const slot = renderSlot(
+        { component: Component },
+        { providerId: "claude-code" },
+        {
+          pluginId: "account-pool",
+          composer: {
+            scope: { kind: "new-thread", projectId: null },
+            selection: { providerId: "claude-code" },
+          },
+          rpc: { "status.get": () => currentStatus },
+        },
+      );
+      const select = await slot.findByRole("combobox", {
+        name: "Subscription",
+      });
+      await waitFor(() => expect(select.hasAttribute("disabled")).toBe(false));
+      fireEvent.change(select, { target: { value: accounts[1]!.id } });
+
+      if (inactiveMode === "routing-off") {
+        currentStatus = {
+          ...currentStatus,
+          routing: { claude: false, codex: true },
+        };
+      } else {
+        currentStatus = {
+          ...currentStatus,
+          parent: {
+            baseUrl: "https://parent.example",
+            mode: "proxy",
+            availability: { claude: true, codex: true },
+          },
+        };
+      }
+      await slot.emitRealtime(ACCOUNT_POOL_CONFIG_CHANGED, {});
+
+      const expected =
+        inactiveMode === "routing-off"
+          ? "This new conversation can't use the selected subscription while Claude routing is off. Choose Automatic or turn routing back on before sending."
+          : "This new conversation can't use the selected subscription while a parent pool is in proxy mode. Choose Automatic or switch the parent to local mode before sending.";
+      expect(await slot.findByText(expected)).toBeTruthy();
+      expect(
+        slot.queryByText(/Saved preference not in use right now/u),
+      ).toBeNull();
+      expect(
+        slot.queryByText(
+          "This conversation uses only the selected subscription.",
+        ),
+      ).toBeNull();
+    },
+  );
+
+  it("selects only the owning conversation and preserves its choice when the server rejects a change", async () => {
+    const slot = renderSlot(
+      { component: Component },
+      { providerId: "claude-code" },
+      {
+        pluginId: "account-pool",
+        composer: {
+          scope: { kind: "thread", threadId: "thr_existing" },
+          selection: { providerId: "claude-code" },
+        },
+        rpc: {
+          "status.get": () => status(accounts),
+          "routing.selection.get": () => ({ accountId: accounts[1]!.id }),
+          "bypass.get": () => ({
+            threadId: "thr_existing",
+            bypassed: false,
+          }),
+          "routing.selection.set": () => {
+            throw new Error("Wait for queued messages to finish.");
+          },
+        },
+      },
+    );
+    const select = await slot.findByRole("combobox");
+    await waitFor(() => expect(select.hasAttribute("disabled")).toBe(false));
+    fireEvent.change(select, { target: { value: "automatic" } });
+    expect(await slot.findByRole("alert")).toHaveProperty(
+      "textContent",
+      "Wait for queued messages to finish.",
+    );
+    expect(slot.rpcCalls.at(-1)?.input).toEqual({
+      threadId: "thr_existing",
+      provider: "claude",
+      accountId: null,
+    });
+    expect((select as HTMLSelectElement).value).toBe(accounts[1]!.id);
+  });
+
+  it("shows a saved preference when parent routing or routing-off makes the pin inactive", async () => {
+    const pinnedSlot = (currentStatus: PoolStatus, bypassed = false) =>
+      renderSlot(
+        { component: Component },
+        { providerId: "claude-code" },
+        {
+          pluginId: "account-pool",
+          composer: {
+            scope: { kind: "thread", threadId: "thr_existing" },
+            selection: { providerId: "claude-code" },
+          },
+          rpc: {
+            "status.get": () => currentStatus,
+            "routing.selection.get": () => ({ accountId: accounts[1]!.id }),
+            "bypass.get": () => ({ threadId: "thr_existing", bypassed }),
+          },
+        },
+      );
+    const parentProxyStatus = {
+      ...status(accounts),
+      parent: {
+        baseUrl: "https://parent.example",
+        mode: "proxy" as const,
+        availability: { claude: true, codex: true },
+      },
+    };
+    const proxySlot = pinnedSlot(parentProxyStatus);
+    expect(
+      await proxySlot.findByText(
+        "Saved preference not in use right now. A parent pool decides which subscription to use.",
+      ),
+    ).toBeTruthy();
+    expect(
+      proxySlot.queryByText(
+        "This conversation uses only the selected subscription.",
+      ),
+    ).toBeNull();
+    cleanup();
+
+    const routingOffSlot = pinnedSlot({
+      ...status(accounts),
+      routing: { claude: false, codex: true },
+    });
+    expect(
+      await routingOffSlot.findByText(
+        "Saved preference not in use right now. Claude routing is off.",
+      ),
+    ).toBeTruthy();
+    expect(
+      routingOffSlot.queryByText(
+        "This conversation uses only the selected subscription.",
+      ),
+    ).toBeNull();
+    cleanup();
+
+    const bypassedSlot = pinnedSlot(status(accounts), true);
+    expect(
+      await bypassedSlot.findByText(
+        "Saved preference not in use right now. Pool routing is bypassed for this conversation.",
+      ),
+    ).toBeTruthy();
+    expect(
+      bypassedSlot.queryByText(
+        "This conversation uses only the selected subscription.",
+      ),
+    ).toBeNull();
+    cleanup();
+  });
+
+  it("refreshes the pin explanation after a routing configuration event", async () => {
+    let currentStatus: PoolStatus = status(accounts);
+    const slot = renderSlot(
+      { component: Component },
+      { providerId: "claude-code" },
+      {
+        pluginId: "account-pool",
+        composer: {
+          scope: { kind: "thread", threadId: "thr_existing" },
+          selection: { providerId: "claude-code" },
+        },
+        rpc: {
+          "status.get": () => currentStatus,
+          "routing.selection.get": () => ({ accountId: accounts[1]!.id }),
+          "bypass.get": () => ({ threadId: "thr_existing", bypassed: false }),
+        },
+      },
+    );
+    expect(
+      await slot.findByText(
+        "This conversation uses only the selected subscription.",
+      ),
+    ).toBeTruthy();
+    const statusCalls = slot.rpcCalls.filter(
+      (call) => call.method === "status.get",
+    ).length;
+    currentStatus = {
+      ...currentStatus,
+      parent: {
+        baseUrl: "https://parent.example",
+        mode: "proxy",
+        availability: { claude: true, codex: true },
+      },
+    };
+    await slot.emitRealtime(ACCOUNT_POOL_CONFIG_CHANGED, {});
+    await waitFor(() =>
+      expect(
+        slot.rpcCalls.filter((call) => call.method === "status.get").length,
+      ).toBeGreaterThan(statusCalls),
+    );
+    expect(
+      await slot.findByText(
+        "Saved preference not in use right now. A parent pool decides which subscription to use.",
+      ),
+    ).toBeTruthy();
+    expect(
+      slot.queryByText(
+        "This conversation uses only the selected subscription.",
+      ),
+    ).toBeNull();
+  });
+
+  it("keeps the exclusivity message for an active local pin", async () => {
+    const slot = renderSlot(
+      { component: Component },
+      { providerId: "claude-code" },
+      {
+        pluginId: "account-pool",
+        composer: {
+          scope: { kind: "thread", threadId: "thr_existing" },
+          selection: { providerId: "claude-code" },
+        },
+        rpc: {
+          "status.get": () => status(accounts),
+          "routing.selection.get": () => ({ accountId: accounts[1]!.id }),
+          "bypass.get": () => ({ threadId: "thr_existing", bypassed: false }),
+        },
+      },
+    );
+    expect(
+      await slot.findByText(
+        "This conversation uses only the selected subscription.",
+      ),
+    ).toBeTruthy();
+    expect(
+      slot.queryByText(/Saved preference not in use right now/u),
+    ).toBeNull();
+  });
+});
+
 describe("Account Pool parent banner", () => {
   const PARENT_URL = "http://127.0.0.1:25231/api/v1/plugins/account-pool/http";
 
-  function renderWithParent(parent: PoolStatus["parent"]) {
+  function renderWithParent(
+    parent: PoolStatus["parent"],
+    accounts = [account()],
+  ) {
     return renderSlot(
       app.settingsSections[0]!,
       {},
       {
         rpc: {
-          "status.get": () => ({ ...status(), parent }),
+          "status.get": () => ({ ...status(accounts), parent }),
           "config.get": () => config(),
         },
         openUrl: () => true,
@@ -149,8 +519,8 @@ describe("Account Pool parent banner", () => {
   }
 
   it("says nothing about a parent when this server has none", async () => {
-    const slot = renderWithParent(null);
-    expect(await slot.findByText("person@example.com")).toBeTruthy();
+    const slot = renderWithParent(null, []);
+    expect(await slot.findByText("No subscriptions in the pool")).toBeTruthy();
     expect(slot.queryByText(/Account Pooler available/i)).toBeNull();
   });
 
@@ -210,35 +580,200 @@ describe("Account Pool parent banner", () => {
   });
 });
 
+it("gives subscription and routing switches a 44px coarse-pointer hit area", async () => {
+  const slot = render([
+    account(),
+    account({
+      id: "22222222-2222-4222-8222-222222222222",
+      provider: "codex",
+      label: "codex@example.com",
+      email: "codex@example.com",
+      accountUuid: null,
+      codexAccountId: "codex-account",
+      subscriptionType: null,
+      rateLimitTier: null,
+    }),
+  ]);
+  const switchNames = [
+    "Use person@example.com",
+    "Use codex@example.com",
+    "Route Claude threads",
+    "Route Codex threads",
+  ];
+
+  for (const name of switchNames) {
+    const control = await slot.findByRole("switch", { name });
+    expect(control.className).toContain("h-4 w-7");
+    expect(control.getAttribute("data-switch-hit-area")).toBe("true");
+    expect(control.className).toContain("pointer-coarse:size-11");
+    expect(control.querySelector("[data-switch-track]")).toBeTruthy();
+  }
+
+  const subscriptionSwitch = slot.getByRole("switch", {
+    name: "Use person@example.com",
+  });
+  const checkedBeforeActions = subscriptionSwitch.getAttribute("aria-checked");
+  fireEvent.click(
+    slot.getByRole("button", { name: "person@example.com actions" }),
+  );
+  expect(subscriptionSwitch.getAttribute("aria-checked")).toBe(
+    checkedBeforeActions,
+  );
+});
+
 describe("Account Pool settings", () => {
+  it("keeps the resolved next account visible during a refresh", async () => {
+    const firstId = "11111111-1111-4111-8111-111111111111";
+    const secondId = "22222222-2222-4222-8222-222222222222";
+    const accounts = [
+      account({
+        id: firstId,
+        label: "First Claude",
+        email: "first@example.com",
+      }),
+      account({
+        id: secondId,
+        label: "Second Claude",
+        email: "second@example.com",
+      }),
+    ];
+    const refreshedBinding = deferred<{
+      nextAccountId: string | null;
+      reason: string;
+    }>();
+    let bindingCalls = 0;
+    const slot = render(accounts, {
+      "routing.binding.next": () => {
+        bindingCalls += 1;
+        return bindingCalls === 1
+          ? { nextAccountId: firstId, reason: "Most headroom." }
+          : refreshedBinding.promise;
+      },
+    });
+
+    const firstRow = (
+      await slot.findByRole("switch", { name: "Use First Claude" })
+    ).closest("div");
+    const secondRow = (
+      await slot.findByRole("switch", { name: "Use Second Claude" })
+    ).closest("div");
+    await waitFor(() => expect(firstRow?.textContent).toContain("Next"));
+
+    await slot.emitRealtime(ACCOUNT_POOL_ACCOUNTS_CHANGED, {});
+    await waitFor(() => expect(bindingCalls).toBe(2));
+    expect(firstRow?.textContent).toContain("Next");
+    expect(firstRow?.textContent).not.toContain("Checking…");
+
+    refreshedBinding.resolve({
+      nextAccountId: secondId,
+      reason: "Most headroom.",
+    });
+    await waitFor(() => expect(secondRow?.textContent).toContain("Next"));
+    expect(firstRow?.textContent).toContain("Ready");
+  });
+
+  it("keeps ready accounts neutral until the next Claude binding resolves", async () => {
+    const next = deferred<{ nextAccountId: string | null; reason: string }>();
+    const live = deferred<PoolStatus>();
+    const accounts = [
+      account({ id: GMAIL_ID, label: "Next Claude" }),
+      account({
+        id: "77777777-7777-4777-8777-777777777777",
+        label: "Used up Claude",
+        email: "used-up@example.com",
+        status: "exhausted",
+        sevenDayUtilization: 1,
+      }),
+      account({
+        id: "88888888-8888-4888-8888-888888888888",
+        label: "Disabled Claude",
+        email: "disabled@example.com",
+        enabled: false,
+        status: "disabled",
+      }),
+    ];
+    window.localStorage.setItem(
+      STATUS_CACHE_KEY,
+      JSON.stringify(status(accounts)),
+    );
+    const slot = render(accounts, {
+      "status.get": () => live.promise,
+      "routing.binding.next": () => next.promise,
+    });
+
+    const nextRow = (
+      await slot.findByRole("switch", { name: "Use Next Claude" })
+    ).closest("div");
+    expect(nextRow?.textContent).toContain("Checking…");
+    expect(nextRow?.textContent).not.toContain("Ready");
+    expect(slot.getByText("Used up")).toBeTruthy();
+    expect(slot.getByText("Off")).toBeTruthy();
+
+    live.resolve(status(accounts));
+    await waitFor(() =>
+      expect(slot.rpcCalls).toContainEqual({
+        method: "routing.binding.next",
+        input: { provider: "claude" },
+      }),
+    );
+    expect(nextRow?.textContent).toContain("Checking…");
+    next.resolve({ nextAccountId: GMAIL_ID, reason: "Most headroom." });
+    await waitFor(() => expect(nextRow?.textContent).toContain("Next"));
+    expect(slot.getByText("· most headroom")).toBeTruthy();
+  });
+
+  it("shows Ready when the next Claude binding lookup fails", async () => {
+    const slot = render([account({ id: GMAIL_ID, label: "Claude account" })], {
+      "routing.binding.next": () => Promise.reject(new Error("offline")),
+    });
+
+    expect(await slot.findByText("Ready")).toBeTruthy();
+    expect(slot.queryByText("Checking…")).toBeNull();
+  });
+
+  it("shows Ready immediately when Claude routing is off", async () => {
+    const live = status([account({ id: GMAIL_ID, label: "Claude account" })]);
+    live.routing.claude = false;
+    const slot = render([account({ id: GMAIL_ID, label: "Claude account" })], {
+      "status.get": () => live,
+      "routing.binding.next": () => {
+        throw new Error("binding lookup should not run");
+      },
+    });
+
+    await waitFor(() => expect(slot.getByText("Ready")).toBeTruthy());
+    expect(
+      slot.rpcCalls.some((call) => call.method === "routing.binding.next"),
+    ).toBe(false);
+  });
+
   it("renders cached accounts as refreshing until live status arrives, then caches it", async () => {
     window.localStorage.setItem(
       STATUS_CACHE_KEY,
-      JSON.stringify(status([account({ fiveHourUtilization: 0.21 })])),
+      JSON.stringify(status([account({ label: "Cached Claude" })])),
     );
     const live = deferred<PoolStatus>();
     const slot = render([], { "status.get": () => live.promise });
-    expect(slot.getByText("person@example.com")).toBeTruthy();
-    expect(slot.getByText("21%")).toBeTruthy();
+    expect(slot.getByText("Cached Claude")).toBeTruthy();
     expect(slot.getByText("refreshing usage…")).toBeTruthy();
     expect(slot.getByText(/· refreshing…$/)).toBeTruthy();
     expect(slot.queryByText("Loading…")).toBeNull();
-    expect(slot.queryByText("No accounts in the pool")).toBeNull();
-    live.resolve(status([account({ fiveHourUtilization: 0.6 })]));
-    expect(await slot.findByText("60%")).toBeTruthy();
+    expect(slot.queryByText("No subscriptions in the pool")).toBeNull();
+    live.resolve(status([account({ label: "Live Claude" })]));
+    expect(await slot.findByText("Live Claude")).toBeTruthy();
     expect(slot.queryByText("refreshing usage…")).toBeNull();
     expect(slot.queryByText(/· refreshing…$/)).toBeNull();
     const cached = JSON.parse(
       window.localStorage.getItem(STATUS_CACHE_KEY) ?? "null",
     ) as PoolStatus;
-    expect(cached.accounts[0]?.fiveHourUtilization).toBe(0.6);
+    expect(cached.accounts[0]?.label).toBe("Live Claude");
   });
 
   it("ignores a malformed status cache and shows the loading state", async () => {
     window.localStorage.setItem(STATUS_CACHE_KEY, '{"accounts":"nope"}');
     const live = deferred<PoolStatus>();
     const slot = render([], { "status.get": () => live.promise });
-    expect(slot.getAllByText("Loading…")).toHaveLength(2);
+    expect(slot.getAllByText("Loading…")).toHaveLength(1);
     live.resolve(status());
     expect(await slot.findByText("person@example.com")).toBeTruthy();
   });
@@ -259,36 +794,188 @@ describe("Account Pool settings", () => {
     );
   });
 
-  it("renders fixed quota slots with missing buckets as em dashes", async () => {
-    const slot = render();
-    expect(await slot.findByText("person@example.com")).toBeTruthy();
-    expect(slot.getByText("5H")).toBeTruthy();
-    expect(slot.getByText("7D")).toBeTruthy();
-    expect(slot.getByText("FABLE")).toBeTruthy();
-    expect(slot.getAllByText("—")).toHaveLength(2);
+  function openActions(slot: ReturnType<typeof render>, label: string) {
+    return slot
+      .findByRole("button", { name: `${label} actions` })
+      .then((button) => fireEvent.pointerDown(button));
+  }
+
+  const GMAIL_ID = "44444444-4444-4444-8444-444444444444";
+  const PREVIOUS_ID = "55555555-5555-4555-8555-555555555555";
+  const ICLOUD_ID = "66666666-6666-4666-8666-666666666666";
+
+  function parallelLogins() {
+    return [
+      account({
+        id: PREVIOUS_ID,
+        label: "Claude Max 20x (previous token, disabled)",
+        email: "Gmail@Example.com",
+        rateLimitTier: "default_claude_max_5x",
+        enabled: false,
+        status: "disabled",
+        signInExpired: true,
+        error: "OAuth refresh failed with HTTP 400.",
+        priority: 1,
+      }),
+      account({
+        id: GMAIL_ID,
+        label: "Claude Max 20x (principal)",
+        email: "gmail@example.com",
+        rateLimitTier: "default_claude_max_20x",
+        organizationUuid: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        priority: 2,
+      }),
+      account({
+        id: ICLOUD_ID,
+        label: "Alexandre",
+        email: "icloud@example.com",
+        rateLimitTier: "default_claude_max_20x",
+        priority: 3,
+      }),
+    ];
+  }
+
+  it("shows one row per subscription when two records share a login", async () => {
+    const slot = render(parallelLogins());
+    const group = await slot.findByRole("group", {
+      name: "Claude subscriptions",
+    });
+    expect(within(group).getByText("2 subscriptions · 2 on")).toBeTruthy();
+    expect(
+      within(group)
+        .getAllByRole("switch", { name: /^Use / })
+        .map((control) => control.getAttribute("aria-label")),
+    ).toEqual(["Use Claude Max 20x (principal)", "Use Alexandre"]);
+    expect(
+      slot.queryByText("Claude Max 20x (previous token, disabled)"),
+    ).toBeNull();
+    expect(slot.queryByText("Sign-in expired")).toBeNull();
+    expect(
+      slot.queryByRole("button", { name: /^Sign in again to / }),
+    ).toBeNull();
+    expect(slot.getAllByText("Max 20x")).toHaveLength(2);
+    for (const badge of slot.getAllByText("Max 20x")) {
+      expect(badge.className).toContain("whitespace-nowrap");
+      expect(badge.parentElement?.className).toContain("shrink-0");
+    }
+  });
+
+  it("keeps the folded record in place when reordering the visible subscriptions", async () => {
+    measureAccountRows();
+    const slot = render(parallelLogins(), {
+      "account.reorder": () => null,
+    });
+    const handle = await slot.findByRole("button", {
+      name: "Reorder Alexandre",
+    });
+    await keyboardMove(handle, "ArrowUp");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    fireEvent.keyDown(document, { code: "ArrowUp" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    fireEvent.keyDown(document, { code: "Space" });
+    await waitFor(() =>
+      expect(slot.rpcCalls).toContainEqual({
+        method: "account.reorder",
+        input: {
+          provider: "claude",
+          accountIds: [PREVIOUS_ID, ICLOUD_ID, GMAIL_ID],
+        },
+      }),
+    );
+  });
+
+  it("marks the subscription behind the next automatic pick, even when a folded record was picked", async () => {
+    const [, principal, icloud] = parallelLogins();
+    if (principal === undefined || icloud === undefined)
+      throw new Error("Missing parallel login fixtures.");
+    const spare = account({
+      ...principal,
+      id: PREVIOUS_ID,
+      label: "Claude Max 20x (spare token)",
+      priority: 4,
+    });
+    const slot = render([principal, icloud, spare], {
+      "routing.binding.next": () => ({
+        nextAccountId: PREVIOUS_ID,
+        reason: "Most headroom.",
+      }),
+    });
+    expect(await slot.findByText("Next")).toBeTruthy();
+    const nextRow = slot
+      .getByRole("switch", { name: "Use Claude Max 20x (principal)" })
+      .closest("div");
+    expect(nextRow?.textContent).toContain("Next");
+    expect(slot.queryByText("Claude Max 20x (spare token)")).toBeNull();
+  });
+
+  it("names each subscription's state in words", async () => {
+    const now = Date.now();
+    const slot = render(
+      [
+        account({ id: GMAIL_ID, label: "Next one", email: "a@example.com" }),
+        account({
+          id: "77777777-7777-4777-8777-777777777777",
+          label: "Used up one",
+          email: "b@example.com",
+          status: "exhausted",
+          sevenDayUtilization: 1,
+          sevenDayResetAt: now + (2 * 24 * 60 + 5) * 60_000,
+        }),
+        account({
+          id: "88888888-8888-4888-8888-888888888888",
+          label: "Held one",
+          email: "c@example.com",
+          status: "held",
+          heldUntil: now + 30 * 60_000,
+        }),
+        account({
+          id: "99999999-9999-4999-8999-999999999999",
+          label: "Unread one",
+          email: "d@example.com",
+          status: "error",
+          error: "Usage could not be read.",
+        }),
+        account({
+          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          label: "Off one",
+          email: "e@example.com",
+          enabled: false,
+          status: "disabled",
+        }),
+      ],
+      {
+        "routing.binding.next": () => ({
+          nextAccountId: GMAIL_ID,
+          reason: "Most headroom.",
+        }),
+      },
+    );
+    expect(await slot.findByText("Next")).toBeTruthy();
+    expect(slot.getByText("· most headroom")).toBeTruthy();
+    expect(slot.getByText("Used up")).toBeTruthy();
+    expect(slot.getByText("· back in 2d 0h")).toBeTruthy();
+    expect(slot.getByText("Held")).toBeTruthy();
+    expect(slot.getByText(/^· retry at /)).toBeTruthy();
+    expect(slot.getByText("Can't read usage")).toBeTruthy();
+    expect(slot.getByText("Off")).toBeTruthy();
+    expect(slot.getByText("5 subscriptions · 4 on")).toBeTruthy();
     expect(
       slot.getByText("Hub accepting · 2 in flight · used by bee"),
     ).toBeTruthy();
   });
 
-  it("keeps the quota slots visible at mobile widths", async () => {
-    const slot = render();
-    const group = (await slot.findByText("5H")).parentElement?.parentElement;
-    expect(group).toBeTruthy();
-    expect(group?.className).not.toMatch(/(^|\s)hidden(\s|$)/u);
-  });
-
-  it("renders only the windows a Codex account reports and no Fable slot", async () => {
+  it("shows the plan from the tier and opens usage details for a Codex subscription", async () => {
     const blockingResetAt = Date.now() + 6 * 24 * 60 * 60 * 1_000;
     const slot = render([
       account({
         id: "22222222-2222-4222-8222-222222222222",
         provider: "codex",
         label: "pro@example.com",
+        email: "pro@example.com",
         codexAccountId: "chatgpt-account",
+        subscriptionType: null,
+        rateLimitTier: null,
         status: "exhausted",
-        fiveHourUtilization: 0.25,
-        fiveHourResetAt: Date.now() + 60 * 60 * 1_000,
         limitWindows: [
           {
             slot: "primary",
@@ -301,20 +988,13 @@ describe("Account Pool settings", () => {
           },
         ],
       }),
+      account({ label: "Claude Max" }),
     ]);
     expect(await slot.findByText("pro@example.com")).toBeTruthy();
-    expect(slot.getByText("7D")).toBeTruthy();
-    expect(slot.getByText("100%")).toBeTruthy();
-    expect(slot.queryByText("5H")).toBeNull();
-    expect(slot.queryByText("FABLE")).toBeNull();
-    expect(
-      slot.getByText(
-        `Exhausted · resets ${new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(blockingResetAt)}`,
-      ),
-    ).toBeTruthy();
-    fireEvent.click(
-      await slot.findByRole("button", { name: "Open pro@example.com details" }),
-    );
+    expect(slot.getByText("Max 5x")).toBeTruthy();
+    expect(slot.getByText("· back in 6d 0h")).toBeTruthy();
+    await openActions(slot, "pro@example.com");
+    fireEvent.click(await slot.findByText("Usage details"));
     expect(await slot.findByText("Weekly")).toBeTruthy();
     expect(slot.queryByText("5 hour")).toBeNull();
     expect(slot.queryByText("7 day")).toBeNull();
@@ -322,54 +1002,715 @@ describe("Account Pool settings", () => {
 
   it.each([
     {
-      action: "Disable",
+      control: "switch",
+      enabled: true,
       method: "account.disable",
-      input: { id: account().id },
     },
     {
-      action: "Refresh usage",
-      method: "account.refreshUsage",
-      input: { accountId: account().id },
+      control: "switch",
+      enabled: false,
+      method: "account.enable",
     },
   ])(
-    "dispatches $action to its RPC contract",
-    async ({ action, method, input }) => {
-      const slot = render([account()], {
+    "turns a subscription with enabled $enabled through its switch",
+    async ({ enabled, method }) => {
+      const slot = render([account({ enabled })], {
         [method]: () => ({ account: null }),
       });
-      fireEvent.pointerDown(
-        await slot.findByRole("button", { name: "person@example.com actions" }),
+      fireEvent.click(
+        await slot.findByRole("switch", { name: "Use person@example.com" }),
       );
-      fireEvent.click(await slot.findByText(action));
-      expect(slot.rpcCalls).toContainEqual({ method, input });
+      await waitFor(() =>
+        expect(slot.rpcCalls).toContainEqual({
+          method,
+          input: { id: account().id },
+        }),
+      );
     },
   );
+
+  function foldedTwins(enabled: boolean) {
+    return [
+      account({
+        id: "b2222222-2222-4222-8222-222222222222",
+        label: "Gmail copy",
+        email: "twin@example.com",
+        enabled,
+        lastUsedAt: 1,
+      }),
+      account({
+        id: "a1111111-1111-4111-8111-111111111111",
+        label: "Gmail twin",
+        email: "Twin@Example.com",
+        enabled,
+        lastUsedAt: 5,
+      }),
+      account({
+        id: "c3333333-3333-4333-8333-333333333333",
+        label: "Gmail lapsed",
+        email: "twin@example.com",
+        enabled: false,
+        signInExpired: true,
+        status: "error",
+        error: "OAuth refresh failed with HTTP 400.",
+      }),
+      account({
+        id: "d4444444-4444-4444-8444-444444444444",
+        label: "Other login",
+        email: "other@example.com",
+        accountUuid: "44444444-4444-4444-8444-444444444444",
+      }),
+    ];
+  }
+
+  it("asks before turning off a subscription whose other records are still on, naming them", async () => {
+    const slot = render(foldedTwins(true), {
+      "account.disableSubscription": () => ({ accounts: [] }),
+    });
+    const accountCalls = () =>
+      slot.rpcCalls.filter((call) => call.method.startsWith("account."));
+    expect(await slot.findByText("2 subscriptions · 2 on")).toBeTruthy();
+    fireEvent.click(slot.getByRole("switch", { name: "Use Gmail twin" }));
+    const dialog = await slot.findByRole("dialog", {
+      name: "Turn off Gmail twin?",
+    });
+    expect(dialog.textContent).toContain(
+      "Also on for this login: Gmail copy. Gmail twin keeps sending through it unless it is turned off too.",
+    );
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(slot.queryByRole("dialog")).toBeNull());
+    expect(accountCalls()).toEqual([]);
+    fireEvent.click(slot.getByRole("switch", { name: "Use Gmail twin" }));
+    fireEvent.click(
+      within(
+        await slot.findByRole("dialog", { name: "Turn off Gmail twin?" }),
+      ).getByRole("button", { name: "Turn off all" }),
+    );
+    await waitFor(() =>
+      expect(accountCalls()).toEqual([
+        {
+          method: "account.disableSubscription",
+          input: {
+            id: "a1111111-1111-4111-8111-111111111111",
+            expectedIds: [
+              "b2222222-2222-4222-8222-222222222222",
+              "a1111111-1111-4111-8111-111111111111",
+            ],
+          },
+        },
+      ]),
+    );
+  });
+
+  it("refuses a stale turn off, shows the updated list and turns off only what it named", async () => {
+    let accounts = foldedTwins(true);
+    const third = account({
+      id: "e5555555-5555-4555-8555-555555555555",
+      label: "Gmail third",
+      email: "twin@example.com",
+      lastUsedAt: 0,
+    });
+    let confirms = 0;
+    const slot = render(accounts, {
+      "status.get": () => status(accounts),
+      "account.disableSubscription": () => {
+        confirms += 1;
+        if (confirms > 1) return { accounts: [] };
+        accounts = [...accounts, third];
+        throw new Error(
+          "The records of this subscription changed. Review the updated list; nothing was turned off.",
+        );
+      },
+    });
+    fireEvent.click(
+      await slot.findByRole("switch", { name: "Use Gmail twin" }),
+    );
+    const dialog = await slot.findByRole("dialog", {
+      name: "Turn off Gmail twin?",
+    });
+    expect(dialog.textContent).toContain("Also on for this login: Gmail copy.");
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Turn off all" }),
+    );
+    expect(
+      await within(dialog).findByText(
+        "The records of this subscription changed. Review the updated list; nothing was turned off.",
+      ),
+    ).toBeTruthy();
+    await waitFor(() =>
+      expect(dialog.textContent).toContain(
+        "Also on for this login: Gmail copy, Gmail third.",
+      ),
+    );
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Turn off all" }),
+    );
+    await waitFor(() => expect(slot.queryByRole("dialog")).toBeNull());
+    expect(
+      slot.rpcCalls
+        .filter((call) => call.method === "account.disableSubscription")
+        .map((call) => call.input),
+    ).toEqual([
+      {
+        id: "a1111111-1111-4111-8111-111111111111",
+        expectedIds: [
+          "b2222222-2222-4222-8222-222222222222",
+          "a1111111-1111-4111-8111-111111111111",
+        ],
+      },
+      {
+        id: "a1111111-1111-4111-8111-111111111111",
+        expectedIds: [
+          "b2222222-2222-4222-8222-222222222222",
+          "a1111111-1111-4111-8111-111111111111",
+          "e5555555-5555-4555-8555-555555555555",
+        ],
+      },
+    ]);
+  });
+
+  it("turns a subscription off without asking when its other enabled record can't send", async () => {
+    const [copy, twin, ...rest] = foldedTwins(true);
+    const slot = render(
+      [
+        {
+          ...copy!,
+          signInExpired: true,
+          status: "error",
+          error: "OAuth refresh failed with HTTP 401.",
+        },
+        twin!,
+        ...rest,
+      ],
+      { "account.disable": () => ({ account: null }) },
+    );
+    fireEvent.click(
+      await slot.findByRole("switch", { name: "Use Gmail twin" }),
+    );
+    await waitFor(() =>
+      expect(
+        slot.rpcCalls.filter((call) => call.method.startsWith("account.")),
+      ).toEqual([
+        {
+          method: "account.disable",
+          input: { id: "a1111111-1111-4111-8111-111111111111" },
+        },
+      ]),
+    );
+    expect(slot.queryByRole("dialog")).toBeNull();
+  });
+
+  it("leaves a folded, disabled record untouched when its subscription is switched off and on", async () => {
+    const PROTECTED = "f5c490bc-0000-4000-8000-000000000000";
+    const pool = (principalEnabled: boolean) => [
+      account({
+        id: PROTECTED,
+        label: "Previous login",
+        email: "Gmail@Example.com",
+        enabled: false,
+        signInExpired: true,
+        status: "error",
+        error: "OAuth refresh failed with HTTP 400.",
+        priority: 1,
+        lastUsedAt: 1,
+      }),
+      account({
+        id: "b2222222-2222-4222-8222-222222222222",
+        label: "principal",
+        email: "gmail@example.com",
+        enabled: principalEnabled,
+        active: true,
+        priority: 2,
+        lastUsedAt: 5,
+      }),
+      account({
+        id: "c3333333-3333-4333-8333-333333333333",
+        label: "Alexandre",
+        email: "icloud@example.com",
+        accountUuid: "44444444-4444-4444-8444-444444444444",
+        priority: 3,
+      }),
+    ];
+    const off = render(pool(true), {
+      "account.disable": () => ({ account: null }),
+    });
+    expect(await off.findByText("2 subscriptions · 2 on")).toBeTruthy();
+    fireEvent.click(off.getByRole("switch", { name: "Use principal" }));
+    await waitFor(() =>
+      expect(off.rpcCalls).toContainEqual({
+        method: "account.disable",
+        input: { id: "b2222222-2222-4222-8222-222222222222" },
+      }),
+    );
+    expect(off.queryByRole("dialog")).toBeNull();
+    const offCalls = off.rpcCalls;
+    cleanup();
+    const on = render(pool(false), {
+      "account.enable": () => ({ account: null }),
+    });
+    expect(await on.findByText("2 subscriptions · 1 on")).toBeTruthy();
+    expect(on.queryByText("Previous login")).toBeNull();
+    fireEvent.click(on.getByRole("switch", { name: "Use principal" }));
+    await waitFor(() =>
+      expect(on.rpcCalls).toContainEqual({
+        method: "account.enable",
+        input: { id: "b2222222-2222-4222-8222-222222222222" },
+      }),
+    );
+    expect(
+      [...offCalls, ...on.rpcCalls].filter((call) =>
+        call.method.startsWith("account."),
+      ),
+    ).toEqual([
+      {
+        method: "account.disable",
+        input: { id: "b2222222-2222-4222-8222-222222222222" },
+      },
+      {
+        method: "account.enable",
+        input: { id: "b2222222-2222-4222-8222-222222222222" },
+      },
+    ]);
+    expect(JSON.stringify([...offCalls, ...on.rpcCalls])).not.toContain(
+      PROTECTED,
+    );
+  });
+
+  it("turns a folded subscription back on through its representative only", async () => {
+    const slot = render(foldedTwins(false), {
+      "account.enable": () => ({ account: null }),
+    });
+    expect(await slot.findByText("2 subscriptions · 1 on")).toBeTruthy();
+    expect(slot.queryByRole("switch", { name: "Use Gmail copy" })).toBeNull();
+    fireEvent.click(slot.getByRole("switch", { name: "Use Gmail twin" }));
+    await waitFor(() =>
+      expect(
+        slot.rpcCalls.filter((call) => call.method === "account.enable"),
+      ).toEqual([
+        {
+          method: "account.enable",
+          input: { id: "a1111111-1111-4111-8111-111111111111" },
+        },
+      ]),
+    );
+    expect(
+      slot.rpcCalls.some((call) => call.method === "account.disable"),
+    ).toBe(false);
+  });
+
+  it("dispatches Refresh usage to its RPC contract", async () => {
+    const slot = render([account()], {
+      "account.refreshUsage": () => ({ account: null }),
+    });
+    await openActions(slot, "person@example.com");
+    fireEvent.click(await slot.findByText("Refresh usage"));
+    expect(slot.rpcCalls).toContainEqual({
+      method: "account.refreshUsage",
+      input: { accountId: account().id },
+    });
+  });
 
   it("confirms Remove before dispatching its RPC contract", async () => {
     const slot = render([account()], {
       "account.remove": () => ({ removed: true }),
     });
-    fireEvent.pointerDown(
-      await slot.findByRole("button", { name: "person@example.com actions" }),
+    await openActions(slot, "person@example.com");
+    fireEvent.click(await slot.findByText("Remove…"));
+    const dialog = await slot.findByRole("dialog", {
+      name: "Remove person@example.com?",
+    });
+    expect(dialog.textContent).toContain(
+      "bb deletes its saved sign-in. Conversations on Automatic move to your other Claude subscriptions; conversations set to this one stop until you choose another. To use it again, sign in again.",
     );
-    fireEvent.click(await slot.findByText("Remove"));
-    expect(await slot.findByText("Remove person@example.com?")).toBeTruthy();
     expect(slot.rpcCalls.some((call) => call.method === "account.remove")).toBe(
       false,
     );
-    fireEvent.click(slot.getByRole("button", { name: "Remove" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Remove" }));
     expect(slot.rpcCalls).toContainEqual({
       method: "account.remove",
       input: { id: account().id },
     });
   });
 
-  it("opens the correct provider sign-in flow from each Add account menu", async () => {
+  it("renames a subscription in place with Enter and on blur, and cancels with Escape", async () => {
+    const slot = render([account()], {
+      "account.rename": () => ({ account: account({ label: "Main Claude" }) }),
+    });
+    const renames = () =>
+      slot.rpcCalls.filter((call) => call.method === "account.rename");
+    fireEvent.click(
+      await slot.findByRole("button", { name: "Rename person@example.com" }),
+    );
+    const field = await slot.findByRole("textbox", {
+      name: "Subscription name",
+    });
+    fireEvent.change(field, { target: { value: "Ignored" } });
+    fireEvent.keyDown(field, { key: "Escape" });
+    expect(slot.queryByRole("textbox", { name: "Subscription name" })).toBe(
+      null,
+    );
+    expect(renames()).toEqual([]);
+
+    fireEvent.click(
+      slot.getByRole("button", { name: "Rename person@example.com" }),
+    );
+    fireEvent.change(
+      await slot.findByRole("textbox", { name: "Subscription name" }),
+      { target: { value: "Also ignored" } },
+    );
+    expect(
+      fireEvent.mouseDown(slot.getByRole("button", { name: "Save" })),
+    ).toBe(false);
+    const cancel = slot.getByRole("button", { name: "Cancel" });
+    expect(fireEvent.mouseDown(cancel)).toBe(false);
+    fireEvent.click(cancel);
+    expect(slot.queryByRole("textbox", { name: "Subscription name" })).toBe(
+      null,
+    );
+    expect(renames()).toEqual([]);
+
+    fireEvent.click(
+      slot.getByRole("button", { name: "Rename person@example.com" }),
+    );
+    const again = await slot.findByRole("textbox", {
+      name: "Subscription name",
+    });
+    fireEvent.change(again, { target: { value: "  Main Claude " } });
+    fireEvent.keyDown(again, { key: "Enter" });
+    await waitFor(() =>
+      expect(renames()).toEqual([
+        {
+          method: "account.rename",
+          input: { id: account().id, label: "Main Claude" },
+        },
+      ]),
+    );
+
+    fireEvent.click(
+      slot.getByRole("button", { name: "Rename person@example.com" }),
+    );
+    const blurred = await slot.findByRole("textbox", {
+      name: "Subscription name",
+    });
+    fireEvent.change(blurred, { target: { value: "Work Claude" } });
+    fireEvent.blur(blurred);
+    await waitFor(() => expect(renames()).toHaveLength(2));
+    expect(renames()[1]?.input).toEqual({
+      id: account().id,
+      label: "Work Claude",
+    });
+  });
+
+  it("signs an expired Claude subscription in again without adding or renaming it", async () => {
+    const expired = account({
+      id: PREVIOUS_ID,
+      label: "Claude Max 20x (gmail)",
+      email: "gmail@example.com",
+      enabled: false,
+      status: "disabled",
+      signInExpired: true,
+      error: "OAuth refresh failed with HTTP 400.",
+    });
+    const slot = render([expired], {
+      "login.start": () => ({
+        sessionId: "22222222-2222-4222-8222-222222222222",
+        authorizeUrl: "https://claude.ai/oauth/authorize",
+      }),
+      "login.complete": () => expired,
+    });
+    expect(await slot.findByText("Sign-in expired")).toBeTruthy();
+    expect(slot.getByText("1 subscription · 0 on · 1 needs sign-in")).toBe(
+      slot.getByText("1 subscription · 0 on · 1 needs sign-in"),
+    );
+    expect(
+      slot.queryByRole("switch", { name: "Use Claude Max 20x (gmail)" }),
+    ).toBeNull();
+    fireEvent.click(
+      slot.getByRole("button", {
+        name: "Sign in again to Claude Max 20x (gmail)",
+      }),
+    );
+    const dialog = await slot.findByRole("dialog", { name: "Sign in again" });
+    expect(slot.rpcCalls).toContainEqual({
+      method: "login.start",
+      input: { accountId: PREVIOUS_ID },
+    });
+    expect(dialog.textContent).toContain(
+      "Sign in to Claude as the account behind Claude Max 20x (gmail). bb keeps its name, plan and place in the list.",
+    );
+    expect(dialog.textContent).toContain(
+      "If the code belongs to a different Claude account, bb stops and keeps this subscription as it is.",
+    );
+    expect(
+      within(dialog).queryByRole("textbox", { name: "Account label" }),
+    ).toBeNull();
+    fireEvent.change(
+      await within(dialog).findByLabelText("Claude authorization code"),
+      { target: { value: "code#state" } },
+    );
+    fireEvent.click(within(dialog).getByRole("button", { name: "Complete" }));
+    await waitFor(() =>
+      expect(slot.rpcCalls).toContainEqual({
+        method: "login.complete",
+        input: {
+          sessionId: "22222222-2222-4222-8222-222222222222",
+          pasted: "code#state",
+        },
+      }),
+    );
+    expect(
+      await within(dialog).findByText(
+        "Signed in again to Claude Max 20x (gmail)",
+      ),
+    ).toBeTruthy();
+    expect(
+      within(dialog).getByText("It stays off until you turn it on."),
+    ).toBeTruthy();
+    expect(
+      within(dialog).queryByRole("button", { name: "Add another" }),
+    ).toBeNull();
+  });
+
+  it("shows a refused sign-in again inside the dialog and offers a fresh start", async () => {
+    const expired = account({
+      label: "Claude Max 20x (gmail)",
+      signInExpired: true,
+      status: "error",
+      error: "OAuth refresh failed with HTTP 400.",
+    });
+    let starts = 0;
+    const slot = render([expired], {
+      "login.start": () => {
+        starts += 1;
+        return {
+          sessionId: "22222222-2222-4222-8222-222222222222",
+          authorizeUrl: "https://claude.ai/oauth/authorize",
+        };
+      },
+      "login.complete": () => {
+        throw new Error(
+          "That code belongs to a different Claude account. Sign in as the account behind Claude Max 20x (gmail); it was not changed.",
+        );
+      },
+    });
+    fireEvent.click(
+      await slot.findByRole("button", { name: /^Sign in again to / }),
+    );
+    const dialog = await slot.findByRole("dialog", { name: "Sign in again" });
+    fireEvent.change(
+      await within(dialog).findByLabelText("Claude authorization code"),
+      { target: { value: "code#state" } },
+    );
+    fireEvent.click(within(dialog).getByRole("button", { name: "Complete" }));
+    expect(
+      await within(dialog).findByText(
+        "That code belongs to a different Claude account. Sign in as the account behind Claude Max 20x (gmail); it was not changed.",
+      ),
+    ).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(starts).toBe(2));
+    expect(
+      slot.rpcCalls.filter((call) => call.method === "login.start"),
+    ).toEqual([
+      { method: "login.start", input: { accountId: expired.id } },
+      { method: "login.start", input: { accountId: expired.id } },
+    ]);
+  });
+
+  it("starts a Codex sign in again for its subscription and keeps Turn off in its menu", async () => {
+    const expired = account({
+      id: "22222222-2222-4222-8222-222222222222",
+      provider: "codex",
+      label: "Codex Pro",
+      email: "codex@example.com",
+      codexAccountId: "chatgpt-account",
+      signInExpired: true,
+      status: "error",
+      error: "OAuth refresh failed with HTTP 401.",
+    });
+    const slot = render([expired], {
+      "codexLogin.start": codexLoginStart,
+      "codexLogin.poll": () => ({ status: "pending" }),
+      "codexLogin.cancel": () => ({ cancelled: true }),
+      "account.disable": () => ({ account: null }),
+    });
+    await openActions(slot, "Codex Pro");
+    fireEvent.click(await slot.findByText("Turn off"));
+    await waitFor(() =>
+      expect(slot.rpcCalls).toContainEqual({
+        method: "account.disable",
+        input: { id: expired.id },
+      }),
+    );
+    fireEvent.click(slot.getByRole("button", { name: /^Sign in again to / }));
+    const dialog = await slot.findByRole("dialog", { name: "Sign in again" });
+    expect(slot.rpcCalls).toContainEqual({
+      method: "codexLogin.start",
+      input: { accountId: expired.id },
+    });
+    expect(dialog.textContent).toContain(
+      "Sign in to ChatGPT as the account behind Codex Pro. bb keeps its name and place in the list.",
+    );
+    expect(
+      within(dialog).queryByRole("textbox", { name: "Account label" }),
+    ).toBeNull();
+  });
+
+  function renderOwnerPool() {
+    const gmail = "gmail.owner@example.com";
+    return render(
+      [
+        account({
+          id: "f5c490bc-0000-4000-8000-000000000000",
+          label: "Claude Max 20x (previous token, disabled)",
+          email: gmail,
+          rateLimitTier: "default_claude_max_20x",
+          enabled: false,
+          signInExpired: true,
+          status: "error",
+          error: "OAuth refresh failed with HTTP 400.",
+          priority: 1,
+          lastUsedAt: 1,
+        }),
+        account({
+          id: "567f46ec-0000-4000-8000-000000000000",
+          label: "Claude Max 20x (principal)",
+          email: gmail,
+          rateLimitTier: "default_claude_max_20x",
+          status: "exhausted",
+          sevenDayUtilization: 1,
+          priority: 1,
+          lastUsedAt: 5,
+        }),
+        account({
+          id: "6b45fa7d-0000-4000-8000-000000000000",
+          label: "Alexandre",
+          email: "icloud.owner@example.com",
+          accountUuid: "44444444-4444-4444-8444-444444444444",
+          active: true,
+          priority: 2,
+        }),
+      ],
+      {
+        "local.logins": () => [
+          {
+            providerId: "codex",
+            displayName: "Codex",
+            email: "codex.owner@example.com",
+            planLabel: "ChatGPT Pro",
+            status: "ready",
+            poolProvider: "codex",
+          },
+        ],
+        "routing.set": () => ({ provider: "codex", enabled: false }),
+      },
+    );
+  }
+
+  it("shows the owner's two records of one Claude login as one subscription beside their other login", async () => {
+    const slot = renderOwnerPool();
+    await slot.findAllByText("Claude Max 20x (principal)");
+    expect(
+      slot.queryByText("Claude Max 20x (previous token, disabled)"),
+    ).toBeNull();
+    const claude = slot.getByRole("group", { name: "Claude subscriptions" });
+    expect(within(claude).getByText("2 subscriptions · 2 on")).toBeTruthy();
+    expect(
+      within(claude)
+        .getAllByRole("switch", { name: /^Use / })
+        .map((control) => control.getAttribute("aria-label")),
+    ).toEqual(["Use Claude Max 20x (principal)", "Use Alexandre"]);
+  });
+
+  it("shows the owner's own Codex login under On this Mac instead of an empty Codex pool section", async () => {
+    const slot = renderOwnerPool();
+    await slot.findAllByText("Claude Max 20x (principal)");
+    expect(slot.queryByText(/No accounts yet/)).toBeNull();
+    expect(
+      slot.queryByRole("switch", { name: "Route Codex threads" }),
+    ).toBeNull();
+    expect(
+      slot.queryByRole("group", { name: "Codex subscriptions" }),
+    ).toBeNull();
+    const mac = await slot.findByRole("group", { name: "On this Mac" });
+    expect(within(mac).getByText("Codex")).toBeTruthy();
+    expect(within(mac).getByText("ChatGPT Pro")).toBeTruthy();
+    expect(within(mac).getByText("Ready")).toBeTruthy();
+    expect(
+      within(mac).getByRole("button", {
+        name: "Add this Mac's Codex login to the pool",
+      }),
+    ).toBeTruthy();
+    fireEvent.click(slot.getByRole("button", { name: "Advanced" }));
+    fireEvent.click(
+      await slot.findByRole("switch", { name: "Route Codex threads" }),
+    );
+    expect(
+      slot.getAllByRole("switch", { name: "Route Claude threads" }),
+    ).toHaveLength(1);
+    await waitFor(() =>
+      expect(slot.rpcCalls).toContainEqual({
+        method: "routing.set",
+        input: { provider: "codex", enabled: false },
+      }),
+    );
+  });
+
+  it("lists this Mac's own logins outside the pool and adds a poolable one", async () => {
+    const slot = render([account()], {
+      "local.logins": () => [
+        {
+          providerId: "codex",
+          displayName: "Codex",
+          email: "codex@example.com",
+          planLabel: null,
+          status: "ready",
+          poolProvider: "codex",
+        },
+        {
+          providerId: "acp-cursor",
+          displayName: "Cursor",
+          email: "cursor@example.com",
+          planLabel: "Pro",
+          status: "expired",
+          poolProvider: null,
+        },
+      ],
+      "account.add": () => account({ provider: "codex" }),
+    });
+    const group = await slot.findByRole("group", { name: "On this Mac" });
+    expect(
+      within(group).getByText("Signed in directly, not in the pool"),
+    ).toBeTruthy();
+    expect(
+      within(group).getByText("cursor@example.com · can't be pooled"),
+    ).toBeTruthy();
+    expect(within(group).getByText("Sign-in expired")).toBeTruthy();
+    expect(
+      within(group)
+        .getAllByRole("button", { name: /to the pool$/ })
+        .map((button) => button.getAttribute("aria-label")),
+    ).toEqual(["Add this Mac's Codex login to the pool"]);
+    fireEvent.click(
+      within(group).getByRole("button", {
+        name: "Add this Mac's Codex login to the pool",
+      }),
+    );
+    await waitFor(() =>
+      expect(slot.rpcCalls).toContainEqual({
+        method: "account.add",
+        input: { provider: "codex", source: { kind: "import" }, label: null },
+      }),
+    );
+  });
+
+  it("opens each provider's sign-in flow from the Add subscription menu", async () => {
     const slot = render([], {
       "login.start": () => ({
         sessionId: "22222222-2222-4222-8222-222222222222",
         authorizeUrl: "https://claude.ai/oauth/authorize",
       }),
+      "login.complete": () => account({ label: "Work Claude" }),
       "codexLogin.start": () => ({
         sessionId: "33333333-3333-4333-8333-333333333333",
         verificationUri: "https://auth.openai.com/codex/device",
@@ -378,18 +1719,41 @@ describe("Account Pool settings", () => {
         intervalMs: 60_000,
       }),
     });
-    const addButtons = await slot.findAllByRole("button", {
-      name: "Add account",
-    });
-    fireEvent.pointerDown(addButtons[0]!);
+    const add = await slot.findByRole("button", { name: "Add subscription" });
+    fireEvent.pointerDown(add);
     fireEvent.click(
       await slot.findByText("Sign in to Claude", { selector: "span.block" }),
     );
+    expect(slot.rpcCalls).toContainEqual({
+      method: "login.start",
+      input: null,
+    });
+    const authorizationCode = await slot.findByLabelText(
+      "Claude authorization code",
+    );
+    expect(authorizationCode.getAttribute("type")).toBe("password");
     expect(
-      await slot.findByLabelText("Claude authorization code"),
+      slot.getByText(
+        /private window or sign in to the account you want to add/i,
+      ),
     ).toBeTruthy();
+    fireEvent.change(slot.getByRole("textbox", { name: "Account label" }), {
+      target: { value: "Work Claude" },
+    });
+    fireEvent.change(authorizationCode, { target: { value: "one-time-code" } });
+    fireEvent.click(await slot.findByRole("button", { name: "Complete" }));
+    await waitFor(() =>
+      expect(slot.rpcCalls).toContainEqual({
+        method: "login.complete",
+        input: {
+          sessionId: "22222222-2222-4222-8222-222222222222",
+          pasted: "one-time-code",
+          label: "Work Claude",
+        },
+      }),
+    );
     fireEvent.click(slot.getByRole("button", { name: "Close" }));
-    fireEvent.pointerDown(addButtons[1]!);
+    fireEvent.pointerDown(add);
     fireEvent.click(
       await slot.findByText("Sign in to Codex", { selector: "span.block" }),
     );
@@ -412,6 +1776,83 @@ describe("Account Pool settings", () => {
       }),
     );
   });
+
+  it("keeps subscription details available while routing is pending and blocks a duplicate toggle", async () => {
+    const update = deferred<object | null>();
+    const slot = render(foldedTwins(true), {
+      "routing.set": () => update.promise,
+    });
+    fireEvent.click(
+      await slot.findByRole("switch", { name: "Route Claude threads" }),
+    );
+    await waitFor(() =>
+      expect(slot.rpcCalls).toContainEqual({
+        method: "routing.set",
+        input: { provider: "claude", enabled: false },
+      }),
+    );
+
+    await openActions(slot, "Gmail twin");
+    fireEvent.click(await slot.findByText("Usage details"));
+    expect(
+      await slot.findByRole("dialog", { name: "Gmail twin" }),
+    ).toBeTruthy();
+    fireEvent.click(slot.getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(slot.queryByRole("dialog")).toBeNull());
+
+    fireEvent.click(slot.getByRole("switch", { name: "Use Gmail twin" }));
+    expect(
+      slot.queryByRole("dialog", { name: "Turn off Gmail twin?" }),
+    ).toBeNull();
+    expect(
+      slot.rpcCalls.filter((call) => call.method.startsWith("account.")),
+    ).toEqual([]);
+
+    update.resolve({ provider: "claude", enabled: false });
+    await waitFor(() =>
+      expect(
+        slot
+          .getByRole("switch", { name: "Route Claude threads" })
+          .getAttribute("aria-disabled"),
+      ).toBeNull(),
+    );
+  });
+
+  it.each(["claude", "codex"] as const)(
+    "retains focus on the Route %s switch while its update is pending",
+    async (provider) => {
+      const update = deferred<object | null>();
+      const slot = render([account()], {
+        "routing.set": () => update.promise,
+      });
+      if (provider === "codex") {
+        fireEvent.click(slot.getByRole("button", { name: "Advanced" }));
+      }
+      const control = await slot.findByRole("switch", {
+        name: `Route ${provider === "claude" ? "Claude" : "Codex"} threads`,
+      });
+      control.focus();
+      fireEvent.click(control);
+      await waitFor(() =>
+        expect(slot.rpcCalls).toContainEqual({
+          method: "routing.set",
+          input: { provider, enabled: false },
+        }),
+      );
+      expect(control.hasAttribute("disabled")).toBe(false);
+      expect(control.getAttribute("aria-disabled")).toBe("true");
+      expect(document.activeElement).toBe(control);
+      fireEvent.click(control);
+      expect(
+        slot.rpcCalls.filter((call) => call.method === "routing.set"),
+      ).toHaveLength(1);
+      update.resolve({ provider, enabled: false });
+      await waitFor(() =>
+        expect(control.getAttribute("aria-disabled")).toBeNull(),
+      );
+      expect(document.activeElement).toBe(control);
+    },
+  );
 
   it("edits Advanced config fields and shows URL validation inline", async () => {
     const nextConfig = config({
@@ -450,7 +1891,7 @@ describe("Account Pool settings", () => {
     );
   });
 
-  it("shows every observed family bucket in the detail dialog", async () => {
+  it("shows every observed family bucket and extra usage in the detail dialog", async () => {
     const fable = {
       utilization: 0.91,
       resetAt: Date.now() + 3_600_000,
@@ -467,15 +1908,15 @@ describe("Account Pool settings", () => {
           haiku: null,
           other: null,
         },
+        extraUsage: { status: "allowed", observedAt: 1, source: "header" },
       }),
     ]);
-    fireEvent.click(
-      await slot.findByRole("button", {
-        name: "Open person@example.com details",
-      }),
-    );
+    await openActions(slot, "person@example.com");
+    fireEvent.click(await slot.findByText("Usage details"));
     expect(await slot.findByText("Fable 7 day")).toBeTruthy();
     expect(slot.getByText("Opus 7 day")).toBeTruthy();
+    expect(slot.getByText("Extra usage")).toBeTruthy();
+    expect(slot.getByText("Available")).toBeTruthy();
   });
 
   it("shows the email beside a display-name label in the row and detail dialog", async () => {
@@ -484,14 +1925,15 @@ describe("Account Pool settings", () => {
       account({
         id: "22222222-2222-4222-8222-222222222222",
         label: "Claude API key",
+        kind: "api-key",
         email: null,
       }),
     ]);
     expect(await slot.findByText("Person Example")).toBeTruthy();
     expect(slot.getAllByText("person@example.com")).toHaveLength(1);
-    fireEvent.click(
-      slot.getByRole("button", { name: "Open Person Example details" }),
-    );
+    expect(slot.getByText("API key")).toBeTruthy();
+    await openActions(slot, "Person Example");
+    fireEvent.click(await slot.findByText("Usage details"));
     expect(await slot.findByText("Email")).toBeTruthy();
     expect(slot.getAllByText("person@example.com")).toHaveLength(2);
   });
@@ -574,13 +2016,12 @@ describe("Account Pool settings", () => {
   );
 
   it("does not claim success when copying the device code fails", async () => {
-    const copy = deferred<void>();
-    const writeText = vi.fn(() => copy.promise);
-    vi.stubGlobal("navigator", {
-      ...navigator,
-      clipboard: { writeText },
-    });
-    const slot = render([], { "codexLogin.start": codexLoginStart });
+    const copy = deferred<boolean>();
+    const slot = render(
+      [],
+      { "codexLogin.start": codexLoginStart },
+      () => copy.promise,
+    );
     fireEvent.click(
       await slot.findByRole("button", { name: "Sign in to Codex" }),
     );
@@ -588,21 +2029,22 @@ describe("Account Pool settings", () => {
       name: "Copy Codex sign-in code",
     });
     fireEvent.click(button);
-    expect(writeText).toHaveBeenCalledWith("ABCD-1234");
-    await act(async () => copy.reject(new Error("denied")));
+    expect(slot.inspection.experimental_clipboardWrites).toEqual([
+      { text: "ABCD-1234" },
+    ]);
+    await act(async () => copy.resolve(false));
     expect(window.getSelection()?.toString()).toBe("ABCD-1234");
     expect(slot.queryByText("Sign-in code copied")).toBeNull();
     expect(button.querySelector('[data-icon="Check"]')).toBeNull();
   });
 
   it("does not claim success when copying the authorization URL fails", async () => {
-    const copy = deferred<void>();
-    const writeText = vi.fn(() => copy.promise);
-    vi.stubGlobal("navigator", {
-      ...navigator,
-      clipboard: { writeText },
-    });
-    const slot = render([], { "codexLogin.start": codexLoginStart });
+    const copy = deferred<boolean>();
+    const slot = render(
+      [],
+      { "codexLogin.start": codexLoginStart },
+      () => copy.promise,
+    );
     fireEvent.click(
       await slot.findByRole("button", { name: "Sign in to Codex" }),
     );
@@ -610,10 +2052,10 @@ describe("Account Pool settings", () => {
       name: "Copy Codex authorization URL",
     });
     fireEvent.click(button);
-    expect(writeText).toHaveBeenCalledWith(
-      "https://auth.openai.com/codex/device",
-    );
-    await act(async () => copy.reject(new Error("denied")));
+    expect(slot.inspection.experimental_clipboardWrites).toEqual([
+      { text: "https://auth.openai.com/codex/device" },
+    ]);
+    await act(async () => copy.resolve(false));
     const input = slot.getByRole("textbox", {
       name: "Codex authorization URL",
     }) as HTMLInputElement;
@@ -624,25 +2066,26 @@ describe("Account Pool settings", () => {
   });
 
   it("keeps polling and the close action working after copying the code", async () => {
-    const copy = deferred<void>();
-    const writeText = vi.fn(() => copy.promise);
-    vi.stubGlobal("navigator", {
-      ...navigator,
-      clipboard: { writeText },
-    });
-    const slot = render([], {
-      "codexLogin.start": codexLoginStart,
-      "codexLogin.poll": () => ({ status: "pending" }),
-      "codexLogin.cancel": () => ({ cancelled: true }),
-    });
+    const copy = deferred<boolean>();
+    const slot = render(
+      [],
+      {
+        "codexLogin.start": codexLoginStart,
+        "codexLogin.poll": () => ({ status: "pending" }),
+        "codexLogin.cancel": () => ({ cancelled: true }),
+      },
+      () => copy.promise,
+    );
     fireEvent.click(
       await slot.findByRole("button", { name: "Sign in to Codex" }),
     );
     fireEvent.click(
       await slot.findByRole("button", { name: "Copy Codex sign-in code" }),
     );
-    expect(writeText).toHaveBeenCalledWith("ABCD-1234");
-    await act(async () => copy.resolve());
+    expect(slot.inspection.experimental_clipboardWrites).toEqual([
+      { text: "ABCD-1234" },
+    ]);
+    await act(async () => copy.resolve(true));
     expect(
       (await slot.findByRole("dialog", { name: "Sign in to Codex" }))
         .textContent,
@@ -681,16 +2124,22 @@ describe("Account Pool settings", () => {
     "reorders %s accounts with the keyboard and persists the displayed order",
     async (provider) => {
       measureAccountRows();
-      const first = account({ label: "First", provider });
+      const first = account({
+        label: "First",
+        email: "first@example.com",
+        provider,
+      });
       const second = account({
         id: "22222222-2222-4222-8222-222222222222",
         label: "Second",
+        email: "second@example.com",
         provider,
       });
       const other = account({
         id: "33333333-3333-4333-8333-333333333333",
         provider: provider === "claude" ? "codex" : "claude",
         label: "Other",
+        email: "other@example.com",
       });
       const accounts = [first, second, other];
       let finishSave = () => {};
@@ -733,10 +2182,11 @@ describe("Account Pool settings", () => {
     measureAccountRows();
     const slot = render(
       [
-        account({ label: "First" }),
+        account({ label: "First", email: "first@example.com" }),
         account({
           id: "22222222-2222-4222-8222-222222222222",
           label: "Second",
+          email: "second@example.com",
         }),
       ],
       {
@@ -764,10 +2214,11 @@ describe("Account Pool settings", () => {
     async (action) => {
       measureAccountRows();
       const slot = render([
-        account({ label: "First" }),
+        account({ label: "First", email: "first@example.com" }),
         account({
           id: "22222222-2222-4222-8222-222222222222",
           label: "Second",
+          email: "second@example.com",
         }),
       ]);
       const handle = await slot.findByRole("button", { name: "Reorder First" });
@@ -788,4 +2239,186 @@ describe("Account Pool settings", () => {
       ).toEqual(["Reorder First", "Reorder Second"]);
     },
   );
+});
+
+describe("Account Pool clean sign-in window", () => {
+  const CLAUDE_SESSION = "22222222-2222-4222-8222-222222222222";
+  const CALLBACK =
+    "https://console.anthropic.com/oauth/code/callback?code=one-time&state=s";
+
+  function fakeWindow() {
+    let settle: (result: SignInResult) => void = () => {};
+    const result = new Promise<SignInResult>((resolve) => {
+      settle = resolve;
+    });
+    const close = vi.fn(() => settle({ reason: "closed" }));
+    return { handle: { close, result }, settle, close };
+  }
+
+  type SignInResult =
+    | { reason: "closed" }
+    | { reason: "redirect"; redirectUrl: string };
+
+  function renderClean(
+    rpc: Record<string, () => object | null | Promise<object | null>>,
+    openSignInWindow: (options: {
+      url: string;
+      redirectUrlPrefix?: string;
+    }) => ReturnType<typeof fakeWindow>["handle"] | null,
+    openUrl = vi.fn(() => true),
+  ) {
+    const slot = renderSlot(
+      app.settingsSections[0]!,
+      {},
+      {
+        rpc: {
+          "status.get": () => status([]),
+          "config.get": () => config(),
+          ...rpc,
+        },
+        openUrl,
+        openSignInWindow,
+      },
+    );
+    return { slot, openUrl };
+  }
+
+  async function startClaude(slot: ReturnType<typeof render>) {
+    const add = await slot.findByRole("button", { name: "Add subscription" });
+    fireEvent.pointerDown(add);
+    fireEvent.click(
+      await slot.findByText("Sign in to Claude", { selector: "span.block" }),
+    );
+  }
+
+  it("opens Claude sign-in in the clean window and completes from the redirect", async () => {
+    const win = fakeWindow();
+    const open = vi.fn(() => win.handle);
+    const { slot, openUrl } = renderClean(
+      {
+        "login.start": () => ({
+          sessionId: CLAUDE_SESSION,
+          authorizeUrl: "https://claude.ai/oauth/authorize?state=s",
+        }),
+        "login.complete": () => account({ label: "Second Claude" }),
+      },
+      open,
+    );
+    await startClaude(slot);
+    await waitFor(() => expect(open).toHaveBeenCalledTimes(1));
+    expect(open).toHaveBeenCalledWith({
+      url: "https://claude.ai/oauth/authorize?state=s",
+      redirectUrlPrefix: "https://console.anthropic.com/oauth/code/callback",
+    });
+    expect(openUrl).not.toHaveBeenCalled();
+    expect(slot.getByText(/The window starts signed out/i)).toBeTruthy();
+
+    win.settle({ reason: "redirect", redirectUrl: CALLBACK });
+    await waitFor(() =>
+      expect(slot.rpcCalls).toContainEqual({
+        method: "login.complete",
+        input: { sessionId: CLAUDE_SESSION, pasted: CALLBACK },
+      }),
+    );
+    expect(await slot.findByText("Connected Second Claude")).toBeTruthy();
+  });
+
+  it("keeps manual code paste working when the window is closed without a redirect", async () => {
+    const win = fakeWindow();
+    const { slot } = renderClean(
+      {
+        "login.start": () => ({
+          sessionId: CLAUDE_SESSION,
+          authorizeUrl: "https://claude.ai/oauth/authorize",
+        }),
+        "login.complete": () => account({ label: "Pasted" }),
+      },
+      () => win.handle,
+    );
+    await startClaude(slot);
+    const code = await slot.findByLabelText("Claude authorization code");
+    win.settle({ reason: "closed" });
+    fireEvent.change(code, { target: { value: "code#state" } });
+    fireEvent.click(await slot.findByRole("button", { name: "Complete" }));
+    await waitFor(() =>
+      expect(slot.rpcCalls).toContainEqual({
+        method: "login.complete",
+        input: { sessionId: CLAUDE_SESSION, pasted: "code#state" },
+      }),
+    );
+  });
+
+  it("closes the clean window when the dialog is dismissed", async () => {
+    const win = fakeWindow();
+    const { slot } = renderClean(
+      {
+        "login.start": () => ({
+          sessionId: CLAUDE_SESSION,
+          authorizeUrl: "https://claude.ai/oauth/authorize",
+        }),
+      },
+      () => win.handle,
+    );
+    await startClaude(slot);
+    await slot.findByLabelText("Claude authorization code");
+    fireEvent.click(slot.getByRole("button", { name: "Close" }));
+    expect(win.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens the Codex device page in the clean window and closes it when sign-in completes", async () => {
+    const win = fakeWindow();
+    const open = vi.fn(() => win.handle);
+    let polls = 0;
+    const { slot } = renderClean(
+      {
+        "codexLogin.start": () => ({
+          sessionId: "33333333-3333-4333-8333-333333333333",
+          verificationUri: "https://auth.openai.com/codex/device",
+          userCode: "ABCD-1234",
+          expiresAt: Date.now() + 600_000,
+          intervalMs: 20,
+        }),
+        "codexLogin.poll": () => {
+          polls += 1;
+          return polls < 2
+            ? { status: "pending" }
+            : { status: "complete", account: account({ label: "Codex Two" }) };
+        },
+      },
+      open,
+    );
+    const add = await slot.findByRole("button", { name: "Add subscription" });
+    fireEvent.pointerDown(add);
+    fireEvent.click(
+      await slot.findByText("Sign in to Codex", { selector: "span.block" }),
+    );
+    await waitFor(() =>
+      expect(open).toHaveBeenCalledWith({
+        url: "https://auth.openai.com/codex/device",
+      }),
+    );
+    await waitFor(() => expect(win.close).toHaveBeenCalledTimes(1));
+    expect(await slot.findByText("Connected Codex Two")).toBeTruthy();
+  });
+
+  it("falls back to the browser with the private-window hint when no clean window exists", async () => {
+    const { slot, openUrl } = renderClean(
+      {
+        "login.start": () => ({
+          sessionId: CLAUDE_SESSION,
+          authorizeUrl: "https://claude.ai/oauth/authorize?state=s",
+        }),
+      },
+      () => null,
+    );
+    await startClaude(slot);
+    await waitFor(() =>
+      expect(openUrl).toHaveBeenCalledWith(
+        "https://claude.ai/oauth/authorize?state=s",
+      ),
+    );
+    expect(
+      slot.getByText(/private window or sign in to the account you want/i),
+    ).toBeTruthy();
+  });
 });

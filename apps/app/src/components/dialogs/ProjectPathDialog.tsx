@@ -1,4 +1,11 @@
-import { useEffect, useId, useState, type FormEvent } from "react";
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useId,
+  useState,
+  type FormEvent,
+} from "react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -24,10 +31,15 @@ import {
 } from "@bb/shared-ui/dialog";
 import { Input } from "@bb/shared-ui/input";
 import { cn } from "@bb/shared-ui/lib/utils";
-import { RemotePathBrowser } from "@/components/dialogs/RemotePathBrowser";
 import { MachineStatusDot } from "@/components/machines/MachineStatusDot";
 import { usePointerCoarse } from "@bb/shared-ui/hooks/use-pointer-coarse";
 import { selectHosts } from "@/hooks/queries/host-queries";
+
+const RemotePathBrowser = lazy(() =>
+  import("@/components/dialogs/RemotePathBrowser").then((module) => ({
+    default: module.RemotePathBrowser,
+  })),
+);
 
 export type ProjectPathDialogTarget =
   | {
@@ -139,6 +151,12 @@ function getPlatformCopy(
     return {
       description: `Enter an absolute WSL path${hostSuffix} to the project folder, such as /home/me/repo or /mnt/c/...`,
       placeholder,
+    };
+  }
+  if (platform === "win32") {
+    return {
+      description: `Enter an absolute Windows path${hostSuffix} to the project folder, such as C:\\Users\\me\\repo.`,
+      placeholder: "C:\\path\\to\\project",
     };
   }
   return {
@@ -316,14 +334,16 @@ export function ProjectPathDialogContent({
           </DropdownMenu>
         ) : null}
         {selectedHostId ? (
-          <RemotePathBrowser
-            key={selectedHostId}
-            hostId={selectedHostId}
-            initialPath={target.kind === "update" ? target.currentPath : null}
-            allowCreateFolder={target.kind === "create"}
-            onDirectoryChange={setBrowserDirectory}
-            disabled={pending || !selectedHostConnected}
-          />
+          <Suspense fallback={null}>
+            <RemotePathBrowser
+              key={selectedHostId}
+              hostId={selectedHostId}
+              initialPath={target.kind === "update" ? target.currentPath : null}
+              allowCreateFolder={target.kind === "create"}
+              onDirectoryChange={setBrowserDirectory}
+              disabled={pending || !selectedHostConnected}
+            />
+          </Suspense>
         ) : noMachineAvailable ? (
           <p className="rounded-md border px-3 py-6 text-center text-sm text-muted-foreground">
             Every machine is offline. Bring one online to browse its folders.

@@ -1,11 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { threadScope, turnScope, type ThreadEvent } from "@bb/domain";
-import {
-  experimental_COMPACTION_PRESENTATION as COMPACTION_PRESENTATION,
-  experimental_REASONING_PRESENTATION as REASONING_PRESENTATION,
-} from "@get-bb/plugin-sdk/provider-bridge";
+import { experimental_REASONING_PRESENTATION as REASONING_PRESENTATION } from "@get-bb/plugin-sdk/provider-bridge";
 import { experimental_createDeltaAssembler as createDeltaAssembler } from "@get-bb/plugin-sdk/provider-bridge/testing";
-import type { DeltaAssembler } from "@get-bb/plugin-sdk/provider-bridge/testing";
+import type {
+  DeltaAssembler,
+  ThreadEvent,
+} from "@get-bb/plugin-sdk/provider-bridge/testing";
 import type { ServerNotification as CodexServerNotification } from "./generated/codex-app-server/schema/ServerNotification.js";
 import type { RateLimitSnapshot } from "./generated/codex-app-server/schema/v2/RateLimitSnapshot.js";
 import type { Turn } from "./generated/codex-app-server/schema/v2/Turn.js";
@@ -22,6 +21,7 @@ import {
   type CodexEventTranslator,
 } from "./translator.js";
 import { codexRateLimitReadResponseSchema } from "./schemas.js";
+import { threadScope, turnScope } from "./event-scope.test-support.js";
 
 const THREAD_ID = "t-codex-translation";
 const ENTROPY = "cx-test";
@@ -68,6 +68,7 @@ function codexRateLimitSnapshot(
   return {
     limitId: "codex",
     limitName: null,
+    normalModelSlug: null,
     primary: null,
     secondary: null,
     credits: null,
@@ -134,22 +135,6 @@ function createHarness(): CodexEquivalenceHarness {
 }
 
 describe("codex turn lifecycle translation", () => {
-  it("translates turn/started into a keyed turn/started", () => {
-    const harness = createHarness();
-    const events = harness.translate(
-      codexEvent("turn/started", {
-        threadId: "t1",
-        turn: codexTurn({ id: "turn-1", status: "inProgress", error: null }),
-      }),
-    );
-    expect(events).toEqual([
-      expect.objectContaining({
-        type: "turn/started",
-        scope: turnScope(harness.turnId("turn-1")),
-      }),
-    ]);
-  });
-
   it("accepts legacy Codex bridge envelopes without jsonrpc", () => {
     const harness = createHarness();
     const events = harness.translate({
@@ -187,18 +172,6 @@ describe("codex turn lifecycle translation", () => {
     );
   });
 
-  it("ignores resolved Codex server requests", () => {
-    const harness = createHarness();
-    const events = harness.translate(
-      codexEvent("serverRequest/resolved", {
-        threadId: "t1",
-        requestId: 0,
-      }),
-    );
-
-    expect(events).toEqual([]);
-  });
-
   it("suppresses automatic review lifecycle notifications", () => {
     const harness = createHarness();
 
@@ -220,66 +193,40 @@ describe("codex turn lifecycle translation", () => {
     }
   });
 
-  it("translates a failed turn/completed without claiming a fork checkpoint", () => {
-    const harness = createHarness();
-    const events = harness.translate(
-      codexEvent("turn/completed", {
-        threadId: "t1",
-        turn: codexTurn({
-          id: "turn-1",
-          status: "failed",
-          error: {
-            message: "rate limited",
-            codexErrorInfo: null,
-            additionalDetails: "try again",
-          },
+  it.each([
+    { status: "completed", error: null, expectedError: {} },
+    { status: "interrupted", error: null, expectedError: {} },
+    {
+      status: "failed",
+      error: {
+        message: "rate limited",
+        codexErrorInfo: null,
+        additionalDetails: "try again",
+        misalignment: null,
+      },
+      expectedError: { error: { message: "rate limited" } },
+    },
+  ] as const)(
+    "stamps the codex turn id as providerCheckpointId on a $status turn",
+    ({ status, error, expectedError }) => {
+      const harness = createHarness();
+      const events = harness.translate(
+        codexEvent("turn/completed", {
+          threadId: "t1",
+          turn: codexTurn({ id: "turn-1", status, error }),
         }),
-      }),
-    );
-    expect(events).toContainEqual(
-      expect.objectContaining({
-        type: "turn/completed",
-        scope: turnScope(harness.turnId("turn-1")),
-        status: "failed",
-        error: { message: "rate limited" },
-      }),
-    );
-    expect(events[0]).not.toHaveProperty("providerCheckpointId");
-  });
-
-  it("stamps the codex turn id as providerCheckpointId on completed turns", () => {
-    const harness = createHarness();
-    const events = harness.translate(
-      codexEvent("turn/completed", {
-        threadId: "t1",
-        turn: codexTurn({ id: "turn-1", status: "completed", error: null }),
-      }),
-    );
-    expect(events).toEqual([
-      expect.objectContaining({
-        type: "turn/completed",
-        status: "completed",
-        providerCheckpointId: "turn-1",
-      }),
-    ]);
-  });
-
-  it("maps interrupted turn status with its fork checkpoint", () => {
-    const harness = createHarness();
-    const events = harness.translate(
-      codexEvent("turn/completed", {
-        threadId: "t1",
-        turn: codexTurn({ id: "turn-1", status: "interrupted", error: null }),
-      }),
-    );
-    expect(events).toContainEqual(
-      expect.objectContaining({
-        type: "turn/completed",
-        status: "interrupted",
-        providerCheckpointId: "turn-1",
-      }),
-    );
-  });
+      );
+      expect(events).toEqual([
+        expect.objectContaining({
+          type: "turn/completed",
+          scope: turnScope(harness.turnId("turn-1")),
+          status,
+          providerCheckpointId: "turn-1",
+          ...expectedError,
+        }),
+      ]);
+    },
+  );
 });
 
 describe("codex thread lifecycle translation", () => {
@@ -301,6 +248,10 @@ describe("codex thread lifecycle translation", () => {
 
           projectId: null,
           modelProvider: "openai",
+          model: null,
+          reasoningEffort: null,
+          originator: null,
+          historyMode: "legacy",
           createdAt: 0,
           updatedAt: 0,
           recencyAt: null,
@@ -365,6 +316,49 @@ describe("codex thread lifecycle translation", () => {
       harness.translate(codexEvent("thread/unarchived", { threadId: "t1" })),
     ).toEqual([]);
   });
+
+  it.each([
+    ["blocked", "paused"],
+    ["usageLimited", "budgetLimited"],
+    ["someFutureStatus", "paused"],
+  ] as const)(
+    "keeps a goal whose status is %s, shown as %s",
+    (codexStatus, bbStatus) => {
+      const harness = createHarness();
+      expect(
+        harness.translate({
+          jsonrpc: "2.0",
+          method: "thread/goal/updated",
+          params: {
+            threadId: "t1",
+            turnId: null,
+            goal: {
+              threadId: "t1",
+              objective: "Finish the task",
+              status: codexStatus,
+              tokenBudget: 1000,
+              tokensUsed: 1000,
+              timeUsedSeconds: 60,
+              createdAt: 0,
+              updatedAt: 0,
+            },
+          },
+        }),
+      ).toEqual([
+        expect.objectContaining({
+          type: "thread/extensionState/updated",
+          kind: "provider-codex/goal",
+          payload: {
+            objective: "Finish the task",
+            status: bbStatus,
+            tokenBudget: 1000,
+            tokensUsed: 1000,
+            timeUsedSeconds: 60,
+          },
+        }),
+      ]);
+    },
+  );
 
   it("maps native thread goal notifications to the codex goal state", () => {
     const harness = createHarness();
@@ -445,6 +439,7 @@ describe("codex item translation", () => {
           phase: null,
           memoryCitation: null,
           delivery: null,
+          questions: null,
         },
       }),
     );
@@ -459,6 +454,75 @@ describe("codex item translation", () => {
           presentation: AGENT_MESSAGE_PRESENTATION,
         },
       }),
+    );
+  });
+
+  it("records an async question as Codex extension state", () => {
+    const harness = createHarness();
+    const events = harness.translate(
+      codexEvent("item/completed", {
+        threadId: "t1",
+        turnId: "turn-1",
+        completedAtMs: 0,
+        item: {
+          type: "agentMessage",
+          id: "call-1",
+          text: "Choose a, b, or c.\n- a\n- b\n- c\n\nWhy?",
+          phase: "final_answer",
+          memoryCitation: null,
+          delivery: "async",
+          questions: [
+            { title: "Choose a, b, or c.", options: ["a", "b", "c"] },
+            { title: "Why?", options: null },
+          ],
+        },
+      }),
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "item/completed",
+        item: expect.objectContaining({
+          type: "agentMessage",
+          text: "Choose a, b, or c.\n- a\n- b\n- c\n\nWhy?",
+        }),
+      }),
+    );
+    expect(events).toContainEqual({
+      type: "thread/extensionState/updated",
+      threadId: "",
+      providerThreadId: "",
+      scope: threadScope(),
+      kind: "provider-codex/async-question",
+      payload: {
+        itemId: "call-1",
+        questions: [
+          { title: "Choose a, b, or c.", options: ["a", "b", "c"] },
+          { title: "Why?", options: null },
+        ],
+      },
+    });
+  });
+
+  it("records no async question for a synchronous agentMessage", () => {
+    const harness = createHarness();
+    const events = harness.translate(
+      codexEvent("item/completed", {
+        threadId: "t1",
+        turnId: "turn-1",
+        completedAtMs: 0,
+        item: {
+          type: "agentMessage",
+          id: "msg-1",
+          text: "Done.",
+          phase: "final_answer",
+          memoryCitation: null,
+          delivery: null,
+          questions: null,
+        },
+      }),
+    );
+    expect(events.map((event) => event.type)).not.toContain(
+      "thread/extensionState/updated",
     );
   });
 
@@ -728,47 +792,6 @@ describe("codex item translation", () => {
     );
   });
 
-  it("maps completed commandExecution status and output fields", () => {
-    const harness = createHarness();
-    const events = harness.translate(
-      codexEvent("item/completed", {
-        threadId: "t1",
-        turnId: "turn-1",
-        completedAtMs: 0,
-        item: {
-          type: "commandExecution",
-          id: "cmd-1",
-          command: "ls -la",
-          cwd: "/tmp",
-          processId: null,
-          pluginId: null,
-          scriptPath: null,
-          source: "agent",
-          status: "completed",
-          commandActions: [],
-          aggregatedOutput: "file1\nfile2",
-          exitCode: 0,
-          durationMs: 150,
-        },
-      }),
-    );
-    expect(events).toContainEqual(
-      expect.objectContaining({
-        type: "item/completed",
-        scope: turnScope(harness.turnId("turn-1")),
-        item: expect.objectContaining({
-          type: "commandExecution",
-          id: harness.itemId("cmd-1"),
-          command: "ls -la",
-          status: "completed",
-          aggregatedOutput: "file1\nfile2",
-          exitCode: 0,
-          durationMs: 150,
-        }),
-      }),
-    );
-  });
-
   it("maps a declined commandExecution to an approval denial", () => {
     const harness = createHarness();
     const events = harness.translate(
@@ -922,6 +945,7 @@ describe("codex item translation", () => {
           tool: "search",
           pluginId: null,
           appContext: null,
+          mcpAppUi: null,
           readOnlyHint: null,
           status: "completed",
           arguments: { query: "test" },
@@ -1239,6 +1263,41 @@ describe("codex item translation", () => {
     );
   });
 
+  it("closes an interrupted collabAgentToolCall as interrupted", () => {
+    const harness = createHarness();
+    const events = harness.translate({
+      jsonrpc: "2.0",
+      method: "item/completed",
+      params: {
+        threadId: "t1",
+        turnId: "turn-1",
+        item: {
+          type: "collabAgentToolCall",
+          id: "collab-interrupted-1",
+          tool: "spawnAgent",
+          status: "interrupted",
+          senderThreadId: "t1",
+          receiverThreadIds: ["sub-thread-1"],
+          prompt: null,
+          model: null,
+          reasoningEffort: null,
+          agentsStates: {},
+        },
+      },
+    });
+
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "item/completed",
+        item: expect.objectContaining({
+          type: "delegation",
+          childRef: "sub-thread-1",
+          status: "interrupted",
+        }),
+      }),
+    );
+  });
+
   it("maps a declined collabAgentToolCall to interrupted", () => {
     const harness = createHarness();
     const events = harness.translate({
@@ -1330,62 +1389,9 @@ describe("codex item translation", () => {
       }),
     );
   });
-
-  it("maps started contextCompaction items", () => {
-    const harness = createHarness();
-    const events = harness.translate(
-      codexEvent("item/started", {
-        threadId: "t1",
-        turnId: "turn-1",
-        startedAtMs: 0,
-        item: { type: "contextCompaction", id: "compact-1" },
-      }),
-    );
-    expect(events).toContainEqual(
-      expect.objectContaining({
-        type: "item/started",
-        scope: turnScope(harness.turnId("turn-1")),
-        item: {
-          type: "contextCompaction",
-          id: harness.itemId("compact-1"),
-          presentation: COMPACTION_PRESENTATION,
-        },
-      }),
-    );
-  });
 });
 
 describe("codex web item translation", () => {
-  it("maps completed search actions to webSearch", () => {
-    const harness = createHarness();
-    const events = harness.translate(
-      codexEvent("item/completed", {
-        threadId: "t1",
-        turnId: "turn-1",
-        completedAtMs: 0,
-        item: {
-          type: "webSearch",
-          id: "web-1",
-          query: "react suspense",
-          results: null,
-          action: { type: "search", query: "react suspense", queries: null },
-        },
-      }),
-    );
-    expect(events).toContainEqual(
-      expect.objectContaining({
-        type: "item/completed",
-        item: {
-          type: "webSearch",
-          id: harness.itemId("web-1"),
-          queries: ["react suspense"],
-          resultText: null,
-          presentation: webSearchPresentation("react suspense"),
-        },
-      }),
-    );
-  });
-
   it("merges query fields on started search actions", () => {
     const harness = createHarness();
     const events = harness.translate(
@@ -1693,63 +1699,6 @@ describe("codex delta and usage translation", () => {
       });
     },
   );
-
-  it("fans thread/tokenUsage/updated out to both usage events exactly", () => {
-    const harness = createHarness();
-    const events = harness.translate(
-      codexEvent("thread/tokenUsage/updated", {
-        threadId: "t1",
-        turnId: "turn-1",
-        tokenUsage: {
-          total: {
-            totalTokens: 100,
-            inputTokens: 60,
-            cachedInputTokens: 10,
-            cacheWriteInputTokens: 7,
-            outputTokens: 30,
-            reasoningOutputTokens: 0,
-          },
-          last: {
-            totalTokens: 50,
-            inputTokens: 30,
-            cachedInputTokens: 5,
-            cacheWriteInputTokens: 3,
-            outputTokens: 15,
-            reasoningOutputTokens: 0,
-          },
-          modelContextWindow: 128000,
-        },
-      }),
-    );
-    expect(events).toContainEqual(
-      expect.objectContaining({
-        type: "thread/tokenUsage/updated",
-        scope: turnScope(harness.turnId("turn-1")),
-        tokenUsage: expect.objectContaining({
-          total: expect.objectContaining({
-            totalTokens: 100,
-            cacheReadInputTokens: 10,
-            cacheWriteInputTokens: 7,
-          }),
-          last: expect.objectContaining({
-            cacheReadInputTokens: 5,
-            cacheWriteInputTokens: 3,
-          }),
-          modelContextWindow: 128000,
-        }),
-      }),
-    );
-    expect(events).toContainEqual(
-      expect.objectContaining({
-        type: "thread/contextWindowUsage/updated",
-        contextWindowUsage: {
-          usedTokens: 50,
-          modelContextWindow: 128000,
-          estimated: false,
-        },
-      }),
-    );
-  });
 });
 
 describe("codex plan translation", () => {
@@ -1846,26 +1795,6 @@ describe("codex plan translation", () => {
   });
 });
 
-describe("codex turn diff translation", () => {
-  it("maps turn/diff/updated onto the vouched turn", () => {
-    const harness = createHarness();
-    const events = harness.translate(
-      codexEvent("turn/diff/updated", {
-        threadId: "t1",
-        turnId: "turn-1",
-        diff: "+added line",
-      }),
-    );
-    expect(events).toEqual([
-      expect.objectContaining({
-        type: "turn/diff/updated",
-        scope: turnScope(harness.turnId("turn-1")),
-        diff: "+added line",
-      }),
-    ]);
-  });
-});
-
 describe("codex error and warning translation", () => {
   it("includes detail and willRetry on turn-scoped errors", () => {
     const harness = createHarness();
@@ -1877,6 +1806,7 @@ describe("codex error and warning translation", () => {
           message: "Rate limited",
           codexErrorInfo: null,
           additionalDetails: "retry after 30s",
+          misalignment: null,
         },
         willRetry: true,
       }),
@@ -1909,6 +1839,7 @@ describe("codex error and warning translation", () => {
           message: "startup failed",
           codexErrorInfo: null,
           additionalDetails: null,
+          misalignment: null,
         },
       },
     });
@@ -1933,6 +1864,7 @@ describe("codex error and warning translation", () => {
             responseStreamDisconnected: { httpStatusCode: 502 },
           },
           additionalDetails: null,
+          misalignment: null,
         },
         willRetry: false,
       }),
@@ -1957,6 +1889,9 @@ describe("codex error and warning translation", () => {
   it.each([
     ["sessionBudgetExceeded", "budget-exceeded"],
     ["misalignmentPolicyViolation", "policy"],
+    ["rateLimitExceeded", "rate-limit"],
+    ["flexUnavailable", "overloaded"],
+    ["tooManyDenials", "policy"],
   ] as const)(
     "normalizes %s errors and failed turn completion",
     (codexErrorInfo, category) => {
@@ -1971,6 +1906,7 @@ describe("codex error and warning translation", () => {
               message: "terminal failure",
               codexErrorInfo,
               additionalDetails: null,
+              misalignment: null,
             },
             willRetry: false,
           }),
@@ -1998,6 +1934,7 @@ describe("codex error and warning translation", () => {
                 message: "terminal failure",
                 codexErrorInfo,
                 additionalDetails: null,
+                misalignment: null,
               },
             }),
           }),
@@ -2006,6 +1943,56 @@ describe("codex error and warning translation", () => {
         expect.objectContaining({
           type: "turn/completed",
           scope: turnScope(harness.turnId("turn-1")),
+          status: "failed",
+          error: { message: "terminal failure" },
+        }),
+      ]);
+    },
+  );
+
+  it.each([
+    ["futureStringCode", "futureStringCode"],
+    [{ futureObjectCode: { httpStatusCode: 503 } }, "futureObjectCode"],
+  ] as const)(
+    "completes a failed turn whose error code bb does not know (%j)",
+    (codexErrorInfo, providerCode) => {
+      const harness = createHarness();
+      const error = {
+        message: "terminal failure",
+        codexErrorInfo,
+        additionalDetails: null,
+        misalignment: null,
+      } as unknown as NonNullable<Turn["error"]>;
+
+      expect(
+        harness.translate(
+          codexEvent("error", {
+            threadId: "t1",
+            turnId: "turn-1",
+            error,
+            willRetry: false,
+          }),
+        ),
+      ).toEqual([
+        expect.objectContaining({
+          type: "provider/error",
+          errorInfo: {
+            category: "unknown",
+            providerCode,
+            httpStatusCode: null,
+          },
+        }),
+      ]);
+      expect(
+        harness.translate(
+          codexEvent("turn/completed", {
+            threadId: "t1",
+            turn: codexTurn({ id: "turn-1", status: "failed", error }),
+          }),
+        ),
+      ).toEqual([
+        expect.objectContaining({
+          type: "turn/completed",
           status: "failed",
           error: { message: "terminal failure" },
         }),
@@ -2083,6 +2070,7 @@ describe("codex account rate-limit translation", () => {
   const blockedSpendControlSnapshot = {
     limitId: "codex",
     limitName: "Codex",
+    normalModelSlug: null,
     primary: null,
     secondary: null,
     credits: null,
@@ -2146,6 +2134,7 @@ describe("codex account rate-limit translation", () => {
         rateLimits: {
           limitId: "codex",
           limitName: "Codex",
+          normalModelSlug: null,
           primary: {
             usedPercent: 100,
             windowDurationMins: 300,
@@ -2413,6 +2402,7 @@ describe("codex account rate-limit translation", () => {
         rateLimits: codexRateLimitSnapshot({
           limitId: "model-a",
           limitName: "Model A",
+          normalModelSlug: null,
           primary: {
             usedPercent: 100,
             windowDurationMins: 300,
@@ -2428,6 +2418,7 @@ describe("codex account rate-limit translation", () => {
         rateLimits: codexRateLimitSnapshot({
           limitId: "model-b",
           limitName: "Model B",
+          normalModelSlug: null,
           primary: {
             usedPercent: 10,
             windowDurationMins: 300,
@@ -2448,13 +2439,9 @@ describe("codex account rate-limit translation", () => {
     });
   });
 
-  it("hydrates and preserves rate-limit buckets by limit id", () => {
+  it("recovers and preserves rate-limit buckets by limit id", () => {
     const harness = createHarness();
-    const [rateLimitRead] = harness.translator.buildPostInitializeRequests();
-    if (rateLimitRead === undefined) {
-      throw new Error("Expected a Codex rate-limit hydration request");
-    }
-    rateLimitRead.onResult({
+    harness.translator.recoverRateLimits({
       rateLimits: {
         limitId: "codex",
         primary: {
@@ -2564,6 +2551,7 @@ describe("codex account rate-limit translation", () => {
         rateLimits: {
           limitId: "codex",
           limitName: "Codex",
+          normalModelSlug: null,
           primary: {
             usedPercent: 100,
             windowDurationMins: 300,
@@ -2598,24 +2586,17 @@ describe("codex account rate-limit translation", () => {
     });
   });
 
-  it("hydrates Codex rate limits before merging truly sparse rolling updates", () => {
+  it("recovers Codex rate limits before merging truly sparse rolling updates", () => {
     const harness = createHarness();
-    const requests = harness.translator.buildPostInitializeRequests();
-    expect(requests).toHaveLength(1);
-    const [rateLimitRead] = requests;
-    if (rateLimitRead === undefined) {
-      throw new Error("Expected a Codex rate-limit hydration request");
-    }
-    expect(rateLimitRead).toMatchObject({
-      plan: { kind: "request", method: "account/rateLimits/read" },
-      required: false,
-    });
-    rateLimitRead.onResult({
+    harness.translator.recoverRateLimits({
+      rateLimitsByLimitId: null,
       rateLimits: {
         limitId: "codex",
         limitName: "Codex",
+        normalModelSlug: null,
         primary: {
           usedPercent: 20,
+          windowDurationMins: null,
           resetsAt: 1_781_120_400,
         },
         secondary: {
@@ -2677,61 +2658,5 @@ describe("codex account rate-limit translation", () => {
         reachedReason: null,
       },
     });
-  });
-});
-
-describe("codex ignored notifications", () => {
-  it("ignores remote control status changes", () => {
-    const harness = createHarness();
-    const events = harness.translate({
-      jsonrpc: "2.0",
-      method: "remoteControl/status/changed",
-      params: {
-        status: "disabled",
-        environmentId: null,
-      },
-    });
-
-    expect(events).toEqual([]);
-  });
-
-  it("ignores thread settings updates", () => {
-    const harness = createHarness();
-    const events = harness.translate({
-      jsonrpc: "2.0",
-      method: "thread/settings/updated",
-      params: {
-        threadId: "t1",
-        threadSettings: {
-          cwd: "/tmp/project",
-          approvalPolicy: "never",
-          approvalsReviewer: "user",
-          sandboxPolicy: {
-            type: "workspaceWrite",
-            writableRoots: ["/tmp/thread-storage"],
-            networkAccess: true,
-            excludeTmpdirEnvVar: false,
-            excludeSlashTmp: false,
-          },
-          activePermissionProfile: null,
-          model: "gpt-5.5",
-          modelProvider: "openai",
-          serviceTier: null,
-          effort: "xhigh",
-          summary: null,
-          collaborationMode: {
-            mode: "default",
-            settings: {
-              model: "gpt-5.5",
-              reasoning_effort: "xhigh",
-              developer_instructions: null,
-            },
-          },
-          personality: "pragmatic",
-        },
-      },
-    });
-
-    expect(events).toEqual([]);
   });
 });

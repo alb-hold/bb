@@ -16,24 +16,14 @@ import {
 
 export {
   AUTOMATION_RUNS_LIMIT_MAX,
-  AUTOMATION_SCRIPT_TIMEOUT_DEFAULT_MS,
   AUTOMATION_SCRIPT_TIMEOUT_MAX_MS,
 } from "./limits.js";
 
 export const permissionModeSchema = z.enum(["accept-edits", "auto", "full"]);
 export type PermissionMode = z.infer<typeof permissionModeSchema>;
-export const reasoningLevelSchema = z.enum([
-  "none",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "ultracode",
-  "max",
-  "ultra",
-]);
+export const reasoningLevelSchema = z.string().min(1);
 export type ReasoningLevel = z.infer<typeof reasoningLevelSchema>;
-export const serviceTierSchema = z.enum(["default", "fast"]);
+export const serviceTierSchema = z.string().min(1);
 export type ServiceTier = z.infer<typeof serviceTierSchema>;
 
 export const unmanagedBranchSpecSchema = z.discriminatedUnion("kind", [
@@ -211,7 +201,9 @@ const storedAutomationScriptExecutionSchema = z
   .strict()
   .transform((execution) => ({
     ...execution,
-    workingDirectory: execution.workingDirectory ?? { type: "automation-storage" as const },
+    workingDirectory: execution.workingDirectory ?? {
+      type: "automation-storage" as const,
+    },
   }));
 
 const automationScriptExecutionRequestSchema = z
@@ -327,7 +319,6 @@ const scriptExecutionUpdateSchema = z
     workingDirectory: automationScriptWorkingDirectorySchema,
   })
   .strict();
-export type ScriptExecutionUpdate = z.infer<typeof scriptExecutionUpdateSchema>;
 
 export const automationResponseSchema = z
   .object({
@@ -362,9 +353,6 @@ export const legacyEmptyPromptAutomationResponseSchema =
   automationResponseSchema.extend({
     execution: legacyEmptyPromptAgentExecutionSchema,
   });
-export type LegacyEmptyPromptAutomationResponse = z.infer<
-  typeof legacyEmptyPromptAutomationResponseSchema
->;
 
 const invalidStoredAutomationReadProblemSchema = z
   .object({
@@ -500,9 +488,6 @@ export type ResolvedAutomationRunsInput = z.output<
 >;
 
 export const automationListResponseSchema = z.array(automationReadResultSchema);
-export type AutomationListResponse = z.infer<
-  typeof automationListResponseSchema
->;
 
 export const automationRunListResponseSchema = z
   .object({

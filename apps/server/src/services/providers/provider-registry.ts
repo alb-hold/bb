@@ -1,5 +1,6 @@
 import type {
   ProviderNativeRoots,
+  ProviderNativeTerminal,
   AvailableModel,
   ExtensionKind,
   JsonValue,
@@ -46,10 +47,13 @@ export interface ProviderRegistration {
   visibility: "always" | "installed";
   pluginId: string;
   fallbackModels: readonly AvailableModel[];
+  /** The provider's declared model for child threads, if it declared one. */
+  childThreadModel?: string;
   envPassthrough: readonly string[];
   nativeSkillRoots: ProviderNativeRoots;
   nativeCommandRoots: ProviderNativeRoots;
   resolvesNativeRoots: boolean;
+  nativeTerminal: ProviderNativeTerminal | null;
   deriveProviderOptions: (
     context: Omit<PluginProviderOptionsContext, "settings">,
   ) => Readonly<Record<string, JsonValue>>;
@@ -61,6 +65,7 @@ const PROVIDER_INSTALLED_CACHE_TTL_MS = 5 * 60_000;
 
 export interface ProviderRegistryService {
   list(): ProviderRegistration[];
+  disabledProviderIds(): ReadonlySet<string>;
   getUserDefaultProviderId(): string | null;
   get(providerId: string): ProviderRegistration | null;
   getRegistrationRevision(): number;
@@ -95,6 +100,7 @@ export interface ProviderRegistryService {
     },
   ): { dispose(): void };
   whenProviderRegistered(providerId: string): Promise<void>;
+  onProviderRegistered(providerId: string, callback: () => void): () => void;
   whenRegistrationsSettled(): Promise<void>;
   markRegistrationsSettled(): void;
 }
@@ -105,6 +111,7 @@ interface ProviderRegistryDeps {
   readUserProviderPreferences?: () => {
     providerOrder: readonly string[];
     defaultProviderId: string | null;
+    disabledProviderIds?: readonly string[];
   };
   deferRegistrationsSettled?: boolean;
 }
@@ -118,6 +125,7 @@ export function createProviderRegistryService(
     { installRank: ProviderInstallRank | null; sequence: number }
   >();
   const providerRegistrationWaiters = new Map<string, Set<() => void>>();
+  const providerRegistrationListeners = new Map<string, Set<() => void>>();
   let registrationRevision = 0;
   const installedByHostId = new Map<
     string,
@@ -181,9 +189,14 @@ export function createProviderRegistryService(
 
   function releaseProviderRegistrationWaiters(providerId: string): void {
     const waiters = providerRegistrationWaiters.get(providerId);
-    if (waiters === undefined) return;
-    providerRegistrationWaiters.delete(providerId);
-    for (const resolve of waiters) resolve();
+    if (waiters !== undefined) {
+      providerRegistrationWaiters.delete(providerId);
+      for (const resolve of waiters) resolve();
+    }
+    const listeners = providerRegistrationListeners.get(providerId);
+    if (listeners === undefined) return;
+    providerRegistrationListeners.delete(providerId);
+    for (const listener of listeners) listener();
   }
 
   function releaseAllProviderRegistrationWaiters(): void {
@@ -205,13 +218,17 @@ export function createProviderRegistryService(
       settled,
       new Promise<void>((resolve) => {
         timer = setTimeout(resolve, REGISTRATIONS_SETTLED_TIMEOUT_MS);
-        timer.unref?.();
       }),
     ]);
     clearTimeout(timer);
   }
 
-  return {
+  const service: ProviderRegistryService = {
+    disabledProviderIds() {
+      return new Set(
+        deps.readUserProviderPreferences?.().disabledProviderIds ?? [],
+      );
+    },
     list() {
       const entries = [...pluginRegistrations.values()].sort(
         compareInstallRank,
@@ -229,9 +246,13 @@ export function createProviderRegistryService(
     },
 
     getUserDefaultProviderId() {
-      const preferred =
-        deps.readUserProviderPreferences?.().defaultProviderId ?? null;
-      if (preferred === null || !pluginRegistrations.has(preferred)) {
+      const preferences = deps.readUserProviderPreferences?.();
+      const preferred = preferences?.defaultProviderId ?? null;
+      if (
+        preferred === null ||
+        !pluginRegistrations.has(preferred) ||
+        preferences?.disabledProviderIds?.includes(preferred) === true
+      ) {
         return null;
       }
       return preferred;
@@ -265,7 +286,9 @@ export function createProviderRegistryService(
     },
 
     revalidateInstalled(key, probe) {
-      const entry = installedStatusByHostId.get(key.hostId)?.get(key.providerId);
+      const entry = installedStatusByHostId
+        .get(key.hostId)
+        ?.get(key.providerId);
       if (
         entry === undefined ||
         entry.revalidating ||
@@ -279,7 +302,8 @@ export function createProviderRegistryService(
         installedStatusByHostId.get(key.hostId)?.get(key.providerId) === entry;
       return probe().then(
         (installed) => {
-          if (isCurrent()) this.rememberInstalled(key, Promise.resolve(installed));
+          if (isCurrent())
+            this.rememberInstalled(key, Promise.resolve(installed));
         },
         () => {
           if (isCurrent()) this.forgetInstalledKey(key);
@@ -422,6 +446,24 @@ export function createProviderRegistryService(
       }
     },
 
+    onProviderRegistered(providerId, callback) {
+      if (pluginRegistrations.has(providerId)) {
+        callback();
+        return () => undefined;
+      }
+      const listeners =
+        providerRegistrationListeners.get(providerId) ?? new Set();
+      listeners.add(callback);
+      providerRegistrationListeners.set(providerId, listeners);
+      return () => {
+        const currentListeners = providerRegistrationListeners.get(providerId);
+        currentListeners?.delete(callback);
+        if (currentListeners?.size === 0) {
+          providerRegistrationListeners.delete(providerId);
+        }
+      };
+    },
+
     async whenRegistrationsSettled() {
       await waitUntilSettledOrTimeout(settled);
     },
@@ -432,4 +474,5 @@ export function createProviderRegistryService(
       releaseAllProviderRegistrationWaiters();
     },
   };
+  return service;
 }

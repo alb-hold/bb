@@ -11,6 +11,7 @@ import {
   type ThreadChangeKind,
   type ThreadChangeMetadata,
   type ThreadEventType,
+  type ThreadTimelineSubscriptionTarget,
 } from "@bb/domain";
 import type { DbNotifier } from "@bb/db";
 import type {
@@ -26,6 +27,7 @@ import {
   terminalServerMessageSchema,
   threadOpenSignalSchema,
   threadPaneActionSignalSchema,
+  type ThreadTimelineSignal,
   type ThreadPaneAction,
   type ThreadOpenFile,
   type ThreadOpenSplit,
@@ -45,6 +47,26 @@ interface HubSocket {
   send(data: string): void;
 }
 
+type DaemonSessionChange =
+  | { kind: "opened"; hostId: string; sessionId: string }
+  | { kind: "closed"; sessionId: string };
+
+type DaemonSessionListener = (change: DaemonSessionChange) => void;
+
+interface TerminalSize {
+  cols: number;
+  rows: number;
+}
+
+interface TerminalClientState {
+  heartbeats: boolean;
+  lastSeenAt: number;
+  size: TerminalSize | null;
+  visible: boolean;
+}
+
+export const TERMINAL_CLIENT_STALE_MS = 45_000;
+
 interface TerminalSocketSendQueue {
   bytes: number;
   payloads: string[];
@@ -61,6 +83,7 @@ export type ServerChangedMessage =
 type ChangedMessageListener = (message: ServerChangedMessage) => void;
 
 interface PendingThreadListEventsAppended {
+  timelineSequence: number | undefined;
   eventTypes: Set<ThreadEventType>;
   merged: boolean;
   timeout: ReturnType<typeof setTimeout>;
@@ -68,10 +91,24 @@ interface PendingThreadListEventsAppended {
 
 type ThreadChangedMessage = Extract<ServerChangedMessage, { entity: "thread" }>;
 
+function isThreadDetailOnlyChange(
+  message: Pick<ThreadChangedMessage, "changes">,
+): boolean {
+  return (
+    message.changes.length > 0 &&
+    message.changes.every((change) => change === "history-compacted")
+  );
+}
+
 function isThreadListRelevantChange(
   message: Pick<ThreadChangedMessage, "changes" | "metadata">,
 ): boolean {
-  if (message.changes.some((change) => change !== "events-appended")) {
+  if (
+    message.changes.some(
+      (change) =>
+        change !== "events-appended" && change !== "history-compacted",
+    )
+  ) {
     return true;
   }
   const metadata = message.metadata;
@@ -169,6 +206,7 @@ interface DaemonSessionCloseWaiter {
 }
 
 interface HostOnlineRpcWaiter {
+  detachAbortListener: () => void;
   reject: (reason?: Error) => void;
   resolve: (message: HostDaemonOnlineRpcResponseMessage) => void;
   sessionId: string;
@@ -196,6 +234,13 @@ export class HostOnlineRpcTimeoutError extends Error {
   }
 }
 
+export class HostOnlineRpcCancelledError extends Error {
+  constructor() {
+    super("Host RPC request was cancelled");
+    this.name = "HostOnlineRpcCancelledError";
+  }
+}
+
 export class HostOnlineRpcUnavailableError extends Error {
   constructor() {
     super("Host daemon is not connected");
@@ -206,12 +251,18 @@ export class HostOnlineRpcUnavailableError extends Error {
 export class NotificationHub implements DbNotifier {
   private readonly clientKeysBySocket = new Map<HubSocket, Set<string>>();
   private readonly clientSocketsByKey = new Map<string, Set<HubSocket>>();
+  private readonly threadTimelineTargetsByKey = new Map<
+    string,
+    ThreadTimelineSubscriptionTarget
+  >();
   private readonly daemonSessions = new Map<
     string,
     {
+      heardSinceLivenessCheck: boolean;
       hostId: string;
       localApiPort: number | null;
       platform: HostPlatform;
+      quietLivenessChecks: number;
       socket: HubSocket;
     }
   >();
@@ -243,10 +294,7 @@ export class NotificationHub implements DbNotifier {
     string,
     ReturnType<typeof setTimeout>
   >();
-  private readonly pendingDaemonActiveWorkDisconnects = new Map<
-    string,
-    ReturnType<typeof setTimeout>
-  >();
+  private readonly daemonSessionListeners = new Set<DaemonSessionListener>();
   private readonly terminalClientSocketsById = new Map<
     string,
     Set<HubSocket>
@@ -259,7 +307,10 @@ export class NotificationHub implements DbNotifier {
     HubSocket,
     Set<string>
   >();
-  private readonly terminalResizeOwnerById = new Map<string, HubSocket>();
+  private readonly terminalClientStateById = new Map<
+    string,
+    Map<HubSocket, TerminalClientState>
+  >();
   private readonly threadEventWaiters = new Map<
     string,
     Set<ThreadEventWaiter>
@@ -290,6 +341,7 @@ export class NotificationHub implements DbNotifier {
       sockets.delete(socket);
       if (sockets.size === 0) {
         this.clientSocketsByKey.delete(key);
+        this.threadTimelineTargetsByKey.delete(key);
       }
     }
 
@@ -315,12 +367,119 @@ export class NotificationHub implements DbNotifier {
     this.terminalIdsByClientSocket.set(socket, terminalIds);
   }
 
-  claimTerminalResizeOwnership(terminalId: string, socket: HubSocket): void {
-    this.terminalResizeOwnerById.set(terminalId, socket);
+  recordTerminalClientSize(
+    terminalId: string,
+    socket: HubSocket,
+    size: TerminalSize,
+    now: number,
+  ): void {
+    const state = this.terminalClientState(terminalId, socket, now);
+    state.size = size;
+    state.lastSeenAt = now;
   }
 
-  isTerminalResizeOwner(terminalId: string, socket: HubSocket): boolean {
-    return this.terminalResizeOwnerById.get(terminalId) === socket;
+  recordTerminalClientVisibility(
+    terminalId: string,
+    socket: HubSocket,
+    visible: boolean,
+    now: number,
+  ): void {
+    const state = this.terminalClientState(terminalId, socket, now);
+    state.visible = visible;
+    state.lastSeenAt = now;
+  }
+
+  hasVisibleTerminalClient(terminalId: string, now: number): boolean {
+    for (const state of this.terminalClientStateById
+      .get(terminalId)
+      ?.values() ?? []) {
+      if (
+        state.visible &&
+        (!state.heartbeats ||
+          now - state.lastSeenAt <= TERMINAL_CLIENT_STALE_MS)
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  recordTerminalClientSeen(
+    terminalId: string,
+    socket: HubSocket,
+    now: number,
+  ): void {
+    this.terminalClientState(terminalId, socket, now).lastSeenAt = now;
+  }
+
+  recordTerminalClientHeartbeat(
+    terminalId: string,
+    socket: HubSocket,
+    now: number,
+  ): void {
+    const state = this.terminalClientState(terminalId, socket, now);
+    state.heartbeats = true;
+    state.lastSeenAt = now;
+  }
+
+  terminalSharedSize(terminalId: string, now: number): TerminalSize | null {
+    let shared: TerminalSize | null = null;
+    for (const state of this.terminalClientStateById
+      .get(terminalId)
+      ?.values() ?? []) {
+      if (
+        state.size === null ||
+        !state.visible ||
+        (state.heartbeats && now - state.lastSeenAt > TERMINAL_CLIENT_STALE_MS)
+      ) {
+        continue;
+      }
+      shared =
+        shared === null
+          ? { ...state.size }
+          : {
+              cols: Math.min(shared.cols, state.size.cols),
+              rows: Math.min(shared.rows, state.size.rows),
+            };
+    }
+    return shared;
+  }
+
+  private terminalClientState(
+    terminalId: string,
+    socket: HubSocket,
+    now: number,
+  ): TerminalClientState {
+    const states =
+      this.terminalClientStateById.get(terminalId) ??
+      new Map<HubSocket, TerminalClientState>();
+    this.terminalClientStateById.set(terminalId, states);
+    const existing = states.get(socket);
+    if (existing) {
+      return existing;
+    }
+    const created: TerminalClientState = {
+      heartbeats: false,
+      lastSeenAt: now,
+      size: null,
+      visible: true,
+    };
+    states.set(socket, created);
+    return created;
+  }
+
+  private forgetTerminalClientState(
+    terminalId: string,
+    socket: HubSocket,
+  ): void {
+    const states = this.terminalClientStateById.get(terminalId);
+    if (!states) {
+      return;
+    }
+    states.delete(socket);
+    if (states.size === 0) {
+      this.terminalClientStateById.delete(terminalId);
+    }
   }
 
   unregisterTerminalClient(terminalId: string, socket: HubSocket): void {
@@ -331,7 +490,7 @@ export class NotificationHub implements DbNotifier {
         this.terminalClientSocketsById.delete(terminalId);
       }
     }
-    this.releaseTerminalResizeOwnership(terminalId, socket, sockets);
+    this.forgetTerminalClientState(terminalId, socket);
 
     const terminalIds = this.terminalIdsByClientSocket.get(socket);
     if (!terminalIds) {
@@ -359,30 +518,11 @@ export class NotificationHub implements DbNotifier {
       if (sockets.size === 0) {
         this.terminalClientSocketsById.delete(terminalId);
       }
-      this.releaseTerminalResizeOwnership(terminalId, socket, sockets);
+      this.forgetTerminalClientState(terminalId, socket);
     }
 
     this.terminalIdsByClientSocket.delete(socket);
     this.clearTerminalSocketSendQueue(socket);
-  }
-
-  private releaseTerminalResizeOwnership(
-    terminalId: string,
-    socket: HubSocket,
-    sockets: Set<HubSocket> | undefined,
-  ): void {
-    if (this.terminalResizeOwnerById.get(terminalId) !== socket) {
-      return;
-    }
-    let replacement: HubSocket | undefined;
-    for (const candidate of sockets ?? []) {
-      replacement = candidate;
-    }
-    if (replacement === undefined) {
-      this.terminalResizeOwnerById.delete(terminalId);
-    } else {
-      this.terminalResizeOwnerById.set(terminalId, replacement);
-    }
   }
 
   sendTerminalSocketMessage(
@@ -393,6 +533,34 @@ export class NotificationHub implements DbNotifier {
       socket,
       JSON.stringify(terminalServerMessageSchema.parse(message)),
     );
+  }
+
+  closeTerminalClients(
+    terminalId: string,
+    code: number,
+    reason: string,
+  ): HubSocket[] {
+    const sockets = [...(this.terminalClientSocketsById.get(terminalId) ?? [])];
+    for (const socket of sockets) {
+      try {
+        socket.close(code, reason);
+      } catch {}
+    }
+    return sockets;
+  }
+
+  subscribeDaemonSessions(listener: DaemonSessionListener): () => void {
+    this.daemonSessionListeners.add(listener);
+    for (const [sessionId, session] of this.daemonSessions) {
+      listener({ kind: "opened", hostId: session.hostId, sessionId });
+    }
+    return () => {
+      this.daemonSessionListeners.delete(listener);
+    };
+  }
+
+  hasTerminalClients(terminalId: string): boolean {
+    return (this.terminalClientSocketsById.get(terminalId)?.size ?? 0) > 0;
   }
 
   sendTerminalClientMessage(
@@ -511,6 +679,12 @@ export class NotificationHub implements DbNotifier {
     const sockets = this.clientSocketsByKey.get(key) ?? new Set<HubSocket>();
     sockets.add(socket);
     this.clientSocketsByKey.set(key, sockets);
+    if (
+      target.kind === "thread-timeline" &&
+      !this.threadTimelineTargetsByKey.has(key)
+    ) {
+      this.threadTimelineTargetsByKey.set(key, { ...target });
+    }
   }
 
   unsubscribe(socket: HubSocket, target: RealtimeSubscriptionTarget): void {
@@ -524,7 +698,30 @@ export class NotificationHub implements DbNotifier {
     sockets.delete(socket);
     if (sockets.size === 0) {
       this.clientSocketsByKey.delete(key);
+      this.threadTimelineTargetsByKey.delete(key);
     }
+  }
+
+  listThreadTimelineTargets(
+    threadId: string,
+  ): ThreadTimelineSubscriptionTarget[] {
+    const targets: ThreadTimelineSubscriptionTarget[] = [];
+    for (const target of this.threadTimelineTargetsByKey.values()) {
+      if (target.threadId === threadId) {
+        targets.push(target);
+      }
+    }
+    return targets;
+  }
+
+  sendThreadTimelineSignal(signal: ThreadTimelineSignal): number {
+    const sockets = this.clientSocketsByKey.get(subscriptionKey(signal.target));
+    if (!sockets) {
+      return 0;
+    }
+    const payload = JSON.stringify(signal);
+    this.notifyClientsByKeySet(sockets, payload);
+    return payload.length;
   }
 
   recordDaemonSessionPlatform(sessionId: string, platform: HostPlatform): void {
@@ -547,14 +744,19 @@ export class NotificationHub implements DbNotifier {
       this.unregisterDaemon(existingSessionId);
     }
     this.daemonSessions.set(sessionId, {
+      heardSinceLivenessCheck: true,
       hostId,
       localApiPort:
         this.daemonSessionLocalApiPortsBySessionId.get(sessionId) ?? null,
       platform:
         this.daemonSessionPlatformsBySessionId.get(sessionId) ?? "unknown",
+      quietLivenessChecks: 0,
       socket,
     });
     this.daemonSessionIdsByHost.set(hostId, sessionId);
+    for (const listener of this.daemonSessionListeners) {
+      listener({ kind: "opened", hostId, sessionId });
+    }
     this.resolveDaemonRegistrationWaiters(hostId);
     this.notifyHost(hostId, ["host-connected"]);
   }
@@ -571,6 +773,9 @@ export class NotificationHub implements DbNotifier {
     if (this.daemonSessionIdsByHost.get(entry.hostId) === sessionId) {
       this.daemonSessionIdsByHost.delete(entry.hostId);
     }
+    for (const listener of this.daemonSessionListeners) {
+      listener({ kind: "closed", sessionId });
+    }
     const waiters = this.daemonSessionCloseWaiters.get(sessionId);
     if (waiters !== undefined) {
       this.daemonSessionCloseWaiters.delete(sessionId);
@@ -579,6 +784,29 @@ export class NotificationHub implements DbNotifier {
         waiter.resolve(true);
       }
     }
+  }
+
+  recordDaemonActivity(sessionId: string): void {
+    const entry = this.daemonSessions.get(sessionId);
+    if (entry) {
+      entry.heardSinceLivenessCheck = true;
+    }
+  }
+
+  takeSilentDaemonSessionIds(maxQuietChecks: number): string[] {
+    const silentSessionIds: string[] = [];
+    for (const [sessionId, entry] of this.daemonSessions) {
+      if (entry.heardSinceLivenessCheck) {
+        entry.heardSinceLivenessCheck = false;
+        entry.quietLivenessChecks = 0;
+        continue;
+      }
+      entry.quietLivenessChecks += 1;
+      if (entry.quietLivenessChecks >= maxQuietChecks) {
+        silentSessionIds.push(sessionId);
+      }
+    }
+    return silentSessionIds;
   }
 
   hasDaemonForHost(hostId: string): boolean {
@@ -721,27 +949,14 @@ export class NotificationHub implements DbNotifier {
     scheduleTimer(this.pendingDaemonDisconnects, sessionId, delayMs, callback);
   }
 
-  scheduleDaemonActiveWorkDisconnect(
-    sessionId: string,
-    delayMs: number,
-    callback: () => void,
-  ): void {
-    scheduleTimer(
-      this.pendingDaemonActiveWorkDisconnects,
-      sessionId,
-      delayMs,
-      callback,
-    );
-  }
-
   cancelPendingDaemonDisconnect(sessionId: string): void {
     cancelTimer(this.pendingDaemonDisconnects, sessionId);
-    cancelTimer(this.pendingDaemonActiveWorkDisconnects, sessionId);
   }
 
   requestHostOnlineRpc(args: {
     hostId: string;
     message: HostDaemonOnlineRpcRequestMessage;
+    signal?: AbortSignal;
     timeoutMs: number;
   }): Promise<HostDaemonOnlineRpcResponseMessage> {
     const sessionId = this.daemonSessionIdsByHost.get(args.hostId);
@@ -752,23 +967,39 @@ export class NotificationHub implements DbNotifier {
     if (!session) {
       return Promise.reject(new HostOnlineRpcUnavailableError());
     }
+    const signal = args.signal;
+    if (signal?.aborted) {
+      return Promise.reject(new HostOnlineRpcCancelledError());
+    }
+    const requestId = args.message.requestId;
 
     return new Promise<HostDaemonOnlineRpcResponseMessage>(
       (resolve, reject) => {
+        const abandon = (error: Error): void => {
+          this.deleteHostOnlineRpcWaiter(requestId, waiter);
+          this.sendHostOnlineRpcCancel(sessionId, requestId);
+          reject(error);
+        };
+        const onAbort = (): void => {
+          abandon(new HostOnlineRpcCancelledError());
+        };
         const waiter: HostOnlineRpcWaiter = {
+          detachAbortListener: () => {
+            signal?.removeEventListener("abort", onAbort);
+          },
           reject,
           resolve,
           sessionId,
           timeout: setTimeout(() => {
-            this.deleteHostOnlineRpcWaiter(args.message.requestId, waiter);
-            reject(new HostOnlineRpcTimeoutError());
+            abandon(new HostOnlineRpcTimeoutError());
           }, args.timeoutMs),
         };
-        this.hostOnlineRpcWaiters.set(args.message.requestId, waiter);
+        signal?.addEventListener("abort", onAbort, { once: true });
+        this.hostOnlineRpcWaiters.set(requestId, waiter);
         try {
           session.socket.send(JSON.stringify(args.message));
         } catch (error) {
-          this.deleteHostOnlineRpcWaiter(args.message.requestId, waiter);
+          this.deleteHostOnlineRpcWaiter(requestId, waiter);
           reject(error instanceof Error ? error : new Error(String(error)));
         }
       },
@@ -831,7 +1062,9 @@ export class NotificationHub implements DbNotifier {
       ...(metadata ? { metadata } : {}),
       changes,
     };
-    if (isThreadListRelevantChange(message)) {
+    if (isThreadDetailOnlyChange(message)) {
+      this.notifyThreadDetailSubscribers(threadId, message);
+    } else if (isThreadListRelevantChange(message)) {
       this.notifyClients(message);
     } else {
       this.notifyThreadEventsAppendedCoalesced(threadId, message);
@@ -976,8 +1209,20 @@ export class NotificationHub implements DbNotifier {
     waiter: HostOnlineRpcWaiter,
   ): void {
     clearTimeout(waiter.timeout);
+    waiter.detachAbortListener();
     if (this.hostOnlineRpcWaiters.get(requestId) === waiter) {
       this.hostOnlineRpcWaiters.delete(requestId);
+    }
+  }
+
+  private sendHostOnlineRpcCancel(sessionId: string, requestId: string): void {
+    try {
+      this.sendDaemonSessionMessage(sessionId, {
+        type: "host-rpc.cancel",
+        requestId,
+      });
+    } catch {
+      return;
     }
   }
 
@@ -1018,13 +1263,13 @@ export class NotificationHub implements DbNotifier {
     this.daemonRegistrationWaiters.delete(hostId);
   }
 
-  private notifyThreadEventsAppendedCoalesced(
+  private notifyThreadDetailSubscribers(
     threadId: string,
     message: ThreadChangedMessage,
-  ): void {
+  ): string | null {
     const payload = serializeServerMessage(message);
     if (payload === null) {
-      return;
+      return null;
     }
     const detailSockets = this.clientSocketsByKey.get(
       subscriptionKey({ kind: "thread-detail", threadId }),
@@ -1033,12 +1278,29 @@ export class NotificationHub implements DbNotifier {
       this.notifyClientsByKeySet(detailSockets, payload);
     }
     this.notifyChangedMessageListeners(message);
+    return payload;
+  }
+
+  private notifyThreadEventsAppendedCoalesced(
+    threadId: string,
+    message: ThreadChangedMessage,
+  ): void {
+    const payload = this.notifyThreadDetailSubscribers(threadId, message);
+    if (payload === null) {
+      return;
+    }
 
     const eventTypes = message.metadata?.eventTypes ?? [];
     const pending = this.pendingThreadListEventsAppendedByThread.get(threadId);
     if (pending) {
       for (const eventType of eventTypes) {
         pending.eventTypes.add(eventType);
+      }
+      if (message.metadata?.timelineSequence !== undefined) {
+        pending.timelineSequence = Math.max(
+          pending.timelineSequence ?? 0,
+          message.metadata.timelineSequence,
+        );
       }
       pending.merged = true;
       return;
@@ -1051,6 +1313,7 @@ export class NotificationHub implements DbNotifier {
     timeout.unref?.();
     this.pendingThreadListEventsAppendedByThread.set(threadId, {
       eventTypes: new Set(eventTypes),
+      timelineSequence: message.metadata?.timelineSequence,
       merged: false,
       timeout,
     });
@@ -1069,8 +1332,17 @@ export class NotificationHub implements DbNotifier {
       type: "changed",
       entity: "thread",
       id: threadId,
-      ...(pending.eventTypes.size > 0
-        ? { metadata: { eventTypes: [...pending.eventTypes] } }
+      ...(pending.eventTypes.size > 0 || pending.timelineSequence !== undefined
+        ? {
+            metadata: {
+              ...(pending.eventTypes.size > 0
+                ? { eventTypes: [...pending.eventTypes] }
+                : {}),
+              ...(pending.timelineSequence !== undefined
+                ? { timelineSequence: pending.timelineSequence }
+                : {}),
+            },
+          }
         : {}),
       changes: ["events-appended"],
     };

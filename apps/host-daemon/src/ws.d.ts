@@ -6,7 +6,10 @@ declare module "ws" {
   export type RawData = string | Buffer | ArrayBuffer | Buffer[];
 
   export interface ClientOptions {
+    handshakeTimeout?: number;
     headers?: Record<string, string>;
+    maxPayload?: number;
+    perMessageDeflate?: boolean;
   }
 
   export class WebSocket extends EventEmitter {
@@ -18,11 +21,13 @@ declare module "ws" {
     );
     static readonly OPEN: number;
     readonly readyState: number;
+    readonly bufferedAmount: number;
     readonly protocol: string;
     send(data: string | Buffer | Uint8Array): void;
     close(code?: number, reason?: string): void;
     terminate(): void;
-    on(event: "open", listener: () => void): this;
+    ping(): void;
+    on(event: "open" | "pong", listener: () => void): this;
     on(event: "message", listener: (data: RawData) => void): this;
     on(
       event: "message",
@@ -40,7 +45,11 @@ declare module "ws" {
 
   export class WebSocketServer extends EventEmitter {
     clients: Set<WebSocket>;
-    constructor(options?: { noServer?: boolean; maxPayload?: number });
+    constructor(options?: {
+      autoPong?: boolean;
+      noServer?: boolean;
+      maxPayload?: number;
+    });
     handleUpgrade(
       request: IncomingMessage,
       socket: Duplex,

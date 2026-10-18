@@ -9,11 +9,13 @@ import type {
 } from "@bb/domain";
 import {
   isApprovalPendingInteraction,
+  isNativeTerminalQuestion,
   toInteractionLifecycle,
   turnScope,
   threadScope,
 } from "@bb/domain";
 import {
+  getLatestThreadSequence,
   getThread,
   type AppendStoredThreadEventArgs,
   type DbNotifier,
@@ -139,6 +141,7 @@ function buildPendingInteractionTimelineWrites(
   db: Pick<AppDeps, "db">["db"] | DbTransaction,
   interaction: PendingInteraction,
 ): AppendStoredThreadEventArgs[] {
+  if (isNativeTerminalQuestion(interaction)) return [];
   const environmentId =
     getThread(db, interaction.threadId)?.environmentId ?? null;
   const writes: AppendStoredThreadEventArgs[] = [
@@ -186,6 +189,9 @@ export function appendPendingInteractionTimelineEventInTransaction(
     appendThreadEventInTransaction(deps.db, write);
   }
   deps.hub.notifyThread(interaction.threadId, ["events-appended"], {
+    timelineSequence: getLatestThreadSequence(deps.db, {
+      threadId: interaction.threadId,
+    }),
     eventTypes: writes.map((write) => write.type),
   });
 }

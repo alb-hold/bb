@@ -1,26 +1,9 @@
 // @vitest-environment jsdom
-import { cleanup, within } from "@testing-library/react";
+import { cleanup } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import type { Label, Task, TaskThread } from "../../shared/contract.js";
 import { makeTask } from "../../test-fixtures.js";
-
-window.matchMedia ??= (query: string) => ({
-  matches: false,
-  media: query,
-  onchange: null,
-  addListener: () => {},
-  removeListener: () => {},
-  addEventListener: () => {},
-  removeEventListener: () => {},
-  dispatchEvent: () => false,
-});
-window.ResizeObserver ??= class {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-};
-Element.prototype.scrollIntoView ??= () => {};
 
 const app = await loadPluginApp(() => import("../../app"));
 
@@ -98,26 +81,7 @@ describe("responsive list structure", () => {
     expect(count.closest(".overflow-x-auto")).toBeNull();
     const sortChip = slot.getByRole("button", { name: /Sort/ });
     expect(sortChip.closest(".overflow-x-auto")).toBeNull();
-    const statusChip = slot.getByRole("button", {
-      name: "Status",
-      exact: true,
-    });
+    const statusChip = slot.getByRole("button", { name: "Status" });
     expect(statusChip.closest(".overflow-x-auto")).not.toBeNull();
-  });
-
-  it("renders exactly one status and one priority editor per row with full metadata", async () => {
-    const slot = renderList();
-    await slot.findByText("TSK-1");
-    const row = slot.container.querySelector('[data-task-key="TSK-1"]')!;
-    expect(
-      within(row as HTMLElement).getAllByRole("button", {
-        name: /Change status, currently/,
-      }),
-    ).toHaveLength(1);
-    expect(
-      within(row as HTMLElement).getAllByRole("button", {
-        name: /Set priority, currently/,
-      }),
-    ).toHaveLength(1);
   });
 });

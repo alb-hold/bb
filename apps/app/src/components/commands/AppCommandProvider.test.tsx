@@ -6,11 +6,16 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
 } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { defaultAppSettings, type AppCommandId } from "@bb/domain";
+import {
+  defaultAppSettings,
+  type AppCommandId,
+  type AppDefaultKeybinding,
+} from "@bb/domain";
 import {
   AppCommandProvider,
   useAppCommandContext,
@@ -18,6 +23,8 @@ import {
   useAppCommandShortcut,
   useIsAppCommandModifierHeld,
 } from "./AppCommandProvider";
+import { makeTerminalSession } from "@/test/fixtures/terminal-sessions";
+import { ThreadTerminalView } from "@/components/thread/terminal/ThreadTerminalView";
 
 const testState = vi.hoisted(() => ({
   calls: [] as string[],
@@ -195,7 +202,7 @@ const testState = vi.hoisted(() => ({
         none: [],
       },
     },
-  ],
+  ] as AppDefaultKeybinding[],
 }));
 
 vi.mock("@/hooks/queries/system-queries", () => ({
@@ -340,9 +347,15 @@ describe("AppCommandProvider", () => {
     vi.useRealTimers();
   });
 
-  it("cancels keyboard hints when the modifier becomes part of a shortcut chord", () => {
+  it("cancels pending hints but preserves revealed hints through shortcut dispatch", () => {
     vi.useFakeTimers();
-    renderProvider(<ModifierState />);
+    vi.spyOn(navigator, "platform", "get").mockReturnValue("MacIntel");
+    renderProvider(
+      <>
+        <ModifierState />
+        <Handler command="thread.jump.1" name="thread" result={true} />
+      </>,
+    );
 
     fireEvent.keyDown(window, { key: "Control", ctrlKey: true });
     act(() => vi.advanceTimersByTime(699));
@@ -358,7 +371,35 @@ describe("AppCommandProvider", () => {
     fireEvent.keyDown(window, { key: "Control", ctrlKey: true });
     act(() => vi.advanceTimersByTime(700));
     expect(screen.getByText("held")).toBeDefined();
-    fireEvent.keyDown(window, { key: "3", ctrlKey: true, shiftKey: true });
+    fireEvent.keyDown(window, { key: "1", ctrlKey: true });
+    expect(testState.calls).toEqual(["thread"]);
+    expect(screen.getByText("held")).toBeDefined();
+    fireEvent.keyUp(window, { key: "1", ctrlKey: true });
+    expect(screen.getByText("held")).toBeDefined();
+    fireEvent.keyUp(window, { key: "Control" });
+    expect(screen.getByText("released")).toBeDefined();
+    vi.useRealTimers();
+  });
+
+  it("tracks modifier holds and releases from controls that stop propagation", () => {
+    vi.useFakeTimers();
+    renderProvider(
+      <>
+        <ModifierState />
+        <button
+          onKeyDown={(event) => event.stopPropagation()}
+          onKeyUp={(event) => event.stopPropagation()}
+        >
+          Collapse section
+        </button>
+      </>,
+    );
+    const button = screen.getByRole("button", { name: "Collapse section" });
+    button.focus();
+    fireEvent.keyDown(button, { key: "Control", ctrlKey: true });
+    act(() => vi.advanceTimersByTime(700));
+    expect(screen.getByText("held")).toBeDefined();
+    fireEvent.keyUp(button, { key: "Control" });
     expect(screen.getByText("released")).toBeDefined();
     vi.useRealTimers();
   });
@@ -400,7 +441,7 @@ describe("AppCommandProvider", () => {
     );
 
     expect(screen.getByText("Ctrl + Shift + O")).toBeDefined();
-    expect(screen.getByText("Ctrl + Shift + ArrowUp")).toBeDefined();
+    expect(screen.getByText("Ctrl + Shift + ↑")).toBeDefined();
     expect(screen.getByText("Ctrl + Shift + 1")).toBeDefined();
   });
 
@@ -589,6 +630,165 @@ describe("AppCommandProvider", () => {
     expect(testState.calls).toEqual([]);
     expect(dispatchReload(inside).defaultPrevented).toBe(true);
     expect(testState.calls).toEqual(["browser"]);
+  });
+
+  it("suppresses a terminal-scoped command from a native terminal input", async () => {
+    const previousKeybindings = testState.keybindings;
+    testState.keybindings = [
+      ...previousKeybindings.filter((binding) => binding.command !== "thread.search"),
+      {
+        command: "thread.search",
+        desktopOnly: false,
+        shortcut: {
+          key: "k",
+          mod: false,
+          meta: false,
+          control: true,
+          alt: false,
+          shift: false,
+        },
+        when: { all: ["mainSurface"], none: ["terminalFocus"] },
+      },
+    ];
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+      measureText: (text: string) => ({ width: text.length * 9 }),
+    } as unknown as CanvasRenderingContext2D);
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(
+      function offsetWidth(this: HTMLElement) {
+        return this.classList.contains("xterm-char-measure-element") ? 288 : 108;
+      },
+    );
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(
+      function offsetHeight(this: HTMLElement) {
+        return this.classList.contains("xterm-char-measure-element") ? 18 : 90;
+      },
+    );
+    renderProvider(
+      <>
+        <Handler command="thread.search" name="search" result={true} />
+        <button type="button" aria-label="Outside terminal" />
+        <div data-testid="terminal-view">
+          <ThreadTerminalView
+            autoFocus={false}
+            isPanelOpen
+            session={makeTerminalSession({
+              id: "term_focus",
+              threadId: "thr_focus",
+              environmentId: "env_focus",
+              hostId: "host_focus",
+              createdAt: 1,
+              updatedAt: 1,
+              status: "running",
+            })}
+          />
+        </div>
+      </>,
+    );
+    const terminalPane = screen.getByTestId("terminal-view").firstElementChild;
+    if (terminalPane === null) throw new Error("Terminal pane is not mounted");
+    const terminalInput = await waitFor(() => {
+      const textarea = terminalPane.querySelector<HTMLTextAreaElement>(
+        ".xterm-helper-textarea",
+      );
+      if (textarea === null) throw new Error("xterm input is not mounted");
+      return textarea;
+    });
+    const outside = screen.getByLabelText("Outside terminal");
+    const dispatchSearch = (target: Element) => {
+      const event = new KeyboardEvent("keydown", {
+        bubbles: true,
+        cancelable: true,
+        ctrlKey: true,
+        key: "k",
+      });
+      target.dispatchEvent(event);
+      return event;
+    };
+    expect(dispatchSearch(outside).defaultPrevented).toBe(true);
+    expect(testState.calls).toEqual(["search"]);
+    testState.calls.length = 0;
+    terminalInput.focus();
+    const event = dispatchSearch(terminalInput);
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(testState.calls).toEqual([]);
+    testState.keybindings = previousKeybindings;
+  });
+
+  it("dispatches terminal attention from the real key handler while terminal input is focused", async () => {
+    const previousKeybindings = testState.keybindings;
+    testState.keybindings = [
+      ...previousKeybindings,
+      {
+        command: "terminal.attention.next",
+        desktopOnly: false,
+        shortcut: {
+          key: "n",
+          mod: false,
+          meta: false,
+          control: false,
+          alt: true,
+          shift: true,
+        },
+        when: { all: ["mainSurface"], none: [] },
+      },
+    ];
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+      measureText: (text: string) => ({ width: text.length * 9 }),
+    } as unknown as CanvasRenderingContext2D);
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(
+      function offsetWidth(this: HTMLElement) {
+        return this.classList.contains("xterm-char-measure-element") ? 288 : 108;
+      },
+    );
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(
+      function offsetHeight(this: HTMLElement) {
+        return this.classList.contains("xterm-char-measure-element") ? 18 : 90;
+      },
+    );
+    renderProvider(
+      <>
+        <Handler command="terminal.attention.next" name="attention" result />
+        <div data-testid="terminal-view">
+          <ThreadTerminalView
+            autoFocus={false}
+            isPanelOpen
+            session={makeTerminalSession({
+              id: "term_attention_focus",
+              threadId: "thr_attention_focus",
+              environmentId: "env_attention_focus",
+              hostId: "host_attention_focus",
+              createdAt: 1,
+              updatedAt: 1,
+              status: "running",
+            })}
+          />
+        </div>
+      </>,
+    );
+    const terminalPane = screen.getByTestId("terminal-view").firstElementChild;
+    if (terminalPane === null) throw new Error("Terminal pane is not mounted");
+    const terminalInput = await waitFor(() => {
+      const textarea = terminalPane.querySelector<HTMLTextAreaElement>(
+        ".xterm-helper-textarea",
+      );
+      if (textarea === null) throw new Error("xterm input is not mounted");
+      return textarea;
+    });
+    terminalInput.focus();
+    const event = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      altKey: true,
+      shiftKey: true,
+      key: "n",
+      code: "KeyN",
+    });
+    terminalInput.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(testState.calls).toEqual(["attention"]);
+    testState.keybindings = previousKeybindings;
   });
 
   it.each([

@@ -1,15 +1,15 @@
+import { registerCodexAiService } from "./src/ai-service.js";
+import { registerAsyncQuestions } from "./src/async-questions.js";
 import { registerUsageSource } from "./src/usage-source.js";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { codexExtensionKinds } from "./src/extension-kinds.js";
 import { CODEX_NATIVE_ROOTS_DECLARATION } from "./src/native-roots.js";
+import { CODEX_POOL_LAUNCH_ENV_ARGS } from "./src/pool-launch.js";
 
 export default function plugin(bb: BbPluginApi) {
   registerUsageSource(bb);
-  bb.experimental_aiServices.register({
-    id: "codex",
-    displayName: "Codex (ChatGPT account or API key)",
-    kinds: ["inference", "voice"],
-  });
+  registerCodexAiService(bb);
+  registerAsyncQuestions(bb);
 
   bb.settings.define({
     memoryEnabled: {
@@ -37,6 +37,8 @@ export default function plugin(bb: BbPluginApi) {
       expiredHint: "Your Codex session expired. Run `codex`, then reload.",
       installUrl: "https://developers.openai.com/codex/cli",
       brandPrefix: "GPT-",
+      planModeCopy:
+        "Codex will plan in its plan mode and can stop to ask you questions before changing anything.",
     },
     models: { scope: "host" },
     ...CODEX_NATIVE_ROOTS_DECLARATION,
@@ -50,9 +52,18 @@ export default function plugin(bb: BbPluginApi) {
       supportsThreadArchive: true,
       supportsThreadRename: true,
       permissionModes: ["accept-edits", "auto", "full"],
-      reasoningLevels: ["low", "medium", "high", "xhigh", "max", "ultra"],
+      reasoningLevels: [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra",
+      ],
     },
     reasoningLevels: [
+      { id: "none", label: "None" },
       { id: "low", label: "Low" },
       { id: "medium", label: "Medium" },
       { id: "high", label: "High" },
@@ -67,8 +78,94 @@ export default function plugin(bb: BbPluginApi) {
     serviceTiers: [
       { id: "default", label: "Default" },
       { id: "fast", label: "Fast" },
+      { id: "ultrafast", label: "Ultrafast" },
     ],
     composerActions: ["plan", "goal"],
+    experimental_nativeTerminal: {
+      executable: "codex",
+      launchArgs: [
+        "--no-daemon",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--no-alt-screen",
+      ],
+      modelArgs: ["-c", 'model="{model}"'],
+      experimental_launchEnvArgs: CODEX_POOL_LAUNCH_ENV_ARGS,
+      mcp: [
+        "-c",
+        "mcp_servers.bb-bridge.command={commandJson}",
+        "-c",
+        "mcp_servers.bb-bridge.args={argsJson}",
+      ],
+      imageArgs: ["--image", "{image}"],
+      pastePlaceholders: ["[Pasted Content ", "[Image #"],
+      sessionRoot: { env: "CODEX_HOME", home: ".codex" },
+      session: {
+        kind: "discovered",
+        resumeArgs: ["resume", "{sessionId}"],
+        transcripts: "sessions/{yyyy}/{mm}/{dd}/rollout-*.jsonl",
+        header: {
+          match: { type: "session_meta" },
+          id: "payload.id",
+          cwd: "payload.cwd",
+          startedAt: "payload.timestamp",
+        },
+      },
+      activity: {
+        transcript: {
+          questions: {
+            open: [
+              {
+                match: {
+                  equals: {
+                    type: "response_item",
+                    "payload.type": "function_call",
+                    "payload.name": "request_user_input",
+                  },
+                },
+                id: "payload.call_id",
+                label: "Codex is asking a question",
+              },
+            ],
+            close: [
+              {
+                match: {
+                  equals: {
+                    type: "response_item",
+                    "payload.type": "function_call_output",
+                  },
+                },
+                id: "payload.call_id",
+              },
+            ],
+          },
+          working: [
+            { equals: { type: "event_msg", "payload.type": "task_started" } },
+          ],
+          idle: [
+            { equals: { type: "event_msg", "payload.type": "task_complete" } },
+            { equals: { type: "event_msg", "payload.type": "turn_aborted" } },
+          ],
+          prompt: [
+            {
+              match: {
+                equals: { type: "event_msg", "payload.type": "user_message" },
+              },
+              text: "payload.message",
+            },
+            {
+              match: {
+                equals: {
+                  type: "event_msg",
+                  "payload.type": "item_completed",
+                  "payload.item.type": "UserMessage",
+                },
+              },
+              text: "payload.item.content.0.text",
+            },
+          ],
+        },
+      },
+    },
     deriveProviderOptions(context) {
       return {
         memoryEnabled: context.settings.memoryEnabled !== false,

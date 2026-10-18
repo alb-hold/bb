@@ -65,6 +65,7 @@ function assistant(
               mobileActionDisplay="inline"
               onOpenLocalFileLink={onOpenLocalFileLink}
               text={text}
+              timestamp={0}
             />
           </MessageDirectiveRegistryProvider>
         </ThreadTitleMentionResourcesProvider>
@@ -80,21 +81,6 @@ afterEach(() => {
 });
 
 describe("assistant streaming Markdown rendering", () => {
-  it.each([
-    ["**Live bold", "strong", "Live bold"],
-    ["`live code", "code", "live code"],
-  ])(
-    "renders incomplete formatting and returns to original Markdown when stopped: %s",
-    (source, selector, text) => {
-      const view = render(assistant(source));
-      expect(view.container.querySelector(selector)?.textContent).toBe(text);
-
-      view.rerender(assistant(source, false));
-      expect(view.container.querySelector(selector)).toBeNull();
-      expect(view.container.textContent).toContain(source);
-    },
-  );
-
   it.each([
     ["**Live bold and `live code", ["strong"]],
     ["__Live bold and `live code", ["strong"]],
@@ -126,17 +112,15 @@ describe("assistant streaming Markdown rendering", () => {
     ).toBe("https://example.com");
   });
 
-  it("does not resolve an incomplete image and resolves the completed local image", () => {
+  it("does not load an incomplete image and loads the completed local image", () => {
     const view = render(assistant("Image ![preview](/workspace/preview"));
     expect(screen.queryByRole("img")).toBeNull();
     expect(view.container.textContent).not.toContain("![preview]");
 
     view.rerender(assistant("Image ![preview](/workspace/preview.png)"));
     expect(
-      screen.getByRole("img", { name: "preview" }).getAttribute("data-markdown-image-src"),
-    ).toBe(
-      "/api/v1/threads/thr_stream/host-files/content?path=%2Fworkspace%2Fpreview.png",
-    );
+      screen.getByRole("img", { name: "preview" }).getAttribute("src"),
+    ).toBe("/api/v1/threads/thr_stream/host-files/workspace/preview.png");
   });
 
   it.each([
@@ -185,6 +169,7 @@ describe("assistant streaming Markdown rendering", () => {
     expect(onOpenLocalFileLink).toHaveBeenCalledWith({
       path: "/workspace/My File.ts",
       lineRange: { startLineNumber: 12, endLineNumber: 12 },
+      openTargetId: null,
     });
     expect(
       screen.getByRole("link", { name: "Related thread" }).getAttribute("href"),

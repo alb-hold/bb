@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
-import { createConnection, migrate, type DbConnection } from "@bb/db";
+import { type DbConnection } from "@bb/db";
+import { createMigratedConnection } from "@bb/db/testing";
 import { encodeClientTurnRequestIdNumber } from "@bb/domain";
 import type { Logger } from "@bb/logger";
 import { RESERVED_AGENT_TOOL_NAMES } from "@get-bb/plugin-sdk/internal/host-policy";
@@ -66,8 +67,7 @@ describe("bb.agents.registerTool", () => {
   let service: PluginService;
 
   beforeEach(async () => {
-    db = createConnection(":memory:");
-    migrate(db);
+    db = createMigratedConnection();
     workDir = await mkdtemp(join(tmpdir(), "bb-plugin-tools-test-"));
     service = createPluginService({
       aiServices: createAiServiceRegistry(),
@@ -563,93 +563,13 @@ describe("bb.agents.registerTool", () => {
   );
 });
 
-describe("bb.agents.experimental_registerProvider (removed in SDK 0.4.16)", () => {
-  let db: DbConnection;
-  let workDir: string;
-  let service: PluginService;
-
-  beforeEach(async () => {
-    db = createConnection(":memory:");
-    migrate(db);
-    workDir = await mkdtemp(join(tmpdir(), "bb-plugin-old-provider-test-"));
-    service = createPluginService({
-      aiServices: createAiServiceRegistry(),
-      telemetry: createNoopTelemetryService(),
-      db,
-      hub: {
-        getDaemonSessionIdForHost: () => null,
-        notifyPluginSignal: () => 0,
-        notifySystem: () => {},
-      },
-      logger,
-      dataDir: join(workDir, "data"),
-      appVersion: "0.9.0",
-      loadTimeoutMs: 2000,
-    });
-  });
-
-  afterEach(async () => {
-    await service.stop();
-    await rm(workDir, { recursive: true, force: true });
-  });
-
-  const REMOVED_MESSAGE =
-    "bb.agents.experimental_registerProvider was removed in SDK 0.4.16; use bb.providers.register";
-
-  it("fails the plugin at factory time with a message naming the replacement", async () => {
-    const rootDir = await writePlugin(workDir, {
-      name: "bb-plugin-old-provider",
-      serverSource: `
-        export default function plugin(bb: any) {
-          bb.agents.experimental_registerProvider({ id: "old" });
-        }
-      `,
-    });
-    const entry = await service.installPath(rootDir);
-    expect(entry.status).toBe("error");
-    expect(entry.statusDetail).toContain(REMOVED_MESSAGE);
-  });
-
-  it("is invisible to enumeration and leaves the rest of bb.agents working", async () => {
-    const rootDir = await writePlugin(workDir, {
-      name: "bb-plugin-current-agents",
-      serverSource: "export default function plugin() {}",
-    });
-    await service.installPath(rootDir);
-    const api = service.getApi("current-agents")!;
-
-    expect(() =>
-      Reflect.get(api.agents, "experimental_registerProvider"),
-    ).toThrow(REMOVED_MESSAGE);
-    expect(Object.keys(api.agents).sort()).toEqual([
-      "configure",
-      "contributeInstructions",
-      "registerTool",
-    ]);
-    expect(Object.keys({ ...api.agents })).not.toContain(
-      "experimental_registerProvider",
-    );
-
-    api.agents.registerTool({
-      name: "still_works",
-      description: "Registered after the removed getter was touched",
-      parameters: { type: "object" },
-      execute: () => "ok",
-    });
-    expect(service.listAgentTools().map((tool) => tool.tool.name)).toEqual([
-      "still_works",
-    ]);
-  });
-});
-
 describe("bb.agents.contributeInstructions", () => {
   let db: DbConnection;
   let workDir: string;
   let service: PluginService;
 
   beforeEach(async () => {
-    db = createConnection(":memory:");
-    migrate(db);
+    db = createMigratedConnection();
     workDir = await mkdtemp(join(tmpdir(), "bb-plugin-instr-test-"));
     service = createPluginService({
       aiServices: createAiServiceRegistry(),

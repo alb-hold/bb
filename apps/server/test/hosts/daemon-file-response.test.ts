@@ -1,8 +1,8 @@
+import { requestMatchesEntityTag } from "../../src/services/files/entity-tag.js";
 import { Buffer } from "node:buffer";
 import { describe, expect, it } from "vitest";
 import {
   createDaemonFileContentResponse,
-  requestMatchesEntityTag,
   type DaemonFileReadResult,
 } from "../../src/services/hosts/daemon-file-response.js";
 
@@ -85,11 +85,15 @@ describe("createDaemonFileContentResponse", () => {
 });
 
 describe("requestMatchesEntityTag", () => {
-  it("matches wildcard, exact, and weak-prefixed tags", () => {
+  it("compares weakly across wildcard, exact, and listed tags", () => {
     expect(requestMatchesEntityTag(undefined, '"a"')).toBe(false);
     expect(requestMatchesEntityTag("*", '"a"')).toBe(true);
     expect(requestMatchesEntityTag('"a"', '"a"')).toBe(true);
     expect(requestMatchesEntityTag('W/"a"', '"a"')).toBe(true);
+    expect(requestMatchesEntityTag('"a"', 'W/"a"')).toBe(true);
+    expect(requestMatchesEntityTag('"b", W/"a"', 'W/"a"')).toBe(true);
     expect(requestMatchesEntityTag('"b", "c"', '"a"')).toBe(false);
+    expect(requestMatchesEntityTag('W/"b"', 'W/"a"')).toBe(false);
+    expect(requestMatchesEntityTag('"ab"', 'W/"a"')).toBe(false);
   });
 });

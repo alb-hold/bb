@@ -31,6 +31,10 @@ export interface TokenUsageObservation {
   threadId: string;
   total: SpendUsageBreakdown;
   turnId: string | null;
+  turnSpendUsage?: {
+    cachedInputTokens: number | null;
+    reasoningOutputTokens: number | null;
+  };
 }
 
 export interface SpendContribution {
@@ -268,6 +272,21 @@ export function ensureSpendTables(db: DbConnection): void {
       thread_id TEXT NOT NULL
     )
   `);
+  db.$client.exec(`
+    CREATE TABLE IF NOT EXISTS fork_thread_turn_spend_repair (
+      thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+      turn_id TEXT NOT NULL,
+      repaired_at INTEGER NOT NULL,
+      PRIMARY KEY (thread_id, turn_id)
+    )
+  `);
+  db.$client.exec(`
+    CREATE TABLE IF NOT EXISTS fork_thread_spend_rollup_repair (
+      thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+      repaired_at INTEGER NOT NULL,
+      PRIMARY KEY (thread_id)
+    )
+  `);
   spendTablesReady.add(db.$client);
 }
 
@@ -340,6 +359,19 @@ export function getSpendCursor(
           AND provider_thread_id = ${args.providerThreadId}`,
   );
   return row ?? null;
+}
+
+export function isSpendThreadHistoryComplete(
+  db: DbQueryConnection,
+  args: { threadId: string },
+): boolean {
+  const row = db.get<{ cursorCount: number; partialCount: number }>(
+    sql`SELECT COUNT(*) AS cursorCount,
+               SUM(CASE WHEN history_complete = 0 THEN 1 ELSE 0 END) AS partialCount
+        FROM ${sql.raw(CURSOR_TABLE)}
+        WHERE thread_id = ${args.threadId}`,
+  );
+  return (row?.cursorCount ?? 0) > 0 && (row?.partialCount ?? 0) === 0;
 }
 
 export function saveSpendCursor(
@@ -562,6 +594,20 @@ export function listStoredTokenUsageEvents(
         WHERE thread_id = ${args.threadId}
           AND type = 'thread/tokenUsage/updated'
         ORDER BY sequence`,
+  );
+}
+
+export function hasStoredTokenUsageEvents(
+  db: DbQueryConnection,
+  args: { threadId: string },
+): boolean {
+  return (
+    db.get<{ found: number }>(
+      sql`SELECT 1 AS found FROM events
+          WHERE thread_id = ${args.threadId}
+            AND type = 'thread/tokenUsage/updated'
+          LIMIT 1`,
+    )?.found === 1
   );
 }
 

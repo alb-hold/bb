@@ -36,11 +36,9 @@ vi.mock("@/hooks/queries/system-queries", () => ({
     data: {
       experiments: {
         changelogPreview: false,
-        mobileApp: false,
-        multiMachinePicker: false,
         serverMove: false,
-        sidebarProgressiveDisclosure: false,
-        timelineWindowing: false,
+        performanceDiagnostics: false,
+        timelinePush: false,
       },
     },
   }),
@@ -51,15 +49,17 @@ vi.mock("@/hooks/useHostDaemon", () => ({
   useLocalHostDaemonAccess: () => ({ accessState: "unavailable" }),
 }));
 
+vi.mock("@/hooks/usePluginSafeModeCommands", () => ({
+  usePluginSafeModeCommands: () => undefined,
+}));
+
 vi.mock("@/components/project/ProjectActionsProvider", () => ({
   ProjectActionsProvider: ({ children }: { children: ReactNode }) => (
     <>{children}</>
   ),
 }));
 
-vi.mock("@/hooks/mutations/thread-state-mutations", () => ({
-  useMoveThreadToSection: () => vi.fn(),
-}));
+vi.mock("@/hooks/mutations/thread-state-mutations", () => ({}));
 
 vi.mock("@/components/thread/ThreadActionsProvider", () => ({
   ThreadActionsProvider: ({ children }: { children: ReactNode }) => (
@@ -97,7 +97,11 @@ vi.mock("@/lib/bb-desktop", () => ({
   DEFAULT_DESKTOP_WINDOW_STATE: { isFullScreen: false },
   MACOS_CHROME_CONTROL_AXIS_CLASS: "",
   MACOS_CHROME_CONTROL_NO_DRAG_CLASS: "",
+  MACOS_TITLE_BAR_CONTROL_AXIS_CLASS: "",
+  MACOS_TITLE_BAR_CONTROL_SIZE_CLASS: "",
+  MACOS_TITLE_BAR_PINNED_TOGGLE_CLASS: "",
   MACOS_TRAFFIC_LIGHT_RESERVE_OFFSET_CLASS: "",
+  MACOS_TRAFFIC_LIGHT_RESERVE_PADDING_CLASS: "",
   MACOS_WINDOW_DRAG_CLASS: "",
   MACOS_WINDOW_NO_DRAG_CLASS: "",
   getBbDesktopInfo: () => null,
@@ -156,12 +160,12 @@ vi.mock("@/hooks/queries/sidebar-navigation-query", () => ({
 }));
 
 vi.mock("@/hooks/queries/thread-queries", () => ({
+  useArchivedThreads: () => ({ data: undefined }),
   didThreadDetailBootstrapRefreshAfterMount: () => true,
   useThread: (...args: unknown[]) => mockUseThread(...args),
   useThreadDetailBootstrap: (...args: unknown[]) =>
     mockUseThreadDetailBootstrap(...args),
   useThreadPendingInteractions: () => ({ data: undefined }),
-  getLatestPendingInteraction: () => null,
 }));
 
 describe("AppLayout root compose project preference", () => {

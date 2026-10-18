@@ -9,6 +9,7 @@ import {
   useRef,
   useState,
   type ComponentPropsWithoutRef,
+  type CSSProperties,
   type Dispatch,
   type MouseEvent as ReactMouseEvent,
   type ReactElement,
@@ -32,15 +33,15 @@ import type {
   Options as ReactMarkdownOptions,
   UrlTransform,
 } from "react-markdown";
-import rehypeRaw from "rehype-raw";
-import rehypeSanitize from "rehype-sanitize";
+import { LazyMarkdownHtml } from "./lazy-markdown-html";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import { ImageLightbox, getWrappedImageIndex } from "./image-lightbox.js";
 import { InlineImageGalleryContext } from "./inline-image-gallery-context.js";
-import { MarkdownImage as DeferredMarkdownImage } from "./markdown-image.js";
+import { remarkInlineDollarMath } from "./markdown-inline-dollar-math.js";
 import { normalizeMathFences } from "./markdown-math-fences.js";
+import { MARKDOWN_TABLE_START_OFFSET_VARIABLE } from "./markdown-table-breakout.js";
 import {
   markdownMayContainMath,
   useRehypeKatex,
@@ -48,6 +49,7 @@ import {
 } from "./markdown-katex-loader.js";
 import { CopyButton } from "./copy-button.js";
 import { Icon } from "@bb/shared-ui/icon";
+import { WorkspaceOpenTargetIcon } from "@/components/workspace-open-target/WorkspaceOpenTargetIcon";
 import { RouteAnchor } from "./app-route-anchor.js";
 import {
   getMarkdownCodeLanguage,
@@ -66,6 +68,7 @@ import {
 } from "./markdown-local-file-link.js";
 import {
   MarkdownLocalFileContextMenuContext,
+  MarkdownLocalFileOpenTargetsContext,
   type MarkdownLinkRouting,
   type MarkdownLocalFileContextMenuItem,
   type MarkdownLocalFileLinkRouting,
@@ -84,15 +87,20 @@ import {
   type MarkdownPromptMentions,
 } from "./markdown-prompt-mentions.js";
 import {
-  buildMessageDirectiveComponent,
+  MessageDirectiveElement,
   EMPTY_MOUNTED_MESSAGE_DIRECTIVES,
   MESSAGE_DIRECTIVE_MOUNT_LIMIT,
   MessageDirectiveMountsContext,
   remarkMessageDirectives,
-  type BuildMessageDirectiveComponentArgs,
   type MarkdownMessageDirectives,
   type MountedMessageDirective,
 } from "./markdown-message-directives.js";
+import {
+  CodeFencePlaceholder,
+  remarkCodeFenceRenderers,
+  useCodeFenceLanguages,
+  type CodeFenceElementProps,
+} from "./markdown-code-fence-renderers.js";
 import {
   createMarkdownPieceCache,
   resolveMarkdownPieces,
@@ -102,7 +110,6 @@ import { normalizePromptBlockquoteBoundaries } from "./markdown-prompt-blockquot
 import { MarkdownMermaidDiagram } from "./markdown-mermaid-diagram.js";
 import type { PromptTextMention } from "@bb/domain";
 import type { PromptMentionLinkResolver } from "@/components/promptbox/editor/prompt-mention-link";
-import type { TimelineTitleLinkResolver } from "@/components/thread/timeline/TimelineTitleView.js";
 import { usePreferredTheme, type Theme } from "@/hooks/useTheme";
 import {
   rewriteLocalhostLinkHref,
@@ -121,6 +128,7 @@ interface MarkdownPreviewProps {
   allowHtml?: boolean;
   className?: string;
   content: string;
+  containerQuery?: boolean;
   sourcePrefix?: string;
   imagePolicy?: MarkdownImagePolicy;
   incrementalBlocks?: boolean;
@@ -136,7 +144,6 @@ type MarkdownImagePolicy = "alt-text" | "render";
 export interface MarkdownThreadMentions {
   mentions: readonly PromptTextMention[];
   preserveSoftBreaks: boolean;
-  resolveLinkHref?: TimelineTitleLinkResolver;
 }
 
 interface MarkdownAnchorProps
@@ -158,12 +165,11 @@ interface BuildMarkdownComponentsArgs {
   setExpandedImage: ExpandedMarkdownImageSetter;
   threadMentions?: MarkdownThreadMentions;
   promptMentions?: ResolvedPromptMentions;
-  messageDirectives?: BuildMessageDirectiveComponentArgs;
+  hasMessageDirectives: boolean;
 }
 
 interface ResolvedPromptMentions {
   mentions: readonly IndexedPromptMention[];
-  resolveLinkHref?: TimelineTitleLinkResolver;
   resolveMentionLink?: PromptMentionLinkResolver;
 }
 
@@ -254,8 +260,11 @@ type MarkdownPreviewPropsEqual = (
 type MarkdownAnchorEvent = ReactMouseEvent<HTMLAnchorElement>;
 type MarkdownBlockquoteProps = ComponentPropsWithoutRef<"blockquote"> &
   ExtraProps;
-type MarkdownCodeProps = ComponentPropsWithoutRef<"code"> & ExtraProps;
+type MarkdownCodeProps = ComponentPropsWithoutRef<"code"> &
+  ExtraProps &
+  CodeFenceElementProps;
 interface MarkdownCodeRendererProps extends MarkdownCodeProps {
+  codeFenceSourceOffset: number;
   imagePolicy: MarkdownImagePolicy;
   linkRouting?: MarkdownLinkRouting;
   preferredTheme: Theme;
@@ -287,26 +296,19 @@ type MarkdownRemarkPlugins = NonNullable<ReactMarkdownOptions["remarkPlugins"]>;
 
 const MARKDOWN_TABLE_BREAKOUT_LIMIT_VARIABLE = "--md-table-breakout-max";
 const MARKDOWN_TABLE_BREAKOUT_WIDTH = `max(100%, min(1100px, 100cqw - 2rem, var(${MARKDOWN_TABLE_BREAKOUT_LIMIT_VARIABLE}, 100cqw)))`;
+const MARKDOWN_TABLE_BREAKOUT_START_MARGIN = `var(${MARKDOWN_TABLE_START_OFFSET_VARIABLE}, calc((100% - ${MARKDOWN_TABLE_BREAKOUT_WIDTH}) / 2))`;
 const MARKDOWN_CONTENT_WIDTH_VARIABLE = "--md-content-w";
 const MARKDOWN_SOURCE_COLOR_SCHEME_MEDIA_PATTERN =
   /^\(\s*prefers-color-scheme\s*:\s*(dark|light)\s*\)$/iu;
-const MARKDOWN_HTML_REHYPE_PLUGINS: MarkdownRehypePlugins = [
-  rehypeRaw,
-  rehypeSanitize,
-];
 
 const MARKDOWN_PLAIN_REHYPE_PLUGINS: MarkdownRehypePlugins = [];
 
 function resolveRehypePlugins({
-  allowHtml,
   rehypeKatex,
 }: {
-  allowHtml: boolean;
   rehypeKatex: RehypeKatex | null;
 }): MarkdownRehypePlugins {
-  const base = allowHtml
-    ? MARKDOWN_HTML_REHYPE_PLUGINS
-    : MARKDOWN_PLAIN_REHYPE_PLUGINS;
+  const base = MARKDOWN_PLAIN_REHYPE_PLUGINS;
   return rehypeKatex === null ? base : [...base, rehypeKatex];
 }
 
@@ -399,8 +401,7 @@ function areMarkdownThreadMentionsEqual({
   if (previous === undefined || next === undefined) return false;
   return (
     previous.mentions === next.mentions &&
-    previous.preserveSoftBreaks === next.preserveSoftBreaks &&
-    previous.resolveLinkHref === next.resolveLinkHref
+    previous.preserveSoftBreaks === next.preserveSoftBreaks
   );
 }
 
@@ -412,7 +413,6 @@ function areMarkdownPromptMentionsEqual({
   if (previous === undefined || next === undefined) return false;
   return (
     previous.mentions === next.mentions &&
-    previous.resolveLinkHref === next.resolveLinkHref &&
     previous.resolveMentionLink === next.resolveMentionLink
   );
 }
@@ -441,6 +441,7 @@ const areMarkdownPreviewPropsEqual: MarkdownPreviewPropsEqual = (
   (previous.allowHtml ?? false) === (next.allowHtml ?? false) &&
   previous.className === next.className &&
   previous.content === next.content &&
+  (previous.containerQuery ?? true) === (next.containerQuery ?? true) &&
   (previous.sourcePrefix ?? "") === (next.sourcePrefix ?? "") &&
   (previous.imagePolicy ?? "render") === (next.imagePolicy ?? "render") &&
   (previous.incrementalBlocks ?? false) === (next.incrementalBlocks ?? false) &&
@@ -480,10 +481,14 @@ function resolveMarkdownLocalFileTarget(
   absolute: MarkdownAbsoluteLocalFileLinkRouting,
   relative: MarkdownRelativeLocalFileLinkRouting | undefined,
 ): ResolvedMarkdownLocalFileTarget | null {
-  const absoluteLink = parseLocalFileHref({
-    absoluteLinks: absolute,
-    href: value,
-  });
+  const absoluteLink =
+    parseLocalFileHref({ absoluteLinks: absolute, href: value }) ??
+    (absolute.kind === "trusted-host" && relative !== undefined
+      ? parseLocalFileHref({
+          absoluteLinks: { kind: "contained", rootPath: relative.rootPath },
+          href: value,
+        })
+      : null);
   if (absoluteLink !== null) {
     return {
       href: value,
@@ -503,7 +508,10 @@ function resolveMarkdownLocalFileTarget(
     return null;
   }
   const relativeLink = parseLocalFileHref({
-    absoluteLinks: absolute,
+    absoluteLinks:
+      absolute.kind === "trusted-host"
+        ? { kind: "contained", rootPath: relative.rootPath }
+        : absolute,
     href: resolvedHref,
   });
   return relativeLink === null
@@ -532,7 +540,10 @@ function buildLocalAwareUrlTransform({
       }
     }
 
-    if (key === "src" && localImageRouting !== undefined) {
+    if (
+      (key === "src" || (key === "poster" && node.tagName === "video")) &&
+      localImageRouting !== undefined
+    ) {
       const localImage = resolveMarkdownLocalFileTarget(
         value,
         localImageRouting.absolutePaths,
@@ -550,11 +561,7 @@ function buildLocalAwareUrlTransform({
   };
 }
 
-function hasMarkdownFileExtension(path: string): boolean {
-  return /\.(?:md|markdown)$/iu.test(path);
-}
-
-function resolveInlineCodeMarkdownFileHref({
+function resolveInlineCodeFileHref({
   codeText,
   localFileRouting,
 }: {
@@ -564,9 +571,7 @@ function resolveInlineCodeMarkdownFileHref({
   if (
     localFileRouting === undefined ||
     codeText.length === 0 ||
-    codeText.trim() !== codeText ||
-    codeText.includes("\n") ||
-    codeText.includes("\r")
+    /\s/u.test(codeText)
   ) {
     return null;
   }
@@ -576,9 +581,71 @@ function resolveInlineCodeMarkdownFileHref({
     localFileRouting.absoluteLinks,
     localFileRouting.relativeLinks,
   );
-  return target !== null && hasMarkdownFileExtension(target.link.path)
+  if (target === null) {
+    return null;
+  }
+
+  return /^(?:[/\\]|\.{1,2}[/\\]|[a-zA-Z]:[/\\]|file:\/\/)/u.test(codeText) ||
+    /\.[\p{L}\p{N}_-]+$/u.test(target.link.path) ||
+    target.link.lineRange !== null
     ? target.href
     : null;
+}
+
+const markdownLinkGraphemes = new Intl.Segmenter(undefined, {
+  granularity: "grapheme",
+});
+
+const MARKDOWN_LOCAL_FILE_LINK_ICON = (
+  <Icon
+    name="ExternalLink"
+    aria-hidden
+    className="ml-1 inline size-3 align-[-0.125em] text-subtle-foreground"
+  />
+);
+
+function appendMarkdownLinkIcon(
+  children: ReactNode,
+  icon: ReactNode,
+): ReactNode {
+  let appended = false;
+  const append = (node: ReactNode): ReactNode => {
+    if (typeof node === "string" || typeof node === "number") {
+      const text = String(node);
+      const last = markdownLinkGraphemes
+        .segment(text)
+        .containing(text.trimEnd().length - 1);
+      if (!last) return node;
+      appended = true;
+      return (
+        <>
+          {text.slice(0, last.index)}
+          <span className="whitespace-nowrap">
+            {text.slice(last.index)}
+            {icon}
+          </span>
+        </>
+      );
+    }
+    if (isValidElement<{ children?: ReactNode }>(node)) {
+      const content = append(node.props.children);
+      return appended ? cloneElement(node, undefined, content) : node;
+    }
+    const nodes: ReactNode[] = Children.toArray(node);
+    for (let index = nodes.length - 1; index >= 0 && !appended; index--) {
+      nodes[index] = append(nodes[index]);
+    }
+    return nodes;
+  };
+  const content = append(children);
+  return appended ? (
+    content
+  ) : (
+    <span className="whitespace-nowrap">
+      {children}
+      {icon}
+    </span>
+  );
 }
 
 function MarkdownAnchor({
@@ -598,18 +665,27 @@ function MarkdownAnchor({
   });
   const isAppRouteHref = isMarkdownAppRouteHref({ href: rewrittenHref });
   const localFileLink =
-    !isAppRouteHref && localFileRouting
-      ? parseLocalFileHref({
-          absoluteLinks: localFileRouting.absoluteLinks,
-          href: rewrittenHref,
-        })
+    !isAppRouteHref && localFileRouting && rewrittenHref
+      ? (resolveMarkdownLocalFileTarget(
+          rewrittenHref,
+          localFileRouting.absoluteLinks,
+          localFileRouting.relativeLinks,
+        )?.link ?? null)
       : null;
   const anchorHref = buildLocalFileAnchorHref(localFileLink, rewrittenHref);
   const getContextMenuItems = useContext(MarkdownLocalFileContextMenuContext);
+  const openTargets = useContext(MarkdownLocalFileOpenTargetsContext);
+  if (!anchorHref) {
+    return <span>{children}</span>;
+  }
   const contextMenuItems =
     localFileLink !== null && getContextMenuItems !== null
       ? getContextMenuItems(localFileLink)
       : null;
+  const openTarget =
+    localFileLink === null || localFileLink.openTargetId === null
+      ? undefined
+      : openTargets.find((target) => target.id === localFileLink.openTargetId);
   const handleAnchorClick = (event: MarkdownAnchorEvent) => {
     if (localFileLink && onOpenLocalFileLink) {
       if (onOpenLocalFileLink(localFileLink)) {
@@ -635,6 +711,10 @@ function MarkdownAnchor({
   const anchor = (
     <RouteAnchor
       {...anchorProps}
+      title={
+        anchorProps.title ??
+        (openTarget === undefined ? undefined : `Open in ${openTarget.label}`)
+      }
       href={anchorHref}
       className={cn(
         "break-words [overflow-wrap:anywhere] underline underline-offset-2",
@@ -643,14 +723,19 @@ function MarkdownAnchor({
       rel="noopener noreferrer"
       onClick={handleAnchorClick}
     >
-      {children}
-      {localFileLink ? (
-        <Icon
-          name="ExternalLink"
-          aria-hidden
-          className="ml-1 inline size-3 align-[-0.125em] text-subtle-foreground"
-        />
-      ) : null}
+      {localFileLink
+        ? appendMarkdownLinkIcon(
+            children,
+            openTarget === undefined ? (
+              MARKDOWN_LOCAL_FILE_LINK_ICON
+            ) : (
+              <WorkspaceOpenTargetIcon
+                target={openTarget}
+                className="ml-1 inline-block size-3.5 align-[-0.2em]"
+              />
+            ),
+          )
+        : children}
     </RouteAnchor>
   );
   if (contextMenuItems === null || contextMenuItems.length === 0) {
@@ -689,97 +774,139 @@ function renderMarkdownLocalFileContextMenuItem(
   );
 }
 
-function MarkdownCode({
-  className: codeClassName,
-  children,
+function MarkdownCodeBlock({
+  codeProps,
+  codeText,
   imagePolicy,
-  linkRouting,
-  node: _node,
+  language,
   preferredTheme,
-  rewriteLocalhostLinks,
-  ...props
-}: MarkdownCodeRendererProps) {
-  const codeText = String(children ?? "").replace(/\n$/, "");
-  const language = getMarkdownCodeLanguage({ className: codeClassName });
-  const isBlock = isMarkdownCodeBlock({ codeText, language });
+}: {
+  codeProps: ComponentPropsWithoutRef<"code">;
+  codeText: string;
+  imagePolicy: MarkdownImagePolicy;
+  language: string | null;
+  preferredTheme: Theme;
+}) {
   const [softWrap, setSoftWrap] = useState(false);
   const highlightedHtml = useMemo(
     () =>
-      isBlock && language !== "mermaid"
+      language !== "mermaid"
         ? highlightMarkdownCode({ code: codeText, language })
         : null,
-    [isBlock, language, codeText],
+    [language, codeText],
   );
   const highlightedMarkup = useMemo(
     () => (highlightedHtml === null ? null : { __html: highlightedHtml }),
     [highlightedHtml],
   );
-  if (isBlock) {
-    if (language === "mermaid" && imagePolicy === "render") {
-      return (
-        <MarkdownMermaidDiagram
-          preferredTheme={preferredTheme}
-          source={codeText}
-        />
-      );
-    }
-
+  if (language === "mermaid" && imagePolicy === "render") {
     return (
-      <div className="my-2 overflow-hidden rounded-md border border-border bg-surface-recessed">
-        <div className="flex items-center justify-between pl-3 pr-1.5 pt-1.5">
-          <span className="font-mono text-xs uppercase text-muted-foreground">
-            {language ?? ""}
-          </span>
-          <div className="flex items-center gap-0.5">
-            <button
-              type="button"
-              aria-pressed={softWrap}
-              aria-label={softWrap ? "Disable line wrap" : "Wrap long lines"}
-              onClick={() => {
-                setSoftWrap((value) => !value);
-              }}
-              className="inline-flex size-5 cursor-pointer items-center justify-center text-muted-foreground transition-colors hover:text-foreground aria-pressed:text-foreground"
-            >
-              <Icon name="TextWrap" className="size-3" />
-            </button>
-            <CopyButton text={codeText} label="Copy code" />
-          </div>
-        </div>
-        <pre
-          className={cn(
-            "bb-code-highlight px-3 pb-3 pt-1",
-            softWrap
-              ? "whitespace-pre-wrap [overflow-wrap:anywhere]"
-              : "overflow-x-auto",
-          )}
-        >
-          {highlightedMarkup === null ? (
-            <code className="font-mono text-xs" {...props}>
-              {codeText}
-            </code>
-          ) : (
-            <code
-              className={cn(
-                "font-mono text-xs",
-                language ? `language-${language}` : "",
-              )}
-              dangerouslySetInnerHTML={highlightedMarkup}
-              {...props}
-            />
-          )}
-        </pre>
-      </div>
+      <MarkdownMermaidDiagram
+        preferredTheme={preferredTheme}
+        source={codeText}
+      />
     );
   }
 
-  const markdownFileHref = resolveInlineCodeMarkdownFileHref({
+  return (
+    <div className="my-2 overflow-hidden rounded-md border border-border bg-surface-recessed">
+      <div
+        data-clipboard-ignore
+        className="flex items-center justify-between pl-3 pr-1.5 pt-1.5"
+      >
+        <span className="font-mono text-xs uppercase text-muted-foreground">
+          {language ?? ""}
+        </span>
+        <div className="flex items-center gap-0.5">
+          <button
+            type="button"
+            aria-pressed={softWrap}
+            aria-label={softWrap ? "Disable line wrap" : "Wrap long lines"}
+            onClick={() => {
+              setSoftWrap((value) => !value);
+            }}
+            className="inline-flex size-5 cursor-pointer items-center justify-center text-muted-foreground transition-colors hover:text-foreground aria-pressed:text-foreground"
+          >
+            <Icon name="TextWrap" className="size-3" />
+          </button>
+          <CopyButton text={codeText} label="Copy code" />
+        </div>
+      </div>
+      <pre
+        className={cn(
+          "bb-code-highlight px-3 pb-3 pt-1",
+          softWrap
+            ? "whitespace-pre-wrap [overflow-wrap:anywhere]"
+            : "overflow-x-auto",
+        )}
+      >
+        {highlightedMarkup === null ? (
+          <code className="font-mono text-xs" {...codeProps}>
+            {codeText}
+          </code>
+        ) : (
+          <code
+            className={cn(
+              "font-mono text-xs",
+              language ? `language-${language}` : "",
+            )}
+            dangerouslySetInnerHTML={highlightedMarkup}
+            {...codeProps}
+          />
+        )}
+      </pre>
+    </div>
+  );
+}
+
+function MarkdownCode({
+  className: codeClassName,
+  children,
+  codeFenceSourceOffset,
+  imagePolicy,
+  linkRouting,
+  node: _node,
+  preferredTheme,
+  rewriteLocalhostLinks,
+  "data-code-fence-offset": codeFenceOffset,
+  "data-code-fence-closed": codeFenceClosed,
+  ...props
+}: MarkdownCodeRendererProps) {
+  const codeText =
+    typeof children === "string" ? children.replace(/\n$/, "") : "";
+  const language = getMarkdownCodeLanguage({ className: codeClassName });
+  const isBlock = isMarkdownCodeBlock({ codeText, language });
+  if (isBlock) {
+    const original = (
+      <MarkdownCodeBlock
+        codeProps={props}
+        codeText={codeText}
+        imagePolicy={imagePolicy}
+        language={language}
+        preferredTheme={preferredTheme}
+      />
+    );
+    return codeFenceOffset === undefined || language === null ? (
+      original
+    ) : (
+      <CodeFencePlaceholder
+        closed={codeFenceClosed === "true"}
+        code={codeText}
+        language={language}
+        offset={codeFenceSourceOffset + Number(codeFenceOffset)}
+        original={original}
+      />
+    );
+  }
+
+  const localFileHref = resolveInlineCodeFileHref({
     codeText,
     localFileRouting: linkRouting?.localFile,
   });
-  if (markdownFileHref !== null) {
+  if (localFileHref !== null) {
     return (
       <MarkdownAnchor
-        href={markdownFileHref}
+        href={localFileHref}
         linkRouting={linkRouting}
         rewriteLocalhostLinks={rewriteLocalhostLinks}
       >
@@ -870,13 +997,28 @@ function MarkdownUnorderedList({ children }: MarkdownUnorderedListProps) {
 function MarkdownOrderedList({
   children,
   className: _className,
-  node: _node,
+  node,
   ...orderedListProps
 }: MarkdownOrderedListProps) {
+  const itemCount =
+    node?.children.filter(
+      (child) => child.type === "element" && child.tagName === "li",
+    ).length ?? Children.toArray(children).filter(isValidElement).length;
+  const start = orderedListProps.start ?? 1;
+  const markerDigits = Math.max(
+    String(start).length,
+    String(start + Math.max(0, itemCount - 1)).length,
+  );
+  const style: CSSProperties & { "--markdown-list-marker-digits": number } = {
+    "--markdown-list-marker-digits": markerDigits,
+    paddingInlineStart:
+      "calc(var(--spacing) * 5 + (var(--markdown-list-marker-digits) - 1) * 1ch)",
+  };
   return (
     <ol
       {...orderedListProps}
       className="mb-2 list-decimal pl-5 text-foreground"
+      style={style}
     >
       {children}
     </ol>
@@ -901,17 +1043,19 @@ function MarkdownTable({ children }: MarkdownTableProps) {
   return (
     <div
       ref={breakoutRef}
-      className="my-2 flex justify-center"
+      className="my-2"
       style={{
         width: MARKDOWN_TABLE_BREAKOUT_WIDTH,
-        marginInline: `calc((100% - ${MARKDOWN_TABLE_BREAKOUT_WIDTH}) / 2)`,
+        marginInlineStart: MARKDOWN_TABLE_BREAKOUT_START_MARGIN,
+        marginInlineEnd: `calc(100% - ${MARKDOWN_TABLE_BREAKOUT_WIDTH} - ${MARKDOWN_TABLE_BREAKOUT_START_MARGIN})`,
       }}
     >
-      {}
       <div
         className="w-max max-w-full overflow-x-auto"
         style={{
           minWidth: `min(var(${MARKDOWN_CONTENT_WIDTH_VARIABLE}, 100%), 100%)`,
+          marginInlineStart: `var(${MARKDOWN_TABLE_START_OFFSET_VARIABLE}, auto)`,
+          marginInlineEnd: "auto",
         }}
       >
         <table className="border border-border">{children}</table>
@@ -947,12 +1091,12 @@ function MarkdownRenderedImage({
   const imageUrl = typeof src === "string" ? src : "";
   if (!imageUrl) return null;
   return (
-    <DeferredMarkdownImage
-      key={JSON.stringify([imageUrl, imageAttributes.srcSet])}
+    <img
       {...imageAttributes}
       src={imageUrl}
       alt={typeof alt === "string" ? alt : "Image"}
       className="my-2 max-h-[max(384px,50vh)] max-w-full cursor-zoom-in object-contain"
+      loading="lazy"
       data-markdown-image=""
       data-markdown-image-offset={sourceOffset}
       onClick={(event) => {
@@ -968,7 +1112,7 @@ function MarkdownRenderedImage({
         );
         const imageIndex = images.indexOf(event.currentTarget);
         const imageSources = images.map(
-          (image) => image.currentSrc || image.src || image.getAttribute("data-markdown-image-src") || "",
+          (image) => image.getAttribute("src") ?? image.src,
         );
         setExpandedImage({
           imageSources,
@@ -1016,7 +1160,7 @@ function buildMarkdownComponents({
   setExpandedImage,
   threadMentions,
   promptMentions,
-  messageDirectives,
+  hasMessageDirectives,
 }: BuildMarkdownComponentsArgs): Components {
   interface RawThreadIdLabelCandidate {
     end: number;
@@ -1229,6 +1373,7 @@ function buildMarkdownComponents({
     return (
       <MarkdownCode
         {...props}
+        codeFenceSourceOffset={imageSourceOffset}
         imagePolicy={imagePolicy}
         linkRouting={linkRouting}
         preferredTheme={preferredTheme}
@@ -1268,6 +1413,39 @@ function buildMarkdownComponents({
     );
   }
 
+  function MarkdownVideo({
+    node: _node,
+    children,
+    src,
+    poster,
+    controls = true,
+    playsInline = true,
+    preload = "metadata",
+    width,
+    height,
+    title,
+    "aria-label": label,
+  }: ComponentPropsWithoutRef<"video"> & ExtraProps) {
+    if (imagePolicy === "alt-text") {
+      return <span>[Video: {label || title || "video"}]</span>;
+    }
+    return (
+      <video
+        src={src}
+        poster={poster}
+        aria-label={label || title || "Video"}
+        controls={controls}
+        playsInline={playsInline}
+        preload={preload}
+        width={width}
+        height={height}
+        className="my-2 max-h-[max(384px,50vh)] max-w-full"
+      >
+        {children}
+      </video>
+    );
+  }
+
   function MarkdownSource({
     media,
     node: _node,
@@ -1301,6 +1479,7 @@ function buildMarkdownComponents({
     p: MarkdownParagraph,
     pre: MarkdownPre,
     source: MarkdownSource,
+    video: MarkdownVideo,
     table: MarkdownTable,
     td: MarkdownTableCell,
     th: MarkdownTableHeader,
@@ -1311,21 +1490,18 @@ function buildMarkdownComponents({
   if (threadMentions !== undefined) {
     components["bb-thread-mention"] = buildThreadMentionComponent({
       mentions: threadMentions.mentions,
-      resolveSegmentLinkHref: threadMentions.resolveLinkHref,
     });
   }
 
   if (promptMentions !== undefined) {
     components["bb-prompt-mention"] = buildPromptMentionComponent({
       mentions: promptMentions.mentions,
-      resolveLinkHref: promptMentions.resolveLinkHref,
       resolveMentionLink: promptMentions.resolveMentionLink,
     });
   }
 
-  if (messageDirectives !== undefined) {
-    components["bb-message-directive"] =
-      buildMessageDirectiveComponent(messageDirectives);
+  if (hasMessageDirectives) {
+    components["bb-message-directive"] = MessageDirectiveElement;
   }
 
   return components;
@@ -1522,11 +1698,19 @@ function readMarkdownTableBreakoutLimit({
   }
   const clipLeft = clip.getBoundingClientRect().left + clip.clientLeft;
   const clipRight = clipLeft + clip.clientWidth;
-  const room = Math.max(
-    0,
-    Math.min(parentLeft - clipLeft, clipRight - parentRight),
-  );
-  return { kind: "set", value: `${parentWidth + 2 * room}px` };
+  const endRoom = Math.max(0, clipRight - parentRight);
+  if (
+    parentStyle
+      .getPropertyValue(MARKDOWN_TABLE_START_OFFSET_VARIABLE)
+      .trim() !== ""
+  ) {
+    return { kind: "set", value: `calc(${parentWidth + endRoom}px - 1rem)` };
+  }
+  const room = Math.min(parentLeft - clipLeft, clipRight - parentRight);
+  return {
+    kind: "set",
+    value: `${Math.max(0, parentWidth + 2 * room)}px`,
+  };
 }
 
 function applyMarkdownTableBreakoutLimit({
@@ -1603,6 +1787,7 @@ function MarkdownPreviewComponent({
   allowHtml = false,
   className,
   content,
+  containerQuery = true,
   sourcePrefix = "",
   imagePolicy = "render",
   incrementalBlocks = false,
@@ -1617,8 +1802,9 @@ function MarkdownPreviewComponent({
   const [expandedImage, setExpandedImage] =
     useState<ExpandedMarkdownImage | null>(null);
   const [markdownPieceCache] = useState(createMarkdownPieceCache);
+  const rendersHtml = allowHtml && content.includes("<");
   const usesIncrementalBlocks =
-    incrementalBlocks && !allowHtml && promptMentions === undefined;
+    incrementalBlocks && !rendersHtml && promptMentions === undefined;
   const localFileRouting = linkRouting?.localFile;
   const localImageRouting = linkRouting?.localImage;
   const normalizeLocalFileLinks =
@@ -1641,7 +1827,6 @@ function MarkdownPreviewComponent({
       promptMentions && promptMentionSubstitution
         ? {
             mentions: promptMentionSubstitution.mentions,
-            resolveLinkHref: promptMentions.resolveLinkHref,
             resolveMentionLink: promptMentions.resolveMentionLink,
           }
         : undefined,
@@ -1693,7 +1878,7 @@ function MarkdownPreviewComponent({
         setExpandedImage,
         threadMentions,
         promptMentions: resolvedPromptMentions,
-        messageDirectives: messageDirectiveMounts ?? undefined,
+        hasMessageDirectives: messageDirectiveMounts !== null,
       }),
     [
       linkRouting,
@@ -1711,6 +1896,7 @@ function MarkdownPreviewComponent({
     const plugins: MarkdownRemarkPlugins = [
       remarkGfm,
       [remarkMath, { singleDollarTextMath: false }],
+      remarkInlineDollarMath,
     ];
     if (
       threadMentions?.preserveSoftBreaks === true ||
@@ -1729,24 +1915,28 @@ function MarkdownPreviewComponent({
     }
     return plugins;
   }, [threadMentions, promptMentions, hasMessageDirectives]);
-  const remarkPlugins = useMemo(
-    (): MarkdownRemarkPlugins =>
-      messageDirectiveMounts === null
-        ? baseRemarkPlugins
-        : [
-            ...baseRemarkPlugins,
-            [
-              remarkMessageDirectives,
-              {
-                indexBase: 0,
-                limit: MESSAGE_DIRECTIVE_MOUNT_LIMIT,
-                mounts: messageDirectiveMounts.mounts,
-                registry: messageDirectiveMounts.registry,
-              },
-            ],
-          ],
-    [baseRemarkPlugins, messageDirectiveMounts],
-  );
+  const codeFenceRegistry = useCodeFenceLanguages();
+  const remarkPlugins = useMemo((): MarkdownRemarkPlugins => {
+    const plugins: MarkdownRemarkPlugins = [...baseRemarkPlugins];
+    if (messageDirectiveMounts !== null) {
+      plugins.push([
+        remarkMessageDirectives,
+        {
+          indexBase: 0,
+          limit: MESSAGE_DIRECTIVE_MOUNT_LIMIT,
+          mounts: messageDirectiveMounts.mounts,
+          registry: messageDirectiveMounts.registry,
+        },
+      ]);
+    }
+    if (codeFenceRegistry !== null) {
+      plugins.push([
+        remarkCodeFenceRenderers,
+        { registry: codeFenceRegistry, sourceOffset: 0 },
+      ]);
+    }
+    return plugins;
+  }, [baseRemarkPlugins, messageDirectiveMounts, codeFenceRegistry]);
   const resolvedUrlTransform = useMemo(
     () =>
       localFileRouting || localImageRouting
@@ -1761,12 +1951,13 @@ function MarkdownPreviewComponent({
 
   const rehypeKatex = useRehypeKatex(markdownMayContainMath(body));
   const rehypePlugins = useMemo(
-    () => resolveRehypePlugins({ allowHtml, rehypeKatex }),
-    [allowHtml, rehypeKatex],
+    () => resolveRehypePlugins({ rehypeKatex }),
+    [rehypeKatex],
   );
 
   const markdownPieceRenderConfig = useMemo(
     (): MarkdownPieceRenderConfig => ({
+      codeFenceRendererRegistry: codeFenceRegistry,
       components: markdownComponents,
       messageDirectiveRegistry: messageDirectiveMounts?.registry ?? null,
       rehypePlugins,
@@ -1774,6 +1965,7 @@ function MarkdownPreviewComponent({
       urlTransform: resolvedUrlTransform,
     }),
     [
+      codeFenceRegistry,
       markdownComponents,
       messageDirectiveMounts,
       rehypePlugins,
@@ -1785,16 +1977,17 @@ function MarkdownPreviewComponent({
     ? resolveMarkdownPieces(markdownPieceCache, markdownPieceRenderConfig, body)
     : null;
 
+  const Markdown = rendersHtml ? LazyMarkdownHtml : ReactMarkdown;
   const renderedMarkdown =
     markdownPieces === null ? (
-      <ReactMarkdown
+      <Markdown
         rehypePlugins={rehypePlugins}
         remarkPlugins={remarkPlugins}
         components={markdownComponents}
         urlTransform={resolvedUrlTransform}
       >
         {body}
-      </ReactMarkdown>
+      </Markdown>
     ) : (
       markdownPieces.children
     );
@@ -1823,6 +2016,7 @@ function MarkdownPreviewComponent({
       <div
         data-markdown-preview=""
         className={cn(
+          containerQuery && "@container",
           "max-w-none break-words text-sm leading-relaxed text-foreground",
           className,
         )}
@@ -1831,11 +2025,13 @@ function MarkdownPreviewComponent({
           <MarkdownFrontmatter source={frontmatter} />
         ) : null}
         <MessageDirectiveMountsContext.Provider
-          value={
-            markdownPieces?.mounts ??
-            messageDirectiveMounts?.mounts ??
-            EMPTY_MOUNTED_MESSAGE_DIRECTIVES
-          }
+          value={{
+            mounts:
+              markdownPieces?.mounts ??
+              messageDirectiveMounts?.mounts ??
+              EMPTY_MOUNTED_MESSAGE_DIRECTIVES,
+            render: messageDirectiveMounts,
+          }}
         >
           {threadMentions === undefined ? (
             renderedMarkdown

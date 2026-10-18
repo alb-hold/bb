@@ -50,30 +50,76 @@ function mockPointerCoarse() {
   }));
 }
 
-describe("TimelineSelectionMenu", () => {
-  it("renders only the actions with handlers", () => {
-    render(
-      <TimelineSelectionMenu
-        selection={makeSelection()}
-        onAddToChat={vi.fn()}
-        onDismiss={vi.fn()}
-      />,
-    );
+function mockLiveSelection(rect: DOMRect | null) {
+  vi.spyOn(window, "getSelection").mockReturnValue({
+    rangeCount: rect === null ? 0 : 1,
+    isCollapsed: rect === null,
+    getRangeAt: () => ({
+      getClientRects: () => ({ length: 1, item: () => rect }),
+      getBoundingClientRect: () => rect,
+    }),
+    removeAllRanges: () => {},
+  } as unknown as Selection);
+}
 
-    expect(screen.getByRole("button", { name: "Add to chat" })).toBeTruthy();
-    expect(
-      screen
-        .getByRole("button", { name: "Add to chat" })
-        .closest("[data-bb-portaled-overlay]"),
-    ).not.toBeNull();
+describe("TimelineSelectionMenu", () => {
+  it("stays actionable while a scroll moves the selection", () => {
+    const onAddToChat = vi.fn();
+    const onDismiss = vi.fn();
+    render(
+      <>
+        <div data-testid="scroller" />
+        <TimelineSelectionMenu
+          selection={makeSelection()}
+          onAddToChat={onAddToChat}
+          onDismiss={onDismiss}
+        />
+      </>,
+    );
+    mockLiveSelection(new DOMRect(10, 40, 100, 20));
+
+    fireEvent.scroll(screen.getByTestId("scroller"));
+    fireEvent.click(screen.getByRole("button", { name: "Add to chat" }));
+
+    expect(onAddToChat).toHaveBeenCalledWith("selected text");
   });
 
-  it("does not mount when no action handlers are supplied", () => {
+  it("dismisses once a scroll moves the selection out of view", () => {
+    const onDismiss = vi.fn();
     render(
-      <TimelineSelectionMenu selection={makeSelection()} onDismiss={vi.fn()} />,
+      <>
+        <div data-testid="scroller" />
+        <TimelineSelectionMenu
+          selection={makeSelection()}
+          onAddToChat={vi.fn()}
+          onDismiss={onDismiss}
+        />
+      </>,
     );
+    mockLiveSelection(new DOMRect(10, -40, 100, 20));
 
-    expect(screen.queryByRole("button")).toBeNull();
+    fireEvent.scroll(screen.getByTestId("scroller"));
+
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+  });
+
+  it("dismisses on scroll once the selection is gone", () => {
+    const onDismiss = vi.fn();
+    render(
+      <>
+        <div data-testid="scroller" />
+        <TimelineSelectionMenu
+          selection={makeSelection()}
+          onAddToChat={vi.fn()}
+          onDismiss={onDismiss}
+        />
+      </>,
+    );
+    mockLiveSelection(null);
+
+    fireEvent.scroll(screen.getByTestId("scroller"));
+
+    expect(onDismiss).toHaveBeenCalledTimes(1);
   });
 
   it("renders from a pointer release point without a physical anchor node", () => {
@@ -180,10 +226,16 @@ describe("TimelineSelectionMenu", () => {
 
     render(<ComposerFocusHandoff />);
     const action = screen.getByRole("button", { name: "Add to chat" });
+    let focusedWhenGestureEnded: Element | null = null;
+    const recordFocus = () => {
+      focusedWhenGestureEnded = document.activeElement;
+    };
+    document.addEventListener("pointerup", recordFocus);
     fireEvent.pointerDown(action, { pointerType: "touch" });
     fireEvent.pointerUp(action, { pointerType: "touch" });
+    document.removeEventListener("pointerup", recordFocus);
 
-    expect(document.activeElement).toBe(
+    expect(focusedWhenGestureEnded).toBe(
       screen.getByRole("textbox", { name: "Chat composer" }),
     );
   });

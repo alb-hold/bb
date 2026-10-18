@@ -1,5 +1,15 @@
 import type { TimelineRow, TimelineTurnRow } from "@bb/server-contract";
+import { useQueryClient } from "@tanstack/react-query";
+import {
+  ThreadTurnTokenTooltipContent,
+  ThreadUsageAndAgents,
+} from "@/components/thread/ThreadUsageSummary";
 import { ThreadTimelineRows } from "@/components/thread/timeline";
+import {
+  Tooltip,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@bb/shared-ui/tooltip";
 import {
   commandRow,
   conversationRow,
@@ -189,6 +199,317 @@ const completedTurnRow = buildTurnRow({
   createdAt: 1777337131200,
 });
 
+const TOKEN_THREAD_ID = "thr_token_footer_story";
+const tokenTurnRows: TimelineTurnRow[] = [
+  {
+    ...turnRow({
+      id: `${TOKEN_THREAD_ID}:turn-1`,
+      threadId: TOKEN_THREAD_ID,
+      turnId: "token-turn-1",
+      sourceSeqStart: 1,
+      sourceSeqEnd: 2,
+      startedAt: 1777337120000,
+      status: "completed",
+      children: [
+        conversationRow({
+          id: `${TOKEN_THREAD_ID}:assistant-1`,
+          threadId: TOKEN_THREAD_ID,
+          turnId: "token-turn-1",
+          sourceSeqStart: 2,
+          sourceSeqEnd: 2,
+          startedAt: 1777337121000,
+          createdAt: 1777337121000,
+          role: "assistant",
+          text: "The first completed response has full token data.",
+          attachments: null,
+        }),
+      ],
+    }),
+  },
+  {
+    ...turnRow({
+      id: `${TOKEN_THREAD_ID}:turn-2`,
+      threadId: TOKEN_THREAD_ID,
+      turnId: "token-turn-2",
+      sourceSeqStart: 3,
+      sourceSeqEnd: 4,
+      startedAt: 1777337130000,
+      status: "completed",
+      children: [
+        conversationRow({
+          id: `${TOKEN_THREAD_ID}:assistant-2`,
+          threadId: TOKEN_THREAD_ID,
+          turnId: "token-turn-2",
+          sourceSeqStart: 4,
+          sourceSeqEnd: 4,
+          startedAt: 1777337131000,
+          createdAt: 1777337131000,
+          role: "assistant",
+          text: "The second completed response has partial token data and no reported reasoning.",
+          attachments: null,
+        }),
+      ],
+    }),
+  },
+  {
+    ...turnRow({
+      id: `${TOKEN_THREAD_ID}:turn-3`,
+      threadId: TOKEN_THREAD_ID,
+      turnId: "token-turn-3",
+      sourceSeqStart: 5,
+      sourceSeqEnd: 6,
+      startedAt: 1777337140000,
+      status: "completed",
+      children: [
+        conversationRow({
+          id: `${TOKEN_THREAD_ID}:assistant-3`,
+          threadId: TOKEN_THREAD_ID,
+          turnId: "token-turn-3",
+          sourceSeqStart: 6,
+          sourceSeqEnd: 6,
+          startedAt: 1777337141000,
+          createdAt: 1777337141000,
+          role: "assistant",
+          text: "The older completed response has no spend row, so its footer stays clear.",
+          attachments: null,
+        }),
+      ],
+    }),
+  },
+];
+
+const activeFooterThreadIds = {
+  claude: "thr_token_footer_active_claude",
+  codex: "thr_token_footer_active_codex",
+};
+
+function makeActiveFooterAssistant(
+  threadId: string,
+  turnId: string,
+  seq: number,
+  text: string,
+): TimelineRow {
+  return conversationRow({
+    id: `${threadId}:assistant-${turnId}`,
+    threadId,
+    turnId,
+    sourceSeqStart: seq,
+    sourceSeqEnd: seq,
+    role: "assistant",
+    text,
+  });
+}
+
+function makePausedToolCall(
+  threadId: string,
+  turnId: string,
+  seq: number,
+): TimelineRow {
+  return commandRow({
+    id: `${threadId}:command-${turnId}`,
+    threadId,
+    turnId,
+    sourceSeqStart: seq,
+    sourceSeqEnd: seq,
+    status: "pending",
+    command: "pnpm test --run",
+  });
+}
+
+const flatClaudeActiveRunRows: TimelineRow[] = [
+  makeActiveFooterAssistant(
+    activeFooterThreadIds.claude,
+    "claude-turn-1",
+    1,
+    "Claude completed response one.",
+  ),
+  makeActiveFooterAssistant(
+    activeFooterThreadIds.claude,
+    "claude-turn-2",
+    2,
+    "Claude completed response two.",
+  ),
+  makePausedToolCall(activeFooterThreadIds.claude, "claude-active-turn", 3),
+];
+
+const groupedCodexActiveRunRows: TimelineTurnRow[] = [
+  ...[
+    {
+      turnId: "codex-turn-1",
+      sourceSeqStart: 1,
+      sourceSeqEnd: 2,
+      status: "completed" as const,
+      assistantText: "Codex completed response one.",
+    },
+    {
+      turnId: "codex-turn-2",
+      sourceSeqStart: 3,
+      sourceSeqEnd: 4,
+      status: "completed" as const,
+      assistantText: "Codex completed response two.",
+    },
+    {
+      turnId: "codex-active-turn",
+      sourceSeqStart: 5,
+      sourceSeqEnd: 6,
+      status: "pending" as const,
+      assistantText: null,
+    },
+  ].map((turn) =>
+    turnRow({
+      id: `${activeFooterThreadIds.codex}:${turn.turnId}`,
+      threadId: activeFooterThreadIds.codex,
+      turnId: turn.turnId,
+      sourceSeqStart: turn.sourceSeqStart,
+      sourceSeqEnd: turn.sourceSeqEnd,
+      startedAt: 1777337120000 + turn.sourceSeqStart * 1000,
+      status: turn.status,
+      children:
+        turn.assistantText === null
+          ? [
+              makePausedToolCall(
+                activeFooterThreadIds.codex,
+                turn.turnId,
+                turn.sourceSeqEnd,
+              ),
+            ]
+          : [
+              makeActiveFooterAssistant(
+                activeFooterThreadIds.codex,
+                turn.turnId,
+                turn.sourceSeqEnd,
+                turn.assistantText,
+              ),
+            ],
+    }),
+  ),
+];
+
+function seedActiveFooterSpend(threadId: string, reasoningOutputTokens: number) {
+  const turns = ["1", "2", "active"].map((turn) => ({
+    turnId: `${threadId.includes("claude") ? "claude" : "codex"}-${turn === "active" ? "active-turn" : `turn-${turn}`}`,
+    inputTokens: turn === "active" ? 8 : 4_100,
+    cachedInputTokens: turn === "active" ? 4 : 3_200,
+    outputTokens: turn === "active" ? 6 : 890,
+    reasoningOutputTokens:
+      turn === "active" || reasoningOutputTokens === 0
+        ? 0
+        : reasoningOutputTokens,
+    totalTokens: turn === "active" ? 18 : 8_190,
+  }));
+  return {
+    historyComplete: false,
+    total: {
+      inputTokens: 8_208,
+      cachedInputTokens: 6_404,
+      outputTokens: 1_786,
+      reasoningOutputTokens,
+      totalTokens: 16_398,
+    },
+    turns,
+  };
+}
+
+function ActiveRunFooterThread({
+  provider,
+}: {
+  provider: "claude" | "codex";
+}) {
+  const queryClient = useQueryClient();
+  const threadId = activeFooterThreadIds[provider];
+  queryClient.setQueryData(
+    ["threadSpendSummary", threadId],
+    seedActiveFooterSpend(threadId, provider === "codex" ? 567 : 0),
+  );
+  const isGrouped = provider === "codex";
+  const timelineRows = isGrouped
+    ? groupedCodexActiveRunRows
+    : flatClaudeActiveRunRows;
+  return (
+    <div className="w-full min-w-0 p-3" data-active-footer-fixture={provider}>
+      <p className="mb-3 text-xs text-muted-foreground">
+        {provider === "claude" ? "Flat Claude" : "Grouped Codex"}: two
+        completed responses followed by an active turn paused in a tool call.
+      </p>
+      <ThreadTimelineRows
+        threadId={threadId}
+        timelineRows={timelineRows}
+        threadRuntimeDisplayStatus="waiting-for-host"
+        threadIsActive={true}
+        initialExpanded={
+          isGrouped
+            ? new Set(groupedCodexActiveRunRows.map((row) => row.id))
+            : undefined
+        }
+        workspaceRootPath={undefined}
+      />
+    </div>
+  );
+}
+
+export function ActiveRunFlatClaude() {
+  return <ActiveRunFooterThread provider="claude" />;
+}
+
+export function ActiveRunGroupedCodex() {
+  return <ActiveRunFooterThread provider="codex" />;
+}
+
+function TokenFooterThread() {
+  const queryClient = useQueryClient();
+  queryClient.setQueryData(["threadChildSummary", TOKEN_THREAD_ID], {
+    nonDeletedChildCount: 3,
+    unarchivedDescendantCount: 3,
+    working: 1,
+    waiting: 1,
+    idle: 1,
+    failed: 0,
+    totalTokens: 64_400_000,
+    children: [],
+  });
+  queryClient.setQueryData(["threadSpendSummary", TOKEN_THREAD_ID], {
+    historyComplete: false,
+    total: {
+      inputTokens: 130,
+      cachedInputTokens: 2_843_796,
+      outputTokens: 6_349,
+      reasoningOutputTokens: null,
+      totalTokens: 2_850_275,
+    },
+    turns: [
+      {
+        turnId: "token-turn-1",
+        inputTokens: 6_442,
+        cachedInputTokens: 686_719_425,
+        outputTokens: 1_809_971,
+        reasoningOutputTokens: 500,
+        totalTokens: 688_535_838,
+      },
+      {
+        turnId: "token-turn-2",
+        inputTokens: 100,
+        cachedInputTokens: 20,
+        outputTokens: 200,
+        reasoningOutputTokens: null,
+        totalTokens: 320,
+      },
+    ],
+  });
+  return (
+    <div className="w-full">
+      <div className="mb-3 border-b border-border pb-2">
+        <ThreadUsageAndAgents threadId={TOKEN_THREAD_ID} />
+      </div>
+      <ThreadTimelineRows
+        {...baseProps}
+        initialExpanded={new Set(tokenTurnRows.map((row) => row.id))}
+        threadId={TOKEN_THREAD_ID}
+        timelineRows={tokenTurnRows}
+      />
+    </div>
+  );
+}
+
 export function Overview() {
   return (
     <StoryCard>
@@ -213,5 +534,53 @@ export function Overview() {
         </TimelineStage>
       </StoryRow>
     </StoryCard>
+  );
+}
+
+export function TokenFooterLayout() {
+  return (
+    <div className="w-full min-w-0 p-3">
+      <p className="mb-3 text-xs text-muted-foreground">
+        Three completed turns: large partial-history spend, partial spend, and
+        no spend row.
+      </p>
+      <TokenFooterThread />
+    </div>
+  );
+}
+
+export function TokenFooterNarrowSplit() {
+  return (
+    <div className="w-[130px] min-w-0">
+      <TokenFooterThread />
+    </div>
+  );
+}
+
+export function TokenFooterTooltip() {
+  return (
+    <TooltipProvider>
+      <div className="p-3">
+        <Tooltip open>
+          <TooltipTrigger asChild>
+            <span className="font-mono text-xs text-muted-foreground">
+              in 6.4K · out 1.8M · reason 500 · cached 686.7M · Σ 688.5M
+            </span>
+          </TooltipTrigger>
+          <ThreadTurnTokenTooltipContent
+            turn={{
+              turnId: "story-turn",
+              model: null,
+              inputTokens: 6_442,
+              outputTokens: 1_809_971,
+              reasoningOutputTokens: 500,
+              cachedInputTokens: 686_719_425,
+              totalTokens: 688_535_838,
+            }}
+            reasoningDisplayValue={500}
+          />
+        </Tooltip>
+      </div>
+    </TooltipProvider>
   );
 }

@@ -19,7 +19,6 @@ import {
   getThreadEventScopeTurnId,
   isStandaloneBuiltinCompactCommand,
   parseStoredThreadEvent,
-  resolveSystemErrorReconnectProgress,
   systemErrorEventDataSchema,
   threadScope,
   turnRequestEventDataSchema,
@@ -136,8 +135,6 @@ interface AppendSystemErrorEventArgs {
   detail?: string;
   environmentId?: string | null;
   message: string;
-  reconnectAttempt?: number;
-  reconnectTotal?: number;
   scope: ThreadEventScope;
   threadId: string;
 }
@@ -244,6 +241,7 @@ interface AppendThreadEventsTransactionResult {
 }
 
 interface BuildAppendThreadEventNotificationMetadataArgs {
+  sequence: number;
   readStateUpdate: ThreadReadStateUpdate | null;
   eventType: ThreadEventType;
 }
@@ -371,11 +369,13 @@ function buildAppendThreadEventNotificationChanges(
 }
 
 function buildAppendThreadEventNotificationMetadata({
+  sequence,
   readStateUpdate,
   eventType,
 }: BuildAppendThreadEventNotificationMetadataArgs): ThreadChangeMetadata {
   const metadata: ThreadChangeMetadata = {
     eventTypes: [eventType],
+    timelineSequence: sequence,
   };
   if (readStateUpdate?.changed === true) {
     metadata.projectId = readStateUpdate.projectId;
@@ -476,6 +476,7 @@ export function appendThreadEvent(
     args.threadId,
     buildAppendThreadEventNotificationChanges(result.readStateUpdate),
     buildAppendThreadEventNotificationMetadata({
+      sequence: result.sequence,
       readStateUpdate: result.readStateUpdate,
       eventType: args.type,
     }),
@@ -548,6 +549,7 @@ export function appendPreparedClientTurnRequestedEventWithNotificationInTransact
       result.readStateUpdate,
     ),
     notificationMetadata: buildAppendThreadEventNotificationMetadata({
+      sequence: result.sequence,
       readStateUpdate: result.readStateUpdate,
       eventType: args.type,
     }),
@@ -696,26 +698,19 @@ export function appendSystemErrorEventInTransaction(
     buildSystemErrorEventArgs(args),
   );
   deps.hub.notifyThread(args.threadId, ["events-appended"], {
+    timelineSequence: sequence,
     eventTypes: ["system/error"],
   });
   return sequence;
 }
 
 export function buildSystemErrorEventData(
-  args: Pick<
-    AppendSystemErrorEventArgs,
-    "code" | "detail" | "message" | "reconnectAttempt" | "reconnectTotal"
-  >,
+  args: Pick<AppendSystemErrorEventArgs, "code" | "detail" | "message">,
 ): SystemErrorEventData {
-  const reconnectProgress = resolveSystemErrorReconnectProgress(args);
   return systemErrorEventDataSchema.parse({
     code: args.code,
     message: args.message,
     ...(args.detail ? { detail: args.detail } : {}),
-    ...(reconnectProgress
-      ? { reconnectAttempt: reconnectProgress.attempt }
-      : {}),
-    ...(reconnectProgress ? { reconnectTotal: reconnectProgress.total } : {}),
   });
 }
 
@@ -836,7 +831,9 @@ export function appendThreadOwnershipChangeEventInTransaction(
   }
 
   const sequence = appendThreadEventInTransaction(deps.db, eventArgs);
-  deps.hub.notifyThread(args.threadId, ["events-appended"]);
+  deps.hub.notifyThread(args.threadId, ["events-appended"], {
+    timelineSequence: sequence,
+  });
   return sequence;
 }
 

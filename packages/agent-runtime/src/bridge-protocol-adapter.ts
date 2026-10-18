@@ -51,6 +51,11 @@ export type ProviderRecoveryHint = Omit<
   "providerId"
 >;
 
+export type DeferredThreadEventsListener = (
+  sourceThreadId: string,
+  events: ThreadEvent[],
+) => void;
+
 export interface BridgeProtocolAdapter {
   id: string;
   capabilities: BridgeEnforcedCapabilities;
@@ -69,6 +74,7 @@ export interface BridgeProtocolAdapter {
   flushPendingEvents(): { threadId: string; events: ThreadEvent[] }[];
   seedOpenTurn(args: SeedOpenTurnArgs): void;
   getProviderTurnId(threadId: string, bbTurnId: string): string | null;
+  onDeferredEvents(listener: DeferredThreadEventsListener): void;
   decodeRecoveryHint(event: ProviderRuntimeEvent): ProviderRecoveryHint | null;
   decodeToolCallRequest(
     request: ProviderInboundRequest,
@@ -117,6 +123,7 @@ function toBridgeWireOptions(
     serviceTier,
     reasoningLevel,
     promptMode,
+    sessionOptions,
     instructions,
     envVars,
     permissionMode,
@@ -133,6 +140,7 @@ function toBridgeWireOptions(
     ...(serviceTier !== undefined ? { serviceTier } : {}),
     ...(reasoningLevel !== undefined ? { reasoningLevel } : {}),
     ...(promptMode !== undefined ? { promptMode } : {}),
+    ...(sessionOptions !== undefined ? { sessionOptions } : {}),
     ...(instructions !== undefined ? { instructions } : {}),
     ...(envVars !== undefined ? { envVars } : {}),
     permissionMode,
@@ -158,7 +166,13 @@ export function createBridgeProtocolAdapter(
       ? handshake.fork
       : declaredFork;
   }
-  const deltaAssembler = createDeltaAssembler({ providerId: options.id });
+  let deferredEventsListener: DeferredThreadEventsListener | null = null;
+  const deltaAssembler = createDeltaAssembler({
+    providerId: options.id,
+    onDeferredEvents: (threadId, events) => {
+      deferredEventsListener?.(threadId, events);
+    },
+  });
 
   function acceptHandshake(capabilities: BridgeCapabilities): void {
     const grammarVersion = negotiateGrammarVersion(
@@ -208,9 +222,6 @@ export function createBridgeProtocolAdapter(
       ...(command.dynamicTools !== undefined
         ? { dynamicTools: command.dynamicTools }
         : {}),
-      ...(command.disallowedTools !== undefined
-        ? { disallowedTools: command.disallowedTools }
-        : {}),
       instructionMode: command.instructionMode,
     };
   }
@@ -259,6 +270,7 @@ export function createBridgeProtocolAdapter(
             method: BRIDGE_REQUEST_METHODS.providerInstallationStatus,
             params: {
               providerId: options.id,
+              checkUpdates: command.checkUpdates,
               ...(command.requirement !== undefined
                 ? { requirement: command.requirement }
                 : {}),
@@ -491,6 +503,10 @@ export function createBridgeProtocolAdapter(
 
     getProviderTurnId(threadId, bbTurnId) {
       return deltaAssembler.getProviderTurnId(threadId, bbTurnId) ?? null;
+    },
+
+    onDeferredEvents(listener: DeferredThreadEventsListener): void {
+      deferredEventsListener = listener;
     },
 
     translateEvent(event: ProviderRuntimeEvent): ThreadEvent[] {

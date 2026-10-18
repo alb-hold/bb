@@ -1,10 +1,16 @@
-import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import {
+  createHash,
+  randomBytes,
+  randomUUID,
+  timingSafeEqual,
+} from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type Database from "better-sqlite3";
 import { z } from "zod";
 import type { PluginKvStorage } from "@get-bb/plugin-sdk";
 import {
+  accountBalanceSchema,
   accountSchema,
   accountSecretSchema,
   EMPTY_FAMILY_WEEKLY,
@@ -14,13 +20,16 @@ import {
   type Account,
   type AccountQuota,
   type AccountSecret,
+  type LastAutomaticChoice,
   type HubTokenSummary,
   type PoolProvider,
 } from "./contracts.js";
 
 const ACCOUNTS_KEY = "accounts:v1";
+const ORGANIZATIONS_KEY = "organizations:v1";
 const ACCOUNT_LAST_USED_PERSIST_MS = 60 * 1_000;
 const accountsSchema = z.array(accountSchema);
+const organizationsSchema = z.record(z.string(), z.string().uuid());
 const HUB_TOKEN_PREFIX = "hub-token-";
 const HUB_TOKEN_GRACE_MS = 10 * 60 * 1_000;
 const HUB_TOKEN_LAST_USED_PERSIST_MS = 60 * 1_000;
@@ -108,7 +117,28 @@ export class AccountStore {
       if (next.length === accounts.length) return false;
       await this.kv.set(ACCOUNTS_KEY, next);
       await fs.rm(this.accountSecretPath(id), { force: true });
+      const organizations = await this.organizations();
+      if (organizations.delete(id))
+        await this.kv.set(ORGANIZATIONS_KEY, Object.fromEntries(organizations));
       return true;
+    });
+  }
+
+  async organizations(): Promise<Map<string, string>> {
+    const value = await this.kv.get(ORGANIZATIONS_KEY);
+    return new Map(
+      Object.entries(
+        value === undefined ? {} : organizationsSchema.parse(value),
+      ),
+    );
+  }
+
+  async setOrganization(id: string, organizationUuid: string): Promise<void> {
+    return this.serialized(async () => {
+      const organizations = await this.organizations();
+      if (organizations.get(id) === organizationUuid) return;
+      organizations.set(id, organizationUuid);
+      await this.kv.set(ORGANIZATIONS_KEY, Object.fromEntries(organizations));
     });
   }
 
@@ -116,8 +146,35 @@ export class AccountStore {
     return this.update(id, (account) => ({ ...account, enabled }));
   }
 
+  async disableWhere(
+    select: (
+      accounts: readonly Account[],
+      organizations: ReadonlyMap<string, string>,
+    ) => readonly string[] | null,
+  ): Promise<Account[] | null> {
+    return this.serialized(async () => {
+      const current = await this.list();
+      const ids = select(current, await this.organizations());
+      if (ids === null) return null;
+      const targets = new Set(ids);
+      const disabled: Account[] = [];
+      const accounts = current.map((account) => {
+        if (!targets.has(account.id) || !account.enabled) return account;
+        const updated = { ...account, enabled: false };
+        disabled.push(updated);
+        return updated;
+      });
+      if (disabled.length > 0) await this.kv.set(ACCOUNTS_KEY, accounts);
+      return disabled;
+    });
+  }
+
   async setPriority(id: string, priority: number): Promise<Account | null> {
     return this.update(id, (account) => ({ ...account, priority }));
+  }
+
+  async rename(id: string, label: string): Promise<Account | null> {
+    return this.update(id, (account) => ({ ...account, label }));
   }
 
   async setSubscriptionType(
@@ -125,6 +182,13 @@ export class AccountStore {
     subscriptionType: string,
   ): Promise<Account | null> {
     return this.update(id, (account) => ({ ...account, subscriptionType }));
+  }
+
+  async setPlan(
+    id: string,
+    plan: { subscriptionType: string | null; rateLimitTier: string | null },
+  ): Promise<Account | null> {
+    return this.update(id, (account) => ({ ...account, ...plan }));
   }
 
   async reorder(provider: PoolProvider, accountIds: string[]): Promise<void> {
@@ -187,6 +251,34 @@ export class AccountStore {
     accountUuid: string,
   ): Promise<Account | null> {
     return this.update(id, (account) => ({ ...account, accountUuid }));
+  }
+
+  async replaceCredentials(
+    id: string,
+    identity: Partial<
+      Pick<
+        Account,
+        | "label"
+        | "email"
+        | "accountUuid"
+        | "codexAccountId"
+        | "subscriptionType"
+        | "rateLimitTier"
+      >
+    >,
+    secret: AccountSecret,
+  ): Promise<Account | null> {
+    return this.serialized(async () => {
+      const accounts = await this.list();
+      const index = accounts.findIndex((account) => account.id === id);
+      const current = accounts[index];
+      if (index < 0 || current === undefined) return null;
+      const updated = accountSchema.parse({ ...current, ...identity });
+      await this.writeSecret(id, secret);
+      accounts[index] = updated;
+      await this.kv.set(ACCOUNTS_KEY, accounts);
+      return updated;
+    });
   }
 
   private async update(
@@ -264,7 +356,6 @@ export class HubTokenStore {
   private async load(): Promise<void> {
     await fs.mkdir(this.secretsDir, { recursive: true, mode: 0o700 });
     await fs.chmod(this.secretsDir, 0o700);
-    await fs.rm(path.join(this.secretsDir, "hub-key"), { force: true });
     const names = await fs.readdir(this.secretsDir);
     for (const name of names) {
       if (!name.startsWith(HUB_TOKEN_PREFIX) || !name.endsWith(".json"))
@@ -303,6 +394,22 @@ export class HubTokenStore {
       await this.write(hostId, next);
       return this.summary(next);
     });
+  }
+
+  async isGenerationLive(hostId: string, digest: string): Promise<boolean> {
+    await this.initialize();
+    const record = this.read(hostId);
+    return record !== null && generationMatches(record, digest);
+  }
+
+  async authenticateGeneration(
+    hostId: string,
+    digest: string,
+  ): Promise<boolean> {
+    await this.initialize();
+    const record = this.read(hostId);
+    if (record === null || !generationMatches(record, digest)) return false;
+    return (await this.authenticate(record.value)) === hostId;
   }
 
   async authenticate(presented: string | null): Promise<string | null> {
@@ -454,6 +561,15 @@ export class HubTokenStore {
   }
 }
 
+function generationMatches(token: StoredHubToken, digest: string): boolean {
+  return [
+    token.value,
+    ...token.previous.map((previous) => previous.value),
+  ].some((value) =>
+    safeTokenEqual(createHash("sha256").update(value).digest("hex"), digest),
+  );
+}
+
 function matchesStoredToken(
   token: StoredHubToken,
   presented: string,
@@ -476,6 +592,37 @@ export class RoutingStore {
 
   async isBypassed(threadId: string): Promise<boolean> {
     return (await this.kv.get(this.bypassKey(threadId))) === true;
+  }
+
+  async selectedAccount(
+    threadId: string,
+    provider: PoolProvider,
+  ): Promise<string | null> {
+    const value = await this.kv.get(
+      `selection:${provider}:${z.string().min(1).parse(threadId)}`,
+    );
+    return value === undefined || value === null
+      ? null
+      : z.string().uuid().parse(value);
+  }
+
+  async selectAccount(
+    threadId: string,
+    provider: PoolProvider,
+    accountId: string | null,
+  ): Promise<void> {
+    const key = `selection:${provider}:${z.string().min(1).parse(threadId)}`;
+    if (accountId === null) await this.kv.delete(key);
+    else await this.kv.set(key, z.string().uuid().parse(accountId));
+  }
+
+  async removeThread(threadId: string): Promise<void> {
+    await Promise.all([
+      this.kv.delete(`selection:claude:${threadId}`),
+      this.kv.delete(`selection:codex:${threadId}`),
+      this.kv.delete(this.bypassKey(threadId)),
+      this.kv.delete(this.routedKey(threadId)),
+    ]);
   }
 
   async isProviderEnabled(provider: PoolProvider): Promise<boolean> {
@@ -545,6 +692,8 @@ const quotaRowSchema = z
     bucket_exhaustion_json: z.string(),
     family_weekly_json: z.string(),
     limit_windows_json: z.string(),
+    extra_usage_json: z.string(),
+    usage_restriction_json: z.string(),
     observed_at: z.number().int().nullable(),
     held_until: z.number().int().nullable(),
     error: z.string().nullable(),
@@ -552,6 +701,8 @@ const quotaRowSchema = z
   .strict();
 
 const EMPTY_QUOTA = {
+  usageRestriction: null,
+  extraUsage: null,
   fiveHourUtilization: null,
   fiveHourResetAt: null,
   fiveHourStatus: null,
@@ -591,6 +742,8 @@ export class QuotaStore {
       representativeClaim: row.representative_claim,
       familyWeekly: JSON.parse(row.family_weekly_json),
       limitWindows: JSON.parse(row.limit_windows_json),
+      extraUsage: JSON.parse(row.extra_usage_json),
+      usageRestriction: JSON.parse(row.usage_restriction_json),
       observedAt: row.observed_at,
       heldUntil: row.held_until,
       error: row.error,
@@ -605,8 +758,8 @@ export class QuotaStore {
           account_id, five_hour_utilization, five_hour_reset_at,
           five_hour_status, seven_day_utilization, seven_day_reset_at,
           seven_day_status, representative_claim, bucket_exhaustion_json,
-          family_weekly_json, limit_windows_json, observed_at, held_until, error
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?, ?)
+          family_weekly_json, limit_windows_json, extra_usage_json, usage_restriction_json, observed_at, held_until, error
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(account_id) DO UPDATE SET
           five_hour_utilization = excluded.five_hour_utilization,
           five_hour_reset_at = excluded.five_hour_reset_at,
@@ -617,6 +770,8 @@ export class QuotaStore {
           representative_claim = excluded.representative_claim,
           family_weekly_json = excluded.family_weekly_json,
           limit_windows_json = excluded.limit_windows_json,
+          extra_usage_json = excluded.extra_usage_json,
+          usage_restriction_json = excluded.usage_restriction_json,
           observed_at = excluded.observed_at,
           held_until = excluded.held_until,
           error = excluded.error`,
@@ -632,6 +787,8 @@ export class QuotaStore {
         value.representativeClaim,
         JSON.stringify(value.familyWeekly),
         JSON.stringify(value.limitWindows),
+        JSON.stringify(value.extraUsage),
+        JSON.stringify(value.usageRestriction),
         value.observedAt,
         value.heldUntil,
         value.error,
@@ -722,6 +879,58 @@ export class PoolAffinityStore {
       )
       .run(provider, accountId);
   }
+
+  loadAutomaticChoices(): Map<string, LastAutomaticChoice> {
+    const rows = z
+      .array(
+        z.object({
+          provider: providerSchema,
+          account_id: z.string().uuid(),
+          chosen_at: z.number().int().nonnegative(),
+          reason: z.string().min(1),
+          family: z.enum(["fable", "sonnet", "opus", "haiku", "other"]),
+          balance_json: z.string(),
+        }),
+      )
+      .parse(this.db.prepare("SELECT * FROM pool_automatic_choice").all());
+    return new Map(
+      rows.map((row) => [
+        `${row.provider}:${row.account_id}`,
+        {
+          chosenAt: row.chosen_at,
+          reason: row.reason,
+          family: row.family,
+          balance: accountBalanceSchema.parse(JSON.parse(row.balance_json)),
+        },
+      ]),
+    );
+  }
+
+  putAutomaticChoice(
+    provider: PoolProvider,
+    accountId: string,
+    choice: LastAutomaticChoice,
+  ): void {
+    this.db
+      .prepare(
+        `INSERT INTO pool_automatic_choice
+          (provider, account_id, chosen_at, reason, family, balance_json)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(provider, account_id) DO UPDATE SET
+          chosen_at = excluded.chosen_at,
+          reason = excluded.reason,
+          family = excluded.family,
+          balance_json = excluded.balance_json`,
+      )
+      .run(
+        provider,
+        accountId,
+        choice.chosenAt,
+        choice.reason,
+        choice.family,
+        JSON.stringify(choice.balance),
+      );
+  }
 }
 
 export const QUOTA_MIGRATIONS = [
@@ -749,5 +958,16 @@ export const QUOTA_MIGRATIONS = [
   CREATE TABLE pool_active_account (
     provider TEXT PRIMARY KEY,
     account_id TEXT NOT NULL
+  )`,
+  `ALTER TABLE account_quota ADD COLUMN extra_usage_json TEXT NOT NULL DEFAULT 'null'`,
+  `ALTER TABLE account_quota ADD COLUMN usage_restriction_json TEXT NOT NULL DEFAULT 'null'`,
+  `CREATE TABLE pool_automatic_choice (
+    provider TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    chosen_at INTEGER NOT NULL,
+    reason TEXT NOT NULL,
+    family TEXT NOT NULL,
+    balance_json TEXT NOT NULL,
+    PRIMARY KEY(provider, account_id)
   )`,
 ];

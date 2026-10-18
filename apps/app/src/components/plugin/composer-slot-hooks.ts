@@ -2,10 +2,13 @@ import { useMemo, useSyncExternalStore } from "react";
 import type { PluginComposerScope } from "@get-bb/plugin-sdk";
 import {
   resolveComposerActions,
+  resolveComposerModelPickers,
+  resolveComposerPopups,
   resolveComposerBanners,
   resolveComposerDraftObservers,
   resolveComposerEditorEffects,
   resolveComposerPlusMenuItems,
+  resolveComposerSendMenuItems,
 } from "@/lib/plugin-slot-resolvers";
 import {
   EMPTY_PLUGIN_SLOT_SNAPSHOT,
@@ -59,6 +62,14 @@ export function useResolvedComposerActions(scopeKind: ComposerScopeKind) {
   return useResolvedComposerSlot(scopeKind, resolveComposerActions, emptyList);
 }
 
+export function useResolvedComposerModelPickers(scopeKind: ComposerScopeKind) {
+  return useResolvedComposerSlot(
+    scopeKind,
+    resolveComposerModelPickers,
+    emptyList,
+  );
+}
+
 export function useResolvedComposerBanners(scopeKind: ComposerScopeKind) {
   return useResolvedComposerSlot(scopeKind, resolveComposerBanners, emptyList);
 }
@@ -71,10 +82,22 @@ export function useResolvedComposerPlusMenuItems(scopeKind: ComposerScopeKind) {
   );
 }
 
+export function useResolvedComposerSendMenuItems(scopeKind: ComposerScopeKind) {
+  return useResolvedComposerSlot(
+    scopeKind,
+    resolveComposerSendMenuItems,
+    emptyList,
+  );
+}
+
 export function useResolvedComposerEditor(scopeKind: ComposerScopeKind) {
   return useResolvedComposerSlot(
     scopeKind,
     resolveComposerEditor,
     emptyComposerEditor,
   );
+}
+
+export function useResolvedComposerPopups(scopeKind: ComposerScopeKind) {
+  return useResolvedComposerSlot(scopeKind, resolveComposerPopups, emptyList);
 }

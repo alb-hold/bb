@@ -19,7 +19,6 @@ import { Skeleton } from "@bb/shared-ui/skeleton";
 import { Switch } from "@bb/shared-ui/switch";
 import {
   ResourceDetailConfigurationSection,
-  ResourceDetailOverviewSection,
   ResourceDetailPanel,
   ResourceDetailStack,
 } from "@bb/shared-ui/resource-list";
@@ -34,6 +33,7 @@ import {
 } from "@/hooks/queries/plugin-settings-queries";
 import { useSidebarNavigation } from "@/hooks/queries/sidebar-navigation-query";
 import { usePluginSlots } from "@/lib/plugin-slots";
+import { arePluginSettingsAvailable } from "@/lib/plugin-settings-availability";
 import { getMutationErrorMessage } from "@/lib/mutation-errors";
 import { PluginMachineServerAccessNotice } from "@/components/machines/MachineServerAccessNotice";
 import { invalidateMachineProviders } from "@/hooks/cache-owners/system-cache-effects";
@@ -174,9 +174,13 @@ function PluginSettingField({
         ariaDescribedBy={ariaDescribedBy}
         ariaInvalid={ariaInvalid}
         ariaLabel={descriptor.label}
-        valueLabel={value.length > 0 ? value : "Select…"}
+        valueLabel={
+          value.length > 0
+            ? (descriptor.experimental_optionLabels?.[value] ?? value)
+            : "Select…"
+        }
         options={descriptor.options.map((option) => ({
-          label: option,
+          label: descriptor.experimental_optionLabels?.[option] ?? option,
           value: option,
         }))}
         onSelect={onChange}
@@ -237,7 +241,7 @@ function PluginSettingField({
         aria-invalid={ariaInvalid}
         onChange={(event) => onChange(event.target.value)}
         onBlur={onBlur}
-        className="h-7 w-full text-xs sm:w-64"
+        className="h-7 w-full text-xs @min-[36rem]/settings:w-64"
       />
     );
   }
@@ -282,7 +286,7 @@ function PluginSettingField({
       placeholder={isSecret ? (secretIsSet ? "[set]" : "[not set]") : undefined}
       onChange={(event) => onChange(event.target.value)}
       onBlur={onBlur}
-      className={isSecret ? textSettingInputClass("") : textSettingInputClass(value)}
+      className={`${isSecret ? textSettingInputClass("") : textSettingInputClass(value)} @min-[36rem]/settings:w-64`}
     />
   );
 }
@@ -411,7 +415,13 @@ function AutosavingPluginSetting({
           ? "secret"
           : undefined
       }
-      controlPlacement={isMultilineSetting(descriptor) ? "below" : "inline"}
+      controlPlacement={
+        descriptor.type === "boolean"
+          ? "trailing"
+          : isMultilineSetting(descriptor)
+            ? "below"
+            : "inline"
+      }
       {...(descriptor.description !== undefined
         ? { description: descriptor.description }
         : {})}
@@ -455,12 +465,6 @@ export function PluginSettingsForm({ pluginId }: { pluginId: string }) {
     </div>
   );
 }
-
-const PLUGIN_STATUSES_WITH_SETTINGS = [
-  "running",
-  "needs-configuration",
-  "degraded",
-];
 
 function PluginSettingsFieldSkeleton() {
   return (
@@ -510,20 +514,19 @@ function PluginSettingsPageSkeleton() {
               </div>
             </ResourceDetailPanel>
           </ResourceDetailConfigurationSection>
-          <ResourceDetailOverviewSection
-            label={<Skeleton className="h-3.5 w-28" />}
-          >
-            <div className="flex h-5 items-center">
-              <Skeleton className="h-3 w-96 max-w-full" />
-            </div>
-          </ResourceDetailOverviewSection>
         </ResourceDetailStack>
       </div>
     </div>
   );
 }
 
-export function PluginSettingsPage({ pluginId }: { pluginId: string }) {
+export function PluginSettingsPage({
+  pluginId,
+  onBackToDetails,
+}: {
+  pluginId: string;
+  onBackToDetails?: () => void;
+}) {
   const listQuery = usePluginList({ enabled: true });
   const plugin =
     listQuery.data?.plugins.find(
@@ -546,10 +549,55 @@ export function PluginSettingsPage({ pluginId }: { pluginId: string }) {
       </p>
     );
   }
-  return <PluginSettingsContent key={plugin.id} plugin={plugin} />;
+  return (
+    <PluginSettingsContent
+      key={plugin.id}
+      plugin={plugin}
+      onBackToDetails={onBackToDetails}
+    />
+  );
 }
 
-function PluginSettingsContent({ plugin }: { plugin: PluginListItem }) {
+function PluginSettingsDetailsLink({
+  pluginId,
+  onBackToDetails,
+}: {
+  pluginId: string;
+  onBackToDetails?: () => void;
+}) {
+  const content = (
+    <>
+      <Icon name="ChevronLeft" className="size-3.5" aria-hidden />
+      Plugin details
+    </>
+  );
+  const className =
+    "-ml-2 mb-3 h-7 gap-1 px-2 text-xs font-normal text-muted-foreground hover:text-foreground";
+  return onBackToDetails ? (
+    <Button
+      variant="ghost"
+      size="sm"
+      className={className}
+      onClick={onBackToDetails}
+    >
+      {content}
+    </Button>
+  ) : (
+    <Button variant="ghost" size="sm" className={className} asChild>
+      <Link to={getPluginDetailRoutePath({ pluginId, view: "installed" })}>
+        {content}
+      </Link>
+    </Button>
+  );
+}
+
+function PluginSettingsContent({
+  plugin,
+  onBackToDetails,
+}: {
+  plugin: PluginListItem;
+  onBackToDetails?: () => void;
+}) {
   const queryClient = useQueryClient();
   const { settingsSections } = usePluginSlots();
   const { toggle, enabled } = usePluginEnabledMutation(plugin, () =>
@@ -560,6 +608,10 @@ function PluginSettingsContent({ plugin }: { plugin: PluginListItem }) {
     settingsSections.some((section) => section.pluginId === plugin.id);
   return (
     <div className="mx-auto w-full max-w-5xl">
+      <PluginSettingsDetailsLink
+        pluginId={plugin.id}
+        onBackToDetails={onBackToDetails}
+      />
       <header className="flex items-center justify-between gap-4">
         <div className="flex min-w-0 items-center gap-3">
           <div className="size-9 shrink-0">
@@ -584,6 +636,7 @@ function PluginSettingsContent({ plugin }: { plugin: PluginListItem }) {
           </div>
         </div>
         <Switch
+          className="mr-[13px]"
           checked={enabled}
           disabled={toggle.isPending}
           onCheckedChange={(next) => toggle.mutate(next)}
@@ -599,25 +652,6 @@ function PluginSettingsContent({ plugin }: { plugin: PluginListItem }) {
             <PluginSettingsDetail plugin={plugin} />
           </ResourceDetailConfigurationSection>
         ) : null}
-        <ResourceDetailOverviewSection label="Plugin details">
-          <p className="max-w-none text-sm leading-relaxed text-muted-foreground">
-            Release, capabilities, and health live on{" "}
-            <Link
-              to={getPluginDetailRoutePath({
-                pluginId: plugin.id,
-                view: "installed",
-              })}
-              className="inline-flex items-center gap-0.5 rounded-sm underline underline-offset-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            >
-              its plugin page
-              <Icon
-                name="ChevronRight"
-                className="size-3.5 no-underline"
-                aria-hidden
-              />
-            </Link>
-          </p>
-        </ResourceDetailOverviewSection>
       </ResourceDetailStack>
     </div>
   );
@@ -628,8 +662,7 @@ export function PluginSettingsDetail({ plugin }: { plugin: PluginListItem }) {
   const hasSettingsSections = settingsSections.some(
     (section) => section.pluginId === plugin.id,
   );
-  const settingsAvailable =
-    plugin.enabled && PLUGIN_STATUSES_WITH_SETTINGS.includes(plugin.status);
+  const settingsAvailable = arePluginSettingsAvailable(plugin);
   if (!plugin.hasSettings && !hasSettingsSections) return null;
 
   return (

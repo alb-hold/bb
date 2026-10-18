@@ -37,8 +37,6 @@ import {
 import { createTestAppHarness } from "../helpers/test-app.js";
 import type { TestAppHarness } from "../helpers/test-app.js";
 
-interface SeedEventRouteArgs {}
-
 interface PostEventBatchArgs {
   harness: TestAppHarness;
   sessionId: string;
@@ -56,7 +54,7 @@ async function postEventBatch(args: PostEventBatchArgs): Promise<Response> {
   });
 }
 
-function setupEventRoute(args: SeedEventRouteArgs = {}) {
+function setupEventRoute() {
   return createTestAppHarness().then((harness) => {
     const { host, session } = seedHostSession(harness.deps);
     const { project } = seedProjectWithSource(harness.deps, {
@@ -293,7 +291,10 @@ describe("internal event append ownership", () => {
         buildThreadTimelineWithProfile(harness.db, thread, {
           completedTurnDisplay: "collapse",
           eventBudget: 1_000_000,
+          includeClearedContextHistory: false,
           includeDiagnosticOperations: true,
+          compactionOfferEnabled: false,
+          summarizeShellCommands: true,
           maxInlineOutputChars: null,
           maxSeq: 1,
           page: {
@@ -424,69 +425,6 @@ describe("internal event append ownership", () => {
               threadId: thread.id,
               scope: threadScope(),
               message: "accepted after skipped",
-            },
-          },
-        ],
-      });
-
-      expect(response.status).toBe(200);
-      await expect(readJson(response)).resolves.toEqual({
-        acceptedEvents: [
-          {
-            eventIndex: 1,
-            threadId: thread.id,
-            sequence: 1,
-          },
-        ],
-        rejectedEvents: [],
-      });
-      expect(
-        harness.db
-          .select()
-          .from(events)
-          .where(eq(events.threadId, thread.id))
-          .all(),
-      ).toMatchObject([
-        {
-          sequence: 1,
-          type: "system/error",
-        },
-      ]);
-    } finally {
-      await harness.cleanup();
-    }
-  });
-
-  it("accepts a batch carrying a provider/unhandled event for a turn bb never started", async () => {
-    const { harness, session, thread } = await setupEventRoute();
-    try {
-      const response = await postEventBatch({
-        harness,
-        sessionId: session.id,
-        events: [
-          {
-            threadId: thread.id,
-            event: {
-              type: "provider/unhandled",
-              threadId: thread.id,
-              providerThreadId: "provider-compacting-session",
-              providerId: "codex",
-              rawType: "sdk/custom",
-              scope: turnScope("auto-compact-1"),
-              rawEvent: {
-                jsonrpc: "2.0",
-                method: "sdk/message",
-                params: { threadId: thread.id, turnId: "auto-compact-1" },
-              },
-            },
-          },
-          {
-            threadId: thread.id,
-            event: {
-              type: "system/error",
-              threadId: thread.id,
-              scope: threadScope(),
-              message: "queued behind the orphan event",
             },
           },
         ],
@@ -653,63 +591,6 @@ describe("internal event append ownership", () => {
       });
       expect(listQueuedThreadMessages(harness.db, thread.id)).toEqual([]);
       expect(getThread(harness.db, thread.id)?.status).toBe("active");
-    } finally {
-      await harness.cleanup();
-    }
-  });
-
-  it("rejects unowned thread events without blocking owned events in the same batch", async () => {
-    const { harness, session, thread } = await setupEventRoute();
-    try {
-      const response = await postEventBatch({
-        harness,
-        sessionId: session.id,
-        events: [
-          {
-            threadId: "thr_missing",
-            event: {
-              type: "system/error",
-              threadId: "thr_missing",
-              scope: threadScope(),
-              message: "stale daemon event",
-            },
-          },
-          {
-            threadId: thread.id,
-            event: {
-              type: "system/error",
-              threadId: thread.id,
-              scope: threadScope(),
-              message: "owned daemon event",
-            },
-          },
-        ],
-      });
-
-      expect(response.status).toBe(200);
-      await expect(readJson(response)).resolves.toEqual({
-        acceptedEvents: [
-          {
-            eventIndex: 1,
-            threadId: thread.id,
-            sequence: 1,
-          },
-        ],
-        rejectedEvents: [
-          {
-            eventIndex: 0,
-            reason: "thread_not_owned_by_host",
-            threadId: "thr_missing",
-          },
-        ],
-      });
-      expect(
-        harness.db
-          .select()
-          .from(events)
-          .where(eq(events.threadId, thread.id))
-          .all(),
-      ).toHaveLength(1);
     } finally {
       await harness.cleanup();
     }
@@ -1222,7 +1103,10 @@ describe("interaction lifecycle records from the daemon", () => {
       const questionRows = buildThreadTimelineWithProfile(harness.db, thread, {
         completedTurnDisplay: "collapse",
         eventBudget: 1_000_000,
+        includeClearedContextHistory: false,
         includeDiagnosticOperations: true,
+        compactionOfferEnabled: false,
+        summarizeShellCommands: true,
         maxInlineOutputChars: null,
         maxSeq,
         page: { kind: "latest", segmentLimit: Number.MAX_SAFE_INTEGER },

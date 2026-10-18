@@ -6,6 +6,9 @@ import {
 } from "@bb/thread-view";
 import {
   resolveEnvironmentMergeBaseBranch,
+  tokenBreakdownLabels,
+  estimateCompactionSavings,
+  summarizeTokenWeather,
   type Environment,
   type Thread,
   type ThreadEventRow,
@@ -18,12 +21,18 @@ import {
   BbHttpError,
   type BbSdk,
   type ThreadExecutionProfileResult,
+  type ThreadChildSummaryResult,
+  type ThreadSpendSummaryResult,
 } from "@bb/sdk";
 import type {
   EnvironmentDiffQuery,
   ThreadTimelineResponse,
+  TimelineConversationRow,
 } from "@bb/server-contract";
-import { THREAD_EVENT_LIST_PAGE_SIZE } from "@bb/server-contract";
+import {
+  THREAD_EVENT_LIST_PAGE_SIZE,
+  THREAD_MESSAGE_CONTEXT_LIMIT,
+} from "@bb/server-contract";
 import { action } from "../../action.js";
 import { createCliBbSdk } from "../../client.js";
 import {
@@ -46,6 +55,7 @@ interface ThreadShowCommandOptions {
   diffSha?: string;
   diffMergeBase?: string;
   json?: boolean;
+  usage?: boolean;
 }
 
 interface ThreadLogCommandOptions {
@@ -55,6 +65,8 @@ interface ThreadLogCommandOptions {
   limit?: string;
   afterSeq?: string;
   all?: boolean;
+  message?: string;
+  context?: string;
 }
 
 const THREAD_LOG_DEFAULT_EVENT_LIMIT = 100;
@@ -78,6 +90,9 @@ interface ThreadShowJsonPayload extends ThreadStatusPayload {
   environment: ThreadShowEnvironmentJsonPayload | null;
   pendingTodos: ThreadTimelinePendingTodos | null;
   execution: ThreadExecutionProfileResult | null;
+  childSummary: ThreadChildSummaryResult | null;
+  spendSummary: ThreadSpendSummaryResult | null;
+  usageTimeline?: ThreadTimelineResponse | null;
   workStatus?: WorkspaceStatus | null;
   gitDiff?: ThreadGitDiffResponse | null;
 }
@@ -214,16 +229,177 @@ export function printExecutionProfile(
     `    Last requested: ${execution.lastRequested ? describe(execution.lastRequested) : "(no turn yet)"}`,
   );
   const { executed } = execution;
+  if (executed === null) {
+    console.log(
+      "    Last provider report: current model unknown (not reported by the provider)",
+    );
+    return;
+  }
+  const report = `${executed.model} · ${executed.reasoningLevel ?? "unreported"} · ${executed.permissionMode ?? "unreported"} · ${executed.serviceTier ?? "unreported"}`;
+  const requestedModel = execution.lastRequested?.model;
+  const status =
+    requestedModel !== undefined && requestedModel !== executed.model
+      ? `stale; current requested model ${requestedModel} is unconfirmed`
+      : "last provider-reported session settings";
+  console.log(`    Last provider report: ${status}: ${report}`);
+}
+
+function compactTokenCount(value: number | null | undefined): string {
+  if (value === null || value === undefined) return "unavailable";
+  return new Intl.NumberFormat("en", {
+    maximumFractionDigits: 1,
+    notation: "compact",
+  }).format(value);
+}
+
+function printSpendSummary(summary: ThreadSpendSummaryResult): void {
+  const total = summary.total;
+  const labels = tokenBreakdownLabels(total.reasoningOutputTokens);
+  const render = (value: number | null, partial = false): string => {
+    const formatted = compactTokenCount(value);
+    return partial && value !== null
+      ? `≥ ${formatted} (partial history)`
+      : formatted;
+  };
+  const reasoning =
+    total.reasoningOutputTokens === null || total.reasoningOutputTokens === 0
+      ? labels.reasoning
+      : `${labels.reasoning} ${render(total.reasoningOutputTokens, !summary.historyComplete)}`;
+  console.log("");
+  console.log("Token usage:");
   console.log(
-    `    Executed:       ${executed ? `${executed.model} · ${executed.reasoningLevel ?? "unreported"} · ${executed.permissionMode ?? "unreported"} · ${executed.serviceTier ?? "unreported"}` : "not reported by the provider"}`,
+    `  Thread: ${labels.input} ${render(total.inputTokens, !summary.historyComplete)} · Out ${render(total.outputTokens, !summary.historyComplete)} · ${reasoning} · ${labels.cache} ${render(total.cachedInputTokens, !summary.historyComplete)} · Σ ${render(total.totalTokens, !summary.historyComplete)}`,
+  );
+  for (const turn of summary.turns) {
+    const turnReasoning =
+      total.reasoningOutputTokens === 0
+        ? labels.reasoning
+        : turn.reasoningOutputTokens === null
+          ? tokenBreakdownLabels(null).reasoning
+          : `${tokenBreakdownLabels(turn.reasoningOutputTokens).reasoning} ${compactTokenCount(turn.reasoningOutputTokens)}`;
+    console.log(
+      `  Turn ${turn.turnId}: ${labels.input} ${compactTokenCount(turn.inputTokens)} · Out ${compactTokenCount(turn.outputTokens)} · ${turnReasoning} · ${labels.cache} ${compactTokenCount(turn.cachedInputTokens)} · Σ ${compactTokenCount(turn.totalTokens)}`,
+    );
+  }
+}
+
+function printTokenWeather(
+  summary: ThreadSpendSummaryResult,
+  timeline: ThreadTimelineResponse | null,
+): void {
+  const providerId = summary.providerId ?? "unknown";
+  const turns = [...summary.turns].reverse().map((turn) => ({
+    ...turn,
+    model: turn.model ?? null,
+    providerId,
+  }));
+  const contextUsage = timeline?.contextWindowUsage;
+  const contextFill = contextUsage
+    ? contextUsage.usedTokens / contextUsage.modelContextWindow
+    : null;
+  const weather = summarizeTokenWeather({
+    contextFill,
+    totals: summary.total,
+    turns,
+  });
+  const compactionTurnIds = (timeline?.rows ?? []).flatMap((row) =>
+    row.kind === "system" &&
+    row.systemKind === "operation" &&
+    row.operationKind === "compaction" &&
+    row.turnId !== null
+      ? [row.turnId]
+      : [],
+  );
+  const compactions = estimateCompactionSavings({
+    compactionTurnIds,
+    turns,
+  });
+  console.log(`  History: ${summary.historyComplete ? "complete" : "partial"}`);
+  console.log(
+    `  Weather: ${weather.weather} · cache reuse ${weather.cacheReuseShare === null ? "unavailable" : `${Math.round(weather.cacheReuseShare * 100)}%`} · context fill ${contextFill === null ? "unavailable" : `${Math.round(contextFill * 100)}%`}`,
+  );
+  console.log(
+    `  Fresh input median/range: ${weather.medianFreshInput?.toLocaleString("en") ?? "unavailable"} / ${weather.rangeFreshInput ? `${weather.rangeFreshInput.min.toLocaleString("en")}–${weather.rangeFreshInput.max.toLocaleString("en")}` : "unavailable"}`,
+  );
+  for (const turn of weather.turns) {
+    const change =
+      turn.freshInputChange === null
+        ? "no same-model baseline"
+        : `${turn.freshInputChange >= 0 ? "+" : ""}${Math.round(turn.freshInputChange * 100)}% vs ${turn.sameModelMedian?.toLocaleString("en") ?? "unavailable"}`;
+    console.log(
+      `  Turn ${turn.turnId}: ${turn.providerId} / ${turn.model ?? "unknown model"} · ${turn.weather} · fresh input ${compactTokenCount(turn.inputTokens)} · ${change}`,
+    );
+  }
+  console.log(
+    "  Rules: overall weather follows durable thread cache reuse (clear at ≥35%, cloudy below); per-turn readings also consider same-model fresh-input growth. Context fill is shown separately.",
+  );
+  if (compactions.length === 0) {
+    console.log(
+      "  Compaction savings: unavailable (no compaction with enough measured turns)",
+    );
+  }
+  for (const compaction of compactions) {
+    const paidForItself =
+      compaction.likelyPaidForItself === null
+        ? "payback unavailable"
+        : compaction.likelyPaidForItself
+          ? "likely paid for itself"
+          : "not yet paid for itself";
+    console.log(
+      `  Compaction ${compaction.turnId}: estimated context ${compaction.beforeTokens?.toLocaleString("en") ?? "unavailable"} → ${compaction.afterTokens?.toLocaleString("en") ?? "unavailable"} · own cost ${compaction.compactionCostTokens?.toLocaleString("en") ?? "unavailable"} · later observed below trend ${compaction.observedSavingsTokens?.toLocaleString("en") ?? "unavailable"} · ${paidForItself} (estimate)`,
+    );
+  }
+}
+
+async function fetchThreadUsageTimeline(
+  sdk: BbSdk,
+  threadId: string,
+): Promise<ThreadTimelineResponse> {
+  const latest = await sdk.threads.timeline({ threadId });
+  const rows: ThreadTimelineResponse["rows"] = [];
+  let page = latest;
+  const seenCursors = new Set<string>();
+  while (true) {
+    rows.push(
+      ...page.rows.filter(
+        (row) =>
+          row.kind === "system" &&
+          row.systemKind === "operation" &&
+          row.operationKind === "compaction",
+      ),
+    );
+    const cursor = page.timelinePage.olderCursor;
+    if (cursor === null) break;
+    const cursorKey = `${cursor.anchorSeq}:${cursor.anchorId}`;
+    if (seenCursors.has(cursorKey)) {
+      throw new Error("Thread timeline repeated an older-page cursor");
+    }
+    seenCursors.add(cursorKey);
+    page = await sdk.threads.timeline({
+      beforeAnchorId: cursor.anchorId,
+      beforeAnchorSeq: String(cursor.anchorSeq),
+      threadId,
+    });
+  }
+  return { ...latest, rows };
+}
+
+function printChildSummary(summary: ThreadChildSummaryResult): void {
+  if (summary.nonDeletedChildCount === 0) return;
+  console.log("");
+  console.log(
+    `Ran ${summary.nonDeletedChildCount} ${summary.nonDeletedChildCount === 1 ? "agent" : "agents"}:`,
+  );
+  console.log(
+    `  ${summary.working ?? 0} working · ${summary.waiting ?? 0} waiting · ${summary.idle ?? 0} idle · ${summary.failed ?? 0} failed · Σ ${compactTokenCount(summary.totalTokens)}`,
   );
 }
 
 export function registerShowCommand(
   parent: Command,
   getUrl: () => string,
-): void {
-  parent
+): Command {
+  const showCommand = parent
     .command("show [id]")
     .aliases(["get", "view", "status"])
     .description("Show thread details and pull request status")
@@ -237,6 +413,7 @@ export function registerShowCommand(
       "all",
     )
     .option("--diff-sha <sha>", "Commit SHA for --diff-target commit")
+    .option("--usage", "Show token weather and compaction savings estimates")
     .option(
       "--diff-merge-base <branch>",
       "Merge base branch for --diff-target branch_committed or all",
@@ -253,6 +430,13 @@ export function registerShowCommand(
 
         const statusPayload: ThreadStatusPayload =
           thread.status === "error" ? { lastError, thread } : { thread };
+        const [childSummary, spendSummary, usageTimeline] = await Promise.all([
+          sdk.threads.childSummary({ threadId }).catch(() => null),
+          sdk.threads.spendSummary({ threadId }).catch(() => null),
+          opts.usage
+            ? fetchThreadUsageTimeline(sdk, threadId).catch(() => null)
+            : null,
+        ]);
         let environment: Environment | null | undefined;
         const getEnvironment = async () => {
           if (!thread.environmentId) {
@@ -369,6 +553,9 @@ export function registerShowCommand(
             ),
             pendingTodos,
             execution,
+            childSummary,
+            spendSummary,
+            ...(opts.usage ? { usageTimeline } : {}),
           };
           if (fetchedWorkStatus !== undefined) {
             jsonPayload.workStatus = fetchedWorkStatus.available
@@ -386,6 +573,14 @@ export function registerShowCommand(
 
         printThreadStatus(statusPayload, environmentInfo, fetchedPullRequest);
         printExecutionProfile(execution);
+        if (spendSummary) {
+          printSpendSummary(spendSummary);
+          if (opts.usage) printTokenWeather(spendSummary, usageTimeline);
+        } else {
+          console.log("");
+          console.log("Token usage: unavailable");
+        }
+        if (childSummary) printChildSummary(childSummary);
 
         printPendingTodos(pendingTodos);
 
@@ -398,7 +593,7 @@ export function registerShowCommand(
             if (ws.branch.currentBranch) {
               console.log(`  Branch:   ${ws.branch.currentBranch}`);
             }
-            console.log(`  Changed files: ${ws.workingTree.files.length}`);
+            console.log(`  Changed files: ${ws.workingTree.fileCount}`);
             if (ws.workingTree.lineStatsComplete) {
               console.log(`  Insertions:    +${ws.workingTree.insertions}`);
               console.log(`  Deletions:     -${ws.workingTree.deletions}`);
@@ -441,7 +636,6 @@ export function registerShowCommand(
         }
       }),
     );
-
   parent
     .command("log [id]")
     .aliases(["messages", "timeline"])
@@ -468,11 +662,27 @@ export function registerShowCommand(
       "--all",
       "Print the whole thread by paging through every entry (cannot be combined with --limit)",
     )
+    .option(
+      "--message <seq>",
+      "Print one message: the msg value of a message link or @thread:<id>#msg=<seq> mention",
+    )
+    .option(
+      "--context <count>",
+      `With --message, also print up to this many messages before and after it (0-${THREAD_MESSAGE_CONTEXT_LIMIT})`,
+    )
     .action(
       action(async (id: string | undefined, opts: ThreadLogCommandOptions) => {
         const threadId = requireThreadIdOrSelf(id, opts);
         const sdk = createCliBbSdk(getUrl());
         const format = resolveThreadTimelineTextFormat(opts);
+
+        if (opts.message !== undefined) {
+          await printThreadLogMessage(sdk, { threadId, format, opts });
+          return;
+        }
+        if (opts.context !== undefined) {
+          throw new Error("--context requires --message");
+        }
 
         if (opts.all && opts.limit !== undefined) {
           throw new Error("--all cannot be combined with --limit");
@@ -528,7 +738,7 @@ export function registerShowCommand(
           await sdk.threads.timeline(timelineQuery);
         let rows = timeline.rows;
         let page = timeline.timelinePage;
-        while (opts.all && page.hasOlderRows && page.olderCursor !== null) {
+        while (opts.all && page.olderCursor !== null) {
           const older: ThreadTimelineResponse = await sdk.threads.timeline({
             ...timelineQuery,
             beforeAnchorSeq: String(page.olderCursor.anchorSeq),
@@ -545,9 +755,10 @@ export function registerShowCommand(
           verbose: format === "verbose",
           color,
         });
-        const notice = page.hasOlderRows
-          ? `(Showing the newest ${page.returnedSegmentCount} user-message turns; older history omitted. Use --limit <n> (max ${THREAD_LOG_TIMELINE_SEGMENT_LIMIT_MAX}) or --all to see more.)`
-          : null;
+        const notice =
+          page.olderCursor !== null
+            ? `(Showing the newest ${page.returnedSegmentCount} user-message turns; older history omitted. Use --limit <n> (max ${THREAD_LOG_TIMELINE_SEGMENT_LIMIT_MAX}) or --all to see more.)`
+            : null;
         console.log(notice === null ? text : `${text}\n\n${notice}`);
       }),
     );
@@ -572,6 +783,7 @@ export function registerShowCommand(
         },
       ),
     );
+  return showCommand;
 }
 
 function printThreadStatus(
@@ -591,6 +803,7 @@ function printThreadStatus(
   console.log(`  Project: ${thread.projectId}`);
   if (thread.parentThreadId) {
     console.log(`  Parent: ${thread.parentThreadId}`);
+    console.log(`  Parent notifications: ${thread.parentNotifications}`);
   }
   if (thread.archivedAt !== null) {
     console.log(`  Archived: ${new Date(thread.archivedAt).toLocaleString()}`);
@@ -677,6 +890,62 @@ function printEnvironmentPullRequest(
     `    Review:       ${pr.review.state} (${pr.review.reviewRequestCount} requested)`,
   );
   console.log(`    Merge:        ${pr.mergeability.state}`);
+}
+
+async function printThreadLogMessage(
+  sdk: BbSdk,
+  args: {
+    threadId: string;
+    format: ThreadTimelineTextFormat;
+    opts: ThreadLogCommandOptions;
+  },
+): Promise<void> {
+  const { format, opts, threadId } = args;
+  if (opts.all || opts.limit !== undefined || opts.afterSeq !== undefined) {
+    throw new Error(
+      "--message cannot be combined with --limit, --all or --after-seq",
+    );
+  }
+  if (opts.message === undefined || !/^(0|[1-9]\d*)$/u.test(opts.message)) {
+    throw new Error("--message must be a non-negative integer.");
+  }
+  const context = opts.context === undefined ? 0 : Number(opts.context);
+  if (
+    opts.context !== undefined &&
+    (!/^\d+$/u.test(opts.context) || context > THREAD_MESSAGE_CONTEXT_LIMIT)
+  ) {
+    throw new Error(
+      `--context must be an integer from 0 to ${THREAD_MESSAGE_CONTEXT_LIMIT}.`,
+    );
+  }
+  const result = await sdk.threads.message({
+    threadId,
+    seq: Number(opts.message),
+    before: context,
+    after: context,
+  });
+  if (format === "json") {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+  const color = process.stdout.isTTY === true && !process.env.NO_COLOR;
+  const formatRows = (rows: readonly TimelineConversationRow[]) =>
+    formatThreadTimelineText([...rows], {
+      verbose: format === "verbose",
+      color,
+    });
+  if (context === 0) {
+    console.log(formatRows([result.message]));
+    return;
+  }
+  const sections = [
+    ...(result.before.length > 0
+      ? [`Before:\n${formatRows(result.before)}`]
+      : []),
+    `Message ${opts.message}:\n${formatRows([result.message])}`,
+    ...(result.after.length > 0 ? [`After:\n${formatRows(result.after)}`] : []),
+  ];
+  console.log(sections.join("\n\n"));
 }
 
 function parseThreadLogLimit<TDefault extends number | null>(

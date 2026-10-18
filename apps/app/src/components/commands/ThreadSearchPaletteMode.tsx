@@ -6,24 +6,41 @@ import {
   useMemo,
   useRef,
   useState,
+  type ComponentPropsWithoutRef,
   type KeyboardEvent as ReactKeyboardEvent,
-  type ReactNode,
 } from "react";
-import { useAtomValue, useStore } from "jotai";
+import { useAtom, useAtomValue, useStore } from "jotai";
 import { isMacKeyboardPlatform } from "@bb/domain";
 import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { Icon } from "@bb/shared-ui/icon";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@bb/shared-ui/tooltip";
 import { cn } from "@bb/shared-ui/lib/utils";
-import { threadListIndicatorStateForThread } from "@bb/client-core";
-import type { ThreadSearchMatch } from "@bb/server-contract";
+import {
+  resolveThreadListIndicator,
+  threadListIndicatorStateForThread,
+} from "@bb/client-core";
 import { usePromptDraftHasInput } from "@/hooks/usePromptDraftStorage";
+import {
+  highlightedText,
+  ThreadTitle,
+} from "@/components/thread/ThreadTitleMentions";
 import {
   ThreadStatusGlyph,
   resolveThreadStatus,
 } from "@/components/thread/ThreadStatusGlyph";
 import { usePluginThreadRowStatus } from "@/lib/plugin-thread-row-status";
+import { THREAD_LIFECYCLE_OPTIONS } from "@/components/thread/ThreadLifecycleFilter";
+import {
+  paletteThreadLifecyclesAtom,
+  paletteThreadSortAtom,
+  paletteThreadSortDirectionAtom,
+} from "@/lib/command-palette/palette-preferences";
+import {
+  normalizeThreadLifecycleFilter,
+  type ThreadArchiveFilter,
+} from "@/lib/thread-lifecycle-filter";
 import { useSidebarNavigation } from "@/hooks/queries/sidebar-navigation-query";
+import { usePaletteRecentArchivedThreads } from "@/hooks/queries/palette-thread-queries";
 import {
   hasThreadSearchableQuery,
   useThreadSearch,
@@ -32,29 +49,53 @@ import { useRouteNavigate } from "@/components/ui/app-route-anchor";
 import {
   NO_THREADS_MESSAGE,
   ThreadListEmptyState,
-} from "@/components/thread/ThreadListEmptyState";
+} from "@bb/shared-ui/thread-list-empty-state";
 import { getThreadRoutePath } from "@/lib/route-paths";
 import { openThreadInSplit } from "@/lib/split-layout/openThreadInSplit";
 import { splitLayoutAtom } from "@/lib/split-layout/atoms";
 import { countPanes, findPaneByContent, MAX_PANES } from "@/lib/split-layout";
 import {
   buildPaletteThreadSearchRows,
-  type PaletteThreadLifecycle,
   type PaletteThreadSearchRow,
 } from "@/lib/command-palette/palette-thread-search";
 import { windowPaletteThreadSearchText } from "@/lib/command-palette/palette-thread-search-window";
-import { PALETTE_SECTION_LABEL_CLASS, PaletteShell } from "./PaletteShell";
+import { PaletteThreadViewMenu } from "./PaletteThreadViewMenu";
+import {
+  PaletteStatusMessage,
+  THREAD_SEARCH_INPUT,
+  threadSearchModeChip,
+} from "./ThreadSearchPalettePlaceholder";
+import {
+  PALETTE_SECTION_LABEL_CLASS,
+  PaletteShell,
+  PaletteShortcut,
+} from "./PaletteShell";
+
+const GROUP_LIMIT = 6;
+const ARCHIVED_BESIDE_ACTIVE_LIMIT = 3;
+
+const NO_MATCHING_THREADS_MESSAGE = "No matching threads";
 
 interface ThreadSearchOption {
-  lifecycle: PaletteThreadLifecycle;
+  lifecycle: ThreadArchiveFilter;
   row: PaletteThreadSearchRow | null;
 }
 
+function optionKey(option: ThreadSearchOption): string {
+  return option.row?.id ?? `more:${option.lifecycle}`;
+}
+
 export function ThreadSearchPaletteMode({
+  query,
+  onQueryChange: setQuery,
   onExit,
+  onClose,
   runAfterClose,
 }: {
+  query: string;
+  onQueryChange: (query: string) => void;
   onExit: () => void;
+  onClose: () => void;
   runAfterClose: (run: () => void) => void;
 }) {
   const listId = useId();
@@ -65,15 +106,43 @@ export function ThreadSearchPaletteMode({
   const store = useStore();
   const splitLayout = useAtomValue(splitLayoutAtom);
   const isCompact = useIsCompactViewport();
-  const [query, setQuery] = useState("");
+  const [selectedLifecycles, setLifecycles] = useAtom(
+    paletteThreadLifecyclesAtom,
+  );
+  const lifecycles = useMemo(
+    () => normalizeThreadLifecycleFilter(selectedLifecycles),
+    [selectedLifecycles],
+  );
+  const [sort, setSort] = useAtom(paletteThreadSortAtom);
+  const [sortDirection, setSortDirection] = useAtom(
+    paletteThreadSortDirectionAtom,
+  );
   const [highlightedIndex, setHighlightedIndex] = useState(0);
-  const [expandedGroups, setExpandedGroups] = useState<
-    PaletteThreadLifecycle[]
-  >([]);
+  const [highlightedKey, setHighlightedKey] = useState<string | null>(null);
+  const [expandedGroups, setExpandedGroups] = useState<ThreadArchiveFilter[]>(
+    [],
+  );
+  const [shownCounts, setShownCounts] = useState<
+    Partial<Record<ThreadArchiveFilter, number>>
+  >({});
+  useLayoutEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+  const filterKey = `${lifecycles.join(",")}:${sort}:${sortDirection}`;
+  const [previousFilterKey, setPreviousFilterKey] = useState(filterKey);
+  if (previousFilterKey !== filterKey) {
+    setPreviousFilterKey(filterKey);
+    setExpandedGroups([]);
+    setShownCounts({});
+    setHighlightedKey(null);
+  }
   const [now] = useState(() => Date.now());
   const navigation = useSidebarNavigation();
   const threadSearch = useThreadSearch({ active: true, query });
   const trimmedQuery = query.trim();
+  const archived = usePaletteRecentArchivedThreads({
+    enabled: trimmedQuery.length === 0 && lifecycles.includes("archived"),
+  });
   const searchable = hasThreadSearchableQuery(trimmedQuery);
   const searchResultsAreCurrent =
     !searchable || threadSearch.debouncedQuery === trimmedQuery;
@@ -89,44 +158,57 @@ export function ThreadSearchPaletteMode({
   }, [navigation.data]);
   const recentThreads = useMemo(
     () => [
-      ...(navigation.data?.projects.flatMap((project) => project.threads) ??
-        []),
-      ...(navigation.data?.personalProject.threads ?? []),
+      ...[
+        ...(navigation.data?.projects.flatMap((project) => project.threads) ??
+          []),
+        ...(navigation.data?.personalProject.threads ?? []),
+      ],
+      ...(lifecycles.includes("archived") ? (archived.data ?? []) : []),
     ],
-    [navigation.data],
+    [archived.data, lifecycles, navigation.data],
   );
   const result = useMemo(
     () =>
       buildPaletteThreadSearchRows({
+        lifecycles,
         now,
         projectNamesById,
         query,
         recentThreads,
         searchResponse: threadSearch.data,
         searchResultsAreCurrent,
+        sort,
+        sortDirection,
       }),
     [
+      lifecycles,
       now,
       projectNamesById,
       query,
       recentThreads,
       searchResultsAreCurrent,
+      sort,
+      sortDirection,
       threadSearch.data,
     ],
   );
   const options = useMemo(() => {
-    const lifecycles = ["active", "archived"] as const;
-    const limit = lifecycles.every((lifecycle) =>
-      result.rows.some((row) => row.lifecycle === lifecycle),
-    )
-      ? 3
-      : 6;
     return lifecycles.flatMap((lifecycle) => {
       const rows = result.rows.filter((row) => row.lifecycle === lifecycle);
-      const visible =
-        result.isRecent || expandedGroups.includes(lifecycle)
-          ? rows
-          : rows.slice(0, limit);
+      const limit =
+        lifecycle === "archived" && lifecycles.includes("active")
+          ? ARCHIVED_BESIDE_ACTIVE_LIMIT
+          : GROUP_LIMIT;
+      const visible = expandedGroups.includes(lifecycle)
+        ? rows
+        : rows.slice(
+            0,
+            Math.max(
+              limit,
+              shownCounts[lifecycle] ?? 0,
+              rows.findIndex((row) => row.id === highlightedKey) + 1,
+            ),
+          );
       const groupOptions: ThreadSearchOption[] = visible.map((row) => ({
         lifecycle,
         row,
@@ -135,13 +217,50 @@ export function ThreadSearchPaletteMode({
         groupOptions.push({ row: null, lifecycle });
       return groupOptions;
     });
-  }, [expandedGroups, result]);
+  }, [expandedGroups, highlightedKey, lifecycles, result, shownCounts]);
+  useLayoutEffect(() => {
+    setShownCounts((current) => {
+      let next = current;
+      for (const lifecycle of lifecycles) {
+        const shown = options.filter(
+          (option) => option.lifecycle === lifecycle && option.row !== null,
+        ).length;
+        if (shown > (next[lifecycle] ?? 0))
+          next = { ...next, [lifecycle]: shown };
+      }
+      return next;
+    });
+  }, [lifecycles, options]);
+  const retainedIndex = options.findIndex(
+    (option) => optionKey(option) === highlightedKey,
+  );
   const activeIndex =
-    options.length === 0 ? -1 : Math.min(highlightedIndex, options.length - 1);
-  const isRecentLoading = result.isRecent && navigation.isLoading;
+    retainedIndex >= 0
+      ? retainedIndex
+      : options.length === 0
+        ? -1
+        : Math.min(highlightedIndex, options.length - 1);
+  useLayoutEffect(() => {
+    setHighlightedIndex(Math.max(activeIndex, 0));
+    setHighlightedKey(activeIndex < 0 ? null : optionKey(options[activeIndex]));
+  }, [activeIndex, options]);
+  const highlightOption = useCallback(
+    (index: number) => {
+      setHighlightedIndex(index);
+      setHighlightedKey(
+        options[index] === undefined ? null : optionKey(options[index]),
+      );
+    },
+    [options],
+  );
+  const recentQueries = lifecycles.map((lifecycle) =>
+    lifecycle === "active" ? navigation : archived,
+  );
+  const isRecentLoading =
+    result.isRecent && recentQueries.some((result) => result.isLoading);
   const hasLoadError = result.isRecent
-    ? navigation.isError
-    : searchResultsAreCurrent && threadSearch.isError;
+    ? recentQueries.some((result) => result.isError)
+    : searchable && searchResultsAreCurrent && threadSearch.isError;
   const showThreadListEmptyState =
     result.rows.length === 0 &&
     result.isRecent &&
@@ -150,16 +269,19 @@ export function ThreadSearchPaletteMode({
   const activeDescendantId =
     activeIndex < 0 ? undefined : `${optionIdPrefix}-${activeIndex}`;
   const activeRow = options[activeIndex]?.row;
+  const splitAvailable =
+    !isCompact &&
+    splitLayout !== null &&
+    countPanes(splitLayout.root) < MAX_PANES;
   const canSplit =
     activeRow != null &&
-    !isCompact &&
+    splitAvailable &&
     splitLayout !== null &&
     findPaneByContent(splitLayout.root, {
       kind: "thread",
       projectId: activeRow.projectId,
       threadId: activeRow.threadId,
-    }) === null &&
-    countPanes(splitLayout.root) < MAX_PANES;
+    }) === null;
   const splitModifier = isMacKeyboardPlatform(navigator.platform)
     ? "⌘"
     : "Ctrl";
@@ -178,6 +300,7 @@ export function ThreadSearchPaletteMode({
         scrollOnNextHighlightRef.current = true;
         setExpandedGroups((current) => [...current, lifecycle]);
         setHighlightedIndex(index);
+        setHighlightedKey(null);
         inputRef.current?.focus();
         return;
       }
@@ -224,25 +347,26 @@ export function ThreadSearchPaletteMode({
       if (event.key === "Escape") {
         event.preventDefault();
         event.stopPropagation();
-        onExit();
+        onClose();
         return;
       }
       if (options.length === 0) return;
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         event.preventDefault();
         scrollOnNextHighlightRef.current = true;
-        setHighlightedIndex((current) => {
-          if (event.key === "ArrowDown") {
-            return current + 1 >= options.length ? 0 : current + 1;
-          }
-          return current <= 0 ? options.length - 1 : current - 1;
-        });
+        highlightOption(
+          event.key === "ArrowDown"
+            ? (activeIndex + 1) % options.length
+            : activeIndex <= 0
+              ? options.length - 1
+              : activeIndex - 1,
+        );
         return;
       }
       if (event.key === "Home" || event.key === "End") {
         event.preventDefault();
         scrollOnNextHighlightRef.current = true;
-        setHighlightedIndex(event.key === "Home" ? 0 : options.length - 1);
+        highlightOption(event.key === "Home" ? 0 : options.length - 1);
         return;
       }
       if (event.key === "Enter") {
@@ -252,8 +376,21 @@ export function ThreadSearchPaletteMode({
         selectOption(option, activeIndex, event.metaKey || event.ctrlKey);
       }
     },
-    [activeIndex, onExit, options, query.length, selectOption],
+    [
+      activeIndex,
+      highlightOption,
+      onClose,
+      onExit,
+      options,
+      query.length,
+      selectOption,
+    ],
   );
+
+  const focusInputAfterMenuClose = (event: Event) => {
+    event.preventDefault();
+    inputRef.current?.focus();
+  };
 
   const isLoading =
     searchable &&
@@ -269,44 +406,57 @@ export function ThreadSearchPaletteMode({
           : "Searching threads"
         : hasLoadError
           ? "Couldn’t load threads"
-          : trimmedQuery.length === 1
+          : trimmedQuery.length === 1 && !lifecycles.includes("active")
             ? "Type at least 2 characters"
             : result.isRecent
               ? NO_THREADS_MESSAGE
-              : "No matching threads";
+              : NO_MATCHING_THREADS_MESSAGE;
   }
 
   return (
     <PaletteShell
       activeDescendantId={activeDescendantId}
+      autoFocus={false}
       inputDescription={
         canSplit
-          ? `Use ${splitModifier}+Enter to open in split. Use Escape to return to commands.`
-          : "Use Escape to return to commands."
+          ? `Use ${splitModifier}+Enter to open in split. Use Backspace to return to commands.`
+          : "Use Backspace to return to commands."
       }
-      inputLabel="Search threads"
+      inputLabel={THREAD_SEARCH_INPUT.label}
+      inputAccessory={
+        <div className="max-w-[45%] shrink-0">
+          <PaletteThreadViewMenu
+            lifecycles={lifecycles}
+            onLifecyclesChange={setLifecycles}
+            sort={sort}
+            sortDirection={sortDirection}
+            onSortChange={(nextSort, nextDirection) => {
+              setSort(nextSort);
+              setSortDirection(nextDirection);
+            }}
+            onCloseAutoFocus={focusInputAfterMenuClose}
+          />
+        </div>
+      }
       inputRef={inputRef}
       listId={listId}
       listLabel="Threads"
       listRef={listRef}
-      modeChip={{
-        icon: "Search",
-        label: "Threads",
-        clearLabel: "Return to commands",
-        onClear: onExit,
-      }}
+      modeChip={threadSearchModeChip(onExit, isCompact)}
       onInputChange={(value) => {
         setQuery(value);
         setHighlightedIndex(0);
+        setHighlightedKey(null);
         setExpandedGroups([]);
+        setShownCounts({});
         if (listRef.current !== null) listRef.current.scrollTop = 0;
       }}
       onInputKeyDown={handleInputKeyDown}
-      placeholder="Search title, project, or message…"
+      placeholder={THREAD_SEARCH_INPUT.placeholder}
       value={query}
     >
       {emptyMessage === null ? (
-        (["active", "archived"] as const).map((lifecycle) => {
+        THREAD_LIFECYCLE_OPTIONS.map(({ value: lifecycle, label }) => {
           if (!result.rows.some((row) => row.lifecycle === lifecycle)) {
             return null;
           }
@@ -319,11 +469,7 @@ export function ThreadSearchPaletteMode({
               className="not-last:mb-2"
             >
               <div id={labelId} className={PALETTE_SECTION_LABEL_CLASS}>
-                {result.isRecent
-                  ? "Recent"
-                  : lifecycle === "archived"
-                    ? "Archived"
-                    : "Threads"}
+                {label}
               </div>
               {options.map((option, index) =>
                 option.lifecycle !== lifecycle ? null : (
@@ -337,7 +483,7 @@ export function ThreadSearchPaletteMode({
                       "flex min-w-0 items-center rounded-md",
                       index === activeIndex && "bg-state-hover text-foreground",
                     )}
-                    onPointerMove={() => setHighlightedIndex(index)}
+                    onPointerMove={() => highlightOption(index)}
                   >
                     <div
                       id={`${optionIdPrefix}-${index}`}
@@ -371,22 +517,24 @@ export function ThreadSearchPaletteMode({
                         <ThreadSearchPaletteRow row={option.row} />
                       )}
                     </div>
-                    {index === activeIndex && canSplit ? (
+                    {option.row !== null && splitAvailable ? (
                       <button
                         type="button"
                         aria-label="Open in split"
-                        className="mr-2 inline-flex h-7 shrink-0 items-center gap-1 rounded-sm px-1 text-xs text-subtle-foreground hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring"
+                        aria-hidden={
+                          index !== activeIndex || !canSplit || undefined
+                        }
+                        tabIndex={
+                          index === activeIndex && canSplit ? undefined : -1
+                        }
+                        className={cn(
+                          "ml-4 mr-1 inline-flex h-7 shrink-0 items-center gap-1 rounded-sm px-1 text-xs text-subtle-foreground hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring",
+                          (index !== activeIndex || !canSplit) && "invisible",
+                        )}
                         onClick={() => selectOption(option, index, true)}
                       >
                         <span className="mr-1">Open in split</span>
-                        {[splitModifier, "↵"].map((key) => (
-                          <kbd
-                            key={key}
-                            className="min-w-4 rounded-sm bg-state-hover px-1 py-0.5 text-center font-sans font-normal text-muted-foreground"
-                          >
-                            {key}
-                          </kbd>
-                        ))}
+                        <PaletteShortcut>{`${splitModifier} ↵`}</PaletteShortcut>
                       </button>
                     ) : null}
                   </div>
@@ -396,69 +544,46 @@ export function ThreadSearchPaletteMode({
           );
         })
       ) : showThreadListEmptyState ||
-        (searchable && !isLoading && !hasLoadError) ? (
+        emptyMessage === NO_MATCHING_THREADS_MESSAGE ? (
         <ThreadListEmptyState
           message={emptyMessage}
           className="justify-center px-3 py-4"
         />
       ) : (
-        <p className="px-3 py-4 text-center text-sm text-muted-foreground">
-          {emptyMessage}
-        </p>
+        <PaletteStatusMessage>{emptyMessage}</PaletteStatusMessage>
       )}
     </PaletteShell>
   );
 }
 
 function ThreadSearchPaletteRow({ row }: { row: PaletteThreadSearchRow }) {
-  const primaryRef = useRef<HTMLSpanElement | null>(null);
-  const matchKey = `${row.primaryText}\u0000${row.highlightRanges
-    .map((range) => `${range.start}:${range.end}`)
-    .join(",")}`;
-  const [windowedMatchKey, setWindowedMatchKey] = useState<string | null>(null);
-  const shouldWindowMatch = windowedMatchKey === matchKey;
-  const primary = shouldWindowMatch
-    ? windowPaletteThreadSearchText({
-        text: row.primaryText,
-        highlightRanges: row.highlightRanges,
-      })
-    : { text: row.primaryText, highlightRanges: row.highlightRanges };
-
-  useLayoutEffect(() => {
-    if (shouldWindowMatch || row.highlightRanges.length === 0) return;
-    const container = primaryRef.current;
-    if (container === null) return;
-    const firstMatch = container.querySelector("mark");
-    if (firstMatch === null) return;
-    const containerRect = container.getBoundingClientRect();
-    const matchRect = firstMatch.getBoundingClientRect();
-    if (
-      matchRect.left < containerRect.left ||
-      matchRect.right > containerRect.right
-    ) {
-      setWindowedMatchKey(matchKey);
-    }
-  }, [matchKey, row.highlightRanges.length, shouldWindowMatch]);
-
-  const metadata = [row.secondaryTitle, row.projectName, row.relativeTime]
+  const metadata = [row.projectName, row.relativeTime]
     .filter(Boolean)
     .join(" · ");
   return (
     <span className="min-w-0 flex-1">
-      <span ref={primaryRef} className="block min-w-0 truncate text-foreground">
-        <HighlightedText text={primary.text} ranges={primary.highlightRanges} />
-      </span>
+      <PaletteMatchText
+        text={row.primaryText}
+        highlightRanges={row.highlightRanges}
+        className="text-foreground"
+      />
       <span
         className="flex min-h-4 items-center gap-1.5"
         data-palette-thread-details
       >
-        {metadata.length === 0 ? null : (
+        {row.excerpt !== null ? (
+          <PaletteMatchText
+            text={row.excerpt.text}
+            highlightRanges={row.excerpt.highlightRanges}
+            className="text-xs leading-4 text-subtle-foreground"
+            data-palette-thread-excerpt
+          />
+        ) : metadata.length === 0 ? null : (
           <span
             className="min-w-0 truncate text-xs leading-4 text-subtle-foreground"
             data-palette-thread-metadata
             title={metadata}
           >
-            {row.secondaryTitle === null ? null : `${row.secondaryTitle} · `}
             {row.projectName === null ? null : (
               <>
                 <Icon
@@ -466,7 +591,12 @@ function ThreadSearchPaletteRow({ row }: { row: PaletteThreadSearchRow }) {
                   className="mr-1 inline-block size-3.5 align-text-bottom"
                   aria-hidden
                 />
-                {`${row.projectName} · `}
+                {highlightedText(
+                  row.projectName,
+                  0,
+                  row.projectHighlightRanges,
+                )}
+                {" · "}
               </>
             )}
             {row.relativeTime}
@@ -478,18 +608,64 @@ function ThreadSearchPaletteRow({ row }: { row: PaletteThreadSearchRow }) {
   );
 }
 
+function PaletteMatchText({
+  text,
+  highlightRanges,
+  className,
+  ...spanProps
+}: {
+  text: string;
+  highlightRanges: PaletteThreadSearchRow["highlightRanges"];
+  className: string;
+} & Omit<ComponentPropsWithoutRef<"span">, "children" | "title">) {
+  const ref = useRef<HTMLSpanElement | null>(null);
+  const matchKey = `${text}\u0000${highlightRanges
+    .map((range) => `${range.start}:${range.end}`)
+    .join(",")}`;
+  const [windowedMatchKey, setWindowedMatchKey] = useState<string | null>(null);
+  const shouldWindowMatch = windowedMatchKey === matchKey;
+  const shown = shouldWindowMatch
+    ? windowPaletteThreadSearchText({ text, highlightRanges })
+    : { text, highlightRanges };
+
+  useLayoutEffect(() => {
+    if (shouldWindowMatch || highlightRanges.length === 0) return;
+    const container = ref.current;
+    if (container === null) return;
+    const firstMatch = container.querySelector("mark");
+    if (firstMatch === null) return;
+    const containerRect = container.getBoundingClientRect();
+    const matchRect = firstMatch.getBoundingClientRect();
+    if (
+      matchRect.left < containerRect.left ||
+      matchRect.right > containerRect.right
+    ) {
+      setWindowedMatchKey(matchKey);
+    }
+  }, [highlightRanges.length, matchKey, shouldWindowMatch]);
+
+  return (
+    <ThreadTitle
+      {...spanProps}
+      ref={ref}
+      title={shown.text}
+      highlightRanges={shown.highlightRanges}
+      className={cn("[&_span]:whitespace-nowrap", className)}
+    />
+  );
+}
+
 function ThreadSearchPaletteStatus({ row }: { row: PaletteThreadSearchRow }) {
   const hasUnsubmittedDraft = usePromptDraftHasInput({
     kind: "thread",
     projectId: row.projectId,
     threadId: row.threadId,
   });
-  const state = threadListIndicatorStateForThread(
-    row.thread,
-    hasUnsubmittedDraft,
+  const indicator = resolveThreadListIndicator(
+    threadListIndicatorStateForThread(row.thread, hasUnsubmittedDraft),
   );
-  const pluginStatus = usePluginThreadRowStatus(row.threadId);
-  const { accessibleLabel: label } = resolveThreadStatus(state, pluginStatus);
+  const rowStatus = usePluginThreadRowStatus(row.threadId);
+  const { accessibleLabel: label } = resolveThreadStatus(indicator, rowStatus);
   if (label === null) return null;
   return (
     <>
@@ -509,8 +685,8 @@ function ThreadSearchPaletteStatus({ row }: { row: PaletteThreadSearchRow }) {
             data-palette-thread-status
           >
             <ThreadStatusGlyph
-              {...state}
-              pluginStatus={pluginStatus}
+              indicator={indicator}
+              rowStatus={rowStatus}
               size="compact"
             />
           </span>
@@ -519,33 +695,4 @@ function ThreadSearchPaletteStatus({ row }: { row: PaletteThreadSearchRow }) {
       </Tooltip>
     </>
   );
-}
-
-function HighlightedText({
-  ranges,
-  text,
-}: {
-  ranges: readonly ThreadSearchMatch["highlightRanges"][number][];
-  text: string;
-}) {
-  if (ranges.length === 0) return <>{text}</>;
-  const nodes: ReactNode[] = [];
-  let cursor = 0;
-  for (const range of ranges) {
-    const start = Math.max(cursor, Math.min(range.start, text.length));
-    const end = Math.max(start, Math.min(range.end, text.length));
-    if (end <= start) continue;
-    if (start > cursor) nodes.push(text.slice(cursor, start));
-    nodes.push(
-      <mark
-        key={`${start}:${end}`}
-        className="rounded-sm bg-[var(--sidebar-search-match)] px-0.5 py-px text-foreground"
-      >
-        {text.slice(start, end)}
-      </mark>,
-    );
-    cursor = end;
-  }
-  if (cursor < text.length) nodes.push(text.slice(cursor));
-  return nodes;
 }

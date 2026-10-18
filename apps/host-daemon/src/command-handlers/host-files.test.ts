@@ -4,7 +4,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { afterEach, describe, expect, it } from "vitest";
+import { initRepo, makeTempDir } from "@bb/test-helpers";
+import { describe, expect, it } from "vitest";
 import {
   CommandDispatchError,
   type CommandOf,
@@ -13,19 +14,11 @@ import {
 import {
   browseHostDirectory,
   readHostFile,
-  readHostFileMetadata,
+  readHostFileChunk,
   readHostRelativeFile,
 } from "./host-files.js";
 
 const execFileAsync = promisify(execFile);
-const tempDirs: string[] = [];
-
-async function makeTempDir(prefix: string): Promise<string> {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
-  tempDirs.push(dir);
-  return dir;
-}
-
 async function runGit(
   args: readonly string[],
   options: { cwd: string },
@@ -34,12 +27,18 @@ async function runGit(
   return result.stdout;
 }
 
-async function initRepo(): Promise<string> {
-  const repoPath = await makeTempDir("bb-host-files-test-");
-  await runGit(["init", "-b", "main"], { cwd: repoPath });
-  await runGit(["config", "user.name", "BB Tests"], { cwd: repoPath });
-  await runGit(["config", "user.email", "bb@example.com"], { cwd: repoPath });
-  return repoPath;
+async function mountSubstDrive(target: string): Promise<string> {
+  for (const letter of "ZYXWVUTSRQPONMLKJIHGFED") {
+    const drive = `${letter}:\\`;
+    const inUse = await fs.stat(drive).then(
+      () => true,
+      () => false,
+    );
+    if (inUse) continue;
+    await execFileAsync("subst", [`${letter}:`, target]);
+    return drive;
+  }
+  throw new Error("No free drive letter for subst");
 }
 
 async function captureReadHostFileError(
@@ -66,18 +65,11 @@ async function captureReadHostRelativeFileError(
   throw new Error("Expected readHostRelativeFile to fail");
 }
 
-afterEach(async () => {
-  while (tempDirs.length > 0) {
-    const dir = tempDirs.pop();
-    if (dir) {
-      await fs.rm(dir, { recursive: true, force: true });
-    }
-  }
-});
-
 describe("readHostFile (no ref — disk read)", () => {
   it("reads explicit file contents from disk without a rootPath", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-host-files-test-"), {
+      commit: false,
+    });
     const filePath = path.join(repoPath, "host-notes.md");
     await fs.writeFile(filePath, "host notes", "utf8");
 
@@ -93,7 +85,9 @@ describe("readHostFile (no ref — disk read)", () => {
   });
 
   it("reads file contents from disk", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-host-files-test-"), {
+      commit: false,
+    });
     const filePath = path.join(repoPath, "hello.txt");
     await fs.writeFile(filePath, "hello world", "utf8");
 
@@ -109,7 +103,9 @@ describe("readHostFile (no ref — disk read)", () => {
   });
 
   it("omits unchanged file content from conditional reads", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-host-files-test-"), {
+      commit: false,
+    });
     const filePath = path.join(repoPath, "large.png");
     const contents = Buffer.alloc(1024, "a");
     const sha256 = createHash("sha256").update(contents).digest("hex");
@@ -148,11 +144,16 @@ describe("readHostFile (no ref — disk read)", () => {
         path: "relative/file.txt",
         rootPath: "/tmp",
       }),
-    ).rejects.toBeInstanceOf(CommandDispatchError);
+    ).rejects.toMatchObject({
+      code: "invalid_path",
+      message: "Path must be absolute",
+    });
   });
 
   it("marks missing targets under an existing root as expected", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-host-files-test-"), {
+      commit: false,
+    });
     const missingPath = path.join(repoPath, "notes.md");
     const thrown = await captureReadHostFileError({
       type: "host.read_file",
@@ -170,7 +171,9 @@ describe("readHostFile (no ref — disk read)", () => {
   });
 
   it("marks missing rootless targets as expected", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-host-files-test-"), {
+      commit: false,
+    });
     const missingPath = path.join(repoPath, "HOST-NOTES.md");
     const thrown = await captureReadHostFileError({
       type: "host.read_file",
@@ -208,6 +211,7 @@ describe("readHostFile (no ref — disk read)", () => {
     const rootPath = path.join(parentPath, "STATUS");
     const thrown = await captureReadHostRelativeFileError({
       type: "host.read_file_relative",
+      followRootSymlink: false,
       rootPath,
       path: "index.html",
       dotfiles: "deny",
@@ -222,7 +226,9 @@ describe("readHostFile (no ref — disk read)", () => {
   });
 
   it("rejects rootless directory paths", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-host-files-test-"), {
+      commit: false,
+    });
 
     await expect(
       readHostFile({
@@ -234,43 +240,21 @@ describe("readHostFile (no ref — disk read)", () => {
       message: "Path is a directory, not a file",
     });
   });
-});
 
-describe("readHostFileMetadata", () => {
-  it("returns host-side file metadata without reading contents", async () => {
-    const repoPath = await initRepo();
-    const filePath = path.join(repoPath, "large-preferences.md");
-    await fs.writeFile(filePath, Buffer.alloc(25 * 1024 * 1024 + 1));
-
-    const result = await readHostFileMetadata({
-      type: "host.file_metadata",
-      path: filePath,
-      rootPath: repoPath,
-    });
-
-    expect(result.path).toBe(filePath);
-    expect(result.sizeBytes).toBe(25 * 1024 * 1024 + 1);
-    expect(result.modifiedAtMs).toBeGreaterThan(0);
-  });
-
-  it("uses the same containment checks as disk reads", async () => {
-    const repoPath = await initRepo();
-    const outsidePath = path.join(repoPath, "..", "outside-metadata.txt");
-    const symlinkPath = path.join(repoPath, "outside-link");
-    await fs.writeFile(outsidePath, "outside");
-    await fs.symlink(outsidePath, symlinkPath);
-
-    await expect(
-      readHostFileMetadata({
-        type: "host.file_metadata",
-        path: symlinkPath,
-        rootPath: repoPath,
-      }),
-    ).rejects.toMatchObject({
-      code: "invalid_path",
-      message: expect.stringContaining("escapes read root"),
-    });
-  });
+  it.runIf(process.platform !== "win32")(
+    "rejects devices instead of reading them without bound",
+    async () => {
+      await expect(
+        readHostFile({
+          type: "host.read_file",
+          path: "/dev/zero",
+        }),
+      ).rejects.toMatchObject({
+        code: "invalid_path",
+        message: "Path is not a regular file",
+      });
+    },
+  );
 });
 
 describe("browseHostDirectory", () => {
@@ -308,6 +292,34 @@ describe("browseHostDirectory", () => {
     ]);
   });
 
+  it.runIf(process.platform === "win32")(
+    "lists every mounted drive and stays on the drive the user picked",
+    async () => {
+      const target = await makeTempDir("bb-browse-drive-");
+      const drive = await mountSubstDrive(target);
+      try {
+        await fs.writeFile(path.join(target, "on-drive.txt"), "x", "utf8");
+        const systemDrive = `${process.env.SystemDrive ?? "C:"}\\`;
+
+        const result = await browseHostDirectory({
+          type: "host.browse_directory",
+          path: drive,
+        });
+
+        expect(result.directory).toBe(drive);
+        expect(result.parent).toBeNull();
+        expect(result.entries.map((entry) => entry.path)).toEqual([
+          `${drive}on-drive.txt`,
+        ]);
+        expect(result.roots).toEqual(
+          expect.arrayContaining([systemDrive, drive]),
+        );
+      } finally {
+        await execFileAsync("subst", [drive.slice(0, 2), "/D"]);
+      }
+    },
+  );
+
   it("defaults to the host home directory when no path is given", async () => {
     const result = await browseHostDirectory({
       type: "host.browse_directory",
@@ -344,7 +356,9 @@ describe("browseHostDirectory", () => {
 
 describe("readHostFile (with ref — git history read)", () => {
   it("rejects ref reads without rootPath", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-host-files-test-"), {
+      commit: false,
+    });
 
     await expect(
       readHostFile({
@@ -358,29 +372,10 @@ describe("readHostFile (with ref — git history read)", () => {
     });
   });
 
-  it("reads file contents at a specific ref", async () => {
-    const repoPath = await initRepo();
-    const filePath = path.join(repoPath, "tracked.txt");
-    await fs.writeFile(filePath, "version 1\n", "utf8");
-    await runGit(["add", "tracked.txt"], { cwd: repoPath });
-    await runGit(["commit", "-m", "v1"], { cwd: repoPath });
-
-    await fs.writeFile(filePath, "version 2\n", "utf8");
-
-    const result = await readHostFile({
-      type: "host.read_file",
-      path: filePath,
-      rootPath: repoPath,
-      ref: "HEAD",
-    });
-
-    expect(result.content).toBe("version 1\n");
-    expect(result.contentEncoding).toBe("utf8");
-    expect(result.sizeBytes).toBe(10);
-  });
-
   it("returns empty content when the file does not exist at the ref", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-host-files-test-"), {
+      commit: false,
+    });
     await fs.writeFile(path.join(repoPath, "seed.txt"), "seed\n", "utf8");
     await runGit(["add", "seed.txt"], { cwd: repoPath });
     await runGit(["commit", "-m", "seed"], { cwd: repoPath });
@@ -397,7 +392,9 @@ describe("readHostFile (with ref — git history read)", () => {
   });
 
   it("rejects unsafe refs (path traversal)", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-host-files-test-"), {
+      commit: false,
+    });
     await fs.writeFile(path.join(repoPath, "f.txt"), "x", "utf8");
     await runGit(["add", "."], { cwd: repoPath });
     await runGit(["commit", "-m", "init"], { cwd: repoPath });
@@ -413,7 +410,9 @@ describe("readHostFile (with ref — git history read)", () => {
   });
 
   it("rejects refs with leading dash", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-host-files-test-"), {
+      commit: false,
+    });
     await expect(
       readHostFile({
         type: "host.read_file",
@@ -425,7 +424,9 @@ describe("readHostFile (with ref — git history read)", () => {
   });
 
   it("rejects paths outside rootPath", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-host-files-test-"), {
+      commit: false,
+    });
     await fs.writeFile(path.join(repoPath, "seed.txt"), "x", "utf8");
     await runGit(["add", "."], { cwd: repoPath });
     await runGit(["commit", "-m", "init"], { cwd: repoPath });
@@ -441,7 +442,9 @@ describe("readHostFile (with ref — git history read)", () => {
   });
 
   it("reads at a commit SHA other than HEAD", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-host-files-test-"), {
+      commit: false,
+    });
     const filePath = path.join(repoPath, "tracked.txt");
     await fs.writeFile(filePath, "first\n", "utf8");
     await runGit(["add", "."], { cwd: repoPath });
@@ -461,5 +464,115 @@ describe("readHostFile (with ref — git history read)", () => {
     });
 
     expect(result.content).toBe("first\n");
+    expect(result.contentEncoding).toBe("utf8");
+    expect(result.sizeBytes).toBe(6);
+  });
+});
+
+describe("readHostFileChunk", () => {
+  it("reads a tiny range beyond the whole-file size cap", async () => {
+    const rootPath = await makeTempDir("bb-file-chunks-");
+    const filePath = path.join(rootPath, "large.mp4");
+    const offset = 32 * 1024 * 1024;
+    const file = await fs.open(filePath, "w");
+    await file.write(Buffer.from([0, 1, 2, 3]), 0, 4, offset);
+    await file.close();
+    const base = {
+      type: "host.read_file_chunk" as const,
+      path: filePath,
+      rootPath,
+      offset: 0,
+      length: 0,
+      revision: null,
+    };
+    const metadata = await readHostFileChunk(base);
+    expect(metadata.content).toBe("");
+    expect(metadata.sizeBytes).toBe(offset + 4);
+    const chunk = await readHostFileChunk({
+      ...base,
+      offset: offset + 1,
+      length: 2,
+      revision: metadata.revision,
+    });
+    expect(Buffer.from(chunk.content, "base64")).toEqual(Buffer.from([1, 2]));
+    expect(chunk.offset).toBe(offset + 1);
+    expect(chunk.revision).toBe(metadata.revision);
+    const eof = await readHostFileChunk({
+      ...base,
+      offset: offset + 3,
+      length: 10,
+      revision: metadata.revision,
+    });
+    expect(Buffer.from(eof.content, "base64")).toEqual(Buffer.from([3]));
+    await expect(
+      readHostFile({ type: "host.read_file", path: filePath, rootPath }),
+    ).rejects.toThrow("exceeds");
+  });
+
+  it.each(["overwrite", "truncate", "replace"])(
+    "rejects stale revisions after %s",
+    async (change) => {
+      const rootPath = await makeTempDir("bb-file-chunks-");
+      const filePath = path.join(rootPath, "clip.mp4");
+      await fs.writeFile(filePath, "original");
+      const base = {
+        type: "host.read_file_chunk" as const,
+        path: filePath,
+        rootPath,
+        offset: 0,
+        length: 0,
+        revision: null,
+      };
+      const metadata = await readHostFileChunk(base);
+      const before = await fs.stat(filePath);
+      if (change === "replace") {
+        await fs.writeFile(path.join(rootPath, "replacement"), "changed!");
+        await fs.rename(path.join(rootPath, "replacement"), filePath);
+      } else if (change === "truncate") {
+        await fs.truncate(filePath, 2);
+      } else {
+        await fs.writeFile(filePath, "changed!");
+        await fs.utimes(filePath, before.atime, before.mtime);
+      }
+      await expect(
+        readHostFileChunk({ ...base, length: 2, revision: metadata.revision }),
+      ).rejects.toMatchObject({ code: "file_changed" });
+    },
+  );
+
+  it("confines reads and rejects non-regular files", async () => {
+    const rootPath = await makeTempDir("bb-file-chunks-");
+    const outside = await makeTempDir("bb-file-chunks-outside-");
+    await fs.writeFile(path.join(outside, "secret"), "private");
+    await fs.symlink(
+      path.join(outside, "secret"),
+      path.join(rootPath, "escape"),
+    );
+    const base = {
+      type: "host.read_file_chunk" as const,
+      rootPath,
+      offset: 0,
+      length: 1,
+      revision: null,
+    };
+    await expect(
+      readHostFileChunk({ ...base, path: path.join(rootPath, "escape") }),
+    ).rejects.toMatchObject({ code: "invalid_path" });
+    await expect(
+      readHostFileChunk({ ...base, path: rootPath }),
+    ).rejects.toMatchObject({ code: "invalid_path" });
+    await expect(
+      readHostFileChunk({ ...base, path: path.join(rootPath, "missing") }),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(
+      readHostFileChunk({ ...base, path: "relative.mp4" }),
+    ).rejects.toMatchObject({ code: "invalid_path" });
+    if (process.platform !== "win32") {
+      const fifo = path.join(rootPath, "fifo");
+      await execFileAsync("mkfifo", [fifo]);
+      await expect(
+        readHostFileChunk({ ...base, path: fifo }),
+      ).rejects.toMatchObject({ code: "invalid_path" });
+    }
   });
 });

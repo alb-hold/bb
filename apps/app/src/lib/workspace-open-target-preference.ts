@@ -17,11 +17,6 @@ export type WorkspaceOpenTargetCapability =
   keyof WorkspaceOpenTargetCapabilities;
 export type WorkspaceOpenTargetContextKind = "local" | "remote-ssh";
 
-const RENAMED_WORKSPACE_OPEN_TARGET_IDS: Record<
-  string,
-  WorkspaceOpenTargetId | undefined
-> = { windsurf: "devin-desktop" };
-
 const NATIVE_VIEWABLE_FILE_EXTENSIONS = new Set([
   ".avif",
   ".bmp",
@@ -299,28 +294,26 @@ export function resolvePreferredWorkspaceOpenFileTarget(
   });
 }
 
+export function shouldOverrideUnknownOpenTargetPreference(
+  preferredTargetId: StoredWorkspaceOpenTargetPreference,
+  targets: WorkspaceOpenTarget[] | undefined,
+): boolean {
+  return (
+    preferredTargetId !== null &&
+    targets !== undefined &&
+    !targets.some((target) => target.id === preferredTargetId) &&
+    targets.some((target) => target.id === "default-app")
+  );
+}
+
 function useOverrideUnknownOpenTargetPreference(
   preferredTargetId: StoredWorkspaceOpenTargetPreference,
   setPreferredTargetId: (targetId: StoredWorkspaceOpenTargetPreference) => void,
   targets: WorkspaceOpenTarget[] | undefined,
 ): void {
   useEffect(() => {
-    const renamedTargetId =
-      preferredTargetId === null
-        ? undefined
-        : RENAMED_WORKSPACE_OPEN_TARGET_IDS[preferredTargetId];
     if (
-      renamedTargetId !== undefined &&
-      targets?.some((target) => target.id === renamedTargetId)
-    ) {
-      setPreferredTargetId(renamedTargetId);
-      return;
-    }
-    if (
-      preferredTargetId === null ||
-      targets === undefined ||
-      targets.some((target) => target.id === preferredTargetId) ||
-      !targets.some((target) => target.id === "default-app")
+      !shouldOverrideUnknownOpenTargetPreference(preferredTargetId, targets)
     ) {
       return;
     }

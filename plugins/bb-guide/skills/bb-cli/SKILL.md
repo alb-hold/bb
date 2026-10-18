@@ -5,8 +5,8 @@ description: "Inspect or manage BB state with the bb CLI; use for BB commands an
 
 # BB CLI
 
-Use bb for BB state and actions. Inspect context when the target project, host,
-workspace, or execution selection is not already established.
+Use bb for BB state and actions. `bb guide` is the reference manual; this skill
+says where to look and how to use bb well.
 
 ## Start with context
 
@@ -14,125 +14,101 @@ workspace, or execution selection is not already established.
 bb status --json
 ```
 
-Use JSON when command output controls later work. Use human output for quick
-inspection.
+- `bb guide` prints the concepts and the chapter index. `bb guide <chapter>`
+  is the full reference for one area.
+- `bb guide commands <group>` prints every command in a group with its options.
+  `bb <command> --help` shows current flags and defaults.
+- references/command-index.md lists every core command path and alias.
 
-Run `bb --version` for the CLI version. Use `bb --help` or `bb help [command]`
-for help. Run bb guide for the system overview. Run bb guide <chapter> for one
-area. Use bb <group> --help for current flags and defaults, or
-`bb guide commands <group>` for every command in a group with its options on
-one page.
+## Find the chapter
 
-## Errors and JSON
+| Task                                                                    | Read                           |
+| ----------------------------------------------------------------------- | ------------------------------ |
+| Spawn, hand off, or fork threads; edit a sent message                   | `bb guide threads`             |
+| List, inspect, wait on, or open threads                                 | `bb guide thread-inspection`   |
+| Message threads, answer interactions, manage queues                     | `bb guide thread-messaging`    |
+| Stop, clear, compact, retry, archive, or delete threads                 | `bb guide thread-lifecycle`    |
+| Worktree setup hooks, environment inspection, commits, pull requests    | `bb guide environments`        |
+| Enroll, create, update, suspend, or remove machines; move the server    | `bb guide machines`            |
+| Projects, sources, attachments, project files                           | `bb guide projects`            |
+| Providers, models, service tiers, custom models                         | `bb guide providers`           |
+| Dev servers and other long-running commands                             | `bb guide terminals`           |
+| Settings, keyboard shortcuts, sidebar preferences, themes, files, voice | `bb guide customization`       |
+| `AGENTS.md` and skills                                                  | `bb guide agent-configuration` |
+| Plugins and marketplaces                                                | `bb guide plugins`             |
+| Scheduled work                                                          | the `automations` skill        |
+| Built-in browser tabs                                                   | `bb guide browser`             |
+| `--json` output shapes and the error envelope                           | `bb guide json`                |
+| Writing theme CSS                                                       | references/theming.md          |
 
-- Read the whole error before you run `--help`. A failed invocation prints the
-  nearest command or option, the usage line, the valid options, and, for a
-  missing project, thread, machine, or environment, the exact flag to add with
-  the current ID filled in.
-- With `--json`, a failure prints
-  `{"ok": false, "error": {"code", "message", "hint"}}` on stdout and the
-  readable message on stderr, and exits non-zero. Parse stdout only; `2>&1`
-  mixes the message into the JSON.
-- Output shapes differ by command: `bb thread list --json` is a bare array,
-  `bb thread show --json` nests under `.thread`, `bb terminal list --json`
-  wraps in `.sessions`. `bb guide json` lists each shape, and the help of the
-  most-parsed commands ends with its JSON shape.
-- Pass long or multi-line text from a file: `bb thread tell <id>
---message-file <path>`, `bb thread spawn --prompt-file <path>`, with `-` for
-  stdin. Inside double quotes the shell runs `backticks` and `$(...)` before
-  bb sees the text, which silently corrupts Markdown and can execute commands.
-- Timeouts take seconds or a duration with a unit (`90s`, `20m`, `4h`).
-
-A standalone CLI targets http://127.0.0.1:38886. Use BB_SERVER_URL and
-BB_HOST_DAEMON_PORT only for an intentional non-default target.
-
-## Read only the relevant reference
-
-- Read references/command-index.md to find the exact core command path. Use
-  live help for current flags and defaults.
-- Read references/configuration.md for settings, agent instructions, skills,
-  remote clients, and environment setup scripts.
-- Read references/thread-creation.md before you spawn or fork threads, create
-  projects, select machines, move the server, or create environments.
-- Read references/thread-operation.md for messages, queues, interactions,
-  panes, terminals, inspection, and long-running commands.
-- Read references/failure-recovery.md when a thread fails, stops, or needs plan
-  or goal recovery.
-- Read references/theme-commands.md for palette and favicon commands. Read
-  references/theming.md before you create or edit theme CSS.
-- Read references/plugins.md for plugin discovery, install, build, update,
-  configuration, runtime, and contributed commands.
-- Read references/app-settings.md for complete app setting keys and effects.
+A plugin's commands and settings are documented in that plugin's own skill.
+`bb plugin list` shows which commands each plugin contributes.
 
 ## Command habits
 
 - Resolve names and IDs with a list or show command before mutation.
-- Pass an explicit project when a command can act across projects.
-- Pass an environment or machine selector when the default host is uncertain.
-- Spawn onto a plugin-provisioned environment with
-  `bb thread spawn --environment-provider <id>` (list them with
-  `bb environment providers`).
-  Read the provider's `requires` (`projectCheckout`, `gitCheckout`, `gitRemote`,
-  `projectless`): these facts decide where
-  the provider is offered. A provider whose `inputs` schema does not accept an
-  empty object needs `--environment-inputs <json>` matching that JSON Schema;
-  providers that accept `{}` use it when the flag is omitted
-  (`bb environment providers --json` prints both facts). `--base-branch`
-  belongs to `--new-environment worktree` only.
-- Enroll an existing machine with `bb machine create --provider manual`; run
-  the printed command on the target. `--no-wait` returns its host ID.
-  Cancel with `bb machine remove <host-id>`. Removal revokes access; use the
-  original `install-machine.sh --uninstall --host-id <host-id>` on that box.
-- Create a standalone machine with `bb machine create --provider <id>`; use
-  `--inputs <JSON>` for non-secret provider inputs and `--key` for retry identity.
-- List plugin-provisioned machine choices with `bb machine providers`. Create a
-  machine and an explicit environment with
-  `bb thread spawn --new-machine <provider-id> --environment-provider <id>`; add
-  `--machine-inputs <json>` when its schema requires inputs. Machine inputs are
-  persisted and non-secret; credentials belong in plugin settings. Composed
-  environments choose their own machine: use `--environment-provider modal-sandbox`
-  without machine selectors and pass `--machine-inputs <json>` when configuring
-  the composition's machine provider.
-- Use `bb machine enroll` for a private core-prepared bundle. Local lifecycle is
-  handled by `install-machine.sh --start|--stop|--uninstall --host-id <id>`;
-  see references/thread-creation.md for ownership checks.
-- Move the bb server to another machine with
-  `bb server move --to <machine> --check`, then the same command without
-  `--check`; it stops all running work. `bb server export --out <file>` backs
-  up a running server. `bb server import`, `unlock`, `allow-connect`, and
-  `delete-old-copy` act on this computer's data directory without calling a
-  server. An imported server keeps its connect tunnel off until
-  `bb server allow-connect`.
-- Use `bb machine suspend|resume <id-or-name>` only for providers that expose
-  suspend and resume. Resume waits for pending suspension and is a no-op
-  when already active. Use `bb machine retry-cleanup <id-or-name>` to retry a
-  failed provider teardown immediately.
-- `bb environment providers` lists Project checkout, Worktree, then other
-  installed providers by display name. With `--project <id> --machine <id>`
-  it also prints that machine's availability (`available`, `setup-required`,
-  `unavailable`, or `unknown` until the background probe answers). Read or set `managedBranchPrefix`
-  through `bb settings show` and `bb settings general <key> <value>`.
-- The server keeps a registry of sidebar layout preferences (organization
-  mode, section order, collapsed rows, navigation entries): `bb settings ui
-list`, `get`, `set`, and `reset`.
-- Query provider models on the machine that will run the thread.
-- Check `bb provider list` before blaming a provider for failing to start: it
-  reports readiness (`status`), and for a provider that is merely not signed in
-  it names the command to run (`loginCommand`). A provider whose CLI is absent
-  is not listed at all. `publishesUsage` says whether the provider publishes
-  quota, which is not the same as bb having no usage data for it.
-- Prefer non-interactive commands and machine-readable output for automation.
-- Pass `--yes` for a confirmed destructive command in a non-interactive shell.
-- Treat plugin commands as normal top-level commands after installation.
-
-- Inspect real status, logs, API results, or diffs instead of assumptions.
-- For launcher startup errors and console output, read `logs/server-stdio.log`
-  or `logs/host-daemon-stdio.log` under the selected bb data directory. These
-  append across restarts; `bb-app`, `bb-server`, and `bb-host-daemon` capture
-  service output there instead of forwarding it to their terminal.
+- Pass the project explicitly. Pass an environment or machine selector when the
+  default host is uncertain, and query provider models on the machine that will
+  run the thread.
 - Keep file paths on the machine that owns the selected workspace.
+- Use `--json` when output controls later work. Parse stdout only: a failure
+  prints the error envelope on stdout and the message on stderr, so `2>&1`
+  corrupts the JSON.
+- Read the whole error before running `--help`; it names the missing flag with
+  the current ID filled in.
+- Pass long or multi-line text with `--message-file <path>` or
+  `--prompt-file <path>` (`-` reads stdin). Inside double quotes the shell runs
+  backticks and `$(...)` before bb sees the text.
+- Prefer non-interactive commands. Pass `--yes` only for a destructive command
+  the user confirmed.
+- Inspect real status, logs, and diffs instead of assuming.
+- Examples use POSIX shell syntax. In PowerShell, read an environment variable
+  as `$env:NAME`, separate commands with `;`, and continue a line with a
+  backtick.
+
+## Working with threads
+
+- Give each task one clear owner. Spawn independent tasks separately.
+- Give spawned threads clear prompts: objective, constraints, expected
+  deliverable, validation to perform, and what to report back.
+- Let threads work. Do not poll with shell sleeps or repeated log and status
+  reads; use `bb thread wait <thread-id>` when you must block.
+- `bb thread tell` steers the active turn by default. Steer for a wrong
+  direction, a hard stop, or a critical clarification; use `--mode queue` for
+  non-urgent follow-ups. A send reported as `queued` is not a failure; do not
+  resend it.
+- For a review or fix pipeline, spawn the follow-up with
+  `--environment <environment-id>` from `bb thread show <thread-id> --json` so
+  it sees the same files.
+- To check whether a thread ever received a message, search
+  `bb thread log <thread-id> --all`, not the default page.
+- Before retrying a failed thread, read `bb thread show <thread-id> --json` and
+  `bb thread log <thread-id>`. Treat a thread the user stopped as intentionally
+  stopped unless they ask you to continue.
+
+## Safety
+
+- Never move the server, abandon a move, or unlock an old copy without the
+  user's explicit confirmation in this conversation. Run
+  `bb server move --to <machine> --check`, show them the checklist, and run it
+  without `--check` only after they confirm. Never pass `--yes` for them.
+- Only the owner can change a machine's permission limit, in the app. Read it
+  with `bb machine show <id-or-name> --json` and ask the user to change it.
+- Keep secrets out of command arguments, logs, and transcripts.
+  `bb machine env set` reads its value from stdin, and enrollment bundles travel
+  through a private file or environment variable. Machine and environment inputs
+  are persisted and readable, so they never carry credentials. Do not print
+  `serverHeaders`.
+- Install a registry skill or plugin by its ID. Never infer an install source
+  from a display name.
 
 ## Common checks
+
+Terminal output can be read with `bb terminal output <id> --lines <n>` after
+exit. The server retains 64 KiB per terminal, 2 MiB and 128 terminals per
+machine for 30 minutes, evicting oldest output first. Use `bb terminal pipe <id> --follow` to
+stream until exit or Ctrl-C; `--command <cmd>` sends the stream to a local
+command.
 
 ```sh
 bb project list --json
@@ -141,7 +117,6 @@ bb environment providers --json
 bb provider list --environment "$BB_ENVIRONMENT_ID" --json
 bb thread show "$BB_THREAD_ID" --json
 bb thread context --self --json
-bb thread image-metadata --self --json
 bb environment status "$BB_ENVIRONMENT_ID" --json
 bb plugin list --json
 bb skill list --environment "$BB_ENVIRONMENT_ID" --json
@@ -151,55 +126,3 @@ bb skill list --environment "$BB_ENVIRONMENT_ID" --json
 
 Confirm the command result and any affected thread, environment, plugin, or
 remote service. Report the stable ID or URL that the user needs next.
-
-`bb environment show <id>` reports core-owned lifecycle, retirement deadline and teardown attempts. Archive/delete of the last live thread starts the provider grace; unarchive cancels pending retirement. Teardown errors remain visible and retry automatically. `bb environment delete <id>` requests cleanup immediately, including under a never-retire policy; destroyed is recorded after cleanup completes. Removal waits for live or stopping runtimes. Project source deletion remains available during project deletion, including removal of the last source, so providers can finish cleanup.
-
-## Plugin configuration
-
-Use `bb plugin config <id>` to inspect the plugin’s configuration and
-`bb plugin config <id> set <key> <value>` to change it. Read the plugin’s own
-skill for its commands, configuration meanings, and operating constraints.
-Discover contributed command paths through `bb plugin list`, the generated
-`plugin-commands` skill, or `bb plugin run <id> --help`.
-
-Keep this skill and its references focused on core BB commands. Plugin-specific
-behavior belongs in the owning plugin’s `skills/` directory, including built-in
-plugins; do not add plugin command manuals here.
-
-## Built-in browser control
-
-Use `bb browser instances --host <host-id> --json` to discover a desktop. Commands `tabs`, `create`, `acquire`, `connection`, `release`, `reveal`, `capture`, `close`, and `watch` require explicit `--host`, `--instance`, `--generation`, and `--thread`. See `bb guide browser` and `bb browser --help` for flags. New tabs use separate automation profiles; personal-tab control needs an explicit handoff. Revealing tabs or acquiring control opens the side panel and selects the tab only in the already focused thread, without switching threads or activating the desktop window. Connection credentials are written with `connection --output <new-file>` and work only on the browser host; keep them out of chat and public port shares. `import-sources` and `import-cookies --from <source> --profile <dir> [--into personal|automation:<id>]` copy signed-in cookies from an installed browser (including Helium on macOS) into a BB browser profile; they need `--host`, `--instance`, and `--generation` only, and the source browser must be quit first.
-
-`bb machine show <id-or-name> --json` includes provider-owned inventory and
-estimates in `providerDetails` when available. Provider inventory failures are
-reported; this is not billing/invoice data. Suspension requires idle live threads
-and no open terminals; empty machines can use an opted-in provider idle policy.
-
-`bb thread image-metadata` reads persisted image dimensions; add `--source URL --width N --height N` and optional `--etag TAG` to record a source without fetching it.
-
-`bb thread context` reads recorded context usage without sending a model request. A breakdown is optional; absent usage is returned as `null`.
-
-## Spend and usage
-
-bb records per-thread, per-provider, per-model, per-day token totals as events
-are stored, because `thread/tokenUsage/updated` is pruned and anything polling
-the event log for spend races deletion.
-
-```sh
-bb spend --by provider
-bb spend --by thread --from 2026-09-01 --json
-bb spend backfill
-bb spend analyze --topic weekly --dry-run
-```
-
-Weighted units are a cost proxy (fresh input x1, cached x0.1, output x5), not
-money; bb ships no prices.
-
-A thread that spent tokens before this rollup existed reports an at-least
-figure, because bb had already deleted its usage events and deletion leaves no
-trace. Report it as a lower bound, never as a shortfall or a gap, and never
-subtract to imply what is absent. It heals on its own: threads started from now
-are counted from their first turn.
-
-`bb spend analyze` sends a rollup to a machine running `acp-hermes-agent` and is
-never automatic; `--dry-run` prints exactly what would be sent.

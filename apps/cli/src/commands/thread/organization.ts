@@ -1,11 +1,15 @@
 import { Command } from "commander";
 import { updateThreadTabsRequestSchema } from "@bb/server-contract";
 import {
+  PROMPT_HISTORY_SEARCH_LIMIT_MAX,
   queuedMessageWaitHolderSchema,
   type PromptInput,
   type QueuedMessageWaitHolder,
 } from "@bb/domain";
-import type { ThreadQueuedMessagesResult } from "@bb/sdk";
+import type {
+  ExperimentalPromptHistorySearchResult,
+  ThreadQueuedMessagesResult,
+} from "@bb/sdk";
 import {
   columnWidths,
   printBorderlessTable,
@@ -44,11 +48,18 @@ interface HistoryOptions extends JsonOptions {
   limit?: string;
 }
 
+interface PromptSearchOptions extends JsonOptions {
+  limit?: string;
+  project?: string;
+}
+
 interface QueueListOptions extends JsonOptions {
   waitHolder?: string;
 }
 
 interface QueueCreateOptions extends JsonOptions {
+  file?: string[];
+  image?: string[];
   messageFile?: string;
   model?: string;
 }
@@ -101,14 +112,6 @@ function printHumanJson(value: unknown): void {
 
 const MAX_QUEUE_TEXT_WIDTH = 40;
 
-/**
- * The queue as a table rather than raw JSON.
- *
- * `Waiting on` and `Send at` are the two columns that make a queued row
- * legible: without them a queued message and one blocked behind a rate-limit
- * window look identical, which is exactly the confusion the typed waits exist
- * to remove.
- */
 function printQueueTable(rows: ThreadQueuedMessagesResult): void {
   const now = Date.now();
   const table = rows.map((row) => [
@@ -120,13 +123,55 @@ function printQueueTable(rows: ThreadQueuedMessagesResult): void {
         ? "System"
         : (row.senderThreadId ?? "Agent"),
     truncateCell(queuedMessagePreview(row.content), MAX_QUEUE_TEXT_WIDTH),
-    truncateCell(describeQueueWait(row), MAX_QUEUE_TEXT_WIDTH),
+    row.state,
+    truncateCell(
+      row.failureReason === null
+        ? describeQueueWait(row)
+        : `Failed: ${row.failureReason}`,
+      MAX_QUEUE_TEXT_WIDTH,
+    ),
     formatQueueSendCountdown(row.sendAt, now),
   ]);
   printBorderlessTable(
     {
-      head: ["ID", "Thread", "Sender", "Message", "Waiting on", "Send at"],
-      colWidths: columnWidths(table, [2, 6, 6, 7, 10, 7]),
+      head: [
+        "ID",
+        "Thread",
+        "Sender",
+        "Message",
+        "State",
+        "Waiting on",
+        "Send at",
+      ],
+      colWidths: columnWidths(table, [2, 6, 6, 7, 5, 10, 7]),
+    },
+    table,
+  );
+  for (const row of rows) {
+    if (row.failureReason === null) continue;
+    console.log(`Failed ${row.id}: ${row.failureReason}`);
+    console.log(`Retry: bb thread queue send ${row.threadId} ${row.id}`);
+  }
+}
+
+function printPromptSearchTable(
+  rows: ExperimentalPromptHistorySearchResult,
+): void {
+  if (rows.length === 0) {
+    console.log("No matching prompts.");
+    return;
+  }
+  const table = rows.map((row) => [
+    new Date(row.lastUsedAt).toISOString(),
+    String(row.useCount),
+    truncateCell(row.projectName, 24),
+    row.threadId,
+    truncateCell(queuedMessagePreview(row.input), 60),
+  ]);
+  printBorderlessTable(
+    {
+      head: ["Last used", "Uses", "Project", "Thread", "Prompt"],
+      colWidths: columnWidths(table, [9, 4, 7, 6, 6]),
     },
     table,
   );
@@ -140,10 +185,6 @@ function queuedMessagePreview(content: PromptInput[]): string {
   return text.trim() === "" ? "(no text)" : text;
 }
 
-/**
- * Wait holders are a prefixed set, so a typo fails here with the shape spelled
- * out rather than as an opaque 400 from the list route.
- */
 function parseWaitHolder(value: string): QueuedMessageWaitHolder {
   const parsed = queuedMessageWaitHolderSchema.safeParse(value.trim());
   if (parsed.success) return parsed.data;
@@ -251,6 +292,36 @@ export function registerOrganizationCommands(
     );
 
   parent
+    .command("prompt-search [query]")
+    .description(
+      "Search prompts you sent in any thread, newest first; omit the query to list recent prompts",
+    )
+    .option("--project <id>", "Only search prompts sent in this project")
+    .option(
+      "--limit <count>",
+      `Maximum prompts (1-${PROMPT_HISTORY_SEARCH_LIMIT_MAX})`,
+    )
+    .option("--json", "Print machine-readable JSON output")
+    .action(
+      action(async (query: string | undefined, opts: PromptSearchOptions) => {
+        const limit = parsePositiveInteger(
+          opts.limit,
+          "--limit",
+          PROMPT_HISTORY_SEARCH_LIMIT_MAX,
+        );
+        const result = await createCliBbSdk(
+          getUrl(),
+        ).threads.experimental_searchPromptHistory({
+          ...(query === undefined ? {} : { query }),
+          ...(opts.project === undefined ? {} : { projectId: opts.project }),
+          ...(limit === undefined ? {} : { limit }),
+        });
+        if (outputJson(opts, result)) return;
+        printPromptSearchTable(result);
+      }),
+    );
+
+  parent
     .command("history <id>")
     .description("List a thread's prompt history")
     .option("--limit <count>", "Maximum history entries")
@@ -320,9 +391,6 @@ export function registerOrganizationCommands(
     .action(
       action(async (threadId: string | undefined, opts: QueueListOptions) => {
         const sdk = createCliBbSdk(getUrl());
-        // A thread argument keeps the thread-scoped route, which is the one
-        // that returns queue ORDER; the cross-thread route answers "what is
-        // queued anywhere" and is ordered by age instead.
         const result =
           threadId === undefined
             ? await sdk.threads.queue.list({
@@ -341,11 +409,23 @@ export function registerOrganizationCommands(
     );
   queue
     .command("create <threadId> [message]")
-    .description("Create a queued text message")
+    .description("Create a queued message with text and attachments")
     .option("--model <model>", "Model override for the queued message")
     .option(
       "--message-file <path>",
       `Read the message from a file instead of [message]; ${TEXT_FILE_HELP_SUFFIX}`,
+    )
+    .option(
+      "--file <path>",
+      "Upload an absolute path or file: URL from this CLI machine or pass an uploaded attachment path (repeatable)",
+      collectOption,
+      [],
+    )
+    .option(
+      "--image <path>",
+      "Upload an absolute path or file: URL from this CLI machine or pass an uploaded attachment path (repeatable)",
+      collectOption,
+      [],
     )
     .option("--json", "Print machine-readable JSON output")
     .action(
@@ -361,11 +441,20 @@ export function registerOrganizationCommands(
             inline: inlineMessage,
             inlineLabel: "<message>",
           });
-          const result = await createCliBbSdk(
-            getUrl(),
-          ).threads.queuedMessages.create({
+          const sdk = createCliBbSdk(getUrl());
+          const input = await uploadClientAttachmentInputs({
+            input: buildPromptInputs({
+              message,
+              files: opts.file,
+              images: opts.image,
+            }),
+            resolveProjectId: async () =>
+              (await sdk.threads.get({ threadId })).projectId,
+            sdk,
+          });
+          const result = await sdk.threads.queuedMessages.create({
             threadId,
-            input: [{ type: "text", text: message, mentions: [] }],
+            input,
             ...(opts.model ? { model: opts.model } : {}),
           });
           if (outputJson(opts, result)) return;

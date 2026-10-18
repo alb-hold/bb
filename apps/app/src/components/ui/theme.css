@@ -6,6 +6,7 @@
    Without this, utility classes used only by moved components — row-height,
    overlay, icon sizing — get purged from the app's CSS. */
 @source "../../../../../packages/shared-ui/src";
+@source "../../../../../plugins/thread-list/app";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -49,6 +50,7 @@
   --color-destructive-foreground: var(--destructive-foreground);
   --color-destructive-text: var(--destructive-text);
   --color-attention: var(--attention);
+  --color-attention-foreground: var(--attention-foreground);
   --color-warning: var(--warning);
   --color-warning-text: var(--warning-text);
   --color-success: var(--success);
@@ -189,7 +191,7 @@
     content: "";
     position: sticky;
     top: 0;
-    z-index: 70;
+    z-index: 55;
     display: block;
     height: var(--bb-sidebar-sticky-stack-padding-top);
     margin-top: calc(-1 * var(--bb-sidebar-sticky-stack-padding-top));
@@ -267,14 +269,16 @@
   }
 
   [data-sidebar-sticky-stack]
-    [data-sidebar-sticky-tier].bb-sidebar-open-in-split-row:is(
+    [data-sidebar-sticky-tier].bb-sidebar-accent-row:is(
       :hover,
-      :has([data-state="open"])
-    ) {
-    background-image: linear-gradient(
-      var(--sidebar-accent),
-      var(--sidebar-accent)
-    );
+      :has([data-state="open"]),
+      :has([data-sidebar-rename-anchor]:focus-visible),
+      :has([data-row-actions-customize]),
+      [data-sidebar-nest-target="valid"]
+    ):not([data-sidebar-touch-armed="true"]) {
+    background-image:
+      linear-gradient(var(--sidebar-accent), var(--sidebar-accent)),
+      linear-gradient(var(--sidebar), var(--sidebar));
   }
 
   .bb-sidebar-hover-actions {
@@ -291,10 +295,6 @@
     opacity: 1;
   }
 
-  /* Row content beside a hover-actions overlay that grows past its rest slot
-   * (the thread row's archive button sits left of the menu trigger). Reserve
-   * one action width under the same row states that reveal the overlay, so the
-   * title truncates instead of running under the button. */
   .bb-sidebar-hover-actions-inset {
     transition-property: padding;
     transition-duration: 0ms;
@@ -306,7 +306,25 @@
       .bb-sidebar-hover-actions[data-sidebar-hover-actions-open="true"]
     )
     .bb-sidebar-hover-actions-inset {
-    padding-right: calc(var(--spacing) * 7.5);
+    padding-right: var(
+      --bb-sidebar-hover-actions-inset,
+      calc(var(--spacing) * 7.5)
+    );
+  }
+
+  @media (hover: hover) {
+    .bb-sidebar-hover-actions-row:is(:hover, :has(:focus-visible))
+      .bb-sidebar-hover-actions-mask,
+    .bb-sidebar-hover-actions-row:has(
+        .bb-sidebar-hover-actions[data-sidebar-hover-actions-open="true"]
+      )
+      .bb-sidebar-hover-actions-mask {
+      mask-image: linear-gradient(
+        to left,
+        transparent var(--bb-sidebar-hover-actions-inset),
+        black calc(var(--bb-sidebar-hover-actions-inset) + var(--spacing) * 4)
+      );
+    }
   }
 
   .bb-sidebar-hover-actions-fade {
@@ -321,9 +339,38 @@
     opacity: 0;
   }
 
-  @media (max-width: 767px) and (pointer: coarse) {
-    /* The overlay is hidden on coarse phones, so no room is reserved. */
-    .bb-sidebar-hover-actions-row .bb-sidebar-hover-actions-inset {
+  :where(.bb-sidebar-hover-actions-row) {
+    container-name: sidebar-thread-row;
+    container-type: inline-size;
+  }
+
+  :where(.bb-sidebar-success-status) {
+    color: color-mix(in oklch, var(--success) 80%, var(--ink));
+  }
+
+  :where(
+    .bb-sidebar-hover-actions-row [data-sidebar-status-full],
+    .bb-sidebar-hover-actions-row [data-sidebar-shortcut-secondary]
+  ) {
+    display: none;
+  }
+
+  @container sidebar-thread-row (min-width: 24rem) {
+    :where(
+      .bb-sidebar-hover-actions-row [data-sidebar-status-full],
+      .bb-sidebar-hover-actions-row [data-sidebar-shortcut-secondary]
+    ) {
+      display: inline;
+    }
+  }
+
+  @media (hover: none) {
+    .bb-sidebar-hover-actions-row:is(:hover, :has(:focus-visible))
+      .bb-sidebar-hover-actions-inset,
+    .bb-sidebar-hover-actions-row:has(
+        .bb-sidebar-hover-actions[data-sidebar-hover-actions-open="true"]
+      )
+      .bb-sidebar-hover-actions-inset {
       padding-right: 0;
     }
 
@@ -480,6 +527,8 @@
    * fill is ~3.56:1 there) while keeping its 3:1 UI duties. */
   --destructive-text: oklch(0.45 0.19 25.8625);
   --attention: oklch(0.74 0.15 80);
+  /* Text on an --attention fill: the darkest anchor in each theme. */
+  --attention-foreground: var(--ink);
   --warning: oklch(0.7 0.16 50);
   --warning-text: oklch(0.55 0.14 50);
   --success: oklch(0.7 0.15 155);
@@ -715,6 +764,7 @@
    * dark canvas; the --destructive fill stays for icons/buttons/ring (3:1 UI). */
   --destructive-text: oklch(0.65 0.16 22);
   --attention: oklch(0.8 0.15 80);
+  --attention-foreground: var(--canvas);
   --warning: oklch(0.75 0.16 50);
   --warning-text: oklch(0.75 0.16 50);
   --success: oklch(0.74 0.15 155);

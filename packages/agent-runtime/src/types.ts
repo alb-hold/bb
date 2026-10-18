@@ -46,6 +46,7 @@ export type AgentRuntimeSkillRoot = SkillsConfigureRoot;
 export interface AgentRuntimeProcessExitThreadState {
   activeTurnId: string | null;
   pendingTurnStart: boolean;
+  pendingTurnStartRetryable?: boolean;
   providerThreadId: string | null;
   threadId: string;
 }
@@ -129,11 +130,13 @@ export interface AgentRuntimeBridgeLaunch {
 
 export interface EnsureProviderArgs {
   bridgeLaunch: AgentRuntimeBridgeLaunch;
+  skillRoots?: readonly AgentRuntimeSkillRoot[];
   providerId: string;
 }
 
 export interface StartThreadArgs {
   bridgeLaunch: AgentRuntimeBridgeLaunch;
+  skillRoots?: readonly AgentRuntimeSkillRoot[];
   environmentId: string;
   threadId: string;
   projectId: string;
@@ -144,7 +147,6 @@ export interface StartThreadArgs {
   options: AgentRuntimeExecutionOptions;
   instructions?: string;
   dynamicTools?: DynamicTool[];
-  disallowedTools?: readonly string[];
   instructionMode?: InstructionMode;
   fork?: {
     sourceProviderThreadId: string;
@@ -158,6 +160,7 @@ export interface StartThreadResult {
 
 interface PrepareThreadRewindArgs {
   bridgeLaunch: AgentRuntimeBridgeLaunch;
+  skillRoots?: readonly AgentRuntimeSkillRoot[];
   environmentId: string;
   threadId: string;
   leaseId: string;
@@ -169,7 +172,6 @@ interface PrepareThreadRewindArgs {
   options: AgentRuntimeExecutionOptions;
   instructions?: string;
   dynamicTools?: DynamicTool[];
-  disallowedTools?: readonly string[];
   instructionMode?: InstructionMode;
 }
 
@@ -183,6 +185,7 @@ interface DiscardThreadRewindArgs {
 
 export interface ResumeThreadArgs {
   bridgeLaunch: AgentRuntimeBridgeLaunch;
+  skillRoots?: readonly AgentRuntimeSkillRoot[];
   environmentId: string;
   threadId: string;
   projectId?: string;
@@ -192,7 +195,6 @@ export interface ResumeThreadArgs {
   options: AgentRuntimeExecutionOptions;
   instructions?: string;
   dynamicTools?: DynamicTool[];
-  disallowedTools?: readonly string[];
   instructionMode?: InstructionMode;
 }
 
@@ -304,6 +306,7 @@ interface ProviderMaintenanceArgs {
 
 interface ProviderInstallationStatusArgs extends ProviderMaintenanceArgs {
   requirement?: "thread_rewind";
+  checkUpdates?: boolean;
 }
 
 export interface AgentRuntime {

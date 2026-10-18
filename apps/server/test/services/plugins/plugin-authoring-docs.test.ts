@@ -1,5 +1,5 @@
 import { readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import ts from "typescript";
@@ -19,7 +19,9 @@ import {
   type PluginCommandRegistration,
   type PluginMessageActionContext,
   type PluginMessageActionRegistration,
+  type ThreadChatMessageReference,
   type PluginMessageDirectiveProps,
+  type ExperimentalCodeFenceRendererProps,
   type PluginNavPanelProps,
   type PluginNavPanelRegistration,
   type PluginNewThreadPanelProps,
@@ -31,11 +33,14 @@ import {
   type PluginSettingDescriptor,
   type PluginSettingsSectionProps,
   type PluginSidebarFooterActionProps,
-  type ExperimentalSidebarNavigationProps,
   type PluginSourceCodeRendererProps,
   type PluginThreadHeaderActionProps,
+  type PluginThreadActionItemInput,
   type ExperimentalPluginBrowserToolbarActionProps,
   type PluginThreadListProps,
+  type ExperimentalSidebarNavigationProps,
+  type ExperimentalSidebarNavigationRegistration,
+  type ExperimentalSidebarHeaderProps,
   type PluginSidebarFooterActionRegistration,
   type PluginThreadEventPayloads,
   type PluginThreadPanelProps,
@@ -70,8 +75,13 @@ function readReference(name: string): string {
 }
 
 function exportedTypeNames(source: string): string[] {
-  return [...source.matchAll(/^export (?:interface|type) ([A-Za-z0-9_]+)/gm)]
-    .map((match) => match[1])
+  return [
+    ...source.matchAll(
+      /(\/\*\*(?:(?!\*\/)[\s\S])*\*\/\s*)?^export (?:interface|type) ([A-Za-z0-9_]+)/gm,
+    ),
+  ]
+    .filter((match) => !(match[1] ?? "").includes("@internal"))
+    .map((match) => match[2])
     .filter((name): name is string => name !== undefined);
 }
 
@@ -133,7 +143,6 @@ const FRONTEND_TEST_EXPORT_NAMES = [
 
 const PUBLIC_PLUGIN_SDK_EXPORT_NAMES = [
   "bb-plugin-sdk.d.ts",
-  "bb-plugin-sdk-ai-services.d.ts",
   "bb-plugin-sdk-provider-bridge.d.ts",
   "bb-plugin-sdk-provider-bridge-testing.d.ts",
   "bb-plugin-sdk-provider-bridge-acp.d.ts",
@@ -172,6 +181,7 @@ const BB_PLUGIN_API_KEYS = [
   "experimental_serverAccess",
   "sdk",
   "onDispose",
+  "onInstall",
 ] as const satisfies readonly (keyof BbPluginApi)[];
 
 type MissingApiKey = Exclude<
@@ -215,7 +225,10 @@ void _assertAllAuthModesListed;
 
 const THREAD_EVENT_PAYLOAD_FIELDS = {
   "experimental_thread.events": ["thread", "sequence"],
+  "experimental_thread.parentChanged": ["thread", "previousParentThreadId"],
   "experimental_terminal.input": ["terminal"],
+  "experimental_host.deleted": ["host"],
+  "experimental_environment.removed": ["removal"],
   "thread.created": ["thread"],
   "thread.active": ["thread"],
   "thread.idle": ["thread", "lastAssistantText"],
@@ -237,9 +250,7 @@ const THREAD_EVENT_PAYLOAD_FIELDS = {
     "attemptNumber",
   ],
 } as const satisfies {
-  [
-    E in keyof PluginThreadEventPayloads
-  ]: readonly (keyof PluginThreadEventPayloads[E])[];
+  [E in keyof PluginThreadEventPayloads]: readonly (keyof PluginThreadEventPayloads[E])[];
 };
 
 type MissingThreadEventField = {
@@ -262,14 +273,16 @@ type SlotPropsByName = {
   experimental_newThreadPanelAction: PluginNewThreadPanelProps;
   pendingInteraction: PluginPendingInteractionProps;
   sidebarFooterAction: PluginSidebarFooterActionProps;
-  experimental_sidebarNavigation: ExperimentalSidebarNavigationProps;
   experimental_threadList: PluginThreadListProps;
+  experimental_sidebarNavigation: ExperimentalSidebarNavigationProps;
   experimental_threadHeaderAction: PluginThreadHeaderActionProps;
+  experimental_threadAction: PluginThreadActionItemInput<unknown>;
   experimental_browserToolbarAction: ExperimentalPluginBrowserToolbarActionProps;
   fileOpener: PluginFileOpenerProps;
   experimental_sourceCodeRenderer: PluginSourceCodeRendererProps;
   experimental_diffRenderer: PluginDiffRendererProps;
   messageDirective: PluginMessageDirectiveProps;
+  experimental_codeFenceRenderer: ExperimentalCodeFenceRendererProps;
   messageAction: PluginMessageActionContext;
   commandPaletteAction: PluginCommandContext;
   experimental_providerIcon: PluginProviderIconRegistration;
@@ -339,27 +352,19 @@ const FRONTEND_SLOT_PROP_FIELDS = {
   experimental_newThreadPanelAction: ["projectId", "params"],
   pendingInteraction: ["interaction", "submit", "cancel"],
   sidebarFooterAction: [],
-  experimental_sidebarNavigation: [
-    "items",
-    "activeItemId",
-    "isCompactViewport",
-    "experimental_activate",
-    "experimental_Original",
-  ],
   experimental_threadList: [
     "activeThreadId",
     "activeProjectId",
     "isCompactViewport",
     "onNavigate",
     "searchQuery",
-    "Original",
-    "experimental_Original",
   ],
   experimental_threadHeaderAction: [
     "threadId",
     "projectId",
     "isCompactViewport",
   ],
+  experimental_threadAction: ["thread", "data", "sdk", "navigate"],
   experimental_browserToolbarAction: [
     "threadId",
     "tabId",
@@ -367,20 +372,13 @@ const FRONTEND_SLOT_PROP_FIELDS = {
     "experimental_page",
     "isCompactViewport",
   ],
-  fileOpener: [
-    "path",
-    "source",
-    "experimental_lineRange",
-    "Original",
-    "experimental_Original",
-  ],
+  fileOpener: ["path", "source", "experimental_lineRange", "Original"],
   experimental_sourceCodeRenderer: [
     "content",
     "path",
     "overflow",
     "highlightedLines",
     "Original",
-    "experimental_Original",
   ],
   experimental_diffRenderer: [
     "patch",
@@ -390,10 +388,23 @@ const FRONTEND_SLOT_PROP_FIELDS = {
     "showLineNumbers",
     "experimental_fullFileContents",
     "Original",
-    "experimental_Original",
   ],
   messageDirective: ["attributes", "source", "message", "openWorkspaceFile"],
-  messageAction: ["threadId", "message", "selectedText", "openPanel"],
+  experimental_codeFenceRenderer: [
+    "code",
+    "language",
+    "status",
+    "index",
+    "message",
+    "Original",
+  ],
+  messageAction: [
+    "threadId",
+    "message",
+    "selectedText",
+    "openPanel",
+    "composer",
+  ],
   commandPaletteAction: ["threadId", "projectId", "openPanel"],
   experimental_providerIcon: ["providerKind", "providerId", "icon"],
   experimental_timelineRenderer: [
@@ -410,6 +421,11 @@ const FRONTEND_SLOT_PROP_FIELDS = {
     "onChange",
   ],
   experimental_machineProviderInputs: ["value", "onChange"],
+  experimental_sidebarNavigation: [
+    "isCompactViewport",
+    "placement",
+    "experimental_Original",
+  ],
 } as const satisfies {
   [S in keyof SlotPropsByName]: readonly (keyof SlotPropsByName[S])[];
 };
@@ -425,6 +441,39 @@ const _assertAllSlotPropFieldsListed: MissingSlotPropField extends never
   : never = true;
 void _assertAllSlotPropFieldsListed;
 
+const SIDEBAR_NAVIGATION_REGISTRATION_FIELDS = [
+  "id",
+  "title",
+  "description",
+  "placement",
+  "component",
+  "headerComponent",
+] as const satisfies readonly (keyof ExperimentalSidebarNavigationRegistration)[];
+
+type MissingSidebarNavigationRegistrationField = Exclude<
+  keyof ExperimentalSidebarNavigationRegistration,
+  (typeof SIDEBAR_NAVIGATION_REGISTRATION_FIELDS)[number]
+>;
+const _assertAllSidebarNavigationRegistrationFieldsListed: MissingSidebarNavigationRegistrationField extends never
+  ? true
+  : never = true;
+void _assertAllSidebarNavigationRegistrationFieldsListed;
+
+const SIDEBAR_HEADER_PROP_FIELDS = [
+  "width",
+  "controlSize",
+  "isCompactViewport",
+] as const satisfies readonly (keyof ExperimentalSidebarHeaderProps)[];
+
+type MissingSidebarHeaderPropField = Exclude<
+  keyof ExperimentalSidebarHeaderProps,
+  (typeof SIDEBAR_HEADER_PROP_FIELDS)[number]
+>;
+const _assertAllSidebarHeaderPropFieldsListed: MissingSidebarHeaderPropField extends never
+  ? true
+  : never = true;
+void _assertAllSidebarHeaderPropFieldsListed;
+
 const NAV_PANEL_REGISTRATION_FIELDS = [
   "id",
   "title",
@@ -432,7 +481,7 @@ const NAV_PANEL_REGISTRATION_FIELDS = [
   "path",
   "component",
   "fixedTabs",
-  "experimental_sidebarAccessory",
+  "experimental_useBadge",
   "headerContent",
 ] as const satisfies readonly (keyof PluginNavPanelRegistration)[];
 
@@ -476,6 +525,24 @@ const _assertAllMessageActionRegistrationFieldsListed: MissingMessageActionRegis
   ? true
   : never = true;
 void _assertAllMessageActionRegistrationFieldsListed;
+
+const MESSAGE_REFERENCE_FIELDS = [
+  "id",
+  "threadId",
+  "role",
+  "text",
+  "sourceSeqEnd",
+  "experimental_messageSeq",
+] as const satisfies readonly (keyof ThreadChatMessageReference)[];
+
+type MissingMessageReferenceField = Exclude<
+  keyof ThreadChatMessageReference,
+  (typeof MESSAGE_REFERENCE_FIELDS)[number]
+>;
+const _assertAllMessageReferenceFieldsListed: MissingMessageReferenceField extends never
+  ? true
+  : never = true;
+void _assertAllMessageReferenceFieldsListed;
 
 const COMMAND_PALETTE_ACTION_REGISTRATION_FIELDS = [
   "defaultShortcut",
@@ -559,8 +626,8 @@ describe("bb-plugin-authoring skill", () => {
       onError,
       shouldCreateNewSourceFile,
     ) =>
-      file === filename
-        ? ts.createSourceFile(filename, source!, languageVersion)
+      resolve(file) === filename
+        ? ts.createSourceFile(file, source!, languageVersion)
         : readSource(file, languageVersion, onError, shouldCreateNewSourceFile);
     const program = ts.createProgram([filename], options, host);
     expect(
@@ -590,16 +657,6 @@ describe("bb-plugin-authoring skill", () => {
     }
   });
 
-  it("warns that environment provider inputs are persisted configuration, not credentials", () => {
-    const documented = readReference("backend-events.md").replace(/\s+/g, " ");
-    expect(documented).toContain(
-      "Parsed inputs are persisted on the environment and are readable by every plugin through the SDK, including after the environment is destroyed.",
-    );
-    expect(documented).toContain(
-      "They are configuration, not a credential store; keep credentials in secret settings.",
-    );
-  });
-
   it("accounts for every @get-bb/plugin-sdk/app type export", () => {
     for (const name of FRONTEND_TYPE_EXPORT_NAMES) {
       expect(skill, `${name} is not documented in the skill`).toContain(name);
@@ -616,24 +673,6 @@ describe("bb-plugin-authoring skill", () => {
     for (const name of PUBLIC_PLUGIN_SDK_EXPORT_NAMES) {
       expect(skill, `${name} is not documented in the skill`).toContain(name);
     }
-  });
-
-  it("keeps fake-host and distribution examples aligned with implementation", () => {
-    const testing = readReference("testing.md");
-    const quickstart = readReference("quickstart.md");
-    const distribution = readReference("distribution.md");
-
-    expect(testing).toContain(
-      "experimental_callHostRpc: async ({ method, input, hostId, signal })",
-    );
-    expect(testing).toContain('const body = JSON.stringify({ event: "test" })');
-    expect(testing).toMatch(
-      /experimental_emitHostSignal\(\s*"host-test",\s*"changed",\s*\{\s*reason: "test",?\s*\}/,
-    );
-    expect(testing).not.toContain("resolveAgentConfiguration(context)");
-    expect(quickstart).toContain("server.js.map");
-    expect(quickstart).toContain("--omit=dev --omit=optional");
-    expect(distribution).not.toMatch(/"engines"\s*:/);
   });
 
   it("documents the complete frontend content-script lifecycle contract", () => {
@@ -690,37 +729,16 @@ describe("bb-plugin-authoring skill", () => {
     }
   });
 
-  it("keeps environment app symbols and composer and event guidance current", () => {
-    const frontendIndex = readReference("frontend-api-index.md");
-    const backendIndex = readReference("backend-api-index.md");
-    const appSymbols = [
-      "experimental_BranchPicker",
-      "BranchPickerProps",
-      "experimental_useBranches",
-      "UseBranchesArgs",
-      "BranchesState",
-      "experimental_useCheckoutState",
-      "UseCheckoutStateArgs",
-      "CheckoutState",
-      "PluginEnvironmentProviderInputsChange",
-      "PluginEnvironmentProviderInputsProps",
-      "PluginEnvironmentProviderInputsRegistration",
-    ];
-    for (const symbol of appSymbols) {
-      expect(frontendIndex).toContain(`\`${symbol}\``);
-      expect(backendIndex).not.toContain(`\`${symbol}\``);
+  it("documents every sidebar navigation registration field and header prop", () => {
+    for (const field of [
+      ...SIDEBAR_NAVIGATION_REGISTRATION_FIELDS,
+      ...SIDEBAR_HEADER_PROP_FIELDS,
+    ]) {
+      expect(
+        skill,
+        `sidebar navigation field "${field}" is not documented in the skill`,
+      ).toContain(field);
     }
-
-    expect(readReference("frontend-components.md")).not.toContain(
-      'workspace: { type: "personal" }',
-    );
-    expect(readReference("backend-events.md")).toContain("Fourteen events.");
-    expect(readReference("backend-events.md")).toContain(
-      "The seven `thread.*` ones",
-    );
-    expect(readReference("testing.md")).toContain(
-      "Thread events are observe-only; there are exactly seven",
-    );
   });
 
   it("documents every navPanel registration field", () => {
@@ -749,7 +767,12 @@ describe("bb-plugin-authoring skill", () => {
         `messageAction registration field "${field}" is not documented in the skill`,
       ).toContain(field);
     }
-    expect(skill).toContain("sourceSeqEnd");
+    for (const field of MESSAGE_REFERENCE_FIELDS) {
+      expect(
+        skill,
+        `message reference field "${field}" is not documented in the skill`,
+      ).toContain(field);
+    }
   });
 
   it("documents every commandPaletteAction registration field", () => {
@@ -778,24 +801,6 @@ describe("bb-plugin-authoring skill", () => {
         `ThreadChatMessageAction field "${field}" is not documented in the skill`,
       ).toContain(field);
     }
-  });
-
-  it("documents the explicit plugin branding contract", () => {
-    expect(skill).toContain("bb.name");
-    expect(skill).toContain("bb.description");
-    expect(skill).toContain("bb.branding");
-    expect(skill).toContain("logo.light");
-    expect(skill).toContain("logo.dark");
-    expect(skill).toContain("no root logo auto-detection");
-    expect(skill).toContain("currentColor");
-    expect(skill).toContain("branding.icon");
-    expect(skill).toContain("./assets/icon.svg");
-    expect(skill).toContain("CSS mask");
-    expect(skill).toContain("canonical BB icon name");
-    expect(skill).toContain("BB reuses this icon on roomy");
-    expect(skill).toContain("Logo-only");
-    expect(skill).toContain("manifests remain supported");
-    expect(skill).toContain("Do not duplicate");
   });
 
   it("documents every frontend slot and its prop fields", () => {

@@ -1,11 +1,12 @@
 import {
   createContext,
+  lazy,
+  Suspense,
   useCallback,
   useContext,
   useMemo,
   type ReactNode,
 } from "react";
-import { useSetAtom } from "jotai";
 import { useNavigate } from "react-router-dom";
 import type { ProjectResponse } from "@bb/server-contract";
 import { useRouteState } from "@/hooks/useRouteState";
@@ -14,12 +15,11 @@ import {
   useDeleteProject,
   useUpdateProject,
 } from "@/hooks/mutations/project-mutations";
-import { useDialogState } from "@/hooks/useDialogState";
+import { useDialogState } from "@bb/shared-ui/use-dialog-state";
 import {
   useLocalPathPicker,
   type LocalPathSubmitParams,
 } from "@/hooks/useLocalPathPicker";
-import { ProjectPathDialog } from "@/components/dialogs/ProjectPathDialog";
 import {
   ProjectDeleteDialog,
   type ProjectDeleteDialogTarget,
@@ -28,8 +28,13 @@ import {
   ProjectRenameDialog,
   type ProjectRenameDialogTarget,
 } from "@/components/dialogs/ProjectRenameDialog";
-import { collapsedProjectIdsAtom } from "@/components/sidebar/sidebarCollapsedAtoms";
 import { getRootComposeRoutePath } from "@/lib/route-paths";
+
+const ProjectPathDialog = lazy(() =>
+  import("@/components/dialogs/ProjectPathDialog").then((module) => ({
+    default: module.ProjectPathDialog,
+  })),
+);
 
 interface ProjectActionsContextValue {
   requestRename: (project: ProjectResponse) => void;
@@ -60,7 +65,6 @@ export function ProjectActionsProvider({
 }: ProjectActionsProviderProps) {
   const navigate = useNavigate();
   const { projectId: routeProjectId } = useRouteState();
-  const setCollapsedProjectIdList = useSetAtom(collapsedProjectIdsAtom);
   const updateProject = useUpdateProject();
   const deleteProject = useDeleteProject();
   const addLocalSource = useAddLocalProjectSource();
@@ -118,9 +122,6 @@ export function ProjectActionsProvider({
       deleteProjectMutate(projectId, {
         onSuccess: () => {
           closeDeleteDialog();
-          setCollapsedProjectIdList((current) =>
-            current.filter((id) => id !== projectId),
-          );
           if (routeProjectId === projectId) {
             navigate(getRootComposeRoutePath(), { replace: true });
           }
@@ -132,7 +133,6 @@ export function ProjectActionsProvider({
       deleteProjectMutate,
       navigate,
       routeProjectId,
-      setCollapsedProjectIdList,
     ],
   );
 
@@ -171,15 +171,19 @@ export function ProjectActionsProvider({
         onOpenChange={deleteDialog.onOpenChange}
         onDelete={confirmDelete}
       />
-      <ProjectPathDialog
-        target={addLocalSourcePicker.projectPathDialog.target}
-        pending={addLocalSource.isPending}
-        platform={addLocalSourcePicker.platform}
-        hostId={addLocalSourcePicker.hostId}
-        hostName={addLocalSourcePicker.hostName}
-        onOpenChange={addLocalSourcePicker.projectPathDialog.onOpenChange}
-        onSubmit={addLocalSourcePicker.submitProjectPath}
-      />
+      {addLocalSourcePicker.projectPathDialog.target === null ? null : (
+        <Suspense fallback={null}>
+          <ProjectPathDialog
+            target={addLocalSourcePicker.projectPathDialog.target}
+            pending={addLocalSource.isPending}
+            platform={addLocalSourcePicker.platform}
+            hostId={addLocalSourcePicker.hostId}
+            hostName={addLocalSourcePicker.hostName}
+            onOpenChange={addLocalSourcePicker.projectPathDialog.onOpenChange}
+            onSubmit={addLocalSourcePicker.submitProjectPath}
+          />
+        </Suspense>
+      )}
     </ProjectActionsContext.Provider>
   );
 }

@@ -17,6 +17,57 @@ export {
 
 export { countAppliedMigrations, migrate } from "./migrate.js";
 export {
+  getThreadSpawner,
+  recordThreadSpawner,
+} from "./fork-thread-spawners.js";
+export {
+  clearThreadRowState,
+  getThreadRowState,
+  putThreadRowState,
+  type ThreadRowProgress,
+  type ThreadRowState,
+  type ThreadRowStatus,
+} from "./fork-thread-row-state.js";
+export {
+  clearTerminalAttention,
+  ensureTerminalAttentionTable,
+  getTerminalAttention,
+  listTerminalAttention,
+  upsertTerminalAttention,
+  type TerminalAttentionKind,
+  type TerminalAttentionRecord,
+} from "./fork-terminal-attention.js";
+export {
+  appendRetainedTerminalOutputChunk,
+  dismissRetainedTerminalOutput,
+  getRetainedTerminalOutput,
+  markRetainedTerminalOutputExited,
+  pruneRetainedTerminalOutput,
+  TERMINAL_RETAINED_OUTPUT_BYTES,
+  HOST_RETAINED_OUTPUT_BYTES,
+  HOST_RETAINED_TERMINAL_LIMIT,
+  TERMINAL_OUTPUT_RETENTION_MS,
+  type RetainedTerminalOutputChunk,
+} from "./fork-terminal-output.js";
+export {
+  consumeNativeTerminalThreadLaunchInput,
+  createNativeTerminalThread,
+  deleteNativeTerminalThread,
+  findNativeTerminalThreadBySession,
+  getNativeTerminalThread,
+  isNativeTerminalThread,
+  listNativeTerminalThreadIds,
+  listNativeTerminalThreadsWithDisconnectedTerminal,
+  recordNativeTerminalThreadSessionId,
+  setNativeTerminalThreadTerminal,
+  type NativeTerminalThreadRecord,
+  type RecordNativeSessionIdResult,
+  setNativeTerminalToolCredential,
+  getNativeTerminalToolCredential,
+  deleteNativeTerminalToolCredential,
+  type NativeTerminalToolCredentialRecord,
+} from "./fork-native-terminal-threads.js";
+export {
   isSqliteForeignKeyConstraint,
   isSqliteUniqueConstraintOnColumns,
 } from "./sqlite-errors.js";

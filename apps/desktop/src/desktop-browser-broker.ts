@@ -56,6 +56,7 @@ export function createDesktopBrowserBroker(args: {
   const registryListeners = new Set<() => void>();
   const snapshots = new Map<string, string>();
   let hostId: string | null = null;
+  let serverOrigin: string | null = null;
 
   function instanceForWindow(webContentsId: number): InstanceEntry | undefined {
     return [...instances.values()].find(
@@ -91,13 +92,17 @@ export function createDesktopBrowserBroker(args: {
       threadId: tab.threadId,
       url: tab.url,
       title: tab.title ?? "",
-      profile: tab.profile,
       presentation: tab.presentation,
       control: controlFor(instance, tab.tabId)?.metadata ?? null,
     };
   }
 
   function publish(instance: InstanceEntry, threadId: string): void {
+    if (
+      instance.window.isDestroyed() ||
+      instance.window.webContents.isDestroyed()
+    )
+      return;
     instance.threads.add(threadId);
     const tabs = tabsFor(instance, threadId).map((tab) =>
       wireTab(instance, tab),
@@ -115,11 +120,6 @@ export function createDesktopBrowserBroker(args: {
     snapshots.set(key, serialized);
     if (isRawThreadId(threadId))
       for (const listener of listeners) listener(event);
-    if (
-      instance.window.isDestroyed() ||
-      instance.window.webContents.isDestroyed()
-    )
-      return;
     for (const tab of tabs) {
       instance.window.webContents.send(BB_DESKTOP_BROWSER_CONTROL_CHANNEL, {
         tabId: tab.tabId,
@@ -221,16 +221,6 @@ export function createDesktopBrowserBroker(args: {
       async createTab(_scope, url, signal) {
         signal.throwIfAborted();
         ensureLease();
-        const firstId = lease.tabs.keys().next().value;
-        if (firstId === undefined)
-          throw new Error("Browser lease has no pages");
-        const profile = requireTab(
-          lease.instance,
-          lease.threadId,
-          firstId,
-        ).profile;
-        if (profile.kind !== "automation")
-          throw new Error("Create automation pages in a dedicated profile");
         if (lease.tabs.size >= 100)
           throw new Error("Browser lease tab limit reached");
         const tab = args.manager.createTab({
@@ -238,7 +228,6 @@ export function createDesktopBrowserBroker(args: {
           threadId: lease.threadId,
           tabId: `browser:${randomUUID()}:none`,
           url,
-          profile,
           viewport: { width: 1280, height: 720 },
         });
         lease.tabs.set(tab.tabId, tab.generation);
@@ -328,15 +317,17 @@ export function createDesktopBrowserBroker(args: {
           instance.descriptor.generation = randomUUID();
       } else changed();
     },
-    resetServer() {
+    setServerOrigin(value: string) {
+      if (serverOrigin === value) return;
+      serverOrigin = value;
       hostId = null;
       for (const lease of [...leases.values()]) revoke(lease);
-      args.manager.destroyAll();
       for (const instance of instances.values()) {
         instance.threads.clear();
         instance.descriptor.generation = randomUUID();
       }
       snapshots.clear();
+      args.manager.setServerOrigin(value);
     },
     getTarget(webContentsId: number): BbDesktopBrowserTarget | null {
       const instance = instanceForWindow(webContentsId);
@@ -402,7 +393,7 @@ export function createDesktopBrowserBroker(args: {
             sourceId: command.sourceId,
             sourceProfileDirectory: command.sourceProfileDirectory,
           },
-          args.manager.profileSession(command.profile),
+          args.manager.session(),
         );
       }
       const scope = {

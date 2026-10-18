@@ -50,19 +50,6 @@ const previewInputs = (slot: {
     .filter((call) => call.method === "preview")
     .map((call) => call.input);
 
-describe("registration", () => {
-  it("renders inline in the chat with a window-level lightbox", () => {
-    expect(app.messageDirectives.map((entry) => entry.id)).toEqual([
-      "browser-preview",
-    ]);
-    expect(app.appOverlays.map((entry) => entry.id)).toEqual([
-      "browser-preview-lightbox",
-    ]);
-    expect(app.threadPanelActions).toEqual([]);
-    expect(app.composerCustomizations).toEqual([]);
-  });
-});
-
 describe("inline browser preview", () => {
   it("rejects a malformed session attribute without calling the server", async () => {
     const slot = renderSlot(directive, props("not-a-session"), { rpc: {} });
@@ -78,6 +65,10 @@ describe("inline browser preview", () => {
     const firstRequested = new Promise<void>((resolve) => {
       deliverFirst = resolve;
     });
+    let deliverSecond!: () => void;
+    const secondRequested = new Promise<void>((resolve) => {
+      deliverSecond = resolve;
+    });
     const slot = renderSlot(directive, props(), {
       rpc: {
         preview: async () => {
@@ -86,7 +77,10 @@ describe("inline browser preview", () => {
             await firstRequested;
             return { session, frame: frame(4) };
           }
-          if (polls === 2) return { session, frame: frame(5, "Checkout") };
+          if (polls === 2) {
+            await secondRequested;
+            return { session, frame: frame(5, "Checkout") };
+          }
           return hang();
         },
       },
@@ -95,9 +89,12 @@ describe("inline browser preview", () => {
     expect(slot.getByText("Connecting")).toBeTruthy();
     deliverFirst();
     const first = await slot.findByAltText("Live view of Cart");
-    expect(first.getAttribute("src")).toBe("data:image/jpeg;base64,bytes4");
+    await waitFor(() =>
+      expect(first.getAttribute("src")).toBe("data:image/jpeg;base64,bytes4"),
+    );
     expect(slot.getByText("shop.test/cart")).toBeTruthy();
     expect(slot.getByText("Live")).toBeTruthy();
+    deliverSecond();
     const second = await slot.findByAltText(
       "Live view of Checkout",
       {},

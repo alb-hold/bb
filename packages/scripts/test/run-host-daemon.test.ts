@@ -7,6 +7,7 @@ import {
   HOST_AUTH_FILE_NAME,
   HOST_ID_FILE_NAME,
 } from "@bb/host-daemon-contract";
+import { makeTempDir } from "@bb/test-helpers";
 import {
   expectedDevDataDir,
   expectedDevServerUrl,
@@ -14,7 +15,6 @@ import {
 import type * as RunHostDaemonModule from "../src/commands/run-host-daemon.js";
 import type { HostDaemonRuntimeEnvironment } from "../src/lib/host-daemon-runtime.js";
 
-const tempDirs: string[] = [];
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(testDir, "..", "..", "..");
 let runHostDaemon: typeof RunHostDaemonModule;
@@ -42,16 +42,9 @@ function createTestRuntimeEnv({
     BB_HOST_ENROLL_KEY: undefined,
     BB_HOST_DAEMON_PORT: "3002",
     BB_HOST_ID: undefined,
-    BB_HOST_NAME: undefined,
     BB_SERVER_URL: serverUrl,
     NODE_ENV: "development",
   };
-}
-
-async function makeTempDir(prefix: string): Promise<string> {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
-  tempDirs.push(dir);
-  return dir;
 }
 
 beforeEach(async () => {
@@ -62,14 +55,9 @@ beforeEach(async () => {
   runHostDaemon = await import("../src/commands/run-host-daemon.js");
 });
 
-afterEach(async () => {
+afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
-  await Promise.all(
-    tempDirs
-      .splice(0)
-      .map((dir) => fs.rm(dir, { recursive: true, force: true })),
-  );
 });
 
 describe("run-host-daemon auto join", () => {

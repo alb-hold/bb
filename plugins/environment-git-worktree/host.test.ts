@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import {
   mkdir,
   mkdtemp,
+  readFile,
   readdir,
   realpath,
   rm,
@@ -51,7 +52,8 @@ async function createSourceRepository(repositoryName = "repo"): Promise<{
   temporaryRoots.push(root);
   const sourcePath = join(root, repositoryName);
   const dataDir = join(root, "plugin-data");
-  await execFileAsync("mkdir", ["-p", sourcePath, dataDir]);
+  await mkdir(sourcePath, { recursive: true });
+  await mkdir(dataDir, { recursive: true });
   await git(sourcePath, "init", "--initial-branch=main");
   await writeFile(join(sourcePath, "README.md"), "hello\n");
   await git(sourcePath, "add", ".");
@@ -69,7 +71,8 @@ async function createDetachedSingleBranchRepository(): Promise<{
   const originPath = join(root, "origin");
   const sourcePath = join(root, "repo");
   const dataDir = join(root, "plugin-data");
-  await execFileAsync("mkdir", ["-p", originPath, dataDir]);
+  await mkdir(originPath, { recursive: true });
+  await mkdir(dataDir, { recursive: true });
   await git(originPath, "init", "--initial-branch=main");
   await writeFile(join(originPath, "README.md"), "hello\n");
   await git(originPath, "add", ".");
@@ -122,13 +125,87 @@ afterEach(async () => {
 });
 
 describe("worktree host entry", () => {
+  it.each([
+    { existingBranch: false, branchMode: "reset" },
+    { existingBranch: false, branchMode: "reuse-existing" },
+    { existingBranch: true, branchMode: "reuse-existing" },
+    { existingBranch: true, branchMode: "reset" },
+  ] as const)(
+    "creates with a locked config (existing=$existingBranch, mode=$branchMode)",
+    async ({ existingBranch, branchMode }) => {
+      const { sourcePath, dataDir } = await createSourceRepository();
+      await git(sourcePath, "remote", "add", "origin", sourcePath);
+      await git(sourcePath, "fetch", "origin");
+      await git(sourcePath, "config", "branch.autoSetupMerge", "always");
+      await git(sourcePath, "config", "core.autocrlf", "true");
+      const branchName = "bb/config-lock";
+      if (existingBranch) {
+        await git(
+          sourcePath,
+          "update-ref",
+          "refs/remotes/origin/published",
+          "HEAD",
+        );
+        await git(
+          sourcePath,
+          "branch",
+          "--track",
+          branchName,
+          "origin/published",
+        );
+      }
+      const configPath = join(sourcePath, ".git", "config");
+      const originalConfig = await readFile(configPath, "utf8");
+      const lockPath = `${configPath}.lock`;
+      await writeFile(lockPath, "another Git writer\n");
+      const harness = createHarness(dataDir);
+      try {
+        const result = await harness.experimental_call("create", {
+          ...createInput({
+            operationId: "config-lock",
+            sourcePath,
+            pathKey: "config-lock",
+            branchName,
+          }),
+          branchMode,
+          baseBranch: { kind: "named", name: "origin/main" },
+        });
+        expect(result.status).toBe("created");
+        if (result.status !== "created") throw new Error(result.message);
+        expect(
+          (await readFile(join(result.path, "README.md"), "utf8")).replace(
+            /\r\n/gu,
+            "\n",
+          ),
+        ).toBe("hello\n");
+        expect(await git(result.path, "rev-parse", "HEAD")).toBe(
+          await git(sourcePath, "rev-parse", "origin/main"),
+        );
+        expect(
+          (
+            await git(
+              result.path,
+              "for-each-ref",
+              "--format=%(upstream:short)",
+              `refs/heads/${branchName}`,
+            )
+          ).trim(),
+        ).toBe(existingBranch ? "origin/published" : "");
+        expect(await readFile(lockPath, "utf8")).toBe("another Git writer\n");
+        expect(await readFile(configPath, "utf8")).toBe(originalConfig);
+      } finally {
+        await harness.experimental_dispose();
+      }
+    },
+  );
+
   it("resolves adoption paths with trailing slashes and symlink aliases", async () => {
     const { root, sourcePath, dataDir } = await createSourceRepository();
     const worktreePath = join(root, "feature");
     await git(sourcePath, "worktree", "add", "-b", "feature", worktreePath);
     const canonicalPath = await realpath(worktreePath);
     const aliasPath = join(root, "feature-alias");
-    await symlink(worktreePath, aliasPath, "dir");
+    await symlink(worktreePath, aliasPath, "junction");
     const harness = createHarness(dataDir);
 
     for (const path of [canonicalPath, `${canonicalPath}/`, aliasPath]) {
@@ -146,7 +223,7 @@ describe("worktree host entry", () => {
     const worktreePath = join(dataDir, "worktrees", "managed");
     await git(sourcePath, "worktree", "add", "-b", "managed", worktreePath);
     const dataAlias = join(root, "data-alias");
-    await symlink(dataDir, dataAlias, "dir");
+    await symlink(dataDir, dataAlias, "junction");
     const harness = createHarness(dataAlias);
 
     expect(
@@ -154,7 +231,7 @@ describe("worktree host entry", () => {
     ).toEqual({ worktrees: [] });
     for (const [index, target] of [sourcePath, worktreePath].entries()) {
       const aliasPath = join(root, `alias-${index}`);
-      await symlink(target, aliasPath, "dir");
+      await symlink(target, aliasPath, "junction");
       expect(
         await harness.experimental_call("resolveExistingWorktree", {
           sourcePath,
@@ -255,7 +332,13 @@ describe("worktree host entry", () => {
     },
   );
 
-  it("creates a bounded worktree path for a long repository name", async () => {
+  it("creates a bounded worktree path for a long repository name", async ({
+    skip,
+  }) => {
+    skip(
+      process.platform === "win32",
+      "Windows cannot start a process whose working directory is longer than MAX_PATH",
+    );
     const repositoryName = "repository".repeat(24);
     const { sourcePath, dataDir } =
       await createSourceRepository(repositoryName);
@@ -311,6 +394,44 @@ describe("worktree host entry", () => {
     expect(existsSync(join(second.path, "README.md"))).toBe(true);
     await harness.experimental_dispose();
   });
+
+  it.skipIf(process.platform === "win32")(
+    "settles a cancelled create promptly when Git's children are still running",
+    async () => {
+      const { root, sourcePath, dataDir } = await createSourceRepository();
+      const hookPidPath = join(root, "hook.pid");
+      const hookPath = join(sourcePath, ".git", "hooks", "post-checkout");
+      await writeFile(
+        hookPath,
+        `#!/bin/sh\necho $$ > "${hookPidPath}"\nexec sleep 30\n`,
+        { mode: 0o755 },
+      );
+      const harness = createHarness(dataDir);
+      const controller = new AbortController();
+      const created = harness
+        .experimental_call(
+          "create",
+          createInput({
+            operationId: "cancelled-create",
+            sourcePath,
+            pathKey: "cancelled",
+            branchName: "bb/cancelled",
+          }),
+          { signal: controller.signal },
+        )
+        .catch((error: unknown) => error);
+      await expect
+        .poll(() => existsSync(hookPidPath), { timeout: 10_000 })
+        .toBe(true);
+      const hookPid = Number((await readFile(hookPidPath, "utf8")).trim());
+      const abortedAt = performance.now();
+      controller.abort();
+      expect(await created).toBeInstanceOf(Error);
+      expect(performance.now() - abortedAt).toBeLessThan(3_000);
+      await expect.poll(() => isPidAlive(hookPid)).toBe(false);
+      await harness.experimental_dispose();
+    },
+  );
 
   it("creates a worktree on a named base under the path-key directory", async () => {
     const { sourcePath, dataDir } = await createSourceRepository();
@@ -514,7 +635,13 @@ describe("worktree host entry", () => {
     await harness.experimental_dispose();
   });
 
-  it("leaves teardown to core, kills workspace processes, and prunes the path-key parent", async () => {
+  it("leaves teardown to core, kills workspace processes, and prunes the path-key parent", async ({
+    skip,
+  }) => {
+    skip(
+      process.platform === "win32",
+      "killProcessesWithCwdUnder does not enumerate process working directories on Windows",
+    );
     const { root, sourcePath, dataDir } = await createSourceRepository();
     await writeFile(
       join(sourcePath, ".bb-env-teardown.sh"),
@@ -533,11 +660,15 @@ describe("worktree host entry", () => {
       }),
     );
     if (created.status !== "created") throw new Error(created.message);
-    const lingering = spawn("sleep", ["300"], {
-      cwd: created.path,
-      detached: true,
-      stdio: "ignore",
-    });
+    const lingering = spawn(
+      process.execPath,
+      ["-e", "setTimeout(() => {}, 300_000)"],
+      {
+        cwd: created.path,
+        detached: true,
+        stdio: "ignore",
+      },
+    );
     lingering.unref();
     const removed = await harness.experimental_call("remove", {
       operationId: "remove",

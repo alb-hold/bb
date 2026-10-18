@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
+import * as fsPromises from "node:fs/promises";
 import {
   access,
   mkdir,
@@ -20,8 +21,31 @@ import {
   describe,
   expect,
   it,
+  vi,
 } from "vitest";
 import { unlink, utimes } from "node:fs/promises";
+
+const lockRace = vi.hoisted(() => ({
+  path: null as string | null,
+  onUnlink: null as (() => Promise<void>) | null,
+  onReapLink: null as (() => void) | null,
+}));
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...actual,
+    link: async (existingPath: string, newPath: string) => {
+      if (newPath === `${lockRace.path}.reap`) lockRace.onReapLink?.();
+      return actual.link(existingPath, newPath);
+    },
+    unlink: vi.fn(async (path: string) => {
+      if (path === lockRace.path) await lockRace.onUnlink?.();
+      return actual.unlink(path);
+    }),
+  };
+});
+
 import {
   acquireLock,
   checkProvenance,
@@ -50,6 +74,8 @@ const release: RuntimeRelease = {
 };
 const asset = `dev-browser-${platform}`;
 const attestationPath = `/-/npm/v1/attestations/dev-browser@${version}`;
+const noWindowsRuntime =
+  "DevBrowser publishes no Windows runtime, so the runtime installer never runs on Windows";
 
 function provenance(
   repository: string,
@@ -92,22 +118,25 @@ const path = require("node:path");
 const config = JSON.parse(fs.readFileSync(path.join(__dirname, "config.json"), "utf8"));
 const counter = path.join(__dirname, "calls");
 fs.appendFileSync(counter, process.argv.slice(2).join(" ") + "\\n");
+async function main() {
 if (process.argv[2] === "install") {
   if (process.env.npm_config_ignore_scripts !== "true") { console.error("scripts not ignored"); process.exit(3); }
   if (!process.env.npm_config_registry) { console.error("no registry"); process.exit(3); }
   if (!process.env.npm_config_cache) { console.error("no cache"); process.exit(3); }
-  const wait = Date.now() + (config.installDelayMs ?? 0);
-  while (Date.now() < wait) {}
+  await new Promise((resolve) => setTimeout(resolve, config.installDelayMs ?? 0));
   if (config.installExit) { console.error("registry unreachable: ENOTFOUND registry.npmjs.org"); process.exit(config.installExit); }
   const dir = path.join(process.cwd(), "node_modules", "dev-browser", "bin");
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, "dev-browser.cjs"), "shim");
   fs.writeFileSync(path.join(dir, "..", "package.json"), JSON.stringify({ name: "dev-browser", version: config.version }));
-  fs.writeFileSync(path.join(process.cwd(), "node_modules", ".package-lock.json"), JSON.stringify({ packages: { "node_modules/dev-browser": { version: config.version, resolved: (config.resolvedBase ?? process.env.npm_config_registry) + "/dev-browser/-/dev-browser.tgz", integrity: config.integrity } } }));
+  const omitResolved = config.omitLockfileRegistryResolved && !process.argv.includes("--omit-lockfile-registry-resolved=false");
+  fs.writeFileSync(path.join(process.cwd(), "node_modules", ".package-lock.json"), JSON.stringify({ packages: { "node_modules/dev-browser": { version: config.version, ...(omitResolved ? {} : { resolved: (config.resolvedBase ?? process.env.npm_config_registry) + "/dev-browser/-/dev-browser.tgz" }), integrity: config.integrity } } }));
   process.exit(0);
 }
 if (process.argv[2] === "audit") { process.stdout.write(JSON.stringify(config.audit)); process.exit(config.auditExit ?? 0); }
 process.exit(9);
+}
+void main().catch((error) => { console.error(error); process.exit(1); });
 `;
 
 let fixture: string;
@@ -213,38 +242,46 @@ beforeEach(async () => {
 });
 
 describe("runtime installer", () => {
-  it("installs the exact pinned package once and reuses it without npm or network", async () => {
-    const dir = await dataDir();
-    const progress: string[] = [];
-    const installed = await install(dir, {
-      onProgress: (detail) => progress.push(detail),
-    });
-    expect(installed.sha256).toBe(sha256(binaryContent));
-    expect(installed.binary).toBe(
-      join(
-        installRoot(dir),
-        `dev-browser@${version}`,
-        "node_modules/dev-browser/bin/dev-browser-bin",
-      ),
-    );
-    await access(installed.binary, constants.X_OK);
-    expect(await npmCalls()).toEqual([
-      `install --ignore-scripts --no-audit --no-fund --omit=dev --loglevel=error --registry=${base}`,
-      `audit signatures --json --registry=${base}`,
-    ]);
-    expect(requests).toEqual([attestationPath, "/SHA256SUMS", `/${asset}`]);
-    expect(progress).toContain(
-      "verifying npm registry signature and provenance",
-    );
-    expect(await entries(dir)).toEqual([`dev-browser@${version}`]);
-    const warm = await install(dir, {
-      env: env(false),
-      downloadBase: "http://127.0.0.1:9/unreachable",
-    });
-    expect(warm.binary).toBe(installed.binary);
-    expect(requests).toHaveLength(3);
-  });
-  it("reinstalls when the cached binary no longer matches the pin", async () => {
+  it.for([false, true])(
+    "installs the exact pinned package with registry URL omission %s and reuses it without npm or network",
+    async (omitLockfileRegistryResolved, { skip }) => {
+      skip(process.platform === "win32", noWindowsRuntime);
+      await configureNpm({ omitLockfileRegistryResolved });
+      const dir = await dataDir();
+      const progress: string[] = [];
+      const installed = await install(dir, {
+        onProgress: (detail) => progress.push(detail),
+      });
+      expect(installed.sha256).toBe(sha256(binaryContent));
+      expect(installed.binary).toBe(
+        join(
+          installRoot(dir),
+          `dev-browser@${version}`,
+          "node_modules/dev-browser/bin/dev-browser-bin",
+        ),
+      );
+      await access(installed.binary, constants.X_OK);
+      expect(await npmCalls()).toEqual([
+        `install --ignore-scripts --no-audit --no-fund --omit=dev --omit-lockfile-registry-resolved=false --loglevel=error --registry=${base}`,
+        `audit signatures --json --registry=${base}`,
+      ]);
+      expect(requests).toEqual([attestationPath, "/SHA256SUMS", `/${asset}`]);
+      expect(progress).toContain(
+        "verifying npm registry signature and provenance",
+      );
+      expect(await entries(dir)).toEqual([`dev-browser@${version}`]);
+      const warm = await install(dir, {
+        env: env(false),
+        downloadBase: "http://127.0.0.1:9/unreachable",
+      });
+      expect(warm.binary).toBe(installed.binary);
+      expect(requests).toHaveLength(3);
+    },
+  );
+  it("reinstalls when the cached binary no longer matches the pin", async ({
+    skip,
+  }) => {
+    skip(process.platform === "win32", noWindowsRuntime);
     const dir = await dataDir();
     const first = await install(dir);
     await writeFile(first.binary, "#!/bin/sh\necho tampered\n", {
@@ -254,14 +291,20 @@ describe("runtime installer", () => {
     const second = await install(dir);
     expect(await readFile(second.binary, "utf8")).toBe(binaryContent);
     expect(await npmCalls()).toHaveLength(2);
-  });
-  it("refuses a binary whose digest differs from the pin and leaves nothing behind", async () => {
+  }, 30_000);
+  it("refuses a binary whose digest differs from the pin and leaves nothing behind", async ({
+    skip,
+  }) => {
+    skip(process.platform === "win32", noWindowsRuntime);
     const dir = await dataDir();
     served[`/${asset}`] = binaryContent.replace(version, "1.0.0-other");
     await expect(install(dir)).rejects.toThrow("not the pinned");
     expect(await entries(dir)).toEqual([]);
   });
-  it("refuses a release whose SHA256SUMS disagrees with the pin", async () => {
+  it("refuses a release whose SHA256SUMS disagrees with the pin", async ({
+    skip,
+  }) => {
+    skip(process.platform === "win32", noWindowsRuntime);
     const dir = await dataDir();
     served["/SHA256SUMS"] = `${"0".repeat(64)}  ${asset}\n`;
     await expect(install(dir)).rejects.toThrow(
@@ -269,7 +312,10 @@ describe("runtime installer", () => {
     );
     expect(requests).toEqual([attestationPath, "/SHA256SUMS"]);
   });
-  it("refuses packages without provenance from the pinned repository tag", async () => {
+  it("refuses packages without provenance from the pinned repository tag", async ({
+    skip,
+  }) => {
+    skip(process.platform === "win32", noWindowsRuntime);
     const dir = await dataDir();
     served[attestationPath] = JSON.stringify(
       provenance("someone-else/dev-browser", `refs/tags/v${version}`),
@@ -284,6 +330,8 @@ describe("runtime installer", () => {
     await expect(install(dir)).rejects.toThrow("npm audit signatures failed");
     await configureNpm({ resolvedBase: "http://mirror.invalid" });
     await expect(install(dir)).rejects.toThrow("not the pinned registry");
+  });
+  it("rejects provenance and signature reports that do not cover the pinned release", () => {
     expect(() =>
       checkProvenance(
         provenance("example/dev-browser", "refs/heads/main"),
@@ -309,8 +357,11 @@ describe("runtime installer", () => {
         release,
       ),
     ).toThrow("registry signature");
-  });
-  it("reports npm failures, a missing npm, and an unrecorded platform clearly", async () => {
+  }, 30_000);
+  it("reports npm failures, a missing npm, and an unrecorded platform clearly", async ({
+    skip,
+  }) => {
+    skip(process.platform === "win32", noWindowsRuntime);
     const dir = await dataDir();
     await configureNpm({ installExit: 1 });
     await expect(install(dir)).rejects.toThrow(
@@ -330,7 +381,10 @@ describe("runtime installer", () => {
       }),
     ).rejects.toThrow(`no verified release artifact recorded for ${platform}`);
   });
-  it("serves concurrent installs from one npm run and tolerates a stale lock", async () => {
+  it("serves concurrent installs from one npm run and tolerates a stale lock", async ({
+    skip,
+  }) => {
+    skip(process.platform === "win32", noWindowsRuntime);
     const dir = await dataDir();
     await mkdir(installRoot(dir), { recursive: true });
     await writeFile(
@@ -341,11 +395,12 @@ describe("runtime installer", () => {
     const ours = join(installRoot(dir), `.staging-dev-browser@${version}-old`);
     await mkdir(foreign);
     await mkdir(ours);
-    const [a, b, c] = await Promise.all([
+    const installed = await Promise.all([
       install(dir),
       install(dir),
       install(dir),
     ]);
+    const [a, b, c] = installed;
     expect(b.binary).toBe(a.binary);
     expect(c.binary).toBe(a.binary);
     expect(
@@ -356,6 +411,215 @@ describe("runtime installer", () => {
       `dev-browser@${version}`,
     ]);
   });
+  it("serializes stale-lock reaping before another caller can enter", async () => {
+    const dir = await dataDir();
+    await mkdir(installRoot(dir), { recursive: true });
+    const path = join(installRoot(dir), "stale-race.lock");
+    await writeFile(path, "999999999");
+    const old = new Date(Date.now() - 60_000);
+    await utimes(path, old, old);
+
+    let unblockFirstUnlink!: () => void;
+    const firstUnlinkGate = new Promise<void>((resolve) => {
+      unblockFirstUnlink = resolve;
+    });
+    let markFirstUnlink!: () => void;
+    const firstUnlinkStarted = new Promise<void>((resolve) => {
+      markFirstUnlink = resolve;
+    });
+    let markSecondUnlink!: () => void;
+    const secondUnlink = new Promise<void>((resolve) => {
+      markSecondUnlink = resolve;
+    });
+    let markSecondReapLink!: () => void;
+    const secondReapLink = new Promise<void>((resolve) => {
+      markSecondReapLink = resolve;
+    });
+    let unlinkCount = 0;
+    let reapLinkCount = 0;
+    lockRace.path = path;
+    lockRace.onUnlink = async () => {
+      unlinkCount += 1;
+      if (unlinkCount === 1) {
+        markFirstUnlink();
+        await firstUnlinkGate;
+      } else if (unlinkCount === 2) markSecondUnlink();
+    };
+    lockRace.onReapLink = () => {
+      reapLinkCount += 1;
+      if (reapLinkCount === 2) markSecondReapLink();
+    };
+
+    const signal = new AbortController().signal;
+    const held: Array<() => Promise<void>> = [];
+    let secondAcquired = false;
+    const first = acquireLock(path, signal).then((unlock) => {
+      held.push(unlock);
+      return unlock;
+    });
+    let firstUnlinkReleased = false;
+    try {
+      await firstUnlinkStarted;
+      const second = acquireLock(path, signal).then((unlock) => {
+        secondAcquired = true;
+        held.push(unlock);
+        return unlock;
+      });
+      const interleaving = await Promise.race([
+        secondUnlink.then(() => "unprotected" as const),
+        secondReapLink.then(() => "serialized" as const),
+      ]);
+
+      if (interleaving === "unprotected") {
+        await second;
+        unblockFirstUnlink();
+        firstUnlinkReleased = true;
+        await first;
+        expect(held).toHaveLength(1);
+      } else {
+        unblockFirstUnlink();
+        firstUnlinkReleased = true;
+        const unlockFirst = await first;
+        expect(secondAcquired).toBe(false);
+        await unlockFirst();
+        const unlockSecond = await second;
+        expect(secondAcquired).toBe(true);
+        await unlockSecond();
+      }
+    } finally {
+      if (!firstUnlinkReleased) unblockFirstUnlink();
+      await Promise.all(held.map((unlock) => unlock()));
+      lockRace.path = null;
+      lockRace.onUnlink = null;
+      lockRace.onReapLink = null;
+      await unlink(path).catch(() => {});
+      await unlink(`${path}.reap`).catch(() => {});
+    }
+  }, 30_000);
+  it("fences stale reaping against release and a fresh lock acquisition", async () => {
+    const dir = await dataDir();
+    await mkdir(installRoot(dir), { recursive: true });
+    const path = join(installRoot(dir), "release-reap-race.lock");
+    const signal = new AbortController().signal;
+    const unlockA = await acquireLock(path, signal);
+    const old = new Date(Date.now() - 25 * 60_000);
+    await utimes(path, old, old);
+
+    let unblockReap!: () => void;
+    const reapGate = new Promise<void>((resolve) => {
+      unblockReap = resolve;
+    });
+    let markReap!: () => void;
+    const reapStarted = new Promise<void>((resolve) => {
+      markReap = resolve;
+    });
+    let markReleaseUnlink!: () => void;
+    const releaseUnlink = new Promise<void>((resolve) => {
+      markReleaseUnlink = resolve;
+    });
+    let markGuardAttempt!: () => void;
+    const guardAttempt = new Promise<void>((resolve) => {
+      markGuardAttempt = resolve;
+    });
+    let unlinkCount = 0;
+    let guardLinkCount = 0;
+    let cAcquired = false;
+    let bHeld: (() => Promise<void>) | undefined;
+    let cHeld: (() => Promise<void>) | undefined;
+    lockRace.path = path;
+    lockRace.onUnlink = async () => {
+      unlinkCount += 1;
+      if (unlinkCount === 1) {
+        markReap();
+        await reapGate;
+      } else if (unlinkCount === 2) markReleaseUnlink();
+    };
+    lockRace.onReapLink = () => {
+      guardLinkCount += 1;
+      if (guardLinkCount >= 3) markGuardAttempt();
+    };
+
+    let reapReleased = false;
+    try {
+      const b = acquireLock(path, signal).then((unlock) => {
+        bHeld = unlock;
+        return unlock;
+      });
+      await reapStarted;
+      const release = unlockA();
+      const c = acquireLock(path, signal).then((unlock) => {
+        cAcquired = true;
+        cHeld = unlock;
+        return unlock;
+      });
+      const interleaving = await Promise.race([
+        releaseUnlink.then(() => "unprotected" as const),
+        guardAttempt.then(() => "guarded" as const),
+      ]);
+
+      if (interleaving === "unprotected") {
+        await releaseUnlink;
+        await c;
+        unblockReap();
+        reapReleased = true;
+        await b;
+        expect(cAcquired).toBe(true);
+        expect([bHeld, cHeld].filter(Boolean)).toHaveLength(1);
+      } else {
+        unblockReap();
+        reapReleased = true;
+        await b;
+        await release;
+        expect(cAcquired).toBe(false);
+        await bHeld!();
+        await c;
+      }
+    } finally {
+      if (!reapReleased) unblockReap();
+      await Promise.all([bHeld?.(), cHeld?.()].filter(Boolean));
+      lockRace.path = null;
+      lockRace.onUnlink = null;
+      lockRace.onReapLink = null;
+      await unlink(path).catch(() => {});
+      await unlink(`${path}.reap`).catch(() => {});
+      await unlink(`${path}.reap.reap`).catch(() => {});
+    }
+  }, 30_000);
+  it("recovers a stale reap lock left by a dead reaper", async () => {
+    const dir = await dataDir();
+    await mkdir(installRoot(dir), { recursive: true });
+    const path = join(installRoot(dir), "dead-reaper.lock");
+    const reaperPath = `${path}.reap`;
+    await writeFile(path, "999999999");
+    await writeFile(reaperPath, "999999999");
+    const old = new Date(Date.now() - 60_000);
+    await utimes(path, old, old);
+    await utimes(reaperPath, old, old);
+
+    const unlock = await acquireLock(path, AbortSignal.timeout(5_000));
+    expect(await readFile(path, "utf8")).toMatch(
+      new RegExp(`^${process.pid} `),
+    );
+    await expect(readFile(reaperPath, "utf8")).rejects.toThrow();
+    await unlock();
+  }, 30_000);
+  it("does not steal an aged reap lock from a live reaper", async () => {
+    const dir = await dataDir();
+    await mkdir(installRoot(dir), { recursive: true });
+    const path = join(installRoot(dir), "live-reaper.lock");
+    const reaperPath = `${path}.reap`;
+    const reaperOwner = `${process.pid} ${"a".repeat(16)}`;
+    await writeFile(path, "999999999");
+    await writeFile(reaperPath, reaperOwner);
+    const old = new Date(Date.now() - 60_000);
+    await utimes(path, old, old);
+    await utimes(reaperPath, old, old);
+
+    await expect(
+      acquireLock(path, AbortSignal.timeout(2_000)),
+    ).rejects.toThrow();
+    expect(await readFile(reaperPath, "utf8")).toBe(reaperOwner);
+  }, 30_000);
   it("hands the lock over in order, keeps unparsable young locks, and never removes a replaced lock", async () => {
     const dir = await dataDir();
     await mkdir(installRoot(dir), { recursive: true });
@@ -388,15 +652,33 @@ describe("runtime installer", () => {
     );
     await unlockC();
     await expect(readFile(path, "utf8")).rejects.toThrow();
-  });
-  it("cancels an in-progress install, cleans up, and allows a retry", async () => {
+  }, 30_000);
+  it("cancels an in-progress install, cleans up, and allows a retry", async ({
+    skip,
+  }) => {
+    skip(process.platform === "win32", noWindowsRuntime);
     const dir = await dataDir();
-    await configureNpm({ installDelayMs: 3_000 });
+    await configureNpm({ installDelayMs: 60_000 });
     const controller = new AbortController();
-    const pending = install(dir, { signal: controller.signal });
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    controller.abort();
-    await expect(pending).rejects.toThrow("cancelled");
+    const pending = install(dir, { signal: controller.signal }).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    try {
+      await vi.waitFor(
+        async () => {
+          expect(
+            (await npmCalls()).some((call) => call.startsWith("install")),
+          ).toBe(true);
+        },
+        { timeout: 5_000 },
+      );
+    } finally {
+      controller.abort();
+      await expect(pending).resolves.toMatchObject({
+        message: expect.stringContaining("cancelled"),
+      });
+    }
     expect(await entries(dir)).toEqual([]);
     await configureNpm({});
     await expect(install(dir)).resolves.toMatchObject({ version });

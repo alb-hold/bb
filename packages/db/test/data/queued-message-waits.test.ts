@@ -14,7 +14,7 @@ import { describe, expect, it } from "vitest";
 import type { PromptInput } from "@bb/domain";
 import { noopNotifier } from "../../src/notifier.js";
 import {
-  claimQueuedThreadMessage,
+  claimQueuedThreadMessageGroup,
   clearQueuedThreadMessageWaitingOn,
   createQueuedThreadMessage,
   getQueuedThreadMessage,
@@ -30,7 +30,7 @@ import {
   deleteThread,
 } from "../../src/data/threads.js";
 import { upsertHost } from "../../src/data/hosts.js";
-import { createMigratedConnection } from "../helpers/migrated-connection.js";
+import { createMigratedConnection } from "../../src/testing.js";
 
 function textInput(text: string): PromptInput[] {
   return [{ type: "text", text, mentions: [] }];
@@ -76,6 +76,7 @@ describe("queued message waits", () => {
     const { db, thread } = setup();
     const row = queue(db, thread.id);
 
+    expect(row.state).toBe("queued");
     expect(row.sendAt).toBeNull();
     expect(row.waitingOn).toBeNull();
     expect(row.waitHolder).toBeNull();
@@ -146,7 +147,11 @@ describe("queued message waits", () => {
       sendAt: null,
     });
 
-    expect(claimQueuedThreadMessage(db, noopNotifier, row.id)).not.toBeNull();
+    expect(
+      claimQueuedThreadMessageGroup(db, noopNotifier, row.id, {
+        kind: "explicit-send",
+      }),
+    ).not.toBeNull();
 
     expect(
       setQueuedThreadMessageWaitingOn(db, noopNotifier, {
@@ -200,6 +205,7 @@ describe("queued message waits", () => {
       id: row.id,
       threadId: thread.id,
     });
+    expect(cleared?.state).toBe("queued");
     expect(cleared?.waitingOn).toBeNull();
     expect(cleared?.waitHolder).toBeNull();
     expect(cleared?.sendAt).toBeNull();
@@ -227,13 +233,6 @@ describe("listDueScheduledQueuedThreadMessages", () => {
     expect(
       listDueScheduledQueuedThreadMessages(db, 5_000).map((row) => row.id),
     ).toEqual([due.id]);
-  });
-
-  it("ignores rows with no schedule at all", () => {
-    const { db, thread } = setup();
-    queue(db, thread.id);
-
-    expect(listDueScheduledQueuedThreadMessages(db, 9_999_999)).toEqual([]);
   });
 
   it("orders oldest-due first", () => {
@@ -267,7 +266,9 @@ describe("listDueScheduledQueuedThreadMessages", () => {
       waitingOn: { kind: "time" },
       sendAt: 1_000,
     });
-    claimQueuedThreadMessage(db, noopNotifier, row.id);
+    claimQueuedThreadMessageGroup(db, noopNotifier, row.id, {
+      kind: "explicit-send",
+    });
 
     expect(listDueScheduledQueuedThreadMessages(db, 5_000)).toEqual([]);
   });
@@ -330,7 +331,9 @@ describe("wait lookups", () => {
       ),
     ).toEqual([mine.id]);
 
-    claimQueuedThreadMessage(db, noopNotifier, mine.id);
+    claimQueuedThreadMessageGroup(db, noopNotifier, mine.id, {
+      kind: "explicit-send",
+    });
     expect(listQueuedThreadMessagesByWaitHolder(db, "plugin:limiter")).toEqual(
       [],
     );

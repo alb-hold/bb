@@ -1,37 +1,32 @@
-// @vitest-environment jsdom
-
-import { renderHook } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   hasSingleUseRootComposeTargetState,
+  readRootComposeEnvironmentTargetFromLocationState,
   shouldStartComposingFromLocationState,
 } from "@/views/RootComposeView";
-import { useCreateThreadInEnvironment } from "./useCreateThreadInEnvironment";
+import { readThreadCreationPlacement } from "@/lib/thread-creation-placement";
+import { buildCreateThreadInEnvironmentState } from "./useCreateThreadInEnvironment";
 
-const navigate = vi.fn();
-
-vi.mock("@/components/ui/app-route-anchor", () => ({
-  useRouteNavigate: () => navigate,
-}));
-
-vi.mock("@/lib/root-compose-selection", () => ({
-  useSetRootComposeProjectId: () => vi.fn(),
-}));
-
-describe("useCreateThreadInEnvironment", () => {
-  it("navigates with state that opens the composer and seeds the environment", () => {
-    navigate.mockClear();
-    const { result } = renderHook(() =>
-      useCreateThreadInEnvironment({
-        projectId: "proj_personal",
+describe("buildCreateThreadInEnvironmentState", () => {
+  it.each(["sec_a", null])(
+    "opens the composer in the source environment and section %s",
+    (sectionId) => {
+      const state = buildCreateThreadInEnvironmentState({
         environmentId: "env_1",
-      }),
-    );
+        sectionId,
+        pinned: true,
+      });
 
-    result.current();
-
-    const state = navigate.mock.calls[0][1].state;
-    expect(shouldStartComposingFromLocationState(state)).toBe(true);
-    expect(hasSingleUseRootComposeTargetState(state)).toBe(true);
-  });
+      expect(readRootComposeEnvironmentTargetFromLocationState(state)).toEqual({
+        kind: "reuse",
+        environmentId: "env_1",
+      });
+      expect(readThreadCreationPlacement(state)).toEqual({
+        sectionId,
+        pinned: true,
+      });
+      expect(shouldStartComposingFromLocationState(state)).toBe(true);
+      expect(hasSingleUseRootComposeTargetState(state)).toBe(true);
+    },
+  );
 });

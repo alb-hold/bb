@@ -6,7 +6,7 @@ import {
   releaseWorkspaceWriteClaims,
   tryClaimWorkspaceWrite,
 } from "../../src/data/fork-workspace-write-claims.js";
-import { createMigratedConnection } from "../helpers/migrated-connection.js";
+import { createMigratedConnection } from "../../src/testing.js";
 
 const target = { hostId: "host-1", workspacePath: "/tmp/shared" };
 

@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import { makeThreadListEntry } from "@bb/test-helpers/domain-fixtures";
 import {
   getCollapsedChildActivity,
-  hasThreadListWorkingActivity,
   isUnreadDoneThread,
   resolveThreadListIndicator,
   threadListIndicatorStateForThread,
@@ -30,14 +29,14 @@ function makeChild(
       activePlanModeCount: 0,
       activeGoalCount: 0,
     },
-    runtime: { displayStatus: "idle", hostReconnectGraceExpiresAt: null },
+    runtime: { displayStatus: "idle" },
     ...overrides,
   };
 }
 
 const busyChild = makeChild({
   status: "active",
-  runtime: { displayStatus: "active", hostReconnectGraceExpiresAt: null },
+  runtime: { displayStatus: "active" },
 });
 const pendingChild = makeChild({ hasPendingInteraction: true });
 const unreadChild = makeChild({ latestAttentionAt: 20, lastReadAt: 10 });
@@ -52,6 +51,7 @@ const idleIndicatorState: ThreadListIndicatorState = {
   hasUnsubmittedDraft: false,
   hasUnreadError: false,
   hasUnreadSuccess: false,
+  isAutomationWoken: false,
   isBackgroundAgentActive: false,
   isBackgroundCommandActive: false,
   isGoalActive: false,
@@ -62,47 +62,63 @@ const idleIndicatorState: ThreadListIndicatorState = {
 };
 
 describe("thread-activity", () => {
-  describe("hasThreadListWorkingActivity", () => {
-    it.each([
-      "isRuntimeActive",
-      "isWorkflowActive",
-      "isBackgroundAgentActive",
-      "isBackgroundCommandActive",
-      "isPlanModeActive",
-      "isGoalActive",
-    ] as const)(
-      "keeps %s working despite higher-priority attention states",
-      (flag) => {
-        expect(
-          hasThreadListWorkingActivity({
-            ...idleIndicatorState,
-            hasPendingInteraction: true,
-            hasUnreadError: true,
-            [flag]: true,
-          }),
-        ).toBe(true);
-      },
-    );
-
-    it("includes plugin work without treating attention-only states as work", () => {
-      const attentionOnly = {
-        ...idleIndicatorState,
-        hasPendingInteraction: true,
-        hasUnreadError: true,
-      };
-
-      expect(hasThreadListWorkingActivity(attentionOnly)).toBe(false);
-      expect(hasThreadListWorkingActivity(attentionOnly, true)).toBe(true);
-    });
-  });
-
   describe("resolveThreadListIndicator", () => {
     it.each([
-      ["hasPendingInteraction", "waiting-for-input"],
-      ["hasUnreadError", "unread-error"],
-      ["hasUnsubmittedDraft", "working-draft"],
-      ["isPlanModeActive", "plan-mode"],
-      ["isGoalActive", "goal"],
+      ["needs input", { hasPendingInteraction: true }, "needs-input"],
+      ["working", { isRuntimeActive: true }, "working"],
+      ["woke", { isAutomationWoken: true }, "woke"],
+      ["done unread", { hasUnreadSuccess: true }, "done-unread"],
+      ["at rest", {}, "none"],
+    ] as const)("resolves %s", (_name, state, expected) => {
+      expect(
+        resolveThreadListIndicator({ ...idleIndicatorState, ...state }),
+      ).toBe(expected);
+    });
+
+    it("uses needs input, working, woke, done, then at-rest precedence", () => {
+      const all = {
+        ...idleIndicatorState,
+        hasPendingInteraction: true,
+        isRuntimeActive: true,
+        isAutomationWoken: true,
+        hasUnreadSuccess: true,
+      };
+      expect(resolveThreadListIndicator(all)).toBe("needs-input");
+      expect(
+        resolveThreadListIndicator({ ...all, hasPendingInteraction: false }),
+      ).toBe("working");
+      expect(
+        resolveThreadListIndicator({
+          ...all,
+          hasPendingInteraction: false,
+          isRuntimeActive: false,
+        }),
+      ).toBe("woke");
+      expect(
+        resolveThreadListIndicator({
+          ...all,
+          hasPendingInteraction: false,
+          isRuntimeActive: false,
+          isAutomationWoken: false,
+        }),
+      ).toBe("done-unread");
+      expect(
+        resolveThreadListIndicator({
+          ...idleIndicatorState,
+          hasPendingInteraction: false,
+          isRuntimeActive: false,
+          isAutomationWoken: false,
+          hasUnreadSuccess: false,
+        }),
+      ).toBe("none");
+    });
+
+    it.each([
+      ["hasPendingInteraction", "needs-input"],
+      ["hasUnreadError", "working"],
+      ["hasUnsubmittedDraft", "working"],
+      ["isPlanModeActive", "working"],
+      ["isGoalActive", "working"],
     ] as const)("shows %s as %s over the runtime spinner", (flag, kind) => {
       expect(
         resolveThreadListIndicator({
@@ -125,7 +141,7 @@ describe("thread-activity", () => {
           isRuntimeActive: true,
           [flag]: true,
         }),
-      ).toBe("runtime");
+      ).toBe("working");
     });
 
     it.each([
@@ -134,14 +150,14 @@ describe("thread-activity", () => {
       "isBackgroundCommandActive",
       "isPlanModeActive",
       "isGoalActive",
-    ] as const)("uses the working draft pencil with %s", (flag) => {
+    ] as const)("uses Working with %s", (flag) => {
       expect(
         resolveThreadListIndicator({
           ...idleIndicatorState,
           hasUnsubmittedDraft: true,
           [flag]: true,
         }),
-      ).toBe("working-draft");
+      ).toBe("working");
     });
 
     it("shows the queued clock over a draft, and never over active work", () => {
@@ -161,14 +177,14 @@ describe("thread-activity", () => {
           queuedWork: "waiting",
           isRuntimeActive: true,
         }),
-      ).toBe("runtime");
+      ).toBe("working");
       expect(
         resolveThreadListIndicator({
           ...idleIndicatorState,
           hasPendingInteraction: true,
           queuedWork: "waiting",
         }),
-      ).toBe("waiting-for-input");
+      ).toBe("needs-input");
     });
 
     it("promotes a failed queued row over a waiting one, but not over work", () => {
@@ -188,7 +204,7 @@ describe("thread-activity", () => {
           queuedWork: "failed",
           isBackgroundCommandActive: true,
         }),
-      ).toBe("background-command");
+      ).toBe("working");
       // And below the thread's own unread failure, which is the same glyph
       // reporting the bigger fact.
       expect(
@@ -197,12 +213,12 @@ describe("thread-activity", () => {
           hasUnreadError: true,
           queuedWork: "failed",
         }),
-      ).toBe("unread-error");
+      ).toBe("done-unread");
     });
 
     it.each([
-      ["waiting", "unread-success"],
-      ["failed", "queued-failed"],
+      ["waiting", "done-unread"],
+      ["failed", "done-unread"],
     ] as const)(
       "resolves unread success and %s queued work as %s",
       (queuedWork, expectedIndicator) => {
@@ -223,7 +239,7 @@ describe("thread-activity", () => {
           isGoalActive: true,
           isPlanModeActive: true,
         }),
-      ).toBe("plan-mode");
+      ).toBe("working");
     });
 
     it("applies idle activity precedence before background work", () => {
@@ -235,7 +251,7 @@ describe("thread-activity", () => {
           isGoalActive: true,
           isPlanModeActive: true,
         }),
-      ).toBe("plan-mode");
+      ).toBe("working");
       expect(
         resolveThreadListIndicator({
           ...idleIndicatorState,
@@ -243,7 +259,7 @@ describe("thread-activity", () => {
           isBackgroundCommandActive: true,
           isGoalActive: true,
         }),
-      ).toBe("goal");
+      ).toBe("working");
     });
 
     it("applies critical, idle draft, and unread precedence", () => {
@@ -254,27 +270,27 @@ describe("thread-activity", () => {
           hasUnreadError: true,
           isWorkflowActive: true,
         }),
-      ).toBe("unread-error");
+      ).toBe("needs-input");
       expect(
         resolveThreadListIndicator({
           ...idleIndicatorState,
           hasPendingInteraction: true,
           isWorkflowActive: true,
         }),
-      ).toBe("waiting-for-input");
+      ).toBe("needs-input");
       expect(
         resolveThreadListIndicator({
           ...idleIndicatorState,
           hasUnsubmittedDraft: true,
           hasUnreadSuccess: true,
         }),
-      ).toBe("unread-success");
+      ).toBe("done-unread");
       expect(
         resolveThreadListIndicator({
           ...idleIndicatorState,
           hasUnreadSuccess: true,
         }),
-      ).toBe("unread-success");
+      ).toBe("done-unread");
     });
   });
 
@@ -324,6 +340,7 @@ describe("thread-activity", () => {
       expect(threadListIndicatorStateForThread(thread, false)).toMatchObject({
         hasUnreadError: true,
         hasUnreadSuccess: false,
+        isAutomationWoken: false,
         hasUnsubmittedDraft: false,
       });
     });
@@ -353,7 +370,7 @@ describe("thread-activity", () => {
           activePlanModeCount: 0,
           activeGoalCount: 1,
         },
-        runtime: { displayStatus: "active", hostReconnectGraceExpiresAt: null },
+        runtime: { displayStatus: "active" },
       });
 
       expect(threadListIndicatorStateForThread(thread, false)).toEqual({
@@ -361,6 +378,7 @@ describe("thread-activity", () => {
         hasUnsubmittedDraft: false,
         hasUnreadError: false,
         hasUnreadSuccess: false,
+        isAutomationWoken: false,
         isBackgroundAgentActive: false,
         isBackgroundCommandActive: true,
         isGoalActive: true,
@@ -521,7 +539,7 @@ describe("thread-activity", () => {
           activePlanModeCount: 0,
           activeGoalCount: 0,
         },
-        runtime: { displayStatus: "active", hostReconnectGraceExpiresAt: null },
+        runtime: { displayStatus: "active" },
       });
 
       expect(getCollapsedChildActivity([busyUnreadErrorChild])).toEqual({
@@ -543,7 +561,7 @@ describe("thread-activity", () => {
       const busyAndPending = makeChild({
         status: "active",
         hasPendingInteraction: true,
-        runtime: { displayStatus: "active", hostReconnectGraceExpiresAt: null },
+        runtime: { displayStatus: "active" },
       });
       expect(getCollapsedChildActivity([busyAndPending])).toEqual({
         pending: true,
@@ -560,163 +578,50 @@ describe("thread-activity", () => {
       });
     });
 
-    it("distinguishes idle background commands from runtime work", () => {
-      const commandChild = makeChild({
-        activity: {
-          activeWorkflowCount: 0,
-          activeBackgroundAgentCount: 0,
-          activeBackgroundCommandCount: 1,
-          activePlanModeCount: 0,
-          activeGoalCount: 0,
-        },
-      });
+    it.each([
+      [
+        "idle background commands",
+        "activeBackgroundCommandCount",
+        "backgroundCommand",
+      ],
+      [
+        "idle background agent activity",
+        "activeBackgroundAgentCount",
+        "backgroundAgent",
+      ],
+      ["idle workflow activity", "activeWorkflowCount", "workflow"],
+      ["plan-mode banner activity", "activePlanModeCount", "planMode"],
+      ["active-goal banner activity", "activeGoalCount", "goal"],
+    ] as const)(
+      "distinguishes %s from runtime work",
+      (_label, countKey, flag) => {
+        const child = makeChild({
+          activity: {
+            activeWorkflowCount: 0,
+            activeBackgroundAgentCount: 0,
+            activeBackgroundCommandCount: 0,
+            activePlanModeCount: 0,
+            activeGoalCount: 0,
+            [countKey]: 1,
+          },
+        });
 
-      expect(getCollapsedChildActivity([commandChild])).toEqual({
-        pending: false,
-        working: true,
-        hasUnsubmittedDraft: false,
-        runtimeWorking: false,
-        workflow: false,
-        backgroundAgent: false,
-        backgroundCommand: true,
-        planMode: false,
-        goal: false,
-        unread: false,
-        unreadError: false,
-      });
-    });
-
-    it("distinguishes idle background agent activity from runtime work", () => {
-      const agentChild = makeChild({
-        activity: {
-          activeWorkflowCount: 0,
-          activeBackgroundAgentCount: 1,
-          activeBackgroundCommandCount: 0,
-          activePlanModeCount: 0,
-          activeGoalCount: 0,
-        },
-      });
-
-      expect(getCollapsedChildActivity([agentChild])).toEqual({
-        pending: false,
-        working: true,
-        hasUnsubmittedDraft: false,
-        runtimeWorking: false,
-        workflow: false,
-        backgroundAgent: true,
-        backgroundCommand: false,
-        planMode: false,
-        goal: false,
-        unread: false,
-        unreadError: false,
-      });
-    });
-
-    it("distinguishes idle workflow activity from runtime work", () => {
-      const workflowChild = makeChild({
-        activity: {
-          activeWorkflowCount: 1,
-          activeBackgroundAgentCount: 0,
-          activeBackgroundCommandCount: 0,
-          activePlanModeCount: 0,
-          activeGoalCount: 0,
-        },
-      });
-
-      expect(getCollapsedChildActivity([workflowChild])).toEqual({
-        pending: false,
-        working: true,
-        hasUnsubmittedDraft: false,
-        runtimeWorking: false,
-        workflow: true,
-        backgroundAgent: false,
-        backgroundCommand: false,
-        planMode: false,
-        goal: false,
-        unread: false,
-        unreadError: false,
-      });
-    });
-
-    it("distinguishes plan-mode banner activity from runtime work", () => {
-      const planModeChild = makeChild({
-        activity: {
-          activeWorkflowCount: 0,
-          activeBackgroundAgentCount: 0,
-          activeBackgroundCommandCount: 0,
-          activePlanModeCount: 1,
-          activeGoalCount: 0,
-        },
-      });
-
-      expect(getCollapsedChildActivity([planModeChild])).toEqual({
-        pending: false,
-        working: true,
-        hasUnsubmittedDraft: false,
-        runtimeWorking: false,
-        workflow: false,
-        backgroundAgent: false,
-        backgroundCommand: false,
-        planMode: true,
-        goal: false,
-        unread: false,
-        unreadError: false,
-      });
-    });
-
-    it("distinguishes active-goal banner activity from runtime work", () => {
-      const goalChild = makeChild({
-        activity: {
-          activeWorkflowCount: 0,
-          activeBackgroundAgentCount: 0,
-          activeBackgroundCommandCount: 0,
-          activePlanModeCount: 0,
-          activeGoalCount: 1,
-        },
-      });
-
-      expect(getCollapsedChildActivity([goalChild])).toEqual({
-        pending: false,
-        working: true,
-        hasUnsubmittedDraft: false,
-        runtimeWorking: false,
-        workflow: false,
-        backgroundAgent: false,
-        backgroundCommand: false,
-        planMode: false,
-        goal: true,
-        unread: false,
-        unreadError: false,
-      });
-    });
-
-    it("keeps workflow activity visible when the same child also has runtime work", () => {
-      const workflowAndRuntimeChild = makeChild({
-        activity: {
-          activeWorkflowCount: 1,
-          activeBackgroundAgentCount: 0,
-          activeBackgroundCommandCount: 0,
-          activePlanModeCount: 0,
-          activeGoalCount: 0,
-        },
-        runtime: { displayStatus: "active", hostReconnectGraceExpiresAt: null },
-        status: "active",
-      });
-
-      expect(getCollapsedChildActivity([workflowAndRuntimeChild])).toEqual({
-        pending: false,
-        working: true,
-        hasUnsubmittedDraft: false,
-        runtimeWorking: true,
-        workflow: true,
-        backgroundAgent: false,
-        backgroundCommand: false,
-        planMode: false,
-        goal: false,
-        unread: false,
-        unreadError: false,
-      });
-    });
+        expect(getCollapsedChildActivity([child])).toEqual({
+          pending: false,
+          working: true,
+          hasUnsubmittedDraft: false,
+          runtimeWorking: false,
+          workflow: false,
+          backgroundAgent: false,
+          backgroundCommand: false,
+          planMode: false,
+          goal: false,
+          unread: false,
+          unreadError: false,
+          [flag]: true,
+        });
+      },
+    );
 
     it("never flags 'unread' for parented children", () => {
       const unreadButParented = makeChild({

@@ -9,6 +9,7 @@ import {
 import { RESERVED_BB_CLI_COMMANDS } from "@bb/domain/plugin-cli";
 import {
   PLUGIN_INTERACTION_MAX_PAYLOAD_BYTES,
+  PLUGIN_INTERACTION_MAX_TIMEOUT_MS,
   PLUGIN_INTERACTION_MAX_TITLE_LENGTH,
 } from "@bb/domain/plugin-interaction-limits";
 import { PROVIDER_FORK_VALUES } from "@bb/domain/provider-fork";
@@ -21,7 +22,9 @@ import {
   normalizeProviderNativeRoots,
   providerNativeRootsInputSchema,
   providerNativeRootsSchema,
+  providerNativeTerminalSchema,
   type ProviderNativeRoots,
+  type ProviderNativeTerminal,
 } from "@bb/domain";
 import { PLUGIN_CLI_OUTPUT_MAX_BYTES } from "../backend-contract.js";
 import type {
@@ -29,7 +32,6 @@ import type {
   PluginRowPresentation,
   PluginAgentToolResult,
   PluginAiServiceDeclaration,
-  PluginAiServiceKind,
   PluginCliCommandInfo,
   PluginCliExecutionResult,
   PluginCliOutputLimitError,
@@ -61,6 +63,7 @@ import type {
 } from "../backend-contract.js";
 import type { JsonValue } from "../json-value.js";
 import type {
+  ExperimentalPluginRpcHandlerContext,
   PluginRpcError,
   PluginRpcMethodContract,
   PluginRpcValidationIssue,
@@ -219,6 +222,9 @@ const settingDescriptorSchema = z.discriminatedUnion("type", [
       type: z.literal("select"),
       ...settingsBaseFields,
       options: z.array(z.string().min(1)).min(1),
+      experimental_optionLabels: z
+        .record(z.string().min(1), z.string().min(1))
+        .optional(),
       experimental_schema: stringSettingSchemaSchema.optional(),
       default: z.string().optional(),
     })
@@ -264,6 +270,16 @@ export function registerSettingDescriptors(
       throw new Error(
         `default for setting "${key}" must be one of its options`,
       );
+    }
+    if (descriptor.type === "select") {
+      const unknownLabel = Object.keys(
+        descriptor.experimental_optionLabels ?? {},
+      ).find((option) => !descriptor.options.includes(option));
+      if (unknownLabel !== undefined) {
+        throw new Error(
+          `label for setting "${key}" names "${unknownLabel}", which is not one of its options`,
+        );
+      }
     }
     if (descriptor.default !== undefined) {
       const errors = validateSettingsUpdate(
@@ -861,6 +877,29 @@ function validateProviderEnvPassthrough(
   return Object.freeze([...seen]);
 }
 
+function validateProviderNativeTerminal(
+  providerId: string,
+  value: unknown,
+): ProviderNativeTerminal {
+  const parsed = providerNativeTerminalSchema.safeParse(value);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    const where = issue?.path.length ? `.${issue.path.join(".")}` : "";
+    throw new Error(
+      `provider "${providerId}" experimental_nativeTerminal${where} ${issue?.message ?? "is invalid"}`,
+    );
+  }
+  return deepFreeze(parsed.data);
+}
+
+function deepFreeze<T>(value: T): T {
+  if (typeof value === "object" && value !== null) {
+    for (const entry of Object.values(value)) deepFreeze(entry);
+    Object.freeze(value);
+  }
+  return value;
+}
+
 function validateProviderNativeRoots(
   providerId: string,
   field: "experimental_nativeSkillRoots" | "experimental_nativeCommandRoots",
@@ -916,6 +955,28 @@ const PROVIDER_MODEL_CATALOG_SCOPES = [
   "host",
   "workspace",
 ] as const satisfies readonly PluginProviderModelCatalogScope[];
+
+const PROVIDER_CHILD_THREAD_MODEL_MAX = 200;
+
+function validateProviderChildThreadModel(
+  providerId: string,
+  value: unknown,
+): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (
+    typeof value !== "string" ||
+    value.trim() !== value ||
+    value.length === 0 ||
+    value.length > PROVIDER_CHILD_THREAD_MODEL_MAX
+  ) {
+    throw new Error(
+      `provider "${providerId}" models.childThreadModel must be a trimmed string of 1-${PROVIDER_CHILD_THREAD_MODEL_MAX} characters`,
+    );
+  }
+  return value;
+}
 
 function validateProviderModelCatalogScope(
   providerId: string,
@@ -994,7 +1055,7 @@ function validateProviderFallbackModels(
           `provider "${providerId}" ${field}.supportedReasoningEfforts must be a non-empty array`,
         );
       }
-      const levels = new Set<PluginProviderReasoningLevel>();
+      const levels = new Set<string>();
       const supportedReasoningEfforts = efforts.map(
         (
           effort,
@@ -1009,18 +1070,12 @@ function validateProviderFallbackModels(
               `provider "${providerId}" ${field}.supportedReasoningEfforts[${effortIndex}] must be { reasoningEffort, description }`,
             );
           }
-          const reasoningEffort = Reflect.get(effort, "reasoningEffort");
-          if (
-            typeof reasoningEffort !== "string" ||
-            !(
-              PLUGIN_PROVIDER_REASONING_LEVEL_VALUES as readonly string[]
-            ).includes(reasoningEffort)
-          ) {
-            throw new Error(
-              `provider "${providerId}" ${field}.supportedReasoningEfforts[${effortIndex}].reasoningEffort must be one of ${PLUGIN_PROVIDER_REASONING_LEVEL_VALUES.join(", ")}`,
-            );
-          }
-          const level = reasoningEffort as PluginProviderReasoningLevel;
+          const level = requireNonBlankString({
+            providerId,
+            field: `${field}.supportedReasoningEfforts[${effortIndex}].reasoningEffort`,
+            value: Reflect.get(effort, "reasoningEffort"),
+          });
+          const label: unknown = Reflect.get(effort, "label");
           if (levels.has(level)) {
             throw new Error(
               `provider "${providerId}" ${field}.supportedReasoningEfforts repeats ${JSON.stringify(level)}`,
@@ -1029,6 +1084,15 @@ function validateProviderFallbackModels(
           levels.add(level);
           return Object.freeze({
             reasoningEffort: level,
+            ...(label === undefined
+              ? {}
+              : {
+                  label: requireNonBlankString({
+                    providerId,
+                    field: `${field}.supportedReasoningEfforts[${effortIndex}].label`,
+                    value: label,
+                  }),
+                }),
             description: requireNonBlankString({
               providerId,
               field: `${field}.supportedReasoningEfforts[${effortIndex}].description`,
@@ -1040,7 +1104,7 @@ function validateProviderFallbackModels(
       const defaultReasoningEffort = record.defaultReasoningEffort;
       if (
         typeof defaultReasoningEffort !== "string" ||
-        !levels.has(defaultReasoningEffort as PluginProviderReasoningLevel)
+        !levels.has(defaultReasoningEffort)
       ) {
         throw new Error(
           `provider "${providerId}" ${field}.defaultReasoningEffort must be one of its supportedReasoningEfforts`,
@@ -1057,8 +1121,7 @@ function validateProviderFallbackModels(
         displayName,
         description,
         supportedReasoningEfforts: Object.freeze(supportedReasoningEfforts),
-        defaultReasoningEffort:
-          defaultReasoningEffort as PluginProviderReasoningLevel,
+        defaultReasoningEffort,
         isDefault: record.isDefault,
       });
     },
@@ -1071,53 +1134,47 @@ function validateProviderFallbackModels(
   return Object.freeze(normalized);
 }
 
-const AI_SERVICE_KINDS = new Set<PluginAiServiceKind>(["inference", "voice"]);
+/**
+ * A validated `bb.experimental_aiServices.register` declaration. Absent
+ * functions are `null` so hosts never have to distinguish missing from
+ * undefined.
+ */
+export interface NormalizedPluginAiService {
+  readonly id: string;
+  readonly displayName: string;
+  readonly complete: NonNullable<PluginAiServiceDeclaration["complete"]> | null;
+  readonly transcribe: NonNullable<
+    PluginAiServiceDeclaration["transcribe"]
+  > | null;
+  readonly status: NonNullable<PluginAiServiceDeclaration["status"]> | null;
+}
 
-export const SERVER_DIRECT_AI_SERVICE_IDS: readonly string[] = Object.freeze([
-  "openai",
-  "amazon-bedrock",
-  "ant-ling",
-  "anthropic",
-  "azure-openai-responses",
-  "baseten",
-  "cerebras",
-  "cloudflare-ai-gateway",
-  "cloudflare-workers-ai",
-  "deepseek",
-  "fireworks",
-  "github-copilot",
-  "google",
-  "google-vertex",
-  "groq",
-  "huggingface",
-  "kimi-coding",
-  "minimax",
-  "minimax-cn",
-  "mistral",
-  "moonshotai",
-  "moonshotai-cn",
-  "nvidia",
-  "openai-codex",
-  "opencode",
-  "opencode-go",
-  "openrouter",
-  "qwen-token-plan",
-  "qwen-token-plan-cn",
-  "radius",
-  "together",
-  "vercel-ai-gateway",
-  "xai",
-  "xiaomi",
-  "xiaomi-token-plan-ams",
-  "xiaomi-token-plan-cn",
-  "xiaomi-token-plan-sgp",
-  "zai",
-  "zai-coding-cn",
+const RESERVED_AI_SERVICE_IDS: ReadonlySet<string> = new Set([
+  "automatic",
+  "off",
 ]);
+
+function optionalAiServiceFunction<T>(
+  id: string,
+  name: string,
+  value: T | undefined,
+): T | null {
+  if (value === undefined) return null;
+  if (typeof value !== "function") {
+    throw new Error(`AI service "${id}" ${name} must be a function`);
+  }
+  return value;
+}
+
+/**
+ * Validate one `bb.experimental_aiServices.register` declaration the same
+ * way in the production host and the fake host. Throws on the first problem;
+ * returns a normalized, frozen copy carrying only contract fields.
+ */
 
 export function validatePluginAiServiceDeclaration(
   declaration: PluginAiServiceDeclaration,
-): PluginAiServiceDeclaration {
+): NormalizedPluginAiService {
   if (typeof declaration !== "object" || declaration === null) {
     throw new Error("AI service declaration must be an object");
   }
@@ -1127,6 +1184,11 @@ export function validatePluginAiServiceDeclaration(
       `invalid AI service id ${JSON.stringify(id)} — use 2-64 lowercase letters, digits, and "-", starting with a letter or digit`,
     );
   }
+  if (RESERVED_AI_SERVICE_IDS.has(id)) {
+    throw new Error(
+      `AI service id "${id}" is reserved: bb uses "automatic" and "off" as selection modes. Choose another id.`,
+    );
+  }
   const displayName =
     typeof declaration.displayName === "string"
       ? declaration.displayName.trim()
@@ -1134,59 +1196,28 @@ export function validatePluginAiServiceDeclaration(
   if (displayName.length === 0 || displayName.length > 64) {
     throw new Error(`AI service "${id}" displayName must be 1-64 characters`);
   }
-  const kinds = declaration.kinds;
-  if (!Array.isArray(kinds) || kinds.length === 0) {
-    throw new Error(`AI service "${id}" must declare at least one kind`);
-  }
-  const seen = new Set<PluginAiServiceKind>();
-  for (const kind of kinds) {
-    if (
-      typeof kind !== "string" ||
-      !AI_SERVICE_KINDS.has(kind as PluginAiServiceKind)
-    ) {
-      throw new Error(
-        `AI service "${id}" kind ${JSON.stringify(kind)} is not one of: ${[...AI_SERVICE_KINDS].join(", ")}`,
-      );
-    }
-    if (seen.has(kind as PluginAiServiceKind)) {
-      throw new Error(`AI service "${id}" declares kind "${kind}" twice`);
-    }
-    seen.add(kind as PluginAiServiceKind);
-  }
-  return Object.freeze({
+  const complete = optionalAiServiceFunction(
     id,
-    displayName,
-    kinds: Object.freeze([...seen]),
-  });
-}
-
-export type AiServiceHostBinding<THostArtifact> =
-  | { readonly artifact: THostArtifact; readonly problem: null }
-  | { readonly artifact: null; readonly problem: string };
-
-export function assertAiServiceRegistrable<THostArtifact>(args: {
-  id: string;
-  hostArtifact: THostArtifact | null;
-  hostArtifactProblem: string | null;
-}): AiServiceHostBinding<THostArtifact> {
-  if (SERVER_DIRECT_AI_SERVICE_IDS.includes(args.id)) {
+    "complete",
+    declaration.complete,
+  );
+  const transcribe = optionalAiServiceFunction(
+    id,
+    "transcribe",
+    declaration.transcribe,
+  );
+  const status = optionalAiServiceFunction(id, "status", declaration.status);
+  if (complete === null && transcribe === null) {
     throw new Error(
-      `AI service id "${args.id}" is reserved: the server serves it directly, so a plugin cannot register it`,
+      `AI service "${id}" must declare complete, transcribe, or both`,
     );
   }
-  if (args.hostArtifact !== null) {
-    return { artifact: args.hostArtifact, problem: null };
-  }
-  if (args.hostArtifactProblem !== null) {
-    return { artifact: null, problem: args.hostArtifactProblem };
-  }
-  throw new Error(
-    `AI service "${args.id}" needs a bb.host entry to run on: this plugin declares none`,
-  );
+  return Object.freeze({ id, displayName, complete, transcribe, status });
 }
 
+/** The collision a plugin's second registration of one AI-service id raises. */
 export function aiServiceAlreadyRegisteredMessage(id: string): string {
-  return `AI service "${id}" is already registered; a plugin cannot shadow an existing service.`;
+  return `AI service "${id}" is already registered by this plugin.`;
 }
 
 export function providerAlreadyRegisteredMessage(id: string): string {
@@ -1198,10 +1229,12 @@ export type NormalizedPluginProviderDeclaration = Omit<
   | "experimental_nativeSkillRoots"
   | "experimental_nativeCommandRoots"
   | "experimental_resolvesNativeRoots"
+  | "experimental_nativeTerminal"
 > & {
   readonly experimental_nativeSkillRoots?: ProviderNativeRoots;
   readonly experimental_nativeCommandRoots?: ProviderNativeRoots;
   readonly experimental_resolvesNativeRoots: boolean;
+  readonly experimental_nativeTerminal?: ProviderNativeTerminal;
   readonly completedTurnDisplay: PluginProviderCompletedTurnDisplay;
   readonly maintenance: {
     readonly health: boolean;
@@ -1211,6 +1244,7 @@ export type NormalizedPluginProviderDeclaration = Omit<
   readonly models: {
     readonly fallback?: readonly PluginProviderFallbackModel[];
     readonly scope: PluginProviderModelCatalogScope;
+    readonly childThreadModel?: string;
   };
 };
 
@@ -1240,6 +1274,7 @@ const READ_EXPERIMENTAL_PROVIDER_DECLARATION_FIELDS: ReadonlySet<string> =
     "experimental_nativeSkillRoots",
     "experimental_nativeCommandRoots",
     "experimental_resolvesNativeRoots",
+    "experimental_nativeTerminal",
   ]);
 
 const RENAMED_PROVIDER_FIELDS_SDK_VERSION = "0.4.16";
@@ -1476,6 +1511,10 @@ export function validatePluginProviderDeclaration(
     id,
     declaration.models?.scope,
   );
+  const childThreadModel = validateProviderChildThreadModel(
+    id,
+    declaration.models?.childThreadModel,
+  );
   const envPassthrough =
     declaration.env === undefined
       ? undefined
@@ -1495,6 +1534,13 @@ export function validatePluginProviderDeclaration(
           id,
           "experimental_nativeCommandRoots",
           declaration.experimental_nativeCommandRoots,
+        );
+  const nativeTerminal =
+    declaration.experimental_nativeTerminal === undefined
+      ? undefined
+      : validateProviderNativeTerminal(
+          id,
+          declaration.experimental_nativeTerminal,
         );
   const resolvesNativeRoots = declaration.experimental_resolvesNativeRoots;
   if (
@@ -1536,6 +1582,7 @@ export function validatePluginProviderDeclaration(
     models: Object.freeze({
       ...(fallbackModels === undefined ? {} : { fallback: fallbackModels }),
       scope: modelCatalogScope,
+      ...(childThreadModel === undefined ? {} : { childThreadModel }),
     }),
     ...(envPassthrough === undefined
       ? {}
@@ -1547,6 +1594,9 @@ export function validatePluginProviderDeclaration(
       ? {}
       : { experimental_nativeCommandRoots: nativeCommandRoots }),
     experimental_resolvesNativeRoots: resolvesNativeRoots ?? false,
+    ...(nativeTerminal === undefined
+      ? {}
+      : { experimental_nativeTerminal: nativeTerminal }),
     ...(deriveProviderOptions === undefined
       ? {}
       : { deriveProviderOptions: deriveProviderOptions }),
@@ -2254,6 +2304,7 @@ export interface NormalizedPluginEnvironmentProvider {
     PluginEnvironmentProviderDeclaration["experimental_existingPath"]
   > | null;
   create: PluginEnvironmentProviderDeclaration["create"];
+  restore: NonNullable<PluginEnvironmentProviderDeclaration["restore"]> | null;
   remove: PluginEnvironmentProviderDeclaration["remove"];
   policy: import("../environment-provider.js").PluginEnvironmentProviderPolicy;
 }
@@ -2404,6 +2455,12 @@ export function validatePluginEnvironmentProviderDeclaration(
     declaration.experimental_existingPath,
     "experimental_existingPath",
   );
+  assertOptionalFunction(
+    "environment provider",
+    id,
+    declaration.restore,
+    "a restore",
+  );
   return {
     id,
     displayName,
@@ -2416,6 +2473,7 @@ export function validatePluginEnvironmentProviderDeclaration(
     validate: declaration.validate ?? null,
     experimental_existingPath: declaration.experimental_existingPath ?? null,
     create: declaration.create,
+    restore: declaration.restore ?? null,
     remove: declaration.remove,
     policy: environmentProviderPolicySchema.parse(declaration.policy ?? {}),
   };
@@ -2599,10 +2657,9 @@ export function runPluginStorageMigrations(
     database.exec("ALTER TABLE _bb_migrations ADD COLUMN statement_hash TEXT");
   }
   const rows = database
-    .prepare<
-      [],
-      { id: number; statement_hash: string | null }
-    >("SELECT id, statement_hash FROM _bb_migrations ORDER BY id")
+    .prepare<[], { id: number; statement_hash: string | null }>(
+      "SELECT id, statement_hash FROM _bb_migrations ORDER BY id",
+    )
     .all();
   const applied = new Map<number, string | null>();
   for (const row of rows) applied.set(row.id, row.statement_hash);
@@ -2712,7 +2769,10 @@ type RpcRegistrationRecord = {
   publication: ReturnType<typeof publishRpcMethod>;
   inputSchema: StandardSchemaV1;
   outputSchema: StandardSchemaV1;
-  handler: (input: unknown) => unknown;
+  handler: (
+    input: unknown,
+    context: ExperimentalPluginRpcHandlerContext,
+  ) => unknown;
 };
 
 export function normalizeRpcRegistration(
@@ -3155,9 +3215,11 @@ export function normalizeInteractionRequest(
   if (
     !Number.isInteger(timeoutMs) ||
     timeoutMs <= 0 ||
-    timeoutMs > 60 * 60 * 1000
+    timeoutMs > PLUGIN_INTERACTION_MAX_TIMEOUT_MS
   ) {
-    throw new Error("ui.requestInput timeoutMs must be between 1 and 3600000");
+    throw new Error(
+      `ui.requestInput timeoutMs must be between 1 and ${PLUGIN_INTERACTION_MAX_TIMEOUT_MS}`,
+    );
   }
   if (
     request.describeSubmission !== undefined &&

@@ -4,6 +4,7 @@ import {
   getEnvironment,
   getQueuedThreadMessage,
   getThread,
+  isNativeTerminalThread,
   listActiveVisiblePinnedThreadRootsWithPendingInteractionState,
   pinThread,
   reorderPinnedThread,
@@ -24,11 +25,7 @@ import {
   type PublicApiSchema,
 } from "@bb/server-contract";
 import type { Hono } from "hono";
-import {
-  createStandaloneBuiltinCompactCommandInput,
-  type Thread,
-  type ThreadQueuedMessage,
-} from "@bb/domain";
+import { type ThreadQueuedMessage } from "@bb/domain";
 import type { AppDeps } from "../../types.js";
 import { ApiError } from "../../errors.js";
 import {
@@ -37,21 +34,28 @@ import {
 } from "../../services/plugins/plugin-thread-events.js";
 import { toThreadQueuedMessage } from "../../services/threads/thread-queued-messages.js";
 import { retryFailedTurn } from "../../services/threads/turn-retry.js";
+import { resumeNativeTerminalAfterUnarchive } from "../../services/threads/native-terminal-threads.js";
 import {
   requireConnectedHostSession,
   requirePublicThread,
 } from "../../services/lib/entity-lookup.js";
 import { parseSafeRelativeRoutePath } from "../relative-route-path.js";
-import { validatePromptAttachmentReferences } from "../../services/projects/attachments.js";
+import { resolvePromptAttachmentReferences } from "../../services/projects/attachments.js";
+import {
+  compactThreadContext,
+  threadTargetHostId,
+} from "../../services/threads/dispatch-attempt.js";
 import {
   createQueuedMessageForThread,
+  holdQueuedMessageForEdit,
+  releaseQueuedMessageEditHold,
+  requestEditReleasedQueuedMessageDispatch,
   sendQueuedMessageNow,
 } from "../../services/threads/queued-messages.js";
 import {
   ensureThreadIsNotAwaitingUserInteraction,
   ensureThreadIsWritable,
   ensureThreadQueueIsWritable,
-  sendThreadMessage,
 } from "../../services/threads/thread-send.js";
 import { acceptThreadSendRequest } from "../../services/threads/thread-send-request.js";
 import { editThreadMessage } from "../../services/threads/thread-edit-message.js";
@@ -63,11 +67,21 @@ import {
 } from "../../services/threads/thread-commands.js";
 import { getLastProviderThreadId } from "../../services/threads/thread-events.js";
 import { stopThreadForCurrentState } from "../../services/threads/thread-lifecycle.js";
+import { interruptNativeTerminalTurn } from "../../services/threads/native-terminal-activity.js";
 import {
+  buildThreadStatusChangeMetadata,
   getThreadPromptBannerActivity,
   toThreadListEntryResponses,
   toThreadResponseFromThread,
 } from "../../services/threads/thread-runtime-display.js";
+import {
+  resolveThreadEnvironmentRestore,
+  throwThreadEnvironmentRestoreRefusal,
+} from "../../services/threads/thread-environment-restore.js";
+import {
+  requestThreadEnvironmentRestore,
+  scheduleThreadProvisioningAdvance,
+} from "../../services/threads/thread-provisioning.js";
 import { archiveThreadAndChildren } from "../../services/threads/thread-archive.js";
 import {
   requireThreadCommandEnvironment,
@@ -119,38 +133,6 @@ function toQueuedMessageOrderResponse(
         "Queued messages with different execution options cannot be grouped",
       );
   }
-}
-
-async function compactThreadContext(
-  deps: AppDeps,
-  thread: Thread,
-): Promise<void> {
-  ensureThreadIsWritable(thread);
-  if (!deps.providerRegistry.supportsManualCompaction(thread.providerId)) {
-    throw new ApiError(
-      409,
-      "invalid_request",
-      `Provider "${thread.providerId}" does not support manual context compaction`,
-    );
-  }
-  if (thread.status !== "idle" && thread.status !== "error") {
-    throw new ApiError(
-      409,
-      "invalid_request",
-      "Context can only be compacted while the thread is idle or errored",
-    );
-  }
-
-  const environment = await requireThreadCommandEnvironment(deps, { thread });
-  await sendThreadMessage(deps, {
-    environment,
-    payload: {
-      input: createStandaloneBuiltinCompactCommandInput(),
-      mode: "start",
-    },
-    thread,
-    trigger: "user",
-  });
 }
 
 function toQueuedMessageGroupBoundaryResponse(
@@ -313,14 +295,15 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
   patch(routes.updateQueuedMessage, async (context, payload) => {
     const thread = requirePublicThread(deps.db, context.req.param("id"));
     ensureThreadQueueIsWritable(thread);
-    await validatePromptAttachmentReferences({
+    const input = await resolvePromptAttachmentReferences({
       db: deps.db,
       dataDir: deps.config.dataDir,
       input: payload.input,
       projectId: thread.projectId,
+      hostId: threadTargetHostId(deps, thread),
     });
     const result = updateQueuedThreadMessage(deps.db, deps.hub, {
-      content: payload.input,
+      content: input,
       expectedUpdatedAt: payload.expectedUpdatedAt,
       id: context.req.param("queuedMessageId"),
       threadId: thread.id,
@@ -342,7 +325,33 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
         "Queued message changed since editing began",
       );
     }
+    if (result.releasedEditHold) {
+      requestEditReleasedQueuedMessageDispatch(deps, {
+        queuedMessageId: result.queuedMessage.id,
+        threadId: thread.id,
+      });
+    }
     return context.json(toThreadQueuedMessage(result.queuedMessage));
+  });
+
+  post(routes.holdQueuedMessageForEdit, (context) => {
+    const thread = requirePublicThread(deps.db, context.req.param("id"));
+    ensureThreadQueueIsWritable(thread);
+    return context.json(
+      holdQueuedMessageForEdit(deps, {
+        queuedMessageId: context.req.param("queuedMessageId"),
+        threadId: thread.id,
+      }),
+    );
+  });
+
+  del(routes.releaseQueuedMessageEditHold, (context) => {
+    const thread = requirePublicThread(deps.db, context.req.param("id"));
+    releaseQueuedMessageEditHold(deps, {
+      queuedMessageId: context.req.param("queuedMessageId"),
+      threadId: thread.id,
+    });
+    return context.json({ ok: true });
   });
 
   del(routes.deleteQueuedMessage, (context) => {
@@ -367,6 +376,10 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
 
   post(routes.stop, async (context) => {
     const thread = requirePublicThread(deps.db, context.req.param("id"));
+    if (isNativeTerminalThread(deps.db, thread.id)) {
+      interruptNativeTerminalTurn(deps, thread.id);
+      return context.json({ ok: true });
+    }
     const environment = resolveThreadHostCommandEnvironment({
       db: deps.db,
       thread,
@@ -552,8 +565,11 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
 
   post(routes.unarchive, (context) => {
     const thread = requirePublicThread(deps.db, context.req.param("id"));
+    if (thread.archivedAt === null) return context.json({ ok: true });
     const providerThreadId = getLastProviderThreadId(deps, thread.id);
     if (!unarchiveThread(deps.db, deps.hub, thread.id)) {
+      if (getThread(deps.db, thread.id)?.archivedAt === null)
+        return context.json({ ok: true });
       throw new ApiError(
         409,
         "invalid_request",
@@ -566,6 +582,14 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
         refreshProviderRetirement(deps, unarchivedThread.environmentId);
       emitPluginThreadUnarchived(unarchivedThread);
     }
+    void resumeNativeTerminalAfterUnarchive(deps, {
+      threadId: thread.id,
+    }).catch((error: unknown) => {
+      deps.logger.warn(
+        { err: error, threadId: thread.id },
+        "Failed to resume native terminal after thread unarchive",
+      );
+    });
     const environment = thread.environmentId
       ? getEnvironment(deps.db, thread.environmentId)
       : null;
@@ -577,6 +601,40 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
       });
     }
     return context.json({ ok: true });
+  });
+
+  post(routes.restoreEnvironment, (context) => {
+    const thread = requirePublicThread(deps.db, context.req.param("id"));
+    ensureThreadIsWritable(thread);
+    const resolution = resolveThreadEnvironmentRestore(deps, { thread });
+    if (!resolution.restorable) {
+      throwThreadEnvironmentRestoreRefusal(resolution.refusal, thread);
+    }
+    const started = requestThreadEnvironmentRestore(deps, {
+      environment: resolution.target.environment,
+      provider: {
+        environmentProviderId: resolution.target.environmentProviderId,
+        selection: resolution.target.selection,
+      },
+      thread,
+    });
+    if (started === null) {
+      throw new ApiError(
+        409,
+        "invalid_request",
+        "Thread is no longer idle, so its workspace cannot be restored",
+      );
+    }
+    const restoringThread = requirePublicThread(deps.db, thread.id);
+    deps.hub.notifyThread(
+      thread.id,
+      ["status-changed"],
+      buildThreadStatusChangeMetadata(deps, restoringThread),
+    );
+    scheduleThreadProvisioningAdvance(deps, thread.id);
+    return context.json(
+      toThreadResponseFromThread(deps, { thread: restoringThread }),
+    );
   });
 
   post(routes.read, (context) => {

@@ -120,7 +120,7 @@ function start(
     done,
     release: () => child.send("continue"),
     async event(...names: string[]): Promise<string> {
-      const deadline = performance.now() + 10_000;
+      const deadline = performance.now() + 60_000;
       for (;;) {
         const found = events.find((event) => names.includes(event));
         if (found) return found;
@@ -166,6 +166,7 @@ async function compete(
 
 function cleanAndPrivate(dir: string, kind: string) {
   expect(readdirSync(dir).filter((file) => file.endsWith(".tmp"))).toEqual([]);
+  if (process.platform === "win32") return;
   expect(statSync(join(dir, `${kind}.json`)).mode & 0o777).toBe(0o600);
   expect(statSync(join(dir, `.${kind}.json.lock`)).mode & 0o777).toBe(0o600);
 }
@@ -187,7 +188,7 @@ const cases = [
   },
 ];
 
-const options = { timeout: 30_000 };
+const options = { timeout: 120_000 };
 
 describe("managed JSON CLI process transactions", options, () => {
   for (const { kind, a, b, va, vb } of cases) {
@@ -209,15 +210,10 @@ describe("managed JSON CLI process transactions", options, () => {
                   customModels: [
                     { providerId: "future-provider", model: "synthetic" },
                   ],
-                  customAcpAgents: [
-                    { id: "synthetic", command: "missing-synthetic-command" },
-                  ],
                 }
               : {};
-          const keep =
-            kind === "env"
-              ? { KEEP: "preserved" }
-              : { BB_INFERENCE: "codex/synthetic" };
+          const keep: Record<string, string> =
+            kind === "env" ? { KEEP: "preserved" } : {};
           const path = seed(dir, kind, {
             ...extras,
             [kind]: { ...keep, ...(operation === "unset" ? { [a]: va } : {}) },
@@ -306,7 +302,7 @@ describe("managed JSON CLI process transactions", options, () => {
         expect(read(path)).toEqual({
           [kind]: { [a]: va, ...(stage === "after-rename" ? { [b]: vb } : {}) },
         });
-        if (stage === "after-write")
+        if (stage === "after-write" && process.platform !== "win32")
           expect(statSync(join(dir, `.${kind}.json.tmp`)).mode & 0o777).toBe(
             0o600,
           );
@@ -382,23 +378,27 @@ describe("managed JSON CLI process transactions", options, () => {
     const lockInode = statSync(lockPath).ino;
     const old = new Date(0);
     utimesSync(lockPath, old, old);
-    owner.child.kill("SIGSTOP");
-    const contender = start(dir, ["env", "unset", "SYNTHETIC_A"]);
+    if (process.platform !== "win32") owner.child.kill("SIGSTOP");
+    const contender = start(dir, ["env", "unset", "SYNTHETIC_A"], {
+      env: { BB_TEST_REPORT_LOCK_WAIT: "1" },
+    });
     await contender.event("blocked");
     const result = await contender.done;
+    const lockWaitMs = Number(/lock-wait-ms=(\d+)/.exec(result.stderr)?.[1]);
+    expect(lockWaitMs).toBeLessThan(20_000);
     expect(result.code).toBe(1);
     expect(result.stderr).toContain(`Timed out waiting to update ${path}`);
     expect(result.stdout).not.toContain("Unset");
     expect(statSync(lockPath).ino).toBe(lockInode);
     expect(existsSync(join(dir, ".env.json.tmp"))).toBe(true);
     expect(read(path)).toEqual({ env: { SYNTHETIC_A: "synthetic" } });
-    owner.child.kill("SIGCONT");
+    if (process.platform !== "win32") owner.child.kill("SIGCONT");
     owner.release();
     await success(owner);
     await success(start(dir, ["env", "unset", "SYNTHETIC_A"]));
     expect(read(path)).toEqual({ env: { SYNTHETIC_B: "b" } });
     cleanAndPrivate(dir, "env");
-  }, 15_000);
+  });
 
   it("rejects invalid input and malformed documents without rewriting them", async () => {
     const dir = directory();

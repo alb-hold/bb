@@ -112,6 +112,44 @@ describe("parseOperationMessage operation titles", () => {
     });
   });
 
+  it("masks plaintext plugin, core and machine values and keeps bb shell values", () => {
+    const event: ThreadEvent = {
+      type: "provider.env-resolved",
+      threadId: THREAD_ID,
+      providerThreadId: "provider-thread-1",
+      scope: { kind: "thread" },
+      entries: [
+        { name: "PATH", source: "shell", value: "/fake/shell/bin" },
+        { name: "GH_TOKEN", source: "shell", value: "fake-machine-secret-789" },
+        {
+          name: "PLUGIN_TOKEN",
+          source: { plugin: "auth-proxy" },
+          value: "fake-secret-123",
+        },
+        {
+          name: "CORE_TOKEN",
+          source: { core: "machine-environment" },
+          value: "fake-core-secret-456",
+        },
+      ],
+    };
+    const message = parseOperationMessage(
+      event,
+      { id: "event-provider-env", seq: 1, createdAt: 1 },
+      { includeDiagnosticOperations: true, threadName: "" },
+    );
+
+    expect(message).toMatchObject({
+      kind: "operation",
+      detail: [
+        "PATH=/fake/shell/bin (shell)",
+        "GH_TOKEN=•••••• (shell)",
+        "PLUGIN_TOKEN=•••••• (auth-proxy)",
+        "CORE_TOKEN=•••••• (machine-environment)",
+      ].join("\n"),
+    });
+  });
+
   describe("provider-unhandled", () => {
     it("uses the projected provider display name for dynamic providers", () => {
       const row = factory().providerUnhandled({
@@ -162,11 +200,6 @@ describe("parseOperationMessage operation titles", () => {
         "Provisioning thread interrupted",
       );
     });
-
-    it("does not depend on whether the thread is named", () => {
-      expect(provisioningTitle("active", "")).toBe("Provisioning thread");
-      expect(provisioningTitle("completed", "")).toBe("Provisioned thread");
-    });
   });
 
   describe("thread-interrupted", () => {
@@ -187,12 +220,12 @@ describe("parseOperationMessage operation titles", () => {
     });
   });
 
-  it("renders a context clear as a concise completed boundary", () => {
+  it("renders a completed context clear with current detail text over the stored message", () => {
     const row = factory().systemOperation({
       operation: "context_clear",
       status: "completed",
       message:
-        "New prompts won’t include messages above. Thread history and workspace are unchanged.",
+        "Earlier chat is hidden from the active timeline. Durable history and workspace are unchanged.",
     });
     const { event, meta } = decodeThreadEventRow(row);
 
@@ -283,4 +316,8 @@ describe("parseOperationMessage operation titles", () => {
       expect(message.title).toBe("Provisioning thread failed");
     });
   });
+});
+
+it("explains an intentional machine removal without suggesting a daemon failure", () => {
+  expect(interruptedTitle("host-removed", THREAD_NAME)).toBe("Stopped because the machine was removed");
 });

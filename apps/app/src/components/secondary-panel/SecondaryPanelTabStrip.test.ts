@@ -12,7 +12,6 @@ import { afterEach, vi } from "vitest";
 import { describe, expect, it } from "vitest";
 import {
   SecondaryPanelTabStrip,
-  SECONDARY_PANEL_TAB_STRIP_FADE_TONE,
   secondaryPanelTabsToClose,
   type SecondaryPanelTabStripProps,
 } from "./SecondaryPanelTabStrip";
@@ -23,8 +22,42 @@ afterEach(() => {
 });
 
 describe("secondary panel tab-strip edge fades", () => {
-  it("uses the themed edge fade", () => {
-    expect(SECONDARY_PANEL_TAB_STRIP_FADE_TONE).toBe("sidebar");
+  it("shows the attention ring on an unread terminal tab", () => {
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        disconnect() {}
+      },
+    );
+    const { getByRole } = render(
+      createElement(SecondaryPanelTabStrip, {
+        activeTabId: "terminal-1",
+        tabs: [
+          {
+            attention: true,
+            label: "Build terminal",
+            isPinned: false,
+            leadingVisual: null,
+            statusLabel: null,
+            onSelect: vi.fn(),
+            onClose: vi.fn(),
+            renderContent: () => null,
+            tab: {
+              id: "terminal-1",
+              kind: "terminal" as const,
+              terminalId: "terminal-1",
+            },
+          },
+        ],
+        onReorderTab: vi.fn(),
+        usesDesktopChrome: false,
+        isPanelOpen: true,
+      }),
+    );
+
+    const tab = getByRole("button", { name: "Build terminal" });
+    expect(tab.parentElement?.classList).toContain("ring-attention");
   });
 
   it("keeps the desktop tab viewport outside the window drag region", () => {
@@ -169,11 +202,6 @@ describe("secondary panel tab-strip edge fades", () => {
     expect(observed).toContain(content);
     expect(resizeCallback).toBeDefined();
     expect(container.querySelectorAll("[data-overflow-fade]")).toHaveLength(2);
-    expect(
-      container
-        .querySelector("[data-overflow-fade='left']")
-        ?.classList.contains("w-6"),
-    ).toBe(true);
     const leftButton = container.querySelector<HTMLButtonElement>(
       '[aria-label="Scroll tabs left"]',
     );
@@ -217,11 +245,6 @@ describe("secondary panel tab-strip edge fades", () => {
     expect(leftButton?.tabIndex).toBe(-1);
     expect(rightButton?.classList.contains("opacity-100")).toBe(true);
     expect(rightButton?.tabIndex).toBe(0);
-    expect(rightButton?.classList.contains("bg-sidebar")).toBe(true);
-    expect(
-      rightButton?.classList.contains("hover:bg-surface-raised-solid"),
-    ).toBe(true);
-    expect(rightButton?.classList.contains("hover:bg-state-hover")).toBe(false);
 
     const scrollBy = vi.fn();
     Object.defineProperty(viewport!, "scrollBy", {

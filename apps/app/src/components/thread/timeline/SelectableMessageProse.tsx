@@ -1,3 +1,4 @@
+import { selectionClipboard } from "@/lib/markdown-clipboard";
 import { useEffect, useRef, type ReactNode } from "react";
 
 export interface SelectionAnchorPoint {
@@ -72,19 +73,58 @@ function normalizeSelectionText(text: string): string {
   return text.replace(/\s+/gu, " ").trim();
 }
 
+interface ReportRangeFacts {
+  selection: Selection;
+  range: Range;
+  selectionText: () => string;
+  normalizedSelectionText: () => string;
+  firstClientRect: () => DOMRect | null;
+}
+
+function createReportRangeFacts(
+  selection: Selection,
+  range: Range,
+): ReportRangeFacts {
+  let cachedSelectionText: string | null = null;
+  let cachedNormalizedSelectionText: string | null = null;
+  let cachedFirstClientRect: DOMRect | null | undefined;
+  const selectionText = (): string => {
+    if (cachedSelectionText === null) {
+      cachedSelectionText = selection.toString().trim();
+    }
+    return cachedSelectionText;
+  };
+  const normalizedSelectionText = (): string => {
+    if (cachedNormalizedSelectionText === null) {
+      cachedNormalizedSelectionText = normalizeSelectionText(selectionText());
+    }
+    return cachedNormalizedSelectionText;
+  };
+  const firstClientRectForReport = (): DOMRect | null => {
+    if (cachedFirstClientRect === undefined) {
+      cachedFirstClientRect = firstClientRect(range);
+    }
+    return cachedFirstClientRect;
+  };
+  return {
+    selection,
+    range,
+    selectionText,
+    normalizedSelectionText,
+    firstClientRect: firstClientRectForReport,
+  };
+}
+
 function isSelectionBoundarySpillWithinNode(
   node: HTMLElement,
-  range: Range,
-  selectionText: string,
+  facts: ReportRangeFacts,
+  intersectsNode: boolean | null,
 ): boolean {
-  if (typeof range.intersectsNode !== "function") {
-    return false;
-  }
-  if (!range.intersectsNode(node)) {
+  if (intersectsNode !== true) {
     return false;
   }
 
-  const normalizedSelectionText = normalizeSelectionText(selectionText);
+  const normalizedSelectionText = facts.normalizedSelectionText();
   if (normalizedSelectionText.length === 0) {
     return false;
   }
@@ -154,13 +194,12 @@ export function selectionAnchorFromPointerRelease(
 function readSelectionWithinNode(
   node: HTMLElement | null,
   anchor: SelectionAnchor | null,
+  facts: ReportRangeFacts,
+  intersectsNode: boolean | null,
 ): MessageProseSelection | null {
-  if (node === null || typeof window === "undefined") return null;
+  if (node === null) return null;
 
-  const selection = window.getSelection();
-  if (selection === null || selection.rangeCount === 0) return null;
-  const range = selection.getRangeAt(0);
-
+  const { selection, range } = facts;
   const accepted = isSelectionWithinNode(node, {
     isCollapsed: selection.isCollapsed,
     anchorNode: selection.anchorNode,
@@ -168,15 +207,21 @@ function readSelectionWithinNode(
     commonAncestorContainer: range.commonAncestorContainer,
   });
   if (accepted) {
-    const text = selection.toString().trim();
-    const rect = firstClientRect(range);
-    return toMessageProseSelection({ anchor, rect, text });
+    return toMessageProseSelection({
+      anchor,
+      rect: facts.firstClientRect(),
+      text: facts.selectionText(),
+    });
   }
 
-  const text = selection.toString().trim();
-  if (isSelectionBoundarySpillWithinNode(node, range, text)) {
-    const rect = firstClientRect(range);
-    return toMessageProseSelection({ anchor, rect, text });
+  if (selection.isCollapsed) return null;
+
+  if (isSelectionBoundarySpillWithinNode(node, facts, intersectsNode)) {
+    return toMessageProseSelection({
+      anchor,
+      rect: facts.firstClientRect(),
+      text: facts.selectionText(),
+    });
   }
 
   return null;
@@ -305,10 +350,19 @@ function findInstanceContaining(
   return null;
 }
 
-function reportInstanceSelection(instance: SelectableProseInstance): void {
+function reportInstanceSelection(
+  instance: SelectableProseInstance,
+  facts: ReportRangeFacts,
+  intersectsNode: boolean | null,
+): void {
   const anchor = instance.pendingReportAnchor;
   instance.pendingReportAnchor = null;
-  const next = readSelectionWithinNode(instance.node, anchor);
+  const next = readSelectionWithinNode(
+    instance.node,
+    anchor,
+    facts,
+    intersectsNode,
+  );
   if (next === null && !instance.hadSelection) return;
   instance.hadSelection = next !== null;
   instance.onSelectRef.current?.(next);
@@ -328,18 +382,26 @@ function reportAllInstances(): void {
     selection !== null && selection.rangeCount > 0
       ? selection.getRangeAt(0)
       : null;
+  const facts =
+    selection !== null && range !== null
+      ? createReportRangeFacts(selection, range)
+      : null;
   const canPreFilter =
-    range !== null && typeof range.intersectsNode === "function";
+    facts !== null && typeof facts.range.intersectsNode === "function";
   for (const instance of proseInstances) {
     if (instance.multiClickTimer !== null) continue;
-    if (
-      range === null ||
-      (canPreFilter && !range.intersectsNode(instance.node))
-    ) {
+    if (facts === null) {
       reportInstanceNull(instance);
       continue;
     }
-    reportInstanceSelection(instance);
+    const intersectsNode = canPreFilter
+      ? facts.range.intersectsNode(instance.node)
+      : null;
+    if (intersectsNode === false) {
+      reportInstanceNull(instance);
+      continue;
+    }
+    reportInstanceSelection(instance, facts, intersectsNode);
   }
 }
 
@@ -454,11 +516,73 @@ function handleSharedKeyUp(): void {
   scheduleSharedReport();
 }
 
-function handleSharedCopy(): void {
+export function readSelectedMessageMarkdown(): string | null {
   const selection = window.getSelection();
-  if (selection === null || selection.rangeCount !== 1) return;
+  if (!selection || selection.isCollapsed || selection.rangeCount !== 1)
+    return null;
   const range = selection.getRangeAt(0);
+  const instance =
+    findInstanceContaining(range.startContainer) ??
+    findInstanceContaining(range.endContainer);
+  if (!instance) return null;
+  const node = instance.node;
+  const clipped =
+    node.contains(range.startContainer) && node.contains(range.endContainer)
+      ? range
+      : clippedRangeForWhitespaceBoundarySpill(node, range);
+  return clipped === null ? null : selectionClipboard(clipped, node).text;
+}
+
+function handleSharedCopy(event: ClipboardEvent): void {
+  if (event.defaultPrevented) return;
+  const selection = window.getSelection();
+  if (selection === null || selection.isCollapsed || selection.rangeCount !== 1)
+    return;
+  const range = selection.getRangeAt(0);
+  const startInstance = findInstanceContaining(range.startContainer);
+  const endInstance = findInstanceContaining(range.endContainer);
+  if (event.clipboardData && startInstance && endInstance) {
+    const instances = Array.from(proseInstances)
+      .filter((instance) => range.intersectsNode(instance.node))
+      .sort((a, b) =>
+        a.node.compareDocumentPosition(b.node) &
+        Node.DOCUMENT_POSITION_FOLLOWING
+          ? -1
+          : 1,
+      );
+    const parts = instances.map((instance) => {
+      const clipped = range.cloneRange();
+      if (!instance.node.contains(range.startContainer))
+        clipped.setStart(instance.node, 0);
+      if (!instance.node.contains(range.endContainer))
+        clipped.setEnd(instance.node, instance.node.childNodes.length);
+      return selectionClipboard(clipped, instance.node);
+    });
+    const payload = {
+      text: parts.map((part) => part.text).join("\n\n"),
+      html: parts.map((part) => part.html).join(""),
+    };
+    if (payload.text) {
+      event.clipboardData.setData("text/plain", payload.text);
+      event.clipboardData.setData("text/html", payload.html);
+      event.preventDefault();
+    }
+    return;
+  }
   for (const instance of proseInstances) {
+    if (event.clipboardData) {
+      const clipped = clippedRangeForWhitespaceBoundarySpill(
+        instance.node,
+        range,
+      );
+      if (clipped) {
+        const payload = selectionClipboard(clipped, instance.node);
+        event.clipboardData.setData("text/plain", payload.text);
+        event.clipboardData.setData("text/html", payload.html);
+        event.preventDefault();
+        return;
+      }
+    }
     if (
       typeof range.intersectsNode === "function" &&
       range.intersectsNode(instance.node) &&

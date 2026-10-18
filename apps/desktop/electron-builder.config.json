@@ -39,6 +39,9 @@
   ],
   "mac": {
     "category": "public.app-category.developer-tools",
+    "extendInfo": {
+      "NSMicrophoneUsageDescription": "bb uses your microphone for voice input and sites you allow in the in-app browser."
+    },
     "minimumSystemVersion": "13.0.0",
     "entitlements": "build/entitlements.mac.plist",
     "entitlementsInherit": "build/entitlements.mac.inherit.plist",
@@ -47,6 +50,19 @@
     "icon": "assets/icon.icns",
     "identity": null,
     "notarize": false,
+    "extendInfo": {
+      "NSAppDataUsageDescription": "An agent in one of your bb threads, or a command it runs, is trying to read files that belong to another app, such as its settings or saved data. Allow it if you asked for work that involves that app. If you choose Don't Allow, those files stay unreadable and the command may skip them or stop with an error.",
+      "NSAppBundlesUsageDescription": "An agent in one of your bb threads or a command it runs is trying to change or delete another application. Allow it only if you asked an agent to install, update or remove that app.",
+      "NSDesktopFolderUsageDescription": "An agent in one of your bb threads or a command it runs, or a file you picked in bb, is trying to use files in your Desktop folder. Allow it if you asked a thread to work with files there.",
+      "NSDocumentsFolderUsageDescription": "An agent in one of your bb threads or a command it runs, or a file you picked in bb, is trying to use files in your Documents folder. Allow it if you asked a thread to work with files there.",
+      "NSDownloadsFolderUsageDescription": "An agent in one of your bb threads or a command it runs, or a file you picked in bb, is trying to use files in your Downloads folder. Allow it if you asked a thread to work with files there.",
+      "NSNetworkVolumesUsageDescription": "An agent in one of your bb threads or a command it runs is trying to use files on a network drive. Allow it if you asked a thread to work with files there.",
+      "NSRemovableVolumesUsageDescription": "An agent in one of your bb threads or a command it runs is trying to use files on an external or removable drive. Allow it if you asked a thread to work with files there.",
+      "NSMicrophoneUsageDescription": "bb uses the microphone when you dictate a message into the composer, or when a thread or plugin you started records audio.",
+      "NSAudioCaptureUsageDescription": "A thread or plugin you started in bb is trying to record the sound other apps are playing.",
+      "NSBluetoothAlwaysUsageDescription": "A web page, plugin or agent command in bb is trying to use a Bluetooth device.",
+      "NSBluetoothPeripheralUsageDescription": "A web page, plugin or agent command in bb is trying to use a Bluetooth device."
+    },
     "target": [
       {
         "target": "dmg",
@@ -63,6 +79,14 @@
     "executableName": "bb",
     "icon": "assets/icon.png",
     "target": [{ "target": "AppImage", "arch": ["x64"] }]
+  },
+  "win": {
+    "icon": "assets/icon.png",
+    "target": [{ "target": "nsis", "arch": ["x64"] }]
+  },
+  "nsis": {
+    "oneClick": true,
+    "perMachine": false
   },
   "dmg": {
     "sign": false

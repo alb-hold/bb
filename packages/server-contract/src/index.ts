@@ -1,7 +1,10 @@
 export * from "./api-client.js";
 export * from "./api-types.js";
+export * from "./api/prompt-history-search.js";
 export * from "./api/spend.js";
+export * from "./api/native-terminal-threads.js";
 export * from "./api/thread-tabs.js";
+export * from "./api/thread-row-state.js";
 export * from "./common.js";
 export * from "./errors.js";
 export * from "./public-api.js";
@@ -20,8 +23,6 @@ export type {
   ChangedMessage,
   ClientMessage,
   RealtimeSubscriptionTarget,
-  ThreadChangeKind,
-  ThreadChangedMessage,
 } from "@bb/domain";
 
 export * from "./api/machine-environment.js";

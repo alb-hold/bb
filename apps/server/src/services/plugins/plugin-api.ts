@@ -52,7 +52,6 @@ import type {
   PluginMentionSearchContext,
   PluginMentionTrigger,
   PluginMachines,
-  PluginAiServiceDeclaration,
   PluginAiServices,
   PluginProviderDeclaration,
   ExperimentalPluginProviderEnvContext,
@@ -76,6 +75,7 @@ import type {
   PluginUi,
   StandardSchemaV1,
   PluginRpcContract,
+  ExperimentalPluginRpcHandlerContext,
 } from "@get-bb/plugin-sdk";
 import {
   KV_VALUE_MAX_BYTES,
@@ -108,7 +108,7 @@ import {
   validatePluginProviderDeclaration,
 } from "@get-bb/plugin-sdk/internal/host-policy";
 import type {
-  AiServiceHostBinding,
+  NormalizedPluginAiService,
   NormalizedPluginEnvironmentProvider,
   NormalizedPluginMachineProvider,
   NormalizedPluginProviderDeclaration,
@@ -116,16 +116,20 @@ import type {
 import type {
   BbSdk,
   ThreadForkArgs,
+  PluginThreadMetadataListArgs,
   ThreadPluginMetadataArgs,
   ThreadPluginMetadataUpdateArgs,
   ThreadSpawnArgs,
 } from "@bb/sdk";
 import { requestEnvironmentProviderRecheck } from "./plugin-environment-provider-registry.js";
 import { requestServerAccessRecheck } from "./plugin-server-access-registry.js";
+import {
+  createPluginRpcCallerSdk,
+  type PluginRpcCallerCredential,
+} from "./plugin-rpc-caller.js";
 import type { ServerLogger } from "../../types.js";
 import type { PluginInteractionResult } from "../interactions/pending-interactions.js";
 import { appendPluginLogLine } from "./plugin-log.js";
-import type { PluginHostArtifactSnapshot } from "./plugin-service-internal.js";
 import {
   readPluginSettingsValues,
   writePluginSettingsUpdate,
@@ -143,13 +147,36 @@ export type {
 } from "@get-bb/plugin-sdk";
 
 class PluginContextStaleError extends Error {
-  constructor(pluginId: string) {
+  constructor(pluginId: string, apiMember: string) {
     super(
       `plugin "${pluginId}" used a stale API handle — it was reloaded or disabled; ` +
         `re-entry happens via a fresh factory call`,
     );
     this.name = "PluginContextStaleError";
+    this.pluginId = pluginId;
+    this.apiMember = apiMember;
   }
+
+  readonly pluginId: string;
+  readonly apiMember: string;
+}
+
+export function getPluginContextStaleErrorDetails(
+  error: unknown,
+): { pluginId: string; apiMember: string } | undefined {
+  return error instanceof PluginContextStaleError
+    ? { pluginId: error.pluginId, apiMember: error.apiMember }
+    : undefined;
+}
+
+function inferPluginApiMember(): string {
+  const frame = new Error().stack
+    ?.split("\n")
+    .slice(1)
+    .find(
+      (line) => !/\bat (?:inferPluginApiMember|assertLive)(?:\s|$)/.test(line),
+    );
+  return frame?.match(/at (.+?)(?: \(|$)/)?.[1] ?? "unknown API member";
 }
 
 export function isNeedsConfigurationError(error: unknown): error is Error {
@@ -190,7 +217,10 @@ export interface PluginRpcHandler {
   publication: ReturnType<typeof publishRpcMethod>;
   inputSchema: StandardSchemaV1;
   outputSchema: StandardSchemaV1;
-  handler: (input: unknown) => unknown;
+  handler: (
+    input: unknown,
+    context: ExperimentalPluginRpcHandlerContext,
+  ) => unknown;
 }
 
 export interface PluginAgentToolRecord {
@@ -249,6 +279,8 @@ type PluginSettingsListener = (
 export interface PluginApiHandle {
   api: BbPluginApi;
   disposeHooks: Array<() => void | Promise<void>>;
+  /** Handlers recorded by `bb.onInstall`; run once after a fresh install. */
+  installHandlers: Array<() => void | Promise<void>>;
   settings: {
     descriptors: PluginSettingDescriptors;
     listeners: PluginSettingsListener[];
@@ -335,9 +367,19 @@ function withPluginThreadAttribution<
   return { ...args, ...attribution };
 }
 
-function wrapSdkForPlugin(sdk: BbSdk, pluginId: string): PluginBbSdk {
+function wrapSdkForPlugin(
+  sdk: BbSdk,
+  pluginId: string,
+  rpcCallerSdk: BbSdk,
+): PluginBbSdk {
   return {
     ...sdk,
+    plugins: {
+      ...sdk.plugins,
+      callRpc(args) {
+        return rpcCallerSdk.plugins.callRpc(args);
+      },
+    },
     threads: {
       ...sdk.threads,
       async getPluginMetadata(
@@ -346,6 +388,16 @@ function wrapSdkForPlugin(sdk: BbSdk, pluginId: string): PluginBbSdk {
         },
       ) {
         return sdk.threads.getPluginMetadata({
+          ...args,
+          pluginId: args.pluginId ?? pluginId,
+        });
+      },
+      async experimental_listPluginMetadata(
+        args: Omit<PluginThreadMetadataListArgs, "pluginId"> & {
+          pluginId?: string;
+        },
+      ) {
+        return sdk.threads.experimental_listPluginMetadata({
           ...args,
           pluginId: args.pluginId ?? pluginId,
         });
@@ -377,7 +429,7 @@ function createStagedRegistrations<
 >(options: {
   validate: (declaration: TDeclaration) => TNormalized;
   bind: (id: string) => TBinding;
-  isTaken: (id: string) => boolean;
+  isTaken?: (id: string) => boolean;
   registerLive: (
     declaration: TNormalized,
     binding: TBinding,
@@ -416,7 +468,7 @@ function createStagedRegistrations<
       };
       if (options.isActivated()) {
         entry.disposer = options.registerLive(normalized, binding);
-      } else if (options.isTaken(normalized.id)) {
+      } else if (options.isTaken?.(normalized.id) === true) {
         throw new Error(options.alreadyRegisteredMessage(normalized.id));
       }
       entries.set(normalized.id, entry);
@@ -458,6 +510,12 @@ export function createPluginApi(options: {
   getMachineEnrollments: () => MachineEnrollments;
   getAppUrl: () => string | null;
   getLoopbackBaseUrl: () => string | undefined;
+  /**
+   * This load's rpc caller token, attached to the plugin's
+   * `bb.sdk.plugins.callRpc` requests so handlers see it as the caller.
+   * Revoked when the handle is invalidated.
+   */
+  rpcCaller: PluginRpcCallerCredential;
   publishSignal: (channel: string, payload: unknown) => void;
   settingsChanged: () => void;
   reportNeedsConfiguration: (message: string) => void;
@@ -508,17 +566,10 @@ export function createPluginApi(options: {
   registerProvider: (declaration: NormalizedPluginProviderDeclaration) => {
     dispose(): void;
   };
-  registerAiService: (
-    declaration: PluginAiServiceDeclaration,
-    binding: AiServiceHostBinding<PluginHostArtifactSnapshot>,
-  ) => {
+  registerAiService: (declaration: NormalizedPluginAiService) => {
     dispose(): void;
   };
   isProviderIdTaken: (providerId: string) => boolean;
-  isAiServiceIdTaken: (serviceId: string) => boolean;
-  assertAiServiceRegistrable: (
-    serviceId: string,
-  ) => AiServiceHostBinding<PluginHostArtifactSnapshot>;
   assertProviderRegistrable: (providerId: string) => void;
 }): PluginApiHandle {
   const {
@@ -529,6 +580,7 @@ export function createPluginApi(options: {
     getSdk,
     getAppUrl,
     getLoopbackBaseUrl,
+    rpcCaller,
     publishSignal,
     settingsChanged,
     reportNeedsConfiguration,
@@ -547,8 +599,6 @@ export function createPluginApi(options: {
     registerAiService,
     isProviderIdTaken,
     assertProviderRegistrable,
-    isAiServiceIdTaken,
-    assertAiServiceRegistrable,
   } = options;
   let invalidated = false;
   let activated = false;
@@ -557,6 +607,7 @@ export function createPluginApi(options: {
   const pendingAgentToolProblems: string[] = [];
   const pendingSharedPorts = new Map<string, readonly number[]>();
   const disposeHooks: Array<() => void | Promise<void>> = [];
+  const installHandlers: Array<() => void | Promise<void>> = [];
   const settingsRecord: PluginApiHandle["settings"] = {
     descriptors: {},
     listeners: [],
@@ -564,7 +615,10 @@ export function createPluginApi(options: {
   const databaseHandles: Database.Database[] = [];
   const threadEventHandlers: PluginThreadEventHandlers = {
     "experimental_thread.events": [],
+    "experimental_thread.parentChanged": [],
     "experimental_terminal.input": [],
+    "experimental_host.deleted": [],
+    "experimental_environment.removed": [],
     "thread.created": [],
     "thread.active": [],
     "thread.idle": [],
@@ -579,6 +633,7 @@ export function createPluginApi(options: {
     "thread.unarchived": [],
   };
   const hooks: PluginHookRecords = {
+    "experimental_thread.configure": null,
     "message.dispatch": null,
   };
   const environmentCompositions = new Map<
@@ -602,8 +657,13 @@ export function createPluginApi(options: {
   const backgroundServices: PluginBackgroundServiceRecord[] = [];
   const schedules: PluginScheduleRecord[] = [];
 
-  function assertLive(): void {
-    if (invalidated) throw new PluginContextStaleError(pluginId);
+  function assertLive(apiMember?: string): void {
+    if (invalidated) {
+      throw new PluginContextStaleError(
+        pluginId,
+        apiMember ?? inferPluginApiMember(),
+      );
+    }
   }
 
   const prefix = `[plugin:${pluginId}]`;
@@ -820,7 +880,7 @@ export function createPluginApi(options: {
 
   const realtime: PluginRealtime = {
     publish(channel, payload) {
-      assertLive();
+      assertLive("realtime.publish");
       publishSignal(channel, normalizeRealtimePayload(channel, payload));
     },
   };
@@ -938,15 +998,6 @@ export function createPluginApi(options: {
       agentTools.push(record);
     },
   };
-  Object.defineProperty(agents, "experimental_registerProvider", {
-    enumerable: false,
-    configurable: false,
-    get(): never {
-      throw new Error(
-        "bb.agents.experimental_registerProvider was removed in SDK 0.4.16; use bb.providers.register",
-      );
-    },
-  });
 
   const mentionProviders: PluginMentionProviderRecord[] = [];
   const ui: PluginUi = {
@@ -1291,9 +1342,8 @@ export function createPluginApi(options: {
 
   const aiServiceRegistrations = createStagedRegistrations({
     validate: validatePluginAiServiceDeclaration,
-    bind: assertAiServiceRegistrable,
-    isTaken: isAiServiceIdTaken,
-    registerLive: registerAiService,
+    bind: () => null,
+    registerLive: (declaration) => registerAiService(declaration),
     alreadyRegisteredMessage: aiServiceAlreadyRegisteredMessage,
     assertLive,
     isActivated: () => activated,
@@ -1328,24 +1378,40 @@ export function createPluginApi(options: {
     get sdk(): PluginBbSdk {
       assertLive();
       const sdk = getSdk();
-      if (!sdk) {
+      const loopbackBaseUrl = getLoopbackBaseUrl();
+      if (!sdk || loopbackBaseUrl === undefined) {
         throw new Error(
           "bb.sdk is not available until the server is listening — " +
             "use it inside handlers, services, or timers, not at factory load time",
         );
       }
-      wrappedSdk ??= wrapSdkForPlugin(sdk, pluginId);
+      wrappedSdk ??= wrapSdkForPlugin(
+        sdk,
+        pluginId,
+        createPluginRpcCallerSdk({
+          baseUrl: loopbackBaseUrl,
+          token: rpcCaller.token,
+        }),
+      );
       return wrappedSdk;
     },
     onDispose(hook) {
       assertLive();
       disposeHooks.push(hook);
     },
+    onInstall(handler) {
+      assertLive();
+      if (typeof handler !== "function") {
+        throw new Error("onInstall expects a function");
+      }
+      installHandlers.push(handler);
+    },
   };
 
   return {
     api,
     disposeHooks,
+    installHandlers,
     settings: settingsRecord,
     databaseHandles,
     threadEventHandlers,
@@ -1413,6 +1479,7 @@ export function createPluginApi(options: {
     },
     invalidate() {
       invalidated = true;
+      rpcCaller.revoke();
     },
   };
 }

@@ -1,12 +1,12 @@
-import { useState } from "react";
+import { memo, useState } from "react";
 import type {
   Label,
   Project,
   Task,
   TaskThread,
 } from "../../shared/contract.js";
-import { Icon } from "@bb/shared-ui/icon";
-import { cn } from "@bb/shared-ui/lib/utils";
+import { Icon } from "@/components/ui/icon";
+import { cn } from "@/lib/utils";
 import type { TaskRowMeta } from "./data.js";
 import { activeWorkLabel, formatDueDate, partitionLabels } from "./lib.js";
 import type { EditFn } from "./property-menus.js";
@@ -53,17 +53,14 @@ function LabelChipRow({
   labels: readonly Label[];
   maxVisible: number;
 }) {
-  const { visible, hidden } = partitionLabels(labels, maxVisible);
+  const { visible, hidden, hiddenTitle } = partitionLabels(labels, maxVisible);
   return (
     <>
       {visible.map((label) => (
         <LabelChip key={label.id} label={label} />
       ))}
       {hidden.length > 0 ? (
-        <span
-          title={hidden.map((label) => label.name).join(", ")}
-          className={`${RAIL_CHIP_CLASS} tabular-nums`}
-        >
+        <span title={hiddenTitle} className={`${RAIL_CHIP_CLASS} tabular-nums`}>
           +{hidden.length}
         </span>
       ) : null}
@@ -99,26 +96,36 @@ interface TaskRowProps {
   showProject: boolean;
   labelsById: Map<string, Label>;
   projectLabels: readonly Label[];
+  projects: readonly Project[];
   onEdit: EditFn;
-  onOpen: () => void;
+  onMoveToProject: (task: Task, projectId: string) => void;
+  onOpen: (taskKey: string) => void;
   pending: boolean;
 }
 
-export function TaskRow({
+export const TaskRow = memo(function TaskRow({
   task,
   meta,
   project,
   showProject,
   labelsById,
   projectLabels,
+  projects,
   onEdit,
+  onMoveToProject,
   onOpen,
   pending,
 }: TaskRowProps) {
   const [openMenu, setOpenMenu] = useState<"status" | "priority" | null>(null);
 
   return (
-    <TaskContextMenu task={task} onEdit={onEdit} projectLabels={projectLabels}>
+    <TaskContextMenu
+      task={task}
+      onEdit={onEdit}
+      projectLabels={projectLabels}
+      projects={projects}
+      onMoveToProject={onMoveToProject}
+    >
       <div
         data-task-key={task.key}
         aria-busy={pending || undefined}
@@ -131,7 +138,7 @@ export function TaskRow({
         <button
           type="button"
           aria-label={`Open ${task.key}: ${task.title}`}
-          onClick={onOpen}
+          onClick={() => onOpen(task.key)}
           onKeyDown={(event) => {
             if (!isBareKey(event)) return;
             const key = event.key.toLowerCase();
@@ -186,4 +193,4 @@ export function TaskRow({
       </div>
     </TaskContextMenu>
   );
-}
+});

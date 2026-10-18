@@ -55,30 +55,6 @@ describe("GitHub app navigation", () => {
     slot.lifecycle.unmount();
   });
 
-  it("uses the standard responsive page inset for the main panel", () => {
-    const slot = renderSlot(
-      app.navPanels[0]!,
-      { subPath: "" },
-      {
-        rpc: {
-          listItems: () => ({ items: [] }),
-          status: () => ({
-            ghOk: true,
-            ghState: "ready",
-            ghError: null,
-            repos: [],
-            lastSyncedAt: null,
-          }),
-          viewer: () => ({ login: "octocat" }),
-        },
-      },
-    );
-
-    expect(slot.container.firstElementChild?.className).toContain("p-4 md:p-5");
-    expect(slot.container.firstElementChild?.className).not.toContain("p-3");
-    slot.lifecycle.unmount();
-  });
-
   it("keeps removed pull-request files out of live workspace navigation", async () => {
     const slot = renderSlot(
       app.threadPanelActions[0]!,

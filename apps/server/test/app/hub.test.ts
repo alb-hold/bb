@@ -8,7 +8,7 @@ import {
   type ThreadChangeKind,
 } from "@bb/domain";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { NotificationHub } from "../../src/ws/hub.js";
+import { NotificationHub, TERMINAL_CLIENT_STALE_MS } from "../../src/ws/hub.js";
 import { createMockHubSocket } from "../helpers/mock-hub-socket.js";
 import { TRANSPORT_TEST_BRIDGE_LAUNCH } from "../helpers/provider-registry.js";
 
@@ -19,22 +19,6 @@ function appendRawChangeKind(changes: string[], kind: string): void {
 describe("NotificationHub", () => {
   afterEach(() => {
     vi.useRealTimers();
-  });
-
-  it("subscribes clients and delivers thread notifications", () => {
-    const hub = new NotificationHub();
-    const socket = createMockHubSocket();
-
-    hub.subscribe(socket, { kind: "thread-detail", threadId: "thread-1" });
-    hub.notifyThread("thread-1", ["events-appended"]);
-
-    expect(socket.messages).toHaveLength(1);
-    expect(JSON.parse(socket.messages[0])).toMatchObject({
-      type: "changed",
-      entity: "thread",
-      id: "thread-1",
-      changes: ["events-appended"],
-    });
   });
 
   it("includes thread notification metadata when provided", () => {
@@ -73,17 +57,6 @@ describe("NotificationHub", () => {
       id: "environment-1",
       changes: ["metadata-changed"],
     });
-  });
-
-  it("stops notifications after unsubscribe", () => {
-    const hub = new NotificationHub();
-    const socket = createMockHubSocket();
-
-    hub.subscribe(socket, { kind: "thread-detail", threadId: "thread-1" });
-    hub.unsubscribe(socket, { kind: "thread-detail", threadId: "thread-1" });
-    hub.notifyThread("thread-1", ["status-changed"]);
-
-    expect(socket.messages).toHaveLength(0);
   });
 
   it("cleans up subscriptions on client disconnect", () => {
@@ -131,21 +104,88 @@ describe("NotificationHub", () => {
     ]);
   });
 
-  it("gives terminal resize ownership to the latest client and restores it on detach", () => {
+  it("sizes a shared terminal to the smallest visible, live client", () => {
     const hub = new NotificationHub();
-    const first = createMockHubSocket();
-    const second = createMockHubSocket();
+    const desktop = createMockHubSocket();
+    const phone = createMockHubSocket();
+    const now = 1_000_000;
 
-    hub.registerTerminalClient("term-1", first);
-    hub.claimTerminalResizeOwnership("term-1", first);
-    hub.registerTerminalClient("term-1", second);
-    hub.claimTerminalResizeOwnership("term-1", second);
+    hub.registerTerminalClient("term-1", desktop);
+    hub.registerTerminalClient("term-1", phone);
+    expect(hub.terminalSharedSize("term-1", now)).toBeNull();
 
-    expect(hub.isTerminalResizeOwner("term-1", first)).toBe(false);
-    expect(hub.isTerminalResizeOwner("term-1", second)).toBe(true);
+    hub.recordTerminalClientSize(
+      "term-1",
+      desktop,
+      { cols: 160, rows: 48 },
+      now,
+    );
+    hub.recordTerminalClientSize("term-1", phone, { cols: 44, rows: 60 }, now);
+    expect(hub.terminalSharedSize("term-1", now)).toEqual({
+      cols: 44,
+      rows: 48,
+    });
 
-    hub.unregisterTerminalClient("term-1", second);
-    expect(hub.isTerminalResizeOwner("term-1", first)).toBe(true);
+    hub.recordTerminalClientVisibility("term-1", phone, false, now);
+    expect(hub.terminalSharedSize("term-1", now)).toEqual({
+      cols: 160,
+      rows: 48,
+    });
+    hub.recordTerminalClientVisibility("term-1", phone, true, now);
+
+    hub.recordTerminalClientHeartbeat("term-1", desktop, now);
+    hub.recordTerminalClientHeartbeat("term-1", phone, now);
+    const later = now + TERMINAL_CLIENT_STALE_MS + 1;
+    hub.recordTerminalClientHeartbeat("term-1", desktop, later);
+    expect(hub.terminalSharedSize("term-1", later)).toEqual({
+      cols: 160,
+      rows: 48,
+    });
+
+    hub.recordTerminalClientHeartbeat("term-1", phone, later);
+    hub.unregisterTerminalClient("term-1", desktop);
+    expect(hub.terminalSharedSize("term-1", later)).toEqual({
+      cols: 44,
+      rows: 60,
+    });
+
+    hub.recordTerminalClientVisibility("term-1", phone, false, later);
+    expect(hub.terminalSharedSize("term-1", later)).toBeNull();
+  });
+
+  it("keeps a client that never sends heartbeats in the shared size while attached", () => {
+    const hub = new NotificationHub();
+    const browser = createMockHubSocket();
+    const legacyCli = createMockHubSocket();
+    const now = 1_000_000;
+
+    hub.registerTerminalClient("term-1", browser);
+    hub.registerTerminalClient("term-1", legacyCli);
+    hub.recordTerminalClientSize(
+      "term-1",
+      browser,
+      { cols: 200, rows: 50 },
+      now,
+    );
+    hub.recordTerminalClientSize(
+      "term-1",
+      legacyCli,
+      { cols: 80, rows: 24 },
+      now,
+    );
+
+    const muchLater = now + 10 * TERMINAL_CLIENT_STALE_MS;
+    hub.recordTerminalClientHeartbeat("term-1", browser, muchLater);
+    expect(hub.terminalSharedSize("term-1", muchLater)).toEqual({
+      cols: 80,
+      rows: 24,
+    });
+
+    hub.unregisterTerminalClient("term-1", legacyCli);
+    expect(hub.terminalSharedSize("term-1", muchLater)).toEqual({
+      cols: 200,
+      rows: 50,
+    });
   });
 
   it("queues terminal output while a browser socket is above high water", () => {
@@ -332,18 +372,19 @@ describe("NotificationHub", () => {
     });
   });
 
-  it("does not resolve host RPC waiters from mismatched daemon sessions", async () => {
+  it("cancels the daemon request when the caller aborts", async () => {
     const hub = new NotificationHub();
     const socket = createMockHubSocket();
     hub.registerDaemon("session-1", "host-1", socket);
-    hub.registerDaemon("session-2", "host-2", createMockHubSocket());
+    const abortController = new AbortController();
 
     const wait = hub.requestHostOnlineRpc({
       hostId: "host-1",
+      signal: abortController.signal,
       timeoutMs: 1_000,
       message: {
         type: "host-rpc.request",
-        requestId: "rpc-session-scoped",
+        requestId: "rpc-1",
         command: {
           type: "provider.list_models",
           providerId: "codex",
@@ -351,48 +392,86 @@ describe("NotificationHub", () => {
         },
       },
     });
-    let resolved = false;
-    const observed = wait.then((response) => {
-      resolved = true;
-      return response;
-    });
+    abortController.abort();
 
-    const mismatch = hub.recordHostOnlineRpcResponse({
-      message: {
-        type: "host-rpc.response",
-        requestId: "rpc-session-scoped",
-        commandType: "provider.list_models",
-        ok: true,
-        result: { models: [], selectedOnlyModels: [] },
-      },
-      sessionId: "session-2",
+    await expect(wait).rejects.toThrow("Host RPC request was cancelled");
+    expect(socket.messages.map((message) => JSON.parse(message).type)).toEqual([
+      "host-rpc.request",
+      "host-rpc.cancel",
+    ]);
+    expect(JSON.parse(socket.messages[1])).toEqual({
+      type: "host-rpc.cancel",
+      requestId: "rpc-1",
     });
-    expect(mismatch).toEqual({
-      expectedSessionId: "session-1",
-      handled: false,
-      reason: "session_mismatch",
-    });
-    await Promise.resolve();
-    expect(resolved).toBe(false);
+    expect(
+      hub.recordHostOnlineRpcResponse({
+        message: {
+          type: "host-rpc.response",
+          requestId: "rpc-1",
+          commandType: "provider.list_models",
+          ok: true,
+          result: { models: [], selectedOnlyModels: [] },
+        },
+        sessionId: "session-1",
+      }),
+    ).toEqual({ handled: false, reason: "stale" });
+  });
 
-    const handled = hub.recordHostOnlineRpcResponse({
+  it("cancels the daemon request when the wait times out", async () => {
+    vi.useFakeTimers();
+    const hub = new NotificationHub();
+    const socket = createMockHubSocket();
+    hub.registerDaemon("session-1", "host-1", socket);
+
+    const wait = hub.requestHostOnlineRpc({
+      hostId: "host-1",
+      timeoutMs: 1_000,
       message: {
-        type: "host-rpc.response",
-        requestId: "rpc-session-scoped",
-        commandType: "provider.list_models",
-        ok: true,
-        result: { models: [], selectedOnlyModels: [] },
+        type: "host-rpc.request",
+        requestId: "rpc-1",
+        command: {
+          type: "provider.list_models",
+          providerId: "codex",
+          bridgeLaunch: TRANSPORT_TEST_BRIDGE_LAUNCH,
+        },
       },
-      sessionId: "session-1",
     });
-    expect(handled).toEqual({ handled: true });
-    await expect(observed).resolves.toEqual({
-      type: "host-rpc.response",
-      requestId: "rpc-session-scoped",
-      commandType: "provider.list_models",
-      ok: true,
-      result: { models: [], selectedOnlyModels: [] },
+    const rejection = expect(wait).rejects.toThrow(
+      "Timed out waiting for host RPC response",
+    );
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    await rejection;
+    expect(JSON.parse(socket.messages[1])).toEqual({
+      type: "host-rpc.cancel",
+      requestId: "rpc-1",
     });
+  });
+
+  it("does not send a request whose signal is already aborted", async () => {
+    const hub = new NotificationHub();
+    const socket = createMockHubSocket();
+    hub.registerDaemon("session-1", "host-1", socket);
+    const abortController = new AbortController();
+    abortController.abort();
+
+    await expect(
+      hub.requestHostOnlineRpc({
+        hostId: "host-1",
+        signal: abortController.signal,
+        timeoutMs: 1_000,
+        message: {
+          type: "host-rpc.request",
+          requestId: "rpc-1",
+          command: {
+            type: "provider.list_models",
+            providerId: "codex",
+            bridgeLaunch: TRANSPORT_TEST_BRIDGE_LAUNCH,
+          },
+        },
+      }),
+    ).rejects.toThrow("Host RPC request was cancelled");
+    expect(socket.messages).toEqual([]);
   });
 
   it("rejects in-flight host RPC requests when the daemon unregisters", async () => {
@@ -416,28 +495,6 @@ describe("NotificationHub", () => {
     hub.unregisterDaemon("session-1");
 
     await expect(wait).rejects.toThrow("Host daemon is not connected");
-  });
-
-  it("keeps subscription bookkeeping consistent across repeated changes", () => {
-    const hub = new NotificationHub();
-    const socket = createMockHubSocket();
-
-    for (let index = 0; index < 20; index += 1) {
-      hub.subscribe(socket, { kind: "thread-detail", threadId: "thread-1" });
-      hub.unsubscribe(socket, {
-        kind: "thread-detail",
-        threadId: "thread-1",
-      });
-    }
-    hub.subscribe(socket, { kind: "thread-detail", threadId: "thread-1" });
-    hub.notifyThread("thread-1", ["events-appended"]);
-
-    expect(socket.messages).toHaveLength(1);
-
-    hub.unregisterClient(socket);
-    hub.notifyThread("thread-1", ["events-appended"]);
-
-    expect(socket.messages).toHaveLength(1);
   });
 
   it("skips and logs broadcasts that fail outgoing schema validation", () => {
@@ -607,6 +664,7 @@ describe("NotificationHub events-appended thread-list coalescing", () => {
       threadId: "thread-1",
     });
 
+    let timelineSequence = 0;
     for (const eventType of [
       "item/agentMessage/delta",
       "item/agentMessage/delta",
@@ -614,6 +672,7 @@ describe("NotificationHub events-appended thread-list coalescing", () => {
     ] as const) {
       hub.notifyThread("thread-1", ["events-appended"], {
         eventTypes: [eventType],
+        timelineSequence: ++timelineSequence,
       });
     }
 
@@ -623,7 +682,10 @@ describe("NotificationHub events-appended thread-list coalescing", () => {
     expect(messagesOf(listSocket)[0]).toMatchObject({
       id: "thread-1",
       changes: ["events-appended"],
-      metadata: { eventTypes: ["item/agentMessage/delta"] },
+      metadata: {
+        eventTypes: ["item/agentMessage/delta"],
+        timelineSequence: 1,
+      },
     });
 
     vi.advanceTimersByTime(999);
@@ -633,7 +695,10 @@ describe("NotificationHub events-appended thread-list coalescing", () => {
     expect(messagesOf(listSocket)[1]).toMatchObject({
       id: "thread-1",
       changes: ["events-appended"],
-      metadata: { eventTypes: ["item/agentMessage/delta", "item/started"] },
+      metadata: {
+        eventTypes: ["item/agentMessage/delta", "item/started"],
+        timelineSequence: 3,
+      },
     });
     expect(detailSocket.messages).toHaveLength(3);
     expect(listAndDetailSocket.messages).toHaveLength(3);
@@ -713,6 +778,45 @@ describe("NotificationHub events-appended thread-list coalescing", () => {
       id: "thread-1",
       changes: ["events-appended"],
     });
+  });
+
+  it("delivers history compaction to detail subscribers and listeners but not to list-only sockets", () => {
+    vi.useFakeTimers();
+    const hub = new NotificationHub();
+    const detailSocket = createMockHubSocket();
+    const listSocket = createMockHubSocket();
+    const otherDetailSocket = createMockHubSocket();
+    const seen: string[][] = [];
+    hub.onChangedMessage((message) => {
+      seen.push([...message.changes]);
+    });
+    hub.subscribe(detailSocket, {
+      kind: "thread-detail",
+      threadId: "thread-1",
+    });
+    hub.subscribe(listSocket, { kind: "thread-list" });
+    hub.subscribe(otherDetailSocket, {
+      kind: "thread-detail",
+      threadId: "thread-2",
+    });
+
+    hub.notifyThread("thread-1", ["history-compacted"]);
+    vi.advanceTimersByTime(1_000);
+
+    expect(messagesOf(detailSocket)).toEqual([
+      {
+        type: "changed",
+        entity: "thread",
+        id: "thread-1",
+        changes: ["history-compacted"],
+      },
+    ]);
+    expect(listSocket.messages).toEqual([]);
+    expect(otherDetailSocket.messages).toEqual([]);
+    expect(seen).toEqual([["history-compacted"]]);
+
+    hub.notifyThread("thread-1", ["history-rewritten"]);
+    expect(listSocket.messages).toHaveLength(1);
   });
 
   it("still tells changed-message listeners about coalesced frames", () => {

@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { LazyPluginThreadChat } from "./LazyPluginThreadChat";
 import {
   cleanup,
   fireEvent,
@@ -7,7 +8,15 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  beforeAll,
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import type { PluginTimelineRendererProps } from "@get-bb/plugin-sdk";
 import { sdk } from "@/lib/sdk";
 import { makeProviderInfo } from "@bb/test-helpers/domain-fixtures";
@@ -29,6 +38,8 @@ import {
   makeThreadTimelineResponse,
 } from "@/test/fixtures/thread-responses";
 
+beforeAll(() => LazyPluginThreadChat.preload());
+
 vi.mock("@/lib/sdk", async (importOriginal) => {
   const mod = await importOriginal<typeof import("@/lib/sdk")>();
   return {
@@ -42,6 +53,7 @@ vi.mock("@/lib/sdk", async (importOriginal) => {
 });
 vi.mock("@/hooks/useRealtimeSubscription", () => ({
   useThreadDetailRealtimeSubscription: vi.fn(),
+  useThreadTimelineRealtimeSubscription: vi.fn(),
   useThreadListRealtimeSubscription: vi.fn(),
   useEnvironmentDetailRealtimeSubscription: vi.fn(),
   useProjectDetailRealtimeSubscription: vi.fn(),

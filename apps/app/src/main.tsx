@@ -7,12 +7,16 @@ import { AppErrorBoundary } from "./components/AppErrorBoundary";
 import { AppToaster } from "./components/AppToaster";
 import { registerProviderCliInstallQueryClient } from "./components/provider-cli/provider-cli-install-store";
 import { initializePreferredTheme } from "./hooks/useTheme";
+import { applyCachedAppThemeCss } from "./lib/app-theme-css";
 import { initializeContentMeasure } from "./lib/content-measure";
 import { initializeFavicon } from "./lib/favicon-color-preference";
 import { installForeignDomMutationGuard } from "./lib/foreign-dom-mutation-guard";
 import { installAppQueryClientBrowserEvents } from "./lib/query-client";
 import { appQueryClient } from "./lib/app-query-client";
-import { applyCachedAppThemeCss } from "./lib/themes";
+import {
+  applyAppFrameGeometry,
+  getBbDesktopInfo,
+} from "./lib/bb-desktop";
 import "./app.css";
 
 installForeignDomMutationGuard();
@@ -26,6 +30,7 @@ initializePreferredTheme();
 initializeContentMeasure();
 applyCachedAppThemeCss();
 initializeFavicon();
+applyAppFrameGeometry(document.documentElement, getBbDesktopInfo());
 
 createRoot(document.getElementById("root")!, {
   onUncaughtError: (error, errorInfo) => {

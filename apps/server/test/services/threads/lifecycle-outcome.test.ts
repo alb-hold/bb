@@ -2,17 +2,19 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   appendStoredThreadEvent,
-  createConnection,
   createEnvironment,
+  createNativeTerminalThread,
   createProject,
   createThread,
+  getThreadRowState,
   getThread,
-  migrate,
   noopNotifier,
   openSession,
+  putThreadRowState,
   upsertHost,
   type DbConnection,
 } from "@bb/db";
+import { createMigratedConnection } from "@bb/db/testing";
 import {
   changedMessageSchema,
   formatClientTurnRequestIdSuffix,
@@ -116,8 +118,7 @@ interface Setup {
 }
 
 function setup(status: ThreadStatus): Setup {
-  const db = createConnection(":memory:");
-  migrate(db);
+  const db = createMigratedConnection();
   const hub = new NotificationHub();
   const host = upsertHost(db, noopNotifier, {
     id: "host-lifecycle-outcome",
@@ -177,6 +178,34 @@ function lastThreadListMessage(
 }
 
 describe("applyLoggedThreadLifecycleEvent", () => {
+  it("retains row state for native terminal threads because they have no bb turns", () => {
+    const { db, hub, threadId } = setup("idle");
+    createNativeTerminalThread(db, {
+      threadId,
+      providerId: "codex",
+      nativeSessionId: "native-session",
+      initialPrompt: null,
+      initialImages: [],
+      model: null,
+    });
+    const state = {
+      statuses: { terminal: { value: "Running" } },
+      progress: { value: 0.25 },
+    };
+    putThreadRowState(db, threadId, state);
+
+    applyLoggedThreadLifecycleEvent(
+      { db, hub, logger: testLogger, providerRegistry },
+      { event: { type: "run.started" }, threadId },
+    );
+    applyLoggedThreadLifecycleEvent(
+      { db, hub, logger: testLogger, providerRegistry },
+      { event: { type: "run.succeeded" }, threadId },
+    );
+
+    expect(getThreadRowState(db, threadId)).toEqual(state);
+  });
+
   it("broadcasts status-changed with the post-transition row and runtime", () => {
     const { db, hostId, hub, projectId, threadId } = setup("idle");
     connectDaemon(db, hub, hostId);
@@ -202,7 +231,6 @@ describe("applyLoggedThreadLifecycleEvent", () => {
           status: "active",
           runtime: {
             displayStatus: "active",
-            hostReconnectGraceExpiresAt: null,
           },
           activity: NO_ACTIVITY,
           latestAttentionAt: row?.latestAttentionAt,
@@ -232,6 +260,10 @@ describe("applyLoggedThreadLifecycleEvent", () => {
   it("carries the status-gated plan and goal activity of the post-transition row", () => {
     const { db, hostId, hub, threadId } = setup("idle");
     connectDaemon(db, hub, hostId);
+    putThreadRowState(db, threadId, {
+      statuses: { review: { value: "In progress" } },
+      progress: { value: 0.5 },
+    });
     seedOpenPlanTurnWithGoal(db, threadId);
     const socket = createMockHubSocket();
     hub.subscribe(socket, { kind: "thread-list" });
@@ -253,6 +285,10 @@ describe("applyLoggedThreadLifecycleEvent", () => {
     ).toMatchObject({
       status: "idle",
       activity: { ...NO_ACTIVITY, activeGoalCount: 1, activePlanModeCount: 0 },
+    });
+    expect(getThreadRowState(db, threadId)).toEqual({
+      statuses: {},
+      progress: null,
     });
   });
 

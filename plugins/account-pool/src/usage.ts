@@ -50,6 +50,14 @@ const usagePayloadSchema = z
     seven_day_opus: usageBucketSchema.nullish(),
     seven_day_haiku: usageBucketSchema.nullish(),
     limits: z.array(usageLimitSchema).optional(),
+    extra_usage: z
+      .object({
+        is_enabled: z.boolean(),
+        utilization: z.number().nonnegative().nullish(),
+        monthly_limit: z.number().nonnegative().nullish(),
+        used_credits: z.number().nonnegative().nullish(),
+      })
+      .nullish(),
   })
   .passthrough();
 
@@ -71,6 +79,7 @@ function normalizeBucket(bucket: UsageBucket, now: number): FamilyQuota | null {
   const resetAt = parseReset(
     bucket.resets_at ?? bucket.reset_at ?? bucket.resetAt ?? null,
   );
+  if (resetAt !== null && resetAt <= now) return null;
   if (utilization === null && resetAt === null && bucket.status == null)
     return null;
   return {
@@ -127,13 +136,24 @@ export function quotaFromUsage(
     data.seven_day_sonnet == null &&
     data.seven_day_opus == null &&
     data.seven_day_haiku == null &&
-    data.limits === undefined
+    data.limits === undefined &&
+    data.extra_usage === undefined
   )
     return null;
   const familyWeekly: FamilyWeekly =
     data.limits === undefined
       ? { ...previous.familyWeekly }
       : { ...EMPTY_FAMILY_WEEKLY };
+  if (data.limits === undefined)
+    for (const family of ["fable", "sonnet", "opus", "haiku"] as const) {
+      const window = familyWeekly[family];
+      if (
+        window?.resetAt !== null &&
+        window?.resetAt !== undefined &&
+        window.resetAt <= now
+      )
+        familyWeekly[family] = null;
+    }
   for (const limit of data.limits ?? []) {
     if (
       limit.kind !== "weekly_scoped" &&
@@ -163,15 +183,48 @@ export function quotaFromUsage(
     data.five_hour == null ? null : normalizeBucket(data.five_hour, now);
   const sevenDay =
     data.seven_day == null ? null : normalizeBucket(data.seven_day, now);
+  const previousFiveHourIsCurrent =
+    previous.fiveHourResetAt === null || previous.fiveHourResetAt > now;
+  const previousSevenDayIsCurrent =
+    previous.sevenDayResetAt === null || previous.sevenDayResetAt > now;
   return {
     ...previous,
     accountId,
-    fiveHourUtilization: fiveHour?.utilization ?? previous.fiveHourUtilization,
-    fiveHourResetAt: fiveHour?.resetAt ?? previous.fiveHourResetAt,
-    fiveHourStatus: fiveHour?.status ?? previous.fiveHourStatus,
-    sevenDayUtilization: sevenDay?.utilization ?? previous.sevenDayUtilization,
-    sevenDayResetAt: sevenDay?.resetAt ?? previous.sevenDayResetAt,
-    sevenDayStatus: sevenDay?.status ?? previous.sevenDayStatus,
+    extraUsage:
+      data.extra_usage === undefined
+        ? previous.extraUsage
+        : data.extra_usage === null
+          ? null
+          : {
+              status:
+                data.extra_usage.is_enabled &&
+                (data.extra_usage.utilization ?? 0) < 100 &&
+                (data.extra_usage.monthly_limit == null ||
+                  (data.extra_usage.used_credits ?? 0) <
+                    data.extra_usage.monthly_limit)
+                  ? "allowed"
+                  : "rejected",
+              observedAt: now,
+              source: "usage",
+            },
+    fiveHourUtilization:
+      fiveHour?.utilization ??
+      (previousFiveHourIsCurrent ? previous.fiveHourUtilization : null),
+    fiveHourResetAt:
+      fiveHour?.resetAt ??
+      (previousFiveHourIsCurrent ? previous.fiveHourResetAt : null),
+    fiveHourStatus:
+      fiveHour?.status ??
+      (previousFiveHourIsCurrent ? previous.fiveHourStatus : null),
+    sevenDayUtilization:
+      sevenDay?.utilization ??
+      (previousSevenDayIsCurrent ? previous.sevenDayUtilization : null),
+    sevenDayResetAt:
+      sevenDay?.resetAt ??
+      (previousSevenDayIsCurrent ? previous.sevenDayResetAt : null),
+    sevenDayStatus:
+      sevenDay?.status ??
+      (previousSevenDayIsCurrent ? previous.sevenDayStatus : null),
     familyWeekly,
     observedAt: now,
   };

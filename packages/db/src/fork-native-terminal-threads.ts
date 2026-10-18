@@ -1,0 +1,330 @@
+import { sql } from "drizzle-orm";
+import type { DbConnection, DbQueryConnection } from "./connection.js";
+
+export interface NativeTerminalThreadRecord {
+  threadId: string;
+  providerId: string;
+  nativeSessionId: string | null;
+  terminalSessionId: string | null;
+  initialPrompt: string | null;
+  model: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+const SELECT_COLUMNS = `thread_id AS threadId, provider_id AS providerId, native_session_id AS nativeSessionId,
+  terminal_session_id AS terminalSessionId, initial_prompt AS initialPrompt, model,
+  created_at AS createdAt, updated_at AS updatedAt`;
+
+export function ensureNativeTerminalThreadsTable(db: DbConnection): void {
+  db.$client.exec(`
+    CREATE TABLE IF NOT EXISTS fork_native_terminal_threads (
+      thread_id TEXT PRIMARY KEY NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+      provider_id TEXT NOT NULL,
+      native_session_id TEXT,
+      terminal_session_id TEXT,
+      initial_prompt TEXT,
+      model TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS fork_native_terminal_threads_session_idx
+      ON fork_native_terminal_threads (provider_id, native_session_id)
+      WHERE native_session_id IS NOT NULL;
+    CREATE TABLE IF NOT EXISTS fork_native_terminal_tool_credentials (
+      thread_id TEXT PRIMARY KEY NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+      terminal_session_id TEXT NOT NULL,
+      credential_hash TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+  `);
+  const columns = db.$client
+    .prepare(`PRAGMA table_info(fork_native_terminal_threads)`)
+    .all() as Array<{ name: string }>;
+  if (!columns.some((column) => column.name === "initial_images")) {
+    db.$client.exec(
+      `ALTER TABLE fork_native_terminal_threads ADD COLUMN initial_images TEXT`,
+    );
+  }
+}
+
+export function createNativeTerminalThread(
+  db: DbConnection,
+  args: {
+    threadId: string;
+    providerId: string;
+    nativeSessionId: string | null;
+    initialPrompt: string | null;
+    initialImages: readonly string[];
+    model: string | null;
+  },
+): NativeTerminalThreadRecord {
+  const now = Date.now();
+  db.$client
+    .prepare(
+      `INSERT INTO fork_native_terminal_threads
+         (thread_id, provider_id, native_session_id, terminal_session_id, initial_prompt, initial_images, model, created_at, updated_at)
+       VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      args.threadId,
+      args.providerId,
+      args.nativeSessionId,
+      args.initialPrompt,
+      args.initialImages.length === 0
+        ? null
+        : JSON.stringify(args.initialImages),
+      args.model,
+      now,
+      now,
+    );
+  return {
+    threadId: args.threadId,
+    providerId: args.providerId,
+    nativeSessionId: args.nativeSessionId,
+    terminalSessionId: null,
+    initialPrompt: args.initialPrompt,
+    model: args.model,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+export function getNativeTerminalThread(
+  db: DbConnection,
+  threadId: string,
+): NativeTerminalThreadRecord | null {
+  const row = db.$client
+    .prepare(
+      `SELECT ${SELECT_COLUMNS} FROM fork_native_terminal_threads WHERE thread_id = ?`,
+    )
+    .get(threadId) as NativeTerminalThreadRecord | undefined;
+  return row ?? null;
+}
+
+export function findNativeTerminalThreadBySession(
+  db: DbConnection,
+  args: { providerId: string; nativeSessionId: string },
+): NativeTerminalThreadRecord | null {
+  const row = db.$client
+    .prepare(
+      `SELECT ${SELECT_COLUMNS} FROM fork_native_terminal_threads
+       WHERE provider_id = ? AND native_session_id = ?`,
+    )
+    .get(args.providerId, args.nativeSessionId) as
+    | NativeTerminalThreadRecord
+    | undefined;
+  return row ?? null;
+}
+
+export function deleteNativeTerminalThread(
+  db: DbConnection,
+  threadId: string,
+): void {
+  db.$client
+    .prepare(`DELETE FROM fork_native_terminal_threads WHERE thread_id = ?`)
+    .run(threadId);
+}
+
+export function isNativeTerminalThread(
+  db: DbQueryConnection,
+  threadId: string,
+): boolean {
+  return db.get(
+    sql`SELECT 1 AS present FROM fork_native_terminal_threads WHERE thread_id = ${threadId}`,
+  ) !== undefined;
+}
+
+export function listNativeTerminalThreadIds(
+  db: DbConnection,
+  threadIds: readonly string[],
+): Set<string> {
+  if (threadIds.length === 0) return new Set();
+  const rows = db.$client
+    .prepare(
+      `SELECT thread_id AS threadId FROM fork_native_terminal_threads
+       WHERE thread_id IN (SELECT value FROM json_each(?))`,
+    )
+    .all(JSON.stringify(threadIds)) as { threadId: string }[];
+  return new Set(rows.map((row) => row.threadId));
+}
+
+export function listNativeTerminalThreadsWithDisconnectedTerminal(
+  db: DbConnection,
+  hostId: string,
+): string[] {
+  const rows = db.$client
+    .prepare(
+      `SELECT n.thread_id AS threadId
+       FROM fork_native_terminal_threads n
+       JOIN terminal_sessions t ON t.id = n.terminal_session_id
+       JOIN threads th ON th.id = n.thread_id
+       WHERE t.host_id = ?
+         AND th.archived_at IS NULL
+         AND th.deleted_at IS NULL
+         AND (
+           t.status = 'disconnected'
+           OR (t.status = 'exited' AND t.close_reason = 'thread-archived')
+         )`,
+    )
+    .all(hostId) as { threadId: string }[];
+  return rows.map((row) => row.threadId);
+}
+
+export function setNativeTerminalThreadTerminal(
+  db: DbConnection,
+  args: { threadId: string; terminalSessionId: string },
+): void {
+  db.$client
+    .prepare(
+      `UPDATE fork_native_terminal_threads SET terminal_session_id = ?, updated_at = ? WHERE thread_id = ?`,
+    )
+    .run(args.terminalSessionId, Date.now(), args.threadId);
+}
+
+export interface NativeTerminalThreadLaunchInput {
+  initialPrompt: string | null;
+  initialImages: string[];
+}
+
+function parseStoredInitialImages(stored: string): string[] {
+  const parsed: unknown = JSON.parse(stored);
+  if (!Array.isArray(parsed)) return [];
+  return parsed.filter(
+    (entry): entry is string => typeof entry === "string" && entry.length > 0,
+  );
+}
+
+export function consumeNativeTerminalThreadLaunchInput(
+  db: DbConnection,
+  threadId: string,
+): NativeTerminalThreadLaunchInput {
+  return db.$client.transaction(() => {
+    const row = db.$client
+      .prepare(
+        `SELECT initial_prompt AS initialPrompt, initial_images AS initialImages
+         FROM fork_native_terminal_threads WHERE thread_id = ?`,
+      )
+      .get(threadId) as
+      | { initialPrompt: string | null; initialImages: string | null }
+      | undefined;
+    if (
+      row === undefined ||
+      (row.initialPrompt === null && row.initialImages === null)
+    ) {
+      return { initialPrompt: null, initialImages: [] };
+    }
+    db.$client
+      .prepare(
+        `UPDATE fork_native_terminal_threads
+         SET initial_prompt = NULL, initial_images = NULL, updated_at = ? WHERE thread_id = ?`,
+      )
+      .run(Date.now(), threadId);
+    return {
+      initialPrompt: row.initialPrompt,
+      initialImages:
+        row.initialImages === null
+          ? []
+          : parseStoredInitialImages(row.initialImages),
+    };
+  })();
+}
+
+export type RecordNativeSessionIdResult =
+  | { kind: "recorded" }
+  | { kind: "unchanged" }
+  | { kind: "claimed-by-other-thread"; threadId: string }
+  | { kind: "already-bound"; nativeSessionId: string };
+
+export function recordNativeTerminalThreadSessionId(
+  db: DbConnection,
+  args: { threadId: string; nativeSessionId: string },
+): RecordNativeSessionIdResult {
+  return db.$client.transaction((): RecordNativeSessionIdResult => {
+    const current = getNativeTerminalThread(db, args.threadId);
+    if (current === null) {
+      throw new Error(
+        `Thread ${args.threadId} is not a native terminal thread`,
+      );
+    }
+    if (current.nativeSessionId === args.nativeSessionId) {
+      return { kind: "unchanged" };
+    }
+    if (current.nativeSessionId !== null) {
+      return {
+        kind: "already-bound",
+        nativeSessionId: current.nativeSessionId,
+      };
+    }
+    const owner = db.$client
+      .prepare(
+        `SELECT thread_id AS threadId FROM fork_native_terminal_threads
+         WHERE provider_id = ? AND native_session_id = ?`,
+      )
+      .get(current.providerId, args.nativeSessionId) as
+      | { threadId: string }
+      | undefined;
+    if (owner !== undefined) {
+      return { kind: "claimed-by-other-thread", threadId: owner.threadId };
+    }
+    db.$client
+      .prepare(
+        `UPDATE fork_native_terminal_threads SET native_session_id = ?, updated_at = ? WHERE thread_id = ?`,
+      )
+      .run(args.nativeSessionId, Date.now(), args.threadId);
+    return { kind: "recorded" };
+  })();
+}
+
+export interface NativeTerminalToolCredentialRecord {
+  threadId: string;
+  terminalSessionId: string;
+  credentialHash: string;
+}
+
+export function setNativeTerminalToolCredential(
+  db: DbConnection,
+  args: NativeTerminalToolCredentialRecord,
+): void {
+  db.$client
+    .prepare(
+      `INSERT INTO fork_native_terminal_tool_credentials
+         (thread_id, terminal_session_id, credential_hash, created_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(thread_id) DO UPDATE SET
+         terminal_session_id = excluded.terminal_session_id,
+         credential_hash = excluded.credential_hash,
+         created_at = excluded.created_at`,
+    )
+    .run(
+      args.threadId,
+      args.terminalSessionId,
+      args.credentialHash,
+      Date.now(),
+    );
+}
+
+export function getNativeTerminalToolCredential(
+  db: DbConnection,
+  threadId: string,
+): NativeTerminalToolCredentialRecord | null {
+  const row = db.$client
+    .prepare(
+      `SELECT thread_id AS threadId, terminal_session_id AS terminalSessionId,
+         credential_hash AS credentialHash
+       FROM fork_native_terminal_tool_credentials WHERE thread_id = ?`,
+    )
+    .get(threadId) as NativeTerminalToolCredentialRecord | undefined;
+  return row ?? null;
+}
+
+export function deleteNativeTerminalToolCredential(
+  db: DbConnection,
+  threadId: string,
+): void {
+  db.$client
+    .prepare(
+      `DELETE FROM fork_native_terminal_tool_credentials WHERE thread_id = ?`,
+    )
+    .run(threadId);
+}

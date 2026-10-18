@@ -31,6 +31,7 @@ function workspaceStatus(
         insertions: 0,
         deletions: 0,
         lineStatsComplete: true,
+        fileCount: 0,
         files: [],
         hasUncommittedChanges,
         state,
@@ -54,6 +55,8 @@ function rawPullRequest(
     baseRefName: "main",
     headRefName: "bb/pr-cache",
     updatedAt: "2026-06-16T12:30:00Z",
+    autoMerge: false,
+    inMergeQueue: false,
     checks: [],
     reviewDecision: null,
     reviewRequestCount: 0,
@@ -348,7 +351,7 @@ it.each(["suspended", "suspending"] as const)(
         );
         expect(response.status).not.toBe(404);
         expect(listQueuedCommands(h, "workspace.status")).toHaveLength(0);
-      expect(listQueuedCommands(h, "workspace.pull_request")).toHaveLength(0);
+        expect(listQueuedCommands(h, "workspace.pull_request")).toHaveLength(0);
       }
     });
   },

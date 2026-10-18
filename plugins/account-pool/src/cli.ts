@@ -11,7 +11,9 @@ import {
   accountIdInputSchema,
   accountPriorityInputSchema,
   accountReorderInputSchema,
+  accountRenameInputSchema,
   accountPoolConfigSetInputSchema,
+  bypassGetInputSchema,
   bypassInputSchema,
   codexLoginPollInputSchema,
   loginCompleteInputSchema,
@@ -19,12 +21,15 @@ import {
   parentModeSchema,
   tokenRotateInputSchema,
   routingSetInputSchema,
+  threadSelectionInputSchema,
+  threadSelectionSetSchema,
   type AccountPoolConfig,
   type AccountPoolConfigController,
   type AccountPoolConfigSetInput,
   type AccountSummary,
   type FamilyQuota,
   type LimitWindow,
+  type LocalLogin,
   type ModelFamily,
   type PoolStatus,
   type PoolStatusReport,
@@ -34,9 +39,10 @@ import type { ClaudeOAuthLogin } from "./oauth-login.js";
 import type { CodexDeviceLogin } from "./codex-device-login.js";
 
 const DESCRIPTION = [
-  "Accounts run sequentially by priority, then order added. The current fallback stays active until unavailable.",
+  "Automatic routing prefers the account with the most remaining headroom across its binding quota windows. Equal headroom prefers the account whose used quota resets faster, then lower priority. A 10-point headroom hysteresis keeps new conversations on the active account until another leads by at least 10 points.",
+  "Conversation affinity stays on its account until that account becomes ineligible; explicit thread selections remain pinned.",
   "When this bb server runs inside another bb server's thread, parent proxy routes its pooled traffic through that parent; isolate neutralises the inherited routing.",
-  "Reorder includes every account for the provider and changes the next failover sequence; existing conversations stay pinned.",
+  "Reorder changes account priority, which breaks ties after quota headroom and reset recovery; existing conversations stay pinned.",
 ].join("\n");
 
 const JSON_OPTION = {
@@ -57,7 +63,7 @@ const SESSION_OPTION = {
   required: true,
   placeholder: "id",
   aliases: ["session-id", "sessionId"],
-  description: "Session ID printed by `bb pool account add --login`",
+  description: "Session ID printed by `{{BB_CLI}} pool account add --login`",
 } as const;
 
 const ACCOUNT_ID_POSITIONAL = {
@@ -119,12 +125,19 @@ function formatAccounts(accounts: readonly AccountSummary[]): string {
       "Provider",
       "Kind",
       "Enabled",
+      "Sign-in",
+      "Active",
       "Priority",
       "5h",
       "5h reset",
       "7d",
       "7d reset",
       "Windows",
+      "Binding window",
+      "Headroom",
+      "Reset recovery/h",
+      "Last automatic choice",
+      "Extra usage",
       ...families.map(familyLabel),
       "Status",
     ].join("\t"),
@@ -136,16 +149,44 @@ function formatAccounts(accounts: readonly AccountSummary[]): string {
         account.provider,
         account.kind,
         String(account.enabled),
+        account.signInExpired ? "expired" : "ok",
+        String(account.active),
         String(account.priority),
         formatUtilization(account.fiveHourUtilization),
         formatReset(account.fiveHourResetAt),
         formatUtilization(account.sevenDayUtilization),
         formatReset(account.sevenDayResetAt),
         formatLimitWindows(account.limitWindows),
+        account.balance.bindingWindow ?? "-",
+        formatUtilization(account.balance.bindingHeadroom),
+        account.balance.resetRecoveryPerHour === null
+          ? "-"
+          : `${(account.balance.resetRecoveryPerHour * 100).toFixed(1)}%/h`,
+        account.lastAutomaticChoice?.reason ?? "-",
+        account.extraUsage?.status ?? "-",
         ...families.map((family) =>
           formatFamilyQuota(account.familyWeekly[family]),
         ),
         account.status,
+      ].join("\t"),
+    ),
+  ].join("\n");
+}
+
+function formatLocalLogins(logins: readonly LocalLogin[]): string {
+  if (logins.length === 0)
+    return "Every provider login on this bb server host is already in the pool.";
+  return [
+    ["Provider", "Plan", "Status", "Email", "Pool"].join("\t"),
+    ...logins.map((login) =>
+      [
+        login.displayName,
+        login.planLabel ?? "-",
+        login.status,
+        login.email ?? "-",
+        login.poolProvider === null
+          ? "can't be pooled"
+          : `{{BB_CLI}} pool account add --provider ${login.poolProvider} --import`,
       ].join("\t"),
     ),
   ].join("\n");
@@ -231,6 +272,10 @@ function json(value: object): string {
   return `${JSON.stringify(value, null, 2)}\n`;
 }
 
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
 async function attempt(
   work: () => Promise<PluginCliResult>,
 ): Promise<PluginCliResult> {
@@ -263,7 +308,7 @@ export function registerPoolCli(
           summary:
             "Sign in to Claude or Codex, import credentials, or add an Anthropic API key",
           description:
-            "--login prints the browser or device step and exits; finish it with `bb pool account login-complete` (Claude) or `bb pool account login-poll` (Codex).\n--import reads the provider's existing login on this bb server host (~/.claude or ~/.codex).",
+            "--login prints the browser or device step and exits; finish it with `{{BB_CLI}} pool account login-complete` (Claude) or `{{BB_CLI}} pool account login-poll` (Codex).\n--import reads the provider's existing login on this bb server host (~/.claude or ~/.codex).",
           unexpectedPositionalHint:
             "the provider belongs in --provider <claude|codex>, not a bare argument",
           options: {
@@ -286,7 +331,7 @@ export function registerPoolCli(
               stdin: true,
               aliases: ["apikey", "key"],
               description:
-                "Anthropic API key, --provider claude only. Unsafe: exposes the key in process arguments, shell history, and agent transcripts",
+                "Anthropic API key, --provider claude only. Use --api-key-stdin to keep it out of process arguments",
             },
             label: {
               type: "string",
@@ -299,7 +344,6 @@ export function registerPoolCli(
               type: "integer",
               min: -1_000_000,
               max: 1_000_000,
-              default: 100,
               placeholder: "n",
               aliases: ["order"],
               description:
@@ -309,7 +353,6 @@ export function registerPoolCli(
           },
           constraints: [
             { kind: "exactly-one", options: ["login", "import", "api-key"] },
-            { kind: "at-most-one", options: ["login", "label"] },
             { kind: "at-most-one", options: ["login", "priority"] },
           ],
           run: (input) =>
@@ -330,7 +373,7 @@ export function registerPoolCli(
                           `Session ID: ${started.sessionId}`,
                           "",
                           "After authorizing, wait for the account to be added with:",
-                          `bb pool account login-poll --session ${started.sessionId}`,
+                          `{{BB_CLI}} pool account login-poll --session ${started.sessionId}${input.options.label === undefined ? "" : ` --label ${shellQuote(input.options.label)}`}`,
                         ].join("\n")}\n`,
                   };
                 }
@@ -346,7 +389,7 @@ export function registerPoolCli(
                         `Session ID: ${started.sessionId}`,
                         "",
                         "After signing in, pipe the code shown on the final page into:",
-                        `printf '%s\\n' \"$CLAUDE_AUTH_CODE\" | bb pool account login-complete --session ${started.sessionId} --code-stdin`,
+                        `printf '%s\\n' \"$CLAUDE_AUTH_CODE\" | {{BB_CLI}} pool account login-complete --session ${started.sessionId} --code-stdin${input.options.label === undefined ? "" : ` --label ${shellQuote(input.options.label)}`}`,
                       ].join("\n")}\n`,
                 };
               }
@@ -374,16 +417,94 @@ export function registerPoolCli(
               };
             }),
         }),
+        "account sign-in-again": cliCommand({
+          summary:
+            "Sign in again to a subscription whose sign-in expired, keeping its name and place",
+          description:
+            "Prints the browser (Claude) or device-code (Codex) step and exits; finish it with `{{BB_CLI}} pool account login-complete` (Claude) or `{{BB_CLI}} pool account login-poll` (Codex).\nThe new sign-in replaces this subscription's saved credentials. bb refuses a sign-in that belongs to a different account and leaves the subscription unchanged.",
+          aliases: ["account reauth", "account reauthorize"],
+          positionals: [ACCOUNT_ID_POSITIONAL],
+          options: { json: JSON_OPTION },
+          run: (input) =>
+            attempt(async () => {
+              const { id } = accountIdInputSchema.parse({
+                id: input.positionals.id,
+              });
+              const account = await operations.requireReauthorizable(id, null);
+              if (account.provider === "codex") {
+                const started = await codexLogin.start({ accountId: id });
+                return {
+                  exitCode: 0,
+                  stdout: input.options.json
+                    ? json({ ok: true, accountId: id, login: started })
+                    : `${[
+                        `Open this URL to sign in to Codex as the account behind ${account.label}:`,
+                        started.verificationUri,
+                        "",
+                        `Enter this code: ${started.userCode}`,
+                        `Session ID: ${started.sessionId}`,
+                        "",
+                        "After authorizing, wait for the sign-in to finish with:",
+                        `{{BB_CLI}} pool account login-poll --session ${started.sessionId}`,
+                      ].join("\n")}\n`,
+                };
+              }
+              const started = login.start({ accountId: id });
+              return {
+                exitCode: 0,
+                stdout: input.options.json
+                  ? json({ ok: true, accountId: id, login: started })
+                  : `${[
+                      `Open this URL to sign in to Claude as the account behind ${account.label}:`,
+                      started.authorizeUrl,
+                      "",
+                      `Session ID: ${started.sessionId}`,
+                      "",
+                      "After signing in, pipe the code shown on the final page into:",
+                      `printf '%s\\n' \"$CLAUDE_AUTH_CODE\" | {{BB_CLI}} pool account login-complete --session ${started.sessionId} --code-stdin`,
+                    ].join("\n")}\n`,
+              };
+            }),
+        }),
+        "account local": cliCommand({
+          summary:
+            "List this bb server host's own provider logins that are not in the pool",
+          description:
+            "Add a Claude or Codex login to the pool with `{{BB_CLI}} pool account add --provider <claude|codex> --import`. Other providers can't be pooled.",
+          options: { json: JSON_OPTION },
+          run: (input) =>
+            attempt(async () => {
+              const logins = await operations.localLogins();
+              return {
+                exitCode: 0,
+                stdout: input.options.json
+                  ? json({ logins })
+                  : `${formatLocalLogins(logins)}\n`,
+              };
+            }),
+        }),
         "account login-poll": cliCommand({
           summary: "Wait for a Codex device-code login to complete",
           description:
             "Blocks until the Codex authorization finishes, fails, or the invocation is cancelled.",
-          options: { session: SESSION_OPTION, json: JSON_OPTION },
+          options: {
+            session: SESSION_OPTION,
+            label: {
+              type: "string",
+              placeholder: "text",
+              description: "Label shown in account listings",
+            },
+            json: JSON_OPTION,
+          },
           run: (input, ctx) =>
             attempt(async () => {
               const parsed = codexLoginPollInputSchema.parse({
                 sessionId: input.options.session,
+                ...(input.options.label === undefined
+                  ? {}
+                  : { label: input.options.label }),
               });
+              const target = codexLogin.targetOf(parsed.sessionId);
               const signal = ctx.signal;
               const cancel = () => codexLogin.cancel(parsed);
               signal?.addEventListener("abort", cancel, { once: true });
@@ -411,7 +532,7 @@ export function registerPoolCli(
                       exitCode: 0,
                       stdout: input.options.json
                         ? json({ ok: true, account: result.account })
-                        : `Added ${result.account.label} (${result.account.id}).\n`,
+                        : `${target === null ? "Added" : "Signed in again to"} ${result.account.label} (${result.account.id}).\n`,
                     };
                   }
                   if (result.status === "error") {
@@ -431,9 +552,14 @@ export function registerPoolCli(
         "account login-complete": cliCommand({
           summary: "Complete a Claude browser login with its manual code",
           description:
-            "Pipe the code the final login page shows:\n  printf '%s\\n' \"$CLAUDE_AUTH_CODE\" | bb pool account login-complete --session <id> --code-stdin",
+            "Pipe the code the final login page shows:\n  printf '%s\\n' \"$CLAUDE_AUTH_CODE\" | {{BB_CLI}} pool account login-complete --session <id> --code-stdin",
           options: {
             session: SESSION_OPTION,
+            label: {
+              type: "string",
+              placeholder: "text",
+              description: "Label shown in account listings",
+            },
             code: {
               type: "string",
               required: true,
@@ -441,7 +567,7 @@ export function registerPoolCli(
               stdin: true,
               aliases: ["pasted", "auth-code"],
               description:
-                "Manual callback code from the final login page. Unsafe: exposes the code in process arguments",
+                "Manual callback code from the final login page; use --code-stdin so it stays out of process arguments",
             },
             json: JSON_OPTION,
           },
@@ -450,13 +576,17 @@ export function registerPoolCli(
               const parsed = loginCompleteInputSchema.parse({
                 sessionId: input.options.session,
                 pasted: input.options.code,
+                ...(input.options.label === undefined
+                  ? {}
+                  : { label: input.options.label }),
               });
+              const target = login.targetOf(parsed.sessionId);
               const account = await login.complete(parsed);
               return {
                 exitCode: 0,
                 stdout: input.options.json
                   ? json({ ok: true, account })
-                  : `Added ${account.label} (${account.id}).\n`,
+                  : `${target === null ? "Added" : "Signed in again to"} ${account.label} (${account.id}).\n`,
               };
             }),
         }),
@@ -525,12 +655,35 @@ export function registerPoolCli(
         "account disable": cliCommand({
           summary: "Disable an account",
           positionals: [ACCOUNT_ID_POSITIONAL],
-          options: { json: JSON_OPTION },
+          options: {
+            json: JSON_OPTION,
+            subscription: {
+              type: "boolean",
+              description:
+                "Disable every enabled record of the subscription this account belongs to",
+            },
+          },
           run: (input) =>
             attempt(async () => {
               const { id } = accountIdInputSchema.parse({
                 id: input.positionals.id,
               });
+              if (input.options.subscription) {
+                const accounts = await operations.disableSubscription(id);
+                if (accounts === null) {
+                  throw new PluginCliError(`Account ${id} does not exist.`, {
+                    code: "account_not_found",
+                  });
+                }
+                return {
+                  exitCode: 0,
+                  stdout: input.options.json
+                    ? json({ ok: true, accounts })
+                    : accounts.length === 0
+                      ? `No record of the subscription of ${id} was enabled.\n`
+                      : `Disabled ${accounts.map((account) => account.id).join(", ")}.\n`,
+                };
+              }
               const account = await operations.disable(id);
               if (account === null) {
                 throw new PluginCliError(`Account ${id} does not exist.`, {
@@ -586,6 +739,33 @@ export function registerPoolCli(
               };
             }),
         }),
+        "account rename": cliCommand({
+          summary: "Rename an account",
+          positionals: [
+            ACCOUNT_ID_POSITIONAL,
+            { name: "label", description: "New account label", required: true },
+          ],
+          options: { json: JSON_OPTION },
+          run: (input) =>
+            attempt(async () => {
+              const parsed = accountRenameInputSchema.parse({
+                id: input.positionals.id,
+                label: input.positionals.label,
+              });
+              const account = await operations.rename(parsed.id, parsed.label);
+              if (account === null) {
+                throw new PluginCliError("Account not found.", {
+                  code: "account_not_found",
+                });
+              }
+              return {
+                exitCode: 0,
+                stdout: input.options.json
+                  ? json({ ok: true, account })
+                  : `Renamed account to ${account.label}.\n`,
+              };
+            }),
+        }),
         "account reorder": cliCommand({
           summary: "Set the complete failover order for one provider",
           description:
@@ -624,7 +804,8 @@ export function registerPoolCli(
             }),
         }),
         "account refresh": cliCommand({
-          summary: "Refresh one account's observed usage",
+          summary:
+            "Refresh one account's observed usage; retries an errored OAuth login and clears the error on success",
           positionals: [ACCOUNT_ID_POSITIONAL],
           options: { json: JSON_OPTION },
           run: (input) =>
@@ -642,7 +823,58 @@ export function registerPoolCli(
                 exitCode: 0,
                 stdout: input.options.json
                   ? json({ ok: true, account })
-                  : `Refreshed usage for ${id}.\n`,
+                  : account.error === null
+                    ? `Refreshed usage for ${id}.\n`
+                    : `Account ${id} is still in error: ${account.error}\n`,
+              };
+            }),
+        }),
+        select: cliCommand({
+          summary: "Show or select a subscription for one idle conversation",
+          positionals: [
+            {
+              name: "thread-id",
+              description: "Conversation ID",
+              required: true,
+            },
+            {
+              name: "provider",
+              description: "claude or codex",
+              required: true,
+            },
+            {
+              name: "account-id",
+              description:
+                "Account UUID or automatic; omit to show the current choice",
+            },
+          ],
+          options: { json: JSON_OPTION },
+          run: (input) =>
+            attempt(async () => {
+              const target = threadSelectionInputSchema.parse({
+                threadId: input.positionals["thread-id"],
+                provider: input.positionals.provider,
+              });
+              const requested = input.positionals["account-id"];
+              const selection =
+                requested === undefined
+                  ? await operations.selectedAccount(
+                      target.threadId,
+                      target.provider,
+                    )
+                  : await operations.selectAccount(
+                      target.threadId,
+                      target.provider,
+                      threadSelectionSetSchema.parse({
+                        ...target,
+                        accountId: requested === "automatic" ? null : requested,
+                      }).accountId,
+                    );
+              return {
+                exitCode: 0,
+                stdout: input.options.json
+                  ? json({ ...target, ...selection })
+                  : `${target.threadId}: ${selection.accountId ?? "Automatic"}\n`,
               };
             }),
         }),
@@ -788,7 +1020,7 @@ export function registerPoolCli(
         "token rotate": cliCommand({
           summary: "Rotate one machine's Account Pooler bearer token",
           description:
-            "The previous token keeps working for ten minutes. Tokens are never printed.",
+            "The previous machine token and every per-thread and nested-server token derived from it keep working for ten minutes, then stop. Threads receive new tokens the next time bb resolves their environment. Tokens are never printed.",
           suggestFor: ["rotate", "token"],
           options: {
             machine: {
@@ -812,6 +1044,30 @@ export function registerPoolCli(
                 stdout: input.options.json
                   ? json({ ok: true, token })
                   : `Rotated the Account Pooler token for ${token.hostName ?? token.hostId}.\n`,
+              };
+            }),
+        }),
+        "bypass get": cliCommand({
+          summary: "Read Account Pooler bypass status for one thread",
+          positionals: [
+            {
+              name: "thread-id",
+              description: "Thread whose routing bypass status to read",
+              required: true,
+            },
+          ],
+          options: { json: JSON_OPTION },
+          run: (input) =>
+            attempt(async () => {
+              const { threadId } = bypassGetInputSchema.parse({
+                threadId: input.positionals["thread-id"],
+              });
+              const result = await operations.getBypass(threadId);
+              return {
+                exitCode: 0,
+                stdout: input.options.json
+                  ? json({ ok: true, ...result })
+                  : `Account Pooler bypass is ${result.bypassed ? "enabled" : "disabled"} for ${result.threadId}.\n`,
               };
             }),
         }),

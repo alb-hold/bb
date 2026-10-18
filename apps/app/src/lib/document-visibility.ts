@@ -31,10 +31,22 @@ export function isDocumentVisible(): boolean {
   );
 }
 
+export function getDocumentVisibilityRevision(): number {
+  return revision;
+}
+
 export function useDocumentVisibilityRevision(): number {
   return useSyncExternalStore(
     subscribeToDocumentVisibility,
-    () => revision,
-    () => revision,
+    getDocumentVisibilityRevision,
+    getDocumentVisibilityRevision,
+  );
+}
+
+export function useDocumentVisible(): boolean {
+  return useSyncExternalStore(
+    subscribeToDocumentVisibility,
+    isDocumentVisible,
+    () => true,
   );
 }

@@ -82,6 +82,29 @@ describe("MobilePanelTabPager", () => {
     ).toBe(true);
   });
 
+  it("shows a terminal status label on the selected phone tab", () => {
+    const tab = {
+      id: "term_exited",
+      label: "cmux3-walk-project",
+      ariaLabel: "cmux3-walk-project",
+      leadingVisual: null,
+      onSelect: vi.fn(),
+      onClose: vi.fn(),
+      statusLabel: "exited",
+    };
+
+    render(
+      <MobilePanelTabPager
+        activeTabId={tab.id}
+        fixedTabs={createFixedTabs()}
+        tabs={[tab]}
+        newTabControl={null}
+      />,
+    );
+
+    expect(screen.getByText("(exited)")).toBeTruthy();
+  });
+
   it("uses wider headers for neighboring tabs and keeps selection visible through resize and removal", () => {
     let width = 460;
     let measure = () => {};

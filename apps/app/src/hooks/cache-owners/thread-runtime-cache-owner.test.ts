@@ -57,7 +57,6 @@ function makeThreadListEntry(id = "thread-1"): ThreadListEntry {
     updatedAt: 1,
     runtime: {
       displayStatus: "active",
-      hostReconnectGraceExpiresAt: null,
     },
     activity: {
       activeWorkflowCount: 0,
@@ -638,50 +637,6 @@ describe("thread runtime cache owner", () => {
     ]);
   });
 
-  it("optimistically removes queued messages and rolls back on failure", async () => {
-    const queryClient = createAppQueryClient({
-      defaultOptions: { queries: { gcTime: Infinity, retry: false } },
-      showMutationErrorToasts: false,
-    });
-    const previousQueue = [
-      makeQueuedMessage({ id: "qmsg-1" }),
-      makeQueuedMessage({ id: "qmsg-2" }),
-    ];
-    queryClient.setQueryData(
-      threadQueuedMessagesQueryKey("thread-1"),
-      previousQueue,
-    );
-
-    const transaction = await beginRemoveQueuedMessageTransaction({
-      queryClient,
-      request: {
-        id: "thread-1",
-        queuedMessageId: "qmsg-1",
-      },
-    });
-
-    expect(
-      queryClient
-        .getQueryData<ThreadQueuedMessage[]>(
-          threadQueuedMessagesQueryKey("thread-1"),
-        )
-        ?.map((queuedMessage) => queuedMessage.id),
-    ).toEqual(["qmsg-2"]);
-
-    rollbackRemoveQueuedMessageTransaction({
-      queryClient,
-      request: {
-        id: "thread-1",
-        queuedMessageId: "qmsg-1",
-      },
-      transaction,
-    });
-
-    expect(
-      queryClient.getQueryData(threadQueuedMessagesQueryKey("thread-1")),
-    ).toEqual(previousQueue);
-  });
-
   it("clears optimistic group edges when deleting a grouped successor", async () => {
     const queryClient = createAppQueryClient({
       defaultOptions: { queries: { gcTime: Infinity, retry: false } },
@@ -837,7 +792,6 @@ describe("thread runtime cache owner", () => {
       updatedAt: 1,
       runtime: {
         displayStatus: "provisioning",
-        hostReconnectGraceExpiresAt: null,
       },
     };
     queryClient.setQueryData(
@@ -907,7 +861,6 @@ describe("thread runtime cache owner", () => {
       updatedAt: 1,
       runtime: {
         displayStatus: "provisioning",
-        hostReconnectGraceExpiresAt: null,
       },
     };
     queryClient.setQueryData(threadQueuedMessagesQueryKey("thread-1"), [
@@ -1089,7 +1042,7 @@ describe("thread runtime cache owner", () => {
       id: "thread-1",
       status: "idle",
       updatedAt: 1,
-      runtime: { displayStatus: "idle", hostReconnectGraceExpiresAt: null },
+      runtime: { displayStatus: "idle" },
     });
     queryClient.setQueryData(
       threadTimelineQueryKey("thread-1"),
@@ -1160,7 +1113,7 @@ describe("thread runtime cache owner", () => {
       id: "thread-1",
       status: "idle",
       updatedAt: 1,
-      runtime: { displayStatus: "idle", hostReconnectGraceExpiresAt: null },
+      runtime: { displayStatus: "idle" },
     };
     queryClient.setQueryData(threadQueryKey("thread-1"), previousThread);
     queryClient.setQueryData(
@@ -1189,7 +1142,6 @@ describe("thread runtime cache owner", () => {
       updatedAt: 5,
       runtime: {
         displayStatus: "provisioning",
-        hostReconnectGraceExpiresAt: null,
       },
     };
     queryClient.setQueryData(threadQueuedMessagesQueryKey("thread-1"), [
@@ -1234,7 +1186,7 @@ describe("thread runtime cache owner", () => {
     queryClient.setQueryData(threadQueryKey("thread-1"), {
       id: "thread-1",
       status: "idle",
-      runtime: { displayStatus: "idle", hostReconnectGraceExpiresAt: null },
+      runtime: { displayStatus: "idle" },
     });
     const promptHistoryQueryFn = vi.fn(async () => []);
     const defaultExecutionOptionsQueryFn = vi.fn(async () => null);
@@ -1296,6 +1248,70 @@ describe("thread runtime cache owner", () => {
     }
   });
 
+  it.each(["sent", "failed"] as const)(
+    "preserves a pending queue refresh when a direct send is %s",
+    async (outcome) => {
+      const queryClient = createAppQueryClient({
+        defaultOptions: { queries: { gcTime: Infinity, retry: false } },
+        showMutationErrorToasts: false,
+      });
+      const queryKey = threadQueuedMessagesQueryKey("thread-1");
+      queryClient.setQueryData(queryKey, [
+        makeQueuedMessage({ waitingOn: { kind: "provisioning" } }),
+      ]);
+      let completeRefresh!: (messages: ThreadQueuedMessage[]) => void;
+      const response = new Promise<ThreadQueuedMessage[]>((resolve) => {
+        completeRefresh = resolve;
+      });
+      let refreshSignal: AbortSignal | undefined;
+      const observer = new QueryObserver(queryClient, {
+        queryKey,
+        queryFn: ({ signal }) => {
+          refreshSignal = signal;
+          return response;
+        },
+        staleTime: Infinity,
+      });
+      const unsubscribe = observer.subscribe(() => {});
+      try {
+        const refresh = queryClient.invalidateQueries({ queryKey });
+        expect(refreshSignal).toBeDefined();
+        const request = {
+          id: "thread-1",
+          mode: "auto" as const,
+          input: [{ type: "text" as const, text: "orange", mentions: [] }],
+        };
+        const transaction = await beginSendThreadMessageTransaction({
+          queryClient,
+          request,
+        });
+        expect(transaction.kind).toBe("accepted-turn");
+        if (outcome === "sent") {
+          applySendThreadMessageSuccess({
+            queryClient,
+            realtimeConnected: true,
+            request,
+            result: { ok: true, delivery: "sent" },
+            transaction,
+          });
+        } else {
+          rollbackSendThreadMessageTransaction({
+            queryClient,
+            request,
+            transaction,
+          });
+        }
+        completeRefresh([]);
+        await refresh;
+        expect(queryClient.getQueryData(queryKey)).toEqual([]);
+        expect(refreshSignal?.aborted).toBe(false);
+      } finally {
+        unsubscribe();
+        queryClient.clear();
+      }
+    },
+  );
+
   it("moves a predicted queued send into the timeline when the server sends it", async () => {
     const queryClient = createAppQueryClient({
       defaultOptions: { queries: { gcTime: Infinity, retry: false } },
@@ -1306,7 +1322,6 @@ describe("thread runtime cache owner", () => {
       updatedAt: 1,
       runtime: {
         displayStatus: "active",
-        hostReconnectGraceExpiresAt: null,
       },
     };
     queryClient.setQueryData(threadQueryKey("thread-1"), activeThread);

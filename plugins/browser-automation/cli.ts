@@ -90,7 +90,7 @@ export function createBrowserAutomationCli(deps: {
     commands: {
       open: cliCommand({
         summary:
-          "Open an isolated desktop or local headless session; --tab hands off an existing tab",
+          "Open a desktop or local headless session; --tab takes over an existing tab",
         options: {
           backend: {
             type: "enum",
@@ -102,8 +102,9 @@ export function createBrowserAutomationCli(deps: {
           machine: {
             type: "string",
             required: true,
-            placeholder: "host-id",
-            description: "Host that runs the browser",
+            placeholder: "name-or-id",
+            description:
+              "Host that runs the browser: exact ID or unambiguous name",
           },
           desktop: {
             type: "string",

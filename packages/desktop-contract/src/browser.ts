@@ -1,7 +1,6 @@
 import { z } from "zod";
 import {
   desktopBrowserImportSelectionSchema,
-  desktopBrowserProfileSchema,
   type DesktopBrowserImportOutcome,
   type DesktopBrowserImportSource,
 } from "@bb/host-daemon-contract";
@@ -175,6 +174,15 @@ export const bbDesktopBrowserStateSchema = z
     tabId: z.string().min(1),
     url: z.string().max(BB_DESKTOP_BROWSER_MAX_URL_LENGTH),
     title: z.string().max(BB_DESKTOP_BROWSER_MAX_TITLE_LENGTH).nullable(),
+    faviconUrl: z
+      .string()
+      .max(BB_DESKTOP_BROWSER_MAX_URL_LENGTH)
+      .nullable()
+      .optional(),
+    faviconUrls: z
+      .array(z.string().max(BB_DESKTOP_BROWSER_MAX_URL_LENGTH))
+      .max(8)
+      .optional(),
     isLoading: z.boolean(),
     canGoBack: z.boolean(),
     canGoForward: z.boolean(),
@@ -258,9 +266,6 @@ export const BB_DESKTOP_BROWSER_MAX_PAGE_EXPRESSION_LENGTH = 4_000_000;
 export const BB_DESKTOP_BROWSER_MAX_PAGE_CHANNEL_LENGTH = 256;
 
 export const bbDesktopBrowserPageWorldSchema = z.enum(["main", "isolated"]);
-export type BbDesktopBrowserPageWorld = z.infer<
-  typeof bbDesktopBrowserPageWorldSchema
->;
 
 export const bbDesktopBrowserEvaluateRequestSchema = z
   .object({
@@ -318,9 +323,7 @@ export type BbDesktopBrowserFindResultHandler = (
 export type BbDesktopBrowserUnsubscribe = () => void;
 
 export const bbDesktopBrowserImportCookiesRequestSchema =
-  desktopBrowserImportSelectionSchema
-    .extend({ profile: desktopBrowserProfileSchema })
-    .strict();
+  desktopBrowserImportSelectionSchema;
 export type BbDesktopBrowserImportCookiesRequest = z.infer<
   typeof bbDesktopBrowserImportCookiesRequestSchema
 >;

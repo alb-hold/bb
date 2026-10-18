@@ -52,6 +52,7 @@ export function makeEnvironment(
     },
     environmentProviderInstanceKey: null,
     lifecycle: { phase: "active", retireAt: null, teardown: null },
+    hostLifecycle: "active",
     managed: true,
     workspaceProvisionType: "managed-worktree",
     createdAt: 0,
@@ -107,11 +108,20 @@ export function makeProviderInfo(
       permissionModes: ["accept-edits", "auto", "full"],
     },
   };
+  const capabilities = { ...provider.capabilities, ...overrides.capabilities };
   return {
     ...provider,
+    ...(capabilities.supportsServiceTier
+      ? {
+          serviceTiers: [
+            { id: "default", label: "Default" },
+            { id: "fast", label: "Fast" },
+          ],
+        }
+      : {}),
     ...overrides,
     maintenance: { ...provider.maintenance, ...overrides.maintenance },
-    capabilities: { ...provider.capabilities, ...overrides.capabilities },
+    capabilities,
   };
 }
 
@@ -131,6 +141,7 @@ export function makeThread(overrides: Partial<Thread> = {}): Thread {
     originKind: null,
     originPluginId: null,
     visibility: "visible",
+    parentNotifications: "auto",
     archivedAt: null,
     pinnedAt: null,
     deletedAt: null,
@@ -147,10 +158,7 @@ export function makeThreadWithRuntime(
 ): ThreadWithRuntime {
   const thread: ThreadWithRuntime = {
     ...makeThread(),
-    runtime: {
-      displayStatus: "idle",
-      hostReconnectGraceExpiresAt: null,
-    },
+    runtime: { displayStatus: "idle" },
   };
   return {
     ...thread,
@@ -178,6 +186,7 @@ export function makeThreadListEntry(
       activeGoalCount: 0,
     },
     hasPendingInteraction: false,
+    listIndicator: "none",
     environmentHostId: null,
     environmentName: null,
     environmentBranchName: null,
@@ -186,6 +195,7 @@ export function makeThreadListEntry(
     environmentIsWorktree: null,
     environmentWorkspaceDisplayKind: "other",
     queuedWork: "none",
+    rowState: { statuses: {}, progress: null },
   };
   return {
     ...entry,
@@ -212,6 +222,7 @@ export function makeThreadQueuedMessage(
     serviceTier: "default",
     groupWithNext: false,
     sendAt: null,
+    state: "queued",
     waitingOn: null,
     failureReason: null,
     payload: { kind: "inline" },

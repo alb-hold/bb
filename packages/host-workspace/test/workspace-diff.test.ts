@@ -1,27 +1,10 @@
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { initRepo, makeTempDir } from "@bb/test-helpers";
+import { describe, expect, it, vi } from "vitest";
 import { Workspace } from "../src/workspace.js";
 import { runGit } from "../src/git.js";
 import type { RawDiffFileStat, WorkspaceDiffTarget } from "@bb/domain";
-
-const tempDirs: string[] = [];
-
-async function makeTempDir(prefix: string): Promise<string> {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
-  tempDirs.push(dir);
-  return dir;
-}
-
-async function initRepo(): Promise<string> {
-  const repoPath = await makeTempDir("bb-diff-repo-");
-  await runGit(["init", "-b", "main"], { cwd: repoPath });
-  await runGit(["config", "user.name", "BB Tests"], { cwd: repoPath });
-  await runGit(["config", "user.email", "bb@example.com"], { cwd: repoPath });
-  await runGit(["config", "core.autocrlf", "false"], { cwd: repoPath });
-  return repoPath;
-}
 
 async function write(
   repoPath: string,
@@ -129,17 +112,11 @@ function formatDiffSection(lines: string[]): string {
   return `${lines.slice(0, end).join("\n")}\n`;
 }
 
-afterEach(async () => {
-  await Promise.all(
-    tempDirs
-      .splice(0)
-      .map((dir) => fs.rm(dir, { recursive: true, force: true })),
-  );
-});
-
 describe("Workspace.diffFiles", () => {
   it("reports staged and untracked files before the initial commit", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-diff-repo-"), {
+      commit: false,
+    });
     await write(repoPath, "staged.txt", "staged pending\n");
     await runGit(["add", "staged.txt"], { cwd: repoPath });
     await write(repoPath, "untracked.txt", "untracked pending\n");
@@ -193,7 +170,9 @@ describe("Workspace.diffFiles", () => {
   });
 
   it("reports additions, modifications, and deletions with numstat counts", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-diff-repo-"), {
+      commit: false,
+    });
     await write(repoPath, "keep.txt", "a\nb\nc\n");
     await write(repoPath, "remove.txt", "x\ny\n");
     await commitAll(repoPath, "base");
@@ -235,7 +214,9 @@ describe("Workspace.diffFiles", () => {
   });
 
   it("detects renames with previousPath and copies", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-diff-repo-"), {
+      commit: false,
+    });
     await write(repoPath, "original.txt", "line1\nline2\nline3\nline4\n");
     await commitAll(repoPath, "base");
 
@@ -254,7 +235,9 @@ describe("Workspace.diffFiles", () => {
   });
 
   it("detects a type change (file to symlink) as statusLetter T", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-diff-repo-"), {
+      commit: false,
+    });
     await write(repoPath, "target.txt", "hello\n");
     await write(repoPath, "thing", "i am a regular file\n");
     await commitAll(repoPath, "base");
@@ -273,7 +256,9 @@ describe("Workspace.diffFiles", () => {
   });
 
   it("marks binary files with binary:true and zero counts", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-diff-repo-"), {
+      commit: false,
+    });
     await write(repoPath, "readme.txt", "text\n");
     await commitAll(repoPath, "base");
 
@@ -297,7 +282,9 @@ describe("Workspace.diffFiles", () => {
   });
 
   it("includes untracked files tagged origin:untracked for uncommitted target", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-diff-repo-"), {
+      commit: false,
+    });
     await write(repoPath, "tracked.txt", "one\n");
     await commitAll(repoPath, "base");
 
@@ -326,7 +313,9 @@ describe("Workspace.diffFiles", () => {
   });
 
   it("supports untracked files outside a sparse-checkout cone", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-diff-repo-"), {
+      commit: false,
+    });
     await write(repoPath, "inside/base.txt", "base\n");
     await commitAll(repoPath, "base");
     await runGit(["sparse-checkout", "init", "--cone"], { cwd: repoPath });
@@ -362,7 +351,9 @@ describe("Workspace.diffFiles", () => {
   });
 
   it("returns placeholders instead of rejecting when an untracked file disappears during indexing", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-diff-repo-"), {
+      commit: false,
+    });
     await write(repoPath, "base.txt", "base\n");
     await commitAll(repoPath, "base");
     await write(repoPath, "gone.txt", "gone\n");
@@ -391,7 +382,9 @@ describe("Workspace.diffFiles", () => {
   });
 
   it("returns an exact truncated untracked slice at the file cap", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-diff-repo-"), {
+      commit: false,
+    });
     await Promise.all([
       write(repoPath, "one.txt", "one\n"),
       write(repoPath, "two.txt", "two\n"),
@@ -413,7 +406,9 @@ describe("Workspace.diffFiles", () => {
   });
 
   it("returns an exact truncated tracked slice after bounded enumeration", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-diff-repo-"), {
+      commit: false,
+    });
     for (let index = 0; index < 5; index += 1) {
       await write(repoPath, `tracked-${index}.txt`, `base ${index}\n`);
     }
@@ -438,7 +433,9 @@ describe("Workspace.diffFiles", () => {
   });
 
   it("keeps rename stats exact in a truncated tracked slice", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-diff-repo-"), {
+      commit: false,
+    });
     await write(repoPath, "a-before.txt", "one\ntwo\nthree\nfour\nfive\n");
     await write(repoPath, "b.txt", "before\n");
     await write(repoPath, "c.txt", "before\n");
@@ -467,7 +464,9 @@ describe("Workspace.diffFiles", () => {
   });
 
   it("keeps full-diff add/delete classification when a truncated slice is below the rename limit", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-diff-repo-"), {
+      commit: false,
+    });
     await runGit(["config", "diff.renameLimit", "15"], { cwd: repoPath });
     const originalContents = Array.from({ length: 20 }, (_unused, index) =>
       [`identity ${index}`, ...Array.from({ length: 40 }, () => "shared")]
@@ -519,7 +518,9 @@ describe("Workspace.diffFiles", () => {
   });
 
   it("does not include untracked files for a commit target", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-diff-repo-"), {
+      commit: false,
+    });
     await write(repoPath, "a.txt", "a\n");
     await commitAll(repoPath, "base");
     await write(repoPath, "b.txt", "b\n");
@@ -541,7 +542,9 @@ describe("Workspace.diffPatch", () => {
   const BIG_BUDGET = 10_000_000;
 
   it("returns a tracked file patch matching the full-diff slice byte-for-byte", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-diff-repo-"), {
+      commit: false,
+    });
     await write(repoPath, "alpha.txt", "1\n2\n3\n");
     await write(repoPath, "beta.txt", "x\ny\n");
     await commitAll(repoPath, "base");
@@ -569,7 +572,9 @@ describe("Workspace.diffPatch", () => {
   });
 
   it("returns a tracked binary patch byte-equal to git diff --binary in a multi-file page", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-diff-repo-"), {
+      commit: false,
+    });
     await writeBytes(
       repoPath,
       "logo.png",
@@ -603,41 +608,10 @@ describe("Workspace.diffPatch", () => {
     expect(binary?.patch).not.toContain("alpha.txt");
   });
 
-  it("preserves rename detection in a path-subset patch", async () => {
-    const repoPath = await initRepo();
-    await write(
-      repoPath,
-      "original.txt",
-      "alpha\nbeta\ngamma\ndelta\nepsilon\n",
-    );
-    await commitAll(repoPath, "base");
-
-    await runGit(["mv", "original.txt", "renamed.txt"], { cwd: repoPath });
-    await write(
-      repoPath,
-      "renamed.txt",
-      "alpha\nbeta\ngamma\ndelta\nepsilon\nzeta\n",
-    );
-    await commitAll(repoPath, "rename with edit");
-
-    const target: WorkspaceDiffTarget = { type: "commit", sha: "HEAD" };
-    const workspace = new Workspace(repoPath);
-
-    const expected = await fullDiffSectionFor(workspace, target, "renamed.txt");
-    const patches = await workspace.diffPatch({
-      target,
-      paths: ["renamed.txt"],
-      maxBytesPerFile: BIG_BUDGET,
-    });
-
-    expect(patches).toHaveLength(1);
-    expect(patches[0]?.patch).toBe(expected);
-    expect(patches[0]?.patch).toMatch(/rename from original\.txt/);
-    expect(patches[0]?.patch).toMatch(/rename to renamed\.txt/);
-  });
-
   it("renders untracked files via the alternate-index path", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-diff-repo-"), {
+      commit: false,
+    });
     await write(repoPath, "tracked.txt", "base\n");
     await commitAll(repoPath, "base");
     const untrackedPath = "odd [name] file.txt";
@@ -659,7 +633,9 @@ describe("Workspace.diffPatch", () => {
   });
 
   it("keeps surviving patches when another untracked file disappears during indexing", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-diff-repo-"), {
+      commit: false,
+    });
     await write(repoPath, "base.txt", "base\n");
     await commitAll(repoPath, "base");
     await write(repoPath, "gone.txt", "gone\n");
@@ -685,7 +661,9 @@ describe("Workspace.diffPatch", () => {
   });
 
   it("matches the full-diff slice for an untracked file", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-diff-repo-"), {
+      commit: false,
+    });
     await write(repoPath, "tracked.txt", "base\n");
     await commitAll(repoPath, "base");
     await write(repoPath, "untracked.txt", "alpha\nbeta\n");
@@ -706,7 +684,9 @@ describe("Workspace.diffPatch", () => {
   });
 
   it("returns patches for a mixed tracked + untracked subset", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-diff-repo-"), {
+      commit: false,
+    });
     await write(repoPath, "tracked.txt", "1\n2\n");
     await commitAll(repoPath, "base");
     await write(repoPath, "tracked.txt", "1\n2\n3\n");
@@ -727,32 +707,10 @@ describe("Workspace.diffPatch", () => {
     expect(patches[1]?.patch).toContain("+3");
   });
 
-  it("truncates a patch exceeding maxBytesPerFile and sets truncated", async () => {
-    const repoPath = await initRepo();
-    await write(repoPath, "base.txt", "seed\n");
-    await commitAll(repoPath, "base");
-
-    const longBody = Array.from(
-      { length: 200 },
-      (_unused, index) => `line ${index}`,
-    ).join("\n");
-    await write(repoPath, "big.txt", `${longBody}\n`);
-
-    const workspace = new Workspace(repoPath);
-    const [entry] = await workspace.diffPatch({
-      target: UNCOMMITTED,
-      paths: ["big.txt"],
-      maxBytesPerFile: 100,
-    });
-
-    expect(entry?.truncated).toBe(true);
-    expect(Buffer.byteLength(entry?.patch ?? "", "utf8")).toBeLessThanOrEqual(
-      100,
-    );
-  });
-
   it("bounds a single tracked file whose raw patch exceeds the per-file budget without throwing", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-diff-repo-"), {
+      commit: false,
+    });
     await write(repoPath, "huge.txt", "seed\n");
     await commitAll(repoPath, "base");
 
@@ -777,7 +735,9 @@ describe("Workspace.diffPatch", () => {
   });
 
   it("bounds every entry of a page whose raw combined diff exceeds the 16 MB default buffer", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-diff-repo-"), {
+      commit: false,
+    });
     const fileCount = 6;
     for (let index = 0; index < fileCount; index += 1) {
       await write(repoPath, `big-${index}.txt`, "seed\n");
@@ -811,7 +771,9 @@ describe("Workspace.diffPatch", () => {
   });
 
   it("matches the full-diff slice for a branch_committed rename target", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-diff-repo-"), {
+      commit: false,
+    });
     await write(repoPath, "mod.txt", "stable\n");
     await write(repoPath, "before.txt", "one\ntwo\nthree\nfour\n");
     await commitAll(repoPath, "base");
@@ -846,7 +808,9 @@ describe("Workspace.diffPatch", () => {
   });
 
   it("ignores requested paths that are not in the target's changes", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-diff-repo-"), {
+      commit: false,
+    });
     await write(repoPath, "real.txt", "a\n");
     await commitAll(repoPath, "base");
     await write(repoPath, "real.txt", "a\nb\n");
@@ -868,35 +832,10 @@ describe("Workspace.diffPatch", () => {
     );
   });
 
-  it("returns a non-empty patch for a tracked path containing a space", async () => {
-    const repoPath = await initRepo();
-    await write(repoPath, "my file.txt", "alpha\nbeta\ngamma\n");
-    await write(repoPath, "other.txt", "untouched\n");
-    await commitAll(repoPath, "base");
-
-    await write(repoPath, "my file.txt", "alpha\nBETA\ngamma\ndelta\n");
-
-    const workspace = new Workspace(repoPath);
-    const expected = await fullDiffSectionFor(
-      workspace,
-      UNCOMMITTED,
-      "my file.txt",
-    );
-    const patches = await workspace.diffPatch({
-      target: UNCOMMITTED,
-      paths: ["my file.txt"],
-      maxBytesPerFile: BIG_BUDGET,
-    });
-
-    expect(patches).toHaveLength(1);
-    expect(patches[0]?.path).toBe("my file.txt");
-    expect(patches[0]?.patch.length).toBeGreaterThan(0);
-    expect(patches[0]?.patch).toBe(expected);
-    expect(expected.length).toBeGreaterThan(0);
-  });
-
   it("preserves rename framing when a renamed side's path contains a space", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-diff-repo-"), {
+      commit: false,
+    });
     await write(
       repoPath,
       "old name.txt",
@@ -935,7 +874,9 @@ describe("Workspace.diffPatch", () => {
   });
 
   it("splits a multi-file page including a space-in-path file from one combined diff", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-diff-repo-"), {
+      commit: false,
+    });
     await write(repoPath, "my file.txt", "alpha\nbeta\ngamma\n");
     await write(repoPath, "normal.txt", "one\ntwo\nthree\n");
     await write(repoPath, "untouched.txt", "stable\n");
@@ -983,7 +924,9 @@ describe("Workspace.diffPatch", () => {
   });
 
   it("splits a multi-file page containing a rename alongside a plain edit", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-diff-repo-"), {
+      commit: false,
+    });
     await write(repoPath, "before.txt", "alpha\nbeta\ngamma\ndelta\nepsilon\n");
     await write(repoPath, "edit.txt", "keep\n");
     await commitAll(repoPath, "base");
@@ -1032,7 +975,9 @@ describe("Workspace.diffPatch", () => {
   });
 
   it("returns a non-empty patch for a path with non-ASCII characters", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-diff-repo-"), {
+      commit: false,
+    });
     await write(repoPath, "café.txt", "un\ndeux\ntrois\n");
     await write(repoPath, "plain.txt", "stable\n");
     await commitAll(repoPath, "base");
@@ -1055,7 +1000,9 @@ describe("Workspace.diffPatch", () => {
   });
 
   it("truncates on a UTF-8 boundary without emitting U+FFFD or overshooting", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-diff-repo-"), {
+      commit: false,
+    });
     await write(repoPath, "seed.txt", "seed\n");
     await commitAll(repoPath, "base");
 

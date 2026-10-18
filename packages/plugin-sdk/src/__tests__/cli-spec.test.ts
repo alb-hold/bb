@@ -332,11 +332,50 @@ describe("defineCli errors", () => {
     expect(ran).not.toHaveBeenCalled();
   });
 
+  it("rejects a repeated boolean option", async () => {
+    const result = await run(memoryLikeCli(), ["catalog", "--json", "--json"]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("--json was given more than once");
+    expect(ran).not.toHaveBeenCalled();
+  });
+
   it("rejects an option written without its value", async () => {
     const result = await run(memoryLikeCli(), ["catalog", "--limit"]);
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain("--limit requires a value");
     expect(result.stderr).toContain("--limit=<value>");
+  });
+
+  it("exits with the spec's usage error code for every usage failure", async () => {
+    const cli = defineCli({
+      name: "retry",
+      summary: "retry",
+      usageErrorExitCode: 2,
+      commands: {
+        "queue cancel": cliCommand({
+          summary: "Cancel",
+          positionals: [{ name: "id", description: "Id", required: true }],
+          options: { json: { type: "boolean", description: "Emit JSON" } },
+          run: () => ({ exitCode: 0 }),
+        }),
+      },
+    });
+
+    for (const argv of [
+      [],
+      ["--json"],
+      ["queue"],
+      ["queue", "cancle"],
+      ["queue", "cancel"],
+      ["queue", "cancel", "a", "b"],
+      ["queue", "cancel", "a", "--jsno"],
+    ]) {
+      const result = await run(cli, argv);
+      expect(result.exitCode, argv.join(" ")).toBe(2);
+    }
+    await expect(run(cli, ["queue", "cancel", "a"])).resolves.toMatchObject({
+      exitCode: 0,
+    });
   });
 });
 
@@ -560,7 +599,10 @@ describe("defineCli parsing", () => {
               description: "API key",
             },
           },
-          run: (input) => ({ exitCode: 0, stdout: input.options.provider }),
+          run: (input) => {
+            ran(input.options);
+            return { exitCode: 0, stdout: input.options.provider };
+          },
         }),
         "account list": cliCommand({
           summary: "List accounts",
@@ -577,7 +619,7 @@ describe("defineCli parsing", () => {
         name: "account-add",
         summary: "Add an account",
         usage:
-          "bb pool account add --provider <claude|codex> [--api-key <value>]",
+          "bb pool account add --provider <claude|codex> [--api-key-stdin]",
       },
       {
         name: "account-list",
@@ -591,7 +633,24 @@ describe("defineCli parsing", () => {
 
     const stdin = await run(cli, ["account", "add", "--api-key-stdin"]);
     expect(stdin.exitCode).toBe(1);
-    expect(stdin.stderr).toContain("--api-key-stdin is read by the bb CLI");
+    expect(stdin.stderr).toContain(
+      "--api-key-stdin must be supplied by the bb CLI through stdin",
+    );
+    const direct = await run(cli, ["account", "add", "--api-key", "secret"]);
+    expect(direct.exitCode).toBe(1);
+    expect(direct.stderr).toContain(
+      "--api-key accepts input only through --api-key-stdin",
+    );
+    expect(direct.stderr).not.toContain("secret");
+    ran.mockClear();
+    const piped = await cli.run(
+      ["account", "add", "--provider", "claude", "--api-key-stdin"],
+      { experimental_stdinInputs: { "api-key": "piped-value" } },
+    );
+    expect(piped.exitCode).toBe(0);
+    expect(ran).toHaveBeenCalledWith(
+      expect.objectContaining({ "api-key": "piped-value" }),
+    );
   });
 
   it("runs a root command when no command word is given", async () => {

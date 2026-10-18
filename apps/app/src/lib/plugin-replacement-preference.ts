@@ -4,6 +4,7 @@ import {
   resolveReplacement,
   type ResolvedReplacement,
 } from "@/lib/plugin-slot-resolvers";
+import { useBuiltinPluginIds } from "@/lib/plugin-slots";
 
 export const AUTOMATIC_REPLACEMENT_PROVIDER = "__automatic__";
 
@@ -29,17 +30,37 @@ export function createReplacementPreferenceAtom(storageKey: string) {
   );
 }
 
+export function findAutomaticReplacement<
+  Slot extends ReplacementProviderIdentity,
+>(
+  slots: readonly Slot[],
+  builtinPluginIds: ReadonlySet<string>,
+): Slot | undefined {
+  return slots.find((slot) => !builtinPluginIds.has(slot.pluginId)) ?? slots[0];
+}
+
 export function resolvePreferredReplacement<
   Slot extends ReplacementProviderIdentity,
 >(
   slots: readonly Slot[],
-  preference: string = AUTOMATIC_REPLACEMENT_PROVIDER,
+  preference: string,
+  builtinPluginIds: ReadonlySet<string>,
 ): ResolvedReplacement<Slot> {
   if (preference === BUILT_IN_REPLACEMENT_PROVIDER) return { kind: "owner" };
+  if (preference === AUTOMATIC_REPLACEMENT_PROVIDER) {
+    const registration = findAutomaticReplacement(slots, builtinPluginIds);
+    return registration === undefined
+      ? { kind: "owner" }
+      : { kind: "plugin", registration };
+  }
   return resolveReplacement(
     slots,
-    preference === AUTOMATIC_REPLACEMENT_PROVIDER
-      ? undefined
-      : (candidate) => replacementProviderKey(candidate) === preference,
+    (candidate) => replacementProviderKey(candidate) === preference,
   );
+}
+
+export function usePreferredReplacement<
+  Slot extends ReplacementProviderIdentity,
+>(slots: readonly Slot[], preference: string): ResolvedReplacement<Slot> {
+  return resolvePreferredReplacement(slots, preference, useBuiltinPluginIds());
 }

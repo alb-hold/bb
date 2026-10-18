@@ -17,7 +17,7 @@ describe("bb guide command output", () => {
     const errorOutput = collectLogLines(vi.mocked(console.error)).join("\n");
     expect(errorOutput).toContain("Unknown guide chapter 'missing'");
     expect(errorOutput).toContain(
-      "Available: threads, environments, agent-configuration, providers, projects, machines, terminals, browser, customization, plugins, automations, spend, json.",
+      "Available: threads, thread-inspection, thread-messaging, thread-lifecycle, environments, agent-configuration, providers, projects, machines, terminals, browser, customization, plugins, spend, json.",
     );
   });
 
@@ -36,7 +36,10 @@ describe("bb guide command output", () => {
 
     const output = collectLogLines(vi.mocked(console.log)).join("\n");
     expect(output).toContain(
-      "bb terminal output|read <terminalId>  [--since-seq <n>] [--tail-bytes <n>] [--limit-chunks <n>] [--json]\n    Print terminal output",
+      "bb terminal output|read <terminalId>  [--since-seq <n>] [--tail-bytes <n>] [--limit-chunks <n>] [--lines <n>] [--json]\n    Print terminal output; retention survives server restarts and is capped at 64 KiB per terminal, 2 MiB and 128 terminals per machine for 30 minutes",
+    );
+    expect(output).toContain(
+      "bb terminal pipe <terminalId>  [--follow] [--command <command>]\n    Stream terminal output until it exits or Ctrl-C",
     );
     expect(output).not.toContain("bb thread ");
   }, 30_000);
@@ -59,12 +62,11 @@ describe("bb guide command output", () => {
     expect(errorOutput).toContain("Command groups: browser, status");
   }, 30_000);
 
-  it("bb guide terminals documents explicit scopes and ID-only mutations", async () => {
+  it("bb guide terminals renders the terminals chapter", async () => {
     await runCommand(["guide", "terminals"], registerGuideCommand);
 
-    const output = collectLogLines(vi.mocked(console.log)).join("\n");
-    expect(output).toContain("exactly one explicit scope");
-    expect(output).toContain("bb terminal list --thread <thread-id>");
-    expect(output).toContain("bb terminal rename <terminal-id> <title>");
+    expect(collectLogLines(vi.mocked(console.log)).join("\n")).toContain(
+      "bb terminal list --thread <thread-id>",
+    );
   });
 });

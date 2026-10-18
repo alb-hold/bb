@@ -13,12 +13,19 @@ import {
   parseExtensionKind,
 } from "@bb/domain";
 import { getThread, hasStoredTurnStarted } from "@bb/db";
+import { sliceUtf16Head } from "@bb/text-utils";
 import { isParentNotifiableChildThread } from "../services/threads/thread-parent.js";
 import type { Hono } from "hono";
-import type { AppDeps } from "../types.js";
+import type {
+  AppDeps,
+  LoggedPendingInteractionWorkSessionDeps,
+} from "../types.js";
 import { ApiError } from "../errors.js";
 import { deferAfterResponse } from "../services/lib/response-deferral.js";
-import { requireThreadEnvironment } from "../services/lib/entity-lookup.js";
+import {
+  requireThreadEnvironment,
+  requireThreadEnvironmentAllowingDestroyed,
+} from "../services/lib/entity-lookup.js";
 import { queueChildThreadNeedsAttentionNotificationBestEffort } from "../services/threads/child-thread-notifications.js";
 import { requireAuthenticatedDaemonSession } from "./session-state.js";
 
@@ -71,7 +78,7 @@ function truncateChildThreadBlockerSummary(summary: string): string {
     CHILD_THREAD_BLOCKER_SUMMARY_MAX_CHARS -
       CHILD_THREAD_BLOCKER_SUMMARY_TRUNCATION_MARKER.length,
   );
-  return `${summary.slice(0, retainedLength).trimEnd()}${CHILD_THREAD_BLOCKER_SUMMARY_TRUNCATION_MARKER}`;
+  return `${sliceUtf16Head(summary, retainedLength).trimEnd()}${CHILD_THREAD_BLOCKER_SUMMARY_TRUNCATION_MARKER}`;
 }
 
 function pluginFormTitleLines(interaction: PendingInteraction): string[] {
@@ -103,12 +110,16 @@ export function buildChildThreadBlockerSummary(
   );
 }
 
-function requestChildThreadNeedsAttentionNotification(
-  deps: AppDeps,
+export function requestChildThreadNeedsAttentionNotification(
+  deps: LoggedPendingInteractionWorkSessionDeps &
+    Pick<AppDeps, "config" | "db" | "logger">,
   args: RequestChildThreadNeedsAttentionNotificationArgs,
 ): void {
   const childThread = getThread(deps.db, args.childThreadId);
-  if (!childThread || !isParentNotifiableChildThread(childThread)) {
+  if (
+    !childThread ||
+    !isParentNotifiableChildThread(childThread, "needs-attention")
+  ) {
     return;
   }
   const parentThreadId = childThread.parentThreadId;
@@ -223,10 +234,17 @@ export function registerInternalInteractiveRequestRoutes(
       for (const threadId of payload.threadIds) {
         let environmentHostId: string;
         try {
-          const { environment } = requireThreadEnvironment(deps.db, threadId);
+          const { environment } = requireThreadEnvironmentAllowingDestroyed(
+            deps.db,
+            threadId,
+          );
           environmentHostId = environment.hostId;
         } catch (error) {
-          if (error instanceof ApiError && error.status === 404) {
+          if (
+            error instanceof ApiError &&
+            (error.status === 404 ||
+              error.body.code === "thread_environment_unavailable")
+          ) {
             continue;
           }
           throw error;

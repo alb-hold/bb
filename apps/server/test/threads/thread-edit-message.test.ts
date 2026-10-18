@@ -1,9 +1,12 @@
 import {
-  claimQueuedThreadMessage,
+  claimQueuedThreadMessageGroup,
+  createQueuedThreadMessage,
   createPendingInteraction,
   createPromptHistoryEntry,
   getThread,
+  listActiveBackgroundTaskCountsByThreadIds,
   listEvents,
+  listQueuedThreadMessages,
   listStoredProjectPromptHistoryRows,
   listStoredThreadPromptHistoryRows,
   recordWorkspaceFileChanges,
@@ -979,38 +982,6 @@ describe("editThreadMessage", () => {
     });
   });
 
-  it("uses the provider lineage that produced the preceding checkpoint", async () => {
-    await withTestHarness(async (harness) => {
-      const { environment, thread } = seedEditableThread(harness, {
-        firstProviderThreadId: "provider-before-restart",
-      });
-      const editPromise = editThreadMessage(harness.deps, {
-        environment,
-        thread,
-        payload: {
-          operationId: "edit-op-provider-lineage",
-          expectedRequestSequence: 7,
-          input: [{ type: "text", text: "Replacement", mentions: [] }],
-        },
-      });
-      const rewind = await waitForQueuedCommand(
-        harness,
-        (queued) => queued.command.type === "thread.rewind.prepare",
-      );
-      expect(rewind.command).toMatchObject({
-        sourceProviderThreadId: "provider-before-restart",
-      });
-      const rejectedEdit = expect(editPromise).rejects.toThrow(
-        "Stop after inspecting command",
-      );
-      await reportQueuedCommandError(harness, rewind, {
-        errorCode: "test_complete",
-        errorMessage: "Stop after inspecting command",
-      });
-      await rejectedEdit;
-    });
-  });
-
   it("rejects grouped requests", async () => {
     await withTestHarness(async (harness) => {
       const { environment, thread } = seedEditableThread(harness);
@@ -1121,6 +1092,114 @@ describe("editThreadMessage", () => {
     });
   });
 
+  it("keeps the settlement of background work started before the edited message", async () => {
+    await withTestHarness(async (harness) => {
+      const { environment, thread } = seedEditableThread(harness, {
+        includeSecondTurn: false,
+        providerId: "claude-code",
+      });
+      const backgroundTask = (id: string, taskStatus: "running" | "stopped") =>
+        ({
+          id,
+          type: "backgroundTask",
+          taskType: "local_bash",
+          description: `Command ${id}`,
+          status: taskStatus === "running" ? "pending" : "interrupted",
+          taskStatus,
+          skipTranscript: false,
+          foreground: false,
+        }) as const;
+      const seedTaskEvent = (args: {
+        id: string;
+        sequence: number;
+        taskStatus: "running" | "stopped";
+      }) =>
+        seedStoredEvent(harness.deps, {
+          threadId: thread.id,
+          providerThreadId: "provider-original",
+          sequence: args.sequence,
+          ...(args.taskStatus === "running"
+            ? {
+                type: "item/started" as const,
+                scope: turnScope("turn-first"),
+              }
+            : {
+                type: "item/backgroundTask/completed" as const,
+                scope: threadScope(),
+              }),
+          itemId: args.id,
+          itemKind: "backgroundTask",
+          data: {
+            providerThreadId: "provider-original",
+            item: backgroundTask(args.id, args.taskStatus),
+          },
+        });
+      seedTaskEvent({ id: "task-before", sequence: 7, taskStatus: "running" });
+      seedTurn(harness, {
+        completionStatus: "interrupted",
+        providerCheckpointId: "checkpoint-last",
+        providerThreadId: "provider-original",
+        requestSequence: 8,
+        text: "Original last message",
+        threadId: thread.id,
+        turnId: "turn-last",
+      });
+      seedTaskEvent({ id: "task-before", sequence: 13, taskStatus: "stopped" });
+      seedTaskEvent({ id: "task-after", sequence: 14, taskStatus: "running" });
+      seedTaskEvent({ id: "task-after", sequence: 15, taskStatus: "stopped" });
+
+      const editPromise = editThreadMessage(harness.deps, {
+        environment,
+        thread,
+        payload: {
+          operationId: "edit-op-background-settlement",
+          expectedRequestSequence: 8,
+          input: [{ type: "text", text: "Replacement", mentions: [] }],
+        },
+      });
+      const rewind = await waitForQueuedCommand(
+        harness,
+        (queued) => queued.command.type === "thread.rewind.prepare",
+      );
+      await reportQueuedCommandSuccess(harness, rewind, {
+        providerThreadId: "provider-staged-background-edit",
+      });
+
+      await expect(editPromise).resolves.toEqual({
+        ok: true,
+        operationId: "edit-op-background-settlement",
+        requestSequence: 18,
+      });
+      const remaining = listEvents(harness.db, { threadId: thread.id });
+      expect(
+        remaining
+          .filter((event) => event.sequence >= 8)
+          .map((event) => [event.sequence, event.type, event.itemId]),
+      ).toEqual([
+        [16, "system/operation", null],
+        [17, "item/backgroundTask/completed", "task-before"],
+        [18, "client/turn/requested", null],
+      ]);
+      const carried = remaining.at(-2);
+      expect(carried).toMatchObject({
+        providerThreadId: "provider-original",
+        scopeKind: "thread",
+      });
+      expect(JSON.parse(carried?.data ?? "null")).toMatchObject({
+        item: {
+          id: "task-before",
+          status: "interrupted",
+          taskStatus: "stopped",
+        },
+      });
+      expect(
+        listActiveBackgroundTaskCountsByThreadIds(harness.db, {
+          threadIds: [thread.id],
+        }),
+      ).toEqual([]);
+    });
+  });
+
   it("stops an active selected turn before editing it", async () => {
     await withTestHarness(async (harness) => {
       const { environment, thread } = seedEditableThread(harness, {
@@ -1176,6 +1255,56 @@ describe("editThreadMessage", () => {
     });
   });
 
+  it("retains queued messages when editing a sent message", async () => {
+    await withTestHarness(async (harness) => {
+      const { environment, thread } = seedEditableThread(harness);
+      const queuedMessage = seedQueuedMessage(harness.deps, {
+        content: [{ type: "text", text: "Keep this queued", mentions: [] }],
+        threadId: thread.id,
+      });
+      const retry = createQueuedThreadMessage(harness.db, harness.deps.hub, {
+        threadId: thread.id,
+        content: [],
+        model: "gpt-5",
+        reasoningLevel: "medium",
+        permissionMode: "full",
+        serviceTier: "default",
+        waitingOn: { kind: "time" },
+        sendAt: Date.now() + 60_000,
+        payload: {
+          kind: "retry",
+          retryOfTurnRequestId: encodeClientTurnRequestIdNumber({ value: 7 }),
+          attempt: 2,
+          reason: "Rate limited",
+        },
+        systemNotice: null,
+      });
+      const editPromise = editThreadMessage(harness.deps, {
+        environment,
+        thread,
+        payload: {
+          operationId: "edit-op-retain-queue",
+          expectedRequestSequence: 7,
+          input: [{ type: "text", text: "Replacement", mentions: [] }],
+        },
+      });
+      const rewind = await waitForQueuedCommand(
+        harness,
+        (queued) => queued.command.type === "thread.rewind.prepare",
+      );
+      await reportQueuedCommandSuccess(harness, rewind, {
+        providerThreadId: "provider-staged-retain-queue",
+      });
+      await expect(editPromise).resolves.toMatchObject({ ok: true });
+      expect(listQueuedThreadMessages(harness.db, thread.id)).toMatchObject([
+        { id: queuedMessage.id },
+      ]);
+      expect(
+        listQueuedThreadMessages(harness.db, thread.id),
+      ).not.toContainEqual(expect.objectContaining({ id: retry.id }));
+    });
+  });
+
   it("rechecks claimed queued messages after rewind preparation", async () => {
     await withTestHarness(async (harness) => {
       const { environment, thread } = seedEditableThread(harness);
@@ -1199,14 +1328,15 @@ describe("editThreadMessage", () => {
         threadId: thread.id,
       });
       expect(
-        claimQueuedThreadMessage(
+        claimQueuedThreadMessageGroup(
           harness.db,
           harness.deps.hub,
           queuedMessage.id,
+          { kind: "explicit-send" },
         ),
       ).not.toBeNull();
       const rejectedEdit = expect(editPromise).rejects.toThrow(
-        "Send or remove queued messages before editing a message",
+        "Wait for queued messages being sent before editing a message",
       );
       await reportQueuedCommandSuccess(harness, rewind, {
         providerThreadId: "provider-staged-queue-race",
@@ -1236,7 +1366,10 @@ describe("editThreadMessage", () => {
           harness.deps.pendingInteractions,
         );
       const pendingInteractionSpy = vi
-        .spyOn(harness.deps.pendingInteractions, "hasTurnBoundPendingThreadInteraction")
+        .spyOn(
+          harness.deps.pendingInteractions,
+          "hasTurnBoundPendingThreadInteraction",
+        )
         .mockImplementation((threadId) => {
           pendingInteractionChecks += 1;
           if (pendingInteractionChecks === 2) {

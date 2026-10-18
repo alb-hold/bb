@@ -115,6 +115,14 @@ function contrastRatio(foreground: OklchColor, background: OklchColor): number {
 }
 
 describe("theme.css neutral ramp", () => {
+  it("keeps touch sidebar titles stable under hover and open action states", () => {
+    const mobileRules = css.slice(css.indexOf("@media (hover: none)"));
+
+    expect(mobileRules).toMatch(
+      /\.bb-sidebar-hover-actions-row:is\(:hover, :has\(:focus-visible\)\)\s+\.bb-sidebar-hover-actions-inset,\s+\.bb-sidebar-hover-actions-row:has\(\s+\.bb-sidebar-hover-actions\[data-sidebar-hover-actions-open="true"\]\s+\)\s+\.bb-sidebar-hover-actions-inset\s*\{\s*padding-right:\s*0;/,
+    );
+  });
+
   it("backs selected sticky sidebar rows with an opaque sidebar layer", () => {
     const rule = css.match(
       /\[data-sidebar-sticky-tier\]\.bb-sidebar-selected-row\s*\{([^}]*)\}/s,
@@ -122,6 +130,17 @@ describe("theme.css neutral ramp", () => {
 
     expect(rule).toContain(
       "linear-gradient(var(--state-active), var(--state-active))",
+    );
+    expect(rule).toContain("linear-gradient(var(--sidebar), var(--sidebar))");
+  });
+
+  it("backs accent-tinted sticky sidebar rows with an opaque sidebar layer", () => {
+    const rule = css.match(
+      /\[data-sidebar-sticky-tier\]\.bb-sidebar-accent-row:is\([^{]+\)\s*\{([^}]*)\}/s,
+    )?.[1];
+
+    expect(rule).toContain(
+      "linear-gradient(var(--sidebar-accent), var(--sidebar-accent))",
     );
     expect(rule).toContain("linear-gradient(var(--sidebar), var(--sidebar))");
   });
@@ -140,6 +159,25 @@ describe("theme.css neutral ramp", () => {
     expect(rule).toContain(
       "margin-top: calc(-1 * var(--bb-sidebar-sticky-stack-padding-top))",
     );
+  });
+
+  it("keeps the scrollport cap below label controls but above project rows", () => {
+    const cap = Number(
+      css.match(
+        /\[data-sidebar-sticky-stack\]::before\s*\{[^}]*z-index:\s*(\d+)/,
+      )?.[1],
+    );
+    const tier = (name: string) =>
+      Number(
+        css.match(
+          new RegExp(
+            `\\[data-sidebar-sticky-tier="${name}"\\]\\s*\\{[^}]*--bb-sidebar-sticky-tier-z-index:\\s*(\\d+)`,
+          ),
+        )?.[1],
+      );
+
+    expect(cap).toBeLessThan(tier("label"));
+    expect(cap).toBeGreaterThan(tier("project"));
   });
 
   it("collapses the label slot when a section header is not sticky", () => {
@@ -181,12 +219,6 @@ describe("theme.css neutral ramp", () => {
     expect(
       stickyRule?.match(/var\(--bb-sidebar-open-in-split-background\)/g),
     ).toHaveLength(2);
-
-    const interactiveRule = css.match(
-      /\[data-sidebar-sticky-tier\]\.bb-sidebar-open-in-split-row:is\([^{]+\)\s*\{([^}]*)\}/s,
-    )?.[1];
-    expect(interactiveRule).toContain("background-image: linear-gradient(");
-    expect(interactiveRule?.match(/var\(--sidebar-accent\)/g)).toHaveLength(2);
   });
 
   for (const mode of MODES) {
@@ -339,6 +371,30 @@ describe("theme.css sidebar width registration", () => {
     expect(rule).toMatch(/syntax:\s*"<length>";/);
     expect(rule).toMatch(/inherits:\s*false;/);
     expect(rule).toMatch(/initial-value:\s*\d+px;/);
+  });
+});
+
+describe("thread row trailing space", () => {
+  it("compacts shortcut hints alongside full status text before metadata", () => {
+    expect(css).toMatch(
+      /\[data-sidebar-status-full\],\s*\.bb-sidebar-hover-actions-row \[data-sidebar-shortcut-secondary\]\s*\)\s*\{\s*display: none;/,
+    );
+    expect(css).toMatch(
+      /@container sidebar-thread-row \(min-width: 24rem\)\s*\{\s*:where\([^}]+\[data-sidebar-shortcut-secondary\]\s*\)\s*\{\s*display: inline;/,
+    );
+  });
+
+  it("reveals actions on pointer hover and keyboard focus without hiding metadata", () => {
+    expect(css).toMatch(
+      /\.bb-sidebar-hover-actions-row:is\(:hover, :has\(:focus-visible\)\)\s+\.bb-sidebar-hover-actions,[^{]+\{\s*pointer-events: auto;\s*opacity: 1;/,
+    );
+    expect(css).not.toContain("[data-sidebar-row-trailing-secondary]");
+  });
+
+  it("keeps mobile actions available without hiding metadata", () => {
+    expect(css).toMatch(
+      /\.bb-sidebar-hover-actions\[data-sidebar-hover-actions-mobile="always"\]\s*\{\s*pointer-events: auto;\s*opacity: 1;/,
+    );
   });
 });
 

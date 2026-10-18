@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,22 +12,23 @@ import {
   type AcpAgentConnection,
   type AcpAgentExitInfo,
 } from "./agent-connection.js";
+import { createDeferredPromise } from "@bb/test-helpers";
 
 const EPIPE_PAYLOAD_SIZE = 1024 * 1024;
 
-function deferred<T>(): {
-  promise: Promise<T>;
-  resolve(value: T): void;
-} {
-  let resolvePromise: ((value: T) => void) | undefined;
-  const promise = new Promise<T>((resolve) => {
-    resolvePromise = resolve;
-  });
+function closedStdinAgent(): { command: string; args: string[] } {
+  const command =
+    process.platform === "win32"
+      ? execFileSync("git", ["var", "GIT_SHELL_PATH"], {
+          encoding: "utf8",
+        }).trim()
+      : "/bin/sh";
   return {
-    promise,
-    resolve(value) {
-      resolvePromise?.(value);
-    },
+    command,
+    args: [
+      "-c",
+      `exec 0<&-; printf '%s\\n' '{"jsonrpc":"2.0","method":"ready"}'; sleep 30`,
+    ],
   };
 }
 
@@ -72,19 +74,11 @@ describe("formatAgentError", () => {
 
 describe("ACP agent stdio lifecycle", () => {
   it("does not surface a closed agent stdin as an unhandled EPIPE", async () => {
-    const ready = deferred<void>();
-    const exited = deferred<AcpAgentExitInfo>();
+    const ready = createDeferredPromise<void>();
+    const exited = createDeferredPromise<AcpAgentExitInfo>();
     const connection = createAcpAgentConnection({
       recordThreadId: null,
-      command: process.execPath,
-      args: [
-        "-e",
-        [
-          'require("node:fs").closeSync(0);',
-          'process.stdout.write(JSON.stringify({ jsonrpc: "2.0", method: "ready" }) + "\\n");',
-          "setTimeout(() => process.exit(0), 1000);",
-        ].join(" "),
-      ],
+      ...closedStdinAgent(),
       cwd: process.cwd(),
       env: process.env,
       onNotification(method) {
@@ -106,19 +100,11 @@ describe("ACP agent stdio lifecycle", () => {
   });
 
   it("rejects requests and stops an agent that closes stdin but stays alive", async () => {
-    const ready = deferred<void>();
-    const exited = deferred<AcpAgentExitInfo>();
+    const ready = createDeferredPromise<void>();
+    const exited = createDeferredPromise<AcpAgentExitInfo>();
     const connection = createAcpAgentConnection({
       recordThreadId: null,
-      command: process.execPath,
-      args: [
-        "-e",
-        [
-          'require("node:fs").closeSync(0);',
-          'process.stdout.write(JSON.stringify({ jsonrpc: "2.0", method: "ready" }) + "\\n");',
-          "setInterval(() => {}, 1000);",
-        ].join(" "),
-      ],
+      ...closedStdinAgent(),
       cwd: process.cwd(),
       env: process.env,
       onNotification(method) {
@@ -163,8 +149,8 @@ describe("ACP agent stdio lifecycle", () => {
   });
 
   it("makes an intentionally stopped connection unavailable before stdin teardown", async () => {
-    const ready = deferred<void>();
-    const exited = deferred<AcpAgentExitInfo>();
+    const ready = createDeferredPromise<void>();
+    const exited = createDeferredPromise<AcpAgentExitInfo>();
     const connection = createAcpAgentConnection({
       recordThreadId: null,
       command: process.execPath,
@@ -224,10 +210,9 @@ describe("ACP agent stdio lifecycle", () => {
           resultSchema: z.unknown(),
         }),
       ).rejects.toThrow(`ACP agent "${process.execPath}" is not running`);
-      await expect(exited.promise).resolves.toMatchObject({
-        code: 0,
-        signal: null,
-      });
+      const exitInfo = await exited.promise;
+      if (process.platform !== "win32")
+        expect(exitInfo).toMatchObject({ code: 0, signal: null });
     } finally {
       await stopConnection(connection, exited.promise);
     }
@@ -236,8 +221,8 @@ describe("ACP agent stdio lifecycle", () => {
   it("ignores an ACP request emitted during SIGTERM", async () => {
     const workspace = mkdtempSync(join(tmpdir(), "bb-acp-stop-"));
     const lateWrite = join(workspace, "late-write.txt");
-    const ready = deferred<void>();
-    const exited = deferred<AcpAgentExitInfo>();
+    const ready = createDeferredPromise<void>();
+    const exited = createDeferredPromise<AcpAgentExitInfo>();
     let requestCount = 0;
     const connection = createAcpAgentConnection({
       recordThreadId: null,
@@ -276,7 +261,7 @@ describe("ACP agent stdio lifecycle", () => {
   });
 
   it("rejects pending requests when the agent exits", async () => {
-    const exited = deferred<AcpAgentExitInfo>();
+    const exited = createDeferredPromise<AcpAgentExitInfo>();
     const connection = createAcpAgentConnection({
       recordThreadId: null,
       command: process.execPath,

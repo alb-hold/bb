@@ -3,8 +3,10 @@ import type {
   TerminalInputRequest,
   TerminalListQuery,
   TerminalListResponse,
+  TerminalAttentionListResponse,
   TerminalOutputQuery,
   TerminalOutputResponse,
+  TerminalNotifyRequest,
   TerminalResizeRequest,
   TerminalSession,
   UpdateTerminalRequest,
@@ -60,6 +62,7 @@ export interface TerminalListArgs {
 
 export interface TerminalCreateArgs {
   cols: number;
+  cwd?: string;
   rows: number;
   scope: TerminalCreateScope;
   start?: CreateTerminalRequest["start"];
@@ -92,11 +95,15 @@ export interface TerminalResizeArgs extends TerminalTargetArgs {
 }
 
 export interface TerminalOutputArgs extends TerminalTargetArgs {
+  lines?: TerminalOutputQuery["lines"];
   limitChunks?: TerminalOutputQuery["limitChunks"];
   signal?: AbortSignal;
   sinceSeq?: TerminalOutputQuery["sinceSeq"];
   tailBytes?: TerminalOutputQuery["tailBytes"];
 }
+
+export interface TerminalNotifyArgs
+  extends TerminalTargetArgs, TerminalNotifyRequest {}
 
 export type TerminalRestartArgs = TerminalTargetArgs;
 
@@ -110,13 +117,24 @@ export type TerminalResizeResult = TerminalSession;
 export type TerminalOutputResult = TerminalOutputResponse;
 export type TerminalRestartResult = TerminalSession;
 
+export interface ExperimentalTerminalAttentionArea {
+  clear(args: TerminalTargetArgs): Promise<TerminalGetResult>;
+  list(): Promise<TerminalAttentionListResponse["sessions"]>;
+  next(): Promise<TerminalGetResult | null>;
+}
+
 export interface TerminalsArea {
+  experimental_attention: ExperimentalTerminalAttentionArea;
   close(args: TerminalCloseArgs): Promise<TerminalCloseResult>;
   create(args: TerminalCreateArgs): Promise<TerminalCreateResult>;
   get(args: TerminalGetArgs): Promise<TerminalGetResult>;
   input(args: TerminalInputArgs): Promise<TerminalInputResult>;
   list(args: TerminalListArgs): Promise<TerminalListResult>;
   output(args: TerminalOutputArgs): Promise<TerminalOutputResult>;
+  notify(args: TerminalNotifyArgs): Promise<TerminalGetResult>;
+  experimental_follow(
+    args: TerminalOutputArgs & { pollIntervalMs?: number },
+  ): AsyncGenerator<Uint8Array>;
   rename(args: TerminalRenameArgs): Promise<TerminalRenameResult>;
   restart(args: TerminalRestartArgs): Promise<TerminalRestartResult>;
   resize(args: TerminalResizeArgs): Promise<TerminalResizeResult>;
@@ -184,6 +202,7 @@ function terminalCreateTarget(
 
 function terminalOutputQuery(args: TerminalOutputArgs): TerminalOutputQuery {
   return {
+    ...(args.lines === undefined ? {} : { lines: args.lines }),
     ...(args.sinceSeq === undefined ? {} : { sinceSeq: args.sinceSeq }),
     ...(args.tailBytes === undefined ? {} : { tailBytes: args.tailBytes }),
     ...(args.limitChunks === undefined
@@ -205,11 +224,31 @@ export function createTerminalsArea(args: CreateSdkAreaArgs): TerminalsArea {
       ),
     );
 
+  const listAttention = async (): Promise<
+    TerminalAttentionListResponse["sessions"]
+  > => {
+    const response: TerminalAttentionListResponse = await transport.readJson(
+      transport.api.v1.terminals.attention.$get({}),
+    );
+    return response.sessions
+      .filter(
+        (session) =>
+          session.attention !== null && session.attention !== undefined,
+      )
+      .sort(
+        (left, right) =>
+          (left.attention?.at ?? 0) - (right.attention?.at ?? 0) ||
+          left.createdAt - right.createdAt ||
+          left.id.localeCompare(right.id),
+      );
+  };
+
   const create = (input: TerminalCreateArgs): Promise<TerminalCreateResult> =>
     transport.readJson(
       transport.api.v1.terminals.$post({
         json: {
           cols: input.cols,
+          ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
           rows: input.rows,
           start: input.start,
           target: terminalCreateTarget(input.scope),
@@ -219,6 +258,19 @@ export function createTerminalsArea(args: CreateSdkAreaArgs): TerminalsArea {
     );
 
   return {
+    experimental_attention: {
+      async clear(input) {
+        return transport.readJson(
+          transport.api.v1.terminals[":terminalId"].attention.clear.$post({
+            param: { terminalId: input.terminalId },
+          }),
+        );
+      },
+      list: listAttention,
+      async next() {
+        return (await listAttention())[0] ?? null;
+      },
+    },
     async close(input) {
       return transport.readJson(
         transport.api.v1.terminals[":terminalId"].close.$post({
@@ -257,6 +309,46 @@ export function createTerminalsArea(args: CreateSdkAreaArgs): TerminalsArea {
           ...signalRequestArgs(input.signal),
         ),
       );
+    },
+    async notify(input) {
+      return transport.readJson(
+        transport.api.v1.terminals[":terminalId"].notify.$post({
+          param: { terminalId: input.terminalId },
+          json: {
+            ...(input.title === undefined ? {} : { title: input.title }),
+            ...(input.body === undefined ? {} : { body: input.body }),
+          },
+        }),
+      );
+    },
+    async *experimental_follow(input) {
+      let sinceSeq = input.sinceSeq ?? 0;
+      let first = true;
+      while (!input.signal?.aborted) {
+        const output = await transport.readJson(
+          transport.api.v1.terminals[":terminalId"].output.$get(
+            {
+              param: { terminalId: input.terminalId },
+              query: terminalOutputQuery({
+                ...input,
+                ...(first ? {} : { lines: undefined, sinceSeq }),
+              }),
+            },
+            ...signalRequestArgs(input.signal),
+          ),
+        );
+        first = false;
+        for (const chunk of output.chunks) {
+          yield Uint8Array.from(atob(chunk.dataBase64), (character) =>
+            character.charCodeAt(0),
+          );
+        }
+        sinceSeq = output.nextSeq;
+        if (output.status === "exited") return;
+        await new Promise((resolve) =>
+          setTimeout(resolve, input.pollIntervalMs ?? 250),
+        );
+      }
     },
     async rename(input) {
       return transport.readJson(

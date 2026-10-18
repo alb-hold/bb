@@ -1,7 +1,7 @@
+import { stopProcessGroupLeaderFirst } from "@bb/process-utils";
+import { makeTempDirSync } from "@bb/test-helpers";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
@@ -32,16 +32,16 @@ interface AdvertisedMcpServer {
   env: { name: string; value: string }[];
 }
 
-const children: ChildProcess[] = [];
-const tempDirs: string[] = [];
+const children: { child: ChildProcess; closed: Promise<void> }[] = [];
 const bridgeLines: BridgeLine[] = [];
 let bridgeStderr = "";
 let nextRequestId = 1;
 
-function makeTempDir(prefix: string): string {
-  const dir = mkdtempSync(join(tmpdir(), prefix));
-  tempDirs.push(dir);
-  return dir;
+function trackChild(child: ChildProcess): void {
+  const closed = new Promise<void>((resolve) => {
+    child.once("close", () => resolve());
+  });
+  children.push({ child, closed });
 }
 
 async function waitFor<T>(
@@ -91,7 +91,7 @@ function spawnBridgeLikeTheAgentRuntime(dataDir: string): ChildProcess {
     ],
     { stdio: ["pipe", "pipe", "pipe"] },
   );
-  children.push(bridge);
+  trackChild(bridge);
   bridge.stderr?.on("data", (chunk: Buffer) => {
     bridgeStderr += chunk.toString();
     process.stderr.write(`[bridge] ${chunk.toString()}`);
@@ -205,7 +205,7 @@ async function runMcpInitialize(config: AdvertisedMcpServer): Promise<{
     env,
     stdio: ["pipe", "pipe", "pipe"],
   });
-  children.push(mcp);
+  trackChild(mcp);
   let stderr = "";
   mcp.stderr?.on("data", (chunk: Buffer) => {
     stderr += chunk.toString();
@@ -241,21 +241,25 @@ async function runMcpInitialize(config: AdvertisedMcpServer): Promise<{
   return { exitCode, stderr, stdoutLines };
 }
 
-afterEach(() => {
-  for (const child of children.splice(0)) {
-    child.kill("SIGKILL");
-  }
-  for (const dir of tempDirs.splice(0)) {
-    rmSync(dir, { recursive: true, force: true });
-  }
+afterEach(async () => {
+  await Promise.all(
+    children.splice(0).map(async ({ child, closed }) => {
+      await stopProcessGroupLeaderFirst({
+        child,
+        timeoutMs: 0,
+        killGraceMs: 0,
+      });
+      await closed;
+    }),
+  );
   bridgeLines.length = 0;
   bridgeStderr = "";
 });
 
 describe("bb-bridge MCP server entry point (#1918)", () => {
   it("advertises an MCP server command that answers MCP initialize when the bridge runs under the bootstrap", async () => {
-    const dataDir = makeTempDir("bb-acp-mcp-entry-data-");
-    const workspaceDir = makeTempDir("bb-acp-mcp-entry-ws-");
+    const dataDir = makeTempDirSync("bb-acp-mcp-entry-data-");
+    const workspaceDir = makeTempDirSync("bb-acp-mcp-entry-ws-");
     const bridge = spawnBridgeLikeTheAgentRuntime(dataDir);
 
     const config = await readAdvertisedMcpServer(bridge, workspaceDir);

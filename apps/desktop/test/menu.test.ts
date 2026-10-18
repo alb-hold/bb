@@ -10,10 +10,14 @@ import { Menu } from "electron";
 
 import {
   buildApplicationMenuTemplate,
-  CONNECT_SERVERS_SKIPPED_MENU_LABELS,
   SET_SERVER_URL_MENU_LABEL,
   type InstallApplicationMenuArgs,
 } from "../src/menu.js";
+import { buildDesktopServerChoices } from "../src/server-list.js";
+import {
+  createServerTargetStore,
+  BUILTIN_SERVER_NAME,
+} from "../src/server-target.js";
 
 function menuArgs(
   reloadWindow: InstallApplicationMenuArgs["reloadWindow"],
@@ -32,6 +36,8 @@ function menuArgs(
     connectServersSkipReason: null,
     createNewWindow: () => {},
     isMac: true,
+    showBuiltinServer: true,
+    toggleBuiltinServer: () => {},
     openAbout: () => {},
     openNewTab: () => {},
     openNewThread: () => {},
@@ -39,10 +45,12 @@ function menuArgs(
     openSettings: () => {},
     reopenClosedTab: () => {},
     reloadWindow,
+    zoomFocusedPage: () => {},
     selectServer: () => {},
     serverDaemonLogsMenuEnabled: false,
-    servers: [{ checked: true, id: "builtin", name: "This Mac" }],
+    servers: [{ checked: true, id: "builtin", name: BUILTIN_SERVER_NAME }],
     setServerUrl: () => {},
+    signInToConnect: () => {},
     addServer: () => {},
     ...overrides,
   };
@@ -54,6 +62,21 @@ function findServerSubmenu(
   const windowMenu = template.find((item) => item.label === "Window");
   const windowSubmenu = windowMenu?.submenu as MenuItemConstructorOptions[];
   const serverMenu = windowSubmenu.find((item) => item.label === "Server");
+  return serverMenu?.submenu as MenuItemConstructorOptions[];
+}
+
+function findDesktopSettingsServerSubmenu(
+  template: MenuItemConstructorOptions[],
+): MenuItemConstructorOptions[] {
+  const appSubmenu = template[0]?.submenu as MenuItemConstructorOptions[];
+  const desktopSettingsMenu = appSubmenu.find(
+    (item) => item.label === "Desktop Settings",
+  );
+  const desktopSettingsSubmenu =
+    desktopSettingsMenu?.submenu as MenuItemConstructorOptions[];
+  const serverMenu = desktopSettingsSubmenu.find(
+    (item) => item.label === "Server",
+  );
   return serverMenu?.submenu as MenuItemConstructorOptions[];
 }
 
@@ -116,6 +139,26 @@ describe("application menu", () => {
     expect(Menu.sendActionToFirstResponder).not.toHaveBeenCalled();
   });
 
+  it("routes zoom shortcuts to the focused page's clamped zoom", () => {
+    const zoomFocusedPage = vi.fn();
+    const template = buildApplicationMenuTemplate(
+      menuArgs(vi.fn(), { zoomFocusedPage }),
+    );
+    const viewMenu = template.find((item) => item.label === "View");
+    const submenu = viewMenu?.submenu as MenuItemConstructorOptions[];
+
+    for (const [label, accelerator] of [
+      ["Actual Size", "CommandOrControl+0"],
+      ["Zoom In", "CommandOrControl+Plus"],
+      ["Zoom Out", "CommandOrControl+-"],
+    ]) {
+      const item = submenu.find((entry) => entry.label === label);
+      expect(item?.accelerator).toBe(accelerator);
+      item?.click?.({} as never, undefined, {} as never);
+    }
+    expect(zoomFocusedPage.mock.calls).toEqual([["reset"], ["in"], ["out"]]);
+  });
+
   it("shows reload shortcuts without globally stealing browser commands", () => {
     const reloadWindow = vi.fn();
     const template = buildApplicationMenuTemplate(menuArgs(reloadWindow));
@@ -135,6 +178,46 @@ describe("application menu", () => {
     expect(reloadWindow).toHaveBeenNthCalledWith(2, focusedWindow, true);
   });
 
+  it.each([
+    { selectedId: "builtin", enabled: false },
+    { selectedId: "connect:office", enabled: true },
+    { selectedId: "custom:office", enabled: true },
+  ])(
+    "enables editing only a selected saved or Connect server ($selectedId)",
+    ({ selectedId, enabled }) => {
+      const template = buildApplicationMenuTemplate(
+        menuArgs(() => {}, {
+          servers: [
+            {
+              checked: selectedId === "builtin",
+              id: "builtin",
+              name: BUILTIN_SERVER_NAME,
+            },
+            {
+              checked: selectedId === "connect:office",
+              id: "connect:office",
+              name: "Connect Office",
+            },
+            {
+              checked: selectedId === "custom:office",
+              id: "custom:office",
+              name: "Office",
+            },
+          ],
+        }),
+      );
+      for (const submenu of [
+        findServerSubmenu(template),
+        findDesktopSettingsServerSubmenu(template),
+      ]) {
+        expect(
+          submenu.find((item) => item.label === SET_SERVER_URL_MENU_LABEL)
+            ?.enabled,
+        ).toBe(enabled);
+      }
+    },
+  );
+
   it("builds a Server menu with multiple custom targets and separate add/edit actions", () => {
     const selectServer = vi.fn();
     const setServerUrl = vi.fn();
@@ -143,7 +226,7 @@ describe("application menu", () => {
       menuArgs(() => {}, {
         selectServer,
         servers: [
-          { checked: false, id: "builtin", name: "This Mac" },
+          { checked: false, id: "builtin", name: BUILTIN_SERVER_NAME },
           {
             checked: true,
             id: "custom:https://first.example",
@@ -161,7 +244,7 @@ describe("application menu", () => {
     );
     const serverSubmenu = findServerSubmenu(template);
 
-    expect(serverSubmenu).toHaveLength(6);
+    expect(serverSubmenu).toHaveLength(8);
     expect(
       serverSubmenu.slice(0, 3).map((item) => [item.type, item.checked]),
     ).toEqual([
@@ -188,38 +271,121 @@ describe("application menu", () => {
     expect(setServerUrl).toHaveBeenCalledTimes(1);
   });
 
-  it("explains an empty Connect list with a disabled row when the sync was skipped", () => {
+  it("offers the Server menu under Desktop Settings with Window → Server as an alias", () => {
+    const selectServer = vi.fn();
+    const addServer = vi.fn();
     const template = buildApplicationMenuTemplate(
       menuArgs(() => {}, {
-        connectServersSkipReason: "no-credential",
+        addServer,
+        selectServer,
         servers: [
-          { checked: false, id: "builtin", name: "This Mac" },
+          { checked: true, id: "builtin", name: "This Mac" },
           {
-            checked: true,
-            id: "custom",
-            name: "old-host.tailnet.ts.net:38886",
+            checked: false,
+            id: "custom:https://first.example",
+            name: "first.example",
           },
         ],
       }),
     );
-    const serverSubmenu = findServerSubmenu(template);
+    const desktopSettingsServerSubmenu =
+      findDesktopSettingsServerSubmenu(template);
+    const labels = (items: MenuItemConstructorOptions[]) =>
+      items.map((item) => item.label ?? `<${item.type}>`);
 
-    expect(serverSubmenu.map((item) => item.label ?? `<${item.type}>`)).toEqual(
-      [
-        "This Mac",
-        "old-host.tailnet.ts.net:38886",
-        CONNECT_SERVERS_SKIPPED_MENU_LABELS["no-credential"],
+    expect(labels(desktopSettingsServerSubmenu)).toEqual([
+      "This Mac",
+      "first.example",
+      "<separator>",
+      "Add Server…",
+      SET_SERVER_URL_MENU_LABEL,
+      "<separator>",
+      "Show This Mac",
+    ]);
+    expect(labels(findServerSubmenu(template))).toEqual(
+      labels(desktopSettingsServerSubmenu),
+    );
+    desktopSettingsServerSubmenu[1]?.click?.(
+      {} as never,
+      undefined,
+      {} as never,
+    );
+    desktopSettingsServerSubmenu[3]?.click?.(
+      {} as never,
+      undefined,
+      {} as never,
+    );
+    expect(selectServer).toHaveBeenCalledWith("custom:https://first.example");
+    expect(addServer).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { reason: "no-credential", label: "Sign in to bb Connect…" },
+    { reason: "unauthorized", label: "Sign in to bb Connect again…" },
+  ] as const)(
+    "offers sign-in with the server actions when the sync needs it ($reason)",
+    ({ reason, label }) => {
+      const signInToConnect = vi.fn();
+      const template = buildApplicationMenuTemplate(
+        menuArgs(() => {}, {
+          connectServersSkipReason: reason,
+          servers: [
+            { checked: false, id: "builtin", name: BUILTIN_SERVER_NAME },
+            { checked: true, id: "connect:brsbl", name: "brsbl" },
+          ],
+          signInToConnect,
+        }),
+      );
+      const serverSubmenu = findServerSubmenu(template);
+
+      expect(
+        serverSubmenu.map((item) => item.label ?? `<${item.type}>`),
+      ).toEqual([
+        BUILTIN_SERVER_NAME,
+        "brsbl",
+        "<separator>",
+        label,
+        "Add Server…",
+        SET_SERVER_URL_MENU_LABEL,
+        "<separator>",
+        "Show This Mac",
+      ]);
+      const signIn = serverSubmenu[3];
+      expect(signIn?.enabled).toBeUndefined();
+      expect(signIn?.type).toBeUndefined();
+      signIn?.click?.({} as never, undefined, {} as never);
+      expect(signInToConnect).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(["unavailable", "not-paired", "plugin-disabled"] as const)(
+    "adds no Connect row when sign-in cannot fix the sync ($0)",
+    (reason) => {
+      const template = buildApplicationMenuTemplate(
+        menuArgs(() => {}, {
+          connectServersSkipReason: reason,
+          servers: [
+            { checked: false, id: "builtin", name: BUILTIN_SERVER_NAME },
+            { checked: true, id: "connect:brsbl", name: "brsbl" },
+          ],
+        }),
+      );
+
+      expect(
+        findServerSubmenu(template).map(
+          (item) => item.label ?? `<${item.type}>`,
+        ),
+      ).toEqual([
+        BUILTIN_SERVER_NAME,
+        "brsbl",
         "<separator>",
         "Add Server…",
         SET_SERVER_URL_MENU_LABEL,
-      ],
-    );
-    const note = serverSubmenu[2];
-    expect(note?.enabled).toBe(false);
-    expect(note?.type).toBeUndefined();
-    expect(note?.click).toBeUndefined();
-    expect(note?.label).toMatch(/sign in to bb Connect/u);
-  });
+        "<separator>",
+        "Show This Mac",
+      ]);
+    },
+  );
 
   it("builds a native Linux menu with the Linux DevTools accelerator", () => {
     vi.mocked(Menu.sendActionToFirstResponder).mockClear();
@@ -251,3 +417,102 @@ describe("application menu", () => {
     expect(Menu.sendActionToFirstResponder).not.toHaveBeenCalled();
   });
 });
+
+it.each([true, false])(
+  "exposes the platform visibility checkbox (Mac: %s)",
+  (isMac) => {
+    const toggleBuiltinServer = vi.fn();
+    const template = buildApplicationMenuTemplate(
+      menuArgs(() => {}, {
+        isMac,
+        showBuiltinServer: false,
+        servers: [{ id: "custom:remote", name: "Remote", checked: true }],
+        toggleBuiltinServer,
+      }),
+    );
+    const appMenu = template[0].submenu as MenuItemConstructorOptions[];
+    const settings = appMenu.find((item) => item.label === "Desktop Settings")
+      ?.submenu as MenuItemConstructorOptions[];
+    expect(settings.some((item) => item.type === "checkbox")).toBe(false);
+    for (const submenu of [
+      findDesktopSettingsServerSubmenu(template),
+      findServerSubmenu(template),
+    ]) {
+      const checkbox = submenu.find((item) => item.type === "checkbox");
+      expect(checkbox?.label).toBe(
+        isMac ? "Show This Mac" : "Show This Computer",
+      );
+      expect(checkbox?.checked).toBe(false);
+      expect(checkbox?.enabled).toBe(true);
+      checkbox?.click?.({} as never, undefined, {} as never);
+    }
+    expect(toggleBuiltinServer).toHaveBeenCalledTimes(2);
+  },
+);
+
+it.each([
+  { active: true, alternatives: 1, show: false, custom: false, visible: true },
+  { active: true, alternatives: 0, show: false, custom: false, visible: true },
+  {
+    active: false,
+    alternatives: 1,
+    show: false,
+    custom: false,
+    visible: false,
+  },
+  { active: false, alternatives: 1, show: true, custom: false, visible: true },
+  { active: false, alternatives: 1, show: false, custom: true, visible: false },
+])(
+  "shares native and palette visibility: %j",
+  async ({ active, alternatives, show, custom, visible }) => {
+    const store = createServerTargetStore({
+      storagePath: "/test/server-target.json",
+      fs: {
+        mkdir: async () => undefined,
+        readFile: async () => "",
+        writeFile: async () => undefined,
+      },
+    });
+    const connect = {
+      handle: "laptop",
+      name: "Laptop",
+      url: "https://laptop.getbb.app",
+    };
+    if (alternatives) {
+      if (custom) await store.setCustomServerUrl("https://custom.example");
+      else await store.setConnectServer(connect);
+    }
+    if (active) await store.setTarget("builtin");
+    await store.setShowBuiltinServer(show);
+    const choices = buildDesktopServerChoices(
+      store,
+      alternatives && !custom ? [connect] : [],
+    );
+    expect(choices.some((choice) => choice.id === "builtin")).toBe(visible);
+    expect(choices.filter((choice) => choice.active)).toHaveLength(1);
+    const template = buildApplicationMenuTemplate(
+      menuArgs(() => {}, {
+        showBuiltinServer: show,
+        servers: choices.map(({ id, name, active }) => ({
+          id,
+          name,
+          checked: active,
+        })),
+      }),
+    );
+    for (const items of [
+      findServerSubmenu(template),
+      findDesktopSettingsServerSubmenu(template),
+    ]) {
+      expect(
+        items.filter((item) => item.type === "radio").map((item) => item.label),
+      ).toEqual(choices.map((choice) => choice.name));
+      expect(items.find((item) => item.type === "checkbox")?.enabled).toBe(
+        !active,
+      );
+      expect(items.filter((item) => item.type === "radio")).toHaveLength(
+        alternatives + Number(visible),
+      );
+    }
+  },
+);

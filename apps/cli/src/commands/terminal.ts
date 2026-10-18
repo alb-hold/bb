@@ -1,4 +1,6 @@
 import { Buffer } from "node:buffer";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { Command, Option } from "commander";
 import { TERMINAL_DATA_MAX_BYTES } from "@bb/domain";
 import type { TerminalCreateScope, TerminalListScope } from "@bb/sdk";
@@ -17,6 +19,7 @@ import { resolveMachineHostId, resolveMachineTargetOption } from "./machine.js";
 
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
+const TERMINAL_ATTACH_HEARTBEAT_MS = 15_000;
 const TERMINAL_WAIT_TIMEOUT_EXIT_CODE = 124;
 
 interface TerminalJsonOptions {
@@ -41,6 +44,7 @@ interface TerminalStartOptions
   cols?: string;
   rows?: string;
   title?: string;
+  workingDirectory?: string;
 }
 
 interface TerminalSendOptions extends TerminalJsonOptions {
@@ -56,8 +60,14 @@ interface TerminalResizeOptions extends TerminalJsonOptions {
 
 interface TerminalOutputOptions extends TerminalJsonOptions {
   limitChunks?: string;
+  lines?: string;
   sinceSeq?: string;
   tailBytes?: string;
+}
+
+interface TerminalPipeOptions {
+  command?: string;
+  follow?: boolean;
 }
 
 interface TerminalWaitOptions extends TerminalOutputOptions {
@@ -73,9 +83,17 @@ interface TerminalCloseOptions extends TerminalJsonOptions {
   ifClean?: boolean;
 }
 
-interface TerminalStartResolution {
-  command: string | null;
+interface TerminalNotifyOptions {
+  body: string;
+  title: string;
 }
+
+interface TerminalAttentionOptions extends TerminalJsonOptions {}
+
+type TerminalStartResolution =
+  | { mode: "shell" }
+  | { mode: "command"; command: string }
+  | { mode: "argv"; argv: string[] };
 
 export function registerTerminalCommands(
   program: Command,
@@ -103,6 +121,93 @@ export function registerTerminalCommands(
     }),
   );
 
+  const attention = terminal
+    .command("attention")
+    .description("Inspect and manage uncleared terminal attention");
+
+  attention
+    .command("list")
+    .description("List terminals with uncleared attention")
+    .option("--json", "Print machine-readable JSON output")
+    .action(
+      action(async (opts: TerminalAttentionOptions) => {
+        const sessions =
+          await createCliBbSdk(
+            getUrl(),
+          ).terminals.experimental_attention.list();
+        if (outputJson(opts, { sessions })) return;
+        if (sessions.length === 0) {
+          console.log("Nothing needs attention.");
+          return;
+        }
+        for (const session of sessions) {
+          console.log(
+            `${session.attention?.at ?? 0}\t${session.id}\t${session.title}\t${session.threadId ?? session.environmentId ?? session.hostId}`,
+          );
+        }
+      }),
+    );
+
+  attention
+    .command("next")
+    .description("Print the oldest terminal with uncleared attention")
+    .option("--json", "Print machine-readable JSON output")
+    .action(
+      action(async (opts: TerminalAttentionOptions) => {
+        const session =
+          await createCliBbSdk(
+            getUrl(),
+          ).terminals.experimental_attention.next();
+        if (session === null) {
+          if (outputJson(opts, { session: null })) return;
+          console.log("Nothing needs attention.");
+          return;
+        }
+        if (outputJson(opts, { session })) return;
+        console.log(
+          `${session.id}\t${session.title}\t${session.threadId ?? session.environmentId ?? session.hostId}`,
+        );
+      }),
+    );
+
+  attention
+    .command("clear <terminalId>")
+    .description("Clear attention for a terminal")
+    .option("--json", "Print machine-readable JSON output")
+    .action(
+      action(async (terminalId: string, opts: TerminalAttentionOptions) => {
+        const session = await createCliBbSdk(
+          getUrl(),
+        ).terminals.experimental_attention.clear({ terminalId });
+        if (outputJson(opts, session)) return;
+        console.log(`Cleared attention for terminal ${session.id}`);
+      }),
+    );
+
+  terminal
+    .command("notify")
+    .description("Raise terminal attention from the current bb terminal")
+    .requiredOption("--title <title>", "Notification title")
+    .requiredOption("--body <body>", "Notification body")
+    .action(
+      action(async (opts: TerminalNotifyOptions) => {
+        const terminalId = process.env.BB_TERMINAL_SESSION_ID;
+        if (!terminalId) {
+          throw new CliUsageError({
+            code: "missing_terminal_identity",
+            hint: "Run this command inside a terminal created by bb.",
+            message: "This shell has no bb terminal identity.",
+          });
+        }
+        await createCliBbSdk(getUrl()).terminals.notify({
+          terminalId,
+          title: opts.title,
+          body: opts.body,
+        });
+        console.log(`Attention sent for terminal ${terminalId}`);
+      }),
+    );
+
   addTerminalScopeOptions(
     terminal
       .command("create [command...]")
@@ -115,6 +220,7 @@ export function registerTerminalCommands(
       )
       .option("--cols <n>", "Initial terminal columns")
       .option("--rows <n>", "Initial terminal rows")
+      .option("--working-directory <path>", "Initial shell working directory")
       .option("--attach", "Attach after creating")
       .option("--json", "Print machine-readable JSON output"),
   ).action(
@@ -126,13 +232,13 @@ export function registerTerminalCommands(
       });
       const session = await sdk.terminals.create({
         cols: parsePositiveInteger(opts.cols, DEFAULT_COLS, "--cols"),
+        ...(opts.workingDirectory === undefined
+          ? {}
+          : { cwd: opts.workingDirectory }),
         rows: parsePositiveInteger(opts.rows, DEFAULT_ROWS, "--rows"),
         scope: await resolveTerminalCreateScope(opts, getUrl()),
         title: opts.title,
-        start:
-          resolvedStart.command === null
-            ? { mode: "shell" }
-            : { mode: "command", command: resolvedStart.command },
+        start: resolvedStart,
       });
       if (outputJson(opts, session)) return;
       console.log(`Created terminal ${session.id} (${session.title})`);
@@ -184,7 +290,7 @@ export function registerTerminalCommands(
     .description("Send input to a terminal session")
     .option("--text <text>", "Text to send")
     .option("--stdin", "Read bytes from stdin")
-    .option("--enter", "Append a newline")
+    .option("--enter", "Press Enter after the text")
     .option("--json", "Print machine-readable JSON output")
     .action(
       action(async (terminalId: string, opts: TerminalSendOptions) => {
@@ -229,10 +335,13 @@ export function registerTerminalCommands(
   terminal
     .command("output <terminalId>")
     .alias("read")
-    .description("Print terminal output from daemon scrollback")
+    .description(
+      "Print terminal output; retention survives server restarts and is capped at 64 KiB per terminal, 2 MiB and 128 terminals per machine for 30 minutes",
+    )
     .option("--since-seq <n>", "Only output chunks from this sequence")
     .option("--tail-bytes <n>", "Bound output to the latest N bytes")
     .option("--limit-chunks <n>", "Bound output to the latest N chunks")
+    .option("--lines <n>", "Print the latest N lines")
     .option("--json", "Print machine-readable JSON output")
     .action(
       action(async (terminalId: string, opts: TerminalOutputOptions) => {
@@ -245,6 +354,58 @@ export function registerTerminalCommands(
         writeOutputChunks(output.chunks);
         if (output.status === "exited") {
           console.error(describeTerminalExit(terminalId, output.exitCode));
+        }
+      }),
+    );
+
+  terminal
+    .command("pipe <terminalId>")
+    .description("Stream terminal output until it exits or Ctrl-C")
+    .option("--follow", "Continue streaming new output")
+    .option("--command <command>", "Pipe output into a local command")
+    .action(
+      action(async (terminalId: string, opts: TerminalPipeOptions) => {
+        if (!opts.follow)
+          throw new CliUsageError({
+            code: "missing_follow_option",
+            hint: "Run `bb terminal pipe <id> --follow` to stream output.",
+            message: "terminal pipe requires --follow",
+          });
+        const sdk = createCliBbSdk(getUrl());
+        const controller = new AbortController();
+        const onInterrupt = (): void => controller.abort();
+        process.once("SIGINT", onInterrupt);
+        const child = opts.command
+          ? spawn(opts.command, {
+              shell: true,
+              stdio: ["pipe", "pipe", process.stderr],
+            })
+          : null;
+        child?.stdout?.pipe(process.stdout);
+        try {
+          for await (const chunk of sdk.terminals.experimental_follow({
+            terminalId,
+            signal: controller.signal,
+          })) {
+            if (child?.stdin && !child.stdin.write(chunk)) {
+              await once(child.stdin, "drain");
+            } else if (!child) {
+              process.stdout.write(chunk);
+            }
+          }
+          child?.stdin?.end();
+          if (child)
+            await new Promise<void>((resolve, reject) => {
+              child.once("error", reject);
+              child.once("exit", (code) =>
+                code === 0
+                  ? resolve()
+                  : reject(new Error(`Local command exited with code ${code}`)),
+              );
+            });
+        } finally {
+          process.removeListener("SIGINT", onInterrupt);
+          if (child && !child.killed) child.kill();
         }
       }),
     );
@@ -443,20 +604,12 @@ function resolveTerminalStart(args: {
     if (command.length === 0) {
       throw new Error("--command must not be empty");
     }
-    return { command };
+    return { mode: "command", command };
   }
   if (args.commandParts.length > 0) {
-    return {
-      command: args.commandParts.map(shellQuoteArg).join(" "),
-    };
+    return { mode: "argv", argv: [...args.commandParts] };
   }
-  return { command: null };
-}
-
-function shellQuoteArg(value: string): string {
-  if (value.length === 0) return "''";
-  if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(value)) return value;
-  return `'${value.replaceAll("'", `'"'"'`)}'`;
+  return { mode: "shell" };
 }
 
 function parsePositiveInteger(
@@ -496,12 +649,15 @@ export async function resolveSendData(
           stdin.on("end", () => resolve(Buffer.concat(chunks)));
         });
   return opts.enter
-    ? Buffer.concat([baseData, Buffer.from("\n", "utf8")])
+    ? Buffer.concat([baseData, Buffer.from("\r", "utf8")])
     : baseData;
 }
 
 function terminalOutputQuery(opts: TerminalOutputOptions) {
   return {
+    ...(opts.lines !== undefined
+      ? { lines: parseRequiredPositiveInteger(opts.lines, "--lines") }
+      : {}),
     ...(opts.sinceSeq !== undefined
       ? { sinceSeq: parseNonNegativeInteger(opts.sinceSeq, "--since-seq") }
       : {}),
@@ -574,7 +730,7 @@ function terminalWebsocketUrl(args: {
   return url.href;
 }
 
-async function attachTerminal(args: {
+export async function attachTerminal(args: {
   baseUrl: string;
   terminalId: string;
 }): Promise<void> {
@@ -614,11 +770,16 @@ async function attachTerminal(args: {
       }),
     );
   };
+  let heartbeat: ReturnType<typeof setInterval> | null = null;
   await new Promise<void>((resolve, reject) => {
     socket.onopen = () => {
       process.stdin.setRawMode(true);
       process.stdin.resume();
+      socket.send(JSON.stringify({ type: "visibility", visible: true }));
       onResize();
+      heartbeat = setInterval(() => {
+        socket.send(JSON.stringify({ type: "ping" }));
+      }, TERMINAL_ATTACH_HEARTBEAT_MS);
     };
     socket.onerror = () => reject(new Error("Terminal websocket failed"));
     socket.onclose = () => resolve();
@@ -645,6 +806,7 @@ async function attachTerminal(args: {
     process.stdin.on("data", onInput);
     process.stdout.on("resize", onResize);
   }).finally(() => {
+    if (heartbeat !== null) clearInterval(heartbeat);
     process.stdin.off("data", onInput);
     process.stdout.off("resize", onResize);
     process.stdin.setRawMode(previousRawMode);
@@ -700,9 +862,9 @@ function describeTerminalExit(
 }
 
 function decodeChunks(chunks: readonly { dataBase64: string }[]): string {
-  return chunks
-    .map((chunk) => Buffer.from(chunk.dataBase64, "base64").toString("utf8"))
-    .join("");
+  return Buffer.concat(
+    chunks.map((chunk) => Buffer.from(chunk.dataBase64, "base64")),
+  ).toString("utf8");
 }
 
 async function waitForTerminal(args: {

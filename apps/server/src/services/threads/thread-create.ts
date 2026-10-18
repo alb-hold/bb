@@ -1,22 +1,27 @@
 import { requestThreadStorageDeletion } from "./thread-lifecycle.js";
+import { seedThreadSessionOptionSelections } from "./thread-session-options.js";
 import { assertEnvironmentPathAvailable } from "../environments/path-admission.js";
 import {
+  acquireProjectAttachmentOwnership,
+  createNativeTerminalThread,
+  isNativeTerminalThread,
   markThreadDeleted,
   getEnvironment,
-  getProjectSourceByHost,
   getThread,
 } from "@bb/db";
-import type {
-  ProjectExecutionDefaults,
-  Project,
-  Thread,
-  ThreadOriginKind,
-  ThreadVisibility,
+import { randomUUID } from "node:crypto";
+import {
+  describeSessionOptionConflict,
+  modelSessionOptionConflict,
+  projectAttachmentPaths,
+  type ProjectExecutionDefaults,
+  type Project,
+  type SessionOptionSelections,
+  type Thread,
+  type ThreadOriginKind,
+  type ThreadVisibility,
 } from "@bb/domain";
-import type {
-  AppDeps,
-  LoggedPendingInteractionWorkSessionDeps,
-} from "../../types.js";
+import type { LoggedPendingInteractionWorkSessionDeps } from "../../types.js";
 import { ApiError } from "../../errors.js";
 import { ensureHostSessionReadyForWork } from "../hosts/host-lifecycle.js";
 import { buildExecutionOptions } from "./thread-commands.js";
@@ -29,7 +34,8 @@ import {
   rememberProjectExecutionDefaultsForCreate,
   resolveProjectExecutionDefaultsForCreate,
 } from "./project-execution-defaults.js";
-import { validatePromptAttachmentReferences } from "../projects/attachments.js";
+import { resolvePromptAttachmentReferences } from "../projects/attachments.js";
+import { projectCheckoutPathOnHost } from "../projects/project-workspace.js";
 import {
   appendPluginMentionContext,
   captureUserMessageSentTelemetry,
@@ -39,8 +45,8 @@ import {
   hostIdForEnvironmentIntent,
   type PendingThreadStartContext,
 } from "./dispatch-attempt.js";
-import { setThreadStartupContext } from "@bb/db";
 import { emitPluginThreadDeleted } from "../plugins/plugin-thread-events.js";
+import { configureThreadPlugins } from "./dispatch-hooks.js";
 import {
   createThreadRecord,
   getThreadSafe,
@@ -64,8 +70,14 @@ import {
   type ThreadCreateServiceRequest,
 } from "./thread-create-request.js";
 import { resolveDispatchAuthor } from "./dispatch-author.js";
-import { deriveTitleFallback } from "./title-generation.js";
+import { deriveForkTitle, deriveTitleFallback } from "./title-generation.js";
 import type { ThreadProvisionEnvironmentIntent } from "./thread-startup-store.js";
+import {
+  beginNativeTerminalThreadProvisioning,
+  nativeTerminalLaunchInput,
+  requireNativeTerminalProvider,
+  type NativeTerminalProvider,
+} from "./native-terminal-threads.js";
 import { resolveSystemProviderModels } from "../system/execution-options.js";
 import {
   getEnvironmentProvider,
@@ -73,6 +85,12 @@ import {
 } from "../plugins/plugin-environment-provider-registry.js";
 
 type ThreadCreateDeps = LoggedPendingInteractionWorkSessionDeps;
+
+interface NativeTerminalCreate {
+  provider: NativeTerminalProvider;
+  initialPrompt: string | null;
+  initialImages: string[];
+}
 
 interface CreateProvisioningThreadArgs {
   environmentId: string | null;
@@ -134,6 +152,63 @@ async function loadCatalogDefaultForProvider(
     providerId: args.providerId,
     model: defaultModel.model,
   });
+}
+
+interface ResolveSessionOptionExecutionDefaultsArgs {
+  cwd?: string;
+  executionDefaults: ProjectExecutionDefaults | null;
+  hostId: string | null;
+  providerId: string;
+  requestedModel: string | null;
+  selections: SessionOptionSelections;
+}
+
+async function resolveSessionOptionExecutionDefaults(
+  deps: ThreadCreateDeps,
+  args: ResolveSessionOptionExecutionDefaultsArgs,
+): Promise<ProjectExecutionDefaults | null> {
+  const model = args.requestedModel ?? args.executionDefaults?.model ?? null;
+  if (
+    model === null ||
+    args.hostId === null ||
+    Object.keys(args.selections).length === 0
+  ) {
+    return args.executionDefaults;
+  }
+  const catalog = await resolveSystemProviderModels(deps, {
+    ...(args.cwd !== undefined ? { cwd: args.cwd } : {}),
+    hostId: args.hostId,
+    providerId: args.providerId,
+  });
+  if (catalog.modelLoadError !== null) {
+    return args.executionDefaults;
+  }
+  const chosen = [...catalog.models, ...catalog.selectedOnlyModels].find(
+    (candidate) => candidate.model === model,
+  );
+  const conflict =
+    chosen === undefined
+      ? null
+      : modelSessionOptionConflict(chosen, args.selections);
+  const compatible = catalog.models.filter(
+    (candidate) =>
+      modelSessionOptionConflict(candidate, args.selections) === null,
+  );
+  const replacement =
+    compatible.find((candidate) => candidate.isDefault) ?? compatible[0];
+  if (chosen === undefined || conflict === null || replacement === undefined) {
+    return args.executionDefaults;
+  }
+  if (args.requestedModel !== null) {
+    throw new ApiError(
+      400,
+      "invalid_request",
+      `${chosen.displayName || chosen.model} cannot run with the chosen options: ${describeSessionOptionConflict(conflict)}. ${replacement.displayName || replacement.model} can.`,
+    );
+  }
+  return args.executionDefaults === null
+    ? null
+    : { ...args.executionDefaults, model: replacement.model };
 }
 
 async function resolveCatalogExecutionDefaults(
@@ -242,15 +317,6 @@ function childHostIdForResolvedEnvironment(
   }
 }
 
-function projectCheckoutPathOnHost(
-  deps: Pick<AppDeps, "db">,
-  projectId: string,
-  hostId: string,
-): string | undefined {
-  const source = getProjectSourceByHost(deps.db, projectId, hostId);
-  return source?.type === "local_path" ? source.path : undefined;
-}
-
 function modelCatalogCwdForResolvedEnvironment(
   resolvedEnvironment: ResolvedStableThreadRequestEnvironment,
 ): string | undefined {
@@ -347,28 +413,11 @@ function requireLiveSourceThread(
   return sourceThread;
 }
 
-/**
- * Creates the thread row and hands its first message to the dispatch
- * checkpoint.
- *
- * This is the whole of thread creation's dispatch story now, and it replaced a
- * pair of near-identical functions — one that provisioned immediately and one
- * that queued the first turn — whose only real difference was
- * whether anything was allowed to run yet. That is a question the checkpoint
- * answers, so asking it here as well meant two code paths that had to be kept
- * in agreement about forks, execution defaults, telemetry and cleanup.
- *
- * The row inserts `pending`: created, with its provider resolved, and nothing
- * provisioned. Creation itself is unhooked — it is a cheap row — and admission
- * happens at the first message's attempt. A cleared attempt moves the thread
- * to `starting` and provisions with the message riding along; a queued one
- * leaves the thread exactly where it is, with the start context recorded so a
- * later drain (or a later server) can start it.
- */
 async function createPendingThreadAndAttemptFirstDispatch(
   deps: ThreadCreateDeps,
   args: CreateProvisioningThreadArgs & {
     environmentIntent: ThreadProvisionEnvironmentIntent;
+    nativeTerminal: NativeTerminalCreate | null;
     sendAt: number | undefined;
   },
 ) {
@@ -384,12 +433,61 @@ async function createPendingThreadAndAttemptFirstDispatch(
       sourceThreadId: args.request.sourceThreadId,
     });
   }
+  const startContext: PendingThreadStartContext = {
+    environmentIntent: args.environmentIntent,
+    fork: args.fork?.descriptor ?? null,
+    ...(args.providerInput !== undefined
+      ? { providerInput: args.providerInput }
+      : {}),
+    startedOnBehalfOf: args.request.startedOnBehalfOf,
+    titleProvided: Boolean(args.request.title),
+  };
+  const placementHostId = hostIdForEnvironmentIntent(
+    deps,
+    args.environmentIntent,
+  );
+  if (placementHostId !== null)
+    requireEnvironmentPlacementHost(deps, placementHostId);
   const thread = createThreadRecord(deps, {
     request: args.request,
     environmentId: args.environmentId,
+    startupContext: JSON.stringify({ kind: "pending", ...startContext }),
   });
   let execution: Awaited<ReturnType<typeof buildExecutionOptions>>;
   try {
+    await configureThreadPlugins(
+      thread,
+      args.request.experimental_pluginCreateData,
+    );
+    if (args.nativeTerminal !== null) {
+      createNativeTerminalThread(deps.db, {
+        threadId: thread.id,
+        providerId: thread.providerId,
+        nativeSessionId:
+          args.nativeTerminal.provider.cli.session.kind === "assigned"
+            ? randomUUID()
+            : null,
+        initialPrompt: args.nativeTerminal.initialPrompt,
+        initialImages: args.nativeTerminal.initialImages,
+        model: args.request.model ?? null,
+      });
+      acquireProjectAttachmentOwnership(
+        deps.db,
+        thread.id,
+        projectAttachmentPaths(args.request.input),
+      );
+      beginNativeTerminalThreadProvisioning(deps, {
+        environmentIntent: args.environmentIntent,
+        input: args.request.input,
+        thread,
+        titleProvided: Boolean(args.request.title),
+      });
+      return thread;
+    }
+    seedThreadSessionOptionSelections(deps, {
+      thread,
+      selections: args.request.sessionOptions ?? {},
+    });
     if (
       args.fork !== null &&
       args.fork.historyEndSequence !== null &&
@@ -411,26 +509,6 @@ async function createPendingThreadAndAttemptFirstDispatch(
       args.request,
       executionPlanArgs,
     );
-    const startContext: PendingThreadStartContext = {
-      environmentIntent: args.environmentIntent,
-      fork: args.fork?.descriptor ?? null,
-      ...(args.providerInput !== undefined
-        ? { providerInput: args.providerInput }
-        : {}),
-      startedOnBehalfOf: args.request.startedOnBehalfOf,
-      titleProvided: Boolean(args.request.title),
-    };
-    const placementHostId = hostIdForEnvironmentIntent(
-      deps,
-      args.environmentIntent,
-    );
-    if (placementHostId !== null)
-      requireEnvironmentPlacementHost(deps, placementHostId);
-    setThreadStartupContext(deps.db, {
-      threadId: thread.id,
-      startupContext: JSON.stringify({ kind: "pending", ...startContext }),
-    });
-
     await attemptDispatch(deps, {
       thread,
       payload: {
@@ -581,6 +659,16 @@ export async function createThreadFromRequest(
         sourceThreadId,
       })
     : null;
+  if (
+    sourceThread !== null &&
+    isNativeTerminalThread(deps.db, sourceThread.id)
+  ) {
+    throw new ApiError(
+      409,
+      "native_terminal_thread",
+      "Native terminal threads cannot be forked",
+    );
+  }
   if (originKind !== null && sourceThread !== null) {
     assertValidParentThread(deps, {
       parentThreadId: sourceThread.id,
@@ -628,12 +716,6 @@ export async function createThreadFromRequest(
       );
     }
   }
-  await validatePromptAttachmentReferences({
-    db: deps.db,
-    dataDir: deps.config.dataDir,
-    input: requestInput.input,
-    projectId: requestInput.projectId,
-  });
   await deps.providerRegistry.whenRegistrationsSettled();
   const {
     executionDefaults,
@@ -679,6 +761,7 @@ export async function createThreadFromRequest(
       : {}),
     ...(sourceThread ? { sourceThreadId: sourceThread.id } : {}),
     originKind,
+    parentNotifications: requestInput.parentNotifications ?? "auto",
     pluginMetadata,
     visibility: resolveCreateThreadVisibility({
       parentThread,
@@ -688,6 +771,18 @@ export async function createThreadFromRequest(
     providerId,
     titleFallback: deriveTitleFallback(requestInput.input),
   };
+  if (
+    request.title === undefined &&
+    request.originKind === "fork" &&
+    request.visibility === "visible" &&
+    request.input.every((item) => item.visibility === "agent-only") &&
+    sourceThread !== null
+  ) {
+    const forkTitle = deriveForkTitle(sourceThread);
+    if (forkTitle !== null) {
+      request.title = forkTitle;
+    }
+  }
   const resolvedEnvironment =
     requestedEnvironment.type === "provider"
       ? null
@@ -724,23 +819,39 @@ export async function createThreadFromRequest(
             request.environment.machine.hostId,
           )
         : undefined;
-  const resolvedExecutionDefaults = await resolveCatalogExecutionDefaults(
-    deps,
-    {
-      ...(modelCatalogCwd !== undefined ? { cwd: modelCatalogCwd } : {}),
-      executionDefaults,
-      hostId: childHostId,
-      providerId,
-      providerFallbackCandidates,
-      requestedModel,
-    },
-  );
+  const catalogExecutionDefaults =
+    request.nativeTerminal === true
+      ? null
+      : await resolveCatalogExecutionDefaults(deps, {
+          ...(modelCatalogCwd !== undefined ? { cwd: modelCatalogCwd } : {}),
+          executionDefaults,
+          hostId: childHostId,
+          providerId,
+          providerFallbackCandidates,
+          requestedModel,
+        });
   if (
-    resolvedExecutionDefaults !== null &&
-    resolvedExecutionDefaults.providerId !== request.providerId
+    catalogExecutionDefaults !== null &&
+    catalogExecutionDefaults.providerId !== request.providerId
   ) {
-    request.providerId = resolvedExecutionDefaults.providerId;
+    request.providerId = catalogExecutionDefaults.providerId;
   }
+  const resolvedExecutionDefaults =
+    request.nativeTerminal === true
+      ? null
+      : await resolveSessionOptionExecutionDefaults(deps, {
+          ...(modelCatalogCwd !== undefined ? { cwd: modelCatalogCwd } : {}),
+          executionDefaults: catalogExecutionDefaults,
+          hostId: childHostId,
+          providerId: request.providerId,
+          requestedModel,
+          selections: request.sessionOptions ?? {},
+        });
+
+  const nativeTerminalProvider =
+    request.nativeTerminal === true
+      ? requireNativeTerminalProvider(deps, request.providerId)
+      : null;
 
   const { environmentId, environmentIntent } =
     await resolveThreadEnvironmentPlacement(deps, {
@@ -753,6 +864,25 @@ export async function createThreadFromRequest(
       projectId: request.projectId,
       requestedEnvironment: request.environment,
     });
+  request.input = await resolvePromptAttachmentReferences({
+    db: deps.db,
+    dataDir: deps.config.dataDir,
+    input: request.input,
+    projectId: request.projectId,
+    hostId: hostIdForEnvironmentIntent(deps, environmentIntent),
+  });
+  const nativeTerminal: NativeTerminalCreate | null =
+    nativeTerminalProvider === null
+      ? null
+      : {
+          provider: nativeTerminalProvider,
+          ...nativeTerminalLaunchInput(deps, {
+            hostId: hostIdForEnvironmentIntent(deps, environmentIntent),
+            input: request.input,
+            projectId: request.projectId,
+            provider: nativeTerminalProvider,
+          }),
+        };
 
   const fork = resolveForkPoint(deps, {
     originKind: request.originKind ?? null,
@@ -774,6 +904,7 @@ export async function createThreadFromRequest(
     environmentIntent,
     executionDefaults: resolvedExecutionDefaults,
     fork,
+    nativeTerminal,
     ...(options.providerInput !== undefined
       ? { providerInput: options.providerInput }
       : {}),

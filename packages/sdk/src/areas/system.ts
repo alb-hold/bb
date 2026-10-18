@@ -1,3 +1,4 @@
+import { mobileAppDownloads } from "@bb/domain";
 import type {
   MachineEnvironmentReplace,
   MachineEnvironmentSet,
@@ -7,15 +8,24 @@ import type {
   AppKeybindingOverrides,
   AppSettings,
   AppSettingsUpdate,
+  ExperimentUpdates,
   Experiments,
   UiPreferenceKey,
   UiPreferenceValue,
 } from "@bb/domain";
 import type { ProviderUsageResponse } from "@bb/host-daemon-contract";
 import type {
+  SetAiServiceSelectionRequest,
+  SystemAiServicesResponse,
+  SystemAppUpdateAcknowledgeRequest,
+  SystemAppUpdateApplyRequest,
+  SystemAppUpdateQuery,
+  SystemAppUpdateStatus,
+  SystemCliCommandStatus,
   SystemAttentionResponse,
   SystemConfigReloadResponse,
   SystemConfigResponse,
+  SystemMobileAppReleasesResponse,
   SystemExecutionOptionsQuery,
   SystemExecutionOptionsResponse,
   SystemCliSkillsStatusResponse,
@@ -27,6 +37,9 @@ import type {
   SystemVersionQuery,
   SystemVersionResponse,
   SystemVoiceTranscriptionResponse,
+  RecordTelemetryEventRequest,
+  TestAiServiceRequest,
+  TestAiServiceResponse,
   UiPreferenceResponse,
   UiPreferencesResponse,
 } from "@bb/server-contract";
@@ -49,7 +62,11 @@ export interface SystemExecutionOptionsArgs extends SystemExecutionOptionsQuery 
   signal?: AbortSignal;
 }
 
-export interface SystemUsageLimitsArgs extends SystemUsageLimitsQuery {
+export interface SystemUsageLimitsArgs extends Omit<
+  SystemUsageLimitsQuery,
+  "refresh"
+> {
+  refresh?: boolean;
   signal?: AbortSignal;
 }
 
@@ -57,6 +74,21 @@ export interface SystemVersionArgs {
   force?: boolean;
   signal?: AbortSignal;
 }
+
+export interface SystemAppUpdateArgs {
+  force?: boolean;
+  signal?: AbortSignal;
+}
+
+export type SystemApplyAppUpdateArgs = SystemAppUpdateApplyRequest;
+export type SystemAcknowledgeAppUpdateArgs = SystemAppUpdateAcknowledgeRequest;
+export type SystemAppUpdateStatusResult = SystemAppUpdateStatus;
+
+export interface SystemCliCommandArgs {
+  signal?: AbortSignal;
+}
+
+export type SystemCliCommandStatusResult = SystemCliCommandStatus;
 
 export interface SystemVoiceTranscriptionArgs {
   file: Blob;
@@ -66,6 +98,18 @@ export interface SystemVoiceTranscriptionArgs {
 
 export type SystemAttentionResult = SystemAttentionResponse;
 export type SystemConfigResult = SystemConfigResponse;
+export type SystemAiServicesResult = SystemAiServicesResponse;
+export type SystemSetAiServiceSelectionArgs = SetAiServiceSelectionRequest;
+export type SystemTestAiServiceArgs = TestAiServiceRequest;
+export type SystemTestAiServiceResult = TestAiServiceResponse;
+export type SystemRecordTelemetryEventArgs = RecordTelemetryEventRequest;
+export interface SystemRecordTelemetryEventResult {
+  ok: true;
+}
+
+export interface SystemAiServicesArgs {
+  signal?: AbortSignal;
+}
 export type SystemExecutionOptionsResult = SystemExecutionOptionsResponse;
 export type SystemReloadConfigResult = SystemConfigReloadResponse;
 export type SystemInstallCliSkillsArgs = SystemInstallCliSkillsRequest;
@@ -124,6 +168,7 @@ export interface SystemArea {
   replaceMachineEnvironment(
     input: MachineEnvironmentReplace,
   ): Promise<MachineEnvironmentList>;
+  aiServices(args?: SystemAiServicesArgs): Promise<SystemAiServicesResult>;
   attention(args?: SystemAttentionArgs): Promise<SystemAttentionResult>;
   config(args?: SystemConfigArgs): Promise<SystemConfigResult>;
   executionOptions(
@@ -135,12 +180,25 @@ export interface SystemArea {
   installCliSkills(
     args: SystemInstallCliSkillsArgs,
   ): Promise<SystemInstallCliSkillsResult>;
+  experimental_recordTelemetryEvent(
+    args: SystemRecordTelemetryEventArgs,
+  ): Promise<SystemRecordTelemetryEventResult>;
   reloadConfig(): Promise<SystemReloadConfigResult>;
+  setAiServiceSelection(
+    args: SystemSetAiServiceSelectionArgs,
+  ): Promise<SystemAiServicesResult>;
+  testAiService(
+    args: SystemTestAiServiceArgs,
+  ): Promise<SystemTestAiServiceResult>;
   transcribeVoice(
     args: SystemVoiceTranscriptionArgs,
   ): Promise<SystemVoiceTranscriptionResult>;
   uiPreferences: SystemUiPreferencesArea;
-  updateExperiments(args: Experiments): Promise<SystemUpdateExperimentsResult>;
+  mobileAppDownloads(): typeof mobileAppDownloads;
+  mobileAppReleases(): Promise<SystemMobileAppReleasesResponse>;
+  updateExperiments(
+    args: ExperimentUpdates,
+  ): Promise<SystemUpdateExperimentsResult>;
   updateGeneralSettings(
     args: AppSettingsUpdate,
   ): Promise<SystemUpdateGeneralSettingsResult>;
@@ -152,9 +210,29 @@ export interface SystemArea {
   ): Promise<SystemProviderStatesResult>;
   usageLimits(args?: SystemUsageLimitsArgs): Promise<SystemUsageLimitsResult>;
   version(args?: SystemVersionArgs): Promise<SystemVersionResult>;
+  appUpdate(args?: SystemAppUpdateArgs): Promise<SystemAppUpdateStatusResult>;
+  applyAppUpdate(
+    args: SystemApplyAppUpdateArgs,
+  ): Promise<SystemAppUpdateStatusResult>;
+  acknowledgeAppUpdate(
+    args: SystemAcknowledgeAppUpdateArgs,
+  ): Promise<SystemAppUpdateStatusResult>;
+  experimental_cliCommand(
+    args?: SystemCliCommandArgs,
+  ): Promise<SystemCliCommandStatusResult>;
+  experimental_installCliCommand(): Promise<SystemCliCommandStatusResult>;
+  experimental_removeCliCommand(): Promise<SystemCliCommandStatusResult>;
 }
 
 function versionQuery(args: SystemVersionArgs | undefined): SystemVersionQuery {
+  return args?.force === undefined
+    ? {}
+    : { force: args.force ? "true" : "false" };
+}
+
+function appUpdateQuery(
+  args: SystemAppUpdateArgs | undefined,
+): SystemAppUpdateQuery {
   return args?.force === undefined
     ? {}
     : { force: args.force ? "true" : "false" };
@@ -224,6 +302,24 @@ export function createSystemArea(args: CreateSdkAreaArgs): SystemArea {
         ),
       );
     },
+    async aiServices(input) {
+      return transport.readJson(
+        transport.api.v1.system["ai-services"].$get(
+          {},
+          ...signalRequestArgs(input?.signal),
+        ),
+      );
+    },
+    async setAiServiceSelection(input) {
+      return transport.readJson(
+        transport.api.v1.system["ai-services"].selection.$put({ json: input }),
+      );
+    },
+    async testAiService(input) {
+      return transport.readJson(
+        transport.api.v1.system["ai-services"].test.$post({ json: input }),
+      );
+    },
     async config(input) {
       return transport.readJson(
         transport.api.v1.system.config.$get(
@@ -253,6 +349,11 @@ export function createSystemArea(args: CreateSdkAreaArgs): SystemArea {
         transport.api.v1.system["cli-skills"].install.$post({ json: input }),
       );
     },
+    async experimental_recordTelemetryEvent(input) {
+      return transport.readJson(
+        transport.api.v1.system.telemetry.events.$post({ json: input }),
+      );
+    },
     async reloadConfig() {
       return transport.readJson(transport.api.v1.system.config.reload.$post());
     },
@@ -274,6 +375,14 @@ export function createSystemArea(args: CreateSdkAreaArgs): SystemArea {
       return systemVoiceTranscriptionResponseSchema.parse(
         await response.json(),
       );
+    },
+    async mobileAppReleases() {
+      return transport.readJson(
+        transport.api.v1.system["mobile-app-releases"].$get(),
+      );
+    },
+    mobileAppDownloads() {
+      return { ...mobileAppDownloads };
     },
     async updateExperiments(input) {
       return transport.readJson(
@@ -310,6 +419,12 @@ export function createSystemArea(args: CreateSdkAreaArgs): SystemArea {
             query: {
               hostId: input.hostId,
               providerId: input.providerId,
+              refresh:
+                input.refresh === undefined
+                  ? undefined
+                  : input.refresh
+                    ? "true"
+                    : "false",
             },
           },
           ...signalRequestArgs(input.signal),
@@ -322,6 +437,44 @@ export function createSystemArea(args: CreateSdkAreaArgs): SystemArea {
           { query: versionQuery(input) },
           ...signalRequestArgs(input?.signal),
         ),
+      );
+    },
+    async appUpdate(input) {
+      return transport.readJson(
+        transport.api.v1.system["app-update"].$get(
+          { query: appUpdateQuery(input) },
+          ...signalRequestArgs(input?.signal),
+        ),
+      );
+    },
+    async applyAppUpdate(input) {
+      return transport.readJson(
+        transport.api.v1.system["app-update"].apply.$post({ json: input }),
+      );
+    },
+    async acknowledgeAppUpdate(input) {
+      return transport.readJson(
+        transport.api.v1.system["app-update"].acknowledge.$post({
+          json: input,
+        }),
+      );
+    },
+    async experimental_cliCommand(input) {
+      return transport.readJson(
+        transport.api.v1.system["cli-command"].$get(
+          {},
+          ...signalRequestArgs(input?.signal),
+        ),
+      );
+    },
+    async experimental_installCliCommand() {
+      return transport.readJson(
+        transport.api.v1.system["cli-command"].install.$post({}),
+      );
+    },
+    async experimental_removeCliCommand() {
+      return transport.readJson(
+        transport.api.v1.system["cli-command"].remove.$post({}),
       );
     },
   };

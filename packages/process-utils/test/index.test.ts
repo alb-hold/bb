@@ -1,6 +1,6 @@
 import { once } from "node:events";
 import { existsSync, mkdtempSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import {
@@ -255,25 +255,28 @@ describe("process utils", () => {
   });
 
   it("resolves paths that stay within the configured root", () => {
+    const rootPath = join(tmpdir(), "root");
+    const candidatePath = join(rootPath, "child", "file.txt");
     expect(
       resolveContainedPath({
-        rootPath: "/tmp/root",
-        candidatePath: "/tmp/root/child/file.txt",
+        rootPath,
+        candidatePath,
       }),
-    ).toBe("/tmp/root/child/file.txt");
+    ).toBe(resolve(candidatePath));
   });
 
   it("rejects root and escaped paths", () => {
+    const rootPath = join(tmpdir(), "root");
     expect(
       resolveContainedPath({
-        rootPath: "/tmp/root",
-        candidatePath: "/tmp/root",
+        rootPath,
+        candidatePath: rootPath,
       }),
     ).toBeNull();
     expect(
       resolveContainedPath({
-        rootPath: "/tmp/root",
-        candidatePath: "/tmp/root/../escape",
+        rootPath,
+        candidatePath: join(rootPath, "..", "escape"),
       }),
     ).toBeNull();
   });
@@ -296,6 +299,29 @@ describe("process utils", () => {
       PATH: "/bin",
     });
     expect("SKIP_ME" in sanitizedEnv).toBe(false);
+  });
+
+  it("drops the session markers of an agent that launched bb", () => {
+    const env: NodeJS.ProcessEnv = {
+      ANTHROPIC_API_KEY: "kept",
+      CLAUDECODE: "1",
+      CLAUDE_CODE_CHILD_SESSION: "1",
+      CLAUDE_CODE_ENTRYPOINT: "cli",
+      CLAUDE_CODE_EXECPATH: "/usr/local/bin/claude",
+      CLAUDE_CODE_MESSAGING_SOCKET: "/tmp/agent.sock",
+      CLAUDE_CODE_MESSAGING_TOKEN: "agent-token",
+      CLAUDE_CODE_SESSION_ATTENDED: "1",
+      CLAUDE_CODE_SESSION_ID: "outer-session",
+      CLAUDE_CODE_USE_BEDROCK: "1",
+      CLAUDE_PID: "4242",
+      PATH: "/bin",
+    };
+
+    expect(sanitizeInheritedChildProcessEnv({ env })).toEqual({
+      ANTHROPIC_API_KEY: "kept",
+      CLAUDE_CODE_USE_BEDROCK: "1",
+      PATH: "/bin",
+    });
   });
 
   it("keeps provider credentials a nested bb server needs and drops the pool marker", () => {

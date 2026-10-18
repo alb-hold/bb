@@ -42,6 +42,7 @@
   --color-destructive-foreground: var(--destructive-foreground);
   --color-destructive-text: var(--destructive-text);
   --color-attention: var(--attention);
+  --color-attention-foreground: var(--attention-foreground);
   --color-warning: var(--warning);
   --color-warning-text: var(--warning-text);
   --color-success: var(--success);
@@ -83,7 +84,6 @@
   --color-pill-surface-border: var(--pill-surface-border);
   --color-pill-surface-selected-border: var(--pill-surface-selected-border);
   --color-sidebar-search-match: var(--sidebar-search-match);
-  --color-sidebar-search-match-border: var(--sidebar-search-match-border);
   --color-shadow-color: var(--shadow-color);
   /* iOS inset-grouped lists (src/theme/mobile-overrides.css): the page behind
      the cards and the cards themselves. */

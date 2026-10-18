@@ -2,8 +2,8 @@ import { useCallback, useMemo, useState } from "react";
 import type { TypeaheadConfig } from "@/components/promptbox/PromptBoxInternal";
 import type { PromptMentionLinkResolver } from "@/components/promptbox/editor/prompt-mention-link";
 import type { PromptBoxAction } from "@/components/promptbox/PromptBoxActionsMenu";
-import { withAppPromptActions } from "@/components/promptbox/PromptBoxActionsMenu";
 import type { ProviderComposerAction } from "@bb/domain";
+import type { ProviderCommand } from "@bb/server-contract";
 import { buildProviderPromptActionProps } from "@bb/client-core";
 import { useCommandSuggestions } from "@/hooks/useCommandSuggestions";
 import { usePromptMentions } from "@/hooks/usePromptMentions";
@@ -18,6 +18,7 @@ interface UseComposerTypeaheadArgs {
   selectedProviderComposerActions:
     | readonly ProviderComposerAction[]
     | undefined;
+  threadProviderCommands?: readonly ProviderCommand[] | null;
   resolveMentionLink: PromptMentionLinkResolver;
 }
 
@@ -34,6 +35,7 @@ export function useComposerTypeahead({
   environmentId,
   currentThreadId,
   selectedProviderComposerActions,
+  threadProviderCommands,
   resolveMentionLink,
 }: UseComposerTypeaheadArgs): UseComposerTypeaheadResult {
   const promptMentions = usePromptMentions(mentionsProjectId ?? projectId, {
@@ -53,10 +55,7 @@ export function useComposerTypeahead({
     () => buildProviderPromptActionProps(selectedProviderComposerActions ?? []),
     [selectedProviderComposerActions],
   );
-  const promptActions = useMemo(
-    () => withAppPromptActions(providerPromptActions.promptActions),
-    [providerPromptActions.promptActions],
-  );
+  const { promptActions } = providerPromptActions;
   const commandSuggestions = useCommandSuggestions({
     projectId,
     providerId,
@@ -64,6 +63,7 @@ export function useComposerTypeahead({
     skillsTriggers: providerPromptActions.skillsTriggers,
     activeTrigger: commandState.trigger,
     promptActions,
+    threadProviderCommands: threadProviderCommands ?? null,
     environmentId,
     query: commandState.query,
     composerFocused: hasComposerFocused,
@@ -75,6 +75,7 @@ export function useComposerTypeahead({
         triggers: promptMentions.triggers,
         results: promptMentions.results,
         isLoading: promptMentions.isLoading,
+        isRefreshing: promptMentions.isRefreshing,
         isError: promptMentions.isError,
         onQueryChange: promptMentions.setQuery,
         resolveLink: resolveMentionLink,
@@ -102,6 +103,7 @@ export function useComposerTypeahead({
       handleEditorFocus,
       promptMentions.isError,
       promptMentions.isLoading,
+      promptMentions.isRefreshing,
       promptMentions.setQuery,
       promptMentions.results,
       promptMentions.triggers,

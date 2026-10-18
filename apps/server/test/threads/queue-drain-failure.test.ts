@@ -68,10 +68,14 @@ function seedQueuedRow(
   return { host, thread, row };
 }
 
-function reread(harness: TestAppHarness, queuedMessageId: string) {
+function rereadRow(harness: TestAppHarness, queuedMessageId: string) {
   const row = getQueuedThreadMessage(harness.db, queuedMessageId);
   if (row === null) throw new Error("the queued row vanished");
-  return toThreadQueuedMessage(row);
+  return row;
+}
+
+function reread(harness: TestAppHarness, queuedMessageId: string) {
+  return toThreadQueuedMessage(rereadRow(harness, queuedMessageId));
 }
 
 describe("host-connected queue dispatch", () => {
@@ -88,6 +92,7 @@ describe("host-connected queue dispatch", () => {
       for (const seeded of [away, otherAway]) {
         recordQueuedMessageDrainFailure(harness.deps, {
           error: new ApiError(502, "host_unavailable", "Host is not connected"),
+          now: Date.now(),
           row: seeded.row,
           thread: seeded.thread,
         });
@@ -121,10 +126,13 @@ describe("host-connected queue dispatch", () => {
 });
 
 describe("recordQueuedMessageDrainFailure", () => {
-  it("does not automatically re-attempt a terminally failed row", async () => {
+  it("hides a failed row from the wakes that are not its booked retry", async () => {
     await withTestHarness(async (harness) => {
       let attempts = 0;
-      const registry: HookRegistry = { "message.dispatch": [] };
+      const registry: HookRegistry = {
+        "experimental_thread.configure": [],
+        "message.dispatch": [],
+      };
       registry["message.dispatch"].push({
         pluginId: "rejector",
         handler: () => {
@@ -178,7 +186,10 @@ describe("recordQueuedMessageDrainFailure", () => {
 
   it("records a terminal failure from the turn-started wake", async () => {
     await withTestHarness(async (harness) => {
-      const registry: HookRegistry = { "message.dispatch": [] };
+      const registry: HookRegistry = {
+        "experimental_thread.configure": [],
+        "message.dispatch": [],
+      };
       registry["message.dispatch"].push({
         pluginId: "rejector",
         handler: () =>
@@ -251,6 +262,7 @@ describe("recordQueuedMessageDrainFailure", () => {
 
       recordQueuedMessageDrainFailure(harness.deps, {
         error: new ApiError(502, "host_unavailable", "Host is not connected"),
+        now: Date.now(),
         row,
         thread,
       });
@@ -276,6 +288,7 @@ describe("recordQueuedMessageDrainFailure", () => {
 
       recordQueuedMessageDrainFailure(harness.deps, {
         error: new ApiError(409, "thread_not_writable", "Thread is archived"),
+        now: Date.now(),
         row,
         thread,
       });
@@ -297,12 +310,15 @@ describe("recordQueuedMessageDrainFailure", () => {
 
       recordQueuedMessageDrainFailure(harness.deps, {
         error: new ApiError(409, "thread_not_writable", "Thread is archived"),
+        now: Date.now(),
         row,
         thread,
       });
 
       expect(reread(harness, row.id).failureReason).toBeNull();
-      expect(getQueuedMessageDispatchRetry(harness.db, row.id)?.attempt).toBe(1);
+      expect(getQueuedMessageDispatchRetry(harness.db, row.id)?.attempt).toBe(
+        1,
+      );
     });
   });
 
@@ -313,11 +329,16 @@ describe("recordQueuedMessageDrainFailure", () => {
         hostName: "M4",
       });
 
-      for (let attempt = 1; attempt <= QUEUED_MESSAGE_DISPATCH_MAX_ATTEMPTS; attempt += 1) {
+      for (
+        let attempt = 1;
+        attempt <= QUEUED_MESSAGE_DISPATCH_MAX_ATTEMPTS;
+        attempt += 1
+      ) {
         recordQueuedMessageDrainFailure(harness.deps, {
           error: new Error(
             "Cannot read properties of undefined (reading 'id')",
           ),
+          now: Date.now(),
           row,
           thread,
         });
@@ -340,10 +361,13 @@ describe("recordQueuedMessageDrainFailure", () => {
         id: row.id,
         threadId: row.threadId,
         failureReason: "Thread is archived",
+        now: Date.now(),
+        retryDelaysMs: [],
       });
 
       recordQueuedMessageDrainFailure(harness.deps, {
         error: new ApiError(502, "host_unavailable", "Host is not connected"),
+        now: Date.now(),
         row,
         thread,
       });

@@ -7,6 +7,7 @@ import {
   jsonRpcEnvelopeSchema,
 } from "@get-bb/plugin-sdk/provider-bridge";
 import { z } from "zod";
+import { codexAsyncQuestionSchema } from "./extension-kinds.js";
 import type { CodexErrorInfo as GeneratedCodexErrorInfo } from "./generated/codex-app-server/schema/v2/CodexErrorInfo.js";
 
 const codexTurnStatusSchema = z.enum([
@@ -22,6 +23,7 @@ const codexItemStatusSchema = z.enum([
   "completed",
   "failed",
   "declined",
+  "interrupted",
 ]);
 export type CodexItemStatus = z.infer<typeof codexItemStatusSchema>;
 
@@ -32,11 +34,15 @@ const codexPlanStepStatusSchema = z.enum([
   "failed",
 ]);
 
-const codexThreadGoalStatusSchema = z.enum([
-  "active",
-  "paused",
-  "budgetLimited",
-  "complete",
+const codexThreadGoalStatusSchema = z.union([
+  z.enum(["active", "paused", "budgetLimited", "complete"]),
+  z
+    .string()
+    .transform((status) =>
+      status === "usageLimited"
+        ? ("budgetLimited" as const)
+        : ("paused" as const),
+    ),
 ]);
 
 const codexThreadGoalSchema = z
@@ -94,6 +100,7 @@ const codexToolReferenceStatusSchema = z.enum([
   "completed",
   "failed",
   "declined",
+  "interrupted",
 ]);
 
 const codexFileChangeKindSchema = z.discriminatedUnion("type", [
@@ -323,6 +330,32 @@ export const codexPermissionsRequestApprovalParamsSchema = z.object({
   permissions: codexRequestPermissionsSchema,
 });
 
+const codexUserInputQuestionSchema = z
+  .object({
+    id: z.string(),
+    header: z.string(),
+    question: z.string(),
+    isOther: z.boolean().default(false),
+    isSecret: z.boolean().default(false),
+    options: z
+      .array(z.object({ label: z.string(), description: z.string() }))
+      .nullable()
+      .default(null),
+  })
+  .passthrough();
+export type CodexUserInputQuestion = z.infer<
+  typeof codexUserInputQuestionSchema
+>;
+
+export const codexToolRequestUserInputParamsSchema = z
+  .object({
+    threadId: z.string(),
+    turnId: z.string(),
+    itemId: z.string(),
+    questions: z.array(codexUserInputQuestionSchema),
+  })
+  .passthrough();
+
 const codexThreadItemEnvelopeSchema = z
   .object({
     type: z.string(),
@@ -342,6 +375,13 @@ export const codexSubAgentActivityItemSchema = z
 export type CodexSubAgentActivityItem = z.infer<
   typeof codexSubAgentActivityItemSchema
 >;
+
+export const codexAsyncQuestionItemSchema = z.object({
+  type: z.literal("agentMessage"),
+  id: z.string().min(1),
+  delivery: z.literal("async"),
+  questions: z.array(codexAsyncQuestionSchema).min(1),
+});
 
 export const codexHandledThreadItemSchema = z.discriminatedUnion("type", [
   z
@@ -502,9 +542,12 @@ const codexErrorInfoSchema = z.union([
   z.literal("contextWindowExceeded"),
   z.literal("sessionBudgetExceeded"),
   z.literal("usageLimitExceeded"),
+  z.literal("rateLimitExceeded"),
+  z.literal("flexUnavailable"),
   z.literal("serverOverloaded"),
   z.literal("cyberPolicy"),
   z.literal("misalignmentPolicyViolation"),
+  z.literal("tooManyDenials"),
   z.object({ httpConnectionFailed: codexErrorHttpStatusSchema }),
   z.object({ responseStreamConnectionFailed: codexErrorHttpStatusSchema }),
   z.literal("internalServerError"),
@@ -531,10 +574,22 @@ const codexErrorInfoSchemaMatchesGenerated: GeneratedCodexErrorInfo extends Code
   : false = true;
 void codexErrorInfoSchemaMatchesGenerated;
 
+const unrecognizedCodexErrorInfoSchema = z
+  .union([z.string(), z.record(z.string(), z.unknown())])
+  .transform((raw) => ({
+    unrecognized:
+      typeof raw === "string" ? raw : (Object.keys(raw)[0] ?? "unknown"),
+  }));
+const tolerantCodexErrorInfoSchema = z.union([
+  codexErrorInfoSchema,
+  unrecognizedCodexErrorInfoSchema,
+]);
+export type CodexParsedErrorInfo = z.infer<typeof tolerantCodexErrorInfoSchema>;
+
 const codexTurnErrorSchema = z
   .object({
     message: z.string(),
-    codexErrorInfo: codexErrorInfoSchema.nullish(),
+    codexErrorInfo: tolerantCodexErrorInfoSchema.nullish(),
     additionalDetails: z.string().nullish(),
   })
   .passthrough();

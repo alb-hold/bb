@@ -15,6 +15,8 @@ import {
 } from "@get-bb/plugin-sdk/provider-bridge";
 import { z } from "zod";
 
+const USER_DECLINED_ANSWER = "The user declined to answer this question.";
+
 export const claudeInteractionOutcomeSchema = z.union([
   approvalInteractionOutcomeSchema,
   userQuestionInteractionOutcomeSchema,
@@ -25,11 +27,13 @@ export type ClaudeInteractionOutcome =
 import {
   buildClaudePlanRejectionMessage,
   buildClaudeSessionPermissionUpdates,
+  CLAUDE_BASH_TOOL_NAME,
   CLAUDE_EXIT_PLAN_MODE_TOOL_NAME,
   claudeExitPlanModeInputSchema,
   isClaudeConcreteFileChangeToolName,
   type ClaudeInteractiveResponse,
   type ClaudePermissionRequestApprovalParams,
+  type ClaudePermissionRule,
   type ClaudeUserQuestion,
   type ClaudeUserQuestionOutput,
   type ClaudeUserQuestionRequestParams,
@@ -40,13 +44,30 @@ import {
   parseClaudeBashCommand,
 } from "./tool-classification.js";
 
+interface ClaudeSessionRulesArgs {
+  permissions: PendingInteractionGrantedPermissionProfile;
+  suggestedRules: ClaudePermissionRule[];
+  toolName: string | null;
+}
+
+function getClaudeSessionRules(
+  args: ClaudeSessionRulesArgs,
+): ClaudePermissionRule[] {
+  if (args.toolName === CLAUDE_BASH_TOOL_NAME) {
+    return args.suggestedRules;
+  }
+  return args.toolName !== null && args.permissions.network?.enabled === true
+    ? [{ toolName: args.toolName }]
+    : [];
+}
+
 function hasClaudeSessionPermissionUpdate(
   args: ClaudePermissionRequestApprovalParams,
 ): boolean {
   return (
     buildClaudeSessionPermissionUpdates({
       permissions: args.permissions,
-      toolName: args.toolName,
+      rules: getClaudeSessionRules(args),
     }) !== undefined
   );
 }
@@ -77,7 +98,7 @@ function buildClaudeApprovalSubject(
     }
   }
 
-  if (args.toolName === "Bash") {
+  if (args.toolName === CLAUDE_BASH_TOOL_NAME) {
     const bashCommand = parseClaudeBashCommand(args.input);
     if (bashCommand) {
       return {
@@ -189,9 +210,7 @@ function buildClaudeUserQuestionAnswerText(
 ): string {
   const answer = resolution.answers[question.id];
   if (!answer) {
-    throw new ProviderResponseEncodeError(
-      `Missing answer for user question '${question.id}'`,
-    );
+    return USER_DECLINED_ANSWER;
   }
   const options = question.options ?? [];
   const selectedLabels = answer.selected.map((selectedValue) => {
@@ -205,18 +224,16 @@ function buildClaudeUserQuestionAnswerText(
     }
     return option.label;
   });
+  const freeText =
+    answer.freeText?.trim().length === 0 ? undefined : answer.freeText;
   if (selectedLabels.length > 0) {
     const selectedText = selectedLabels.join(", ");
-    return answer.freeText
-      ? `${selectedText}; ${answer.freeText}`
-      : selectedText;
+    return freeText ? `${selectedText}; ${freeText}` : selectedText;
   }
-  if (answer.freeText) {
-    return answer.freeText;
+  if (freeText) {
+    return freeText;
   }
-  throw new ProviderResponseEncodeError(
-    `Answer for user question '${question.id}' is empty`,
-  );
+  return USER_DECLINED_ANSWER;
 }
 
 function buildClaudeUserQuestionAnnotations(
@@ -284,7 +301,7 @@ function getClaudePermissionUpdateToolName(
 ): string | null {
   switch (payload.subject.kind) {
     case "command":
-      return "Bash";
+      return CLAUDE_BASH_TOOL_NAME;
     case "file_change":
       return null;
     case "permission_grant":
@@ -300,6 +317,7 @@ function getClaudePermissionUpdateToolName(
 
 export function buildClaudeInteractiveResponse(
   args: ClaudeInteractionOutcome,
+  suggestedRules: ClaudePermissionRule[],
 ): ClaudeInteractiveResponse {
   if (!isApprovalInteractionOutcome(args)) {
     return {
@@ -332,11 +350,16 @@ export function buildClaudeInteractiveResponse(
     };
   }
 
+  const permissions = resolveClaudeGrantedPermissions(
+    args.resolution.grantedPermissions,
+  );
   const updatedPermissions = buildClaudeSessionPermissionUpdates({
-    permissions: resolveClaudeGrantedPermissions(
-      args.resolution.grantedPermissions,
-    ),
-    toolName: getClaudePermissionUpdateToolName(args.payload),
+    permissions,
+    rules: getClaudeSessionRules({
+      permissions,
+      suggestedRules,
+      toolName: getClaudePermissionUpdateToolName(args.payload),
+    }),
   });
 
   return {

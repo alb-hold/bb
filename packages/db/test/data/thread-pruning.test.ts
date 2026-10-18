@@ -1,14 +1,24 @@
+import { markThreadPruningWork } from "../../src/data/thread-pruning-work.js";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { createConnection } from "../../src/connection.js";
-import { events, threadPruningCursors, threads } from "../../src/schema.js";
+import {
+  events,
+  threadPruningCursors,
+  threadPruningWork,
+  threads,
+} from "../../src/schema.js";
 import { noopNotifier } from "../../src/notifier.js";
 import { upsertHost } from "../../src/data/hosts.js";
 import { createProject } from "../../src/data/projects.js";
-import { createThread } from "../../src/data/threads.js";
+import {
+  archiveThread,
+  createThread,
+  unarchiveThread,
+} from "../../src/data/threads.js";
 import {
   advanceThreadPruning,
   getNextThreadPruningPolicy,
@@ -17,17 +27,16 @@ import {
 import type { ThreadPruningPolicy } from "../../src/data/thread-pruning.js";
 import {
   appendDaemonEventsInTransaction,
-  pruneResolvedItemDeltas,
-  pruneBackgroundTaskProgressEvents,
   getHighWaterMarks,
   deleteThreadEventSuffixInTransaction,
   getLastStoredProviderThreadId,
   getLatestStoredRateLimitsEvent,
   listThreadTurnInterruptionEventStates,
 } from "../../src/data/events.js";
+import { advanceLiveEventPruning } from "../../src/data/resolved-item-pruning.js";
 import { getThreadEventRewriteGeneration } from "../../src/data/event-rewrite-generation.js";
 import { THREAD_CONTEXT_CLEAR_OPERATION, turnScope } from "@bb/domain";
-import { createMigratedConnection } from "../helpers/migrated-connection.js";
+import { createMigratedConnection } from "../../src/testing.js";
 
 function setup() {
   const db = createMigratedConnection();
@@ -63,6 +72,7 @@ function seed(
       ...values,
     })
     .run();
+  markThreadPruningWork(f.db, [f.thread.id]);
 }
 function seedWindow(
   f: Fixture,
@@ -99,7 +109,331 @@ function sequences(f: Fixture) {
     .map((r) => r.sequence);
 }
 
+type LegacyProgressFixture = {
+  sequence: number;
+  itemId: string;
+  itemKind: (typeof events.$inferInsert)["itemKind"];
+  turnId: string;
+};
+
+type LegacyPassBudget = number | "unlimited";
+
+function legacyReferencePrunedIds(
+  f: Fixture,
+  passBudget: LegacyPassBudget = "unlimited",
+  carryCursorAcrossCandidates = false,
+) {
+  const allProgress = f.db.all<{
+    id: string;
+    sequence: number;
+    itemId: string | null;
+  }>(sql`SELECT id, sequence, item_id AS itemId
+    FROM events INDEXED BY events_thread_type_sequence_idx
+    WHERE thread_id = ${f.thread.id}
+      AND type = 'item/backgroundTask/progress'
+    ORDER BY sequence`);
+  const upperSequence = f.db.get<{ sequence: number }>(sql`SELECT sequence
+    FROM events WHERE thread_id = ${f.thread.id}
+    ORDER BY sequence DESC LIMIT 1`)?.sequence ?? 0;
+  const passLimit =
+    passBudget === "unlimited" ? 100_000 : passBudget + 1;
+  const pruned = new Set<string>();
+  let cursorSequence = 0;
+  let probeEventId: string | null = null;
+  let probeSequence = 0;
+  let probePhase = 0;
+  for (let pass = 0; pass < 20_000; pass++) {
+    const activeAtPassStart = allProgress.filter(
+      (row) => !pruned.has(row.id),
+    );
+    const candidates = activeAtPassStart
+      .filter(
+        (row) =>
+          row.itemId !== null &&
+          row.sequence > cursorSequence &&
+          row.sequence <= upperSequence,
+      )
+      .slice(0, passLimit);
+    if (candidates.length === 0) return pruned;
+    let remaining = passLimit;
+    let processed = 0;
+    let sequence = 0;
+    const discardedThisPass = new Set<string>();
+    for (const candidate of candidates) {
+      if (remaining <= 0) break;
+      remaining -= 1;
+      if (probeEventId !== candidate.id) {
+        if (!carryCursorAcrossCandidates) {
+          probeEventId = null;
+          probeSequence = 0;
+          probePhase = 0;
+        }
+        probeEventId = candidate.id;
+      }
+      let finished = false;
+      while (!finished && remaining > 0) {
+        const limit = Math.min(remaining, probeSequence === 0 ? 1 : 64);
+        const support: {
+          id: string;
+          sequence: number;
+          type?: string;
+          itemId?: string | null;
+        }[] =
+          probePhase === 0
+            ? f.db.all<{ id: string; sequence: number; type: string }>(sql`
+                SELECT id, sequence, type
+                FROM events INDEXED BY events_item_lifecycle_thread_item_sequence_idx
+                WHERE thread_id = ${f.thread.id}
+                  AND sequence > ${probeSequence}
+                  AND item_id = ${candidate.itemId}
+                  AND type IN ('item/started', 'item/completed', 'item/backgroundTask/completed')
+                ORDER BY sequence LIMIT ${limit}`)
+            : f.db.all<{
+                id: string;
+                sequence: number;
+                itemId: string | null;
+              }>(sql`SELECT id, sequence, item_id AS itemId
+                FROM events INDEXED BY events_thread_type_sequence_idx
+                WHERE thread_id = ${f.thread.id}
+                  AND sequence > ${Math.max(candidate.sequence, probeSequence)}
+                  AND type = 'item/backgroundTask/progress'
+                ORDER BY sequence LIMIT ${limit}`);
+        remaining -= Math.max(1, support.length);
+        const match =
+          probePhase === 0
+            ? support.find(
+                (row) => row.type === "item/backgroundTask/completed",
+              )
+            : support.find(
+                (row) =>
+                  "itemId" in row && row.itemId === candidate.itemId,
+              );
+        if (match) {
+          discardedThisPass.add(candidate.id);
+          finished = true;
+        } else if (support.length < limit) {
+          if (probePhase === 0) {
+            probePhase = 1;
+            probeSequence = 0;
+          } else finished = true;
+        } else {
+          const last = support.at(-1);
+          if (!last) throw new Error("Missing legacy reference cursor");
+          probeSequence = last.sequence;
+        }
+      }
+      if (!finished) break;
+      sequence = candidate.sequence;
+      processed += 1;
+      if (!carryCursorAcrossCandidates) {
+        probeEventId = null;
+        probeSequence = 0;
+        probePhase = 0;
+      }
+    }
+    for (const id of discardedThisPass) pruned.add(id);
+    if (sequence > 0) cursorSequence = sequence;
+    if (
+      processed === candidates.length &&
+      (candidates.length < passLimit || cursorSequence >= upperSequence)
+    )
+      return pruned;
+  }
+  throw new Error("Legacy pruning reference did not finish");
+}
+
+function seedLegacyParityFixture(
+  f: Fixture,
+  rows: readonly LegacyProgressFixture[],
+) {
+  f.db.transaction(() => {
+    for (const row of rows)
+      seed(f, row.sequence, {
+        id: `legacy-${row.sequence}`,
+        type: "item/backgroundTask/progress",
+        itemId: row.itemId,
+        itemKind: row.itemKind,
+        turnId: row.turnId,
+      });
+    seed(f, Math.max(...rows.map((row) => row.sequence)) + 1, {
+      type: "turn/completed",
+    });
+  });
+
+}
+
+function readProgressIds(f: Fixture) {
+  return f.db.all<{ id: string }>(sql`SELECT id FROM events
+    WHERE thread_id = ${f.thread.id}
+      AND type = 'item/backgroundTask/progress'
+      AND item_id IS NOT NULL`).map((row) => row.id);
+}
+
+function driveLivePruning(f: Fixture, passBudget: LegacyPassBudget) {
+  const passLimit =
+    passBudget === "unlimited" ? 100_000 : passBudget + 1;
+  let complete = false;
+  for (let pass = 0; pass < 20_000 && !complete; pass++)
+    complete = advanceLiveEventPruning(f.db, {
+      threadId: f.thread.id,
+      kind: "background",
+      limit: passLimit,
+    }).complete;
+  expect(complete).toBe(true);
+  return new Set(readProgressIds(f));
+}
+
+function runLegacyParityFixture(
+  f: Fixture,
+  rows: readonly LegacyProgressFixture[],
+  passBudget: LegacyPassBudget = "unlimited",
+  carryCursorAcrossCandidates = false,
+) {
+  seedLegacyParityFixture(f, rows);
+  const before = readProgressIds(f);
+  const reference = legacyReferencePrunedIds(
+    f,
+    passBudget,
+    carryCursorAcrossCandidates,
+  );
+  const after = driveLivePruning(f, passBudget);
+  const pruned = new Set(before.filter((id) => !after.has(id)));
+  const kept = new Set(before.filter((id) => after.has(id)));
+  expect(pruned).toEqual(reference);
+  return { kept, pruned };
+}
+
+function expectLegacyParityCase(
+  rows: readonly LegacyProgressFixture[],
+  expectedKept: readonly string[],
+  expectedPruned: readonly string[],
+  passBudget: LegacyPassBudget = "unlimited",
+) {
+  const f = setup();
+  try {
+    const { kept, pruned } = runLegacyParityFixture(f, rows, passBudget);
+    expect(kept).toEqual(new Set(expectedKept));
+    expect(pruned).toEqual(new Set(expectedPruned));
+  } finally {
+    f.db.$client.close();
+  }
+}
+
 describe("thread pruning", () => {
+  it("queues archive changes for every owned thread and rolls them back together", () => {
+    const f = setup();
+    try {
+      const child = createThread(f.db, noopNotifier, {
+        projectId: f.project.id,
+        providerId: "codex",
+        lifecycleOwnerThreadId: f.thread.id,
+      });
+      const work = () => f.db.select().from(threadPruningWork).all();
+      expect(() =>
+        f.db.transaction((tx) => {
+          archiveThread(tx, noopNotifier, f.thread.id);
+          throw new Error("rollback archive");
+        }),
+      ).toThrow("rollback archive");
+      expect(work()).toEqual([]);
+      expect(
+        f.db
+          .select()
+          .from(threads)
+          .all()
+          .every((thread) => thread.archivedAt === null),
+      ).toBe(true);
+      archiveThread(f.db, noopNotifier, f.thread.id);
+      expect(work()).toHaveLength(2);
+      expect(work()).toEqual(
+        expect.arrayContaining([
+          { policy: "rate-limits", threadId: f.thread.id, revision: 1 },
+          { policy: "rate-limits", threadId: child.id, revision: 1 },
+        ]),
+      );
+      archiveThread(f.db, noopNotifier, f.thread.id);
+      expect(work().every((row) => row.revision === 1)).toBe(true);
+      unarchiveThread(f.db, noopNotifier, f.thread.id);
+      expect(() =>
+        f.db.transaction(() => {
+          unarchiveThread(f.db, noopNotifier, child.id);
+          throw new Error("rollback unarchive");
+        }),
+      ).toThrow("rollback unarchive");
+      expect(work().find((row) => row.threadId === child.id)?.revision).toBe(1);
+      expect(
+        f.db.select().from(threads).where(eq(threads.id, child.id)).get()
+          ?.archivedAt,
+      ).not.toBeNull();
+      unarchiveThread(f.db, noopNotifier, child.id);
+      expect(work().every((row) => row.revision === 2)).toBe(true);
+    } finally {
+      f.db.$client.close();
+    }
+  });
+
+  it("advances past a thread that becomes dirty again before its next cycle", () => {
+    const f = setup();
+    try {
+      const other = createThread(f.db, noopNotifier, {
+        projectId: f.project.id,
+        providerId: "codex",
+      });
+      const [first, second] = [f.thread, other].sort((a, b) =>
+        a.id.localeCompare(b.id),
+      );
+      if (!first || !second) throw new Error("Missing pruning fixtures");
+      seed({ ...f, thread: first }, 1);
+      seed({ ...f, thread: second }, 1);
+      expect(advanceThreadPruning(f.db, "rate-limits").threadId).toBe(first.id);
+      seed({ ...f, thread: first }, 2);
+      expect(advanceThreadPruning(f.db, "rate-limits").threadId).toBe(
+        second.id,
+      );
+    } finally {
+      f.db.$client.close();
+    }
+  });
+
+  it("requires output presence only when pruning command output deltas", () => {
+    const f = setup();
+    try {
+      let sequence = 0;
+      const retained: number[] = [];
+      for (const [itemKind, type] of [
+        ["agentMessage", "item/agentMessage/delta"],
+        ["reasoning", "item/reasoning/textDelta"],
+        ["commandExecution", "item/commandExecution/outputDelta"],
+      ] as const) {
+        for (const [data, hasOutput] of [
+          ["malformed", false],
+          ["{}", false],
+          ['{"item":{"aggregatedOutput":null}}', true],
+          ['{"item":{"aggregatedOutput":42}}', true],
+          ['{"item":{"aggregatedOutput":"done"}}', true],
+        ] as const) {
+          const itemId = `item-${sequence}`;
+          seed(f, ++sequence, { type, itemId });
+          retained.push(sequence);
+          seed(f, ++sequence, { type, itemId });
+          if (itemKind === "commandExecution" && !hasOutput)
+            retained.push(sequence);
+          seed(f, ++sequence, {
+            type: "item/completed",
+            itemKind,
+            itemId,
+            data,
+          });
+          retained.push(sequence);
+        }
+      }
+      cycle(f, "resolved-items");
+      expect(sequences(f)).toEqual(retained);
+    } finally {
+      f.db.$client.close();
+    }
+  });
+
   it("rotates scoped live policies durably and drains active usage without global idle cleanup", () => {
     let f = setup();
     try {
@@ -235,26 +569,38 @@ describe("thread pruning", () => {
           for (let i = 1; i <= 600; i++)
             seed(fixture, i, { type: "item/agentMessage/delta" });
         });
-        pruneResolvedItemDeltas(f.db, { threadId: fixture.thread.id });
+        for (let i = 0; i < 4; i++)
+          advanceThreadPruning(f.db, { threadId: fixture.thread.id });
       }
       advanceThreadPruning(f.db, "rate-limits");
       const before = f.db.select().from(threadPruningCursors).all();
-      expect(before).toHaveLength(3);
       expect(
         before
           .filter((row) => row.policy === "deltas")
           .map((row) => row.scope)
           .sort(),
       ).toEqual([f.thread.id, other.thread.id].sort());
-      pruneResolvedItemDeltas(f.db, { threadId: f.thread.id });
+      const hasLiveDeltaCursor = () =>
+        f.db
+          .select()
+          .from(threadPruningCursors)
+          .all()
+          .some((row) => row.policy === "deltas" && row.scope === f.thread.id);
+      for (let i = 0; i < 1000 && hasLiveDeltaCursor(); i++)
+        advanceThreadPruning(f.db, { threadId: f.thread.id });
+      expect(hasLiveDeltaCursor()).toBe(false);
       const remaining = f.db.select().from(threadPruningCursors).all();
-      expect(remaining).toEqual(
+      expect(remaining.filter((row) => row.scope !== f.thread.id)).toEqual(
         before.filter((row) => row.scope !== f.thread.id),
       );
       f.db.delete(threads).where(eq(threads.id, other.thread.id)).run();
-      expect(f.db.select().from(threadPruningCursors).all()).toEqual(
-        before.filter((row) => row.scope === ""),
-      );
+      expect(
+        f.db
+          .select()
+          .from(threadPruningCursors)
+          .all()
+          .filter((row) => row.scope !== f.thread.id),
+      ).toEqual(before.filter((row) => row.scope === ""));
     } finally {
       f.db.$client.close();
     }
@@ -319,34 +665,31 @@ describe("thread pruning", () => {
         seed(f, 252, { type: "turn/completed" });
       });
       f.db.run(
-        sql`CREATE TRIGGER fail_live_insert BEFORE INSERT ON thread_pruning_cursors BEGIN SELECT RAISE(ABORT, 'live insert failed'); END`,
+        sql`CREATE TRIGGER fail_live_insert BEFORE INSERT ON thread_pruning_cursors WHEN NEW.policy = 'deltas' BEGIN SELECT RAISE(ABORT, 'live insert failed'); END`,
       );
-      expect(() =>
-        pruneResolvedItemDeltas(f.db, { threadId: f.thread.id }),
-      ).toThrow("live insert failed");
+      expect(() => advanceThreadPruning(f.db, "resolved-items")).toThrow(
+        "live insert failed",
+      );
       expect(sequences(f)).toContain(126);
       expect(f.db.select().from(threadPruningCursors).all()).toEqual([]);
       f.db.run(sql`DROP TRIGGER fail_live_insert`);
-      let removed = 0;
-      for (let i = 0; i < 5; i++)
-        removed += pruneResolvedItemDeltas(f.db, { threadId: f.thread.id });
-      expect(removed).toBe(1);
+      expect(
+        cycle(f, "resolved-items").reduce((n, r) => n + r.removed, 0),
+      ).toBe(1);
       expect(sequences(f)).not.toContain(126);
       expect(sequences(f).filter((sequence) => sequence <= 125)).toHaveLength(
         125,
       );
       seed(f, 253, { type: "item/agentMessage/delta", itemId: "late" });
       seed(f, 254, { type: "item/agentMessage/delta", itemId: "late" });
-      for (let i = 0; i < 5; i++)
-        pruneResolvedItemDeltas(f.db, { threadId: f.thread.id });
+      cycle(f, "resolved-items");
       expect(sequences(f)).toContain(254);
       seed(f, 255, {
         type: "item/completed",
         itemKind: "agentMessage",
         itemId: "late",
       });
-      for (let i = 0; i < 5; i++)
-        pruneResolvedItemDeltas(f.db, { threadId: f.thread.id });
+      cycle(f, "resolved-items");
       expect(sequences(f)).toContain(253);
       expect(sequences(f)).not.toContain(254);
     } finally {
@@ -382,26 +725,33 @@ describe("thread pruning", () => {
           parentToolCallId: "target",
         });
       });
-      expect(pruneResolvedItemDeltas(f.db, { threadId: f.thread.id })).toBe(0);
+      expect(advanceThreadPruning(f.db, "resolved-items").removed).toBe(0);
       const before = f.db.select().from(threadPruningCursors).all();
-      expect(before[0]?.probeSequence).toBeGreaterThan(0);
+      expect(
+        before.find((row) => row.policy === "deltas")?.probeSequence,
+      ).toBeGreaterThan(0);
       f.db.run(
         sql`CREATE TRIGGER fail_live_cursor BEFORE UPDATE ON thread_pruning_cursors BEGIN SELECT RAISE(ABORT, 'live cursor failed'); END`,
       );
-      expect(() =>
-        pruneResolvedItemDeltas(f.db, { threadId: f.thread.id }),
-      ).toThrow("live cursor failed");
+      expect(() => advanceThreadPruning(f.db, "resolved-items")).toThrow(
+        "live cursor failed",
+      );
       expect(f.db.select().from(threadPruningCursors).all()).toEqual(before);
       f.db.run(sql`DROP TRIGGER fail_live_cursor`);
       const saved = f.db.$client.serialize();
       f.db.$client.close();
       f = { ...f, db: createConnection(saved) };
-      for (let i = 0; i < 20; i++)
-        pruneResolvedItemDeltas(f.db, { threadId: f.thread.id });
+      cycle(f, "resolved-items");
       expect(sequences(f)).toContain(1);
       expect(sequences(f)).not.toContain(2);
       f.db.delete(threads).where(eq(threads.id, f.thread.id)).run();
-      expect(f.db.select().from(threadPruningCursors).all()).toEqual([]);
+      expect(
+        f.db
+          .select()
+          .from(threadPruningCursors)
+          .all()
+          .filter((row) => row.scope !== ""),
+      ).toEqual([]);
     } finally {
       f.db.$client.close();
     }
@@ -415,15 +765,16 @@ describe("thread pruning", () => {
           seed(f, i, {
             type: "item/backgroundTask/progress",
             itemId: `task-${i}`,
+            itemKind: "backgroundTask",
           });
         seed(f, 511, {
           type: "item/backgroundTask/progress",
           itemId: "task-1",
+          itemKind: "backgroundTask",
         });
         seed(f, 512, { type: "turn/completed" });
       });
-      for (let i = 0; i < 8; i++)
-        pruneBackgroundTaskProgressEvents(f.db, { threadId: f.thread.id });
+      cycle(f, "resolved-items");
       expect(sequences(f)).not.toContain(1);
       expect(sequences(f)).toContain(511);
       seed(f, 513, { type: "item/agentMessage/delta", itemId: "message" });
@@ -439,7 +790,228 @@ describe("thread pruning", () => {
     } finally {
       f.db.$client.close();
     }
+  }, 15_000);
+
+  it("prunes task progress superseded by legacy rows with missing or mismatched item kinds", () => {
+    const f = setup();
+    try {
+      seed(f, 1, {
+        type: "item/backgroundTask/progress",
+        itemId: "task-unrelated",
+        itemKind: "backgroundTask",
+      });
+      seed(f, 2, {
+        type: "item/backgroundTask/progress",
+        itemId: "task-null-kind",
+        itemKind: "backgroundTask",
+      });
+      seed(f, 3, {
+        type: "item/backgroundTask/progress",
+        itemId: "task-null-kind",
+        itemKind: null,
+      });
+      seed(f, 4, {
+        type: "item/backgroundTask/progress",
+        itemId: "task-mismatched-kind",
+        itemKind: "backgroundTask",
+      });
+      seed(f, 5, {
+        type: "item/backgroundTask/progress",
+        itemId: "task-mismatched-kind",
+        itemKind: "agentMessage",
+      });
+      seed(f, 6, { type: "turn/completed" });
+
+      cycle(f, "resolved-items");
+
+      expect(sequences(f)).toContain(1);
+      expect(sequences(f)).not.toContain(2);
+      expect(sequences(f)).toContain(3);
+      expect(sequences(f)).not.toContain(4);
+      expect(sequences(f)).toContain(5);
+    } finally {
+      f.db.$client.close();
+    }
   });
+
+  it("matches the old progress query across legacy supersession edge cases", () => {
+    expectLegacyParityCase(
+      [
+        { sequence: 1, itemId: "reused", itemKind: "backgroundTask", turnId: "turn-a" },
+        { sequence: 2, itemId: "reused", itemKind: null, turnId: "turn-b" },
+      ],
+      ["legacy-2"],
+      ["legacy-1"],
+    );
+    expectLegacyParityCase(
+      [
+        { sequence: 1, itemId: "earlier", itemKind: null, turnId: "turn-a" },
+        { sequence: 2, itemId: "earlier", itemKind: "backgroundTask", turnId: "turn-b" },
+        { sequence: 3, itemId: "equal", itemKind: "agentMessage", turnId: "turn-c" },
+      ],
+      ["legacy-2", "legacy-3"],
+      ["legacy-1"],
+    );
+    expectLegacyParityCase(
+      [
+        { sequence: 1, itemId: "inside-window", itemKind: "backgroundTask", turnId: "turn-a" },
+        { sequence: 2, itemId: "interleaved-a", itemKind: "backgroundTask", turnId: "turn-a" },
+        { sequence: 3, itemId: "inside-window", itemKind: null, turnId: "turn-b" },
+        { sequence: 4, itemId: "outside-window", itemKind: "backgroundTask", turnId: "turn-a" },
+        { sequence: 5, itemId: "outside-window", itemKind: "agentMessage", turnId: "turn-b" },
+        { sequence: 6, itemId: "interleaved-b", itemKind: "backgroundTask", turnId: "turn-a" },
+      ],
+      ["legacy-2", "legacy-3", "legacy-5", "legacy-6"],
+      ["legacy-1", "legacy-4"],
+    );
+    expectLegacyParityCase(
+      [
+        { sequence: 1, itemId: "chain", itemKind: null, turnId: "turn-a" },
+        { sequence: 2, itemId: "chain", itemKind: "agentMessage", turnId: "turn-b" },
+        { sequence: 3, itemId: "chain", itemKind: null, turnId: "turn-c" },
+      ],
+      ["legacy-3"],
+      ["legacy-1", "legacy-2"],
+    );
+    expectLegacyParityCase(
+      [
+        { sequence: 1, itemId: "null-kind", itemKind: "backgroundTask", turnId: "turn-a" },
+        { sequence: 2, itemId: "null-kind", itemKind: null, turnId: "turn-b" },
+        { sequence: 3, itemId: "mismatched-kind", itemKind: "backgroundTask", turnId: "turn-a" },
+        { sequence: 4, itemId: "mismatched-kind", itemKind: "agentMessage", turnId: "turn-b" },
+      ],
+      ["legacy-2", "legacy-4"],
+      ["legacy-1", "legacy-3"],
+    );
+  });
+
+  it("resumes phase-one scans across bounded passes", () => {
+    const rows: LegacyProgressFixture[] = [
+      { sequence: 1, itemId: "first-filler", itemKind: "backgroundTask", turnId: "turn-a" },
+      { sequence: 2, itemId: "target", itemKind: null, turnId: "turn-a" },
+      { sequence: 3, itemId: "target", itemKind: "backgroundTask", turnId: "turn-b" },
+      { sequence: 4, itemId: "filler-4", itemKind: "backgroundTask", turnId: "turn-b" },
+      { sequence: 5, itemId: "filler-5", itemKind: "backgroundTask", turnId: "turn-c" },
+      { sequence: 6, itemId: "filler-6", itemKind: "backgroundTask", turnId: "turn-a" },
+      { sequence: 7, itemId: "filler-7", itemKind: "backgroundTask", turnId: "turn-b" },
+      { sequence: 8, itemId: "target", itemKind: "agentMessage", turnId: "turn-c" },
+    ];
+    for (const passBudget of [1, 2, 3] as const)
+      expectLegacyParityCase(
+        rows,
+        ["legacy-1", "legacy-4", "legacy-5", "legacy-6", "legacy-7", "legacy-8"],
+        ["legacy-2", "legacy-3"],
+        passBudget,
+      );
+  });
+
+  it("resets the probe cursor before scanning the next candidate", () => {
+    const rows: LegacyProgressFixture[] = [
+      { sequence: 1, itemId: "first-item", itemKind: "backgroundTask", turnId: "turn-a" },
+      { sequence: 2, itemId: "second-item", itemKind: "backgroundTask", turnId: "turn-b" },
+      ...Array.from({ length: 17 }, (_, index) => ({
+        sequence: index + 3,
+        itemId: `filler-${index + 3}`,
+        itemKind: "backgroundTask" as const,
+        turnId: `turn-${index % 3}`,
+      })),
+      { sequence: 20, itemId: "second-item", itemKind: "agentMessage", turnId: "turn-c" },
+      ...Array.from({ length: 49 }, (_, index) => ({
+        sequence: index + 21,
+        itemId: `filler-${index + 21}`,
+        itemKind: "backgroundTask" as const,
+        turnId: `turn-${index % 3}`,
+      })),
+      { sequence: 70, itemId: "first-item", itemKind: null, turnId: "turn-b" },
+    ];
+    const kept = [
+      ...Array.from({ length: 68 }, (_, index) => `legacy-${index + 3}`),
+    ];
+    expectLegacyParityCase(rows, kept, ["legacy-1", "legacy-2"]);
+  });
+
+  it("matches the legacy oracle for 20 seeded fixtures at every live pass budget", () => {
+    const passBudgets = [1, 2, 3, 64] as const;
+    for (let initialSeed = 1; initialSeed <= 20; initialSeed++) {
+      let seedValue = initialSeed;
+      const next = () => {
+        seedValue = (seedValue * 48271) % 2147483647;
+        return seedValue;
+      };
+      const kinds = ["backgroundTask", null, "agentMessage"] as const;
+      const rows = Array.from({ length: 200 }, (_, index) => ({
+        sequence: index + 1,
+        itemId: `item-${next() % 12}`,
+        itemKind: kinds[next() % kinds.length] ?? null,
+        turnId: `turn-${next() % 5}`,
+      }));
+      const oracleFixture = setup();
+      try {
+        seedLegacyParityFixture(oracleFixture, rows);
+        const before = readProgressIds(oracleFixture);
+        const legacyPruned = legacyReferencePrunedIds(oracleFixture);
+        const legacyKept = new Set(
+          before.filter((id) => !legacyPruned.has(id)),
+        );
+        const unlimitedKept = driveLivePruning(oracleFixture, "unlimited");
+        expect(unlimitedKept).toEqual(legacyKept);
+
+        for (const passBudget of passBudgets) {
+          const f = setup();
+          try {
+            seedLegacyParityFixture(f, rows);
+            const seeded = readProgressIds(f);
+            const liveKept = driveLivePruning(f, passBudget);
+            expect(new Set(seeded.filter((id) => !liveKept.has(id)))).toEqual(
+              legacyPruned,
+            );
+            expect(liveKept).toEqual(legacyKept);
+          } finally {
+            f.db.$client.close();
+          }
+        }
+      } finally {
+        oracleFixture.db.$client.close();
+      }
+    }
+  }, 120_000);
+
+  it("bounds legacy progress fallback for 510 task candidates", () => {
+    for (let batch = 0; batch < 7; batch++) {
+      const f = setup();
+      try {
+        f.db.transaction(() => {
+          for (let i = 1; i <= 510; i++)
+            seed(f, i, {
+              type: "item/backgroundTask/progress",
+              itemId: `task-${i}`,
+              itemKind: "backgroundTask",
+            });
+          seed(f, 511, {
+            type: "item/backgroundTask/progress",
+            itemId: "task-1",
+            itemKind: null,
+          });
+          seed(f, 512, {
+            type: "item/backgroundTask/progress",
+            itemId: "task-2",
+            itemKind: "agentMessage",
+          });
+          seed(f, 513, { type: "turn/completed" });
+        });
+
+        cycle(f, "resolved-items");
+
+        expect(sequences(f)).not.toContain(1);
+        expect(sequences(f)).not.toContain(2);
+        expect(sequences(f)).toContain(511);
+        expect(sequences(f)).toContain(512);
+        expect(sequences(f)).toContain(510);
+      } finally {
+        f.db.$client.close();
+      }
+    }
+  }, 15_000);
 
   it("prunes oversized snapshots without parsing their payloads", () => {
     const f = setup();
@@ -516,6 +1088,7 @@ describe("thread pruning", () => {
       const nextSurvivor = 599;
       expect(batch.removed).toBeLessThanOrEqual(64);
       writer.delete(events).where(eq(events.sequence, 600)).run();
+      markThreadPruningWork(writer, [f.thread.id]);
       cycle(f, "rate-limits");
       expect(sequences(f)).toEqual([nextSurvivor]);
       expect(
@@ -725,11 +1298,7 @@ describe("thread pruning", () => {
   it("drains more than 500 resolved deltas and preserves scope, first-delta and output guards", () => {
     const f = setup();
     try {
-      f.db
-        .update(threads)
-        .set({ archivedAt: 1 })
-        .where(eq(threads.id, f.thread.id))
-        .run();
+      archiveThread(f.db, noopNotifier, f.thread.id);
       f.db.transaction(() => {
         for (let i = 1; i <= 1200; i++)
           seed(f, i, {
@@ -744,25 +1313,27 @@ describe("thread pruning", () => {
           itemKind: "commandExecution",
           data: '{"item":{"aggregatedOutput":"x"}}',
         });
-        seed(f, 1202, {
-          type: "item/commandExecution/outputDelta",
-          itemId: "cmd",
-          turnId: "other",
-          data: '{"delta":"keep"}',
-        });
-        seed(f, 1203, {
-          type: "item/commandExecution/outputDelta",
-          itemId: "cmd",
-          parentToolCallId: "nested",
-          data: '{"delta":"keep"}',
-        });
+        for (let i = 1202; i <= 1203; i++)
+          seed(f, i, {
+            type: "item/commandExecution/outputDelta",
+            itemId: "cmd",
+            turnId: "other",
+            data: '{"delta":"keep"}',
+          });
         for (let i = 1204; i <= 1205; i++)
+          seed(f, i, {
+            type: "item/commandExecution/outputDelta",
+            itemId: "cmd",
+            parentToolCallId: "nested",
+            data: '{"delta":"keep"}',
+          });
+        for (let i = 1206; i <= 1207; i++)
           seed(f, i, {
             type: "item/commandExecution/outputDelta",
             itemId: "no-output",
             data: '{"delta":"keep"}',
           });
-        seed(f, 1206, {
+        seed(f, 1208, {
           type: "item/completed",
           itemId: "no-output",
           itemKind: "commandExecution",
@@ -770,7 +1341,60 @@ describe("thread pruning", () => {
         });
       });
       cycle(f, "resolved-items");
-      expect(sequences(f)).toEqual([1, 1201, 1202, 1203, 1204, 1205, 1206]);
+      expect(sequences(f)).toEqual([
+        1, 1201, 1202, 1203, 1204, 1205, 1206, 1207, 1208,
+      ]);
+    } finally {
+      f.db.$client.close();
+    }
+  });
+
+  it("preserves the first delta of each type across batches with reversed storage order", () => {
+    const f = setup();
+    try {
+      const types = [
+        "item/agentMessage/delta",
+        "item/commandExecution/outputDelta",
+        "item/reasoning/summaryTextDelta",
+        "item/reasoning/textDelta",
+      ] as const;
+      for (const [index, itemKind] of (
+        ["agentMessage", "commandExecution", "reasoning"] as const
+      ).entries()) {
+        seed(f, 13 + index, {
+          type: "item/completed",
+          itemId: "item",
+          itemKind,
+          data: '{"item":{"aggregatedOutput":"complete"}}',
+        });
+      }
+      for (let sequence = 12; sequence > 0; sequence--) {
+        seed(f, sequence, {
+          type: types[(sequence - 1) % types.length],
+          itemId: "item",
+        });
+      }
+      seed(f, 16, { type: "turn/completed" });
+      let complete = false;
+      let removed = 0;
+      for (let i = 0; i < 30; i++) {
+        const batch = f.db.transaction((tx) =>
+          advanceLiveEventPruning(tx, {
+            threadId: f.thread.id,
+            kind: "deltas",
+            limit: 5,
+          }),
+        );
+        expect(batch.scanned).toBeLessThanOrEqual(5);
+        removed += batch.removed;
+        if (batch.complete) {
+          complete = true;
+          break;
+        }
+      }
+      expect(complete).toBe(true);
+      expect(removed).toBe(8);
+      expect(sequences(f)).toEqual([1, 2, 3, 4, 13, 14, 15, 16]);
     } finally {
       f.db.$client.close();
     }
@@ -781,25 +1405,14 @@ describe("thread pruning", () => {
     try {
       for (let i = 1; i <= 130; i++) seed(f, i);
       seed(f, 131, { type: "turn/completed" });
-      f.db
-        .update(threads)
-        .set({ archivedAt: 1 })
-        .where(eq(threads.id, f.thread.id))
-        .run();
+      archiveThread(f.db, noopNotifier, f.thread.id);
       expect(advanceThreadPruning(f.db, "rate-limits").removed).toBe(64);
-      f.db
-        .update(threads)
-        .set({ archivedAt: null })
-        .where(eq(threads.id, f.thread.id))
-        .run();
+      unarchiveThread(f.db, noopNotifier, f.thread.id);
       cycle(f, "rate-limits");
       expect(sequences(f)).toEqual([130, 131]);
-      f.db
-        .update(threads)
-        .set({ archivedAt: 2 })
-        .where(eq(threads.id, f.thread.id))
-        .run();
+      archiveThread(f.db, noopNotifier, f.thread.id);
       f.db.delete(events).where(eq(events.sequence, 131)).run();
+      markThreadPruningWork(f.db, [f.thread.id]);
       cycle(f, "rate-limits");
       expect(sequences(f)).toEqual([130]);
       seed(f, 131, { type: "turn/completed" });
@@ -815,11 +1428,7 @@ describe("thread pruning", () => {
     (archivedAt) => {
       const f = setup();
       try {
-        f.db
-          .update(threads)
-          .set({ archivedAt })
-          .where(eq(threads.id, f.thread.id))
-          .run();
+        if (archivedAt !== null) archiveThread(f.db, noopNotifier, f.thread.id);
         for (let sequence = 1; sequence <= 6; sequence++) {
           seed(f, sequence, {
             type: "thread/contextWindowUsage/updated",
@@ -855,7 +1464,9 @@ describe("thread pruning", () => {
         const window = seedWindow(
           f,
           16,
-          THREAD_EVENT_KEEP_RECENT_BY_MODE[archivedAt === null ? "idle" : "archived"],
+          THREAD_EVENT_KEEP_RECENT_BY_MODE[
+            archivedAt === null ? "idle" : "archived"
+          ],
           {
             type: "thread/tokenUsage/updated",
             data: '{"tokenUsage":{"modelContextWindow":null}}',
@@ -871,7 +1482,7 @@ describe("thread pruning", () => {
     },
   );
 
-  it("restarts usage keeper discovery after a keeper disappears during a visit", () => {
+  it("retains the latest context snapshot boundary through pruning between estimates", () => {
     const f = setup();
     try {
       f.db
@@ -879,6 +1490,126 @@ describe("thread pruning", () => {
         .set({ archivedAt: 1 })
         .where(eq(threads.id, f.thread.id))
         .run();
+      const usage = (sequence: number, values: object) =>
+        seed(f, sequence, {
+          type: "thread/contextWindowUsage/updated",
+          data: JSON.stringify({
+            contextWindowUsage: { estimated: true, ...values },
+          }),
+        });
+      usage(1, {
+        usedTokens: 128000,
+        modelContextWindow: 256000,
+        snapshot: {
+          contextWindowTokens: 256000,
+          autoCompactAtTokens: 223000,
+        },
+      });
+      usage(2, { usedTokens: 140000, modelContextWindow: 1000000 });
+      usage(3, { usedTokens: 150000, modelContextWindow: 1000000 });
+      for (let sequence = 4; sequence <= 123; sequence++)
+        seed(f, sequence, { type: "system/error", data: "{}" });
+      cycle(f, "usage");
+      expect(
+        f.db
+          .select({ sequence: events.sequence })
+          .from(events)
+          .where(
+            and(
+              eq(events.threadId, f.thread.id),
+              eq(events.type, "thread/contextWindowUsage/updated"),
+            ),
+          )
+          .orderBy(events.sequence)
+          .all()
+          .map((row) => row.sequence),
+      ).toEqual([1, 3]);
+      f.db.delete(events).where(eq(events.type, "system/error")).run();
+      usage(4, { usedTokens: null, modelContextWindow: null });
+      usage(5, { usedTokens: 160000, modelContextWindow: 1000000 });
+      for (let sequence = 6; sequence <= 125; sequence++)
+        seed(f, sequence, { type: "system/error", data: "{}" });
+      cycle(f, "usage");
+      expect(
+        f.db
+          .select({ sequence: events.sequence })
+          .from(events)
+          .where(
+            and(
+              eq(events.threadId, f.thread.id),
+              eq(events.type, "thread/contextWindowUsage/updated"),
+            ),
+          )
+          .orderBy(events.sequence)
+          .all()
+          .map((row) => row.sequence),
+      ).toEqual([4, 5]);
+    } finally {
+      f.db.$client.close();
+    }
+  });
+
+  it("reports exact removed UTF-8 bytes while retaining usage keepers", () => {
+    const f = setup();
+    try {
+      const context = (modelContextWindow: number | null) =>
+        JSON.stringify({
+          contextWindowUsage: { modelContextWindow },
+          text: "é🙂",
+        });
+      const payloads = [
+        context(200000),
+        context(null),
+        context(null),
+        "",
+        "é🙂\0x",
+        "{}",
+        "malformed",
+      ];
+      for (const [index, data] of payloads.entries())
+        seed(f, index + 1, {
+          type:
+            index < 3
+              ? "thread/contextWindowUsage/updated"
+              : "thread/tokenUsage/updated",
+          data,
+        });
+      seed(f, 8, {
+        type: "turn/started",
+        turnId: "nested",
+        parentToolCallId: "tool",
+      });
+      seed(f, 9, {
+        type: "thread/tokenUsage/updated",
+        turnId: "nested",
+        data: "{}",
+      });
+      seed(f, 10, { type: "turn/completed" });
+      seed(f, 1010, { type: "turn/completed" });
+      const results = cycle(f, "usage");
+      expect(sequences(f)).toEqual([1, 3, 7, 8, 10, 1010]);
+      expect(results.reduce((total, result) => total + result.removed, 0)).toBe(
+        5,
+      );
+      expect(
+        results.reduce((total, result) => total + result.removedBytes, 0),
+      ).toBe(
+        Buffer.byteLength(context(null)) + Buffer.byteLength("é🙂\0x") + 4,
+      );
+      expect(
+        results
+          .filter((result) => result.removed === 0)
+          .every((result) => result.removedBytes === 0),
+      ).toBe(true);
+    } finally {
+      f.db.$client.close();
+    }
+  });
+
+  it("restarts usage keeper discovery after a keeper disappears during a visit", () => {
+    const f = setup();
+    try {
+      archiveThread(f.db, noopNotifier, f.thread.id);
       f.db.transaction(() => {
         for (let i = 1; i <= 600; i++)
           seed(f, i, {
@@ -899,6 +1630,7 @@ describe("thread pruning", () => {
       advanceThreadPruning(f.db, "usage");
       advanceThreadPruning(f.db, "usage");
       f.db.delete(events).where(eq(events.sequence, 600)).run();
+      markThreadPruningWork(f.db, [f.thread.id]);
       expect(advanceThreadPruning(f.db, "usage").removed).toBe(0);
       cycle(f, "usage");
       cycle(f, "usage");
@@ -911,11 +1643,7 @@ describe("thread pruning", () => {
   it("revisits deltas whose completion arrives after their candidate window", () => {
     const f = setup();
     try {
-      f.db
-        .update(threads)
-        .set({ archivedAt: 1 })
-        .where(eq(threads.id, f.thread.id))
-        .run();
+      archiveThread(f.db, noopNotifier, f.thread.id);
       f.db.transaction(() => {
         for (let i = 1; i <= 800; i++)
           seed(f, i, {
@@ -946,11 +1674,7 @@ describe("thread pruning", () => {
   it("resumes bounded support probes through adversarial reused-item scopes", () => {
     let f = setup();
     try {
-      f.db
-        .update(threads)
-        .set({ archivedAt: 1 })
-        .where(eq(threads.id, f.thread.id))
-        .run();
+      archiveThread(f.db, noopNotifier, f.thread.id);
       seed(f, 1, {
         type: "item/agentMessage/delta",
         itemId: "reused",

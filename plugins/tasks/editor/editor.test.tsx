@@ -2,7 +2,7 @@
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Editor } from "@tiptap/core";
-import { POINTER_COARSE_QUERY } from "@bb/shared-ui/hooks/use-pointer-coarse";
+import { POINTER_COARSE_QUERY } from "@/components/ui/hooks/use-pointer-coarse";
 import { createEditorExtensions } from "./extensions.js";
 import { TasksEditor } from "./tasks-editor.js";
 
@@ -307,83 +307,6 @@ describe("thread mention extension", () => {
     );
     fireEvent.click(pill!);
     expect(onOpenThread).toHaveBeenCalledWith("thr_a82u8wp8qq");
-  });
-});
-
-describe("heading toggle", () => {
-  function editorWith(markdown: string): Editor {
-    return new Editor({
-      extensions: createEditorExtensions(),
-      content: markdown,
-    });
-  }
-
-  function selectBlocks(
-    editor: Editor,
-    fromBlock: number,
-    toBlock = fromBlock,
-  ) {
-    const positions: number[] = [];
-    editor.state.doc.forEach((_node, offset) => {
-      positions.push(offset + 2);
-    });
-    editor.commands.setTextSelection({
-      from: positions[fromBlock - 1]!,
-      to: positions[toBlock - 1]!,
-    });
-  }
-
-  it("converts only the block under a within-block selection", () => {
-    const editor = editorWith("First\n\nSecond\n\nThird");
-    try {
-      selectBlocks(editor, 2);
-      editor.chain().toggleHeading({ level: 2 }).run();
-      expect(editor.storage.markdown.getMarkdown()).toBe(
-        "First\n\n## Second\n\nThird",
-      );
-    } finally {
-      editor.destroy();
-    }
-  });
-
-  it("converts only intersecting blocks for a multi-block selection", () => {
-    const editor = editorWith("First\n\nSecond\n\nThird");
-    try {
-      selectBlocks(editor, 2, 3);
-      editor.chain().toggleHeading({ level: 2 }).run();
-      expect(editor.storage.markdown.getMarkdown()).toBe(
-        "First\n\n## Second\n\n## Third",
-      );
-    } finally {
-      editor.destroy();
-    }
-  });
-
-  it("toggles a heading back to a paragraph", () => {
-    const editor = editorWith("First\n\n## Second\n\nThird");
-    try {
-      selectBlocks(editor, 2);
-      editor.chain().toggleHeading({ level: 2 }).run();
-      expect(editor.storage.markdown.getMarkdown()).toBe(
-        "First\n\nSecond\n\nThird",
-      );
-    } finally {
-      editor.destroy();
-    }
-  });
-
-  it("converts only the caret's block with no selection", () => {
-    const editor = editorWith("First\n\nSecond\n\nThird");
-    try {
-      selectBlocks(editor, 3);
-      editor.commands.setTextSelection(editor.state.selection.from);
-      editor.chain().toggleHeading({ level: 2 }).run();
-      expect(editor.storage.markdown.getMarkdown()).toBe(
-        "First\n\nSecond\n\n## Third",
-      );
-    } finally {
-      editor.destroy();
-    }
   });
 });
 

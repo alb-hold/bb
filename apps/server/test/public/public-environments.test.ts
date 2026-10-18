@@ -238,6 +238,7 @@ describe("public environments", () => {
             insertions: 0,
             deletions: 0,
             lineStatsComplete: true,
+            fileCount: 0,
             files: [],
             hasUncommittedChanges: false,
             state: "clean",
@@ -306,6 +307,7 @@ describe("public environments", () => {
             insertions: 0,
             deletions: 0,
             lineStatsComplete: true,
+            fileCount: 0,
             files: [],
             hasUncommittedChanges: false,
             state: "clean",
@@ -699,61 +701,6 @@ describe("environment list and delete", () => {
         hostId: host.id,
         projectId: project.id,
         path: "/tmp/env-release",
-        environmentProviderId: "git-worktree",
-      });
-
-      const response = await harness.app.request(
-        `/api/v1/environments/${environment.id}`,
-        { method: "DELETE" },
-      );
-      expect(response.status).toBe(200);
-      expect(getEnvironment(harness.db, environment.id)).toMatchObject({
-        status: "ready",
-        path: environment.path,
-        teardownStatus: "running",
-        teardownAttempt: 0,
-      });
-    });
-  });
-
-  it("destroys an environment no provider produced too", async () => {
-    await withTestHarness(async (harness) => {
-      const { host, session } = seedHostSession(harness.deps, {
-        id: "host-env-no-release",
-      });
-      registerTestHostRpcCapture(harness, {
-        hostId: host.id,
-        sessionId: session.id,
-      });
-      const { project } = seedProjectWithSource(harness.deps, {
-        hostId: host.id,
-      });
-      const environment = seedEnvironment(harness.deps, {
-        hostId: host.id,
-        projectId: project.id,
-        path: "/tmp/env-attached",
-      });
-
-      const response = await harness.app.request(
-        `/api/v1/environments/${environment.id}`,
-        { method: "DELETE" },
-      );
-      expect(response.status).toBe(200);
-    });
-  });
-
-  it("retains cleanup facts until the provider is available", async () => {
-    await withTestHarness(async (harness) => {
-      const { host } = seedHostSession(harness.deps, {
-        id: "host-env-release-offline",
-      });
-      const { project } = seedProjectWithSource(harness.deps, {
-        hostId: host.id,
-      });
-      const environment = seedEnvironment(harness.deps, {
-        hostId: host.id,
-        projectId: project.id,
-        path: "/tmp/env-release-offline",
         environmentProviderId: "git-worktree",
       });
 

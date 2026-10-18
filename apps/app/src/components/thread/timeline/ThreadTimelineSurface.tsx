@@ -1,19 +1,18 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import type {
-  ActiveThinking,
-  ThreadOriginKind,
-  ThreadRuntimeDisplayStatus,
-} from "@bb/domain";
+import type { ActiveThinking, ThreadRuntimeDisplayStatus } from "@bb/domain";
 import type { TimelineRow } from "@bb/server-contract";
 import type { PromptMentionLinkResolver } from "@/components/promptbox/editor/prompt-mention-link";
 import { Button } from "@bb/shared-ui/button";
 import { ConversationTimeline } from "@/components/ui/conversation.js";
 import { HeightTransition } from "@/components/ui/height-transition.js";
 import { Icon } from "@bb/shared-ui/icon";
-import { Skeleton } from "@bb/shared-ui/skeleton";
-import { useSystemConfig } from "@/hooks/queries/system-queries";
+import { isRouteLoadingSkeletonMounted } from "@/components/ui/route-loading-skeleton";
 import { toUserAttachmentImageSrc } from "@/lib/user-attachment-images";
-import { TimelineImageMetadata } from "./TimelineImageMetadata";
+import {
+  SHORT_LIVED_STATUS_DELAY_MS,
+  useSustainedFlag,
+} from "@/hooks/useSustainedFlag";
+import { ThreadTimelineLoadingSkeleton } from "./ThreadTimelineLoadingSkeleton.js";
 import { ThreadTimelineRows } from "./ThreadTimelineRows.js";
 import { useAutoLoadOlderRows } from "./useAutoLoadOlderRows.js";
 import { TimelineStatusIndicator } from "./TimelineStatusIndicator.js";
@@ -25,7 +24,6 @@ import type {
   ThreadTimelineEditMessageHandler,
   ThreadTimelineInlineMessageEditor,
   ThreadTimelineAddToChatHandler,
-  ThreadTimelineSendToMainMessageHandler,
   ThreadTimelineConsumerMessageAction,
   ThreadTimelineLinkHandler,
   ThreadTimelineLocalFileLinkHandler,
@@ -35,16 +33,16 @@ import type {
 
 export interface HostConnectionNotice {
   label: string;
-  tone: "pending" | "error";
 }
 
 export interface ThreadTimelineSurfaceProps {
   activeThinking: ActiveThinking | null;
   canSpawnChild?: boolean;
   contextBoundarySeq: number | null;
-  threadOriginKind?: ThreadOriginKind | null;
   hasOlderTimelineRows?: boolean;
+  hasUnseenTimelineEvents?: boolean;
   hostConnectionNotice?: HostConnectionNotice | null;
+  isCatchingUpTimeline?: boolean;
   isLoadingOlderTimelineRows?: boolean;
   isThreadTimelinePending: boolean;
   timelineError: boolean;
@@ -54,7 +52,6 @@ export interface ThreadTimelineSurfaceProps {
   onEditMessage?: ThreadTimelineEditMessageHandler;
   inlineMessageEditor?: ThreadTimelineInlineMessageEditor;
   onMessageAddToChat?: ThreadTimelineAddToChatHandler;
-  onSendToMainMessage?: ThreadTimelineSendToMainMessageHandler;
   onSelectionAddToChat?: ThreadTimelineAddToChatHandler;
   consumerMessageActions?: readonly ThreadTimelineConsumerMessageAction[];
   includePluginMessageActions?: boolean;
@@ -73,8 +70,8 @@ export interface ThreadTimelineSurfaceProps {
   timelineRows: TimelineRow[];
   timelineNavigationTargetRowId?: string | null;
   threadId: string;
+  threadIsActive?: boolean;
   threadRuntimeDisplayStatus: ThreadRuntimeDisplayStatus;
-  unreadDividerAutoScroll?: boolean;
   unreadDividerPlacement?: ThreadTimelineUnreadDividerPlacement | null;
   workspaceRootPath: string | undefined;
 }
@@ -144,9 +141,10 @@ export function ThreadTimelineSurface({
   activeThinking,
   canSpawnChild,
   contextBoundarySeq,
-  threadOriginKind = null,
   hasOlderTimelineRows = false,
+  hasUnseenTimelineEvents = false,
   hostConnectionNotice,
+  isCatchingUpTimeline = false,
   isLoadingOlderTimelineRows = false,
   isThreadTimelinePending,
   timelineError,
@@ -156,7 +154,6 @@ export function ThreadTimelineSurface({
   onEditMessage,
   inlineMessageEditor,
   onMessageAddToChat,
-  onSendToMainMessage,
   onSelectionAddToChat,
   consumerMessageActions,
   includePluginMessageActions,
@@ -175,14 +172,16 @@ export function ThreadTimelineSurface({
   timelineRows,
   timelineNavigationTargetRowId,
   threadId,
+  threadIsActive,
   threadRuntimeDisplayStatus,
-  unreadDividerAutoScroll,
   unreadDividerPlacement,
   workspaceRootPath,
 }: ThreadTimelineSurfaceProps) {
-  const systemConfigQuery = useSystemConfig();
-  const timelineWindowingEnabled =
-    systemConfigQuery.data?.experiments.timelineWindowing ?? false;
+  const showCatchUpIndicator =
+    isCatchingUpTimeline &&
+    !isThreadTimelinePending &&
+    !timelineError &&
+    !showOngoingIndicator;
   const showActiveThinking =
     activeThinking !== null && ongoingIndicatorLabel === undefined;
   const activeThinkingText = activeThinking?.text.trim() ?? "";
@@ -200,6 +199,13 @@ export function ThreadTimelineSurface({
     stoppingAnchorAt,
     threadId,
   });
+  const isOngoingIndicatorSustained = useSustainedFlag(
+    showOngoingIndicator,
+    SHORT_LIVED_STATUS_DELAY_MS,
+  );
+  const isOngoingIndicatorVisible =
+    showOngoingIndicator &&
+    (timelineRowsWithPendingStop.length > 0 || isOngoingIndicatorSustained);
   const showLoadOlderRows =
     hasOlderTimelineRows &&
     onLoadOlderRows !== undefined &&
@@ -226,50 +232,45 @@ export function ThreadTimelineSurface({
             className={timelineErrorClassName}
           />
         ) : timelineRowsWithPendingStop.length > 0 ? (
-          <TimelineImageMetadata key={threadId} threadId={threadId}>
-            <ThreadTimelineRows
-              canSpawnChild={canSpawnChild}
-              threadOriginKind={threadOriginKind}
-              onForkMessage={onForkMessage}
-              onEditMessage={onEditMessage}
-              inlineMessageEditor={inlineMessageEditor}
-              onMessageAddToChat={onMessageAddToChat}
-              onSendToMainMessage={onSendToMainMessage}
-              onSelectionAddToChat={onSelectionAddToChat}
-              consumerMessageActions={consumerMessageActions}
-              includePluginMessageActions={includePluginMessageActions}
-              onOpenLink={onOpenLink}
-              onOpenLocalFileLink={onOpenLocalFileLink}
-              onOpenPluginPanel={onOpenPluginPanel}
-              onTitleAction={onTitleAction}
-              projectId={projectId}
-              resolveMentionLink={resolveMentionLink}
-              resolveUserAttachmentImageSrc={toUserAttachmentImageSrc}
-              hasOlderTimelineRows={hasOlderTimelineRows}
-              isLoadingOlderTimelineRows={isLoadingOlderTimelineRows}
-              onLoadOlderRows={onLoadOlderRows}
-              timelineRows={timelineRowsWithPendingStop}
-              timelineNavigationTargetRowId={timelineNavigationTargetRowId}
-              timelineWindowingEnabled={timelineWindowingEnabled}
-              threadId={threadId}
-              threadRuntimeDisplayStatus={threadRuntimeDisplayStatus}
-              unreadDividerAutoScroll={unreadDividerAutoScroll}
-              unreadDividerPlacement={unreadDividerPlacement}
-              workspaceRootPath={workspaceRootPath}
-            />
-          </TimelineImageMetadata>
+          <ThreadTimelineRows
+            canSpawnChild={canSpawnChild}
+            onForkMessage={onForkMessage}
+            onEditMessage={onEditMessage}
+            inlineMessageEditor={inlineMessageEditor}
+            onMessageAddToChat={onMessageAddToChat}
+            onSelectionAddToChat={onSelectionAddToChat}
+            consumerMessageActions={consumerMessageActions}
+            includePluginMessageActions={includePluginMessageActions}
+            onOpenLink={onOpenLink}
+            onOpenLocalFileLink={onOpenLocalFileLink}
+            onOpenPluginPanel={onOpenPluginPanel}
+            onTitleAction={onTitleAction}
+            projectId={projectId}
+            resolveMentionLink={resolveMentionLink}
+            resolveUserAttachmentImageSrc={toUserAttachmentImageSrc}
+            hasOlderTimelineRows={hasOlderTimelineRows}
+            hasUnseenTimelineEvents={hasUnseenTimelineEvents}
+            isLoadingOlderTimelineRows={isLoadingOlderTimelineRows}
+            onLoadOlderRows={onLoadOlderRows}
+            timelineRows={timelineRowsWithPendingStop}
+            timelineNavigationTargetRowId={timelineNavigationTargetRowId}
+            threadId={threadId}
+            threadIsActive={threadIsActive}
+            threadRuntimeDisplayStatus={threadRuntimeDisplayStatus}
+            unreadDividerPlacement={unreadDividerPlacement}
+            workspaceRootPath={workspaceRootPath}
+          />
         ) : null}
         {hostConnectionNotice ? (
           <TimelineStatusIndicator
             label={hostConnectionNotice.label}
-            className={
-              hostConnectionNotice.tone === "error"
-                ? "mt-4 text-destructive"
-                : "mt-4"
-            }
+            className="mt-4 text-destructive"
           />
         ) : null}
-        <HeightTransition visible={showOngoingIndicator}>
+        <HeightTransition visible={showCatchUpIndicator}>
+          {showCatchUpIndicator ? <DelayedCatchUpIndicator /> : null}
+        </HeightTransition>
+        <HeightTransition visible={isOngoingIndicatorVisible}>
           <TimelineWorkingIndicator
             key={ongoingIndicatorKey}
             details={activeThinkingDetails}
@@ -328,16 +329,46 @@ function LoadOlderMessages({
 }
 
 const LOADING_INDICATOR_REVEAL_DELAY_MS = 200;
+const CATCH_UP_INDICATOR_LABEL = "Loading latest messages…";
 
-function DelayedThreadLoadingIndicator() {
+const CATCH_UP_INDICATOR_REVEAL_DELAY_MS = 1_000;
+
+function DelayedCatchUpIndicator() {
   const [visible, setVisible] = useState(false);
   useEffect(() => {
+    const id = window.setTimeout(
+      () => setVisible(true),
+      CATCH_UP_INDICATOR_REVEAL_DELAY_MS,
+    );
+    return () => window.clearTimeout(id);
+  }, []);
+
+  if (!visible) return null;
+
+  return (
+    <TimelineStatusIndicator
+      label={
+        <span role="status" className="animate-shine">
+          {CATCH_UP_INDICATOR_LABEL}
+        </span>
+      }
+      className="mt-4 flex min-h-7 items-center"
+    />
+  );
+}
+
+function DelayedThreadLoadingIndicator() {
+  const [visible, setVisible] = useState(isRouteLoadingSkeletonMounted);
+  useEffect(() => {
+    if (visible) {
+      return;
+    }
     const id = window.setTimeout(
       () => setVisible(true),
       LOADING_INDICATOR_REVEAL_DELAY_MS,
     );
     return () => window.clearTimeout(id);
-  }, []);
+  }, [visible]);
 
   if (!visible) {
     return null;
@@ -346,35 +377,3 @@ function DelayedThreadLoadingIndicator() {
   return <ThreadTimelineLoadingSkeleton />;
 }
 
-function ThreadTimelineLoadingSkeleton() {
-  return (
-    <div className="mt-6 space-y-5" role="status" aria-label="Loading thread">
-      <div className="flex justify-end px-2">
-        <Skeleton className="h-12 w-3/5" />
-      </div>
-      <div className="space-y-2 px-2">
-        <Skeleton className="h-3.5 w-11/12" />
-        <Skeleton className="h-3.5 w-full" />
-        <Skeleton className="h-3.5 w-3/4" />
-      </div>
-      <div className="space-y-2.5 px-2">
-        <div className="flex items-center gap-2">
-          <Skeleton className="size-3.5 shrink-0 rounded" />
-          <Skeleton className="h-3 w-2/5" />
-        </div>
-        <div className="flex items-center gap-2">
-          <Skeleton className="size-3.5 shrink-0 rounded" />
-          <Skeleton className="h-3 w-1/2" />
-        </div>
-        <div className="flex items-center gap-2">
-          <Skeleton className="size-3.5 shrink-0 rounded" />
-          <Skeleton className="h-3 w-1/3" />
-        </div>
-      </div>
-      <div className="space-y-2 px-2">
-        <Skeleton className="h-3.5 w-5/6" />
-        <Skeleton className="h-3.5 w-2/3" />
-      </div>
-    </div>
-  );
-}

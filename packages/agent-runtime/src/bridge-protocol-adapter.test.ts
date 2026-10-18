@@ -1,5 +1,5 @@
 import type { ThreadEvent } from "@bb/domain";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createBridgeProtocolAdapter } from "./bridge-protocol-adapter.js";
 import type { ProviderExecutionContext } from "./provider-adapter.js";
 
@@ -161,6 +161,7 @@ describe("handshake gating", () => {
     expect(
       adapter.buildCommandPlan({
         type: "provider/installation/status",
+        checkUpdates: false,
         cwd: "/workspace",
         requirement: "thread_rewind",
       }),
@@ -171,6 +172,7 @@ describe("handshake gating", () => {
         providerId: "fake-bridge",
         cwd: "/workspace",
         requirement: "thread_rewind",
+        checkUpdates: false,
       },
     });
     expect(
@@ -343,24 +345,6 @@ describe("skills/configure", () => {
 });
 
 describe("translateEvent", () => {
-  const validEvent: ThreadEvent = {
-    type: "turn/started",
-    threadId: "thr_1",
-    providerThreadId: "p_1",
-    scope: { kind: "turn", turnId: "bturn_1" },
-  };
-
-  it("ignores the retired thread/event notification", () => {
-    const adapter = makeAdapter();
-    expect(
-      adapter.translateEvent({
-        jsonrpc: "2.0",
-        method: "thread/event",
-        params: { threadId: "thr_1", event: validEvent },
-      }),
-    ).toStrictEqual([]);
-  });
-
   it("ignores an unknown bridge notification without emitting a timeline event", () => {
     const adapter = makeAdapter();
     expect(
@@ -691,5 +675,45 @@ describe("provider-native id translation", () => {
       },
     });
     expect(decoded).toMatchObject({ turnId: bbTurnId, callId: bbItemId });
+  });
+});
+
+describe("deferred text flush", () => {
+  it("hands a quiet stream's buffered text to the deferred listener", () => {
+    vi.useFakeTimers();
+    try {
+      const adapter = makeAdapter();
+      const deferred: Array<[string, ThreadEvent[]]> = [];
+      adapter.onDeferredEvents((threadId, events) => {
+        deferred.push([threadId, events]);
+      });
+      const opened = feedDeltas(adapter, "t_1", [
+        { kind: "turn.open" },
+        {
+          kind: "item.textDelta",
+          key: { channel: "assistant" },
+          channel: "agentMessage",
+          text: "Hi",
+        },
+      ]);
+      expect(opened.map((event) => event.type)).toEqual([
+        "turn/started",
+        "item/started",
+      ]);
+      vi.advanceTimersByTime(60);
+      expect(deferred).toEqual([
+        [
+          "t_1",
+          [
+            expect.objectContaining({
+              type: "item/agentMessage/delta",
+              delta: "Hi",
+            }),
+          ],
+        ],
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

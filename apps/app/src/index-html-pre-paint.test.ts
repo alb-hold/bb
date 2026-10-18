@@ -7,7 +7,7 @@ import {
   APP_THEME_CSS_STORAGE_KEY,
   applyAppThemeCss,
   applyCachedAppThemeCss,
-} from "./lib/themes";
+} from "./lib/app-theme-css";
 
 const indexHtml = readFileSync(
   resolve(import.meta.dirname, "../index.html"),
@@ -64,10 +64,6 @@ describe("index.html pre-paint script", () => {
     document.documentElement.className = "";
     document.head.innerHTML = "";
     document.body.innerHTML = "";
-  });
-
-  it("extracts both inline scripts from index.html", () => {
-    expect(extractInlineScripts(indexHtml)).toHaveLength(2);
   });
 
   it("adds the dark class before paint when the stored preference is dark", () => {

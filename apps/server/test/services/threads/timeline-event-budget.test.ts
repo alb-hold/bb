@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { getTimelineGroupingContext } from "../../../src/services/threads/timeline-context-order.js";
 import { prependOlderTimelineRows } from "@bb/client-core";
 import {
+  applyTimelineDelta,
   threadTimelineResponseSchema,
   type TimelineRow,
 } from "@bb/server-contract";
@@ -22,16 +23,17 @@ import {
   createProject,
   createThread,
   insertEvents,
-  migrate,
   noopNotifier,
   upsertHost,
 } from "@bb/db";
+import { createMigratedConnection } from "@bb/db/testing";
 import type { DbConnection } from "@bb/db";
 import type {
   ThreadTimelineResponse,
   TimelinePaginationCursor,
 } from "@bb/server-contract";
 import { buildThreadTimelineWithProfile } from "../../../src/services/threads/timeline.js";
+import { clearTimelineSelectionMemo } from "../../../src/services/threads/timeline-selection-memo.js";
 
 const LARGE_BUDGET = 1_000_000;
 
@@ -116,8 +118,7 @@ function setup(connection?: DbConnection): {
   db: DbConnection;
   thread: Thread;
 } {
-  const db = connection ?? createConnection(":memory:");
-  if (connection === undefined) migrate(db);
+  const db = connection ?? createMigratedConnection();
   const host = upsertHost(db, noopNotifier, {
     name: "test-host",
   });
@@ -337,7 +338,10 @@ function walkAllFileChangeDiffs(
       {
         completedTurnDisplay: "collapse",
         eventBudget,
+        includeClearedContextHistory: false,
         includeDiagnosticOperations: false,
+        compactionOfferEnabled: false,
+        summarizeShellCommands: true,
         includeNestedRows: true,
         maxInlineOutputChars: null,
         maxSeq: 0,
@@ -355,7 +359,7 @@ function walkAllFileChangeDiffs(
             : "",
         ),
     );
-    if (!response.timelinePage.hasOlderRows) {
+    if (response.timelinePage.olderCursor === null) {
       break;
     }
     cursor = response.timelinePage.olderCursor;
@@ -386,7 +390,10 @@ function walkAllPages(
       {
         completedTurnDisplay: "collapse",
         eventBudget,
+        includeClearedContextHistory: false,
         includeDiagnosticOperations: false,
+        compactionOfferEnabled: false,
+        summarizeShellCommands: true,
         includeNestedRows: true,
         maxInlineOutputChars: null,
         maxSeq: 0,
@@ -401,7 +408,7 @@ function walkAllPages(
         .filter((row) => row.kind === "conversation" && row.role === "user")
         .map((row) => row.id),
     );
-    if (!response.timelinePage.hasOlderRows) {
+    if (response.timelinePage.olderCursor === null) {
       break;
     }
     const next = response.timelinePage.olderCursor;
@@ -443,7 +450,10 @@ describe("timeline event budget", () => {
       );
       const options = {
         completedTurnDisplay: "collapse",
+        includeClearedContextHistory: false,
         includeDiagnosticOperations: false,
+        compactionOfferEnabled: false,
+        summarizeShellCommands: true,
         includeNestedRows: true,
         maxInlineOutputChars: null,
         maxSeq: 0,
@@ -475,7 +485,6 @@ describe("timeline event budget", () => {
           olderRows: page.rows,
         });
         cursor = page.timelinePage.olderCursor;
-        expect(page.timelinePage.hasOlderRows).toBe(cursor !== null);
         if (cursor !== null) {
           expect(seen.has(cursor.anchorId)).toBe(false);
           seen.add(cursor.anchorId);
@@ -519,7 +528,10 @@ describe("timeline event budget", () => {
       );
       const options = {
         completedTurnDisplay: "collapse",
+        includeClearedContextHistory: false,
         includeDiagnosticOperations: false,
+        compactionOfferEnabled: false,
+        summarizeShellCommands: true,
         includeNestedRows: true,
         maxInlineOutputChars: null,
         maxSeq: 0,
@@ -536,8 +548,7 @@ describe("timeline event budget", () => {
       }).response;
       expect(latest.rows).toEqual(full.rows);
       expect(latest.rows.length).toBeGreaterThan(0);
-      expect(latest.timelinePage.kind).toBe("latest");
-      expect(latest.timelinePage.hasOlderRows).toBe(false);
+      expect(latest.timelinePage.olderCursor).toBeNull();
       expect(latest.timelinePage.olderCursor).toBeNull();
     } finally {
       db.$client.close();
@@ -548,7 +559,10 @@ describe("timeline event budget", () => {
     const { db, thread } = setup();
     insertTurns(db, thread, 3, [10, 120, 10]);
     const options = {
+      includeClearedContextHistory: false,
       includeDiagnosticOperations: false,
+      compactionOfferEnabled: false,
+      summarizeShellCommands: true,
       includeNestedRows: true,
       maxInlineOutputChars: null,
       maxSeq: 0,
@@ -586,6 +600,255 @@ describe("timeline event budget", () => {
     db.$client.close();
   });
 
+  it("limits selected-turn context reads to the timeline window", () => {
+    const { db, thread } = setup();
+    try {
+      insertTurns(db, thread, 26, [
+        1_000,
+        ...Array.from({ length: 25 }, () => 2),
+      ]);
+      const latestSequence = db.$client
+        .prepare<[string], { sequence: number }>(
+          "SELECT MAX(sequence) AS sequence FROM events WHERE thread_id = ?",
+        )
+        .get(thread.id)!.sequence;
+      insertEvents(db, noopNotifier, [
+        {
+          threadId: thread.id,
+          sequence: latestSequence + 1,
+          type: "item/completed",
+          scope: turnScope("turn-1"),
+          providerThreadId,
+          itemId: "turn-1-late-item",
+          itemKind: "agentMessage",
+          parentToolCallId: null,
+          data: JSON.stringify({
+            item: {
+              type: "agentMessage",
+              id: "turn-1-late-item",
+              text: "Late output from the older turn",
+            },
+          }),
+        },
+      ]);
+
+      const firstSelectedRequest = db.$client
+        .prepare<[string], { sequence: number }>(
+          `SELECT sequence FROM events
+           WHERE thread_id = ? AND type = 'client/turn/requested'
+           ORDER BY sequence LIMIT 1 OFFSET 6`,
+        )
+        .get(thread.id)!.sequence;
+      const maxSequence = db.$client
+        .prepare<[string], { sequence: number }>(
+          "SELECT MAX(sequence) AS sequence FROM events WHERE thread_id = ?",
+        )
+        .get(thread.id)!.sequence;
+      const selectedTurnIds = [
+        "turn-1",
+        ...Array.from({ length: 20 }, (_, index) => `turn-${index + 7}`),
+      ];
+      const selectedTurnIdsJson = JSON.stringify(selectedTurnIds);
+      const broadRows = db.$client
+        .prepare<[string, string], { count: number }>(
+          `SELECT COUNT(*) AS count FROM events
+           WHERE thread_id = ? AND turn_id IN (
+             SELECT value FROM json_each(?)
+           )`,
+        )
+        .get(thread.id, selectedTurnIdsJson)!.count;
+      const windowRows = db.$client
+        .prepare<[string, string, number, number], { count: number }>(
+          `SELECT COUNT(*) AS count FROM events
+           WHERE thread_id = ? AND turn_id IN (
+             SELECT value FROM json_each(?)
+           ) AND sequence >= ? AND sequence < ?`,
+        )
+        .get(
+          thread.id,
+          selectedTurnIdsJson,
+          firstSelectedRequest,
+          maxSequence + 1,
+        )!.count;
+
+      let turnLookupRows = 0;
+      const turnLookupStatements: Array<{
+        params: unknown[];
+        source: string;
+      }> = [];
+      const prepareBeforeCapture = db.$client.prepare;
+      const prepareBeforeCaptureBound = prepareBeforeCapture.bind(db.$client);
+      Object.defineProperty(db.$client, "prepare", {
+        configurable: true,
+        value: (source: string) => {
+          const statement = prepareBeforeCaptureBound(source);
+          const normalizedSource = source.toLowerCase();
+          if (
+            normalizedSource.includes('"turn_id" in (') &&
+            (normalizedSource.includes("events_thread_sequence_idx") ||
+              normalizedSource.includes(
+                "events_thread_turn_type_item_sequence_idx",
+              ))
+          ) {
+            const all = statement.all.bind(statement);
+            statement.all = (...params) => {
+              const rows = all(...params);
+              turnLookupRows += rows.length;
+              turnLookupStatements.push({ params, source });
+              return rows;
+            };
+          }
+          return statement;
+        },
+        writable: true,
+      });
+
+      let latestPage: ReturnType<typeof buildThreadTimelineWithProfile>;
+      try {
+        latestPage = buildThreadTimelineWithProfile(db, thread, {
+          compactionOfferEnabled: false,
+          summarizeShellCommands: true,
+          completedTurnDisplay: "collapse",
+          eventBudget: LARGE_BUDGET,
+          includeClearedContextHistory: false,
+          includeDiagnosticOperations: false,
+          includeNestedRows: true,
+          maxInlineOutputChars: null,
+          maxSeq: 0,
+          page: { kind: "latest", segmentLimit: 20 },
+        });
+      } finally {
+        db.$client.prepare = prepareBeforeCapture;
+      }
+
+      expect(turnLookupRows).toBe(windowRows);
+      expect({ broadRows, selectedWindowRows: turnLookupRows }).toEqual({
+        broadRows: 1_083,
+        selectedWindowRows: 81,
+      });
+      const selectiveLookup = turnLookupStatements.find(({ source }) =>
+        source.includes("events_thread_sequence_idx"),
+      );
+      const boundedLookupPlan = prepareBeforeCaptureBound(
+        `EXPLAIN QUERY PLAN ${selectiveLookup!.source}`,
+      ).all(...selectiveLookup!.params) as Array<{ detail: string }>;
+      expect(boundedLookupPlan.map((row) => row.detail).join(" ")).toContain(
+        "USING INDEX events_thread_sequence_idx",
+      );
+      expect(
+        turnLookupStatements.some(({ source }) =>
+          source.includes("events_thread_turn_type_item_sequence_idx"),
+        ),
+      ).toBe(true);
+      expect(
+        latestPage.response.rows.flatMap((row) =>
+          row.kind === "conversation" && row.role === "user" ? [row.id] : [],
+        ),
+      ).toEqual(
+        Array.from(
+          { length: 20 },
+          (_, index) => `${thread.id}:user-seed:${1029 + index * 5}`,
+        ),
+      );
+      expect(walkAllPages(db, thread, LARGE_BUDGET).userMessages).toEqual([
+        `${thread.id}:user-seed:1`,
+        ...Array.from(
+          { length: 25 },
+          (_, index) => `${thread.id}:user-seed:${1004 + index * 5}`,
+        ),
+      ]);
+    } finally {
+      db.$client.close();
+    }
+  });
+
+  it("excludes item lifecycle events appended after the selected timeline snapshot", () => {
+    const { db, thread } = setup();
+    try {
+      insertTurns(db, thread, 26, [
+        1_000,
+        ...Array.from({ length: 25 }, () => 2),
+      ]);
+      const lastSequence = db.$client
+        .prepare<[string], { sequence: number }>(
+          "SELECT MAX(sequence) AS sequence FROM events WHERE thread_id = ?",
+        )
+        .get(thread.id)!.sequence;
+      insertEvents(db, noopNotifier, [
+        {
+          threadId: thread.id,
+          sequence: lastSequence + 1,
+          type: "item/started",
+          scope: turnScope("turn-1"),
+          providerThreadId,
+          itemId: "turn-1-open-item",
+          itemKind: "agentMessage",
+          parentToolCallId: null,
+          data: JSON.stringify({
+            item: {
+              type: "agentMessage",
+              id: "turn-1-open-item",
+              text: "Open before the selected snapshot",
+            },
+          }),
+        },
+      ]);
+      const beforeSequence = lastSequence + 1;
+      const beforeBuild = buildThreadTimelineWithProfile(db, thread, {
+        compactionOfferEnabled: false,
+        summarizeShellCommands: true,
+        completedTurnDisplay: "collapse",
+        eventBudget: 100,
+        includeClearedContextHistory: false,
+        includeDiagnosticOperations: false,
+        includeNestedRows: true,
+        maxInlineOutputChars: 32_000,
+        maxSeq: beforeSequence,
+        page: { kind: "latest", segmentLimit: 20 },
+      });
+      expect(beforeBuild.profile.selectionStrategy).toBe("standard-window");
+      insertEvents(db, noopNotifier, [
+        {
+          threadId: thread.id,
+          sequence: beforeSequence + 1,
+          type: "item/completed",
+          scope: turnScope("turn-1"),
+          providerThreadId,
+          itemId: "turn-1-open-item",
+          itemKind: "agentMessage",
+          parentToolCallId: null,
+          data: JSON.stringify({
+            item: {
+              type: "agentMessage",
+              id: "turn-1-open-item",
+              text: "Appended after the selected snapshot",
+            },
+          }),
+        },
+      ]);
+      clearTimelineSelectionMemo(db);
+
+      const afterBuild = buildThreadTimelineWithProfile(db, thread, {
+        compactionOfferEnabled: false,
+        summarizeShellCommands: true,
+        completedTurnDisplay: "collapse",
+        eventBudget: 100,
+        includeClearedContextHistory: false,
+        includeDiagnosticOperations: false,
+        includeNestedRows: true,
+        maxInlineOutputChars: 32_000,
+        maxSeq: beforeSequence,
+        page: { kind: "latest", segmentLimit: 20 },
+      });
+      expect(afterBuild.response).toEqual(beforeBuild.response);
+      expect(afterBuild.profile.eventRowCount).toBe(
+        beforeBuild.profile.eventRowCount,
+      );
+    } finally {
+      db.$client.close();
+    }
+  });
+
   it("excludes later appends and continues endpoint pagination after an edit", async () => {
     const harness = await createTestAppHarness({
       featureFlags: { ...defaultFeatureFlags, timelineWindowEventBudget: 5 },
@@ -602,7 +865,10 @@ describe("timeline event budget", () => {
       };
       const expected = buildThreadTimelineWithProfile(db, thread, {
         completedTurnDisplay: "collapse",
+        includeClearedContextHistory: false,
         includeDiagnosticOperations: false,
+        compactionOfferEnabled: false,
+        summarizeShellCommands: true,
         includeNestedRows: true,
         maxInlineOutputChars: 32_000,
         maxSeq: 0,
@@ -670,7 +936,10 @@ describe("timeline event budget", () => {
       ).toEqual(
         buildThreadTimelineWithProfile(db, thread, {
           completedTurnDisplay: "collapse",
+          includeClearedContextHistory: false,
           includeDiagnosticOperations: false,
+          compactionOfferEnabled: false,
+          summarizeShellCommands: true,
           includeNestedRows: true,
           maxInlineOutputChars: 32_000,
           maxSeq: 0,
@@ -770,7 +1039,7 @@ describe("timeline event budget", () => {
       expect(live.timelinePage.historySnapshot).not.toBe(
         latest.timelinePage.historySnapshot,
       );
-      expect(live.timelinePage.olderRowsSourceSeqEnd).toBeLessThanOrEqual(
+      expect(live.timelinePage.olderRowsSourceSeqEnd ?? 0).toBeLessThanOrEqual(
         latest.maxSeq,
       );
       expect(
@@ -782,7 +1051,10 @@ describe("timeline event budget", () => {
       ).toEqual(
         buildThreadTimelineWithProfile(db, thread, {
           completedTurnDisplay: "collapse",
+          includeClearedContextHistory: false,
           includeDiagnosticOperations: false,
+          compactionOfferEnabled: false,
+          summarizeShellCommands: true,
           includeNestedRows: true,
           maxInlineOutputChars: 32_000,
           maxSeq: 0,
@@ -797,9 +1069,12 @@ describe("timeline event budget", () => {
 
   it.each([
     { changedRows: "an older group", turns: [1, 2] },
-    { changedRows: "the omitted start of the newest group", turns: [1] },
+    {
+      changedRows: "the omitted start of the newest group",
+      turns: [1],
+    },
   ])(
-    "signals a rebuild when a late completion changes $changedRows",
+    "merges a late completion that changes $changedRows",
     async ({ turns }) => {
       const harness = await createTestAppHarness({
         featureFlags: { ...defaultFeatureFlags, timelineWindowEventBudget: 5 },
@@ -927,7 +1202,9 @@ describe("timeline event budget", () => {
 
         const live = await read("");
 
-        expect(live.timelinePage.olderRowsSourceSeqEnd).toBe(latest.maxSeq + 1);
+        expect(
+          live.timelinePage.olderRowsSourceSeqEnd ?? 0,
+        ).toBeLessThanOrEqual(latest.maxSeq);
         const merged = mergeLoadedTimelineWithLatest({
           current: buildLoadedTimelineState({
             latestWindowEndSequence: latest.maxSeq,
@@ -939,7 +1216,10 @@ describe("timeline event budget", () => {
           latestTimeline: live,
           surfaceKey: thread.id,
         });
-        expect(merged.rows).toEqual(live.rows);
+        expect(merged.rows.map((row) => row.id)).toEqual(
+          rows.map((row) => row.id),
+        );
+        expect(merged.olderCursor).toBeNull();
         let reloadedRows = merged.rows;
         let reloadCursor = merged.olderCursor;
         while (reloadCursor) {
@@ -958,7 +1238,10 @@ describe("timeline event budget", () => {
         expect(reloadedRows).toEqual(
           buildThreadTimelineWithProfile(db, thread, {
             completedTurnDisplay: "collapse",
+            includeClearedContextHistory: false,
             includeDiagnosticOperations: false,
+            compactionOfferEnabled: false,
+            summarizeShellCommands: true,
             includeNestedRows: false,
             maxInlineOutputChars: 32_000,
             maxSeq: 0,
@@ -972,12 +1255,219 @@ describe("timeline event budget", () => {
     },
   );
 
+  it.each(["steer", "new-turn"] as const)(
+    "keeps walked history while a background subagent streams under a later %s message",
+    async (secondMessage) => {
+      const harness = await createTestAppHarness();
+      try {
+        const { db, thread } = setup(harness.db);
+        type EventInput = Parameters<typeof insertEvents>[2][number];
+        let sequence = 0;
+        const event = (
+          type: EventInput["type"],
+          scope: EventInput["scope"],
+          fields: Partial<EventInput> = {},
+        ): EventInput => ({
+          threadId: thread.id,
+          sequence: ++sequence,
+          type,
+          scope,
+          providerThreadId,
+          itemId: null,
+          itemKind: null,
+          parentToolCallId: null,
+          data: "{}",
+          ...fields,
+        });
+        const delegationId = "turn-1-delegation";
+        const backgroundTaskId = "background-task";
+        const backgroundTask = (progress: number) =>
+          JSON.stringify({
+            item: {
+              type: "backgroundTask",
+              id: backgroundTaskId,
+              familyId: "background-audit",
+              taskType: "local_agent",
+              description: "Background audit",
+              status: "pending",
+              taskStatus: "running",
+              skipTranscript: false,
+              foreground: false,
+              usage: {
+                totalTokens: progress,
+                toolUses: progress,
+                durationMs: 0,
+              },
+              parentToolCallId: delegationId,
+            },
+          });
+        const delegation = (status: "pending" | "completed") =>
+          JSON.stringify({
+            item: {
+              type: "delegation",
+              id: delegationId,
+              childRef: "toolu_background",
+              label: "Background audit",
+              status,
+              background: true,
+            },
+          });
+        const message = (
+          id: string,
+          parentToolCallId: string | null = null,
+          turnId = "turn-1",
+        ): EventInput =>
+          event("item/completed", turnScope(turnId), {
+            itemId: id,
+            itemKind: "agentMessage",
+            parentToolCallId,
+            data: JSON.stringify({
+              item: {
+                type: "agentMessage",
+                id,
+                text: id,
+                ...(parentToolCallId === null ? {} : { parentToolCallId }),
+              },
+            }),
+          });
+        const request = (turn: number): EventInput[] => {
+          const turnId =
+            turn === 2 && secondMessage === "steer" ? "turn-1" : `turn-${turn}`;
+          return [
+            event("client/turn/requested", threadScope(), {
+              providerThreadId: null,
+              data: JSON.stringify({
+                direction: "outbound",
+                source: "tell",
+                initiator: "user",
+                request: { method: "turn/start", params: {} },
+                requestId: requestId(turn),
+                senderThreadId: null,
+                input: [{ type: "text", text: `User ${turn}`, mentions: [] }],
+                target:
+                  turn === 1
+                    ? { kind: "thread-start" }
+                    : secondMessage === "steer"
+                      ? { kind: "steer", expectedTurnId: "turn-1" }
+                      : { kind: "new-turn" },
+                execution,
+              }),
+            }),
+            ...(turnId === `turn-${turn}`
+              ? [event("turn/started", turnScope(turnId))]
+              : []),
+            event("turn/input/accepted", turnScope(turnId), {
+              data: JSON.stringify({ clientRequestId: requestId(turn) }),
+            }),
+          ];
+        };
+        insertEvents(db, noopNotifier, [
+          ...request(1),
+          event("item/started", turnScope("turn-1"), {
+            itemId: delegationId,
+            itemKind: "delegation",
+            data: delegation("pending"),
+          }),
+          event("item/delegation/completed", threadScope(), {
+            itemId: delegationId,
+            itemKind: "delegation",
+            data: delegation("completed"),
+          }),
+          event("item/started", turnScope("turn-1"), {
+            itemId: backgroundTaskId,
+            itemKind: "backgroundTask",
+            parentToolCallId: delegationId,
+            data: backgroundTask(0),
+          }),
+          message("turn-1-message"),
+          ...request(2),
+          message(
+            "turn-2-message",
+            null,
+            secondMessage === "steer" ? "turn-1" : "turn-2",
+          ),
+        ]);
+        const read = async (query = "") => {
+          const response = await harness.app.request(
+            `/api/v1/threads/${thread.id}/timeline?segmentLimit=1&${query}`,
+          );
+          expect(response.status).toBe(200);
+          return threadTimelineResponseSchema.parse(await response.json());
+        };
+        const walk = async (latest: ThreadTimelineResponse) => {
+          let rows = latest.rows;
+          let cursor = latest.timelinePage.olderCursor;
+          while (cursor) {
+            const older = await read(
+              `beforeAnchorSeq=${cursor.anchorSeq}&beforeAnchorId=${cursor.anchorId}`,
+            );
+            rows = prependOlderTimelineRows({
+              olderRows: older.rows,
+              loadedRows: rows,
+            });
+            cursor = older.timelinePage.olderCursor;
+          }
+          return rows;
+        };
+        const latest = await read();
+        let current = buildLoadedTimelineState({
+          latestWindowEndSequence: latest.maxSeq,
+          latestRows: await walk(latest),
+          olderCursor: null,
+          surfaceKey: thread.id,
+          historySnapshot: latest.timelinePage.historySnapshot,
+        });
+        expect(current.rows.length).toBeGreaterThan(latest.rows.length);
+
+        let previous = latest;
+        for (const progress of [1, 2]) {
+          insertEvents(db, noopNotifier, [
+            message(`subagent-${progress}`, delegationId),
+            event("item/backgroundTask/progress", threadScope(), {
+              itemId: backgroundTaskId,
+              itemKind: "backgroundTask",
+              parentToolCallId: delegationId,
+              data: backgroundTask(progress),
+            }),
+          ]);
+          const response = await read(`afterSequence=${previous.maxSeq}`);
+          expect(response.delta).toBeDefined();
+          const live =
+            response.delta === undefined
+              ? response
+              : {
+                  ...response,
+                  rows: applyTimelineDelta(previous.rows, response.delta) ?? [],
+                  delta: undefined,
+                };
+          previous = live;
+          expect(live.timelinePage.olderRowUpdates?.length).toBeGreaterThan(0);
+          const summary = await read("summaryOnly=true");
+          expect(summary.rows).toEqual([]);
+          expect(summary.timelinePage.olderRowUpdates).toBeUndefined();
+          current = mergeLoadedTimelineWithLatest({
+            current,
+            latestTimeline: live,
+            surfaceKey: thread.id,
+          });
+          expect(current.olderCursor).toBeNull();
+          expect(current.rows).toEqual(await walk(live));
+        }
+      } finally {
+        await harness.cleanup();
+      }
+    },
+  );
+
   it("preserves canonical content under a tiny response byte budget", () => {
     const { db, thread } = setup();
     try {
       insertTurns(db, thread, 3, [2, 30, 2]);
       const options = {
+        includeClearedContextHistory: false,
         includeDiagnosticOperations: false,
+        compactionOfferEnabled: false,
+        summarizeShellCommands: true,
         includeNestedRows: true,
         maxInlineOutputChars: null,
         maxSeq: 0,
@@ -1023,7 +1513,10 @@ describe("timeline event budget", () => {
     try {
       insertTurns(db, thread, 3, 2);
       const options = {
+        includeClearedContextHistory: false,
         includeDiagnosticOperations: false,
+        compactionOfferEnabled: false,
+        summarizeShellCommands: true,
         includeNestedRows: true,
         maxInlineOutputChars: null,
         maxSeq: 0,
@@ -1113,18 +1606,24 @@ describe("timeline event budget", () => {
     const unbudgeted = buildThreadTimelineWithProfile(db, thread, {
       completedTurnDisplay: "collapse",
       eventBudget: LARGE_BUDGET,
+      includeClearedContextHistory: false,
       includeDiagnosticOperations: false,
+      compactionOfferEnabled: false,
+      summarizeShellCommands: true,
       includeNestedRows: true,
       maxInlineOutputChars: null,
       maxSeq: 0,
       page: { kind: "latest", segmentLimit: 20 },
     }).response;
-    expect(unbudgeted.timelinePage.hasOlderRows).toBe(false);
+    expect(unbudgeted.timelinePage.olderCursor).toBeNull();
 
     const budgeted = buildThreadTimelineWithProfile(db, thread, {
       completedTurnDisplay: "collapse",
       eventBudget: 100,
+      includeClearedContextHistory: false,
       includeDiagnosticOperations: false,
+      compactionOfferEnabled: false,
+      summarizeShellCommands: true,
       includeNestedRows: true,
       maxInlineOutputChars: null,
       maxSeq: 0,
@@ -1133,7 +1632,7 @@ describe("timeline event budget", () => {
     expect(budgeted.timelinePage.returnedSegmentCount).toBeLessThan(
       unbudgeted.timelinePage.returnedSegmentCount,
     );
-    expect(budgeted.timelinePage.hasOlderRows).toBe(true);
+    expect(budgeted.timelinePage.olderCursor).not.toBeNull();
     expect(budgeted.timelinePage.olderCursor).not.toBeNull();
   });
 
@@ -1209,7 +1708,10 @@ describe("timeline event budget", () => {
       const response = buildThreadTimelineWithProfile(db, thread, {
         completedTurnDisplay: "collapse",
         eventBudget: 2,
+        includeClearedContextHistory: false,
         includeDiagnosticOperations: false,
+        compactionOfferEnabled: false,
+        summarizeShellCommands: true,
         includeNestedRows: true,
         maxInlineOutputChars: null,
         maxSeq: 0,
@@ -1225,10 +1727,13 @@ describe("timeline event budget", () => {
             row.text === "Visible response",
         ),
       ).toBe(true);
-      expect(response.timelinePage.hasOlderRows).toBe(true);
+      expect(response.timelinePage.olderCursor).not.toBeNull();
       const options = {
         completedTurnDisplay: "collapse",
+        includeClearedContextHistory: false,
         includeDiagnosticOperations: false,
+        compactionOfferEnabled: false,
+        summarizeShellCommands: true,
         includeNestedRows: true,
         maxInlineOutputChars: null,
         maxSeq: 0,
@@ -1266,7 +1771,10 @@ describe("timeline event budget", () => {
     const budgeted = buildThreadTimelineWithProfile(db, thread, {
       completedTurnDisplay: "collapse",
       eventBudget: 50,
+      includeClearedContextHistory: false,
       includeDiagnosticOperations: false,
+      compactionOfferEnabled: false,
+      summarizeShellCommands: true,
       includeNestedRows: true,
       maxInlineOutputChars: null,
       maxSeq: 0,
@@ -1301,7 +1809,10 @@ describe("timeline event budget", () => {
 
     const page = { kind: "latest", segmentLimit: 20 } as const;
     const options = {
+      includeClearedContextHistory: false,
       includeDiagnosticOperations: false,
+      compactionOfferEnabled: false,
+      summarizeShellCommands: true,
       includeNestedRows: true,
       maxInlineOutputChars: null,
       maxSeq: 0,
@@ -1329,7 +1840,10 @@ it("does not decode unrelated turn history for a one-group page", () => {
   const { response, profile } = buildThreadTimelineWithProfile(db, thread, {
     completedTurnDisplay: "collapse",
     eventBudget: 1500,
+    includeClearedContextHistory: false,
     includeDiagnosticOperations: false,
+    compactionOfferEnabled: false,
+    summarizeShellCommands: true,
     maxInlineOutputChars: 32000,
     maxSeq: 0,
     page: { kind: "latest", segmentLimit: 1 },
@@ -1357,7 +1871,10 @@ it("resolves acceptance after the next conversation boundary", () => {
   const expected = buildThreadTimelineWithProfile(db, thread, {
     completedTurnDisplay: "collapse",
     eventBudget: LARGE_BUDGET,
+    includeClearedContextHistory: false,
     includeDiagnosticOperations: false,
+    compactionOfferEnabled: false,
+    summarizeShellCommands: true,
     maxInlineOutputChars: 32000,
     maxSeq: 0,
     page: { kind: "latest", segmentLimit: 100 },
@@ -1365,7 +1882,10 @@ it("resolves acceptance after the next conversation boundary", () => {
   let page = buildThreadTimelineWithProfile(db, thread, {
     completedTurnDisplay: "collapse",
     eventBudget: 5,
+    includeClearedContextHistory: false,
     includeDiagnosticOperations: false,
+    compactionOfferEnabled: false,
+    summarizeShellCommands: true,
     maxInlineOutputChars: 32000,
     maxSeq: 0,
     page: { kind: "latest", segmentLimit: 1 },
@@ -1376,7 +1896,10 @@ it("resolves acceptance after the next conversation boundary", () => {
     page = buildThreadTimelineWithProfile(db, thread, {
       completedTurnDisplay: "collapse",
       eventBudget: 5,
+      includeClearedContextHistory: false,
       includeDiagnosticOperations: false,
+      compactionOfferEnabled: false,
+      summarizeShellCommands: true,
       maxInlineOutputChars: 32000,
       maxSeq: 0,
       page: {

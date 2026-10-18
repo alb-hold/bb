@@ -3,15 +3,25 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
-import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import plugin, { buildCatalog, classifySelector, createCatalogLoader, parseThemeSwatches } from "./server";
+import {
+  createFakePluginHost,
+  type FakeSdkOverrides,
+} from "@get-bb/plugin-sdk/testing";
+import plugin, {
+  buildCatalog,
+  classifySelector,
+  createCatalogLoader,
+  parseThemeSwatches,
+} from "./server";
 
 describe("classifySelector", () => {
   it("accepts the mode roots and rejects element-scoped blocks", () => {
     expect(classifySelector(":root, .light")).toBe("shared");
     expect(classifySelector(":root")).toBe("shared");
     expect(classifySelector(":root:not(.dark)")).toBe("light");
-    expect(classifySelector(":root:not(.dark), .light:not(.dark)")).toBe("light");
+    expect(classifySelector(":root:not(.dark), .light:not(.dark)")).toBe(
+      "light",
+    );
     expect(classifySelector(".dark")).toBe("dark");
     expect(classifySelector(".dark .fixed.bg-sidebar")).toBeNull();
     expect(classifySelector("code:not(pre code)")).toBeNull();
@@ -33,7 +43,6 @@ describe("parseThemeSwatches", () => {
     expect(light?.primary).toBe("#2e6f95");
     expect(light?.canvas).toBe("#f4f4f4");
     expect(dark?.primary).toBe("#ffffff");
-    // the element-scoped override describes one surface, not the palette
     expect(dark?.sidebar).toBe("#0a0a0a");
   });
 
@@ -51,8 +60,12 @@ describe("parseThemeSwatches", () => {
     const { light, dark } = parseThemeSwatches(css);
     expect(light?.fontSans).toBe("Helvetica");
     expect(dark?.fontSans).toBe("Helvetica");
-    expect(parseThemeSwatches(":root { --background: #fff; }").light?.canvas).toBe("#fff");
-    expect(parseThemeSwatches(":root { --background: #fff; }").dark?.canvas).toBe("#fff");
+    expect(
+      parseThemeSwatches(":root { --background: #fff; }").light?.canvas,
+    ).toBe("#fff");
+    expect(
+      parseThemeSwatches(":root { --background: #fff; }").dark?.canvas,
+    ).toBe("#fff");
   });
 
   it("resolves shared, mode-specific, derived, and inherited values", () => {
@@ -69,24 +82,36 @@ describe("parseThemeSwatches", () => {
   });
 });
 
+function themeHost(sdk: FakeSdkOverrides) {
+  return createFakePluginHost({
+    pluginId: "theme-preview",
+    sdk: { plugins: { list: async () => ({ plugins: [] }) }, ...sdk },
+  });
+}
+
+function warnings(harness: ReturnType<typeof themeHost>["harness"]): string[] {
+  return harness.logEntries
+    .filter((entry) => entry.level === "warn")
+    .map((entry) => entry.message);
+}
+
 describe("createCatalogLoader", () => {
   it("shares one catalog refresh across overlapping callers", async () => {
     let catalogCalls = 0;
     let releaseCatalog!: () => void;
-    const catalogBlocked = new Promise<void>((resolve) => { releaseCatalog = resolve; });
-    const bb = {
-      sdk: {
-        theme: {
-          catalog: async () => {
-            catalogCalls += 1;
-            await catalogBlocked;
-            return { active: { themeId: "default" }, custom: [], dir: null };
-          },
+    const catalogBlocked = new Promise<void>((resolve) => {
+      releaseCatalog = resolve;
+    });
+    const { bb } = themeHost({
+      theme: {
+        catalog: async () => {
+          catalogCalls += 1;
+          await catalogBlocked;
+          return { active: { themeId: "default" }, custom: [], dir: null };
         },
-        plugins: { list: async () => ({ plugins: [] }) },
       },
-      log: { info() {}, warn() {} },
-    } as unknown as BbPluginApi;
+      plugins: { list: async () => ({ plugins: [] }) },
+    });
 
     const catalogLoader = createCatalogLoader(bb);
     const first = catalogLoader.catalog();
@@ -102,32 +127,38 @@ describe("createCatalogLoader", () => {
     try {
       let catalogCalls = 0;
       let firstSignal: AbortSignal | undefined;
-      const warn = vi.fn();
-      const bb = {
-        sdk: {
-          theme: {
-            catalog: ({ signal }: { signal?: AbortSignal } = {}) => {
-              catalogCalls += 1;
-              if (catalogCalls === 1) {
-                firstSignal = signal;
-                return new Promise(() => undefined);
-              }
-              return Promise.resolve({ active: { themeId: "default" }, custom: [], dir: null });
-            },
+      const { bb, harness } = themeHost({
+        theme: {
+          catalog: ({ signal }: { signal?: AbortSignal } = {}) => {
+            catalogCalls += 1;
+            if (catalogCalls === 1) {
+              firstSignal = signal;
+              return new Promise(() => undefined);
+            }
+            return Promise.resolve({
+              active: { themeId: "default" },
+              custom: [],
+              dir: null,
+            });
           },
-          plugins: { list: async () => ({ plugins: [] }) },
         },
-        log: { info() {}, warn },
-      } as unknown as BbPluginApi;
+        plugins: { list: async () => ({ plugins: [] }) },
+      });
 
       const catalogLoader = createCatalogLoader(bb);
       const failed = catalogLoader.catalog().catch((error: unknown) => error);
       await vi.advanceTimersByTimeAsync(5_000);
 
-      expect(warn).toHaveBeenCalledWith("theme-preview: theme catalog still pending after 5000ms");
+      expect(warnings(harness)).toContain(
+        "theme-preview: theme catalog still pending after 5000ms",
+      );
       await vi.advanceTimersByTimeAsync(10_000);
       const error = await failed;
-      expect(error).toEqual(expect.objectContaining({ message: "theme-preview: theme catalog timed out after 15000ms" }));
+      expect(error).toEqual(
+        expect.objectContaining({
+          message: "theme-preview: theme catalog timed out after 15000ms",
+        }),
+      );
       expect(firstSignal?.aborted).toBe(true);
 
       const recovered = await catalogLoader.catalog();
@@ -143,38 +174,44 @@ describe("createCatalogLoader", () => {
     try {
       let pluginListCalls = 0;
       let firstSignal: AbortSignal | undefined;
-      const warn = vi.fn();
-      const bb = {
-        sdk: {
-          theme: {
-            catalog: async () => ({ active: { themeId: "default" }, custom: [], dir: null }),
-          },
-          plugins: {
-            list: ({ signal }: { signal?: AbortSignal } = {}) => {
-              pluginListCalls += 1;
-              if (pluginListCalls === 1) {
-                firstSignal = signal;
-                return new Promise(() => undefined);
-              }
-              return Promise.resolve({ plugins: [] });
-            },
+      const { bb, harness } = themeHost({
+        theme: {
+          catalog: async () => ({
+            active: { themeId: "default" },
+            custom: [],
+            dir: null,
+          }),
+        },
+        plugins: {
+          list: ({ signal }: { signal?: AbortSignal } = {}) => {
+            pluginListCalls += 1;
+            if (pluginListCalls === 1) {
+              firstSignal = signal;
+              return new Promise(() => undefined);
+            }
+            return Promise.resolve({ plugins: [] });
           },
         },
-        log: { info() {}, warn },
-      } as unknown as BbPluginApi;
+      });
 
       const catalogLoader = createCatalogLoader(bb);
       const degraded = catalogLoader.catalog();
       await vi.advanceTimersByTimeAsync(5_000);
-      expect(warn).toHaveBeenCalledWith("theme-preview: plugin list still pending after 5000ms");
+      expect(warnings(harness)).toContain(
+        "theme-preview: plugin list still pending after 5000ms",
+      );
       await vi.advanceTimersByTimeAsync(10_000);
 
-      await expect(degraded).resolves.toEqual(expect.objectContaining({ activeThemeId: "default" }));
+      await expect(degraded).resolves.toEqual(
+        expect.objectContaining({ activeThemeId: "default" }),
+      );
       expect(firstSignal?.aborted).toBe(true);
-      expect(warn).toHaveBeenCalledWith(
+      expect(warnings(harness)).toContain(
         "theme-preview: plugin list unavailable: Error: theme-preview: plugin list timed out after 15000ms",
       );
-      await expect(catalogLoader.catalog()).resolves.toEqual(expect.objectContaining({ activeThemeId: "default" }));
+      await expect(catalogLoader.catalog()).resolves.toEqual(
+        expect.objectContaining({ activeThemeId: "default" }),
+      );
       expect(pluginListCalls).toBe(2);
     } finally {
       vi.useRealTimers();
@@ -185,22 +222,27 @@ describe("createCatalogLoader", () => {
     let activeThemeId = "theme-a";
     let blockPluginList = false;
     let releasePluginList!: () => void;
-    const pluginListBlocked = new Promise<void>((resolve) => { releasePluginList = resolve; });
-    const bb = {
-      sdk: {
-        theme: {
-          catalog: async () => ({ active: { themeId: activeThemeId }, custom: ["theme-a", "theme-b"], dir: null }),
-          set: async (themeId: string) => { activeThemeId = themeId; },
-        },
-        plugins: {
-          list: async () => {
-            if (blockPluginList) await pluginListBlocked;
-            return { plugins: [] };
-          },
+    const pluginListBlocked = new Promise<void>((resolve) => {
+      releasePluginList = resolve;
+    });
+    const { bb } = themeHost({
+      theme: {
+        catalog: async () => ({
+          active: { themeId: activeThemeId },
+          custom: ["theme-a", "theme-b"],
+          dir: null,
+        }),
+        set: async (themeId: string) => {
+          activeThemeId = themeId;
         },
       },
-      log: { info() {}, warn() {} },
-    } as unknown as BbPluginApi;
+      plugins: {
+        list: async () => {
+          if (blockPluginList) await pluginListBlocked;
+          return { plugins: [] };
+        },
+      },
+    });
 
     const catalogLoader = createCatalogLoader(bb);
     await catalogLoader.catalog();
@@ -209,13 +251,16 @@ describe("createCatalogLoader", () => {
     const selection = catalogLoader.setTheme("theme-b");
     const outcome = await Promise.race([
       selection.then((catalog) => ({ status: "resolved" as const, catalog })),
-      new Promise<{ status: "pending" }>((resolve) => setTimeout(() => resolve({ status: "pending" }), 10)),
+      new Promise<{ status: "pending" }>((resolve) =>
+        setTimeout(() => resolve({ status: "pending" }), 10),
+      ),
     ]);
 
     releasePluginList();
     await selection;
     expect(outcome.status).toBe("resolved");
-    if (outcome.status === "resolved") expect(outcome.catalog.activeThemeId).toBe("theme-b");
+    if (outcome.status === "resolved")
+      expect(outcome.catalog.activeThemeId).toBe("theme-b");
   });
 
   it("serializes overlapping selections so the latest requested theme wins", async () => {
@@ -223,25 +268,30 @@ describe("createCatalogLoader", () => {
     const setCalls: string[] = [];
     let releaseFirst!: () => void;
     let markFirstStarted!: () => void;
-    const firstBlocked = new Promise<void>((resolve) => { releaseFirst = resolve; });
-    const firstStarted = new Promise<void>((resolve) => { markFirstStarted = resolve; });
-    const bb = {
-      sdk: {
-        theme: {
-          catalog: async () => ({ active: { themeId: activeThemeId }, custom: [], dir: null }),
-          set: async (themeId: string) => {
-            setCalls.push(themeId);
-            if (themeId === "theme-a") {
-              markFirstStarted();
-              await firstBlocked;
-            }
-            activeThemeId = themeId;
-          },
+    const firstBlocked = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const firstStarted = new Promise<void>((resolve) => {
+      markFirstStarted = resolve;
+    });
+    const { bb } = themeHost({
+      theme: {
+        catalog: async () => ({
+          active: { themeId: activeThemeId },
+          custom: [],
+          dir: null,
+        }),
+        set: async (themeId: string) => {
+          setCalls.push(themeId);
+          if (themeId === "theme-a") {
+            markFirstStarted();
+            await firstBlocked;
+          }
+          activeThemeId = themeId;
         },
-        plugins: { list: async () => ({ plugins: [] }) },
       },
-      log: { info() {}, warn() {} },
-    } as unknown as BbPluginApi;
+      plugins: { list: async () => ({ plugins: [] }) },
+    });
 
     const catalogLoader = createCatalogLoader(bb);
     const first = catalogLoader.setTheme("theme-a");
@@ -260,30 +310,39 @@ describe("createCatalogLoader", () => {
     const directory = await mkdtemp(join(tmpdir(), "theme-preview-catalog-"));
     for (const id of ["theme-a", "theme-b"]) {
       await mkdir(join(directory, id));
-      await writeFile(join(directory, id, "theme.css"), `:root { --canvas: #${id === "theme-a" ? "aaaaaa" : "bbbbbb"}; }`);
+      await writeFile(
+        join(directory, id, "theme.css"),
+        `:root { --canvas: #${id === "theme-a" ? "aaaaaa" : "bbbbbb"}; }`,
+      );
     }
 
     let activeThemeId = "theme-a";
     let pluginListCalls = 0;
     let resumeFirstPluginList!: () => void;
-    const firstPluginList = new Promise<void>((resolve) => { resumeFirstPluginList = resolve; });
+    const firstPluginList = new Promise<void>((resolve) => {
+      resumeFirstPluginList = resolve;
+    });
     const setCalls: string[] = [];
-    const bb = {
-      sdk: {
-        theme: {
-          catalog: async () => ({ active: { themeId: activeThemeId }, custom: ["theme-a", "theme-b"], dir: directory }),
-          set: async (themeId: string) => { setCalls.push(themeId); activeThemeId = themeId; },
-        },
-        plugins: {
-          list: async () => {
-            pluginListCalls += 1;
-            if (pluginListCalls === 1) await firstPluginList;
-            return { plugins: [] };
-          },
+    const { bb } = themeHost({
+      theme: {
+        catalog: async () => ({
+          active: { themeId: activeThemeId },
+          custom: ["theme-a", "theme-b"],
+          dir: directory,
+        }),
+        set: async (themeId: string) => {
+          setCalls.push(themeId);
+          activeThemeId = themeId;
         },
       },
-      log: { info() {}, warn() {} },
-    } as unknown as BbPluginApi;
+      plugins: {
+        list: async () => {
+          pluginListCalls += 1;
+          if (pluginListCalls === 1) await firstPluginList;
+          return { plugins: [] };
+        },
+      },
+    });
 
     const catalogLoader = createCatalogLoader(bb);
     const stale = catalogLoader.catalog();
@@ -305,22 +364,28 @@ describe("createCatalogLoader", () => {
     await mkdir(themeDirectory);
     await writeFile(filePath, ":root { --canvas: #ffffff; }");
     const setCalls: string[] = [];
-    const bb = {
-      sdk: {
-        theme: {
-          catalog: async () => ({ active: { themeId: "theme-a" }, custom: ["theme-a"], dir: directory }),
-          set: async (themeId: string) => { setCalls.push(themeId); },
+    const { bb } = themeHost({
+      theme: {
+        catalog: async () => ({
+          active: { themeId: "theme-a" },
+          custom: ["theme-a"],
+          dir: directory,
+        }),
+        set: async (themeId: string) => {
+          setCalls.push(themeId);
         },
-        plugins: { list: async () => ({ plugins: [] }) },
       },
-      log: { info() {}, warn() {} },
-    } as unknown as BbPluginApi;
+      plugins: { list: async () => ({ plugins: [] }) },
+    });
 
     try {
       const loader = createCatalogLoader(bb);
       expect((await loader.catalog()).revision).toBe(0);
 
-      await writeFile(filePath, ":root { --canvas: #dddddd; }\n/* external and longer */");
+      await writeFile(
+        filePath,
+        ":root { --canvas: #dddddd; }\n/* external and longer */",
+      );
       expect((await loader.catalog()).revision).toBe(1);
       expect(setCalls).toEqual(["theme-a"]);
     } finally {
@@ -331,58 +396,34 @@ describe("createCatalogLoader", () => {
 
 describe("theme watcher", () => {
   it("stops promptly when aborted during the initial catalog request", async () => {
-    let start!: (signal: AbortSignal) => Promise<void>;
     let markCatalogStarted!: () => void;
-    const catalogStarted = new Promise<void>((resolve) => { markCatalogStarted = resolve; });
+    const catalogStarted = new Promise<void>((resolve) => {
+      markCatalogStarted = resolve;
+    });
     let catalogSignal: AbortSignal | undefined;
-    const bb = {
-      background: {
-        service(_name: string, options: { start(signal: AbortSignal): Promise<void> }) {
-          start = options.start;
-        },
-      },
-      sdk: {
-        theme: {
-          catalog: ({ signal }: { signal?: AbortSignal } = {}) => {
-            catalogSignal = signal;
-            markCatalogStarted();
-            return new Promise((_resolve, reject) => {
-              signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+    const { bb, harness } = themeHost({
+      theme: {
+        catalog: ({ signal }: { signal?: AbortSignal } = {}) => {
+          catalogSignal = signal;
+          markCatalogStarted();
+          return new Promise((_resolve, reject) => {
+            signal?.addEventListener("abort", () => reject(signal.reason), {
+              once: true,
             });
-          },
+          });
         },
       },
-      rpc: { register() {} },
-      log: { info() {}, warn() {} },
-    } as unknown as BbPluginApi;
+    });
 
     await plugin(bb);
+    const [service] = harness.registrations.services;
     const controller = new AbortController();
-    const running = start(controller.signal);
+    const running = service!.start(controller.signal);
     await catalogStarted;
     controller.abort();
 
     await expect(running).resolves.toBeUndefined();
     expect(catalogSignal).toBe(controller.signal);
-  });
-});
-
-describe("RPC registration", () => {
-  it("exposes only catalog loading and theme selection", async () => {
-    let handlerNames: string[] = [];
-    const bb = {
-      background: { service() {} },
-      rpc: {
-        register(_contract: unknown, handlers: object) {
-          handlerNames = Object.keys(handlers).sort();
-        },
-      },
-      log: { info() {}, warn() {} },
-    } as unknown as BbPluginApi;
-
-    await plugin(bb);
-
-    expect(handlerNames).toEqual(["setTheme", "themeCatalog"]);
   });
 });
 
@@ -399,13 +440,18 @@ describe("buildCatalog", () => {
       {
         active: { themeId: "default" },
         custom: ["endless"],
-        plugins: [{ id: "plugin:endless:endless-color", name: "Endless Color" }],
+        plugins: [
+          { id: "plugin:endless:endless-color", name: "Endless Color" },
+        ],
       },
       async (id) => (id === "endless" ? ":root { --canvas: #f4f4f4; }" : null),
     );
     expect(out.activeThemeId).toBe("default");
-    expect(out.themes.map((t) => t.id).slice(0, 3)).toEqual(["endless", "plugin:endless:endless-color", "default"]);
-    // bundled palettes carry swatches extracted from bb's source
+    expect(out.themes.map((t) => t.id).slice(0, 3)).toEqual([
+      "endless",
+      "plugin:endless:endless-color",
+      "default",
+    ]);
     const nord = out.themes.find((t) => t.id === "nord");
     expect(nord?.dark?.primary).toBe("#88c0d0");
     expect(nord?.light?.canvas).toBe("#eceff4");

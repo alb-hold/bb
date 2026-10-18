@@ -28,8 +28,50 @@ Workspace instructions (.bb/AGENTS.md):
   Only the plural AGENTS.md is read, only from the exact data-dir and
   workspace-root .bb/ locations above (bb does not walk parent directories), and
   an empty file is ignored. This is bb's own provider-agnostic instruction
-  injection, separate from provider-native files such as CLAUDE.md or a
-  repo-root AGENTS.md.
+  injection, separate from provider-native instruction files. Codex reads a
+  repo-root AGENTS.md. Claude Code 2.1.277 and later also reads AGENTS.md when
+  no project or ancestor CLAUDE.md or CLAUDE.local.md takes precedence. Older
+  Claude Code versions and sessions without its built-in AGENTS.md support
+  still require CLAUDE.md.
+
+Codex MCP servers:
+
+  A running Codex thread reloads its MCP servers at the start of the next turn
+  after ~/.codex/config.toml ($CODEX_HOME/config.toml) or a .codex/config.toml
+  in the working directory or its parents changes.
+
+Claude Code MCP servers:
+
+  A running Claude Code thread applies MCP configuration changes at the start
+  of its next turn without restarting the conversation. It watches ~/.claude.json,
+  $CLAUDE_CONFIG_DIR/settings.json and settings.local.json (default under ~/.claude/), and
+  .mcp.json, .claude/settings.json, and .claude/settings.local.json in the
+  working directory and its parents. Changes can add, remove, or update servers;
+  MCP changes are detected from the effective server set and MCP enablement
+  settings, so unrelated ~/.claude.json state does not trigger a reload. Before
+  passing project .mcp.json servers to the SDK, bb requires their names in
+  enabledMcpjsonServers or enableAllProjectMcpServers: true in user or local
+  project settings. Checked-in project settings cannot approve their own
+  commands or provide MCP server definitions; disabledMcpjsonServers always
+  takes precedence. At the start of a turn, bb checks configuration and starts
+  changes on the current SDK query without restarting the conversation. Turn
+  input waits at most 50 ms for SDK status, disable, or update calls; slower
+  calls continue in the background. A slow config read, invalid or incomplete
+  config, or failed status read preserves the current server set, logs the
+  failure, leaves reconciliation pending, and still sends the turn input.
+  Per-server connection errors are logged without marking the whole server set
+  pending, so other servers remain available. If a whole-set update cannot be
+  applied, or status/disable/restore state is uncertain, the bridge temporarily
+  denies external MCP tool calls while reconciliation retries on later turns;
+  turn input, non-MCP tools, and the bb bridge's own tools remain available.
+  The project .mcp.json approval checks still apply before those servers can be
+  passed to the SDK.
+
+  After a changed configuration is applied, bb checks server status in the
+  background and attempts to reconnect servers reported as needs-auth or
+  failed. It does not reconnect healthy unchanged servers, and it does not
+  repeat reconnect attempts on turns where the effective MCP configuration is
+  unchanged. A failed or still-running reconnect does not delay turn input.
 
 Skills (.bb/skills/):
 
@@ -56,7 +98,9 @@ Skills (.bb/skills/):
   commands default to `BB_PROJECT_ID`, then the personal project; pass
   `--project` or `--environment` when a different workspace is required.
 
-  Use `bb skill search` to browse skills.sh, `bb skill registry detail
+  Use `bb skill search [query]` to browse skills.sh (no query lists what is
+  trending; `--page` starts at 0 and `--per-page` defaults to 24). JSON
+  `installs` counts the `ranking` window; `lifetimeInstalls` may be null. Use `bb skill registry detail
   <registry-skill-id>` to inspect metadata and the bounded file preview, and
   `bb skill install <registry-skill-id>` to install that canonical registry
   identity into bb user skills. Registry commands are server-wide and do not
@@ -65,14 +109,13 @@ Skills (.bb/skills/):
   Use `bb skill install-cli-skills` to copy bb's built-in CLI skills into a
   machine's global agent skill roots (`~/.agents/skills` and
   `~/.claude/skills`) so agents running outside bb can drive it. It installs on
-  every connected machine unless you pass `--machine <id-or-name>`, which is
-  repeatable. Settings → Skills exposes the same action; it asks which machines
-  only when more than one is enrolled. Machines install independently, so the
-  command reports each machine's outcome and exits non-zero if any failed. The
-  install replaces a previously installed copy of the same skill and leaves
-  other skills alone. `bb skill cli-skills-status` reports whether each machine
-  is installed, out of date, missing, or unknown (disconnected or unreachable);
-  the settings row shows the same as a badge.
+  every connected persistent machine unless you pass `--machine <id-or-name>`
+  (repeatable; required for a sandbox) (Settings → Skills has the same action). Machines install
+  independently, so the command reports each machine's outcome and exits
+  non-zero if any failed. The install replaces a previously installed copy of
+  the same skill and leaves other skills alone. `bb skill cli-skills-status`
+  reports whether each machine is installed, out of date, missing, or unknown
+  (disconnected or unreachable).
 
   Use the skill-creator skill to author and iterate on skills.
 
@@ -92,11 +135,3 @@ BB guide plugin:
 
   Changes apply when agent configuration is next assembled. They do not erase
   existing conversation text or disable independently installed copies.
-
-Connect agent instructions:
-
-  Settings → Installed plugins → Connect → Tell agents about remote access
-  controls the message telling remotely used agents to expose public server
-  links. It defaults to true and still requires active/recent remote usage.
-  Use `bb plugin config connect set sendRemoteInstructions false` to turn it
-  off. Port sharing remains available.

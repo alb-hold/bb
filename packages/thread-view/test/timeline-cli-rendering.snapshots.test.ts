@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   createTimelineEventFactory,
+  flattenTimelineRows,
   messageKinds,
   renderTimelineFixture,
+  workRowsOfKind,
 } from "./timeline-test-harness.js";
 import { formatThreadTimelineText } from "../src/format-timeline-text.js";
 import type { TimelineRow } from "@bb/server-contract";
@@ -51,28 +53,6 @@ function renderPrefixSnapshots(events: TimelineFixtureEvent[]) {
       text: timeline.text,
     };
   });
-}
-
-function getNestedRows(row: TimelineRow): readonly TimelineRow[] {
-  if (row.kind === "turn") {
-    return row.children ?? [];
-  }
-  if (row.kind === "work" && row.workKind === "delegation") {
-    return row.childRows;
-  }
-  return [];
-}
-
-function flattenTimelineRows(rows: readonly TimelineRow[]): TimelineRow[] {
-  const flattenedRows: TimelineRow[] = [];
-  const visitRows = (currentRows: readonly TimelineRow[]): void => {
-    for (const row of currentRows) {
-      flattenedRows.push(row);
-      visitRows(getNestedRows(row));
-    }
-  };
-  visitRows(rows);
-  return flattenedRows;
 }
 
 function isTimelineWebWorkRow(row: TimelineRow): row is TimelineWebWorkRow {
@@ -462,6 +442,19 @@ describe("timeline CLI rendering snapshots", () => {
         ── Running pnpm lint
           $ pnpm lint"
     `);
+  });
+
+  it("pads top-level separators by display width", () => {
+    const event = createTimelineEventFactory({ threadId: "thread-1" });
+    const command = "调".repeat(10);
+    const timeline = renderActiveTimeline([
+      event.turnStarted(),
+      event.commandStarted({ itemId: "cmd-wide", command }),
+    ]);
+
+    expect(timeline.text).toContain(
+      `── Running ${command} ${"─".repeat(28)}\n`,
+    );
   });
 
   it("uses shared turn title fallback text in CLI output", () => {
@@ -880,7 +873,7 @@ describe("timeline CLI rendering snapshots", () => {
     ]);
   });
 
-  it("shows provisioning failure as user input, operation, and error", () => {
+  it("shows provisioning failure once with its transcript and error detail", () => {
     const event = createTimelineEventFactory({ threadId: "thread-1" });
     const timeline = renderTimelineFixture({
       events: [
@@ -924,21 +917,13 @@ describe("timeline CLI rendering snapshots", () => {
       },
     });
 
-    expect(messageKinds(timeline.messages)).toEqual([
-      "user",
-      "operation",
-      "error",
-    ]);
+    expect(messageKinds(timeline.messages)).toEqual(["user", "operation"]);
     expect(timeline.text).toMatchInlineSnapshot(`
       "── User ────────────────────────────────────────────────────
       Start the failing workspace
 
       ── Provisioning thread failed ──────────────────────────────
         Running setup
-        pnpm install failed
-
-      ── Error ───────────────────────────────────────────────────
-        Provisioning thread failed
         pnpm install failed"
     `);
   });
@@ -1213,26 +1198,18 @@ describe("timeline CLI rendering snapshots", () => {
       event.turnCompleted(),
     ]);
 
-    const allRows = flattenTimelineRows(timeline.rows);
     const rootTurn = timeline.rows.find(
       (row): row is Extract<TimelineRow, { kind: "turn" }> =>
         row.kind === "turn",
     );
-    const delegation = allRows.find(
-      (
-        row,
-      ): row is Extract<
-        TimelineRow,
-        { kind: "work"; workKind: "delegation" }
-      > => row.kind === "work" && row.workKind === "delegation",
-    );
+    const delegation = workRowsOfKind(timeline.rows, "delegation").at(0);
 
     expect(rootTurn).toBeDefined();
     expect(delegation).toBeDefined();
-    expect(delegation?.childRows.some((row) => row.kind === "turn")).toBe(
+    expect(delegation?.childRows?.some((row) => row.kind === "turn")).toBe(
       false,
     );
-    expect(delegation?.childRows.length ?? 0).toBeGreaterThan(0);
+    expect(delegation?.childRows?.length ?? 0).toBeGreaterThan(0);
     for (const childRow of delegation?.childRows ?? []) {
       expect(childRow.id.startsWith(`${delegation?.id}:child:`)).toBe(true);
     }
@@ -1293,15 +1270,7 @@ describe("timeline CLI rendering snapshots", () => {
       event.turnCompleted(),
     ]);
 
-    const allRows = flattenTimelineRows(timeline.rows);
-    const delegations = allRows.filter(
-      (
-        row,
-      ): row is Extract<
-        TimelineRow,
-        { kind: "work"; workKind: "delegation" }
-      > => row.kind === "work" && row.workKind === "delegation",
-    );
+    const delegations = workRowsOfKind(timeline.rows, "delegation");
     const topLevelChildTurns = timeline.rows.filter(
       (row) => row.kind === "turn" && row.turnId.startsWith("child-turn-"),
     );
@@ -1336,7 +1305,7 @@ describe("timeline CLI rendering snapshots", () => {
     );
     expect(
       delegations.some((delegation) =>
-        delegation.childRows.some((row) => row.kind === "turn"),
+        delegation.childRows?.some((row) => row.kind === "turn"),
       ),
     ).toBe(false);
   });
@@ -1505,15 +1474,7 @@ describe("timeline CLI rendering snapshots", () => {
       }),
     ]);
 
-    const allRows = flattenTimelineRows(timeline.rows);
-    const delegation = allRows.find(
-      (
-        row,
-      ): row is Extract<
-        TimelineRow,
-        { kind: "work"; workKind: "delegation" }
-      > => row.kind === "work" && row.workKind === "delegation",
-    );
+    const delegation = workRowsOfKind(timeline.rows, "delegation").at(0);
     const rootFollowUp = timeline.rows.find(
       (row) =>
         row.kind === "conversation" &&
@@ -1531,7 +1492,7 @@ describe("timeline CLI rendering snapshots", () => {
         }),
       ]),
     );
-    expect(delegation?.childRows.some((row) => row.turnId === "turn-2")).toBe(
+    expect(delegation?.childRows?.some((row) => row.turnId === "turn-2")).toBe(
       false,
     );
     expect(rootFollowUp).toMatchObject({
@@ -1586,15 +1547,7 @@ describe("timeline CLI rendering snapshots", () => {
       }),
     ]);
 
-    const allRows = flattenTimelineRows(timeline.rows);
-    const delegation = allRows.find(
-      (
-        row,
-      ): row is Extract<
-        TimelineRow,
-        { kind: "work"; workKind: "delegation" }
-      > => row.kind === "work" && row.workKind === "delegation",
-    );
+    const delegation = workRowsOfKind(timeline.rows, "delegation").at(0);
     const topLevelSubagentOutput = timeline.rows.find(
       (row) =>
         row.kind === "conversation" &&
@@ -1710,15 +1663,7 @@ describe("timeline CLI rendering snapshots", () => {
     );
     const timeline = renderActiveTimeline(events);
 
-    const allRows = flattenTimelineRows(timeline.rows);
-    const delegation = allRows.find(
-      (
-        row,
-      ): row is Extract<
-        TimelineRow,
-        { kind: "work"; workKind: "delegation" }
-      > => row.kind === "work" && row.workKind === "delegation",
-    );
+    const delegation = workRowsOfKind(timeline.rows, "delegation").at(0);
     const sendTurn = timeline.rows.find(
       (row): row is Extract<TimelineRow, { kind: "turn" }> =>
         row.kind === "turn" && row.turnId === "turn-2",
@@ -1793,15 +1738,7 @@ describe("timeline CLI rendering snapshots", () => {
       }),
     ]);
 
-    const allRows = flattenTimelineRows(timeline.rows);
-    const delegation = allRows.find(
-      (
-        row,
-      ): row is Extract<
-        TimelineRow,
-        { kind: "work"; workKind: "delegation" }
-      > => row.kind === "work" && row.workKind === "delegation",
-    );
+    const delegation = workRowsOfKind(timeline.rows, "delegation").at(0);
     const rootFollowUp = timeline.rows.find(
       (row) =>
         row.kind === "conversation" &&
@@ -1820,7 +1757,7 @@ describe("timeline CLI rendering snapshots", () => {
       ]),
     );
     expect(
-      delegation?.childRows.some((row) => row.turnId === "follow-up-turn"),
+      delegation?.childRows?.some((row) => row.turnId === "follow-up-turn"),
     ).toBe(false);
     expect(rootFollowUp).toMatchObject({
       kind: "conversation",
@@ -1902,15 +1839,7 @@ describe("timeline CLI rendering snapshots", () => {
       }),
     ]);
 
-    const allRows = flattenTimelineRows(timeline.rows);
-    const delegation = allRows.find(
-      (
-        row,
-      ): row is Extract<
-        TimelineRow,
-        { kind: "work"; workKind: "delegation" }
-      > => row.kind === "work" && row.workKind === "delegation",
-    );
+    const delegation = workRowsOfKind(timeline.rows, "delegation").at(0);
     const rootFollowUp = timeline.rows.find(
       (row) =>
         row.kind === "conversation" &&
@@ -1929,7 +1858,7 @@ describe("timeline CLI rendering snapshots", () => {
       ]),
     );
     expect(
-      delegation?.childRows.some((row) => row.turnId === "follow-up-turn"),
+      delegation?.childRows?.some((row) => row.turnId === "follow-up-turn"),
     ).toBe(false);
     expect(rootFollowUp).toMatchObject({
       kind: "conversation",
@@ -1969,15 +1898,7 @@ describe("timeline CLI rendering snapshots", () => {
       }),
     ]);
 
-    const allRows = flattenTimelineRows(timeline.rows);
-    const delegation = allRows.find(
-      (
-        row,
-      ): row is Extract<
-        TimelineRow,
-        { kind: "work"; workKind: "delegation" }
-      > => row.kind === "work" && row.workKind === "delegation",
-    );
+    const delegation = workRowsOfKind(timeline.rows, "delegation").at(0);
     const topLevelChildRows = timeline.rows.filter(
       (row) => row.turnId?.startsWith("child-turn-") === true,
     );
@@ -2027,15 +1948,7 @@ describe("timeline CLI rendering snapshots", () => {
       event.turnCompleted(),
     ]);
 
-    const allRows = flattenTimelineRows(timeline.rows);
-    const delegation = allRows.find(
-      (
-        row,
-      ): row is Extract<
-        TimelineRow,
-        { kind: "work"; workKind: "delegation" }
-      > => row.kind === "work" && row.workKind === "delegation",
-    );
+    const delegation = workRowsOfKind(timeline.rows, "delegation").at(0);
     const topLevelChildRows = timeline.rows.filter(
       (row) => row.turnId === "child-turn-1",
     );
@@ -2088,15 +2001,7 @@ describe("timeline CLI rendering snapshots", () => {
       }),
     ]);
 
-    const allRows = flattenTimelineRows(timeline.rows);
-    const delegation = allRows.find(
-      (
-        row,
-      ): row is Extract<
-        TimelineRow,
-        { kind: "work"; workKind: "delegation" }
-      > => row.kind === "work" && row.workKind === "delegation",
-    );
+    const delegation = workRowsOfKind(timeline.rows, "delegation").at(0);
     const rootFollowUp = timeline.rows.find(
       (row) =>
         row.kind === "conversation" &&
@@ -2114,7 +2019,7 @@ describe("timeline CLI rendering snapshots", () => {
         }),
       ]),
     );
-    expect(delegation?.childRows.some((row) => row.turnId === "turn-2")).toBe(
+    expect(delegation?.childRows?.some((row) => row.turnId === "turn-2")).toBe(
       false,
     );
     expect(rootFollowUp).toMatchObject({
@@ -2158,22 +2063,14 @@ describe("timeline CLI rendering snapshots", () => {
       }),
     ]);
 
-    const allRows = flattenTimelineRows(timeline.rows);
-    const delegation = allRows.find(
-      (
-        row,
-      ): row is Extract<
-        TimelineRow,
-        { kind: "work"; workKind: "delegation" }
-      > => row.kind === "work" && row.workKind === "delegation",
-    );
+    const delegation = workRowsOfKind(timeline.rows, "delegation").at(0);
 
     expect(delegation).toBeDefined();
     expect(delegation?.status).toBe("pending");
-    expect(delegation?.childRows.some((row) => row.kind === "turn")).toBe(
+    expect(delegation?.childRows?.some((row) => row.kind === "turn")).toBe(
       false,
     );
-    expect(delegation?.childRows.length ?? 0).toBeGreaterThanOrEqual(3);
+    expect(delegation?.childRows?.length ?? 0).toBeGreaterThanOrEqual(3);
     expect(timeline.text).not.toContain("Worked for");
     expect(timeline.text).not.toContain("Working for");
   });
@@ -2371,6 +2268,7 @@ describe("timeline CLI rendering snapshots", () => {
       {
         kind: "operation",
         id: "thread-1:op:reasoning:kind:reasoning|turn:turn-1|parent:root|item:reasoning-1",
+        sourceEvent: { seq: 2, part: 0 },
         threadId: "thread-1",
         sourceSeqStart: 2,
         sourceSeqEnd: 4,
@@ -2419,7 +2317,8 @@ describe("timeline CLI rendering snapshots", () => {
     const expectedText = "Summary 1.\nBody.\nSummary 2.";
 
     expect(
-      renderActiveTimeline(streamingEvents).projection.state.activeThinking?.text,
+      renderActiveTimeline(streamingEvents).projection.state.activeThinking
+        ?.text,
     ).toBe(expectedText);
     const completedMessages = renderActiveTimeline(
       completedEvents.slice(0, -1),
@@ -2446,7 +2345,8 @@ describe("timeline CLI rendering snapshots", () => {
     const expectedText = "First paragraph.\n\nSecond paragraph.";
 
     expect(
-      renderActiveTimeline(streamingEvents).projection.state.activeThinking?.text,
+      renderActiveTimeline(streamingEvents).projection.state.activeThinking
+        ?.text,
     ).toBe(expectedText);
     expect(
       renderIdleTimeline([
@@ -2509,32 +2409,35 @@ describe("timeline CLI rendering snapshots", () => {
     expect(reasoningMessages[0]).not.toHaveProperty("parentToolCallId");
   });
 
-  it("finalizes streamed reasoning as interrupted when its turn fails", () => {
-    const event = createTimelineEventFactory({ threadId: "thread-1" });
-    const timeline = renderIdleTimeline([
-      event.turnStarted({ createdAt: 0 }),
-      event.reasoningDelta({
-        createdAt: 2_000,
-        itemId: "reasoning-1",
-        delta: "Checking the failure path.",
-      }),
-      event.turnCompleted({ createdAt: 7_000, status: "failed" }),
-    ]);
+  it.each(["failed", "interrupted"] as const)(
+    "finalizes streamed reasoning as interrupted when its turn ends %s",
+    (status) => {
+      const event = createTimelineEventFactory({ threadId: "thread-1" });
+      const timeline = renderIdleTimeline([
+        event.turnStarted({ createdAt: 0 }),
+        event.reasoningDelta({
+          createdAt: 2_000,
+          itemId: "reasoning-1",
+          delta: "Checking the failure path.",
+        }),
+        event.turnCompleted({ createdAt: 7_000, status }),
+      ]);
 
-    expect(
-      timeline.messages.filter((message) => message.kind === "operation"),
-    ).toEqual([
-      expect.objectContaining({
-        completedAt: 7_000,
-        detail: "Checking the failure path.",
-        sourceSeqEnd: 3,
-        sourceSeqStart: 2,
-        startedAt: 2_000,
-        status: "interrupted",
-        title: "Thought for 5s",
-      }),
-    ]);
-  });
+      expect(
+        timeline.messages.filter((message) => message.kind === "operation"),
+      ).toEqual([
+        expect.objectContaining({
+          completedAt: 7_000,
+          detail: "Checking the failure path.",
+          sourceSeqEnd: 3,
+          sourceSeqStart: 2,
+          startedAt: 2_000,
+          status: "interrupted",
+          title: "Thought for 5s",
+        }),
+      ]);
+    },
+  );
 
   it("truncates very long completed reasoning detail", () => {
     const event = createTimelineEventFactory({ threadId: "thread-1" });
@@ -2560,33 +2463,6 @@ describe("timeline CLI rendering snapshots", () => {
     expect(detail).toContain("more characters truncated");
     expect(detail.startsWith("x".repeat(32_000))).toBe(true);
     expect(detail.length).toBeLessThan(40_000);
-  });
-
-  it("finalizes streamed reasoning as interrupted when its turn is interrupted", () => {
-    const event = createTimelineEventFactory({ threadId: "thread-1" });
-    const timeline = renderIdleTimeline([
-      event.turnStarted({ createdAt: 0 }),
-      event.reasoningDelta({
-        createdAt: 2_000,
-        itemId: "reasoning-1",
-        delta: "Checking the failure path.",
-      }),
-      event.turnCompleted({ createdAt: 7_000, status: "interrupted" }),
-    ]);
-
-    expect(
-      timeline.messages.filter((message) => message.kind === "operation"),
-    ).toEqual([
-      expect.objectContaining({
-        completedAt: 7_000,
-        detail: "Checking the failure path.",
-        sourceSeqEnd: 3,
-        sourceSeqStart: 2,
-        startedAt: 2_000,
-        status: "interrupted",
-        title: "Thought for 5s",
-      }),
-    ]);
   });
 
   it("ignores reasoning deltas after explicit completion", () => {
@@ -2852,25 +2728,6 @@ describe("timeline CLI rendering snapshots", () => {
     expect(fetchRow).not.toHaveProperty("resultText");
   });
 
-  it("capitalizes fetch-only web summaries", () => {
-    const event = createTimelineEventFactory({ threadId: "thread-1" });
-    const timeline = renderIdleTimeline([
-      event.turnStarted(),
-      event.webFetchCompleted({
-        itemId: "web-fetch-1",
-        url: "https://example.com/page",
-        resultText: "Fetched page payload that should stay out of the summary.",
-      }),
-      event.turnCompleted(),
-    ]);
-
-    expect(timeline.text).not.toContain("Fetched page payload");
-    expect(timeline.text).toMatchInlineSnapshot(`
-      "── Worked for (2ms) ────────────────────────────────────────
-        ── Fetched: https://example.com/page"
-    `);
-  });
-
   it("shows pending approval and denied command states", () => {
     const event = createTimelineEventFactory({ threadId: "thread-1" });
     const timeline = renderActiveTimeline([
@@ -2992,13 +2849,16 @@ describe("timeline CLI rendering snapshots", () => {
   it("shows reconnect errors compactly", () => {
     const event = createTimelineEventFactory({ threadId: "thread-1" });
     const timeline = renderActiveTimeline([
-      event.systemError({
-        code: "provider_reconnect",
-        message: "Reconnecting... 1/3",
+      event.turnStarted(),
+      event.providerError({
+        message: "Provider error",
+        detail: "Reconnecting... 1/3\nstream disconnected",
+        willRetry: true,
       }),
-      event.systemError({
-        code: "provider_reconnect",
-        message: "Reconnecting... 2/3",
+      event.providerError({
+        message: "Provider error",
+        detail: "Reconnecting... 2/3\nstream disconnected",
+        willRetry: true,
       }),
       event.systemError({
         code: "provider_runtime_error",

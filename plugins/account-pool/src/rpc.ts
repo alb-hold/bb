@@ -2,25 +2,37 @@ import { defineRpcContract, type PluginRpcHandlers } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import {
   accountAddInputSchema,
+  accountDisableSubscriptionInputSchema,
   accountPoolConfigSchema,
   accountPoolConfigSetInputSchema,
   accountIdInputSchema,
   accountPriorityInputSchema,
+  accountRenameInputSchema,
   accountReorderInputSchema,
   accountSchema,
   accountSummarySchema,
+  bypassGetInputSchema,
   bypassInputSchema,
   codexLoginCancelSchema,
   codexLoginPollInputSchema,
   codexLoginPollSchema,
   codexLoginStartSchema,
   hubTokenSummarySchema,
+  localLoginSchema,
   loginCompleteInputSchema,
+  loginStartInputSchema,
   loginStartSchema,
   routedThreadStatusListSchema,
   statusSchema,
   tokenRotateInputSchema,
   routingSetInputSchema,
+  routingBindingGetInputSchema,
+  routingBindingGetSchema,
+  routingBindingNextInputSchema,
+  routingBindingNextSchema,
+  threadSelectionInputSchema,
+  threadSelectionSetSchema,
+  threadSelectionSchema,
   type AccountPoolConfigController,
 } from "./contracts.js";
 import type { PoolOperations } from "./operations.js";
@@ -28,6 +40,14 @@ import type { ClaudeOAuthLogin } from "./oauth-login.js";
 import type { CodexDeviceLogin } from "./codex-device-login.js";
 
 export const accountPoolRpcContract = defineRpcContract({
+  "routing.selection.get": {
+    input: threadSelectionInputSchema,
+    output: threadSelectionSchema,
+  },
+  "routing.selection.set": {
+    input: threadSelectionSetSchema,
+    output: threadSelectionSchema,
+  },
   "account.add": {
     input: accountAddInputSchema,
     output: accountSchema,
@@ -48,8 +68,16 @@ export const accountPoolRpcContract = defineRpcContract({
     input: accountIdInputSchema,
     output: z.object({ account: accountSchema.nullable() }).strict(),
   },
+  "account.disableSubscription": {
+    input: accountDisableSubscriptionInputSchema,
+    output: z.object({ accounts: z.array(accountSchema).nullable() }).strict(),
+  },
   "account.setPriority": {
     input: accountPriorityInputSchema,
+    output: z.object({ account: accountSchema.nullable() }).strict(),
+  },
+  "account.rename": {
+    input: accountRenameInputSchema,
     output: z.object({ account: accountSchema.nullable() }).strict(),
   },
   "account.reorder": {
@@ -75,7 +103,7 @@ export const accountPoolRpcContract = defineRpcContract({
     output: accountPoolConfigSchema,
   },
   "login.start": {
-    input: z.null(),
+    input: loginStartInputSchema,
     output: loginStartSchema,
   },
   "login.complete": {
@@ -83,8 +111,12 @@ export const accountPoolRpcContract = defineRpcContract({
     output: accountSchema,
   },
   "codexLogin.start": {
-    input: z.null(),
+    input: loginStartInputSchema,
     output: codexLoginStartSchema,
+  },
+  "local.logins": {
+    input: z.null(),
+    output: z.array(localLoginSchema),
   },
   "codexLogin.poll": {
     input: codexLoginPollInputSchema,
@@ -112,6 +144,41 @@ export const accountPoolRpcContract = defineRpcContract({
   },
 });
 
+export const accountPoolBypassReadRpcContract = defineRpcContract({
+  "bypass.get": {
+    input: bypassGetInputSchema,
+    output: bypassInputSchema,
+    experimental_description:
+      "Reads whether Account Pooler routing is bypassed for one thread. This is read-only and does not change routing.",
+  },
+});
+
+export const accountPoolBindingReadRpcContract = defineRpcContract({
+  "routing.binding.get": {
+    input: routingBindingGetInputSchema,
+    output: routingBindingGetSchema,
+    experimental_description:
+      "Reads one Claude thread's automatic account affinity, the next automatic account choice, and per-account headroom. It never changes routing.",
+  },
+  "routing.binding.next": {
+    input: routingBindingNextInputSchema,
+    output: routingBindingNextSchema,
+    experimental_description:
+      "Reads the next automatic Claude account choice for a new conversation. It never changes routing.",
+  },
+});
+
+export function createBindingReadRpcHandlers(
+  operations: PoolOperations,
+): PluginRpcHandlers<typeof accountPoolBindingReadRpcContract> {
+  return {
+    "routing.binding.get": ({ threadId }) =>
+      operations.bindingPreview(threadId),
+    "routing.binding.next": ({ provider }) =>
+      operations.nextAccountPreview(provider),
+  };
+}
+
 export function createRpcHandlers(
   operations: PoolOperations,
   login: ClaudeOAuthLogin,
@@ -119,6 +186,10 @@ export function createRpcHandlers(
   config: AccountPoolConfigController,
 ): PluginRpcHandlers<typeof accountPoolRpcContract> {
   return {
+    "routing.selection.get": ({ threadId, provider }) =>
+      operations.selectedAccount(threadId, provider),
+    "routing.selection.set": ({ threadId, provider, accountId }) =>
+      operations.selectAccount(threadId, provider, accountId),
     "account.add": (input) => operations.add(input),
     "account.list": () => operations.list(),
     "account.remove": async ({ id }) => ({
@@ -130,8 +201,14 @@ export function createRpcHandlers(
     "account.disable": async ({ id }) => ({
       account: await operations.disable(id),
     }),
+    "account.disableSubscription": async ({ id, expectedIds }) => ({
+      accounts: await operations.disableSubscription(id, expectedIds),
+    }),
     "account.setPriority": async ({ accountId, priority }) => ({
       account: await operations.setPriority(accountId, priority),
+    }),
+    "account.rename": async ({ id, label }) => ({
+      account: await operations.rename(id, label),
     }),
     "account.refreshUsage": async ({ accountId }) => ({
       account: await operations.refreshUsage(accountId),
@@ -146,10 +223,29 @@ export function createRpcHandlers(
     },
     "config.get": () => config.get(),
     "config.set": (input) => config.set(input),
-    "login.start": () => login.start(),
+    "login.start": async (input) => {
+      if (input !== null)
+        await operations.requireReauthorizable(input.accountId, "claude");
+      return login.start(input);
+    },
     "login.complete": (input) => login.complete(input),
-    "codexLogin.start": () => codexLogin.start(),
-    "codexLogin.poll": (input) => codexLogin.poll(input),
+    "codexLogin.start": async (input) => {
+      if (input !== null)
+        await operations.requireReauthorizable(input.accountId, "codex");
+      return codexLogin.start(input);
+    },
+    "local.logins": () => operations.localLogins(),
+    "codexLogin.poll": async ({ sessionId, label }) => {
+      const result = await codexLogin.poll({ sessionId });
+      if (result.status !== "complete" || label === undefined) return result;
+      const account = await operations.rename(result.account.id, label);
+      return account === null
+        ? result
+        : {
+            status: "complete" as const,
+            account: { ...result.account, label },
+          };
+    },
     "codexLogin.cancel": (input) => ({
       cancelled: codexLogin.cancel(input),
     }),

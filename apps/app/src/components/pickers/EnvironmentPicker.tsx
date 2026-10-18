@@ -1,3 +1,4 @@
+import { PICKER_MOBILE_CLASS_NAME } from "./picker-layout";
 import { EnvironmentProviderIcon } from "@/components/plugin/EnvironmentProviderIcon";
 import { useMemo, useRef, useState } from "react";
 import type { Host, ProjectSource } from "@bb/domain";
@@ -41,7 +42,7 @@ import {
 import { selectHosts } from "@/hooks/queries/host-queries";
 import { providerInputsControlRequired } from "./environment-provider-inputs";
 import { MACHINE_BADGE_CLASS_NAME, orderLocalHostFirst } from "./MachinePicker";
-import { PickerLoadingRows } from "./PickerLoadingRows";
+import { ListLoadingPlaceholder } from "@/components/ui/ListLoadingPlaceholder";
 import { MachineIcon } from "@/components/machines/MachineLabel";
 import { searchMachineHosts } from "./machine-picker-search";
 import { useResetPickerScroll } from "./useResetPickerScroll";
@@ -85,7 +86,6 @@ export interface EnvironmentPickerUIProps {
   >;
   selectedProviderHostId?: string | null;
   inputsControlProviderIds?: ReadonlySet<string>;
-  multiMachinePickerEnabled?: boolean;
   onSelectProvider?: (
     provider: SystemEnvironmentProvider,
     hostId: string | null,
@@ -164,6 +164,33 @@ function mergeHostProviders(
     return hostProvider === undefined ? [] : [hostProvider];
   });
 }
+
+function contextualActiveHost({
+  machines,
+  previewHostId,
+  selectedHostId,
+  hasSelectedHostlessProvider,
+}: {
+  machines: EnvironmentPickerMachines;
+  previewHostId: string | null;
+  selectedHostId: string | null;
+  hasSelectedHostlessProvider: boolean;
+}): Host | undefined {
+  return (
+    machines.hosts.find((machineHost) => machineHost.id === previewHostId) ??
+    machines.hosts.find((machineHost) => machineHost.id === selectedHostId) ??
+    (hasSelectedHostlessProvider
+      ? undefined
+      : (machines.hosts.find(
+          (machineHost) => machineHost.id === machines.localDaemonHostId,
+        ) ??
+        machines.hosts.find(
+          (machineHost) => machineHost.id === machines.primaryHostId,
+        ) ??
+        machines.hosts[0]))
+  );
+}
+
 export function EnvironmentPickerUI({
   value,
   sources,
@@ -184,7 +211,6 @@ export function EnvironmentPickerUI({
   providersByHostId,
   selectedProviderHostId = null,
   inputsControlProviderIds = NO_INPUTS_CONTROL_PROVIDER_IDS,
-  multiMachinePickerEnabled = false,
   onSelectProvider,
   onSelectHost,
   onSelectReuse,
@@ -194,6 +220,9 @@ export function EnvironmentPickerUI({
   );
   const [searchQuery, setSearchQuery] = useState("");
   const [previewHostId, setPreviewHostId] = useState<string | null>(null);
+  const [commandValueOverride, setCommandValueOverride] = useState<
+    string | null
+  >(null);
   const commandRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const listRef = useResetPickerScroll<HTMLDivElement>(searchQuery);
@@ -211,7 +240,6 @@ export function EnvironmentPickerUI({
   const hostId = availableHost?.id ?? null;
   const hasMultipleMachines = (availableMachines?.hosts.length ?? 0) > 1;
   const showSearch =
-    multiMachinePickerEnabled &&
     hasMultipleMachines &&
     (availableMachines?.hosts.length ?? 0) >=
       MACHINE_CONTEXTUAL_MENU_MIN_OPTIONS;
@@ -259,6 +287,29 @@ export function EnvironmentPickerUI({
       provider.machineProviderId &&
       provider.requires.projectless === projectless,
   );
+  const selectedHostlessProvider = hostlessProviders.find((provider) =>
+    providerValueSelected(value, provider),
+  );
+  const contextualSelectedHostId =
+    parsed?.type === "provider" ? selectedProviderHostId : hostId;
+  const contextualHost =
+    showSearch && availableMachines
+      ? contextualActiveHost({
+          machines: availableMachines,
+          previewHostId,
+          selectedHostId: contextualSelectedHostId,
+          hasSelectedHostlessProvider: selectedHostlessProvider !== undefined,
+        })
+      : undefined;
+  const selectedCommandValue = contextualHost
+    ? `machine:${contextualHost.id}`
+    : selectedHostlessProvider
+      ? `provider:any:${selectedHostlessProvider.id}`
+      : parsed?.type === "reuse"
+        ? "reuse"
+        : selectedProvider !== undefined && selectedProviderHostId !== null
+          ? `provider:${selectedProviderHostId}:${selectedProvider.id}`
+          : "";
   const selected = useMemo((): SelectedEnvironment => {
     if (
       selectedProvider !== undefined &&
@@ -306,6 +357,7 @@ export function EnvironmentPickerUI({
   const handleOpenChange = (nextOpen: boolean) => {
     setUncontrolledOpen(nextOpen);
     onOpenChange?.(nextOpen);
+    setCommandValueOverride(null);
     if (!nextOpen) {
       setSearchQuery("");
       setPreviewHostId(null);
@@ -398,6 +450,7 @@ export function EnvironmentPickerUI({
         </Button>
       </PopoverTrigger>
       <PopoverContent
+        mobileClassName={PICKER_MOBILE_CLASS_NAME}
         align="start"
         aria-label="Environment"
         mobileTitle="Environment"
@@ -407,15 +460,14 @@ export function EnvironmentPickerUI({
         className="flex max-h-[min(var(--radix-popover-content-available-height),calc(100dvh-0.5rem))] w-auto max-w-80 min-w-52 flex-col overflow-hidden p-0 max-md:min-h-0 max-md:w-full max-md:flex-1"
       >
         {isLoading ? (
-          <PickerLoadingRows
-            label="Loading environments"
-            rowDataAttribute="data-environment-loading-row"
-          />
+          <ListLoadingPlaceholder label="Loading environments" />
         ) : (
           <Command
             ref={commandRef}
             label="Search machines"
             shouldFilter={false}
+            value={commandValueOverride ?? selectedCommandValue}
+            onValueChange={setCommandValueOverride}
             className="min-h-0"
           >
             {showSearch ? (
@@ -569,7 +621,6 @@ interface HostlessEnvironmentOptionsProps {
     | ((provider: SystemEnvironmentProvider, hostId: string | null) => void)
     | undefined;
   separated: boolean;
-  heading?: string;
 }
 
 function HostlessEnvironmentOptions({
@@ -578,14 +629,13 @@ function HostlessEnvironmentOptions({
   inputsControlProviderIds,
   onSelectProvider,
   separated,
-  heading,
 }: HostlessEnvironmentOptionsProps) {
   if (onSelectProvider === undefined || providers.length === 0) return null;
 
   return (
     <>
       {separated ? <CommandSeparator className="mx-0 shrink-0" /> : null}
-      <CommandGroup heading={heading} className="shrink-0">
+      <CommandGroup className="shrink-0">
         {providers.map((provider) => (
           <EnvironmentMenuItem
             key={provider.id}
@@ -776,18 +826,12 @@ function MachineContextualEnvironmentOptions({
   const selectedHostlessProvider = hostlessProviders.find((provider) =>
     providerValueSelected(value, provider),
   );
-  const activeHost =
-    orderedHosts.find((machineHost) => machineHost.id === previewHostId) ??
-    orderedHosts.find((machineHost) => machineHost.id === selectedHostId) ??
-    (selectedHostlessProvider === undefined
-      ? (orderedHosts.find(
-          (machineHost) => machineHost.id === machines.localDaemonHostId,
-        ) ??
-        orderedHosts.find(
-          (machineHost) => machineHost.id === machines.primaryHostId,
-        ) ??
-        orderedHosts[0])
-      : undefined);
+  const activeHost = contextualActiveHost({
+    machines: { ...machines, hosts: orderedHosts },
+    previewHostId,
+    selectedHostId,
+    hasSelectedHostlessProvider: selectedHostlessProvider !== undefined,
+  });
 
   return (
     <>
@@ -810,7 +854,7 @@ function MachineContextualEnvironmentOptions({
             />
           ))}
           {filteredHosts.length === 0 ? (
-            <div className="px-2 py-[0.3125rem] text-xs text-muted-foreground max-md:py-2">
+            <div className="px-2 py-[0.3125rem] text-xs text-muted-foreground max-md:pointer-coarse:py-2">
               No machines found
             </div>
           ) : null}
@@ -895,7 +939,7 @@ function MachineChoiceItem({
       aria-current={active ? "true" : undefined}
       onSelect={onSelect}
       className={cn(
-        "flex items-center gap-3 py-[0.3125rem] text-xs max-md:py-2",
+        "flex items-center gap-3 py-[0.3125rem] text-xs max-md:pointer-coarse:py-2",
         LIST_HOVER_TRANSITION,
         active && "font-medium text-foreground",
       )}
@@ -1100,7 +1144,7 @@ function EnvironmentMenuItem({
       }}
       className={cn(
         "flex items-start justify-between gap-3 whitespace-normal",
-        "py-[0.3125rem] text-xs max-md:py-2",
+        "py-[0.3125rem] text-xs max-md:pointer-coarse:py-2",
         LIST_HOVER_TRANSITION,
       )}
     >

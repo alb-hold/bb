@@ -1,4 +1,9 @@
 import { TERMINAL_DATA_MAX_BYTES } from "@bb/domain";
+import type {
+  TerminalServerMessage,
+  TerminalSession,
+} from "@bb/server-contract";
+import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { Terminal } from "@xterm/xterm";
 import { describe, expect, it, vi } from "vitest";
 import { decodeBase64Bytes } from "@/lib/base64-bytes";
@@ -7,6 +12,7 @@ import {
   applyTerminalFontFamily,
   captureTerminalContextMenuState,
   encodeTerminalInputChunks,
+  handleTerminalServerMessage,
   forceTerminalFontMeasurement,
   focusTerminalFromTouchRelease,
   forwardTerminalData,
@@ -17,9 +23,9 @@ import {
   startTerminalTouchFocusGesture,
   TERMINAL_ALLOW_PROPOSED_API,
   TERMINAL_FONT_FAMILY,
-  TERMINAL_UNICODE_VERSION,
   resolveTerminalFontFamily,
   writeTerminalOutput,
+  writeRetainedTerminalOutput,
   updateTerminalTouchFocusGesture,
 } from "./ThreadTerminalView";
 import {
@@ -262,6 +268,95 @@ describe("terminal touch focus", () => {
 });
 
 describe("terminal output encoding", () => {
+  it("finishes rendering many retained chunks before the exit notice", async () => {
+    const terminal = new Terminal({ cols: 80, rows: 24 });
+    const session = {
+      id: "term_many_chunks",
+      threadId: "thr_1",
+      environmentId: "env_1",
+      hostId: "host_1",
+      title: "Terminal",
+      initialCwd: "/workspace",
+      cols: 80,
+      rows: 24,
+      status: "exited",
+      exitCode: 0,
+      closeReason: null,
+      createdAt: 1,
+      updatedAt: 1,
+      lastUserInputAt: null,
+    } satisfies TerminalSession;
+    const chunks = Array.from({ length: 1_024 }, (_, index) =>
+      new TextEncoder().encode(
+        index === 1_023 ? "xFINAL-RETAINED-CHUNK" : "x",
+      ),
+    );
+
+    await writeRetainedTerminalOutput({
+      chunks,
+      lastNotice: { current: null },
+      session,
+      terminal,
+    });
+
+    const renderedText = Array.from(
+      { length: terminal.buffer.active.length },
+      (_, index) =>
+        terminal.buffer.active.getLine(index)?.translateToString() ?? "",
+    ).join("");
+    expect(renderedText).toContain("Terminal exited with code 0");
+    expect(renderedText.indexOf("FINAL-RETAINED-CHUNK")).toBeLessThan(
+      renderedText.indexOf("Terminal exited with code 0"),
+    );
+    expect(
+      renderedText.replace("Terminal exited with code 0", "").match(/x/g),
+    ).toHaveLength(chunks.length);
+    terminal.dispose();
+  }, 10_000);
+
+  it("writes the exit notice after all retained output has parsed", async () => {
+    const terminal = new Terminal({ cols: 80, rows: 24 });
+    const session = {
+      id: "term_1",
+      threadId: "thr_1",
+      environmentId: "env_1",
+      hostId: "host_1",
+      title: "Terminal",
+      initialCwd: "/workspace",
+      cols: 80,
+      rows: 24,
+      status: "exited",
+      exitCode: 0,
+      closeReason: null,
+      createdAt: 1,
+      updatedAt: 1,
+      lastUserInputAt: null,
+    } satisfies TerminalSession;
+
+    await writeRetainedTerminalOutput({
+      chunks: [
+        new TextEncoder().encode("CW-1\nCW-2\n"),
+        new TextEncoder().encode("CW-3\nCW-4\n"),
+      ],
+      lastNotice: { current: null },
+      session,
+      terminal,
+    });
+
+    const renderedText = Array.from(
+      { length: terminal.buffer.active.length },
+      (_, index) =>
+        terminal.buffer.active.getLine(index)?.translateToString() ?? "",
+    ).join("\n");
+    expect(renderedText.indexOf("CW-1")).toBeLessThan(
+      renderedText.indexOf("Terminal exited with code 0"),
+    );
+    expect(renderedText.indexOf("CW-4")).toBeLessThan(
+      renderedText.indexOf("Terminal exited with code 0"),
+    );
+    terminal.dispose();
+  });
+
   it("splits large paste input at the wire limit without losing UTF-8 bytes", () => {
     const input = `${"a".repeat(TERMINAL_DATA_MAX_BYTES - 1)}🙂tail`;
     const chunks = encodeTerminalInputChunks(input);
@@ -294,16 +389,72 @@ describe("terminal output encoding", () => {
     ).toBe("🙂");
   });
 
+  it.each(["€", "🙂"])(
+    "renders split UTF-8 character %s through the terminal output handler",
+    async (glyph) => {
+      const terminal = new Terminal({ cols: 80, rows: 24 });
+      const glyphBytes = Buffer.from(glyph);
+      const payloads = [
+        Buffer.concat([Buffer.from("before\n"), glyphBytes.subarray(0, 1)]),
+        Buffer.concat([glyphBytes.subarray(1), Buffer.from(" after\n")]),
+      ];
+      payloads.forEach((payload, seq) => {
+        handleTerminalServerMessage({
+          acknowledgeOutput: vi.fn(),
+          message: {
+            type: "output",
+            chunk: { seq, dataBase64: payload.toString("base64") },
+          },
+          onReplayComplete: vi.fn(),
+          replayNextSeq: null,
+          replayWriteState: { suppressedWriteCount: 0 },
+          setReplayNextSeq: vi.fn(),
+          terminal,
+        });
+      });
+      await new Promise<void>((resolve) => terminal.write("", resolve));
+
+      expect(
+        terminal.buffer.active.getLine(0)?.translateToString().trimEnd(),
+      ).toBe("before");
+      expect(terminal.buffer.active.getLine(1)?.translateToString()).toContain(
+        `${glyph} after`,
+      );
+      terminal.dispose();
+    },
+  );
+
+  it("sends nothing for a touch fling's positionless wheel reports", () => {
+    const onInput = vi.fn<(dataBase64: string) => void>();
+    const onUserInput = vi.fn();
+    const forward = (data: string) =>
+      forwardTerminalData({
+        data,
+        onInput,
+        onUserInput,
+        replayWriteState: { suppressedWriteCount: 0 },
+        sessionStatus: "running",
+      });
+
+    forward("\x1b[<65;NaN;NaNM\x1b[<65;NaN;NaNM");
+    expect(onInput).not.toHaveBeenCalled();
+    expect(onUserInput).not.toHaveBeenCalled();
+
+    forward("\x1b[<65;NaN;NaNM\x1b[<65;10;4M");
+    expect(onInput).toHaveBeenCalledOnce();
+    expect(
+      Buffer.from(onInput.mock.calls[0]?.[0] ?? "", "base64").toString("utf8"),
+    ).toBe("\x1b[<65;10;4M");
+  });
+
   it("does not send terminal protocol replies generated by replayed output", async () => {
     const terminal = new Terminal({ cols: 80, rows: 24 });
     const onInput = vi.fn<(dataBase64: string) => void>();
-    const onUserInput = vi.fn();
     const replayWriteState = { suppressedWriteCount: 0 };
     terminal.onData((data) => {
       forwardTerminalData({
         data,
         onInput,
-        onUserInput,
         replayWriteState,
         sessionStatus: "running",
       });
@@ -312,17 +463,18 @@ describe("terminal output encoding", () => {
     writeTerminalOutput({
       data: "\u001b[6n",
       isReplay: true,
+      onParsed: () => undefined,
       replayWriteState,
       terminal,
     });
     await new Promise<void>((resolve) => terminal.write("", resolve));
 
     expect(onInput).not.toHaveBeenCalled();
-    expect(onUserInput).not.toHaveBeenCalled();
 
     writeTerminalOutput({
       data: "\u001b[6n",
       isReplay: false,
+      onParsed: () => undefined,
       replayWriteState,
       terminal,
     });
@@ -336,19 +488,158 @@ describe("terminal output encoding", () => {
     expect(Buffer.from(encodedReply, "base64").toString("utf8")).toBe(
       "\u001b[1;1R",
     );
-    expect(onUserInput).toHaveBeenCalledOnce();
     expect(replayWriteState.suppressedWriteCount).toBe(0);
     terminal.dispose();
   });
 
-  it("enables the proposed xterm API required by the Unicode addon", () => {
-    expect(TERMINAL_ALLOW_PROPOSED_API).toBe(true);
-    expect(TERMINAL_UNICODE_VERSION).toBe("11");
+  it("requests a repaint only after the final replay chunk has parsed", async () => {
+    const terminal = new Terminal({ cols: 80, rows: 24 });
+    const replayWriteState = { suppressedWriteCount: 0 };
+    const replayState = { nextSeq: null as number | null };
+    const acknowledgeOutput = vi.fn();
+    const session = {
+      id: "term_1",
+      threadId: "thr_1",
+      environmentId: "env_1",
+      hostId: "host_1",
+      title: "Terminal",
+      initialCwd: "/workspace",
+      cols: 80,
+      rows: 24,
+      status: "running",
+      exitCode: null,
+      closeReason: null,
+      createdAt: 1,
+      updatedAt: 1,
+      lastUserInputAt: null,
+    } satisfies TerminalSession;
+    const attachedMessage = {
+      type: "attached",
+      session,
+      replayStartSeq: 7,
+      nextSeq: 9,
+    } satisfies TerminalServerMessage;
+    const replayMessage = {
+      type: "output",
+      chunk: {
+        seq: 8,
+        dataBase64: Buffer.from("prompt", "utf8").toString("base64"),
+      },
+    } satisfies TerminalServerMessage;
+    const onReplayComplete = vi.fn(() => {
+      expect(
+        terminal.buffer.active.getLine(0)?.translateToString().trimEnd(),
+      ).toBe("prompt");
+    });
+    const handleMessage = (message: TerminalServerMessage) =>
+      handleTerminalServerMessage({
+        acknowledgeOutput,
+        message,
+        onReplayComplete,
+        replayNextSeq: replayState.nextSeq,
+        replayWriteState,
+        setReplayNextSeq: (nextSeq) => {
+          replayState.nextSeq = nextSeq;
+        },
+        terminal,
+      });
+
+    handleMessage(attachedMessage);
+    expect(onReplayComplete).not.toHaveBeenCalled();
+    handleMessage(replayMessage);
+    await new Promise<void>((resolve) => terminal.write("", resolve));
+
+    expect(onReplayComplete).toHaveBeenCalledOnce();
+    expect(acknowledgeOutput).toHaveBeenCalledWith(9);
+    expect(replayState.nextSeq).toBeNull();
+    terminal.dispose();
   });
 
-  it("prefers installed Nerd Font families before system monospace fallbacks", () => {
-    expect(TERMINAL_FONT_FAMILY).toContain("Nerd Font");
-    expect(TERMINAL_FONT_FAMILY).toContain("ui-monospace");
+  it("restores a synthetic TUI after a mid-stream alternate-screen replay", async () => {
+    const terminal = new Terminal({ cols: 80, rows: 24 });
+    const replayWriteState = { suppressedWriteCount: 0 };
+    const replayState = { nextSeq: null as number | null };
+    const session = {
+      id: "term_1",
+      threadId: "thr_1",
+      environmentId: "env_1",
+      hostId: "host_1",
+      title: "Terminal",
+      initialCwd: "/workspace",
+      cols: 80,
+      rows: 24,
+      status: "running",
+      exitCode: null,
+      closeReason: null,
+      createdAt: 1,
+      updatedAt: 1,
+      lastUserInputAt: null,
+    } satisfies TerminalSession;
+    let resolveRepaint = (): void => {};
+    const repaint = new Promise<void>((resolve) => {
+      resolveRepaint = resolve;
+    });
+    const fullScreen =
+      "\u001b[2J\u001b[HClaude Code v2.1.296\u001b[12;1H[ Prompt ]\u001b[13;1H❯ run terminal reattach tests\u001b[23;1HOpus 5.5 · branch · ctx 4M\u001b[24;1HStatus · connected · footer\u001b[13;3H";
+    const requestRepaint = vi.fn(() => {
+      terminal.write(fullScreen, resolveRepaint);
+    });
+    const acknowledgeOutput = vi.fn();
+    const handleMessage = (message: TerminalServerMessage) =>
+      handleTerminalServerMessage({
+        acknowledgeOutput,
+        message,
+        onReplayComplete: requestRepaint,
+        replayNextSeq: replayState.nextSeq,
+        replayWriteState,
+        setReplayNextSeq: (nextSeq) => {
+          replayState.nextSeq = nextSeq;
+        },
+        terminal,
+      });
+
+    handleMessage({
+      type: "attached",
+      session,
+      replayStartSeq: 41,
+      nextSeq: 42,
+    });
+    handleMessage({
+      type: "output",
+      chunk: {
+        seq: 41,
+        dataBase64: Buffer.from(
+          "\u001b[?1049hmid-stream-tail",
+          "utf8",
+        ).toString("base64"),
+      },
+    });
+    await repaint;
+
+    const lines = Array.from({ length: 24 }, (_, index) =>
+      terminal.buffer.active.getLine(index)?.translateToString().trimEnd(),
+    );
+    expect(requestRepaint).toHaveBeenCalledOnce();
+    expect(terminal.buffer.active.type).toBe("alternate");
+    expect(lines[0]).toContain("Claude Code v2.1.296");
+    expect(lines[11]).toContain("[ Prompt ]");
+    expect(lines[12]).toContain("❯ run terminal reattach tests");
+    expect(lines[22]).toContain("Opus 5.5 · branch · ctx 4M");
+    expect(lines[23]).toContain("Status · connected · footer");
+    expect(terminal.buffer.active.cursorX).toBe(2);
+    expect(terminal.buffer.active.cursorY).toBe(12);
+    expect(acknowledgeOutput).toHaveBeenCalledWith(42);
+    terminal.dispose();
+  });
+
+  it("allows the proposed xterm API that the Unicode 11 addon requires", () => {
+    const terminal = new Terminal({
+      allowProposedApi: TERMINAL_ALLOW_PROPOSED_API,
+    });
+    terminal.loadAddon(new Unicode11Addon());
+    terminal.unicode.activeVersion = "11";
+    expect(terminal.unicode.activeVersion).toBe("11");
+    terminal.dispose();
   });
 });
 
@@ -515,7 +806,9 @@ describe("loadTerminalWebglRenderer", () => {
     };
     const terminal = { loadAddon: vi.fn() };
 
-    expect(loadTerminalWebglRenderer(terminal, () => addon)).toBe(true);
+    expect(loadTerminalWebglRenderer(terminal, () => addon).renderer).toBe(
+      "webgl",
+    );
     expect(terminal.loadAddon).toHaveBeenCalledWith(addon);
 
     onContextLoss();
@@ -535,7 +828,9 @@ describe("loadTerminalWebglRenderer", () => {
       }),
     };
 
-    expect(loadTerminalWebglRenderer(terminal, () => addon)).toBe(false);
+    expect(loadTerminalWebglRenderer(terminal, () => addon).renderer).toBe(
+      "dom",
+    );
     expect(addon.dispose).toHaveBeenCalledOnce();
   });
 });

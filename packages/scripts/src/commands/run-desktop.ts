@@ -27,8 +27,9 @@ const LOOPBACK_HOST = "127.0.0.1";
 export function resolveDesktopPackageTask(platform: NodeJS.Platform): string {
   if (platform === "darwin") return "package";
   if (platform === "linux") return "package:linux";
+  if (platform === "win32") return "package:win";
   throw new Error(
-    `[desktop] Packaging is supported on macOS and Linux, not ${platform}.`,
+    `[desktop] Packaging is supported on macOS, Linux, and Windows, not ${platform}.`,
   );
 }
 
@@ -105,6 +106,7 @@ export function toDesktopLaunchProcessEnv(args: {
     args.baseEnv,
     args.config,
   );
+  env.BB_SKIP_ONBOARDING ??= "1";
   env.BB_TELEMETRY = "false";
   env.NODE_ENV = "production";
   return env;
@@ -120,7 +122,9 @@ function formatConfig(
     return `${prefix} Packaged desktop app with its installed data directory and ports`;
   }
   if (desktopUserDataDir === undefined) {
-    throw new Error("[desktop:worktree] Electron user data directory is missing");
+    throw new Error(
+      "[desktop:worktree] Electron user data directory is missing",
+    );
   }
   return [
     `${prefix} Instance ${config.instanceId}`,

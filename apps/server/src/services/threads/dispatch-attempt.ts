@@ -7,12 +7,14 @@ import {
   deleteClaimedQueuedThreadMessageBatchInTransaction,
   getEnvironment,
   getThread,
+  getThreadSpawner,
   isThreadQueueAutoSendPaused,
   listRunningThreads,
   type ClaimedQueuedThreadMessageRow,
   type RunningThreadRow,
 } from "@bb/db";
 import {
+  createStandaloneBuiltinCompactCommandInput,
   promptInputSchema,
   type PromptInput,
   type QueuedMessagePayload,
@@ -34,7 +36,7 @@ import {
   goneThreadEnvironmentDetails,
   throwThreadNotWritable,
 } from "../lib/lifecycle-api-errors.js";
-import { validatePromptAttachmentReferences } from "../projects/attachments.js";
+import { resolvePromptAttachmentReferences } from "../projects/attachments.js";
 import {
   dispatchEnvironmentAndHost,
   dispatchExecutionSources,
@@ -53,8 +55,10 @@ import {
 } from "./queue-waits.js";
 import { applyLoggedThreadLifecycleEventInTransaction } from "./lifecycle-outcome.js";
 import { buildExecutionOptions } from "./thread-commands.js";
+import { childThreadModel } from "./child-thread-model.js";
 import { getActiveTurnId, isManualCompactionActive } from "./thread-events.js";
 import { requireThreadCommandEnvironment } from "./thread-command-environment.js";
+import { assertThreadHostAcceptsWork } from "./thread-host-admission.js";
 import {
   requestThreadProvision,
   scheduleThreadProvisioningAdvance,
@@ -92,6 +96,7 @@ import {
 import { resolveDispatchAuthor } from "./dispatch-author.js";
 import type { TurnRequestRetryMarker } from "./thread-events.js";
 import { restoreInterruptedThreadStartupRequest } from "./thread-provisioning.js";
+import { markTurnTraceSpan } from "../system/turn-trace.js";
 
 export const pendingThreadStartContextSchema = z.object({
   environmentIntent: threadProvisionEnvironmentIntentSchema,
@@ -172,6 +177,15 @@ export function intendedThreadHostId(
   return intent === null ? null : hostIdForEnvironmentIntent(deps, intent);
 }
 
+export function threadTargetHostId(
+  deps: Pick<LoggedPendingInteractionWorkSessionDeps, "db">,
+  thread: Pick<Thread, "id" | "environmentId">,
+): string | null {
+  return thread.environmentId !== null
+    ? (getEnvironment(deps.db, thread.environmentId)?.hostId ?? null)
+    : intendedThreadHostId(deps, thread.id);
+}
+
 export function listRunningThreadsWithIntendedHosts(
   deps: Pick<LoggedPendingInteractionWorkSessionDeps, "db">,
 ): RunningThreadRow[] {
@@ -232,15 +246,20 @@ async function runDispatchAttempt(
   args: DispatchAttemptArgs,
   reattempted: boolean,
 ): Promise<DispatchAttemptOutcome> {
-  const { payload, thread } = args;
+  const { thread } = args;
+  let { payload } = args;
   ensureThreadIsWritable(thread, true);
+  assertThreadHostAcceptsWork(deps.db, thread);
   if (args.trigger === "user" && args.source.kind === "inline") {
-    await validatePromptAttachmentReferences({
+    const input = await resolvePromptAttachmentReferences({
       db: deps.db,
       dataDir: deps.config.dataDir,
       input: payload.input,
       projectId: thread.projectId,
+      hostId: threadTargetHostId(deps, thread),
     });
+    payload = { ...payload, input };
+    args = { ...args, payload };
   }
   const senderThreadId = resolveMessageSenderThreadId(deps, {
     ...(payload.senderThreadId !== undefined
@@ -278,9 +297,15 @@ async function runDispatchAttempt(
 
   const execution = await buildExecutionOptions(
     deps,
-    payload,
+    withChildThreadModel(deps, thread, payload),
     args.executionDefaults ?? { threadId: thread.id },
   );
+  if (payload.compactFirst) {
+    const { compactFirst, ...request } = payload;
+    await compactThreadContext(deps, thread);
+    payload = request;
+    args = { ...args, payload };
+  }
   let resolvedPayload = resolveExecutionIntoPayload(payload, execution);
   const queuedMessage: QueuedDispatchMessage = {
     input: resolvedPayload.input,
@@ -333,6 +358,27 @@ async function runDispatchAttempt(
       return;
     }
 
+    const currentThread = getThread(deps.db, thread.id);
+    if (currentThread === null) {
+      throw new ApiError(404, "thread_not_found", "Thread not found");
+    }
+    if (
+      currentThread.status !== thread.status ||
+      currentThread.archivedAt !== thread.archivedAt ||
+      currentThread.deletedAt !== thread.deletedAt
+    ) {
+      continued.reattemptThread = currentThread;
+      return;
+    }
+
+    if (thread.status === "active" && payload.mode === "start") {
+      throwThreadNotWritable(
+        thread,
+        "already_active",
+        "Thread is already active",
+      );
+    }
+
     const { environment: dispatchEnvironment, host: dispatchHost } =
       dispatchEnvironmentAndHost(deps, thread.environmentId);
     if (
@@ -349,13 +395,6 @@ async function runDispatchAttempt(
     }
 
     if (thread.status === "active" && attempt === "start-turn") {
-      if (payload.mode === "start") {
-        throwThreadNotWritable(
-          thread,
-          "already_active",
-          "Thread is already active",
-        );
-      }
       continued.outcome = waitOn({ kind: "thread-busy" }, null);
       return;
     }
@@ -363,7 +402,8 @@ async function runDispatchAttempt(
     if (
       dispatchEnvironment !== null &&
       goneThreadEnvironmentDetails(dispatchEnvironment) === null &&
-      dispatchHost?.status === "disconnected"
+      dispatchHost !== null &&
+      !deps.hub.hasDaemonForHost(dispatchHost.id)
     ) {
       continued.outcome = waitOn(
         { kind: "host-offline", hostName: dispatchHost.name },
@@ -374,18 +414,6 @@ async function runDispatchAttempt(
 
     if (payload.mode !== "start" && isManualCompactionActive(deps, thread)) {
       continued.outcome = waitOn({ kind: "thread-busy" }, null);
-      return;
-    }
-    const currentThread = getThread(deps.db, thread.id);
-    if (currentThread === null) {
-      throw new ApiError(404, "thread_not_found", "Thread not found");
-    }
-    if (
-      currentThread.status !== thread.status ||
-      currentThread.archivedAt !== thread.archivedAt ||
-      currentThread.deletedAt !== thread.deletedAt
-    ) {
-      continued.reattemptThread = currentThread;
       return;
     }
     if (
@@ -547,6 +575,7 @@ async function runDispatchAttempt(
       return { kind: "dispatched" };
     }
 
+    markTurnTraceSpan("dispatch.checkpoint.done");
     const environment = await requireThreadCommandEnvironment(deps, { thread });
     const sent = await sendThreadMessage(deps, {
       environment,
@@ -644,6 +673,43 @@ class PendingThreadAdmissionLost extends Error {
   }
 }
 
+type ExecutionRequest = Parameters<typeof buildExecutionOptions>[1];
+
+// A child thread runs every turn on its provider's child model, whatever the
+// caller, a sticky update or the project defaults asked for. A top-level
+// thread another thread spawned counts as a child too. Setting it on the
+// request keeps it inside the normal model validation.
+function withChildThreadModel<TRequest extends ExecutionRequest>(
+  deps: Pick<
+    LoggedPendingInteractionWorkSessionDeps,
+    "db" | "providerRegistry"
+  >,
+  thread: Pick<Thread, "id" | "parentThreadId" | "providerId">,
+  request: TRequest,
+): TRequest {
+  const model = childThreadModel({
+    parentThreadId:
+      thread.parentThreadId ?? getThreadSpawner(deps.db, thread.id),
+    declaredChildModel: deps.providerRegistry.get(thread.providerId)
+      ?.childThreadModel,
+  });
+  if (model === null) {
+    return request;
+  }
+  return {
+    ...request,
+    model,
+    ...(request.executionInputSources !== undefined
+      ? {
+          executionInputSources: {
+            ...request.executionInputSources,
+            model: "explicit",
+          },
+        }
+      : {}),
+  };
+}
+
 async function admitPendingThread(
   deps: LoggedPendingInteractionWorkSessionDeps,
   args: AdmitPendingThreadArgs,
@@ -660,9 +726,11 @@ async function admitPendingThread(
       `Thread ${args.thread.id} is pending but has no start context to dispatch`,
     );
   }
-  const execution = await buildExecutionOptions(deps, args.payload, {
-    threadId: args.thread.id,
-  });
+  const execution = await buildExecutionOptions(
+    deps,
+    withChildThreadModel(deps, args.thread, args.payload),
+    { threadId: args.thread.id },
+  );
   const claimedRow = args.claimed?.[0] ?? null;
   let startingThread: Thread;
   try {
@@ -750,4 +818,36 @@ function resolveExecutionIntoPayload(
       permissionMode: "explicit",
     },
   };
+}
+
+export async function compactThreadContext(
+  deps: LoggedPendingInteractionWorkSessionDeps,
+  thread: Thread,
+): Promise<void> {
+  ensureThreadIsWritable(thread);
+  if (!deps.providerRegistry.supportsManualCompaction(thread.providerId)) {
+    throw new ApiError(
+      409,
+      "invalid_request",
+      `Provider "${thread.providerId}" does not support manual context compaction`,
+    );
+  }
+  if (thread.status !== "idle" && thread.status !== "error") {
+    throw new ApiError(
+      409,
+      "invalid_request",
+      "Context can only be compacted while the thread is idle or errored",
+    );
+  }
+
+  const environment = await requireThreadCommandEnvironment(deps, { thread });
+  await sendThreadMessage(deps, {
+    environment,
+    payload: {
+      input: createStandaloneBuiltinCompactCommandInput(),
+      mode: "start",
+    },
+    thread,
+    trigger: "user",
+  });
 }

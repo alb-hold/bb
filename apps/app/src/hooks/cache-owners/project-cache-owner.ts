@@ -1,7 +1,6 @@
 import type { QueryClient } from "@tanstack/react-query";
 import type {
   ProjectResponse,
-  ThreadSectionMutationResponse,
   ProjectWithThreadsResponse,
   SidebarBootstrapResponse,
 } from "@bb/server-contract";
@@ -10,6 +9,7 @@ import {
   sidebarNavigationQueryKey,
 } from "../queries/query-keys";
 import { invalidateProjectDeleteQueries } from "./mutation-cache-effects";
+import { patchCachedQueryData } from "./cache-effect-utils";
 
 interface ApplyProjectCreateResultArgs {
   project: ProjectResponse;
@@ -116,7 +116,8 @@ export function applyProjectCreateResult({
         ? applyProjectToProjectList(currentProjects, project)
         : [project],
   );
-  queryClient.setQueryData<SidebarBootstrapResponse>(
+  patchCachedQueryData<SidebarBootstrapResponse>(
+    queryClient,
     sidebarNavigationQueryKey(),
     (currentNavigation) =>
       currentNavigation
@@ -157,7 +158,8 @@ export function applyProjectDeleteResult({
         ? removeProjectFromProjectList(currentProjects, projectId)
         : currentProjects,
   );
-  queryClient.setQueryData<SidebarBootstrapResponse>(
+  patchCachedQueryData<SidebarBootstrapResponse>(
+    queryClient,
     sidebarNavigationQueryKey(),
     (currentNavigation) =>
       currentNavigation
@@ -165,27 +167,4 @@ export function applyProjectDeleteResult({
         : currentNavigation,
   );
   invalidateProjectDeleteQueries({ queryClient });
-}
-
-export function applyThreadSectionRenameResult({
-  section,
-  queryClient,
-}: {
-  section: ThreadSectionMutationResponse;
-  queryClient: QueryClient;
-}): void {
-  queryClient.setQueryData<SidebarBootstrapResponse>(
-    sidebarNavigationQueryKey(),
-    (navigation) =>
-      navigation
-        ? {
-            ...navigation,
-            sections: navigation.sections.map((current) =>
-              current.id === section.id
-                ? { ...current, name: section.name }
-                : current,
-            ),
-          }
-        : navigation,
-  );
 }

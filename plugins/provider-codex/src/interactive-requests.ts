@@ -1,8 +1,15 @@
 import {
   ProviderRequestDecodeError as ProviderRequestDecodeErrorValue,
   ProviderResponseEncodeError,
+  USER_QUESTION_MAX_OPTIONS,
+  USER_QUESTION_MAX_QUESTIONS,
+  isApprovalInteractionOutcome,
+  userQuestionInteractionOutcomeSchema,
   type ApprovalInteractionOutcome,
   type DecodedInteractiveRequest,
+  type PendingInteractionUserQuestionQuestion,
+  type UserQuestionInteractionOutcome,
+  type UserQuestionPendingInteractionPayload,
   type ProviderInboundRequest,
   type PendingInteractionApprovalDecision,
   type PendingInteractionGrantablePermissionProfile,
@@ -18,8 +25,10 @@ import {
   codexCommandExecutionRequestApprovalParamsSchema,
   codexFileChangeRequestApprovalParamsSchema,
   codexPermissionsRequestApprovalParamsSchema,
+  codexToolRequestUserInputParamsSchema,
 } from "./schemas.js";
 import type {
+  CodexUserInputQuestion,
   CodexAdditionalPermissions,
   CodexCommandApprovalDecision,
   CodexRequestedPermissionProfile,
@@ -29,7 +38,158 @@ import type {
 type CodexInteractiveResponse =
   | CommandExecutionRequestApprovalResponse
   | FileChangeRequestApprovalResponse
-  | PermissionsRequestApprovalResponse;
+  | PermissionsRequestApprovalResponse
+  | { answers: Record<string, { answers: string[] }> };
+
+type CodexInteractionOutcome =
+  | ApprovalInteractionOutcome
+  | UserQuestionInteractionOutcome;
+
+export interface CodexUserInputResponse {
+  answers: Record<string, { answers: string[] }>;
+}
+
+const USER_DECLINED_ANSWER = "The user declined to answer this question.";
+
+function nonBlank(value: string): string | undefined {
+  return value.trim().length > 0 ? value : undefined;
+}
+
+function codexUserInputOptionValue(
+  questionId: string,
+  optionIndex: number,
+): string {
+  return `${questionId}:option-${optionIndex + 1}`;
+}
+
+function toUserQuestion(
+  question: CodexUserInputQuestion,
+  questionIndex: number,
+): PendingInteractionUserQuestionQuestion {
+  if (question.isSecret) {
+    throw new ProviderRequestDecodeErrorValue(
+      "bb does not collect secret answers in a question card. Ask the user to provide the value another way, such as an environment variable or a file in the workspace.",
+    );
+  }
+  const prompt = nonBlank(question.question) ?? nonBlank(question.header);
+  if (nonBlank(question.id) === undefined || prompt === undefined) {
+    throw new ProviderRequestDecodeErrorValue(
+      "Every question needs an id and question text.",
+    );
+  }
+  const options = question.options ?? [];
+  if (options.length > USER_QUESTION_MAX_OPTIONS) {
+    throw new ProviderRequestDecodeErrorValue(
+      `bb shows at most ${USER_QUESTION_MAX_OPTIONS} options per question; ask again with fewer options.`,
+    );
+  }
+  if (options.some((option) => nonBlank(option.label) === undefined)) {
+    throw new ProviderRequestDecodeErrorValue("Every option needs a label.");
+  }
+  const shortLabel = nonBlank(question.header);
+  const id = `question-${questionIndex + 1}`;
+  return {
+    id,
+    prompt,
+    ...(shortLabel !== undefined && shortLabel !== prompt
+      ? { shortLabel }
+      : {}),
+    multiSelect: false,
+    ...(options.length > 0
+      ? {
+          options: options.map((option, optionIndex) => {
+            const description = nonBlank(option.description);
+            return {
+              value: codexUserInputOptionValue(id, optionIndex),
+              label: option.label,
+              ...(description !== undefined ? { description } : {}),
+            };
+          }),
+        }
+      : {}),
+    allowFreeText: question.isOther || options.length === 0,
+  };
+}
+
+function toUserQuestionPayload(
+  questions: readonly CodexUserInputQuestion[],
+): UserQuestionPendingInteractionPayload {
+  if (
+    questions.length === 0 ||
+    questions.length > USER_QUESTION_MAX_QUESTIONS
+  ) {
+    throw new ProviderRequestDecodeErrorValue(
+      `bb shows between 1 and ${USER_QUESTION_MAX_QUESTIONS} questions at a time; ask again with fewer questions.`,
+    );
+  }
+  if (
+    new Set(questions.map((question) => question.id)).size !== questions.length
+  ) {
+    throw new ProviderRequestDecodeErrorValue("Question ids must be unique.");
+  }
+  return {
+    kind: "user_question",
+    questions: questions.map((question, questionIndex) =>
+      toUserQuestion(question, questionIndex),
+    ),
+  };
+}
+
+export function codexUserInputQuestionIds(params: unknown): string[] {
+  const parsed = codexToolRequestUserInputParamsSchema.safeParse(params);
+  if (!parsed.success) {
+    throw new ProviderResponseEncodeError(
+      "Codex user-input request params no longer parse",
+    );
+  }
+  return parsed.data.questions.map((question) => question.id);
+}
+
+export function buildCodexUserInputResponse(args: {
+  outcome: UserQuestionInteractionOutcome;
+  codexQuestionIds: readonly string[];
+}): CodexUserInputResponse {
+  const { outcome } = args;
+  if (args.codexQuestionIds.length !== outcome.payload.questions.length) {
+    throw new ProviderResponseEncodeError(
+      "The answered questions do not match the Codex request",
+    );
+  }
+  const resolved = new Map(Object.entries(outcome.resolution.answers));
+  const answers: Array<[string, { answers: string[] }]> = [];
+  for (const [questionIndex, question] of outcome.payload.questions.entries()) {
+    const answer = resolved.get(question.id);
+    const codexQuestionId = args.codexQuestionIds[questionIndex];
+    if (codexQuestionId === undefined) {
+      continue;
+    }
+    if (answer === undefined) {
+      answers.push([codexQuestionId, { answers: [USER_DECLINED_ANSWER] }]);
+      continue;
+    }
+    const labels = answer.selected.map((value) => {
+      const option = question.options?.find((entry) => entry.value === value);
+      if (option === undefined) {
+        throw new ProviderResponseEncodeError(
+          `Answer to '${question.id}' selected an unknown option '${value}'`,
+        );
+      }
+      return option.label;
+    });
+    const freeText =
+      answer.freeText?.trim().length === 0 ? undefined : answer.freeText;
+    const answerTexts = freeText === undefined ? labels : [...labels, freeText];
+    answers.push([
+      codexQuestionId,
+      {
+        answers: answerTexts.some((value) => value.trim().length > 0)
+          ? answerTexts
+          : [USER_DECLINED_ANSWER],
+      },
+    ]);
+  }
+  return { answers: Object.fromEntries(answers) };
+}
 
 function assertNever(value: never): never {
   throw new ProviderResponseEncodeError(`Unexpected value: ${String(value)}`);
@@ -77,6 +237,76 @@ function filterSessionDecisionWithoutGrant(
     );
   }
   return filtered;
+}
+
+function buildCodexUserQuestionId(
+  questionId: string,
+  optionIndex: number,
+): string {
+  return `${questionId}:option-${optionIndex + 1}`;
+}
+
+function buildCodexUserQuestionPayload(params: {
+  questions: Array<{
+    id: string;
+    header: string;
+    question: string;
+    isSecret: boolean;
+    options: Array<{ label: string; description: string }> | null;
+  }>;
+}): UserQuestionPendingInteractionPayload {
+  const payload = userQuestionInteractionOutcomeSchema.shape.payload.safeParse({
+    kind: "user_question",
+    questions: params.questions.map((question) => ({
+      id: question.id,
+      prompt: question.question,
+      shortLabel: question.header,
+      multiSelect: false,
+      options: question.options?.map((option, optionIndex) => ({
+        value: buildCodexUserQuestionId(question.id, optionIndex),
+        label: option.label,
+        description: option.description,
+      })),
+      allowFreeText: true,
+    })),
+  });
+  if (!payload.success) {
+    throw new ProviderRequestDecodeErrorValue(payload.error.message);
+  }
+  return payload.data;
+}
+
+function buildCodexUserQuestionResponse(args: UserQuestionInteractionOutcome): {
+  answers: Record<string, { answers: string[] }>;
+} {
+  const answers: Record<string, { answers: string[] }> = {};
+  for (const question of args.payload.questions) {
+    const answer = args.resolution.answers[question.id];
+    if (!answer) {
+      throw new ProviderResponseEncodeError(
+        `Missing answer for user question '${question.id}'`,
+      );
+    }
+    const selected = answer.selected.map((value) => {
+      const option = question.options?.find(
+        (candidate) => candidate.value === value,
+      );
+      if (!option) {
+        throw new ProviderResponseEncodeError(
+          `Unknown selected option '${value}' for user question '${question.id}'`,
+        );
+      }
+      return option.label;
+    });
+    const values = answer.freeText ? [...selected, answer.freeText] : selected;
+    if (values.length === 0) {
+      throw new ProviderResponseEncodeError(
+        `Answer for user question '${question.id}' is empty`,
+      );
+    }
+    answers[question.id] = { answers: values };
+  }
+  return { answers };
 }
 
 export function decodeCodexInteractiveRequest(
@@ -198,14 +428,32 @@ export function decodeCodexInteractiveRequest(
         },
       };
     }
+    case "item/tool/requestUserInput": {
+      const parsed = codexToolRequestUserInputParamsSchema.safeParse(
+        request.params,
+      );
+      if (!parsed.success) {
+        return null;
+      }
+      return {
+        requestId: request.id,
+        method: request.method,
+        providerThreadId: parsed.data.threadId,
+        turnId: parsed.data.turnId,
+        payload: toUserQuestionPayload(parsed.data.questions),
+      };
+    }
     default:
       return null;
   }
 }
 
 export function buildCodexInteractiveResponse(
-  args: ApprovalInteractionOutcome,
+  args: CodexInteractionOutcome,
 ): CodexInteractiveResponse {
+  if (!isApprovalInteractionOutcome(args)) {
+    return buildCodexUserQuestionResponse(args);
+  }
   switch (args.payload.subject.kind) {
     case "command": {
       const response: CommandExecutionRequestApprovalResponse = {

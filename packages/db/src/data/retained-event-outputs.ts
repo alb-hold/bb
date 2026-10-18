@@ -4,8 +4,9 @@ import {
   type ThreadEventItemType,
   type ThreadEventType,
 } from "@bb/domain";
-import { sliceUtf16HeadAndTail } from "@bb/domain/utf16";
+import { sliceUtf16HeadAndTail } from "@bb/text-utils";
 import type { DbQueryConnection } from "../connection.js";
+import { logDatabaseWriteBytes } from "../connection.js";
 import {
   COMPLETED_EVENT_OUTPUT_RETENTION_MS,
   getCompletedEventOutputTruncationLimits,
@@ -16,10 +17,10 @@ import {
   type RetainedEventOutputTarget,
 } from "../retained-event-output.js";
 import { events, retainedEventOutputs } from "../schema.js";
+import { queryInSqliteVariableBatches } from "./sqlite-variable-batches.js";
 
 const COMPLETED_EVENT_OUTPUT_TRUNCATION_MARKER =
   "\n\n[... output truncated by retention policy; showing beginning and end ...]\n\n";
-const RETAINED_EVENT_OUTPUT_LOOKUP_BATCH_SIZE = 100;
 
 interface PreparedRetainedEventOutput {
   expiresAt: number;
@@ -81,6 +82,7 @@ interface DeleteExpiredRetainedEventOutputsArgs {
 
 export interface DeleteExpiredRetainedEventOutputsResult {
   deleted: number;
+  removedBytes: number;
   threadIds: string[];
 }
 
@@ -271,8 +273,8 @@ export function insertPreparedRetainedEventOutput(
 export function copyRetainedEventOutput(
   db: DbQueryConnection,
   args: CopyRetainedEventOutputArgs,
-): void {
-  db.run(sql`INSERT INTO retained_event_outputs
+): number {
+  const copied = db.all<{ valueBytes: number }>(sql`INSERT INTO retained_event_outputs
     (event_id, output_path, value, expires_at)
     SELECT
       ${args.targetEventId},
@@ -281,7 +283,9 @@ export function copyRetainedEventOutput(
       expires_at
     FROM retained_event_outputs
     WHERE event_id = ${args.sourceEventId}
-      AND expires_at > ${args.copiedAt}`);
+      AND expires_at > ${args.copiedAt}
+    RETURNING length(CAST(value AS BLOB)) AS valueBytes`);
+  return copied.reduce((total, row) => total + row.valueBytes, 0);
 }
 
 function decodeRetainedOutputValue(encodedValue: string): string {
@@ -350,15 +354,13 @@ export function hydrateRetainedEventOutputRows<
   if (rows.length === 0) {
     return [];
   }
-  const eventIds = [...new Set(rows.map((row) => row.id))];
-  const outputs: RetainedEventOutputHydrationRow[] = [];
-  for (
-    let start = 0;
-    start < eventIds.length;
-    start += RETAINED_EVENT_OUTPUT_LOOKUP_BATCH_SIZE
-  ) {
-    outputs.push(
-      ...db
+  const outputs = queryInSqliteVariableBatches({
+    dedupeKey: (eventId) => eventId,
+    fixedVariableCount: 1,
+    variableCountPerValue: 1,
+    values: rows.map((row) => row.id),
+    queryBatch: (batch) =>
+      db
         .select({
           encodedValue: retainedEventOutputs.value,
           eventId: retainedEventOutputs.eventId,
@@ -367,19 +369,12 @@ export function hydrateRetainedEventOutputRows<
         .from(retainedEventOutputs)
         .where(
           and(
-            inArray(
-              retainedEventOutputs.eventId,
-              eventIds.slice(
-                start,
-                start + RETAINED_EVENT_OUTPUT_LOOKUP_BATCH_SIZE,
-              ),
-            ),
+            inArray(retainedEventOutputs.eventId, [...batch]),
             gt(retainedEventOutputs.expiresAt, now),
           ),
         )
         .all(),
-    );
-  }
+  });
   if (outputs.length === 0) {
     return [...rows];
   }
@@ -397,14 +392,13 @@ function listRetainedEventOutputSizes(
   eventIds: readonly string[],
   now: number,
 ): RetainedEventOutputSizeRow[] {
-  const sizes: RetainedEventOutputSizeRow[] = [];
-  for (
-    let start = 0;
-    start < eventIds.length;
-    start += RETAINED_EVENT_OUTPUT_LOOKUP_BATCH_SIZE
-  ) {
-    sizes.push(
-      ...db
+  return queryInSqliteVariableBatches({
+    dedupeKey: (eventId) => eventId,
+    fixedVariableCount: 1,
+    variableCountPerValue: 1,
+    values: eventIds,
+    queryBatch: (batch) =>
+      db
         .select({
           eventId: retainedEventOutputs.eventId,
           outputPath: retainedEventOutputs.outputPath,
@@ -413,20 +407,12 @@ function listRetainedEventOutputSizes(
         .from(retainedEventOutputs)
         .where(
           and(
-            inArray(
-              retainedEventOutputs.eventId,
-              eventIds.slice(
-                start,
-                start + RETAINED_EVENT_OUTPUT_LOOKUP_BATCH_SIZE,
-              ),
-            ),
+            inArray(retainedEventOutputs.eventId, [...batch]),
             gt(retainedEventOutputs.expiresAt, now),
           ),
         )
         .all(),
-    );
-  }
-  return sizes;
+  });
 }
 
 function retainedOutputSizeTotal(
@@ -465,9 +451,7 @@ function projectedHydratedDataBytes<TRow extends HydratableStoredEventRow>(
       return total + Buffer.byteLength(row.data);
     }
     return (
-      total +
-      hydratedEventDataBaseBytes(row, size.outputPath) +
-      size.valueBytes
+      total + hydratedEventDataBaseBytes(row, size.outputPath) + size.valueBytes
     );
   }, 0);
 }
@@ -531,7 +515,7 @@ export function deleteExpiredRetainedEventOutputs(
   args: DeleteExpiredRetainedEventOutputsArgs,
 ): DeleteExpiredRetainedEventOutputsResult {
   if (args.limit <= 0) {
-    return { deleted: 0, threadIds: [] };
+    return { deleted: 0, removedBytes: 0, threadIds: [] };
   }
   const rows = db
     .select({
@@ -545,15 +529,29 @@ export function deleteExpiredRetainedEventOutputs(
     .limit(args.limit)
     .all();
   if (rows.length === 0) {
-    return { deleted: 0, threadIds: [] };
+    return { deleted: 0, removedBytes: 0, threadIds: [] };
   }
   const eventIds = rows.map((row) => row.eventId);
-  const result = db
+  const deletedRows = db
     .delete(retainedEventOutputs)
     .where(inArray(retainedEventOutputs.eventId, eventIds))
-    .run();
+    .returning({
+      valueBytes: sql<number>`length(CAST(${retainedEventOutputs.value} AS BLOB))`,
+    })
+    .all();
+  const removedBytes = deletedRows.reduce(
+    (total, row) => total + row.valueBytes,
+    0,
+  );
+  if (removedBytes > 0) {
+    logDatabaseWriteBytes(db, {
+      bytes: removedBytes,
+      source: "event-prune-delete",
+    });
+  }
   return {
-    deleted: result.changes,
+    deleted: deletedRows.length,
+    removedBytes,
     threadIds: [...new Set(rows.map((row) => row.threadId))],
   };
 }

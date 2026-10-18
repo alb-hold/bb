@@ -17,15 +17,18 @@
   "types": "./src/index.ts",
   "scripts": {
     "clean": "rimraf dist tsconfig.tsbuildinfo",
+    "lint": "oxlint --ignore-pattern \"**/*.mjs\" src",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --config vitest.config.ts"
   },
   "dependencies": {
     "@bb/domain": "workspace:*",
     "@bb/provider-bridge-protocol": "workspace:*",
-    "zod": "^4.3.6"
+    "zod": "^4.3.6",
+    "@bb/process-utils": "workspace:*"
   },
   "devDependencies": {
+    "@bb/test-helpers": "workspace:*",
     "@bb/tsconfig": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@types/node": "^22.0.0",

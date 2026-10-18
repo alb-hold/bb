@@ -6,13 +6,19 @@ import {
   type GitBranchSelection,
   type EnvironmentMachineSelection,
   type Thread,
+  type ThreadParentNotifications,
   type JsonValue,
 } from "@bb/domain";
 import type { CreateThreadEnvironmentArgs } from "@bb/server-contract";
+import { createThreadRequestSchema } from "@bb/server-contract";
 import { action, CliUsageError } from "../../action.js";
 import { createCliBbSdk } from "../../client.js";
 import { missingProjectHint } from "../../context-hints.js";
-import { requireTextInput, TEXT_FILE_HELP_SUFFIX } from "../../text-input.js";
+import {
+  requireTextInput,
+  resolveTextInput,
+  TEXT_FILE_HELP_SUFFIX,
+} from "../../text-input.js";
 import {
   resolveExplicitIdFlag,
   resolveContextThreadId,
@@ -32,10 +38,14 @@ import {
   parsePermissionMode,
   buildPromptInputs,
   uploadClientAttachmentInputs,
+  PARENT_NOTIFICATIONS_HELP,
   PERMISSION_MODE_HELP,
   PLAN_HELP,
+  parseParentNotifications,
   parseServiceTier,
+  SERVICE_TIER_HELP,
 } from "./helpers.js";
+import { parseSpawnSessionOptions } from "./session-state.js";
 import { SEND_AT_HELP, parseSendAt } from "./send-time.js";
 
 const PROVIDER_HELP =
@@ -58,6 +68,7 @@ interface ThreadSpawnCommandOptions {
   title?: string;
   lifecycleOwnerThread?: string;
   serviceTier?: string;
+  option?: string[];
   permissionMode?: string;
   plan?: boolean;
   parentSelf?: boolean;
@@ -68,15 +79,25 @@ interface ThreadSpawnCommandOptions {
   file?: string[];
   image?: string[];
   section?: string;
+  pinned?: boolean;
   originKind?: string;
   sourceThread?: string;
   sourceSeqEnd?: string;
   visibility?: string;
+  parentNotifications?: string;
   sendAt?: string;
+  pluginCreateData?: string;
+  native?: boolean;
 }
 
 export function looksLikePath(value: string): boolean {
-  return value.includes("/") || value.startsWith(".") || value.startsWith("~");
+  return (
+    value.includes("/") ||
+    value.includes("\\") ||
+    /^[A-Za-z]:/u.test(value) ||
+    value.startsWith(".") ||
+    value.startsWith("~")
+  );
 }
 
 export function requireHostId(hostId: string | null): string {
@@ -355,15 +376,24 @@ export function registerSpawnCommand(
     .option("--parent-self", "Parent the new thread to BB_THREAD_ID")
     .option("--provider <id>", PROVIDER_HELP)
     .option(
+      "--plugin-create-data <json>",
+      "Plugin-owned non-secret creation configuration, keyed by plugin ID",
+    )
+    .option(
       "--model <model>",
       "Model ID for the thread. Omit to use the project's remembered default for the resolved provider",
     )
     .option(
       "--reasoning-level <level>",
-      "Reasoning level: low, medium, high, xhigh, max (provider-dependent)",
+      "Reasoning level id the model lists: low, medium, high, xhigh, max, or a provider-specific id",
     )
     .option("--title <title>", "Thread title")
-    .option("--service-tier <tier>", "Service tier: fast or default")
+    .option("--service-tier <tier>", SERVICE_TIER_HELP)
+    .option(
+      "--option <option=value>",
+      "Choose a value for an option the provider's model lists (see bb provider models); use true or false for an on/off option (repeatable)",
+      (value: string, previous: string[] = []) => [...previous, value],
+    )
     .option("--permission-mode <mode>", PERMISSION_MODE_HELP)
     .option("--plan", PLAN_HELP)
     .option(
@@ -379,10 +409,12 @@ export function registerSpawnCommand(
       [],
     )
     .option("--section <id>", "Create the thread in a section")
+    .option("--pinned", "Create the thread in Pinned")
     .option(
       "--visibility <visibility>",
       "Thread visibility: visible or hidden (a child inherits its parent)",
     )
+    .option("--parent-notifications <value>", PARENT_NOTIFICATIONS_HELP)
     .option(
       "--environment-provider <id>",
       "Run on an environment provider by id (list them with `bb environment providers`)",
@@ -392,6 +424,10 @@ export function registerSpawnCommand(
       "JSON value for an --environment-provider that declares inputs (`bb environment providers --json` shows the schema)",
     )
     .option("--send-at <when>", SEND_AT_HELP)
+    .option(
+      "--native",
+      "Run the provider's own CLI in the thread's terminal instead of the chat view (providers that declare one, such as claude-code and codex); --prompt becomes its first message. Cannot be combined with --option, --send-at or a fork",
+    )
     .option("--origin-kind <kind>", "Thread origin: fork")
     .option("--source-thread <id>", "Source thread for a fork")
     .option(
@@ -400,12 +436,15 @@ export function registerSpawnCommand(
     )
     .action(
       action(async (opts: ThreadSpawnCommandOptions) => {
-        const prompt = await requireTextInput({
+        const textInputArgs = {
           file: opts.promptFile,
           fileLabel: "--prompt-file",
           inline: opts.prompt,
           inlineLabel: "--prompt <prompt>",
-        });
+        };
+        const prompt = opts.native
+          ? await resolveTextInput(textInputArgs)
+          : await requireTextInput(textInputArgs);
         const projectId = resolveExplicitIdFlag({
           flagName: "--project flag",
           value: opts.project,
@@ -535,15 +574,22 @@ export function registerSpawnCommand(
             });
         const reasoningLevel = parseReasoningLevel(opts.reasoningLevel);
         const serviceTier = parseServiceTier(opts.serviceTier);
+        const sessionOptions = parseSpawnSessionOptions(opts.option ?? []);
         const permissionMode = parsePermissionMode(opts.permissionMode);
         const visibility =
           opts.visibility === undefined
             ? undefined
             : threadVisibilitySchema.parse(opts.visibility);
+        const parentNotifications = parseParentNotifications(
+          opts.parentNotifications,
+        );
         const parentThreadId = resolveSpawnParentThreadId({
           parentSelf: opts.parentSelf,
           parentThread: opts.parentThread,
         });
+        // Run from inside a thread, the spawn is an agent's: record who made it
+        // so the server treats an unparented thread as that thread's child.
+        const spawnedByThreadId = resolveContextThreadId();
         if (opts.originKind !== undefined && opts.originKind !== "fork") {
           throw new Error("--origin-kind must be fork.");
         }
@@ -560,22 +606,34 @@ export function registerSpawnCommand(
         const sendAt =
           opts.sendAt === undefined ? undefined : parseSendAt(opts.sendAt);
         const providerId = opts.provider?.trim();
+        const pluginCreateData =
+          opts.pluginCreateData === undefined
+            ? undefined
+            : createThreadRequestSchema.shape.experimental_pluginCreateData.parse(
+                JSON.parse(opts.pluginCreateData),
+              );
 
         let thread: Thread;
         try {
           const sdk = createCliBbSdk(getUrl());
-          const input = await uploadClientAttachmentInputs({
-            input: buildPromptInputs({
-              message: prompt,
-              plan: opts.plan,
-              files: opts.file,
-              images: opts.image,
-            }),
-            resolveProjectId: async () => projectId,
-            sdk,
-          });
+          const input =
+            prompt === undefined
+              ? []
+              : await uploadClientAttachmentInputs({
+                  input: buildPromptInputs({
+                    message: prompt,
+                    plan: opts.plan,
+                    files: opts.file,
+                    images: opts.image,
+                  }),
+                  resolveProjectId: async () => projectId,
+                  sdk,
+                });
           thread = await sdk.threads.spawn({
             origin: "cli",
+            ...(pluginCreateData === undefined
+              ? {}
+              : { experimental_pluginCreateData: pluginCreateData }),
             projectId,
             ...(providerId ? { providerId } : {}),
             ...(opts.model ? { model: opts.model } : {}),
@@ -583,19 +641,28 @@ export function registerSpawnCommand(
             ...(reasoningLevel ? { reasoningLevel } : {}),
             ...(opts.title ? { title: opts.title } : {}),
             ...(serviceTier ? { serviceTier } : {}),
+            ...(Object.keys(sessionOptions).length > 0
+              ? { sessionOptions }
+              : {}),
             ...(permissionMode ? { permissionMode } : {}),
             ...(visibility ? { visibility } : {}),
             environment,
             startedOnBehalfOf: null,
             originKind: opts.originKind ?? null,
             ...(parentThreadId ? { parentThreadId } : {}),
+            ...(spawnedByThreadId && !parentThreadId
+              ? { spawnedByThreadId }
+              : {}),
+            ...(parentNotifications ? { parentNotifications } : {}),
             ...(opts.lifecycleOwnerThread !== undefined
               ? { lifecycleOwnerThreadId: opts.lifecycleOwnerThread }
               : {}),
             ...(opts.section ? { sectionId: opts.section } : {}),
+            ...(opts.pinned ? { pinned: true } : {}),
             ...(opts.sourceThread ? { sourceThreadId: opts.sourceThread } : {}),
             ...(sourceSeqEnd !== undefined ? { sourceSeqEnd } : {}),
             ...(sendAt !== undefined ? { sendAt } : {}),
+            ...(opts.native ? { nativeTerminal: true } : {}),
           });
         } catch (err: unknown) {
           throw prependErrorContext("Failed to create thread", err);
@@ -614,11 +681,24 @@ export function registerSpawnCommand(
           thread.parentThreadId &&
           thread.parentThreadId === resolveContextThreadId()
         ) {
-          console.log("You will be notified when this thread is done.");
+          console.log(parentNotificationsPromise(thread.parentNotifications));
         }
         printThread(thread);
       }),
     );
+}
+
+function parentNotificationsPromise(
+  parentNotifications: ThreadParentNotifications,
+): string {
+  switch (parentNotifications) {
+    case "auto":
+      return "You will be notified when this thread is done.";
+    case "stuck":
+      return "You will be notified only if this thread fails, is interrupted, or is blocked.";
+    case "off":
+      return "You will not be notified about this thread.";
+  }
 }
 
 function printThread(thread: Thread): void {

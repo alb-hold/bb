@@ -2,7 +2,8 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createConnection, migrate, type DbConnection } from "@bb/db";
+import { type DbConnection } from "@bb/db";
+import { createMigratedConnection } from "@bb/db/testing";
 import { encodeClientTurnRequestIdNumber } from "@bb/domain";
 import type { Logger } from "@bb/logger";
 import { createAiServiceRegistry } from "../../../src/services/ai/ai-service-registry.js";
@@ -99,8 +100,7 @@ describe("plugin skills tier", () => {
   let service: PluginService;
 
   beforeEach(async () => {
-    db = createConnection(":memory:");
-    migrate(db);
+    db = createMigratedConnection();
     workDir = await mkdtemp(join(tmpdir(), "bb-plugin-skills-test-"));
     service = createPluginService({
       aiServices: createAiServiceRegistry(),
@@ -197,26 +197,6 @@ describe("plugin skills tier", () => {
     }).map((entry) => entry.runtimeSource);
     expect(sources.map((source) => source.name)).toEqual(["relocated-skill"]);
   });
-
-  it("a skill added after install is discovered on the next resolve after reload", async () => {
-    const rootDir = await writePlugin(workDir, {
-      name: "bb-plugin-growing",
-      skillNames: ["first-skill"],
-    });
-    await service.installPath(rootDir);
-
-    const resolve = () =>
-      resolveSkillCatalogEntries(testLogger, {
-        dataDir: join(workDir, "data"),
-        pluginSkillRoots: service.listSkillRootContributions(),
-        skillTreeRegistry: new SkillTreeRegistry(),
-      }).map((entry) => entry.runtimeSource.name);
-
-    expect(resolve()).toEqual(["first-skill"]);
-    await writeSkill(join(rootDir, "skills"), "second-skill");
-    await service.reload("growing");
-    expect(resolve()).toEqual(["first-skill", "second-skill"]);
-  });
 });
 
 describe("plugin agent contributions reach thread runtime config", () => {
@@ -229,8 +209,7 @@ describe("plugin agent contributions reach thread runtime config", () => {
   });
 
   it("isolates resolver failures and timeouts", async () => {
-    const db = createConnection(":memory:");
-    migrate(db);
+    const db = createMigratedConnection();
     const service = createPluginService({
       aiServices: createAiServiceRegistry(),
       telemetry: createNoopTelemetryService(),
@@ -440,5 +419,15 @@ describe("plugin agent contributions reach thread runtime config", () => {
         source: { plugin: "env-second" },
       },
     ]);
+    const nativeEnv = await harness.pluginService.resolveProviderEnv({
+      providerId: "codex",
+      context: {
+        threadId: thread.id,
+        projectId: project.id,
+        hostId: host.id,
+        experimental_runtimeKind: "native",
+      },
+    });
+    expect(nativeEnv.entries).toEqual(command.contributedEnv);
   });
 });

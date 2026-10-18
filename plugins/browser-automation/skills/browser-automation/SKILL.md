@@ -6,18 +6,24 @@ description: Use the Browser Automation BB plugin to inspect and automate persis
 Use `bb browser-automation`. Open one session, retain its session ID, then inspect,
 act, and verify in short scripts.
 
+`--machine` accepts an exact host ID or an unambiguous machine name. Exact IDs
+take precedence over names; unknown or ambiguous names fail before opening a session.
+
 Choose `--backend local --headless --machine <host-id>` for headless Chrome on
 an enrolled host. Choose `--backend desktop --machine <host-id> --desktop
-<instance-id>` for a new dedicated desktop automation tab. Starting desktop
+<instance-id>` for a new desktop automation tab. Desktop tabs use the BB
+browser's profile, including the user's signed-in cookies. Starting desktop
 control opens the side panel and selects the browser tab only if its thread is
 already focused. New or activated controller pages follow the same rule;
-automation does not switch threads or bring the desktop window forward. Headless sessions remain headless.
+automation does not switch threads or bring the desktop window forward. While
+controlled, a desktop tab never takes keyboard focus from the composer or other
+apps; the user presses Take over to type into it. Headless sessions remain headless.
 Plugin-owned local/headless Chrome launches with `--no-sandbox`, disabling Chrome's
 sandbox. Desktop attachment does not change the browser's launch flags.
 Resolve the explicit instance with `bb browser instances --host <host-id> --json`
-first. Never silently choose a different host, mode, or login profile.
-Adding `--tab <tab-id>` hands off an existing tab and its profile's logged-in
-authority; do so only when the user asked to use that tab. The CLI uses the
+first. Never silently choose a different host or mode.
+Adding `--tab <tab-id>` takes control of an existing tab; do so only when the
+user asked to use that tab. The CLI uses the
 current thread, or `--thread <id>` outside a thread. Each session belongs to
 that thread.
 
@@ -83,8 +89,10 @@ operations and `localhost` refer to the browser host. Transfer files explicitly.
 
 Stop cancels running and queued work and releases desktop control. Cancellation
 and timeout stop the session too; open a new session to resume. Close disposes
-owned Chrome and plugin-created desktop tabs while preserving handed-off tabs.
-Close sessions after use. Five-minute idle and thirty-minute absolute expiry
+owned Chrome and desktop tabs the session opened while preserving a `--tab` tab.
+Close sessions after use. When `close` or `stop` fails, the session still
+accepts no more commands, but its browser may still be running; run `close`
+again to retry cleanup. Five-minute idle and thirty-minute absolute expiry
 apply. Timeouts default to 30 seconds, maximum 120 seconds: pass either
 `--timeout-ms <1000-120000>` or `--timeout <duration>`, where a duration carries
 a unit (`90s`, `2m`, `1500ms`) and a bare number is read as seconds (1-120) or

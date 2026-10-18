@@ -1,10 +1,13 @@
 import { spawn } from "node:child_process";
+import { isDeepStrictEqual } from "node:util";
 import {
   query,
   type CanUseTool,
-  type McpSdkServerConfigWithInstance,
+  type McpServerConfig,
+  type McpServerStatus,
   type Options,
   type Query,
+  type Settings,
   type SDKMessage,
   type SDKUserMessage,
   type SpawnedProcess,
@@ -29,12 +32,13 @@ export interface SdkSessionOptions {
   effort?: Options["effort"];
   sessionId?: string;
   permissionMode?: ClaudePermissionMode;
+  allowBypassPermissions: boolean;
   sandbox?: Options["sandbox"];
   hooks?: Options["hooks"];
-  mcpServers?: Record<string, McpSdkServerConfigWithInstance>;
+  mcpServers?: Record<string, McpServerConfig>;
   allowedTools?: string[];
-  disallowedTools?: string[];
   canUseTool?: CanUseTool;
+  onElicitation?: Options["onElicitation"];
   env?: NodeJS.ProcessEnv;
   pathToClaudeCodeExecutable?: Options["pathToClaudeCodeExecutable"];
   plugins?: Options["plugins"];
@@ -56,6 +60,7 @@ export type ClaudeMutableFlagSettings = {
   enableWorkflows: boolean;
   effortLevel?: ClaudeSdkReasoningEffort;
   ultracode: boolean;
+  fastMode: boolean;
 };
 
 type SdkSessionMessageHandler = (message: SDKMessage) => void;
@@ -73,6 +78,7 @@ interface SdkPermissionOptions {
 }
 
 interface BuildSdkPermissionOptionsArgs {
+  allowBypassPermissions: boolean;
   permissionMode: ClaudePermissionMode | undefined;
 }
 
@@ -87,9 +93,25 @@ interface BuildSdkDoneErrorMessageArgs {
 }
 
 const SDK_STDERR_TAIL_MAX_CHARS = 4_000;
+const CLAUDE_CONFIG_MCP_SCOPES = new Set(["user", "project", "local"]);
 
-function isCurrentProcessRoot(): boolean {
-  return process.getuid?.() === 0;
+export class McpServerConfigChangeError extends Error {
+  constructor(name: string | undefined, cause: unknown) {
+    const reason = cause instanceof Error ? cause.message : String(cause);
+    const server = name ? ` for server ${name}` : "";
+    super(`Could not safely apply MCP configuration${server}: ${reason}`, {
+      cause,
+    });
+    this.name = "McpServerConfigChangeError";
+  }
+}
+
+function isClaudeConfigScope(scope: string | undefined): boolean {
+  return scope !== undefined && CLAUDE_CONFIG_MCP_SCOPES.has(scope);
+}
+
+export function isBypassPermissionsAvailable(): boolean {
+  return process.getuid?.() !== 0;
 }
 
 function appendBoundedText(args: AppendBoundedTextArgs): string {
@@ -139,12 +161,15 @@ function buildSdkPermissionOptions(
   args: BuildSdkPermissionOptionsArgs,
 ): SdkPermissionOptions {
   const permissionMode = args.permissionMode ?? "default";
-  if (permissionMode !== "bypassPermissions") {
+  if (!args.allowBypassPermissions) {
     return { permissionMode };
   }
 
-  if (isCurrentProcessRoot()) {
-    return { permissionMode: "default" };
+  if (!isBypassPermissionsAvailable()) {
+    return {
+      permissionMode:
+        permissionMode === "bypassPermissions" ? "default" : permissionMode,
+    };
   }
 
   return {
@@ -163,6 +188,12 @@ export class SdkSession {
   private inputDone = false;
   private readonly abortController = new AbortController();
   private readonly completion: Promise<void>;
+  private readonly baseMcpServers: Record<string, McpServerConfig>;
+  private readonly bridgeDisabledStaticServers = new Map<
+    string,
+    McpServerStatus["config"]
+  >();
+  private mcpReconciliationPending = false;
   private complete: (() => void) | null = null;
   private stderrTail = "";
 
@@ -171,6 +202,7 @@ export class SdkSession {
     private readonly onMessage: SdkSessionMessageHandler,
     private readonly onDone: SdkSessionDoneHandler,
   ) {
+    this.baseMcpServers = { ...options.mcpServers };
     this.completion = new Promise((resolve) => {
       this.complete = resolve;
     });
@@ -185,8 +217,14 @@ export class SdkSession {
   }
 
   async setPermissionMode(mode: ClaudePermissionMode): Promise<void> {
-    this.options.permissionMode = mode;
     await this.query?.setPermissionMode(mode);
+    this.options.permissionMode = mode;
+  }
+
+  async applyPermissionSettings(
+    settings: Pick<Settings, "sandbox" | "permissions">,
+  ): Promise<void> {
+    await this.query?.applyFlagSettings(settings);
   }
 
   async getContextUsage(): Promise<unknown> {
@@ -196,6 +234,118 @@ export class SdkSession {
   async setModel(model: string | undefined): Promise<void> {
     await this.query?.setModel(model);
     this.options.model = model;
+  }
+
+  needsMcpServerReconciliation(): boolean {
+    return this.mcpReconciliationPending;
+  }
+
+  markMcpServerReconciliationPending(): void {
+    this.mcpReconciliationPending = true;
+  }
+
+  async setMcpServers(servers: Record<string, McpServerConfig>): Promise<void> {
+    const query = this.query;
+    if (!query) return;
+    this.mcpReconciliationPending = true;
+    let statuses: McpServerStatus[];
+    try {
+      statuses = await query.mcpServerStatus();
+    } catch (error) {
+      throw new McpServerConfigChangeError(undefined, error);
+    }
+    const statusesByName = new Map(
+      statuses.map((status: McpServerStatus) => [status.name, status]),
+    );
+    const dynamicServers = Object.create(null) as Record<
+      string,
+      McpServerConfig
+    >;
+    const restoreAfterFailedUpdate = new Set<string>();
+    let nextServers: Record<string, McpServerConfig>;
+    try {
+      for (const status of statuses) {
+        const configuredServer = servers[status.name];
+        if (!isClaudeConfigScope(status.scope)) {
+          if (configuredServer !== undefined) {
+            dynamicServers[status.name] = configuredServer;
+          }
+          continue;
+        }
+        if (configuredServer === undefined) {
+          if (status.status !== "disabled") {
+            this.bridgeDisabledStaticServers.set(status.name, status.config);
+            try {
+              await query.toggleMcpServer(status.name, false);
+            } catch (error) {
+              throw new McpServerConfigChangeError(status.name, error);
+            }
+          }
+          continue;
+        }
+        if (!isDeepStrictEqual(status.config, configuredServer)) {
+          if (status.status !== "disabled") {
+            this.bridgeDisabledStaticServers.set(status.name, status.config);
+            restoreAfterFailedUpdate.add(status.name);
+            try {
+              await query.toggleMcpServer(status.name, false);
+            } catch (error) {
+              throw new McpServerConfigChangeError(status.name, error);
+            }
+          }
+          if (this.bridgeDisabledStaticServers.has(status.name)) {
+            restoreAfterFailedUpdate.add(status.name);
+          }
+          dynamicServers[status.name] = configuredServer;
+          continue;
+        }
+        if (status.status === "disabled") {
+          if (
+            this.bridgeDisabledStaticServers.has(status.name) &&
+            (this.bridgeDisabledStaticServers.get(status.name) === undefined ||
+              isDeepStrictEqual(
+                this.bridgeDisabledStaticServers.get(status.name),
+                configuredServer,
+              ))
+          ) {
+            await query.toggleMcpServer(status.name, true);
+            this.bridgeDisabledStaticServers.delete(status.name);
+          }
+        }
+      }
+      for (const [name, config] of Object.entries(servers)) {
+        if (!statusesByName.has(name)) dynamicServers[name] = config;
+      }
+      nextServers = { ...dynamicServers, ...this.baseMcpServers };
+      const result = await query.setMcpServers(nextServers);
+      for (const [name, message] of Object.entries(result.errors)) {
+        process.stderr.write(
+          `claude-code bridge: MCP server ${name} failed to connect: ${message}\n`,
+        );
+      }
+    } catch (error) {
+      this.mcpReconciliationPending = true;
+      for (const name of restoreAfterFailedUpdate) {
+        try {
+          await query.toggleMcpServer(name, true);
+          this.bridgeDisabledStaticServers.delete(name);
+        } catch {}
+      }
+      throw error;
+    }
+    this.mcpReconciliationPending = false;
+    this.options.mcpServers = nextServers;
+  }
+
+  async reconnectMcpServersNeedingAuth(): Promise<void> {
+    const query = this.query;
+    if (!query) return;
+    const statuses = await query.mcpServerStatus();
+    for (const status of statuses) {
+      if (status.status === "needs-auth" || status.status === "failed") {
+        await query.reconnectMcpServer(status.name);
+      }
+    }
   }
 
   async applyMutableSettings(args: {
@@ -222,6 +372,7 @@ export class SdkSession {
 
     this.stderrTail = "";
     const permissionOptions = buildSdkPermissionOptions({
+      allowBypassPermissions: this.options.allowBypassPermissions,
       permissionMode: this.options.permissionMode,
     });
     const onStderr = (data: string): void => {
@@ -257,11 +408,11 @@ export class SdkSession {
       ...(this.options.allowedTools
         ? { allowedTools: this.options.allowedTools }
         : {}),
-      ...(this.options.disallowedTools
-        ? { disallowedTools: this.options.disallowedTools }
-        : {}),
       ...(this.options.canUseTool
         ? { canUseTool: this.options.canUseTool }
+        : {}),
+      ...(this.options.onElicitation
+        ? { onElicitation: this.options.onElicitation }
         : {}),
       ...(this.options.sandbox ? { sandbox: this.options.sandbox } : {}),
       ...(this.options.hooks ? { hooks: this.options.hooks } : {}),
@@ -282,7 +433,10 @@ export class SdkSession {
       ...(this.options.plugins ? { plugins: this.options.plugins } : {}),
       ...(this.options.thinking ? { thinking: this.options.thinking } : {}),
       ...(this.options.settings ? { settings: this.options.settings } : {}),
-      ...(this.options.extraArgs ? { extraArgs: this.options.extraArgs } : {}),
+      extraArgs: {
+        ...this.options.extraArgs,
+        "replay-user-messages": null,
+      },
     };
 
     try {
@@ -345,19 +499,37 @@ export class SdkSession {
     this.query = undefined;
   }
 
+  async stopAndDrain(timeoutMs: number): Promise<void> {
+    this.stop();
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        this.completion,
+        new Promise<void>((resolve) => {
+          timeout = setTimeout(resolve, timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+    }
+  }
+
   async closeGracefully(timeoutMs: number): Promise<void> {
     this.inputDone = true;
     this.rejectQueuedInputs("Claude SDK session closed before input consumed");
-    this.resolveInputDone();
 
-    if (!this.query) {
+    const query = this.query;
+    if (!query) {
+      this.resolveInputDone();
       return;
     }
 
     let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
-        this.completion,
+        this.interruptAndDrain(query),
         new Promise<void>((_, reject) => {
           timeout = setTimeout(() => {
             reject(
@@ -375,6 +547,12 @@ export class SdkSession {
         clearTimeout(timeout);
       }
     }
+  }
+
+  private async interruptAndDrain(query: Query): Promise<void> {
+    await query.interrupt();
+    this.resolveInputDone();
+    await this.completion;
   }
 
   private createInputIterable(): AsyncIterable<SDKUserMessage> {

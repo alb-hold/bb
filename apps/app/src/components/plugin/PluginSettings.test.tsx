@@ -27,6 +27,7 @@ import {
   makePluginListItem,
   makePluginRegistrationSet,
 } from "@/test/fixtures/plugins";
+import { createDeferredPromise } from "@bb/test-helpers";
 
 interface RecordedRequest {
   url: string;
@@ -46,14 +47,6 @@ function jsonError(message: string): Response {
     status: 400,
     headers: { "content-type": "application/json" },
   });
-}
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((resolvePromise) => {
-    resolve = resolvePromise;
-  });
-  return { promise, resolve };
 }
 
 const SETTINGS_VIEW = {
@@ -284,8 +277,8 @@ describe("PluginSettingsForm", () => {
   });
 
   it("preserves text typed while an older save is pending", async () => {
-    const first = deferred<Response>();
-    const second = deferred<Response>();
+    const first = createDeferredPromise<Response>();
+    const second = createDeferredPromise<Response>();
     const requests: RecordedRequest[] = [];
     let saveCount = 0;
     vi.stubGlobal(
@@ -337,8 +330,8 @@ describe("PluginSettingsForm", () => {
   });
 
   it("preserves restored saved text while an older save is pending", async () => {
-    const first = deferred<Response>();
-    const second = deferred<Response>();
+    const first = createDeferredPromise<Response>();
+    const second = createDeferredPromise<Response>();
     const requests: RecordedRequest[] = [];
     let saveCount = 0;
     vi.stubGlobal(
@@ -539,9 +532,9 @@ describe("PluginSettingsForm", () => {
   });
 
   it("serializes immediate autosaves so the latest repeated toggle wins", async () => {
-    const first = deferred<Response>();
-    const second = deferred<Response>();
-    const third = deferred<Response>();
+    const first = createDeferredPromise<Response>();
+    const second = createDeferredPromise<Response>();
+    const third = createDeferredPromise<Response>();
     const requests: RecordedRequest[] = [];
     let saveCount = 0;
     vi.stubGlobal(
@@ -603,8 +596,10 @@ describe("PluginSettingsForm", () => {
       );
       await third.promise;
     });
-    expect(screen.queryByRole("status")).toBeNull();
-    expect(enabled.getAttribute("data-state")).toBe("unchecked");
+    await vi.waitFor(() => {
+      expect(screen.queryByRole("status")).toBeNull();
+      expect(enabled.getAttribute("data-state")).toBe("unchecked");
+    });
   });
 });
 
@@ -701,7 +696,7 @@ describe("PluginSettingsPage", () => {
     ).toBeNull();
     expect(
       container.querySelectorAll("[data-resource-detail-section]"),
-    ).toHaveLength(1);
+    ).toHaveLength(0);
 
     fireEvent.click(enable);
 
@@ -855,7 +850,7 @@ describe("PluginSettingsPage", () => {
     expect(screen.queryByRole("heading", { name: "Configuration" })).toBeNull();
     expect(
       container.querySelectorAll("[data-resource-detail-section]"),
-    ).toHaveLength(1);
+    ).toHaveLength(0);
   });
 
   it("keeps a section-only plugin in Configuration with a flat surface", async () => {
@@ -895,6 +890,9 @@ describe("PluginSettingsPage", () => {
     const section = await screen.findByText("Custom connect settings");
     expect(section.closest(".overflow-hidden")).toBeNull();
     expect(screen.getByRole("heading", { name: "Configuration" })).toBeTruthy();
+    expect(
+      screen.getByRole("heading", { level: 3, name: "Remote access" }),
+    ).toBeTruthy();
   });
 
   it("keeps the recessed unavailable hint for a section-only plugin", async () => {
@@ -1038,41 +1036,5 @@ describe("PluginSettingsDetail settings gating", () => {
     render(<PluginSettingsDetail plugin={rowPlugin("error")} />, { wrapper });
     expect(screen.queryByLabelText("Greeting")).toBeNull();
     expect(fetchSpy).not.toHaveBeenCalled();
-  });
-
-  it("renders a slot-only plugin configuration without a recessed panel", async () => {
-    function ConnectSettings() {
-      return <div>Custom connect settings</div>;
-    }
-    setPluginSlotRegistrations(
-      "connect",
-      makePluginRegistrationSet({
-        settingsSections: [
-          { id: "remote", title: "Remote access", component: ConnectSettings },
-        ],
-      }),
-    );
-    const { wrapper } = createQueryClientTestHarness();
-    render(
-      <PluginSettingsDetail
-        plugin={{
-          ...rowPlugin("running"),
-          id: "connect",
-          provenance: "builtin",
-          hasSettings: false,
-        }}
-      />,
-      { wrapper },
-    );
-
-    expect(
-      await screen.findByRole("heading", {
-        level: 3,
-        name: "Remote access",
-      }),
-    ).toBeDefined();
-    const section = screen.getByText("Custom connect settings");
-    expect(section.closest(".overflow-hidden")).toBeNull();
-    expect(screen.queryByText("This plugin declares no settings.")).toBeNull();
   });
 });

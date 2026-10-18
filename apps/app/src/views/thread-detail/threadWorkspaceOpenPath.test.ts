@@ -54,6 +54,7 @@ function makeWorkspaceChangedFilesSection(
       insertions: 1,
       deletions: 1,
       lineStatsComplete: true,
+      fileCount: 1,
     },
     ...overrides,
   };
@@ -79,16 +80,6 @@ describe("resolveThreadWorkspaceOpenPath", () => {
       serverOrigin: "https://bb.example.test",
       hostId: "host-remote",
     });
-  });
-
-  it("returns the ready local environment path when the capability is available", () => {
-    expect(
-      resolveThreadWorkspaceOpenPath({
-        canOpenWorkspace: true,
-        environment: makeWorkspaceEnvironment(),
-        hasWorkspaceOpenTargets: true,
-      }),
-    ).toBe("/tmp/workspace");
   });
 
   it("hides when workspace open preconditions are missing", () => {

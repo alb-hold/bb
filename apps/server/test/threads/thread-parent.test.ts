@@ -1,24 +1,17 @@
-import {
-  createConnection,
-  createProject,
-  createThread,
-  migrate,
-  noopNotifier,
-  upsertHost,
-} from "@bb/db";
+import { createProject, createThread, noopNotifier, upsertHost } from "@bb/db";
+import { createMigratedConnection } from "@bb/db/testing";
 import { describe, expect, it } from "vitest";
 import { ApiError } from "../../src/errors.js";
 import {
   assertValidParentThread,
-  isAgentDelegatedChildThread,
   isParentNotifiableChildThread,
+  type ParentNotificationOutcome,
 } from "../../src/services/threads/thread-parent.js";
 
 type ThrowingCallback = () => void;
 
 function setup() {
-  const db = createConnection(":memory:");
-  migrate(db);
+  const db = createMigratedConnection();
   const host = upsertHost(db, noopNotifier, {
     name: "test-host",
   });
@@ -46,23 +39,6 @@ function captureApiError(callback: ThrowingCallback): ApiError {
 }
 
 describe("thread parent validation", () => {
-  it("accepts live standard parent threads", () => {
-    const { db, project } = setup();
-    const parentThread = createThread(db, noopNotifier, {
-      projectId: project.id,
-      providerId: "codex",
-    });
-
-    const validatedParent = assertValidParentThread(
-      { db },
-      {
-        parentThreadId: parentThread.id,
-      },
-    );
-
-    expect(validatedParent.id).toBe(parentThread.id);
-  });
-
   it("accepts a live parent thread from another project", () => {
     const { db, host } = setup();
     const { project: otherProject } = createProject(db, noopNotifier, {
@@ -249,55 +225,59 @@ describe("thread parent validation", () => {
   });
 });
 
-describe("isAgentDelegatedChildThread", () => {
-  it("is true for a thread with a parent", () => {
-    expect(
-      isAgentDelegatedChildThread({
-        parentThreadId: "thr_parent",
-      }),
-    ).toBe(true);
-  });
-
-  it("is false for a fork-style root", () => {
-    expect(
-      isAgentDelegatedChildThread({
-        parentThreadId: null,
-      }),
-    ).toBe(false);
-  });
-});
-
 describe("isParentNotifiableChildThread", () => {
-  it("is true for a hidden delegated child", () => {
-    expect(
-      isParentNotifiableChildThread({
-        originKind: null,
-        parentThreadId: "thr_parent",
-      }),
-    ).toBe(true);
-  });
-
   it("is false for a fork that kept a parent id", () => {
     expect(
-      isParentNotifiableChildThread({
-        originKind: "fork",
-        parentThreadId: "thr_parent",
-      }),
+      isParentNotifiableChildThread(
+        {
+          originKind: "fork",
+          parentNotifications: "auto",
+          parentThreadId: "thr_parent",
+        },
+        "failed",
+      ),
     ).toBe(false);
   });
 
-  it("is false for a source-derived fork and for a root thread", () => {
+  it("is false for a root thread", () => {
     expect(
-      isParentNotifiableChildThread({
-        originKind: "fork",
-        parentThreadId: "thr_parent",
-      }),
-    ).toBe(false);
-    expect(
-      isParentNotifiableChildThread({
-        originKind: null,
-        parentThreadId: null,
-      }),
+      isParentNotifiableChildThread(
+        {
+          originKind: null,
+          parentNotifications: "auto",
+          parentThreadId: null,
+        },
+        "failed",
+      ),
     ).toBe(false);
   });
+
+  const outcomes: ParentNotificationOutcome[] = [
+    "completed",
+    "failed",
+    "interrupted",
+    "needs-attention",
+  ];
+
+  it.each([
+    ["auto", outcomes],
+    ["stuck", ["failed", "interrupted", "needs-attention"]],
+    ["off", []],
+  ] as const)(
+    "notifies the parent for exactly the %s outcomes",
+    (policy, notifying) => {
+      expect(
+        outcomes.filter((outcome) =>
+          isParentNotifiableChildThread(
+            {
+              originKind: null,
+              parentNotifications: policy,
+              parentThreadId: "thr_parent",
+            },
+            outcome,
+          ),
+        ),
+      ).toEqual(notifying);
+    },
+  );
 });

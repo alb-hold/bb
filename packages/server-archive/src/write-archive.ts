@@ -1,6 +1,13 @@
-import { constants, createWriteStream } from "node:fs";
+import { constants, createWriteStream, type WriteStream } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
-import { type FileHandle, mkdir, open, rename, rm } from "node:fs/promises";
+import {
+  type FileHandle,
+  lstat,
+  mkdir,
+  open,
+  rename,
+  rm,
+} from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -50,6 +57,16 @@ interface PlannedArchiveFile {
 }
 
 async function openSourceFile(sourcePath: string): Promise<FileHandle> {
+  const pathStats =
+    process.platform === "win32"
+      ? await lstat(sourcePath, { bigint: true })
+      : null;
+  if (pathStats?.isSymbolicLink()) {
+    throw new ServerArchiveError(
+      "unsafe_entry",
+      `${sourcePath} is a symbolic link`,
+    );
+  }
   const handle = await open(
     sourcePath,
     constants.O_RDONLY | constants.O_NOFOLLOW,
@@ -62,12 +79,22 @@ async function openSourceFile(sourcePath: string): Promise<FileHandle> {
     }
     throw error;
   });
-  const stats = await handle.stat();
+  const stats = await handle.stat({ bigint: true });
   if (!stats.isFile()) {
     await handle.close();
     throw new ServerArchiveError(
       "unsafe_entry",
       `${sourcePath} is not a regular file`,
+    );
+  }
+  if (
+    pathStats !== null &&
+    (stats.ino !== pathStats.ino || stats.dev !== pathStats.dev)
+  ) {
+    await handle.close();
+    throw new ServerArchiveError(
+      "unsafe_entry",
+      `${sourcePath} changed while it was being opened`,
     );
   }
   return handle;
@@ -185,6 +212,14 @@ function assertArchivePaths(files: readonly ServerArchiveSourceFile[]): void {
   }
 }
 
+function whenClosed(stream: WriteStream): Promise<void> {
+  return stream.closed
+    ? Promise.resolve()
+    : new Promise((resolve) => {
+        stream.once("close", () => resolve());
+      });
+}
+
 export async function writeServerArchive(
   args: WriteServerArchiveArgs,
 ): Promise<WriteServerArchiveResult> {
@@ -207,6 +242,10 @@ export async function writeServerArchive(
   );
   const archiveHash = createHash("sha256");
   let sizeBytes = 0;
+  const destination = createWriteStream(tempPath, {
+    flags: "wx",
+    mode: 0o600,
+  });
   try {
     await pipeline(
       Readable.from(generateTarChunks(manifest, plannedFiles)),
@@ -218,10 +257,11 @@ export async function writeServerArchive(
           yield chunk;
         }
       },
-      createWriteStream(tempPath, { flags: "wx", mode: 0o600 }),
+      destination,
     );
     await rename(tempPath, args.outPath);
   } catch (error) {
+    await whenClosed(destination);
     await rm(tempPath, { force: true });
     throw error;
   }

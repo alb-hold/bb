@@ -1,5 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { readdirSync, readFileSync } from "node:fs";
 import { posix as posixPath } from "node:path";
+import { DESKTOP_OWNED_RUNTIME_SHUTDOWN_GRACE_MS } from "@bb/config/full-stack-shutdown";
 import {
   hasProcessExited,
   waitForProcessExit,
@@ -87,8 +89,53 @@ interface ResolveBbAppProcessRuntimeArgs {
 const APPIMAGE_BRIDGE_RELATIVE_PATH_ENV =
   "BB_DESKTOP_APPIMAGE_BRIDGE_RELATIVE_PATH";
 
+function processGroupHasLiveMembers(processGroupId: number): boolean {
+  for (const entry of readdirSync("/proc", { withFileTypes: true })) {
+    if (!entry.isDirectory() || !/^\d+$/u.test(entry.name)) {
+      continue;
+    }
+    try {
+      const stat = readFileSync(`/proc/${entry.name}/stat`, "utf8");
+      const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+      if (fields[0] !== "Z" && Number(fields[2]) === processGroupId) {
+        return true;
+      }
+    } catch (error) {
+      if (
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        (error.code === "ENOENT" || error.code === "ESRCH")
+      ) {
+        continue;
+      }
+      throw error;
+    }
+  }
+  return false;
+}
+
+async function waitForProcessGroupExitWithTimeout(args: {
+  processGroupId: number;
+  timeoutMs: number;
+}): Promise<void> {
+  const deadline = Date.now() + args.timeoutMs;
+  while (processGroupHasLiveMembers(args.processGroupId)) {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      throw new Error(
+        `Process group ${String(args.processGroupId)} did not exit within ${String(args.timeoutMs)}ms`,
+      );
+    }
+    await new Promise<void>((resolveDelay) => {
+      setTimeout(resolveDelay, Math.min(10, remainingMs));
+    });
+  }
+}
+
 async function runAppImageBridgeSupervisor(
   bridgeRelativePathEnv: string,
+  shutdownGraceMs: number,
 ): Promise<void> {
   const { spawn: spawnChild } = process.getBuiltinModule("node:child_process");
   const { readdirSync, readFileSync } = process.getBuiltinModule("node:fs");
@@ -102,8 +149,40 @@ async function runAppImageBridgeSupervisor(
   const bridgePath = resolvePath(appDirPath, bridgeRelativePath);
   const bridgeProcess = spawnChild(process.execPath, [bridgePath], {
     env: process.env,
-    stdio: "inherit",
+    stdio: ["inherit", "inherit", "inherit", "ipc"],
   });
+  const relayMessage = (
+    message: unknown,
+    send: (message: object) => void,
+  ): void => {
+    if (
+      typeof message === "object" &&
+      message !== null &&
+      "channel" in message &&
+      typeof message.channel === "string" &&
+      message.channel.startsWith("bb-desktop-update/")
+    ) {
+      send(message);
+    }
+  };
+  process.on("message", (message: unknown) =>
+    relayMessage(message, (value) => {
+      if (bridgeProcess.connected) bridgeProcess.send(value, () => undefined);
+    }),
+  );
+  bridgeProcess.on("message", (message: unknown) =>
+    relayMessage(message, (value) => {
+      if (process.connected) process.send?.(value, () => undefined);
+    }),
+  );
+  process.on("disconnect", () => {
+    if (bridgeProcess.connected)
+      bridgeProcess.send(
+        { channel: "bb-desktop-update/disconnected" },
+        () => undefined,
+      );
+  });
+  process.channel?.unref();
   if (bridgeProcess.pid === undefined) {
     throw new Error("AppImage bridge process did not expose a PID");
   }
@@ -163,8 +242,8 @@ async function runAppImageBridgeSupervisor(
       return;
     }
     terminationSignal = signal;
-    signalBridgeGroup(signal);
-    killTimer = setTimeout(() => signalBridgeGroup("SIGKILL"), 4_000);
+    bridgeProcess.kill(signal);
+    killTimer = setTimeout(() => signalBridgeGroup("SIGKILL"), shutdownGraceMs);
   };
   process.on("SIGINT", () => beginTermination("SIGINT"));
   process.on("SIGTERM", () => beginTermination("SIGTERM"));
@@ -188,7 +267,7 @@ async function runAppImageBridgeSupervisor(
   }
 }
 
-const APPIMAGE_BRIDGE_BOOTSTRAP = `await (${runAppImageBridgeSupervisor.toString()})(${JSON.stringify(APPIMAGE_BRIDGE_RELATIVE_PATH_ENV)});`;
+const APPIMAGE_BRIDGE_BOOTSTRAP = `await (${runAppImageBridgeSupervisor.toString()})(${JSON.stringify(APPIMAGE_BRIDGE_RELATIVE_PATH_ENV)}, ${DESKTOP_OWNED_RUNTIME_SHUTDOWN_GRACE_MS});`;
 
 function createRuntimeLogBuffer(
   args: CreateRuntimeLogBufferArgs,
@@ -214,14 +293,30 @@ function createRuntimeLogBuffer(
   };
 }
 
+const INHERITED_AGENT_SESSION_ENV_KEYS: readonly string[] = [
+  "CLAUDECODE",
+  "CLAUDE_CODE_CHILD_SESSION",
+  "CLAUDE_CODE_ENTRYPOINT",
+  "CLAUDE_CODE_EXECPATH",
+  "CLAUDE_CODE_MESSAGING_SOCKET",
+  "CLAUDE_CODE_MESSAGING_TOKEN",
+  "CLAUDE_CODE_SESSION_ATTENDED",
+  "CLAUDE_CODE_SESSION_ID",
+  "CLAUDE_PID",
+];
+
 export function createBbAppProcessEnv(
   args: CreateBbAppProcessEnvArgs,
 ): NodeJS.ProcessEnv {
+  const env = { ...args.env };
+  for (const key of INHERITED_AGENT_SESSION_ENV_KEYS) {
+    delete env[key];
+  }
   if (args.runtimeMode === "electron-node") {
-    return { ...args.env, ELECTRON_RUN_AS_NODE: "1" };
+    env.ELECTRON_RUN_AS_NODE = "1";
+    return env;
   }
 
-  const env = { ...args.env };
   delete env.ELECTRON_RUN_AS_NODE;
   return env;
 }
@@ -324,7 +419,7 @@ export function startBbAppProcess(args: StartBbAppProcessArgs): BbAppProcess {
     cwd: args.cwd,
     detached: args.runtime.kind === "appimage",
     env: launch.env,
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: ["ignore", "pipe", "pipe", "ipc"],
   });
   const pid = childProcess.pid;
   if (pid === undefined) {
@@ -364,12 +459,42 @@ export function startBbAppProcess(args: StartBbAppProcessArgs): BbAppProcess {
       }
 
       if (!hasProcessExited(childProcess)) {
-        childProcess.kill(stopArgs.killSignal);
+        if (args.runtime.kind === "appimage") {
+          try {
+            process.kill(-pid, stopArgs.killSignal);
+          } catch (error) {
+            if (
+              typeof error === "object" &&
+              error !== null &&
+              "code" in error &&
+              error.code === "ESRCH"
+            ) {
+              childProcess.kill(stopArgs.killSignal);
+            } else {
+              throw error;
+            }
+          }
+        } else {
+          childProcess.kill(stopArgs.killSignal);
+        }
       }
-      await waitForProcessExitWithTimeout({
-        childProcess,
-        timeoutMs: stopArgs.killTimeoutMs,
-      });
+      if (args.runtime.kind === "appimage") {
+        await Promise.all([
+          waitForProcessExitWithTimeout({
+            childProcess,
+            timeoutMs: stopArgs.killTimeoutMs,
+          }),
+          waitForProcessGroupExitWithTimeout({
+            processGroupId: pid,
+            timeoutMs: stopArgs.killTimeoutMs,
+          }),
+        ]);
+      } else {
+        await waitForProcessExitWithTimeout({
+          childProcess,
+          timeoutMs: stopArgs.killTimeoutMs,
+        });
+      }
     },
   };
 }

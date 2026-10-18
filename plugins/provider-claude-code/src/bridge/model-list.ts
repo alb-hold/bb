@@ -9,18 +9,17 @@ import {
 import { z } from "zod";
 import { buildClaudeCodeModels } from "../model-list.js";
 import { afterClaudeRenewalSettles } from "./claude-refresh-lock.js";
-import { translateMissingClaudeCliError } from "./missing-cli-error.js";
+import { translateMissingClaudeCliCatalogError } from "./missing-cli-error.js";
 import { resolveClaudeCodeExecutable } from "./session-options.js";
 
 function buildModelProbeOptions(env: NodeJS.ProcessEnv): Options {
   const pathToClaudeCodeExecutable = resolveClaudeCodeExecutable({ env });
   return {
     cwd: process.cwd(),
+    env,
     maxTurns: 0,
     persistSession: false,
-    allowDangerouslySkipPermissions: true,
-    permissionMode: "bypassPermissions",
-    settingSources: [],
+    settingSources: ["user", "project", "local"],
     ...(pathToClaudeCodeExecutable ? { pathToClaudeCodeExecutable } : {}),
   };
 }
@@ -35,14 +34,17 @@ export async function probeClaudeCodeDiscoveredModels(
       options: buildModelProbeOptions(env),
     });
   } catch (error) {
-    throw translateMissingClaudeCliError(error);
+    throw translateMissingClaudeCliCatalogError(error);
   }
 
   try {
     const initialization = await session.initializationResult();
+    if (initialization.models.length === 0) {
+      throw new Error("Claude Code reported no models.");
+    }
     return initialization.models;
   } catch (error) {
-    throw translateMissingClaudeCliError(error);
+    throw translateMissingClaudeCliCatalogError(error);
   } finally {
     await afterClaudeRenewalSettles(env);
     session.close();
@@ -55,7 +57,24 @@ export async function listClaudeCodeBridgeModels(
   models: AvailableModel[];
   selectedOnlyModels: AvailableModel[];
 }> {
-  return buildClaudeCodeModels(await probeClaudeCodeDiscoveredModels(env));
+  try {
+    return buildClaudeCodeModels(await probeClaudeCodeDiscoveredModels(env));
+  } catch (error) {
+    if (
+      env.ANTHROPIC_MODEL &&
+      error instanceof Error &&
+      error.message.includes("--client-data-url:") &&
+      error.message.includes("pass the matching --model")
+    ) {
+      return buildClaudeCodeModels(
+        await probeClaudeCodeDiscoveredModels({
+          ...env,
+          ANTHROPIC_MODEL: undefined,
+        }),
+      );
+    }
+    throw error;
+  }
 }
 
 type ClaudeCodeModelCatalog = Awaited<

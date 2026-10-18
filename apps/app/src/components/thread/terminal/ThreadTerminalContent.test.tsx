@@ -35,9 +35,9 @@ function controller(
 ): ThreadTerminalController {
   return {
     activeSession: session,
-    canCreateTerminal: true,
     handleActiveTerminalSessionChange: () => undefined,
     handleActiveTerminalTitleChange: () => undefined,
+    handleActiveTerminalCwdChange: () => undefined,
     handleActiveTerminalUserInput: () => undefined,
     handleCreateTerminal: () => undefined,
     handleSelectTerminal: () => undefined,
@@ -115,5 +115,25 @@ describe("ThreadTerminalContent", () => {
     );
 
     expect(rendered.queryByTestId("terminal-view")).toBeNull();
+  });
+
+  it("keeps exited terminals mounted so their retained output can render", () => {
+    const exitedSession = makeTerminalSession({
+      ...session,
+      status: "exited",
+      exitCode: 0,
+    });
+
+    render(
+      <ThreadTerminalContent
+        autoFocus={false}
+        controller={{ ...controller(true), activeSession: exitedSession }}
+      />,
+    );
+
+    expect(threadTerminalView).toHaveBeenCalledWith(
+      expect.objectContaining({ session: exitedSession }),
+      undefined,
+    );
   });
 });

@@ -87,7 +87,7 @@ jobs:
               if git cat-file -e "HEAD:$path" 2>/dev/null; then
                 git restore --source=HEAD --staged --worktree -- "$path"
               else
-                git rm -f -- "$path"
+                git rm -f --ignore-unmatch -- "$path"
               fi
             done <<< "$workflow_paths"
           fi

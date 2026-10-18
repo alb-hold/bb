@@ -661,6 +661,19 @@ export type PendingInteraction =
   | ProviderPendingInteraction
   | PluginPendingInteraction;
 
+export const NATIVE_TERMINAL_QUESTION_REQUEST_PREFIX = "native:";
+
+export function isNativeTerminalQuestion(
+  interaction: PendingInteraction,
+): interaction is ProviderPendingInteraction {
+  return (
+    !isPluginPendingInteraction(interaction) &&
+    interaction.providerRequestId.startsWith(
+      NATIVE_TERMINAL_QUESTION_REQUEST_PREFIX,
+    )
+  );
+}
+
 export function isPluginPendingInteraction(
   interaction: PendingInteraction,
 ): interaction is PluginPendingInteraction {

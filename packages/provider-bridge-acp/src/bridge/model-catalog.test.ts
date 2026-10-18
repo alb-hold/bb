@@ -127,6 +127,16 @@ describe("acp model catalog", () => {
     ).toBe("gpt-5.3-codex-high");
   });
 
+  it("reports the fast tier only for families that list a -fast variant", () => {
+    const catalog = catalogFromSample();
+    const tiersByModel = Object.fromEntries(
+      catalog.models.map((model) => [model.id, model.supportedServiceTiers]),
+    );
+    expect(tiersByModel["gpt-5.3-codex"]).toEqual([{ id: "fast" }]);
+    expect(tiersByModel["gpt-5.5-medium"]).toEqual([]);
+    expect(tiersByModel["auto"]).toEqual([]);
+  });
+
   it("resolves fast at the default effort when no reasoning level is given", () => {
     const catalog = buildAgentModelCatalog(
       parseAgentModelLines(
@@ -350,22 +360,25 @@ describe("acp configOptions model catalog", () => {
   });
 
   it("maps model configOptions values, names, and currentValue into picker models", () => {
-    const reasoningByModel = new Map([
+    const supportByModel = new Map([
       [
         "opencode/deepseek-v4-flash-free",
-        buildAcpNativeReasoningSupport({
-          id: "effort",
-          category: "thought_level",
-          type: "select",
-          currentValue: "high",
-          options: [
-            { value: "none" },
-            { value: "low" },
-            { value: "medium" },
-            { value: "high" },
-            { value: "xhigh" },
-          ],
-        }),
+        {
+          supportedServiceTiers: [],
+          ...buildAcpNativeReasoningSupport({
+            id: "effort",
+            category: "thought_level",
+            type: "select",
+            currentValue: "high",
+            options: [
+              { value: "none" },
+              { value: "low" },
+              { value: "medium" },
+              { value: "high" },
+              { value: "xhigh" },
+            ],
+          }),
+        },
       ],
     ]);
     const models = buildModelCatalogFromConfigOptions(
@@ -386,7 +399,7 @@ describe("acp configOptions model catalog", () => {
           },
         ],
       },
-      reasoningByModel,
+      supportByModel,
     );
 
     expect(models).toMatchObject([

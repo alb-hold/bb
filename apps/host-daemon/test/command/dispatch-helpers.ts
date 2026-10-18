@@ -1,7 +1,5 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type {
@@ -24,12 +22,15 @@ import type {
   PullRequestActionOptions,
 } from "@bb/host-workspace";
 import { RuntimeManager } from "../../src/runtime-manager.js";
-import { noopEventSink } from "../../src/command-dispatch-support.js";
 import type { CommandDispatchOptions } from "../../src/command-dispatch-support.js";
 import type { FetchProjectAttachment } from "../../src/project-attachments.js";
 
-const tempDirs: string[] = [];
 const execFileAsync = promisify(execFile);
+export const noopEventSink: CommandDispatchOptions["eventSink"] = {
+  emit: () => undefined,
+  flush: async () => undefined,
+};
+
 export const silentLogger: CommandDispatchOptions["logger"] = {
   debug: () => undefined,
   warn: () => undefined,
@@ -517,25 +518,11 @@ export function makeDispatchOptions(
   };
 }
 
-export async function makeTempDir(prefix: string): Promise<string> {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
-  tempDirs.push(dir);
-  return dir;
-}
-
 export async function runGitCommand(
   args: GitCommandArgs,
   options: RunGitCommandOptions,
 ): Promise<void> {
   await execFileAsync("git", args, { cwd: options.cwd });
-}
-
-export async function cleanupTempDirs(): Promise<void> {
-  await Promise.all(
-    tempDirs
-      .splice(0)
-      .map((dir) => fs.rm(dir, { recursive: true, force: true })),
-  );
 }
 
 export const DISPATCH_TEST_ARTIFACT_BYTES = Buffer.from(
@@ -590,6 +577,3 @@ export function dispatchTestRuntimeBridgeLaunch(
     envPassthrough: [],
   };
 }
-
-export const DISPATCH_TEST_RUNTIME_BRIDGE_LAUNCH: AgentRuntimeBridgeLaunch =
-  dispatchTestRuntimeBridgeLaunch();

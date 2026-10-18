@@ -1,8 +1,13 @@
 # Provider usage
 
-Shows usage from enabled usage-source plugins in the sidebar. Provider tabs
-use provider names and icons, with pooled accounts stacked under each provider.
-The card lists account metadata cheaply, then fetches only the selected provider’s accounts. Unopened tabs have no quota badge until measured. Shared sources such as Account Pooler are selected by default; an explicit
+Shows usage from enabled usage-source plugins in the sidebar. When a location has
+more than one provider, the card opens on an **All** tab that stacks every provider
+tab's accounts, each marked with its provider icon. Provider tabs use provider icons,
+with pooled accounts stacked under each provider. Each account shows its plan and,
+per usage window, a bar, the percent used, and the time until reset.
+The card lists account metadata cheaply, then fetches the accounts on the selected
+tab. Unopened tabs have no quota badge until measured, and a badge shows only while
+that provider's accounts are off screen. Shared sources such as Account Pooler are selected by default; an explicit
 machine selection shows that machine’s local usage instead.
 
 An unconfigured shared source remains selectable and shows setup guidance.
@@ -10,9 +15,15 @@ Failed refreshes retain the last available measurements with a retry notice.
 Account authentication failures and plans without reported limits have separate
 states; unavailable usage is never represented as zero consumption.
 
-Settings → Installed plugins → Provider usage contains the usage page, using its
-full-size provider groups with email-labeled accounts and fetching only resources in the selected pool or machine. Both surfaces share the plugin’s aggregation and cache. Neither display is required for source
-plugins to publish their usage.
+Settings → Installed plugins → Provider usage defaults to a combined view of
+Claude subscriptions published by Account Pooler and non-Claude providers
+published by the primary host. Its Usage source picker keeps each source view
+available. If Account Pooler is missing or has no Claude accounts, the combined
+view falls back to all providers published by the host. The compact sidebar card
+uses the same combined view and cache when Account Pooler is selected, showing
+pooled Claude subscriptions alongside non-Claude providers from the primary host.
+An explicit machine selection continues to show that machine’s local usage.
+Neither display is required for source plugins to publish their usage.
 
 Use `bb plugin rpc list --method provider-usage.v1.listResources --json` to find sources
 and `bb plugin rpc inspect <plugin-id> provider-usage.v1.listResources --json`
@@ -27,6 +38,11 @@ for their own providers. Account Pooler implements it for shared accounts. The
 contract is owned here and copied into each source; no additional adapter plugin,
 provider-kit helper, or core runtime convention is required. Other providers must
 explicitly implement the contract to appear in these displays.
+
+OpenCode's host-local source reports OpenCode Go subscription limits when a Go
+Console account or API key is configured on the selected machine. Its five-hour, weekly, and monthly
+windows come from Go's usage API. Other providers used through OpenCode and Zen
+pay-as-you-go spending are not included.
 
 Known provider-issued account identities are deduplicated within the selected
 location. Unknown identities are never merged by email. Structured plan and quota

@@ -1,15 +1,14 @@
-import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-  createConnection,
   getInstalledPluginRegistration,
-  migrate,
   upsertInstalledPlugin,
   type DbConnection,
 } from "@bb/db";
+import { createMigratedConnection } from "@bb/db/testing";
 import type { Logger } from "@bb/logger";
 import { derivePluginId } from "@bb/domain";
 import { createAiServiceRegistry } from "../../../src/services/ai/ai-service-registry.js";
@@ -101,8 +100,7 @@ describe("store-installed official plugins", () => {
 
   beforeEach(async () => {
     delete globals.__builtinFixtureLoads;
-    db = createConnection(":memory:");
-    migrate(db);
+    db = createMigratedConnection();
     workDir = await mkdtemp(join(tmpdir(), "bb-community-plugins-"));
   });
 
@@ -184,6 +182,7 @@ describe("store-installed official plugins", () => {
         rootDir: fixtureRoot,
         version: "0.1.0",
         enabled: true,
+        enabledFollowsDefault: false,
       });
       service = createService({
         db,
@@ -212,38 +211,6 @@ describe("store-installed official plugins", () => {
       ]);
     },
   );
-
-  it("re-points an installed official plugin when the bundled copy changes", async () => {
-    const mutableRoot = join(workDir, "bb-plugin-builtin-fixture");
-    await cp(fixtureRoot, mutableRoot, { recursive: true });
-    service = createService({
-      db,
-      dataDir: join(workDir, "data"),
-      bundled: [officialEntry({ rootDir: mutableRoot })],
-    });
-    await service.start();
-    await service.installOfficialPlugin("fixture");
-    await service.stop();
-
-    const packageJson = JSON.parse(
-      await readFile(join(mutableRoot, "package.json"), "utf8"),
-    ) as { version: string };
-    await writeFile(
-      join(mutableRoot, "package.json"),
-      JSON.stringify({ ...packageJson, version: "0.2.0" }),
-    );
-
-    service = createService({
-      db,
-      dataDir: join(workDir, "data"),
-      bundled: [officialEntry({ rootDir: mutableRoot })],
-    });
-    await service.start();
-
-    expect(service.list()).toMatchObject([
-      { id: "builtin-fixture", version: "0.2.0", status: "running" },
-    ]);
-  });
 
   it("keeps a removed official plugin uninstalled across restarts", async () => {
     service = createService({

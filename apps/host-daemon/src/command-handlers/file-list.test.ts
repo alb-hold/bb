@@ -1,19 +1,19 @@
-import fs from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
+import { fuzzyMatchPaths } from "@bb/fuzzy-match";
 import { describe, expect, it } from "vitest";
 import {
   finalizeListedFiles,
   finalizeListedPaths,
-  listPathsRecursively,
   normalizeListedPath,
 } from "./file-list.js";
 
+const signal = new AbortController().signal;
+
 describe("finalizeListedFiles", () => {
-  it("preserves walk order for an empty query", () => {
-    const result = finalizeListedFiles({
+  it("preserves walk order for an empty query", async () => {
+    const result = await finalizeListedFiles({
       filePaths: ["src/z.ts", "src/a.ts", "src/m.ts"],
       limit: 2,
+      signal,
     });
 
     expect(result.files.map((file) => file.path)).toEqual([
@@ -23,10 +23,11 @@ describe("finalizeListedFiles", () => {
     expect(result.truncated).toBe(true);
   });
 
-  it("sets the display name from the path basename", () => {
-    const result = finalizeListedFiles({
+  it("sets the display name from the path basename", async () => {
+    const result = await finalizeListedFiles({
       filePaths: ["src/components/PromptBox.tsx"],
       limit: 5,
+      signal,
     });
 
     expect(result.files).toEqual([
@@ -38,20 +39,11 @@ describe("finalizeListedFiles", () => {
     expect(result.truncated).toBe(false);
   });
 
-  it("does not report truncation below the limit", () => {
-    const result = finalizeListedFiles({
-      filePaths: ["a.ts", "b.ts"],
-      limit: 3,
-    });
-
-    expect(result.files.map((file) => file.path)).toEqual(["a.ts", "b.ts"]);
-    expect(result.truncated).toBe(false);
-  });
-
-  it("does not report truncation exactly at the limit", () => {
-    const result = finalizeListedFiles({
+  it("does not report truncation exactly at the limit", async () => {
+    const result = await finalizeListedFiles({
       filePaths: ["a.ts", "b.ts", "c.ts"],
       limit: 3,
+      signal,
     });
 
     expect(result.files.map((file) => file.path)).toEqual([
@@ -62,22 +54,8 @@ describe("finalizeListedFiles", () => {
     expect(result.truncated).toBe(false);
   });
 
-  it("reports truncation above the limit", () => {
-    const result = finalizeListedFiles({
-      filePaths: ["a.ts", "b.ts", "c.ts", "d.ts"],
-      limit: 3,
-    });
-
-    expect(result.files.map((file) => file.path)).toEqual([
-      "a.ts",
-      "b.ts",
-      "c.ts",
-    ]);
-    expect(result.truncated).toBe(true);
-  });
-
-  it("applies query matching before truncating", () => {
-    const result = finalizeListedFiles({
+  it("applies query matching before truncating", async () => {
+    const result = await finalizeListedFiles({
       filePaths: [
         "src/a.ts",
         "src/b.ts",
@@ -85,6 +63,7 @@ describe("finalizeListedFiles", () => {
       ],
       query: "PromptBox",
       limit: 1,
+      signal,
     });
 
     expect(result.files.map((file) => file.path)).toEqual([
@@ -93,22 +72,24 @@ describe("finalizeListedFiles", () => {
     expect(result.truncated).toBe(false);
   });
 
-  it("reports truncation after query matching when more matches remain", () => {
-    const result = finalizeListedFiles({
+  it("reports truncation after query matching when more matches remain", async () => {
+    const result = await finalizeListedFiles({
       filePaths: ["src/prompt-a.ts", "src/prompt-b.ts", "src/prompt-c.ts"],
       query: "prompt",
       limit: 2,
+      signal,
     });
 
     expect(result.files).toHaveLength(2);
     expect(result.truncated).toBe(true);
   });
 
-  it("returns an empty untruncated list when a query has no matches", () => {
-    const result = finalizeListedFiles({
+  it("returns an empty untruncated list when a query has no matches", async () => {
+    const result = await finalizeListedFiles({
       filePaths: ["src/a.ts", "src/b.ts"],
       query: "prompt",
       limit: 2,
+      signal,
     });
 
     expect(result.files).toEqual([]);
@@ -117,8 +98,8 @@ describe("finalizeListedFiles", () => {
 });
 
 describe("finalizeListedPaths", () => {
-  it("excludes directories when directory results are disabled", () => {
-    const result = finalizeListedPaths({
+  it("excludes directories when directory results are disabled", async () => {
+    const result = await finalizeListedPaths({
       paths: [
         { kind: "directory", path: "src", name: "src" },
         { kind: "file", path: "src/index.ts", name: "index.ts" },
@@ -126,6 +107,7 @@ describe("finalizeListedPaths", () => {
       includeFiles: true,
       includeDirectories: false,
       limit: 10,
+      signal,
     });
 
     expect(result.paths).toEqual([
@@ -140,8 +122,8 @@ describe("finalizeListedPaths", () => {
     expect(result.truncated).toBe(false);
   });
 
-  it("includes directories with typed path metadata when requested", () => {
-    const result = finalizeListedPaths({
+  it("includes directories with typed path metadata when requested", async () => {
+    const result = await finalizeListedPaths({
       paths: [
         { kind: "directory", path: "src", name: "src" },
         { kind: "file", path: "src/index.ts", name: "index.ts" },
@@ -149,6 +131,7 @@ describe("finalizeListedPaths", () => {
       includeFiles: true,
       includeDirectories: true,
       limit: 10,
+      signal,
     });
 
     expect(result.paths.map((pathEntry) => pathEntry.kind)).toEqual([
@@ -164,8 +147,8 @@ describe("finalizeListedPaths", () => {
     });
   });
 
-  it("applies fuzzy ranking before truncating mixed path results", () => {
-    const result = finalizeListedPaths({
+  it("applies fuzzy ranking before truncating mixed path results", async () => {
+    const result = await finalizeListedPaths({
       paths: [
         {
           kind: "file",
@@ -187,6 +170,7 @@ describe("finalizeListedPaths", () => {
       includeFiles: true,
       includeDirectories: true,
       limit: 1,
+      signal,
     });
 
     expect(result.paths).toHaveLength(1);
@@ -199,193 +183,159 @@ describe("finalizeListedPaths", () => {
   });
 });
 
-describe("listPathsRecursively", () => {
-  it("returns slash-separated relative paths for nested entries", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "bb-file-list-"));
-    try {
-      await fs.mkdir(path.join(root, "src", "components"), {
-        recursive: true,
-      });
-      await fs.writeFile(
-        path.join(root, "src", "components", "Button.tsx"),
-        "",
-      );
+interface LargeListedPath {
+  kind: "file" | "directory";
+  path: string;
+  name: string;
+}
 
-      const result = await listPathsRecursively({
-        dir: root,
-        root,
-        includeFiles: true,
-        includeDirectories: true,
-        includeHidden: false,
-        ignoredPaths: new Set<string>(),
-        excludeNames: new Set<string>(),
-      });
-
-      expect(result).toEqual([
-        { kind: "directory", path: "src", name: "src" },
-        {
-          kind: "directory",
-          path: "src/components",
-          name: "components",
-        },
-        {
-          kind: "file",
-          path: "src/components/Button.tsx",
-          name: "Button.tsx",
-        },
-      ]);
-    } finally {
-      await fs.rm(root, { recursive: true, force: true });
+function createLargeListing(): LargeListedPath[] {
+  const paths: LargeListedPath[] = [];
+  for (let repo = 0; repo < 20; repo += 1) {
+    for (let pkg = 0; pkg < 50; pkg += 1) {
+      const dir = `vendor/repo-${repo}/packages/pkg-${pkg}/src`;
+      paths.push({ kind: "directory", path: dir, name: "src" });
+      for (let file = 0; file < 25; file += 1) {
+        const name = file === 0 ? "index.ts" : `file-${file}.ts`;
+        paths.push({ kind: "file", path: `${dir}/${name}`, name });
+      }
     }
+  }
+  paths.push({ kind: "directory", path: "packages", name: "packages" });
+  paths.push({
+    kind: "file",
+    path: "packages/app/src/index.ts",
+    name: "index.ts",
+  });
+  return paths;
+}
+
+describe("finalizeListedPaths on large listings", () => {
+  const listing = createLargeListing();
+
+  it.each([
+    "p",
+    "index.ts",
+    "file-24",
+    "packages/",
+    "packages/app",
+    "repo-15/pkg-49/",
+    "pkg-3/src/index",
+  ])("ranks %j the same as a single pass over every path", async (query) => {
+    const result = await finalizeListedPaths({
+      paths: listing,
+      query,
+      includeFiles: true,
+      includeDirectories: true,
+      limit: 20,
+      signal,
+    });
+
+    const expected = fuzzyMatchPaths({
+      items: listing,
+      query,
+      getPath: (pathEntry) => pathEntry.path,
+      limit: 21,
+    });
+    expect(
+      result.paths.map((pathEntry) => [
+        pathEntry.path,
+        pathEntry.score,
+        pathEntry.positions,
+      ]),
+    ).toEqual(
+      expected
+        .slice(0, 20)
+        .map((match) => [match.item.path, match.score, match.positions]),
+    );
+    expect(result.truncated).toBe(expected.length > 20);
   });
 
-  it("lists dot-prefixed entries only when hidden entries are included", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "bb-file-list-"));
-    try {
-      await fs.mkdir(path.join(root, ".github", "workflows"), {
-        recursive: true,
-      });
-      await fs.writeFile(path.join(root, ".github", "workflows", "ci.yml"), "");
-      await fs.writeFile(path.join(root, ".env"), "");
-      await fs.writeFile(path.join(root, "README.md"), "");
+  it("lets timers run while concurrent searches rank", async () => {
+    let timerRanBeforeSearchesFinished = false;
+    let searchesFinished = false;
+    const timer = setTimeout(() => {
+      timerRanBeforeSearchesFinished = !searchesFinished;
+    }, 0);
 
-      const listPaths = (includeHidden: boolean) =>
-        listPathsRecursively({
-          dir: root,
-          root,
+    await Promise.all(
+      ["p", "packages/", "index.ts"].map((query) =>
+        finalizeListedPaths({
+          paths: listing,
+          query,
           includeFiles: true,
           includeDirectories: true,
-          includeHidden,
-          ignoredPaths: new Set<string>(),
-          excludeNames: new Set<string>(),
-        }).then((entries) => entries.map((entry) => entry.path).sort());
+          limit: 20,
+          signal,
+        }),
+      ),
+    );
+    searchesFinished = true;
+    clearTimeout(timer);
 
-      expect(await listPaths(true)).toEqual([
-        ".env",
-        ".github",
-        ".github/workflows",
-        ".github/workflows/ci.yml",
-        "README.md",
-      ]);
-      expect(await listPaths(false)).toEqual(["README.md"]);
-    } finally {
-      await fs.rm(root, { recursive: true, force: true });
-    }
+    expect(timerRanBeforeSearchesFinished).toBe(true);
   });
 
-  it("skips excluded names at any depth and never lists .git", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "bb-file-list-"));
-    try {
-      await fs.mkdir(path.join(root, ".git"), { recursive: true });
-      await fs.writeFile(path.join(root, ".git", "HEAD"), "");
-      await fs.mkdir(path.join(root, "node_modules", "pkg"), {
-        recursive: true,
-      });
-      await fs.writeFile(
-        path.join(root, "node_modules", "pkg", "index.js"),
-        "",
-      );
-      await fs.mkdir(path.join(root, "apps", "web", ".turbo"), {
-        recursive: true,
-      });
-      await fs.writeFile(path.join(root, "apps", "web", ".turbo", "log"), "");
-      await fs.writeFile(path.join(root, "apps", "web", ".DS_Store"), "");
-      await fs.writeFile(path.join(root, "apps", "web", "index.ts"), "");
+  it("stops a search cancelled while it ranks", async () => {
+    const abortController = new AbortController();
+    const search = finalizeListedPaths({
+      paths: listing,
+      query: "packages/",
+      includeFiles: true,
+      includeDirectories: true,
+      limit: 20,
+      signal: abortController.signal,
+    });
+    setImmediate(() => abortController.abort());
 
-      const listPaths = (excludeNames: string[]) =>
-        listPathsRecursively({
-          dir: root,
-          root,
-          includeFiles: true,
-          includeDirectories: true,
-          includeHidden: true,
-          ignoredPaths: new Set<string>(),
-          excludeNames: new Set(excludeNames),
-        }).then((entries) => entries.map((entry) => entry.path).sort());
-
-      expect(await listPaths(["node_modules", ".turbo", ".DS_Store"])).toEqual([
-        "apps",
-        "apps/web",
-        "apps/web/index.ts",
-      ]);
-      expect(await listPaths([])).toEqual([
-        "apps",
-        "apps/web",
-        "apps/web/.DS_Store",
-        "apps/web/.turbo",
-        "apps/web/.turbo/log",
-        "apps/web/index.ts",
-        "node_modules",
-        "node_modules/pkg",
-        "node_modules/pkg/index.js",
-      ]);
-    } finally {
-      await fs.rm(root, { recursive: true, force: true });
-    }
+    await expect(search).rejects.toMatchObject({ code: "cancelled" });
   });
 
-  it("does not return symlinked files as regular path entries", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "bb-file-list-"));
-    try {
-      await fs.writeFile(path.join(root, "state.json"), "{}");
-      await fs.symlink(
-        path.join(root, "state.json"),
-        path.join(root, "logo.svg"),
-      );
+  it("skips a queued search cancelled before its turn", async () => {
+    const queuedAbortController = new AbortController();
+    const running = finalizeListedPaths({
+      paths: listing,
+      query: "p",
+      includeFiles: true,
+      includeDirectories: true,
+      limit: 20,
+      signal,
+    });
+    const queued = finalizeListedPaths({
+      paths: listing,
+      query: "index.ts",
+      includeFiles: true,
+      includeDirectories: true,
+      limit: 20,
+      signal: queuedAbortController.signal,
+    });
+    queuedAbortController.abort();
 
-      const result = await listPathsRecursively({
-        dir: root,
-        root,
+    await expect(queued).rejects.toMatchObject({ code: "cancelled" });
+    expect((await running).paths).toHaveLength(20);
+  });
+
+  it("rejects a search that was cancelled before it started", async () => {
+    const abortController = new AbortController();
+    abortController.abort();
+
+    await expect(
+      finalizeListedPaths({
+        paths: [{ kind: "file", path: "src/a.ts", name: "a.ts" }],
+        query: "a",
         includeFiles: true,
         includeDirectories: false,
-        includeHidden: false,
-        ignoredPaths: new Set<string>(),
-        excludeNames: new Set<string>(),
-      });
-
-      expect(result).toEqual([
-        { kind: "file", path: "state.json", name: "state.json" },
-      ]);
-    } finally {
-      await fs.rm(root, { recursive: true, force: true });
-    }
+        limit: 5,
+        signal: abortController.signal,
+      }),
+    ).rejects.toMatchObject({ code: "cancelled" });
   });
+});
 
+describe("normalizeListedPath", () => {
   it("normalizes Windows separators before returning paths", () => {
     expect(normalizeListedPath("src\\components\\Button.tsx")).toBe(
       "src/components/Button.tsx",
     );
   });
-
-  it("does not overflow the call stack merging a large subdirectory", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "bb-file-list-"));
-    try {
-      const nested = path.join(root, "many");
-      await fs.mkdir(nested, { recursive: true });
-      const fileCount = 150_000;
-      const batchSize = 500;
-      for (let start = 0; start < fileCount; start += batchSize) {
-        const end = Math.min(start + batchSize, fileCount);
-        await Promise.all(
-          Array.from({ length: end - start }, (_, offset) =>
-            fs.writeFile(path.join(nested, `f${start + offset}.txt`), ""),
-          ),
-        );
-      }
-
-      const result = await listPathsRecursively({
-        dir: root,
-        root,
-        includeFiles: true,
-        includeDirectories: false,
-        includeHidden: false,
-        ignoredPaths: new Set<string>(),
-        excludeNames: new Set<string>(),
-      });
-
-      expect(result).toHaveLength(fileCount);
-    } finally {
-      await fs.rm(root, { recursive: true, force: true });
-    }
-  }, 60_000);
 });

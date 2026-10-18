@@ -14,6 +14,7 @@ import {
 import { useSidebarNavigation } from "./queries/sidebar-navigation-query";
 import { useThreadMentionCandidates } from "./queries/thread-queries";
 import { buildThreadMentionSuggestions } from "./threadMentionSuggestions";
+import { useResolveThreadTitle } from "@/components/thread/ThreadTitleMentions";
 import {
   usePathSuggestions,
   PATH_SUGGESTION_DEBOUNCE_MS,
@@ -45,6 +46,7 @@ interface UsePromptMentionsResult {
   ) => void;
   results: OrderedMentionSuggestions;
   isLoading: boolean;
+  isRefreshing: boolean;
   isError: boolean;
 }
 
@@ -188,6 +190,7 @@ export function usePromptMentions(
   );
 
   const currentThreadId = options.currentThreadId;
+  const resolveTitle = useResolveThreadTitle();
   const pathSuggestions = useMemo(
     () =>
       includeBuiltInSources
@@ -207,6 +210,7 @@ export function usePromptMentions(
       currentEnvironmentId: options.environmentId,
       projectNamesById,
       limit: PROMPT_MENTION_SOURCE_LIMIT,
+      resolveTitle,
     });
   }, [
     currentThreadId,
@@ -214,6 +218,7 @@ export function usePromptMentions(
     options.environmentId,
     projectId,
     projectNamesById,
+    resolveTitle,
     threadsQuery.data,
     trimmedQuery,
   ]);
@@ -261,18 +266,20 @@ export function usePromptMentions(
     ],
   );
 
-  const isLoading =
-    hasQuery &&
-    results.suggestions.length === 0 &&
-    ((includeBuiltInSources &&
+  const isSearching =
+    (includeBuiltInSources &&
       (pathSearch.isDebouncing ||
         pathSearch.isLoading ||
+        pathSearch.isRefreshing ||
         threadsQuery.isLoading ||
         threadsQuery.isFetching)) ||
-      (hasMentionProviders &&
-        (!pluginSearchMatchesInput ||
-          pluginSearch.isLoading ||
-          pluginSearch.isFetching)));
+    (hasMentionProviders &&
+      (!pluginSearchMatchesInput ||
+        pluginSearch.isLoading ||
+        pluginSearch.isFetching));
+  const isLoading = hasQuery && results.suggestions.length === 0 && isSearching;
+  const isRefreshing =
+    hasQuery && results.suggestions.length > 0 && isSearching;
   const isThreadError =
     includeBuiltInSources &&
     hasQuery &&
@@ -288,6 +295,7 @@ export function usePromptMentions(
     setQuery,
     results,
     isLoading,
+    isRefreshing,
     isError,
   };
 }

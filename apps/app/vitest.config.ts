@@ -5,10 +5,16 @@ import {
 } from "../../vitest.shared.js";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
+import { forkablePluginPaths } from "./vite-forkable-plugin-paths.js";
 import { sharedUiEnvSeam } from "./vite-shared-ui-seam.js";
 
 export default defineWorkspaceTestConfig({
-  plugins: [sharedUiEnvSeam(), react(), tailwindcss()],
+  plugins: [
+    forkablePluginPaths(path.resolve(__dirname, "./src")),
+    sharedUiEnvSeam(),
+    react(),
+    tailwindcss(),
+  ],
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
@@ -24,6 +30,13 @@ export default defineWorkspaceTestConfig({
       aliases: { "@": path.resolve(__dirname, "./src") },
       name: "@bb/app",
       include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
+      exclude: [
+        "dist/**",
+        "node_modules/**",
+        ...(process.env.BB_SIDEBAR_BENCH === "1"
+          ? []
+          : ["src/components/sidebar/sidebar.bench.test.tsx"]),
+      ],
     }),
   },
 });

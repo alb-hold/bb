@@ -6,6 +6,7 @@ import {
   getProject,
   getThread,
   isSqliteForeignKeyConstraint,
+  recordThreadSpawner,
 } from "@bb/db";
 import type { DbNotifier } from "@bb/db";
 import type { HostDaemonCommand } from "@bb/host-daemon-contract";
@@ -87,10 +88,35 @@ export function buildEnvironmentProvisionCommand(
   };
 }
 
+// The server has no caller identity finer than the client, so a spawner is
+// only believed when it could be the agent making this call: a live thread in
+// the same project that is mid-turn right now. Anything else is ignored and
+// the new thread keeps its own model.
+function resolveRecordableSpawner(
+  deps: Pick<AppDeps, "db">,
+  args: { projectId: string; spawnedByThreadId: string | undefined },
+) {
+  if (args.spawnedByThreadId === undefined) {
+    return null;
+  }
+  const spawner = getThread(deps.db, args.spawnedByThreadId);
+  if (
+    spawner === null ||
+    spawner.projectId !== args.projectId ||
+    spawner.archivedAt !== null ||
+    spawner.deletedAt !== null ||
+    spawner.status !== "active"
+  ) {
+    return null;
+  }
+  return spawner;
+}
+
 export function createThreadRecord(
   deps: Pick<AppDeps, "db"> & { hub: DbNotifier },
   args: {
     environmentId: string | null;
+    startupContext?: string;
     request: ThreadCreateServiceRequest;
   },
 ) {
@@ -107,6 +133,7 @@ export function createThreadRecord(
       title: args.request.title ?? null,
       titleFallback: args.request.titleFallback,
       sectionId,
+      pinned: args.request.pinned ?? false,
       parentThreadId: args.request.parentThreadId ?? null,
       sourceThreadId: args.request.sourceThreadId ?? null,
       lifecycleOwnerThreadId: args.request.lifecycleOwnerThreadId,
@@ -114,13 +141,25 @@ export function createThreadRecord(
       originPluginId: args.request.originPluginId ?? null,
       pluginMetadata: args.request.pluginMetadata,
       visibility: args.request.visibility,
+      parentNotifications: args.request.parentNotifications,
       // Every thread starts `pending`, with no exception to parameterise.
       // Creation is unhooked and provisions nothing; admission happens at the
       // first message's dispatch attempt, and clearing it is what moves the
       // thread to `starting`. A caller that could pass `starting` here would
       // be claiming a thread had been admitted before anything decided so.
       status: "pending",
+      startupContext: args.startupContext,
     });
+    const spawner = resolveRecordableSpawner(deps, {
+      projectId: thread.projectId,
+      spawnedByThreadId: args.request.spawnedByThreadId,
+    });
+    if (spawner !== null) {
+      recordThreadSpawner(deps.db, {
+        threadId: thread.id,
+        spawnedByThreadId: spawner.id,
+      });
+    }
     emitPluginThreadCreated(thread);
     return thread;
   } catch (error) {

@@ -78,6 +78,16 @@ export const usageResourceSchema = z.object({
       hostName: z.string().min(1),
     }),
   ]),
+  accountPool: z
+    .object({
+      active: z.boolean(),
+      enabled: z.boolean(),
+      status: z.enum(["disabled", "ready", "held", "exhausted", "error"]),
+      heldUntil: z.number().int().nullable(),
+      error: z.string().nullable(),
+      extraUsage: z.enum(["allowed", "rejected"]).nullable(),
+    })
+    .optional(),
 });
 export const usageResourceListSchema = z.object({
   label: z
@@ -110,7 +120,6 @@ export const usageFetchInputSchema = z.object({
       "False permits a cached measurement but still returns actual usage. True requests a fresh collection attempt for this resource only.",
     ),
 });
-export type UsageResourceList = z.infer<typeof usageResourceListSchema>;
 export type UsageMeasurement = z.infer<typeof usageMeasurementSchema>;
 export type UsageResource = z.infer<typeof usageResourceSchema> &
   UsageMeasurement;

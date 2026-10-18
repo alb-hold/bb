@@ -1,10 +1,8 @@
 import { extractThreadContextWindowUsage } from "@bb/thread-view";
-import { clearTimelineOrderingContextCache } from "../../services/threads/timeline-context-order.js";
-import path from "node:path";
 import {
   getAppSettings,
-  listThreadImageMetadata,
-  saveThreadImageMetadata,
+  ensureSpendTables,
+  getDatabaseDataVersion,
   getThreadPluginMetadata,
   patchThreadPluginMetadata,
   getLatestCompletedThreadContextClearSequence,
@@ -14,14 +12,16 @@ import {
   getThreadExecutionOverride,
   getThreadExecutionReport,
   listQueuedThreadMessages,
+  listSpendRollupRows,
+  listThreadTurnSpend,
+  listCompletedTurnsByThreadIds,
+  isSpendThreadHistoryComplete,
 } from "@bb/db";
 import type { Hono } from "hono";
 import {
-  DEFAULT_COMPLETED_TURN_DISPLAY,
   PROMPT_HISTORY_ENTRY_LIMIT,
   threadEventTypeSchema,
-  type AppSettings,
-  type CompletedTurnDisplay,
+  type Thread,
   type ThreadEventType,
 } from "@bb/domain";
 import {
@@ -32,35 +32,23 @@ import {
   type ThreadConversationOutlineResponse,
   type ThreadExecutionProfileResponse,
   type ThreadTimelineQuery,
+  type ThreadSpendSummaryResponse,
 } from "@bb/server-contract";
-import type {
-  AppDeps,
-  LoggedWorkSessionDeps,
-  WorkSessionDeps,
-} from "../../types.js";
+import type { AppDeps } from "../../types.js";
 import { COMMAND_TIMEOUT_MS } from "../../constants.js";
 import { ApiError } from "../../errors.js";
-import {
-  requireEnvironment,
-  requirePublicThread,
-  requireReadyEnvironment,
-} from "../../services/lib/entity-lookup.js";
-import {
-  threadEnvironmentUnavailableDetails,
-  throwThreadEnvironmentUnavailable,
-} from "../../services/lib/lifecycle-api-errors.js";
+import { requirePublicThread } from "../../services/lib/entity-lookup.js";
 import { callHostRetryableOnlineRpc } from "../../services/hosts/online-rpc.js";
-import {
-  createDaemonFileContentResponse,
-  type DaemonFileReadResult,
-  serveDaemonFileContent,
-} from "../../services/hosts/daemon-file-response.js";
-import { requireThreadStoragePath } from "../../services/threads/thread-storage.js";
+import { requireThreadStorageTarget } from "../../services/threads/thread-storage.js";
 import { toThreadQueuedMessage } from "../../services/threads/thread-queued-messages.js";
+import {
+  isCompactionOfferEnabled,
+  withCompactionOffer,
+} from "../../services/threads/compaction-offer.js";
 import {
   toThreadEventWithMeta,
   buildThreadConversationOutlineProjectionKey,
-  buildThreadTimelineWithProfile,
+  getThreadMessage,
   buildTimelineTurnSummaryDetails,
   loadThreadConversationOutline,
   THREAD_TIMELINE_DEFAULT_SEGMENT_LIMIT,
@@ -70,19 +58,11 @@ import type {
   ThreadTimelinePageKind,
   ThreadTimelinePageRequest,
 } from "../../services/threads/timeline-pagination.js";
-import { createSlowThreadTimelineBuildLogger } from "../../services/threads/timeline-build-log.js";
 import {
-  buildThreadTimelineCacheKey,
-  buildThreadTimelineParamsKey,
-  createThreadTimelineCache,
-} from "../../services/threads/timeline-cache.js";
-import { createTimelineLatestRowsCache } from "../../services/threads/timeline-latest-rows-cache.js";
-import {
-  DEFAULT_MAX_INLINE_OUTPUT_CHARS,
-  truncateTimelineResponseOutputs,
-} from "../../services/threads/timeline-output-truncation.js";
-import { previewTimelineResponseOutputs } from "../../services/threads/timeline-output-preview.js";
-import { computeTimelineRowDelta } from "@bb/server-contract";
+  createThreadTimelineWindows,
+  resolveThreadCompletedTurnDisplay,
+  resolveThreadProviderDisplayName,
+} from "../../services/threads/thread-timeline-windows.js";
 import {
   findThreadEvent,
   getLastThreadOutput,
@@ -96,58 +76,13 @@ import {
   parseInteger,
   parseOptionalInteger,
 } from "../../services/lib/validation.js";
-import { resolveProviderPlanCommand } from "../../services/providers/provider-plan-command.js";
 import { parsePathKindInclusion } from "../path-list-inclusion.js";
 import {
   DEFAULT_PATH_LIST_EXCLUDE_NAMES,
   THREAD_STORAGE_PATH_LIST_INCLUDE_HIDDEN,
 } from "../path-list-policy.js";
 import { parseFileListLimit } from "../file-list-query.js";
-import { parseSafeRelativeRoutePath } from "../relative-route-path.js";
-
-function resolveThreadProviderDisplayName(
-  deps: Pick<AppDeps, "providerRegistry">,
-  providerId: string,
-): string | undefined {
-  return deps.providerRegistry.get(providerId)?.info.displayName;
-}
-
-function resolveThreadCompletedTurnDisplay(
-  deps: Pick<AppDeps, "providerRegistry">,
-  settings: AppSettings,
-  providerId: string,
-): CompletedTurnDisplay {
-  return (
-    settings.providerCompletedTurnDisplay[providerId] ??
-    deps.providerRegistry.get(providerId)?.info.completedTurnDisplay ??
-    DEFAULT_COMPLETED_TURN_DISPLAY
-  );
-}
-
-function validateFilePath(filePath: string): void {
-  if (
-    filePath.startsWith("/") ||
-    filePath.split("/").includes("..") ||
-    filePath.split("\\").includes("..")
-  ) {
-    throw new ApiError(400, "invalid_request", "Invalid file path");
-  }
-}
-
-interface ThreadStorageTarget {
-  hostId: string;
-  storagePath: string;
-}
-
-interface RequireThreadStorageTargetArgs {
-  threadId: string;
-}
-
-const RAW_FILE_NO_STORE_CACHE_CONTROL = "no-store";
-const RAW_FILE_HTML_CONTENT_TYPE = "text/html; charset=utf-8";
-const RAW_FILE_CONTENT_TYPE_OPTIONS = "nosniff";
-const HTML_PREVIEW_MAX_BYTES = 5 * 1024 * 1024;
-const GENERIC_HTML_PREVIEW_CSP = "sandbox allow-scripts";
+import { repairThreadTurnSpendFromStoredEvents } from "../../services/system/spend-rollup.js";
 
 function parseThreadEventTypes(
   value: string | undefined,
@@ -222,141 +157,34 @@ function parseThreadTimelinePage(
   };
 }
 
-async function requireThreadStorageTarget(
-  deps: WorkSessionDeps,
-  args: RequireThreadStorageTargetArgs,
-): Promise<ThreadStorageTarget> {
-  const thread = requirePublicThread(deps.db, args.threadId);
-  if (!thread.environmentId) {
-    throwThreadEnvironmentUnavailable(
-      threadEnvironmentUnavailableDetails("never_attached", null),
-    );
-  }
-  const environment = requireEnvironment(deps.db, thread.environmentId);
-  return {
-    hostId: environment.hostId,
-    storagePath: await requireThreadStoragePath(deps, {
-      hostId: environment.hostId,
-      threadId: thread.id,
-    }),
-  };
-}
-
-function isHtmlPreviewPath(relativePath: string): boolean {
-  return relativePath.toLowerCase().endsWith(".html");
-}
-
-function assertHtmlPreviewSize(relativePath: string, sizeBytes: number): void {
-  if (isHtmlPreviewPath(relativePath) && sizeBytes > HTML_PREVIEW_MAX_BYTES) {
-    throw new ApiError(
-      413,
-      "file_too_large",
-      "HTML preview exceeds the 5 MB limit",
-      false,
-    );
-  }
-}
-
-function createRawFilePreviewResponse(
-  result: DaemonFileReadResult,
-  relativePath: string,
-  ifNoneMatch: string | undefined,
-): Response {
-  assertHtmlPreviewSize(relativePath, result.sizeBytes);
-  const headers = new Headers({
-    "x-content-type-options": RAW_FILE_CONTENT_TYPE_OPTIONS,
-  });
-  const isHtml = isHtmlPreviewPath(relativePath);
-  if (isHtml) {
-    headers.set("cache-control", RAW_FILE_NO_STORE_CACHE_CONTROL);
-    headers.set("content-security-policy", GENERIC_HTML_PREVIEW_CSP);
-    headers.set("content-type", RAW_FILE_HTML_CONTENT_TYPE);
-  }
-  return createDaemonFileContentResponse(result, {
-    headers,
-    ifNoneMatch: isHtml ? undefined : ifNoneMatch,
-  });
-}
-
-async function serveThreadStorageRawFile(
-  deps: LoggedWorkSessionDeps,
-  threadId: string,
-  rawPath: string,
-  ifNoneMatch: string | undefined,
-): Promise<Response> {
-  const filePath = parseSafeRelativeRoutePath(rawPath);
-  const target = await requireThreadStorageTarget(deps, { threadId });
-
-  return serveDaemonFileContent(
-    deps,
-    {
-      hostId: target.hostId,
-      ...(!isHtmlPreviewPath(filePath.relativePath) ? { ifNoneMatch } : {}),
-      path: path.join(target.storagePath, filePath.relativePath),
-      rootPath: target.storagePath,
-    },
-    (result) =>
-      createRawFilePreviewResponse(result, filePath.relativePath, ifNoneMatch),
-  );
-}
-
-async function serveThreadWorktreeRawFile(
-  deps: LoggedWorkSessionDeps,
-  threadId: string,
-  rawPath: string,
-  ifNoneMatch: string | undefined,
-): Promise<Response> {
-  const filePath = parseSafeRelativeRoutePath(rawPath);
-  const thread = requirePublicThread(deps.db, threadId);
-  if (!thread.environmentId) {
-    throw new ApiError(409, "invalid_request", "Thread has no environment");
-  }
-  const environment = requireReadyEnvironment(deps.db, thread.environmentId);
-
-  return serveDaemonFileContent(
-    deps,
-    {
-      hostId: environment.hostId,
-      ...(!isHtmlPreviewPath(filePath.relativePath) ? { ifNoneMatch } : {}),
-      path: path.join(environment.path, filePath.relativePath),
-      rootPath: environment.path,
-    },
-    (result) =>
-      createRawFilePreviewResponse(result, filePath.relativePath, ifNoneMatch),
-  );
-}
-
 export function registerThreadDataRoutes(app: Hono, deps: AppDeps): void {
-  const { get, patch, put } = typedRoutes<PublicApiSchema>(app, {
+  const { get, patch } = typedRoutes<PublicApiSchema>(app, {
     onValidationError: (msg) => new ApiError(400, "invalid_request", msg),
   });
   const routes = publicApiRoutes.threads;
-  const timelineCache = createThreadTimelineCache();
-  const timelineLatestRowsCache = createTimelineLatestRowsCache();
-  deps.hub.onChangedMessage((message) => {
-    if (
-      message.entity === "thread" &&
-      message.changes.includes("history-rewritten")
-    ) {
-      clearTimelineOrderingContextCache(deps.db);
-      timelineCache.invalidateThread(message.id);
-      timelineLatestRowsCache.invalidateThread(message.id);
-    }
-  });
-  const slowTimelineBuildLogger = createSlowThreadTimelineBuildLogger({
-    logger: deps.logger,
-  });
+  const timelineWindows = createThreadTimelineWindows(deps);
   const conversationOutlineCache = new Map<
     string,
     ThreadConversationOutlineResponse["items"]
   >();
   const CONVERSATION_OUTLINE_CACHE_MAX_ENTRIES = 128;
-
-  put(routes.saveImageMetadata, (context, payload) => {
-    const thread = requirePublicThread(deps.db, context.req.param("id"));
-    saveThreadImageMetadata(deps.db, { threadId: thread.id, ...payload });
-    return context.json({ ok: true as const });
-  });
+  const resolveConversationRowsOptions = (thread: Thread) => {
+    const providerDisplayName = resolveThreadProviderDisplayName(
+      deps,
+      thread.providerId,
+    );
+    const settings = getAppSettings(deps.db);
+    return {
+      completedTurnDisplay: resolveThreadCompletedTurnDisplay(
+        deps,
+        settings,
+        thread.providerId,
+      ),
+      includeClearedContextHistory: settings.keepHistoryAfterContextClear,
+      maxSeq: getLatestThreadSequence(deps.db, { threadId: thread.id }),
+      ...(providerDisplayName === undefined ? {} : { providerDisplayName }),
+    };
+  };
 
   get(routes.pluginMetadata.get, (context, query) => {
     const thread = requirePublicThread(deps.db, context.req.param("id"));
@@ -406,124 +234,54 @@ export function registerThreadDataRoutes(app: Hono, deps: AppDeps): void {
       threadId: thread.id,
       sequenceStart,
     });
+    const usage = extractThreadContextWindowUsage(
+      rows.map(toThreadEventWithMeta),
+    );
     return context.json({
-      usage: extractThreadContextWindowUsage(rows.map(toThreadEventWithMeta)),
+      usage:
+        usage === null
+          ? null
+          : withCompactionOffer(deps.db, {
+              enabled: isCompactionOfferEnabled(deps, thread.providerId),
+              sequenceStart,
+              threadId: thread.id,
+              usage,
+            }),
     });
   });
 
   get(routes.timeline, (context, query) => {
     const thread = requirePublicThread(deps.db, context.req.param("id"));
-    const page = parseThreadTimelinePage(query);
-    const includeNestedRows = query.includeNestedRows === "true";
-    const summaryOnly = query.summaryOnly === "true";
-
-    const providerDisplayName = resolveThreadProviderDisplayName(
-      deps,
-      thread.providerId,
+    return context.json(
+      timelineWindows.read(
+        thread,
+        {
+          deferContent: query.deferContent === "true",
+          includeNestedRows: query.includeNestedRows === "true",
+          page: parseThreadTimelinePage(query),
+          summaryOnly: query.summaryOnly === "true",
+        },
+        parseOptionalInteger(query.afterSequence, "afterSequence"),
+      ),
     );
-    const settings = getAppSettings(deps.db);
-    const includeDiagnosticOperations = settings.showDiagnosticEvents;
-    const completedTurnDisplay = resolveThreadCompletedTurnDisplay(
-      deps,
-      settings,
-      thread.providerId,
-    );
-    const maxSeq = getLatestThreadSequence(deps.db, {
-      threadId: thread.id,
-    });
-    const eventBudget = deps.config.featureFlags.timelineWindowEventBudget;
-    const keyArgs = {
-      threadId: thread.id,
-      status: thread.status,
-      environmentId: thread.environmentId,
-      providerDisplayName,
-      page,
-      includeNestedRows,
-      summaryOnly,
-      includeDiagnosticOperations,
-      completedTurnDisplay,
-    };
-    const full = timelineCache.getOrBuild(
-      thread.id,
-      buildThreadTimelineCacheKey({ ...keyArgs, maxSeq }),
-      () => {
-        const { profile, response } = buildThreadTimelineWithProfile(
-          deps.db,
-          thread,
-          {
-            completedTurnDisplay,
-            eventBudget,
-            includeDiagnosticOperations,
-            includeNestedRows,
-            maxInlineOutputChars: DEFAULT_MAX_INLINE_OUTPUT_CHARS,
-            maxSeq,
-            page,
-            providerDisplayName,
-            planCommand: resolveProviderPlanCommand(
-              deps.providerRegistry,
-              thread.providerId,
-            ),
-            summaryOnly,
-          },
-        );
-        slowTimelineBuildLogger.log({ profile, threadId: thread.id });
-        const truncated = truncateTimelineResponseOutputs(
-          response,
-          DEFAULT_MAX_INLINE_OUTPUT_CHARS,
-        );
-        return includeNestedRows
-          ? truncated
-          : previewTimelineResponseOutputs(truncated);
-      },
-    );
-
-    const afterSequence = parseOptionalInteger(
-      query.afterSequence,
-      "afterSequence",
-    );
-    const paramsKey = buildThreadTimelineParamsKey(keyArgs);
-    const previous =
-      afterSequence === undefined
-        ? undefined
-        : timelineLatestRowsCache.get(thread.id, paramsKey, afterSequence);
-    const delta =
-      previous === undefined
-        ? undefined
-        : computeTimelineRowDelta(previous.rows, full.rows);
-    timelineLatestRowsCache.set(thread.id, paramsKey, {
-      maxSeq,
-      rows: full.rows,
-    });
-
-    return context.json({
-      ...(delta === undefined ? full : { ...full, rows: [], delta }),
-      imageMetadata: listThreadImageMetadata(deps.db, thread.id),
-    });
   });
 
-  get(routes.conversationOutline, (context) => {
+  get(routes.conversationOutline, (context, query) => {
     const thread = requirePublicThread(deps.db, context.req.param("id"));
+    const selectItems = (items: ThreadConversationOutlineResponse["items"]) =>
+      query.role === undefined
+        ? items
+        : items.filter((item) => item.role === query.role);
 
-    const maxSeq = getLatestThreadSequence(deps.db, { threadId: thread.id });
     const outlineSequence = getLatestStoredConversationOutlineSequence(
       deps.db,
       { threadId: thread.id },
     );
-    const providerDisplayName = resolveThreadProviderDisplayName(
-      deps,
-      thread.providerId,
-    );
-    const outlineOptions = {
-      completedTurnDisplay: resolveThreadCompletedTurnDisplay(
-        deps,
-        getAppSettings(deps.db),
-        thread.providerId,
-      ),
-      maxSeq,
-      ...(providerDisplayName === undefined ? {} : { providerDisplayName }),
-    };
+    const outlineOptions = resolveConversationRowsOptions(thread);
+    const { maxSeq } = outlineOptions;
     const cacheKey = JSON.stringify([
       thread.id,
+      getDatabaseDataVersion(deps.db),
       buildThreadConversationOutlineProjectionKey(
         thread,
         outlineSequence,
@@ -534,7 +292,7 @@ export function registerThreadDataRoutes(app: Hono, deps: AppDeps): void {
     if (cached !== undefined) {
       conversationOutlineCache.delete(cacheKey);
       conversationOutlineCache.set(cacheKey, cached);
-      return context.json({ items: cached, maxSeq });
+      return context.json({ items: selectItems(cached), maxSeq });
     }
     const response = loadThreadConversationOutline(deps.db, thread, {
       ...outlineOptions,
@@ -550,7 +308,27 @@ export function registerThreadDataRoutes(app: Hono, deps: AppDeps): void {
       }
       conversationOutlineCache.delete(oldest);
     }
-    return context.json(response);
+    return context.json({ ...response, items: selectItems(response.items) });
+  });
+
+  get(routes.message, (context, query) => {
+    const thread = requirePublicThread(deps.db, context.req.param("id"));
+    const seq = context.req.param("seq");
+    if (!/^\d+$/.test(seq)) {
+      throw new ApiError(
+        400,
+        "invalid_request",
+        "Message seq must be a non-negative integer",
+      );
+    }
+    return context.json(
+      getThreadMessage(deps.db, thread, {
+        ...resolveConversationRowsOptions(thread),
+        seq: parseInteger(seq, "seq"),
+        before: parseOptionalInteger(query.before, "before") ?? 0,
+        after: parseOptionalInteger(query.after, "after") ?? 0,
+      }),
+    );
   });
 
   get(routes.timelineTurnSummaryDetails, (context, query) => {
@@ -559,12 +337,15 @@ export function registerThreadDataRoutes(app: Hono, deps: AppDeps): void {
     return context.json(
       buildTimelineTurnSummaryDetails(deps.db, thread, {
         beforeCursor: query.beforeCursor,
+        deferContent: query.deferContent === "true",
+        itemId: query.itemId ?? null,
         completedTurnDisplay: resolveThreadCompletedTurnDisplay(
           deps,
           settings,
           thread.providerId,
         ),
         includeDiagnosticOperations: settings.showDiagnosticEvents,
+        summarizeShellCommands: settings.summarizeShellCommands,
         providerDisplayName: resolveThreadProviderDisplayName(
           deps,
           thread.providerId,
@@ -574,6 +355,69 @@ export function registerThreadDataRoutes(app: Hono, deps: AppDeps): void {
         sourceSeqEnd: parseInteger(query.sourceSeqEnd, "sourceSeqEnd"),
       }),
     );
+  });
+
+  get(routes.spendSummary, (context) => {
+    const thread = requirePublicThread(deps.db, context.req.param("id"));
+    ensureSpendTables(deps.db);
+    const completedTurnIds = new Set(
+      listCompletedTurnsByThreadIds(deps.db, [thread.id]).map(
+        (turn) => turn.turnId,
+      ),
+    );
+    repairThreadTurnSpendFromStoredEvents(deps.db, {
+      completedTurnIds,
+      providerId: thread.providerId,
+      threadId: thread.id,
+    });
+    const dailyRows = listSpendRollupRows(deps.db, { threadId: thread.id });
+    const recordedTurns = listThreadTurnSpend(deps.db, { threadId: thread.id });
+    const recordedTurnIds = new Set(recordedTurns.map((turn) => turn.turnId));
+    const unavailableTurns = new Map(
+      [...completedTurnIds]
+        .filter((turnId) => !recordedTurnIds.has(turnId))
+        .map((turnId) => [
+          turnId,
+          {
+            turnId,
+            model: null,
+            inputTokens: null,
+            cachedInputTokens: null,
+            outputTokens: null,
+            reasoningOutputTokens: null,
+            totalTokens: null,
+          },
+        ]),
+    );
+    const turns = [...recordedTurns, ...unavailableTurns.values()];
+    const sumDaily = (
+      field:
+        | "inputTokens"
+        | "cachedInputTokens"
+        | "outputTokens"
+        | "reasoningOutputTokens"
+        | "totalTokens",
+    ): number | null =>
+      dailyRows.length === 0
+        ? null
+        : dailyRows.reduce((sum, row) => sum + row[field], 0);
+    const dailyTotalTokens = sumDaily("totalTokens");
+    const total = {
+      cachedInputTokens: sumDaily("cachedInputTokens"),
+      inputTokens: sumDaily("inputTokens"),
+      outputTokens: sumDaily("outputTokens"),
+      reasoningOutputTokens: sumDaily("reasoningOutputTokens"),
+      totalTokens: dailyTotalTokens,
+    };
+    const response: ThreadSpendSummaryResponse = {
+      historyComplete: isSpendThreadHistoryComplete(deps.db, {
+        threadId: thread.id,
+      }),
+      providerId: thread.providerId,
+      total,
+      turns,
+    };
+    return context.json(response);
   });
 
   get(routes.output, (context) => {
@@ -706,27 +550,21 @@ export function registerThreadDataRoutes(app: Hono, deps: AppDeps): void {
     return context.json(response);
   });
 
-  get(routes.worktreeFile, async (context) =>
-    serveThreadWorktreeRawFile(
+  get(routes.storageFiles, async (context, query) => {
+    const target = await requireThreadStorageTarget(
       deps,
       context.req.param("id"),
-      context.req.param("filePath"),
-      context.req.header("if-none-match"),
-    ),
-  );
-
-  get(routes.storageFiles, async (context, query) => {
-    const target = await requireThreadStorageTarget(deps, {
-      threadId: context.req.param("id"),
-    });
+    );
     const limit = parseFileListLimit(query.limit);
 
     try {
       const result = await callHostRetryableOnlineRpc(deps, {
         hostId: target.hostId,
+        signal: context.req.raw.signal,
         timeoutMs: COMMAND_TIMEOUT_MS,
         command: {
           type: "host.list_files",
+          followRootSymlink: false,
           path: target.storagePath,
           ...(query.query ? { query: query.query } : {}),
           limit,
@@ -753,28 +591,21 @@ export function registerThreadDataRoutes(app: Hono, deps: AppDeps): void {
   });
 
   get(routes.storageLocation, async (context) => {
-    const target = await requireThreadStorageTarget(deps, {
-      threadId: context.req.param("id"),
-    });
+    const target = await requireThreadStorageTarget(
+      deps,
+      context.req.param("id"),
+    );
     return context.json({
       hostId: target.hostId,
       storageRootPath: target.storagePath,
     });
   });
 
-  get(routes.storageFile, async (context) =>
-    serveThreadStorageRawFile(
+  get(routes.storagePaths, async (context, query) => {
+    const target = await requireThreadStorageTarget(
       deps,
       context.req.param("id"),
-      context.req.param("filePath"),
-      context.req.header("if-none-match"),
-    ),
-  );
-
-  get(routes.storagePaths, async (context, query) => {
-    const target = await requireThreadStorageTarget(deps, {
-      threadId: context.req.param("id"),
-    });
+    );
     const limit = parseFileListLimit(query.limit);
     const inclusion = parsePathKindInclusion({
       includeFiles: query.includeFiles,
@@ -784,6 +615,7 @@ export function registerThreadDataRoutes(app: Hono, deps: AppDeps): void {
     try {
       const result = await callHostRetryableOnlineRpc(deps, {
         hostId: target.hostId,
+        signal: context.req.raw.signal,
         timeoutMs: COMMAND_TIMEOUT_MS,
         command: {
           type: "host.list_paths",
@@ -812,49 +644,5 @@ export function registerThreadDataRoutes(app: Hono, deps: AppDeps): void {
       }
       throw error;
     }
-  });
-
-  get(routes.storageContent, async (context, query) => {
-    validateFilePath(query.path);
-    const target = await requireThreadStorageTarget(deps, {
-      threadId: context.req.param("id"),
-    });
-
-    return serveDaemonFileContent(
-      deps,
-      {
-        hostId: target.hostId,
-        ifNoneMatch: context.req.header("if-none-match"),
-        path: path.join(target.storagePath, query.path),
-        rootPath: target.storagePath,
-      },
-      (result) =>
-        createDaemonFileContentResponse(result, {
-          ifNoneMatch: context.req.header("if-none-match"),
-        }),
-    );
-  });
-
-  get(routes.hostFileContent, async (context, query) => {
-    const thread = requirePublicThread(deps.db, context.req.param("id"));
-    if (!thread.environmentId) {
-      throwThreadEnvironmentUnavailable(
-        threadEnvironmentUnavailableDetails("never_attached", null),
-      );
-    }
-    const environment = requireEnvironment(deps.db, thread.environmentId);
-
-    return serveDaemonFileContent(
-      deps,
-      {
-        hostId: environment.hostId,
-        ifNoneMatch: context.req.header("if-none-match"),
-        path: query.path,
-      },
-      (result) =>
-        createDaemonFileContentResponse(result, {
-          ifNoneMatch: context.req.header("if-none-match"),
-        }),
-    );
   });
 }

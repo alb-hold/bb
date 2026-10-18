@@ -299,6 +299,31 @@ describe("provider declaration target-state fields", () => {
     ).toThrow(/models\.scope must be one of host, workspace/u);
   });
 
+  it("carries a declared child-thread model and omits an undeclared one", () => {
+    expect(
+      validatePluginProviderDeclaration(
+        declaration({ models: { childThreadModel: "child-model" } }),
+      ).models.childThreadModel,
+    ).toBe("child-model");
+    expect(
+      "childThreadModel" in
+        validatePluginProviderDeclaration(declaration()).models,
+    ).toBe(false);
+  });
+
+  it.each([42, "", " child-model", "x".repeat(201)])(
+    "rejects the child-thread model %j",
+    (childThreadModel) => {
+      expect(() =>
+        validatePluginProviderDeclaration(
+          declaration({
+            models: { childThreadModel: childThreadModel as never },
+          }),
+        ),
+      ).toThrow(/models\.childThreadModel must be a trimmed string/u);
+    },
+  );
+
   it("defaults the model catalog scope to workspace", () => {
     expect(validatePluginProviderDeclaration(declaration()).models.scope).toBe(
       "workspace",
@@ -439,6 +464,168 @@ describe("provider declaration fields renamed in SDK 0.4.16", () => {
           }),
         ),
       ).toThrow(/reportsTokenUsage must be a boolean/u);
+    });
+  });
+
+  describe("experimental_nativeTerminal", () => {
+    const assigned = {
+      executable: "my-agent",
+      launchArgs: ["--no-daemon"],
+      modelArgs: ["--model", "{model}"],
+      imageArgs: [],
+      pastePlaceholders: ["[Pasted text #"],
+      sessionRoot: { env: "MY_AGENT_HOME", home: ".my-agent" },
+      session: {
+        kind: "assigned" as const,
+        startArgs: ["--session-id", "{sessionId}"],
+        resumeArgs: ["--resume", "{sessionId}"],
+        transcript: "sessions/*/{sessionId}.jsonl",
+      },
+    };
+
+    it("is accepted without imageArgs, as a plugin written before it declares", () => {
+      const older: Omit<typeof assigned, "imageArgs"> & {
+        imageArgs?: string[];
+      } = { ...assigned };
+      delete older.imageArgs;
+      const normalized = validatePluginProviderDeclaration(
+        declaration({ experimental_nativeTerminal: older }),
+      );
+      expect(normalized.experimental_nativeTerminal).toEqual(older);
+    });
+
+    it("is accepted, carried through and frozen", () => {
+      const normalized = validatePluginProviderDeclaration(
+        declaration({ experimental_nativeTerminal: assigned }),
+      );
+      expect(normalized.experimental_nativeTerminal).toEqual(assigned);
+      expect(Object.isFrozen(normalized.experimental_nativeTerminal)).toBe(
+        true,
+      );
+      expect(
+        Object.isFrozen(normalized.experimental_nativeTerminal?.session),
+      ).toBe(true);
+    });
+
+    it("stays absent when a provider does not declare it", () => {
+      expect(
+        validatePluginProviderDeclaration(declaration()),
+      ).not.toHaveProperty("experimental_nativeTerminal");
+    });
+
+    it("accepts provisional hooks and transcript identity with boolean outcomes", () => {
+      const activity = {
+        hooks: {
+          args: ["--settings", "{settings}"],
+          working: ["UserPromptSubmit"],
+          idle: [],
+          pending: ["Stop"],
+          promptField: "prompt",
+          turnId: "prompt_id",
+        },
+        transcript: {
+          identity: {
+            recordId: "uuid",
+            parentId: "parentUuid",
+            turnId: "promptId",
+            timestamp: "timestamp",
+          },
+          working: [{ equals: { type: "assistant", isSidechain: false } }],
+          idle: [{ equals: { type: "system", hasOutput: false } }],
+          prompt: [],
+        },
+      };
+      const normalized = validatePluginProviderDeclaration(
+        declaration({ experimental_nativeTerminal: { ...assigned, activity } }),
+      );
+      expect(normalized.experimental_nativeTerminal?.activity).toEqual(
+        activity,
+      );
+      for (const identity of [
+        { recordId: "uuid", parentId: "..parent", turnId: "promptId" },
+        {
+          recordId: "uuid",
+          parentId: "parentUuid",
+          turnId: "promptId",
+          timestamp: "..time",
+        },
+        {
+          recordId: "uuid",
+          parentId: "parentUuid",
+          turnId: undefined as unknown as string,
+        },
+      ]) {
+        expect(() =>
+          validatePluginProviderDeclaration({
+            ...declaration(),
+            experimental_nativeTerminal: {
+              ...assigned,
+              activity: {
+                ...activity,
+                transcript: { ...activity.transcript, identity },
+              },
+            },
+          }),
+        ).toThrow(/activity\.transcript\.identity/u);
+      }
+    });
+
+    it.each([
+      [
+        "a token in launch argv",
+        { ...assigned, launchArgs: ["--home", "{sessionId}"] },
+        /experimental_nativeTerminal\.launchArgs may only use no tokens, not \{sessionId\}/u,
+      ],
+      [
+        "an unknown argv token",
+        { ...assigned, modelArgs: ["--model", "{models}"] },
+        /experimental_nativeTerminal\.modelArgs may only use \{model\}/u,
+      ],
+      [
+        "image argv without the image",
+        { ...assigned, imageArgs: ["--image"] },
+        /experimental_nativeTerminal\.imageArgs must pass \{image\} when not empty/u,
+      ],
+      [
+        "resume argv without the session id",
+        {
+          ...assigned,
+          session: { ...assigned.session, resumeArgs: ["--continue"] },
+        },
+        /experimental_nativeTerminal\.session\.resumeArgs must pass \{sessionId\}/u,
+      ],
+      [
+        "a transcript that escapes the session root",
+        {
+          ...assigned,
+          session: { ...assigned.session, transcript: "../{sessionId}.jsonl" },
+        },
+        /experimental_nativeTerminal\.session\.transcript must be a relative path/u,
+      ],
+      [
+        "a missing paste placeholder list",
+        {
+          ...assigned,
+          pastePlaceholders: undefined as unknown as string[],
+        },
+        /experimental_nativeTerminal\.pastePlaceholders/u,
+      ],
+      [
+        "a paste placeholder too short to tell apart from typed text",
+        { ...assigned, pastePlaceholders: ["[P"] },
+        /experimental_nativeTerminal\.pastePlaceholders\.0/u,
+      ],
+      [
+        "an executable path instead of a name",
+        { ...assigned, executable: "/usr/bin/my-agent" },
+        /experimental_nativeTerminal\.executable must be a bare executable name/u,
+      ],
+    ])("rejects %s", (_label, value, message) => {
+      expect(() =>
+        validatePluginProviderDeclaration(
+          declaration({ experimental_nativeTerminal: value }),
+        ),
+      ).toThrow(message);
     });
   });
 });

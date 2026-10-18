@@ -2,16 +2,14 @@ import { createHash } from "node:crypto";
 import {
   chmod,
   mkdir,
-  mkdtemp,
   readFile,
   rename,
-  rm,
   symlink,
   writeFile,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { makeTempDir } from "@bb/test-helpers";
+import { describe, expect, it } from "vitest";
 import { resolveBuiltinSkillsRootPath } from "../../src/services/skills/builtin-skills-copy.js";
 import {
   hashSkillTreeEntries,
@@ -51,20 +49,6 @@ function resolveInjectedSkillSources(
     skillTreeRegistry: new SkillTreeRegistry(),
   }).map((entry) => entry.runtimeSource);
 }
-
-const tempDirs: string[] = [];
-
-async function makeTempDir(): Promise<string> {
-  const root = await mkdtemp(path.join(tmpdir(), "bb-injected-skills-"));
-  tempDirs.push(root);
-  return root;
-}
-
-afterEach(async () => {
-  await Promise.all(
-    tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })),
-  );
-});
 
 function createCapturingLogger(): CapturingLogger {
   const debugs: CapturedLog[] = [];
@@ -164,8 +148,10 @@ describe("injected skill source discovery", () => {
     expect(readSkillTreeManifest(secondRoot).treeHash).not.toBe(baseline);
     await rename(renamedReference, secondReference);
 
-    await chmod(secondReference, 0o755);
-    expect(readSkillTreeManifest(secondRoot).treeHash).not.toBe(baseline);
+    if (process.platform !== "win32") {
+      await chmod(secondReference, 0o755);
+      expect(readSkillTreeManifest(secondRoot).treeHash).not.toBe(baseline);
+    }
   });
 
   it("hashes Unicode paths in locale-independent code-point order", () => {
@@ -191,28 +177,6 @@ describe("injected skill source discovery", () => {
     }
 
     expect(hashSkillTreeEntries(entries)).toBe(expected.digest("hex"));
-  });
-
-  it("aggregates valid data-dir skills", async () => {
-    const dataDir = await makeTempDir();
-    const dataDirSkillRoot = await writeSkill({
-      rootPath: path.join(dataDir, "skills"),
-      name: "release-notes",
-    });
-    const { logger } = createCapturingLogger();
-
-    const sources = await resolveInjectedSkillSources(logger, {
-      dataDir,
-    });
-
-    expect(sources).toEqual([
-      expectedTreeSource({
-        sourceType: "data-dir",
-        name: "release-notes",
-        description: "Use release-notes when tests need it.",
-        rootPath: dataDirSkillRoot,
-      }),
-    ]);
   });
 
   it("skips invalid skills and logs the reason", async () => {

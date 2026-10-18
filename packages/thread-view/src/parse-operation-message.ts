@@ -10,8 +10,10 @@ import type {
 } from "@bb/domain";
 import {
   THREAD_CONTEXT_CLEAR_OPERATION,
+  THREAD_CONTEXT_CLEARED_DETAIL,
   isApprovalInteractionLifecycle,
   isPluginInteractionLifecycle,
+  isReadableProviderEnvironmentEntry,
   isUserQuestionInteractionLifecycle,
   ownershipChangeOperationMetadataSchema,
 } from "@bb/domain";
@@ -123,6 +125,8 @@ function threadInterruptedTitle(
     return "Stopped — connection to host was lost";
   }
   switch (reason) {
+    case "host-removed":
+      return "Stopped because the machine was removed";
     case "manual-stop":
       return "Stopped manually";
     case "host-daemon-restarted":
@@ -306,6 +310,7 @@ function buildPermissionGrantLifecycleMessage(
     kind: "permission-grant-lifecycle",
     id: messageId(decoded.threadId, "approval", interaction.id),
     threadId: decoded.threadId,
+    sourceEvent: { seq: meta.seq, part: 0 },
     sourceSeqStart: meta.seq,
     sourceSeqEnd: meta.seq,
     createdAt: meta.createdAt,
@@ -366,6 +371,7 @@ function buildUserQuestionLifecycleMessage(
     kind: "user-question-lifecycle",
     id: messageId(decoded.threadId, "question", interaction.id),
     threadId: decoded.threadId,
+    sourceEvent: { seq: meta.seq, part: 0 },
     sourceSeqStart: meta.seq,
     sourceSeqEnd: meta.seq,
     createdAt: meta.createdAt,
@@ -441,6 +447,7 @@ function buildPluginFormLifecycleMessage(
     kind: "plugin-form-lifecycle",
     id: messageId(decoded.threadId, "form", interaction.id),
     threadId: decoded.threadId,
+    sourceEvent: { seq: meta.seq, part: 0 },
     sourceSeqStart: meta.seq,
     sourceSeqEnd: meta.seq,
     createdAt: meta.createdAt,
@@ -495,6 +502,7 @@ function op(
     kind: "operation",
     id: messageId(decoded.threadId, "op", `${idKey}:${meta.seq}`),
     threadId: decoded.threadId,
+    sourceEvent: { seq: meta.seq, part: 0 },
     sourceSeqStart: meta.seq,
     sourceSeqEnd: meta.seq,
     createdAt: meta.createdAt,
@@ -516,6 +524,7 @@ function isTerminalOperationStatus(
 type ViewOperationFields = Omit<
   EventProjectionOperationMessage,
   | "kind"
+  | "sourceEvent"
   | "id"
   | "threadId"
   | "sourceSeqStart"
@@ -577,7 +586,11 @@ export function parseOperationMessage(
             : "plugin" in entry.source
               ? entry.source.plugin
               : entry.source.core;
-        const value = typeof entry.value === "string" ? entry.value : "••••••";
+        const value =
+          isReadableProviderEnvironmentEntry(entry) &&
+          typeof entry.value === "string"
+            ? entry.value
+            : "••••••";
         const reason = entry.reason ? ` — ${entry.reason}` : "";
         return `${entry.name}=${value} (${source})${reason}`;
       })
@@ -671,7 +684,11 @@ export function parseOperationMessage(
       typeof decoded.metadata?.branch === "string"
         ? decoded.metadata.branch
         : undefined;
-    const messageDetail = decoded.message.trim();
+    const messageDetail =
+      decoded.operation === THREAD_CONTEXT_CLEAR_OPERATION &&
+      decoded.status === "completed"
+        ? THREAD_CONTEXT_CLEARED_DETAIL
+        : decoded.message.trim();
     const detailParts = [
       messageDetail.length > 0 && messageDetail !== title
         ? messageDetail

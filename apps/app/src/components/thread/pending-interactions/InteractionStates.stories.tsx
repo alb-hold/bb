@@ -16,12 +16,14 @@ import {
 } from "@/lib/plugin-logos";
 import { PluginPendingInteractionComposer } from "@/components/plugin/PluginPendingInteractionComposer";
 import { PendingInteractionShell } from "./PendingInteractionShell";
-import { ThreadPendingInteractionBanner } from "./ThreadPendingInteractionBanner";
+import { ThreadPendingInteractionBanners } from "./ThreadPendingInteractionBanner";
 import { StoryCard, StoryRow } from "../../../../.ladle/story-card";
+import { loadPluginAppDefinition } from "../../../../.ladle/plugin-app-module";
 
 installTestPluginRuntime();
-const { default: secretsApp } =
-  await import("../../../../../../plugins/secrets/app");
+const secretsApp = await loadPluginAppDefinition(
+  import.meta.glob<unknown>("../../../../../../plugins/secrets/app.tsx"),
+);
 
 export default { title: "thread/Pending Interaction/Additional States" };
 
@@ -42,34 +44,37 @@ export function Overview() {
   }, []);
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 p-4">
-      <ThreadPendingInteractionBanner
+      <ThreadPendingInteractionBanners
         threadId="thread-demo"
-        interaction={{
-          id: "plan-demo",
-          threadId: "thread-demo",
-          turnId: "turn-demo",
-          providerId: "codex",
-          providerThreadId: "provider-demo",
-          providerRequestId: "request-demo",
-          status: "pending",
-          statusReason: null,
-          createdAt: 1,
-          resolvedAt: null,
-          resolution: null,
-          payload: {
-            kind: "approval",
-            reason: null,
-            availableDecisions: ["allow_once", "deny"],
-            subject: {
-              kind: "plan",
-              itemId: "plan-demo",
-              plan: "# Share question forms\n\n1. Extract the shared form.\n2. Preserve submission adapters.\n3. Verify mobile and desktop states.",
-              planFilePath: "/workspace/plan.md",
+        interactions={[
+          {
+            id: "plan-demo",
+            threadId: "thread-demo",
+            turnId: "turn-demo",
+            providerId: "codex",
+            providerThreadId: "provider-demo",
+            providerRequestId: "request-demo",
+            status: "pending",
+            statusReason: null,
+            createdAt: 1,
+            resolvedAt: null,
+            resolution: null,
+            payload: {
+              kind: "approval",
+              reason: null,
+              availableDecisions: ["allow_once", "deny"],
+              subject: {
+                kind: "plan",
+                itemId: "plan-demo",
+                plan: "# Share question forms\n\n1. Extract the shared form.\n2. Preserve submission adapters.\n3. Verify mobile and desktop states.",
+                planFilePath: "/workspace/plan.md",
+              },
             },
           },
-        }}
+        ]}
       />
       <PluginPendingInteractionComposer
+        collapsedByDefault={false}
         interaction={{
           id: "secrets-demo",
           threadId: "thread-demo",
@@ -88,6 +93,7 @@ export function Overview() {
         }}
       />
       <PluginPendingInteractionComposer
+        collapsedByDefault={false}
         interaction={{
           id: "unavailable-demo",
           threadId: "thread-demo",
@@ -103,7 +109,7 @@ export function Overview() {
       />
       <PendingInteractionShell
         label="Question submission failed"
-        initiallyExpanded
+        expandedByDefault
         errorMessage="Could not submit your answer. Please try again once the connection is restored."
         testId="error-interaction-shell"
       >
@@ -203,6 +209,7 @@ export function PluginFormBooting() {
       >
         <PromptStage>
           <PluginPendingInteractionComposer
+            collapsedByDefault={false}
             interaction={pluginInteraction("secrets-booting-demo")}
             origin="plugin"
             request={secretsRequest}
@@ -216,6 +223,7 @@ export function PluginFormBooting() {
       >
         <PromptStage>
           <PluginPendingInteractionComposer
+            collapsedByDefault={false}
             interaction={pluginInteraction("missing-booting-demo")}
             origin="plugin"
             request={missingRendererRequest}
@@ -239,6 +247,7 @@ export function PluginFormSettled() {
       >
         <PromptStage>
           <PluginPendingInteractionComposer
+            collapsedByDefault={false}
             interaction={pluginInteraction("secrets-settled-demo")}
             origin="plugin"
             request={secretsRequest}
@@ -252,6 +261,7 @@ export function PluginFormSettled() {
       >
         <PromptStage>
           <PluginPendingInteractionComposer
+            collapsedByDefault={false}
             interaction={pluginInteraction("missing-settled-demo")}
             origin="plugin"
             request={missingRendererRequest}
@@ -265,6 +275,7 @@ export function PluginFormSettled() {
       >
         <PromptStage>
           <PluginPendingInteractionComposer
+            collapsedByDefault={false}
             interaction={pluginInteraction("bridge-settled-demo")}
             origin="provider"
             request={secretsRequest}
@@ -272,5 +283,35 @@ export function PluginFormSettled() {
         </PromptStage>
       </StoryRow>
     </StoryCard>
+  );
+}
+
+export function ManySecretsInThread() {
+  usePluginBranding();
+  useSecretsFormRegistered();
+  useSettledPluginFrontends(true);
+  return (
+    <div className="mx-auto flex h-dvh max-w-3xl flex-col overflow-hidden p-4">
+      <div className="min-h-0 flex-1 overflow-y-auto pb-4">
+        <p>Enter the credentials from each service dashboard below.</p>
+      </div>
+      <div className="shrink-0">
+        <PluginPendingInteractionComposer
+          collapsedByDefault={false}
+          interaction={pluginInteraction("many-secrets-demo")}
+          origin="plugin"
+          request={{
+            ...secretsRequest,
+            data: {
+              ...secretsRequest.data,
+              fields: Array.from({ length: 12 }, (_, index) => ({
+                name: `SERVICE_${index + 1}_KEY`,
+                description: `API key from service ${index + 1}`,
+              })),
+            },
+          }}
+        />
+      </div>
+    </div>
   );
 }

@@ -1,28 +1,32 @@
 import { describe, expect, it } from "vitest";
 import { threadScope, turnScope } from "@bb/domain";
 import type { DbConnection } from "../../src/connection.js";
-import { getThreadEventRewriteGeneration } from "../../src/data/event-rewrite-generation.js";
+import {
+  getThreadConversationOutlineRewriteGeneration,
+  getThreadEventRewriteGeneration,
+} from "../../src/data/event-rewrite-generation.js";
 import {
   appendDaemonEventsInTransaction,
   deleteThreadEventSuffixInTransaction,
   insertEvents,
-  pruneBackgroundTaskProgressEvents,
-  pruneResolvedItemDeltas,
-  pruneThreadEventsBeforeSequence,
-  pruneTokenUsageEvents,
   type InsertEventInput,
 } from "../../src/data/events.js";
 import { upsertHost } from "../../src/data/hosts.js";
 import { createProject } from "../../src/data/projects.js";
 import { migrateNextCompletedEventItemOutput } from "../../src/data/sweeps.js";
+import {
+  advanceThreadPruning,
+  type ThreadPruningPolicy,
+} from "../../src/data/thread-pruning.js";
 import { createThread } from "../../src/data/threads.js";
 import { noopNotifier } from "../../src/notifier.js";
 import { COMPLETED_EVENT_OUTPUT_TRUNCATION_THRESHOLD_CHARS } from "../../src/retained-event-output.js";
 import { events } from "../../src/schema.js";
-import { createMigratedConnection } from "../helpers/migrated-connection.js";
+import { createMigratedConnection } from "../../src/testing.js";
 
 interface RewriteCase {
   between?: (threadId: string) => InsertEventInput[];
+  conversationOutline: boolean;
   name: string;
   noop: (db: DbConnection, threadId: string) => number;
   rewrite: (db: DbConnection, threadId: string) => number;
@@ -48,14 +52,60 @@ function setup() {
   };
 }
 
+function pruneThreadEvents(
+  db: DbConnection,
+  policy: ThreadPruningPolicy,
+): number {
+  let removed = 0;
+  for (let pass = 0; pass < 100; pass += 1) {
+    const result = advanceThreadPruning(db, policy);
+    removed += result.removed;
+    if (result.action === "cycle-complete") return removed;
+  }
+  throw new Error("Pruning did not finish a cycle");
+}
+
 function expectGenerationBump(
   threadId: string,
   bumped: boolean,
   mutate: () => void,
+  conversationOutlineBumped = bumped,
 ): void {
   const before = getThreadEventRewriteGeneration(threadId);
+  const outlineBefore = getThreadConversationOutlineRewriteGeneration(threadId);
   mutate();
   expect(getThreadEventRewriteGeneration(threadId) !== before).toBe(bumped);
+  expect(
+    getThreadConversationOutlineRewriteGeneration(threadId) !== outlineBefore,
+  ).toBe(conversationOutlineBumped);
+}
+
+function resolvedDeltaCase(name: string, text: string): RewriteCase {
+  return {
+    name,
+    conversationOutline: text.length === 0,
+    seed: (threadId) =>
+      [1, 2, 3].map((sequence) =>
+        row(
+          threadId,
+          sequence,
+          "item/agentMessage/delta",
+          { delta: `chunk ${sequence}`, itemId: "msg-1" },
+          { itemId: "msg-1" },
+        ),
+      ),
+    noop: (db) => pruneThreadEvents(db, "resolved-items"),
+    between: (threadId) => [
+      row(
+        threadId,
+        4,
+        "item/completed",
+        { item: { id: "msg-1", text, type: "agentMessage" } },
+        { itemId: "msg-1", itemKind: "agentMessage" },
+      ),
+    ],
+    rewrite: (db) => pruneThreadEvents(db, "resolved-items"),
+  };
 }
 
 function row(
@@ -97,6 +147,18 @@ function tokenUsage(threadId: string, sequence: number): InsertEventInput {
   });
 }
 
+function rateLimits(threadId: string, sequence: number): InsertEventInput {
+  return row(threadId, sequence, "provider/rateLimits/updated", {
+    rateLimits: { providerId: "codex" },
+  });
+}
+
+function turnDiff(threadId: string, sequence: number): InsertEventInput {
+  return row(threadId, sequence, "turn/diff/updated", {
+    diff: `diff ${sequence}`,
+  });
+}
+
 function taskProgress(threadId: string, sequence: number): InsertEventInput {
   return row(
     threadId,
@@ -107,6 +169,7 @@ function taskProgress(threadId: string, sequence: number): InsertEventInput {
         description: "fixture workflow",
         id: "task:wf-1",
         skipTranscript: false,
+        foreground: false,
         status: "pending",
         taskStatus: "running",
         taskType: "local_workflow",
@@ -171,80 +234,51 @@ describe("thread event rewrite generation", () => {
   it.each<RewriteCase>([
     {
       name: "a suffix delete",
+      conversationOutline: true,
       seed: (threadId) =>
         [1, 2, 3].map((sequence) => message(threadId, sequence)),
       noop: (db, threadId) => deleteSuffix(db, threadId, 10),
       rewrite: (db, threadId) => deleteSuffix(db, threadId, 2),
     },
     {
-      name: "a typed prune",
-      seed: (threadId) =>
-        [1, 2, 3].map((sequence) => tokenUsage(threadId, sequence)),
-      noop: (db, threadId) =>
-        pruneThreadEventsBeforeSequence(db, {
-          sequenceCutoff: 3,
-          threadId,
-          types: ["thread/contextWindowUsage/updated"],
-        }),
-      rewrite: (db, threadId) =>
-        pruneThreadEventsBeforeSequence(db, {
-          sequenceCutoff: 2,
-          threadId,
-          types: ["thread/tokenUsage/updated"],
-        }),
-    },
-    {
       name: "a usage prune",
-      seed: (threadId) =>
-        [1, 2, 3, 4].map((sequence) => tokenUsage(threadId, sequence)),
-      noop: (db, threadId) =>
-        pruneTokenUsageEvents(db, {
-          afterSequence: 4,
-          threadId,
-        }),
-      rewrite: (db, threadId) =>
-        pruneTokenUsageEvents(db, {
-          threadId,
-        }),
+      conversationOutline: false,
+      seed: (threadId) => [tokenUsage(threadId, 1)],
+      noop: (db) => pruneThreadEvents(db, "usage"),
+      between: (threadId) =>
+        Array.from({ length: 303 }, (_, index) =>
+          tokenUsage(threadId, index + 2),
+        ),
+      rewrite: (db) => pruneThreadEvents(db, "usage"),
+    },
+    resolvedDeltaCase("a resolved delta prune", "chunk 1chunk 2chunk 3"),
+    resolvedDeltaCase("a resolved delta prune without final text", ""),
+    {
+      name: "a rate-limit prune",
+      conversationOutline: false,
+      seed: (threadId) => [rateLimits(threadId, 1)],
+      noop: (db) => pruneThreadEvents(db, "rate-limits"),
+      between: (threadId) => [rateLimits(threadId, 2)],
+      rewrite: (db) => pruneThreadEvents(db, "rate-limits"),
     },
     {
-      name: "a resolved delta prune",
-      seed: (threadId) =>
-        [1, 2, 3].map((sequence) =>
-          row(
-            threadId,
-            sequence,
-            "item/agentMessage/delta",
-            { delta: `chunk ${sequence}`, itemId: "msg-1" },
-            { itemId: "msg-1" },
-          ),
+      name: "a turn-diff prune",
+      conversationOutline: false,
+      seed: (threadId) => [turnDiff(threadId, 1)],
+      noop: (db) => pruneThreadEvents(db, "turn-diffs"),
+      between: (threadId) =>
+        Array.from({ length: 302 }, (_, index) =>
+          turnDiff(threadId, index + 2),
         ),
-      noop: (db, threadId) => pruneResolvedItemDeltas(db, { threadId }),
-      between: (threadId) => [
-        row(
-          threadId,
-          4,
-          "item/completed",
-          {
-            item: {
-              id: "msg-1",
-              text: "chunk 1chunk 2chunk 3",
-              type: "agentMessage",
-            },
-          },
-          { itemId: "msg-1", itemKind: "agentMessage" },
-        ),
-      ],
-      rewrite: (db, threadId) => pruneResolvedItemDeltas(db, { threadId }),
+      rewrite: (db) => pruneThreadEvents(db, "turn-diffs"),
     },
     {
       name: "a background task progress prune",
+      conversationOutline: false,
       seed: (threadId) => [taskProgress(threadId, 1)],
-      noop: (db, threadId) =>
-        pruneBackgroundTaskProgressEvents(db, { threadId }),
+      noop: (db) => pruneThreadEvents(db, "resolved-items"),
       between: (threadId) => [taskProgress(threadId, 2)],
-      rewrite: (db, threadId) =>
-        pruneBackgroundTaskProgressEvents(db, { threadId }),
+      rewrite: (db) => pruneThreadEvents(db, "resolved-items"),
     },
   ])("changes only when $name removes rows", (testCase) => {
     const { db, otherThreadId, threadId } = setup();
@@ -258,9 +292,14 @@ describe("thread event rewrite generation", () => {
     });
     insertEvents(db, noopNotifier, testCase.between?.(threadId) ?? []);
     const otherBefore = getThreadEventRewriteGeneration(otherThreadId);
-    expectGenerationBump(threadId, true, () => {
-      expect(testCase.rewrite(db, threadId)).toBeGreaterThan(0);
-    });
+    expectGenerationBump(
+      threadId,
+      true,
+      () => {
+        expect(testCase.rewrite(db, threadId)).toBeGreaterThan(0);
+      },
+      testCase.conversationOutline,
+    );
     expect(getThreadEventRewriteGeneration(otherThreadId)).toBe(otherBefore);
   });
 

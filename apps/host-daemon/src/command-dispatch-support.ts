@@ -17,6 +17,7 @@ import {
   type HostDaemonConnectTunnelIdentity,
   type WorkspaceContext,
 } from "@bb/host-daemon-contract";
+import { BRIDGE_JSON_RPC_ERRORS } from "@bb/provider-bridge-protocol";
 import type {
   ProviderInstallationCommand,
   ProviderInstallationRunResult,
@@ -41,16 +42,16 @@ export type CommandOf<TType extends DispatchCommand["type"]> = Extract<
   { type: TType }
 >;
 
-export const noopEventSink: Pick<EventSink, "emit" | "flush"> = {
-  emit: () => undefined,
-  flush: async () => undefined,
-};
+export interface TerminalDataSocketPort {
+  connect(args: { ticket: string; url: string }): Promise<boolean>;
+}
 
 export interface CommandDispatchOptions {
   emitEnvironmentHookProgress?: (
     message: EnvironmentHookProgressMessage,
   ) => void;
   desktopBrowserBroker?: DesktopBrowserBroker;
+  terminalDataSocket?: TerminalDataSocketPort;
   dataDir: string;
   logger: Pick<HostDaemonLogger, "debug" | "warn">;
   fetchProjectAttachment: FetchProjectAttachment;
@@ -81,6 +82,7 @@ export interface CommandDispatchOptions {
     bridgeLaunch: AgentRuntimeBridgeLaunch;
     cwd?: string;
     requirement?: "thread_rewind";
+    checkUpdates?: boolean;
   }) => Promise<ProviderInstallationStatus>;
   providerInstallationRun: (args: {
     providerId: string;
@@ -93,7 +95,7 @@ export interface CommandDispatchOptions {
     plan: ProviderInstallationCommand;
     env?: NodeJS.ProcessEnv;
   }) => ReadableStream<Uint8Array>;
-  refreshShellEnv: () => Promise<void>;
+  refreshShellEnv: (args: { allowStale: boolean }) => Promise<void>;
   resolveInteractiveRequest?: (
     request: InteractiveResolveCommandInput,
   ) => Promise<void>;
@@ -193,6 +195,9 @@ export function getErrorCode(error: unknown): string {
   if (error instanceof CompetingTurnError) {
     return COMPETING_TURN_ERROR_CODE;
   }
+  if (isBridgeMissingExecutableError(error)) {
+    return "missing_executable";
+  }
   if (isStructuredSpawnMissingExecutableError(error)) {
     return "missing_executable";
   }
@@ -207,6 +212,14 @@ export function getErrorCode(error: unknown): string {
     return "missing_executable";
   }
   return "command_failed";
+}
+
+function isBridgeMissingExecutableError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    error.code === BRIDGE_JSON_RPC_ERRORS.MISSING_EXECUTABLE
+  );
 }
 
 function isStructuredSpawnMissingExecutableError(error: unknown): boolean {

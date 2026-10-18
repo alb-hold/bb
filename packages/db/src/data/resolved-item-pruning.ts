@@ -1,6 +1,7 @@
+import { prepareCachedQuery } from "../connection.js";
 import { isBeforeLatestThreadEvent } from "./event-pruning-guards.js";
-import { threadPruningCursors } from "../schema.js";
-import { and, eq, sql } from "drizzle-orm";
+import { events, threadPruningCursors } from "../schema.js";
+import { and, eq, sql, type SQL } from "drizzle-orm";
 import type { DbQueryConnection } from "../connection.js";
 import type { ThreadEventType } from "@bb/domain";
 
@@ -11,7 +12,7 @@ export interface ResolvedItemPruningProbe {
   probeWitnessId: string | null;
 }
 
-export interface ResolvedItemPruningCandidate {
+interface ResolvedItemPruningCandidate {
   id: string;
   sequence: number;
   type: ThreadEventType;
@@ -45,20 +46,101 @@ const deltaKinds: Partial<Record<ThreadEventType, string>> = {
   "item/reasoning/textDelta": "reasoning",
 };
 
-export function pruneResolvedItemCandidates(
+function prepareSupport(
+  db: DbQueryConnection,
+  index: string,
+  predicate: SQL,
+  hasOutput = sql<number>`1`,
+) {
+  return db
+    .select({
+      id: sql<string>`${events.id}`,
+      sequence: sql<number>`${events.sequence}`,
+      type: sql<string>`${events.type}`,
+      itemKind: sql<string | null>`${events.itemKind}`,
+      itemId: sql<string | null>`${events.itemId}`,
+      parentToolCallId: sql<string | null>`${events.parentToolCallId}`,
+      hasOutput,
+    })
+    .from(sql`events INDEXED BY ${sql.raw(index)}`)
+    .where(
+      sql`thread_id = ${sql.placeholder("threadId")} AND sequence > ${sql.placeholder("afterSequence")} AND ${predicate}`,
+    )
+    .orderBy(events.sequence)
+    .limit(sql.placeholder("limit"))
+    .prepare();
+}
+
+const completionPredicate = sql`turn_id = ${sql.placeholder("turnId")} AND type = 'item/completed' AND item_id = ${sql.placeholder("itemId")}`;
+const prepareLifecycle = (db: DbQueryConnection) =>
+  prepareSupport(
+    db,
+    "events_item_lifecycle_thread_item_sequence_idx",
+    sql`item_id = ${sql.placeholder("itemId")} AND type IN ('item/started', 'item/completed', 'item/backgroundTask/completed')`,
+  );
+const prepareProgress = (db: DbQueryConnection) =>
+  prepareSupport(
+    db,
+    "events_background_task_thread_type_item_sequence_idx",
+    sql`type = 'item/backgroundTask/progress'
+      AND item_kind = 'backgroundTask'
+      AND item_id = ${sql.placeholder("itemId")}`,
+  );
+const prepareEarlier = (db: DbQueryConnection) =>
+  prepareSupport(
+    db,
+    "events_thread_turn_type_item_sequence_idx",
+    sql`turn_id = ${sql.placeholder("turnId")} AND type = ${sql.placeholder("type")} AND item_id = ${sql.placeholder("itemId")} AND sequence < ${sql.placeholder("beforeSequence")}`,
+  );
+const prepareOutput = (db: DbQueryConnection) =>
+  prepareSupport(
+    db,
+    "events_thread_turn_type_item_sequence_idx",
+    completionPredicate,
+    sql<number>`CASE WHEN json_valid(data) THEN json_type(data, '$.item.aggregatedOutput') IS NOT NULL ELSE 0 END`,
+  );
+const prepareCompletion = (db: DbQueryConnection) =>
+  prepareSupport(
+    db,
+    "events_thread_turn_type_item_sequence_idx",
+    completionPredicate,
+  );
+
+function pruneResolvedItemCandidates(
   db: DbQueryConnection,
   args: {
     threadId: string;
     candidates: readonly ResolvedItemPruningCandidate[];
     kind: "deltas" | "background";
     probe: ResolvedItemPruningProbe;
-    limit?: number;
+    limit: number;
   },
 ) {
   const rows = args.candidates;
   const probe = args.probe;
+  const hasLegacyProgress =
+    args.kind === "background" &&
+    db.get(sql`SELECT 1 FROM events INDEXED BY events_thread_type_sequence_idx
+      WHERE thread_id = ${args.threadId}
+        AND type = 'item/backgroundTask/progress'
+        AND (item_kind IS NULL OR item_kind <> 'backgroundTask')
+      LIMIT 1`) !== undefined;
+  const legacyProgressByItemId = new Map<string, number>();
+  if (hasLegacyProgress) {
+    const rows = db.all<{ itemId: string; maxSequence: number }>(sql`
+      SELECT item_id AS itemId, MAX(sequence) AS maxSequence
+      FROM events INDEXED BY events_thread_type_sequence_idx
+      WHERE thread_id = ${args.threadId}
+        AND type = 'item/backgroundTask/progress'
+        AND (item_kind IS NULL OR item_kind <> 'backgroundTask')
+        AND item_id IS NOT NULL
+      GROUP BY item_id
+    `);
+    for (const row of rows)
+      legacyProgressByItemId.set(row.itemId, row.maxSequence);
+  }
   const discarded: string[] = [];
-  let remaining = args.limit ?? 500;
+  let remaining = args.limit;
   let sequence = 0;
   let processed = 0;
   const reset = () => Object.assign(probe, emptyResolvedItemPruningProbe());
@@ -66,30 +148,30 @@ export function pruneResolvedItemCandidates(
     candidate: ResolvedItemPruningCandidate,
     limit: number,
   ): Support[] => {
-    if (args.kind === "background" && probe.probePhase === 0) {
-      return db.all<Support>(sql`SELECT id, sequence, type, item_kind AS itemKind, item_id AS itemId, parent_tool_call_id AS parentToolCallId, 1 AS hasOutput
-        FROM events INDEXED BY events_item_lifecycle_thread_item_sequence_idx
-        WHERE thread_id = ${args.threadId} AND item_id = ${candidate.itemId}
-          AND type IN ('item/started', 'item/completed', 'item/backgroundTask/completed')
-          AND sequence > ${probe.probeSequence} ORDER BY sequence LIMIT ${limit}`);
-    }
-    if (args.kind === "background") {
-      return db.all<Support>(sql`SELECT id, sequence, type, item_kind AS itemKind, item_id AS itemId, parent_tool_call_id AS parentToolCallId, 1 AS hasOutput
-        FROM events INDEXED BY events_thread_type_sequence_idx WHERE thread_id = ${args.threadId} AND type = 'item/backgroundTask/progress'
-          AND sequence > ${Math.max(candidate.sequence, probe.probeSequence)} ORDER BY sequence LIMIT ${limit}`);
-    }
-    if (probe.probePhase === 0) {
-      return db.all<Support>(sql`SELECT id, sequence, type, item_kind AS itemKind, item_id AS itemId, parent_tool_call_id AS parentToolCallId,
-          CASE WHEN json_valid(data) THEN json_type(data, '$.item.aggregatedOutput') IS NOT NULL ELSE 0 END AS hasOutput
-        FROM events INDEXED BY events_thread_turn_type_item_sequence_idx WHERE thread_id = ${args.threadId} AND turn_id = ${candidate.turnId}
-          AND type = 'item/completed' AND item_id = ${candidate.itemId}
-          AND sequence > ${probe.probeSequence} ORDER BY sequence LIMIT ${limit}`);
-    }
-    return db.all<Support>(sql`SELECT id, sequence, type, item_kind AS itemKind, item_id AS itemId, parent_tool_call_id AS parentToolCallId, 1 AS hasOutput
-      FROM events INDEXED BY events_thread_turn_type_item_sequence_idx WHERE thread_id = ${args.threadId} AND turn_id = ${candidate.turnId}
-        AND type = ${candidate.type} AND item_id = ${candidate.itemId}
-        AND sequence > ${probe.probeSequence} AND sequence < ${candidate.sequence}
-      ORDER BY sequence LIMIT ${limit}`);
+    const build =
+      args.kind === "background"
+        ? probe.probePhase === 0
+          ? prepareLifecycle
+          : prepareProgress
+        : probe.probePhase === 1
+          ? prepareEarlier
+          : candidate.type === "item/commandExecution/outputDelta"
+            ? prepareOutput
+            : prepareCompletion;
+    const queryArgs = {
+      threadId: args.threadId,
+      turnId: candidate.turnId,
+      itemId: candidate.itemId,
+      type: candidate.type,
+      afterSequence:
+        args.kind === "background" && probe.probePhase === 1
+          ? Math.max(candidate.sequence, probe.probeSequence)
+          : probe.probeSequence,
+      beforeSequence: candidate.sequence,
+      limit,
+    };
+    const support = prepareCachedQuery(db, build).all(queryArgs);
+    return support;
   };
   for (const candidate of rows) {
     if (remaining <= 0) break;
@@ -137,14 +219,22 @@ export function pruneResolvedItemCandidates(
                 (candidate.type !== "item/commandExecution/outputDelta" ||
                   row.hasOutput !== 0))),
       );
-      if (match) {
+      const legacySupersedes =
+        !match &&
+        support.length === 0 &&
+        args.kind === "background" &&
+        probe.probePhase === 1 &&
+        candidate.itemId !== null &&
+        (legacyProgressByItemId.get(candidate.itemId) ?? 0) >
+          candidate.sequence;
+      if (match || legacySupersedes) {
         if (args.kind === "background" || probe.probePhase === 1) {
           discarded.push(candidate.id);
           finished = true;
         } else {
           probe.probePhase = 1;
           probe.probeSequence = 0;
-          probe.probeWitnessId = match.id;
+          probe.probeWitnessId = match?.id ?? null;
         }
       } else if (support.length < limit) {
         if (args.kind === "background" && probe.probePhase === 0) {
@@ -162,21 +252,46 @@ export function pruneResolvedItemCandidates(
     processed += 1;
     reset();
   }
-  const removed =
+  const rewritesConversationOutline =
+    args.kind === "deltas" &&
+    discarded.length > 0 &&
+    db.get(sql`SELECT 1 FROM events AS delta
+      JOIN events AS completion INDEXED BY events_thread_turn_type_item_sequence_idx
+        ON completion.thread_id = delta.thread_id AND completion.turn_id = delta.turn_id
+        AND completion.type = 'item/completed' AND completion.item_id = delta.item_id
+      WHERE delta.id IN (${sql.join(
+        discarded.map((id) => sql`${id}`),
+        sql`, `,
+      )}) AND delta.type = 'item/agentMessage/delta'
+        AND completion.item_kind = 'agentMessage'
+        AND COALESCE(CASE WHEN json_valid(completion.data) THEN length(json_extract(completion.data, '$.item.text')) END, 0) = 0
+      LIMIT 1`) !== undefined;
+  const deletedRows =
     discarded.length === 0
-      ? 0
-      : db.run(
+      ? []
+      : db.all<{ dataBytes: number }>(
           sql`DELETE FROM events WHERE id IN (${sql.join(
             discarded.map((id) => sql`${id}`),
             sql`, `,
-          )}) AND ${isBeforeLatestThreadEvent(args.threadId)}`,
-        ).changes;
-  return { removed, sequence, complete: processed === rows.length };
+          )}) AND ${isBeforeLatestThreadEvent(args.threadId)}
+            RETURNING length(CAST(data AS BLOB)) AS dataBytes`,
+        );
+  const removedBytes = deletedRows.reduce(
+    (total, row) => total + row.dataBytes,
+    0,
+  );
+  return {
+    removed: deletedRows.length,
+    removedBytes,
+    rewritesConversationOutline,
+    sequence,
+    complete: processed === rows.length,
+  };
 }
 
 export function advanceLiveEventPruning(
   db: DbQueryConnection,
-  args: { threadId: string; kind: "deltas" | "background"; limit?: number },
+  args: { threadId: string; kind: "deltas" | "background"; limit: number },
 ) {
   const key = and(
     eq(threadPruningCursors.scope, args.threadId),
@@ -187,7 +302,14 @@ export function advanceLiveEventPruning(
     const latest = db.get<{ sequence: number }>(
       sql`SELECT sequence FROM events WHERE thread_id = ${args.threadId} ORDER BY sequence DESC LIMIT 1`,
     );
-    if (!latest) return { removed: 0, scanned: 0, complete: true };
+    if (!latest)
+      return {
+        removed: 0,
+        removedBytes: 0,
+        rewritesConversationOutline: false,
+        scanned: 0,
+        complete: true,
+      };
     cursor = db
       .insert(threadPruningCursors)
       .values({
@@ -207,23 +329,23 @@ export function advanceLiveEventPruning(
       : Object.keys(deltaKinds);
   const candidates = db.all<ResolvedItemPruningCandidate>(sql`
     WITH candidate_ids AS MATERIALIZED (
-      SELECT id, sequence FROM (${sql.join(
+      SELECT eventRowid, sequence FROM (${sql.join(
         types.map(
           (type) => sql`
-        SELECT id, sequence FROM (
-          SELECT id, sequence FROM events INDEXED BY events_thread_type_sequence_idx
+        SELECT eventRowid, sequence FROM (
+          SELECT rowid AS eventRowid, sequence FROM events INDEXED BY events_thread_type_sequence_idx
           WHERE thread_id = ${args.threadId} AND type = ${type}
             AND sequence > ${cursor.sequence} AND sequence <= ${cursor.upperSequence}
-          ORDER BY sequence LIMIT ${args.limit ?? 500}
+          ORDER BY sequence LIMIT ${args.limit}
         )`,
         ),
         sql` UNION ALL `,
       )})
-      ORDER BY sequence LIMIT ${args.limit ?? 500}
+      ORDER BY sequence LIMIT ${args.limit}
     )
     SELECT events.id, events.sequence, events.type, events.turn_id AS turnId,
       events.item_id AS itemId, events.parent_tool_call_id AS parentToolCallId
-    FROM candidate_ids JOIN events ON events.id = candidate_ids.id
+    FROM candidate_ids JOIN events ON events.rowid = candidate_ids.eventRowid
     ORDER BY events.sequence
   `);
   const result = pruneResolvedItemCandidates(db, {
@@ -234,8 +356,7 @@ export function advanceLiveEventPruning(
   if (result.sequence > 0) cursor.sequence = result.sequence;
   const complete =
     result.complete &&
-    (candidates.length < (args.limit ?? 500) ||
-      cursor.sequence >= cursor.upperSequence);
+    (candidates.length < args.limit || cursor.sequence >= cursor.upperSequence);
   cursor.updatedAt = Date.now();
   if (complete) {
     db.delete(threadPruningCursors).where(key).run();
@@ -248,5 +369,11 @@ export function advanceLiveEventPruning(
       })
       .run();
   }
-  return { removed: result.removed, scanned: candidates.length, complete };
+  return {
+    removed: result.removed,
+    removedBytes: result.removedBytes,
+    rewritesConversationOutline: result.rewritesConversationOutline,
+    scanned: candidates.length,
+    complete,
+  };
 }

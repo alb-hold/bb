@@ -1,12 +1,23 @@
 import { registerInternalForkAdoptionRoutes } from "./internal/fork-adoption.js";
+import { createPluginUpdateJobs } from "./services/plugins/plugin-update-jobs.js";
+import { registerPluginUpdateJobRoutes } from "./routes/plugin-update-jobs.js";
 import { recheckEnvironmentProvisioning } from "./services/threads/thread-environment-providers.js";
-import { enrolledInstallerScript } from "./services/machines/manual-enrollment-command.js";
+import { clearNativeTerminalStateOnExit } from "./services/threads/native-terminal-activity.js";
+import {
+  enrolledInstallerScript,
+  enrolledWindowsInstallerScript,
+  windowsInstallerFailureScript,
+} from "./services/machines/manual-enrollment-command.js";
+import { reconnectBootstrapForCredential } from "./services/machines/reconnect.js";
 import { getMachineEnrollmentService } from "./services/machines/machine-services.js";
 import { withManualMachineProvider } from "./services/machines/manual-provider.js";
 import { registerDesktopBrowserRoutes } from "./routes/desktop-browsers.js";
-import { INSTALL_MACHINE_SCRIPT_PATH } from "./install-machine-asset.js";
+import {
+  INSTALL_MACHINE_SCRIPT_PATH,
+  INSTALL_MACHINE_WINDOWS_SCRIPT_PATH,
+} from "./install-machine-asset.js";
 import { createNodeWebSocket } from "@hono/node-ws";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 import { extname, join, resolve } from "node:path";
@@ -15,7 +26,7 @@ import { terminalWebSocketQuerySchema } from "@bb/server-contract";
 import { compress } from "hono/compress";
 import { cors } from "hono/cors";
 import type { ServerAppDeps } from "./types.js";
-import { ApiError, errorToResponse } from "./errors.js";
+import { ApiError, createServerErrorHandler } from "./errors.js";
 import { registerEnvironmentRoutes } from "./routes/environments.js";
 import { registerFileRoutes } from "./routes/files.js";
 import { registerHostRoutes } from "./routes/hosts.js";
@@ -27,8 +38,12 @@ import { registerTerminalRoutes } from "./routes/terminals.js";
 import { registerThreadRoutes } from "./routes/threads/index.js";
 import { registerQueueRoutes } from "./routes/queue.js";
 import { registerSpendRoutes } from "./routes/spend.js";
+import { registerNativeTerminalThreadRoutes } from "./routes/native-terminal-threads.js";
 import { registerPluginRoutes } from "./routes/plugins.js";
 import { registerPluginCatalogRoutes } from "./routes/plugin-catalog.js";
+import { registerPluginInstallJobRoutes } from "./routes/plugin-install-jobs.js";
+import { createPluginInstallJobs } from "./services/plugins/plugin-install-jobs.js";
+import { registerPromptHistoryRoutes } from "./routes/prompt-history.js";
 import { registerSkillsRegistryRoutes } from "./routes/skills-registry.js";
 import {
   createPluginService,
@@ -94,10 +109,11 @@ import {
   type PluginCatalogService,
 } from "./services/plugin-catalog/plugin-catalog-service.js";
 import { callHostRetryableOnlineRpcForWork } from "./services/hosts/online-rpc.js";
-import { requestMatchesEntityTag } from "./services/hosts/daemon-file-response.js";
+import { requestMatchesEntityTag } from "./services/files/entity-tag.js";
 import {
   allowedAppOrigins,
   browserRequestProblem,
+  requestHostProblem,
 } from "./browser-request-guard.js";
 import {
   callPluginHostRpc,
@@ -110,6 +126,7 @@ import { apiJsonCompression } from "./api-response-compression.js";
 import { planUnclaimedAnswerDelivery } from "./services/interactions/deliver-unclaimed-answer.js";
 import { createQueuedMessageForThread } from "./services/threads/queued-messages.js";
 import { getThread } from "@bb/db";
+import { APP_SURFACE_WEB, type AppSurface } from "@bb/config/app-surface";
 import type { ServerBindHost } from "@bb/config/server";
 import { registerServerMoveRoutes } from "./routes/server-move.js";
 import {
@@ -170,6 +187,7 @@ function normalizeInternalAuthPath(path: string): string {
 }
 
 export interface ServerMoveAppOptions {
+  appSurface: AppSurface;
   bindHost: ServerBindHost | null;
   manualImportPending: boolean;
   pending: PendingServerMove | null;
@@ -181,6 +199,7 @@ interface CreateAppOptions {
   bbAppArtifactService?: BbAppArtifactService;
   serverMove?: ServerMoveAppOptions;
   slowApiRequestLogThresholdMs?: number;
+  performanceDiagnosticsEnabled?: () => boolean;
   staticDir?: string;
 }
 
@@ -202,7 +221,7 @@ const SLOW_API_REQUEST_LOG_THRESHOLD_MS = 1_000;
 const THREAD_EVENT_WAIT_PATH_PATTERN =
   /^\/api\/v1\/threads\/[^/]+\/events\/wait$/u;
 const PLUGIN_APP_ASSET_PATH_PATTERN =
-  /^\/api\/v1\/plugins\/[^/]+\/assets\/app\.(?:js|css)$/u;
+  /^\/api\/v1\/(?:plugins\/[^/]+\/assets|plugin-app-assets\/[a-f0-9]{16})\/app\.(?:js|css)$/u;
 const PRECOMPRESSED_STATIC_FILES = [
   { encoding: "br", extension: ".br" },
   { encoding: "gzip", extension: ".gz" },
@@ -421,29 +440,39 @@ async function findPrecompressedStaticFile(args: {
   return null;
 }
 
-function closeWebSocketServer(args: CloseWebSocketServerArgs): Promise<void> {
+export function closeWebSocketServer(
+  args: CloseWebSocketServerArgs,
+): Promise<void> {
   for (const client of args.server.clients) {
     client.close(WEB_SOCKET_SHUTDOWN_CODE, args.reason);
   }
 
   return new Promise<void>((resolvePromise, reject) => {
+    let settled = false;
+    const finish = (error?: WebSocketCloseError) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(forceCloseTimeout);
+      if (error) reject(error);
+      else resolvePromise();
+    };
     const forceCloseTimeout = setTimeout(() => {
       for (const client of args.server.clients) {
         client.terminate();
       }
+      finish();
     }, args.forceCloseAfterMs);
     forceCloseTimeout.unref();
 
     args.server.close((error: WebSocketCloseError) => {
-      clearTimeout(forceCloseTimeout);
-      if (error) {
-        reject(error);
-        return;
-      }
-      resolvePromise();
+      finish(error);
     });
   });
 }
+
+const nativeExitHandlingRegistered = new WeakSet<
+  ServerAppDeps["terminalSessions"]
+>();
 
 export function createApp(
   deps: ServerAppDeps,
@@ -462,6 +491,7 @@ export function createApp(
       serverEntryUrl: import.meta.url,
     });
   const serverMoveOptions: ServerMoveAppOptions = options?.serverMove ?? {
+    appSurface: APP_SURFACE_WEB,
     bindHost: null,
     manualImportPending: false,
     pending: null,
@@ -475,6 +505,13 @@ export function createApp(
   };
   const pendingServerMove = serverMoveOptions.pending;
 
+  app.use("*", async (context, next) => {
+    const problem = requestHostProblem(context, deps);
+    if (problem !== null) {
+      throw new ApiError(problem.status, "forbidden_host", problem.error);
+    }
+    return next();
+  });
   app.use("*", async (context, next) => {
     captureTrustedRemoteAddress(context);
     return runWithTelemetryAppSurface(resolveRequestAppSurface(context), next);
@@ -512,7 +549,13 @@ export function createApp(
       await compressApiJson(context, next);
     });
   });
-  app.onError((error) => errorToResponse(error, deps.logger));
+  app.onError(createServerErrorHandler(deps.logger));
+  if (!nativeExitHandlingRegistered.has(deps.terminalSessions)) {
+    nativeExitHandlingRegistered.add(deps.terminalSessions);
+    deps.terminalSessions.onTerminalExited((session) => {
+      clearNativeTerminalStateOnExit(deps, session);
+    });
+  }
   app.get("/health", async (context) => {
     const serverMove = await readServerMoveHealth({
       dataDir: deps.config.dataDir,
@@ -529,20 +572,37 @@ export function createApp(
   app.get("/install.sh", async (context) => {
     const script = await readFile(INSTALL_MACHINE_SCRIPT_PATH, "utf8");
     const credential = context.req.header("X-BB-Enrollment");
-    const bootstrap =
+    let bootstrap =
       credential === undefined
         ? null
         : await getMachineEnrollmentService(deps).pendingBootstrapForCredential(
             credential,
           );
     if (credential !== undefined && bootstrap === null) {
+      try {
+        bootstrap = await reconnectBootstrapForCredential(deps, credential);
+      } catch (error) {
+        deps.logger.warn({ error }, "Could not refresh machine access");
+        return new Response(
+          "echo 'Could not refresh machine access. Run the command again, or generate a new one in bb.' >&2\nexit 1\n",
+          {
+            status: 503,
+            headers: {
+              "cache-control": "no-store",
+              "content-type": "text/x-shellscript; charset=utf-8",
+            },
+          },
+        );
+      }
+    }
+    if (credential !== undefined && bootstrap === null) {
       return new Response(
-        "Enrollment is expired or unavailable. Generate a new command in bb.\n",
+        "echo 'This enrollment command has already been used, replaced, or expired. Generate a new command in bb.' >&2\nexit 1\n",
         {
           status: 403,
           headers: {
             "cache-control": "no-store",
-            "content-type": "text/plain",
+            "content-type": "text/x-shellscript; charset=utf-8",
           },
         },
       );
@@ -557,6 +617,53 @@ export function createApp(
       },
     );
   });
+  app.get("/install.ps1", async (context) => {
+    const headers = {
+      "cache-control": "no-store",
+      "content-type": "text/plain; charset=utf-8",
+    };
+    const credential = context.req.header("X-BB-Enrollment");
+    if (credential === undefined) {
+      return new Response(
+        windowsInstallerFailureScript(
+          "This installer needs an enrollment command. Generate one in bb under Settings, Machines.",
+        ),
+        { headers },
+      );
+    }
+    let bootstrap =
+      await getMachineEnrollmentService(deps).pendingBootstrapForCredential(
+        credential,
+      );
+    if (bootstrap === null) {
+      try {
+        bootstrap = await reconnectBootstrapForCredential(deps, credential);
+      } catch (error) {
+        deps.logger.warn({ error }, "Could not refresh machine access");
+        return new Response(
+          windowsInstallerFailureScript(
+            "Could not refresh machine access. Run the command again, or generate a new one in bb.",
+          ),
+          { headers },
+        );
+      }
+    }
+    if (bootstrap === null) {
+      return new Response(
+        windowsInstallerFailureScript(
+          "This enrollment command has already been used, replaced, or expired. Generate a new command in bb.",
+        ),
+        { headers },
+      );
+    }
+    return new Response(
+      enrolledWindowsInstallerScript(
+        await readFile(INSTALL_MACHINE_WINDOWS_SCRIPT_PATH, "utf8"),
+        bootstrap,
+      ),
+      { headers },
+    );
+  });
   app.get("/install/version", async (context) => {
     return context.json({
       version: await bbAppArtifactService.getVersion(),
@@ -564,35 +671,67 @@ export function createApp(
     });
   });
   app.get("/install/bb-app.tgz", async (context) => {
-    const artifact = await bbAppArtifactService.getArtifact();
-    const etag = `"sha256-${artifact.digest}"`;
-    const headers = {
-      "cache-control": "public, max-age=300",
-      "content-type": "application/gzip",
-      etag,
-      "x-bb-artifact-sha256": artifact.digest,
-    };
-    if (context.req.header("if-none-match") === etag) {
-      return new Response(null, { headers, status: 304 });
+    try {
+      const artifact = await bbAppArtifactService.getArtifact();
+      const etag = `"sha256-${artifact.digest}"`;
+      const headers = {
+        "cache-control": "public, max-age=300",
+        "content-type": "application/gzip",
+        etag,
+        "x-bb-artifact-sha256": artifact.digest,
+      };
+      if (context.req.header("if-none-match") === etag) {
+        return new Response(null, { headers, status: 304 });
+      }
+      const tarball = await readFile(artifact.path);
+      return new Response(tarball, {
+        headers: { ...headers, "content-length": String(artifact.size) },
+      });
+    } catch (error) {
+      const diagnosticId = randomUUID();
+      const code =
+        error instanceof Error && "code" in error ? error.code : undefined;
+      const reason =
+        code === "ENOENT"
+          ? "A required server package file or packaging tool is missing."
+          : code === "EACCES" || code === "EPERM"
+            ? "The server lacks permission to prepare or read the host package."
+            : code === "ENOSPC"
+              ? "The server ran out of disk space while preparing the host package."
+              : "The server could not build or read its host package.";
+      deps.logger.error(
+        { err: error, diagnosticId },
+        "Host package download failed",
+      );
+      return context.json(
+        {
+          code: "host_package_unavailable",
+          message: `${reason} Check the server logs for diagnostic ID ${diagnosticId}, then retry installation.`,
+          diagnosticId,
+        },
+        500,
+        { "cache-control": "no-store" },
+      );
     }
-    const tarball = await readFile(artifact.path);
-    return new Response(tarball, {
-      headers: { ...headers, "content-length": String(artifact.size) },
-    });
   });
   app.use("/api/v1/*", async (context, next) => {
     const startedAt = performance.now();
     await next();
     const durationMs = performance.now() - startedAt;
     const path = context.req.path;
+    const diagnosticsEnabled =
+      options?.performanceDiagnosticsEnabled?.() ?? false;
     if (
       shouldLogSlowApiRequest({
         durationMs,
         path,
-        thresholdMs: slowApiRequestLogThresholdMs,
+        thresholdMs: diagnosticsEnabled ? 100 : slowApiRequestLogThresholdMs,
       })
     ) {
-      deps.logger.debug(
+      const log = diagnosticsEnabled
+        ? deps.logger.info.bind(deps.logger)
+        : deps.logger.debug.bind(deps.logger);
+      log(
         {
           durationMs: roundDurationMs(durationMs),
           method: context.req.method,
@@ -602,12 +741,6 @@ export function createApp(
         "Slow API request",
       );
     }
-  });
-  app.use("/api/v1/development-only/*", async (_context, next) => {
-    if (!deps.config.isDevelopment) {
-      throw new ApiError(404, "not_found", "Not found");
-    }
-    return next();
   });
   app.use("/internal/*", async (context, next) => {
     const normalizedPath = normalizeInternalAuthPath(context.req.path);
@@ -699,11 +832,11 @@ export function createApp(
           });
         })
         .catch((error: unknown) => {
-        deps.logger.warn(
-          { err: error, threadId: interaction.threadId },
-          "Could not queue an answer that arrived after its tool call ended",
-        );
-      });
+          deps.logger.warn(
+            { err: error, threadId: interaction.threadId },
+            "Could not queue an answer that arrived after its tool call ended",
+          );
+        });
     },
   );
   setPluginThreadEventEmitter(pluginService.events);
@@ -730,6 +863,7 @@ export function createApp(
   setPluginAgentContributions(pluginService);
   const serverMove = createServerMoveCoordinator(
     createDefaultServerMoveEnvironment({
+      appSurface: serverMoveOptions.appSurface,
       bindHost: serverMoveOptions.bindHost,
       deps,
       env: process.env,
@@ -781,6 +915,7 @@ export function createApp(
     warn: (message) => deps.logger.warn(message),
   });
   registerProjectRoutes(publicApi, deps);
+  registerPromptHistoryRoutes(publicApi, deps);
   registerThreadSectionRoutes(publicApi, deps);
   registerFileRoutes(publicApi, deps);
   registerHostRoutes(publicApi, deps, pluginService);
@@ -790,10 +925,30 @@ export function createApp(
   registerThreadRoutes(publicApi, deps);
   registerQueueRoutes(publicApi, deps);
   registerSpendRoutes(publicApi, deps);
+  registerNativeTerminalThreadRoutes(publicApi, deps);
   registerSystemRoutes(publicApi, deps, pluginService);
   registerUiPreferenceRoutes(publicApi, deps);
-  registerPluginCatalogRoutes(publicApi, pluginCatalogService);
-  registerPluginRoutes(publicApi, deps, pluginService, upgradeWebSocket);
+  const pluginInstallJobs = createPluginInstallJobs({
+    notifyChanged: () => deps.hub.notifySystem(["plugin-install-jobs-changed"]),
+  });
+  const pluginUpdateJobs = createPluginUpdateJobs({
+    notifyChanged: () => deps.hub.notifySystem(["plugin-update-jobs-changed"]),
+  });
+  registerPluginUpdateJobRoutes(publicApi, pluginUpdateJobs);
+  registerPluginInstallJobRoutes(publicApi, pluginInstallJobs);
+  registerPluginCatalogRoutes(
+    publicApi,
+    pluginCatalogService,
+    pluginInstallJobs,
+  );
+  registerPluginRoutes(
+    publicApi,
+    deps,
+    pluginService,
+    pluginInstallJobs,
+    pluginUpdateJobs,
+    upgradeWebSocket,
+  );
   registerSkillsRegistryRoutes(publicApi, deps);
   registerServerMoveRoutes(publicApi, deps, serverMove);
   app.route("/api/v1", publicApi);
@@ -856,18 +1011,22 @@ export function createApp(
       assertBrowserWebSocketAllowed(context);
       const terminalId = context.req.param("terminalId");
       const query = terminalWebSocketQuerySchema.safeParse({
+        outputAcks: context.req.query("outputAcks"),
+        resizeAcks: context.req.query("resizeAcks"),
         sinceSeq: context.req.query("sinceSeq"),
       });
       if (!query.success) {
         throw new ApiError(
           400,
           "invalid_terminal_socket_query",
-          "Terminal websocket sinceSeq must be a non-negative integer",
+          "Terminal websocket sinceSeq must be a non-negative integer and outputAcks and resizeAcks must be 0 or 1",
         );
       }
       return {
         onOpen: (_event, socket) =>
           onTerminalSocketOpen(deps, {
+            outputAcks: query.data.outputAcks,
+            resizeAcks: query.data.resizeAcks,
             socket,
             sinceSeq: query.data.sinceSeq,
             terminalId,

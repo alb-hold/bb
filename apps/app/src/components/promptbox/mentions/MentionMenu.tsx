@@ -21,6 +21,10 @@ import { Pill } from "@bb/shared-ui/pill";
 import { TruncateStart } from "@/components/ui/truncate-start.js";
 import { cn } from "@bb/shared-ui/lib/utils";
 import {
+  ThreadTitle,
+  useThreadTitleDisplayText,
+} from "@/components/thread/ThreadTitleMentions";
+import {
   EMPTY_ORDERED_MENTION_SUGGESTIONS,
   type OrderedMentionSuggestions,
   type PromptMentionSuggestion,
@@ -28,6 +32,7 @@ import {
   type ThreadMentionRelation,
   type TypeaheadMenuState,
 } from "@bb/client-core";
+import { CHILD_THREAD_NOUN } from "@/lib/child-thread-copy";
 
 export type TypeaheadSuggestion =
   | PromptMentionSuggestion
@@ -43,6 +48,7 @@ interface MentionMenuProps {
 
 interface MentionResultsProps {
   results: OrderedMentionSuggestions;
+  refreshing: boolean;
   selectedIndex: number;
   onApply: (item: TypeaheadSuggestion) => void;
   onDismiss?: () => void;
@@ -104,7 +110,7 @@ function getPathSectionLabel(item: PathMentionSuggestion): string {
 
 const THREAD_MENTION_RELATION_LABEL: Record<ThreadMentionRelation, string> = {
   parent: "parent",
-  child: "child",
+  child: CHILD_THREAD_NOUN,
   "same-parent": "same parent",
   "same-environment": "same environment",
 };
@@ -114,7 +120,7 @@ const THREAD_MENTION_RELATION_COMPACT_LABEL: Record<
   string
 > = {
   parent: "parent",
-  child: "child",
+  child: CHILD_THREAD_NOUN,
   "same-parent": "same parent",
   "same-environment": "same env",
 };
@@ -165,6 +171,10 @@ function getMentionTitle(item: PromptMentionSuggestion): string {
     return `${item.providerLabel}: ${item.title}`;
   }
 
+  if (item.kind === "attachment") {
+    return `Attachment: ${item.name}`;
+  }
+
   return `${getPathSectionLabel(item)}: ${item.path}`;
 }
 
@@ -185,6 +195,9 @@ function getMentionKey(item: PromptMentionSuggestion): string {
   }
   if (item.kind === "project") {
     return JSON.stringify([item.kind, item.projectId]);
+  }
+  if (item.kind === "attachment") {
+    return JSON.stringify([item.kind, item.path]);
   }
   return JSON.stringify([item.kind, item.sectionId]);
 }
@@ -256,7 +269,7 @@ interface SuggestionRowProps {
   index: number;
   selectedIndex: number;
   icon: ReactNode;
-  primary: string;
+  primary: ReactNode;
   trailing: ReactNode;
   badge?: ReactNode;
   title: string;
@@ -287,20 +300,46 @@ function SuggestionRow({
         onApply();
       }}
       className={cn(
-        "w-full scroll-mt-7 rounded px-2 py-1.5 text-left text-xs",
+        "w-full scroll-mt-7 rounded px-2 py-1.5 text-left text-xs pointer-coarse:min-h-11 [[data-promptbox-typeahead-constrained]_&]:scroll-mt-0",
         isSelected ? "bg-state-active text-foreground" : "hover:bg-state-hover",
       )}
       title={title}
     >
       <div className="flex min-w-0 items-center gap-1.5">
         {icon}
-        <span className="truncate text-foreground">{primary}</span>
+        {typeof primary === "string" ? (
+          <span className="truncate text-foreground">{primary}</span>
+        ) : (
+          primary
+        )}
         {trailing}
         {badge === undefined ? null : (
           <span className="ml-auto shrink-0">{badge}</span>
         )}
       </div>
     </button>
+  );
+}
+
+type ThreadMentionSuggestion = Extract<
+  PromptMentionSuggestion,
+  { kind: "thread" }
+>;
+
+function ThreadSuggestionRow({
+  item,
+  ...rowProps
+}: Omit<SuggestionRowProps, "primary" | "title"> & {
+  item: ThreadMentionSuggestion;
+}) {
+  const threadTitle = item.title || "Untitled thread";
+  const displayTitle = useThreadTitleDisplayText(threadTitle);
+  return (
+    <SuggestionRow
+      {...rowProps}
+      primary={<ThreadTitle title={threadTitle} className="text-foreground" />}
+      title={getMentionTitle({ ...item, title: displayTitle })}
+    />
   );
 }
 
@@ -345,21 +384,32 @@ function MenuStatusRow({
 
 function MenuSectionHeader({
   label,
+  refreshing = false,
   onDismiss,
 }: {
   label: string;
+  refreshing?: boolean;
   onDismiss?: () => void;
 }) {
   return (
     <div
       className={cn(
-        "sticky top-0 z-10 bg-background text-xs text-muted-foreground",
+        "sticky top-0 z-10 bg-background text-xs text-muted-foreground [[data-promptbox-typeahead-constrained]_&]:static",
         onDismiss
           ? "flex h-11 items-center justify-between pl-3 pr-1"
-          : "px-3 pb-1 pt-1.5",
+          : "flex items-center px-3 pb-1 pt-1.5",
       )}
     >
-      <span>{label}</span>
+      <span className="flex min-w-0 items-center gap-1.5">
+        <span>{label}</span>
+        <span
+          role="status"
+          aria-label={refreshing ? "Updating results" : undefined}
+          className={cn("flex", !refreshing && "invisible")}
+        >
+          <Icon name="Spinner" className="size-3 animate-spin" aria-hidden />
+        </span>
+      </span>
       {onDismiss ? <CloseSuggestionsButton onDismiss={onDismiss} /> : null}
     </div>
   );
@@ -367,6 +417,7 @@ function MenuSectionHeader({
 
 function MentionResults({
   results,
+  refreshing,
   selectedIndex,
   onApply,
   onDismiss,
@@ -386,6 +437,7 @@ function MentionResults({
         <div key={group.key}>
           <MenuSectionHeader
             label={group.label}
+            refreshing={groupIndex === 0 && refreshing}
             onDismiss={groupIndex === 0 ? onDismiss : undefined}
           />
           <div className="flex flex-col gap-px px-1">
@@ -404,6 +456,8 @@ function MentionResults({
                 primary = item.name;
               } else if (item.kind === "section") {
                 primary = item.name;
+              } else if (item.kind === "attachment") {
+                primary = item.name;
               } else if (item.kind === "plugin") {
                 primary = item.title;
                 secondaryContext = item.subtitle;
@@ -416,34 +470,43 @@ function MentionResults({
                 secondaryContextKind = directory ? "path" : null;
               }
 
-              return (
-                <SuggestionRow
+              const rowProps = {
+                index,
+                selectedIndex,
+                icon: (
+                  <PromptMentionIcon
+                    resource={promptMentionResourceFromSuggestion(item)}
+                    className={ROW_ICON_CLASS}
+                  />
+                ),
+                trailing:
+                  secondaryContext === null ? null : secondaryContextKind ===
+                    "path" ? (
+                    <MutedTrailingPath>{secondaryContext}</MutedTrailingPath>
+                  ) : (
+                    <MutedTrailing>{secondaryContext}</MutedTrailing>
+                  ),
+                onApply: () => onApply(item),
+                itemRefs,
+              };
+
+              return item.kind === "thread" ? (
+                <ThreadSuggestionRow
                   key={getMentionKey(item)}
-                  index={index}
-                  selectedIndex={selectedIndex}
-                  icon={
-                    <PromptMentionIcon
-                      resource={promptMentionResourceFromSuggestion(item)}
-                      className={ROW_ICON_CLASS}
-                    />
-                  }
-                  primary={primary}
-                  trailing={
-                    secondaryContext === null ? null : secondaryContextKind ===
-                      "path" ? (
-                      <MutedTrailingPath>{secondaryContext}</MutedTrailingPath>
-                    ) : (
-                      <MutedTrailing>{secondaryContext}</MutedTrailing>
+                  {...rowProps}
+                  item={item}
+                  badge={
+                    item.relation === null ? undefined : (
+                      <ThreadRelationPill relation={item.relation} />
                     )
                   }
-                  badge={
-                    item.kind === "thread" && item.relation !== null ? (
-                      <ThreadRelationPill relation={item.relation} />
-                    ) : undefined
-                  }
+                />
+              ) : (
+                <SuggestionRow
+                  key={getMentionKey(item)}
+                  {...rowProps}
+                  primary={primary}
                   title={getMentionTitle(item)}
-                  onApply={() => onApply(item)}
-                  itemRefs={itemRefs}
                 />
               );
             })}
@@ -530,6 +593,14 @@ function mentionResults(state: TypeaheadMenuState): OrderedMentionSuggestions {
     : EMPTY_ORDERED_MENTION_SUGGESTIONS;
 }
 
+function mentionResultsRefreshing(state: TypeaheadMenuState): boolean {
+  return (
+    state.trigger === "mention" &&
+    state.state.kind === "results" &&
+    state.state.refreshing
+  );
+}
+
 function commandSuggestions(
   state: TypeaheadMenuState,
 ): readonly ProviderCommandSuggestion[] {
@@ -581,8 +652,8 @@ export function MentionMenu({
   }, [resultsLength, selectedIndex]);
 
   return (
-    <div className="@container/mention-menu overflow-hidden rounded-md border border-border bg-popover text-popover-foreground">
-      <div className="max-h-48 overflow-y-auto" onScroll={handleScroll}>
+    <div className="@container/mention-menu flex max-h-(--promptbox-typeahead-max-height) flex-col overflow-hidden rounded-md border border-border bg-popover text-popover-foreground">
+      <div className="max-h-48 min-h-0 overflow-y-auto" onScroll={handleScroll}>
         {innerState.kind === "hint" ? (
           <MenuStatusRow
             onDismiss={onDismiss}
@@ -619,6 +690,7 @@ export function MentionMenu({
         ) : (
           <MentionResults
             results={mentionResults(state)}
+            refreshing={mentionResultsRefreshing(state)}
             selectedIndex={selectedIndex}
             onApply={onApply}
             itemRefs={itemRefs}

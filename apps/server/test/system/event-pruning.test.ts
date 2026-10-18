@@ -262,7 +262,10 @@ describe("thread event pruning", () => {
       const timeline = buildThreadTimelineWithProfile(harness.db, thread, {
         completedTurnDisplay: "collapse",
         eventBudget: 1_000_000,
+        includeClearedContextHistory: false,
         includeDiagnosticOperations: true,
+        compactionOfferEnabled: false,
+        summarizeShellCommands: true,
         maxInlineOutputChars: null,
         maxSeq: 0,
         page: {
@@ -502,7 +505,7 @@ describe("thread event pruning", () => {
         totalRemoved: 32,
       });
       expect(notify).toHaveBeenCalledExactlyOnceWith(thread.id, [
-        "history-rewritten",
+        "history-compacted",
       ]);
       const second = pruneThreadEventHistoryBestEffort(harness.deps, {
         threadId: thread.id,

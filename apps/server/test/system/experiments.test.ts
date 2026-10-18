@@ -1,9 +1,36 @@
 import { describe, expect, it } from "vitest";
 import { getExperiments } from "@bb/db";
-import { experimentsSchema } from "@bb/domain";
+import {
+  defaultAppSettings,
+  defaultExperiments,
+  earlyAdopterExperiments,
+  experimentsSchema,
+} from "@bb/domain";
 import { systemConfigResponseSchema } from "@bb/server-contract";
 import { readJson } from "../helpers/json.js";
-import { withTestHarness } from "../helpers/test-app.js";
+import { type TestAppHarness, withTestHarness } from "../helpers/test-app.js";
+
+function putExperiments(harness: TestAppHarness, body: object) {
+  return harness.app.request("/api/v1/settings/experiments", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+function putGeneralSettings(harness: TestAppHarness, body: object) {
+  return harness.app.request("/api/v1/settings/general", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+async function configExperiments(harness: TestAppHarness) {
+  const response = await harness.app.request("/api/v1/system/config");
+  return systemConfigResponseSchema.parse(await readJson(response))
+    .experiments;
+}
 
 describe("experiments settings", () => {
   it("serves the shipped experiment defaults in /system/config", async () => {
@@ -13,14 +40,27 @@ describe("experiments settings", () => {
       const body = systemConfigResponseSchema.parse(await readJson(response));
       expect(body.experiments).toEqual({
         changelogPreview: false,
-        mobileApp: false,
-        multiMachinePicker: false,
+        compactExpiredCache: false,
         serverMove: false,
-        sidebarProgressiveDisclosure: false,
-        timelineWindowing: false,
+        performanceDiagnostics: false,
+        timelinePush: false,
       });
     });
   });
+
+  it.each([false, true])(
+    "reports startup permission %s independently of the experiment",
+    async (available) => {
+      await withTestHarness(async (harness) => {
+        harness.deps.config.performanceDiagnosticsAvailable = available;
+        await putExperiments(harness, { performanceDiagnostics: true });
+        const response = await harness.app.request("/api/v1/system/config");
+        const body = systemConfigResponseSchema.parse(await readJson(response));
+        expect(body.performanceDiagnosticsAvailable).toBe(available);
+        expect(body.experiments.performanceDiagnostics).toBe(true);
+      });
+    },
+  );
 
   it("persists a PUT and reflects it in /system/config", async () => {
     await withTestHarness(async (harness) => {
@@ -29,29 +69,26 @@ describe("experiments settings", () => {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           changelogPreview: true,
-          mobileApp: true,
-          multiMachinePicker: true,
+          compactExpiredCache: true,
           serverMove: true,
-          sidebarProgressiveDisclosure: true,
-          timelineWindowing: true,
+          performanceDiagnostics: true,
+          timelinePush: true,
         }),
       });
       expect(put.status).toBe(200);
       expect(experimentsSchema.parse(await readJson(put))).toEqual({
         changelogPreview: true,
-        mobileApp: true,
-        multiMachinePicker: true,
+        compactExpiredCache: true,
         serverMove: true,
-        sidebarProgressiveDisclosure: true,
-        timelineWindowing: true,
+        performanceDiagnostics: true,
+        timelinePush: true,
       });
       expect(getExperiments(harness.db)).toEqual({
         changelogPreview: true,
-        mobileApp: true,
-        multiMachinePicker: true,
+        compactExpiredCache: true,
         serverMove: true,
-        sidebarProgressiveDisclosure: true,
-        timelineWindowing: true,
+        performanceDiagnostics: true,
+        timelinePush: true,
       });
 
       const config = await harness.app.request("/api/v1/system/config");
@@ -59,50 +96,77 @@ describe("experiments settings", () => {
         systemConfigResponseSchema.parse(await readJson(config)).experiments,
       ).toEqual({
         changelogPreview: true,
-        mobileApp: true,
-        multiMachinePicker: true,
+        compactExpiredCache: true,
         serverMove: true,
-        sidebarProgressiveDisclosure: true,
-        timelineWindowing: true,
+        performanceDiagnostics: true,
+        timelinePush: true,
       });
     });
   });
 
-  it("does not expose legacy direct bb connect routes", async () => {
+  it("changes only the experiments a PUT names", async () => {
     await withTestHarness(async (harness) => {
-      const disabled = await harness.app.request("/api/v1/connect/status");
-      expect(disabled.status).toBe(404);
-
-      const put = await harness.app.request("/api/v1/settings/experiments", {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          changelogPreview: false,
-          mobileApp: false,
-          multiMachinePicker: false,
-          serverMove: false,
-          sidebarProgressiveDisclosure: false,
-          timelineWindowing: false,
-        }),
-      });
+      await putExperiments(harness, { serverMove: true });
+      const put = await putExperiments(harness, { changelogPreview: true });
       expect(put.status).toBe(200);
-
-      const enabled = await harness.app.request("/api/v1/connect/status");
-      expect(enabled.status).toBe(404);
+      expect(experimentsSchema.parse(await readJson(put))).toEqual({
+        changelogPreview: true,
+        compactExpiredCache: false,
+        serverMove: true,
+        performanceDiagnostics: false,
+        timelinePush: false,
+      });
+      expect(
+        harness.db.$client
+          .prepare<[], { key: string }>(
+            "SELECT key FROM system_experiments ORDER BY key",
+          )
+          .all()
+          .map((row) => row.key),
+      ).toEqual(["changelogPreview", "serverMove"]);
     });
   });
 
-  it("rejects payloads that are not the full experiments object", async () => {
+  it.each([
+    ["an unknown experiment", { futureExperiment: true }],
+    ["a non-boolean value", { serverMove: "yes" }],
+  ])("rejects %s", async (_label, body) => {
     await withTestHarness(async (harness) => {
-      const response = await harness.app.request(
-        "/api/v1/settings/experiments",
-        {
-          method: "PUT",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({}),
-        },
-      );
+      const response = await putExperiments(harness, body);
       expect(response.status).toBe(400);
+      expect(getExperiments(harness.db)).toEqual(defaultExperiments);
+    });
+  });
+
+  it("serves the early adopter defaults while the setting is on and keeps experiments the user set", async () => {
+    await withTestHarness(async (harness) => {
+      await putExperiments(harness, { timelinePush: false });
+      expect(
+        (
+          await putGeneralSettings(harness, {
+            ...defaultAppSettings,
+            earlyAdopter: true,
+          })
+        ).status,
+      ).toBe(200);
+      expect(await configExperiments(harness)).toEqual({
+        ...earlyAdopterExperiments,
+        timelinePush: false,
+      });
+
+      harness.db.$client.prepare("DELETE FROM system_experiments").run();
+      expect(await configExperiments(harness)).toEqual(earlyAdopterExperiments);
+
+      const { earlyAdopter: omitted, ...legacy } = defaultAppSettings;
+      expect(omitted).toBe(false);
+      expect((await putGeneralSettings(harness, legacy)).status).toBe(200);
+      expect(await configExperiments(harness)).toEqual(earlyAdopterExperiments);
+
+      await putGeneralSettings(harness, {
+        ...defaultAppSettings,
+        earlyAdopter: false,
+      });
+      expect(await configExperiments(harness)).toEqual(defaultExperiments);
     });
   });
 });

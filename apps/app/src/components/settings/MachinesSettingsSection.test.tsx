@@ -6,6 +6,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { makeHost } from "@bb/test-helpers/domain-fixtures";
 import { RETRY_ACTION_ICON } from "@bb/domain/update-state";
@@ -15,7 +16,7 @@ import type {
   SystemConfigResponse,
   SystemMachineProvider,
 } from "@bb/server-contract";
-import { MemoryRouter, useLocation } from "react-router-dom";
+import { MemoryRouter } from "react-router-dom";
 import { defaultExperiments, type Host } from "@bb/domain";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { sdk } from "@/lib/sdk";
@@ -24,6 +25,7 @@ import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import { makeSystemConfig } from "@/test/fixtures/system-config";
 import { MachinesSettingsSection } from "./MachinesSettingsSection";
 import { focusWithKeyboard } from "@/test/keyboard-focus";
+import { LocationProbe } from "@/test/location-probe";
 
 vi.mock("@/lib/sdk", () => ({
   sdk: {
@@ -36,6 +38,7 @@ vi.mock("@/lib/sdk", () => ({
       delete: vi.fn(),
       list: vi.fn(),
       experimental_listProviders: vi.fn(),
+      experimental_reconnect: vi.fn(),
       experimental_resume: vi.fn(),
       experimental_retryCleanup: vi.fn(),
       retryUpdate: vi.fn(),
@@ -43,6 +46,10 @@ vi.mock("@/lib/sdk", () => ({
       update: vi.fn(),
     },
     system: { config: vi.fn() },
+    threads: {
+      count: vi.fn(async () => ({ total: 0 })),
+      list: vi.fn(async () => []),
+    },
   },
 }));
 
@@ -132,11 +139,6 @@ function stubSidebarBootstrapFetch(): void {
   );
 }
 
-function LocationProbe() {
-  const location = useLocation();
-  return <div data-testid="location">{location.pathname}</div>;
-}
-
 function renderSectionWithClient() {
   const { queryClient, wrapper } = createQueryClientTestHarness();
   render(
@@ -196,6 +198,63 @@ afterEach(() => {
 });
 
 describe("MachinesSettingsSection", () => {
+  it("explains offline machines and removes the warning after reconnection", async () => {
+    vi.mocked(sdk.system.config).mockResolvedValue(systemConfig());
+    vi.mocked(sdk.hosts.list).mockResolvedValue([primaryHost, offlineHost]);
+    stubSidebarBootstrapFetch();
+    const { queryClient } = renderSectionWithClient();
+    const banner = await screen.findByRole("region", {
+      name: "dev-vm is offline",
+    });
+    expect(within(banner).getByText("dev-vm is offline")).toBeTruthy();
+    expect(within(banner).queryByRole("button")).toBeNull();
+    vi.mocked(sdk.hosts.list).mockResolvedValue([
+      primaryHost,
+      { ...offlineHost, status: "connected" },
+    ]);
+    await queryClient.invalidateQueries();
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("region", { name: "dev-vm is offline" }),
+      ).toBeNull(),
+    );
+  });
+
+  it("shows the cleanup error in the warning and keeps recovery in the machine menu", async () => {
+    const failedHost = {
+      ...offlineHost,
+      lifecycle: {
+        ...offlineHost.lifecycle,
+        phase: "removing" as const,
+        message: "Provider credentials expired.",
+        teardown: { status: "failed" as const, attempt: 3 },
+      },
+    };
+    vi.mocked(sdk.system.config).mockResolvedValue(systemConfig());
+    vi.mocked(sdk.hosts.list).mockResolvedValue([primaryHost, failedHost]);
+    vi.mocked(sdk.hosts.experimental_retryCleanup).mockResolvedValue({
+      ok: true,
+    });
+    stubSidebarBootstrapFetch();
+    renderSection();
+    const banner = await screen.findByRole("region", {
+      name: "Machines need attention",
+    });
+    expect(
+      within(banner).getByText("Provider credentials expired."),
+    ).toBeTruthy();
+    expect(within(banner).queryByRole("button")).toBeNull();
+    await openHostMenu(failedHost.name);
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: "Retry cleanup" }),
+    );
+    await waitFor(() =>
+      expect(sdk.hosts.experimental_retryCleanup).toHaveBeenCalledWith({
+        hostId: "host_remote",
+      }),
+    );
+  });
+
   it("reveals sandboxes in the machine list behind Show all machines", async () => {
     vi.mocked(sdk.system.config).mockResolvedValue(systemConfig());
     vi.mocked(sdk.hosts.list).mockResolvedValue([primaryHost, sandboxHost]);
@@ -366,7 +425,7 @@ describe("MachinesSettingsSection", () => {
     ).toBeNull();
   });
 
-  it("shows protocol versions when a machine needs an update", async () => {
+  it("prioritizes offline status while keeping the retry update action available", async () => {
     vi.mocked(sdk.system.config).mockResolvedValue(systemConfig());
     vi.mocked(sdk.hosts.list).mockResolvedValue([
       primaryHost,
@@ -379,11 +438,8 @@ describe("MachinesSettingsSection", () => {
 
     renderSection();
 
-    const updateStatus = await screen.findByText(
-      `Needs update · daemon protocol ${HOST_DAEMON_PROTOCOL_VERSION - 1} · server protocol ${HOST_DAEMON_PROTOCOL_VERSION}`,
-    );
-    expect(updateStatus.className).toContain("min-w-0");
-    expect(updateStatus.className).not.toContain("shrink-0");
+    await screen.findByText(/^Offline · last seen/);
+    expect(screen.queryByText(/Needs update|daemon protocol/)).toBeNull();
     await openHostMenu("dev-vm");
     const renameItem = await screen.findByRole("menuitem", { name: "Rename" });
     const retryItem = await screen.findByRole("menuitem", {
@@ -392,14 +448,6 @@ describe("MachinesSettingsSection", () => {
     const removeItem = await screen.findByRole("menuitem", {
       name: "Remove machine",
     });
-    const menu = screen.getByRole("menu");
-    expect(menu.className).toContain("w-max");
-    expect(menu.className).toContain("min-w-0");
-    for (const item of [renameItem, retryItem, removeItem]) {
-      expect(item.className).toContain("min-h-9");
-      expect(item.className).toContain("px-2.5");
-      expect(item.className).toContain("py-2");
-    }
     expect(renameItem.querySelector('[data-icon="Edit"]')).not.toBeNull();
     expect(
       retryItem.querySelector(`[data-icon="${RETRY_ACTION_ICON}"]`),
@@ -444,10 +492,6 @@ describe("MachinesSettingsSection", () => {
     });
     expect(addMachine.textContent).toBe("Add a machine");
     expect(addMachine.querySelector('[data-icon="Plus"]')).not.toBeNull();
-    const action = addMachine.parentElement;
-    expect(action?.className).toContain("self-start");
-    expect(action?.parentElement?.className).toContain("flex-col");
-    expect(action?.parentElement?.className).toContain("sm:flex-row");
     fireEvent.click(addMachine);
     expect(
       await screen.findByRole("heading", { name: "Set up machine access" }),
@@ -555,22 +599,6 @@ describe("MachinesSettingsSection", () => {
     });
   });
 
-  it("keeps the row menu open without navigating when its trigger is clicked", async () => {
-    vi.mocked(sdk.system.config).mockResolvedValue(systemConfig());
-    vi.mocked(sdk.hosts.list).mockResolvedValue([primaryHost, offlineHost]);
-    stubSidebarBootstrapFetch();
-
-    renderSection();
-
-    await screen.findByText("dev-vm");
-    await openHostMenu("dev-vm");
-
-    expect(
-      await screen.findByRole("menuitem", { name: "Rename" }),
-    ).toBeDefined();
-    expect(screen.getByTestId("location").textContent).toBe("/");
-  });
-
   it("stays on the machines list when a row menu item is selected", async () => {
     vi.mocked(sdk.system.config).mockResolvedValue(systemConfig());
     vi.mocked(sdk.hosts.list).mockResolvedValue([primaryHost, offlineHost]);
@@ -578,8 +606,12 @@ describe("MachinesSettingsSection", () => {
 
     renderSection();
 
-    await screen.findByText("dev-vm");
-    await openHostMenu("dev-vm");
+    const trigger = await screen.findByRole("button", {
+      name: "dev-vm actions",
+    });
+    fireEvent.pointerDown(trigger, { button: 0 });
+    fireEvent.click(trigger);
+    expect(screen.getByTestId("location").textContent).toBe("/");
     fireEvent.click(await screen.findByRole("menuitem", { name: "Rename" }));
 
     expect(await screen.findByLabelText("Machine name")).toBeDefined();
@@ -715,59 +747,67 @@ describe("MachinesSettingsSection", () => {
     ).toBeDefined();
   });
 
-  it("offers Move server here only on connected, active persistent machines other than the server", async () => {
+  it("keeps a dialog chosen from the row menu with the keyboard open", async () => {
     vi.mocked(sdk.system.config).mockResolvedValue(systemConfig());
-    vi.mocked(sdk.hosts.list).mockResolvedValue([
-      primaryHost,
-      deskHost,
-      offlineHost,
-      host({
-        id: "host_paused",
-        name: "paused-vm",
-        machineProviderId: "modal-sandbox",
-        lifecycle: {
-          phase: "suspending",
-          suspendedAt: null,
-          message: null,
-          pendingLog: "",
-          teardown: null,
-        },
-      }),
-      sandboxHost,
-    ]);
+    vi.mocked(sdk.hosts.list).mockResolvedValue([primaryHost, offlineHost]);
+    vi.mocked(sdk.hosts.experimental_reconnect).mockReturnValue(
+      new Promise(() => {}),
+    );
     stubSidebarBootstrapFetch();
 
     renderSection();
 
-    await screen.findByText("desk");
-    await waitFor(() => {
-      expect(vi.mocked(sdk.experimental_server.moveStatus)).toHaveBeenCalled();
-    });
+    for (const [itemName, dialogName] of [
+      ["Remove machine", "Remove dev-vm?"],
+      ["Reconnect", "Reconnect machine"],
+    ]) {
+      const trigger = await screen.findByRole("button", {
+        name: "dev-vm actions",
+      });
+      trigger.focus();
+      fireEvent.keyDown(trigger, { key: "ArrowDown" });
+      const item = await screen.findByRole("menuitem", { name: itemName });
+      item.focus();
+      fireEvent.keyDown(item, { key: "Enter" });
 
-    await openHostMenu("desk");
-    expect(
-      await screen.findByRole("menuitem", { name: "Move server here" }),
-    ).toBeDefined();
-    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
-
-    for (const name of ["MacBook Pro", "dev-vm", "paused-vm"]) {
-      await openHostMenu(name);
-      await screen.findByRole("menuitem", { name: "Rename" });
-      expect(
-        screen.queryByRole("menuitem", { name: "Move server here" }),
-      ).toBeNull();
-      fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+      const dialog = await screen.findByRole("dialog", { name: dialogName });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(dialog.isConnected).toBe(true);
+      fireEvent.keyDown(dialog, { key: "Escape" });
       await waitFor(() => {
-        expect(screen.queryByRole("menu")).toBeNull();
+        expect(screen.queryByRole("dialog")).toBeNull();
       });
     }
+  });
 
-    fireEvent.click(screen.getByRole("button", { name: "Show all machines" }));
-    await openHostMenu(sandboxHost.name);
-    await screen.findByRole("menuitem", { name: "Rename" });
+  it("requests a reconnect command and shows it for the chosen machine", async () => {
+    vi.mocked(sdk.system.config).mockResolvedValue(systemConfig());
+    vi.mocked(sdk.hosts.list).mockResolvedValue([primaryHost, offlineHost]);
+    vi.mocked(sdk.hosts.experimental_reconnect).mockResolvedValue({
+      command:
+        "curl -fsSL -H 'X-BB-Enrollment: bbde_test' 'https://bb.example.com/install.sh' | sh",
+      windowsCommand:
+        "irm -Headers @{ 'X-BB-Enrollment' = 'bbde_test' } 'https://bb.example.com/install.ps1' | iex",
+      expiresAt: NOW + 15 * 60 * 1000,
+      hostId: offlineHost.id,
+    });
+    stubSidebarBootstrapFetch();
+
+    renderSection();
+
+    await screen.findByText("dev-vm");
+    await openHostMenu("dev-vm");
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Reconnect" }));
+
+    await waitFor(() => {
+      expect(vi.mocked(sdk.hosts.experimental_reconnect)).toHaveBeenCalledWith({
+        hostId: offlineHost.id,
+      });
+    });
+    expect(await screen.findByText(/X-BB-Enrollment: bbde_test/)).toBeDefined();
     expect(
-      screen.queryByRole("menuitem", { name: "Move server here" }),
-    ).toBeNull();
+      await screen.findByText("Waiting for the machine to reconnect…"),
+    ).toBeDefined();
   });
 
   it("hides Move server here while a move is underway", async () => {

@@ -1,6 +1,13 @@
 import { isActiveTerminalSessionStatus } from "@bb/domain";
 import type { TerminalSession } from "@bb/server-contract";
 
+export function isVisibleTerminalSession(session: TerminalSession): boolean {
+  return (
+    isActiveTerminalSessionStatus(session.status) ||
+    session.status === "disconnected"
+  );
+}
+
 interface RetainedTerminalSessionArgs {
   retainedTerminalIds: ReadonlySet<string>;
   session: TerminalSession;
@@ -12,7 +19,9 @@ export function shouldShowRetainedTerminalSession({
 }: RetainedTerminalSessionArgs): boolean {
   return (
     isActiveTerminalSessionStatus(session.status) ||
-    (session.status === "disconnected" && retainedTerminalIds.has(session.id))
+    (session.status === "disconnected" &&
+      retainedTerminalIds.has(session.id)) ||
+    session.status === "exited"
   );
 }
 

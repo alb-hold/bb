@@ -5,12 +5,12 @@ import {
   type ThreadEventItemStatus,
   extractResultText,
   type PreparedProviderCommandDispatch,
-  type ProviderPostInitializeRequest,
   type ProviderRuntimeEvent,
 } from "@get-bb/plugin-sdk/provider-bridge";
 import { z } from "zod";
 import {
   applyCodexRateLimitUpdate,
+  normalizeCodexRateLimits,
   clearCodexEventTranslationThreadState,
   createCodexEventTranslationState,
   setCodexInjectedTools,
@@ -339,6 +339,40 @@ function extractRecoveredCommandOutput(
 
 interface CreateCodexEventTranslatorOptions {
   additionalWorkspaceWriteRoots: readonly string[];
+  resumeModel?: string;
+  resumeProviderThreadId?: string;
+}
+
+const intentionalResumeModelWarningPattern =
+  /^This session was recorded with model `([^`]+)` but is resuming with `([^`]+)`\. Consider switching back to `([^`]+)` as it may affect Codex performance\.$/u;
+
+function isIntentionalResumeModelWarning(
+  event: ProviderRuntimeEvent,
+  resumeModel: string | undefined,
+  resumeProviderThreadId: string | undefined,
+): boolean {
+  if (
+    event.method !== "warning" ||
+    resumeModel === undefined ||
+    resumeProviderThreadId === undefined
+  ) {
+    return false;
+  }
+  const params = z
+    .object({ threadId: z.string(), message: z.string() })
+    .passthrough()
+    .safeParse(event.params);
+  if (!params.success) {
+    return false;
+  }
+  const match = intentionalResumeModelWarningPattern.exec(params.data.message);
+  return (
+    params.data.threadId === resumeProviderThreadId &&
+    match !== null &&
+    match[2] === resumeModel &&
+    match[1] === match[3] &&
+    match[1] !== match[2]
+  );
 }
 
 interface CodexSessionConstructionInput {
@@ -382,6 +416,8 @@ export function createCodexEventTranslator(
   options: CreateCodexEventTranslatorOptions,
 ) {
   const additionalWorkspaceWriteRoots = options.additionalWorkspaceWriteRoots;
+  const resumeModel = options.resumeModel;
+  const resumeProviderThreadId = options.resumeProviderThreadId;
   const eventTranslationState = createCodexEventTranslationState();
   const nativeTurnStartClientRequestIdsByProviderThreadId = new Map<
     string,
@@ -1214,10 +1250,12 @@ export function createCodexEventTranslator(
     if (!tracked.terminal) {
       return [];
     }
-    const wasOpen = isTrackedSubAgentOpen(tracked);
+    if (!isTrackedSubAgentOpen(tracked)) {
+      return beginCodexTrackedSubAgent(activity);
+    }
     tracked.pendingFollowups += 1;
     rearmTrackedSubAgent(tracked);
-    return wasOpen ? [] : [buildCodexSubAgentOpenDelta(tracked)];
+    return [];
   }
 
   function hasConsumablePendingDelegationLink(args: {
@@ -1609,31 +1647,39 @@ export function createCodexEventTranslator(
     return repairedDeltas;
   }
 
-  function buildPostInitializeRequests(): readonly ProviderPostInitializeRequest[] {
+  function resetRateLimits(): void {
+    eventTranslationState.rateLimitsByLimitId.clear();
+    eventTranslationState.latestRateLimitId = "codex";
+  }
+
+  function recoverRateLimits(
+    response: z.output<typeof codexRateLimitReadResponseSchema> | null,
+  ): ThreadDelta[] {
+    const preferredLimitId = eventTranslationState.latestRateLimitId;
+    eventTranslationState.rateLimitsByLimitId.clear();
+    const snapshots = response?.rateLimitsByLimitId ?? null;
+    if (response === null) {
+      applyCodexRateLimitUpdate(eventTranslationState, {
+        limitId: preferredLimitId,
+      });
+    } else if (snapshots === null || Object.keys(snapshots).length === 0) {
+      applyCodexRateLimitUpdate(eventTranslationState, response.rateLimits);
+    } else {
+      for (const [limitId, snapshot] of Object.entries(snapshots)) {
+        applyCodexRateLimitUpdate(eventTranslationState, {
+          ...snapshot,
+          limitId: snapshot.limitId ?? limitId,
+        });
+      }
+    }
+    eventTranslationState.latestRateLimitId = preferredLimitId;
     return [
       {
-        plan: {
-          kind: "request" as const,
-          method: "account/rateLimits/read",
-        },
-        required: false,
-        onResult(result: unknown) {
-          const response = codexRateLimitReadResponseSchema.parse(result);
-          const snapshots = response.rateLimitsByLimitId;
-          if (snapshots === null || Object.keys(snapshots).length === 0) {
-            applyCodexRateLimitUpdate(
-              eventTranslationState,
-              response.rateLimits,
-            );
-            return;
-          }
-          for (const [limitId, snapshot] of Object.entries(snapshots)) {
-            applyCodexRateLimitUpdate(eventTranslationState, {
-              ...snapshot,
-              limitId: snapshot.limitId ?? limitId,
-            });
-          }
-        },
+        kind: "provider.rateLimits",
+        rateLimits: normalizeCodexRateLimits(
+          eventTranslationState,
+          preferredLimitId,
+        ),
       },
     ];
   }
@@ -1649,6 +1695,15 @@ export function createCodexEventTranslator(
     const rawResponseDeltas = consumeCodexRawResponseItem(event);
     if (rawResponseDeltas !== null) {
       return rawResponseDeltas;
+    }
+    if (
+      isIntentionalResumeModelWarning(
+        event,
+        resumeModel,
+        resumeProviderThreadId,
+      )
+    ) {
+      return [];
     }
 
     const providerThreadId = extractCodexProviderThreadId(event);
@@ -1681,7 +1736,8 @@ export function createCodexEventTranslator(
 
   return {
     activateThreadGitWritableRoots,
-    buildPostInitializeRequests,
+    recoverRateLimits,
+    resetRateLimits,
     clearExitedChildThreadState,
     configureInjectedTools,
     getThreadGitWritableRoots,

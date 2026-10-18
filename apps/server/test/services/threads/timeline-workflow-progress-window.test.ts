@@ -7,14 +7,13 @@ import {
 } from "@bb/domain";
 import type { Thread } from "@bb/domain";
 import {
-  createConnection,
   createProject,
   createThread,
   insertEvents,
-  migrate,
   noopNotifier,
   upsertHost,
 } from "@bb/db";
+import { createMigratedConnection } from "@bb/db/testing";
 import type { DbConnection } from "@bb/db";
 import type {
   TimelinePaginationCursor,
@@ -23,7 +22,6 @@ import type {
 import {
   buildThreadConversationOutline,
   buildThreadTimelineWithProfile,
-  THREAD_TIMELINE_EVENT_DATA_BYTE_LIMIT,
 } from "../../../src/services/threads/timeline.js";
 
 const LARGE_BUDGET = 1_000_000;
@@ -44,8 +42,7 @@ const execution = {
 type EventInput = Parameters<typeof insertEvents>[2][number];
 
 function setup(): { db: DbConnection; thread: Thread } {
-  const db = createConnection(":memory:");
-  migrate(db);
+  const db = createMigratedConnection();
   const host = upsertHost(db, noopNotifier, {
     name: "test-host",
   });
@@ -74,6 +71,7 @@ function workflowTaskData(args: {
       status: args.status,
       taskStatus: args.status === "pending" ? "running" : "completed",
       skipTranscript: false,
+      foreground: false,
       workflowName: "sweep",
       parentToolCallId: WORKFLOW_CALL_ID,
       workflow: {
@@ -292,7 +290,10 @@ function buildPage(
   return buildThreadTimelineWithProfile(db, thread, {
     completedTurnDisplay: "collapse",
     eventBudget,
+    includeClearedContextHistory: false,
     includeDiagnosticOperations: false,
+    compactionOfferEnabled: false,
+    summarizeShellCommands: true,
     includeNestedRows: false,
     maxInlineOutputChars: 32_000,
     maxSeq: 0,
@@ -318,7 +319,7 @@ function walkAllPages(db: DbConnection, thread: Thread): WalkResult {
     pages += 1;
     maxEventDataBytes = Math.max(maxEventDataBytes, profile.eventDataBytes);
     rowsByPage.push(response.rows);
-    if (!response.timelinePage.hasOlderRows) {
+    if (response.timelinePage.olderCursor === null) {
       break;
     }
     cursor = response.timelinePage.olderCursor;
@@ -329,24 +330,6 @@ function walkAllPages(db: DbConnection, thread: Thread): WalkResult {
 }
 
 describe("workflow progress snapshots across timeline pages", () => {
-  it("renders the spawning turn's summary once, not once per byte page", () => {
-    const { db, thread } = setup();
-    seedWorkflowThread(db, thread, { snapshotCount: SNAPSHOT_COUNT });
-    expect(SNAPSHOT_BYTES * SNAPSHOT_COUNT).toBeGreaterThan(
-      THREAD_TIMELINE_EVENT_DATA_BYTE_LIMIT * 2,
-    );
-
-    const walk = walkAllPages(db, thread);
-    const turnRows = walk.rows.filter(
-      (row): row is Extract<TimelineRow, { kind: "turn" }> =>
-        row.kind === "turn",
-    );
-    const turnOneRows = turnRows.filter((row) => row.turnId === "turn-1");
-
-    expect(turnOneRows.map((row) => row.id)).toHaveLength(1);
-    expect(new Set(turnRows.map((row) => row.id)).size).toBe(turnRows.length);
-  });
-
   it("does not emit the spawning turn's summary on byte pages of a later turn", () => {
     const { db, thread } = setup();
     seedWorkflowThread(db, thread, { pendingTurnItems: 250, snapshotCount: 1 });
@@ -370,19 +353,22 @@ describe("workflow progress snapshots across timeline pages", () => {
     seedWorkflowThread(db, thread, { snapshotCount: SNAPSHOT_COUNT });
 
     const latest = buildPage(db, thread, null);
-    expect(latest.response.timelinePage.hasOlderRows).toBe(false);
+    expect(latest.response.timelinePage.olderCursor).toBeNull();
     expect(latest.profile.eventDataBytes).toBeLessThan(SNAPSHOT_BYTES * 3);
     expect(latest.response.activeWorkflows).toHaveLength(1);
     expect(
-      latest.response.rows.filter((row) => row.kind === "turn"),
-    ).toHaveLength(1);
+      latest.response.rows.flatMap((row) =>
+        row.kind === "turn" ? [row.turnId] : [],
+      ),
+    ).toEqual(["turn-1"]);
 
     const eventBudgeted = buildPage(db, thread, null, 30);
-    expect(eventBudgeted.response.timelinePage.hasOlderRows).toBe(false);
+    expect(eventBudgeted.response.timelinePage.olderCursor).toBeNull();
     expect(eventBudgeted.response.rows).toEqual(latest.response.rows);
 
     const outline = buildThreadConversationOutline(db, thread, {
       completedTurnDisplay: "collapse",
+      includeClearedContextHistory: false,
       maxSeq: 0,
     });
     expect(outline.items.map((item) => item.role)).toEqual([

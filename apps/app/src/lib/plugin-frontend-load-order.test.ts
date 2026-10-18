@@ -1,11 +1,8 @@
-// @vitest-environment jsdom
-
 import { describe, expect, it, vi } from "vitest";
 import { definePluginApp } from "./plugin-app-definition";
 import {
   createPluginFrontendReconcileState,
   orderPluginFrontendCandidates,
-  PLUGIN_FRONTEND_LOAD_CONCURRENCY,
   reconcilePluginFrontends,
   type PluginFrontendCandidate,
   type PluginFrontendReconcileDeps,
@@ -114,7 +111,6 @@ describe("reconcilePluginFrontends load scheduling", () => {
     const done = reconcilePluginFrontends(state, deps);
     for (let i = 0; i < 10; i += 1) await Promise.resolve();
 
-    expect(PLUGIN_FRONTEND_LOAD_CONCURRENCY).toBe(3);
     expect(imports.started).toEqual([
       "/api/v1/plugins/panel/assets/app.js?h=h",
       "/api/v1/plugins/tiny/assets/app.js?h=h",

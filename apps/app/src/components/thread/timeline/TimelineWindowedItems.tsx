@@ -1,37 +1,80 @@
 import {
+  createContext,
   useCallback,
+  useContext,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
+  type ReactNode,
   type SyntheticEvent,
 } from "react";
 import { useComposedRefs } from "@radix-ui/react-compose-refs";
 import {
   defaultRangeExtractor,
+  elementScroll,
   useVirtualizer,
   type Range,
-  type Virtualizer,
 } from "@tanstack/react-virtual";
-import {
-  DEFAULT_WINDOWING_MIN_ITEM_COUNT,
-  NOOP_ITEM_REF,
-  recordTimelineMeasurement,
-  type TimelineWindowedItemsProps,
-} from "./TimelineWindowedItemsLoader.js";
+import { AutoHeightSnapContext } from "@/components/ui/height-transition";
+import { isIOSWebKit } from "@/lib/ios-webkit";
+
+export const DEFAULT_WINDOWING_MIN_ITEM_COUNT = 20;
+const MAX_MEASUREMENTS = 2_000;
+
+export function recordTimelineMeasurement(
+  measurements: Map<string, number>,
+  key: string,
+  height: number,
+): void {
+  measurements.delete(key);
+  measurements.set(key, height);
+  while (measurements.size > MAX_MEASUREMENTS) {
+    const oldestKey = measurements.keys().next().value;
+    if (oldestKey === undefined) break;
+    measurements.delete(oldestKey);
+  }
+}
+
+export interface TimelineWindowingScrollRoot {
+  getScrollElement: () => HTMLElement | null;
+}
+
+export const TimelineWindowingScrollRootContext =
+  createContext<TimelineWindowingScrollRoot | null>(null);
+
+export const TimelineWindowingMeasurementsContext = createContext<Map<
+  string,
+  number
+> | null>(null);
+
+export interface TimelineWindowedItemRenderState {
+  itemIndex: number | undefined;
+  itemRef: (node: HTMLDivElement | null) => void;
+  itemStyle: CSSProperties | undefined;
+  windowingEnabled: boolean;
+}
+
+export interface TimelineWindowedItemsProps {
+  alwaysMountedKeys?: ReadonlySet<string>;
+  estimateItemHeight: (index: number) => number;
+  gap: number;
+  getScrollElement: (() => HTMLElement | null) | null;
+  itemKeys: readonly string[];
+  measurements: Map<string, number>;
+  renderItem: (
+    index: number,
+    state: TimelineWindowedItemRenderState,
+  ) => ReactNode;
+  pinnedToEnd: boolean;
+}
 
 const TIMELINE_WINDOW_OVERSCAN_ITEMS = 8;
-const TIMELINE_WINDOW_IDLE_DELAY_MS = 300;
 const TIMELINE_WINDOW_MAX_INTERACTION_PINS = 24;
 
 const EMPTY_KEY_SET: ReadonlySet<string> = new Set();
 const GET_NO_SCROLL_ELEMENT = () => null;
-
-interface ScrollSample {
-  at: number;
-  fast: boolean;
-  offset: number;
-}
 
 function measureBorderBox(
   element: HTMLElement,
@@ -56,28 +99,33 @@ function findOwnedWindowKey(
 }
 
 export function TimelineWindowedItems({
-  enabled,
   alwaysMountedKeys = EMPTY_KEY_SET,
   estimateItemHeight,
   gap,
   getScrollElement,
   itemKeys,
   measurements,
-  minItemCount = DEFAULT_WINDOWING_MIN_ITEM_COUNT,
   renderItem,
+  pinnedToEnd,
 }: TimelineWindowedItemsProps) {
+  const [scrollAdjustmentsKeepMomentum] = useState(
+    () => typeof navigator === "undefined" || !isIOSWebKit(navigator),
+  );
   const configured =
-    enabled && itemKeys.length >= minItemCount && getScrollElement !== null;
-  const [scrollRootUsable, setScrollRootUsable] = useState(true);
+    scrollAdjustmentsKeepMomentum &&
+    itemKeys.length >= DEFAULT_WINDOWING_MIN_ITEM_COUNT &&
+    getScrollElement !== null;
+  const [scrollRootStatus, setScrollRootStatus] = useState<
+    "pending" | "usable" | "unusable"
+  >("pending");
+  const [initialRect] = useState(() => ({
+    width: 0,
+    height: typeof window === "undefined" ? 800 : window.innerHeight,
+  }));
   const [scrollMargin, setScrollMargin] = useState(0);
   const [interactionPins, setInteractionPins] = useState<readonly string[]>([]);
   const containerElementRef = useRef<HTMLDivElement>(null);
-  const scrollSampleRef = useRef<ScrollSample>({
-    at: 0,
-    fast: false,
-    offset: 0,
-  });
-  const windowingEnabled = configured && scrollRootUsable;
+  const windowingEnabled = configured && scrollRootStatus !== "unusable";
   const resolvedGetScrollElement = getScrollElement ?? GET_NO_SCROLL_ELEMENT;
 
   const indexByKey = useMemo(
@@ -118,11 +166,7 @@ export function TimelineWindowedItems({
       const index = Number(element.dataset.index);
       const height = measureBorderBox(element, entry);
       const key = Number.isInteger(index) ? itemKeys[index] : undefined;
-      if (
-        key !== undefined &&
-        height > 0 &&
-        element.dataset.timelineWindowedRealized === "true"
-      ) {
+      if (key !== undefined && height > 0) {
         recordTimelineMeasurement(measurements, key, height);
       }
       return height > 0 ? height : estimateSize(index);
@@ -137,34 +181,35 @@ export function TimelineWindowedItems({
     },
     [forcedIndexes],
   );
-  const handleVirtualizerChange = useCallback(
-    (
-      instance: Virtualizer<HTMLElement, HTMLDivElement>,
-      scrolling: boolean,
-    ) => {
-      const sample = scrollSampleRef.current;
-      if (!scrolling) {
-        sample.fast = false;
-        sample.at = 0;
-        sample.offset = instance.scrollOffset ?? sample.offset;
-        return;
+  const initialOffset = useCallback(() => {
+    const scrollElement = resolvedGetScrollElement();
+    if (!pinnedToEnd) return scrollElement?.scrollTop ?? 0;
+    let estimatedEnd = scrollMargin;
+    for (let index = 0; index < itemKeys.length; index += 1) {
+      estimatedEnd += estimateSize(index) + (index > 0 ? gap : 0);
+    }
+    const viewportHeight = scrollElement?.clientHeight || initialRect.height;
+    return Math.max(0, estimatedEnd - viewportHeight);
+  }, [
+    estimateSize,
+    gap,
+    initialRect,
+    itemKeys,
+    resolvedGetScrollElement,
+    scrollMargin,
+    pinnedToEnd,
+  ]);
+  const snapAutoHeight = useContext(AutoHeightSnapContext);
+  const scrollToFn = useCallback<typeof elementScroll<HTMLElement>>(
+    (offset, options, instance) => {
+      const container = containerElementRef.current;
+      if (container !== null) {
+        container.style.height = `${instance.getTotalSize()}px`;
       }
-      const now = performance.now();
-      const offset = instance.scrollOffset ?? 0;
-      const elapsed = sample.at === 0 ? 0 : now - sample.at;
-      const distance = Math.abs(offset - sample.offset);
-      const viewportSize = instance.scrollRect?.height ?? 0;
-      sample.fast =
-        (sample.at === 0 || elapsed <= 100) &&
-        distance >= Math.max(200, viewportSize * 0.5);
-      sample.at = now;
-      sample.offset = offset;
+      snapAutoHeight?.();
+      elementScroll(offset, options, instance);
     },
-    [],
-  );
-  const initialOffset = useCallback(
-    () => resolvedGetScrollElement()?.scrollTop ?? 0,
-    [resolvedGetScrollElement],
+    [snapAutoHeight],
   );
 
   const virtualizer = useVirtualizer<HTMLElement, HTMLDivElement>({
@@ -177,18 +222,32 @@ export function TimelineWindowedItems({
     getItemKey,
     getScrollElement: resolvedGetScrollElement,
     initialOffset,
-    isScrollingResetDelay: TIMELINE_WINDOW_IDLE_DELAY_MS,
+    initialRect,
     measureElement,
-    onChange: handleVirtualizerChange,
     overscan: TIMELINE_WINDOW_OVERSCAN_ITEMS,
     rangeExtractor,
     scrollMargin,
+    scrollToFn,
     useFlushSync: false,
   });
   const containerRef = useComposedRefs(
     containerElementRef,
     virtualizer.containerRef,
   );
+
+  useLayoutEffect(() => {
+    virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (
+      item,
+      _delta,
+      instance,
+    ) => {
+      if (pinnedToEnd) return item.index < instance.options.count - 1;
+      const scrollTop = resolvedGetScrollElement()?.scrollTop ?? 0;
+      if (item.start >= scrollTop) return false;
+      if (!instance.itemSizeCache.has(item.key)) return true;
+      return item.end <= scrollTop;
+    };
+  }, [pinnedToEnd, resolvedGetScrollElement, virtualizer]);
 
   const updateScrollGeometry = useCallback(() => {
     if (!configured) return;
@@ -210,30 +269,37 @@ export function TimelineWindowedItems({
     const updateRootUsability = () => {
       const scrollElement = resolvedGetScrollElement();
       if (scrollElement !== null) {
-        setScrollRootUsable(scrollElement.clientHeight > 0);
+        setScrollRootStatus(
+          scrollElement.clientHeight > 0 ? "usable" : "unusable",
+        );
       }
     };
-    const scrollElement = resolvedGetScrollElement();
-    if (scrollElement === null) {
-      const frame = requestAnimationFrame(() => {
+    let frame: number | undefined;
+    let observer: ResizeObserver | undefined;
+    const attach = () => {
+      const scrollElement = resolvedGetScrollElement();
+      if (scrollElement === null) {
+        frame = requestAnimationFrame(attach);
+        return;
+      }
+      updateRootUsability();
+      updateScrollGeometry();
+      if (typeof ResizeObserver === "undefined") return;
+      observer = new ResizeObserver(() => {
         updateRootUsability();
         updateScrollGeometry();
       });
-      return () => cancelAnimationFrame(frame);
-    }
-    updateRootUsability();
-    updateScrollGeometry();
-    if (typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(() => {
-      updateRootUsability();
-      updateScrollGeometry();
-    });
-    observer.observe(scrollElement);
-    const containerParent = containerElementRef.current?.parentElement;
-    if (containerParent !== null && containerParent !== undefined) {
-      observer.observe(containerParent);
-    }
-    return () => observer.disconnect();
+      observer.observe(scrollElement);
+      const containerParent = containerElementRef.current?.parentElement;
+      if (containerParent !== null && containerParent !== undefined) {
+        observer.observe(containerParent);
+      }
+    };
+    attach();
+    return () => {
+      if (frame !== undefined) cancelAnimationFrame(frame);
+      observer?.disconnect();
+    };
   }, [configured, resolvedGetScrollElement, updateScrollGeometry]);
 
   useLayoutEffect(updateScrollGeometry);
@@ -253,23 +319,6 @@ export function TimelineWindowedItems({
     [indexByKey],
   );
 
-  if (!windowingEnabled) {
-    return (
-      <>
-        {itemKeys.map((key, index) =>
-          renderItem(index, {
-            isRealized: true,
-            itemIndex: undefined,
-            itemRef: NOOP_ITEM_REF,
-            itemStyle: undefined,
-            windowingEnabled: false,
-          }),
-        )}
-      </>
-    );
-  }
-
-  const fastScrolling = scrollSampleRef.current.fast;
   const virtualItemsByIndex = new Map(
     virtualizer.getVirtualItems().map((item) => [item.index, item]),
   );
@@ -280,35 +329,38 @@ export function TimelineWindowedItems({
   const virtualItems = [...virtualItemsByIndex.values()].sort(
     (left, right) => left.index - right.index,
   );
+  const indexes = windowingEnabled
+    ? virtualItems.map((item) => item.index)
+    : itemKeys.map((_, index) => index);
   return (
     <div
       ref={containerRef}
       className="relative w-full"
-      data-timeline-virtual-spacer=""
+      style={windowingEnabled ? undefined : { display: "contents" }}
+      data-timeline-items=""
+      data-timeline-virtual-spacer={windowingEnabled ? "" : undefined}
       onClickCapture={retainInteractedItem}
       onFocusCapture={retainInteractedItem}
     >
-      {virtualItems.map((item) => {
-        const isRealized = !fastScrolling || forcedIndexes.has(item.index);
-        return renderItem(item.index, {
-          isRealized,
-          itemIndex: item.index,
-          itemRef: virtualizer.measureElement,
-          itemStyle: {
-            position: "absolute",
-            left: 0,
-            width: "100%",
-            ...(isRealized
-              ? undefined
-              : {
-                  height: item.size,
-                  minHeight: item.size,
-                  overflow: "hidden",
-                }),
-          },
-          windowingEnabled: true,
-        });
-      })}
+      {indexes.map((index) =>
+        renderItem(index, {
+          itemIndex: index,
+          itemRef: windowingEnabled
+            ? virtualizer.measureElement
+            : (element) => {
+                if (element === null) return;
+                const key = itemKeys[index];
+                const height = element.getBoundingClientRect().height;
+                if (key !== undefined && height > 0) {
+                  recordTimelineMeasurement(measurements, key, height);
+                }
+              },
+          itemStyle: windowingEnabled
+            ? { position: "absolute", left: 0, width: "100%" }
+            : undefined,
+          windowingEnabled,
+        }),
+      )}
     </div>
   );
 }

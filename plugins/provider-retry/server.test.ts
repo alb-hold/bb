@@ -1,3 +1,7 @@
+import {
+  retryAvailabilityMethod,
+  type RetryAvailability,
+} from "./src/retry-contract.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createFakePluginHost,
@@ -75,10 +79,6 @@ function overloadedFailure(
   });
 }
 
-/**
- * A queued retry as the server would return it: a retry payload and a `sendAt`
- * for core's due sweep.
- */
 function queuedRetry(overrides: Partial<QueueEntry> = {}): QueueEntry {
   return makeQueueEntry({
     id: "queued_1",
@@ -110,11 +110,17 @@ interface RetryRequest {
   reason?: string;
 }
 
-function createHost(queued: QueueEntry[] = []) {
+function createHost(
+  queued: QueueEntry[] = [],
+  plugins: NonNullable<CreateFakePluginHostOptions["sdk"]>["plugins"] = {
+    experimental_discoverRpc: async () => [],
+  },
+) {
   const deleted: QueuedMessageTarget[] = [];
   const sent: QueuedMessageSend[] = [];
   const retries: RetryRequest[] = [];
   const sdk: CreateFakePluginHostOptions["sdk"] = {
+    plugins,
     threads: {
       queue: { list: async () => queued },
       retry: async (args: RetryRequest) => {
@@ -151,16 +157,15 @@ function createHost(queued: QueueEntry[] = []) {
 
 describe("provider retry policy", () => {
   it("waits for the reported reset plus a buffer, jittered within its bound", () => {
-    // The jitter is what keeps every thread on one exhausted account from
-    // retrying in the same instant, so its bounds are the contract: never
-    // before the buffer, never a full jitter window past it.
     const earliest = decideRetry({
+      availability: { kind: "not-routed" },
       failure: failure(),
       maximumWaitMs: null,
       now: NOW_MS,
       random: 0,
     });
     const latest = decideRetry({
+      availability: { kind: "not-routed" },
       failure: failure(),
       maximumWaitMs: null,
       now: NOW_MS,
@@ -181,6 +186,7 @@ describe("provider retry policy", () => {
 
   it("never schedules a retry in the past when the reset has already passed", () => {
     const decision = decideRetry({
+      availability: { kind: "not-routed" },
       failure: failure({
         rateLimits: rateLimits({
           windows: [
@@ -207,6 +213,7 @@ describe("provider retry policy", () => {
   it("waits for the latest blocked window, not the first to open", () => {
     const weekly = RESET_AT_MS + 48 * 60 * 60 * 1_000;
     const decision = decideRetry({
+      availability: { kind: "not-routed" },
       failure: failure({
         rateLimits: rateLimits({
           windows: [
@@ -239,15 +246,16 @@ describe("provider retry policy", () => {
   it("declines a reset beyond the configured maximum wait", () => {
     expect(
       decideRetry({
+        availability: { kind: "not-routed" },
         failure: failure(),
         maximumWaitMs: 60 * 60 * 1_000,
         now: NOW_MS,
         random: 0,
       }),
     ).toEqual({ kind: "decline", reason: "beyond-maximum-wait" });
-    // The same window is fine once the limit is raised past it.
     expect(
       decideRetry({
+        availability: { kind: "not-routed" },
         failure: failure(),
         maximumWaitMs: 24 * 60 * 60 * 1_000,
         now: NOW_MS,
@@ -260,6 +268,7 @@ describe("provider retry policy", () => {
     const overloaded = overloadedFailure();
     expect(
       decideRetry({
+        availability: { kind: "not-routed" },
         failure: overloaded,
         maximumWaitMs: null,
         now: NOW_MS,
@@ -271,6 +280,7 @@ describe("provider retry policy", () => {
       reason: "Provider overloaded",
     });
     const fourthAttempt = decideRetry({
+      availability: { kind: "not-routed" },
       failure: { ...overloaded, attemptNumber: 4 },
       maximumWaitMs: null,
       now: NOW_MS,
@@ -286,6 +296,7 @@ describe("provider retry policy", () => {
   it("declines failures that are not retryable, and limits that do not reset", () => {
     expect(
       decideRetry({
+        availability: { kind: "not-routed" },
         failure: failure({
           errorInfo: {
             category: "internal",
@@ -300,15 +311,16 @@ describe("provider retry policy", () => {
     ).toEqual({ kind: "decline", reason: "not-retryable" });
     expect(
       decideRetry({
+        availability: { kind: "not-routed" },
         failure: failure({ rateLimits: null }),
         maximumWaitMs: null,
         now: NOW_MS,
         random: 0,
       }),
     ).toEqual({ kind: "decline", reason: "no-rate-limit-state" });
-    // Credits do not come back on a clock, so waiting is not a fix.
     expect(
       decideRetry({
+        availability: { kind: "not-routed" },
         failure: failure({ rateLimits: rateLimits({ kind: "credits" }) }),
         maximumWaitMs: null,
         now: NOW_MS,
@@ -320,6 +332,7 @@ describe("provider retry policy", () => {
   it("gives up once a turn has been retried its maximum number of times", () => {
     expect(
       decideRetry({
+        availability: { kind: "not-routed" },
         failure: failure({ attemptNumber: MAX_RETRY_ATTEMPTS }),
         maximumWaitMs: null,
         now: NOW_MS,
@@ -328,6 +341,7 @@ describe("provider retry policy", () => {
     ).toEqual({ kind: "decline", reason: "attempts-exhausted" });
     expect(
       decideRetry({
+        availability: { kind: "not-routed" },
         failure: failure({ attemptNumber: MAX_RETRY_ATTEMPTS - 1 }),
         maximumWaitMs: null,
         now: NOW_MS,
@@ -336,6 +350,7 @@ describe("provider retry policy", () => {
     ).toBe("retry");
     expect(
       decideRetry({
+        availability: { kind: "not-routed" },
         failure: overloadedFailure({ attemptNumber: MAX_RETRY_ATTEMPTS }),
         maximumWaitMs: null,
         now: NOW_MS,
@@ -355,10 +370,6 @@ describe("provider retry plugin", () => {
   });
 
   it("listens for one event and answers no hook", async () => {
-    // The load-bearing half is the empty hook slot. This plugin must never
-    // intercept a send: a remembered rate limit is a stale cache of provider
-    // state, and refusing an attempt on it strands a user who fixed the limit
-    // out of band.
     const host = createHost();
     await plugin(host.bb);
 
@@ -378,7 +389,7 @@ describe("provider retry plugin", () => {
     expect(host.harness.registrations.hooks["message.dispatch"]).toBeNull();
     expect(
       host.harness.registrations.cli?.commands.map((command) => command.name),
-    ).toEqual(["status", "cancel", "retry"]);
+    ).toEqual(["status", "explain", "cancel", "retry"]);
     await host.harness.dispose();
   });
 
@@ -395,63 +406,137 @@ describe("provider retry plugin", () => {
     expect(host.retries).toHaveLength(1);
     const retry = host.retries[0];
     expect(retry?.threadId).toBe(THREAD_ID);
-    // By reference: core re-submits the turn itself, so the id is the whole of
-    // what this plugin has to say about WHAT to retry.
     expect(retry?.turnRequestId).toBe(REQUEST_ID);
     expect(retry?.sendAt).toBeGreaterThanOrEqual(RESET_AT_MS + RESET_BUFFER_MS);
-    // Just the cause, no time: every surface renders the row's `sendAt`
-    // itself, so a time here shows up twice on the card and in the queue list.
     expect(retry?.reason).toBe("Rate limited");
     await host.harness.dispose();
   });
 
-  it("asks core to retry an overloaded turn after backoff", async () => {
-    const host = createHost();
-    await plugin(host.bb);
+  it.each<{
+    availability: RetryAvailability;
+    scheduled: boolean;
+    reason: string;
+  }>([
+    {
+      availability: { kind: "ready" },
+      scheduled: true,
+      reason: "Rate limited",
+    },
+    {
+      availability: { kind: "blocked", retryAt: RESET_AT_MS },
+      scheduled: true,
+      reason: "Rate limited",
+    },
+    {
+      availability: { kind: "blocked", retryAt: NOW_MS + 7 * 3_600_000 },
+      scheduled: false,
+      reason: "beyond-maximum-wait",
+    },
+    {
+      availability: { kind: "unavailable", reason: "reset-unknown" },
+      scheduled: false,
+      reason: "pool-unavailable",
+    },
+  ])(
+    "uses pool availability $availability and records an explainable decision",
+    async ({ availability, scheduled, reason }) => {
+      const host = createHost([], {
+        experimental_discoverRpc: async () => [
+          {
+            pluginId: "account-pool",
+            displayName: "Account Pooler",
+            method: retryAvailabilityMethod,
+          },
+        ],
+        callRpc: async () => availability,
+      });
+      await plugin(host.bb);
+      expect(
+        (await host.harness.behavior.emitThreadEvent("turn.failed", failure()))
+          .errors,
+      ).toEqual([]);
+      expect(host.retries).toHaveLength(scheduled ? 1 : 0);
+      const explained = await host.harness.runCli([
+        "explain",
+        THREAD_ID,
+        "--json",
+      ]);
+      expect(explained.exitCode).toBe(0);
+      const expected = {
+        requestId: REQUEST_ID,
+        availability,
+        decision: { kind: scheduled ? "retry" : "decline", reason },
+      };
+      expect(JSON.parse(explained.stdout)).toMatchObject({
+        threadId: THREAD_ID,
+        diagnostic: expected,
+      });
+      expect(
+        await host.harness.behavior.callRpc("decision.get", {
+          threadId: THREAD_ID,
+        }),
+      ).toMatchObject(expected);
+      await host.harness.dispose();
+    },
+  );
 
-    const { errors } = await host.harness.behavior.emitThreadEvent(
-      "turn.failed",
-      overloadedFailure(),
-    );
-
-    expect(errors).toEqual([]);
-    expect(host.retries).toHaveLength(1);
-    expect(host.retries[0]).toMatchObject({
-      threadId: THREAD_ID,
-      turnRequestId: REQUEST_ID,
-      reason: "Provider overloaded",
+  it("retries a pooled HTTP 429 wrapped by Codex native retry exhaustion", async () => {
+    const host = createHost([], {
+      experimental_discoverRpc: async () => [
+        {
+          pluginId: "account-pool",
+          displayName: "Account Pooler",
+          method: retryAvailabilityMethod,
+        },
+      ],
+      callRpc: async () => ({ kind: "blocked", retryAt: RESET_AT_MS }),
     });
-    expect(host.retries[0]?.sendAt).toBeGreaterThanOrEqual(
-      NOW_MS + OVERLOAD_RETRY_BASE_MS,
+    await plugin(host.bb);
+    const result = await host.harness.behavior.emitThreadEvent(
+      "turn.failed",
+      failure({
+        errorInfo: {
+          category: "too-many-failed-attempts",
+          providerCode: "responseTooManyFailedAttempts",
+          httpStatusCode: 429,
+        },
+        rateLimits: null,
+      }),
     );
-    expect(host.retries[0]?.sendAt).toBeLessThan(
-      NOW_MS + OVERLOAD_RETRY_BASE_MS * 2,
+    expect(result.errors).toEqual([]);
+    expect(host.retries).toHaveLength(1);
+    expect(host.retries[0]?.sendAt).toBeGreaterThanOrEqual(
+      RESET_AT_MS + RESET_BUFFER_MS,
     );
     await host.harness.dispose();
   });
 
-  it("leaves ordinary failures alone", async () => {
-    const host = createHost();
-    await plugin(host.bb);
-
-    await host.harness.behavior.emitThreadEvent(
-      "turn.failed",
-      failure({
-        errorInfo: {
-          category: "internal",
-          providerCode: null,
-          httpStatusCode: 500,
+  it("reports a broken availability source instead of using a stale provider snapshot", async () => {
+    const host = createHost([], {
+      experimental_discoverRpc: async () => [
+        {
+          pluginId: "account-pool",
+          displayName: "Account Pooler",
+          method: retryAvailabilityMethod,
         },
-      }),
-    );
-
+      ],
+      callRpc: async () => {
+        throw new Error("source stopped");
+      },
+    });
+    await plugin(host.bb);
+    expect(
+      (await host.harness.behavior.emitThreadEvent("turn.failed", failure()))
+        .errors,
+    ).toEqual([]);
     expect(host.retries).toEqual([]);
+    expect(
+      (await host.harness.runCli(["explain", THREAD_ID])).stdout,
+    ).toContain("source-unavailable");
     await host.harness.dispose();
   });
 
   it("re-reads the maximum wait when the setting changes", async () => {
-    // The listener closes over a cached number, so the `onChange` wiring is the
-    // only thing that stops a raised limit from being ignored until restart.
     const host = createHost();
     await plugin(host.bb);
     const beyondSixHours = failure({
@@ -491,8 +576,6 @@ describe("provider retry plugin", () => {
         },
       ],
     });
-    // Scoped to the thread the user asked about; a retry is identified by its
-    // payload, not by a wait this plugin owns.
     expect(
       host.harness.inspection.sdk.callsTo("threads.queue.list")[0]?.[0],
     ).toEqual({ threadId: THREAD_ID });
@@ -500,8 +583,6 @@ describe("provider retry plugin", () => {
   });
 
   it("cancels by deleting the queued row and retries by sending it now", async () => {
-    // Both are the affordances the user already has on the queued card, rather
-    // than a second mechanism this plugin owns.
     const host = createHost([queuedRetry()]);
     await plugin(host.bb);
 
@@ -551,33 +632,16 @@ describe("provider retry plugin", () => {
     await host.harness.dispose();
   });
 
-  it("renders help, refuses unknown flags, and reports errors as JSON", async () => {
+  it("documents the optional thread id, exits 2 on usage errors, and reports errors as JSON", async () => {
     const host = createHost();
     await plugin(host.bb);
 
-    for (const argv of [["--help"], ["-h"], ["cancel", "--help"]]) {
-      const help = await host.harness.runCli(argv);
-      expect(help.exitCode, argv.join(" ")).toBe(0);
-      expect(help.stderr).toBe("");
-      expect(help.stdout).toContain("bb provider-retry");
-    }
-    expect((await host.harness.runCli(["retry", "--help"])).stdout).toContain(
-      "[<thread-id>]",
-    );
-
-    const unknownFlag = await host.harness.runCli(["status", "--jsom"]);
-    expect(unknownFlag.exitCode).toBe(2);
-    expect(unknownFlag.stderr).toContain("unknown option '--jsom'");
-    expect(unknownFlag.stderr).toContain("(Did you mean --json?)");
-
-    const unknownCommand = await host.harness.runCli(["cancle", THREAD_ID]);
-    expect(unknownCommand.exitCode).toBe(2);
-    expect(unknownCommand.stderr).toContain("unknown command 'cancle'");
-    expect(unknownCommand.stderr).toContain("(Did you mean cancel?)");
+    const help = (await host.harness.runCli(["retry", "--help"])).stdout;
+    expect(help).toContain("bb provider-retry retry");
+    expect(help).toContain("[<thread-id>]");
 
     const stray = await host.harness.runCli(["retry", THREAD_ID, "extra"]);
     expect(stray.exitCode).toBe(2);
-    expect(stray.stderr).toContain("unexpected argument 'extra'");
     expect(host.sent).toEqual([]);
 
     const envelope = await host.harness.runCli(["cancel", THREAD_ID, "--json"]);

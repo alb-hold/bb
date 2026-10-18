@@ -5,6 +5,7 @@ import type {
   SlowDbQueryLogger,
 } from "@bb/db";
 import type { Logger } from "@bb/logger";
+import { getCurrentEventLoopWorkLabel } from "./services/system/event-loop-work.js";
 import {
   exportLegacyAutomationsForPluginImport,
   hasLegacyAutomationsToExport,
@@ -12,10 +13,12 @@ import {
 
 type InitDbLogger = MigrationWarningLogger &
   SlowDbQueryLogger &
-  Pick<Logger, "error" | "info">;
+  Pick<Logger, "debug" | "error" | "info">;
 
 interface InitDbOptions {
   dataDir?: string;
+  slowQueryThresholdMs?: number | (() => number);
+  slowQueryDiagnosticsEnabled?: () => boolean;
   logger?: InitDbLogger;
 }
 
@@ -24,23 +27,32 @@ export function initDb(
   options: InitDbOptions = {},
 ): DbConnection {
   const db = createConnection(databasePath, {
+    databaseWriteBytesLogger: options.logger,
     slowQueryLogger: options.logger,
+    slowQueryThresholdMs: options.slowQueryThresholdMs,
+    slowQueryWorkLabel: getCurrentEventLoopWorkLabel,
+    slowQueryDiagnosticsEnabled: options.slowQueryDiagnosticsEnabled,
   });
-  if (options.dataDir !== undefined && options.logger !== undefined) {
-    exportLegacyAutomationsForPluginImport({
-      dataDir: options.dataDir,
-      db,
+  try {
+    if (options.dataDir !== undefined && options.logger !== undefined) {
+      exportLegacyAutomationsForPluginImport({
+        dataDir: options.dataDir,
+        db,
+        logger: options.logger,
+      });
+    } else if (hasLegacyAutomationsToExport(db)) {
+      throw new Error(
+        "Cannot migrate legacy automations without dataDir and logger; refusing to drop kernel automation rows before exporting them for the automations plugin",
+      );
+    }
+    migrate(db, {
+      deferDestructiveLegacyCleanup: true,
       logger: options.logger,
     });
-  } else if (hasLegacyAutomationsToExport(db)) {
-    throw new Error(
-      "Cannot migrate legacy automations without dataDir and logger; refusing to drop kernel automation rows before exporting them for the automations plugin",
-    );
+    ensurePersonalProject(db);
+  } catch (error) {
+    db.$client.close();
+    throw error;
   }
-  migrate(db, {
-    deferDestructiveLegacyCleanup: true,
-    logger: options.logger,
-  });
-  ensurePersonalProject(db);
   return db;
 }

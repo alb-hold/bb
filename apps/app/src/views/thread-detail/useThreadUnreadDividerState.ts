@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import type { ThreadTimelineUnreadDividerPlacement } from "@/components/thread/timeline";
+import { didThreadDetailBootstrapRefreshAfterMount } from "@/hooks/queries/thread-queries";
 
 interface ThreadUnreadDividerThreadState {
   id: string;
@@ -9,13 +10,17 @@ interface ThreadUnreadDividerThreadState {
 
 interface ThreadUnreadDividerSnapshot {
   attentionAt: number;
-  autoScroll: boolean;
+  hasAttentionAfterOpening: boolean;
+  hasUnseenUpdatesOnOpen: boolean;
+  isFocused: boolean;
+  isOpening: boolean;
+  isPlaceholderData: boolean;
   placement: ThreadTimelineUnreadDividerPlacement | null;
   threadId: string;
 }
 
 interface ThreadUnreadDividerState {
-  autoScroll: boolean;
+  hasUnseenTimelineEvents: boolean;
   placement: ThreadTimelineUnreadDividerPlacement | null;
 }
 
@@ -30,14 +35,34 @@ interface IsThreadUnreadArgs {
 }
 
 interface UseThreadUnreadDividerStateArgs {
+  bootstrapQuery: Parameters<
+    typeof didThreadDetailBootstrapRefreshAfterMount
+  >[0];
+  threadQuery: {
+    isFetchedAfterMount: boolean;
+    isError: boolean;
+    isPlaceholderData: boolean;
+  };
+  hasUnseenTimelineEvents: boolean;
+  isFocused?: boolean;
   routeThreadId: string | undefined;
   thread: ThreadUnreadDividerThreadState | undefined;
 }
 
 const NO_UNREAD_DIVIDER_STATE: ThreadUnreadDividerState = {
-  autoScroll: false,
+  hasUnseenTimelineEvents: false,
   placement: null,
 };
+
+function shouldOpenThreadAtLatest({
+  hasUnseenTimelineEvents,
+  hasUnseenUpdatesOnOpen,
+}: {
+  hasUnseenTimelineEvents: boolean;
+  hasUnseenUpdatesOnOpen: boolean;
+}): boolean {
+  return hasUnseenTimelineEvents || hasUnseenUpdatesOnOpen;
+}
 
 function shouldTrackThreadUnreadDivider({
   routeThreadId,
@@ -73,13 +98,20 @@ function buildUnreadDividerPlacement(
 }
 
 export function useThreadUnreadDividerState({
+  bootstrapQuery,
+  threadQuery,
+  hasUnseenTimelineEvents,
+  isFocused = true,
   routeThreadId,
   thread,
 }: UseThreadUnreadDividerStateArgs): ThreadUnreadDividerState {
+  const isOpening =
+    !didThreadDetailBootstrapRefreshAfterMount(bootstrapQuery) &&
+    !threadQuery.isFetchedAfterMount &&
+    !threadQuery.isError;
   const [snapshot, setSnapshot] = useState<ThreadUnreadDividerSnapshot | null>(
     null,
   );
-  const trackedThreadIdRef = useRef<string | null>(null);
   const threadId = thread?.id;
   const threadLastReadAt = thread?.lastReadAt;
   const threadLatestAttentionAt = thread?.latestAttentionAt;
@@ -94,13 +126,10 @@ export function useThreadUnreadDividerState({
         threadId,
       })
     ) {
-      trackedThreadIdRef.current = null;
       setSnapshot(null);
       return;
     }
 
-    const isFirstTrackedThreadState = trackedThreadIdRef.current !== threadId;
-    trackedThreadIdRef.current = threadId;
     const threadState: ThreadUnreadDividerThreadState = {
       id: threadId,
       lastReadAt: threadLastReadAt,
@@ -108,51 +137,152 @@ export function useThreadUnreadDividerState({
     };
 
     setSnapshot((currentSnapshot) => {
+      const nextIsOpening =
+        currentSnapshot?.threadId === threadId
+          ? currentSnapshot.isOpening && isOpening
+          : isOpening;
+      const replacedPlaceholder =
+        currentSnapshot?.threadId === threadId &&
+        currentSnapshot.isPlaceholderData &&
+        !threadQuery.isPlaceholderData;
       if (
         currentSnapshot?.threadId === threadId &&
         currentSnapshot.attentionAt === threadLatestAttentionAt
       ) {
+        const becameFocused = !currentSnapshot.isFocused && isFocused;
+        const focusChanged = currentSnapshot.isFocused !== isFocused;
         if (threadLastReadAt === null) {
-          const autoScroll =
-            currentSnapshot.placement !== null && currentSnapshot.autoScroll;
           return {
             attentionAt: threadLatestAttentionAt,
-            autoScroll,
+            hasAttentionAfterOpening:
+              currentSnapshot.hasAttentionAfterOpening,
+            hasUnseenUpdatesOnOpen:
+              currentSnapshot.hasUnseenUpdatesOnOpen ||
+              becameFocused ||
+              replacedPlaceholder,
+            isFocused,
+            isOpening: nextIsOpening,
+            isPlaceholderData: threadQuery.isPlaceholderData,
             placement: { kind: "before-first" },
             threadId,
           };
         }
-        return currentSnapshot;
+        const placement = buildUnreadDividerPlacement(threadState);
+        return currentSnapshot.isOpening === nextIsOpening &&
+          !focusChanged &&
+          !replacedPlaceholder
+          ? currentSnapshot
+          : {
+              ...currentSnapshot,
+              hasUnseenUpdatesOnOpen:
+                currentSnapshot.hasUnseenUpdatesOnOpen ||
+                ((becameFocused || replacedPlaceholder) &&
+                  placement !== null),
+              isFocused,
+              isOpening: nextIsOpening,
+              isPlaceholderData: threadQuery.isPlaceholderData,
+              placement: replacedPlaceholder
+                ? placement
+                : currentSnapshot.placement,
+            };
       }
 
       const placement = buildUnreadDividerPlacement(threadState);
+      const becameFocused =
+        currentSnapshot?.threadId === threadId &&
+        !currentSnapshot.isFocused &&
+        isFocused;
       return {
         attentionAt: threadLatestAttentionAt,
-        autoScroll: isFirstTrackedThreadState && placement !== null,
+        hasAttentionAfterOpening:
+          currentSnapshot?.threadId === threadId
+            ? currentSnapshot.hasAttentionAfterOpening ||
+              (!currentSnapshot.isOpening &&
+                !becameFocused &&
+                placement !== null)
+            : false,
+        hasUnseenUpdatesOnOpen:
+          currentSnapshot?.threadId === threadId
+            ? currentSnapshot.hasUnseenUpdatesOnOpen ||
+              ((currentSnapshot.isOpening || becameFocused) &&
+                placement !== null)
+            : placement !== null,
+        isFocused,
+        isOpening: nextIsOpening,
+        isPlaceholderData: threadQuery.isPlaceholderData,
         placement,
         threadId,
       };
     });
-  }, [routeThreadId, threadId, threadLastReadAt, threadLatestAttentionAt]);
+  }, [
+    isOpening,
+    isFocused,
+    routeThreadId,
+    threadId,
+    threadLastReadAt,
+    threadLatestAttentionAt,
+    threadQuery.isPlaceholderData,
+  ]);
 
   if (
     !shouldTrackThreadUnreadDivider({
       routeThreadId,
       threadId,
     }) ||
-    snapshot === null ||
-    snapshot.threadId !== threadId ||
-    (snapshot.attentionAt !== threadLatestAttentionAt &&
+    (snapshot !== null &&
+      snapshot.threadId === threadId &&
+      snapshot.attentionAt !== threadLatestAttentionAt &&
       !isThreadUnread({
         lastReadAt: threadLastReadAt,
         latestAttentionAt: threadLatestAttentionAt,
       }))
   ) {
-    return NO_UNREAD_DIVIDER_STATE;
+    return {
+      ...NO_UNREAD_DIVIDER_STATE,
+      hasUnseenTimelineEvents: isFocused && hasUnseenTimelineEvents,
+    };
   }
 
+  const hasUnseenUpdatesOnOpen =
+    snapshot !== null && snapshot.threadId === threadId
+      ? snapshot.hasUnseenUpdatesOnOpen ||
+        ((snapshot.isOpening ||
+          (!snapshot.isFocused && isFocused) ||
+          (snapshot.isPlaceholderData && !threadQuery.isPlaceholderData)) &&
+          isThreadUnread({
+            lastReadAt: threadLastReadAt,
+            latestAttentionAt: threadLatestAttentionAt,
+          }))
+      : isThreadUnread({
+          lastReadAt: threadLastReadAt,
+          latestAttentionAt: threadLatestAttentionAt,
+        });
+  const becameFocused =
+    snapshot !== null &&
+    snapshot.threadId === threadId &&
+    !snapshot.isFocused &&
+    isFocused;
+  const hasNewAttentionAfterOpening =
+    snapshot !== null &&
+    snapshot.threadId === threadId &&
+    !snapshot.isOpening &&
+    !(snapshot.isPlaceholderData && !threadQuery.isPlaceholderData) &&
+    !hasUnseenUpdatesOnOpen &&
+    (snapshot.hasAttentionAfterOpening ||
+      (snapshot.attentionAt !== threadLatestAttentionAt && !becameFocused));
   return {
-    autoScroll: snapshot.autoScroll && snapshot.placement !== null,
-    placement: snapshot.placement,
+    hasUnseenTimelineEvents: shouldOpenThreadAtLatest({
+      hasUnseenTimelineEvents:
+        isFocused && hasUnseenTimelineEvents && !hasNewAttentionAfterOpening,
+      hasUnseenUpdatesOnOpen: isFocused && hasUnseenUpdatesOnOpen,
+    }),
+    placement:
+      snapshot !== null &&
+      snapshot.threadId === threadId &&
+      !(snapshot.isPlaceholderData && !threadQuery.isPlaceholderData)
+        ? snapshot.placement
+        : thread === undefined
+          ? null
+          : buildUnreadDividerPlacement(thread),
   };
 }

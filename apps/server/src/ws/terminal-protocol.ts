@@ -1,6 +1,7 @@
 import {
   terminalClientMessageSchema,
   terminalServerMessageSchema,
+  type TerminalClientMessage,
 } from "@bb/server-contract";
 import { ApiError } from "../errors.js";
 import type { AppDeps } from "../types.js";
@@ -14,6 +15,8 @@ interface TerminalSocket {
 }
 
 interface TerminalSocketOpenArgs {
+  outputAcks: boolean;
+  resizeAcks: boolean;
   socket: TerminalSocket;
   sinceSeq: number;
   terminalId: string;
@@ -21,6 +24,12 @@ interface TerminalSocketOpenArgs {
 
 interface TerminalSocketMessageArgs {
   raw: unknown;
+  socket: TerminalSocket;
+  terminalId: string;
+}
+
+interface TerminalSocketParsedMessageArgs {
+  message: TerminalClientMessage;
   socket: TerminalSocket;
   terminalId: string;
 }
@@ -75,6 +84,8 @@ export function onTerminalSocketOpen(
 ): void {
   try {
     deps.terminalSessions.attachBrowserTerminal({
+      outputAcks: args.outputAcks,
+      resizeAcks: args.resizeAcks,
       socket: args.socket,
       sinceSeq: args.sinceSeq,
       terminalId: args.terminalId,
@@ -96,10 +107,20 @@ export function onTerminalSocketMessage(
   if (message === null) {
     return;
   }
+  onTerminalSocketParsedMessage(deps, {
+    message,
+    socket: args.socket,
+    terminalId: args.terminalId,
+  });
+}
 
+export function onTerminalSocketParsedMessage(
+  deps: TerminalProtocolDeps,
+  args: TerminalSocketParsedMessageArgs,
+): void {
   try {
     deps.terminalSessions.handleBrowserTerminalMessage({
-      message,
+      message: args.message,
       socket: args.socket,
       terminalId: args.terminalId,
     });

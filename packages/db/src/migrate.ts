@@ -4,6 +4,12 @@ import { dirname, join, resolve } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { DbConnection } from "./connection.js";
+import { bumpThreadEventOwnershipEpoch } from "./data/event-rewrite-generation.js";
+import { ensureItemCompletionLookupIndex } from "./fork-item-completion-index.js";
+import { ensureThreadSpawnersTable } from "./fork-thread-spawners.js";
+import { ensureNativeTerminalThreadsTable } from "./fork-native-terminal-threads.js";
+import { ensureTerminalAttentionTable } from "./fork-terminal-attention.js";
+import { restoreNativeThreadDraftsToDraftsQueue } from "./fork-restore-native-drafts.js";
 import {
   compatibleMigrationHashes,
   publishedMigrationWhensByTag,
@@ -1171,19 +1177,32 @@ function skipEventLargeValuesRoundTripForInlineEvents(
   markMigrationApplied(db, restoreMigration);
 }
 
-function applyQueuedMessageGroupingSchema(db: DbConnection): void {
+function stageQueuedMessageGroups(
+  db: DbConnection,
+  migrationsFolder: string,
+): void {
+  const sqlite = db.$client;
+  sqlite.exec(
+    "CREATE TEMP TABLE IF NOT EXISTS bb_migration_queued_message_groups (id TEXT PRIMARY KEY, group_with_next INTEGER NOT NULL)",
+  );
+  sqlite.exec("DELETE FROM bb_migration_queued_message_groups");
   if (
+    !tableExists(db, "__drizzle_migrations") ||
     !tableExists(db, "queued_thread_messages") ||
-    columnExists(db, "queued_thread_messages", "group_with_next")
+    !columnExists(db, "queued_thread_messages", "group_with_next")
   ) {
     return;
   }
-
-  db.$client
-    .prepare(
-      "ALTER TABLE queued_thread_messages ADD COLUMN group_with_next integer DEFAULT 0 NOT NULL",
-    )
-    .run();
+  const migration = requireExpectedAppliedMigration(
+    readExpectedAppliedMigrations(migrationsFolder),
+    "0143_queued_message_state",
+  );
+  if (readAppliedMigrationCreatedAts(db).has(migration.createdAt)) {
+    return;
+  }
+  sqlite.exec(
+    "INSERT INTO bb_migration_queued_message_groups (id, group_with_next) SELECT id, group_with_next FROM queued_thread_messages",
+  );
 }
 
 function applyInitialThreadSectionSchema(db: DbConnection): void {
@@ -1548,6 +1567,20 @@ export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
   const migrationsFolder = resolveMigrationsFolder();
   const sqlite = db.$client;
 
+  const existingInstallation =
+    tableExists(db, "__drizzle_migrations") &&
+    db.$client.prepare("SELECT 1 FROM __drizzle_migrations LIMIT 1").get() !==
+      undefined;
+  sqlite.exec(
+    "CREATE TEMP TABLE IF NOT EXISTS bb_migration_existing_installation (existing INTEGER NOT NULL)",
+  );
+  sqlite.exec("DELETE FROM bb_migration_existing_installation");
+  sqlite
+    .prepare(
+      "INSERT INTO bb_migration_existing_installation (existing) VALUES (?)",
+    )
+    .run(existingInstallation ? 1 : 0);
+
   sqlite.exec(
     "CREATE TEMP TABLE IF NOT EXISTS bb_migration_local_host (id TEXT PRIMARY KEY)",
   );
@@ -1573,11 +1606,13 @@ export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
       db,
       migrationsFolder,
     );
+    restoreNativeThreadDraftsToDraftsQueue(db);
     skipEventLargeValuesRoundTripForInlineEvents(db, migrationsFolder);
     repairBranchLocalQueuedGroupingBeforeInitialThreadSections(
       db,
       migrationsFolder,
     );
+    stageQueuedMessageGroups(db, migrationsFolder);
     const stagedConnectMachineId = stageExistingConnectMachineIdColumn(
       db,
       migrationsFolder,
@@ -1592,13 +1627,17 @@ export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
         restoreStagedThreadStorageDeletedAtColumn(db);
     }
     applyReorderedCleanupMigrations(db, migrationsFolder);
-    applyQueuedMessageGroupingSchema(db);
     seedKeepAwakePluginConfiguration(db);
   } finally {
     sqlite.pragma("foreign_keys = ON");
+    bumpThreadEventOwnershipEpoch();
   }
 
   warnAboutFutureAppliedMigrations(db, options);
   validateAppliedMigrationHistory(db, migrationsFolder);
   validatePendingInteractionsSchema(db);
+  ensureItemCompletionLookupIndex(db);
+  ensureThreadSpawnersTable(db);
+  ensureNativeTerminalThreadsTable(db);
+  ensureTerminalAttentionTable(db);
 }

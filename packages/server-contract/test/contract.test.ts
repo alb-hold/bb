@@ -35,6 +35,7 @@ import {
   terminalOutputChunkSchema,
   terminalOutputResponseSchema,
   terminalSessionSchema,
+  terminalNotifyRequestSchema,
   terminalWebSocketQuerySchema,
   threadListResponseSchema,
   threadPendingInteractionsResponseSchema,
@@ -49,9 +50,24 @@ interface OptionalServerFieldGroup {
   reason: string;
 }
 
-const OPTIONAL_SERVER_FIELD_GROUP_LIMIT = 46;
+const OPTIONAL_SERVER_FIELD_GROUP_LIMIT = 47;
 
 const OPTIONAL_SERVER_FIELD_GROUPS: readonly OptionalServerFieldGroup[] = [
+  {
+    reason:
+      "Older parent notices have no per-child outcomes. New notices omit interruption details for completed, failed, or unclassified turns; a recorded host-connection-loss cause is optional even when the interruption reason is known.",
+    fields: [
+      "threadTimelineResponseSchema.delta.upsertRows.systemMessageSubject.outcomes",
+      "threadTimelineResponseSchema.delta.upsertRows.systemMessageSubject.outcomes.interruption",
+      "threadTimelineResponseSchema.delta.upsertRows.systemMessageSubject.outcomes.interruption.cause",
+      "threadTimelineResponseSchema.rows.systemMessageSubject.outcomes",
+      "threadTimelineResponseSchema.timelinePage.olderRowUpdates.systemMessageSubject.outcomes",
+      "threadTimelineResponseSchema.rows.systemMessageSubject.outcomes.interruption",
+      "threadTimelineResponseSchema.timelinePage.olderRowUpdates.systemMessageSubject.outcomes.interruption",
+      "threadTimelineResponseSchema.rows.systemMessageSubject.outcomes.interruption.cause",
+      "threadTimelineResponseSchema.timelinePage.olderRowUpdates.systemMessageSubject.outcomes.interruption.cause",
+    ],
+  },
   {
     reason:
       "A submitted plugin form leaves on its row only what the plugin's describeSubmission returned, and the whole description is absent when the plugin declares no describeSubmission or when that call throws or times out. Within one, an absent title means the presentation's completed label stands, an absent detail means the title is the whole row, and an absent payload means the row renders without handing anything to the plugin's own timeline renderer. bb never stores the form's payload or the submitted value, so these fields are the entire record of what happened.",
@@ -117,6 +133,7 @@ const OPTIONAL_SERVER_FIELD_GROUPS: readonly OptionalServerFieldGroup[] = [
       "threadTimelineResponseSchema.activeWorkflows.presentation",
       "threadTimelineResponseSchema.delta.upsertRows.presentation",
       "threadTimelineResponseSchema.rows.presentation",
+      "threadTimelineResponseSchema.timelinePage.olderRowUpdates.presentation",
     ],
   },
   {
@@ -149,10 +166,15 @@ const OPTIONAL_SERVER_FIELD_GROUPS: readonly OptionalServerFieldGroup[] = [
       "threadTimelineResponseSchema.delta.upsertRows.presentation.tint",
       "threadTimelineResponseSchema.delta.upsertRows.presentation.title",
       "threadTimelineResponseSchema.rows.presentation.badge",
+      "threadTimelineResponseSchema.timelinePage.olderRowUpdates.presentation.badge",
       "threadTimelineResponseSchema.rows.presentation.detail",
+      "threadTimelineResponseSchema.timelinePage.olderRowUpdates.presentation.detail",
       "threadTimelineResponseSchema.rows.presentation.suppress",
+      "threadTimelineResponseSchema.timelinePage.olderRowUpdates.presentation.suppress",
       "threadTimelineResponseSchema.rows.presentation.tint",
+      "threadTimelineResponseSchema.timelinePage.olderRowUpdates.presentation.tint",
       "threadTimelineResponseSchema.rows.presentation.title",
+      "threadTimelineResponseSchema.timelinePage.olderRowUpdates.presentation.title",
     ],
   },
   {
@@ -166,8 +188,11 @@ const OPTIONAL_SERVER_FIELD_GROUPS: readonly OptionalServerFieldGroup[] = [
       "threadTimelineResponseSchema.delta.upsertRows.questions.options.description",
       "threadTimelineResponseSchema.delta.upsertRows.questions.shortLabel",
       "threadTimelineResponseSchema.rows.questions.options",
+      "threadTimelineResponseSchema.timelinePage.olderRowUpdates.questions.options",
       "threadTimelineResponseSchema.rows.questions.options.description",
+      "threadTimelineResponseSchema.timelinePage.olderRowUpdates.questions.options.description",
       "threadTimelineResponseSchema.rows.questions.shortLabel",
+      "threadTimelineResponseSchema.timelinePage.olderRowUpdates.questions.shortLabel",
     ],
   },
   {
@@ -217,19 +242,33 @@ const OPTIONAL_SERVER_FIELD_GROUPS: readonly OptionalServerFieldGroup[] = [
       "threadTimelineResponseSchema.delta.upsertRows.workflow.agents.tokens",
       "threadTimelineResponseSchema.delta.upsertRows.workflow.agents.toolCalls",
       "threadTimelineResponseSchema.rows.workflow.agents.agentType",
+      "threadTimelineResponseSchema.timelinePage.olderRowUpdates.workflow.agents.agentType",
       "threadTimelineResponseSchema.rows.workflow.agents.durationMs",
+      "threadTimelineResponseSchema.timelinePage.olderRowUpdates.workflow.agents.durationMs",
       "threadTimelineResponseSchema.rows.workflow.agents.error",
+      "threadTimelineResponseSchema.timelinePage.olderRowUpdates.workflow.agents.error",
       "threadTimelineResponseSchema.rows.workflow.agents.isolation",
+      "threadTimelineResponseSchema.timelinePage.olderRowUpdates.workflow.agents.isolation",
       "threadTimelineResponseSchema.rows.workflow.agents.lastToolName",
+      "threadTimelineResponseSchema.timelinePage.olderRowUpdates.workflow.agents.lastToolName",
       "threadTimelineResponseSchema.rows.workflow.agents.lastToolSummary",
+      "threadTimelineResponseSchema.timelinePage.olderRowUpdates.workflow.agents.lastToolSummary",
       "threadTimelineResponseSchema.rows.workflow.agents.phaseIndex",
+      "threadTimelineResponseSchema.timelinePage.olderRowUpdates.workflow.agents.phaseIndex",
       "threadTimelineResponseSchema.rows.workflow.agents.phaseTitle",
+      "threadTimelineResponseSchema.timelinePage.olderRowUpdates.workflow.agents.phaseTitle",
       "threadTimelineResponseSchema.rows.workflow.agents.promptPreview",
+      "threadTimelineResponseSchema.timelinePage.olderRowUpdates.workflow.agents.promptPreview",
       "threadTimelineResponseSchema.rows.workflow.agents.queuedAt",
+      "threadTimelineResponseSchema.timelinePage.olderRowUpdates.workflow.agents.queuedAt",
       "threadTimelineResponseSchema.rows.workflow.agents.resultPreview",
+      "threadTimelineResponseSchema.timelinePage.olderRowUpdates.workflow.agents.resultPreview",
       "threadTimelineResponseSchema.rows.workflow.agents.startedAt",
+      "threadTimelineResponseSchema.timelinePage.olderRowUpdates.workflow.agents.startedAt",
       "threadTimelineResponseSchema.rows.workflow.agents.tokens",
+      "threadTimelineResponseSchema.timelinePage.olderRowUpdates.workflow.agents.tokens",
       "threadTimelineResponseSchema.rows.workflow.agents.toolCalls",
+      "threadTimelineResponseSchema.timelinePage.olderRowUpdates.workflow.agents.toolCalls",
     ],
   },
   {
@@ -240,14 +279,19 @@ const OPTIONAL_SERVER_FIELD_GROUPS: readonly OptionalServerFieldGroup[] = [
       "threadTimelineResponseSchema.activeWorkflows.workflow.phases.kind",
       "threadTimelineResponseSchema.delta.upsertRows.workflow.phases.kind",
       "threadTimelineResponseSchema.rows.workflow.phases.kind",
+      "threadTimelineResponseSchema.timelinePage.olderRowUpdates.workflow.phases.kind",
     ],
   },
   {
     reason:
-      "A command row carries an output preview only when its output was truncated and the full text may still be fetchable; absence means the row's output field is the whole output.",
+      "A command row carries an output preview only when its output was truncated and the full text may still be fetchable, and a row is marked contentDeferred only when its expandable content was left out to be loaded on expand; absence means the row's fields hold the whole content.",
     fields: [
+      "threadTimelineResponseSchema.delta.upsertRows.contentDeferred",
+      "threadTimelineResponseSchema.rows.contentDeferred",
+      "threadTimelineResponseSchema.timelinePage.olderRowUpdates.contentDeferred",
       "threadTimelineResponseSchema.delta.upsertRows.outputPreview",
       "threadTimelineResponseSchema.rows.outputPreview",
+      "threadTimelineResponseSchema.timelinePage.olderRowUpdates.outputPreview",
     ],
   },
   {
@@ -256,6 +300,7 @@ const OPTIONAL_SERVER_FIELD_GROUPS: readonly OptionalServerFieldGroup[] = [
     fields: [
       "threadTimelineResponseSchema.delta.upsertRows.reasoningId",
       "threadTimelineResponseSchema.rows.reasoningId",
+      "threadTimelineResponseSchema.timelinePage.olderRowUpdates.reasoningId",
     ],
   },
   {
@@ -264,6 +309,7 @@ const OPTIONAL_SERVER_FIELD_GROUPS: readonly OptionalServerFieldGroup[] = [
     fields: [
       "threadTimelineResponseSchema.delta.upsertRows.steps.status",
       "threadTimelineResponseSchema.rows.steps.status",
+      "threadTimelineResponseSchema.timelinePage.olderRowUpdates.steps.status",
     ],
   },
   {
@@ -278,13 +324,12 @@ const OPTIONAL_SERVER_FIELD_GROUPS: readonly OptionalServerFieldGroup[] = [
   },
   {
     reason:
-      "Timeline snapshot and image metadata fields are absent on older servers; content metadata and detail continuation inputs only apply to paginated content.",
+      "Timeline snapshot fields are absent on older servers; content metadata and detail continuation inputs only apply to paginated content; older row updates only appear when a latest page omits rows that changed inside its window; a detail item scope is absent when the whole turn is requested, and content stays inline unless deferral is requested.",
     fields: [
-      "threadTimelineResponseSchema.imageMetadata",
-      "threadTimelineResponseSchema.timelinePage.contentPage",
-      "threadTimelineResponseSchema.timelinePage.historySnapshot",
-      "threadTimelineResponseSchema.timelinePage.olderRowsSourceSeqEnd",
+      "threadTimelineResponseSchema.timelinePage.olderRowUpdates",
       "timelineTurnSummaryDetailsQuerySchema.beforeCursor",
+      "timelineTurnSummaryDetailsQuerySchema.deferContent",
+      "timelineTurnSummaryDetailsQuerySchema.itemId",
     ],
   },
   {
@@ -328,8 +373,11 @@ const OPTIONAL_SERVER_FIELD_GROUPS: readonly OptionalServerFieldGroup[] = [
   },
   {
     reason:
-      "Thread creation may omit visibility for backward compatibility; the server fills visible at the creation boundary.",
-    fields: ["createThreadRequestSchema.visibility"],
+      "Thread creation may omit visibility and parentNotifications; the server fills visible and auto at the creation boundary.",
+    fields: [
+      "createThreadRequestSchema.visibility",
+      "createThreadRequestSchema.parentNotifications",
+    ],
   },
   {
     reason:
@@ -341,12 +389,13 @@ const OPTIONAL_SERVER_FIELD_GROUPS: readonly OptionalServerFieldGroup[] = [
   },
   {
     reason:
-      'pluginMetadata is accepted only when origin is "plugin"; plugin submission data is present only for experimental composer submissions and queued payloads that preserve them.',
+      'pluginMetadata is accepted only when origin is "plugin"; plugin submission data is present only for experimental composer submissions and queued payloads that preserve them; experimental per-plugin creation data is present only when a creator supplies plugin-specific initialization data.',
     fields: [
       "createThreadRequestSchema.pluginMetadata",
       "forkThreadRequestSchema.pluginMetadata",
       "createThreadRequestSchema.pluginSubmission",
       "sendMessageRequestSchema.pluginSubmission",
+      "createThreadRequestSchema.experimental_pluginCreateData",
     ],
   },
   {
@@ -364,17 +413,21 @@ const OPTIONAL_SERVER_FIELD_GROUPS: readonly OptionalServerFieldGroup[] = [
   },
   {
     reason:
-      "Thread creation may omit root-thread presentation and execution fields so the server can resolve project/provider defaults.",
+      "Thread creation may omit root-thread presentation and execution fields so the server can resolve project/provider defaults; omitting nativeTerminal keeps the provider-driven execution mode.",
     fields: [
       "createThreadRequestSchema.sectionId",
+      "createThreadRequestSchema.pinned",
       "createThreadRequestSchema.model",
+      "createThreadRequestSchema.nativeTerminal",
       "createThreadRequestSchema.parentThreadId",
       "createThreadRequestSchema.providerId",
       "createThreadRequestSchema.permissionMode",
       "createThreadRequestSchema.reasoningLevel",
       "createThreadRequestSchema.serviceTier",
+      "createThreadRequestSchema.sessionOptions",
       "createThreadRequestSchema.sourceSeqEnd",
       "createThreadRequestSchema.sourceThreadId",
+      "createThreadRequestSchema.spawnedByThreadId",
       "createThreadRequestSchema.title",
     ],
   },
@@ -444,11 +497,14 @@ const OPTIONAL_SERVER_FIELD_GROUPS: readonly OptionalServerFieldGroup[] = [
       "Thread PATCH requests omit fields that should be left unchanged; null explicitly clears nullable values.",
     fields: [
       "updateThreadRequestSchema.model",
-      "updateThreadRequestSchema.sectionId",
       "updateThreadRequestSchema.parentThreadId",
+      "updateThreadRequestSchema.projectId",
+      "updateThreadRequestSchema.sectionId",
       "updateThreadRequestSchema.reasoningLevel",
+      "updateThreadRequestSchema.sessionOptions",
       "updateThreadRequestSchema.title",
       "updateThreadRequestSchema.visibility",
+      "updateThreadRequestSchema.parentNotifications",
     ],
   },
   {
@@ -476,10 +532,11 @@ const OPTIONAL_SERVER_FIELD_GROUPS: readonly OptionalServerFieldGroup[] = [
   },
   {
     reason:
-      "System provider lookups may target a host indirectly or directly, omit provider id to use the host default, and omit capability to return the full roster.",
+      "System provider lookups may target a host indirectly or directly, omit provider id to use the host default, omit the project when no project checkout should scope the model list, and omit capability to return the full roster.",
     fields: [
       "systemExecutionOptionsQuerySchema.environmentId",
       "systemExecutionOptionsQuerySchema.hostId",
+      "systemExecutionOptionsQuerySchema.projectId",
       "systemExecutionOptionsQuerySchema.providerId",
       "systemProvidersQuerySchema.capability",
       "systemProvidersQuerySchema.environmentId",
@@ -503,6 +560,7 @@ const OPTIONAL_SERVER_FIELD_GROUPS: readonly OptionalServerFieldGroup[] = [
     fields: [
       "threadListQuerySchema.archived",
       "threadListQuerySchema.environmentId",
+      "threadListQuerySchema.hostId",
       "threadListQuerySchema.sectionId",
       "threadListQuerySchema.limit",
       "threadListQuerySchema.hasParent",
@@ -513,6 +571,7 @@ const OPTIONAL_SERVER_FIELD_GROUPS: readonly OptionalServerFieldGroup[] = [
       "threadListQuerySchema.parentThreadId",
       "threadListQuerySchema.projectId",
       "threadListQuerySchema.sourceThreadId",
+      "threadListQuerySchema.threadIds",
       "threadListQuerySchema.unsectioned",
     ],
   },
@@ -526,6 +585,7 @@ const OPTIONAL_SERVER_FIELD_GROUPS: readonly OptionalServerFieldGroup[] = [
       "threadTimelineQuerySchema.beforeAnchorId",
       "threadTimelineQuerySchema.summaryOnly",
       "threadTimelineQuerySchema.afterSequence",
+      "threadTimelineQuerySchema.deferContent",
     ],
   },
   {
@@ -535,8 +595,12 @@ const OPTIONAL_SERVER_FIELD_GROUPS: readonly OptionalServerFieldGroup[] = [
   },
   {
     reason:
-      "Context snapshots are omitted when the latest measurement has no breakdown.",
-    fields: ["threadTimelineResponseSchema.contextWindowUsage.snapshot"],
+      "Context snapshots are omitted when the latest measurement has no breakdown, session cost when the provider reports none, and the compaction offer time unless the compactExpiredCache experiment is on and the provider reported a prompt-cache lifetime for a context of at least 100k tokens.",
+    fields: [
+      "threadTimelineResponseSchema.contextWindowUsage.snapshot",
+      "threadTimelineResponseSchema.contextWindowUsage.cost",
+      "threadTimelineResponseSchema.contextWindowUsage.compactionOfferAt",
+    ],
   },
   {
     reason:
@@ -548,15 +612,31 @@ const OPTIONAL_SERVER_FIELD_GROUPS: readonly OptionalServerFieldGroup[] = [
   },
   {
     reason:
-      "Uploaded attachments may omit mime type when the client could not determine one.",
-    fields: ["uploadedPromptAttachmentSchema.mimeType"],
+      "Uploaded attachments may omit mime type when the client could not determine one. A source project is present only while an uploaded attachment still belongs to a different project, and a machine only on an absolute-path attachment from prompt history or a draft; the server checks and strips both, and destination-relative and legacy references omit them.",
+    fields: [
+      "uploadedPromptAttachmentSchema.mimeType",
+      "uploadedPromptAttachmentSchema.sourceProjectId",
+      "createQueuedMessageRequestSchema.input.sourceProjectId",
+      "createThreadRequestSchema.input.sourceProjectId",
+      "forkThreadRequestSchema.agentContextSeed.sourceProjectId",
+      "forkThreadRequestSchema.input.sourceProjectId",
+      "sendMessageRequestSchema.input.sourceProjectId",
+      "sendQueuedMessageResponseSchema.queuedMessage.content.sourceProjectId",
+      "createQueuedMessageRequestSchema.input.hostId",
+      "createThreadRequestSchema.input.hostId",
+      "forkThreadRequestSchema.agentContextSeed.hostId",
+      "forkThreadRequestSchema.input.hostId",
+      "sendMessageRequestSchema.input.hostId",
+      "sendQueuedMessageResponseSchema.queuedMessage.content.hostId",
+    ],
   },
   {
     reason:
-      "sendAt is present only when the caller is scheduling the dispatch; omission means attempt the dispatch now, which allocates no queued row at all when nothing blocks it.",
+      "sendAt is present only when the caller is scheduling the dispatch, and compactFirst only when it asks to compact before the message; omission means attempt the dispatch now, which allocates no queued row at all when nothing blocks it.",
     fields: [
       "createThreadRequestSchema.sendAt",
       "sendMessageRequestSchema.sendAt",
+      "sendMessageRequestSchema.compactFirst",
     ],
   },
   {
@@ -865,6 +945,17 @@ describe("public host contracts", () => {
 });
 
 describe("public terminal contracts", () => {
+  it("strips control characters and bounds explicit terminal attention text", () => {
+    expect(
+      terminalNotifyRequestSchema.parse({
+        title: `Build\u0000${"x".repeat(300)}`,
+        body: `Done\u001b${"y".repeat(2100)}`,
+      }),
+    ).toEqual({
+      title: `Build${"x".repeat(251)}`,
+      body: `Done${"y".repeat(2044)}`,
+    });
+  });
   it("allows threadless terminal session responses", () => {
     expect(
       terminalSessionSchema.safeParse({
@@ -891,9 +982,18 @@ describe("public terminal contracts", () => {
       createTerminalRequestSchema.safeParse({
         cols: TERMINAL_COLS_MAX,
         rows: TERMINAL_ROWS_MAX,
+        cwd: "/tmp/workspace/packages/app",
         target: { kind: "thread", threadId: "thr_1" },
       }).success,
     ).toBe(true);
+    expect(
+      createTerminalRequestSchema.safeParse({
+        cols: TERMINAL_COLS_MAX,
+        rows: TERMINAL_ROWS_MAX,
+        cwd: "x".repeat(4097),
+        target: { kind: "thread", threadId: "thr_1" },
+      }).success,
+    ).toBe(false);
     expect(
       createTerminalRequestSchema.safeParse({
         cols: TERMINAL_COLS_MAX + 1,
@@ -952,12 +1052,31 @@ describe("public terminal contracts", () => {
   });
 
   it("defaults and validates the terminal websocket replay sequence", () => {
-    expect(terminalWebSocketQuerySchema.parse({})).toEqual({ sinceSeq: 0 });
-    expect(terminalWebSocketQuerySchema.parse({ sinceSeq: "12" })).toEqual({
-      sinceSeq: 12,
+    expect(terminalWebSocketQuerySchema.parse({})).toEqual({
+      outputAcks: false,
+      resizeAcks: false,
+      sinceSeq: 0,
     });
     expect(
+      terminalWebSocketQuerySchema.parse({ outputAcks: "1", sinceSeq: "12" }),
+    ).toEqual({
+      outputAcks: true,
+      resizeAcks: false,
+      sinceSeq: 12,
+    });
+    expect(terminalWebSocketQuerySchema.parse({ resizeAcks: "1" })).toEqual({
+      outputAcks: false,
+      resizeAcks: true,
+      sinceSeq: 0,
+    });
+    expect(
+      terminalWebSocketQuerySchema.safeParse({ resizeAcks: "yes" }).success,
+    ).toBe(false);
+    expect(
       terminalWebSocketQuerySchema.safeParse({ sinceSeq: "-1" }).success,
+    ).toBe(false);
+    expect(
+      terminalWebSocketQuerySchema.safeParse({ outputAcks: "true" }).success,
     ).toBe(false);
   });
 
@@ -1196,12 +1315,14 @@ describe("server-contract canonical schemas", () => {
           titleFallback: "Pending thread",
           sectionId: null,
           status: "idle",
+          rowState: { statuses: {}, progress: null },
           parentThreadId: null,
           sourceThreadId: null,
           lifecycleOwnerThreadId: null,
           originKind: null,
           originPluginId: null,
           visibility: "visible",
+          parentNotifications: "auto",
           archivedAt: null,
           pinnedAt: null,
           pinSortKey: null,
@@ -1212,7 +1333,6 @@ describe("server-contract canonical schemas", () => {
           updatedAt: 2,
           runtime: {
             displayStatus: "idle",
-            hostReconnectGraceExpiresAt: null,
           },
           activity: {
             activeWorkflowCount: 0,
@@ -1222,6 +1342,7 @@ describe("server-contract canonical schemas", () => {
             activeGoalCount: 0,
           },
           hasPendingInteraction: true,
+          listIndicator: "needs-input",
           environmentHostId: "host_123",
           environmentName: null,
           environmentBranchName: "bb/test",
@@ -1428,12 +1549,19 @@ describe("server-contract canonical schemas", () => {
       }),
     ).toThrow("Project path must be an absolute path.");
 
+    expect(
+      contract.updateProjectSourceRequestSchema.parse({
+        type: "local_path",
+        path: " c:/Users/michael/bb/ ",
+      }),
+    ).toMatchObject({ path: "C:\\Users\\michael\\bb" });
+
     expect(() =>
       contract.updateProjectSourceRequestSchema.parse({
         type: "local_path",
-        path: " C:\\Users\\michael\\bb\\ ",
+        path: "\\\\server\\share\\bb",
       }),
-    ).toThrow("Native Windows paths are not supported");
+    ).toThrow("Windows network paths are not supported");
 
     expect(() =>
       contract.updateProjectSourceRequestSchema.parse({
@@ -1945,12 +2073,6 @@ describe("server-contract clients", () => {
       }).pathname,
     ).toBe("/api/v1/projects/proj_123/paths");
     expect(
-      publicClient.projects[":id"].files.content.$url({
-        param: { id: "proj_123" },
-        query: { path: "src/app.ts" },
-      }).pathname,
-    ).toBe("/api/v1/projects/proj_123/files/content");
-    expect(
       publicClient.threads[":id"].timeline["turn-summary-details"].$url({
         param: { id: "thr_123" },
         query: {
@@ -1979,38 +2101,6 @@ describe("server-contract clients", () => {
         },
       }).pathname,
     ).toBe("/api/v1/threads/thr_123/thread-storage/paths");
-    expect(
-      publicClient.threads[":id"]["thread-storage"].content.$url({
-        param: { id: "thr_123" },
-        query: { path: "notes/plan.md" },
-      }).pathname,
-    ).toBe("/api/v1/threads/thr_123/thread-storage/content");
-    expect(
-      publicClient.threads[":id"]["host-files"].content.$url({
-        param: { id: "thr_123" },
-        query: { path: "/Users/me/notes/plan.md" },
-      }).pathname,
-    ).toBe("/api/v1/threads/thr_123/host-files/content");
-    expect(
-      publicClient.threads[":id"]["thread-storage"].files[":filePath{.+}"].$url(
-        {
-          param: { id: "thr_123", filePath: "reports/a%20b/preview.html" },
-        },
-      ).pathname,
-    ).toBe(
-      "/api/v1/threads/thr_123/thread-storage/files/reports/a%20b/preview.html",
-    );
-    expect(
-      publicClient.threads[":id"].worktree.files[":filePath{.+}"].$url({
-        param: { id: "thr_123", filePath: "public/report.html" },
-      }).pathname,
-    ).toBe("/api/v1/threads/thr_123/worktree/files/public/report.html");
-    expect(
-      publicClient.threads[":id"].files.raw.$url({
-        param: { id: "thr_123" },
-        query: { path: "/Users/me/report.html" },
-      }).pathname,
-    ).toBe("/api/v1/threads/thr_123/files/raw");
     expect(
       publicClient.threads[":id"].interactions.$url({
         param: { id: "thr_123" },
@@ -2045,11 +2135,6 @@ describe("server-contract clients", () => {
     expect(() =>
       contract.threadStorageFilesQuerySchema.parse({ query: longQuery }),
     ).toThrow();
-    expect(
-      contract.threadHostFileContentQuerySchema.parse({
-        path: "/Users/me/notes/plan.md",
-      }),
-    ).toEqual({ path: "/Users/me/notes/plan.md" });
   });
 
   it("keeps project command catalog queries snapshot-only", () => {

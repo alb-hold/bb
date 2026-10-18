@@ -10,7 +10,7 @@ import {
 } from "@testing-library/react";
 import { createStore, Provider as JotaiProvider } from "jotai";
 import { useContext } from "react";
-import { MemoryRouter, useLocation } from "react-router-dom";
+import { MemoryRouter } from "react-router-dom";
 import {
   QueryClient,
   QueryClientProvider,
@@ -25,7 +25,9 @@ import { useUnarchiveThread } from "@/hooks/mutations/thread-state-mutations";
 import { splitLayoutAtom } from "@/lib/split-layout/atoms";
 import type { SplitLayout } from "@/lib/split-layout";
 import { PaneContext } from "./PaneContext";
+import { RouteNavigationProvider } from "@/components/ui/app-route-anchor";
 import { SplitThreadArea } from "./SplitThreadArea";
+import { LocationProbe } from "@/test/location-probe";
 
 const ARCHIVED_AT = 1_700_000_000_000;
 
@@ -120,11 +122,6 @@ function ArchiveHarness({ threadId }: { threadId: string }) {
   );
 }
 
-function LocationProbe() {
-  const location = useLocation();
-  return <div data-testid="location">{location.pathname}</div>;
-}
-
 function UnarchiveHarness() {
   const mutation = useUnarchiveThread();
   return (
@@ -175,10 +172,12 @@ function renderArchiveScenario(initialArchivedAt: number | null = null) {
     <JotaiProvider store={store}>
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={["/threads/thr-b"]}>
-          <SplitThreadArea />
-          <LocationProbe />
-          <ArchiveHarness threadId="thr-b" />
-          <UnarchiveHarness />
+          <RouteNavigationProvider>
+            <SplitThreadArea />
+            <LocationProbe />
+            <ArchiveHarness threadId="thr-b" />
+            <UnarchiveHarness />
+          </RouteNavigationProvider>
         </MemoryRouter>
       </QueryClientProvider>
     </JotaiProvider>,
@@ -205,7 +204,9 @@ describe("SplitThreadArea archive pruning", () => {
 
     fireEvent.click(screen.getByTestId("unarchive"));
     await waitFor(() => expect(archivedAtOf(queryClient, "thr-b")).toBeNull());
-    await act(async () => pendingArchive!.reject(new Error("unarchive failed")));
+    await act(async () =>
+      pendingArchive!.reject(new Error("unarchive failed")),
+    );
 
     await waitFor(() =>
       expect(archivedAtOf(queryClient, "thr-b")).toBe(ARCHIVED_AT),

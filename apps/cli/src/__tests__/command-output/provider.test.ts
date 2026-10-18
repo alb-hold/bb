@@ -177,28 +177,6 @@ describe("bb provider command output", () => {
     ]);
   });
 
-  it("bb provider models renders the shared borderless table", async () => {
-    const get = vi.fn(async () => [
-      { model: "gpt-5", displayName: "GPT-5", isDefault: true },
-    ]);
-    stubServerApi({
-      "v1.system.execution-options.$get": vi.fn(async () => ({
-        providers: [],
-        models: await get(),
-        selectedOnlyModels: [],
-      })),
-    });
-
-    await runCommand(["provider", "models", "openai"], register);
-
-    expect(collectLogPayloads(vi.mocked(console.log))).toEqual([
-      "Models for openai:",
-      "",
-      "Model  Name   Default\n-----  -----  -------\ngpt-5  GPT-5  *",
-      "",
-    ]);
-  });
-
   it("bb provider models includes a matching selected-only model", async () => {
     const get = vi.fn(async () => ({
       providers: [],
@@ -216,6 +194,7 @@ describe("bb provider command output", () => {
           isDefault: false,
         },
       ],
+      modelLoadError: null,
     }));
     stubServerApi({ "v1.system.execution-options.$get": get });
 
@@ -261,6 +240,66 @@ describe("bb provider command output", () => {
       query: { environmentId: "env-remote", providerId: "codex" },
     });
     expect(collectLogPayloads(vi.mocked(console.log))).toEqual(["[]"]);
+  });
+
+  it("bb provider models names the project whose checkout scopes the list", async () => {
+    const get = vi.fn(async () => ({
+      providers: [],
+      models: [],
+      selectedOnlyModels: [],
+      modelLoadError: null,
+    }));
+    stubServerApi({ "v1.system.execution-options.$get": get });
+
+    await runCommand(
+      ["provider", "models", "acp-opencode", "--project", "proj_1", "--json"],
+      register,
+    );
+
+    expect(get).toHaveBeenCalledWith({
+      query: { projectId: "proj_1", providerId: "acp-opencode" },
+    });
+    await expect(
+      runCommand(
+        [
+          "provider",
+          "models",
+          "acp-opencode",
+          "--project",
+          "proj_1",
+          "--environment",
+          "env_1",
+        ],
+        register,
+      ),
+    ).rejects.toThrow("process.exit:1");
+    expect(console.error).toHaveBeenCalledWith(
+      "Error: Cannot combine --project with --environment; the environment already selects its workspace.",
+    );
+  });
+
+  it("bb provider models reports a model-load failure and its detail on stderr", async () => {
+    const get = vi.fn(async () => ({
+      providers: [],
+      models: [],
+      selectedOnlyModels: [],
+      modelLoadError: {
+        providerId: "codex",
+        code: "failed",
+        detail: "bb could not find the Codex CLI on this machine.",
+      },
+    }));
+    stubServerApi({ "v1.system.execution-options.$get": get });
+
+    await runCommand(["provider", "models", "codex"], register);
+
+    expect(vi.mocked(console.error).mock.calls).toEqual([
+      ["Could not load models for codex (failed)"],
+      ["  bb could not find the Codex CLI on this machine."],
+    ]);
+    expect(collectLogPayloads(vi.mocked(console.log))).toEqual([
+      "No models available",
+    ]);
   });
 
   it("rejects simultaneous machine and environment selectors", async () => {

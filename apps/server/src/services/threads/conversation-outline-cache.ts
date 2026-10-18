@@ -1,0 +1,409 @@
+import {
+  getDatabaseDataVersion,
+  getThreadConversationOutlineRewriteGeneration,
+  listConversationOutlineBackgroundTaskSpans,
+  type ConversationOutlineBackgroundTaskSpan,
+  type DbConnection,
+} from "@bb/db";
+import type { ThreadConversationOutlineItem } from "@bb/server-contract";
+import {
+  MIN_AGENT_MESSAGE_DELTAS_FOR_SUMMARY_COMPACTION,
+  type ThreadEventWithMeta,
+} from "@bb/thread-view";
+
+interface ConversationOutlineProjection {
+  events: ThreadEventWithMeta[];
+  items: {
+    item: ThreadConversationOutlineItem;
+    sourceSeqStart: number;
+    sourceSeqEnd: number;
+  }[];
+}
+
+export interface ConversationOutlineSelection {
+  events: ThreadEventWithMeta[];
+  project: () => ConversationOutlineProjection["items"];
+}
+
+export interface ConversationOutlineProjectionState {
+  includeNestedEvents: boolean;
+  summaryCompactionEnabled: boolean;
+}
+
+interface Checkpoint {
+  agentMessageDeltaCount: number;
+  items: ThreadConversationOutlineItem[];
+  sequenceStart: number;
+  turnIds: Set<string>;
+  requestIds: Set<string>;
+  parentItemIds: Set<string>;
+  backgroundItemIds: Set<string>;
+}
+
+interface SequenceSpan {
+  start: number;
+  end: number;
+}
+
+interface Entry {
+  agentMessageDeltaCount: number;
+  checkpoint: Checkpoint;
+  historySequenceStart: number;
+  contextBoundarySeq: number;
+  dataVersion: number;
+  generation: number;
+  key: string;
+  maxSeq: number;
+  chars: number;
+  projectionState: ConversationOutlineProjectionState;
+}
+
+interface OutlineCache {
+  entries: Map<string, Entry>;
+  chars: number;
+}
+
+const caches = new WeakMap<DbConnection, OutlineCache>();
+const MAX_ENTRIES = 16;
+const MAX_CHARS = 8_000_000;
+
+function referencedRequestId(
+  event: ThreadEventWithMeta["event"],
+): string | null {
+  if (
+    event.type === "client/turn/requested" ||
+    event.type === "client/turn/rejected"
+  ) {
+    return event.requestId;
+  }
+  return event.type === "turn/input/accepted" ? event.clientRequestId : null;
+}
+
+function parentItemId(event: ThreadEventWithMeta["event"]): string | null {
+  if ("item" in event && "parentToolCallId" in event.item)
+    return event.item.parentToolCallId ?? null;
+  return "parentToolCallId" in event ? (event.parentToolCallId ?? null) : null;
+}
+
+function backgroundTaskItemId(
+  event: ThreadEventWithMeta["event"],
+): string | null {
+  return "item" in event && event.item.type === "backgroundTask"
+    ? event.item.id
+    : null;
+}
+
+function mergeBackgroundTaskSpans(
+  spans: readonly ConversationOutlineBackgroundTaskSpan[],
+): SequenceSpan[] {
+  const merged: SequenceSpan[] = [];
+  const sorted = spans
+    .map(({ startSequence, endSequence }) => ({
+      start: startSequence,
+      end: endSequence ?? Number.POSITIVE_INFINITY,
+    }))
+    .sort((left, right) => left.start - right.start);
+  for (const span of sorted) {
+    const last = merged.at(-1);
+    if (last !== undefined && span.start <= last.end)
+      last.end = Math.max(last.end, span.end);
+    else merged.push(span);
+  }
+  return merged;
+}
+
+function isOutsideSpans(spans: readonly SequenceSpan[], boundary: number) {
+  let low = 0;
+  let high = spans.length;
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    if (spans[middle]!.end < boundary) low = middle + 1;
+    else high = middle;
+  }
+  const span = spans[low];
+  return span === undefined || boundary <= span.start;
+}
+
+function isThreadError(event: ThreadEventWithMeta["event"]): boolean {
+  return (
+    event.scope.kind === "thread" &&
+    (event.type === "system/error" ||
+      event.type === "provider/error" ||
+      event.type === "system/thread/interrupted")
+  );
+}
+
+function canReuse(
+  checkpoint: Checkpoint,
+  events: ThreadEventWithMeta[],
+): boolean {
+  let hasTailTurn = false;
+  return events.every(({ event }) => {
+    if (event.type === "turn/started") hasTailTurn = true;
+    const backgroundItemId = backgroundTaskItemId(event);
+    if (
+      backgroundItemId !== null &&
+      checkpoint.backgroundItemIds.has(backgroundItemId)
+    )
+      return false;
+    const parentId = parentItemId(event);
+    if (parentId !== null && checkpoint.parentItemIds.has(parentId))
+      return false;
+    if (
+      "item" in event &&
+      event.item.type === "toolCall" &&
+      checkpoint.parentItemIds.has(event.item.id)
+    )
+      return false;
+    if (isThreadError(event) && !hasTailTurn) return false;
+    if (
+      event.scope.kind === "turn" &&
+      checkpoint.turnIds.has(event.scope.turnId)
+    )
+      return false;
+    const requestId = referencedRequestId(event);
+    if (requestId !== null && checkpoint.requestIds.has(requestId))
+      return false;
+    if (
+      event.type === "client/turn/requested" &&
+      "expectedTurnId" in event.target
+    ) {
+      const turnId = event.target.expectedTurnId;
+      if (turnId !== null && checkpoint.turnIds.has(turnId)) return false;
+    }
+    return true;
+  });
+}
+
+function nextCheckpoint(
+  projection: ConversationOutlineProjection,
+  previous: Checkpoint,
+  backgroundTaskSpans: readonly SequenceSpan[],
+): Checkpoint {
+  const activeTurns = new Set<string>();
+  const pendingRequests = new Set<string>();
+  let completedBoundary = previous.sequenceStart;
+  let boundary = previous.sequenceStart;
+  for (const { event, meta } of projection.events) {
+    if (isThreadError(event)) {
+      completedBoundary = boundary;
+    }
+    if (
+      event.type === "client/turn/requested" &&
+      (event.target.kind === "steer" ||
+        (event.target.kind === "auto" && event.target.expectedTurnId !== null))
+    )
+      pendingRequests.add(event.requestId);
+    if (event.type === "turn/input/accepted")
+      pendingRequests.delete(event.clientRequestId);
+    if (event.type === "client/turn/rejected")
+      pendingRequests.delete(event.requestId);
+    if (event.scope.kind !== "turn") continue;
+    if (event.type === "turn/started") {
+      if (
+        activeTurns.size === 0 &&
+        isOutsideSpans(backgroundTaskSpans, completedBoundary)
+      )
+        boundary = completedBoundary;
+      activeTurns.add(event.scope.turnId);
+    }
+    if (event.type === "turn/completed") {
+      activeTurns.delete(event.scope.turnId);
+      if (activeTurns.size === 0 && pendingRequests.size === 0)
+        completedBoundary = meta.seq + 1;
+    }
+  }
+  if (boundary <= previous.sequenceStart) return previous;
+  const turnIds = new Set(previous.turnIds);
+  const requestIds = new Set(previous.requestIds);
+  const parentItemIds = new Set(previous.parentItemIds);
+  const backgroundItemIds = new Set(previous.backgroundItemIds);
+  for (const { event, meta } of projection.events) {
+    if (meta.seq >= boundary) continue;
+    if (event.scope.kind === "turn") turnIds.add(event.scope.turnId);
+    const backgroundItemId = backgroundTaskItemId(event);
+    if (backgroundItemId !== null) backgroundItemIds.add(backgroundItemId);
+    const parentId = parentItemId(event);
+    if (parentId !== null) parentItemIds.add(parentId);
+    if ("item" in event && event.item.type === "toolCall")
+      parentItemIds.add(event.item.id);
+    const requestId = referencedRequestId(event);
+    if (requestId !== null) requestIds.add(requestId);
+  }
+  const checkpoint: Checkpoint = {
+    agentMessageDeltaCount:
+      previous.agentMessageDeltaCount +
+      projection.events.filter(
+        ({ event, meta }) =>
+          meta.seq < boundary && event.type === "item/agentMessage/delta",
+      ).length,
+    items: previous.items,
+    sequenceStart: boundary,
+    turnIds,
+    requestIds,
+    parentItemIds,
+    backgroundItemIds,
+  };
+  const tailEvents = projection.events.filter(
+    ({ meta }) => meta.seq >= boundary,
+  );
+  if (!canReuse(checkpoint, tailEvents)) return previous;
+  if (
+    projection.items.some(
+      ({ sourceSeqStart, sourceSeqEnd }) =>
+        sourceSeqStart < boundary && sourceSeqEnd >= boundary,
+    )
+  )
+    return previous;
+  let reachedTail = false;
+  const frozen: ThreadConversationOutlineItem[] = [];
+  for (const row of projection.items) {
+    if (row.sourceSeqStart >= boundary) reachedTail = true;
+    else {
+      if (reachedTail) return previous;
+      frozen.push(row.item);
+    }
+  }
+  checkpoint.items = [...previous.items, ...frozen];
+  return checkpoint;
+}
+
+export function projectConversationOutlineIncrementally(args: {
+  db: DbConnection;
+  threadId: string;
+  key: string;
+  maxSeq: number;
+  contextBoundarySeq: number;
+  historySequenceStart: number;
+  orderingBoundarySequence: number | null;
+  resolveProjectionState: (
+    sequenceStart: number,
+    previous: ConversationOutlineProjectionState | null,
+  ) => ConversationOutlineProjectionState;
+  select: (
+    sequenceStart: number,
+    precedingAgentMessageDeltaCount: number,
+    projectionState: ConversationOutlineProjectionState,
+  ) => ConversationOutlineSelection;
+}): ThreadConversationOutlineItem[] {
+  let cache = caches.get(args.db);
+  if (cache === undefined) {
+    cache = { entries: new Map(), chars: 0 };
+    caches.set(args.db, cache);
+  }
+  const dataVersion = getDatabaseDataVersion(args.db);
+  const generation = getThreadConversationOutlineRewriteGeneration(
+    args.threadId,
+  );
+  const entry = cache.entries.get(args.threadId);
+  if (entry !== undefined) {
+    cache.entries.delete(args.threadId);
+    cache.chars -= entry.chars;
+  }
+  const empty: Checkpoint = {
+    agentMessageDeltaCount: 0,
+    items: [],
+    sequenceStart: args.historySequenceStart,
+    turnIds: new Set(),
+    requestIds: new Set(),
+    parentItemIds: new Set(),
+    backgroundItemIds: new Set(),
+  };
+  const canReuseEntry =
+    entry !== undefined &&
+    entry.key === args.key &&
+    entry.dataVersion === dataVersion &&
+    entry.generation === generation &&
+    entry.contextBoundarySeq === args.contextBoundarySeq &&
+    entry.historySequenceStart === args.historySequenceStart &&
+    entry.maxSeq <= args.maxSeq;
+  const previousState = canReuseEntry ? entry.projectionState : null;
+  const projectionState = args.resolveProjectionState(
+    canReuseEntry ? entry.maxSeq + 1 : args.historySequenceStart,
+    previousState,
+  );
+  let checkpoint =
+    canReuseEntry &&
+    previousState?.includeNestedEvents ===
+      projectionState.includeNestedEvents &&
+    previousState.summaryCompactionEnabled ===
+      projectionState.summaryCompactionEnabled
+      ? entry.checkpoint
+      : empty;
+  let selection = args.select(
+    checkpoint.sequenceStart,
+    checkpoint.agentMessageDeltaCount,
+    projectionState,
+  );
+  let agentMessageDeltaCount =
+    checkpoint.agentMessageDeltaCount +
+    selection.events.filter(
+      ({ event }) => event.type === "item/agentMessage/delta",
+    ).length;
+  const crossedCompactionThreshold =
+    entry !== undefined &&
+    entry.agentMessageDeltaCount <
+      MIN_AGENT_MESSAGE_DELTAS_FOR_SUMMARY_COMPACTION &&
+    agentMessageDeltaCount >= MIN_AGENT_MESSAGE_DELTAS_FOR_SUMMARY_COMPACTION;
+  if (
+    checkpoint !== empty &&
+    (crossedCompactionThreshold || !canReuse(checkpoint, selection.events))
+  ) {
+    checkpoint = empty;
+    selection = args.select(checkpoint.sequenceStart, 0, projectionState);
+    agentMessageDeltaCount = selection.events.filter(
+      ({ event }) => event.type === "item/agentMessage/delta",
+    ).length;
+  }
+  const projection = { events: selection.events, items: selection.project() };
+  const items = [
+    ...checkpoint.items,
+    ...projection.items.map(({ item }) => item),
+  ];
+  const next = nextCheckpoint(
+    projection,
+    checkpoint,
+    projection.events.some(({ event }) => backgroundTaskItemId(event) !== null)
+      ? mergeBackgroundTaskSpans(
+          listConversationOutlineBackgroundTaskSpans(args.db, {
+            threadId: args.threadId,
+            sequenceStart: checkpoint.sequenceStart,
+          }),
+        )
+      : [],
+  );
+  if (next.sequenceStart > args.historySequenceStart) {
+    const chars =
+      next === entry?.checkpoint
+        ? entry.chars
+        : JSON.stringify(next.items).length +
+          [
+            ...next.turnIds,
+            ...next.requestIds,
+            ...next.parentItemIds,
+            ...next.backgroundItemIds,
+          ].reduce((sum, id) => sum + id.length, 0);
+    if (chars <= MAX_CHARS) {
+      cache.entries.set(args.threadId, {
+        agentMessageDeltaCount,
+        checkpoint: next,
+        historySequenceStart: args.historySequenceStart,
+        contextBoundarySeq: args.contextBoundarySeq,
+        dataVersion,
+        generation,
+        key: args.key,
+        maxSeq: args.maxSeq,
+        chars,
+        projectionState,
+      });
+      cache.chars += chars;
+    }
+  }
+  while (cache.entries.size > MAX_ENTRIES || cache.chars > MAX_CHARS) {
+    const oldest = cache.entries.keys().next().value;
+    if (oldest === undefined) break;
+    cache.chars -= cache.entries.get(oldest)!.chars;
+    cache.entries.delete(oldest);
+  }
+  return items;
+}

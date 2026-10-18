@@ -1,18 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
-  createConnection,
   createProject,
   createThread,
   listStoredEventRows,
-  migrate,
   noopNotifier,
   upsertHost,
 } from "@bb/db";
+import { createMigratedConnection } from "@bb/db/testing";
 import { parseStoredEvent } from "../../src/services/threads/thread-data.js";
 
 function setup() {
-  const db = createConnection(":memory:");
-  migrate(db);
+  const db = createMigratedConnection();
   const host = upsertHost(db, noopNotifier, {
     name: "test-host",
   });
@@ -67,46 +65,6 @@ describe("thread data stored event parsing", () => {
       expect(() => parseStoredEvent(row)).toThrow(/invalid scope_kind/);
     } finally {
       db.$client.pragma("ignore_check_constraints = OFF");
-      db.$client.close();
-    }
-  });
-
-  it("rejects stored event rows with malformed JSON payloads", () => {
-    const { db, thread } = setup();
-
-    try {
-      db.$client
-        .prepare(
-          `INSERT INTO events (
-            id,
-            thread_id,
-            scope_kind,
-            turn_id,
-            sequence,
-            type,
-            data,
-            created_at
-          )
-          VALUES (
-            'evt_malformed_json',
-            ?,
-            'thread',
-            NULL,
-            1,
-            'system/error',
-            '{"message":',
-            1
-          )`,
-        )
-        .run(thread.id);
-
-      const [row] = listStoredEventRows(db, { threadId: thread.id });
-      if (!row) {
-        throw new Error("Expected stored event row");
-      }
-
-      expect(() => parseStoredEvent(row)).toThrow(/not valid JSON/);
-    } finally {
       db.$client.close();
     }
   });

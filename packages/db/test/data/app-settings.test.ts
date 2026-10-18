@@ -7,7 +7,7 @@ import {
   setAppSettings,
   type DbConnection,
 } from "../../src/index.js";
-import { createMigratedConnection } from "../helpers/migrated-connection.js";
+import { createMigratedConnection } from "../../src/testing.js";
 
 describe("app settings data", () => {
   let db: DbConnection;
@@ -18,6 +18,12 @@ describe("app settings data", () => {
 
   afterEach(() => {
     db.$client.close();
+  });
+
+  it("defaults archive confirmation to enabled and persists opting out", () => {
+    expect(getAppSettings(db).confirmThreadArchive).toBe(true);
+    setAppSettings(db, { ...defaultAppSettings, confirmThreadArchive: false });
+    expect(getAppSettings(db).confirmThreadArchive).toBe(false);
   });
 
   it("preserves the legacy diagnostic preference and lets the new preference override it", () => {

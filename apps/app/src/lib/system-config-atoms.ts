@@ -1,5 +1,4 @@
 import { atom } from "jotai";
-import { DEFAULTS } from "@bb/config/defaults";
 import { defaultAppSettings, defaultAppTheme } from "@bb/domain";
 import type { WorkspaceOpenTarget } from "@bb/host-daemon-contract";
 import type { HostDaemonStatusSnapshot } from "./api-host-daemon";
@@ -15,6 +14,7 @@ import {
   resolveLocalHostDaemonProbePorts,
   type LocalHostDaemonAccessState,
 } from "./local-host-daemon-access";
+import { setStreamTraceEnabled } from "./stream-trace";
 import { wsManager } from "./ws";
 
 const unavailableSystemConfig: SystemConfigResponse = {
@@ -28,13 +28,13 @@ const unavailableSystemConfig: SystemConfigResponse = {
   keybindings: [],
   defaultKeybindings: [],
   keybindingOverrides: [],
+  performanceDiagnosticsAvailable: false,
   experiments: {
     changelogPreview: false,
-    mobileApp: false,
-    multiMachinePicker: false,
+    compactExpiredCache: false,
     serverMove: false,
-    sidebarProgressiveDisclosure: false,
-    timelineWindowing: false,
+    performanceDiagnostics: false,
+    timelinePush: false,
   },
   appearance: defaultAppTheme,
   customThemes: [],
@@ -46,12 +46,6 @@ const unavailableSystemConfig: SystemConfigResponse = {
   primaryHostId: null,
   primaryHostPlatform: null,
   voiceTranscriptionEnabled: false,
-  aiServices: {
-    inference: DEFAULTS.inferenceModel,
-    inferenceFallback: DEFAULTS.inferenceFallbackModel,
-    transcription: DEFAULTS.transcriptionModel,
-    services: [],
-  },
   dataDir: "",
 };
 
@@ -91,6 +85,10 @@ async function loadSystemConfig(): Promise<SystemConfigResponse> {
   try {
     const config = await appQueryClient.fetchQuery(systemConfigQueryOptions());
     markSystemConfigLoadSucceeded();
+    setStreamTraceEnabled(
+      config.performanceDiagnosticsAvailable &&
+        config.experiments.performanceDiagnostics,
+    );
     return config;
   } catch {
     markSystemConfigLoadFailed();

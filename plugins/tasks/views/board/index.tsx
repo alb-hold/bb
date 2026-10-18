@@ -11,12 +11,7 @@ import {
   type TaskStatus,
   type TaskThread,
 } from "../../shared/contract.js";
-import {
-  listAllTasks,
-  useTasksQuery,
-  useTasksRpc,
-  type TasksRpc,
-} from "../../shell/data.js";
+import { useTasksQuery, useTasksRpc } from "../../shell/data.js";
 import { useTasksNavigation } from "../../shell/routes.js";
 import { NewTaskDialog } from "../manage/new-task-dialog.js";
 import {
@@ -27,103 +22,21 @@ import {
   visibleBoardStatuses,
 } from "./drop-position.js";
 import { PriorityIcon, StatusIcon } from "./icons.js";
-import { isActiveThread } from "../detail/meta.js";
+import {
+  EMPTY_META,
+  fetchBoard,
+  patchBoard,
+  type BoardCardMeta,
+  type BoardData,
+} from "./board-data.js";
 import { STATUS_LABELS } from "../list/lib.js";
-import { Button } from "@bb/shared-ui/button";
-import { DelayedLoading } from "@bb/shared-ui/delayed-loading";
-import { Icon } from "@bb/shared-ui/icon";
-import { Skeleton } from "@bb/shared-ui/skeleton";
-import { cn } from "@bb/shared-ui/lib/utils";
+import { Button } from "@/components/ui/button";
+import { DelayedLoading } from "@/components/ui/delayed-loading";
+import { Icon } from "@/components/ui/icon";
+import { Skeleton } from "@/components/ui/skeleton";
+import { cn } from "@/lib/utils";
 
 const DRAG_THRESHOLD_PX = 5;
-
-interface BoardCardMeta {
-  workingThreads: TaskThread[];
-  attachmentCount: number;
-  subDone: number;
-  subTotal: number;
-}
-
-interface BoardData {
-  tasks: Task[];
-  labelsById: Map<string, Label>;
-  metaByTaskId: Map<string, BoardCardMeta>;
-}
-
-const EMPTY_META: BoardCardMeta = {
-  workingThreads: [],
-  attachmentCount: 0,
-  subDone: 0,
-  subTotal: 0,
-};
-
-async function fetchBoard(
-  rpc: TasksRpc,
-  projectId: string,
-): Promise<BoardData> {
-  const tasks = await listAllTasks(rpc, { projectId });
-  const topLevel = tasks.filter((task) => task.parentTaskId === null);
-
-  const labels = await rpc.call("listLabels", { projectId }).then(
-    (result) => result.labels,
-    () => [],
-  );
-  const subProgress = new Map<string, { done: number; total: number }>();
-  for (const task of tasks) {
-    if (task.parentTaskId === null) continue;
-    const entry = subProgress.get(task.parentTaskId) ?? { done: 0, total: 0 };
-    entry.total += 1;
-    if (task.status === "done") entry.done += 1;
-    subProgress.set(task.parentTaskId, entry);
-  }
-  const activeTaskIds = await listAllTasks(rpc, {
-    projectId,
-    activeOnly: true,
-  }).then(
-    (result) => new Set(result.map((task) => task.id)),
-    () => new Set<string>(),
-  );
-  const workingByTaskId = new Map<string, TaskThread[]>();
-  await Promise.all(
-    topLevel
-      .filter((task) => activeTaskIds.has(task.id))
-      .map(async (task) => {
-        const threads = await rpc
-          .call("listTaskThreads", { taskId: task.id })
-          .then(
-            (result) => result.taskThreads,
-            () => [],
-          );
-        workingByTaskId.set(task.id, threads.filter(isActiveThread));
-      }),
-  );
-  const attachmentCounts = new Map<string, number>();
-  await Promise.all(
-    topLevel.map(async (task) => {
-      const count = await rpc.call("listAttachments", { taskId: task.id }).then(
-        (result) => result.attachments.length,
-        () => 0,
-      );
-      attachmentCounts.set(task.id, count);
-    }),
-  );
-
-  return {
-    tasks: topLevel,
-    labelsById: new Map(labels.map((label) => [label.id, label])),
-    metaByTaskId: new Map(
-      topLevel.map((task) => [
-        task.id,
-        {
-          workingThreads: workingByTaskId.get(task.id) ?? [],
-          attachmentCount: attachmentCounts.get(task.id) ?? 0,
-          subDone: subProgress.get(task.id)?.done ?? 0,
-          subTotal: subProgress.get(task.id)?.total ?? 0,
-        },
-      ]),
-    ),
-  };
-}
 
 type ColumnMap = Record<TaskStatus, Task[]>;
 
@@ -273,10 +186,14 @@ interface BoardViewProps {
 export function BoardView({ projectId }: BoardViewProps) {
   const rpc = useTasksRpc();
   const navigation = useTasksNavigation();
-  const board = useTasksQuery(
+  const board = useTasksQuery<BoardData>(
     (queryRpc) => fetchBoard(queryRpc, projectId),
     ["tasks:changed", "projects:changed", "threads:changed"],
     [projectId],
+    {
+      applySignals: (queryRpc, current, signals) =>
+        patchBoard(queryRpc, projectId, current, signals),
+    },
   );
 
   const [columns, setColumns] = useState<ColumnMap | undefined>(undefined);

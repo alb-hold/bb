@@ -1,19 +1,16 @@
 import fs from "node:fs/promises";
-import { afterEach, describe, expect, it } from "vitest";
+import { makeTempDir } from "@bb/test-helpers";
+import { describe, expect, it } from "vitest";
 import { WorkspaceError, type HostWorkspace } from "@bb/host-workspace";
 import { dispatchCommand } from "../../src/command-dispatch.js";
 import type { EventSinkInput } from "../../src/event-sink.js";
 import {
-  cleanupTempDirs,
   createFakeRuntime,
   createFakeWorkspace,
   createHarness,
   makeDispatchOptions,
-  makeTempDir,
 } from "./dispatch-helpers.js";
 import { RuntimeManager } from "../../src/runtime-manager.js";
-
-afterEach(cleanupTempDirs);
 
 function streamedEntries(emitted: EventSinkInput[]) {
   return emitted.flatMap((input) =>
@@ -519,17 +516,20 @@ it("cancels setup with contributions even when another attach is waiting", async
     await expect
       .poll(async () => fs.readFile(`${sourcePath}/started`, "utf8"))
       .toBe("configured");
-    await dispatchCommand(
-      {
-        type: "environment.attach.cancel",
-        environmentId: command.environmentId,
-      },
-      options,
-    );
-    expect(await settled).toEqual([
-      expect.objectContaining({ status: "rejected" }),
-      expect.objectContaining({ status: "rejected" }),
-    ]);
+    await expect(
+      dispatchCommand(
+        {
+          type: "environment.attach.cancel",
+          environmentId: command.environmentId,
+        },
+        options,
+      ),
+    ).resolves.toEqual({ aborted: true });
+    const rejection = {
+      status: "rejected",
+      reason: expect.objectContaining({ code: "provision_cancelled" }),
+    };
+    expect(await settled).toEqual([rejection, rejection]);
     await expect(fs.stat(`${sourcePath}/after-cancel`)).rejects.toThrow();
     expect(harness.provisions).toHaveLength(0);
   } finally {

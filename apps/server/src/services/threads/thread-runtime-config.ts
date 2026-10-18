@@ -28,17 +28,16 @@ import {
 } from "../plugins/plugin-agent-contributions.js";
 import { resolveSkillCatalog } from "../skills/skill-catalog.js";
 import { discoverPluginSkillIds } from "../skills/injected-skills.js";
-import { resolveWorkspaceProjectSkills } from "../skills/workspace-skills.js";
-import { resolveSharedSkills } from "../skills/shared-skills.js";
 import { UPDATE_ENVIRONMENT_DIRECTORY_TOOL } from "./thread-environment-directory.js";
 import {
   DATA_DIR_AGENT_INSTRUCTIONS_RELATIVE_PATH,
   WORKSPACE_AGENT_INSTRUCTIONS_RELATIVE_PATH,
   readDataDirAgentInstructions,
-  readWorkspaceAgentInstructions,
 } from "./workspace-agent-instructions.js";
+import { readWorkspaceAgentContext } from "./workspace-agent-context.js";
 import { resolveDeprecatedWorkspaceProvisionType } from "../environments/environment-response.js";
 import { workspaceAwarenessInstructions } from "./workspace-awareness.js";
+import { markTurnTraceSpan } from "../system/turn-trace.js";
 
 const UPDATE_ENVIRONMENT_DIRECTORY_INSTRUCTIONS =
   "If the user asks you to move this thread to another checkout, worktree, or directory, make sure the target directory exists, then call `update_environment_directory` with its absolute path. After it succeeds, stop work in the current turn; future turns will run in the updated environment.";
@@ -118,11 +117,18 @@ export function resolvePermissionEscalation(
   return "ask";
 }
 
-export async function resolveThreadRuntimeCommandConfig(
+interface ResolvedThreadPluginConfiguration {
+  conditionalConfiguration: Awaited<
+    ReturnType<typeof resolvePluginAgentConfiguration>
+  >;
+  host: NonNullable<ReturnType<typeof getHost>>;
+  project: NonNullable<ReturnType<typeof getProject>>;
+}
+
+async function resolveThreadPluginConfiguration(
   deps: LoggedWorkSessionDeps,
   args: ResolveThreadRuntimeCommandConfigArgs,
-): Promise<ResolvedThreadRuntimeCommandConfig> {
-  const workspacePath = requireWorkspacePath(args.environment);
+): Promise<ResolvedThreadPluginConfiguration> {
   const project = getProject(deps.db, args.thread.projectId);
   if (!project) {
     throw new ApiError(404, "project_not_found", "Project not found");
@@ -136,21 +142,6 @@ export async function resolveThreadRuntimeCommandConfig(
     throw new ApiError(404, "host_not_found", "Host not found");
   }
 
-  const [projectSkillSources, sharedSkills, workspaceAgentInstructions] =
-    await Promise.all([
-      resolveWorkspaceProjectSkills(deps, {
-        hostId: args.environment.hostId,
-        workspacePath,
-      }),
-      resolveSharedSkills(deps, {
-        hostId: args.environment.hostId,
-        cwd: workspacePath,
-      }),
-      readWorkspaceAgentInstructions(deps, {
-        hostId: args.environment.hostId,
-        workspacePath,
-      }),
-    ]);
   const pluginSkillRoots = getPluginSkillRootContributions();
   const skillIdsByPlugin = discoverPluginSkillIds(deps.logger, {
     pluginSkillRoots,
@@ -196,6 +187,37 @@ export async function resolveThreadRuntimeCommandConfig(
     },
     skillIdsByPlugin,
   });
+  return { conditionalConfiguration, host, project };
+}
+
+export async function resolveThreadDynamicTools(
+  deps: LoggedWorkSessionDeps,
+  args: ResolveThreadRuntimeCommandConfigArgs,
+): Promise<DynamicTool[]> {
+  const { conditionalConfiguration } = await resolveThreadPluginConfiguration(
+    deps,
+    args,
+  );
+  return resolveDynamicTools(conditionalConfiguration.tools).map(
+    (contribution) => contribution.tool,
+  );
+}
+
+export async function resolveThreadRuntimeCommandConfig(
+  deps: LoggedWorkSessionDeps,
+  args: ResolveThreadRuntimeCommandConfigArgs,
+): Promise<ResolvedThreadRuntimeCommandConfig> {
+  markTurnTraceSpan("runtimeConfig.started");
+  const workspacePath = requireWorkspacePath(args.environment);
+  const workspaceAgentContext = await readWorkspaceAgentContext(deps, {
+    includeAgentInstructions: true,
+    hostId: args.environment.hostId,
+    workspacePath,
+  });
+  markTurnTraceSpan("runtimeConfig.workspaceRead");
+  const { conditionalConfiguration, host, project } =
+    await resolveThreadPluginConfiguration(deps, args);
+  markTurnTraceSpan("runtimeConfig.pluginConfig");
   const contributedEnv = mergeHostAndProviderEnvironment(
     await resolveHostEnvironment(deps, {
       hostId: host.id,
@@ -210,9 +232,10 @@ export async function resolveThreadRuntimeCommandConfig(
       },
     }),
   );
+  markTurnTraceSpan("runtimeConfig.env");
   const injectedSkillSources = resolveSkillCatalog(deps, {
-    projectSkillSources,
-    sharedSkillSources: sharedSkills.runtimeSources,
+    projectSkillSources: workspaceAgentContext.projectSkillSources,
+    sharedSkillSources: workspaceAgentContext.sharedSkills.runtimeSources,
     pluginSkillSelections: conditionalConfiguration.selectedSkillIdsByPlugin,
   }).map((entry) => entry.runtimeSource);
   const dataDirAgentInstructions = readDataDirAgentInstructions(
@@ -276,10 +299,10 @@ export async function resolveThreadRuntimeCommandConfig(
       dataDirAgentInstructions,
     );
   }
-  if (workspaceAgentInstructions) {
+  if (workspaceAgentContext.agentInstructions) {
     instructionSections.push(
       `The following workspace instructions come from ${WORKSPACE_AGENT_INSTRUCTIONS_RELATIVE_PATH}:`,
-      workspaceAgentInstructions,
+      workspaceAgentContext.agentInstructions,
     );
   }
   const workspaceAwareness = workspaceAwarenessInstructions(deps.db, {
@@ -294,6 +317,7 @@ export async function resolveThreadRuntimeCommandConfig(
     hostId: args.environment.hostId,
     threadId: args.thread.id,
   });
+  markTurnTraceSpan("runtimeConfig.built");
   return {
     contributedEnv,
     dynamicTools,

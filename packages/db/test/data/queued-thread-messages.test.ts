@@ -1,29 +1,33 @@
 import { describe, expect, it, vi } from "vitest";
-import { threadScope, type PromptInput } from "@bb/domain";
+import { eq } from "drizzle-orm";
+import { threadScope, turnScope, type PromptInput } from "@bb/domain";
 import { noopNotifier } from "../../src/notifier.js";
 import { insertEvents } from "../../src/data/events.js";
 import {
   claimNextQueuedThreadMessageGroup,
-  claimQueuedThreadMessage,
   claimQueuedThreadMessageGroup,
   clearQueuedThreadMessageWaitingOn,
   createQueuedThreadMessage,
   deleteClaimedQueuedThreadMessageBatchInTransaction,
   deleteQueuedThreadMessage,
   getQueuedThreadMessage,
+  holdQueuedThreadMessageForEdit,
   listIdleThreadsWithQueuedMessages,
   listQueuedThreadMessages,
   releaseQueuedMessageClaim,
+  releaseQueuedThreadMessageEditHold,
   releaseStaleQueuedMessageClaims,
   reorderQueuedThreadMessage,
   requeueClaimedQueuedThreadMessages,
   setQueuedThreadMessageGroupBoundary,
   updateQueuedThreadMessage,
 } from "../../src/data/queued-thread-messages.js";
+import { createEnvironment } from "../../src/data/environments.js";
 import { createProject } from "../../src/data/projects.js";
-import { createThread } from "../../src/data/threads.js";
+import { archiveThread, createThread } from "../../src/data/threads.js";
 import { upsertHost } from "../../src/data/hosts.js";
-import { createMigratedConnection } from "../helpers/migrated-connection.js";
+import { environments, queuedThreadMessages } from "../../src/schema.js";
+import { createMigratedConnection } from "../../src/testing.js";
 
 function textInput(text: string): PromptInput[] {
   return [{ type: "text", text, mentions: [] }];
@@ -31,6 +35,32 @@ function textInput(text: string): PromptInput[] {
 
 const defaultInput = textInput("hello");
 const altInput = textInput("world");
+
+function queueTurnEndMessage(
+  db: ReturnType<typeof createMigratedConnection>,
+  threadId: string,
+  content: PromptInput[],
+  wait: {
+    sendAt: number | null;
+    waitingOn: { kind: "thread-busy" | "time" };
+  } = {
+    sendAt: null,
+    waitingOn: { kind: "thread-busy" },
+  },
+) {
+  return createQueuedThreadMessage(db, noopNotifier, {
+    threadId,
+    content,
+    model: "gpt-5",
+    reasoningLevel: "medium",
+    permissionMode: "full",
+    serviceTier: "default",
+    waitingOn: wait.waitingOn,
+    sendAt: wait.sendAt,
+    payload: { kind: "inline" },
+    systemNotice: null,
+  });
+}
 
 function setup() {
   const db = createMigratedConnection();
@@ -48,78 +78,247 @@ function setup() {
   return { db, project, thread };
 }
 
+const PAUSE_LOOKUP_ON_QUEUED_MESSAGE =
+  '"queue_pause_interruption"."thread_id" = "queued_thread_messages"."thread_id"';
+const PAUSE_LOOKUP_ON_THREAD =
+  '"queue_pause_interruption"."thread_id" = "threads"."id"';
+const QUEUED_MESSAGES_FIRST_JOIN =
+  'from "queued_thread_messages" cross join "threads" left join';
+const PLANNER_ORDERED_JOIN =
+  'from "queued_thread_messages" inner join "threads" left join';
+
+function captureIdleQueuedThreadQuery(
+  db: ReturnType<typeof createMigratedConnection>,
+) {
+  const captured: { params: unknown[]; sql: string }[] = [];
+  const raw = db.$client;
+  const originalPrepare = raw.prepare.bind(raw);
+  Object.defineProperty(raw, "prepare", {
+    configurable: true,
+    writable: true,
+    value: (source: string) => {
+      const statement = originalPrepare(source);
+      const originalAll = statement.all.bind(statement);
+      statement.all = (...params: unknown[]) => {
+        captured.push({ params, sql: source });
+        return originalAll(...params);
+      };
+      return statement;
+    },
+  });
+  try {
+    const rows = listIdleThreadsWithQueuedMessages(db);
+    const query = captured.find((entry) =>
+      entry.sql.includes("queue_pause_interruption"),
+    );
+    if (!query) {
+      throw new Error("Expected the idle queued-message thread SQL");
+    }
+    return { query, rows };
+  } finally {
+    Object.defineProperty(raw, "prepare", {
+      configurable: true,
+      writable: true,
+      value: originalPrepare,
+    });
+  }
+}
+
 describe("queued thread messages", () => {
-  it("creates a queued message", () => {
-    const { db, thread } = setup();
-    const queuedMessage = createQueuedThreadMessage(db, noopNotifier, {
-      threadId: thread.id,
-      content: defaultInput,
-      model: "gpt-5",
-      reasoningLevel: "medium",
-      permissionMode: "full",
-      serviceTier: "default",
-      waitingOn: null,
-      sendAt: null,
-      payload: { kind: "inline" },
-      systemNotice: null,
+  it("returns the same threads as the thread-correlated pause lookup it replaced", () => {
+    const { db, project } = setup();
+    const idleThread = () =>
+      createThread(db, noopNotifier, {
+        projectId: project.id,
+        providerId: "codex",
+        status: "idle",
+      }).id;
+    const manualStop = (threadId: string, sequence: number) => ({
+      threadId,
+      sequence,
+      type: "system/thread/interrupted" as const,
+      scope: threadScope(),
+      itemId: null,
+      itemKind: null,
+      parentToolCallId: null,
+      data: JSON.stringify({ reason: "manual-stop" }),
     });
 
-    expect(queuedMessage.id).toMatch(/^qmsg_/);
-    expect(queuedMessage.threadId).toBe(thread.id);
-    expect(queuedMessage.content).toBe(JSON.stringify(defaultInput));
-    expect(queuedMessage.model).toBe("gpt-5");
-    expect(queuedMessage.serviceTier).toBe("default");
-    expect(queuedMessage.groupWithNext).toBe(false);
-  });
+    const severalQueued = idleThread();
+    queueTurnEndMessage(db, severalQueued, defaultInput);
+    queueTurnEndMessage(db, severalQueued, altInput);
+    queueTurnEndMessage(db, severalQueued, defaultInput);
 
-  it("gets a queued message by ID", () => {
-    const { db, thread } = setup();
-    const queuedMessage = createQueuedThreadMessage(db, noopNotifier, {
-      threadId: thread.id,
-      content: defaultInput,
-      model: "gpt-5",
-      reasoningLevel: "medium",
-      permissionMode: "full",
-      serviceTier: "default",
-      waitingOn: null,
-      sendAt: null,
-      payload: { kind: "inline" },
-      systemNotice: null,
+    const archived = idleThread();
+    queueTurnEndMessage(db, archived, defaultInput);
+    archiveThread(db, noopNotifier, archived);
+
+    const active = createThread(db, noopNotifier, {
+      projectId: project.id,
+      providerId: "codex",
+      status: "active",
+    }).id;
+    queueTurnEndMessage(db, active, defaultInput);
+
+    const paused = idleThread();
+    queueTurnEndMessage(db, paused, defaultInput);
+    queueTurnEndMessage(db, paused, altInput);
+    insertEvents(db, noopNotifier, [manualStop(paused, 1)]);
+
+    const pauseCleared = idleThread();
+    queueTurnEndMessage(db, pauseCleared, defaultInput);
+    insertEvents(db, noopNotifier, [
+      manualStop(pauseCleared, 1),
+      {
+        threadId: pauseCleared,
+        sequence: 2,
+        type: "client/turn/requested",
+        scope: threadScope(),
+        itemId: null,
+        itemKind: null,
+        parentToolCallId: null,
+        data: JSON.stringify({
+          initiator: "user",
+          input: defaultInput,
+          target: { kind: "new-turn" },
+        }),
+      },
+      {
+        threadId: pauseCleared,
+        sequence: 3,
+        type: "turn/started",
+        scope: turnScope("turn-after-stop"),
+        itemId: null,
+        itemKind: null,
+        parentToolCallId: null,
+        data: JSON.stringify({ providerThreadId: "provider-after-stop" }),
+      },
+    ]);
+
+    const stoppedAgain = idleThread();
+    queueTurnEndMessage(db, stoppedAgain, defaultInput);
+    insertEvents(db, noopNotifier, [
+      manualStop(stoppedAgain, 1),
+      {
+        ...manualStop(stoppedAgain, 2),
+        data: JSON.stringify({ reason: "host-disconnected" }),
+      },
+    ]);
+
+    const pausedWithoutQueue = idleThread();
+    insertEvents(db, noopNotifier, [manualStop(pausedWithoutQueue, 1)]);
+    idleThread();
+
+    const queueOn = (threadId: string) =>
+      queueTurnEndMessage(db, threadId, defaultInput).id;
+    const setQueuedRow = (
+      id: string,
+      values: Partial<typeof queuedThreadMessages.$inferInsert>,
+    ) =>
+      db
+        .update(queuedThreadMessages)
+        .set(values)
+        .where(eq(queuedThreadMessages.id, id))
+        .run();
+    const idleThreadWaitingOn = (kind: string) => {
+      const threadId = idleThread();
+      setQueuedRow(queueOn(threadId), { state: "waiting", waitingOn: JSON.stringify({ kind }) });
+      return threadId;
+    };
+
+    const onlyClaimed = idleThread();
+    setQueuedRow(queueOn(onlyClaimed), {
+      state: "claimed",
+      claimedAt: 1,
+      claimToken: "claim",
     });
 
-    const fetched = getQueuedThreadMessage(db, queuedMessage.id);
-    expect(fetched?.id).toBe(queuedMessage.id);
-    expect(getQueuedThreadMessage(db, "qmsg_nonexistent")).toBeNull();
-  });
-
-  it("lists queued messages by thread", () => {
-    const { db, thread } = setup();
-    createQueuedThreadMessage(db, noopNotifier, {
-      threadId: thread.id,
-      content: defaultInput,
-      model: "gpt-5",
-      reasoningLevel: "medium",
-      permissionMode: "full",
-      serviceTier: "default",
-      waitingOn: null,
-      sendAt: null,
-      payload: { kind: "inline" },
-      systemNotice: null,
+    const claimedAndFree = idleThread();
+    setQueuedRow(queueOn(claimedAndFree), {
+      state: "claimed",
+      claimedAt: 1,
+      claimToken: "other-claim",
     });
-    createQueuedThreadMessage(db, noopNotifier, {
-      threadId: thread.id,
-      content: altInput,
-      model: "gpt-5",
-      reasoningLevel: "medium",
-      permissionMode: "full",
-      serviceTier: "default",
-      waitingOn: null,
-      sendAt: null,
-      payload: { kind: "inline" },
-      systemNotice: null,
+    queueOn(claimedAndFree);
+
+    const onlyFailed = idleThread();
+    setQueuedRow(queueOn(onlyFailed), {
+      state: "failed_exhausted",
+      failureReason: "provider rejected",
+      failureCount: 1,
     });
 
-    expect(listQueuedThreadMessages(db, thread.id)).toHaveLength(2);
+    const failedAndFree = idleThread();
+    setQueuedRow(queueOn(failedAndFree), {
+      state: "failed_exhausted",
+      failureReason: "provider rejected",
+      failureCount: 1,
+    });
+    queueOn(failedAndFree);
+
+    const waitingOnTurnStart = idleThreadWaitingOn("turn-starting");
+    const waitingOnStop = idleThreadWaitingOn("stopping");
+    idleThreadWaitingOn("time");
+    idleThreadWaitingOn("plugin");
+    idleThreadWaitingOn("provisioning");
+    idleThreadWaitingOn("host-offline");
+
+    const pausedWaitingOnStop = idleThreadWaitingOn("stopping");
+    insertEvents(db, noopNotifier, [manualStop(pausedWaitingOnStop, 1)]);
+
+    const host = upsertHost(db, noopNotifier, { name: "environment-host" });
+    const threadInEnvironment = (path: string) => {
+      const environment = createEnvironment(db, noopNotifier, {
+        projectId: project.id,
+        hostId: host.id,
+        path,
+        status: "ready",
+        providerOwnsPath: false,
+      });
+      const threadId = createThread(db, noopNotifier, {
+        projectId: project.id,
+        environmentId: environment.id,
+        providerId: "codex",
+        status: "idle",
+      }).id;
+      queueOn(threadId);
+      return { environmentId: environment.id, threadId };
+    };
+    const inReadyEnvironment = threadInEnvironment("/tmp/ready-environment");
+    const inDestroyedEnvironment = threadInEnvironment(
+      "/tmp/destroyed-environment",
+    );
+    db.update(environments)
+      .set({ status: "destroyed" })
+      .where(eq(environments.id, inDestroyedEnvironment.environmentId))
+      .run();
+
+    const { query, rows } = captureIdleQueuedThreadQuery(db);
+    expect(query.sql).toContain(PAUSE_LOOKUP_ON_QUEUED_MESSAGE);
+    expect(query.sql).toContain(QUEUED_MESSAGES_FIRST_JOIN);
+    const replacedSql = query.sql
+      .replace(PAUSE_LOOKUP_ON_QUEUED_MESSAGE, PAUSE_LOOKUP_ON_THREAD)
+      .replace(QUEUED_MESSAGES_FIRST_JOIN, PLANNER_ORDERED_JOIN);
+    expect(replacedSql).toContain(PAUSE_LOOKUP_ON_THREAD);
+    expect(replacedSql).toContain(PLANNER_ORDERED_JOIN);
+    const run = (sql: string) =>
+      db.$client.prepare<unknown[], unknown[]>(sql).raw().all(...query.params);
+
+    expect(run(query.sql)).toEqual(run(replacedSql));
+    expect(rows.map((row) => row.threadId).sort()).toEqual(
+      [
+        severalQueued,
+        pauseCleared,
+        stoppedAgain,
+        claimedAndFree,
+        failedAndFree,
+        waitingOnTurnStart,
+        waitingOnStop,
+        pausedWaitingOnStop,
+        inReadyEnvironment.threadId,
+      ].sort(),
+    );
+    expect(run(query.sql)).toHaveLength(9);
   });
 
   it("lists an idle thread waiting for its turn to start", () => {
@@ -145,6 +344,54 @@ describe("queued thread messages", () => {
     expect(
       listIdleThreadsWithQueuedMessages(db).map((row) => row.threadId),
     ).toContain(thread.id);
+  });
+
+  it("reads queued messages first and checks the manual-stop pause only for their threads", () => {
+    const { db, project } = setup();
+    const threadIds = Array.from(
+      { length: 40 },
+      () =>
+        createThread(db, noopNotifier, {
+          projectId: project.id,
+          providerId: "codex",
+          status: "idle",
+        }).id,
+    );
+    const queuedThreadId = threadIds[0];
+    if (queuedThreadId === undefined) {
+      throw new Error("Expected a thread to queue a message on");
+    }
+    queueTurnEndMessage(db, queuedThreadId, defaultInput);
+
+    const { query, rows } = captureIdleQueuedThreadQuery(db);
+    expect(rows.map((row) => row.threadId)).toEqual([queuedThreadId]);
+    const raw = db.$client;
+    expect(query.sql).toContain(
+      '"queue_pause_interruption"."thread_id" = "queued_thread_messages"."thread_id"',
+    );
+    const planDetails = raw
+      .prepare<unknown[], { detail: string }>(
+        `EXPLAIN QUERY PLAN ${query.sql}`,
+      )
+      .all(...query.params)
+      .map((row) => row.detail);
+    const queuedMessagesStep = planDetails.findIndex((detail) =>
+      /^(SEARCH|SCAN) queued_thread_messages\b/u.test(detail),
+    );
+    const pauseLookupStep = planDetails.findIndex((detail) =>
+      detail.includes("queue_pause_interruption"),
+    );
+    expect(queuedMessagesStep).toBe(0);
+    expect(pauseLookupStep).toBeGreaterThan(queuedMessagesStep);
+    raw.exec("ANALYZE");
+    expect(
+      raw
+        .prepare<unknown[], { detail: string }>(
+          `EXPLAIN QUERY PLAN ${query.sql}`,
+        )
+        .all(...query.params)
+        .map((row) => row.detail)[0],
+    ).toMatch(/^(SEARCH|SCAN) queued_thread_messages\b/u);
   });
 
   it("updates queued message content without changing its identity or position", () => {
@@ -290,7 +537,9 @@ describe("queued thread messages", () => {
       payload: { kind: "inline" },
       systemNotice: null,
     });
-    claimQueuedThreadMessage(db, noopNotifier, queuedMessage.id);
+    claimQueuedThreadMessageGroup(db, noopNotifier, queuedMessage.id, {
+      kind: "explicit-send",
+    });
 
     expect(
       updateQueuedThreadMessage(db, noopNotifier, {
@@ -344,11 +593,12 @@ describe("queued thread messages", () => {
       systemNotice: null,
     });
 
-    const claimedQueuedMessage = claimQueuedThreadMessage(
+    const claimedQueuedMessage = claimQueuedThreadMessageGroup(
       db,
       noopNotifier,
       queuedMessage.id,
-    );
+      { kind: "explicit-send" },
+    )?.[0];
     expect(claimedQueuedMessage?.id).toBe(queuedMessage.id);
     expect(claimedQueuedMessage?.claimToken).toMatch(/^qclaim_/);
     expect(listQueuedThreadMessages(db, thread.id)).toHaveLength(0);
@@ -379,11 +629,12 @@ describe("queued thread messages", () => {
       payload: { kind: "inline" },
       systemNotice: null,
     });
-    const firstClaim = claimQueuedThreadMessage(
+    const firstClaim = claimQueuedThreadMessageGroup(
       db,
       noopNotifier,
       queuedMessage.id,
-    );
+      { kind: "explicit-send" },
+    )?.[0];
     if (!firstClaim) {
       throw new Error("Expected first queued message claim");
     }
@@ -412,11 +663,12 @@ describe("queued thread messages", () => {
         claimToken: firstClaim.claimToken,
       }),
     ).toBe(true);
-    const secondClaim = claimQueuedThreadMessage(
+    const secondClaim = claimQueuedThreadMessageGroup(
       db,
       noopNotifier,
       queuedMessage.id,
-    );
+      { kind: "explicit-send" },
+    )?.[0];
     if (!secondClaim) {
       throw new Error("Expected second queued message claim");
     }
@@ -462,11 +714,12 @@ describe("queued thread messages", () => {
         payload: { kind: "inline" },
         systemNotice: null,
       });
-      const claimedQueuedMessage = claimQueuedThreadMessage(
+      const claimedQueuedMessage = claimQueuedThreadMessageGroup(
         db,
         noopNotifier,
         queuedMessage.id,
-      );
+        { kind: "explicit-send" },
+      )?.[0];
       expect(claimedQueuedMessage?.claimedAt).toBe(1_000);
       expect(claimedQueuedMessage?.claimToken).toMatch(/^qclaim_/);
       expect(listQueuedThreadMessages(db, thread.id)).toHaveLength(0);
@@ -526,16 +779,18 @@ describe("queued thread messages", () => {
           systemNotice: null,
         },
       );
-      const protectedClaim = claimQueuedThreadMessage(
+      const protectedClaim = claimQueuedThreadMessageGroup(
         db,
         noopNotifier,
         protectedQueuedMessage.id,
-      );
-      const releasableClaim = claimQueuedThreadMessage(
+        { kind: "explicit-send" },
+      )?.[0];
+      const releasableClaim = claimQueuedThreadMessageGroup(
         db,
         noopNotifier,
         releasableQueuedMessage.id,
-      );
+        { kind: "explicit-send" },
+      )?.[0];
       if (!protectedClaim || !releasableClaim) {
         throw new Error("Expected queued message claims");
       }
@@ -597,6 +852,7 @@ describe("queued thread messages", () => {
         db,
         noopNotifier,
         thread.id,
+        () => true,
       )?.[0];
       expect(claimedQueuedMessage?.id).toBe(firstQueuedMessage.id);
       expect(
@@ -798,6 +1054,7 @@ describe("queued thread messages", () => {
       db,
       noopNotifier,
       thread.id,
+      () => true,
     );
 
     expect(
@@ -868,12 +1125,16 @@ describe("queued thread messages", () => {
       claimQueuedThreadMessageGroup(db, noopNotifier, ordinary.id, {
         kind: "automatic",
         isGroupEligible: () => true,
+        retryingFailure: false,
       }),
     ).toBeNull();
     expect(
-      claimNextQueuedThreadMessageGroup(db, noopNotifier, thread.id)?.map(
-        (row) => row.id,
-      ),
+      claimNextQueuedThreadMessageGroup(
+        db,
+        noopNotifier,
+        thread.id,
+        () => true,
+      )?.map((row) => row.id),
     ).toEqual([notice.id]);
     expect(
       listQueuedThreadMessages(db, thread.id).map((row) => row.id),
@@ -931,12 +1192,16 @@ describe("queued thread messages", () => {
       claimQueuedThreadMessageGroup(db, noopNotifier, heldBack.id, {
         kind: "automatic",
         isGroupEligible: () => true,
+        retryingFailure: false,
       }),
     ).toBeNull();
     expect(
-      claimNextQueuedThreadMessageGroup(db, noopNotifier, thread.id)?.map(
-        (row) => row.id,
-      ),
+      claimNextQueuedThreadMessageGroup(
+        db,
+        noopNotifier,
+        thread.id,
+        () => true,
+      )?.map((row) => row.id),
     ).toEqual([askedForDuringStop.id]);
     expect(
       listQueuedThreadMessages(db, thread.id).map((row) => row.id),
@@ -1017,6 +1282,7 @@ describe("queued thread messages", () => {
       db,
       noopNotifier,
       thread.id,
+      () => true,
     );
     expect(claimed?.map((queuedMessage) => queuedMessage.id)).toEqual([
       lead.id,
@@ -1032,7 +1298,12 @@ describe("queued thread messages", () => {
     // The requeue wrote the wait on the lead only; the tail must not be
     // claimable alone, or the drain would dispatch half a composed prompt.
     expect(
-      claimNextQueuedThreadMessageGroup(db, noopNotifier, thread.id),
+      claimNextQueuedThreadMessageGroup(
+        db,
+        noopNotifier,
+        thread.id,
+        () => true,
+      ),
     ).toBeNull();
 
     // An independent row behind the blocked group still drains past it.
@@ -1049,9 +1320,12 @@ describe("queued thread messages", () => {
       systemNotice: null,
     });
     expect(
-      claimNextQueuedThreadMessageGroup(db, noopNotifier, thread.id)?.map(
-        (queuedMessage) => queuedMessage.id,
-      ),
+      claimNextQueuedThreadMessageGroup(
+        db,
+        noopNotifier,
+        thread.id,
+        () => true,
+      )?.map((queuedMessage) => queuedMessage.id),
     ).toEqual([independent.id]);
   });
 
@@ -1092,6 +1366,7 @@ describe("queued thread messages", () => {
       db,
       noopNotifier,
       thread.id,
+      () => true,
     );
     requeueClaimedQueuedThreadMessages(db, noopNotifier, {
       claims: claimed!.map(({ id, claimToken }) => ({ id, claimToken })),
@@ -1242,9 +1517,12 @@ describe("queued thread messages", () => {
       { id: thirdQueuedMessage.id, groupWithNext: false },
     ]);
     expect(
-      claimNextQueuedThreadMessageGroup(db, noopNotifier, thread.id)?.map(
-        (queuedMessage) => queuedMessage.id,
-      ),
+      claimNextQueuedThreadMessageGroup(
+        db,
+        noopNotifier,
+        thread.id,
+        () => true,
+      )?.map((queuedMessage) => queuedMessage.id),
     ).toEqual([firstQueuedMessage.id]);
   });
 
@@ -1534,6 +1812,7 @@ describe("queued thread messages", () => {
       db,
       noopNotifier,
       thread.id,
+      () => true,
     );
     if (!claimedQueuedMessages) {
       throw new Error("Expected grouped claim");
@@ -1692,6 +1971,7 @@ describe("queued thread messages", () => {
       db,
       noopNotifier,
       thread.id,
+      () => true,
     )?.[0];
     expect(claimedQueuedMessage?.id).toBe(secondQueuedMessage.id);
     expect(
@@ -1834,9 +2114,12 @@ describe("queued thread messages", () => {
       { id: secondQueuedMessage.id, groupWithNext: false },
     ]);
     expect(
-      claimNextQueuedThreadMessageGroup(db, noopNotifier, thread.id)?.map(
-        (queuedMessage) => queuedMessage.id,
-      ),
+      claimNextQueuedThreadMessageGroup(
+        db,
+        noopNotifier,
+        thread.id,
+        () => true,
+      )?.map((queuedMessage) => queuedMessage.id),
     ).toEqual([firstQueuedMessage.id]);
   });
 
@@ -1926,11 +2209,12 @@ describe("queued thread messages", () => {
       }).kind,
     ).toBe("invalid_neighbor_order");
 
-    const claimedQueuedMessage = claimQueuedThreadMessage(
+    const claimedQueuedMessage = claimQueuedThreadMessageGroup(
       db,
       noopNotifier,
       secondQueuedMessage.id,
-    );
+      { kind: "explicit-send" },
+    )?.[0];
     if (!claimedQueuedMessage) {
       throw new Error("Expected queued message claim");
     }
@@ -1954,5 +2238,161 @@ describe("queued thread messages", () => {
         nextQueuedMessageId: secondQueuedMessage.id,
       }).kind,
     ).toBe("stale_neighbor");
+  });
+
+  describe("edit holds", () => {
+    it("keeps an edited row and the rows behind it from automatic dispatch until the save", () => {
+      const { db, thread } = setup();
+      const edited = queueTurnEndMessage(db, thread.id, textInput("ORIGINAL"));
+      const behind = queueTurnEndMessage(db, thread.id, altInput);
+
+      expect(
+        holdQueuedThreadMessageForEdit(db, {
+          heldUntil: Date.now() + 60_000,
+          id: edited.id,
+          threadId: thread.id,
+        }),
+      ).toEqual({ kind: "held" });
+
+      expect(
+        claimNextQueuedThreadMessageGroup(
+          db,
+          noopNotifier,
+          thread.id,
+          () => true,
+        ),
+      ).toBeNull();
+      expect(
+        claimQueuedThreadMessageGroup(db, noopNotifier, edited.id, {
+          kind: "automatic",
+          isGroupEligible: () => true,
+          retryingFailure: false,
+        }),
+      ).toBeNull();
+      expect(getQueuedThreadMessage(db, edited.id)?.updatedAt).toBe(
+        edited.updatedAt,
+      );
+
+      const saved = updateQueuedThreadMessage(db, noopNotifier, {
+        content: textInput("SAVED EDIT"),
+        expectedUpdatedAt: edited.updatedAt,
+        id: edited.id,
+        threadId: thread.id,
+      });
+      expect(saved).toMatchObject({ kind: "updated", releasedEditHold: true });
+
+      const claimed = claimNextQueuedThreadMessageGroup(
+        db,
+        noopNotifier,
+        thread.id,
+        () => true,
+      );
+      expect(claimed?.map((row) => [row.id, row.content])).toEqual([
+        [edited.id, JSON.stringify(textInput("SAVED EDIT"))],
+      ]);
+      expect(
+        listQueuedThreadMessages(db, thread.id).map((row) => row.id),
+      ).toEqual([behind.id]);
+    });
+
+    it("lets a row dispatch once its hold is released or lapses", () => {
+      const { db, thread } = setup();
+      const released = queueTurnEndMessage(db, thread.id, defaultInput);
+      const lapsed = queueTurnEndMessage(db, thread.id, altInput);
+      holdQueuedThreadMessageForEdit(db, {
+        heldUntil: Date.now() + 60_000,
+        id: released.id,
+        threadId: thread.id,
+      });
+      holdQueuedThreadMessageForEdit(db, {
+        heldUntil: Date.now() - 1,
+        id: lapsed.id,
+        threadId: thread.id,
+      });
+
+      expect(
+        releaseQueuedThreadMessageEditHold(db, {
+          id: released.id,
+          threadId: thread.id,
+        }),
+      ).toBe(true);
+      expect(
+        releaseQueuedThreadMessageEditHold(db, {
+          id: released.id,
+          threadId: thread.id,
+        }),
+      ).toBe(false);
+
+      expect(
+        claimNextQueuedThreadMessageGroup(
+          db,
+          noopNotifier,
+          thread.id,
+          () => true,
+        )?.map((row) => row.id),
+      ).toEqual([released.id]);
+      expect(
+        claimNextQueuedThreadMessageGroup(
+          db,
+          noopNotifier,
+          thread.id,
+          () => true,
+        )?.map((row) => row.id),
+      ).toEqual([lapsed.id]);
+    });
+
+    it("does not hold back idle-drain rows behind an edited row that waits on something else", () => {
+      const { db, thread } = setup();
+      const scheduled = queueTurnEndMessage(db, thread.id, defaultInput, {
+        sendAt: Date.now() + 60_000,
+        waitingOn: { kind: "time" },
+      });
+      const plain = queueTurnEndMessage(db, thread.id, altInput);
+      holdQueuedThreadMessageForEdit(db, {
+        heldUntil: Date.now() + 60_000,
+        id: scheduled.id,
+        threadId: thread.id,
+      });
+
+      expect(
+        claimNextQueuedThreadMessageGroup(
+          db,
+          noopNotifier,
+          thread.id,
+          () => true,
+        )?.map((row) => row.id),
+      ).toEqual([plain.id]);
+    });
+
+    it("refuses to hold a row a dispatch already claimed or another thread owns", () => {
+      const { db, project, thread } = setup();
+      const otherThread = createThread(db, noopNotifier, {
+        projectId: project.id,
+        providerId: "codex",
+      });
+      const queued = queueTurnEndMessage(db, thread.id, defaultInput);
+
+      expect(
+        holdQueuedThreadMessageForEdit(db, {
+          heldUntil: Date.now() + 60_000,
+          id: queued.id,
+          threadId: otherThread.id,
+        }),
+      ).toEqual({ kind: "not_found" });
+
+      claimNextQueuedThreadMessageGroup(
+        db,
+        noopNotifier,
+        thread.id,
+        () => true,
+      );
+      expect(
+        holdQueuedThreadMessageForEdit(db, {
+          heldUntil: Date.now() + 60_000,
+          id: queued.id,
+          threadId: thread.id,
+        }),
+      ).toEqual({ kind: "claimed" });
+    });
   });
 });

@@ -1,12 +1,20 @@
+import {
+  retryAvailabilitySchema,
+  type RetryAvailability,
+} from "./retry-contract.js";
+import { HUB_TOKEN_HEADER } from "./parent-pool.js";
 import type {
   Account,
+  AccountBalance,
   AccountPoolConfig,
   AccountQuota,
   AccountSecret,
   ModelFamily,
   PoolProvider,
   PoolStatus,
+  LastAutomaticChoice,
 } from "./contracts.js";
+import { accountBalance, chooseBalancedCandidate } from "./balancer.js";
 import { createClaudeAdapter } from "./claude-adapter.js";
 import {
   createCodexAdapter,
@@ -15,7 +23,11 @@ import {
 } from "./codex-adapter.js";
 import type { ProviderAdapter } from "./provider-adapter.js";
 import type { ImportedProviderAccount } from "./provider-adapter.js";
-import { TransientOAuthRefreshError } from "./provider-adapter.js";
+import {
+  isSignInRejection,
+  OAuthRefreshError,
+  TransientOAuthRefreshError,
+} from "./provider-adapter.js";
 import type {
   ImportedClaudeCredentials,
   ImportedCodexCredentials,
@@ -24,8 +36,10 @@ import {
   accountStatus,
   blockingResetAt,
   governingWeeklyResetAt,
+  hasExtraUsage,
   isQuotaExhausted,
   isSharedQuotaExhausted,
+  isUsageRestricted,
   retryAfterMilliseconds,
 } from "./quota.js";
 import type {
@@ -34,7 +48,9 @@ import type {
   HubTokenStore,
   PoolAffinityStore,
   QuotaStore,
+  RoutingStore,
 } from "./store.js";
+import type { ThreadTokenStore, ThreadRoute } from "./thread-tokens.js";
 import { parentRequestHeaders, type ParentPool } from "./parent-pool.js";
 
 const ROUTE = "/api/v1/plugins/account-pool/http";
@@ -42,12 +58,14 @@ const DEFAULT_REFRESH_URL = "https://platform.claude.com/v1/oauth/token";
 const DEFAULT_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 const DEFAULT_PROFILE_URL = "https://api.anthropic.com/api/oauth/profile";
 const DEFAULT_USAGE_REFRESH_INTERVAL_MS = 5 * 60 * 1_000;
+const EXHAUSTED_USAGE_REFRESH_INTERVAL_MS = 30 * 1_000;
 const MAX_INLINE_HOLD_MS = 20_000;
 const MAX_REFRESH_BACKOFF_MS = 60_000;
 const MAX_REFRESH_BACKOFFS = 1_024;
+const UPSTREAM_REJECTION_HOLD_MS = 60_000;
 const MAX_FAILURE_DETAIL_BYTES = 1_024;
 const FAILURE_DISPOSAL_TIMEOUT_MS = 250;
-const AFFINITY_IDLE_TTL_MS = 30 * 60 * 1_000;
+const AFFINITY_IDLE_TTL_MS = 65 * 60 * 1_000;
 const MAX_AFFINITY_BINDINGS = 4_096;
 const DROPPED_RESPONSE_HEADERS = new Set([
   "content-encoding",
@@ -68,6 +86,8 @@ interface HubOptions {
   affinity: PoolAffinityStore;
   maxAffinityBindings: number;
   hubTokens: HubTokenStore;
+  threadTokens: ThreadTokenStore;
+  routing: RoutingStore | null;
   getSettings: () => AccountPoolConfig;
   adapters: ReadonlyMap<PoolProvider, ProviderAdapter>;
   fetch: typeof fetch;
@@ -76,12 +96,19 @@ interface HubOptions {
   getParentRoute: () => ParentPool | null;
   onAccountsChanged: () => void;
   onUpstreamError: (provider: PoolProvider, error: unknown) => void;
+  onOAuthRefresh: (
+    provider: PoolProvider,
+    accountId: string,
+    outcome: "succeeded" | "failed",
+    message: string,
+  ) => void;
 }
 
 interface SelectedAccount {
   account: Account;
   quota: AccountQuota;
   keepAffinity: boolean;
+  automaticChoice: LastAutomaticChoice | null;
   accept: () => void;
 }
 
@@ -98,7 +125,25 @@ interface RoutingAttempt {
   binding: AccountBinding | null;
   active: ActiveAccount | null;
   pinnedAccountId: string | null;
+  selectionAccountId: string | null;
 }
+
+export interface BindingPreview {
+  boundAccountId: string | null;
+  nextAccountId: string | null;
+  reason: string;
+  headroom: Array<{
+    accountId: string;
+    balance: AccountBalance;
+    eligible: boolean;
+  }>;
+}
+
+export interface NextAccountPreview {
+  nextAccountId: string | null;
+  reason: string;
+}
+
 interface UpstreamResult {
   response: Response;
   controller: AbortController;
@@ -106,7 +151,7 @@ interface UpstreamResult {
 }
 
 interface RefreshBackoff {
-  kind: "proactive" | "rejected";
+  kind: "proactive" | "rejected" | "upstream";
   accessToken: string;
   retryAt: number;
   delayMs: number;
@@ -137,7 +182,7 @@ export class AccountPoolHub {
   private readonly pacingByAccount = new Map<string, PacingFlight>();
   private affinityBindings = new Map<string, AccountBinding>();
   private activeAccounts = new Map<PoolProvider, ActiveAccount>();
-  private readonly usageRefreshes = new Map<string, Promise<void>>();
+  private readonly usageRefreshes = new Map<string, Promise<boolean>>();
   private readonly lastUsageRefreshAt = new Map<string, number>();
   private readonly drainWaiters = new Set<() => void>();
 
@@ -159,11 +204,44 @@ export class AccountPoolHub {
     await this.stop();
   }
 
-  async authenticate(request: Request): Promise<string | null> {
-    const token =
-      request.headers.get("x-bb-account-pool-token") ??
-      readBearer(request.headers.get("authorization"));
-    return this.options.hubTokens.authenticate(token);
+  async authenticateProvider(
+    request: Request,
+    provider: PoolProvider,
+  ): Promise<string | null> {
+    return (await this.authenticateRoute(request, provider)).hostId;
+  }
+
+  private async authenticateRoute(request: Request, provider: PoolProvider) {
+    const token = presentedToken(request);
+    const authenticated = await this.options.threadTokens.authenticate(
+      token,
+      provider,
+    );
+    const threadRoute =
+      authenticated === null ||
+      !this.options.threadTokens.isProcessCredential(token) ||
+      this.options.routing === null ||
+      this.options.getParentRoute() !== null
+        ? authenticated
+        : {
+            ...authenticated,
+            accountId: await this.options.routing.selectedAccount(
+              authenticated.threadId,
+              provider,
+            ),
+          };
+    const hostId =
+      threadRoute?.hostId ??
+      (await this.options.threadTokens.authenticateNested(token))?.hostId ??
+      null;
+    return { threadRoute, hostId };
+  }
+
+  async authenticateNested(request: Request): Promise<string | null> {
+    const route = await this.options.threadTokens.authenticateNested(
+      presentedToken(request),
+    );
+    return route?.hostId ?? null;
   }
 
   async importAccount(
@@ -172,13 +250,22 @@ export class AccountPoolHub {
     return this.adapter(provider).importAccount();
   }
 
+  localLogin(
+    provider: PoolProvider,
+  ): Promise<{ email: string | null; planLabel: string | null } | null> {
+    return this.adapter(provider).localLogin();
+  }
+
   async handle(
     request: Request,
     provider: PoolProvider,
     routePath: string,
   ): Promise<Response> {
     const adapter = this.adapter(provider);
-    const hostId = await this.authenticate(request);
+    const { threadRoute, hostId } = await this.authenticateRoute(
+      request,
+      provider,
+    );
     if (hostId === null) {
       return adapter.errorResponse(401, "Invalid Account Pooler bearer token.");
     }
@@ -187,8 +274,30 @@ export class AccountPoolHub {
         503,
         "Account Pooler is not accepting requests.",
       );
+    if (
+      threadRoute !== null &&
+      threadRoute.accountId !== null &&
+      threadRoute.accountId !== undefined &&
+      this.options.routing !== null &&
+      ((await this.options.routing.isBypassed(threadRoute.threadId)) ||
+        !(await this.options.routing.isProviderEnabled(provider)))
+    ) {
+      return adapter.errorResponse(
+        409,
+        "Pooled routing is disabled for this conversation. Start a new turn to use its current routing settings.",
+      );
+    }
     const parent = this.options.getParentRoute();
     if (parent !== null) {
+      if (
+        threadRoute?.accountId !== undefined &&
+        threadRoute.accountId !== null
+      ) {
+        return adapter.errorResponse(
+          409,
+          "An explicit subscription requires a local account pool. Choose Automatic while using a parent pool.",
+        );
+      }
       return this.forwardToParent(request, adapter, routePath, parent);
     }
     return this.forward(
@@ -196,6 +305,7 @@ export class AccountPoolHub {
       new Uint8Array(await request.arrayBuffer()),
       adapter,
       hostId,
+      threadRoute,
     );
   }
 
@@ -268,46 +378,87 @@ export class AccountPoolHub {
     }
   }
 
-  async refreshUsage(accountId?: string, force = false): Promise<void> {
+  async refreshUsage(accountId?: string, force = false): Promise<boolean> {
     const accounts = (await this.options.accounts.list()).filter(
       (account) =>
         account.enabled &&
         account.kind === "oauth" &&
         (accountId === undefined || account.id === accountId),
     );
+    const refreshed = await Promise.all(
+      accounts.map((account) =>
+        this.refreshAccountUsage(
+          account,
+          force ? 0 : DEFAULT_USAGE_REFRESH_INTERVAL_MS,
+          force,
+        ),
+      ),
+    );
+    return refreshed.every(Boolean);
+  }
+
+  private async refreshExhaustedUsage(
+    candidateIds: ReadonlySet<string>,
+    attempted: ReadonlySet<string>,
+    family: ModelFamily,
+  ): Promise<void> {
+    const now = this.options.now();
+    const threshold = this.options.getSettings().switchThreshold;
+    const accounts = (await this.options.accounts.list()).filter((account) => {
+      if (
+        !candidateIds.has(account.id) ||
+        attempted.has(account.id) ||
+        !account.enabled ||
+        account.kind !== "oauth"
+      )
+        return false;
+      const quota = this.options.quotas.get(account.id);
+      return (
+        quota.error === null && isQuotaExhausted(quota, family, threshold, now)
+      );
+    });
     await Promise.all(
-      accounts.map((account) => this.refreshAccountUsage(account, force)),
+      accounts.map((account) =>
+        this.refreshAccountUsage(account, EXHAUSTED_USAGE_REFRESH_INTERVAL_MS),
+      ),
     );
   }
 
   private async refreshAccountUsage(
     account: Account,
-    force: boolean,
-  ): Promise<void> {
+    minIntervalMs: number,
+    recoverError = false,
+  ): Promise<boolean> {
     const adapter = this.adapter(account.provider);
-    if ((this.inFlightByAccount.get(account.id) ?? 0) > 0) return;
-    const now = this.options.now();
-    const last = this.lastUsageRefreshAt.get(account.id);
-    if (
-      !force &&
-      last !== undefined &&
-      now - last < DEFAULT_USAGE_REFRESH_INTERVAL_MS
-    )
-      return;
+    if ((this.inFlightByAccount.get(account.id) ?? 0) > 0) return true;
     const running = this.usageRefreshes.get(account.id);
     if (running !== undefined) return running;
+    const now = this.options.now();
+    const last = this.lastUsageRefreshAt.get(account.id);
+    if (last !== undefined && now - last < minIntervalMs) return true;
     this.lastUsageRefreshAt.set(account.id, now);
+    const recover =
+      recoverError && this.options.quotas.get(account.id).error !== null;
     const refresh = adapter
       .refreshUsage({
         account,
         freshSecret: () =>
-          this.freshSecret(account, adapter, { kind: "normal" }),
+          this.freshSecret(account, adapter, { kind: "normal" }, recover).catch(
+            (error: unknown) => {
+              if (recover && !(error instanceof TransientOAuthRefreshError))
+                this.markError(account.id, errorMessage(error));
+              throw error;
+            },
+          ),
         accounts: this.options.accounts,
         quotas: this.options.quotas,
         fetch: this.options.fetch,
         now: this.options.now,
       })
-      .catch(() => undefined)
+      .then(
+        () => true,
+        () => false,
+      )
       .finally(() => this.usageRefreshes.delete(account.id));
     this.usageRefreshes.set(account.id, refresh);
     return refresh;
@@ -338,9 +489,11 @@ export class AccountPoolHub {
   async status(): Promise<Omit<PoolStatus, "routing" | "parent">> {
     const settings = this.options.getSettings();
     const now = this.options.now();
+    const automaticChoices = this.options.affinity.loadAutomaticChoices();
     const accounts = (await this.options.accounts.list()).sort(
       (left, right) => left.priority - right.priority,
     );
+    const organizations = await this.options.accounts.organizations();
     return {
       route: ROUTE,
       enabledAccountCount: accounts.filter((account) => account.enabled).length,
@@ -352,12 +505,141 @@ export class AccountPoolHub {
         const { accountId: _accountId, ...quotaFields } = quota;
         return {
           ...account,
+          active:
+            this.activeAccounts.get(account.provider)?.accountId === account.id,
+          balance: accountBalance(quota, null, now),
+          lastAutomaticChoice:
+            automaticChoices.get(`${account.provider}:${account.id}`) ?? null,
           lastUsedHostName: null,
           ...quotaFields,
           inFlight: this.inFlightByAccount.get(account.id) ?? 0,
           status: accountStatus(account, quota, settings.switchThreshold, now),
+          signInExpired: isSignInRejection(quota.error),
+          organizationUuid: organizations.get(account.id) ?? null,
         };
       }),
+    };
+  }
+
+  async bindingPreview(threadId: string | null): Promise<BindingPreview> {
+    const preview = await this.previewAccountChoice("claude");
+    const now = this.options.now();
+    let binding: AccountBinding | null = null;
+    for (const [key, value] of this.affinityBindings) {
+      let identity: unknown;
+      try {
+        identity = JSON.parse(key);
+      } catch {
+        continue;
+      }
+      if (
+        Array.isArray(identity) &&
+        identity[0] === "claude" &&
+        identity[2] === threadId &&
+        value.lastUsedAt > (binding?.lastUsedAt ?? 0) &&
+        now - value.lastUsedAt < AFFINITY_IDLE_TTL_MS
+      )
+        binding = value;
+    }
+    const bindingEligibleIds = new Set(preview.bindingEligibleAccountIds);
+    const status = await this.options.accounts.list();
+    const account =
+      binding === null
+        ? null
+        : status.find(
+            (candidate) =>
+              candidate.id === binding?.accountId &&
+              candidate.provider === "claude" &&
+              candidate.enabled &&
+              bindingEligibleIds.has(candidate.id),
+          );
+    const headroom = preview.headroom;
+    return {
+      boundAccountId: account?.id ?? null,
+      nextAccountId: preview.nextAccountId,
+      reason: preview.reason,
+      headroom,
+    };
+  }
+
+  async nextAccountPreview(provider: PoolProvider): Promise<
+    NextAccountPreview & {
+      headroom: Array<{
+        accountId: string;
+        balance: AccountBalance;
+        eligible: boolean;
+      }>;
+    }
+  > {
+    const preview = await this.previewAccountChoice(provider);
+    return {
+      nextAccountId: preview.nextAccountId,
+      reason: preview.reason,
+      headroom: preview.headroom,
+    };
+  }
+
+  private async previewAccountChoice(provider: PoolProvider): Promise<
+    NextAccountPreview & {
+      headroom: Array<{
+        accountId: string;
+        balance: AccountBalance;
+        eligible: boolean;
+      }>;
+      bindingEligibleAccountIds: string[];
+    }
+  > {
+    const now = this.options.now();
+    const threshold = this.options.getSettings().switchThreshold;
+    const enabled = (await this.options.accounts.list()).filter(
+      (account) => account.provider === provider && account.enabled,
+    );
+    const available = enabled
+      .map((account) => ({
+        account,
+        quota: this.options.quotas.get(account.id),
+      }))
+      .filter(
+        ({ quota }) =>
+          quota.error === null &&
+          !isUsageRestricted(quota, now) &&
+          (!isSharedQuotaExhausted(quota, threshold, now) ||
+            hasExtraUsage(quota)),
+      );
+    let eligible = available.filter(
+      ({ quota }) =>
+        !isQuotaExhausted(quota, "other", threshold, now) ||
+        hasExtraUsage(quota),
+    );
+    const included = eligible.filter(
+      ({ quota }) => !isQuotaExhausted(quota, "other", threshold, now),
+    );
+    if (
+      included.some(
+        ({ quota }) => quota.heldUntil === null || quota.heldUntil <= now,
+      )
+    )
+      eligible = included;
+    const bindingEligibleAccountIds = eligible.map(({ account }) => account.id);
+    eligible = eligible.filter(
+      ({ quota }) => quota.heldUntil === null || quota.heldUntil <= now,
+    );
+    const eligibleIds = new Set(eligible.map(({ account }) => account.id));
+    const choice = chooseBalancedCandidate(
+      eligible,
+      "other",
+      now,
+      this.activeAccounts.get(provider)?.accountId ?? null,
+    );
+    return {
+      nextAccountId: choice.candidate?.account.id ?? null,
+      reason: choice.reason,
+      headroom: enabled.map((account) => ({
+        accountId: account.id,
+        balance: accountBalance(this.options.quotas.get(account.id), null, now),
+        eligible: eligibleIds.has(account.id),
+      })),
+      bindingEligibleAccountIds,
     };
   }
 
@@ -366,6 +648,7 @@ export class AccountPoolHub {
     body: Uint8Array,
     adapter: ProviderAdapter,
     hostId: string,
+    threadRoute: ThreadRoute | null = null,
   ): Promise<Response> {
     const signal = AbortSignal.any([request.signal, this.stopped.signal]);
     const attempted = new Set<string>();
@@ -374,23 +657,52 @@ export class AccountPoolHub {
       binding: null,
       active: null,
       pinnedAccountId: null,
+      selectionAccountId: threadRoute?.accountId ?? null,
     };
     let previousAccountId: string | null = null;
     let failure: FailureSummary | null = null;
+    let usageRefreshed = false;
     const accounts = (await this.options.accounts.list()).filter(
-      (account) => account.provider === adapter.provider,
+      (account) =>
+        account.provider === adapter.provider &&
+        (routing.selectionAccountId === null ||
+          account.id === routing.selectionAccountId),
     );
+    if (routing.selectionAccountId !== null && accounts.length === 0) {
+      return adapter.errorResponse(
+        404,
+        "The selected subscription no longer exists. Choose another subscription or Automatic.",
+      );
+    }
     const candidateIds = new Set(accounts.map((account) => account.id));
     const parsed = adapter.parseRequest(body, request.headers);
     const family = parsed.family;
     const affinityKey =
       parsed.affinityId === null
         ? null
-        : JSON.stringify([adapter.provider, hostId, parsed.affinityId]);
+        : JSON.stringify(
+            threadRoute === null
+              ? [adapter.provider, hostId, parsed.affinityId]
+              : [
+                  adapter.provider,
+                  hostId,
+                  threadRoute.threadId,
+                  parsed.affinityId,
+                ],
+          );
     const parentAffinityKey =
       affinityKey === null || parsed.parentAffinityId === null
         ? null
-        : JSON.stringify([adapter.provider, hostId, parsed.parentAffinityId]);
+        : JSON.stringify(
+            threadRoute === null
+              ? [adapter.provider, hostId, parsed.parentAffinityId]
+              : [
+                  adapter.provider,
+                  hostId,
+                  threadRoute.threadId,
+                  parsed.parentAffinityId,
+                ],
+          );
     try {
       while (attempted.size < candidateIds.size) {
         signal.throwIfAborted();
@@ -405,6 +717,23 @@ export class AccountPoolHub {
           routing,
           signal,
         );
+        if (
+          !usageRefreshed &&
+          (selected === null ||
+            isQuotaExhausted(
+              selected.quota,
+              family,
+              this.options.getSettings().switchThreshold,
+              this.options.now(),
+            ))
+        ) {
+          usageRefreshed = true;
+          await abortable(
+            this.refreshExhaustedUsage(candidateIds, attempted, family),
+            signal,
+          );
+          continue;
+        }
         if (selected === null) break;
         let pacing: PacingFlight | null = null;
         const heldMs = (selected.quota.heldUntil ?? 0) - this.options.now();
@@ -446,8 +775,8 @@ export class AccountPoolHub {
             continue;
           }
         }
-        previousAccountId = selected.account.id;
         attempted.add(selected.account.id);
+        previousAccountId = selected.account.id;
         const changed = await this.options.accounts.recordUsed(
           selected.account.id,
           this.options.now(),
@@ -576,11 +905,8 @@ export class AccountPoolHub {
                   ".",
               headers: retryAfter === null ? {} : { "retry-after": retryAfter },
             };
-            if (
-              response.status === 401 &&
-              secret.kind === "oauth" &&
-              !authRetried
-            ) {
+            const rejected = response.status === 401 || response.status === 403;
+            if (rejected && secret.kind === "oauth" && !authRetried) {
               authRetried = true;
               try {
                 secret = await abortable(
@@ -599,23 +925,47 @@ export class AccountPoolHub {
                     headers: {},
                   };
                 } else {
-                  await this.markAuthError(
+                  const message = errorMessage(error);
+                  await this.rejectCredential(
                     selected.account,
                     secret,
-                    errorMessage(error),
                     signal,
+                    () => this.markError(selected.account.id, message),
                   );
                 }
                 break;
               }
               continue;
             }
-            if (response.status === 401 || response.status === 403) {
-              await this.markAuthError(
+            if (rejected && secret.kind === "oauth") {
+              const accessToken = secret.accessToken;
+              const hold = new TransientOAuthRefreshError(
+                adapter.upstreamName +
+                  " returned HTTP " +
+                  response.status +
+                  " for a freshly refreshed credential, so the Account Pooler is treating it as an upstream failure: " +
+                  failure.message,
+                0,
+              );
+              failure = { status: 503, message: hold.message, headers: {} };
+              await this.rejectCredential(
                 selected.account,
                 secret,
-                failure.message,
                 signal,
+                () =>
+                  this.holdUpstreamRejection(
+                    selected.account.id,
+                    accessToken,
+                    hold,
+                  ),
+              );
+            } else if (rejected) {
+              const message = failure.message;
+              await this.rejectCredential(
+                selected.account,
+                secret,
+                signal,
+                () => this.markError(selected.account.id, message),
               );
             }
             break;
@@ -686,14 +1036,14 @@ export class AccountPoolHub {
     }
   }
 
-  private async markAuthError(
+  private async rejectCredential(
     account: Account,
     rejected: AccountSecret,
-    message: string,
     signal: AbortSignal,
+    apply: () => void,
   ): Promise<void> {
     if (rejected.kind !== "oauth") {
-      this.markError(account.id, message);
+      apply();
       return;
     }
     while (true) {
@@ -720,11 +1070,12 @@ export class AccountPoolHub {
               current.kind === "oauth" &&
               current.accessToken === rejected.accessToken &&
               !(
-                backoff?.kind === "rejected" &&
+                backoff !== undefined &&
+                backoff.kind !== "proactive" &&
                 backoff.accessToken === current.accessToken
               )
             ) {
-              this.markError(account.id, message);
+              apply();
             }
           })
           .finally(() => {
@@ -761,11 +1112,32 @@ export class AccountPoolHub {
         account,
         quota: this.options.quotas.get(account.id),
       }))
-      .filter(({ quota }) => quota.error === null)
-      .filter(({ quota }) => !isSharedQuotaExhausted(quota, threshold, now));
-    const eligible = available.filter(
+      .filter(
+        ({ quota }) => quota.error === null && !isUsageRestricted(quota, now),
+      )
+      .filter(
+        ({ quota }) =>
+          !isSharedQuotaExhausted(quota, threshold, now) ||
+          hasExtraUsage(quota),
+      );
+    let eligible = available.filter(
+      ({ quota }) =>
+        !isQuotaExhausted(quota, family, threshold, now) ||
+        hasExtraUsage(quota),
+    );
+    const included = eligible.filter(
       ({ quota }) => !isQuotaExhausted(quota, family, threshold, now),
     );
+    if (
+      included.some(
+        ({ account, quota }) =>
+          candidateIds.has(account.id) &&
+          !attempted.has(account.id) &&
+          (quota.heldUntil === null || quota.heldUntil <= now),
+      )
+    ) {
+      eligible = included;
+    }
     const unattempted = eligible.filter(
       ({ account }) =>
         candidateIds.has(account.id) && !attempted.has(account.id),
@@ -783,6 +1155,10 @@ export class AccountPoolHub {
       boundAccountId !== null
         ? eligible.find(({ account }) => account.id === boundAccountId)
         : undefined;
+    const boundIsHeld =
+      bound !== undefined &&
+      bound.quota.heldUntil !== null &&
+      bound.quota.heldUntil > now;
     let inherited: (typeof candidates)[number] | undefined;
     if (bound === undefined && parentAffinityKey !== null) {
       const parent = this.affinityBindings.get(parentAffinityKey);
@@ -799,6 +1175,20 @@ export class AccountPoolHub {
     const activeAccount = eligible.find(
       ({ account }) => account.id === active?.accountId,
     );
+    const balanced =
+      provider === "claude"
+        ? chooseBalancedCandidate(
+            candidates,
+            family,
+            now,
+            activeAccount?.account.id ?? null,
+          )
+        : {
+            candidate: candidates[0] ?? null,
+            reason: "priority tie-break",
+          };
+    const selectedBound =
+      bound !== undefined && unattempted.includes(bound) ? bound : null;
     const anchorId = previousAccountId ?? boundAccountId ?? active?.accountId;
     const anchorIndex = accounts.findIndex(
       (account) => account.id === anchorId,
@@ -812,18 +1202,33 @@ export class AccountPoolHub {
         candidates.find((candidate) => candidate.account.id === account.id),
       )
       .find((candidate) => candidate !== undefined);
+    const legacyAutomatic =
+      boundAccountId === null &&
+      previousAccountId === null &&
+      activeAccount !== undefined &&
+      unattempted.includes(activeAccount)
+        ? activeAccount
+        : (next ?? null);
     const selected =
-      bound !== undefined && unattempted.includes(bound)
-        ? bound
-        : (inherited ??
-          (boundAccountId === null &&
-          previousAccountId === null &&
-          activeAccount !== undefined &&
-          unattempted.includes(activeAccount)
-            ? activeAccount
-            : next) ??
-          null);
+      selectedBound ??
+      inherited ??
+      (provider === "claude" ? balanced.candidate : legacyAutomatic);
     if (selected === null) return null;
+    const choiceReason =
+      selectedBound !== null || inherited !== undefined
+        ? null
+        : balanced.reason;
+    const automaticChoice =
+      provider !== "claude" ||
+      choiceReason === null ||
+      routing.selectionAccountId !== null
+        ? null
+        : {
+            chosenAt: now,
+            reason: choiceReason,
+            family,
+            balance: accountBalance(selected.quota, family, now),
+          };
     if (routing.active === null)
       routing.pinnedAccountId = boundAccountId ?? inherited?.account.id ?? null;
     if (affinityKey !== null && binding === undefined) {
@@ -846,28 +1251,47 @@ export class AccountPoolHub {
     }
     if (active === undefined) {
       active = { accountId: selected.account.id };
-      this.activeAccounts.set(provider, active);
+      if (routing.selectionAccountId === null)
+        this.activeAccounts.set(provider, active);
     }
     routing.binding ??= binding ?? null;
     routing.active ??= active;
     const familyDetour = (accountId: string | null) =>
-      available.some(({ account }) => account.id === accountId) &&
-      !eligible.some(({ account }) => account.id === accountId);
+      available.some(
+        ({ account, quota }) =>
+          account.id === accountId &&
+          !isSharedQuotaExhausted(quota, threshold, now) &&
+          isQuotaExhausted(quota, family, threshold, now),
+      );
     const rebind =
       affinityKey !== null &&
       !familyDetour(boundAccountId) &&
       (bound === undefined ||
         bound.account.id === selected.account.id ||
-        (binding === routing.binding && attempted.has(bound.account.id)));
+        (binding === routing.binding &&
+          attempted.has(bound.account.id) &&
+          !boundIsHeld));
     const advance =
+      routing.selectionAccountId === null &&
       !familyDetour(active.accountId) &&
       (activeAccount === undefined ||
         active.accountId === selected.account.id ||
-        (active === routing.active && attempted.has(active.accountId)));
+        (active === routing.active && attempted.has(active.accountId)) ||
+        (provider === "claude" && automaticChoice !== null));
     return {
       ...selected,
-      keepAffinity: selected.account.id === routing.pinnedAccountId,
+      keepAffinity:
+        selected.account.id === routing.pinnedAccountId &&
+        (provider !== "claude" || routing.selectionAccountId !== null),
+      automaticChoice,
       accept: () => {
+        if (automaticChoice !== null) {
+          this.options.affinity.putAutomaticChoice(
+            provider,
+            selected.account.id,
+            automaticChoice,
+          );
+        }
         if (rebind && this.affinityBindings.get(affinityKey) === binding) {
           const accepted = {
             accountId: selected.account.id,
@@ -889,6 +1313,7 @@ export class AccountPoolHub {
     account: Account,
     adapter: ProviderAdapter,
     use: SecretUse,
+    recover = false,
   ): Promise<AccountSecret> {
     while (true) {
       const existing = this.refreshes.get(account.id);
@@ -911,7 +1336,7 @@ export class AccountPoolHub {
         if (
           secret.kind === "oauth" &&
           backoff?.accessToken === secret.accessToken &&
-          backoff.kind === "rejected"
+          backoff.kind !== "proactive"
         )
           continue;
         if (
@@ -944,7 +1369,7 @@ export class AccountPoolHub {
               use.kind === "rejected" &&
               secret.accessToken === use.accessToken;
             const forceRefresh =
-              explicitlyRejected || backoff?.kind === "rejected";
+              recover || explicitlyRejected || backoff?.kind === "rejected";
             if (forceRefresh && secret.kind === "oauth") {
               flight.use = {
                 kind: "rejected",
@@ -952,13 +1377,15 @@ export class AccountPoolHub {
               };
             }
             const error = this.options.quotas.get(account.id).error;
-            if (error !== null) throw new Error(error);
+            if (error !== null && !recover) throw new Error(error);
             if (
+              !recover &&
               backoff !== undefined &&
               this.options.now() < backoff.retryAt &&
-              (!explicitlyRejected || backoff.kind === "rejected")
+              (!explicitlyRejected || backoff.kind !== "proactive")
             ) {
               if (
+                backoff.kind === "proactive" &&
                 !forceRefresh &&
                 secret.kind === "oauth" &&
                 secret.expiresAt !== null &&
@@ -980,11 +1407,23 @@ export class AccountPoolHub {
               });
               this.refreshBackoffs.delete(account.id);
               if (result.refreshed) {
+                this.options.onOAuthRefresh(
+                  account.provider,
+                  account.id,
+                  "succeeded",
+                  `previousExpiresAt=${secret.kind === "oauth" ? secret.expiresAt : null}, expiresAt=${result.secret.kind === "oauth" ? result.secret.expiresAt : null}, forced=${forceRefresh}.`,
+                );
                 const quota = this.options.quotas.get(account.id);
                 this.options.quotas.put({ ...quota, error: null });
               }
               return result.secret;
             } catch (error) {
+              this.options.onOAuthRefresh(
+                account.provider,
+                account.id,
+                "failed",
+                `${error instanceof OAuthRefreshError ? error.message : "Stored credential refresh failed."} expiresAt=${secret.kind === "oauth" ? secret.expiresAt : null}, forced=${forceRefresh}.`,
+              );
               if (
                 !(error instanceof TransientOAuthRefreshError) ||
                 secret.kind !== "oauth"
@@ -1128,6 +1567,74 @@ export class AccountPoolHub {
     });
   }
 
+  async retryAvailability(
+    provider: PoolProvider,
+    family: ModelFamily,
+  ): Promise<RetryAvailability> {
+    const parent = this.options.getParentRoute();
+    if (parent !== null) {
+      try {
+        const response = await this.options.fetch(
+          `${parent.baseUrl}/retry-availability?provider=${provider}&family=${family}`,
+          {
+            headers: { [HUB_TOKEN_HEADER]: parent.token },
+            signal: AbortSignal.timeout(2_000),
+          },
+        );
+        if (response.ok)
+          return retryAvailabilitySchema.parse(await response.json());
+        await response.body?.cancel();
+      } catch {
+        return { kind: "unavailable", reason: "source-unavailable" };
+      }
+      return { kind: "unavailable", reason: "source-unavailable" };
+    }
+    const accounts = (await this.options.accounts.list()).filter(
+      (account) => account.provider === provider,
+    );
+    return this.accountAvailability(accounts, family);
+  }
+
+  private accountAvailability(
+    accounts: readonly Account[],
+    family: ModelFamily,
+  ): RetryAvailability {
+    const enabled = accounts.filter((account) => account.enabled);
+    if (enabled.length === 0)
+      return { kind: "unavailable", reason: "no-enabled-account" };
+    const now = this.options.now();
+    const threshold = this.options.getSettings().switchThreshold;
+    const resets: number[] = [];
+    let unknown = false;
+    for (const account of enabled) {
+      const quota = this.options.quotas.get(account.id);
+      if (quota.error !== null) continue;
+      if (isUsageRestricted(quota, now)) {
+        unknown = true;
+        continue;
+      }
+      const exhausted =
+        isQuotaExhausted(quota, family, threshold, now) &&
+        !hasExtraUsage(quota);
+      const resetAt = exhausted
+        ? blockingResetAt(quota, family, threshold, now)
+        : now;
+      if (resetAt === null) {
+        unknown = true;
+        continue;
+      }
+      const availableAt = Math.max(resetAt, quota.heldUntil ?? 0);
+      if (availableAt <= now) return { kind: "ready" };
+      resets.push(availableAt);
+    }
+    return resets.length > 0
+      ? { kind: "blocked", retryAt: Math.min(...resets) }
+      : {
+          kind: "unavailable",
+          reason: unknown ? "reset-unknown" : "authentication",
+        };
+  }
+
   private noEligibleResponse(
     accounts: readonly Account[],
     family: ModelFamily,
@@ -1140,31 +1647,39 @@ export class AccountPoolHub {
       );
     }
     const now = this.options.now();
-    const threshold = this.options.getSettings().switchThreshold;
-    const next = accounts
-      .filter((account) => account.enabled)
-      .flatMap((account) => {
-        const quota = this.options.quotas.get(account.id);
-        if (quota.error !== null) return [];
-        const quotaResetAt = blockingResetAt(quota, family, threshold, now);
-        if (
-          quotaResetAt === null &&
-          isQuotaExhausted(quota, family, threshold, now)
-        )
-          return [];
-        const resetAt = Math.max(quota.heldUntil ?? 0, quotaResetAt ?? 0);
-        return resetAt > now ? [resetAt] : [];
-      })
-      .sort((left, right) => left - right)[0];
+    const availability = this.accountAvailability(accounts, family);
+    const next =
+      availability.kind === "blocked" ? availability.retryAt : undefined;
     const retryAfter = Math.max(
       1,
       Math.ceil(((next ?? now + 1_000) - now) / 1_000),
     );
     return adapter.errorResponse(
       429,
-      "No Account Pooler account is currently eligible.",
+      next === undefined
+        ? "No Account Pooler account is currently eligible."
+        : `No Account Pooler account is currently eligible. Next account is expected to be available at ${new Date(next).toISOString()} (in ${retryAfter} seconds).`,
       { "retry-after": String(retryAfter) },
     );
+  }
+
+  private holdUpstreamRejection(
+    accountId: string,
+    accessToken: string,
+    error: TransientOAuthRefreshError,
+  ): void {
+    this.refreshBackoffs.delete(accountId);
+    this.refreshBackoffs.set(accountId, {
+      kind: "upstream",
+      accessToken,
+      retryAt: this.options.now() + UPSTREAM_REJECTION_HOLD_MS,
+      delayMs: UPSTREAM_REJECTION_HOLD_MS,
+      error,
+    });
+    while (this.refreshBackoffs.size > MAX_REFRESH_BACKOFFS) {
+      const oldest = this.refreshBackoffs.keys().next();
+      if (!oldest.done) this.refreshBackoffs.delete(oldest.value);
+    }
   }
 
   private markError(accountId: string, message: string): void {
@@ -1212,6 +1727,8 @@ export function createHub(options: {
   quotas: QuotaStore;
   affinity: PoolAffinityStore;
   hubTokens: HubTokenStore;
+  threadTokens: ThreadTokenStore;
+  routing?: RoutingStore;
   getSettings: () => AccountPoolConfig;
   fetch?: typeof fetch;
   now?: () => number;
@@ -1227,6 +1744,7 @@ export function createHub(options: {
   getParentRoute?: () => ParentPool | null;
   onAccountsChanged?: () => void;
   onUpstreamError?: (provider: PoolProvider, error: unknown) => void;
+  onOAuthRefresh?: HubOptions["onOAuthRefresh"];
 }): AccountPoolHub {
   const adapters: ReadonlyMap<PoolProvider, ProviderAdapter> = new Map([
     [
@@ -1253,6 +1771,8 @@ export function createHub(options: {
     affinity: options.affinity,
     maxAffinityBindings: options.maxAffinityBindings ?? MAX_AFFINITY_BINDINGS,
     hubTokens: options.hubTokens,
+    threadTokens: options.threadTokens,
+    routing: options.routing ?? null,
     getSettings: options.getSettings,
     adapters,
     fetch: options.fetch ?? fetch,
@@ -1261,7 +1781,15 @@ export function createHub(options: {
     getParentRoute: options.getParentRoute ?? (() => null),
     onAccountsChanged: options.onAccountsChanged ?? (() => {}),
     onUpstreamError: options.onUpstreamError ?? (() => {}),
+    onOAuthRefresh: options.onOAuthRefresh ?? (() => {}),
   });
+}
+
+function presentedToken(request: Request): string | null {
+  return (
+    request.headers.get("x-bb-account-pool-token") ??
+    readBearer(request.headers.get("authorization"))
+  );
 }
 
 function readBearer(value: string | null): string | null {
@@ -1273,7 +1801,7 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function waitForDelay(
+export function waitForDelay(
   milliseconds: number,
   signal: AbortSignal,
 ): Promise<void> {

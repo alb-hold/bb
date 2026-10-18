@@ -9,18 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { usePluginBranches } from "./usePluginBranchPickerState";
 
 vi.mock("@/hooks/queries/sidebar-navigation-query", () => ({
-  useSidebarNavigation: () => ({
-    data: {
-      projects: [
-        {
-          id: "project-1",
-          sources: [
-            { type: "local_path", isDefault: true, hostId: "source-host" },
-          ],
-        },
-      ],
-    },
-  }),
+  useSidebarNavigation: () => ({ data: undefined }),
 }));
 
 vi.mock("@/lib/sdk", () => ({
@@ -55,22 +44,6 @@ describe("usePluginBranches", () => {
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
-  });
-
-  it("uses the project source for branch suggestions before a host exists", async () => {
-    const { wrapper } = createQueryClientTestHarness();
-    vi.mocked(readProjectBranchOptions).mockResolvedValue(BRANCHES);
-    const { result } = renderHook(
-      () => usePluginBranches({ hostId: null, projectId: "project-1" }),
-      { wrapper },
-    );
-    await waitFor(() => expect(result.current.branches).toEqual(["release"]));
-    expect(readProjectBranchOptions).toHaveBeenCalledWith(
-      expect.objectContaining({
-        hostId: "source-host",
-        projectId: "project-1",
-      }),
-    );
   });
 
   it("searches cached branches and refreshes them from the host", async () => {
@@ -116,5 +89,30 @@ describe("usePluginBranches", () => {
         query: "release",
       }),
     );
+  });
+
+  it("only requests branches for the query a typist settles on", async () => {
+    const { wrapper } = createQueryClientTestHarness();
+    vi.mocked(readProjectBranchOptions).mockResolvedValue(BRANCHES);
+    const { rerender } = renderHook(
+      ({ query }: { query: string }) =>
+        usePluginBranches({ hostId: "host-1", projectId: "project-1", query }),
+      { wrapper, initialProps: { query: "" } },
+    );
+    await waitFor(() =>
+      expect(readProjectBranchOptions).toHaveBeenCalledTimes(1),
+    );
+
+    for (const query of ["r", "re", "rel", "rele", "relea", "releas"]) {
+      rerender({ query });
+    }
+    rerender({ query: "release" });
+
+    await waitFor(() =>
+      expect(readProjectBranchOptions).toHaveBeenCalledWith(
+        expect.objectContaining({ query: "release" }),
+      ),
+    );
+    expect(readProjectBranchOptions).toHaveBeenCalledTimes(2);
   });
 });

@@ -1,9 +1,12 @@
 import {
+  getLatestThreadSequence,
   getEnvironment,
+  getHost,
   getThread,
   requireThreadLifecycleEventApplied,
   type DbTransaction,
 } from "@bb/db";
+import { isNativeTerminalThread } from "@bb/db";
 import type {
   PromptInput,
   PromptMentionResource,
@@ -42,6 +45,7 @@ import {
 } from "./thread-turn-dispatch.js";
 import { resolvePermissionEscalation } from "./thread-runtime-config.js";
 import { ensureHostSessionReadyForWork } from "../hosts/host-lifecycle.js";
+import { isHostUnavailableApiError } from "../hosts/online-rpc.js";
 import {
   LIVE_DAEMON_COMMAND_TIMEOUT_MS,
   startLiveHostCommand,
@@ -330,6 +334,9 @@ async function queueActiveParentSystemMessage(
   }
 
   deps.hub.notifyThread(args.thread.id, ["events-appended"], {
+    timelineSequence: getLatestThreadSequence(deps.db, {
+      threadId: args.thread.id,
+    }),
     eventTypes: ["client/turn/requested"],
   });
   startLiveHostCommand(deps, {
@@ -399,6 +406,9 @@ async function queueReadyParentSystemMessage(
     { behavior: "immediate" },
   );
   deps.hub.notifyThread(args.thread.id, ["events-appended"], {
+    timelineSequence: getLatestThreadSequence(deps.db, {
+      threadId: args.thread.id,
+    }),
     eventTypes: ["client/turn/requested"],
   });
   startLiveHostCommand(deps, {
@@ -430,12 +440,16 @@ export async function queueParentSystemMessage(
   if (
     !parentThread ||
     parentThread.archivedAt !== null ||
-    parentThread.deletedAt !== null
+    parentThread.deletedAt !== null ||
+    isNativeTerminalThread(deps.db, parentThread.id)
   ) {
     return false;
   }
   const hasPendingInteraction =
-    deps.pendingInteractions.hasTurnBoundPendingThreadInteraction(parentThread.id);
+    deps.pendingInteractions.hasTurnBoundPendingThreadInteraction(
+      parentThread.id,
+    );
+  let hostUnavailable = false;
   if (!hasPendingInteraction) {
     try {
       return await deliverParentSystemMessage(deps, {
@@ -445,7 +459,13 @@ export async function queueParentSystemMessage(
         systemMessageSubject: args.systemMessageSubject,
       });
     } catch (error) {
-      if (!(error instanceof ThreadContextClearInProgressError)) throw error;
+      hostUnavailable = isHostUnavailableApiError(error);
+      if (
+        !(error instanceof ThreadContextClearInProgressError) &&
+        !hostUnavailable
+      ) {
+        throw error;
+      }
     }
   }
 
@@ -456,6 +476,15 @@ export async function queueParentSystemMessage(
       threadId: parentThread.id,
     },
   );
+  const host = hostUnavailable
+    ? getHost(
+        deps.db,
+        requireThreadEnvironment(deps.db, parentThread.id).environment.hostId,
+      )
+    : null;
+  if (hostUnavailable && !host) {
+    throw new Error("Parent host disappeared while queueing a system message");
+  }
   createQueuedThreadMessage(deps.db, deps.hub, {
     threadId: parentThread.id,
     content: args.input,
@@ -466,7 +495,9 @@ export async function queueParentSystemMessage(
     reasoningLevel: execution.reasoningLevel,
     permissionMode: execution.permissionMode,
     serviceTier: execution.serviceTier,
-    waitingOn: { kind: hasPendingInteraction ? "interaction" : "thread-busy" },
+    waitingOn: host
+      ? { kind: "host-offline", hostName: host.name }
+      : { kind: hasPendingInteraction ? "interaction" : "thread-busy" },
     sendAt: null,
     payload: { kind: "inline" },
     systemNotice: {
@@ -474,7 +505,7 @@ export async function queueParentSystemMessage(
       subject: args.systemMessageSubject,
     },
   });
-  if (!hasPendingInteraction) {
+  if (!hasPendingInteraction && !hostUnavailable) {
     requestQueuedMessageDispatch(deps, {
       kind: "thread-ready",
       threadId: parentThread.id,
@@ -500,6 +531,7 @@ export async function deliverParentSystemMessage(
   deps: LoggedPendingInteractionWorkSessionDeps,
   args: DeliverParentSystemMessageArgs,
 ): Promise<boolean> {
+  if (isNativeTerminalThread(deps.db, args.parentThread.id)) return false;
   return withThreadSendGuard(args.parentThread.id, () =>
     deliverParentSystemMessageWithContextGuard(deps, args),
   );

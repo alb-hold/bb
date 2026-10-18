@@ -1,3 +1,4 @@
+import { isClosedProcessStdinError } from "@bb/process-utils";
 import type { Writable } from "node:stream";
 import { z } from "zod";
 import { bridgeErrorDataSchema, type ProviderRecoveryHint } from "../errors.js";
@@ -135,7 +136,6 @@ interface SettleJsonRpcResponseArgs {
   response: JsonRpcObject;
 }
 
-const closedJsonRpcStdinErrorCodes = new Set(["EPIPE", "ERR_STREAM_DESTROYED"]);
 const jsonRpcStdinErrorHandledStreams = new WeakSet<Writable>();
 
 function isJsonRpcObject(value: unknown): value is JsonRpcObject {
@@ -176,16 +176,8 @@ function decodeRecoveryHint(data: unknown): ProviderRecoveryHint | null {
   return parsed.success ? (parsed.data.recovery ?? null) : null;
 }
 
-function isClosedJsonRpcStdinError(error: Error): boolean {
-  return (
-    "code" in error &&
-    typeof error.code === "string" &&
-    closedJsonRpcStdinErrorCodes.has(error.code)
-  );
-}
-
 function handleJsonRpcStdinError(error: Error): void {
-  if (isClosedJsonRpcStdinError(error)) {
+  if (isClosedProcessStdinError(error)) {
     return;
   }
   throw error;
@@ -283,15 +275,7 @@ export function settleJsonRpcResponse(args: SettleJsonRpcResponseArgs): void {
   pending.resolve(args.response.result);
 }
 
-export function sendJsonRpc(
-  child: JsonRpcPeer,
-  message: JsonRpcMessage | ProviderRequestCommandPlan,
-): void {
-  const line = JSON.stringify(toJsonRpcMessage(message));
-  writeJsonRpcLine(child, line);
-}
-
-export function toJsonRpcMessage(
+function toJsonRpcMessage(
   message: JsonRpcMessage | ProviderRequestCommandPlan,
 ): JsonRpcMessage {
   if ("jsonrpc" in message) {
@@ -337,7 +321,7 @@ export function sendJsonRpcRequest<TResult>(
         reject(error);
       },
     });
-    sendJsonRpc(args.child, withId);
+    writeJsonRpcLine(args.child, JSON.stringify(withId));
   });
 }
 

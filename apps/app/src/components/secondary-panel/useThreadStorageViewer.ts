@@ -38,13 +38,12 @@ export function useThreadStorageViewer({
     },
     [threadId],
   );
-
   return {
     checkThreadStorageFileExists,
     isThreadStorageFilesLoading,
-    threadStorageFilesError,
+    threadStorageFilesError:
+      threadStorageFiles === undefined ? threadStorageFilesError : null,
     threadStorageFiles,
-    threadStorageRootPath: threadStorageFiles?.storageRootPath ?? null,
     refetchThreadStorageFiles,
   };
 }

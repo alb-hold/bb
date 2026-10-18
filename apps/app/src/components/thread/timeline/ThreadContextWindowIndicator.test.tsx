@@ -2,9 +2,33 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it } from "vitest";
 import type { ThreadContextWindowUsage } from "@bb/server-contract";
-import { ThreadContextWindowCard } from "./ThreadContextWindowIndicator";
+import {
+  ThreadContextWindowCard,
+  ThreadContextWindowIndicator,
+} from "./ThreadContextWindowIndicator";
 
 afterEach(cleanup);
+
+it("keeps the context trigger clear of compact footer siblings without changing desktop spacing", () => {
+  const usage: ThreadContextWindowUsage = {
+    usedTokens: 1000,
+    modelContextWindow: 10000,
+    estimated: true,
+  };
+
+  render(<ThreadContextWindowIndicator usage={usage} />);
+
+  const trigger = screen.getByRole("button", {
+    name: "Context window 10% used",
+  });
+  const triggerClasses = trigger.className.split(/\s+/);
+
+  expect(triggerClasses).toContain("-m-1");
+  expect(triggerClasses).toContain("max-md:ml-0");
+  expect(triggerClasses).toContain("max-md:-mr-3");
+  expect(triggerClasses).toContain("max-md:h-11");
+  expect(triggerClasses).not.toContain("max-md:-ml-1");
+});
 
 it("shows details when a snapshot arrives and removes them when only aggregate usage remains", () => {
   const usage: ThreadContextWindowUsage = {
@@ -48,4 +72,21 @@ it("shows details when a snapshot arrives and removes them when only aggregate u
   expect(screen.queryByText("Messages")).toBeNull();
   expect(screen.queryByRole("button", { name: "Hide details" })).toBeNull();
   expect(screen.getByText("10% used")).toBeTruthy();
+});
+
+it("shows the session cost only when the provider reports one", () => {
+  const usage: ThreadContextWindowUsage = {
+    usedTokens: 1000,
+    modelContextWindow: 10000,
+    estimated: false,
+  };
+  const { rerender } = render(<ThreadContextWindowCard usage={usage} />);
+  expect(screen.queryByText("Session cost")).toBeNull();
+  rerender(
+    <ThreadContextWindowCard
+      usage={{ ...usage, cost: { amount: 1.5, currency: "USD" } }}
+    />,
+  );
+  expect(screen.getByText("Session cost")).toBeTruthy();
+  expect(screen.getByText(/1\.50/)).toBeTruthy();
 });

@@ -41,9 +41,9 @@ import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
 import {
   OverflowFade,
   type OverflowFadeTone,
-} from "@/components/ui/overflow-fade";
+} from "@bb/shared-ui/overflow-fade";
 import { TabPill } from "@/components/ui/tab-pill";
-import { useDragClickSuppression } from "@/components/ui/use-drag-click-suppression";
+import { useDragClickSuppression } from "@bb/shared-ui/use-drag-click-suppression";
 import { cn } from "@bb/shared-ui/lib/utils";
 import {
   MACOS_APP_REGION_NO_DRAG_CLASS,
@@ -61,7 +61,7 @@ const TAB_STRIP_SCROLL_BUTTON_CLASS =
 
 const EDGE_EPSILON_PX = 1;
 
-export const SECONDARY_PANEL_TAB_STRIP_FADE_TONE: OverflowFadeTone = "sidebar";
+const SECONDARY_PANEL_TAB_STRIP_FADE_TONE: OverflowFadeTone = "sidebar";
 
 class InertTouchSensor extends TouchSensor {
   static override setup(): () => void {
@@ -651,8 +651,10 @@ function PanelTab({
       enlargeCloseTargetOnCoarsePointer={
         tab.tab.kind === "workspace-file-preview" ||
         tab.tab.kind === "host-file-preview" ||
-        tab.tab.kind === "thread-storage-file-preview"
+        tab.tab.kind === "thread-storage-file-preview" ||
+        tab.tab.kind === "attachment-file-preview"
       }
+      attention={tab.attention}
       closeAction={
         tab.isPinned
           ? null

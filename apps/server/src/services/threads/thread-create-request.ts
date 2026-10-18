@@ -4,6 +4,7 @@ import type {
   StartedOnBehalfOf,
   ThreadCreateOrigin,
   ThreadOriginKind,
+  ThreadParentNotifications,
   ThreadVisibility,
 } from "@bb/domain";
 import type {
@@ -23,22 +24,28 @@ export interface ThreadCreateServiceRequestInput {
    */
   sendAt?: CreateThreadRequest["sendAt"];
   input: PromptInput[];
+  nativeTerminal?: CreateThreadRequest["nativeTerminal"];
   pluginMetadata?: CreateThreadRequest["pluginMetadata"];
   pluginSubmission?: CreateThreadRequest["pluginSubmission"];
+  experimental_pluginCreateData?: CreateThreadRequest["experimental_pluginCreateData"];
   sectionId?: CreateThreadRequest["sectionId"];
+  pinned?: CreateThreadRequest["pinned"];
   model?: CreateThreadRequest["model"];
   origin: ThreadCreateOrigin | null;
   originPluginId?: CreateThreadRequest["originPluginId"];
   originKind?: ThreadOriginKind | null;
   parentThreadId?: string;
+  parentNotifications?: ThreadParentNotifications;
   lifecycleOwnerThreadId?: string;
   permissionMode?: CreateThreadRequest["permissionMode"];
   projectId: string;
   providerId?: CreateThreadRequest["providerId"];
   reasoningLevel?: CreateThreadRequest["reasoningLevel"];
   serviceTier?: CreateThreadRequest["serviceTier"];
+  sessionOptions?: CreateThreadRequest["sessionOptions"];
   sourceSeqEnd?: CreateThreadRequest["sourceSeqEnd"];
   sourceThreadId?: string;
+  spawnedByThreadId?: string;
   startedOnBehalfOf: StartedOnBehalfOf | null;
   title?: string;
   visibility?: ThreadVisibility;
@@ -51,6 +58,7 @@ export interface ThreadCreateServiceRequest extends Omit<
   environment: EnvironmentArgs | ProviderEnvironmentArgs;
   pluginMetadata: { pluginId: string; metadata: JsonObject } | null;
   providerId: string;
+  parentNotifications: ThreadParentNotifications;
   titleFallback: string | null;
   visibility: ThreadVisibility;
 }

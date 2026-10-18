@@ -87,6 +87,22 @@ export const APP_COMMAND_GROUPS: readonly AppCommandGroup[] = [
       ),
       command("window.new", "New window", "Open another bb desktop window."),
       command(
+        "window.find",
+        "Find in window",
+        "Search the text shown in the current bb desktop window.",
+      ),
+      command(
+        "window.reload",
+        "Reload window",
+        "Reload the current bb desktop window.",
+      ),
+      command("history.back", "Go back", "Go back in this window's history."),
+      command(
+        "history.forward",
+        "Go forward",
+        "Go forward in this window's history.",
+      ),
+      command(
         "app.back",
         "Back to app",
         "Return from Settings, Plugins, or Skills to the app.",
@@ -143,6 +159,11 @@ export const APP_COMMAND_GROUPS: readonly AppCommandGroup[] = [
         "Show or hide the secondary panel.",
       ),
       command(
+        "panel.fullScreen.toggle",
+        "Toggle panel full screen",
+        "Expand the right panel over the conversation, or restore the conversation.",
+      ),
+      command(
         "pane.focus.left",
         "Focus chat pane left",
         "Focus the chat pane to the left of the current pane.",
@@ -195,9 +216,29 @@ export const APP_COMMAND_GROUPS: readonly AppCommandGroup[] = [
         "Open the desktop log viewer for the bb server and host daemon.",
       ),
       command(
+        "dataDirectory.open",
+        "Open data directory",
+        "Reveal the bb data directory in the system file manager.",
+      ),
+      command(
         "notifications.open",
         "Show all notifications",
         "Open the notification center to read and clear past notifications.",
+      ),
+      command(
+        "plugins.enterSafeMode",
+        "Turn on plugin safe mode",
+        "Stop every plugin you installed, keeping each plugin's enabled setting. Plugins included with bb keep running.",
+      ),
+      command(
+        "plugins.exitSafeMode",
+        "Turn off plugin safe mode",
+        "Restart the plugins that were enabled before safe mode.",
+      ),
+      command(
+        "plugins.pruneCache",
+        "Clean up plugin cache",
+        "Delete cached plugin versions that no installed plugin uses, such as versions left by earlier bb releases.",
       ),
     ],
   },
@@ -220,6 +261,11 @@ export const APP_COMMAND_GROUPS: readonly AppCommandGroup[] = [
         "Open a terminal in the secondary panel.",
       ),
       command(
+        "terminal.attention.next",
+        "Next terminal needing attention",
+        "Open the oldest terminal with uncleared attention.",
+      ),
+      command(
         "workspace.openPreferred",
         "Open in preferred app",
         "Open the workspace in the preferred editor or terminal.",
@@ -233,6 +279,11 @@ export const APP_COMMAND_GROUPS: readonly AppCommandGroup[] = [
         "composer.focus",
         "Focus composer",
         "Focus the active composer's input and move the caret to the end.",
+      ),
+      command(
+        "composer.searchPromptHistory",
+        "Search prompt history",
+        "Search prompts you sent in any thread and put one in the active composer.",
       ),
       command(
         "modelPicker.toggle",
@@ -302,19 +353,3 @@ export const APP_COMMAND_GROUPS: readonly AppCommandGroup[] = [
     ),
   },
 ];
-
-const APP_COMMAND_METADATA = new Map(
-  APP_COMMAND_GROUPS.flatMap((group) =>
-    group.commands.map((metadata) => [metadata.command, metadata]),
-  ),
-);
-
-export function getAppCommandMetadata(
-  commandId: AppCommandId,
-): AppCommandMetadata {
-  const metadata = APP_COMMAND_METADATA.get(commandId);
-  if (metadata === undefined) {
-    throw new Error(`Missing metadata for app command ${commandId}`);
-  }
-  return metadata;
-}

@@ -17,11 +17,19 @@ import {
 import { createProjectsArea, type ProjectsArea } from "./areas/projects.js";
 import { createProvidersArea, type ProvidersArea } from "./areas/providers.js";
 import { createPluginsArea, type PluginsArea } from "./areas/plugins.js";
+import {
+  createPromptHistoryArea,
+  type ExperimentalPromptHistoryArea,
+} from "./areas/prompt-history.js";
 import { createBbRealtimeClient } from "./realtime-client.js";
 import type { BbRealtime } from "./realtime-types.js";
 import { createStatusArea, type StatusArea } from "./areas/status.js";
 import { createSkillsArea, type SkillsArea } from "./areas/skills.js";
 import { createSpendArea, type SpendArea } from "./areas/spend.js";
+import {
+  createNativeTerminalsArea,
+  type NativeTerminalsArea,
+} from "./areas/native-terminals.js";
 import { createThemeArea, type ThemeArea } from "./areas/theme.js";
 import { createSystemArea, type SystemArea } from "./areas/system.js";
 import { createTerminalsArea, type TerminalsArea } from "./areas/terminals.js";
@@ -45,11 +53,13 @@ export interface CreateBbSdkWithGuideArgs extends CreateBbSdkArgs {
 
 export interface BbSdkAreas extends BbRealtime {
   experimental_desktopBrowsers: ExperimentalDesktopBrowsersArea;
+  experimental_promptHistory: ExperimentalPromptHistoryArea;
   experimental_server: ExperimentalServerArea;
   environments: EnvironmentsArea;
   files: FilesArea;
   hosts: HostsArea;
   projects: ProjectsArea;
+  nativeTerminals: NativeTerminalsArea;
   plugins: PluginsArea;
   providers: ProvidersArea;
   skills: SkillsArea;
@@ -77,6 +87,7 @@ export function createBbSdk(
   });
   const areas: BbSdkAreas = {
     experimental_desktopBrowsers: createDesktopBrowsersArea(sdkContext),
+    experimental_promptHistory: createPromptHistoryArea(sdkContext),
     experimental_server: createServerArea(sdkContext),
     environments: createEnvironmentsArea(sdkContext),
     files: createFilesArea(sdkContext),
@@ -85,6 +96,7 @@ export function createBbSdk(
       return realtime.subscribe(args);
     },
     projects: createProjectsArea(sdkContext),
+    nativeTerminals: createNativeTerminalsArea(sdkContext),
     plugins: createPluginsArea(sdkContext),
     providers: createProvidersArea(sdkContext),
     skills: createSkillsArea(sdkContext),

@@ -32,6 +32,7 @@ import {
   setPluginSlotRegistrations,
 } from "@/lib/plugin-slots";
 import { PluginsOverview } from "@/components/plugin/PluginsOverview";
+import { pluginDetailKeyFromRoute } from "@/components/plugin/plugin-detail-key";
 import { PluginDetailPaneView, PluginsView } from "./ToolsView";
 import { AppRoutes } from "../App";
 import {
@@ -43,28 +44,23 @@ import {
 } from "@/components/tools/PluginDetail";
 import type { PluginCatalogSearchEntry } from "@/hooks/queries/plugin-catalog-queries";
 import { pluginSourceQueryKey } from "@/hooks/queries/query-keys";
+import { formatAbsoluteDate } from "@/components/plugin/management/plugin-ui";
 import type { PluginFrontendDiagnostic } from "@/lib/plugin-frontend";
 import {
   makeInstalledPlugin,
   makePluginListItem,
   makePluginRegistrationSet,
 } from "@/test/fixtures/plugins";
+import { LocationProbe } from "@/test/location-probe";
 
 vi.mock("@/components/layout/AppLayout", () => ({
   AppLayout: ({ children }: { children: ReactNode }) => <>{children}</>,
 }));
 
-vi.mock("react-resizable-panels", async () => {
-  const { createRequire } = await import("node:module");
-  const { dirname, join } = await import("node:path");
-  const require = createRequire(import.meta.url);
-  return require(
-    join(
-      dirname(require.resolve("react-resizable-panels/package.json")),
-      "dist/react-resizable-panels.browser.cjs.js",
-    ),
-  );
-});
+vi.mock(
+  "react-resizable-panels",
+  () => import("@/test/react-resizable-panels-browser"),
+);
 
 const GITHUB_PLUGIN = makePluginListItem({
   id: "github",
@@ -100,6 +96,8 @@ const GITHUB_CATALOG_ENTRY = {
   official: true,
   author: null,
   installed: false,
+  conflictingInstallSource: null,
+  installedByDefault: false,
   installs: null,
   compatible: true,
   incompatibleReason: null,
@@ -112,6 +110,10 @@ function RoutedPluginsView() {
   const pluginId = location.pathname.startsWith(prefix)
     ? decodeURIComponent(location.pathname.slice(prefix.length))
     : undefined;
+  const detailKey =
+    pluginId === undefined
+      ? undefined
+      : pluginDetailKeyFromRoute(pluginId, location.search);
   return (
     <>
       <TooltipProvider>
@@ -122,7 +124,7 @@ function RoutedPluginsView() {
             <PluginsOverview mode="installed" />
           )
         ) : (
-          <PluginsView pluginId={pluginId} />
+          <PluginsView detailKey={detailKey} />
         )}
       </TooltipProvider>
       <LocationProbe />
@@ -130,19 +132,13 @@ function RoutedPluginsView() {
   );
 }
 
-function LocationProbe() {
-  const location = useLocation();
-  return (
-    <>
-      <output data-testid="route-path">{location.pathname}</output>
-      <output data-testid="route-search">{location.search}</output>
-    </>
-  );
-}
-
 function HistoryBackButton() {
   const navigate = useNavigate();
   return <button onClick={() => navigate(-1)}>Browser back</button>;
+}
+
+function renderWithQueryClient(ui: ReactNode) {
+  return render(ui, { wrapper: createQueryClientTestHarness().wrapper });
 }
 
 afterEach(() => {
@@ -156,7 +152,7 @@ afterEach(() => {
 describe("PluginDetail official catalog lifecycle", () => {
   it("offers Install from an unowned BB Official plugin detail page", () => {
     const onInstall = vi.fn();
-    const { container } = render(
+    const { container } = renderWithQueryClient(
       <CatalogPluginDetail
         entry={GITHUB_CATALOG_ENTRY}
         onInstall={onInstall}
@@ -167,7 +163,7 @@ describe("PluginDetail official catalog lifecycle", () => {
 
     expect(screen.getByRole("heading", { name: "GitHub" })).toBeTruthy();
     expect(screen.getAllByText("BB Official").length).toBeGreaterThan(0);
-    expect(screen.getByText("Developer tools")).toBeTruthy();
+    expect(screen.queryByText("Developer tools")).toBeNull();
     expect(
       screen.getByText("Browse GitHub issues and pull requests in BB."),
     ).toBeTruthy();
@@ -179,7 +175,7 @@ describe("PluginDetail official catalog lifecycle", () => {
   });
 
   it("links the catalog entry's repository from the metadata line", () => {
-    render(
+    renderWithQueryClient(
       <CatalogPluginDetail
         entry={{
           ...GITHUB_CATALOG_ENTRY,
@@ -199,7 +195,7 @@ describe("PluginDetail official catalog lifecycle", () => {
   });
 
   it("loads remote screenshots only in detail and shows the listed date", () => {
-    const { container } = render(
+    const { container } = renderWithQueryClient(
       <CatalogPluginDetail
         entry={{
           ...GITHUB_CATALOG_ENTRY,
@@ -224,15 +220,44 @@ describe("PluginDetail official catalog lifecycle", () => {
     expect(container.textContent).not.toContain("Last updated");
   });
 
+  it("links the category from the byline and drops the duplicate official marketplace", () => {
+    renderWithQueryClient(
+      <MemoryRouter>
+        <CatalogPluginDetail
+          entry={{
+            ...GITHUB_CATALOG_ENTRY,
+            categoryId: "code-and-reviews",
+            category: "Code & Reviews",
+          }}
+          onInstall={() => undefined}
+          catalogEntries={[]}
+          onOpenPlugin={() => undefined}
+        />
+      </MemoryRouter>,
+    );
+
+    const link = screen.getByRole("link", {
+      name: "Browse Code & Reviews plugins",
+    });
+    expect(link.getAttribute("href")).toBe(
+      "/plugins?shelf=category%3Acode-and-reviews",
+    );
+    expect(screen.queryByText("Marketplace")).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Details" })).toBeNull();
+  });
+
   it("explains why an incompatible official plugin cannot be installed", () => {
     const incompatibleEntry = {
       ...GITHUB_CATALOG_ENTRY,
       compatible: false,
       incompatibleReason: "Requires bb 0.20 or newer.",
     };
-    render(
+    renderWithQueryClient(
       <>
-        <CatalogPluginDetailBanner entry={incompatibleEntry} />
+        <CatalogPluginDetailBanner
+          entry={incompatibleEntry}
+          onOpenPlugin={vi.fn()}
+        />
         <CatalogPluginDetail
           entry={incompatibleEntry}
           onInstall={() => {}}
@@ -257,13 +282,11 @@ describe("PluginDetail official catalog lifecycle", () => {
     expect(
       screen
         .getByRole("button", { name: "Install GitHub" })
-        .hasAttribute("disabled"),
-    ).toBe(true);
+        .getAttribute("aria-disabled"),
+    ).toBe("true");
   });
 
   it("keeps catalog provenance and release management in the unified detail taxonomy", async () => {
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.assign(navigator, { clipboard: { writeText } });
     const { wrapper: QueryClientWrapper } = createQueryClientTestHarness();
     const onDelete = vi.fn();
     const { container } = render(
@@ -287,12 +310,12 @@ describe("PluginDetail official catalog lifecycle", () => {
     );
 
     expect(screen.getAllByText("BB Official").length).toBeGreaterThan(0);
-    expect(screen.getByText("Developer tools")).toBeTruthy();
+    expect(screen.queryByText("Developer tools")).toBeNull();
     expect(
       screen.queryByRole("button", { name: "Uninstall GitHub" }),
     ).toBeNull();
 
-    expect(screen.getByText("Release")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Details" })).toBeTruthy();
     expect(
       screen.getByText("Browse GitHub issues and pull requests in BB."),
     ).toBeTruthy();
@@ -302,15 +325,10 @@ describe("PluginDetail official catalog lifecycle", () => {
         .closest("[data-resource-detail-section]")
         ?.getAttribute("data-resource-detail-section"),
     ).toBe("release");
-    expect(screen.getByText("~/.bb/plugins/github")).toBeTruthy();
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: "Copy plugin path: /Users/you/.bb/plugins/github",
-      }),
-    );
-    await waitFor(() => {
-      expect(writeText).toHaveBeenCalledWith("/Users/you/.bb/plugins/github");
-    });
+    expect(screen.queryByText("~/.bb/plugins/github")).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: /Copy plugin path/u }),
+    ).toBeNull();
     expect(screen.getByText("Updates with bb")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Check now" })).toBeNull();
 
@@ -323,7 +341,7 @@ describe("PluginDetail official catalog lifecycle", () => {
     expect(onDelete).toHaveBeenCalledWith(GITHUB_PLUGIN);
   });
 
-  it("keeps update in the Release section without embedding it in the table", () => {
+  it("keeps the update action separate from Details metadata", () => {
     const { wrapper: QueryClientWrapper } = createQueryClientTestHarness();
     const plugin: PluginListItem = {
       ...GITHUB_PLUGIN,
@@ -360,7 +378,7 @@ describe("PluginDetail official catalog lifecycle", () => {
       name: "Update GitHub to 1.5.0",
     });
     const activation = screen.getByRole("switch", { name: "Disable GitHub" });
-    const path = screen.getByText("~/.bb/plugins/github");
+    const path = screen.queryByText("~/.bb/plugins/github");
     const releaseSection = document.querySelector(
       '[data-resource-detail-section="release"]',
     );
@@ -368,23 +386,20 @@ describe("PluginDetail official catalog lifecycle", () => {
     expect(releaseSection?.contains(version)).toBe(true);
     expect(releaseSection?.contains(update)).toBe(true);
     expect(releaseSection?.contains(activation)).toBe(false);
-    expect(releaseSection?.contains(path)).toBe(false);
-    expect(version.closest("td")).not.toBe(update.closest("td"));
-    expect(update.closest("table")).toBeNull();
-    const updateRow = screen
-      .getByRole("rowheader", { name: "Update" })
-      .closest("tr");
-    const updateLabel = screen.getByRole("rowheader", { name: "Update" });
+    expect(path).toBeNull();
+    expect(version.closest("dl")).not.toBeNull();
+    expect(update.closest("dl")).toBeNull();
+    const updateLabel = screen.getByText("Update", { selector: "p" });
+    const updateRow = updateLabel.parentElement;
     expect(updateRow).not.toBeNull();
     if (updateRow === null) return;
-    const updateDetails = within(updateRow).getByRole("cell");
+    const updateDetails = updateRow.querySelector('[role="status"]');
+    expect(updateRow.closest("dl")).toBeNull();
     expect(updateRow?.textContent).toContain("1.5.0");
     expect(updateRow?.textContent).toContain("Available");
     expect(updateRow?.contains(update)).toBe(false);
-    expect(updateLabel.tagName).toBe("TH");
-    expect(updateDetails.tagName).toBe("TD");
-    expect(updateLabel).not.toBe(updateDetails);
-    const versionLabel = screen.getByRole("rowheader", { name: "Version" });
+    expect(updateDetails?.textContent).toContain("1.5.0");
+    const versionLabel = screen.getByText("Version", { selector: "dt" });
     expect(releaseSection?.contains(versionLabel)).toBe(true);
   });
 
@@ -419,9 +434,59 @@ describe("PluginDetail official catalog lifecycle", () => {
       </MemoryRouter>,
     );
 
-    expect(screen.getByRole("rowheader", { name: "Installed" })).toBeTruthy();
+    expect(screen.getByText("Installed", { selector: "dt" })).toBeTruthy();
     expect(screen.getByText("Install date unavailable")).toBeTruthy();
     expect(screen.queryByText("Updates with bb")).toBeNull();
+  });
+
+  it("loads the install date for a local plugin", async () => {
+    const installedAt = Date.UTC(2026, 8, 1);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) =>
+        String(input) === "/api/v1/plugins/github/source"
+          ? Response.json({
+              requested: "path:/Users/you/src/bb-plugin-github",
+              resolved: "0.1.0",
+              engines: {},
+              installedAt,
+              history: [],
+            })
+          : Response.json({ error: "not found" }, { status: 404 }),
+      ),
+    );
+    const plugin: PluginListItem = {
+      ...GITHUB_PLUGIN,
+      source: "path:/Users/you/src/bb-plugin-github",
+      rootDir: "/Users/you/src/bb-plugin-github",
+      provenance: "direct",
+      catalogEntryId: null,
+      publisherLabel: null,
+    };
+    const { wrapper: QueryClientWrapper } = createQueryClientTestHarness();
+    render(
+      <MemoryRouter>
+        <QueryClientWrapper>
+          <PluginDetail
+            isLoading={false}
+            plugin={plugin}
+            pending={false}
+            openSourceDisabled
+            onToggle={() => {}}
+            onEdit={() => {}}
+            onOpenSource={() => {}}
+            onDelete={() => {}}
+            catalogEntries={[]}
+            onOpenPlugin={() => undefined}
+          />
+        </QueryClientWrapper>
+      </MemoryRouter>,
+    );
+
+    expect(
+      await screen.findByText(formatAbsoluteDate(installedAt)),
+    ).toBeTruthy();
+    expect(screen.queryByText("Loading…")).toBeNull();
   });
 
   it.each([
@@ -450,7 +515,7 @@ describe("PluginDetail official catalog lifecycle", () => {
       actionName: null,
     },
   ])(
-    "places $state information in the Update row and keeps its action above the table",
+    "places $state information below metadata and keeps its action in the section header",
     ({ updateState, expected, actionName }) => {
       const { wrapper: QueryClientWrapper } = createQueryClientTestHarness();
       render(
@@ -479,19 +544,19 @@ describe("PluginDetail official catalog lifecycle", () => {
         </MemoryRouter>,
       );
 
-      const updateLabel = screen.getByRole("rowheader", { name: "Update" });
-      const updateRow = updateLabel.closest("tr");
+      const updateLabel = screen.getByText("Update", { selector: "p" });
+      const updateRow = updateLabel.parentElement;
       const status = screen.getByRole("status", { name: expected });
       expect(updateRow?.contains(status)).toBe(true);
       expect(screen.queryByText(expected)).toBeNull();
       expect(
-        screen.getByRole("rowheader", { name: "Version" }).closest("tr"),
+        screen.getByText("Version", { selector: "dt" }).parentElement,
       ).not.toBe(updateRow);
       const action =
         actionName === null
           ? null
           : screen.getByRole("button", { name: actionName });
-      expect(action?.closest("table") ?? null).toBeNull();
+      expect(action?.closest("dl") ?? null).toBeNull();
       expect(screen.queryByRole("dialog")).toBeNull();
     },
   );
@@ -586,6 +651,111 @@ describe("PluginDetail official catalog lifecycle", () => {
         "Included with BB; disable this plugin instead.",
       ),
     ).not.toHaveLength(0);
+  });
+
+  it("copies the public marketplace link for a BB Community catalog entry", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    const entry = {
+      ...GITHUB_CATALOG_ENTRY,
+      entryId: "acme github",
+      pluginId: "acme-github",
+      marketplace: "bb-community",
+      marketplaceDisplayName: "BB Community",
+      official: false,
+    } satisfies PluginCatalogSearchEntry;
+    renderWithQueryClient(
+      <CatalogPluginDetail
+        entry={entry}
+        onInstall={() => {}}
+        catalogEntries={[entry]}
+        onOpenPlugin={() => undefined}
+      />,
+    );
+
+    fireEvent.pointerDown(
+      screen.getByRole("button", { name: "GitHub actions" }),
+    );
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: "Copy marketplace link" }),
+    );
+    await waitFor(() =>
+      expect(writeText).toHaveBeenCalledWith(
+        "https://getbb.app/marketplace/acme%20github",
+      ),
+    );
+  });
+
+  it("copies the marketplace link for an installed BB Community plugin without a loaded catalog entry", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    const { wrapper: QueryClientWrapper } = createQueryClientTestHarness();
+    render(
+      <MemoryRouter>
+        <QueryClientWrapper>
+          <PluginDetail
+            isLoading={false}
+            plugin={{
+              ...GITHUB_PLUGIN,
+              source: "github:acme/bb-github",
+              catalogEntryId: "acme-github",
+              catalogMarketplaceName: "bb-community",
+            }}
+            pending={false}
+            openSourceDisabled
+            onToggle={() => {}}
+            onEdit={() => {}}
+            onOpenSource={() => {}}
+            onDelete={() => {}}
+            catalogEntries={[]}
+            onOpenPlugin={() => undefined}
+          />
+        </QueryClientWrapper>
+      </MemoryRouter>,
+    );
+
+    fireEvent.pointerDown(
+      screen.getByRole("button", { name: "GitHub actions" }),
+    );
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: "Copy marketplace link" }),
+    );
+    await waitFor(() =>
+      expect(writeText).toHaveBeenCalledWith(
+        "https://getbb.app/marketplace/acme-github",
+      ),
+    );
+  });
+
+  it("offers no marketplace link for plugins outside BB Community", async () => {
+    const { wrapper: QueryClientWrapper } = createQueryClientTestHarness();
+    render(
+      <MemoryRouter>
+        <QueryClientWrapper>
+          <PluginDetail
+            isLoading={false}
+            plugin={GITHUB_PLUGIN}
+            pending={false}
+            openSourceDisabled
+            onToggle={() => {}}
+            onEdit={() => {}}
+            onOpenSource={() => {}}
+            onDelete={() => {}}
+            catalogEntry={GITHUB_CATALOG_ENTRY}
+            catalogEntries={[GITHUB_CATALOG_ENTRY]}
+            onOpenPlugin={() => undefined}
+          />
+        </QueryClientWrapper>
+      </MemoryRouter>,
+    );
+
+    fireEvent.pointerDown(
+      screen.getByRole("button", { name: "GitHub actions" }),
+    );
+    await screen.findByRole("menuitem", { name: "Uninstall" });
+    expect(
+      screen.queryByRole("menuitem", { name: "Copy marketplace link" }),
+    ).toBeNull();
   });
 });
 
@@ -723,7 +893,7 @@ describe("BB Official plugin detail routing", () => {
       expect(screen.getByRole("button", { name: "Close GitHub" })).toBeTruthy();
       fireEvent.click(screen.getByRole("link", { name: "Browse plugins" }));
       await waitFor(() =>
-        expect(screen.getByTestId("route-search").textContent).toBe(""),
+        expect(screen.getByTestId("location").textContent).toBe("/plugins"),
       );
       expect(
         screen.getByRole("button", { name: "Close Automations" }),
@@ -740,6 +910,110 @@ describe("BB Official plugin detail routing", () => {
       ).toBeNull();
     },
   );
+
+  it("opens a marketplace entry instead of a local plugin that shares its id", async () => {
+    const marketplaceCanvas = {
+      ...GITHUB_CATALOG_ENTRY,
+      entryId: "canvas",
+      pluginId: "canvas",
+      displayName: "Canvas",
+      description: "Draw diagrams on a shared tldraw canvas.",
+      source: "git:https://github.com/example/canvas.git@main",
+      marketplace: "bb-community",
+      marketplaceDisplayName: "BB Community",
+      publisherKey: "bb-community",
+      publisherLabel: "BB Community",
+      official: false,
+      conflictingInstallSource: "path:/Users/you/git/canvas",
+    } satisfies PluginCatalogSearchEntry;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/api/v1/plugins") {
+          return new Response(
+            JSON.stringify({
+              enabled: true,
+              plugins: [
+                makeInstalledPlugin({
+                  id: "canvas",
+                  name: "Canvas",
+                  description: "Edit .mdx files beside the chat.",
+                  source: "path:/Users/you/git/canvas",
+                  rootDir: "/Users/you/git/canvas",
+                  provenance: "direct",
+                }),
+              ],
+            }),
+            { headers: { "content-type": "application/json" } },
+          );
+        }
+        if (url.startsWith("/api/v1/plugin-catalog/search")) {
+          return new Response(
+            JSON.stringify({ results: [marketplaceCanvas], collections: [] }),
+            { headers: { "content-type": "application/json" } },
+          );
+        }
+        return new Response(JSON.stringify({ error: "not found" }), {
+          status: 404,
+          headers: { "content-type": "application/json" },
+        });
+      }),
+    );
+
+    const { wrapper: QueryClientWrapper } = createQueryClientTestHarness();
+    render(
+      <MemoryRouter initialEntries={["/plugins?q=canvas"]}>
+        <Routes>
+          <Route path="/plugins/*" element={<RoutedPluginsView />} />
+        </Routes>
+      </MemoryRouter>,
+      { wrapper: QueryClientWrapper },
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Open Canvas details" }),
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("location").textContent).toBe(
+        "/plugins/canvas?q=canvas&listing=bb-community",
+      );
+    });
+    await waitFor(() => {
+      expect(document.querySelector("[data-plugin-summary]")?.textContent).toBe(
+        "Draw diagrams on a shared tldraw canvas.",
+      );
+    });
+    expect(screen.getByText("Another plugin uses this ID")).toBeTruthy();
+    const installButtons = screen.getAllByRole("button", { name: /Install/u });
+    expect(installButtons).toHaveLength(2);
+    for (const button of installButtons) {
+      expect(button.getAttribute("aria-disabled")).toBe("true");
+    }
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "View installed plugin" }),
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId("location").textContent).toBe(
+        "/plugins/canvas?q=canvas",
+      );
+    });
+    await waitFor(() => {
+      expect(document.querySelector("[data-plugin-summary]")?.textContent).toBe(
+        "Edit .mdx files beside the chat.",
+      );
+    });
+    expect(screen.getByText("Also published in BB Community")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "View listing" }));
+    await waitFor(() => {
+      expect(screen.getByTestId("location").textContent).toBe(
+        "/plugins/canvas?q=canvas&listing=bb-community",
+      );
+    });
+  });
 
   it("uses the installed catalog identity when plugin ids collide", async () => {
     const firstCatalogEntry = {
@@ -948,7 +1222,7 @@ describe("BB Official plugin detail routing", () => {
             path="/plugins/:pluginId"
             element={
               <TooltipProvider>
-                <PluginsView pluginId="github" />
+                <PluginsView detailKey="github" />
               </TooltipProvider>
             }
           />
@@ -1061,9 +1335,8 @@ describe("BB Official plugin detail routing", () => {
         screen.getByRole("button", { name: `Close ${pluginName}` }),
       );
       await waitFor(() => {
-        expect(screen.getByTestId("route-path").textContent).toBe("/plugins");
-        expect(screen.getByTestId("route-search").textContent).toBe(
-          installed ? "?view=installed&query=Local+GitHub" : "",
+        expect(screen.getByTestId("location").textContent).toBe(
+          installed ? "/plugins?view=installed&query=Local+GitHub" : "/plugins",
         );
         expect(document.activeElement).toBe(card);
         if (installed) expect(search).toHaveProperty("value", "Local GitHub");
@@ -1077,8 +1350,8 @@ describe("BB Official plugin detail routing", () => {
 
       fireEvent.click(screen.getByRole("button", { name: "Browser back" }));
       await waitFor(() => {
-        expect(screen.getByTestId("route-path").textContent).toBe(
-          "/plugins/github",
+        expect(screen.getByTestId("location").textContent).toBe(
+          installed ? "/plugins/github?view=installed" : "/plugins/github",
         );
       });
     },
@@ -1159,9 +1432,7 @@ describe("BB Official plugin detail routing", () => {
           name: "Search installed plugins",
         }),
       ).toBeTruthy();
-      expect(screen.getByTestId("route-path").textContent).toBe(
-        path.split("?")[0],
-      );
+      expect(screen.getByTestId("location").textContent).toBe(path);
       const pluginButton = await screen.findByRole("button", {
         name: "GitHub plugin details",
       });
@@ -1175,13 +1446,10 @@ describe("BB Official plugin detail routing", () => {
     expect(screen.getAllByText("GitHub", { selector: "h1" })).toHaveLength(1);
     fireEvent.click(relatedPluginButton);
     await waitFor(() => {
-      expect(screen.getByTestId("route-path").textContent).toBe(
-        "/plugins/automations",
+      expect(screen.getByTestId("location").textContent).toBe(
+        "/plugins/automations?view=installed",
       );
     });
-    expect(screen.getByTestId("route-search").textContent).toBe(
-      "?view=installed",
-    );
     expect(
       await screen.findByRole("button", { name: "Close Automations" }),
     ).toBeTruthy();
@@ -1251,23 +1519,17 @@ describe("BB Official plugin detail routing", () => {
       (await screen.findAllByRole("link", { name: "BB Official" }))[0]!,
     );
     expect(await screen.findByRole("heading", { name: /^BB/u })).toBeTruthy();
-    let params = new URLSearchParams(
-      screen.getByTestId("route-search").textContent ?? "",
+    expect(screen.getByTestId("location").textContent).toBe(
+      "/plugins?category=code-and-reviews&sort=recently-added&author=11%3Abb-official%3Agithub%3Aget-bb",
     );
-    expect(params.get("author")).toBe("11:bb-official:github:get-bb");
-    expect(params.getAll("category")).toEqual(["code-and-reviews"]);
-    expect(params.get("sort")).toBe("recently-added");
 
     fireEvent.click(screen.getByRole("button", { name: "Browser back" }));
     await waitFor(() => {
       expect(screen.queryByRole("heading", { name: /^BB/u })).toBeNull();
     });
-    params = new URLSearchParams(
-      screen.getByTestId("route-search").textContent ?? "",
+    expect(screen.getByTestId("location").textContent).toBe(
+      "/plugins?category=code-and-reviews&sort=recently-added",
     );
-    expect(params.has("author")).toBe(false);
-    expect(params.getAll("category")).toEqual(["code-and-reviews"]);
-    expect(params.get("sort")).toBe("recently-added");
 
     fireEvent.click(
       (await screen.findAllByRole("link", { name: "BB Official" }))[0]!,
@@ -1338,14 +1600,11 @@ describe("BB Official plugin detail routing", () => {
     const authorLinks = screen.getAllByRole("link", { name: "BB Official" });
     fireEvent.click(authorLinks.at(-1)!);
     await waitFor(() => {
-      expect(screen.getByTestId("route-path").textContent).toBe("/plugins");
+      expect(screen.getByTestId("location").textContent).toBe(
+        "/plugins?author=11%3Abb-official%3Agithub%3Aget-bb",
+      );
     });
     expect(await screen.findByRole("heading", { name: /^BB/u })).toBeTruthy();
-    expect(
-      new URLSearchParams(
-        screen.getByTestId("route-search").textContent ?? "",
-      ).get("author"),
-    ).toBe("11:bb-official:github:get-bb");
   });
 });
 
@@ -1402,7 +1661,7 @@ describe("plugin removal confirmation", () => {
             path="/plugins/:pluginId"
             element={
               <TooltipProvider>
-                <PluginsView pluginId="github" />
+                <PluginsView detailKey="github" />
               </TooltipProvider>
             }
           />
@@ -1462,17 +1721,20 @@ describe("PluginDetail banner precedence", () => {
 
   it("renders only current health and keeps diagnostics out of user copy", () => {
     const { wrapper } = createQueryClientTestHarness();
-    render(<PluginDetailBanners plugin={collision} />, { wrapper });
+    render(
+      <PluginDetailBanners
+        plugin={collision}
+        catalogEntries={[]}
+        onOpenPlugin={vi.fn()}
+      />,
+      { wrapper },
+    );
 
     const alerts = screen.getAllByRole("alert");
     expect(alerts).toHaveLength(1);
     expect(alerts[0]?.textContent).toContain("Degraded");
-    expect(alerts[0]?.textContent).toContain(
-      "A background service is still stopping.",
-    );
-    expect(alerts[0]?.textContent).toContain(
-      "Wait a moment, then reload the plugin.",
-    );
+    expect(alerts[0]?.textContent).toContain("A service is still stopping.");
+    expect(alerts[0]?.textContent).toContain("Wait, then reload.");
     expect(alerts[0]?.textContent).not.toContain("issue-sync");
     expect(alerts[0]?.textContent).not.toContain("handler");
     expect(screen.getByRole("button", { name: "Reload" })).toBeTruthy();
@@ -1487,6 +1749,8 @@ describe("PluginDetail banner precedence", () => {
           ...managedPlugin,
           handlerStats: { ...managedPlugin.handlerStats, errorCount: 3 },
         }}
+        catalogEntries={[]}
+        onOpenPlugin={vi.fn()}
       />,
       { wrapper },
     );
@@ -1555,7 +1819,11 @@ describe("PluginDetail runtime health", () => {
     const result = render(
       <MemoryRouter>
         <QueryClientWrapper>
-          <PluginDetailBanners plugin={plugin} />
+          <PluginDetailBanners
+            plugin={plugin}
+            catalogEntries={[]}
+            onOpenPlugin={vi.fn()}
+          />
           <PluginDetail
             isLoading={false}
             plugin={plugin}
@@ -1591,7 +1859,7 @@ describe("PluginDetail runtime health", () => {
     expect(alert.textContent).toContain("Failed");
     expect(alert.textContent).toContain("The plugin couldn't start.");
     expect(alert.textContent).not.toContain("runtime reported");
-    expect(alert.textContent).toContain("Reload the plugin.");
+    expect(alert.textContent).toContain("Try reloading it.");
     expect(screen.getByRole("button", { name: "Reload" })).toBeTruthy();
 
     const about = container.querySelector(
@@ -1602,25 +1870,9 @@ describe("PluginDetail runtime health", () => {
     ).toBeTruthy();
   });
 
-  it("offers Reload for degraded runtime status without a bottom rule", () => {
+  it("offers Reload for degraded runtime status and keeps diagnostics out of the banner", () => {
     renderRuntimeStatus("degraded", {
       statusDetail: "service issue-sync did not stop",
-    });
-
-    const alert = screen.getByRole("alert");
-    expect(alert.textContent).toContain(
-      "A background service is still stopping.",
-    );
-    expect(alert.textContent).toContain(
-      "Wait a moment, then reload the plugin.",
-    );
-    expect(alert.textContent).not.toContain("issue-sync");
-    expect(alert.textContent).not.toContain("Restart bb");
-    expect(screen.getByRole("button", { name: "Reload" })).toBeTruthy();
-  });
-
-  it("does not fold cumulative handler diagnostics into the runtime banner", () => {
-    renderRuntimeStatus("degraded", {
       handlerStats: {
         ...GITHUB_PLUGIN.handlerStats,
         errorCount: 3,
@@ -1629,32 +1881,21 @@ describe("PluginDetail runtime health", () => {
 
     const alerts = screen.getAllByRole("alert");
     expect(alerts).toHaveLength(1);
-    expect(alerts[0]?.textContent).toContain("Degraded");
-    expect(alerts[0]?.textContent).not.toContain("handler");
+    const alertText = alerts[0]?.textContent;
+    expect(alertText).toContain("Degraded");
+    expect(alertText).toContain("A service is still stopping.");
+    expect(alertText).toContain("Wait, then reload.");
+    expect(alertText).not.toContain("issue-sync");
+    expect(alertText).not.toContain("handler");
+    expect(alertText).not.toContain("Restart bb");
+    expect(screen.getByRole("button", { name: "Reload" })).toBeTruthy();
   });
 
-  it.each(["incompatible", "missing"] as const)(
-    "does not offer Reload for %s runtime status",
-    (status) => {
-      renderRuntimeStatus(status);
-
-      expect(screen.queryByRole("button", { name: "Reload" })).toBeNull();
-    },
-  );
-
   it.each([
-    [
-      "incompatible",
-      "This plugin version isn't compatible with your version of bb.",
-      "Update bb to load a compatible bundled plugin.",
-    ],
-    [
-      "missing",
-      "The plugin's files are missing.",
-      "Restart bb. If the files are still missing, reinstall bb.",
-    ],
+    ["incompatible", "This version is incompatible with bb.", "Update bb."],
+    ["missing", "Plugin files are missing.", "Update or reinstall bb."],
   ] as const)(
-    "explains the %s condition and a supported recovery",
+    "explains the %s condition and a supported recovery without offering Reload",
     (status, condition, recovery) => {
       renderRuntimeStatus(status);
 
@@ -1662,6 +1903,7 @@ describe("PluginDetail runtime health", () => {
       expect(alert.textContent).toContain(condition);
       expect(alert.textContent).toContain(recovery);
       expect(alert.textContent).not.toContain("runtime reported");
+      expect(screen.queryByRole("button", { name: "Reload" })).toBeNull();
     },
   );
 
@@ -1672,10 +1914,7 @@ describe("PluginDetail runtime health", () => {
     });
 
     const alert = screen.getByRole("alert");
-    expect(alert.textContent).toContain("An API token is required.");
-    expect(alert.textContent).toContain(
-      "Complete the Configuration section; bb reloads the plugin after you save.",
-    );
+    expect(alert.querySelector("p")?.textContent).toBe("Needs configuration");
     const settingsLink = within(alert).getByRole("link", {
       name: "Open settings",
     });
@@ -1693,9 +1932,7 @@ describe("PluginDetail runtime health", () => {
     expect(alert.textContent).toContain(
       "Set GITHUB_TOKEN in the server environment.",
     );
-    expect(alert.textContent).toContain(
-      "Add the required configuration, then reload the plugin.",
-    );
+    expect(alert.textContent).toContain("Then reload.");
     expect(screen.getByRole("button", { name: "Reload" })).toBeTruthy();
     expect(
       within(alert).queryByRole("link", { name: "Open settings" }),
@@ -2181,7 +2418,7 @@ describe("detail disable workspace cleanup", () => {
       if (fails) {
         expect(store.get(splitLayoutAtom)).toEqual(layout);
         expect(store.get(maximizedPaneIdAtom)).toBe("github");
-        expect(screen.getByTestId("route-path").textContent).toBe(
+        expect(screen.getByTestId("location").textContent).toBe(
           "/plugins/github/main",
         );
       } else {
@@ -2189,10 +2426,227 @@ describe("detail disable workspace cleanup", () => {
           content: { kind: "new-thread" },
         });
         expect(store.get(maximizedPaneIdAtom)).toBeNull();
-        expect(screen.getByTestId("route-path").textContent).toBe("/");
+        expect(screen.getByTestId("location").textContent).toBe("/");
         fireEvent.click(screen.getByRole("button", { name: "Browser back" }));
-        expect(screen.getByTestId("route-path").textContent).toBe("/skills");
+        expect(screen.getByTestId("location").textContent).toBe("/skills");
       }
     },
   );
+});
+
+describe("plugin detail source and settings", () => {
+  it("shows a local plugin's source with open and copy actions outside the overflow menu", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    const onOpenSource = vi.fn();
+    const plugin: PluginListItem = {
+      ...GITHUB_PLUGIN,
+      source: "path:/Users/you/src/bb-plugin-github",
+      rootDir: "/Users/you/src/bb-plugin-github",
+      provenance: "direct",
+      catalogEntryId: null,
+      publisherLabel: null,
+    };
+    const { wrapper: QueryClientWrapper } = createQueryClientTestHarness();
+    render(
+      <MemoryRouter>
+        <QueryClientWrapper>
+          <PluginDetail
+            isLoading={false}
+            plugin={plugin}
+            pending={false}
+            openSourceDisabled={false}
+            onToggle={() => {}}
+            onEdit={() => {}}
+            onOpenSource={onOpenSource}
+            onDelete={() => {}}
+            catalogEntries={[]}
+            onOpenPlugin={() => undefined}
+          />
+        </QueryClientWrapper>
+      </MemoryRouter>,
+    );
+
+    const source = screen
+      .getByRole("heading", { name: "Source" })
+      .closest("[data-resource-detail-section]");
+    expect(source).not.toBeNull();
+    if (source === null) return;
+    expect(
+      within(source as HTMLElement).getByText("~/src/bb-plugin-github"),
+    ).toBeTruthy();
+    fireEvent.click(
+      within(source as HTMLElement).getByRole("button", {
+        name: "Open source",
+      }),
+    );
+    expect(onOpenSource).toHaveBeenCalledWith(plugin);
+    fireEvent.click(
+      within(source as HTMLElement).getByRole("button", {
+        name: "Copy plugin path: /Users/you/src/bb-plugin-github",
+      }),
+    );
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledWith("/Users/you/src/bb-plugin-github");
+    });
+
+    fireEvent.pointerDown(
+      screen.getByRole("button", { name: "GitHub actions" }),
+    );
+    expect(await screen.findByRole("menuitem", { name: "Edit" })).toBeTruthy();
+    expect(screen.queryByRole("menuitem", { name: "Open source" })).toBeNull();
+  });
+
+  it("opens settings in place from the detail gear and returns to details", async () => {
+    stubConfigurablePlugin("running");
+    const { wrapper } = createQueryClientTestHarness();
+    render(
+      <MemoryRouter initialEntries={["/plugins/github?view=installed"]}>
+        <TooltipProvider>
+          <PluginDetailPaneView pluginId="github" />
+        </TooltipProvider>
+        <LocationProbe />
+        <HistoryBackButton />
+      </MemoryRouter>,
+      { wrapper },
+    );
+
+    expect(
+      await screen.findByRole("heading", { name: "Details" }),
+    ).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Configuration" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "GitHub settings" }));
+    expect(await screen.findByLabelText("Repository")).toHaveProperty(
+      "value",
+      "get-bb/bb",
+    );
+    expect(screen.getByTestId("location").textContent).toBe(
+      "/plugins/github?view=installed&configure=github",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Plugin details" }));
+    expect(
+      await screen.findByRole("heading", { name: "Details" }),
+    ).toBeTruthy();
+    expect(screen.getByTestId("location").textContent).toBe(
+      "/plugins/github?view=installed",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Browser back" }));
+    expect(await screen.findByLabelText("Repository")).toHaveProperty(
+      "value",
+      "get-bb/bb",
+    );
+  });
+
+  function stubConfigurablePlugin(status: "running" | "needs-configuration") {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/api/v1/plugins") {
+          return Response.json({
+            enabled: true,
+            plugins: [
+              makeInstalledPlugin({
+                id: "github",
+                name: "GitHub",
+                hasSettings: true,
+                status,
+              }),
+            ],
+          });
+        }
+        if (url.startsWith("/api/v1/plugin-catalog/search")) {
+          return Response.json({ results: [], collections: [] });
+        }
+        if (url === "/api/v1/plugins/github/settings") {
+          return Response.json({
+            ok: true,
+            schema: { repository: { type: "string", label: "Repository" } },
+            values: { repository: "get-bb/bb" },
+          });
+        }
+        return Response.json({ error: "not found" }, { status: 404 });
+      }),
+    );
+  }
+
+  it("points the needs-configuration banner at settings in place", async () => {
+    stubConfigurablePlugin("needs-configuration");
+    const { wrapper } = createQueryClientTestHarness();
+    render(
+      <MemoryRouter initialEntries={["/plugins/github?view=installed"]}>
+        <TooltipProvider>
+          <PluginDetailPaneView pluginId="github" />
+        </TooltipProvider>
+      </MemoryRouter>,
+      { wrapper },
+    );
+
+    const openSettings = await screen.findByRole("link", {
+      name: "Open settings",
+    });
+    expect(openSettings.getAttribute("href")).toBe(
+      "/plugins/github?view=installed&configure=github",
+    );
+  });
+
+  it("opens settings in place for a legacy #configuration link", async () => {
+    stubConfigurablePlugin("running");
+    const { wrapper } = createQueryClientTestHarness();
+    render(
+      <MemoryRouter
+        initialEntries={["/plugins/github?view=installed#configuration"]}
+      >
+        <TooltipProvider>
+          <PluginDetailPaneView pluginId="github" />
+        </TooltipProvider>
+        <LocationProbe />
+      </MemoryRouter>,
+      { wrapper },
+    );
+
+    expect(await screen.findByLabelText("Repository")).toHaveProperty(
+      "value",
+      "get-bb/bb",
+    );
+    expect(screen.getByTestId("location").textContent).toBe(
+      "/plugins/github?view=installed&configure=github",
+    );
+  });
+
+  it("keeps in-place settings out of the URL when the detail pane is embedded in a thread", async () => {
+    stubConfigurablePlugin("running");
+    const { wrapper } = createQueryClientTestHarness();
+    render(
+      <MemoryRouter initialEntries={["/threads/thr_1?panel=files"]}>
+        <TooltipProvider>
+          <PluginDetailPaneView pluginId="github" />
+        </TooltipProvider>
+        <LocationProbe />
+      </MemoryRouter>,
+      { wrapper },
+    );
+
+    expect(
+      await screen.findByRole("heading", { name: "Details" }),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "GitHub settings" }));
+    expect(await screen.findByLabelText("Repository")).toHaveProperty(
+      "value",
+      "get-bb/bb",
+    );
+    expect(screen.getByTestId("location").textContent).toBe(
+      "/threads/thr_1?panel=files",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Plugin details" }));
+    expect(
+      await screen.findByRole("heading", { name: "Details" }),
+    ).toBeTruthy();
+    expect(screen.getByTestId("location").textContent).toBe(
+      "/threads/thr_1?panel=files",
+    );
+  });
 });

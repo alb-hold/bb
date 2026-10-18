@@ -1,5 +1,6 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { eq } from "drizzle-orm";
 import {
   createEnvironment,
   createQueuedThreadMessage,
@@ -10,11 +11,13 @@ import {
   createProject,
   createThread,
   openSession,
+  threads,
   upsertHost,
 } from "@bb/db";
 import {
   HOST_DAEMON_PROTOCOL_VERSION,
   HOST_ID_FILE_NAME,
+  type HostPlatform,
 } from "@bb/host-daemon-contract";
 import {
   encodeClientTurnRequestIdNumber,
@@ -35,9 +38,11 @@ import type {
   ThreadEventType,
   ThreadOriginKind,
   ThreadStatus,
+  ThreadParentNotifications,
   ThreadVisibility,
 } from "@bb/domain";
 import type { AppDeps } from "../../src/types.js";
+import { ARCHIVE_UNDO_GRACE_MS } from "../../src/constants.js";
 import { registerTestHostRpcCapture } from "./commands.js";
 
 interface SeedEventArgs<TType extends ThreadEventType> {
@@ -92,10 +97,10 @@ export function seedHost(
 
 export function seedHostSession(
   deps: Pick<AppDeps, "db" | "hub">,
-  args: { id?: string; name?: string } = {},
+  args: { id?: string; name?: string; platform?: HostPlatform } = {},
 ) {
   const host = seedHost(deps, args);
-  const session = seedSession(deps, host.id);
+  const session = seedSession(deps, host.id, { platform: args.platform });
   return { host, session };
 }
 
@@ -106,17 +111,24 @@ export function seedPrimaryHost(
   writeFileSync(join(deps.config.dataDir, HOST_ID_FILE_NAME), hostId);
 }
 
-export function seedSession(deps: Pick<AppDeps, "db" | "hub">, hostId: string) {
+export function seedSession(
+  deps: Pick<AppDeps, "db" | "hub">,
+  hostId: string,
+  options: { instanceId?: string; platform?: HostPlatform } = {},
+) {
   const session = openSession(deps.db, {
     hostId,
-    instanceId: "instance-1",
+    instanceId: options.instanceId ?? "instance-1",
     hostName: "Test Host",
     dataDir: `/tmp/bb-host-data/${hostId}`,
     protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
     heartbeatIntervalMs: 5_000,
     leaseTimeoutMs: 30_000,
   });
-  deps.hub.recordDaemonSessionPlatform(session.id, "darwin");
+  deps.hub.recordDaemonSessionPlatform(
+    session.id,
+    options.platform ?? "darwin",
+  );
   registerTestHostRpcCapture(deps, { hostId, sessionId: session.id });
   return session;
 }
@@ -201,6 +213,7 @@ export function seedThread(
     originPluginId?: string | null;
     titleFallback?: string | null;
     visibility?: ThreadVisibility;
+    parentNotifications?: ThreadParentNotifications;
   },
 ) {
   return createThread(deps.db, deps.hub, {
@@ -216,6 +229,7 @@ export function seedThread(
     originKind: args.originKind ?? null,
     originPluginId: args.originPluginId ?? null,
     visibility: args.visibility ?? "visible",
+    parentNotifications: args.parentNotifications ?? "auto",
   });
 }
 
@@ -425,4 +439,15 @@ export function seedStoredEvent(
       data: JSON.stringify(args.data),
     },
   ]);
+}
+
+export function expireArchiveUndoGrace(
+  deps: Pick<AppDeps, "db">,
+  threadId: string,
+): void {
+  deps.db
+    .update(threads)
+    .set({ archivedAt: Date.now() - ARCHIVE_UNDO_GRACE_MS - 1 })
+    .where(eq(threads.id, threadId))
+    .run();
 }

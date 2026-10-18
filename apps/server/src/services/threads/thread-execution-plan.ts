@@ -1,12 +1,24 @@
-import { getProjectExecutionDefaults, getThread } from "@bb/db";
-import type {
-  CallerExecutionInputSource,
-  PermissionMode,
-  ProjectExecutionDefaults,
-  ReasoningLevel,
-  ResolvedThreadExecutionOptions,
-  ServiceTier,
-  ThreadExecutionSource,
+import {
+  getAppSettings,
+  getProjectExecutionDefaults,
+  getQueuedThreadStartMessage,
+  getThread,
+  getThreadSpawner,
+} from "@bb/db";
+import {
+  DEFAULT_SERVICE_TIER,
+  isStandardReasoningLevel,
+  providerServiceTierOptions,
+  reconcileServiceTier,
+  type CallerExecutionInputSource,
+  type PermissionMode,
+  type ProjectExecutionDefaults,
+  type ReasoningLevel,
+  type RecordedThreadExecutionOptions,
+  type ResolvedThreadExecutionOptions,
+  type ServiceTier,
+  type ThreadExecutionSource,
+  type Thread,
 } from "@bb/domain";
 import { ApiError } from "../../errors.js";
 import type { AppDeps } from "../../types.js";
@@ -18,10 +30,11 @@ import {
 } from "../hosts/permission-ceiling.js";
 import {
   DEFAULT_REASONING_LEVEL,
-  DEFAULT_SERVICE_TIER,
   resolveThreadExecutionPermissionMode,
 } from "./thread-default-policy.js";
 import { getLastExecutionOptions } from "./thread-events.js";
+import { childThreadModel } from "./child-thread-model.js";
+import { toThreadQueuedMessage } from "./thread-queued-messages.js";
 import { getSupportedReasoningLevelsForProvider } from "./thread-reasoning-policy.js";
 
 interface ExecutionPlanFieldInput<TValue> {
@@ -63,6 +76,26 @@ interface ExistingThreadExecutionPlan {
   resolvedExecution: ResolvedThreadExecutionOptions;
 }
 
+function getStoredThreadExecutionOptions(
+  deps: Pick<AppDeps, "db">,
+  thread: Thread,
+): RecordedThreadExecutionOptions | null {
+  const lastExecution = getLastExecutionOptions(deps, thread.id);
+  if (lastExecution !== null || thread.status !== "pending") {
+    return lastExecution;
+  }
+  const queuedStart = getQueuedThreadStartMessage(deps.db, thread.id);
+  if (queuedStart === null) return null;
+  const queued = toThreadQueuedMessage(queuedStart);
+  return {
+    model: queued.model,
+    reasoningLevel: queued.reasoningLevel,
+    permissionMode: queued.permissionMode,
+    serviceTier: queued.serviceTier,
+    source: "client/turn/requested",
+  };
+}
+
 export function resolveExistingThreadPermissionMode(
   deps: Pick<AppDeps, "db" | "providerRegistry">,
   threadId: string,
@@ -81,9 +114,9 @@ export function resolveExistingThreadPermissionMode(
     thread.parentThreadId !== null
       ? getThread(deps.db, thread.parentThreadId)
       : null;
-  const lastExecutionPermissionMode = getLastExecutionOptions(
+  const lastExecutionPermissionMode = getStoredThreadExecutionOptions(
     deps,
-    thread.id,
+    thread,
   )?.permissionMode;
   const permissionMode = clampPermissionModeToHost(deps, {
     hostId: resolveEnvironmentHostId(deps, thread.environmentId),
@@ -222,7 +255,8 @@ function validateProviderReasoningLevel(
   );
   if (
     supportedLevels.length === 0 ||
-    supportedLevels.includes(reasoningLevel)
+    supportedLevels.includes(reasoningLevel) ||
+    !isStandardReasoningLevel(reasoningLevel)
   ) {
     return;
   }
@@ -231,6 +265,40 @@ function validateProviderReasoningLevel(
     400,
     "invalid_request",
     `Provider ${providerId} does not support ${reasoningLevel} reasoning level. Supported reasoning levels: ${supportedLevels.join(", ")}.`,
+  );
+}
+
+function resolveProviderServiceTier(
+  registry: ProviderRegistryService,
+  args: {
+    providerId: string;
+    requested: ExecutionPlanFieldInput<ServiceTier> | undefined;
+    inherited: ServiceTier | undefined;
+  },
+): ServiceTier {
+  const provider = registry.get(args.providerId);
+  const candidate = args.requested?.value ?? args.inherited;
+  if (candidate === undefined || candidate === DEFAULT_SERVICE_TIER) {
+    return DEFAULT_SERVICE_TIER;
+  }
+  if (provider === null) {
+    return candidate;
+  }
+  const supported = providerServiceTierOptions(provider.info);
+  const reconciled = reconcileServiceTier(candidate, supported);
+  if (reconciled === candidate || args.requested?.source !== "explicit") {
+    return reconciled;
+  }
+
+  throw new ProviderCapabilityValidationError(
+    400,
+    "invalid_request",
+    supported.length === 0
+      ? `Provider ${args.providerId} does not support service tiers.`
+      : `Provider ${args.providerId} does not support the ${candidate} service tier. Supported service tiers: ${[
+          DEFAULT_SERVICE_TIER,
+          ...supported.map((tier) => tier.id),
+        ].join(", ")}.`,
   );
 }
 
@@ -256,11 +324,11 @@ export async function resolveExistingThreadExecutionPlan(
   deps: Pick<AppDeps, "db" | "providerRegistry">,
   args: ResolveExistingThreadExecutionPlanArgs,
 ): Promise<ExistingThreadExecutionPlan> {
-  const lastExecution = getLastExecutionOptions(deps, args.threadId);
   const thread = getThread(deps.db, args.threadId);
   if (!thread) {
     throw new ApiError(404, "thread_not_found", "Thread not found");
   }
+  const lastExecution = getStoredThreadExecutionOptions(deps, thread);
   const rawProjectExecution =
     args.projectDefaults === undefined
       ? getProjectExecutionDefaults(deps.db, {
@@ -281,6 +349,12 @@ export async function resolveExistingThreadExecutionPlan(
       ? getLastExecutionOptions(deps, parentThread.id)
       : null;
   const model = resolveRequiredField<string>([
+    childThreadModel({
+      parentThreadId:
+        thread.parentThreadId ?? getThreadSpawner(deps.db, thread.id),
+      declaredChildModel: deps.providerRegistry.get(thread.providerId)
+        ?.childThreadModel,
+    }) ?? undefined,
     args.input.model?.value,
     thread.modelOverride ?? undefined,
     lastExecution?.model,
@@ -329,14 +403,13 @@ export async function resolveExistingThreadExecutionPlan(
     reasoningLevel,
   );
 
-  const serviceTier = resolveFieldWithDefault<ServiceTier>(
-    [
-      args.input.serviceTier?.value,
-      lastExecution?.serviceTier,
-      projectExecution?.serviceTier,
-    ],
-    DEFAULT_SERVICE_TIER,
-  );
+  const serviceTier = getAppSettings(deps.db).allowFastServiceTier
+    ? resolveProviderServiceTier(deps.providerRegistry, {
+        providerId: thread.providerId,
+        requested: args.input.serviceTier,
+        inherited: lastExecution?.serviceTier ?? projectExecution?.serviceTier,
+      })
+    : DEFAULT_SERVICE_TIER;
 
   const resolvedExecution = {
     model,

@@ -1,7 +1,11 @@
-import { filterCommandSuggestions } from "@bb/client-core";
 import { describe, expect, it } from "vitest";
-import { AUTOMATION_PROMPT_ACTION } from "@/components/promptbox/PromptBoxActionsMenu";
-import { promptActionCommandSuggestions } from "./useCommandSuggestions";
+import {
+  discoveredCommandSuggestions,
+  isCommandSuggestionsActive,
+  promptActionCommandSuggestions,
+  shouldPrefetchCommandCatalog,
+  threadProviderCommandSuggestions,
+} from "./useCommandSuggestions";
 
 const promptActions = [
   { kind: "skills", text: "/" },
@@ -15,7 +19,6 @@ const promptActions = [
     command: { trigger: "/", name: "goal", trailingText: " " },
     text: "/goal ",
   },
-  AUTOMATION_PROMPT_ACTION,
 ] as const;
 
 describe("promptActionCommandSuggestions", () => {
@@ -43,14 +46,6 @@ describe("promptActionCommandSuggestions", () => {
         description: null,
         argumentHint: null,
       },
-      {
-        kind: "command",
-        name: "automation",
-        source: "command",
-        origin: "user",
-        description: null,
-        argumentHint: null,
-      },
     ]);
   });
 
@@ -62,58 +57,142 @@ describe("promptActionCommandSuggestions", () => {
         trigger: "/",
       }).map((suggestion) => suggestion.name),
     ).toEqual(["plan"]);
-
-    expect(
-      promptActionCommandSuggestions({
-        promptActions,
-        query: "auto",
-        trigger: "/",
-      }).map((suggestion) => suggestion.name),
-    ).toEqual(["automation"]);
   });
 });
 
-describe("filterCommandSuggestions", () => {
-  const pluginSkill = {
-    kind: "command",
-    name: "review",
-    source: "skill",
-    origin: "user",
-    description: "Review a pull request",
-    argumentHint: null,
-    pluginId: "github",
-  } as const;
+describe("threadProviderCommandSuggestions", () => {
+  const commands = [
+    {
+      name: "review",
+      source: "command",
+      origin: "builtin",
+      description: "Review the diff",
+      argumentHint: null,
+    },
+    {
+      name: "web",
+      source: "command",
+      origin: "builtin",
+      description: null,
+      argumentHint: "query",
+    },
+  ] as const;
 
-  it("filters the cached catalog locally by name and description", () => {
-    expect(filterCommandSuggestions([pluginSkill], "rev")).toEqual([
-      pluginSkill,
+  it("offers the agent's live commands under the slash trigger only", () => {
+    expect(
+      threadProviderCommandSuggestions({ commands, query: "", trigger: "/" }),
+    ).toEqual([
+      {
+        kind: "command",
+        name: "review",
+        source: "command",
+        origin: "builtin",
+        description: "Review the diff",
+        argumentHint: null,
+      },
+      {
+        kind: "command",
+        name: "web",
+        source: "command",
+        origin: "builtin",
+        description: null,
+        argumentHint: "query",
+      },
     ]);
-    expect(filterCommandSuggestions([pluginSkill], "pull")).toEqual([
-      pluginSkill,
-    ]);
-    expect(filterCommandSuggestions([pluginSkill], "deploy")).toEqual([]);
+    expect(
+      threadProviderCommandSuggestions({ commands, query: "", trigger: "$" }),
+    ).toEqual([]);
+    expect(
+      threadProviderCommandSuggestions({
+        commands: null,
+        query: "",
+        trigger: "/",
+      }),
+    ).toEqual([]);
   });
 
-  it("filters without taking ownership of suggestion ordering", () => {
-    const names = filterCommandSuggestions(
-      [
-        {
-          ...pluginSkill,
-          name: "deploy-service",
-          source: "command",
-          origin: "user",
-        },
-        { ...pluginSkill, name: "deploy-helper" },
-        {
-          ...pluginSkill,
-          name: "review-helper",
-          description: "Contains deploy guidance",
-        },
-        { ...pluginSkill, name: "review-helper", description: null },
-      ],
-      "deploy",
-    ).map((suggestion) => suggestion.name);
+  it("filters them by the typed query", () => {
+    expect(
+      threadProviderCommandSuggestions({
+        commands,
+        query: "we",
+        trigger: "/",
+      }).map((suggestion) => suggestion.name),
+    ).toEqual(["web"]);
+  });
+});
 
-    expect(names).toEqual(["deploy-service", "deploy-helper", "review-helper"]);
+const BASE_ARGS = {
+  projectId: "project-1",
+  providerId: "codex",
+  skillsTriggers: ["/"] as const,
+  activeTrigger: null,
+  query: null,
+};
+
+describe("useCommandSuggestions catalog prefetch", () => {
+  it("warms the command catalog when a coarse-pointer composer gains focus", () => {
+    expect(
+      shouldPrefetchCommandCatalog({
+        ...BASE_ARGS,
+        composerFocused: false,
+        isPointerCoarse: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldPrefetchCommandCatalog({
+        ...BASE_ARGS,
+        composerFocused: true,
+        isPointerCoarse: true,
+      }),
+    ).toBe(true);
+    expect(isCommandSuggestionsActive(BASE_ARGS)).toBe(false);
+  });
+
+  it("does not add a request for fine-pointer composers, which autofocus on mount", () => {
+    expect(
+      shouldPrefetchCommandCatalog({
+        ...BASE_ARGS,
+        composerFocused: true,
+        isPointerCoarse: false,
+      }),
+    ).toBe(false);
+    expect(isCommandSuggestionsActive(BASE_ARGS)).toBe(false);
+  });
+
+  it("still fetches on the first trigger without any focus signal", () => {
+    expect(
+      isCommandSuggestionsActive({
+        ...BASE_ARGS,
+        activeTrigger: "/",
+        query: "",
+      }),
+    ).toBe(true);
+  });
+
+  it("offers only skills for the explicit dollar trigger", () => {
+    expect(
+      discoveredCommandSuggestions({
+        commands: [
+          {
+            name: "writing-for-agents",
+            source: "skill",
+            origin: "user",
+            description: "Write agent instructions",
+            argumentHint: null,
+          },
+          {
+            name: "plan",
+            source: "command",
+            origin: "builtin",
+            description: "Plan work",
+            argumentHint: null,
+          },
+        ],
+        trigger: "$",
+        commandScope: "thread",
+        query: "",
+      }).map((suggestion) => suggestion.name),
+    ).toEqual(["writing-for-agents"]);
   });
 });

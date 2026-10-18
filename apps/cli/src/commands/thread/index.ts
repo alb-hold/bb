@@ -1,5 +1,5 @@
 import { registerContextCommand } from "./context.js";
-import { registerImageMetadataCommand } from "./image-metadata.js";
+import { registerSessionStateCommands } from "./session-state.js";
 import { Command } from "commander";
 import { registerActionsCommands } from "./actions.js";
 import { registerCountCommand } from "./count.js";
@@ -12,6 +12,8 @@ import { registerShowCommand } from "./show.js";
 import { registerSpawnCommand } from "./spawn.js";
 import { registerForkCommand } from "./fork.js";
 import { registerWaitCommand } from "./wait.js";
+import { registerNativeCommands } from "./native.js";
+import { registerRowStateCommands } from "./row-state.js";
 
 export function registerThreadCommands(
   program: Command,
@@ -24,11 +26,13 @@ export function registerThreadCommands(
   registerListCommand(thread, getUrl);
   registerCountCommand(thread, getUrl);
   registerContextCommand(thread, getUrl);
-  registerImageMetadataCommand(thread, getUrl);
+  registerSessionStateCommands(thread, getUrl);
   registerShowCommand(thread, getUrl);
   registerOpenCommand(thread, getUrl);
   registerPaneCommand(thread, getUrl);
   registerOrganizationCommands(thread, getUrl);
   registerActionsCommands(thread, getUrl);
   registerInteractionCommands(thread, getUrl);
+  registerNativeCommands(thread, getUrl);
+  registerRowStateCommands(thread, getUrl);
 }

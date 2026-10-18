@@ -1,5 +1,6 @@
 import { getThreadEventScopeTurnId, turnScope } from "@bb/domain";
 import type { ThreadEvent } from "@bb/domain";
+import { TEXT_DELTA_FLUSH_MS } from "@bb/provider-bridge-protocol/assembler";
 import type {
   HostDaemonEventBatchResponse,
   HostDaemonEventEnvelope,
@@ -12,7 +13,9 @@ import {
   type TurnStartPendingResponseDetails,
 } from "./server-client.js";
 
-const DEFAULT_DEBOUNCE_MS = 100;
+const STREAM_TICK_MS = TEXT_DELTA_FLUSH_MS;
+const INITIAL_RETRY_DELAY_MS = 1_000;
+const MAX_RETRY_DELAY_MS = 30_000;
 
 const TURN_START_RETRY_INITIAL_MS = 250;
 const TURN_START_RETRY_MAX_MS = 10_000;
@@ -49,7 +52,15 @@ export interface CreateEventSinkOptions {
 export interface EventSink {
   emit(event: EventSinkInput): void;
   flush(): Promise<void>;
+  listUndeliveredThreadIds(): string[];
   dispose(): Promise<void>;
+}
+
+interface QueuedEvent {
+  delivery: EventSinkDelivery | null;
+  envelope: HostDaemonEventEnvelope;
+  immediate: boolean;
+  queuedAt: number;
 }
 
 interface RejectedEventSummary {
@@ -145,18 +156,26 @@ function summarizeRejectedEvents(
 
 export function createEventSink(options: CreateEventSinkOptions): EventSink {
   const now = options.now ?? (() => Date.now());
-  const queue: HostDaemonEventEnvelope[] = [];
-  const deliveries: (EventSinkDelivery | null)[] = [];
-  let flushTimer: ReturnType<typeof setTimeout> | null = null;
-  let flushPromise: Promise<void> | null = null;
+  const queue: QueuedEvent[] = [];
+  const inFlightByThreadId = new Map<string, number>();
+  const inFlightPosts = new Set<Promise<void>>();
+  let lastPostAt: number | null = null;
+  let lastBatchStartedAt = Number.NEGATIVE_INFINITY;
+  let tickTimer: ReturnType<typeof setTimeout> | null = null;
+  let tickDueAt = Number.POSITIVE_INFINITY;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  let failedPosts = 0;
   let disposed = false;
   let backedUpSinceMs: number | null = null;
   let backpressureLogged = false;
+  let retryDelayMs = INITIAL_RETRY_DELAY_MS;
   let turnStartRetryDelayMs = TURN_START_RETRY_INITIAL_MS;
   let turnStartRetryPending = false;
-  let pendingTurnStart: { key: string; sinceMs: number } | null = null;
+  let turnStartRepaired = false;
+  let turnStartRepairCount = 0;
+  const pendingTurnStarts = new Map<string, number>();
   let undetailedTurnStartSinceMs: number | null = null;
-  let expiredTurnStart: TurnStartPendingResponseDetails | null = null;
+  const expiredTurnStarts: TurnStartPendingResponseDetails[] = [];
   const abandonedTurnKeys = new Set<string>();
 
   function noteTurnStartPending(
@@ -166,12 +185,20 @@ export function createEventSink(options: CreateEventSinkOptions): EventSink {
       return;
     }
     const key = buildTurnKey(pending.threadId, pending.turnId);
-    if (pendingTurnStart === null || pendingTurnStart.key !== key) {
-      pendingTurnStart = { key, sinceMs: now() };
+    const sinceMs = pendingTurnStarts.get(key);
+    if (sinceMs === undefined) {
+      pendingTurnStarts.set(key, now());
       return;
     }
-    if (now() - pendingTurnStart.sinceMs >= TURN_START_PENDING_GRACE_MS) {
-      expiredTurnStart = pending;
+    if (
+      now() - sinceMs >= TURN_START_PENDING_GRACE_MS &&
+      !expiredTurnStarts.some(
+        (expired) =>
+          expired.threadId === pending.threadId &&
+          expired.turnId === pending.turnId,
+      )
+    ) {
+      expiredTurnStarts.push(pending);
     }
   }
 
@@ -187,9 +214,8 @@ export function createEventSink(options: CreateEventSinkOptions): EventSink {
   }
 
   function removeQueuedEntry(index: number): void {
-    queue.splice(index, 1);
-    const [delivery] = deliveries.splice(index, 1);
-    delivery?.onSettled();
+    const [removed] = queue.splice(index, 1);
+    removed?.delivery?.onSettled();
   }
 
   function abandonTurn(key: string): void {
@@ -206,11 +232,11 @@ export function createEventSink(options: CreateEventSinkOptions): EventSink {
     pending: TurnStartPendingResponseDetails,
   ): void {
     const key = buildTurnKey(pending.threadId, pending.turnId);
-    const pendingForMs =
-      pendingTurnStart === null ? null : now() - pendingTurnStart.sinceMs;
-    pendingTurnStart = null;
+    const sinceMs = pendingTurnStarts.get(key);
+    const pendingForMs = sinceMs === undefined ? null : now() - sinceMs;
+    pendingTurnStarts.delete(key);
     const firstIndex = queue.findIndex(
-      (envelope) => getEnvelopeTurnKey(envelope) === key,
+      (queued) => getEnvelopeTurnKey(queued.envelope) === key,
     );
     if (firstIndex === -1) {
       options.logger.warn(
@@ -220,9 +246,9 @@ export function createEventSink(options: CreateEventSinkOptions): EventSink {
       return;
     }
     let providerThreadId: string | null = null;
-    for (const envelope of queue) {
-      if (getEnvelopeTurnKey(envelope) === key) {
-        providerThreadId = getEventProviderThreadId(envelope.event);
+    for (const queued of queue) {
+      if (getEnvelopeTurnKey(queued.envelope) === key) {
+        providerThreadId = getEventProviderThreadId(queued.envelope.event);
         if (providerThreadId !== null) {
           break;
         }
@@ -231,15 +257,19 @@ export function createEventSink(options: CreateEventSinkOptions): EventSink {
 
     if (providerThreadId !== null) {
       queue.splice(firstIndex, 0, {
-        threadId: pending.threadId,
-        event: {
-          type: "turn/started",
+        delivery: null,
+        envelope: {
           threadId: pending.threadId,
-          providerThreadId,
-          scope: turnScope(pending.turnId),
+          event: {
+            type: "turn/started",
+            threadId: pending.threadId,
+            providerThreadId,
+            scope: turnScope(pending.turnId),
+          },
         },
+        immediate: true,
+        queuedAt: now(),
       });
-      deliveries.splice(firstIndex, 0, null);
       options.logger.error(
         { threadId: pending.threadId, turnId: pending.turnId, pendingForMs },
         "turn/started never reached the server; synthesized it so the event queue can drain",
@@ -249,8 +279,11 @@ export function createEventSink(options: CreateEventSinkOptions): EventSink {
 
     let dropped = 0;
     for (let index = queue.length - 1; index >= firstIndex; index -= 1) {
-      const envelope = queue[index];
-      if (envelope !== undefined && getEnvelopeTurnKey(envelope) === key) {
+      const queued = queue[index];
+      if (
+        queued !== undefined &&
+        getEnvelopeTurnKey(queued.envelope) === key
+      ) {
         removeQueuedEntry(index);
         dropped += 1;
       }
@@ -287,41 +320,115 @@ export function createEventSink(options: CreateEventSinkOptions): EventSink {
     );
   }
 
-  function clearScheduledFlush(): void {
-    if (flushTimer === null) {
-      return;
+  function clearTick(): void {
+    if (tickTimer !== null) {
+      clearTimeout(tickTimer);
+      tickTimer = null;
+      tickDueAt = Number.POSITIVE_INFINITY;
     }
-    clearTimeout(flushTimer);
-    flushTimer = null;
   }
 
-  function scheduleFlush(delayMs: number): void {
-    if (disposed || flushPromise !== null) {
+  function clearRetry(): void {
+    if (retryTimer !== null) {
+      clearTimeout(retryTimer);
+      retryTimer = null;
+    }
+  }
+
+  function logFlushFailure(error: unknown): void {
+    options.logger.error(
+      runtimeErrorLogFields(normalizeCaughtError(error)),
+      "Daemon event delivery failed",
+    );
+  }
+
+  function scheduleTick(immediate: boolean): void {
+    if (disposed || retryTimer !== null || queue.length === 0) {
       return;
     }
-    if (flushTimer !== null) {
-      if (delayMs > 0) {
+    const delayMs = immediate
+      ? 0
+      : Math.max(0, lastBatchStartedAt + STREAM_TICK_MS - now());
+    const dueAt = now() + delayMs;
+    if (tickTimer !== null) {
+      if (tickDueAt <= dueAt) {
         return;
       }
-      clearScheduledFlush();
+      clearTick();
     }
-    flushTimer = setTimeout(() => {
-      flushTimer = null;
-      void flush().catch((error) => {
-        options.logger.error(
-          runtimeErrorLogFields(normalizeCaughtError(error)),
-          "Daemon event delivery failed",
-        );
-      });
+    tickDueAt = dueAt;
+    tickTimer = setTimeout(() => {
+      tickTimer = null;
+      tickDueAt = Number.POSITIVE_INFINITY;
+      startEligibleBatch();
     }, delayMs);
   }
 
-  async function deliverBatch(
-    batch: readonly HostDaemonEventEnvelope[],
-  ): Promise<number> {
+  function scheduleRetry(): void {
+    if (disposed || retryTimer !== null || !options.isSessionOpen()) {
+      return;
+    }
+    clearTick();
+    const delayMs = Math.floor(retryDelayMs * (0.5 + Math.random() * 0.5));
+    retryDelayMs = Math.min(retryDelayMs * 2, MAX_RETRY_DELAY_MS);
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      void flush().catch(logFlushFailure);
+    }, delayMs);
+  }
+
+  function scheduleTurnStartRetry(delayMs: number): void {
+    if (disposed || retryTimer !== null || !options.isSessionOpen()) {
+      return;
+    }
+    clearTick();
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      void flush().catch(logFlushFailure);
+    }, delayMs);
+  }
+
+  function logPostedBatch(
+    batch: readonly QueuedEvent[],
+    postedAt: number,
+  ): void {
+    let textChars = 0;
+    let oldestQueuedAt = postedAt;
+    for (const { envelope, queuedAt } of batch) {
+      oldestQueuedAt = Math.min(oldestQueuedAt, queuedAt);
+      if (
+        envelope.event.type === "item/agentMessage/delta" ||
+        envelope.event.type === "item/reasoning/summaryTextDelta" ||
+        envelope.event.type === "item/reasoning/textDelta" ||
+        envelope.event.type === "item/plan/delta"
+      ) {
+        textChars += envelope.event.delta.length;
+      }
+    }
+    options.logger.debug(
+      {
+        eventBatch: {
+          events: batch.length,
+          textChars,
+          oldestQueuedMs: postedAt - oldestQueuedAt,
+          sincePreviousPostMs:
+            lastPostAt === null ? null : postedAt - lastPostAt,
+          postMs: now() - postedAt,
+          postedAt,
+        },
+      },
+      "Posted daemon event batch",
+    );
+    lastPostAt = postedAt;
+  }
+
+  async function deliverBatch(batch: readonly QueuedEvent[]): Promise<number> {
     let response: EventPostResult;
+    const postedAt = now();
     try {
-      response = await options.postEvents([...batch]);
+      response = await options.postEvents(
+        batch.map((queued) => queued.envelope),
+      );
     } catch (error) {
       const normalized = normalizeCaughtError(error);
       const turnStartPending = isTurnStartPendingRejection(normalized);
@@ -348,7 +455,7 @@ export function createEventSink(options: CreateEventSinkOptions): EventSink {
       if (!turnStartPending && !isPermanentPostRejection(normalized)) {
         options.logger.error(
           runtimeErrorLogFields(normalized),
-          "Failed to post daemon events; will retry on the next flush",
+          "Failed to post daemon events; keeping events queued for retry",
         );
         return 0;
       }
@@ -358,8 +465,8 @@ export function createEventSink(options: CreateEventSinkOptions): EventSink {
         options.logger.error(
           {
             ...runtimeErrorLogFields(normalized),
-            eventType: offending.event.type,
-            threadId: offending.threadId,
+            eventType: offending.envelope.event.type,
+            threadId: offending.envelope.threadId,
           },
           "Dropped a daemon event the server will never accept",
         );
@@ -376,6 +483,7 @@ export function createEventSink(options: CreateEventSinkOptions): EventSink {
       return midpoint + (await deliverBatch(batch.slice(midpoint)));
     }
 
+    logPostedBatch(batch, postedAt);
     if (response.rejectedEvents.length > 0) {
       options.logger.warn(
         {
@@ -385,58 +493,133 @@ export function createEventSink(options: CreateEventSinkOptions): EventSink {
       );
     }
     turnStartRetryDelayMs = TURN_START_RETRY_INITIAL_MS;
-    pendingTurnStart = null;
+    for (const queued of batch) {
+      const turnKey = getEnvelopeTurnKey(queued.envelope);
+      if (turnKey !== null) {
+        pendingTurnStarts.delete(turnKey);
+      }
+    }
     return batch.length;
   }
 
-  async function drainQueue(): Promise<void> {
-    while (queue.length > 0 && !disposed && options.isSessionOpen()) {
-      const batch = queue.slice();
-      const delivered = await deliverBatch(batch);
-      queue.splice(0, delivered);
-      for (const delivery of deliveries.splice(0, delivered)) {
-        delivery?.onSettled();
+  function takeEligibleBatch(): QueuedEvent[] {
+    const batch: QueuedEvent[] = [];
+    const waiting: QueuedEvent[] = [];
+    for (const queued of queue) {
+      (inFlightByThreadId.has(queued.envelope.threadId) ? waiting : batch).push(
+        queued,
+      );
+    }
+    queue.splice(0, queue.length, ...waiting);
+    return batch;
+  }
+
+  function settleBatch(batch: readonly QueuedEvent[], delivered: number): void {
+    for (const queued of batch.slice(0, delivered)) {
+      queued.delivery?.onSettled();
+    }
+    for (const queued of batch) {
+      const remaining =
+        (inFlightByThreadId.get(queued.envelope.threadId) ?? 1) - 1;
+      if (remaining === 0) {
+        inFlightByThreadId.delete(queued.envelope.threadId);
+      } else {
+        inFlightByThreadId.set(queued.envelope.threadId, remaining);
       }
-      if (expiredTurnStart !== null) {
-        const expired = expiredTurnStart;
-        expiredTurnStart = null;
-        repairMissingTurnStart(expired);
-        turnStartRetryPending = false;
-        turnStartRetryDelayMs = TURN_START_RETRY_INITIAL_MS;
-        continue;
+    }
+    if (delivered < batch.length) {
+      failedPosts += 1;
+      if (!disposed) {
+        queue.unshift(...batch.slice(delivered));
       }
-      if (queue.length === 0) {
-        undetailedTurnStartSinceMs = null;
-        backedUpSinceMs = null;
-        backpressureLogged = false;
-      }
-      if (delivered < batch.length) {
-        return;
-      }
+      return;
+    }
+    if (queue.length === 0 && inFlightByThreadId.size === 0) {
+      undetailedTurnStartSinceMs = null;
+      backedUpSinceMs = null;
+      backpressureLogged = false;
+      retryDelayMs = INITIAL_RETRY_DELAY_MS;
     }
   }
 
-  async function flush(): Promise<void> {
-    clearScheduledFlush();
-    if (flushPromise !== null) {
-      await flushPromise;
+  function startEligibleBatch(): void {
+    if (disposed || !options.isSessionOpen()) {
       return;
     }
-
-    flushPromise = drainQueue();
-    try {
-      await flushPromise;
-    } finally {
-      flushPromise = null;
-      if (turnStartRetryPending) {
-        turnStartRetryPending = false;
-        if (queue.length > 0 && !disposed) {
-          scheduleFlush(turnStartRetryDelayMs);
-          turnStartRetryDelayMs = Math.min(
-            turnStartRetryDelayMs * 2,
-            TURN_START_RETRY_MAX_MS,
+    const batch = takeEligibleBatch();
+    if (batch.length === 0) {
+      return;
+    }
+    lastBatchStartedAt = now();
+    for (const queued of batch) {
+      inFlightByThreadId.set(
+        queued.envelope.threadId,
+        (inFlightByThreadId.get(queued.envelope.threadId) ?? 0) + 1,
+      );
+    }
+    const failuresBefore = failedPosts;
+    const post: Promise<void> = deliverBatch(batch)
+      .catch((error: unknown) => {
+        logFlushFailure(error);
+        return 0;
+      })
+      .then((delivered) => {
+        settleBatch(batch, delivered);
+        if (expiredTurnStarts.length > 0) {
+          for (const expired of expiredTurnStarts.splice(0)) {
+            repairMissingTurnStart(expired);
+          }
+          turnStartRetryPending = false;
+          turnStartRetryDelayMs = TURN_START_RETRY_INITIAL_MS;
+          turnStartRepaired = true;
+          turnStartRepairCount += 1;
+        }
+      })
+      .finally(() => {
+        inFlightPosts.delete(post);
+        if (turnStartRepaired) {
+          turnStartRepaired = false;
+          scheduleTick(true);
+        } else if (turnStartRetryPending) {
+          turnStartRetryPending = false;
+          if (queue.length > 0 && !disposed) {
+            scheduleTurnStartRetry(turnStartRetryDelayMs);
+            turnStartRetryDelayMs = Math.min(
+              turnStartRetryDelayMs * 2,
+              TURN_START_RETRY_MAX_MS,
+            );
+          }
+        } else if (failedPosts !== failuresBefore) {
+          scheduleRetry();
+        } else {
+          scheduleTick(
+            queue.some(
+              (queued) =>
+                queued.immediate &&
+                !inFlightByThreadId.has(queued.envelope.threadId),
+            ),
           );
         }
+      });
+    inFlightPosts.add(post);
+  }
+
+  async function flush(): Promise<void> {
+    clearTick();
+    clearRetry();
+    for (;;) {
+      const failuresBefore = failedPosts;
+      const repairsBefore = turnStartRepairCount;
+      startEligibleBatch();
+      if (inFlightPosts.size === 0) {
+        return;
+      }
+      await Promise.all(inFlightPosts);
+      if (
+        failedPosts !== failuresBefore &&
+        turnStartRepairCount === repairsBefore
+      ) {
+        return;
       }
     }
   }
@@ -445,6 +628,9 @@ export function createEventSink(options: CreateEventSinkOptions): EventSink {
     emit(input): void {
       if (disposed) {
         throw new EventSinkDisposedError();
+      }
+      if (backedUpSinceMs === null) {
+        backedUpSinceMs = now();
       }
       if (abandonedTurnKeys.size > 0) {
         const turnId = getThreadEventScopeTurnId(input.event.scope);
@@ -458,33 +644,37 @@ export function createEventSink(options: CreateEventSinkOptions): EventSink {
           abandonedTurnKeys.delete(key);
         }
       }
-      if (backedUpSinceMs === null) {
-        backedUpSinceMs = now();
-      }
+      const immediate = shouldFlushThreadEventImmediately(input.event);
       queue.push({
-        threadId: input.threadId,
-        event: input.event,
-        ...(input.delivery === undefined
-          ? {}
-          : { replayKey: input.delivery.replayKey }),
+        delivery: input.delivery ?? null,
+        envelope: {
+          threadId: input.threadId,
+          event: input.event,
+          ...(input.delivery === undefined
+            ? {}
+            : { replayKey: input.delivery.replayKey }),
+        },
+        immediate,
+        queuedAt: now(),
       });
-      deliveries.push(input.delivery ?? null);
       maybeLogQueuePressure();
-      scheduleFlush(
-        shouldFlushThreadEventImmediately(input.event)
-          ? 0
-          : DEFAULT_DEBOUNCE_MS,
-      );
+      scheduleTick(immediate);
     },
     flush,
+    listUndeliveredThreadIds(): string[] {
+      return [
+        ...new Set([
+          ...inFlightByThreadId.keys(),
+          ...queue.map((queued) => queued.envelope.threadId),
+        ]),
+      ];
+    },
     async dispose(): Promise<void> {
       disposed = true;
-      clearScheduledFlush();
-      if (flushPromise !== null) {
-        await flushPromise.catch(() => undefined);
-      }
+      clearTick();
+      clearRetry();
+      await Promise.all(inFlightPosts);
       queue.length = 0;
-      deliveries.length = 0;
     },
   };
 }

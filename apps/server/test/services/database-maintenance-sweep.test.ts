@@ -14,13 +14,12 @@ import {
   type SlowDbQueryLogger,
   getDatabaseAutoVacuumMode,
   getDatabaseFreelistStats,
-  getDatabaseMaintenanceActivity,
-  isDatabaseMaintenanceIdle,
   listDeferredLegacyTables,
   migrate,
   noopNotifier,
   upsertHost,
 } from "@bb/db";
+import { createMigratedConnection } from "@bb/db/testing";
 import type { ServerLogger } from "../../src/types.js";
 import { runDatabaseMaintenanceSweep } from "../../src/services/system/periodic-sweeps.js";
 import { testLogger } from "../helpers/test-app.js";
@@ -139,8 +138,7 @@ function buildFreelist(db: DbConnection): void {
 }
 
 function setupBusyDatabaseWithFreelist() {
-  const db = createConnection(":memory:");
-  migrate(db);
+  const db = createMigratedConnection();
   markDatabaseBusy(db);
   buildFreelist(db);
 
@@ -158,8 +156,7 @@ function setupBusyFileDatabaseWithFreelist(tempDatabase: TempDatabasePath) {
 
 describe("runDatabaseMaintenanceSweep", () => {
   it("drops deferred legacy tables on an idle maintenance pass", () => {
-    const db = createConnection(":memory:");
-    migrate(db);
+    const db = createMigratedConnection();
     createDeferredLegacyTables(db);
     expect(listDeferredLegacyTables(db)).toEqual(
       [...TEST_DEFERRED_LEGACY_TABLE_NAMES].sort(),
@@ -178,22 +175,6 @@ describe("runDatabaseMaintenanceSweep", () => {
 
     expect(listDeferredLegacyTables(db)).toEqual(
       [...TEST_DEFERRED_LEGACY_TABLE_NAMES].sort(),
-    );
-  });
-
-  it("reclaims freed pages incrementally even when the instance is not idle", () => {
-    const { db } = setupBusyDatabaseWithFreelist();
-
-    const before = getDatabaseFreelistStats(db);
-    expect(before.freelistCount).toBeGreaterThan(0);
-    expect(isDatabaseMaintenanceIdle(getDatabaseMaintenanceActivity(db))).toBe(
-      false,
-    );
-
-    runDatabaseMaintenanceSweep({ db, logger: testLogger });
-
-    expect(getDatabaseFreelistStats(db).freelistCount).toBeLessThan(
-      before.freelistCount,
     );
   });
 

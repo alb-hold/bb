@@ -334,6 +334,20 @@ export function registerEnvironmentCommands(
     .description("Inspect and operate on first-class environments");
 
   environment
+    .command("cleanup <id>")
+    .description("Clean up an unused provider-managed environment")
+    .option("--json", "Print machine-readable JSON output")
+    .action(
+      action(async (id: string, opts: { json?: boolean }) => {
+        const result = await createCliBbSdk(
+          getUrl(),
+        ).environments.experimental_cleanup({ environmentId: id });
+        if (!outputJson(opts, result))
+          console.log("Environment cleanup requested.");
+      }),
+    );
+
+  environment
     .command("providers")
     .description("List registered environment providers")
     .option(
@@ -535,7 +549,7 @@ export function registerEnvironmentCommands(
         console.log(`State: ${status.workingTree.state}`);
         console.log(`Branch: ${status.branch.currentBranch ?? "(detached)"}`);
         console.log(`Default branch: ${status.branch.defaultBranch}`);
-        console.log(`Changed files: ${status.workingTree.files.length}`);
+        console.log(`Changed files: ${status.workingTree.fileCount}`);
         if (status.workingTree.lineStatsComplete) {
           console.log(`Insertions: +${status.workingTree.insertions}`);
           console.log(`Deletions: -${status.workingTree.deletions}`);
@@ -876,6 +890,10 @@ export function registerEnvironmentCommands(
         console.log(`URL: ${pr.url}`);
         console.log(`Branch: ${pr.headRefName} -> ${pr.baseRefName}`);
         console.log(`Attention: ${pr.attention}`);
+        console.log(`Auto-merge: ${pr.autoMerge ? "on" : "off"}`);
+        console.log(
+          `Merge queue: ${pr.inMergeQueue === null ? "unknown" : pr.inMergeQueue ? "queued" : "not queued"}`,
+        );
         console.log(
           `Checks: ${pr.checks.state} (${pr.checks.passedCount} passed, ` +
             `${pr.checks.failedCount} failed, ${pr.checks.pendingCount} pending, ` +

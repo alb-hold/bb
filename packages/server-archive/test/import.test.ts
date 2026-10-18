@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import {
   mkdir,
-  mkdtemp,
   readdir,
   readFile,
   rm,
@@ -9,9 +8,9 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { makeTempDir } from "@bb/test-helpers";
+import { describe, expect, it } from "vitest";
 import {
   archiveExistingServerData,
   discardImportBackups,
@@ -34,22 +33,6 @@ import {
   SERVER_OWNED_FIXTURE_PATHS,
   writeFixtureFile,
 } from "./data-dir-fixtures.js";
-
-const tempDirs: string[] = [];
-
-async function makeTempDir(): Promise<string> {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "bb-server-import-"));
-  tempDirs.push(tempDir);
-  return tempDir;
-}
-
-afterEach(async () => {
-  await Promise.all(
-    tempDirs
-      .splice(0)
-      .map((tempDir) => rm(tempDir, { force: true, recursive: true })),
-  );
-});
 
 async function writeDataFile(
   dataDir: string,
@@ -182,7 +165,6 @@ describe("mergeImportedManagedConfig", () => {
     const merged = mergeImportedManagedConfig({
       importedConfig: {
         config: { BB_LOG_LEVEL: "info" },
-        customAcpAgents: [{ id: "raw-agent", futureField: 1 }],
         serverUrl: "https://ignored.example",
         machineCredential: "source-credential",
       },
@@ -198,18 +180,16 @@ describe("mergeImportedManagedConfig", () => {
 
     expect(merged).toEqual({
       config: { BB_LOG_LEVEL: "info", BB_APP_URL: "https://target.example" },
-      customAcpAgents: [{ id: "raw-agent", futureField: 1 }],
       serverUrl: "http://127.0.0.1:39886",
     });
   });
 
-  it("takes custom models, ACP agents, and shared skill roots only from the imported server", () => {
+  it("takes custom models and shared skill roots only from the imported server", () => {
     expect(
       mergeImportedManagedConfig({
         importedConfig: {},
         existingConfig: {
           customModels: [{ providerId: "codex", model: "target-model" }],
-          customAcpAgents: [{ id: "target-agent" }],
           sharedSkillRoots: { user: ["~/target-skills"], project: [] },
         },
         localServerUrl: null,
@@ -278,17 +258,17 @@ describe("installImportedServerFiles and removeImportedServerFiles", () => {
     expect(await readJson(dataDir, "config.json")).toEqual({
       config: {
         BB_APP_URL: "https://target.example",
-        BB_INFERENCE: "codex/gpt-5.4-mini",
         BB_LOG_LEVEL: "info",
       },
       customModels: SOURCE_CONFIG.customModels,
-      customAcpAgents: SOURCE_CONFIG.customAcpAgents,
       sharedSkillRoots: SOURCE_CONFIG.sharedSkillRoots,
       serverUrl: "http://127.0.0.1:39886",
     });
-    expect((await stat(path.join(dataDir, "config.json"))).mode & 0o777).toBe(
-      0o600,
-    );
+    if (process.platform !== "win32") {
+      expect((await stat(path.join(dataDir, "config.json"))).mode & 0o777).toBe(
+        0o600,
+      );
+    }
     expect(await readJson(dataDir, "env.json")).toEqual({
       env: { SHARED: "from-source", SOURCE_ONLY: "1", TARGET_ONLY: "1" },
     });

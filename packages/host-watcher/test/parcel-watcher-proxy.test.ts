@@ -1,9 +1,13 @@
+import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type {
   ChildToParentMessage,
   ParentToChildMessage,
 } from "../src/parcel-subprocess/messages.js";
-import { createParcelChildHandler } from "../src/parcel-subprocess/parcel-child-handler.js";
+import {
+  createParcelChildHandler,
+  disposeThenExit,
+} from "../src/parcel-subprocess/parcel-child-handler.js";
 import {
   createParcelWatcherProxy,
   type ChildChannel,
@@ -184,80 +188,6 @@ function createHarness(options?: {
   return { proxy, children, current };
 }
 
-interface RecoveryBenchmarkCounts {
-  subscriptions: number;
-  affectedSubscriptions: number;
-  unaffectedSubscriptions: number;
-  childRestarts: number;
-  proxyResubscriptions: number;
-  listEntriesCalls: number;
-  affectedSubscriptionsReceivingErrors: number;
-  affectedSubscriptionsReceivingEvents: number;
-  unaffectedSubscriptionsReceivingErrors: number;
-  unaffectedSubscriptionsReceivingEvents: number;
-}
-
-async function runRecoveryCountSample(
-  subscriptionCount: number,
-): Promise<RecoveryBenchmarkCounts> {
-  let listEntriesCalls = 0;
-  const { proxy, children, current } = createHarness({
-    listEntries: () => {
-      listEntriesCalls += 1;
-      return Promise.resolve(["current-entry"]);
-    },
-  });
-  let affectedErrors = 0;
-  let affectedEvents = 0;
-  const unaffectedSubscriptionsReceivingErrors = new Set<number>();
-  const unaffectedSubscriptionsReceivingEvents = new Set<number>();
-
-  for (let index = 0; index < subscriptionCount; index += 1) {
-    await proxy.subscribe(`/root-${index}`, (error, events) => {
-      if (index === 0) {
-        if (error) {
-          affectedErrors += 1;
-        } else {
-          affectedEvents += events.length;
-        }
-        return;
-      }
-      if (error) {
-        unaffectedSubscriptionsReceivingErrors.add(index);
-      } else if (events.length > 0) {
-        unaffectedSubscriptionsReceivingEvents.add(index);
-      }
-    });
-  }
-  await flush();
-
-  current().parcel.emitError(
-    "/root-0",
-    `Events were dropped by the FSEvents client. ${RESCAN_REQUIRED_MESSAGE}.`,
-  );
-  await flush();
-  const totalSubscribeCalls = children.reduce(
-    (total, child) => total + child.parcel.subscriptions.length,
-    0,
-  );
-  const counts: RecoveryBenchmarkCounts = {
-    subscriptions: subscriptionCount,
-    affectedSubscriptions: 1,
-    unaffectedSubscriptions: subscriptionCount - 1,
-    childRestarts: children.length - 1,
-    proxyResubscriptions: totalSubscribeCalls - subscriptionCount,
-    listEntriesCalls,
-    affectedSubscriptionsReceivingErrors: affectedErrors > 0 ? 1 : 0,
-    affectedSubscriptionsReceivingEvents: affectedEvents > 0 ? 1 : 0,
-    unaffectedSubscriptionsReceivingErrors:
-      unaffectedSubscriptionsReceivingErrors.size,
-    unaffectedSubscriptionsReceivingEvents:
-      unaffectedSubscriptionsReceivingEvents.size,
-  };
-  proxy.dispose();
-  return counts;
-}
-
 describe("createParcelWatcherProxy", () => {
   it("delivers parcel events from the child to the subscriber", async () => {
     const { proxy, current } = createHarness();
@@ -426,8 +356,8 @@ describe("createParcelWatcherProxy", () => {
     current().exit();
     await flush();
     expect([...received].sort()).toEqual([
-      "/storage/thread-1",
-      "/storage/thread-2",
+      path.join("/storage", "thread-1"),
+      path.join("/storage", "thread-2"),
     ]);
     proxy.dispose();
   });
@@ -559,7 +489,10 @@ describe("createParcelWatcherProxy", () => {
 
       expect(children).toHaveLength(3);
       expect(current().parcel.activeDirs().sort()).toEqual(["/other", "/root"]);
-      expect(received.sort()).toEqual(["/other/gap-file", "/root/gap-file"]);
+      expect(received.sort()).toEqual([
+        path.join("/other", "gap-file"),
+        path.join("/root", "gap-file"),
+      ]);
       proxy.dispose();
     } finally {
       vi.useRealTimers();
@@ -691,6 +624,47 @@ describe("createParcelWatcherProxy", () => {
 
       await subscription.dispose();
     } finally {
+      disposeParcelWatcherBackend();
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("reports an oversized event batch as dropped events without resubscribing", async () => {
+    vi.spyOn(pathExistsModule, "pathExists").mockResolvedValue(true);
+    const { proxy, children, current } = createHarness();
+    setParcelWatcherBackend(proxy);
+    const deliveredBatchSizes: number[] = [];
+    let droppedEventReports = 0;
+    const subscription = new RootSubscription({
+      rootPath: "/root",
+      retryDelayMs: 250,
+      maxRetryDelayMs: 30_000,
+      onEvents: (events) => deliveredBatchSizes.push(events.length),
+      onDroppedEvents: () => {
+        droppedEventReports += 1;
+      },
+      onWatchError: () => {},
+    });
+    const batch = (size: number): ParcelWatcherEventBatch =>
+      Array.from({ length: size }, (_unused, index) => ({
+        path: `/root/build/${index}.js`,
+        type: "update" as const,
+      }));
+    try {
+      subscription.start();
+      await flush(20);
+
+      current().parcel.emit("/root", batch(10_000));
+      current().parcel.emit("/root", batch(10_001));
+      await flush(20);
+
+      expect(deliveredBatchSizes).toEqual([10_000]);
+      expect(droppedEventReports).toBe(1);
+      expect(children).toHaveLength(1);
+      expect(current().parcel.subscribeAttempts).toEqual(["/root"]);
+      expect(current().parcel.activeDirs()).toEqual(["/root"]);
+    } finally {
+      await subscription.dispose();
       disposeParcelWatcherBackend();
       vi.restoreAllMocks();
     }
@@ -828,20 +802,34 @@ describe("createParcelWatcherProxy", () => {
   });
 });
 
-if (process.env.BB_WATCHER_RECOVERY_BENCHMARK === "1") {
-  describe("watcher recovery count harness", () => {
-    it("reports two-subscription and fan-out recovery work", async () => {
-      const result = {
-        twoSubscriptions: await runRecoveryCountSample(2),
-        fanOut: await runRecoveryCountSample(100),
-      };
-      expect(result.twoSubscriptions.affectedSubscriptions).toBe(1);
-      expect(result.twoSubscriptions.unaffectedSubscriptions).toBe(1);
-      expect(result.fanOut.affectedSubscriptions).toBe(1);
-      expect(result.fanOut.unaffectedSubscriptions).toBe(99);
-      process.stdout.write(
-        `WATCHER_RECOVERY_COUNTS ${JSON.stringify(result)}\n`,
-      );
-    }, 30_000);
+describe("disposeThenExit", () => {
+  it("exits by the deadline when a native unsubscribe never settles", async () => {
+    vi.useFakeTimers();
+    try {
+      const parcel = new FakeParcel();
+      parcel.unsubscribeGate = new Promise<void>(() => {});
+      const handler = createParcelChildHandler({
+        parcel,
+        send: () => {},
+        listEntries: async () => [],
+      });
+      handler.handleMessage({ kind: "subscribe", id: "sub_1", dir: "/root" });
+      await flush();
+      expect(parcel.activeDirs()).toEqual(["/root"]);
+      const exit = vi.fn();
+
+      disposeThenExit({
+        deadlineMs: 2_000,
+        dispose: () => handler.dispose(),
+        exit,
+      });
+      await vi.advanceTimersByTimeAsync(1_999);
+      expect(exit).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(exit).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
-}
+});
