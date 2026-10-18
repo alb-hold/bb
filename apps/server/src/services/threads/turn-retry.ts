@@ -69,6 +69,7 @@ function requireFailedTurn(
 export interface RetryFailedTurnArgs {
   thread: Thread;
   request: RetryTurnRequest;
+  onTurnRequestCreated?: (requestId: string, turnId?: string) => void;
 }
 
 const CONTINUE_ACCEPTED_TURN_TEXT = "Please continue.";
@@ -167,6 +168,7 @@ export async function retryFailedTurn(
       origin: null,
       originPluginId: null,
       startedOnBehalfOf: null,
+      onTurnRequestCreated: args.onTurnRequestCreated,
       trigger: "user",
     });
     if (outcome.kind === "dispatched") {

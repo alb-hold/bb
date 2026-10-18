@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import type {
   DeviceHandoffExpiredSignal,
+  DeviceHandoffNoticeSignal,
   DeviceHandoffSignal,
 } from "@bb/server-contract";
 import { Button } from "@bb/shared-ui/button";
@@ -12,11 +13,17 @@ import { copyToClipboardWithToast } from "@/lib/clipboard";
 import { openUrlInExternalBrowser } from "@/lib/url-open-routing";
 
 interface DeviceHandoffSheetProps {
-  signal: DeviceHandoffSignal | DeviceHandoffExpiredSignal | null;
+  signal:
+    | DeviceHandoffSignal
+    | DeviceHandoffExpiredSignal
+    | DeviceHandoffNoticeSignal
+    | null;
   position: number;
   count: number;
   onDismiss(): void;
   onAcknowledge(id: string): void;
+  onShowHere?(id: string): void;
+  shownOn?: string;
 }
 
 export function DeviceHandoffSheet({
@@ -25,11 +32,18 @@ export function DeviceHandoffSheet({
   count,
   onDismiss,
   onAcknowledge,
+  onShowHere = () => {},
+  shownOn,
 }: DeviceHandoffSheetProps) {
   const open = signal !== null;
   const { isContentRealized } = useResponsiveDrawerRealization({ open });
   useEffect(() => {
-    if (signal === null || signal.type !== "device-handoff") return;
+    if (
+      signal === null ||
+      (signal.type !== "device-handoff" &&
+        signal.type !== "device-handoff-notice")
+    )
+      return;
     const timer = window.setTimeout(
       onDismiss,
       Math.max(0, signal.expiresAt - Date.now()),
@@ -80,6 +94,25 @@ export function DeviceHandoffSheet({
           </Button>
         </div>
       </>
+    ) : signal?.type === "device-handoff-notice" ? (
+      <>
+        <p className="text-sm text-muted-foreground">
+          {signal.kind === "copy-text" ? "Text" : "Link"} from{" "}
+          {signal.hostLabel} is waiting.
+          {shownOn ? ` Shown on ${shownOn}.` : ""}
+        </p>
+        <p className="text-sm text-muted-foreground">
+          {new Date(signal.createdAt).toLocaleString()}
+        </p>
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="ghost" onClick={onDismiss}>
+            Dismiss
+          </Button>
+          <Button type="button" onClick={() => onShowHere(signal.id)}>
+            Show here
+          </Button>
+        </div>
+      </>
     ) : signal?.type === "device-handoff" &&
       signal.request.kind === "copy-text" ? (
       <>
@@ -127,9 +160,13 @@ export function DeviceHandoffSheet({
           <h2 className="text-base font-semibold">
             {signal.type === "device-handoff-expired"
               ? "Handoff expired"
-              : signal.request.kind === "copy-text"
-                ? "Text ready to copy"
-                : "URL ready to open"}
+              : signal.type === "device-handoff-notice"
+                ? signal.kind === "copy-text"
+                  ? "Text waiting"
+                  : "Link waiting"
+                : signal.request.kind === "copy-text"
+                  ? "Text ready to copy"
+                  : "URL ready to open"}
           </h2>
           {count > 0 ? (
             <p className="text-sm text-muted-foreground">

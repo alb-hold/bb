@@ -11,6 +11,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   DeviceHandoffExpiredSignal,
+  DeviceHandoffNoticeSignal,
   DeviceHandoffSignal,
 } from "@bb/server-contract";
 import { DeviceHandoffSheet } from "./DeviceHandoffSheet";
@@ -35,7 +36,8 @@ vi.mock("@/lib/clipboard", () => ({
 }));
 
 vi.mock("@/lib/url-open-routing", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/lib/url-open-routing")>();
+  const actual =
+    await importOriginal<typeof import("@/lib/url-open-routing")>();
   return {
     ...actual,
     openUrlInExternalBrowser: vi.fn(actual.openUrlInExternalBrowser),
@@ -466,6 +468,37 @@ describe("DeviceHandoffSheet", () => {
     expect(onAcknowledge).toHaveBeenCalledExactlyOnceWith("open-handoff");
     expect(onDismiss).toHaveBeenCalledTimes(1);
     windowOpen.mockRestore();
+  });
+
+  it("shows only fallback metadata until the user taps Show here", async () => {
+    const notice: DeviceHandoffNoticeSignal = {
+      type: "device-handoff-notice",
+      id: "fallback-handoff",
+      createdAt: Date.now(),
+      expiresAt: Date.now() + 600_000,
+      kind: "open-url",
+      threadId: "thread-1",
+      hostLabel: "Development host",
+    };
+    const onShowHere = vi.fn();
+    const onDismiss = vi.fn();
+    render(
+      <DeviceHandoffSheet
+        signal={notice}
+        position={1}
+        count={1}
+        onDismiss={onDismiss}
+        onAcknowledge={vi.fn()}
+        onShowHere={onShowHere}
+      />,
+    );
+
+    expect(await screen.findByText("Link waiting")).toBeTruthy();
+    expect(screen.getByText(/Development host is waiting/)).toBeTruthy();
+    expect(screen.queryByText(/example\.com|secret-url/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Show here" }));
+    expect(onShowHere).toHaveBeenCalledExactlyOnceWith("fallback-handoff");
+    expect(onDismiss).not.toHaveBeenCalled();
   });
 
   it("shows queued handoffs in arrival order and acknowledges only explicit actions", async () => {

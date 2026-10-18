@@ -1,5 +1,8 @@
 import { extractErrorMessage, toRecord } from "@bb/core-ui";
-import type { SystemVoiceTranscriptionResponse } from "@bb/server-contract";
+import type {
+  DeviceHandoffSignal,
+  SystemVoiceTranscriptionResponse,
+} from "@bb/server-contract";
 import { apiClient, toRelativeUrl } from "./api-server";
 import { appSurfaceRequestInit } from "./app-surface";
 import {
@@ -123,6 +126,12 @@ export async function request<T>(
   const res = await requestResponse(responsePromise);
   const text = await res.text();
   return JSON.parse(text) as T;
+}
+
+export function claimDeviceHandoff(id: string): Promise<DeviceHandoffSignal> {
+  return request<DeviceHandoffSignal>(
+    apiClient["device-handoff"].claim.$post({ json: { id } }),
+  );
 }
 
 const FILE_PREVIEW_SAMPLE_RANGE = `bytes=0-${FILE_PREVIEW_SAMPLE_BYTES - 1}`;

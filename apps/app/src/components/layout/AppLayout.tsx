@@ -918,6 +918,8 @@ export function AppLayout({ children }: AppLayoutProps) {
                 count={deviceHandoffQueue.count}
                 onDismiss={deviceHandoffQueue.dismiss}
                 onAcknowledge={deviceHandoffQueue.acknowledge}
+                onShowHere={(id) => void deviceHandoffQueue.showHere(id)}
+                shownOn={deviceHandoffQueue.shownOn}
               />
               {quickCreateProject.projectPathDialog.target === null ? null : (
                 <Suspense fallback={null}>

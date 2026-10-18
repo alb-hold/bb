@@ -10,6 +10,8 @@ import {
   deviceHandoffExpiredSignalLenientSchema,
   deviceHandoffAcknowledgedSignalLenientSchema,
   deviceHandoffClientTokenSignalLenientSchema,
+  deviceHandoffNoticeSignalLenientSchema,
+  deviceHandoffShownSignalLenientSchema,
   threadTimelineSignalLenientSchema,
 } from "@bb/server-contract";
 import type {
@@ -24,6 +26,8 @@ import type {
   DeviceHandoffSignal,
   DeviceHandoffExpiredSignal,
   DeviceHandoffAcknowledgedSignal,
+  DeviceHandoffNoticeSignal,
+  DeviceHandoffShownSignal,
 } from "@bb/server-contract";
 import { buildBrowserWebSocketUrl } from "./dev-websocket-url";
 import {
@@ -40,7 +44,9 @@ type DeviceHandoffCallback = (
   signal:
     | DeviceHandoffSignal
     | DeviceHandoffExpiredSignal
-    | DeviceHandoffAcknowledgedSignal,
+    | DeviceHandoffAcknowledgedSignal
+    | DeviceHandoffNoticeSignal
+    | DeviceHandoffShownSignal,
 ) => void;
 export type WebSocketConnectedEvent =
   | { reconnected: false }
@@ -397,6 +403,23 @@ export class WebSocketManager {
       if (deviceHandoff.data.expiresAt > Date.now()) {
         for (const cb of this.deviceHandoffCallbacks) cb(deviceHandoff.data);
       }
+      return;
+    }
+
+    const deviceHandoffNotice =
+      deviceHandoffNoticeSignalLenientSchema.safeParse(parsed);
+    if (deviceHandoffNotice.success) {
+      if (deviceHandoffNotice.data.expiresAt > Date.now()) {
+        for (const cb of this.deviceHandoffCallbacks)
+          cb(deviceHandoffNotice.data);
+      }
+      return;
+    }
+
+    const deviceHandoffShown =
+      deviceHandoffShownSignalLenientSchema.safeParse(parsed);
+    if (deviceHandoffShown.success) {
+      for (const cb of this.deviceHandoffCallbacks) cb(deviceHandoffShown.data);
       return;
     }
 

@@ -2,6 +2,8 @@ import { z } from "zod";
 
 export const DEVICE_HANDOFF_TEXT_MAX_BYTES = 1024 * 1024;
 export const DEVICE_HANDOFF_URL_MAX_LENGTH = 8 * 1024;
+export const DEVICE_HANDOFF_CLIENT_TOKEN_HEADER =
+  "x-bb-device-handoff-client-token";
 export const deviceHandoffClientTokenSignalSchema = z
   .object({
     type: z.literal("device-handoff-client-token"),
@@ -20,6 +22,7 @@ const deviceHandoffOriginSchema = z
   .object({
     threadId: z.string().min(1).max(128).optional(),
     terminalSessionId: z.string().min(1).max(128).optional(),
+    turnId: z.string().min(1).max(128).optional(),
   })
   .strict()
   .refine(
@@ -89,6 +92,48 @@ export const deviceHandoffSignalLenientSchema = z.object({
   request: deviceHandoffRequestSchema,
   originLabel: z.string(),
 });
+
+export const deviceHandoffNoticeSignalSchema = z
+  .object({
+    type: z.literal("device-handoff-notice"),
+    id: z.string().min(1),
+    createdAt: z.number().int().nonnegative(),
+    expiresAt: z.number().int().nonnegative(),
+    kind: z.enum(["copy-text", "open-url"]),
+    threadId: z.string().min(1),
+    hostLabel: z.string().max(256),
+  })
+  .strict();
+
+export type DeviceHandoffNoticeSignal = z.infer<
+  typeof deviceHandoffNoticeSignalSchema
+>;
+
+export const deviceHandoffNoticeSignalLenientSchema =
+  deviceHandoffNoticeSignalSchema;
+
+export const deviceHandoffShownSignalSchema = z
+  .object({
+    type: z.literal("device-handoff-shown"),
+    id: z.string().min(1),
+    deviceLabel: z.string().min(1).max(64),
+  })
+  .strict();
+
+export type DeviceHandoffShownSignal = z.infer<
+  typeof deviceHandoffShownSignalSchema
+>;
+
+export const deviceHandoffShownSignalLenientSchema =
+  deviceHandoffShownSignalSchema;
+
+export const deviceHandoffClaimRequestSchema = z
+  .object({ id: z.string().min(1) })
+  .strict();
+
+export type DeviceHandoffClaimRequest = z.infer<
+  typeof deviceHandoffClaimRequestSchema
+>;
 
 export const deviceHandoffExpiredSignalSchema = z
   .object({

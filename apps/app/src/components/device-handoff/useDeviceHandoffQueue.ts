@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   deviceHandoffExpiredSignalLenientSchema,
   deviceHandoffSignalLenientSchema,
+  type DeviceHandoffNoticeSignal,
+  type DeviceHandoffShownSignal,
   type DeviceHandoffExpiredSignal,
   type DeviceHandoffSignal,
 } from "@bb/server-contract";
@@ -9,13 +11,15 @@ import { wsManager } from "@/lib/ws";
 
 type DeviceHandoffQueueSignal =
   | DeviceHandoffSignal
-  | DeviceHandoffExpiredSignal;
+  | DeviceHandoffExpiredSignal
+  | DeviceHandoffNoticeSignal;
 
 interface DeviceHandoffQueueEntry {
   order: number;
   threadId: string | null;
   terminalSessionId: string | null;
   signal: DeviceHandoffQueueSignal;
+  shownOn?: string;
 }
 
 interface QueueProgress {
@@ -41,6 +45,9 @@ function signalOrigin(signal: DeviceHandoffQueueSignal) {
       threadId: signal.threadId,
       terminalSessionId: signal.terminalSessionId,
     };
+  }
+  if (signal.type === "device-handoff-notice") {
+    return { threadId: signal.threadId, terminalSessionId: null };
   }
   return {
     threadId: signal.request.origin.threadId ?? null,
@@ -98,7 +105,10 @@ function pruneExpiredQueue(
 ): DeviceHandoffQueueState {
   const allEntries = Object.values(queue.partitions).flat();
   const live = allEntries.filter(
-    ({ signal }) => signal.type !== "device-handoff" || signal.expiresAt > now,
+    ({ signal }) =>
+      (signal.type !== "device-handoff" &&
+        signal.type !== "device-handoff-notice") ||
+      signal.expiresAt > now,
   );
   if (live.length === allEntries.length) return queue;
 
@@ -127,7 +137,8 @@ function pruneExpiredQueue(
     const firstLiveOrder = liveScopeEntries[0]?.order ?? 0;
     const expiredBeforeCurrent = scopeEntries.filter(
       ({ signal, order }) =>
-        signal.type === "device-handoff" &&
+        (signal.type === "device-handoff" ||
+          signal.type === "device-handoff-notice") &&
         signal.expiresAt <= now &&
         order < firstLiveOrder,
     ).length;
@@ -193,49 +204,91 @@ export function useDeviceHandoffQueue(
   activeTerminalSessionId: string | null,
 ) {
   const [queue, setQueue] = useState<DeviceHandoffQueueState>(emptyQueue);
-  const enqueue = useCallback((signal: DeviceHandoffQueueSignal) => {
-    const now = Date.now();
-    if (signal.type === "device-handoff" && signal.expiresAt <= now) return;
-    setQueue((current) => {
-      const live = pruneExpiredQueue(current, now);
-      const allEntries = Object.values(live.partitions).flat();
-      if (allEntries.some((entry) => entry.signal.id === signal.id)) {
-        return live;
+  const enqueue = useCallback(
+    (signal: DeviceHandoffQueueSignal | DeviceHandoffShownSignal) => {
+      if (signal.type === "device-handoff-shown") {
+        setQueue((current) => {
+          const partitions = Object.fromEntries(
+            Object.entries(current.partitions).map(([key, entries]) => [
+              key,
+              entries.map((entry) =>
+                entry.signal.id === signal.id
+                  ? { ...entry, shownOn: signal.deviceLabel }
+                  : entry,
+              ),
+            ]),
+          );
+          return { ...current, partitions };
+        });
+        return;
       }
-      const origin = signalOrigin(signal);
-      const key = originKey(origin);
-      const entry = {
-        order: live.nextOrder,
-        threadId: origin.threadId,
-        terminalSessionId: origin.terminalSessionId,
-        signal,
-      };
-      const scope = scopeKey(entry);
-      if (scope === null) return live;
-      const scopeEntries = entriesForScope(live, scope);
-      const progress = live.progressByScope[scope];
-      return {
-        partitions: {
-          ...live.partitions,
-          [key]: [...(live.partitions[key] ?? []), entry],
-        },
-        progressByScope: {
-          ...live.progressByScope,
-          [scope]: {
-            position: progress?.position ?? 1,
-            total: scopeEntries.length === 0 ? 1 : (progress?.total ?? 0) + 1,
+      const now = Date.now();
+      if (
+        (signal.type === "device-handoff" ||
+          signal.type === "device-handoff-notice") &&
+        signal.expiresAt <= now
+      )
+        return;
+      setQueue((current) => {
+        const live = pruneExpiredQueue(current, now);
+        const allEntries = Object.values(live.partitions).flat();
+        const previousEntry = allEntries.find(
+          (entry) => entry.signal.id === signal.id,
+        );
+        if (previousEntry) {
+          if (signal.type === "device-handoff") {
+            const partitions = Object.fromEntries(
+              Object.entries(live.partitions).map(([key, entries]) => [
+                key,
+                entries.map((entry) =>
+                  entry.signal.id === signal.id ? { ...entry, signal } : entry,
+                ),
+              ]),
+            );
+            return { ...live, partitions };
+          }
+          return live;
+        }
+        const origin = signalOrigin(signal);
+        const key = originKey(origin);
+        const entry = {
+          order: live.nextOrder,
+          threadId: origin.threadId,
+          terminalSessionId: origin.terminalSessionId,
+          signal,
+        };
+        const scope = scopeKey(entry);
+        if (scope === null) return live;
+        const scopeEntries = entriesForScope(live, scope);
+        const progress = live.progressByScope[scope];
+        return {
+          partitions: {
+            ...live.partitions,
+            [key]: [...(live.partitions[key] ?? []), entry],
           },
-        },
-        nextOrder: live.nextOrder + 1,
-      };
-    });
-  }, []);
+          progressByScope: {
+            ...live.progressByScope,
+            [scope]: {
+              position: progress?.position ?? 1,
+              total: scopeEntries.length === 0 ? 1 : (progress?.total ?? 0) + 1,
+            },
+          },
+          nextOrder: live.nextOrder + 1,
+        };
+      });
+    },
+    [],
+  );
 
   useEffect(() => {
     wsManager.setDeviceHandoffView(activeThreadId, activeTerminalSessionId);
     const unsubscribe = wsManager.onDeviceHandoff((signal) => {
       if (signal.type === "device-handoff-acknowledged") {
         setQueue((current) => removeSignal(current, signal.id));
+        return;
+      }
+      if (signal.type === "device-handoff-shown") {
+        enqueue(signal);
         return;
       }
       enqueue(signal);
@@ -262,8 +315,9 @@ export function useDeviceHandoffQueue(
       .flat()
       .map(({ signal }) => signal)
       .filter(
-        (signal): signal is DeviceHandoffSignal =>
-          signal.type === "device-handoff",
+        (signal): signal is DeviceHandoffSignal | DeviceHandoffNoticeSignal =>
+          signal.type === "device-handoff" ||
+          signal.type === "device-handoff-notice",
       );
     if (expiring.length === 0) return;
     const expiresAt = Math.min(...expiring.map((item) => item.expiresAt));
@@ -343,11 +397,25 @@ export function useDeviceHandoffQueue(
     wsManager.acknowledgeDeviceHandoff(id);
   }, []);
 
+  const showHere = useCallback(
+    async (id: string) => {
+      const signal = await import("@/lib/api").then(({ claimDeviceHandoff }) =>
+        claimDeviceHandoff(id),
+      );
+      enqueue(signal);
+    },
+    [enqueue],
+  );
+
+  const activeShownOn = activeQueue[0]?.shownOn;
+
   return {
     signal: activeQueue[0]?.signal ?? null,
     position: activeProgress?.position ?? 1,
     count: activeProgress?.total ?? 0,
     dismiss,
     acknowledge,
+    showHere,
+    shownOn: activeShownOn,
   };
 }

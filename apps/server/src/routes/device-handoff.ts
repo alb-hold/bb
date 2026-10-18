@@ -1,13 +1,25 @@
 import { Buffer } from "node:buffer";
-import { getThread, updateThread } from "@bb/db";
 import {
+  getEnvironment,
+  getHost,
+  getStoredTurnRequestEventForTurn,
+  getThread,
+  updateThread,
+} from "@bb/db";
+import {
+  DEVICE_HANDOFF_CLIENT_TOKEN_HEADER,
   publicApiRoutes,
   typedRoutes,
   type PublicApiSchema,
 } from "@bb/server-contract";
+import { APP_SURFACE_HEADER_NAME } from "@bb/config/app-surface";
 import type { Hono } from "hono";
 import { ApiError } from "../errors.js";
 import type { AppDeps } from "../types.js";
+import {
+  getActiveTurnId,
+  parseStoredTurnRequestEvent,
+} from "../services/threads/thread-events.js";
 
 export function registerDeviceHandoffRoutes(app: Hono, deps: AppDeps): void {
   const attentionMarkers = new Map<
@@ -81,15 +93,83 @@ export function registerDeviceHandoffRoutes(app: Hono, deps: AppDeps): void {
           terminalId: request.origin.terminalSessionId,
         })
       : undefined;
-    const originLabel = (terminal?.title ?? thread?.title ?? "BB").slice(
+    const originLabel = (terminal?.title ?? thread?.title ?? "Thread").slice(
       0,
       256,
     );
+    const hostId =
+      terminal?.hostId ??
+      (thread?.environmentId
+        ? getEnvironment(deps.db, thread.environmentId)?.hostId
+        : undefined);
+    const hostLabel = hostId ? (getHost(deps.db, hostId)?.name ?? "BB") : "BB";
+    const activeTurnId = thread
+      ? (getActiveTurnId({ db: deps.db }, thread.id) ?? undefined)
+      : undefined;
+    const turnId =
+      activeTurnId !== undefined &&
+      (request.origin.turnId === undefined ||
+        request.origin.turnId === activeTurnId)
+        ? activeTurnId
+        : undefined;
+    const requestEvent =
+      thread && turnId
+        ? getStoredTurnRequestEventForTurn(deps.db, {
+            threadId: thread.id,
+            turnId,
+          })
+        : null;
+    const turnRequestId = requestEvent
+      ? parseStoredTurnRequestEvent(requestEvent).requestId
+      : undefined;
     const delivered = deps.hub.notifyDeviceHandoff(
       request,
       originLabel,
       thread?.id ?? terminal?.threadId,
+      turnRequestId,
+      hostLabel,
     );
     return context.json({ delivered });
+  });
+
+  post(publicApiRoutes.deviceHandoff.claim, (context, request) => {
+    const surface = context.req.header(APP_SURFACE_HEADER_NAME);
+    const deviceLabel =
+      surface === "mobile" || surface === "desktop" || surface === "web"
+        ? surface
+        : "this device";
+    const claim = deps.hub.claimThreadOnlyDeviceHandoff(
+      context.req.header(DEVICE_HANDOFF_CLIENT_TOKEN_HEADER),
+      request.id,
+      deviceLabel,
+    );
+    switch (claim.kind) {
+      case "claimed":
+        return context.json(claim.signal);
+      case "invalid-token":
+        throw new ApiError(
+          403,
+          "invalid_device_handoff_token",
+          "A live app connection is required to claim this handoff",
+        );
+      case "not-found":
+        throw new ApiError(
+          404,
+          "device_handoff_not_found",
+          "Handoff not found",
+        );
+      case "not-viewer":
+        throw new ApiError(
+          403,
+          "device_handoff_not_viewer",
+          "Open the originating thread before showing this handoff",
+        );
+      case "already-claimed":
+        throw new ApiError(
+          409,
+          "device_handoff_already_claimed",
+          "This handoff has already been shown on another device",
+        );
+    }
   });
 }
