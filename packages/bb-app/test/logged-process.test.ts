@@ -17,7 +17,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { createConnection } from "node:net";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { spawnLoggedProcess } from "../src/logged-process.js";
 
@@ -2055,15 +2055,46 @@ fs.renameSync = function (source, destination) {
         expect(existsSync(ownerSegment)).toBe(true);
         writeFileSync(renameFailurePath, "fail once");
         owner.writerProcess.kill("SIGCONT");
+        const rebindStartedAt = Date.now();
         const initialSegment = ownerSegment;
         let recreatedSocketIdentity: ReturnType<typeof lstatSync> | undefined;
         let recreatedOwnerSegment: string | undefined;
         await expect
           .poll(
             () => {
+              const observedAt = Date.now();
+              const timestamp = new Date(observedAt).toISOString();
+              let socketRecord:
+                | { dev: number; ino: number; mtimeMs: number; isSocket: boolean }
+                | undefined;
+              try {
+                const stat = lstatSync(ownerSocket);
+                socketRecord = {
+                  dev: stat.dev,
+                  ino: stat.ino,
+                  mtimeMs: stat.mtimeMs,
+                  isSocket: stat.isSocket(),
+                };
+              } catch {}
+              const activeRecords = familyFiles(logDir, "server")
+                .filter((file) => file.includes(".active-") && fileIncludes(file, "socket-owner-heartbeat"))
+                .map((file) => {
+                  try {
+                    const stat = statSync(file);
+                    return { name: basename(file), mtimeMs: stat.mtimeMs };
+                  } catch {
+                    return { name: basename(file), mtimeMs: undefined };
+                  }
+                });
               try {
                 const identity = lstatSync(ownerSocket);
-                if (!identity.isSocket()) return false;
+                if (!identity.isSocket()) {
+                  console.error(
+                    "liveness-rebind-poll",
+                    JSON.stringify({ timestamp, elapsedMs: observedAt - rebindStartedAt, socket: socketRecord, active: activeRecords, matched: false }),
+                  );
+                  return false;
+                }
                 const expectedMarker = `-i-${identity.dev}-${identity.ino}`;
                 const segment = familyFiles(logDir, "server").find(
                   (file) =>
@@ -2072,11 +2103,19 @@ fs.renameSync = function (source, destination) {
                     file.includes(expectedMarker) &&
                     fileIncludes(file, "socket-owner-heartbeat"),
                 );
+                console.error(
+                  "liveness-rebind-poll",
+                  JSON.stringify({ timestamp, elapsedMs: observedAt - rebindStartedAt, socket: socketRecord, active: activeRecords, matched: segment !== undefined }),
+                );
                 if (segment === undefined) return false;
                 recreatedSocketIdentity = identity;
                 recreatedOwnerSegment = segment;
                 return true;
               } catch {
+                console.error(
+                  "liveness-rebind-poll",
+                  JSON.stringify({ timestamp, elapsedMs: observedAt - rebindStartedAt, socket: socketRecord, active: activeRecords, matched: false }),
+                );
                 return false;
               }
             },
