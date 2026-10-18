@@ -34,9 +34,13 @@ vi.mock("@/lib/clipboard", () => ({
   copyToClipboardWithToast: copied,
 }));
 
-vi.mock("@/lib/url-open-routing", () => ({
-  openUrlInExternalBrowser: vi.fn(),
-}));
+vi.mock("@/lib/url-open-routing", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/url-open-routing")>();
+  return {
+    ...actual,
+    openUrlInExternalBrowser: vi.fn(actual.openUrlInExternalBrowser),
+  };
+});
 
 vi.mock("@/lib/ws", () => ({
   wsManager: {
@@ -48,6 +52,7 @@ vi.mock("@/lib/ws", () => ({
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
   copied.mockReset();
   vi.mocked(openUrlInExternalBrowser).mockClear();
   registerDeviceHandoff.mockClear();
@@ -449,12 +454,19 @@ describe("DeviceHandoffSheet", () => {
     expect(screen.getByRole("button", { name: "Open" })).toBeTruthy();
     expect(openUrlInExternalBrowser).not.toHaveBeenCalled();
     expect(onDismiss).not.toHaveBeenCalled();
+    const windowOpen = vi.spyOn(window, "open").mockReturnValue(null);
     fireEvent.click(screen.getByRole("button", { name: "Open" }));
 
     expect(openUrlInExternalBrowser).toHaveBeenCalledTimes(1);
     expect(openUrlInExternalBrowser).toHaveBeenCalledWith(url);
+    expect(windowOpen).toHaveBeenCalledExactlyOnceWith(
+      url,
+      "_blank",
+      "noopener,noreferrer",
+    );
     expect(onAcknowledge).toHaveBeenCalledExactlyOnceWith("open-handoff");
     expect(onDismiss).toHaveBeenCalledTimes(1);
+    windowOpen.mockRestore();
   });
 
   it("shows queued handoffs in arrival order and acknowledges only explicit actions", async () => {
