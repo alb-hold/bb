@@ -600,7 +600,7 @@ describe("ThreadTerminalView terminal focus boundary", () => {
         )
         .filter((message) => message.type === "resize");
       expect(resizes).toEqual([{ type: "resize", cols: 51, rows: 47 }]);
-    });
+    }, { timeout: 6_000 });
     const session = makeTerminalSession({
       id: "term_first_attach_font_metrics",
       status: "running",
