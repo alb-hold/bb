@@ -13,7 +13,7 @@ type Operation =
 
 export function createTerminalOutputPipeline(
   terminal: TerminalWriter,
-  onGrid?: () => void,
+  onGrid?: (grid: TerminalGrid) => void,
 ): {
   push(bytes: Uint8Array, callback: () => void): void;
   setGrid(cols: number, rows: number): void;
@@ -74,7 +74,7 @@ export function createTerminalOutputPipeline(
         if (operation.type === "bytes" && operation.bytes.length > 0) {
           enqueue({ type: "write", bytes: operation.bytes });
         } else if (operation.type === "grid") {
-          onGrid?.();
+          onGrid?.(operation.grid);
           enqueue({ type: "grid", grid: operation.grid });
         }
       }

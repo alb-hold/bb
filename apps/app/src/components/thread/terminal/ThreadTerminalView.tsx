@@ -1043,8 +1043,10 @@ export function ThreadTerminalView({
     let sharedSize: TerminalGridSize | null = null;
     let markerGridActive = false;
     let localFitGrid: TerminalGridSize | null = null;
+    let replayComplete = false;
     let replayPreview: {
       dispose(): void;
+      matchesFitGrid(): boolean;
       refresh(): void;
       resize(cols: number, rows: number): void;
       setFitGrid(cols: number, rows: number): void;
@@ -1132,9 +1134,6 @@ export function ThreadTerminalView({
         terminal,
       });
       terminalRef.current = terminal;
-      outputPipeline = createTerminalOutputPipeline(terminal, () => {
-        markerGridActive = true;
-      });
       fitAddon = new LoadedFitAddon();
       terminal.loadAddon(fitAddon);
       terminal.loadAddon(new Unicode11Addon());
@@ -1158,6 +1157,36 @@ export function ThreadTerminalView({
         ),
       );
       terminal.open(containerElement);
+      const mountReplayPreview = (grid: TerminalGridSize) => {
+        if (!terminal) return;
+        replayPreview?.dispose();
+        const previewTerminal = new Terminal({
+          cols: grid.cols,
+          rows: grid.rows,
+          fontFamily: readTerminalFontFamily(),
+          fontSize: 12,
+          theme: buildTerminalTheme(),
+        });
+        replayPreview = mountTerminalReplayPreview({
+          container: containerElement,
+          initialFitGrid: localFitGrid ?? grid,
+          sourceTerminal: terminal,
+          terminal: previewTerminal,
+        });
+      };
+      const revealReplayPreviewIfMatched = () => {
+        if (replayComplete && replayPreview?.matchesFitGrid()) {
+          replayPreview.refresh();
+        }
+      };
+      const updateReplayPreviewGrid = (grid: TerminalGridSize) => {
+        if (!replayPreview) mountReplayPreview(grid);
+        replayPreview?.resize(grid.cols, grid.rows);
+      };
+      outputPipeline = createTerminalOutputPipeline(terminal, (grid) => {
+        markerGridActive = true;
+        updateReplayPreviewGrid(grid);
+      });
       if (searchAddonModule !== null) {
         const searchAddon = new searchAddonModule.SearchAddon();
         terminal.loadAddon(searchAddon);
@@ -1198,8 +1227,11 @@ export function ThreadTerminalView({
         ) {
           return;
         }
+        containerElement.dataset.terminalFitCols = String(fitted.cols);
+        containerElement.dataset.terminalFitRows = String(fitted.rows);
         localFitGrid = { cols: fitted.cols, rows: fitted.rows };
         replayPreview?.setFitGrid(fitted.cols, fitted.rows);
+        revealReplayPreviewIfMatched();
         if (!markerGridActive) {
           const display = terminalDisplaySize(fitted, sharedSize);
           if (
@@ -1327,9 +1359,11 @@ export function ThreadTerminalView({
             if (nextSize !== null) {
               sharedSize = nextSize;
               replayPreview?.resize(nextSize.cols, nextSize.rows);
+              revealReplayPreviewIfMatched();
               scheduleFit();
             } else if (message.type === "session-updated" && !isOwnNudgeEcho) {
               replayPreview?.resize(cols, rows);
+              revealReplayPreviewIfMatched();
             }
           }
           handleTerminalServerMessage({
@@ -1337,8 +1371,8 @@ export function ThreadTerminalView({
               activeTransport.acknowledgeOutput(nextSeq),
             message,
             onReplayComplete: () => {
-              replayPreview?.dispose();
-              replayPreview = null;
+              replayComplete = true;
+              revealReplayPreviewIfMatched();
               if (
                 !disposed &&
                 sessionStatusRef.current === "running" &&
@@ -1348,28 +1382,16 @@ export function ThreadTerminalView({
                 activeTransport.requestRepaint();
               }
             },
-            onOutputParsed: () => replayPreview?.refresh(),
+            onOutputParsed: () => {
+              replayPreview?.refresh();
+              revealReplayPreviewIfMatched();
+            },
             onSessionChange: onSessionChangeRef.current,
             replayNextSeq,
             replayWriteState,
             onReplayStart: (session) => {
-              replayPreview?.dispose();
-              const previewTerminal = new Terminal({
-                cols: session.cols,
-                rows: session.rows,
-                fontFamily: readTerminalFontFamily(),
-                fontSize: 12,
-                theme: buildTerminalTheme(),
-              });
-              replayPreview = mountTerminalReplayPreview({
-                container: containerElement,
-                initialFitGrid: localFitGrid ?? {
-                  cols: session.cols,
-                  rows: session.rows,
-                },
-                sourceTerminal: activeTerminal,
-                terminal: previewTerminal,
-              });
+              replayComplete = false;
+              mountReplayPreview({ cols: session.cols, rows: session.rows });
             },
             setReplayNextSeq: (nextSeq) => {
               replayNextSeq = nextSeq;

@@ -12,6 +12,7 @@ export function mountTerminalReplayPreview({
   terminal: XTermTerminal;
 }): {
   dispose(): void;
+  matchesFitGrid(): boolean;
   refresh(): void;
   resize(cols: number, rows: number): void;
   setFitGrid(cols: number, rows: number): void;
@@ -24,6 +25,8 @@ export function mountTerminalReplayPreview({
   preview.dataset.terminalReplayPreview = "";
   preview.dataset.gridCols = String(terminal.cols);
   preview.dataset.gridRows = String(terminal.rows);
+  preview.dataset.fitCols = String(initialFitGrid.cols);
+  preview.dataset.fitRows = String(initialFitGrid.rows);
   Object.assign(preview.style, {
     position: "absolute",
     inset: "0",
@@ -62,34 +65,44 @@ export function mountTerminalReplayPreview({
     terminal.reset();
     preview.dataset.gridCols = String(terminal.cols);
     preview.dataset.gridRows = String(terminal.rows);
+    preview.dataset.fitCols = String(fitGrid.cols);
+    preview.dataset.fitRows = String(fitGrid.rows);
     preview.dataset.previewMode = "snapshot";
     terminal.write(snapshot, () => {
       terminal.scrollToBottom();
       preview.dataset.gridCols = String(terminal.cols);
       preview.dataset.gridRows = String(terminal.rows);
-      if (allowSnapshotVisibility) {
-        hasShownSnapshot = true;
-        preview.style.visibility = "visible";
-      }
       snapshotWriting = false;
       if (snapshotDirty) {
         snapshotDirty = false;
         writeSnapshot();
+        return;
+      }
+      if (allowSnapshotVisibility) {
+        hasShownSnapshot = true;
+        preview.style.visibility = "visible";
       }
     });
   };
   const updateVisibility = () => {
     if (disposed) return;
-    if (
-      currentGrid.cols === fitGrid.cols &&
-      currentGrid.rows === fitGrid.rows
-    ) {
+    const currentGridMatchesFit =
+      currentGrid.cols === fitGrid.cols && currentGrid.rows === fitGrid.rows;
+    const sourceGridMatchesFit =
+      sourceTerminal.cols === fitGrid.cols &&
+      sourceTerminal.rows === fitGrid.rows;
+    if (currentGridMatchesFit) {
       if (fallbackTimeout !== null) {
         clearTimeout(fallbackTimeout);
         fallbackTimeout = null;
       }
       allowSnapshotVisibility = true;
-      writeSnapshot();
+      if (sourceGridMatchesFit) {
+        writeSnapshot();
+      } else {
+        hasShownSnapshot = true;
+        preview.style.visibility = "visible";
+      }
       return;
     }
     if (hasShownSnapshot) {
@@ -115,8 +128,33 @@ export function mountTerminalReplayPreview({
   };
   updateVisibility();
   return {
+    matchesFitGrid() {
+      return (
+        currentGrid.cols === fitGrid.cols &&
+        currentGrid.rows === fitGrid.rows &&
+        sourceTerminal.cols === fitGrid.cols &&
+        sourceTerminal.rows === fitGrid.rows
+      );
+    },
     refresh() {
-      if (disposed || preview.style.visibility !== "visible") return;
+      if (disposed) return;
+      if (
+        currentGrid.cols === fitGrid.cols &&
+        currentGrid.rows === fitGrid.rows &&
+        sourceTerminal.cols === fitGrid.cols &&
+        sourceTerminal.rows === fitGrid.rows
+      ) {
+        if (fallbackTimeout !== null) {
+          clearTimeout(fallbackTimeout);
+          fallbackTimeout = null;
+        }
+        allowSnapshotVisibility = true;
+        if (preview.style.visibility !== "visible") {
+          writeSnapshot();
+          return;
+        }
+      }
+      if (preview.style.visibility !== "visible") return;
       if (refreshFrame !== null) return;
       refreshFrame = window.requestAnimationFrame(() => {
         refreshFrame = null;
@@ -132,8 +170,15 @@ export function mountTerminalReplayPreview({
     },
     setFitGrid(cols, rows) {
       if (disposed) return;
+      if (fitGrid.cols !== cols || fitGrid.rows !== rows) {
+        preview.style.visibility = "hidden";
+      }
       fitGrid = { cols, rows };
       terminal.resize(cols, rows);
+      preview.dataset.gridCols = String(terminal.cols);
+      preview.dataset.gridRows = String(terminal.rows);
+      preview.dataset.fitCols = String(cols);
+      preview.dataset.fitRows = String(rows);
       updateVisibility();
     },
     dispose() {
