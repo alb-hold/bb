@@ -85,8 +85,7 @@ export function DeviceHandoffSheet({
     signal?.type === "device-handoff-expired" ? (
       <>
         <p className="text-sm text-muted-foreground">
-          A link or copied text from this terminal expired before you opened it.
-          Run the command again.
+          A handoff expired before it was acknowledged.
         </p>
         <div className="flex justify-end">
           <Button type="button" onClick={onDismiss}>

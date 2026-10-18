@@ -686,7 +686,7 @@ describe("DeviceHandoffSheet", () => {
     expect(screen.getByText("2 of 2")).toBeTruthy();
   });
 
-  it("shows the payload-free notice when an expired handoff is delivered", async () => {
+  it("shows an accurate payload-free expiry notice to a non-recipient viewer", async () => {
     render(<DeviceHandoffQueueHarness activeThreadId="thr_1" />);
     const listener = registerDeviceHandoff.mock.lastCall?.[0] as
       | ((signal: DeviceHandoffSignal | DeviceHandoffExpiredSignal) => void)
@@ -703,9 +703,11 @@ describe("DeviceHandoffSheet", () => {
 
     expect(
       await screen.findByText(
-        "A link or copied text from this terminal expired before you opened it. Run the command again.",
+        "A handoff expired before it was acknowledged.",
       ),
     ).toBeTruthy();
+    expect(screen.queryByText(/Run the command again/)).toBeNull();
+    expect(screen.queryByText(/copied text from this terminal/)).toBeNull();
     expect(screen.queryByRole("button", { name: "Open" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Copy" })).toBeNull();
   });
@@ -809,8 +811,7 @@ describe("DeviceHandoffSheet", () => {
         terminalSessionId: "term-a",
       }),
     );
-    const notice =
-      "A link or copied text from this terminal expired before you opened it. Run the command again.";
+    const notice = "A handoff expired before it was acknowledged.";
     expect(screen.queryByText(notice)).toBeNull();
 
     view.rerender(
