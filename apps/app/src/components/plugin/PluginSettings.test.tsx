@@ -94,7 +94,9 @@ describe("PluginSettingsForm", () => {
     expect(
       queryClient.getQueryData(pluginSettingsViewQueryKey("demo")),
     ).toMatchObject({ values: { greeting: "hello" } });
-    const greeting = screen.getByLabelText("Greeting") as HTMLInputElement;
+    const greeting = (await screen.findByLabelText(
+      "Greeting",
+    )) as HTMLInputElement;
     expect(greeting.value).toBe("hello");
 
     const apiKey = screen.getByLabelText("API key") as HTMLInputElement;
