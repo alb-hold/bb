@@ -106,7 +106,10 @@ async function readUploadPackInvocations(
   sshLogPath: string,
 ): Promise<string[]> {
   const log = await fs.readFile(sshLogPath, "utf8").catch(() => "");
-  return log.split("--\n").filter((entry) => entry.includes("git-upload-pack"));
+  return log
+    .split("--\n")
+    .slice(0, -1)
+    .filter((entry) => entry.includes("git-upload-pack"));
 }
 
 async function waitForUploadPackInvocations(
@@ -173,6 +176,22 @@ async function waitForFile(filePath: string, timeoutMs = 2_000): Promise<void> {
 }
 
 describe("host.inspect_git_source dispatch", () => {
+  it("ignores an unterminated ssh invocation entry", async () => {
+    const sshLogPath = path.join(
+      await makeTempDir("bb-host-branches-ssh-log-"),
+      "ssh-invocations.log",
+    );
+    await fs.writeFile(
+      sshLogPath,
+      "git-upload-pack '/complete.git'\nGIT_TERMINAL_PROMPT=0\n--\ngit-upload-pack '/partial.git'\n",
+      "utf8",
+    );
+
+    await expect(readUploadPackInvocations(sshLogPath)).resolves.toEqual([
+      "git-upload-pack '/complete.git'\nGIT_TERMINAL_PROMPT=0\n",
+    ]);
+  });
+
   it("reports checkout and default-ref metadata without branch pages", async () => {
     const repoPath = await initBranchRepo();
     const harness = createHarness();
