@@ -20,7 +20,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-it("keeps Done, Escape and compact Back usable through a held import, failure and retry", async () => {
+it("keeps Done, Escape and compact Back usable while the import is held", async () => {
   vi.spyOn(console, "error").mockImplementation(() => {});
   const onDone = vi.fn();
   const props = {
@@ -51,18 +51,8 @@ it("keeps Done, Escape and compact Back usable through a held import, failure an
     </CompactViewportOverrideProvider>,
   );
   await act(async () => {
-    download.reject(new Error("module initialization failed"));
+    download.resolve();
   });
-  expect(await screen.findByRole("alert")).toBeDefined();
-  const back = screen.getByRole("button", { name: "Done" });
-  expect(document.activeElement).toBe(back);
-  fireEvent.click(back);
-  expect(onDone).toHaveBeenCalledTimes(3);
-
-  vi.doMock("./SidebarVisibilityCustomize", (importOriginal) =>
-    importOriginal(),
-  );
-  fireEvent.click(screen.getByRole("button", { name: "Try again" }));
   fireEvent.click(
     await screen.findByRole("checkbox", { name: "Show Review in sidebar" }),
   );

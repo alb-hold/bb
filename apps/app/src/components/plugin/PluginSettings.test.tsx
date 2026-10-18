@@ -119,6 +119,7 @@ describe("PluginSettingsForm", () => {
     expect(JSON.parse(String(put?.init?.body))).toEqual({
       values: { greeting: "hi there" },
     });
+    await screen.findByDisplayValue("hi there");
     expect(screen.queryByRole("status")).toBeNull();
     expect((screen.getByLabelText("Greeting") as HTMLInputElement).value).toBe(
       "hi there",
