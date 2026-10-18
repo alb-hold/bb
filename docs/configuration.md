@@ -289,6 +289,14 @@ it fails, titles fall back to the start of the prompt and commits to
 `bb: automated commit`. `bb ai off|on` turns bb cloud off and on; see the
 `bb-cloud-ai` skill.
 
+The Claude Code provider plugin registers a `claude` service for
+`thread-title`, `commit-message`, and `writing`. It runs the primary machine's
+`claude` CLI with its own login (`claude auth login`), no tools, no settings,
+and no session history, trying Claude Haiku 5.5 and then Claude Sonnet 5.5.
+Claude does not transcribe audio, so `voice` still needs bb cloud or Codex.
+Because `provider-claude-code` sorts before `provider-codex`, automatic text
+tasks try Claude before Codex.
+
 The removed `BB_INFERENCE`, `BB_INFERENCE_FALLBACK`, and `BB_TRANSCRIPTION`
 keys are ignored with a warning in `~/.bb/config.json`, and `bb-app config set`
 refuses them.
@@ -374,8 +382,8 @@ and eh are kept ("vai funcionar, né?" never becomes "Vai funcionar."). Only
 speech the transcript left unpunctuated may be punctuated as a question.
 
 Usage counts and the cost estimate use list prices and are not a bill: bb
-cloud has its own daily limit, and Codex uses the primary machine's Codex
-login. Typing and sending never wait for assistance.
+cloud has its own daily limit, Codex uses the primary machine's Codex
+login, and Claude uses the primary machine's Claude Code login. Typing and sending never wait for assistance.
 
 bb accepts voice recordings up to 25 MB; a service may set a lower limit, and
 Codex transcribes up to 20 MB and bb cloud up to 10 MB. With a ChatGPT

@@ -1,0 +1,151 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import {
+  claudeCompleteArgs,
+  claudeCompleteEnv,
+  completeClaudeInference,
+} from "./claude-complete.js";
+
+const tempDirs: string[] = [];
+
+const FAKE_CLI = `#!/usr/bin/env node
+const fs = require("node:fs");
+const prompt = fs.readFileSync(0, "utf8");
+const mode = process.env.FAKE_CLAUDE_MODE;
+fs.writeFileSync(process.env.FAKE_CLAUDE_LOG, JSON.stringify({ argv: process.argv.slice(2), prompt, env: process.env }));
+const result = (body) => process.stdout.write(JSON.stringify({ type: "result", subtype: "success", ...body }));
+if (mode === "ok") result({ is_error: false, result: "The user is ready." });
+else if (mode === "rate") result({ is_error: true, api_error_status: 429, result: "Rate limited" });
+else if (mode === "outage") result({ is_error: true, api_error_status: 529, result: "Overloaded" });
+else if (mode === "denied") result({ is_error: true, api_error_status: 401, result: "Invalid credentials" });
+else if (mode === "signed-out") { process.stdout.write("Not logged in · Please run /login\\n"); process.exit(1); }
+else if (mode === "crash") { process.stderr.write("boom\\n"); process.exit(2); }
+else if (mode === "hang") setInterval(() => {}, 1000);
+`;
+
+async function fakeCli(mode: string) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bb-claude-cli-"));
+  tempDirs.push(dir);
+  const executable = path.join(dir, "claude");
+  const log = path.join(dir, "call.json");
+  await fs.writeFile(executable, FAKE_CLI, { mode: 0o755 });
+  const env = {
+    PATH: process.env.PATH,
+    FAKE_CLAUDE_MODE: mode,
+    FAKE_CLAUDE_LOG: log,
+    CLAUDECODE: "1",
+    CLAUDE_CODE_SESSION_ID: "parent-session",
+    CLAUDE_CODE_OAUTH_TOKEN: "oauth-token",
+  };
+  const readCall = async () =>
+    JSON.parse(await fs.readFile(log, "utf8")) as {
+      argv: string[];
+      prompt: string;
+      env: Record<string, string>;
+    };
+  return { deps: { executable, env }, readCall };
+}
+
+function run(
+  deps: { executable: string; env: NodeJS.ProcessEnv },
+  options: { timeoutMs?: number; signal?: AbortSignal } = {},
+) {
+  return completeClaudeInference(
+    {
+      model: "claude-haiku-5-5",
+      prompt: "Correct: The user are ready.",
+      timeoutMs: options.timeoutMs ?? 10_000,
+    },
+    options.signal ?? new AbortController().signal,
+    deps,
+  );
+}
+
+afterEach(async () => {
+  await Promise.all(
+    tempDirs
+      .splice(0)
+      .map((dir) => fs.rm(dir, { recursive: true, force: true })),
+  );
+});
+
+describe("completeClaudeInference", () => {
+  it("returns the CLI result and sends the prompt on stdin without tools or settings", async () => {
+    const cli = await fakeCli("ok");
+    await expect(run(cli.deps)).resolves.toEqual({
+      ok: true,
+      text: "The user is ready.",
+    });
+    const call = await cli.readCall();
+    expect(call.prompt).toBe("Correct: The user are ready.");
+    expect(call.argv).toEqual(claudeCompleteArgs("claude-haiku-5-5"));
+    expect(call.argv).not.toContain("Correct: The user are ready.");
+    expect(
+      call.argv.slice(
+        call.argv.indexOf("--tools"),
+        call.argv.indexOf("--tools") + 2,
+      ),
+    ).toEqual(["--tools", ""]);
+  });
+
+  it("drops the parent Claude Code session variables but keeps the OAuth token", async () => {
+    const cli = await fakeCli("ok");
+    await run(cli.deps);
+    const { env } = await cli.readCall();
+    expect(env.CLAUDECODE).toBeUndefined();
+    expect(env.CLAUDE_CODE_SESSION_ID).toBeUndefined();
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe("oauth-token");
+    expect(
+      claudeCompleteEnv({ CLAUDE_CODE_ENTRYPOINT: "cli", HOME: "/home/u" }),
+    ).toEqual({ HOME: "/home/u" });
+  });
+
+  it.each([
+    ["rate", "rate_limited", "Rate limited"],
+    ["outage", "service_unavailable", "Overloaded"],
+    ["denied", "auth_required", "Invalid credentials"],
+    [
+      "signed-out",
+      "auth_required",
+      "Run `claude auth login` on the primary machine",
+    ],
+    ["crash", "request_failed", "boom"],
+  ])("maps the %s answer to %s", async (mode, code, message) => {
+    const cli = await fakeCli(mode);
+    await expect(run(cli.deps)).resolves.toEqual({ ok: false, code, message });
+  });
+
+  it("kills a CLI that does not answer in time", async () => {
+    const cli = await fakeCli("hang");
+    const started = Date.now();
+    await expect(run(cli.deps, { timeoutMs: 400 })).resolves.toEqual({
+      ok: false,
+      code: "timeout",
+      message: "Claude did not answer within 400ms",
+    });
+    expect(Date.now() - started).toBeLessThan(3_000);
+  });
+
+  it("stops when the caller cancels", async () => {
+    const cli = await fakeCli("hang");
+    const controller = new AbortController();
+    const pending = run(cli.deps, { signal: controller.signal });
+    setTimeout(() => controller.abort(), 200);
+    await expect(pending).resolves.toEqual({
+      ok: false,
+      code: "timeout",
+      message: "The request was cancelled",
+    });
+  });
+
+  it("explains how to install Claude Code when the CLI is missing", async () => {
+    const result = await run({
+      executable: path.join(os.tmpdir(), "bb-no-such-claude-cli"),
+      env: { PATH: process.env.PATH },
+    });
+    expect(result).toMatchObject({ ok: false, code: "request_failed" });
+    expect(result.ok ? "" : result.message).toContain("Install Claude Code");
+  });
+});
