@@ -1365,6 +1365,9 @@ export function ThreadTerminalView({
                   cols: session.cols,
                   rows: session.rows,
                 },
+                canShowMismatchedFallback: () =>
+                  !document.hasFocus() ||
+                  !activeTerminal.element?.contains(document.activeElement),
                 terminal: previewTerminal,
               });
             },

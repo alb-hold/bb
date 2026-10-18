@@ -1,12 +1,16 @@
 import type { Terminal as XTermTerminal } from "@xterm/xterm";
 
+export const TERMINAL_REPLAY_PREVIEW_FALLBACK_MS = 1_500;
+
 export function mountTerminalReplayPreview({
   container,
   initialFitGrid,
+  canShowMismatchedFallback,
   terminal,
 }: {
   container: HTMLDivElement;
   initialFitGrid: { cols: number; rows: number };
+  canShowMismatchedFallback: () => boolean;
   terminal: XTermTerminal;
 }): {
   dispose(): void;
@@ -35,12 +39,23 @@ export function mountTerminalReplayPreview({
 
   let disposed = false;
   let fitGrid = initialFitGrid;
+  let fallbackElapsed = false;
   const updateVisibility = () => {
     preview.style.visibility =
-      terminal.cols === fitGrid.cols && terminal.rows === fitGrid.rows
+      (terminal.cols === fitGrid.cols && terminal.rows === fitGrid.rows) ||
+      (fallbackElapsed && canShowMismatchedFallback())
         ? "visible"
         : "hidden";
   };
+  const refreshVisibility = () => updateVisibility();
+  document.addEventListener("focusin", refreshVisibility);
+  document.addEventListener("focusout", refreshVisibility);
+  window.addEventListener("focus", refreshVisibility);
+  window.addEventListener("blur", refreshVisibility);
+  const fallbackTimeout = setTimeout(() => {
+    fallbackElapsed = true;
+    updateVisibility();
+  }, TERMINAL_REPLAY_PREVIEW_FALLBACK_MS);
   updateVisibility();
   return {
     resize(cols, rows) {
@@ -58,6 +73,11 @@ export function mountTerminalReplayPreview({
     dispose() {
       if (disposed) return;
       disposed = true;
+      clearTimeout(fallbackTimeout);
+      document.removeEventListener("focusin", refreshVisibility);
+      document.removeEventListener("focusout", refreshVisibility);
+      window.removeEventListener("focus", refreshVisibility);
+      window.removeEventListener("blur", refreshVisibility);
       terminal.dispose();
       preview.remove();
       container.style.opacity = previousOpacity;

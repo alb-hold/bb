@@ -1,13 +1,17 @@
 // @vitest-environment jsdom
 import { Terminal } from "@xterm/xterm";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createTerminalGridMarker } from "@bb/domain";
 import { createTerminalOutputPipeline } from "./terminal-output-pipeline";
-import { mountTerminalReplayPreview } from "./terminal-replay-preview";
+import {
+  mountTerminalReplayPreview,
+  TERMINAL_REPLAY_PREVIEW_FALLBACK_MS,
+} from "./terminal-replay-preview";
 
 const originalGetContext = HTMLCanvasElement.prototype.getContext;
 
 afterEach(() => {
+  vi.useRealTimers();
   HTMLCanvasElement.prototype.getContext = originalGetContext;
 });
 
@@ -43,6 +47,7 @@ describe("terminal replay preview", () => {
     const cover = mountTerminalReplayPreview({
       container: historyContainer,
       initialFitGrid: { cols: 120, rows: 36 },
+      canShowMismatchedFallback: () => false,
       terminal: preview,
     });
     expect(historyContainer.style.opacity).toBe("0");
@@ -145,6 +150,7 @@ describe("terminal replay preview", () => {
     const cover = mountTerminalReplayPreview({
       container: historyContainer,
       initialFitGrid: { cols: 51, rows: 47 },
+      canShowMismatchedFallback: () => false,
       terminal: preview,
     });
     const previewElement = parent.querySelector(
@@ -165,5 +171,107 @@ describe("terminal replay preview", () => {
     cover.dispose();
     history.dispose();
     parent.remove();
+  });
+
+  it("keeps a focused phone blank until its fitted grid arrives", () => {
+    vi.useFakeTimers();
+    const context = new Proxy(
+      {
+        measureText: (text: string) => ({ width: text.length * 8 }),
+        getImageData: () => ({ data: new Uint8ClampedArray(4) }),
+        createImageData: () => ({ data: new Uint8ClampedArray(4) }),
+      } as Record<string, unknown>,
+      {
+        get(target, property) {
+          const value = target[property as string];
+          return value ?? (() => undefined);
+        },
+        set(target, property, value) {
+          target[property as string] = value;
+          return true;
+        },
+      },
+    );
+    HTMLCanvasElement.prototype.getContext = (() =>
+      context) as unknown as typeof HTMLCanvasElement.prototype.getContext;
+    const parent = document.createElement("div");
+    const container = document.createElement("div");
+    parent.append(container);
+    document.body.append(parent);
+
+    const preview = new Terminal({ cols: 135, rows: 56 });
+    const cover = mountTerminalReplayPreview({
+      container,
+      initialFitGrid: { cols: 51, rows: 47 },
+      canShowMismatchedFallback: () => false,
+      terminal: preview,
+    });
+    const previewElement = parent.querySelector(
+      "[data-terminal-replay-preview]",
+    )!;
+
+    vi.advanceTimersByTime(TERMINAL_REPLAY_PREVIEW_FALLBACK_MS);
+    expect(getComputedStyle(previewElement).visibility).toBe("hidden");
+
+    cover.resize(51, 47);
+    expect(getComputedStyle(previewElement).visibility).toBe("visible");
+    expect(previewElement.getAttribute("data-grid-cols")).toBe("51");
+
+    cover.dispose();
+    parent.remove();
+    vi.useRealTimers();
+  });
+
+  it("reveals the current grid after the fallback for a non-owner", () => {
+    vi.useFakeTimers();
+    const context = new Proxy(
+      {
+        measureText: (text: string) => ({ width: text.length * 8 }),
+        getImageData: () => ({ data: new Uint8ClampedArray(4) }),
+        createImageData: () => ({ data: new Uint8ClampedArray(4) }),
+      } as Record<string, unknown>,
+      {
+        get(target, property) {
+          const value = target[property as string];
+          return value ?? (() => undefined);
+        },
+        set(target, property, value) {
+          target[property as string] = value;
+          return true;
+        },
+      },
+    );
+    HTMLCanvasElement.prototype.getContext = (() =>
+      context) as unknown as typeof HTMLCanvasElement.prototype.getContext;
+    const parent = document.createElement("div");
+    const container = document.createElement("div");
+    parent.append(container);
+    document.body.append(parent);
+
+    const preview = new Terminal({ cols: 135, rows: 56 });
+    let nonOwner = true;
+    const cover = mountTerminalReplayPreview({
+      container,
+      initialFitGrid: { cols: 51, rows: 47 },
+      canShowMismatchedFallback: () => nonOwner,
+      terminal: preview,
+    });
+    const previewElement = parent.querySelector(
+      "[data-terminal-replay-preview]",
+    )!;
+
+    vi.advanceTimersByTime(TERMINAL_REPLAY_PREVIEW_FALLBACK_MS - 1);
+    expect(getComputedStyle(previewElement).visibility).toBe("hidden");
+    vi.advanceTimersByTime(1);
+    expect(getComputedStyle(previewElement).visibility).toBe("visible");
+    expect(previewElement.getAttribute("data-grid-cols")).toBe("135");
+
+    nonOwner = false;
+    document.dispatchEvent(new Event("focusin"));
+    expect(getComputedStyle(previewElement).visibility).toBe("hidden");
+
+    cover.dispose();
+    parent.remove();
+    vi.useRealTimers();
   });
 });
