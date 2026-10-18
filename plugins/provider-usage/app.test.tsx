@@ -69,9 +69,7 @@ function threadOnMachine(
 }
 
 async function setupUsageDisclosure() {
-  localStorage.removeItem(
-    "bb.bb--provider-usage.selected-machine.v1",
-  );
+  localStorage.removeItem("bb.bb--provider-usage.selected-machine.v1");
   const pooledAccounts: UsageProvider[] = (
     [
       ["claude-code", "Claude Code", "claude-team@example.com", 97],
@@ -312,7 +310,7 @@ function selectMachine(
 }
 
 describe("provider usage footer disclosure", () => {
-  it("aggregates every machine and shows pooled account status", async () => {
+  it("aggregates every machine", async () => {
     const { item, slot, fetchMock } = await setupUsageDisclosure();
     expect(item).toMatchObject({
       kind: "disclosure",
@@ -349,10 +347,6 @@ describe("provider usage footer disclosure", () => {
       "Claude Code Claude Secondary",
       "Codex codex@example.com",
     ]);
-    expect(slot.getAllByText("Active")).toHaveLength(1);
-    expect(slot.getByText("Extra usage allowed")).toBeTruthy();
-    expect(slot.getByText("Enabled · held")).toBeTruthy();
-    expect(slot.getByText("Extra usage rejected")).toBeTruthy();
     await waitFor(() =>
       expect(fetchMock.mock.calls).toEqual(
         expect.arrayContaining([
@@ -370,6 +364,14 @@ describe("provider usage footer disclosure", () => {
         ]),
       ),
     );
+  });
+
+  it("shows pooled account status in the disclosure card", async () => {
+    const { slot } = await setupUsageDisclosure();
+    expect(slot.getAllByText("Active")).toHaveLength(1);
+    expect(slot.getByText("Extra usage allowed")).toBeTruthy();
+    expect(slot.getByText("Enabled · held")).toBeTruthy();
+    expect(slot.getByText("Extra usage rejected")).toBeTruthy();
   });
 
   it("selects and persists a host machine in the disclosure card", async () => {
