@@ -1290,11 +1290,17 @@ describe("device handoff websocket acknowledgement", () => {
       title: "Standalone routing terminal",
     });
     const socket = await connectRealtime(server.baseUrl);
+    const elsewhere = await connectRealtime(server.baseUrl);
     try {
       sendRealtime(socket, {
         type: "device-handoff-view",
         threadId: null,
         terminalSessionId: terminal.id,
+      });
+      sendRealtime(elsewhere, {
+        type: "device-handoff-view",
+        threadId: null,
+        terminalSessionId: "term_elsewhere",
       });
       const terminalViewer = {
         close() {},
@@ -1312,6 +1318,9 @@ describe("device handoff websocket acknowledgement", () => {
       const ready = nextRealtimeMessage(socket, "pong");
       sendRealtime(socket, { type: "ping" });
       await ready;
+      const elsewhereReady = nextRealtimeMessage(elsewhere, "pong");
+      sendRealtime(elsewhere, { type: "ping" });
+      await elsewhereReady;
       const delivered = nextRealtimeMessage(socket, "device-handoff");
       const response = await server.app.request("/api/v1/device-handoff", {
         method: "POST",
@@ -1334,6 +1343,7 @@ describe("device handoff websocket acknowledgement", () => {
       });
     } finally {
       socket.close();
+      elsewhere.close();
       await server.close();
     }
   });
