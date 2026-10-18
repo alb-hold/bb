@@ -11,6 +11,7 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { InstalledPlugin } from "@bb/server-contract";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
+import { pluginSettingsViewQueryOptions } from "@/hooks/queries/plugin-settings-queries";
 import {
   pluginSettingsViewQueryKey,
   systemMachineProvidersQueryKey,
@@ -87,9 +88,13 @@ describe("PluginSettingsForm", () => {
     const { queryClient, wrapper } = createQueryClientTestHarness();
     render(<PluginSettingsForm pluginId="demo" />, { wrapper });
 
-    const greeting = (await screen.findByLabelText(
-      "Greeting",
-    )) as HTMLInputElement;
+    await act(async () => {
+      await queryClient.fetchQuery(pluginSettingsViewQueryOptions("demo"));
+    });
+    expect(
+      queryClient.getQueryData(pluginSettingsViewQueryKey("demo")),
+    ).toMatchObject({ values: { greeting: "hello" } });
+    const greeting = screen.getByLabelText("Greeting") as HTMLInputElement;
     expect(greeting.value).toBe("hello");
 
     const apiKey = screen.getByLabelText("API key") as HTMLInputElement;

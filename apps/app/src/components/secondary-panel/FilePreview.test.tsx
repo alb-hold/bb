@@ -1146,6 +1146,7 @@ describe("FilePreview", () => {
             name: this.download,
           });
         });
+      const drawerFrames: FrameRequestCallback[] = [];
       try {
         for (const compact of [false, true]) {
           const view = render(
@@ -1159,12 +1160,24 @@ describe("FilePreview", () => {
             </CompactViewportOverrideProvider>,
           );
           if (compact) {
+            vi.spyOn(window, "requestAnimationFrame").mockImplementation(
+              (callback) => {
+                drawerFrames.push(callback);
+                return drawerFrames.length;
+              },
+            );
             fireEvent.click(
               screen.getByRole("button", { name: "File actions" }),
             );
-            fireEvent.click(
-              await screen.findByRole("menuitem", { name: "Download" }),
-            );
+            await act(async () => {
+              const firstFrame = drawerFrames.shift();
+              expect(firstFrame).toBeDefined();
+              firstFrame?.(0);
+              const secondFrame = drawerFrames.shift();
+              expect(secondFrame).toBeDefined();
+              secondFrame?.(16);
+            });
+            fireEvent.click(screen.getByRole("menuitem", { name: "Download" }));
           } else {
             fireEvent.click(screen.getByRole("button", { name: "Download" }));
           }
