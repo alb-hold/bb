@@ -73,7 +73,8 @@ import {
   applyTerminalSurfaceScale,
   attachTerminalScalePointerCoordinates,
   canRevealTerminalSurface,
-  terminalSurfaceScaleToWidth,
+  readTerminalSurfaceScale,
+  terminalSurfaceScale,
 } from "./terminal-grid-presentation";
 import {
   attachTerminalPromptTracker,
@@ -1040,6 +1041,7 @@ export function ThreadTerminalView({
     }
 
     const activeElementAtMount = document.activeElement;
+    container.style.containerType = "inline-size";
 
     let disposed = false;
     let transport: TerminalWebSocketTransport | null = null;
@@ -1115,12 +1117,7 @@ export function ThreadTerminalView({
         containerElement.style.opacity = "0";
         const scale =
           localFitGrid !== null
-            ? terminalSurfaceScaleToWidth(
-                latestPtyGrid,
-                localFitGrid,
-                terminal.element!,
-                containerElement.getBoundingClientRect().width,
-              )
+            ? terminalSurfaceScale(latestPtyGrid, localFitGrid)
             : 1;
         if (terminal.element) {
           applyTerminalSurfaceScale(terminal.element, scale);
@@ -1266,7 +1263,8 @@ export function ThreadTerminalView({
       if (terminal.element) {
         detachPointerCoordinates = attachTerminalScalePointerCoordinates(
           terminal.element,
-          () => Number(terminal?.element?.dataset.surfaceScale ?? "1"),
+          () =>
+            terminal?.element ? readTerminalSurfaceScale(terminal.element) : 1,
         );
       }
       containerElement.dataset.renderGridCols = String(terminal.cols);

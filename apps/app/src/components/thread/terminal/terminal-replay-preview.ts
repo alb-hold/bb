@@ -5,7 +5,8 @@ import {
   applyTerminalSurfaceScale,
   attachTerminalScalePointerCoordinates,
   canRevealTerminalSurface,
-  terminalSurfaceScaleToWidth,
+  readTerminalSurfaceScale,
+  terminalSurfaceScale,
 } from "./terminal-grid-presentation";
 
 export function updateTerminalReplayPreviewPtyGrid(
@@ -37,17 +38,20 @@ export function mountTerminalReplayPreview({
   if (!parent) throw new Error("Terminal replay preview requires a parent");
 
   const previousOpacity = container.style.opacity;
+  const previousContainerType = container.style.containerType;
+  container.style.containerType = "inline-size";
   const preview = document.createElement("div");
   preview.dataset.terminalReplayPreview = "";
   preview.dataset.gridCols = String(terminal.cols);
   preview.dataset.gridRows = String(terminal.rows);
   Object.assign(preview.style, {
     position: "absolute",
-    inset: "0",
+    inset: "0 16px 0 0",
     overflow: "hidden",
     paddingLeft: "0.5rem",
     pointerEvents: "none",
     zIndex: "5",
+    containerType: "inline-size",
   });
   container.style.opacity = "0";
   parent.append(preview);
@@ -55,30 +59,19 @@ export function mountTerminalReplayPreview({
   let fitGrid = initialFitGrid;
   let latestPtyGrid = { cols: terminal.cols, rows: terminal.rows };
   let surfaceScale =
-    fitGrid === null
-      ? 1
-      : terminalSurfaceScaleToWidth(
-          latestPtyGrid,
-          fitGrid,
-          terminal.element!,
-          container.getBoundingClientRect().width,
-        );
+    fitGrid === null ? 1 : terminalSurfaceScale(latestPtyGrid, fitGrid);
   const detachPointerCoordinates = terminal.element
     ? attachTerminalScalePointerCoordinates(
         terminal.element,
-        () => surfaceScale,
+        () =>
+          terminal.element ? readTerminalSurfaceScale(terminal.element) : 1,
       )
     : () => undefined;
   const updateSurfaceScale = () => {
     if (fitGrid === null) return;
     const wasVisible = preview.style.visibility === "visible";
     preview.style.visibility = "hidden";
-    surfaceScale = terminalSurfaceScaleToWidth(
-      latestPtyGrid,
-      fitGrid,
-      terminal.element!,
-      container.getBoundingClientRect().width,
-    );
+    surfaceScale = terminalSurfaceScale(latestPtyGrid, fitGrid);
     if (terminal.element) {
       applyTerminalSurfaceScale(terminal.element, surfaceScale);
     }
@@ -169,6 +162,7 @@ export function mountTerminalReplayPreview({
       terminal.dispose();
       preview.remove();
       container.style.opacity = previousOpacity;
+      container.style.containerType = previousContainerType;
     },
   };
 }

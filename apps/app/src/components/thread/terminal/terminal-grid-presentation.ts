@@ -16,7 +16,7 @@ export function terminalSurfaceScaleToWidth(
   surface: HTMLElement,
   availableWidth: number,
 ): number {
-  const currentScale = Number(surface.dataset.surfaceScale ?? "1");
+  const currentScale = readTerminalSurfaceScale(surface);
   const screen = surface.querySelector<HTMLElement>(".xterm-screen");
   const paintedWidth = screen?.getBoundingClientRect().width ?? 0;
   const naturalWidth = currentScale > 0 ? paintedWidth / currentScale : paintedWidth;
@@ -25,6 +25,15 @@ export function terminalSurfaceScaleToWidth(
       ? Math.min(1, availableWidth / naturalWidth)
       : 1;
   return Math.min(terminalSurfaceScale(grid, fitGrid), widthScale);
+}
+
+export function readTerminalSurfaceScale(surface: HTMLElement): number {
+  const transform = getComputedStyle(surface).transform;
+  const value = transform.match(/^matrix(?:3d)?\(([-\d.]+)/u)?.[1];
+  const computedScale = Number(value);
+  return Number.isFinite(computedScale)
+    ? computedScale
+    : Number(surface.dataset.surfaceScale ?? "1");
 }
 
 export function canRevealTerminalSurface({
@@ -49,7 +58,16 @@ export function applyTerminalSurfaceScale(
   surface: HTMLElement,
   scale: number,
 ): void {
-  surface.style.transform = scale < 1 ? `scale(${scale})` : "";
+  const currentScale = readTerminalSurfaceScale(surface);
+  const screenWidth =
+    surface.querySelector<HTMLElement>(".xterm-screen")?.getBoundingClientRect().width ?? 0;
+  const naturalWidth = currentScale > 0 ? screenWidth / currentScale : screenWidth;
+  surface.style.setProperty("--terminal-grid-scale", String(scale));
+  if (naturalWidth > 0) {
+    surface.style.setProperty("--terminal-natural-width", `${naturalWidth}px`);
+  }
+  surface.style.transform =
+    "scale(min(var(--terminal-grid-scale, 1), calc(100cqw / var(--terminal-natural-width, 1px))))";
   surface.style.transformOrigin = "top left";
   surface.dataset.surfaceScale = String(scale);
 }

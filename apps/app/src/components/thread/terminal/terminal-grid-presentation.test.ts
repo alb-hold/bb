@@ -56,7 +56,9 @@ describe("terminal grid presentation", () => {
     applyTerminalSurfaceScale(surface, scale);
 
     expect(scale).toBeCloseTo(51 / 135);
-    expect(surface.style.transform).toBe(`scale(${scale})`);
+    expect(surface.style.transform).toBe(
+      "scale(min(var(--terminal-grid-scale, 1), calc(100cqw / var(--terminal-natural-width, 1px))))",
+    );
     expect(surface.dataset.surfaceScale).toBe(String(scale));
   });
 
@@ -77,6 +79,9 @@ describe("terminal grid presentation", () => {
       availableWidth,
     );
     applyTerminalSurfaceScale(surface, scale);
+    expect(surface.style.transform).toBe(
+      "scale(min(var(--terminal-grid-scale, 1), calc(100cqw / var(--terminal-natural-width, 1px))))",
+    );
     expect(975 * scale).toBeLessThanOrEqual(availableWidth + 1);
 
     availableWidth = 357;

@@ -215,7 +215,9 @@ describe("terminal replay preview", () => {
       rows: 56,
     });
     expect(getComputedStyle(previewElement).visibility).toBe("visible");
-    expect(preview.element?.style.transform).toBe(`scale(${scale})`);
+    expect(preview.element?.style.transform).toBe(
+      "scale(min(var(--terminal-grid-scale, 1), calc(100cqw / var(--terminal-natural-width, 1px))))",
+    );
     expect(135 * scale).toBe(51);
 
     cover.dispose();
@@ -267,7 +269,8 @@ describe("terminal replay preview", () => {
       configurable: true,
       value: () => {
         const scale = Number(preview.element?.dataset.surfaceScale ?? "1");
-        return new DOMRect(0, 0, 975 * scale, 784 * scale);
+        const widthScale = Math.min(1, availableWidth / 975);
+        return new DOMRect(0, 0, 975 * Math.min(scale, widthScale), 784 * Math.min(scale, widthScale));
       },
     });
     const paintedWidth = () => screen!.getBoundingClientRect().width;
@@ -281,7 +284,11 @@ describe("terminal replay preview", () => {
 
     expect(previewElement.style.visibility).toBe("visible");
     expect(paintedWidth()).toBeLessThanOrEqual(availableWidth + 1);
-    expect(Number(preview.element?.dataset.surfaceScale)).toBeLessThan(1);
+    expect(container.style.containerType).toBe("inline-size");
+    expect(preview.element?.style.transform).toBe(
+      "scale(min(var(--terminal-grid-scale, 1), calc(100cqw / var(--terminal-natural-width, 1px))))",
+    );
+    expect(preview.element?.style.getPropertyValue("--terminal-grid-scale")).toBe("1");
 
     cover.dispose();
     parent.remove();
@@ -456,7 +463,9 @@ describe("terminal replay preview", () => {
       cols: 135,
       rows: 56,
     });
-    expect(preview.element?.style.transform).toBe("scale(0.37777777777777777)");
+    expect(preview.element?.style.transform).toBe(
+      "scale(min(var(--terminal-grid-scale, 1), calc(100cqw / var(--terminal-natural-width, 1px))))",
+    );
     expect(
       Array.from({ length: preview.buffer.active.length }, (_, index) =>
         preview.buffer.active.getLine(index)?.translateToString(),
