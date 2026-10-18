@@ -338,8 +338,10 @@ missing final period, capitalization or spacing in text that does not end a
 sentence (such as a bare `return true`), other punctuation (commas, question marks), homophones such as its/it's, and tense or
 plural changes are offered as suggestions. Code, paths, identifiers and
 vocabulary terms are never edited, and on a line containing any of
-= ; { } ( ) < > [ ] $ ` | \ / # or -- every change, even capitalization, is
-only suggested. Dictation formatting follows the same rule:
+= ; { } ( ) < > [ ] $ ` | \ / # " or --, a colon followed directly by text
+(10:30), a key: value line (status: ready, - name: x, "title": x), a line
+indented four spaces or a tab, or a line inside a ``` or ~~~ fence, every
+change, even capitalization, is only suggested. Dictation formatting follows the same rule:
 if the formatter changes a spoken word into another word, other than one of
 those accent restorations, the transcript is inserted
 as heard. Vocabulary terms are sent to transcription as hints, which make the

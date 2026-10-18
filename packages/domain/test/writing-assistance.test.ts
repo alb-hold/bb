@@ -372,6 +372,15 @@ describe("resolveWritingEdits", () => {
     ["echo $HOME | grep user", "user", "User", "capitalization"],
     ["return return value;", "return return", "return", "grammar"],
     ["if (users are ready)", "are", "is", "grammar"],
+    ["status: the user are ready", "are", "is", "grammar"],
+    ["  - status: the user are ready", "are", "is", "grammar"],
+    ['"status": the user are ready', "are", "is", "grammar"],
+    ["'status': the user are ready", "are", "is", "grammar"],
+    ['title "the user are ready"', "are", "is", "grammar"],
+    ["url http:example the user are ready", "are", "is", "grammar"],
+    ["    the user are ready", "are", "is", "grammar"],
+    ["\tthe user are ready", "are", "is", "grammar"],
+    ["~~~yaml\nthe user are ready", "are", "is", "grammar"],
   ])(
     "never auto-applies an edit on the code-like line %s",
     (target, original, replacement, category) => {
@@ -388,6 +397,19 @@ describe("resolveWritingEdits", () => {
       expect(edits.map((edit) => edit.disposition)).not.toContain("apply");
     },
   );
+
+  it.each([
+    "```\nconst x = 1;\n```\nthe user are ready",
+    "We met at noon: the user are ready",
+    "  the user are ready",
+  ])("still auto-applies on a prose line: %s", (target) => {
+    const edits = resolveWritingEdits({
+      ...base,
+      target,
+      proposals: [proposal("user are", "user is")],
+    });
+    expect(edits.map((edit) => edit.disposition)).toEqual(["apply"]);
+  });
 
   it("still auto-applies on a prose line below a code line", () => {
     const target = "const x = 1;\nthe user are ready";

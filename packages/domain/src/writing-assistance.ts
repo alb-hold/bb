@@ -611,13 +611,21 @@ function splitWordChanges(change: TextChangeSpan): TextChangeSpan[] {
   return pieces.length > 1 ? pieces : [change];
 }
 
-const CODE_CHARACTERS = /[=;{}()<>[\]$`|\\/#]|--/u;
+const CODE_CHARACTERS = /[=;{}()<>[\]$`|\\/#"]|--|:\S/u;
+const CONFIG_LINE = /^(?: {4}|\t)|^\s*(?:-\s+)?['"]?[\w.-]+['"]?\s*:(?:\s|$)/u;
 
 function inCodeLikeLine(target: string, start: number, end: number): boolean {
   const lineStart = start === 0 ? 0 : target.lastIndexOf("\n", start - 1) + 1;
   const lineEnd = target.indexOf("\n", end);
-  return CODE_CHARACTERS.test(
-    target.slice(lineStart, lineEnd === -1 ? target.length : lineEnd),
+  const line = target.slice(
+    lineStart,
+    lineEnd === -1 ? target.length : lineEnd,
+  );
+  const fences = target.slice(0, lineStart).match(/^\s*(?:```|~~~)/gmu) ?? [];
+  return (
+    fences.length % 2 === 1 ||
+    CODE_CHARACTERS.test(line) ||
+    CONFIG_LINE.test(line)
   );
 }
 
