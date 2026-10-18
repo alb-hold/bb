@@ -5,6 +5,7 @@ import {
   attachTerminalScalePointerCoordinates,
   canRevealTerminalSurface,
   terminalSurfaceScale,
+  terminalSurfaceScaleToWidth,
 } from "./terminal-grid-presentation";
 
 describe("terminal grid presentation", () => {
@@ -56,6 +57,37 @@ describe("terminal grid presentation", () => {
 
     expect(scale).toBeCloseTo(51 / 135);
     expect(surface.style.transform).toBe(`scale(${scale})`);
+    expect(surface.dataset.surfaceScale).toBe(String(scale));
+  });
+
+  it("caps the surface to the renderer width after a viewport resize", () => {
+    const surface = document.createElement("div");
+    const screen = document.createElement("div");
+    screen.className = "xterm-screen";
+    surface.append(screen);
+    let availableWidth = 964;
+    Object.defineProperty(screen, "getBoundingClientRect", {
+      value: () => ({ width: 975 * Number(surface.dataset.surfaceScale ?? "1") }),
+    });
+    const fitGrid = { cols: 135, rows: 56 };
+    let scale = terminalSurfaceScaleToWidth(
+      { cols: 135, rows: 56 },
+      fitGrid,
+      surface,
+      availableWidth,
+    );
+    applyTerminalSurfaceScale(surface, scale);
+    expect(975 * scale).toBeLessThanOrEqual(availableWidth + 1);
+
+    availableWidth = 357;
+    scale = terminalSurfaceScaleToWidth(
+      { cols: 135, rows: 56 },
+      fitGrid,
+      surface,
+      availableWidth,
+    );
+    applyTerminalSurfaceScale(surface, scale);
+    expect(975 * scale).toBeLessThanOrEqual(availableWidth + 1);
     expect(surface.dataset.surfaceScale).toBe(String(scale));
   });
 

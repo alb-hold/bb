@@ -10,6 +10,23 @@ export function terminalSurfaceScale(
   return fitGrid.cols / grid.cols;
 }
 
+export function terminalSurfaceScaleToWidth(
+  grid: TerminalGrid,
+  fitGrid: TerminalGrid,
+  surface: HTMLElement,
+  availableWidth: number,
+): number {
+  const currentScale = Number(surface.dataset.surfaceScale ?? "1");
+  const screen = surface.querySelector<HTMLElement>(".xterm-screen");
+  const paintedWidth = screen?.getBoundingClientRect().width ?? 0;
+  const naturalWidth = currentScale > 0 ? paintedWidth / currentScale : paintedWidth;
+  const widthScale =
+    naturalWidth > 0 && availableWidth > 0
+      ? Math.min(1, availableWidth / naturalWidth)
+      : 1;
+  return Math.min(terminalSurfaceScale(grid, fitGrid), widthScale);
+}
+
 export function canRevealTerminalSurface({
   fitGrid,
   isOwner,

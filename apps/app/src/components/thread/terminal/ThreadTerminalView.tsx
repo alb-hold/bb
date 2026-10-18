@@ -73,7 +73,7 @@ import {
   applyTerminalSurfaceScale,
   attachTerminalScalePointerCoordinates,
   canRevealTerminalSurface,
-  terminalSurfaceScale,
+  terminalSurfaceScaleToWidth,
 } from "./terminal-grid-presentation";
 import {
   attachTerminalPromptTracker,
@@ -1113,8 +1113,13 @@ export function ThreadTerminalView({
             rendererGrid: { cols: terminal.cols, rows: terminal.rows },
           });
         const scale =
-          !ownsTerminal && localFitGrid !== null
-            ? terminalSurfaceScale(latestPtyGrid, localFitGrid)
+          localFitGrid !== null
+            ? terminalSurfaceScaleToWidth(
+                latestPtyGrid,
+                localFitGrid,
+                terminal.element!,
+                containerElement.getBoundingClientRect().width,
+              )
             : 1;
         if (terminal.element) {
           applyTerminalSurfaceScale(terminal.element, scale);
@@ -1243,11 +1248,13 @@ export function ThreadTerminalView({
       document.addEventListener("focusout", updateGridVisibility);
       window.addEventListener("focus", updateGridVisibility);
       window.addEventListener("blur", updateGridVisibility);
+      window.addEventListener("resize", updateGridVisibility);
       detachGridVisibilityListeners = () => {
         document.removeEventListener("focusin", updateGridVisibility);
         document.removeEventListener("focusout", updateGridVisibility);
         window.removeEventListener("focus", updateGridVisibility);
         window.removeEventListener("blur", updateGridVisibility);
+        window.removeEventListener("resize", updateGridVisibility);
       };
       if (terminal.element) {
         detachPointerCoordinates = attachTerminalScalePointerCoordinates(
@@ -1637,6 +1644,7 @@ export function ThreadTerminalView({
       );
 
       resizeObserver = new ResizeObserver((entries) => {
+        updateGridVisibility();
         const hasSize = hasVisibleTerminalSize({ containerElement, entries });
         if (hasSize !== containerHasSize) {
           containerHasSize = hasSize;

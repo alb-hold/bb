@@ -222,6 +222,71 @@ describe("terminal replay preview", () => {
     parent.remove();
   });
 
+  it("keeps a visible 135-column preview inside the renderer across a desktop-to-phone resize", () => {
+    const context = new Proxy(
+      {
+        measureText: (text: string) => ({ width: text.length * 8 }),
+        getImageData: () => ({ data: new Uint8ClampedArray(4) }),
+        createImageData: () => ({ data: new Uint8ClampedArray(4) }),
+      } as Record<string, unknown>,
+      {
+        get(target, property) {
+          const value = target[property as string];
+          return value ?? (() => undefined);
+        },
+        set(target, property, value) {
+          target[property as string] = value;
+          return true;
+        },
+      },
+    );
+    HTMLCanvasElement.prototype.getContext = (() =>
+      context) as unknown as typeof HTMLCanvasElement.prototype.getContext;
+    const parent = document.createElement("div");
+    const container = document.createElement("div");
+    parent.append(container);
+    document.body.append(parent);
+    let availableWidth = 964;
+    const preview = new Terminal({ cols: 135, rows: 56 });
+    const cover = mountTerminalReplayPreview({
+      container,
+      initialFitGrid: { cols: 135, rows: 56 },
+      isOwner: () => false,
+      terminal: preview,
+    });
+    const previewElement = parent.querySelector<HTMLElement>(
+      "[data-terminal-replay-preview]",
+    )!;
+    Object.defineProperty(container, "getBoundingClientRect", {
+      configurable: true,
+      value: () => new DOMRect(0, 0, availableWidth, 800),
+    });
+    const screen = preview.element?.querySelector<HTMLElement>(".xterm-screen");
+    expect(screen).not.toBeNull();
+    Object.defineProperty(screen!, "getBoundingClientRect", {
+      configurable: true,
+      value: () => {
+        const scale = Number(preview.element?.dataset.surfaceScale ?? "1");
+        return new DOMRect(0, 0, 975 * scale, 784 * scale);
+      },
+    });
+    const paintedWidth = () => screen!.getBoundingClientRect().width;
+
+    window.dispatchEvent(new Event("resize"));
+    expect(previewElement.style.visibility).toBe("visible");
+    expect(paintedWidth()).toBeLessThanOrEqual(availableWidth + 1);
+
+    availableWidth = 357;
+    window.dispatchEvent(new Event("resize"));
+
+    expect(previewElement.style.visibility).toBe("visible");
+    expect(paintedWidth()).toBeLessThanOrEqual(availableWidth + 1);
+    expect(Number(preview.element?.dataset.surfaceScale)).toBeLessThan(1);
+
+    cover.dispose();
+    parent.remove();
+  });
+
   it("hides a visible preview as soon as a newer PTY marker arrives", async () => {
     const context = new Proxy(
       {

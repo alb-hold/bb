@@ -5,7 +5,7 @@ import {
   applyTerminalSurfaceScale,
   attachTerminalScalePointerCoordinates,
   canRevealTerminalSurface,
-  terminalSurfaceScale,
+  terminalSurfaceScaleToWidth,
 } from "./terminal-grid-presentation";
 
 export function updateTerminalReplayPreviewPtyGrid(
@@ -55,7 +55,14 @@ export function mountTerminalReplayPreview({
   let fitGrid = initialFitGrid;
   let latestPtyGrid = { cols: terminal.cols, rows: terminal.rows };
   let surfaceScale =
-    fitGrid === null ? 1 : terminalSurfaceScale(latestPtyGrid, fitGrid);
+    fitGrid === null
+      ? 1
+      : terminalSurfaceScaleToWidth(
+          latestPtyGrid,
+          fitGrid,
+          terminal.element!,
+          container.getBoundingClientRect().width,
+        );
   const detachPointerCoordinates = terminal.element
     ? attachTerminalScalePointerCoordinates(
         terminal.element,
@@ -64,7 +71,12 @@ export function mountTerminalReplayPreview({
     : () => undefined;
   const updateSurfaceScale = () => {
     if (fitGrid === null) return;
-    surfaceScale = terminalSurfaceScale(latestPtyGrid, fitGrid);
+    surfaceScale = terminalSurfaceScaleToWidth(
+      latestPtyGrid,
+      fitGrid,
+      terminal.element!,
+      container.getBoundingClientRect().width,
+    );
     if (terminal.element) {
       applyTerminalSurfaceScale(terminal.element, surfaceScale);
     }
@@ -81,6 +93,9 @@ export function mountTerminalReplayPreview({
   );
 
   let disposed = false;
+  const resizeObserver = new ResizeObserver(updateSurfaceScale);
+  resizeObserver.observe(container);
+  window.addEventListener("resize", updateSurfaceScale);
   const updateVisibility = () => {
     updateSurfaceScale();
     preview.style.visibility =
@@ -136,6 +151,8 @@ export function mountTerminalReplayPreview({
       disposed = true;
       document.removeEventListener("focusin", refreshVisibility);
       document.removeEventListener("focusout", refreshVisibility);
+      window.removeEventListener("resize", updateSurfaceScale);
+      resizeObserver.disconnect();
       window.removeEventListener("focus", refreshVisibility);
       window.removeEventListener("blur", refreshVisibility);
       detachPointerCoordinates();
