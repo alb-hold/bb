@@ -115,7 +115,7 @@ if (process.platform !== "win32") {
   }
 }
 if (process.platform === "win32") {
-  socketPath = "\\\\.\\pipe\\bb-stdio-" + familyHash + "-" + pipeToken;
+  socketPath = "\\\\\\\\.\\\\pipe\\\\bb-stdio-" + familyHash + "-" + pipeToken;
 }
 const livenessServer = net.createServer((connection) => connection.destroy());
 const livenessReady = new Promise((resolve) => {
@@ -231,7 +231,7 @@ const ensureLivenessEndpoint = () => {
     livenessEndpointRecoveryPromise = new Promise((resolveListen) => {
       if (livenessEndpointWasBound) {
         pipeToken = crypto.randomUUID();
-        socketPath = "\\\\.\\pipe\\bb-stdio-" + familyHash + "-" + pipeToken;
+        socketPath = "\\\\\\\\.\\\\pipe\\\\bb-stdio-" + familyHash + "-" + pipeToken;
       }
       const onListenError = (error) => {
         livenessEndpointAvailable = false;
@@ -349,7 +349,7 @@ const backupPattern = /^.+\\.backup-[0-9]+-[0-9]+-[a-f0-9-]+$/;
 const activePattern = /^.+\\.active-[0-9]+-[012]-[a-f0-9]{16}-(?:[en]-)?[a-f0-9-]+(?:-i-[0-9]+-[0-9]+|-p-[a-f0-9-]+)?$/;
 const paths = () => fs.readdirSync(path.dirname(logPath)).map((name) => path.join(path.dirname(logPath), name));
 const socketPathForToken = (value) => recoveryPlatform === "win32"
-  ? "\\\\.\\pipe\\bb-stdio-" + familyHash + "-" + value
+  ? "\\\\\\\\.\\\\pipe\\\\bb-stdio-" + familyHash + "-" + value
   : socketDir === undefined ? undefined : path.join(socketDir, "s-" + value);
 const ownerProcessHoldsSegment = (pid, segmentPath) => {
   try {
