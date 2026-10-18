@@ -2046,9 +2046,22 @@ describe("spawnLoggedProcess", () => {
           )
           .toBe(true);
         const initialSegment = ownerSegment;
+        await expect
+          .poll(
+            () =>
+              familyFiles(logDir, "server").find(
+                (file) =>
+                  file.includes(".active-") &&
+                  file !== initialSegment &&
+                  fileIncludes(file, "socket-owner-heartbeat"),
+              ),
+            { timeout: 3_000, interval: 10 },
+          )
+          .toBeDefined();
         ownerSegment = familyFiles(logDir, "server").find(
           (file) =>
             file.includes(".active-") &&
+            file !== initialSegment &&
             fileIncludes(file, "socket-owner-heartbeat"),
         )!;
         expect(ownerSegment).not.toBe(initialSegment);
