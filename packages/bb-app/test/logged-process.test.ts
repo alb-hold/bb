@@ -2034,11 +2034,27 @@ describe("spawnLoggedProcess", () => {
         );
         expect(existsSync(ownerSegment)).toBe(true);
         owner.writerProcess.kill("SIGCONT");
+        const initialSegment = ownerSegment;
+        let recreatedSocketIdentity: ReturnType<typeof lstatSync> | undefined;
+        let recreatedOwnerSegment: string | undefined;
         await expect
           .poll(
             () => {
               try {
-                return lstatSync(ownerSocket).isSocket();
+                const identity = lstatSync(ownerSocket);
+                if (!identity.isSocket()) return false;
+                const expectedMarker = `-i-${identity.dev}-${identity.ino}`;
+                const segment = familyFiles(logDir, "server").find(
+                  (file) =>
+                    file.includes(".active-") &&
+                    file !== initialSegment &&
+                    file.includes(expectedMarker) &&
+                    fileIncludes(file, "socket-owner-heartbeat"),
+                );
+                if (segment === undefined) return false;
+                recreatedSocketIdentity = identity;
+                recreatedOwnerSegment = segment;
+                return true;
               } catch {
                 return false;
               }
@@ -2046,26 +2062,12 @@ describe("spawnLoggedProcess", () => {
             { timeout: 3_000, interval: 10 },
           )
           .toBe(true);
-        const initialSegment = ownerSegment;
-        await expect
-          .poll(
-            () =>
-              familyFiles(logDir, "server").find(
-                (file) =>
-                  file.includes(".active-") &&
-                  file !== initialSegment &&
-                  fileIncludes(file, "socket-owner-heartbeat"),
-              ),
-            { timeout: 3_000, interval: 10 },
-          )
-          .toBeDefined();
-        ownerSegment = familyFiles(logDir, "server").find(
-          (file) =>
-            file.includes(".active-") &&
-            file !== initialSegment &&
-            fileIncludes(file, "socket-owner-heartbeat"),
-        )!;
+        ownerSegment = recreatedOwnerSegment!;
         expect(ownerSegment).not.toBe(initialSegment);
+        expect(recreatedSocketIdentity).toBeDefined();
+        expect(ownerSegment).toContain(
+          `-i-${recreatedSocketIdentity!.dev}-${recreatedSocketIdentity!.ino}`,
+        );
         expect(existsSync(ownerSegment)).toBe(true);
         expect(readFileSync(ownerSegment, "utf8")).toContain(
           "socket-owner-heartbeat",
@@ -2082,11 +2084,25 @@ describe("spawnLoggedProcess", () => {
         );
         unlinkSync(ownerSocket);
         owner.writerProcess.kill("SIGCONT");
+        let replacementSocketIdentity: ReturnType<typeof lstatSync> | undefined;
+        let replacementOwnerSegment: string | undefined;
         await expect
           .poll(
             () => {
               try {
-                return lstatSync(ownerSocket).isSocket();
+                const identity = lstatSync(ownerSocket);
+                if (!identity.isSocket()) return false;
+                const expectedMarker = `-i-${identity.dev}-${identity.ino}`;
+                const segment = familyFiles(logDir, "server").find(
+                  (file) =>
+                    file.includes(".active-") &&
+                    file.includes(expectedMarker) &&
+                    fileIncludes(file, "socket-owner-heartbeat"),
+                );
+                if (segment === undefined) return false;
+                replacementSocketIdentity = identity;
+                replacementOwnerSegment = segment;
+                return true;
               } catch {
                 return false;
               }
@@ -2094,15 +2110,8 @@ describe("spawnLoggedProcess", () => {
             { timeout: 3_000, interval: 10 },
           )
           .toBe(true);
-        ownerSegment = familyFiles(logDir, "server").find(
-          (file) =>
-            file.includes(".active-") &&
-            readFileSync(file, "utf8").includes("socket-owner-heartbeat"),
-        )!;
-        const recreatedSocketIdentity = lstatSync(ownerSocket);
-        expect(ownerSegment).toContain(
-          `-i-${recreatedSocketIdentity.dev}-${recreatedSocketIdentity.ino}`,
-        );
+        ownerSegment = replacementOwnerSegment!;
+        expect(replacementSocketIdentity).toBeDefined();
         expect(existsSync(ownerSegment)).toBe(true);
         writeFileSync(ownerStopPath, "stop");
         expect(await waitForExit(owner)).toBe(0);
