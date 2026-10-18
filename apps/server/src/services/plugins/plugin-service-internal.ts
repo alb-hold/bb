@@ -177,6 +177,7 @@ export interface PluginResolvedProviderEnv {
 }
 
 export interface PluginResolvedProviderEnvHealth {
+  pluginId: string;
   label: string;
   statusMessage: string;
 }

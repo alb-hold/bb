@@ -11,6 +11,7 @@ import type { SystemUsageLimitsQuery } from "@bb/server-contract";
 import type { AppDeps } from "../../types.js";
 import { COMMAND_TIMEOUT_MS } from "../../constants.js";
 import { callHostRetryableOnlineRpc } from "../hosts/online-rpc.js";
+import { resolvePluginProviderEnvHealth } from "../plugins/plugin-agent-contributions.js";
 import {
   assertUsableHostId,
   requirePrimaryHostId,
@@ -47,6 +48,32 @@ function providerUsageCache(deps: AppDeps) {
   return cache;
 }
 
+const ACCOUNT_POOL_PLUGIN_ID = "account-pool";
+
+async function withPoolCredentials(
+  usage: ProviderUsage,
+  providerId: string,
+  hostId: string,
+): Promise<ProviderUsage> {
+  if (usage.status !== "unauthenticated" && usage.status !== "expired") {
+    return usage;
+  }
+  const contributed = await resolvePluginProviderEnvHealth({
+    providerId,
+    hostId,
+  });
+  if (contributed === null || contributed.pluginId !== ACCOUNT_POOL_PLUGIN_ID) {
+    return usage;
+  }
+  return {
+    status: "error",
+    message:
+      "Routed through the account pool; there are no subscription windows from a local login.",
+    planLabel: null,
+    accountEmail: null,
+  };
+}
+
 export async function getProviderUsageLimits(
   deps: AppDeps,
   query: SystemUsageLimitsQuery,
@@ -79,7 +106,11 @@ export async function getProviderUsageLimits(
             }),
           query.refresh === "true",
         );
-        return result.supported ? [provider.id, result.usage] : null;
+        if (!result.supported) return null;
+        return [
+          provider.id,
+          await withPoolCredentials(result.usage, provider.id, hostId),
+        ];
       } catch {
         return [
           provider.id,

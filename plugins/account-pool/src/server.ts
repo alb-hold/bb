@@ -545,8 +545,16 @@ export function createAccountPoolPlugin(
                 "Claude Code uses a 5-minute prompt cache behind a custom base URL; subscription accounts get the 1-hour cache Claude Code uses for a direct subscription login",
             },
           ];
+    const isServingHealthily = async (
+      provider: PoolProvider,
+    ): Promise<boolean> => {
+      if (proxyingParent() !== null && availability !== null) {
+        return canServe(provider);
+      }
+      return operations.hasReadyAccount(provider);
+    };
     const proxiedHealth = async (provider: PoolProvider) =>
-      (await canServe(provider))
+      (await isServingHealthily(provider))
         ? {
             label: "Proxied",
             statusMessage:
