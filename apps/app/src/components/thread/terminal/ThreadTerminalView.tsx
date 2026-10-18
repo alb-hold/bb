@@ -66,6 +66,7 @@ import {
 import { handleTerminalFileDrop } from "./terminal-file-drop";
 import { terminalPromptLine } from "./terminal-shell-state";
 import { createTerminalOutputPipeline } from "./terminal-output-pipeline";
+import { mountTerminalReplayPreview } from "./terminal-replay-preview";
 import {
   attachTerminalPromptTracker,
   type TerminalPromptTrackerState,
@@ -488,6 +489,7 @@ interface HandleTerminalServerMessageArgs {
   terminal: XTermTerminal;
   pipeline?: ReturnType<typeof createTerminalOutputPipeline>;
   allowAttachedGrid?: boolean;
+  onReplayStart?: (session: TerminalSession) => void;
 }
 
 function encodeBytesBase64(bytes: Uint8Array): string {
@@ -699,9 +701,13 @@ export function handleTerminalServerMessage({
   terminal,
   pipeline,
   allowAttachedGrid = true,
+  onReplayStart,
 }: HandleTerminalServerMessageArgs): void {
   switch (message.type) {
     case "attached":
+      if (message.replayStartSeq < message.nextSeq) {
+        onReplayStart?.(message.session);
+      }
       if (allowAttachedGrid) {
         if (pipeline)
           pipeline.setGrid(message.session.cols, message.session.rows);
@@ -1033,6 +1039,10 @@ export function ThreadTerminalView({
     let stopWatchingLayout: (() => void) | null = null;
     let sharedSize: TerminalGridSize | null = null;
     let markerGridActive = false;
+    let replayPreview: {
+      dispose(): void;
+      resize(cols: number, rows: number): void;
+    } | null = null;
     let outputPipeline: ReturnType<typeof createTerminalOutputPipeline> | null =
       null;
     let containerHasSize = hasVisibleTerminalSize({
@@ -1306,6 +1316,7 @@ export function ThreadTerminalView({
             );
             if (nextSize !== null) {
               sharedSize = nextSize;
+              replayPreview?.resize(nextSize.cols, nextSize.rows);
               scheduleFit();
             }
           }
@@ -1314,6 +1325,8 @@ export function ThreadTerminalView({
               activeTransport.acknowledgeOutput(nextSeq),
             message,
             onReplayComplete: () => {
+              replayPreview?.dispose();
+              replayPreview = null;
               if (
                 !disposed &&
                 sessionStatusRef.current === "running" &&
@@ -1326,6 +1339,20 @@ export function ThreadTerminalView({
             onSessionChange: onSessionChangeRef.current,
             replayNextSeq,
             replayWriteState,
+            onReplayStart: (session) => {
+              replayPreview?.dispose();
+              const previewTerminal = new Terminal({
+                cols: session.cols,
+                rows: session.rows,
+                fontFamily: readTerminalFontFamily(),
+                fontSize: 12,
+                theme: buildTerminalTheme(),
+              });
+              replayPreview = mountTerminalReplayPreview({
+                container: containerElement,
+                terminal: previewTerminal,
+              });
+            },
             setReplayNextSeq: (nextSeq) => {
               replayNextSeq = nextSeq;
             },
@@ -1503,6 +1530,8 @@ export function ThreadTerminalView({
       }
       setConnectionNotice(null);
       resizeObserver?.disconnect();
+      replayPreview?.dispose();
+      replayPreview = null;
       selectionChangeDisposable?.dispose();
       shellOscDisposable?.dispose();
       terminalInteractions?.dispose();
