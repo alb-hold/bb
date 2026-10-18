@@ -1055,6 +1055,7 @@ export function ThreadTerminalView({
     > | null = null;
     let resizeObserver: ResizeObserver | null = null;
     let selectionChangeDisposable: { dispose: () => void } | null = null;
+    let terminalKeyDisposable: { dispose: () => void } | null = null;
     let shellOscDisposable: { dispose: () => void } | null = null;
     let stopObservingFonts: (() => void) | null = null;
     let stopWatchingLayout: (() => void) | null = null;
@@ -1065,7 +1066,7 @@ export function ThreadTerminalView({
       cols: sessionRef.current.cols,
       rows: sessionRef.current.rows,
     };
-    let fallbackElapsed = false;
+    let terminalInputClaimed = false;
     let detachPointerCoordinates: (() => void) | null = null;
     let detachGridVisibilityListeners: (() => void) | null = null;
     let replayPreview: {
@@ -1074,8 +1075,6 @@ export function ThreadTerminalView({
       setFitGrid(cols: number, rows: number): void;
       push(bytes: Uint8Array, callback: () => void): void;
     } | null = null;
-    let mismatchedGridFallbackTimeout: ReturnType<typeof setTimeout> | null =
-      null;
     let outputPipeline: ReturnType<typeof createTerminalOutputPipeline> | null =
       null;
     let containerHasSize = hasVisibleTerminalSize({
@@ -1097,12 +1096,12 @@ export function ThreadTerminalView({
         containerElement.dataset.renderGridCols = String(terminal.cols);
         containerElement.dataset.renderGridRows = String(terminal.rows);
         const ownsTerminal =
+          terminalInputClaimed &&
           document.hasFocus() &&
           terminal.element?.contains(document.activeElement) === true;
         const canReveal =
           localFitGrid !== null &&
           canRevealTerminalSurface({
-            fallbackElapsed,
             fitGrid: localFitGrid,
             isOwner: ownsTerminal,
             ptyGrid: latestPtyGrid,
@@ -1118,20 +1117,10 @@ export function ThreadTerminalView({
         containerElement.dataset.ptyGridCols = String(latestPtyGrid.cols);
         containerElement.dataset.ptyGridRows = String(latestPtyGrid.rows);
         if (canReveal) {
-          if (mismatchedGridFallbackTimeout !== null) {
-            clearTimeout(mismatchedGridFallbackTimeout);
-            mismatchedGridFallbackTimeout = null;
-          }
           containerElement.style.opacity = "";
           return;
         }
         containerElement.style.opacity = "0";
-        if (mismatchedGridFallbackTimeout !== null || fallbackElapsed) return;
-        mismatchedGridFallbackTimeout = setTimeout(() => {
-          mismatchedGridFallbackTimeout = null;
-          fallbackElapsed = true;
-          updateGridVisibility();
-        }, 1_500);
       };
       const requiredModulesPromise = Promise.all([
         import("@xterm/xterm"),
@@ -1420,11 +1409,6 @@ export function ThreadTerminalView({
               message.type === "session-updated" &&
               activeTransport.consumeRepaintNudgeEcho({ cols, rows });
             latestPtyGrid = { cols, rows };
-            fallbackElapsed = false;
-            if (mismatchedGridFallbackTimeout !== null) {
-              clearTimeout(mismatchedGridFallbackTimeout);
-              mismatchedGridFallbackTimeout = null;
-            }
             updateGridVisibility();
             const nextSize = nextSharedTerminalSize(
               sharedSize,
@@ -1483,9 +1467,11 @@ export function ThreadTerminalView({
                   cols: replayGrid.cols,
                   rows: replayGrid.rows,
                 },
-                canShowMismatchedFallback: () =>
-                  !document.hasFocus() ||
-                  !activeTerminal.element?.contains(document.activeElement),
+                isOwner: () =>
+                  terminalInputClaimed &&
+                  document.hasFocus() &&
+                  activeTerminal.element?.contains(document.activeElement) ===
+                    true,
                 terminal: previewTerminal,
               });
             },
@@ -1593,13 +1579,26 @@ export function ThreadTerminalView({
       terminalInteractions = attachTerminalInteractions({
         element: containerElement.parentElement ?? containerElement,
         getSelection: () => activeTerminal.getSelection(),
-        onPointerDown: handleTerminalPointerDown,
+        onPointerDown: (event) => {
+          if (
+            event.target instanceof Node &&
+            activeTerminal.element?.contains(event.target)
+          ) {
+            terminalInputClaimed = true;
+            updateGridVisibility();
+          }
+          handleTerminalPointerDown(event);
+        },
         onPointerRelease: handleTerminalPointerRelease,
         onPointerCancel: handleTerminalPointerCancel,
         onSelection: (text) =>
           reportTerminalSelection(lastPointerReleaseAnchorRef.current, text),
         copySelection: copyTerminalSelection,
         onFilesDrop: (files) => handleFileDropRef.current?.(files),
+      });
+      terminalKeyDisposable = activeTerminal.onKey(() => {
+        terminalInputClaimed = true;
+        updateGridVisibility();
       });
       activeTerminal.onData((data) => {
         if (controlActiveRef.current) {
@@ -1669,15 +1668,13 @@ export function ThreadTerminalView({
       resizeObserver?.disconnect();
       replayPreview?.dispose();
       replayPreview = null;
-      if (mismatchedGridFallbackTimeout !== null) {
-        clearTimeout(mismatchedGridFallbackTimeout);
-        mismatchedGridFallbackTimeout = null;
-      }
       detachPointerCoordinates?.();
       detachPointerCoordinates = null;
       detachGridVisibilityListeners?.();
       detachGridVisibilityListeners = null;
       selectionChangeDisposable?.dispose();
+      terminalKeyDisposable?.dispose();
+      terminalKeyDisposable = null;
       shellOscDisposable?.dispose();
       terminalInteractions?.dispose();
       handleFileDropRef.current = null;

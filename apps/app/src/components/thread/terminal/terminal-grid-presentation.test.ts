@@ -12,26 +12,35 @@ describe("terminal grid presentation", () => {
     vi.restoreAllMocks();
   });
 
-  it("keeps the local-fit grid hidden when it differs from the PTY grid after fallback", () => {
+  it("reveals a non-owner at the authoritative grid when it differs from local fit", () => {
     expect(
       canRevealTerminalSurface({
-        fallbackElapsed: true,
-        fitGrid: { cols: 51, rows: 47 },
+        fitGrid: { cols: 130, rows: 50 },
         isOwner: false,
         ptyGrid: { cols: 135, rows: 56 },
-        rendererGrid: { cols: 51, rows: 47 },
+        rendererGrid: { cols: 135, rows: 56 },
+      }),
+    ).toBe(true);
+  });
+
+  it("keeps an owner hidden until its fitted PTY grid is authoritative", () => {
+    expect(
+      canRevealTerminalSurface({
+        fitGrid: { cols: 51, rows: 47 },
+        isOwner: true,
+        ptyGrid: { cols: 135, rows: 56 },
+        rendererGrid: { cols: 135, rows: 56 },
       }),
     ).toBe(false);
   });
 
-  it("reveals only the PTY grid after a non-owner fallback", () => {
+  it("reveals immediately when the attached PTY grid already matches the local fit", () => {
     expect(
       canRevealTerminalSurface({
-        fallbackElapsed: true,
         fitGrid: { cols: 51, rows: 47 },
-        isOwner: false,
-        ptyGrid: { cols: 135, rows: 56 },
-        rendererGrid: { cols: 135, rows: 56 },
+        isOwner: true,
+        ptyGrid: { cols: 51, rows: 47 },
+        rendererGrid: { cols: 51, rows: 47 },
       }),
     ).toBe(true);
   });

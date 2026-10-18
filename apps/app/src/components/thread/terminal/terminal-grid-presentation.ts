@@ -11,13 +11,11 @@ export function terminalSurfaceScale(
 }
 
 export function canRevealTerminalSurface({
-  fallbackElapsed,
   fitGrid,
   isOwner,
   ptyGrid,
   rendererGrid,
 }: {
-  fallbackElapsed: boolean;
   fitGrid: TerminalGrid;
   isOwner: boolean;
   ptyGrid: TerminalGrid;
@@ -27,7 +25,7 @@ export function canRevealTerminalSurface({
     rendererGrid.cols === ptyGrid.cols && rendererGrid.rows === ptyGrid.rows;
   const matchesFit =
     rendererGrid.cols === fitGrid.cols && rendererGrid.rows === fitGrid.rows;
-  return matchesPty && (matchesFit || (fallbackElapsed && !isOwner));
+  return matchesPty && (matchesFit || !isOwner);
 }
 
 export function applyTerminalSurfaceScale(

@@ -3,10 +3,7 @@ import { Terminal } from "@xterm/xterm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createTerminalGridMarker } from "@bb/domain";
 import { createTerminalOutputPipeline } from "./terminal-output-pipeline";
-import {
-  mountTerminalReplayPreview,
-  TERMINAL_REPLAY_PREVIEW_FALLBACK_MS,
-} from "./terminal-replay-preview";
+import { mountTerminalReplayPreview } from "./terminal-replay-preview";
 
 const originalGetContext = HTMLCanvasElement.prototype.getContext;
 
@@ -47,7 +44,7 @@ describe("terminal replay preview", () => {
     const cover = mountTerminalReplayPreview({
       container: historyContainer,
       initialFitGrid: { cols: 120, rows: 36 },
-      canShowMismatchedFallback: () => false,
+      isOwner: () => true,
       terminal: preview,
     });
     expect(historyContainer.style.opacity).toBe("0");
@@ -147,7 +144,7 @@ describe("terminal replay preview", () => {
     const cover = mountTerminalReplayPreview({
       container: historyContainer,
       initialFitGrid: { cols: 51, rows: 47 },
-      canShowMismatchedFallback: () => false,
+      isOwner: () => true,
       terminal: preview,
     });
     const previewElement = parent.querySelector(
@@ -169,8 +166,7 @@ describe("terminal replay preview", () => {
     parent.remove();
   });
 
-  it("keeps a focused phone blank until its fitted grid arrives", async () => {
-    vi.useFakeTimers();
+  it("keeps an owner hidden until its fitted grid arrives", async () => {
     const context = new Proxy(
       {
         measureText: (text: string) => ({ width: text.length * 8 }),
@@ -199,29 +195,25 @@ describe("terminal replay preview", () => {
     const cover = mountTerminalReplayPreview({
       container,
       initialFitGrid: { cols: 51, rows: 47 },
-      canShowMismatchedFallback: () => false,
+      isOwner: () => true,
       terminal: preview,
     });
     const previewElement = parent.querySelector(
       "[data-terminal-replay-preview]",
     )!;
 
-    vi.advanceTimersByTime(TERMINAL_REPLAY_PREVIEW_FALLBACK_MS);
     expect(getComputedStyle(previewElement).visibility).toBe("hidden");
 
     const resized = cover.resize(51, 47);
-    await vi.advanceTimersByTimeAsync(100);
     await resized;
     expect(getComputedStyle(previewElement).visibility).toBe("visible");
     expect(previewElement.getAttribute("data-grid-cols")).toBe("51");
 
     cover.dispose();
     parent.remove();
-    vi.useRealTimers();
   });
 
-  it("reveals the current replay frame at the PTY grid after fallback for a non-owner", async () => {
-    vi.useFakeTimers();
+  it("reveals a non-owner at the authoritative PTY grid without waiting for a resize", async () => {
     const context = new Proxy(
       {
         measureText: (text: string) => ({ width: text.length * 8 }),
@@ -251,13 +243,17 @@ describe("terminal replay preview", () => {
     const cover = mountTerminalReplayPreview({
       container,
       initialFitGrid: { cols: 51, rows: 47 },
-      canShowMismatchedFallback: () => nonOwner,
+      isOwner: () => !nonOwner,
       terminal: preview,
     });
     const previewElement = parent.querySelector(
       "[data-terminal-replay-preview]",
     )!;
-    expect(getComputedStyle(previewElement).visibility).toBe("hidden");
+    expect(getComputedStyle(previewElement).visibility).toBe("visible");
+    expect({ cols: preview.cols, rows: preview.rows }).toEqual({
+      cols: 135,
+      rows: 56,
+    });
     const parsed = new Promise<void>((resolve) =>
       cover.push(
         Buffer.from(
@@ -266,11 +262,8 @@ describe("terminal replay preview", () => {
         resolve,
       ),
     );
-    await vi.advanceTimersByTimeAsync(100);
     await parsed;
 
-    await vi.advanceTimersByTimeAsync(TERMINAL_REPLAY_PREVIEW_FALLBACK_MS);
-    await vi.advanceTimersByTimeAsync(100);
     expect(getComputedStyle(previewElement).visibility).toBe("visible");
     expect(previewElement.getAttribute("data-grid-cols")).toBe("135");
     expect(previewElement.getAttribute("data-grid-rows")).toBe("56");
@@ -291,6 +284,5 @@ describe("terminal replay preview", () => {
 
     cover.dispose();
     parent.remove();
-    vi.useRealTimers();
   });
 });

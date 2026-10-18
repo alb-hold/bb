@@ -7,17 +7,15 @@ import {
   terminalSurfaceScale,
 } from "./terminal-grid-presentation";
 
-export const TERMINAL_REPLAY_PREVIEW_FALLBACK_MS = 1_500;
-
 export function mountTerminalReplayPreview({
   container,
   initialFitGrid,
-  canShowMismatchedFallback,
+  isOwner,
   terminal,
 }: {
   container: HTMLDivElement;
   initialFitGrid: { cols: number; rows: number };
-  canShowMismatchedFallback: () => boolean;
+  isOwner: () => boolean;
   terminal: XTermTerminal;
 }): {
   dispose(): void;
@@ -71,24 +69,11 @@ export function mountTerminalReplayPreview({
   );
 
   let disposed = false;
-  let fallbackElapsed = false;
-  let fallbackTimeout: ReturnType<typeof setTimeout> | null = null;
-  const scheduleFallback = () => {
-    if (fallbackTimeout !== null) clearTimeout(fallbackTimeout);
-    fallbackElapsed = false;
-    fallbackTimeout = setTimeout(() => {
-      fallbackTimeout = null;
-      fallbackElapsed = true;
-      updateVisibility();
-    }, TERMINAL_REPLAY_PREVIEW_FALLBACK_MS);
-  };
   const updateVisibility = () => {
-    const canShowFallback = fallbackElapsed && canShowMismatchedFallback();
     updateSurfaceScale();
     preview.style.visibility = canRevealTerminalSurface({
-      fallbackElapsed: canShowFallback,
       fitGrid,
-      isOwner: !canShowMismatchedFallback(),
+      isOwner: isOwner(),
       ptyGrid: latestPtyGrid,
       rendererGrid: { cols: terminal.cols, rows: terminal.rows },
     })
@@ -100,13 +85,11 @@ export function mountTerminalReplayPreview({
   document.addEventListener("focusout", refreshVisibility);
   window.addEventListener("focus", refreshVisibility);
   window.addEventListener("blur", refreshVisibility);
-  scheduleFallback();
   updateVisibility();
   return {
     resize(cols, rows) {
       if (disposed) return Promise.resolve();
       latestPtyGrid = { cols, rows };
-      scheduleFallback();
       updateVisibility();
       return new Promise((resolve) => {
         outputPipeline.setGrid(cols, rows, () => {
@@ -122,7 +105,6 @@ export function mountTerminalReplayPreview({
     setFitGrid(cols, rows) {
       if (disposed) return;
       fitGrid = { cols, rows };
-      scheduleFallback();
       updateSurfaceScale();
       updateVisibility();
     },
@@ -133,7 +115,6 @@ export function mountTerminalReplayPreview({
     dispose() {
       if (disposed) return;
       disposed = true;
-      if (fallbackTimeout !== null) clearTimeout(fallbackTimeout);
       document.removeEventListener("focusin", refreshVisibility);
       document.removeEventListener("focusout", refreshVisibility);
       window.removeEventListener("focus", refreshVisibility);
