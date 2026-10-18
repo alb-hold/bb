@@ -213,14 +213,18 @@ export function beginSplitDrag(config: SplitDragConfig): void {
 }
 
 function swallowNextClick(): void {
+  const targetWindow = window;
+  const removeClickListener = targetWindow.removeEventListener.bind(
+    targetWindow,
+  );
   const swallow = (event: MouseEvent): void => {
     event.stopPropagation();
     event.preventDefault();
-    window.removeEventListener("click", swallow, true);
+    removeClickListener("click", swallow, true);
   };
-  window.addEventListener("click", swallow, true);
-  window.setTimeout(
-    () => window.removeEventListener("click", swallow, true),
+  targetWindow.addEventListener("click", swallow, true);
+  targetWindow.setTimeout(
+    () => removeClickListener("click", swallow, true),
     300,
   );
 }
