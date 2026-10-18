@@ -1132,16 +1132,27 @@ function spokenPositions(
   return positions;
 }
 
+const NUMBER_SOURCE = String.raw`(?:(?<![\p{L}\p{N}.,])[.,]\d+|\d+(?:[.,]\d+)*)`;
+
+function numberPattern(source: string): RegExp {
+  return new RegExp(source, "gu");
+}
+
 function negativeNumbers(text: string): string[] {
-  return [...text.matchAll(/(?<![\p{L}\p{N}.,])[-−](\d+(?:[.,]\d+)*)/gu)]
+  return [
+    ...text.matchAll(
+      numberPattern(String.raw`(?<![\p{L}\p{N}.,])[-−](${NUMBER_SOURCE})`),
+    ),
+  ]
     .map((match) => match[1]!)
     .sort();
 }
 
 function numberSigns(text: string): Map<string, boolean[]> {
   const signs = new Map<string, boolean[]>();
-  const pattern =
-    /(?:(?<![\p{L}\p{N}.,])([-−]))?(?<![\d.,])(\d+(?:[.,]\d+)*)/gu;
+  const pattern = numberPattern(
+    String.raw`(?:(?<![\p{L}\p{N}.,])([-−]))?(?<![\d.,])(${NUMBER_SOURCE})`,
+  );
   for (const match of text.matchAll(pattern)) {
     const forms = signs.get(match[2]!) ?? [];
     forms.push(match[1] !== undefined);
@@ -1152,8 +1163,9 @@ function numberSigns(text: string): Map<string, boolean[]> {
 
 function numberSymbols(text: string): Map<string, string[]> {
   const symbols = new Map<string, string[]>();
-  const pattern =
-    /([%‰$€£¥₹¢₩₽₿°º#+×±~≈<>≤≥]*)(\d+(?:[.,]\d+)*)([%‰$€£¥₹¢₩₽₿°º#+×±~≈<>≤≥]*)/gu;
+  const pattern = numberPattern(
+    String.raw`([%‰$€£¥₹¢₩₽₿°º#+×±~≈<>≤≥]*)(${NUMBER_SOURCE})([%‰$€£¥₹¢₩₽₿°º#+×±~≈<>≤≥]*)`,
+  );
   for (const match of text.matchAll(pattern)) {
     const forms = symbols.get(match[2]!) ?? [];
     forms.push(`${match[1]} ${match[3]}`);
@@ -1165,7 +1177,7 @@ function numberSymbols(text: string): Map<string, string[]> {
 function numberPairs(
   text: string,
 ): { first: string; between: string; second: string; joined: boolean }[] {
-  const numbers = [...text.matchAll(/\d+(?:[.,]\d+)*/gu)];
+  const numbers = [...text.matchAll(numberPattern(NUMBER_SOURCE))];
   return numbers.slice(1).map((match, index) => {
     const previous = numbers[index]!;
     const between = text.slice(
@@ -1221,8 +1233,8 @@ export function validateFormattedTranscript(
     return { ok: false, reason: "list-numbers" };
   }
   const body = formatted.replace(/^(\s*)\d{1,2}[.)]\s+/gmu, "$1");
-  const rawNumbers = new Set(raw.match(/\d+(?:[.,]\d+)*/gu) ?? []);
-  for (const number of body.match(/\d+(?:[.,]\d+)*/gu) ?? []) {
+  const rawNumbers = new Set(raw.match(numberPattern(NUMBER_SOURCE)) ?? []);
+  for (const number of body.match(numberPattern(NUMBER_SOURCE)) ?? []) {
     if (!rawNumbers.has(number)) {
       return { ok: false, reason: "added-words" };
     }

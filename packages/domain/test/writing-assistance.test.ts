@@ -932,11 +932,32 @@ describe("validateFormattedTranscript", () => {
     ["set the offset to -5", "Set the offset to 5.", "dropped-words"],
     ["set the offset to 5", "Set the offset to -5.", "added-words"],
     ["the delta is −2.5 now", "The delta is 2.5 now.", "dropped-words"],
+    ["set value to -.5", "Set value to .5.", "dropped-words"],
+    ["set value to .5", "Set value to -.5.", "added-words"],
+    ["set value to -,5", "Set value to ,5.", "dropped-words"],
   ])("keeps the sign of a spoken number: %s", (raw, formatted, reason) => {
     expect(validateFormattedTranscript(raw, formatted)).toEqual({
       ok: false,
       reason,
     });
+  });
+
+  it.each([
+    ["set value to .5", "Set value to 5."],
+    ["set value to .5", "Set value to 0.5."],
+    ["set value to 5", "Set value to .5."],
+  ])("keeps a leading decimal point: %s", (raw, formatted) => {
+    expect(validateFormattedTranscript(raw, formatted)).toEqual({
+      ok: false,
+      reason: "added-words",
+    });
+  });
+
+  it.each([
+    ["set value to -.5", "Set value to -.5."],
+    ["the ratio is .25 or 1.5", "The ratio is .25 or 1.5."],
+  ])("accepts leading decimals that keep their form: %s", (raw, formatted) => {
+    expect(validateFormattedTranscript(raw, formatted)).toEqual({ ok: true });
   });
 
   it.each([

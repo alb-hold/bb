@@ -605,6 +605,20 @@ describe("dictation segments", () => {
     });
   });
 
+  it("keeps the transcript when formatting drops the sign of a leading-decimal number", async () => {
+    await withTestHarness({}, async (harness) => {
+      registerFakeAiService(harness.deps.aiServices, {
+        transcribe: async () => "set value to -.5",
+        complete: async () => "Set value to .5.",
+      });
+      await expect((await postSegment(harness)).json()).resolves.toMatchObject({
+        raw: "set value to -.5",
+        text: "set value to -.5",
+        formatted: false,
+      });
+    });
+  });
+
   it("keeps the transcript when formatting drops the sign of a number", async () => {
     await withTestHarness({}, async (harness) => {
       registerFakeAiService(harness.deps.aiServices, {

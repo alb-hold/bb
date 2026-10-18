@@ -370,7 +370,7 @@ that replaces nothing, as in "no wait is required", is not a correction), spoken
 mode, and the spoken numbers of a numbered list with the connectors (and, then, next, finally, e,
 depois, então) said just before an item number, as in "and then second"; a connector inside an item ("users and groups") always stays; leaving out any other word, a negation
 outside a self-correction phrase, or the minus sign of a number ("-5" never
-becomes "5", and "-5 and 5" never becomes "5 and -5"), or adding, removing or moving a symbol next to a number, such as
+becomes "5", "-.5" never becomes ".5", and "-5 and 5" never becomes "5 and -5"), or adding, removing or moving a symbol next to a number, such as
 %, $, €, °, #, + or ~ ("5" never becomes "5%", and "5% and 5" never becomes
 "5 and 5%"), or changing what joins two numbers ("1-3" never becomes "1/3",
 and "10 30" never becomes "10:30"), inserts the transcript as heard. The spoken words must also keep the order they were said in,
