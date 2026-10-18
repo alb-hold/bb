@@ -61,9 +61,9 @@ const readProcessIdentity = (pid) => {
 };
 const ownerIdentity = writerBarrier?.ownerIdentity ?? readProcessIdentity(process.pid);
 const ownerPid = writerBarrier?.ownerIdentity?.pid ?? process.pid;
-const token = ownerPid + "-" + ownerIdentity.source + "-" + ownerIdentity.fingerprint + "-" + crypto.randomUUID();
+const socketToken = crypto.randomUUID();
+const token = ownerPid + "-" + ownerIdentity.source + "-" + ownerIdentity.fingerprint + "-" + socketToken;
 const familyPrefix = logPath + ".";
-const socketToken = token.split("-").slice(3).join("-");
 const familyHash = crypto.createHash("sha256").update(path.resolve(logPath) + "-" + (process.getuid?.() ?? process.env.USERNAME ?? "")).digest("hex").slice(0, 12);
 const socketPathLimit = 103;
 const socketDirName = ".bb-stdio-" + familyHash;
@@ -168,6 +168,25 @@ const socketFileState = () => {
     return { exists: true, trusted: false };
   }
 };
+const socketFileStateAt = (socketFilePath) => {
+  if (process.platform === "win32") return { exists: false, trusted: false };
+  try {
+    const stat = fs.lstatSync(socketFilePath);
+    return {
+      exists: true,
+      trusted:
+        !stat.isSymbolicLink() &&
+        stat.isSocket() &&
+        process.getuid !== undefined &&
+        stat.uid === process.getuid(),
+      dev: stat.dev,
+      ino: stat.ino,
+    };
+  } catch (error) {
+    if (error.code === "ENOENT") return { exists: false, trusted: false };
+    return { exists: true, trusted: false };
+  }
+};
 const sameSocketFile = (left, right) => left?.trusted === true && right?.trusted === true && left.dev === right.dev && left.ino === right.ino;
 const socketDirectoryIsTrusted = () => {
   try {
@@ -246,6 +265,7 @@ const ensureLivenessEndpoint = () => {
             livenessEndpointWasBound = true;
             livenessSocketIdentity = socketFileState();
             livenessEndpointAvailable = livenessSocketIdentity.trusted;
+            refreshActivePathForSocketIdentity();
             resolveListen();
           });
         } catch (error) {
@@ -290,21 +310,45 @@ const pendingChunks = [];
 let pendingBytes = 0;
 const maxPendingBytes = 16 * 1024 * 1024;
 const backupPattern = /^.+\\.backup-[0-9]+-[0-9]+-[a-f0-9-]+$/;
-const activePattern = /^.+\\.active-[0-9]+-[012]-[a-f0-9]{16}-(?:[en]-)?[a-f0-9-]+$/;
+const activePattern = /^.+\\.active-[0-9]+-[012]-[a-f0-9]{16}-(?:[en]-)?[a-f0-9-]+(?:-i-[0-9]+-[0-9]+)?$/;
 const paths = () => fs.readdirSync(path.dirname(logPath)).map((name) => path.join(path.dirname(logPath), name));
 const socketPathForToken = (value) => process.platform === "win32"
   ? "\\\\.\\pipe\\bb-stdio-" + familyHash + "-" + value
   : socketDir === undefined ? undefined : path.join(socketDir, "s-" + value);
-const probeOwnerSocket = (value) => new Promise((resolve) => {
-  const ownerSocketPath = socketPathForToken(value);
-  if (ownerSocketPath === undefined) {
-    resolve(undefined);
-    return;
+const ownerProcessHoldsSegment = (pid, segmentPath) => {
+  try {
+    if (process.platform === "darwin") {
+      const output = execFileSync("/usr/sbin/lsof", ["-nP", "-F", "n", "-a", "-p", String(pid), segmentPath], {
+        encoding: "utf8",
+        timeout: 1_000,
+        env: { ...process.env, LC_ALL: "C", TZ: "UTC" },
+      });
+      const paths = [segmentPath];
+      try {
+        paths.push(fs.realpathSync(segmentPath));
+      } catch {}
+      return output.split(/\\r?\\n/).some((line) => paths.includes(line.slice(1)) && line.startsWith("n"));
+    }
+    if (process.platform === "linux") {
+      const segmentStat = fs.statSync(segmentPath);
+      const descriptorDirectory = "/proc/" + pid + "/fd";
+      for (const descriptor of fs.readdirSync(descriptorDirectory)) {
+        try {
+          const descriptorStat = fs.statSync(path.join(descriptorDirectory, descriptor));
+          if (descriptorStat.dev === segmentStat.dev && descriptorStat.ino === segmentStat.ino) return true;
+        } catch (error) {
+          if (error.code !== "ENOENT") return undefined;
+        }
+      }
+      return false;
+    }
+    return undefined;
+  } catch (error) {
+    if (error.status === 1 && !String(error.stderr ?? "").trim()) return false;
+    return undefined;
   }
-  if (writerBarrier?.unreadableOwnerSocketTokens?.includes(value)) {
-    resolve(undefined);
-    return;
-  }
+};
+const probeOwnerSocketOnce = (ownerSocketPath) => new Promise((resolve) => {
   const client = net.createConnection(ownerSocketPath);
   let settled = false;
   const timer = setTimeout(() => finish(undefined), 500);
@@ -317,13 +361,46 @@ const probeOwnerSocket = (value) => new Promise((resolve) => {
   };
   client.once("connect", () => finish(true));
   client.once("error", (error) => {
-    if (error.code === "ENOENT" || error.code === "ECONNREFUSED") {
+    if (error.code === "ECONNREFUSED") {
       finish(false);
     } else {
       finish(undefined);
     }
   });
 });
+const probeOwnerSocket = async (value, expectedIdentity, ownerPid, segmentPath) => {
+  const ownerSocketPath = socketPathForToken(value);
+  if (ownerSocketPath === undefined || expectedIdentity === undefined) return undefined;
+  if (writerBarrier?.unreadableOwnerSocketTokens?.includes(value)) {
+    return undefined;
+  }
+  const sameRecordedSocket = () => {
+    if (!socketDirectoryIsTrusted()) return false;
+    const current = socketFileStateAt(ownerSocketPath);
+    return current.trusted && current.dev === expectedIdentity.dev && current.ino === expectedIdentity.ino;
+  };
+  if (!sameRecordedSocket()) return undefined;
+  const refusalWindowMs = Math.max(1_500, recoveryIntervalMs + 500);
+  const refusalRetryDelayMs = 200;
+  const startedAt = Date.now();
+  let refusals = 0;
+  while (Date.now() - startedAt < refusalWindowMs) {
+    if (!sameRecordedSocket()) return undefined;
+    const result = await probeOwnerSocketOnce(ownerSocketPath);
+    if (result === true) return true;
+    if (result !== false) return undefined;
+    const ownerHoldsSegment = ownerProcessHoldsSegment(ownerPid, segmentPath);
+    if (ownerHoldsSegment === true) return true;
+    if (ownerHoldsSegment === undefined) return undefined;
+    refusals += 1;
+    if (Date.now() - startedAt < refusalWindowMs) {
+      await new Promise((resolve) => setTimeout(resolve, refusalRetryDelayMs));
+    }
+  }
+  if (refusals < 2 || !sameRecordedSocket()) return undefined;
+  const ownerHoldsSegment = ownerProcessHoldsSegment(ownerPid, segmentPath);
+  return ownerHoldsSegment === false ? false : ownerHoldsSegment === true ? true : undefined;
+};
 const uniqueBackupPath = () => familyPrefix + "backup-" + Date.now() + "-" + token + "-" + crypto.randomUUID();
 const makeInjectedFailure = (operation) => {
   const error = new Error("injected stdio " + operation + " failure");
@@ -480,7 +557,12 @@ const recoverClosedSegments = async () => {
       const ownerFingerprint = ownerParts[2];
       const hasEndpointFlag = ownerParts[3] === "e" || ownerParts[3] === "n";
       const endpointAvailable = hasEndpointFlag && ownerParts[3] === "e";
-      const ownerUuid = ownerParts.slice(hasEndpointFlag ? 4 : 3).join("-");
+      const socketIdentityMarker = ownerParts.length - 3;
+      const hasSocketIdentity = endpointAvailable && socketIdentityMarker > 4 && ownerParts[socketIdentityMarker] === "i";
+      const ownerSocketIdentity = hasSocketIdentity
+        ? { dev: Number(ownerParts[ownerParts.length - 2]), ino: Number(ownerParts[ownerParts.length - 1]) }
+        : undefined;
+      const ownerUuid = ownerParts.slice(hasEndpointFlag ? 4 : 3, hasSocketIdentity ? socketIdentityMarker : undefined).join("-");
       if (!Number.isInteger(ownerPid) || ownerPid < 1 || ownerUuid.length === 0) continue;
       let recover = false;
       try {
@@ -495,8 +577,9 @@ const recoverClosedSegments = async () => {
       }
       if (!recover) {
         if (endpointAvailable) {
-          const socketAlive = await probeOwnerSocket(ownerUuid);
+          const socketAlive = await probeOwnerSocket(ownerUuid, ownerSocketIdentity, ownerPid, file);
           if (socketAlive === true) continue;
+          if (socketAlive === false) recover = true;
         }
         if (!recover) {
           const currentIdentity = readProcessIdentity(ownerPid);
@@ -532,11 +615,26 @@ const recoverClosedSegments = async () => {
 };
 const createActive = () => {
   const endpointFlag = livenessEndpointAvailable ? "e" : "n";
-  activePath = familyPrefix + "active-" + ownerPid + "-" + ownerIdentity.source + "-" + ownerIdentity.fingerprint + "-" + endpointFlag + "-" + socketToken;
+  const socketIdentity = endpointFlag === "e" && livenessSocketIdentity?.trusted
+    ? "-i-" + livenessSocketIdentity.dev + "-" + livenessSocketIdentity.ino
+    : "";
+  activePath = familyPrefix + "active-" + ownerPid + "-" + ownerIdentity.source + "-" + ownerIdentity.fingerprint + "-" + endpointFlag + "-" + socketToken + socketIdentity;
   activeFd = fs.openSync(activePath, "wx", 0o600);
   activeSize = fs.fstatSync(activeFd).size;
   publishAliasTo(activePath);
 };
+function refreshActivePathForSocketIdentity() {
+  if (activeFd === undefined || activePath === undefined || !livenessSocketIdentity?.trusted) return;
+  const nextPath = familyPrefix + "active-" + ownerPid + "-" + ownerIdentity.source + "-" + ownerIdentity.fingerprint + "-e-" + socketToken + "-i-" + livenessSocketIdentity.dev + "-" + livenessSocketIdentity.ino;
+  if (nextPath === activePath) return;
+  try {
+    fs.renameSync(activePath, nextPath);
+    activePath = nextPath;
+    publishAliasTo(activePath);
+  } catch (error) {
+    reportFsError("stdio active segment socket identity update failed", error);
+  }
+}
 const ensureInitialized = () => {
   if (initialized) return Promise.resolve();
   if (initializationPromise !== undefined) return initializationPromise;

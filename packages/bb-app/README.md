@@ -101,6 +101,13 @@ Server and host-daemon output goes directly to `logs/server-stdio.log` and
 and console output. The named log is a hard-link view of the newest writer
 segment. Each writer owns separate segments; every segment is capped at 10 MiB,
 and the five newest completed segments are retained across that log family.
+Recovery never uses segment age. Active segments record their liveness socket's
+device and inode. A successful socket connection keeps the segment; repeated
+connection refusals over more than one writer tick can prove the endpoint is
+closed only while the recorded socket is still the same file and the recorded
+process no longer holds the segment open. On macOS, this also avoids mistaking
+a full Unix-socket backlog for a dead writer. A missing or replaced socket does
+not itself prove death, and a live writer's segment is never reclaimed.
 The launcher prints status and log locations without forwarding service output
 to the terminal, so a stalled terminal cannot block service logging. To follow
 the newest segment with the default data directory:

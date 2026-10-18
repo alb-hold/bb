@@ -148,6 +148,14 @@ function socketResponds(socketPath: string): Promise<boolean> {
   });
 }
 
+function socketTokenFromActivePath(activePath: string): string {
+  const parts = activePath.slice(activePath.indexOf(".active-") + 8).split("-");
+  const socketIdentityMarker = parts.length - 3;
+  const end =
+    parts[socketIdentityMarker] === "i" ? socketIdentityMarker : undefined;
+  return parts.slice(4, end).join("-");
+}
+
 describe("spawnLoggedProcess", () => {
   it.skipIf(process.platform === "win32")(
     "keeps a live segment when its endpoint directory has unsafe permissions",
@@ -818,7 +826,7 @@ describe("spawnLoggedProcess", () => {
     }
   });
 
-  it("keeps an ambiguous dead endpoint segment when its pid fingerprint still matches a live process", async () => {
+  it("reclaims a dead endpoint segment when its pid and fingerprint match a live replacement process", async () => {
     if (process.platform === "win32") return;
     const logDir = scratchDir();
     const identity = currentProcessIdentity();
@@ -858,17 +866,23 @@ describe("spawnLoggedProcess", () => {
       expect(deadSegment).toContain(
         `.active-${identity.pid}-${identity.source}-${identity.fingerprint}-`,
       );
-      const deadParts = deadSegment
-        .slice(deadSegment.indexOf(".active-") + 8)
-        .split("-");
-      const deadToken = deadParts.slice(4).join("-");
+      const deadToken = socketTokenFromActivePath(deadSegment);
       const deadSocket = join(
         livenessDirectory(logDir, "server"),
         `s-${deadToken}`,
       );
+      const recordedSocket = lstatSync(deadSocket);
+      expect(recordedSocket.isSocket()).toBe(true);
+      expect(deadSegment).toContain(
+        `-i-${recordedSocket.dev}-${recordedSocket.ino}`,
+      );
       const deadWriterPid = dead.writerProcess.pid!;
       dead.writerProcess.kill("SIGKILL");
       await dead.writerExit;
+      expect(await socketResponds(deadSocket)).toBe(false);
+      expect(identity.pid).toBe(process.pid);
+      expect(() => process.kill(identity.pid, 0)).not.toThrow();
+      expect(currentProcessIdentity()).toEqual(identity);
       await expect
         .poll(
           () => {
@@ -883,6 +897,7 @@ describe("spawnLoggedProcess", () => {
         )
         .toBe(true);
 
+      const liveWriterStartedAt = Date.now();
       live = spawnLoggedProcess({
         command: process.execPath,
         args: [
@@ -910,6 +925,7 @@ describe("spawnLoggedProcess", () => {
           { timeout: 5_000, interval: 10 },
         )
         .toBe(true);
+      expect(Date.now() - liveWriterStartedAt).toBeGreaterThanOrEqual(1_500);
       const liveSegment = familyFiles(logDir, "server").find(
         (file) =>
           file.includes(".active-") &&
@@ -925,25 +941,22 @@ describe("spawnLoggedProcess", () => {
       });
       expect(await waitForExit(observer)).toBe(0);
       await observer.writerExit;
-      expect(existsSync(deadSegment)).toBe(true);
-      expect(lstatSync(deadSocket).isSocket()).toBe(true);
-      expect(await socketResponds(deadSocket)).toBe(false);
+      expect(existsSync(deadSegment)).toBe(false);
+      expect(
+        familyFiles(logDir, "server").some(
+          (file) =>
+            file.includes(".backup-") &&
+            readFileSync(file, "utf8").includes("dead same-identity output"),
+        ),
+      ).toBe(true);
       expect(existsSync(liveSegment)).toBe(true);
-      const liveParts = liveSegment
-        .slice(liveSegment.indexOf(".active-") + 8)
-        .split("-");
-      const liveToken = liveParts.slice(4).join("-");
+      const liveToken = socketTokenFromActivePath(liveSegment);
       const liveSocket = join(
         livenessDirectory(logDir, "server"),
         `s-${liveToken}`,
       );
       expect(lstatSync(liveSocket).isSocket()).toBe(true);
       expect(await socketResponds(liveSocket)).toBe(true);
-      expect(
-        uniqueFamilyFiles(logDir, "server")
-          .map((file) => readFileSync(file, "utf8"))
-          .join(""),
-      ).toContain("dead same-identity output");
       expect(readFileSync(liveSegment, "utf8")).toContain(
         "live same-identity output",
       );
@@ -962,6 +975,186 @@ describe("spawnLoggedProcess", () => {
       }
     }
   });
+
+  it("keeps a live endpoint under connection load when its process fingerprint differs", async () => {
+    const logDir = scratchDir();
+    const identity = currentProcessIdentity();
+    const differentFingerprint =
+      identity.fingerprint === "0000000000000000"
+        ? "ffffffffffffffff"
+        : "0000000000000000";
+    const ownerIdentity = { ...identity, fingerprint: differentFingerprint };
+    const ownerStopPath = join(logDir, "stop-busy-endpoint-owner");
+    const owner = spawnLoggedProcess({
+      command: process.execPath,
+      args: [
+        "-e",
+        `const fs = require("node:fs"); process.stdout.write("busy endpoint owner output\\n"); const timer = setInterval(() => { if (fs.existsSync(${JSON.stringify(ownerStopPath)})) { clearInterval(timer); process.exit(0); } }, 10);`,
+      ],
+      env: process.env,
+      logDir,
+      logName: "server",
+      testWriterBarrier: { ownerIdentity, recoveryIntervalMs: 25 },
+    });
+    let observer: ReturnType<typeof spawnLoggedProcess> | undefined;
+    try {
+      await expect
+        .poll(
+          () =>
+            familyFiles(logDir, "server").some(
+              (file) =>
+                file.includes(".active-") &&
+                readFileSync(file, "utf8").includes(
+                  "busy endpoint owner output",
+                ),
+            ),
+          { timeout: 5_000, interval: 10 },
+        )
+        .toBe(true);
+      const ownerSegment = familyFiles(logDir, "server").find(
+        (file) =>
+          file.includes(".active-") &&
+          readFileSync(file, "utf8").includes("busy endpoint owner output"),
+      )!;
+      const ownerToken = socketTokenFromActivePath(ownerSegment);
+      const ownerSocket = join(
+        livenessDirectory(logDir, "server"),
+        `s-${ownerToken}`,
+      );
+      observer = spawnLoggedProcess({
+        command: process.execPath,
+        args: ["-e", 'process.stdout.write("busy endpoint observer\\n");'],
+        env: process.env,
+        logDir,
+        logName: "server",
+        testWriterBarrier: { recoveryIntervalMs: 25 },
+      });
+      let successfulConnections = 0;
+      for (let batch = 0; batch < 20; batch += 1) {
+        const results = await Promise.all(
+          Array.from({ length: 32 }, () => socketResponds(ownerSocket)),
+        );
+        successfulConnections += results.filter(Boolean).length;
+        await new Promise<void>((resolvePromise) =>
+          setTimeout(resolvePromise, 100),
+        );
+      }
+      expect(successfulConnections).toBeGreaterThan(0);
+      expect(existsSync(ownerSegment)).toBe(true);
+      expect(readFileSync(ownerSegment, "utf8")).toContain(
+        "busy endpoint owner output",
+      );
+    } finally {
+      if (observer !== undefined && observer.exitCode === null)
+        observer.kill("SIGKILL");
+      if (owner.exitCode === null) {
+        writeFileSync(ownerStopPath, "stop");
+        await waitForExit(owner);
+        await owner.writerExit;
+      }
+    }
+  });
+
+  it.skipIf(process.platform !== "darwin")(
+    "keeps a live writer with a full listen backlog despite repeated connection refusals",
+    async () => {
+      const logDir = scratchDir();
+      const ownerStopPath = join(logDir, "stop-full-backlog-owner");
+      const owner = spawnLoggedProcess({
+        command: process.execPath,
+        args: [
+          "-e",
+          `const fs = require("node:fs"); process.stdout.write("full backlog owner output\\n"); const timer = setInterval(() => { if (fs.existsSync(${JSON.stringify(ownerStopPath)})) { clearInterval(timer); process.exit(0); } }, 10);`,
+        ],
+        env: process.env,
+        logDir,
+        logName: "server",
+        testWriterBarrier: { recoveryIntervalMs: 25 },
+      });
+      let observer: ReturnType<typeof spawnLoggedProcess> | undefined;
+      const heldConnections: ReturnType<typeof createConnection>[] = [];
+      try {
+        await expect
+          .poll(
+            () =>
+              familyFiles(logDir, "server").some(
+                (file) =>
+                  file.includes(".active-") &&
+                  readFileSync(file, "utf8").includes(
+                    "full backlog owner output",
+                  ),
+              ),
+            { timeout: 5_000, interval: 10 },
+          )
+          .toBe(true);
+        const ownerSegment = familyFiles(logDir, "server").find(
+          (file) =>
+            file.includes(".active-") &&
+            readFileSync(file, "utf8").includes("full backlog owner output"),
+        )!;
+        const ownerSocket = join(
+          livenessDirectory(logDir, "server"),
+          `s-${socketTokenFromActivePath(ownerSegment)}`,
+        );
+        owner.writerProcess.kill("SIGSTOP");
+        let refusedConnections = 0;
+        const connectionResults = await Promise.all(
+          Array.from(
+            { length: 240 },
+            () =>
+              new Promise<boolean>((resolvePromise) => {
+                const socket = createConnection(ownerSocket);
+                let settled = false;
+                const finish = (connected: boolean) => {
+                  if (settled) return;
+                  settled = true;
+                  clearTimeout(timer);
+                  if (connected) heldConnections.push(socket);
+                  else socket.destroy();
+                  resolvePromise(connected);
+                };
+                const timer = setTimeout(() => finish(false), 1_500);
+                socket.once("connect", () => finish(true));
+                socket.once("error", (error) => {
+                  if (
+                    (error as NodeJS.ErrnoException).code === "ECONNREFUSED"
+                  ) {
+                    refusedConnections += 1;
+                  }
+                  finish(false);
+                });
+              }),
+          ),
+        );
+        expect(connectionResults.some(Boolean)).toBe(true);
+        expect(refusedConnections).toBeGreaterThan(0);
+        observer = spawnLoggedProcess({
+          command: process.execPath,
+          args: ["-e", 'process.stdout.write("full backlog observer\\n");'],
+          env: process.env,
+          logDir,
+          logName: "server",
+          testWriterBarrier: { recoveryIntervalMs: 25 },
+        });
+        expect(await waitForExit(observer)).toBe(0);
+        await observer.writerExit;
+        expect(existsSync(ownerSegment)).toBe(true);
+        expect(readFileSync(ownerSegment, "utf8")).toContain(
+          "full backlog owner output",
+        );
+      } finally {
+        for (const socket of heldConnections) socket.destroy();
+        if (observer !== undefined && observer.exitCode === null)
+          observer.kill("SIGKILL");
+        if (owner.exitCode === null) {
+          owner.writerProcess.kill("SIGCONT");
+          writeFileSync(ownerStopPath, "stop");
+          await waitForExit(owner);
+          await owner.writerExit;
+        }
+      }
+    },
+  );
 
   it.skipIf(process.platform === "win32")(
     "reclaims an endpoint-dead segment when its recorded process identity mismatches",
@@ -1162,9 +1355,7 @@ describe("spawnLoggedProcess", () => {
       )!;
       expect(firstActivePath).toContain("-e-");
       const firstSocketDir = livenessDirectory(logDir, "server");
-      const firstToken = firstActivePath.slice(
-        firstActivePath.indexOf("-e-") + 3,
-      );
+      const firstToken = socketTokenFromActivePath(firstActivePath);
       expect(readdirSync(firstSocketDir)).toContain(`s-${firstToken}`);
       second = spawnLoggedProcess({
         command: process.execPath,
@@ -1195,9 +1386,7 @@ describe("spawnLoggedProcess", () => {
       )!;
       const secondSocketDir = livenessDirectory(logDir, "server");
       expect(secondSocketDir).toBe(firstSocketDir);
-      const secondToken = secondActivePath.slice(
-        secondActivePath.indexOf("-e-") + 3,
-      );
+      const secondToken = socketTokenFromActivePath(secondActivePath);
       expect(readdirSync(secondSocketDir)).toContain(`s-${secondToken}`);
       await expect
         .poll(
@@ -1293,10 +1482,7 @@ describe("spawnLoggedProcess", () => {
       );
       expect(ownerSegment).toBeDefined();
       expect(ownerSegment).toContain("-e-");
-      const ownerParts = ownerSegment!
-        .slice(ownerSegment!.indexOf(".active-") + 8)
-        .split("-");
-      const ownerToken = ownerParts.slice(4).join("-");
+      const ownerToken = socketTokenFromActivePath(ownerSegment!);
       utimesSync(ownerSegment!, new Date(0), new Date(0));
       observer = spawnLoggedProcess({
         command: process.execPath,
@@ -1401,10 +1587,7 @@ describe("spawnLoggedProcess", () => {
         );
         expect(ownerSegment).toBeDefined();
         expect(ownerSegment).toContain(`.active-${identity.pid}-1-`);
-        const ownerParts = ownerSegment!
-          .slice(ownerSegment!.indexOf(".active-") + 8)
-          .split("-");
-        const ownerToken = ownerParts.slice(4).join("-");
+        const ownerToken = socketTokenFromActivePath(ownerSegment!);
         observer = spawnLoggedProcess({
           command: process.execPath,
           args: [
@@ -1576,10 +1759,7 @@ describe("spawnLoggedProcess", () => {
       );
       expect(ownerSegment).toBeDefined();
       expect(ownerSegment).toContain("-e-");
-      const ownerParts = ownerSegment!
-        .slice(ownerSegment!.indexOf(".active-") + 8)
-        .split("-");
-      const ownerToken = ownerParts.slice(4).join("-");
+      const ownerToken = socketTokenFromActivePath(ownerSegment!);
       const originalPath = process.env.PATH;
       process.env.PATH = "";
       try {
@@ -1685,7 +1865,10 @@ describe("spawnLoggedProcess", () => {
         env: process.env,
         logDir,
         logName: "server",
-        testWriterBarrier: { recoveryIntervalMs: 25 },
+        testWriterBarrier: {
+          ownerIdentity: currentProcessIdentity(),
+          recoveryIntervalMs: 25,
+        },
       });
       let observer: ReturnType<typeof spawnLoggedProcess> | undefined;
       try {
@@ -1700,20 +1883,21 @@ describe("spawnLoggedProcess", () => {
             { timeout: 5_000, interval: 10 },
           )
           .toBe(true);
-        const ownerSegment = familyFiles(logDir, "server").find(
+        let ownerSegment = familyFiles(logDir, "server").find(
           (file) =>
             file.includes(".active-") &&
             readFileSync(file, "utf8").includes("socket-owner-heartbeat"),
         )!;
-        const ownerParts = ownerSegment
-          .slice(ownerSegment.indexOf(".active-") + 8)
-          .split("-");
-        const ownerToken = ownerParts.slice(4).join("-");
+        const ownerToken = socketTokenFromActivePath(ownerSegment);
         const ownerSocket = join(
           livenessDirectory(logDir, "server"),
           `s-${ownerToken}`,
         );
-        expect(lstatSync(ownerSocket).isSocket()).toBe(true);
+        const initialSocketIdentity = lstatSync(ownerSocket);
+        expect(initialSocketIdentity.isSocket()).toBe(true);
+        expect(ownerSegment).toContain(
+          `-i-${initialSocketIdentity.dev}-${initialSocketIdentity.ino}`,
+        );
         observer = spawnLoggedProcess({
           command: process.execPath,
           args: [
@@ -1743,7 +1927,7 @@ describe("spawnLoggedProcess", () => {
         const staleTime = new Date(0);
         utimesSync(ownerSegment, staleTime, staleTime);
         await new Promise<void>((resolvePromise) =>
-          setTimeout(resolvePromise, 500),
+          setTimeout(resolvePromise, 1_800),
         );
         expect(existsSync(ownerSegment)).toBe(true);
         owner.writerProcess.kill("SIGCONT");
@@ -1759,10 +1943,51 @@ describe("spawnLoggedProcess", () => {
             { timeout: 3_000, interval: 10 },
           )
           .toBe(true);
+        const initialSegment = ownerSegment;
+        ownerSegment = familyFiles(logDir, "server").find(
+          (file) =>
+            file.includes(".active-") &&
+            readFileSync(file, "utf8").includes("socket-owner-heartbeat"),
+        )!;
+        expect(ownerSegment).not.toBe(initialSegment);
         expect(existsSync(ownerSegment)).toBe(true);
         expect(readFileSync(ownerSegment, "utf8")).toContain(
           "socket-owner-heartbeat",
         );
+        owner.writerProcess.kill("SIGSTOP");
+        unlinkSync(ownerSocket);
+        writeFileSync(ownerSocket, "replacement path must not prove death");
+        await new Promise<void>((resolvePromise) =>
+          setTimeout(resolvePromise, 1_800),
+        );
+        expect(existsSync(ownerSegment)).toBe(true);
+        expect(readFileSync(ownerSegment, "utf8")).toContain(
+          "socket-owner-heartbeat",
+        );
+        unlinkSync(ownerSocket);
+        owner.writerProcess.kill("SIGCONT");
+        await expect
+          .poll(
+            () => {
+              try {
+                return lstatSync(ownerSocket).isSocket();
+              } catch {
+                return false;
+              }
+            },
+            { timeout: 3_000, interval: 10 },
+          )
+          .toBe(true);
+        ownerSegment = familyFiles(logDir, "server").find(
+          (file) =>
+            file.includes(".active-") &&
+            readFileSync(file, "utf8").includes("socket-owner-heartbeat"),
+        )!;
+        const recreatedSocketIdentity = lstatSync(ownerSocket);
+        expect(ownerSegment).toContain(
+          `-i-${recreatedSocketIdentity.dev}-${recreatedSocketIdentity.ino}`,
+        );
+        expect(existsSync(ownerSegment)).toBe(true);
         writeFileSync(ownerStopPath, "stop");
         expect(await waitForExit(owner)).toBe(0);
         await owner.writerExit;
