@@ -392,6 +392,7 @@ describe("resolveWritingEdits", () => {
     ["git commit -m the user are ready.", "are", "is", "grammar"],
     ["Run it.\ngit tag the user are ready.", "are", "is", "grammar"],
     ["ls -la the user are ready.", "are", "is", "grammar"],
+    ["then pass -rf so the user are ready.", "are", "is", "grammar"],
   ])(
     "never auto-applies an edit on the code-like line %s",
     (target, original, replacement, category) => {
