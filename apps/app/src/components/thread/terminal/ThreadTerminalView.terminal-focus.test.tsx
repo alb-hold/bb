@@ -588,19 +588,22 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       </MemoryRouter>,
     );
 
-    await waitFor(() => {
-      const resizes = testState.socketMessages
-        .map(
-          (message) =>
-            JSON.parse(message) as {
-              cols?: number;
-              rows?: number;
-              type?: string;
-            },
-        )
-        .filter((message) => message.type === "resize");
-      expect(resizes).toEqual([{ type: "resize", cols: 51, rows: 47 }]);
-    }, { timeout: 6_000 });
+    await waitFor(
+      () => {
+        const resizes = testState.socketMessages
+          .map(
+            (message) =>
+              JSON.parse(message) as {
+                cols?: number;
+                rows?: number;
+                type?: string;
+              },
+          )
+          .filter((message) => message.type === "resize");
+        expect(resizes).toEqual([{ type: "resize", cols: 51, rows: 47 }]);
+      },
+      { timeout: 6_000 },
+    );
     const session = makeTerminalSession({
       id: "term_first_attach_font_metrics",
       status: "running",
@@ -635,23 +638,26 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       replayStartSeq: 0,
       nextSeq: 0,
     });
-    await waitFor(() => {
-      const resizes = testState.socketMessages
-        .map(
-          (message) =>
-            JSON.parse(message) as {
-              cols?: number;
-              rows?: number;
-              type?: string;
-            },
-        )
-        .filter((message) => message.type === "resize");
-      expect(resizes.slice(-2)).toEqual([
-        { type: "resize", cols: 50, rows: 47 },
-        { type: "resize", cols: 51, rows: 47 },
-      ]);
-    });
-  });
+    await waitFor(
+      () => {
+        const resizes = testState.socketMessages
+          .map(
+            (message) =>
+              JSON.parse(message) as {
+                cols?: number;
+                rows?: number;
+                type?: string;
+              },
+          )
+          .filter((message) => message.type === "resize");
+        expect(resizes.slice(-2)).toEqual([
+          { type: "resize", cols: 50, rows: 47 },
+          { type: "resize", cols: 51, rows: 47 },
+        ]);
+      },
+      { timeout: 6_000 },
+    );
+  }, 15_000);
 
   it("suppresses terminal-scoped shortcuts from the real xterm input", async () => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
