@@ -2403,7 +2403,9 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
             return value;
           },
         );
-        if (outcome.ok && outcome.value !== null) return outcome.value;
+        if (outcome.ok && outcome.value !== null) {
+          return { pluginId, ...outcome.value };
+        }
       }
       return null;
     },

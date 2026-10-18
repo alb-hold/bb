@@ -18,8 +18,13 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resolveAppServerLaunch } from "./bridge.js";
+import { parseModelCatalog } from "../models.js";
 
 const POOL_TOKEN = "pool-token-for-no-local-auth-test";
+const modelCatalogBody = readFileSync(
+  new URL("./pool-model-catalog.fixture.json", import.meta.url),
+  "utf8",
+);
 
 interface RecordedRequest {
   method: string;
@@ -78,7 +83,7 @@ function handle(request: IncomingMessage, response: ServerResponse): void {
     });
     if (url.startsWith("/pool/v1/models")) {
       response.setHeader("content-type", "application/json");
-      response.end(JSON.stringify({ models: [] }));
+      response.end(modelCatalogBody);
       return;
     }
     if (url.startsWith("/pool/v1/responses")) {
@@ -206,5 +211,79 @@ describe.skipIf(!codexAvailable)("pooled Codex without a local login", () => {
       .update(readFileSync(authFile))
       .digest("hex");
     expect(after).toBe(before);
+  }, 90_000);
+
+  it("lists the pool's model catalog through app-server model/list with an empty CODEX_HOME", async () => {
+    const env = {
+      ...process.env,
+      CODEX_HOME: codexHome,
+      CODEX_OPENAI_BASE_URL: `${baseUrl}/pool/v1`,
+      CODEX_POOL_AUTH_TOKEN: POOL_TOKEN,
+    };
+    const launch = resolveAppServerLaunch(env);
+    const result = await new Promise<unknown>((resolve, reject) => {
+      const child = spawn(launch.command, launch.args, {
+        env,
+        stdio: ["pipe", "pipe", "ignore"],
+      });
+      const timer = setTimeout(() => {
+        child.kill("SIGKILL");
+        reject(new Error("model/list timed out"));
+      }, 60_000);
+      let buffered = "";
+      const send = (message: unknown) =>
+        child.stdin.write(`${JSON.stringify(message)}\n`);
+      child.on("error", reject);
+      child.stdout.on("data", (chunk: Buffer) => {
+        buffered += chunk.toString();
+        for (;;) {
+          const newline = buffered.indexOf("\n");
+          if (newline < 0) return;
+          const line = buffered.slice(0, newline);
+          buffered = buffered.slice(newline + 1);
+          const message = JSON.parse(line) as { id?: number; result?: unknown };
+          if (message.id === 1) {
+            send({ method: "initialized" });
+            send({ id: 2, method: "model/list", params: {} });
+          }
+          if (message.id === 2) {
+            clearTimeout(timer);
+            child.kill("SIGKILL");
+            resolve(message.result);
+          }
+        }
+      });
+      send({
+        id: 1,
+        method: "initialize",
+        params: {
+          clientInfo: { name: "bb", version: "1.0.0", title: null },
+          capabilities: { experimentalApi: true },
+        },
+      });
+    });
+    const catalog = parseModelCatalog(result);
+    const ids = catalog.models.map((model) => model.model);
+    console.log(
+      `POOL MODEL LIST count=${ids.length} ids=${JSON.stringify(ids)} catalogRequests=${JSON.stringify(
+        requests
+          .filter((request) => request.url.startsWith("/pool/v1/models"))
+          .map((request) => ({
+            url: request.url,
+            bearer: request.authorization === `Bearer ${POOL_TOKEN}`,
+            poolHeader: request.poolToken === POOL_TOKEN,
+          })),
+      )}`,
+    );
+    expect(ids).toEqual(expect.arrayContaining(["pool-catalog-probe"]));
+    const catalogRequests = requests.filter((request) =>
+      request.url.startsWith("/pool/v1/models"),
+    );
+    expect(catalogRequests.length).toBeGreaterThan(0);
+    for (const request of catalogRequests) {
+      expect(request.authorization).toBe(`Bearer ${POOL_TOKEN}`);
+      expect(request.poolToken).toBe(POOL_TOKEN);
+    }
+    expect(existsSync(path.join(codexHome, "auth.json"))).toBe(false);
   }, 90_000);
 });

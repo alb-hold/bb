@@ -12203,3 +12203,116 @@ describe("Account Pool credential scoping", () => {
     ]);
   });
 });
+
+describe("Account Pool provider health", () => {
+  const poolHealth = {
+    label: "Proxied",
+    statusMessage: "Credentials are provided by the Account Pooler hub.",
+  };
+  const codexHealth = (fixture: Fixture) =>
+    fixture.host.harness.behavior.resolveProviderEnvHealth("codex", {
+      hostId: "host-one",
+    });
+
+  it("reports pool-supplied credentials when routing is on and an account is ready", async () => {
+    const fixture = await createOAuthRequestFixture(
+      "codex",
+      async () => Response.json({}),
+      Date.now,
+    );
+    await expect(codexHealth(fixture)).resolves.toEqual(poolHealth);
+  });
+
+  it("reports nothing while routing is off for the provider", async () => {
+    const fixture = await createOAuthRequestFixture(
+      "codex",
+      async () => Response.json({}),
+      Date.now,
+    );
+    await fixture.host.harness.behavior.callRpc("routing.set", {
+      provider: "codex",
+      enabled: false,
+    });
+    await expect(codexHealth(fixture)).resolves.toBeNull();
+  });
+
+  it("reports nothing when the only account is disabled", async () => {
+    const fixture = await createOAuthRequestFixture(
+      "codex",
+      async () => Response.json({}),
+      Date.now,
+    );
+    await fixture.host.harness.behavior.callRpc("account.disable", {
+      id: fixture.account.id,
+    });
+    await expect(codexHealth(fixture)).resolves.toBeNull();
+  });
+
+  it("reports nothing while the only account is held after a rate limit", async () => {
+    const fixture = await createOAuthRequestFixture(
+      "codex",
+      async () =>
+        new Response("{}", { status: 429, headers: { "retry-after": "600" } }),
+      Date.now,
+    );
+    await expect(codexHealth(fixture)).resolves.toEqual(poolHealth);
+    const response = await fixture.host.harness.behavior.fetchHttp(
+      "POST",
+      "/v1/responses",
+      {
+        headers: {
+          "x-bb-account-pool-token": fixture.key,
+          "content-type": "application/json",
+        },
+        body: "{}",
+      },
+    );
+    await response.text();
+    const [account] = z
+      .array(accountSummarySchema)
+      .parse(await fixture.host.harness.behavior.callRpc("account.list", null));
+    expect(account?.status).not.toBe("ready");
+    await expect(codexHealth(fixture)).resolves.toBeNull();
+  });
+
+  it("reports nothing when the only account's sign-in was rejected", async () => {
+    const fixture = await createOAuthRequestFixture(
+      "codex",
+      async (input, init) =>
+        String(input).endsWith("/oauth/token")
+          ? Response.json({ error: "invalid_grant" }, { status: 400 })
+          : Response.json(
+              {},
+              {
+                status:
+                  new Headers(init?.headers).get("authorization") ===
+                  "Bearer oauth-old"
+                    ? 401
+                    : 200,
+              },
+            ),
+      () => 1_800_000_000_000,
+      { rate_limit: { primary_window: { used_percent: 10 } } },
+    );
+    await expect(codexHealth(fixture)).resolves.toEqual(poolHealth);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const response = await fixture.host.harness.behavior.fetchHttp(
+        "POST",
+        "/v1/responses",
+        {
+          headers: {
+            "x-bb-account-pool-token": fixture.key,
+            "content-type": "application/json",
+          },
+          body: "{}",
+        },
+      );
+      await response.text();
+    }
+    const [account] = z
+      .array(accountSummarySchema)
+      .parse(await fixture.host.harness.behavior.callRpc("account.list", null));
+    expect(account?.status === "error" || account?.signInExpired).toBe(true);
+    await expect(codexHealth(fixture)).resolves.toBeNull();
+  });
+});

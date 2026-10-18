@@ -48,6 +48,8 @@ function providerUsageCache(deps: AppDeps) {
   return cache;
 }
 
+const ACCOUNT_POOL_PLUGIN_ID = "account-pool";
+
 async function withPoolCredentials(
   usage: ProviderUsage,
   providerId: string,
@@ -60,7 +62,9 @@ async function withPoolCredentials(
     providerId,
     hostId,
   });
-  if (contributed === null) return usage;
+  if (contributed === null || contributed.pluginId !== ACCOUNT_POOL_PLUGIN_ID) {
+    return usage;
+  }
   return {
     status: "error",
     message:

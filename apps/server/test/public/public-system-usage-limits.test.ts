@@ -198,25 +198,34 @@ describe("GET /api/v1/system/usage-limits", () => {
         try {
           const withoutPool = await harness.app.request(url);
           expect(await withoutPool.json()).toEqual({ codex: { status } });
-          setPluginAgentContributions({
-            listSkillRootContributions: () => [],
-            listAgentTools: () => [],
-            listInstructionContributions: () => [],
-            findAgentTool: () => undefined,
-            invokeAgentTool: async () => ({
-              success: false,
-              contentItems: [{ type: "inputText", text: "unused" }],
-            }),
-            resolveMention: async () => ({ ok: false, error: "unused" }),
-            resolveProviderEnvHealth: async ({ providerId }) =>
-              providerId === "codex"
-                ? {
-                    label: "Proxied",
-                    statusMessage:
-                      "Credentials are provided by the Account Pooler hub.",
-                  }
-                : null,
-          });
+          const contribute = (pluginId: string | null) =>
+            setPluginAgentContributions({
+              listSkillRootContributions: () => [],
+              listAgentTools: () => [],
+              listInstructionContributions: () => [],
+              findAgentTool: () => undefined,
+              invokeAgentTool: async () => ({
+                success: false,
+                contentItems: [{ type: "inputText", text: "unused" }],
+              }),
+              resolveMention: async () => ({ ok: false, error: "unused" }),
+              resolveProviderEnvHealth: async ({ providerId }) =>
+                providerId === "codex" && pluginId !== null
+                  ? {
+                      pluginId,
+                      label: "Proxied",
+                      statusMessage:
+                        "Credentials are provided by the Account Pooler hub.",
+                    }
+                  : null,
+            });
+          contribute("some-other-plugin");
+          const fromOtherPlugin = await harness.app.request(url);
+          expect(await fromOtherPlugin.json()).toEqual({ codex: { status } });
+          contribute(null);
+          const noContribution = await harness.app.request(url);
+          expect(await noContribution.json()).toEqual({ codex: { status } });
+          contribute("account-pool");
           const withPool = await harness.app.request(url);
           expect(await withPool.json()).toEqual({
             codex: {
