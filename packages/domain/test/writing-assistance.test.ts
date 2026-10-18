@@ -918,6 +918,32 @@ describe("validateFormattedTranscript", () => {
     expect(validateFormattedTranscript(raw, formatted)).toEqual({ ok: true });
   });
 
+  it.each([
+    ["set range to 1-3", "Set range to 1/3.", "added-words"],
+    ["meet at 10 30", "Meet at 10:30.", "added-words"],
+    ["pages 4 5", "Pages 4-5.", "added-words"],
+    ["items 2 3", "Items 2&3.", "added-words"],
+    ["set range to 1-3", "Set range to 1 3.", "dropped-words"],
+    ["set range to 1-3", "Set range to 1 - 3.", "dropped-words"],
+  ])(
+    "keeps what joins two spoken numbers: %s -> %s",
+    (raw, formatted, reason) => {
+      expect(validateFormattedTranscript(raw, formatted)).toEqual({
+        ok: false,
+        reason,
+      });
+    },
+  );
+
+  it.each([
+    ["set range to 1-3", "Set range to 1-3."],
+    ["meet at 10:30", "Meet at 10:30."],
+    ["ship 2 or 3", "Ship 2 or 3."],
+    ["use 5, 6 and 7", "Use 5, 6 and 7."],
+  ])("accepts numbers joined as spoken: %s", (raw, formatted) => {
+    expect(validateFormattedTranscript(raw, formatted)).toEqual({ ok: true });
+  });
+
   it("accepts a negative number that keeps its sign", () => {
     expect(
       validateFormattedTranscript(

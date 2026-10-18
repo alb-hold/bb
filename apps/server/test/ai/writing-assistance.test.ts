@@ -448,6 +448,7 @@ describe("dictation segments", () => {
       "set first limit to 5% and second to 5",
       "Set first limit to 5 and second to 5%.",
     ],
+    ["set range to 1-3", "Set range to 1/3."],
   ])(
     "keeps the transcript when formatting adds or moves a symbol on a spoken number: %s",
     async (raw, completion) => {

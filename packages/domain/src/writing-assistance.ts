@@ -1110,6 +1110,25 @@ function numberSymbols(text: string): Map<string, string[]> {
   return symbols;
 }
 
+function numberPairs(
+  text: string,
+): { first: string; between: string; second: string; joined: boolean }[] {
+  const numbers = [...text.matchAll(/\d+(?:[.,]\d+)*/gu)];
+  return numbers.slice(1).map((match, index) => {
+    const previous = numbers[index]!;
+    const between = text.slice(
+      previous.index + previous[0].length,
+      match.index,
+    );
+    return {
+      first: previous[0],
+      between,
+      second: match[0],
+      joined: /^[^\s\p{L}\p{N}]{1,3}$/u.test(between),
+    };
+  });
+}
+
 function symbolMismatch(
   spoken: readonly string[],
   written: readonly string[],
@@ -1164,6 +1183,28 @@ export function validateFormattedTranscript(
     if (spoken === undefined) continue;
     const mismatch = symbolMismatch(spoken, written);
     if (mismatch !== null) return { ok: false, reason: mismatch };
+  }
+  const rawPairs = numberPairs(raw);
+  const bodyPairs = numberPairs(body);
+  for (const pair of bodyPairs) {
+    if (!pair.joined) continue;
+    const spoken = rawPairs.some(
+      (candidate) =>
+        candidate.first === pair.first &&
+        candidate.between === pair.between &&
+        candidate.second === pair.second,
+    );
+    if (!spoken) return { ok: false, reason: "added-words" };
+  }
+  for (const pair of rawPairs) {
+    if (!pair.joined) continue;
+    const rewritten = bodyPairs.some(
+      (candidate) =>
+        candidate.first === pair.first &&
+        candidate.second === pair.second &&
+        candidate.between !== pair.between,
+    );
+    if (rewritten) return { ok: false, reason: "dropped-words" };
   }
   const rawNegatives = negativeNumbers(raw);
   const formattedNegatives = negativeNumbers(body);
