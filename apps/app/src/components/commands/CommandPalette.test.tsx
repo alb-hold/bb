@@ -468,6 +468,7 @@ const selectedOption = () =>
 afterEach(() => {
   testState.overrides = [];
   cleanup();
+  vi.restoreAllMocks();
   removePluginSlotRegistrations("linear");
   removePluginSlotRegistrations("automations");
   resetPluginLogoStoreForTest();
@@ -493,6 +494,16 @@ afterEach(() => {
 
 describe("CommandPalette", () => {
   it("closes direct thread search on Escape and restores terminal focus", async () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    const flushAnimationFrames = async () => {
+      await act(async () => {
+        while (frames.length > 0) frames.shift()?.(performance.now());
+      });
+    };
     const { unmount } = renderPalette({ compact: true, withMoreMenu: true });
     const terminalRoot = document.createElement("div");
     terminalRoot.setAttribute("data-app-terminal", "");
@@ -508,9 +519,11 @@ describe("CommandPalette", () => {
 
     fireEvent.pointerDown(screen.getByRole("button", { name: "More" }));
     fireEvent.click(screen.getByRole("button", { name: "More" }));
+    await flushAnimationFrames();
     fireEvent.click(
       await screen.findByRole("menuitem", { name: "Search threads" }),
     );
+    await flushAnimationFrames();
 
     await waitFor(() =>
       expect(document.activeElement?.getAttribute("aria-label")).toBe(
