@@ -1294,7 +1294,7 @@ describe("device handoff websocket acknowledgement", () => {
       sendRealtime(socket, {
         type: "device-handoff-view",
         threadId: null,
-        terminalSessionId: null,
+        terminalSessionId: terminal.id,
       });
       const terminalViewer = {
         close() {},
@@ -1309,6 +1309,10 @@ describe("device handoff websocket acknowledgement", () => {
         true,
         Date.now(),
       );
+      const ready = nextRealtimeMessage(socket, "pong");
+      sendRealtime(socket, { type: "ping" });
+      await ready;
+      const delivered = nextRealtimeMessage(socket, "device-handoff");
       const response = await server.app.request("/api/v1/device-handoff", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -1320,17 +1324,7 @@ describe("device handoff websocket acknowledgement", () => {
       });
       expect(response.status).toBe(200);
       expect(await response.json()).toEqual({ delivered: 1 });
-      expect(terminalViewer.messages).toHaveLength(1);
-      const ready = nextRealtimeMessage(socket, "pong");
-      sendRealtime(socket, { type: "ping" });
-      await ready;
-
-      const delivered = nextRealtimeMessage(socket, "device-handoff");
-      sendRealtime(socket, {
-        type: "device-handoff-view",
-        threadId: null,
-        terminalSessionId: terminal.id,
-      });
+      expect(terminalViewer.messages).toHaveLength(0);
       expect(await delivered).toMatchObject({
         type: "device-handoff",
         request: {
