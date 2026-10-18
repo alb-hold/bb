@@ -427,6 +427,40 @@ describe("terminal output encoding", () => {
     terminal.dispose();
   });
 
+  it("waits for prior writes before resizing at a grid marker", async () => {
+    const writeCallbacks: Array<() => void> = [];
+    const resize = vi.fn();
+    const pipeline = createTerminalOutputPipeline({
+      resize,
+      write: (_data, callback) => writeCallbacks.push(callback),
+    });
+    const afterResize = vi.fn();
+    let finish!: () => void;
+    const finished = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+
+    pipeline.push(
+      Buffer.from(
+        `before${createTerminalGridMarker({ cols: 51, rows: 12 })}after`,
+      ),
+      finish,
+    );
+    await Promise.resolve();
+
+    expect(resize).not.toHaveBeenCalled();
+    expect(writeCallbacks).toHaveLength(1);
+    writeCallbacks.shift()?.();
+    await vi.waitFor(() =>
+      expect(resize).toHaveBeenCalledWith(51, 12),
+    );
+    expect(writeCallbacks).toHaveLength(1);
+    writeCallbacks.shift()?.();
+    await finished;
+    pipeline.setGrid(51, 12, afterResize);
+    await vi.waitFor(() => expect(afterResize).toHaveBeenCalledOnce());
+  });
+
   it("splits markers across output chunks before writing them to xterm", async () => {
     const terminal = new Terminal({ cols: 30, rows: 6 });
     const pipeline = createTerminalOutputPipeline(terminal);
