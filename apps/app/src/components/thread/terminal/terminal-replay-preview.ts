@@ -15,7 +15,7 @@ export function mountTerminalReplayPreview({
   terminal: XTermTerminal;
 }): {
   dispose(): void;
-  resize(cols: number, rows: number): void;
+  resize(cols: number, rows: number): Promise<void>;
   setFitGrid(cols: number, rows: number): void;
   push(bytes: Uint8Array, callback: () => void): void;
 } {
@@ -39,21 +39,29 @@ export function mountTerminalReplayPreview({
   parent.append(preview);
   terminal.open(preview);
   const outputPipeline = createTerminalOutputPipeline({
-    resize: () => undefined,
+    resize: (cols, rows) => terminal.resize(cols, rows),
     write: (bytes, callback) => terminal.write(bytes, callback),
-  });
+  }, undefined, undefined, { resizeMarkerGrids: false });
 
   let disposed = false;
   let fitGrid = initialFitGrid;
   let fallbackElapsed = false;
+  let fallbackResizePending = false;
   const updateVisibility = () => {
     const matchesFit =
       terminal.cols === fitGrid.cols && terminal.rows === fitGrid.rows;
     const canShowFallback = fallbackElapsed && canShowMismatchedFallback();
     if (canShowFallback && !matchesFit) {
-      terminal.resize(fitGrid.cols, fitGrid.rows);
-      preview.dataset.gridCols = String(fitGrid.cols);
-      preview.dataset.gridRows = String(fitGrid.rows);
+      if (!fallbackResizePending) {
+        fallbackResizePending = true;
+        outputPipeline.setGrid(fitGrid.cols, fitGrid.rows, () => {
+          fallbackResizePending = false;
+          preview.dataset.gridCols = String(fitGrid.cols);
+          preview.dataset.gridRows = String(fitGrid.rows);
+          updateVisibility();
+        });
+      }
+      return;
     }
     preview.style.visibility =
       matchesFit || canShowFallback ? "visible" : "hidden";
@@ -70,11 +78,17 @@ export function mountTerminalReplayPreview({
   updateVisibility();
   return {
     resize(cols, rows) {
-      if (disposed) return;
-      terminal.resize(cols, rows);
-      preview.dataset.gridCols = String(cols);
-      preview.dataset.gridRows = String(rows);
-      updateVisibility();
+      if (disposed) return Promise.resolve();
+      return new Promise((resolve) => {
+        outputPipeline.setGrid(cols, rows, () => {
+          if (!disposed) {
+            preview.dataset.gridCols = String(cols);
+            preview.dataset.gridRows = String(rows);
+            updateVisibility();
+          }
+          resolve();
+        });
+      });
     },
     setFitGrid(cols, rows) {
       if (disposed) return;

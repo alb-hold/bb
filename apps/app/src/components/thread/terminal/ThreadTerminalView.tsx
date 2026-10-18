@@ -1052,7 +1052,7 @@ export function ThreadTerminalView({
     let localFitGrid: TerminalGridSize | null = null;
     let replayPreview: {
       dispose(): void;
-      resize(cols: number, rows: number): void;
+      resize(cols: number, rows: number): Promise<void>;
       setFitGrid(cols: number, rows: number): void;
       push(bytes: Uint8Array, callback: () => void): void;
     } | null = null;

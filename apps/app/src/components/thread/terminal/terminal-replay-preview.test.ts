@@ -85,7 +85,7 @@ describe("terminal replay preview", () => {
     }
 
     cover.setFitGrid(51, 47);
-    cover.resize(51, 47);
+    await cover.resize(51, 47);
     expect(
       getComputedStyle(
         parent.querySelector("[data-terminal-replay-preview]")!,
@@ -119,7 +119,7 @@ describe("terminal replay preview", () => {
     parent.remove();
   });
 
-  it("keeps a phone preview hidden until the PTY grid matches its fit", () => {
+  it("keeps a phone preview hidden until the PTY grid matches its fit", async () => {
     const context = new Proxy(
       {
         measureText: (text: string) => ({ width: text.length * 8 }),
@@ -160,7 +160,7 @@ describe("terminal replay preview", () => {
     expect(getComputedStyle(previewElement).visibility).toBe("hidden");
     expect(previewElement.getAttribute("data-grid-cols")).toBe("135");
 
-    cover.resize(51, 47);
+    await cover.resize(51, 47);
 
     expect(preview.cols).toBe(51);
     expect(preview.rows).toBe(47);
@@ -172,7 +172,7 @@ describe("terminal replay preview", () => {
     parent.remove();
   });
 
-  it("keeps a focused phone blank until its fitted grid arrives", () => {
+  it("keeps a focused phone blank until its fitted grid arrives", async () => {
     vi.useFakeTimers();
     const context = new Proxy(
       {
@@ -212,7 +212,9 @@ describe("terminal replay preview", () => {
     vi.advanceTimersByTime(TERMINAL_REPLAY_PREVIEW_FALLBACK_MS);
     expect(getComputedStyle(previewElement).visibility).toBe("hidden");
 
-    cover.resize(51, 47);
+    const resized = cover.resize(51, 47);
+    await vi.advanceTimersByTimeAsync(100);
+    await resized;
     expect(getComputedStyle(previewElement).visibility).toBe("visible");
     expect(previewElement.getAttribute("data-grid-cols")).toBe("51");
 
@@ -271,6 +273,7 @@ describe("terminal replay preview", () => {
     await parsed;
 
     await vi.advanceTimersByTimeAsync(TERMINAL_REPLAY_PREVIEW_FALLBACK_MS);
+    await vi.advanceTimersByTimeAsync(100);
     expect(getComputedStyle(previewElement).visibility).toBe("visible");
     expect(previewElement.getAttribute("data-grid-cols")).toBe("51");
     expect(previewElement.getAttribute("data-grid-rows")).toBe("47");

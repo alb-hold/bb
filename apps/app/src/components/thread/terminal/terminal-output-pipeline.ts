@@ -8,13 +8,19 @@ type TerminalWriter = {
 
 type Operation =
   | { type: "write"; bytes: Uint8Array }
-  | { type: "grid"; grid: TerminalGrid; callback?: () => void }
+  | {
+      type: "grid";
+      grid: TerminalGrid;
+      callback?: () => void;
+      resize: boolean;
+    }
   | { type: "ack"; callback: () => void };
 
 export function createTerminalOutputPipeline(
   terminal: TerminalWriter,
   onGrid?: () => void,
   onResize?: (cols: number, rows: number) => void,
+  options: { resizeMarkerGrids?: boolean } = {},
 ): {
   push(bytes: Uint8Array, callback: () => void): void;
   setGrid(cols: number, rows: number, callback?: () => void): void;
@@ -56,8 +62,10 @@ export function createTerminalOutputPipeline(
         }
         if (operation.type === "grid") {
           await Promise.all(pendingWrites);
-          terminal.resize(operation.grid.cols, operation.grid.rows);
-          onResize?.(operation.grid.cols, operation.grid.rows);
+          if (operation.resize) {
+            terminal.resize(operation.grid.cols, operation.grid.rows);
+            onResize?.(operation.grid.cols, operation.grid.rows);
+          }
           operation.callback?.();
           continue;
         }
@@ -78,7 +86,11 @@ export function createTerminalOutputPipeline(
           enqueue({ type: "write", bytes: operation.bytes });
         } else if (operation.type === "grid") {
           onGrid?.();
-          enqueue({ type: "grid", grid: operation.grid });
+          enqueue({
+            type: "grid",
+            grid: operation.grid,
+            resize: options.resizeMarkerGrids ?? true,
+          });
         }
       }
       if (result.hasPending) {
@@ -94,7 +106,12 @@ export function createTerminalOutputPipeline(
       }
     },
     setGrid(cols, rows, callback) {
-      enqueue({ type: "grid", grid: { cols, rows }, callback });
+      enqueue({
+        type: "grid",
+        grid: { cols, rows },
+        callback,
+        resize: true,
+      });
     },
   };
 }
