@@ -22,6 +22,7 @@ import type { MarkdownPreviewLinkHandler } from "@/components/ui/markdown-link";
 import { openUrlInExternalBrowser } from "@/lib/url-open-routing";
 import { decodeBase64Bytes } from "@/lib/base64-bytes";
 import { sdk } from "@/lib/sdk";
+import { wsManager } from "@/lib/ws";
 import { useAppNavigationHost } from "@/lib/app-navigation-host";
 import { copyToClipboardWithToast } from "@/lib/clipboard";
 import {
@@ -749,6 +750,13 @@ export function ThreadTerminalView({
   onUserInput,
   session,
 }: ThreadTerminalViewProps) {
+  const [handoffOwnerToken, setHandoffOwnerToken] = useState(() =>
+    wsManager.getDeviceHandoffClientToken(),
+  );
+  useEffect(
+    () => wsManager.onDeviceHandoffClientToken(setHandoffOwnerToken),
+    [],
+  );
   const isTouchDevice = useMediaQuery("(pointer: coarse)");
   const attentionClearRequestRef = useRef<string | null>(null);
   const [controlActive, setControlActive] = useState(false);
@@ -1333,7 +1341,10 @@ export function ThreadTerminalView({
         },
         shouldReconnect: () =>
           !disposed && sessionStatusRef.current === "running",
-        url: buildTerminalWebSocketUrl({ terminalId: session.id }),
+        url: buildTerminalWebSocketUrl({
+          handoffOwnerToken,
+          terminalId: session.id,
+        }),
       });
       transport = activeTransport;
       fitTerminal();
@@ -1518,6 +1529,7 @@ export function ThreadTerminalView({
     jumpToPrompt,
     requestOpenTerminalLink,
     session.id,
+    handoffOwnerToken,
     session.title,
     session.threadId,
     updateHoveredTerminalLink,

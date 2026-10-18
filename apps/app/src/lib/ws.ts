@@ -9,6 +9,7 @@ import {
   deviceHandoffSignalLenientSchema,
   deviceHandoffExpiredSignalLenientSchema,
   deviceHandoffAcknowledgedSignalLenientSchema,
+  deviceHandoffClientTokenSignalLenientSchema,
   threadTimelineSignalLenientSchema,
 } from "@bb/server-contract";
 import type {
@@ -98,6 +99,10 @@ export class WebSocketManager {
   private pluginSignalCallbacks = new Set<PluginSignalCallback>();
   private threadTimelineCallbacks = new Set<ThreadTimelineCallback>();
   private deviceHandoffCallbacks = new Set<DeviceHandoffCallback>();
+  private deviceHandoffClientToken: string | null = null;
+  private deviceHandoffClientTokenCallbacks = new Set<
+    (token: string) => void
+  >();
   private activeDeviceHandoffView = {
     threadId: null as string | null,
     terminalSessionId: null as string | null,
@@ -370,6 +375,15 @@ export class WebSocketManager {
       return;
     }
 
+    const clientToken =
+      deviceHandoffClientTokenSignalLenientSchema.safeParse(parsed);
+    if (clientToken.success) {
+      this.deviceHandoffClientToken = clientToken.data.token;
+      for (const callback of this.deviceHandoffClientTokenCallbacks)
+        callback(clientToken.data.token);
+      return;
+    }
+
     const threadTimeline = threadTimelineSignalLenientSchema.safeParse(parsed);
     if (threadTimeline.success) {
       for (const cb of this.threadTimelineCallbacks) {
@@ -510,6 +524,15 @@ export class WebSocketManager {
   onDeviceHandoff(callback: DeviceHandoffCallback): () => void {
     this.deviceHandoffCallbacks.add(callback);
     return () => this.deviceHandoffCallbacks.delete(callback);
+  }
+
+  getDeviceHandoffClientToken(): string | null {
+    return this.deviceHandoffClientToken;
+  }
+
+  onDeviceHandoffClientToken(callback: (token: string) => void): () => void {
+    this.deviceHandoffClientTokenCallbacks.add(callback);
+    return () => this.deviceHandoffClientTokenCallbacks.delete(callback);
   }
 
   setDeviceHandoffView(

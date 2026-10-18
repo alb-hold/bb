@@ -14,7 +14,7 @@ export function onClientSocketOpen(
   hub: NotificationHub,
   socket: ClientSocket,
 ): void {
-  hub.registerClient(socket);
+  hub.issueDeviceHandoffClientToken(socket);
 }
 
 export function onClientSocketMessage(

@@ -128,14 +128,22 @@ describe("NotificationHub device handoff routing", () => {
       false,
       false,
     );
+    const appViewer = createMockHubSocket();
+    const token = hub.issueDeviceHandoffClientToken(appViewer);
     hub.registerTerminalClient("term_1", terminalDataSocket);
+    expect(
+      hub.linkDeviceHandoffTerminalAttachment(
+        token,
+        "term_1",
+        terminalDataSocket,
+      ),
+    ).toBe(true);
     hub.recordTerminalClientVisibility(
       "term_1",
       terminalDataSocket,
       true,
       Date.now(),
     );
-    const appViewer = createMockHubSocket();
     hub.setDeviceHandoffView(appViewer, null, "term_1");
 
     expect(
@@ -148,10 +156,77 @@ describe("NotificationHub device handoff routing", () => {
         "Terminal one",
       ),
     ).toBe(1);
-    expect(JSON.parse(appViewer.messages[0]!).request).toMatchObject({
+    const handoff = appViewer.messages
+      .map((message) => JSON.parse(message))
+      .find((message) => message.type === "device-handoff");
+    expect(handoff.request).toMatchObject({
       text: "terminal copy",
     });
     expect(terminalDataSocket.isClosed).toBe(false);
+  });
+
+  it("does not link a terminal attachment to an unissued client token", () => {
+    const hub = new NotificationHub();
+    const owner = createMockHubSocket();
+    const forged = createMockHubSocket();
+    const ownerToken = hub.issueDeviceHandoffClientToken(owner);
+    hub.issueDeviceHandoffClientToken(forged);
+    const terminalSocket = createMockHubSocket();
+    hub.registerTerminalClient("term_1", terminalSocket);
+
+    expect(
+      hub.linkDeviceHandoffTerminalAttachment(
+        "x".repeat(22),
+        "term_1",
+        terminalSocket,
+      ),
+    ).toBe(false);
+    hub.setDeviceHandoffView(owner, null, "term_1");
+    hub.setDeviceHandoffView(forged, null, "term_1");
+    expect(
+      hub.notifyDeviceHandoff(
+        {
+          kind: "copy-text",
+          text: "token-bound",
+          origin: { terminalSessionId: "term_1" },
+        },
+        "Terminal one",
+      ),
+    ).toBe(0);
+
+    expect(
+      hub.linkDeviceHandoffTerminalAttachment(
+        ownerToken,
+        "term_1",
+        terminalSocket,
+      ),
+    ).toBe(true);
+    hub.recordTerminalClientVisibility(
+      "term_1",
+      terminalSocket,
+      true,
+      Date.now(),
+    );
+    expect(
+      hub.notifyDeviceHandoff(
+        {
+          kind: "copy-text",
+          text: "token-bound",
+          origin: { terminalSessionId: "term_1" },
+        },
+        "Terminal one",
+      ),
+    ).toBe(1);
+    expect(
+      owner.messages
+        .map((message) => JSON.parse(message))
+        .some((message) => message.type === "device-handoff"),
+    ).toBe(true);
+    expect(
+      forged.messages
+        .map((message) => JSON.parse(message))
+        .some((message) => message.type === "device-handoff"),
+    ).toBe(false);
   });
 
   it("expires undelivered origin-scoped payloads", () => {

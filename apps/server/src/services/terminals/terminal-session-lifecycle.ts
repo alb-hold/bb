@@ -154,6 +154,7 @@ interface PendingTerminalCloseKey extends PendingRpcKey {
 }
 
 interface PendingTerminalAttachKey extends PendingTerminalRpcKey {
+  handoffOwnerToken?: string;
   socket: TerminalClientSocket;
 }
 
@@ -202,6 +203,7 @@ interface ResolvedTerminalLaunchTarget {
 }
 
 interface AttachBrowserTerminalArgs {
+  handoffOwnerToken?: string;
   outputAcks: boolean;
   resizeAcks: boolean;
   socket: TerminalClientSocket;
@@ -1977,6 +1979,7 @@ export class TerminalSessionLifecycle {
     const session = this.toTerminalSession(current);
     if (current.status === "disconnected") {
       this.holdBrowserTerminalForReattach({
+        handoffOwnerToken: args.handoffOwnerToken,
         session,
         sinceSeq: args.sinceSeq,
         socket: args.socket,
@@ -2007,6 +2010,7 @@ export class TerminalSessionLifecycle {
 
     const requestId = randomUUID();
     const pendingAttach: PendingTerminalAttachKey = {
+      handoffOwnerToken: args.handoffOwnerToken,
       daemonSessionId: current.daemonSessionId,
       requestId,
       rpcKey: terminalRpcKey(current.daemonSessionId, current.id, requestId),
@@ -2029,6 +2033,7 @@ export class TerminalSessionLifecycle {
     if (!sent) {
       this.pendingAttaches.cancel(pendingAttach.rpcKey);
       this.holdBrowserTerminalForReattach({
+        handoffOwnerToken: args.handoffOwnerToken,
         session,
         sinceSeq: args.sinceSeq,
         socket: args.socket,
@@ -2040,11 +2045,17 @@ export class TerminalSessionLifecycle {
   }
 
   private holdBrowserTerminalForReattach(args: {
+    handoffOwnerToken?: string;
     session: TerminalSession;
     sinceSeq: number;
     socket: TerminalClientSocket;
   }): void {
     this.options.hub.registerTerminalClient(args.session.id, args.socket);
+    this.options.hub.linkDeviceHandoffTerminalAttachment(
+      args.handoffOwnerToken,
+      args.session.id,
+      args.socket,
+    );
     this.addOutputFlowClient(args.session.id, args.socket, args.sinceSeq);
     this.forwardedNextSeqByTerminalId.set(
       args.session.id,
@@ -2880,6 +2891,11 @@ export class TerminalSessionLifecycle {
       return;
     }
     this.options.hub.registerTerminalClient(current.id, pending.socket);
+    this.options.hub.linkDeviceHandoffTerminalAttachment(
+      pending.handoffOwnerToken,
+      current.id,
+      pending.socket,
+    );
     this.addOutputFlowClient(current.id, pending.socket, message.nextSeq);
     this.forwardedNextSeqByTerminalId.set(
       current.id,

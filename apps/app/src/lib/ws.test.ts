@@ -269,6 +269,24 @@ describe("WebSocketManager subscriptions", () => {
   });
 });
 
+describe("WebSocketManager device handoff attachment token", () => {
+  it("stores a token delivered by the server and notifies terminal views", () => {
+    const manager = new WebSocketManager();
+    const callback = vi.fn();
+    manager.onDeviceHandoffClientToken(callback);
+    manager.handleIncomingMessage(
+      JSON.stringify({
+        type: "device-handoff-client-token",
+        token: "0123456789abcdefghij_-",
+      }),
+    );
+    expect(manager.getDeviceHandoffClientToken()).toBe(
+      "0123456789abcdefghij_-",
+    );
+    expect(callback).toHaveBeenCalledWith("0123456789abcdefghij_-");
+  });
+});
+
 describe("WebSocketManager thread-open signals", () => {
   const originalWebSocket = globalThis.WebSocket;
 

@@ -22,6 +22,7 @@ import {
   seedThread,
   seedThreadFixture,
 } from "../helpers/seed.js";
+import { createMockHubSocket } from "../helpers/mock-hub-socket.js";
 
 async function connectRealtime(
   baseUrl: string,
@@ -36,6 +37,23 @@ async function connectRealtime(
     socket.once("error", reject);
   });
   return socket;
+}
+
+async function connectRealtimeWithToken(
+  baseUrl: string,
+  options: { origin?: string; path?: string } = {},
+): Promise<{ socket: WebSocket; token: string }> {
+  const socket = new WebSocket(
+    `${baseUrl.replace(/^http/, "ws")}${options.path ?? "/ws"}`,
+    options.origin === undefined ? {} : { origin: options.origin },
+  );
+  const token = nextRealtimeMessage(socket, "device-handoff-client-token");
+  await new Promise<void>((resolve, reject) => {
+    socket.once("open", resolve);
+    socket.once("error", reject);
+  });
+  const signal = await token;
+  return { socket, token: signal.token as string };
 }
 
 function rejectedRealtimeResponse(
@@ -1224,13 +1242,13 @@ describe("device handoff websocket acknowledgement", () => {
       threadId: null,
       title: "Standalone handoff terminal",
     });
-    const socket = await connectRealtime(server.baseUrl);
+    const socket = createMockHubSocket();
+    const forged = createMockHubSocket();
+    const token = server.hub.issueDeviceHandoffClientToken(socket);
+    server.hub.issueDeviceHandoffClientToken(forged);
     try {
-      sendRealtime(socket, {
-        type: "device-handoff-view",
-        threadId: null,
-        terminalSessionId: null,
-      });
+      server.hub.setDeviceHandoffView(socket, null, null);
+      server.hub.setDeviceHandoffView(forged, null, terminal.id);
       vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
       vi.setSystemTime(Date.now());
       const response = await server.app.request("/api/v1/device-handoff", {
@@ -1245,37 +1263,44 @@ describe("device handoff websocket acknowledgement", () => {
       expect(response.status).toBe(200);
       expect(await response.json()).toEqual({ delivered: 0 });
       await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
+      vi.useRealTimers();
 
       const terminalViewer = { close() {}, send() {} };
+      server.hub.registerTerminalClient(terminal.id, terminalViewer);
+      server.hub.linkDeviceHandoffTerminalAttachment(
+        token,
+        terminal.id,
+        terminalViewer,
+      );
       server.hub.recordTerminalClientVisibility(
         terminal.id,
         terminalViewer,
         true,
         Date.now(),
       );
-      const notice = nextRealtimeMessage(socket, "device-handoff-expired");
-      sendRealtime(socket, {
-        type: "device-handoff-view",
-        threadId: null,
-        terminalSessionId: terminal.id,
-      });
-      const expired = await notice;
+      server.hub.setDeviceHandoffView(socket, null, terminal.id);
+      const expired = socket.messages
+        .map((message) => JSON.parse(message))
+        .find((message) => message.type === "device-handoff-expired");
       expect(expired).toMatchObject({
-        type: "device-handoff-expired",
         threadId: null,
         terminalSessionId: terminal.id,
       });
       expect(JSON.stringify(expired)).not.toContain(
         "private terminal-only copy",
       );
+      expect(
+        forged.messages.map((message) => JSON.parse(message)),
+      ).not.toContainEqual(
+        expect.objectContaining({ type: "device-handoff-expired" }),
+      );
     } finally {
       vi.useRealTimers();
-      socket.close();
       await server.close();
     }
   });
 
-  it("delivers a threadless handoff to the app socket only while its terminal is active", async () => {
+  it("delivers a threadless handoff only to the app socket linked to its visible terminal attachment", async () => {
     const server = await startTestServer();
     const { host, session } = seedHostSession(server.deps);
     const terminal = createTerminalSession(server.db, {
@@ -1289,39 +1314,69 @@ describe("device handoff websocket acknowledgement", () => {
       threadId: null,
       title: "Standalone routing terminal",
     });
-    const socket = await connectRealtime(server.baseUrl);
-    const elsewhere = await connectRealtime(server.baseUrl);
+    const port = new URL(server.baseUrl).port;
+    const origin = `http://127.0.0.1:${port}`;
+    const { socket, token } = await connectRealtimeWithToken(server.baseUrl, {
+      origin,
+    });
+    const { socket: forged } = await connectRealtimeWithToken(server.baseUrl, {
+      origin,
+    });
+    const linkedAttachment = vi.spyOn(
+      server.hub,
+      "linkDeviceHandoffTerminalAttachment",
+    );
+    let resolveDaemonAttach: ((frame: Record<string, unknown>) => void) | null =
+      null;
+    const daemonAttach = new Promise<Record<string, unknown>>((resolve) => {
+      resolveDaemonAttach = resolve;
+    });
+    server.hub.registerDaemon(session.id, host.id, {
+      close() {},
+      send(data) {
+        const frame = JSON.parse(data) as Record<string, unknown>;
+        if (frame.type === "terminal.attach") resolveDaemonAttach?.(frame);
+      },
+    });
+    const terminalReader = await connectRealtime(server.baseUrl, {
+      origin,
+      path: `/ws/terminals/${terminal.id}?sinceSeq=0&handoffOwnerToken=${encodeURIComponent(token)}`,
+    });
     try {
       sendRealtime(socket, {
         type: "device-handoff-view",
         threadId: null,
         terminalSessionId: terminal.id,
       });
-      sendRealtime(elsewhere, {
+      sendRealtime(forged, {
         type: "device-handoff-view",
         threadId: null,
-        terminalSessionId: "term_elsewhere",
+        terminalSessionId: terminal.id,
       });
-      const terminalViewer = {
-        close() {},
-        messages: [] as string[],
-        send(data: string) {
-          this.messages.push(data);
+      const attached = nextSocketMessage(terminalReader, "attached");
+      const attach = await daemonAttach;
+      expect(attach).not.toHaveProperty("handoffOwnerToken");
+      server.deps.terminalSessions.handleDaemonTerminalMessage({
+        hostId: host.id,
+        sessionId: session.id,
+        message: {
+          type: "terminal.replay",
+          requestId: attach.requestId as string,
+          terminalId: terminal.id,
+          chunks: [],
+          replayStartSeq: 0,
+          nextSeq: 0,
         },
-      };
-      server.hub.recordTerminalClientVisibility(
-        terminal.id,
-        terminalViewer,
-        true,
-        Date.now(),
-      );
-      const ready = nextRealtimeMessage(socket, "pong");
-      sendRealtime(socket, { type: "ping" });
-      await ready;
-      const elsewhereReady = nextRealtimeMessage(elsewhere, "pong");
-      sendRealtime(elsewhere, { type: "ping" });
-      await elsewhereReady;
+      });
+      await attached;
+      sendRealtime(terminalReader, { type: "visibility", visible: true });
+      const terminalPong = nextSocketMessage(terminalReader, "pong");
+      sendRealtime(terminalReader, { type: "ping" });
+      await terminalPong;
+      expect(linkedAttachment).toHaveBeenCalledTimes(1);
+      expect(linkedAttachment.mock.results[0]?.value).toBe(true);
       const delivered = nextRealtimeMessage(socket, "device-handoff");
+      const forgedFrame = nextRealtimeMessage(forged, "device-handoff");
       const response = await server.app.request("/api/v1/device-handoff", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -1333,7 +1388,6 @@ describe("device handoff websocket acknowledgement", () => {
       });
       expect(response.status).toBe(200);
       expect(await response.json()).toEqual({ delivered: 1 });
-      expect(terminalViewer.messages).toHaveLength(0);
       expect(await delivered).toMatchObject({
         type: "device-handoff",
         request: {
@@ -1341,9 +1395,34 @@ describe("device handoff websocket acknowledgement", () => {
           text: "standalone terminal payload",
         },
       });
+      await expect(
+        Promise.race([
+          forgedFrame,
+          new Promise((resolve) => setTimeout(() => resolve("no-frame"), 100)),
+        ]),
+      ).resolves.toBe("no-frame");
+      terminalReader.close();
+      await new Promise<void>((resolve) =>
+        terminalReader.once("close", () => resolve()),
+      );
+      const secondResponse = await server.app.request(
+        "/api/v1/device-handoff",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            kind: "copy-text",
+            text: "after detach",
+            origin: { terminalSessionId: terminal.id },
+          }),
+        },
+      );
+      expect(await secondResponse.json()).toEqual({ delivered: 0 });
     } finally {
       socket.close();
-      elsewhere.close();
+      forged.close();
+      terminalReader.close();
+      server.hub.unregisterDaemon(session.id);
       await server.close();
     }
   });

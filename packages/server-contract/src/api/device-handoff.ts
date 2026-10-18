@@ -2,6 +2,19 @@ import { z } from "zod";
 
 export const DEVICE_HANDOFF_TEXT_MAX_BYTES = 1024 * 1024;
 export const DEVICE_HANDOFF_URL_MAX_LENGTH = 8 * 1024;
+export const deviceHandoffClientTokenSignalSchema = z
+  .object({
+    type: z.literal("device-handoff-client-token"),
+    token: z
+      .string()
+      .length(22)
+      .regex(/^[A-Za-z0-9_-]+$/u),
+  })
+  .strict();
+export const deviceHandoffClientTokenSignalLenientSchema = z.object({
+  type: z.literal("device-handoff-client-token"),
+  token: z.string(),
+});
 
 const deviceHandoffOriginSchema = z
   .object({
