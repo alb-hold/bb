@@ -316,7 +316,10 @@ export class NotificationHub implements DbNotifier {
     string,
     number
   >();
-  private readonly expiredDeviceHandoffThreads = new Set<string>();
+  private readonly expiredDeviceHandoffs = new Map<
+    string,
+    DeviceHandoffRequest["origin"]
+  >();
   private readonly terminalClientSocketsById = new Map<
     string,
     Set<HubSocket>
@@ -354,9 +357,9 @@ export class NotificationHub implements DbNotifier {
       timeout: ReturnType<typeof setTimeout>;
     }>
   >();
-  private readonly activeThreadByClientSocket = new Map<
+  private readonly activeDeviceHandoffViewByClientSocket = new Map<
     HubSocket,
-    string | null
+    { threadId: string | null; terminalSessionId: string | null }
   >();
 
   registerClient(socket: HubSocket): void {
@@ -366,7 +369,7 @@ export class NotificationHub implements DbNotifier {
 
   unregisterClient(socket: HubSocket): void {
     this.unregisterTerminalClientSocket(socket);
-    this.activeThreadByClientSocket.delete(socket);
+    this.activeDeviceHandoffViewByClientSocket.delete(socket);
     for (const handoffs of this.pendingDeviceHandoffsByOrigin.values()) {
       for (const handoff of handoffs) {
         handoff.sentTo.delete(socket);
@@ -441,6 +444,14 @@ export class NotificationHub implements DbNotifier {
     state.lastSeenAt = now;
     if (visible) {
       this.deliverPendingDeviceHandoffs({ terminalSessionId: terminalId }, now);
+      for (const [clientSocket, activeView] of this
+        .activeDeviceHandoffViewByClientSocket) {
+        if (activeView.terminalSessionId === terminalId) {
+          this.deliverExpiredDeviceHandoffNotice(clientSocket, {
+            terminalSessionId: terminalId,
+          });
+        }
+      }
     }
   }
 
@@ -745,26 +756,49 @@ export class NotificationHub implements DbNotifier {
         { threadId: target.threadId },
         Date.now(),
       );
-      if (this.activeThreadByClientSocket.get(socket) === target.threadId) {
-        this.deliverExpiredDeviceHandoffNotice(socket, target.threadId);
+      if (
+        this.activeDeviceHandoffViewByClientSocket.get(socket)?.threadId ===
+        target.threadId
+      ) {
+        this.deliverExpiredDeviceHandoffNotice(socket, {
+          threadId: target.threadId,
+        });
       }
     }
   }
 
-  setDeviceHandoffView(socket: HubSocket, threadId: string | null): void {
+  setDeviceHandoffView(
+    socket: HubSocket,
+    threadId: string | null,
+    terminalSessionId: string | null = null,
+  ): void {
     this.registerClient(socket);
-    const previousThreadId = this.activeThreadByClientSocket.get(socket);
-    if (previousThreadId !== threadId) {
+    const previous = this.activeDeviceHandoffViewByClientSocket.get(socket);
+    if (
+      previous?.threadId !== threadId ||
+      previous.terminalSessionId !== terminalSessionId
+    ) {
       for (const handoffs of this.pendingDeviceHandoffsByOrigin.values()) {
         for (const handoff of handoffs) handoff.sentTo.delete(socket);
       }
     }
-    this.activeThreadByClientSocket.set(socket, threadId);
+    this.activeDeviceHandoffViewByClientSocket.set(socket, {
+      threadId,
+      terminalSessionId,
+    });
     if (threadId !== null) {
       this.deliverPendingDeviceHandoffs({ threadId }, Date.now());
       const key = subscriptionKey({ kind: "thread-detail", threadId });
       if (this.clientSocketsByKey.get(key)?.has(socket)) {
-        this.deliverExpiredDeviceHandoffNotice(socket, threadId);
+        this.deliverExpiredDeviceHandoffNotice(socket, { threadId });
+      }
+    }
+    if (terminalSessionId !== null) {
+      const now = Date.now();
+      const origin = { terminalSessionId };
+      this.deliverPendingDeviceHandoffs(origin, now);
+      if (this.deviceHandoffRecipients(origin, now).has(socket)) {
+        this.deliverExpiredDeviceHandoffNotice(socket, origin);
       }
     }
   }
@@ -1306,7 +1340,7 @@ export class NotificationHub implements DbNotifier {
       for (const handoff of handoffs) {
         if (handoff.expiresAt <= now) {
           clearTimeout(handoff.timeout);
-          this.markDeviceHandoffExpired(handoff.attentionThreadId);
+          this.markDeviceHandoffExpired(handoff.origin);
           this.decrementDeviceHandoffAttention(
             handoff.attentionThreadId,
             handoff.origin.terminalSessionId ?? null,
@@ -1333,8 +1367,9 @@ export class NotificationHub implements DbNotifier {
   ): Set<HubSocket> {
     const recipients = new Set<HubSocket>();
     if (origin.threadId !== undefined) {
-      for (const [socket, activeThreadId] of this.activeThreadByClientSocket) {
-        if (activeThreadId !== origin.threadId) continue;
+      for (const [socket, activeView] of this
+        .activeDeviceHandoffViewByClientSocket) {
+        if (activeView.threadId !== origin.threadId) continue;
         const key = subscriptionKey({
           kind: "thread-detail",
           threadId: origin.threadId,
@@ -1345,6 +1380,14 @@ export class NotificationHub implements DbNotifier {
       }
     }
     if (origin.terminalSessionId !== undefined) {
+      if (this.hasVisibleTerminalClient(origin.terminalSessionId, now)) {
+        for (const [socket, activeView] of this
+          .activeDeviceHandoffViewByClientSocket) {
+          if (activeView.terminalSessionId === origin.terminalSessionId) {
+            recipients.add(socket);
+          }
+        }
+      }
       for (const [socket, state] of this.terminalClientStateById.get(
         origin.terminalSessionId,
       ) ?? []) {
@@ -1393,18 +1436,28 @@ export class NotificationHub implements DbNotifier {
 
   private deliverExpiredDeviceHandoffNotice(
     socket: HubSocket,
-    threadId: string,
+    openedOrigin: DeviceHandoffRequest["origin"],
   ): void {
-    if (!this.expiredDeviceHandoffThreads.delete(threadId)) return;
-    socket.send(
-      JSON.stringify(
-        deviceHandoffExpiredSignalSchema.parse({
-          type: "device-handoff-expired",
-          id: randomUUID(),
-          threadId,
-        }),
-      ),
-    );
+    for (const [key, origin] of this.expiredDeviceHandoffs) {
+      const matches =
+        (openedOrigin.threadId !== undefined &&
+          origin.threadId === openedOrigin.threadId) ||
+        (openedOrigin.terminalSessionId !== undefined &&
+          origin.terminalSessionId === openedOrigin.terminalSessionId);
+      if (!matches) continue;
+      this.expiredDeviceHandoffs.delete(key);
+      socket.send(
+        JSON.stringify(
+          deviceHandoffExpiredSignalSchema.parse({
+            type: "device-handoff-expired",
+            id: randomUUID(),
+            threadId: origin.threadId ?? null,
+            terminalSessionId: origin.terminalSessionId ?? null,
+          }),
+        ),
+      );
+      return;
+    }
   }
 
   private enforcePendingDeviceHandoffLimit(): void {
@@ -1436,9 +1489,9 @@ export class NotificationHub implements DbNotifier {
         );
         if (index !== -1) {
           clearTimeout(handoffs[index]?.timeout);
-          this.markDeviceHandoffExpired(
-            handoffs[index]?.attentionThreadId ?? null,
-          );
+          if (handoffs[index]) {
+            this.markDeviceHandoffExpired(handoffs[index].origin);
+          }
           this.decrementDeviceHandoffAttention(
             handoffs[index]?.attentionThreadId ?? null,
             handoffs[index]?.origin.terminalSessionId ?? null,
@@ -1483,8 +1536,8 @@ export class NotificationHub implements DbNotifier {
       removed?.attentionThreadId ?? null,
       removed?.origin.terminalSessionId ?? null,
     );
-    if (expired && removed?.attentionThreadId) {
-      this.markDeviceHandoffExpired(removed.attentionThreadId);
+    if (expired && removed) {
+      this.markDeviceHandoffExpired(removed.origin);
     }
     if (remaining.length === 0) {
       this.pendingDeviceHandoffsByOrigin.delete(originKey);
@@ -1523,16 +1576,16 @@ export class NotificationHub implements DbNotifier {
     this.emitDeviceHandoffAttentionChange(threadId, null, false);
   }
 
-  private markDeviceHandoffExpired(threadId: string | null): void {
-    if (threadId === null) return;
-    this.expiredDeviceHandoffThreads.delete(threadId);
-    this.expiredDeviceHandoffThreads.add(threadId);
-    while (
-      this.expiredDeviceHandoffThreads.size > DEVICE_HANDOFF_PENDING_LIMIT
-    ) {
-      const oldest = this.expiredDeviceHandoffThreads.values().next().value;
+  private markDeviceHandoffExpired(
+    origin: DeviceHandoffRequest["origin"],
+  ): void {
+    const key = this.deviceHandoffOriginKey(origin);
+    this.expiredDeviceHandoffs.delete(key);
+    this.expiredDeviceHandoffs.set(key, origin);
+    while (this.expiredDeviceHandoffs.size > DEVICE_HANDOFF_PENDING_LIMIT) {
+      const oldest = this.expiredDeviceHandoffs.keys().next().value;
       if (oldest === undefined) break;
-      this.expiredDeviceHandoffThreads.delete(oldest);
+      this.expiredDeviceHandoffs.delete(oldest);
     }
   }
 

@@ -164,6 +164,7 @@ const deviceHandoffClientMessageSchema = z.discriminatedUnion("type", [
     .object({
       type: z.literal("device-handoff-view"),
       threadId: z.string().min(1).nullable(),
+      terminalSessionId: z.string().min(1).nullable().default(null),
     })
     .strict(),
   z

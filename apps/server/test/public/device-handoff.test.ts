@@ -572,6 +572,7 @@ describe("device handoff pending attention", () => {
         expect(notice).toBeDefined();
         expect(Object.keys(JSON.parse(notice!)).sort()).toEqual([
           "id",
+          "terminalSessionId",
           "threadId",
           "type",
         ]);
@@ -769,7 +770,11 @@ describe("device handoff websocket acknowledgement", () => {
         type: "subscribe",
         target: { kind: "thread-detail", threadId: thread.id },
       });
-      sendRealtime(socket, { type: "device-handoff-view", threadId: null });
+      sendRealtime(socket, {
+        type: "device-handoff-view",
+        threadId: null,
+        terminalSessionId: null,
+      });
       const ready = nextRealtimeMessage(socket, "pong");
       sendRealtime(socket, { type: "ping" });
       await ready;
@@ -801,6 +806,7 @@ describe("device handoff websocket acknowledgement", () => {
       sendRealtime(socket, {
         type: "device-handoff-view",
         threadId: thread.id,
+        terminalSessionId: null,
       });
       expect(await pending).toMatchObject({
         type: "device-handoff",
@@ -841,6 +847,7 @@ describe("device handoff websocket acknowledgement", () => {
         sendRealtime(admitted, {
           type: "device-handoff-view",
           threadId: null,
+          terminalSessionId: null,
         });
         const hiddenViewReady = nextRealtimeMessage(admitted, "pong");
         sendRealtime(admitted, { type: "ping" });
@@ -862,6 +869,7 @@ describe("device handoff websocket acknowledgement", () => {
         sendRealtime(admitted, {
           type: "device-handoff-view",
           threadId: thread.id,
+          terminalSessionId: null,
         });
         await expect(pendingHandoff).resolves.toMatchObject({
           type: "device-handoff",
@@ -920,6 +928,7 @@ describe("device handoff websocket acknowledgement", () => {
       sendRealtime(admitted, {
         type: "device-handoff-view",
         threadId: thread.id,
+        terminalSessionId: null,
       });
       const received = nextRealtimeMessage(admitted, "device-handoff");
       const response = await server.app.request("/api/v1/device-handoff", {
@@ -987,6 +996,7 @@ describe("device handoff websocket acknowledgement", () => {
       sendRealtime(viewer, {
         type: "device-handoff-view",
         threadId: thread.id,
+        terminalSessionId: null,
       });
       const handoff = nextRealtimeMessage(viewer, "device-handoff");
       const terminalOutput = nextSocketMessage(terminalReader, "output");
@@ -1052,7 +1062,11 @@ describe("device handoff websocket acknowledgement", () => {
         type: "subscribe",
         target: { kind: "thread-detail", threadId: thread.id },
       });
-      sendRealtime(socket, { type: "device-handoff-view", threadId: null });
+      sendRealtime(socket, {
+        type: "device-handoff-view",
+        threadId: null,
+        terminalSessionId: null,
+      });
       const hiddenReady = nextRealtimeMessage(socket, "pong");
       sendRealtime(socket, { type: "ping" });
       await hiddenReady;
@@ -1078,6 +1092,7 @@ describe("device handoff websocket acknowledgement", () => {
       sendRealtime(socket, {
         type: "device-handoff-view",
         threadId: thread.id,
+        terminalSessionId: null,
       });
       const signal = await handoff;
       expect(signal).toMatchObject({
@@ -1088,11 +1103,16 @@ describe("device handoff websocket acknowledgement", () => {
         raisedAttentionAt,
       );
 
-      sendRealtime(socket, { type: "device-handoff-view", threadId: null });
+      sendRealtime(socket, {
+        type: "device-handoff-view",
+        threadId: null,
+        terminalSessionId: null,
+      });
       const returnedHandoff = nextRealtimeMessage(socket, "device-handoff");
       sendRealtime(socket, {
         type: "device-handoff-view",
         threadId: thread.id,
+        terminalSessionId: null,
       });
       expect(await returnedHandoff).toMatchObject({
         id: signal.id,
@@ -1124,6 +1144,7 @@ describe("device handoff websocket acknowledgement", () => {
         sendRealtime(later, {
           type: "device-handoff-view",
           threadId: thread.id,
+          terminalSessionId: null,
         });
         await expect(unexpected).rejects.toThrow(
           "Timed out waiting for realtime message",
@@ -1146,7 +1167,11 @@ describe("device handoff websocket acknowledgement", () => {
         type: "subscribe",
         target: { kind: "thread-detail", threadId: thread.id },
       });
-      sendRealtime(socket, { type: "device-handoff-view", threadId: null });
+      sendRealtime(socket, {
+        type: "device-handoff-view",
+        threadId: null,
+        terminalSessionId: null,
+      });
       vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
       vi.setSystemTime(Date.now());
       const response = await server.app.request("/api/v1/device-handoff", {
@@ -1164,16 +1189,156 @@ describe("device handoff websocket acknowledgement", () => {
       sendRealtime(socket, {
         type: "device-handoff-view",
         threadId: thread.id,
+        terminalSessionId: null,
       });
       const expired = await notice;
       expect(expired).toMatchObject({
         type: "device-handoff-expired",
         threadId: thread.id,
       });
-      expect(Object.keys(expired).sort()).toEqual(["id", "threadId", "type"]);
+      expect(Object.keys(expired).sort()).toEqual([
+        "id",
+        "terminalSessionId",
+        "threadId",
+        "type",
+      ]);
       expect(JSON.stringify(expired)).not.toContain("expiring-code");
     } finally {
       vi.useRealTimers();
+      socket.close();
+      await server.close();
+    }
+  });
+
+  it("delivers a threadless terminal expiry notice only after that terminal is opened", async () => {
+    const server = await startTestServer();
+    const { host, session } = seedHostSession(server.deps);
+    const terminal = createTerminalSession(server.db, {
+      cols: 80,
+      environmentId: null,
+      hostId: host.id,
+      daemonSessionId: session.id,
+      initialCwd: "/tmp",
+      rows: 24,
+      status: "running",
+      threadId: null,
+      title: "Standalone handoff terminal",
+    });
+    const socket = await connectRealtime(server.baseUrl);
+    try {
+      sendRealtime(socket, {
+        type: "device-handoff-view",
+        threadId: null,
+        terminalSessionId: null,
+      });
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+      vi.setSystemTime(Date.now());
+      const response = await server.app.request("/api/v1/device-handoff", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          kind: "copy-text",
+          text: "private terminal-only copy",
+          origin: { terminalSessionId: terminal.id },
+        }),
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ delivered: 0 });
+      await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
+
+      const terminalViewer = { close() {}, send() {} };
+      server.hub.recordTerminalClientVisibility(
+        terminal.id,
+        terminalViewer,
+        true,
+        Date.now(),
+      );
+      const notice = nextRealtimeMessage(socket, "device-handoff-expired");
+      sendRealtime(socket, {
+        type: "device-handoff-view",
+        threadId: null,
+        terminalSessionId: terminal.id,
+      });
+      const expired = await notice;
+      expect(expired).toMatchObject({
+        type: "device-handoff-expired",
+        threadId: null,
+        terminalSessionId: terminal.id,
+      });
+      expect(JSON.stringify(expired)).not.toContain(
+        "private terminal-only copy",
+      );
+    } finally {
+      vi.useRealTimers();
+      socket.close();
+      await server.close();
+    }
+  });
+
+  it("delivers a threadless handoff to the app socket only while its terminal is active", async () => {
+    const server = await startTestServer();
+    const { host, session } = seedHostSession(server.deps);
+    const terminal = createTerminalSession(server.db, {
+      cols: 80,
+      environmentId: null,
+      hostId: host.id,
+      daemonSessionId: session.id,
+      initialCwd: "/tmp",
+      rows: 24,
+      status: "running",
+      threadId: null,
+      title: "Standalone routing terminal",
+    });
+    const socket = await connectRealtime(server.baseUrl);
+    try {
+      sendRealtime(socket, {
+        type: "device-handoff-view",
+        threadId: null,
+        terminalSessionId: null,
+      });
+      const terminalViewer = {
+        close() {},
+        messages: [] as string[],
+        send(data: string) {
+          this.messages.push(data);
+        },
+      };
+      server.hub.recordTerminalClientVisibility(
+        terminal.id,
+        terminalViewer,
+        true,
+        Date.now(),
+      );
+      const response = await server.app.request("/api/v1/device-handoff", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          kind: "copy-text",
+          text: "standalone terminal payload",
+          origin: { terminalSessionId: terminal.id },
+        }),
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ delivered: 1 });
+      expect(terminalViewer.messages).toHaveLength(1);
+      const ready = nextRealtimeMessage(socket, "pong");
+      sendRealtime(socket, { type: "ping" });
+      await ready;
+
+      const delivered = nextRealtimeMessage(socket, "device-handoff");
+      sendRealtime(socket, {
+        type: "device-handoff-view",
+        threadId: null,
+        terminalSessionId: terminal.id,
+      });
+      expect(await delivered).toMatchObject({
+        type: "device-handoff",
+        request: {
+          kind: "copy-text",
+          text: "standalone terminal payload",
+        },
+      });
+    } finally {
       socket.close();
       await server.close();
     }
@@ -1194,8 +1359,13 @@ describe("device handoff websocket acknowledgement", () => {
       sendRealtime(showing, {
         type: "device-handoff-view",
         threadId: thread.id,
+        terminalSessionId: null,
       });
-      sendRealtime(elsewhere, { type: "device-handoff-view", threadId: null });
+      sendRealtime(elsewhere, {
+        type: "device-handoff-view",
+        threadId: null,
+        terminalSessionId: null,
+      });
       const showingReady = nextRealtimeMessage(showing, "pong");
       sendRealtime(showing, { type: "ping" });
       const elsewhereReady = nextRealtimeMessage(elsewhere, "pong");

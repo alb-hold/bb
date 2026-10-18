@@ -39,6 +39,7 @@ import { CommandPalette } from "@/components/commands/CommandPalette";
 import { NotificationCenter } from "@/components/notifications/NotificationCenter";
 import { DeviceHandoffSheet } from "@/components/device-handoff/DeviceHandoffSheet";
 import { useDeviceHandoffQueue } from "@/components/device-handoff/useDeviceHandoffQueue";
+import { useActiveDeviceHandoffTerminal } from "@/components/device-handoff/device-handoff-view";
 import {
   resolveAutomationBreadcrumbs,
   resolvePluginsWorkspaceHeaderMeta,
@@ -474,8 +475,10 @@ export function AppLayout({ children }: AppLayoutProps) {
   const location = useLocation();
   const { projectId, threadId, isThreadView, isArchivedView, isRootView } =
     useRouteState();
+  const activeTerminalSessionId = useActiveDeviceHandoffTerminal();
   const deviceHandoffQueue = useDeviceHandoffQueue(
     isThreadView ? (threadId ?? null) : null,
+    activeTerminalSessionId,
   );
   const [resourceRouteLabel, setResourceRouteLabel] = useAtom(
     resourceRouteLabelAtom,

@@ -46,7 +46,11 @@ export function onClientSocketMessage(
       socket.send(JSON.stringify(PONG_MESSAGE));
       break;
     case "device-handoff-view":
-      deps.hub.setDeviceHandoffView(socket, parsed.threadId);
+      deps.hub.setDeviceHandoffView(
+        socket,
+        parsed.threadId,
+        parsed.terminalSessionId,
+      );
       break;
     case "device-handoff-ack":
       deps.hub.acknowledgeDeviceHandoff(socket, parsed.id);

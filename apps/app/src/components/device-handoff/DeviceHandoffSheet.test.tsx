@@ -49,10 +49,12 @@ afterEach(() => {
 
 function DeviceHandoffQueueHarness({
   activeThreadId = null,
+  activeTerminalSessionId = null,
 }: {
   activeThreadId?: string | null;
+  activeTerminalSessionId?: string | null;
 }) {
-  const queue = useDeviceHandoffQueue(activeThreadId);
+  const queue = useDeviceHandoffQueue(activeThreadId, activeTerminalSessionId);
   return (
     <DeviceHandoffSheet
       signal={queue.signal}
@@ -185,7 +187,7 @@ describe("DeviceHandoffSheet", () => {
         },
       },
     ];
-    render(<DeviceHandoffQueueHarness />);
+    render(<DeviceHandoffQueueHarness activeTerminalSessionId="term_1" />);
     const listener = registerDeviceHandoff.mock.lastCall?.[0] as
       | ((signal: DeviceHandoffSignal | DeviceHandoffExpiredSignal) => void)
       | undefined;
@@ -340,6 +342,7 @@ describe("DeviceHandoffSheet", () => {
         type: "device-handoff-expired",
         id: "expired-1",
         threadId: "thr_1",
+        terminalSessionId: null,
       });
     });
 
@@ -350,5 +353,82 @@ describe("DeviceHandoffSheet", () => {
     ).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Open" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Copy" })).toBeNull();
+  });
+
+  it("shows standalone terminal handoffs only while their terminal is active", async () => {
+    const first: DeviceHandoffSignal = {
+      type: "device-handoff",
+      id: "terminal-a-first",
+      createdAt: Date.now(),
+      expiresAt: Date.now() + 600_000,
+      originLabel: "Standalone A",
+      request: {
+        kind: "copy-text",
+        text: "terminal A first copy",
+        origin: { terminalSessionId: "term-a" },
+      },
+    };
+    const second: DeviceHandoffSignal = {
+      ...first,
+      id: "terminal-a-second",
+      request: {
+        kind: "copy-text",
+        text: "terminal A second copy",
+        origin: { terminalSessionId: "term-a" },
+      },
+    };
+    const view = render(<DeviceHandoffQueueHarness />);
+    const homeListener = registerDeviceHandoff.mock.lastCall?.[0] as
+      | ((signal: DeviceHandoffSignal | DeviceHandoffExpiredSignal) => void)
+      | undefined;
+    act(() => {
+      homeListener?.(first);
+      homeListener?.(second);
+    });
+    expect(screen.queryByText("terminal A first copy")).toBeNull();
+
+    view.rerender(
+      <DeviceHandoffQueueHarness activeTerminalSessionId="term-b" />,
+    );
+    expect(screen.queryByText("terminal A first copy")).toBeNull();
+    expect(screen.queryByText("terminal A second copy")).toBeNull();
+    expect(acknowledgeDeviceHandoff).not.toHaveBeenCalled();
+
+    view.rerender(
+      <DeviceHandoffQueueHarness activeTerminalSessionId="term-a" />,
+    );
+    expect(await screen.findByText("terminal A first copy")).toBeTruthy();
+    expect(screen.getByText("1 of 2")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(await screen.findByText("terminal A second copy")).toBeTruthy();
+    expect(screen.getByText("2 of 2")).toBeTruthy();
+  });
+
+  it("shows a threadless expiry notice only on its originating terminal", async () => {
+    const view = render(<DeviceHandoffQueueHarness />);
+    const homeListener = registerDeviceHandoff.mock.lastCall?.[0] as
+      | ((signal: DeviceHandoffSignal | DeviceHandoffExpiredSignal) => void)
+      | undefined;
+    act(() =>
+      homeListener?.({
+        type: "device-handoff-expired",
+        id: "terminal-expired-1",
+        threadId: null,
+        terminalSessionId: "term-a",
+      }),
+    );
+    const notice =
+      "A link or copied text from this terminal expired before you opened it. Run the command again.";
+    expect(screen.queryByText(notice)).toBeNull();
+
+    view.rerender(
+      <DeviceHandoffQueueHarness activeTerminalSessionId="term-b" />,
+    );
+    expect(screen.queryByText(notice)).toBeNull();
+
+    view.rerender(
+      <DeviceHandoffQueueHarness activeTerminalSessionId="term-a" />,
+    );
+    expect(await screen.findByText(notice)).toBeTruthy();
   });
 });

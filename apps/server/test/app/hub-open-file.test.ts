@@ -159,7 +159,12 @@ describe("NotificationHub device handoff routing", () => {
         threadId: "thr_1",
       });
       hub.setDeviceHandoffView(laterAtOrigin, "thr_1");
-      expect(laterAtOrigin.messages).toHaveLength(0);
+      expect(laterAtOrigin.messages).toHaveLength(1);
+      expect(JSON.parse(laterAtOrigin.messages[0]!)).toMatchObject({
+        type: "device-handoff-expired",
+        threadId: "thr_1",
+        terminalSessionId: null,
+      });
     } finally {
       vi.useRealTimers();
     }

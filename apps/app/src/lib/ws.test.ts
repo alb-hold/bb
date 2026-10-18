@@ -200,13 +200,21 @@ describe("WebSocketManager subscriptions", () => {
 
     manager.setDeviceHandoffView("thread-1");
     expect(readClientMessages(socket)).toEqual([
-      { type: "device-handoff-view", threadId: "thread-1" },
+      {
+        type: "device-handoff-view",
+        threadId: "thread-1",
+        terminalSessionId: null,
+      },
     ]);
     socket.sentMessages.length = 0;
 
     manager.setDeviceHandoffView(null);
     expect(readClientMessages(socket)).toEqual([
-      { type: "device-handoff-view", threadId: null },
+      {
+        type: "device-handoff-view",
+        threadId: null,
+        terminalSessionId: null,
+      },
     ]);
     socket.sentMessages.length = 0;
 
@@ -219,7 +227,44 @@ describe("WebSocketManager subscriptions", () => {
     socket.open();
 
     expect(readClientMessages(socket)).toEqual([
-      { type: "device-handoff-view", threadId: "thread-1" },
+      {
+        type: "device-handoff-view",
+        threadId: "thread-1",
+        terminalSessionId: null,
+      },
+    ]);
+  });
+
+  it("tracks the active standalone terminal handoff view and resends it on reconnect", () => {
+    const { manager, socket } = createConnectedManager();
+
+    manager.setDeviceHandoffView(null, "term-a");
+    expect(readClientMessages(socket)).toEqual([
+      {
+        type: "device-handoff-view",
+        threadId: null,
+        terminalSessionId: "term-a",
+      },
+    ]);
+    socket.sentMessages.length = 0;
+    socket.close();
+    socket.open();
+    expect(readClientMessages(socket)).toEqual([
+      {
+        type: "device-handoff-view",
+        threadId: null,
+        terminalSessionId: "term-a",
+      },
+    ]);
+    socket.sentMessages.length = 0;
+
+    manager.setDeviceHandoffView(null, "term-b");
+    expect(readClientMessages(socket)).toEqual([
+      {
+        type: "device-handoff-view",
+        threadId: null,
+        terminalSessionId: "term-b",
+      },
     ]);
   });
 });

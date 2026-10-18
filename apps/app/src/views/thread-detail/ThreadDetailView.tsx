@@ -1,5 +1,6 @@
 import { BrowserTabIcon } from "@/components/secondary-panel/BrowserTabIcon";
 import { getPanelTabHistoryKey } from "@/components/secondary-panel/recentlyClosedPanelTabs";
+import { setActiveDeviceHandoffTerminal } from "@/components/device-handoff/device-handoff-view";
 import { NativeThreadTerminalMain } from "@/components/thread/terminal/NativeThreadTerminalMain";
 import { useNativeTerminalThread } from "@/hooks/queries/native-terminal-queries";
 import { appendQuoteAndAttachmentsToDraft } from "@bb/client-core";
@@ -1580,6 +1581,16 @@ function ThreadDetailViewInternal(
         )
       : undefined;
   const activeTerminalSessionId = activeTerminalSession?.id;
+  useEffect(() => {
+    const terminalId =
+      isFocused && isSecondaryPanelOpen
+        ? (activeTerminalSessionId ?? null)
+        : null;
+    setActiveDeviceHandoffTerminal(terminalId);
+    return () => {
+      setActiveDeviceHandoffTerminal(null);
+    };
+  }, [activeTerminalSessionId, isFocused, isSecondaryPanelOpen]);
   const activeTerminalInitialCwd = activeTerminalSession?.initialCwd;
   const getActiveTerminalSpawnCwd = useCallback(
     () =>

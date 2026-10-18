@@ -98,7 +98,10 @@ export class WebSocketManager {
   private pluginSignalCallbacks = new Set<PluginSignalCallback>();
   private threadTimelineCallbacks = new Set<ThreadTimelineCallback>();
   private deviceHandoffCallbacks = new Set<DeviceHandoffCallback>();
-  private activeDeviceHandoffThreadId: string | null = null;
+  private activeDeviceHandoffView = {
+    threadId: null as string | null,
+    terminalSessionId: null as string | null,
+  };
   private pendingOpenFileByThreadId = new Map<string, ThreadOpenFile>();
   private connectedCallbacks = new Set<ConnectedCallback>();
   private connectionStateCallbacks = new Set<ConnectionStateCallback>();
@@ -146,10 +149,13 @@ export class WebSocketManager {
       for (const subscription of this.subscriptions.values()) {
         this.sendMessage({ type: "subscribe", target: subscription.target });
       }
-      if (this.activeDeviceHandoffThreadId !== null) {
+      if (
+        this.activeDeviceHandoffView.threadId !== null ||
+        this.activeDeviceHandoffView.terminalSessionId !== null
+      ) {
         this.sendMessage({
           type: "device-handoff-view",
-          threadId: this.activeDeviceHandoffThreadId,
+          ...this.activeDeviceHandoffView,
         });
       }
       const event: WebSocketConnectedEvent = reconnected
@@ -506,13 +512,23 @@ export class WebSocketManager {
     return () => this.deviceHandoffCallbacks.delete(callback);
   }
 
-  setDeviceHandoffView(threadId: string | null): void {
-    const previousThreadId = this.activeDeviceHandoffThreadId;
-    this.activeDeviceHandoffThreadId = threadId;
-    if (threadId === null && previousThreadId === null) {
+  setDeviceHandoffView(
+    threadId: string | null,
+    terminalSessionId: string | null = null,
+  ): void {
+    const previous = this.activeDeviceHandoffView;
+    this.activeDeviceHandoffView = { threadId, terminalSessionId };
+    if (
+      threadId === previous.threadId &&
+      terminalSessionId === previous.terminalSessionId
+    ) {
       return;
     }
-    this.sendMessage({ type: "device-handoff-view", threadId });
+    this.sendMessage({
+      type: "device-handoff-view",
+      threadId,
+      terminalSessionId,
+    });
   }
 
   acknowledgeDeviceHandoff(id: string): void {

@@ -81,7 +81,8 @@ export const deviceHandoffExpiredSignalSchema = z
   .object({
     type: z.literal("device-handoff-expired"),
     id: z.string().min(1),
-    threadId: z.string().min(1),
+    threadId: z.string().min(1).nullable(),
+    terminalSessionId: z.string().min(1).nullable(),
   })
   .strict();
 
@@ -92,7 +93,8 @@ export type DeviceHandoffExpiredSignal = z.infer<
 export const deviceHandoffExpiredSignalLenientSchema = z.object({
   type: z.literal("device-handoff-expired"),
   id: z.string(),
-  threadId: z.string(),
+  threadId: z.string().nullable(),
+  terminalSessionId: z.string().nullable(),
 });
 
 export const deviceHandoffAcknowledgedSignalSchema = z
