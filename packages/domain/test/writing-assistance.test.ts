@@ -1022,6 +1022,29 @@ describe("validateFormattedTranscript", () => {
     expect(validateFormattedTranscript(raw, formatted)).toEqual({ ok: true });
   });
 
+  it.each([
+    ["set offset to -5 and limit to 5", "Set offset to 5 and limit to -5."],
+    ["move from 3 to -3", "Move from -3 to 3."],
+    ["use -2.5 then 2.5 then -2.5", "Use -2.5 then -2.5 then 2.5."],
+  ])(
+    "keeps the transcript when a sign moves to another equal number: %s",
+    (raw, formatted) => {
+      expect(validateFormattedTranscript(raw, formatted)).toEqual({
+        ok: false,
+        reason: "reordered",
+      });
+    },
+  );
+
+  it("accepts equal numbers that keep their signs in order", () => {
+    expect(
+      validateFormattedTranscript(
+        "set offset to -5 and limit to 5",
+        "Set offset to -5 and limit to 5.",
+      ),
+    ).toEqual({ ok: true });
+  });
+
   it("accepts a negative number that keeps its sign", () => {
     expect(
       validateFormattedTranscript(

@@ -1138,6 +1138,18 @@ function negativeNumbers(text: string): string[] {
     .sort();
 }
 
+function numberSigns(text: string): Map<string, boolean[]> {
+  const signs = new Map<string, boolean[]>();
+  const pattern =
+    /(?:(?<![\p{L}\p{N}.,])([-−]))?(?<![\d.,])(\d+(?:[.,]\d+)*)/gu;
+  for (const match of text.matchAll(pattern)) {
+    const forms = signs.get(match[2]!) ?? [];
+    forms.push(match[1] !== undefined);
+    signs.set(match[2]!, forms);
+  }
+  return signs;
+}
+
 function numberSymbols(text: string): Map<string, string[]> {
   const symbols = new Map<string, string[]>();
   const pattern =
@@ -1255,6 +1267,14 @@ export function validateFormattedTranscript(
           ? "added-words"
           : "dropped-words",
     };
+  }
+  const rawSigns = numberSigns(raw);
+  for (const [number, written] of numberSigns(body)) {
+    const spoken = rawSigns.get(number);
+    if (spoken === undefined || spoken.length !== written.length) continue;
+    if (spoken.some((negative, index) => negative !== written[index])) {
+      return { ok: false, reason: "reordered" };
+    }
   }
   const bodyQuestions = questionWords(body);
   const pieces = wordTokens(body).map((token, index) => ({

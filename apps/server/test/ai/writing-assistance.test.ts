@@ -591,6 +591,20 @@ describe("dictation segments", () => {
     });
   });
 
+  it("keeps the transcript when formatting moves a sign to another equal number", async () => {
+    await withTestHarness({}, async (harness) => {
+      registerFakeAiService(harness.deps.aiServices, {
+        transcribe: async () => "set offset to -5 and limit to 5",
+        complete: async () => "Set offset to 5 and limit to -5.",
+      });
+      await expect((await postSegment(harness)).json()).resolves.toMatchObject({
+        raw: "set offset to -5 and limit to 5",
+        text: "set offset to -5 and limit to 5",
+        formatted: false,
+      });
+    });
+  });
+
   it("keeps the transcript when formatting drops the sign of a number", async () => {
     await withTestHarness({}, async (harness) => {
       registerFakeAiService(harness.deps.aiServices, {

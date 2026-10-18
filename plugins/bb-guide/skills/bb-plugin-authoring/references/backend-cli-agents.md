@@ -289,7 +289,8 @@ bb.experimental_aiServices.register({
   keeps the transcript as heard when the formatted reply is unreadable, adds
   words, changes protected tokens, loses a negation (other than the words of a
   self-correction phrase that replaces what was said before it, such as no in
-  no wait) or a number's minus sign, adds, removes or moves a symbol next to a
+  no wait) or a number's minus sign (also when it moves to another equal
+  number, as in -5 and 5 becoming 5 and -5), adds, removes or moves a symbol next to a
   number (5 never becomes 5%) or changes what joins two numbers (1-3 never
   becomes 1/3), or drops any word, even a hesitation sound such as uh or one
   of a word said twice such as the the, other than a spoken self-correction
