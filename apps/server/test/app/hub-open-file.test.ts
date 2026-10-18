@@ -39,21 +39,22 @@ describe("NotificationHub device handoff routing", () => {
         "Thread one",
       ),
     ).toBe(1);
-    expect(
-      viewing.messages.map((message) => JSON.parse(message).request),
-    ).toEqual([
-      { kind: "copy-text", text: "first", origin: { threadId: "thr_1" } },
-      {
-        kind: "open-url",
-        url: "https://example.com/2",
-        origin: { threadId: "thr_1" },
-      },
-      {
-        kind: "open-url",
-        url: "https://example.com/3",
-        origin: { threadId: "thr_1" },
-      },
+    const notices = viewing.messages.map((message) => JSON.parse(message));
+    expect(notices).toHaveLength(3);
+    expect(notices.map((notice) => [notice.type, notice.kind])).toEqual([
+      ["device-handoff-notice", "copy-text"],
+      ["device-handoff-notice", "open-url"],
+      ["device-handoff-notice", "open-url"],
     ]);
+    for (const notice of notices) {
+      expect(notice).toMatchObject({
+        threadId: "thr_1",
+        hostLabel: "Thread one",
+      });
+      expect(notice).not.toHaveProperty("request");
+      expect(notice).not.toHaveProperty("text");
+      expect(notice).not.toHaveProperty("url");
+    }
     expect(other.messages).toHaveLength(0);
   });
 
@@ -94,20 +95,22 @@ describe("NotificationHub device handoff routing", () => {
     hub.subscribe(laterAtOrigin, { kind: "thread-detail", threadId: "thr_1" });
     hub.setDeviceHandoffView(laterAtOrigin, "thr_1");
 
-    expect(
-      laterAtOrigin.messages.map((message) => JSON.parse(message).request),
-    ).toEqual([
-      {
-        kind: "copy-text",
-        text: "first secret",
-        origin: { threadId: "thr_1" },
-      },
-      {
-        kind: "open-url",
-        url: "https://example.com/login",
-        origin: { threadId: "thr_1" },
-      },
+    const notices = laterAtOrigin.messages.map((message) =>
+      JSON.parse(message),
+    );
+    expect(notices.map((notice) => [notice.type, notice.kind])).toEqual([
+      ["device-handoff-notice", "copy-text"],
+      ["device-handoff-notice", "open-url"],
     ]);
+    for (const notice of notices) {
+      expect(notice).toMatchObject({
+        threadId: "thr_1",
+        hostLabel: "Thread one",
+      });
+      expect(notice).not.toHaveProperty("request");
+      expect(notice).not.toHaveProperty("text");
+      expect(notice).not.toHaveProperty("url");
+    }
     expect(unrelatedCurrent.messages).toHaveLength(0);
     expect(laterElsewhere.messages).toHaveLength(0);
   });
@@ -284,14 +287,17 @@ describe("NotificationHub device handoff routing", () => {
       hub.setDeviceHandoffView(laterAtOrigin, "thr_1");
 
       expect(
-        laterAtOrigin.messages.map((message) => JSON.parse(message).request),
-      ).toEqual([
-        {
-          kind: "open-url",
-          url: "https://login.example.com/device",
-          origin: { threadId: "thr_1" },
-        },
-      ]);
+        laterAtOrigin.messages.map((message) => JSON.parse(message)),
+      ).toHaveLength(1);
+      const notice = JSON.parse(laterAtOrigin.messages[0]!);
+      expect(notice).toMatchObject({
+        type: "device-handoff-notice",
+        kind: "open-url",
+        hostLabel: "Thread one",
+        threadId: "thr_1",
+      });
+      expect(notice).not.toHaveProperty("request");
+      expect(notice).not.toHaveProperty("url");
       expect(
         laterAtOrigin.messages.some((message) =>
           message.includes("device-handoff-expired"),
