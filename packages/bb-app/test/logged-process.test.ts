@@ -2591,6 +2591,148 @@ fs.renameSync = function (source, destination) {
     }
   });
 
+  it("continues pruning after more than 32 backups disappear during unlink", async () => {
+    const logDir = scratchDir();
+    const logPath = join(logDir, "server-stdio.log");
+    for (let index = 0; index < 45; index += 1) {
+      const backupPath = `${logPath}.backup-${index + 1}-1-${String(index + 1).padStart(8, "0")}`;
+      writeFileSync(backupPath, `old-backup-${index}\n`);
+      const timestamp = new Date(1_700_000_000_000 + index * 1_000);
+      utimesSync(backupPath, timestamp, timestamp);
+    }
+    const attemptPath = join(logDir, "unlink-attempt");
+    const releasePath = join(logDir, "release-unlink");
+    const writer = spawnLoggedProcess({
+      command: process.execPath,
+      args: ["-e", `process.stdout.write(Buffer.alloc(10 * 1024 * 1024, 65));`],
+      env: process.env,
+      logDir,
+      logName: "server",
+      testWriterBarrier: {
+        completionPath: join(logDir, "writer-complete"),
+        pruneUnlinkAttemptPath: attemptPath,
+        pruneUnlinkReleasePath: releasePath,
+      },
+    });
+
+    let injected = 0;
+    try {
+      while (injected < 40) {
+        const nextAttempt = injected + 1;
+        const marker = `${attemptPath}.${nextAttempt}`;
+        await expect
+          .poll(() => existsSync(marker), { timeout: 5_000, interval: 10 })
+          .toBe(true);
+        const selected = readFileSync(marker, "utf8");
+        unlinkSync(selected);
+        writeFileSync(`${releasePath}.${nextAttempt}`, "release");
+        injected += 1;
+      }
+      for (let attempt = 41; attempt < 100; attempt += 1) {
+        const marker = `${attemptPath}.${attempt}`;
+        const finished = join(logDir, "writer-complete");
+        if (existsSync(finished)) break;
+        await expect
+          .poll(() => existsSync(marker) || existsSync(finished), {
+            timeout: 5_000,
+            interval: 10,
+          })
+          .toBe(true);
+        if (existsSync(marker))
+          writeFileSync(`${releasePath}.${attempt}`, "release");
+      }
+      await expect
+        .poll(() => existsSync(join(logDir, "writer-complete")), {
+          timeout: 5_000,
+          interval: 10,
+        })
+        .toBe(true);
+      await writer.writerExit;
+      const backups = familyFiles(logDir, "server").filter((file) =>
+        file.includes(".backup-"),
+      );
+      expect(injected).toBeGreaterThanOrEqual(40);
+      expect(backups).toHaveLength(5);
+      expect(
+        familyFiles(logDir, "server").every(
+          (file) => statSync(file).size <= 10 * 1024 * 1024,
+        ),
+      ).toBe(true);
+    } finally {
+      if (writer.writerProcess.exitCode === null)
+        writer.writerProcess.kill("SIGKILL");
+      await writer.writerExit;
+    }
+  });
+
+  it("bounds flat-count prune rescans and converges after additions stop", async () => {
+    const logDir = scratchDir();
+    const logPath = join(logDir, "server-stdio.log");
+    for (let index = 0; index < 8; index += 1) {
+      const backupPath = `${logPath}.backup-${index + 1}-1-${String(index + 1).padStart(8, "0")}`;
+      writeFileSync(backupPath, `old-backup-${index}\n`);
+      const timestamp = new Date(1_700_000_000_000 + index * 1_000);
+      utimesSync(backupPath, timestamp, timestamp);
+    }
+    const attemptPath = join(logDir, "unlink-attempt");
+    const releasePath = join(logDir, "release-unlink");
+    const writer = spawnLoggedProcess({
+      command: process.execPath,
+      args: ["-e", `process.stdout.write(Buffer.alloc(10 * 1024 * 1024, 66));`],
+      env: process.env,
+      logDir,
+      logName: "server",
+      testWriterBarrier: {
+        completionPath: join(logDir, "writer-complete"),
+        pruneUnlinkAttemptPath: attemptPath,
+        pruneUnlinkReleasePath: releasePath,
+      },
+    });
+
+    try {
+      for (let attempt = 1; attempt <= 5; attempt += 1) {
+        const marker = `${attemptPath}.${attempt}`;
+        await expect
+          .poll(() => existsSync(marker), { timeout: 5_000, interval: 10 })
+          .toBe(true);
+        unlinkSync(readFileSync(marker, "utf8"));
+        const replacement = `${logPath}.backup-${100 + attempt}-1-${String(100 + attempt).padStart(8, "0")}`;
+        writeFileSync(replacement, `replacement-${attempt}\n`);
+        const timestamp = new Date(1_800_000_000_000 + attempt * 1_000);
+        utimesSync(replacement, timestamp, timestamp);
+        writeFileSync(`${releasePath}.${attempt}`, "release");
+      }
+      for (let attempt = 6; attempt < 100; attempt += 1) {
+        const marker = `${attemptPath}.${attempt}`;
+        const finished = join(logDir, "writer-complete");
+        await expect
+          .poll(() => existsSync(marker) || existsSync(finished), {
+            timeout: 5_000,
+            interval: 10,
+          })
+          .toBe(true);
+        if (existsSync(finished)) break;
+        writeFileSync(`${releasePath}.${attempt}`, "release");
+      }
+      await expect
+        .poll(() => existsSync(join(logDir, "writer-complete")), {
+          timeout: 5_000,
+          interval: 10,
+        })
+        .toBe(true);
+      await writer.writerExit;
+      expect(
+        familyFiles(logDir, "server").filter((file) =>
+          file.includes(".backup-"),
+        ).length,
+      ).toBe(5);
+    } finally {
+      if (writer.writerProcess.exitCode === null)
+        writer.writerProcess.kill("SIGKILL");
+      await writer.writerExit;
+    }
+  });
+
   it("returns from backup pruning when the log directory disappears", async () => {
     const root = scratchDir();
     const logDir = join(root, "logs");
@@ -2650,7 +2792,8 @@ fs.renameSync = function (source, destination) {
       ).toBe(true);
     } finally {
       writeFileSync(pruneSnapshotReleasePath, "release");
-      if (writer.writerProcess.exitCode === null) writer.writerProcess.kill("SIGKILL");
+      if (writer.writerProcess.exitCode === null)
+        writer.writerProcess.kill("SIGKILL");
       await writer.writerExit;
     }
   });

@@ -531,12 +531,9 @@ const publishAliasTo = (targetPath) => {
 };
 const pruneBackups = () => {
   let noProgressScans = 0;
-  const rescanWithoutProgress = () => {
-    noProgressScans += 1;
-    if (noProgressScans < 32) return true;
-    reportDiagnostic("stdio backup prune made no progress");
-    return false;
-  };
+  let previousBackupCount;
+  let rescanPending = false;
+  let pruneUnlinkAttempt = 0;
   while (true) {
     let backupPaths;
     try {
@@ -554,7 +551,7 @@ const pruneBackups = () => {
       backups = backupPaths.map((file) => ({ file, mtimeMs: fs.statSync(file).mtimeMs }));
     } catch (error) {
       if (error.code === "ENOENT") {
-        if (!rescanWithoutProgress()) return;
+        rescanPending = true;
         continue;
       }
       reportFsError("stdio backup scan failed", error);
@@ -562,6 +559,17 @@ const pruneBackups = () => {
     }
     backups.sort((left, right) => left.mtimeMs - right.mtimeMs);
     backups = backups.map(({ file }) => file);
+    if (rescanPending) {
+      noProgressScans = previousBackupCount !== undefined && backups.length < previousBackupCount
+        ? 0
+        : noProgressScans + 1;
+      if (noProgressScans >= 32) {
+        reportDiagnostic("stdio backup prune made no progress");
+        return;
+      }
+      rescanPending = false;
+    }
+    previousBackupCount = backups.length;
     if (pruneSnapshotBarrierUsed && writerBarrier?.pruneObservedCountsPath !== undefined) {
       fs.appendFileSync(writerBarrier.pruneObservedCountsPath, String(backups.length) + "\\n");
     }
@@ -580,6 +588,17 @@ const pruneBackups = () => {
       fs.appendFileSync(writerBarrier.pruneObservedCountsPath, String(backups.length) + "\\n");
     }
     const oldest = backups[0];
+    if (
+      writerBarrier?.pruneUnlinkAttemptPath !== undefined &&
+      writerBarrier.pruneUnlinkReleasePath !== undefined
+    ) {
+      pruneUnlinkAttempt += 1;
+      const attemptPath = writerBarrier.pruneUnlinkAttemptPath + "." + pruneUnlinkAttempt;
+      fs.writeFileSync(attemptPath, oldest);
+      const waitCell = new Int32Array(new SharedArrayBuffer(4));
+      const releasePath = writerBarrier.pruneUnlinkReleasePath + "." + pruneUnlinkAttempt;
+      while (!fs.existsSync(releasePath)) Atomics.wait(waitCell, 0, 0, 10);
+    }
     try {
       const aliasStat = fs.statSync(logPath);
       const oldestStat = fs.statSync(oldest);
@@ -597,13 +616,14 @@ const pruneBackups = () => {
       fs.unlinkSync(oldest);
     } catch (error) {
       if (error.code === "ENOENT") {
-        if (!rescanWithoutProgress()) return;
+        rescanPending = true;
         continue;
       }
       reportFsError("stdio backup prune failed", error);
       return;
     }
     noProgressScans = 0;
+    rescanPending = false;
   }
 };
 const migrateLegacyFiles = () => {
@@ -1103,6 +1123,8 @@ export interface StdioLogWriterTestBarrier {
   pruneSnapshotEnteredPath?: string;
   pruneSnapshotReleasePath?: string;
   pruneObservedCountsPath?: string;
+  pruneUnlinkAttemptPath?: string;
+  pruneUnlinkReleasePath?: string;
 }
 
 export function spawnLoggedProcess(
