@@ -186,6 +186,78 @@ function sendRealtime(
   socket.send(JSON.stringify(message));
 }
 
+async function connectLinkedTerminalAttachment(
+  server: Awaited<ReturnType<typeof startTestServer>>,
+  args: {
+    hostId: string;
+    sessionId: string;
+    terminalId: string;
+    ownerToken: string;
+    visible: boolean;
+  },
+): Promise<{ setVisible(visible: boolean): Promise<void>; socket: WebSocket }> {
+  let resolveDaemonAttach: ((frame: Record<string, unknown>) => void) | null =
+    null;
+  const daemonAttach = new Promise<Record<string, unknown>>((resolve) => {
+    resolveDaemonAttach = resolve;
+  });
+  server.hub.registerDaemon(args.sessionId, args.hostId, {
+    close() {},
+    send(data) {
+      const frame = JSON.parse(data) as Record<string, unknown>;
+      if (frame.type === "terminal.attach") resolveDaemonAttach?.(frame);
+    },
+  });
+  const socket = await connectRealtime(server.baseUrl, {
+    path: `/ws/terminals/${args.terminalId}?sinceSeq=0&handoffOwnerToken=${encodeURIComponent(args.ownerToken)}`,
+  });
+  const attached = nextSocketMessage(socket, "attached");
+  const attach = await daemonAttach;
+  server.deps.terminalSessions.handleDaemonTerminalMessage({
+    hostId: args.hostId,
+    sessionId: args.sessionId,
+    message: {
+      type: "terminal.replay",
+      requestId: attach.requestId as string,
+      terminalId: args.terminalId,
+      chunks: [],
+      replayStartSeq: 0,
+      nextSeq: 0,
+    },
+  });
+  await attached;
+  const setVisible = async (visible: boolean) => {
+    sendRealtime(socket, { type: "visibility", visible });
+    const pong = nextSocketMessage(socket, "pong");
+    sendRealtime(socket, { type: "ping" });
+    await pong;
+  };
+  await setVisible(args.visible);
+  return { setVisible, socket };
+}
+
+async function expectNoRealtimeMessage(
+  socket: WebSocket,
+  type: string,
+  durationMs = 100,
+): Promise<void> {
+  const received = await new Promise<boolean>((resolve) => {
+    const onMessage = (data: WebSocket.RawData) => {
+      const parsed = JSON.parse(data.toString()) as Record<string, unknown>;
+      if (parsed.type !== type) return;
+      clearTimeout(timer);
+      socket.off("message", onMessage);
+      resolve(true);
+    };
+    const timer = setTimeout(() => {
+      socket.off("message", onMessage);
+      resolve(false);
+    }, durationMs);
+    socket.on("message", onMessage);
+  });
+  expect(received).toBe(false);
+}
+
 describe("device handoff route validation", () => {
   let harness: TestAppHarness | null = null;
 
@@ -516,11 +588,27 @@ describe("device handoff pending attention", () => {
           this.messages.push(data);
         },
       };
+      const ownerToken = harness.hub.issueDeviceHandoffClientToken(viewer);
+      const terminalAttachment = { close() {}, send() {} };
+      harness.hub.registerTerminalClient(terminal.id, terminalAttachment);
+      expect(
+        harness.hub.linkDeviceHandoffTerminalAttachment(
+          ownerToken,
+          terminal.id,
+          terminalAttachment,
+        ),
+      ).toBe(true);
+      harness.hub.recordTerminalClientVisibility(
+        terminal.id,
+        terminalAttachment,
+        true,
+        Date.now(),
+      );
       harness.hub.subscribe(viewer, {
         kind: "thread-detail",
         threadId: thread.id,
       });
-      harness.hub.setDeviceHandoffView(viewer, thread.id);
+      harness.hub.setDeviceHandoffView(viewer, thread.id, terminal.id);
       const handoff = viewer.messages
         .map((message) => JSON.parse(message) as { id?: string; type?: string })
         .find((message) => message.type === "device-handoff");
@@ -764,6 +852,272 @@ describe("device handoff pending attention", () => {
 });
 
 describe("device handoff websocket acknowledgement", () => {
+  it("delivers a thread-and-terminal handoff only through its linked visible attachment", async () => {
+    const server = await startTestServer();
+    const { host, session, thread } = seedThreadFixture(server);
+    const terminal = createTerminalSession(server.db, {
+      cols: 80,
+      environmentId: null,
+      hostId: host.id,
+      daemonSessionId: session.id,
+      initialCwd: "/tmp",
+      rows: 24,
+      status: "running",
+      threadId: thread.id,
+      title: "Mixed origin routing terminal",
+    });
+    const origin = `http://127.0.0.1:${new URL(server.baseUrl).port}`;
+    const { socket: viewer, token } = await connectRealtimeWithToken(
+      server.baseUrl,
+      { origin },
+    );
+    const forgedBoth = await connectRealtime(server.baseUrl, { origin });
+    const forgedThreadOnly = await connectRealtime(server.baseUrl, { origin });
+    const terminalAttachment = await connectLinkedTerminalAttachment(server, {
+      hostId: host.id,
+      sessionId: session.id,
+      terminalId: terminal.id,
+      ownerToken: token,
+      visible: true,
+    });
+    const setView = async (
+      socket: WebSocket,
+      terminalSessionId: string | null,
+    ) => {
+      sendRealtime(socket, {
+        type: "subscribe",
+        target: { kind: "thread-detail", threadId: thread.id },
+      });
+      sendRealtime(socket, {
+        type: "device-handoff-view",
+        threadId: thread.id,
+        terminalSessionId,
+      });
+      const pong = nextRealtimeMessage(socket, "pong");
+      sendRealtime(socket, { type: "ping" });
+      await pong;
+    };
+    let viewerHandoffFrames = 0;
+    const countViewerHandoffs = (data: WebSocket.RawData) => {
+      const message = JSON.parse(data.toString()) as Record<string, unknown>;
+      if (message.type === "device-handoff") viewerHandoffFrames += 1;
+    };
+
+    try {
+      await setView(viewer, terminal.id);
+      await setView(forgedBoth, terminal.id);
+      await setView(forgedThreadOnly, null);
+
+      viewer.on("message", countViewerHandoffs);
+      const received = nextRealtimeMessage(viewer, "device-handoff");
+      const response = await server.app.request("/api/v1/device-handoff", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          kind: "copy-text",
+          text: "mixed thread and terminal payload",
+          origin: { threadId: thread.id, terminalSessionId: terminal.id },
+        }),
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ delivered: 1 });
+      const first = await received;
+      expect(first).toMatchObject({
+        type: "device-handoff",
+        request: { text: "mixed thread and terminal payload" },
+      });
+
+      await setView(viewer, terminal.id);
+      expect(viewerHandoffFrames).toBe(1);
+      await expectNoRealtimeMessage(forgedBoth, "device-handoff");
+      await expectNoRealtimeMessage(forgedThreadOnly, "device-handoff");
+    } finally {
+      viewer.off("message", countViewerHandoffs);
+      viewer.close();
+      forgedBoth.close();
+      forgedThreadOnly.close();
+      terminalAttachment.socket.close();
+      server.hub.unregisterDaemon(session.id);
+      await server.close();
+    }
+  });
+
+  it("delivers a pending mixed-origin handoff only when its viewer attachment becomes visible", async () => {
+    const server = await startTestServer();
+    const { host, session, thread } = seedThreadFixture(server);
+    const terminal = createTerminalSession(server.db, {
+      cols: 80,
+      environmentId: null,
+      hostId: host.id,
+      daemonSessionId: session.id,
+      initialCwd: "/tmp",
+      rows: 24,
+      status: "running",
+      threadId: thread.id,
+      title: "Pending mixed origin terminal",
+    });
+    const origin = `http://127.0.0.1:${new URL(server.baseUrl).port}`;
+    const { socket: viewer, token } = await connectRealtimeWithToken(
+      server.baseUrl,
+      { origin },
+    );
+    const forgedBoth = await connectRealtime(server.baseUrl, { origin });
+    const forgedThreadOnly = await connectRealtime(server.baseUrl, { origin });
+    const terminalAttachment = await connectLinkedTerminalAttachment(server, {
+      hostId: host.id,
+      sessionId: session.id,
+      terminalId: terminal.id,
+      ownerToken: token,
+      visible: false,
+    });
+    const setView = async (
+      socket: WebSocket,
+      terminalSessionId: string | null,
+    ) => {
+      sendRealtime(socket, {
+        type: "subscribe",
+        target: { kind: "thread-detail", threadId: thread.id },
+      });
+      sendRealtime(socket, {
+        type: "device-handoff-view",
+        threadId: thread.id,
+        terminalSessionId,
+      });
+      const pong = nextRealtimeMessage(socket, "pong");
+      sendRealtime(socket, { type: "ping" });
+      await pong;
+    };
+
+    try {
+      await setView(viewer, terminal.id);
+      await setView(forgedBoth, terminal.id);
+      await setView(forgedThreadOnly, null);
+      const response = await server.app.request("/api/v1/device-handoff", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          kind: "copy-text",
+          text: "pending mixed-origin payload",
+          origin: { threadId: thread.id, terminalSessionId: terminal.id },
+        }),
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ delivered: 0 });
+      await expectNoRealtimeMessage(forgedBoth, "device-handoff");
+      await expectNoRealtimeMessage(forgedThreadOnly, "device-handoff");
+
+      const received = nextRealtimeMessage(viewer, "device-handoff");
+      await terminalAttachment.setVisible(true);
+      expect(await received).toMatchObject({
+        type: "device-handoff",
+        request: { text: "pending mixed-origin payload" },
+      });
+      await expectNoRealtimeMessage(forgedBoth, "device-handoff");
+      await expectNoRealtimeMessage(forgedThreadOnly, "device-handoff");
+    } finally {
+      viewer.close();
+      forgedBoth.close();
+      forgedThreadOnly.close();
+      terminalAttachment.socket.close();
+      server.hub.unregisterDaemon(session.id);
+      await server.close();
+    }
+  });
+
+  it("routes an expired mixed-origin notice only through its linked visible attachment", async () => {
+    const server = await startTestServer();
+    const { host, session, thread } = seedThreadFixture(server);
+    const terminal = createTerminalSession(server.db, {
+      cols: 80,
+      environmentId: null,
+      hostId: host.id,
+      daemonSessionId: session.id,
+      initialCwd: "/tmp",
+      rows: 24,
+      status: "running",
+      threadId: thread.id,
+      title: "Expiring mixed origin terminal",
+    });
+    const origin = `http://127.0.0.1:${new URL(server.baseUrl).port}`;
+    const { socket: viewer, token } = await connectRealtimeWithToken(
+      server.baseUrl,
+      { origin },
+    );
+    const forgedBoth = await connectRealtime(server.baseUrl, { origin });
+    const forgedThreadOnly = await connectRealtime(server.baseUrl, { origin });
+    const terminalAttachment = await connectLinkedTerminalAttachment(server, {
+      hostId: host.id,
+      sessionId: session.id,
+      terminalId: terminal.id,
+      ownerToken: token,
+      visible: false,
+    });
+    const setView = async (
+      socket: WebSocket,
+      terminalSessionId: string | null,
+    ) => {
+      sendRealtime(socket, {
+        type: "subscribe",
+        target: { kind: "thread-detail", threadId: thread.id },
+      });
+      sendRealtime(socket, {
+        type: "device-handoff-view",
+        threadId: thread.id,
+        terminalSessionId,
+      });
+      const pong = nextRealtimeMessage(socket, "pong");
+      sendRealtime(socket, { type: "ping" });
+      await pong;
+    };
+
+    try {
+      await setView(viewer, terminal.id);
+      await setView(forgedBoth, terminal.id);
+      await setView(forgedThreadOnly, null);
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+      vi.setSystemTime(Date.now());
+      const response = await server.app.request("/api/v1/device-handoff", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          kind: "open-url",
+          url: "https://example.com/mixed-expiry",
+          origin: { threadId: thread.id, terminalSessionId: terminal.id },
+        }),
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ delivered: 0 });
+      await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
+      vi.useRealTimers();
+
+      await setView(forgedBoth, terminal.id);
+      await setView(forgedThreadOnly, null);
+      await expectNoRealtimeMessage(forgedBoth, "device-handoff-expired");
+      await expectNoRealtimeMessage(
+        forgedThreadOnly,
+        "device-handoff-expired",
+      );
+
+      const expired = nextRealtimeMessage(viewer, "device-handoff-expired");
+      await terminalAttachment.setVisible(true);
+      expect(await expired).toMatchObject({
+        type: "device-handoff-expired",
+        threadId: thread.id,
+        terminalSessionId: terminal.id,
+      });
+      await expectNoRealtimeMessage(forgedBoth, "device-handoff-expired");
+      await expectNoRealtimeMessage(forgedThreadOnly, "device-handoff-expired");
+    } finally {
+      vi.useRealTimers();
+      viewer.close();
+      forgedBoth.close();
+      forgedThreadOnly.close();
+      terminalAttachment.socket.close();
+      server.hub.unregisterDaemon(session.id);
+      await server.close();
+    }
+  });
+
   it("delivers a terminal handoff after the command exits", async () => {
     const server = await startTestServer();
     const { host, session } = seedHostSession(server.deps);
@@ -782,7 +1136,14 @@ describe("device handoff websocket acknowledgement", () => {
       threadId: thread.id,
       title: "Immediate exit handoff",
     });
-    const socket = await connectRealtime(server.baseUrl);
+    const { socket, token } = await connectRealtimeWithToken(server.baseUrl);
+    const terminalAttachment = await connectLinkedTerminalAttachment(server, {
+      hostId: host.id,
+      sessionId: session.id,
+      terminalId: terminal.id,
+      ownerToken: token,
+      visible: true,
+    });
     try {
       sendRealtime(socket, {
         type: "subscribe",
@@ -824,7 +1185,7 @@ describe("device handoff websocket acknowledgement", () => {
       sendRealtime(socket, {
         type: "device-handoff-view",
         threadId: thread.id,
-        terminalSessionId: null,
+        terminalSessionId: terminal.id,
       });
       expect(await pending).toMatchObject({
         type: "device-handoff",
@@ -835,6 +1196,8 @@ describe("device handoff websocket acknowledgement", () => {
       });
     } finally {
       socket.close();
+      terminalAttachment.socket.close();
+      server.hub.unregisterDaemon(session.id);
       await server.close();
     }
   });
@@ -1001,10 +1364,13 @@ describe("device handoff websocket acknowledgement", () => {
     });
     const port = new URL(server.baseUrl).port;
     const origin = `http://127.0.0.1:${port}`;
-    const viewer = await connectRealtime(server.baseUrl, { origin });
+    const { socket: viewer, token } = await connectRealtimeWithToken(
+      server.baseUrl,
+      { origin },
+    );
     const terminalReader = await connectRealtime(server.baseUrl, {
       origin,
-      path: `/ws/terminals/${terminal.id}?sinceSeq=0`,
+      path: `/ws/terminals/${terminal.id}?sinceSeq=0&handoffOwnerToken=${encodeURIComponent(token)}`,
     });
     try {
       sendRealtime(viewer, {
@@ -1014,7 +1380,7 @@ describe("device handoff websocket acknowledgement", () => {
       sendRealtime(viewer, {
         type: "device-handoff-view",
         threadId: thread.id,
-        terminalSessionId: null,
+        terminalSessionId: terminal.id,
       });
       const handoff = nextRealtimeMessage(viewer, "device-handoff");
       const terminalOutput = nextSocketMessage(terminalReader, "output");
@@ -1041,6 +1407,10 @@ describe("device handoff websocket acknowledgement", () => {
           nextSeq: 1,
         },
       });
+      sendRealtime(terminalReader, { type: "visibility", visible: true });
+      const terminalPong = nextSocketMessage(terminalReader, "pong");
+      sendRealtime(terminalReader, { type: "ping" });
+      await terminalPong;
       const response = await server.app.request("/api/v1/device-handoff", {
         method: "POST",
         headers: { "content-type": "application/json" },

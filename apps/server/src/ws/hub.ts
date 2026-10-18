@@ -1447,7 +1447,10 @@ export class NotificationHub implements DbNotifier {
     now: number,
   ): Set<HubSocket> {
     const recipients = new Set<HubSocket>();
-    if (origin.threadId !== undefined) {
+    if (
+      origin.terminalSessionId === undefined &&
+      origin.threadId !== undefined
+    ) {
       for (const [socket, activeView] of this
         .activeDeviceHandoffViewByClientSocket) {
         if (activeView.threadId !== origin.threadId) continue;
@@ -1546,6 +1549,8 @@ export class NotificationHub implements DbNotifier {
         (openedOrigin.terminalSessionId !== undefined &&
           origin.terminalSessionId === openedOrigin.terminalSessionId);
       if (!matches) continue;
+      if (!this.deviceHandoffRecipients(origin, Date.now()).has(socket))
+        continue;
       this.expiredDeviceHandoffs.delete(key);
       socket.send(
         JSON.stringify(
