@@ -294,6 +294,7 @@ import { resolveGitDiffTabStatus } from "@/components/secondary-panel/gitDiffTab
 import { isRootThread } from "./threadParentSelectorOptions";
 import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
 import {
+  activeTerminalIdForDeviceHandoff,
   getActiveFixedSecondaryTab,
   useSetThreadSecondaryPanelSelection,
   useToggleThreadSecondaryPanelSelection,
@@ -1584,7 +1585,7 @@ function ThreadDetailViewInternal(
   const activeTerminalSessionId = activeTerminalSession?.id;
   useActiveDeviceHandoffTerminalView({
     ownerId: `thread:${threadId}:${paneId}`,
-    terminalId: activeTerminalSessionId ?? null,
+    terminalId: activeTerminalIdForDeviceHandoff(activeFixedSecondaryTab),
     isFocused,
     isOpen: isSecondaryPanelOpen,
   });

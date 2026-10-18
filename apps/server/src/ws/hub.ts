@@ -1388,17 +1388,6 @@ export class NotificationHub implements DbNotifier {
           }
         }
       }
-      for (const [socket, state] of this.terminalClientStateById.get(
-        origin.terminalSessionId,
-      ) ?? []) {
-        if (
-          state.visible &&
-          (!state.heartbeats ||
-            now - state.lastSeenAt <= TERMINAL_CLIENT_STALE_MS)
-        ) {
-          recipients.add(socket);
-        }
-      }
     }
     return recipients;
   }

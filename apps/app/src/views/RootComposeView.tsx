@@ -154,6 +154,7 @@ import {
   terminalSpawnCwd,
 } from "@/components/thread/terminal/terminal-shell-state";
 import {
+  activeTerminalIdForDeviceHandoff,
   getActiveFixedSecondaryTab,
   useSetThreadSecondaryPanelSelection,
 } from "./thread-detail/threadSecondaryPanelSelection";
@@ -905,7 +906,7 @@ function RootComposeSurface({
   const activeTerminalSessionId = activeTerminalSession?.id;
   useActiveDeviceHandoffTerminalView({
     ownerId: `root-compose:${paneContext?.paneId ?? "root"}`,
-    terminalId: activeTerminalSessionId ?? null,
+    terminalId: activeTerminalIdForDeviceHandoff(activeFixedSecondaryTab),
     isFocused: isFocusedPane,
     isOpen: isSecondaryPanelOpen,
   });

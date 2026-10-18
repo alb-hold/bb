@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { ChildTerminalSocket } from "../../src/services/terminals/data-plane/child-terminal-socket.js";
 import { NotificationHub } from "../../src/ws/hub.js";
 import { createMockHubSocket } from "../helpers/mock-hub-socket.js";
 
@@ -111,10 +112,32 @@ describe("NotificationHub device handoff routing", () => {
     expect(laterElsewhere.messages).toHaveLength(0);
   });
 
-  it("delivers terminal-scoped handoffs when a matching terminal becomes visible", () => {
+  it("delivers terminal-scoped handoffs to the app view, not its terminal data socket", () => {
     const hub = new NotificationHub();
-    const terminalViewer = createMockHubSocket();
-    hub.registerTerminalClient("term_1", terminalViewer);
+    const sink = {
+      broadcast: vi.fn(),
+      close: vi.fn(),
+      relayOutput: vi.fn(),
+      reply: vi.fn(),
+      replay: vi.fn(),
+    };
+    const terminalDataSocket = new ChildTerminalSocket(
+      "attach_1",
+      "term_1",
+      sink,
+      false,
+      false,
+    );
+    hub.registerTerminalClient("term_1", terminalDataSocket);
+    hub.recordTerminalClientVisibility(
+      "term_1",
+      terminalDataSocket,
+      true,
+      Date.now(),
+    );
+    const appViewer = createMockHubSocket();
+    hub.setDeviceHandoffView(appViewer, null, "term_1");
+
     expect(
       hub.notifyDeviceHandoff(
         {
@@ -124,18 +147,11 @@ describe("NotificationHub device handoff routing", () => {
         },
         "Terminal one",
       ),
-    ).toBe(0);
-    expect(terminalViewer.messages).toHaveLength(0);
-
-    hub.recordTerminalClientVisibility(
-      "term_1",
-      terminalViewer,
-      true,
-      Date.now(),
-    );
-    expect(JSON.parse(terminalViewer.messages[0]!).request).toMatchObject({
+    ).toBe(1);
+    expect(JSON.parse(appViewer.messages[0]!).request).toMatchObject({
       text: "terminal copy",
     });
+    expect(terminalDataSocket.isClosed).toBe(false);
   });
 
   it("expires undelivered origin-scoped payloads", () => {

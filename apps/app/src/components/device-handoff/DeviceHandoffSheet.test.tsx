@@ -21,6 +21,7 @@ import {
   useActiveDeviceHandoffTerminalView,
 } from "./device-handoff-view";
 import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
+import { activeTerminalIdForDeviceHandoff } from "@/views/thread-detail/threadSecondaryPanelSelection";
 
 const copied = vi.hoisted(() => vi.fn());
 const registerDeviceHandoff = vi.hoisted(() =>
@@ -73,6 +74,20 @@ function DeviceHandoffQueueHarness({
   );
 }
 
+function SelectedDeviceHandoffQueueHarness() {
+  const activeTerminalSessionId = useActiveDeviceHandoffTerminal();
+  const queue = useDeviceHandoffQueue(null, activeTerminalSessionId);
+  return (
+    <DeviceHandoffSheet
+      signal={queue.signal}
+      position={queue.position}
+      count={queue.count}
+      onDismiss={queue.dismiss}
+      onAcknowledge={queue.acknowledge}
+    />
+  );
+}
+
 function ActiveTerminalPane({
   ownerId,
   terminalId,
@@ -89,6 +104,21 @@ function ActiveTerminalPane({
     terminalId,
     isFocused,
     isOpen,
+  });
+  return null;
+}
+
+function SelectedTerminalPane({ terminalId }: { terminalId: string }) {
+  const selectedTab = {
+    id: `tab-${terminalId}`,
+    kind: "terminal" as const,
+    terminalId,
+  };
+  useActiveDeviceHandoffTerminalView({
+    ownerId: "root-compose:root",
+    terminalId: activeTerminalIdForDeviceHandoff(selectedTab),
+    isFocused: true,
+    isOpen: true,
   });
   return null;
 }
@@ -685,6 +715,41 @@ describe("DeviceHandoffSheet", () => {
     fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
     expect(await screen.findByText("terminal A second copy")).toBeTruthy();
     expect(screen.getByText("2 of 2")).toBeTruthy();
+  });
+
+  it("uses the selected mobile panel terminal before its session query resolves", async () => {
+    const view = render(
+      <CompactViewportOverrideProvider isCompactViewport={true}>
+        <SelectedTerminalPane terminalId="term-a" />
+        <SelectedDeviceHandoffQueueHarness />
+      </CompactViewportOverrideProvider>,
+    );
+    const listener = registerDeviceHandoff.mock.lastCall?.[0] as
+      | ((signal: DeviceHandoffSignal | DeviceHandoffExpiredSignal) => void)
+      | undefined;
+    act(() =>
+      listener?.({
+        type: "device-handoff",
+        id: "selected-tab-live",
+        createdAt: Date.now(),
+        expiresAt: Date.now() + 600_000,
+        originLabel: "Standalone A",
+        request: {
+          kind: "copy-text",
+          text: "selected terminal copy",
+          origin: { terminalSessionId: "term-a" },
+        },
+      }),
+    );
+    expect(await screen.findByText("selected terminal copy")).toBeTruthy();
+
+    view.rerender(
+      <CompactViewportOverrideProvider isCompactViewport={true}>
+        <SelectedTerminalPane terminalId="term-b" />
+        <SelectedDeviceHandoffQueueHarness />
+      </CompactViewportOverrideProvider>,
+    );
+    expect(screen.queryByText("selected terminal copy")).toBeNull();
   });
 
   it("shows a threadless expiry notice only on its originating terminal", async () => {
