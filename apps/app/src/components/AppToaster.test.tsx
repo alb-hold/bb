@@ -22,7 +22,6 @@ afterEach(async () => {
     });
     vi.useRealTimers();
   }
-  await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
   cleanup();
   toast.dismiss();
 });
