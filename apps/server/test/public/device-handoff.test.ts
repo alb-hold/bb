@@ -1093,10 +1093,7 @@ describe("device handoff websocket acknowledgement", () => {
       await setView(forgedBoth, terminal.id);
       await setView(forgedThreadOnly, null);
       await expectNoRealtimeMessage(forgedBoth, "device-handoff-expired");
-      await expectNoRealtimeMessage(
-        forgedThreadOnly,
-        "device-handoff-expired",
-      );
+      await expectNoRealtimeMessage(forgedThreadOnly, "device-handoff-expired");
 
       const expired = nextRealtimeMessage(viewer, "device-handoff-expired");
       await terminalAttachment.setVisible(true);
@@ -1328,6 +1325,110 @@ describe("device handoff websocket acknowledgement", () => {
       });
     } finally {
       admitted.close();
+      await server.close();
+    }
+  });
+
+  it("delivers a thread-only handoff once to subscribed sockets viewing its thread", async () => {
+    const server = await startTestServer();
+    const { thread: originThread } = seedThreadFixture(server);
+    const { thread: otherThread } = seedThreadFixture(server);
+    const origin = `http://127.0.0.1:${new URL(server.baseUrl).port}`;
+    const viewer = await connectRealtime(server.baseUrl, { origin });
+    const subscribedElsewhere = await connectRealtime(server.baseUrl, {
+      origin,
+    });
+    const viewingWithoutSubscription = await connectRealtime(server.baseUrl, {
+      origin,
+    });
+    let viewerHandoffCount = 0;
+    const countViewerHandoff = (data: WebSocket.RawData) => {
+      if (
+        (JSON.parse(data.toString()) as { type?: string }).type ===
+        "device-handoff"
+      ) {
+        viewerHandoffCount += 1;
+      }
+    };
+    viewer.on("message", countViewerHandoff);
+    try {
+      sendRealtime(viewer, {
+        type: "subscribe",
+        target: { kind: "thread-detail", threadId: originThread.id },
+      });
+      sendRealtime(viewer, {
+        type: "device-handoff-view",
+        threadId: originThread.id,
+        terminalSessionId: null,
+      });
+      sendRealtime(subscribedElsewhere, {
+        type: "subscribe",
+        target: { kind: "thread-detail", threadId: originThread.id },
+      });
+      sendRealtime(subscribedElsewhere, {
+        type: "device-handoff-view",
+        threadId: otherThread.id,
+        terminalSessionId: null,
+      });
+      sendRealtime(viewingWithoutSubscription, {
+        type: "device-handoff-view",
+        threadId: originThread.id,
+        terminalSessionId: null,
+      });
+      const viewerReady = nextRealtimeMessage(viewer, "pong");
+      const elsewhereReady = nextRealtimeMessage(subscribedElsewhere, "pong");
+      const unsubscribedReady = nextRealtimeMessage(
+        viewingWithoutSubscription,
+        "pong",
+      );
+      sendRealtime(viewer, { type: "ping" });
+      sendRealtime(subscribedElsewhere, { type: "ping" });
+      sendRealtime(viewingWithoutSubscription, { type: "ping" });
+      await Promise.all([viewerReady, elsewhereReady, unsubscribedReady]);
+
+      const received = nextRealtimeMessage(viewer, "device-handoff");
+      const response = await server.app.request("/api/v1/device-handoff", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          kind: "copy-text",
+          text: "thread-only origin payload",
+          origin: { threadId: originThread.id },
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ delivered: 1 });
+      await expect(received).resolves.toMatchObject({
+        type: "device-handoff",
+        request: {
+          kind: "copy-text",
+          text: "thread-only origin payload",
+        },
+      });
+      sendRealtime(viewer, {
+        type: "device-handoff-view",
+        threadId: originThread.id,
+        terminalSessionId: null,
+      });
+      sendRealtime(viewer, {
+        type: "subscribe",
+        target: { kind: "thread-detail", threadId: originThread.id },
+      });
+      const viewerReconfirmed = nextRealtimeMessage(viewer, "pong");
+      sendRealtime(viewer, { type: "ping" });
+      await viewerReconfirmed;
+      expect(viewerHandoffCount).toBe(1);
+      await expectNoRealtimeMessage(subscribedElsewhere, "device-handoff");
+      await expectNoRealtimeMessage(
+        viewingWithoutSubscription,
+        "device-handoff",
+      );
+    } finally {
+      viewer.off("message", countViewerHandoff);
+      viewer.close();
+      subscribedElsewhere.close();
+      viewingWithoutSubscription.close();
       await server.close();
     }
   });
