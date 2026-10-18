@@ -1087,7 +1087,17 @@ export function ThreadTerminalView({
             !document.hasFocus() ||
             !terminal?.element?.contains(document.activeElement)
           ) {
-            containerElement.style.opacity = "";
+            if (localFitGrid !== null && outputPipeline !== null) {
+              outputPipeline.setGrid(
+                localFitGrid.cols,
+                localFitGrid.rows,
+                () => {
+                  containerElement.style.opacity = "";
+                },
+              );
+            } else {
+              containerElement.style.opacity = "";
+            }
           }
         }, 1_500);
       };
@@ -1372,7 +1382,17 @@ export function ThreadTerminalView({
                   !document.hasFocus() ||
                   !activeTerminal.element?.contains(document.activeElement)
                 ) {
-                  containerElement.style.opacity = "";
+                  if (localFitGrid !== null && outputPipeline !== null) {
+                    outputPipeline.setGrid(
+                      localFitGrid.cols,
+                      localFitGrid.rows,
+                      () => {
+                        containerElement.style.opacity = "";
+                      },
+                    );
+                  } else {
+                    containerElement.style.opacity = "";
+                  }
                 }
               }, 1_500);
             }
