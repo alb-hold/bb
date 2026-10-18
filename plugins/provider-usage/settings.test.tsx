@@ -4,6 +4,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { providerUsageRpcContract } from "./server.js";
 import type { UsageMachine, UsageProvider } from "./usage-schema.js";
+import pluginApp from "./app.js";
 
 afterEach(() => {
   cleanup();
@@ -58,7 +59,7 @@ const machine = (
 });
 
 it("fetches all providers only in the selected source and keeps grouped accounts, icons, labels and reset times", async () => {
-  const app = await loadPluginApp(() => import("./app"));
+  const app = await loadPluginApp(pluginApp);
   const result = {
     machines: [
       machine("host", [account("local")]),
@@ -74,9 +75,7 @@ it("fetches all providers only in the selected source and keeps grouped accounts
     {},
     { rpc: { getUsage: () => result } },
   );
-  await waitFor(() =>
-    expect(slot.getByLabelText("Reload usage data")).toBeTruthy(),
-  );
+  await slot.findByLabelText("Reload usage data");
   expect(
     slot.getByRole("button", { name: "Usage source" }).textContent,
   ).toContain("Combined");
@@ -84,10 +83,8 @@ it("fetches all providers only in the selected source and keeps grouped accounts
   expect(slot.getByText("third@example.com")).toBeTruthy();
   expect(slot.queryByText("first@example.com")).toBeNull();
   fireEvent.pointerDown(slot.getByRole("button", { name: "Usage source" }));
-  fireEvent.click(
-    await screen.findByRole("menuitem", { name: /Account Pooler/ }),
-  );
-  await slot.findByText("first@example.com");
+  fireEvent.click(screen.getByRole("menuitem", { name: /Account Pooler/ }));
+  await slot.findByLabelText("Reload usage data");
   expect(slot.getAllByRole("heading", { name: "Codex" })).toHaveLength(2);
   expect(slot.getByText("first@example.com")).toBeTruthy();
   expect(slot.getByText("second@example.com")).toBeTruthy();
@@ -100,11 +97,8 @@ it("fetches all providers only in the selected source and keeps grouped accounts
     maxAgeMs: 60_000,
   });
   fireEvent.click(slot.getByLabelText("Reload usage data"));
-  await waitFor(() =>
-    expect(slot.rpcCalls.some((call) => usageInput(call.input).force)).toBe(
-      true,
-    ),
-  );
+  await slot.findByLabelText("Reloading usage data");
+  expect(slot.rpcCalls.some((call) => usageInput(call.input).force)).toBe(true);
   expect(
     slot.rpcCalls.some((call) => {
       const input = usageInput(call.input);

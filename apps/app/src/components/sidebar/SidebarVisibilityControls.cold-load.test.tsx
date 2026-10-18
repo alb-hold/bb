@@ -5,14 +5,19 @@ import { afterEach, expect, it, vi } from "vitest";
 import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { SidebarVisibilityCustomize } from "./SidebarVisibilityControls";
 
-const download = await vi.hoisted(async () => {
+const moduleImports = await vi.hoisted(async () => {
   const { createDeferredPromise } = await import("@bb/test-helpers");
-  return createDeferredPromise<void>();
+  return {
+    download: createDeferredPromise<void>(),
+    loaded: createDeferredPromise<void>(),
+  };
 });
 
 vi.mock("./SidebarVisibilityCustomize", async (importOriginal) => {
-  await download.promise;
-  return importOriginal();
+  await moduleImports.download.promise;
+  const module = await importOriginal();
+  moduleImports.loaded.resolve();
+  return module;
 });
 
 afterEach(() => {
@@ -51,10 +56,11 @@ it("keeps Done, Escape and compact Back usable while the import is held", async 
     </CompactViewportOverrideProvider>,
   );
   await act(async () => {
-    download.resolve();
+    moduleImports.download.resolve();
+    await moduleImports.loaded.promise;
   });
   fireEvent.click(
-    await screen.findByRole("checkbox", { name: "Show Review in sidebar" }),
+    screen.getByRole("checkbox", { name: "Show Review in sidebar" }),
   );
   expect(props.onVisibleChange).toHaveBeenCalledWith("section:review", true);
   expect(screen.queryByRole("alert")).toBeNull();
