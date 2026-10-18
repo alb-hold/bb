@@ -1890,7 +1890,7 @@ describe("spawnLoggedProcess", () => {
       const previousElectronMode = process.env.ELECTRON_RUN_AS_NODE;
       process.env.ELECTRON_RUN_AS_NODE = "1";
       Object.defineProperty(process, "execPath", { value: fakeElectronPath });
-      let child!: ChildProcess;
+      let child!: ReturnType<typeof spawnLoggedProcess>;
       try {
         child = spawnLoggedProcess({
           command: previousExecPath,
