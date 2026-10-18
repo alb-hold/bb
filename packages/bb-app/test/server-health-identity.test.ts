@@ -367,6 +367,7 @@ describe("startFullStackServerProcess", () => {
         },
       });
       let serverRun: ManagedProcessRun | undefined;
+      let writerProcess: ChildProcess | undefined;
       let holderPid: number | undefined;
       try {
         serverRun = await startFullStackServerProcess({
@@ -375,13 +376,17 @@ describe("startFullStackServerProcess", () => {
             BB_SERVER_PORT: String(context.serverPort),
             PATH: process.env.PATH,
           },
+          onSpawned: (child) => {
+            writerProcess = (
+              child as ChildProcess & { writerProcess: ChildProcess }
+            ).writerProcess;
+          },
           processes,
         });
         const termination = serverRun.terminate("SIGTERM");
         await vi.waitFor(() => expect(existsSync(holderPidPath)).toBe(true));
         holderPid = Number(readFileSync(holderPidPath, "utf8"));
         expect(holderPid).toBeGreaterThan(0);
-        const writerProcess = processes.serverRun?.childProcess.writerProcess;
         expect(writerProcess).toBeDefined();
         const writerPid = writerProcess?.pid;
         expect(writerPid).toBeGreaterThan(0);
