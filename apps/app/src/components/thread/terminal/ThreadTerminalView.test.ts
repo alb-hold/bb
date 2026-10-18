@@ -493,6 +493,32 @@ describe("terminal output encoding", () => {
     await vi.waitFor(() => expect(afterResize).toHaveBeenCalledOnce());
   });
 
+  it("keeps the replay-completion reveal callback when queued grids collapse", async () => {
+    const writeCallbacks: Array<() => void> = [];
+    const resize = vi.fn();
+    const pipeline = createTerminalOutputPipeline({
+      resize,
+      write: (_data, callback) => writeCallbacks.push(callback),
+    });
+    const reveal = vi.fn();
+
+    pipeline.push(Buffer.from("pending replay output"), () => undefined);
+    await Promise.resolve();
+    pipeline.push(
+      Buffer.from(createTerminalGridMarker({ cols: 51, rows: 47 })),
+      () => undefined,
+    );
+    pipeline.setGrid(51, 47, reveal);
+    pipeline.push(
+      Buffer.from(createTerminalGridMarker({ cols: 51, rows: 48 })),
+      () => undefined,
+    );
+    writeCallbacks.shift()?.();
+
+    await vi.waitFor(() => expect(reveal).toHaveBeenCalledOnce());
+    expect(resize).toHaveBeenLastCalledWith(51, 48);
+  });
+
   it("splits markers across output chunks before writing them to xterm", async () => {
     const terminal = new Terminal({ cols: 30, rows: 6 });
     const pipeline = createTerminalOutputPipeline(terminal);

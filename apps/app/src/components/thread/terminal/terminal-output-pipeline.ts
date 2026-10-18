@@ -39,7 +39,16 @@ export function createTerminalOutputPipeline(
   const enqueue = (operation: Operation) => {
     const previous = operations.at(-1);
     if (operation.type === "grid" && previous?.type === "grid") {
-      operations[operations.length - 1] = operation;
+      const callbacks = [previous.callback, operation.callback].filter(
+        (callback): callback is () => void => callback !== undefined,
+      );
+      operations[operations.length - 1] = {
+        ...operation,
+        callback:
+          callbacks.length === 0
+            ? undefined
+            : () => callbacks.forEach((callback) => callback()),
+      };
     } else {
       operations.push(operation);
     }
