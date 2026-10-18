@@ -76,6 +76,7 @@ vi.mock("@get-bb/plugin-sdk/app", async (importOriginal) => {
 
 beforeAll(async () => {
   installTestPluginRuntime();
+  await import("./CommandPaletteBody");
   await import("./ThreadSearchPaletteMode");
 });
 
