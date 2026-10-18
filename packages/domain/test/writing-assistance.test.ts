@@ -868,17 +868,6 @@ describe("validateFormattedTranscript", () => {
     ["o carro para para deixar passar", "O carro para deixar passar."],
     ["so did i. i left early", "So did I left early."],
     ["check the\tthe cache", "Check the cache."],
-  ])(
-    "keeps the transcript when formatting drops a repeat that can be meant: %s",
-    (raw, formatted) => {
-      expect(validateFormattedTranscript(raw, formatted)).toEqual({
-        ok: false,
-        reason: "dropped-words",
-      });
-    },
-  );
-
-  it.each([
     [
       "check the the cache before the deploy",
       "Check the cache before the deploy.",
@@ -889,11 +878,41 @@ describe("validateFormattedTranscript", () => {
     ],
     ["eu eu vou rodar de de novo", "Eu vou rodar de novo."],
   ])(
-    "allows formatting to drop a short function word said twice by accident: %s",
+    "keeps the transcript when formatting drops a repeated word: %s",
     (raw, formatted) => {
-      expect(validateFormattedTranscript(raw, formatted)).toEqual({ ok: true });
+      expect(validateFormattedTranscript(raw, formatted)).toEqual({
+        ok: false,
+        reason: "dropped-words",
+      });
     },
   );
+
+  it.each([
+    [
+      "the not not not i mean not not not not",
+      "The not not not, I mean not not not.",
+      "negation",
+    ],
+    ["and and i mean and and and", "And and, I mean and.", "dropped-words"],
+  ])(
+    "keeps the transcript when a repeat after a correction phrase is cut: %s",
+    (raw, formatted, reason) => {
+      expect(validateFormattedTranscript(raw, formatted)).toEqual({
+        ok: false,
+        reason,
+      });
+    },
+  );
+
+  it.each([
+    [
+      "check the the cache before the deploy",
+      "Check the the cache before the deploy.",
+    ],
+    ["eu eu vou rodar de de novo", "Eu eu vou rodar de de novo."],
+  ])("accepts formatting that keeps a repeated word: %s", (raw, formatted) => {
+    expect(validateFormattedTranscript(raw, formatted)).toEqual({ ok: true });
+  });
 
   it.each([
     ["no wait is required", "Wait is required.", "negation"],
@@ -1204,13 +1223,19 @@ describe("validateFormattedTranscript", () => {
     ).toEqual({ ok: false, reason: "dropped-words" });
   });
 
-  it("drops list connectors and repeated words only when safe", () => {
+  it("drops list connectors but never a repeated word", () => {
+    expect(
+      validateFormattedTranscript(
+        "first check auth and then second add the tests",
+        "1. Check auth.\n2. Add the tests.",
+      ),
+    ).toEqual({ ok: true });
     expect(
       validateFormattedTranscript(
         "first check auth and then second add the the tests",
         "1. Check auth.\n2. Add the tests.",
       ),
-    ).toEqual({ ok: true });
+    ).toEqual({ ok: false, reason: "dropped-words" });
     expect(
       validateFormattedTranscript(
         "check auth and add tests",

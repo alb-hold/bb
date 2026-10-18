@@ -1190,7 +1190,6 @@ export function validateFormattedTranscript(
     }
   }
   const rawTokens = wordTokens(raw);
-  const repeats = accidentalRepeatPairs(raw);
   const source = new Set(rawTokens);
   const items = listItems(formatted);
   const list = items.size > 0;
@@ -1300,7 +1299,6 @@ export function validateFormattedTranscript(
     const token = rawTokens[index]!;
     if (allowed[index]) continue;
     if (options.literalCode && SPOKEN_SYMBOLS.has(token)) continue;
-    if (repeats[index]) continue;
     const enumerator = ENUMERATOR_VALUES.get(token);
     if (
       enumerator !== undefined &&

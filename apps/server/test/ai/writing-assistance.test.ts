@@ -555,6 +555,20 @@ describe("dictation segments", () => {
     });
   });
 
+  it("keeps the transcript when formatting drops a word said twice", async () => {
+    await withTestHarness({}, async (harness) => {
+      registerFakeAiService(harness.deps.aiServices, {
+        transcribe: async () => "check the the cache before the deploy",
+        complete: async () => "Check the cache before the deploy.",
+      });
+      await expect((await postSegment(harness)).json()).resolves.toMatchObject({
+        raw: "check the the cache before the deploy",
+        text: "check the the cache before the deploy",
+        formatted: false,
+      });
+    });
+  });
+
   it("keeps the transcript when formatting drops the sign of a number", async () => {
     await withTestHarness({}, async (harness) => {
       registerFakeAiService(harness.deps.aiServices, {

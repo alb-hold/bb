@@ -351,13 +351,14 @@ their case or punctuation
 ("next js" to "Next.js") but never their letters, since without a dictionary a
 misheard name cannot be told from a real word ("public" is never rewritten as
 a similar term). Formatting may not leave out any spoken word, including hesitation
-sounds such as uh, um or hmm (a formatted phrase that does is discarded in favor
+sounds such as uh, um or hmm, or one of two words said twice in a row ("the the"
+stays, because only the speaker knows whether it was meant) (a formatted phrase that does is discarded in favor
 of the plain transcript); it may leave out only a spoken self-correction (no wait, I mean, scratch that, actually,
 quer dizer, na verdade and the like) together with the phrase just before it
 that it replaces (one unbroken run of at most six words ending at the
 correction, no longer than what was said after it and starting with the same
 word (on monday no wait on tuesday), with nothing else near it left out; a phrase
-that replaces nothing, as in "no wait is required", is not a correction), one of those words said twice with only spaces between (never another word, such as very, had, that, is, her or in, and never across punctuation), spoken symbol names in literal-code
+that replaces nothing, as in "no wait is required", is not a correction), spoken symbol names in literal-code
 mode, and the spoken numbers and connectors (and, then, next, finally, e,
 depois, então) of a numbered list; leaving out any other word, a negation
 outside a self-correction phrase, or the minus sign of a number ("-5" never
