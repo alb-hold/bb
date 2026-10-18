@@ -434,7 +434,6 @@ describe("terminal output encoding", () => {
       resize,
       write: (_data, callback) => writeCallbacks.push(callback),
     });
-    const afterResize = vi.fn();
     let finish!: () => void;
     const finished = new Promise<void>((resolve) => {
       finish = resolve;
@@ -454,11 +453,11 @@ describe("terminal output encoding", () => {
     await vi.waitFor(() =>
       expect(resize).toHaveBeenCalledWith(51, 12),
     );
+    expect(resize).toHaveBeenCalledOnce();
     expect(writeCallbacks).toHaveLength(1);
     writeCallbacks.shift()?.();
     await finished;
-    pipeline.setGrid(51, 12, afterResize);
-    await vi.waitFor(() => expect(afterResize).toHaveBeenCalledOnce());
+    expect(resize).toHaveBeenCalledOnce();
   });
 
   it("splits markers across output chunks before writing them to xterm", async () => {
