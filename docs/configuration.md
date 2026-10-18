@@ -294,10 +294,14 @@ The Claude Code provider plugin registers a `claude` service for
 `claude` CLI with its own login (`claude auth login`), no tools, no settings,
 and no session history, trying Claude Haiku 5.5 and then Claude Sonnet 5.5.
 The CLI gets only an allowlisted environment (path, home, user, temp, locale,
-XDG, proxy and CA variables, `CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_OAUTH_TOKEN`,
-and the Windows system variables), so `ANTHROPIC_BASE_URL`,
-`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `NODE_OPTIONS`, and other
-`CLAUDE_CODE_*` settings in bb's environment never reach it.
+XDG, `CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_OAUTH_TOKEN`, and the Windows system
+variables), so `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`,
+`ANTHROPIC_AUTH_TOKEN`, `NODE_OPTIONS`, other `CLAUDE_CODE_*` settings, and
+the proxy and CA variables (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`,
+`NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `SSL_CERT_DIR`) in bb's environment
+never reach it, and the prompt cannot be redirected or intercepted through
+them. On a network that only allows HTTPS through a proxy, this service
+cannot reach Claude; pick Codex or bb cloud for the text tasks there.
 Claude does not transcribe audio, so `voice` still needs bb cloud or Codex.
 Because `provider-claude-code` sorts before `provider-codex`, automatic text
 tasks try Claude before Codex.

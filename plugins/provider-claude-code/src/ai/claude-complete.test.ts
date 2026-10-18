@@ -43,6 +43,11 @@ async function fakeCli(mode: string) {
     CLAUDE_CODE_USE_BEDROCK: "1",
     NODE_OPTIONS: "--require /tmp/hook.js",
     https_proxy: "http://proxy.internal:3128",
+    HTTP_PROXY: "http://proxy.internal:3128",
+    NO_PROXY: "localhost",
+    NODE_EXTRA_CA_CERTS: "/tmp/intercept-ca.pem",
+    SSL_CERT_FILE: "/tmp/intercept-ca.pem",
+    SSL_CERT_DIR: "/tmp/intercept-certs",
     LC_ALL: "en_US.UTF-8",
     CLAUDECODE: "1",
     CLAUDE_CODE_SESSION_ID: "parent-session",
@@ -107,7 +112,7 @@ describe("completeClaudeInference", () => {
     ]);
   });
 
-  it("passes only the allowlisted environment, so endpoint and credential overrides cannot redirect the prompt", async () => {
+  it("passes only the allowlisted environment, so endpoint, credential, proxy and CA overrides cannot redirect or intercept the prompt", async () => {
     const cli = await fakeCli("ok");
     await run(cli.deps);
     const { env } = await cli.readCall();
@@ -115,13 +120,7 @@ describe("completeClaudeInference", () => {
       (key) => !["PWD", "SHLVL", "_", "__CF_USER_TEXT_ENCODING"].includes(key),
     );
     expect(passed.sort()).toEqual(
-      [
-        "CLAUDE_CODE_OAUTH_TOKEN",
-        "HOME",
-        "LC_ALL",
-        "PATH",
-        "https_proxy",
-      ].sort(),
+      ["CLAUDE_CODE_OAUTH_TOKEN", "HOME", "LC_ALL", "PATH"].sort(),
     );
     expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe("oauth-token");
     expect(
