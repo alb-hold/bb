@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { Buffer } from "node:buffer";
 import os from "node:os";
 import { z } from "zod";
 import { missingClaudeCliGuidance } from "../bridge/missing-cli-error.js";
@@ -123,8 +124,10 @@ export function completeClaudeInference(
   }
   return new Promise((resolve) => {
     let settled = false;
-    let stdout = "";
-    let stderr = "";
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
     const child = spawn(deps.executable, claudeCompleteArgs(input.model), {
       cwd: os.tmpdir(),
       env: claudeCompleteEnv(deps.env),
@@ -153,16 +156,17 @@ export function completeClaudeInference(
     const onAbort = (): void =>
       finish(failure("timeout", "The request was cancelled"));
     signal.addEventListener("abort", onAbort, { once: true });
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
-      stdout += chunk;
-      if (stdout.length > MAX_OUTPUT_BYTES) {
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout.push(chunk);
+      stdoutBytes += chunk.length;
+      if (stdoutBytes > MAX_OUTPUT_BYTES) {
         finish(failure("invalid_response", "Claude Code output was too large"));
       }
     });
-    child.stderr.on("data", (chunk: string) => {
-      if (stderr.length < MAX_OUTPUT_BYTES) stderr += chunk;
+    child.stderr.on("data", (chunk: Buffer) => {
+      if (stderrBytes >= MAX_OUTPUT_BYTES) return;
+      stderr.push(chunk);
+      stderrBytes += chunk.length;
     });
     child.on("error", (error: NodeJS.ErrnoException) =>
       finish(
@@ -173,7 +177,13 @@ export function completeClaudeInference(
       ),
     );
     child.on("close", (exitCode) =>
-      finish(parseClaudeCliResult(stdout, stderr, exitCode)),
+      finish(
+        parseClaudeCliResult(
+          Buffer.concat(stdout).toString("utf8"),
+          Buffer.concat(stderr).toString("utf8"),
+          exitCode,
+        ),
+      ),
     );
     child.stdin.on("error", () => {});
     child.stdin.end(input.prompt);

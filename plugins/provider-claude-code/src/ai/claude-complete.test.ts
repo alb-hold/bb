@@ -22,6 +22,8 @@ else if (mode === "denied") result({ is_error: true, api_error_status: 401, resu
 else if (mode === "signed-out") { process.stdout.write("Not logged in · Please run /login\\n"); process.exit(1); }
 else if (mode === "crash") { process.stderr.write("boom\\n"); process.exit(2); }
 else if (mode === "hang") setInterval(() => {}, 1000);
+else if (mode === "multibyte-over") result({ is_error: false, result: "\u00e9".repeat(600000) });
+else if (mode === "multibyte-under") result({ is_error: false, result: "\u00e9".repeat(500000) });
 `;
 
 async function fakeCli(mode: string) {
@@ -122,6 +124,22 @@ describe("completeClaudeInference", () => {
   ])("maps the %s answer to %s", async (mode, code, message) => {
     const cli = await fakeCli(mode);
     await expect(run(cli.deps)).resolves.toEqual({ ok: false, code, message });
+  });
+
+  it("rejects output over 1 MiB of bytes even when it is under 1 Mi characters", async () => {
+    const cli = await fakeCli("multibyte-over");
+    await expect(run(cli.deps)).resolves.toEqual({
+      ok: false,
+      code: "invalid_response",
+      message: "Claude Code output was too large",
+    });
+  });
+
+  it("accepts multibyte output just under 1 MiB of bytes", async () => {
+    const cli = await fakeCli("multibyte-under");
+    const result = await run(cli.deps);
+    expect(result.ok).toBe(true);
+    expect(result.ok ? result.text.length : 0).toBe(500_000);
   });
 
   it("kills a CLI that does not answer in time", async () => {

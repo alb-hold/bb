@@ -86,6 +86,7 @@ export function useSegmentedDictation(options: UseSegmentedDictationOptions) {
   const streamRef = useRef<MediaStream | null>(null);
   const contextRef = useRef<AudioContext | null>(null);
   const startRequestRef = useRef(0);
+  const startingRef = useRef(false);
   const [state, setState] = useState<SegmentedDictationState>(IDLE);
 
   const releaseDevices = useCallback(() => {
@@ -134,8 +135,11 @@ export function useSegmentedDictation(options: UseSegmentedDictationOptions) {
     startRequestRef.current += 1;
     const session = sessionRef.current;
     if (session === null) {
+      const wasStarting = startingRef.current;
+      startingRef.current = false;
       releaseDevices();
       setState((previous) => (previous.phase === "starting" ? IDLE : previous));
+      if (wasStarting) optionsRef.current.onFinished?.();
       return;
     }
     void session.stop();
@@ -144,6 +148,7 @@ export function useSegmentedDictation(options: UseSegmentedDictationOptions) {
 
   const cancel = useCallback(() => {
     startRequestRef.current += 1;
+    startingRef.current = false;
     const session = sessionRef.current;
     sessionRef.current = null;
     session?.cancel();
@@ -170,6 +175,7 @@ export function useSegmentedDictation(options: UseSegmentedDictationOptions) {
     }
     contextRef.current = context;
     setState({ ...IDLE, phase: "starting" });
+    startingRef.current = true;
     let stream: MediaStream;
     try {
       stream = await requestAudioInputStream(
@@ -178,6 +184,7 @@ export function useSegmentedDictation(options: UseSegmentedDictationOptions) {
       );
     } catch (error) {
       if (request === startRequestRef.current) {
+        startingRef.current = false;
         releaseDevices();
         setState(IDLE);
         optionsRef.current.onError(microphoneErrorMessage(error));
@@ -188,6 +195,7 @@ export function useSegmentedDictation(options: UseSegmentedDictationOptions) {
       stream.getTracks().forEach((track) => track.stop());
       return;
     }
+    startingRef.current = false;
     streamRef.current = stream;
     const session = new DictationSession({
       env: createBrowserDictationEnvironment(stream, context),

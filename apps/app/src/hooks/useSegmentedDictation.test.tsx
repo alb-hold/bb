@@ -48,14 +48,25 @@ function fakeStream() {
   return { stream, track };
 }
 
-function renderDictation() {
+function renderDictation(onFinished: () => void = () => {}) {
   return renderHook(() =>
     useSegmentedDictation({
       transcribe: async () => "",
       onText: () => {},
       onError: () => {},
+      onFinished,
     }),
   );
+}
+
+function pendingGrant() {
+  let grant: (value: MediaStream) => void = () => {};
+  media.request.mockReturnValue(
+    new Promise<MediaStream>((resolve) => {
+      grant = resolve;
+    }),
+  );
+  return (value: MediaStream) => grant(value);
 }
 
 async function startRecording() {
@@ -128,5 +139,45 @@ describe("useSegmentedDictation microphone release", () => {
     });
     expect(track.stop).toHaveBeenCalledTimes(1);
     expect(hook.result.current.phase).toBe("idle");
+  });
+
+  it("finishes once when stopped while the microphone permission is pending", async () => {
+    const { stream, track } = fakeStream();
+    const grant = pendingGrant();
+    const onFinished = vi.fn();
+    const hook = renderDictation(onFinished);
+    let started: Promise<void> = Promise.resolve();
+    act(() => {
+      started = hook.result.current.start();
+    });
+    expect(hook.result.current.phase).toBe("starting");
+    act(() => hook.result.current.stop());
+    expect(onFinished).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      grant(stream);
+      await started;
+    });
+    expect(onFinished).toHaveBeenCalledTimes(1);
+    expect(track.stop).toHaveBeenCalledTimes(1);
+    expect(hook.result.current.phase).toBe("idle");
+  });
+
+  it("does not finish when cancelled while the microphone permission is pending", async () => {
+    const { stream, track } = fakeStream();
+    const grant = pendingGrant();
+    const onFinished = vi.fn();
+    const hook = renderDictation(onFinished);
+    let started: Promise<void> = Promise.resolve();
+    act(() => {
+      started = hook.result.current.start();
+    });
+    act(() => hook.result.current.cancel());
+    act(() => hook.result.current.stop());
+    await act(async () => {
+      grant(stream);
+      await started;
+    });
+    expect(onFinished).not.toHaveBeenCalled();
+    expect(track.stop).toHaveBeenCalledTimes(1);
   });
 });
