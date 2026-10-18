@@ -30,11 +30,15 @@ import {
   type TerminalSessionMutation,
   type TerminalSessionRow,
 } from "@bb/db";
+import {
+  findLastTerminalGridMarker,
+  TERMINAL_DATA_MAX_BYTES,
+  TERMINAL_GRID_OSC_PREFIX,
+} from "@bb/domain";
 import type {
   HostDaemonTerminalCloseReason,
   TerminalSessionCloseReason,
 } from "@bb/domain";
-import { TERMINAL_DATA_MAX_BYTES } from "@bb/domain";
 import type {
   HostDaemonContributedEnvEntry,
   HostDaemonDaemonWsMessage,
@@ -463,7 +467,13 @@ function applyTerminalOutputBounds(args: {
     limitedByChunks.length < chunks.length ||
     (chunks[0]?.seq ?? replayNextSeq) > requestedSinceSeq;
   if (query.tailBytes === undefined) {
-    return { chunks: [...limitedByChunks], truncated };
+    return {
+      chunks: prependGridMarkerFromTrimmedChunks({
+        allChunks: chunks,
+        retainedChunks: [...limitedByChunks],
+      }),
+      truncated,
+    };
   }
 
   const bounded: TerminalOutputChunk[] = [];
@@ -485,7 +495,50 @@ function applyTerminalOutputBounds(args: {
   if (bounded.length < limitedByChunks.length) {
     truncated = true;
   }
-  return { chunks: bounded, truncated };
+  return {
+    chunks: prependGridMarkerFromTrimmedChunks({
+      allChunks: chunks,
+      retainedChunks: bounded,
+    }),
+    truncated,
+  };
+}
+
+function prependGridMarkerFromTrimmedChunks(args: {
+  allChunks: readonly TerminalOutputChunk[];
+  retainedChunks: TerminalOutputChunk[];
+}): TerminalOutputChunk[] {
+  const first = args.retainedChunks[0];
+  if (first === undefined) return args.retainedChunks;
+  const firstRetainedIndex = args.allChunks.findIndex(
+    (chunk) => chunk.seq === first.seq,
+  );
+  if (firstRetainedIndex <= 0) return args.retainedChunks;
+  const marker = findLastTerminalGridMarker(
+    Buffer.concat(
+      args.allChunks
+        .slice(0, firstRetainedIndex)
+        .map((chunk) => Buffer.from(chunk.dataBase64, "base64")),
+    ).toString("utf8"),
+  );
+  if (marker === null) return args.retainedChunks;
+  const firstData = Buffer.from(first.dataBase64, "base64");
+  if (firstData.toString("utf8").startsWith(TERMINAL_GRID_OSC_PREFIX)) {
+    return args.retainedChunks;
+  }
+  const markerBytes = Buffer.from(marker, "utf8");
+  const retainedFirstData =
+    markerBytes.byteLength + firstData.byteLength > TERMINAL_DATA_MAX_BYTES
+      ? firstData.subarray(
+          firstData.byteLength -
+            (TERMINAL_DATA_MAX_BYTES - markerBytes.byteLength),
+        )
+      : firstData;
+  const data = Buffer.concat([markerBytes, retainedFirstData]);
+  return [
+    { ...first, dataBase64: data.toString("base64") },
+    ...args.retainedChunks.slice(1),
+  ];
 }
 
 function terminalOutputLastLines(
@@ -499,7 +552,14 @@ function terminalOutputLastLines(
   const split = text.split("\n");
   if (trailingNewline) split.pop();
   const selected = split.slice(-lines);
-  const selectedText = `${selected.join("\n")}${trailingNewline ? "\n" : ""}`;
+  let selectedText = `${selected.join("\n")}${trailingNewline ? "\n" : ""}`;
+  const removedText = split
+    .slice(0, Math.max(0, split.length - lines))
+    .join("\n");
+  const marker = findLastTerminalGridMarker(removedText);
+  if (marker !== null && !selectedText.startsWith(TERMINAL_GRID_OSC_PREFIX)) {
+    selectedText = `${marker}${selectedText}`;
+  }
   const firstSeq = output.chunks[0]?.seq ?? 0;
   return {
     chunks:

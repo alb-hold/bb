@@ -5,6 +5,7 @@ import {
   findLocalPathProjectSourceForHost,
   isActiveTerminalSessionStatus,
   mobileAppDownloads,
+  createTerminalGridByteMarkerScanner,
 } from "@bb/domain";
 import type { TerminalOutputChunk, TerminalSession } from "@bb/server-contract";
 import { useMediaQuery } from "@bb/shared-ui/hooks/use-media-query";
@@ -104,11 +105,15 @@ const PLUGIN_TOGGLE_SETTLE_TIMEOUT_MS = 10_000;
 
 function decodeTerminalChunks(chunks: readonly TerminalOutputChunk[]): string {
   const decoder = new TextDecoder();
-  return chunks
+  const scanner = createTerminalGridByteMarkerScanner();
+  const text = chunks
     .map((chunk) =>
-      decoder.decode(decodeBase64Bytes(chunk.dataBase64), { stream: true }),
+      decoder.decode(scanner.push(decodeBase64Bytes(chunk.dataBase64)).bytes, {
+        stream: true,
+      }),
     )
     .join("");
+  return `${text}${decoder.decode(scanner.flush())}${decoder.decode()}`;
 }
 
 function encodeTerminalInput(text: string): string {

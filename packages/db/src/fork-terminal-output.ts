@@ -1,4 +1,5 @@
 import type { DbConnection } from "./connection.js";
+import { findLastTerminalGridMarker } from "@bb/domain";
 
 export const TERMINAL_RETAINED_OUTPUT_BYTES = 64 * 1024;
 export const HOST_RETAINED_OUTPUT_BYTES = 2 * 1024 * 1024;
@@ -19,6 +20,7 @@ interface RetainedTerminalOutputRow {
 
 interface RetainedChunk {
   chunk: RetainedTerminalOutputChunk;
+  leadingGridMarker?: string;
   retainedAt: number;
 }
 
@@ -35,6 +37,8 @@ function parseChunks(chunksJson: string): RetainedChunk[] {
       !("retainedAt" in entry) ||
       typeof entry.retainedAt !== "number" ||
       !Number.isInteger(entry.retainedAt) ||
+      ("leadingGridMarker" in entry &&
+        typeof entry.leadingGridMarker !== "string") ||
       typeof entry.chunk !== "object" ||
       entry.chunk === null ||
       !("seq" in entry.chunk) ||
@@ -51,6 +55,9 @@ function parseChunks(chunksJson: string): RetainedChunk[] {
         seq: entry.chunk.seq,
         dataBase64: entry.chunk.dataBase64,
       },
+      ...(typeof entry.leadingGridMarker === "string"
+        ? { leadingGridMarker: entry.leadingGridMarker }
+        : {}),
       retainedAt: entry.retainedAt,
     });
   }
@@ -90,16 +97,28 @@ export function appendRetainedTerminalOutputChunk(
     const chunks = existing ? parseChunks(existing.chunksJson) : [];
     if (chunks.some(({ chunk }) => chunk.seq === args.chunk.seq)) return;
     const data = Buffer.from(args.chunk.dataBase64, "base64");
+    let leadingGridMarker: string | undefined;
+    let retainedData = data;
+    if (data.byteLength > TERMINAL_RETAINED_OUTPUT_BYTES) {
+      retainedData = data.subarray(
+        data.byteLength - TERMINAL_RETAINED_OUTPUT_BYTES,
+      );
+      leadingGridMarker =
+        findLastTerminalGridMarker(
+          data
+            .subarray(0, data.byteLength - TERMINAL_RETAINED_OUTPUT_BYTES)
+            .toString("utf8"),
+        ) ?? undefined;
+    }
     const boundedChunk =
-      data.byteLength > TERMINAL_RETAINED_OUTPUT_BYTES
-        ? {
-            ...args.chunk,
-            dataBase64: data
-              .subarray(data.byteLength - TERMINAL_RETAINED_OUTPUT_BYTES)
-              .toString("base64"),
-          }
-        : args.chunk;
-    chunks.push({ chunk: boundedChunk, retainedAt: args.now });
+      retainedData === data
+        ? args.chunk
+        : { ...args.chunk, dataBase64: retainedData.toString("base64") };
+    chunks.push({
+      chunk: boundedChunk,
+      ...(leadingGridMarker === undefined ? {} : { leadingGridMarker }),
+      retainedAt: args.now,
+    });
     let bytes = chunks.reduce(
       (total, entry) => total + chunkBytes(entry.chunk),
       0,
@@ -107,6 +126,15 @@ export function appendRetainedTerminalOutputChunk(
     while (bytes > TERMINAL_RETAINED_OUTPUT_BYTES && chunks.length > 0) {
       const removed = chunks.shift();
       if (removed) bytes -= chunkBytes(removed.chunk);
+      if (removed && chunks[0]) {
+        const latestGridMarker =
+          findLastTerminalGridMarker(
+            Buffer.from(removed.chunk.dataBase64, "base64").toString("utf8"),
+          ) ?? removed.leadingGridMarker;
+        if (latestGridMarker !== undefined) {
+          chunks[0].leadingGridMarker = latestGridMarker;
+        }
+      }
     }
     if (bytes === 0) {
       db.$client
@@ -157,6 +185,15 @@ export function appendRetainedTerminalOutputChunk(
       if (!oldest) break;
       const oldestChunks = parseChunks(oldest.chunksJson);
       const removed = oldestChunks.shift();
+      if (removed && oldestChunks[0]) {
+        const latestGridMarker =
+          findLastTerminalGridMarker(
+            Buffer.from(removed.chunk.dataBase64, "base64").toString("utf8"),
+          ) ?? removed.leadingGridMarker;
+        if (latestGridMarker !== undefined) {
+          oldestChunks[0].leadingGridMarker = latestGridMarker;
+        }
+      }
       if (oldestChunks.length === 0) {
         db.$client
           .prepare(
@@ -258,7 +295,33 @@ export function getRetainedTerminalOutput(
     .get(args.terminalSessionId, args.hostId, args.now) as
     | { chunksJson: string }
     | undefined;
-  return row ? parseChunks(row.chunksJson).map(({ chunk }) => chunk) : null;
+  if (!row) return null;
+  return parseChunks(row.chunksJson).map(
+    ({ chunk, leadingGridMarker }, index) => {
+      if (index !== 0 || leadingGridMarker === undefined) return chunk;
+      const marker = Buffer.from(leadingGridMarker, "utf8");
+      const data = Buffer.from(chunk.dataBase64, "base64");
+      const leadingOscEnd = data.indexOf(0x07);
+      const existingLeadingMarker =
+        leadingOscEnd >= 0
+          ? data.subarray(0, leadingOscEnd + 1).toString("latin1")
+          : "";
+      if (
+        findLastTerminalGridMarker(existingLeadingMarker) ===
+        existingLeadingMarker
+      ) {
+        return chunk;
+      }
+      const boundedData =
+        marker.byteLength + data.byteLength > TERMINAL_RETAINED_OUTPUT_BYTES
+          ? data.subarray(marker.byteLength)
+          : data;
+      return {
+        ...chunk,
+        dataBase64: Buffer.concat([marker, boundedData]).toString("base64"),
+      };
+    },
+  );
 }
 
 export function pruneRetainedTerminalOutput(

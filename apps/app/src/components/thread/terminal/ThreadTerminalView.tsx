@@ -61,7 +61,6 @@ import {
 } from "./terminal-links";
 import {
   nextSharedTerminalSize,
-  terminalDisplaySize,
   type TerminalGridSize,
 } from "./terminal-shared-size";
 import { handleTerminalFileDrop } from "./terminal-file-drop";
@@ -69,6 +68,18 @@ import {
   registerTerminalOsc52Handler,
   terminalPromptLine,
 } from "./terminal-shell-state";
+import { createTerminalOutputPipeline } from "./terminal-output-pipeline";
+import {
+  mountTerminalReplayPreview,
+  updateTerminalReplayPreviewPtyGrid,
+} from "./terminal-replay-preview";
+import {
+  applyTerminalSurfaceScale,
+  attachTerminalScalePointerCoordinates,
+  canRevealTerminalSurface,
+  readTerminalSurfaceScale,
+  terminalSurfaceScale,
+} from "./terminal-grid-presentation";
 import {
   attachTerminalPromptTracker,
   type TerminalPromptTrackerState,
@@ -445,6 +456,11 @@ interface TerminalOutputWriteArgs {
   onParsed: () => void;
   replayWriteState: TerminalReplayWriteState;
   terminal: XTermTerminal;
+  pipeline?: ReturnType<typeof createTerminalOutputPipeline>;
+  replayPipeline?: Pick<
+    ReturnType<typeof createTerminalOutputPipeline>,
+    "push"
+  >;
 }
 
 interface ForwardTerminalDataArgs {
@@ -488,6 +504,13 @@ interface HandleTerminalServerMessageArgs {
   replayWriteState: TerminalReplayWriteState;
   setReplayNextSeq: (nextSeq: number | null) => void;
   terminal: XTermTerminal;
+  pipeline?: ReturnType<typeof createTerminalOutputPipeline>;
+  replayPipeline?: Pick<
+    ReturnType<typeof createTerminalOutputPipeline>,
+    "push"
+  >;
+  allowAttachedGrid?: boolean;
+  onReplayStart?: (session: TerminalSession) => void;
 }
 
 function encodeBytesBase64(bytes: Uint8Array): string {
@@ -619,15 +642,23 @@ export async function writeRetainedTerminalOutput({
   lastNotice,
   session,
   terminal,
+  pipeline,
 }: {
   chunks: readonly Uint8Array[];
   lastNotice: TerminalSessionStatusNoticeRef;
   session: TerminalSession;
   terminal: XTermTerminal;
+  pipeline?: ReturnType<typeof createTerminalOutputPipeline>;
 }): Promise<void> {
-  for (const chunk of chunks) {
-    await new Promise<void>((resolve) => terminal.write(chunk, resolve));
-  }
+  await Promise.all(
+    chunks.map(
+      (chunk) =>
+        new Promise<void>((resolve) => {
+          if (pipeline) pipeline.push(chunk, resolve);
+          else terminal.write(chunk, resolve);
+        }),
+    ),
+  );
   writeTerminalSessionStatusNotice({ lastNotice, session, terminal });
   await new Promise<void>((resolve) => terminal.write("", resolve));
 }
@@ -658,17 +689,32 @@ export function writeTerminalOutput({
   onParsed,
   replayWriteState,
   terminal,
+  pipeline,
+  replayPipeline,
 }: TerminalOutputWriteArgs): void {
+  const bytes =
+    typeof data === "string" ? new TextEncoder().encode(data) : data;
+  const write = (callback: () => void, applyMarkerGrids: boolean) => {
+    if (pipeline) pipeline.push(bytes, callback, applyMarkerGrids);
+    else terminal.write(data, callback);
+  };
   if (!isReplay) {
-    terminal.write(data, onParsed);
+    write(onParsed, true);
     return;
   }
 
   replayWriteState.suppressedWriteCount += 1;
-  terminal.write(data, () => {
-    replayWriteState.suppressedWriteCount -= 1;
-    onParsed();
-  });
+  write(() => {
+    if (!replayPipeline) {
+      replayWriteState.suppressedWriteCount -= 1;
+      onParsed();
+      return;
+    }
+    replayPipeline.push(bytes, () => {
+      replayWriteState.suppressedWriteCount -= 1;
+      onParsed();
+    });
+  }, false);
 }
 
 export function handleTerminalServerMessage({
@@ -680,9 +726,21 @@ export function handleTerminalServerMessage({
   replayWriteState,
   setReplayNextSeq,
   terminal,
+  pipeline,
+  replayPipeline,
+  allowAttachedGrid = true,
+  onReplayStart,
 }: HandleTerminalServerMessageArgs): void {
   switch (message.type) {
     case "attached":
+      if (message.replayStartSeq < message.nextSeq) {
+        onReplayStart?.(message.session);
+      }
+      if (allowAttachedGrid) {
+        if (pipeline)
+          pipeline.setGrid(message.session.cols, message.session.rows);
+        else terminal.resize(message.session.cols, message.session.rows);
+      }
       onSessionChange?.(message.session);
       setReplayNextSeq(message.nextSeq);
       if (message.replayStartSeq === message.nextSeq) {
@@ -713,6 +771,8 @@ export function handleTerminalServerMessage({
         },
         replayWriteState,
         terminal,
+        pipeline,
+        replayPipeline,
       });
       return;
     }
@@ -992,6 +1052,7 @@ export function ThreadTerminalView({
     }
 
     const activeElementAtMount = document.activeElement;
+    container.style.containerType = "inline-size";
 
     let disposed = false;
     let transport: TerminalWebSocketTransport | null = null;
@@ -1010,11 +1071,31 @@ export function ThreadTerminalView({
     > | null = null;
     let resizeObserver: ResizeObserver | null = null;
     let selectionChangeDisposable: { dispose: () => void } | null = null;
+    let terminalKeyDisposable: { dispose: () => void } | null = null;
     let shellOscDisposable: { dispose: () => void } | null = null;
     let osc52Disposable: { dispose: () => void } | null = null;
     let stopObservingFonts: (() => void) | null = null;
     let stopWatchingLayout: (() => void) | null = null;
     let sharedSize: TerminalGridSize | null = null;
+    let markerGridActive = false;
+    let replayCompleted = false;
+    let localFitGrid: TerminalGridSize | null = null;
+    let latestPtyGrid: TerminalGridSize = {
+      cols: sessionRef.current.cols,
+      rows: sessionRef.current.rows,
+    };
+    let terminalInputClaimed = false;
+    let detachPointerCoordinates: (() => void) | null = null;
+    let detachGridVisibilityListeners: (() => void) | null = null;
+    let replayPreview: {
+      dispose(): void;
+      resize(cols: number, rows: number): Promise<void>;
+      setFitGrid(cols: number, rows: number): void;
+      setPtyGrid(cols: number, rows: number): void;
+      push(bytes: Uint8Array, callback: () => void): void;
+    } | null = null;
+    let outputPipeline: ReturnType<typeof createTerminalOutputPipeline> | null =
+      null;
     let containerHasSize = hasVisibleTerminalSize({
       containerElement: container,
     });
@@ -1027,6 +1108,50 @@ export function ThreadTerminalView({
     async function mountTerminal(
       containerElement: HTMLDivElement,
     ): Promise<void> {
+      const updateGridVisibility = () => {
+        if (terminal === null || (replayPreview !== null && !replayCompleted)) {
+          return;
+        }
+        containerElement.dataset.renderGridCols = String(terminal.cols);
+        containerElement.dataset.renderGridRows = String(terminal.rows);
+        const ownsTerminal =
+          terminalInputClaimed &&
+          document.hasFocus() &&
+          terminal.element?.contains(document.activeElement) === true;
+        const canReveal =
+          localFitGrid !== null &&
+          canRevealTerminalSurface({
+            fitGrid: localFitGrid,
+            isOwner: ownsTerminal,
+            ptyGrid: latestPtyGrid,
+            rendererGrid: { cols: terminal.cols, rows: terminal.rows },
+          });
+        containerElement.style.opacity = "0";
+        const scale =
+          localFitGrid !== null
+            ? terminalSurfaceScale(latestPtyGrid, localFitGrid)
+            : 1;
+        if (terminal.element) {
+          applyTerminalSurfaceScale(terminal.element, scale);
+        }
+        const rendererWidth = containerElement.getBoundingClientRect().width;
+        const paintedWidth =
+          terminal.element
+            ?.querySelector<HTMLElement>(".xterm-screen")
+            ?.getBoundingClientRect().width ?? 0;
+        const widthFits =
+          rendererWidth > 0 && paintedWidth <= rendererWidth + 1;
+        containerElement.dataset.ptyGridCols = String(latestPtyGrid.cols);
+        containerElement.dataset.ptyGridRows = String(latestPtyGrid.rows);
+        if (canReveal && widthFits) {
+          containerElement.style.opacity = "";
+          if (replayCompleted && replayPreview !== null) {
+            replayPreview.dispose();
+            replayPreview = null;
+          }
+          return;
+        }
+      };
       const requiredModulesPromise = Promise.all([
         import("@xterm/xterm"),
         import("@xterm/addon-fit"),
@@ -1124,6 +1249,22 @@ export function ThreadTerminalView({
         },
         () => replayWriteState.suppressedWriteCount > 0,
       );
+      outputPipeline = createTerminalOutputPipeline(
+        terminal,
+        (grid, apply) => {
+          markerGridActive = true;
+          if (apply) {
+            latestPtyGrid = grid;
+          }
+          updateTerminalReplayPreviewPtyGrid(replayPreview, grid, apply);
+          updateGridVisibility();
+        },
+        (cols, rows) => {
+          containerElement.dataset.renderGridCols = String(cols);
+          containerElement.dataset.renderGridRows = String(rows);
+          updateGridVisibility();
+        },
+      );
       fitAddon = new LoadedFitAddon();
       terminal.loadAddon(fitAddon);
       terminal.loadAddon(new Unicode11Addon());
@@ -1147,6 +1288,27 @@ export function ThreadTerminalView({
         ),
       );
       terminal.open(containerElement);
+      document.addEventListener("focusin", updateGridVisibility);
+      document.addEventListener("focusout", updateGridVisibility);
+      window.addEventListener("focus", updateGridVisibility);
+      window.addEventListener("blur", updateGridVisibility);
+      window.addEventListener("resize", updateGridVisibility);
+      detachGridVisibilityListeners = () => {
+        document.removeEventListener("focusin", updateGridVisibility);
+        document.removeEventListener("focusout", updateGridVisibility);
+        window.removeEventListener("focus", updateGridVisibility);
+        window.removeEventListener("blur", updateGridVisibility);
+        window.removeEventListener("resize", updateGridVisibility);
+      };
+      if (terminal.element) {
+        detachPointerCoordinates = attachTerminalScalePointerCoordinates(
+          terminal.element,
+          () =>
+            terminal?.element ? readTerminalSurfaceScale(terminal.element) : 1,
+        );
+      }
+      containerElement.dataset.renderGridCols = String(terminal.cols);
+      containerElement.dataset.renderGridRows = String(terminal.rows);
       if (searchAddonModule !== null) {
         const searchAddon = new searchAddonModule.SearchAddon();
         terminal.loadAddon(searchAddon);
@@ -1187,10 +1349,11 @@ export function ThreadTerminalView({
         ) {
           return;
         }
-        const display = terminalDisplaySize(fitted, sharedSize);
-        if (terminal.cols !== display.cols || terminal.rows !== display.rows) {
-          terminal.resize(display.cols, display.rows);
-        }
+        localFitGrid = { cols: fitted.cols, rows: fitted.rows };
+        containerElement.dataset.fitGridCols = String(fitted.cols);
+        containerElement.dataset.fitGridRows = String(fitted.rows);
+        replayPreview?.setFitGrid(fitted.cols, fitted.rows);
+        updateGridVisibility();
         transport?.sendResize(fitted.cols, fitted.rows);
       };
       const scheduleFit: TerminalFitScheduler = () => {
@@ -1245,6 +1408,14 @@ export function ThreadTerminalView({
           const nextSize = nextSharedTerminalSize(sharedSize, size, false);
           if (nextSize !== null) {
             sharedSize = nextSize;
+            if (!markerGridActive) {
+              latestPtyGrid = nextSize;
+              outputPipeline?.setGrid(
+                nextSize.cols,
+                nextSize.rows,
+                updateGridVisibility,
+              );
+            }
             scheduleFit();
           }
         },
@@ -1298,15 +1469,25 @@ export function ThreadTerminalView({
             message.type === "session-updated"
           ) {
             const { cols, rows } = message.session;
+            const isOwnNudgeEcho =
+              message.type === "session-updated" &&
+              activeTransport.consumeRepaintNudgeEcho({ cols, rows });
+            latestPtyGrid = { cols, rows };
+            updateGridVisibility();
             const nextSize = nextSharedTerminalSize(
               sharedSize,
               { cols, rows },
-              message.type === "session-updated" &&
-                activeTransport.consumeRepaintNudgeEcho({ cols, rows }),
+              isOwnNudgeEcho,
             );
             if (nextSize !== null) {
               sharedSize = nextSize;
+              replayPreview?.resize(nextSize.cols, nextSize.rows);
               scheduleFit();
+            } else {
+              replayPreview?.resize(cols, rows);
+            }
+            if (message.type === "session-updated" && !markerGridActive) {
+              outputPipeline?.setGrid(cols, rows, updateGridVisibility);
             }
           }
           handleTerminalServerMessage({
@@ -1314,6 +1495,12 @@ export function ThreadTerminalView({
               activeTransport.acknowledgeOutput(nextSeq),
             message,
             onReplayComplete: () => {
+              replayCompleted = true;
+              outputPipeline?.setGrid(
+                latestPtyGrid.cols,
+                latestPtyGrid.rows,
+                updateGridVisibility,
+              );
               if (
                 !disposed &&
                 sessionStatusRef.current === "running" &&
@@ -1326,10 +1513,35 @@ export function ThreadTerminalView({
             onSessionChange: onSessionChangeRef.current,
             replayNextSeq,
             replayWriteState,
+            onReplayStart: () => {
+              replayPreview?.dispose();
+              replayCompleted = false;
+              const replayGrid = latestPtyGrid;
+              const previewTerminal = new Terminal({
+                cols: replayGrid.cols,
+                rows: replayGrid.rows,
+                fontFamily: readTerminalFontFamily(),
+                fontSize: 12,
+                theme: buildTerminalTheme(),
+              });
+              replayPreview = mountTerminalReplayPreview({
+                container: containerElement,
+                initialFitGrid: localFitGrid,
+                isOwner: () =>
+                  terminalInputClaimed &&
+                  document.hasFocus() &&
+                  activeTerminal.element?.contains(document.activeElement) ===
+                    true,
+                terminal: previewTerminal,
+              });
+            },
             setReplayNextSeq: (nextSeq) => {
               replayNextSeq = nextSeq;
             },
             terminal: activeTerminal,
+            pipeline: outputPipeline ?? undefined,
+            replayPipeline: replayPreview ?? undefined,
+            allowAttachedGrid: !markerGridActive,
           });
         },
         onSequenceGap: () => {
@@ -1364,6 +1576,7 @@ export function ThreadTerminalView({
             lastNotice: lastStatusNoticeRef,
             session: sessionRef.current,
             terminal: activeTerminal,
+            pipeline: outputPipeline ?? undefined,
           });
         }
       } else {
@@ -1430,13 +1643,26 @@ export function ThreadTerminalView({
       terminalInteractions = attachTerminalInteractions({
         element: containerElement.parentElement ?? containerElement,
         getSelection: () => activeTerminal.getSelection(),
-        onPointerDown: handleTerminalPointerDown,
+        onPointerDown: (event) => {
+          if (
+            event.target instanceof Node &&
+            activeTerminal.element?.contains(event.target)
+          ) {
+            terminalInputClaimed = true;
+            updateGridVisibility();
+          }
+          handleTerminalPointerDown(event);
+        },
         onPointerRelease: handleTerminalPointerRelease,
         onPointerCancel: handleTerminalPointerCancel,
         onSelection: (text) =>
           reportTerminalSelection(lastPointerReleaseAnchorRef.current, text),
         copySelection: copyTerminalSelection,
         onFilesDrop: (files) => handleFileDropRef.current?.(files),
+      });
+      terminalKeyDisposable = activeTerminal.onKey(() => {
+        terminalInputClaimed = true;
+        updateGridVisibility();
       });
       activeTerminal.onData((data) => {
         if (controlActiveRef.current) {
@@ -1467,6 +1693,7 @@ export function ThreadTerminalView({
       );
 
       resizeObserver = new ResizeObserver((entries) => {
+        updateGridVisibility();
         const hasSize = hasVisibleTerminalSize({ containerElement, entries });
         if (hasSize !== containerHasSize) {
           containerHasSize = hasSize;
@@ -1504,7 +1731,15 @@ export function ThreadTerminalView({
       }
       setConnectionNotice(null);
       resizeObserver?.disconnect();
+      replayPreview?.dispose();
+      replayPreview = null;
+      detachPointerCoordinates?.();
+      detachPointerCoordinates = null;
+      detachGridVisibilityListeners?.();
+      detachGridVisibilityListeners = null;
       selectionChangeDisposable?.dispose();
+      terminalKeyDisposable?.dispose();
+      terminalKeyDisposable = null;
       shellOscDisposable?.dispose();
       osc52Disposable?.dispose();
       terminalInteractions?.dispose();
