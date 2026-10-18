@@ -52,7 +52,6 @@ vi.mock("@/lib/ws", () => ({
 
 afterEach(() => {
   cleanup();
-  vi.restoreAllMocks();
   copied.mockReset();
   vi.mocked(openUrlInExternalBrowser).mockClear();
   registerDeviceHandoff.mockClear();
