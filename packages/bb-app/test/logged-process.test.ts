@@ -351,6 +351,7 @@ describe("spawnLoggedProcess", () => {
       });
 
       expect(await waitForExit(child)).toBe(0);
+      await child.writerExit;
       const logPath = join(logDir, `${logName}-stdio.log`);
       const output = readFileSync(logPath, "utf8");
       expect(output.split("A").length - 1).toBe(2 * 1024 * 1024);
