@@ -11,10 +11,12 @@ import {
   rmSync,
   statSync,
   symlinkSync,
+  unlinkSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
+import { createConnection } from "node:net";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { spawnLoggedProcess } from "../src/logged-process.js";
@@ -132,6 +134,17 @@ function waitForExit(
       clearTimeout(timer);
       resolve(code);
     });
+  });
+}
+
+function socketResponds(socketPath: string): Promise<boolean> {
+  return new Promise((resolvePromise) => {
+    const socket = createConnection(socketPath);
+    socket.once("connect", () => {
+      socket.destroy();
+      resolvePromise(true);
+    });
+    socket.once("error", () => resolvePromise(false));
   });
 }
 
@@ -804,7 +817,8 @@ describe("spawnLoggedProcess", () => {
     }
   });
 
-  it("uses the writer liveness endpoint when dead and live segments share a pid fingerprint", async () => {
+  it("keeps an ambiguous dead endpoint segment when its pid fingerprint still matches a live process", async () => {
+    if (process.platform === "win32") return;
     const logDir = scratchDir();
     const identity = currentProcessIdentity();
     const liveStopPath = join(logDir, "stop-same-identity-writer");
@@ -843,13 +857,22 @@ describe("spawnLoggedProcess", () => {
       expect(deadSegment).toContain(
         `.active-${identity.pid}-${identity.source}-${identity.fingerprint}-`,
       );
+      const deadParts = deadSegment
+        .slice(deadSegment.indexOf(".active-") + 8)
+        .split("-");
+      const deadToken = deadParts.slice(4).join("-");
+      const deadSocket = join(
+        livenessDirectory(logDir, "server"),
+        `s-${deadToken}`,
+      );
+      const deadWriterPid = dead.writerProcess.pid!;
       dead.writerProcess.kill("SIGKILL");
       await dead.writerExit;
       await expect
         .poll(
           () => {
             try {
-              process.kill(dead.writerProcess.pid!, 0);
+              process.kill(deadWriterPid, 0);
               return false;
             } catch (error) {
               return (error as NodeJS.ErrnoException).code === "ESRCH";
@@ -901,8 +924,20 @@ describe("spawnLoggedProcess", () => {
       });
       expect(await waitForExit(observer)).toBe(0);
       await observer.writerExit;
-      expect(existsSync(deadSegment)).toBe(false);
+      expect(existsSync(deadSegment)).toBe(true);
+      expect(lstatSync(deadSocket).isSocket()).toBe(true);
+      expect(await socketResponds(deadSocket)).toBe(false);
       expect(existsSync(liveSegment)).toBe(true);
+      const liveParts = liveSegment
+        .slice(liveSegment.indexOf(".active-") + 8)
+        .split("-");
+      const liveToken = liveParts.slice(4).join("-");
+      const liveSocket = join(
+        livenessDirectory(logDir, "server"),
+        `s-${liveToken}`,
+      );
+      expect(lstatSync(liveSocket).isSocket()).toBe(true);
+      expect(await socketResponds(liveSocket)).toBe(true);
       expect(
         uniqueFamilyFiles(logDir, "server")
           .map((file) => readFileSync(file, "utf8"))
@@ -926,6 +961,58 @@ describe("spawnLoggedProcess", () => {
       }
     }
   });
+
+  it.skipIf(process.platform === "win32")(
+    "reclaims an endpoint-dead segment when its recorded process identity mismatches",
+    async () => {
+      const logDir = scratchDir();
+      const identity = currentProcessIdentity();
+      const token = "deadbeef-dead-beef-dead-beefdeadbeef";
+      const deadFingerprint =
+        identity.fingerprint === "0000000000000000"
+          ? "ffffffffffffffff"
+          : "0000000000000000";
+      const deadSegment = join(
+        logDir,
+        `server-stdio.log.active-${identity.pid}-${identity.source}-${deadFingerprint}-e-${token}`,
+      );
+      writeFileSync(deadSegment, "endpoint-dead-identity-mismatch\n");
+      const stopPath = join(logDir, "stop-endpoint-dead-observer");
+      const observer = spawnLoggedProcess({
+        command: process.execPath,
+        args: [
+          "-e",
+          `const fs = require("node:fs"); process.stdout.write("endpoint-dead-observer-started\\n"); const timer = setInterval(() => { if (fs.existsSync(${JSON.stringify(stopPath)})) { clearInterval(timer); process.exit(0); } }, 10);`,
+        ],
+        env: process.env,
+        logDir,
+        logName: "server",
+        testWriterBarrier: { recoveryIntervalMs: 25 },
+      });
+      try {
+        await expect
+          .poll(() => !existsSync(deadSegment), {
+            timeout: 3_000,
+            interval: 10,
+          })
+          .toBe(true);
+        expect(
+          familyFiles(logDir, "server").some(
+            (file) =>
+              file.includes(".backup-") &&
+              readFileSync(file, "utf8").includes(
+                "endpoint-dead-identity-mismatch",
+              ),
+          ),
+        ).toBe(true);
+        writeFileSync(stopPath, "stop");
+        expect(await waitForExit(observer)).toBe(0);
+        await observer.writerExit;
+      } finally {
+        if (observer.exitCode === null) observer.kill("SIGKILL");
+      }
+    },
+  );
 
   it("keeps live segments when writers use different locale environments", async () => {
     const logDir = scratchDir();
@@ -1169,7 +1256,6 @@ describe("spawnLoggedProcess", () => {
       logDir,
       "unknown-endpoint-observer-finished",
     );
-    const fallbackMs = 100;
     const owner = spawnLoggedProcess({
       command: process.execPath,
       args: [
@@ -1181,7 +1267,6 @@ describe("spawnLoggedProcess", () => {
       logName: "server",
       testWriterBarrier: {
         completionPath: ownerCompletionPath,
-        identityFallbackMs: fallbackMs,
         recoveryIntervalMs: 10_000,
       },
     });
@@ -1223,7 +1308,6 @@ describe("spawnLoggedProcess", () => {
         logName: "server",
         testWriterBarrier: {
           completionPath: observerCompletionPath,
-          identityFallbackMs: fallbackMs,
           recoveryIntervalMs: 25,
           unreadableOwnerSocketTokens: [ownerToken],
         },
@@ -1334,31 +1418,24 @@ describe("spawnLoggedProcess", () => {
     }
   });
 
-  it("uses the idle bound only when a live owner's identity is unreadable", async () => {
+  it("keeps a stale live owner when socket and identity checks are unavailable, then reclaims it after exit", async () => {
     const logDir = scratchDir();
-    const ownerStopPath = join(logDir, "stop-unreadable-identity-owner");
     const observerStopPath = join(logDir, "stop-unreadable-identity-observer");
-    const ownerCompletionPath = join(
-      logDir,
-      "unreadable-identity-owner-finished",
-    );
     const observerCompletionPath = join(
       logDir,
       "unreadable-identity-observer-finished",
     );
-    const fallbackMs = 1_500;
     const owner = spawnLoggedProcess({
       command: process.execPath,
       args: [
         "-e",
-        `const fs = require("node:fs"); process.stdout.write("unreadable-identity-owner-output\\n"); const timer = setInterval(() => { if (fs.existsSync(${JSON.stringify(ownerStopPath)})) { clearInterval(timer); process.exit(0); } }, 10);`,
+        'process.stdout.write("unreadable-identity-owner-output\\n"); setInterval(() => {}, 1000);',
       ],
       env: process.env,
       logDir,
       logName: "server",
       testWriterBarrier: {
-        completionPath: ownerCompletionPath,
-        recoveryIntervalMs: 10_000,
+        recoveryIntervalMs: 60_000,
       },
     });
     let observer: ReturnType<typeof spawnLoggedProcess> | undefined;
@@ -1404,7 +1481,6 @@ describe("spawnLoggedProcess", () => {
           testWriterBarrier: {
             completionPath: observerCompletionPath,
             forcePsIdentity: true,
-            identityFallbackMs: fallbackMs,
             recoveryIntervalMs: 25,
             unreadableOwnerSocketTokens: [ownerToken],
           },
@@ -1428,10 +1504,28 @@ describe("spawnLoggedProcess", () => {
         .toBe(true);
       expect(existsSync(ownerSegment!)).toBe(true);
       await new Promise<void>((resolvePromise) =>
-        setTimeout(resolvePromise, 200),
+        setTimeout(resolvePromise, 500),
       );
       expect(existsSync(ownerSegment!)).toBe(true);
-      utimesSync(ownerSegment!, new Date(0), new Date(0));
+      const staleTime = new Date(Date.now() - 11 * 60 * 1000);
+      utimesSync(ownerSegment!, staleTime, staleTime);
+      await new Promise<void>((resolvePromise) =>
+        setTimeout(resolvePromise, 500),
+      );
+      expect(existsSync(ownerSegment!)).toBe(true);
+      expect(
+        familyFiles(logDir, "server").some(
+          (file) =>
+            file.includes(".backup-") &&
+            readFileSync(file, "utf8").includes(
+              "unreadable-identity-owner-output",
+            ),
+        ),
+      ).toBe(false);
+      owner.writerProcess.kill("SIGKILL");
+      await owner.writerExit;
+      owner.kill("SIGKILL");
+      await waitForExit(owner);
       await expect
         .poll(() => !existsSync(ownerSegment!), {
           timeout: 3_000,
@@ -1450,26 +1544,134 @@ describe("spawnLoggedProcess", () => {
       writeFileSync(observerStopPath, "stop");
       expect(await waitForExit(observer)).toBe(0);
       await observer.writerExit;
-      writeFileSync(ownerStopPath, "stop");
-      expect(await waitForExit(owner)).toBe(0);
-      await expect
-        .poll(() => existsSync(ownerCompletionPath), {
-          timeout: 3_000,
-          interval: 10,
-        })
-        .toBe(true);
-      await expect
-        .poll(() => existsSync(observerCompletionPath), {
-          timeout: 3_000,
-          interval: 10,
-        })
-        .toBe(true);
+      expect(existsSync(observerCompletionPath)).toBe(true);
     } finally {
       if (observer !== undefined && observer.exitCode === null)
         observer.kill("SIGKILL");
       if (owner.exitCode === null) owner.kill("SIGKILL");
+      if (owner.writerProcess.exitCode === null) {
+        owner.writerProcess.kill("SIGKILL");
+        await owner.writerExit;
+      }
     }
   });
+
+  it.skipIf(process.platform === "win32")(
+    "recreates a removed liveness socket without recovering the live writer segment",
+    async () => {
+      const logDir = scratchDir();
+      const ownerStopPath = join(logDir, "stop-socket-recreate-owner");
+      const observerStopPath = join(logDir, "stop-socket-recreate-observer");
+      const owner = spawnLoggedProcess({
+        command: process.execPath,
+        args: [
+          "-e",
+          `const fs = require("node:fs"); const timer = setInterval(() => { if (fs.existsSync(${JSON.stringify(ownerStopPath)})) { clearInterval(timer); process.stdout.write("socket-restored-output\\n"); setTimeout(() => process.exit(0), 50); } else { process.stdout.write("socket-owner-heartbeat\\n"); } }, 20);`,
+        ],
+        env: process.env,
+        logDir,
+        logName: "server",
+        testWriterBarrier: { recoveryIntervalMs: 25 },
+      });
+      let observer: ReturnType<typeof spawnLoggedProcess> | undefined;
+      try {
+        await expect
+          .poll(
+            () =>
+              familyFiles(logDir, "server").some(
+                (file) =>
+                  file.includes(".active-") &&
+                  readFileSync(file, "utf8").includes("socket-owner-heartbeat"),
+              ),
+            { timeout: 5_000, interval: 10 },
+          )
+          .toBe(true);
+        const ownerSegment = familyFiles(logDir, "server").find(
+          (file) =>
+            file.includes(".active-") &&
+            readFileSync(file, "utf8").includes("socket-owner-heartbeat"),
+        )!;
+        const ownerParts = ownerSegment
+          .slice(ownerSegment.indexOf(".active-") + 8)
+          .split("-");
+        const ownerToken = ownerParts.slice(4).join("-");
+        const ownerSocket = join(
+          livenessDirectory(logDir, "server"),
+          `s-${ownerToken}`,
+        );
+        expect(lstatSync(ownerSocket).isSocket()).toBe(true);
+        observer = spawnLoggedProcess({
+          command: process.execPath,
+          args: [
+            "-e",
+            `const fs = require("node:fs"); process.stdout.write("socket-observer-started\\n"); const timer = setInterval(() => { if (fs.existsSync(${JSON.stringify(observerStopPath)})) { clearInterval(timer); process.exit(0); } }, 10);`,
+          ],
+          env: process.env,
+          logDir,
+          logName: "server",
+          testWriterBarrier: { recoveryIntervalMs: 25 },
+        });
+        await expect
+          .poll(
+            () =>
+              familyFiles(logDir, "server").some(
+                (file) =>
+                  file.includes(".active-") &&
+                  readFileSync(file, "utf8").includes(
+                    "socket-observer-started",
+                  ),
+              ),
+            { timeout: 5_000, interval: 10 },
+          )
+          .toBe(true);
+        owner.writerProcess.kill("SIGSTOP");
+        unlinkSync(ownerSocket);
+        const staleTime = new Date(0);
+        utimesSync(ownerSegment, staleTime, staleTime);
+        await new Promise<void>((resolvePromise) =>
+          setTimeout(resolvePromise, 500),
+        );
+        expect(existsSync(ownerSegment)).toBe(true);
+        owner.writerProcess.kill("SIGCONT");
+        await expect
+          .poll(
+            () => {
+              try {
+                return lstatSync(ownerSocket).isSocket();
+              } catch {
+                return false;
+              }
+            },
+            { timeout: 3_000, interval: 10 },
+          )
+          .toBe(true);
+        expect(existsSync(ownerSegment)).toBe(true);
+        expect(readFileSync(ownerSegment, "utf8")).toContain(
+          "socket-owner-heartbeat",
+        );
+        writeFileSync(ownerStopPath, "stop");
+        expect(await waitForExit(owner)).toBe(0);
+        await owner.writerExit;
+        expect(
+          uniqueFamilyFiles(logDir, "server")
+            .map((file) => readFileSync(file, "utf8"))
+            .join(""),
+        ).toContain("socket-restored-output");
+        writeFileSync(observerStopPath, "stop");
+        expect(await waitForExit(observer)).toBe(0);
+        await observer.writerExit;
+      } finally {
+        if (observer !== undefined && observer.exitCode === null) {
+          observer.kill("SIGKILL");
+        }
+        if (owner.exitCode === null) owner.kill("SIGKILL");
+        if (owner.writerProcess.exitCode === null) {
+          owner.writerProcess.kill("SIGKILL");
+          await owner.writerExit;
+        }
+      }
+    },
+  );
 
   it("recovers a dead writer segment on a timer while a survivor stays below the rotation limit", async () => {
     const logDir = scratchDir();

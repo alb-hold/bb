@@ -16,7 +16,6 @@ const maxWriteAttempts = 3;
 const retryDelayMs = 10;
 const maxChunkRetryMs = 2_000;
 const recoveryIntervalMs = writerBarrier?.recoveryIntervalMs ?? 1_000;
-const identityFallbackMs = writerBarrier?.identityFallbackMs ?? 10 * 60 * 1000;
 const errorCode = (error) => typeof error?.code === "string" ? error.code : "UNKNOWN";
 const reportDiagnostic = (message) => {
   try {
@@ -72,6 +71,10 @@ let socketDir;
 let socketPath;
 let socketDirectoryAvailable = process.platform === "win32";
 let livenessEndpointAvailable = false;
+let livenessEndpointWasBound = false;
+let livenessSocketIdentity;
+let livenessEndpointRecoveryPromise;
+let livenessRecoveryDiagnosticReported = false;
 let activePath;
 const rejectSocketDirectory = (message) => {
   const error = new Error(message);
@@ -106,7 +109,7 @@ if (process.platform !== "win32") {
     }
   }
   if (!socketDirectoryAvailable) {
-    reportDiagnostic("stdio liveness endpoint unavailable; using process identity and idle recovery");
+    reportDiagnostic("stdio liveness endpoint unavailable; using process identity recovery");
   }
 }
 if (process.platform === "win32") {
@@ -114,41 +117,153 @@ if (process.platform === "win32") {
 }
 const livenessServer = net.createServer((connection) => connection.destroy());
 const livenessReady = new Promise((resolve) => {
-  if (!socketDirectoryAvailable) {
+  let settled = false;
+  const finish = () => {
+    if (settled) return;
+    settled = true;
     resolve();
+  };
+  if (!socketDirectoryAvailable) {
+    finish();
     return;
   }
   const onListenError = (error) => {
-    socketDirectoryAvailable = false;
     livenessEndpointAvailable = false;
     reportFsError("stdio liveness endpoint setup failed", error);
-    resolve();
+    if (!livenessEndpointWasBound) socketDirectoryAvailable = false;
+    finish();
   };
-  livenessServer.once("error", onListenError);
+  livenessServer.on("error", onListenError);
   try {
     livenessServer.listen(socketPath, () => {
-      livenessServer.off("error", onListenError);
-      livenessEndpointAvailable = true;
-      livenessServer.on("error", (error) => {
-        reportFsError("stdio liveness endpoint failed", error);
-        if (!livenessServer.listening) {
-          livenessEndpointAvailable = false;
-          try {
-            if (activeFd !== undefined || (activePath !== undefined && fs.existsSync(activePath))) {
-              closeActive(true);
-            }
-            if (initialized) createActive();
-          } catch (recoveryError) {
-            reportFsError("stdio liveness endpoint recovery failed", recoveryError);
-          }
-        }
-      });
-      resolve();
+      livenessEndpointWasBound = true;
+      if (process.platform === "win32") {
+        livenessEndpointAvailable = true;
+      } else {
+        livenessSocketIdentity = socketFileState();
+        livenessEndpointAvailable = livenessSocketIdentity.trusted;
+      }
+      finish();
     });
   } catch (error) {
     onListenError(error);
   }
 });
+const socketFileState = () => {
+  if (process.platform === "win32" || socketPath === undefined) return { exists: false, trusted: false };
+  try {
+    const stat = fs.lstatSync(socketPath);
+    return {
+      exists: true,
+      trusted:
+        !stat.isSymbolicLink() &&
+        stat.isSocket() &&
+        process.getuid !== undefined &&
+        stat.uid === process.getuid(),
+      dev: stat.dev,
+      ino: stat.ino,
+    };
+  } catch (error) {
+    if (error.code === "ENOENT") return { exists: false, trusted: false };
+    return { exists: true, trusted: false };
+  }
+};
+const sameSocketFile = (left, right) => left?.trusted === true && right?.trusted === true && left.dev === right.dev && left.ino === right.ino;
+const socketDirectoryIsTrusted = () => {
+  try {
+    const stat = fs.lstatSync(socketDir);
+    return !stat.isSymbolicLink() &&
+      stat.isDirectory() &&
+      process.getuid !== undefined &&
+      stat.uid === process.getuid() &&
+      (stat.mode & 0o7777) === 0o700;
+  } catch {
+    return false;
+  }
+};
+const ensureSocketDirectory = () => {
+  try {
+    fs.mkdirSync(socketDir, { mode: 0o700 });
+  } catch (error) {
+    if (error.code !== "EEXIST") return false;
+  }
+  return socketDirectoryIsTrusted();
+};
+const ensureLivenessEndpoint = () => {
+  if (finalized || inputEnded || process.platform === "win32" || !socketDirectoryAvailable || socketDir === undefined || socketPath === undefined) {
+    return Promise.resolve();
+  }
+  if (!ensureSocketDirectory()) {
+    livenessEndpointAvailable = false;
+    if (!livenessRecoveryDiagnosticReported) {
+      reportDiagnostic("stdio liveness directory unavailable; endpoint rebind skipped");
+      livenessRecoveryDiagnosticReported = true;
+    }
+    return Promise.resolve();
+  }
+  const currentIdentity = socketFileState();
+  if (livenessServer.listening && sameSocketFile(currentIdentity, livenessSocketIdentity)) {
+    livenessEndpointAvailable = true;
+    return Promise.resolve();
+  }
+  if (currentIdentity.exists && !sameSocketFile(currentIdentity, livenessSocketIdentity)) {
+    livenessEndpointAvailable = false;
+    if (!livenessRecoveryDiagnosticReported) {
+      reportDiagnostic("stdio liveness socket path is not owned by the writer; endpoint rebind skipped");
+      livenessRecoveryDiagnosticReported = true;
+    }
+    return Promise.resolve();
+  }
+  if (livenessEndpointRecoveryPromise !== undefined) return livenessEndpointRecoveryPromise;
+  livenessEndpointRecoveryPromise = (async () => {
+    try {
+      if (livenessServer.listening) {
+        await new Promise((resolveClose) => {
+          livenessServer.close((error) => {
+            if (error) reportFsError("stdio liveness endpoint close failed", error);
+            resolveClose();
+          });
+        });
+      }
+      const remainingIdentity = socketFileState();
+      if (remainingIdentity.exists) {
+        if (!livenessEndpointWasBound || !sameSocketFile(remainingIdentity, livenessSocketIdentity)) {
+          livenessEndpointAvailable = false;
+          return;
+        }
+        fs.unlinkSync(socketPath);
+      }
+      await new Promise((resolveListen) => {
+        const onListenError = (error) => {
+          livenessEndpointAvailable = false;
+          reportFsError("stdio liveness endpoint rebind failed", error);
+          resolveListen();
+        };
+        livenessServer.once("error", onListenError);
+        try {
+          livenessServer.listen(socketPath, () => {
+            livenessServer.off("error", onListenError);
+            livenessEndpointWasBound = true;
+            livenessSocketIdentity = socketFileState();
+            livenessEndpointAvailable = livenessSocketIdentity.trusted;
+            resolveListen();
+          });
+        } catch (error) {
+          livenessServer.off("error", onListenError);
+          reportFsError("stdio liveness endpoint rebind failed", error);
+          livenessEndpointAvailable = false;
+          resolveListen();
+        }
+      });
+    } catch (error) {
+      livenessEndpointAvailable = false;
+      reportFsError("stdio liveness endpoint recovery failed", error);
+    }
+  })().finally(() => {
+    livenessEndpointRecoveryPromise = undefined;
+  });
+  return livenessEndpointRecoveryPromise;
+};
 let recoveryPromise;
 let initializationPromise;
 let activeFd;
@@ -162,6 +277,7 @@ let inputEnded = false;
 let finalized = false;
 let retryTimer;
 let recoveryTimer;
+let periodicRecoveryPromise;
 let writeAttempts = 0;
 let chunkRetryStartedAt;
 let pendingOffset = 0;
@@ -378,32 +494,22 @@ const recoverClosedSegments = async () => {
         }
       }
       if (!recover) {
-        let socketAlive;
         if (endpointAvailable) {
-          socketAlive = await probeOwnerSocket(ownerUuid);
+          const socketAlive = await probeOwnerSocket(ownerUuid);
           if (socketAlive === true) continue;
-          if (socketAlive === false) recover = true;
         }
-        if (!recover && (!endpointAvailable || socketAlive === undefined)) {
+        if (!recover) {
           const currentIdentity = readProcessIdentity(ownerPid);
           if (ownerSource > 0 && currentIdentity.source > 0) {
             if (
-              currentIdentity.source === ownerSource &&
-              currentIdentity.fingerprint === ownerFingerprint
+              currentIdentity.source !== ownerSource ||
+              currentIdentity.fingerprint !== ownerFingerprint
             ) {
+              recover = true;
+            } else {
               continue;
             }
-            recover = true;
           }
-        }
-        if (!recover) {
-          try {
-            recover = Date.now() - fs.statSync(file).mtimeMs > identityFallbackMs;
-          } catch (statError) {
-            if (statError.code !== "ENOENT") reportFsError("stdio segment idle check failed", statError);
-            continue;
-          }
-          if (recover) reportDiagnostic("stdio segment owner socket unavailable; recovering after idle bound");
         }
       }
       if (recover) {
@@ -459,42 +565,55 @@ const closeActive = (archive) => {
     pruneBackups();
   }
 };
-const closeLivenessServer = () => new Promise((resolve, reject) => {
-  const cleanup = () => {
-    if (process.platform === "win32" || socketDir === undefined || socketPath === undefined) {
+const closeLivenessServer = async () => {
+  if (livenessEndpointRecoveryPromise !== undefined) await livenessEndpointRecoveryPromise;
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      if (process.platform === "win32" || socketDir === undefined || socketPath === undefined) {
+        resolve();
+        return;
+      }
+      if (!socketDirectoryIsTrusted()) {
+        resolve();
+        return;
+      }
+      const socketInfo = socketFileState();
+      if (socketInfo.exists && sameSocketFile(socketInfo, livenessSocketIdentity)) {
+        try {
+          fs.unlinkSync(socketPath);
+        } catch (error) {
+          if (error.code !== "ENOENT") {
+            reject(error);
+            return;
+          }
+        }
+      } else if (socketInfo.exists && !livenessRecoveryDiagnosticReported) {
+        reportDiagnostic("stdio liveness socket cleanup skipped for an untrusted path");
+        livenessRecoveryDiagnosticReported = true;
+      }
+      try {
+        fs.rmdirSync(socketDir);
+      } catch (error) {
+        if (error.code !== "ENOENT" && error.code !== "ENOTEMPTY" && error.code !== "EEXIST") {
+          reject(error);
+          return;
+        }
+      }
       resolve();
+    };
+    if (!livenessServer.listening) {
+      cleanup();
       return;
     }
-    try {
-      fs.unlinkSync(socketPath);
-    } catch (error) {
-      if (error.code !== "ENOENT") {
+    livenessServer.close((error) => {
+      if (error) {
         reject(error);
-        return;
+      } else {
+        cleanup();
       }
-    }
-    try {
-      fs.rmdirSync(socketDir);
-    } catch (error) {
-      if (error.code !== "ENOENT" && error.code !== "ENOTEMPTY" && error.code !== "EEXIST") {
-        reject(error);
-        return;
-      }
-    }
-    resolve();
-  };
-  if (!livenessServer.listening) {
-    cleanup();
-    return;
-  }
-  livenessServer.close((error) => {
-    if (error) {
-      reject(error);
-    } else {
-      cleanup();
-    }
+    });
   });
-});
+};
 const rotateOwnedSegment = async () => {
   closeActive(true);
   await recoverClosedSegments();
@@ -574,6 +693,7 @@ const scheduleRetry = (delayMs = retryDelayMs) => {
 };
 const finishStream = async () => {
   if (finalized) return;
+  clearInterval(recoveryTimer);
   try {
     if (writerBarrier?.finalizationEnteredPath !== undefined) {
       fs.writeFileSync(writerBarrier.finalizationEnteredPath, String(process.pid));
@@ -585,6 +705,7 @@ const finishStream = async () => {
         Atomics.wait(waitCell, 0, 0, 10);
       }
     }
+    if (periodicRecoveryPromise !== undefined) await periodicRecoveryPromise;
     if (pendingLossBytes > 0) await writePendingLossMarker();
     closeActive(true);
     await closeLivenessServer();
@@ -592,7 +713,6 @@ const finishStream = async () => {
       fs.writeFileSync(writerBarrier.completionPath, "done");
     }
     finalized = true;
-    clearInterval(recoveryTimer);
   } catch (error) {
     finalizationAttempts += 1;
     reportFsError("stdio finalization retry " + finalizationAttempts + "/" + maxWriteAttempts, error);
@@ -670,13 +790,18 @@ process.on("uncaughtException", (error) => {
   scheduleRetry();
 });
 recoveryTimer = setInterval(() => {
-  if (finalized) return;
+  if (finalized || inputEnded || periodicRecoveryPromise !== undefined) return;
   try {
     if (activeFd !== undefined) {
       const now = new Date();
       fs.futimesSync(activeFd, now, now);
     }
-    void recoverClosedSegments().catch((error) => reportFsError("stdio periodic segment recovery failed", error));
+    periodicRecoveryPromise = ensureLivenessEndpoint()
+      .then(() => recoverClosedSegments())
+      .catch((error) => reportFsError("stdio periodic segment recovery failed", error))
+      .finally(() => {
+        periodicRecoveryPromise = undefined;
+      });
   } catch (error) {
     reportFsError("stdio periodic segment recovery failed", error);
   }
@@ -705,7 +830,6 @@ export interface StdioLogWriterTestBarrier {
   pauseAtBytes?: number;
   failActiveOpenCount?: number;
   failActiveWriteCount?: number;
-  identityFallbackMs?: number;
   recoveryIntervalMs?: number;
   unreadableOwnerSocketTokens?: string[];
   ownerIdentity?: {
