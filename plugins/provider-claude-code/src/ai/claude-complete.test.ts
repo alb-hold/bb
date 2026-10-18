@@ -3,7 +3,6 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
-  claudeCompleteArgs,
   claudeCompleteEnv,
   completeClaudeInference,
 } from "./claude-complete.js";
@@ -80,14 +79,22 @@ describe("completeClaudeInference", () => {
     });
     const call = await cli.readCall();
     expect(call.prompt).toBe("Correct: The user are ready.");
-    expect(call.argv).toEqual(claudeCompleteArgs("claude-haiku-5-5"));
-    expect(call.argv).not.toContain("Correct: The user are ready.");
-    expect(
-      call.argv.slice(
-        call.argv.indexOf("--tools"),
-        call.argv.indexOf("--tools") + 2,
-      ),
-    ).toEqual(["--tools", ""]);
+    expect(call.argv).toEqual([
+      "-p",
+      "--output-format",
+      "json",
+      "--model",
+      "claude-haiku-5-5",
+      "--tools",
+      "",
+      "--no-session-persistence",
+      "--setting-sources",
+      "",
+      "--strict-mcp-config",
+      "--disable-slash-commands",
+      "--system-prompt",
+      "Follow the instructions in the user message exactly. Reply with only the requested text.",
+    ]);
   });
 
   it("drops the parent Claude Code session variables but keeps the OAuth token", async () => {
