@@ -8,6 +8,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -17,7 +18,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { createConnection } from "node:net";
-import { basename, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { spawnLoggedProcess } from "../src/logged-process.js";
 
@@ -1994,6 +1995,7 @@ fs.renameSync = function (source, destination) {
         },
       });
       let observer: ReturnType<typeof spawnLoggedProcess> | undefined;
+      let movedSocketPath: string | undefined;
       try {
         await expect
           .poll(
@@ -2012,6 +2014,10 @@ fs.renameSync = function (source, destination) {
             readFileSync(file, "utf8").includes("socket-owner-heartbeat"),
         )!;
         const ownerToken = socketTokenFromActivePath(ownerSegment);
+        movedSocketPath = join(
+          livenessDirectory(logDir, "server"),
+          `moved-${ownerToken}`,
+        );
         const ownerSocket = join(
           livenessDirectory(logDir, "server"),
           `s-${ownerToken}`,
@@ -2046,7 +2052,7 @@ fs.renameSync = function (source, destination) {
           )
           .toBe(true);
         owner.writerProcess.kill("SIGSTOP");
-        unlinkSync(ownerSocket);
+        renameSync(ownerSocket, movedSocketPath);
         const staleTime = new Date(0);
         utimesSync(ownerSegment, staleTime, staleTime);
         await new Promise<void>((resolvePromise) =>
@@ -2055,46 +2061,15 @@ fs.renameSync = function (source, destination) {
         expect(existsSync(ownerSegment)).toBe(true);
         writeFileSync(renameFailurePath, "fail once");
         owner.writerProcess.kill("SIGCONT");
-        const rebindStartedAt = Date.now();
         const initialSegment = ownerSegment;
         let recreatedSocketIdentity: ReturnType<typeof lstatSync> | undefined;
         let recreatedOwnerSegment: string | undefined;
         await expect
           .poll(
             () => {
-              const observedAt = Date.now();
-              const timestamp = new Date(observedAt).toISOString();
-              let socketRecord:
-                | { dev: number; ino: number; mtimeMs: number; isSocket: boolean }
-                | undefined;
-              try {
-                const stat = lstatSync(ownerSocket);
-                socketRecord = {
-                  dev: stat.dev,
-                  ino: stat.ino,
-                  mtimeMs: stat.mtimeMs,
-                  isSocket: stat.isSocket(),
-                };
-              } catch {}
-              const activeRecords = familyFiles(logDir, "server")
-                .filter((file) => file.includes(".active-") && fileIncludes(file, "socket-owner-heartbeat"))
-                .map((file) => {
-                  try {
-                    const stat = statSync(file);
-                    return { name: basename(file), mtimeMs: stat.mtimeMs };
-                  } catch {
-                    return { name: basename(file), mtimeMs: undefined };
-                  }
-                });
               try {
                 const identity = lstatSync(ownerSocket);
-                if (!identity.isSocket()) {
-                  console.error(
-                    "liveness-rebind-poll",
-                    JSON.stringify({ timestamp, elapsedMs: observedAt - rebindStartedAt, socket: socketRecord, active: activeRecords, matched: false }),
-                  );
-                  return false;
-                }
+                if (!identity.isSocket()) return false;
                 const expectedMarker = `-i-${identity.dev}-${identity.ino}`;
                 const segment = familyFiles(logDir, "server").find(
                   (file) =>
@@ -2103,19 +2078,11 @@ fs.renameSync = function (source, destination) {
                     file.includes(expectedMarker) &&
                     fileIncludes(file, "socket-owner-heartbeat"),
                 );
-                console.error(
-                  "liveness-rebind-poll",
-                  JSON.stringify({ timestamp, elapsedMs: observedAt - rebindStartedAt, socket: socketRecord, active: activeRecords, matched: segment !== undefined }),
-                );
                 if (segment === undefined) return false;
                 recreatedSocketIdentity = identity;
                 recreatedOwnerSegment = segment;
                 return true;
               } catch {
-                console.error(
-                  "liveness-rebind-poll",
-                  JSON.stringify({ timestamp, elapsedMs: observedAt - rebindStartedAt, socket: socketRecord, active: activeRecords, matched: false }),
-                );
                 return false;
               }
             },
@@ -2187,6 +2154,9 @@ fs.renameSync = function (source, destination) {
         writeFileSync(observerStopPath, "stop");
         expect(await waitForExit(observer)).toBe(0);
         await observer.writerExit;
+        if (movedSocketPath !== undefined && existsSync(movedSocketPath)) {
+          unlinkSync(movedSocketPath);
+        }
       } finally {
         if (observer !== undefined && observer.exitCode === null) {
           observer.kill("SIGKILL");
@@ -2195,6 +2165,9 @@ fs.renameSync = function (source, destination) {
         if (owner.writerProcess.exitCode === null) {
           owner.writerProcess.kill("SIGKILL");
           await owner.writerExit;
+        }
+        if (movedSocketPath !== undefined && existsSync(movedSocketPath)) {
+          unlinkSync(movedSocketPath);
         }
       }
     },
