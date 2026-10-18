@@ -500,11 +500,8 @@ const recoverClosedSegments = async () => {
         }
         if (!recover) {
           const currentIdentity = readProcessIdentity(ownerPid);
-          if (ownerSource > 0 && currentIdentity.source > 0) {
-            if (
-              currentIdentity.source !== ownerSource ||
-              currentIdentity.fingerprint !== ownerFingerprint
-            ) {
+          if (ownerSource > 0 && currentIdentity.source === ownerSource) {
+            if (currentIdentity.fingerprint !== ownerFingerprint) {
               recover = true;
             } else {
               continue;

@@ -1357,6 +1357,119 @@ describe("spawnLoggedProcess", () => {
     }
   });
 
+  it.skipIf(process.platform !== "linux")(
+    "keeps a live source-1 owner when a source-2 observer cannot reach its endpoint",
+    async () => {
+      const logDir = scratchDir();
+      const identity = currentProcessIdentity();
+      expect(identity.source).toBe(1);
+      const ownerStopPath = join(logDir, "stop-cross-source-owner");
+      const observerStopPath = join(logDir, "stop-cross-source-observer");
+      const owner = spawnLoggedProcess({
+        command: process.execPath,
+        args: [
+          "-e",
+          `const fs = require("node:fs"); process.stdout.write("cross-source-owner-started\\n"); const timer = setInterval(() => { if (fs.existsSync(${JSON.stringify(ownerStopPath)})) { clearInterval(timer); process.exit(0); } }, 10);`,
+        ],
+        env: process.env,
+        logDir,
+        logName: "server",
+        testWriterBarrier: {
+          ownerIdentity: identity,
+          recoveryIntervalMs: 10_000,
+        },
+      });
+      let observer: ReturnType<typeof spawnLoggedProcess> | undefined;
+      try {
+        await expect
+          .poll(
+            () =>
+              familyFiles(logDir, "server").some(
+                (file) =>
+                  file.includes(".active-") &&
+                  readFileSync(file, "utf8").includes(
+                    "cross-source-owner-started",
+                  ),
+              ),
+            { timeout: 5_000, interval: 10 },
+          )
+          .toBe(true);
+        const ownerSegment = familyFiles(logDir, "server").find(
+          (file) =>
+            file.includes(".active-") &&
+            readFileSync(file, "utf8").includes("cross-source-owner-started"),
+        );
+        expect(ownerSegment).toBeDefined();
+        expect(ownerSegment).toContain(`.active-${identity.pid}-1-`);
+        const ownerParts = ownerSegment!
+          .slice(ownerSegment!.indexOf(".active-") + 8)
+          .split("-");
+        const ownerToken = ownerParts.slice(4).join("-");
+        observer = spawnLoggedProcess({
+          command: process.execPath,
+          args: [
+            "-e",
+            `const fs = require("node:fs"); process.stdout.write("cross-source-observer-started\\n"); const timer = setInterval(() => { if (fs.existsSync(${JSON.stringify(observerStopPath)})) { clearInterval(timer); process.exit(0); } }, 10);`,
+          ],
+          env: process.env,
+          logDir,
+          logName: "server",
+          testWriterBarrier: {
+            forcePsIdentity: true,
+            recoveryIntervalMs: 25,
+            unreadableOwnerSocketTokens: [ownerToken],
+          },
+        });
+        await expect
+          .poll(
+            () =>
+              familyFiles(logDir, "server").some(
+                (file) =>
+                  file.includes(".active-") &&
+                  readFileSync(file, "utf8").includes(
+                    "cross-source-observer-started",
+                  ),
+              ),
+            { timeout: 5_000, interval: 10 },
+          )
+          .toBe(true);
+        await new Promise<void>((resolvePromise) =>
+          setTimeout(resolvePromise, 700),
+        );
+        expect(existsSync(ownerSegment!)).toBe(true);
+        expect(readFileSync(ownerSegment!, "utf8")).toContain(
+          "cross-source-owner-started",
+        );
+        writeFileSync(observerStopPath, "stop");
+        expect(await waitForExit(observer)).toBe(0);
+        await observer.writerExit;
+        writeFileSync(ownerStopPath, "stop");
+        expect(await waitForExit(owner)).toBe(0);
+        await owner.writerExit;
+      } finally {
+        if (observer !== undefined && observer.exitCode === null) {
+          observer.kill("SIGKILL");
+          await waitForExit(observer);
+        }
+        if (
+          observer !== undefined &&
+          observer.writerProcess.exitCode === null
+        ) {
+          observer.writerProcess.kill("SIGKILL");
+          await observer.writerExit;
+        }
+        if (owner.exitCode === null) {
+          owner.kill("SIGKILL");
+          await waitForExit(owner);
+        }
+        if (owner.writerProcess.exitCode === null) {
+          owner.writerProcess.kill("SIGKILL");
+          await owner.writerExit;
+        }
+      }
+    },
+  );
+
   it("reclaims a dead endpoint-backed owner when its probe is unknown", async () => {
     const logDir = scratchDir();
     const stopPath = join(logDir, "stop-dead-owner-observer");
