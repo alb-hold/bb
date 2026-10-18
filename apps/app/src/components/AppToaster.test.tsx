@@ -16,9 +16,15 @@ import { ArchivedThreadToastDescription } from "./thread/ArchivedThreadToastDesc
 import { AppToastContent } from "./ui/app-toast";
 
 afterEach(async () => {
+  if (vi.isFakeTimers()) {
+    await act(async () => {
+      await vi.runOnlyPendingTimersAsync();
+    });
+    vi.useRealTimers();
+  }
+  await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
   cleanup();
   toast.dismiss();
-  await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
 });
 
 async function renderToaster(isCompactViewport: boolean) {
@@ -117,6 +123,7 @@ describe("AppToaster", () => {
     "dismisses a compact toast to the %s",
     async (_name, startX, endX) => {
       await renderToaster(true);
+      vi.useFakeTimers();
       const toastElement = document.querySelector<HTMLElement>(
         "[data-sonner-toast]",
       );
@@ -127,9 +134,10 @@ describe("AppToaster", () => {
 
       swipeToast(toastElement, 1, startX, 100, endX, 100);
 
-      await waitFor(() => {
-        expect(document.querySelector("[data-sonner-toast]")).toBeNull();
+      await act(async () => {
+        await vi.runOnlyPendingTimersAsync();
       });
+      expect(document.querySelector("[data-sonner-toast]")).toBeNull();
     },
   );
 
