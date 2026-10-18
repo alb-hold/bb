@@ -2503,4 +2503,107 @@ describe("device handoff websocket acknowledgement", () => {
       await server.close();
     }
   });
+
+  it("shows a payload-free expiry notice to a viewer after the payload recipient disconnects", async () => {
+    const server = await startTestServer();
+    const { thread } = seedThreadFixture(server);
+    const origin = `http://127.0.0.1:${new URL(server.baseUrl).port}`;
+    const submitter = await connectRealtimeWithToken(server.baseUrl, {
+      origin,
+    });
+    const otherViewer = await connectRealtimeWithToken(server.baseUrl, {
+      origin,
+    });
+    const otherViewerFrames: Record<string, unknown>[] = [];
+    otherViewer.socket.on("message", (data) =>
+      otherViewerFrames.push(
+        JSON.parse(data.toString()) as Record<string, unknown>,
+      ),
+    );
+    try {
+      for (const socket of [submitter.socket, otherViewer.socket]) {
+        sendRealtime(socket, {
+          type: "subscribe",
+          target: { kind: "thread-detail", threadId: thread.id },
+        });
+        sendRealtime(socket, {
+          type: "device-handoff-view",
+          threadId: thread.id,
+          terminalSessionId: null,
+        });
+        const ready = nextRealtimeMessage(socket, "pong");
+        sendRealtime(socket, { type: "ping" });
+        await ready;
+      }
+      expect(
+        server.hub.recordDeviceHandoffTurnSubmitter(
+          submitter.token,
+          thread.id,
+          "turn-request-disconnected-expiry",
+          "turn-disconnected-expiry",
+        ),
+      ).toBe(true);
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+      vi.setSystemTime(Date.now());
+      const payload = nextRealtimeMessage(submitter.socket, "device-handoff");
+      expect(
+        server.hub.notifyDeviceHandoff(
+          {
+            kind: "copy-text",
+            text: "private payload for the phone",
+            origin: {
+              threadId: thread.id,
+              turnId: "turn-disconnected-expiry",
+            },
+          },
+          thread.title ?? "Thread",
+          thread.id,
+          "turn-request-disconnected-expiry",
+        ),
+      ).toBe(1);
+      expect((await payload).request).toMatchObject({
+        text: "private payload for the phone",
+      });
+      expect(
+        otherViewerFrames.some((frame) => frame.type === "device-handoff"),
+      ).toBe(false);
+
+      const submitterClosed = new Promise<void>((resolve) => {
+        submitter.socket.once("close", () => resolve());
+      });
+      submitter.socket.close();
+      await submitterClosed;
+      await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
+
+      const expiredNotice = nextRealtimeMessage(
+        otherViewer.socket,
+        "device-handoff-expired",
+      );
+      sendRealtime(otherViewer.socket, {
+        type: "device-handoff-view",
+        threadId: thread.id,
+        terminalSessionId: null,
+      });
+      const expired = await expiredNotice;
+      expect(expired).toMatchObject({
+        type: "device-handoff-expired",
+        threadId: thread.id,
+        terminalSessionId: null,
+      });
+      expect(Object.keys(expired).sort()).toEqual([
+        "id",
+        "terminalSessionId",
+        "threadId",
+        "type",
+      ]);
+      expect(JSON.stringify(expired)).not.toContain(
+        "private payload for the phone",
+      );
+    } finally {
+      vi.useRealTimers();
+      submitter.socket.close();
+      otherViewer.socket.close();
+      await server.close();
+    }
+  });
 });

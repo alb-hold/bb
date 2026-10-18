@@ -49,7 +49,7 @@ describe("NotificationHub device handoff routing", () => {
     for (const notice of notices) {
       expect(notice).toMatchObject({
         threadId: "thr_1",
-        hostLabel: "Thread one",
+        hostLabel: "BB",
       });
       expect(notice).not.toHaveProperty("request");
       expect(notice).not.toHaveProperty("text");
@@ -105,7 +105,7 @@ describe("NotificationHub device handoff routing", () => {
     for (const notice of notices) {
       expect(notice).toMatchObject({
         threadId: "thr_1",
-        hostLabel: "Thread one",
+        hostLabel: "BB",
       });
       expect(notice).not.toHaveProperty("request");
       expect(notice).not.toHaveProperty("text");
@@ -293,7 +293,7 @@ describe("NotificationHub device handoff routing", () => {
       expect(notice).toMatchObject({
         type: "device-handoff-notice",
         kind: "open-url",
-        hostLabel: "Thread one",
+        hostLabel: "BB",
         threadId: "thr_1",
       });
       expect(notice).not.toHaveProperty("request");
