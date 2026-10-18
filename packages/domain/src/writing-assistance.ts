@@ -1272,6 +1272,9 @@ export function validateFormattedTranscript(
   for (const [number, written] of numberSigns(body)) {
     const spoken = rawSigns.get(number);
     if (spoken === undefined || spoken.length !== written.length) continue;
+    if (spoken.filter(Boolean).length !== written.filter(Boolean).length) {
+      continue;
+    }
     if (spoken.some((negative, index) => negative !== written[index])) {
       return { ok: false, reason: "reordered" };
     }
