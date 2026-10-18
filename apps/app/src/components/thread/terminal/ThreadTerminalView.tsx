@@ -1062,8 +1062,8 @@ export function ThreadTerminalView({
     let markerGridActive = false;
     let localFitGrid: TerminalGridSize | null = null;
     let latestPtyGrid: TerminalGridSize = {
-      cols: session.cols,
-      rows: session.rows,
+      cols: sessionRef.current.cols,
+      rows: sessionRef.current.rows,
     };
     let fallbackElapsed = false;
     let detachPointerCoordinates: (() => void) | null = null;
