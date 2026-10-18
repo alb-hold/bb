@@ -3,6 +3,7 @@ import type {
   ProviderUsageResponse,
 } from "@bb/host-daemon-contract";
 import { describe, expect, it } from "vitest";
+import { setPluginAgentContributions } from "../../src/services/plugins/plugin-agent-contributions.js";
 import { registerHostRpcResponder } from "../helpers/host-rpc.js";
 import { readJson } from "../helpers/json.js";
 import { minimalProviderRegistration } from "../helpers/provider-registry.js";
@@ -172,6 +173,67 @@ describe("GET /api/v1/system/usage-limits", () => {
       }
     });
   });
+
+  it.each(["unauthenticated", "expired"] as const)(
+    "reports a %s provider as unreadable, not unusable, while the account pool supplies its credentials",
+    async (status) => {
+      await withTestHarness(async (harness) => {
+        const { host, session } = seedHostSession(harness.deps, {
+          id: `pool-usage-${status}`,
+        });
+        const responder = registerHostRpcResponder(harness, {
+          hostId: host.id,
+          sessionId: session.id,
+          handle(request) {
+            if (request.command.type === "provider.usage") {
+              return {
+                ok: true,
+                result: { supported: true, usage: { status } },
+              };
+            }
+            return handleUsageRequest(request);
+          },
+        });
+        const url = `/api/v1/system/usage-limits?hostId=${host.id}&providerId=codex&refresh=true`;
+        try {
+          const withoutPool = await harness.app.request(url);
+          expect(await withoutPool.json()).toEqual({ codex: { status } });
+          setPluginAgentContributions({
+            listSkillRootContributions: () => [],
+            listAgentTools: () => [],
+            listInstructionContributions: () => [],
+            findAgentTool: () => undefined,
+            invokeAgentTool: async () => ({
+              success: false,
+              contentItems: [{ type: "inputText", text: "unused" }],
+            }),
+            resolveMention: async () => ({ ok: false, error: "unused" }),
+            resolveProviderEnvHealth: async ({ providerId }) =>
+              providerId === "codex"
+                ? {
+                    label: "Proxied",
+                    statusMessage:
+                      "Credentials are provided by the Account Pooler hub.",
+                  }
+                : null,
+          });
+          const withPool = await harness.app.request(url);
+          expect(await withPool.json()).toEqual({
+            codex: {
+              status: "error",
+              message:
+                "Routed through the account pool; there are no subscription windows from a local login.",
+              planLabel: null,
+              accountEmail: null,
+            },
+          });
+        } finally {
+          setPluginAgentContributions(undefined);
+          responder.unregister();
+        }
+      });
+    },
+  );
 
   it("does not start a usage probe the provider did not declare", async () => {
     await withTestHarness(async (harness) => {
