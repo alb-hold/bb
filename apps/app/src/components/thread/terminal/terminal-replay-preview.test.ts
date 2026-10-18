@@ -42,6 +42,7 @@ describe("terminal replay preview", () => {
     const preview = new Terminal({ cols: 120, rows: 36 });
     const cover = mountTerminalReplayPreview({
       container: historyContainer,
+      initialFitGrid: { cols: 120, rows: 36 },
       terminal: preview,
     });
     expect(historyContainer.style.opacity).toBe("0");
@@ -78,6 +79,7 @@ describe("terminal replay preview", () => {
       });
     }
 
+    cover.setFitGrid(51, 47);
     cover.resize(51, 47);
     expect(
       getComputedStyle(
@@ -108,6 +110,59 @@ describe("terminal replay preview", () => {
     expect(rendered).toContain("middle historical frame");
     expect(rendered).toContain("current frame");
 
+    history.dispose();
+    parent.remove();
+  });
+
+  it("keeps a phone preview hidden until the PTY grid matches its fit", () => {
+    const context = new Proxy(
+      {
+        measureText: (text: string) => ({ width: text.length * 8 }),
+        getImageData: () => ({ data: new Uint8ClampedArray(4) }),
+        createImageData: () => ({ data: new Uint8ClampedArray(4) }),
+      } as Record<string, unknown>,
+      {
+        get(target, property) {
+          const value = target[property as string];
+          return value ?? (() => undefined);
+        },
+        set(target, property, value) {
+          target[property as string] = value;
+          return true;
+        },
+      },
+    );
+    HTMLCanvasElement.prototype.getContext = (() =>
+      context) as unknown as typeof HTMLCanvasElement.prototype.getContext;
+    const parent = document.createElement("div");
+    const historyContainer = document.createElement("div");
+    parent.append(historyContainer);
+    document.body.append(parent);
+
+    const history = new Terminal({ cols: 135, rows: 56 });
+    history.open(historyContainer);
+    const preview = new Terminal({ cols: 135, rows: 56 });
+    const cover = mountTerminalReplayPreview({
+      container: historyContainer,
+      initialFitGrid: { cols: 51, rows: 47 },
+      terminal: preview,
+    });
+    const previewElement = parent.querySelector(
+      "[data-terminal-replay-preview]",
+    )!;
+
+    expect(preview.cols).toBe(135);
+    expect(getComputedStyle(previewElement).visibility).toBe("hidden");
+    expect(previewElement.getAttribute("data-grid-cols")).toBe("135");
+
+    cover.resize(51, 47);
+
+    expect(preview.cols).toBe(51);
+    expect(preview.rows).toBe(47);
+    expect(getComputedStyle(previewElement).visibility).toBe("visible");
+    expect(previewElement.getAttribute("data-grid-cols")).toBe("51");
+
+    cover.dispose();
     history.dispose();
     parent.remove();
   });

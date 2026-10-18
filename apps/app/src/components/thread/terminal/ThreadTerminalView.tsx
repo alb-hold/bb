@@ -1039,9 +1039,11 @@ export function ThreadTerminalView({
     let stopWatchingLayout: (() => void) | null = null;
     let sharedSize: TerminalGridSize | null = null;
     let markerGridActive = false;
+    let localFitGrid: TerminalGridSize | null = null;
     let replayPreview: {
       dispose(): void;
       resize(cols: number, rows: number): void;
+      setFitGrid(cols: number, rows: number): void;
     } | null = null;
     let outputPipeline: ReturnType<typeof createTerminalOutputPipeline> | null =
       null;
@@ -1192,6 +1194,8 @@ export function ThreadTerminalView({
         ) {
           return;
         }
+        localFitGrid = { cols: fitted.cols, rows: fitted.rows };
+        replayPreview?.setFitGrid(fitted.cols, fitted.rows);
         if (!markerGridActive) {
           const display = terminalDisplaySize(fitted, sharedSize);
           if (
@@ -1357,6 +1361,10 @@ export function ThreadTerminalView({
               });
               replayPreview = mountTerminalReplayPreview({
                 container: containerElement,
+                initialFitGrid: localFitGrid ?? {
+                  cols: session.cols,
+                  rows: session.rows,
+                },
                 terminal: previewTerminal,
               });
             },

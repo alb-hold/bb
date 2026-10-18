@@ -2,13 +2,16 @@ import type { Terminal as XTermTerminal } from "@xterm/xterm";
 
 export function mountTerminalReplayPreview({
   container,
+  initialFitGrid,
   terminal,
 }: {
   container: HTMLDivElement;
+  initialFitGrid: { cols: number; rows: number };
   terminal: XTermTerminal;
 }): {
   dispose(): void;
   resize(cols: number, rows: number): void;
+  setFitGrid(cols: number, rows: number): void;
 } {
   const parent = container.parentElement;
   if (!parent) throw new Error("Terminal replay preview requires a parent");
@@ -31,12 +34,26 @@ export function mountTerminalReplayPreview({
   terminal.open(preview);
 
   let disposed = false;
+  let fitGrid = initialFitGrid;
+  const updateVisibility = () => {
+    preview.style.visibility =
+      terminal.cols === fitGrid.cols && terminal.rows === fitGrid.rows
+        ? "visible"
+        : "hidden";
+  };
+  updateVisibility();
   return {
     resize(cols, rows) {
       if (disposed) return;
       terminal.resize(cols, rows);
       preview.dataset.gridCols = String(cols);
       preview.dataset.gridRows = String(rows);
+      updateVisibility();
+    },
+    setFitGrid(cols, rows) {
+      if (disposed) return;
+      fitGrid = { cols, rows };
+      updateVisibility();
     },
     dispose() {
       if (disposed) return;
