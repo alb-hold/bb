@@ -285,6 +285,20 @@ describe("WebSocketManager device handoff attachment token", () => {
     );
     expect(callback).toHaveBeenCalledWith("0123456789abcdefghij_-");
   });
+
+  it("replays the current token to a terminal view that subscribes late", () => {
+    const manager = new WebSocketManager();
+    const token = "0123456789abcdefghij_-";
+    manager.handleIncomingMessage(
+      JSON.stringify({ type: "device-handoff-client-token", token }),
+    );
+    const callback = vi.fn();
+
+    manager.onDeviceHandoffClientToken(callback);
+
+    expect(callback).toHaveBeenCalledOnce();
+    expect(callback).toHaveBeenCalledWith(token);
+  });
 });
 
 describe("WebSocketManager thread-open signals", () => {

@@ -532,6 +532,9 @@ export class WebSocketManager {
 
   onDeviceHandoffClientToken(callback: (token: string) => void): () => void {
     this.deviceHandoffClientTokenCallbacks.add(callback);
+    if (this.deviceHandoffClientToken !== null) {
+      callback(this.deviceHandoffClientToken);
+    }
     return () => this.deviceHandoffClientTokenCallbacks.delete(callback);
   }
 

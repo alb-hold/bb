@@ -1342,7 +1342,8 @@ export function ThreadTerminalView({
         shouldReconnect: () =>
           !disposed && sessionStatusRef.current === "running",
         url: buildTerminalWebSocketUrl({
-          handoffOwnerToken,
+          handoffOwnerToken:
+            wsManager.getDeviceHandoffClientToken() ?? handoffOwnerToken,
           terminalId: session.id,
         }),
       });
