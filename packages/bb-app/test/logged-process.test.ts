@@ -2467,12 +2467,11 @@ fs.renameSync = function (source, destination) {
       familyFiles(logDir, "server").filter((file) => file.includes(".backup-"))
         .length;
     const postRenameReleasePath = join(logDir, "release-post-rename");
-    const pruneSnapshotReleasePath = join(logDir, "release-prune-snapshot");
     const barriers = ["A", "B"].map((label) => ({
       postRenameEnteredPath: join(logDir, `post-rename-${label}`),
       postRenameReleasePath,
       pruneSnapshotEnteredPath: join(logDir, `prune-snapshot-${label}`),
-      pruneSnapshotReleasePath,
+      pruneSnapshotReleasePath: join(logDir, `release-prune-snapshot-${label}`),
       pruneObservedCountsPath: join(logDir, `prune-counts-${label}`),
       completionPath: join(logDir, `writer-complete-${label}`),
     }));
@@ -2527,7 +2526,9 @@ fs.renameSync = function (source, destination) {
             readFileSync(barrier.pruneSnapshotEnteredPath!, "utf8") === "6",
         ),
       ).toBe(true);
-      writeFileSync(pruneSnapshotReleasePath, "release");
+      writeFileSync(barriers[0].pruneSnapshotReleasePath!, "release");
+      await writers[0].writerExit;
+      writeFileSync(barriers[1].pruneSnapshotReleasePath!, "release");
       await Promise.all(writers.map((writer) => writer.writerExit));
       await expect
         .poll(
@@ -2577,7 +2578,9 @@ fs.renameSync = function (source, destination) {
       );
     } finally {
       writeFileSync(postRenameReleasePath, "release");
-      writeFileSync(pruneSnapshotReleasePath, "release");
+      for (const barrier of barriers) {
+        writeFileSync(barrier.pruneSnapshotReleasePath!, "release");
+      }
       for (const writer of writers) {
         if (writer.exitCode === null) writer.kill("SIGKILL");
       }
