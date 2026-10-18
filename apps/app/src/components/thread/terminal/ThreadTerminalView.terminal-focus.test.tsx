@@ -111,6 +111,7 @@ function Handler() {
 
 afterEach(() => {
   cleanup();
+  Reflect.set(wsManager, "deviceHandoffClientToken", null);
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   testState.calls.length = 0;
@@ -217,6 +218,12 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       compact: false,
     },
   ])("attaches the $path with its owning app token", async (view) => {
+    wsManager.handleIncomingMessage(
+      JSON.stringify({
+        type: "device-handoff-client-token",
+        token: "0123456789abcdefghij_-",
+      }),
+    );
     vi.stubGlobal("WebSocket", TestTerminalSocket);
     vi.stubGlobal(
       "ResizeObserver",
