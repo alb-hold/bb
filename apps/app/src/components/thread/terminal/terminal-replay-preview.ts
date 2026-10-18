@@ -41,11 +41,15 @@ export function mountTerminalReplayPreview({
   let fitGrid = initialFitGrid;
   let fallbackElapsed = false;
   const updateVisibility = () => {
-    preview.style.visibility =
-      (terminal.cols === fitGrid.cols && terminal.rows === fitGrid.rows) ||
-      (fallbackElapsed && canShowMismatchedFallback())
-        ? "visible"
-        : "hidden";
+    const matchesFit =
+      terminal.cols === fitGrid.cols && terminal.rows === fitGrid.rows;
+    const canShowFallback = fallbackElapsed && canShowMismatchedFallback();
+    if (canShowFallback && !matchesFit) {
+      terminal.resize(fitGrid.cols, fitGrid.rows);
+      preview.dataset.gridCols = String(fitGrid.cols);
+      preview.dataset.gridRows = String(fitGrid.rows);
+    }
+    preview.style.visibility = matchesFit || canShowFallback ? "visible" : "hidden";
   };
   const refreshVisibility = () => updateVisibility();
   document.addEventListener("focusin", refreshVisibility);

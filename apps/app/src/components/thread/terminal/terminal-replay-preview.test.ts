@@ -222,7 +222,7 @@ describe("terminal replay preview", () => {
     vi.useRealTimers();
   });
 
-  it("reveals the current grid after the fallback for a non-owner", () => {
+  it("reveals the fitted grid after the fallback for a non-owner", () => {
     vi.useFakeTimers();
     const context = new Proxy(
       {
@@ -264,11 +264,16 @@ describe("terminal replay preview", () => {
     expect(getComputedStyle(previewElement).visibility).toBe("hidden");
     vi.advanceTimersByTime(1);
     expect(getComputedStyle(previewElement).visibility).toBe("visible");
-    expect(previewElement.getAttribute("data-grid-cols")).toBe("135");
+    expect(previewElement.getAttribute("data-grid-cols")).toBe("51");
+    expect(previewElement.getAttribute("data-grid-rows")).toBe("47");
+    expect({ cols: preview.cols, rows: preview.rows }).toEqual({
+      cols: 51,
+      rows: 47,
+    });
 
     nonOwner = false;
     document.dispatchEvent(new Event("focusin"));
-    expect(getComputedStyle(previewElement).visibility).toBe("hidden");
+    expect(getComputedStyle(previewElement).visibility).toBe("visible");
 
     cover.dispose();
     parent.remove();
