@@ -538,6 +538,7 @@ describe("spawnLoggedProcess", () => {
       .poll(() => existsSync(attemptedPath), { timeout: 5_000 })
       .toBe(true);
     expect(await waitForExit(child)).toBe(0);
+    await child.writerExit;
     expect(existsSync(laterPath)).toBe(true);
     await expect
       .poll(
@@ -1906,6 +1907,7 @@ describe("spawnLoggedProcess", () => {
       }
 
       expect(await waitForExit(child)).toBe(0);
+      await child.writerExit;
       await expect
         .poll(() => existsSync(writerStartedPath), { timeout: 5_000 })
         .toBe(true);
