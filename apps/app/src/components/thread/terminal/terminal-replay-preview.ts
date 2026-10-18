@@ -1,4 +1,5 @@
 import type { Terminal as XTermTerminal } from "@xterm/xterm";
+import { createTerminalOutputPipeline } from "./terminal-output-pipeline";
 
 export const TERMINAL_REPLAY_PREVIEW_FALLBACK_MS = 1_500;
 
@@ -16,6 +17,7 @@ export function mountTerminalReplayPreview({
   dispose(): void;
   resize(cols: number, rows: number): void;
   setFitGrid(cols: number, rows: number): void;
+  push(bytes: Uint8Array, callback: () => void): void;
 } {
   const parent = container.parentElement;
   if (!parent) throw new Error("Terminal replay preview requires a parent");
@@ -36,6 +38,10 @@ export function mountTerminalReplayPreview({
   container.style.opacity = "0";
   parent.append(preview);
   terminal.open(preview);
+  const outputPipeline = createTerminalOutputPipeline({
+    resize: () => undefined,
+    write: (bytes, callback) => terminal.write(bytes, callback),
+  });
 
   let disposed = false;
   let fitGrid = initialFitGrid;
@@ -74,6 +80,10 @@ export function mountTerminalReplayPreview({
       if (disposed) return;
       fitGrid = { cols, rows };
       updateVisibility();
+    },
+    push(bytes, callback) {
+      if (!disposed) outputPipeline.push(bytes, callback);
+      else callback();
     },
     dispose() {
       if (disposed) return;

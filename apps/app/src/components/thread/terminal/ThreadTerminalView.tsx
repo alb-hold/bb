@@ -444,6 +444,7 @@ interface TerminalOutputWriteArgs {
   replayWriteState: TerminalReplayWriteState;
   terminal: XTermTerminal;
   pipeline?: ReturnType<typeof createTerminalOutputPipeline>;
+  replayPipeline?: Pick<ReturnType<typeof createTerminalOutputPipeline>, "push">;
 }
 
 interface ForwardTerminalDataArgs {
@@ -488,6 +489,7 @@ interface HandleTerminalServerMessageArgs {
   setReplayNextSeq: (nextSeq: number | null) => void;
   terminal: XTermTerminal;
   pipeline?: ReturnType<typeof createTerminalOutputPipeline>;
+  replayPipeline?: Pick<ReturnType<typeof createTerminalOutputPipeline>, "push">;
   allowAttachedGrid?: boolean;
   onReplayStart?: (session: TerminalSession) => void;
 }
@@ -669,13 +671,12 @@ export function writeTerminalOutput({
   replayWriteState,
   terminal,
   pipeline,
+  replayPipeline,
 }: TerminalOutputWriteArgs): void {
+  const bytes = typeof data === "string" ? new TextEncoder().encode(data) : data;
   const write = (callback: () => void) => {
     if (pipeline)
-      pipeline.push(
-        typeof data === "string" ? new TextEncoder().encode(data) : data,
-        callback,
-      );
+      pipeline.push(bytes, callback);
     else terminal.write(data, callback);
   };
   if (!isReplay) {
@@ -685,8 +686,15 @@ export function writeTerminalOutput({
 
   replayWriteState.suppressedWriteCount += 1;
   write(() => {
-    replayWriteState.suppressedWriteCount -= 1;
-    onParsed();
+    if (!replayPipeline) {
+      replayWriteState.suppressedWriteCount -= 1;
+      onParsed();
+      return;
+    }
+    replayPipeline.push(bytes, () => {
+      replayWriteState.suppressedWriteCount -= 1;
+      onParsed();
+    });
   });
 }
 
@@ -700,6 +708,7 @@ export function handleTerminalServerMessage({
   setReplayNextSeq,
   terminal,
   pipeline,
+  replayPipeline,
   allowAttachedGrid = true,
   onReplayStart,
 }: HandleTerminalServerMessageArgs): void {
@@ -744,6 +753,7 @@ export function handleTerminalServerMessage({
         replayWriteState,
         terminal,
         pipeline,
+        replayPipeline,
       });
       return;
     }
@@ -1044,6 +1054,7 @@ export function ThreadTerminalView({
       dispose(): void;
       resize(cols: number, rows: number): void;
       setFitGrid(cols: number, rows: number): void;
+      push(bytes: Uint8Array, callback: () => void): void;
     } | null = null;
     let mismatchedGridFallbackTimeout: ReturnType<typeof setTimeout> | null =
       null;
@@ -1470,6 +1481,7 @@ export function ThreadTerminalView({
             },
             terminal: activeTerminal,
             pipeline: outputPipeline ?? undefined,
+            replayPipeline: replayPreview ?? undefined,
             allowAttachedGrid: !markerGridActive,
           });
         },

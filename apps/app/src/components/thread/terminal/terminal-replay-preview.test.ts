@@ -156,7 +156,6 @@ describe("terminal replay preview", () => {
     const previewElement = parent.querySelector(
       "[data-terminal-replay-preview]",
     )!;
-
     expect(preview.cols).toBe(135);
     expect(getComputedStyle(previewElement).visibility).toBe("hidden");
     expect(previewElement.getAttribute("data-grid-cols")).toBe("135");
@@ -222,7 +221,7 @@ describe("terminal replay preview", () => {
     vi.useRealTimers();
   });
 
-  it("reveals the fitted grid after the fallback for a non-owner", () => {
+  it("reveals the current replay frame at the fitted grid after fallback for a non-owner", async () => {
     vi.useFakeTimers();
     const context = new Proxy(
       {
@@ -259,10 +258,19 @@ describe("terminal replay preview", () => {
     const previewElement = parent.querySelector(
       "[data-terminal-replay-preview]",
     )!;
-
-    vi.advanceTimersByTime(TERMINAL_REPLAY_PREVIEW_FALLBACK_MS - 1);
     expect(getComputedStyle(previewElement).visibility).toBe("hidden");
-    vi.advanceTimersByTime(1);
+    const parsed = new Promise<void>((resolve) =>
+      cover.push(
+        Buffer.from(
+          `${createTerminalGridMarker({ cols: 135, rows: 56 })}current frame\r\n`,
+        ),
+        resolve,
+      ),
+    );
+    await vi.advanceTimersByTimeAsync(100);
+    await parsed;
+
+    await vi.advanceTimersByTimeAsync(TERMINAL_REPLAY_PREVIEW_FALLBACK_MS);
     expect(getComputedStyle(previewElement).visibility).toBe("visible");
     expect(previewElement.getAttribute("data-grid-cols")).toBe("51");
     expect(previewElement.getAttribute("data-grid-rows")).toBe("47");
@@ -270,6 +278,11 @@ describe("terminal replay preview", () => {
       cols: 51,
       rows: 47,
     });
+    expect(
+      Array.from({ length: preview.buffer.active.length }, (_, index) =>
+        preview.buffer.active.getLine(index)?.translateToString(),
+      ).join("\n"),
+    ).toContain("current frame");
 
     nonOwner = false;
     document.dispatchEvent(new Event("focusin"));
