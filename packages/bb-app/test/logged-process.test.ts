@@ -621,8 +621,9 @@ describe("spawnLoggedProcess", () => {
       await expect
         .poll(
           () =>
-            familyFiles(logDir, "server").some((path) =>
-              path.includes(".active-"),
+            familyFiles(logDir, "server").some(
+              (path) =>
+                path.includes(".active-") && statSync(path).size >= firstBytes,
             ),
           { timeout: 5_000, interval: 10 },
         )
