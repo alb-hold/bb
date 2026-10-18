@@ -14,7 +14,7 @@ export function mountTerminalReplayPreview({
   terminal,
 }: {
   container: HTMLDivElement;
-  initialFitGrid: { cols: number; rows: number };
+  initialFitGrid: { cols: number; rows: number } | null;
   isOwner: () => boolean;
   terminal: XTermTerminal;
 }): {
@@ -44,7 +44,8 @@ export function mountTerminalReplayPreview({
   terminal.open(preview);
   let fitGrid = initialFitGrid;
   let latestPtyGrid = { cols: terminal.cols, rows: terminal.rows };
-  let surfaceScale = terminalSurfaceScale(latestPtyGrid, fitGrid);
+  let surfaceScale =
+    fitGrid === null ? 1 : terminalSurfaceScale(latestPtyGrid, fitGrid);
   const detachPointerCoordinates = terminal.element
     ? attachTerminalScalePointerCoordinates(
         terminal.element,
@@ -52,6 +53,7 @@ export function mountTerminalReplayPreview({
       )
     : () => undefined;
   const updateSurfaceScale = () => {
+    if (fitGrid === null) return;
     surfaceScale = terminalSurfaceScale(latestPtyGrid, fitGrid);
     if (terminal.element) {
       applyTerminalSurfaceScale(terminal.element, surfaceScale);
@@ -71,14 +73,16 @@ export function mountTerminalReplayPreview({
   let disposed = false;
   const updateVisibility = () => {
     updateSurfaceScale();
-    preview.style.visibility = canRevealTerminalSurface({
-      fitGrid,
-      isOwner: isOwner(),
-      ptyGrid: latestPtyGrid,
-      rendererGrid: { cols: terminal.cols, rows: terminal.rows },
-    })
-      ? "visible"
-      : "hidden";
+    preview.style.visibility =
+      fitGrid !== null &&
+      canRevealTerminalSurface({
+        fitGrid,
+        isOwner: isOwner(),
+        ptyGrid: latestPtyGrid,
+        rendererGrid: { cols: terminal.cols, rows: terminal.rows },
+      })
+        ? "visible"
+        : "hidden";
   };
   const refreshVisibility = () => updateVisibility();
   document.addEventListener("focusin", refreshVisibility);

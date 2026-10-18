@@ -1467,10 +1467,7 @@ export function ThreadTerminalView({
               });
               replayPreview = mountTerminalReplayPreview({
                 container: containerElement,
-                initialFitGrid: localFitGrid ?? {
-                  cols: replayGrid.cols,
-                  rows: replayGrid.rows,
-                },
+                initialFitGrid: localFitGrid,
                 isOwner: () =>
                   terminalInputClaimed &&
                   document.hasFocus() &&

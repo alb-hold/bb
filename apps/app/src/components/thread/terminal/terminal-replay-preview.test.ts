@@ -166,6 +166,59 @@ describe("terminal replay preview", () => {
     parent.remove();
   });
 
+  it("waits for the phone fit before revealing and scaling an attached-grid preview", () => {
+    const context = new Proxy(
+      {
+        measureText: (text: string) => ({ width: text.length * 8 }),
+        getImageData: () => ({ data: new Uint8ClampedArray(4) }),
+        createImageData: () => ({ data: new Uint8ClampedArray(4) }),
+      } as Record<string, unknown>,
+      {
+        get(target, property) {
+          const value = target[property as string];
+          return value ?? (() => undefined);
+        },
+        set(target, property, value) {
+          target[property as string] = value;
+          return true;
+        },
+      },
+    );
+    HTMLCanvasElement.prototype.getContext = (() =>
+      context) as unknown as typeof HTMLCanvasElement.prototype.getContext;
+    const parent = document.createElement("div");
+    const container = document.createElement("div");
+    parent.append(container);
+    document.body.append(parent);
+
+    const preview = new Terminal({ cols: 135, rows: 56 });
+    const cover = mountTerminalReplayPreview({
+      container,
+      initialFitGrid: null,
+      isOwner: () => false,
+      terminal: preview,
+    });
+    const previewElement = parent.querySelector(
+      "[data-terminal-replay-preview]",
+    )!;
+
+    expect(getComputedStyle(previewElement).visibility).toBe("hidden");
+
+    cover.setFitGrid(51, 47);
+
+    const scale = 51 / 135;
+    expect({ cols: preview.cols, rows: preview.rows }).toEqual({
+      cols: 135,
+      rows: 56,
+    });
+    expect(getComputedStyle(previewElement).visibility).toBe("visible");
+    expect(preview.element?.style.transform).toBe(`scale(${scale})`);
+    expect(135 * scale).toBe(51);
+
+    cover.dispose();
+    parent.remove();
+  });
+
   it("keeps an owner hidden until its fitted grid arrives", async () => {
     const context = new Proxy(
       {
