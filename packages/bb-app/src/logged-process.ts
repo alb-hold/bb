@@ -16,6 +16,7 @@ const maxWriteAttempts = 3;
 const retryDelayMs = 10;
 const maxChunkRetryMs = 2_000;
 const recoveryIntervalMs = writerBarrier?.recoveryIntervalMs ?? 1_000;
+const recoveryPlatform = writerBarrier?.recoveryPlatform ?? process.platform;
 const errorCode = (error) => typeof error?.code === "string" ? error.code : "UNKNOWN";
 const reportDiagnostic = (message) => {
   try {
@@ -62,6 +63,7 @@ const readProcessIdentity = (pid) => {
 const ownerIdentity = writerBarrier?.ownerIdentity ?? readProcessIdentity(process.pid);
 const ownerPid = writerBarrier?.ownerIdentity?.pid ?? process.pid;
 const socketToken = crypto.randomUUID();
+let pipeToken = socketToken;
 const token = ownerPid + "-" + ownerIdentity.source + "-" + ownerIdentity.fingerprint + "-" + socketToken;
 const familyPrefix = logPath + ".";
 const familyHash = crypto.createHash("sha256").update(path.resolve(logPath) + "-" + (process.getuid?.() ?? process.env.USERNAME ?? "")).digest("hex").slice(0, 12);
@@ -113,7 +115,7 @@ if (process.platform !== "win32") {
   }
 }
 if (process.platform === "win32") {
-  socketPath = "\\\\.\\pipe\\bb-stdio-" + familyHash + "-" + socketToken;
+  socketPath = "\\\\.\\pipe\\bb-stdio-" + familyHash + "-" + pipeToken;
 }
 const livenessServer = net.createServer((connection) => connection.destroy());
 const livenessReady = new Promise((resolve) => {
@@ -209,16 +211,50 @@ const ensureSocketDirectory = () => {
   return socketDirectoryIsTrusted();
 };
 const ensureLivenessEndpoint = () => {
-  if (finalized || inputEnded || process.platform === "win32" || !socketDirectoryAvailable || socketDir === undefined || socketPath === undefined) {
+  if (finalized || inputEnded || !socketDirectoryAvailable || socketPath === undefined) {
     return Promise.resolve();
   }
-  if (!ensureSocketDirectory()) {
+  if (process.platform !== "win32" && (socketDir === undefined || !ensureSocketDirectory())) {
     livenessEndpointAvailable = false;
     if (!livenessRecoveryDiagnosticReported) {
       reportDiagnostic("stdio liveness directory unavailable; endpoint rebind skipped");
       livenessRecoveryDiagnosticReported = true;
     }
     return Promise.resolve();
+  }
+  if (process.platform === "win32") {
+    if (livenessServer.listening) {
+      livenessEndpointAvailable = true;
+      return Promise.resolve();
+    }
+    if (livenessEndpointRecoveryPromise !== undefined) return livenessEndpointRecoveryPromise;
+    livenessEndpointRecoveryPromise = new Promise((resolveListen) => {
+      if (livenessEndpointWasBound) {
+        pipeToken = crypto.randomUUID();
+        socketPath = "\\\\.\\pipe\\bb-stdio-" + familyHash + "-" + pipeToken;
+      }
+      const onListenError = (error) => {
+        livenessEndpointAvailable = false;
+        reportFsError("stdio liveness endpoint rebind failed", error);
+        resolveListen();
+      };
+      livenessServer.once("error", onListenError);
+      try {
+        livenessServer.listen(socketPath, () => {
+          livenessServer.off("error", onListenError);
+          livenessEndpointWasBound = true;
+          livenessEndpointAvailable = true;
+          refreshActivePathForSocketIdentity();
+          resolveListen();
+        });
+      } catch (error) {
+        livenessServer.off("error", onListenError);
+        onListenError(error);
+      }
+    }).finally(() => {
+      livenessEndpointRecoveryPromise = undefined;
+    });
+    return livenessEndpointRecoveryPromise;
   }
   const currentIdentity = socketFileState();
   if (livenessServer.listening && sameSocketFile(currentIdentity, livenessSocketIdentity)) {
@@ -310,9 +346,9 @@ const pendingChunks = [];
 let pendingBytes = 0;
 const maxPendingBytes = 16 * 1024 * 1024;
 const backupPattern = /^.+\\.backup-[0-9]+-[0-9]+-[a-f0-9-]+$/;
-const activePattern = /^.+\\.active-[0-9]+-[012]-[a-f0-9]{16}-(?:[en]-)?[a-f0-9-]+(?:-i-[0-9]+-[0-9]+)?$/;
+const activePattern = /^.+\\.active-[0-9]+-[012]-[a-f0-9]{16}-(?:[en]-)?[a-f0-9-]+(?:-i-[0-9]+-[0-9]+|-p-[a-f0-9-]+)?$/;
 const paths = () => fs.readdirSync(path.dirname(logPath)).map((name) => path.join(path.dirname(logPath), name));
-const socketPathForToken = (value) => process.platform === "win32"
+const socketPathForToken = (value) => recoveryPlatform === "win32"
   ? "\\\\.\\pipe\\bb-stdio-" + familyHash + "-" + value
   : socketDir === undefined ? undefined : path.join(socketDir, "s-" + value);
 const ownerProcessHoldsSegment = (pid, segmentPath) => {
@@ -368,6 +404,49 @@ const probeOwnerSocketOnce = (ownerSocketPath) => new Promise((resolve) => {
     }
   });
 });
+const probeOwnerPipeOnce = (ownerPipePath, ownerToken) => {
+  const injected = writerBarrier?.pipeProbeResultsByToken?.[ownerToken];
+  if (injected !== undefined) {
+    if (injected.length === 0) return Promise.resolve(undefined);
+    const result = injected.shift();
+    return Promise.resolve(result === "connected" ? true : result === "ENOENT" ? false : undefined);
+  }
+  const fallback = writerBarrier?.pipeProbeResults;
+  if (Array.isArray(fallback) && fallback.length > 0) {
+    const result = fallback.shift();
+    return Promise.resolve(result === "connected" ? true : result === "ENOENT" ? false : undefined);
+  }
+  return new Promise((resolve) => {
+    const client = net.createConnection(ownerPipePath);
+    let settled = false;
+    const timer = setTimeout(() => finish(undefined), 500);
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      client.destroy();
+      resolve(result);
+    };
+    client.once("connect", () => finish(true));
+    client.once("error", (error) => finish(error.code === "ENOENT" ? false : undefined));
+  });
+};
+const probeOwnerPipe = async (ownerToken) => {
+  const ownerPipePath = socketPathForToken(ownerToken);
+  if (ownerPipePath === undefined) return undefined;
+  const refusalWindowMs = Math.max(1_500, recoveryIntervalMs + 500);
+  const startedAt = Date.now();
+  let notFoundCount = 0;
+  while (Date.now() - startedAt < refusalWindowMs) {
+    const result = await probeOwnerPipeOnce(ownerPipePath, ownerToken);
+    if (result === true || result === undefined) return result;
+    notFoundCount += 1;
+    if (Date.now() - startedAt < refusalWindowMs) {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+  }
+  return notFoundCount >= 2 ? false : undefined;
+};
 const probeOwnerSocket = async (value, expectedIdentity, ownerPid, segmentPath) => {
   const ownerSocketPath = socketPathForToken(value);
   if (ownerSocketPath === undefined || expectedIdentity === undefined) return undefined;
@@ -558,11 +637,14 @@ const recoverClosedSegments = async () => {
       const hasEndpointFlag = ownerParts[3] === "e" || ownerParts[3] === "n";
       const endpointAvailable = hasEndpointFlag && ownerParts[3] === "e";
       const socketIdentityMarker = ownerParts.length - 3;
+      const pipeIdentityMarker = ownerParts.length - 6;
       const hasSocketIdentity = endpointAvailable && socketIdentityMarker > 4 && ownerParts[socketIdentityMarker] === "i";
+      const hasPipeIdentity = endpointAvailable && pipeIdentityMarker > 4 && ownerParts[pipeIdentityMarker] === "p";
       const ownerSocketIdentity = hasSocketIdentity
         ? { dev: Number(ownerParts[ownerParts.length - 2]), ino: Number(ownerParts[ownerParts.length - 1]) }
         : undefined;
-      const ownerUuid = ownerParts.slice(hasEndpointFlag ? 4 : 3, hasSocketIdentity ? socketIdentityMarker : undefined).join("-");
+      const ownerPipeToken = hasPipeIdentity ? ownerParts.slice(pipeIdentityMarker + 1).join("-") : undefined;
+      const ownerUuid = ownerParts.slice(hasEndpointFlag ? 4 : 3, hasSocketIdentity ? socketIdentityMarker : hasPipeIdentity ? pipeIdentityMarker : undefined).join("-");
       if (!Number.isInteger(ownerPid) || ownerPid < 1 || ownerUuid.length === 0) continue;
       let recover = false;
       try {
@@ -576,13 +658,18 @@ const recoverClosedSegments = async () => {
         }
       }
       if (!recover) {
-        if (endpointAvailable) {
+        if (endpointAvailable && recoveryPlatform === "win32" && ownerPipeToken !== undefined) {
+          const pipeAlive = await probeOwnerPipe(ownerPipeToken);
+          if (pipeAlive === true) continue;
+          if (pipeAlive === false) recover = true;
+        } else if (endpointAvailable && recoveryPlatform !== "win32") {
           const socketAlive = await probeOwnerSocket(ownerUuid, ownerSocketIdentity, ownerPid, file);
           if (socketAlive === true) continue;
           if (socketAlive === false) recover = true;
         }
+        if (!recover && recoveryPlatform === "win32") continue;
         if (!recover) {
-          const currentIdentity = readProcessIdentity(ownerPid);
+          const currentIdentity = writerBarrier?.recoveryIdentity ?? readProcessIdentity(ownerPid);
           if (ownerSource > 0 && currentIdentity.source === ownerSource) {
             if (currentIdentity.fingerprint !== ownerFingerprint) {
               recover = true;
@@ -615,17 +702,21 @@ const recoverClosedSegments = async () => {
 };
 const createActive = () => {
   const endpointFlag = livenessEndpointAvailable ? "e" : "n";
-  const socketIdentity = endpointFlag === "e" && livenessSocketIdentity?.trusted
-    ? "-i-" + livenessSocketIdentity.dev + "-" + livenessSocketIdentity.ino
-    : "";
+  const socketIdentity = endpointFlag !== "e" ? "" : recoveryPlatform === "win32"
+    ? "-p-" + pipeToken
+    : livenessSocketIdentity?.trusted ? "-i-" + livenessSocketIdentity.dev + "-" + livenessSocketIdentity.ino : "";
   activePath = familyPrefix + "active-" + ownerPid + "-" + ownerIdentity.source + "-" + ownerIdentity.fingerprint + "-" + endpointFlag + "-" + socketToken + socketIdentity;
   activeFd = fs.openSync(activePath, "wx", 0o600);
   activeSize = fs.fstatSync(activeFd).size;
   publishAliasTo(activePath);
 };
 function refreshActivePathForSocketIdentity() {
-  if (activeFd === undefined || activePath === undefined || !livenessSocketIdentity?.trusted) return;
-  const nextPath = familyPrefix + "active-" + ownerPid + "-" + ownerIdentity.source + "-" + ownerIdentity.fingerprint + "-e-" + socketToken + "-i-" + livenessSocketIdentity.dev + "-" + livenessSocketIdentity.ino;
+  if (activeFd === undefined || activePath === undefined) return;
+  if (recoveryPlatform !== "win32" && !livenessSocketIdentity?.trusted) return;
+  const endpointIdentity = recoveryPlatform === "win32"
+    ? "-p-" + pipeToken
+    : "-i-" + livenessSocketIdentity.dev + "-" + livenessSocketIdentity.ino;
+  const nextPath = familyPrefix + "active-" + ownerPid + "-" + ownerIdentity.source + "-" + ownerIdentity.fingerprint + "-e-" + socketToken + endpointIdentity;
   if (nextPath === activePath) return;
   try {
     fs.renameSync(activePath, nextPath);
@@ -927,6 +1018,13 @@ export interface StdioLogWriterTestBarrier {
   failActiveWriteCount?: number;
   recoveryIntervalMs?: number;
   unreadableOwnerSocketTokens?: string[];
+  recoveryPlatform?: NodeJS.Platform;
+  pipeProbeResults?: Array<"ENOENT" | "connected" | "busy">;
+  pipeProbeResultsByToken?: Record<string, Array<"ENOENT" | "connected" | "busy">>;
+  recoveryIdentity?: {
+    source: 0 | 1 | 2;
+    fingerprint: string;
+  };
   ownerIdentity?: {
     pid: number;
     source: 0 | 1 | 2;

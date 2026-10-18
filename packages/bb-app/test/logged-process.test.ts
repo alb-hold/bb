@@ -842,6 +842,92 @@ describe("spawnLoggedProcess", () => {
     }
   });
 
+  it("uses repeated Windows pipe ENOENT as death proof despite a matching live pid and keeps busy pipes", async () => {
+    const logDir = scratchDir();
+    const identity = {
+      source: 2 as const,
+      fingerprint: "1111111111111111",
+    };
+    const ownerToken = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+    const deadPipeToken = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+    const busyOwnerToken = "cccccccc-cccc-cccc-cccc-cccccccccccc";
+    const busyPipeToken = "dddddddd-dddd-dddd-dddd-dddddddddddd";
+    const deadSegment = join(
+      logDir,
+      `server-stdio.log.active-${process.pid}-${identity.source}-${identity.fingerprint}-e-${ownerToken}-p-${deadPipeToken}`,
+    );
+    const busySegment = join(
+      logDir,
+      `server-stdio.log.active-${process.pid}-${identity.source}-${identity.fingerprint}-e-${busyOwnerToken}-p-${busyPipeToken}`,
+    );
+    writeFileSync(deadSegment, "dead Windows writer output\\n");
+    writeFileSync(busySegment, "live busy Windows writer output\\n");
+    const observer = spawnLoggedProcess({
+      command: process.execPath,
+      args: ["-e", 'process.stdout.write("Windows recovery observer\\n");'],
+      env: process.env,
+      logDir,
+      logName: "server",
+      testWriterBarrier: {
+        recoveryIntervalMs: 25,
+        recoveryPlatform: "win32",
+        recoveryIdentity: identity,
+        pipeProbeResultsByToken: {
+          [deadPipeToken]: Array.from({ length: 10 }, () => "ENOENT" as const),
+          [busyPipeToken]: ["busy"],
+        },
+      },
+    });
+    expect(await waitForExit(observer)).toBe(0);
+    await observer.writerExit;
+    expect(existsSync(deadSegment)).toBe(false);
+    expect(
+      familyFiles(logDir, "server").some(
+        (file) =>
+          file.includes(".backup-") &&
+          readFileSync(file, "utf8").includes("dead Windows writer output"),
+      ),
+    ).toBe(true);
+    expect(existsSync(busySegment)).toBe(true);
+    expect(readFileSync(busySegment, "utf8")).toContain(
+      "live busy Windows writer output",
+    );
+  });
+
+  it("does not reclaim a Windows pipe segment after only one ENOENT", async () => {
+    const logDir = scratchDir();
+    const identity = {
+      source: 2 as const,
+      fingerprint: "2222222222222222",
+    };
+    const ownerToken = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee";
+    const pipeToken = "ffffffff-ffff-ffff-ffff-ffffffffffff";
+    const segment = join(
+      logDir,
+      `server-stdio.log.active-${process.pid}-${identity.source}-${identity.fingerprint}-e-${ownerToken}-p-${pipeToken}`,
+    );
+    writeFileSync(segment, "single ENOENT Windows writer output\\n");
+    const observer = spawnLoggedProcess({
+      command: process.execPath,
+      args: ["-e", 'process.stdout.write("single ENOENT observer\\n");'],
+      env: process.env,
+      logDir,
+      logName: "server",
+      testWriterBarrier: {
+        recoveryIntervalMs: 25,
+        recoveryPlatform: "win32",
+        recoveryIdentity: identity,
+        pipeProbeResultsByToken: { [pipeToken]: ["ENOENT", "busy"] },
+      },
+    });
+    expect(await waitForExit(observer)).toBe(0);
+    await observer.writerExit;
+    expect(existsSync(segment)).toBe(true);
+    expect(readFileSync(segment, "utf8")).toContain(
+      "single ENOENT Windows writer output",
+    );
+  });
+
   it("reclaims a dead endpoint segment when its pid and fingerprint match a live replacement process", async () => {
     if (process.platform === "win32") return;
     const logDir = scratchDir();
