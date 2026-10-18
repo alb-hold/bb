@@ -1,3 +1,5 @@
+import { createTerminalGridByteMarkerScanner } from "@bb/domain";
+
 const TERMINAL_TOKEN =
   /\u001b\[([0-9;?<>=]*)([ -/]*)([@-~])|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[()][A-Za-z0-9]|\u001b([78DEMc=>])|([\s\S])/gu;
 const TERMINAL_CONTROL_SEQUENCE =
@@ -21,9 +23,12 @@ export function normalizeTerminalEcho(value: string): string {
 export function decodeTerminalOutputChunks(
   chunks: readonly { dataBase64: string }[],
 ): string {
-  return Buffer.concat(
-    chunks.map((chunk) => Buffer.from(chunk.dataBase64, "base64")),
-  ).toString("utf8");
+  const scanner = createTerminalGridByteMarkerScanner();
+  const filtered = chunks.map((chunk) =>
+    Buffer.from(scanner.push(Buffer.from(chunk.dataBase64, "base64")).bytes),
+  );
+  filtered.push(Buffer.from(scanner.flush()));
+  return Buffer.concat(filtered).toString("utf8");
 }
 
 function csiNumbers(params: string): number[] {

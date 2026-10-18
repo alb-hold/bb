@@ -4,6 +4,11 @@ import os from "node:os";
 import path from "node:path";
 import type { AgentRuntime } from "@bb/agent-runtime";
 import type { HostDaemonDaemonWsMessage } from "@bb/host-daemon-contract";
+import {
+  createTerminalGridMarker,
+  createTerminalGridMarkerScanner,
+  stripTerminalGridMarkers,
+} from "@bb/domain";
 import type { HostWorkspace } from "@bb/host-workspace";
 import {
   createDeferredPromise,
@@ -63,6 +68,7 @@ interface CreateHarnessOptions {
   maxExitedScrollbackBytes?: number;
   maxExitedTerminals?: number;
   onSendMessage: TerminalMessageObserver;
+  preserveGridMarkers?: boolean;
   resolveShell: ResolveTerminalShell;
 }
 
@@ -98,12 +104,10 @@ function createFakeLogger(): HostDaemonLogger {
 
 async function cleanupTempDirs(): Promise<void> {
   await Promise.all(
-    tempDirs
-      .splice(0)
-      .map(async (tempDir) => {
-        await fs.chmod(tempDir, 0o700).catch(() => undefined);
-        await fs.rm(tempDir, { force: true, recursive: true });
-      }),
+    tempDirs.splice(0).map(async (tempDir) => {
+      await fs.chmod(tempDir, 0o700).catch(() => undefined);
+      await fs.rm(tempDir, { force: true, recursive: true });
+    }),
   );
 }
 
@@ -320,17 +324,24 @@ function createFakeWorkspace(path: string): HostWorkspace {
   };
 }
 
-function createHarness(): TerminalManagerHarness {
-  return createHarnessWithShell({
-    resolveShell: async () => "/bin/zsh",
-  });
+function createHarness(
+  args: { preserveGridMarkers?: boolean } = {},
+): TerminalManagerHarness {
+  return createHarnessWithShell(
+    {
+      resolveShell: async () => "/bin/zsh",
+    },
+    args,
+  );
 }
 
 function createHarnessWithShell(
   args: CreateHarnessWithShellArgs,
+  options: { preserveGridMarkers?: boolean } = {},
 ): TerminalManagerHarness {
   return createHarnessWithOptions({
     onSendMessage: () => undefined,
+    preserveGridMarkers: options.preserveGridMarkers,
     resolveShell: args.resolveShell,
   });
 }
@@ -360,6 +371,20 @@ function createHarnessWithOptions(
     resolveShell: args.resolveShell,
     runtimeManager,
     sendMessage: (message) => {
+      if (!args.preserveGridMarkers && message.type === "terminal.output") {
+        message = {
+          ...message,
+          chunk: stripGridMarkerFromChunk(message.chunk),
+        };
+      } else if (
+        !args.preserveGridMarkers &&
+        message.type === "terminal.replay"
+      ) {
+        message = {
+          ...message,
+          chunks: message.chunks.map(stripGridMarkerFromChunk),
+        };
+      }
       messages.push(message);
       args.onSendMessage(message);
       return true;
@@ -377,14 +402,30 @@ function createHarnessWithOptions(
   };
 }
 
+function stripGridMarkerFromChunk<T extends { dataBase64: string }>(
+  chunk: T,
+): T {
+  return {
+    ...chunk,
+    dataBase64: Buffer.from(
+      stripTerminalGridMarkers(
+        Buffer.from(chunk.dataBase64, "base64").toString("utf8"),
+      ),
+    ).toString("base64"),
+  };
+}
+
 function collectTerminalOutput(messages: HostDaemonDaemonWsMessage[]): string {
-  return messages
+  const scanner = createTerminalGridMarkerScanner();
+  const filtered = messages
     .flatMap((message) =>
       message.type === "terminal.output"
         ? [Buffer.from(message.chunk.dataBase64, "base64").toString("utf8")]
         : [],
     )
+    .map((chunk) => scanner.push(chunk).text)
     .join("");
+  return filtered + scanner.flush();
 }
 
 async function waitForOutputContaining(args: WaitForOutputArgs): Promise<void> {
@@ -580,7 +621,9 @@ describe("TerminalManager", () => {
         ),
       ).toBe(true),
     );
-    await vi.waitFor(async () => expect(fs.access(directory)).rejects.toThrow());
+    await vi.waitFor(async () =>
+      expect(fs.access(directory)).rejects.toThrow(),
+    );
   });
 
   it("removes shell integration files when PTY spawn fails", async () => {
@@ -734,20 +777,23 @@ describe("TerminalManager", () => {
   it.each([
     ["forward slash", "C:/base/../outside"],
     ["backslash", String.raw`C:\base\..\outside`],
-  ])("rejects Windows cwd traversal with %s separators", async (_label, cwd) => {
-    const statPath = vi.fn(async () => ({ isDirectory: () => true }));
+  ])(
+    "rejects Windows cwd traversal with %s separators",
+    async (_label, cwd) => {
+      const statPath = vi.fn(async () => ({ isDirectory: () => true }));
 
-    await expect(
-      resolveTerminalCwdOverride(
-        { cwd, defaultCwd: String.raw`C:\workspace` },
-        { pathApi: path.win32, statPath },
-      ),
-    ).resolves.toBe(String.raw`C:\workspace`);
-    expect(statPath).not.toHaveBeenCalled();
-  });
+      await expect(
+        resolveTerminalCwdOverride(
+          { cwd, defaultCwd: String.raw`C:\workspace` },
+          { pathApi: path.win32, statPath },
+        ),
+      ).resolves.toBe(String.raw`C:\workspace`);
+      expect(statPath).not.toHaveBeenCalled();
+    },
+  );
 
-  it("injects host credentials into a PTY and forwards terminal output as-is", async () => {
-    const harness = createHarness();
+  it("injects the starting grid before terminal output", async () => {
+    const harness = createHarness({ preserveGridMarkers: true });
     const pty = await openTerminal(harness, [
       {
         name: "GH_TOKEN",
@@ -766,6 +812,69 @@ describe("TerminalManager", () => {
     });
     expect(collectTerminalOutput(harness.messages)).toContain(
       "terminal-private-token",
+    );
+    const rawOutput = harness.messages
+      .filter((message) => message.type === "terminal.output")
+      .map((message) =>
+        Buffer.from(message.chunk.dataBase64, "base64").toString("utf8"),
+      )
+      .join("");
+    expect(
+      rawOutput.startsWith(createTerminalGridMarker({ cols: 100, rows: 30 })),
+    ).toBe(true);
+  });
+
+  it("strips a program-emitted grid marker split across PTY chunks", async () => {
+    const harness = createHarness({ preserveGridMarkers: true });
+    const pty = await openTerminal(harness);
+    const spoof = createTerminalGridMarker({ cols: 41, rows: 17 });
+    pty.emitData(spoof.slice(0, 10));
+    pty.emitData(`${spoof.slice(10)}payload`);
+    await waitForOutputContaining({
+      messages: harness.messages,
+      text: "payload",
+    });
+    const rawOutput = harness.messages
+      .filter((message) => message.type === "terminal.output")
+      .map((message) =>
+        Buffer.from(message.chunk.dataBase64, "base64").toString("utf8"),
+      )
+      .join("");
+    expect(rawOutput).toContain(
+      createTerminalGridMarker({ cols: 100, rows: 30 }),
+    );
+    expect(rawOutput).not.toContain(spoof);
+  });
+
+  it("puts the new grid marker between old-size and new-size output", async () => {
+    const harness = createHarness({ preserveGridMarkers: true });
+    const markTerminalActive = vi.spyOn(
+      harness.runtimeManager,
+      "markTerminalActive",
+    );
+    const pty = await openTerminal(harness);
+    expect(markTerminalActive).toHaveBeenCalledTimes(1);
+    pty.emitData("old-size");
+    await harness.manager.handleMessage({
+      type: "terminal.resize",
+      terminalId: "term-1",
+      cols: 51,
+      rows: 16,
+    });
+    expect(markTerminalActive).toHaveBeenCalledTimes(1);
+    pty.emitData("new-size");
+    await waitForOutputContaining({
+      messages: harness.messages,
+      text: "new-size",
+    });
+    const rawOutput = harness.messages
+      .filter((message) => message.type === "terminal.output")
+      .map((message) =>
+        Buffer.from(message.chunk.dataBase64, "base64").toString("utf8"),
+      )
+      .join("");
+    expect(rawOutput).toBe(
+      `${createTerminalGridMarker({ cols: 100, rows: 30 })}old-size${createTerminalGridMarker({ cols: 51, rows: 16 })}new-size`,
     );
   });
 
@@ -1307,7 +1416,7 @@ describe("TerminalManager", () => {
   });
 
   it("forwards output and replays scrollback on attach", async () => {
-    const harness = createHarness();
+    const harness = createHarness({ preserveGridMarkers: true });
     const pty = await openTerminal(harness);
 
     pty.emitData("hello");
@@ -1320,18 +1429,16 @@ describe("TerminalManager", () => {
       tailBytes: 4 * 1024 * 1024,
     });
 
+    const emitted = harness.messages.filter(
+      (message) => message.type === "terminal.output",
+    );
+    expect(emitted).toHaveLength(1);
+    const emittedChunk = emitted[0];
+    if (emittedChunk?.type !== "terminal.output")
+      throw new Error("Missing output");
     expect(
-      harness.messages.filter((message) => message.type === "terminal.output"),
-    ).toEqual([
-      {
-        type: "terminal.output",
-        terminalId: "term-1",
-        chunk: {
-          seq: 0,
-          dataBase64: Buffer.from("hello\n", "utf8").toString("base64"),
-        },
-      },
-    ]);
+      Buffer.from(emittedChunk.chunk.dataBase64, "base64").toString("utf8"),
+    ).toBe(`${createTerminalGridMarker({ cols: 100, rows: 30 })}hello\n`);
     expect(harness.messages).toContainEqual({
       type: "terminal.replay",
       requestId: "attach-1",
@@ -1339,7 +1446,10 @@ describe("TerminalManager", () => {
       chunks: [
         {
           seq: 0,
-          dataBase64: Buffer.from("hello\n", "utf8").toString("base64"),
+          dataBase64: Buffer.from(
+            `${createTerminalGridMarker({ cols: 100, rows: 30 })}hello\n`,
+            "utf8",
+          ).toString("base64"),
         },
       ],
       replayStartSeq: 0,
@@ -1357,7 +1467,9 @@ describe("TerminalManager", () => {
       pty.emitData("\u0007\u001b]9;build finished\u0007");
       await vi.advanceTimersByTimeAsync(50);
       expect(
-        harness.messages.filter((message) => message.type === "terminal.attention"),
+        harness.messages.filter(
+          (message) => message.type === "terminal.attention",
+        ),
       ).toEqual([
         {
           type: "terminal.attention",
@@ -1370,13 +1482,17 @@ describe("TerminalManager", () => {
       pty.emitData("\u001b]777;notify;Build;Again\u0007");
       await vi.advanceTimersByTimeAsync(50);
       expect(
-        harness.messages.filter((message) => message.type === "terminal.attention"),
+        harness.messages.filter(
+          (message) => message.type === "terminal.attention",
+        ),
       ).toHaveLength(1);
       now = 1_002_000;
       pty.emitData("\u001b]777;notify;Build;Again\u0007");
       await vi.advanceTimersByTimeAsync(50);
       expect(
-        harness.messages.filter((message) => message.type === "terminal.attention"),
+        harness.messages.filter(
+          (message) => message.type === "terminal.attention",
+        ),
       ).toHaveLength(2);
     } finally {
       dateNow.mockRestore();
@@ -1426,7 +1542,7 @@ describe("TerminalManager", () => {
     });
     const chunk = "x".repeat(64 * 1024);
 
-    for (let index = 0; index < 16; index += 1) {
+    for (let index = 0; index < 15; index += 1) {
       pty.emitData(chunk);
     }
     expect(pty.paused).toBe(false);
@@ -1740,9 +1856,9 @@ describe("TerminalManager", () => {
       type: "terminal.replay",
       requestId: "attach-split-da1",
       terminalId: "term-1",
-      chunks: [],
+      chunks: [textChunk("", 0)],
       replayStartSeq: 0,
-      nextSeq: 0,
+      nextSeq: 1,
     });
   });
 
@@ -1798,7 +1914,9 @@ describe("TerminalManager", () => {
       chunks: [
         {
           seq: 1,
-          dataBase64: Buffer.from("tail", "utf8").toString("base64"),
+          dataBase64: Buffer.from(`${"a".repeat(22)}tail`, "utf8").toString(
+            "base64",
+          ),
         },
       ],
       replayStartSeq: 1,
@@ -1826,11 +1944,11 @@ describe("TerminalManager", () => {
     expect(replay).toMatchObject({
       chunks: [
         {
-          seq: 1,
-          dataBase64: Buffer.from("OK", "utf8").toString("base64"),
+          seq: 2,
+          dataBase64: Buffer.from("\u001b[31mOK", "utf8").toString("base64"),
         },
       ],
-      replayStartSeq: 1,
+      replayStartSeq: 2,
     });
   });
 
@@ -2423,7 +2541,7 @@ describe("TerminalManager", () => {
     }
     for (const session of harness.manager["sessions"].values()) {
       expect(session.scrollback).toHaveLength(10_000);
-      expect(session.scrollbackBytes).toBe(70_000);
+      expect(session.scrollbackBytes).toBe(70_022);
       for (const entry of session.scrollback) {
         expect(Object.isFrozen(entry.parserStateBefore)).toBe(true);
         snapshots.add(entry.parserStateBefore);
@@ -2570,13 +2688,13 @@ describe("TerminalManager", () => {
     expect(replay).toMatchObject({
       chunks: [
         {
-          seq: 1,
+          seq: 2,
           dataBase64: Buffer.from("\u001b[?1049htail", "utf8").toString(
             "base64",
           ),
         },
       ],
-      replayStartSeq: 1,
+      replayStartSeq: 2,
     });
   });
 

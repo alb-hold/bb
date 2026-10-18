@@ -1,5 +1,6 @@
 import { collectOptionalFieldPaths } from "@bb/test-helpers";
 import {
+  createTerminalGridMarker,
   TERMINAL_COLS_MAX,
   TERMINAL_DATA_MAX_BASE64_LENGTH,
   TERMINAL_DATA_MAX_BYTES,
@@ -3846,6 +3847,15 @@ describe("host-daemon session schemas", () => {
         dataBase64: maxPayload,
       }).success,
     ).toBe(true);
+    const markerChunk = {
+      seq: 1,
+      dataBase64: Buffer.from(
+        `${createTerminalGridMarker({ cols: 120, rows: 36 })}payload`,
+      ).toString("base64"),
+    };
+    expect(hostDaemonTerminalOutputChunkSchema.parse(markerChunk)).toEqual(
+      markerChunk,
+    );
     expect(
       hostDaemonDaemonWsMessageSchema.safeParse({
         type: "terminal.replay",

@@ -6,6 +6,7 @@ import {
   terminalOutputShowsPasteAgain,
   terminalScreenAlreadyShowsText,
 } from "../../src/services/threads/native-terminal-echo.js";
+import { createTerminalGridMarker } from "@bb/domain";
 
 describe("terminalOutputShowsPaste", () => {
   it("finds text a TUI drew between cursor moves and wrapped lines", () => {
@@ -290,5 +291,24 @@ describe("decodeTerminalOutputChunks", () => {
         { dataBase64: bytes.subarray(2).toString("base64") },
       ]),
     ).toBe("› ok");
+  });
+
+  it("removes a grid marker split across output chunks before echo checks", () => {
+    const marker = Buffer.from(
+      createTerminalGridMarker({ cols: 51, rows: 16 }),
+    );
+    const output = decodeTerminalOutputChunks([
+      { dataBase64: marker.subarray(0, 8).toString("base64") },
+      {
+        dataBase64: Buffer.concat([
+          marker.subarray(8),
+          Buffer.from("prompt"),
+        ]).toString("base64"),
+      },
+    ]);
+    expect(output).toBe("prompt");
+    expect(terminalOutputAlreadyShowsText({ output, text: "bb-grid" })).toBe(
+      false,
+    );
   });
 });
