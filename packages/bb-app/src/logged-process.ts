@@ -259,6 +259,7 @@ const ensureLivenessEndpoint = () => {
   const currentIdentity = socketFileState();
   if (livenessServer.listening && sameSocketFile(currentIdentity, livenessSocketIdentity)) {
     livenessEndpointAvailable = true;
+    refreshActivePathForSocketIdentity();
     return Promise.resolve();
   }
   if (currentIdentity.exists && !sameSocketFile(currentIdentity, livenessSocketIdentity)) {
@@ -1031,7 +1032,7 @@ export interface StdioLogWriterTestBarrier {
     fingerprint: string;
   };
   forcePsIdentity?: boolean;
-  writerEnv?: Partial<Pick<NodeJS.ProcessEnv, "LC_ALL" | "TMPDIR" | "TZ">>;
+  writerEnv?: Partial<Pick<NodeJS.ProcessEnv, "LC_ALL" | "NODE_OPTIONS" | "TMPDIR" | "TZ">>;
   diagnosticPath?: string;
   completionPath?: string;
   finalizationEnteredPath?: string;

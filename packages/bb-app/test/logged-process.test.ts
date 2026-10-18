@@ -1959,6 +1959,24 @@ describe("spawnLoggedProcess", () => {
       const logDir = scratchDir();
       const ownerStopPath = join(logDir, "stop-socket-recreate-owner");
       const observerStopPath = join(logDir, "stop-socket-recreate-observer");
+      const renameFailurePath = join(logDir, "fail-active-rename-once");
+      const renamePreloadPath = join(logDir, "fail-active-rename-once.cjs");
+      const diagnosticPath = join(logDir, "writer-diagnostics.log");
+      writeFileSync(
+        renamePreloadPath,
+        `const fs = require("node:fs");
+const rename = fs.renameSync;
+fs.renameSync = function (source, destination) {
+  if (fs.existsSync(${JSON.stringify(renameFailurePath)}) && String(source).includes(".active-") && String(destination).includes("-i-")) {
+    fs.unlinkSync(${JSON.stringify(renameFailurePath)});
+    const error = new Error("injected active rename failure");
+    error.code = "EBUSY";
+    throw error;
+  }
+  return rename.call(this, source, destination);
+};
+`,
+      );
       const owner = spawnLoggedProcess({
         command: process.execPath,
         args: [
@@ -1971,6 +1989,8 @@ describe("spawnLoggedProcess", () => {
         testWriterBarrier: {
           ownerIdentity: currentProcessIdentity(),
           recoveryIntervalMs: 25,
+          writerEnv: { NODE_OPTIONS: `--require=${renamePreloadPath}` },
+          diagnosticPath,
         },
       });
       let observer: ReturnType<typeof spawnLoggedProcess> | undefined;
@@ -2033,6 +2053,7 @@ describe("spawnLoggedProcess", () => {
           setTimeout(resolvePromise, 1_800),
         );
         expect(existsSync(ownerSegment)).toBe(true);
+        writeFileSync(renameFailurePath, "fail once");
         owner.writerProcess.kill("SIGCONT");
         const initialSegment = ownerSegment;
         let recreatedSocketIdentity: ReturnType<typeof lstatSync> | undefined;
@@ -2062,6 +2083,9 @@ describe("spawnLoggedProcess", () => {
             { timeout: 3_000, interval: 10 },
           )
           .toBe(true);
+        expect(readFileSync(diagnosticPath, "utf8")).toContain(
+          "stdio active segment socket identity update failed: EBUSY",
+        );
         ownerSegment = recreatedOwnerSegment!;
         expect(ownerSegment).not.toBe(initialSegment);
         expect(recreatedSocketIdentity).toBeDefined();
