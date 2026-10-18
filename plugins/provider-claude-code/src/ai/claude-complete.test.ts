@@ -12,8 +12,8 @@ const tempDirs: string[] = [];
 const FAKE_CLI = `#!/usr/bin/env node
 const fs = require("node:fs");
 const prompt = fs.readFileSync(0, "utf8");
-const mode = process.env.FAKE_CLAUDE_MODE;
-fs.writeFileSync(process.env.FAKE_CLAUDE_LOG, JSON.stringify({ argv: process.argv.slice(2), prompt, env: process.env }));
+const mode = fs.readFileSync(__dirname + "/mode", "utf8");
+fs.writeFileSync(__dirname + "/call.json", JSON.stringify({ argv: process.argv.slice(2), prompt, env: process.env }));
 const result = (body) => process.stdout.write(JSON.stringify({ type: "result", subtype: "success", ...body }));
 if (mode === "ok") result({ is_error: false, result: "The user is ready." });
 else if (mode === "rate") result({ is_error: true, api_error_status: 429, result: "Rate limited" });
@@ -32,10 +32,18 @@ async function fakeCli(mode: string) {
   const executable = path.join(dir, "claude");
   const log = path.join(dir, "call.json");
   await fs.writeFile(executable, FAKE_CLI, { mode: 0o755 });
+  await fs.writeFile(path.join(dir, "mode"), mode);
   const env = {
     PATH: process.env.PATH,
-    FAKE_CLAUDE_MODE: mode,
-    FAKE_CLAUDE_LOG: log,
+    HOME: "/home/u",
+    ANTHROPIC_BASE_URL: "https://attacker.example",
+    ANTHROPIC_API_KEY: "sk-ant-api-key",
+    ANTHROPIC_AUTH_TOKEN: "proxy-token",
+    ANTHROPIC_MODEL: "other-model",
+    CLAUDE_CODE_USE_BEDROCK: "1",
+    NODE_OPTIONS: "--require /tmp/hook.js",
+    https_proxy: "http://proxy.internal:3128",
+    LC_ALL: "en_US.UTF-8",
     CLAUDECODE: "1",
     CLAUDE_CODE_SESSION_ID: "parent-session",
     CLAUDE_CODE_OAUTH_TOKEN: "oauth-token",
@@ -99,16 +107,32 @@ describe("completeClaudeInference", () => {
     ]);
   });
 
-  it("drops the parent Claude Code session variables but keeps the OAuth token", async () => {
+  it("passes only the allowlisted environment, so endpoint and credential overrides cannot redirect the prompt", async () => {
     const cli = await fakeCli("ok");
     await run(cli.deps);
     const { env } = await cli.readCall();
-    expect(env.CLAUDECODE).toBeUndefined();
-    expect(env.CLAUDE_CODE_SESSION_ID).toBeUndefined();
+    const passed = Object.keys(env).filter(
+      (key) => !["PWD", "SHLVL", "_", "__CF_USER_TEXT_ENCODING"].includes(key),
+    );
+    expect(passed.sort()).toEqual(
+      [
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "HOME",
+        "LC_ALL",
+        "PATH",
+        "https_proxy",
+      ].sort(),
+    );
     expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe("oauth-token");
     expect(
-      claudeCompleteEnv({ CLAUDE_CODE_ENTRYPOINT: "cli", HOME: "/home/u" }),
-    ).toEqual({ HOME: "/home/u" });
+      claudeCompleteEnv({
+        ANTHROPIC_BASE_URL: "https://attacker.example",
+        ANTHROPIC_API_KEY: "sk-ant-api-key",
+        CLAUDE_CODE_ENTRYPOINT: "cli",
+        Path: "C:\\Windows",
+        HOME: "/home/u",
+      }),
+    ).toEqual({ HOME: "/home/u", Path: "C:\\Windows" });
   });
 
   it.each([

@@ -303,6 +303,111 @@ describe("writing assistance corrections", () => {
   });
 });
 
+function oversizedUpload(totalChunks: number): {
+  body: ReadableStream<Uint8Array>;
+  pulled: () => number;
+} {
+  const chunk = new Uint8Array(1024 * 1024).fill(0x61);
+  let count = 0;
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (count === totalChunks) {
+        controller.close();
+        return;
+      }
+      count += 1;
+      controller.enqueue(chunk);
+    },
+  });
+  return { body, pulled: () => count };
+}
+
+describe("dictation segment upload limit", () => {
+  it("rejects a chunked upload over 25 MiB while streaming, without transcribing", async () => {
+    await withTestHarness({}, async (harness) => {
+      const service = registerFakeAiService(harness.deps.aiServices, {});
+      const upload = oversizedUpload(64);
+      const request = new Request(
+        "http://localhost/api/v1/writing-assistance/dictation-segments",
+        {
+          method: "POST",
+          headers: {
+            "content-type": "multipart/form-data; boundary=limit",
+            "transfer-encoding": "chunked",
+          },
+          body: upload.body,
+          duplex: "half",
+        } as RequestInit,
+      );
+      expect(request.headers.has("content-length")).toBe(false);
+      const response = await harness.app.request(request);
+      expect(response.status).toBe(413);
+      await expect(response.json()).resolves.toMatchObject({
+        code: "invalid_request",
+        message: "A dictation segment upload can be at most 26214400 bytes",
+      });
+      expect(upload.pulled()).toBeLessThanOrEqual(27);
+      expect(service.transcribeCalls).toEqual([]);
+      expect(getWritingUsage(harness.deps.db, utcDay())).toMatchObject({
+        dictationSegments: 0,
+        audioSeconds: 0,
+      });
+    });
+  });
+
+  it("rejects a declared content length over 25 MiB before reading the body", async () => {
+    await withTestHarness({}, async (harness) => {
+      const service = registerFakeAiService(harness.deps.aiServices, {});
+      const upload = oversizedUpload(64);
+      const request = new Request(
+        "http://localhost/api/v1/writing-assistance/dictation-segments",
+        {
+          method: "POST",
+          headers: {
+            "content-type": "multipart/form-data; boundary=limit",
+            "content-length": String(64 * 1024 * 1024),
+          },
+          body: upload.body,
+          duplex: "half",
+        } as RequestInit,
+      );
+      const response = await harness.app.request(request);
+      expect(response.status).toBe(413);
+      expect(upload.pulled()).toBeLessThanOrEqual(1);
+      expect(service.transcribeCalls).toEqual([]);
+    });
+  });
+
+  it("accepts a streamed upload under the limit", async () => {
+    await withTestHarness({}, async (harness) => {
+      const service = registerFakeAiService(harness.deps.aiServices, {
+        complete: async () => "Fake transcript.",
+      });
+      const form = new FormData();
+      form.set("file", wav(0.5));
+      form.set("context", "");
+      const encoded = new Request("http://localhost/", {
+        method: "POST",
+        body: form,
+      });
+      const request = new Request(
+        "http://localhost/api/v1/writing-assistance/dictation-segments",
+        {
+          method: "POST",
+          headers: {
+            "content-type": encoded.headers.get("content-type") ?? "",
+          },
+          body: encoded.body,
+          duplex: "half",
+        } as RequestInit,
+      );
+      const response = await harness.app.request(request);
+      expect(response.status).toBe(200);
+      expect(service.transcribeCalls).toHaveLength(1);
+    });
+  });
+});
+
 describe("dictation segments", () => {
   it("transcribes, formats, validates and records usage", async () => {
     await withTestHarness({}, async (harness) => {

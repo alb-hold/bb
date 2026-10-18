@@ -293,6 +293,11 @@ The Claude Code provider plugin registers a `claude` service for
 `thread-title`, `commit-message`, and `writing`. It runs the primary machine's
 `claude` CLI with its own login (`claude auth login`), no tools, no settings,
 and no session history, trying Claude Haiku 5.5 and then Claude Sonnet 5.5.
+The CLI gets only an allowlisted environment (path, home, user, temp, locale,
+XDG, proxy and CA variables, `CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_OAUTH_TOKEN`,
+and the Windows system variables), so `ANTHROPIC_BASE_URL`,
+`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `NODE_OPTIONS`, and other
+`CLAUDE_CODE_*` settings in bb's environment never reach it.
 Claude does not transcribe audio, so `voice` still needs bb cloud or Codex.
 Because `provider-claude-code` sorts before `provider-codex`, automatic text
 tasks try Claude before Codex.
@@ -311,7 +316,9 @@ timestamps describe, so a gap between timestamps counts as recorded time (for
 WAV, only the declared audio data counts, not metadata after it). Only that
 measured length counts against `dailyDictationMinutes`; the request carries no
 client-reported length. A clip it cannot measure, an empty one, or one longer
-than 120 seconds is refused before transcription. A formatted phrase that
+than 120 seconds is refused before transcription. An upload over 25 MiB
+(26214400 bytes), whether it declares its length or is sent chunked, is
+refused with 413 while it streams in, before the form is parsed. A formatted phrase that
 adds words the speaker did not say, changes a number, or drops a protected
 term is discarded in favor of the plain transcript. Typing assistance sends
 only finished sentences that changed, with up to 500 characters of preceding

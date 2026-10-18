@@ -14,7 +14,41 @@ const SYSTEM_PROMPT =
 const MAX_OUTPUT_BYTES = 1024 * 1024;
 const SIGNED_OUT_PATTERN = /not logged in|please run \/login/i;
 const SIGN_IN_MESSAGE = "Run `claude auth login` on the primary machine";
-const KEPT_CLAUDE_CODE_ENV = new Set(["CLAUDE_CODE_OAUTH_TOKEN"]);
+const PASSED_ENV = new Set([
+  "PATH",
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "SHELL",
+  "TMPDIR",
+  "TEMP",
+  "TMP",
+  "LANG",
+  "XDG_CONFIG_HOME",
+  "XDG_DATA_HOME",
+  "XDG_CACHE_HOME",
+  "XDG_RUNTIME_DIR",
+  "DBUS_SESSION_BUS_ADDRESS",
+  "CLAUDE_CONFIG_DIR",
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "NO_PROXY",
+  "NODE_EXTRA_CA_CERTS",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "SYSTEMROOT",
+  "SYSTEMDRIVE",
+  "WINDIR",
+  "COMSPEC",
+  "PATHEXT",
+  "USERPROFILE",
+  "USERNAME",
+  "APPDATA",
+  "LOCALAPPDATA",
+  "PROGRAMDATA",
+  "PROGRAMFILES",
+]);
 
 const cliResultSchema = z.object({
   type: z.literal("result"),
@@ -50,9 +84,7 @@ export function claudeCompleteArgs(model: string): string[] {
 export function claudeCompleteEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return Object.fromEntries(
     Object.entries(env).filter(
-      ([key]) =>
-        key !== "CLAUDECODE" &&
-        (!key.startsWith("CLAUDE_CODE_") || KEPT_CLAUDE_CODE_ENV.has(key)),
+      ([key]) => PASSED_ENV.has(key.toUpperCase()) || key.startsWith("LC_"),
     ),
   );
 }

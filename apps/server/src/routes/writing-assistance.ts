@@ -13,8 +13,53 @@ import {
   updateWritingAssistance,
 } from "../services/ai/writing-assistance.js";
 
+const DICTATION_SEGMENT_MAX_BYTES = 25 * 1024 * 1024;
+
 function formString(value: FormDataEntryValue | null): string {
   return typeof value === "string" ? value : "";
+}
+
+function segmentTooLarge(): ApiError {
+  return new ApiError(
+    413,
+    "invalid_request",
+    `A dictation segment upload can be at most ${DICTATION_SEGMENT_MAX_BYTES} bytes`,
+  );
+}
+
+async function readLimitedFormData(request: Request): Promise<FormData> {
+  const declared = Number(request.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > DICTATION_SEGMENT_MAX_BYTES) {
+    throw segmentTooLarge();
+  }
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  if (request.body !== null) {
+    const reader = request.body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > DICTATION_SEGMENT_MAX_BYTES) {
+        await reader.cancel();
+        throw segmentTooLarge();
+      }
+      chunks.push(value);
+    }
+  }
+  const body = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  try {
+    return await new Response(body, {
+      headers: { "content-type": request.headers.get("content-type") ?? "" },
+    }).formData();
+  } catch {
+    throw new ApiError(400, "invalid_request", "Audio file is required");
+  }
 }
 
 export function registerWritingAssistanceRoutes(
@@ -38,7 +83,7 @@ export function registerWritingAssistanceRoutes(
   );
 
   post(routes.dictationSegment, async (context) => {
-    const formData = await context.req.formData();
+    const formData = await readLimitedFormData(context.req.raw);
     const file = formData.get("file");
     if (!(file instanceof File)) {
       throw new ApiError(400, "invalid_request", "Audio file is required");
