@@ -12,7 +12,7 @@ afterEach(() => {
 });
 
 describe("terminal replay preview", () => {
-  it("keeps historical marker grids hidden until the final grid is ready", async () => {
+  it("keeps historical grids hidden until the confirmed final grid is ready", async () => {
     const context = new Proxy(
       {
         measureText: (text: string) => ({ width: text.length * 8 }),
@@ -39,10 +39,11 @@ describe("terminal replay preview", () => {
 
     const history = new Terminal({ cols: 120, rows: 36 });
     history.open(historyContainer);
-    const preview = new Terminal({ cols: 51, rows: 47 });
+    const preview = new Terminal({ cols: 120, rows: 36 });
     const cover = mountTerminalReplayPreview({
       container: historyContainer,
       terminal: preview,
+      visible: false,
     });
     expect(historyContainer.style.opacity).toBe("0");
     expect(getComputedStyle(historyContainer).opacity).toBe("0");
@@ -50,9 +51,9 @@ describe("terminal replay preview", () => {
       getComputedStyle(
         parent.querySelector("[data-terminal-replay-preview]")!,
       ).visibility,
-    ).toBe("visible");
-    expect(preview.cols).toBe(51);
-    expect(preview.rows).toBe(47);
+    ).toBe("hidden");
+    expect(preview.cols).toBe(120);
+    expect(preview.rows).toBe(36);
 
     const pipeline = createTerminalOutputPipeline(history);
     for (const [cols, rows, text] of [
@@ -71,12 +72,24 @@ describe("terminal replay preview", () => {
         rows,
       });
       expect(historyContainer.style.opacity).toBe("0");
+      expect(getComputedStyle(historyContainer).opacity).toBe("0");
       expect({ cols: preview.cols, rows: preview.rows }).toEqual({
-        cols: 51,
-        rows: 47,
+        cols: 120,
+        rows: 36,
       });
     }
 
+    cover.resize(51, 47);
+    cover.setVisible(true);
+    expect(
+      getComputedStyle(
+        parent.querySelector("[data-terminal-replay-preview]")!,
+      ).visibility,
+    ).toBe("visible");
+    expect({ cols: preview.cols, rows: preview.rows }).toEqual({
+      cols: 51,
+      rows: 47,
+    });
     cover.dispose();
     expect(historyContainer.style.opacity).toBe("");
     expect(parent.querySelector("[data-terminal-replay-preview]")).toBeNull();

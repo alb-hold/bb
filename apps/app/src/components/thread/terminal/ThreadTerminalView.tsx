@@ -1042,6 +1042,7 @@ export function ThreadTerminalView({
     let replayPreview: {
       dispose(): void;
       resize(cols: number, rows: number): void;
+      setVisible(visible: boolean): void;
     } | null = null;
     let outputPipeline: ReturnType<typeof createTerminalOutputPipeline> | null =
       null;
@@ -1308,16 +1309,27 @@ export function ThreadTerminalView({
             message.type === "session-updated"
           ) {
             const { cols, rows } = message.session;
+            const isOwnNudgeEcho =
+              message.type === "session-updated" &&
+              activeTransport.consumeRepaintNudgeEcho({ cols, rows });
             const nextSize = nextSharedTerminalSize(
               sharedSize,
               { cols, rows },
-              message.type === "session-updated" &&
-                activeTransport.consumeRepaintNudgeEcho({ cols, rows }),
+              isOwnNudgeEcho,
             );
             if (nextSize !== null) {
               sharedSize = nextSize;
               replayPreview?.resize(nextSize.cols, nextSize.rows);
+              if (message.type === "session-updated") {
+                replayPreview?.setVisible(true);
+              }
               scheduleFit();
+            } else if (
+              message.type === "session-updated" &&
+              !isOwnNudgeEcho
+            ) {
+              replayPreview?.resize(cols, rows);
+              replayPreview?.setVisible(true);
             }
           }
           handleTerminalServerMessage({
@@ -1341,6 +1353,10 @@ export function ThreadTerminalView({
             replayWriteState,
             onReplayStart: (session) => {
               replayPreview?.dispose();
+              const fitted = fitAddon?.proposeDimensions();
+              const visible =
+                fitted === undefined ||
+                (fitted.cols === session.cols && fitted.rows === session.rows);
               const previewTerminal = new Terminal({
                 cols: session.cols,
                 rows: session.rows,
@@ -1351,6 +1367,7 @@ export function ThreadTerminalView({
               replayPreview = mountTerminalReplayPreview({
                 container: containerElement,
                 terminal: previewTerminal,
+                visible,
               });
             },
             setReplayNextSeq: (nextSeq) => {
