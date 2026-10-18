@@ -49,7 +49,8 @@ export function mountTerminalReplayPreview({
       preview.dataset.gridCols = String(fitGrid.cols);
       preview.dataset.gridRows = String(fitGrid.rows);
     }
-    preview.style.visibility = matchesFit || canShowFallback ? "visible" : "hidden";
+    preview.style.visibility =
+      matchesFit || canShowFallback ? "visible" : "hidden";
   };
   const refreshVisibility = () => updateVisibility();
   document.addEventListener("focusin", refreshVisibility);
