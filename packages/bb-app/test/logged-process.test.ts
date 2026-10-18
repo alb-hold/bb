@@ -2459,6 +2459,134 @@ fs.renameSync = function (source, destination) {
     ).toBe(true);
   });
 
+  it("converges concurrent backup pruning at the five-backup boundary", async () => {
+    const logDir = scratchDir();
+    const logPath = join(logDir, "server-stdio.log");
+    const backupCount = () =>
+      familyFiles(logDir, "server").filter((file) => file.includes(".backup-"))
+        .length;
+    const postRenameReleasePath = join(logDir, "release-post-rename");
+    const pruneSnapshotReleasePath = join(logDir, "release-prune-snapshot");
+    const barriers = ["A", "B"].map((label) => ({
+      postRenameEnteredPath: join(logDir, `post-rename-${label}`),
+      postRenameReleasePath,
+      pruneSnapshotEnteredPath: join(logDir, `prune-snapshot-${label}`),
+      pruneSnapshotReleasePath,
+      pruneObservedCountsPath: join(logDir, `prune-counts-${label}`),
+      completionPath: join(logDir, `writer-complete-${label}`),
+    }));
+    for (let index = 0; index < 4; index += 1) {
+      const backupPath = `${logPath}.backup-${index + 1}-1-${String(index + 1).padStart(8, "0")}`;
+      writeFileSync(backupPath, `old-backup-${index}\n`);
+      const timestamp = new Date(1_700_000_000_000 + index * 1_000);
+      utimesSync(backupPath, timestamp, timestamp);
+    }
+    const writers = ["A", "B"].map((label, index) =>
+      spawnLoggedProcess({
+        command: process.execPath,
+        args: [
+          "-e",
+          `process.stdout.write(Buffer.alloc(10 * 1024 * 1024, ${label.charCodeAt(0)}));`,
+        ],
+        env: process.env,
+        logDir,
+        logName: "server",
+        testWriterBarrier: barriers[index],
+      }),
+    );
+
+    try {
+      expect(
+        await Promise.all(writers.map((writer) => waitForExit(writer))),
+      ).toEqual([0, 0]);
+      await expect
+        .poll(
+          () =>
+            barriers.every((barrier) =>
+              existsSync(barrier.postRenameEnteredPath!),
+            ),
+          { timeout: 10_000 },
+        )
+        .toBe(true);
+      expect(backupCount()).toBe(6);
+      writeFileSync(postRenameReleasePath, "release");
+      await expect
+        .poll(
+          () =>
+            barriers.every((barrier) =>
+              existsSync(barrier.pruneSnapshotEnteredPath!),
+            ),
+          { timeout: 10_000 },
+        )
+        .toBe(true);
+      expect(backupCount()).toBe(6);
+      expect(
+        barriers.every(
+          (barrier) =>
+            readFileSync(barrier.pruneSnapshotEnteredPath!, "utf8") === "6",
+        ),
+      ).toBe(true);
+      writeFileSync(pruneSnapshotReleasePath, "release");
+      await Promise.all(writers.map((writer) => writer.writerExit));
+      await expect
+        .poll(
+          () =>
+            barriers.every((barrier) => existsSync(barrier.completionPath!)),
+          {
+            timeout: 10_000,
+          },
+        )
+        .toBe(true);
+
+      const backups = familyFiles(logDir, "server").filter((file) =>
+        file.includes(".backup-"),
+      );
+      expect(backups).toHaveLength(5);
+      expect(
+        barriers.map((barrier) =>
+          readFileSync(barrier.pruneObservedCountsPath!, "utf8"),
+        ),
+      ).toEqual(["6\n5\n", "6\n5\n"]);
+      const family = uniqueFamilyFiles(logDir, "server");
+      expect(
+        family.every((file) => statSync(file).size <= 10 * 1024 * 1024),
+      ).toBe(true);
+      const contents = family.map((file) =>
+        readFileSync(file).toString("latin1"),
+      );
+      for (const byte of ["A", "B"]) {
+        expect(
+          contents.reduce(
+            (total, content) => total + content.split(byte).length - 1,
+            0,
+          ),
+        ).toBe(10 * 1024 * 1024);
+      }
+      expect(contents.some((content) => content.includes("old-backup-0"))).toBe(
+        false,
+      );
+      expect(contents.some((content) => content.includes("old-backup-1"))).toBe(
+        true,
+      );
+      expect(contents.some((content) => content.includes("old-backup-2"))).toBe(
+        true,
+      );
+      expect(contents.some((content) => content.includes("old-backup-3"))).toBe(
+        true,
+      );
+    } finally {
+      writeFileSync(postRenameReleasePath, "release");
+      writeFileSync(pruneSnapshotReleasePath, "release");
+      for (const writer of writers) {
+        if (writer.exitCode === null) writer.kill("SIGKILL");
+      }
+      await Promise.all(
+        writers.map((writer) => waitForExit(writer).catch(() => -1)),
+      );
+      await Promise.all(writers.map((writer) => writer.writerExit));
+    }
+  });
+
   it("fails instead of falling back to terminal output when logs cannot be opened", () => {
     const logDir = scratchDir();
     const blockedPath = join(logDir, "not-a-directory");

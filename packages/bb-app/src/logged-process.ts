@@ -327,6 +327,8 @@ let activeFd;
 let activeSize = 0;
 let aliasSequence = 0;
 let writerBarrierUsed = false;
+let postRenameBarrierUsed = false;
+let pruneSnapshotBarrierUsed = false;
 let initialized = false;
 let processing = false;
 let inputPaused = false;
@@ -527,17 +529,35 @@ const publishAliasTo = (targetPath) => {
     }
   }
 };
-const pruneBackups = (maximum = retainedBackups) => {
-  let backups;
-  try {
-    backups = paths().filter((file) => file.startsWith(familyPrefix) && backupPattern.test(path.basename(file)));
-    backups.sort((left, right) => fs.statSync(left).mtimeMs - fs.statSync(right).mtimeMs);
-  } catch (error) {
-    reportFsError("stdio backup scan failed", error);
-    return;
-  }
-  while (backups.length > maximum) {
-    const oldest = backups.shift();
+const pruneBackups = () => {
+  while (true) {
+    let backups;
+    try {
+      backups = paths().filter((file) => file.startsWith(familyPrefix) && backupPattern.test(path.basename(file)));
+      backups.sort((left, right) => fs.statSync(left).mtimeMs - fs.statSync(right).mtimeMs);
+    } catch (error) {
+      if (error.code === "ENOENT") continue;
+      reportFsError("stdio backup scan failed", error);
+      return;
+    }
+    if (pruneSnapshotBarrierUsed && writerBarrier?.pruneObservedCountsPath !== undefined) {
+      fs.appendFileSync(writerBarrier.pruneObservedCountsPath, String(backups.length) + "\\n");
+    }
+    if (backups.length <= retainedBackups) return;
+    if (
+      !pruneSnapshotBarrierUsed &&
+      writerBarrier?.pruneSnapshotEnteredPath !== undefined &&
+      writerBarrier.pruneSnapshotReleasePath !== undefined
+    ) {
+      pruneSnapshotBarrierUsed = true;
+      fs.writeFileSync(writerBarrier.pruneSnapshotEnteredPath, String(backups.length));
+      const waitCell = new Int32Array(new SharedArrayBuffer(4));
+      while (!fs.existsSync(writerBarrier.pruneSnapshotReleasePath)) Atomics.wait(waitCell, 0, 0, 10);
+    }
+    if (pruneSnapshotBarrierUsed && writerBarrier?.pruneObservedCountsPath !== undefined) {
+      fs.appendFileSync(writerBarrier.pruneObservedCountsPath, String(backups.length) + "\\n");
+    }
+    const oldest = backups[0];
     try {
       const aliasStat = fs.statSync(logPath);
       const oldestStat = fs.statSync(oldest);
@@ -554,7 +574,9 @@ const pruneBackups = (maximum = retainedBackups) => {
     try {
       fs.unlinkSync(oldest);
     } catch (error) {
-      if (error.code !== "ENOENT") reportFsError("stdio backup prune failed", error);
+      if (error.code === "ENOENT") continue;
+      reportFsError("stdio backup prune failed", error);
+      return;
     }
   }
 };
@@ -585,7 +607,6 @@ const migrateLegacyFiles = () => {
       while (remaining > 0) {
         if (backupFd === undefined || segmentSize >= sizeLimit) {
           if (backupFd !== undefined) fs.closeSync(backupFd);
-          pruneBackups(retainedBackups - 1);
           const backupPath = uniqueBackupPath();
           backupFd = fs.openSync(backupPath, "wx", 0o600);
           segmentSize = 0;
@@ -682,8 +703,8 @@ const recoverClosedSegments = async () => {
       }
       if (recover) {
         try {
-          pruneBackups(retainedBackups - 1);
           fs.renameSync(file, uniqueBackupPath());
+          pruneBackups();
           try {
             const staleSocketPath = socketPathForToken(ownerUuid);
             if (staleSocketPath !== undefined) fs.unlinkSync(staleSocketPath);
@@ -747,8 +768,17 @@ const closeActive = (archive) => {
     activeFd = undefined;
   }
   if (archive && activePath !== undefined && fs.existsSync(activePath)) {
-    pruneBackups(retainedBackups - 1);
     fs.renameSync(activePath, uniqueBackupPath());
+    if (
+      !postRenameBarrierUsed &&
+      writerBarrier?.postRenameEnteredPath !== undefined &&
+      writerBarrier.postRenameReleasePath !== undefined
+    ) {
+      postRenameBarrierUsed = true;
+      fs.writeFileSync(writerBarrier.postRenameEnteredPath, "renamed");
+      const waitCell = new Int32Array(new SharedArrayBuffer(4));
+      while (!fs.existsSync(writerBarrier.postRenameReleasePath)) Atomics.wait(waitCell, 0, 0, 10);
+    }
     pruneBackups();
   }
 };
@@ -1021,7 +1051,10 @@ export interface StdioLogWriterTestBarrier {
   unreadableOwnerSocketTokens?: string[];
   recoveryPlatform?: NodeJS.Platform;
   pipeProbeResults?: Array<"ENOENT" | "connected" | "busy">;
-  pipeProbeResultsByToken?: Record<string, Array<"ENOENT" | "connected" | "busy">>;
+  pipeProbeResultsByToken?: Record<
+    string,
+    Array<"ENOENT" | "connected" | "busy">
+  >;
   recoveryIdentity?: {
     source: 0 | 1 | 2;
     fingerprint: string;
@@ -1032,11 +1065,18 @@ export interface StdioLogWriterTestBarrier {
     fingerprint: string;
   };
   forcePsIdentity?: boolean;
-  writerEnv?: Partial<Pick<NodeJS.ProcessEnv, "LC_ALL" | "NODE_OPTIONS" | "TMPDIR" | "TZ">>;
+  writerEnv?: Partial<
+    Pick<NodeJS.ProcessEnv, "LC_ALL" | "NODE_OPTIONS" | "TMPDIR" | "TZ">
+  >;
   diagnosticPath?: string;
   completionPath?: string;
   finalizationEnteredPath?: string;
   finalizationReleasePath?: string;
+  postRenameEnteredPath?: string;
+  postRenameReleasePath?: string;
+  pruneSnapshotEnteredPath?: string;
+  pruneSnapshotReleasePath?: string;
+  pruneObservedCountsPath?: string;
 }
 
 export function spawnLoggedProcess(
