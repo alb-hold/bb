@@ -614,6 +614,10 @@ function splitWordChanges(change: TextChangeSpan): TextChangeSpan[] {
 const CODE_CHARACTERS = /[=;{}()<>[\]$`|\\/#"]|--|:\S/u;
 const CONFIG_LINE = /^(?: {4}|\t)|^\s*(?:-\s+)?['"]?[\w.-]+['"]?\s*:(?:\s|$)/u;
 
+const COMMAND_LINE =
+  /^\s*(?:[$%>#]\s*)?(?:sudo\s+)?(?:echo|printf|git|gh|npm|npx|pnpm|yarn|bun|deno|node|python3?|pip3?|uv|poetry|cargo|rustc|java|mvn|gradle|php|composer|bash|sh|zsh|fish|cd|ls|ll|cat|grep|rg|ag|sed|awk|curl|wget|ssh|scp|rsync|rm|mv|cp|mkdir|rmdir|chmod|chown|ln|tar|zip|unzip|docker|podman|kubectl|helm|terraform|aws|gcloud|az|brew|apt|apt-get|yum|dnf|pacman|systemctl|launchctl|journalctl|ps|pkill|pgrep|lsof|psql|mysql|sqlite3|redis-cli|unset|xargs|tsc|vitest|jest|pytest|tox|eslint|prettier|bb|codex|claude|wrangler|vercel|ffmpeg|jq|yq|nohup|whoami|chdir|pwd|tmux|vim|nvim|nano)(?=\s|$)/u;
+const SHORT_FLAG = /(?:^|\s)-[A-Za-z]{1,3}(?=\s|$)/u;
+
 const FENCE_LINE = /^\s*(?:`{3,}|~{3,})/u;
 
 function insideFence(text: string): boolean {
@@ -645,7 +649,9 @@ function inCodeLikeLine(target: string, start: number, end: number): boolean {
     insideFence(target.slice(0, lineStart)) ||
     FENCE_LINE.test(line) ||
     CODE_CHARACTERS.test(line) ||
-    CONFIG_LINE.test(line)
+    CONFIG_LINE.test(line) ||
+    COMMAND_LINE.test(line) ||
+    SHORT_FLAG.test(line)
   );
 }
 

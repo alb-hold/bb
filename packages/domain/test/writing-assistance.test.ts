@@ -385,6 +385,13 @@ describe("resolveWritingEdits", () => {
     ["~~~\n~~~yaml\nthe user are ready", "are", "is", "grammar"],
     ["````\n```\nthe user are ready", "are", "is", "grammar"],
     ["```\n```js\nthe user are ready", "are", "is", "grammar"],
+    ["echo the user are ready.", "are", "is", "grammar"],
+    ["printf the user are ready.", "are", "is", "grammar"],
+    ["$ echo the user are ready.", "are", "is", "grammar"],
+    ["  sudo echo the user are ready.", "are", "is", "grammar"],
+    ["git commit -m the user are ready.", "are", "is", "grammar"],
+    ["Run it.\ngit tag the user are ready.", "are", "is", "grammar"],
+    ["ls -la the user are ready.", "are", "is", "grammar"],
   ])(
     "never auto-applies an edit on the code-like line %s",
     (target, original, replacement, category) => {
@@ -401,6 +408,22 @@ describe("resolveWritingEdits", () => {
       expect(edits.map((edit) => edit.disposition)).not.toContain("apply");
     },
   );
+
+  it.each([
+    "the user are ready.",
+    "Echo said the user are ready.",
+    "make sure the user are ready.",
+    "find out if the user are ready.",
+    "go check that the user are ready.",
+    "Ask the team - the user are ready.",
+  ])("still auto-applies a safe fix on the prose line %s", (target) => {
+    const edits = resolveWritingEdits({
+      ...base,
+      target,
+      proposals: [proposal("user are", "user is")],
+    });
+    expect(edits.map((edit) => edit.disposition)).toEqual(["apply"]);
+  });
 
   it.each([
     "```\nthe user are ready\n```",
