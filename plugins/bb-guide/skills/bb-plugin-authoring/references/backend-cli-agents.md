@@ -289,15 +289,17 @@ bb.experimental_aiServices.register({
   keeps the transcript as heard when the formatted reply is unreadable, adds
   words, changes protected tokens, loses a negation (other than the words of a
   self-correction phrase that replaces what was said before it, such as no in
-  no wait) or a number's minus sign, or drops any word (even a hesitation sound such as uh) other
-  than a spoken self-correction (no wait, quer dizer) with
-  the phrase just before it that it replaces (one unbroken run of at most six
-  words ending at the correction, no longer than what was said after it,
-  starting with the same word, and nothing else near it left out; a phrase that replaces nothing is not a correction), a short function word said twice with only spaces between that can never
-  stand twice (such as the, I, of or de; never very, had, that, is, her or in,
-  and never across punctuation), spoken symbol
-  names in literal-code mode, or a numbered list's spoken numbers and
-  connectors.
+  no wait) or a number's minus sign, adds, removes or moves a symbol next to a
+  number (5 never becomes 5%) or changes what joins two numbers (1-3 never
+  becomes 1/3), or drops any word, even a hesitation sound such as uh or one
+  of a word said twice such as the the, other than a spoken self-correction
+  (no wait, quer dizer) with the phrase just before it that it replaces (one
+  unbroken run of at most six words ending at the correction, no longer than
+  what was said after it, starting with the same word, and nothing else near
+  it left out; a phrase that replaces nothing is not a correction), spoken
+  symbol names in literal-code mode, or a numbered list's spoken numbers and
+  the connectors said just before an item number (and then second; a
+  connector inside an item, as in users and groups, always stays).
 - `transcribe(audio: File, { signal, hint })` returns a transcript. `hint` is
   vocabulary text or `null`. Declared services appear for voice input.
 - `status()` is optional. Its message shows beside the service in the picker.

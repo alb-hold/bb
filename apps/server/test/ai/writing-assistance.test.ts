@@ -327,6 +327,13 @@ describe("dictation segments", () => {
       expect(service.transcribeCalls[0]?.options.hint).toBe(
         "Terms: Hermes. Plan for Hermes:",
       );
+      const prompt = service.completeCalls[0]?.prompt ?? "";
+      expect(prompt).toContain("Keep every spoken word, including hesitations");
+      expect(prompt).toContain("words said twice");
+      expect(prompt).toContain(
+        "keep every other word, including an and inside a step",
+      );
+      expect(prompt).not.toMatch(/remove hesitations|repeated words/iu);
       const usage = getWritingUsage(harness.deps.db, utcDay());
       expect(usage).toMatchObject({
         dictationSegments: 1,
