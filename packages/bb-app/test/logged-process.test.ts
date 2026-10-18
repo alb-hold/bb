@@ -57,6 +57,22 @@ function familyFiles(logDir: string, logName: string): string[] {
     .map((name) => join(logDir, name));
 }
 
+function fileIncludes(path: string, content: string): boolean {
+  try {
+    return readFileSync(path, "utf8").includes(content);
+  } catch (error) {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "ENOENT"
+    ) {
+      return false;
+    }
+    throw error;
+  }
+}
+
 function uniqueFamilyFiles(logDir: string, logName: string): string[] {
   const seen = new Set<string>();
   return familyFiles(logDir, logName).filter((path) => {
@@ -1878,7 +1894,7 @@ describe("spawnLoggedProcess", () => {
               familyFiles(logDir, "server").some(
                 (file) =>
                   file.includes(".active-") &&
-                  readFileSync(file, "utf8").includes("socket-owner-heartbeat"),
+                  fileIncludes(file, "socket-owner-heartbeat"),
               ),
             { timeout: 5_000, interval: 10 },
           )
@@ -1947,7 +1963,7 @@ describe("spawnLoggedProcess", () => {
         ownerSegment = familyFiles(logDir, "server").find(
           (file) =>
             file.includes(".active-") &&
-            readFileSync(file, "utf8").includes("socket-owner-heartbeat"),
+            fileIncludes(file, "socket-owner-heartbeat"),
         )!;
         expect(ownerSegment).not.toBe(initialSegment);
         expect(existsSync(ownerSegment)).toBe(true);
