@@ -5,6 +5,7 @@ import {
   getRetainedTerminalOutput,
   getTerminalSession,
 } from "@bb/db";
+import { createTerminalGridMarker } from "@bb/domain";
 import { createMigratedConnection } from "@bb/db/testing";
 import {
   TerminalDataPlaneChild,
@@ -169,6 +170,63 @@ async function setup(args: { holdOutputBatches?: boolean } = {}) {
 }
 
 describe("terminal output retained from the data plane", () => {
+  it("carries the latest trimmed grid marker to the retained replay window", async () => {
+    const fixture = await setup();
+    const chunks = [
+      `${createTerminalGridMarker({ cols: 80, rows: 24 })}${"a".repeat(30_000)}`,
+      `${createTerminalGridMarker({ cols: 51, rows: 16 })}${"b".repeat(30_000)}`,
+      "c".repeat(30_000),
+      "d".repeat(10_000),
+    ];
+    chunks.forEach((text, seq) => {
+      fixture.daemonSocket.receive({
+        type: "terminal.output",
+        terminalId: fixture.terminal.id,
+        chunk: { seq, dataBase64: Buffer.from(text).toString("base64") },
+      });
+    });
+
+    const retained = getRetainedTerminalOutput(fixture.db, {
+      hostId: fixture.host.id,
+      terminalSessionId: fixture.terminal.id,
+      now: Date.now(),
+    });
+    expect(retained?.[0]?.seq).toBe(1);
+    const firstRetainedText = Buffer.from(
+      retained?.[0]?.dataBase64 ?? "",
+      "base64",
+    ).toString("utf8");
+    expect(
+      firstRetainedText.startsWith(
+        createTerminalGridMarker({ cols: 51, rows: 16 }),
+      ),
+    ).toBe(true);
+    expect(firstRetainedText).not.toContain(
+      createTerminalGridMarker({ cols: 80, rows: 24 }),
+    );
+    fixture.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.host.id,
+      sessionId: fixture.session.id,
+      message: {
+        type: "terminal.exited",
+        terminalId: fixture.terminal.id,
+        exitCode: 0,
+        closeReason: "process-exit",
+      },
+    });
+    await Promise.resolve();
+    const replay = await fixture.terminalSessions.readTerminalOutput({
+      terminalId: fixture.terminal.id,
+      query: { limitChunks: 1 },
+    });
+    const replayText = textFrom(replay.chunks);
+    expect(
+      replayText.startsWith(createTerminalGridMarker({ cols: 51, rows: 16 })),
+    ).toBe(true);
+    expect(replay.chunks[0]?.seq).toBe(2);
+    fixture.child.shutdown();
+  });
+
   it("persists live data-socket output without a browser and reads it after exit", async () => {
     const fixture = await setup();
     for (const chunk of outputChunks()) {
@@ -342,7 +400,9 @@ describe("terminal output retained from the data plane", () => {
     });
 
     expect(fixture.heldOutputBatches).toHaveLength(1);
-    expect(fixture.heldOutputBatches[0]?.message.chunks).toEqual(outputChunks());
+    expect(fixture.heldOutputBatches[0]?.message.chunks).toEqual(
+      outputChunks(),
+    );
 
     fixture.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.host.id,

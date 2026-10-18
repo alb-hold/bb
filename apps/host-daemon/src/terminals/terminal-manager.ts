@@ -5,7 +5,12 @@ import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { spawn as spawnPty } from "node-pty";
-import type { HostDaemonTerminalCloseReason } from "@bb/domain";
+import {
+  createTerminalGridMarker,
+  createTerminalGridMarkerScanner,
+  findLastTerminalGridMarker,
+  type HostDaemonTerminalCloseReason,
+} from "@bb/domain";
 import type { HostDaemonDaemonWsMessage } from "@bb/host-daemon-contract";
 import { HOST_DAEMON_TERMINAL_EXIT_RETENTION_MS } from "@bb/host-daemon-contract/protocol";
 import {
@@ -167,6 +172,7 @@ interface ExitedTerminalSession {
   scrollbackBytes: number;
   scrollbackParserStateBytes: number;
   terminalId: string;
+  gridMarkerBeforeScrollback: string | null;
 }
 
 interface UnacknowledgedOutputChunk {
@@ -196,15 +202,18 @@ interface TerminalSession {
   outputBytes: number;
   outputFlow: TerminalOutputFlow | null;
   attentionParserState: TerminalAttentionParserState;
+  gridMarkerEmitted: boolean;
   outputFlushCancel: (() => void) | null;
   pendingPrimaryDeviceAttributesQuery: PendingPrimaryDeviceAttributesQuery;
   pty: TerminalPtyProcess;
+  gridMarkerScanner: ReturnType<typeof createTerminalGridMarkerScanner>;
   rows: number;
   scrollbackParserState: TerminalReplayParserState;
   scrollback: ScrollbackEntry[];
   scrollbackBytes: number;
   scrollbackParserStateBytes: number;
   terminalId: string;
+  gridMarkerBeforeScrollback: string | null;
 }
 
 type PendingPrimaryDeviceAttributesQuery =
@@ -259,6 +268,7 @@ interface FinishTerminalSessionArgs {
 }
 
 interface SendTerminalReplayArgs {
+  gridMarkerBeforeScrollback: string | null;
   message: TerminalAttachMessage;
   nextSeq: number;
   scrollback: readonly ScrollbackEntry[];
@@ -511,13 +521,16 @@ async function requireTerminalCwd(cwd: string | null): Promise<string> {
   return normalizedCwd;
 }
 
-export async function resolveTerminalCwdOverride(args: {
-  cwd: string | undefined;
-  defaultCwd: string;
-}, dependencies: {
-  pathApi: Pick<typeof path, "isAbsolute" | "normalize" | "sep">;
-  statPath: (cwd: string) => Promise<{ isDirectory: () => boolean }>;
-} = { pathApi: path, statPath: stat }): Promise<string> {
+export async function resolveTerminalCwdOverride(
+  args: {
+    cwd: string | undefined;
+    defaultCwd: string;
+  },
+  dependencies: {
+    pathApi: Pick<typeof path, "isAbsolute" | "normalize" | "sep">;
+    statPath: (cwd: string) => Promise<{ isDirectory: () => boolean }>;
+  } = { pathApi: path, statPath: stat },
+): Promise<string> {
   if (args.cwd === undefined || args.cwd.length > 4096) return args.defaultCwd;
   try {
     if (
@@ -527,7 +540,8 @@ export async function resolveTerminalCwdOverride(args: {
       return args.defaultCwd;
     }
     const cwd = dependencies.pathApi.normalize(args.cwd);
-    if (!(await dependencies.statPath(cwd)).isDirectory()) return args.defaultCwd;
+    if (!(await dependencies.statPath(cwd)).isDirectory())
+      return args.defaultCwd;
     return cwd;
   } catch {
     return args.defaultCwd;
@@ -909,9 +923,12 @@ export class TerminalManager {
         outputBytes: 0,
         outputFlow: null,
         attentionParserState: { ...INITIAL_TERMINAL_ATTENTION_PARSER_STATE },
+        gridMarkerEmitted: false,
+        gridMarkerBeforeScrollback: null,
         outputFlushCancel: null,
         pendingPrimaryDeviceAttributesQuery: "",
         pty,
+        gridMarkerScanner: createTerminalGridMarkerScanner(),
         rows: message.rows,
         scrollbackParserState: { ...INITIAL_TERMINAL_REPLAY_PARSER_STATE },
         scrollback: [],
@@ -1008,6 +1025,7 @@ export class TerminalManager {
         message,
         nextSeq: session.nextSeq,
         scrollback: session.scrollback,
+        gridMarkerBeforeScrollback: session.gridMarkerBeforeScrollback,
       });
       return;
     }
@@ -1018,6 +1036,7 @@ export class TerminalManager {
         message,
         nextSeq: exited.nextSeq,
         scrollback: exited.scrollback,
+        gridMarkerBeforeScrollback: exited.gridMarkerBeforeScrollback,
       });
       return;
     }
@@ -1031,6 +1050,14 @@ export class TerminalManager {
   }
 
   private sendTerminalReplay(args: SendTerminalReplayArgs): void {
+    let gridMarkerBeforeReplay = args.gridMarkerBeforeScrollback;
+    for (const entry of args.scrollback) {
+      if (entry.chunk.seq >= args.message.sinceSeq) break;
+      gridMarkerBeforeReplay =
+        findLastTerminalGridMarker(
+          Buffer.from(entry.chunk.dataBase64, "base64").toString("latin1"),
+        ) ?? gridMarkerBeforeReplay;
+    }
     const replayEntries = args.scrollback.filter(
       (entry) => entry.chunk.seq >= args.message.sinceSeq,
     );
@@ -1041,6 +1068,10 @@ export class TerminalManager {
     while (replayEntries.length > 1 && replayBytes > args.message.tailBytes) {
       const removed = replayEntries.shift();
       if (removed) {
+        gridMarkerBeforeReplay =
+          findLastTerminalGridMarker(
+            Buffer.from(removed.chunk.dataBase64, "base64").toString("latin1"),
+          ) ?? gridMarkerBeforeReplay;
         replayBytes -= removed.byteLength;
       }
     }
@@ -1052,6 +1083,17 @@ export class TerminalManager {
     const chunks = safePosition
       ? replayEntries.slice(safePosition.chunkIndex).map((entry) => entry.chunk)
       : [];
+    if (safePosition && safePosition.offset > 0) {
+      const firstEntry = replayEntries[safePosition.chunkIndex];
+      if (firstEntry) {
+        gridMarkerBeforeReplay =
+          findLastTerminalGridMarker(
+            Buffer.from(firstEntry.chunk.dataBase64, "base64")
+              .subarray(0, safePosition.offset)
+              .toString("latin1"),
+          ) ?? gridMarkerBeforeReplay;
+      }
+    }
     if (safePosition && safePosition.offset > 0) {
       const firstEntry = replayEntries[safePosition.chunkIndex];
       if (firstEntry) {
@@ -1081,6 +1123,23 @@ export class TerminalManager {
         };
       }
     }
+    if (chunks.length > 0 && gridMarkerBeforeReplay) {
+      const firstChunk = chunks[0];
+      if (firstChunk) {
+        const firstBytes = Buffer.from(firstChunk.dataBase64, "base64");
+        const markerBytes = Buffer.from(gridMarkerBeforeReplay, "latin1");
+        if (!firstBytes.subarray(0, markerBytes.length).equals(markerBytes)) {
+          const contentLimit = MAX_OUTPUT_CHUNK_BYTES - markerBytes.length;
+          chunks[0] = {
+            ...firstChunk,
+            dataBase64: Buffer.concat([
+              markerBytes,
+              firstBytes.subarray(-contentLimit),
+            ]).toString("base64"),
+          };
+        }
+      }
+    }
     this.options.sendMessage({
       type: "terminal.replay",
       requestId: args.message.requestId,
@@ -1107,8 +1166,14 @@ export class TerminalManager {
     if (session.cols === args.cols && session.rows === args.rows) {
       return;
     }
+    this.flushTerminalOutput(session);
     session.cols = args.cols;
     session.rows = args.rows;
+    this.bufferTerminalOutput(
+      session,
+      createTerminalGridMarker({ cols: session.cols, rows: session.rows }),
+    );
+    session.gridMarkerEmitted = true;
     session.pty.resize(args.cols, args.rows);
   }
 
@@ -1208,6 +1273,20 @@ export class TerminalManager {
       return;
     }
 
+    const filtered = session.gridMarkerScanner.push(data);
+    this.bufferTerminalContent(session, filtered.text);
+  }
+
+  private bufferTerminalContent(session: TerminalSession, data: string): void {
+    if (data.length === 0) return;
+    if (!session.gridMarkerEmitted) {
+      this.bufferTerminalOutput(
+        session,
+        createTerminalGridMarker({ cols: session.cols, rows: session.rows }),
+      );
+      session.gridMarkerEmitted = true;
+    }
+
     const result = consumePrimaryDeviceAttributesQueries(
       session.pendingPrimaryDeviceAttributesQuery,
       data,
@@ -1302,7 +1381,9 @@ export class TerminalManager {
             terminalId: session.terminalId,
             seq: chunk.seq,
             kind: detection.kind,
-            ...(detection.title === undefined ? {} : { title: detection.title }),
+            ...(detection.title === undefined
+              ? {}
+              : { title: detection.title }),
             ...(detection.body === undefined ? {} : { body: detection.body }),
           });
         }
@@ -1467,6 +1548,10 @@ export class TerminalManager {
     if (!removed) {
       return;
     }
+    session.gridMarkerBeforeScrollback =
+      findLastTerminalGridMarker(
+        Buffer.from(removed.chunk.dataBase64, "base64").toString("latin1"),
+      ) ?? session.gridMarkerBeforeScrollback;
     const parserStateBytes = this.replayParserStateBytes(removed);
     if (parserStateBytes > 0) {
       session.chargedScrollbackEntries.shift();
@@ -1523,6 +1608,10 @@ export class TerminalManager {
       );
       args.session.pendingPrimaryDeviceAttributesQuery = "";
     }
+    this.bufferTerminalContent(
+      args.session,
+      args.session.gridMarkerScanner.flush(),
+    );
     this.flushTerminalOutput(args.session);
     this.disableOutputFlow(args.session);
     if (args.session.closeTimeout !== null) {
@@ -1579,6 +1668,7 @@ export class TerminalManager {
       scrollbackBytes: session.scrollbackBytes,
       scrollbackParserStateBytes: session.scrollbackParserStateBytes,
       terminalId: session.terminalId,
+      gridMarkerBeforeScrollback: session.gridMarkerBeforeScrollback,
     };
     const expiryTimeout = setTimeout(() => {
       exited.expiryTimeout = null;

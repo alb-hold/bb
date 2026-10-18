@@ -2,7 +2,10 @@ import { Buffer } from "node:buffer";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { Command, Option } from "commander";
-import { TERMINAL_DATA_MAX_BYTES } from "@bb/domain";
+import {
+  createTerminalGridByteMarkerScanner,
+  TERMINAL_DATA_MAX_BYTES,
+} from "@bb/domain";
 import type { TerminalCreateScope, TerminalListScope } from "@bb/sdk";
 import { createNodeWebsocketFactory } from "@bb/sdk/node-websocket";
 import {
@@ -350,8 +353,9 @@ export function registerTerminalCommands(
           terminalId,
           ...terminalOutputQuery(opts),
         });
-        if (outputJson(opts, output)) return;
-        writeOutputChunks(output.chunks);
+        const displayOutput = stripTerminalGridMarkersFromOutput(output);
+        if (outputJson(opts, displayOutput)) return;
+        writeOutputChunks(displayOutput.chunks);
         if (output.status === "exited") {
           console.error(describeTerminalExit(terminalId, output.exitCode));
         }
@@ -711,9 +715,40 @@ function printTerminalTable(sessions: TerminalSession[]): void {
 function writeOutputChunks(
   chunks: readonly { dataBase64: string; seq: number }[],
 ): void {
+  const scanner = createTerminalGridByteMarkerScanner();
   for (const chunk of chunks) {
-    process.stdout.write(Buffer.from(chunk.dataBase64, "base64"));
+    const result = scanner.push(Buffer.from(chunk.dataBase64, "base64"));
+    process.stdout.write(Buffer.from(result.bytes));
   }
+  process.stdout.write(Buffer.from(scanner.flush()));
+}
+
+function stripTerminalGridMarkersFromOutput<
+  T extends {
+    chunks: readonly { dataBase64: string; seq: number }[];
+  },
+>(output: T): T {
+  const scanner = createTerminalGridByteMarkerScanner();
+  const chunks = output.chunks.map((chunk) => ({
+    ...chunk,
+    dataBase64: Buffer.from(
+      scanner.push(Buffer.from(chunk.dataBase64, "base64")).bytes,
+    ).toString("base64"),
+  }));
+  const trailing = scanner.flush();
+  if (trailing.byteLength > 0 && chunks.length > 0) {
+    const last = chunks.at(-1);
+    if (last) {
+      chunks[chunks.length - 1] = {
+        ...last,
+        dataBase64: Buffer.concat([
+          Buffer.from(last.dataBase64, "base64"),
+          Buffer.from(trailing),
+        ]).toString("base64"),
+      };
+    }
+  }
+  return { ...output, chunks };
 }
 
 function terminalWebsocketUrl(args: {
@@ -862,9 +897,12 @@ function describeTerminalExit(
 }
 
 function decodeChunks(chunks: readonly { dataBase64: string }[]): string {
-  return Buffer.concat(
-    chunks.map((chunk) => Buffer.from(chunk.dataBase64, "base64")),
-  ).toString("utf8");
+  const scanner = createTerminalGridByteMarkerScanner();
+  const parts = chunks.map((chunk) =>
+    Buffer.from(scanner.push(Buffer.from(chunk.dataBase64, "base64")).bytes),
+  );
+  parts.push(Buffer.from(scanner.flush()));
+  return Buffer.concat(parts).toString("utf8");
 }
 
 async function waitForTerminal(args: {
