@@ -525,10 +525,8 @@ describe("CommandPalette", () => {
     );
     await flushAnimationFrames();
 
-    await waitFor(() =>
-      expect(document.activeElement?.getAttribute("aria-label")).toBe(
-        "Search threads",
-      ),
+    expect(document.activeElement?.getAttribute("aria-label")).toBe(
+      "Search threads",
     );
     const search = screen.getByRole("combobox", { name: "Search threads" });
     terminalKeys.length = 0;
