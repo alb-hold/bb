@@ -111,7 +111,7 @@ export function DictationStrip({
         type="button"
         aria-label="Cancel dictation"
         className="flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-muted pointer-coarse:size-9"
-        onPointerDown={(event) => event.preventDefault()}
+        onMouseDown={(event) => event.preventDefault()}
         onClick={onCancel}
       >
         <Icon name="X" className="size-3.5" />
@@ -167,7 +167,7 @@ export function AssistStrip({
           <button
             type="button"
             className="ml-0.5 flex h-6 items-center gap-1 rounded px-1.5 text-foreground hover:bg-muted pointer-coarse:h-8"
-            onPointerDown={(event) => event.preventDefault()}
+            onMouseDown={(event) => event.preventDefault()}
             onClick={onUndo}
           >
             <Icon name="RotateCcw" className="size-3" />
@@ -185,7 +185,7 @@ export function AssistStrip({
             type="button"
             className="flex h-6 min-w-0 items-center gap-1 rounded-l-full pr-1 pl-2.5 hover:bg-muted pointer-coarse:h-8"
             aria-label={`Replace “${suggestion.original}” with “${suggestion.replacement}”`}
-            onPointerDown={(event) => event.preventDefault()}
+            onMouseDown={(event) => event.preventDefault()}
             onClick={() => onAccept(suggestion.id)}
           >
             <span className="truncate text-muted-foreground line-through decoration-muted-foreground/60">
@@ -202,7 +202,7 @@ export function AssistStrip({
             type="button"
             aria-label="Dismiss suggestion"
             className="flex size-6 shrink-0 items-center justify-center rounded-r-full text-muted-foreground hover:bg-muted pointer-coarse:size-8"
-            onPointerDown={(event) => event.preventDefault()}
+            onMouseDown={(event) => event.preventDefault()}
             onClick={() => onDismiss(suggestion.id)}
           >
             <Icon name="X" className="size-3" />
