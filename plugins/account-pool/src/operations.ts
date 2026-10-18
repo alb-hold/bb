@@ -685,8 +685,8 @@ export class PoolOperations {
     for (const account of accounts) {
       if (account.provider !== provider || account.status !== "ready") continue;
       try {
-        await this.accounts.readSecret(account.id);
-        return true;
+        const secret = await this.accounts.readSecret(account.id);
+        if (carriesCredential(secret)) return true;
       } catch {
         continue;
       }
@@ -752,4 +752,10 @@ export class PoolOperations {
       ];
     });
   }
+}
+
+function carriesCredential(secret: AccountSecret): boolean {
+  return secret.kind === "oauth"
+    ? secret.accessToken.length > 0 && secret.refreshToken.length > 0
+    : secret.apiKey.length > 0;
 }

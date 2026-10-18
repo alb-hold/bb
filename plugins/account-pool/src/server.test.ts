@@ -2395,6 +2395,42 @@ describe("Account Pool plugin", () => {
     ).resolves.toBeNull();
   });
 
+  it("withholds proxied health when an enabled account secret is unreadable or empty", async () => {
+    const upstream = await startUpstream(async (request, response) => {
+      await readRequestBody(request);
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end("{}");
+    });
+    cleanups.push(upstream.close);
+    const fixture = await createFixture({ upstreamUrl: upstream.url });
+    const accountSecretFile = path.join(
+      fixture.dataDir,
+      "plugins",
+      "account-pool",
+      "secrets",
+      "accounts",
+      `account-${fixture.account.id}.json`,
+    );
+    const health = () =>
+      fixture.host.harness.behavior.resolveProviderEnvHealth("claude-code", {
+        hostId: "host-one",
+      });
+    await expect(health()).resolves.toEqual({
+      label: "Proxied",
+      statusMessage: "Credentials are provided by the Account Pooler hub.",
+    });
+    const original = await fs.readFile(accountSecretFile, "utf8");
+    await fs.writeFile(accountSecretFile, '{"kind":"api-key","apiKey":""}\n');
+    await expect(health()).resolves.toBeNull();
+    await fs.writeFile(accountSecretFile, "not json");
+    await expect(health()).resolves.toBeNull();
+    await fs.writeFile(accountSecretFile, original);
+    await expect(health()).resolves.toEqual({
+      label: "Proxied",
+      statusMessage: "Credentials are provided by the Account Pooler hub.",
+    });
+  });
+
   it("rotates a machine token with a ten-minute grace window", async () => {
     let now = 1_000;
     const upstream = await startUpstream(async (request, response) => {
