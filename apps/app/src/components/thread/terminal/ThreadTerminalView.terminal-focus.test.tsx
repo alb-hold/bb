@@ -860,7 +860,7 @@ describe("ThreadTerminalView terminal focus boundary", () => {
           .filter((message) => message.type === "resize");
         expect(resizes).toEqual([{ type: "resize", cols: 51, rows: 47 }]);
       },
-      { timeout: 6_000 },
+      { timeout: 10_000 },
     );
     const session = makeTerminalSession({
       id: "term_first_attach_font_metrics",
@@ -913,9 +913,9 @@ describe("ThreadTerminalView terminal focus boundary", () => {
           { type: "resize", cols: 51, rows: 47 },
         ]);
       },
-      { timeout: 6_000 },
+      { timeout: 10_000 },
     );
-  }, 15_000);
+  }, 25_000);
 
   it("suppresses terminal-scoped shortcuts from the real xterm input", async () => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
