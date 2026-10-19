@@ -26,7 +26,6 @@ afterEach(() => {
 });
 
 it("keeps Done, Escape and compact Back usable while the import is held", async () => {
-  vi.spyOn(console, "error").mockImplementation(() => {});
   const onDone = vi.fn();
   const props = {
     items: [{ id: "section:review", title: "Review" }],
