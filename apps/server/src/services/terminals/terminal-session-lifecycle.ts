@@ -687,7 +687,7 @@ export class TerminalSessionLifecycle {
   private readonly outputFlow: TerminalOutputFlowControl;
   private readonly pendingRetainedOutput = new Map<
     string,
-    { hostId: string; chunks: TerminalOutputChunk[] }
+    Array<{ hostId: string; chunks: TerminalOutputChunk[] }>
   >();
   private retainedOutputFlushTimer: ReturnType<typeof setTimeout> | null =
     null;
@@ -1666,15 +1666,14 @@ export class TerminalSessionLifecycle {
     session: TerminalSessionRow,
     chunk: TerminalOutputChunk,
   ): void {
-    const current = this.pendingRetainedOutput.get(session.id);
-    if (current === undefined) {
-      this.pendingRetainedOutput.set(session.id, {
-        hostId: session.hostId,
-        chunks: [chunk],
-      });
+    const batches = this.pendingRetainedOutput.get(session.id) ?? [];
+    const last = batches.at(-1);
+    if (last !== undefined && last.hostId === session.hostId) {
+      last.chunks.push(chunk);
     } else {
-      current.chunks.push(chunk);
+      batches.push({ hostId: session.hostId, chunks: [chunk] });
     }
+    this.pendingRetainedOutput.set(session.id, batches);
     this.scheduleRetainedOutputFlush();
   }
 
@@ -1688,29 +1687,49 @@ export class TerminalSessionLifecycle {
   }
 
   private flushRetainedOutput(terminalSessionId: string): void {
-    const pending = this.pendingRetainedOutput.get(terminalSessionId);
-    if (pending === undefined) return;
+    const batches = this.pendingRetainedOutput.get(terminalSessionId);
+    if (batches === undefined) return;
     this.pendingRetainedOutput.delete(terminalSessionId);
-    try {
-      appendRetainedTerminalOutputChunks(this.options.db, {
-        hostId: pending.hostId,
-        terminalSessionId,
-        chunks: pending.chunks,
-        clock: Date.now,
-      });
-    } catch (error) {
-      let bytes = pending.chunks.reduce(
-        (total, chunk) =>
-          total + Buffer.byteLength(chunk.dataBase64, "base64"),
-        0,
-      );
-      while (bytes > HOST_RETAINED_OUTPUT_BYTES && pending.chunks.length > 1) {
-        const dropped = pending.chunks.shift();
-        if (dropped) bytes -= Buffer.byteLength(dropped.dataBase64, "base64");
+    for (const [index, batch] of batches.entries()) {
+      try {
+        appendRetainedTerminalOutputChunks(this.options.db, {
+          hostId: batch.hostId,
+          terminalSessionId,
+          chunks: batch.chunks,
+          clock: Date.now,
+        });
+      } catch (error) {
+        const unwritten = batches.slice(index);
+        let bytes = unwritten.reduce(
+          (total, entry) =>
+            total +
+            entry.chunks.reduce(
+              (sum, chunk) =>
+                sum + Buffer.byteLength(chunk.dataBase64, "base64"),
+              0,
+            ),
+          0,
+        );
+        while (bytes > HOST_RETAINED_OUTPUT_BYTES) {
+          const oldest = unwritten[0];
+          if (
+            oldest === undefined ||
+            (unwritten.length === 1 && oldest.chunks.length === 1)
+          )
+            break;
+          const dropped = oldest.chunks.shift();
+          if (dropped)
+            bytes -= Buffer.byteLength(dropped.dataBase64, "base64");
+          if (oldest.chunks.length === 0) unwritten.shift();
+        }
+        const newer = this.pendingRetainedOutput.get(terminalSessionId) ?? [];
+        this.pendingRetainedOutput.set(terminalSessionId, [
+          ...unwritten,
+          ...newer,
+        ]);
+        this.scheduleRetainedOutputFlush();
+        throw error;
       }
-      this.pendingRetainedOutput.set(terminalSessionId, pending);
-      this.scheduleRetainedOutputFlush();
-      throw error;
     }
   }
 
@@ -1727,9 +1746,15 @@ export class TerminalSessionLifecycle {
       clearTimeout(this.retainedOutputFlushTimer);
       this.retainedOutputFlushTimer = null;
     }
-    for (const [terminalId, pending] of this.pendingRetainedOutput) {
+    for (const [terminalId, batches] of this.pendingRetainedOutput) {
       this.options.logger.error(
-        { terminalId, chunks: pending.chunks.length },
+        {
+          terminalId,
+          chunks: batches.reduce(
+            (total, batch) => total + batch.chunks.length,
+            0,
+          ),
+        },
         "Lost retained terminal output at shutdown",
       );
     }
