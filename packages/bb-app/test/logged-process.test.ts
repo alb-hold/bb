@@ -3058,18 +3058,51 @@ fs.renameSync = function (source, destination) {
       pruneObservedCountsPath: join(logDir, `prune-counts-${label}`),
       completionPath: join(logDir, `writer-complete-${label}`),
     }));
+    const pipeProbeBarrier = {
+      postRenameEnteredPath: join(logDir, "pipe-probe-post-rename"),
+      postRenameReleasePath: join(logDir, "release-pipe-probe-post-rename"),
+      childOutputStartedPath: join(logDir, "pipe-probe-output-started"),
+      childOutputFinishedPath: join(logDir, "pipe-probe-output-finished"),
+      completionPath: join(logDir, "pipe-probe-writer-complete"),
+    };
+    const pipeProbeLogDir = join(logDir, "pipe-probe");
+    const pipeProbeScript = `
+      const fs = require("node:fs");
+      const waitForMainRenames = () => {
+        if (
+          !fs.existsSync(${JSON.stringify(barriers[0].postRenameEnteredPath)}) ||
+          !fs.existsSync(${JSON.stringify(barriers[1].postRenameEnteredPath)})
+        ) {
+          setTimeout(waitForMainRenames, 25);
+          return;
+        }
+        process.stdout.write(Buffer.alloc(10 * 1024 * 1024 + 64 * 1024, 67));
+        const waitForRename = () => {
+          if (!fs.existsSync(${JSON.stringify(pipeProbeBarrier.postRenameEnteredPath)})) {
+            setTimeout(waitForRename, 25);
+            return;
+          }
+          fs.writeFileSync(${JSON.stringify(pipeProbeBarrier.childOutputStartedPath)}, "started");
+          process.stdout.write(Buffer.alloc(9 * 1024 * 1024, 67), () =>
+            fs.writeFileSync(${JSON.stringify(pipeProbeBarrier.childOutputFinishedPath)}, "finished"),
+          );
+        };
+        waitForRename();
+      };
+      waitForMainRenames();
+    `;
     for (let index = 0; index < 4; index += 1) {
       const backupPath = `${logPath}.backup-${index + 1}-1-${String(index + 1).padStart(8, "0")}`;
       writeFileSync(backupPath, `old-backup-${index}\n`);
       const timestamp = new Date(1_700_000_000_000 + index * 1_000);
       utimesSync(backupPath, timestamp, timestamp);
     }
-    const writers = ["A", "B"].map((label, index) =>
+    const pruningWriters = ["A", "B"].map((label, index) =>
       spawnLoggedProcess({
         command: process.execPath,
         args: [
           "-e",
-          `process.stdout.write(Buffer.alloc(10 * 1024 * 1024, ${label.charCodeAt(0)}));`,
+          `process.stdout.write(Buffer.alloc(9 * 1024 * 1024, ${label.charCodeAt(0)}));`,
         ],
         env: process.env,
         logDir,
@@ -3077,6 +3110,15 @@ fs.renameSync = function (source, destination) {
         testWriterBarrier: barriers[index],
       }),
     );
+    const pipeProbe = spawnLoggedProcess({
+      command: process.execPath,
+      args: ["-e", pipeProbeScript],
+      env: process.env,
+      logDir: pipeProbeLogDir,
+      logName: "server",
+      testWriterBarrier: pipeProbeBarrier,
+    });
+    const writers = [...pruningWriters, pipeProbe];
 
     try {
       await expect
@@ -3089,6 +3131,14 @@ fs.renameSync = function (source, destination) {
         )
         .toBe(true);
       expect(backupCount()).toBe(6);
+      await expect
+        .poll(() => existsSync(pipeProbeBarrier.childOutputStartedPath), {
+          timeout: 10_000,
+        })
+        .toBe(true);
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      expect(pipeProbe.exitCode).toBe(null);
+      expect(existsSync(pipeProbeBarrier.childOutputFinishedPath)).toBe(false);
       writeFileSync(postRenameReleasePath, "release");
       await expect
         .poll(
@@ -3106,17 +3156,20 @@ fs.renameSync = function (source, destination) {
             readFileSync(barrier.pruneSnapshotEnteredPath!, "utf8") === "6",
         ),
       ).toBe(true);
-      for (const barrier of barriers) {
-        writeFileSync(barrier.pruneSnapshotReleasePath!, "release");
-      }
+      writeFileSync(barriers[0].pruneSnapshotReleasePath!, "release");
+      await writers[0].writerExit;
+      writeFileSync(barriers[1].pruneSnapshotReleasePath!, "release");
+      await writers[1].writerExit;
+      writeFileSync(pipeProbeBarrier.postRenameReleasePath, "release");
       expect(
         await Promise.all(writers.map((writer) => waitForExit(writer))),
-      ).toEqual([0, 0]);
-      await Promise.all(writers.map((writer) => writer.writerExit));
+      ).toEqual([0, 0, 0]);
+      await pipeProbe.writerExit;
       await expect
         .poll(
           () =>
-            barriers.every((barrier) => existsSync(barrier.completionPath!)),
+            barriers.every((barrier) => existsSync(barrier.completionPath!)) &&
+            existsSync(pipeProbeBarrier.completionPath),
           {
             timeout: 10_000,
           },
@@ -3145,7 +3198,7 @@ fs.renameSync = function (source, destination) {
             (total, content) => total + content.split(byte).length - 1,
             0,
           ),
-        ).toBe(10 * 1024 * 1024);
+        ).toBe(9 * 1024 * 1024);
       }
       expect(contents.some((content) => content.includes("old-backup-0"))).toBe(
         false,
@@ -3159,11 +3212,22 @@ fs.renameSync = function (source, destination) {
       expect(contents.some((content) => content.includes("old-backup-3"))).toBe(
         true,
       );
+      const pipeProbeContents = uniqueFamilyFiles(
+        pipeProbeLogDir,
+        "server",
+      ).map((file) => readFileSync(file).toString("latin1"));
+      expect(
+        pipeProbeContents.reduce(
+          (total, content) => total + content.split("C").length - 1,
+          0,
+        ),
+      ).toBe(19 * 1024 * 1024 + 64 * 1024);
     } finally {
       writeFileSync(postRenameReleasePath, "release");
       for (const barrier of barriers) {
         writeFileSync(barrier.pruneSnapshotReleasePath!, "release");
       }
+      writeFileSync(pipeProbeBarrier.postRenameReleasePath, "release");
       for (const writer of writers) {
         if (writer.exitCode === null) writer.kill("SIGKILL");
       }
