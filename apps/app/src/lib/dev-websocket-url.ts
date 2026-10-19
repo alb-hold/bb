@@ -41,9 +41,10 @@ export function buildDevWebSocketUrl(
   }
 
   const url = new URL(baseUrl);
-  url.pathname = args.path;
-  url.search = "";
-  url.hash = "";
+  const target = new URL(args.path, url);
+  url.pathname = target.pathname;
+  url.search = target.search;
+  url.hash = target.hash;
   return url.toString();
 }
 

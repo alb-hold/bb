@@ -218,6 +218,11 @@ export const terminalWebSocketQuerySchema = z
       .enum(["0", "1"])
       .default("0")
       .transform((value) => value === "1"),
+    handoffOwnerToken: z
+      .string()
+      .length(22)
+      .regex(/^[A-Za-z0-9_-]+$/u)
+      .optional(),
   })
   .strict();
 

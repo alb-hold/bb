@@ -101,9 +101,9 @@ function installOpenWebSocketConstructor(): void {
 }
 
 function readClientMessages(socket: FakeSocket): readonly ClientMessage[] {
-  return socket.sentMessages.map((message) =>
-    clientMessageSchema.parse(JSON.parse(message)),
-  );
+  return socket.sentMessages
+    .map((message) => clientMessageSchema.parse(JSON.parse(message)))
+    .filter((message) => message.type !== "device-handoff-device");
 }
 
 function getOnlySocket(): FakeSocket {
@@ -131,6 +131,8 @@ describe("WebSocketManager subscriptions", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
     Object.defineProperty(globalThis, "WebSocket", {
       configurable: true,
       value: originalWebSocket,
@@ -194,6 +196,187 @@ describe("WebSocketManager subscriptions", () => {
       },
     ]);
   });
+
+  it("resends the active device-handoff view on reconnect, but does not send an empty view", () => {
+    const { manager, socket } = createConnectedManager();
+
+    manager.setDeviceHandoffView("thread-1");
+    expect(readClientMessages(socket)).toEqual([
+      {
+        type: "device-handoff-view",
+        threadId: "thread-1",
+        terminalSessionId: null,
+      },
+    ]);
+    socket.sentMessages.length = 0;
+
+    manager.setDeviceHandoffView(null);
+    expect(readClientMessages(socket)).toEqual([
+      {
+        type: "device-handoff-view",
+        threadId: null,
+        terminalSessionId: null,
+      },
+    ]);
+    socket.sentMessages.length = 0;
+
+    manager.setDeviceHandoffView(null);
+    expect(readClientMessages(socket)).toEqual([]);
+
+    manager.setDeviceHandoffView("thread-1");
+    socket.sentMessages.length = 0;
+    socket.close();
+    socket.open();
+
+    expect(readClientMessages(socket)).toEqual([
+      {
+        type: "device-handoff-view",
+        threadId: "thread-1",
+        terminalSessionId: null,
+      },
+    ]);
+  });
+
+  it("tracks the active standalone terminal handoff view and resends it on reconnect", () => {
+    const { manager, socket } = createConnectedManager();
+
+    manager.setDeviceHandoffView(null, "term-a");
+    expect(readClientMessages(socket)).toEqual([
+      {
+        type: "device-handoff-view",
+        threadId: null,
+        terminalSessionId: "term-a",
+      },
+    ]);
+    socket.sentMessages.length = 0;
+    socket.close();
+    socket.open();
+    expect(readClientMessages(socket)).toEqual([
+      {
+        type: "device-handoff-view",
+        threadId: null,
+        terminalSessionId: "term-a",
+      },
+    ]);
+    socket.sentMessages.length = 0;
+
+    manager.setDeviceHandoffView(null, "term-b");
+    expect(readClientMessages(socket)).toEqual([
+      {
+        type: "device-handoff-view",
+        threadId: null,
+        terminalSessionId: "term-b",
+      },
+    ]);
+  });
+});
+
+describe("WebSocketManager device handoff attachment token", () => {
+  beforeEach(() => {
+    fakeSocketState.instances.length = 0;
+    installOpenWebSocketConstructor();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    Object.defineProperty(globalThis, "WebSocket", {
+      configurable: true,
+      value: originalWebSocket,
+    });
+  });
+
+  const originalWebSocket = globalThis.WebSocket;
+
+  function installBrowserStorage(throwOnAccess = false): void {
+    const values = new Map<string, string>();
+    vi.stubGlobal("window", {
+      localStorage: {
+        getItem: (key: string) => {
+          if (throwOnAccess) throw new Error("storage unavailable");
+          return values.get(key) ?? null;
+        },
+        setItem: (key: string, value: string) => {
+          if (throwOnAccess) throw new Error("storage unavailable");
+          values.set(key, value);
+        },
+        removeItem: (key: string) => values.delete(key),
+      },
+      crypto: globalThis.crypto,
+      btoa: globalThis.btoa,
+      location: { origin: "http://localhost" },
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+  }
+
+  it("creates and stores a browser device id before the first WebSocket connection", async () => {
+    const storageKey = "bb-device-handoff-device-id";
+    installBrowserStorage();
+    window.localStorage.removeItem(storageKey);
+    vi.resetModules();
+    const { WebSocketManager: FreshWebSocketManager } = await import("./ws");
+    const manager = new FreshWebSocketManager();
+    const deviceId = manager.getDeviceHandoffClientToken();
+    expect(deviceId).toMatch(/^[A-Za-z0-9_-]{22}$/u);
+    expect(window.localStorage.getItem(storageKey)).toBe(deviceId);
+    manager.connect();
+    const socket = getOnlySocket();
+    socket.open();
+    expect(JSON.parse(socket.sentMessages[0] ?? "{}")).toEqual({
+      type: "device-handoff-device",
+      token: deviceId,
+    });
+    manager.disconnect();
+    window.localStorage.removeItem(storageKey);
+  });
+
+  it("reuses an in-memory device id when local storage is unavailable", async () => {
+    installBrowserStorage(true);
+    vi.resetModules();
+    const { WebSocketManager: FreshWebSocketManager } = await import("./ws");
+    const manager = new FreshWebSocketManager();
+    const deviceId = manager.getDeviceHandoffClientToken();
+    expect(deviceId).toMatch(/^[A-Za-z0-9_-]{22}$/u);
+    manager.connect();
+    const socket = getOnlySocket();
+    socket.open();
+    expect(JSON.parse(socket.sentMessages[0] ?? "{}")).toEqual({
+      type: "device-handoff-device",
+      token: deviceId,
+    });
+    expect(manager.getDeviceHandoffClientToken()).toBe(deviceId);
+    manager.disconnect();
+  });
+
+  it("stores a token delivered by the server and notifies terminal views", () => {
+    const manager = new WebSocketManager();
+    const callback = vi.fn();
+    manager.onDeviceHandoffClientToken(callback);
+    manager.handleIncomingMessage(
+      JSON.stringify({
+        type: "device-handoff-client-token",
+        token: "0123456789abcdefghij_-",
+      }),
+    );
+    expect(manager.getDeviceHandoffClientToken()).toBe(
+      "0123456789abcdefghij_-",
+    );
+    expect(callback).toHaveBeenCalledWith("0123456789abcdefghij_-");
+  });
+
+  it("replays the current token to a terminal view that subscribes late", () => {
+    const manager = new WebSocketManager();
+    const token = "0123456789abcdefghij_-";
+    manager.handleIncomingMessage(
+      JSON.stringify({ type: "device-handoff-client-token", token }),
+    );
+    const callback = vi.fn();
+
+    manager.onDeviceHandoffClientToken(callback);
+
+    expect(callback).toHaveBeenCalledOnce();
+    expect(callback).toHaveBeenCalledWith(token);
+  });
 });
 
 describe("WebSocketManager thread-open signals", () => {
@@ -205,6 +388,7 @@ describe("WebSocketManager thread-open signals", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     Object.defineProperty(globalThis, "WebSocket", {
       configurable: true,
       value: originalWebSocket,

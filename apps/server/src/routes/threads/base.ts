@@ -36,6 +36,7 @@ import {
 } from "@bb/domain";
 import { toEnvironmentResponse } from "../../services/environments/environment-response.js";
 import {
+  DEVICE_HANDOFF_CLIENT_TOKEN_HEADER,
   threadIncludeOptionSchema,
   THREAD_COUNT_ROOT_PARENT,
   publicApiRoutes,
@@ -424,15 +425,35 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
     if (payload.sectionId) {
       requireThreadSection(deps, payload.sectionId);
     }
-    const thread = await createThreadFromRequest(deps, {
-      ...payload,
-      origin: payload.origin,
-    });
+    const thread = await createThreadFromRequest(
+      deps,
+      {
+        ...payload,
+        origin: payload.origin,
+      },
+      {
+        ...(context.req.header(DEVICE_HANDOFF_CLIENT_TOKEN_HEADER) === undefined
+          ? {}
+          : {
+              deviceHandoffClientToken: context.req.header(
+                DEVICE_HANDOFF_CLIENT_TOKEN_HEADER,
+              ),
+            }),
+      },
+    );
     return context.json(toThreadResponseFromThread(deps, { thread }), 201);
   });
 
   post(routes.fork, async (context, payload) => {
-    const thread = await createThreadForkFromRequest(deps, payload);
+    const thread = await createThreadForkFromRequest(deps, payload, {
+      ...(context.req.header(DEVICE_HANDOFF_CLIENT_TOKEN_HEADER) === undefined
+        ? {}
+        : {
+            deviceHandoffClientToken: context.req.header(
+              DEVICE_HANDOFF_CLIENT_TOKEN_HEADER,
+            ),
+          }),
+    });
     return context.json(toThreadResponseFromThread(deps, { thread }), 201);
   });
 
