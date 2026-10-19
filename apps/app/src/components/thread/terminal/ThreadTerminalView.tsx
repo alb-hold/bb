@@ -22,6 +22,7 @@ import type { MarkdownPreviewLinkHandler } from "@/components/ui/markdown-link";
 import { openUrlInExternalBrowser } from "@/lib/url-open-routing";
 import { decodeBase64Bytes } from "@/lib/base64-bytes";
 import { sdk } from "@/lib/sdk";
+import { wsManager } from "@/lib/ws";
 import { useAppNavigationHost } from "@/lib/app-navigation-host";
 import { copyToClipboardWithToast } from "@/lib/clipboard";
 import {
@@ -64,7 +65,10 @@ import {
   type TerminalGridSize,
 } from "./terminal-shared-size";
 import { handleTerminalFileDrop } from "./terminal-file-drop";
-import { terminalPromptLine } from "./terminal-shell-state";
+import {
+  registerTerminalOsc52Handler,
+  terminalPromptLine,
+} from "./terminal-shell-state";
 import { createTerminalOutputPipeline } from "./terminal-output-pipeline";
 import {
   mountTerminalReplayPreview,
@@ -850,6 +854,13 @@ export function ThreadTerminalView({
   onUserInput,
   session,
 }: ThreadTerminalViewProps) {
+  const [handoffOwnerToken, setHandoffOwnerToken] = useState(() =>
+    wsManager.getDeviceHandoffClientToken(),
+  );
+  useEffect(
+    () => wsManager.onDeviceHandoffClientToken(setHandoffOwnerToken),
+    [],
+  );
   const isTouchDevice = useMediaQuery("(pointer: coarse)");
   const attentionClearRequestRef = useRef<string | null>(null);
   const [controlActive, setControlActive] = useState(false);
@@ -1108,6 +1119,7 @@ export function ThreadTerminalView({
     let terminalInputForwarding: { dispose: () => void } | null = null;
     let terminalCompositionInputGuard: { dispose: () => void } | null = null;
     let shellOscDisposable: { dispose: () => void } | null = null;
+    let osc52Disposable: { dispose: () => void } | null = null;
     let stopObservingFonts: (() => void) | null = null;
     let stopWatchingLayout: (() => void) | null = null;
     let sharedSize: TerminalGridSize | null = null;
@@ -1255,6 +1267,34 @@ export function ThreadTerminalView({
         terminal,
       });
       terminalRef.current = terminal;
+      osc52Disposable = registerTerminalOsc52Handler(
+        { parser: terminal.parser },
+        (text) => {
+          const now = Date.now();
+          window.dispatchEvent(
+            new CustomEvent("bb-device-handoff", {
+              detail: {
+                type: "device-handoff",
+                id: `${now}-${Math.random()}`,
+                createdAt: now,
+                expiresAt: now + 120_000,
+                originLabel: session.title,
+                request: {
+                  kind: "copy-text",
+                  text,
+                  origin: {
+                    ...(session.threadId === null
+                      ? {}
+                      : { threadId: session.threadId }),
+                    terminalSessionId: session.id,
+                  },
+                },
+              },
+            }),
+          );
+        },
+        () => replayWriteState.suppressedWriteCount > 0,
+      );
       outputPipeline = createTerminalOutputPipeline(
         terminal,
         (grid, apply) => {
@@ -1564,7 +1604,11 @@ export function ThreadTerminalView({
         },
         shouldReconnect: () =>
           !disposed && sessionStatusRef.current === "running",
-        url: buildTerminalWebSocketUrl({ terminalId: session.id }),
+        url: buildTerminalWebSocketUrl({
+          handoffOwnerToken:
+            wsManager.getDeviceHandoffClientToken() ?? handoffOwnerToken,
+          terminalId: session.id,
+        }),
       });
       transport = activeTransport;
       fitTerminal();
@@ -1757,6 +1801,7 @@ export function ThreadTerminalView({
       terminalCompositionInputGuard?.dispose();
       terminalCompositionInputGuard = null;
       shellOscDisposable?.dispose();
+      osc52Disposable?.dispose();
       terminalInteractions?.dispose();
       handleFileDropRef.current = null;
       document.removeEventListener(
@@ -1781,6 +1826,8 @@ export function ThreadTerminalView({
     requestOpenTerminalLink,
     isTouchDevice,
     session.id,
+    handoffOwnerToken,
+    session.title,
     session.threadId,
     updateHoveredTerminalLink,
   ]);

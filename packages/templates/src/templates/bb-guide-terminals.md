@@ -48,6 +48,31 @@ From inside a bb terminal, `bb terminal notify --title "Build" --body "Finished"
 raises attention on its terminal. The SDK exposes the same operation as
 `sdk.terminals.notify({ terminalId, title, body })`.
 
+Device handoffs
+
+Agent commands and terminal shells can offer text to copy or an HTTP(S) URL to
+open on a device whose WebSocket is admitted by BB's browser request guard.
+Thread-only handoffs go to the device that most recently sent a message in the
+thread's current turn, whether it started the turn or steered it. `bb` finds
+that turn itself. If `BB_TURN_ID` is set, it must name that turn, or the request
+fails with: `BB_TURN_ID does not match the thread's current turn`. With no current turn, it goes to the device that most recently sent a
+message in the thread, and fails with the existing message if none has: “No device has sent a message
+in this thread yet; open the thread on your phone and send a message, then run
+the command again.” The app generates and stores its device id in local storage
+so the same device receives pending handoffs after reconnect. Handoffs are not
+sent to other viewers. Terminal-bearing handoffs require a linked, visible
+terminal attachment on the target device. Examples:
+
+  bb device copy "text to copy"
+  printf '%s' "text to copy" | bb device copy
+  bb device open https://example.com/login
+
+The SDK exposes `sdk.device.request({ kind: "copy-text", text, origin })` and
+`sdk.device.request({ kind: "open-url", url, origin })`. On the host, `pbcopy`,
+`open`, `xdg-open`, and `$BROWSER` preserve their local behavior and also offer
+supported text or URLs to the viewing device. Handoffs expire after ten minutes
+and never copy or open anything until the user taps the offered action.
+
   bb terminal show <terminal-id>
   bb terminal attach <terminal-id>        Ctrl-B d detaches
   bb terminal send <terminal-id> --text <text> [--enter]
