@@ -370,6 +370,21 @@ export function onDaemonSocketMessage(
   }
 }
 
+export function createDaemonSocketMessageQueue<T>(args: {
+  afterOpen: () => Promise<void>;
+  handle: (message: T) => void;
+  onError: (error: unknown) => void;
+}): (message: T) => Promise<void> {
+  let pending = Promise.resolve();
+  return (message) => {
+    const next = pending
+      .then(args.afterOpen)
+      .then(() => args.handle(message));
+    pending = next.catch(args.onError);
+    return pending;
+  };
+}
+
 const DAEMON_LIVENESS_CHECK_INTERVAL_MS = HEARTBEAT_INTERVAL_MS;
 const DAEMON_LIVENESS_MAX_QUIET_CHECKS = Math.ceil(
   LEASE_TIMEOUT_MS / DAEMON_LIVENESS_CHECK_INTERVAL_MS,

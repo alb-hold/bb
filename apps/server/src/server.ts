@@ -89,6 +89,7 @@ import {
   onClientSocketOpen,
 } from "./ws/client-protocol.js";
 import {
+  createDaemonSocketMessageQueue,
   onDaemonSocketClose,
   onDaemonSocketMessage,
   onDaemonSocketOpen,
@@ -1058,23 +1059,40 @@ export function createApp(
         protocolHeader: context.req.header("sec-websocket-protocol"),
         sessionId: context.req.query("sessionId") ?? null,
       });
+      let daemonOpen = Promise.resolve();
+      const enqueueDaemonMessage = createDaemonSocketMessageQueue<() => void>({
+        afterOpen: () => daemonOpen,
+        handle: (message) => message(),
+        onError: (error) => {
+          deps.logger.error({ err: error }, "Daemon socket message queue failed");
+        },
+      });
       return {
-        onOpen: (_event, socket) =>
-          onDaemonSocketOpen(deps, {
+        onOpen: (_event, socket) => {
+          daemonOpen = onDaemonSocketOpen(deps, {
             ...websocketContext,
             socket,
-          }),
+          }).catch((error: unknown) => {
+            deps.logger.error(
+              { err: error, sessionId: websocketContext.sessionId },
+              "Daemon socket open reconciliation failed",
+            );
+          });
+          return daemonOpen;
+        },
         onMessage: (event, socket) =>
-          onDaemonSocketMessage(
-            deps,
-            {
-              hostId: websocketContext.hostId,
-              raw: event.data,
-              sessionId: websocketContext.sessionId,
-              socket,
-            },
-            pluginService,
-            serverMove,
+          enqueueDaemonMessage(() =>
+            onDaemonSocketMessage(
+              deps,
+              {
+                hostId: websocketContext.hostId,
+                raw: event.data,
+                sessionId: websocketContext.sessionId,
+                socket,
+              },
+              pluginService,
+              serverMove,
+            ),
           ),
         onClose: () => onDaemonSocketClose(deps, websocketContext.sessionId),
       };

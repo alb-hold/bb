@@ -1795,11 +1795,43 @@ export class TerminalSessionLifecycle {
     args: ReadRunningTerminalOutputArgs,
   ): Promise<TerminalOutputResponse> {
     try {
-      return await this.requestTerminalOutputReplay({
+      const replay = await this.requestTerminalOutputReplay({
         daemonSessionId: args.session.daemonSessionId,
         query: args.query,
         session: args.session,
       });
+      const retained = this.getRetainedOutput(args.session) ?? [];
+      const chunksBySequence = new Map<number, TerminalOutputChunk>();
+      for (const chunk of retained) chunksBySequence.set(chunk.seq, chunk);
+      for (const chunk of replay.chunks) chunksBySequence.set(chunk.seq, chunk);
+      const chunks = [...chunksBySequence.values()].sort(
+        (left, right) => left.seq - right.seq,
+      );
+      const nextSeq = Math.max(
+        replay.nextSeq,
+        (chunks.at(-1)?.seq ?? -1) + 1,
+      );
+      const bounded = applyTerminalOutputBounds({
+        chunks,
+        query: args.query,
+        replayNextSeq: nextSeq,
+        requestedSinceSeq: args.query.sinceSeq ?? 0,
+      });
+      const output: TerminalOutputResponse = {
+        chunks: bounded.chunks,
+        nextSeq,
+        truncated: bounded.truncated,
+        status: replay.status,
+        exitCode: replay.exitCode,
+        closeReason: replay.closeReason,
+      };
+      if (args.query.lines === undefined) return output;
+      const lineBounded = terminalOutputLastLines(output, args.query.lines);
+      return {
+        ...output,
+        chunks: lineBounded.chunks,
+        truncated: output.truncated || lineBounded.truncated,
+      };
     } catch (error) {
       if (
         !(error instanceof ApiError) ||
@@ -2029,15 +2061,24 @@ export class TerminalSessionLifecycle {
             ? null
             : requireEnvironment(this.options.db, launchTarget.environmentId);
         const requestId = randomUUID();
+        const contributedEnv = mergeHostAndProviderEnvironment(
+          await resolveHostEnvironment(this.options, {
+            hostId: launchTarget.hostId,
+            projectId: environment?.projectId ?? null,
+          }),
+          [],
+        );
+        if (this.holderBackedTerminalIds.has(reconnected.id)) {
+          contributedEnv.push({
+            name: "BB_TERMINAL_HOLDER_REATTACH_ONLY",
+            value: "1",
+            source: { core: "machine-environment" },
+            reason: "Attach the existing shell holder after daemon reconnect",
+          });
+        }
         const openMessage: HostDaemonServerWsMessage = {
           type: "terminal.open",
-          contributedEnv: mergeHostAndProviderEnvironment(
-            await resolveHostEnvironment(this.options, {
-              hostId: launchTarget.hostId,
-              projectId: environment?.projectId ?? null,
-            }),
-            [],
-          ),
+          contributedEnv,
           requestId,
           terminalId: reconnected.id,
           ...(reconnected.threadId === null

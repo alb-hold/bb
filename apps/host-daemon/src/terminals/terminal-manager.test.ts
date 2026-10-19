@@ -562,6 +562,33 @@ describe("TerminalManager", () => {
     ).toEqual([]);
   });
 
+  it("passes bash integration env and rcfile args through the holder client", async () => {
+    const harness = createHarnessWithOptions({
+      onSendMessage: () => undefined,
+      resolveShell: async () => "/bin/bash",
+      shellEnv: { BB_CLI: "/tmp/bb" },
+    });
+
+    await openTerminal(harness);
+
+    const spawn = harness.adapter.lastSpawnArgs;
+    expect(spawn?.file).toBe("/tmp/bb");
+    expect(spawn?.args.slice(0, 4)).toEqual([
+      "terminal",
+      "holder-shell-client",
+      "term-1",
+      "/bin/bash",
+    ]);
+    const shellArgs = JSON.parse(
+      Buffer.from(spawn?.args[4] ?? "", "base64").toString("utf8"),
+    ) as string[];
+    expect(shellArgs[0]).toBe("--rcfile");
+    const rcFile = shellArgs[1];
+    if (!rcFile) throw new Error("Expected bash integration rcfile");
+    expect(await fs.readFile(rcFile, "utf8")).toContain("\\e]133;A\\a");
+    expect(spawn?.env.BB_CLI).toBe("/tmp/bb");
+  });
+
   afterEach(async () => {
     vi.useRealTimers();
     vi.unstubAllEnvs();

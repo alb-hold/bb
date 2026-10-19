@@ -624,6 +624,30 @@ describe("opening a native holder connection", () => {
 });
 
 describe("native holder signals", () => {
+  it("keeps bash OSC command and cwd reports through the holder PTY", async () => {
+    const socketPath = socketIn();
+    const rcFile = path.join(path.dirname(socketPath), "bashrc");
+    writeFileSync(
+      rcFile,
+      `PS1=''\nPS0=$'\\e]133;B\\a\\e]133;C\\a'\nPROMPT_COMMAND='printf "\\e]133;D;0\\a\\e]133;A\\a\\e]7;file://localhost%s\\a" "$PWD"'\n`,
+    );
+    const held = startHolder(socketPath, {
+      command: "/bin/bash",
+      args: ["--rcfile", rcFile, "-i"],
+    });
+    const client = await attach(socketPath);
+    try {
+      await client.waitFor(/\x1b\]133;A\x07/u);
+      client.type("cd /tmp\r");
+      await client.waitFor(/\x1b\]7;file:\/\/localhost\/tmp\x07/u);
+      expect(client.output).toContain("\x1b]133;B\x07\x1b]133;C\x07");
+      expect(client.output).toContain("\x1b]133;D;0\x07\x1b]133;A\x07");
+    } finally {
+      client.type("exit\r");
+      await held;
+    }
+  });
+
   it("survives the termination signals a bb quit or a process manager sends, so its CLI keeps running", async () => {
     const holderModule = pathToFileURL(
       path.join(import.meta.dirname, "..", "native-holder.ts"),
@@ -902,7 +926,7 @@ describe("checking whether bb closed a native terminal for good", () => {
     expect(await held).not.toBe(7);
   });
 
-  it("replays output produced while the daemon client is disconnected", async () => {
+  it("keeps the same shell PID and replays output across a daemon restart", async () => {
     const socketPath = socketIn();
     const command: NativeHolderProcess = {
       command: "/bin/sh",
@@ -938,6 +962,27 @@ describe("checking whether bb closed a native terminal for good", () => {
     const first = await attach(socketPath);
     await first.waitFor(/started:(\d+)/u);
     first.socket.destroy();
+
+    await expect(held).resolves.not.toBe(7);
+    expect(await waitForNativeHolder(socketPath, 100)).toBeNull();
+  });
+
+  it("reaps an orphaned shell when a stock server marks its terminal disconnected", async () => {
+    let terminal: { status: string; closeReason: string | null } = {
+      status: "disconnected",
+      closeReason: null,
+    };
+    const socketPath = socketIn();
+    const held = startHolder(
+      socketPath,
+      ECHO_LOOP,
+      200,
+      async () => nativeTerminalCheck({ terminal }),
+    );
+    const first = await attach(socketPath);
+    await first.waitFor(/started:(\d+)/u);
+    first.socket.destroy();
+    terminal = { status: "exited", closeReason: "daemon-disconnect" };
 
     await expect(held).resolves.not.toBe(7);
     expect(await waitForNativeHolder(socketPath, 100)).toBeNull();

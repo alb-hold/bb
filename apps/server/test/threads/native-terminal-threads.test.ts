@@ -2549,6 +2549,12 @@ describe("native terminal threads", () => {
     const reopened = await waitForTerminalOpen(socket);
     expect(reopened.terminalId).toBe(active.terminalId);
     expect(reopened.start).toEqual({ mode: "shell" });
+    expect(reopened.contributedEnv).toContainEqual(
+      expect.objectContaining({
+        name: "BB_TERMINAL_HOLDER_REATTACH_ONLY",
+        value: "1",
+      }),
+    );
     expect(
       daemonMessages(socket)
         .filter((message) => message.type === "terminal.open")
@@ -2580,6 +2586,57 @@ describe("native terminal threads", () => {
         },
       },
     });
+    const runningOutputPromise = fixture.harness.app.request(
+      `/api/v1/terminals/${active.terminalId}/output`,
+    );
+    let attach: Extract<
+      HostDaemonServerWsMessage,
+      { type: "terminal.attach" }
+    > | undefined;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      attach = daemonMessages(socket).find(
+        (message): message is Extract<
+          HostDaemonServerWsMessage,
+          { type: "terminal.attach" }
+        > =>
+          message.type === "terminal.attach" &&
+          message.terminalId === active.terminalId,
+      );
+      if (attach !== undefined) break;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(attach).toBeDefined();
+    if (attach === undefined) throw new Error("Missing terminal.attach");
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.hostId,
+      sessionId,
+      message: {
+        type: "terminal.replay",
+        requestId: attach.requestId,
+        terminalId: active.terminalId,
+        chunks: [
+          {
+            seq: 0,
+            dataBase64: Buffer.from(`AFTER:${pid}\n`).toString("base64"),
+          },
+        ],
+        replayStartSeq: 0,
+        nextSeq: 1,
+      },
+    });
+    const runningOutputResponse = await runningOutputPromise;
+    expect(runningOutputResponse.status).toBe(200);
+    const runningOutput = terminalOutputResponseSchema.parse(
+      await readJson(runningOutputResponse),
+    );
+    expect(runningOutput.chunks.map((chunk) => chunk.seq)).toEqual([0, 1]);
+    expect(
+      Buffer.concat(
+        runningOutput.chunks.map((chunk) =>
+          Buffer.from(chunk.dataBase64, "base64"),
+        ),
+      ).toString("utf8"),
+    ).toBe(`BEFORE:${pid}\nAFTER:${pid}\n`);
     fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.hostId,
       sessionId,

@@ -129,7 +129,9 @@ export function registerTerminalCommands(
         const session = await createCliBbSdk(baseUrl).terminals.get({ terminalId });
         const connection = await openNativeHolderConnection({
           socketPath,
-          reattachOnly: session.status !== "starting",
+          reattachOnly:
+            session.status === "exited" ||
+            process.env.BB_TERMINAL_HOLDER_REATTACH_ONLY === "1",
           startTimeoutMs: 20_000,
           startHolder: () => {
             const holder = spawn(
@@ -158,6 +160,7 @@ export function registerTerminalCommands(
       action(async (terminalId: string, shell: string, shellArgsBase64: string) => {
         const socketPath = defaultNativeHolderSocketPath(getUrl(), terminalId);
         ignoreNativeHolderSignals(process, socketPath);
+        delete process.env.BB_TERMINAL_HOLDER_REATTACH_ONLY;
         const shellArgs: unknown = JSON.parse(
           Buffer.from(shellArgsBase64, "base64").toString("utf8"),
         );
