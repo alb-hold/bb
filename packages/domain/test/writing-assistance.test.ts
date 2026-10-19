@@ -393,6 +393,14 @@ describe("resolveWritingEdits", () => {
     ["Run it.\ngit tag the user are ready.", "are", "is", "grammar"],
     ["ls -la the user are ready.", "are", "is", "grammar"],
     ["then pass -rf so the user are ready.", "are", "is", "grammar"],
+    ["make sure the user are ready.", "are", "is", "grammar"],
+    ["find out if the user are ready.", "are", "is", "grammar"],
+    ["go check that the user are ready.", "are", "is", "grammar"],
+    ["test that the user are ready.", "are", "is", "grammar"],
+    ["open the page so the user are ready.", "are", "is", "grammar"],
+    ["export the users so the user are ready.", "are", "is", "grammar"],
+    ["tail the log so the user are ready.", "are", "is", "grammar"],
+    ["kill it so the user are ready.", "are", "is", "grammar"],
   ])(
     "never auto-applies an edit on the code-like line %s",
     (target, original, replacement, category) => {
@@ -413,9 +421,10 @@ describe("resolveWritingEdits", () => {
   it.each([
     "the user are ready.",
     "Echo said the user are ready.",
-    "make sure the user are ready.",
-    "find out if the user are ready.",
-    "go check that the user are ready.",
+    "Make sure the user are ready.",
+    "Find out if the user are ready.",
+    "Go check that the user are ready.",
+    "Test that the user are ready.",
     "Ask the team - the user are ready.",
   ])("still auto-applies a safe fix on the prose line %s", (target) => {
     const edits = resolveWritingEdits({
