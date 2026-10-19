@@ -86,6 +86,40 @@ describe("device handoff submission headers", () => {
     ).toBe(identity);
   });
 
+  it("sends a turn when secure identity generation is unavailable", async () => {
+    installBrowserWindow();
+    Object.defineProperty(window, "crypto", {
+      configurable: true,
+      value: {
+        getRandomValues: () => {
+          throw new Error("secure randomness unavailable");
+        },
+      },
+    });
+    vi.resetModules();
+    const [{ fetchWithDeviceHandoffSubmission }] = await Promise.all([
+      import("./api-server"),
+      import("./ws"),
+    ]);
+    const fetch = vi.fn<typeof globalThis.fetch>(
+      async () => new Response("{}"),
+    );
+    vi.stubGlobal("fetch", fetch);
+
+    const response = await fetchWithDeviceHandoffSubmission(
+      "http://localhost/api/v1/threads/thr_private_mode/send",
+      { method: "POST" },
+    );
+
+    expect(response.status).toBe(200);
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(
+      new Headers(fetch.mock.calls[0]?.[1]?.headers).has(
+        DEVICE_HANDOFF_CLIENT_TOKEN_HEADER,
+      ),
+    ).toBe(false);
+  });
+
   it("does not attach the socket token to unrelated requests", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>(
       async () => new Response("{}"),

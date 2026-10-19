@@ -26,16 +26,17 @@ export async function fetchWithDeviceHandoffSubmission(
     turnSubmissionPath.test(url.pathname)
   ) {
     const storedToken = wsManager.getDeviceHandoffClientToken();
-    if (storedToken === null) {
-      throw new Error("Could not establish this device's handoff identity.");
-    }
     const headers = new Headers(
       input instanceof Request ? input.headers : undefined,
     );
     new Headers(init?.headers).forEach((value, key) =>
       headers.set(key, value),
     );
-    headers.set(DEVICE_HANDOFF_CLIENT_TOKEN_HEADER, storedToken);
+    if (storedToken === null) {
+      headers.delete(DEVICE_HANDOFF_CLIENT_TOKEN_HEADER);
+    } else {
+      headers.set(DEVICE_HANDOFF_CLIENT_TOKEN_HEADER, storedToken);
+    }
     init = { ...init, headers };
   }
   return await fetchWithAppSurface(input, init);
