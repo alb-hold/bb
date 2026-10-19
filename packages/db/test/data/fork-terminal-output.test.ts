@@ -47,6 +47,7 @@ describe("retained terminal output replay", () => {
   it("matches per-chunk retention for a large replay and retains it within the timing bound", () => {
     const chunks = replayChunks(10_000);
     const perChunk = setup();
+    const perChunkStartedAt = performance.now();
     for (const chunk of chunks) {
       appendRetainedTerminalOutputChunk(perChunk.db, {
         hostId: perChunk.host.id,
@@ -55,6 +56,7 @@ describe("retained terminal output replay", () => {
         now: 2,
       });
     }
+    const perChunkMs = performance.now() - perChunkStartedAt;
     const expected = perChunk.db.$client
       .prepare(
         "SELECT chunks_json AS chunksJson, byte_length AS byteLength FROM fork_terminal_output WHERE terminal_session_id = ?",
@@ -76,7 +78,7 @@ describe("retained terminal output replay", () => {
       )
       .get(batched.terminal.id) as { chunksJson: string; byteLength: number };
     process.stdout.write(
-      `retained replay 10000 chunks: ${elapsedMs.toFixed(1)}ms; json=${Buffer.byteLength(row.chunksJson)} bytes; retained=${row.byteLength} bytes\n`,
+      `retained replay 10000 chunks: batched ${elapsedMs.toFixed(1)}ms, per-chunk reference ${perChunkMs.toFixed(1)}ms; json=${Buffer.byteLength(row.chunksJson)} bytes; retained=${row.byteLength} bytes\n`,
     );
     expect(row).toEqual(expected);
     expect(row.byteLength).toBe(65_421);
