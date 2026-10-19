@@ -383,7 +383,8 @@ const ownerProcessHoldsSegment = (pid, segmentPath) => {
     return undefined;
   } catch (error) {
     if (error.status === 1 && !String(error.stderr ?? "").trim()) return false;
-    reportFsError("stdio segment holder check inconclusive", error);
+    const failure = typeof error.status === "number" ? "EXIT_" + error.status : errorCode(error);
+    reportDiagnostic("stdio segment holder check inconclusive: " + failure);
     return undefined;
   }
 };

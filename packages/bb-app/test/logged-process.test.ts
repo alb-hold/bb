@@ -2700,7 +2700,11 @@ fs.renameSync = function (source, destination) {
         const nextAttempt = injected + 1;
         const marker = `${attemptPath}.${nextAttempt}`;
         await expect
-          .poll(() => existsSync(marker), { timeout: 5_000, interval: 10 })
+          .poll(() => {
+            if (!existsSync(marker)) return false;
+            const selected = readFileSync(marker, "utf8");
+            return selected.length > 0 && existsSync(selected);
+          }, { timeout: 5_000, interval: 10 })
           .toBe(true);
         const selected = readFileSync(marker, "utf8");
         unlinkSync(selected);
