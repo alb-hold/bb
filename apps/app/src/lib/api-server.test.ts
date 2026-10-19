@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEVICE_HANDOFF_CLIENT_TOKEN_HEADER } from "@bb/server-contract";
 import { fetchWithDeviceHandoffSubmission } from "./api-server";
-import { wsManager } from "./ws";
 
 describe("device handoff submission headers", () => {
   afterEach(() => {
@@ -10,13 +9,27 @@ describe("device handoff submission headers", () => {
     vi.useRealTimers();
   });
 
-  it("binds turn submissions to the current app device", async () => {
-    vi.spyOn(wsManager, "getDeviceHandoffClientToken").mockReturnValue(
-      "0123456789abcdefghijk_",
-    );
-    vi.spyOn(wsManager, "waitForDeviceHandoffClientToken").mockResolvedValue(
-      "0123456789abcdefghijk_",
-    );
+  function installBrowserWindow(): void {
+    const values = new Map<string, string>();
+    vi.stubGlobal("window", {
+      localStorage: {
+        getItem: (key: string) => values.get(key) ?? null,
+        setItem: (key: string, value: string) => values.set(key, value),
+        removeItem: (key: string) => values.delete(key),
+      },
+      crypto: globalThis.crypto,
+      btoa: globalThis.btoa,
+      location: { origin: "http://localhost" },
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+  }
+
+  it("reuses one generated device id across turn submissions", async () => {
+    installBrowserWindow();
+    vi.resetModules();
+    const [{ fetchWithDeviceHandoffSubmission }, { wsManager: freshManager }] =
+      await Promise.all([import("./api-server"), import("./ws")]);
     const fetch = vi.fn<typeof globalThis.fetch>(
       async () => new Response("{}"),
     );
@@ -36,21 +49,20 @@ describe("device handoff submission headers", () => {
     );
 
     expect(fetch).toHaveBeenCalledTimes(3);
-    expect(wsManager.waitForDeviceHandoffClientToken).not.toHaveBeenCalled();
+    const identity = freshManager.getDeviceHandoffClientToken();
+    expect(identity).toMatch(/^[A-Za-z0-9_-]{22}$/u);
     for (const [, init] of fetch.mock.calls) {
       expect(
         new Headers(init?.headers).get(DEVICE_HANDOFF_CLIENT_TOKEN_HEADER),
-      ).toBe("0123456789abcdefghijk_");
+      ).toBe(identity);
     }
   });
 
-  it("sends immediately with the stored identity while the websocket is down", async () => {
-    vi.spyOn(wsManager, "getDeviceHandoffClientToken").mockReturnValue(
-      "stored-device-identity",
-    );
-    const wait = vi
-      .spyOn(wsManager, "waitForDeviceHandoffClientToken")
-      .mockResolvedValue("stored-device-identity");
+  it("sends the generated first-run identity immediately before any socket connects", async () => {
+    installBrowserWindow();
+    vi.resetModules();
+    const [{ fetchWithDeviceHandoffSubmission }, { wsManager: freshManager }] =
+      await Promise.all([import("./api-server"), import("./ws")]);
     const fetch = vi.fn<typeof globalThis.fetch>(
       async () => new Response("{}"),
     );
@@ -61,58 +73,20 @@ describe("device handoff submission headers", () => {
       { method: "POST" },
     );
 
+    const identity = freshManager.getDeviceHandoffClientToken();
+    expect(identity).toMatch(/^[A-Za-z0-9_-]{22}$/u);
+    expect(window.localStorage.getItem("bb-device-handoff-device-id")).toBe(
+      identity,
+    );
     expect(fetch).toHaveBeenCalledOnce();
     expect(
       new Headers(fetch.mock.calls[0]?.[1]?.headers).get(
         DEVICE_HANDOFF_CLIENT_TOKEN_HEADER,
       ),
-    ).toBe("stored-device-identity");
-    expect(wait).not.toHaveBeenCalled();
-  });
-
-  it("submits first-run turns without identity after the bounded wait expires", async () => {
-    vi.useFakeTimers();
-    vi.spyOn(wsManager, "getDeviceHandoffClientToken").mockReturnValue(null);
-    const wait = vi
-      .spyOn(wsManager, "waitForDeviceHandoffClientToken")
-      .mockImplementation(
-        (timeoutMs = 0) =>
-          new Promise((_resolve, reject) => {
-            setTimeout(
-              () => reject(new Error("identity wait expired")),
-              timeoutMs,
-            );
-          }),
-      );
-    const fetch = vi.fn<typeof globalThis.fetch>(
-      async () => new Response("{}"),
-    );
-    vi.stubGlobal("fetch", fetch);
-
-    const submission = fetchWithDeviceHandoffSubmission(
-      "http://localhost/api/v1/threads/thr_cold_start/send",
-      { method: "POST" },
-    );
-
-    expect(wait).toHaveBeenCalledOnce();
-    expect(wait).toHaveBeenCalledWith(3_000);
-    expect(fetch).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(2_999);
-    expect(fetch).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(1);
-    await submission;
-    expect(fetch).toHaveBeenCalledOnce();
-    expect(
-      new Headers(fetch.mock.calls[0]?.[1]?.headers).has(
-        DEVICE_HANDOFF_CLIENT_TOKEN_HEADER,
-      ),
-    ).toBe(false);
+    ).toBe(identity);
   });
 
   it("does not attach the socket token to unrelated requests", async () => {
-    vi.spyOn(wsManager, "waitForDeviceHandoffClientToken").mockResolvedValue(
-      "0123456789abcdefghijk_",
-    );
     const fetch = vi.fn<typeof globalThis.fetch>(
       async () => new Response("{}"),
     );

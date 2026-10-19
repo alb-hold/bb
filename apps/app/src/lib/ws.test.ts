@@ -131,6 +131,8 @@ describe("WebSocketManager subscriptions", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
     Object.defineProperty(globalThis, "WebSocket", {
       configurable: true,
       value: originalWebSocket,
@@ -276,6 +278,7 @@ describe("WebSocketManager device handoff attachment token", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     Object.defineProperty(globalThis, "WebSocket", {
       configurable: true,
       value: originalWebSocket,
@@ -284,50 +287,65 @@ describe("WebSocketManager device handoff attachment token", () => {
 
   const originalWebSocket = globalThis.WebSocket;
 
-  it("presents the saved device id on every WebSocket connection", () => {
-    const storageKey = "bb-device-handoff-device-id";
-    if (typeof window !== "undefined")
-      window.localStorage.removeItem(storageKey);
-    const manager = new WebSocketManager();
-    manager.connect();
-    const socket = getOnlySocket();
-    socket.open();
-    expect(JSON.parse(socket.sentMessages[0] ?? "{}")).toEqual({
-      type: "device-handoff-device",
-      token: null,
+  function installBrowserStorage(throwOnAccess = false): void {
+    const values = new Map<string, string>();
+    vi.stubGlobal("window", {
+      localStorage: {
+        getItem: (key: string) => {
+          if (throwOnAccess) throw new Error("storage unavailable");
+          return values.get(key) ?? null;
+        },
+        setItem: (key: string, value: string) => {
+          if (throwOnAccess) throw new Error("storage unavailable");
+          values.set(key, value);
+        },
+        removeItem: (key: string) => values.delete(key),
+      },
+      crypto: globalThis.crypto,
+      btoa: globalThis.btoa,
+      location: { origin: "http://localhost" },
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
     });
-    manager.handleIncomingMessage(
-      JSON.stringify({
-        type: "device-handoff-client-token",
-        token: "0123456789abcdefghij_-",
-      }),
-    );
-    socket.sentMessages.length = 0;
-    socket.close();
-    socket.open();
-    expect(JSON.parse(socket.sentMessages[0] ?? "{}")).toEqual({
-      type: "device-handoff-device",
-      token: "0123456789abcdefghij_-",
-    });
-    manager.disconnect();
-    if (typeof window !== "undefined")
-      window.localStorage.removeItem(storageKey);
-  });
+  }
 
-  it("ignores a malformed saved device id and asks the server for a new one", () => {
+  it("creates and stores a browser device id before the first WebSocket connection", async () => {
     const storageKey = "bb-device-handoff-device-id";
-    if (typeof window === "undefined") return;
-    window.localStorage.setItem(storageKey, "malformed-device-id");
-    const manager = new WebSocketManager();
+    installBrowserStorage();
+    window.localStorage.removeItem(storageKey);
+    vi.resetModules();
+    const { WebSocketManager: FreshWebSocketManager } = await import("./ws");
+    const manager = new FreshWebSocketManager();
+    const deviceId = manager.getDeviceHandoffClientToken();
+    expect(deviceId).toMatch(/^[A-Za-z0-9_-]{22}$/u);
+    expect(window.localStorage.getItem(storageKey)).toBe(deviceId);
     manager.connect();
     const socket = getOnlySocket();
     socket.open();
     expect(JSON.parse(socket.sentMessages[0] ?? "{}")).toEqual({
       type: "device-handoff-device",
-      token: null,
+      token: deviceId,
     });
     manager.disconnect();
     window.localStorage.removeItem(storageKey);
+  });
+
+  it("reuses an in-memory device id when local storage is unavailable", async () => {
+    installBrowserStorage(true);
+    vi.resetModules();
+    const { WebSocketManager: FreshWebSocketManager } = await import("./ws");
+    const manager = new FreshWebSocketManager();
+    const deviceId = manager.getDeviceHandoffClientToken();
+    expect(deviceId).toMatch(/^[A-Za-z0-9_-]{22}$/u);
+    manager.connect();
+    const socket = getOnlySocket();
+    socket.open();
+    expect(JSON.parse(socket.sentMessages[0] ?? "{}")).toEqual({
+      type: "device-handoff-device",
+      token: deviceId,
+    });
+    expect(manager.getDeviceHandoffClientToken()).toBe(deviceId);
+    manager.disconnect();
   });
 
   it("stores a token delivered by the server and notifies terminal views", () => {
@@ -344,43 +362,6 @@ describe("WebSocketManager device handoff attachment token", () => {
       "0123456789abcdefghij_-",
     );
     expect(callback).toHaveBeenCalledWith("0123456789abcdefghij_-");
-  });
-
-  it("waits for a server-confirmed identity on cold connect and reconnect", async () => {
-    const manager = new WebSocketManager();
-    const firstIdentity = manager.waitForDeviceHandoffClientToken();
-    const firstSocket = getOnlySocket();
-    firstSocket.open();
-    expect(firstSocket.sentMessages[0]).toContain('"token":null');
-    manager.handleIncomingMessage(
-      JSON.stringify({
-        type: "device-handoff-client-token",
-        token: "0123456789abcdefghij_-",
-      }),
-    );
-    await expect(firstIdentity).resolves.toBe("0123456789abcdefghij_-");
-
-    manager.disconnect();
-    const afterReconnect = manager.waitForDeviceHandoffClientToken();
-    const secondSocket = fakeSocketState.instances[1];
-    if (!secondSocket) throw new Error("Expected reconnect socket");
-    secondSocket.open();
-    manager.handleIncomingMessage(
-      JSON.stringify({
-        type: "device-handoff-client-token",
-        token: "abcdefghij_0123456789a",
-      }),
-    );
-    await expect(afterReconnect).resolves.toBe("abcdefghij_0123456789a");
-    manager.disconnect();
-  });
-
-  it("fails a turn identity wait within its configured deadline", async () => {
-    const manager = new WebSocketManager();
-    await expect(manager.waitForDeviceHandoffClientToken(5)).rejects.toThrow(
-      "Could not confirm this device with the server before submitting",
-    );
-    manager.disconnect();
   });
 
   it("replays the current token to a terminal view that subscribes late", () => {
@@ -407,6 +388,7 @@ describe("WebSocketManager thread-open signals", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     Object.defineProperty(globalThis, "WebSocket", {
       configurable: true,
       value: originalWebSocket,

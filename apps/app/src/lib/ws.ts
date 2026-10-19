@@ -61,26 +61,42 @@ export const REALTIME_PONG_TIMEOUT_MS = 5_000;
 export const REALTIME_RESUME_PONG_TIMEOUT_MS = 1_500;
 export const REALTIME_RESUME_HIDDEN_THRESHOLD_MS = 5_000;
 const DEVICE_HANDOFF_DEVICE_STORAGE_KEY = "bb-device-handoff-device-id";
+let inMemoryDeviceHandoffId: string | null = null;
 
-function readStoredDeviceHandoffId(): string | null {
+function generateDeviceHandoffId(): string {
+  const bytes = new Uint8Array(16);
+  window.crypto.getRandomValues(bytes);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return window
+    .btoa(binary)
+    .replace(/\+/gu, "-")
+    .replace(/\//gu, "_")
+    .replace(/=+$/u, "");
+}
+
+function ensureDeviceHandoffId(): string | null {
+  if (inMemoryDeviceHandoffId !== null) return inMemoryDeviceHandoffId;
   if (typeof window === "undefined") return null;
   try {
     const token = window.localStorage.getItem(
       DEVICE_HANDOFF_DEVICE_STORAGE_KEY,
     );
-    return token !== null && /^[A-Za-z0-9_-]{22}$/u.test(token) ? token : null;
+    if (token !== null && /^[A-Za-z0-9_-]{22}$/u.test(token)) {
+      inMemoryDeviceHandoffId = token;
+      return token;
+    }
   } catch {
-    return null;
+    inMemoryDeviceHandoffId = null;
   }
-}
-
-function storeDeviceHandoffId(token: string): void {
-  if (typeof window === "undefined") return;
+  const token = generateDeviceHandoffId();
+  inMemoryDeviceHandoffId = token;
   try {
     window.localStorage.setItem(DEVICE_HANDOFF_DEVICE_STORAGE_KEY, token);
   } catch {
-    return;
+    return inMemoryDeviceHandoffId;
   }
+  return token;
 }
 export const REALTIME_MIN_RECONNECTION_DELAY_MS = 250;
 export const REALTIME_RECONNECTION_DELAY_JITTER_MS = 250;
@@ -121,12 +137,8 @@ export class WebSocketManager {
   private pluginSignalCallbacks = new Set<PluginSignalCallback>();
   private threadTimelineCallbacks = new Set<ThreadTimelineCallback>();
   private deviceHandoffCallbacks = new Set<DeviceHandoffCallback>();
-  private deviceHandoffClientToken: string | null = readStoredDeviceHandoffId();
-  private deviceHandoffClientTokenReady = false;
+  private deviceHandoffClientToken: string | null = ensureDeviceHandoffId();
   private deviceHandoffClientTokenCallbacks = new Set<
-    (token: string) => void
-  >();
-  private deviceHandoffClientTokenReadyCallbacks = new Set<
     (token: string) => void
   >();
   private activeDeviceHandoffView = {
@@ -170,7 +182,6 @@ export class WebSocketManager {
     this.socket = socket;
 
     socket.onopen = () => {
-      this.deviceHandoffClientTokenReady = false;
       const disconnectedAt = this.disconnectedAt;
       this.disconnectedAt = null;
       this.lastServerActivityAt = Date.now();
@@ -209,7 +220,6 @@ export class WebSocketManager {
     };
 
     socket.onclose = () => {
-      this.deviceHandoffClientTokenReady = false;
       if (this.pongTimer !== null) {
         this.replaceSocket(this.lastServerActivityAt);
         return;
@@ -388,7 +398,6 @@ export class WebSocketManager {
 
   private markSocketLost(at: number): void {
     this.stopPingLoop();
-    this.deviceHandoffClientTokenReady = false;
     if (this.hasConnected && this.disconnectedAt === null) {
       this.disconnectedAt = at;
     }
@@ -412,11 +421,16 @@ export class WebSocketManager {
       deviceHandoffClientTokenSignalLenientSchema.safeParse(parsed);
     if (clientToken.success) {
       this.deviceHandoffClientToken = clientToken.data.token;
-      this.deviceHandoffClientTokenReady = true;
-      storeDeviceHandoffId(clientToken.data.token);
+      inMemoryDeviceHandoffId = clientToken.data.token;
+      try {
+        window.localStorage.setItem(
+          DEVICE_HANDOFF_DEVICE_STORAGE_KEY,
+          clientToken.data.token,
+        );
+      } catch {
+        inMemoryDeviceHandoffId = clientToken.data.token;
+      }
       for (const callback of this.deviceHandoffClientTokenCallbacks)
-        callback(clientToken.data.token);
-      for (const callback of this.deviceHandoffClientTokenReadyCallbacks)
         callback(clientToken.data.token);
       return;
     }
@@ -498,7 +512,6 @@ export class WebSocketManager {
 
   disconnect(): void {
     this.stopPingLoop();
-    this.deviceHandoffClientTokenReady = false;
     if (this.hasConnected && this.disconnectedAt === null) {
       this.disconnectedAt = Date.now();
     }
@@ -565,43 +578,10 @@ export class WebSocketManager {
   }
 
   getDeviceHandoffClientToken(): string | null {
-    return this.deviceHandoffClientToken;
-  }
-
-  waitForDeviceHandoffClientToken(timeoutMs = 60_000): Promise<string> {
-    if (
-      this.deviceHandoffClientTokenReady &&
-      this.deviceHandoffClientToken !== null
-    ) {
-      return Promise.resolve(this.deviceHandoffClientToken);
+    if (this.deviceHandoffClientToken === null) {
+      this.deviceHandoffClientToken = ensureDeviceHandoffId();
     }
-    this.connect();
-    return new Promise((resolve, reject) => {
-      const finish = (callback: () => void) => {
-        clearTimeout(timeout);
-        this.deviceHandoffClientTokenReadyCallbacks.delete(onReady);
-        callback();
-      };
-      const onReady = (token: string) => finish(() => resolve(token));
-      const timeout = setTimeout(
-        () =>
-          finish(() =>
-            reject(
-              new Error(
-                "Could not confirm this device with the server before submitting. Check the connection and try again.",
-              ),
-            ),
-          ),
-        timeoutMs,
-      );
-      this.deviceHandoffClientTokenReadyCallbacks.add(onReady);
-      if (
-        this.deviceHandoffClientTokenReady &&
-        this.deviceHandoffClientToken !== null
-      ) {
-        onReady(this.deviceHandoffClientToken);
-      }
-    });
+    return this.deviceHandoffClientToken;
   }
 
   onDeviceHandoffClientToken(callback: (token: string) => void): () => void {
