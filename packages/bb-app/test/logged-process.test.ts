@@ -2776,7 +2776,11 @@ fs.renameSync = function (source, destination) {
       for (let attempt = 1; attempt <= 5; attempt += 1) {
         const marker = `${attemptPath}.${attempt}`;
         await expect
-          .poll(() => existsSync(marker), { timeout: 5_000, interval: 10 })
+          .poll(() => {
+            if (!existsSync(marker)) return false;
+            const selected = readFileSync(marker, "utf8");
+            return selected.length > 0 && existsSync(selected);
+          }, { timeout: 5_000, interval: 10 })
           .toBe(true);
         unlinkSync(readFileSync(marker, "utf8"));
         const replacement = `${logPath}.backup-${100 + attempt}-1-${String(100 + attempt).padStart(8, "0")}`;
@@ -2849,7 +2853,12 @@ fs.renameSync = function (source, destination) {
         const marker = `${attemptPath}.${attempt}`;
         await expect
           .poll(
-            () => existsSync(marker) || existsSync(completionPath),
+            () => {
+              if (existsSync(completionPath)) return true;
+              if (!existsSync(marker)) return false;
+              const selected = readFileSync(marker, "utf8");
+              return selected.length > 0 && existsSync(selected);
+            },
             { timeout: 5_000, interval: 10 },
           )
           .toBe(true);
