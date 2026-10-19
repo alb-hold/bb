@@ -6,6 +6,7 @@ import { createMigratedConnection } from "../../src/testing.js";
 import {
   appendRetainedTerminalOutputChunk,
   appendRetainedTerminalOutputChunks,
+  TERMINAL_RETAINED_OUTPUT_BYTES,
 } from "../../src/fork-terminal-output.js";
 import { createTerminalGridMarker } from "@bb/domain";
 
@@ -87,4 +88,90 @@ describe("retained terminal output replay", () => {
     );
     expect(elapsedMs).toBeLessThan(2_000);
   }, 60_000);
+
+  const marker = createTerminalGridMarker({ cols: 80, rows: 24 });
+  const chunkOf = (seq: number, text: string) => ({
+    seq,
+    dataBase64: Buffer.from(text).toString("base64"),
+  });
+  const filled = (from: number, count: number, size: number) =>
+    Array.from({ length: count }, (_, index) =>
+      chunkOf(from + index, `${from + index}:`.padEnd(size, "y")),
+    );
+  const atCap = filled(0, TERMINAL_RETAINED_OUTPUT_BYTES / 256, 256);
+
+  it.each([
+    {
+      name: "a short replay into an empty buffer",
+      existing: [],
+      replay: filled(0, 20, 200),
+    },
+    {
+      name: "a buffer exactly at the cap, then a replay crossing it",
+      existing: atCap,
+      replay: [
+        chunkOf(atCap.length, `${marker}after the cap`),
+        ...filled(atCap.length + 1, 300, 256),
+      ],
+    },
+    {
+      name: "a buffer one byte under the cap, then a replay crossing it by one byte and then far",
+      existing: [...filled(0, 255, 256), chunkOf(255, "z".repeat(255))],
+      replay: [chunkOf(256, "ab"), ...filled(257, 40, 1024)],
+    },
+    {
+      name: "a replay holding one chunk larger than the cap, with a grid marker in the cut prefix",
+      existing: filled(0, 10, 256),
+      replay: [
+        chunkOf(10, `${marker}${"p".repeat(1_000)}${"q".repeat(TERMINAL_RETAINED_OUTPUT_BYTES + 500)}`),
+        ...filled(11, 5, 256),
+      ],
+    },
+    {
+      name: "a replay overlapping sequences already retained, crossing the cap",
+      existing: filled(0, 200, 256),
+      replay: filled(150, 200, 256),
+    },
+  ])("retains byte-identical output to the per-chunk path: $name", ({ existing, replay }) => {
+    const reference = setup();
+    const batched = setup();
+    for (const target of [reference, batched]) {
+      for (const chunk of existing) {
+        appendRetainedTerminalOutputChunk(target.db, {
+          hostId: target.host.id,
+          terminalSessionId: target.terminal.id,
+          chunk,
+          now: 2,
+        });
+      }
+    }
+    for (const chunk of replay) {
+      appendRetainedTerminalOutputChunk(reference.db, {
+        hostId: reference.host.id,
+        terminalSessionId: reference.terminal.id,
+        chunk,
+        now: 3,
+      });
+    }
+    appendRetainedTerminalOutputChunks(batched.db, {
+      hostId: batched.host.id,
+      terminalSessionId: batched.terminal.id,
+      chunks: replay,
+      now: 3,
+    });
+    const read = (target: ReturnType<typeof setup>) =>
+      target.db.$client
+        .prepare(
+          "SELECT chunks_json AS chunksJson, byte_length AS byteLength, retained_at AS retainedAt FROM fork_terminal_output WHERE terminal_session_id = ?",
+        )
+        .get(target.terminal.id) as
+        | { chunksJson: string; byteLength: number; retainedAt: number }
+        | undefined;
+    const expected = read(reference);
+    expect(expected?.byteLength).toBeGreaterThan(0);
+    expect(expected?.byteLength).toBeLessThanOrEqual(
+      TERMINAL_RETAINED_OUTPUT_BYTES,
+    );
+    expect(read(batched)).toEqual(expected);
+  });
 });

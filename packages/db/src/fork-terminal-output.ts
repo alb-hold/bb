@@ -24,6 +24,16 @@ interface RetainedChunk {
   retainedAt: number;
 }
 
+function canonicalRetainedChunk(entry: RetainedChunk): RetainedChunk {
+  return {
+    chunk: { seq: entry.chunk.seq, dataBase64: entry.chunk.dataBase64 },
+    ...(entry.leadingGridMarker === undefined
+      ? {}
+      : { leadingGridMarker: entry.leadingGridMarker }),
+    retainedAt: entry.retainedAt,
+  };
+}
+
 function parseChunks(chunksJson: string): RetainedChunk[] {
   const value: unknown = JSON.parse(chunksJson);
   if (!Array.isArray(value))
@@ -120,6 +130,11 @@ export function appendRetainedTerminalOutputChunks(
       if (seenSequences.has(chunk.seq)) continue;
       seenSequences.add(chunk.seq);
       appended = true;
+      const first = chunks[0];
+      if (first) chunks[0] = canonicalRetainedChunk(first);
+      const lastIndex = chunks.length - 1;
+      const last = chunks[lastIndex];
+      if (last) chunks[lastIndex] = canonicalRetainedChunk(last);
       const data = Buffer.from(chunk.dataBase64, "base64");
       let leadingGridMarker: string | undefined;
       let retainedData = data;
