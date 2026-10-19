@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { FitAddon } from "@xterm/addon-fit";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { TerminalWebSocketTransport } from "@bb/client-core";
 import { makeTerminalSession } from "@/test/fixtures/terminal-sessions";
 import {
   AppCommandProvider,
@@ -14,7 +15,9 @@ import { ThreadTerminalView } from "./ThreadTerminalView";
 const testState = vi.hoisted(() => ({
   calls: [] as string[],
   clearAttention: vi.fn(),
+  deferSocketOpen: false,
   sockets: [] as TestTerminalSocket[],
+  socketCreated: null as (() => void) | null,
   socketMessages: [] as string[],
 }));
 
@@ -28,13 +31,26 @@ class TestTerminalSocket {
   onmessage: ((event: MessageEvent) => void) | null = null;
   onopen: ((event: Event) => void) | null = null;
   readyState = TestTerminalSocket.CONNECTING;
+  readonly opened: Promise<void>;
+  readonly sent: string[] = [];
+  private resolveOpened!: () => void;
 
   constructor() {
     testState.sockets.push(this);
-    queueMicrotask(() => {
-      this.readyState = TestTerminalSocket.OPEN;
-      this.onopen?.(new Event("open"));
+    testState.socketCreated?.();
+    testState.socketCreated = null;
+    this.opened = new Promise((resolve) => {
+      this.resolveOpened = resolve;
     });
+    if (!testState.deferSocketOpen) {
+      queueMicrotask(() => this.open());
+    }
+  }
+
+  open(): void {
+    this.readyState = TestTerminalSocket.OPEN;
+    this.onopen?.(new Event("open"));
+    this.resolveOpened();
   }
 
   close(): void {
@@ -47,6 +63,7 @@ class TestTerminalSocket {
   }
 
   send(data: string): void {
+    this.sent.push(data);
     testState.socketMessages.push(data);
   }
 
@@ -107,11 +124,14 @@ function Handler() {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   cleanup();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   testState.calls.length = 0;
   testState.sockets.length = 0;
+  testState.socketCreated = null;
+  testState.deferSocketOpen = false;
   testState.socketMessages.length = 0;
   testState.clearAttention.mockReset();
 });
@@ -387,6 +407,24 @@ describe("ThreadTerminalView terminal focus boundary", () => {
         return { cols: 51, rows: 47 };
       },
     );
+    const markLayoutSettled =
+      TerminalWebSocketTransport.prototype.markLayoutSettled;
+    let resolveLayoutSettled!: () => void;
+    const layoutSettled = new Promise<void>((resolve) => {
+      resolveLayoutSettled = resolve;
+    });
+    vi.spyOn(
+      TerminalWebSocketTransport.prototype,
+      "markLayoutSettled",
+    ).mockImplementation(function (this: TerminalWebSocketTransport) {
+      markLayoutSettled.call(this);
+      resolveLayoutSettled();
+    });
+    let resolveSocketCreated!: () => void;
+    const socketCreated = new Promise<void>((resolve) => {
+      resolveSocketCreated = resolve;
+    });
+    testState.socketCreated = resolveSocketCreated;
 
     render(
       <MemoryRouter>
@@ -405,19 +443,20 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       </MemoryRouter>,
     );
 
-    await waitFor(() => {
-      const resizes = testState.socketMessages
-        .map(
-          (message) =>
-            JSON.parse(message) as {
-              cols?: number;
-              rows?: number;
-              type?: string;
-            },
-        )
-        .filter((message) => message.type === "resize");
-      expect(resizes).toEqual([{ type: "resize", cols: 51, rows: 47 }]);
-    });
+    await socketCreated;
+    const socket = testState.sockets[0]!;
+    await Promise.all([socket.opened, layoutSettled]);
+    const resizes = testState.socketMessages
+      .map(
+        (message) =>
+          JSON.parse(message) as {
+            cols?: number;
+            rows?: number;
+            type?: string;
+          },
+      )
+      .filter((message) => message.type === "resize");
+    expect(resizes).toEqual([{ type: "resize", cols: 51, rows: 47 }]);
     const session = makeTerminalSession({
       id: "term_first_attach_font_metrics",
       status: "running",
@@ -444,29 +483,55 @@ describe("ThreadTerminalView terminal focus boundary", () => {
         .filter((message) => message.type === "resize"),
     ).toEqual([{ type: "resize", cols: 51, rows: 47 }]);
 
+    testState.deferSocketOpen = true;
     testState.sockets[0]?.disconnect();
     await waitFor(() => expect(testState.sockets).toHaveLength(2));
-    testState.sockets[1]?.receive({
+    const reconnectedSocket = testState.sockets[1]!;
+    vi.useFakeTimers();
+    reconnectedSocket.open();
+    await reconnectedSocket.opened;
+    reconnectedSocket.receive({ type: "features", resizeAcks: true });
+    reconnectedSocket.receive({
       type: "attached",
       session,
       replayStartSeq: 0,
       nextSeq: 0,
     });
-    await waitFor(() => {
-      const resizes = testState.socketMessages
+    const socketResizes = () =>
+      reconnectedSocket.sent
         .map(
           (message) =>
             JSON.parse(message) as {
               cols?: number;
               rows?: number;
+              seq?: number;
               type?: string;
             },
         )
         .filter((message) => message.type === "resize");
-      expect(resizes.slice(-2)).toEqual([
-        { type: "resize", cols: 50, rows: 47 },
-        { type: "resize", cols: 51, rows: 47 },
-      ]);
+    await vi.waitFor(() => {
+      expect(socketResizes()).toContainEqual({
+        type: "resize",
+        cols: 50,
+        rows: 47,
+        seq: 1,
+      });
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(400);
+    });
+    expect(socketResizes().at(-1)).toEqual({
+      type: "resize",
+      cols: 50,
+      rows: 47,
+      seq: 1,
+    });
+    reconnectedSocket.receive({ type: "resize-applied", seq: 1 });
+    expect(socketResizes().at(-1)).toEqual({
+      type: "resize",
+      cols: 51,
+      rows: 47,
+      seq: 2,
     });
   });
 
