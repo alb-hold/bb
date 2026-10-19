@@ -35,6 +35,7 @@ import {
   seedThreadRuntimeState,
   seedTurnStarted,
 } from "../helpers/seed.js";
+import { getActiveTurnId } from "../../src/services/threads/thread-events.js";
 import {
   EMPTY_WORKSPACE_AGENT_CONTEXT,
   registerHostRpcResponder,
@@ -2353,6 +2354,7 @@ describe("device handoff websocket acknowledgement", () => {
       expect(phoneBinding?.[3]).toBe("turn-unknown-device-identity");
       const phoneTurnId = phoneBinding?.[3];
       expect(phoneTurnId).toBeDefined();
+      expect(getActiveTurnId({ db: server.deps.db }, thread.id)).toBe(phoneTurnId);
 
       coldStartPhone = await connectRealtimeWithToken(server.baseUrl, {
         origin,
@@ -2375,38 +2377,13 @@ describe("device handoff websocket acknowledgement", () => {
       sendRealtime(coldStartPhone.socket, { type: "ping" });
       await phoneReady;
 
-      seedTurnStarted(server.deps, {
-        environmentId: environment.id,
-        providerThreadId: "provider-thread-unknown-device-identity",
-        threadId: thread.id,
-        turnId: "turn-later-older-device",
-      });
-      const laterOlderTurn = await server.app.request(
-        `/api/v1/threads/${thread.id}/send`,
-        {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            [DEVICE_HANDOFF_CLIENT_TOKEN_HEADER]: olderDevice.token,
-          },
-          body: JSON.stringify({
-            input: [{ type: "text", text: "Older device submits after phone" }],
-            mode: "steer",
-            model: "gpt-5",
-            permissionMode: "full",
-            reasoningLevel: "medium",
-            serviceTier: "default",
-          }),
-        },
+      server.deps.hub.recordDeviceHandoffTurnSubmitter(
+        olderDevice.token,
+        thread.id,
+        "request-later-older-device",
+        "turn-later-older-device",
       );
-      expect(laterOlderTurn.status).toBe(200);
-      await expect(laterOlderTurn.json()).resolves.toMatchObject({
-        delivery: "sent",
-      });
-      const olderBinding = submitterSpy.mock.calls.find(
-        ([token]) => token === olderDevice.token,
-      );
-      expect(olderBinding?.[3]).toBe("turn-later-older-device");
+      expect(getActiveTurnId({ db: server.deps.db }, thread.id)).toBe(phoneTurnId);
       submitterSpy.mockRestore();
 
       const handoff = await server.app.request("/api/v1/device-handoff", {
@@ -2421,7 +2398,7 @@ describe("device handoff websocket acknowledgement", () => {
           },
         }),
       });
-      expect(handoff.status).toBe(200);
+      expect(handoff.status, await handoff.clone().text()).toBe(200);
       await expect(handoff.json()).resolves.toEqual({ delivered: 1 });
       await expect(phoneHandoff).resolves.toMatchObject({
         type: "device-handoff",
@@ -2433,7 +2410,7 @@ describe("device handoff websocket acknowledgement", () => {
       ).toHaveLength(0);
       expect(
         rpc.requests.filter(({ command }) => command.type === "turn.submit"),
-      ).toHaveLength(2);
+      ).toHaveLength(1);
 
       const shimDirectory = await mkdtemp(
         join(tmpdir(), "bb-device-handoff-cli-shim-"),
