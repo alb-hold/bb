@@ -122,7 +122,7 @@ afterEach(() => {
 });
 
 describe("ThreadTerminalView terminal focus boundary", () => {
-  it("reattaches after the app token arrives after the terminal socket opens", async () => {
+  it("keeps the app identity when the server echoes it after terminal attach", async () => {
     vi.stubGlobal("WebSocket", TestTerminalSocket);
     vi.stubGlobal(
       "ResizeObserver",
@@ -167,33 +167,27 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       </MemoryRouter>,
     );
     await waitFor(() => expect(testState.socketUrls).toHaveLength(1));
-    expect(
-      new URL(testState.socketUrls[0] ?? "ws://localhost").searchParams.has(
-        "handoffOwnerToken",
-      ),
-    ).toBe(false);
+    const initialToken = new URL(
+      testState.socketUrls[0] ?? "ws://localhost",
+    ).searchParams.get("handoffOwnerToken");
+    expect(initialToken).toMatch(/^[A-Za-z0-9_-]{22}$/u);
 
     wsManager.handleIncomingMessage(
       JSON.stringify({
         type: "device-handoff-client-token",
-        token: "late-terminal-owner-token",
+        token: initialToken,
       }),
     );
 
+    expect(testState.socketUrls).toHaveLength(1);
+
+    testState.sockets[0]?.disconnect();
     await waitFor(() => expect(testState.socketUrls).toHaveLength(2));
     expect(
       new URL(testState.socketUrls[1] ?? "ws://localhost").searchParams.get(
         "handoffOwnerToken",
       ),
-    ).toBe("late-terminal-owner-token");
-
-    testState.sockets[1]?.disconnect();
-    await waitFor(() => expect(testState.socketUrls).toHaveLength(3));
-    expect(
-      new URL(testState.socketUrls[2] ?? "ws://localhost").searchParams.get(
-        "handoffOwnerToken",
-      ),
-    ).toBe("late-terminal-owner-token");
+    ).toBe(initialToken);
   });
 
   it.each([

@@ -89,7 +89,12 @@ function ensureDeviceHandoffId(): string | null {
   } catch {
     inMemoryDeviceHandoffId = null;
   }
-  const token = generateDeviceHandoffId();
+  let token: string;
+  try {
+    token = generateDeviceHandoffId();
+  } catch {
+    return null;
+  }
   inMemoryDeviceHandoffId = token;
   try {
     window.localStorage.setItem(DEVICE_HANDOFF_DEVICE_STORAGE_KEY, token);
@@ -189,10 +194,12 @@ export class WebSocketManager {
       this.hasConnected = true;
       this.setConnectionState("connected");
       this.startPingLoop();
-      this.sendMessage({
-        type: "device-handoff-device",
-        token: this.deviceHandoffClientToken,
-      });
+      if (this.deviceHandoffClientToken !== null) {
+        this.sendMessage({
+          type: "device-handoff-device",
+          token: this.deviceHandoffClientToken,
+        });
+      }
       for (const subscription of this.subscriptions.values()) {
         this.sendMessage({ type: "subscribe", target: subscription.target });
       }
@@ -420,6 +427,8 @@ export class WebSocketManager {
     const clientToken =
       deviceHandoffClientTokenSignalLenientSchema.safeParse(parsed);
     if (clientToken.success) {
+      const tokenChanged =
+        this.deviceHandoffClientToken !== clientToken.data.token;
       this.deviceHandoffClientToken = clientToken.data.token;
       inMemoryDeviceHandoffId = clientToken.data.token;
       try {
@@ -430,8 +439,10 @@ export class WebSocketManager {
       } catch {
         inMemoryDeviceHandoffId = clientToken.data.token;
       }
-      for (const callback of this.deviceHandoffClientTokenCallbacks)
-        callback(clientToken.data.token);
+      if (tokenChanged) {
+        for (const callback of this.deviceHandoffClientTokenCallbacks)
+          callback(clientToken.data.token);
+      }
       return;
     }
 
