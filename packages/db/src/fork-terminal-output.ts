@@ -5,6 +5,7 @@ export const TERMINAL_RETAINED_OUTPUT_BYTES = 64 * 1024;
 export const HOST_RETAINED_OUTPUT_BYTES = 2 * 1024 * 1024;
 export const HOST_RETAINED_TERMINAL_LIMIT = 128;
 export const TERMINAL_OUTPUT_RETENTION_MS = 30 * 60_000;
+const PRUNE_BATCH_ROWS = 128;
 
 export interface RetainedTerminalOutputChunk {
   seq: number;
@@ -22,6 +23,16 @@ interface RetainedChunk {
   chunk: RetainedTerminalOutputChunk;
   leadingGridMarker?: string;
   retainedAt: number;
+}
+
+function canonicalRetainedChunk(entry: RetainedChunk): RetainedChunk {
+  return {
+    chunk: { seq: entry.chunk.seq, dataBase64: entry.chunk.dataBase64 },
+    ...(entry.leadingGridMarker === undefined
+      ? {}
+      : { leadingGridMarker: entry.leadingGridMarker }),
+    retainedAt: entry.retainedAt,
+  };
 }
 
 function parseChunks(chunksJson: string): RetainedChunk[] {
@@ -77,12 +88,55 @@ export function appendRetainedTerminalOutputChunk(
     now: number;
   },
 ): void {
+  appendRetainedTerminalOutputChunks(db, {
+    hostId: args.hostId,
+    terminalSessionId: args.terminalSessionId,
+    chunks: [args.chunk],
+    clock: () => args.now,
+  });
+}
+
+export function appendRetainedTerminalOutputChunks(
+  db: DbConnection,
+  args: {
+    hostId: string;
+    terminalSessionId: string;
+    chunks: RetainedTerminalOutputChunk[];
+    clock: () => number;
+  },
+): void {
+  if (args.chunks.length === 0) return;
   const run = db.$client.transaction(() => {
-    pruneRetainedTerminalOutput(db, args.now);
+    const nextExpiryStatement = db.$client.prepare(
+      `SELECT MIN(expires_at) AS nextExpiry FROM fork_terminal_output
+       WHERE expires_at IS NOT NULL`,
+    );
+    let lastPruned = 0;
+    let nextExpiry: number | null = null;
+    const prune = (now: number, always: boolean): boolean => {
+      if (
+        !always &&
+        lastPruned < PRUNE_BATCH_ROWS &&
+        (nextExpiry === null || nextExpiry > now)
+      ) {
+        return false;
+      }
+      lastPruned = pruneRetainedTerminalOutput(db, now);
+      nextExpiry = (nextExpiryStatement.get() as { nextExpiry: number | null })
+        .nextExpiry;
+      return true;
+    };
+    const firstNow = args.clock();
+    prune(firstNow, true);
     const owner = db.$client
       .prepare("SELECT host_id AS hostId FROM terminal_sessions WHERE id = ?")
       .get(args.terminalSessionId) as { hostId: string } | undefined;
-    if (owner?.hostId !== args.hostId) return;
+    if (owner?.hostId !== args.hostId) {
+      for (let index = 1; index < args.chunks.length; index += 1) {
+        prune(args.clock(), false);
+      }
+      return;
+    }
 
     const existing = db.$client
       .prepare(
@@ -94,56 +148,111 @@ export function appendRetainedTerminalOutputChunk(
       .get(args.terminalSessionId, args.hostId) as
       | RetainedTerminalOutputRow
       | undefined;
+    const ownRowStatement = db.$client.prepare(
+      `SELECT 1 AS present FROM fork_terminal_output
+       WHERE terminal_session_id = ? AND host_id = ?`,
+    );
+    const deleteOwnRow = db.$client.prepare(
+      `DELETE FROM fork_terminal_output WHERE terminal_session_id = ?`,
+    );
     const chunks = existing ? parseChunks(existing.chunksJson) : [];
-    if (chunks.some(({ chunk }) => chunk.seq === args.chunk.seq)) return;
-    const data = Buffer.from(args.chunk.dataBase64, "base64");
-    let leadingGridMarker: string | undefined;
-    let retainedData = data;
-    if (data.byteLength > TERMINAL_RETAINED_OUTPUT_BYTES) {
-      retainedData = data.subarray(
-        data.byteLength - TERMINAL_RETAINED_OUTPUT_BYTES,
-      );
-      leadingGridMarker =
-        findLastTerminalGridMarker(
-          data
-            .subarray(0, data.byteLength - TERMINAL_RETAINED_OUTPUT_BYTES)
-            .toString("utf8"),
-        ) ?? undefined;
-    }
-    const boundedChunk =
-      retainedData === data
-        ? args.chunk
-        : { ...args.chunk, dataBase64: retainedData.toString("base64") };
-    chunks.push({
-      chunk: boundedChunk,
-      ...(leadingGridMarker === undefined ? {} : { leadingGridMarker }),
-      retainedAt: args.now,
-    });
+    const seenSequences = new Set(chunks.map(({ chunk }) => chunk.seq));
+    let appended = false;
+    let ownRowStored = existing !== undefined;
+    let ownRowExpiresAt = existing?.expiresAt ?? null;
+    let insertedRetainedAt: number | null = null;
+    let lastNow = firstNow;
     let bytes = chunks.reduce(
       (total, entry) => total + chunkBytes(entry.chunk),
       0,
     );
-    while (bytes > TERMINAL_RETAINED_OUTPUT_BYTES && chunks.length > 0) {
-      const removed = chunks.shift();
-      if (removed) bytes -= chunkBytes(removed.chunk);
-      if (removed && chunks[0]) {
-        const latestGridMarker =
+    for (const [index, chunk] of args.chunks.entries()) {
+      const now = index === 0 ? firstNow : args.clock();
+      lastNow = now;
+      if (
+        index > 0 &&
+        prune(now, false) &&
+        ownRowExpiresAt !== null &&
+        ownRowStatement.get(args.terminalSessionId, args.hostId) === undefined
+      ) {
+        chunks.length = 0;
+        seenSequences.clear();
+        bytes = 0;
+        ownRowStored = false;
+        ownRowExpiresAt = null;
+      }
+      if (seenSequences.has(chunk.seq)) continue;
+      seenSequences.add(chunk.seq);
+      if (ownRowExpiresAt !== null) {
+        db.$client
+          .prepare(
+            `UPDATE fork_terminal_output SET expires_at = NULL
+             WHERE terminal_session_id = ? AND host_id = ?`,
+          )
+          .run(args.terminalSessionId, args.hostId);
+        ownRowExpiresAt = null;
+        nextExpiry = (
+          nextExpiryStatement.get() as { nextExpiry: number | null }
+        ).nextExpiry;
+      }
+      appended = true;
+      const first = chunks[0];
+      if (first) chunks[0] = canonicalRetainedChunk(first);
+      const lastIndex = chunks.length - 1;
+      const last = chunks[lastIndex];
+      if (last) chunks[lastIndex] = canonicalRetainedChunk(last);
+      const data = Buffer.from(chunk.dataBase64, "base64");
+      let leadingGridMarker: string | undefined;
+      let retainedData = data;
+      if (data.byteLength > TERMINAL_RETAINED_OUTPUT_BYTES) {
+        retainedData = data.subarray(
+          data.byteLength - TERMINAL_RETAINED_OUTPUT_BYTES,
+        );
+        leadingGridMarker =
           findLastTerminalGridMarker(
-            Buffer.from(removed.chunk.dataBase64, "base64").toString("utf8"),
-          ) ?? removed.leadingGridMarker;
-        if (latestGridMarker !== undefined) {
-          chunks[0].leadingGridMarker = latestGridMarker;
+            data
+              .subarray(0, data.byteLength - TERMINAL_RETAINED_OUTPUT_BYTES)
+              .toString("utf8"),
+          ) ?? undefined;
+      }
+      const boundedChunk =
+        retainedData === data
+          ? chunk
+          : { ...chunk, dataBase64: retainedData.toString("base64") };
+      chunks.push({
+        chunk: boundedChunk,
+        ...(leadingGridMarker === undefined ? {} : { leadingGridMarker }),
+        retainedAt: now,
+      });
+      bytes += chunkBytes(boundedChunk);
+      while (bytes > TERMINAL_RETAINED_OUTPUT_BYTES && chunks.length > 0) {
+        const removed = chunks.shift();
+        if (removed) {
+          bytes -= chunkBytes(removed.chunk);
+          seenSequences.delete(removed.chunk.seq);
+        }
+        if (removed && chunks[0]) {
+          const latestGridMarker =
+            findLastTerminalGridMarker(
+              Buffer.from(removed.chunk.dataBase64, "base64").toString("utf8"),
+            ) ?? removed.leadingGridMarker;
+          if (latestGridMarker !== undefined) {
+            chunks[0].leadingGridMarker = latestGridMarker;
+          }
         }
       }
+      if (bytes === 0) {
+        if (ownRowStored) deleteOwnRow.run(args.terminalSessionId);
+        chunks.length = 0;
+        seenSequences.clear();
+        ownRowStored = false;
+        insertedRetainedAt = null;
+      } else if (!ownRowStored) {
+        ownRowStored = true;
+        insertedRetainedAt = chunks[0]?.retainedAt ?? now;
+      }
     }
-    if (bytes === 0) {
-      db.$client
-        .prepare(
-          `DELETE FROM fork_terminal_output WHERE terminal_session_id = ?`,
-        )
-        .run(args.terminalSessionId);
-      return;
-    }
+    if (!appended || bytes === 0) return;
     db.$client
       .prepare(
         `INSERT INTO fork_terminal_output
@@ -160,7 +269,7 @@ export function appendRetainedTerminalOutputChunk(
         args.hostId,
         JSON.stringify(chunks),
         bytes,
-        chunks[0]?.retainedAt ?? args.now,
+        insertedRetainedAt ?? chunks[0]?.retainedAt ?? lastNow,
       );
 
     let hostTotals = db.$client
@@ -212,7 +321,7 @@ export function appendRetainedTerminalOutputChunk(
           .run(
             JSON.stringify(oldestChunks),
             removedBytes,
-            oldestChunks[0]?.retainedAt ?? args.now,
+            oldestChunks[0]?.retainedAt ?? lastNow,
             oldest.terminalSessionId,
             args.hostId,
           );
@@ -333,8 +442,8 @@ export function pruneRetainedTerminalOutput(
       `DELETE FROM fork_terminal_output
        WHERE terminal_session_id IN (
          SELECT terminal_session_id FROM fork_terminal_output
-         WHERE expires_at <= ? ORDER BY expires_at ASC LIMIT 128
+         WHERE expires_at <= ? ORDER BY expires_at ASC LIMIT ?
        )`,
     )
-    .run(now).changes;
+    .run(now, PRUNE_BATCH_ROWS).changes;
 }
