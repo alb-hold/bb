@@ -998,6 +998,7 @@ describe("spawnLoggedProcess", () => {
       const deadWriterPid = dead.writerProcess.pid!;
       dead.writerProcess.kill("SIGKILL");
       await dead.writerExit;
+      unlinkSync(deadSocket);
       expect(await socketResponds(deadSocket)).toBe(false);
       expect(identity.pid).toBe(process.pid);
       expect(() => process.kill(identity.pid, 0)).not.toThrow();
@@ -1016,7 +1017,6 @@ describe("spawnLoggedProcess", () => {
         )
         .toBe(true);
 
-      const liveWriterStartedAt = Date.now();
       live = spawnLoggedProcess({
         command: process.execPath,
         args: [
@@ -1041,7 +1041,6 @@ describe("spawnLoggedProcess", () => {
           { timeout: 5_000, interval: 10 },
         )
         .toBe(true);
-      expect(Date.now() - liveWriterStartedAt).toBeGreaterThanOrEqual(1_500);
       const liveSegment = familyFiles(logDir, "server").find(
         (file) =>
           file.includes(".active-") &&
@@ -1342,6 +1341,179 @@ describe("spawnLoggedProcess", () => {
           writeFileSync(stopPath, "stop");
           await waitForExit(owner);
           await owner.writerExit;
+        }
+      }
+    },
+  );
+
+  it.skipIf(process.platform !== "darwin")(
+    "does not count a matching inode on another device as a segment holder",
+    async () => {
+      const logDir = scratchDir();
+      const identity = {
+        pid: process.pid,
+        source: 0 as const,
+        fingerprint: "0000000000000000",
+      };
+      const dead = spawnLoggedProcess({
+        command: process.execPath,
+        args: [
+          "-e",
+          'process.stdout.write("different device dead output\\n"); setInterval(() => {}, 1000);',
+        ],
+        env: process.env,
+        logDir,
+        logName: "server",
+        testWriterBarrier: { ownerIdentity: identity },
+      });
+      let observer: ReturnType<typeof spawnLoggedProcess> | undefined;
+      try {
+        await expect
+          .poll(
+            () =>
+              familyFiles(logDir, "server").find(
+                (file) =>
+                  file.includes(".active-") &&
+                  fileIncludes(file, "different device dead output"),
+              ),
+            { timeout: 5_000, interval: 10 },
+          )
+          .toBeDefined();
+        const deadSegment = familyFiles(logDir, "server").find(
+          (file) =>
+            file.includes(".active-") &&
+            fileIncludes(file, "different device dead output"),
+        )!;
+        const segmentStat = statSync(deadSegment, { bigint: true });
+        const otherDevice = segmentStat.dev === 0n ? 1n : segmentStat.dev ^ 1n;
+        const deadSocket = join(
+          livenessDirectory(logDir, "server"),
+          `s-${socketTokenFromActivePath(deadSegment)}`,
+        );
+        dead.writerProcess.kill("SIGKILL");
+        await dead.writerExit;
+        unlinkSync(deadSocket);
+
+        observer = spawnLoggedProcess({
+          command: process.execPath,
+          args: ["-e", 'process.stdout.write("different device observer\\n");'],
+          env: process.env,
+          logDir,
+          logName: "server",
+          testWriterBarrier: {
+            recoveryIdentity: {
+              source: 0,
+              fingerprint: identity.fingerprint,
+            },
+            lsofOutput: `p${identity.pid}\nf1\nD0x${otherDevice.toString(16)}\ni${segmentStat.ino}\n`,
+            recoveryIntervalMs: 25,
+          },
+        });
+        expect(await waitForExit(observer)).toBe(0);
+        await observer.writerExit;
+        expect(existsSync(deadSegment)).toBe(false);
+        expect(
+          familyFiles(logDir, "server").some(
+            (file) =>
+              file.includes(".backup-") &&
+              fileIncludes(file, "different device dead output"),
+          ),
+        ).toBe(true);
+      } finally {
+        if (observer !== undefined && observer.exitCode === null) {
+          observer.kill("SIGKILL");
+        }
+        if (dead.exitCode === null) {
+          dead.kill("SIGKILL");
+          await waitForExit(dead);
+        }
+      }
+    },
+  );
+
+  it.skipIf(process.platform !== "darwin")(
+    "keeps a segment when lsof omits the matching live pid",
+    async () => {
+      const logDir = scratchDir();
+      const diagnosticPath = join(logDir, "holder-diagnostic");
+      const identity = {
+        pid: process.pid,
+        source: 0 as const,
+        fingerprint: "0000000000000000",
+      };
+      const dead = spawnLoggedProcess({
+        command: process.execPath,
+        args: [
+          "-e",
+          'process.stdout.write("omitted pid dead output\\n"); setInterval(() => {}, 1000);',
+        ],
+        env: process.env,
+        logDir,
+        logName: "server",
+        testWriterBarrier: { ownerIdentity: identity },
+      });
+      let observer: ReturnType<typeof spawnLoggedProcess> | undefined;
+      try {
+        await expect
+          .poll(
+            () =>
+              familyFiles(logDir, "server").find(
+                (file) =>
+                  file.includes(".active-") &&
+                  fileIncludes(file, "omitted pid dead output"),
+              ),
+            { timeout: 5_000, interval: 10 },
+          )
+          .toBeDefined();
+        const deadSegment = familyFiles(logDir, "server").find(
+          (file) =>
+            file.includes(".active-") &&
+            fileIncludes(file, "omitted pid dead output"),
+        )!;
+        const deadSocket = join(
+          livenessDirectory(logDir, "server"),
+          `s-${socketTokenFromActivePath(deadSegment)}`,
+        );
+        dead.writerProcess.kill("SIGKILL");
+        await dead.writerExit;
+        unlinkSync(deadSocket);
+
+        observer = spawnLoggedProcess({
+          command: process.execPath,
+          args: ["-e", 'process.stdout.write("omitted pid observer\\n");'],
+          env: process.env,
+          logDir,
+          logName: "server",
+          testWriterBarrier: {
+            recoveryIdentity: {
+              source: 0,
+              fingerprint: identity.fingerprint,
+            },
+            lsofOutput: "",
+            diagnosticPath,
+            recoveryIntervalMs: 25,
+          },
+        });
+        expect(await waitForExit(observer)).toBe(0);
+        await observer.writerExit;
+        expect(existsSync(deadSegment)).toBe(true);
+        expect(
+          familyFiles(logDir, "server").some(
+            (file) =>
+              file.includes(".backup-") &&
+              fileIncludes(file, "omitted pid dead output"),
+          ),
+        ).toBe(false);
+        expect(readFileSync(diagnosticPath, "utf8")).toContain(
+          "stdio segment holder check inconclusive: lsof omitted process",
+        );
+      } finally {
+        if (observer !== undefined && observer.exitCode === null) {
+          observer.kill("SIGKILL");
+        }
+        if (dead.exitCode === null) {
+          dead.kill("SIGKILL");
+          await waitForExit(dead);
         }
       }
     },

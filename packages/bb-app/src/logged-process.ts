@@ -359,7 +359,7 @@ const ownerProcessHoldsSegment = (pid, segmentPath) => {
   try {
     if (process.platform === "darwin") {
       const segmentStat = fs.statSync(segmentPath, { bigint: true });
-      const output = execFileSync("/usr/sbin/lsof", ["-n", "-P", "-F", "pDfi", "-p", String(pid)], {
+      const output = writerBarrier?.lsofOutput ?? execFileSync("/usr/sbin/lsof", ["-n", "-P", "-F", "pDfi", "-p", String(pid)], {
         encoding: "utf8",
         timeout: 750,
         env: { ...process.env, LC_ALL: "C", TZ: "UTC" },
@@ -1136,6 +1136,7 @@ export interface StdioLogWriterTestBarrier {
   failActiveOpenCount?: number;
   failActiveWriteCount?: number;
   recoveryIntervalMs?: number;
+  lsofOutput?: string;
   unreadableOwnerSocketTokens?: string[];
   recoveryPlatform?: NodeJS.Platform;
   pipeProbeResults?: Array<"ENOENT" | "connected" | "busy">;
