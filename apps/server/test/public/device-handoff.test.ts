@@ -169,12 +169,13 @@ async function rejectedRealtimeStatus(
 function nextRealtimeMessage(
   socket: WebSocket,
   type?: string,
+  timeoutMs = 3_000,
 ): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       socket.off("message", onMessage);
       reject(new Error("Timed out waiting for realtime message"));
-    }, 3_000);
+    }, timeoutMs);
     const onMessage = (data: WebSocket.RawData) => {
       const parsed = JSON.parse(data.toString()) as Record<string, unknown>;
       if (type !== undefined && parsed.type !== type) return;
@@ -2383,7 +2384,9 @@ describe("device handoff websocket acknowledgement", () => {
       expect(phoneBinding?.[3]).toBe("turn-unknown-device-identity");
       const phoneTurnId = phoneBinding?.[3];
       expect(phoneTurnId).toBeDefined();
-      expect(getActiveTurnId({ db: server.deps.db }, thread.id)).toBe(phoneTurnId);
+      expect(getActiveTurnId({ db: server.deps.db }, thread.id)).toBe(
+        phoneTurnId,
+      );
 
       coldStartPhone = await connectRealtimeWithToken(server.baseUrl, {
         origin,
@@ -2412,7 +2415,9 @@ describe("device handoff websocket acknowledgement", () => {
         "request-later-older-device",
         "turn-later-older-device",
       );
-      expect(getActiveTurnId({ db: server.deps.db }, thread.id)).toBe(phoneTurnId);
+      expect(getActiveTurnId({ db: server.deps.db }, thread.id)).toBe(
+        phoneTurnId,
+      );
       submitterSpy.mockRestore();
 
       const handoff = await server.app.request("/api/v1/device-handoff", {
@@ -2450,9 +2455,10 @@ describe("device handoff websocket acknowledgement", () => {
           await copyFile(join(cliBin, file), join(shimDirectory, file));
           await chmod(join(shimDirectory, file), 0o755);
         }
+        const cliRoot = resolve(process.cwd(), "../cli");
         await writeFile(
           join(shimDirectory, "bb"),
-          "#!/usr/bin/env node\nconst [, , command, action, url] = process.argv;\nif (command !== 'device' || action !== 'open') process.exit(2);\nconst response = await fetch(process.env.DH_ENDPOINT, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind: 'open-url', url, origin: { threadId: process.env.BB_THREAD_ID, turnId: process.env.BB_TURN_ID } }) });\nprocess.exit(response.ok ? 0 : 1);\n",
+          `#!/bin/sh\ncd ${JSON.stringify(cliRoot)} || exit 1\nexec ${JSON.stringify(process.execPath)} --conditions=source --import tsx src/index.ts "$@"\n`,
           { mode: 0o755 },
         );
         await chmod(join(shimDirectory, "bb"), 0o755);
@@ -2460,11 +2466,72 @@ describe("device handoff websocket acknowledgement", () => {
         const phoneCliHandoff = nextRealtimeMessage(
           coldStartPhone.socket,
           "device-handoff",
+          30_000,
         );
         const notifyDeviceHandoff = vi.spyOn(
           server.deps.hub,
           "notifyDeviceHandoff",
         );
+        const cliResponses: Array<{ status: number; body: unknown }> = [];
+        const cliApiProxy = http.createServer((request, response) => {
+          void (async () => {
+            const chunks: Buffer[] = [];
+            for await (const chunk of request) {
+              chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+            }
+            const upstream = await fetch(
+              new URL(request.url ?? "/", server.baseUrl),
+              {
+                method: request.method,
+                headers:
+                  typeof request.headers["content-type"] === "string"
+                    ? { "content-type": request.headers["content-type"] }
+                    : undefined,
+                body:
+                  request.method === "GET" || request.method === "HEAD"
+                    ? undefined
+                    : Buffer.concat(chunks),
+              },
+            );
+            const body = await upstream.text();
+            if (request.url === "/api/v1/device-handoff") {
+              cliResponses.push({
+                status: upstream.status,
+                body: JSON.parse(body) as unknown,
+              });
+            }
+            response.statusCode = upstream.status;
+            response.setHeader(
+              "content-type",
+              upstream.headers.get("content-type") ?? "application/json",
+            );
+            response.end(body);
+          })().catch((error: unknown) => {
+            response.statusCode = 502;
+            response.end(
+              error instanceof Error ? error.message : String(error),
+            );
+          });
+        });
+        await new Promise<void>((resolveListen, rejectListen) => {
+          cliApiProxy.once("error", rejectListen);
+          cliApiProxy.listen(0, "127.0.0.1", resolveListen);
+        });
+        const cliProxyAddress = cliApiProxy.address();
+        if (cliProxyAddress === null || typeof cliProxyAddress === "string") {
+          throw new Error("CLI API proxy did not bind to a TCP port");
+        }
+        const cliEnv: NodeJS.ProcessEnv = {
+          ...process.env,
+          PATH: `${shimDirectory}:${process.env.PATH ?? ""}`,
+          BB_CLI_REEXEC: "1",
+          BB_DATA_DIR: join(shimDirectory, "data"),
+          BB_SERVER_URL: `http://127.0.0.1:${cliProxyAddress.port}`,
+          BB_THREAD_ID: thread.id,
+          BB_TURN_ID: phoneTurnId!,
+        };
+        delete cliEnv.DISPLAY;
+        delete cliEnv.WAYLAND_DISPLAY;
         const cliResult = await new Promise<{
           code: number;
           errorMessage: string | null;
@@ -2476,13 +2543,7 @@ describe("device handoff websocket acknowledgement", () => {
             [cliUrl],
             {
               cwd: shimDirectory,
-              env: {
-                ...process.env,
-                PATH: `${shimDirectory}:${process.env.PATH ?? ""}`,
-                DH_ENDPOINT: `${server.baseUrl}/api/v1/device-handoff`,
-                BB_THREAD_ID: thread.id,
-                BB_TURN_ID: phoneTurnId!,
-              },
+              env: cliEnv,
             },
             (error, stdout, stderr) => {
               resolveResult({
@@ -2499,18 +2560,33 @@ describe("device handoff websocket acknowledgement", () => {
             },
           );
         });
+        await new Promise<void>((resolveClose, rejectClose) => {
+          cliApiProxy.close((error) =>
+            error ? rejectClose(error) : resolveClose(),
+          );
+        });
         expect(cliResult, JSON.stringify(cliResult)).toMatchObject({
           code: 0,
           stderr: "",
         });
+        expect(cliResponses).toEqual([{ status: 200, body: { delivered: 1 } }]);
         expect(
           notifyDeviceHandoff.mock.calls.map((call, index) => ({
+            request: call[0],
             origin: call[0].origin,
             turnRequestId: call[3],
             delivered: notifyDeviceHandoff.mock.results[index]?.value,
           })),
         ).toEqual([
           expect.objectContaining({
+            request: {
+              kind: "open-url",
+              url: cliUrl,
+              origin: {
+                threadId: thread.id,
+                turnId: phoneTurnId,
+              },
+            },
             origin: {
               threadId: thread.id,
               turnId: phoneTurnId,
@@ -2532,7 +2608,7 @@ describe("device handoff websocket acknowledgement", () => {
       rpc.unregister();
       await server.close();
     }
-  });
+  }, 30_000);
 
   it("routes active-turn handoffs to the device that most recently sent through /send", async () => {
     const server = await startTestServer();
@@ -2628,18 +2704,15 @@ describe("device handoff websocket acknowledgement", () => {
           recipient.socket,
           "device-handoff",
         );
-        const response = await server.app.request(
-          "/api/v1/device-handoff",
-          {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              kind: "copy-text",
-              text,
-              origin: { threadId: thread.id, turnId: phoneTurnId },
-            }),
-          },
-        );
+        const response = await server.app.request("/api/v1/device-handoff", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            kind: "copy-text",
+            text,
+            origin: { threadId: thread.id, turnId: phoneTurnId },
+          }),
+        });
         expect(response.status, await response.clone().text()).toBe(200);
         await expect(response.json()).resolves.toEqual({ delivered: 1 });
         await expect(recipientFrame).resolves.toMatchObject({
@@ -2790,7 +2863,9 @@ describe("device handoff websocket acknowledgement", () => {
         scope: turnScope(oldTurnId!),
         data: { clientRequestId: turnSubmitRequestId(0) },
       });
-      expect(getActiveTurnId({ db: server.deps.db }, thread.id)).toBe(oldTurnId);
+      expect(getActiveTurnId({ db: server.deps.db }, thread.id)).toBe(
+        oldTurnId,
+      );
       seedEvent(server.deps, {
         threadId: thread.id,
         environmentId: environment.id,
@@ -2873,7 +2948,9 @@ describe("device handoff websocket acknowledgement", () => {
         },
       );
       expect(currentTurnHandoff.status).toBe(200);
-      await expect(currentTurnHandoff.json()).resolves.toEqual({ delivered: 1 });
+      await expect(currentTurnHandoff.json()).resolves.toEqual({
+        delivered: 1,
+      });
       await expect(desktopHandoff).resolves.toMatchObject({
         type: "device-handoff",
         request: { text: "desktop current turn" },
