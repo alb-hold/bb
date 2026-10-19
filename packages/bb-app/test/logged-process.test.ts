@@ -2082,7 +2082,6 @@ describe("spawnLoggedProcess", () => {
         logDir,
         logName: "server",
         testWriterBarrier: {
-          ownerIdentity: identity,
           recoveryIntervalMs: 10_000,
         },
       });
@@ -2107,7 +2106,7 @@ describe("spawnLoggedProcess", () => {
             readFileSync(file, "utf8").includes("cross-source-owner-started"),
         );
         expect(ownerSegment).toBeDefined();
-        expect(ownerSegment).toContain(`.active-${identity.pid}-1-`);
+        expect(ownerSegment).toContain(`.active-${owner.writerProcess.pid}-1-`);
         const ownerToken = socketTokenFromActivePath(ownerSegment!);
         observer = spawnLoggedProcess({
           command: process.execPath,
