@@ -140,4 +140,48 @@ describe("NativeTerminalPromptBar with a pending microphone permission", () => {
     expect(track.stop).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledTimes(1);
   });
+
+  it("says Listening only once the microphone is recording", async () => {
+    const track = { stop: vi.fn(), addEventListener: vi.fn() };
+    const stream = {
+      getTracks: () => [track],
+      getAudioTracks: () => [track],
+    } as unknown as MediaStream;
+    let grant: (value: MediaStream) => void = () => {};
+    media.request.mockReturnValue(
+      new Promise<MediaStream>((resolve) => {
+        grant = resolve;
+      }),
+    );
+    const { wrapper: Wrapper } = createQueryClientTestHarness();
+    render(
+      <Wrapper>
+        <NativeTerminalPromptBar
+          projectId="proj-n"
+          providerLabel="Native CLI"
+          threadId="thr-n"
+        />
+      </Wrapper>,
+    );
+    const input = screen.getByLabelText(
+      "Message Native CLI",
+    ) as HTMLTextAreaElement;
+    const mic = screen.getByRole("button", {
+      name: "Dictate a message to Native CLI",
+    });
+    fireEvent.pointerDown(mic, { button: 0 });
+    fireEvent.pointerUp(mic);
+    fireEvent.click(mic, { detail: 1 });
+    expect(mic.getAttribute("aria-pressed")).toBe("true");
+    expect(input.placeholder).toBe("Starting microphone…");
+
+    await act(async () => {
+      grant(stream);
+      for (let flush = 0; flush < 3; flush += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+    });
+
+    await waitFor(() => expect(input.placeholder).toBe("Listening…"));
+  });
 });

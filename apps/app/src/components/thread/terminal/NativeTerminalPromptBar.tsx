@@ -548,7 +548,13 @@ export function NativeTerminalPromptBar({
           enterKeyHint="send"
           spellCheck
           autoCorrect="on"
-          placeholder={recording ? "Listening…" : `Message ${providerLabel}`}
+          placeholder={
+            dictation.phase === "starting"
+              ? "Starting microphone…"
+              : recording
+                ? "Listening…"
+                : `Message ${providerLabel}`
+          }
           onChange={(event) => {
             applyValue(event.target.value, programmaticRef.current);
           }}
