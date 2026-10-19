@@ -474,17 +474,7 @@ export class NotificationHub implements DbNotifier {
       expiresAt: now + DEVICE_HANDOFF_TTL_MS,
     });
     if (turnId !== undefined) {
-      const turnKey = this.deviceHandoffSubmitterKey(threadId, turnId);
-      const threadKeyPrefix = `${threadId}\u0000`;
-      for (const existingKey of this.deviceHandoffSubmitterByThreadTurn.keys()) {
-        if (
-          existingKey.startsWith(threadKeyPrefix) &&
-          existingKey !== turnKey
-        ) {
-          this.deviceHandoffSubmitterByThreadTurn.delete(existingKey);
-        }
-      }
-      this.deviceHandoffSubmitterByThreadTurn.set(turnKey, { deviceHash });
+      this.setDeviceHandoffTurnSubmitter(threadId, turnId, deviceHash);
     }
     if (deviceHash !== null) {
       this.latestDeviceHandoffSubmitterByThread.set(threadId, {
@@ -503,6 +493,24 @@ export class NotificationHub implements DbNotifier {
       this.deviceHandoffSubmitterByThreadRequest.delete(oldest);
     }
     return deviceHash !== null;
+  }
+
+  promoteDeviceHandoffTurnSubmitter(
+    threadId: string,
+    turnRequestId: string,
+    turnId: string,
+    now = Date.now(),
+  ): boolean {
+    this.pruneDeviceHandoffSubmitters(now);
+    const requestKey = this.deviceHandoffSubmitterKey(threadId, turnRequestId);
+    const submission =
+      this.deviceHandoffSubmitterByThreadRequest.get(requestKey);
+    if (submission === undefined) {
+      return false;
+    }
+    this.setDeviceHandoffTurnSubmitter(threadId, turnId, submission.deviceHash);
+    this.deviceHandoffSubmitterByThreadRequest.delete(requestKey);
+    return true;
   }
 
   clearDeviceHandoffTurnSubmitterForThread(threadId: string): void {
@@ -524,6 +532,21 @@ export class NotificationHub implements DbNotifier {
     turnRequestId: string,
   ): string {
     return `${threadId}\u0000${turnRequestId}`;
+  }
+
+  private setDeviceHandoffTurnSubmitter(
+    threadId: string,
+    turnId: string,
+    deviceHash: string | null,
+  ): void {
+    const turnKey = this.deviceHandoffSubmitterKey(threadId, turnId);
+    const threadKeyPrefix = `${threadId}\u0000`;
+    for (const existingKey of this.deviceHandoffSubmitterByThreadTurn.keys()) {
+      if (existingKey.startsWith(threadKeyPrefix) && existingKey !== turnKey) {
+        this.deviceHandoffSubmitterByThreadTurn.delete(existingKey);
+      }
+    }
+    this.deviceHandoffSubmitterByThreadTurn.set(turnKey, { deviceHash });
   }
 
   private deviceHandoffHashForToken(token: string | undefined): string | null {

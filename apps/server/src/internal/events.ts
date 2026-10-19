@@ -81,7 +81,10 @@ import { getAuthenticatedDaemon } from "./auth.js";
 import { validateExtensionPayloads } from "./extension-payloads.js";
 import { validatePresentationIcons } from "./presentation-icons.js";
 import { listSharedWorkspaceActiveThreadIds } from "../services/threads/workspace-awareness.js";
-import { appendThreadEvent } from "../services/threads/thread-events.js";
+import {
+  appendThreadEvent,
+  getActiveTurnId,
+} from "../services/threads/thread-events.js";
 import { threadScope } from "@bb/domain";
 import {
   observeStreamTraceEventBatch,
@@ -1353,6 +1356,24 @@ export function registerInternalEventRoutes(app: Hono, deps: AppDeps): void {
             sessionId: session.id,
           },
           "Dropped orphan thread-state snapshot with no stored turn/started",
+        );
+      }
+      for (const index of appendResult.insertedInputIndexes) {
+        const entry = labelledEntries[index];
+        if (entry?.envelope.event.type !== "turn/input/accepted") continue;
+        const turnId = requireThreadEventScopeTurnId({
+          type: entry.envelope.event.type,
+          scope: entry.envelope.event.scope,
+        });
+        if (
+          getActiveTurnId({ db: deps.db }, entry.envelope.threadId) !== turnId
+        ) {
+          continue;
+        }
+        deps.hub.promoteDeviceHandoffTurnSubmitter(
+          entry.envelope.threadId,
+          entry.envelope.event.clientRequestId,
+          turnId,
         );
       }
       const committedAt = performance.now();

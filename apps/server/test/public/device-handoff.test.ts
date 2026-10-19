@@ -22,6 +22,7 @@ import {
   DEVICE_HANDOFF_CLIENT_TOKEN_HEADER,
   DEVICE_HANDOFF_DEVICE_STORAGE_KEY,
 } from "@bb/server-contract";
+import { groupHostDaemonEvents } from "@bb/host-daemon-contract";
 import { turnScope } from "@bb/domain";
 import { createNodeBbSdk } from "@bb/sdk/node";
 import {
@@ -47,6 +48,7 @@ import {
   EMPTY_WORKSPACE_AGENT_CONTEXT,
   registerHostRpcResponder,
 } from "../helpers/host-rpc.js";
+import { internalAuthHeaders } from "../helpers/commands.js";
 import { createMockHubSocket } from "../helpers/mock-hub-socket.js";
 
 async function connectRealtime(
@@ -4079,6 +4081,177 @@ describe("device handoff websocket acknowledgement", () => {
       await server.close();
     }
   });
+
+  it.each(["create", "fork"] as const)(
+    "keeps the first %s turn bound to its submitting device past the request TTL",
+    async (creationKind) => {
+      const server = await startTestServer();
+      const {
+        host,
+        session,
+        project,
+        environment,
+        thread: sourceThread,
+      } = seedThreadFixture(server);
+      seedThreadRuntimeState(server.deps, {
+        environmentId: environment.id,
+        providerThreadId: "provider-device-handoff-first-turn-source",
+        threadId: sourceThread.id,
+      });
+      seedTurnStarted(server.deps, {
+        environmentId: environment.id,
+        providerThreadId: "provider-device-handoff-first-turn-source",
+        threadId: sourceThread.id,
+        turnId: "turn-device-handoff-first-turn-source",
+      });
+      const rpc = registerHostRpcResponder(server, {
+        hostId: host.id,
+        sessionId: session.id,
+        handle: ({ command }) => {
+          if (command.type === "host.read_workspace_agent_context") {
+            return { ok: true, result: EMPTY_WORKSPACE_AGENT_CONTEXT };
+          }
+          if (command.type === "turn.submit") {
+            return { ok: true, result: { trace: { spans: [] } } };
+          }
+          return {
+            ok: false,
+            errorCode: "unsupported_test_command",
+            errorMessage: `Unhandled test RPC ${command.type}`,
+          };
+        },
+      });
+      const origin = `http://127.0.0.1:${new URL(server.baseUrl).port}`;
+      const phone = await connectRealtimeWithToken(server.baseUrl, { origin });
+      const desktop = await connectRealtimeWithToken(server.baseUrl, {
+        origin,
+      });
+      try {
+        vi.useFakeTimers({ toFake: ["Date"] });
+        const startedAt = Date.now();
+        const createResponse = await server.app.request(
+          creationKind === "create"
+            ? "/api/v1/threads"
+            : "/api/v1/threads/fork",
+          {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              [DEVICE_HANDOFF_CLIENT_TOKEN_HEADER]: phone.token,
+            },
+            body: JSON.stringify(
+              creationKind === "create"
+                ? {
+                    origin: "app",
+                    projectId: project.id,
+                    providerId: "codex",
+                    model: "gpt-5",
+                    input: [{ type: "text", text: "First prompt" }],
+                    environment: {
+                      type: "reuse",
+                      environmentId: environment.id,
+                    },
+                  }
+                : {
+                    sourceThreadId: sourceThread.id,
+                    input: [{ type: "text", text: "First fork prompt" }],
+                    visibility: "visible",
+                  },
+            ),
+          },
+        );
+        expect(createResponse.status, await createResponse.clone().text()).toBe(
+          201,
+        );
+        const createdThread = (await createResponse.json()) as { id: string };
+        const requestedEvent = listEvents(server.deps.db, {
+          threadId: createdThread.id,
+        }).find((event) => event.type === "client/turn/requested");
+        expect(requestedEvent).toBeDefined();
+        const requestId = (
+          JSON.parse(requestedEvent!.data) as { requestId: string }
+        ).requestId;
+        const turnId = `turn-device-handoff-first-${creationKind}`;
+        const providerThreadId = `provider-device-handoff-first-${creationKind}`;
+        const accepted = await server.app.request("/internal/session/events", {
+          method: "POST",
+          headers: internalAuthHeaders(server),
+          body: JSON.stringify({
+            sessionId: session.id,
+            eventGroups: groupHostDaemonEvents([
+              {
+                threadId: createdThread.id,
+                event: {
+                  type: "turn/started",
+                  threadId: createdThread.id,
+                  providerThreadId,
+                  scope: turnScope(turnId),
+                },
+              },
+              {
+                threadId: createdThread.id,
+                event: {
+                  type: "turn/input/accepted",
+                  threadId: createdThread.id,
+                  providerThreadId,
+                  scope: turnScope(turnId),
+                  clientRequestId: requestId,
+                },
+              },
+            ]),
+          }),
+        });
+        expect(accepted.status, await accepted.clone().text()).toBe(200);
+        expect(getActiveTurnId({ db: server.deps.db }, createdThread.id)).toBe(
+          turnId,
+        );
+        for (const socket of [phone.socket, desktop.socket]) {
+          sendRealtime(socket, {
+            type: "subscribe",
+            target: { kind: "thread-detail", threadId: createdThread.id },
+          });
+          sendRealtime(socket, {
+            type: "device-handoff-view",
+            threadId: createdThread.id,
+            terminalSessionId: null,
+          });
+          const ready = nextRealtimeMessage(socket, "pong");
+          sendRealtime(socket, { type: "ping" });
+          await ready;
+        }
+        vi.setSystemTime(startedAt + 11 * 60 * 1000);
+        expect(getActiveTurnId({ db: server.deps.db }, createdThread.id)).toBe(
+          turnId,
+        );
+        const phoneHandoff = nextRealtimeMessage(
+          phone.socket,
+          "device-handoff",
+        );
+        const handoff = await server.app.request("/api/v1/device-handoff", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            kind: "open-url",
+            url: `https://first-${creationKind}.example.com/sign-in`,
+            origin: { threadId: createdThread.id },
+          }),
+        });
+        expect(handoff.status, await handoff.clone().text()).toBe(200);
+        await expect(handoff.json()).resolves.toEqual({ delivered: 1 });
+        await expect(phoneHandoff).resolves.toMatchObject({
+          type: "device-handoff",
+          request: { url: `https://first-${creationKind}.example.com/sign-in` },
+        });
+        await expectNoRealtimeMessage(desktop.socket, "device-handoff");
+      } finally {
+        vi.useRealTimers();
+        phone.socket.close();
+        desktop.socket.close();
+        rpc.unregister();
+        await server.close();
+      }
+    },
+  );
 
   it("fails closed for a thread-only handoff when no device has submitted a turn", async () => {
     const server = await startTestServer();
