@@ -86,6 +86,12 @@ function harness(options: { vad?: boolean } = {}) {
     advance(ms);
     level = 0;
   };
+  const tickAfter = (gapMs: number, nextLevel: number) => {
+    level = nextLevel;
+    now += gapMs;
+    for (const callback of intervals.values()) callback();
+    level = 0;
+  };
   const flush = async () => {
     for (let index = 0; index < 10; index += 1) await Promise.resolve();
   };
@@ -99,6 +105,7 @@ function harness(options: { vad?: boolean } = {}) {
     meterClosed,
     advance,
     speak,
+    tickAfter,
     flush,
     runTimeouts: () => timeouts.splice(0).forEach((callback) => callback()),
     last: () => snapshots.at(-1),
@@ -128,6 +135,42 @@ describe("DictationSession", () => {
     await h.flush();
     expect(h.calls).toHaveLength(0);
     expect(h.last()?.phase).toBe("done");
+  });
+
+  it("keeps speech that a busy main thread only sampled a few times", async () => {
+    const h = harness();
+    h.session.start();
+    h.tickAfter(470, 0.2);
+    h.tickAfter(470, 0.2);
+    h.tickAfter(470, 0.2);
+    h.tickAfter(470, 0);
+    void h.session.stop();
+    await h.flush();
+    expect(h.calls).toHaveLength(1);
+    expect(h.calls[0]?.segment.durationMs).toBe(1_880);
+  });
+
+  it("does not cut at a pause that fell between two late samples", async () => {
+    const h = harness();
+    h.session.start();
+    h.speak(1_500);
+    h.tickAfter(DICTATION_PAUSE_MS + 50, 0);
+    await h.flush();
+    expect(h.calls).toHaveLength(0);
+    h.advance(DICTATION_PAUSE_MS + DICTATION_TICK_MS);
+    await h.flush();
+    expect(h.calls).toHaveLength(1);
+  });
+
+  it("still drops a segment whose samples were all silent", async () => {
+    const h = harness();
+    h.session.start();
+    h.speak(1_500);
+    h.advance(DICTATION_PAUSE_MS + DICTATION_TICK_MS);
+    h.advance(2_000);
+    void h.session.stop();
+    await h.flush();
+    expect(h.calls).toHaveLength(1);
   });
 
   it("delivers text in recording order even when replies arrive out of order", async () => {

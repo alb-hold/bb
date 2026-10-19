@@ -63,6 +63,7 @@ export const DICTATION_MAX_QUEUED = 8;
 const SPEECH_FLOOR = 0.012;
 const NOISE_MULTIPLIER = 3;
 const RETRY_DELAY_MS = 800;
+const DENSE_TICK_GAP_MS = DICTATION_TICK_MS * 2;
 
 interface QueuedSegment {
   file: File;
@@ -89,6 +90,9 @@ export class DictationSession {
   private segmentStartedAt = 0;
   private lastSpeechAt = 0;
   private speechMs = 0;
+  private unsampledMs = 0;
+  private observedSilenceMs = 0;
+  private lastTickAt = 0;
   private noise = SPEECH_FLOOR / NOISE_MULTIPLIER;
   private speaking = false;
   private cutting: Promise<void> = Promise.resolve();
@@ -167,20 +171,29 @@ export class DictationSession {
     const now = this.env.now();
     this.segmentStartedAt = now;
     this.lastSpeechAt = now;
+    this.lastTickAt = now;
     this.speechMs = 0;
+    this.unsampledMs = 0;
+    this.observedSilenceMs = 0;
   }
 
   private tick(): void {
     if (this.phase !== "recording" || this.meter === null) return;
     const level = this.meter.read();
     const now = this.env.now();
+    const elapsed = Math.max(0, now - this.lastTickAt);
+    this.lastTickAt = now;
+    const dense = elapsed <= DENSE_TICK_GAP_MS;
+    if (!dense) this.unsampledMs += elapsed - DICTATION_TICK_MS;
     const threshold = Math.max(SPEECH_FLOOR, this.noise * NOISE_MULTIPLIER);
     const speaking = level >= threshold;
     if (speaking) {
       this.lastSpeechAt = now;
-      this.speechMs += DICTATION_TICK_MS;
+      this.speechMs += elapsed;
+      this.observedSilenceMs = 0;
     } else {
       this.noise = this.noise * 0.95 + level * 0.05;
+      this.observedSilenceMs = dense ? this.observedSilenceMs + elapsed : 0;
     }
     if (speaking !== this.speaking) {
       this.speaking = speaking;
@@ -192,7 +205,7 @@ export class DictationSession {
     if (
       (hadSpeech &&
         age >= DICTATION_MIN_SEGMENT_MS &&
-        silence >= DICTATION_PAUSE_MS) ||
+        this.observedSilenceMs >= DICTATION_PAUSE_MS) ||
       (age >= DICTATION_SOFT_MAX_SEGMENT_MS && silence >= 200) ||
       age >= DICTATION_HARD_MAX_SEGMENT_MS
     ) {
@@ -204,7 +217,10 @@ export class DictationSession {
     const recorder = this.recorder;
     if (recorder === null) return this.cutting;
     const durationMs = this.env.now() - this.segmentStartedAt;
-    const hadSpeech = !this.vad || this.speechMs >= DICTATION_MIN_SPEECH_MS;
+    const hadSpeech =
+      !this.vad ||
+      this.speechMs >= DICTATION_MIN_SPEECH_MS ||
+      this.unsampledMs >= DICTATION_MIN_SPEECH_MS;
     this.recorder = null;
     if (!final) this.beginSegment();
     const stopped = recorder.stop().catch(() => null);
