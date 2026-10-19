@@ -1026,10 +1026,7 @@ describe("spawnLoggedProcess", () => {
         env: process.env,
         logDir,
         logName: "server",
-        testWriterBarrier: {
-          ownerIdentity: identity,
-          recoveryIntervalMs: 25,
-        },
+        testWriterBarrier: { recoveryIntervalMs: 25 },
       });
       await expect
         .poll(
