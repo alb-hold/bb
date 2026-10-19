@@ -1810,6 +1810,59 @@ describe("public terminal routes", () => {
     );
   });
 
+  it("retains a large daemon replay in one pass instead of rewriting the buffer per chunk", async () => {
+    const fixture = await createTerminalRouteFixture();
+    harnesses.push(fixture.harness);
+    const terminal = createTerminalSession(fixture.harness.db, {
+      cols: 120,
+      daemonSessionId: fixture.session.id,
+      environmentId: fixture.environment.id,
+      hostId: fixture.host.id,
+      initialCwd: fixture.environment.path ?? "/tmp/terminal-workspace",
+      rows: 32,
+      status: "running",
+      threadId: fixture.thread.id,
+      title: "Long replay",
+    });
+    const chunks = Array.from({ length: 10_000 }, (_, seq) => ({
+      seq,
+      dataBase64: Buffer.from(
+        `line ${String(seq).padStart(5, "0")} `.padEnd(200, "x"),
+      ).toString("base64"),
+    }));
+
+    const startedAt = performance.now();
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.host.id,
+      sessionId: fixture.session.id,
+      message: {
+        type: "terminal.replay",
+        requestId: "long-replay",
+        terminalId: terminal.id,
+        chunks,
+        replayStartSeq: 0,
+        nextSeq: chunks.length,
+      },
+    });
+    const elapsedMs = performance.now() - startedAt;
+    process.stdout.write(
+      `terminal.replay of ${chunks.length} chunks handled in ${elapsedMs.toFixed(1)}ms\n`,
+    );
+
+    const retained = getRetainedTerminalOutput(fixture.harness.db, {
+      hostId: fixture.host.id,
+      terminalSessionId: terminal.id,
+      now: Date.now(),
+    });
+    expect(retained?.at(-1)).toEqual(chunks.at(-1));
+    expect(retained?.map((chunk) => chunk.seq)).toEqual(
+      chunks
+        .slice(chunks.length - (retained?.length ?? 0))
+        .map((chunk) => chunk.seq),
+    );
+    expect(elapsedMs).toBeLessThan(1_500);
+  }, 60_000);
+
   it("accepts retained output only from the terminal's owning host", async () => {
     const fixture = await createTerminalRouteFixture();
     harnesses.push(fixture.harness);
