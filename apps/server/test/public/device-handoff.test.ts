@@ -211,7 +211,7 @@ function sendRealtime(
   socket.send(JSON.stringify(message));
 }
 
-function postThreadSend(
+async function postThreadSend(
   server: Pick<TestAppHarness, "app">,
   args: {
     threadId: string;
@@ -220,7 +220,7 @@ function postThreadSend(
     mode: "auto" | "steer";
   },
 ): Promise<Response> {
-  return server.app.request(`/api/v1/threads/${args.threadId}/send`, {
+  return await server.app.request(`/api/v1/threads/${args.threadId}/send`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
