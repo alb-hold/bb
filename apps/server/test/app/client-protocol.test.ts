@@ -17,6 +17,14 @@ function createProtocolDeps(hub: NotificationHub) {
   };
 }
 
+function applicationMessages(
+  socket: ReturnType<typeof createMockHubSocket>,
+): string[] {
+  return socket.messages.filter((message) => {
+    return JSON.parse(message).type !== "device-handoff-client-token";
+  });
+}
+
 describe("client websocket protocol", () => {
   it("subscribes valid client messages parsed through the shared schema", () => {
     const hub = new NotificationHub();
@@ -35,8 +43,8 @@ describe("client websocket protocol", () => {
     hub.notifyThread("thread-1", ["events-appended"]);
 
     expect(socket.closed).toHaveLength(0);
-    expect(socket.messages).toHaveLength(1);
-    expect(JSON.parse(socket.messages[0])).toMatchObject({
+    expect(applicationMessages(socket)).toHaveLength(1);
+    expect(JSON.parse(applicationMessages(socket)[0]!)).toMatchObject({
       type: "changed",
       entity: "thread",
       id: "thread-1",
@@ -61,7 +69,7 @@ describe("client websocket protocol", () => {
     hub.notifyThread("thread-1", ["events-appended"]);
 
     expect(socket.closed).toEqual([{ code: 1008, reason: "invalid-message" }]);
-    expect(socket.messages).toHaveLength(0);
+    expect(applicationMessages(socket)).toHaveLength(0);
   });
 
   it("removes subscriptions after unsubscribe messages", () => {
@@ -89,7 +97,7 @@ describe("client websocket protocol", () => {
     hub.notifyThread("thread-1", ["events-appended"]);
 
     expect(socket.closed).toHaveLength(0);
-    expect(socket.messages).toHaveLength(0);
+    expect(applicationMessages(socket)).toHaveLength(0);
   });
 
   it("rejects subscribe messages for unknown targets", () => {
@@ -108,7 +116,7 @@ describe("client websocket protocol", () => {
     );
 
     expect(socket.closed).toEqual([{ code: 1008, reason: "invalid-message" }]);
-    expect(socket.messages).toHaveLength(0);
+    expect(applicationMessages(socket)).toHaveLength(0);
   });
 
   it("rejects client messages with missing required fields", () => {
@@ -126,7 +134,7 @@ describe("client websocket protocol", () => {
     );
 
     expect(socket.closed).toEqual([{ code: 1008, reason: "invalid-message" }]);
-    expect(socket.messages).toHaveLength(0);
+    expect(applicationMessages(socket)).toHaveLength(0);
   });
 
   it("closes the socket instead of throwing on malformed JSON", () => {
@@ -184,10 +192,10 @@ describe("client websocket protocol", () => {
     onClientSocketMessage(deps, socket, JSON.stringify({ type: "ping" }));
 
     expect(socket.closed).toHaveLength(0);
-    expect(socket.messages.map((message) => JSON.parse(message))).toEqual([
-      { type: "pong" },
-    ]);
-    expect(otherSocket.messages).toHaveLength(0);
+    expect(
+      applicationMessages(socket).map((message) => JSON.parse(message)),
+    ).toEqual([{ type: "pong" }]);
+    expect(applicationMessages(otherSocket)).toHaveLength(0);
     expect(deps.watchInterests.subscribe).not.toHaveBeenCalled();
   });
 

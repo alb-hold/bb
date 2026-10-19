@@ -33,6 +33,7 @@ export interface DataPlaneTransport {
 
 export interface DataPlaneLifecyclePort {
   attach(args: {
+    handoffOwnerToken?: string;
     outputAcks: boolean;
     resizeAcks: boolean;
     sinceSeq: number;
@@ -62,6 +63,7 @@ interface PendingAttach {
 
 export interface DataPlaneAttachArgs {
   daemonSessionId: string;
+  handoffOwnerToken?: string;
   outputAcks: boolean;
   resizeAcks: boolean;
   request: TerminalDataPlaneHandoffRequest;
@@ -72,6 +74,7 @@ export interface DataPlaneAttachArgs {
 
 export class TerminalDataPlaneRouter implements ChildTerminalSocketSink {
   private readonly pending = new Map<string, PendingAttach>();
+  private readonly handoffOwnerTokensByAttachId = new Map<string, string>();
   private readonly socketsByAttachId = new Map<string, ChildTerminalSocket>();
   private readonly attachIdsByTerminalId = new Map<string, Set<string>>();
   private readonly relayedSeqByTerminalId = new Map<string, number>();
@@ -103,6 +106,9 @@ export class TerminalDataPlaneRouter implements ChildTerminalSocketSink {
       sinceSeq: args.sinceSeq,
       terminalId: args.terminalId,
     });
+    if (args.handoffOwnerToken !== undefined) {
+      this.handoffOwnerTokensByAttachId.set(attachId, args.handoffOwnerToken);
+    }
     const sent = this.transport.send(
       {
         v: V,
@@ -118,6 +124,7 @@ export class TerminalDataPlaneRouter implements ChildTerminalSocketSink {
     );
     if (!sent) {
       this.pending.delete(attachId);
+      this.handoffOwnerTokensByAttachId.delete(attachId);
       return null;
     }
     return attachId;
@@ -181,7 +188,11 @@ export class TerminalDataPlaneRouter implements ChildTerminalSocketSink {
     );
   }
 
-  closeTerminalBrowsers(terminalId: string, code: number, reason: string): void {
+  closeTerminalBrowsers(
+    terminalId: string,
+    code: number,
+    reason: string,
+  ): void {
     this.transport.send({
       v: V,
       type: "browser.close",
@@ -212,7 +223,11 @@ export class TerminalDataPlaneRouter implements ChildTerminalSocketSink {
         );
         return;
       case "browser.resync":
-        this.handleResync(message.attachId, message.terminalId, message.fromSeq);
+        this.handleResync(
+          message.attachId,
+          message.terminalId,
+          message.fromSeq,
+        );
         return;
       case "terminal.ack":
         this.withSocket(message.attachId, (socket) =>
@@ -233,7 +248,11 @@ export class TerminalDataPlaneRouter implements ChildTerminalSocketSink {
         );
         return;
       case "terminal.input":
-        this.handleInput(message.attachId, message.terminalId, message.dataBase64);
+        this.handleInput(
+          message.attachId,
+          message.terminalId,
+          message.dataBase64,
+        );
         return;
       case "terminal.input-activity":
         this.lifecycle.recordInputActivity(message.terminalId);
@@ -249,6 +268,7 @@ export class TerminalDataPlaneRouter implements ChildTerminalSocketSink {
   handleChildDown(): void {
     const sockets = [...this.socketsByAttachId.values()];
     this.pending.clear();
+    this.handoffOwnerTokensByAttachId.clear();
     this.socketsByAttachId.clear();
     this.attachIdsByTerminalId.clear();
     this.relayedSeqByTerminalId.clear();
@@ -357,6 +377,7 @@ export class TerminalDataPlaneRouter implements ChildTerminalSocketSink {
     ids.add(attachId);
     this.attachIdsByTerminalId.set(pending.terminalId, ids);
     this.lifecycle.attach({
+      handoffOwnerToken: this.handoffOwnerTokensByAttachId.get(attachId),
       outputAcks: pending.outputAcks,
       resizeAcks: pending.resizeAcks,
       sinceSeq: pending.sinceSeq,
@@ -372,6 +393,7 @@ export class TerminalDataPlaneRouter implements ChildTerminalSocketSink {
       return;
     }
     this.forget(socket);
+    this.handoffOwnerTokensByAttachId.delete(attachId);
     socket.markClosed();
     this.lifecycle.detach({ socket, terminalId: socket.terminalId });
   }
@@ -396,6 +418,7 @@ export class TerminalDataPlaneRouter implements ChildTerminalSocketSink {
     );
     this.socketsByAttachId.set(attachId, fresh);
     this.lifecycle.attach({
+      handoffOwnerToken: this.handoffOwnerTokensByAttachId.get(attachId),
       outputAcks: fresh.outputAcks,
       resizeAcks: fresh.resizeAcks,
       sinceSeq: fromSeq,

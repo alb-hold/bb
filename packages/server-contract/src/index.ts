@@ -6,6 +6,7 @@ export * from "./api/native-terminal-threads.js";
 export * from "./api/thread-tabs.js";
 export * from "./api/thread-row-state.js";
 export * from "./common.js";
+export * from "./device-handoff-identity.js";
 export * from "./errors.js";
 export * from "./public-api.js";
 export * from "./thread-timeline.js";

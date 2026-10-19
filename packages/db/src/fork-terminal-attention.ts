@@ -14,6 +14,11 @@ export interface TerminalAttentionRecord {
   updatedAt: number;
 }
 
+export interface DeviceHandoffAttentionMarker {
+  terminalSessionId: string;
+  attentionSeq: number;
+}
+
 export function ensureTerminalAttentionTable(db: DbConnection): void {
   db.$client.exec(`
     CREATE TABLE IF NOT EXISTS fork_terminal_attention (
@@ -124,4 +129,83 @@ export function clearTerminalAttention(
        WHERE terminal_session_id = ? AND cleared_at IS NULL`,
     )
     .run(clearedAt, clearedAt, terminalSessionId);
+}
+
+export function setDeviceHandoffAttentionMarker(
+  db: DbConnection,
+  terminalSessionId: string,
+  attentionSeq: number,
+): void {
+  db.$client
+    .prepare(
+      `INSERT INTO fork_device_handoff_attention (terminal_session_id, attention_seq)
+       VALUES (?, ?)
+       ON CONFLICT(terminal_session_id) DO UPDATE SET attention_seq = excluded.attention_seq`,
+    )
+    .run(terminalSessionId, attentionSeq);
+}
+
+export function getDeviceHandoffAttentionMarker(
+  db: DbConnection,
+  terminalSessionId: string,
+): DeviceHandoffAttentionMarker | null {
+  const row = db.$client
+    .prepare(
+      `SELECT terminal_session_id AS terminalSessionId, attention_seq AS attentionSeq
+       FROM fork_device_handoff_attention WHERE terminal_session_id = ?`,
+    )
+    .get(terminalSessionId) as DeviceHandoffAttentionMarker | undefined;
+  return row ?? null;
+}
+
+export function listDeviceHandoffAttentionMarkers(
+  db: DbConnection,
+): DeviceHandoffAttentionMarker[] {
+  return db.$client
+    .prepare(
+      `SELECT terminal_session_id AS terminalSessionId, attention_seq AS attentionSeq
+       FROM fork_device_handoff_attention`,
+    )
+    .all() as DeviceHandoffAttentionMarker[];
+}
+
+export function deleteDeviceHandoffAttentionMarker(
+  db: DbConnection,
+  terminalSessionId: string,
+  attentionSeq: number,
+): void {
+  db.$client
+    .prepare(
+      `DELETE FROM fork_device_handoff_attention
+       WHERE terminal_session_id = ? AND attention_seq = ?`,
+    )
+    .run(terminalSessionId, attentionSeq);
+}
+
+export function clearPersistedDeviceHandoffAttention(
+  db: DbConnection,
+  clearedAt: number,
+): void {
+  const markers = listDeviceHandoffAttentionMarkers(db);
+  const clear = db.$client.prepare(
+    `UPDATE fork_terminal_attention
+     SET cleared_at = ?, updated_at = ?
+     WHERE terminal_session_id = ? AND seq = ? AND cleared_at IS NULL`,
+  );
+  const remove = db.$client.prepare(
+    `DELETE FROM fork_device_handoff_attention
+     WHERE terminal_session_id = ? AND attention_seq = ?`,
+  );
+  const cleanup = db.$client.transaction(() => {
+    for (const marker of markers) {
+      clear.run(
+        clearedAt,
+        clearedAt,
+        marker.terminalSessionId,
+        marker.attentionSeq,
+      );
+      remove.run(marker.terminalSessionId, marker.attentionSeq);
+    }
+  });
+  cleanup();
 }
