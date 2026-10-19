@@ -1,6 +1,13 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { FitAddon } from "@xterm/addon-fit";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -16,6 +23,7 @@ import { ThreadTerminalView } from "./ThreadTerminalView";
 const testState = vi.hoisted(() => ({
   calls: [] as string[],
   clearAttention: vi.fn(),
+  mediaQueryListeners: new Set<() => void>(),
   touchEnabled: false,
   toastError: vi.fn(),
   sockets: [] as TestTerminalSocket[],
@@ -78,15 +86,25 @@ vi.mock("@/components/ui/app-toast", () => ({
 }));
 
 vi.mock("@bb/shared-ui/hooks/use-media-query", async (importOriginal) => {
-  const actual = await importOriginal<
-    typeof import("@bb/shared-ui/hooks/use-media-query")
-  >();
+  const { useSyncExternalStore } = await import("react");
+  const actual =
+    await importOriginal<
+      typeof import("@bb/shared-ui/hooks/use-media-query")
+    >();
   return {
     ...actual,
-    useMediaQuery: (query: string) =>
-      query === "(pointer: coarse)"
-        ? testState.touchEnabled
-        : actual.useMediaQuery(query),
+    useMediaQuery: (query: string) => {
+      const touchEnabled = useSyncExternalStore(
+        (notify) => {
+          testState.mediaQueryListeners.add(notify);
+          return () => testState.mediaQueryListeners.delete(notify);
+        },
+        () => testState.touchEnabled,
+        () => false,
+      );
+      const actualValue = actual.useMediaQuery(query);
+      return query === "(pointer: coarse)" ? touchEnabled : actualValue;
+    },
   };
 });
 
@@ -146,6 +164,7 @@ afterEach(() => {
   testState.clearAttention.mockReset();
   testState.toastError.mockReset();
   testState.touchEnabled = false;
+  testState.mediaQueryListeners.clear();
 });
 
 const originalClipboardDescriptor = Object.getOwnPropertyDescriptor(
@@ -218,11 +237,7 @@ function renderMobileTerminal(): ReturnType<typeof makeTerminalSession> {
   render(
     <MemoryRouter>
       <AppCommandProvider>
-        <ThreadTerminalView
-          autoFocus={false}
-          isPanelOpen
-          session={session}
-        />
+        <ThreadTerminalView autoFocus={false} isPanelOpen session={session} />
       </AppCommandProvider>
     </MemoryRouter>,
   );
@@ -230,6 +245,57 @@ function renderMobileTerminal(): ReturnType<typeof makeTerminalSession> {
 }
 
 describe("ThreadTerminalView terminal focus boundary", () => {
+  it("preserves the open terminal and its scrollback when pointer mode changes", async () => {
+    prepareMobileTerminal();
+    testState.touchEnabled = false;
+    const session = renderMobileTerminal();
+
+    await waitFor(() => expect(testState.sockets).toHaveLength(1));
+    const socket = testState.sockets[0];
+    if (!socket) throw new Error("terminal socket was not created");
+    socket.receive({
+      type: "attached",
+      session,
+      replayStartSeq: 0,
+      nextSeq: 0,
+    });
+    const output = Array.from(
+      { length: 48 },
+      (_, index) => `retained-${String(index + 1).padStart(2, "0")}`,
+    ).join("\r\n");
+    socket.receive({
+      type: "output",
+      chunk: { seq: 0, dataBase64: btoa(output) },
+    });
+    await waitFor(() => {
+      expect(document.querySelector(".xterm-rows")?.textContent).toContain(
+        "retained-48",
+      );
+    });
+    const xterm = document.querySelector(".xterm");
+    expect(xterm).not.toBeNull();
+
+    act(() => {
+      testState.touchEnabled = true;
+      for (const notify of [...testState.mediaQueryListeners]) notify();
+    });
+
+    await screen.findByRole("button", { name: "More terminal keys" });
+    await waitFor(() => expect(testState.sockets).toHaveLength(1));
+    expect(document.querySelector(".xterm")).toBe(xterm);
+    fireEvent.click(screen.getByRole("button", { name: "More terminal keys" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Select terminal text" }),
+    );
+    await waitFor(() => {
+      const snapshot = screen.getByRole("textbox", {
+        name: "Terminal text snapshot",
+      }) as HTMLTextAreaElement;
+      expect(snapshot.value).toContain("retained-01");
+      expect(snapshot.value).toContain("retained-48");
+    });
+  });
+
   it("sends clipboard text once through xterm paste input", async () => {
     prepareMobileTerminal();
     const readText = vi.fn().mockResolvedValue("paste-once");
@@ -242,13 +308,21 @@ describe("ThreadTerminalView terminal focus boundary", () => {
     await screen.findByRole("button", { name: "More terminal keys" });
     await waitFor(() => {
       expect(
-        (screen.getByRole("button", { name: "More terminal keys" }) as HTMLButtonElement)
-          .disabled,
+        (
+          screen.getByRole("button", {
+            name: "More terminal keys",
+          }) as HTMLButtonElement
+        ).disabled,
       ).toBe(false);
     });
     const socket = testState.sockets[0];
     if (!socket) throw new Error("terminal socket was not created");
-    socket.receive({ type: "attached", session, replayStartSeq: 0, nextSeq: 0 });
+    socket.receive({
+      type: "attached",
+      session,
+      replayStartSeq: 0,
+      nextSeq: 0,
+    });
     socket.receive({
       type: "output",
       chunk: { seq: 0, dataBase64: btoa("\x1b[?2004h") },
@@ -258,14 +332,19 @@ describe("ThreadTerminalView terminal focus boundary", () => {
 
     await waitFor(() => {
       const inputMessages = testState.socketMessages
-        .map((message) => JSON.parse(message) as { dataBase64?: string; type?: string })
+        .map(
+          (message) =>
+            JSON.parse(message) as { dataBase64?: string; type?: string },
+        )
         .filter(
           (message): message is { dataBase64: string; type: "input" } =>
             message.type === "input" && typeof message.dataBase64 === "string",
         );
       expect(inputMessages).toHaveLength(1);
       expect(
-        new TextDecoder().decode(decodeBase64Bytes(inputMessages[0]!.dataBase64)),
+        new TextDecoder().decode(
+          decodeBase64Bytes(inputMessages[0]!.dataBase64),
+        ),
       ).toBe("paste-once");
     });
     expect(readText).toHaveBeenCalledOnce();
@@ -284,8 +363,11 @@ describe("ThreadTerminalView terminal focus boundary", () => {
     await screen.findByRole("button", { name: "More terminal keys" });
     await waitFor(() => {
       expect(
-        (screen.getByRole("button", { name: "More terminal keys" }) as HTMLButtonElement)
-          .disabled,
+        (
+          screen.getByRole("button", {
+            name: "More terminal keys",
+          }) as HTMLButtonElement
+        ).disabled,
       ).toBe(false);
     });
     fireEvent.click(screen.getByRole("button", { name: "More terminal keys" }));

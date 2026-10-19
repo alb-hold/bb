@@ -1117,7 +1117,6 @@ export function ThreadTerminalView({
     let selectionChangeDisposable: { dispose: () => void } | null = null;
     let terminalKeyDisposable: { dispose: () => void } | null = null;
     let terminalInputForwarding: { dispose: () => void } | null = null;
-    let terminalCompositionInputGuard: { dispose: () => void } | null = null;
     let shellOscDisposable: { dispose: () => void } | null = null;
     let osc52Disposable: { dispose: () => void } | null = null;
     let stopObservingFonts: (() => void) | null = null;
@@ -1334,11 +1333,6 @@ export function ThreadTerminalView({
         ),
       );
       terminal.open(containerElement);
-      terminalCompositionInputGuard = isTouchDevice
-        ? suppressDuplicateTerminalCompositionInput(
-            containerElement.parentElement ?? containerElement,
-          )
-        : null;
       document.addEventListener("focusin", updateGridVisibility);
       document.addEventListener("focusout", updateGridVisibility);
       window.addEventListener("focus", updateGridVisibility);
@@ -1798,8 +1792,6 @@ export function ThreadTerminalView({
       terminalKeyDisposable = null;
       terminalInputForwarding?.dispose();
       terminalInputForwarding = null;
-      terminalCompositionInputGuard?.dispose();
-      terminalCompositionInputGuard = null;
       shellOscDisposable?.dispose();
       osc52Disposable?.dispose();
       terminalInteractions?.dispose();
@@ -1824,13 +1816,21 @@ export function ThreadTerminalView({
     handleTerminalPointerCancel,
     jumpToPrompt,
     requestOpenTerminalLink,
-    isTouchDevice,
     session.id,
     handoffOwnerToken,
     session.title,
     session.threadId,
     updateHoveredTerminalLink,
   ]);
+
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    if (!isTouchDevice || terminal?.element == null) return;
+    const compositionInputGuard = suppressDuplicateTerminalCompositionInput(
+      terminal.element.parentElement ?? terminal.element,
+    );
+    return () => compositionInputGuard.dispose();
+  }, [isTouchDevice, terminalReady]);
 
   useEffect(() => {
     if (!isPanelOpen || !autoFocus) {
