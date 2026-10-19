@@ -4,6 +4,8 @@ import {
   createTerminalSession,
   getRetainedTerminalOutput,
   getTerminalSession,
+  listTerminalSessions,
+  pruneRetainedTerminalOutput,
 } from "@bb/db";
 import { createTerminalGridMarker } from "@bb/domain";
 import { createMigratedConnection } from "@bb/db/testing";
@@ -68,6 +70,14 @@ class FakeSocket implements TerminalDataPlaneSocket {
       listener(data);
     }
   }
+}
+
+function retainedAfterFlush(
+  terminalSessions: { flushAllRetainedOutput(): void },
+  ...args: Parameters<typeof getRetainedTerminalOutput>
+): ReturnType<typeof getRetainedTerminalOutput> {
+  terminalSessions.flushAllRetainedOutput();
+  return getRetainedTerminalOutput(...args);
 }
 
 function outputChunks(): Array<{ seq: number; dataBase64: string }> {
@@ -186,7 +196,7 @@ describe("terminal output retained from the data plane", () => {
       });
     });
 
-    const retained = getRetainedTerminalOutput(fixture.db, {
+    const retained = retainedAfterFlush(fixture.terminalSessions, fixture.db, {
       hostId: fixture.host.id,
       terminalSessionId: fixture.terminal.id,
       now: Date.now(),
@@ -227,6 +237,330 @@ describe("terminal output retained from the data plane", () => {
     fixture.child.shutdown();
   });
 
+  it("writes a burst of live output to the database in one write", async () => {
+    const fixture = await setup();
+    fixture.db.$client.exec(`
+      CREATE TABLE retained_output_writes (n INTEGER NOT NULL);
+      INSERT INTO retained_output_writes (n) VALUES (0);
+      CREATE TRIGGER retained_output_inserted AFTER INSERT ON fork_terminal_output
+        BEGIN UPDATE retained_output_writes SET n = n + 1; END;
+      CREATE TRIGGER retained_output_updated AFTER UPDATE ON fork_terminal_output
+        BEGIN UPDATE retained_output_writes SET n = n + 1; END;
+    `);
+    const writes = () =>
+      (
+        fixture.db.$client
+          .prepare("SELECT n FROM retained_output_writes")
+          .get() as { n: number }
+      ).n;
+    for (let seq = 0; seq < 200; seq += 1) {
+      fixture.daemonSocket.receive({
+        type: "terminal.output",
+        terminalId: fixture.terminal.id,
+        chunk: {
+          seq,
+          dataBase64: Buffer.from(`line ${seq}\n`).toString("base64"),
+        },
+      });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(
+      fixture.childMessages.filter(
+        (message) => message.type === "terminal.output-batch",
+      ).length,
+    ).toBeGreaterThan(0);
+    expect(writes()).toBe(0);
+    fixture.terminalSessions.flushAllRetainedOutput();
+    expect(writes()).toBe(1);
+    const retained = getRetainedTerminalOutput(fixture.db, {
+      hostId: fixture.host.id,
+      terminalSessionId: fixture.terminal.id,
+      now: Date.now(),
+    });
+    expect(retained).toHaveLength(200);
+    expect(textFrom(retained ?? []).endsWith("line 199\n")).toBe(true);
+  });
+
+  it("keeps queued output when a write fails and writes it on the next flush", async () => {
+    const fixture = await setup();
+    fixture.db.$client.exec(`
+      CREATE TRIGGER retained_output_disk_full BEFORE INSERT ON fork_terminal_output
+        BEGIN SELECT RAISE(ABORT, 'disk full'); END;
+    `);
+    for (const chunk of outputChunks()) {
+      fixture.daemonSocket.receive({
+        type: "terminal.output",
+        terminalId: fixture.terminal.id,
+        chunk,
+      });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    fixture.terminalSessions.flushAllRetainedOutput();
+    expect(
+      getRetainedTerminalOutput(fixture.db, {
+        hostId: fixture.host.id,
+        terminalSessionId: fixture.terminal.id,
+        now: Date.now(),
+      }),
+    ).toBeNull();
+    fixture.db.$client.exec("DROP TRIGGER retained_output_disk_full");
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    expect(
+      getRetainedTerminalOutput(fixture.db, {
+        hostId: fixture.host.id,
+        terminalSessionId: fixture.terminal.id,
+        now: Date.now(),
+      }),
+    ).toEqual(outputChunks());
+    fixture.child.shutdown();
+  });
+
+  it("keeps the newest 2 MiB queued through failed writes and then stores what an uninterrupted write would", async () => {
+    const fixture = await setup();
+    fixture.db.$client.exec(`
+      CREATE TRIGGER retained_output_disk_full BEFORE INSERT ON fork_terminal_output
+        BEGIN SELECT RAISE(ABORT, 'disk full'); END;
+    `);
+    const chunks = Array.from({ length: 2_200 }, (_, seq) => ({
+      seq,
+      dataBase64: Buffer.from(
+        `${String(seq).padStart(6, "0")}${"x".repeat(1_017)}\n`,
+      ).toString("base64"),
+    }));
+    for (const chunk of chunks) {
+      fixture.daemonSocket.receive({
+        type: "terminal.output",
+        terminalId: fixture.terminal.id,
+        chunk,
+      });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    fixture.terminalSessions.flushAllRetainedOutput();
+    fixture.terminalSessions.flushAllRetainedOutput();
+    fixture.db.$client.exec("DROP TRIGGER retained_output_disk_full");
+    fixture.terminalSessions.flushAllRetainedOutput();
+    expect(
+      getRetainedTerminalOutput(fixture.db, {
+        hostId: fixture.host.id,
+        terminalSessionId: fixture.terminal.id,
+        now: Date.now(),
+      }),
+    ).toEqual(chunks.slice(-64));
+    fixture.child.shutdown();
+  });
+
+  it("retries failed writes at shutdown so queued output is stored before the database closes", async () => {
+    const fixture = await setup();
+    for (const chunk of outputChunks()) {
+      fixture.daemonSocket.receive({
+        type: "terminal.output",
+        terminalId: fixture.terminal.id,
+        chunk,
+      });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const client = fixture.db.$client;
+    const transaction = client.transaction.bind(client);
+    let failures = 2;
+    vi.spyOn(client, "transaction").mockImplementation(((
+      run: Parameters<typeof transaction>[0],
+    ) => {
+      if (failures > 0) {
+        failures -= 1;
+        throw new Error("disk full");
+      }
+      return transaction(run);
+    }) as typeof client.transaction);
+    fixture.terminalSessions.flushRetainedOutputBeforeClose();
+    vi.restoreAllMocks();
+    expect(failures).toBe(0);
+    expect(
+      getRetainedTerminalOutput(fixture.db, {
+        hostId: fixture.host.id,
+        terminalSessionId: fixture.terminal.id,
+        now: Date.now(),
+      }),
+    ).toEqual(outputChunks());
+    fixture.child.shutdown();
+  });
+
+  it("discards output queued across failed writes only after three failed shutdown writes, leaving nothing queued", async () => {
+    const fixture = await setup();
+    fixture.db.$client.exec(`
+      CREATE TRIGGER retained_output_disk_full BEFORE INSERT ON fork_terminal_output
+        BEGIN SELECT RAISE(ABORT, 'disk full'); END;
+    `);
+    const [first, ...rest] = outputChunks();
+    if (first === undefined) throw new Error("missing chunk");
+    fixture.daemonSocket.receive({
+      type: "terminal.output",
+      terminalId: fixture.terminal.id,
+      chunk: first,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    fixture.terminalSessions.flushAllRetainedOutput();
+    for (const chunk of rest) {
+      fixture.daemonSocket.receive({
+        type: "terminal.output",
+        terminalId: fixture.terminal.id,
+        chunk,
+      });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    fixture.terminalSessions.flushAllRetainedOutput();
+    const client = fixture.db.$client;
+    const transaction = client.transaction.bind(client);
+    let shutdownAttempts = 0;
+    vi.spyOn(client, "transaction").mockImplementation(((
+      run: Parameters<typeof transaction>[0],
+    ) => {
+      shutdownAttempts += 1;
+      return transaction(run);
+    }) as typeof client.transaction);
+    expect(() =>
+      fixture.terminalSessions.flushRetainedOutputBeforeClose(),
+    ).not.toThrow();
+    vi.restoreAllMocks();
+    expect(shutdownAttempts).toBe(3);
+    fixture.db.$client.exec("DROP TRIGGER retained_output_disk_full");
+    fixture.terminalSessions.flushAllRetainedOutput();
+    expect(
+      getRetainedTerminalOutput(fixture.db, {
+        hostId: fixture.host.id,
+        terminalSessionId: fixture.terminal.id,
+        now: Date.now(),
+      }),
+    ).toBeNull();
+    fixture.child.shutdown();
+  });
+
+  it("keeps output queued for a terminal's new host through a failed write", async () => {
+    const fixture = await setup();
+    const [first, ...rest] = outputChunks();
+    if (first === undefined) throw new Error("missing chunk");
+    fixture.daemonSocket.receive({
+      type: "terminal.output",
+      terminalId: fixture.terminal.id,
+      chunk: first,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const other = seedHostSession(fixture.harness.deps, { id: "host-other" });
+    fixture.db.$client
+      .prepare("UPDATE terminal_sessions SET host_id = ? WHERE id = ?")
+      .run(other.host.id, fixture.terminal.id);
+    for (const chunk of rest) {
+      fixture.daemonSocket.receive({
+        type: "terminal.output",
+        terminalId: fixture.terminal.id,
+        chunk,
+      });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    fixture.db.$client.exec(`
+      CREATE TRIGGER retained_output_disk_full BEFORE INSERT ON fork_terminal_output
+        BEGIN SELECT RAISE(ABORT, 'disk full'); END;
+    `);
+    fixture.terminalSessions.flushAllRetainedOutput();
+    fixture.db.$client.exec("DROP TRIGGER retained_output_disk_full");
+    fixture.terminalSessions.flushAllRetainedOutput();
+    expect(
+      getRetainedTerminalOutput(fixture.db, {
+        hostId: other.host.id,
+        terminalSessionId: fixture.terminal.id,
+        now: Date.now(),
+      }),
+    ).toEqual(rest);
+    fixture.child.shutdown();
+  });
+
+  it("does not let the prune sweep drop output that is still queued", async () => {
+    const fixture = await setup();
+    const [first, ...rest] = outputChunks();
+    if (first === undefined) throw new Error("missing chunk");
+    fixture.daemonSocket.receive({
+      type: "terminal.output",
+      terminalId: fixture.terminal.id,
+      chunk: first,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    fixture.terminalSessions.flushAllRetainedOutput();
+    for (const chunk of rest) {
+      fixture.daemonSocket.receive({
+        type: "terminal.output",
+        terminalId: fixture.terminal.id,
+        chunk,
+      });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(
+      pruneRetainedTerminalOutput(fixture.db, Date.now() + 365 * 86_400_000),
+    ).toBe(0);
+    fixture.terminalSessions.flushAllRetainedOutput();
+    expect(
+      getRetainedTerminalOutput(fixture.db, {
+        hostId: fixture.host.id,
+        terminalSessionId: fixture.terminal.id,
+        now: Date.now(),
+      }),
+    ).toEqual(outputChunks());
+    fixture.child.shutdown();
+  });
+
+  it("lists an exited terminal with all of its queued output without a separate flush", async () => {
+    const fixture = await setup();
+    for (const chunk of outputChunks()) {
+      fixture.daemonSocket.receive({
+        type: "terminal.output",
+        terminalId: fixture.terminal.id,
+        chunk,
+      });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    fixture.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.host.id,
+      sessionId: fixture.session.id,
+      message: {
+        type: "terminal.exited",
+        terminalId: fixture.terminal.id,
+        exitCode: 0,
+        closeReason: "process-exit",
+      },
+    });
+    expect(
+      listTerminalSessions(fixture.db, {
+        scope: { kind: "all" },
+        visible: true,
+      }).map((session) => session.id),
+    ).toContain(fixture.terminal.id);
+    expect(
+      getRetainedTerminalOutput(fixture.db, {
+        hostId: fixture.host.id,
+        terminalSessionId: fixture.terminal.id,
+        now: Date.now(),
+      }),
+    ).toEqual(outputChunks());
+    fixture.child.shutdown();
+  });
+
+  it("persists live output within about a second without a reader", async () => {
+    const fixture = await setup();
+    fixture.daemonSocket.receive({
+      type: "terminal.output",
+      terminalId: fixture.terminal.id,
+      chunk: { seq: 0, dataBase64: Buffer.from("kept\n").toString("base64") },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    expect(
+      getRetainedTerminalOutput(fixture.db, {
+        hostId: fixture.host.id,
+        terminalSessionId: fixture.terminal.id,
+        now: Date.now(),
+      }),
+    ).toEqual([
+      { seq: 0, dataBase64: Buffer.from("kept\n").toString("base64") },
+    ]);
+  });
+
   it("persists live data-socket output without a browser and reads it after exit", async () => {
     const fixture = await setup();
     for (const chunk of outputChunks()) {
@@ -248,7 +582,7 @@ describe("terminal output retained from the data plane", () => {
       ),
     ).toHaveLength(1);
     expect(
-      getRetainedTerminalOutput(fixture.db, {
+      retainedAfterFlush(fixture.terminalSessions, fixture.db, {
         hostId: fixture.host.id,
         terminalSessionId: fixture.terminal.id,
         now: Date.now(),
@@ -429,7 +763,7 @@ describe("terminal output retained from the data plane", () => {
       })?.daemonSessionId,
     ).toBe(fixture.session.id);
     expect(
-      getRetainedTerminalOutput(fixture.db, {
+      retainedAfterFlush(fixture.terminalSessions, fixture.db, {
         hostId: fixture.host.id,
         terminalSessionId: fixture.terminal.id,
         now: Date.now(),
@@ -438,7 +772,7 @@ describe("terminal output retained from the data plane", () => {
 
     fixture.releaseOutputBatches();
     expect(
-      getRetainedTerminalOutput(fixture.db, {
+      retainedAfterFlush(fixture.terminalSessions, fixture.db, {
         hostId: fixture.host.id,
         terminalSessionId: fixture.terminal.id,
         now: Date.now(),
@@ -462,7 +796,7 @@ describe("terminal output retained from the data plane", () => {
       })),
     });
     expect(
-      getRetainedTerminalOutput(fixture.db, {
+      retainedAfterFlush(fixture.terminalSessions, fixture.db, {
         hostId: fixture.host.id,
         terminalSessionId: fixture.terminal.id,
         now: Date.now(),
