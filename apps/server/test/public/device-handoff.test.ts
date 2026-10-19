@@ -2594,11 +2594,18 @@ describe("device handoff websocket acknowledgement", () => {
             delivered: 1,
           }),
         ]);
+        await expectNoRealtimeMessage(
+          olderDevice.socket,
+          "device-handoff",
+          250,
+        );
+        expect(
+          olderFrames.filter((frame) => frame.type === "device-handoff"),
+        ).toHaveLength(0);
         await expect(phoneCliHandoff).resolves.toMatchObject({
           type: "device-handoff",
           request: { url: cliUrl },
         });
-        await expectNoRealtimeMessage(olderDevice.socket, "device-handoff");
       } finally {
         await rm(shimDirectory, { recursive: true, force: true });
       }
