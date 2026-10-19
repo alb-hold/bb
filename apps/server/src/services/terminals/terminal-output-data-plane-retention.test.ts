@@ -349,6 +349,70 @@ describe("terminal output retained from the data plane", () => {
     fixture.child.shutdown();
   });
 
+  it("retries failed writes at shutdown so queued output is stored before the database closes", async () => {
+    const fixture = await setup();
+    for (const chunk of outputChunks()) {
+      fixture.daemonSocket.receive({
+        type: "terminal.output",
+        terminalId: fixture.terminal.id,
+        chunk,
+      });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const client = fixture.db.$client;
+    const transaction = client.transaction.bind(client);
+    let failures = 2;
+    vi.spyOn(client, "transaction").mockImplementation(((
+      run: Parameters<typeof transaction>[0],
+    ) => {
+      if (failures > 0) {
+        failures -= 1;
+        throw new Error("disk full");
+      }
+      return transaction(run);
+    }) as typeof client.transaction);
+    fixture.terminalSessions.flushRetainedOutputBeforeClose();
+    vi.restoreAllMocks();
+    expect(failures).toBe(0);
+    expect(
+      getRetainedTerminalOutput(fixture.db, {
+        hostId: fixture.host.id,
+        terminalSessionId: fixture.terminal.id,
+        now: Date.now(),
+      }),
+    ).toEqual(outputChunks());
+    fixture.child.shutdown();
+  });
+
+  it("returns from the shutdown flush when every write fails, leaving nothing queued", async () => {
+    const fixture = await setup();
+    fixture.db.$client.exec(`
+      CREATE TRIGGER retained_output_disk_full BEFORE INSERT ON fork_terminal_output
+        BEGIN SELECT RAISE(ABORT, 'disk full'); END;
+    `);
+    for (const chunk of outputChunks()) {
+      fixture.daemonSocket.receive({
+        type: "terminal.output",
+        terminalId: fixture.terminal.id,
+        chunk,
+      });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(() =>
+      fixture.terminalSessions.flushRetainedOutputBeforeClose(),
+    ).not.toThrow();
+    fixture.db.$client.exec("DROP TRIGGER retained_output_disk_full");
+    fixture.terminalSessions.flushAllRetainedOutput();
+    expect(
+      getRetainedTerminalOutput(fixture.db, {
+        hostId: fixture.host.id,
+        terminalSessionId: fixture.terminal.id,
+        now: Date.now(),
+      }),
+    ).toBeNull();
+    fixture.child.shutdown();
+  });
+
   it("does not let the prune sweep drop output that is still queued", async () => {
     const fixture = await setup();
     const [first, ...rest] = outputChunks();

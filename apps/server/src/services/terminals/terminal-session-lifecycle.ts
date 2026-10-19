@@ -87,6 +87,7 @@ import { TerminalOutputFlowControl } from "./terminal-output-flow-control.js";
 const DEFAULT_TERMINAL_OPEN_TIMEOUT_MS = 10_000;
 const DEFAULT_TERMINAL_CLOSE_TIMEOUT_MS = 5_000;
 const RETAINED_OUTPUT_FLUSH_MS = 1_000;
+const RETAINED_OUTPUT_CLOSE_ATTEMPTS = 3;
 const DEFAULT_TERMINAL_START: NonNullable<CreateTerminalRequest["start"]> = {
   mode: "shell",
 };
@@ -1711,6 +1712,28 @@ export class TerminalSessionLifecycle {
       this.scheduleRetainedOutputFlush();
       throw error;
     }
+  }
+
+  flushRetainedOutputBeforeClose(): void {
+    for (
+      let attempt = 0;
+      attempt < RETAINED_OUTPUT_CLOSE_ATTEMPTS &&
+      this.pendingRetainedOutput.size > 0;
+      attempt += 1
+    ) {
+      this.flushAllRetainedOutput();
+    }
+    if (this.retainedOutputFlushTimer !== null) {
+      clearTimeout(this.retainedOutputFlushTimer);
+      this.retainedOutputFlushTimer = null;
+    }
+    for (const [terminalId, pending] of this.pendingRetainedOutput) {
+      this.options.logger.error(
+        { terminalId, chunks: pending.chunks.length },
+        "Lost retained terminal output at shutdown",
+      );
+    }
+    this.pendingRetainedOutput.clear();
   }
 
   flushAllRetainedOutput(): void {

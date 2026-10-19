@@ -730,7 +730,7 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
         server,
         stopTerminalDataPlane: () => {
           terminalDataPlane?.stop();
-          terminalSessions.flushAllRetainedOutput();
+          terminalSessions.flushRetainedOutputBeforeClose();
         },
       });
     })();
