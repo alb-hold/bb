@@ -358,12 +358,38 @@ const socketPathForToken = (value) => recoveryPlatform === "win32"
 const ownerProcessHoldsSegment = (pid, segmentPath) => {
   try {
     if (process.platform === "darwin") {
-      const output = execFileSync("/usr/sbin/lsof", ["-n", "-P", "-F", "p", "--", path.resolve(segmentPath)], {
+      const segmentStat = fs.statSync(segmentPath, { bigint: true });
+      const output = execFileSync("/usr/sbin/lsof", ["-n", "-P", "-F", "pDfi", "-p", String(pid)], {
         encoding: "utf8",
-        timeout: 2_500,
+        timeout: 750,
         env: { ...process.env, LC_ALL: "C", TZ: "UTC" },
       });
-      return output.split(/\\r?\\n/).some((line) => line === "p" + pid);
+      let processFound = false;
+      let device;
+      let inode;
+      for (const line of output.split(/\\r?\\n/)) {
+        if (line === "p" + pid) {
+          processFound = true;
+        } else if (line.startsWith("f")) {
+          device = undefined;
+          inode = undefined;
+        } else if (line.startsWith("D")) {
+          device = BigInt(line.slice(1));
+        } else if (line.startsWith("i")) {
+          inode = BigInt(line.slice(1));
+        }
+        if (
+          device === segmentStat.dev &&
+          inode === segmentStat.ino
+        ) {
+          return true;
+        }
+      }
+      if (!processFound) {
+        reportDiagnostic("stdio segment holder check inconclusive: lsof omitted process");
+        return undefined;
+      }
+      return false;
     }
     if (process.platform === "linux") {
       const descriptorDirectory = "/proc/" + pid + "/fd";
