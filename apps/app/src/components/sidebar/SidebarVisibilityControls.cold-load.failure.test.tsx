@@ -24,21 +24,27 @@ it("shows an import failure and keeps Done focused and working", async () => {
   vi.spyOn(console, "error").mockImplementation(() => {});
   const onDone = vi.fn();
   render(
-    <CompactViewportOverrideProvider isCompactViewport={true}>
-      <SidebarVisibilityCustomize
-        items={[{ id: "section:review", title: "Review" }]}
-        visibleIds={[]}
-        title="Customize list"
-        listLabel="Sections"
-        onVisibleChange={vi.fn()}
-        onReorder={vi.fn()}
-        onActivate={vi.fn()}
-        onExit={vi.fn()}
-        onDone={onDone}
-        variant="compact"
-      />
-    </CompactViewportOverrideProvider>,
+    <>
+      <button type="button">Before failure</button>
+      <CompactViewportOverrideProvider isCompactViewport={true}>
+        <SidebarVisibilityCustomize
+          items={[{ id: "section:review", title: "Review" }]}
+          visibleIds={[]}
+          title="Customize list"
+          listLabel="Sections"
+          onVisibleChange={vi.fn()}
+          onReorder={vi.fn()}
+          onActivate={vi.fn()}
+          onExit={vi.fn()}
+          onDone={onDone}
+          variant="compact"
+        />
+      </CompactViewportOverrideProvider>
+    </>,
   );
+  const beforeFailure = screen.getByRole("button", { name: "Before failure" });
+  beforeFailure.focus();
+  expect(document.activeElement).toBe(beforeFailure);
   await act(async () => {
     download.reject(new Error("module initialization failed"));
   });
