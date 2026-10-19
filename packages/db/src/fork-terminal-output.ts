@@ -161,7 +161,10 @@ export function appendRetainedTerminalOutputChunks(
       bytes += chunkBytes(boundedChunk);
       while (bytes > TERMINAL_RETAINED_OUTPUT_BYTES && chunks.length > 0) {
         const removed = chunks.shift();
-        if (removed) bytes -= chunkBytes(removed.chunk);
+        if (removed) {
+          bytes -= chunkBytes(removed.chunk);
+          seenSequences.delete(removed.chunk.seq);
+        }
         if (removed && chunks[0]) {
           const latestGridMarker =
             findLastTerminalGridMarker(

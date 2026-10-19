@@ -128,6 +128,21 @@ describe("retained terminal output replay", () => {
       ],
     },
     {
+      name: "a replay repeating a sequence after the cap trim evicted it",
+      existing: filled(0, 4, 256),
+      replay: [
+        chunkOf(4, "first copy of sequence 4"),
+        ...filled(5, 300, 256),
+        chunkOf(4, "second copy of sequence 4, after its eviction"),
+        ...filled(305, 3, 256),
+      ],
+    },
+    {
+      name: "a replay repeating an evicted sequence from the existing buffer",
+      existing: filled(0, 4, 256),
+      replay: [...filled(4, 300, 256), chunkOf(1, "sequence 1 again")],
+    },
+    {
       name: "a replay overlapping sequences already retained, crossing the cap",
       existing: filled(0, 200, 256),
       replay: filled(150, 200, 256),
