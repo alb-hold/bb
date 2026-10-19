@@ -17,7 +17,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
 import type { ChildTerminalSocket } from "./child-terminal-socket.js";
 import type { DaemonSessionChange } from "./daemon-data-sockets.js";
-import { TERMINAL_DATA_PLANE_IPC_VERSION } from "../../../terminal-data-plane/ipc-contract.js";
+import { TERMINAL_DATA_PLANE_PROBE_IPC_VERSION } from "@bb/host-daemon-contract";
 import {
   startTerminalDataPlane,
   type TerminalDataPlane,
@@ -182,7 +182,7 @@ async function createFixture(mode: DaemonMode = "capable"): Promise<Fixture> {
           return rpcAnswer(message, {
             result: {
               dataSocket: true,
-              ipcVersion: TERMINAL_DATA_PLANE_IPC_VERSION,
+              ipcVersion: TERMINAL_DATA_PLANE_PROBE_IPC_VERSION,
             },
           });
         }
