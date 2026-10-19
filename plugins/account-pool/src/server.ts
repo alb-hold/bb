@@ -26,7 +26,11 @@ import {
   type PoolProvider,
   type PoolStatus,
 } from "./contracts.js";
-import { ThreadTokenStore, type ThreadLookup } from "./thread-tokens.js";
+import {
+  THREAD_STATE_LOOKUP_TIMEOUT_MS,
+  ThreadTokenStore,
+  type ThreadLookup,
+} from "./thread-tokens.js";
 import {
   AVAILABILITY_PATH,
   PARENT_TOKEN_ENV,
@@ -169,7 +173,7 @@ export function createAccountPoolPlugin(
       hubTokens,
       now,
       lookupThread,
-      options.threadSweepLookupTimeoutMs ?? THREAD_SWEEP_LOOKUP_TIMEOUT_MS,
+      options.threadSweepLookupTimeoutMs ?? THREAD_STATE_LOOKUP_TIMEOUT_MS,
       (message) => bb.log.warn(message),
       bb.storage.kv,
     );

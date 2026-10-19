@@ -1289,6 +1289,27 @@ describe.each(["durable", "process"] as const)("%s credentials", (lifetime) => {
     ]);
   });
 
+  it("waits past five seconds by default for bb to confirm a thread live on a busy server", async () => {
+    const w = await world();
+    const warnings: string[] = [];
+    const store = new ThreadTokenStore(
+      w.directory,
+      w.hosts,
+      w.clock,
+      w.lookup,
+      undefined,
+      (message) => warnings.push(message),
+    );
+    await store.initialize([route.hostId]);
+    const tokens = await mint(store, w.hostToken, lifetime);
+    const release = w.hold();
+    const pending = accepted(store, tokens);
+    await new Promise((resolve) => setTimeout(resolve, 6_000));
+    release();
+    expect(await pending).toEqual({ token: true, nested: true });
+    expect(warnings).toEqual([]);
+  }, 20_000);
+
   it("retries a failed lookup once within the same flight", async () => {
     const w = await world();
     let calls = 0;
