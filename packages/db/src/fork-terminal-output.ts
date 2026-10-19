@@ -5,6 +5,7 @@ export const TERMINAL_RETAINED_OUTPUT_BYTES = 64 * 1024;
 export const HOST_RETAINED_OUTPUT_BYTES = 2 * 1024 * 1024;
 export const HOST_RETAINED_TERMINAL_LIMIT = 128;
 export const TERMINAL_OUTPUT_RETENTION_MS = 30 * 60_000;
+const PRUNE_BATCH_ROWS = 128;
 
 export interface RetainedTerminalOutputChunk {
   seq: number;
@@ -102,12 +103,26 @@ export function appendRetainedTerminalOutputChunks(
     now: number;
   },
 ): void {
+  if (args.chunks.length === 0) return;
   const run = db.$client.transaction(() => {
-    pruneRetainedTerminalOutput(db, args.now);
+    let pruneCalls = 1;
+    let lastPruned = pruneRetainedTerminalOutput(db, args.now);
+    const pruneAsPerChunk = () => {
+      while (
+        lastPruned === PRUNE_BATCH_ROWS &&
+        pruneCalls < args.chunks.length
+      ) {
+        lastPruned = pruneRetainedTerminalOutput(db, args.now);
+        pruneCalls += 1;
+      }
+    };
     const owner = db.$client
       .prepare("SELECT host_id AS hostId FROM terminal_sessions WHERE id = ?")
       .get(args.terminalSessionId) as { hostId: string } | undefined;
-    if (owner?.hostId !== args.hostId) return;
+    if (owner?.hostId !== args.hostId) {
+      pruneAsPerChunk();
+      return;
+    }
 
     const existing = db.$client
       .prepare(
@@ -176,13 +191,17 @@ export function appendRetainedTerminalOutputChunks(
         }
       }
     }
-    if (!appended) return;
+    if (!appended) {
+      pruneAsPerChunk();
+      return;
+    }
     if (bytes === 0) {
       db.$client
         .prepare(
           `DELETE FROM fork_terminal_output WHERE terminal_session_id = ?`,
         )
         .run(args.terminalSessionId);
+      pruneAsPerChunk();
       return;
     }
     db.$client
@@ -203,6 +222,7 @@ export function appendRetainedTerminalOutputChunks(
         bytes,
         chunks[0]?.retainedAt ?? args.now,
       );
+    pruneAsPerChunk();
 
     let hostTotals = db.$client
       .prepare(
@@ -374,8 +394,8 @@ export function pruneRetainedTerminalOutput(
       `DELETE FROM fork_terminal_output
        WHERE terminal_session_id IN (
          SELECT terminal_session_id FROM fork_terminal_output
-         WHERE expires_at <= ? ORDER BY expires_at ASC LIMIT 128
+         WHERE expires_at <= ? ORDER BY expires_at ASC LIMIT ?
        )`,
     )
-    .run(now).changes;
+    .run(now, PRUNE_BATCH_ROWS).changes;
 }
