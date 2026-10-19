@@ -386,16 +386,13 @@ export function NativeTerminalPromptBar({
 
   const stopDictation = dictation.stop;
   const finishPress = useCallback(
-    (cancelled: boolean, onButton: boolean) => {
+    (cancelled: boolean, onButton: boolean, releasedAt: number) => {
       releasePressRef.current?.();
       if (!onButton) ignoreClickRef.current = false;
       const press = pressRef.current;
       pressRef.current = null;
       if (press === null || !press.startedDictation) return;
-      if (
-        cancelled ||
-        performance.now() - press.startedAt >= PUSH_TO_TALK_HOLD_MS
-      ) {
+      if (cancelled || releasedAt - press.startedAt >= PUSH_TO_TALK_HOLD_MS) {
         stopDictation();
       }
     },
@@ -410,7 +407,7 @@ export function NativeTerminalPromptBar({
     ignoreClickRef.current = true;
     releasePressRef.current?.();
     const startedDictation = dictation.phase === "idle";
-    pressRef.current = { startedAt: performance.now(), startedDictation };
+    pressRef.current = { startedAt: event.timeStamp, startedDictation };
     const pointerId = event.pointerId;
     const button = event.currentTarget;
     const onUp = (release: globalThis.PointerEvent) => {
@@ -418,10 +415,12 @@ export function NativeTerminalPromptBar({
       finishPress(
         false,
         release.target instanceof Node && button.contains(release.target),
+        release.timeStamp,
       );
     };
     const onCancel = (release: globalThis.PointerEvent) => {
-      if (release.pointerId === pointerId) finishPress(true, false);
+      if (release.pointerId === pointerId)
+        finishPress(true, false, release.timeStamp);
     };
     window.addEventListener("pointerup", onUp, true);
     window.addEventListener("pointercancel", onCancel, true);

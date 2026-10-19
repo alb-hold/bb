@@ -3,6 +3,7 @@
 import {
   act,
   cleanup,
+  createEvent,
   fireEvent,
   render,
   screen,
@@ -373,17 +374,31 @@ async function renderWithAssistance() {
 }
 
 describe("NativeTerminalPromptBar push-to-talk", () => {
-  function pressMic(at: number) {
-    vi.spyOn(performance, "now").mockReturnValue(at);
+  function firePointer(
+    target: Element,
+    type: "pointerDown" | "pointerUp" | "pointerCancel",
+    at: number,
+    handledAt: number,
+  ) {
+    vi.spyOn(performance, "now").mockReturnValue(handledAt);
+    const event = createEvent[type](target, { button: 0, pointerId: 7 });
+    Object.defineProperty(event, "timeStamp", { value: at });
+    fireEvent(target, event);
+  }
+
+  function pressMic(at: number, handledAt = at) {
     const mic = screen.getByRole("button", {
       name: "Dictate a message to Native CLI",
     });
-    fireEvent.pointerDown(mic, { button: 0, pointerId: 7 });
+    firePointer(mic, "pointerDown", at, handledAt);
   }
 
-  function releaseAt(at: number, type: "pointerUp" | "pointerCancel") {
-    vi.spyOn(performance, "now").mockReturnValue(at);
-    fireEvent[type](document.body, { pointerId: 7 });
+  function releaseAt(
+    at: number,
+    type: "pointerUp" | "pointerCancel",
+    handledAt = at,
+  ) {
+    firePointer(document.body, type, at, handledAt);
   }
 
   beforeEach(() => {
@@ -417,6 +432,20 @@ describe("NativeTerminalPromptBar push-to-talk", () => {
     releaseAt(5_000, "pointerUp");
     releaseAt(5_100, "pointerCancel");
     expect(dictationHook.stop).not.toHaveBeenCalled();
+  });
+
+  it("keeps a quick tap as a tap when a busy page handles the release late", () => {
+    renderBar();
+    pressMic(1_000);
+    releaseAt(1_080, "pointerUp", 2_000);
+    expect(dictationHook.stop).not.toHaveBeenCalled();
+  });
+
+  it("still stops a real hold whose press was handled late", () => {
+    renderBar();
+    pressMic(1_000, 1_500);
+    releaseAt(1_600, "pointerUp", 1_610);
+    expect(dictationHook.stop).toHaveBeenCalledTimes(1);
   });
 
   function micButton() {
