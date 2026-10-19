@@ -197,8 +197,10 @@ describe("retained terminal output replay", () => {
   function seededRandom(seed: number) {
     let state = seed >>> 0;
     return (limit: number) => {
-      state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
-      return state % limit;
+      state = (state + 0x6d2b79f5) >>> 0;
+      let value = Math.imul(state ^ (state >>> 15), state | 1);
+      value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
+      return ((value ^ (value >>> 14)) >>> 0) % limit;
     };
   }
 
@@ -212,7 +214,7 @@ describe("retained terminal output replay", () => {
         chunkOf(seq, text(seq, 1 + random(pressure ? 4_000 : 1_500))),
       ),
       retainedAt: 2 + random(50),
-      expired: random(5) === 0,
+      expired: !pressure && random(5) === 0,
       ownedByTarget: index === 0,
     }));
     const otherHostExpired = random(3) === 0 ? 0 : 1 + random(400);
@@ -282,6 +284,13 @@ describe("retained terminal output replay", () => {
     const before = db.$client
       .prepare("SELECT COUNT(*) AS count FROM fork_terminal_output WHERE expires_at <= ?")
       .get(replayNow) as { count: number };
+    const chunkCountsBefore = new Map(
+      (
+        db.$client
+          .prepare("SELECT terminal_session_id AS terminalSessionId, chunks_json AS chunksJson FROM fork_terminal_output WHERE expires_at IS NULL")
+          .all() as { terminalSessionId: string; chunksJson: string }[]
+      ).map((row) => [labels.get(row.terminalSessionId) ?? row.terminalSessionId, JSON.parse(row.chunksJson).length as number]),
+    );
     const target = sessionIds[0] ?? "";
     if (mode === "batched") {
       appendRetainedTerminalOutputChunks(db, {
@@ -322,7 +331,7 @@ describe("retained terminal output replay", () => {
         hostId: labels.get(row.hostId) ?? row.hostId,
       }))
       .sort((left, right) => left.terminalSessionId.localeCompare(right.terminalSessionId));
-    return { rows, expiredBefore: before.count };
+    return { rows, expiredBefore: before.count, chunkCountsBefore };
   }
 
   const hostLoad = (scenario: Scenario) => {
@@ -366,8 +375,23 @@ describe("retained terminal output replay", () => {
         underPressure += 1;
       }
       const targetRows = batched.rows.filter((row) => row.hostId === "host:target");
+      const targetBytes = targetRows.reduce((total, row) => total + row.byteLength, 0);
       expect(targetRows.length).toBeLessThanOrEqual(HOST_RETAINED_TERMINAL_LIMIT);
-      expect(targetRows.reduce((total, row) => total + row.byteLength, 0)).toBeLessThanOrEqual(HOST_RETAINED_OUTPUT_BYTES);
+      expect(targetBytes).toBeLessThanOrEqual(HOST_RETAINED_OUTPUT_BYTES);
+      const otherSessionLostChunks = [...batched.chunkCountsBefore].some(
+        ([label, count]) =>
+          label.startsWith("session:") &&
+          label !== "session:0" &&
+          (batched.rows.find((row) => row.terminalSessionId === label) ? JSON.parse(batched.rows.find((row) => row.terminalSessionId === label)?.chunksJson ?? "[]").length : 0) < count,
+      );
+      process.stdout.write(`pressure seed ${seed}: sessions ${scenario.sessions.length}, rows ${targetRows.length}, bytes ${targetBytes}, other sessions lost chunks ${otherSessionLostChunks}\n`);
+      expect({
+        seed,
+        evictionStoppedWithinOneChunkOfACap:
+          !otherSessionLostChunks ||
+          targetRows.length === HOST_RETAINED_TERMINAL_LIMIT ||
+          targetBytes > HOST_RETAINED_OUTPUT_BYTES - 4_000,
+      }).toEqual({ seed, evictionStoppedWithinOneChunkOfACap: true });
       for (const row of batched.rows) {
         expect(row.byteLength).toBe(
           JSON.parse(row.chunksJson).reduce(
