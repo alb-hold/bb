@@ -101,11 +101,11 @@ export const SERVER_MOVE_FENCED_DAEMON_MESSAGE_TYPES: ReadonlySet<
   "terminal.exited",
 ]);
 
-export function onDaemonSocketOpen(
+export async function onDaemonSocketOpen(
   deps: LoggedPendingInteractionWorkSessionDeps &
     Pick<AppDeps, "hub" | "logger" | "sharedPorts" | "terminalSessions">,
   args: { hostId: string; sessionId: string; socket: DaemonSocket },
-): void {
+): Promise<void> {
   deps.logger.info(
     { sessionId: args.sessionId, hostId: args.hostId },
     "Daemon WebSocket opened",
@@ -119,9 +119,10 @@ export function onDaemonSocketOpen(
       deps,
       args.hostId,
     );
-    deps.terminalSessions.reconcileDisconnectedHostTerminals({
+    await deps.terminalSessions.reconcileDisconnectedHostTerminals({
       daemonSessionId: args.sessionId,
       hostId: args.hostId,
+      nativeThreadIds,
     });
   }
   if (isServerMoveFrozen(deps.db)) {

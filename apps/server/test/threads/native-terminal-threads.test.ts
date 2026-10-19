@@ -32,6 +32,7 @@ import {
   apiErrorSchema,
   nativeTerminalLaunchSpecSchema,
   nativeTerminalThreadSchema,
+  terminalOutputResponseSchema,
   threadResponseSchema,
 } from "@bb/server-contract";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -2456,6 +2457,161 @@ describe("native terminal threads", () => {
       "active",
     );
     expect(interruptionReasons(fixture, running.thread.id)).toEqual([]);
+  });
+
+  it("reopens a holder-backed shell after a real daemon restart, rebases output, and keeps a user-closed terminal closed", async () => {
+    const fixture = await createFixture();
+    const openShell = async (skip: number) => {
+      const creating = postJson(fixture, "/terminals", {
+        cols: 80,
+        rows: 24,
+        target: {
+          kind: "environment",
+          environmentId: fixture.environment.id,
+        },
+      });
+      const open = await waitForTerminalOpen(fixture.socket, skip);
+      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.hostId,
+        sessionId: fixture.sessionId,
+        message: {
+          type: "terminal.opened",
+          requestId: open.requestId,
+          terminalId: open.terminalId,
+          shell: "/bin/zsh",
+          title: "zsh",
+          initialCwd: "/tmp/native-workspace",
+          cols: open.cols,
+          rows: open.rows,
+        },
+      });
+      expect((await creating).status).toBe(201);
+      return open;
+    };
+    const active = await openShell(0);
+    const closed = await openShell(1);
+    const pid = 42424;
+    const output = (seq: number, text: string) =>
+      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.hostId,
+        sessionId: fixture.sessionId,
+        message: {
+          type: "terminal.output",
+          terminalId: active.terminalId,
+          chunk: {
+            seq,
+            dataBase64: Buffer.from(text).toString("base64"),
+          },
+        },
+      });
+    output(0, `BEFORE:${pid}\n`);
+    fixture.harness.deps.terminalSessions.flushAllRetainedOutput();
+
+    handleDaemonSocketClosed(fixture.harness.deps, {
+      sessionId: fixture.sessionId,
+    });
+    await fixture.harness.deps.terminalSessions.closeTerminal({
+      terminalId: closed.terminalId,
+      payload: { mode: "force", reason: "user" },
+    });
+    const openedSession = await fixture.harness.app.request(
+      "/internal/session/open",
+      {
+        method: "POST",
+        headers: internalAuthHeaders(fixture.harness, {
+          hostId: fixture.hostId,
+        }),
+        body: JSON.stringify({
+          hostId: fixture.hostId,
+          instanceId: "instance-shell-restarted",
+          hostName: "Test Host",
+          hasMachineCredential: false,
+          platform: "darwin",
+          dataDir: "/tmp/host-daemon-restart",
+          localApiPort: null,
+          protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
+          activeThreads: [],
+          undeliveredEventThreadIds: [],
+        }),
+      },
+    );
+    expect(openedSession.status).toBe(201);
+    const { sessionId } = (await readJson(openedSession)) as {
+      sessionId: string;
+    };
+    const socket = createFakeDaemonSocket();
+    await onDaemonSocketOpen(fixture.harness.deps, {
+      hostId: fixture.hostId,
+      sessionId,
+      socket,
+    });
+
+    const reopened = await waitForTerminalOpen(socket);
+    expect(reopened.terminalId).toBe(active.terminalId);
+    expect(reopened.start).toEqual({ mode: "shell" });
+    expect(
+      daemonMessages(socket)
+        .filter((message) => message.type === "terminal.open")
+        .map((message) => message.terminalId),
+    ).not.toContain(closed.terminalId);
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.hostId,
+      sessionId,
+      message: {
+        type: "terminal.opened",
+        requestId: reopened.requestId,
+        terminalId: reopened.terminalId,
+        shell: "/bin/zsh",
+        title: "zsh",
+        initialCwd: "/tmp/native-workspace",
+        cols: reopened.cols,
+        rows: reopened.rows,
+      },
+    });
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.hostId,
+      sessionId,
+      message: {
+        type: "terminal.output",
+        terminalId: active.terminalId,
+        chunk: {
+          seq: 0,
+          dataBase64: Buffer.from(`AFTER:${pid}\n`).toString("base64"),
+        },
+      },
+    });
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.hostId,
+      sessionId,
+      message: {
+        type: "terminal.exited",
+        terminalId: active.terminalId,
+        exitCode: 0,
+        closeReason: "process-exit",
+      },
+    });
+    fixture.harness.deps.terminalSessions.flushAllRetainedOutput();
+    const outputResponse = await fixture.harness.app.request(
+      `/api/v1/terminals/${active.terminalId}/output`,
+    );
+    expect(outputResponse.status).toBe(200);
+    const retained = terminalOutputResponseSchema.parse(
+      await readJson(outputResponse),
+    );
+    expect(retained.chunks.map((chunk) => chunk.seq)).toEqual([0, 1]);
+    expect(
+      Buffer.concat(
+        retained.chunks.map((chunk) =>
+          Buffer.from(chunk.dataBase64, "base64"),
+        ),
+      ).toString("utf8"),
+    ).toBe(`BEFORE:${pid}\nAFTER:${pid}\n`);
+    expect(
+      getTerminalSession(fixture.harness.db, {
+        kind: "terminal",
+        terminalId: closed.terminalId,
+      }),
+    ).toMatchObject({ status: "exited", closeReason: "user" });
   });
 
   it("interrupts a running native thread after a real daemon restart when the reattach finds the holder gone", async () => {

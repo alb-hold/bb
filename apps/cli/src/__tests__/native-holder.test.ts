@@ -902,6 +902,47 @@ describe("checking whether bb closed a native terminal for good", () => {
     expect(await held).not.toBe(7);
   });
 
+  it("replays output produced while the daemon client is disconnected", async () => {
+    const socketPath = socketIn();
+    const command: NativeHolderProcess = {
+      command: "/bin/sh",
+      args: [
+        "-c",
+        'printf "BEFORE:%s\\n" "$$"; (sleep 0.2; printf "GAP:%s\\n" "$$") & while IFS= read -r line; do eval "$line"; done; wait',
+      ],
+    };
+    const held = startHolder(socketPath, command);
+    const first = await attach(socketPath);
+    const pid = (await first.waitFor(/BEFORE:(\d+)/u))[1];
+    first.socket.destroy();
+    await new Promise((resolve) => setTimeout(resolve, 400));
+
+    const second = await attach(socketPath);
+    await second.waitFor(new RegExp(`GAP:${pid}`, "u"));
+    second.type("echo AFTER:$$\r");
+    await second.waitFor(new RegExp(`AFTER:${pid}`, "u"));
+
+    const output = first.output + second.output;
+    expect(output.match(new RegExp(`BEFORE:${pid}`, "gu"))).toHaveLength(1);
+    expect(output.match(new RegExp(`GAP:${pid}`, "gu"))).toHaveLength(1);
+    expect(output.match(new RegExp(`AFTER:${pid}`, "gu"))).toHaveLength(1);
+
+    second.type("\u0004");
+    await held;
+    second.socket.destroy();
+  });
+
+  it("does not resurrect a shell after the terminal closes while detached", async () => {
+    const socketPath = socketIn();
+    const held = startHolder(socketPath, ECHO_LOOP, 300, async () => "closed-for-good");
+    const first = await attach(socketPath);
+    await first.waitFor(/started:(\d+)/u);
+    first.socket.destroy();
+
+    await expect(held).resolves.not.toBe(7);
+    expect(await waitForNativeHolder(socketPath, 100)).toBeNull();
+  });
+
   it("keeps a detached CLI past the reap window while bb answers that its terminal awaits the host daemon", async () => {
     let waiting = true;
     const baseUrl = await bb((response) => {

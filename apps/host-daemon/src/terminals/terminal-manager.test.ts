@@ -69,6 +69,7 @@ interface CreateHarnessOptions {
   maxExitedTerminals?: number;
   onSendMessage: TerminalMessageObserver;
   preserveGridMarkers?: boolean;
+  shellEnv?: NodeJS.ProcessEnv;
   resolveShell: ResolveTerminalShell;
 }
 
@@ -359,6 +360,7 @@ function createHarnessWithOptions(
     provisionWorkspace: async () => workspace,
     shellEnv: {
       BB_BASE_ENV: "1",
+      ...args.shellEnv,
     },
   });
   const manager = new TerminalManager({
@@ -534,6 +536,32 @@ function textChunk(text: string, seq: number): TerminalOutputChunk {
 }
 
 describe("TerminalManager", () => {
+  it("starts shell terminals through the terminal-id holder client when bb is available", async () => {
+    const harness = createHarnessWithOptions({
+      onSendMessage: () => undefined,
+      resolveShell: async () => "/bin/zsh",
+      shellEnv: { BB_CLI: "/tmp/bb" },
+    });
+
+    await openTerminal(harness);
+
+    expect(harness.adapter.lastSpawnArgs?.file).toBe("/tmp/bb");
+    expect(harness.adapter.lastSpawnArgs?.args.slice(0, 3)).toEqual([
+      "terminal",
+      "holder-shell-client",
+      "term-1",
+    ]);
+    expect(harness.adapter.lastSpawnArgs?.args[3]).toBe("/bin/zsh");
+    expect(
+      JSON.parse(
+        Buffer.from(
+          harness.adapter.lastSpawnArgs?.args[4] ?? "",
+          "base64",
+        ).toString("utf8"),
+      ),
+    ).toEqual([]);
+  });
+
   afterEach(async () => {
     vi.useRealTimers();
     vi.unstubAllEnvs();

@@ -23,6 +23,7 @@ const NATIVE_HOLDER_FIRST_CLIENT_TIMEOUT_MS = 20_000;
 const NATIVE_HOLDER_REAP_CHECK_MS = 30_000;
 const UNIX_SOCKET_PATH_MAX_BYTES = 100;
 const NATIVE_HOLDER_LOG_MAX_BYTES = 256 * 1024;
+const NATIVE_HOLDER_OUTPUT_MAX_BYTES = 4 * 1024 * 1024;
 
 export function logNativeHolderEvent(
   socketPath: string,
@@ -335,6 +336,8 @@ export async function runNativeHolder(
   let pty: NativeHolderPty | null = null;
   let pendingSize: TerminalSize | null = null;
   let pendingInput = "";
+  let pendingOutput: Buffer[] = [];
+  let pendingOutputBytes = 0;
   let redrawOnResize = false;
   let credential: string | null = null;
   let starting = false;
@@ -388,6 +391,30 @@ export async function runNativeHolder(
     pty.resize(next.cols, next.rows);
   };
 
+  const sendOutput = (data: Buffer): void => {
+    if (client !== null) {
+      writeFrame(client, NativeHolderFrame.output, data);
+      return;
+    }
+    pendingOutput.push(data);
+    pendingOutputBytes += data.byteLength;
+    while (
+      pendingOutputBytes > NATIVE_HOLDER_OUTPUT_MAX_BYTES &&
+      pendingOutput.length > 0
+    ) {
+      const first = pendingOutput[0];
+      if (first === undefined) break;
+      const excess = pendingOutputBytes - NATIVE_HOLDER_OUTPUT_MAX_BYTES;
+      if (first.byteLength <= excess) {
+        pendingOutput.shift();
+        pendingOutputBytes -= first.byteLength;
+      } else {
+        pendingOutput[0] = first.subarray(excess);
+        pendingOutputBytes -= excess;
+      }
+    }
+  };
+
   const start = async (): Promise<void> => {
     if (starting) return;
     starting = true;
@@ -399,11 +426,7 @@ export async function runNativeHolder(
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      writeFrame(
-        client,
-        NativeHolderFrame.output,
-        Buffer.from(`${message}\r\n`),
-      );
+      sendOutput(Buffer.from(`${message}\r\n`));
       finish(1);
       return;
     }
@@ -417,11 +440,7 @@ export async function runNativeHolder(
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      writeFrame(
-        client,
-        NativeHolderFrame.output,
-        Buffer.from(`${message}\r\n`),
-      );
+      sendOutput(Buffer.from(`${message}\r\n`));
       finish(1);
       return;
     }
@@ -437,7 +456,7 @@ export async function runNativeHolder(
       pendingInput = "";
     }
     pty.onData((data) => {
-      writeFrame(client, NativeHolderFrame.output, Buffer.from(data, "utf8"));
+      sendOutput(Buffer.from(data, "utf8"));
     });
     pty.onExit(({ exitCode, signal }) => {
       logNativeHolderEvent(options.socketPath, "pty-child-exit", {
@@ -460,6 +479,11 @@ export async function runNativeHolder(
     }
     client?.destroy();
     client = socket;
+    for (const chunk of pendingOutput) {
+      writeFrame(client, NativeHolderFrame.output, chunk);
+    }
+    pendingOutput = [];
+    pendingOutputBytes = 0;
     redrawOnResize = pty !== null;
     const decoder = new NativeHolderFrameDecoder();
     const text = new StringDecoder("utf8");

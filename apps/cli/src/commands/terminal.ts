@@ -14,6 +14,14 @@ import {
 } from "@bb/server-contract";
 import { action, CliExitError, CliUsageError } from "../action.js";
 import { createCliBbSdk } from "../client.js";
+import {
+  defaultNativeHolderSocketPath,
+  ignoreNativeHolderSignals,
+  nativeTerminalCheck,
+  openNativeHolderConnection,
+  pipeNativeHolderClient,
+  runNativeHolder,
+} from "../native-holder.js";
 import { terminalScopeHint } from "../context-hints.js";
 import { durationHelp, parseDurationMs } from "../duration.js";
 import { columnWidths, printBorderlessTable } from "../table.js";
@@ -106,6 +114,84 @@ export function registerTerminalCommands(
     .command("terminal")
     .description(
       "Manage terminal sessions across threads, environments, and machines",
+    );
+
+  terminal
+    .command("holder-shell-client <terminalId> <shell> <shellArgsBase64>", {
+      hidden: true,
+    })
+    .action(
+      action(async (terminalId: string, shell: string, shellArgsBase64: string) => {
+        const baseUrl = getUrl();
+        const socketPath = defaultNativeHolderSocketPath(baseUrl, terminalId);
+        const script = process.argv[1];
+        if (script === undefined) throw new CliExitError("Cannot locate the bb CLI", 1);
+        const session = await createCliBbSdk(baseUrl).terminals.get({ terminalId });
+        const connection = await openNativeHolderConnection({
+          socketPath,
+          reattachOnly: session.status !== "starting",
+          startTimeoutMs: 20_000,
+          startHolder: () => {
+            const holder = spawn(
+              process.execPath,
+              [...process.execArgv, script, "terminal", "holder-shell", terminalId, shell, shellArgsBase64],
+              { cwd: process.cwd(), detached: true, env: process.env, stdio: "ignore" },
+            );
+            holder.unref();
+          },
+        });
+        if (connection.kind !== "attached") return;
+        for (const signal of ["SIGTERM", "SIGHUP"] as const) {
+          process.on(signal, () => connection.socket.destroy());
+        }
+        await pipeNativeHolderClient(connection.socket, {
+          input: process.stdin,
+          output: process.stdout,
+          fallbackSize: { cols: 80, rows: 24 },
+        });
+      }),
+    );
+
+  terminal
+    .command("holder-shell <terminalId> <shell> <shellArgsBase64>", { hidden: true })
+    .action(
+      action(async (terminalId: string, shell: string, shellArgsBase64: string) => {
+        const socketPath = defaultNativeHolderSocketPath(getUrl(), terminalId);
+        ignoreNativeHolderSignals(process, socketPath);
+        const shellArgs: unknown = JSON.parse(
+          Buffer.from(shellArgsBase64, "base64").toString("utf8"),
+        );
+        if (!Array.isArray(shellArgs) || !shellArgs.every((arg) => typeof arg === "string")) {
+          throw new CliExitError("Invalid shell arguments", 1);
+        }
+        const nodePty = await import("node-pty");
+        const sdk = createCliBbSdk(getUrl());
+        const exitCode = await runNativeHolder({
+          socketPath,
+          cwd: process.cwd(),
+          env: process.env,
+          prepare: async () => ({ command: shell, args: shellArgs }),
+          spawnPty: (child, options) => nodePty.spawn(child.command, child.args, {
+            name: process.env.TERM ?? "xterm-256color",
+            cols: options.cols,
+            rows: options.rows,
+            cwd: options.cwd,
+            env: options.env,
+          }),
+          checkTerminal: async () => {
+            try {
+              const session = await sdk.terminals.get({ terminalId });
+              return nativeTerminalCheck({ terminal: session });
+            } catch (error) {
+              if (error instanceof Error && "status" in error && error.status === 404) {
+                return "closed-for-good";
+              }
+              throw error;
+            }
+          },
+        });
+        process.exitCode = exitCode;
+      }),
     );
 
   addTerminalScopeOptions(
