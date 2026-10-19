@@ -3102,7 +3102,7 @@ fs.renameSync = function (source, destination) {
         command: process.execPath,
         args: [
           "-e",
-          `process.stdout.write(Buffer.alloc(9 * 1024 * 1024, ${label.charCodeAt(0)}));`,
+          `process.stdout.write(Buffer.alloc(10 * 1024 * 1024, ${label.charCodeAt(0)}));`,
         ],
         env: process.env,
         logDir,
@@ -3198,7 +3198,7 @@ fs.renameSync = function (source, destination) {
             (total, content) => total + content.split(byte).length - 1,
             0,
           ),
-        ).toBe(9 * 1024 * 1024);
+        ).toBe(10 * 1024 * 1024);
       }
       expect(contents.some((content) => content.includes("old-backup-0"))).toBe(
         false,
