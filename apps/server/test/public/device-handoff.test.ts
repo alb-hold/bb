@@ -2238,6 +2238,233 @@ describe("device handoff websocket acknowledgement", () => {
     }
   });
 
+  it("fails closed for a cold-start turn with no identity instead of reusing an older device", async () => {
+    const server = await startTestServer();
+    const { host, session, environment, thread } = seedThreadFixture(server, {
+      thread: { status: "active" },
+    });
+    seedThreadRuntimeState(server.deps, {
+      environmentId: environment.id,
+      providerThreadId: "provider-thread-unknown-device-identity",
+      threadId: thread.id,
+    });
+    seedTurnStarted(server.deps, {
+      environmentId: environment.id,
+      providerThreadId: "provider-thread-unknown-device-identity",
+      threadId: thread.id,
+      turnId: "turn-unknown-device-identity",
+    });
+    const rpc = registerHostRpcResponder(server, {
+      hostId: host.id,
+      sessionId: session.id,
+      handle: ({ command }) => {
+        if (command.type === "host.read_workspace_agent_context") {
+          return { ok: true, result: EMPTY_WORKSPACE_AGENT_CONTEXT };
+        }
+        if (command.type === "turn.submit") {
+          return { ok: true, result: { trace: { spans: [] } } };
+        }
+        return {
+          ok: false,
+          errorCode: "unsupported_test_command",
+          errorMessage: `Unhandled test RPC ${command.type}`,
+        };
+      },
+    });
+    const origin = `http://127.0.0.1:${new URL(server.baseUrl).port}`;
+    const olderDevice = await connectRealtimeWithToken(server.baseUrl, {
+      origin,
+    });
+    const olderFrames: Record<string, unknown>[] = [];
+    olderDevice.socket.on("message", (data) => {
+      olderFrames.push(JSON.parse(data.toString()) as Record<string, unknown>);
+    });
+    try {
+      sendRealtime(olderDevice.socket, {
+        type: "subscribe",
+        target: { kind: "thread-detail", threadId: thread.id },
+      });
+      sendRealtime(olderDevice.socket, {
+        type: "device-handoff-view",
+        threadId: thread.id,
+        terminalSessionId: null,
+      });
+      const ready = nextRealtimeMessage(olderDevice.socket, "pong");
+      sendRealtime(olderDevice.socket, { type: "ping" });
+      await ready;
+      const oldTurn = await server.app.request(
+        `/api/v1/threads/${thread.id}/send`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            [DEVICE_HANDOFF_CLIENT_TOKEN_HEADER]: olderDevice.token,
+          },
+          body: JSON.stringify({
+            input: [{ type: "text", text: "Earlier device submitted first" }],
+            mode: "steer",
+            model: "gpt-5",
+            permissionMode: "full",
+            reasoningLevel: "medium",
+            serviceTier: "default",
+          }),
+        },
+      );
+      expect(oldTurn.status).toBe(200);
+
+      const coldPhoneTurn = await server.app.request(
+        `/api/v1/threads/${thread.id}/send`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            input: [{ type: "text", text: "Cold-start phone submits now" }],
+            mode: "steer",
+            model: "gpt-5",
+            permissionMode: "full",
+            reasoningLevel: "medium",
+            serviceTier: "default",
+          }),
+        },
+      );
+      expect(coldPhoneTurn.status).toBe(200);
+      await expect(coldPhoneTurn.json()).resolves.toMatchObject({
+        delivery: "sent",
+      });
+
+      const handoff = await server.app.request("/api/v1/device-handoff", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          kind: "copy-text",
+          text: "must not go to the older device",
+          origin: { threadId: thread.id, turnId: "turn-unknown-device-identity" },
+        }),
+      });
+      expect(handoff.status).toBe(409);
+      await expect(handoff.json()).resolves.toMatchObject({
+        code: "device_handoff_no_recipient",
+      });
+      await expectNoRealtimeMessage(olderDevice.socket, "device-handoff");
+      expect(
+        olderFrames.filter((frame) => frame.type === "device-handoff"),
+      ).toHaveLength(0);
+      expect(
+        rpc.requests.filter(({ command }) => command.type === "turn.submit"),
+      ).toHaveLength(2);
+    } finally {
+      olderDevice.socket.close();
+      rpc.unregister();
+      await server.close();
+    }
+  });
+
+  it("binds a turn to a previously issued identity even when no device socket is connected", async () => {
+    const server = await startTestServer();
+    const { host, session, environment, thread } = seedThreadFixture(server, {
+      thread: { status: "active" },
+    });
+    seedThreadRuntimeState(server.deps, {
+      environmentId: environment.id,
+      providerThreadId: "provider-thread-offline-known-device",
+      threadId: thread.id,
+    });
+    seedTurnStarted(server.deps, {
+      environmentId: environment.id,
+      providerThreadId: "provider-thread-offline-known-device",
+      threadId: thread.id,
+      turnId: "turn-offline-known-device",
+    });
+    const rpc = registerHostRpcResponder(server, {
+      hostId: host.id,
+      sessionId: session.id,
+      handle: ({ command }) => {
+        if (command.type === "host.read_workspace_agent_context") {
+          return { ok: true, result: EMPTY_WORKSPACE_AGENT_CONTEXT };
+        }
+        if (command.type === "turn.submit") {
+          return { ok: true, result: { trace: { spans: [] } } };
+        }
+        return {
+          ok: false,
+          errorCode: "unsupported_test_command",
+          errorMessage: `Unhandled test RPC ${command.type}`,
+        };
+      },
+    });
+    const origin = `http://127.0.0.1:${new URL(server.baseUrl).port}`;
+    const knownDevice = await connectRealtimeWithToken(server.baseUrl, {
+      origin,
+    });
+    const deviceId = knownDevice.token;
+    const closed = new Promise<void>((resolve) =>
+      knownDevice.socket.once("close", () => resolve()),
+    );
+    knownDevice.socket.close();
+    await closed;
+    try {
+      const turn = await server.app.request(
+        `/api/v1/threads/${thread.id}/send`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            [DEVICE_HANDOFF_CLIENT_TOKEN_HEADER]: deviceId,
+          },
+          body: JSON.stringify({
+            input: [{ type: "text", text: "Known device submits while offline" }],
+            mode: "steer",
+            model: "gpt-5",
+            permissionMode: "full",
+            reasoningLevel: "medium",
+            serviceTier: "default",
+          }),
+        },
+      );
+      expect(turn.status).toBe(200);
+      const handoff = await server.app.request("/api/v1/device-handoff", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          kind: "copy-text",
+          text: "queued for the known device",
+          origin: { threadId: thread.id, turnId: "turn-offline-known-device" },
+        }),
+      });
+      expect(handoff.status).toBe(200);
+      await expect(handoff.json()).resolves.toEqual({ delivered: 0 });
+
+      const reconnected = await connectRealtimeWithToken(server.baseUrl, {
+        origin,
+        deviceId,
+      });
+      try {
+        const received = nextRealtimeMessage(
+          reconnected.socket,
+          "device-handoff",
+        );
+        sendRealtime(reconnected.socket, {
+          type: "subscribe",
+          target: { kind: "thread-detail", threadId: thread.id },
+        });
+        sendRealtime(reconnected.socket, {
+          type: "device-handoff-view",
+          threadId: thread.id,
+          terminalSessionId: null,
+        });
+        await expect(received).resolves.toMatchObject({
+          type: "device-handoff",
+          request: { text: "queued for the known device" },
+        });
+      } finally {
+        reconnected.socket.close();
+      }
+    } finally {
+      rpc.unregister();
+      await server.close();
+    }
+  });
+
   it("binds a thread-only payload to the socket that submitted the turn", async () => {
     const server = await startTestServer();
     const { thread } = seedThreadFixture(server);
@@ -2283,7 +2510,7 @@ describe("device handoff websocket acknowledgement", () => {
           "foreign-socket-token",
           thread.id,
           "turn-request-foreign",
-          "turn-direct",
+          "turn-foreign",
         ),
       ).toBe(false);
       const submittedPayload = nextRealtimeMessage(
@@ -2373,13 +2600,9 @@ describe("device handoff websocket acknowledgement", () => {
     const origin = `http://127.0.0.1:${new URL(server.baseUrl).port}`;
     const forged = await connectRealtimeWithToken(server.baseUrl, { origin });
     try {
-      const disconnected = createMockHubSocket();
-      const disconnectedToken =
-        server.hub.issueDeviceHandoffClientToken(disconnected);
-      server.hub.unregisterClient(disconnected);
       expect(
         server.hub.recordDeviceHandoffTurnSubmitter(
-          disconnectedToken,
+          "unknown-device-token",
           thread.id,
           "disconnected-turn-request",
         ),

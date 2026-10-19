@@ -25,14 +25,21 @@ export async function fetchWithDeviceHandoffSubmission(
     method === "POST" &&
     turnSubmissionPath.test(url.pathname)
   ) {
-    const token = await wsManager.waitForDeviceHandoffClientToken();
+    const storedToken = wsManager.getDeviceHandoffClientToken();
+    const token =
+      storedToken ??
+      (await wsManager
+        .waitForDeviceHandoffClientToken(3_000)
+        .catch(() => null));
     const headers = new Headers(
       input instanceof Request ? input.headers : undefined,
     );
     new Headers(init?.headers).forEach((value, key) =>
       headers.set(key, value),
     );
-    headers.set(DEVICE_HANDOFF_CLIENT_TOKEN_HEADER, token);
+    if (token !== null) {
+      headers.set(DEVICE_HANDOFF_CLIENT_TOKEN_HEADER, token);
+    }
     init = { ...init, headers };
   }
   return await fetchWithAppSurface(input, init);

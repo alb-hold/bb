@@ -378,11 +378,11 @@ export class NotificationHub implements DbNotifier {
   >();
   private readonly deviceHandoffSubmitterByThreadRequest = new Map<
     string,
-    { deviceHash: string; expiresAt: number }
+    { deviceHash: string | null; expiresAt: number }
   >();
   private readonly deviceHandoffSubmitterByThreadTurn = new Map<
     string,
-    { deviceHash: string; expiresAt: number }
+    { deviceHash: string | null; expiresAt: number }
   >();
   private readonly latestDeviceHandoffSubmitterByThread = new Map<
     string,
@@ -469,12 +469,6 @@ export class NotificationHub implements DbNotifier {
   ): boolean {
     this.pruneDeviceHandoffSubmitters(now);
     const deviceHash = this.deviceHandoffHashForToken(token);
-    if (
-      deviceHash === null ||
-      (this.deviceHandoffClientSocketsByHash.get(deviceHash)?.size ?? 0) === 0
-    ) {
-      return false;
-    }
     const key = this.deviceHandoffSubmitterKey(threadId, turnRequestId);
     this.deviceHandoffSubmitterByThreadRequest.set(key, {
       deviceHash,
@@ -486,10 +480,12 @@ export class NotificationHub implements DbNotifier {
         { deviceHash, expiresAt: now + DEVICE_HANDOFF_TTL_MS },
       );
     }
-    this.latestDeviceHandoffSubmitterByThread.set(threadId, {
-      deviceHash,
-      submittedAt: now,
-    });
+    if (deviceHash !== null) {
+      this.latestDeviceHandoffSubmitterByThread.set(threadId, {
+        deviceHash,
+        submittedAt: now,
+      });
+    }
     while (
       this.deviceHandoffSubmitterByThreadRequest.size >
       DEVICE_HANDOFF_PENDING_LIMIT
@@ -510,7 +506,7 @@ export class NotificationHub implements DbNotifier {
       if (oldest === undefined) break;
       this.deviceHandoffSubmitterByThreadTurn.delete(oldest);
     }
-    return true;
+    return deviceHash !== null;
   }
 
   private deviceHandoffSubmitterKey(
@@ -1504,30 +1500,37 @@ export class NotificationHub implements DbNotifier {
     const scopedAttentionThreadId = attentionThreadId ?? null;
     this.pruneDeviceHandoffSubmitters(createdAt);
     const threadId = request.origin.threadId;
-    const submission =
+    const turnRequestKey =
+      threadId !== undefined && turnRequestId !== undefined
+        ? this.deviceHandoffSubmitterKey(threadId, turnRequestId)
+        : undefined;
+    const turnKey =
+      threadId !== undefined && request.origin.turnId !== undefined
+        ? this.deviceHandoffSubmitterKey(threadId, request.origin.turnId)
+        : undefined;
+    const hasTurnRequestSubmission =
       request.origin.terminalSessionId === undefined &&
-      threadId !== undefined &&
-      request.origin.turnId !== undefined
-        ? (this.deviceHandoffSubmitterByThreadTurn.get(
-            this.deviceHandoffSubmitterKey(threadId, request.origin.turnId),
-          ) ??
-          (turnRequestId === undefined
-            ? undefined
-            : this.deviceHandoffSubmitterByThreadRequest.get(
-                this.deviceHandoffSubmitterKey(threadId, turnRequestId),
-              )))
-        : request.origin.terminalSessionId === undefined &&
-            threadId !== undefined &&
-            turnRequestId !== undefined
-          ? this.deviceHandoffSubmitterByThreadRequest.get(
-              this.deviceHandoffSubmitterKey(threadId, turnRequestId),
-            )
-          : undefined;
+      turnRequestKey !== undefined &&
+      this.deviceHandoffSubmitterByThreadRequest.has(turnRequestKey);
+    const hasTurnSubmission =
+      request.origin.terminalSessionId === undefined &&
+      turnKey !== undefined &&
+      this.deviceHandoffSubmitterByThreadTurn.has(turnKey);
+    const submission = hasTurnRequestSubmission
+      ? this.deviceHandoffSubmitterByThreadRequest.get(turnRequestKey!)
+      : hasTurnSubmission
+        ? this.deviceHandoffSubmitterByThreadTurn.get(turnKey!)
+        : undefined;
+    const hasTurnBinding =
+      hasTurnRequestSubmission ||
+      hasTurnSubmission ||
+      request.origin.turnId !== undefined ||
+      turnRequestId !== undefined;
     const recipientDeviceHash =
       request.origin.terminalSessionId !== undefined
         ? null
         : (submission?.deviceHash ??
-          (threadId === undefined
+          (hasTurnBinding || threadId === undefined
             ? undefined
             : this.latestDeviceHandoffSubmitterByThread.get(threadId)
                 ?.deviceHash) ??
