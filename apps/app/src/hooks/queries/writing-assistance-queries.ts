@@ -3,7 +3,7 @@ import type {
   WritingAssistanceSettingsUpdate,
   WritingAssistanceView,
 } from "@bb/domain";
-import { writeCachedWritingAssistance } from "@/hooks/cache-owners/system-config-cache-owner";
+import { writeCachedWritingAssistance } from "@/hooks/cache-owners/writing-assistance-cache-owner";
 import { useSystemRealtimeSubscription } from "@/hooks/useRealtimeSubscription";
 import { sdk } from "@/lib/sdk";
 import { writingAssistanceQueryKey } from "./query-keys";

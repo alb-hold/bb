@@ -241,7 +241,6 @@ const CACHE_OWNER_QUERY_KEY_IMPORTS: CacheOwnerQueryKeyImportRegistry = {
   "hooks/cache-owners/system-config-cache-owner.ts": [
     "systemAiServicesQueryKey",
     "systemConfigQueryKey",
-    "writingAssistanceQueryKey",
   ],
   "hooks/cache-owners/system-version-cache-owner.ts": ["systemVersionQueryKey"],
   "hooks/cache-owners/terminal-cache-owner.ts": [
@@ -272,6 +271,9 @@ const CACHE_OWNER_QUERY_KEY_IMPORTS: CacheOwnerQueryKeyImportRegistry = {
   ],
   "hooks/cache-owners/thread-timeline-unseen-events.ts": [
     "threadTimelineQueryKey",
+  ],
+  "hooks/cache-owners/writing-assistance-cache-owner.ts": [
+    "writingAssistanceQueryKey",
   ],
   "hooks/cache-owners/ui-preferences-cache-owner.ts": ["uiPreferencesQueryKey"],
   "hooks/cache-owners/thread-runtime-cache-owner.ts": [

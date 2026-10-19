@@ -10,12 +10,10 @@ import {
 import type {
   SystemAiServicesResponse,
   SystemConfigResponse,
-  WritingAssistanceView,
 } from "@bb/server-contract";
 import {
   systemAiServicesQueryKey,
   systemConfigQueryKey,
-  writingAssistanceQueryKey,
 } from "../queries/query-keys";
 
 interface KeyboardSettingsCacheTransaction {
@@ -180,11 +178,4 @@ export function writeCachedAiServices(
   view: SystemAiServicesResponse,
 ): void {
   queryClient.setQueryData(systemAiServicesQueryKey(), view);
-}
-
-export function writeCachedWritingAssistance(
-  queryClient: QueryClient,
-  view: WritingAssistanceView,
-): void {
-  queryClient.setQueryData(writingAssistanceQueryKey(), view);
 }
