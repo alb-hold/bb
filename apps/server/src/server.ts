@@ -35,6 +35,7 @@ import { registerThreadSectionRoutes } from "./routes/thread-sections.js";
 import { registerSystemRoutes } from "./routes/system.js";
 import { registerUiPreferenceRoutes } from "./routes/ui-preferences.js";
 import { registerTerminalRoutes } from "./routes/terminals.js";
+import { registerDeviceHandoffRoutes } from "./routes/device-handoff.js";
 import { registerThreadRoutes } from "./routes/threads/index.js";
 import { registerQueueRoutes } from "./routes/queue.js";
 import { registerSpendRoutes } from "./routes/spend.js";
@@ -922,6 +923,7 @@ export function createApp(
   registerHostRoutes(publicApi, deps, pluginService);
   registerDesktopBrowserRoutes(publicApi, deps);
   registerTerminalRoutes(publicApi, deps);
+  registerDeviceHandoffRoutes(publicApi, deps);
   registerEnvironmentRoutes(publicApi, deps);
   registerThreadRoutes(publicApi, deps);
   registerQueueRoutes(publicApi, deps);
@@ -1016,6 +1018,7 @@ export function createApp(
         outputAcks: context.req.query("outputAcks"),
         resizeAcks: context.req.query("resizeAcks"),
         sinceSeq: context.req.query("sinceSeq"),
+        handoffOwnerToken: context.req.query("handoffOwnerToken"),
       });
       if (!query.success) {
         throw new ApiError(
@@ -1028,6 +1031,7 @@ export function createApp(
         onOpen: (_event, socket) =>
           onTerminalSocketOpen(deps, {
             outputAcks: query.data.outputAcks,
+            handoffOwnerToken: query.data.handoffOwnerToken,
             resizeAcks: query.data.resizeAcks,
             socket,
             sinceSeq: query.data.sinceSeq,

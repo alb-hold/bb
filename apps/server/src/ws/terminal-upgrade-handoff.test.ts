@@ -47,9 +47,7 @@ async function createFixture(
     handleDataSocketUpgrade: () => false,
     isAvailable: () => true,
     resolveTerminal: (terminalId) =>
-      terminalId === "term_1"
-        ? { terminalId, daemonSessionId: "ds_1" }
-        : null,
+      terminalId === "term_1" ? { terminalId, daemonSessionId: "ds_1" } : null,
     ...overrides,
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -85,10 +83,14 @@ async function upgrade(
 describe("installTerminalUpgradeHandoff", () => {
   it("hands an authorized terminal upgrade to the data plane with the id from the path", async () => {
     const { attach, fallback, port } = await createFixture();
-    await upgrade(port, "/ws/terminals/term_1?outputAcks=1&sinceSeq=5");
+    await upgrade(
+      port,
+      "/ws/terminals/term_1?outputAcks=1&sinceSeq=5&handoffOwnerToken=0123456789abcdefghij_-",
+    );
     expect(attach).toHaveBeenCalledTimes(1);
     expect(attach.mock.calls[0]?.[0]).toMatchObject({
       daemonSessionId: "ds_1",
+      handoffOwnerToken: "0123456789abcdefghij_-",
       outputAcks: true,
       sinceSeq: 5,
       terminalId: "term_1",

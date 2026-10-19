@@ -9,6 +9,10 @@ import {
 } from "./areas/environments.js";
 import { createFilesArea, type FilesArea } from "./areas/files.js";
 import type { GuideArea } from "./areas/guide.js";
+import {
+  createDeviceHandoffArea,
+  type DeviceHandoffArea,
+} from "./areas/device-handoff.js";
 import { createHostsArea, type HostsArea } from "./areas/hosts.js";
 import {
   createServerArea,
@@ -56,6 +60,7 @@ export interface CreateBbSdkWithGuideArgs extends CreateBbSdkArgs {
 }
 
 export interface BbSdkAreas extends BbRealtime {
+  device: DeviceHandoffArea;
   experimental_desktopBrowsers: ExperimentalDesktopBrowsersArea;
   experimental_promptHistory: ExperimentalPromptHistoryArea;
   experimental_server: ExperimentalServerArea;
@@ -91,6 +96,7 @@ export function createBbSdk(
     transport: args.transport,
   });
   const areas: BbSdkAreas = {
+    device: createDeviceHandoffArea(sdkContext),
     experimental_desktopBrowsers: createDesktopBrowsersArea(sdkContext),
     experimental_promptHistory: createPromptHistoryArea(sdkContext),
     experimental_server: createServerArea(sdkContext),

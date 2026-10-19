@@ -1,5 +1,6 @@
 import { BrowserTabIcon } from "@/components/secondary-panel/BrowserTabIcon";
 import { getPanelTabHistoryKey } from "@/components/secondary-panel/recentlyClosedPanelTabs";
+import { useActiveDeviceHandoffTerminalView } from "@/components/device-handoff/device-handoff-view";
 import { NativeThreadTerminalMain } from "@/components/thread/terminal/NativeThreadTerminalMain";
 import { useNativeTerminalThread } from "@/hooks/queries/native-terminal-queries";
 import { appendQuoteAndAttachmentsToDraft } from "@bb/client-core";
@@ -293,6 +294,7 @@ import { resolveGitDiffTabStatus } from "@/components/secondary-panel/gitDiffTab
 import { isRootThread } from "./threadParentSelectorOptions";
 import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
 import {
+  activeTerminalIdForDeviceHandoff,
   getActiveFixedSecondaryTab,
   useSetThreadSecondaryPanelSelection,
   useToggleThreadSecondaryPanelSelection,
@@ -512,6 +514,7 @@ function ThreadDetailViewInternal(
   const { projectId, threadId, timelineEnabled } = props;
   const {
     isFocused,
+    paneId,
     isMaximized: isPaneMaximized,
     navigateInPane,
     onRequestClose,
@@ -1580,6 +1583,12 @@ function ThreadDetailViewInternal(
         )
       : undefined;
   const activeTerminalSessionId = activeTerminalSession?.id;
+  useActiveDeviceHandoffTerminalView({
+    ownerId: `thread:${threadId}:${paneId}`,
+    terminalId: activeTerminalIdForDeviceHandoff(activeFixedSecondaryTab),
+    isFocused,
+    isOpen: isSecondaryPanelOpen,
+  });
   const activeTerminalInitialCwd = activeTerminalSession?.initialCwd;
   const getActiveTerminalSpawnCwd = useCallback(
     () =>

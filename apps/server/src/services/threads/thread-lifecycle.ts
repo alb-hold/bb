@@ -1849,6 +1849,12 @@ function interruptActiveThreads(
     { behavior: "immediate" },
   );
 
+  for (const result of results) {
+    if (result.interruptedTurnId !== null) {
+      deps.hub.clearDeviceHandoffTurnSubmitterForThread(result.threadId);
+    }
+  }
+
   deps.pendingInteractions.interruptPendingInteractionsForThreadIds({
     threadIds: results.map((result) => result.threadId),
     reason: pendingInteractionStopReason(effectiveReason),
@@ -1949,6 +1955,13 @@ export function finalizeStoppedThread(
       ),
     { behavior: "immediate" },
   );
+  const finalizedThread = getThread(deps.db, args.threadId);
+  if (
+    finalizedThread !== null &&
+    (finalizedThread.status === "idle" || finalizedThread.status === "error")
+  ) {
+    deps.hub.clearDeviceHandoffTurnSubmitterForThread(args.threadId);
+  }
   notificationBuffer.flushInto(deps.hub);
   requestQueuedMessageDispatch(deps, {
     kind: "thread-ready",

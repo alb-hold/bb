@@ -91,6 +91,7 @@ type SendThreadMessagePayload = SendMessageRequest & {
 
 interface SendThreadMessageArgs {
   beforeAppendInTransaction?: SendThreadMessageTransactionPreflight;
+  onTurnRequestCreated?: (requestId: string, turnId?: string) => void;
   retryOf?: TurnRequestRetryMarker;
   environment: EnvironmentRow;
   historyReplacement?: {
@@ -108,11 +109,13 @@ export interface ThreadSendRefusal {
 }
 
 export interface ThreadSendResult {
+  requestId?: ClientTurnRequestId;
   refusal: ThreadSendRefusal | null;
 }
 
 interface DispatchedThreadSend {
   acceptance: Promise<ThreadSendRefusal | null>;
+  requestId?: ClientTurnRequestId;
 }
 
 const NO_REFUSAL: DispatchedThreadSend = { acceptance: Promise.resolve(null) };
@@ -522,7 +525,12 @@ export async function sendThreadMessage(
   const dispatched = await withThreadSendGuard(args.thread.id, () =>
     sendThreadMessageWithoutContextClear(deps, args),
   );
-  return { refusal: await dispatched.acceptance };
+  return {
+    refusal: await dispatched.acceptance,
+    ...(dispatched.requestId !== undefined
+      ? { requestId: dispatched.requestId }
+      : {}),
+  };
 }
 
 async function sendThreadMessageWithoutContextClear(
@@ -756,6 +764,12 @@ async function sendThreadMessageWithoutContextClear(
       queuedRequest.request.notificationChanges,
       queuedRequest.request.notificationMetadata,
     );
+    args.onTurnRequestCreated?.(
+      requestId,
+      target.kind === "auto" || target.kind === "steer"
+        ? (target.expectedTurnId ?? undefined)
+        : undefined,
+    );
     const acceptance =
       command.mode === "turn.submit"
         ? watchTurnAcceptance(deps.config.turnAcceptanceGraceMs)
@@ -795,7 +809,11 @@ async function sendThreadMessageWithoutContextClear(
         providerId: thread.providerId,
       });
     }
-    return acceptance === null ? NO_REFUSAL : { acceptance: acceptance.result };
+    return {
+      acceptance:
+        acceptance === null ? NO_REFUSAL.acceptance : acceptance.result,
+      requestId,
+    };
   }
 
   await ensureHostSessionReadyForWork(deps, {
@@ -845,6 +863,12 @@ async function sendThreadMessageWithoutContextClear(
     queuedRequest.request.notificationChanges,
     queuedRequest.request.notificationMetadata,
   );
+  args.onTurnRequestCreated?.(
+    requestId,
+    target.kind === "auto" || target.kind === "steer"
+      ? (target.expectedTurnId ?? undefined)
+      : undefined,
+  );
   const acceptance = watchTurnAcceptance(deps.config.turnAcceptanceGraceMs);
   startLiveHostCommand(deps, {
     command,
@@ -866,5 +890,5 @@ async function sendThreadMessageWithoutContextClear(
       providerId: thread.providerId,
     });
   }
-  return { acceptance: acceptance.result };
+  return { acceptance: acceptance.result, requestId };
 }
