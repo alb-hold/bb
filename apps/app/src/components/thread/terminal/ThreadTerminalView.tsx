@@ -52,6 +52,7 @@ import { terminalTextSnapshot } from "./terminal-text-snapshot";
 import {
   applyTerminalControl,
   encodeTerminalArrow,
+  suppressDuplicateTerminalCompositionInput,
 } from "./terminal-mobile-input";
 import {
   createTerminalOsc8LinkHandler,
@@ -1105,6 +1106,7 @@ export function ThreadTerminalView({
     let selectionChangeDisposable: { dispose: () => void } | null = null;
     let terminalKeyDisposable: { dispose: () => void } | null = null;
     let terminalInputForwarding: { dispose: () => void } | null = null;
+    let terminalCompositionInputGuard: { dispose: () => void } | null = null;
     let shellOscDisposable: { dispose: () => void } | null = null;
     let stopObservingFonts: (() => void) | null = null;
     let stopWatchingLayout: (() => void) | null = null;
@@ -1292,6 +1294,11 @@ export function ThreadTerminalView({
         ),
       );
       terminal.open(containerElement);
+      terminalCompositionInputGuard = isTouchDevice
+        ? suppressDuplicateTerminalCompositionInput(
+            containerElement.parentElement ?? containerElement,
+          )
+        : null;
       document.addEventListener("focusin", updateGridVisibility);
       document.addEventListener("focusout", updateGridVisibility);
       window.addEventListener("focus", updateGridVisibility);
@@ -1747,6 +1754,8 @@ export function ThreadTerminalView({
       terminalKeyDisposable = null;
       terminalInputForwarding?.dispose();
       terminalInputForwarding = null;
+      terminalCompositionInputGuard?.dispose();
+      terminalCompositionInputGuard = null;
       shellOscDisposable?.dispose();
       terminalInteractions?.dispose();
       handleFileDropRef.current = null;
@@ -1770,6 +1779,7 @@ export function ThreadTerminalView({
     handleTerminalPointerCancel,
     jumpToPrompt,
     requestOpenTerminalLink,
+    isTouchDevice,
     session.id,
     session.threadId,
     updateHoveredTerminalLink,
