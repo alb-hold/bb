@@ -357,26 +357,25 @@ const socketPathForToken = (value) => recoveryPlatform === "win32"
 const ownerProcessHoldsSegment = (pid, segmentPath) => {
   try {
     if (process.platform === "darwin") {
-      const output = execFileSync("/usr/sbin/lsof", ["-nP", "-F", "n", "-a", "-p", String(pid), segmentPath], {
+      const output = execFileSync("/usr/sbin/lsof", ["-n", "-P", "-F", "p", "--", path.resolve(segmentPath)], {
         encoding: "utf8",
-        timeout: 1_000,
+        timeout: 750,
         env: { ...process.env, LC_ALL: "C", TZ: "UTC" },
       });
-      const paths = [segmentPath];
-      try {
-        paths.push(fs.realpathSync(segmentPath));
-      } catch {}
-      return output.split(/\\r?\\n/).some((line) => paths.includes(line.slice(1)) && line.startsWith("n"));
+      return output.split(/\\r?\\n/).some((line) => line === "p" + pid);
     }
     if (process.platform === "linux") {
-      const segmentStat = fs.statSync(segmentPath);
       const descriptorDirectory = "/proc/" + pid + "/fd";
       for (const descriptor of fs.readdirSync(descriptorDirectory)) {
         try {
-          const descriptorStat = fs.statSync(path.join(descriptorDirectory, descriptor));
-          if (descriptorStat.dev === segmentStat.dev && descriptorStat.ino === segmentStat.ino) return true;
+          const target = fs.readlinkSync(path.join(descriptorDirectory, descriptor));
+          const resolvedTarget = path.resolve(target.replace(/ \\(deleted\\)$/u, ""));
+          if (resolvedTarget === path.resolve(segmentPath)) return true;
         } catch (error) {
-          if (error.code !== "ENOENT") return undefined;
+          if (error.code !== "ENOENT") {
+            reportFsError("stdio segment holder check inconclusive", error);
+            return undefined;
+          }
         }
       }
       return false;
@@ -384,6 +383,7 @@ const ownerProcessHoldsSegment = (pid, segmentPath) => {
     return undefined;
   } catch (error) {
     if (error.status === 1 && !String(error.stderr ?? "").trim()) return false;
+    reportFsError("stdio segment holder check inconclusive", error);
     return undefined;
   }
 };
@@ -742,7 +742,13 @@ const recoverClosedSegments = async () => {
             if (currentIdentity.fingerprint !== ownerFingerprint) {
               recover = true;
             } else {
-              continue;
+              const ownerHoldsSegment = ownerProcessHoldsSegment(ownerPid, file);
+              if (ownerHoldsSegment === true) continue;
+              if (ownerHoldsSegment === false) {
+                recover = true;
+              } else {
+                continue;
+              }
             }
           }
         }

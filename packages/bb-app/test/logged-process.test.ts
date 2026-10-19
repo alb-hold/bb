@@ -1081,6 +1081,86 @@ describe("spawnLoggedProcess", () => {
     }
   });
 
+  it.skipIf(process.platform === "win32")(
+    "reclaims a dead segment when a matching live process does not hold it open and its endpoint is absent",
+    async () => {
+      const logDir = scratchDir();
+      const identity = currentProcessIdentity();
+      const dead = spawnLoggedProcess({
+        command: process.execPath,
+        args: [
+          "-e",
+          'process.stdout.write("dead fallback identity output\\n"); setInterval(() => {}, 1000);',
+        ],
+        env: process.env,
+        logDir,
+        logName: "server",
+        testWriterBarrier: { ownerIdentity: identity },
+      });
+      let observer: ReturnType<typeof spawnLoggedProcess> | undefined;
+      try {
+        await expect
+          .poll(
+            () =>
+              familyFiles(logDir, "server").find(
+                (file) =>
+                  file.includes(".active-") &&
+                  fileIncludes(file, "dead fallback identity output"),
+              ),
+            { timeout: 5_000, interval: 10 },
+          )
+          .toBeDefined();
+        const deadSegment = familyFiles(logDir, "server").find((file) =>
+          file.includes(".active-") &&
+          fileIncludes(file, "dead fallback identity output"),
+        )!;
+        expect(deadSegment).toContain(
+          `.active-${identity.pid}-${identity.source}-${identity.fingerprint}-`,
+        );
+        const deadSocket = join(
+          livenessDirectory(logDir, "server"),
+          `s-${socketTokenFromActivePath(deadSegment)}`,
+        );
+        dead.writerProcess.kill("SIGKILL");
+        await dead.writerExit;
+        unlinkSync(deadSocket);
+        expect(identity.pid).toBe(process.pid);
+        expect(() => process.kill(identity.pid, 0)).not.toThrow();
+        expect(currentProcessIdentity()).toEqual(identity);
+
+        observer = spawnLoggedProcess({
+          command: process.execPath,
+          args: ["-e", 'process.stdout.write("fallback observer\\n");'],
+          env: process.env,
+          logDir,
+          logName: "server",
+          testWriterBarrier: {
+            recoveryIdentity: identity,
+            recoveryIntervalMs: 25,
+          },
+        });
+        expect(await waitForExit(observer)).toBe(0);
+        await observer.writerExit;
+        expect(existsSync(deadSegment)).toBe(false);
+        expect(
+          familyFiles(logDir, "server").some(
+            (file) =>
+              file.includes(".backup-") &&
+              fileIncludes(file, "dead fallback identity output"),
+          ),
+        ).toBe(true);
+      } finally {
+        if (observer !== undefined && observer.exitCode === null) {
+          observer.kill("SIGKILL");
+        }
+        if (dead.exitCode === null) {
+          dead.kill("SIGKILL");
+          await waitForExit(dead);
+        }
+      }
+    },
+  );
+
   it("keeps a live endpoint under connection load when its process fingerprint differs", async () => {
     const logDir = scratchDir();
     const identity = currentProcessIdentity();
@@ -1989,7 +2069,6 @@ fs.renameSync = function (source, destination) {
         logDir,
         logName: "server",
         testWriterBarrier: {
-          ownerIdentity: currentProcessIdentity(),
           recoveryIntervalMs: 25,
           writerEnv: { NODE_OPTIONS: `--require=${renamePreloadPath}` },
           diagnosticPath,
