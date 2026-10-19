@@ -34,6 +34,9 @@ export function onClientSocketMessage(
   }
 
   switch (parsed.type) {
+    case "device-handoff-device":
+      deps.hub.issueDeviceHandoffClientToken(socket, parsed.token);
+      break;
     case "subscribe":
       deps.hub.subscribe(socket, parsed.target);
       deps.watchInterests.subscribe(socket, parsed.target);
@@ -44,6 +47,16 @@ export function onClientSocketMessage(
       break;
     case "ping":
       socket.send(JSON.stringify(PONG_MESSAGE));
+      break;
+    case "device-handoff-view":
+      deps.hub.setDeviceHandoffView(
+        socket,
+        parsed.threadId,
+        parsed.terminalSessionId,
+      );
+      break;
+    case "device-handoff-ack":
+      deps.hub.acknowledgeDeviceHandoff(socket, parsed.id);
       break;
     default: {
       const _exhaustive: never = parsed;

@@ -24,6 +24,7 @@ import {
   type ThreadListResponse,
   type PublicApiSchema,
 } from "@bb/server-contract";
+import { DEVICE_HANDOFF_CLIENT_TOKEN_HEADER } from "@bb/server-contract";
 import type { Hono } from "hono";
 import { type ThreadQueuedMessage } from "@bb/domain";
 import type { AppDeps } from "../../types.js";
@@ -212,7 +213,13 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
   post(routes.send, async (context, payload) => {
     const thread = requirePublicThread(deps.db, context.req.param("id"));
     return context.json(
-      await acceptThreadSendRequest(deps, { payload, thread }),
+      await acceptThreadSendRequest(deps, {
+        payload,
+        thread,
+        deviceHandoffClientToken: context.req.header(
+          DEVICE_HANDOFF_CLIENT_TOKEN_HEADER,
+        ),
+      }),
     );
   });
 
@@ -225,6 +232,13 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
       environment,
       payload,
       thread,
+      onTurnRequestCreated: (requestId, turnId) =>
+        deps.hub.recordDeviceHandoffTurnSubmitter(
+          context.req.header(DEVICE_HANDOFF_CLIENT_TOKEN_HEADER),
+          thread.id,
+          requestId,
+          turnId,
+        ),
     });
     return context.json(result);
   });
@@ -232,7 +246,17 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
   post(routes.retry, async (context, payload) => {
     const thread = requirePublicThread(deps.db, context.req.param("id"));
     ensureThreadIsWritable(thread);
-    const result = await retryFailedTurn(deps, { request: payload, thread });
+    const result = await retryFailedTurn(deps, {
+      request: payload,
+      thread,
+      onTurnRequestCreated: (requestId, turnId) =>
+        deps.hub.recordDeviceHandoffTurnSubmitter(
+          context.req.header(DEVICE_HANDOFF_CLIENT_TOKEN_HEADER),
+          thread.id,
+          requestId,
+          turnId,
+        ),
+    });
     return context.json(result);
   });
 
@@ -253,6 +277,13 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
       queuedMessageId: context.req.param("queuedMessageId"),
       mode: payload.mode,
       threadId: context.req.param("id"),
+      onTurnRequestCreated: (requestId, turnId) =>
+        deps.hub.recordDeviceHandoffTurnSubmitter(
+          context.req.header(DEVICE_HANDOFF_CLIENT_TOKEN_HEADER),
+          thread.id,
+          requestId,
+          turnId,
+        ),
     });
     return context.json({ ok: true, ...result });
   });

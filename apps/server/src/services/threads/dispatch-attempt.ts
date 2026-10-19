@@ -217,11 +217,16 @@ export interface DispatchAttemptArgs {
   originPluginId: string | null;
   startedOnBehalfOf: StartedOnBehalfOf | null;
   executionDefaults?: Parameters<typeof buildExecutionOptions>[2];
+  onTurnRequestCreated?: (requestId: string, turnId?: string) => void;
   trigger: "auto-dispatch" | "user";
 }
 
 export type DispatchAttemptOutcome =
-  | { kind: "dispatched"; refusal?: ThreadSendRefusal | null }
+  | {
+      kind: "dispatched";
+      refusal?: ThreadSendRefusal | null;
+      turnRequestId?: string;
+    }
   | { kind: "queued"; entry: ThreadQueuedMessage };
 
 export function resolveDispatchAttemptKind(
@@ -571,8 +576,9 @@ async function runDispatchAttempt(
           reattempted,
         );
       }
+      args.onTurnRequestCreated?.(admission.turnRequestId);
       await launchAdmittedThread(deps, admission);
-      return { kind: "dispatched" };
+      return { kind: "dispatched", turnRequestId: admission.turnRequestId };
     }
 
     markTurnTraceSpan("dispatch.checkpoint.done");
@@ -582,6 +588,7 @@ async function runDispatchAttempt(
       payload: resolvedPayload,
       thread,
       trigger: args.trigger,
+      onTurnRequestCreated: args.onTurnRequestCreated,
       ...(args.retryOf !== undefined ? { retryOf: args.retryOf } : {}),
       beforeAppendInTransaction: ({ tx }) => {
         if (getThread(tx, thread.id)?.status !== thread.status) {
@@ -599,7 +606,13 @@ async function runDispatchAttempt(
     if (claimed !== null) {
       settleQueueRowDispatched({ row: claimed[0]! });
     }
-    return { kind: "dispatched", refusal: sent.refusal };
+    return {
+      kind: "dispatched",
+      refusal: sent.refusal,
+      ...(sent.requestId !== undefined
+        ? { turnRequestId: sent.requestId }
+        : {}),
+    };
   } catch (error) {
     releaseWorkspaceForThread(deps, thread);
     if (error instanceof DispatchThreadStatusChangedError) {
@@ -664,6 +677,7 @@ interface AdmitPendingThreadArgs {
 interface PendingThreadAdmission {
   claimedRow: ClaimedQueuedThreadMessageRow | null;
   startingThread: Thread;
+  turnRequestId: string;
 }
 
 class PendingThreadAdmissionLost extends Error {
@@ -732,9 +746,9 @@ async function admitPendingThread(
     { threadId: args.thread.id },
   );
   const claimedRow = args.claimed?.[0] ?? null;
-  let startingThread: Thread;
+  let admission: { startingThread: Thread; turnRequestId: string };
   try {
-    startingThread = deps.db.transaction(
+    admission = deps.db.transaction(
       (tx) => {
         if (args.claimed !== null && args.claimed.length > 0) {
           consumeClaimedRows(
@@ -752,7 +766,7 @@ async function admitPendingThread(
         }
         const starting = getThread(tx, args.thread.id);
         if (starting === null) throw new PendingThreadAdmissionLost();
-        requestThreadProvision(deps, {
+        const provisionContext = requestThreadProvision(deps, {
           thread: starting,
           environmentIntent: startContext.environmentIntent,
           execution,
@@ -764,7 +778,10 @@ async function admitPendingThread(
           startedOnBehalfOf: startContext.startedOnBehalfOf,
           titleProvided: startContext.titleProvided,
         });
-        return starting;
+        return {
+          startingThread: starting,
+          turnRequestId: provisionContext.request.clientRequestId,
+        };
       },
       { behavior: "immediate" },
     );
@@ -778,6 +795,7 @@ async function admitPendingThread(
     );
     return null;
   }
+  const { startingThread, turnRequestId } = admission;
   deps.hub.notifyThread(
     startingThread.id,
     ["status-changed"],
@@ -786,6 +804,7 @@ async function admitPendingThread(
   return {
     claimedRow,
     startingThread,
+    turnRequestId,
   };
 }
 

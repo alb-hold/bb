@@ -27,6 +27,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
 
 vi.mock("@/lib/api-server", () => ({
   apiClient: { "sidebar-bootstrap": { $get: vi.fn(() => ({})) } },
+  fetchWithDeviceHandoffSubmission: vi.fn(),
 }));
 
 vi.mock("@/hooks/useRealtimeSubscription", () => ({

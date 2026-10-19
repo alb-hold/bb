@@ -1070,6 +1070,15 @@ describe("public terminal contracts", () => {
       sinceSeq: 0,
     });
     expect(
+      terminalWebSocketQuerySchema.parse({
+        handoffOwnerToken: "0123456789abcdefghij_-",
+      }).handoffOwnerToken,
+    ).toBe("0123456789abcdefghij_-");
+    expect(
+      terminalWebSocketQuerySchema.safeParse({ handoffOwnerToken: "bad" })
+        .success,
+    ).toBe(false);
+    expect(
       terminalWebSocketQuerySchema.safeParse({ resizeAcks: "yes" }).success,
     ).toBe(false);
     expect(

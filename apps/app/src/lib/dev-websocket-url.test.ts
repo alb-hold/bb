@@ -60,6 +60,20 @@ describe("buildDevWebSocketUrl", () => {
     );
   });
 
+  it("preserves terminal attachment query parameters on the proxied app origin", () => {
+    vi.stubGlobal("__BB_DEV_WS_BROWSER_HOST_PORT__", 23_802);
+    vi.stubGlobal("__BB_DEV_APP_BROWSER_HOST_PORT__", 15_802);
+    installWindowLocation("http://devbox.local:15802/");
+
+    expect(
+      buildDevWebSocketUrl({
+        path: "/ws/terminals/term_1?handoffOwnerToken=owner-token",
+      }),
+    ).toBe(
+      "ws://devbox.local:23802/ws/terminals/term_1?handoffOwnerToken=owner-token",
+    );
+  });
+
   it("returns undefined outside the dev build", () => {
     installWindowLocation("https://app.example.test/threads/thr_1");
 
