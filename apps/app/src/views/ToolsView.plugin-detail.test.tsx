@@ -1317,14 +1317,16 @@ describe("BB Official plugin detail routing", () => {
         ? pluginListQueryKey(true)
         : pluginCatalogSearchQueryKey("");
       await act(async () => {
-        await queryClient.ensureQueryData(
-          installed
-            ? pluginListQueryOptions({ enabled: true })
-            : {
-                queryKey: cardQueryKey,
-                queryFn: () => searchPluginCatalog(fetch, ""),
-              },
-        );
+        if (installed) {
+          await queryClient.ensureQueryData(
+            pluginListQueryOptions({ enabled: true }),
+          );
+        } else {
+          await queryClient.ensureQueryData({
+            queryKey: pluginCatalogSearchQueryKey(""),
+            queryFn: () => searchPluginCatalog(fetch, ""),
+          });
+        }
       });
       expect(queryClient.getQueryState(cardQueryKey)?.data).toMatchObject(
         installed
