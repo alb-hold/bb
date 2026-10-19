@@ -113,6 +113,7 @@ interface SendQueuedMessageArgs {
   mode: SendQueuedMessageMode;
   queuedMessageId: string;
   threadId: string;
+  onTurnRequestCreated?: (requestId: string, turnId?: string) => void;
 }
 
 type ClaimedQueuedMessage = Exclude<
@@ -125,6 +126,7 @@ interface SendClaimedQueuedMessageArgs {
   queuedMessages: ClaimedQueuedMessage[];
   sendNow: boolean;
   threadId: string;
+  onTurnRequestCreated?: (requestId: string, turnId?: string) => void;
 }
 
 interface SendClaimedQueuedMessageForThreadArgs {
@@ -132,6 +134,7 @@ interface SendClaimedQueuedMessageForThreadArgs {
   queuedMessages: ClaimedQueuedMessage[];
   sendNow: boolean;
   thread: Thread;
+  onTurnRequestCreated?: (requestId: string, turnId?: string) => void;
 }
 
 export function createAutomaticQueuedMessageGroupEligibility(
@@ -449,6 +452,7 @@ async function sendClaimedQueuedMessage(
     queuedMessages: args.queuedMessages,
     sendNow: args.sendNow,
     thread,
+    onTurnRequestCreated: args.onTurnRequestCreated,
   });
 }
 
@@ -532,7 +536,7 @@ async function sendClaimedQueuedMessageForIdleProviderThread(
     thread,
   });
 
-  const { activeThread, command } = deps.db.transaction(
+  const { activeThread, command, requestId } = deps.db.transaction(
     (tx) => {
       if (
         respectsManualStopPause(args) &&
@@ -586,7 +590,11 @@ async function sendClaimedQueuedMessageForIdleProviderThread(
       if (!outcome.applied) {
         throw createQueuedMessageClaimLostError();
       }
-      return { activeThread: outcome.thread, command };
+      return {
+        activeThread: outcome.thread,
+        command,
+        requestId: request.requestId,
+      };
     },
     { behavior: "immediate" },
   );
@@ -602,6 +610,7 @@ async function sendClaimedQueuedMessageForIdleProviderThread(
       ...buildThreadStatusChangeMetadata(deps, activeThread),
     },
   );
+  args.onTurnRequestCreated?.(requestId);
   startLiveHostCommand(deps, {
     command,
     hostId: environment.hostId,
@@ -703,6 +712,7 @@ async function sendClaimedQueuedMessageForThread(
     origin: lead.origin,
     originPluginId: lead.originPluginId,
     startedOnBehalfOf: storedQueuedThreadMessageRequestedBy(lead),
+    onTurnRequestCreated: args.onTurnRequestCreated,
     trigger: "auto-dispatch",
   });
   if (
@@ -774,6 +784,7 @@ export async function sendQueuedMessage(
         queuedMessages,
         sendNow,
         threadId: args.threadId,
+        onTurnRequestCreated: args.onTurnRequestCreated,
       }),
     );
   } catch (error) {
@@ -794,6 +805,7 @@ export async function sendQueuedMessageNow(
     mode: SendQueuedMessageMode;
     queuedMessageId: string;
     threadId: string;
+    onTurnRequestCreated?: (requestId: string, turnId?: string) => void;
   },
 ): Promise<
   | { delivery: "sent" }
@@ -804,6 +816,7 @@ export async function sendQueuedMessageNow(
     mode: args.mode,
     queuedMessageId: args.queuedMessageId,
     threadId: args.threadId,
+    onTurnRequestCreated: args.onTurnRequestCreated,
   });
   const remainingQueuedMessage = getQueuedThreadMessage(
     deps.db,

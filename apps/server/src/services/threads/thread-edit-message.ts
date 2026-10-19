@@ -477,6 +477,7 @@ export async function editThreadMessage(
   deps: LoggedPendingInteractionWorkSessionDeps,
   args: {
     environment: Parameters<typeof requireReadyThreadEnvironment>[0];
+    onTurnRequestCreated?: (requestId: string, turnId?: string) => void;
     payload: EditMessageRequest;
     thread: Thread;
   },
@@ -608,6 +609,7 @@ export async function editThreadMessage(
   let cancelledRetryCount = 0;
   try {
     await sendThreadMessage(deps, {
+      onTurnRequestCreated: args.onTurnRequestCreated,
       beforeAppendInTransaction: ({ tx }) => {
         if (getActivePendingInteractionForThread(tx, editableThread.id)) {
           conflict(

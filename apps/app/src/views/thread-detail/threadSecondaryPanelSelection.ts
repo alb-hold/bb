@@ -35,6 +35,12 @@ export function getActiveFixedSecondaryTab({
   return activeTab;
 }
 
+export function activeTerminalIdForDeviceHandoff(
+  tab: ActiveFixedSecondaryTab,
+): string | null {
+  return tab?.kind === "terminal" ? tab.terminalId : null;
+}
+
 export function useSetThreadSecondaryPanelSelection(
   panelStateId: ThreadSecondaryPanelThreadId,
   syncThreadId: ThreadSecondaryPanelThreadId,

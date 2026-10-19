@@ -28,7 +28,12 @@ function announceTurnFailed(
 
 interface ApplyLoggedThreadLifecycleEventDeps {
   db: DbConnection;
-  hub: Pick<NotificationHub, "getDaemonSessionIdForHost" | "notifyThread">;
+  hub: Pick<
+    NotificationHub,
+    | "clearDeviceHandoffTurnSubmitterForThread"
+    | "getDaemonSessionIdForHost"
+    | "notifyThread"
+  >;
   logger: ServerLogger;
   providerRegistry: ProviderRegistryService;
 }
@@ -63,6 +68,9 @@ export function applyLoggedThreadLifecycleEvent(
 ): ApplyThreadLifecycleEventOutcome {
   const outcome = applyThreadLifecycleEvent(deps.db, args);
   if (outcome.applied) {
+    if (outcome.thread.status === "idle" || outcome.thread.status === "error") {
+      deps.hub.clearDeviceHandoffTurnSubmitterForThread(args.threadId);
+    }
     if (
       (outcome.thread.status === "idle" || outcome.thread.status === "error") &&
       !isNativeTerminalThread(deps.db, args.threadId)

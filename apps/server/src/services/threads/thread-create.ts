@@ -93,6 +93,7 @@ interface NativeTerminalCreate {
 }
 
 interface CreateProvisioningThreadArgs {
+  deviceHandoffClientToken?: string;
   environmentId: string | null;
   executionDefaults: Parameters<
     typeof buildExecutionOptions
@@ -531,6 +532,16 @@ async function createPendingThreadAndAttemptFirstDispatch(
       origin: args.request.origin,
       originPluginId: args.request.originPluginId ?? null,
       startedOnBehalfOf: args.request.startedOnBehalfOf,
+      onTurnRequestCreated: (requestId, turnId) => {
+        if (args.deviceHandoffClientToken !== undefined) {
+          deps.hub.recordDeviceHandoffTurnSubmitter(
+            args.deviceHandoffClientToken,
+            thread.id,
+            requestId,
+            turnId,
+          );
+        }
+      },
       trigger: "user",
     });
   } catch (error) {
@@ -599,6 +610,7 @@ export async function createThreadFromRequest(
   deps: ThreadCreateDeps,
   rawRequestInput: ThreadCreateServiceRequestInput,
   options: {
+    deviceHandoffClientToken?: string;
     providerInput?: ThreadCreateServiceRequestInput["input"];
     forkSourceEnvironmentId?: string;
   } = {},
@@ -905,6 +917,9 @@ export async function createThreadFromRequest(
     executionDefaults: resolvedExecutionDefaults,
     fork,
     nativeTerminal,
+    ...(options.deviceHandoffClientToken === undefined
+      ? {}
+      : { deviceHandoffClientToken: options.deviceHandoffClientToken }),
     ...(options.providerInput !== undefined
       ? { providerInput: options.providerInput }
       : {}),

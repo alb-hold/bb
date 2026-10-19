@@ -6,6 +6,7 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TerminalWebSocketTransport } from "@bb/client-core";
 import { makeTerminalSession } from "@/test/fixtures/terminal-sessions";
+import { wsManager } from "@/lib/ws";
 import {
   AppCommandProvider,
   useAppCommandHandler,
@@ -19,6 +20,7 @@ const testState = vi.hoisted(() => ({
   sockets: [] as TestTerminalSocket[],
   socketCreated: null as (() => void) | null,
   socketMessages: [] as string[],
+  socketUrls: [] as string[],
 }));
 
 class TestTerminalSocket {
@@ -35,7 +37,8 @@ class TestTerminalSocket {
   readonly sent: string[] = [];
   private resolveOpened!: () => void;
 
-  constructor() {
+  constructor(url: string) {
+    testState.socketUrls.push(url);
     testState.sockets.push(this);
     testState.socketCreated?.();
     testState.socketCreated = null;
@@ -126,6 +129,7 @@ function Handler() {
 afterEach(() => {
   vi.useRealTimers();
   cleanup();
+  Reflect.set(wsManager, "deviceHandoffClientToken", null);
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   testState.calls.length = 0;
@@ -133,10 +137,183 @@ afterEach(() => {
   testState.socketCreated = null;
   testState.deferSocketOpen = false;
   testState.socketMessages.length = 0;
+  testState.socketUrls.length = 0;
   testState.clearAttention.mockReset();
 });
 
 describe("ThreadTerminalView terminal focus boundary", () => {
+  it("keeps the app identity when the server echoes it after terminal attach", async () => {
+    vi.stubGlobal("WebSocket", TestTerminalSocket);
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(private readonly callback: ResizeObserverCallback) {}
+        disconnect(): void {}
+        observe(target: Element): void {
+          this.callback(
+            [
+              {
+                target,
+                contentRect: { width: 390, height: 700 },
+              } as ResizeObserverEntry,
+            ],
+            this as unknown as ResizeObserver,
+          );
+        }
+        unobserve(): void {}
+      },
+    );
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+      measureText: (text: string) => ({ width: text.length * 8 }),
+    } as unknown as CanvasRenderingContext2D);
+    vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
+      cols: 40,
+      rows: 20,
+    });
+
+    render(
+      <MemoryRouter>
+        <AppCommandProvider>
+          <ThreadTerminalView
+            autoFocus={false}
+            isPanelOpen
+            session={makeTerminalSession({
+              id: "term-late-app-token",
+              threadId: null,
+              status: "running",
+            })}
+          />
+        </AppCommandProvider>
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(testState.socketUrls).toHaveLength(1));
+    const initialToken = new URL(
+      testState.socketUrls[0] ?? "ws://localhost",
+    ).searchParams.get("handoffOwnerToken");
+    expect(initialToken).toMatch(/^[A-Za-z0-9_-]{22}$/u);
+
+    wsManager.handleIncomingMessage(
+      JSON.stringify({
+        type: "device-handoff-client-token",
+        token: initialToken,
+      }),
+    );
+
+    expect(testState.socketUrls).toHaveLength(1);
+
+    testState.sockets[0]?.disconnect();
+    await waitFor(() => expect(testState.socketUrls).toHaveLength(2));
+    expect(
+      new URL(testState.socketUrls[1] ?? "ws://localhost").searchParams.get(
+        "handoffOwnerToken",
+      ),
+    ).toBe(initialToken);
+  });
+
+  it.each([
+    {
+      path: "desktop terminal tab",
+      threadId: null,
+      compact: false,
+    },
+    {
+      path: "split-pane terminal",
+      threadId: "thr_split_terminal",
+      compact: false,
+    },
+    {
+      path: "phone right-panel terminal tab",
+      threadId: null,
+      compact: true,
+    },
+    {
+      path: "thread terminal with a threadless origin",
+      threadId: null,
+      compact: false,
+    },
+  ])("attaches the $path with its owning app token", async (view) => {
+    wsManager.handleIncomingMessage(
+      JSON.stringify({
+        type: "device-handoff-client-token",
+        token: "0123456789abcdefghij_-",
+      }),
+    );
+    vi.stubGlobal("WebSocket", TestTerminalSocket);
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(private readonly callback: ResizeObserverCallback) {}
+        disconnect(): void {}
+        observe(target: Element): void {
+          this.callback(
+            [
+              {
+                target,
+                contentRect: { width: 390, height: 700 },
+              } as ResizeObserverEntry,
+            ],
+            this as unknown as ResizeObserver,
+          );
+        }
+        unobserve(): void {}
+      },
+    );
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: view.compact && query === "(pointer: coarse)",
+      media: query,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      onchange: null,
+      dispatchEvent: vi.fn(),
+    }));
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+      measureText: (text: string) => ({ width: text.length * 8 }),
+    } as unknown as CanvasRenderingContext2D);
+    vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
+      cols: 40,
+      rows: 20,
+    });
+    const token = `view-path-owner-${view.path.replaceAll(" ", "-")}`;
+    wsManager.handleIncomingMessage(
+      JSON.stringify({ type: "device-handoff-client-token", token }),
+    );
+
+    render(
+      <MemoryRouter>
+        <AppCommandProvider>
+          <ThreadTerminalView
+            autoFocus={false}
+            isPanelOpen
+            session={makeTerminalSession({
+              id: `term-${view.path.replaceAll(" ", "-")}`,
+              threadId: view.threadId,
+              status: "running",
+            })}
+          />
+        </AppCommandProvider>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(testState.socketUrls).toHaveLength(1));
+    const url = new URL(testState.socketUrls[0] ?? "ws://localhost");
+    expect(url.pathname).toBe(
+      `/ws/terminals/term-${view.path.replaceAll(" ", "-")}`,
+    );
+    expect(url.searchParams.get("handoffOwnerToken")).toBe(token);
+    await waitFor(() => {
+      expect(
+        testState.socketMessages
+          .map((message) => JSON.parse(message))
+          .some(
+            (message) =>
+              message.type === "visibility" && message.visible === true,
+          ),
+      ).toBe(true);
+    });
+  });
+
   it("clears attention when its terminal panel becomes visible", async () => {
     const session = makeTerminalSession({
       id: "term_attention",

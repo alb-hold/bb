@@ -28,7 +28,10 @@ export interface TerminalUpgradeHandoffOptions {
   resolveTerminal(terminalId: string): TerminalUpgradeTarget | null;
 }
 
-function headerValue(request: IncomingMessage, name: string): string | undefined {
+function headerValue(
+  request: IncomingMessage,
+  name: string,
+): string | undefined {
   const value = request.headers[name];
   return Array.isArray(value) ? value[0] : value;
 }
@@ -94,6 +97,7 @@ export function handOffTerminalUpgrade(
     outputAcks: url.searchParams.get("outputAcks") ?? undefined,
     resizeAcks: url.searchParams.get("resizeAcks") ?? undefined,
     sinceSeq: url.searchParams.get("sinceSeq") ?? undefined,
+    handoffOwnerToken: url.searchParams.get("handoffOwnerToken") ?? undefined,
   });
   if (!query.success) {
     return false;
@@ -102,8 +106,11 @@ export function handOffTerminalUpgrade(
   if (target === null || target.terminalId !== terminalId) {
     return false;
   }
+  const handoffOwnerToken = query.data.handoffOwnerToken;
+  url.searchParams.delete("handoffOwnerToken");
   const attachId = options.attach({
     daemonSessionId: target.daemonSessionId,
+    handoffOwnerToken,
     outputAcks: query.data.outputAcks,
     resizeAcks: query.data.resizeAcks,
     request: {
