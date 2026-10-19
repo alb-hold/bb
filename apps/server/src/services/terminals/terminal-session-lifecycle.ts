@@ -384,7 +384,6 @@ interface CloseRemovedHostTerminalsArgs {
 interface ReconcileDisconnectedHostTerminalsArgs {
   daemonSessionId: string;
   hostId: string;
-  nativeThreadIds?: readonly string[];
 }
 
 interface HandleDaemonTerminalMessageArgs {
@@ -2002,9 +2001,6 @@ export class TerminalSessionLifecycle {
       visible: false,
     });
     for (const session of disconnected) {
-      if (session.threadId !== null && args.nativeThreadIds?.includes(session.threadId)) {
-        continue;
-      }
       const ownerInstanceId =
         session.daemonSessionId === null
           ? null
@@ -2143,23 +2139,13 @@ export class TerminalSessionLifecycle {
       }
     }
 
-    const exitedSessions = disconnected.flatMap((session) => {
-      if (
-        openedInstanceId !== null &&
-        session.threadId !== null &&
-        args.nativeThreadIds?.includes(session.threadId)
-      ) {
-        return [];
-      }
-      const exited = updateTerminalSession(this.options.db, {
-        scope: {
-          kind: "terminal",
-          statuses: ["disconnected"],
-          terminalId: session.id,
-        },
-        update: { closeReason: "daemon-disconnect", kind: "exit" },
-      });
-      return exited === null ? [] : [exited];
+    const exitedSessions = updateTerminalSessions(this.options.db, {
+      scope: {
+        hostId: args.hostId,
+        kind: "host",
+        statuses: ["disconnected"],
+      },
+      update: { closeReason: "daemon-disconnect", kind: "exit" },
     });
     for (const session of exitedSessions) {
       this.options.hub.sendDaemonSessionMessage(args.daemonSessionId, {

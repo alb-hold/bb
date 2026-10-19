@@ -122,7 +122,6 @@ export async function onDaemonSocketOpen(
     await deps.terminalSessions.reconcileDisconnectedHostTerminals({
       daemonSessionId: args.sessionId,
       hostId: args.hostId,
-      nativeThreadIds,
     });
   }
   if (isServerMoveFrozen(deps.db)) {
