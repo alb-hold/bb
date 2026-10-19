@@ -77,6 +77,21 @@ export function appendRetainedTerminalOutputChunk(
     now: number;
   },
 ): void {
+  appendRetainedTerminalOutputChunks(db, {
+    ...args,
+    chunks: [args.chunk],
+  });
+}
+
+export function appendRetainedTerminalOutputChunks(
+  db: DbConnection,
+  args: {
+    hostId: string;
+    terminalSessionId: string;
+    chunks: RetainedTerminalOutputChunk[];
+    now: number;
+  },
+): void {
   const run = db.$client.transaction(() => {
     pruneRetainedTerminalOutput(db, args.now);
     const owner = db.$client
@@ -95,47 +110,55 @@ export function appendRetainedTerminalOutputChunk(
       | RetainedTerminalOutputRow
       | undefined;
     const chunks = existing ? parseChunks(existing.chunksJson) : [];
-    if (chunks.some(({ chunk }) => chunk.seq === args.chunk.seq)) return;
-    const data = Buffer.from(args.chunk.dataBase64, "base64");
-    let leadingGridMarker: string | undefined;
-    let retainedData = data;
-    if (data.byteLength > TERMINAL_RETAINED_OUTPUT_BYTES) {
-      retainedData = data.subarray(
-        data.byteLength - TERMINAL_RETAINED_OUTPUT_BYTES,
-      );
-      leadingGridMarker =
-        findLastTerminalGridMarker(
-          data
-            .subarray(0, data.byteLength - TERMINAL_RETAINED_OUTPUT_BYTES)
-            .toString("utf8"),
-        ) ?? undefined;
-    }
-    const boundedChunk =
-      retainedData === data
-        ? args.chunk
-        : { ...args.chunk, dataBase64: retainedData.toString("base64") };
-    chunks.push({
-      chunk: boundedChunk,
-      ...(leadingGridMarker === undefined ? {} : { leadingGridMarker }),
-      retainedAt: args.now,
-    });
+    const seenSequences = new Set(chunks.map(({ chunk }) => chunk.seq));
+    let appended = false;
     let bytes = chunks.reduce(
       (total, entry) => total + chunkBytes(entry.chunk),
       0,
     );
-    while (bytes > TERMINAL_RETAINED_OUTPUT_BYTES && chunks.length > 0) {
-      const removed = chunks.shift();
-      if (removed) bytes -= chunkBytes(removed.chunk);
-      if (removed && chunks[0]) {
-        const latestGridMarker =
+    for (const chunk of args.chunks) {
+      if (seenSequences.has(chunk.seq)) continue;
+      seenSequences.add(chunk.seq);
+      appended = true;
+      const data = Buffer.from(chunk.dataBase64, "base64");
+      let leadingGridMarker: string | undefined;
+      let retainedData = data;
+      if (data.byteLength > TERMINAL_RETAINED_OUTPUT_BYTES) {
+        retainedData = data.subarray(
+          data.byteLength - TERMINAL_RETAINED_OUTPUT_BYTES,
+        );
+        leadingGridMarker =
           findLastTerminalGridMarker(
-            Buffer.from(removed.chunk.dataBase64, "base64").toString("utf8"),
-          ) ?? removed.leadingGridMarker;
-        if (latestGridMarker !== undefined) {
-          chunks[0].leadingGridMarker = latestGridMarker;
+            data
+              .subarray(0, data.byteLength - TERMINAL_RETAINED_OUTPUT_BYTES)
+              .toString("utf8"),
+          ) ?? undefined;
+      }
+      const boundedChunk =
+        retainedData === data
+          ? chunk
+          : { ...chunk, dataBase64: retainedData.toString("base64") };
+      chunks.push({
+        chunk: boundedChunk,
+        ...(leadingGridMarker === undefined ? {} : { leadingGridMarker }),
+        retainedAt: args.now,
+      });
+      bytes += chunkBytes(boundedChunk);
+      while (bytes > TERMINAL_RETAINED_OUTPUT_BYTES && chunks.length > 0) {
+        const removed = chunks.shift();
+        if (removed) bytes -= chunkBytes(removed.chunk);
+        if (removed && chunks[0]) {
+          const latestGridMarker =
+            findLastTerminalGridMarker(
+              Buffer.from(removed.chunk.dataBase64, "base64").toString("utf8"),
+            ) ?? removed.leadingGridMarker;
+          if (latestGridMarker !== undefined) {
+            chunks[0].leadingGridMarker = latestGridMarker;
+          }
         }
       }
     }
+    if (!appended) return;
     if (bytes === 0) {
       db.$client
         .prepare(

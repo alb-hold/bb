@@ -10,6 +10,7 @@ import {
   createTerminalSession,
   dismissRetainedTerminalOutput,
   appendRetainedTerminalOutputChunk,
+  appendRetainedTerminalOutputChunks,
   clearTerminalAttention,
   getTerminalAttention,
   listTerminalAttention,
@@ -2309,9 +2310,12 @@ export class TerminalSessionLifecycle {
             return;
           }
           if (current) {
-            for (const chunk of args.message.chunks) {
-              this.retainTerminalOutput(current, toTerminalOutputChunk(chunk));
-            }
+            appendRetainedTerminalOutputChunks(this.options.db, {
+              hostId: current.hostId,
+              terminalSessionId: current.id,
+              chunks: args.message.chunks.map(toTerminalOutputChunk),
+              now: Date.now(),
+            });
             if (current.status === "exited") {
               markRetainedTerminalOutputExited(
                 this.options.db,
