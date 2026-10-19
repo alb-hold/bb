@@ -20,23 +20,36 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-it("shows an import failure and keeps Done focused and working", async () => {
+it("preserves Done, Escape and compact Back callbacks through an import failure", async () => {
   vi.spyOn(console, "error").mockImplementation(() => {});
   const onDone = vi.fn();
+  const props = {
+    items: [{ id: "section:review", title: "Review" }],
+    visibleIds: [],
+    title: "Customize list",
+    listLabel: "Sections",
+    onVisibleChange: vi.fn(),
+    onReorder: vi.fn(),
+    onActivate: vi.fn(),
+    onExit: vi.fn(),
+    onDone,
+  };
+  const held = render(<SidebarVisibilityCustomize {...props} variant="card" />);
+  const heldDone = screen.getByRole("button", { name: "Done" });
+  expect(
+    screen.getByRole("status", { name: "Loading sidebar customization" }),
+  ).toBeDefined();
+  fireEvent.keyDown(heldDone, { key: "Escape" });
+  fireEvent.click(heldDone);
+  expect(onDone).toHaveBeenCalledTimes(2);
+  held.unmount();
+
   render(
     <>
       <button type="button">Before failure</button>
       <CompactViewportOverrideProvider isCompactViewport={true}>
         <SidebarVisibilityCustomize
-          items={[{ id: "section:review", title: "Review" }]}
-          visibleIds={[]}
-          title="Customize list"
-          listLabel="Sections"
-          onVisibleChange={vi.fn()}
-          onReorder={vi.fn()}
-          onActivate={vi.fn()}
-          onExit={vi.fn()}
-          onDone={onDone}
+          {...props}
           variant="compact"
         />
       </CompactViewportOverrideProvider>
@@ -52,5 +65,5 @@ it("shows an import failure and keeps Done focused and working", async () => {
   const done = screen.getByRole("button", { name: "Done" });
   expect(document.activeElement).toBe(done);
   fireEvent.click(done);
-  expect(onDone).toHaveBeenCalledTimes(1);
+  expect(onDone).toHaveBeenCalledTimes(3);
 });
