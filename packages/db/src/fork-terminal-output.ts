@@ -321,7 +321,7 @@ export function appendRetainedTerminalOutputChunks(
           .run(
             JSON.stringify(oldestChunks),
             removedBytes,
-            oldestChunks[0]?.retainedAt ?? args.now,
+            oldestChunks[0]?.retainedAt ?? lastNow,
             oldest.terminalSessionId,
             args.hostId,
           );
