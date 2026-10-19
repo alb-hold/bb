@@ -48,25 +48,34 @@ function replayChunks(count: number) {
   });
 }
 
+function ticking(start: number, step = 1) {
+  let next = start;
+  return () => {
+    const now = next;
+    next += step;
+    return now;
+  };
+}
+
 describe("retained terminal output replay", () => {
   it("matches per-chunk retention for a large replay and retains it within the timing bound", () => {
     const chunks = replayChunks(10_000);
     const perChunk = setup();
     const perChunkStartedAt = performance.now();
-    for (const chunk of chunks) {
+    for (const [index, chunk] of chunks.entries()) {
       appendRetainedTerminalOutputChunk(perChunk.db, {
         hostId: perChunk.host.id,
         terminalSessionId: perChunk.terminal.id,
         chunk,
-        now: 2,
+        now: 2 + index,
       });
     }
     const perChunkMs = performance.now() - perChunkStartedAt;
     const expected = perChunk.db.$client
       .prepare(
-        "SELECT chunks_json AS chunksJson, byte_length AS byteLength FROM fork_terminal_output WHERE terminal_session_id = ?",
+        "SELECT chunks_json AS chunksJson, byte_length AS byteLength, retained_at AS retainedAt FROM fork_terminal_output WHERE terminal_session_id = ?",
       )
-      .get(perChunk.terminal.id) as { chunksJson: string; byteLength: number };
+      .get(perChunk.terminal.id) as { chunksJson: string; byteLength: number; retainedAt: number };
 
     const batched = setup();
     const startedAt = performance.now();
@@ -74,14 +83,14 @@ describe("retained terminal output replay", () => {
       hostId: batched.host.id,
       terminalSessionId: batched.terminal.id,
       chunks,
-      now: 2,
+      clock: ticking(2),
     });
     const elapsedMs = performance.now() - startedAt;
     const row = batched.db.$client
       .prepare(
-        "SELECT chunks_json AS chunksJson, byte_length AS byteLength FROM fork_terminal_output WHERE terminal_session_id = ?",
+        "SELECT chunks_json AS chunksJson, byte_length AS byteLength, retained_at AS retainedAt FROM fork_terminal_output WHERE terminal_session_id = ?",
       )
-      .get(batched.terminal.id) as { chunksJson: string; byteLength: number };
+      .get(batched.terminal.id) as { chunksJson: string; byteLength: number; retainedAt: number };
     process.stdout.write(
       `retained replay 10000 chunks: batched ${elapsedMs.toFixed(1)}ms, per-chunk reference ${perChunkMs.toFixed(1)}ms; json=${Buffer.byteLength(row.chunksJson)} bytes; retained=${row.byteLength} bytes\n`,
     );
@@ -147,6 +156,11 @@ describe("retained terminal output replay", () => {
       replay: [...filled(4, 300, 256), chunkOf(1, "sequence 1 again")],
     },
     {
+      name: "a zero-byte chunk into an empty buffer, then the same sequence again",
+      existing: [],
+      replay: [chunkOf(0, ""), chunkOf(0, "sequence 0 after the empty one"), chunkOf(1, "one")],
+    },
+    {
       name: "a replay overlapping sequences already retained, crossing the cap",
       existing: filled(0, 200, 256),
       replay: filled(150, 200, 256),
@@ -164,19 +178,19 @@ describe("retained terminal output replay", () => {
         });
       }
     }
-    for (const chunk of replay) {
+    for (const [index, chunk] of replay.entries()) {
       appendRetainedTerminalOutputChunk(reference.db, {
         hostId: reference.host.id,
         terminalSessionId: reference.terminal.id,
         chunk,
-        now: 3,
+        now: 3 + index,
       });
     }
     appendRetainedTerminalOutputChunks(batched.db, {
       hostId: batched.host.id,
       terminalSessionId: batched.terminal.id,
       chunks: replay,
-      now: 3,
+      clock: ticking(3),
     });
     const read = (target: ReturnType<typeof setup>) =>
       target.db.$client
@@ -243,15 +257,15 @@ describe("retained terminal output replay", () => {
           hostId: host.id,
           terminalSessionId: terminal.id,
           chunks: replay,
-          now: replayNow,
+          clock: ticking(replayNow),
         });
       } else {
-        for (const chunk of replay) {
+        for (const [index, chunk] of replay.entries()) {
           appendRetainedTerminalOutputChunk(db, {
             hostId: host.id,
             terminalSessionId: terminal.id,
             chunk,
-            now: replayNow,
+            now: replayNow + index,
           });
         }
       }
@@ -269,11 +283,11 @@ describe("retained terminal output replay", () => {
     expect(reference.remainingOthers).toBe(0);
     expect(reference.own).toEqual({
       chunksJson: JSON.stringify([
-        { chunk: chunkOf(2, "replayed 2"), retainedAt: replayNow },
-        { chunk: chunkOf(3, "new 3"), retainedAt: replayNow },
+        { chunk: chunkOf(2, "replayed 2"), retainedAt: replayNow + 2 },
+        { chunk: chunkOf(3, "new 3"), retainedAt: replayNow + 3 },
       ]),
       byteLength: 15,
-      retainedAt: replayNow,
+      retainedAt: replayNow + 2,
       expiresAt: null,
     });
     expect(run("batched")).toEqual(reference);
@@ -300,19 +314,23 @@ describe("retained terminal output replay", () => {
       ),
       retainedAt: 2 + random(50),
       expired: !pressure && random(5) === 0,
+      exitedAt: random(2) === 0 ? 2 + random(48) : 50 + random(450),
       ownedByTarget: index === 0,
     }));
     const otherHostExpired = random(3) === 0 ? 0 : 1 + random(400);
+    const otherHostExitedAt = Array.from({ length: otherHostExpired }, () => (random(2) === 0 ? 2 + random(48) : 50 + random(450)));
+    const clockStep = random(3);
     const replayLength = 1 + random(250);
     const replay = Array.from({ length: replayLength }, (_, index) => {
       const seq =
         random(10) === 0 ? random(index + 10) : 1_000 + index;
+      if (random(40) === 0) return chunkOf(seq, "");
       if (random(60) === 0) {
         return chunkOf(seq, text(seq, TERMINAL_RETAINED_OUTPUT_BYTES + 1 + random(3_000)));
       }
       return chunkOf(seq, text(seq, 1 + random(2_000)));
     });
-    return { sessions, otherHostExpired, replay };
+    return { sessions, otherHostExpired, otherHostExitedAt, clockStep, replay };
   }
 
   type Scenario = ReturnType<typeof buildScenario>;
@@ -320,7 +338,7 @@ describe("retained terminal output replay", () => {
   function runScenario(scenario: Scenario, mode: "per-chunk" | "batched") {
     const db = createMigratedConnection();
     const host = upsertHost(db, noopNotifier, { name: "target" });
-    const otherHost = upsertHost(db, noopNotifier, { name: "other" });
+    const otherHosts = [0, 1, 2].map((index) => upsertHost(db, noopNotifier, { name: `other ${index}` }));
     const replayNow = 100 + TERMINAL_OUTPUT_RETENTION_MS;
     const create = (hostId: string, label: number) =>
       createTerminalSession(db, {
@@ -337,9 +355,10 @@ describe("retained terminal output replay", () => {
       });
     const labels = new Map<string, string>([
       [host.id, "host:target"],
-      [otherHost.id, "host:other"],
+      ...otherHosts.map((other, index): [string, string] => [other.id, `host:other-${index}`]),
     ]);
     for (let index = 0; index < scenario.otherHostExpired; index += 1) {
+      const otherHost = otherHosts[index % 3] ?? host;
       const terminal = create(otherHost.id, index);
       labels.set(terminal.id, `other:${index}`);
       appendRetainedTerminalOutputChunk(db, {
@@ -348,7 +367,7 @@ describe("retained terminal output replay", () => {
         chunk: chunkOf(0, `other host ${index}`),
         now: 2,
       });
-      markRetainedTerminalOutputExited(db, terminal.id, otherHost.id, 2 + (index % 7));
+      markRetainedTerminalOutputExited(db, terminal.id, otherHost.id, scenario.otherHostExitedAt[index] ?? 2);
     }
     const sessionIds = scenario.sessions.map((session, index) => {
       const terminal = create(host.id, index);
@@ -362,13 +381,16 @@ describe("retained terminal output replay", () => {
         });
       }
       if (session.expired && !session.ownedByTarget) {
-        markRetainedTerminalOutputExited(db, terminal.id, host.id, 3 + (index % 5));
+        markRetainedTerminalOutputExited(db, terminal.id, host.id, session.exitedAt);
       }
       return terminal.id;
     });
     const before = db.$client
       .prepare("SELECT COUNT(*) AS count FROM fork_terminal_output WHERE expires_at <= ?")
       .get(replayNow) as { count: number };
+    const expiringDuring = db.$client
+      .prepare("SELECT COUNT(*) AS count FROM fork_terminal_output WHERE expires_at > ? AND expires_at <= ?")
+      .get(replayNow, replayNow + (scenario.replay.length - 1) * scenario.clockStep) as { count: number };
     const chunkCountsBefore = new Map(
       (
         db.$client
@@ -382,15 +404,15 @@ describe("retained terminal output replay", () => {
         hostId: host.id,
         terminalSessionId: target,
         chunks: scenario.replay,
-        now: replayNow,
+        clock: ticking(replayNow, scenario.clockStep),
       });
     } else {
-      for (const chunk of scenario.replay) {
+      for (const [index, chunk] of scenario.replay.entries()) {
         appendRetainedTerminalOutputChunk(db, {
           hostId: host.id,
           terminalSessionId: target,
           chunk,
-          now: replayNow,
+          now: replayNow + index * scenario.clockStep,
         });
       }
     }
@@ -416,7 +438,7 @@ describe("retained terminal output replay", () => {
         hostId: labels.get(row.hostId) ?? row.hostId,
       }))
       .sort((left, right) => left.terminalSessionId.localeCompare(right.terminalSessionId));
-    return { rows, expiredBefore: before.count, chunkCountsBefore };
+    return { rows, expiredBefore: before.count, expiringDuring: expiringDuring.count, chunkCountsBefore };
   }
 
   const hostLoad = (scenario: Scenario) => {
@@ -435,6 +457,7 @@ describe("retained terminal output replay", () => {
 
   it("matches the per-chunk path on every row for 40 seeded replays without host pressure", () => {
     let prunedBeyondOneBatch = 0;
+    let expiringDuringReplay = 0;
     for (let seed = 1; seed <= 40; seed += 1) {
       const scenario = buildScenario(seed, false);
       const load = hostLoad(scenario);
@@ -443,10 +466,12 @@ describe("retained terminal output replay", () => {
       const reference = runScenario(scenario, "per-chunk");
       const batched = runScenario(scenario, "batched");
       if (reference.expiredBefore > 128 && scenario.replay.length > 1) prunedBeyondOneBatch += 1;
+      if (reference.expiringDuring > 0) expiringDuringReplay += 1;
       expect({ seed, rows: batched.rows }).toEqual({ seed, rows: reference.rows });
     }
-    process.stdout.write(`seeded replays: 40 without host pressure, ${prunedBeyondOneBatch} needing more than one prune batch\n`);
-    expect(prunedBeyondOneBatch).toBeGreaterThan(5);
+    process.stdout.write(`seeded replays: 40 without host pressure, ${prunedBeyondOneBatch} needing more than one prune batch, ${expiringDuringReplay} with rows expiring while the replay's clock advances\n`);
+    expect(prunedBeyondOneBatch).toBeGreaterThan(3);
+    expect(expiringDuringReplay).toBeGreaterThan(5);
   }, 120_000);
 
   it("keeps the host caps and never evicts more from other sessions than the per-chunk path, for 12 seeded replays under host pressure", () => {

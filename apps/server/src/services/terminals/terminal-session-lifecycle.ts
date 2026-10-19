@@ -2314,7 +2314,7 @@ export class TerminalSessionLifecycle {
               hostId: current.hostId,
               terminalSessionId: current.id,
               chunks: args.message.chunks.map(toTerminalOutputChunk),
-              now: Date.now(),
+              clock: Date.now,
             });
             if (current.status === "exited") {
               markRetainedTerminalOutputExited(
