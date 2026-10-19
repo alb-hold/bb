@@ -61,6 +61,7 @@ const readProcessIdentity = (pid) => {
   return { source: 0, fingerprint: "0000000000000000" };
 };
 const ownerIdentity = writerBarrier?.ownerIdentity ?? readProcessIdentity(process.pid);
+if (writerBarrier?.ownerIdentitySource !== undefined) ownerIdentity.source = writerBarrier.ownerIdentitySource;
 const ownerPid = writerBarrier?.ownerIdentity?.pid ?? process.pid;
 const socketToken = crypto.randomUUID();
 let pipeToken = socketToken;
@@ -359,7 +360,7 @@ const ownerProcessHoldsSegment = (pid, segmentPath) => {
     if (process.platform === "darwin") {
       const output = execFileSync("/usr/sbin/lsof", ["-n", "-P", "-F", "p", "--", path.resolve(segmentPath)], {
         encoding: "utf8",
-        timeout: 750,
+        timeout: 2_500,
         env: { ...process.env, LC_ALL: "C", TZ: "UTC" },
       });
       return output.split(/\\r?\\n/).some((line) => line === "p" + pid);
@@ -745,17 +746,19 @@ const recoverClosedSegments = async () => {
         if (!recover && recoveryPlatform === "win32") continue;
         if (!recover) {
           const currentIdentity = writerBarrier?.recoveryIdentity ?? readProcessIdentity(ownerPid);
-          if (ownerSource > 0 && currentIdentity.source === ownerSource) {
-            if (currentIdentity.fingerprint !== ownerFingerprint) {
+          if (
+            ownerSource > 0 &&
+            currentIdentity.source === ownerSource &&
+            currentIdentity.fingerprint !== ownerFingerprint
+          ) {
+            recover = true;
+          } else {
+            const ownerHoldsSegment = ownerProcessHoldsSegment(ownerPid, file);
+            if (ownerHoldsSegment === true) continue;
+            if (ownerHoldsSegment === false) {
               recover = true;
             } else {
-              const ownerHoldsSegment = ownerProcessHoldsSegment(ownerPid, file);
-              if (ownerHoldsSegment === true) continue;
-              if (ownerHoldsSegment === false) {
-                recover = true;
-              } else {
-                continue;
-              }
+              continue;
             }
           }
         }
@@ -1123,6 +1126,7 @@ export interface StdioLogWriterTestBarrier {
     source: 0 | 1 | 2;
     fingerprint: string;
   };
+  ownerIdentitySource?: 0 | 1 | 2;
   forcePsIdentity?: boolean;
   writerEnv?: Partial<
     Pick<NodeJS.ProcessEnv, "LC_ALL" | "NODE_OPTIONS" | "TMPDIR" | "TZ">

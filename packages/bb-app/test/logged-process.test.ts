@@ -1176,6 +1176,180 @@ describe("spawnLoggedProcess", () => {
     },
   );
 
+  it.skipIf(process.platform === "win32")(
+    "reclaims a no-endpoint segment with source-0 identity when its live pid does not hold it",
+    async () => {
+      const logDir = scratchDir();
+      const identity = {
+        pid: process.pid,
+        source: 0 as const,
+        fingerprint: "0000000000000000",
+      };
+      const dead = spawnLoggedProcess({
+        command: process.execPath,
+        args: [
+          "-e",
+          'process.stdout.write("dead source-zero output\\n"); setInterval(() => {}, 1000);',
+        ],
+        env: process.env,
+        logDir,
+        logName: "server",
+        testWriterBarrier: { ownerIdentity: identity },
+      });
+      let observer: ReturnType<typeof spawnLoggedProcess> | undefined;
+      try {
+        await expect
+          .poll(
+            () =>
+              familyFiles(logDir, "server").find(
+                (file) =>
+                  file.includes(".active-") &&
+                  fileIncludes(file, "dead source-zero output"),
+              ),
+            { timeout: 5_000, interval: 10 },
+          )
+          .toBeDefined();
+        const deadSegment = familyFiles(logDir, "server").find(
+          (file) =>
+            file.includes(".active-") &&
+            fileIncludes(file, "dead source-zero output"),
+        )!;
+        expect(deadSegment).toContain(
+          `.active-${identity.pid}-0-${identity.fingerprint}-`,
+        );
+        const deadSocket = join(
+          livenessDirectory(logDir, "server"),
+          `s-${socketTokenFromActivePath(deadSegment)}`,
+        );
+        dead.writerProcess.kill("SIGKILL");
+        await dead.writerExit;
+        unlinkSync(deadSocket);
+        expect(() => process.kill(identity.pid, 0)).not.toThrow();
+
+        observer = spawnLoggedProcess({
+          command: process.execPath,
+          args: ["-e", 'process.stdout.write("source-zero observer\\n");'],
+          env: process.env,
+          logDir,
+          logName: "server",
+          testWriterBarrier: {
+            recoveryIdentity: {
+              source: 0,
+              fingerprint: identity.fingerprint,
+            },
+            recoveryIntervalMs: 25,
+          },
+        });
+        expect(await waitForExit(observer)).toBe(0);
+        await observer.writerExit;
+        expect(existsSync(deadSegment)).toBe(false);
+        expect(
+          familyFiles(logDir, "server").some(
+            (file) =>
+              file.includes(".backup-") &&
+              fileIncludes(file, "dead source-zero output"),
+          ),
+        ).toBe(true);
+      } finally {
+        if (observer !== undefined && observer.exitCode === null) {
+          observer.kill("SIGKILL");
+        }
+        if (dead.exitCode === null) {
+          dead.kill("SIGKILL");
+          await waitForExit(dead);
+        }
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "keeps a live source-0 writer segment when its endpoint is absent",
+    async () => {
+      const logDir = scratchDir();
+      const stopPath = join(logDir, "stop-source-zero-live-writer");
+      const owner = spawnLoggedProcess({
+        command: process.execPath,
+        args: [
+          "-e",
+          `const fs = require("node:fs"); process.stdout.write("live source-zero output\\n"); const timer = setInterval(() => { if (fs.existsSync(${JSON.stringify(stopPath)})) { clearInterval(timer); process.exit(0); } }, 10);`,
+        ],
+        env: process.env,
+        logDir,
+        logName: "server",
+        testWriterBarrier: {
+          ownerIdentitySource: 0,
+          recoveryIntervalMs: 25,
+        },
+      });
+      let observer: ReturnType<typeof spawnLoggedProcess> | undefined;
+      try {
+        await expect
+          .poll(
+            () =>
+              familyFiles(logDir, "server").find(
+                (file) =>
+                  file.includes(".active-") &&
+                  fileIncludes(file, "live source-zero output"),
+              ),
+            { timeout: 5_000, interval: 10 },
+          )
+          .toBeDefined();
+        const liveSegment = familyFiles(logDir, "server").find(
+          (file) =>
+            file.includes(".active-") &&
+            fileIncludes(file, "live source-zero output"),
+        )!;
+        expect(liveSegment).toContain(
+          `.active-${owner.writerProcess.pid}-0-`,
+        );
+        const ownerSocket = join(
+          livenessDirectory(logDir, "server"),
+          `s-${socketTokenFromActivePath(liveSegment)}`,
+        );
+        unlinkSync(ownerSocket);
+        observer = spawnLoggedProcess({
+          command: process.execPath,
+          args: ["-e", 'process.stdout.write("live source-zero observer\\n");'],
+          env: process.env,
+          logDir,
+          logName: "server",
+          testWriterBarrier: {
+            recoveryIdentity: {
+              source: 0,
+              fingerprint: "0000000000000000",
+            },
+            recoveryIntervalMs: 25,
+          },
+        });
+        expect(await waitForExit(observer)).toBe(0);
+        await observer.writerExit;
+        expect(
+          familyFiles(logDir, "server").some(
+            (file) =>
+              file.includes(".active-") &&
+              fileIncludes(file, "live source-zero output"),
+          ),
+        ).toBe(true);
+        expect(
+          familyFiles(logDir, "server").some(
+            (file) =>
+              file.includes(".backup-") &&
+              fileIncludes(file, "live source-zero output"),
+          ),
+        ).toBe(false);
+      } finally {
+        if (observer !== undefined && observer.exitCode === null) {
+          observer.kill("SIGKILL");
+        }
+        if (owner.exitCode === null) {
+          writeFileSync(stopPath, "stop");
+          await waitForExit(owner);
+          await owner.writerExit;
+        }
+      }
+    },
+  );
+
   it("keeps a live endpoint under connection load when its process fingerprint differs", async () => {
     const logDir = scratchDir();
     const identity = currentProcessIdentity();
