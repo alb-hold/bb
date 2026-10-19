@@ -382,7 +382,7 @@ export class NotificationHub implements DbNotifier {
   >();
   private readonly deviceHandoffSubmitterByThreadTurn = new Map<
     string,
-    { deviceHash: string | null; expiresAt: number }
+    { deviceHash: string | null }
   >();
   private readonly latestDeviceHandoffSubmitterByThread = new Map<
     string,
@@ -474,10 +474,17 @@ export class NotificationHub implements DbNotifier {
       expiresAt: now + DEVICE_HANDOFF_TTL_MS,
     });
     if (turnId !== undefined) {
-      this.deviceHandoffSubmitterByThreadTurn.set(
-        this.deviceHandoffSubmitterKey(threadId, turnId),
-        { deviceHash, expiresAt: now + DEVICE_HANDOFF_TTL_MS },
-      );
+      const turnKey = this.deviceHandoffSubmitterKey(threadId, turnId);
+      const threadKeyPrefix = `${threadId}\u0000`;
+      for (const existingKey of this.deviceHandoffSubmitterByThreadTurn.keys()) {
+        if (
+          existingKey.startsWith(threadKeyPrefix) &&
+          existingKey !== turnKey
+        ) {
+          this.deviceHandoffSubmitterByThreadTurn.delete(existingKey);
+        }
+      }
+      this.deviceHandoffSubmitterByThreadTurn.set(turnKey, { deviceHash });
     }
     if (deviceHash !== null) {
       this.latestDeviceHandoffSubmitterByThread.set(threadId, {
@@ -495,17 +502,21 @@ export class NotificationHub implements DbNotifier {
       if (oldest === undefined) break;
       this.deviceHandoffSubmitterByThreadRequest.delete(oldest);
     }
-    while (
-      this.deviceHandoffSubmitterByThreadTurn.size >
-      DEVICE_HANDOFF_PENDING_LIMIT
-    ) {
-      const oldest = this.deviceHandoffSubmitterByThreadTurn
-        .keys()
-        .next().value;
-      if (oldest === undefined) break;
-      this.deviceHandoffSubmitterByThreadTurn.delete(oldest);
-    }
     return deviceHash !== null;
+  }
+
+  clearDeviceHandoffTurnSubmitterForThread(threadId: string): void {
+    const threadKeyPrefix = `${threadId}\u0000`;
+    for (const key of this.deviceHandoffSubmitterByThreadRequest.keys()) {
+      if (key.startsWith(threadKeyPrefix)) {
+        this.deviceHandoffSubmitterByThreadRequest.delete(key);
+      }
+    }
+    for (const key of this.deviceHandoffSubmitterByThreadTurn.keys()) {
+      if (key.startsWith(threadKeyPrefix)) {
+        this.deviceHandoffSubmitterByThreadTurn.delete(key);
+      }
+    }
   }
 
   private deviceHandoffSubmitterKey(
@@ -540,11 +551,6 @@ export class NotificationHub implements DbNotifier {
       .deviceHandoffSubmitterByThreadRequest) {
       if (submission.expiresAt <= now) {
         this.deviceHandoffSubmitterByThreadRequest.delete(key);
-      }
-    }
-    for (const [key, submission] of this.deviceHandoffSubmitterByThreadTurn) {
-      if (submission.expiresAt <= now) {
-        this.deviceHandoffSubmitterByThreadTurn.delete(key);
       }
     }
   }
