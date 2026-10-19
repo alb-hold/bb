@@ -2733,6 +2733,71 @@ fs.renameSync = function (source, destination) {
     }
   });
 
+  it("returns from pruning after 32 flat-count rescans", async () => {
+    const logDir = scratchDir();
+    const logPath = join(logDir, "server-stdio.log");
+    const diagnosticPath = join(logDir, "writer-diagnostics");
+    writeFileSync(diagnosticPath, "");
+    for (let index = 0; index < 8; index += 1) {
+      const backupPath = `${logPath}.backup-${index + 1}-1-${String(index + 1).padStart(8, "0")}`;
+      writeFileSync(backupPath, `old-backup-${index}\n`);
+      const timestamp = new Date(1_700_000_000_000 + index * 1_000);
+      utimesSync(backupPath, timestamp, timestamp);
+    }
+    const attemptPath = join(logDir, "unlink-attempt");
+    const releasePath = join(logDir, "release-unlink");
+    const completionPath = join(logDir, "writer-complete");
+    const writer = spawnLoggedProcess({
+      command: process.execPath,
+      args: ["-e", `process.stdout.write(Buffer.alloc(10 * 1024 * 1024, 67));`],
+      env: process.env,
+      logDir,
+      logName: "server",
+      testWriterBarrier: {
+        completionPath,
+        diagnosticPath,
+        pruneUnlinkAttemptPath: attemptPath,
+        pruneUnlinkReleasePath: releasePath,
+      },
+    });
+
+    try {
+      for (let attempt = 1; attempt <= 40; attempt += 1) {
+        const marker = `${attemptPath}.${attempt}`;
+        await expect
+          .poll(
+            () => existsSync(marker) || existsSync(completionPath),
+            { timeout: 5_000, interval: 10 },
+          )
+          .toBe(true);
+        if (existsSync(completionPath)) break;
+        const selected = readFileSync(marker, "utf8");
+        unlinkSync(selected);
+        const replacement = `${logPath}.backup-${100 + attempt}-1-${String(100 + attempt).padStart(8, "0")}`;
+        writeFileSync(replacement, `replacement-${attempt}\n`);
+        const timestamp = new Date(1_800_000_000_000 + attempt * 1_000);
+        utimesSync(replacement, timestamp, timestamp);
+        writeFileSync(`${releasePath}.${attempt}`, "release");
+      }
+      await expect
+        .poll(() => existsSync(completionPath), { timeout: 5_000, interval: 10 })
+        .toBe(true);
+      await writer.writerExit;
+      expect(readFileSync(diagnosticPath, "utf8")).toContain(
+        "stdio backup prune made no progress",
+      );
+      expect(
+        familyFiles(logDir, "server").filter((file) =>
+          file.includes(".backup-"),
+        ).length,
+      ).toBeLessThanOrEqual(5);
+    } finally {
+      if (writer.writerProcess.exitCode === null)
+        writer.writerProcess.kill("SIGKILL");
+      await writer.writerExit;
+    }
+  });
+
   it("returns from backup pruning when the log directory disappears", async () => {
     const root = scratchDir();
     const logDir = join(root, "logs");
