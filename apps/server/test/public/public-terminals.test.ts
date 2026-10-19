@@ -88,6 +88,14 @@ interface TerminalRouteFixture {
 
 type TestDb = TestAppHarness["db"];
 
+function retainedAfterFlush(
+  terminalSessions: { flushAllRetainedOutput(): void },
+  ...args: Parameters<typeof getRetainedTerminalOutput>
+): ReturnType<typeof getRetainedTerminalOutput> {
+  terminalSessions.flushAllRetainedOutput();
+  return getRetainedTerminalOutput(...args);
+}
+
 function getTerminalSessionForThread(
   db: TestDb,
   args: { terminalId: string; threadId: string },
@@ -1849,7 +1857,7 @@ describe("public terminal routes", () => {
       `terminal.replay of ${chunks.length} chunks handled in ${elapsedMs.toFixed(1)}ms\n`,
     );
 
-    const retained = getRetainedTerminalOutput(fixture.harness.db, {
+    const retained = retainedAfterFlush(fixture.harness.deps.terminalSessions, fixture.harness.db, {
       hostId: fixture.host.id,
       terminalSessionId: terminal.id,
       now: Date.now(),
@@ -1918,7 +1926,7 @@ describe("public terminal routes", () => {
       },
     });
     expect(
-      getRetainedTerminalOutput(fixture.harness.db, {
+      retainedAfterFlush(fixture.harness.deps.terminalSessions, fixture.harness.db, {
         hostId: fixture.host.id,
         terminalSessionId: trustedTerminal.id,
         now: Date.now(),
@@ -1963,7 +1971,7 @@ describe("public terminal routes", () => {
       closeReason: null,
     });
     expect(
-      getRetainedTerminalOutput(fixture.harness.db, {
+      retainedAfterFlush(fixture.harness.deps.terminalSessions, fixture.harness.db, {
         hostId: fixture.host.id,
         terminalSessionId: exitedTerminal.id,
         now: Date.now(),
@@ -1990,7 +1998,7 @@ describe("public terminal routes", () => {
       },
     });
     expect(
-      getRetainedTerminalOutput(fixture.harness.db, {
+      retainedAfterFlush(fixture.harness.deps.terminalSessions, fixture.harness.db, {
         hostId: fixture.host.id,
         terminalSessionId: trustedTerminal.id,
         now: Date.now(),
@@ -2027,7 +2035,7 @@ describe("public terminal routes", () => {
       },
     });
     expect(
-      getRetainedTerminalOutput(fixture.harness.db, {
+      retainedAfterFlush(fixture.harness.deps.terminalSessions, fixture.harness.db, {
         hostId: fixture.host.id,
         terminalSessionId: replayTerminal.id,
         now: Date.now(),
@@ -2047,7 +2055,7 @@ describe("public terminal routes", () => {
       },
     });
     expect(
-      getRetainedTerminalOutput(fixture.harness.db, {
+      retainedAfterFlush(fixture.harness.deps.terminalSessions, fixture.harness.db, {
         hostId: fixture.host.id,
         terminalSessionId: replayTerminal.id,
         now: Date.now(),

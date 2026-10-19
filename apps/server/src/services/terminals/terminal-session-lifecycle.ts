@@ -10,7 +10,6 @@ import {
   createTerminalSession,
   clearPersistedDeviceHandoffAttention,
   dismissRetainedTerminalOutput,
-  appendRetainedTerminalOutputChunk,
   appendRetainedTerminalOutputChunks,
   clearTerminalAttention,
   getTerminalAttention,
@@ -19,6 +18,7 @@ import {
   listTerminalAttention,
   getSessionById,
   getTerminalSession,
+  HOST_RETAINED_OUTPUT_BYTES,
   getRetainedTerminalOutput,
   listTerminalSessions,
   markRetainedTerminalOutputExited,
@@ -86,6 +86,8 @@ import { TerminalOutputFlowControl } from "./terminal-output-flow-control.js";
 
 const DEFAULT_TERMINAL_OPEN_TIMEOUT_MS = 10_000;
 const DEFAULT_TERMINAL_CLOSE_TIMEOUT_MS = 5_000;
+const RETAINED_OUTPUT_FLUSH_MS = 1_000;
+const RETAINED_OUTPUT_CLOSE_ATTEMPTS = 3;
 const DEFAULT_TERMINAL_START: NonNullable<CreateTerminalRequest["start"]> = {
   mode: "shell",
 };
@@ -683,6 +685,12 @@ export class TerminalSessionLifecycle {
   >();
   private readonly resizeAckSockets = new WeakSet<TerminalClientSocket>();
   private readonly outputFlow: TerminalOutputFlowControl;
+  private readonly pendingRetainedOutput = new Map<
+    string,
+    Array<{ hostId: string; chunks: TerminalOutputChunk[] }>
+  >();
+  private retainedOutputFlushTimer: ReturnType<typeof setTimeout> | null =
+    null;
 
   constructor(private readonly options: TerminalSessionLifecycleOptions) {
     clearPersistedDeviceHandoffAttention(options.db, Date.now());
@@ -1378,6 +1386,7 @@ export class TerminalSessionLifecycle {
     const current = args.current;
     if (current.status === "exited") {
       if (args.payload.reason === "user") {
+        this.flushRetainedOutput(current.id);
         dismissRetainedTerminalOutput(
           this.options.db,
           current.id,
@@ -1618,6 +1627,7 @@ export class TerminalSessionLifecycle {
   private getRetainedOutput(
     session: TerminalSessionRow,
   ): TerminalOutputChunk[] | null {
+    this.flushRetainedOutput(session.id);
     return getRetainedTerminalOutput(this.options.db, {
       hostId: session.hostId,
       terminalSessionId: session.id,
@@ -1656,12 +1666,112 @@ export class TerminalSessionLifecycle {
     session: TerminalSessionRow,
     chunk: TerminalOutputChunk,
   ): void {
-    appendRetainedTerminalOutputChunk(this.options.db, {
-      hostId: session.hostId,
-      terminalSessionId: session.id,
-      chunk,
-      now: Date.now(),
-    });
+    const batches = this.pendingRetainedOutput.get(session.id) ?? [];
+    const last = batches.at(-1);
+    if (last !== undefined && last.hostId === session.hostId) {
+      last.chunks.push(chunk);
+    } else {
+      batches.push({ hostId: session.hostId, chunks: [chunk] });
+    }
+    this.pendingRetainedOutput.set(session.id, batches);
+    this.scheduleRetainedOutputFlush();
+  }
+
+  private scheduleRetainedOutputFlush(): void {
+    if (this.retainedOutputFlushTimer !== null) return;
+    this.retainedOutputFlushTimer = setTimeout(() => {
+      this.retainedOutputFlushTimer = null;
+      this.flushAllRetainedOutput();
+    }, RETAINED_OUTPUT_FLUSH_MS);
+    this.retainedOutputFlushTimer.unref?.();
+  }
+
+  private flushRetainedOutput(terminalSessionId: string): void {
+    const batches = this.pendingRetainedOutput.get(terminalSessionId);
+    if (batches === undefined) return;
+    this.pendingRetainedOutput.delete(terminalSessionId);
+    for (const [index, batch] of batches.entries()) {
+      try {
+        appendRetainedTerminalOutputChunks(this.options.db, {
+          hostId: batch.hostId,
+          terminalSessionId,
+          chunks: batch.chunks,
+          clock: Date.now,
+        });
+      } catch (error) {
+        const unwritten = batches.slice(index);
+        let bytes = unwritten.reduce(
+          (total, entry) =>
+            total +
+            entry.chunks.reduce(
+              (sum, chunk) =>
+                sum + Buffer.byteLength(chunk.dataBase64, "base64"),
+              0,
+            ),
+          0,
+        );
+        while (bytes > HOST_RETAINED_OUTPUT_BYTES) {
+          const oldest = unwritten[0];
+          if (
+            oldest === undefined ||
+            (unwritten.length === 1 && oldest.chunks.length === 1)
+          )
+            break;
+          const dropped = oldest.chunks.shift();
+          if (dropped)
+            bytes -= Buffer.byteLength(dropped.dataBase64, "base64");
+          if (oldest.chunks.length === 0) unwritten.shift();
+        }
+        const newer = this.pendingRetainedOutput.get(terminalSessionId) ?? [];
+        this.pendingRetainedOutput.set(terminalSessionId, [
+          ...unwritten,
+          ...newer,
+        ]);
+        this.scheduleRetainedOutputFlush();
+        throw error;
+      }
+    }
+  }
+
+  flushRetainedOutputBeforeClose(): void {
+    for (
+      let attempt = 0;
+      attempt < RETAINED_OUTPUT_CLOSE_ATTEMPTS &&
+      this.pendingRetainedOutput.size > 0;
+      attempt += 1
+    ) {
+      this.flushAllRetainedOutput();
+    }
+    if (this.retainedOutputFlushTimer !== null) {
+      clearTimeout(this.retainedOutputFlushTimer);
+      this.retainedOutputFlushTimer = null;
+    }
+    for (const [terminalId, batches] of this.pendingRetainedOutput) {
+      this.options.logger.error(
+        {
+          terminalId,
+          chunks: batches.reduce(
+            (total, batch) => total + batch.chunks.length,
+            0,
+          ),
+        },
+        "Lost retained terminal output at shutdown",
+      );
+    }
+    this.pendingRetainedOutput.clear();
+  }
+
+  flushAllRetainedOutput(): void {
+    for (const terminalSessionId of [...this.pendingRetainedOutput.keys()]) {
+      try {
+        this.flushRetainedOutput(terminalSessionId);
+      } catch (error) {
+        this.options.logger.warn(
+          { error, terminalId: terminalSessionId },
+          "Failed to retain terminal output",
+        );
+      }
+    }
   }
 
   private async readRunningTerminalOutput(
@@ -1963,6 +2073,7 @@ export class TerminalSessionLifecycle {
       this.retainTerminalOutput(current, chunk);
     }
     if (current.status === "exited") {
+      this.flushRetainedOutput(current.id);
       markRetainedTerminalOutputExited(
         this.options.db,
         current.id,
@@ -2373,6 +2484,7 @@ export class TerminalSessionLifecycle {
             return;
           }
           if (current) {
+            this.flushRetainedOutput(current.id);
             appendRetainedTerminalOutputChunks(this.options.db, {
               hostId: current.hostId,
               terminalSessionId: current.id,
@@ -2428,6 +2540,7 @@ export class TerminalSessionLifecycle {
     this.clearDeviceHandoffAttention(exited.id);
     this.forwardedNextSeqByTerminalId.delete(exited.id);
     this.outputFlow.forgetTerminal(exited.id);
+    this.flushRetainedOutput(exited.id);
     markRetainedTerminalOutputExited(
       this.options.db,
       exited.id,
@@ -2553,6 +2666,7 @@ export class TerminalSessionLifecycle {
     args: NotifyExitedTerminalSessionArgs,
   ): void {
     this.clearDeviceHandoffAttention(args.session.id);
+    this.flushRetainedOutput(args.session.id);
     markRetainedTerminalOutputExited(
       this.options.db,
       args.session.id,
