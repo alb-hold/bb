@@ -150,6 +150,30 @@ describe("DictationSession", () => {
     expect(h.calls[0]?.segment.durationMs).toBe(1_880);
   });
 
+  it("credits speech by the time between samples, not by the number of samples", async () => {
+    const h = harness();
+    h.session.start();
+    h.tickAfter(110, 0.2);
+    h.tickAfter(110, 0.2);
+    h.tickAfter(110, 0.2);
+    void h.session.stop();
+    await h.flush();
+    expect(h.calls).toHaveLength(1);
+    expect(h.calls[0]?.segment.durationMs).toBe(330);
+  });
+
+  it("keeps a segment it could not sample densely even when every late sample was quiet", async () => {
+    const h = harness();
+    h.session.start();
+    h.tickAfter(470, 0);
+    h.tickAfter(470, 0);
+    h.tickAfter(470, 0);
+    h.tickAfter(470, 0);
+    void h.session.stop();
+    await h.flush();
+    expect(h.calls).toHaveLength(1);
+  });
+
   it("does not cut at a pause that fell between two late samples", async () => {
     const h = harness();
     h.session.start();
