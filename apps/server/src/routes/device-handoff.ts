@@ -140,6 +140,7 @@ export function registerDeviceHandoffRoutes(app: Hono, deps: AppDeps): void {
         thread?.id ?? terminal?.threadId,
         turnRequestId,
         hostLabel,
+        activeTurnId,
       );
     } catch (error) {
       if (error instanceof NoDeviceHandoffSubmitterError) {

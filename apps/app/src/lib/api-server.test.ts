@@ -86,6 +86,48 @@ describe("device handoff submission headers", () => {
     ).toBe(identity);
   });
 
+  it("attaches the device identity to thread creation requests with an initial prompt", async () => {
+    installBrowserWindow();
+    vi.resetModules();
+    const [{ fetchWithDeviceHandoffSubmission }, { wsManager: freshManager }] =
+      await Promise.all([import("./api-server"), import("./ws")]);
+    const fetch = vi.fn<typeof globalThis.fetch>(
+      async () => new Response("{}"),
+    );
+    vi.stubGlobal("fetch", fetch);
+
+    await fetchWithDeviceHandoffSubmission("http://localhost/api/v1/threads", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        origin: "app",
+        projectId: "project-1",
+        input: [{ type: "text", text: "First prompt" }],
+      }),
+    });
+    await fetchWithDeviceHandoffSubmission(
+      "http://localhost/api/v1/threads/fork",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          origin: "app",
+          projectId: "project-1",
+          input: [{ type: "text", text: "Fork's first prompt" }],
+        }),
+      },
+    );
+
+    const identity = freshManager.getDeviceHandoffClientToken();
+    expect(identity).toMatch(/^[A-Za-z0-9_-]{22}$/u);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    for (const [, init] of fetch.mock.calls) {
+      expect(
+        new Headers(init?.headers).get(DEVICE_HANDOFF_CLIENT_TOKEN_HEADER),
+      ).toBe(identity);
+    }
+  });
+
   it("sends a turn when secure identity generation is unavailable", async () => {
     installBrowserWindow();
     Object.defineProperty(window, "crypto", {

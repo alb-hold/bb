@@ -7,7 +7,7 @@ const BASE_URL =
   typeof window === "undefined" ? "http://localhost" : window.location.origin;
 
 const turnSubmissionPath =
-  /^\/api\/v1\/(?:threads\/[^/]+\/(?:send|edit-message|retry|steer|queued-messages(?:\/[^/]+\/send)?))$/u;
+  /^\/api\/v1\/(?:threads(?:\/fork)?|threads\/[^/]+\/(?:send|edit-message|retry|steer|queued-messages(?:\/[^/]+\/send)?))$/u;
 
 export async function fetchWithDeviceHandoffSubmission(
   input: Parameters<typeof fetch>[0],
@@ -29,9 +29,7 @@ export async function fetchWithDeviceHandoffSubmission(
     const headers = new Headers(
       input instanceof Request ? input.headers : undefined,
     );
-    new Headers(init?.headers).forEach((value, key) =>
-      headers.set(key, value),
-    );
+    new Headers(init?.headers).forEach((value, key) => headers.set(key, value));
     if (storedToken === null) {
       headers.delete(DEVICE_HANDOFF_CLIENT_TOKEN_HEADER);
     } else {

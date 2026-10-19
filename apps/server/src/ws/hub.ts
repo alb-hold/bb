@@ -1503,6 +1503,7 @@ export class NotificationHub implements DbNotifier {
     attentionThreadId?: string | null,
     turnRequestId?: string,
     hostLabel = "BB",
+    activeTurnId?: string,
   ): number {
     const createdAt = Date.now();
     const signal = deviceHandoffSignalSchema.parse({
@@ -1519,13 +1520,14 @@ export class NotificationHub implements DbNotifier {
     const scopedAttentionThreadId = attentionThreadId ?? null;
     this.pruneDeviceHandoffSubmitters(createdAt);
     const threadId = request.origin.threadId;
+    const effectiveTurnId = request.origin.turnId ?? activeTurnId;
     const turnRequestKey =
       threadId !== undefined && turnRequestId !== undefined
         ? this.deviceHandoffSubmitterKey(threadId, turnRequestId)
         : undefined;
     const turnKey =
-      threadId !== undefined && request.origin.turnId !== undefined
-        ? this.deviceHandoffSubmitterKey(threadId, request.origin.turnId)
+      threadId !== undefined && effectiveTurnId !== undefined
+        ? this.deviceHandoffSubmitterKey(threadId, effectiveTurnId)
         : undefined;
     const hasTurnRequestSubmission =
       request.origin.terminalSessionId === undefined &&
@@ -1544,7 +1546,8 @@ export class NotificationHub implements DbNotifier {
       hasTurnRequestSubmission ||
       hasTurnSubmission ||
       request.origin.turnId !== undefined ||
-      turnRequestId !== undefined;
+      turnRequestId !== undefined ||
+      activeTurnId !== undefined;
     const recipientDeviceHash =
       request.origin.terminalSessionId !== undefined
         ? null
