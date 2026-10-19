@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { FitAddon } from "@xterm/addon-fit";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { decodeBase64Bytes } from "@/lib/base64-bytes";
 import { makeTerminalSession } from "@/test/fixtures/terminal-sessions";
 import {
   AppCommandProvider,
@@ -14,6 +15,8 @@ import { ThreadTerminalView } from "./ThreadTerminalView";
 const testState = vi.hoisted(() => ({
   calls: [] as string[],
   clearAttention: vi.fn(),
+  touchEnabled: false,
+  toastError: vi.fn(),
   sockets: [] as TestTerminalSocket[],
   socketMessages: [] as string[],
 }));
@@ -67,6 +70,23 @@ vi.mock("@/lib/sdk", () => ({
   },
 }));
 
+vi.mock("@/components/ui/app-toast", () => ({
+  appToast: { error: testState.toastError },
+}));
+
+vi.mock("@bb/shared-ui/hooks/use-media-query", async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import("@bb/shared-ui/hooks/use-media-query")
+  >();
+  return {
+    ...actual,
+    useMediaQuery: (query: string) =>
+      query === "(pointer: coarse)"
+        ? testState.touchEnabled
+        : actual.useMediaQuery(query),
+  };
+});
+
 vi.mock("@/hooks/queries/system-queries", () => ({
   useSystemConfig: () => ({
     data: {
@@ -110,13 +130,175 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  if (originalClipboardDescriptor === undefined) {
+    Reflect.deleteProperty(navigator, "clipboard");
+  } else {
+    Object.defineProperty(navigator, "clipboard", originalClipboardDescriptor);
+  }
   testState.calls.length = 0;
   testState.sockets.length = 0;
   testState.socketMessages.length = 0;
   testState.clearAttention.mockReset();
+  testState.toastError.mockReset();
+  testState.touchEnabled = false;
 });
 
+const originalClipboardDescriptor = Object.getOwnPropertyDescriptor(
+  navigator,
+  "clipboard",
+);
+
+function prepareMobileTerminal(): void {
+  testState.touchEnabled = true;
+  vi.stubGlobal("WebSocket", TestTerminalSocket);
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      constructor(private readonly callback: ResizeObserverCallback) {}
+
+      disconnect(): void {}
+
+      observe(target: Element): void {
+        this.callback(
+          [
+            {
+              target,
+              contentRect: { width: 354, height: 504 },
+            } as ResizeObserverEntry,
+          ],
+          this as unknown as ResizeObserver,
+        );
+      }
+
+      unobserve(): void {}
+    },
+  );
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+    measureText: (text: string) => ({ width: text.length * 9 }),
+  } as unknown as CanvasRenderingContext2D);
+  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(
+    function offsetWidth(this: HTMLElement) {
+      return this.classList.contains("xterm-char-measure-element") ? 9 : 354;
+    },
+  );
+  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(
+    function offsetHeight(this: HTMLElement) {
+      return this.classList.contains("xterm-char-measure-element") ? 18 : 504;
+    },
+  );
+  vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(
+    function clientWidth(this: HTMLElement) {
+      return this.classList.contains("xterm-char-measure-element") ? 9 : 354;
+    },
+  );
+  vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(
+    function clientHeight(this: HTMLElement) {
+      return this.classList.contains("xterm-char-measure-element") ? 18 : 504;
+    },
+  );
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+    function getBoundingClientRect(this: HTMLElement) {
+      return new DOMRect(0, 0, this.clientWidth, this.clientHeight);
+    },
+  );
+}
+
+function renderMobileTerminal(): ReturnType<typeof makeTerminalSession> {
+  const session = makeTerminalSession({
+    id: "term_mobile_paste",
+    status: "running",
+    cols: 40,
+    rows: 12,
+  });
+  render(
+    <MemoryRouter>
+      <AppCommandProvider>
+        <ThreadTerminalView
+          autoFocus={false}
+          isPanelOpen
+          session={session}
+        />
+      </AppCommandProvider>
+    </MemoryRouter>,
+  );
+  return session;
+}
+
 describe("ThreadTerminalView terminal focus boundary", () => {
+  it("sends clipboard text once through xterm paste input", async () => {
+    prepareMobileTerminal();
+    const readText = vi.fn().mockResolvedValue("paste-once");
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { readText },
+    });
+    const session = renderMobileTerminal();
+
+    await screen.findByRole("button", { name: "More terminal keys" });
+    await waitFor(() => {
+      expect(
+        (screen.getByRole("button", { name: "More terminal keys" }) as HTMLButtonElement)
+          .disabled,
+      ).toBe(false);
+    });
+    const socket = testState.sockets[0];
+    if (!socket) throw new Error("terminal socket was not created");
+    socket.receive({ type: "attached", session, replayStartSeq: 0, nextSeq: 0 });
+    socket.receive({
+      type: "output",
+      chunk: { seq: 0, dataBase64: btoa("\x1b[?2004h") },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "More terminal keys" }));
+    fireEvent.click(screen.getByRole("button", { name: "Paste" }));
+
+    await waitFor(() => {
+      const inputMessages = testState.socketMessages
+        .map((message) => JSON.parse(message) as { dataBase64?: string; type?: string })
+        .filter(
+          (message): message is { dataBase64: string; type: "input" } =>
+            message.type === "input" && typeof message.dataBase64 === "string",
+        );
+      expect(inputMessages).toHaveLength(1);
+      expect(
+        new TextDecoder().decode(decodeBase64Bytes(inputMessages[0]!.dataBase64)),
+      ).toBe("paste-once");
+    });
+    expect(readText).toHaveBeenCalledOnce();
+    expect(testState.toastError).not.toHaveBeenCalled();
+  });
+
+  it("shows the clipboard fallback without sending input when read is denied", async () => {
+    prepareMobileTerminal();
+    const readText = vi.fn().mockRejectedValue(new DOMException("denied"));
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { readText },
+    });
+    renderMobileTerminal();
+
+    await screen.findByRole("button", { name: "More terminal keys" });
+    await waitFor(() => {
+      expect(
+        (screen.getByRole("button", { name: "More terminal keys" }) as HTMLButtonElement)
+          .disabled,
+      ).toBe(false);
+    });
+    fireEvent.click(screen.getByRole("button", { name: "More terminal keys" }));
+    fireEvent.click(screen.getByRole("button", { name: "Paste" }));
+
+    await waitFor(() => {
+      expect(testState.toastError).toHaveBeenCalledWith(
+        "This connection can’t read the clipboard. Long-press a message box and choose Paste.",
+      );
+    });
+    expect(readText).toHaveBeenCalledOnce();
+    expect(
+      testState.socketMessages
+        .map((message) => JSON.parse(message) as { type?: string })
+        .filter((message) => message.type === "input"),
+    ).toHaveLength(0);
+  });
+
   it("clears attention when its terminal panel becomes visible", async () => {
     const session = makeTerminalSession({
       id: "term_attention",
