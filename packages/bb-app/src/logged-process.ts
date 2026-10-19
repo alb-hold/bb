@@ -366,11 +366,17 @@ const ownerProcessHoldsSegment = (pid, segmentPath) => {
     }
     if (process.platform === "linux") {
       const descriptorDirectory = "/proc/" + pid + "/fd";
+      let segmentStat;
+      try {
+        segmentStat = fs.statSync(segmentPath);
+      } catch (error) {
+        reportFsError("stdio segment holder check inconclusive", error);
+        return undefined;
+      }
       for (const descriptor of fs.readdirSync(descriptorDirectory)) {
         try {
-          const target = fs.readlinkSync(path.join(descriptorDirectory, descriptor));
-          const resolvedTarget = path.resolve(target.replace(/ \\(deleted\\)$/u, ""));
-          if (resolvedTarget === path.resolve(segmentPath)) return true;
+          const descriptorStat = fs.statSync(path.join(descriptorDirectory, descriptor));
+          if (descriptorStat.dev === segmentStat.dev && descriptorStat.ino === segmentStat.ino) return true;
         } catch (error) {
           if (error.code !== "ENOENT") {
             reportFsError("stdio segment holder check inconclusive", error);

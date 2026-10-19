@@ -173,6 +173,20 @@ function socketTokenFromActivePath(activePath: string): string {
   return parts.slice(4, end).join("-");
 }
 
+function identityFromActivePath(activePath: string): {
+  fingerprint: string;
+  pid: number;
+  source: 0 | 1 | 2;
+} {
+  const match = activePath.match(/\.active-(\d+)-([012])-([a-f0-9]{16})-/u);
+  if (match === null) throw new Error("active segment has no owner identity");
+  return {
+    fingerprint: match[3]!,
+    pid: Number(match[1]),
+    source: Number(match[2]) as 0 | 1 | 2,
+  };
+}
+
 describe("spawnLoggedProcess", () => {
   it.skipIf(process.platform === "win32")(
     "keeps a live segment when its endpoint directory has unsafe permissions",
@@ -1110,9 +1124,10 @@ describe("spawnLoggedProcess", () => {
             { timeout: 5_000, interval: 10 },
           )
           .toBeDefined();
-        const deadSegment = familyFiles(logDir, "server").find((file) =>
-          file.includes(".active-") &&
-          fileIncludes(file, "dead fallback identity output"),
+        const deadSegment = familyFiles(logDir, "server").find(
+          (file) =>
+            file.includes(".active-") &&
+            fileIncludes(file, "dead fallback identity output"),
         )!;
         expect(deadSegment).toContain(
           `.active-${identity.pid}-${identity.source}-${identity.fingerprint}-`,
@@ -1337,6 +1352,153 @@ describe("spawnLoggedProcess", () => {
           await waitForExit(owner);
           await owner.writerExit;
         }
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "keeps a live fallback segment when its log directory is reached through a symlink",
+    async () => {
+      const root = scratchDir();
+      const realLogDir = join(root, "real-log");
+      const logDir = join(root, "linked-log");
+      mkdirSync(realLogDir);
+      symlinkSync(realLogDir, logDir, "dir");
+      const socketDir = livenessDirectory(logDir, "server");
+      mkdirSync(socketDir, { mode: 0o755 });
+      scratchDirs.push(socketDir);
+      const stopPath = join(realLogDir, "stop-symlink-owner");
+      const live = spawnLoggedProcess({
+        command: process.execPath,
+        args: [
+          "-e",
+          `const fs = require("node:fs"); process.stdout.write("symlink fallback owner output\\n"); setInterval(() => { if (fs.existsSync(${JSON.stringify(stopPath)})) process.exit(0); }, 10);`,
+        ],
+        env: process.env,
+        logDir,
+        logName: "server",
+      });
+      let observer: ReturnType<typeof spawnLoggedProcess> | undefined;
+      try {
+        await expect
+          .poll(
+            () =>
+              familyFiles(logDir, "server").find(
+                (file) =>
+                  file.includes(".active-") &&
+                  fileIncludes(file, "symlink fallback owner output"),
+              ),
+            { timeout: 5_000, interval: 10 },
+          )
+          .toBeDefined();
+        const liveSegment = familyFiles(logDir, "server").find(
+          (file) =>
+            file.includes(".active-") &&
+            fileIncludes(file, "symlink fallback owner output"),
+        )!;
+        expect(liveSegment).toContain("-n-");
+        const identity = identityFromActivePath(liveSegment);
+        expect(identity.pid).toBe(live.writerProcess.pid);
+
+        observer = spawnLoggedProcess({
+          command: process.execPath,
+          args: ["-e", 'process.stdout.write("symlink fallback observer\\n");'],
+          env: process.env,
+          logDir,
+          logName: "server",
+          testWriterBarrier: {
+            recoveryIdentity: identity,
+            recoveryIntervalMs: 25,
+          },
+        });
+        expect(await waitForExit(observer)).toBe(0);
+        await observer.writerExit;
+        expect(existsSync(liveSegment)).toBe(true);
+        expect(readFileSync(liveSegment, "utf8")).toContain(
+          "symlink fallback owner output",
+        );
+      } finally {
+        if (!existsSync(stopPath)) writeFileSync(stopPath, "stop");
+        if (observer?.exitCode === null) observer.kill("SIGKILL");
+        if (live.exitCode === null) live.kill("SIGKILL");
+        await Promise.all([
+          live.writerExit,
+          ...(observer ? [observer.writerExit] : []),
+        ]);
+      }
+    },
+  );
+
+  it.skipIf(process.platform !== "linux")(
+    "keeps a live fallback segment after its open path is renamed",
+    async () => {
+      const logDir = scratchDir();
+      const socketDir = livenessDirectory(logDir, "server");
+      mkdirSync(socketDir, { mode: 0o755 });
+      scratchDirs.push(socketDir);
+      const stopPath = join(logDir, "stop-renamed-owner");
+      const live = spawnLoggedProcess({
+        command: process.execPath,
+        args: [
+          "-e",
+          `const fs = require("node:fs"); process.stdout.write("renamed fallback owner output\\n"); setInterval(() => { if (fs.existsSync(${JSON.stringify(stopPath)})) process.exit(0); }, 10);`,
+        ],
+        env: process.env,
+        logDir,
+        logName: "server",
+      });
+      let observer: ReturnType<typeof spawnLoggedProcess> | undefined;
+      try {
+        await expect
+          .poll(
+            () =>
+              familyFiles(logDir, "server").find(
+                (file) =>
+                  file.includes(".active-") &&
+                  fileIncludes(file, "renamed fallback owner output"),
+              ),
+            { timeout: 5_000, interval: 10 },
+          )
+          .toBeDefined();
+        const originalSegment = familyFiles(logDir, "server").find(
+          (file) =>
+            file.includes(".active-") &&
+            fileIncludes(file, "renamed fallback owner output"),
+        )!;
+        expect(originalSegment).toContain("-n-");
+        const identity = identityFromActivePath(originalSegment);
+        expect(identity.pid).toBe(live.writerProcess.pid);
+        const marker = originalSegment.lastIndexOf("-n-");
+        const renamedSegment =
+          originalSegment.slice(0, marker + 3) +
+          createHash("sha256").update(stopPath).digest("hex").slice(0, 16);
+        renameSync(originalSegment, renamedSegment);
+
+        observer = spawnLoggedProcess({
+          command: process.execPath,
+          args: ["-e", 'process.stdout.write("renamed fallback observer\\n");'],
+          env: process.env,
+          logDir,
+          logName: "server",
+          testWriterBarrier: {
+            recoveryIdentity: identity,
+            recoveryIntervalMs: 25,
+          },
+        });
+        expect(await waitForExit(observer)).toBe(0);
+        await observer.writerExit;
+        expect(existsSync(renamedSegment)).toBe(true);
+        expect(readFileSync(renamedSegment, "utf8")).toContain(
+          "renamed fallback owner output",
+        );
+      } finally {
+        if (!existsSync(stopPath)) writeFileSync(stopPath, "stop");
+        if (observer?.exitCode === null) observer.kill("SIGKILL");
+        if (live.exitCode === null) live.kill("SIGKILL");
+        await Promise.all([
+          live.writerExit,
+          ...(observer ? [observer.writerExit] : []),
+        ]);
       }
     },
   );
@@ -2700,11 +2862,14 @@ fs.renameSync = function (source, destination) {
         const nextAttempt = injected + 1;
         const marker = `${attemptPath}.${nextAttempt}`;
         await expect
-          .poll(() => {
-            if (!existsSync(marker)) return false;
-            const selected = readFileSync(marker, "utf8");
-            return selected.length > 0 && existsSync(selected);
-          }, { timeout: 5_000, interval: 10 })
+          .poll(
+            () => {
+              if (!existsSync(marker)) return false;
+              const selected = readFileSync(marker, "utf8");
+              return selected.length > 0 && existsSync(selected);
+            },
+            { timeout: 5_000, interval: 10 },
+          )
           .toBe(true);
         const selected = readFileSync(marker, "utf8");
         unlinkSync(selected);
@@ -2776,11 +2941,14 @@ fs.renameSync = function (source, destination) {
       for (let attempt = 1; attempt <= 5; attempt += 1) {
         const marker = `${attemptPath}.${attempt}`;
         await expect
-          .poll(() => {
-            if (!existsSync(marker)) return false;
-            const selected = readFileSync(marker, "utf8");
-            return selected.length > 0 && existsSync(selected);
-          }, { timeout: 5_000, interval: 10 })
+          .poll(
+            () => {
+              if (!existsSync(marker)) return false;
+              const selected = readFileSync(marker, "utf8");
+              return selected.length > 0 && existsSync(selected);
+            },
+            { timeout: 5_000, interval: 10 },
+          )
           .toBe(true);
         unlinkSync(readFileSync(marker, "utf8"));
         const replacement = `${logPath}.backup-${100 + attempt}-1-${String(100 + attempt).padStart(8, "0")}`;
@@ -2872,7 +3040,10 @@ fs.renameSync = function (source, destination) {
         writeFileSync(`${releasePath}.${attempt}`, "release");
       }
       await expect
-        .poll(() => existsSync(completionPath), { timeout: 5_000, interval: 10 })
+        .poll(() => existsSync(completionPath), {
+          timeout: 5_000,
+          interval: 10,
+        })
         .toBe(true);
       await writer.writerExit;
       expect(readFileSync(diagnosticPath, "utf8")).toContain(
