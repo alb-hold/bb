@@ -1665,18 +1665,6 @@ export class TerminalSessionLifecycle {
     session: TerminalSessionRow,
     chunk: TerminalOutputChunk,
   ): void {
-    const pending = this.pendingRetainedOutput.get(session.id);
-    if (pending !== undefined && pending.hostId !== session.hostId) {
-      try {
-        this.flushRetainedOutput(session.id);
-      } catch (error) {
-        this.pendingRetainedOutput.delete(session.id);
-        this.options.logger.warn(
-          { error, terminalId: session.id },
-          "Failed to retain terminal output",
-        );
-      }
-    }
     const current = this.pendingRetainedOutput.get(session.id);
     if (current === undefined) {
       this.pendingRetainedOutput.set(session.id, {

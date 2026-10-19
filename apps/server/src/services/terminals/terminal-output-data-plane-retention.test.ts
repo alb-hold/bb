@@ -315,6 +315,40 @@ describe("terminal output retained from the data plane", () => {
     fixture.child.shutdown();
   });
 
+  it("keeps the newest 2 MiB queued through failed writes and then stores what an uninterrupted write would", async () => {
+    const fixture = await setup();
+    fixture.db.$client.exec(`
+      CREATE TRIGGER retained_output_disk_full BEFORE INSERT ON fork_terminal_output
+        BEGIN SELECT RAISE(ABORT, 'disk full'); END;
+    `);
+    const chunks = Array.from({ length: 2_200 }, (_, seq) => ({
+      seq,
+      dataBase64: Buffer.from(
+        `${String(seq).padStart(6, "0")}${"x".repeat(1_017)}\n`,
+      ).toString("base64"),
+    }));
+    for (const chunk of chunks) {
+      fixture.daemonSocket.receive({
+        type: "terminal.output",
+        terminalId: fixture.terminal.id,
+        chunk,
+      });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    fixture.terminalSessions.flushAllRetainedOutput();
+    fixture.terminalSessions.flushAllRetainedOutput();
+    fixture.db.$client.exec("DROP TRIGGER retained_output_disk_full");
+    fixture.terminalSessions.flushAllRetainedOutput();
+    expect(
+      getRetainedTerminalOutput(fixture.db, {
+        hostId: fixture.host.id,
+        terminalSessionId: fixture.terminal.id,
+        now: Date.now(),
+      }),
+    ).toEqual(chunks.slice(-64));
+    fixture.child.shutdown();
+  });
+
   it("does not let the prune sweep drop output that is still queued", async () => {
     const fixture = await setup();
     const [first, ...rest] = outputChunks();
