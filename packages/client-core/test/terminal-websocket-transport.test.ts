@@ -625,7 +625,7 @@ describe("TerminalWebSocketTransport", () => {
       const ack = (seq: number) =>
         opened.socket.receive({ type: "resize-applied", seq });
       const echo = (size: { cols: number; rows: number }) =>
-        opened.harness.transport.consumeRepaintNudgeEcho(size);
+        opened.harness.transport.consumeRepaintNudgeEcho(size, 1);
       return { ...opened, ack, echo };
     }
 

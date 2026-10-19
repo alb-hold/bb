@@ -370,18 +370,22 @@ export class TerminalWebSocketTransport {
     }, 0);
   }
 
-  consumeRepaintNudgeEcho(size: { cols: number; rows: number }): boolean {
+  consumeRepaintNudgeEcho(
+    size: { cols: number; rows: number },
+    resizeSeq?: number,
+  ): boolean {
     const inFlight = this.repaintNudgeInFlight;
     if (inFlight === null) {
       return false;
     }
     if (
       !inFlight.echoTaken &&
+      (!this.resizeAcksConfirmed || resizeSeq === inFlight.nudgeSeq) &&
       size.cols === inFlight.nudge.cols &&
       size.rows === inFlight.nudge.rows
     ) {
       inFlight.echoTaken = true;
-      inFlight.ignored = size;
+      inFlight.ignored = inFlight.restoreRequested ? null : size;
       return true;
     }
     inFlight.ignored = null;

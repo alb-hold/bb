@@ -57,6 +57,7 @@ import type {
   TerminalOutputResponse,
   TerminalResizeRequest,
   TerminalSession,
+  TerminalServerMessage,
   TerminalNotifyRequest,
   UpdateTerminalRequest,
 } from "@bb/server-contract";
@@ -2754,7 +2755,7 @@ export class TerminalSessionLifecycle {
       { cols: args.message.cols, rows: args.message.rows },
       Date.now(),
     );
-    this.applySharedTerminalSize(args);
+    this.applySharedTerminalSize({ ...args, resizeSeq: args.message.seq });
     if (
       args.message.seq !== undefined &&
       this.resizeAckSockets.has(args.socket)
@@ -2769,6 +2770,7 @@ export class TerminalSessionLifecycle {
   private applySharedTerminalSize(args: {
     socket: TerminalClientSocket | null;
     terminalId: string;
+    resizeSeq?: number;
   }): void {
     const size = this.options.hub.terminalSharedSize(
       args.terminalId,
@@ -2780,16 +2782,23 @@ export class TerminalSessionLifecycle {
     const current = getTerminalById(this.options.db, args.terminalId);
     if (
       !current ||
-      !isRunningBrowserTerminalSession(current) ||
-      (current.cols === size.cols && current.rows === size.rows)
+      !isRunningBrowserTerminalSession(current)
     ) {
       return;
     }
-    this.resizeRunningBrowserTerminal(args.socket, current, size);
+    if (current.cols === size.cols && current.rows === size.rows) {
+      this.options.hub.sendTerminalClientMessage(
+        current.id,
+        { type: "session-updated", session: this.toTerminalSession(current) },
+        args.socket ?? undefined,
+      );
+      return;
+    }
+    this.resizeRunningBrowserTerminal(args, current, size);
   }
 
   private resizeRunningBrowserTerminal(
-    socket: TerminalClientSocket | null,
+    args: { resizeSeq?: number; socket: TerminalClientSocket | null },
     current: RunningBrowserTerminalSession,
     size: { cols: number; rows: number },
   ): void {
@@ -2802,10 +2811,28 @@ export class TerminalSessionLifecycle {
       if (resized) {
         const session = this.toTerminalSession(resized);
         this.notifyTerminalSessionChanged(resized);
-        this.options.hub.sendTerminalClientMessage(resized.id, {
+        const message = {
           type: "session-updated",
           session,
-        });
+        } satisfies TerminalServerMessage;
+        const resizeSeq = args.resizeSeq;
+        const tagResizeEcho =
+          args.socket !== null &&
+          resizeSeq !== undefined &&
+          this.resizeAckSockets.has(args.socket);
+        if (tagResizeEcho && args.socket !== null && resizeSeq !== undefined) {
+          this.options.hub.sendTerminalClientMessage(
+            resized.id,
+            message,
+            args.socket,
+          );
+          this.options.hub.sendTerminalSocketMessage(args.socket, {
+            ...message,
+            resizeSeq,
+          });
+        } else {
+          this.options.hub.sendTerminalClientMessage(resized.id, message);
+        }
       }
     }
     const sent = this.options.hub.sendDaemonSessionMessage(
@@ -2818,9 +2845,9 @@ export class TerminalSessionLifecycle {
       },
     );
     if (!sent) {
-      if (socket !== null) {
+      if (args.socket !== null) {
         this.sendTerminalSocketError({
-          socket,
+          socket: args.socket,
           code: "host_disconnected",
           message: "Host is not connected",
         });

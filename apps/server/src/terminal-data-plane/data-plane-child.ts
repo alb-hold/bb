@@ -547,10 +547,7 @@ export class TerminalDataPlaneChild {
 
   private sendReply(
     attachId: string,
-    message: Extract<
-      TerminalServerMessage,
-      { type: "features" | "resize-applied" }
-    >,
+    message: TerminalServerMessage,
   ): void {
     const attach = this.attaches.get(attachId);
     if (attach === undefined || attach.closed) {
