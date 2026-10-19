@@ -15,9 +15,12 @@ import {
   updateThread,
   updateTerminalSession,
 } from "@bb/db";
-import { DEVICE_HANDOFF_CLIENT_TOKEN_HEADER } from "@bb/server-contract";
+import {
+  createDeviceHandoffIdentityManager,
+  DEVICE_HANDOFF_CLIENT_TOKEN_HEADER,
+  DEVICE_HANDOFF_DEVICE_STORAGE_KEY,
+} from "@bb/server-contract";
 import { createNodeBbSdk } from "@bb/sdk/node";
-import { createDeviceHandoffIdentityManager } from "../../../app/src/lib/device-handoff-identity.js";
 import {
   createTestAppHarness,
   startTestServer,
@@ -2282,24 +2285,20 @@ describe("device handoff websocket acknowledgement", () => {
       origin,
     });
     const storedIdentity = new Map<string, string>();
-    vi.stubGlobal("window", {
-      localStorage: {
-        getItem: (key: string) => storedIdentity.get(key) ?? null,
-        setItem: (key: string, value: string) => storedIdentity.set(key, value),
+    const phoneDeviceIdentity = createDeviceHandoffIdentityManager({
+      readStoredId: () =>
+        storedIdentity.get(DEVICE_HANDOFF_DEVICE_STORAGE_KEY) ?? null,
+      storeId: (value) =>
+        storedIdentity.set(DEVICE_HANDOFF_DEVICE_STORAGE_KEY, value),
+      createId: () => {
+        const bytes = new Uint8Array(16);
+        bytes.set(Array.from({ length: bytes.length }, (_, index) => index));
+        return Buffer.from(bytes).toString("base64url");
       },
-      crypto: {
-        getRandomValues: (bytes: Uint8Array) => {
-          bytes.set(Array.from({ length: bytes.length }, (_, index) => index));
-          return bytes;
-        },
-      },
-      btoa: (value: string) => Buffer.from(value, "binary").toString("base64"),
     });
-    const phoneDeviceIdentity = createDeviceHandoffIdentityManager();
     const generatedPhoneDeviceId = phoneDeviceIdentity.ensure();
     expect(generatedPhoneDeviceId).toMatch(/^[A-Za-z0-9_-]{22}$/u);
     expect([...storedIdentity.values()]).toEqual([generatedPhoneDeviceId]);
-    vi.unstubAllGlobals();
     const olderFrames: Record<string, unknown>[] = [];
     olderDevice.socket.on("message", (data) => {
       olderFrames.push(JSON.parse(data.toString()) as Record<string, unknown>);

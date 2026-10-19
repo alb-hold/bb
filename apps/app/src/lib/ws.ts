@@ -10,6 +10,7 @@ import {
   deviceHandoffExpiredSignalLenientSchema,
   deviceHandoffAcknowledgedSignalLenientSchema,
   deviceHandoffClientTokenSignalLenientSchema,
+  DEVICE_HANDOFF_DEVICE_STORAGE_KEY,
   threadTimelineSignalLenientSchema,
 } from "@bb/server-contract";
 import type {
@@ -31,7 +32,6 @@ import {
   subscribeToDocumentVisibility,
 } from "./document-visibility";
 import {
-  DEVICE_HANDOFF_DEVICE_STORAGE_KEY,
   ensureDeviceHandoffId,
   rememberDeviceHandoffId,
 } from "./device-handoff-identity";
