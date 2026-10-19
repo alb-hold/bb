@@ -8,13 +8,14 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { act, type ReactElement } from "react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   FilePreview,
   buildCsvPreviewData,
   getCsvTruncationNote,
 } from "./FilePreview";
 import { SOURCE_CODE_MAX_LINES } from "@/components/code/source-code-budget";
+import { BbSourceCodeSplit } from "@/components/code/SourceCodeHost";
 import { SecondaryPanelFilePreview } from "./ThreadStorageFilePreview";
 import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { HttpError } from "@/lib/api";
@@ -185,6 +186,10 @@ function mockCsvTableLayout() {
     },
   );
 }
+
+beforeAll(async () => {
+  await BbSourceCodeSplit.preload();
+});
 
 describe("FilePreview", () => {
   beforeEach(() => {
@@ -1141,6 +1146,7 @@ describe("FilePreview", () => {
             name: this.download,
           });
         });
+      const drawerFrames: FrameRequestCallback[] = [];
       try {
         for (const compact of [false, true]) {
           const view = render(
@@ -1154,12 +1160,24 @@ describe("FilePreview", () => {
             </CompactViewportOverrideProvider>,
           );
           if (compact) {
+            vi.spyOn(window, "requestAnimationFrame").mockImplementation(
+              (callback) => {
+                drawerFrames.push(callback);
+                return drawerFrames.length;
+              },
+            );
             fireEvent.click(
               screen.getByRole("button", { name: "File actions" }),
             );
-            fireEvent.click(
-              await screen.findByRole("menuitem", { name: "Download" }),
-            );
+            await act(async () => {
+              const firstFrame = drawerFrames.shift();
+              expect(firstFrame).toBeDefined();
+              firstFrame?.(0);
+              const secondFrame = drawerFrames.shift();
+              expect(secondFrame).toBeDefined();
+              secondFrame?.(16);
+            });
+            fireEvent.click(screen.getByRole("menuitem", { name: "Download" }));
           } else {
             fireEvent.click(screen.getByRole("button", { name: "Download" }));
           }
