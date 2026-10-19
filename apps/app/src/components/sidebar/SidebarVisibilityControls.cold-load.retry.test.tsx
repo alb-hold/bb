@@ -10,6 +10,11 @@ const download = await vi.hoisted(async () => {
   return createDeferredPromise<void>();
 });
 
+const retryLoaded = await vi.hoisted(async () => {
+  const { createDeferredPromise } = await import("@bb/test-helpers");
+  return createDeferredPromise<void>();
+});
+
 vi.mock("./SidebarVisibilityCustomize", async () => {
   await download.promise;
   throw new Error("module initialization failed");
@@ -44,13 +49,16 @@ it("retries the failed import and updates sidebar visibility", async () => {
   });
   expect(await screen.findByRole("alert")).toBeDefined();
   vi.resetModules();
-  vi.doMock("./SidebarVisibilityCustomize", (importOriginal) =>
-    importOriginal(),
-  );
+  vi.doMock("./SidebarVisibilityCustomize", async (importOriginal) => {
+    const module = await importOriginal();
+    retryLoaded.resolve();
+    return module;
+  });
   fireEvent.click(screen.getByRole("button", { name: "Try again" }));
-  fireEvent.click(
-    await screen.findByRole("checkbox", { name: "Show Review in sidebar" }),
-  );
+  await act(async () => {
+    await retryLoaded.promise;
+  });
+  fireEvent.click(screen.getByRole("checkbox", { name: "Show Review in sidebar" }));
   expect(onVisibleChange).toHaveBeenCalledWith("section:review", true);
   expect(screen.queryByRole("alert")).toBeNull();
 });
