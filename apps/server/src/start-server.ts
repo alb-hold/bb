@@ -728,7 +728,10 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
         stopPeriodicUpdateChecks: () =>
           pluginService.stopPeriodicUpdateChecks(),
         server,
-        stopTerminalDataPlane: () => terminalDataPlane?.stop(),
+        stopTerminalDataPlane: () => {
+          terminalDataPlane?.stop();
+          terminalSessions.flushAllRetainedOutput();
+        },
       });
     })();
     return shutdownPromise;

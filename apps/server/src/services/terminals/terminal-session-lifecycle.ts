@@ -9,7 +9,6 @@ import { z } from "zod";
 import {
   createTerminalSession,
   dismissRetainedTerminalOutput,
-  appendRetainedTerminalOutputChunk,
   appendRetainedTerminalOutputChunks,
   clearTerminalAttention,
   getTerminalAttention,
@@ -82,6 +81,7 @@ import { TerminalOutputFlowControl } from "./terminal-output-flow-control.js";
 
 const DEFAULT_TERMINAL_OPEN_TIMEOUT_MS = 10_000;
 const DEFAULT_TERMINAL_CLOSE_TIMEOUT_MS = 5_000;
+const RETAINED_OUTPUT_FLUSH_MS = 1_000;
 const DEFAULT_TERMINAL_START: NonNullable<CreateTerminalRequest["start"]> = {
   mode: "shell",
 };
@@ -677,6 +677,12 @@ export class TerminalSessionLifecycle {
   >();
   private readonly resizeAckSockets = new WeakSet<TerminalClientSocket>();
   private readonly outputFlow: TerminalOutputFlowControl;
+  private readonly pendingRetainedOutput = new Map<
+    string,
+    { hostId: string; chunks: TerminalOutputChunk[] }
+  >();
+  private retainedOutputFlushTimer: ReturnType<typeof setTimeout> | null =
+    null;
 
   constructor(private readonly options: TerminalSessionLifecycleOptions) {
     this.outputFlow = new TerminalOutputFlowControl({
@@ -1324,6 +1330,7 @@ export class TerminalSessionLifecycle {
     const current = args.current;
     if (current.status === "exited") {
       if (args.payload.reason === "user") {
+        this.flushRetainedOutput(current.id);
         dismissRetainedTerminalOutput(
           this.options.db,
           current.id,
@@ -1564,6 +1571,7 @@ export class TerminalSessionLifecycle {
   private getRetainedOutput(
     session: TerminalSessionRow,
   ): TerminalOutputChunk[] | null {
+    this.flushRetainedOutput(session.id);
     return getRetainedTerminalOutput(this.options.db, {
       hostId: session.hostId,
       terminalSessionId: session.id,
@@ -1602,12 +1610,51 @@ export class TerminalSessionLifecycle {
     session: TerminalSessionRow,
     chunk: TerminalOutputChunk,
   ): void {
-    appendRetainedTerminalOutputChunk(this.options.db, {
-      hostId: session.hostId,
-      terminalSessionId: session.id,
-      chunk,
-      now: Date.now(),
+    const pending = this.pendingRetainedOutput.get(session.id);
+    if (pending !== undefined && pending.hostId !== session.hostId) {
+      this.flushRetainedOutput(session.id);
+    }
+    const current = this.pendingRetainedOutput.get(session.id);
+    if (current === undefined) {
+      this.pendingRetainedOutput.set(session.id, {
+        hostId: session.hostId,
+        chunks: [chunk],
+      });
+    } else {
+      current.chunks.push(chunk);
+    }
+    if (this.retainedOutputFlushTimer === null) {
+      this.retainedOutputFlushTimer = setTimeout(() => {
+        this.retainedOutputFlushTimer = null;
+        this.flushAllRetainedOutput();
+      }, RETAINED_OUTPUT_FLUSH_MS);
+      this.retainedOutputFlushTimer.unref?.();
+    }
+  }
+
+  private flushRetainedOutput(terminalSessionId: string): void {
+    const pending = this.pendingRetainedOutput.get(terminalSessionId);
+    if (pending === undefined) return;
+    this.pendingRetainedOutput.delete(terminalSessionId);
+    appendRetainedTerminalOutputChunks(this.options.db, {
+      hostId: pending.hostId,
+      terminalSessionId,
+      chunks: pending.chunks,
+      clock: Date.now,
     });
+  }
+
+  flushAllRetainedOutput(): void {
+    for (const terminalSessionId of [...this.pendingRetainedOutput.keys()]) {
+      try {
+        this.flushRetainedOutput(terminalSessionId);
+      } catch (error) {
+        this.options.logger.warn(
+          { error, terminalId: terminalSessionId },
+          "Failed to retain terminal output",
+        );
+      }
+    }
   }
 
   private async readRunningTerminalOutput(
@@ -1909,6 +1956,7 @@ export class TerminalSessionLifecycle {
       this.retainTerminalOutput(current, chunk);
     }
     if (current.status === "exited") {
+      this.flushRetainedOutput(current.id);
       markRetainedTerminalOutputExited(
         this.options.db,
         current.id,
@@ -2310,6 +2358,7 @@ export class TerminalSessionLifecycle {
             return;
           }
           if (current) {
+            this.flushRetainedOutput(current.id);
             appendRetainedTerminalOutputChunks(this.options.db, {
               hostId: current.hostId,
               terminalSessionId: current.id,
@@ -2364,6 +2413,7 @@ export class TerminalSessionLifecycle {
     }
     this.forwardedNextSeqByTerminalId.delete(exited.id);
     this.outputFlow.forgetTerminal(exited.id);
+    this.flushRetainedOutput(exited.id);
     markRetainedTerminalOutputExited(
       this.options.db,
       exited.id,
@@ -2488,6 +2538,7 @@ export class TerminalSessionLifecycle {
   private notifyExitedTerminalSession(
     args: NotifyExitedTerminalSessionArgs,
   ): void {
+    this.flushRetainedOutput(args.session.id);
     markRetainedTerminalOutputExited(
       this.options.db,
       args.session.id,
