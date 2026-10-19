@@ -3079,9 +3079,6 @@ fs.renameSync = function (source, destination) {
     );
 
     try {
-      expect(
-        await Promise.all(writers.map((writer) => waitForExit(writer))),
-      ).toEqual([0, 0]);
       await expect
         .poll(
           () =>
@@ -3109,9 +3106,12 @@ fs.renameSync = function (source, destination) {
             readFileSync(barrier.pruneSnapshotEnteredPath!, "utf8") === "6",
         ),
       ).toBe(true);
-      writeFileSync(barriers[0].pruneSnapshotReleasePath!, "release");
-      await writers[0].writerExit;
-      writeFileSync(barriers[1].pruneSnapshotReleasePath!, "release");
+      for (const barrier of barriers) {
+        writeFileSync(barrier.pruneSnapshotReleasePath!, "release");
+      }
+      expect(
+        await Promise.all(writers.map((writer) => waitForExit(writer))),
+      ).toEqual([0, 0]);
       await Promise.all(writers.map((writer) => writer.writerExit));
       await expect
         .poll(
