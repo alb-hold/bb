@@ -1,7 +1,7 @@
 import { Buffer } from "node:buffer";
 import { Readable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
-import { TERMINAL_DATA_MAX_BYTES } from "@bb/domain";
+import { createTerminalGridMarker, TERMINAL_DATA_MAX_BYTES } from "@bb/domain";
 import { TERMINAL_ATTENTION_CONTRACT_CASES } from "@bb/test-helpers";
 import {
   collectLogLines,
@@ -116,8 +116,9 @@ describe("bb terminal command output", () => {
       stubServerApi({ "v1.terminals.attention.$get": listAttention });
       await runCommand(["terminal", "attention", "list", "--json"], register);
       expect(
-        JSON.parse(collectLogPayloads(vi.mocked(console.log)).at(-1) ?? "{}")
-          .sessions.map((session: { id: string }) => session.id),
+        JSON.parse(
+          collectLogPayloads(vi.mocked(console.log)).at(-1) ?? "{}",
+        ).sessions.map((session: { id: string }) => session.id),
       ).toEqual(contract.unreadIds);
 
       stubServerApi({ "v1.terminals.attention.$get": listAttention });
@@ -486,11 +487,20 @@ describe("bb terminal command output", () => {
   });
 
   it("prints terminal output without a thread selector", async () => {
+    const marker = createTerminalGridMarker({ cols: 51, rows: 16 });
     const output = vi.fn(async () => ({
       chunks: [
         {
           seq: 0,
-          dataBase64: Buffer.from("hello\n", "utf8").toString("base64"),
+          dataBase64: Buffer.from(marker.slice(0, 8), "utf8").toString(
+            "base64",
+          ),
+        },
+        {
+          seq: 1,
+          dataBase64: Buffer.from(`${marker.slice(8)}hello\n`, "utf8").toString(
+            "base64",
+          ),
         },
       ],
       nextSeq: 1,
@@ -514,7 +524,9 @@ describe("bb terminal command output", () => {
       query: { lines: 1 },
     });
     expect(
-      Buffer.from(write.mock.calls[0]?.[0] as Uint8Array).toString("utf8"),
+      Buffer.concat(
+        write.mock.calls.map(([data]) => Buffer.from(data as Uint8Array)),
+      ).toString("utf8"),
     ).toBe("hello\n");
   });
 
@@ -720,11 +732,55 @@ describe("bb terminal command output", () => {
     expect(output.mock.calls[1]?.[0]).toMatchObject({ query: { sinceSeq: 4 } });
   });
 
+  it("does not match a private grid marker as terminal text", async () => {
+    const marker = "\u001b]7791;bb-grid;51;16\u0007";
+    const output = vi.fn(async () => ({
+      chunks: [
+        {
+          seq: 0,
+          dataBase64: Buffer.from(marker.slice(0, 12)).toString("base64"),
+        },
+        {
+          seq: 1,
+          dataBase64: Buffer.from(`${marker.slice(12)}ready\n`).toString(
+            "base64",
+          ),
+        },
+      ],
+      nextSeq: 2,
+      truncated: false,
+      status: "exited",
+      exitCode: 0,
+      closeReason: "process-exit",
+    }));
+    stubServerApi({ "v1.terminals.:terminalId.output.$get": output });
+
+    await runCommand(
+      [
+        "terminal",
+        "wait",
+        "term-1",
+        "--from-start",
+        "--contains",
+        "ready",
+        "--json",
+      ],
+      register,
+    );
+
+    expect(
+      JSON.parse(collectLogPayloads(vi.mocked(console.log)).at(-1) ?? "{}"),
+    ).toMatchObject({ matched: "ready", nextSeq: 2 });
+  });
+
   it.each(["€", "🙂"])(
     "matches UTF-8 character %s split across terminal chunks",
     async (glyph) => {
       const bytes = Buffer.from(glyph, "utf8");
-      const first = Buffer.concat([Buffer.from("ready "), bytes.subarray(0, 1)]);
+      const first = Buffer.concat([
+        Buffer.from("ready "),
+        bytes.subarray(0, 1),
+      ]);
       const second = Buffer.concat([bytes.subarray(1), Buffer.from("\n")]);
       const output = vi.fn(async () => ({
         chunks: [first, second].map((chunk, index) => ({
@@ -740,7 +796,15 @@ describe("bb terminal command output", () => {
       stubServerApi({ "v1.terminals.:terminalId.output.$get": output });
 
       await runCommand(
-        ["terminal", "wait", "term-1", "--from-start", "--contains", glyph, "--json"],
+        [
+          "terminal",
+          "wait",
+          "term-1",
+          "--from-start",
+          "--contains",
+          glyph,
+          "--json",
+        ],
         register,
       );
 

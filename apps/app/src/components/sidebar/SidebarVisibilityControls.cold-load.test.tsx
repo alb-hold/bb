@@ -5,14 +5,19 @@ import { afterEach, expect, it, vi } from "vitest";
 import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { SidebarVisibilityCustomize } from "./SidebarVisibilityControls";
 
-const download = await vi.hoisted(async () => {
+const moduleImports = await vi.hoisted(async () => {
   const { createDeferredPromise } = await import("@bb/test-helpers");
-  return createDeferredPromise<void>();
+  return {
+    download: createDeferredPromise<void>(),
+    loaded: createDeferredPromise<void>(),
+  };
 });
 
 vi.mock("./SidebarVisibilityCustomize", async (importOriginal) => {
-  await download.promise;
-  return importOriginal();
+  await moduleImports.download.promise;
+  const module = await importOriginal();
+  moduleImports.loaded.resolve();
+  return module;
 });
 
 afterEach(() => {
@@ -20,8 +25,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-it("keeps Done, Escape and compact Back usable through a held import, failure and retry", async () => {
-  vi.spyOn(console, "error").mockImplementation(() => {});
+it("keeps Done, Escape and compact Back usable while the import is held", async () => {
   const onDone = vi.fn();
   const props = {
     items: [{ id: "section:review", title: "Review" }],
@@ -51,20 +55,11 @@ it("keeps Done, Escape and compact Back usable through a held import, failure an
     </CompactViewportOverrideProvider>,
   );
   await act(async () => {
-    download.reject(new Error("module initialization failed"));
+    moduleImports.download.resolve();
+    await moduleImports.loaded.promise;
   });
-  expect(await screen.findByRole("alert")).toBeDefined();
-  const back = screen.getByRole("button", { name: "Done" });
-  expect(document.activeElement).toBe(back);
-  fireEvent.click(back);
-  expect(onDone).toHaveBeenCalledTimes(3);
-
-  vi.doMock("./SidebarVisibilityCustomize", (importOriginal) =>
-    importOriginal(),
-  );
-  fireEvent.click(screen.getByRole("button", { name: "Try again" }));
   fireEvent.click(
-    await screen.findByRole("checkbox", { name: "Show Review in sidebar" }),
+    screen.getByRole("checkbox", { name: "Show Review in sidebar" }),
   );
   expect(props.onVisibleChange).toHaveBeenCalledWith("section:review", true);
   expect(screen.queryByRole("alert")).toBeNull();

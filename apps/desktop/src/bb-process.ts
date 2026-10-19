@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { readdirSync, readFileSync } from "node:fs";
 import { posix as posixPath } from "node:path";
 import { DESKTOP_OWNED_RUNTIME_SHUTDOWN_GRACE_MS } from "@bb/config/full-stack-shutdown";
 import {
@@ -87,6 +88,50 @@ interface ResolveBbAppProcessRuntimeArgs {
 
 const APPIMAGE_BRIDGE_RELATIVE_PATH_ENV =
   "BB_DESKTOP_APPIMAGE_BRIDGE_RELATIVE_PATH";
+
+function processGroupHasLiveMembers(processGroupId: number): boolean {
+  for (const entry of readdirSync("/proc", { withFileTypes: true })) {
+    if (!entry.isDirectory() || !/^\d+$/u.test(entry.name)) {
+      continue;
+    }
+    try {
+      const stat = readFileSync(`/proc/${entry.name}/stat`, "utf8");
+      const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+      if (fields[0] !== "Z" && Number(fields[2]) === processGroupId) {
+        return true;
+      }
+    } catch (error) {
+      if (
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        (error.code === "ENOENT" || error.code === "ESRCH")
+      ) {
+        continue;
+      }
+      throw error;
+    }
+  }
+  return false;
+}
+
+async function waitForProcessGroupExitWithTimeout(args: {
+  processGroupId: number;
+  timeoutMs: number;
+}): Promise<void> {
+  const deadline = Date.now() + args.timeoutMs;
+  while (processGroupHasLiveMembers(args.processGroupId)) {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      throw new Error(
+        `Process group ${String(args.processGroupId)} did not exit within ${String(args.timeoutMs)}ms`,
+      );
+    }
+    await new Promise<void>((resolveDelay) => {
+      setTimeout(resolveDelay, Math.min(10, remainingMs));
+    });
+  }
+}
 
 async function runAppImageBridgeSupervisor(
   bridgeRelativePathEnv: string,
@@ -433,10 +478,23 @@ export function startBbAppProcess(args: StartBbAppProcessArgs): BbAppProcess {
           childProcess.kill(stopArgs.killSignal);
         }
       }
-      await waitForProcessExitWithTimeout({
-        childProcess,
-        timeoutMs: stopArgs.killTimeoutMs,
-      });
+      if (args.runtime.kind === "appimage") {
+        await Promise.all([
+          waitForProcessExitWithTimeout({
+            childProcess,
+            timeoutMs: stopArgs.killTimeoutMs,
+          }),
+          waitForProcessGroupExitWithTimeout({
+            processGroupId: pid,
+            timeoutMs: stopArgs.killTimeoutMs,
+          }),
+        ]);
+      } else {
+        await waitForProcessExitWithTimeout({
+          childProcess,
+          timeoutMs: stopArgs.killTimeoutMs,
+        });
+      }
     },
   };
 }

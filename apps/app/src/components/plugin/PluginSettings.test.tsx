@@ -11,7 +11,11 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { InstalledPlugin } from "@bb/server-contract";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
-import { systemMachineProvidersQueryKey } from "@/hooks/queries/query-keys";
+import { pluginSettingsViewQueryOptions } from "@/hooks/queries/plugin-settings-queries";
+import {
+  pluginSettingsViewQueryKey,
+  systemMachineProvidersQueryKey,
+} from "@/hooks/queries/query-keys";
 import {
   resetPluginSlotStoreForTest,
   setPluginSlotRegistrations,
@@ -68,27 +72,28 @@ afterEach(() => {
 
 describe("PluginSettingsForm", () => {
   it("autosaves the latest text value on blur", async () => {
+    const saveResponse = createDeferredPromise<Response>();
     const requests: RecordedRequest[] = [];
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string, init?: RequestInit) => {
         requests.push({ url, init });
         if (init?.method === "PUT") {
-          const body = JSON.parse(String(init.body)) as {
-            values: Record<string, unknown>;
-          };
-          return jsonOk({
-            ...SETTINGS_VIEW,
-            values: { ...SETTINGS_VIEW.values, ...body.values },
-          });
+          return saveResponse.promise;
         }
         return jsonOk(SETTINGS_VIEW);
       }),
     );
 
-    const { wrapper } = createQueryClientTestHarness();
+    const { queryClient, wrapper } = createQueryClientTestHarness();
     render(<PluginSettingsForm pluginId="demo" />, { wrapper });
 
+    await act(async () => {
+      await queryClient.fetchQuery(pluginSettingsViewQueryOptions("demo"));
+    });
+    expect(
+      queryClient.getQueryData(pluginSettingsViewQueryKey("demo")),
+    ).toMatchObject({ values: { greeting: "hello" } });
     const greeting = (await screen.findByLabelText(
       "Greeting",
     )) as HTMLInputElement;
@@ -119,6 +124,20 @@ describe("PluginSettingsForm", () => {
     expect(JSON.parse(String(put?.init?.body))).toEqual({
       values: { greeting: "hi there" },
     });
+    saveResponse.resolve(
+      jsonOk({
+        ...SETTINGS_VIEW,
+        values: { ...SETTINGS_VIEW.values, greeting: "hi there" },
+      }),
+    );
+    await vi.waitFor(() => {
+      expect(
+        queryClient.getQueryData(pluginSettingsViewQueryKey("demo")),
+      ).toMatchObject({ values: { greeting: "hi there" } });
+    });
+    expect(
+      queryClient.getQueryData(pluginSettingsViewQueryKey("demo")),
+    ).toMatchObject({ values: { greeting: "hi there" } });
     expect(screen.queryByRole("status")).toBeNull();
     expect((screen.getByLabelText("Greeting") as HTMLInputElement).value).toBe(
       "hi there",

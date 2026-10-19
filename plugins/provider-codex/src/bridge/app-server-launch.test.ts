@@ -70,6 +70,16 @@ describe("Codex Account Pool launch", () => {
       "model_providers.bb-account-pool.supports_websockets=false",
     );
     expect(launch.args).toContain(
+      "model_providers.bb-account-pool.requires_openai_auth=false",
+    );
+    expect(launch.args).not.toContain(
+      "model_providers.bb-account-pool.requires_openai_auth=true",
+    );
+    expect(launch.args).toContain('cli_auth_credentials_store="ephemeral"');
+    expect(launch.args).toContain(
+      'model_providers.bb-account-pool.auth={command="printenv",args=["CODEX_POOL_AUTH_TOKEN"]}',
+    );
+    expect(launch.args).toContain(
       'shell_environment_policy.filters={"CODEX_*POOL*"="exclude","BB_ACCOUNT_POOL_*"="exclude","CODEX_OPENAI_BASE_URL"="exclude"}',
     );
 

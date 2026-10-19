@@ -1,4 +1,4 @@
-import { TERMINAL_DATA_MAX_BYTES } from "@bb/domain";
+import { createTerminalGridMarker, TERMINAL_DATA_MAX_BYTES } from "@bb/domain";
 import type {
   TerminalServerMessage,
   TerminalSession,
@@ -7,9 +7,12 @@ import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { Terminal } from "@xterm/xterm";
 import { describe, expect, it, vi } from "vitest";
 import { decodeBase64Bytes } from "@/lib/base64-bytes";
+import { registerTerminalGridOscHandler } from "./terminal-grid-osc";
+import { createTerminalOutputPipeline } from "./terminal-output-pipeline";
 import {
   buildTerminalThemeFromCssColors,
   applyTerminalFontFamily,
+  attachTerminalInputForwarding,
   captureTerminalContextMenuState,
   encodeTerminalInputChunks,
   handleTerminalServerMessage,
@@ -21,6 +24,7 @@ import {
   observeTerminalFontLoading,
   shouldFocusTerminalAfterAsyncMount,
   startTerminalTouchFocusGesture,
+  subscribeToTerminalUserInput,
   TERMINAL_ALLOW_PROPOSED_API,
   TERMINAL_FONT_FAMILY,
   resolveTerminalFontFamily,
@@ -268,6 +272,419 @@ describe("terminal touch focus", () => {
 });
 
 describe("terminal output encoding", () => {
+  it("sizes the xterm to the attached PTY before writing legacy output", async () => {
+    const terminal = new Terminal({ cols: 120, rows: 36 });
+    const pipeline = createTerminalOutputPipeline(terminal);
+    const session = {
+      id: "term_attach_grid",
+      threadId: "thr_1",
+      environmentId: "env_1",
+      hostId: "host_1",
+      title: "Terminal",
+      initialCwd: "/workspace",
+      cols: 55,
+      rows: 56,
+      status: "running",
+      exitCode: null,
+      closeReason: null,
+      createdAt: 1,
+      updatedAt: 1,
+      lastUserInputAt: null,
+    } satisfies TerminalSession;
+
+    handleTerminalServerMessage({
+      acknowledgeOutput: vi.fn(),
+      message: { type: "attached", session, nextSeq: 0, replayStartSeq: 0 },
+      onReplayComplete: vi.fn(),
+      replayNextSeq: null,
+      replayWriteState: { suppressedWriteCount: 0 },
+      setReplayNextSeq: vi.fn(),
+      terminal,
+      pipeline,
+    });
+
+    let resolveParsed!: () => void;
+    const outputParsed = new Promise<void>((resolve) => {
+      resolveParsed = resolve;
+    });
+    handleTerminalServerMessage({
+      acknowledgeOutput: resolveParsed,
+      message: {
+        type: "output",
+        chunk: {
+          seq: 0,
+          dataBase64: Buffer.from("attached output").toString("base64"),
+        },
+      },
+      onReplayComplete: vi.fn(),
+      replayNextSeq: null,
+      replayWriteState: { suppressedWriteCount: 0 },
+      setReplayNextSeq: vi.fn(),
+      terminal,
+      pipeline,
+    });
+    await outputParsed;
+    expect({ cols: terminal.cols, rows: terminal.rows }).toEqual({
+      cols: 55,
+      rows: 56,
+    });
+    expect(terminal.buffer.active.getLine(0)?.translateToString()).toContain(
+      "attached output",
+    );
+    terminal.dispose();
+  });
+
+  it("applies replayed grid markers before parsing the following bytes for two clients", async () => {
+    const clients = [
+      new Terminal({ cols: 18, rows: 5 }),
+      new Terminal({ cols: 80, rows: 24 }),
+    ];
+    const pipelines = clients.map((terminal) =>
+      createTerminalOutputPipeline(terminal),
+    );
+    const firstMarker = createTerminalGridMarker({ cols: 51, rows: 16 });
+    const secondMarker = createTerminalGridMarker({ cols: 82, rows: 27 });
+    const firstBytes = `${firstMarker}${"A".repeat(51)}\r\n`;
+    const secondBytes = `${secondMarker}${"B".repeat(82)}\r\n`;
+    await Promise.all(
+      pipelines.map(
+        (pipeline) =>
+          new Promise<void>((resolve) =>
+            pipeline.push(Buffer.from(firstBytes), resolve),
+          ),
+      ),
+    );
+    await Promise.all(
+      pipelines.map(
+        (pipeline) =>
+          new Promise<void>((resolve) =>
+            pipeline.push(Buffer.from(secondBytes), resolve),
+          ),
+      ),
+    );
+
+    for (const terminal of clients) {
+      expect({ cols: terminal.cols, rows: terminal.rows }).toEqual({
+        cols: 82,
+        rows: 27,
+      });
+      const rendered = Array.from(
+        { length: terminal.buffer.active.length },
+        (_, index) =>
+          terminal.buffer.active.getLine(index)?.translateToString(true),
+      ).join("\n");
+      expect(rendered).toContain("A".repeat(51));
+      expect(rendered).toContain("B".repeat(82));
+      terminal.dispose();
+    }
+  });
+
+  it("strips historical grid markers without resizing the live renderer", async () => {
+    const terminal = new Terminal({ cols: 51, rows: 47 });
+    const onGrid = vi.fn();
+    const pipeline = createTerminalOutputPipeline(terminal, onGrid);
+    const marker = Buffer.from(
+      createTerminalGridMarker({ cols: 135, rows: 56 }),
+    );
+    const splitAt = Math.floor(marker.length / 2);
+
+    pipeline.push(marker.subarray(0, splitAt), vi.fn(), false);
+    await new Promise<void>((resolve) =>
+      pipeline.push(
+        Buffer.concat([
+          marker.subarray(splitAt),
+          Buffer.from("retained output"),
+        ]),
+        resolve,
+        true,
+      ),
+    );
+
+    expect({ cols: terminal.cols, rows: terminal.rows }).toEqual({
+      cols: 51,
+      rows: 47,
+    });
+    expect(onGrid).toHaveBeenCalledWith({ cols: 135, rows: 56 }, false);
+    expect(
+      Array.from({ length: terminal.buffer.active.length }, (_, index) =>
+        terminal.buffer.active.getLine(index)?.translateToString(true),
+      ).join("\n"),
+    ).toContain("retained output");
+    terminal.dispose();
+  });
+
+  it("keeps a newer grid when xterm parses it inside an earlier resize", async () => {
+    const terminal = new Terminal({ cols: 30, rows: 6 });
+    const pipeline = createTerminalOutputPipeline(terminal);
+    const markerA = createTerminalGridMarker({ cols: 120, rows: 36 });
+    const markerB = createTerminalGridMarker({ cols: 55, rows: 12 });
+    const chunks = [markerA, "A", markerB, "B".repeat(55)];
+    let parsedChunks = 0;
+    let resolveParsed!: () => void;
+    const allParsed = new Promise<void>((resolve) => {
+      resolveParsed = resolve;
+    });
+    for (const [seq, data] of chunks.entries()) {
+      handleTerminalServerMessage({
+        acknowledgeOutput: () => {
+          parsedChunks += 1;
+          if (parsedChunks === chunks.length) resolveParsed();
+        },
+        message: {
+          type: "output",
+          chunk: {
+            seq,
+            dataBase64: Buffer.from(data).toString("base64"),
+          },
+        },
+        onReplayComplete: vi.fn(),
+        replayNextSeq: null,
+        replayWriteState: { suppressedWriteCount: 0 },
+        setReplayNextSeq: vi.fn(),
+        terminal,
+        pipeline,
+      });
+    }
+    await allParsed;
+
+    expect({ cols: terminal.cols, rows: terminal.rows }).toEqual({
+      cols: 55,
+      rows: 12,
+    });
+    const rendered = Array.from(
+      { length: terminal.buffer.active.length },
+      (_, index) =>
+        terminal.buffer.active.getLine(index)?.translateToString(true),
+    ).join("\n");
+    expect(rendered).toContain("A");
+    expect([...rendered].filter((character) => character === "B")).toHaveLength(
+      55,
+    );
+    terminal.dispose();
+  });
+
+  it("waits for prior writes before resizing at a grid marker", async () => {
+    const writeCallbacks: Array<() => void> = [];
+    const resize = vi.fn();
+    const pipeline = createTerminalOutputPipeline({
+      resize,
+      write: (_data, callback) => writeCallbacks.push(callback),
+    });
+    const afterResize = vi.fn();
+    let finish!: () => void;
+    const finished = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+
+    pipeline.push(
+      Buffer.from(
+        `before${createTerminalGridMarker({ cols: 51, rows: 12 })}after`,
+      ),
+      finish,
+    );
+    await Promise.resolve();
+
+    expect(resize).not.toHaveBeenCalled();
+    expect(writeCallbacks).toHaveLength(1);
+    writeCallbacks.shift()?.();
+    await vi.waitFor(() => expect(resize).toHaveBeenCalledWith(51, 12));
+    expect(writeCallbacks).toHaveLength(1);
+    writeCallbacks.shift()?.();
+    await finished;
+    pipeline.setGrid(51, 12, afterResize);
+    await vi.waitFor(() => expect(afterResize).toHaveBeenCalledOnce());
+  });
+
+  it("keeps the replay-completion reveal callback when queued grids collapse", async () => {
+    const writeCallbacks: Array<() => void> = [];
+    const resize = vi.fn();
+    const pipeline = createTerminalOutputPipeline({
+      resize,
+      write: (_data, callback) => writeCallbacks.push(callback),
+    });
+    const reveal = vi.fn();
+
+    pipeline.push(Buffer.from("pending replay output"), () => undefined);
+    await Promise.resolve();
+    pipeline.push(
+      Buffer.from(createTerminalGridMarker({ cols: 51, rows: 47 })),
+      () => undefined,
+    );
+    pipeline.setGrid(51, 47, reveal);
+    pipeline.push(
+      Buffer.from(createTerminalGridMarker({ cols: 51, rows: 48 })),
+      () => undefined,
+    );
+    writeCallbacks.shift()?.();
+
+    await vi.waitFor(() => expect(reveal).toHaveBeenCalledOnce());
+    expect(resize).toHaveBeenLastCalledWith(51, 48);
+  });
+
+  it("splits markers across output chunks before writing them to xterm", async () => {
+    const terminal = new Terminal({ cols: 30, rows: 6 });
+    const pipeline = createTerminalOutputPipeline(terminal);
+    const markerBytes = Buffer.from(
+      createTerminalGridMarker({ cols: 51, rows: 12 }),
+    );
+    const splitAt = Math.floor(markerBytes.length / 2);
+    await Promise.all([
+      new Promise<void>((resolve) =>
+        pipeline.push(
+          Buffer.concat([
+            Buffer.from("before"),
+            markerBytes.subarray(0, splitAt),
+          ]),
+          resolve,
+        ),
+      ),
+      new Promise<void>((resolve) =>
+        pipeline.push(
+          Buffer.concat([markerBytes.subarray(splitAt), Buffer.from("after")]),
+          resolve,
+        ),
+      ),
+    ]);
+    expect({ cols: terminal.cols, rows: terminal.rows }).toEqual({
+      cols: 51,
+      rows: 12,
+    });
+    const rendered = Array.from(
+      { length: terminal.buffer.active.length },
+      (_, index) =>
+        terminal.buffer.active.getLine(index)?.translateToString(true),
+    ).join("\n");
+    expect(rendered).toContain("beforeafter");
+    terminal.dispose();
+  });
+
+  it("uses each grid around two markers in one chunk", async () => {
+    const terminal = new Terminal({ cols: 30, rows: 6 });
+    const pipeline = createTerminalOutputPipeline(terminal);
+    const input = `${createTerminalGridMarker({ cols: 12, rows: 5 })}A${"a".repeat(11)}\r\n${createTerminalGridMarker({ cols: 22, rows: 8 })}B${"b".repeat(21)}`;
+    await new Promise<void>((resolve) =>
+      pipeline.push(Buffer.from(input), resolve),
+    );
+    expect({ cols: terminal.cols, rows: terminal.rows }).toEqual({
+      cols: 22,
+      rows: 8,
+    });
+    const rendered = Array.from(
+      { length: terminal.buffer.active.length },
+      (_, index) =>
+        terminal.buffer.active.getLine(index)?.translateToString(true),
+    ).join("\n");
+    expect(rendered).toContain("Aaaaaaaaaaaa");
+    expect(rendered).toContain("Bbbbbbbbbbbbbbbbbbbbbb");
+    terminal.dispose();
+  });
+
+  it("does not release later output reentrantly before a grid resize returns", async () => {
+    const terminal = new Terminal({ cols: 30, rows: 6 });
+    const pipeline = createTerminalOutputPipeline(terminal);
+    let resizing = false;
+    let writeDuringResize = false;
+    const originalWrite = terminal.write.bind(terminal);
+    terminal.write = ((data: string | Uint8Array, callback?: () => void) => {
+      if (resizing) writeDuringResize = true;
+      originalWrite(data, callback);
+    }) as typeof terminal.write;
+    const originalResize = terminal.resize.bind(terminal);
+    terminal.resize = (cols: number, rows: number) => {
+      resizing = true;
+      originalResize(cols, rows);
+      pipeline.push(Buffer.from("reentrant output"), () => undefined);
+      resizing = false;
+    };
+    await new Promise<void>((resolve) =>
+      pipeline.push(
+        Buffer.from(
+          `${createTerminalGridMarker({ cols: 51, rows: 12 })}after marker`,
+        ),
+        resolve,
+      ),
+    );
+    await new Promise<void>((resolve) => terminal.write("", resolve));
+    expect(writeDuringResize).toBe(false);
+    expect(terminal.cols).toBe(51);
+    expect(
+      Array.from({ length: terminal.buffer.active.length }, (_, index) =>
+        terminal.buffer.active.getLine(index)?.translateToString(true),
+      ).join("\n"),
+    ).toContain("reentrant output");
+    terminal.dispose();
+  });
+
+  it("queues markerless output writes without waiting per chunk", async () => {
+    const terminal = new Terminal({ cols: 80, rows: 24 });
+    const pipeline = createTerminalOutputPipeline(terminal);
+    let callbacks = 0;
+    let writeCalls = 0;
+    const originalWrite = terminal.write.bind(terminal);
+    terminal.write = ((data: string | Uint8Array, callback?: () => void) => {
+      writeCalls += 1;
+      originalWrite(data, () => {
+        callbacks += 1;
+        callback?.();
+      });
+    }) as typeof terminal.write;
+    const data = new Uint8Array(2 * 1024 * 1024).fill(120);
+    const chunks = Array.from({ length: 32 }, (_, index) =>
+      data.subarray(index * 65536, (index + 1) * 65536),
+    );
+    const settled = Promise.all(
+      chunks.map(
+        (chunk) =>
+          new Promise<void>((resolve) => pipeline.push(chunk, resolve)),
+      ),
+    );
+    expect(callbacks).toBe(0);
+    expect(writeCalls).toBe(32);
+    await settled;
+    expect(callbacks).toBe(32);
+    terminal.dispose();
+  });
+
+  it("keeps unknown grid OSC invisible to an older stock xterm", async () => {
+    const withMarker = new Terminal({ cols: 12, rows: 3 });
+    const withoutMarker = new Terminal({ cols: 12, rows: 3 });
+    const marker = createTerminalGridMarker({ cols: 40, rows: 8 });
+    await new Promise<void>((resolve) =>
+      withMarker.write(`${marker}visible text`, resolve),
+    );
+    await new Promise<void>((resolve) =>
+      withoutMarker.write("visible text", resolve),
+    );
+    const visibleText = (terminal: Terminal) =>
+      Array.from({ length: terminal.buffer.active.length }, (_, index) =>
+        terminal.buffer.active.getLine(index)?.translateToString(),
+      );
+    expect(withMarker.cols).toBe(12);
+    expect(visibleText(withMarker)).toEqual(visibleText(withoutMarker));
+    withMarker.dispose();
+    withoutMarker.dispose();
+  });
+
+  it("leaves the grid unchanged for a stock daemon stream without markers", async () => {
+    const terminal = new Terminal({ cols: 30, rows: 7 });
+    const registration = registerTerminalGridOscHandler(
+      terminal,
+      () => undefined,
+    );
+    await new Promise<void>((resolve) =>
+      terminal.write("legacy output", resolve),
+    );
+    expect({ cols: terminal.cols, rows: terminal.rows }).toEqual({
+      cols: 30,
+      rows: 7,
+    });
+    expect(terminal.buffer.active.getLine(0)?.translateToString()).toContain(
+      "legacy output",
+    );
+    registration.dispose();
+    terminal.dispose();
+  });
+
   it("finishes rendering many retained chunks before the exit notice", async () => {
     const terminal = new Terminal({ cols: 80, rows: 24 });
     const session = {
@@ -287,9 +704,7 @@ describe("terminal output encoding", () => {
       lastUserInputAt: null,
     } satisfies TerminalSession;
     const chunks = Array.from({ length: 1_024 }, (_, index) =>
-      new TextEncoder().encode(
-        index === 1_023 ? "xFINAL-RETAINED-CHUNK" : "x",
-      ),
+      new TextEncoder().encode(index === 1_023 ? "xFINAL-RETAINED-CHUNK" : "x"),
     );
 
     await writeRetainedTerminalOutput({
@@ -430,6 +845,7 @@ describe("terminal output encoding", () => {
     const forward = (data: string) =>
       forwardTerminalData({
         data,
+        isUserInput: true,
         onInput,
         onUserInput,
         replayWriteState: { suppressedWriteCount: 0 },
@@ -454,6 +870,7 @@ describe("terminal output encoding", () => {
     terminal.onData((data) => {
       forwardTerminalData({
         data,
+        isUserInput: false,
         onInput,
         replayWriteState,
         sessionStatus: "running",
@@ -489,6 +906,127 @@ describe("terminal output encoding", () => {
       "\u001b[1;1R",
     );
     expect(replayWriteState.suppressedWriteCount).toBe(0);
+    terminal.dispose();
+  });
+
+  it("keeps keystrokes typed while replayed output is still parsing, and still drops the replay's protocol replies", async () => {
+    const terminal = new Terminal({ cols: 80, rows: 24 });
+    const sent: string[] = [];
+    const replayWriteState = { suppressedWriteCount: 0 };
+    const forwarding = attachTerminalInputForwarding({
+      onData: (data, isUserInput) =>
+        forwardTerminalData({
+          data,
+          isUserInput,
+          onInput: (dataBase64) =>
+            sent.push(Buffer.from(dataBase64, "base64").toString("utf8")),
+          replayWriteState,
+          sessionStatus: "running",
+        }),
+      terminal,
+    });
+
+    writeTerminalOutput({
+      data: "\u001b[6nreplayed screen\u001b[6n",
+      isReplay: true,
+      onParsed: () => undefined,
+      replayWriteState,
+      terminal,
+    });
+    expect(replayWriteState.suppressedWriteCount).toBe(1);
+    terminal.input("T", true);
+    terminal.input("yped", true);
+    await new Promise<void>((resolve) => terminal.write("", resolve));
+    terminal.input("\r", true);
+
+    expect(replayWriteState.suppressedWriteCount).toBe(0);
+    expect(sent).toEqual(["T", "yped", "\r"]);
+
+    writeTerminalOutput({
+      data: "\u001b[6n",
+      isReplay: false,
+      onParsed: () => undefined,
+      replayWriteState,
+      terminal,
+    });
+    await new Promise<void>((resolve) => terminal.write("", resolve));
+    expect(sent).toEqual(["T", "yped", "\r", "\u001b[1;16R"]);
+    forwarding.dispose();
+    terminal.dispose();
+  });
+
+  it("does not treat a replay's protocol reply as user input after a keystroke", async () => {
+    const terminal = new Terminal({ cols: 80, rows: 24 });
+    const sent: string[] = [];
+    const replayWriteState = { suppressedWriteCount: 0 };
+    const forwarding = attachTerminalInputForwarding({
+      onData: (data, isUserInput) =>
+        forwardTerminalData({
+          data,
+          isUserInput,
+          onInput: (dataBase64) =>
+            sent.push(Buffer.from(dataBase64, "base64").toString("utf8")),
+          replayWriteState,
+          sessionStatus: "running",
+        }),
+      terminal,
+    });
+
+    terminal.input("a", true);
+    writeTerminalOutput({
+      data: "\u001b[6n",
+      isReplay: true,
+      onParsed: () => undefined,
+      replayWriteState,
+      terminal,
+    });
+    await new Promise<void>((resolve) => terminal.write("", resolve));
+
+    expect(sent).toEqual(["a"]);
+    forwarding.dispose();
+    terminal.dispose();
+  });
+
+  it("drops all input during a replay, as before, when xterm no longer exposes the user-input signal", async () => {
+    const terminal = new Terminal({ cols: 80, rows: 24 });
+    const core: unknown = Reflect.get(terminal, "_core");
+    const coreService: unknown =
+      typeof core === "object" && core !== null
+        ? Reflect.get(core, "coreService")
+        : undefined;
+    if (typeof coreService !== "object" || coreService === null) {
+      throw new Error("Expected xterm to keep its core service");
+    }
+    Object.defineProperty(coreService, "onUserInput", { value: undefined });
+    expect(subscribeToTerminalUserInput(terminal, () => undefined)).toBeNull();
+    const sent: string[] = [];
+    const replayWriteState = { suppressedWriteCount: 0 };
+    const forwarding = attachTerminalInputForwarding({
+      onData: (data, isUserInput) =>
+        forwardTerminalData({
+          data,
+          isUserInput,
+          onInput: (dataBase64) =>
+            sent.push(Buffer.from(dataBase64, "base64").toString("utf8")),
+          replayWriteState,
+          sessionStatus: "running",
+        }),
+      terminal,
+    });
+
+    writeTerminalOutput({
+      data: "\u001b[6nreplayed screen",
+      isReplay: true,
+      onParsed: () => undefined,
+      replayWriteState,
+      terminal,
+    });
+    terminal.input("lost", true);
+    await new Promise<void>((resolve) => terminal.write("", resolve));
+    terminal.input("kept", true);
+
+    expect(sent).toEqual(["kept"]);
+    forwarding.dispose();
     terminal.dispose();
   });
 

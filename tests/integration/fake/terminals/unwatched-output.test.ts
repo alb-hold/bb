@@ -1,4 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
+import {
+  createTerminalGridMarker,
+  createTerminalGridMarkerScanner,
+} from "@bb/domain";
 import { terminalServerMessageSchema } from "@bb/server-contract";
 import type { TerminalServerMessage } from "@bb/server-contract";
 import { withHarness, type IntegrationHarness } from "../../helpers/harness.js";
@@ -18,6 +22,8 @@ interface BrowserTerminal {
   bytes(): number;
   chunks: OutputChunk[];
   close(): void;
+  gridMarkers(): { cols: number; rows: number }[];
+  rawText(): string;
   send(message: object): void;
   text(): string;
   waitFor(predicate: (text: string) => boolean): Promise<void>;
@@ -82,10 +88,19 @@ async function attachBrowser(
   const chunks: OutputChunk[] = [];
   let byteCount = 0;
   let acking = false;
-  const text = () =>
-    Buffer.concat(
+  const decodedOutput = () => {
+    const raw = Buffer.concat(
       chunks.map((chunk) => Buffer.from(chunk.dataBase64, "base64")),
     ).toString("utf8");
+    const scanner = createTerminalGridMarkerScanner();
+    const result = scanner.push(raw);
+    return {
+      raw,
+      text: `${result.text}${scanner.flush()}`,
+      markers: result.markers,
+    };
+  };
+  const text = () => decodedOutput().text;
   let attached: BrowserTerminal["attached"] | null = null;
   socket.addEventListener("message", (event) => {
     const message = terminalServerMessageSchema.parse(
@@ -121,6 +136,8 @@ async function attachBrowser(
     bytes: () => byteCount,
     chunks,
     close: () => socket.close(),
+    gridMarkers: () => decodedOutput().markers,
+    rawText: () => decodedOutput().raw,
     send: (message) => socket.send(JSON.stringify(message)),
     text,
     waitFor: (predicate) =>
@@ -242,6 +259,12 @@ describe.sequential("terminal output nobody is watching", () => {
       await first.waitFor((text) => text.includes("FIRST_DONE"));
       assertContiguous(first.chunks, 0);
       const expectedFirst = numbers(1, 5000);
+      const initialGridMarker = createTerminalGridMarker({
+        cols: 120,
+        rows: 40,
+      });
+      expect(first.rawText().startsWith(initialGridMarker)).toBe(true);
+      expect(first.gridMarkers()[0]).toEqual({ cols: 120, rows: 40 });
       expect(first.text().startsWith(expectedFirst)).toBe(true);
 
       first.send({ type: "input", dataBase64: inputBase64("ping\n") });

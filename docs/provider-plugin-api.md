@@ -191,7 +191,8 @@ terminal option; core never names a provider for it. The declaration is data
 the bb CLI runs on the thread's host: the `executable`, `launchArgs` placed
 first on every launch (no tokens; Codex passes `--no-daemon` so its session
 lives in the terminal's own process and is free for chat once the CLI exits,
-and both Claude Code and Codex pass their permission-bypass flag so a native
+and `--no-alt-screen` so its transcript stays in terminal scrollback; both
+Claude Code and Codex pass their permission-bypass flag so a native
 thread runs unattended like a chat thread in full access),
 `modelArgs` placed next when the thread has a model (`{model}`), `imageArgs` added once per image
 attached at creation, after the first prompt of a new session (`{image}` is the image's path on the

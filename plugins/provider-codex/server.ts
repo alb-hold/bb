@@ -83,7 +83,11 @@ export default function plugin(bb: BbPluginApi) {
     composerActions: ["plan", "goal"],
     experimental_nativeTerminal: {
       executable: "codex",
-      launchArgs: ["--no-daemon", "--dangerously-bypass-approvals-and-sandbox"],
+      launchArgs: [
+        "--no-daemon",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--no-alt-screen",
+      ],
       modelArgs: ["-c", 'model="{model}"'],
       experimental_launchEnvArgs: CODEX_POOL_LAUNCH_ENV_ARGS,
       mcp: [

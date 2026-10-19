@@ -8,16 +8,81 @@ import {
   render,
   waitFor,
 } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { toast } from "sonner";
 import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { AppToasterView } from "./AppToasterView";
 import { ArchivedThreadToastDescription } from "./thread/ArchivedThreadToastDescription";
 import { AppToastContent } from "./ui/app-toast";
 
-afterEach(() => {
-  toast.dismiss();
-  cleanup();
+const originalSetTimeout = globalThis.setTimeout.bind(globalThis);
+const originalClearTimeout = globalThis.clearTimeout.bind(globalThis);
+let pendingSonnerTimeouts = new Map<
+  Parameters<typeof globalThis.clearTimeout>[0],
+  () => void
+>();
+
+beforeEach(() => {
+  pendingSonnerTimeouts = new Map();
+  vi.spyOn(globalThis, "setTimeout").mockImplementation(
+    (handler, timeout, ...args) => {
+      const isSonnerTimeout =
+        new Error().stack?.includes("sonner/dist/index.mjs") ?? false;
+      if (!isSonnerTimeout || typeof handler !== "function") {
+        return originalSetTimeout(handler, timeout, ...args);
+      }
+      let timeoutId: ReturnType<typeof setTimeout>;
+      const wrappedHandler = (...handlerArgs: Parameters<typeof handler>) => {
+        pendingSonnerTimeouts.delete(timeoutId);
+        handler(...handlerArgs);
+      };
+      timeoutId = originalSetTimeout(wrappedHandler, timeout, ...args);
+      pendingSonnerTimeouts.set(timeoutId, () => wrappedHandler());
+      return timeoutId;
+    },
+  );
+  vi.spyOn(globalThis, "clearTimeout").mockImplementation((timeoutId) => {
+    pendingSonnerTimeouts.delete(timeoutId);
+    return originalClearTimeout(timeoutId);
+  });
+});
+
+async function drainSonnerTimeouts() {
+  await act(async () => {
+    while (pendingSonnerTimeouts.size > 0) {
+      const next = pendingSonnerTimeouts.entries().next();
+      if (next.done) {
+        break;
+      }
+      const [timeoutId, runTimeout] = next.value;
+      originalClearTimeout(timeoutId);
+      runTimeout();
+      await Promise.resolve();
+    }
+  });
+}
+
+afterEach(async () => {
+  try {
+    if (vi.isFakeTimers()) {
+      await act(async () => {
+        await vi.runOnlyPendingTimersAsync();
+      });
+    }
+    await drainSonnerTimeouts();
+    cleanup();
+    toast.dismiss();
+    await drainSonnerTimeouts();
+    expect(pendingSonnerTimeouts.size).toBe(0);
+    if (vi.isFakeTimers()) {
+      expect(vi.getTimerCount()).toBe(0);
+    }
+  } finally {
+    if (vi.isFakeTimers()) {
+      vi.useRealTimers();
+    }
+    vi.restoreAllMocks();
+  }
 });
 
 async function renderToaster(isCompactViewport: boolean) {
@@ -116,6 +181,7 @@ describe("AppToaster", () => {
     "dismisses a compact toast to the %s",
     async (_name, startX, endX) => {
       await renderToaster(true);
+      vi.useFakeTimers();
       const toastElement = document.querySelector<HTMLElement>(
         "[data-sonner-toast]",
       );
@@ -126,9 +192,10 @@ describe("AppToaster", () => {
 
       swipeToast(toastElement, 1, startX, 100, endX, 100);
 
-      await waitFor(() => {
-        expect(document.querySelector("[data-sonner-toast]")).toBeNull();
+      await act(async () => {
+        await vi.runOnlyPendingTimersAsync();
       });
+      expect(document.querySelector("[data-sonner-toast]")).toBeNull();
     },
   );
 
