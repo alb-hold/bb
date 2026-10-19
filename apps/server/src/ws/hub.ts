@@ -431,12 +431,11 @@ export class NotificationHub implements DbNotifier {
       if (previousSockets?.size === 0)
         this.deviceHandoffClientSocketsByHash.delete(previousHash);
     }
-    const presentedHash = presentedToken
-      ? createHash("sha256").update(presentedToken).digest("hex")
-      : null;
+    const presentedHash = this.deviceHandoffHashForWellFormedToken(
+      presentedToken ?? undefined,
+    );
     const token =
-      presentedHash !== null &&
-      this.deviceHandoffDeviceByHash.has(presentedHash)
+      presentedHash !== null
         ? presentedToken!
         : randomBytes(16).toString("base64url");
     const deviceHash = createHash("sha256").update(token).digest("hex");
@@ -518,8 +517,22 @@ export class NotificationHub implements DbNotifier {
 
   private deviceHandoffHashForToken(token: string | undefined): string | null {
     if (token === undefined) return null;
-    const hash = createHash("sha256").update(token).digest("hex");
-    return this.deviceHandoffDeviceByHash.has(hash) ? hash : null;
+    const hash = this.deviceHandoffHashForWellFormedToken(token);
+    if (hash === null) return null;
+    if (!this.deviceHandoffDeviceByHash.has(hash)) {
+      this.deviceHandoffDeviceByHash.set(hash, { label: "BB device" });
+    }
+    return hash;
+  }
+
+  private deviceHandoffHashForWellFormedToken(
+    token: string | undefined,
+  ): string | null {
+    if (token === undefined || !/^[A-Za-z0-9_-]{22}$/.test(token)) return null;
+    const bytes = Buffer.from(token, "base64url");
+    if (bytes.length !== 16 || bytes.toString("base64url") !== token)
+      return null;
+    return createHash("sha256").update(token).digest("hex");
   }
 
   private pruneDeviceHandoffSubmitters(now: number): void {
