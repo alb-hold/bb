@@ -194,6 +194,91 @@ describe("retained terminal output replay", () => {
     expect(read(batched)).toEqual(expected);
   });
 
+  it("matches the per-chunk path when leading duplicates let a later prune delete the session's expired row", () => {
+    const replayNow = 100 + TERMINAL_OUTPUT_RETENTION_MS;
+    const run = (mode: "per-chunk" | "batched") => {
+      const { db, host, terminal } = setup();
+      const otherHosts = [0, 1, 2].map((index) =>
+        upsertHost(db, noopNotifier, { name: `other ${index}` }),
+      );
+      for (let index = 0; index < 300; index += 1) {
+        const otherHost = otherHosts[index % 3] ?? host;
+        const other = createTerminalSession(db, {
+          cols: 80,
+          daemonSessionId: null,
+          environmentId: null,
+          hostId: otherHost.id,
+          initialCwd: "/tmp",
+          rows: 24,
+          status: "running",
+          threadId: null,
+          title: `other ${index}`,
+          now: 1,
+        });
+        appendRetainedTerminalOutputChunk(db, {
+          hostId: otherHost.id,
+          terminalSessionId: other.id,
+          chunk: chunkOf(0, `other ${index}`),
+          now: 2,
+        });
+        markRetainedTerminalOutputExited(db, other.id, otherHost.id, 2);
+      }
+      for (const chunk of filled(0, 3, 64)) {
+        appendRetainedTerminalOutputChunk(db, {
+          hostId: host.id,
+          terminalSessionId: terminal.id,
+          chunk,
+          now: 5,
+        });
+      }
+      markRetainedTerminalOutputExited(db, terminal.id, host.id, 10);
+      const replay = [
+        chunkOf(0, "replayed 0"),
+        chunkOf(1, "replayed 1"),
+        chunkOf(2, "replayed 2"),
+        chunkOf(3, "new 3"),
+      ];
+      if (mode === "batched") {
+        appendRetainedTerminalOutputChunks(db, {
+          hostId: host.id,
+          terminalSessionId: terminal.id,
+          chunks: replay,
+          now: replayNow,
+        });
+      } else {
+        for (const chunk of replay) {
+          appendRetainedTerminalOutputChunk(db, {
+            hostId: host.id,
+            terminalSessionId: terminal.id,
+            chunk,
+            now: replayNow,
+          });
+        }
+      }
+      const remainingOthers = db.$client
+        .prepare("SELECT COUNT(*) AS count FROM fork_terminal_output WHERE host_id != ?")
+        .get(host.id) as { count: number };
+      const own = db.$client
+        .prepare(
+          "SELECT chunks_json AS chunksJson, byte_length AS byteLength, retained_at AS retainedAt, expires_at AS expiresAt FROM fork_terminal_output WHERE terminal_session_id = ?",
+        )
+        .get(terminal.id);
+      return { remainingOthers: remainingOthers.count, own };
+    };
+    const reference = run("per-chunk");
+    expect(reference.remainingOthers).toBe(0);
+    expect(reference.own).toEqual({
+      chunksJson: JSON.stringify([
+        { chunk: chunkOf(2, "replayed 2"), retainedAt: replayNow },
+        { chunk: chunkOf(3, "new 3"), retainedAt: replayNow },
+      ]),
+      byteLength: 15,
+      retainedAt: replayNow,
+      expiresAt: null,
+    });
+    expect(run("batched")).toEqual(reference);
+  });
+
   function seededRandom(seed: number) {
     let state = seed >>> 0;
     return (limit: number) => {

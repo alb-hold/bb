@@ -141,7 +141,32 @@ export function appendRetainedTerminalOutputChunks(
       (total, entry) => total + chunkBytes(entry.chunk),
       0,
     );
-    for (const chunk of args.chunks) {
+    let ownRowExpired =
+      existing !== undefined &&
+      existing.expiresAt !== null &&
+      existing.expiresAt <= args.now;
+    for (const [index, chunk] of args.chunks.entries()) {
+      if (
+        index > 0 &&
+        !appended &&
+        ownRowExpired &&
+        lastPruned === PRUNE_BATCH_ROWS
+      ) {
+        lastPruned = pruneRetainedTerminalOutput(db, args.now);
+        pruneCalls += 1;
+        const ownRow = db.$client
+          .prepare(
+            `SELECT 1 AS present FROM fork_terminal_output
+             WHERE terminal_session_id = ? AND host_id = ?`,
+          )
+          .get(args.terminalSessionId, args.hostId);
+        if (ownRow === undefined) {
+          chunks.length = 0;
+          seenSequences.clear();
+          bytes = 0;
+          ownRowExpired = false;
+        }
+      }
       if (seenSequences.has(chunk.seq)) continue;
       seenSequences.add(chunk.seq);
       appended = true;
