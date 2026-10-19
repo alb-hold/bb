@@ -20,6 +20,7 @@ import {
   DEVICE_HANDOFF_CLIENT_TOKEN_HEADER,
   DEVICE_HANDOFF_DEVICE_STORAGE_KEY,
 } from "@bb/server-contract";
+import { turnScope } from "@bb/domain";
 import { createNodeBbSdk } from "@bb/sdk/node";
 import {
   createTestAppHarness,
@@ -33,9 +34,11 @@ import {
   seedThread,
   seedThreadFixture,
   seedThreadRuntimeState,
+  seedEvent,
   seedTurnStarted,
 } from "../helpers/seed.js";
 import { getActiveTurnId } from "../../src/services/threads/thread-events.js";
+import { applyLoggedThreadLifecycleEvent } from "../../src/services/threads/lifecycle-outcome.js";
 import {
   EMPTY_WORKSPACE_AGENT_CONTEXT,
   registerHostRpcResponder,
@@ -206,6 +209,32 @@ function sendRealtime(
   message: Record<string, unknown>,
 ): void {
   socket.send(JSON.stringify(message));
+}
+
+function postThreadSend(
+  server: Pick<TestAppHarness, "app">,
+  args: {
+    threadId: string;
+    token: string;
+    text: string;
+    mode: "auto" | "steer";
+  },
+): Promise<Response> {
+  return server.app.request(`/api/v1/threads/${args.threadId}/send`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      [DEVICE_HANDOFF_CLIENT_TOKEN_HEADER]: args.token,
+    },
+    body: JSON.stringify({
+      input: [{ type: "text", text: args.text }],
+      mode: args.mode,
+      model: "gpt-5",
+      permissionMode: "full",
+      reasoningLevel: "medium",
+      serviceTier: "default",
+    }),
+  });
 }
 
 function recordThreadHandoffSubmitter(
@@ -2500,6 +2529,362 @@ describe("device handoff websocket acknowledgement", () => {
     } finally {
       olderDevice.socket.close();
       coldStartPhone?.socket.close();
+      rpc.unregister();
+      await server.close();
+    }
+  });
+
+  it("routes active-turn handoffs to the device that most recently sent through /send", async () => {
+    const server = await startTestServer();
+    const { host, session, environment, thread } = seedThreadFixture(server, {
+      thread: { status: "idle" },
+    });
+    seedThreadRuntimeState(server.deps, {
+      environmentId: environment.id,
+      providerThreadId: "provider-thread-steer-rebinding",
+      threadId: thread.id,
+    });
+    const rpc = registerHostRpcResponder(server, {
+      hostId: host.id,
+      sessionId: session.id,
+      handle: ({ command }) => {
+        if (command.type === "host.read_workspace_agent_context") {
+          return { ok: true, result: EMPTY_WORKSPACE_AGENT_CONTEXT };
+        }
+        if (command.type === "turn.submit") {
+          return { ok: true, result: { trace: { spans: [] } } };
+        }
+        return {
+          ok: false,
+          errorCode: "unsupported_test_command",
+          errorMessage: `Unhandled test RPC ${command.type}`,
+        };
+      },
+    });
+    const origin = `http://127.0.0.1:${new URL(server.baseUrl).port}`;
+    const phone = await connectRealtimeWithToken(server.baseUrl, { origin });
+    const desktop = await connectRealtimeWithToken(server.baseUrl, { origin });
+    const subscribe = async (socket: WebSocket) => {
+      sendRealtime(socket, {
+        type: "subscribe",
+        target: { kind: "thread-detail", threadId: thread.id },
+      });
+      sendRealtime(socket, {
+        type: "device-handoff-view",
+        threadId: thread.id,
+        terminalSessionId: null,
+      });
+      const ready = nextRealtimeMessage(socket, "pong");
+      sendRealtime(socket, { type: "ping" });
+      await ready;
+    };
+    try {
+      await subscribe(phone.socket);
+      await subscribe(desktop.socket);
+      const turnSubmitRequestId = (index: number): string => {
+        const commands = rpc.requests.flatMap(({ command }) =>
+          command.type === "turn.submit" ? [command] : [],
+        );
+        const requestId = commands[index]?.requestId;
+        expect(requestId).toBeTruthy();
+        return requestId!;
+      };
+      const phoneStart = await postThreadSend(server, {
+        threadId: thread.id,
+        token: phone.token,
+        text: "Phone starts the turn",
+        mode: "auto",
+      });
+      expect(phoneStart.status, await phoneStart.clone().text()).toBe(200);
+      await expect(phoneStart.json()).resolves.toMatchObject({
+        delivery: "sent",
+      });
+      const phoneTurnId = "turn-phone-started-device-binding";
+      seedTurnStarted(server.deps, {
+        environmentId: environment.id,
+        providerThreadId: "provider-thread-steer-rebinding",
+        threadId: thread.id,
+        turnId: phoneTurnId!,
+      });
+      seedEvent(server.deps, {
+        threadId: thread.id,
+        environmentId: environment.id,
+        providerThreadId: "provider-thread-steer-rebinding",
+        sequence: 100,
+        type: "turn/input/accepted",
+        scope: turnScope(phoneTurnId!),
+        data: { clientRequestId: turnSubmitRequestId(0) },
+      });
+      expect(getActiveTurnId({ db: server.deps.db }, thread.id)).toBe(
+        phoneTurnId,
+      );
+
+      const sendHandoff = async (
+        text: string,
+        recipient: typeof phone | typeof desktop,
+        nonRecipient: typeof phone | typeof desktop,
+      ) => {
+        const recipientFrame = nextRealtimeMessage(
+          recipient.socket,
+          "device-handoff",
+        );
+        const response = await server.app.request(
+          "/api/v1/device-handoff",
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              kind: "copy-text",
+              text,
+              origin: { threadId: thread.id, turnId: phoneTurnId },
+            }),
+          },
+        );
+        expect(response.status, await response.clone().text()).toBe(200);
+        await expect(response.json()).resolves.toEqual({ delivered: 1 });
+        await expect(recipientFrame).resolves.toMatchObject({
+          type: "device-handoff",
+          request: { text },
+        });
+        await expectNoRealtimeMessage(nonRecipient.socket, "device-handoff");
+      };
+
+      await sendHandoff("phone started", phone, desktop);
+      const desktopSteer = await postThreadSend(server, {
+        threadId: thread.id,
+        token: desktop.token,
+        text: "Desktop steers the phone turn",
+        mode: "steer",
+      });
+      expect(desktopSteer.status, await desktopSteer.clone().text()).toBe(200);
+      await expect(desktopSteer.json()).resolves.toMatchObject({
+        delivery: "sent",
+      });
+      expect(getActiveTurnId({ db: server.deps.db }, thread.id)).toBe(
+        phoneTurnId,
+      );
+      seedEvent(server.deps, {
+        threadId: thread.id,
+        environmentId: environment.id,
+        providerThreadId: "provider-thread-steer-rebinding",
+        sequence: 200,
+        type: "turn/input/accepted",
+        scope: turnScope(phoneTurnId!),
+        data: { clientRequestId: turnSubmitRequestId(1) },
+      });
+      await sendHandoff("desktop steered", desktop, phone);
+
+      const phoneSteer = await postThreadSend(server, {
+        threadId: thread.id,
+        token: phone.token,
+        text: "Phone steers the same turn again",
+        mode: "steer",
+      });
+      expect(phoneSteer.status, await phoneSteer.clone().text()).toBe(200);
+      await expect(phoneSteer.json()).resolves.toMatchObject({
+        delivery: "sent",
+      });
+      expect(getActiveTurnId({ db: server.deps.db }, thread.id)).toBe(
+        phoneTurnId,
+      );
+      seedEvent(server.deps, {
+        threadId: thread.id,
+        environmentId: environment.id,
+        providerThreadId: "provider-thread-steer-rebinding",
+        sequence: 300,
+        type: "turn/input/accepted",
+        scope: turnScope(phoneTurnId!),
+        data: { clientRequestId: turnSubmitRequestId(2) },
+      });
+      await sendHandoff("phone steered again", phone, desktop);
+      expect(
+        rpc.requests.filter(({ command }) => command.type === "turn.submit"),
+      ).toHaveLength(3);
+    } finally {
+      phone.socket.close();
+      desktop.socket.close();
+      rpc.unregister();
+      await server.close();
+    }
+  });
+
+  it("routes a new turn to its sender and rejects the ended turn id", async () => {
+    const server = await startTestServer();
+    const { host, session, environment, thread } = seedThreadFixture(server, {
+      thread: { status: "idle" },
+    });
+    const providerThreadId = "provider-thread-turn-replacement";
+    seedThreadRuntimeState(server.deps, {
+      environmentId: environment.id,
+      providerThreadId,
+      threadId: thread.id,
+    });
+    const rpc = registerHostRpcResponder(server, {
+      hostId: host.id,
+      sessionId: session.id,
+      handle: ({ command }) => {
+        if (command.type === "host.read_workspace_agent_context") {
+          return { ok: true, result: EMPTY_WORKSPACE_AGENT_CONTEXT };
+        }
+        if (command.type === "turn.submit") {
+          return { ok: true, result: { trace: { spans: [] } } };
+        }
+        return {
+          ok: false,
+          errorCode: "unsupported_test_command",
+          errorMessage: `Unhandled test RPC ${command.type}`,
+        };
+      },
+    });
+    const origin = `http://127.0.0.1:${new URL(server.baseUrl).port}`;
+    const phone = await connectRealtimeWithToken(server.baseUrl, { origin });
+    const desktop = await connectRealtimeWithToken(server.baseUrl, { origin });
+    const subscribe = async (socket: WebSocket) => {
+      sendRealtime(socket, {
+        type: "subscribe",
+        target: { kind: "thread-detail", threadId: thread.id },
+      });
+      sendRealtime(socket, {
+        type: "device-handoff-view",
+        threadId: thread.id,
+        terminalSessionId: null,
+      });
+      const ready = nextRealtimeMessage(socket, "pong");
+      sendRealtime(socket, { type: "ping" });
+      await ready;
+    };
+    try {
+      await subscribe(phone.socket);
+      await subscribe(desktop.socket);
+      const turnSubmitRequestId = (index: number): string => {
+        const commands = rpc.requests.flatMap(({ command }) =>
+          command.type === "turn.submit" ? [command] : [],
+        );
+        const requestId = commands[index]?.requestId;
+        expect(requestId).toBeTruthy();
+        return requestId!;
+      };
+      const phoneStart = await postThreadSend(server, {
+        threadId: thread.id,
+        token: phone.token,
+        text: "Phone starts the first turn",
+        mode: "auto",
+      });
+      expect(phoneStart.status, await phoneStart.clone().text()).toBe(200);
+      await expect(phoneStart.json()).resolves.toMatchObject({
+        delivery: "sent",
+      });
+      const oldTurnId = "turn-phone-ended-device-binding";
+      seedTurnStarted(server.deps, {
+        environmentId: environment.id,
+        providerThreadId,
+        threadId: thread.id,
+        turnId: oldTurnId!,
+      });
+      seedEvent(server.deps, {
+        threadId: thread.id,
+        environmentId: environment.id,
+        providerThreadId,
+        sequence: 100,
+        type: "turn/input/accepted",
+        scope: turnScope(oldTurnId!),
+        data: { clientRequestId: turnSubmitRequestId(0) },
+      });
+      expect(getActiveTurnId({ db: server.deps.db }, thread.id)).toBe(oldTurnId);
+      seedEvent(server.deps, {
+        threadId: thread.id,
+        environmentId: environment.id,
+        providerThreadId,
+        sequence: 101,
+        type: "turn/completed",
+        scope: turnScope(oldTurnId!),
+        data: { status: "completed" },
+      });
+      applyLoggedThreadLifecycleEvent(server.deps, {
+        event: { type: "run.succeeded" },
+        threadId: thread.id,
+      });
+      expect(getThread(server.deps.db, thread.id)?.status).toBe("idle");
+      expect(getActiveTurnId({ db: server.deps.db }, thread.id)).toBeNull();
+
+      const desktopStart = await postThreadSend(server, {
+        threadId: thread.id,
+        token: desktop.token,
+        text: "Desktop starts the next turn",
+        mode: "auto",
+      });
+      expect(desktopStart.status, await desktopStart.clone().text()).toBe(200);
+      await expect(desktopStart.json()).resolves.toMatchObject({
+        delivery: "sent",
+      });
+      const currentTurnId = "turn-desktop-started-device-binding";
+      seedTurnStarted(server.deps, {
+        environmentId: environment.id,
+        providerThreadId,
+        threadId: thread.id,
+        turnId: currentTurnId!,
+      });
+      seedEvent(server.deps, {
+        threadId: thread.id,
+        environmentId: environment.id,
+        providerThreadId,
+        sequence: 200,
+        type: "turn/input/accepted",
+        scope: turnScope(currentTurnId!),
+        data: { clientRequestId: turnSubmitRequestId(1) },
+      });
+      expect(getActiveTurnId({ db: server.deps.db }, thread.id)).toBe(
+        currentTurnId,
+      );
+      expect(currentTurnId).not.toBe(oldTurnId);
+
+      const staleTurnHandoff = await server.app.request(
+        "/api/v1/device-handoff",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            kind: "copy-text",
+            text: "old turn payload",
+            origin: { threadId: thread.id, turnId: oldTurnId },
+          }),
+        },
+      );
+      expect(staleTurnHandoff.status).toBe(409);
+      await expect(staleTurnHandoff.json()).resolves.toEqual({
+        code: "device_handoff_turn_mismatch",
+        message: "BB_TURN_ID does not match the thread's current turn",
+      });
+
+      const desktopHandoff = nextRealtimeMessage(
+        desktop.socket,
+        "device-handoff",
+      );
+      const currentTurnHandoff = await server.app.request(
+        "/api/v1/device-handoff",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            kind: "copy-text",
+            text: "desktop current turn",
+            origin: { threadId: thread.id },
+          }),
+        },
+      );
+      expect(currentTurnHandoff.status).toBe(200);
+      await expect(currentTurnHandoff.json()).resolves.toEqual({ delivered: 1 });
+      await expect(desktopHandoff).resolves.toMatchObject({
+        type: "device-handoff",
+        request: { text: "desktop current turn" },
+      });
+      await expectNoRealtimeMessage(phone.socket, "device-handoff");
+      expect(
+        rpc.requests.filter(({ command }) => command.type === "turn.submit"),
+      ).toHaveLength(2);
+    } finally {
+      phone.socket.close();
+      desktop.socket.close();
       rpc.unregister();
       await server.close();
     }

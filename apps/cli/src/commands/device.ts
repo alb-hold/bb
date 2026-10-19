@@ -54,7 +54,7 @@ export function registerDeviceCommands(
     .description("Hand off text and URLs to a device viewing the origin")
     .addHelpText(
       "after",
-      "A thread-only handoff is bound to the device that sent the message starting the thread's current turn; bb finds that turn itself. If BB_TURN_ID is set, it must name that turn, or the request fails with: BB_TURN_ID does not match the thread's current turn. With no current turn (a shell outside an agent turn, or the SDK), it goes to the device that most recently sent a message in the thread, and fails with the existing no-recipient error if none has. A disconnected device can receive its pending handoffs after reconnecting.",
+      "A thread-only handoff goes to the device that most recently sent a message in the thread's current turn, whether it started the turn or steered it. bb finds that turn itself. If BB_TURN_ID is set, it must name that turn, or the request fails with: BB_TURN_ID does not match the thread's current turn. With no current turn, it goes to the device that most recently sent a message in the thread, and fails with the existing no-recipient error if none has. A disconnected device can receive its pending handoffs after reconnecting.",
     );
 
   device
