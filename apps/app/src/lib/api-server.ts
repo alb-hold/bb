@@ -7,7 +7,7 @@ const BASE_URL =
   typeof window === "undefined" ? "http://localhost" : window.location.origin;
 
 const turnSubmissionPath =
-  /^\/api\/v1\/(?:threads(?:\/fork)?|threads\/[^/]+\/(?:send|edit-message|retry|steer|queued-messages(?:\/[^/]+\/send)?))$/u;
+  /^\/api\/v1\/threads(?:\/fork|\/[^/]+\/(?:send|edit-message|retry|steer|queued-messages(?:\/[^/]+\/send)?))?$/u;
 
 export async function fetchWithDeviceHandoffSubmission(
   input: Parameters<typeof fetch>[0],
