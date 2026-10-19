@@ -24,7 +24,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   EMPTY_PLUGIN_UPDATE_STATE,
   type PluginListItem,
+  pluginListQueryOptions,
 } from "@/hooks/queries/plugin-settings-queries";
+import { searchPluginCatalog } from "@/hooks/queries/plugin-catalog-queries";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import { TooltipProvider } from "@bb/shared-ui/tooltip";
 import {
@@ -43,7 +45,11 @@ import {
   pluginFrontendDiagnosticRequiresFailureBanner,
 } from "@/components/tools/PluginDetail";
 import type { PluginCatalogSearchEntry } from "@/hooks/queries/plugin-catalog-queries";
-import { pluginSourceQueryKey } from "@/hooks/queries/query-keys";
+import {
+  pluginCatalogSearchQueryKey,
+  pluginListQueryKey,
+  pluginSourceQueryKey,
+} from "@/hooks/queries/query-keys";
 import { formatAbsoluteDate } from "@/components/plugin/management/plugin-ui";
 import type { PluginFrontendDiagnostic } from "@/lib/plugin-frontend";
 import {
@@ -1290,7 +1296,10 @@ describe("BB Official plugin detail routing", () => {
         }),
       );
 
-      const { wrapper: QueryClientWrapper } = createQueryClientTestHarness();
+      const {
+        queryClient,
+        wrapper: QueryClientWrapper,
+      } = createQueryClientTestHarness();
       render(
         <MemoryRouter
           initialEntries={[installed ? "/plugins?view=installed" : "/plugins"]}
@@ -1304,7 +1313,25 @@ describe("BB Official plugin detail routing", () => {
         { wrapper: QueryClientWrapper },
       );
 
-      const card = await screen.findByRole("button", {
+      const cardQueryKey = installed
+        ? pluginListQueryKey(true)
+        : pluginCatalogSearchQueryKey("");
+      await act(async () => {
+        await queryClient.ensureQueryData(
+          installed
+            ? pluginListQueryOptions({ enabled: true })
+            : {
+                queryKey: cardQueryKey,
+                queryFn: () => searchPluginCatalog(fetch, ""),
+              },
+        );
+      });
+      expect(queryClient.getQueryState(cardQueryKey)?.data).toMatchObject(
+        installed
+          ? [{ id: "github" }]
+          : { entries: [expect.objectContaining({ entryId: "github" })] },
+      );
+      const card = screen.getByRole("button", {
         name: installed
           ? `${pluginName} plugin details`
           : "Open GitHub details",
