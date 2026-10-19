@@ -105,6 +105,17 @@ export function registerDeviceHandoffRoutes(app: Hono, deps: AppDeps): void {
     const activeTurnId = thread
       ? (getActiveTurnId({ db: deps.db }, thread.id) ?? undefined)
       : undefined;
+    if (
+      request.origin.terminalSessionId === undefined &&
+      request.origin.turnId !== undefined &&
+      request.origin.turnId !== activeTurnId
+    ) {
+      throw new ApiError(
+        409,
+        "device_handoff_turn_mismatch",
+        "BB_TURN_ID does not match the thread's current turn",
+      );
+    }
     const turnId =
       activeTurnId !== undefined &&
       (request.origin.turnId === undefined ||

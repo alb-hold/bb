@@ -2528,6 +2528,39 @@ describe("device handoff websocket acknowledgement", () => {
     }
   });
 
+  it("returns a clear error when BB_TURN_ID is not the current turn", async () => {
+    const server = await startTestServer();
+    const { environment, thread } = seedThreadFixture(server, {
+      thread: { status: "active" },
+    });
+    seedTurnStarted(server.deps, {
+      environmentId: environment.id,
+      threadId: thread.id,
+      turnId: "turn-device-handoff-current",
+    });
+    try {
+      const response = await server.app.request("/api/v1/device-handoff", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          kind: "copy-text",
+          text: "wrong turn",
+          origin: {
+            threadId: thread.id,
+            turnId: "turn-device-handoff-stale",
+          },
+        }),
+      });
+      expect(response.status).toBe(409);
+      await expect(response.json()).resolves.toEqual({
+        code: "device_handoff_turn_mismatch",
+        message: "BB_TURN_ID does not match the thread's current turn",
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
   it("binds a turn to a previously issued identity even when no device socket is connected", async () => {
     const server = await startTestServer();
     const { host, session, environment, thread } = seedThreadFixture(server, {

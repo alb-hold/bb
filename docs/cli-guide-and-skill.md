@@ -18,15 +18,16 @@ Keep the discoverable surfaces in sync whenever you add or change a `bb` CLI com
 
 Device handoff is available as `bb device copy [text]` (or stdin) and
 `bb device open <url>`, with SDK methods under `sdk.device.request()`. A
-thread-only handoff is sent only to the device bound to `BB_TURN_ID` when it is
-set; set it to bind to a specific originating turn. Otherwise it goes to the
-device that most recently submitted a message in that thread, and only while
-that device has the thread open. The app generates
-and stores its device id in local storage so it can receive pending handoffs
-after reconnect. If no device has submitted a message in the thread, the
-command fails with: “No device has sent a message in this thread yet; open the
-thread on your phone and send a message, then run the command again.” Handoffs
-are not sent to other viewers. Terminal-bearing handoffs require a linked,
-visible terminal attachment on the target device.
+thread-only handoff is bound to the device that sent the message starting the
+thread's current turn. `bb` finds that turn itself. If `BB_TURN_ID` is set, it
+must name that turn, or the request fails with “BB_TURN_ID does not match the
+thread's current turn”. With no current turn (a shell outside an agent turn, or
+the SDK), it goes to the device that most recently sent a message in the thread,
+and fails with the existing message if none has: “No device has sent a message
+in this thread yet; open the thread on your phone and send a message, then run
+the command again.” The app generates and stores its device id in local storage
+so it can receive pending handoffs after reconnect. Handoffs are not sent to
+other viewers. Terminal-bearing handoffs require a linked, visible terminal
+attachment on the target device.
 
 `bb thread row-status set <key> <value> [--icon <icon>] [--color <color>] [--priority <number>]`, `bb thread row-status clear [<key>]`, and `bb thread row-status list` manage up to eight status chips on the current thread's sidebar row. `bb thread progress <0..1> [--label <text>]` sets its progress bar; `bb thread progress clear` removes it. These commands use `BB_THREAD_ID` and fail outside a thread. `bb thread status <id>` remains an alias for `bb thread show <id>`. Row state clears when a managed turn settles to idle or error, or when a native terminal session closes with process exit or user close. A daemon disconnect does not clear native row state because the terminal may reattach. Explicit clear commands remove the selected state, and a targeted read hides state after 60 minutes without an update as a backstop. The SDK equivalents are `threads.experimental_rowState` and `threads.experimental_updateRowState`.
