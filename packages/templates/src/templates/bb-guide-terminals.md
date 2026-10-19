@@ -52,13 +52,15 @@ Device handoffs
 
 Agent commands and terminal shells can offer text to copy or an HTTP(S) URL to
 open on a device whose WebSocket is admitted by BB's browser request guard.
-Thread-only handoffs go only to the device that most recently sent a message in
-the thread, while that device has the thread open. The app keeps its server-
-issued device id in local storage so the same device receives pending handoffs
-after reconnect. If no device has sent a message in the thread, the command
-fails with a clear error: open the thread on the target device, send a message,
-then run the command again. It does not fall back to other viewers. Handoffs
-with a terminal origin require that device to have a linked, visible terminal
+Thread-only handoffs go to the device bound to `BB_TURN_ID` when it is set;
+otherwise they go only to the device that most recently sent a message in the
+thread, while that device has the thread open. Set `BB_TURN_ID` to bind the
+handoff to a specific originating turn. The app generates and stores its
+device id in local storage so the same device receives pending handoffs after
+reconnect. If no device has sent a message in the thread, the command fails
+with a clear error: open the thread on the target device, send a message, then
+run the command again. It does not fall back to other viewers. Handoffs with a
+terminal origin require that device to have a linked, visible terminal
 attachment. Examples:
 
   bb device copy "text to copy"

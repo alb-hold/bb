@@ -27,6 +27,9 @@ function getOrigin(deps: CommandGroupDeps) {
   const context = deps.getContext();
   const origin = {
     ...(context.threadId === undefined ? {} : { threadId: context.threadId }),
+    ...(process.env.BB_TURN_ID === undefined
+      ? {}
+      : { turnId: process.env.BB_TURN_ID }),
     ...(process.env.BB_TERMINAL_SESSION_ID === undefined
       ? {}
       : { terminalSessionId: process.env.BB_TERMINAL_SESSION_ID }),
@@ -51,7 +54,7 @@ export function registerDeviceCommands(
     .description("Hand off text and URLs to a device viewing the origin")
     .addHelpText(
       "after",
-      "Thread-only handoffs go to the device that most recently sent a message in that thread. If no device has sent one, open the thread on the target device, send a message, then run the command again. A disconnected device can receive its pending handoffs after reconnecting.",
+      "Thread-only handoffs go to the device bound to BB_TURN_ID when it is set; otherwise they go to the device that most recently sent a message in that thread. If no device has sent one, open the thread on the target device, send a message, then run the command again. A disconnected device can receive its pending handoffs after reconnecting.",
     );
 
   device

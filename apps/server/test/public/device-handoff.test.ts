@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { execFile } from "node:child_process";
+import { chmod, copyFile, mkdtemp, rm, writeFile } from "node:fs/promises";
 import http from "node:http";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import WebSocket from "ws";
 import {
   createConnection,
@@ -13,6 +17,7 @@ import {
 } from "@bb/db";
 import { DEVICE_HANDOFF_CLIENT_TOKEN_HEADER } from "@bb/server-contract";
 import { createNodeBbSdk } from "@bb/sdk/node";
+import { createDeviceHandoffIdentityManager } from "../../../app/src/lib/device-handoff-identity.js";
 import {
   createTestAppHarness,
   startTestServer,
@@ -2276,7 +2281,25 @@ describe("device handoff websocket acknowledgement", () => {
     const olderDevice = await connectRealtimeWithToken(server.baseUrl, {
       origin,
     });
-    const phoneDeviceId = "AAECAwQFBgcICQoLDA0ODw";
+    const storedIdentity = new Map<string, string>();
+    vi.stubGlobal("window", {
+      localStorage: {
+        getItem: (key: string) => storedIdentity.get(key) ?? null,
+        setItem: (key: string, value: string) => storedIdentity.set(key, value),
+      },
+      crypto: {
+        getRandomValues: (bytes: Uint8Array) => {
+          bytes.set(Array.from({ length: bytes.length }, (_, index) => index));
+          return bytes;
+        },
+      },
+      btoa: (value: string) => Buffer.from(value, "binary").toString("base64"),
+    });
+    const phoneDeviceIdentity = createDeviceHandoffIdentityManager();
+    const generatedPhoneDeviceId = phoneDeviceIdentity.ensure();
+    expect(generatedPhoneDeviceId).toMatch(/^[A-Za-z0-9_-]{22}$/u);
+    expect([...storedIdentity.values()]).toEqual([generatedPhoneDeviceId]);
+    vi.unstubAllGlobals();
     const olderFrames: Record<string, unknown>[] = [];
     olderDevice.socket.on("message", (data) => {
       olderFrames.push(JSON.parse(data.toString()) as Record<string, unknown>);
@@ -2297,33 +2320,17 @@ describe("device handoff websocket acknowledgement", () => {
       const ready = nextRealtimeMessage(olderDevice.socket, "pong");
       sendRealtime(olderDevice.socket, { type: "ping" });
       await ready;
-      const oldTurn = await server.app.request(
-        `/api/v1/threads/${thread.id}/send`,
-        {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            [DEVICE_HANDOFF_CLIENT_TOKEN_HEADER]: olderDevice.token,
-          },
-          body: JSON.stringify({
-            input: [{ type: "text", text: "Earlier device submitted first" }],
-            mode: "steer",
-            model: "gpt-5",
-            permissionMode: "full",
-            reasoningLevel: "medium",
-            serviceTier: "default",
-          }),
-        },
+      const submitterSpy = vi.spyOn(
+        server.deps.hub,
+        "recordDeviceHandoffTurnSubmitter",
       );
-      expect(oldTurn.status).toBe(200);
-
       const coldPhoneTurn = await server.app.request(
         `/api/v1/threads/${thread.id}/send`,
         {
           method: "POST",
           headers: {
             "content-type": "application/json",
-            [DEVICE_HANDOFF_CLIENT_TOKEN_HEADER]: phoneDeviceId,
+            [DEVICE_HANDOFF_CLIENT_TOKEN_HEADER]: generatedPhoneDeviceId!,
           },
           body: JSON.stringify({
             input: [{ type: "text", text: "Cold-start phone submits now" }],
@@ -2339,10 +2346,18 @@ describe("device handoff websocket acknowledgement", () => {
       await expect(coldPhoneTurn.json()).resolves.toMatchObject({
         delivery: "sent",
       });
+      const phoneBinding = submitterSpy.mock.calls.find(
+        ([token]) => token === generatedPhoneDeviceId,
+      );
+      expect(phoneBinding).toBeDefined();
+      expect(phoneBinding?.[1]).toBe(thread.id);
+      expect(phoneBinding?.[3]).toBe("turn-unknown-device-identity");
+      const phoneTurnId = phoneBinding?.[3];
+      expect(phoneTurnId).toBeDefined();
 
       coldStartPhone = await connectRealtimeWithToken(server.baseUrl, {
         origin,
-        deviceId: phoneDeviceId,
+        deviceId: generatedPhoneDeviceId!,
       });
       const phoneHandoff = nextRealtimeMessage(
         coldStartPhone.socket,
@@ -2361,13 +2376,50 @@ describe("device handoff websocket acknowledgement", () => {
       sendRealtime(coldStartPhone.socket, { type: "ping" });
       await phoneReady;
 
+      seedTurnStarted(server.deps, {
+        environmentId: environment.id,
+        providerThreadId: "provider-thread-unknown-device-identity",
+        threadId: thread.id,
+        turnId: "turn-later-older-device",
+      });
+      const laterOlderTurn = await server.app.request(
+        `/api/v1/threads/${thread.id}/send`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            [DEVICE_HANDOFF_CLIENT_TOKEN_HEADER]: olderDevice.token,
+          },
+          body: JSON.stringify({
+            input: [{ type: "text", text: "Older device submits after phone" }],
+            mode: "steer",
+            model: "gpt-5",
+            permissionMode: "full",
+            reasoningLevel: "medium",
+            serviceTier: "default",
+          }),
+        },
+      );
+      expect(laterOlderTurn.status).toBe(200);
+      await expect(laterOlderTurn.json()).resolves.toMatchObject({
+        delivery: "sent",
+      });
+      const olderBinding = submitterSpy.mock.calls.find(
+        ([token]) => token === olderDevice.token,
+      );
+      expect(olderBinding?.[3]).toBe("turn-later-older-device");
+      submitterSpy.mockRestore();
+
       const handoff = await server.app.request("/api/v1/device-handoff", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           kind: "copy-text",
           text: "must not go to the older device",
-          origin: { threadId: thread.id },
+          origin: {
+            threadId: thread.id,
+            turnId: phoneTurnId!,
+          },
         }),
       });
       expect(handoff.status).toBe(200);
@@ -2383,6 +2435,92 @@ describe("device handoff websocket acknowledgement", () => {
       expect(
         rpc.requests.filter(({ command }) => command.type === "turn.submit"),
       ).toHaveLength(2);
+
+      const shimDirectory = await mkdtemp(
+        join(tmpdir(), "bb-device-handoff-cli-shim-"),
+      );
+      try {
+        const cliBin = resolve(process.cwd(), "../cli/bin");
+        for (const file of ["bb-device-handoff-shim", "open"]) {
+          await copyFile(join(cliBin, file), join(shimDirectory, file));
+          await chmod(join(shimDirectory, file), 0o755);
+        }
+        await writeFile(
+          join(shimDirectory, "bb"),
+          "#!/usr/bin/env node\nconst [, , command, action, url] = process.argv;\nif (command !== 'device' || action !== 'open') process.exit(2);\nconst response = await fetch(process.env.DH_ENDPOINT, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind: 'open-url', url, origin: { threadId: process.env.BB_THREAD_ID, turnId: process.env.BB_TURN_ID } }) });\nprocess.exit(response.ok ? 0 : 1);\n",
+          { mode: 0o755 },
+        );
+        await chmod(join(shimDirectory, "bb"), 0o755);
+        const cliUrl = "https://example.com/cold-start-device-handoff";
+        const phoneCliHandoff = nextRealtimeMessage(
+          coldStartPhone.socket,
+          "device-handoff",
+        );
+        const notifyDeviceHandoff = vi.spyOn(
+          server.deps.hub,
+          "notifyDeviceHandoff",
+        );
+        const cliResult = await new Promise<{
+          code: number;
+          errorMessage: string | null;
+          stderr: string;
+          stdout: string;
+        }>((resolveResult) => {
+          execFile(
+            join(shimDirectory, "open"),
+            [cliUrl],
+            {
+              cwd: shimDirectory,
+              env: {
+                ...process.env,
+                PATH: `${shimDirectory}:${process.env.PATH ?? ""}`,
+                DH_ENDPOINT: `${server.baseUrl}/api/v1/device-handoff`,
+                BB_THREAD_ID: thread.id,
+                BB_TURN_ID: phoneTurnId!,
+              },
+            },
+            (error, stdout, stderr) => {
+              resolveResult({
+                code:
+                  error === null
+                    ? 0
+                    : typeof error.code === "number"
+                      ? error.code
+                      : 1,
+                errorMessage: error?.message ?? null,
+                stderr,
+                stdout,
+              });
+            },
+          );
+        });
+        expect(cliResult, JSON.stringify(cliResult)).toMatchObject({
+          code: 0,
+          stderr: "",
+        });
+        expect(
+          notifyDeviceHandoff.mock.calls.map((call, index) => ({
+            origin: call[0].origin,
+            turnRequestId: call[3],
+            delivered: notifyDeviceHandoff.mock.results[index]?.value,
+          })),
+        ).toEqual([
+          expect.objectContaining({
+            origin: {
+              threadId: thread.id,
+              turnId: phoneTurnId,
+            },
+            delivered: 1,
+          }),
+        ]);
+        await expect(phoneCliHandoff).resolves.toMatchObject({
+          type: "device-handoff",
+          request: { url: cliUrl },
+        });
+        await expectNoRealtimeMessage(olderDevice.socket, "device-handoff");
+      } finally {
+        await rm(shimDirectory, { recursive: true, force: true });
+      }
     } finally {
       olderDevice.socket.close();
       coldStartPhone?.socket.close();
@@ -2444,7 +2582,9 @@ describe("device handoff websocket acknowledgement", () => {
             [DEVICE_HANDOFF_CLIENT_TOKEN_HEADER]: deviceId,
           },
           body: JSON.stringify({
-            input: [{ type: "text", text: "Known device submits while offline" }],
+            input: [
+              { type: "text", text: "Known device submits while offline" },
+            ],
             mode: "steer",
             model: "gpt-5",
             permissionMode: "full",
@@ -2550,7 +2690,9 @@ describe("device handoff websocket acknowledgement", () => {
           [DEVICE_HANDOFF_CLIENT_TOKEN_HEADER]: olderDeviceId,
         },
         body: JSON.stringify({
-          input: [{ type: "text", text: "Older device submitted before restart" }],
+          input: [
+            { type: "text", text: "Older device submitted before restart" },
+          ],
           mode: "steer",
           model: "gpt-5",
           permissionMode: "full",
@@ -2620,10 +2762,10 @@ describe("device handoff websocket acknowledgement", () => {
         delivery: "sent",
       });
 
-      olderDeviceAfterRestart = await connectRealtimeWithToken(
-        server.baseUrl,
-        { origin: restartedOrigin, deviceId: olderDeviceId },
-      );
+      olderDeviceAfterRestart = await connectRealtimeWithToken(server.baseUrl, {
+        origin: restartedOrigin,
+        deviceId: olderDeviceId,
+      });
       phoneAfterRestart = await connectRealtimeWithToken(server.baseUrl, {
         origin: restartedOrigin,
         deviceId: phoneDeviceId,

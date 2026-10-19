@@ -30,6 +30,11 @@ import {
   isDocumentVisible,
   subscribeToDocumentVisibility,
 } from "./document-visibility";
+import {
+  DEVICE_HANDOFF_DEVICE_STORAGE_KEY,
+  ensureDeviceHandoffId,
+  rememberDeviceHandoffId,
+} from "./device-handoff-identity";
 
 type ChangeCallback = (message: ChangedMessage) => void;
 type ThreadOpenCallback = (signal: ThreadOpenSignal) => void;
@@ -60,49 +65,6 @@ export const REALTIME_PING_INTERVAL_MS = 25_000;
 export const REALTIME_PONG_TIMEOUT_MS = 5_000;
 export const REALTIME_RESUME_PONG_TIMEOUT_MS = 1_500;
 export const REALTIME_RESUME_HIDDEN_THRESHOLD_MS = 5_000;
-const DEVICE_HANDOFF_DEVICE_STORAGE_KEY = "bb-device-handoff-device-id";
-let inMemoryDeviceHandoffId: string | null = null;
-
-function generateDeviceHandoffId(): string {
-  const bytes = new Uint8Array(16);
-  window.crypto.getRandomValues(bytes);
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return window
-    .btoa(binary)
-    .replace(/\+/gu, "-")
-    .replace(/\//gu, "_")
-    .replace(/=+$/u, "");
-}
-
-function ensureDeviceHandoffId(): string | null {
-  if (inMemoryDeviceHandoffId !== null) return inMemoryDeviceHandoffId;
-  if (typeof window === "undefined") return null;
-  try {
-    const token = window.localStorage.getItem(
-      DEVICE_HANDOFF_DEVICE_STORAGE_KEY,
-    );
-    if (token !== null && /^[A-Za-z0-9_-]{22}$/u.test(token)) {
-      inMemoryDeviceHandoffId = token;
-      return token;
-    }
-  } catch {
-    inMemoryDeviceHandoffId = null;
-  }
-  let token: string;
-  try {
-    token = generateDeviceHandoffId();
-  } catch {
-    return null;
-  }
-  inMemoryDeviceHandoffId = token;
-  try {
-    window.localStorage.setItem(DEVICE_HANDOFF_DEVICE_STORAGE_KEY, token);
-  } catch {
-    return inMemoryDeviceHandoffId;
-  }
-  return token;
-}
 export const REALTIME_MIN_RECONNECTION_DELAY_MS = 250;
 export const REALTIME_RECONNECTION_DELAY_JITTER_MS = 250;
 
@@ -430,14 +392,14 @@ export class WebSocketManager {
       const tokenChanged =
         this.deviceHandoffClientToken !== clientToken.data.token;
       this.deviceHandoffClientToken = clientToken.data.token;
-      inMemoryDeviceHandoffId = clientToken.data.token;
+      rememberDeviceHandoffId(clientToken.data.token);
       try {
         window.localStorage.setItem(
           DEVICE_HANDOFF_DEVICE_STORAGE_KEY,
           clientToken.data.token,
         );
       } catch {
-        inMemoryDeviceHandoffId = clientToken.data.token;
+        rememberDeviceHandoffId(clientToken.data.token);
       }
       if (tokenChanged) {
         for (const callback of this.deviceHandoffClientTokenCallbacks)
