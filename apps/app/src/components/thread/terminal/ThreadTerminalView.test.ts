@@ -12,6 +12,7 @@ import { createTerminalOutputPipeline } from "./terminal-output-pipeline";
 import {
   buildTerminalThemeFromCssColors,
   applyTerminalFontFamily,
+  attachTerminalInputForwarding,
   captureTerminalContextMenuState,
   encodeTerminalInputChunks,
   handleTerminalServerMessage,
@@ -23,6 +24,7 @@ import {
   observeTerminalFontLoading,
   shouldFocusTerminalAfterAsyncMount,
   startTerminalTouchFocusGesture,
+  subscribeToTerminalUserInput,
   TERMINAL_ALLOW_PROPOSED_API,
   TERMINAL_FONT_FAMILY,
   resolveTerminalFontFamily,
@@ -843,6 +845,7 @@ describe("terminal output encoding", () => {
     const forward = (data: string) =>
       forwardTerminalData({
         data,
+        isUserInput: true,
         onInput,
         onUserInput,
         replayWriteState: { suppressedWriteCount: 0 },
@@ -867,6 +870,7 @@ describe("terminal output encoding", () => {
     terminal.onData((data) => {
       forwardTerminalData({
         data,
+        isUserInput: false,
         onInput,
         replayWriteState,
         sessionStatus: "running",
@@ -902,6 +906,127 @@ describe("terminal output encoding", () => {
       "\u001b[1;1R",
     );
     expect(replayWriteState.suppressedWriteCount).toBe(0);
+    terminal.dispose();
+  });
+
+  it("keeps keystrokes typed while replayed output is still parsing, and still drops the replay's protocol replies", async () => {
+    const terminal = new Terminal({ cols: 80, rows: 24 });
+    const sent: string[] = [];
+    const replayWriteState = { suppressedWriteCount: 0 };
+    const forwarding = attachTerminalInputForwarding({
+      onData: (data, isUserInput) =>
+        forwardTerminalData({
+          data,
+          isUserInput,
+          onInput: (dataBase64) =>
+            sent.push(Buffer.from(dataBase64, "base64").toString("utf8")),
+          replayWriteState,
+          sessionStatus: "running",
+        }),
+      terminal,
+    });
+
+    writeTerminalOutput({
+      data: "\u001b[6nreplayed screen\u001b[6n",
+      isReplay: true,
+      onParsed: () => undefined,
+      replayWriteState,
+      terminal,
+    });
+    expect(replayWriteState.suppressedWriteCount).toBe(1);
+    terminal.input("T", true);
+    terminal.input("yped", true);
+    await new Promise<void>((resolve) => terminal.write("", resolve));
+    terminal.input("\r", true);
+
+    expect(replayWriteState.suppressedWriteCount).toBe(0);
+    expect(sent).toEqual(["T", "yped", "\r"]);
+
+    writeTerminalOutput({
+      data: "\u001b[6n",
+      isReplay: false,
+      onParsed: () => undefined,
+      replayWriteState,
+      terminal,
+    });
+    await new Promise<void>((resolve) => terminal.write("", resolve));
+    expect(sent).toEqual(["T", "yped", "\r", "\u001b[1;16R"]);
+    forwarding.dispose();
+    terminal.dispose();
+  });
+
+  it("does not treat a replay's protocol reply as user input after a keystroke", async () => {
+    const terminal = new Terminal({ cols: 80, rows: 24 });
+    const sent: string[] = [];
+    const replayWriteState = { suppressedWriteCount: 0 };
+    const forwarding = attachTerminalInputForwarding({
+      onData: (data, isUserInput) =>
+        forwardTerminalData({
+          data,
+          isUserInput,
+          onInput: (dataBase64) =>
+            sent.push(Buffer.from(dataBase64, "base64").toString("utf8")),
+          replayWriteState,
+          sessionStatus: "running",
+        }),
+      terminal,
+    });
+
+    terminal.input("a", true);
+    writeTerminalOutput({
+      data: "\u001b[6n",
+      isReplay: true,
+      onParsed: () => undefined,
+      replayWriteState,
+      terminal,
+    });
+    await new Promise<void>((resolve) => terminal.write("", resolve));
+
+    expect(sent).toEqual(["a"]);
+    forwarding.dispose();
+    terminal.dispose();
+  });
+
+  it("drops all input during a replay, as before, when xterm no longer exposes the user-input signal", async () => {
+    const terminal = new Terminal({ cols: 80, rows: 24 });
+    const core: unknown = Reflect.get(terminal, "_core");
+    const coreService: unknown =
+      typeof core === "object" && core !== null
+        ? Reflect.get(core, "coreService")
+        : undefined;
+    if (typeof coreService !== "object" || coreService === null) {
+      throw new Error("Expected xterm to keep its core service");
+    }
+    Object.defineProperty(coreService, "onUserInput", { value: undefined });
+    expect(subscribeToTerminalUserInput(terminal, () => undefined)).toBeNull();
+    const sent: string[] = [];
+    const replayWriteState = { suppressedWriteCount: 0 };
+    const forwarding = attachTerminalInputForwarding({
+      onData: (data, isUserInput) =>
+        forwardTerminalData({
+          data,
+          isUserInput,
+          onInput: (dataBase64) =>
+            sent.push(Buffer.from(dataBase64, "base64").toString("utf8")),
+          replayWriteState,
+          sessionStatus: "running",
+        }),
+      terminal,
+    });
+
+    writeTerminalOutput({
+      data: "\u001b[6nreplayed screen",
+      isReplay: true,
+      onParsed: () => undefined,
+      replayWriteState,
+      terminal,
+    });
+    terminal.input("lost", true);
+    await new Promise<void>((resolve) => terminal.write("", resolve));
+    terminal.input("kept", true);
+
+    expect(sent).toEqual(["kept"]);
+    forwarding.dispose();
     terminal.dispose();
   });
 
