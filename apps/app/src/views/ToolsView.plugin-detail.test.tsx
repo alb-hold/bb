@@ -1331,7 +1331,7 @@ describe("BB Official plugin detail routing", () => {
           ? [{ id: "github" }]
           : { entries: [expect.objectContaining({ entryId: "github" })] },
       );
-      const card = screen.getByRole("button", {
+      const card = await screen.findByRole("button", {
         name: installed
           ? `${pluginName} plugin details`
           : "Open GitHub details",
