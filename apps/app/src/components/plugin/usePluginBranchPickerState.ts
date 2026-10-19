@@ -70,12 +70,24 @@ export function usePluginCheckoutState({
   hostId,
   projectId,
 }: UseCheckoutStateArgs): CheckoutState {
-  const enabled = hostId !== null && projectId !== null;
-  const query = useProjectSourceBranches(projectId ?? undefined, hostId, {
-    enabled,
-    query: "",
-    selectedBranch: "",
+  const navigation = useSidebarNavigation({
+    enabled: hostId === null && projectId !== null,
   });
+  const checkoutHostId = resolvePluginBranchHostId(
+    hostId,
+    navigation.data?.projects.find((project) => project.id === projectId)
+      ?.sources,
+  );
+  const enabled = checkoutHostId !== null && projectId !== null;
+  const query = useProjectSourceBranches(
+    projectId ?? undefined,
+    checkoutHostId,
+    {
+      enabled,
+      query: "",
+      selectedBranch: "",
+    },
+  );
   const checkout = query.data?.checkout;
 
   return useMemo(
