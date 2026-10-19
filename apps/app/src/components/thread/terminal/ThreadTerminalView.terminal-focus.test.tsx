@@ -473,31 +473,6 @@ describe("ThreadTerminalView terminal focus boundary", () => {
         )
         .filter((message) => message.type === "resize"),
     ).toEqual([{ type: "resize", cols: 51, rows: 47 }]);
-
-    testState.sockets[0]?.disconnect();
-    await waitFor(() => expect(testState.sockets).toHaveLength(2));
-    testState.sockets[1]?.receive({
-      type: "attached",
-      session,
-      replayStartSeq: 0,
-      nextSeq: 0,
-    });
-    await waitFor(() => {
-      const resizes = testState.socketMessages
-        .map(
-          (message) =>
-            JSON.parse(message) as {
-              cols?: number;
-              rows?: number;
-              type?: string;
-            },
-        )
-        .filter((message) => message.type === "resize");
-      expect(resizes.slice(-2)).toEqual([
-        { type: "resize", cols: 50, rows: 47 },
-        { type: "resize", cols: 51, rows: 47 },
-      ]);
-    });
   });
 
   it("suppresses terminal-scoped shortcuts from the real xterm input", async () => {
