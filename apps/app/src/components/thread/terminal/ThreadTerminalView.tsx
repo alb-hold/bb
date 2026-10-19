@@ -465,6 +465,7 @@ interface TerminalOutputWriteArgs {
 
 interface ForwardTerminalDataArgs {
   data: string;
+  isUserInput: boolean;
   onInput: (dataBase64: string) => void;
   onUserInput?: () => void;
   replayWriteState: TerminalReplayWriteState;
@@ -543,14 +544,15 @@ export function encodeTerminalInputChunks(value: string): string[] {
 
 export function forwardTerminalData({
   data,
+  isUserInput,
   onInput,
   onUserInput,
   replayWriteState,
   sessionStatus,
 }: ForwardTerminalDataArgs): void {
   if (
-    replayWriteState.suppressedWriteCount > 0 ||
-    sessionStatus !== "running"
+    sessionStatus !== "running" ||
+    (replayWriteState.suppressedWriteCount > 0 && !isUserInput)
   ) {
     return;
   }
@@ -563,6 +565,47 @@ export function forwardTerminalData({
     onInput(dataBase64);
   }
   onUserInput?.();
+}
+
+export function subscribeToTerminalUserInput(
+  terminal: XTermTerminal,
+  listener: () => void,
+): { dispose: () => void } | null {
+  const core: unknown = Reflect.get(terminal, "_core");
+  if (typeof core !== "object" || core === null) return null;
+  const coreService: unknown = Reflect.get(core, "coreService");
+  if (typeof coreService !== "object" || coreService === null) return null;
+  const onUserInput: unknown = Reflect.get(coreService, "onUserInput");
+  if (typeof onUserInput !== "function") return null;
+  const disposable: unknown = onUserInput.call(coreService, listener);
+  if (typeof disposable !== "object" || disposable === null) return null;
+  const dispose: unknown = Reflect.get(disposable, "dispose");
+  if (typeof dispose !== "function") return null;
+  return { dispose: () => dispose.call(disposable) };
+}
+
+export function attachTerminalInputForwarding({
+  onData,
+  terminal,
+}: {
+  onData: (data: string, isUserInput: boolean) => void;
+  terminal: XTermTerminal;
+}): { dispose: () => void } {
+  let userInputPending = false;
+  const userInputSubscription = subscribeToTerminalUserInput(terminal, () => {
+    userInputPending = true;
+  });
+  const dataSubscription = terminal.onData((data) => {
+    const isUserInput = userInputPending;
+    userInputPending = false;
+    onData(data, isUserInput);
+  });
+  return {
+    dispose: () => {
+      userInputSubscription?.dispose();
+      dataSubscription.dispose();
+    },
+  };
 }
 
 function hasVisibleTerminalSize({
@@ -1072,6 +1115,7 @@ export function ThreadTerminalView({
     let resizeObserver: ResizeObserver | null = null;
     let selectionChangeDisposable: { dispose: () => void } | null = null;
     let terminalKeyDisposable: { dispose: () => void } | null = null;
+    let terminalInputForwarding: { dispose: () => void } | null = null;
     let shellOscDisposable: { dispose: () => void } | null = null;
     let osc52Disposable: { dispose: () => void } | null = null;
     let stopObservingFonts: (() => void) | null = null;
@@ -1633,6 +1677,7 @@ export function ThreadTerminalView({
           sendInput: (input) =>
             forwardTerminalData({
               data: input,
+              isUserInput: true,
               onInput: sendTerminalInput,
               onUserInput: onUserInputRef.current,
               replayWriteState,
@@ -1664,19 +1709,23 @@ export function ThreadTerminalView({
         terminalInputClaimed = true;
         updateGridVisibility();
       });
-      activeTerminal.onData((data) => {
-        if (controlActiveRef.current) {
-          data = applyTerminalControl(data);
-          controlActiveRef.current = false;
-          setControlActive(false);
-        }
-        forwardTerminalData({
-          data,
-          onInput: sendTerminalInput,
-          onUserInput: onUserInputRef.current,
-          replayWriteState,
-          sessionStatus: sessionStatusRef.current,
-        });
+      terminalInputForwarding = attachTerminalInputForwarding({
+        onData: (data, isUserInput) => {
+          if (controlActiveRef.current) {
+            data = applyTerminalControl(data);
+            controlActiveRef.current = false;
+            setControlActive(false);
+          }
+          forwardTerminalData({
+            data,
+            isUserInput,
+            onInput: sendTerminalInput,
+            onUserInput: onUserInputRef.current,
+            replayWriteState,
+            sessionStatus: sessionStatusRef.current,
+          });
+        },
+        terminal: activeTerminal,
       });
       setTerminalReady(true);
       activeTerminal.onTitleChange((title) => {
@@ -1740,6 +1789,8 @@ export function ThreadTerminalView({
       selectionChangeDisposable?.dispose();
       terminalKeyDisposable?.dispose();
       terminalKeyDisposable = null;
+      terminalInputForwarding?.dispose();
+      terminalInputForwarding = null;
       shellOscDisposable?.dispose();
       osc52Disposable?.dispose();
       terminalInteractions?.dispose();
