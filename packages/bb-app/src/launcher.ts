@@ -4,7 +4,11 @@ import { randomUUID } from "node:crypto";
 import { relayDesktopAppUpdates } from "@bb/config/desktop-app-update";
 import { spawn } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { spawnLoggedProcess } from "./logged-process.js";
+import {
+  spawnLoggedProcess,
+  type LoggedChildProcess,
+  type StdioLogWriterTestBarrier,
+} from "./logged-process.js";
 import {
   formatServerMovedNotice,
   startMovedResponder,
@@ -419,7 +423,7 @@ export interface ManagedProcessRun {
 }
 
 interface ChildManagedProcessRun extends ManagedProcessRun {
-  childProcess: ChildProcess;
+  childProcess: LoggedChildProcess;
 }
 
 export interface ManagedFullStackProcesses {
@@ -434,6 +438,7 @@ interface SpawnNamedManagedProcessArgs {
   command: string;
   env: NodeJS.ProcessEnv;
   processName: ManagedProcessName;
+  testWriterBarrier?: StdioLogWriterTestBarrier;
 }
 
 interface StartFullStackServerProcessArgs {
@@ -442,6 +447,7 @@ interface StartFullStackServerProcessArgs {
   env: NodeJS.ProcessEnv;
   onSpawned?: (childProcess: ChildProcess) => void;
   processes: ManagedFullStackProcesses;
+  testWriterBarrier?: StdioLogWriterTestBarrier;
 }
 
 interface StartDaemonProcessArgs {
@@ -2451,13 +2457,75 @@ function spawnNamedManagedProcess(
       processName: args.processName,
     }),
     async terminate(signal): Promise<void> {
-      await terminateProcessIfRunning({
-        childProcess,
-        processName: args.processName,
-        signal,
-      });
+      try {
+        await terminateProcessIfRunning({
+          childProcess,
+          processName: args.processName,
+          signal,
+        });
+      } finally {
+        await waitForStdioLogWriterExit(childProcess, args.processName);
+      }
     },
   };
+}
+
+const STDIO_LOG_WRITER_EXIT_TIMEOUT_MS = 2_000;
+const STDIO_LOG_WRITER_KILL_WAIT_TIMEOUT_MS = 1_000;
+
+async function waitForStdioLogWriterExit(
+  childProcess: LoggedChildProcess,
+  processName: ManagedProcessName,
+): Promise<void> {
+  let timeout: NodeJS.Timeout | undefined;
+  const result = await Promise.race([
+    childProcess.writerExit.then(() => "exited" as const),
+    new Promise<"timed-out">((resolvePromise) => {
+      timeout = setTimeout(
+        () => resolvePromise("timed-out"),
+        STDIO_LOG_WRITER_EXIT_TIMEOUT_MS,
+      );
+    }),
+  ]);
+  if (timeout !== undefined) clearTimeout(timeout);
+  if (result === "timed-out") {
+    log(
+      yellow("!"),
+      `${processName} stdio log writer did not exit within ${STDIO_LOG_WRITER_EXIT_TIMEOUT_MS}ms`,
+    );
+    try {
+      childProcess.writerProcess.kill("SIGKILL");
+    } catch (error) {
+      if (
+        typeof error !== "object" ||
+        error === null ||
+        !("code" in error) ||
+        error.code !== "ESRCH"
+      ) {
+        log(
+          red("✗"),
+          `${processName} stdio log writer SIGKILL failed: ${String(error)}`,
+        );
+        throw error;
+      }
+    }
+    let killWaitTimeout: NodeJS.Timeout | undefined;
+    const killResult = await Promise.race([
+      childProcess.writerExit.then(() => "exited" as const),
+      new Promise<"timed-out">((resolvePromise) => {
+        killWaitTimeout = setTimeout(
+          () => resolvePromise("timed-out"),
+          STDIO_LOG_WRITER_KILL_WAIT_TIMEOUT_MS,
+        );
+      }),
+    ]);
+    if (killWaitTimeout !== undefined) clearTimeout(killWaitTimeout);
+    if (killResult === "timed-out") {
+      const message = `${processName} stdio log writer ${String(childProcess.writerProcess.pid)} did not exit within ${STDIO_LOG_WRITER_KILL_WAIT_TIMEOUT_MS}ms after SIGKILL`;
+      log(red("✗"), message);
+      throw new Error(message);
+    }
+  }
 }
 
 async function waitForNamedProcessExit(
@@ -3158,6 +3226,7 @@ export async function startFullStackServerProcess(
     ipc: true,
     logDir: args.context.logDir,
     processName: "server",
+    testWriterBarrier: args.testWriterBarrier,
   });
   args.processes.serverRun = serverRun;
   args.onSpawned?.(serverRun.childProcess);
@@ -3171,11 +3240,7 @@ export async function startFullStackServerProcess(
     });
     return serverRun;
   } catch (error) {
-    await terminateProcessIfRunning({
-      childProcess: serverRun.childProcess,
-      processName: "server",
-      signal: "SIGTERM",
-    });
+    await serverRun.terminate("SIGTERM");
     if (args.processes.serverRun === serverRun) {
       args.processes.serverRun = null;
     }
@@ -3210,11 +3275,7 @@ async function startDaemonProcess(
     });
     return daemonRun;
   } catch {
-    await terminateProcessIfRunning({
-      childProcess: daemonRun.childProcess,
-      processName: "daemon",
-      signal: "SIGTERM",
-    });
+    await daemonRun.terminate("SIGTERM");
     if (args.processes.daemonRun === daemonRun) {
       args.processes.daemonRun = null;
     }
