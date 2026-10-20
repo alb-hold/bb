@@ -36,6 +36,25 @@ import {
   createTerminalOsc8LinkHandler,
   requestTerminalLinkOpen,
 } from "./terminal-links";
+import {
+  readTerminalViewportAnchor,
+  resolveTerminalViewportRestore,
+  terminalViewportStorageKey,
+  writeTerminalViewportAnchor,
+} from "./terminal-viewport";
+import {
+  createEmptyFixedPanelTabsState,
+  createTerminalFixedPanelTab,
+  parseFixedPanelTabsState,
+  serializeFixedPanelTabsState,
+} from "@/lib/fixed-panel-tabs-state";
+import {
+  createSidebarSplitState,
+  moveSidebarTab,
+  parseSidebarSplitState,
+  resizeSidebarSplit,
+  serializeSidebarSplitState,
+} from "@/components/secondary-panel/sidebarSplitLayout";
 
 describe("terminal hyperlinks", () => {
   it("preserves OSC-8 provenance through hover and primary activation", () => {
@@ -209,6 +228,138 @@ describe("terminal async mount focus", () => {
         isPanelOpen: false,
       }),
     ).toBe(false);
+  });
+});
+
+describe("terminal viewport restore", () => {
+  it("persists a per-thread terminal anchor and restores it after replay", () => {
+    const values = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+    };
+    const key = terminalViewportStorageKey("thread-1", "terminal-a");
+
+    writeTerminalViewportAnchor(storage, key, {
+      distanceFromTail: 12,
+      outputSequence: 42,
+    });
+
+    const anchor = readTerminalViewportAnchor(storage, key);
+    expect(anchor).toEqual({ distanceFromTail: 12, outputSequence: 42 });
+    expect(
+      resolveTerminalViewportRestore({
+        anchor,
+        baseY: 80,
+        replayStartSequence: 20,
+      }),
+    ).toBe(68);
+  });
+
+  it.each(["app reload", "server restart", "daemon reconnect"])(
+    "restores the same retained viewport after %s",
+    () => {
+      const values = new Map<string, string>();
+      const storage = {
+        getItem: (key: string) => values.get(key) ?? null,
+        setItem: (key: string, value: string) => values.set(key, value),
+      };
+      const key = terminalViewportStorageKey("thread-1", "terminal-a");
+      writeTerminalViewportAnchor(storage, key, {
+        distanceFromTail: 18,
+        outputSequence: 64,
+      });
+
+      expect(
+        resolveTerminalViewportRestore({
+          anchor: readTerminalViewportAnchor(storage, key),
+          baseY: 100,
+          replayStartSequence: 50,
+        }),
+      ).toBe(82);
+    },
+  );
+
+  it.each([
+    ["truncated output", { distanceFromTail: 12, outputSequence: 8 }, 9, 80],
+    ["expired scrollback", { distanceFromTail: 90, outputSequence: 42 }, 20, 80],
+    ["tail anchor", { distanceFromTail: 0, outputSequence: 42 }, 20, 80],
+  ])("falls back to the tail when %s", (_reason, anchor, replayStartSequence, baseY) => {
+    expect(
+      resolveTerminalViewportRestore({
+        anchor,
+        baseY,
+        replayStartSequence,
+      }),
+    ).toBe(baseY);
+  });
+
+  it("keeps anchors isolated by thread and terminal", () => {
+    expect(terminalViewportStorageKey("thread-1", "terminal-a")).not.toBe(
+      terminalViewportStorageKey("thread-2", "terminal-a"),
+    );
+    expect(terminalViewportStorageKey("thread-1", "terminal-a")).not.toBe(
+      terminalViewportStorageKey("thread-1", "terminal-b"),
+    );
+  });
+
+  it("restores the selected terminal and resized split with its viewport anchor", () => {
+    const terminalA = createTerminalFixedPanelTab({ terminalId: "terminal-a" });
+    const terminalB = createTerminalFixedPanelTab({ terminalId: "terminal-b" });
+    const fixedTabs = createEmptyFixedPanelTabsState({
+      lastUsedAt: 1_700_000_000_000,
+      secondary: {
+        activeTabId: terminalB.id,
+        isOpen: true,
+        tabs: [terminalA, terminalB],
+      },
+    });
+    const restoredTabs = parseFixedPanelTabsState({
+      initialValue: createEmptyFixedPanelTabsState({ lastUsedAt: 0 }),
+      now: 1_700_000_000_000,
+      storedValue: serializeFixedPanelTabsState({ state: fixedTabs }),
+    });
+
+    const initialSplit = createSidebarSplitState(
+      [terminalA.id, terminalB.id],
+      terminalA.id,
+    );
+    const split = moveSidebarTab(
+      initialSplit,
+      initialSplit.layout.focusedPaneId,
+      terminalB.id,
+      { paneId: initialSplit.layout.focusedPaneId, zone: "right" },
+      { groupId: "terminal-b" },
+    );
+    const resizedSplit = resizeSidebarSplit(split, [], 0, 0.65);
+    const restoredSplit = parseSidebarSplitState(
+      serializeSidebarSplitState(resizedSplit),
+      [terminalA.id, terminalB.id],
+      restoredTabs.secondary.activeTabId ?? terminalA.id,
+    );
+    const values = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+    };
+    const viewportKey = terminalViewportStorageKey("thread-1", "terminal-a");
+    writeTerminalViewportAnchor(storage, viewportKey, {
+      distanceFromTail: 15,
+      outputSequence: 42,
+    });
+
+    expect(restoredTabs.secondary.activeTabId).toBe(terminalB.id);
+    expect(restoredSplit.layout.root).toMatchObject({
+      type: "split",
+      sizes: [0.65, 0.35],
+    });
+    expect(
+      resolveTerminalViewportRestore({
+        anchor: readTerminalViewportAnchor(storage, viewportKey),
+        baseY: 90,
+        replayStartSequence: 20,
+      }),
+    ).toBe(75);
   });
 });
 
