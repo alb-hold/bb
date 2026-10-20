@@ -237,7 +237,15 @@ describe("terminal touch flow with mouse tracking off", () => {
     fireLongPress();
     dispatchTouch(wrapper, "touchend", { x: 40, y: 50 }, 2_400);
 
-    expect(terminal.buffer.active.viewportY).toBeLessThanOrEqual(startY - 9);
+    const screen = terminal.element?.querySelector<HTMLElement>(".xterm-screen");
+    if (screen === null || screen === undefined) {
+      throw new Error("xterm screen element missing");
+    }
+    const rowHeight = screen.getBoundingClientRect().height / terminal.rows;
+    const expectedRows = Math.round(150 / rowHeight);
+    const rowsMoved = startY - terminal.buffer.active.viewportY;
+
+    expect(Math.abs(rowsMoved - expectedRows)).toBeLessThanOrEqual(1);
     expect(sheetOpened).not.toHaveBeenCalled();
   });
 });
