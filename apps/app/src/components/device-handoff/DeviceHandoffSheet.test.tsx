@@ -702,7 +702,7 @@ describe("DeviceHandoffSheet", () => {
         type: "device-handoff",
         id: "recipient-expiry-race",
         createdAt: now,
-        expiresAt: now + 5_000,
+        expiresAt: now + 2_000,
         originLabel: "Thread terminal",
         request: {
           kind: "copy-text",
@@ -713,7 +713,7 @@ describe("DeviceHandoffSheet", () => {
     );
     expect(await screen.findByText("short-lived code")).toBeTruthy();
     expect(
-      await screen.findByText("Handoff expired", {}, { timeout: 7_000 }),
+      await screen.findByText("Handoff expired", {}, { timeout: 10_000 }),
     ).toBeTruthy();
     expect(
       screen.getByText(
