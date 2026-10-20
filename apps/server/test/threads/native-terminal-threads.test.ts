@@ -3178,12 +3178,41 @@ describe("native terminal threads", () => {
       incomplete.toString("utf8"),
     );
 
+    const delayedTerminalIds = [await openShell(), await openShell()];
     const timedOutTerminalId = await openShell();
-    const timedOutPrefix = Buffer.from(
-      `\u001b]7717;bb-holder;${timedOutTerminalId}`,
-    );
+    vi.useFakeTimers();
+    for (const [index, delayMs] of [300, 2_000].entries()) {
+      const delayedTerminalId = delayedTerminalIds[index];
+      if (delayedTerminalId === undefined) throw new Error("Missing terminal");
+      const marker = Buffer.from(
+        `\u001b]7717;bb-holder;${delayedTerminalId}\u0007`,
+      );
+      const prefix = Buffer.from("\u001b]7717;bb-holder;");
+      send(delayedTerminalId, 0, prefix);
+      await vi.advanceTimersByTimeAsync(delayMs);
+      expect(
+        getTerminalSession(fixture.harness.db, {
+          kind: "terminal",
+          terminalId: delayedTerminalId,
+        }),
+      ).toMatchObject({ holderBacked: false });
+      send(
+        delayedTerminalId,
+        1,
+        Buffer.concat([marker.subarray(prefix.length), Buffer.from("AFTER\n")]),
+      );
+      expect(
+        getTerminalSession(fixture.harness.db, {
+          kind: "terminal",
+          terminalId: delayedTerminalId,
+        }),
+      ).toMatchObject({ holderBacked: true });
+      expect(await retainedText(delayedTerminalId)).toBe("AFTER\n");
+    }
+
+    const timedOutPrefix = Buffer.from("\u001b]7;");
     send(timedOutTerminalId, 0, timedOutPrefix);
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    await vi.advanceTimersByTimeAsync(250);
     expect(
       getTerminalSession(fixture.harness.db, {
         kind: "terminal",
@@ -3193,6 +3222,7 @@ describe("native terminal threads", () => {
     expect(await retainedText(timedOutTerminalId)).toBe(
       timedOutPrefix.toString("utf8"),
     );
+    vi.useRealTimers();
   });
 
   it("does not adopt a terminal when the first holder marker names another terminal", async () => {

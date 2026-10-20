@@ -7,6 +7,7 @@ import {
   TerminalDataPlaneChild,
   type TerminalDataPlaneSocket,
 } from "./data-plane-child.js";
+import { HOLDER_MARKER_PENDING_TIMEOUT_MS } from "../services/terminals/holder-marker.js";
 import {
   TERMINAL_DATA_PLANE_CHILD_PENDING_IPC_BYTES,
   TERMINAL_DATA_PLANE_INPUT_COALESCE_MS,
@@ -1300,6 +1301,88 @@ describe("terminal data plane child", () => {
       harness.child.shutdown();
     }
   });
+
+  it.each([300, 2_000])(
+    "keeps an unambiguous holder marker prefix buffered for %i ms",
+    async (delayMs) => {
+      vi.useFakeTimers();
+      const harness = createHarness();
+      main(harness, {
+        v,
+        type: "terminal.route",
+        terminalId: "term_a",
+        daemonSessionId: "session_1",
+        mode: "data-socket",
+        holderMarkerPending: true,
+      });
+      const browser = await attachLive(harness, {
+        attachId: "a1",
+        terminalId: "term_a",
+        daemonSessionId: "session_1",
+      });
+      const daemon = await attachDaemon(harness, "session_1");
+      const marker = Buffer.from("\u001b]7717;bb-holder;term_a\u0007");
+      const prefix = Buffer.from("\u001b]7717;bb-holder;");
+      daemon.receive({
+        type: "terminal.output",
+        terminalId: "term_a",
+        chunk: { seq: 0, dataBase64: prefix.toString("base64") },
+      });
+      await vi.advanceTimersByTimeAsync(delayMs);
+      expect(browser.frames().filter((frame) => frame.type === "output")).toHaveLength(0);
+      daemon.receive({
+        type: "terminal.output",
+        terminalId: "term_a",
+        chunk: {
+          seq: 1,
+          dataBase64: Buffer.concat([
+            marker.subarray(prefix.length),
+            Buffer.from("after"),
+          ]).toString("base64"),
+        },
+      });
+      const output = browser.frames()
+        .filter((frame) => frame.type === "output")
+        .map((frame) => frame.chunk as { dataBase64: string });
+      const received = Buffer.concat(output.map((chunk) => Buffer.from(chunk.dataBase64, "base64")));
+      expect(received.includes(Buffer.from("7717;bb-holder"))).toBe(false);
+      expect(received.toString()).toBe("after");
+      harness.child.shutdown();
+    },
+  );
+
+  it.each(["\u001b", "\u001b]", "\u001b]7;"])(
+    "flushes short ambiguous prefix %j after the timeout",
+    async (text) => {
+      vi.useFakeTimers();
+      const harness = createHarness();
+      main(harness, {
+        v,
+        type: "terminal.route",
+        terminalId: "term_a",
+        daemonSessionId: "session_1",
+        mode: "data-socket",
+        holderMarkerPending: true,
+      });
+      const browser = await attachLive(harness, {
+        attachId: "a1",
+        terminalId: "term_a",
+        daemonSessionId: "session_1",
+      });
+      const daemon = await attachDaemon(harness, "session_1");
+      daemon.receive({
+        type: "terminal.output",
+        terminalId: "term_a",
+        chunk: { seq: 0, dataBase64: Buffer.from(text).toString("base64") },
+      });
+      await vi.advanceTimersByTimeAsync(HOLDER_MARKER_PENDING_TIMEOUT_MS);
+      const output = browser.frames()
+        .filter((frame) => frame.type === "output")
+        .map((frame) => frame.chunk as { dataBase64: string });
+      expect(Buffer.concat(output.map((chunk) => Buffer.from(chunk.dataBase64, "base64"))).toString()).toBe(text);
+      harness.child.shutdown();
+    },
+  );
 
   it("drops a session's routes and closes its data socket on daemon.detach", async () => {
     const harness = createHarness();

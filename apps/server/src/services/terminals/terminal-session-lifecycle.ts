@@ -84,7 +84,12 @@ import {
 } from "./pending-rpc-registry.js";
 import { TerminalOutputFlowControl } from "./terminal-output-flow-control.js";
 import { TerminalOutputSequenceRebase } from "./terminal-output-sequence-rebase.js";
-import { stripHolderMarkerChunks, type HolderMarkerStripState } from "./holder-marker.js";
+import {
+  isTimeoutFlushableHolderMarkerPrefix,
+  shouldFlushHolderMarkerChunksOnTimeout,
+  stripHolderMarkerChunks,
+  type HolderMarkerStripState,
+} from "./holder-marker.js";
 
 const DEFAULT_TERMINAL_OPEN_TIMEOUT_MS = 10_000;
 const DEFAULT_TERMINAL_CLOSE_TIMEOUT_MS = 5_000;
@@ -474,6 +479,9 @@ function inspectTerminalHolderMarker(data: Buffer):
         ),
       )
   ) {
+    if (isTimeoutFlushableHolderMarkerPrefix(data)) {
+      return { kind: "pending" };
+    }
     const gridPrefixLength = Math.min(
       data.length,
       TERMINAL_GRID_MARKER_PREFIX_BYTES.length,
@@ -3400,10 +3408,17 @@ export class TerminalSessionLifecycle {
         this.pendingHolderMarkers.delete(current.id);
         return false;
       }
-      const timer = setTimeout(
-        () => this.flushPendingHolderOutput(current.id),
-        TERMINAL_HOLDER_MARKER_TIMEOUT_MS,
-      );
+      const timer = setTimeout(() => {
+        const timedOut = this.pendingHolderOutput.get(current.id);
+        if (
+          timedOut !== undefined &&
+          !shouldFlushHolderMarkerChunksOnTimeout({
+            chunks: [],
+            data: timedOut.chunks.map((part) => part.data),
+          })
+        ) return;
+        this.flushPendingHolderOutput(current.id);
+      }, TERMINAL_HOLDER_MARKER_TIMEOUT_MS);
       timer.unref?.();
       pending = { chunks: [], timer };
       this.pendingHolderOutput.set(current.id, pending);

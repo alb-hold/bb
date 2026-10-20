@@ -14,6 +14,7 @@ import {
 import { parseSocketMessage } from "../ws/decode-payload.js";
 import {
   flushHolderMarkerChunks,
+  shouldFlushHolderMarkerChunksOnTimeout,
   HOLDER_MARKER_PENDING_TIMEOUT_MS,
   stripHolderMarkerChunks,
   type HolderMarkerStripState,
@@ -682,6 +683,10 @@ export class TerminalDataPlaneChild {
       const timer = setTimeout(() => {
         const pending = this.holderMarkerStripStates.get(terminalId);
         if (pending === undefined) return;
+        if (!shouldFlushHolderMarkerChunksOnTimeout(pending)) {
+          this.holderMarkerStripTimers.delete(terminalId);
+          return;
+        }
         this.holderMarkerStripStates.delete(terminalId);
         this.holderMarkerStripTimers.delete(terminalId);
         this.deliverSanitizedOutput(

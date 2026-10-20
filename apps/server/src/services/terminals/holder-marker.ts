@@ -4,11 +4,29 @@ import type { TerminalOutputChunk } from "@bb/server-contract";
 const PREFIX = Buffer.from("\u001b]7717;bb-holder;");
 const GRID_PREFIX = Buffer.from("\u001b]7791;bb-grid;");
 const LIMIT = 160;
+const ESC = Buffer.from("\u001b");
+const ESC_OSC = Buffer.from("\u001b]");
+const ESC_CWD_OSC = Buffer.from("\u001b]7;");
 export const HOLDER_MARKER_PENDING_TIMEOUT_MS = 250;
 
 export interface HolderMarkerStripState {
   chunks: TerminalOutputChunk[];
   data: Buffer[];
+}
+
+export function isTimeoutFlushableHolderMarkerPrefix(data: Buffer): boolean {
+  return data.equals(ESC) || data.equals(ESC_OSC) || data.equals(ESC_CWD_OSC);
+}
+
+export function shouldFlushHolderMarkerChunksOnTimeout(
+  state: HolderMarkerStripState,
+): boolean {
+  if (state.data.length === 0) return true;
+  const data = Buffer.concat(state.data);
+  const candidate = holderCandidate(data);
+  if (candidate === null) return true;
+  if (isTimeoutFlushableHolderMarkerPrefix(candidate)) return true;
+  return !candidate.subarray(0, PREFIX.length).equals(PREFIX);
 }
 
 export function stripHolderMarkerChunks(
@@ -39,6 +57,7 @@ export function stripHolderMarkerChunks(
   const candidate = combined.subarray(markerOffset);
   const prefixLength = Math.min(candidate.length, PREFIX.length);
   if (!candidate.subarray(0, prefixLength).equals(PREFIX.subarray(0, prefixLength))) {
+    if (isTimeoutFlushableHolderMarkerPrefix(candidate)) return [];
     const result = state.chunks;
     state.chunks = [];
     state.data = [];
@@ -83,6 +102,18 @@ export function stripHolderMarkerChunks(
   state.chunks = [];
   state.data = [];
   return result;
+}
+
+function holderCandidate(data: Buffer): Buffer | null {
+  if (data.subarray(0, Math.min(data.length, GRID_PREFIX.length)).equals(
+    GRID_PREFIX.subarray(0, Math.min(data.length, GRID_PREFIX.length)),
+  )) {
+    if (data.length < GRID_PREFIX.length) return null;
+    const gridEnd = data.indexOf(0x07, GRID_PREFIX.length);
+    if (gridEnd < 0) return null;
+    return data.subarray(gridEnd + 1);
+  }
+  return data;
 }
 
 export function flushHolderMarkerChunks(
