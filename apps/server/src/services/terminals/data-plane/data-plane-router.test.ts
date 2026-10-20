@@ -1,7 +1,10 @@
 import type { Socket } from "node:net";
 import type { TerminalSession } from "@bb/server-contract";
 import { describe, expect, it, vi } from "vitest";
-import { stripHolderMarkerChunks, type HolderMarkerStripState } from "../holder-marker.js";
+import {
+  stripHolderMarkerChunks,
+  type HolderMarkerStripState,
+} from "../holder-marker.js";
 import {
   TERMINAL_DATA_PLANE_IPC_VERSION,
   TERMINAL_DATA_PLANE_RELAY_HARD_CAP_BYTES,
@@ -82,10 +85,7 @@ function createFixture() {
     onTerminalExited,
   );
   const request = { url: "/ws/terminals/term_1", headers: [], headBase64: "" };
-  const attach = (
-    terminalId = "term_1",
-    handoffOwnerToken?: string,
-  ) => {
+  const attach = (terminalId = "term_1", handoffOwnerToken?: string) => {
     const raw = {} as Socket;
     const attachId = router.attachBrowser({
       daemonSessionId: "ds_1",
@@ -165,9 +165,10 @@ describe("TerminalDataPlaneRouter", () => {
         outputAcks: false,
         resizeAcks: false,
         sequenceBase: 0,
-        request: fixture.sent[0]?.message.type === "browser.attach"
-          ? fixture.sent[0].message.request
-          : { url: "", headers: [], headBase64: "" },
+        request:
+          fixture.sent[0]?.message.type === "browser.attach"
+            ? fixture.sent[0].message.request
+            : { url: "", headers: [], headBase64: "" },
         sinceSeq: 0,
         socket: raw,
         terminalId: "term_1",
@@ -214,9 +215,7 @@ describe("TerminalDataPlaneRouter", () => {
     fixture.attach();
     await Promise.resolve();
     const sockets = fixture.attached;
-    sockets[0]?.send(
-      JSON.stringify({ type: "session-updated", session }),
-    );
+    sockets[0]?.send(JSON.stringify({ type: "session-updated", session }));
     sockets[0]?.send(JSON.stringify({ type: "resize-applied", seq: 3 }));
     sockets[0]?.send(JSON.stringify({ type: "features", resizeAcks: true }));
 
@@ -272,13 +271,14 @@ describe("TerminalDataPlaneRouter", () => {
     fixture.attached[0]?.send(
       JSON.stringify({ type: "output", chunk: chunk(2) }),
     );
-    expect(fixture.lifecycle.stripHolderMarkersFromDataPlaneOutput).toHaveBeenCalledWith(
-      "term_1",
-      chunk(2),
-    );
+    expect(
+      fixture.lifecycle.stripHolderMarkersFromDataPlaneOutput,
+    ).toHaveBeenCalledWith("term_1", chunk(2));
     expect(
       fixture.sent.find(
-        (entry) => entry.message.type === "terminal.output" && entry.message.chunk.seq === 2,
+        (entry) =>
+          entry.message.type === "terminal.output" &&
+          entry.message.chunk.seq === 2,
       )?.message,
     ).toMatchObject({
       type: "terminal.output",
@@ -295,35 +295,48 @@ describe("TerminalDataPlaneRouter", () => {
     const bytes = Buffer.concat([grid, marker, leading, trailing]);
     const scenarios: Buffer[][] = [
       [bytes],
-      ...Array.from({ length: bytes.length - 1 }, (_, index) => [bytes.subarray(0, index + 1), bytes.subarray(index + 1)]),
-      Array.from({ length: bytes.length }, (_, index) => bytes.subarray(index, index + 1)),
+      ...Array.from({ length: bytes.length - 1 }, (_, index) => [
+        bytes.subarray(0, index + 1),
+        bytes.subarray(index + 1),
+      ]),
+      Array.from({ length: bytes.length }, (_, index) =>
+        bytes.subarray(index, index + 1),
+      ),
     ];
     for (const parts of scenarios) {
       const fixture = createFixture();
       const states = new Map<string, HolderMarkerStripState>();
-      fixture.lifecycle.stripHolderMarkersFromDataPlaneOutput = (terminalId, chunk) => {
+      fixture.lifecycle.stripHolderMarkersFromDataPlaneOutput = (
+        terminalId,
+        chunk,
+      ) => {
         let state = states.get(terminalId);
         if (state === undefined) {
-          state = { chunks: [], data: [] };
+          state = { chunks: [], data: [], releasedPrefix: null };
           states.set(terminalId, state);
         }
         const output = stripHolderMarkerChunks(chunk, state);
-        if (state.chunks.length === 0) states.delete(terminalId);
+        if (state.chunks.length === 0 && state.releasedPrefix === null)
+          states.delete(terminalId);
         return output;
       };
       fixture.lifecycle.attach = vi.fn((args) => {
         fixture.attached.push(args.socket);
-        args.socket.send(JSON.stringify({
-          type: "attached",
-          session,
-          replayStartSeq: 0,
-          nextSeq: parts.length,
-        }));
+        args.socket.send(
+          JSON.stringify({
+            type: "attached",
+            session,
+            replayStartSeq: 0,
+            nextSeq: parts.length,
+          }),
+        );
         for (const [seq, part] of parts.entries()) {
-          args.socket.send(JSON.stringify({
-            type: "output",
-            chunk: { seq, dataBase64: part.toString("base64") },
-          }));
+          args.socket.send(
+            JSON.stringify({
+              type: "output",
+              chunk: { seq, dataBase64: part.toString("base64") },
+            }),
+          );
         }
       });
       const { attachId } = fixture.attach("term_1");
@@ -333,10 +346,16 @@ describe("TerminalDataPlaneRouter", () => {
         .find((message) => message.type === "browser.replay");
       expect(replay).toMatchObject({ type: "browser.replay", attachId });
       if (replay?.type !== "browser.replay") throw new Error("missing replay");
-      const received = Buffer.concat(replay.chunks.map((chunk) => Buffer.from(chunk.dataBase64, "base64")));
+      const received = Buffer.concat(
+        replay.chunks.map((chunk) => Buffer.from(chunk.dataBase64, "base64")),
+      );
       expect(received.includes(Buffer.from("7717;bb-holder"))).toBe(false);
-      expect(received.toString()).toBe(Buffer.concat([grid, leading, trailing]).toString());
-      expect(replay.chunks.map((chunk) => chunk.seq)).toEqual(parts.map((_, index) => index));
+      expect(received.toString()).toBe(
+        Buffer.concat([grid, leading, trailing]).toString(),
+      );
+      expect(replay.chunks.map((chunk) => chunk.seq)).toEqual(
+        parts.map((_, index) => index),
+      );
     }
   });
 

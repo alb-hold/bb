@@ -142,8 +142,14 @@ export class TerminalDataPlaneChild {
   private readonly attachesByTerminalId = new Map<string, Set<BrowserAttach>>();
   private readonly daemonSockets = new Map<string, TerminalDataPlaneSocket>();
   private readonly routes = new Map<string, TerminalRoute>();
-  private readonly holderMarkerStripStates = new Map<string, HolderMarkerStripState>();
-  private readonly holderMarkerStripTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly holderMarkerStripStates = new Map<
+    string,
+    HolderMarkerStripState
+  >();
+  private readonly holderMarkerStripTimers = new Map<
+    string,
+    ReturnType<typeof setTimeout>
+  >();
   private readonly inputWindows = new Map<string, InputWindow>();
   private readonly outputBatches = new Map<string, OutputBatch>();
   private readonly lastInputActivityAt = new Map<string, number>();
@@ -269,7 +275,7 @@ export class TerminalDataPlaneChild {
       case "terminal.route":
         this.routes.set(message.terminalId, {
           daemonSessionId: message.daemonSessionId,
-        holderMarkerPending: message.holderMarkerPending === true,
+          holderMarkerPending: message.holderMarkerPending === true,
           mode: message.mode,
         });
         this.closeAttachesBoundElsewhere(message.terminalId);
@@ -346,7 +352,11 @@ export class TerminalDataPlaneChild {
         socket.on("message", (data) => this.handleBrowserFrame(attach, data));
         socket.on("close", () => this.handleBrowserClosed(attach));
         socket.on("error", () => socket.terminate());
-        this.send({ v: V, type: "browser.attached", attachId: attach.attachId });
+        this.send({
+          v: V,
+          type: "browser.attached",
+          attachId: attach.attachId,
+        });
       },
       (error: unknown) => {
         handle.destroy();
@@ -476,7 +486,11 @@ export class TerminalDataPlaneChild {
     }
   }
 
-  private closeAttach(attach: BrowserAttach, code: number, reason: string): void {
+  private closeAttach(
+    attach: BrowserAttach,
+    code: number,
+    reason: string,
+  ): void {
     if (attach.closed) {
       return;
     }
@@ -519,7 +533,9 @@ export class TerminalDataPlaneChild {
     code: number,
     reason: string,
   ): void {
-    for (const attach of [...(this.attachesByTerminalId.get(terminalId) ?? [])]) {
+    for (const attach of [
+      ...(this.attachesByTerminalId.get(terminalId) ?? []),
+    ]) {
       this.closeAttach(attach, code, reason);
     }
   }
@@ -553,7 +569,9 @@ export class TerminalDataPlaneChild {
     >,
   ): void {
     const frame = JSON.stringify(message);
-    for (const attach of [...(this.attachesByTerminalId.get(terminalId) ?? [])]) {
+    for (const attach of [
+      ...(this.attachesByTerminalId.get(terminalId) ?? []),
+    ]) {
       if (attach.attachedFrameSent) {
         this.write(attach, frame);
       } else {
@@ -669,11 +687,11 @@ export class TerminalDataPlaneChild {
     }
     let stripState = this.holderMarkerStripStates.get(terminalId);
     if (stripState === undefined) {
-      stripState = { chunks: [], data: [] };
+      stripState = { chunks: [], data: [], releasedPrefix: null };
       this.holderMarkerStripStates.set(terminalId, stripState);
     }
     const chunks = stripHolderMarkerChunks(chunk, stripState);
-    if (stripState.chunks.length === 0) {
+    if (stripState.chunks.length === 0 && stripState.releasedPrefix === null) {
       route.holderMarkerPending = false;
       const timer = this.holderMarkerStripTimers.get(terminalId);
       if (timer !== undefined) clearTimeout(timer);
@@ -687,13 +705,13 @@ export class TerminalDataPlaneChild {
           this.holderMarkerStripTimers.delete(terminalId);
           return;
         }
-        this.holderMarkerStripStates.delete(terminalId);
+        const chunks = flushHolderMarkerChunks(pending);
         this.holderMarkerStripTimers.delete(terminalId);
-        this.deliverSanitizedOutput(
-          terminalId,
-          flushHolderMarkerChunks(pending),
-          dataSocketSessionId,
-        );
+        if (pending.releasedPrefix === null) {
+          route.holderMarkerPending = false;
+          this.holderMarkerStripStates.delete(terminalId);
+        }
+        this.deliverSanitizedOutput(terminalId, chunks, dataSocketSessionId);
       }, HOLDER_MARKER_PENDING_TIMEOUT_MS);
       timer.unref?.();
       this.holderMarkerStripTimers.set(terminalId, timer);
@@ -743,7 +761,9 @@ export class TerminalDataPlaneChild {
   }
 
   private closeAttachesBoundElsewhere(terminalId: string): void {
-    for (const attach of [...(this.attachesByTerminalId.get(terminalId) ?? [])]) {
+    for (const attach of [
+      ...(this.attachesByTerminalId.get(terminalId) ?? []),
+    ]) {
       if (attach.socket !== null && this.isBoundElsewhere(attach)) {
         this.closeAttach(
           attach,
@@ -795,7 +815,9 @@ export class TerminalDataPlaneChild {
     }
     attach.buffered.push(chunk);
     attach.bufferedBytes += chunk.dataBase64.length;
-    if (attach.bufferedBytes > TERMINAL_DATA_PLANE_PENDING_REPLAY_BUFFER_BYTES) {
+    if (
+      attach.bufferedBytes > TERMINAL_DATA_PLANE_PENDING_REPLAY_BUFFER_BYTES
+    ) {
       this.closeAttach(
         attach,
         TERMINAL_DATA_PLANE_OVERLOAD_CLOSE_CODE,
@@ -935,7 +957,9 @@ export class TerminalDataPlaneChild {
         socket.on("message", (data) =>
           this.handleDaemonFrame(daemonSessionId, socket, data),
         );
-        socket.on("close", () => this.handleDaemonClosed(daemonSessionId, socket));
+        socket.on("close", () =>
+          this.handleDaemonClosed(daemonSessionId, socket),
+        );
         socket.on("error", () => socket.terminate());
         this.syncSessionFlowClients(daemonSessionId);
         this.send({ v: V, type: "daemon.attached", daemonSessionId });

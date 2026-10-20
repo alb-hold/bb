@@ -88,6 +88,7 @@ import {
   isTimeoutFlushableHolderMarkerPrefix,
   shouldFlushHolderMarkerChunksOnTimeout,
   stripHolderMarkerChunks,
+  timeoutReleasedHolderMarkerPrefix,
   type HolderMarkerStripState,
 } from "./holder-marker.js";
 
@@ -415,6 +416,7 @@ interface PendingHolderOutputChunk {
 interface PendingHolderOutputBuffer {
   chunks: PendingHolderOutputChunk[];
   timer: ReturnType<typeof setTimeout>;
+  releasedPrefix: Buffer | null;
 }
 
 interface RefuseDaemonTerminalOpenArgs {
@@ -840,13 +842,16 @@ export class TerminalSessionLifecycle {
     string,
     PendingHolderOutputBuffer
   >();
-  private readonly dataPlaneHolderOutput = new Map<string, HolderMarkerStripState>();
+  private readonly releasedHolderMarkerPrefixes = new Map<string, Buffer>();
+  private readonly dataPlaneHolderOutput = new Map<
+    string,
+    HolderMarkerStripState
+  >();
   private readonly pendingRetainedOutput = new Map<
     string,
     Array<{ hostId: string; chunks: TerminalOutputChunk[] }>
   >();
-  private retainedOutputFlushTimer: ReturnType<typeof setTimeout> | null =
-    null;
+  private retainedOutputFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private readonly options: TerminalSessionLifecycleOptions) {
     clearPersistedDeviceHandoffAttention(options.db, Date.now());
@@ -2316,9 +2321,7 @@ export class TerminalSessionLifecycle {
     }
   }
 
-  resolveRunningTerminalRoute(
-    terminalId: string,
-  ): {
+  resolveRunningTerminalRoute(terminalId: string): {
     daemonSessionId: string;
     holderMarkerPending: boolean;
     sequenceBase: number;
@@ -2415,7 +2418,7 @@ export class TerminalSessionLifecycle {
     if (!this.pendingHolderMarkers.has(terminalId)) return [chunk];
     let state = this.dataPlaneHolderOutput.get(terminalId);
     if (state === undefined) {
-      state = { chunks: [], data: [] };
+      state = { chunks: [], data: [], releasedPrefix: null };
       this.dataPlaneHolderOutput.set(terminalId, state);
     }
     const inspection = inspectTerminalHolderMarker(
@@ -2425,7 +2428,10 @@ export class TerminalSessionLifecycle {
     if (state.chunks.length === 0) {
       this.pendingHolderMarkers.delete(terminalId);
       this.dataPlaneHolderOutput.delete(terminalId);
-      if (inspection.kind === "complete" && inspection.terminalId === terminalId) {
+      if (
+        inspection.kind === "complete" &&
+        inspection.terminalId === terminalId
+      ) {
         updateTerminalSession(this.options.db, {
           scope: {
             kind: "terminal",
@@ -3404,23 +3410,35 @@ export class TerminalSessionLifecycle {
     const data = Buffer.from(chunk.dataBase64, "base64");
     let pending = this.pendingHolderOutput.get(current.id);
     if (pending === undefined) {
-      if (inspectTerminalHolderMarker(data).kind === "mismatch") {
+      const releasedPrefix =
+        this.releasedHolderMarkerPrefixes.get(current.id) ?? null;
+      const inspection = inspectTerminalHolderMarker(
+        Buffer.concat([releasedPrefix ?? Buffer.alloc(0), data]),
+      );
+      if (inspection.kind === "mismatch") {
         this.pendingHolderMarkers.delete(current.id);
+        this.releasedHolderMarkerPrefixes.delete(current.id);
         return false;
       }
       const timer = setTimeout(() => {
         const timedOut = this.pendingHolderOutput.get(current.id);
+        const stripState: HolderMarkerStripState = {
+          chunks: [],
+          data: timedOut?.chunks.map((part) => part.data) ?? [],
+          releasedPrefix: timedOut?.releasedPrefix ?? null,
+        };
         if (
           timedOut !== undefined &&
-          !shouldFlushHolderMarkerChunksOnTimeout({
-            chunks: [],
-            data: timedOut.chunks.map((part) => part.data),
-          })
-        ) return;
-        this.flushPendingHolderOutput(current.id);
+          !shouldFlushHolderMarkerChunksOnTimeout(stripState)
+        )
+          return;
+        this.flushPendingHolderOutput(
+          current.id,
+          timeoutReleasedHolderMarkerPrefix(stripState),
+        );
       }, TERMINAL_HOLDER_MARKER_TIMEOUT_MS);
       timer.unref?.();
-      pending = { chunks: [], timer };
+      pending = { chunks: [], timer, releasedPrefix };
       this.pendingHolderOutput.set(current.id, pending);
     }
     pending.chunks.push({
@@ -3429,7 +3447,10 @@ export class TerminalSessionLifecycle {
       chunk,
       data,
     });
-    const combined = Buffer.concat(pending.chunks.map((part) => part.data));
+    const combined = Buffer.concat([
+      pending.releasedPrefix ?? Buffer.alloc(0),
+      ...pending.chunks.map((part) => part.data),
+    ]);
     const inspection = inspectTerminalHolderMarker(combined);
     if (inspection.kind === "pending") return true;
     if (inspection.kind === "mismatch") {
@@ -3440,6 +3461,7 @@ export class TerminalSessionLifecycle {
     clearTimeout(pending.timer);
     this.pendingHolderOutput.delete(current.id);
     this.pendingHolderMarkers.delete(current.id);
+    this.releasedHolderMarkerPrefixes.delete(current.id);
     if (inspection.terminalId === current.id) {
       updateTerminalSession(this.options.db, {
         scope: {
@@ -3450,7 +3472,11 @@ export class TerminalSessionLifecycle {
         update: { kind: "holder-backed" },
       });
     }
-    const stripState: HolderMarkerStripState = { chunks: [], data: [] };
+    const stripState: HolderMarkerStripState = {
+      chunks: [],
+      data: [],
+      releasedPrefix: pending.releasedPrefix,
+    };
     const outputChunks = pending.chunks.flatMap((part) =>
       stripHolderMarkerChunks(part.chunk, stripState),
     );
@@ -3483,6 +3509,7 @@ export class TerminalSessionLifecycle {
     }
     if (markerOffset >= 0 && markerPending) {
       this.pendingHolderMarkers.delete(current.id);
+      this.releasedHolderMarkerPrefixes.delete(current.id);
       updateTerminalSession(this.options.db, {
         scope: {
           kind: "terminal",
@@ -3522,12 +3549,28 @@ export class TerminalSessionLifecycle {
     });
   }
 
-  private flushPendingHolderOutput(terminalId: string): void {
-    this.pendingHolderMarkers.delete(terminalId);
+  private flushPendingHolderOutput(
+    terminalId: string,
+    releasedPrefix: Buffer | null = null,
+  ): void {
     const pending = this.pendingHolderOutput.get(terminalId);
-    if (pending === undefined) return;
+    if (pending === undefined) {
+      if (releasedPrefix === null) this.pendingHolderMarkers.delete(terminalId);
+      else {
+        this.pendingHolderMarkers.add(terminalId);
+        this.releasedHolderMarkerPrefixes.set(terminalId, releasedPrefix);
+      }
+      return;
+    }
     clearTimeout(pending.timer);
     this.pendingHolderOutput.delete(terminalId);
+    if (releasedPrefix === null) {
+      this.pendingHolderMarkers.delete(terminalId);
+      this.releasedHolderMarkerPrefixes.delete(terminalId);
+    } else {
+      this.pendingHolderMarkers.add(terminalId);
+      this.releasedHolderMarkerPrefixes.set(terminalId, releasedPrefix);
+    }
     for (const part of pending.chunks) {
       this.processTerminalOutputChunk(
         part.sessionId,

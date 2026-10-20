@@ -3178,18 +3178,33 @@ describe("native terminal threads", () => {
       incomplete.toString("utf8"),
     );
 
-    const delayedTerminalIds = [await openShell(), await openShell()];
+    const delayedOffsets = [
+      ...Array.from({ length: 17 }, (_, index) => index + 1),
+      Buffer.byteLength("\u001b]7717;bb-holder;") + 3,
+    ];
+    const delayedTerminalIds = await Promise.all(
+      delayedOffsets.map(() => openShell()),
+    );
     const timedOutTerminalId = await openShell();
     vi.useFakeTimers();
-    for (const [index, delayMs] of [300, 2_000].entries()) {
+    const grid = Buffer.from("\u001b]7791;bb-grid;80;24\u0007");
+    for (const [index, splitAt] of delayedOffsets.entries()) {
       const delayedTerminalId = delayedTerminalIds[index];
       if (delayedTerminalId === undefined) throw new Error("Missing terminal");
       const marker = Buffer.from(
         `\u001b]7717;bb-holder;${delayedTerminalId}\u0007`,
       );
-      const prefix = Buffer.from("\u001b]7717;bb-holder;");
-      send(delayedTerminalId, 0, prefix);
-      await vi.advanceTimersByTimeAsync(delayMs);
+      const first = Buffer.concat([grid, marker.subarray(0, splitAt)]);
+      send(delayedTerminalId, 0, first);
+      await vi.advanceTimersByTimeAsync(250);
+      const beforeRemainder = await retainedText(delayedTerminalId);
+      if (splitAt <= 3) {
+        expect(beforeRemainder).toBe(first.toString());
+      } else {
+        expect(beforeRemainder).toBe("");
+      }
+      await vi.advanceTimersByTimeAsync(1_750);
+      expect(await retainedText(delayedTerminalId)).toBe(beforeRemainder);
       expect(
         getTerminalSession(fixture.harness.db, {
           kind: "terminal",
@@ -3199,7 +3214,7 @@ describe("native terminal threads", () => {
       send(
         delayedTerminalId,
         1,
-        Buffer.concat([marker.subarray(prefix.length), Buffer.from("AFTER\n")]),
+        Buffer.concat([marker.subarray(splitAt), Buffer.from("AFTER\n")]),
       );
       expect(
         getTerminalSession(fixture.harness.db, {
@@ -3207,7 +3222,18 @@ describe("native terminal threads", () => {
           terminalId: delayedTerminalId,
         }),
       ).toMatchObject({ holderBacked: true });
-      expect(await retainedText(delayedTerminalId)).toBe("AFTER\n");
+      const ambiguousPrefix =
+        splitAt <= 3 ? marker.subarray(0, splitAt) : Buffer.alloc(0);
+      const retained = await retainedText(delayedTerminalId);
+      expect(retained).not.toContain("7717;bb-holder");
+      expect(retained.match(/AFTER\n/gu)).toHaveLength(1);
+      expect(retained).toBe(
+        Buffer.concat([
+          grid,
+          ambiguousPrefix,
+          Buffer.from("AFTER\n"),
+        ]).toString(),
+      );
     }
 
     const timedOutPrefix = Buffer.from("\u001b]7;");
