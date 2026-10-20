@@ -393,6 +393,10 @@ describe("resolveWritingEdits", () => {
     ["Run it.\ngit tag the user are ready.", "are", "is", "grammar"],
     ["ls -la the user are ready.", "are", "is", "grammar"],
     ["next pass -rf so the user are ready.", "are", "is", "grammar"],
+    ["Write-Output the user are ready.", "are", "is", "grammar"],
+    ["Get-ChildItem the user are ready", "are", "is", "grammar"],
+    ["write-output the user are ready.", "are", "is", "grammar"],
+    ["$ Write-Host the user are ready.", "are", "is", "grammar"],
     ["make sure the user are ready.", "are", "is", "grammar"],
     ["find out if the user are ready.", "are", "is", "grammar"],
     ["go check that the user are ready.", "are", "is", "grammar"],
@@ -452,6 +456,8 @@ describe("resolveWritingEdits", () => {
     "If the user are ready, ship it.",
     "While the user are ready, wait.",
     "For now the user are ready.",
+    "Well-known teams say the user are ready.",
+    "Long-term the user are ready.",
     "Ask the team - the user are ready.",
   ])("still auto-applies a safe fix on the prose line %s", (target) => {
     const edits = resolveWritingEdits({

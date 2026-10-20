@@ -23,12 +23,17 @@ function health(
 }
 
 describe("claudeAiStatusFromHealth", () => {
-  it.each(["ready", "expired"] as const)(
-    "is ready when the sign-in is %s, since the CLI renews it",
-    (status) => {
-      expect(claudeAiStatusFromHealth(health(status))).toEqual({ ready: true });
-    },
-  );
+  it("is ready when the sign-in is ready, including a lapsed token the CLI renews", () => {
+    expect(claudeAiStatusFromHealth(health("ready"))).toEqual({ ready: true });
+  });
+
+  it("is not ready when the sign-in expired with nothing to renew it", () => {
+    expect(claudeAiStatusFromHealth(health("expired"))).toEqual({
+      ready: false,
+      message:
+        "The Claude Code sign-in expired and cannot renew. Run `claude auth login` on the primary machine",
+    });
+  });
 
   it("asks for a sign-in when signed out", () => {
     expect(claudeAiStatusFromHealth(health("unauthenticated"))).toEqual({

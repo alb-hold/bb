@@ -347,7 +347,14 @@ async function formatDictation(
     addWritingUsage(deps.db, day, { formattings: -1 });
     return unformatted;
   }
+  const verdict = validateFormattedTranscript(
+    raw,
+    outcome.value,
+    settings.vocabulary,
+    { literalCode: settings.mode === "literal-code" },
+  );
   addWritingUsage(deps.db, day, {
+    formattings: verdict.ok ? 0 : -1,
     inputChars: prompt.length,
     outputChars: outcome.value.length,
     estimatedCostMicros: estimateTextCostMicros(
@@ -355,12 +362,6 @@ async function formatDictation(
       outcome.value.length,
     ),
   });
-  const verdict = validateFormattedTranscript(
-    raw,
-    outcome.value,
-    settings.vocabulary,
-    { literalCode: settings.mode === "literal-code" },
-  );
   if (!verdict.ok) {
     deps.logger.info(
       { reason: verdict.reason },

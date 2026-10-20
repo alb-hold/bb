@@ -295,6 +295,10 @@ The Claude Code provider plugin registers a `claude` service for
 project settings, CLAUDE.md or hooks, no auto-memory (it passes only the
 setting `autoMemoryEnabled: false`), and no session history, trying Claude
 Haiku 5.5 and then Claude Sonnet 5.5.
+It reports ready when that login is valid or has a refresh token the CLI can
+renew with, and not ready, asking for `claude auth login`, when the login is
+signed out, its renewal was rejected, or its access token expired with
+nothing to renew it.
 The CLI gets only an allowlisted environment (path, home, user, temp, locale,
 XDG, `CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_OAUTH_TOKEN`, and the Windows system
 variables), so `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`,
@@ -366,7 +370,8 @@ vocabulary terms are never edited, and on a line containing any of
 = ; { } ( ) < > [ ] $ ` | \ / # " or --, a colon followed directly by text
 (10:30), a key: value line (status: ready, - name: x, "title": x), a line
 that starts with a shell command, builtin or keyword such as echo, git, npm, read, for or if (also after a $,
-%, > or # prompt or sudo), a line with a short flag such as -la, a line
+%, > or # prompt or sudo), a line that starts with a PowerShell cmdlet such as
+Write-Output or get-childitem, a line with a short flag such as -la, a line
 indented four spaces or a tab, or a ``` or ~~~ fence line or a line inside such a fence (closed
 only by a bare fence of the same character at least as long), every
 change, even capitalization, is only suggested. Dictation formatting follows the same rule:

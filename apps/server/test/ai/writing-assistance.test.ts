@@ -492,6 +492,41 @@ describe("dictation segments", () => {
     });
   });
 
+  it("returns the reserved formatting when the reply is rejected, so the next segment is still formatted", async () => {
+    await withTestHarness({}, async (harness) => {
+      const replies = [
+        "Add comprehensive integration tests for every endpoint.",
+        "Add integration tests.",
+      ];
+      const service = registerFakeAiService(harness.deps.aiServices, {
+        transcribe: async () => "add integration tests",
+        complete: async () => replies.shift() ?? "Add integration tests.",
+      });
+      updateWritingAssistanceSettings(harness.deps.db, {
+        dailyCorrectionLimit: 1,
+      });
+      await expect((await postSegment(harness)).json()).resolves.toEqual({
+        raw: "add integration tests",
+        text: "add integration tests",
+        formatted: false,
+      });
+      const afterRejected = getWritingUsage(harness.deps.db, utcDay());
+      expect(afterRejected.formattings).toBe(0);
+      expect(afterRejected.inputChars).toBeGreaterThan(0);
+      expect(afterRejected.outputChars).toBe(
+        "Add comprehensive integration tests for every endpoint.".length,
+      );
+      expect(afterRejected.estimatedCostMicros).toBeGreaterThan(0);
+      await expect((await postSegment(harness)).json()).resolves.toEqual({
+        raw: "add integration tests",
+        text: "Add integration tests.",
+        formatted: true,
+      });
+      expect(service.completeCalls).toHaveLength(2);
+      expect(getWritingUsage(harness.deps.db, utcDay()).formattings).toBe(1);
+    });
+  });
+
   it("does not ask for formatting a segment too long for the reply limit", async () => {
     await withTestHarness({}, async (harness) => {
       const long = Array.from(

@@ -2,6 +2,8 @@ import type { ProviderHealthResult } from "@get-bb/plugin-sdk/provider-bridge";
 import type { ClaudeAiStatus } from "./host-contract.js";
 
 const SIGN_IN_MESSAGE = "Run `claude auth login` on the primary machine";
+const EXPIRED_MESSAGE =
+  "The Claude Code sign-in expired and cannot renew. Run `claude auth login` on the primary machine";
 
 export function claudeAiStatusFromHealth(
   result: ProviderHealthResult,
@@ -12,8 +14,12 @@ export function claudeAiStatusFromHealth(
   const { status, statusMessage } = result.health;
   switch (status) {
     case "ready":
-    case "expired":
       return { ready: true };
+    case "expired":
+      return {
+        ready: false,
+        message: statusMessage ?? EXPIRED_MESSAGE,
+      };
     case "not_installed":
       return {
         ready: false,
