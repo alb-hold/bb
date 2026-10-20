@@ -188,7 +188,10 @@ describe("createRealtimeCacheEffects", () => {
         },
       },
     });
-    const listKey = threadListQueryKey({ projectId: "project-1" });
+    const listKey = threadListQueryKey({
+      archived: false,
+      projectId: "project-1",
+    });
     const searchKey = threadSearchQueryKey({
       limitPerGroup: 20,
       query: "native receipt",

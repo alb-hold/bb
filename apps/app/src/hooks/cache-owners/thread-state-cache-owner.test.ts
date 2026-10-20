@@ -721,6 +721,9 @@ it("patches receipt metadata when the thread updatedAt is unchanged", () => {
   updateCachedThreadListStatusState(queryClient, original.id, receipt);
 
   for (const thread of read()) {
+    if (thread === undefined) {
+      throw new Error("Expected the thread in each cache");
+    }
     expect(thread.updatedAt).toBe(30);
     expect(thread.runtime.nativeActivity?.lastEvidenceAt).toBe(20);
   }
