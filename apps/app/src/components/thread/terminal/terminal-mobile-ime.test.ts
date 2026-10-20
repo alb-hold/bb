@@ -175,6 +175,48 @@ describe("mobile terminal IME input through xterm", () => {
     expect(output.join("")).toBe("日本!?");
   });
 
+  it("preserves a typed composition prefix before trailing text and Enter", () => {
+    const { input, output } = openTerminal();
+
+    dispatchComposition(input, "日本");
+    dispatchCompositionCommit(input, "日本");
+    dispatchInsertText(input, "日");
+    dispatchInsertText(input, "!");
+    input.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Enter",
+        keyCode: 13,
+        which: 13,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+
+    expect(output.join("")).toBe("日本日!\r");
+  });
+
+  it("preserves a repeated composition string typed immediately after its echo", async () => {
+    const { input, output } = openTerminal();
+
+    dispatchComposition(input, "日本");
+    dispatchCompositionCommit(input, "日本");
+    dispatchInsertText(input, "日本");
+    await flushComposition();
+
+    expect(output.join("")).toBe("日本日本");
+  });
+
+  it("preserves a composition suffix typed immediately after its echo", async () => {
+    const { input, output } = openTerminal();
+
+    dispatchComposition(input, "日本");
+    dispatchCompositionCommit(input, "日本");
+    dispatchInsertText(input, "本");
+    await flushComposition();
+
+    expect(output.join("")).toBe("日本本");
+  });
+
   it("flushes a deferred insertion before an immediate Enter keydown", () => {
     const { input, output } = openTerminal();
 

@@ -14,8 +14,8 @@ export function suppressDuplicateTerminalCompositionInput(
   sendInput: (data: string) => void,
 ): { dispose: () => void; flushPendingInput: () => void } {
   let composing = false;
-  let pendingText = "";
   let pendingCompositionInput = false;
+  let compositionEchoSuppressed = false;
   let compositionText = "";
   let compositionInput: HTMLTextAreaElement | null = null;
   let compositionBaseValue = "";
@@ -23,12 +23,12 @@ export function suppressDuplicateTerminalCompositionInput(
   let compositionBaseEnd: number | null = 0;
   let compositionBaseDirection: "forward" | "backward" | "none" | null = "none";
   let pendingCompositionInputTimer: ReturnType<typeof setTimeout> | null = null;
-  let pendingTextTimeout: ReturnType<typeof setTimeout> | null = null;
+  let compositionEchoTimeout: ReturnType<typeof setTimeout> | null = null;
   const deferredInputs: DeferredCompositionInput[] = [];
-  const clearPendingTextTimeout = () => {
-    if (pendingTextTimeout === null) return;
-    clearTimeout(pendingTextTimeout);
-    pendingTextTimeout = null;
+  const clearCompositionEchoTimeout = () => {
+    if (compositionEchoTimeout === null) return;
+    clearTimeout(compositionEchoTimeout);
+    compositionEchoTimeout = null;
   };
   const clearDeferredInputTimer = () => {
     if (pendingCompositionInputTimer === null) return;
@@ -73,8 +73,7 @@ export function suppressDuplicateTerminalCompositionInput(
     if (deferredInputs.length === 0) return;
     const trailingText = deferredInputs.map(({ data }) => data).join("");
     clearDeferredInputs();
-    clearPendingTextTimeout();
-    pendingText = "";
+    clearCompositionEchoTimeout();
     pendingCompositionInput = false;
     sendInput(`${compositionText}${trailingText}`);
     resetCompositionTextarea();
@@ -82,25 +81,24 @@ export function suppressDuplicateTerminalCompositionInput(
   const onCompositionStart = (event: CompositionEvent) => {
     composing = true;
     pendingCompositionInput = false;
+    compositionEchoSuppressed = false;
     compositionInput = event.target instanceof HTMLTextAreaElement ? event.target : null;
     compositionBaseValue = compositionInput?.value ?? "";
     compositionBaseStart = compositionInput?.selectionStart ?? 0;
     compositionBaseEnd = compositionInput?.selectionEnd ?? compositionBaseStart;
     compositionBaseDirection = compositionInput?.selectionDirection ?? "none";
-    clearPendingTextTimeout();
-    pendingText = "";
+    clearCompositionEchoTimeout();
     compositionText = "";
   };
   const onCompositionEnd = (event: CompositionEvent) => {
     composing = false;
-    pendingText = event.data;
     compositionText = event.data;
     pendingCompositionInput = event.data.length > 0;
-    clearPendingTextTimeout();
-    pendingTextTimeout = setTimeout(() => {
-      pendingText = "";
+    compositionEchoSuppressed = false;
+    clearCompositionEchoTimeout();
+    compositionEchoTimeout = setTimeout(() => {
       pendingCompositionInput = false;
-      pendingTextTimeout = null;
+      compositionEchoTimeout = null;
     }, 0);
   };
   const onKeydown = () => flushPendingInput();
@@ -109,10 +107,16 @@ export function suppressDuplicateTerminalCompositionInput(
       return;
     }
     if (
-      (pendingCompositionInput || deferredInputs.length > 0) &&
-      event.data &&
-      !pendingText.startsWith(event.data)
+      pendingCompositionInput &&
+      !compositionEchoSuppressed &&
+      event.data === compositionText
     ) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      compositionEchoSuppressed = true;
+      return;
+    }
+    if ((pendingCompositionInput || deferredInputs.length > 0) && event.data) {
       const input = event.target;
       if (!(input instanceof HTMLTextAreaElement)) return;
       const insertedEnd = input.selectionStart ?? input.value.length;
@@ -139,8 +143,7 @@ export function suppressDuplicateTerminalCompositionInput(
       event.preventDefault();
       event.stopImmediatePropagation();
       pendingCompositionInput = true;
-      clearPendingTextTimeout();
-      pendingText = "";
+      clearCompositionEchoTimeout();
       if (pendingCompositionInputTimer === null) {
         pendingCompositionInputTimer = setTimeout(() => {
           pendingCompositionInputTimer = setTimeout(replayDeferredInputs, 0);
@@ -148,22 +151,8 @@ export function suppressDuplicateTerminalCompositionInput(
       }
       return;
     }
-    if (!pendingText || !event.data || !pendingText.startsWith(event.data)) {
-      if (!composing) {
-        clearPendingTextTimeout();
-        pendingText = "";
-      }
-      return;
-    }
-    event.preventDefault();
-    event.stopImmediatePropagation();
-    pendingText = pendingText.slice(event.data.length);
-    if (!pendingText) {
-      clearPendingTextTimeout();
-      pendingTextTimeout = setTimeout(() => {
-        pendingCompositionInput = false;
-        pendingTextTimeout = null;
-      }, 0);
+    if (!composing) {
+      clearCompositionEchoTimeout();
     }
   };
   element.addEventListener("compositionstart", onCompositionStart, true);
@@ -172,7 +161,7 @@ export function suppressDuplicateTerminalCompositionInput(
   element.addEventListener("input", onInput, true);
   return {
     dispose: () => {
-      clearPendingTextTimeout();
+      clearCompositionEchoTimeout();
       if (deferredInputs.length > 0) resetCompositionTextarea();
       clearDeferredInputs();
       element.removeEventListener("compositionstart", onCompositionStart, true);
