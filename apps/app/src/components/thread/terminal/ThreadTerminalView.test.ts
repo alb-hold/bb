@@ -37,6 +37,7 @@ import {
   requestTerminalLinkOpen,
 } from "./terminal-links";
 import {
+  createTerminalViewportPersistence,
   readTerminalViewportAnchor,
   resolveTerminalViewportRestore,
   terminalViewportStorageKey,
@@ -232,13 +233,25 @@ describe("terminal async mount focus", () => {
 });
 
 describe("terminal viewport restore", () => {
-  it("persists a per-thread terminal anchor and restores it after replay", () => {
+  function createStorage() {
     const values = new Map<string, string>();
-    const storage = {
+    const setItem = vi.fn((key: string, value: string) => {
+      values.set(key, value);
+    });
+    return {
       getItem: (key: string) => values.get(key) ?? null,
-      setItem: (key: string, value: string) => values.set(key, value),
+      setItem,
+      removeItem: (key: string) => values.delete(key),
+      key: (index: number) => [...values.keys()][index] ?? null,
+      get length() {
+        return values.size;
+      },
     };
-    const key = terminalViewportStorageKey("thread-1", "terminal-a");
+  }
+
+  it("persists a per-terminal anchor and restores it after replay", () => {
+    const storage = createStorage();
+    const key = terminalViewportStorageKey("terminal-a");
 
     writeTerminalViewportAnchor(storage, key, {
       distanceFromTail: 12,
@@ -259,12 +272,8 @@ describe("terminal viewport restore", () => {
   it.each(["app reload", "server restart", "daemon reconnect"])(
     "restores the same retained viewport after %s",
     () => {
-      const values = new Map<string, string>();
-      const storage = {
-        getItem: (key: string) => values.get(key) ?? null,
-        setItem: (key: string, value: string) => values.set(key, value),
-      };
-      const key = terminalViewportStorageKey("thread-1", "terminal-a");
+      const storage = createStorage();
+      const key = terminalViewportStorageKey("terminal-a");
       writeTerminalViewportAnchor(storage, key, {
         distanceFromTail: 18,
         outputSequence: 64,
@@ -294,13 +303,56 @@ describe("terminal viewport restore", () => {
     ).toBe(baseY);
   });
 
-  it("keeps anchors isolated by thread and terminal", () => {
-    expect(terminalViewportStorageKey("thread-1", "terminal-a")).not.toBe(
-      terminalViewportStorageKey("thread-2", "terminal-a"),
+  it("keeps anchors isolated by terminal session", () => {
+    expect(terminalViewportStorageKey("terminal-a")).not.toBe(
+      terminalViewportStorageKey("terminal-b"),
     );
-    expect(terminalViewportStorageKey("thread-1", "terminal-a")).not.toBe(
-      terminalViewportStorageKey("thread-1", "terminal-b"),
-    );
+  });
+
+  it("coalesces 1,000 scroll updates and flushes the latest anchor on unmount", () => {
+    vi.useFakeTimers();
+    try {
+      const storage = createStorage();
+      const key = terminalViewportStorageKey("terminal-a");
+      const persistence = createTerminalViewportPersistence({ storage, key });
+
+      for (let event = 0; event < 1_000; event += 1) {
+        persistence.schedule({
+          distanceFromTail: 1_000 - event,
+          outputSequence: 42,
+        });
+      }
+
+      expect(storage.setItem).not.toHaveBeenCalled();
+      persistence.dispose();
+
+      expect(storage.setItem).toHaveBeenCalledTimes(2);
+      expect(readTerminalViewportAnchor(storage, key)).toEqual({
+        distanceFromTail: 1,
+        outputSequence: 42,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps only the 200 newest terminal anchors", () => {
+    const storage = createStorage();
+    for (let terminal = 1; terminal <= 201; terminal += 1) {
+      writeTerminalViewportAnchor(
+        storage,
+        terminalViewportStorageKey(`terminal-${terminal}`),
+        { distanceFromTail: terminal, outputSequence: terminal },
+      );
+    }
+
+    expect(
+      readTerminalViewportAnchor(storage, terminalViewportStorageKey("terminal-1")),
+    ).toBeNull();
+    expect(
+      readTerminalViewportAnchor(storage, terminalViewportStorageKey("terminal-201")),
+    ).toEqual({ distanceFromTail: 201, outputSequence: 201 });
+    expect(storage.length).toBe(201);
   });
 
   it("restores the selected terminal and resized split with its viewport anchor", () => {
@@ -337,12 +389,8 @@ describe("terminal viewport restore", () => {
       [terminalA.id, terminalB.id],
       restoredTabs.secondary.activeTabId ?? terminalA.id,
     );
-    const values = new Map<string, string>();
-    const storage = {
-      getItem: (key: string) => values.get(key) ?? null,
-      setItem: (key: string, value: string) => values.set(key, value),
-    };
-    const viewportKey = terminalViewportStorageKey("thread-1", "terminal-a");
+    const storage = createStorage();
+    const viewportKey = terminalViewportStorageKey("terminal-a");
     writeTerminalViewportAnchor(storage, viewportKey, {
       distanceFromTail: 15,
       outputSequence: 42,

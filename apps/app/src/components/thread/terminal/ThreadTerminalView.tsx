@@ -51,10 +51,10 @@ import { loadOptionalTerminalSearchAddon } from "./terminal-search-addon";
 import { TerminalTextSelectSheet } from "./TerminalTextSelectSheet";
 import { terminalTextSnapshot } from "./terminal-text-snapshot";
 import {
+  createTerminalViewportPersistence,
   readTerminalViewportAnchor,
   resolveTerminalViewportRestore,
   terminalViewportStorageKey,
-  writeTerminalViewportAnchor,
 } from "./terminal-viewport";
 import {
   applyTerminalControl,
@@ -797,7 +797,7 @@ export function handleTerminalServerMessage({
       onSessionChange?.(message.session);
       setReplayNextSeq(message.nextSeq);
       setReplayStartSequence?.(message.replayStartSeq);
-      if (message.replayStartSeq >= message.nextSeq) {
+      if (message.replayStartSeq === message.nextSeq) {
         setReplayNextSeq(null);
         onReplayComplete();
       }
@@ -1140,13 +1140,16 @@ export function ThreadTerminalView({
     let hasManualScrollIntent = false;
     let manualScrollTimeout: ReturnType<typeof setTimeout> | null = null;
     const viewportStorageKey = terminalViewportStorageKey(
-      session.threadId ?? session.environmentId ?? session.hostId,
       session.id,
     );
     const savedViewportAnchor = readTerminalViewportAnchor(
       window.localStorage,
       viewportStorageKey,
     );
+    const viewportPersistence = createTerminalViewportPersistence({
+      key: viewportStorageKey,
+      storage: window.localStorage,
+    });
     anchoredOutputSequence = savedViewportAnchor?.outputSequence ?? 0;
     const noteManualScrollIntent = () => {
       hasManualScrollIntent = true;
@@ -1320,9 +1323,9 @@ export function ThreadTerminalView({
                   kind: "copy-text",
                   text,
                   origin: {
-                    ...(session.threadId === null
+                    ...(sessionRef.current.threadId === null
                       ? {}
-                      : { threadId: session.threadId }),
+                      : { threadId: sessionRef.current.threadId }),
                     terminalSessionId: session.id,
                   },
                 },
@@ -1391,6 +1394,8 @@ export function ThreadTerminalView({
           noteManualScrollIntent();
         }
       };
+      const flushViewportOnPageHide = () => viewportPersistence.flush();
+      window.addEventListener("pagehide", flushViewportOnPageHide);
       containerElement.addEventListener("wheel", markManualScrollIntent);
       containerElement.addEventListener("touchmove", markManualScrollIntent);
       containerElement.addEventListener("pointerdown", markManualScrollIntent);
@@ -1414,7 +1419,7 @@ export function ThreadTerminalView({
             outputLineAnchors.at(-1)?.sequence ??
             latestOutputSequence;
         }
-        writeTerminalViewportAnchor(window.localStorage, viewportStorageKey, {
+        viewportPersistence.schedule({
           distanceFromTail,
           outputSequence: anchoredOutputSequence,
         });
@@ -1425,6 +1430,8 @@ export function ThreadTerminalView({
         containerElement.removeEventListener("touchmove", markManualScrollIntent);
         containerElement.removeEventListener("pointerdown", markManualScrollIntent);
         containerElement.removeEventListener("keydown", markManualScrollKeydownIntent);
+        window.removeEventListener("pagehide", flushViewportOnPageHide);
+        viewportPersistence.dispose();
         if (manualScrollTimeout !== null) {
           clearTimeout(manualScrollTimeout);
           manualScrollTimeout = null;
@@ -1943,9 +1950,6 @@ export function ThreadTerminalView({
     session.id,
     handoffOwnerToken,
     session.title,
-    session.threadId,
-    session.environmentId,
-    session.hostId,
     updateHoveredTerminalLink,
   ]);
 
