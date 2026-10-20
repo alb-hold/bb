@@ -658,6 +658,20 @@ describe("ThreadTerminalView terminal focus boundary", () => {
         ).toEqual([{ type: "resize", cols: 51, rows: 47 }]),
       { timeout: 6_000 },
     );
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(
+      testState.socketMessages
+        .map(
+          (message) =>
+            JSON.parse(message) as {
+              cols?: number;
+              rows?: number;
+              type?: string;
+            },
+        )
+        .filter((message) => message.type === "resize"),
+    ).toEqual([{ type: "resize", cols: 51, rows: 47 }]);
 
     testState.sockets[0]?.disconnect();
     await waitFor(() => expect(testState.sockets).toHaveLength(2));
