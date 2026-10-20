@@ -92,6 +92,7 @@ function createFixture() {
       outputAcks: true,
       resizeAcks: false,
       request,
+      sequenceBase: 0,
       sinceSeq: 0,
       socket: raw,
       terminalId,
@@ -162,6 +163,7 @@ describe("TerminalDataPlaneRouter", () => {
         daemonSessionId: "ds_1",
         outputAcks: false,
         resizeAcks: false,
+        sequenceBase: 0,
         request: fixture.sent[0]?.message.type === "browser.attach"
           ? fixture.sent[0].message.request
           : { url: "", headers: [], headBase64: "" },

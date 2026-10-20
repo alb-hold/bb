@@ -2308,7 +2308,7 @@ export class TerminalSessionLifecycle {
 
   resolveRunningTerminalRoute(
     terminalId: string,
-  ): { daemonSessionId: string; terminalId: string } | null {
+  ): { daemonSessionId: string; sequenceBase: number; terminalId: string } | null {
     const current = getTerminalById(this.options.db, terminalId);
     if (
       !current ||
@@ -2317,7 +2317,11 @@ export class TerminalSessionLifecycle {
     ) {
       return null;
     }
-    return { daemonSessionId: current.daemonSessionId, terminalId: current.id };
+    return {
+      daemonSessionId: current.daemonSessionId,
+      sequenceBase: this.outputSequenceRebase.toServer(current.id, 0),
+      terminalId: current.id,
+    };
   }
 
   markDirectOutputSocket(socket: TerminalClientSocket): void {

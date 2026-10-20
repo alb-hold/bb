@@ -88,6 +88,7 @@ interface BrowserAttach {
   readonly attachId: string;
   readonly daemonSessionId: string;
   readonly outputAcks: boolean;
+  readonly sequenceBase: number;
   readonly terminalId: string;
   attachedFrameSent: boolean;
   buffered: TerminalOutputChunk[];
@@ -302,6 +303,7 @@ export class TerminalDataPlaneChild {
       attachId: message.attachId,
       daemonSessionId: message.daemonSessionId,
       outputAcks: message.outputAcks,
+      sequenceBase: message.sequenceBase,
       terminalId: message.terminalId,
       attachedFrameSent: false,
       buffered: [],
@@ -412,7 +414,11 @@ export class TerminalDataPlaneChild {
       attach.lastAckedSeq = nextSeq - 1;
     }
     if (attach.flowClient) {
-      this.flow.acknowledge(attach.terminalId, attach, nextSeq);
+      this.flow.acknowledge(
+        attach.terminalId,
+        attach,
+        Math.max(0, nextSeq - attach.sequenceBase),
+      );
       return;
     }
     this.send({
@@ -655,7 +661,17 @@ export class TerminalDataPlaneChild {
         dataSocketSessionId === null ||
         attach.daemonSessionId === dataSocketSessionId
       ) {
-        this.deliver(attach, chunk, frame);
+        const deliveredChunk =
+          dataSocketSessionId === null || attach.sequenceBase === 0
+            ? chunk
+            : { ...chunk, seq: chunk.seq + attach.sequenceBase };
+        this.deliver(
+          attach,
+          deliveredChunk,
+          deliveredChunk === chunk
+            ? frame
+            : JSON.stringify({ type: "output", chunk: deliveredChunk }),
+        );
       }
     }
   }
@@ -1033,7 +1049,7 @@ export class TerminalDataPlaneChild {
       this.flow.addClient(
         attach.terminalId,
         attach,
-        attach.nextSeq,
+        Math.max(0, attach.nextSeq - attach.sequenceBase),
         attach.visible,
       );
     } else {

@@ -71,6 +71,7 @@ export interface DataPlaneAttachArgs {
   outputAcks: boolean;
   resizeAcks: boolean;
   request: TerminalDataPlaneHandoffRequest;
+  sequenceBase: number;
   sinceSeq: number;
   socket: Socket;
   terminalId: string;
@@ -121,6 +122,7 @@ export class TerminalDataPlaneRouter implements ChildTerminalSocketSink {
         terminalId: args.terminalId,
         daemonSessionId: args.daemonSessionId,
         outputAcks: args.outputAcks,
+        sequenceBase: args.sequenceBase,
         sinceSeq: args.sinceSeq,
         request: args.request,
       },
