@@ -5704,6 +5704,7 @@ describe("bridge", () => {
       if (questionRequest?.id === undefined) {
         throw new Error("Expected an elicitation question request");
       }
+      expect(bridge.messages.filter(isUserQuestionInteraction)).toHaveLength(1);
       expect(questionRequest.params).toMatchObject({
         threadId,
         turnId: null,

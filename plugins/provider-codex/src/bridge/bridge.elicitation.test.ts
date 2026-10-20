@@ -262,6 +262,11 @@ async function runElicitation(args: {
     await harness.waitForResponse(turnRequestId);
     return {
       interaction: params,
+      interactionCount: harness.messages.filter(
+        (message) =>
+          message.method === BRIDGE_INBOUND_REQUEST_METHODS.interactionRequest &&
+          message.id !== undefined,
+      ).length,
       nativeResponse: nativeResponseEnvelopeSchema.parse(
         JSON.parse(readFileSync(responseLogPath, "utf8").trim()),
       ),
@@ -336,13 +341,14 @@ it.sequential("rejects an invalid Computer Use answer without granting access", 
 }, 30_000);
 
 it.sequential("round-trips a validated generic form response", async () => {
-  const { interaction, nativeResponse } = await runElicitation({
+  const { interaction, interactionCount, nativeResponse } = await runElicitation({
     request: formElicitation,
     answer: {
       action: "accept",
       content: { project: "bb", retries: 4, notify: false },
     },
   });
+  expect(interactionCount).toBe(1);
   expect(interaction.payload).toEqual({
     kind: CODEX_MCP_ELICITATION_KIND,
     title: formElicitation.params.message,
@@ -391,6 +397,23 @@ it.sequential("round-trips a validated generic form response", async () => {
       content: { project: "bb", retries: 4, notify: false },
       _meta: null,
     },
+  });
+}, 30_000);
+
+it.sequential("round-trips a generic form cancel answer", async () => {
+  const { interaction, interactionCount, nativeResponse } = await runElicitation({
+    request: formElicitation,
+    answer: { action: "cancel" },
+  });
+  expect(interactionCount).toBe(1);
+  expect(interaction.payload).toMatchObject({
+    kind: CODEX_MCP_ELICITATION_KIND,
+    data: { kind: "form" },
+  });
+  expect(nativeResponse).toEqual({
+    jsonrpc: "2.0",
+    id: "fx-req-1",
+    result: { action: "cancel", content: null, _meta: null },
   });
 }, 30_000);
 
