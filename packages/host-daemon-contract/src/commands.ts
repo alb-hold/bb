@@ -54,6 +54,7 @@ import {
   terminalDataPlaneProbeResultSchema,
 } from "./terminal-data-plane.js";
 import {
+  commandListResultSchema as providerCommandListResultSchema,
   providerHealthResultSchema,
   providerInstallationStatusSchema,
   providerUsageResultSchema,
@@ -915,7 +916,17 @@ const providerListModelsCommandSchema = z.object({
   providerId: z.string().min(1),
   bridgeLaunch: hostDaemonBridgeLaunchSchema,
   cwd: z.string().min(1).optional(),
+  contributedEnv: z.array(hostDaemonContributedEnvEntrySchema),
 });
+
+const providerListCommandsCommandSchema = z
+  .object({
+    type: z.literal("provider.list_commands"),
+    providerId: z.string().min(1),
+    bridgeLaunch: hostDaemonBridgeLaunchSchema,
+    cwd: z.string().min(1).nullable(),
+  })
+  .strict();
 
 const providerHealthCommandSchema = z
   .object({
@@ -1971,6 +1982,15 @@ export const hostDaemonCommandRegistry = {
     resultSchema: terminalDataPlaneConnectResultSchema,
     transport: "onlineRpc",
     retryable: false,
+    flushEventsBeforeResult: false,
+    envLane: null,
+  }),
+  "provider.list_commands": defineHostDaemonCommandDescriptor({
+    type: "provider.list_commands",
+    schema: providerListCommandsCommandSchema,
+    resultSchema: providerCommandListResultSchema,
+    transport: "onlineRpc",
+    retryable: true,
     flushEventsBeforeResult: false,
     envLane: null,
   }),

@@ -145,9 +145,10 @@ jobs:
 
       - name: Setup Bun
         if: ${{ matrix.shard == 'packages' }}
-        uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2b76
+        timeout-minutes: 4
+        uses: ./.github/actions/setup-bun
         with:
-          bun-version: "1.3.14"
+          version: "1.3.14"
 
       - name: Install Electron runtime libraries
         if: ${{ matrix.shard == 'packages' }}
@@ -158,6 +159,10 @@ jobs:
 
       - name: Test
         run: pnpm exec turbo run test ${{ matrix.filter }} --cache-dir=.turbo/cache --output-logs=new-only --concurrency=4 ${{ matrix.args }}
+
+      - name: Test native browser address interactions
+        if: ${{ matrix.shard == 'packages' }}
+        run: xvfb-run -a pnpm exec turbo run smoke:browser-address --filter=@bb/desktop --output-logs=new-only
 
   # Every other suite mocks the Agent SDK, so an upstream CLI release that
   # breaks the model probe passes CI silently. This runs it against a real,
@@ -180,9 +185,10 @@ jobs:
           cache-prefix: plugin-forks
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2b76
+        timeout-minutes: 4
+        uses: ./.github/actions/setup-bun
         with:
-          bun-version: "1.3.14"
+          version: "1.3.14"
 
       - name: Build, typecheck, and test forkable plugins outside the workspace
         run: node scripts/check-plugin-forks.mjs

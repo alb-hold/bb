@@ -144,6 +144,16 @@ export class ThreadTokenStore {
   private readonly tokenIndex = new Map<string, RouteRecord>();
   private readonly nestedRoutes = new Map<string, NestedRouteRecord>();
   private readonly nestedTokenIndex = new Map<string, NestedRouteRecord>();
+  private readonly catalogTokenIndex = new Map<
+    string,
+    {
+      hostId: string;
+      provider: ThreadRoute["provider"];
+      hostTokenDigest: string;
+      issuedAt: number;
+      expiresAt: number;
+    }
+  >();
   private readonly archivedThreads = new Set<string>();
   private readonly deletedThreadDigests = new Set<string>();
   private readonly recordedDeletions = new Set<string>();
@@ -582,6 +592,23 @@ export class ThreadTokenStore {
     });
   }
 
+  async forCatalog(
+    hostId: string,
+    provider: ThreadRoute["provider"],
+    hostToken: string,
+  ): Promise<string> {
+    const token = randomBytes(32).toString("base64url");
+    const { issuedAt, expiresAt } = this.processLifetime();
+    this.catalogTokenIndex.set(digest(token), {
+      hostId,
+      provider,
+      hostTokenDigest: digest(hostToken),
+      issuedAt,
+      expiresAt,
+    });
+    return token;
+  }
+
   async authenticate(
     token: string | null,
     provider?: ThreadRoute["provider"],
@@ -608,6 +635,30 @@ export class ThreadTokenStore {
       provider: record.provider,
       accountId: record.accountId,
     };
+  }
+
+  async authenticateCatalog(
+    token: string | null,
+    provider: ThreadRoute["provider"],
+  ): Promise<string | null> {
+    if (token === null) return null;
+    const tokenDigest = digest(token);
+    const record = this.catalogTokenIndex.get(tokenDigest);
+    if (
+      record === undefined ||
+      record.provider !== provider ||
+      !this.lifetimeSound(record) ||
+      record.expiresAt <= this.now()
+    ) {
+      this.catalogTokenIndex.delete(tokenDigest);
+      return null;
+    }
+    return (await this.hosts.authenticateGeneration(
+      record.hostId,
+      record.hostTokenDigest,
+    ))
+      ? record.hostId
+      : null;
   }
 
   isProcessCredential(token: string | null): boolean {

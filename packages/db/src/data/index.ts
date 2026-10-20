@@ -250,6 +250,7 @@ export {
   listUnnormalizedPluginRegistrations,
   markInstalledPluginRemoved,
   normalizeInstalledPluginRegistration,
+  restoreRemovedInstalledPlugin,
   setInstalledPluginDirectProvenance,
   setInstalledPluginEnabled,
   setInstalledPluginUpdateState,
@@ -393,6 +394,7 @@ export {
   getHighWaterMarks,
   findStoredEventRow,
   getActiveStoredTurnId,
+  isStoredTurnMainRunIdle,
   hasRootStoredTurnStarted,
   hasStoredSpawnAgentToolCall,
   hasStoredTerminalClientTurnRequestEvent,
@@ -502,6 +504,7 @@ export type {
 } from "./events.js";
 
 export {
+  countTerminalSessions,
   createTerminalSession,
   getTerminalSession,
   listTerminalSessions,

@@ -1,6 +1,5 @@
 import { collectOptionalFieldPaths } from "@bb/test-helpers";
 import {
-  createTerminalGridMarker,
   TERMINAL_COLS_MAX,
   TERMINAL_DATA_MAX_BASE64_LENGTH,
   TERMINAL_DATA_MAX_BYTES,
@@ -179,9 +178,9 @@ const WORKSPACE_DIFF_AVAILABLE_RESULT: JsonObject = {
 
 const ONLINE_RPC_RESPONSE_RESULT_FIXTURES: OnlineRpcResponseResultFixtures = {
   "environment.hook.run": {},
+  "environment.hook.cancel": { status: "terminated" },
   "terminal-data-plane.probe": { dataSocket: true, ipcVersion: 1 },
   "terminal-data-plane.connect": { connected: true },
-  "environment.hook.cancel": { status: "terminated" },
   "desktop.browser.list_instances": { instances: [] },
   "desktop.browser.list_tabs": { tabs: [] },
   "desktop.browser.create_tab": {
@@ -431,6 +430,15 @@ const ONLINE_RPC_RESPONSE_RESULT_FIXTURES: OnlineRpcResponseResultFixtures = {
       },
     ],
     selectedOnlyModels: [],
+  },
+  "provider.list_commands": {
+    commands: [
+      {
+        name: "simplify",
+        description: "Simplify the changed code",
+        inputHint: "[<target>]",
+      },
+    ],
   },
   "provider.health": {
     supported: true,
@@ -823,8 +831,6 @@ const INTENTIONAL_OPTIONAL_HOST_DAEMON_FIELDS: Record<string, string> = {
     "a dynamic tool's presentation carries a tint only when the plugin wants an accent colour; absence means the neutral row tint, which is not a colour value.",
   "hostDaemonCommandSchema.dynamicTools.presentation.title":
     "a dynamic tool's presentation has a title only when the call has a headline (a path, a query); absence means the label stands alone.",
-  "hostDaemonCommandSchema.dynamicTools.waitsForUserInput":
-    "a dynamic tool waits for user input only while its plugin-owned interaction is pending; absence means the tool completes with the turn.",
   "hostDaemonCommandSchema.input.sourceProjectId":
     "a source project exists only on a portable server-facing attachment reference; the server copies it into the destination and strips this field before sending a daemon command.",
   "hostDaemonCommandSchema.input.hostId":
@@ -861,8 +867,6 @@ const INTENTIONAL_OPTIONAL_HOST_DAEMON_FIELDS: Record<string, string> = {
     "a dynamic tool's presentation carries a tint only when the plugin wants an accent colour; absence means the neutral row tint, which is not a colour value.",
   "hostDaemonCommandSchema.resumeContext.dynamicTools.presentation.title":
     "a dynamic tool's presentation has a title only when the call has a headline (a path, a query); absence means the label stands alone.",
-  "hostDaemonCommandSchema.resumeContext.dynamicTools.waitsForUserInput":
-    "a resumed dynamic tool waits for user input only while its plugin-owned interaction is pending; absence means the tool completes with the turn.",
   "hostDaemonInteractiveRequestSchema.interaction.payload.questions.options":
     "a user question omits options when it takes free text only; absence is the question's shape, not missing choices.",
   "hostDaemonInteractiveRequestSchema.interaction.payload.questions.options.description":
@@ -1263,7 +1267,7 @@ describe("host-daemon command schemas", () => {
   });
 
   it("uses the current host-daemon protocol version", () => {
-    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(242);
+    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(244);
     expect(HOST_ARTIFACT_MAX_BYTES).toBe(256 * 1024 * 1024);
   });
 
@@ -1833,6 +1837,7 @@ describe("host-daemon command schemas", () => {
       },
       {
         type: "provider.list_models",
+        contributedEnv: [],
         providerId: "codex",
         bridgeLaunch: BRIDGE_LAUNCH,
       },
@@ -2218,6 +2223,7 @@ describe("host-daemon command schemas", () => {
   it("round-trips a provider's declared launch spec on provider.list_models, thread.start, and turn.submit", () => {
     const providerListModelsCommand = {
       type: "provider.list_models",
+      contributedEnv: [],
       bridgeLaunch: ACP_BRIDGE_LAUNCH,
       providerId: "acp-local",
       cwd: "/tmp/workspace",
@@ -2345,6 +2351,7 @@ describe("host-daemon command schemas", () => {
 
     const providerListModelsCommand = {
       type: "provider.list_models",
+      contributedEnv: [],
       providerId: "echo-agent",
       bridgeLaunch,
       cwd: "/tmp/workspace",
@@ -3756,7 +3763,6 @@ describe("host-daemon session schemas", () => {
         requestId: "request-1",
         terminalId: "term_123",
         threadId: "thr_123",
-        cwd: "/tmp/workspace/packages/app",
         target: {
           kind: "workspace",
           environmentId: "env_123",
@@ -3764,23 +3770,6 @@ describe("host-daemon session schemas", () => {
             workspacePath: "/tmp/workspace",
           },
         },
-        cols: TERMINAL_COLS_MAX,
-        rows: TERMINAL_ROWS_MAX,
-        start: { mode: "shell" },
-      }).success,
-    ).toBe(true);
-    expect(
-      hostDaemonServerWsMessageSchema.safeParse({
-        type: "terminal.open",
-        contributedEnv: [],
-        requestId: "request-1",
-        terminalId: "term_123",
-        target: {
-          kind: "workspace",
-          environmentId: "env_123",
-          workspaceContext: { workspacePath: "/tmp/workspace" },
-        },
-        cwd: "x".repeat(4097),
         cols: TERMINAL_COLS_MAX,
         rows: TERMINAL_ROWS_MAX,
         start: { mode: "shell" },
@@ -3847,15 +3836,6 @@ describe("host-daemon session schemas", () => {
         dataBase64: maxPayload,
       }).success,
     ).toBe(true);
-    const markerChunk = {
-      seq: 1,
-      dataBase64: Buffer.from(
-        `${createTerminalGridMarker({ cols: 120, rows: 36 })}payload`,
-      ).toString("base64"),
-    };
-    expect(hostDaemonTerminalOutputChunkSchema.parse(markerChunk)).toEqual(
-      markerChunk,
-    );
     expect(
       hostDaemonDaemonWsMessageSchema.safeParse({
         type: "terminal.replay",
@@ -3882,34 +3862,6 @@ describe("host-daemon session schemas", () => {
       hostDaemonTerminalOutputChunkSchema.safeParse({
         seq: 0,
         dataBase64: oversizedEncodedPayload,
-      }).success,
-    ).toBe(false);
-  });
-
-  it("sanitizes and bounds daemon terminal attention payloads", () => {
-    const result = hostDaemonDaemonWsMessageSchema.parse({
-      type: "terminal.attention",
-      terminalId: "term_123",
-      seq: 7,
-      kind: "osc-777",
-      title: `Build\u0000${"x".repeat(300)}`,
-      body: `Done\u001b${"y".repeat(2100)}`,
-    });
-    if (result.type !== "terminal.attention") {
-      throw new Error("Expected a terminal attention message");
-    }
-    expect(result).toMatchObject({
-      title: `Build${"x".repeat(251)}`,
-      body: `Done${"y".repeat(2044)}`,
-    });
-    expect(result.title).toHaveLength(256);
-    expect(result.body).toHaveLength(2048);
-    expect(
-      hostDaemonDaemonWsMessageSchema.safeParse({
-        type: "terminal.attention",
-        terminalId: "term_123",
-        seq: -1,
-        kind: "osc-777",
       }).success,
     ).toBe(false);
   });
