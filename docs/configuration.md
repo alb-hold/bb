@@ -339,6 +339,10 @@ Settings (stored server-side; also `bb settings writing`):
 | `dailyCorrectionLimit`  | `300`       | Writing requests per UTC day before assistance pauses                                                                                                |
 | `dailyDictationMinutes` | `60`        | Dictated minutes per UTC day before dictation stops; bb cloud also caps each account at $0.50 of AI usage per day, about 80 minutes of transcription |
 
+`bb settings writing vocabulary add|remove` and the Settings page edit the
+vocabulary on the server in one step, so concurrent edits keep each other's
+terms. `remove` changes nothing and fails when a term is not in the vocabulary.
+
 Automatic typing correction applies an edit by itself only when its meaning cannot
 change, whatever the AI service reports: capitalizing the first word of a
 sentence or the pronoun I, and spacing, inside a sentence that already ends
@@ -359,7 +363,7 @@ plural changes are offered as suggestions. Code, paths, identifiers and
 vocabulary terms are never edited, and on a line containing any of
 = ; { } ( ) < > [ ] $ ` | \ / # " or --, a colon followed directly by text
 (10:30), a key: value line (status: ready, - name: x, "title": x), a line
-that starts with a shell command such as echo, git or npm (also after a $,
+that starts with a shell command or builtin such as echo, git, npm or read (also after a $,
 %, > or # prompt or sudo), a line with a short flag such as -la, a line
 indented four spaces or a tab, or a ``` or ~~~ fence line or a line inside such a fence (closed
 only by a bare fence of the same character at least as long), every

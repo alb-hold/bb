@@ -106,7 +106,8 @@ has/have and does/do, whose mood can change the meaning, are only suggested), an
 entao and amanha apply by themselves, never inside code, paths, identifiers or
 vocabulary terms, nor on a line containing = ; { } ( ) < > [ ] $ ` | \ / # or --.
 Vocabulary terms are spelling hints for transcription and correction, not a
-guarantee. Everything else, including spelling, other punctuation and
+guarantee. `vocabulary remove` changes nothing and fails when a term is
+not in the vocabulary. Everything else, including spelling, other punctuation and
 tense or plural changes such as deploy/deployed, is offered as a suggestion. `correct` and `transcribe` run the
 same pipeline as the composer. `transcribe` accepts WebM or Ogg with Opus,
 MP4 or M4A with AAC, MP3 and WAV; the server measures the clip, counting gaps
