@@ -201,7 +201,9 @@ export function createAiServiceRegistry(
       if (cached !== undefined && now() - cached.checkedAt <= STATUS_TTL_MS) {
         return cached.status;
       }
-      return answerWithin(service, refresh(service), maxWaitMs);
+      const probe = refresh(service);
+      if (cached?.status.ready === true) return cached.status;
+      return answerWithin(service, probe, maxWaitMs);
     },
   };
 }

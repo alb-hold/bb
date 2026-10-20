@@ -236,6 +236,52 @@ describe("AI task routing", () => {
     });
   });
 
+  it("gives the call the full deadline when a ready status has expired and its recheck is slow", async () => {
+    await withTestHarness({}, async (harness) => {
+      let clock = 0;
+      let checks = 0;
+      const deps = {
+        ...harness.deps,
+        aiServices: createAiServiceRegistry({ now: () => clock }),
+      };
+      const claude = registerFakeAiService(deps.aiServices, {
+        id: "claude",
+        pluginId: "provider-claude-code",
+        builtin: true,
+        status: () => {
+          checks += 1;
+          return checks === 1
+            ? Promise.resolve({ ready: true as const })
+            : new Promise((resolve) =>
+                setTimeout(() => resolve({ ready: true }), 1_600),
+              );
+        },
+        complete: () =>
+          new Promise((resolve) =>
+            setTimeout(() => resolve("Claude title"), 1_000),
+          ),
+      });
+      await deps.aiServices.status({
+        pluginId: "provider-claude-code",
+        serviceId: "claude",
+      });
+
+      clock += 10_001;
+      const startedAt = Date.now();
+      const outcome = await runTextAiTask(deps, {
+        task: "thread-title",
+        label: "test",
+        prompt: PROMPT,
+        timeoutMs: 2_000,
+      });
+
+      expect(outcome).toMatchObject({ ok: true, value: "Claude title" });
+      expect(Date.now() - startedAt).toBeLessThan(1_500);
+      expect(checks).toBe(2);
+      expect(claude.completeCalls).toHaveLength(1);
+    });
+  });
+
   it("skips a cancelled request without calling a service", async () => {
     await withTestHarness({}, async (harness) => {
       const codex = registerFakeAiService(harness.deps.aiServices, {
