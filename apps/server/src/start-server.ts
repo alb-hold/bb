@@ -644,6 +644,11 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
               onTerminalSocketParsedMessage({ terminalSessions }, args),
             recordInputActivity: (terminalId) =>
               terminalSessions.recordDirectTerminalInput(terminalId),
+            stripHolderMarkersFromDataPlaneOutput: (terminalId, chunk) =>
+              terminalSessions.stripHolderMarkersFromDataPlaneOutput(
+                terminalId,
+                chunk,
+              ),
             recordOutputBatch: (args) =>
               terminalSessions.recordDirectTerminalOutputBatch(args),
           },

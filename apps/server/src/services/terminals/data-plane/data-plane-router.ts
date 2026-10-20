@@ -47,6 +47,10 @@ export interface DataPlaneLifecyclePort {
     terminalId: string;
   }): void;
   recordInputActivity(terminalId: string): void;
+  stripHolderMarkersFromDataPlaneOutput(
+    terminalId: string,
+    chunk: TerminalOutputChunk,
+  ): TerminalOutputChunk;
   recordOutputBatch(args: {
     chunks: TerminalOutputChunk[];
     daemonSessionId: string;
@@ -341,12 +345,16 @@ export class TerminalDataPlaneRouter implements ChildTerminalSocketSink {
   }
 
   relayOutput(terminalId: string, chunk: TerminalOutputChunk): void {
+    const sanitized = this.lifecycle.stripHolderMarkersFromDataPlaneOutput(
+      terminalId,
+      chunk,
+    );
     const relayed = this.relayedSeqByTerminalId.get(terminalId) ?? -1;
-    if (chunk.seq <= relayed) {
+    if (sanitized.seq <= relayed) {
       return;
     }
-    this.relayedSeqByTerminalId.set(terminalId, chunk.seq);
-    this.relayDaemonOutput(terminalId, chunk);
+    this.relayedSeqByTerminalId.set(terminalId, sanitized.seq);
+    this.relayDaemonOutput(terminalId, sanitized);
   }
 
   close(attachId: string, code: number, reason: string): void {

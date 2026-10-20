@@ -3038,6 +3038,74 @@ describe("native terminal threads", () => {
       ).toString("utf8");
     };
 
+    const replayTerminalId = await openShell();
+    const replayMarker = Buffer.from(
+      `\u001b]7791;bb-grid;80;24\u0007\u001b]7717;bb-holder;${replayTerminalId}\u0007`,
+    );
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.hostId,
+      sessionId: fixture.sessionId,
+      message: {
+        type: "terminal.replay",
+        requestId: "holder-marker-replay",
+        terminalId: replayTerminalId,
+        chunks: replayMarker
+          .reduce<Buffer[]>(
+            (parts, byte) => [...parts, Buffer.from([byte])],
+            [],
+          )
+          .map((part, seq) => ({
+            seq,
+            dataBase64: part.toString("base64"),
+          }))
+          .concat([
+            {
+              seq: replayMarker.length,
+              dataBase64: Buffer.from("REPLAY-SUFFIX\n").toString("base64"),
+            },
+          ]),
+        replayStartSeq: 0,
+        nextSeq: replayMarker.length + 1,
+      },
+    });
+    expect(
+      getTerminalSession(fixture.harness.db, {
+        kind: "terminal",
+        terminalId: replayTerminalId,
+      }),
+    ).toMatchObject({ holderBacked: true });
+    expect(await retainedText(replayTerminalId)).toBe(
+      `\u001b]7791;bb-grid;80;24\u0007REPLAY-SUFFIX\n`,
+    );
+    const midReplayMarker = Buffer.from(
+      `\u001b]7717;bb-holder;${replayTerminalId}\u0007`,
+    );
+    const midReplayChunks = [
+      Buffer.from("BEFORE\n"),
+      ...Array.from(midReplayMarker, (byte) => Buffer.from([byte])),
+      Buffer.from("AFTER\n"),
+    ];
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.hostId,
+      sessionId: fixture.sessionId,
+      message: {
+        type: "terminal.replay",
+        requestId: "holder-marker-mid-replay",
+        terminalId: replayTerminalId,
+        chunks: midReplayChunks.map((part, index) => ({
+          seq: 100 + index,
+          dataBase64: part.toString("base64"),
+        })),
+        replayStartSeq: 100,
+        nextSeq: 100 + midReplayChunks.length,
+      },
+    });
+    const holderReplayText = await retainedText(replayTerminalId);
+    expect(holderReplayText.endsWith("BEFORE\nAFTER\n")).toBe(true);
+    expect(holderReplayText).not.toContain(
+      `\u001b]7717;bb-holder;${replayTerminalId}\u0007`,
+    );
+
     const firstSplitTerminalId = await openShell();
     const firstSplitMarker = Buffer.from(
       `\u001b]7717;bb-holder;${firstSplitTerminalId}\u0007`,

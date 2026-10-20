@@ -71,6 +71,7 @@ function createFixture() {
     detach: vi.fn(),
     handleMessage: vi.fn(),
     recordInputActivity: vi.fn(),
+    stripHolderMarkersFromDataPlaneOutput: (_terminalId, output) => output,
     recordOutputBatch: vi.fn(),
   };
   const onTerminalExited = vi.fn();
@@ -256,6 +257,31 @@ describe("TerminalDataPlaneRouter", () => {
         message.type === "terminal.output" ? message.chunk.seq : -1,
       ),
     ).toEqual([2, 3]);
+  });
+
+  it("sanitizes output before relaying it to browser sockets", async () => {
+    const fixture = createFixture();
+    fixture.lifecycle.stripHolderMarkersFromDataPlaneOutput = vi.fn(
+      (_terminalId, output) => ({ ...output, dataBase64: "c2FmZQ==" }),
+    );
+    fixture.attach();
+    await Promise.resolve();
+    fixture.attached[0]?.send(
+      JSON.stringify({ type: "output", chunk: chunk(2) }),
+    );
+    expect(fixture.lifecycle.stripHolderMarkersFromDataPlaneOutput).toHaveBeenCalledWith(
+      "term_1",
+      chunk(2),
+    );
+    expect(
+      fixture.sent.find(
+        (entry) => entry.message.type === "terminal.output" && entry.message.chunk.seq === 2,
+      )?.message,
+    ).toMatchObject({
+      type: "terminal.output",
+      terminalId: "term_1",
+      chunk: { seq: 2, dataBase64: "c2FmZQ==" },
+    });
   });
 
   it("routes acks and controls only to the socket they name", () => {

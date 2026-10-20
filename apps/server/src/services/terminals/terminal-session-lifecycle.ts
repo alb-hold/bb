@@ -105,6 +105,7 @@ const TERMINAL_HOLDER_MARKER_TIMEOUT_MS = 250;
 const TERMINAL_HOLDER_MARKER_PREFIX_BYTES = Buffer.from(
   TERMINAL_HOLDER_MARKER_PREFIX,
 );
+const TERMINAL_GRID_MARKER_PREFIX_BYTES = Buffer.from("\u001b]7791;bb-grid;");
 const TERMINAL_OUTPUT_DISCARDED_MESSAGE = `The server no longer has the retained output of this exited terminal. The server keeps terminal output for ${TERMINAL_EXIT_RETENTION_MINUTES} minutes after a terminal exits, so read it sooner or run the command again.`;
 const TERMINAL_ATTACH_CANCELLED = new Error("Terminal attach cancelled");
 const REOPEN_NATIVE_TERMINAL_REPAINT_DELAY_MS = 1_500;
@@ -449,47 +450,103 @@ function stripTerminalHolderMarker(data: Buffer): {
   return { data: data.subarray(end + 1), terminalId };
 }
 
-function inspectTerminalHolderMarker(
-  data: Buffer,
-):
+function inspectTerminalHolderMarker(data: Buffer):
   | { kind: "pending" }
   | { kind: "mismatch" }
-  | { kind: "complete"; markerLength: number; terminalId: string } {
+  | {
+      kind: "complete";
+      markerLength: number;
+      markerOffset: number;
+      terminalId: string;
+    } {
+  let markerOffset = 0;
+  if (
+    !data
+      .subarray(
+        0,
+        Math.min(data.length, TERMINAL_HOLDER_MARKER_PREFIX_BYTES.length),
+      )
+      .equals(
+        TERMINAL_HOLDER_MARKER_PREFIX_BYTES.subarray(
+          0,
+          Math.min(data.length, TERMINAL_HOLDER_MARKER_PREFIX_BYTES.length),
+        ),
+      )
+  ) {
+    const gridPrefixLength = Math.min(
+      data.length,
+      TERMINAL_GRID_MARKER_PREFIX_BYTES.length,
+    );
+    if (
+      !data
+        .subarray(0, gridPrefixLength)
+        .equals(TERMINAL_GRID_MARKER_PREFIX_BYTES.subarray(0, gridPrefixLength))
+    ) {
+      return { kind: "mismatch" };
+    }
+    const gridMarkerEnd = data.indexOf(
+      0x07,
+      TERMINAL_GRID_MARKER_PREFIX_BYTES.length,
+    );
+    if (gridMarkerEnd < 0) {
+      const gridMarkerBody = data
+        .subarray(TERMINAL_GRID_MARKER_PREFIX_BYTES.length)
+        .toString("ascii");
+      return /^[0-9;]*$/u.test(gridMarkerBody) && data.length < 64
+        ? { kind: "pending" }
+        : { kind: "mismatch" };
+    }
+    const gridMarkerBody = data
+      .subarray(TERMINAL_GRID_MARKER_PREFIX_BYTES.length, gridMarkerEnd)
+      .toString("ascii");
+    if (!/^\d{1,4};\d{1,4}$/u.test(gridMarkerBody)) {
+      return { kind: "mismatch" };
+    }
+    markerOffset = gridMarkerEnd + 1;
+  }
+  const markerData = data.subarray(markerOffset);
   const prefixLength = Math.min(
-    data.length,
+    markerData.length,
     TERMINAL_HOLDER_MARKER_PREFIX_BYTES.length,
   );
   if (
-    !data
+    !markerData
       .subarray(0, prefixLength)
       .equals(TERMINAL_HOLDER_MARKER_PREFIX_BYTES.subarray(0, prefixLength))
   ) {
     return { kind: "mismatch" };
   }
-  if (data.length < TERMINAL_HOLDER_MARKER_PREFIX_BYTES.length) {
+  if (markerData.length < TERMINAL_HOLDER_MARKER_PREFIX_BYTES.length) {
     return { kind: "pending" };
   }
-  const end = data.indexOf(0x07, TERMINAL_HOLDER_MARKER_PREFIX_BYTES.length);
+  const end = markerData.indexOf(
+    0x07,
+    TERMINAL_HOLDER_MARKER_PREFIX_BYTES.length,
+  );
   if (end < 0) {
-    const idBytes = data.subarray(TERMINAL_HOLDER_MARKER_PREFIX_BYTES.length);
+    const idBytes = markerData.subarray(
+      TERMINAL_HOLDER_MARKER_PREFIX_BYTES.length,
+    );
     if (
       idBytes.length > 128 ||
-      data.length >= TERMINAL_HOLDER_MARKER_LIMIT ||
+      markerData.length >= TERMINAL_HOLDER_MARKER_LIMIT ||
       !/^[A-Za-z0-9_-]*$/u.test(idBytes.toString("ascii"))
     ) {
       return { kind: "mismatch" };
     }
     return { kind: "pending" };
   }
-  const markerLength = end + 1;
-  const marker = stripTerminalHolderMarker(data.subarray(0, markerLength));
-  if (
-    markerLength > TERMINAL_HOLDER_MARKER_LIMIT ||
-    marker.terminalId === null
-  ) {
+  const markerLength = markerOffset + end + 1;
+  const marker = stripTerminalHolderMarker(markerData.subarray(0, end + 1));
+  if (end + 1 > TERMINAL_HOLDER_MARKER_LIMIT || marker.terminalId === null) {
     return { kind: "mismatch" };
   }
-  return { kind: "complete", markerLength, terminalId: marker.terminalId };
+  return {
+    kind: "complete",
+    markerLength,
+    markerOffset,
+    terminalId: marker.terminalId,
+  };
 }
 
 function terminalRpcKey(
@@ -2304,7 +2361,11 @@ export class TerminalSessionLifecycle {
     ) {
       return;
     }
-    for (const chunk of args.chunks) {
+    for (const rawChunk of args.chunks) {
+      const chunk = this.stripHolderMarkersFromDataPlaneOutput(
+        args.terminalId,
+        rawChunk,
+      );
       if (current.status === "running") {
         this.outputFlow.recordOutput(
           args.terminalId,
@@ -2323,6 +2384,32 @@ export class TerminalSessionLifecycle {
         Date.now(),
       );
     }
+  }
+
+  stripHolderMarkersFromDataPlaneOutput(
+    terminalId: string,
+    chunk: TerminalOutputChunk,
+  ): TerminalOutputChunk {
+    const current = getTerminalById(this.options.db, terminalId);
+    if (current === null) return chunk;
+    if (!this.pendingHolderMarkers.has(current.id) && !current.holderBacked) {
+      return chunk;
+    }
+    const data = Buffer.from(chunk.dataBase64, "base64");
+    const marker = Buffer.from(
+      `${TERMINAL_HOLDER_MARKER_PREFIX}${current.id}\u0007`,
+    );
+    let markerOffset = data.indexOf(marker);
+    if (markerOffset < 0) return chunk;
+    let output = data;
+    while (markerOffset >= 0) {
+      output = Buffer.concat([
+        output.subarray(0, markerOffset),
+        output.subarray(markerOffset + marker.length),
+      ]);
+      markerOffset = output.indexOf(marker);
+    }
+    return { ...chunk, dataBase64: output.toString("base64") };
   }
 
   private closeDaemonSessionBrowserTerminals(args: {
@@ -2702,7 +2789,23 @@ export class TerminalSessionLifecycle {
         return;
       }
       case "terminal.replay": {
-        const message = this.outputSequenceRebase.replayToServer(args.message);
+        const rebasedMessage = this.outputSequenceRebase.replayToServer(
+          args.message,
+        );
+        const replaySession = getTerminalById(
+          this.options.db,
+          rebasedMessage.terminalId,
+        );
+        const message =
+          replaySession === null
+            ? rebasedMessage
+            : {
+                ...rebasedMessage,
+                chunks: this.stripPendingHolderMarkerFromReplay(
+                  replaySession,
+                  rebasedMessage.chunks,
+                ),
+              };
         const current = getTerminalById(this.options.db, message.terminalId);
         if (
           current &&
@@ -3274,15 +3377,7 @@ export class TerminalSessionLifecycle {
     const data = Buffer.from(chunk.dataBase64, "base64");
     let pending = this.pendingHolderOutput.get(current.id);
     if (pending === undefined) {
-      const prefixLength = Math.min(
-        data.length,
-        TERMINAL_HOLDER_MARKER_PREFIX_BYTES.length,
-      );
-      if (
-        !data
-          .subarray(0, prefixLength)
-          .equals(TERMINAL_HOLDER_MARKER_PREFIX_BYTES.subarray(0, prefixLength))
-      ) {
+      if (inspectTerminalHolderMarker(data).kind === "mismatch") {
         this.pendingHolderMarkers.delete(current.id);
         return false;
       }
@@ -3321,11 +3416,22 @@ export class TerminalSessionLifecycle {
         update: { kind: "holder-backed" },
       });
     }
-    let markerBytesRemaining = inspection.markerLength;
+    let markerPrefixRemaining = inspection.markerOffset;
+    let markerBytesRemaining =
+      inspection.markerLength - inspection.markerOffset;
     for (const part of pending.chunks) {
-      const bytesToStrip = Math.min(markerBytesRemaining, part.data.length);
+      const prefixBytes = Math.min(markerPrefixRemaining, part.data.length);
+      const markerBytesStart = prefixBytes;
+      const bytesToStrip = Math.min(
+        markerBytesRemaining,
+        part.data.length - markerBytesStart,
+      );
+      markerPrefixRemaining -= prefixBytes;
       markerBytesRemaining -= bytesToStrip;
-      const outputData = part.data.subarray(bytesToStrip);
+      const outputData = Buffer.concat([
+        part.data.subarray(0, markerBytesStart),
+        part.data.subarray(markerBytesStart + bytesToStrip),
+      ]);
       const outputChunk =
         bytesToStrip === 0
           ? part.chunk
@@ -3341,6 +3447,62 @@ export class TerminalSessionLifecycle {
       );
     }
     return true;
+  }
+
+  private stripPendingHolderMarkerFromReplay(
+    current: TerminalSessionRow,
+    chunks: TerminalReplayMessage["chunks"],
+  ): TerminalReplayMessage["chunks"] {
+    const markerPending = this.pendingHolderMarkers.has(current.id);
+    const data = chunks.map((chunk) => Buffer.from(chunk.dataBase64, "base64"));
+    const combined = Buffer.concat(data);
+    const marker = Buffer.from(
+      `${TERMINAL_HOLDER_MARKER_PREFIX}${current.id}\u0007`,
+    );
+    let markerOffset = combined.indexOf(marker);
+    if (markerOffset < 0 && !current.holderBacked) {
+      this.flushPendingHolderOutput(current.id);
+      return chunks;
+    }
+    if (markerOffset >= 0 && markerPending) {
+      this.pendingHolderMarkers.delete(current.id);
+      updateTerminalSession(this.options.db, {
+        scope: {
+          kind: "terminal",
+          statuses: ["starting", "running"],
+          terminalId: current.id,
+        },
+        update: { kind: "holder-backed" },
+      });
+    }
+    const pending = this.pendingHolderOutput.get(current.id);
+    if (pending !== undefined && markerOffset >= 0) {
+      clearTimeout(pending.timer);
+      this.pendingHolderOutput.delete(current.id);
+    }
+    let output = combined;
+    let stripped = false;
+    markerOffset = output.indexOf(marker);
+    while (markerOffset >= 0) {
+      output = Buffer.concat([
+        output.subarray(0, markerOffset),
+        output.subarray(markerOffset + marker.length),
+      ]);
+      stripped = true;
+      markerOffset = output.indexOf(marker);
+    }
+    if (!stripped) return chunks;
+    let offset = 0;
+    return chunks.map((chunk, index) => {
+      const length = Math.min(data[index]?.length ?? 0, output.length - offset);
+      const nextOffset = offset + Math.max(0, length);
+      const outputChunk = output.subarray(offset, nextOffset);
+      offset = nextOffset;
+      return {
+        ...chunk,
+        dataBase64: outputChunk.toString("base64"),
+      };
+    });
   }
 
   private flushPendingHolderOutput(terminalId: string): void {
