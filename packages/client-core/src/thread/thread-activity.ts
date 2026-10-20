@@ -21,8 +21,28 @@ type ThreadStatusShape = Pick<
 type ThreadRuntimeShape = Pick<ThreadWithRuntime, "runtime">;
 type ThreadActivityStateShape = Pick<ThreadListEntry, "activity">;
 
-function isRuntimeBusyThread(thread: ThreadRuntimeShape): boolean {
-  return isRunningThreadRuntimeDisplayStatus(thread.runtime.displayStatus);
+function isRuntimeBusyThread(
+  thread: ThreadRuntimeShape,
+  now = Date.now(),
+): boolean {
+  return (
+    !isNativeActivityUnconfirmed(thread.runtime, now) &&
+    isRunningThreadRuntimeDisplayStatus(thread.runtime.displayStatus)
+  );
+}
+
+export function isNativeActivityUnconfirmed(
+  runtime: ThreadRuntimeShape["runtime"],
+  now = Date.now(),
+): boolean {
+  const activity = runtime.nativeActivity;
+  if (activity === undefined) return false;
+  return (
+    activity.confirmation === "unconfirmed" ||
+    activity.lastEvidenceAt === null ||
+    now < activity.lastEvidenceAt ||
+    now - activity.lastEvidenceAt > activity.freshForMs
+  );
 }
 
 function hasActiveWorkflowActivity(thread: ThreadActivityStateShape): boolean {
@@ -51,9 +71,10 @@ function hasActiveGoalActivity(thread: ThreadActivityStateShape): boolean {
 
 function isBusyThread(
   thread: ThreadRuntimeShape & ThreadActivityStateShape,
+  now = Date.now(),
 ): boolean {
   return (
-    isRuntimeBusyThread(thread) ||
+    isRuntimeBusyThread(thread, now) ||
     hasActiveWorkflowActivity(thread) ||
     hasActiveBackgroundAgentActivity(thread) ||
     hasActiveBackgroundCommandActivity(thread) ||
@@ -130,6 +151,7 @@ function hasThreadListWorkingActivity(
 export function threadListIndicatorStateForThread(
   thread: ThreadListEntry,
   hasUnsubmittedDraft: boolean,
+  now = Date.now(),
 ): ThreadListIndicatorState {
   const unreadDone = isUnreadDoneThread(thread);
   return {
@@ -143,7 +165,7 @@ export function threadListIndicatorStateForThread(
     isGoalActive: hasActiveGoalActivity(thread),
     queuedWork: thread.queuedWork,
     isPlanModeActive: hasActivePlanModeActivity(thread),
-    isRuntimeActive: isRuntimeBusyThread(thread),
+    isRuntimeActive: isRuntimeBusyThread(thread, now),
     isWorkflowActive: hasActiveWorkflowActivity(thread),
   };
 }
@@ -185,6 +207,7 @@ const EMPTY_DRAFT_THREAD_IDS: ReadonlySet<string> = new Set();
 export function getCollapsedChildActivity(
   threads: readonly ThreadActivityShape[],
   draftThreadIds: ReadonlySet<string> = EMPTY_DRAFT_THREAD_IDS,
+  now = Date.now(),
 ): CollapsedChildActivity {
   let pending = false;
   let working = false;
@@ -211,8 +234,8 @@ export function getCollapsedChildActivity(
     if (thread.hasPendingInteraction) {
       pending = true;
     }
-    if (isBusyThread(thread)) working = true;
-    if (isRuntimeBusyThread(thread)) runtimeWorking = true;
+    if (isBusyThread(thread, now)) working = true;
+    if (isRuntimeBusyThread(thread, now)) runtimeWorking = true;
     if (hasActiveWorkflowActivity(thread)) workflow = true;
     if (hasActiveBackgroundAgentActivity(thread)) backgroundAgent = true;
     if (hasActiveBackgroundCommandActivity(thread)) backgroundCommand = true;

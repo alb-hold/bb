@@ -5,6 +5,7 @@ import {
   appendStoredThreadEvent,
   closeSession,
   createEnvironment,
+  createNativeTerminalThread,
   createProject,
   createQueuedThreadMessage,
   createThread,
@@ -33,6 +34,7 @@ import type {
 import { HOST_RECONNECT_GRACE_MS } from "../../../src/constants.js";
 import {
   resolveThreadRuntimeState,
+  toThreadResponseFromThread,
   toThreadListEntryResponses,
 } from "../../../src/services/threads/thread-runtime-display.js";
 import { NotificationHub } from "../../../src/ws/hub.js";
@@ -243,6 +245,58 @@ function createThreadListEntry(
 }
 
 describe("thread runtime display", () => {
+  it("applies one receipt freshness policy to native list and detail status", () => {
+    const { db, hostId, hub } = setup();
+    const native = createThreadWithEnvironment({
+      db,
+      hostId,
+      providerId: "claude-code",
+    });
+    const ordinary = createThreadWithEnvironment({ db, hostId });
+    createNativeTerminalThread(db, {
+      threadId: native.thread.id,
+      providerId: native.thread.providerId,
+      nativeSessionId: "synthetic-session",
+      initialPrompt: null,
+      initialImages: [],
+      model: null,
+    });
+    db.$client
+      .prepare(
+        "UPDATE fork_native_terminal_threads SET last_evidence_at = ? WHERE thread_id = ?",
+      )
+      .run(100_000, native.thread.id);
+    const nativeEntry = createThreadListEntry({
+      environmentHostId: hostId,
+      thread: native.thread,
+    });
+    const ordinaryEntry = createThreadListEntry({
+      environmentHostId: hostId,
+      thread: ordinary.thread,
+    });
+
+    const fresh = toThreadListEntryResponses(
+      { db, hub, providerRegistry },
+      { now: 190_000, threads: [nativeEntry, ordinaryEntry] },
+    );
+    const stale = toThreadListEntryResponses(
+      { db, hub, providerRegistry },
+      { now: 190_001, threads: [nativeEntry, ordinaryEntry] },
+    );
+    const detail = toThreadResponseFromThread(
+      { db, hub, providerRegistry },
+      { now: 190_001, thread: native.thread },
+    );
+
+    expect(fresh[0]?.runtime.nativeActivity?.confirmation).toBe("confirmed");
+    expect(fresh[0]?.listIndicator).toBe("working");
+    expect(stale[0]?.runtime.nativeActivity?.confirmation).toBe("unconfirmed");
+    expect(stale[0]?.listIndicator).toBe("none");
+    expect(detail.runtime.nativeActivity?.confirmation).toBe("unconfirmed");
+    expect(stale[1]?.runtime.nativeActivity).toBeUndefined();
+    expect(stale[1]?.listIndicator).toBe("working");
+  });
+
   it("keeps active threads active while the host daemon websocket is registered", () => {
     const { db, hostId, hub } = setup();
     const now = 1_000;

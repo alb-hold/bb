@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   createConnection,
   deleteThread,
@@ -6,6 +7,7 @@ import {
   getThread,
   isNativeTerminalThread,
   listPendingInteractionsByThread,
+  setNativeTerminalToolCredential,
   type DbConnection,
 } from "@bb/db";
 import {
@@ -218,10 +220,14 @@ async function postJson(
   fixture: Fixture,
   path: string,
   body: unknown,
+  authorization?: string,
 ): Promise<Response> {
   return fixture.harness.app.request(`/api/v1${path}`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      ...(authorization === undefined ? {} : { authorization }),
+    },
     body: JSON.stringify(body),
   });
 }
@@ -506,6 +512,156 @@ function threadStatus(fixture: Fixture, threadId: string) {
 }
 
 describe("native terminal activity", () => {
+  it("stamps only current live reports and notifies steady receipts no faster than the holder interval", async () => {
+    const fixture = await createFixture();
+    const thread = seedChatThread(fixture, {
+      providerId: "claude-code",
+      providerThreadId: SESSION_ID,
+    });
+    await enterTerminal(fixture, thread.id);
+    const nativeRecord = getNativeTerminalThread(
+      fixture.harness.db,
+      thread.id,
+    );
+    if (nativeRecord?.terminalSessionId === null || nativeRecord === null) {
+      throw new Error("Expected the native terminal to be bound");
+    }
+    const credential = "synthetic-native-activity-heartbeat-test";
+    setNativeTerminalToolCredential(fixture.harness.db, {
+      threadId: thread.id,
+      terminalSessionId: nativeRecord.terminalSessionId,
+      credentialHash: createHash("sha256").update(credential).digest("hex"),
+    });
+    const authorization = `Bearer ${credential}`;
+    const notify = vi.spyOn(fixture.harness.hub, "notifyThread");
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000_000);
+    try {
+      recordNativeTerminalActivity(fixture.harness.deps, {
+        authorization,
+        threadId: thread.id,
+        state: "working",
+      });
+      expect(
+        getNativeTerminalThread(fixture.harness.db, thread.id)?.lastEvidenceAt,
+      ).toBe(1_000_000);
+      expect(notify).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(15_000);
+      recordNativeTerminalActivity(fixture.harness.deps, {
+        authorization,
+        threadId: thread.id,
+        state: "working",
+      });
+      expect(notify).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(15_000);
+      recordNativeTerminalActivity(fixture.harness.deps, {
+        authorization,
+        threadId: thread.id,
+        state: "working",
+      });
+      expect(
+        getNativeTerminalThread(fixture.harness.db, thread.id)?.lastEvidenceAt,
+      ).toBe(1_030_000);
+      expect(notify).toHaveBeenCalledTimes(2);
+
+      recordNativeTerminalActivity(fixture.harness.deps, {
+        authorization,
+        threadId: thread.id,
+        state: "waiting",
+      });
+      expect(notify).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+      notify.mockRestore();
+    }
+  });
+
+  it("keeps lifecycle acceptance when a valid reporter has no available thread environment", async () => {
+    const fixture = await createFixture();
+    const thread = seedChatThread(fixture, {
+      providerId: "claude-code",
+      providerThreadId: SESSION_ID,
+    });
+    await enterTerminal(fixture, thread.id);
+    const nativeRecord = getNativeTerminalThread(
+      fixture.harness.db,
+      thread.id,
+    );
+    if (nativeRecord?.terminalSessionId === null || nativeRecord === null) {
+      throw new Error("Expected the native terminal to be bound");
+    }
+    const credential = "synthetic-native-activity-test-credential";
+    setNativeTerminalToolCredential(fixture.harness.db, {
+      threadId: thread.id,
+      terminalSessionId: nativeRecord.terminalSessionId,
+      credentialHash: createHash("sha256").update(credential).digest("hex"),
+    });
+    fixture.harness.db.$client
+      .prepare("UPDATE threads SET environment_id = NULL WHERE id = ?")
+      .run(thread.id);
+
+    const response = await postJson(
+      fixture,
+      `/threads/${thread.id}/native-terminal/activity`,
+      { state: "working" },
+      `Bearer ${credential}`,
+    );
+
+    expect(response.status).toBe(200);
+    expect(threadStatus(fixture, thread.id)).toBe("active");
+    expect(
+      getNativeTerminalThread(fixture.harness.db, thread.id)?.lastEvidenceAt,
+    ).toBeNull();
+  });
+
+  it("accepts invalid and obsolete bearer activity without stamping confirmation", async () => {
+    const fixture = await createFixture();
+    const thread = seedChatThread(fixture, {
+      providerId: "claude-code",
+      providerThreadId: SESSION_ID,
+    });
+    await enterTerminal(fixture, thread.id);
+    const nativeRecord = getNativeTerminalThread(
+      fixture.harness.db,
+      thread.id,
+    );
+    if (nativeRecord?.terminalSessionId === null || nativeRecord === null) {
+      throw new Error("Expected the native terminal to be bound");
+    }
+
+    const invalid = await postJson(
+      fixture,
+      `/threads/${thread.id}/native-terminal/activity`,
+      { state: "idle" },
+      "Bearer synthetic-invalid-activity-credential",
+    );
+    expect(invalid.status).toBe(200);
+    expect(threadStatus(fixture, thread.id)).toBe("idle");
+
+    const obsoleteCredential = "synthetic-obsolete-activity-credential";
+    setNativeTerminalToolCredential(fixture.harness.db, {
+      threadId: thread.id,
+      terminalSessionId: "terminal-obsolete",
+      credentialHash: createHash("sha256")
+        .update(obsoleteCredential)
+        .digest("hex"),
+    });
+    const obsolete = await postJson(
+      fixture,
+      `/threads/${thread.id}/native-terminal/activity`,
+      { state: "working" },
+      `Bearer ${obsoleteCredential}`,
+    );
+
+    expect(obsolete.status).toBe(200);
+    expect(threadStatus(fixture, thread.id)).toBe("active");
+    expect(
+      getNativeTerminalThread(fixture.harness.db, thread.id)?.lastEvidenceAt,
+    ).toBeNull();
+  });
+
   it("revives a daemon-restarted question for the terminal and settles it after the TUI answer", async () => {
     const fixture = await createFixture();
     const thread = seedChatThread(fixture, {
@@ -862,6 +1018,9 @@ describe("native terminal activity", () => {
       threadId: thread.id,
       state: "working",
     });
+    expect(
+      getNativeTerminalThread(fixture.harness.db, thread.id)?.lastEvidenceAt,
+    ).toBeNull();
     const changes = fixture.harness.db.$client
       .prepare("SELECT total_changes()")
       .pluck();
@@ -878,6 +1037,9 @@ describe("native terminal activity", () => {
       expect(queries).not.toHaveBeenCalled();
       expect(changes.get()).toBe(before);
       expect(notify).not.toHaveBeenCalled();
+      expect(
+        getNativeTerminalThread(fixture.harness.db, thread.id)?.lastEvidenceAt,
+      ).toBeNull();
     } finally {
       notify.mockRestore();
     }

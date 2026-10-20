@@ -1,5 +1,6 @@
 import {
   getEnvironment,
+  getNativeTerminalThread,
   getThreadRowState,
   getSessionById,
   listActiveBackgroundTaskCountsByThreadIds,
@@ -13,7 +14,10 @@ import {
   type ThreadClientTurnRequestKey,
   type ThreadWithPendingInteractionState,
 } from "@bb/db";
-import { LEGACY_CODEX_GOAL_EXTENSION_KIND } from "@bb/domain";
+import {
+  LEGACY_CODEX_GOAL_EXTENSION_KIND,
+  NATIVE_TERMINAL_ACTIVITY_FRESH_FOR_MS,
+} from "@bb/domain";
 import type {
   Thread,
   ThreadActivityState,
@@ -61,9 +65,11 @@ interface ThreadRuntimeDisplayDeps {
   hub: ThreadRuntimeDisplayHub;
 }
 
-interface ThreadPromptBannerDeps extends ThreadRuntimeDisplayDeps {
+interface NativeActivityDisplayDeps extends ThreadRuntimeDisplayDeps {
   providerRegistry: ProviderRegistryService;
 }
+
+type ThreadPromptBannerDeps = NativeActivityDisplayDeps;
 
 interface ResolveThreadRuntimeStateArgs {
   environmentHostId: string | null;
@@ -94,6 +100,7 @@ interface ToThreadListEntryResponsesArgs {
 }
 
 interface ToThreadListEntryResponseFromLatestSessionArgs {
+  deps: NativeActivityDisplayDeps;
   activity: ThreadActivityState;
   hostConnected: boolean;
   latestClosedSession: HostDaemonSessionRow | null;
@@ -249,6 +256,37 @@ function resolveThreadEnvironmentHostId(
   return getEnvironment(deps.db, thread.environmentId)?.hostId ?? null;
 }
 
+function addNativeActivityDiagnostic(
+  deps: NativeActivityDisplayDeps,
+  thread: Thread,
+  runtime: ThreadRuntimeState,
+  now = Date.now(),
+): ThreadRuntimeState {
+  if (thread.status !== "active") return runtime;
+  const nativeThread = getNativeTerminalThread(deps.db, thread.id);
+  if (
+    nativeThread === null ||
+    nativeThread.providerId !== thread.providerId ||
+    deps.providerRegistry.get(thread.providerId)?.nativeTerminal?.activity ===
+      undefined
+  ) {
+    return runtime;
+  }
+  const lastEvidenceAt = nativeThread.lastEvidenceAt;
+  const isFresh =
+    lastEvidenceAt !== null &&
+    now >= lastEvidenceAt &&
+    now - lastEvidenceAt <= NATIVE_TERMINAL_ACTIVITY_FRESH_FOR_MS;
+  return {
+    ...runtime,
+    nativeActivity: {
+      lastEvidenceAt,
+      freshForMs: NATIVE_TERMINAL_ACTIVITY_FRESH_FOR_MS,
+      confirmation: isFresh ? "confirmed" : "unconfirmed",
+    },
+  };
+}
+
 export function buildThreadStatusChangeMetadata(
   deps: ThreadPromptBannerDeps,
   thread: Thread,
@@ -257,10 +295,14 @@ export function buildThreadStatusChangeMetadata(
     activity:
       buildThreadActivityStateByThreadId(deps, [thread]).get(thread.id) ??
       EMPTY_THREAD_ACTIVITY,
-    runtime: resolveThreadRuntimeState(deps, {
-      environmentHostId: resolveThreadEnvironmentHostId(deps, thread),
-      status: thread.status,
-    }),
+    runtime: addNativeActivityDiagnostic(
+      deps,
+      thread,
+      resolveThreadRuntimeState(deps, {
+        environmentHostId: resolveThreadEnvironmentHostId(deps, thread),
+        status: thread.status,
+      }),
+    ),
     thread,
   });
 }
@@ -289,12 +331,16 @@ export function buildThreadStatusChangeMetadataByThreadId(
       thread.id,
       toThreadStatusChangeMetadata({
         activity: activityByThreadId.get(thread.id) ?? EMPTY_THREAD_ACTIVITY,
-        runtime: resolveThreadRuntimeStateFromLatestSession({
-          environmentHostId: args.environmentHostId,
-          hostConnected,
-          latestClosedSession,
-          status: thread.status,
-        }),
+        runtime: addNativeActivityDiagnostic(
+          deps,
+          thread,
+          resolveThreadRuntimeStateFromLatestSession({
+            environmentHostId: args.environmentHostId,
+            hostConnected,
+            latestClosedSession,
+            status: thread.status,
+          }),
+        ),
         thread,
       }),
     ]),
@@ -317,22 +363,27 @@ function toThreadStatusChangeMetadata(
 }
 
 function toThreadResponseWithHost(
-  deps: ThreadRuntimeDisplayDeps,
+  deps: NativeActivityDisplayDeps,
   args: ToThreadResponseWithHostArgs,
 ): ThreadWithRuntime {
   const thread = toPublicThread(args.thread);
   return {
     ...thread,
-    runtime: resolveThreadRuntimeState(deps, {
-      environmentHostId: args.environmentHostId,
-      now: args.now,
-      status: thread.status,
-    }),
+    runtime: addNativeActivityDiagnostic(
+      deps,
+      args.thread,
+      resolveThreadRuntimeState(deps, {
+        environmentHostId: args.environmentHostId,
+        now: args.now,
+        status: thread.status,
+      }),
+      args.now,
+    ),
   };
 }
 
 export function toThreadResponseFromThread(
-  deps: ThreadRuntimeDisplayDeps,
+  deps: NativeActivityDisplayDeps,
   args: ToThreadResponseFromThreadArgs,
 ): ThreadResponse {
   const threadWithRuntime = toThreadResponseWithHost(deps, {
@@ -589,6 +640,7 @@ export function toThreadListEntryResponses(
   );
   return args.threads.map((thread) => {
     const entry = toThreadListEntryResponseFromLatestSession({
+      deps,
       activity: activityByThreadId.get(thread.id) ?? EMPTY_THREAD_ACTIVITY,
       queuedWork: queuedWorkByThreadId.get(thread.id) ?? "none",
       hostConnected:
@@ -613,7 +665,7 @@ export function toThreadListEntryResponses(
     return {
       ...withEnvironmentHost,
       listIndicator: resolveThreadListIndicator(
-        threadListIndicatorStateForThread(withEnvironmentHost, false),
+        threadListIndicatorStateForThread(withEnvironmentHost, false, args.now),
       ),
     };
   });
@@ -641,12 +693,17 @@ function toThreadListEntryResponseFromLatestSession(
     hasPendingInteraction: args.thread.hasPendingInteraction,
     listIndicator: "none",
     rowState: args.rowState,
-    runtime: resolveThreadRuntimeStateFromLatestSession({
-      environmentHostId: args.thread.environmentHostId,
-      hostConnected: args.hostConnected,
-      latestClosedSession: args.latestClosedSession,
-      now: args.now,
-      status: thread.status,
-    }),
+    runtime: addNativeActivityDiagnostic(
+      args.deps,
+      args.thread,
+      resolveThreadRuntimeStateFromLatestSession({
+        environmentHostId: args.thread.environmentHostId,
+        hostConnected: args.hostConnected,
+        latestClosedSession: args.latestClosedSession,
+        now: args.now,
+        status: thread.status,
+      }),
+      args.now,
+    ),
   };
 }

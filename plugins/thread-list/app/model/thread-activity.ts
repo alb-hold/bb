@@ -81,7 +81,10 @@ const DONE_THREAD_STATUSES: Record<PluginSidebarThread["status"], boolean> = {
 };
 
 export function isRuntimeBusyThread(thread: ThreadRuntimeShape): boolean {
-  return RUNNING_RUNTIME_STATUSES[thread.runtimeStatus] ?? false;
+  return (
+    thread.experimental_nativeActivity?.confirmation !== "unconfirmed" &&
+    (RUNNING_RUNTIME_STATUSES[thread.runtimeStatus] ?? false)
+  );
 }
 
 function hasActiveWorkflowActivity(thread: ThreadActivityStateShape): boolean {

@@ -181,6 +181,38 @@ describe("bb thread list command output", () => {
     ]);
   });
 
+  it("shows native activity uncertainty and suppresses runtime-only Working", async () => {
+    const list = vi.fn(async () => [
+      fixtures.makeThread({
+        id: "thread-native-uncertain",
+        projectId: "proj-1",
+        providerId: "claude-code",
+        status: "active",
+        listIndicator: "working",
+        runtime: {
+          displayStatus: "active",
+          nativeActivity: {
+            lastEvidenceAt: null,
+            freshForMs: 90_000,
+            confirmation: "unconfirmed",
+          },
+        },
+        createdAt: 1,
+        updatedAt: 1,
+      }),
+    ]);
+    stubServerApi({
+      "v1.threads.$get": list,
+      "v1.projects.$get": async () => [{ id: "proj-1", name: "Alpha" }],
+    });
+
+    await runCommand(["thread", "list"], register);
+
+    const table = collectLogPayloads(vi.mocked(console.log)).join("\n");
+    expect(table).toContain("active (activity unconfirmed)");
+    expect(table).not.toContain("Working");
+  });
+
   it("bb thread list prints the thread title, fallback, and project name (#1648)", async () => {
     const list = vi.fn(async () => [
       fixtures.makeThread({

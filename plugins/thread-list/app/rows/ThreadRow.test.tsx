@@ -773,6 +773,24 @@ describe("ThreadRow", () => {
     expect(actionSlot?.classList.contains("absolute")).toBe(false);
   });
 
+  it("shows native activity uncertainty without a runtime Working label", () => {
+    const { container } = renderThreadRow({
+      thread: createThread({
+        status: "active",
+        runtimeStatus: "active",
+        experimental_nativeActivity: {
+          lastEvidenceAt: null,
+          freshForMs: 90_000,
+          confirmation: "unconfirmed",
+        },
+      }),
+    });
+    const warning = screen.getByRole("img", { name: "Activity unconfirmed" });
+
+    expect(warning.textContent).toContain("Activity unconfirmed");
+    expect(container.querySelector('[aria-label="Working"]')).toBeNull();
+  });
+
   it.each(
     [false, true].flatMap((isCompactViewport) =>
       (["Working", "Done"] as const).flatMap((statusLabel) =>

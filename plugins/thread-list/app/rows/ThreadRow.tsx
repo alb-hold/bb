@@ -298,12 +298,14 @@ function ThreadTrailingIndicator({
   state,
   hideIdleDraftLabel,
   rowStatus,
+  nativeActivityUnconfirmed,
   automationStartedAt,
   elapsedMinutes,
 }: {
   state: ThreadListIndicatorState;
   hideIdleDraftLabel: boolean;
   rowStatus: PluginSidebarThreadRowStatus | null;
+  nativeActivityUnconfirmed: boolean;
   automationStartedAt: number | null;
   elapsedMinutes: number | null;
 }) {
@@ -316,7 +318,11 @@ function ThreadTrailingIndicator({
     rowStatus,
   );
 
-  if (indicatorKind === "none" && !rowStatusIsVisible) {
+  if (
+    indicatorKind === "none" &&
+    !rowStatusIsVisible &&
+    !nativeActivityUnconfirmed
+  ) {
     return null;
   }
 
@@ -329,7 +335,9 @@ function ThreadTrailingIndicator({
           ? `Woke${elapsedMinutes === null ? "" : ` ${elapsedMinutes}m`}`
           : indicatorKind === "done-unread"
             ? "Done"
-            : null;
+            : nativeActivityUnconfirmed
+              ? "Activity unconfirmed"
+              : null;
 
   const indicator = (
     <span
@@ -360,6 +368,15 @@ function ThreadTrailingIndicator({
           {statusText}
         </span>
       )}
+      {nativeActivityUnconfirmed && statusText !== "Activity unconfirmed" ? (
+        <span
+          data-sidebar-native-activity-warning=""
+          className="text-muted-foreground"
+          role="status"
+        >
+          Activity unconfirmed
+        </span>
+      ) : null}
     </span>
   );
   if (statusText === null) return indicator;
@@ -639,6 +656,7 @@ function ThreadRowComponent({
   const hasVisibleStatus =
     trailingIndicatorKind !== "none" ||
     trailingIndicatorResolution.rowStatusIsVisible ||
+    thread.experimental_nativeActivity?.confirmation === "unconfirmed" ||
     miniMap !== null ||
     automationStartedAt !== null;
   const splitIndicatorIsWorking = hasThreadListWorkingActivity(
@@ -905,6 +923,10 @@ function ThreadRowComponent({
               ) : (
                 <ThreadTrailingIndicator
                   state={trailingIndicatorState}
+                  nativeActivityUnconfirmed={
+                    thread.experimental_nativeActivity?.confirmation ===
+                    "unconfirmed"
+                  }
                   automationStartedAt={automationStartedAt}
                   elapsedMinutes={elapsedMinutes}
                   hideIdleDraftLabel={

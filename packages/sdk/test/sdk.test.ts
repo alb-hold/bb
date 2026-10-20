@@ -8,6 +8,7 @@ import { TERMINAL_ATTENTION_CONTRACT_CASES } from "../../test-helpers/src/termin
 import type { FetchImplementation } from "../src/response.js";
 
 interface CapturedRequest {
+  authorization?: string;
   bodyText: string | undefined;
   method: string;
   url: string;
@@ -93,7 +94,9 @@ function createFetchQueue(
   const requests: CapturedRequest[] = [];
   const remaining = [...responses];
   const fetchMock: FetchImplementation = async (input, init) => {
+    const authorization = new Headers(init?.headers).get("authorization");
     requests.push({
+      ...(authorization === null ? {} : { authorization }),
       bodyText: bodyText(init),
       method: init?.method ?? "GET",
       url: String(input),
@@ -108,6 +111,33 @@ function createFetchQueue(
 }
 
 describe("@bb/sdk", () => {
+  it("passes an optional native activity report credential as a header", async () => {
+    const queue = createFetchQueue([{ body: { ok: true } }]);
+    const sdk = createBbSdk({
+      transport: createHttpTransport({
+        baseUrl: "http://bb.test",
+        fetch: queue.fetch,
+        runtime: "node",
+      }),
+    });
+
+    await expect(
+      sdk.nativeTerminals.reportActivity({
+        threadId: "thr_test",
+        state: "working",
+        authorization: "Bearer synthetic-sdk-test-credential",
+      }),
+    ).resolves.toEqual({ ok: true });
+    expect(queue.requests).toEqual([
+      {
+        authorization: "Bearer synthetic-sdk-test-credential",
+        bodyText: JSON.stringify({ state: "working" }),
+        method: "POST",
+        url: "http://bb.test/api/v1/threads/thr_test/native-terminal/activity",
+      },
+    ]);
+  });
+
   it("pages prompt history with an opaque cursor", async () => {
     const response = {
       entries: [

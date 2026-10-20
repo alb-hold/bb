@@ -169,6 +169,7 @@ function payload(threads: ThreadListEntry[], sections: SidebarSection[] = []) {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   cleanup();
   vi.clearAllMocks();
   state.data = undefined;
@@ -181,6 +182,54 @@ afterEach(() => {
 });
 
 describe("useSidebarThreads", () => {
+  it("refreshes native activity confirmation through receipts, silence, and recovery", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000_000);
+    const withReceipt = (lastEvidenceAt: number) =>
+      makeThreadListEntry({
+        id: "thr_native_activity",
+        status: "active",
+        runtime: {
+          displayStatus: "active",
+          nativeActivity: {
+            lastEvidenceAt,
+            freshForMs: 90_000,
+            confirmation: "confirmed",
+          },
+        },
+      });
+    state.data = payload([withReceipt(Date.now())]);
+    const { result, rerender } = renderHook(() => useSidebarThreads());
+    const thread = () => result.current.threads[0]!;
+    expect(thread().experimental_nativeActivity?.confirmation).toBe(
+      "confirmed",
+    );
+
+    for (let heartbeat = 1; heartbeat <= 3; heartbeat += 1) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30_000);
+      });
+      state.data = payload([withReceipt(Date.now())]);
+      rerender();
+      expect(thread().experimental_nativeActivity?.confirmation).toBe(
+        "confirmed",
+      );
+    }
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(90_001);
+    });
+    expect(thread().experimental_nativeActivity?.confirmation).toBe(
+      "unconfirmed",
+    );
+
+    state.data = payload([withReceipt(Date.now())]);
+    rerender();
+    expect(thread().experimental_nativeActivity?.confirmation).toBe(
+      "confirmed",
+    );
+  });
+
   it("keeps DTO identity for entries that did not change across a sidebar update", () => {
     const stable = makeThreadListEntry({ id: "thr_stable", title: "Stable" });
     const changing = makeThreadListEntry({ id: "thr_changing", title: "One" });

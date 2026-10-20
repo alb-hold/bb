@@ -3,7 +3,10 @@ import { getPanelTabHistoryKey } from "@/components/secondary-panel/recentlyClos
 import { useActiveDeviceHandoffTerminalView } from "@/components/device-handoff/device-handoff-view";
 import { NativeThreadTerminalMain } from "@/components/thread/terminal/NativeThreadTerminalMain";
 import { useNativeTerminalThread } from "@/hooks/queries/native-terminal-queries";
-import { appendQuoteAndAttachmentsToDraft } from "@bb/client-core";
+import {
+  appendQuoteAndAttachmentsToDraft,
+  isNativeActivityUnconfirmed,
+} from "@bb/client-core";
 import { queueSplitDownload } from "@/lib/split-prefetch";
 import { createCoreComposerActions } from "@/lib/plugin-composer-handle";
 import {
@@ -88,6 +91,7 @@ import {
   type ProjectThreadSubsetFilters,
 } from "../../hooks/queries/thread-queries";
 import { isTransientReadError } from "@/hooks/queries/query-helpers";
+import { useSecondTick } from "@/hooks/useSecondTick";
 import { getPromptDraftAccessor } from "@/hooks/usePromptDraftStorage";
 import { subscribeComposerFocusRequests } from "@/lib/composer-focus-requests";
 import { ThreadGitActionDialog } from "@/components/dialogs/ThreadGitActionDialog";
@@ -552,6 +556,10 @@ function ThreadDetailViewInternal(
     snapshot: queriedThread,
     threadId,
   });
+  const activityNow = useSecondTick();
+  const nativeActivityUnconfirmed =
+    thread !== undefined &&
+    isNativeActivityUnconfirmed(thread.runtime, activityNow);
   const environmentQuery = useEnvironment(thread?.environmentId, {
     enabled: hasThreadDetailBootstrapSettled,
     staleTime: 5_000,
@@ -1962,7 +1970,8 @@ function ThreadDetailViewInternal(
       .filter(
         (entry) =>
           entry.originKind === null &&
-          (isThreadDisplayStatusBannerActive(entry.runtime.displayStatus) ||
+          ((isThreadDisplayStatusBannerActive(entry.runtime.displayStatus) &&
+            !isNativeActivityUnconfirmed(entry.runtime, activityNow)) ||
             entry.hasPendingInteraction),
       )
       .sort((left, right) =>
@@ -1983,7 +1992,7 @@ function ThreadDetailViewInternal(
       }));
     if (activeItems.length === 0) return null;
     return { items: activeItems };
-  }, [childThreadSubsetQuery.data]);
+  }, [activityNow, childThreadSubsetQuery.data]);
   const childPendingInteractions = useChildThreadPendingAttention(
     childThreadsSection?.items ?? EMPTY_CHILD_THREAD_ITEMS,
   );
@@ -2939,6 +2948,7 @@ function ThreadDetailViewInternal(
                 <NativeThreadTerminalMain
                   onOpenLink={handleOpenTimelineLink}
                   projectId={thread.projectId}
+                  runtime={thread.runtime}
                   threadId={thread.id}
                   threadIsProvisioning={
                     thread.status === "pending" || thread.status === "starting"
@@ -3075,6 +3085,7 @@ function ThreadDetailViewInternal(
                 isRunningThreadRuntimeDisplayStatus(
                   thread.runtime.displayStatus,
                 ) &&
+                !nativeActivityUnconfirmed &&
                 !isThreadTimelinePending,
               timelineRows,
               isStopping: thread.status === "stopping",

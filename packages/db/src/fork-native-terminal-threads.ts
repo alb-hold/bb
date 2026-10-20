@@ -6,6 +6,7 @@ export interface NativeTerminalThreadRecord {
   providerId: string;
   nativeSessionId: string | null;
   terminalSessionId: string | null;
+  lastEvidenceAt: number | null;
   initialPrompt: string | null;
   model: string | null;
   createdAt: number;
@@ -13,7 +14,8 @@ export interface NativeTerminalThreadRecord {
 }
 
 const SELECT_COLUMNS = `thread_id AS threadId, provider_id AS providerId, native_session_id AS nativeSessionId,
-  terminal_session_id AS terminalSessionId, initial_prompt AS initialPrompt, model,
+  terminal_session_id AS terminalSessionId, last_evidence_at AS lastEvidenceAt,
+  initial_prompt AS initialPrompt, model,
   created_at AS createdAt, updated_at AS updatedAt`;
 
 export function ensureNativeTerminalThreadsTable(db: DbConnection): void {
@@ -44,6 +46,11 @@ export function ensureNativeTerminalThreadsTable(db: DbConnection): void {
   if (!columns.some((column) => column.name === "initial_images")) {
     db.$client.exec(
       `ALTER TABLE fork_native_terminal_threads ADD COLUMN initial_images TEXT`,
+    );
+  }
+  if (!columns.some((column) => column.name === "last_evidence_at")) {
+    db.$client.exec(
+      `ALTER TABLE fork_native_terminal_threads ADD COLUMN last_evidence_at INTEGER`,
     );
   }
 }
@@ -83,6 +90,7 @@ export function createNativeTerminalThread(
     providerId: args.providerId,
     nativeSessionId: args.nativeSessionId,
     terminalSessionId: null,
+    lastEvidenceAt: null,
     initialPrompt: args.initialPrompt,
     model: args.model,
     createdAt: now,
@@ -177,9 +185,40 @@ export function setNativeTerminalThreadTerminal(
 ): void {
   db.$client
     .prepare(
-      `UPDATE fork_native_terminal_threads SET terminal_session_id = ?, updated_at = ? WHERE thread_id = ?`,
+      `UPDATE fork_native_terminal_threads SET terminal_session_id = ?, last_evidence_at = NULL, updated_at = ? WHERE thread_id = ?`,
     )
     .run(args.terminalSessionId, Date.now(), args.threadId);
+}
+
+export type StampNativeTerminalActivityResult =
+  | { updated: false }
+  | { updated: true; previousLastEvidenceAt: number | null };
+
+export function stampNativeTerminalThreadActivity(
+  db: DbConnection,
+  args: { at: number; terminalSessionId: string; threadId: string },
+): StampNativeTerminalActivityResult {
+  return db.$client.transaction((): StampNativeTerminalActivityResult => {
+    const record = db.$client
+      .prepare(
+        `SELECT last_evidence_at AS lastEvidenceAt
+         FROM fork_native_terminal_threads
+         WHERE thread_id = ? AND terminal_session_id = ?`,
+      )
+      .get(args.threadId, args.terminalSessionId) as
+      | { lastEvidenceAt: number | null }
+      | undefined;
+    if (record === undefined) return { updated: false };
+    const result = db.$client
+      .prepare(
+        `UPDATE fork_native_terminal_threads
+         SET last_evidence_at = ?
+         WHERE thread_id = ? AND terminal_session_id = ?`,
+      )
+      .run(args.at, args.threadId, args.terminalSessionId);
+    if (result.changes !== 1) return { updated: false };
+    return { updated: true, previousLastEvidenceAt: record.lastEvidenceAt };
+  })();
 }
 
 export interface NativeTerminalThreadLaunchInput {

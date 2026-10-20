@@ -2552,6 +2552,9 @@ doc covers three September 2026 additions:
   query order, including those with no threads. Older hosts may omit it.
 - `openNewThread({ hostId })`, unprefixed by request, preselects a machine for
   a new environment. `environmentId` takes priority.
+- `PluginSidebarThread.experimental_nativeActivity` provides the optional
+  native receipt snapshot so sidebar consumers can suppress runtime-only busy
+  indicators. It does not establish model progress or task completion.
 
 Docs: `frontend-registration.md`.
 

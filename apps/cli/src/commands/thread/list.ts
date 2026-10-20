@@ -5,6 +5,7 @@ import {
   type JsonValue,
   type ThreadListEntry,
 } from "@bb/domain";
+import { isNativeActivityUnconfirmed } from "@bb/client-core";
 import { action } from "../../action.js";
 import { createCliBbSdk } from "../../client.js";
 import { resolveExplicitIdFlag } from "../../context-env.js";
@@ -115,13 +116,10 @@ export function registerListCommand(
             opts,
             threads.map((thread) => ({
               ...thread,
-              listIndicator:
-                thread.listIndicator === "working" ||
-                thread.listIndicator === "needs-input"
-                  ? thread.listIndicator
-                  : wokeThreadIds.has(thread.id)
-                    ? "woke"
-                    : thread.listIndicator,
+              listIndicator: activityAwareListIndicator(
+                thread,
+                wokeThreadIds,
+              ),
             })),
           )
         )
@@ -180,6 +178,9 @@ function formatThreadListProject(
 
 function formatThreadListStatus(thread: ThreadListEntry): string {
   const flags: string[] = [];
+  if (isNativeActivityUnconfirmed(thread.runtime)) {
+    flags.push("activity unconfirmed");
+  }
   if (thread.archivedAt !== null) {
     flags.push("archived");
   }
@@ -190,6 +191,32 @@ function formatThreadListStatus(thread: ThreadListEntry): string {
     return thread.status;
   }
   return `${thread.status} (${flags.join(", ")})`;
+}
+
+function hasIndependentWorkingActivity(
+  thread: Pick<ThreadListEntry, "activity">,
+): boolean {
+  return (
+    thread.activity.activeWorkflowCount > 0 ||
+    thread.activity.activeBackgroundAgentCount > 0 ||
+    thread.activity.activeBackgroundCommandCount > 0 ||
+    thread.activity.activePlanModeCount > 0 ||
+    thread.activity.activeGoalCount > 0
+  );
+}
+
+function activityAwareListIndicator(
+  thread: ThreadListEntry,
+  wokeThreadIds: ReadonlySet<string>,
+): ThreadListEntry["listIndicator"] {
+  if (thread.listIndicator === "needs-input") return thread.listIndicator;
+  if (thread.listIndicator === "working") {
+    return isNativeActivityUnconfirmed(thread.runtime) &&
+      !hasIndependentWorkingActivity(thread)
+      ? "none"
+      : "working";
+  }
+  return wokeThreadIds.has(thread.id) ? "woke" : thread.listIndicator;
 }
 
 async function getWokenThreadIds(
@@ -233,11 +260,24 @@ function asJsonObject(
 }
 
 export function formatThreadListIndicator(
-  thread: Pick<ThreadListEntry, "id" | "listIndicator">,
+  thread: Pick<ThreadListEntry, "id" | "listIndicator"> &
+    Partial<Pick<ThreadListEntry, "runtime" | "activity">>,
   wokeThreadIds: ReadonlySet<string>,
 ): string {
   if (thread.listIndicator === "needs-input") return "Needs input";
-  if (thread.listIndicator === "working") return "Working";
+  if (thread.listIndicator === "working") {
+    const hasIndependentActivity = thread.activity
+      ? hasIndependentWorkingActivity({ activity: thread.activity })
+      : false;
+    if (
+      thread.runtime === undefined ||
+      !isNativeActivityUnconfirmed(thread.runtime) ||
+      hasIndependentActivity
+    ) {
+      return "Working";
+    }
+    return "-";
+  }
   if (wokeThreadIds.has(thread.id)) return "Woke";
   if (thread.listIndicator === "done-unread") return "Done";
   return "-";

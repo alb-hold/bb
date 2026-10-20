@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { makeThreadListEntry } from "@bb/test-helpers/domain-fixtures";
 import {
   getCollapsedChildActivity,
+  isNativeActivityUnconfirmed,
   isUnreadDoneThread,
   resolveThreadListIndicator,
   threadListIndicatorStateForThread,
@@ -62,6 +63,29 @@ const idleIndicatorState: ThreadListIndicatorState = {
 };
 
 describe("thread-activity", () => {
+  it("treats native confirmation as stale after 90 seconds and on future timestamps", () => {
+    const runtime = {
+      displayStatus: "active" as const,
+      nativeActivity: {
+        lastEvidenceAt: 1_000_000,
+        freshForMs: 90_000,
+        confirmation: "confirmed" as const,
+      },
+    };
+    expect(isNativeActivityUnconfirmed(runtime, 1_090_000)).toBe(false);
+    expect(isNativeActivityUnconfirmed(runtime, 1_090_001)).toBe(true);
+    expect(isNativeActivityUnconfirmed(runtime, 999_999)).toBe(true);
+    expect(
+      isNativeActivityUnconfirmed(
+        {
+          ...runtime,
+          nativeActivity: { ...runtime.nativeActivity, lastEvidenceAt: null },
+        },
+        1_000_000,
+      ),
+    ).toBe(true);
+  });
+
   describe("resolveThreadListIndicator", () => {
     it.each([
       ["needs input", { hasPendingInteraction: true }, "needs-input"],
@@ -391,6 +415,32 @@ describe("thread-activity", () => {
   });
 
   describe("getCollapsedChildActivity", () => {
+    it("excludes unconfirmed native runtime while retaining independent child work", () => {
+      const nativeChild = makeChild({
+        status: "active",
+        runtime: {
+          displayStatus: "active",
+          nativeActivity: {
+            lastEvidenceAt: null,
+            freshForMs: 90_000,
+            confirmation: "unconfirmed",
+          },
+        },
+      });
+      expect(getCollapsedChildActivity([nativeChild])).toMatchObject({
+        working: false,
+        runtimeWorking: false,
+      });
+      expect(
+        getCollapsedChildActivity([
+          {
+            ...nativeChild,
+            activity: { ...nativeChild.activity, activeBackgroundAgentCount: 1 },
+          },
+        ]),
+      ).toMatchObject({ working: true, runtimeWorking: false });
+    });
+
     it("preserves descendant draft state independently from work", () => {
       expect(
         getCollapsedChildActivity(

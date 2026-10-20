@@ -8,6 +8,7 @@ const idle = {
   displayStatus: "idle",
   isStopping: false,
   isTurnSubmitting: false,
+  nativeActivityUnconfirmed: false,
   timelineLoading: false,
 } as const;
 
@@ -32,6 +33,21 @@ describe("resolveThreadOngoingIndicator", () => {
       name: "no indicator once the nested agent count returns to zero",
       input: idle,
       expected: { show: false, label: undefined },
+    },
+    {
+      name: "no runtime-only indicator after native activity expires",
+      input: { ...idle, displayStatus: "active", nativeActivityUnconfirmed: true },
+      expected: { show: false, label: undefined },
+    },
+    {
+      name: "preserve background activity after native activity expires",
+      input: {
+        ...idle,
+        displayStatus: "active",
+        activeBackgroundAgentCount: 1,
+        nativeActivityUnconfirmed: true,
+      },
+      expected: { show: true, label: "Background work running" },
     },
   ] as const)("shows $name", ({ input, expected }) => {
     expect(resolveThreadOngoingIndicator(input)).toEqual(expected);

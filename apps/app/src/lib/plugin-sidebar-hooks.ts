@@ -8,6 +8,7 @@ import {
   type ThreadListEntry,
 } from "@bb/domain";
 import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
+import { isNativeActivityUnconfirmed } from "@bb/client-core";
 import type {
   PluginSdkApp,
   PluginSidebarProject,
@@ -62,6 +63,7 @@ import {
   useSidebarThreadEntries,
 } from "./sidebar-thread-entries";
 import { useSetRootComposeProjectId } from "./root-compose-selection";
+import { useSecondTick } from "@/hooks/useSecondTick";
 import { notifyPaneLimit } from "./split-layout/notifyPaneLimit";
 import { openThreadInSplit } from "./split-layout/openThreadInSplit";
 import {
@@ -97,6 +99,7 @@ const pluginSidebarThreadByEntry = new WeakMap<
   {
     hostNamesById: ReadonlyMap<string, string>;
     titleResources: ThreadTitleMentionResources;
+    nativeActivityUnconfirmed: boolean;
     thread: PluginSidebarThread;
   }
 >();
@@ -105,19 +108,31 @@ function toPluginSidebarThreadCached(
   entry: ThreadListEntry,
   hostNamesById: ReadonlyMap<string, string>,
   titleResources: ThreadTitleMentionResources,
+  now: number,
 ): PluginSidebarThread {
   const cached = pluginSidebarThreadByEntry.get(entry);
+  const nativeActivityUnconfirmed = isNativeActivityUnconfirmed(
+    entry.runtime,
+    now,
+  );
   if (
     cached !== undefined &&
     cached.hostNamesById === hostNamesById &&
-    cached.titleResources === titleResources
+    cached.titleResources === titleResources &&
+    cached.nativeActivityUnconfirmed === nativeActivityUnconfirmed
   ) {
     return cached.thread;
   }
-  const thread = toPluginSidebarThread(entry, hostNamesById, titleResources);
+  const thread = toPluginSidebarThread(
+    entry,
+    hostNamesById,
+    titleResources,
+    now,
+  );
   pluginSidebarThreadByEntry.set(entry, {
     hostNamesById,
     titleResources,
+    nativeActivityUnconfirmed,
     thread,
   });
   return thread;
@@ -163,6 +178,7 @@ export function useSidebarThreads(
     ],
   );
   const query = useSidebarNavigation();
+  const activityNow = useSecondTick();
   const data = query.data;
   const { data: hosts } = useHosts();
   const hostNamesById = hostNamesFor(hosts);
@@ -197,7 +213,12 @@ export function useSidebarThreads(
       experimental_archived: archiveState,
       status: !active && archiveState !== null ? archiveState.status : "ready",
       threads: [...selected.values()].map((thread) =>
-        toPluginSidebarThreadCached(thread, hostNamesById, titleResources),
+        toPluginSidebarThreadCached(
+          thread,
+          hostNamesById,
+          titleResources,
+          activityNow,
+        ),
       ),
       experimental_hosts: hosts ?? [],
       projects: allProjects.map((project) => ({
@@ -211,6 +232,7 @@ export function useSidebarThreads(
     };
   }, [
     data,
+    activityNow,
     hostNamesById,
     hosts,
     query.isError,
