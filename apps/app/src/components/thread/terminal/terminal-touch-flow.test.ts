@@ -209,6 +209,67 @@ describe("terminal touch flow with mouse tracking off", () => {
     );
   });
 
+  it("moves the viewport during the drag on the next animation frame", async () => {
+    stubMeasurements();
+    const { screen, terminal } = openTerminal(true);
+    await write(
+      terminal,
+      Array.from({ length: 200 }, (_, index) => `line ${index}`).join("\r\n"),
+    );
+    const startViewportY = terminal.buffer.active.viewportY;
+    const rowHeight = CELL_HEIGHT_PX;
+    const rows = 3;
+    const frames: FrameRequestCallback[] = [];
+    const requestFrame = vi
+      .spyOn(window, "requestAnimationFrame")
+      .mockImplementation((callback) => {
+        frames.push(callback);
+        return frames.length;
+      });
+    const cancelFrame = vi
+      .spyOn(window, "cancelAnimationFrame")
+      .mockImplementation(() => {});
+
+    try {
+      dispatchTouch(screen, "touchstart", { x: 40, y: 200 }, 2_000);
+      dispatchTouch(
+        screen,
+        "touchmove",
+        { x: 40, y: 200 - rowHeight * 2 },
+        2_016,
+      );
+      dispatchTouch(
+        screen,
+        "touchmove",
+        { x: 40, y: 200 - rowHeight * rows },
+        2_032,
+      );
+
+      expect(terminal.buffer.active.viewportY).toBe(startViewportY);
+      expect(frames).toHaveLength(1);
+      frames.shift()?.(2_048);
+      expect(terminal.buffer.active.viewportY).toBe(startViewportY - rows);
+
+      dispatchTouch(
+        screen,
+        "touchmove",
+        { x: 40, y: 200 - rowHeight * 4 },
+        2_056,
+      );
+      dispatchTouch(
+        screen,
+        "touchend",
+        { x: 40, y: 200 - rowHeight * 5 },
+        2_064,
+      );
+      expect(terminal.buffer.active.viewportY).toBe(startViewportY - 5);
+    } finally {
+      requestFrame.mockRestore();
+      cancelFrame.mockRestore();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  });
+
   it("scrolls touchmove distance before the long-press selection delay", async () => {
     stubMeasurements();
     const { wrapper, terminal } = openTerminal(true);
@@ -237,7 +298,8 @@ describe("terminal touch flow with mouse tracking off", () => {
     fireLongPress();
     dispatchTouch(wrapper, "touchend", { x: 40, y: 50 }, 2_400);
 
-    const screen = terminal.element?.querySelector<HTMLElement>(".xterm-screen");
+    const screen =
+      terminal.element?.querySelector<HTMLElement>(".xterm-screen");
     if (screen === null || screen === undefined) {
       throw new Error("xterm screen element missing");
     }
