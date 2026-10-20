@@ -229,10 +229,15 @@ import { usePluginSlots } from "@/lib/plugin-slots";
 import { getFileExtension } from "@/lib/plugin-slot-resolvers";
 import { Icon } from "@bb/shared-ui/icon";
 import { getBbDesktopInfo, isDesktopBrowserAvailable } from "@/lib/bb-desktop";
-import { UrlOpenRoutingProvider } from "@/lib/url-open-routing";
+import {
+  openUrlInExternalBrowser,
+  UrlOpenRoutingProvider,
+} from "@/lib/url-open-routing";
 import {
   isTerminalLinkForThreadBrowser,
+  openTerminalBrowserAction,
   openTerminalLinkInThreadBrowser,
+  terminalBrowserExternalOpenToastOptions,
 } from "@/components/thread/terminal/terminal-link-routing";
 import {
   AppNavigationHostProvider,
@@ -2202,22 +2207,35 @@ function ThreadDetailViewInternal(
     if (!parsedAction.success) return;
     consumedTerminalActionLocationRef.current = location.key;
     navigate(location.pathname, { replace: true, state: null });
-    setActiveTerminal(parsedAction.data.terminalId, {
+    selectTerminal(parsedAction.data.terminalId, {
       kind: "thread",
       threadId,
     });
     if (parsedAction.data.action === "openBrowser" && parsedAction.data.url) {
-      openTerminalLinkInThreadBrowser({
-        isCompact: renderSecondaryPanelAsDrawer,
-        openDrawer: secondaryPanelDrawerVisibility.openDrawer,
-        openTab,
-        requestSplit: (tabId) => {
-          splitTabToRightRequestIdRef.current += 1;
-          setSplitTabToRightRequest({
-            requestId: splitTabToRightRequestIdRef.current,
-            tabId,
-          });
-        },
+      openTerminalBrowserAction({
+        canOpenInAppBrowser: isDesktopBrowserAvailable(),
+        openInAppBrowser: (url) =>
+          openTerminalLinkInThreadBrowser({
+            isCompact: renderSecondaryPanelAsDrawer,
+            openDrawer: secondaryPanelDrawerVisibility.openDrawer,
+            openTab,
+            requestSplit: (tabId) => {
+              splitTabToRightRequestIdRef.current += 1;
+              setSplitTabToRightRequest({
+                requestId: splitTabToRightRequestIdRef.current,
+                tabId,
+              });
+            },
+            url,
+          }),
+        showExternalOpenAction: (url) =>
+          appToast.message(
+            "Open this link in your browser?",
+            terminalBrowserExternalOpenToastOptions(
+              url,
+              openUrlInExternalBrowser,
+            ),
+          ),
         url: parsedAction.data.url,
       });
     }
@@ -2227,9 +2245,9 @@ function ThreadDetailViewInternal(
     location.state,
     navigate,
     openTab,
+    selectTerminal,
     renderSecondaryPanelAsDrawer,
     secondaryPanelDrawerVisibility.openDrawer,
-    setActiveTerminal,
     threadId,
   ]);
   const handleTimelineTitleAction = useCallback<TimelineTitleActionResolver>(

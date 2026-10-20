@@ -58,6 +58,8 @@ The SDK exposes `sdk.terminals.experimental_surfaces.list({ threadId })`,
 includes its thread and terminal IDs, title, status, and whether it is a
 regular or native terminal. Archived threads and terminal IDs outside the
 requested thread fail closed.
+On clients without an in-app browser, `open-link` presents an Open action for
+the external browser instead of adding an unavailable browser tab.
 
 From inside a bb terminal, `bb terminal notify --title "Build" --body "Finished"`
 raises attention on its terminal. The SDK exposes the same operation as

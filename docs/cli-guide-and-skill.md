@@ -7,7 +7,9 @@ Thread terminal actions are available through `bb terminal surfaces --thread
 `terminals.experimental_focus({ terminalId })`, and
 `terminals.experimental_openBrowser({ terminalId, url })`. The first lists
 server-known terminal surfaces; the latter two ask connected app clients to
-select the terminal tab or open the URL in the thread browser.
+select and reveal the terminal tab or open the URL in the thread browser. A
+client without an in-app browser offers the URL through an Open action instead
+of creating an unavailable browser tab.
 
 `bb terminal output <id> --lines <n>` prints the latest lines, including from
 recently exited terminals. The server retains at most 64 KiB per terminal,

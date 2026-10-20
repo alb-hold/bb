@@ -59,8 +59,11 @@ and remains active with terminal focus.
 `experimental_surfaces.list({ threadId })` lists thread terminal surfaces with
 stable thread and terminal IDs, title, status, and kind. `experimental_focus({
 terminalId })` opens the owning thread and activates its terminal tab in
-connected app clients. `experimental_openBrowser({ terminalId, url })` uses the
-same thread-open signal and W4B browser panel placement used by terminal links.
+connected app clients, revealing the terminal panel on compact layouts.
+`experimental_openBrowser({ terminalId, url })` uses the same thread-open signal
+and W4B browser panel placement used by terminal links. Clients without an
+in-app browser offer the URL through an Open action instead of creating an
+unavailable browser tab.
 The CLI surfaces are `bb terminal surfaces --thread`, `bb terminal focus`, and
 `bb terminal open-link`.
 
@@ -75,8 +78,11 @@ behavior, URL restrictions, and stale/foreign ID failures before stabilizing.
 `experimental_surfaces.list({ threadId })` lists thread terminal surfaces with
 stable thread and terminal IDs, title, status, and kind. `experimental_focus({
 terminalId })` opens the owning thread and activates its terminal tab in
-connected app clients. `experimental_openBrowser({ terminalId, url })` uses the
-same thread-open signal and W4B browser panel placement used by terminal links.
+connected app clients, revealing the terminal panel on compact layouts.
+`experimental_openBrowser({ terminalId, url })` uses the same thread-open signal
+and W4B browser panel placement used by terminal links. Clients without an
+in-app browser offer the URL through an Open action instead of creating an
+unavailable browser tab.
 The CLI surfaces are `bb terminal surfaces --thread`, `bb terminal focus`, and
 `bb terminal open-link`.
 

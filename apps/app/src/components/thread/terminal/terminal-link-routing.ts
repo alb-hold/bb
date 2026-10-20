@@ -10,6 +10,26 @@ interface OpenTerminalLinkInThreadBrowserArgs {
   url: string;
 }
 
+interface OpenTerminalBrowserActionArgs {
+  canOpenInAppBrowser: boolean;
+  openInAppBrowser: (url: string) => void;
+  showExternalOpenAction: (url: string) => void;
+  url: string;
+}
+
+export function terminalBrowserExternalOpenToastOptions(
+  url: string,
+  openExternalBrowser: (url: string) => void,
+) {
+  return {
+    action: {
+      label: "Open",
+      onClick: () => openExternalBrowser(url),
+    },
+    description: url,
+  };
+}
+
 export function isTerminalLinkForThreadBrowser(
   url: string,
   environmentHostnames: readonly string[] = [],
@@ -46,4 +66,17 @@ export function openTerminalLinkInThreadBrowser({
   if (isCompact) openDrawer();
   else requestSplit(tab.id);
   return true;
+}
+
+export function openTerminalBrowserAction({
+  canOpenInAppBrowser,
+  openInAppBrowser,
+  showExternalOpenAction,
+  url,
+}: OpenTerminalBrowserActionArgs): void {
+  if (!canOpenInAppBrowser) {
+    showExternalOpenAction(url);
+    return;
+  }
+  openInAppBrowser(url);
 }
