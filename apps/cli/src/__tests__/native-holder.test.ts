@@ -16,7 +16,7 @@ import path from "node:path";
 import { PassThrough } from "node:stream";
 import { pathToFileURL } from "node:url";
 import { spawn as spawnPty } from "node-pty";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import * as nativeHolder from "../native-holder.js";
 import {
   NativeHolderFrame,
@@ -31,6 +31,7 @@ import {
   pipeNativeHolderClient,
   runNativeHolder,
   waitForNativeHolder,
+  writeNativeHolderAttachMarker,
   type NativeHolderProcess,
   type NativeTerminalCheck,
 } from "../native-holder.js";
@@ -1093,6 +1094,20 @@ describe("checking whether bb closed a native terminal for good", () => {
       expect(await held).not.toBe(7);
     },
   );
+});
+
+describe("native holder attach marker", () => {
+  it("writes one marker each time a holder client attaches", () => {
+    const output = { write: vi.fn() };
+
+    writeNativeHolderAttachMarker(output, "term-1");
+    writeNativeHolderAttachMarker(output, "term-1");
+
+    expect(output.write.mock.calls).toEqual([
+      ["\u001b]7717;bb-holder;term-1\u0007"],
+      ["\u001b]7717;bb-holder;term-1\u0007"],
+    ]);
+  });
 });
 
 describe("native holder frames", () => {

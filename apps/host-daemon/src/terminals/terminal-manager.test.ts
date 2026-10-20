@@ -562,6 +562,21 @@ describe("TerminalManager", () => {
     ).toEqual([]);
   });
 
+  it("starts a direct shell when bb is unavailable", async () => {
+    const harness = createHarnessWithOptions({
+      onSendMessage: () => undefined,
+      resolveShell: async () => "/bin/zsh",
+      shellEnv: {},
+    });
+
+    await openTerminal(harness);
+
+    expect(harness.adapter.lastSpawnArgs?.file).toBe("/bin/zsh");
+    expect(harness.adapter.lastSpawnArgs?.args).not.toContain(
+      "holder-shell-client",
+    );
+  });
+
   it("passes bash integration env and rcfile args through the holder client", async () => {
     const harness = createHarnessWithOptions({
       onSendMessage: () => undefined,

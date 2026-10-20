@@ -62,7 +62,7 @@ export type TerminalSessionSingleScope = TerminalStatusScope &
 
 export type TerminalSessionMutation =
   | { kind: "disconnect"; retainDaemonSession: boolean }
-  | { daemonSessionId: string; kind: "reconnect" }
+  | { daemonSessionId: string; kind: "reconnect"; resetHolderBacked?: boolean }
   | {
       closeReason: TerminalSessionCloseReason;
       exitCode?: number | null;
@@ -79,6 +79,7 @@ export type TerminalSessionMutation =
     }
   | { cols: number; kind: "size"; rows: number }
   | { kind: "title"; title: string }
+  | { kind: "holder-backed" }
   | { kind: "user-input" };
 
 export interface ListTerminalSessionsArgs {
@@ -161,6 +162,7 @@ function mutationValues(
     case "reconnect":
       return {
         daemonSessionId: update.daemonSessionId,
+        ...(update.resetHolderBacked ? { holderBacked: false } : {}),
         status: "running",
         updatedAt: now,
       };
@@ -188,6 +190,8 @@ function mutationValues(
       return { cols: update.cols, rows: update.rows, updatedAt: now };
     case "title":
       return { title: update.title, updatedAt: now };
+    case "holder-backed":
+      return { holderBacked: true, updatedAt: now };
     case "user-input":
       return { lastUserInputAt: now, updatedAt: now };
   }

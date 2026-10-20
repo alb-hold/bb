@@ -1,8 +1,4 @@
 import { HOST_DAEMON_RESTART_EXIT_CODE } from "@bb/config/machine-service";
-import {
-  defaultNativeHolderSocketPath,
-  nativeHolderIsAlive,
-} from "@bb/cli/src/native-holder.js";
 import { startDesktopBrowserBroker } from "./desktop-browser-broker.js";
 import { MachineEnvironment } from "./machine-environment.js";
 import { CommandRouter } from "./command-router.js";
@@ -818,19 +814,6 @@ export async function createHostDaemonApp(
     emitEnvironmentHookProgress: (message) => sendServerMessage(message),
     desktopBrowserBroker,
     terminalDataSocket,
-    listTerminalHolderSessions: async (terminalIds) => {
-      const live: string[] = [];
-      for (const terminalId of terminalIds) {
-        if (
-          await nativeHolderIsAlive(
-            defaultNativeHolderSocketPath(options.serverUrl, terminalId),
-          )
-        ) {
-          live.push(terminalId);
-        }
-      }
-      return live;
-    },
     dataDir: options.dataDir,
     fetchProjectAttachment: (args) =>
       runSessionRequest({

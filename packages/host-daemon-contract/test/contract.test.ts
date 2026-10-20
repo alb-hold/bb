@@ -180,7 +180,6 @@ const WORKSPACE_DIFF_AVAILABLE_RESULT: JsonObject = {
 const ONLINE_RPC_RESPONSE_RESULT_FIXTURES: OnlineRpcResponseResultFixtures = {
   "environment.hook.run": {},
   "terminal-data-plane.probe": { dataSocket: true, ipcVersion: 1 },
-  "terminal.holder-sessions": { terminalIds: ["term-1"] },
   "terminal-data-plane.connect": { connected: true },
   "environment.hook.cancel": { status: "terminated" },
   "desktop.browser.list_instances": { instances: [] },

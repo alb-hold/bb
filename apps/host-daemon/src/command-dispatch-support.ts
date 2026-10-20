@@ -52,7 +52,6 @@ export interface CommandDispatchOptions {
   ) => void;
   desktopBrowserBroker?: DesktopBrowserBroker;
   terminalDataSocket?: TerminalDataSocketPort;
-  listTerminalHolderSessions?: (terminalIds: string[]) => Promise<string[]>;
   dataDir: string;
   logger: Pick<HostDaemonLogger, "debug" | "warn">;
   fetchProjectAttachment: FetchProjectAttachment;

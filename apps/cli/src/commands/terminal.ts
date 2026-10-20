@@ -21,6 +21,7 @@ import {
   openNativeHolderConnection,
   pipeNativeHolderClient,
   runNativeHolder,
+  writeNativeHolderAttachMarker,
 } from "../native-holder.js";
 import { terminalScopeHint } from "../context-hints.js";
 import { durationHelp, parseDurationMs } from "../duration.js";
@@ -143,6 +144,7 @@ export function registerTerminalCommands(
           },
         });
         if (connection.kind !== "attached") return;
+        writeNativeHolderAttachMarker(process.stdout, terminalId);
         for (const signal of ["SIGTERM", "SIGHUP"] as const) {
           process.on(signal, () => connection.socket.destroy());
         }

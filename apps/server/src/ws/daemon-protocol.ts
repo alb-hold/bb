@@ -1,12 +1,9 @@
-import { randomUUID } from "node:crypto";
 import { reportEnvironmentHookProgress } from "../services/environments/environment-hooks.js";
 import { syncDesktopBrowserTabs } from "../services/desktop-browsers.js";
-import { getNativeTerminalThread, heartbeatSession } from "@bb/db";
+import { heartbeatSession } from "@bb/db";
 import {
   hasHostDaemonWebSocketProtocol,
   hostDaemonDaemonWsMessageSchema,
-  TERMINAL_HOLDER_SESSIONS_TIMEOUT_MS,
-  terminalHolderSessionsResultSchema,
   type HostDaemonDaemonWsMessage,
 } from "@bb/host-daemon-contract";
 import { ApiError } from "../errors.js";
@@ -122,64 +119,9 @@ export async function onDaemonSocketOpen(
       deps,
       args.hostId,
     );
-    const terminalIds = deps.terminalSessions.listDisconnectedHostTerminalIds({
-      hostId: args.hostId,
-      excludeTerminalIds: nativeThreadIds.flatMap((threadId) => {
-        const terminalId = getNativeTerminalThread(
-          deps.db,
-          threadId,
-        )?.terminalSessionId;
-        return terminalId === null || terminalId === undefined
-          ? []
-          : [terminalId];
-      }),
-    });
-    const holderTerminalIds = new Set<string>();
-    for (let offset = 0; offset < terminalIds.length; offset += 1_000) {
-      const candidates = terminalIds.slice(offset, offset + 1_000);
-      try {
-        const response = await deps.hub.requestHostOnlineRpc({
-          hostId: args.hostId,
-          message: {
-            type: "host-rpc.request",
-            requestId: randomUUID(),
-            command: {
-              type: "terminal.holder-sessions",
-              terminalIds: candidates,
-            },
-          },
-          timeoutMs: TERMINAL_HOLDER_SESSIONS_TIMEOUT_MS,
-        });
-        if (
-          !response.ok ||
-          response.commandType !== "terminal.holder-sessions"
-        ) {
-          holderTerminalIds.clear();
-          break;
-        }
-        const parsed = terminalHolderSessionsResultSchema.safeParse(
-          response.result,
-        );
-        if (!parsed.success) {
-          holderTerminalIds.clear();
-          break;
-        }
-        const candidateSet = new Set(candidates);
-        for (const terminalId of parsed.data.terminalIds) {
-          if (candidateSet.has(terminalId)) holderTerminalIds.add(terminalId);
-        }
-      } catch (error) {
-        holderTerminalIds.clear();
-        deps.logger.debug(
-          { err: error, hostId: args.hostId },
-          "Terminal holder query got no answer; disconnected shells will exit",
-        );
-      }
-    }
     await deps.terminalSessions.reconcileDisconnectedHostTerminals({
       daemonSessionId: args.sessionId,
       hostId: args.hostId,
-      holderTerminalIds: [...holderTerminalIds],
     });
   }
   if (isServerMoveFrozen(deps.db)) {
@@ -189,10 +131,6 @@ export async function onDaemonSocketOpen(
     hostId: args.hostId,
     threadIds: nativeThreadIds,
   });
-  // A dispatch that arrived while this machine was away parked its row on a
-  // `host-offline` wait with no schedule, so no sweep can see it — the
-  // machine coming back is that wait's release signal, and this socket
-  // opening is where core hears it.
   requestQueuedMessageDispatch(deps, {
     hostId: args.hostId,
     kind: "host-connected",
@@ -434,9 +372,7 @@ export function createDaemonSocketMessageQueue<T>(args: {
 }): (message: T) => Promise<void> {
   let pending = Promise.resolve();
   return (message) => {
-    const next = pending
-      .then(args.afterOpen)
-      .then(() => args.handle(message));
+    const next = pending.then(args.afterOpen).then(() => args.handle(message));
     pending = next.catch(args.onError);
     return pending;
   };

@@ -127,7 +127,9 @@ async function stopThreadRuntime(
         timeoutMs: THREAD_STOP_ACTIVE_TURN_WAIT_MS,
       });
     }
-    const result = await entry.runtime.stopThread({ threadId: command.threadId });
+    const result = await entry.runtime.stopThread({
+      threadId: command.threadId,
+    });
     providerCheckpointId = result.providerCheckpointId ?? providerCheckpointId;
   }
   await options.eventSink.flush();
@@ -663,12 +665,6 @@ const onlineRpcHandlers: OnlineRpcHandlerMap = {
   "terminal-data-plane.probe": async (_command, options) => ({
     dataSocket: options.terminalDataSocket !== undefined,
     ipcVersion: 1,
-  }),
-  "terminal.holder-sessions": async (command, options) => ({
-    terminalIds:
-      options.listTerminalHolderSessions === undefined
-        ? []
-        : await options.listTerminalHolderSessions(command.terminalIds),
   }),
   "terminal-data-plane.connect": async (command, options) => ({
     connected:

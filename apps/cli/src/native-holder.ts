@@ -26,6 +26,13 @@ const UNIX_SOCKET_PATH_MAX_BYTES = 100;
 const NATIVE_HOLDER_LOG_MAX_BYTES = 256 * 1024;
 const NATIVE_HOLDER_OUTPUT_MAX_BYTES = 4 * 1024 * 1024;
 
+export function writeNativeHolderAttachMarker(
+  output: { write(chunk: string): unknown },
+  terminalId: string,
+): void {
+  output.write(`\u001b]7717;bb-holder;${terminalId}\u0007`);
+}
+
 export function logNativeHolderEvent(
   socketPath: string,
   event: string,

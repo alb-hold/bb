@@ -1,0 +1,1 @@
+ALTER TABLE `terminal_sessions` ADD `holder_backed` integer DEFAULT false NOT NULL;

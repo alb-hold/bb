@@ -65,7 +65,6 @@ export interface CommandRouterOptions {
   emitEnvironmentHookProgress?: CommandDispatchOptions["emitEnvironmentHookProgress"];
   desktopBrowserBroker?: CommandDispatchOptions["desktopBrowserBroker"];
   terminalDataSocket?: CommandDispatchOptions["terminalDataSocket"];
-  listTerminalHolderSessions?: CommandDispatchOptions["listTerminalHolderSessions"];
   dataDir: CommandDispatchOptions["dataDir"];
   fetchProjectAttachment: CommandDispatchOptions["fetchProjectAttachment"];
   fetchSkillTree?: CommandDispatchOptions["fetchSkillTree"];
@@ -309,7 +308,6 @@ export class CommandRouter {
       runtimeManager: this.options.runtimeManager,
       desktopBrowserBroker: this.options.desktopBrowserBroker,
       terminalDataSocket: this.options.terminalDataSocket,
-      listTerminalHolderSessions: this.options.listTerminalHolderSessions,
       dataDir: this.options.dataDir,
       eventSink: this.options.eventSink,
       listModels: this.options.listModels,

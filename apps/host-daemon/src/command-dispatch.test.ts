@@ -2473,35 +2473,6 @@ describe("dispatchCommand", () => {
     });
   });
 
-  it("answers holder-session queries only when the server asks", async () => {
-    const manager = new RuntimeManager({
-      createRuntime: () => createRuntime(),
-      provisionWorkspace: async () => createWorkspace(),
-    });
-    const listTerminalHolderSessions = vi.fn(async (terminalIds: string[]) =>
-      terminalIds.filter((id) => id === "term-live"),
-    );
-    const options = makeDispatchOptions({
-      runtimeManager: manager,
-      listTerminalHolderSessions,
-    });
-
-    await expect(
-      dispatchOnlineRpcCommand(
-        {
-          type: "terminal.holder-sessions",
-          terminalIds: ["term-live", "term-direct"],
-        },
-        options,
-        new AbortController().signal,
-      ),
-    ).resolves.toEqual({ terminalIds: ["term-live"] });
-    expect(listTerminalHolderSessions).toHaveBeenCalledWith([
-      "term-live",
-      "term-direct",
-    ]);
-  });
-
   it("routes provider health and usage to the targeted bridge runtime", async () => {
     const runtime = createRuntime();
     const manager = new RuntimeManager({

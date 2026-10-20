@@ -1171,6 +1171,9 @@ export const terminalSessions = sqliteTable(
     cols: integer("cols").notNull(),
     rows: integer("rows").notNull(),
     status: text("status").$type<TerminalSessionStatus>().notNull(),
+    holderBacked: integer("holder_backed", { mode: "boolean" })
+      .notNull()
+      .default(false),
     exitCode: integer("exit_code"),
     closeReason: text("close_reason").$type<TerminalSessionCloseReason>(),
     createdAt: integer("created_at").notNull(),

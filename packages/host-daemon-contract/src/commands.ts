@@ -52,8 +52,6 @@ import {
   terminalDataPlaneConnectResultSchema,
   terminalDataPlaneProbeCommandSchema,
   terminalDataPlaneProbeResultSchema,
-  terminalHolderSessionsCommandSchema,
-  terminalHolderSessionsResultSchema,
 } from "./terminal-data-plane.js";
 import {
   providerHealthResultSchema,
@@ -1962,15 +1960,6 @@ export const hostDaemonCommandRegistry = {
     type: "terminal-data-plane.probe",
     schema: terminalDataPlaneProbeCommandSchema,
     resultSchema: terminalDataPlaneProbeResultSchema,
-    transport: "onlineRpc",
-    retryable: false,
-    flushEventsBeforeResult: false,
-    envLane: null,
-  }),
-  "terminal.holder-sessions": defineHostDaemonCommandDescriptor({
-    type: "terminal.holder-sessions",
-    schema: terminalHolderSessionsCommandSchema,
-    resultSchema: terminalHolderSessionsResultSchema,
     transport: "onlineRpc",
     retryable: false,
     flushEventsBeforeResult: false,
