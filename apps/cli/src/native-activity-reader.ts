@@ -122,6 +122,9 @@ export class NativeActivityReader {
     };
     const hooks = activity.hooks;
     if (hooks !== undefined && this.eventsFile !== null) {
+      const unconfirmedHookReasons = new Set<
+        "missing-session" | "foreign-session" | "unbound"
+      >();
       for (const record of this.hookTail.readRecords(this.eventsFile)) {
         if (hooks.sessionIdField !== undefined) {
           const hookSession = this.stringField(record, hooks.sessionIdField);
@@ -134,13 +137,17 @@ export class NativeActivityReader {
                   ? "foreign-session"
                   : null;
           if (reason !== null) {
+            if (
+              this.hookIdentityConfirmed ||
+              this.unconfirmedTranscriptOffset === null
+            ) {
+              this.unconfirmedTranscriptOffset = this.currentTranscriptSize();
+            }
             this.hookIdentityConfirmed = false;
-            this.unconfirmedTranscriptOffset = this.currentTranscriptSize();
-            this.onUnconfirmedHookIdentity?.(reason, ++this.unconfirmedHookCount);
+            this.unconfirmedHookCount += 1;
+            unconfirmedHookReasons.add(reason);
             continue;
           }
-          this.hookIdentityConfirmed = true;
-          this.unconfirmedTranscriptOffset = null;
         }
         const signal = classifyHookRecord(hooks, record);
         const turn =
@@ -153,7 +160,19 @@ export class NativeActivityReader {
           this.currentTurn = turn;
           this.rememberTurn(turn);
         }
-        push(this.tracker.apply(signal));
+        const report = this.tracker.apply(signal);
+        if (
+          hooks.sessionIdField !== undefined &&
+          (signal.state !== null ||
+            (report !== null &&
+              (signal.question !== undefined || signal.answered !== undefined)))
+        ) {
+          this.confirmHookIdentity();
+        }
+        push(report);
+      }
+      for (const reason of unconfirmedHookReasons) {
+        this.onUnconfirmedHookIdentity?.(reason, this.unconfirmedHookCount);
       }
     }
     const transcript = activity.transcript;
@@ -177,15 +196,17 @@ export class NativeActivityReader {
       }
       const signal = classifyTranscriptRecord(transcript, record);
       const identified = this.identifyTranscript(record, signal, location);
+      const report = this.tracker.apply(identified);
       if (
-        identified.state !== null ||
-        identified.question !== undefined ||
-        identified.answered !== undefined
+        this.cli.activity?.hooks?.sessionIdField !== undefined &&
+        (identified.state !== null ||
+          (report !== null &&
+            (identified.question !== undefined ||
+              identified.answered !== undefined)))
       ) {
-        this.hookIdentityConfirmed = true;
-        this.unconfirmedTranscriptOffset = null;
+        this.confirmHookIdentity();
       }
-      push(this.tracker.apply(identified));
+      push(report);
     });
     return reports;
   }
@@ -217,6 +238,11 @@ export class NativeActivityReader {
     const file = this.transcriptFile ?? this.findTranscript();
     if (file === null) return Number.POSITIVE_INFINITY;
     return fileSize(file) ?? Number.POSITIVE_INFINITY;
+  }
+
+  private confirmHookIdentity(): void {
+    this.hookIdentityConfirmed = true;
+    this.unconfirmedTranscriptOffset = null;
   }
 
   private stringField(record: unknown, field: string): string | null {
