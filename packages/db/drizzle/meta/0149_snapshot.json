@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "335bc7af-03e9-4935-ab94-f61f06c3ce0a",
+  "id": "e8c93f6d-644d-49df-9c89-d7571b5e6bcd",
   "prevId": "1076cff7-8847-403e-93d2-f20eac9921d1",
   "tables": {
     "app_settings": {
@@ -1205,6 +1205,44 @@
           "tableTo": "terminal_sessions",
           "columnsFrom": [
             "terminal_session_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "fork_terminal_holder_sessions": {
+      "name": "fork_terminal_holder_sessions",
+      "columns": {
+        "terminal_id": {
+          "name": "terminal_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "confirmed_at": {
+          "name": "confirmed_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "fork_terminal_holder_sessions_terminal_id_terminal_sessions_id_fk": {
+          "name": "fork_terminal_holder_sessions_terminal_id_terminal_sessions_id_fk",
+          "tableFrom": "fork_terminal_holder_sessions",
+          "tableTo": "terminal_sessions",
+          "columnsFrom": [
+            "terminal_id"
           ],
           "columnsTo": [
             "id"
@@ -4241,14 +4279,6 @@
           "primaryKey": false,
           "notNull": true,
           "autoincrement": false
-        },
-        "holder_backed": {
-          "name": "holder_backed",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": false
         },
         "exit_code": {
           "name": "exit_code",

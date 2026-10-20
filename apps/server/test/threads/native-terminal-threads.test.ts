@@ -4,13 +4,16 @@ import os from "node:os";
 import path from "node:path";
 import {
   archiveThread,
+  createConnection,
   createNativeTerminalThread,
   createTerminalSession,
   getNativeTerminalThread,
+  getRetainedTerminalOutput,
   getTerminalSession,
   getThread,
   listNativeTerminalThreadsWithDisconnectedTerminal,
   listEvents,
+  migrate,
   noopNotifier,
   projectAttachmentThreads,
   setNativeTerminalThreadTerminal,
@@ -357,6 +360,118 @@ function composerScreen(pasted: string): string {
 }
 
 describe("native terminal threads", () => {
+  it("adopts a holder-backed shell after the server reloads its database", async () => {
+    const fixture = await createFixture();
+    const creating = postJson(fixture, "/terminals", {
+      cols: 80,
+      rows: 24,
+      target: {
+        kind: "environment",
+        environmentId: fixture.environment.id,
+      },
+    });
+    const open = await waitForTerminalOpen(fixture.socket);
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.hostId,
+      sessionId: fixture.sessionId,
+      message: {
+        type: "terminal.opened",
+        requestId: open.requestId,
+        terminalId: open.terminalId,
+        shell: "/bin/zsh",
+        title: "zsh",
+        initialCwd: "/tmp/native-workspace",
+        cols: open.cols,
+        rows: open.rows,
+      },
+    });
+    expect((await creating).status).toBe(201);
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.hostId,
+      sessionId: fixture.sessionId,
+      message: {
+        type: "terminal.output",
+        terminalId: open.terminalId,
+        chunk: {
+          seq: 0,
+          dataBase64: Buffer.from(
+            `\u001b]7717;bb-holder;${open.terminalId}\u0007BEFORE:42424\n`,
+          ).toString("base64"),
+        },
+      },
+    });
+    fixture.harness.deps.terminalSessions.flushAllRetainedOutput();
+    handleDaemonSocketClosed(fixture.harness.deps, {
+      sessionId: fixture.sessionId,
+    });
+
+    const reloadedDb = createConnection(fixture.harness.db.$client.serialize());
+    migrate(reloadedDb);
+    explicitlyMigratedDbs.push(reloadedDb);
+    const restartedHarness = await createTestAppHarness({ db: reloadedDb });
+    harnesses.push(restartedHarness);
+    const openedSession = await restartedHarness.app.request(
+      "/internal/session/open",
+      {
+        method: "POST",
+        headers: internalAuthHeaders(restartedHarness, {
+          hostId: fixture.hostId,
+        }),
+        body: JSON.stringify({
+          hostId: fixture.hostId,
+          instanceId: "instance-1",
+          hostName: "Test Host",
+          hasMachineCredential: false,
+          platform: "darwin",
+          dataDir: "/tmp/server-restarted",
+          localApiPort: null,
+          protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
+          activeThreads: [],
+          undeliveredEventThreadIds: [],
+        }),
+      },
+    );
+    expect(openedSession.status).toBe(201);
+    const { sessionId } = (await readJson(openedSession)) as {
+      sessionId: string;
+    };
+    const socket = createFakeDaemonSocket();
+    await onDaemonSocketOpen(restartedHarness.deps, {
+      hostId: fixture.hostId,
+      sessionId,
+      socket,
+    });
+
+    expect(
+      daemonMessages(socket).filter(
+        (message) => message.type === "terminal.open",
+      ),
+    ).toEqual([]);
+    expect(
+      getTerminalSession(reloadedDb, {
+        kind: "terminal",
+        terminalId: open.terminalId,
+      }),
+    ).toMatchObject({
+      daemonSessionId: sessionId,
+      holderBacked: true,
+      status: "running",
+    });
+    const retained = getRetainedTerminalOutput(reloadedDb, {
+      hostId: fixture.hostId,
+      terminalSessionId: open.terminalId,
+      now: Date.now(),
+    });
+    expect(retained).not.toBeNull();
+    expect(
+      Buffer.concat(
+        (retained ?? []).map((chunk) =>
+          Buffer.from(chunk.dataBase64, "base64"),
+        ),
+      ).toString("utf8"),
+    ).toBe("BEFORE:42424\n");
+  });
+
   it("applies a reconnecting client's size after a native terminal reopens", async () => {
     const fixture = await createMigratedMemoryFixture();
     const { open, thread } = await openRunningNativeThread(fixture, {

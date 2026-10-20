@@ -1171,9 +1171,6 @@ export const terminalSessions = sqliteTable(
     cols: integer("cols").notNull(),
     rows: integer("rows").notNull(),
     status: text("status").$type<TerminalSessionStatus>().notNull(),
-    holderBacked: integer("holder_backed", { mode: "boolean" })
-      .notNull()
-      .default(false),
     exitCode: integer("exit_code"),
     closeReason: text("close_reason").$type<TerminalSessionCloseReason>(),
     createdAt: integer("created_at").notNull(),
@@ -1193,6 +1190,16 @@ export const terminalSessions = sqliteTable(
     index("terminal_sessions_host_status_idx").on(table.hostId, table.status),
     index("terminal_sessions_daemon_session_idx").on(table.daemonSessionId),
   ],
+);
+
+export const forkTerminalHolderSessions = sqliteTable(
+  "fork_terminal_holder_sessions",
+  {
+    terminalSessionId: text("terminal_id")
+      .primaryKey()
+      .references(() => terminalSessions.id, { onDelete: "cascade" }),
+    confirmedAt: integer("confirmed_at").notNull(),
+  },
 );
 
 export const forkDeviceHandoffAttention = sqliteTable(
