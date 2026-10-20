@@ -2984,6 +2984,149 @@ describe("native terminal threads", () => {
     }
   });
 
+  it("buffers split holder markers and preserves non-markers and incomplete output", async () => {
+    const fixture = await createFixture();
+    let openedCount = 0;
+    const openShell = async () => {
+      const creating = postJson(fixture, "/terminals", {
+        cols: 80,
+        rows: 24,
+        target: {
+          kind: "environment",
+          environmentId: fixture.environment.id,
+        },
+      });
+      const open = await waitForTerminalOpen(fixture.socket, openedCount++);
+      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.hostId,
+        sessionId: fixture.sessionId,
+        message: {
+          type: "terminal.opened",
+          requestId: open.requestId,
+          terminalId: open.terminalId,
+          shell: "/bin/zsh",
+          title: "zsh",
+          initialCwd: "/tmp/native-workspace",
+          cols: open.cols,
+          rows: open.rows,
+        },
+      });
+      expect((await creating).status).toBe(201);
+      return open.terminalId;
+    };
+    const send = (terminalId: string, seq: number, data: Buffer) =>
+      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.hostId,
+        sessionId: fixture.sessionId,
+        message: {
+          type: "terminal.output",
+          terminalId,
+          chunk: { seq, dataBase64: data.toString("base64") },
+        },
+      });
+    const retainedText = async (terminalId: string) => {
+      fixture.harness.deps.terminalSessions.flushAllRetainedOutput();
+      const retained = getRetainedTerminalOutput(fixture.harness.db, {
+        hostId: fixture.hostId,
+        terminalSessionId: terminalId,
+        now: Date.now(),
+      });
+      return Buffer.concat(
+        (retained ?? []).map((chunk) =>
+          Buffer.from(chunk.dataBase64, "base64"),
+        ),
+      ).toString("utf8");
+    };
+
+    const firstSplitTerminalId = await openShell();
+    const firstSplitMarker = Buffer.from(
+      `\u001b]7717;bb-holder;${firstSplitTerminalId}\u0007`,
+    );
+    for (let offset = 1; offset < firstSplitMarker.length; offset += 1) {
+      const terminalId =
+        offset === 1 ? firstSplitTerminalId : await openShell();
+      const marker = Buffer.from(`\u001b]7717;bb-holder;${terminalId}\u0007`);
+      expect(marker.length).toBe(firstSplitMarker.length);
+      const suffix = `SPLIT-${offset}\n`;
+      send(terminalId, 0, marker.subarray(0, offset));
+      send(
+        terminalId,
+        1,
+        Buffer.concat([marker.subarray(offset), Buffer.from(suffix)]),
+      );
+      expect(
+        getTerminalSession(fixture.harness.db, {
+          kind: "terminal",
+          terminalId,
+        }),
+      ).toMatchObject({ holderBacked: true });
+      expect(await retainedText(terminalId)).toBe(suffix);
+    }
+
+    const bytewiseTerminalId = await openShell();
+    const bytewiseMarker = Buffer.from(
+      `\u001b]7717;bb-holder;${bytewiseTerminalId}\u0007`,
+    );
+    for (const [seq, byte] of bytewiseMarker.entries()) {
+      send(bytewiseTerminalId, seq, Buffer.from([byte]));
+    }
+    send(bytewiseTerminalId, bytewiseMarker.length, Buffer.from("BYTEWISE\n"));
+    expect(
+      getTerminalSession(fixture.harness.db, {
+        kind: "terminal",
+        terminalId: bytewiseTerminalId,
+      }),
+    ).toMatchObject({ holderBacked: true });
+    expect(await retainedText(bytewiseTerminalId)).toBe("BYTEWISE\n");
+
+    const nonMarkerTerminalId = await openShell();
+    const nonMarker = Buffer.from(
+      "\u001b]7717;bb-holder;!not-a-holder\u0007VISIBLE\n",
+    );
+    send(nonMarkerTerminalId, 0, nonMarker);
+    expect(
+      getTerminalSession(fixture.harness.db, {
+        kind: "terminal",
+        terminalId: nonMarkerTerminalId,
+      }),
+    ).toMatchObject({ holderBacked: false });
+    expect(await retainedText(nonMarkerTerminalId)).toBe(
+      nonMarker.toString("utf8"),
+    );
+
+    const incompleteTerminalId = await openShell();
+    const incomplete = Buffer.concat([
+      Buffer.from(`\u001b]7717;bb-holder;${incompleteTerminalId}`),
+      Buffer.alloc(160, 0x61),
+    ]);
+    send(incompleteTerminalId, 0, incomplete);
+    expect(
+      getTerminalSession(fixture.harness.db, {
+        kind: "terminal",
+        terminalId: incompleteTerminalId,
+      }),
+    ).toMatchObject({ holderBacked: false });
+    expect(await retainedText(incompleteTerminalId)).toBe(
+      incomplete.toString("utf8"),
+    );
+
+    const timedOutTerminalId = await openShell();
+    const timedOutPrefix = Buffer.from(
+      `\u001b]7717;bb-holder;${timedOutTerminalId}`,
+    );
+    send(timedOutTerminalId, 0, timedOutPrefix);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(
+      getTerminalSession(fixture.harness.db, {
+        kind: "terminal",
+        terminalId: timedOutTerminalId,
+      }),
+    ).toMatchObject({ holderBacked: false });
+    expect(await retainedText(timedOutTerminalId)).toBe(
+      timedOutPrefix.toString("utf8"),
+    );
+  });
+
   it("does not adopt a terminal when the first holder marker names another terminal", async () => {
     const fixture = await createFixture();
     const creating = postJson(fixture, "/terminals", {
