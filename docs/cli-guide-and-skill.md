@@ -1,5 +1,14 @@
 # CLI, Guide, And Skill
 
+Thread terminal actions are available through `bb terminal surfaces --thread
+<id> [--json]`, `bb terminal focus <terminalId>`, and `bb terminal open-link
+<terminalId> <url>`. The SDK exposes these as
+`terminals.experimental_surfaces.list({ threadId })`,
+`terminals.experimental_focus({ terminalId })`, and
+`terminals.experimental_openBrowser({ terminalId, url })`. The first lists
+server-known terminal surfaces; the latter two ask connected app clients to
+select the terminal tab or open the URL in the thread browser.
+
 `bb terminal output <id> --lines <n>` prints the latest lines, including from
 recently exited terminals. The server retains at most 64 KiB per terminal,
 2 MiB and 128 terminals per machine for 30 minutes, evicting oldest output
