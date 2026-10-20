@@ -402,6 +402,9 @@ describe("resolveWritingEdits", () => {
     ["measure-object the user are ready.", "are", "is", "grammar"],
     ["get-ChildItem the user are ready.", "are", "is", "grammar"],
     ["Fetch-Data the user are ready.", "are", "is", "grammar"],
+    ["fetch-data the user are ready.", "are", "is", "grammar"],
+    ["Well-known teams say the user are ready.", "are", "is", "grammar"],
+    ["long-term the user are ready.", "are", "is", "grammar"],
     ["make sure the user are ready.", "are", "is", "grammar"],
     ["find out if the user are ready.", "are", "is", "grammar"],
     ["go check that the user are ready.", "are", "is", "grammar"],
@@ -461,8 +464,8 @@ describe("resolveWritingEdits", () => {
     "If the user are ready, ship it.",
     "While the user are ready, wait.",
     "For now the user are ready.",
-    "Well-known teams say the user are ready.",
-    "Long-term the user are ready.",
+    "A well-known team says the user are ready.",
+    "The long-term plan says the user are ready.",
     "Ask the team - the user are ready.",
   ])("still auto-applies a safe fix on the prose line %s", (target) => {
     const edits = resolveWritingEdits({

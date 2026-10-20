@@ -37,7 +37,7 @@ export interface AiServiceRegistry {
   list(): AiServiceRegistration[];
   peekStatus(key: AiServiceKey): AiServiceStatus | null;
   status(key: AiServiceKey): Promise<AiServiceStatus>;
-  settledStatus(key: AiServiceKey): Promise<AiServiceStatus>;
+  settledStatus(key: AiServiceKey, maxWaitMs: number): Promise<AiServiceStatus>;
 }
 
 interface CreateAiServiceRegistryArgs {
@@ -125,9 +125,10 @@ export function createAiServiceRegistry(
     return request;
   }
 
-  function answerSoon(
+  function answerWithin(
     service: AiServiceRegistration,
     probe: Promise<AiServiceStatus>,
+    waitMs: number,
   ): Promise<AiServiceStatus> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     return Promise.race([
@@ -135,7 +136,7 @@ export function createAiServiceRegistry(
       new Promise<AiServiceStatus>((resolve) => {
         timer = setTimeout(
           () => resolve(statuses.get(service)?.status ?? CHECKING),
-          STATUS_ANSWER_MS,
+          waitMs,
         );
         timer.unref();
       }),
@@ -189,9 +190,9 @@ export function createAiServiceRegistry(
       if (cached !== undefined && now() - cached.checkedAt <= STATUS_TTL_MS) {
         return cached.status;
       }
-      return answerSoon(service, refresh(service));
+      return answerWithin(service, refresh(service), STATUS_ANSWER_MS);
     },
-    async settledStatus(key) {
+    async settledStatus(key, maxWaitMs) {
       const service = services.get(mapKey(key));
       if (service === undefined) {
         return { ready: false, message: "Plugin not loaded" };
@@ -200,7 +201,7 @@ export function createAiServiceRegistry(
       if (cached !== undefined && now() - cached.checkedAt <= STATUS_TTL_MS) {
         return cached.status;
       }
-      return refresh(service);
+      return answerWithin(service, refresh(service), maxWaitMs);
     },
   };
 }

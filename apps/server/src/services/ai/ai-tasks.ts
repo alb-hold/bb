@@ -211,9 +211,10 @@ export async function runAiTask<T>(
     message: "No AI service is ready",
   };
   for (const service of services) {
+    const attemptDeadline = Date.now() + timeoutMs;
     const skipped = skipMessage(
       service,
-      await deps.aiServices.settledStatus(aiServiceKey(service)),
+      await deps.aiServices.settledStatus(aiServiceKey(service), timeoutMs),
     );
     if (skipped !== null) {
       last = { reason: "unavailable", message: skipped };
@@ -223,7 +224,10 @@ export async function runAiTask<T>(
       last = { reason: "cancelled", message: REQUEST_CANCELLED_MESSAGE };
       break;
     }
-    const link = linkedSignal(timeoutMs, args.signal);
+    const link = linkedSignal(
+      Math.max(0, attemptDeadline - Date.now()),
+      args.signal,
+    );
     const fields = {
       task: args.task,
       serviceId: service.id,

@@ -188,7 +188,7 @@ describe("AI service registry", () => {
         const registry = createAiServiceRegistry();
         const slow = slowStatus();
         registry.register(service(slow.status));
-        const settled = registry.settledStatus(ACME);
+        const settled = registry.settledStatus(ACME, 60_000);
         let result: unknown = null;
         void settled.then((status) => {
           result = status;
@@ -207,7 +207,7 @@ describe("AI service registry", () => {
       try {
         const registry = createAiServiceRegistry();
         registry.register(service(() => new Promise(() => {})));
-        const settled = registry.settledStatus(ACME);
+        const settled = registry.settledStatus(ACME, 60_000);
         await vi.advanceTimersByTimeAsync(30_001);
         await expect(settled).resolves.toEqual({
           ready: false,

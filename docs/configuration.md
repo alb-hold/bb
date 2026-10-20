@@ -370,8 +370,9 @@ vocabulary terms are never edited, and on a line containing any of
 = ; { } ( ) < > [ ] $ ` | \ / # " or --, a colon followed directly by text
 (10:30), a key: value line (status: ready, - name: x, "title": x), a line
 that starts with a shell command, builtin or keyword such as echo, git, npm, read, for or if (also after a $,
-%, > or # prompt or sudo), a line that starts with a PowerShell cmdlet such as Write-Output,
-ConvertTo-Json or get-childitem, a line with a short flag such as -la, a line
+%, > or # prompt or sudo), a line that starts with a hyphenated word, as every PowerShell
+command does (Write-Output, ConvertTo-Json, fetch-data; also prose such as
+Well-known teams say), a line with a short flag such as -la, a line
 indented four spaces or a tab, or a ``` or ~~~ fence line or a line inside such a fence (closed
 only by a bare fence of the same character at least as long), every
 change, even capitalization, is only suggested. Dictation formatting follows the same rule:
