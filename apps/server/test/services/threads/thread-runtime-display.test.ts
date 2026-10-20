@@ -247,6 +247,8 @@ function createThreadListEntry(
 describe("thread runtime display", () => {
   it("applies one receipt freshness policy to native list and detail status", () => {
     const { db, hostId, hub } = setup();
+    const session = openTestSession({ db, hostId });
+    registerTestDaemon(hub, { hostId, sessionId: session.id });
     const native = createThreadWithEnvironment({
       db,
       hostId,

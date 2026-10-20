@@ -176,9 +176,15 @@ function formatThreadListProject(
   return projectNames.get(thread.projectId) ?? thread.projectId;
 }
 
-function formatThreadListStatus(thread: ThreadListEntry): string {
+function formatThreadListStatus(
+  thread: Pick<ThreadListEntry, "archivedAt" | "pinnedAt" | "status"> &
+    Partial<Pick<ThreadListEntry, "runtime">>,
+): string {
   const flags: string[] = [];
-  if (isNativeActivityUnconfirmed(thread.runtime)) {
+  if (
+    thread.runtime !== undefined &&
+    isNativeActivityUnconfirmed(thread.runtime)
+  ) {
     flags.push("activity unconfirmed");
   }
   if (thread.archivedAt !== null) {
@@ -206,13 +212,18 @@ function hasIndependentWorkingActivity(
 }
 
 function activityAwareListIndicator(
-  thread: ThreadListEntry,
+  thread: Pick<ThreadListEntry, "id" | "listIndicator"> &
+    Partial<Pick<ThreadListEntry, "runtime" | "activity">>,
   wokeThreadIds: ReadonlySet<string>,
 ): ThreadListEntry["listIndicator"] {
   if (thread.listIndicator === "needs-input") return thread.listIndicator;
   if (thread.listIndicator === "working") {
-    return isNativeActivityUnconfirmed(thread.runtime) &&
-      !hasIndependentWorkingActivity(thread)
+    return (
+      thread.runtime !== undefined &&
+      isNativeActivityUnconfirmed(thread.runtime) &&
+      (thread.activity === undefined ||
+        !hasIndependentWorkingActivity({ activity: thread.activity }))
+    )
       ? "none"
       : "working";
   }

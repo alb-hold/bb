@@ -556,10 +556,6 @@ function ThreadDetailViewInternal(
     snapshot: queriedThread,
     threadId,
   });
-  const activityNow = useSecondTick();
-  const nativeActivityUnconfirmed =
-    thread !== undefined &&
-    isNativeActivityUnconfirmed(thread.runtime, activityNow);
   const environmentQuery = useEnvironment(thread?.environmentId, {
     enabled: hasThreadDetailBootstrapSettled,
     staleTime: 5_000,
@@ -835,6 +831,15 @@ function ThreadDetailViewInternal(
     enabled: threadQueryState.status === "ready" && Boolean(thread?.id),
     parentThreadId: thread?.id,
   });
+  const activityNow = useSecondTick(
+    thread?.runtime.nativeActivity !== undefined ||
+      childThreadSubsetQuery.data?.some(
+        (entry) => entry.runtime.nativeActivity !== undefined,
+      ) === true,
+  );
+  const nativeActivityUnconfirmed =
+    thread !== undefined &&
+    isNativeActivityUnconfirmed(thread.runtime, activityNow);
   const parentThreads = useMemo(
     () =>
       shouldLoadParentThreads

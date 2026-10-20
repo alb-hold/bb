@@ -178,8 +178,20 @@ export function useSidebarThreads(
     ],
   );
   const query = useSidebarNavigation();
-  const activityNow = useSecondTick();
   const data = query.data;
+  const activityNow = useSecondTick(
+    data?.projects.some((project) =>
+      project.threads.some(
+        (thread) => thread.runtime.nativeActivity !== undefined,
+      ),
+    ) === true ||
+      data?.personalProject.threads.some(
+        (thread) => thread.runtime.nativeActivity !== undefined,
+      ) === true ||
+      archived.data?.pages.some((page) =>
+        page.some((thread) => thread.runtime.nativeActivity !== undefined),
+      ) === true,
+  );
   const { data: hosts } = useHosts();
   const hostNamesById = hostNamesFor(hosts);
   const titleResources = useThreadTitleMentionResources();

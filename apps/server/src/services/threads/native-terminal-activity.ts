@@ -71,10 +71,10 @@ function hasCurrentLiveTerminalCredential(
   } catch (error) {
     if (
       error instanceof ApiError &&
-      (error.code === "native_terminal_credential_invalid" ||
-        error.code === "native_terminal_not_live" ||
-        error.code === "thread_environment_unavailable" ||
-        error.code === "environment_not_found")
+      (error.body.code === "native_terminal_credential_invalid" ||
+        error.body.code === "native_terminal_not_live" ||
+        error.body.code === "thread_environment_unavailable" ||
+        error.body.code === "environment_not_found")
     ) {
       return false;
     }
@@ -181,10 +181,11 @@ export function recordNativeTerminalActivity(
   if (repeatedWorkingSignal) {
     if (notifyReceipt) {
       const thread = requirePublicThread(deps.db, args.threadId);
+      const metadata = buildThreadStatusChangeMetadata(deps, thread);
       deps.hub.notifyThread(
         args.threadId,
         ["status-changed"],
-        buildThreadStatusChangeMetadata(deps, thread),
+        metadata,
       );
     }
     return;
@@ -193,10 +194,11 @@ export function recordNativeTerminalActivity(
   const thread = requirePublicThread(deps.db, args.threadId);
   const record = requireNativeRecord(deps, args.threadId);
   if (notifyReceipt) {
+    const metadata = buildThreadStatusChangeMetadata(deps, thread);
     deps.hub.notifyThread(
       args.threadId,
       ["status-changed"],
-      buildThreadStatusChangeMetadata(deps, thread),
+      metadata,
     );
   }
   if (

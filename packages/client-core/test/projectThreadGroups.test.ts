@@ -68,6 +68,41 @@ function findNode(
 }
 
 describe("buildChronologicalThreadList", () => {
+  it("expires collapsed native child activity at the shared freshness boundary", () => {
+    const parent = createThread({ id: "parent" });
+    const child = createThread({
+      id: "native-child",
+      parentThreadId: parent.id,
+      status: "active",
+      runtime: {
+        displayStatus: "active",
+        nativeActivity: {
+          lastEvidenceAt: 1_000_000,
+          freshForMs: 90_000,
+          confirmation: "confirmed",
+        },
+      },
+    });
+    const atBoundary = buildChronologicalThreadList(
+      [parent, child],
+      compareByAttentionDescending,
+      new Set(),
+      1_090_000,
+    );
+    const afterBoundary = buildChronologicalThreadList(
+      [parent, child],
+      compareByAttentionDescending,
+      new Set(),
+      1_090_001,
+    );
+
+    expect(findNode(atBoundary, parent.id)?.stats.childActivity.runtimeWorking)
+      .toBe(true);
+    expect(
+      findNode(afterBoundary, parent.id)?.stats.childActivity.runtimeWorking,
+    ).toBe(false);
+  });
+
   it("nests threads recursively from parentThreadId regardless of thread type", () => {
     const rootItems = buildList([
       createThread({

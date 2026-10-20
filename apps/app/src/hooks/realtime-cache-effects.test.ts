@@ -10,7 +10,10 @@ import {
   defaultExperiments,
 } from "@bb/domain";
 import type { QueryClient } from "@tanstack/react-query";
-import { makeEnvironment } from "@bb/test-helpers/domain-fixtures";
+import {
+  makeEnvironment,
+  makeThreadListEntry,
+} from "@bb/test-helpers/domain-fixtures";
 import { createAppQueryClient } from "@/lib/query-client";
 import { makeSystemConfig } from "@/test/fixtures/system-config";
 import { hasThreadTimelineUnseenEvents } from "./cache-owners/thread-timeline-unseen-events";
@@ -169,6 +172,69 @@ function createRealtimeEffectsTestContext(
 }
 
 describe("createRealtimeCacheEffects", () => {
+  it("patches native receipts into list and search caches without broad invalidation", () => {
+    const { effects, queryClient } = createRealtimeEffectsTestContext();
+    const thread = makeThreadListEntry({
+      id: "thr_native_receipt_cache",
+      projectId: "project-1",
+      updatedAt: 1,
+      runtime: {
+        displayStatus: "active",
+        nativeActivity: {
+          lastEvidenceAt: 1_000,
+          freshForMs: 90_000,
+          confirmation: "confirmed",
+        },
+      },
+    });
+    const listKey = threadListQueryKey({ projectId: "project-1" });
+    const searchKey = threadSearchQueryKey({
+      limitPerGroup: 20,
+      query: "native receipt",
+    });
+    queryClient.setQueryData(listKey, [thread]);
+    queryClient.setQueryData(searchKey, {
+      active: { total: 1, results: [{ thread, matches: [] }] },
+      archived: { total: 0, results: [] },
+    });
+
+    effects.handleChanged({
+      type: "changed",
+      entity: "thread",
+      id: thread.id,
+      metadata: {
+        statusChange: {
+          activity: NO_THREAD_ACTIVITY,
+          latestAttentionAt: thread.latestAttentionAt,
+          runtime: {
+            displayStatus: "active",
+            nativeActivity: {
+              lastEvidenceAt: 31_000,
+              freshForMs: 90_000,
+              confirmation: "confirmed",
+            },
+          },
+          status: "active",
+          updatedAt: thread.updatedAt,
+        },
+      },
+      changes: ["status-changed"],
+    });
+
+    expect(
+      queryClient.getQueryData<Array<typeof thread>>(listKey)?.[0]?.runtime
+        .nativeActivity?.lastEvidenceAt,
+    ).toBe(31_000);
+    expect(
+      queryClient.getQueryData<{ active: { results: { thread: typeof thread }[] } }>(
+        searchKey,
+      )?.active.results[0]?.thread.runtime.nativeActivity?.lastEvidenceAt,
+    ).toBe(31_000);
+    expect(queryClient.getQueryState(listKey)?.isInvalidated).toBe(false);
+    expect(queryClient.getQueryState(searchKey)?.isInvalidated).toBe(false);
+    effects.dispose();
+  });
+
   it.each(
     [
       threadStorageFilesQueryKey("thread-1"),

@@ -1,7 +1,12 @@
 import type { ThreadListEntry } from "@bb/domain";
 import type { PluginSidebarThread } from "@get-bb/plugin-sdk";
-import { getThreadListIndicatorLabel, isThreadRead } from "@bb/client-core";
-import { isNativeActivityUnconfirmed } from "@bb/client-core";
+import {
+  getThreadListIndicatorLabel,
+  isNativeActivityUnconfirmed,
+  isThreadRead,
+  resolveThreadListIndicator,
+  threadListIndicatorStateForThread,
+} from "@bb/client-core";
 import {
   EMPTY_TITLE_MENTION_RESOURCES,
   resolveThreadTitleDisplayText,
@@ -16,7 +21,12 @@ export function toPluginSidebarThread(
   titleResources: ThreadTitleMentionResources = EMPTY_TITLE_MENTION_RESOURCES,
   now = Date.now(),
 ): PluginSidebarThread {
-  const indicator = entry.listIndicator;
+  const indicatorState = threadListIndicatorStateForThread(entry, false, now);
+  const indicator = resolveThreadListIndicator({
+    ...indicatorState,
+    isAutomationWoken:
+      indicatorState.isAutomationWoken || entry.listIndicator === "woke",
+  });
 
   return {
     id: entry.id,

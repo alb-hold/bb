@@ -8,6 +8,7 @@ import {
 } from "../helpers/command-output-harness.js";
 import type { CommandRegistrar } from "../helpers/command-output-harness.js";
 import * as fixtures from "../helpers/command-output-fixtures.js";
+import { makeThreadListEntry } from "@bb/test-helpers/domain-fixtures";
 import { registerThreadCommands } from "../../commands/thread/index.js";
 import { formatThreadListIndicator } from "../../commands/thread/list.js";
 
@@ -16,6 +17,13 @@ describe("bb thread list command output", () => {
 
   const register: CommandRegistrar = (program) =>
     registerThreadCommands(program, () => "http://server");
+
+  const makeThreadListFixture = (
+    overrides: Parameters<typeof fixtures.makeThread>[0],
+  ) => {
+    const thread = fixtures.makeThread(overrides);
+    return { ...makeThreadListEntry(thread), ...thread };
+  };
 
   it("bb thread list supports parent-thread filtering", async () => {
     const list = vi.fn(async () => []);
@@ -124,7 +132,7 @@ describe("bb thread list command output", () => {
     "bb thread list renders $flag status in the shared borderless table",
     async ({ flag, stamp, table }) => {
       const list = vi.fn(async () => [
-        fixtures.makeThread({
+        makeThreadListFixture({
           id: `thread-${flag}-1`,
           projectId: "proj-1",
           providerId: "codex",
@@ -154,7 +162,7 @@ describe("bb thread list command output", () => {
 
   it("bb thread list hides the personal project label", async () => {
     const list = vi.fn(async () => [
-      fixtures.makeThread({
+      makeThreadListFixture({
         id: "thread-personal-1",
         projectId: domain.PERSONAL_PROJECT_ID,
         providerId: "codex",
@@ -183,23 +191,32 @@ describe("bb thread list command output", () => {
 
   it("shows native activity uncertainty and suppresses runtime-only Working", async () => {
     const list = vi.fn(async () => [
-      fixtures.makeThread({
-        id: "thread-native-uncertain",
-        projectId: "proj-1",
-        providerId: "claude-code",
-        status: "active",
-        listIndicator: "working",
+      {
+        ...makeThreadListFixture({
+          id: "thread-native-uncertain",
+          projectId: "proj-1",
+          providerId: "claude-code",
+          status: "active",
+          createdAt: 1,
+          updatedAt: 1,
+        }),
+        listIndicator: "working" as const,
         runtime: {
-          displayStatus: "active",
+          displayStatus: "active" as const,
           nativeActivity: {
             lastEvidenceAt: null,
             freshForMs: 90_000,
-            confirmation: "unconfirmed",
+            confirmation: "unconfirmed" as const,
           },
         },
-        createdAt: 1,
-        updatedAt: 1,
-      }),
+        activity: {
+          activeWorkflowCount: 0,
+          activeBackgroundAgentCount: 0,
+          activeBackgroundCommandCount: 0,
+          activePlanModeCount: 0,
+          activeGoalCount: 0,
+        },
+      },
     ]);
     stubServerApi({
       "v1.threads.$get": list,
@@ -213,9 +230,65 @@ describe("bb thread list command output", () => {
     expect(table).not.toContain("Working");
   });
 
+  it("keeps needs-input and independent background work visible for an unconfirmed native thread", async () => {
+    const makeNativeThread = (
+      id: string,
+      listIndicator: "needs-input" | "working",
+      overrides: {
+        activeBackgroundAgentCount?: number;
+        hasPendingInteraction?: boolean;
+      } = {},
+    ) => ({
+      ...makeThreadListFixture({
+        id,
+        projectId: "proj-1",
+        providerId: "claude-code",
+        status: "active",
+        createdAt: 1,
+        updatedAt: 1,
+      }),
+      listIndicator,
+      hasPendingInteraction: overrides.hasPendingInteraction ?? false,
+      runtime: {
+        displayStatus: "active" as const,
+        nativeActivity: {
+          lastEvidenceAt: null,
+          freshForMs: 90_000,
+          confirmation: "unconfirmed" as const,
+        },
+      },
+      activity: {
+        activeWorkflowCount: 0,
+        activeBackgroundAgentCount: overrides.activeBackgroundAgentCount ?? 0,
+        activeBackgroundCommandCount: 0,
+        activePlanModeCount: 0,
+        activeGoalCount: 0,
+      },
+    });
+    const list = vi.fn(async () => [
+      makeNativeThread("thread-needs-input", "needs-input", {
+        hasPendingInteraction: true,
+      }),
+      makeNativeThread("thread-background", "working", {
+        activeBackgroundAgentCount: 1,
+      }),
+    ]);
+    stubServerApi({
+      "v1.threads.$get": list,
+      "v1.projects.$get": async () => [{ id: "proj-1", name: "Alpha" }],
+    });
+
+    await runCommand(["thread", "list"], register);
+
+    const table = collectLogPayloads(vi.mocked(console.log)).join("\n");
+    expect(table).toContain("active (activity unconfirmed)");
+    expect(table).toContain("Needs input");
+    expect(table).toContain("Working");
+  });
+
   it("bb thread list prints the thread title, fallback, and project name (#1648)", async () => {
     const list = vi.fn(async () => [
-      fixtures.makeThread({
+      makeThreadListFixture({
         id: "thr_a9niqhjj9c",
         projectId: "proj_bsst4jxfwv",
         providerId: "codex",
@@ -225,7 +298,7 @@ describe("bb thread list command output", () => {
         createdAt: 1,
         updatedAt: 1,
       }),
-      fixtures.makeThread({
+      makeThreadListFixture({
         id: "thr_uwfzqywzsz",
         projectId: "proj_bsst4jxfwv",
         providerId: "codex",
@@ -235,7 +308,7 @@ describe("bb thread list command output", () => {
         createdAt: 1,
         updatedAt: 1,
       }),
-      fixtures.makeThread({
+      makeThreadListFixture({
         id: "thr_unknownproj",
         projectId: "proj_missing",
         providerId: "codex",

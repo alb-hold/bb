@@ -36,7 +36,11 @@ describe("resolveThreadOngoingIndicator", () => {
     },
     {
       name: "no runtime-only indicator after native activity expires",
-      input: { ...idle, displayStatus: "active", nativeActivityUnconfirmed: true },
+      input: {
+        ...idle,
+        displayStatus: "active",
+        nativeActivityUnconfirmed: true,
+      },
       expected: { show: false, label: undefined },
     },
     {

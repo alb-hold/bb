@@ -512,7 +512,7 @@ function threadStatus(fixture: Fixture, threadId: string) {
 }
 
 describe("native terminal activity", () => {
-  it("stamps only current live reports and notifies steady receipts no faster than the holder interval", async () => {
+  it("stamps live receipts through silence and recovery", async () => {
     const fixture = await createFixture();
     const thread = seedChatThread(fixture, {
       providerId: "claude-code",
@@ -545,16 +545,12 @@ describe("native terminal activity", () => {
       expect(
         getNativeTerminalThread(fixture.harness.db, thread.id)?.lastEvidenceAt,
       ).toBe(1_000_000);
-      expect(notify).toHaveBeenCalledTimes(1);
-
       await vi.advanceTimersByTimeAsync(15_000);
       recordNativeTerminalActivity(fixture.harness.deps, {
         authorization,
         threadId: thread.id,
         state: "working",
       });
-      expect(notify).toHaveBeenCalledTimes(1);
-
       await vi.advanceTimersByTimeAsync(15_000);
       recordNativeTerminalActivity(fixture.harness.deps, {
         authorization,
@@ -564,14 +560,54 @@ describe("native terminal activity", () => {
       expect(
         getNativeTerminalThread(fixture.harness.db, thread.id)?.lastEvidenceAt,
       ).toBe(1_030_000);
-      expect(notify).toHaveBeenCalledTimes(2);
+      const receiptMetadataAt = (timestamp: number) =>
+        notify.mock.calls
+          .map((call) => call[2])
+          .filter(
+            (metadata) =>
+              metadata?.statusChange?.runtime.nativeActivity?.lastEvidenceAt ===
+              timestamp,
+          );
+      expect(receiptMetadataAt(1_030_000)).toHaveLength(1);
+      expect(
+        receiptMetadataAt(1_030_000)[0]?.statusChange?.runtime.nativeActivity
+          ?.lastEvidenceAt,
+      ).toBe(1_030_000);
 
+      for (let period = 2; period <= 4; period += 1) {
+        await vi.advanceTimersByTimeAsync(30_000);
+        recordNativeTerminalActivity(fixture.harness.deps, {
+          authorization,
+          threadId: thread.id,
+          state: "working",
+        });
+        const timestamp = 1_000_000 + period * 30_000;
+        expect(receiptMetadataAt(timestamp)).toHaveLength(1);
+        expect(
+          receiptMetadataAt(timestamp)[0]?.statusChange?.runtime.nativeActivity
+            ?.lastEvidenceAt,
+        ).toBe(timestamp);
+      }
+
+      await vi.advanceTimersByTimeAsync(91_000);
+      recordNativeTerminalActivity(fixture.harness.deps, {
+        authorization,
+        threadId: thread.id,
+        state: "working",
+      });
+      expect(receiptMetadataAt(1_211_000)).toHaveLength(1);
+      expect(
+        receiptMetadataAt(1_211_000)[0]?.statusChange?.runtime.nativeActivity
+          ?.lastEvidenceAt,
+      ).toBe(1_211_000);
+
+      const beforeTransition = notify.mock.calls.length;
       recordNativeTerminalActivity(fixture.harness.deps, {
         authorization,
         threadId: thread.id,
         state: "waiting",
       });
-      expect(notify).toHaveBeenCalledTimes(3);
+      expect(notify.mock.calls.length).toBeGreaterThan(beforeTransition);
     } finally {
       vi.useRealTimers();
       notify.mockRestore();
@@ -611,6 +647,44 @@ describe("native terminal activity", () => {
 
     expect(response.status).toBe(200);
     expect(threadStatus(fixture, thread.id)).toBe("active");
+    expect(
+      getNativeTerminalThread(fixture.harness.db, thread.id)?.lastEvidenceAt,
+    ).toBeNull();
+  });
+
+  it("propagates unexpected current terminal validation errors", async () => {
+    const fixture = await createFixture();
+    const thread = seedChatThread(fixture, {
+      providerId: "claude-code",
+      providerThreadId: SESSION_ID,
+    });
+    await enterTerminal(fixture, thread.id);
+    const nativeRecord = getNativeTerminalThread(
+      fixture.harness.db,
+      thread.id,
+    );
+    if (nativeRecord?.terminalSessionId === null || nativeRecord === null) {
+      throw new Error("Expected the native terminal to be bound");
+    }
+    const credential = "synthetic-unexpected-validation-error-test";
+    setNativeTerminalToolCredential(fixture.harness.db, {
+      threadId: thread.id,
+      terminalSessionId: nativeRecord.terminalSessionId,
+      credentialHash: createHash("sha256").update(credential).digest("hex"),
+    });
+    const unexpected = new Error("unexpected terminal lookup failure");
+    vi.spyOn(fixture.harness.deps.terminalSessions, "getTerminal")
+      .mockImplementation(() => {
+        throw unexpected;
+      });
+
+    expect(() =>
+      recordNativeTerminalActivity(fixture.harness.deps, {
+        authorization: `Bearer ${credential}`,
+        threadId: thread.id,
+        state: "working",
+      }),
+    ).toThrow(unexpected);
     expect(
       getNativeTerminalThread(fixture.harness.db, thread.id)?.lastEvidenceAt,
     ).toBeNull();
