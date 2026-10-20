@@ -509,7 +509,7 @@ interface HandleTerminalServerMessageArgs {
   onSessionChange?: (session: TerminalSession) => void;
   replayNextSeq: number | null;
   replayWriteState: TerminalReplayWriteState;
-  outputReceivedAt: number;
+  outputReceivedAt?: number;
   setReplayNextSeq: (nextSeq: number | null) => void;
   terminal: XTermTerminal;
   pipeline?: ReturnType<typeof createTerminalOutputPipeline>;

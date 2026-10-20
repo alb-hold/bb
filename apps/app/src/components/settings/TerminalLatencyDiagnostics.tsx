@@ -4,9 +4,14 @@ import {
   type TerminalLatencyDiagnosticsSnapshot,
 } from "@/components/thread/terminal/terminal-latency-diagnostics.js";
 
-function metricText(count: number, p50Ms: number | null, p95Ms: number | null) {
+function metricText(
+  count: number,
+  totalCount: number,
+  p50Ms: number | null,
+  p95Ms: number | null,
+) {
   if (count === 0 || p50Ms === null || p95Ms === null) return "No samples yet";
-  return `${count} samples · p50 ${p50Ms.toFixed(1)} ms · p95 ${p95Ms.toFixed(1)} ms`;
+  return `n=${count} (total ${totalCount}) · p50 ${p50Ms.toFixed(1)} ms · p95 ${p95Ms.toFixed(1)} ms`;
 }
 
 export function TerminalLatencyDiagnostics() {
@@ -30,6 +35,7 @@ export function TerminalLatencyDiagnostics() {
           <div>
             Input to first output received: {metricText(
               snapshot[formFactor].inputToFirstOutputReceivedMs.count,
+              snapshot[formFactor].inputToFirstOutputReceivedMs.totalCount,
               snapshot[formFactor].inputToFirstOutputReceivedMs.p50Ms,
               snapshot[formFactor].inputToFirstOutputReceivedMs.p95Ms,
             )}
@@ -37,6 +43,7 @@ export function TerminalLatencyDiagnostics() {
           <div>
             Input to first output render: {metricText(
               snapshot[formFactor].inputToFirstOutputRenderMs.count,
+              snapshot[formFactor].inputToFirstOutputRenderMs.totalCount,
               snapshot[formFactor].inputToFirstOutputRenderMs.p50Ms,
               snapshot[formFactor].inputToFirstOutputRenderMs.p95Ms,
             )}
@@ -44,6 +51,7 @@ export function TerminalLatencyDiagnostics() {
           <div>
             Output receive to render: {metricText(
               snapshot[formFactor].outputRenderMs.count,
+              snapshot[formFactor].outputRenderMs.totalCount,
               snapshot[formFactor].outputRenderMs.p50Ms,
               snapshot[formFactor].outputRenderMs.p95Ms,
             )}

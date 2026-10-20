@@ -1,5 +1,4 @@
 const RING_SIZE = 256;
-const INPUT_SAMPLE_EVERY = 16;
 
 type LatencyMetric =
   | "inputToFirstOutputReceivedMs"
@@ -8,6 +7,7 @@ type LatencyMetric =
 
 export interface TerminalLatencyMetricSnapshot {
   count: number;
+  totalCount: number;
   p50Ms: number | null;
   p95Ms: number | null;
 }
@@ -26,6 +26,7 @@ export interface TerminalLatencyDiagnosticsSnapshot {
 class LatencyRing {
   private readonly values = new Float64Array(RING_SIZE);
   private count = 0;
+  private totalCount = 0;
   private nextIndex = 0;
 
   add(value: number): void {
@@ -33,15 +34,18 @@ class LatencyRing {
     this.values[this.nextIndex] = value;
     this.nextIndex = (this.nextIndex + 1) % RING_SIZE;
     this.count = Math.min(this.count + 1, RING_SIZE);
+    this.totalCount += 1;
   }
 
   snapshot(): TerminalLatencyMetricSnapshot {
-    if (this.count === 0) return { count: 0, p50Ms: null, p95Ms: null };
+    if (this.count === 0)
+      return { count: 0, totalCount: this.totalCount, p50Ms: null, p95Ms: null };
     const sorted = Array.from(this.values.slice(0, this.count)).sort(
       (left, right) => left - right,
     );
     return {
       count: this.count,
+      totalCount: this.totalCount,
       p50Ms: percentile(sorted, 0.5),
       p95Ms: percentile(sorted, 0.95),
     };
@@ -64,49 +68,56 @@ const metrics: Record<"desktop" | "phone", Record<LatencyMetric, LatencyRing>> =
     outputRenderMs: new LatencyRing(),
   },
 };
-let inputCount = 0;
-let sampledInputAt: {
-  formFactor: "desktop" | "phone";
-  outputReceived: boolean;
-  timestamp: number;
-} | null = null;
+type FormFactor = "desktop" | "phone";
 
-function currentFormFactor(): "desktop" | "phone" {
+const pendingInputs: Array<{ formFactor: FormFactor; timestamp: number }> = [];
+const pendingRenders: Array<{
+  formFactor: FormFactor;
+  inputTimestamp: number | null;
+  receivedAt: number;
+}> = [];
+
+function currentFormFactor(): FormFactor {
   return typeof window !== "undefined" && window.innerWidth < 768
     ? "phone"
     : "desktop";
 }
 
 export function recordTerminalInputEnqueued(timestamp: number): void {
-  inputCount += 1;
-  if (inputCount % INPUT_SAMPLE_EVERY === 0) {
-    sampledInputAt = {
-      formFactor: currentFormFactor(),
-      outputReceived: false,
-      timestamp,
-    };
-  }
+  if (!Number.isFinite(timestamp)) return;
+  if (pendingInputs.length === RING_SIZE) pendingInputs.shift();
+  pendingInputs.push({ formFactor: currentFormFactor(), timestamp });
 }
 
 export function recordTerminalOutputReceived(timestamp: number): void {
-  if (sampledInputAt === null || sampledInputAt.outputReceived) return;
-  metrics[sampledInputAt.formFactor].inputToFirstOutputReceivedMs.add(
-    timestamp - sampledInputAt.timestamp,
-  );
-  sampledInputAt.outputReceived = true;
+  if (!Number.isFinite(timestamp)) return;
+  const firstInput = pendingInputs.shift() ?? null;
+  if (firstInput !== null) {
+    metrics[firstInput.formFactor].inputToFirstOutputReceivedMs.add(
+      timestamp - firstInput.timestamp,
+    );
+    pendingInputs.length = 0;
+  }
+  if (pendingRenders.length === RING_SIZE) pendingRenders.shift();
+  pendingRenders.push({
+    formFactor: firstInput?.formFactor ?? currentFormFactor(),
+    inputTimestamp: firstInput?.timestamp ?? null,
+    receivedAt: timestamp,
+  });
 }
 
 export function recordTerminalOutputRendered(
   receivedAt: number,
   renderedAt: number,
 ): void {
-  const formFactor = currentFormFactor();
-  metrics[formFactor].outputRenderMs.add(renderedAt - receivedAt);
-  if (sampledInputAt !== null) {
-    metrics[sampledInputAt.formFactor].inputToFirstOutputRenderMs.add(
-      renderedAt - sampledInputAt.timestamp,
+  const pending = pendingRenders.shift();
+  const formFactor = pending?.formFactor ?? currentFormFactor();
+  const frameReceivedAt = pending?.receivedAt ?? receivedAt;
+  metrics[formFactor].outputRenderMs.add(renderedAt - frameReceivedAt);
+  if (pending?.inputTimestamp !== null && pending?.inputTimestamp !== undefined) {
+    metrics[formFactor].inputToFirstOutputRenderMs.add(
+      renderedAt - pending.inputTimestamp,
     );
-    sampledInputAt = null;
   }
 }
 
