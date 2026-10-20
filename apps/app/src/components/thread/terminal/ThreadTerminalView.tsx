@@ -42,6 +42,7 @@ import {
 } from "./terminal-layout-settle";
 import {
   recordTerminalInputEnqueued,
+  recordTerminalInputWebSocketSent,
   recordTerminalOutputReceived,
   recordTerminalOutputRendered,
 } from "./terminal-latency-diagnostics.js";
@@ -471,8 +472,9 @@ interface TerminalOutputWriteArgs {
 
 interface ForwardTerminalDataArgs {
   data: string;
+  inputEventAt?: number;
   isUserInput: boolean;
-  onInput: (dataBase64: string) => void;
+  onInput: (dataBase64: string, inputEventAt?: number) => void;
   onUserInput?: () => void;
   replayWriteState: TerminalReplayWriteState;
   sessionStatus: TerminalSession["status"];
@@ -551,6 +553,7 @@ export function encodeTerminalInputChunks(value: string): string[] {
 
 export function forwardTerminalData({
   data,
+  inputEventAt,
   isUserInput,
   onInput,
   onUserInput,
@@ -569,7 +572,7 @@ export function forwardTerminalData({
   }
 
   for (const dataBase64 of encodeTerminalInputChunks(input)) {
-    onInput(dataBase64);
+    onInput(dataBase64, inputEventAt);
   }
   onUserInput?.();
 }
@@ -1467,6 +1470,7 @@ export function ThreadTerminalView({
       const activeTransport = new TerminalWebSocketTransport({
         now: () => performance.now(),
         onInputEnqueued: recordTerminalInputEnqueued,
+        onInputSent: recordTerminalInputWebSocketSent,
         onOutputFrameReceived: (timestamp) => {
           outputFrameReceivedAt = timestamp;
           recordTerminalOutputReceived(timestamp);
@@ -1690,8 +1694,8 @@ export function ThreadTerminalView({
           }),
         requestFrame: (callback) => window.requestAnimationFrame(callback),
       });
-      const sendTerminalInput = (dataBase64: string) =>
-        activeTransport.sendInput(dataBase64);
+      const sendTerminalInput = (dataBase64: string, inputEventAt?: number) =>
+        activeTransport.sendInput(dataBase64, inputEventAt);
       handleFileDropRef.current = (files) => {
         const desktop = window.bbDesktop;
         handleTerminalFileDrop({
@@ -1735,6 +1739,7 @@ export function ThreadTerminalView({
       });
       terminalInputForwarding = attachTerminalInputForwarding({
         onData: (data, isUserInput) => {
+          const inputEventAt = isUserInput ? performance.now() : undefined;
           if (controlActiveRef.current) {
             data = applyTerminalControl(data);
             controlActiveRef.current = false;
@@ -1742,6 +1747,7 @@ export function ThreadTerminalView({
           }
           forwardTerminalData({
             data,
+            inputEventAt,
             isUserInput,
             onInput: sendTerminalInput,
             onUserInput: onUserInputRef.current,

@@ -120,6 +120,34 @@ afterEach(() => {
 });
 
 describe("TerminalWebSocketTransport", () => {
+  it("records enqueue and actual socket send times for queued and immediate input", () => {
+    let timestamp = 100;
+    const inputEnqueued = vi.fn();
+    const inputSent = vi.fn();
+    const harness = createHarness({
+      now: () => timestamp++,
+      onInputEnqueued: inputEnqueued,
+      onInputSent: inputSent,
+    });
+    const queuedInput = Buffer.from("queued").toString("base64");
+    const immediateInput = Buffer.from("immediate").toString("base64");
+
+    harness.transport.start();
+    expect(harness.transport.sendInput(queuedInput, 95)).toBe(true);
+    harness.sockets[0]?.open();
+    expect(harness.transport.sendInput(immediateInput, 104)).toBe(true);
+
+    expect(inputEnqueued.mock.calls).toEqual([
+      [100, 95],
+      [103, 104],
+    ]);
+    expect(inputSent.mock.calls).toEqual([
+      [100, 102],
+      [103, 104],
+    ]);
+    harness.transport.dispose();
+  });
+
   it("reports visible state when a socket opens", () => {
     const harness = createHarness();
 

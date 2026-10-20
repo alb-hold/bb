@@ -70,6 +70,7 @@ interface RepaintNudgeInFlight {
 
 interface PendingTerminalInput {
   bytes: number;
+  enqueuedAt: number;
   payload: string;
 }
 
@@ -82,7 +83,8 @@ export interface TerminalWebSocketTransportOptions {
   now?: () => number;
   onConnectionState?: (state: TerminalSocketConnectionState) => void;
   onInputOverflow?: (maxBytes: number) => void;
-  onInputEnqueued?: (timestamp: number) => void;
+  onInputEnqueued?: (timestamp: number, inputEventAt?: number) => void;
+  onInputSent?: (enqueuedAt: number, sentAt: number) => void;
   onOutputFrameReceived?: (timestamp: number) => void;
   onInvalidMessage?: () => void;
   onMessage: (message: TerminalServerMessage) => void;
@@ -173,10 +175,14 @@ export class TerminalWebSocketTransport {
     this.options.onConnectionState?.("closed");
   }
 
-  sendInput(dataBase64: string): boolean {
-    const enqueuedAt = this.options.onInputEnqueued ? this.now() : 0;
+  sendInput(dataBase64: string, inputEventAt?: number): boolean {
+    const tracksInputTiming =
+      this.options.onInputEnqueued !== undefined ||
+      this.options.onInputSent !== undefined;
+    const enqueuedAt = tracksInputTiming ? this.now() : 0;
     const pending = {
       bytes: getTerminalBase64DecodedByteLength(dataBase64),
+      enqueuedAt,
       payload: JSON.stringify({
         type: "input",
         dataBase64,
@@ -189,12 +195,16 @@ export class TerminalWebSocketTransport {
       socketBufferedAmount(socket) <= this.socketHighWaterBytes &&
       this.pendingInputs.length === 0
     ) {
-      if (this.trySend(socket, pending.payload)) {
-        this.options.onInputEnqueued?.(enqueuedAt);
+      this.options.onInputEnqueued?.(enqueuedAt, inputEventAt);
+      const onSent = this.options.onInputSent
+        ? (sentAt: number) => this.options.onInputSent?.(enqueuedAt, sentAt)
+        : undefined;
+      if (this.trySend(socket, pending.payload, onSent)) {
         return true;
       }
+      return this.enqueueInput(pending, inputEventAt, true);
     }
-    return this.enqueueInput(pending, enqueuedAt);
+    return this.enqueueInput(pending, inputEventAt);
   }
 
   acknowledgeOutput(nextSeq: number): void {
@@ -612,14 +622,20 @@ export class TerminalWebSocketTransport {
     }, delay);
   }
 
-  private enqueueInput(pending: PendingTerminalInput, enqueuedAt: number): boolean {
+  private enqueueInput(
+    pending: PendingTerminalInput,
+    inputEventAt?: number,
+    alreadyRecorded = false,
+  ): boolean {
     if (this.pendingInputBytes + pending.bytes > this.inputQueueMaxBytes) {
       this.options.onInputOverflow?.(this.inputQueueMaxBytes);
       return false;
     }
     this.pendingInputs.push(pending);
     this.pendingInputBytes += pending.bytes;
-    this.options.onInputEnqueued?.(enqueuedAt);
+    if (!alreadyRecorded) {
+      this.options.onInputEnqueued?.(pending.enqueuedAt, inputEventAt);
+    }
     this.scheduleDrain();
     return true;
   }
@@ -635,7 +651,16 @@ export class TerminalWebSocketTransport {
       socketBufferedAmount(socket) <= this.socketHighWaterBytes
     ) {
       const pending = this.pendingInputs[0];
-      if (!pending || !this.trySend(socket, pending.payload)) {
+      if (
+        !pending ||
+        !this.trySend(
+          socket,
+          pending.payload,
+          this.options.onInputSent
+            ? (sentAt) => this.options.onInputSent?.(pending.enqueuedAt, sentAt)
+            : undefined,
+        )
+      ) {
         break;
       }
       this.pendingInputs.shift();
@@ -646,12 +671,18 @@ export class TerminalWebSocketTransport {
     }
   }
 
-  private trySend(socket: TerminalBrowserSocket, payload: string): boolean {
+  private trySend(
+    socket: TerminalBrowserSocket,
+    payload: string,
+    onSent?: (sentAt: number) => void,
+  ): boolean {
     if (socket.readyState !== SOCKET_OPEN) {
       return false;
     }
     try {
+      const sentAt = onSent === undefined ? undefined : this.now();
       socket.send(payload);
+      if (onSent !== undefined && sentAt !== undefined) onSent(sentAt);
       return true;
     } catch {
       try {

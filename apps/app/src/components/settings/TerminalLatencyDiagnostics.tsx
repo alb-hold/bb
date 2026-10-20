@@ -28,12 +28,47 @@ export function TerminalLatencyDiagnostics() {
   }, []);
 
   return (
-    <div className="space-y-2 text-sm" aria-label="Terminal latency diagnostics">
+    <div
+      className="space-y-2 text-sm"
+      aria-label="Terminal latency diagnostics"
+    >
       {(["desktop", "phone"] as const).map((formFactor) => (
         <div key={formFactor}>
           <div className="font-medium capitalize">{formFactor}</div>
           <div>
-            Input to first output received: {metricText(
+            Input event to transport enqueue:{" "}
+            {metricText(
+              snapshot[formFactor].inputEventToEnqueueMs.count,
+              snapshot[formFactor].inputEventToEnqueueMs.totalCount,
+              snapshot[formFactor].inputEventToEnqueueMs.p50Ms,
+              snapshot[formFactor].inputEventToEnqueueMs.p95Ms,
+            )}
+          </div>
+          <div>
+            Transport enqueue to WebSocket send:{" "}
+            {metricText(
+              snapshot[formFactor].inputEnqueueToWebSocketSendMs.count,
+              snapshot[formFactor].inputEnqueueToWebSocketSendMs.totalCount,
+              snapshot[formFactor].inputEnqueueToWebSocketSendMs.p50Ms,
+              snapshot[formFactor].inputEnqueueToWebSocketSendMs.p95Ms,
+            )}
+          </div>
+          <div>
+            WebSocket send to first output received:{" "}
+            {metricText(
+              snapshot[formFactor].inputWebSocketSendToFirstOutputReceivedMs
+                .count,
+              snapshot[formFactor].inputWebSocketSendToFirstOutputReceivedMs
+                .totalCount,
+              snapshot[formFactor].inputWebSocketSendToFirstOutputReceivedMs
+                .p50Ms,
+              snapshot[formFactor].inputWebSocketSendToFirstOutputReceivedMs
+                .p95Ms,
+            )}
+          </div>
+          <div>
+            Transport enqueue to first output received:{" "}
+            {metricText(
               snapshot[formFactor].inputToFirstOutputReceivedMs.count,
               snapshot[formFactor].inputToFirstOutputReceivedMs.totalCount,
               snapshot[formFactor].inputToFirstOutputReceivedMs.p50Ms,
@@ -41,7 +76,17 @@ export function TerminalLatencyDiagnostics() {
             )}
           </div>
           <div>
-            Input to first output render: {metricText(
+            Input echo received to rendered:{" "}
+            {metricText(
+              snapshot[formFactor].inputEchoReceivedToRenderMs.count,
+              snapshot[formFactor].inputEchoReceivedToRenderMs.totalCount,
+              snapshot[formFactor].inputEchoReceivedToRenderMs.p50Ms,
+              snapshot[formFactor].inputEchoReceivedToRenderMs.p95Ms,
+            )}
+          </div>
+          <div>
+            Input to first output render:{" "}
+            {metricText(
               snapshot[formFactor].inputToFirstOutputRenderMs.count,
               snapshot[formFactor].inputToFirstOutputRenderMs.totalCount,
               snapshot[formFactor].inputToFirstOutputRenderMs.p50Ms,
@@ -49,7 +94,8 @@ export function TerminalLatencyDiagnostics() {
             )}
           </div>
           <div>
-            Output receive to render: {metricText(
+            Output receive to render:{" "}
+            {metricText(
               snapshot[formFactor].outputRenderMs.count,
               snapshot[formFactor].outputRenderMs.totalCount,
               snapshot[formFactor].outputRenderMs.p50Ms,
@@ -59,7 +105,8 @@ export function TerminalLatencyDiagnostics() {
         </div>
       ))}
       <p className="text-muted-foreground">
-        Timings are sampled in memory. Terminal input and output contents are not recorded.
+        Timings are sampled in memory. Terminal input and output contents are
+        not recorded.
       </p>
     </div>
   );
