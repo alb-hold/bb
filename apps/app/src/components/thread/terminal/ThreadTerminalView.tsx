@@ -1931,6 +1931,11 @@ export function ThreadTerminalView({
                 Open Link
               </ContextMenuItem>
               <ContextMenuItem
+                onSelect={() => openUrlInExternalBrowser(contextMenuLink.uri)}
+              >
+                Open Link Externally
+              </ContextMenuItem>
+              <ContextMenuItem
                 onSelect={() =>
                   copyTerminalContextValue(contextMenuLink.uri, "Link copied")
                 }
