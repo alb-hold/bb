@@ -45,6 +45,7 @@ import type {
   TerminalSession,
   TimelineRow,
 } from "@bb/server-contract";
+import { threadOpenTerminalActionSchema } from "@bb/server-contract";
 import type { WorkspaceOpenTarget } from "@bb/host-daemon-contract";
 import { appToast } from "@/components/ui/app-toast";
 import { copyToClipboardWithToast } from "@/lib/clipboard";
@@ -229,7 +230,10 @@ import { getFileExtension } from "@/lib/plugin-slot-resolvers";
 import { Icon } from "@bb/shared-ui/icon";
 import { getBbDesktopInfo, isDesktopBrowserAvailable } from "@/lib/bb-desktop";
 import { UrlOpenRoutingProvider } from "@/lib/url-open-routing";
-import { isTerminalLinkForThreadBrowser } from "@/components/thread/terminal/terminal-link-routing";
+import {
+  isTerminalLinkForThreadBrowser,
+  openTerminalLinkInThreadBrowser,
+} from "@/components/thread/terminal/terminal-link-routing";
 import {
   AppNavigationHostProvider,
   type AppFixedTabOpenIntent,
@@ -673,6 +677,7 @@ function ThreadDetailViewInternal(
     tabId: string;
   } | null>(null);
   const splitTabToRightRequestIdRef = useRef(0);
+  const consumedTerminalActionLocationRef = useRef<string | null>(null);
   const shouldLoadThreadStorageFiles = shouldLoadThreadStorageFileList({
     hasThread: thread !== undefined,
     isSecondaryPanelOpen,
@@ -2159,18 +2164,19 @@ function ThreadDetailViewInternal(
       ) {
         return handleOpenTimelineLink({ href });
       }
-      const tab = openTab({ kind: "browser", url: href });
-      if (tab?.kind !== "browser") return false;
-      if (renderSecondaryPanelAsDrawer) {
-        secondaryPanelDrawerVisibility.openDrawer();
-      } else {
-        splitTabToRightRequestIdRef.current += 1;
-        setSplitTabToRightRequest({
-          requestId: splitTabToRightRequestIdRef.current,
-          tabId: tab.id,
-        });
-      }
-      return true;
+      return openTerminalLinkInThreadBrowser({
+        isCompact: renderSecondaryPanelAsDrawer,
+        openDrawer: secondaryPanelDrawerVisibility.openDrawer,
+        openTab,
+        requestSplit: (tabId) => {
+          splitTabToRightRequestIdRef.current += 1;
+          setSplitTabToRightRequest({
+            requestId: splitTabToRightRequestIdRef.current,
+            tabId,
+          });
+        },
+        url: href,
+      });
     },
     [
       handleOpenTimelineLink,
@@ -2180,6 +2186,52 @@ function ThreadDetailViewInternal(
       secondaryPanelDrawerVisibility,
     ],
   );
+  useEffect(() => {
+    const locationState = location.state;
+    if (
+      location.key === consumedTerminalActionLocationRef.current ||
+      locationState === null ||
+      typeof locationState !== "object" ||
+      !("terminalAction" in locationState)
+    ) {
+      return;
+    }
+    const parsedAction = threadOpenTerminalActionSchema.safeParse(
+      locationState.terminalAction,
+    );
+    if (!parsedAction.success) return;
+    consumedTerminalActionLocationRef.current = location.key;
+    navigate(location.pathname, { replace: true, state: null });
+    setActiveTerminal(parsedAction.data.terminalId, {
+      kind: "thread",
+      threadId,
+    });
+    if (parsedAction.data.action === "openBrowser" && parsedAction.data.url) {
+      openTerminalLinkInThreadBrowser({
+        isCompact: renderSecondaryPanelAsDrawer,
+        openDrawer: secondaryPanelDrawerVisibility.openDrawer,
+        openTab,
+        requestSplit: (tabId) => {
+          splitTabToRightRequestIdRef.current += 1;
+          setSplitTabToRightRequest({
+            requestId: splitTabToRightRequestIdRef.current,
+            tabId,
+          });
+        },
+        url: parsedAction.data.url,
+      });
+    }
+  }, [
+    location.key,
+    location.pathname,
+    location.state,
+    navigate,
+    openTab,
+    renderSecondaryPanelAsDrawer,
+    secondaryPanelDrawerVisibility.openDrawer,
+    setActiveTerminal,
+    threadId,
+  ]);
   const handleTimelineTitleAction = useCallback<TimelineTitleActionResolver>(
     (action) => {
       switch (action.kind) {

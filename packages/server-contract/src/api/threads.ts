@@ -817,6 +817,21 @@ export const threadOpenSplitSchema = z.enum([
 ]);
 export type ThreadOpenSplit = z.infer<typeof threadOpenSplitSchema>;
 
+export const threadOpenTerminalActionSchema = z
+  .object({
+    action: z.enum(["focus", "openBrowser"]),
+    terminalId: z.string().min(1),
+    url: z
+      .string()
+      .url()
+      .refine((value) => ["http:", "https:"].includes(new URL(value).protocol))
+      .optional(),
+  })
+  .strict();
+export type ThreadOpenTerminalAction = z.infer<
+  typeof threadOpenTerminalActionSchema
+>;
+
 export const threadOpenFileSchema = z
   .object({
     source: panelFileSourceSchema,
@@ -839,6 +854,7 @@ export const threadOpenSignalSchema = z
     threadId: z.string().min(1),
     split: threadOpenSplitSchema,
     file: threadOpenFileSchema.nullable(),
+    terminalAction: threadOpenTerminalActionSchema.optional(),
   })
   .strict();
 export type ThreadOpenSignal = z.infer<typeof threadOpenSignalSchema>;
@@ -849,12 +865,20 @@ export const threadOpenSignalLenientSchema = z.object({
   threadId: z.string(),
   split: threadOpenSplitSchema,
   file: threadOpenFileLenientSchema.nullable(),
+  terminalAction: z
+    .object({
+      action: z.enum(["focus", "openBrowser"]),
+      terminalId: z.string(),
+      url: z.string().optional(),
+    })
+    .optional(),
 });
 
 export const threadOpenRequestSchema = z
   .object({
     split: threadOpenSplitSchema.optional(),
     file: threadOpenFileSchema.nullable(),
+    terminalAction: threadOpenTerminalActionSchema.optional(),
   })
   .strict();
 export type ThreadOpenRequest = z.infer<typeof threadOpenRequestSchema>;
