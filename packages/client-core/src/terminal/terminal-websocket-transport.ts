@@ -82,6 +82,8 @@ export interface TerminalWebSocketTransportOptions {
   now?: () => number;
   onConnectionState?: (state: TerminalSocketConnectionState) => void;
   onInputOverflow?: (maxBytes: number) => void;
+  onInputEnqueued?: (timestamp: number) => void;
+  onOutputFrameReceived?: (timestamp: number) => void;
   onInvalidMessage?: () => void;
   onMessage: (message: TerminalServerMessage) => void;
   onRepaintNudgeSizeReleased?: (size: { cols: number; rows: number }) => void;
@@ -172,6 +174,7 @@ export class TerminalWebSocketTransport {
   }
 
   sendInput(dataBase64: string): boolean {
+    const enqueuedAt = this.options.onInputEnqueued ? this.now() : 0;
     const pending = {
       bytes: getTerminalBase64DecodedByteLength(dataBase64),
       payload: JSON.stringify({
@@ -187,10 +190,11 @@ export class TerminalWebSocketTransport {
       this.pendingInputs.length === 0
     ) {
       if (this.trySend(socket, pending.payload)) {
+        this.options.onInputEnqueued?.(enqueuedAt);
         return true;
       }
     }
-    return this.enqueueInput(pending);
+    return this.enqueueInput(pending, enqueuedAt);
   }
 
   acknowledgeOutput(nextSeq: number): void {
@@ -502,6 +506,7 @@ export class TerminalWebSocketTransport {
     if (this.disposed || this.socket !== socket || typeof raw !== "string") {
       return;
     }
+    const receivedAt = this.options.onOutputFrameReceived ? this.now() : 0;
     let decoded: unknown;
     try {
       decoded = JSON.parse(raw);
@@ -545,6 +550,7 @@ export class TerminalWebSocketTransport {
         this.options.onSequenceGap?.(this.nextOutputSeq, message.chunk.seq);
       }
       this.nextOutputSeq = message.chunk.seq + 1;
+      this.options.onOutputFrameReceived?.(receivedAt);
     }
     if (message.type === "exited") {
       this.terminalEnded = true;
@@ -606,13 +612,14 @@ export class TerminalWebSocketTransport {
     }, delay);
   }
 
-  private enqueueInput(pending: PendingTerminalInput): boolean {
+  private enqueueInput(pending: PendingTerminalInput, enqueuedAt: number): boolean {
     if (this.pendingInputBytes + pending.bytes > this.inputQueueMaxBytes) {
       this.options.onInputOverflow?.(this.inputQueueMaxBytes);
       return false;
     }
     this.pendingInputs.push(pending);
     this.pendingInputBytes += pending.bytes;
+    this.options.onInputEnqueued?.(enqueuedAt);
     this.scheduleDrain();
     return true;
   }

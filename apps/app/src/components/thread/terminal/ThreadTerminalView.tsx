@@ -40,6 +40,11 @@ import {
   observeLayoutSignals,
   watchTerminalLayoutSettled,
 } from "./terminal-layout-settle";
+import {
+  recordTerminalInputEnqueued,
+  recordTerminalOutputReceived,
+  recordTerminalOutputRendered,
+} from "./terminal-latency-diagnostics.js";
 import { TerminalLinkOpenDialog } from "./TerminalLinkOpenDialog";
 import { TerminalAttentionPane } from "./TerminalAttentionPane";
 import { TerminalMobileControls } from "./TerminalMobileControls";
@@ -453,6 +458,7 @@ interface WriteTerminalSessionStatusNoticeArgs {
 interface TerminalOutputWriteArgs {
   data: string | Uint8Array;
   isReplay: boolean;
+  receivedAt?: number;
   onParsed: () => void;
   replayWriteState: TerminalReplayWriteState;
   terminal: XTermTerminal;
@@ -503,6 +509,7 @@ interface HandleTerminalServerMessageArgs {
   onSessionChange?: (session: TerminalSession) => void;
   replayNextSeq: number | null;
   replayWriteState: TerminalReplayWriteState;
+  outputReceivedAt: number;
   setReplayNextSeq: (nextSeq: number | null) => void;
   terminal: XTermTerminal;
   pipeline?: ReturnType<typeof createTerminalOutputPipeline>;
@@ -729,12 +736,14 @@ export function captureTerminalContextMenuState({
 export function writeTerminalOutput({
   data,
   isReplay,
+  receivedAt,
   onParsed,
   replayWriteState,
   terminal,
   pipeline,
   replayPipeline,
 }: TerminalOutputWriteArgs): void {
+  const frameReceivedAt = receivedAt ?? performance.now();
   const bytes =
     typeof data === "string" ? new TextEncoder().encode(data) : data;
   const write = (callback: () => void, applyMarkerGrids: boolean) => {
@@ -742,7 +751,10 @@ export function writeTerminalOutput({
     else terminal.write(data, callback);
   };
   if (!isReplay) {
-    write(onParsed, true);
+    write(() => {
+      recordTerminalOutputRendered(frameReceivedAt, performance.now());
+      onParsed();
+    }, true);
     return;
   }
 
@@ -750,11 +762,13 @@ export function writeTerminalOutput({
   write(() => {
     if (!replayPipeline) {
       replayWriteState.suppressedWriteCount -= 1;
+      recordTerminalOutputRendered(frameReceivedAt, performance.now());
       onParsed();
       return;
     }
     replayPipeline.push(bytes, () => {
       replayWriteState.suppressedWriteCount -= 1;
+      recordTerminalOutputRendered(frameReceivedAt, performance.now());
       onParsed();
     });
   }, false);
@@ -767,6 +781,7 @@ export function handleTerminalServerMessage({
   onSessionChange,
   replayNextSeq,
   replayWriteState,
+  outputReceivedAt,
   setReplayNextSeq,
   terminal,
   pipeline,
@@ -801,6 +816,7 @@ export function handleTerminalServerMessage({
       writeTerminalOutput({
         data: decodeBase64Bytes(message.chunk.dataBase64),
         isReplay: replayNextSeq !== null && message.chunk.seq < replayNextSeq,
+        receivedAt: outputReceivedAt,
         onParsed: () => {
           acknowledgeOutput(nextSeq);
           if (
@@ -1441,6 +1457,7 @@ export function ThreadTerminalView({
       let reconnecting = false;
       let repaintAfterReconnect = false;
       let reconnectingNoticeVisible = false;
+      let outputFrameReceivedAt = 0;
       const clearConnectionNoticeTimeout = () => {
         if (connectionNoticeTimeout !== null) {
           clearTimeout(connectionNoticeTimeout);
@@ -1448,6 +1465,12 @@ export function ThreadTerminalView({
         }
       };
       const activeTransport = new TerminalWebSocketTransport({
+        now: () => performance.now(),
+        onInputEnqueued: recordTerminalInputEnqueued,
+        onOutputFrameReceived: (timestamp) => {
+          outputFrameReceivedAt = timestamp;
+          recordTerminalOutputReceived(timestamp);
+        },
         onRepaintNudgeSizeReleased: (size) => {
           const nextSize = nextSharedTerminalSize(sharedSize, size, false);
           if (nextSize !== null) {
@@ -1557,6 +1580,7 @@ export function ThreadTerminalView({
             onSessionChange: onSessionChangeRef.current,
             replayNextSeq,
             replayWriteState,
+            outputReceivedAt: outputFrameReceivedAt,
             onReplayStart: () => {
               replayPreview?.dispose();
               replayCompleted = false;
