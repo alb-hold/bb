@@ -1197,9 +1197,9 @@ function refreshThreadListStatusState(
 
 function dirtyThreadDetailForStatusChange(
   context: ThreadRealtimeDirtyContext,
-): void {
+): QueryKey[] | void {
   if (context.nativeActivityReceiptOnly === true) return;
-  dirtyThreadDetailQueries(context);
+  return dirtyThreadDetailQueries(context);
 }
 
 function dirtyEnvironmentRecordQueries(

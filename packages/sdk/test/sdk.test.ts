@@ -1243,7 +1243,8 @@ describe("@bb/sdk", () => {
       const sessions = contract.sessions.map(makeSession);
       const afterClear = contract.unreadIdsAfterClear.map((id) => {
         const entry = contract.sessions.find((item) => item.id === id);
-        if (entry === undefined) throw new Error(`Unknown contract terminal ${id}`);
+        if (entry === undefined)
+          throw new Error(`Unknown contract terminal ${id}`);
         return makeSession(entry);
       });
       const responses: QueuedJsonResponse[] = [
@@ -1271,13 +1272,11 @@ describe("@bb/sdk", () => {
       });
 
       expect(
-        (await sdk.terminals.experimental_attention.list()).map(
-          ({ id }) => id,
-        ),
+        (await sdk.terminals.experimental_attention.list()).map(({ id }) => id),
       ).toEqual(contract.unreadIds);
-      expect((await sdk.terminals.experimental_attention.next())?.id ?? null).toBe(
-        contract.nextId,
-      );
+      expect(
+        (await sdk.terminals.experimental_attention.next())?.id ?? null,
+      ).toBe(contract.nextId);
       if (contract.clearId !== null) {
         await sdk.terminals.experimental_attention.clear({
           terminalId: contract.clearId,

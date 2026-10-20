@@ -519,10 +519,7 @@ describe("native terminal activity", () => {
       providerThreadId: SESSION_ID,
     });
     await enterTerminal(fixture, thread.id);
-    const nativeRecord = getNativeTerminalThread(
-      fixture.harness.db,
-      thread.id,
-    );
+    const nativeRecord = getNativeTerminalThread(fixture.harness.db, thread.id);
     if (nativeRecord?.terminalSessionId === null || nativeRecord === null) {
       throw new Error("Expected the native terminal to be bound");
     }
@@ -621,10 +618,7 @@ describe("native terminal activity", () => {
       providerThreadId: SESSION_ID,
     });
     await enterTerminal(fixture, thread.id);
-    const nativeRecord = getNativeTerminalThread(
-      fixture.harness.db,
-      thread.id,
-    );
+    const nativeRecord = getNativeTerminalThread(fixture.harness.db, thread.id);
     if (nativeRecord?.terminalSessionId === null || nativeRecord === null) {
       throw new Error("Expected the native terminal to be bound");
     }
@@ -659,10 +653,7 @@ describe("native terminal activity", () => {
       providerThreadId: SESSION_ID,
     });
     await enterTerminal(fixture, thread.id);
-    const nativeRecord = getNativeTerminalThread(
-      fixture.harness.db,
-      thread.id,
-    );
+    const nativeRecord = getNativeTerminalThread(fixture.harness.db, thread.id);
     if (nativeRecord?.terminalSessionId === null || nativeRecord === null) {
       throw new Error("Expected the native terminal to be bound");
     }
@@ -673,10 +664,12 @@ describe("native terminal activity", () => {
       credentialHash: createHash("sha256").update(credential).digest("hex"),
     });
     const unexpected = new Error("unexpected terminal lookup failure");
-    vi.spyOn(fixture.harness.deps.terminalSessions, "getTerminal")
-      .mockImplementation(() => {
-        throw unexpected;
-      });
+    vi.spyOn(
+      fixture.harness.deps.terminalSessions,
+      "getTerminal",
+    ).mockImplementation(() => {
+      throw unexpected;
+    });
 
     expect(() =>
       recordNativeTerminalActivity(fixture.harness.deps, {
@@ -697,10 +690,7 @@ describe("native terminal activity", () => {
       providerThreadId: SESSION_ID,
     });
     await enterTerminal(fixture, thread.id);
-    const nativeRecord = getNativeTerminalThread(
-      fixture.harness.db,
-      thread.id,
-    );
+    const nativeRecord = getNativeTerminalThread(fixture.harness.db, thread.id);
     if (nativeRecord?.terminalSessionId === null || nativeRecord === null) {
       throw new Error("Expected the native terminal to be bound");
     }

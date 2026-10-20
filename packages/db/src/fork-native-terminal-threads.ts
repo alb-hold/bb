@@ -138,9 +138,11 @@ export function isNativeTerminalThread(
   db: DbQueryConnection,
   threadId: string,
 ): boolean {
-  return db.get(
-    sql`SELECT 1 AS present FROM fork_native_terminal_threads WHERE thread_id = ${threadId}`,
-  ) !== undefined;
+  return (
+    db.get(
+      sql`SELECT 1 AS present FROM fork_native_terminal_threads WHERE thread_id = ${threadId}`,
+    ) !== undefined
+  );
 }
 
 export function listNativeTerminalThreadIds(

@@ -435,7 +435,10 @@ describe("thread-activity", () => {
         getCollapsedChildActivity([
           {
             ...nativeChild,
-            activity: { ...nativeChild.activity, activeBackgroundAgentCount: 1 },
+            activity: {
+              ...nativeChild.activity,
+              activeBackgroundAgentCount: 1,
+            },
           },
         ]),
       ).toMatchObject({ working: true, runtimeWorking: false });

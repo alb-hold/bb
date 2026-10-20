@@ -96,8 +96,9 @@ describe("buildChronologicalThreadList", () => {
       1_090_001,
     );
 
-    expect(findNode(atBoundary, parent.id)?.stats.childActivity.runtimeWorking)
-      .toBe(true);
+    expect(
+      findNode(atBoundary, parent.id)?.stats.childActivity.runtimeWorking,
+    ).toBe(true);
     expect(
       findNode(afterBoundary, parent.id)?.stats.childActivity.runtimeWorking,
     ).toBe(false);

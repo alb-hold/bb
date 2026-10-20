@@ -116,10 +116,7 @@ export function registerListCommand(
             opts,
             threads.map((thread) => ({
               ...thread,
-              listIndicator: activityAwareListIndicator(
-                thread,
-                wokeThreadIds,
-              ),
+              listIndicator: activityAwareListIndicator(thread, wokeThreadIds),
             })),
           )
         )
@@ -218,12 +215,10 @@ function activityAwareListIndicator(
 ): ThreadListEntry["listIndicator"] {
   if (thread.listIndicator === "needs-input") return thread.listIndicator;
   if (thread.listIndicator === "working") {
-    return (
-      thread.runtime !== undefined &&
+    return thread.runtime !== undefined &&
       isNativeActivityUnconfirmed(thread.runtime) &&
       (thread.activity === undefined ||
         !hasIndependentWorkingActivity({ activity: thread.activity }))
-    )
       ? "none"
       : "working";
   }

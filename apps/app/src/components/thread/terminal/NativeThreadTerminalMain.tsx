@@ -71,16 +71,11 @@ export function NativeThreadTerminalMain({
         data-no-sidebar-swipe=""
       >
         <NativeTerminalWaitingBanner
-          prompts={nativeTerminalWaitingPrompts(
-            interactionsQuery.data ?? [],
-          )}
+          prompts={nativeTerminalWaitingPrompts(interactionsQuery.data ?? [])}
           providerLabel={providerLabel}
         />
         {activityUnconfirmed ? (
-          <p
-            className="px-3 py-1 text-xs text-muted-foreground"
-            role="status"
-          >
+          <p className="px-3 py-1 text-xs text-muted-foreground" role="status">
             Activity unconfirmed — No recent report from this native session
           </p>
         ) : null}

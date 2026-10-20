@@ -69,6 +69,10 @@ interface NativeActivityDisplayDeps extends ThreadRuntimeDisplayDeps {
   providerRegistry: ProviderRegistryService;
 }
 
+interface ThreadResponseDisplayDeps extends ThreadRuntimeDisplayDeps {
+  providerRegistry?: ProviderRegistryService;
+}
+
 type ThreadPromptBannerDeps = NativeActivityDisplayDeps;
 
 interface ResolveThreadRuntimeStateArgs {
@@ -363,27 +367,34 @@ function toThreadStatusChangeMetadata(
 }
 
 function toThreadResponseWithHost(
-  deps: NativeActivityDisplayDeps,
+  deps: ThreadResponseDisplayDeps,
   args: ToThreadResponseWithHostArgs,
 ): ThreadWithRuntime {
   const thread = toPublicThread(args.thread);
+  const runtime = resolveThreadRuntimeState(deps, {
+    environmentHostId: args.environmentHostId,
+    now: args.now,
+    status: thread.status,
+  });
   return {
     ...thread,
-    runtime: addNativeActivityDiagnostic(
-      deps,
-      args.thread,
-      resolveThreadRuntimeState(deps, {
-        environmentHostId: args.environmentHostId,
-        now: args.now,
-        status: thread.status,
-      }),
-      args.now,
-    ),
+    runtime: deps.providerRegistry
+      ? addNativeActivityDiagnostic(
+          {
+            db: deps.db,
+            hub: deps.hub,
+            providerRegistry: deps.providerRegistry,
+          },
+          args.thread,
+          runtime,
+          args.now,
+        )
+      : runtime,
   };
 }
 
 export function toThreadResponseFromThread(
-  deps: NativeActivityDisplayDeps,
+  deps: ThreadResponseDisplayDeps,
   args: ToThreadResponseFromThreadArgs,
 ): ThreadResponse {
   const threadWithRuntime = toThreadResponseWithHost(deps, {

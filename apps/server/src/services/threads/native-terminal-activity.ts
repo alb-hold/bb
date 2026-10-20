@@ -170,23 +170,18 @@ export function recordNativeTerminalActivity(
         now - previous.lastNotifiedAt >=
           NATIVE_TERMINAL_ACTIVITY_HEARTBEAT_INTERVAL_MS;
       notifyReceipt = transition || heartbeatElapsed;
-      states.set(
-        args.threadId,
-        notifyReceipt
-          ? { signature, lastNotifiedAt: now }
-          : { ...previous, signature },
-      );
+      if (previous === undefined || notifyReceipt) {
+        states.set(args.threadId, { signature, lastNotifiedAt: now });
+      } else {
+        states.set(args.threadId, { ...previous, signature });
+      }
     }
   }
   if (repeatedWorkingSignal) {
     if (notifyReceipt) {
       const thread = requirePublicThread(deps.db, args.threadId);
       const metadata = buildThreadStatusChangeMetadata(deps, thread);
-      deps.hub.notifyThread(
-        args.threadId,
-        ["status-changed"],
-        metadata,
-      );
+      deps.hub.notifyThread(args.threadId, ["status-changed"], metadata);
     }
     return;
   }
@@ -195,11 +190,7 @@ export function recordNativeTerminalActivity(
   const record = requireNativeRecord(deps, args.threadId);
   if (notifyReceipt) {
     const metadata = buildThreadStatusChangeMetadata(deps, thread);
-    deps.hub.notifyThread(
-      args.threadId,
-      ["status-changed"],
-      metadata,
-    );
+    deps.hub.notifyThread(args.threadId, ["status-changed"], metadata);
   }
   if (
     args.state === "working" &&

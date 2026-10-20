@@ -345,8 +345,7 @@ function ThreadTrailingIndicator({
       data-sidebar-status-slot={statusText === null ? undefined : ""}
       className={cn(
         "inline-flex h-5 shrink-0 items-center gap-1.5 rounded-full px-1.5 font-medium text-xs",
-        statusText !== null &&
-          "justify-end gap-1 whitespace-nowrap px-0",
+        statusText !== null && "justify-end gap-1 whitespace-nowrap px-0",
         indicatorKind === "needs-input" && "text-destructive-text",
         indicatorKind === "working" && SIDEBAR_WORKING_STATUS_COLOR_CLASS,
         indicatorKind === "woke" && "text-warning",
@@ -939,7 +938,9 @@ function ThreadRowComponent({
           ) : null}
           {shortcut ? (
             <span
-              data-sidebar-shortcut-secondary={hasVisibleStatus ? "" : undefined}
+              data-sidebar-shortcut-secondary={
+                hasVisibleStatus ? "" : undefined
+              }
               className="shrink-0"
             >
               <ShortcutPill shortcut={shortcut} />
@@ -1025,7 +1026,10 @@ function ThreadRowComponent({
           className="pointer-events-none relative z-[1] flex min-w-0 flex-col gap-1 pl-6 pr-2 pb-1"
         >
           {Object.entries(thread.experimental_rowState.statuses)
-            .sort(([, left], [, right]) => (right.priority ?? 0) - (left.priority ?? 0))
+            .sort(
+              ([, left], [, right]) =>
+                (right.priority ?? 0) - (left.priority ?? 0),
+            )
             .slice(0, 2)
             .map(([key, status]) => (
               <span
@@ -1035,12 +1039,14 @@ function ThreadRowComponent({
                 className="max-w-full truncate rounded-sm bg-sidebar-accent px-1.5 py-0.5 font-medium text-xs text-sidebar-accent-foreground"
                 style={status.color ? { color: status.color } : undefined}
               >
-                {status.icon ? `${status.icon} ` : ""}{status.value}
+                {status.icon ? `${status.icon} ` : ""}
+                {status.value}
               </span>
             ))}
           {Object.keys(thread.experimental_rowState.statuses).length > 2 ? (
             <span className="text-muted-foreground text-xs">
-              +{Object.keys(thread.experimental_rowState.statuses).length - 2} more
+              +{Object.keys(thread.experimental_rowState.statuses).length - 2}{" "}
+              more
             </span>
           ) : null}
           {thread.experimental_rowState.progress ? (
@@ -1052,15 +1058,22 @@ function ThreadRowComponent({
               ) : null}
               <div
                 role="progressbar"
-                aria-label={thread.experimental_rowState.progress.label ?? "Thread progress"}
+                aria-label={
+                  thread.experimental_rowState.progress.label ??
+                  "Thread progress"
+                }
                 aria-valuemin={0}
                 aria-valuemax={100}
-                aria-valuenow={Math.round(thread.experimental_rowState.progress.value * 100)}
+                aria-valuenow={Math.round(
+                  thread.experimental_rowState.progress.value * 100,
+                )}
                 className="h-1 overflow-hidden rounded-full bg-sidebar-accent"
               >
                 <div
                   className="h-full rounded-full bg-sidebar-primary transition-[width]"
-                  style={{ width: `${thread.experimental_rowState.progress.value * 100}%` }}
+                  style={{
+                    width: `${thread.experimental_rowState.progress.value * 100}%`,
+                  }}
                 />
               </div>
             </div>

@@ -80,10 +80,12 @@ describe("useSecondTick", () => {
 
     rerender({ enabled: true });
     expect(vi.getTimerCount()).toBe(1);
+    const enabledAt = Date.now();
     act(() => {
       vi.advanceTimersByTime(1_000);
     });
-    expect(result.current).toBe(initial + 3_000);
+    expect(result.current).toBe(enabledAt + 1_000);
+    expect(result.current).not.toBe(initial);
 
     rerender({ enabled: false });
     expect(vi.getTimerCount()).toBe(0);

@@ -189,6 +189,18 @@ function resetThreadChangeState(state: ThreadChangeState): void {
   state.nativeActivityReceiptOnlyByThreadId.clear();
 }
 
+function recordNativeActivityReceiptOnly(
+  state: ThreadChangeState,
+  threadId: string,
+  receiptOnly: boolean,
+): void {
+  const previous = state.nativeActivityReceiptOnlyByThreadId.get(threadId);
+  state.nativeActivityReceiptOnlyByThreadId.set(
+    threadId,
+    previous === undefined ? receiptOnly : previous && receiptOnly,
+  );
+}
+
 function mergeThreadChanges({
   changes,
   state,
@@ -531,7 +543,8 @@ export function createRealtimeCacheEffects({
           if (!documentVisible) {
             recordThreadChange(threadChangeState, message);
             if (message.id && message.changes.includes("status-changed")) {
-              threadChangeState.nativeActivityReceiptOnlyByThreadId.set(
+              recordNativeActivityReceiptOnly(
+                threadChangeState,
                 message.id,
                 nativeActivityReceiptOnly,
               );
@@ -542,7 +555,8 @@ export function createRealtimeCacheEffects({
           if (message.metadata?.eventTypes?.includes("turn/completed")) {
             recordThreadChange(threadChangeState, message);
             if (message.id && message.changes.includes("status-changed")) {
-              threadChangeState.nativeActivityReceiptOnlyByThreadId.set(
+              recordNativeActivityReceiptOnly(
+                threadChangeState,
                 message.id,
                 nativeActivityReceiptOnly,
               );
