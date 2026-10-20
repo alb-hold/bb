@@ -831,6 +831,8 @@ const INTENTIONAL_OPTIONAL_HOST_DAEMON_FIELDS: Record<string, string> = {
     "a dynamic tool's presentation carries a tint only when the plugin wants an accent colour; absence means the neutral row tint, which is not a colour value.",
   "hostDaemonCommandSchema.dynamicTools.presentation.title":
     "a dynamic tool's presentation has a title only when the call has a headline (a path, a query); absence means the label stands alone.",
+  "hostDaemonCommandSchema.dynamicTools.waitsForUserInput":
+    "a dynamic tool waits for user input only while its plugin-owned interaction is pending; absence means the tool completes with the turn.",
   "hostDaemonCommandSchema.input.sourceProjectId":
     "a source project exists only on a portable server-facing attachment reference; the server copies it into the destination and strips this field before sending a daemon command.",
   "hostDaemonCommandSchema.input.hostId":
@@ -867,6 +869,8 @@ const INTENTIONAL_OPTIONAL_HOST_DAEMON_FIELDS: Record<string, string> = {
     "a dynamic tool's presentation carries a tint only when the plugin wants an accent colour; absence means the neutral row tint, which is not a colour value.",
   "hostDaemonCommandSchema.resumeContext.dynamicTools.presentation.title":
     "a dynamic tool's presentation has a title only when the call has a headline (a path, a query); absence means the label stands alone.",
+  "hostDaemonCommandSchema.resumeContext.dynamicTools.waitsForUserInput":
+    "a resumed dynamic tool waits for user input only while its plugin-owned interaction is pending; absence means the tool completes with the turn.",
   "hostDaemonInteractiveRequestSchema.interaction.payload.questions.options":
     "a user question omits options when it takes free text only; absence is the question's shape, not missing choices.",
   "hostDaemonInteractiveRequestSchema.interaction.payload.questions.options.description":

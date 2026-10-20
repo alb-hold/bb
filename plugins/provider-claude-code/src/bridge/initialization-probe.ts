@@ -4,6 +4,7 @@ import {
   type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import { translateMissingClaudeCliCatalogError } from "./missing-cli-error.js";
+import { afterClaudeRenewalSettles } from "./claude-refresh-lock.js";
 import { resolveClaudeCodeExecutable } from "./session-options.js";
 
 async function* promptWithoutMessages(
@@ -48,6 +49,7 @@ export async function probeClaudeInitialization(args: {
     throw translateMissingClaudeCliCatalogError(error);
   } finally {
     promptEnd.abort();
+    await afterClaudeRenewalSettles(args.env);
     session.close();
   }
 }
