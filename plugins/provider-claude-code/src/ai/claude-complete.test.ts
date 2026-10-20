@@ -107,6 +107,8 @@ describe("completeClaudeInference", () => {
       "",
       "--strict-mcp-config",
       "--disable-slash-commands",
+      "--settings",
+      '{"autoMemoryEnabled":false}',
       "--system-prompt",
       "Follow the instructions in the user message exactly. Reply with only the requested text.",
     ]);

@@ -20,6 +20,7 @@ export const MAX_SUGGESTIONS = 4;
 const MAX_ANALYZED_KEYS = 400;
 const RECENT_VISIBLE_MS = 6_000;
 const PAUSE_AFTER_UNAVAILABLE_MS = 10 * 60_000;
+const MAX_ATTEMPTS_PER_SENTENCE = 2;
 
 interface TrackedRange {
   start: number;
@@ -98,9 +99,11 @@ export function useTypingAssistance(
   const trackedRef = useRef(new Set<TrackedRange>());
   const suggestionsRef = useRef<TrackedSuggestion[]>([]);
   const recentRef = useRef<AppliedCorrection[]>([]);
+  const failedAttemptsRef = useRef(new Map<string, number>());
   const inFlightRef = useRef<{
     controller: AbortController;
     range: TrackedRange;
+    keys: string[];
   } | null>(null);
   const idleTimerRef = useRef<number | null>(null);
   const trailingTimerRef = useRef<number | null>(null);
@@ -182,6 +185,30 @@ export function useTypingAssistance(
     analyzed.add(key);
   }, []);
 
+  const isSettledOrInFlight = useCallback(
+    (key: string) =>
+      analyzedRef.current.has(key) ||
+      (inFlightRef.current?.keys.includes(key) ?? false),
+    [],
+  );
+
+  const recordFailure = useCallback(
+    (keys: string[]) => {
+      const failures = failedAttemptsRef.current;
+      for (const key of keys) {
+        const attempts = (failures.get(key) ?? 0) + 1;
+        if (attempts >= MAX_ATTEMPTS_PER_SENTENCE) {
+          failures.delete(key);
+          remember(key);
+        } else {
+          if (failures.size >= MAX_ANALYZED_KEYS) failures.clear();
+          failures.set(key, attempts);
+        }
+      }
+    },
+    [remember],
+  );
+
   const rememberSentencesIn = useCallback(
     (start: number, end: number) => {
       const text = optionsRef.current.getText();
@@ -258,7 +285,7 @@ export function useTypingAssistance(
   );
 
   const send = useCallback(
-    (start: number, end: number, complete: boolean) => {
+    (start: number, end: number, complete: boolean, keys: string[]) => {
       const current = optionsRef.current;
       const text = current.getText();
       const target = text.slice(start, end);
@@ -266,7 +293,7 @@ export function useTypingAssistance(
       inFlightRef.current?.controller.abort();
       const region = track(start, end);
       const controller = new AbortController();
-      inFlightRef.current = { controller, range: region };
+      inFlightRef.current = { controller, range: region, keys };
       setPending(true);
       current
         .correct(
@@ -286,12 +313,20 @@ export function useTypingAssistance(
               response.reason === "off"
             ) {
               pausedUntilRef.current = Date.now() + PAUSE_AFTER_UNAVAILABLE_MS;
+            } else {
+              recordFailure(keys);
             }
             return;
           }
+          for (const key of keys) {
+            failedAttemptsRef.current.delete(key);
+            remember(key);
+          }
           handleEdits(region, target, response.edits);
         })
-        .catch(() => {})
+        .catch(() => {
+          if (!controller.signal.aborted) recordFailure(keys);
+        })
         .finally(() => {
           untrack(region);
           if (inFlightRef.current?.controller === controller) {
@@ -300,7 +335,7 @@ export function useTypingAssistance(
           }
         });
     },
-    [handleEdits, track, untrack],
+    [handleEdits, recordFailure, remember, track, untrack],
   );
 
   const canRun = useCallback(() => {
@@ -320,12 +355,13 @@ export function useTypingAssistance(
     const caret = current.getCaret();
     let groupStart = -1;
     let groupEnd = -1;
+    const keys: string[] = [];
     for (const range of sentenceRanges(text)) {
       if (!range.complete) continue;
       if (caret !== null && caret > range.start && caret < range.end) continue;
       if (insideCodeFence(text, range.start)) continue;
       const key = text.slice(range.start, range.end);
-      if (analyzedRef.current.has(key)) continue;
+      if (isSettledOrInFlight(key)) continue;
       if (groupStart < 0) {
         groupStart = range.start;
       } else if (
@@ -340,12 +376,12 @@ export function useTypingAssistance(
         continue;
       }
       groupEnd = range.end;
-      remember(key);
+      keys.push(key);
     }
     if (groupStart >= 0 && groupEnd > groupStart) {
-      send(groupStart, groupEnd, true);
+      send(groupStart, groupEnd, true, keys);
     }
-  }, [canRun, remember, send]);
+  }, [canRun, isSettledOrInFlight, remember, send]);
 
   const analyzeTrailing = useCallback(() => {
     if (!canRun() || inFlightRef.current !== null) return;
@@ -355,11 +391,10 @@ export function useTypingAssistance(
     if (last === undefined || last.complete) return;
     if (insideCodeFence(text, last.start)) return;
     const key = text.slice(last.start, last.end);
-    if (analyzedRef.current.has(key) || key.split(/\s+/u).length < 5) return;
+    if (isSettledOrInFlight(key) || key.split(/\s+/u).length < 5) return;
     if (last.end - last.start > MAX_TARGET_CHARS) return;
-    remember(key);
-    send(last.start, last.end, false);
-  }, [canRun, remember, send]);
+    send(last.start, last.end, false, [key]);
+  }, [canRun, isSettledOrInFlight, send]);
 
   const clearTimers = useCallback(() => {
     if (idleTimerRef.current !== null)
@@ -476,14 +511,14 @@ export function useTypingAssistance(
         end,
         clampedStart + MAX_TARGET_CHARS,
       );
-      for (const range of sentenceRanges(text)) {
-        if (range.start >= clampedStart && range.end <= clampedEnd) {
-          remember(text.slice(range.start, range.end));
-        }
-      }
-      send(clampedStart, clampedEnd, true);
+      const keys = sentenceRanges(text)
+        .filter(
+          (range) => range.start >= clampedStart && range.end <= clampedEnd,
+        )
+        .map((range) => text.slice(range.start, range.end));
+      send(clampedStart, clampedEnd, true, keys);
     },
-    [canRun, remember, send],
+    [canRun, send],
   );
 
   useEffect(

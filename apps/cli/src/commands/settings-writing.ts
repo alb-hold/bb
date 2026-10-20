@@ -51,23 +51,10 @@ function parseCount(key: string, value: string, max: number): number {
   return parsed;
 }
 
-export function addVocabularyTerms(
-  current: readonly string[],
-  terms: readonly string[],
-): string[] {
-  const added = terms.map((term) => term.trim()).filter((term) => term !== "");
-  return [...new Set([...current, ...added])];
-}
-
-export function removeVocabularyTerms(
-  current: readonly string[],
-  terms: readonly string[],
-): { vocabulary: string[]; missing: string[] } {
-  const removed = new Set(terms.map((term) => term.trim()));
-  return {
-    vocabulary: current.filter((term) => !removed.has(term)),
-    missing: [...removed].filter((term) => !current.includes(term)),
-  };
+export function vocabularyTerms(terms: readonly string[]): string[] {
+  return [
+    ...new Set(terms.map((term) => term.trim()).filter((term) => term !== "")),
+  ];
 }
 
 export function parseWritingSetting(
@@ -184,11 +171,12 @@ export function registerWritingSettingsCommands(
     .option("--json", "Print machine-readable JSON output")
     .action(
       action(async (terms: string[], opts: JsonOptions) => {
-        const sdk = createCliBbSdk(getUrl());
-        const current = (await sdk.writingAssistance.view()).settings
-          .vocabulary;
-        const view = await sdk.writingAssistance.updateSettings({
-          vocabulary: addVocabularyTerms(current, terms),
+        const view = await createCliBbSdk(
+          getUrl(),
+        ).writingAssistance.editVocabulary({
+          add: vocabularyTerms(terms),
+          remove: [],
+          ifMissing: "fail",
         });
         if (outputJson(opts, view)) return;
         console.log(view.settings.vocabulary.join("\n"));
@@ -202,20 +190,12 @@ export function registerWritingSettingsCommands(
     .option("--json", "Print machine-readable JSON output")
     .action(
       action(async (terms: string[], opts: JsonOptions) => {
-        const sdk = createCliBbSdk(getUrl());
-        const current = (await sdk.writingAssistance.view()).settings
-          .vocabulary;
-        const { vocabulary: next, missing } = removeVocabularyTerms(
-          current,
-          terms,
-        );
-        if (missing.length > 0) {
-          throw new Error(
-            `Not in the vocabulary: ${missing.join(", ")}. Nothing was removed.`,
-          );
-        }
-        const view = await sdk.writingAssistance.updateSettings({
-          vocabulary: next,
+        const view = await createCliBbSdk(
+          getUrl(),
+        ).writingAssistance.editVocabulary({
+          add: [],
+          remove: vocabularyTerms(terms),
+          ifMissing: "fail",
         });
         if (outputJson(opts, view)) return;
         console.log(view.settings.vocabulary.join("\n"));

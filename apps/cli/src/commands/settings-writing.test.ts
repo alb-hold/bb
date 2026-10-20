@@ -1,25 +1,12 @@
 import { describe, expect, it } from "vitest";
-import {
-  addVocabularyTerms,
-  parseWritingSetting,
-  removeVocabularyTerms,
-} from "./settings-writing.js";
+import { parseWritingSetting, vocabularyTerms } from "./settings-writing.js";
 
-describe("vocabulary terms", () => {
-  it("trims terms the same way when adding and removing", () => {
-    const added = addVocabularyTerms(["bb"], [" refreshToken ", "bb", " "]);
-    expect(added).toEqual(["bb", "refreshToken"]);
-    expect(removeVocabularyTerms(added, [" refreshToken "])).toEqual({
-      vocabulary: ["bb"],
-      missing: [],
-    });
-  });
-
-  it("reports terms that are not in the vocabulary", () => {
-    expect(removeVocabularyTerms(["bb"], ["Hermes"])).toEqual({
-      vocabulary: ["bb"],
-      missing: ["Hermes"],
-    });
+describe("vocabularyTerms", () => {
+  it("trims terms, drops blanks and repeats", () => {
+    expect(vocabularyTerms([" refreshToken ", "bb", " ", "bb"])).toEqual([
+      "refreshToken",
+      "bb",
+    ]);
   });
 });
 

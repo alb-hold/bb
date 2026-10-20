@@ -121,4 +121,105 @@ describe("AI service registry", () => {
     expect(onStatusChange).toHaveBeenCalledTimes(4);
     expect(registry.get(ACME)).toBeNull();
   });
+
+  describe("slow status checks", () => {
+    function slowStatus() {
+      const answers: ((status: { ready: true }) => void)[] = [];
+      const status = vi.fn(
+        () =>
+          new Promise<{ ready: true }>((resolve) => {
+            answers.push(resolve);
+          }),
+      );
+      return { status, answer: () => answers.shift()?.({ ready: true }) };
+    }
+
+    it("says Checking, not Not responding, while a first slow check runs, then keeps its late answer", async () => {
+      vi.useFakeTimers();
+      try {
+        const onStatusChange = vi.fn();
+        const registry = createAiServiceRegistry({ onStatusChange });
+        const slow = slowStatus();
+        registry.register(service(slow.status));
+        onStatusChange.mockClear();
+
+        const quick = registry.status(ACME);
+        await vi.advanceTimersByTimeAsync(2_001);
+        await expect(quick).resolves.toEqual({
+          ready: false,
+          message: "Checking",
+        });
+
+        await vi.advanceTimersByTimeAsync(1_500);
+        slow.answer();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(registry.peekStatus(ACME)).toEqual({ ready: true });
+        expect(onStatusChange).toHaveBeenCalledTimes(1);
+        expect(slow.status).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("answers with the last known status while a later check is slow", async () => {
+      vi.useFakeTimers();
+      try {
+        let clock = 1_000;
+        const registry = createAiServiceRegistry({ now: () => clock });
+        const slow = slowStatus();
+        registry.register(service(slow.status));
+        const first = registry.status(ACME);
+        slow.answer();
+        await expect(first).resolves.toEqual({ ready: true });
+
+        clock += 10_001;
+        const later = registry.status(ACME);
+        await vi.advanceTimersByTimeAsync(2_001);
+        await expect(later).resolves.toEqual({ ready: true });
+        expect(slow.status).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("waits for a slow check to finish before deciding whether a task can run", async () => {
+      vi.useFakeTimers();
+      try {
+        const registry = createAiServiceRegistry();
+        const slow = slowStatus();
+        registry.register(service(slow.status));
+        const settled = registry.settledStatus(ACME);
+        let result: unknown = null;
+        void settled.then((status) => {
+          result = status;
+        });
+        await vi.advanceTimersByTimeAsync(4_000);
+        expect(result).toBeNull();
+        slow.answer();
+        await expect(settled).resolves.toEqual({ ready: true });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("reports Not responding only when a check never answers", async () => {
+      vi.useFakeTimers();
+      try {
+        const registry = createAiServiceRegistry();
+        registry.register(service(() => new Promise(() => {})));
+        const settled = registry.settledStatus(ACME);
+        await vi.advanceTimersByTimeAsync(30_001);
+        await expect(settled).resolves.toEqual({
+          ready: false,
+          message: "Not responding",
+        });
+        expect(registry.peekStatus(ACME)).toEqual({
+          ready: false,
+          message: "Not responding",
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
 });

@@ -4,6 +4,7 @@ export {
   writingAssistanceViewSchema,
   writingCorrectionRequestSchema,
   writingCorrectionResponseSchema,
+  writingVocabularyEditSchema,
 } from "@bb/domain";
 export type {
   DictationSegmentResponse,
@@ -11,6 +12,7 @@ export type {
   WritingAssistanceView,
   WritingCorrectionRequest,
   WritingCorrectionResponse,
+  WritingVocabularyEdit,
 } from "@bb/domain";
 
 export interface DictationSegmentForm {

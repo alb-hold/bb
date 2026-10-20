@@ -213,7 +213,7 @@ export async function runAiTask<T>(
   for (const service of services) {
     const skipped = skipMessage(
       service,
-      await deps.aiServices.status(aiServiceKey(service)),
+      await deps.aiServices.settledStatus(aiServiceKey(service)),
     );
     if (skipped !== null) {
       last = { reason: "unavailable", message: skipped };

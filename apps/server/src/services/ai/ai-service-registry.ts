@@ -8,11 +8,13 @@ import type { NormalizedPluginAiService } from "@get-bb/plugin-sdk/internal/host
 import { aiServiceAlreadyRegisteredMessage } from "@get-bb/plugin-sdk/internal/host-policy";
 
 const STATUS_TTL_MS = 10_000;
-const STATUS_TIMEOUT_MS = 2_000;
+const STATUS_ANSWER_MS = 2_000;
+const STATUS_SETTLE_MS = 30_000;
 const NOT_RESPONDING: AiServiceStatus = {
   ready: false,
   message: "Not responding",
 };
+const CHECKING: AiServiceStatus = { ready: false, message: "Checking" };
 
 export interface AiServiceRegistration extends NormalizedPluginAiService {
   pluginId: string;
@@ -35,6 +37,7 @@ export interface AiServiceRegistry {
   list(): AiServiceRegistration[];
   peekStatus(key: AiServiceKey): AiServiceStatus | null;
   status(key: AiServiceKey): Promise<AiServiceStatus>;
+  settledStatus(key: AiServiceKey): Promise<AiServiceStatus>;
 }
 
 interface CreateAiServiceRegistryArgs {
@@ -75,7 +78,7 @@ async function readStatus(
     const raw = await Promise.race([
       service.status(),
       new Promise<null>((resolve) => {
-        timer = setTimeout(() => resolve(null), STATUS_TIMEOUT_MS);
+        timer = setTimeout(() => resolve(null), STATUS_SETTLE_MS);
         timer.unref();
       }),
     ]);
@@ -122,6 +125,25 @@ export function createAiServiceRegistry(
     return request;
   }
 
+  function answerSoon(
+    service: AiServiceRegistration,
+    probe: Promise<AiServiceStatus>,
+  ): Promise<AiServiceStatus> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    return Promise.race([
+      probe,
+      new Promise<AiServiceStatus>((resolve) => {
+        timer = setTimeout(
+          () => resolve(statuses.get(service)?.status ?? CHECKING),
+          STATUS_ANSWER_MS,
+        );
+        timer.unref();
+      }),
+    ]).finally(() => {
+      if (timer !== undefined) clearTimeout(timer);
+    });
+  }
+
   return {
     register(registration) {
       const key = mapKey(aiServiceKey(registration));
@@ -159,6 +181,17 @@ export function createAiServiceRegistry(
       return cached?.status ?? null;
     },
     async status(key) {
+      const service = services.get(mapKey(key));
+      if (service === undefined) {
+        return { ready: false, message: "Plugin not loaded" };
+      }
+      const cached = statuses.get(service);
+      if (cached !== undefined && now() - cached.checkedAt <= STATUS_TTL_MS) {
+        return cached.status;
+      }
+      return answerSoon(service, refresh(service));
+    },
+    async settledStatus(key) {
       const service = services.get(mapKey(key));
       if (service === undefined) {
         return { ready: false, message: "Plugin not loaded" };

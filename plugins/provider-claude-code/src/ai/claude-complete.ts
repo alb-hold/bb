@@ -70,6 +70,8 @@ export function claudeCompleteArgs(model: string): string[] {
     "",
     "--strict-mcp-config",
     "--disable-slash-commands",
+    "--settings",
+    JSON.stringify({ autoMemoryEnabled: false }),
     "--system-prompt",
     SYSTEM_PROMPT,
   ];

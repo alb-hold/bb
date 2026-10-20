@@ -1066,6 +1066,106 @@ describe("writing assistance settings route", () => {
   });
 });
 
+describe("writing vocabulary edits", () => {
+  async function editVocabulary(
+    harness: TestAppHarness,
+    edit: { add: string[]; remove: string[]; ifMissing: "fail" | "ignore" },
+  ): Promise<Response> {
+    return harness.app.request("/api/v1/writing-assistance/vocabulary", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(edit),
+    });
+  }
+
+  async function vocabulary(harness: TestAppHarness): Promise<string[]> {
+    const view = await (
+      await harness.app.request("/api/v1/writing-assistance")
+    ).json();
+    return view.settings.vocabulary;
+  }
+
+  async function seed(harness: TestAppHarness, terms: string[]) {
+    await harness.app.request("/api/v1/writing-assistance/settings", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ vocabulary: terms }),
+    });
+  }
+
+  it("keeps both changes when two clients edit a list they read at the same time", async () => {
+    await withTestHarness({}, async (harness) => {
+      await seed(harness, ["bb"]);
+      const [seenByA, seenByB] = await Promise.all([
+        vocabulary(harness),
+        vocabulary(harness),
+      ]);
+      expect(seenByA).toEqual(["bb"]);
+      expect(seenByB).toEqual(["bb"]);
+      const [a, b] = await Promise.all([
+        editVocabulary(harness, {
+          add: ["Hermes"],
+          remove: [],
+          ifMissing: "fail",
+        }),
+        editVocabulary(harness, {
+          add: ["refreshToken"],
+          remove: ["bb"],
+          ifMissing: "fail",
+        }),
+      ]);
+      expect([a.status, b.status]).toEqual([200, 200]);
+      expect(await vocabulary(harness)).toEqual(["Hermes", "refreshToken"]);
+    });
+  });
+
+  it("changes nothing and names the missing terms when a remove asks for a term that is not there", async () => {
+    await withTestHarness({}, async (harness) => {
+      await seed(harness, ["bb", "refreshToken"]);
+      const response = await editVocabulary(harness, {
+        add: ["Hermes"],
+        remove: ["refreshToken", "Kestrel"],
+        ifMissing: "fail",
+      });
+      expect(response.status).toBe(409);
+      await expect(response.json()).resolves.toMatchObject({
+        message: "Not in the vocabulary: Kestrel. Nothing was changed.",
+      });
+      expect(await vocabulary(harness)).toEqual(["bb", "refreshToken"]);
+    });
+  });
+
+  it("applies the rest of an edit when missing terms are to be ignored", async () => {
+    await withTestHarness({}, async (harness) => {
+      await seed(harness, ["bb", "refreshToken"]);
+      const response = await editVocabulary(harness, {
+        add: ["Hermes"],
+        remove: ["refreshToken", "Kestrel"],
+        ifMissing: "ignore",
+      });
+      expect(response.status).toBe(200);
+      expect(await vocabulary(harness)).toEqual(["bb", "Hermes"]);
+    });
+  });
+
+  it("refuses an edit that would go over the term limit and changes nothing", async () => {
+    await withTestHarness({}, async (harness) => {
+      const full = Array.from({ length: 200 }, (_, index) => `term${index}`);
+      await seed(harness, full);
+      const response = await editVocabulary(harness, {
+        add: ["Hermes"],
+        remove: [],
+        ifMissing: "fail",
+      });
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({
+        message: "The vocabulary holds at most 200 terms. Nothing was changed.",
+      });
+      expect(await vocabulary(harness)).toEqual(full);
+    });
+  });
+});
+
 describe("reply parsing", () => {
   it("keeps valid edits and drops malformed ones", () => {
     expect(

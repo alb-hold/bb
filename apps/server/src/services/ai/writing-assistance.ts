@@ -1,5 +1,6 @@
 import {
   addWritingUsage,
+  editWritingAssistanceVocabulary,
   getWritingAssistanceSettings,
   getWritingUsage,
   reserveWritingUsage,
@@ -21,6 +22,7 @@ import {
   type WritingMode,
   type WritingSkipReason,
   type WritingUsage,
+  type WritingVocabularyEdit,
 } from "@bb/domain";
 import type { LoggedWorkSessionDeps } from "../../types.js";
 import { ApiError } from "../../errors.js";
@@ -462,6 +464,29 @@ export function updateWritingAssistance(
   update: WritingAssistanceSettingsUpdate,
 ): WritingAssistanceView {
   updateWritingAssistanceSettings(deps.db, update);
+  deps.hub.notifySystem(["config-changed"]);
+  return buildWritingAssistanceView(deps);
+}
+
+export function editWritingVocabulary(
+  deps: WritingDeps,
+  edit: WritingVocabularyEdit,
+): WritingAssistanceView {
+  const result = editWritingAssistanceVocabulary(deps.db, edit);
+  if (result.kind === "missing") {
+    throw new ApiError(
+      409,
+      "invalid_request",
+      `Not in the vocabulary: ${result.missing.join(", ")}. Nothing was changed.`,
+    );
+  }
+  if (result.kind === "full") {
+    throw new ApiError(
+      400,
+      "invalid_request",
+      `The vocabulary holds at most ${result.limit} terms. Nothing was changed.`,
+    );
+  }
   deps.hub.notifySystem(["config-changed"]);
   return buildWritingAssistanceView(deps);
 }

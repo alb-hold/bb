@@ -15,6 +15,7 @@ import type {
   WritingEdit,
 } from "@bb/domain";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { writingAssistanceQueryKey } from "@/hooks/queries/query-keys";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import { NativeTerminalPromptBar } from "./NativeTerminalPromptBar";
 
@@ -100,7 +101,7 @@ vi.mock("@/lib/attachment-local-previews", () => ({
 }));
 
 function renderBar() {
-  const { wrapper: Wrapper } = createQueryClientTestHarness();
+  const { wrapper: Wrapper, queryClient } = createQueryClientTestHarness();
   render(
     <Wrapper>
       <NativeTerminalPromptBar
@@ -111,6 +112,7 @@ function renderBar() {
     </Wrapper>,
   );
   return {
+    queryClient,
     input: screen.getByLabelText("Message Native CLI") as HTMLTextAreaElement,
     sendButton: screen.getByRole("button", { name: "Send to Native CLI" }),
   };
@@ -762,6 +764,83 @@ describe(
           complete: true,
         }),
       );
+    });
+
+    it("checks a sentence again after its check was cancelled by turning assistance off", async () => {
+      writingView.mockResolvedValue(view());
+      let firstSignal: AbortSignal | null = null;
+      let resolveFirst: (value: WritingCorrectionResponse) => void = () => {};
+      correct.mockImplementationOnce(({ signal }: { signal: AbortSignal }) => {
+        firstSignal = signal;
+        return new Promise<WritingCorrectionResponse>((resolve) => {
+          resolveFirst = resolve;
+        });
+      });
+      correct.mockResolvedValue({
+        status: "ok",
+        edits: [
+          edit({ start: 9, end: 12, original: "are", replacement: "is" }),
+        ],
+      });
+      const { input, queryClient } = renderBar();
+      await waitFor(() => expect(writingView).toHaveBeenCalled());
+      await act(async () => {
+        await writingView.mock.results[0]?.value;
+      });
+      fireEvent.change(input, { target: { value: "The user are here. " } });
+      await waitFor(() => expect(correct).toHaveBeenCalledTimes(1), {
+        timeout: 4_000,
+      });
+      act(() => {
+        queryClient.setQueryData(
+          writingAssistanceQueryKey(),
+          view({ typingCorrection: "off" }),
+        );
+      });
+      await waitFor(() => expect(firstSignal?.aborted).toBe(true));
+      await act(async () => {
+        resolveFirst({
+          status: "ok",
+          edits: [
+            edit({ start: 9, end: 12, original: "are", replacement: "was" }),
+          ],
+        });
+      });
+      expect(input.value).toBe("The user are here. ");
+      act(() => {
+        queryClient.setQueryData(writingAssistanceQueryKey(), view());
+      });
+      await waitFor(() => expect(input.value).toBe("The user is here. "), {
+        timeout: 8_000,
+      });
+      expect(correct).toHaveBeenCalledTimes(2);
+      expect(correct).toHaveBeenLastCalledWith(
+        expect.objectContaining({ target: "The user are here." }),
+      );
+    });
+
+    it("retries a sentence whose check failed once, then stops after a second failure", async () => {
+      writingView.mockResolvedValue(view());
+      correct.mockResolvedValue({ status: "skipped", reason: "failed" });
+      const { input } = renderBar();
+      await waitFor(() => expect(writingView).toHaveBeenCalled());
+      await act(async () => {
+        await writingView.mock.results[0]?.value;
+      });
+      fireEvent.change(input, { target: { value: "The user are here. " } });
+      await waitFor(() => expect(correct).toHaveBeenCalledTimes(1), {
+        timeout: 4_000,
+      });
+      fireEvent.change(input, { target: { value: "The user are here. A" } });
+      await waitFor(() => expect(correct).toHaveBeenCalledTimes(2), {
+        timeout: 4_000,
+      });
+      expect(correct).toHaveBeenLastCalledWith(
+        expect.objectContaining({ target: "The user are here." }),
+      );
+      fireEvent.change(input, { target: { value: "The user are here. Ab" } });
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+      expect(correct).toHaveBeenCalledTimes(2);
     });
 
     it("does not ask for corrections when typing correction is off", async () => {

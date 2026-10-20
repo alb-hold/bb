@@ -39,14 +39,18 @@ describe("bb settings writing vocabulary", () => {
   const register: CommandRegistrar = (program) =>
     registerSettingsCommands(program, () => "http://server");
 
-  it("fails without writing when a term to remove is not in the vocabulary", async () => {
-    const put = vi.fn(async () => writingView(["bb"]));
-    stubServerApi({
-      "v1.writing-assistance.$get": vi.fn(async () =>
-        writingView(["bb", "refreshToken"]),
-      ),
-      "v1.writing-assistance.settings.$put": put,
-    });
+  it("sends a remove to the server and reports its refusal when a term is missing", async () => {
+    const post = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            code: "invalid_request",
+            message: "Not in the vocabulary: Hermes. Nothing was changed.",
+          }),
+          { status: 409, headers: { "content-type": "application/json" } },
+        ),
+    );
+    stubServerApi({ "v1.writing-assistance.vocabulary.$post": post });
 
     await expect(
       runCommand(
@@ -57,35 +61,21 @@ describe("bb settings writing vocabulary", () => {
           "remove",
           "refreshToken",
           "Hermes",
-          "--json",
         ],
         register,
       ),
     ).rejects.toThrow("process.exit:1");
-    expect(
-      collectLogPayloads(vi.mocked(console.log)).map((line) =>
-        JSON.parse(line),
-      ),
-    ).toEqual([
-      {
-        ok: false,
-        error: {
-          code: "error",
-          message: "Not in the vocabulary: Hermes. Nothing was removed.",
-        },
-      },
-    ]);
-    expect(put).not.toHaveBeenCalled();
+    expect(post).toHaveBeenCalledWith({
+      json: { add: [], remove: ["refreshToken", "Hermes"], ifMissing: "fail" },
+    });
+    expect(console.error).toHaveBeenCalledWith(
+      "Error: HTTP 409: Not in the vocabulary: Hermes. Nothing was changed.",
+    );
   });
 
-  it("removes a padded term and prints the updated settings as JSON", async () => {
-    const put = vi.fn(async () => writingView(["bb"]));
-    stubServerApi({
-      "v1.writing-assistance.$get": vi.fn(async () =>
-        writingView(["bb", "refreshToken"]),
-      ),
-      "v1.writing-assistance.settings.$put": put,
-    });
+  it("removes a padded term through one server edit and prints the settings as JSON", async () => {
+    const post = vi.fn(async () => writingView(["bb"]));
+    stubServerApi({ "v1.writing-assistance.vocabulary.$post": post });
 
     await runCommand(
       [
@@ -98,9 +88,29 @@ describe("bb settings writing vocabulary", () => {
       ],
       register,
     );
-    expect(put).toHaveBeenCalledWith({ json: { vocabulary: ["bb"] } });
+    expect(post).toHaveBeenCalledWith({
+      json: { add: [], remove: ["refreshToken"], ifMissing: "fail" },
+    });
     expect(
       JSON.parse(collectLogPayloads(vi.mocked(console.log))[0] ?? "null"),
     ).toMatchObject({ settings: { vocabulary: ["bb"] } });
+  });
+
+  it("adds terms through one server edit without reading the list first", async () => {
+    const get = vi.fn(async () => writingView(["bb"]));
+    const post = vi.fn(async () => writingView(["bb", "Hermes"]));
+    stubServerApi({
+      "v1.writing-assistance.$get": get,
+      "v1.writing-assistance.vocabulary.$post": post,
+    });
+
+    await runCommand(
+      ["settings", "writing", "vocabulary", "add", " Hermes ", "bb", " "],
+      register,
+    );
+    expect(get).not.toHaveBeenCalled();
+    expect(post).toHaveBeenCalledWith({
+      json: { add: ["Hermes", "bb"], remove: [], ifMissing: "fail" },
+    });
   });
 });

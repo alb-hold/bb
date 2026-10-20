@@ -5,6 +5,7 @@ import {
   type WritingAssistanceView,
   type WritingCorrectionRequest,
   type WritingCorrectionResponse,
+  type WritingVocabularyEdit,
 } from "@bb/server-contract";
 import { signalRequestArgs, type CreateSdkAreaArgs } from "./common.js";
 
@@ -13,6 +14,10 @@ export interface WritingAssistanceViewArgs {
 }
 
 export interface WritingAssistanceUpdateSettingsArgs extends WritingAssistanceSettingsUpdate {
+  signal?: AbortSignal;
+}
+
+export interface WritingAssistanceEditVocabularyArgs extends WritingVocabularyEdit {
   signal?: AbortSignal;
 }
 
@@ -34,6 +39,9 @@ export interface WritingAssistanceArea {
   view(args?: WritingAssistanceViewArgs): Promise<WritingAssistanceViewResult>;
   updateSettings(
     args: WritingAssistanceUpdateSettingsArgs,
+  ): Promise<WritingAssistanceViewResult>;
+  editVocabulary(
+    args: WritingAssistanceEditVocabularyArgs,
   ): Promise<WritingAssistanceViewResult>;
   correct(
     args: WritingAssistanceCorrectArgs,
@@ -61,6 +69,15 @@ export function createWritingAssistanceArea(
       return transport.readJson(
         transport.api.v1["writing-assistance"].settings.$put(
           { json: update },
+          ...signalRequestArgs(signal),
+        ),
+      );
+    },
+    async editVocabulary(input) {
+      const { signal, ...edit } = input;
+      return transport.readJson(
+        transport.api.v1["writing-assistance"].vocabulary.$post(
+          { json: edit },
           ...signalRequestArgs(signal),
         ),
       );

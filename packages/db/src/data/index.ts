@@ -233,11 +233,13 @@ export {
 } from "./app-settings.js";
 export {
   addWritingUsage,
+  editWritingAssistanceVocabulary,
   reserveWritingUsage,
   emptyWritingUsage,
   getWritingAssistanceSettings,
   getWritingUsage,
   updateWritingAssistanceSettings,
+  type WritingVocabularyEditResult,
 } from "./writing-assistance.js";
 export { getStoredThreadTabs, replaceStoredThreadTabs } from "./thread-tabs.js";
 export {

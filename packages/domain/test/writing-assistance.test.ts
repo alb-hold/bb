@@ -401,6 +401,14 @@ describe("resolveWritingEdits", () => {
     ["export the users so the user are ready.", "are", "is", "grammar"],
     ["tail the log so the user are ready.", "are", "is", "grammar"],
     ["kill it so the user are ready.", "are", "is", "grammar"],
+    ["read the user are ready.", "are", "is", "grammar"],
+    ["typeset the user are ready.", "are", "is", "grammar"],
+    ["local the user are ready.", "are", "is", "grammar"],
+    ["print the user are ready.", "are", "is", "grammar"],
+    ["trap the user are ready.", "are", "is", "grammar"],
+    ["wait so the user are ready.", "are", "is", "grammar"],
+    ["stat the user are ready.", "are", "is", "grammar"],
+    ["basename the user are ready.", "are", "is", "grammar"],
   ])(
     "never auto-applies an edit on the code-like line %s",
     (target, original, replacement, category) => {
@@ -425,6 +433,8 @@ describe("resolveWritingEdits", () => {
     "Find out if the user are ready.",
     "Go check that the user are ready.",
     "Test that the user are ready.",
+    "Read the user are ready.",
+    "Wait so the user are ready.",
     "Ask the team - the user are ready.",
   ])("still auto-applies a safe fix on the prose line %s", (target) => {
     const edits = resolveWritingEdits({

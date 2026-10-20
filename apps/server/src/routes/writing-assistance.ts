@@ -9,6 +9,7 @@ import { ApiError } from "../errors.js";
 import {
   buildWritingAssistanceView,
   correctWriting,
+  editWritingVocabulary,
   transcribeDictationSegment,
   updateWritingAssistance,
 } from "../services/ai/writing-assistance.js";
@@ -76,6 +77,10 @@ export function registerWritingAssistanceRoutes(
 
   put(routes.updateSettings, (context, payload) =>
     context.json(updateWritingAssistance(deps, payload)),
+  );
+
+  post(routes.editVocabulary, (context, payload) =>
+    context.json(editWritingVocabulary(deps, payload)),
   );
 
   post(routes.correct, async (context, payload) =>

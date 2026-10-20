@@ -39,6 +39,30 @@ describe("AI task routing", () => {
     });
   });
 
+  it("runs a task on a service whose first status check is slower than the quick answer", async () => {
+    await withTestHarness({}, async (harness) => {
+      const claude = registerFakeAiService(harness.deps.aiServices, {
+        id: "claude",
+        pluginId: "provider-claude-code",
+        builtin: true,
+        status: () =>
+          new Promise((resolve) =>
+            setTimeout(() => resolve({ ready: true }), 2_500),
+          ),
+        complete: async () => "Claude title",
+      });
+
+      const outcome = await runTextAiTask(harness.deps, {
+        task: "thread-title",
+        label: "test",
+        prompt: PROMPT,
+      });
+
+      expect(outcome).toMatchObject({ ok: true, value: "Claude title" });
+      expect(claude.completeCalls.map((call) => call.prompt)).toEqual([PROMPT]);
+    });
+  });
+
   it("moves to the next Automatic service when one rejects or is not ready", async () => {
     await withTestHarness({}, async (harness) => {
       const codex = registerFakeAiService(harness.deps.aiServices, {

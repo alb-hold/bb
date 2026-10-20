@@ -1,11 +1,14 @@
 import { and, eq, like, lt } from "drizzle-orm";
 import {
+  applyWritingVocabularyEdit,
   defaultWritingAssistanceSettings,
+  WRITING_VOCABULARY_MAX_TERMS,
   writingAssistanceSettingsSchema,
   writingUsageSchema,
   type WritingAssistanceSettings,
   type WritingAssistanceSettingsUpdate,
   type WritingUsage,
+  type WritingVocabularyEdit,
 } from "@bb/domain";
 import type { DbConnection, DbQueryConnection } from "../connection.js";
 import { appSettingsValues } from "../schema.js";
@@ -50,7 +53,7 @@ function writeValue(db: DbQueryConnection, key: string, value: unknown): void {
 }
 
 export function getWritingAssistanceSettings(
-  db: DbConnection,
+  db: DbQueryConnection,
 ): WritingAssistanceSettings {
   const stored = readValue(db, WRITING_SETTINGS_KEY);
   const settings: WritingAssistanceSettings = {
@@ -75,6 +78,36 @@ export function updateWritingAssistanceSettings(
   });
   writeValue(db, WRITING_SETTINGS_KEY, next);
   return next;
+}
+
+export type WritingVocabularyEditResult =
+  | { kind: "updated"; settings: WritingAssistanceSettings }
+  | { kind: "missing"; missing: string[] }
+  | { kind: "full"; limit: number };
+
+export function editWritingAssistanceVocabulary(
+  db: DbConnection,
+  edit: WritingVocabularyEdit,
+): WritingVocabularyEditResult {
+  return db.transaction((transaction): WritingVocabularyEditResult => {
+    const current = getWritingAssistanceSettings(transaction);
+    const { vocabulary, missing } = applyWritingVocabularyEdit(
+      current.vocabulary,
+      edit,
+    );
+    if (missing.length > 0 && edit.ifMissing === "fail") {
+      return { kind: "missing", missing };
+    }
+    if (vocabulary.length > WRITING_VOCABULARY_MAX_TERMS) {
+      return { kind: "full", limit: WRITING_VOCABULARY_MAX_TERMS };
+    }
+    const settings = writingAssistanceSettingsSchema.parse({
+      ...current,
+      vocabulary,
+    });
+    writeValue(transaction, WRITING_SETTINGS_KEY, settings);
+    return { kind: "updated", settings };
+  });
 }
 
 export function emptyWritingUsage(day: string): WritingUsage {

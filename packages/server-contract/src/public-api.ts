@@ -326,12 +326,14 @@ import {
 import {
   writingAssistanceSettingsUpdateSchema,
   writingCorrectionRequestSchema,
+  writingVocabularyEditSchema,
   type DictationSegmentForm,
   type DictationSegmentResponse,
   type WritingAssistanceSettingsUpdate,
   type WritingAssistanceView,
   type WritingCorrectionRequest,
   type WritingCorrectionResponse,
+  type WritingVocabularyEdit,
 } from "./api/writing-assistance.js";
 import {
   callNativeTerminalAgentToolRequestSchema,
@@ -2063,6 +2065,14 @@ export const publicApiRoutes = {
       method: "put",
       request: jsonRequest<EmptyInput, WritingAssistanceSettingsUpdate>(
         writingAssistanceSettingsUpdateSchema,
+      ),
+      response: jsonResponse<WritingAssistanceView>(),
+    }),
+    editVocabulary: defineRoute({
+      path: "/writing-assistance/vocabulary",
+      method: "post",
+      request: jsonRequest<EmptyInput, WritingVocabularyEdit>(
+        writingVocabularyEditSchema,
       ),
       response: jsonResponse<WritingAssistanceView>(),
     }),

@@ -19,6 +19,7 @@ import {
   SettingsWithControl,
 } from "@/components/ui/settings-section";
 import {
+  useEditWritingVocabulary,
   useUpdateWritingAssistanceSettings,
   useWritingAssistanceView,
 } from "@/hooks/queries/writing-assistance-queries";
@@ -61,9 +62,20 @@ function parseVocabulary(value: string): string[] {
   ].slice(0, WRITING_VOCABULARY_MAX_TERMS);
 }
 
+export function vocabularyEdit(
+  saved: readonly string[],
+  edited: readonly string[],
+): { add: string[]; remove: string[] } {
+  return {
+    add: edited.filter((term) => !saved.includes(term)),
+    remove: saved.filter((term) => !edited.includes(term)),
+  };
+}
+
 export function WritingAssistanceSettingsSection() {
   const view = useWritingAssistanceView();
   const update = useUpdateWritingAssistanceSettings();
+  const editVocabulary = useEditWritingVocabulary();
   const settings = view.data?.settings;
   const [vocabulary, setVocabulary] = useState("");
   const savedVocabulary = settings?.vocabulary.join("\n") ?? "";
@@ -165,9 +177,12 @@ export function WritingAssistanceSettingsSection() {
             placeholder={"bb\nHermes\nuseSegmentedDictation"}
             onChange={(event) => setVocabulary(event.target.value)}
             onBlur={() => {
-              const terms = parseVocabulary(vocabulary);
-              if (terms.join("\n") !== savedVocabulary) {
-                update.mutate({ vocabulary: terms });
+              const edit = vocabularyEdit(
+                settings.vocabulary,
+                parseVocabulary(vocabulary),
+              );
+              if (edit.add.length > 0 || edit.remove.length > 0) {
+                editVocabulary.mutate({ ...edit, ifMissing: "ignore" });
               }
             }}
           />
