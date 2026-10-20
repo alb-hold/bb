@@ -8,12 +8,14 @@ import {
 
 interface TerminalTextSelectSheetProps {
   onOpenChange: (open: boolean) => void;
+  initialLine?: number | null;
   open: boolean;
   text: string;
 }
 
 export function TerminalTextSelectSheet({
   onOpenChange,
+  initialLine = null,
   open,
   text,
 }: TerminalTextSelectSheetProps) {
@@ -44,10 +46,27 @@ export function TerminalTextSelectSheet({
 
   useLayoutEffect(() => {
     const element = textRef.current;
-    if (element !== null) {
+    if (element === null) return;
+    if (initialLine === null) {
       element.scrollTop = element.scrollHeight;
+      return;
     }
-  }, [isContentRealized, text]);
+    const frame = window.requestAnimationFrame(() => {
+      const lineStart = element.value
+        .split("\n")
+        .slice(0, Math.max(0, initialLine))
+        .reduce((offset, line) => offset + line.length + 1, 0);
+      if (document.activeElement !== element) {
+        element.focus({ preventScroll: true });
+      }
+      element.setSelectionRange(lineStart, lineStart);
+      const beforeLine = element.value.slice(0, lineStart);
+      element.scrollTop =
+        (beforeLine.match(/\n/g)?.length ?? 0) *
+        (element.scrollHeight / Math.max(1, element.value.split("\n").length));
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [initialLine, isContentRealized, text]);
 
   return (
     <PersistentResponsiveDrawerShell

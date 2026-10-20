@@ -74,11 +74,7 @@ async function findSnapshotTextarea(): Promise<HTMLTextAreaElement> {
 describe("TerminalTextSelectSheet", () => {
   it("offers Copy selection for the snapshot", async () => {
     render(
-      <TerminalTextSelectSheet
-        open
-        text="alpha beta"
-        onOpenChange={vi.fn()}
-      />,
+      <TerminalTextSelectSheet open text="alpha beta" onOpenChange={vi.fn()} />,
     );
     await screen.findByText("alpha beta");
     expect(
@@ -104,13 +100,25 @@ describe("TerminalTextSelectSheet", () => {
     expect(copied).toEqual(["beta"]);
   });
 
-  it("disables Copy selection when the snapshot selection is empty", async () => {
+  it("opens the snapshot caret at the requested terminal line", async () => {
     render(
       <TerminalTextSelectSheet
         open
-        text="alpha beta"
+        initialLine={1}
+        text={"alpha\nbeta\ngamma"}
         onOpenChange={vi.fn()}
       />,
+    );
+    const textarea = await findSnapshotTextarea();
+    await waitFor(() => expect(textarea.selectionStart).toBe(6));
+    expect(textarea.selectionStart).toBe(6);
+    expect(textarea.selectionEnd).toBe(6);
+    expect(document.activeElement).toBe(textarea);
+  });
+
+  it("disables Copy selection when the snapshot selection is empty", async () => {
+    render(
+      <TerminalTextSelectSheet open text="alpha beta" onOpenChange={vi.fn()} />,
     );
     expect(
       await screen.findByRole("button", { name: "Copy selection" }),
@@ -119,11 +127,7 @@ describe("TerminalTextSelectSheet", () => {
 
   it("keeps the textarea focused and selected when Copy selection is pressed", async () => {
     render(
-      <TerminalTextSelectSheet
-        open
-        text="alpha beta"
-        onOpenChange={vi.fn()}
-      />,
+      <TerminalTextSelectSheet open text="alpha beta" onOpenChange={vi.fn()} />,
     );
     const textarea = await findSnapshotTextarea();
     Object.defineProperties(textarea, {
@@ -144,11 +148,7 @@ describe("TerminalTextSelectSheet", () => {
 
   it("uses a read-only textarea without requesting a keyboard", async () => {
     render(
-      <TerminalTextSelectSheet
-        open
-        text="alpha beta"
-        onOpenChange={vi.fn()}
-      />,
+      <TerminalTextSelectSheet open text="alpha beta" onOpenChange={vi.fn()} />,
     );
     const textarea = await findSnapshotTextarea();
     expect(textarea).toHaveProperty("readOnly", true);
