@@ -1514,8 +1514,8 @@ describe("native terminal threads", () => {
           fixture.harness.db
             .select()
             .from(queuedThreadMessages)
-            .all()
-            .filter((message) => message.threadId === thread.id),
+            .where(eq(queuedThreadMessages.threadId, thread.id))
+            .all(),
         ).toEqual([]);
         expect(
           listEvents(fixture.harness.db, { threadId: thread.id }).filter(
@@ -1526,8 +1526,8 @@ describe("native terminal threads", () => {
           fixture.harness.db
             .select()
             .from(projectAttachmentThreads)
-            .all()
-            .filter((owner) => owner.threadId === thread.id),
+            .where(eq(projectAttachmentThreads.threadId, thread.id))
+            .all(),
         ).toEqual([]);
       } finally {
         cli.stop();
