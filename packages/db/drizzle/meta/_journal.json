@@ -1044,13 +1044,6 @@
       "when": 1792262861731,
       "tag": "0148_zippy_sunfire",
       "breakpoints": true
-    },
-    {
-      "idx": 149,
-      "version": "6",
-      "when": 1792472353790,
-      "tag": "0149_new_guardsmen",
-      "breakpoints": true
     }
   ]
 }

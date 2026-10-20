@@ -214,6 +214,40 @@ function createStartingThreadlessTerminal(fixture: TerminalSessionFixture) {
 }
 
 describe("terminal sessions", () => {
+  it("creates the holder table when upgrading an ours-migrated database and is idempotent", () => {
+    const fixture = setup();
+    try {
+      fixture.db.$client.exec("DROP TABLE fork_terminal_holder_sessions");
+      const migrationCountBefore = fixture.db.$client
+        .prepare("SELECT COUNT(*) AS count FROM __drizzle_migrations")
+        .get() as { count: number };
+
+      migrate(fixture.db);
+
+      expect(
+        fixture.db.$client
+          .prepare("PRAGMA table_info(fork_terminal_holder_sessions)")
+          .all(),
+      ).toEqual([
+        expect.objectContaining({ name: "terminal_id", notnull: 1, pk: 1 }),
+        expect.objectContaining({ name: "confirmed_at", notnull: 1, pk: 0 }),
+      ]);
+      const migrationCountAfterFirstRun = fixture.db.$client
+        .prepare("SELECT COUNT(*) AS count FROM __drizzle_migrations")
+        .get() as { count: number };
+
+      migrate(fixture.db);
+
+      const migrationCountAfterSecondRun = fixture.db.$client
+        .prepare("SELECT COUNT(*) AS count FROM __drizzle_migrations")
+        .get() as { count: number };
+      expect(migrationCountAfterFirstRun).toEqual(migrationCountBefore);
+      expect(migrationCountAfterSecondRun).toEqual(migrationCountBefore);
+    } finally {
+      fixture.db.$client.close();
+    }
+  });
+
   it("persists holder confirmation across a database reload and clears it on exit", () => {
     const fixture = setup();
     const terminal = createStartingTerminal(fixture);
