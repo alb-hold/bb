@@ -11,9 +11,12 @@ function setup(
     call: ExperimentalFakeHostRpcCall,
   ) => ClaudeAiTextResult | ClaudeAiStatus,
   primaryHostId: string | null = "host-1",
+  config: () => Promise<{ primaryHostId: string | null }> = async () => ({
+    primaryHostId,
+  }),
 ) {
   const { bb, harness } = createFakePluginHost({
-    sdk: { system: { config: async () => ({ primaryHostId }) } },
+    sdk: { system: { config } },
     experimental_callHostRpc: answer,
   });
   registerClaudeAiService(bb);
@@ -98,6 +101,119 @@ describe("Claude AI service", () => {
         claude.complete("Fix it", { signal: new AbortController().signal }),
       ).rejects.toThrow("Slow down");
       expect(claude.calls.map(modelOf)).toEqual(["claude-haiku-5-5"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("counts the primary machine lookup against the deadline", async () => {
+    vi.useFakeTimers({ now: 1_000_000 });
+    try {
+      const claude = setup(
+        () => ({ ok: true, text: "The user is ready." }),
+        "host-1",
+        () =>
+          new Promise((resolve) => {
+            setTimeout(() => resolve({ primaryHostId: "host-1" }), 3_000);
+          }),
+      );
+      const done = claude.complete("Fix it", {
+        signal: new AbortController().signal,
+      });
+      await vi.advanceTimersByTimeAsync(3_000);
+      await expect(done).resolves.toBe("The user is ready.");
+      expect(claude.calls.map((call) => call.input)).toEqual([
+        expect.objectContaining({
+          model: "claude-haiku-5-5",
+          timeoutMs: 5_000,
+        }),
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("answers within the deadline and starts no Claude request when the primary machine lookup never answers", async () => {
+    vi.useFakeTimers({ now: 1_000_000 });
+    try {
+      const claude = setup(
+        () => ({ ok: true, text: "unused" }),
+        "host-1",
+        () => new Promise(() => {}),
+      );
+      const done = claude.complete("Fix it", {
+        signal: new AbortController().signal,
+      });
+      const outcome = expect(done).rejects.toThrow(
+        "Claude did not answer in time",
+      );
+      await vi.advanceTimersByTimeAsync(8_000);
+      await outcome;
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(claude.calls).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("starts no Claude request when the lookup leaves less than a second of the deadline", async () => {
+    vi.useFakeTimers({ now: 1_000_000 });
+    try {
+      const claude = setup(
+        () => ({ ok: true, text: "unused" }),
+        "host-1",
+        () =>
+          new Promise((resolve) => {
+            setTimeout(() => resolve({ primaryHostId: "host-1" }), 7_500);
+          }),
+      );
+      const done = claude.complete("Fix it", {
+        signal: new AbortController().signal,
+      });
+      const outcome = expect(done).rejects.toThrow(
+        "Claude did not answer in time",
+      );
+      await vi.advanceTimersByTimeAsync(7_500);
+      await outcome;
+      expect(claude.calls).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops at once and starts no Claude request when the caller cancels during the lookup", async () => {
+    let answer: (config: { primaryHostId: string | null }) => void = () => {};
+    const claude = setup(
+      () => ({ ok: true, text: "unused" }),
+      "host-1",
+      () =>
+        new Promise((resolve) => {
+          answer = resolve;
+        }),
+    );
+    const controller = new AbortController();
+    const done = claude.complete("Fix it", { signal: controller.signal });
+    controller.abort();
+    await expect(done).rejects.toThrow("The request was cancelled");
+    answer({ primaryHostId: "host-1" });
+    await Promise.resolve();
+    expect(claude.calls).toHaveLength(0);
+  });
+
+  it("answers the status check within its deadline when the primary machine lookup never answers", async () => {
+    vi.useFakeTimers({ now: 1_000_000 });
+    try {
+      const claude = setup(
+        () => ({ ready: true }),
+        "host-1",
+        () => new Promise(() => {}),
+      );
+      const outcome = expect(claude.status()).rejects.toThrow(
+        "The Claude status check did not answer in time",
+      );
+      await vi.advanceTimersByTimeAsync(5_000);
+      await outcome;
+      expect(claude.calls).toHaveLength(0);
     } finally {
       vi.useRealTimers();
     }
