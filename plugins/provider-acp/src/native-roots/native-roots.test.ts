@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { experimental_nativeRootsResolveOutputSchema } from "@get-bb/plugin-sdk/host";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveGrokNativeRoots } from "./grok.js";
 import { resolveHermesNativeRoots } from "./hermes.js";
 import { resolveOmpNativeRoots } from "./omp.js";
@@ -100,6 +100,19 @@ describe("opencode", () => {
 });
 
 describe("omp", () => {
+  beforeEach(() => {
+    vi.stubEnv("HOME", homeDir);
+    vi.stubEnv("XDG_CONFIG_HOME", path.join(homeDir, ".config"));
+    vi.stubEnv("PI_CONFIG_FILES", "");
+    vi.stubEnv("PI_CODING_AGENT_DIR", path.join(homeDir, ".pi"));
+    vi.stubEnv("PI_PROFILE", "default");
+    vi.stubEnv("OMP_PROFILE", "default");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it("reads the agent, pi, codex and opencode skill directories", async () => {
     const roots = await resolveSkills(resolveOmpNativeRoots, argsFor());
     expect(roots.map((root) => root.path)).toEqual([
@@ -184,6 +197,7 @@ describe("omp", () => {
 
   it("reads PI_CONFIG_FILES relative to the workspace and expands $VARS", async () => {
     const extraConfig = path.join(tempRoot, "extra", "config.yml");
+    await mkdir(path.join(cwd, ".git"), { recursive: true });
     await writeFileEnsuringDir(
       extraConfig,
       "skills:\n  customDirectories:\n    - $SKILLS_BASE/team\n",
