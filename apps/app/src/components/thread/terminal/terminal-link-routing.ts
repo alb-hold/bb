@@ -27,6 +27,7 @@ export function terminalBrowserExternalOpenToastOptions(
       onClick: () => openExternalBrowser(url),
     },
     description: url,
+    duration: 10_000,
   };
 }
 

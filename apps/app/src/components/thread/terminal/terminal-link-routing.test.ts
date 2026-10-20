@@ -150,6 +150,7 @@ describe("openTerminalBrowserAction", () => {
 
     expect(options.description).toBe("http://localhost:8765");
     expect(options.action.label).toBe("Open");
+    expect(options.duration).toBe(10_000);
     expect(openExternalBrowser).not.toHaveBeenCalled();
     options.action.onClick();
     expect(openExternalBrowser).toHaveBeenCalledWith("http://localhost:8765");
