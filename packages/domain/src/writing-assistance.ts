@@ -647,6 +647,8 @@ const COMMAND_LINE =
   /^\s*(?:[$%>#]\s*)?(?:sudo\s+)?(?:echo|printf|git|gh|npm|npx|pnpm|yarn|bun|deno|node|python3?|pip3?|uv|poetry|cargo|rustc|java|mvn|gradle|php|composer|bash|sh|zsh|fish|cd|ls|ll|cat|grep|rg|ag|sed|awk|curl|wget|ssh|scp|rsync|rm|mv|cp|mkdir|rmdir|chmod|chown|ln|tar|zip|unzip|docker|podman|kubectl|helm|terraform|aws|gcloud|az|brew|apt|apt-get|yum|dnf|pacman|systemctl|launchctl|journalctl|ps|pkill|pgrep|lsof|psql|mysql|sqlite3|redis-cli|unset|xargs|tsc|vitest|jest|pytest|tox|eslint|prettier|bb|codex|claude|wrangler|vercel|ffmpeg|jq|yq|nohup|whoami|chdir|pwd|make|cmake|ninja|just|rake|bundle|gem|ruby|perl|go|swift|xcodebuild|dotnet|find|test|kill|killall|open|touch|which|export|source|env|time|watch|head|tail|sort|uniq|diff|patch|man|less|more|top|say|tee|cut|tr|wc|date|sleep|exec|eval|set|alias|history|ping|dig|nc|openssl|scutil|defaults|tailscale|ollama|code|cursor|tmux|vim|nvim|nano|read|readonly|declare|typeset|local|let|integer|float|print|getopts|shift|trap|wait|jobs|fg|bg|disown|suspend|builtin|command|type|hash|whence|where|enable|disable|shopt|setopt|unsetopt|emulate|autoload|zmodload|zstyle|bind|bindkey|pushd|popd|dirs|unalias|unfunction|unhash|rehash|ulimit|umask|limit|unlimit|times|sched|fc|caller|complete|compgen|return|break|continue|exit|logout|true|false|yes|seq|noglob|vared|help|functions|basename|dirname|stat|du|df|file|cmp|id|uname|hostname|mount|su|nice|xcrun|pod|turbo|for|while|until|if|then|elif|else|fi|do|done|case|esac|select|function|time|coproc|repeat|foreach)(?=\s|$)/u;
 const SHORT_FLAG = /(?:^|\s)-[A-Za-z]{1,3}(?=\s|$)/u;
 const HYPHENATED_START_LINE = /^\s*(?:[$%>#]\s*)?[A-Za-z]+-[A-Za-z]+(?=\s|$)/u;
+const IDENTIFIER_START_LINE =
+  /^\s*(?:[$%>#]\s*)?(?:\w*_\w*|[A-Za-z]?[a-z0-9]+[A-Z]\w*)(?=\s|$)/u;
 const CALL_OPERATOR_LINE = /^\s*(?:[$%>#]\s*)?[&.]\s+\S/u;
 
 const FENCE_LINE = /^\s*(?:`{3,}|~{3,})/u;
@@ -684,6 +686,7 @@ function inCodeLikeLine(target: string, start: number, end: number): boolean {
     COMMAND_LINE.test(line) ||
     SHORT_FLAG.test(line) ||
     HYPHENATED_START_LINE.test(line) ||
+    IDENTIFIER_START_LINE.test(line) ||
     CALL_OPERATOR_LINE.test(line)
   );
 }

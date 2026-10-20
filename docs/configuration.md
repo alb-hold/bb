@@ -377,10 +377,13 @@ that starts with a shell command, builtin or keyword such as echo, git, npm, rea
 %, > or # prompt or sudo), a line that starts with a hyphenated word, as every PowerShell
 command does (Write-Output, ConvertTo-Json, fetch-data; also prose such as
 Well-known teams say), a line that starts with PowerShell's call or
-dot-source operator, & or . then a space (& Fetch-Data, . setup), a line with a short flag such as -la, a line
+dot-source operator, & or . then a space (& Fetch-Data, . setup), a line that starts with an identifier written with an underscore or with a
+lowercase letter followed by a capital (fetch_data, \_fetch, fetchData,
+FetchData; also words such as iPhone or McDonald), a line with a short flag such as -la, a line
 indented four spaces or a tab, or a ``` or ~~~ fence line or a line inside such a fence (closed
 only by a bare fence of the same character at least as long), every
-change, even capitalization, is only suggested. Dictation formatting follows the same rule:
+change, even capitalization, is only suggested. A line that starts with a plain word, such as a custom command named setup or
+notepad typed without a prompt, cannot be told from prose and is treated as prose. Dictation formatting follows the same rule:
 if the formatter changes a spoken word into another word, other than one of
 those accent restorations, the transcript is inserted
 as heard. Vocabulary terms are sent to transcription as hints, which make the
