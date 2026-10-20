@@ -1,6 +1,7 @@
 import type { Socket } from "node:net";
 import type { TerminalSession } from "@bb/server-contract";
 import { describe, expect, it, vi } from "vitest";
+import { stripHolderMarkerChunks, type HolderMarkerStripState } from "../holder-marker.js";
 import {
   TERMINAL_DATA_PLANE_IPC_VERSION,
   TERMINAL_DATA_PLANE_RELAY_HARD_CAP_BYTES,
@@ -71,7 +72,7 @@ function createFixture() {
     detach: vi.fn(),
     handleMessage: vi.fn(),
     recordInputActivity: vi.fn(),
-    stripHolderMarkersFromDataPlaneOutput: (_terminalId, output) => output,
+    stripHolderMarkersFromDataPlaneOutput: (_terminalId, output) => [output],
     recordOutputBatch: vi.fn(),
   };
   const onTerminalExited = vi.fn();
@@ -264,7 +265,7 @@ describe("TerminalDataPlaneRouter", () => {
   it("sanitizes output before relaying it to browser sockets", async () => {
     const fixture = createFixture();
     fixture.lifecycle.stripHolderMarkersFromDataPlaneOutput = vi.fn(
-      (_terminalId, output) => ({ ...output, dataBase64: "c2FmZQ==" }),
+      (_terminalId, output) => [{ ...output, dataBase64: "c2FmZQ==" }],
     );
     fixture.attach();
     await Promise.resolve();
@@ -284,6 +285,59 @@ describe("TerminalDataPlaneRouter", () => {
       terminalId: "term_1",
       chunk: { seq: 2, dataBase64: "c2FmZQ==" },
     });
+  });
+
+  it("strips whole, split, and bytewise holder markers before data-plane delivery", async () => {
+    const marker = Buffer.from("\u001b]7717;bb-holder;term_1\u0007");
+    const grid = Buffer.from("\u001b]7791;bb-grid;80;24\u0007");
+    const leading = Buffer.from("before");
+    const trailing = Buffer.from("after");
+    const bytes = Buffer.concat([grid, marker, leading, trailing]);
+    const scenarios: Buffer[][] = [
+      [bytes],
+      ...Array.from({ length: bytes.length - 1 }, (_, index) => [bytes.subarray(0, index + 1), bytes.subarray(index + 1)]),
+      Array.from({ length: bytes.length }, (_, index) => bytes.subarray(index, index + 1)),
+    ];
+    for (const parts of scenarios) {
+      const fixture = createFixture();
+      const states = new Map<string, HolderMarkerStripState>();
+      fixture.lifecycle.stripHolderMarkersFromDataPlaneOutput = (terminalId, chunk) => {
+        let state = states.get(terminalId);
+        if (state === undefined) {
+          state = { chunks: [], data: [] };
+          states.set(terminalId, state);
+        }
+        const output = stripHolderMarkerChunks(chunk, state);
+        if (state.chunks.length === 0) states.delete(terminalId);
+        return output;
+      };
+      fixture.lifecycle.attach = vi.fn((args) => {
+        fixture.attached.push(args.socket);
+        args.socket.send(JSON.stringify({
+          type: "attached",
+          session,
+          replayStartSeq: 0,
+          nextSeq: parts.length,
+        }));
+        for (const [seq, part] of parts.entries()) {
+          args.socket.send(JSON.stringify({
+            type: "output",
+            chunk: { seq, dataBase64: part.toString("base64") },
+          }));
+        }
+      });
+      const { attachId } = fixture.attach("term_1");
+      await Promise.resolve();
+      const replay = fixture.sent
+        .map((entry) => entry.message)
+        .find((message) => message.type === "browser.replay");
+      expect(replay).toMatchObject({ type: "browser.replay", attachId });
+      if (replay?.type !== "browser.replay") throw new Error("missing replay");
+      const received = Buffer.concat(replay.chunks.map((chunk) => Buffer.from(chunk.dataBase64, "base64")));
+      expect(received.includes(Buffer.from("7717;bb-holder"))).toBe(false);
+      expect(received.toString()).toBe(Buffer.concat([grid, leading, trailing]).toString());
+      expect(replay.chunks.map((chunk) => chunk.seq)).toEqual(parts.map((_, index) => index));
+    }
   });
 
   it("routes acks and controls only to the socket they name", () => {

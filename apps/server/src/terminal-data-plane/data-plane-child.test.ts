@@ -1257,6 +1257,50 @@ describe("terminal data plane child", () => {
     expect(ofType(harness, "terminal.ack")).toHaveLength(2);
   });
 
+  it("strips holder markers from data-plane client output when whole, split, or bytewise", async () => {
+    const grid = Buffer.from("\u001b]7791;bb-grid;80;24\u0007");
+    const marker = Buffer.from("\u001b]7717;bb-holder;term_a\u0007");
+    const body = Buffer.from("beforeafter");
+    const bytes = Buffer.concat([grid, marker, body]);
+    const scenarios = [
+      [bytes],
+      ...Array.from({ length: bytes.length - 1 }, (_, index) => [bytes.subarray(0, index + 1), bytes.subarray(index + 1)]),
+      Array.from({ length: bytes.length }, (_, index) => bytes.subarray(index, index + 1)),
+    ];
+    for (const parts of scenarios) {
+      const harness = createHarness();
+      main(harness, {
+        v,
+        type: "terminal.route",
+        terminalId: "term_a",
+        daemonSessionId: "session_1",
+        mode: "data-socket",
+        holderMarkerPending: true,
+      });
+      const browser = await attachLive(harness, {
+        attachId: "a1",
+        terminalId: "term_a",
+        daemonSessionId: "session_1",
+      });
+      const daemon = await attachDaemon(harness, "session_1");
+      for (const [seq, part] of parts.entries()) {
+        daemon.receive({
+          type: "terminal.output",
+          terminalId: "term_a",
+          chunk: { seq, dataBase64: part.toString("base64") },
+        });
+      }
+      const output = browser.frames()
+        .filter((frame) => frame.type === "output")
+        .map((frame) => frame.chunk as { seq: number; dataBase64: string });
+      const received = Buffer.concat(output.map((chunk) => Buffer.from(chunk.dataBase64, "base64")));
+      expect(received.includes(Buffer.from("7717;bb-holder"))).toBe(false);
+      expect(received.toString()).toBe(Buffer.concat([grid, body]).toString());
+      expect(output.map((chunk) => chunk.seq)).toEqual(parts.map((_, index) => index));
+      harness.child.shutdown();
+    }
+  });
+
   it("drops a session's routes and closes its data socket on daemon.detach", async () => {
     const harness = createHarness();
     const daemon = await attachDaemon(harness, "session_1");

@@ -84,6 +84,7 @@ import {
 } from "./pending-rpc-registry.js";
 import { TerminalOutputFlowControl } from "./terminal-output-flow-control.js";
 import { TerminalOutputSequenceRebase } from "./terminal-output-sequence-rebase.js";
+import { stripHolderMarkerChunks, type HolderMarkerStripState } from "./holder-marker.js";
 
 const DEFAULT_TERMINAL_OPEN_TIMEOUT_MS = 10_000;
 const DEFAULT_TERMINAL_CLOSE_TIMEOUT_MS = 5_000;
@@ -831,6 +832,7 @@ export class TerminalSessionLifecycle {
     string,
     PendingHolderOutputBuffer
   >();
+  private readonly dataPlaneHolderOutput = new Map<string, HolderMarkerStripState>();
   private readonly pendingRetainedOutput = new Map<
     string,
     Array<{ hostId: string; chunks: TerminalOutputChunk[] }>
@@ -2308,7 +2310,12 @@ export class TerminalSessionLifecycle {
 
   resolveRunningTerminalRoute(
     terminalId: string,
-  ): { daemonSessionId: string; sequenceBase: number; terminalId: string } | null {
+  ): {
+    daemonSessionId: string;
+    holderMarkerPending: boolean;
+    sequenceBase: number;
+    terminalId: string;
+  } | null {
     const current = getTerminalById(this.options.db, terminalId);
     if (
       !current ||
@@ -2319,6 +2326,7 @@ export class TerminalSessionLifecycle {
     }
     return {
       daemonSessionId: current.daemonSessionId,
+      holderMarkerPending: this.pendingHolderMarkers.has(current.id),
       sequenceBase: this.outputSequenceRebase.toServer(current.id, 0),
       terminalId: current.id,
     };
@@ -2366,18 +2374,20 @@ export class TerminalSessionLifecycle {
       return;
     }
     for (const rawChunk of args.chunks) {
-      const chunk = this.stripHolderMarkersFromDataPlaneOutput(
+      const chunks = this.stripHolderMarkersFromDataPlaneOutput(
         args.terminalId,
         rawChunk,
       );
-      if (current.status === "running") {
-        this.outputFlow.recordOutput(
-          args.terminalId,
-          args.daemonSessionId,
-          chunk.seq,
-        );
+      for (const chunk of chunks) {
+        if (current.status === "running") {
+          this.outputFlow.recordOutput(
+            args.terminalId,
+            args.daemonSessionId,
+            chunk.seq,
+          );
+        }
+        this.retainTerminalOutput(current, chunk);
       }
-      this.retainTerminalOutput(current, chunk);
     }
     if (current.status === "exited") {
       this.flushRetainedOutput(current.id);
@@ -2393,27 +2403,32 @@ export class TerminalSessionLifecycle {
   stripHolderMarkersFromDataPlaneOutput(
     terminalId: string,
     chunk: TerminalOutputChunk,
-  ): TerminalOutputChunk {
-    const current = getTerminalById(this.options.db, terminalId);
-    if (current === null) return chunk;
-    if (!this.pendingHolderMarkers.has(current.id) && !current.holderBacked) {
-      return chunk;
+  ): TerminalOutputChunk[] {
+    if (!this.pendingHolderMarkers.has(terminalId)) return [chunk];
+    let state = this.dataPlaneHolderOutput.get(terminalId);
+    if (state === undefined) {
+      state = { chunks: [], data: [] };
+      this.dataPlaneHolderOutput.set(terminalId, state);
     }
-    const data = Buffer.from(chunk.dataBase64, "base64");
-    const marker = Buffer.from(
-      `${TERMINAL_HOLDER_MARKER_PREFIX}${current.id}\u0007`,
+    const inspection = inspectTerminalHolderMarker(
+      Buffer.concat([...state.data, Buffer.from(chunk.dataBase64, "base64")]),
     );
-    let markerOffset = data.indexOf(marker);
-    if (markerOffset < 0) return chunk;
-    let output = data;
-    while (markerOffset >= 0) {
-      output = Buffer.concat([
-        output.subarray(0, markerOffset),
-        output.subarray(markerOffset + marker.length),
-      ]);
-      markerOffset = output.indexOf(marker);
+    const stripped = stripHolderMarkerChunks(chunk, state);
+    if (state.chunks.length === 0) {
+      this.pendingHolderMarkers.delete(terminalId);
+      this.dataPlaneHolderOutput.delete(terminalId);
+      if (inspection.kind === "complete" && inspection.terminalId === terminalId) {
+        updateTerminalSession(this.options.db, {
+          scope: {
+            kind: "terminal",
+            statuses: ["starting", "running"],
+            terminalId,
+          },
+          update: { kind: "holder-backed" },
+        });
+      }
     }
-    return { ...chunk, dataBase64: output.toString("base64") };
+    return stripped;
   }
 
   private closeDaemonSessionBrowserTerminals(args: {
@@ -3420,29 +3435,12 @@ export class TerminalSessionLifecycle {
         update: { kind: "holder-backed" },
       });
     }
-    let markerPrefixRemaining = inspection.markerOffset;
-    let markerBytesRemaining =
-      inspection.markerLength - inspection.markerOffset;
-    for (const part of pending.chunks) {
-      const prefixBytes = Math.min(markerPrefixRemaining, part.data.length);
-      const markerBytesStart = prefixBytes;
-      const bytesToStrip = Math.min(
-        markerBytesRemaining,
-        part.data.length - markerBytesStart,
-      );
-      markerPrefixRemaining -= prefixBytes;
-      markerBytesRemaining -= bytesToStrip;
-      const outputData = Buffer.concat([
-        part.data.subarray(0, markerBytesStart),
-        part.data.subarray(markerBytesStart + bytesToStrip),
-      ]);
-      const outputChunk =
-        bytesToStrip === 0
-          ? part.chunk
-          : {
-              ...part.chunk,
-              dataBase64: outputData.toString("base64"),
-            };
+    const stripState: HolderMarkerStripState = { chunks: [], data: [] };
+    const outputChunks = pending.chunks.flatMap((part) =>
+      stripHolderMarkerChunks(part.chunk, stripState),
+    );
+    for (const [index, part] of pending.chunks.entries()) {
+      const outputChunk = outputChunks[index] ?? part.chunk;
       this.processTerminalOutputChunk(
         part.sessionId,
         { type: "terminal.output", terminalId: current.id, chunk: part.chunk },

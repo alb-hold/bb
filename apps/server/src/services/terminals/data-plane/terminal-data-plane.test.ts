@@ -274,7 +274,7 @@ async function createFixture(mode: DaemonMode = "capable"): Promise<Fixture> {
       recordInputActivity: (terminalId) => {
         inputActivity.push(terminalId);
       },
-      stripHolderMarkersFromDataPlaneOutput: (_terminalId, chunk) => chunk,
+      stripHolderMarkersFromDataPlaneOutput: (_terminalId, chunk) => [chunk],
       recordOutputBatch: ({ chunks, daemonSessionId, terminalId }) =>
         outputBatches.push({ chunks, daemonSessionId, terminalId }),
     },

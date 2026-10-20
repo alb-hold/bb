@@ -13,6 +13,12 @@ import {
 } from "../services/terminals/terminal-output-flow-control.js";
 import { parseSocketMessage } from "../ws/decode-payload.js";
 import {
+  flushHolderMarkerChunks,
+  HOLDER_MARKER_PENDING_TIMEOUT_MS,
+  stripHolderMarkerChunks,
+  type HolderMarkerStripState,
+} from "../services/terminals/holder-marker.js";
+import {
   TERMINAL_DATA_PLANE_CHILD_PENDING_IPC_BYTES,
   TERMINAL_DATA_PLANE_INPUT_ACTIVITY_INTERVAL_MS,
   TERMINAL_DATA_PLANE_INPUT_COALESCE_MS,
@@ -106,6 +112,7 @@ interface BrowserAttach {
 
 interface TerminalRoute {
   daemonSessionId: string;
+  holderMarkerPending: boolean;
   mode: TerminalDataPlaneRouteMode;
 }
 
@@ -134,6 +141,8 @@ export class TerminalDataPlaneChild {
   private readonly attachesByTerminalId = new Map<string, Set<BrowserAttach>>();
   private readonly daemonSockets = new Map<string, TerminalDataPlaneSocket>();
   private readonly routes = new Map<string, TerminalRoute>();
+  private readonly holderMarkerStripStates = new Map<string, HolderMarkerStripState>();
+  private readonly holderMarkerStripTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly inputWindows = new Map<string, InputWindow>();
   private readonly outputBatches = new Map<string, OutputBatch>();
   private readonly lastInputActivityAt = new Map<string, number>();
@@ -259,6 +268,7 @@ export class TerminalDataPlaneChild {
       case "terminal.route":
         this.routes.set(message.terminalId, {
           daemonSessionId: message.daemonSessionId,
+        holderMarkerPending: message.holderMarkerPending === true,
           mode: message.mode,
         });
         this.closeAttachesBoundElsewhere(message.terminalId);
@@ -651,27 +661,69 @@ export class TerminalDataPlaneChild {
     chunk: TerminalOutputChunk,
     dataSocketSessionId: string | null,
   ): void {
+    const route = this.routes.get(terminalId);
+    if (route?.holderMarkerPending !== true) {
+      this.deliverSanitizedOutput(terminalId, [chunk], dataSocketSessionId);
+      return;
+    }
+    let stripState = this.holderMarkerStripStates.get(terminalId);
+    if (stripState === undefined) {
+      stripState = { chunks: [], data: [] };
+      this.holderMarkerStripStates.set(terminalId, stripState);
+    }
+    const chunks = stripHolderMarkerChunks(chunk, stripState);
+    if (stripState.chunks.length === 0) {
+      route.holderMarkerPending = false;
+      const timer = this.holderMarkerStripTimers.get(terminalId);
+      if (timer !== undefined) clearTimeout(timer);
+      this.holderMarkerStripTimers.delete(terminalId);
+      this.holderMarkerStripStates.delete(terminalId);
+    } else if (!this.holderMarkerStripTimers.has(terminalId)) {
+      const timer = setTimeout(() => {
+        const pending = this.holderMarkerStripStates.get(terminalId);
+        if (pending === undefined) return;
+        this.holderMarkerStripStates.delete(terminalId);
+        this.holderMarkerStripTimers.delete(terminalId);
+        this.deliverSanitizedOutput(
+          terminalId,
+          flushHolderMarkerChunks(pending),
+          dataSocketSessionId,
+        );
+      }, HOLDER_MARKER_PENDING_TIMEOUT_MS);
+      timer.unref?.();
+      this.holderMarkerStripTimers.set(terminalId, timer);
+    }
+    this.deliverSanitizedOutput(terminalId, chunks, dataSocketSessionId);
+  }
+
+  private deliverSanitizedOutput(
+    terminalId: string,
+    chunks: TerminalOutputChunk[],
+    dataSocketSessionId: string | null,
+  ): void {
     const attaches = this.attachesByTerminalId.get(terminalId);
     if (attaches === undefined) {
       return;
     }
-    const frame = JSON.stringify({ type: "output", chunk });
-    for (const attach of [...attaches]) {
-      if (
-        dataSocketSessionId === null ||
-        attach.daemonSessionId === dataSocketSessionId
-      ) {
-        const deliveredChunk =
-          dataSocketSessionId === null || attach.sequenceBase === 0
-            ? chunk
-            : { ...chunk, seq: chunk.seq + attach.sequenceBase };
-        this.deliver(
-          attach,
-          deliveredChunk,
-          deliveredChunk === chunk
-            ? frame
-            : JSON.stringify({ type: "output", chunk: deliveredChunk }),
-        );
+    for (const outputChunk of chunks) {
+      const frame = JSON.stringify({ type: "output", chunk: outputChunk });
+      for (const attach of [...attaches]) {
+        if (
+          dataSocketSessionId === null ||
+          attach.daemonSessionId === dataSocketSessionId
+        ) {
+          const deliveredChunk =
+            dataSocketSessionId === null || attach.sequenceBase === 0
+              ? outputChunk
+              : { ...outputChunk, seq: outputChunk.seq + attach.sequenceBase };
+          this.deliver(
+            attach,
+            deliveredChunk,
+            deliveredChunk === outputChunk
+              ? frame
+              : JSON.stringify({ type: "output", chunk: deliveredChunk }),
+          );
+        }
       }
     }
   }

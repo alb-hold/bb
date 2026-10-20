@@ -50,7 +50,7 @@ export interface DataPlaneLifecyclePort {
   stripHolderMarkersFromDataPlaneOutput(
     terminalId: string,
     chunk: TerminalOutputChunk,
-  ): TerminalOutputChunk;
+  ): TerminalOutputChunk[];
   recordOutputBatch(args: {
     chunks: TerminalOutputChunk[];
     daemonSessionId: string;
@@ -67,6 +67,7 @@ interface PendingAttach {
 
 export interface DataPlaneAttachArgs {
   daemonSessionId: string;
+  holderMarkerPending?: boolean;
   handoffOwnerToken?: string;
   outputAcks: boolean;
   resizeAcks: boolean;
@@ -138,6 +139,7 @@ export class TerminalDataPlaneRouter implements ChildTerminalSocketSink {
 
   routeTerminal(args: {
     daemonSessionId: string;
+    holderMarkerPending?: boolean;
     mode: TerminalDataPlaneRouteMode;
     terminalId: string;
   }): void {
@@ -146,6 +148,7 @@ export class TerminalDataPlaneRouter implements ChildTerminalSocketSink {
       type: "terminal.route",
       terminalId: args.terminalId,
       daemonSessionId: args.daemonSessionId,
+      holderMarkerPending: args.holderMarkerPending,
       mode: args.mode,
     });
   }
@@ -290,7 +293,10 @@ export class TerminalDataPlaneRouter implements ChildTerminalSocketSink {
     frame: ChildTerminalReplayFrame,
     trailing: ChildTerminalBroadcastMessage[],
   ): void {
-    const bytes = frame.chunks.reduce(
+    const chunks = frame.chunks.flatMap((chunk) =>
+      this.lifecycle.stripHolderMarkersFromDataPlaneOutput(socket.terminalId, chunk),
+    );
+    const bytes = chunks.reduce(
       (total, chunk) => total + chunk.dataBase64.length,
       0,
     );
@@ -302,7 +308,7 @@ export class TerminalDataPlaneRouter implements ChildTerminalSocketSink {
         terminalId: socket.terminalId,
         session: frame.session,
         replayStartSeq: frame.replayStartSeq,
-        chunks: frame.chunks,
+        chunks,
         nextSeq: frame.nextSeq,
       },
       { bytes },
@@ -347,16 +353,18 @@ export class TerminalDataPlaneRouter implements ChildTerminalSocketSink {
   }
 
   relayOutput(terminalId: string, chunk: TerminalOutputChunk): void {
-    const sanitized = this.lifecycle.stripHolderMarkersFromDataPlaneOutput(
+    const sanitizedChunks = this.lifecycle.stripHolderMarkersFromDataPlaneOutput(
       terminalId,
       chunk,
     );
-    const relayed = this.relayedSeqByTerminalId.get(terminalId) ?? -1;
-    if (sanitized.seq <= relayed) {
-      return;
+    for (const sanitized of sanitizedChunks) {
+      const relayed = this.relayedSeqByTerminalId.get(terminalId) ?? -1;
+      if (sanitized.seq <= relayed) {
+        continue;
+      }
+      this.relayedSeqByTerminalId.set(terminalId, sanitized.seq);
+      this.relayDaemonOutput(terminalId, sanitized);
     }
-    this.relayedSeqByTerminalId.set(terminalId, sanitized.seq);
-    this.relayDaemonOutput(terminalId, sanitized);
   }
 
   close(attachId: string, code: number, reason: string): void {

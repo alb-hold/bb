@@ -13,6 +13,7 @@ const TERMINAL_SOCKET_PATH = /^\/ws\/terminals\/([^/]+)$/u;
 
 export interface TerminalUpgradeTarget {
   daemonSessionId: string;
+  holderMarkerPending?: boolean;
   sequenceBase: number;
   terminalId: string;
 }
@@ -111,6 +112,7 @@ export function handOffTerminalUpgrade(
   url.searchParams.delete("handoffOwnerToken");
   const attachId = options.attach({
     daemonSessionId: target.daemonSessionId,
+    holderMarkerPending: target.holderMarkerPending,
     handoffOwnerToken,
     outputAcks: query.data.outputAcks,
     resizeAcks: query.data.resizeAcks,
