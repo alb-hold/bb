@@ -12,6 +12,7 @@ export const CLAUDE_TEXT_MODELS = [
 const COMPLETE_TIMEOUT_MS = 8_000;
 const STATUS_TIMEOUT_MS = 5_000;
 const HOST_CALL_GRACE_MS = 1_000;
+const MIN_ATTEMPT_MS = 1_000;
 const RETRY_WITH_NEXT_MODEL: ReadonlySet<ClaudeAiFailureCode> = new Set([
   "rate_limited",
   "service_unavailable",
@@ -31,15 +32,18 @@ export function registerClaudeAiService(bb: BbPluginApi): void {
     async complete(prompt, { signal }) {
       const hostId = await primaryHostId();
       if (hostId === null) throw new Error("No primary machine is connected");
+      const deadline = Date.now() + COMPLETE_TIMEOUT_MS;
       let last: ClaudeAiTextResult | null = null;
       for (const model of CLAUDE_TEXT_MODELS) {
+        const remainingMs = deadline - Date.now();
+        if (last !== null && remainingMs < MIN_ATTEMPT_MS) break;
         last = await host.call(
           "claude.ai.complete",
-          { model, prompt, timeoutMs: COMPLETE_TIMEOUT_MS },
+          { model, prompt, timeoutMs: remainingMs },
           {
             hostId,
             signal,
-            timeoutMs: COMPLETE_TIMEOUT_MS + HOST_CALL_GRACE_MS,
+            timeoutMs: remainingMs + HOST_CALL_GRACE_MS,
           },
         );
         if (last.ok || !RETRY_WITH_NEXT_MODEL.has(last.code)) break;

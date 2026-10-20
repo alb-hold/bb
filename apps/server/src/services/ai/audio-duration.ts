@@ -122,7 +122,7 @@ function webmSeconds(bytes: Uint8Array): number | null {
     if (size.unknown || start + size.value > bytes.length) return null;
     const end = start + size.value;
     if (id.value === WEBM_CODEC_ID) {
-      if (ascii(bytes, start, size.value) !== "A_OPUS") return null;
+      if (size.value !== 6 || ascii(bytes, start, 6) !== "A_OPUS") return null;
       opus = true;
     }
     if (

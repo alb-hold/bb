@@ -38,6 +38,20 @@ function wav(seconds: number, sampleRate = 1_000, metadataBytes = 0): File {
   return new File([bytes], "dictation-1.wav", { type: "audio/wav" });
 }
 
+function webmWithHugeCodecId(): Buffer {
+  const codecIdBytes = 300_000;
+  return Buffer.concat([
+    Buffer.from([0x1a, 0x45, 0xdf, 0xa3, 0x80]),
+    Buffer.from([
+      0x86,
+      0x20 | (codecIdBytes >> 16),
+      (codecIdBytes >> 8) & 0xff,
+      codecIdBytes & 0xff,
+    ]),
+    Buffer.alloc(codecIdBytes, 0x41),
+  ]);
+}
+
 async function postSegment(
   harness: TestAppHarness,
   fields: { durationMs?: string; context?: string; file?: File } = {},
@@ -1088,6 +1102,19 @@ describe("dictation segments", () => {
       });
       const empty = await postSegment(harness, { file: wav(0) });
       expect(empty.status).toBe(400);
+      const hugeCodecId = await postSegment(harness, {
+        file: new File(
+          [new Uint8Array(webmWithHugeCodecId())],
+          "dictation-1.webm",
+          {
+            type: "audio/webm",
+          },
+        ),
+      });
+      expect(hugeCodecId.status).toBe(400);
+      await expect(hugeCodecId.json()).resolves.toMatchObject({
+        message: expect.stringContaining("Unsupported or unreadable audio"),
+      });
       expect(service.transcribeCalls).toHaveLength(0);
       expect(getWritingUsage(harness.deps.db, utcDay()).audioSeconds).toBe(0);
     });

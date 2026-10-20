@@ -2,7 +2,7 @@ import {
   createFakePluginHost,
   type ExperimentalFakeHostRpcCall,
 } from "@get-bb/plugin-sdk/testing";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { registerClaudeAiService } from "./ai-service.js";
 import type { ClaudeAiStatus, ClaudeAiTextResult } from "./ai/host-contract.js";
 
@@ -57,6 +57,50 @@ describe("Claude AI service", () => {
       hostId: "host-1",
       method: "claude.ai.complete",
     });
+  });
+
+  it("gives the Sonnet retry only what the Haiku attempt left of one deadline", async () => {
+    vi.useFakeTimers({ now: 1_000_000 });
+    try {
+      const claude = setup((call) => {
+        if (modelOf(call) === "claude-haiku-5-5") {
+          vi.setSystemTime(1_000_000 + 6_500);
+          return { ok: false, code: "service_unavailable", message: "Busy" };
+        }
+        return { ok: true, text: "The user is ready." };
+      });
+      await expect(
+        claude.complete("Fix it", { signal: new AbortController().signal }),
+      ).resolves.toBe("The user is ready.");
+      expect(claude.calls.map((call) => call.input)).toEqual([
+        expect.objectContaining({
+          model: "claude-haiku-5-5",
+          timeoutMs: 8_000,
+        }),
+        expect.objectContaining({
+          model: "claude-sonnet-5-5",
+          timeoutMs: 1_500,
+        }),
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("skips the Sonnet retry when less than a second of the deadline is left", async () => {
+    vi.useFakeTimers({ now: 1_000_000 });
+    try {
+      const claude = setup(() => {
+        vi.setSystemTime(1_000_000 + 7_500);
+        return { ok: false, code: "rate_limited", message: "Slow down" };
+      });
+      await expect(
+        claude.complete("Fix it", { signal: new AbortController().signal }),
+      ).rejects.toThrow("Slow down");
+      expect(claude.calls.map(modelOf)).toEqual(["claude-haiku-5-5"]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("does not retry a sign-in failure and surfaces its message", async () => {
