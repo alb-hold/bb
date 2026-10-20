@@ -521,6 +521,7 @@ describe("NativeActivityReader", () => {
           uuid: "old-bound-answer",
           parentUuid: null,
           promptId: "old-bound-turn",
+          timestamp: "2026-10-20T12:00:00.000Z",
           message: { content: [{ type: "text", text: "stale" }] },
         },
       ]),
@@ -539,6 +540,22 @@ describe("NativeActivityReader", () => {
     expect(reader.read()).toEqual([]);
     expect(Reflect.get(reader, "currentTurn")).toBeNull();
     expect(reader.heartbeat()).toBeNull();
+    const mismatchBoundary = Reflect.get(reader, "unconfirmedTranscriptOffset");
+    expect(mismatchBoundary).toBe(statSync(transcript).size);
+    appendFileSync(
+      events,
+      jsonl([
+        {
+          hook_event_name: "UserPromptSubmit",
+          session_id: "foreign",
+          prompt_id: "repeated-foreign-turn",
+        },
+      ]),
+    );
+    expect(reader.read()).toEqual([]);
+    expect(Reflect.get(reader, "unconfirmedTranscriptOffset")).toBe(
+      mismatchBoundary,
+    );
     appendFileSync(
       transcript,
       jsonl([
@@ -547,6 +564,7 @@ describe("NativeActivityReader", () => {
           uuid: "fresh-bound-user",
           parentUuid: null,
           promptId: "fresh-bound-turn",
+          timestamp: "2026-10-20T12:00:01.000Z",
           origin: { kind: "human" },
           message: { content: "fresh" },
         },
@@ -649,6 +667,7 @@ describe("NativeActivityReader", () => {
       "foreign-session",
       "foreign-session",
       "foreign-session",
+      "foreign-session",
     ]);
   });
 
@@ -677,10 +696,7 @@ describe("NativeActivityReader", () => {
     expect(Reflect.get(fixture.reader, "currentTurn")).toBe("turn-1");
     fixture.hook([{ hook_event_name: "Stop", prompt_id: "turn-1" }]);
     expect(fixture.reader.read()).toEqual([]);
-    expect(fixture.reader.heartbeat()).toEqual({
-      state: "working",
-      prompt: null,
-    });
+    expect(fixture.reader.heartbeat()).toBeNull();
     fixture.hook([{ hook_event_name: "PreToolUse", prompt_id: "turn-1" }]);
     expect(fixture.reader.read()).toEqual([]);
     fixture.hook([{ hook_event_name: "Stop", prompt_id: "turn-1" }]);

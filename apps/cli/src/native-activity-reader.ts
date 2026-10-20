@@ -71,6 +71,7 @@ export class NativeActivityReader {
   private currentTurn: string | null = null;
   private hookIdentityConfirmed = false;
   private unconfirmedTranscriptOffset: number | null = null;
+  private unconfirmedHookBoundaryEstablished = false;
   private unconfirmedHookCount = 0;
   private workingRecord: string | null = null;
   private transcriptPosition = 0;
@@ -110,6 +111,7 @@ export class NativeActivityReader {
     this.sessionId = sessionId;
     if (this.cli.activity?.hooks?.sessionIdField !== undefined) {
       this.unconfirmedTranscriptOffset = this.currentTranscriptSize();
+      this.unconfirmedHookBoundaryEstablished = false;
     }
   }
 
@@ -139,9 +141,10 @@ export class NativeActivityReader {
           if (reason !== null) {
             if (
               this.hookIdentityConfirmed ||
-              this.unconfirmedTranscriptOffset === null
+              !this.unconfirmedHookBoundaryEstablished
             ) {
               this.unconfirmedTranscriptOffset = this.currentTranscriptSize();
+              this.unconfirmedHookBoundaryEstablished = true;
             }
             this.hookIdentityConfirmed = false;
             this.unconfirmedHookCount += 1;
@@ -243,6 +246,7 @@ export class NativeActivityReader {
   private confirmHookIdentity(): void {
     this.hookIdentityConfirmed = true;
     this.unconfirmedTranscriptOffset = null;
+    this.unconfirmedHookBoundaryEstablished = false;
   }
 
   private stringField(record: unknown, field: string): string | null {
