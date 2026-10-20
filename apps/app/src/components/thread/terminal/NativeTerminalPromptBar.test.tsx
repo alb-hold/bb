@@ -420,6 +420,20 @@ describe("NativeTerminalPromptBar push-to-talk", () => {
     expect(dictationHook.stop).toHaveBeenCalledTimes(1);
   });
 
+  it("stops a held recording whose release targets the button, as a touch pointer captured by the button does after dragging off", () => {
+    renderBar();
+    pressMic(1_000);
+    firePointer(micButton(), "pointerUp", 1_600, 1_600);
+    expect(dictationHook.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a tapped recording running when the tap's release targets the button", () => {
+    renderBar();
+    pressMic(1_000);
+    firePointer(micButton(), "pointerUp", 1_100, 1_100);
+    expect(dictationHook.stop).not.toHaveBeenCalled();
+  });
+
   it("stops the recording it started when the press is cancelled", () => {
     renderBar();
     pressMic(1_000);
