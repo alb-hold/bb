@@ -352,7 +352,11 @@ describe("NativeActivityReader", () => {
     expect(fixture.reader.read()).toEqual([]);
     expect(fixture.reader.heartbeat()).toBeNull();
     fixture.hook([
-      { hook_event_name: "PostToolUse", prompt_id: "turn-1", tool_name: "Bash" },
+      {
+        hook_event_name: "PostToolUse",
+        prompt_id: "turn-1",
+        tool_name: "Bash",
+      },
     ]);
     expect(fixture.reader.read()).toEqual([]);
     expect(fixture.reader.heartbeat()).toBeNull();
@@ -413,9 +417,7 @@ describe("NativeActivityReader", () => {
 
   it("recovers on a bound permission close only when that permission is open", () => {
     const fixture = claudeFixture();
-    fixture.hook([
-      { hook_event_name: "PermissionRequest", tool_name: "Bash" },
-    ]);
+    fixture.hook([{ hook_event_name: "PermissionRequest", tool_name: "Bash" }]);
     expect(fixture.reader.read()).toEqual([
       {
         state: "waiting",
@@ -438,12 +440,8 @@ describe("NativeActivityReader", () => {
     ]);
     expect(fixture.reader.read()).toEqual([]);
     expect(fixture.reader.heartbeat()).toBeNull();
-    fixture.hook([
-      { hook_event_name: "PostToolUse", tool_name: "Bash" },
-    ]);
-    expect(fixture.reader.read()).toEqual([
-      { state: "working", prompt: null },
-    ]);
+    fixture.hook([{ hook_event_name: "PostToolUse", tool_name: "Bash" }]);
+    expect(fixture.reader.read()).toEqual([{ state: "working", prompt: null }]);
     expect(fixture.reader.heartbeat()).toEqual({
       state: "working",
       prompt: null,
@@ -472,239 +470,237 @@ describe("NativeActivityReader", () => {
     ]);
   });
 
-  it(
-    "rejects hooks before discovery, rejects stale transcript replay, then recovers on bound evidence",
-    () => {
-      const diagnostics: string[] = [];
-      const host = createFakePluginHost({ pluginId: "provider-claude-code" });
-      claudeCodePlugin(host.bb);
-      const cli = host.harness.registrations.providerRegistrations.find(
-        (entry) => entry.id === "claude-code",
-      )?.experimental_nativeTerminal;
-      if (cli === undefined) throw new Error("Claude native declaration missing");
-      const home = tempHome();
-      const events = path.join(home, "hooks.jsonl");
-      const transcript = path.join(home, ".claude", "projects", "work", `${SESSION_ID}.jsonl`);
-      mkdirSync(path.dirname(transcript), { recursive: true });
-      writeFileSync(transcript, "");
-      writeFileSync(events, "");
-      const reader = new NativeActivityReader(
-        cli,
-        { HOME: home },
-        events,
-        { kind: "discover" },
-        undefined,
-        (reason) => diagnostics.push(reason),
-      );
-      appendFileSync(
-        events,
-        jsonl([
-          {
-            hook_event_name: "UserPromptSubmit",
-            session_id: SESSION_ID,
-            prompt_id: "unbound-turn",
-            prompt: "private",
-          },
-        ]),
-      );
-      expect(reader.read()).toEqual([]);
-      expect(Reflect.get(reader, "currentTurn")).toBeNull();
-      reader.sessionDiscovered(SESSION_ID);
-      appendFileSync(
-        transcript,
-        jsonl([
-          {
-            type: "assistant",
-            isSidechain: false,
-            uuid: "old-bound-answer",
-            parentUuid: null,
-            promptId: "old-bound-turn",
-            message: { content: [{ type: "text", text: "stale" }] },
-          },
-        ]),
-      );
-      appendFileSync(
-        events,
-        jsonl([
-          {
-            hook_event_name: "UserPromptSubmit",
-            session_id: "foreign",
-            prompt_id: "foreign-turn",
-            prompt: "private",
-          },
-        ]),
-      );
-      expect(reader.read()).toEqual([]);
-      expect(Reflect.get(reader, "currentTurn")).toBeNull();
-      expect(reader.heartbeat()).toBeNull();
-      appendFileSync(
-        transcript,
-        jsonl([
-          {
-            type: "user",
-            uuid: "fresh-bound-user",
-            parentUuid: null,
-            promptId: "fresh-bound-turn",
-            origin: { kind: "human" },
-            message: { content: "fresh" },
-          },
-        ]),
-      );
-      expect(reader.read()).toEqual([{ state: "working", prompt: null }]);
-      expect(Reflect.get(reader, "currentTurn")).toBe("fresh-bound-turn");
-      appendFileSync(
-        events,
-        jsonl([
-          {
-            hook_event_name: "PermissionRequest",
-            session_id: "foreign",
-            tool_name: "Bash",
-          },
-        ]),
-      );
-      expect(reader.read()).toEqual([]);
-      appendFileSync(
-        events,
-        jsonl([
-          {
-            hook_event_name: "UserPromptSubmit",
-            session_id: SESSION_ID,
-            prompt_id: "bound-turn",
-            prompt: "bound prompt",
-          },
-        ]),
-      );
-      expect(reader.read()).toEqual([
-        { state: "working", prompt: "bound prompt" },
-      ]);
-      expect(Reflect.get(reader, "currentTurn")).toBe("bound-turn");
-      appendFileSync(
-        events,
-        jsonl([
-          {
-            hook_event_name: "PermissionRequest",
-            session_id: SESSION_ID,
-            tool_name: "Bash",
-          },
-        ]),
-      );
-      expect(reader.read()).toEqual([
-        { state: "waiting", prompt: null, questions: expect.any(Array) },
-      ]);
-      appendFileSync(
-        events,
-        jsonl([
-          {
-            hook_event_name: "PostToolUse",
-            session_id: "foreign",
-            tool_name: "Bash",
-          },
-        ]),
-      );
-      expect(reader.read()).toEqual([]);
-      expect(reader.heartbeat()).toBeNull();
-      const tracker: unknown = Reflect.get(reader, "tracker");
-      const questions: unknown =
-        typeof tracker === "object" && tracker !== null
-          ? Reflect.get(tracker, "questions")
-          : undefined;
-      expect(questions instanceof Map && questions.has("permission:Bash")).toBe(
-        true,
-      );
-      appendFileSync(
-        events,
-        jsonl([
-          {
-            hook_event_name: "UserPromptSubmit",
-            session_id: SESSION_ID,
-            prompt_id: "bound-turn",
-            prompt: "bound recovery prompt",
-          },
-        ]),
-      );
-      expect(reader.read()).toEqual([
-        { state: "working", prompt: "bound recovery prompt" },
-      ]);
-      expect(reader.heartbeat()).toEqual({
-        state: "working",
-        prompt: null,
-      });
-      appendFileSync(
-        events,
-        jsonl([
-          {
-            hook_event_name: "Stop",
-            session_id: "foreign",
-            prompt_id: "bound-turn",
-          },
-        ]),
-      );
-      expect(reader.read()).toEqual([]);
-      expect(reader.heartbeat()).toBeNull();
-      expect(diagnostics).toEqual([
-        "unbound",
-        "foreign-session",
-        "foreign-session",
-        "foreign-session",
-        "foreign-session",
-      ]);
-    },
-  );
-
-  it(
-    "keeps foreign and identity-less hooks from changing a bound turn; transcript summary alone settles it",
-    () => {
-      const fixture = claudeFixture();
-      fixture.hook([
+  it("rejects hooks before discovery, rejects stale transcript replay, then recovers on bound evidence", () => {
+    const diagnostics: string[] = [];
+    const host = createFakePluginHost({ pluginId: "provider-claude-code" });
+    claudeCodePlugin(host.bb);
+    const cli = host.harness.registrations.providerRegistrations.find(
+      (entry) => entry.id === "claude-code",
+    )?.experimental_nativeTerminal;
+    if (cli === undefined) throw new Error("Claude native declaration missing");
+    const home = tempHome();
+    const events = path.join(home, "hooks.jsonl");
+    const transcript = path.join(
+      home,
+      ".claude",
+      "projects",
+      "work",
+      `${SESSION_ID}.jsonl`,
+    );
+    mkdirSync(path.dirname(transcript), { recursive: true });
+    writeFileSync(transcript, "");
+    writeFileSync(events, "");
+    const reader = new NativeActivityReader(
+      cli,
+      { HOME: home },
+      events,
+      { kind: "discover" },
+      undefined,
+      (reason) => diagnostics.push(reason),
+    );
+    appendFileSync(
+      events,
+      jsonl([
+        {
+          hook_event_name: "UserPromptSubmit",
+          session_id: SESSION_ID,
+          prompt_id: "unbound-turn",
+          prompt: "private",
+        },
+      ]),
+    );
+    expect(reader.read()).toEqual([]);
+    expect(Reflect.get(reader, "currentTurn")).toBeNull();
+    reader.sessionDiscovered(SESSION_ID);
+    appendFileSync(
+      transcript,
+      jsonl([
+        {
+          type: "assistant",
+          isSidechain: false,
+          uuid: "old-bound-answer",
+          parentUuid: null,
+          promptId: "old-bound-turn",
+          message: { content: [{ type: "text", text: "stale" }] },
+        },
+      ]),
+    );
+    appendFileSync(
+      events,
+      jsonl([
         {
           hook_event_name: "UserPromptSubmit",
           session_id: "foreign",
           prompt_id: "foreign-turn",
-          prompt: "other",
+          prompt: "private",
         },
-      ]);
-      expect(fixture.reader.read()).toEqual([]);
-      expect(Reflect.get(fixture.reader, "currentTurn")).toBe("turn-1");
-      expect(fixture.reader.heartbeat()).toBeNull();
-      fixture.hook([
+      ]),
+    );
+    expect(reader.read()).toEqual([]);
+    expect(Reflect.get(reader, "currentTurn")).toBeNull();
+    expect(reader.heartbeat()).toBeNull();
+    appendFileSync(
+      transcript,
+      jsonl([
+        {
+          type: "user",
+          uuid: "fresh-bound-user",
+          parentUuid: null,
+          promptId: "fresh-bound-turn",
+          origin: { kind: "human" },
+          message: { content: "fresh" },
+        },
+      ]),
+    );
+    expect(reader.read()).toEqual([{ state: "working", prompt: null }]);
+    expect(Reflect.get(reader, "currentTurn")).toBe("fresh-bound-turn");
+    appendFileSync(
+      events,
+      jsonl([
+        {
+          hook_event_name: "PermissionRequest",
+          session_id: "foreign",
+          tool_name: "Bash",
+        },
+      ]),
+    );
+    expect(reader.read()).toEqual([]);
+    appendFileSync(
+      events,
+      jsonl([
         {
           hook_event_name: "UserPromptSubmit",
-          session_id: null,
-          prompt_id: "missing-turn",
-          prompt: "other",
+          session_id: SESSION_ID,
+          prompt_id: "bound-turn",
+          prompt: "bound prompt",
         },
-      ]);
-      expect(fixture.reader.read()).toEqual([]);
-      expect(Reflect.get(fixture.reader, "currentTurn")).toBe("turn-1");
-      fixture.hook([{ hook_event_name: "Stop", prompt_id: "turn-1" }]);
-      expect(fixture.reader.read()).toEqual([]);
-      expect(fixture.reader.heartbeat()).toEqual({
-        state: "working",
-        prompt: null,
-      });
-      fixture.hook([{ hook_event_name: "PreToolUse", prompt_id: "turn-1" }]);
-      expect(fixture.reader.read()).toEqual([]);
-      fixture.hook([{ hook_event_name: "Stop", prompt_id: "turn-1" }]);
-      expect(fixture.reader.read()).toEqual([]);
-      expect(fixture.reader.heartbeat()).toEqual({
-        state: "working",
-        prompt: null,
-      });
-      fixture.append([
+      ]),
+    );
+    expect(reader.read()).toEqual([
+      { state: "working", prompt: "bound prompt" },
+    ]);
+    expect(Reflect.get(reader, "currentTurn")).toBe("bound-turn");
+    appendFileSync(
+      events,
+      jsonl([
         {
-          type: "system",
-          subtype: "stop_hook_summary",
-          isSidechain: false,
-          hasOutput: false,
-          uuid: "bound-stop-summary",
-          parentUuid: "answer-1",
+          hook_event_name: "PermissionRequest",
+          session_id: SESSION_ID,
+          tool_name: "Bash",
         },
-      ]);
-      expect(fixture.reader.read()).toEqual([
-        { state: "idle", prompt: null },
-      ]);
-    },
-  );
+      ]),
+    );
+    expect(reader.read()).toEqual([
+      { state: "waiting", prompt: null, questions: expect.any(Array) },
+    ]);
+    appendFileSync(
+      events,
+      jsonl([
+        {
+          hook_event_name: "PostToolUse",
+          session_id: "foreign",
+          tool_name: "Bash",
+        },
+      ]),
+    );
+    expect(reader.read()).toEqual([]);
+    expect(reader.heartbeat()).toBeNull();
+    const tracker: unknown = Reflect.get(reader, "tracker");
+    const questions: unknown =
+      typeof tracker === "object" && tracker !== null
+        ? Reflect.get(tracker, "questions")
+        : undefined;
+    expect(questions instanceof Map && questions.has("permission:Bash")).toBe(
+      true,
+    );
+    appendFileSync(
+      events,
+      jsonl([
+        {
+          hook_event_name: "UserPromptSubmit",
+          session_id: SESSION_ID,
+          prompt_id: "bound-turn",
+          prompt: "bound recovery prompt",
+        },
+      ]),
+    );
+    expect(reader.read()).toEqual([
+      { state: "working", prompt: "bound recovery prompt" },
+    ]);
+    expect(reader.heartbeat()).toEqual({
+      state: "working",
+      prompt: null,
+    });
+    appendFileSync(
+      events,
+      jsonl([
+        {
+          hook_event_name: "Stop",
+          session_id: "foreign",
+          prompt_id: "bound-turn",
+        },
+      ]),
+    );
+    expect(reader.read()).toEqual([]);
+    expect(reader.heartbeat()).toBeNull();
+    expect(diagnostics).toEqual([
+      "unbound",
+      "foreign-session",
+      "foreign-session",
+      "foreign-session",
+      "foreign-session",
+    ]);
+  });
+
+  it("keeps foreign and identity-less hooks from changing a bound turn; transcript summary alone settles it", () => {
+    const fixture = claudeFixture();
+    fixture.hook([
+      {
+        hook_event_name: "UserPromptSubmit",
+        session_id: "foreign",
+        prompt_id: "foreign-turn",
+        prompt: "other",
+      },
+    ]);
+    expect(fixture.reader.read()).toEqual([]);
+    expect(Reflect.get(fixture.reader, "currentTurn")).toBe("turn-1");
+    expect(fixture.reader.heartbeat()).toBeNull();
+    fixture.hook([
+      {
+        hook_event_name: "UserPromptSubmit",
+        session_id: null,
+        prompt_id: "missing-turn",
+        prompt: "other",
+      },
+    ]);
+    expect(fixture.reader.read()).toEqual([]);
+    expect(Reflect.get(fixture.reader, "currentTurn")).toBe("turn-1");
+    fixture.hook([{ hook_event_name: "Stop", prompt_id: "turn-1" }]);
+    expect(fixture.reader.read()).toEqual([]);
+    expect(fixture.reader.heartbeat()).toEqual({
+      state: "working",
+      prompt: null,
+    });
+    fixture.hook([{ hook_event_name: "PreToolUse", prompt_id: "turn-1" }]);
+    expect(fixture.reader.read()).toEqual([]);
+    fixture.hook([{ hook_event_name: "Stop", prompt_id: "turn-1" }]);
+    expect(fixture.reader.read()).toEqual([]);
+    expect(fixture.reader.heartbeat()).toEqual({
+      state: "working",
+      prompt: null,
+    });
+    fixture.append([
+      {
+        type: "system",
+        subtype: "stop_hook_summary",
+        isSidechain: false,
+        hasOutput: false,
+        uuid: "bound-stop-summary",
+        parentUuid: "answer-1",
+      },
+    ]);
+    expect(fixture.reader.read()).toEqual([{ state: "idle", prompt: null }]);
+  });
 
   it("treats an evicted identity whose stored line was rewritten as unconfirmed, counts it and logs it", () => {
     const counts: number[] = [];

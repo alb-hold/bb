@@ -324,10 +324,14 @@ async function holdNativeHarness(
         },
         (reason, total) => {
           if (ownsSocket) {
-            logNativeHolderEvent(socketPath, "activity-hook-identity-unconfirmed", {
-              reason,
-              count: total,
-            });
+            logNativeHolderEvent(
+              socketPath,
+              "activity-hook-identity-unconfirmed",
+              {
+                reason,
+                count: total,
+              },
+            );
           }
         },
       );

@@ -290,7 +290,9 @@ export class NativeActivityReader {
     });
     this.pruneRecords();
     if (signal.question !== undefined || signal.answered !== undefined) {
-      return turn === null || this.currentTurn === null || this.currentTurn === turn
+      return turn === null ||
+        this.currentTurn === null ||
+        this.currentTurn === turn
         ? signal
         : ignored;
     }

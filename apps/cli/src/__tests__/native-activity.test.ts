@@ -93,12 +93,28 @@ function tempDir(): string {
 
 describe("native terminal activity", () => {
   it("accepts a provider-declared hook identity field and rejects malformed paths", () => {
-    expect(providerNativeTerminalActivitySchema.parse({
-      hooks: { args: ["--settings", "{settings}"], working: ["Start"], idle: [], promptField: "prompt", sessionIdField: "session_id" },
-    }).hooks?.sessionIdField).toBe("session_id");
-    expect(() => providerNativeTerminalActivitySchema.parse({
-      hooks: { args: ["--settings", "{settings}"], working: ["Start"], idle: [], promptField: "prompt", sessionIdField: "session-id" },
-    })).toThrow();
+    expect(
+      providerNativeTerminalActivitySchema.parse({
+        hooks: {
+          args: ["--settings", "{settings}"],
+          working: ["Start"],
+          idle: [],
+          promptField: "prompt",
+          sessionIdField: "session_id",
+        },
+      }).hooks?.sessionIdField,
+    ).toBe("session_id");
+    expect(() =>
+      providerNativeTerminalActivitySchema.parse({
+        hooks: {
+          args: ["--settings", "{settings}"],
+          working: ["Start"],
+          idle: [],
+          promptField: "prompt",
+          sessionIdField: "session-id",
+        },
+      }),
+    ).toThrow();
   });
 
   it("installs hooks that append each event's input to the events file", () => {
