@@ -126,7 +126,7 @@ export type ThreadLookup = (
   threadId: string,
   signal?: AbortSignal,
 ) => Promise<"live" | "archived" | "gone">;
-export const THREAD_STATE_LOOKUP_TIMEOUT_MS = 5_000;
+export const THREAD_STATE_LOOKUP_TIMEOUT_MS = 30_000;
 export const UNANSWERED_WARNING_MS = 60_000;
 export type DeletionRecords = Pick<PluginKvStorage, "set" | "list">;
 export type ThreadSweepOptions = {
