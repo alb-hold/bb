@@ -405,6 +405,10 @@ describe("resolveWritingEdits", () => {
     ["fetch-data the user are ready.", "are", "is", "grammar"],
     ["Well-known teams say the user are ready.", "are", "is", "grammar"],
     ["long-term the user are ready.", "are", "is", "grammar"],
+    ["& Fetch-Data the user are ready.", "are", "is", "grammar"],
+    ["& fetch-data the user are ready.", "are", "is", "grammar"],
+    ["& notepad the user are ready.", "are", "is", "grammar"],
+    [". setup the user are ready.", "are", "is", "grammar"],
     ["make sure the user are ready.", "are", "is", "grammar"],
     ["find out if the user are ready.", "are", "is", "grammar"],
     ["go check that the user are ready.", "are", "is", "grammar"],
@@ -467,6 +471,7 @@ describe("resolveWritingEdits", () => {
     "A well-known team says the user are ready.",
     "The long-term plan says the user are ready.",
     "Ask the team - the user are ready.",
+    "Tom & Jerry say the user are ready.",
   ])("still auto-applies a safe fix on the prose line %s", (target) => {
     const edits = resolveWritingEdits({
       ...base,

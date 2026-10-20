@@ -347,7 +347,11 @@ Settings (stored server-side; also `bb settings writing`):
 
 `bb settings writing vocabulary add|remove` and the Settings page edit the
 vocabulary on the server in one step, so concurrent edits keep each other's
-terms. `remove` changes nothing and fails when a term is not in the vocabulary.
+terms. Each edit says what to do with a term to remove that is not in the
+vocabulary (`ifMissing`). `bb settings writing vocabulary remove` sends
+`fail`: it changes nothing and fails, naming the missing term. The Settings
+page sends `ignore`: a term that is already gone is skipped and the rest of the
+edit applies. SDK callers choose either one.
 
 Automatic typing correction applies an edit by itself only when its meaning cannot
 change, whatever the AI service reports: capitalizing the first word of a
@@ -372,7 +376,8 @@ vocabulary terms are never edited, and on a line containing any of
 that starts with a shell command, builtin or keyword such as echo, git, npm, read, for or if (also after a $,
 %, > or # prompt or sudo), a line that starts with a hyphenated word, as every PowerShell
 command does (Write-Output, ConvertTo-Json, fetch-data; also prose such as
-Well-known teams say), a line with a short flag such as -la, a line
+Well-known teams say), a line that starts with PowerShell's call or
+dot-source operator, & or . then a space (& Fetch-Data, . setup), a line with a short flag such as -la, a line
 indented four spaces or a tab, or a ``` or ~~~ fence line or a line inside such a fence (closed
 only by a bare fence of the same character at least as long), every
 change, even capitalization, is only suggested. Dictation formatting follows the same rule:
