@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { FitAddon } from "@xterm/addon-fit";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -122,6 +122,137 @@ afterEach(() => {
 });
 
 describe("ThreadTerminalView terminal focus boundary", () => {
+  it("uses gesture-start scale for uneven multi-frame pinch gestures", async () => {
+    vi.stubGlobal("WebSocket", TestTerminalSocket);
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(private readonly callback: ResizeObserverCallback) {}
+        disconnect(): void {}
+        observe(target: Element): void {
+          this.callback(
+            [{ target, contentRect: { width: 354, height: 504 } } as ResizeObserverEntry],
+            this as unknown as ResizeObserver,
+          );
+        }
+        unobserve(): void {}
+      },
+    );
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: query === "(pointer: coarse)",
+      media: query,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      onchange: null,
+      dispatchEvent: vi.fn(),
+    }));
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+      measureText: (text: string) => ({ width: text.length * 7 }),
+    } as unknown as CanvasRenderingContext2D);
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(
+      function offsetWidth(this: HTMLElement) {
+        return this.classList.contains("xterm-char-measure-element") ? 7 : 354;
+      },
+    );
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(
+      function offsetHeight(this: HTMLElement) {
+        return this.classList.contains("xterm-char-measure-element") ? 14 : 504;
+      },
+    );
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(
+      function clientWidth(this: HTMLElement) {
+        return this.classList.contains("xterm-char-measure-element") ? 7 : 354;
+      },
+    );
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(
+      function clientHeight(this: HTMLElement) {
+        return this.classList.contains("xterm-char-measure-element") ? 14 : 504;
+      },
+    );
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function getBoundingClientRect(this: HTMLElement) {
+        return new DOMRect(0, 0, this.clientWidth, this.clientHeight);
+      },
+    );
+    vi.spyOn(FitAddon.prototype, "proposeDimensions").mockImplementation(
+      function proposeDimensions() {
+        const fontSize = Number(
+          document.querySelector("[data-terminal-renderer]")?.getAttribute("data-terminal-font-size") ?? 12,
+        );
+        return {
+          cols: Math.round(612 / fontSize),
+          rows: Math.round(676.8 / (fontSize * 1.2)),
+        };
+      },
+    );
+
+    render(
+      <MemoryRouter>
+        <AppCommandProvider>
+          <ThreadTerminalView
+            autoFocus={false}
+            isPanelOpen
+            session={makeTerminalSession({
+              id: "term_multiframe_pinch",
+              status: "running",
+              cols: 51,
+              rows: 47,
+            })}
+          />
+        </AppCommandProvider>
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(testState.sockets).toHaveLength(1));
+    const pane = document.querySelector(".group\\/terminal-pane");
+    const fontSizeNode = document.querySelector("[data-terminal-renderer]");
+    expect(pane).not.toBeNull();
+    expect(fontSizeNode?.getAttribute("data-terminal-font-size")).toBe("12");
+
+    const dispatchTouches = (
+      type: "touchstart" | "touchmove" | "touchend",
+      distance: number,
+      ending = false,
+    ) => {
+      const event = new Event(type, { bubbles: true, cancelable: true });
+      const points = [
+        { identifier: 1, clientX: 100 - distance / 2, clientY: 100 },
+        { identifier: 2, clientX: 100 + distance / 2, clientY: 100 },
+      ];
+      const touchList = (items: typeof points) =>
+        Object.assign(items, { item: (index: number) => items[index] ?? null });
+      Object.defineProperty(event, "touches", { value: touchList(ending ? [] : points) });
+      Object.defineProperty(event, "targetTouches", { value: touchList(ending ? [] : points) });
+      Object.defineProperty(event, "changedTouches", { value: touchList(points) });
+      fireEvent(pane as HTMLElement, event);
+    };
+    const resizeMessages = () =>
+      testState.socketMessages
+        .map((message) => JSON.parse(message) as { cols?: number; rows?: number; type?: string })
+        .filter((message) => message.type === "resize");
+
+    await waitFor(() => expect(resizeMessages()).toHaveLength(1));
+    const originalGrid = resizeMessages().at(-1);
+    dispatchTouches("touchstart", 100);
+    for (const ratio of [1.05, 1.1, 1.15, 1.2, 1.25, 1.3, 1.35, 1.4, 1.45, 1.5]) {
+      dispatchTouches("touchmove", 100 * ratio);
+    }
+    dispatchTouches("touchend", 150, true);
+    await waitFor(() => expect(fontSizeNode?.getAttribute("data-terminal-font-size")).toBe("18"));
+    await waitFor(() => expect(resizeMessages()).toHaveLength(2));
+    expect(resizeMessages().at(-1)).toEqual({ type: "resize", cols: 34, rows: 31 });
+
+    dispatchTouches("touchstart", 150);
+    for (const ratio of [1.45, 1.4, 1.35, 1.3, 1.25, 1.2, 1.15, 1.1, 1.05, 1]) {
+      dispatchTouches("touchmove", 150 * (ratio / 1.5));
+    }
+    dispatchTouches("touchend", 100, true);
+    await waitFor(() => expect(fontSizeNode?.getAttribute("data-terminal-font-size")).toBe("12"));
+    await waitFor(() => expect(resizeMessages()).toHaveLength(3));
+    expect(resizeMessages().at(-1)).toEqual(originalGrid);
+  });
+
   it("keeps the app identity when the server echoes it after terminal attach", async () => {
     vi.stubGlobal("WebSocket", TestTerminalSocket);
     vi.stubGlobal(
