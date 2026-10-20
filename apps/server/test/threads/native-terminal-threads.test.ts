@@ -2459,6 +2459,111 @@ describe("native terminal threads", () => {
     expect(interruptionReasons(fixture, running.thread.id)).toEqual([]);
   });
 
+  it.each([
+    ["an older daemon", "unknown"],
+    ["a direct-shell fallback", "empty"],
+    ["an RPC timeout", "timeout"],
+  ] as const)(
+    "ends a shell after daemon restart when holder status is unavailable (%s)",
+    async (_name, responseKind) => {
+      const fixture = await createFixture();
+      const creating = postJson(fixture, "/terminals", {
+        cols: 80,
+        rows: 24,
+        target: {
+          kind: "environment",
+          environmentId: fixture.environment.id,
+        },
+      });
+      const initialOpen = await waitForTerminalOpen(fixture.socket);
+      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.hostId,
+        sessionId: fixture.sessionId,
+        message: {
+          type: "terminal.opened",
+          requestId: initialOpen.requestId,
+          terminalId: initialOpen.terminalId,
+          shell: "/bin/zsh",
+          title: "zsh",
+          initialCwd: "/tmp/native-workspace",
+          cols: initialOpen.cols,
+          rows: initialOpen.rows,
+        },
+      });
+      expect((await creating).status).toBe(201);
+      handleDaemonSocketClosed(fixture.harness.deps, {
+        sessionId: fixture.sessionId,
+      });
+      const openedSession = await fixture.harness.app.request(
+        "/internal/session/open",
+        {
+          method: "POST",
+          headers: internalAuthHeaders(fixture.harness, {
+            hostId: fixture.hostId,
+          }),
+          body: JSON.stringify({
+            hostId: fixture.hostId,
+            instanceId: "instance-shell-restarted",
+            hostName: "Test Host",
+            hasMachineCredential: false,
+            platform: "darwin",
+            dataDir: "/tmp/host-daemon-restart",
+            localApiPort: null,
+            protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
+            activeThreads: [],
+            undeliveredEventThreadIds: [],
+          }),
+        },
+      );
+      expect(openedSession.status).toBe(201);
+      const { sessionId } = (await readJson(openedSession)) as {
+        sessionId: string;
+      };
+      const rpc = vi.spyOn(fixture.harness.deps.hub, "requestHostOnlineRpc");
+      if (responseKind === "timeout") {
+        rpc.mockRejectedValue(new Error("request timed out"));
+      } else {
+        rpc.mockResolvedValue(
+          (responseKind === "unknown"
+            ? {
+                type: "host-rpc.response",
+                requestId: "unknown-rpc",
+                commandType: "terminal.holder-sessions",
+                ok: false,
+                errorCode: "unknown_command",
+                errorMessage: "Unknown online RPC",
+              }
+            : {
+                type: "host-rpc.response",
+                requestId: "direct-shell",
+                commandType: "terminal.holder-sessions",
+                ok: true,
+                result: { terminalIds: [] },
+              }) as never,
+        );
+      }
+      const socket = createFakeDaemonSocket();
+      await onDaemonSocketOpen(fixture.harness.deps, {
+        hostId: fixture.hostId,
+        sessionId,
+        socket,
+      });
+
+      expect(rpc).toHaveBeenCalledTimes(1);
+      expect(
+        daemonMessages(socket).filter(
+          (message) => message.type === "terminal.open",
+        ),
+      ).toEqual([]);
+      expect(
+        getTerminalSession(fixture.harness.db, {
+          kind: "terminal",
+          terminalId: initialOpen.terminalId,
+        }),
+      ).toMatchObject({ status: "exited", closeReason: "daemon-disconnect" });
+    },
+  );
+
   it("reopens a holder-backed shell after a real daemon restart, rebases output, and keeps a user-closed terminal closed", async () => {
     const fixture = await createFixture();
     const openShell = async (skip: number) => {
@@ -2539,12 +2644,40 @@ describe("native terminal threads", () => {
     const { sessionId } = (await readJson(openedSession)) as {
       sessionId: string;
     };
+    const holderRpc = vi
+      .spyOn(fixture.harness.deps.hub, "requestHostOnlineRpc")
+      .mockResolvedValue({
+        type: "host-rpc.response",
+        requestId: "holder-sessions",
+        commandType: "terminal.holder-sessions",
+        ok: true,
+        result: { terminalIds: [active.terminalId, "term-not-a-candidate"] },
+      });
+    const reconcile = vi.spyOn(
+      fixture.harness.deps.terminalSessions,
+      "reconcileDisconnectedHostTerminals",
+    );
     const socket = createFakeDaemonSocket();
     await onDaemonSocketOpen(fixture.harness.deps, {
       hostId: fixture.hostId,
       sessionId,
       socket,
     });
+
+    expect(holderRpc).toHaveBeenCalledWith(
+      expect.objectContaining({
+        hostId: fixture.hostId,
+        message: expect.objectContaining({
+          command: expect.objectContaining({
+            type: "terminal.holder-sessions",
+            terminalIds: expect.arrayContaining([active.terminalId]),
+          }),
+        }),
+      }),
+    );
+    expect(reconcile).toHaveBeenCalledWith(
+      expect.objectContaining({ holderTerminalIds: [active.terminalId] }),
+    );
 
     const reopened = await waitForTerminalOpen(socket);
     expect(reopened.terminalId).toBe(active.terminalId);
@@ -2657,11 +2790,11 @@ describe("native terminal threads", () => {
     );
     expect(retained.chunks.map((chunk) => chunk.seq)).toEqual([0, 1]);
     expect(
-      Buffer.concat(
-        retained.chunks.map((chunk) =>
-          Buffer.from(chunk.dataBase64, "base64"),
-        ),
-      ).toString("utf8"),
+        Buffer.concat(
+          retained.chunks.map((chunk) =>
+            Buffer.from(chunk.dataBase64, "base64"),
+          ),
+        ).toString("utf8"),
     ).toBe(`BEFORE:${pid}\nAFTER:${pid}\n`);
     expect(
       getTerminalSession(fixture.harness.db, {

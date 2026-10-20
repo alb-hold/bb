@@ -384,6 +384,7 @@ interface CloseRemovedHostTerminalsArgs {
 interface ReconcileDisconnectedHostTerminalsArgs {
   daemonSessionId: string;
   hostId: string;
+  holderTerminalIds?: string[];
 }
 
 interface HandleDaemonTerminalMessageArgs {
@@ -687,7 +688,6 @@ export class TerminalSessionLifecycle {
   private readonly resizeAckSockets = new WeakSet<TerminalClientSocket>();
   private readonly outputFlow: TerminalOutputFlowControl;
   private readonly outputSequenceRebase = new TerminalOutputSequenceRebase();
-  private readonly holderBackedTerminalIds = new Set<string>();
   private readonly pendingRetainedOutput = new Map<
     string,
     Array<{ hostId: string; chunks: TerminalOutputChunk[] }>
@@ -1119,9 +1119,6 @@ export class TerminalSessionLifecycle {
       threadId: args.threadId,
       title: args.title,
     });
-    if (start.mode === "shell") {
-      this.holderBackedTerminalIds.add(startingSession.id);
-    }
     const requestId = randomUUID();
     const openMessage: HostDaemonServerWsMessage = {
       type: "terminal.open",
@@ -2000,6 +1997,7 @@ export class TerminalSessionLifecycle {
       scope: { hostId: args.hostId, kind: "host", statuses: ["disconnected"] },
       visible: false,
     });
+    const holderTerminalIds = new Set(args.holderTerminalIds ?? []);
     for (const session of disconnected) {
       const ownerInstanceId =
         session.daemonSessionId === null
@@ -2009,7 +2007,7 @@ export class TerminalSessionLifecycle {
             })?.instanceId ?? null);
       if (openedInstanceId === null) continue;
       const daemonRestarted = ownerInstanceId !== openedInstanceId;
-      if (daemonRestarted && !this.holderBackedTerminalIds.has(session.id)) {
+      if (daemonRestarted && !holderTerminalIds.has(session.id)) {
         continue;
       }
       if (daemonRestarted) {
@@ -2064,7 +2062,7 @@ export class TerminalSessionLifecycle {
           }),
           [],
         );
-        if (this.holderBackedTerminalIds.has(reconnected.id)) {
+        if (holderTerminalIds.has(reconnected.id)) {
           contributedEnv.push({
             name: "BB_TERMINAL_HOLDER_REATTACH_ONLY",
             value: "1",
@@ -2159,6 +2157,19 @@ export class TerminalSessionLifecycle {
         message: "Host disconnected from terminal session",
       });
     }
+  }
+
+  listDisconnectedHostTerminalIds(args: {
+    hostId: string;
+    excludeTerminalIds: string[];
+  }): string[] {
+    const excludedTerminals = new Set(args.excludeTerminalIds);
+    return listTerminalSessions(this.options.db, {
+      scope: { hostId: args.hostId, kind: "host", statuses: ["disconnected"] },
+      visible: false,
+    })
+      .filter((session) => !excludedTerminals.has(session.id))
+      .map((session) => session.id);
   }
 
   resolveRunningTerminalRoute(

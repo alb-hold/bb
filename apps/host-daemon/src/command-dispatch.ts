@@ -664,6 +664,12 @@ const onlineRpcHandlers: OnlineRpcHandlerMap = {
     dataSocket: options.terminalDataSocket !== undefined,
     ipcVersion: 1,
   }),
+  "terminal.holder-sessions": async (command, options) => ({
+    terminalIds:
+      options.listTerminalHolderSessions === undefined
+        ? []
+        : await options.listTerminalHolderSessions(command.terminalIds),
+  }),
   "terminal-data-plane.connect": async (command, options) => ({
     connected:
       options.terminalDataSocket === undefined

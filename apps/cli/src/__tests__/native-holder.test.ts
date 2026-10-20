@@ -24,6 +24,7 @@ import {
   encodeNativeHolderFrame,
   ignoreNativeHolderSignals,
   nativeHolderSocketPath,
+  nativeHolderIsAlive,
   nativeTerminalCheck,
   nativeTerminalClosedForGood,
   openNativeHolderConnection,
@@ -548,6 +549,25 @@ try {
     await expect(held).resolves.toBe(3);
     expect(shown).toContain("got:hi");
   });
+
+  it("checks holder liveness without replacing its terminal client", async () => {
+    const socketPath = socketIn();
+    const held = startHolder(socketPath, {
+      command: "/bin/sh",
+      args: [
+        "-c",
+        'echo "started:$$"; IFS= read -r line; echo "got:$line:$$"; exit 7',
+      ],
+    });
+    const client = await attach(socketPath);
+    const started = await client.waitFor(/started:(\d+)/u);
+
+    await expect(nativeHolderIsAlive(socketPath)).resolves.toBe(true);
+    client.type("AFTER\n");
+    await client.waitFor(/got:AFTER:/u);
+    await expect(held).resolves.toBe(7);
+    expect(client.output).toContain(`started:${started[1]}`);
+  });
 });
 
 describe("opening a native holder connection", () => {
@@ -939,6 +959,7 @@ describe("checking whether bb closed a native terminal for good", () => {
     const first = await attach(socketPath);
     const pid = (await first.waitFor(/BEFORE:(\d+)/u))[1];
     first.socket.destroy();
+    await expect(nativeHolderIsAlive(socketPath)).resolves.toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 400));
 
     const second = await attach(socketPath);

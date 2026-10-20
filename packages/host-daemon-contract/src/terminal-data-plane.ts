@@ -2,6 +2,22 @@ import { z } from "zod";
 
 export const TERMINAL_DATA_PLANE_PROBE_TIMEOUT_MS = 3_000;
 
+export const TERMINAL_HOLDER_SESSIONS_TIMEOUT_MS = 3_000;
+
+export const terminalHolderSessionsCommandSchema = z
+  .object({
+    type: z.literal("terminal.holder-sessions"),
+    terminalIds: z.array(z.string().min(1)).max(1_000),
+  })
+  .strict();
+
+export const terminalHolderSessionsResultSchema = z
+  .object({ terminalIds: z.array(z.string().min(1)).max(1_000) })
+  .strict();
+export type TerminalHolderSessionsResult = z.infer<
+  typeof terminalHolderSessionsResultSchema
+>;
+
 export const terminalDataPlaneProbeCommandSchema = z
   .object({
     type: z.literal("terminal-data-plane.probe"),

@@ -483,6 +483,7 @@ const hostDaemonOnlineRpcResponseSuccessSchema = z.discriminatedUnion(
     onlineRpcResponseSuccessSchemaFor("provider.list_models"),
     onlineRpcResponseSuccessSchemaFor("provider.health"),
     onlineRpcResponseSuccessSchemaFor("terminal-data-plane.probe"),
+    onlineRpcResponseSuccessSchemaFor("terminal.holder-sessions"),
     onlineRpcResponseSuccessSchemaFor("terminal-data-plane.connect"),
     onlineRpcResponseSuccessSchemaFor("provider.installation.status"),
     onlineRpcResponseSuccessSchemaFor("provider.installation.run"),
@@ -799,7 +800,9 @@ const terminalAttentionTextSchema = (maxLength: number) =>
   z
     .string()
     .max(4096)
-    .transform((value) => value.replace(/[\u0000-\u001f\u007f-\u009f]/gu, "").slice(0, maxLength));
+    .transform((value) =>
+      value.replace(/[\u0000-\u001f\u007f-\u009f]/gu, "").slice(0, maxLength),
+    );
 
 const hostDaemonTerminalAttentionMessageSchema = z
   .object({
