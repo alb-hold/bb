@@ -850,7 +850,10 @@ function handleChildRequest(
     return;
   }
 
-  if (method === CODEX_MCP_ELICITATION_METHOD) {
+  if (
+    method === CODEX_MCP_ELICITATION_METHOD &&
+    codexMcpElicitationParamsSchema.safeParse(params).success
+  ) {
     handleCodexMcpElicitation(session, params, responder);
     return;
   }
