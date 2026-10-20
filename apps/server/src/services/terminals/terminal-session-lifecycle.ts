@@ -2787,11 +2787,6 @@ export class TerminalSessionLifecycle {
       return;
     }
     if (current.cols === size.cols && current.rows === size.rows) {
-      this.options.hub.sendTerminalClientMessage(
-        current.id,
-        { type: "session-updated", session: this.toTerminalSession(current) },
-        args.socket ?? undefined,
-      );
       return;
     }
     this.resizeRunningBrowserTerminal(args, current, size);
