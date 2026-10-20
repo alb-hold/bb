@@ -543,20 +543,6 @@ describe("NativeActivityReader", () => {
     const mismatchBoundary = Reflect.get(reader, "unconfirmedTranscriptOffset");
     expect(mismatchBoundary).toBe(statSync(transcript).size);
     appendFileSync(
-      events,
-      jsonl([
-        {
-          hook_event_name: "UserPromptSubmit",
-          session_id: "foreign",
-          prompt_id: "repeated-foreign-turn",
-        },
-      ]),
-    );
-    expect(reader.read()).toEqual([]);
-    expect(Reflect.get(reader, "unconfirmedTranscriptOffset")).toBe(
-      mismatchBoundary,
-    );
-    appendFileSync(
       transcript,
       jsonl([
         {
@@ -570,8 +556,19 @@ describe("NativeActivityReader", () => {
         },
       ]),
     );
+    appendFileSync(
+      events,
+      jsonl([
+        {
+          hook_event_name: "UserPromptSubmit",
+          session_id: "foreign",
+          prompt_id: "repeated-foreign-turn",
+        },
+      ]),
+    );
     expect(reader.read()).toEqual([{ state: "working", prompt: null }]);
     expect(Reflect.get(reader, "currentTurn")).toBe("fresh-bound-turn");
+    expect(Reflect.get(reader, "unconfirmedTranscriptOffset")).toBeNull();
     appendFileSync(
       events,
       jsonl([
