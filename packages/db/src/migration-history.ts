@@ -7,6 +7,7 @@ export interface CompatibleMigrationHash {
   hash: string;
   tag: string;
   when: number;
+  appliedWhen?: number;
 }
 
 export const publishedMigrationWhens = [
@@ -40,6 +41,18 @@ export const compatibleMigrationHashes = [
     tag: "0132_thread_drafts",
     when: 1790322211064,
     hash: "34086c32a5765e290293be611f00de29327ad1903e663f11b93d88eacfb95f7f",
+  },
+  {
+    tag: "0144_thread_parent_notifications",
+    when: 1792016697708,
+    appliedWhen: 1792193667184,
+    hash: "b56954240864756e3184bcd8ebd30f67927fd01aee72f6a9ec00741e1da0b5d7",
+  },
+  {
+    tag: "0145_terminal_sessions_status_thread_index",
+    when: 1792208936004,
+    appliedWhen: 1792470678777,
+    hash: "43e7562f9de43436a9ba4c2ab77246d0b550f47a8e5190e1c2956db123263658",
   },
 ] as const satisfies readonly CompatibleMigrationHash[];
 

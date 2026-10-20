@@ -414,6 +414,19 @@ function tableExists(db: DbConnection, tableName: string): boolean {
   );
 }
 
+function dropEmptyLegacyDeferredMessages(db: DbConnection): void {
+  if (!tableExists(db, "deferred_thread_messages_legacy")) {
+    return;
+  }
+
+  const row = db.$client
+    .prepare("SELECT 1 FROM deferred_thread_messages_legacy LIMIT 1")
+    .get();
+  if (row === undefined) {
+    db.$client.exec("DROP TABLE deferred_thread_messages_legacy");
+  }
+}
+
 function columnExists(
   db: DbConnection,
   tableName: string,
@@ -629,7 +642,10 @@ function hasCompatibleMigrationHash(
       compatibleMigration.when === expectedMigration.createdAt &&
       appliedMigrations.some(
         (appliedMigration) =>
-          appliedMigration.createdAt === expectedMigration.createdAt &&
+          appliedMigration.createdAt ===
+            (("appliedWhen" in compatibleMigration
+              ? compatibleMigration.appliedWhen
+              : undefined) ?? expectedMigration.createdAt) &&
           appliedMigration.hash === compatibleMigration.hash,
       ),
   );
@@ -1628,6 +1644,7 @@ export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
     }
     applyReorderedCleanupMigrations(db, migrationsFolder);
     seedKeepAwakePluginConfiguration(db);
+    dropEmptyLegacyDeferredMessages(db);
   } finally {
     sqlite.pragma("foreign_keys = ON");
     bumpThreadEventOwnershipEpoch();
