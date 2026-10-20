@@ -206,6 +206,28 @@ describe("public thread open", () => {
         threadId: thread.id,
         title: "Thread terminal",
       });
+      const targetTerminal = createTerminalSession(harness.db, {
+        cols: 80,
+        daemonSessionId: session.id,
+        environmentId: null,
+        hostId: host.id,
+        initialCwd: "/tmp",
+        rows: 24,
+        status: "running",
+        threadId: thread.id,
+        title: "Target terminal",
+      });
+      const foreignTarget = createTerminalSession(harness.db, {
+        cols: 80,
+        daemonSessionId: session.id,
+        environmentId: null,
+        hostId: host.id,
+        initialCwd: "/tmp",
+        rows: 24,
+        status: "running",
+        threadId: otherThread.id,
+        title: "Foreign terminal",
+      });
       const socket = createMockHubSocket();
       harness.deps.hub.registerClient(socket);
 
@@ -237,6 +259,47 @@ describe("public thread open", () => {
         },
       });
 
+      const split = await postOpen(harness, thread.id, {
+        file: null,
+        terminalLayoutAction: {
+          action: "split",
+          terminalId: terminal.id,
+          side: "right",
+        },
+      });
+      const move = await postOpen(harness, thread.id, {
+        file: null,
+        terminalLayoutAction: {
+          action: "move",
+          terminalId: terminal.id,
+          targetTerminalId: targetTerminal.id,
+        },
+      });
+      const foreignMove = await postOpen(harness, thread.id, {
+        file: null,
+        terminalLayoutAction: {
+          action: "move",
+          terminalId: terminal.id,
+          targetTerminalId: foreignTarget.id,
+        },
+      });
+      expect(split.status).toBe(200);
+      expect(move.status).toBe(200);
+      expect(JSON.parse(socket.messages[2]!)).toMatchObject({
+        terminalLayoutAction: {
+          action: "split",
+          terminalId: terminal.id,
+          side: "right",
+        },
+      });
+      expect(JSON.parse(socket.messages[3]!)).toMatchObject({
+        terminalLayoutAction: {
+          action: "move",
+          terminalId: terminal.id,
+          targetTerminalId: targetTerminal.id,
+        },
+      });
+
       const foreign = await postOpen(harness, otherThread.id, {
         file: null,
         terminalAction: { action: "focus", terminalId: terminal.id },
@@ -256,7 +319,8 @@ describe("public thread open", () => {
       expect(foreign.status).toBe(404);
       expect(unknown.status).toBe(404);
       expect(invalidUrl.status).toBe(400);
-      expect(socket.messages).toHaveLength(2);
+      expect(foreignMove.status).toBe(404);
+      expect(socket.messages).toHaveLength(4);
     });
   });
 

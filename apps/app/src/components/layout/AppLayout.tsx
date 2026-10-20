@@ -533,10 +533,18 @@ export function AppLayout({ children }: AppLayoutProps) {
         if (next !== current) {
           store.set(splitLayoutAtom, next);
         }
+        const navigationState = {
+          ...(signal.terminalAction
+            ? { terminalAction: signal.terminalAction }
+            : {}),
+          ...(signal.terminalLayoutAction
+            ? { terminalLayoutAction: signal.terminalLayoutAction }
+            : {}),
+        };
         void navigate(route, {
           ...(alreadyOpen ? { replace: true } : {}),
-          ...(signal.terminalAction
-            ? { state: { terminalAction: signal.terminalAction } }
+          ...(Object.keys(navigationState).length > 0
+            ? { state: navigationState }
             : {}),
         });
       }),

@@ -198,6 +198,41 @@ export function registerTerminalCommands(
       }),
     );
 
+  terminal
+    .command("split <terminalId>")
+    .description("Place a terminal in a new side panel pane")
+    .requiredOption("--side <side>", "Pane side: right, left, up, or down")
+    .action(
+      action(async (terminalId: string, opts: { side: string }) => {
+        if (!["right", "left", "up", "down"].includes(opts.side)) {
+          throw new CliUsageError({
+            code: "invalid_terminal_split_side",
+            hint: "Choose right, left, up, or down.",
+            message: "--side must be right, left, up, or down",
+          });
+        }
+        await createCliBbSdk(getUrl()).terminals.experimental_layout.split({
+          terminalId,
+          side: opts.side as "right" | "left" | "up" | "down",
+        });
+        console.log(`Split terminal ${terminalId} ${opts.side}`);
+      }),
+    );
+
+  terminal
+    .command("move <terminalId>")
+    .description("Move a terminal tab to the pane containing another terminal")
+    .requiredOption("--to-pane-of <terminalId>", "Terminal whose pane receives this tab")
+    .action(
+      action(async (terminalId: string, opts: { toPaneOf: string }) => {
+        await createCliBbSdk(getUrl()).terminals.experimental_layout.move({
+          terminalId,
+          targetTerminalId: opts.toPaneOf,
+        });
+        console.log(`Moved terminal ${terminalId} to the pane of ${opts.toPaneOf}`);
+      }),
+    );
+
   attention
     .command("next")
     .description("Print the oldest terminal with uncleared attention")

@@ -127,6 +127,13 @@ export function isSecondaryPanelLayoutTransition(
 ): boolean {
   return propertyName === "flex-grow" || propertyName === "flex-basis";
 }
+
+export function canRenderSidebarSplits(
+  renderAsDrawer: boolean,
+  splitPanelStateId: string | undefined,
+): splitPanelStateId is string {
+  return !renderAsDrawer && splitPanelStateId !== undefined;
+}
 const SECONDARY_RESIZABLE_PANEL_STYLE: CSSProperties = {
   pointerEvents: "auto",
 };
@@ -229,6 +236,13 @@ export interface ThreadSecondaryPanelProps {
   onCreateTerminalInNewPane?: () => Promise<string | null>;
   splitPanelStateId?: string;
   splitTabToRightRequest?: { requestId: number; tabId: string } | null;
+  terminalLayoutRequest?: {
+    action: "split" | "move";
+    requestId: number;
+    side?: "right" | "left" | "up" | "down";
+    targetTerminalId?: string;
+    terminalId: string;
+  } | null;
   isOpen: boolean;
   showConversationCollapseControl?: boolean;
   showFullScreenShortcut?: boolean;
@@ -272,6 +286,7 @@ function ThreadSecondaryPanelContent({
   onCreateTerminalInNewPane,
   splitPanelStateId,
   splitTabToRightRequest,
+  terminalLayoutRequest,
   isOpen,
   showConversationCollapseControl = true,
   showFullScreenShortcut = false,
@@ -1041,8 +1056,10 @@ function ThreadSecondaryPanelContent({
     );
   };
 
-  const shouldEnableSidebarSplits =
-    !renderAsDrawer && splitPanelStateId !== undefined;
+  const shouldEnableSidebarSplits = canRenderSidebarSplits(
+    renderAsDrawer,
+    splitPanelStateId,
+  );
   const splitTabs = shouldEnableSidebarSplits
     ? ([
         ...fixedTabs.map((fixedTab) => ({
@@ -1102,6 +1119,7 @@ function ThreadSecondaryPanelContent({
       onCreateTerminalInNewPane={onCreateTerminalInNewPane}
       panelStateId={splitPanelStateId}
       splitTabToRightRequest={splitTabToRightRequest}
+      terminalLayoutRequest={terminalLayoutRequest}
       tabs={splitTabs}
       renderPane={(pane: SidebarSplitPaneRenderArgs) => {
         const activePaneTabId = pane.group.activeTabId;

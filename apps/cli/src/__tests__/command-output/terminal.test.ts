@@ -134,6 +134,57 @@ describe("bb terminal command output", () => {
     });
   });
 
+  it("splits a terminal to a requested sidebar side", async () => {
+    const open = vi.fn(async () => ({ delivered: 1 }));
+    stubServerApi({
+      "v1.terminals.:terminalId.$get": async () => makeTerminalSession(),
+      "v1.threads.:id.open.$post": open,
+    });
+
+    await runCommand(["terminal", "split", "term-1", "--side", "down"], register);
+
+    expect(open).toHaveBeenCalledWith({
+      param: { id: "thr-1" },
+      json: {
+        file: null,
+        terminalLayoutAction: {
+          action: "split",
+          terminalId: "term-1",
+          side: "down",
+        },
+      },
+    });
+  });
+
+  it("moves a terminal into the pane of the requested terminal", async () => {
+    const get = vi
+      .fn()
+      .mockResolvedValueOnce(makeTerminalSession({ id: "term-1" }))
+      .mockResolvedValueOnce(makeTerminalSession({ id: "term-2" }));
+    const open = vi.fn(async () => ({ delivered: 1 }));
+    stubServerApi({
+      "v1.terminals.:terminalId.$get": get,
+      "v1.threads.:id.open.$post": open,
+    });
+
+    await runCommand(
+      ["terminal", "move", "term-1", "--to-pane-of", "term-2"],
+      register,
+    );
+
+    expect(open).toHaveBeenCalledWith({
+      param: { id: "thr-1" },
+      json: {
+        file: null,
+        terminalLayoutAction: {
+          action: "move",
+          terminalId: "term-1",
+          targetTerminalId: "term-2",
+        },
+      },
+    });
+  });
+
   it("raises attention for the terminal identity injected into its shell", async () => {
     const notify = vi.fn(async () => makeTerminalSession());
     stubServerApi({ "v1.terminals.:terminalId.notify.$post": notify });

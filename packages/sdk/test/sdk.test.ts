@@ -226,6 +226,84 @@ describe("@bb/sdk", () => {
     );
   });
 
+  it("requests a persisted sidebar split through the thread-open signal", async () => {
+    const queue = createFetchQueue([
+      { body: makeTerminalSession({ id: "term_split" }) },
+      { body: { delivered: 1 } },
+    ]);
+    const sdk = createBbSdk({
+      transport: createHttpTransport({
+        baseUrl: "http://bb.test",
+        fetch: queue.fetch,
+        runtime: "node",
+      }),
+    });
+
+    await sdk.terminals.experimental_layout.split({
+      terminalId: "term_split",
+      side: "down",
+    });
+    expect(queue.requests[1]?.bodyText).toBe(
+      JSON.stringify({
+        file: null,
+        terminalLayoutAction: {
+          action: "split",
+          terminalId: "term_split",
+          side: "down",
+        },
+      }),
+    );
+  });
+
+  it("moves a terminal only to another terminal in the same thread", async () => {
+    const queue = createFetchQueue([
+      { body: makeTerminalSession({ id: "term_move" }) },
+      { body: makeTerminalSession({ id: "term_target" }) },
+      { body: { delivered: 1 } },
+    ]);
+    const sdk = createBbSdk({
+      transport: createHttpTransport({
+        baseUrl: "http://bb.test",
+        fetch: queue.fetch,
+        runtime: "node",
+      }),
+    });
+
+    await sdk.terminals.experimental_layout.move({
+      terminalId: "term_move",
+      targetTerminalId: "term_target",
+    });
+    expect(queue.requests[2]?.bodyText).toBe(
+      JSON.stringify({
+        file: null,
+        terminalLayoutAction: {
+          action: "move",
+          terminalId: "term_move",
+          targetTerminalId: "term_target",
+        },
+      }),
+    );
+
+    const foreignQueue = createFetchQueue([
+      { body: makeTerminalSession({ id: "term_move" }) },
+      { body: makeTerminalSession({ id: "term_foreign", threadId: "thr_other" }) },
+    ]);
+    const foreignSdk = createBbSdk({
+      transport: createHttpTransport({
+        baseUrl: "http://bb.test",
+        fetch: foreignQueue.fetch,
+        runtime: "node",
+      }),
+    });
+    await expect(
+      foreignSdk.terminals.experimental_layout.move({
+        terminalId: "term_move",
+        targetTerminalId: "term_foreign",
+      }),
+    ).rejects.toThrow("Terminal sessions must belong to the same thread");
+    expect(foreignQueue.requests).toHaveLength(2);
+  });
+
   it("pages prompt history with an opaque cursor", async () => {
     const response = {
       entries: [

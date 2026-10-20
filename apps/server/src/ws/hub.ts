@@ -37,6 +37,8 @@ import {
   type ThreadPaneAction,
   type ThreadOpenFile,
   type ThreadOpenSplit,
+  type ThreadOpenTerminalAction,
+  type ThreadOpenTerminalLayoutAction,
   type TerminalServerMessage,
 } from "@bb/server-contract";
 
@@ -1475,11 +1477,8 @@ export class NotificationHub implements DbNotifier {
     request: {
       split: ThreadOpenSplit;
       file: ThreadOpenFile | null;
-      terminalAction?: {
-        action: "focus" | "openBrowser";
-        terminalId: string;
-        url?: string;
-      };
+      terminalAction?: ThreadOpenTerminalAction;
+      terminalLayoutAction?: ThreadOpenTerminalLayoutAction;
     },
   ): number {
     return this.broadcastToAllClients(
@@ -1492,6 +1491,9 @@ export class NotificationHub implements DbNotifier {
           file: request.file,
           ...(request.terminalAction
             ? { terminalAction: request.terminalAction }
+            : {}),
+          ...(request.terminalLayoutAction
+            ? { terminalLayoutAction: request.terminalLayoutAction }
             : {}),
         }),
       ),

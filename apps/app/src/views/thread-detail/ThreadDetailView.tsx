@@ -45,7 +45,10 @@ import type {
   TerminalSession,
   TimelineRow,
 } from "@bb/server-contract";
-import { threadOpenTerminalActionSchema } from "@bb/server-contract";
+import {
+  threadOpenTerminalActionSchema,
+  threadOpenTerminalLayoutActionSchema,
+} from "@bb/server-contract";
 import type { WorkspaceOpenTarget } from "@bb/host-daemon-contract";
 import { appToast } from "@/components/ui/app-toast";
 import { copyToClipboardWithToast } from "@/lib/clipboard";
@@ -682,6 +685,14 @@ function ThreadDetailViewInternal(
     tabId: string;
   } | null>(null);
   const splitTabToRightRequestIdRef = useRef(0);
+  const [terminalLayoutRequest, setTerminalLayoutRequest] = useState<{
+    action: "split" | "move";
+    requestId: number;
+    side?: "right" | "left" | "up" | "down";
+    targetTerminalId?: string;
+    terminalId: string;
+  } | null>(null);
+  const terminalLayoutRequestIdRef = useRef(0);
   const consumedTerminalActionLocationRef = useRef<string | null>(null);
   const shouldLoadThreadStorageFiles = shouldLoadThreadStorageFileList({
     hasThread: thread !== undefined,
@@ -2250,6 +2261,23 @@ function ThreadDetailViewInternal(
     secondaryPanelDrawerVisibility.openDrawer,
     threadId,
   ]);
+  useEffect(() => {
+    const locationState = location.state;
+    if (
+      location.key === consumedTerminalActionLocationRef.current ||
+      locationState === null ||
+      typeof locationState !== "object" ||
+      !("terminalLayoutAction" in locationState)
+    ) return;
+    const parsed = threadOpenTerminalLayoutActionSchema.safeParse(
+      locationState.terminalLayoutAction,
+    );
+    if (!parsed.success) return;
+    consumedTerminalActionLocationRef.current = location.key;
+    navigate(location.pathname, { replace: true, state: null });
+    terminalLayoutRequestIdRef.current += 1;
+    setTerminalLayoutRequest({ ...parsed.data, requestId: terminalLayoutRequestIdRef.current });
+  }, [location.key, location.pathname, location.state, navigate]);
   const handleTimelineTitleAction = useCallback<TimelineTitleActionResolver>(
     (action) => {
       switch (action.kind) {
@@ -3131,6 +3159,7 @@ function ThreadDetailViewInternal(
               fixedTabs: secondaryPanelFixedTabs,
               splitPanelStateId: thread.id,
               splitTabToRightRequest,
+              terminalLayoutRequest,
               onCreateTerminalInNewPane: canCreateTerminal
                 ? startTerminalSession
                 : undefined,

@@ -25,7 +25,11 @@ import {
   sidebarSplitStorageKey,
   type SidebarSplitState,
 } from "./sidebarSplitLayout";
-import { getFixedPanelTabsStateStorageKey } from "@/lib/fixed-panel-tabs-state";
+import {
+  createTerminalFixedPanelTab,
+  getFixedPanelTabsStateStorageKey,
+} from "@/lib/fixed-panel-tabs-state";
+import { countPanes } from "@/lib/split-layout";
 
 const TABS: readonly SidebarSplitTabDescriptor[] = [
   { id: "tab-a", label: "A", restoresPlacementAfterRemoval: true },
@@ -83,6 +87,7 @@ function renderContainer({
   onToggleFullScreen = vi.fn(),
   renderPane,
   tabs = TABS,
+  terminalLayoutRequest,
 }: {
   activeTabId?: string;
   isFullScreen?: boolean;
@@ -90,6 +95,13 @@ function renderContainer({
   onToggleFullScreen?: () => void;
   renderPane: (args: SidebarSplitPaneRenderArgs) => ReactNode;
   tabs?: readonly SidebarSplitTabDescriptor[];
+  terminalLayoutRequest?: {
+    action: "split" | "move";
+    requestId: number;
+    side?: "right" | "left" | "up" | "down";
+    targetTerminalId?: string;
+    terminalId: string;
+  } | null;
 }) {
   return render(
     <SidebarProvider>
@@ -102,6 +114,7 @@ function renderContainer({
           onToggleFullScreen={onToggleFullScreen}
           panelStateId={PANEL_STATE_ID}
           renderPane={renderPane}
+          terminalLayoutRequest={terminalLayoutRequest}
           tabs={tabs}
         />
       </TooltipProvider>
@@ -156,6 +169,51 @@ function MultiTabStatefulPane({
 }
 
 describe("SidebarSplitContainer", () => {
+  it("applies a terminal layout request through the persisted sidebar split state", async () => {
+    const terminalId = "term-layout-source";
+    const otherTerminalId = "term-layout-other";
+    const terminalTabId = createTerminalFixedPanelTab({ terminalId }).id;
+    const otherTabId = createTerminalFixedPanelTab({
+      terminalId: otherTerminalId,
+    }).id;
+    const tabs = [
+      { id: terminalTabId, label: "Source", restoresPlacementAfterRemoval: true },
+      { id: otherTabId, label: "Other", restoresPlacementAfterRemoval: true },
+    ];
+    const terminalLayoutRequest = {
+      action: "split" as const,
+      requestId: 1,
+      side: "down" as const,
+      terminalId,
+    };
+
+    renderContainer({
+      activeTabId: terminalTabId,
+      tabs,
+      terminalLayoutRequest,
+      renderPane: ({ group, paneId }) => (
+        <div data-testid={`layout-pane-${paneId}`}>{group.tabIds.join(",")}</div>
+      ),
+    });
+
+    await waitFor(() => expect(listPaneIds()).toHaveLength(2));
+    const stored = window.localStorage.getItem(
+      sidebarSplitStorageKey(PANEL_STATE_ID),
+    );
+    expect(stored).not.toBeNull();
+    expect(countPanes(parseSidebarSplitState(stored, tabs.map((tab) => tab.id), terminalTabId).layout.root)).toBe(2);
+
+    cleanup();
+    renderContainer({
+      activeTabId: terminalTabId,
+      tabs,
+      renderPane: ({ group, paneId }) => (
+        <div data-testid={`layout-pane-${paneId}`}>{group.tabIds.join(",")}</div>
+      ),
+    });
+    await waitFor(() => expect(listPaneIds()).toHaveLength(2));
+  });
+
   beforeEach(() => {
     window.localStorage.clear();
     nextPaneInstance = 0;

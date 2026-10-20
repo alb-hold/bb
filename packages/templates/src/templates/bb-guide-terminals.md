@@ -51,6 +51,8 @@ The browser action uses the same thread panel placement as terminal links.
   bb terminal surfaces --thread <thread-id> [--json]
   bb terminal focus <terminal-id>
   bb terminal open-link <terminal-id> <http-or-https-url>
+  bb terminal split <terminal-id> --side right|left|up|down
+  bb terminal move <terminal-id> --to-pane-of <other-terminal-id>
 
 The SDK exposes `sdk.terminals.experimental_surfaces.list({ threadId })`,
 `sdk.terminals.experimental_focus({ terminalId })`, and
@@ -58,6 +60,11 @@ The SDK exposes `sdk.terminals.experimental_surfaces.list({ threadId })`,
 includes its thread and terminal IDs, title, status, and whether it is a
 regular or native terminal. Archived threads and terminal IDs outside the
 requested thread fail closed.
+`sdk.terminals.experimental_layout.split({ terminalId, side })` and
+`sdk.terminals.experimental_layout.move({ terminalId, targetTerminalId })`
+arrange terminal tabs in persisted sidebar panes. These requests are
+fire-and-forget because connected clients enforce pane limits and compact
+layouts.
 On clients without an in-app browser, `open-link` presents an Open action for
 the external browser instead of adding an unavailable browser tab.
 

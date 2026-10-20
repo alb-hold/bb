@@ -1,15 +1,20 @@
 # CLI, Guide, And Skill
 
 Thread terminal actions are available through `bb terminal surfaces --thread
-<id> [--json]`, `bb terminal focus <terminalId>`, and `bb terminal open-link
-<terminalId> <url>`. The SDK exposes these as
+<id> [--json]`, `bb terminal focus <terminalId>`, `bb terminal open-link
+<terminalId> <url>`, `bb terminal split <terminalId> --side right|left|up|down`,
+and `bb terminal move <terminalId> --to-pane-of <otherTerminalId>`. The SDK exposes these as
 `terminals.experimental_surfaces.list({ threadId })`,
 `terminals.experimental_focus({ terminalId })`, and
-`terminals.experimental_openBrowser({ terminalId, url })`. The first lists
+`terminals.experimental_openBrowser({ terminalId, url })`,
+`terminals.experimental_layout.split({ terminalId, side })`, and
+`terminals.experimental_layout.move({ terminalId, targetTerminalId })`. The first lists
 server-known terminal surfaces; the latter two ask connected app clients to
 select and reveal the terminal tab or open the URL in the thread browser. A
 client without an in-app browser offers the URL through an Open action instead
-of creating an unavailable browser tab.
+of creating an unavailable browser tab. Split and move are fire-and-forget:
+pane limits and compact layouts are client state, so the CLI cannot confirm
+whether a connected client applied the action.
 
 `bb terminal output <id> --lines <n>` prints the latest lines, including from
 recently exited terminals. The server retains at most 64 KiB per terminal,

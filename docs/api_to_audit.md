@@ -54,7 +54,7 @@ routes share that server trust boundary.
 cross-client behavior of explicit clearing. The app shortcut uses Alt+Shift+N
 and remains active with terminal focus.
 
-## `sdk.terminals.experimental_surfaces`, `experimental_focus`, and `experimental_openBrowser`
+## `sdk.terminals.experimental_surfaces`, `experimental_focus`, `experimental_openBrowser`, and `experimental_layout`
 
 `experimental_surfaces.list({ threadId })` lists thread terminal surfaces with
 stable thread and terminal IDs, title, status, and kind. `experimental_focus({
@@ -72,6 +72,16 @@ target thread fail closed. The app client ignores unknown thread-open fields so
 older clients still navigate to the thread without attempting the new action.
 Audit cross-client broadcast behavior, split placement and compact drawer
 behavior, URL restrictions, and stale/foreign ID failures before stabilizing.
+`experimental_layout.split({ terminalId, side })` splits the terminal into a
+new sidebar pane; `experimental_layout.move({ terminalId, targetTerminalId })`
+moves its tab into the target terminal's pane. The CLI exposes these as
+`bb terminal split` and `bb terminal move`. Layout changes use the same
+sidebar split state as UI operations and persist in local storage. Requests
+are fire-and-forget because pane limits and compact layouts are client state;
+the API confirms delivery to connected app clients, not application.
+
+Audit each split side, pane limits, compact layouts, reload persistence,
+same-thread and stale terminal IDs, and old-client parsing before stabilizing.
 
 ## `sdk.terminals.experimental_surfaces`, `experimental_focus`, and `experimental_openBrowser`
 

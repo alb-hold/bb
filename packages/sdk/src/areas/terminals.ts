@@ -144,6 +144,14 @@ export interface ExperimentalTerminalOpenBrowserArgs {
   url: string;
 }
 
+export interface ExperimentalTerminalLayoutArea {
+  move(args: { targetTerminalId: string; terminalId: string }): Promise<void>;
+  split(args: {
+    side: "right" | "left" | "up" | "down";
+    terminalId: string;
+  }): Promise<void>;
+}
+
 export interface TerminalsArea {
   experimental_attention: ExperimentalTerminalAttentionArea;
   experimental_surfaces: ExperimentalTerminalSurfacesArea;
@@ -151,6 +159,7 @@ export interface TerminalsArea {
   experimental_openBrowser(
     args: ExperimentalTerminalOpenBrowserArgs,
   ): Promise<void>;
+  experimental_layout: ExperimentalTerminalLayoutArea;
   close(args: TerminalCloseArgs): Promise<TerminalCloseResult>;
   create(args: TerminalCreateArgs): Promise<TerminalCreateResult>;
   get(args: TerminalGetArgs): Promise<TerminalGetResult>;
@@ -473,6 +482,52 @@ export function createTerminalsArea(args: CreateSdkAreaArgs): TerminalsArea {
           json: { cols: input.cols, rows: input.rows },
         }),
       );
+    },
+    experimental_layout: {
+      async split(input) {
+        const session = await get({ terminalId: input.terminalId });
+        if (session.threadId === null) {
+          throw new Error("Terminal session is not attached to a thread");
+        }
+        await transport.readJson(
+          transport.api.v1.threads[":id"].open.$post({
+            param: { id: session.threadId },
+            json: {
+              file: null,
+              terminalLayoutAction: {
+                action: "split",
+                terminalId: session.id,
+                side: input.side,
+              },
+            },
+          }),
+        );
+      },
+      async move(input) {
+        const [session, target] = await Promise.all([
+          get({ terminalId: input.terminalId }),
+          get({ terminalId: input.targetTerminalId }),
+        ]);
+        if (
+          session.threadId === null ||
+          target.threadId !== session.threadId
+        ) {
+          throw new Error("Terminal sessions must belong to the same thread");
+        }
+        await transport.readJson(
+          transport.api.v1.threads[":id"].open.$post({
+            param: { id: session.threadId },
+            json: {
+              file: null,
+              terminalLayoutAction: {
+                action: "move",
+                terminalId: session.id,
+                targetTerminalId: target.id,
+              },
+            },
+          }),
+        );
+      },
     },
   };
 }
