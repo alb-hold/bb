@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { suppressDuplicateTerminalCompositionInput } from "./terminal-mobile-input";
 
 interface TerminalHarness {
+  guard: { dispose: () => void; flushPendingInput: () => void };
   input: HTMLTextAreaElement;
   output: string[];
   terminal: Terminal;
@@ -37,12 +38,12 @@ function openTerminal(): TerminalHarness {
   terminal.onData((data) => output.push(data));
   const element = terminal.element;
   if (element == null) throw new Error("xterm element is not mounted");
-  guards.push(
-    suppressDuplicateTerminalCompositionInput(
-      element.parentElement ?? element,
-    ),
+  const guard = suppressDuplicateTerminalCompositionInput(
+    element.parentElement ?? element,
+    (data) => terminal.input(data),
   );
-  return { input, output, terminal };
+  guards.push(guard);
+  return { guard, input, output, terminal };
 }
 
 function dispatchInsertText(input: HTMLTextAreaElement, data: string): void {
@@ -160,6 +161,62 @@ describe("mobile terminal IME input through xterm", () => {
     await flushComposition();
 
     expect(output.join("")).toBe("日本!");
+  });
+
+  it("keeps multiple immediate insertions in FIFO order", async () => {
+    const { input, output } = openTerminal();
+
+    dispatchComposition(input, "日本");
+    dispatchCompositionCommit(input, "日本");
+    dispatchInsertText(input, "!");
+    dispatchInsertText(input, "?");
+    await flushComposition();
+
+    expect(output.join("")).toBe("日本!?");
+  });
+
+  it("flushes a deferred insertion before an immediate Enter keydown", () => {
+    const { input, output } = openTerminal();
+
+    dispatchComposition(input, "日本");
+    dispatchCompositionCommit(input, "日本");
+    dispatchInsertText(input, "!");
+    input.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Enter",
+        keyCode: 13,
+        which: 13,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+
+    expect(output.join("")).toBe("日本!\r");
+  });
+
+  it("flushes a deferred insertion before a dock arrow write", () => {
+    const { guard, input, output, terminal } = openTerminal();
+
+    dispatchComposition(input, "日本");
+    dispatchCompositionCommit(input, "日本");
+    dispatchInsertText(input, "!");
+    guard.flushPendingInput();
+    terminal.input("\x1b[D");
+
+    expect(output.join("")).toBe("日本!\x1b[D");
+  });
+
+  it("does not write a deferred insertion after disposal", async () => {
+    const { guard, input, output } = openTerminal();
+
+    dispatchComposition(input, "日本");
+    dispatchCompositionCommit(input, "日本");
+    dispatchInsertText(input, "!");
+
+    expect(() => guard.dispose()).not.toThrow();
+    await flushComposition();
+
+    expect(output.join("")).toBe("");
   });
 
   it("sends an echoed command with composed text and trailing punctuation once", async () => {
