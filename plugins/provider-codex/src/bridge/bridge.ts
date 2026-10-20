@@ -852,7 +852,8 @@ function handleChildRequest(
 
   if (
     method === CODEX_MCP_ELICITATION_METHOD &&
-    codexMcpElicitationParamsSchema.safeParse(params).success
+    codexMcpElicitationParamsSchema.safeParse(params).success &&
+    !isCodexNativeMcpElicitation(params)
   ) {
     handleCodexMcpElicitation(session, params, responder);
     return;
@@ -935,6 +936,18 @@ const codexMcpElicitationParamsSchema = z
     requestedSchema: z.unknown().optional(),
   })
   .passthrough();
+
+function isCodexNativeMcpElicitation(params: unknown): boolean {
+  if (typeof params !== "object" || params === null || !("_meta" in params)) {
+    return false;
+  }
+  const metadata = params._meta;
+  return (
+    typeof metadata === "object" &&
+    metadata !== null &&
+    "codex_approval_kind" in metadata
+  );
+}
 
 function handleCodexMcpElicitation(
   session: CodexBridgeSession,
