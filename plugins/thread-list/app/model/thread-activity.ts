@@ -8,7 +8,10 @@ type ThreadStatusShape = Pick<
   PluginSidebarThread,
   "status" | "isUnread" | "parentThreadId"
 >;
-type ThreadRuntimeShape = Pick<PluginSidebarThread, "runtimeStatus">;
+type ThreadRuntimeShape = Pick<
+  PluginSidebarThread,
+  "runtimeStatus" | "experimental_nativeActivity"
+>;
 type ThreadActivityStateShape = Pick<PluginSidebarThread, "activity">;
 
 export interface ThreadListIndicatorState {
