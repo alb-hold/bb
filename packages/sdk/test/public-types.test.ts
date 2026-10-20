@@ -491,6 +491,7 @@ type ExpectedTerminalsKey =
   | "create"
   | "experimental_attention"
   | "experimental_follow"
+  | "experimental_screen"
   | "get"
   | "input"
   | "list"

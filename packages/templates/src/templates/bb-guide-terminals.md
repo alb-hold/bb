@@ -114,6 +114,14 @@ prints the target because it has no app window. The SDK exposes
   `Terminal <id> exited with code N` on stderr. Once the scrollback is gone,
   output fails with `terminal_output_unavailable` and says why.
 
+  bb terminal screen <terminal-id>
+    --lines <n>                          Print latest rendered rows, up to 500
+    --json                                Include cursor position and grid size
+
+  Screen reads replay at most 64 KiB of retained output into a disposable
+  server-side terminal renderer. The default returns the visible grid. Selection
+  is client-local and is not available through this command.
+
   bb terminal wait <terminal-id>
     --contains <text>                     Wait for new output containing text
     --regex <pattern>                     Wait for new output matching regex

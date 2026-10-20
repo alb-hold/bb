@@ -1186,6 +1186,12 @@ importers:
       '@opentelemetry/api':
         specifier: 1.9.1
         version: 1.9.1
+      '@xterm/addon-unicode11':
+        specifier: ^0.9.0
+        version: 0.9.0
+      '@xterm/headless':
+        specifier: 6.1.0-beta.292
+        version: 6.1.0-beta.292
       better-auth:
         specifier: ^1.6.23
         version: 1.6.23(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.1)(@tanstack/react-start@1.168.25(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(vite@8.0.12(@types/node@22.19.10)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.50.0)(tsx@4.23.1)(yaml@2.9.0)))(better-sqlite3@12.10.0)(drizzle-orm@0.38.4(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.1)(@types/better-sqlite3@7.6.13)(@types/react@19.2.13)(better-sqlite3@12.10.0)(kysely@0.29.3)(react@19.2.4))(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(vitest@4.1.1(@opentelemetry/api@1.9.1)(@types/node@22.19.10)(jsdom@29.0.1(@noble/hashes@2.4.0))(msw@2.12.14(@types/node@22.19.10)(@typescript/typescript6@6.0.2))(vite@8.0.12(@types/node@22.19.10)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.50.0)(tsx@4.23.1)(yaml@2.9.0)))(vue@3.5.39(@typescript/typescript6@6.0.2))
@@ -11094,6 +11100,9 @@ packages:
     resolution: {integrity: sha512-gH7r5g8f2NWMhBtaeApuwLQTJmX4uq7zT0okjeNWkFAD0nxzbUPB+kt6sogZZ5K90XYPt2OLu/bhuvF6DmKqOQ==}
     peerDependencies:
       '@xterm/xterm': ^6.1.0-beta.292
+
+  '@xterm/headless@6.1.0-beta.292':
+    resolution: {integrity: sha512-Es2xZ95wJb8n3hIfTfEh4AYzf7wXVQX1dVdA6idFFjRm26p+x6LZEgurXD6ZPwwsbXSfJXcAuzhYQruSw9Ccgg==}
 
   '@xterm/xterm@6.1.0-beta.292':
     resolution: {integrity: sha512-17zqK5tM/l6qeD7McF42OrEJ6w3XqJ2vFVKdWqu0cYLzdFqMWAHp2oFNc8Fj5DmqDSl1E1FZEg6IFflDllTvLA==}
@@ -23607,6 +23616,8 @@ snapshots:
   '@xterm/addon-webgl@0.20.0-beta.291(@xterm/xterm@6.1.0-beta.292)':
     dependencies:
       '@xterm/xterm': 6.1.0-beta.292
+
+  '@xterm/headless@6.1.0-beta.292': {}
 
   '@xterm/xterm@6.1.0-beta.292': {}
 

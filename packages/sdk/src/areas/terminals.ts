@@ -9,6 +9,8 @@ import type {
   TerminalNotifyRequest,
   TerminalResizeRequest,
   TerminalSession,
+  TerminalScreenQuery,
+  TerminalScreenResponse,
   UpdateTerminalRequest,
 } from "@bb/server-contract";
 import { signalRequestArgs, type CreateSdkAreaArgs } from "./common.js";
@@ -102,6 +104,11 @@ export interface TerminalOutputArgs extends TerminalTargetArgs {
   tailBytes?: TerminalOutputQuery["tailBytes"];
 }
 
+export interface TerminalScreenArgs extends TerminalTargetArgs {
+  lines?: TerminalScreenQuery["lines"];
+  signal?: AbortSignal;
+}
+
 export interface TerminalNotifyArgs
   extends TerminalTargetArgs, TerminalNotifyRequest {}
 
@@ -115,6 +122,7 @@ export type TerminalCloseResult = TerminalSession;
 export type TerminalInputResult = TerminalSession;
 export type TerminalResizeResult = TerminalSession;
 export type TerminalOutputResult = TerminalOutputResponse;
+export type TerminalScreenResult = TerminalScreenResponse;
 export type TerminalRestartResult = TerminalSession;
 
 export interface ExperimentalTerminalAttentionArea {
@@ -131,6 +139,7 @@ export interface TerminalsArea {
   input(args: TerminalInputArgs): Promise<TerminalInputResult>;
   list(args: TerminalListArgs): Promise<TerminalListResult>;
   output(args: TerminalOutputArgs): Promise<TerminalOutputResult>;
+  experimental_screen(args: TerminalScreenArgs): Promise<TerminalScreenResult>;
   notify(args: TerminalNotifyArgs): Promise<TerminalGetResult>;
   experimental_follow(
     args: TerminalOutputArgs & { pollIntervalMs?: number },
@@ -305,6 +314,17 @@ export function createTerminalsArea(args: CreateSdkAreaArgs): TerminalsArea {
           {
             param: { terminalId: input.terminalId },
             query: terminalOutputQuery(input),
+          },
+          ...signalRequestArgs(input.signal),
+        ),
+      );
+    },
+    async experimental_screen(input) {
+      return transport.readJson(
+        transport.api.v1.terminals[":terminalId"].screen.$get(
+          {
+            param: { terminalId: input.terminalId },
+            query: input.lines === undefined ? {} : { lines: input.lines },
           },
           ...signalRequestArgs(input.signal),
         ),

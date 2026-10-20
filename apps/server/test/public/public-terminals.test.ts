@@ -29,6 +29,7 @@ import {
   terminalListResponseSchema,
   terminalServerMessageSchema,
   terminalOutputResponseSchema,
+  terminalScreenResponseSchema,
   type TerminalServerMessage,
   terminalSessionSchema,
 } from "@bb/server-contract";
@@ -1755,6 +1756,32 @@ describe("public terminal routes", () => {
         dataBase64: Buffer.from("build failed\n", "utf8").toString("base64"),
       },
     ]);
+    const screenResponse = await fixture.harness.app.request(
+      `/api/v1/terminals/${session.id}/screen?lines=2`,
+    );
+    expect(screenResponse.status).toBe(200);
+    expect(
+      terminalScreenResponseSchema.parse(await readJson(screenResponse)),
+    ).toMatchObject({
+      rows: ["setup failed", "            build failed"],
+      cols: 120,
+      gridRows: 32,
+      truncated: false,
+    });
+  });
+
+  it("fails closed for unknown and foreign terminal screen IDs", async () => {
+    const fixture = await createTerminalRouteFixture();
+    harnesses.push(fixture.harness);
+    for (const terminalId of ["unknown-terminal", "foreign-server-terminal"]) {
+      const response = await fixture.harness.app.request(
+        `/api/v1/terminals/${terminalId}/screen`,
+      );
+      expect(response.status).toBe(404);
+      expect(apiErrorSchema.parse(await readJson(response)).code).toBe(
+        "terminal_not_found",
+      );
+    }
   });
 
   it("reads exited terminal output after reopening the database", async () => {
@@ -1857,11 +1884,15 @@ describe("public terminal routes", () => {
       `terminal.replay of ${chunks.length} chunks handled in ${elapsedMs.toFixed(1)}ms\n`,
     );
 
-    const retained = retainedAfterFlush(fixture.harness.deps.terminalSessions, fixture.harness.db, {
-      hostId: fixture.host.id,
-      terminalSessionId: terminal.id,
-      now: Date.now(),
-    });
+    const retained = retainedAfterFlush(
+      fixture.harness.deps.terminalSessions,
+      fixture.harness.db,
+      {
+        hostId: fixture.host.id,
+        terminalSessionId: terminal.id,
+        now: Date.now(),
+      },
+    );
     expect(retained?.at(-1)).toEqual(chunks.at(-1));
     expect(retained?.map((chunk) => chunk.seq)).toEqual(
       chunks
@@ -1926,11 +1957,15 @@ describe("public terminal routes", () => {
       },
     });
     expect(
-      retainedAfterFlush(fixture.harness.deps.terminalSessions, fixture.harness.db, {
-        hostId: fixture.host.id,
-        terminalSessionId: trustedTerminal.id,
-        now: Date.now(),
-      }),
+      retainedAfterFlush(
+        fixture.harness.deps.terminalSessions,
+        fixture.harness.db,
+        {
+          hostId: fixture.host.id,
+          terminalSessionId: trustedTerminal.id,
+          now: Date.now(),
+        },
+      ),
     ).toEqual([trustedChunk]);
     expect(
       fixture.harness.deps.terminalSessions.getTerminal({
@@ -1971,11 +2006,15 @@ describe("public terminal routes", () => {
       closeReason: null,
     });
     expect(
-      retainedAfterFlush(fixture.harness.deps.terminalSessions, fixture.harness.db, {
-        hostId: fixture.host.id,
-        terminalSessionId: exitedTerminal.id,
-        now: Date.now(),
-      }),
+      retainedAfterFlush(
+        fixture.harness.deps.terminalSessions,
+        fixture.harness.db,
+        {
+          hostId: fixture.host.id,
+          terminalSessionId: exitedTerminal.id,
+          now: Date.now(),
+        },
+      ),
     ).toEqual([trustedChunk]);
     expect(
       fixture.harness.db.$client
@@ -1998,11 +2037,15 @@ describe("public terminal routes", () => {
       },
     });
     expect(
-      retainedAfterFlush(fixture.harness.deps.terminalSessions, fixture.harness.db, {
-        hostId: fixture.host.id,
-        terminalSessionId: trustedTerminal.id,
-        now: Date.now(),
-      }),
+      retainedAfterFlush(
+        fixture.harness.deps.terminalSessions,
+        fixture.harness.db,
+        {
+          hostId: fixture.host.id,
+          terminalSessionId: trustedTerminal.id,
+          now: Date.now(),
+        },
+      ),
     ).toEqual([trustedChunk]);
     fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.host.id,
@@ -2035,11 +2078,15 @@ describe("public terminal routes", () => {
       },
     });
     expect(
-      retainedAfterFlush(fixture.harness.deps.terminalSessions, fixture.harness.db, {
-        hostId: fixture.host.id,
-        terminalSessionId: replayTerminal.id,
-        now: Date.now(),
-      }),
+      retainedAfterFlush(
+        fixture.harness.deps.terminalSessions,
+        fixture.harness.db,
+        {
+          hostId: fixture.host.id,
+          terminalSessionId: replayTerminal.id,
+          now: Date.now(),
+        },
+      ),
     ).toBeNull();
 
     fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
@@ -2055,11 +2102,15 @@ describe("public terminal routes", () => {
       },
     });
     expect(
-      retainedAfterFlush(fixture.harness.deps.terminalSessions, fixture.harness.db, {
-        hostId: fixture.host.id,
-        terminalSessionId: replayTerminal.id,
-        now: Date.now(),
-      }),
+      retainedAfterFlush(
+        fixture.harness.deps.terminalSessions,
+        fixture.harness.db,
+        {
+          hostId: fixture.host.id,
+          terminalSessionId: replayTerminal.id,
+          now: Date.now(),
+        },
+      ),
     ).toEqual([replayChunk]);
     expect(warn).toHaveBeenCalledWith(
       expect.objectContaining({

@@ -8,6 +8,11 @@ restarts. Use
 `bb terminal pipe <id> --follow [--command <cmd>]` to stream output to stdout or
 a local command until the terminal exits or Ctrl-C.
 
+`bb terminal screen <id> [--lines <n>] [--json]` prints rendered terminal rows,
+cursor position, and grid size. Without `--lines`, it prints the visible grid;
+`--lines` includes up to 500 latest scrollback rows. The SDK equivalent is
+`sdk.terminals.experimental_screen({ terminalId, lines? })`.
+
 Keep the discoverable surfaces in sync whenever you add or change a `bb` CLI command, flag, or a user-facing configuration knob (env var, `.bb/` workspace file, settings field):
 
 - The in-CLI guide templates under `packages/templates/src/templates/bb-guide-*.md` are the core CLI manual. Document core commands, flags, and settings there; turbo regenerates `packages/templates/src/generated/templates.generated.ts` (not committed) before every build, typecheck, and test task.
