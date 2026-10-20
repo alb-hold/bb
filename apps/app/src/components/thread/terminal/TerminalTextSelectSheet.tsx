@@ -44,6 +44,20 @@ export function TerminalTextSelectSheet({
     );
   }, []);
 
+  const selectPressedLine = useCallback(() => {
+    const element = textRef.current;
+    if (element === null || initialLine === null) return;
+    const lineStart = element.value
+      .split("\n")
+      .slice(0, Math.max(0, initialLine))
+      .reduce((offset, line) => offset + line.length + 1, 0);
+    const newline = element.value.indexOf("\n", lineStart);
+    const lineEnd = newline === -1 ? element.value.length : newline;
+    element.focus({ preventScroll: true });
+    element.setSelectionRange(lineStart, lineEnd);
+    updateSelection();
+  }, [initialLine, updateSelection]);
+
   useLayoutEffect(() => {
     const element = textRef.current;
     if (element === null) return;
@@ -93,6 +107,11 @@ export function TerminalTextSelectSheet({
             >
               Copy all
             </Button>
+            {initialLine !== null ? (
+              <Button type="button" variant="ghost" onClick={selectPressedLine}>
+                Select line
+              </Button>
+            ) : null}
             <Button
               type="button"
               disabled={!hasSelection}
@@ -114,6 +133,8 @@ export function TerminalTextSelectSheet({
             data-terminal-text-snapshot=""
             inputMode="none"
             onSelect={updateSelection}
+            onPointerUp={updateSelection}
+            onTouchEnd={updateSelection}
             readOnly
             spellCheck={false}
             wrap="off"

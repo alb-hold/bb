@@ -100,6 +100,48 @@ describe("TerminalTextSelectSheet", () => {
     expect(copied).toEqual(["beta"]);
   });
 
+  it("enables exact selection copy after touch selection", async () => {
+    render(
+      <TerminalTextSelectSheet
+        open
+        initialLine={1}
+        text={"alpha\nbeta gamma\ndelta"}
+        onOpenChange={vi.fn()}
+      />,
+    );
+    const textarea = await findSnapshotTextarea();
+    const copySelection = screen.getByRole("button", {
+      name: "Copy selection",
+    });
+    Object.defineProperties(textarea, {
+      selectionStart: { configurable: true, value: 6 },
+      selectionEnd: { configurable: true, value: 10 },
+    });
+    expect(copySelection).toHaveProperty("disabled", true);
+
+    fireEvent.touchEnd(textarea);
+
+    expect(copySelection).toHaveProperty("disabled", false);
+    fireEvent.click(copySelection);
+    expect(copied).toEqual(["beta"]);
+  });
+
+  it("selects and copies the pressed line from the sheet control", async () => {
+    render(
+      <TerminalTextSelectSheet
+        open
+        initialLine={1}
+        text={"alpha\nbeta gamma\ndelta"}
+        onOpenChange={vi.fn()}
+      />,
+    );
+    const textarea = await findSnapshotTextarea();
+    fireEvent.click(screen.getByRole("button", { name: "Select line" }));
+    expect([textarea.selectionStart, textarea.selectionEnd]).toEqual([6, 16]);
+    fireEvent.click(screen.getByRole("button", { name: "Copy selection" }));
+    expect(copied).toEqual(["beta gamma"]);
+  });
+
   it("opens the snapshot caret at the requested terminal line", async () => {
     render(
       <TerminalTextSelectSheet

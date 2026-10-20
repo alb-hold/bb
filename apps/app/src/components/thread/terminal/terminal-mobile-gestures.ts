@@ -19,17 +19,7 @@ export function terminalFontSizeForPinch(
 ): number {
   return Math.min(
     TERMINAL_TOUCH_FONT_MAX,
-    Math.max(TERMINAL_TOUCH_FONT_MIN, Math.round(initialFontSize * scale)),
-  );
-}
-
-export function terminalZoomLevelForPinch(
-  initialZoomLevel: number,
-  scale: number,
-): number {
-  return Math.min(
-    TERMINAL_TOUCH_FONT_MAX,
-    Math.max(TERMINAL_TOUCH_FONT_MIN, initialZoomLevel * scale),
+    Math.max(TERMINAL_TOUCH_FONT_MIN, initialFontSize * scale),
   );
 }
 
@@ -78,46 +68,60 @@ export function startTerminalLongPress(
 }
 
 export function createTerminalPinchGesture({
-  getZoomLevel,
-  setZoomLevel,
+  getFontSize,
+  setFontSize,
   fitAndResize,
 }: {
-  getZoomLevel: () => number;
-  setZoomLevel: (zoomLevel: number) => void;
+  getFontSize: () => number;
+  setFontSize: (fontSize: number) => void;
   fitAndResize: () => void;
 }) {
   let initialDistance: number | null = null;
-  let initialZoomLevel = 0;
   let initialFontSize = 0;
+  let lastDistance: number | null = null;
+  let changed = false;
   return {
     cancel() {
       this.end();
     },
     end() {
       if (initialDistance === null) return;
+      const finalFontSize = Math.round(
+        terminalFontSizeForPinch(
+          initialFontSize,
+          (lastDistance ?? initialDistance) / initialDistance,
+        ),
+      );
+      const didChange = changed;
       initialDistance = null;
-      if (terminalFontSizeForPinch(getZoomLevel(), 1) !== initialFontSize) {
-        fitAndResize();
+      lastDistance = null;
+      changed = false;
+      if (getFontSize() !== finalFontSize) {
+        setFontSize(finalFontSize);
       }
+      if (didChange) fitAndResize();
     },
     move(touches: readonly TerminalGestureTouch[]) {
       if (initialDistance === null) return;
       const distance = terminalPinchDistance(touches);
       if (distance === null || initialDistance <= 0) return;
-      const nextZoomLevel = terminalZoomLevelForPinch(
-        initialZoomLevel,
+      lastDistance = distance;
+      const nextFontSize = terminalFontSizeForPinch(
+        initialFontSize,
         distance / initialDistance,
       );
-      if (nextZoomLevel !== getZoomLevel()) {
-        setZoomLevel(nextZoomLevel);
+      if (nextFontSize !== getFontSize()) {
+        changed = true;
+        setFontSize(nextFontSize);
       }
     },
     start(touches: readonly TerminalGestureTouch[]) {
       const distance = terminalPinchDistance(touches);
       if (distance === null) return;
       initialDistance = distance;
-      initialZoomLevel = getZoomLevel();
-      initialFontSize = terminalFontSizeForPinch(initialZoomLevel, 1);
+      initialFontSize = getFontSize();
+      lastDistance = distance;
+      changed = false;
     },
   };
 }

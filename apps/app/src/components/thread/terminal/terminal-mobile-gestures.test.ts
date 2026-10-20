@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createTerminalPinchGesture,
   startTerminalLongPress,
+  terminalFontSizeForPinch,
 } from "./terminal-mobile-gestures";
 
 describe("terminal touch selection", () => {
@@ -49,13 +50,13 @@ describe("terminal touch selection", () => {
 describe("terminal pinch zoom", () => {
   it("zooms in and sends one resize after the gesture ends", () => {
     let zoomLevel = 12;
-    const setZoomLevel = vi.fn((size: number) => {
+    const setFontSize = vi.fn((size: number) => {
       zoomLevel = size;
     });
     const fitAndResize = vi.fn();
     const pinch = createTerminalPinchGesture({
-      getZoomLevel: () => zoomLevel,
-      setZoomLevel,
+      getFontSize: () => zoomLevel,
+      setFontSize,
       fitAndResize,
     });
     pinch.start([
@@ -83,8 +84,8 @@ describe("terminal pinch zoom", () => {
     const apply = (startSize: number, scale: number) => {
       zoomLevel = startSize;
       const pinch = createTerminalPinchGesture({
-        getZoomLevel: () => zoomLevel,
-        setZoomLevel: (size) => {
+        getFontSize: () => zoomLevel,
+        setFontSize: (size) => {
           zoomLevel = size;
         },
         fitAndResize: vi.fn(),
@@ -117,10 +118,10 @@ describe("terminal pinch zoom", () => {
       };
     });
     const pinch = createTerminalPinchGesture({
-      getZoomLevel: () => zoomLevel,
-      setZoomLevel: (nextZoomLevel) => {
+      getFontSize: () => zoomLevel,
+      setFontSize: (nextZoomLevel) => {
         zoomLevel = nextZoomLevel;
-        fontSize = Math.round(nextZoomLevel);
+        fontSize = terminalFontSizeForPinch(nextZoomLevel, 1);
       },
       fitAndResize: resize,
     });
@@ -150,5 +151,46 @@ describe("terminal pinch zoom", () => {
     expect(fontSize).toBe(12);
     expect(grid).toEqual(startGrid);
     expect(resize).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns to the exact start font and grid after uneven out-and-back moves", () => {
+    let zoomLevel = 12;
+    let fontSize = 12;
+    const liveFontSizes: number[] = [];
+    let grid = { cols: 49, rows: 46 };
+    const startGrid = grid;
+    const resize = vi.fn(() => {
+      grid = {
+        cols: Math.floor(357 / (fontSize * 0.6)),
+        rows: Math.floor(658 / (fontSize * 1.17)),
+      };
+    });
+    const pinch = createTerminalPinchGesture({
+      getFontSize: () => zoomLevel,
+      setFontSize: (nextZoomLevel) => {
+        zoomLevel = nextZoomLevel;
+        fontSize = terminalFontSizeForPinch(nextZoomLevel, 1);
+        liveFontSizes.push(fontSize);
+      },
+      fitAndResize: resize,
+    });
+    pinch.start([
+      { identifier: 1, x: 0, y: 0 },
+      { identifier: 2, x: 100, y: 0 },
+    ]);
+    for (const distance of [108.3, 119.6, 131.2, 143.9, 150, 139.1, 128.4, 117.8, 106.2, 100]) {
+      pinch.move([
+        { identifier: 1, x: 0, y: 0 },
+        { identifier: 2, x: distance, y: 0 },
+      ]);
+    }
+
+    expect(zoomLevel).toBe(12);
+    expect(liveFontSizes.some((size) => !Number.isInteger(size))).toBe(true);
+    pinch.end();
+
+    expect(fontSize).toBe(12);
+    expect(grid).toEqual(startGrid);
+    expect(resize).toHaveBeenCalledOnce();
   });
 });
