@@ -255,16 +255,104 @@ function terminalTouchPoints(
 }
 
 export function createTerminalTouchHandlers(terminalRef: {
-  readonly current: Pick<XTermTerminal, "element" | "focus" | "modes"> | null;
+  readonly current: Pick<
+    XTermTerminal,
+    | "buffer"
+    | "element"
+    | "focus"
+    | "modes"
+    | "rows"
+    | "scrollLines"
+    | "scrollToLine"
+  > | null;
 }) {
   let gesture: TerminalTouchFocusGesture | null = null;
+  let touchScrollLastY: number | null = null;
+  let touchScrollStartY: number | null = null;
+  let touchScrollStartViewportY: number | null = null;
+  let touchScrollAccumulator = 0;
+  const resetTouchScroll = () => {
+    touchScrollLastY = null;
+    touchScrollStartY = null;
+    touchScrollStartViewportY = null;
+    touchScrollAccumulator = 0;
+  };
+  const scrollTouchMove = (touches: readonly TerminalTouchPoint[]) => {
+    const terminal = terminalRef.current;
+    const screen =
+      terminal?.element?.querySelector<HTMLElement>(".xterm-screen") ?? null;
+    const touch = touches[0];
+    if (
+      terminal === null ||
+      screen === null ||
+      touches.length !== 1 ||
+      touch === undefined ||
+      typeof Reflect.get(screen, "handleTouchScroll") === "function" ||
+      terminal.buffer.active.type !== "normal" ||
+      terminal.buffer.active.baseY === 0 ||
+      terminal.modes.mouseTrackingMode !== "none"
+    ) {
+      resetTouchScroll();
+      return;
+    }
+    const lineHeight = screen.getBoundingClientRect().height / terminal.rows;
+    if (!Number.isFinite(lineHeight) || lineHeight <= 0) {
+      resetTouchScroll();
+      return;
+    }
+    if (touchScrollLastY === null) {
+      touchScrollLastY = touch.y;
+      return;
+    }
+    touchScrollAccumulator += touch.y - touchScrollLastY;
+    touchScrollLastY = touch.y;
+    const lines = Math.trunc(touchScrollAccumulator / lineHeight);
+    if (lines === 0) return;
+    touchScrollAccumulator -= lines * lineHeight;
+    terminal.scrollLines(lines);
+  };
+  const finishTouchScroll = (touches: readonly TerminalTouchPoint[]) => {
+    const terminal = terminalRef.current;
+    const screen =
+      terminal?.element?.querySelector<HTMLElement>(".xterm-screen") ?? null;
+    const touch = touches[0];
+    if (
+      terminal === null ||
+      screen === null ||
+      touch === undefined ||
+      touchScrollStartY === null ||
+      touchScrollStartViewportY === null ||
+      typeof Reflect.get(screen, "handleTouchScroll") === "function" ||
+      terminal.buffer.active.type !== "normal" ||
+      terminal.buffer.active.baseY === 0 ||
+      terminal.modes.mouseTrackingMode !== "none"
+    ) {
+      return;
+    }
+    const lineHeight = screen.getBoundingClientRect().height / terminal.rows;
+    const lines = Math.trunc((touch.y - touchScrollStartY) / lineHeight);
+    if (lines !== 0) {
+      terminal.scrollToLine(
+        Math.max(
+          0,
+          Math.min(
+            terminal.buffer.active.baseY,
+            touchScrollStartViewportY + lines,
+          ),
+        ),
+      );
+    }
+  };
   return {
     cancel(): void {
       gesture = null;
+      resetTouchScroll();
     },
     end(event: TerminalTouchEventLike): void {
       const completed = gesture;
       gesture = null;
+      finishTouchScroll(terminalTouchPoints(event.changedTouches));
+      resetTouchScroll();
       const changedTouches = terminalTouchPoints(event.changedTouches);
       const tapped = focusTerminalFromTouchRelease({
         changedTouches,
@@ -280,12 +368,21 @@ export function createTerminalTouchHandlers(terminalRef: {
       }
     },
     move(event: TerminalTouchEventLike): void {
+      scrollTouchMove(terminalTouchPoints(event.touches));
       gesture = updateTerminalTouchFocusGesture(
         gesture,
         terminalTouchPoints(event.touches),
       );
     },
     start(event: TerminalTouchEventLike): void {
+      resetTouchScroll();
+      const touch = terminalTouchPoints(event.touches)[0];
+      if (event.touches.length === 1 && touch !== undefined) {
+        touchScrollLastY = touch.y;
+        touchScrollStartY = touch.y;
+        touchScrollStartViewportY =
+          terminalRef.current?.buffer.active.viewportY ?? null;
+      }
       gesture = startTerminalTouchFocusGesture(
         terminalTouchPoints(event.touches),
         event.timeStamp,
@@ -1800,6 +1897,7 @@ export function ThreadTerminalView({
       }
       setConnectionNotice(null);
       resizeObserver?.disconnect();
+      touchHandlersRef.current?.cancel();
       replayPreview?.dispose();
       replayPreview = null;
       detachPointerCoordinates?.();

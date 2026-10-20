@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { Terminal } from "@xterm/xterm";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { startTerminalLongPress } from "./terminal-mobile-gestures";
 import { createTerminalTouchHandlers } from "./ThreadTerminalView";
 
 const CELL_WIDTH_PX = 8;
@@ -18,6 +19,7 @@ interface TouchPoint {
 
 interface Opened {
   screen: HTMLElement;
+  wrapper: HTMLElement;
   sent: string[];
   terminal: Terminal;
 }
@@ -69,8 +71,10 @@ function openTerminal(withTouchHandlers: boolean): Opened {
       width: COLS * CELL_WIDTH_PX,
       height: ROWS * CELL_HEIGHT_PX,
     });
+  let cancelTouchHandlers = () => {};
   if (withTouchHandlers) {
     const handlers = createTerminalTouchHandlers({ current: terminal });
+    cancelTouchHandlers = handlers.cancel;
     wrapper.addEventListener("touchstart", (event) =>
       handlers.start(event as TouchEvent),
     );
@@ -85,10 +89,11 @@ function openTerminal(withTouchHandlers: boolean): Opened {
   const sent: string[] = [];
   terminal.onData((data) => sent.push(data));
   disposers.push(() => {
+    cancelTouchHandlers();
     terminal.dispose();
     wrapper.remove();
   });
-  return { screen, sent, terminal };
+  return { screen, wrapper, sent, terminal };
 }
 
 function dispatchTouch(
@@ -192,22 +197,47 @@ describe("terminal touch flow with mouse tracking off", () => {
     expect(sent).toEqual([]);
   });
 
-  it("scrolls a swipe exactly as without the touch handlers", async () => {
+  it("scrolls a swipe without sending terminal input", async () => {
     stubMeasurements();
     const lines = Array.from({ length: 200 }, (_, index) => `line ${index}`);
     const withHandlers = openTerminal(true);
-    const without = openTerminal(false);
     await write(withHandlers.terminal, lines.join("\r\n"));
-    await write(without.terminal, lines.join("\r\n"));
-    swipe(withHandlers.screen, { x: 40, y: 100 }, 150);
-    swipe(without.screen, { x: 40, y: 100 }, 150);
+    swipe(withHandlers.wrapper, { x: 40, y: 200 }, -150);
     expect(withHandlers.sent).toEqual([]);
-    expect(without.sent).toEqual([]);
     expect(withHandlers.terminal.buffer.active.viewportY).toBeLessThan(
       withHandlers.terminal.buffer.active.baseY,
     );
-    expect(withHandlers.terminal.buffer.active.viewportY).toBe(
-      without.terminal.buffer.active.viewportY,
+  });
+
+  it("scrolls touchmove distance before the long-press selection delay", async () => {
+    stubMeasurements();
+    const { wrapper, terminal } = openTerminal(true);
+    await write(
+      terminal,
+      Array.from({ length: 200 }, (_, index) => `line ${index}`).join("\r\n"),
     );
+    const startY = terminal.buffer.active.viewportY;
+    const sheetOpened = vi.fn();
+    let fireLongPress = () => {};
+    const longPress = startTerminalLongPress(
+      [{ identifier: 1, x: 40, y: 200 }],
+      () => 0,
+      sheetOpened,
+      (callback) => {
+        fireLongPress = callback;
+        return { cancel: vi.fn() };
+      },
+    );
+    dispatchTouch(wrapper, "touchstart", { x: 40, y: 200 }, 2_000);
+    for (let step = 1; step <= 6; step += 1) {
+      const point = { x: 40, y: 200 - (150 * step) / 6 };
+      dispatchTouch(wrapper, "touchmove", point, 2_000 + step * 50);
+      longPress.move([{ identifier: 1, ...point }]);
+    }
+    fireLongPress();
+    dispatchTouch(wrapper, "touchend", { x: 40, y: 50 }, 2_400);
+
+    expect(terminal.buffer.active.viewportY).toBeLessThanOrEqual(startY - 9);
+    expect(sheetOpened).not.toHaveBeenCalled();
   });
 });
