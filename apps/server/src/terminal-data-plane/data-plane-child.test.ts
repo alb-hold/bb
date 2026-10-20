@@ -1628,7 +1628,12 @@ describe("terminal data plane child", () => {
       const ambiguousPrefix =
         splitAt <= 3 ? marker.subarray(0, splitAt) : Buffer.alloc(0);
       expect(received.toString()).toBe(
-        Buffer.concat([grid, ambiguousPrefix, Buffer.from("after")]).toString(),
+        Buffer.concat([
+          grid,
+          ambiguousPrefix,
+          splitAt <= 3 ? Buffer.from("\u001b\\") : Buffer.alloc(0),
+          Buffer.from("after"),
+        ]).toString(),
       );
       harness.child.shutdown();
     },

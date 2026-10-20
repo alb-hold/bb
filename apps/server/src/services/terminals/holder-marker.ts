@@ -4,6 +4,7 @@ import type { TerminalOutputChunk } from "@bb/server-contract";
 const PREFIX = Buffer.from("\u001b]7717;bb-holder;");
 const GRID_PREFIX = Buffer.from("\u001b]7791;bb-grid;");
 const LIMIT = 160;
+const STRING_TERMINATOR = Buffer.from("\u001b\\");
 const ESC = Buffer.from("\u001b");
 const ESC_OSC = Buffer.from("\u001b]");
 const ESC_CWD_OSC = Buffer.from("\u001b]7");
@@ -110,21 +111,29 @@ export function stripHolderMarkerChunks(
   const markerEnd = Math.max(0, markerOffset + end + 1 - releasedPrefixLength);
   const result: TerminalOutputChunk[] = [];
   let offset = 0;
+  let stringTerminatorInserted = false;
   for (let index = 0; index < state.chunks.length; index += 1) {
     const original = state.chunks[index];
     const bytes = state.data[index];
     if (original === undefined || bytes === undefined) continue;
     const chunkStart = offset;
     const chunkEnd = chunkStart + bytes.length;
-    const kept = Buffer.concat([
-      bytes.subarray(
-        0,
-        Math.max(0, Math.min(bytes.length, markerStart - chunkStart)),
-      ),
-      bytes.subarray(
-        Math.max(0, Math.min(bytes.length, markerEnd - chunkStart)),
-      ),
-    ]);
+    const beforeMarker = bytes.subarray(
+      0,
+      Math.max(0, Math.min(bytes.length, markerStart - chunkStart)),
+    );
+    const afterMarker = bytes.subarray(
+      Math.max(0, Math.min(bytes.length, markerEnd - chunkStart)),
+    );
+    const insertStringTerminator =
+      releasedPrefixLength > 0 &&
+      !stringTerminatorInserted &&
+      markerStart >= chunkStart &&
+      markerStart <= chunkEnd;
+    if (insertStringTerminator) stringTerminatorInserted = true;
+    const kept = insertStringTerminator
+      ? Buffer.concat([beforeMarker, STRING_TERMINATOR, afterMarker])
+      : Buffer.concat([beforeMarker, afterMarker]);
     offset = chunkEnd;
     result.push({
       ...original,

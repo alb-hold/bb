@@ -3224,6 +3224,8 @@ describe("native terminal threads", () => {
       ).toMatchObject({ holderBacked: true });
       const ambiguousPrefix =
         splitAt <= 3 ? marker.subarray(0, splitAt) : Buffer.alloc(0);
+      const stringTerminator =
+        splitAt <= 3 ? Buffer.from("\u001b\\") : Buffer.alloc(0);
       const retained = await retainedText(delayedTerminalId);
       expect(retained).not.toContain("7717;bb-holder");
       expect(retained.match(/AFTER\n/gu)).toHaveLength(1);
@@ -3231,6 +3233,7 @@ describe("native terminal threads", () => {
         Buffer.concat([
           grid,
           ambiguousPrefix,
+          stringTerminator,
           Buffer.from("AFTER\n"),
         ]).toString(),
       );
