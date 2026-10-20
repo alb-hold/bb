@@ -1,5 +1,7 @@
 # Debugging And QA
 
+Claude native activity accepts hook evidence only when its `session_id` matches the control-plane assigned session. This prevents a foreign hook from creating or renewing activity; it does not repair a stale active status already displayed by the server. Truthful display for unknown or incomplete execution still needs a separate reviewed server source change.
+
 - `pnpm dev` and `pnpm start:worktree` save the absolute source checkout path in `<data dir>/bb-dev-instance.json`. Storage reports use this record to identify development data even after the checkout is removed. Older instances can be identified from `bb-app-runtime.json` or hash-verified path matches; unknown source paths are reported explicitly.
 - `pnpm dev` prints the active frontend URL, server API URL, host daemon port, data dir, and logs dir. Do not assume fixed dev ports.
 - `pnpm mobile:apk:dev` builds a standalone ARM64 Android APK at `apps/mobile/build-output/bb-dev.apk`, named **bb dev** with an orange icon and separate package/data from the installed app. Append `-- x86_64` for an Intel emulator. See [the mobile build instructions](../apps/mobile/README.md#android-local-apk-and-verification) for prerequisites, installation, and per-thread delivery.

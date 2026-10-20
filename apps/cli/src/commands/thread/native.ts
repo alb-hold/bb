@@ -322,6 +322,14 @@ async function holdNativeHarness(
             });
           }
         },
+        (reason, total) => {
+          if (ownsSocket) {
+            logNativeHolderEvent(socketPath, "activity-hook-identity-unconfirmed", {
+              reason,
+              count: total,
+            });
+          }
+        },
       );
       if (activity !== undefined) {
         activityTimers.push(

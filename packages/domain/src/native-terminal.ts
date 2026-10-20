@@ -105,6 +105,7 @@ export const providerNativeTerminalActivitySchema = z
         idle: z.array(hookEventNameSchema).max(8),
         pending: z.array(hookEventNameSchema).min(1).max(8).optional(),
         promptField: recordFieldPathSchema,
+        sessionIdField: recordFieldPathSchema.optional(),
         permission: z
           .object({
             open: z.array(hookEventNameSchema).min(1).max(8),

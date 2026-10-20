@@ -69,6 +69,9 @@ export class NativeActivityReader {
   private transcriptFile: string | null;
   private sessionId: string | null;
   private currentTurn: string | null = null;
+  private hookIdentityConfirmed = false;
+  private unconfirmedTranscriptOffset: number | null = null;
+  private unconfirmedHookCount = 0;
   private workingRecord: string | null = null;
   private transcriptPosition = 0;
   private evictedRecords: EvictedRecordIndex | null = null;
@@ -87,6 +90,10 @@ export class NativeActivityReader {
     private readonly eventsFile: string | null,
     start: NativeActivityStart,
     private readonly onUnconfirmedIdentity?: (total: number) => void,
+    private readonly onUnconfirmedHookIdentity?: (
+      reason: "missing-session" | "foreign-session" | "unbound",
+      total: number,
+    ) => void,
   ) {
     if (start.kind === "resume") {
       this.sessionId = start.id;
@@ -101,6 +108,9 @@ export class NativeActivityReader {
 
   sessionDiscovered(sessionId: string): void {
     this.sessionId = sessionId;
+    if (this.cli.activity?.hooks?.sessionIdField !== undefined) {
+      this.unconfirmedTranscriptOffset = this.currentTranscriptSize();
+    }
   }
 
   read(): NativeActivityReport[] {
@@ -113,6 +123,25 @@ export class NativeActivityReader {
     const hooks = activity.hooks;
     if (hooks !== undefined && this.eventsFile !== null) {
       for (const record of this.hookTail.readRecords(this.eventsFile)) {
+        if (hooks.sessionIdField !== undefined) {
+          const hookSession = this.stringField(record, hooks.sessionIdField);
+          const reason =
+            this.sessionId === null
+              ? "unbound"
+              : hookSession === null
+                ? "missing-session"
+                : hookSession !== this.sessionId
+                  ? "foreign-session"
+                  : null;
+          if (reason !== null) {
+            this.hookIdentityConfirmed = false;
+            this.unconfirmedTranscriptOffset = this.currentTranscriptSize();
+            this.onUnconfirmedHookIdentity?.(reason, ++this.unconfirmedHookCount);
+            continue;
+          }
+          this.hookIdentityConfirmed = true;
+          this.unconfirmedTranscriptOffset = null;
+        }
         const signal = classifyHookRecord(hooks, record);
         const turn =
           hooks.turnId === undefined
@@ -131,16 +160,43 @@ export class NativeActivityReader {
     if (transcript === undefined) return reports;
     this.transcriptFile ??= this.findTranscript();
     if (this.transcriptFile === null) return reports;
+    if (
+      !this.hookIdentityConfirmed &&
+      this.unconfirmedTranscriptOffset === Number.POSITIVE_INFINITY
+    ) {
+      this.unconfirmedTranscriptOffset =
+        fileSize(this.transcriptFile) ?? Number.POSITIVE_INFINITY;
+    }
     this.transcriptTail.readRecords(this.transcriptFile, (record, location) => {
+      if (
+        !this.hookIdentityConfirmed &&
+        this.unconfirmedTranscriptOffset !== null &&
+        location.offset < this.unconfirmedTranscriptOffset
+      ) {
+        return;
+      }
       const signal = classifyTranscriptRecord(transcript, record);
-      push(
-        this.tracker.apply(this.identifyTranscript(record, signal, location)),
-      );
+      const identified = this.identifyTranscript(record, signal, location);
+      if (
+        identified.state !== null ||
+        identified.question !== undefined ||
+        identified.answered !== undefined
+      ) {
+        this.hookIdentityConfirmed = true;
+        this.unconfirmedTranscriptOffset = null;
+      }
+      push(this.tracker.apply(identified));
     });
     return reports;
   }
 
   heartbeat(): NativeActivityReport | null {
+    if (
+      this.cli.activity?.hooks?.sessionIdField !== undefined &&
+      !this.hookIdentityConfirmed
+    ) {
+      return null;
+    }
     return this.tracker.heartbeat();
   }
 
@@ -155,6 +211,12 @@ export class NativeActivityReader {
     } catch {
       return null;
     }
+  }
+
+  private currentTranscriptSize(): number {
+    const file = this.transcriptFile ?? this.findTranscript();
+    if (file === null) return Number.POSITIVE_INFINITY;
+    return fileSize(file) ?? Number.POSITIVE_INFINITY;
   }
 
   private stringField(record: unknown, field: string): string | null {
