@@ -174,7 +174,11 @@ describe("MCP form normalization and validation", () => {
     ["email", "reader@example.com", "not-email"],
     ["uri", "urn:example:reader", "not a URI"],
     ["date", "2024-02-29", "2025-02-29"],
-    ["date-time", "2026-09-04T12:30:00+01:00", "2026-09-04T12:30:00"],
+    [
+      "date-time",
+      "2026-09-04T12:30:00+01:00",
+      "2026-09-30T12:00:00+99:99",
+    ],
   ])("validates %s format", (format, accepted, rejected) => {
     const formatted = normalizeCodexMcpForm({
       type: "object",

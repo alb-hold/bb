@@ -435,6 +435,55 @@ it.sequential("round-trips URL acceptance without form content", async () => {
   });
 }, 30_000);
 
+it.sequential("declines a URL elicitation through the native Codex form path", async () => {
+  const { interaction, nativeResponse } = await runElicitation({
+    request: urlElicitation,
+    answer: { action: "decline" },
+  });
+  expect(interaction.payload).toMatchObject({
+    kind: CODEX_MCP_ELICITATION_KIND,
+    data: { kind: "url", url: "https://example.com/connect" },
+  });
+  expect(nativeResponse).toEqual({
+    jsonrpc: "2.0",
+    id: "fx-req-1",
+    result: { action: "decline", content: null, _meta: null },
+  });
+}, 30_000);
+
+it.sequential("rejects a date-time answer with an impossible offset", async () => {
+  const request = {
+    ...formElicitation,
+    params: {
+      ...formElicitation.params,
+      requestedSchema: {
+        type: "object",
+        properties: {
+          when: { type: "string", title: "Ship at", format: "date-time" },
+        },
+        required: ["when"],
+      },
+    },
+  } satisfies ScriptedElicitationRequest;
+  const { interaction, nativeResponse } = await runElicitation({
+    request,
+    answer: {
+      action: "accept",
+      content: { when: "2026-09-30T12:00:00+99:99" },
+    },
+  });
+  expect(interaction.payload).toMatchObject({
+    kind: CODEX_MCP_ELICITATION_KIND,
+    data: { kind: "form", fields: [{ kind: "string", format: "date-time" }] },
+  });
+  expect(nativeResponse).toMatchObject({
+    error: {
+      code: BRIDGE_JSON_RPC_ERRORS.BRIDGE_ERROR,
+      message: expect.stringContaining("Invalid Codex MCP elicitation response"),
+    },
+  });
+}, 30_000);
+
 it.sequential("lets the user decline an unsupported elicitation", async () => {
   const { interaction, nativeResponse } = await runElicitation({
     request: unsupportedElicitation,
