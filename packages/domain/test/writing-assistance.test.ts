@@ -583,9 +583,9 @@ describe("resolveWritingEdits", () => {
     ["git push origin main", "git", "Git"],
     ["return  true", "return  true", "return true"],
     ["The build passed.\nreturn true", "return", "Return"],
-    ["return true // explanation.", "return", "Return"],
-    ["return true # explanation.", "return", "Return"],
-    ["return true -- explanation.", "return", "Return"],
+    ["value stays true // explanation.", "value", "Value"],
+    ["value stays true # explanation.", "value", "Value"],
+    ["value stays true -- explanation.", "value", "Value"],
   ])(
     "only suggests a case, spacing or period change in the unfinished sentence %j",
     (target, original, replacement) => {
