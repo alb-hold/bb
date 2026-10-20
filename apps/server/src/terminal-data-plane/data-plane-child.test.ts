@@ -1639,6 +1639,83 @@ describe("terminal data plane child", () => {
     },
   );
 
+  it.each([
+    [4, 300, "same-chunk"],
+    [8, 2_000, "later-chunk"],
+    [Buffer.byteLength("\u001b]7791;bb-grid;"), 300, "same-chunk"],
+    [Buffer.byteLength("\u001b]7791;bb-grid;80;"), 2_000, "later-chunk"],
+  ] as const)(
+    "keeps holder filtering pending across a delayed partial grid prefix at byte %i (%i ms, %s)",
+    async (splitAt, delayMs, markerPlacement) => {
+      vi.useFakeTimers();
+      const harness = createHarness();
+      main(harness, {
+        v,
+        type: "terminal.route",
+        terminalId: "term_a",
+        daemonSessionId: "session_1",
+        mode: "data-socket",
+        holderMarkerPending: true,
+      });
+      const browser = await attachLive(harness, {
+        attachId: "a1",
+        terminalId: "term_a",
+        daemonSessionId: "session_1",
+      });
+      const daemon = await attachDaemon(harness, "session_1");
+      const grid = Buffer.from("\u001b]7791;bb-grid;80;24\u0007");
+      const holder = Buffer.from("\u001b]7717;bb-holder;term_a\u0007");
+      const after = Buffer.from("AFTER\n");
+      daemon.receive({
+        type: "terminal.output",
+        terminalId: "term_a",
+        chunk: {
+          seq: 0,
+          dataBase64: grid.subarray(0, splitAt).toString("base64"),
+        },
+      });
+      await vi.advanceTimersByTimeAsync(delayMs);
+      expect(
+        browser.frames().filter((frame) => frame.type === "output"),
+      ).toEqual([]);
+      const sameChunk = markerPlacement === "same-chunk";
+      const rest = Buffer.concat([
+        grid.subarray(splitAt),
+        ...(sameChunk ? [holder, after] : []),
+      ]);
+      daemon.receive({
+        type: "terminal.output",
+        terminalId: "term_a",
+        chunk: { seq: 1, dataBase64: rest.toString("base64") },
+      });
+      if (!sameChunk) {
+        await vi.advanceTimersByTimeAsync(delayMs);
+        daemon.receive({
+          type: "terminal.output",
+          terminalId: "term_a",
+          chunk: {
+            seq: 2,
+            dataBase64: Buffer.concat([holder, after]).toString("base64"),
+          },
+        });
+      }
+      const output = browser
+        .frames()
+        .filter((frame) => frame.type === "output")
+        .map((frame) => frame.chunk as { seq: number; dataBase64: string });
+      const received = Buffer.concat(
+        output.map((part) => Buffer.from(part.dataBase64, "base64")),
+      );
+      expect(received.toString()).toBe(`${grid.toString()}AFTER\n`);
+      expect(received.toString()).not.toContain("7717;bb-holder");
+      expect(received.toString().match(/AFTER\n/gu)).toHaveLength(1);
+      expect(output.map((part) => part.seq)).toEqual(
+        markerPlacement === "same-chunk" ? [0, 1] : [0, 1, 2],
+      );
+      harness.child.shutdown();
+    },
+  );
+
   it.each(["\u001b", "\u001b]", "\u001b]7"])(
     "flushes short ambiguous prefix %j after the timeout",
     async (text) => {

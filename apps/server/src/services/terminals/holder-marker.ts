@@ -29,7 +29,8 @@ export function shouldFlushHolderMarkerChunksOnTimeout(
     ...state.data,
   ]);
   const candidate = holderCandidate(data);
-  if (candidate === null) return true;
+  if (candidate === null) return !isUnambiguousGridPrefix(data);
+  if (candidate.length === 0) return false;
   if (isTimeoutFlushableHolderMarkerPrefix(candidate)) return true;
   const comparedLength = Math.min(candidate.length, PREFIX.length);
   return (
@@ -165,17 +166,35 @@ function holderCandidate(data: Buffer): Buffer | null {
 export function timeoutReleasedHolderMarkerPrefix(
   state: HolderMarkerStripState,
 ): Buffer | null {
-  const candidate = holderCandidate(
-    Buffer.concat([state.releasedPrefix ?? Buffer.alloc(0), ...state.data]),
-  );
-  const comparedLength = Math.min(candidate?.length ?? 0, PREFIX.length);
-  return candidate !== null &&
-    candidate.length < 4 &&
-    candidate
+  const data = Buffer.concat([
+    state.releasedPrefix ?? Buffer.alloc(0),
+    ...state.data,
+  ]);
+  const candidate = holderCandidate(data);
+  const released =
+    candidate ?? (isTimeoutFlushableHolderMarkerPrefix(data) ? data : null);
+  const comparedLength = Math.min(released?.length ?? 0, PREFIX.length);
+  return released !== null &&
+    released.length > 0 &&
+    released.length < 4 &&
+    released
       .subarray(0, comparedLength)
       .equals(PREFIX.subarray(0, comparedLength))
-    ? candidate
+    ? released
     : null;
+}
+
+function isUnambiguousGridPrefix(data: Buffer): boolean {
+  const comparedLength = Math.min(data.length, GRID_PREFIX.length);
+  if (
+    !data
+      .subarray(0, comparedLength)
+      .equals(GRID_PREFIX.subarray(0, comparedLength)) ||
+    data.length < 4
+  )
+    return false;
+  if (data.length < GRID_PREFIX.length) return true;
+  return data.indexOf(0x07, GRID_PREFIX.length) < 0 && data.length < 64;
 }
 
 export function flushHolderMarkerChunks(

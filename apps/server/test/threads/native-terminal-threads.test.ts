@@ -3037,6 +3037,10 @@ describe("native terminal threads", () => {
         ),
       ).toString("utf8");
     };
+    const forwarded = vi.spyOn(
+      fixture.harness.deps.hub,
+      "sendTerminalClientMessage",
+    );
 
     const replayTerminalId = await openShell();
     const replayMarker = Buffer.from(
@@ -3182,12 +3186,25 @@ describe("native terminal threads", () => {
       ...Array.from({ length: 17 }, (_, index) => index + 1),
       Buffer.byteLength("\u001b]7717;bb-holder;") + 3,
     ];
+    const grid = Buffer.from("\u001b]7791;bb-grid;80;24\u0007");
+    const gridPrefix = Buffer.from("\u001b]7791;bb-grid;");
+    const gridCases = [
+      ...[4, 8, gridPrefix.length, grid.length - 2].flatMap((splitAt) =>
+        [300, 2_000].flatMap((delayMs) =>
+          ["same-chunk", "later-chunk"].map((markerPlacement) => ({
+            splitAt,
+            delayMs,
+            markerPlacement,
+          })),
+        ),
+      ),
+    ];
+    const gridTerminalIds = await Promise.all(gridCases.map(() => openShell()));
     const delayedTerminalIds = await Promise.all(
       delayedOffsets.map(() => openShell()),
     );
     const timedOutTerminalId = await openShell();
     vi.useFakeTimers();
-    const grid = Buffer.from("\u001b]7791;bb-grid;80;24\u0007");
     for (const [index, splitAt] of delayedOffsets.entries()) {
       const delayedTerminalId = delayedTerminalIds[index];
       if (delayedTerminalId === undefined) throw new Error("Missing terminal");
@@ -3237,6 +3254,53 @@ describe("native terminal threads", () => {
           Buffer.from("AFTER\n"),
         ]).toString(),
       );
+    }
+
+    for (const [index, scenario] of gridCases.entries()) {
+      const terminalId = gridTerminalIds[index];
+      if (terminalId === undefined) throw new Error("Missing grid terminal");
+      const holder = Buffer.from(`\u001b]7717;bb-holder;${terminalId}\u0007`);
+      const suffix = Buffer.from("AFTER\n");
+      send(terminalId, 0, grid.subarray(0, scenario.splitAt));
+      await vi.advanceTimersByTimeAsync(scenario.delayMs);
+      expect(await retainedText(terminalId)).toBe("");
+      const gridRemainder = grid.subarray(scenario.splitAt);
+      const sameChunk = scenario.markerPlacement === "same-chunk";
+      send(
+        terminalId,
+        1,
+        Buffer.concat([
+          gridRemainder,
+          ...(sameChunk ? [holder] : []),
+          ...(sameChunk ? [suffix] : []),
+        ]),
+      );
+      if (!sameChunk) {
+        await vi.advanceTimersByTimeAsync(scenario.delayMs);
+        send(terminalId, 2, Buffer.concat([holder, suffix]));
+      }
+      expect(
+        getTerminalSession(fixture.harness.db, {
+          kind: "terminal",
+          terminalId,
+        }),
+      ).toMatchObject({ holderBacked: true });
+      const retained = await retainedText(terminalId);
+      expect(retained).toBe(`${grid.toString()}AFTER\n`);
+      expect(retained).not.toContain("7717;bb-holder");
+      expect(retained.match(/AFTER\n/gu)).toHaveLength(1);
+      const clientText = forwarded.mock.calls
+        .filter(
+          ([id, message]) => id === terminalId && message.type === "output",
+        )
+        .map(([, message]) =>
+          message.type === "output"
+            ? Buffer.from(message.chunk.dataBase64, "base64").toString("utf8")
+            : "",
+        )
+        .join("");
+      expect(clientText).toBe(retained);
+      expect(clientText).not.toContain("7717;bb-holder");
     }
 
     const timedOutPrefix = Buffer.from("\u001b]7;");
