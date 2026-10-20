@@ -29,6 +29,7 @@ import { runWithTurnTrace } from "../system/turn-trace.js";
 interface AcceptThreadSendRequestArgs {
   payload: SendMessageRequest;
   thread: Thread;
+  deviceHandoffClientToken?: string;
 }
 
 export async function acceptThreadSendRequest(
@@ -110,6 +111,13 @@ export async function acceptThreadSendRequest(
         origin: null,
         originPluginId: null,
         startedOnBehalfOf: null,
+        onTurnRequestCreated: (turnRequestId, turnId) =>
+          deps.hub.recordDeviceHandoffTurnSubmitter(
+            args.deviceHandoffClientToken,
+            args.thread.id,
+            turnRequestId,
+            turnId,
+          ),
         trigger: "user",
       }),
   );

@@ -80,10 +80,14 @@ function createFixture() {
     onTerminalExited,
   );
   const request = { url: "/ws/terminals/term_1", headers: [], headBase64: "" };
-  const attach = (terminalId = "term_1") => {
+  const attach = (
+    terminalId = "term_1",
+    handoffOwnerToken?: string,
+  ) => {
     const raw = {} as Socket;
     const attachId = router.attachBrowser({
       daemonSessionId: "ds_1",
+      handoffOwnerToken,
       outputAcks: true,
       resizeAcks: false,
       request,
@@ -111,6 +115,36 @@ function createFixture() {
 }
 
 describe("TerminalDataPlaneRouter", () => {
+  it("keeps the app owner token on the server side of the daemon data-plane boundary", () => {
+    const fixture = createFixture();
+    const token = "0123456789abcdefghij_-";
+    const { attachId } = fixture.attach("term_1", token);
+
+    expect(fixture.sent[0]?.message).not.toHaveProperty("handoffOwnerToken");
+    expect(fixture.sent[0]?.message).toMatchObject({
+      type: "browser.attach",
+      request: { url: "/ws/terminals/term_1", headers: [], headBase64: "" },
+    });
+    expect(fixture.lifecycle.attach).toHaveBeenCalledWith(
+      expect.objectContaining({
+        handoffOwnerToken: token,
+        socket: fixture.attached[0],
+        terminalId: "term_1",
+      }),
+    );
+
+    fixture.router.handleChildMessage({
+      v: V,
+      type: "browser.resync",
+      attachId,
+      terminalId: "term_1",
+      fromSeq: 1,
+    });
+    expect(fixture.lifecycle.attach).toHaveBeenLastCalledWith(
+      expect.objectContaining({ handoffOwnerToken: token }),
+    );
+  });
+
   it("hands the raw socket to the child and refuses when the child is not ready", () => {
     const fixture = createFixture();
     const { attachId, raw } = fixture.attach();
