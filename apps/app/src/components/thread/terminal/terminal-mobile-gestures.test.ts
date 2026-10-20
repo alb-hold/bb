@@ -48,14 +48,14 @@ describe("terminal touch selection", () => {
 
 describe("terminal pinch zoom", () => {
   it("zooms in and sends one resize after the gesture ends", () => {
-    let fontSize = 12;
-    const setFontSize = vi.fn((size: number) => {
-      fontSize = size;
+    let zoomLevel = 12;
+    const setZoomLevel = vi.fn((size: number) => {
+      zoomLevel = size;
     });
     const fitAndResize = vi.fn();
     const pinch = createTerminalPinchGesture({
-      getFontSize: () => fontSize,
-      setFontSize,
+      getZoomLevel: () => zoomLevel,
+      setZoomLevel,
       fitAndResize,
     });
     pinch.start([
@@ -71,7 +71,7 @@ describe("terminal pinch zoom", () => {
       { identifier: 2, x: 170, y: 0 },
     ]);
 
-    expect(fontSize).toBe(20);
+    expect(Math.round(zoomLevel)).toBe(20);
     expect(fitAndResize).not.toHaveBeenCalled();
     pinch.end();
 
@@ -79,13 +79,13 @@ describe("terminal pinch zoom", () => {
   });
 
   it("zooms out and clamps both ends of the supported font range", () => {
-    let fontSize = 12;
+    let zoomLevel = 12;
     const apply = (startSize: number, scale: number) => {
-      fontSize = startSize;
+      zoomLevel = startSize;
       const pinch = createTerminalPinchGesture({
-        getFontSize: () => fontSize,
-        setFontSize: (size) => {
-          fontSize = size;
+        getZoomLevel: () => zoomLevel,
+        setZoomLevel: (size) => {
+          zoomLevel = size;
         },
         fitAndResize: vi.fn(),
       });
@@ -98,10 +98,57 @@ describe("terminal pinch zoom", () => {
         { identifier: 2, x: 100 * scale, y: 0 },
       ]);
       pinch.end();
-      return fontSize;
+      return Math.round(zoomLevel);
     };
 
     expect(apply(12, 0.5)).toBe(8);
     expect(apply(12, 3)).toBe(28);
+  });
+
+  it("restores the start grid after reciprocal gestures and resizes once per end", () => {
+    let zoomLevel = 12;
+    let fontSize = 12;
+    let grid = { cols: 49, rows: 46 };
+    const startGrid = grid;
+    const resize = vi.fn(() => {
+      grid = {
+        cols: Math.floor(357 / (fontSize * 0.6)),
+        rows: Math.floor(658 / (fontSize * 1.17)),
+      };
+    });
+    const pinch = createTerminalPinchGesture({
+      getZoomLevel: () => zoomLevel,
+      setZoomLevel: (nextZoomLevel) => {
+        zoomLevel = nextZoomLevel;
+        fontSize = Math.round(nextZoomLevel);
+      },
+      fitAndResize: resize,
+    });
+    const gesture = (scale: number) => {
+      const resizeCount = resize.mock.calls.length;
+      pinch.start([
+        { identifier: 1, x: 0, y: 0 },
+        { identifier: 2, x: 100, y: 0 },
+      ]);
+      pinch.move([
+        { identifier: 1, x: 0, y: 0 },
+        { identifier: 2, x: 100 * scale, y: 0 },
+      ]);
+      expect(resize).toHaveBeenCalledTimes(resizeCount);
+      pinch.end();
+      expect(resize).toHaveBeenCalledTimes(resizeCount + 1);
+    };
+
+    gesture(1.5);
+
+    expect(fontSize).toBe(18);
+    expect(grid).toEqual({ cols: 33, rows: 31 });
+    expect(resize).toHaveBeenCalledOnce();
+
+    gesture(1 / 1.5);
+
+    expect(fontSize).toBe(12);
+    expect(grid).toEqual(startGrid);
+    expect(resize).toHaveBeenCalledTimes(2);
   });
 });

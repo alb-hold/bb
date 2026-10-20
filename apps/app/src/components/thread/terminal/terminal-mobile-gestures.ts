@@ -23,6 +23,16 @@ export function terminalFontSizeForPinch(
   );
 }
 
+export function terminalZoomLevelForPinch(
+  initialZoomLevel: number,
+  scale: number,
+): number {
+  return Math.min(
+    TERMINAL_TOUCH_FONT_MAX,
+    Math.max(TERMINAL_TOUCH_FONT_MIN, initialZoomLevel * scale),
+  );
+}
+
 export function terminalPinchDistance(
   touches: readonly TerminalGestureTouch[],
 ): number | null {
@@ -68,18 +78,17 @@ export function startTerminalLongPress(
 }
 
 export function createTerminalPinchGesture({
-  getFontSize,
-  setFontSize,
+  getZoomLevel,
+  setZoomLevel,
   fitAndResize,
 }: {
-  getFontSize: () => number;
-  setFontSize: (fontSize: number) => void;
+  getZoomLevel: () => number;
+  setZoomLevel: (zoomLevel: number) => void;
   fitAndResize: () => void;
 }) {
   let initialDistance: number | null = null;
+  let initialZoomLevel = 0;
   let initialFontSize = 0;
-  let changed = false;
-  let didResize = false;
   return {
     cancel() {
       this.end();
@@ -87,33 +96,28 @@ export function createTerminalPinchGesture({
     end() {
       if (initialDistance === null) return;
       initialDistance = null;
-      if (changed && !didResize) {
-        didResize = true;
+      if (terminalFontSizeForPinch(getZoomLevel(), 1) !== initialFontSize) {
         fitAndResize();
       }
-      changed = false;
-      didResize = false;
     },
     move(touches: readonly TerminalGestureTouch[]) {
       if (initialDistance === null) return;
       const distance = terminalPinchDistance(touches);
       if (distance === null || initialDistance <= 0) return;
-      const nextSize = terminalFontSizeForPinch(
-        initialFontSize,
+      const nextZoomLevel = terminalZoomLevelForPinch(
+        initialZoomLevel,
         distance / initialDistance,
       );
-      if (nextSize !== getFontSize()) {
-        setFontSize(nextSize);
-        changed = true;
+      if (nextZoomLevel !== getZoomLevel()) {
+        setZoomLevel(nextZoomLevel);
       }
     },
     start(touches: readonly TerminalGestureTouch[]) {
       const distance = terminalPinchDistance(touches);
       if (distance === null) return;
       initialDistance = distance;
-      initialFontSize = getFontSize();
-      changed = false;
-      didResize = false;
+      initialZoomLevel = getZoomLevel();
+      initialFontSize = terminalFontSizeForPinch(initialZoomLevel, 1);
     },
   };
 }

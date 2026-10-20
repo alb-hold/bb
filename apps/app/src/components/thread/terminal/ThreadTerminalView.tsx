@@ -56,6 +56,7 @@ import {
 import {
   createTerminalPinchGesture,
   startTerminalLongPress,
+  terminalFontSizeForPinch,
   type TerminalGestureTouch,
 } from "./terminal-mobile-gestures";
 import {
@@ -903,6 +904,7 @@ export function ThreadTerminalView({
   >(null);
   const [terminalFontSize, setTerminalFontSize] = useState(12);
   const terminalFontSizeRef = useRef(12);
+  const terminalZoomLevelRef = useRef(12);
   const longPressGestureRef = useRef<{
     cancel: () => void;
     move: (touches: readonly TerminalGestureTouch[]) => void;
@@ -1905,8 +1907,11 @@ export function ThreadTerminalView({
     }));
   const ensurePinchGesture = () => {
     pinchGestureRef.current ??= createTerminalPinchGesture({
-      getFontSize: () => terminalFontSizeRef.current,
-      setFontSize: (size) => {
+      getZoomLevel: () => terminalZoomLevelRef.current,
+      setZoomLevel: (zoomLevel) => {
+        terminalZoomLevelRef.current = zoomLevel;
+        const size = terminalFontSizeForPinch(zoomLevel, 1);
+        if (size === terminalFontSizeRef.current) return;
         terminalFontSizeRef.current = size;
         setTerminalFontSize(size);
         const terminal = terminalRef.current;
