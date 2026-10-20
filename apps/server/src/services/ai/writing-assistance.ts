@@ -280,7 +280,9 @@ export async function correctWriting(
       outcome.message,
     );
   }
+  const proposals = parseCorrectionReply(outcome.value);
   addWritingUsage(deps.db, day, {
+    corrections: proposals === null ? -1 : 0,
     inputChars: prompt.length,
     outputChars: outcome.value.length,
     estimatedCostMicros: estimateTextCostMicros(
@@ -288,7 +290,6 @@ export async function correctWriting(
       outcome.value.length,
     ),
   });
-  const proposals = parseCorrectionReply(outcome.value);
   if (proposals === null) {
     return skipped("failed", "The AI service returned an unreadable reply");
   }

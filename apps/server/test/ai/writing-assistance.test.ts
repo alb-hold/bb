@@ -279,6 +279,34 @@ describe("writing assistance corrections", () => {
     });
   });
 
+  it("returns the reserved request when the reply is unreadable, so the next request still runs", async () => {
+    await withTestHarness({}, async (harness) => {
+      const replies = ["Sure! Here are some thoughts.", editsReply([])];
+      const service = registerFakeAiService(harness.deps.aiServices, {
+        complete: async () => replies.shift() ?? editsReply([]),
+      });
+      updateWritingAssistanceSettings(harness.deps.db, {
+        dailyCorrectionLimit: 1,
+      });
+      const unreadable = await (
+        await postCorrection(harness, { target: "One." })
+      ).json();
+      expect(unreadable).toMatchObject({ status: "skipped", reason: "failed" });
+      const afterUnreadable = getWritingUsage(harness.deps.db, utcDay());
+      expect(afterUnreadable.corrections).toBe(0);
+      expect(afterUnreadable.inputChars).toBeGreaterThan(0);
+      expect(afterUnreadable.outputChars).toBe(
+        "Sure! Here are some thoughts.".length,
+      );
+      const next = await (
+        await postCorrection(harness, { target: "Two." })
+      ).json();
+      expect(next).toMatchObject({ status: "ok" });
+      expect(service.completeCalls).toHaveLength(2);
+      expect(getWritingUsage(harness.deps.db, utcDay()).corrections).toBe(1);
+    });
+  });
+
   it("does not call the service when typing correction is off", async () => {
     await withTestHarness({}, async (harness) => {
       const service = registerFakeAiService(harness.deps.aiServices);

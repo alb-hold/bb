@@ -291,8 +291,10 @@ it fails, titles fall back to the start of the prompt and commits to
 
 The Claude Code provider plugin registers a `claude` service for
 `thread-title`, `commit-message`, and `writing`. It runs the primary machine's
-`claude` CLI with its own login (`claude auth login`), no tools, no settings,
-and no session history, trying Claude Haiku 5.5 and then Claude Sonnet 5.5.
+`claude` CLI with its own login (`claude auth login`), no tools, no user or
+project settings, CLAUDE.md or hooks, no auto-memory (it passes only the
+setting `autoMemoryEnabled: false`), and no session history, trying Claude
+Haiku 5.5 and then Claude Sonnet 5.5.
 The CLI gets only an allowlisted environment (path, home, user, temp, locale,
 XDG, `CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_OAUTH_TOKEN`, and the Windows system
 variables), so `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`,
@@ -363,7 +365,7 @@ plural changes are offered as suggestions. Code, paths, identifiers and
 vocabulary terms are never edited, and on a line containing any of
 = ; { } ( ) < > [ ] $ ` | \ / # " or --, a colon followed directly by text
 (10:30), a key: value line (status: ready, - name: x, "title": x), a line
-that starts with a shell command or builtin such as echo, git, npm or read (also after a $,
+that starts with a shell command, builtin or keyword such as echo, git, npm, read, for or if (also after a $,
 %, > or # prompt or sudo), a line with a short flag such as -la, a line
 indented four spaces or a tab, or a ``` or ~~~ fence line or a line inside such a fence (closed
 only by a bare fence of the same character at least as long), every

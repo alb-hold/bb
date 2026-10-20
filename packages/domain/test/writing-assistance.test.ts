@@ -409,6 +409,20 @@ describe("resolveWritingEdits", () => {
     ["wait so the user are ready.", "are", "is", "grammar"],
     ["stat the user are ready.", "are", "is", "grammar"],
     ["basename the user are ready.", "are", "is", "grammar"],
+    ["for value in user are ready", "are", "is", "grammar"],
+    [
+      "for value in user are ready\ndo\n  echo $value\ndone",
+      "are",
+      "is",
+      "grammar",
+    ],
+    ["while the user are ready", "are", "is", "grammar"],
+    ["until the user are ready", "are", "is", "grammar"],
+    ["if the user are ready", "are", "is", "grammar"],
+    ["case the user are ready", "are", "is", "grammar"],
+    ["select the user are ready", "are", "is", "grammar"],
+    ["function the user are ready", "are", "is", "grammar"],
+    ["time the user are ready", "are", "is", "grammar"],
   ])(
     "never auto-applies an edit on the code-like line %s",
     (target, original, replacement, category) => {
@@ -435,6 +449,9 @@ describe("resolveWritingEdits", () => {
     "Test that the user are ready.",
     "Read the user are ready.",
     "Wait so the user are ready.",
+    "If the user are ready, ship it.",
+    "While the user are ready, wait.",
+    "For now the user are ready.",
     "Ask the team - the user are ready.",
   ])("still auto-applies a safe fix on the prose line %s", (target) => {
     const edits = resolveWritingEdits({
