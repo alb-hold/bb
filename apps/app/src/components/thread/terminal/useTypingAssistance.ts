@@ -370,6 +370,18 @@ export function useTypingAssistance(
     trailingTimerRef.current = null;
   }, []);
 
+  const scheduleAnalysis = useCallback(() => {
+    clearTimers();
+    idleTimerRef.current = window.setTimeout(() => {
+      idleTimerRef.current = null;
+      analyzeCompleted();
+    }, TYPING_IDLE_MS);
+    trailingTimerRef.current = window.setTimeout(() => {
+      trailingTimerRef.current = null;
+      analyzeTrailing();
+    }, TRAILING_IDLE_MS);
+  }, [analyzeCompleted, analyzeTrailing, clearTimers]);
+
   const onTextChange = useCallback(
     (change: TextChange, programmatic: boolean) => {
       for (const range of trackedRef.current) mapRange(change, range);
@@ -389,23 +401,9 @@ export function useTypingAssistance(
         clearRecent();
       }
       if (programmatic || !optionsRef.current.enabled) return;
-      clearTimers();
-      idleTimerRef.current = window.setTimeout(() => {
-        idleTimerRef.current = null;
-        analyzeCompleted();
-      }, TYPING_IDLE_MS);
-      trailingTimerRef.current = window.setTimeout(() => {
-        trailingTimerRef.current = null;
-        analyzeTrailing();
-      }, TRAILING_IDLE_MS);
+      scheduleAnalysis();
     },
-    [
-      analyzeCompleted,
-      analyzeTrailing,
-      clearRecent,
-      clearTimers,
-      publishSuggestions,
-    ],
+    [clearRecent, publishSuggestions, scheduleAnalysis],
   );
 
   const acceptSuggestion = useCallback(
@@ -499,12 +497,15 @@ export function useTypingAssistance(
   );
 
   useEffect(() => {
-    if (options.enabled) return;
+    if (options.enabled) {
+      if (optionsRef.current.getText().trim().length > 0) scheduleAnalysis();
+      return;
+    }
     clearTimers();
     inFlightRef.current?.controller.abort();
     inFlightRef.current = null;
     setPending(false);
-  }, [clearTimers, options.enabled]);
+  }, [clearTimers, options.enabled, scheduleAnalysis]);
 
   return {
     suggestions,

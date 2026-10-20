@@ -731,6 +731,39 @@ describe(
       });
     });
 
+    it("checks a sentence typed before writing assistance finished loading", async () => {
+      let resolveView: (value: WritingAssistanceView) => void = () => {};
+      writingView.mockReturnValue(
+        new Promise<WritingAssistanceView>((resolve) => {
+          resolveView = resolve;
+        }),
+      );
+      correct.mockResolvedValue({
+        status: "ok",
+        edits: [
+          edit({ start: 9, end: 12, original: "are", replacement: "is" }),
+        ],
+      });
+      const { input } = renderBar();
+      await waitFor(() => expect(writingView).toHaveBeenCalled());
+      fireEvent.change(input, { target: { value: "The user are here. " } });
+      await new Promise((resolve) => setTimeout(resolve, 1_300));
+      expect(correct).not.toHaveBeenCalled();
+      await act(async () => {
+        resolveView(view());
+      });
+      await waitFor(() => expect(input.value).toBe("The user is here. "), {
+        timeout: 8_000,
+      });
+      expect(correct).toHaveBeenCalledTimes(1);
+      expect(correct).toHaveBeenCalledWith(
+        expect.objectContaining({
+          target: "The user are here.",
+          complete: true,
+        }),
+      );
+    });
+
     it("does not ask for corrections when typing correction is off", async () => {
       writingView.mockResolvedValue(view({ typingCorrection: "off" }));
       const { input } = renderBar();
