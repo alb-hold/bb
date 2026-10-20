@@ -1059,9 +1059,7 @@ export function createApp(
         protocolHeader: context.req.header("sec-websocket-protocol"),
         sessionId: context.req.query("sessionId") ?? null,
       });
-      let daemonOpen = Promise.resolve();
-      const enqueueDaemonMessage = createDaemonSocketMessageQueue<() => void>({
-        afterOpen: () => daemonOpen,
+      const daemonMessageQueue = createDaemonSocketMessageQueue<() => void>({
         handle: (message) => message(),
         onError: (error) => {
           deps.logger.error({ err: error }, "Daemon socket message queue failed");
@@ -1069,19 +1067,23 @@ export function createApp(
       });
       return {
         onOpen: (_event, socket) => {
-          daemonOpen = onDaemonSocketOpen(deps, {
+          const daemonOpen = onDaemonSocketOpen(deps, {
             ...websocketContext,
             socket,
-          }).catch((error: unknown) => {
-            deps.logger.error(
-              { err: error, sessionId: websocketContext.sessionId },
-              "Daemon socket open reconciliation failed",
-            );
           });
-          return daemonOpen;
+          return daemonOpen.then(
+            () => daemonMessageQueue.release(),
+            (error: unknown) => {
+              deps.logger.error(
+                { err: error, sessionId: websocketContext.sessionId },
+                "Daemon socket open reconciliation failed",
+              );
+              daemonMessageQueue.release();
+            },
+          );
         },
         onMessage: (event, socket) =>
-          enqueueDaemonMessage(() =>
+          daemonMessageQueue.enqueue(() =>
             onDaemonSocketMessage(
               deps,
               {

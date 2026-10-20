@@ -104,6 +104,9 @@ const TERMINAL_HOLDER_MARKER_LIMIT = 256;
 const TERMINAL_HOLDER_MARKER_PREFIX_BYTES = Buffer.from(
   TERMINAL_HOLDER_MARKER_PREFIX,
 );
+const TERMINAL_HOLDER_MARKER_BASE64_PREFIX = TERMINAL_HOLDER_MARKER_PREFIX_BYTES
+  .subarray(0, 15)
+  .toString("base64");
 const TERMINAL_OUTPUT_DISCARDED_MESSAGE = `The server no longer has the retained output of this exited terminal. The server keeps terminal output for ${TERMINAL_EXIT_RETENTION_MINUTES} minutes after a terminal exits, so read it sooner or run the command again.`;
 const TERMINAL_ATTACH_CANCELLED = new Error("Terminal attach cancelled");
 const REOPEN_NATIVE_TERMINAL_REPAINT_DELAY_MS = 1_500;
@@ -409,10 +412,7 @@ interface HandleDaemonSessionClosedArgs {
 function toTerminalOutputChunk(
   chunk: TerminalOutputMessage["chunk"],
 ): TerminalOutputChunk {
-  return {
-    seq: chunk.seq,
-    dataBase64: chunk.dataBase64,
-  };
+  return chunk;
 }
 
 function stripTerminalHolderMarker(data: Buffer): {
@@ -721,7 +721,8 @@ export class TerminalSessionLifecycle {
     string,
     Array<{ hostId: string; chunks: TerminalOutputChunk[] }>
   >();
-  private retainedOutputFlushTimer: ReturnType<typeof setTimeout> | null = null;
+  private retainedOutputFlushTimer: ReturnType<typeof setTimeout> | null =
+    null;
 
   constructor(private readonly options: TerminalSessionLifecycleOptions) {
     clearPersistedDeviceHandoffAttention(options.db, Date.now());
@@ -2607,11 +2608,6 @@ export class TerminalSessionLifecycle {
         this.finalizeTerminalExit(args);
         return;
       case "terminal.output": {
-        const originalBytes = Buffer.from(
-          args.message.chunk.dataBase64,
-          "base64",
-        );
-        const holderMarker = stripTerminalHolderMarker(originalBytes);
         const current = getTerminalById(
           this.options.db,
           args.message.terminalId,
@@ -2633,31 +2629,43 @@ export class TerminalSessionLifecycle {
           }
           return;
         }
+        const pendingHolderMarker = this.pendingHolderMarkers.delete(current.id);
+        let outputChunk = args.message.chunk;
         if (
-          this.pendingHolderMarkers.delete(current.id) &&
-          holderMarker.terminalId === current.id
+          pendingHolderMarker &&
+          outputChunk.dataBase64.startsWith(TERMINAL_HOLDER_MARKER_BASE64_PREFIX)
         ) {
-          updateTerminalSession(this.options.db, {
-            scope: {
-              kind: "terminal",
-              statuses: ["starting", "running"],
-              terminalId: current.id,
-            },
-            update: { kind: "holder-backed" },
-          });
+          const holderMarker = stripTerminalHolderMarker(
+            Buffer.from(outputChunk.dataBase64, "base64"),
+          );
+          if (holderMarker.terminalId === current.id) {
+            updateTerminalSession(this.options.db, {
+              scope: {
+                kind: "terminal",
+                statuses: ["starting", "running"],
+                terminalId: current.id,
+              },
+              update: { kind: "holder-backed" },
+            });
+          }
+          if (holderMarker.terminalId !== null) {
+            outputChunk = {
+              ...outputChunk,
+              dataBase64: holderMarker.data.toString("base64"),
+            };
+          }
         }
-        const chunk = {
-          ...args.message.chunk,
-          dataBase64: holderMarker.data.toString("base64"),
-          seq: this.outputSequenceRebase.toServer(
-            args.message.terminalId,
-            args.message.chunk.seq,
-          ),
-        };
+        const serverSeq = this.outputSequenceRebase.toServer(
+          args.message.terminalId,
+          outputChunk.seq,
+        );
+        if (serverSeq !== outputChunk.seq) {
+          outputChunk = { ...outputChunk, seq: serverSeq };
+        }
         this.outputFlow.recordOutput(
           args.message.terminalId,
           args.sessionId,
-          chunk.seq,
+          outputChunk.seq,
         );
         if (
           current.status !== "running" ||
@@ -2665,8 +2673,8 @@ export class TerminalSessionLifecycle {
         ) {
           return;
         }
-        this.retainTerminalOutput(current, toTerminalOutputChunk(chunk));
-        this.forwardTerminalOutput(current.id, chunk);
+        this.retainTerminalOutput(current, toTerminalOutputChunk(outputChunk));
+        this.forwardTerminalOutput(current.id, outputChunk);
         return;
       }
       case "terminal.replay": {

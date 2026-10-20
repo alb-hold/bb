@@ -9,22 +9,22 @@ describe("daemon socket message queue", () => {
     });
     const handled: string[] = [];
     const onError = vi.fn();
-    const enqueue = createDaemonSocketMessageQueue({
-      afterOpen: () => afterOpen,
+    const queue = createDaemonSocketMessageQueue({
       handle: (message: () => void) => {
         message();
       },
       onError,
     });
+    void afterOpen.then(queue.release);
 
-    const output = enqueue(() => handled.push("terminal.output"));
-    const exited = enqueue(() => handled.push("terminal.exited"));
-    const sessions = enqueue(() => handled.push("sessions"));
-    await Promise.resolve();
+    queue.enqueue(() => handled.push("terminal.output"));
+    queue.enqueue(() => handled.push("terminal.exited"));
+    queue.enqueue(() => handled.push("sessions"));
     expect(handled).toEqual([]);
 
     finishOpen();
-    await Promise.all([output, exited, sessions]);
+    await afterOpen;
+    await Promise.resolve();
 
     expect(handled).toEqual([
       "terminal.output",
@@ -32,5 +32,21 @@ describe("daemon socket message queue", () => {
       "sessions",
     ]);
     expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("handles messages synchronously after the open queue drains", async () => {
+    const handled: string[] = [];
+    const queue = createDaemonSocketMessageQueue({
+      handle: (message: () => void) => message(),
+      onError: (error) => {
+        throw error;
+      },
+    });
+    queue.enqueue(() => handled.push("queued"));
+    queue.release();
+    expect(handled).toEqual(["queued"]);
+
+    queue.enqueue(() => handled.push("direct"));
+    expect(handled).toEqual(["queued", "direct"]);
   });
 });

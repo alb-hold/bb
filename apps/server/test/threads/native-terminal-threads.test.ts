@@ -2798,6 +2798,77 @@ describe("native terminal threads", () => {
     ).toMatchObject({ status: "exited", closeReason: "user" });
   });
 
+  it("forwards ordinary output unchanged without decoding it when no holder marker is pending", async () => {
+    const fixture = await createFixture();
+    const creating = postJson(fixture, "/terminals", {
+      cols: 80,
+      rows: 24,
+      target: {
+        kind: "environment",
+        environmentId: fixture.environment.id,
+      },
+    });
+    const open = await waitForTerminalOpen(fixture.socket);
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.hostId,
+      sessionId: fixture.sessionId,
+      message: {
+        type: "terminal.opened",
+        requestId: open.requestId,
+        terminalId: open.terminalId,
+        shell: "/bin/zsh",
+        title: "zsh",
+        initialCwd: "/tmp/native-workspace",
+        cols: open.cols,
+        rows: open.rows,
+      },
+    });
+    expect((await creating).status).toBe(201);
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.hostId,
+      sessionId: fixture.sessionId,
+      message: {
+        type: "terminal.output",
+        terminalId: open.terminalId,
+        chunk: {
+          seq: 0,
+          dataBase64: Buffer.from("FIRST\n").toString("base64"),
+        },
+      },
+    });
+
+    const chunk = {
+      seq: 1,
+      dataBase64: Buffer.from("SECOND\n").toString("base64"),
+    };
+    const from = vi.spyOn(Buffer, "from");
+    const forwarded = vi.spyOn(
+      fixture.harness.deps.hub,
+      "sendTerminalClientMessage",
+    );
+    try {
+      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.hostId,
+        sessionId: fixture.sessionId,
+        message: {
+          type: "terminal.output",
+          terminalId: open.terminalId,
+          chunk,
+        },
+      });
+      expect(from).not.toHaveBeenCalled();
+      const output = forwarded.mock.calls.find(
+        ([, message]) => message.type === "output" && message.chunk.seq === 1,
+      );
+      expect(output?.[1]).toMatchObject({ type: "output", chunk });
+      if (output?.[1].type !== "output") throw new Error("Missing output");
+      expect(output[1].chunk).toBe(chunk);
+    } finally {
+      from.mockRestore();
+      forwarded.mockRestore();
+    }
+  });
+
   it("does not adopt a terminal when the first holder marker names another terminal", async () => {
     const fixture = await createFixture();
     const creating = postJson(fixture, "/terminals", {

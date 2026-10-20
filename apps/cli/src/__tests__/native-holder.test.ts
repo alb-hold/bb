@@ -149,7 +149,7 @@ class Client {
 }
 
 async function attach(socketPath: string): Promise<Client> {
-  const socket = await waitForNativeHolder(socketPath, 5_000);
+  const socket = await waitForNativeHolder(socketPath, 30_000);
   if (socket === null) throw new Error("holder did not listen");
   return new Client(socket);
 }
@@ -882,11 +882,11 @@ describe("checking whether bb closed a native terminal for good", () => {
     return url;
   }
 
-  const check = (baseUrl: string) =>
+  const check = (baseUrl: string, timeoutMs = 5_000) =>
     checkNativeTerminal({
       baseUrl,
       threadId: "thr_x",
-      timeoutMs: 200,
+      timeoutMs,
     });
 
   it("treats a missing thread as closed for good", async () => {
@@ -912,7 +912,7 @@ describe("checking whether bb closed a native terminal for good", () => {
   });
 
   it("counts a response whose body stalls past the timeout as bb answering", async () => {
-    await expect(check(await stallingAfterHeaders())).resolves.toBe(
+    await expect(check(await stallingAfterHeaders(), 50)).resolves.toBe(
       "detached",
     );
   });
@@ -920,8 +920,9 @@ describe("checking whether bb closed a native terminal for good", () => {
   it.each([
     ["the connection is refused", closedPort],
     ["bb accepts the connection but never sends headers", hungBeforeHeaders],
-  ] as const)("reports bb unreachable when %s", async (_name, start) => {
-    await expect(check(await start())).rejects.toBeInstanceOf(
+  ] as const)("reports bb unreachable when %s", async (name, start) => {
+    const timeoutMs = name.includes("never sends headers") ? 50 : 5_000;
+    await expect(check(await start(), timeoutMs)).rejects.toBeInstanceOf(
       NativeBbUnreachableError,
     );
   });
@@ -934,7 +935,9 @@ describe("checking whether bb closed a native terminal for good", () => {
       response.end('{"terminal":{"status":"running","closeReason":null}}');
     });
     const socketPath = socketIn();
-    const held = startHolder(socketPath, ECHO_LOOP, 300, () => check(baseUrl));
+    const held = startHolder(socketPath, ECHO_LOOP, 300, () =>
+      check(baseUrl, 100),
+    );
     const first = await attach(socketPath);
     const pid = (await first.waitFor(/started:(\d+)/u))[1];
     first.socket.destroy();

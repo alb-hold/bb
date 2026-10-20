@@ -131,6 +131,10 @@ export async function onDaemonSocketOpen(
     hostId: args.hostId,
     threadIds: nativeThreadIds,
   });
+  // A dispatch that arrived while this machine was away parked its row on a
+  // `host-offline` wait with no schedule, so no sweep can see it — the
+  // machine coming back is that wait's release signal, and this socket
+  // opening is where core hears it.
   requestQueuedMessageDispatch(deps, {
     hostId: args.hostId,
     kind: "host-connected",
@@ -366,15 +370,38 @@ export function onDaemonSocketMessage(
 }
 
 export function createDaemonSocketMessageQueue<T>(args: {
-  afterOpen: () => Promise<void>;
   handle: (message: T) => void;
   onError: (error: unknown) => void;
-}): (message: T) => Promise<void> {
-  let pending = Promise.resolve();
-  return (message) => {
-    const next = pending.then(args.afterOpen).then(() => args.handle(message));
-    pending = next.catch(args.onError);
-    return pending;
+}): { enqueue: (message: T) => void; release: () => void } {
+  let released = false;
+  let draining = false;
+  const queued: { value: T }[] = [];
+  const deliver = (message: T): void => {
+    try {
+      args.handle(message);
+    } catch (error) {
+      args.onError(error);
+    }
+  };
+  const release = (): void => {
+    if (released || draining) return;
+    draining = true;
+    let index = 0;
+    while (index < queued.length) deliver(queued[index++]!.value);
+    queued.length = 0;
+    draining = false;
+    released = true;
+  };
+  return {
+    enqueue: (message) => {
+      if (released || draining) {
+        if (draining) queued.push({ value: message });
+        else deliver(message);
+        return;
+      }
+      queued.push({ value: message });
+    },
+    release,
   };
 }
 
