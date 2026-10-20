@@ -97,6 +97,8 @@
  * - "then-unprompted-stream"     → message chunks and a finished tool call
  * - "then-unprompted-permission" → a permission request, then its outcome
  * - "then-unprompted-open-tool"  → a tool call that stays in progress
+ * - "hang-with-open-command"     → start a command, then hang until cancelled
+ *                                  without ever closing it (Cursor's shape)
  * - "stop-reason:<reason>"       → end the turn with that stop reason
  * - "advertise-commands"         → advertise two slash commands, twice
  * - "ask-form"                   → ask a two-field form question
@@ -767,6 +769,16 @@ async function handlePrompt(message) {
     }, UNPROMPTED_DELAY_MS);
   } else if (text.includes("end-silently")) {
     notifyUpdate({ sessionUpdate: "usage_update", used: 100, size: 1000 });
+  } else if (text.includes("hang-with-open-command")) {
+    notifyUpdate({
+      sessionUpdate: "tool_call",
+      toolCallId: "open-command",
+      title: "`sleep 40`",
+      kind: "execute",
+      status: "in_progress",
+      rawInput: { command: "sleep 40" },
+    });
+    return;
   } else if (text.includes("hang")) {
     // Stay pending until the client sends session/cancel.
     return;
@@ -775,6 +787,10 @@ async function handlePrompt(message) {
   } else if (text.includes("slow")) {
     notifyUpdate(messageChunk(`echo:${text}`));
     await sleep(300);
+  } else if (text.includes("echo-permission-env")) {
+    notifyUpdate(
+      messageChunk(`permission:${process.env.OPENCODE_PERMISSION ?? "unset"}`),
+    );
   } else if (text.includes("echo-question-env")) {
     notifyUpdate(
       messageChunk(

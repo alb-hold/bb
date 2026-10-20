@@ -49,7 +49,7 @@ import type {
 } from "@bb/provider-bridge-protocol/bridge-kit";
 import { execPortableFile } from "@bb/process-utils";
 import { randomBytes } from "node:crypto";
-import { promises as fs, readFileSync } from "node:fs";
+import { promises as fs, readFileSync, statSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { dirname, isAbsolute, basename, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -61,6 +61,7 @@ import {
   ACP_DEFAULT_MODEL_ID,
   ACP_FS_WRITE_METHOD,
   ACP_TURN_COMPLETED_METHOD,
+  ACP_PROMPT_INTERRUPTED_METHOD,
   ACP_TURN_STARTED_METHOD,
   ACP_UPDATE_METHOD,
   ACP_WARNING_METHOD,
@@ -219,6 +220,7 @@ interface AcpThreadSession {
   queuedInputs: AcpPendingTurnInput[];
   promptRequestPending: boolean;
   cancelRequested: boolean;
+  turnStartedAtMs: number | undefined;
   restartAfterCancelError: boolean;
   loading: boolean;
   loadingSessionId: string | undefined;
@@ -272,6 +274,7 @@ let runtimeRequestIdCounter = 0;
 let dynamicToolBridgePromise: Promise<AcpDynamicToolBridge> | null = null;
 
 const THREAD_STOP_CANCEL_TIMEOUT_MS = 4_000;
+const SHUTDOWN_CANCEL_TIMEOUT_MS = 1_500;
 const AGENT_TURN_QUIET_MS = 5_000;
 const SESSION_BUSY_QUIET_MS = 2_000;
 const SESSION_BUSY_MAX_WAITS = 300;
@@ -1711,30 +1714,54 @@ async function selectAcpNativeServiceTier(args: {
   recordAcpConfigValue(args.session, configState, fastOption.id, value);
 }
 
-function textWithoutUnknownLeadingSkillCommand(
+function textWithBbSkillCommandsSpelledOut(
   session: AcpThreadSession,
   item: Extract<PromptInput, { type: "text" }>,
 ): string {
-  const advertised = session.model.snapshot().commands;
-  if (advertised.length === 0) {
+  const bbSkillNames = new Set(
+    (configuredSkillRoots ?? []).flatMap((root) =>
+      root.skills.map((skill) => skill.name),
+    ),
+  );
+  if (bbSkillNames.size === 0) {
     return item.text;
   }
-  const firstCharacter = item.text.search(/\S/u);
-  const leading = item.mentions.find(
-    (mention) =>
-      mention.start === firstCharacter &&
+  const advertised = new Set(
+    session.model.snapshot().commands.map((command) => command.name),
+  );
+  const mentions = item.mentions
+    .flatMap((mention) =>
       mention.resource.kind === "command" &&
       mention.resource.source === "skill" &&
-      mention.resource.trigger === "/",
-  );
-  if (!leading || leading.resource.kind !== "command") {
-    return item.text;
+      mention.resource.trigger === "/" &&
+      bbSkillNames.has(mention.resource.name) &&
+      !advertised.has(mention.resource.name) &&
+      item.text.slice(mention.start, mention.end) ===
+        `/${mention.resource.name}`
+        ? [
+            {
+              start: mention.start,
+              end: mention.end,
+              name: mention.resource.name,
+            },
+          ]
+        : [],
+    )
+    .sort((a, b) => b.start - a.start);
+  const firstCharacter = item.text.search(/\S/u);
+  let text = item.text;
+  let nextStart = text.length;
+  for (const mention of mentions) {
+    if (mention.end > nextStart) {
+      continue;
+    }
+    const leadsText =
+      mention.start === firstCharacter &&
+      text.slice(mention.end).trim().length > 0;
+    text = `${text.slice(0, mention.start)}Use the bb skill "${mention.name}"${leadsText ? ":" : ""}${text.slice(mention.end)}`;
+    nextStart = mention.start;
   }
-  const name = leading.resource.name;
-  if (advertised.some((command) => command.name === name)) {
-    return item.text;
-  }
-  return `${item.text.slice(0, leading.start)}Use the bb skill "${name}":${item.text.slice(leading.end)}`;
+  return text;
 }
 
 function buildPromptContentBlocks(
@@ -1752,15 +1779,12 @@ function buildPromptContentBlocks(
     });
   }
 
-  for (const [index, item] of input.entries()) {
+  for (const item of input) {
     switch (item.type) {
       case "text":
         blocks.push({
           type: "text",
-          text:
-            index === 0
-              ? textWithoutUnknownLeadingSkillCommand(session, item)
-              : item.text,
+          text: textWithBbSkillCommandsSpelledOut(session, item),
         });
         break;
       case "image":
@@ -2181,6 +2205,41 @@ type AcpSessionStartRequest =
       sourceProviderThreadId: string;
     };
 
+function fileCreatedSince(
+  path: string,
+  sinceMs: number | undefined,
+): boolean | undefined {
+  if (sinceMs === undefined) {
+    return undefined;
+  }
+  try {
+    const { birthtimeMs } = statSync(path);
+    return birthtimeMs > 0 ? birthtimeMs >= sinceMs : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function dialectLaunchEnv(
+  dialectId: string,
+  permissionMode: AcpSessionParams["permissionMode"],
+): Record<string, string> {
+  if (dialectId !== "opencode") {
+    return {};
+  }
+  const outsideEdits = permissionMode === "full" ? "allow" : "ask";
+  return {
+    OPENCODE_CLIENT: "acp",
+    OPENCODE_ENABLE_QUESTION_TOOL: "false",
+    OPENCODE_PERMISSION: JSON.stringify({
+      edit: "allow",
+      bash: outsideEdits,
+      webfetch: outsideEdits,
+      external_directory: outsideEdits,
+    }),
+  };
+}
+
 async function startAgentSession(
   request: AcpSessionStartRequest,
 ): Promise<AcpThreadSession> {
@@ -2199,6 +2258,8 @@ async function startAgentSession(
   const translator = createAcpDeltaTranslator({
     cwd: params.cwd,
     dialect,
+    fileCreatedThisTurn: (path) =>
+      fileCreatedSince(path, session.turnStartedAtMs),
   });
   translator.configureInjectedTools(
     (params.dynamicTools ?? []).map((tool) => ({
@@ -2240,9 +2301,7 @@ async function startAgentSession(
   const childEnv = {
     ...withoutBridgeRuntimeEnv(process.env),
     ...params.envVars,
-    ...(dialect.id === "opencode"
-      ? { OPENCODE_CLIENT: "acp", OPENCODE_ENABLE_QUESTION_TOOL: "false" }
-      : {}),
+    ...dialectLaunchEnv(dialect.id, params.permissionMode),
   };
   const connection = createBridgeAgentConnection({
     command: params.agent.command,
@@ -2304,6 +2363,7 @@ async function startAgentSession(
     queuedInputs: [],
     promptRequestPending: false,
     cancelRequested: false,
+    turnStartedAtMs: undefined,
     restartAfterCancelError: false,
     loading: false,
     loadingSessionId: undefined,
@@ -2528,7 +2588,10 @@ async function startAgentSession(
   }
 }
 
-async function stopSession(session: AcpThreadSession): Promise<void> {
+async function stopSession(
+  session: AcpThreadSession,
+  cancelTimeoutMs = THREAD_STOP_CANCEL_TIMEOUT_MS,
+): Promise<void> {
   if (session.stopping) {
     return;
   }
@@ -2547,7 +2610,7 @@ async function stopSession(session: AcpThreadSession): Promise<void> {
       await Promise.race([
         session.turnSettled,
         new Promise<void>((resolveTimeout) =>
-          setTimeout(resolveTimeout, THREAD_STOP_CANCEL_TIMEOUT_MS),
+          setTimeout(resolveTimeout, cancelTimeoutMs),
         ),
       ]);
     }
@@ -2912,6 +2975,7 @@ function finishTurn(
   if (session.activePromptKind !== "turn") {
     return;
   }
+  session.turnStartedAtMs = undefined;
   for (const controller of session.pendingToolCalls) controller.abort();
   setActivePromptKind(session, null);
   dropQueuedTurnInputs(session, "ACP turn ended before the steer was sent");
@@ -3013,6 +3077,7 @@ function runTurn(
         const prompt = buildPromptContentBlocks(session, pending.input);
         let inputAccepted = false;
         let busyRetries = 0;
+        session.turnStartedAtMs ??= Date.now();
         for (;;) {
           session.promptRequestPending = true;
           const promptResult = session.connection.request({
@@ -3080,6 +3145,11 @@ function runTurn(
       if (!session.stopping) {
         const next = session.queuedInputs.shift();
         if (next) {
+          if (stopReason === "cancelled") {
+            emitForSession(session, ACP_PROMPT_INTERRUPTED_METHOD, {
+              threadId: session.bbThreadId,
+            });
+          }
           pending = next;
           continue;
         }
@@ -3143,6 +3213,15 @@ function reconcileExecutionSettings(
     permissionMode: options.permissionMode,
     workspaceWriteRoots,
   };
+  const launchModelChanged = !isDeepStrictEqual(
+    launchModelSelection(session.construction),
+    launchModelSelection(construction),
+  );
+  if (launchModelChanged && !session.supportsLoadSession) {
+    throw new Error(
+      "This ACP agent cannot restore its session. Start a new thread to change the launch-time model or reasoning level.",
+    );
+  }
   const launchArgsChanged =
     !isDeepStrictEqual(
       permissionCliArgsForMode(
@@ -3155,9 +3234,10 @@ function reconcileExecutionSettings(
       ),
     ) ||
     !isDeepStrictEqual(
-      launchModelSelection(session.construction),
-      launchModelSelection(construction),
-    );
+      dialectLaunchEnv(session.dialect.id, session.construction.permissionMode),
+      dialectLaunchEnv(session.dialect.id, construction.permissionMode),
+    ) ||
+    launchModelChanged;
   const restart =
     session.connection.exited ||
     session.restartAfterCancelError ||
@@ -3931,12 +4011,23 @@ function handleParsedMessage(parsed: unknown): void {
 export const handleLine = createBridgeLineHandler({ handleParsedMessage });
 
 async function stopAllSessions(): Promise<void> {
+  const sessions = Array.from(sessionsByBbThreadId.values());
+  const sessionConnections = new Set(
+    sessions.map((session) => session.connection),
+  );
   const results = await Promise.allSettled([
-    ...Array.from(sessionsByBbThreadId.values(), (session) =>
-      releaseSession(session),
+    ...sessions.map((session) =>
+      stopSession(session, SHUTDOWN_CANCEL_TIMEOUT_MS),
     ),
-    ...Array.from(agentConnections, (connection) => connection.kill()),
+    ...Array.from(agentConnections)
+      .filter((connection) => !sessionConnections.has(connection))
+      .map((connection) => connection.kill()),
   ]);
+  results.push(
+    ...(await Promise.allSettled(
+      Array.from(agentConnections, (connection) => connection.kill()),
+    )),
+  );
   for (const result of results) {
     if (result.status === "rejected") {
       process.stderr.write(

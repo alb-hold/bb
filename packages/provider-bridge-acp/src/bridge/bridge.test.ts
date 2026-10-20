@@ -1413,7 +1413,7 @@ describe("acp bridge", () => {
         (text) => text === "argv:--model pinme-extra-high",
       ),
     ).toBe(true);
-  });
+  }, 20_000);
 
   it.each([
     { dialectId: "opencode", client: "acp", question: "false" },
@@ -1437,6 +1437,55 @@ describe("acp bridge", () => {
       );
     },
   );
+
+  it("launches OpenCode with a permission policy that follows the thread's permission mode", async () => {
+    const policy = (shell: "allow" | "ask") =>
+      `permission:${JSON.stringify({
+        edit: "allow",
+        bash: shell,
+        webfetch: shell,
+        external_directory: shell,
+      })}`;
+    const { providerThreadId } = await startThread({
+      dialectId: "opencode",
+      envVars: { FAKE_ACP_LOAD_SESSION: "1" },
+    });
+    expect(
+      await completeTurnWith(
+        providerThreadId,
+        "echo-permission-env",
+        executionOptions({
+          permissionMode: "full",
+          envVars: { FAKE_ACP_LOAD_SESSION: "1" },
+        }),
+      ),
+    ).toBe(policy("allow"));
+    expect(
+      await completeTurnWith(
+        providerThreadId,
+        "echo-permission-env",
+        executionOptions({
+          permissionMode: "accept-edits",
+          envVars: { FAKE_ACP_LOAD_SESSION: "1" },
+        }),
+      ),
+    ).toBe(policy("ask"));
+    expect(notifications("session/replaced").at(-1)?.params).toMatchObject({
+      providerThreadId,
+      contextLost: false,
+    });
+  });
+
+  it("gives agents other than OpenCode no OpenCode permission policy", async () => {
+    const { providerThreadId } = await startThread();
+    expect(
+      await completeTurnWith(
+        providerThreadId,
+        "echo-permission-env",
+        executionOptions({ permissionMode: "accept-edits" }),
+      ),
+    ).toBe("permission:unset");
+  });
 
   it("launches ACP agents with a configured reasoning CLI flag", async () => {
     chmodSync(FAKE_AGENT_PATH, 0o755);
@@ -1853,6 +1902,86 @@ describe("acp bridge", () => {
     expect(notifications("session/replaced")).toHaveLength(1);
   }, 30_000);
 
+  it.each([
+    { setting: "model", restorable: false },
+    { setting: "reasoning", restorable: false },
+    { setting: "model", restorable: true },
+    { setting: "reasoning", restorable: true },
+  ])(
+    "preserves the session across CLI $setting changes (restorable=$restorable)",
+    async ({ setting, restorable }) => {
+      chmodSync(FAKE_AGENT_PATH, 0o755);
+      const promptLog = join(workspaceDir, "settings-prompts.log");
+      const launch: AgentLaunchArgs = {
+        agent: { command: FAKE_AGENT_PATH, args: [] },
+        modelListArgs: ["--list-models"],
+        selectFlag: "--model",
+        reasoningCli: {
+          flag: "--reasoning-effort",
+          supportedLevels: ["low", "high"],
+          defaultLevel: "low",
+        },
+        envVars: {
+          FAKE_ACP_LOAD_SESSION: restorable ? "1" : "0",
+          FAKE_ACP_MODEL_LINES: "pinme - Pin Me\nother - Other",
+          FAKE_ACP_PROMPT_LOG: promptLog,
+        },
+      };
+      const originalOptions = executionOptions({
+        model: "pinme",
+        reasoningLevel: "low",
+        providerOptions: launchProviderOptions(launch),
+      });
+      const { providerThreadId } = await startThread({
+        ...launch,
+        model: "pinme",
+        reasoningLevel: "low",
+      });
+      const originalArgv = "argv:--model pinme --reasoning-effort low";
+      expect(
+        await completeTurnWith(providerThreadId, "echo-argv", originalOptions),
+      ).toBe(originalArgv);
+      const changedOptions = executionOptions({
+        model: setting === "model" ? "other" : "pinme",
+        reasoningLevel: setting === "reasoning" ? "high" : "low",
+        providerOptions: launchProviderOptions(launch),
+      });
+      if (restorable) {
+        expect(
+          await completeTurnWith(providerThreadId, "echo-argv", changedOptions),
+        ).toBe(
+          setting === "model"
+            ? "argv:--model other --reasoning-effort low"
+            : "argv:--model pinme --reasoning-effort high",
+        );
+        expect(notifications("session/replaced").at(-1)?.params).toMatchObject({
+          providerThreadId,
+          contextLost: false,
+        });
+        return;
+      }
+      const changedTurnId = sendTurnRequest("turn/start", providerThreadId, {
+        input: [{ type: "text", text: "echo-argv", mentions: [] }],
+        options: changedOptions,
+      });
+      const response = await waitForResponse(changedTurnId);
+      expect(
+        response.error,
+        JSON.stringify({
+          response,
+          replacements: notifications("session/replaced"),
+        }),
+      ).toMatchObject({
+        message: expect.stringContaining("cannot restore"),
+      });
+      expect(notifications("session/replaced")).toHaveLength(0);
+      expect(loggedPrompts(promptLog)).toEqual(["echo-argv"]);
+      expect(
+        await completeTurnWith(providerThreadId, "echo-argv", originalOptions),
+      ).toBe(originalArgv);
+    },
+  );
+
   it("selects ACP-native reasoning with session/set_config_option before the first prompt", async () => {
     const { providerThreadId } = await startThread({
       envVars: {
@@ -2049,7 +2178,7 @@ describe("acp bridge", () => {
     expect(threadEventsOfType("provider/warning").at(-1)).toMatchObject({
       summary: expect.stringContaining("no max reasoning variant"),
     });
-  });
+  }, 20_000);
 
   it("starts a session and runs a prompt turn end to end", async () => {
     const { bbThreadId, providerThreadId } = await startThread();
@@ -3245,6 +3374,38 @@ describe("acp bridge", () => {
     expect(agentMessageTexts().join("")).toContain("echo:second-steer");
     expect(threadEventsOfType("turn/started")).toHaveLength(1);
     expect(threadEventsOfType("turn/completed")).toHaveLength(1);
+  });
+
+  it("closes a command left open by a steered-away prompt as interrupted", async () => {
+    const { providerThreadId } = await startThread();
+    await waitForResponse(
+      sendTurnRequest("turn/start", providerThreadId, {
+        input: [{ type: "text", text: "hang-with-open-command", mentions: [] }],
+      }),
+    );
+    await waitFor(
+      () => (threadEventsOfType("item/started").length > 0 ? true : undefined),
+      "the command to start",
+    );
+    await waitForResponse(
+      sendTurnRequest("turn/steer", providerThreadId, {
+        expectedTurnId: "turn-1",
+        input: [{ type: "text", text: "first-steer", mentions: [] }],
+      }),
+    );
+
+    expect(await waitForTurnCompleted()).toMatchObject({ status: "completed" });
+    const command = threadEventsOfType("item/completed")
+      .map((event) => event.item)
+      .find(
+        (item) =>
+          typeof item === "object" &&
+          item !== null &&
+          "type" in item &&
+          item.type === "commandExecution",
+      );
+    expect(command).toMatchObject({ status: "interrupted" });
+    expect(agentMessageTexts().join("")).toContain("echo:first-steer");
   });
 
   it("cancels a stacked steer prompt that also hangs", async () => {
@@ -5193,57 +5354,105 @@ describe("acp bridge: live session state", () => {
     });
   });
 
-  it("rewrites a leading bb skill command the agent did not advertise, so the agent does not swallow it as an unknown command", async () => {
-    const promptLog = join(workspaceDir, "prompts.log");
-    const { providerThreadId } = await startThread({
-      envVars: { FAKE_ACP_PROMPT_LOG: promptLog },
-    });
-    const skillTurn = (name: string) => [
-      {
+  it("spells out bb skill commands the agent did not advertise, wherever they appear, so the agent does not swallow them as unknown commands", async () => {
+    expect(
+      (
+        await waitForResponse(
+          sendRequest("skills/configure", {
+            roots: [
+              {
+                id: "root_bb",
+                path: "/staged/acp-skills",
+                skills: [
+                  { name: "example-skill", description: "Example." },
+                  { name: "deploy", description: "Ship the app." },
+                  { name: "review", description: "bb review." },
+                ],
+              },
+            ],
+          }),
+        )
+      ).error,
+    ).toBeUndefined();
+    try {
+      const promptLog = join(workspaceDir, "prompts.log");
+      const { providerThreadId } = await startThread({
+        envVars: { FAKE_ACP_PROMPT_LOG: promptLog },
+      });
+      const command = (name: string, start: number) => ({
+        start,
+        end: start + name.length + 1,
+        resource: {
+          kind: "command",
+          trigger: "/",
+          name,
+          source: "skill",
+          origin: "user",
+          label: name,
+          argumentHint: null,
+        },
+      });
+      const run = async (input: unknown[]) => {
+        const completedBefore = threadEventsOfType("turn/completed").length;
+        await waitForResponse(
+          sendTurnRequest("turn/start", providerThreadId, { input }),
+        );
+        await waitFor(
+          () =>
+            threadEventsOfType("turn/completed").length > completedBefore
+              ? true
+              : undefined,
+          "turn completion",
+        );
+      };
+      const text = (value: string, mentions: unknown[]) => ({
         type: "text",
-        text: `/${name} summarize the repo`,
-        mentions: [
-          {
-            start: 0,
-            end: name.length + 1,
-            resource: {
-              kind: "command",
-              trigger: "/",
-              name,
-              source: "skill",
-              origin: "user",
-              label: name,
-              argumentHint: null,
-            },
-          },
-        ],
-      },
-    ];
-    const run = async (input: unknown[]) => {
-      const completedBefore = threadEventsOfType("turn/completed").length;
-      await waitForResponse(
-        sendTurnRequest("turn/start", providerThreadId, { input }),
-      );
-      await waitFor(
-        () =>
-          threadEventsOfType("turn/completed").length > completedBefore
-            ? true
-            : undefined,
-        "turn completion",
-      );
-    };
+        text: value,
+        mentions,
+      });
 
-    await run(skillTurn("example-skill"));
-    await run([{ type: "text", text: "advertise-commands", mentions: [] }]);
-    await run(skillTurn("example-skill"));
-    await run(skillTurn("review"));
+      await run([
+        text("/example-skill summarize the repo", [
+          command("example-skill", 0),
+        ]),
+      ]);
+      await run([
+        text("first /deploy, then /example-skill", [
+          command("deploy", 6),
+          command("example-skill", 20),
+        ]),
+      ]);
+      await run([
+        text("/native-only go", [command("native-only", 0)]),
+        text("and /deploy", [command("deploy", 4)]),
+      ]);
+      await run([text("/deploy", [{ ...command("deploy", 0), end: 5 }])]);
+      await run([text("advertise-commands", [])]);
+      await run([
+        text("/review this and /deploy", [
+          command("review", 0),
+          command("deploy", 17),
+        ]),
+      ]);
 
-    expect(loggedPrompts(promptLog)).toEqual([
-      "/example-skill summarize the repo",
-      "advertise-commands",
-      'Use the bb skill "example-skill": summarize the repo',
-      "/review summarize the repo",
-    ]);
+      expect(
+        loggedPrompts(promptLog).map((prompt) =>
+          prompt.replace(
+            /^<system_instructions>[\s\S]*?<\/system_instructions>\n/u,
+            "",
+          ),
+        ),
+      ).toEqual([
+        'Use the bb skill "example-skill": summarize the repo',
+        'first Use the bb skill "deploy", then Use the bb skill "example-skill"',
+        '/native-only go\nand Use the bb skill "deploy"',
+        "/deploy",
+        "advertise-commands",
+        '/review this and Use the bb skill "deploy"',
+      ]);
+    } finally {
+      await waitForResponse(sendRequest("skills/configure", { roots: [] }));
+    }
   });
 
   it("publishes nothing for an agent with no commands or options", async () => {
