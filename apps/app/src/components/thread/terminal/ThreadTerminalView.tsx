@@ -793,6 +793,34 @@ export async function writeRetainedTerminalOutput({
   await new Promise<void>((resolve) => terminal.write("", resolve));
 }
 
+export function applyTerminalGridBeforeViewportRestore({
+  pipeline,
+  cols,
+  rows,
+  onGridApplied,
+  restoreViewport,
+  afterRestore,
+}: {
+  pipeline: ReturnType<typeof createTerminalOutputPipeline> | null | undefined;
+  cols: number;
+  rows: number;
+  onGridApplied: () => void;
+  restoreViewport: () => void;
+  afterRestore: () => void;
+}): void {
+  if (!pipeline) {
+    onGridApplied();
+    restoreViewport();
+    afterRestore();
+    return;
+  }
+  pipeline.setGrid(cols, rows, () => {
+    onGridApplied();
+    restoreViewport();
+    afterRestore();
+  });
+}
+
 function openTerminalWebLink({
   onOpenLink,
   uri,
@@ -1975,20 +2003,23 @@ export function ThreadTerminalView({
             },
             onReplayComplete: () => {
               replayCompleted = true;
-              restoreViewport();
-              outputPipeline?.setGrid(
-                latestPtyGrid.cols,
-                latestPtyGrid.rows,
-                updateGridVisibility,
-              );
-              if (
-                !disposed &&
-                sessionStatusRef.current === "running" &&
-                repaintAfterReconnect
-              ) {
-                repaintAfterReconnect = false;
-                activeTransport.requestRepaint();
-              }
+              applyTerminalGridBeforeViewportRestore({
+                pipeline: outputPipeline,
+                cols: latestPtyGrid.cols,
+                rows: latestPtyGrid.rows,
+                onGridApplied: updateGridVisibility,
+                restoreViewport,
+                afterRestore: () => {
+                  if (
+                    !disposed &&
+                    sessionStatusRef.current === "running" &&
+                    repaintAfterReconnect
+                  ) {
+                    repaintAfterReconnect = false;
+                    activeTransport.requestRepaint();
+                  }
+                },
+              });
             },
             onSessionChange: onSessionChangeRef.current,
             onOutputStart: recordOutputStart,

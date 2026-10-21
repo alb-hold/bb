@@ -12,6 +12,7 @@ import { createTerminalOutputPipeline } from "./terminal-output-pipeline";
 import {
   buildTerminalThemeFromCssColors,
   attachTerminalManualScrollIntentListeners,
+  applyTerminalGridBeforeViewportRestore,
   applyTerminalFontFamily,
   attachTerminalInputForwarding,
   captureTerminalContextMenuState,
@@ -388,6 +389,144 @@ describe("terminal viewport restore", () => {
     expect(terminal.buffer.active.getLine(restoreLine)?.translateToString(true)).toBe(
       "line 01474",
     );
+    tracker.dispose();
+    terminal.dispose();
+  });
+
+  it("keeps the exact saved phone line when replay completion applies the PTY grid afterward", async () => {
+    const terminal = new Terminal({ cols: 80, rows: 52, scrollback: 10_000 });
+    const pipeline = createTerminalOutputPipeline(terminal);
+    const tracker = createTerminalOutputLineAnchorTracker({
+      registerMarker: () => terminal.registerMarker(),
+      getCurrentLine: () =>
+        terminal.buffer.active.baseY + terminal.buffer.active.cursorY,
+    });
+    const outputLineAnchors: NonNullable<
+      ReturnType<typeof tracker.recordOutputStart>
+    >[] = [];
+    tracker.reset();
+    await writeRetainedTerminalOutput({
+      chunks: [
+        {
+          seq: 0,
+          data: new TextEncoder().encode(
+            Array.from(
+              { length: 9 },
+              (_, i) => `line ${String(i + 1).padStart(5, "0")}\r\n`,
+            ).join(""),
+          ),
+        },
+        {
+          seq: 1,
+          data: new TextEncoder().encode(
+            Array.from(
+              { length: 515 },
+              (_, i) => `line ${String(i + 10).padStart(5, "0")}\r\n`,
+            ).join(""),
+          ),
+        },
+        {
+          seq: 2,
+          data: new TextEncoder().encode(
+            Array.from(
+              { length: 1_313 },
+              (_, i) => `line ${String(i + 525).padStart(5, "0")}\r\n`,
+            ).join(""),
+          ),
+        },
+        {
+          seq: 3,
+          data: new TextEncoder().encode(
+            Array.from(
+              { length: 341 },
+              (_, i) => `line ${String(i + 1_838).padStart(5, "0")}\r\n`,
+            ).join(""),
+          ),
+        },
+        {
+          seq: 4,
+          data: new TextEncoder().encode(
+            Array.from(
+              { length: 682 },
+              (_, i) => `line ${String(i + 2_179).padStart(5, "0")}\r\n`,
+            ).join(""),
+          ),
+        },
+        {
+          seq: 5,
+          data: new TextEncoder().encode(
+            Array.from(
+              { length: 140 },
+              (_, i) => `line ${String(i + 2_861).padStart(5, "0")}\r\n`,
+            ).join(""),
+          ),
+        },
+        {
+          seq: 6,
+          data: new TextEncoder().encode("\u001b[?2004h\u001b]0;terminal: $ "),
+        },
+        { seq: 7, data: new Uint8Array() },
+        { seq: 8, data: new TextEncoder().encode("\r\u001b[Kterminal: $ ") },
+      ],
+      lastNotice: { current: null },
+      session: {
+        id: "term_phone_resize_replay",
+        threadId: "thr_1",
+        environmentId: "env_1",
+        hostId: "host_1",
+        title: "Terminal",
+        initialCwd: "/workspace",
+        cols: 80,
+        rows: 52,
+        status: "running",
+        exitCode: null,
+        closeReason: null,
+        createdAt: 1,
+        updatedAt: 1,
+        lastUserInputAt: null,
+      } satisfies TerminalSession,
+      terminal,
+      pipeline,
+      onOutputStart: (sequence) => {
+        const anchor = tracker.recordOutputStart(sequence);
+        if (anchor) outputLineAnchors.push(anchor);
+      },
+    });
+    expect(outputLineAnchors.find(({ sequence }) => sequence === 2)?.line).toBe(
+      524,
+    );
+    expect(terminal.buffer.active.baseY).toBe(2_949);
+
+    await new Promise<void>((resolve) => {
+      applyTerminalGridBeforeViewportRestore({
+        pipeline,
+        cols: 80,
+        rows: 22,
+        onGridApplied: () => {},
+        restoreViewport: () => {
+          const restoreLine = resolveTerminalViewportRestore({
+            anchor: {
+              distanceFromTail: 30,
+              lineOffset: 2_396,
+              outputSequence: 2,
+            },
+            baseY: terminal.buffer.active.baseY,
+            outputLineAnchors,
+            replayStartSequence: 0,
+            replayNextSequence: 9,
+          });
+          terminal.scrollToLine(restoreLine);
+        },
+        afterRestore: resolve,
+      });
+    });
+
+    expect(terminal.buffer.active.viewportY).toBe(2_920);
+    expect(
+      terminal.buffer.active
+        .getLine(terminal.buffer.active.viewportY)
+        ?.translateToString(true),
+    ).toBe("line 02921");
     tracker.dispose();
     terminal.dispose();
   });
