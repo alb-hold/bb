@@ -7,10 +7,15 @@ import {
 } from "./worktree-list.js";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { removeDirectoryTree } from "./remove-directory-tree.js";
+import {
+  beginCopy,
+  inspectCreatedBy,
+  recordCopy,
+  removeVerifiedCopies,
+  type CreatedBy,
+} from "./created-by.js";
 import {
   WORKTREE_PRESERVED_CODE,
-  findCreatedHeadMismatch,
   findPreservationReasons,
   identifyWorktree,
   isWorktreePreservedError,
@@ -70,7 +75,7 @@ interface RemoveWorktreeArgs {
   path: string;
   rootPath: string;
   completionPath?: string | undefined;
-  createdHead?: string | undefined;
+  createdBy?: CreatedBy | undefined;
   onProgress?: ProgressCallback | undefined;
   signal?: AbortSignal | undefined;
 }
@@ -396,6 +401,7 @@ function summarizePaths(paths: readonly string[]): string {
 async function copyIncludedFiles(args: {
   sourcePath: string;
   targetPath: string;
+  createdBy: CreatedBy | undefined;
   onProgress: ProgressCallback | undefined;
   signal: AbortSignal | undefined;
 }): Promise<void> {
@@ -407,6 +413,16 @@ async function copyIncludedFiles(args: {
       sourcePath: args.sourcePath,
       targetPath: args.targetPath,
       signal: args.signal,
+      ...(args.createdBy !== undefined
+        ? {
+            ledger: {
+              begin: (relativePath: string) =>
+                beginCopy(args.createdBy!, relativePath),
+              record: (relativePath: string, file: string) =>
+                recordCopy(args.createdBy!, relativePath, file),
+            },
+          }
+        : {}),
     });
   } catch (error) {
     if (isProvisionAbortError(error)) {
@@ -467,7 +483,10 @@ async function readCompletedBranch(
   }
 }
 
-async function finishWorktreeSetup(args: CreateWorktreeArgs): Promise<void> {
+async function finishWorktreeSetup(
+  args: CreateWorktreeArgs,
+  createdBy?: CreatedBy,
+): Promise<void> {
   emitCwd({
     onProgress: args.onProgress,
     keySuffix: "target",
@@ -476,33 +495,36 @@ async function finishWorktreeSetup(args: CreateWorktreeArgs): Promise<void> {
   await copyIncludedFiles({
     sourcePath: args.sourcePath,
     targetPath: args.targetPath,
+    createdBy,
     onProgress: args.onProgress,
     signal: args.signal,
   });
   await fs.writeFile(args.completionPath, `${args.branchName}\n`, "utf8");
 }
 
-async function readCreatedHead(
+async function readCreatedBy(
   args: CreateWorktreeArgs,
-): Promise<string | undefined> {
+): Promise<CreatedBy | undefined> {
   const head = await runGit(["rev-parse", "HEAD"], {
     cwd: args.targetPath,
     allowFailure: true,
     ...signalOptions(args.signal),
   });
   const sha = head.stdout.trim();
-  return head.exitCode === 0 && sha !== "" ? sha : undefined;
+  return head.exitCode === 0 && sha !== ""
+    ? { head: sha, copies: new Map() }
+    : undefined;
 }
 
 async function removeCreateTarget(
   args: CreateWorktreeArgs,
-  createdHead?: string,
+  createdBy?: CreatedBy,
 ): Promise<void> {
   await removeWorktree({
     path: args.targetPath,
     rootPath: args.ownWorktreesRoot,
     completionPath: args.completionPath,
-    createdHead,
+    createdBy,
     ...(args.signal !== undefined ? { signal: args.signal } : {}),
   });
 }
@@ -510,10 +532,10 @@ async function removeCreateTarget(
 async function removeCreateTargetAfterFailure(
   args: CreateWorktreeArgs,
   failure: unknown,
-  createdHead?: string,
+  createdBy?: CreatedBy,
 ): Promise<never> {
   try {
-    await removeCreateTarget(args, createdHead);
+    await removeCreateTarget(args, createdBy);
   } catch (cleanupError) {
     if (isWorktreePreservedError(cleanupError)) {
       throw new WorkspaceError(
@@ -624,7 +646,7 @@ export async function createWorktree(
     startedAt: worktreeStartedAt,
   });
   let worktreeCreated = false;
-  let createdHead: string | undefined;
+  let createdBy: CreatedBy | undefined;
   try {
     const result = await runGitWithWorktreeMetadataLock(gitArgs, {
       cwd: args.sourcePath,
@@ -640,8 +662,8 @@ export async function createWorktree(
       metadata: { durationMs: Date.now() - worktreeStartedAt },
     });
     worktreeCreated = true;
-    createdHead = await readCreatedHead(args);
-    await finishWorktreeSetup(args);
+    createdBy = await readCreatedBy(args);
+    await finishWorktreeSetup(args, createdBy);
     return { path: args.targetPath };
   } catch (error) {
     if (!worktreeCreated) {
@@ -654,7 +676,7 @@ export async function createWorktree(
         metadata: { durationMs: Date.now() - worktreeStartedAt },
       });
     }
-    return await removeCreateTargetAfterFailure(args, error, createdHead);
+    return await removeCreateTargetAfterFailure(args, error, createdBy);
   }
 }
 
@@ -680,8 +702,8 @@ async function assertWorktreeRemovable(
   args: RemoveWorktreeArgs,
 ): Promise<void> {
   const reasons =
-    args.createdHead !== undefined
-      ? await findCreatedHeadMismatch(identity, args.createdHead, args.signal)
+    args.createdBy !== undefined
+      ? (await inspectCreatedBy(identity, args.createdBy, args.signal)).reasons
       : await findPreservationReasons(identity, args.signal);
   if (reasons.length > 0) {
     throw worktreePreservedError(identity.path, reasons);
@@ -692,18 +714,16 @@ async function removeRegisteredWorktree(
   identity: WorktreeIdentity,
   args: RemoveWorktreeArgs,
 ): Promise<void> {
-  const force = args.createdHead !== undefined;
+  if (args.createdBy !== undefined) {
+    const copyReasons = await removeVerifiedCopies(identity, args.createdBy);
+    if (copyReasons.length > 0) {
+      throw worktreePreservedError(identity.path, copyReasons);
+    }
+  }
   const parentPath = path.dirname(identity.path);
   const removal = await withWorktreeMetadataLock(identity.commonDir, () =>
     runGit(
-      [
-        "--git-dir",
-        identity.commonDir,
-        "worktree",
-        "remove",
-        ...(force ? ["--force"] : []),
-        identity.path,
-      ],
+      ["--git-dir", identity.commonDir, "worktree", "remove", identity.path],
       {
         cwd: parentPath,
         ...(args.signal !== undefined ? { signal: args.signal } : {}),
@@ -712,13 +732,9 @@ async function removeRegisteredWorktree(
     ),
   );
   if (removal.exitCode !== 0) {
-    if (!force) {
-      throw worktreePreservedError(identity.path, [
-        `Git declined to remove it${removal.stderr.trim() ? ` (${removal.stderr.trim()})` : ""}`,
-      ]);
-    }
-    throwIfProvisionAborted(args.signal);
-    await removeDirectoryTree(identity.path);
+    throw worktreePreservedError(identity.path, [
+      `Git declined to remove it${removal.stderr.trim() ? ` (${removal.stderr.trim()})` : ""}`,
+    ]);
   }
   await removeDirectoryIfEmpty(identity.path);
   try {

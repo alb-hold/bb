@@ -20,3 +20,6 @@ commit that no remote-tracking branch contains, a lock, or an unfinished merge,
 rebase, cherry-pick or revert. A kept worktree is retried with a growing delay;
 when removal fails after bb changed anything, the environment stays in error
 and is never reused.
+
+A create that fails after the worktree exists removes it only if it still holds
+nothing but what bb put there; anything else is kept and reported.

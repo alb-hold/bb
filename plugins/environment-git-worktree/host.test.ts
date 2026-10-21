@@ -1424,7 +1424,7 @@ setTimeout(() => {}, 300_000);`,
         await harness.experimental_dispose();
       });
 
-      it("refuses forced removal when HEAD moved since the attempt created the worktree", async () => {
+      it("refuses a fresh-create removal when HEAD moved since the attempt created the worktree, before stopping anything", async () => {
         const worktree = await createManagedWorktree({ publish: false });
         try {
           const createdHead = (
@@ -1435,12 +1435,38 @@ setTimeout(() => {}, 300_000);`,
             removeWorktree({
               path: worktree.path,
               rootPath: join(worktree.dataDir, "worktrees"),
-              createdHead,
+              createdBy: { head: createdHead, copies: new Map() },
             }),
           ).rejects.toMatchObject({ code: "worktree_preserved" });
           expect(existsSync(join(worktree.path, "after-create.txt"))).toBe(
             true,
           );
+          expect(isPidAlive(worktree.lingering.pid ?? 0)).toBe(true);
+        } finally {
+          await worktree.harness.experimental_dispose();
+        }
+      });
+
+      it("refuses a fresh-create removal while a copy has no recorded contents, before stopping anything", async () => {
+        const worktree = await createManagedWorktree({ publish: false });
+        try {
+          const createdHead = (
+            await git(worktree.path, "rev-parse", "HEAD")
+          ).trim();
+          await expect(
+            removeWorktree({
+              path: worktree.path,
+              rootPath: join(worktree.dataDir, "worktrees"),
+              createdBy: {
+                head: createdHead,
+                copies: new Map([["README.md", { state: "pending" }]]),
+              },
+            }),
+          ).rejects.toMatchObject({
+            code: "worktree_preserved",
+            message: expect.stringContaining("could not record"),
+          });
+          expect(existsSync(join(worktree.path, "README.md"))).toBe(true);
           expect(isPidAlive(worktree.lingering.pid ?? 0)).toBe(true);
         } finally {
           await worktree.harness.experimental_dispose();

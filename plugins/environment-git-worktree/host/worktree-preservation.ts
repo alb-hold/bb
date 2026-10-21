@@ -56,7 +56,7 @@ function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function signalOptions(signal: AbortSignal | undefined): {
+export function signalOptions(signal: AbortSignal | undefined): {
   signal?: AbortSignal;
 } {
   return signal !== undefined ? { signal } : {};
@@ -72,7 +72,7 @@ function isStrictlyInside(root: string, target: string): boolean {
   );
 }
 
-async function entryExists(target: string): Promise<boolean | null> {
+export async function entryExists(target: string): Promise<boolean | null> {
   try {
     await fs.lstat(target);
     return true;
@@ -81,7 +81,7 @@ async function entryExists(target: string): Promise<boolean | null> {
   }
 }
 
-function gitEnvironment(worktreePath: string): NodeJS.ProcessEnv {
+export function gitEnvironment(worktreePath: string): NodeJS.ProcessEnv {
   return { GIT_CEILING_DIRECTORIES: path.dirname(worktreePath) };
 }
 
@@ -234,18 +234,10 @@ export async function identifyWorktree(args: {
   };
 }
 
-export async function findPreservationReasons(
+export async function findStructuralReasons(
   identity: WorktreeIdentity,
-  signal: AbortSignal | undefined,
 ): Promise<string[]> {
   const reasons: string[] = [];
-  const gitOptions = {
-    cwd: identity.path,
-    env: gitEnvironment(identity.path),
-    allowFailure: true,
-    ...signalOptions(signal),
-  };
-
   if (identity.locked) {
     reasons.push("is locked (git worktree lock)");
   }
@@ -258,6 +250,29 @@ export async function findPreservationReasons(
   } else if (marker === null) {
     reasons.push(`could not check for ${KEEP_WORKTREE_MARKER}`);
   }
+
+  for (const name of IN_PROGRESS_OPERATION_PATHS) {
+    const present = await entryExists(path.join(identity.gitDir, name));
+    if (present === true) {
+      reasons.push(`has a Git operation in progress (${name})`);
+    } else if (present === null) {
+      reasons.push(`could not check for a Git operation in progress (${name})`);
+    }
+  }
+  return reasons;
+}
+
+export async function findPreservationReasons(
+  identity: WorktreeIdentity,
+  signal: AbortSignal | undefined,
+): Promise<string[]> {
+  const reasons = await findStructuralReasons(identity);
+  const gitOptions = {
+    cwd: identity.path,
+    env: gitEnvironment(identity.path),
+    allowFailure: true,
+    ...signalOptions(signal),
+  };
 
   const status = await runGit(
     [
@@ -297,38 +312,6 @@ export async function findPreservationReasons(
     reasons.push(
       "has commits that are not reachable from any remote-tracking branch",
     );
-  }
-
-  for (const name of IN_PROGRESS_OPERATION_PATHS) {
-    const present = await entryExists(path.join(identity.gitDir, name));
-    if (present === true) {
-      reasons.push(`has a Git operation in progress (${name})`);
-    } else if (present === null) {
-      reasons.push(`could not check for a Git operation in progress (${name})`);
-    }
-  }
-  return reasons;
-}
-
-export async function findCreatedHeadMismatch(
-  identity: WorktreeIdentity,
-  createdHead: string,
-  signal: AbortSignal | undefined,
-): Promise<string[]> {
-  const reasons: string[] = [];
-  if (identity.locked) {
-    reasons.push("is locked (git worktree lock)");
-  }
-  const head = await runGit(["--no-optional-locks", "rev-parse", "HEAD"], {
-    cwd: identity.path,
-    env: gitEnvironment(identity.path),
-    allowFailure: true,
-    ...signalOptions(signal),
-  });
-  if (head.exitCode !== 0) {
-    reasons.push("could not read HEAD");
-  } else if (head.stdout.trim() !== createdHead) {
-    reasons.push("has a HEAD that changed since this attempt created it");
   }
   return reasons;
 }

@@ -32,10 +32,8 @@ takes precedence. In-place progress updates require a stdout TTY.
 Commit `.bb-env-setup.sh` when a managed worktree needs repository setup.
 Commit `.bb-env-teardown.sh` when bb must release external resources before it
 removes that worktree. Create an empty `.keep-worktree` file in a worktree's
-root to stop bb from removing it when its environment retires. The one
-exception is the half-built worktree of a create that bb just started and
-failed: bb removes that one regardless, only while its HEAD is still the commit
-bb created. See [Worktrees, setup scripts, and
+root to stop bb from removing it, including the half-built worktree of a
+create that failed. See [Worktrees, setup scripts, and
 teardown scripts](worktrees.md) for the lifecycle, environment, timeout, and
 failure contracts.
 

@@ -164,8 +164,12 @@ servers, `nohup` jobs), and any process you started there yourself, such as a
 shell you `cd`'d into the worktree or an editor terminal. Each process gets
 `SIGTERM`, then `SIGKILL` after a short grace period. It checks again, then
 `git worktree remove` runs without `--force`. If Git declines, the worktree is
-kept. A worktree that a failed create just made is the one case removed with
-force. The branch is left behind, so work you committed to it survives the
+kept. bb never uses `--force`. A create that fails after bb made the worktree
+removes it only while it holds nothing but what bb put there: HEAD is still the
+commit bb created, no tracked file changed, no `.keep-worktree`, lock or
+unfinished operation exists, and every other file is a `.worktreeinclude` copy
+whose contents still match what bb wrote. Anything else is kept and the create
+reports why. The branch is left behind, so work you committed to it survives the
 worktree. Push (or open a PR) from inside the worktree to let bb remove it, and
 move your own shells out of the worktree first if you want to keep them.
 
