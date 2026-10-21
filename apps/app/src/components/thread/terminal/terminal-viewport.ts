@@ -409,16 +409,18 @@ export function resolveTerminalViewportRestore(args: {
   outputLineAnchors: readonly TerminalOutputLineAnchor[];
   replayNextSequence: number;
   replayStartSequence: number;
-}): number {
+}, onBranch?: (branch: "no-anchor" | "sequence-reset-tail" | "expired-to-top" | "retained-anchor") => void): number {
   const { anchor, baseY, outputLineAnchors, replayNextSequence, replayStartSequence } =
     args;
   if (anchor === null) {
+    onBranch?.("no-anchor");
     return baseY;
   }
   if (
     replayStartSequence < anchor.outputSequence &&
     replayNextSequence < anchor.outputSequence
   ) {
+    onBranch?.("sequence-reset-tail");
     return Math.max(0, baseY - anchor.distanceFromTail);
   }
   const outputAnchor = outputLineAnchors.find(
@@ -429,8 +431,10 @@ export function resolveTerminalViewportRestore(args: {
     outputAnchor.expired ||
     outputAnchor.line < 0
   ) {
+    onBranch?.("expired-to-top");
     return 0;
   }
+  onBranch?.("retained-anchor");
   return Math.max(
     0,
     Math.min(

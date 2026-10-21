@@ -1653,13 +1653,24 @@ export function ThreadTerminalView({
             ? outputLineAnchors
             : [...outputLineAnchors, savedOutputLineAnchor];
         terminal.scrollToLine(
-          resolveTerminalViewportRestore({
+          resolveTerminalViewportRestore(
+            {
             anchor: savedViewportAnchor,
             baseY: activeBuffer.baseY,
             outputLineAnchors: restoreOutputLineAnchors,
             replayNextSequence,
             replayStartSequence,
-          }),
+            },
+            (branch) => {
+              console.debug("Terminal viewport restore", {
+                terminalId: session.id,
+                branch,
+                anchor: savedViewportAnchor,
+                replayStartSequence,
+                replayNextSequence,
+              });
+            },
+          ),
         );
         hasRestoredViewport = true;
         viewportReplaySaveGate.finishRestore();
