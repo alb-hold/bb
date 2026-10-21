@@ -14,7 +14,7 @@ import { registerThreadCommands } from "../../commands/thread/index.js";
 
 type OpenThreadHandler = (
   request: unknown,
-) => Promise<{ delivered: number }> | { delivered: number };
+) => Promise<{ deliveredClients: number }> | { deliveredClients: number };
 
 function stubThreadOpenApi(args: {
   environments?: Record<string, Environment>;
@@ -37,7 +37,7 @@ function stubThreadOpenApi(args: {
     }
     return environment;
   });
-  const openThread = vi.fn(args.open ?? (async () => ({ delivered: 0 })));
+  const openThread = vi.fn(args.open ?? (async () => ({ deliveredClients: 0 })));
   stubServerApi({
     "v1.threads.:id.$get": getThread,
     "v1.environments.:id.$get": getEnvironment,
@@ -55,7 +55,7 @@ describe("bb thread open command output", () => {
   it("uses BB_THREAD_ID and opens a thread-relative workspace path", async () => {
     vi.stubEnv("BB_THREAD_ID", "thread-current");
     const { openThread } = stubThreadOpenApi({
-      open: async () => ({ delivered: 2 }),
+      open: async () => ({ deliveredClients: 2 }),
     });
 
     await runCommand(["thread", "open", "reports/status.md"], register);
@@ -75,7 +75,7 @@ describe("bb thread open command output", () => {
       "Split: replace",
       "Source: workspace",
       "Path: reports/status.md",
-      "Delivered: 2",
+      "Request sent to 2 open bb app clients; receipt and application are not confirmed.",
     ]);
   });
 
@@ -95,7 +95,7 @@ describe("bb thread open command output", () => {
     });
     const { getEnvironment, getThread, openThread } = stubThreadOpenApi({
       environments: { "env-workspace": environment },
-      open: async () => ({ delivered: 1 }),
+      open: async () => ({ deliveredClients: 1 }),
       threads: { "thread-workspace": thread },
     });
 
@@ -132,7 +132,7 @@ describe("bb thread open command output", () => {
       "Source: workspace",
       "Path: reports/status.md",
       "Line: 7",
-      "Delivered: 1",
+      "Request sent to 1 open bb app client; receipt and application are not confirmed.",
     ]);
   });
 
@@ -140,7 +140,7 @@ describe("bb thread open command output", () => {
     vi.stubEnv("BB_THREAD_ID", "thread-storage");
     vi.stubEnv("BB_THREAD_STORAGE", "/tmp/bb-thread-storage/thread-storage");
     const { getEnvironment, getThread, openThread } = stubThreadOpenApi({
-      open: async () => ({ delivered: 1 }),
+      open: async () => ({ deliveredClients: 1 }),
     });
 
     await runCommand(
@@ -169,7 +169,7 @@ describe("bb thread open command output", () => {
       "Split: replace",
       "Source: thread-storage",
       "Path: reports/preview.html",
-      "Delivered: 1",
+      "Request sent to 1 open bb app client; receipt and application are not confirmed.",
     ]);
   });
 
@@ -183,7 +183,7 @@ describe("bb thread open command output", () => {
 
   it("returns the opened path as JSON", async () => {
     const { openThread } = stubThreadOpenApi({
-      open: async () => ({ delivered: 3 }),
+      open: async () => ({ deliveredClients: 3 }),
     });
 
     await runCommand(
@@ -206,7 +206,7 @@ describe("bb thread open command output", () => {
     expect(payloads.join("\n")).toContain('"split": "replace"');
     expect(payloads.join("\n")).toContain('"source": "workspace"');
     expect(payloads.join("\n")).toContain('"path": "reports/status.md"');
-    expect(payloads.join("\n")).toContain('"delivered": 3');
+    expect(payloads.join("\n")).toContain('"deliveredClients": 3');
   });
 
   it("does not offer the removed flags in help", async () => {
@@ -219,7 +219,7 @@ describe("bb thread open command output", () => {
 
   it("opens a thread in a split without requiring a file path", async () => {
     const { openThread } = stubThreadOpenApi({
-      open: async () => ({ delivered: 2 }),
+      open: async () => ({ deliveredClients: 2 }),
     });
 
     await runCommand(
@@ -234,7 +234,7 @@ describe("bb thread open command output", () => {
     expect(collectLogLines(vi.mocked(console.log))).toEqual([
       "Thread: thread-split",
       "Split: right",
-      "Delivered: 2",
+      "Request sent to 2 open bb app clients; receipt and application are not confirmed.",
     ]);
   });
 

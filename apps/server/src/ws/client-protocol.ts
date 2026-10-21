@@ -13,8 +13,9 @@ interface ClientSocket {
 export function onClientSocketOpen(
   hub: NotificationHub,
   socket: ClientSocket,
+  isAppClient = false,
 ): void {
-  hub.registerClient(socket);
+  hub.registerClient(socket, isAppClient);
 }
 
 export function onClientSocketMessage(

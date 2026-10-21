@@ -31,12 +31,16 @@ import {
 import { IframeDragGuardOverlay } from "@/lib/iframe-drag-guard";
 import { MACOS_APP_REGION_NO_DRAG_CLASS } from "@/lib/bb-desktop";
 import { withLocalStorage } from "@/lib/browser-storage";
+import { notifyPaneLimit } from "@/lib/split-layout/notifyPaneLimit";
+import { appToast } from "@/components/ui/app-toast";
 import {
   PaneContext,
   type PaneContextValue,
 } from "@/views/thread-detail/PaneContext";
 import {
   adjacentSidebarTab,
+  applyTerminalSidebarLayoutAction,
+  applySidebarTabLayoutAction,
   createSidebarSplitState,
   focusSidebarPane,
   getSidebarGroupForPane,
@@ -113,11 +117,19 @@ interface SidebarSplitContainerProps {
   isFullScreen: boolean;
   onActivateTab: (tabId: string) => void;
   onCreateTerminalInNewPane?: () => Promise<string | null>;
+  onEnsureTerminalTabs?: (terminalIds: readonly string[]) => boolean | null;
   onGlobalTabReorder: (request: SecondaryPanelTabReorderRequest) => void;
   onToggleFullScreen: () => void;
   panelStateId: string;
   renderPane: (args: SidebarSplitPaneRenderArgs) => ReactNode;
   splitTabToRightRequest?: { requestId: number; tabId: string } | null;
+  terminalLayoutRequest?: {
+    action: "split" | "move";
+    requestId: number;
+    side?: "right" | "left" | "up" | "down";
+    targetTerminalId?: string;
+    terminalId: string;
+  } | null;
   tabs: readonly SidebarSplitTabDescriptor[];
 }
 
@@ -139,11 +151,13 @@ export function SidebarSplitContainer({
   isFullScreen,
   onActivateTab,
   onCreateTerminalInNewPane,
+  onEnsureTerminalTabs,
   onGlobalTabReorder,
   onToggleFullScreen,
   panelStateId,
   renderPane,
   splitTabToRightRequest = null,
+  terminalLayoutRequest = null,
   tabs,
 }: SidebarSplitContainerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -176,6 +190,8 @@ export function SidebarSplitContainer({
   const removedTabPlacements = useRef(new Map<string, SidebarTabPlacement>());
   const previousFullScreen = useRef(isFullScreen);
   const handledSplitTabRequestId = useRef<number | null>(null);
+  const handledTerminalLayoutRequestId = useRef<number | null>(null);
+  const requestedTerminalLayoutAvailabilityId = useRef<number | null>(null);
   const dimsInactiveSplits = useAtomValue(dimInactiveSplitsAtom);
   const [resizeCursor, setResizeCursor] =
     useState<SidebarSplitResizeCursor | null>(null);
@@ -430,6 +446,73 @@ export function SidebarSplitContainer({
     }
   }, [availableTabIds, splitTabToRightRequest]);
 
+  useEffect(() => {
+    if (
+      terminalLayoutRequest === null ||
+      handledTerminalLayoutRequestId.current === terminalLayoutRequest.requestId
+    ) return;
+    if (
+      terminalLayoutRequest.action === "split" &&
+      countPanes(stateRef.current.layout.root) >= MAX_PANES
+    ) {
+      notifyPaneLimit("at-pane-limit");
+      handledTerminalLayoutRequestId.current = terminalLayoutRequest.requestId;
+      return;
+    }
+    const sourceTabId = createTerminalFixedPanelTab({
+      terminalId: terminalLayoutRequest.terminalId,
+    }).id;
+    const targetTabId = terminalLayoutRequest.targetTerminalId === undefined
+      ? undefined
+      : createTerminalFixedPanelTab({
+          terminalId: terminalLayoutRequest.targetTerminalId,
+        }).id;
+    const requiredTabIds = [sourceTabId, ...(targetTabId === undefined ? [] : [targetTabId])];
+    const missingTabIds = requiredTabIds.filter((tabId) => !availableTabIds.includes(tabId));
+    if (missingTabIds.length > 0) {
+      if (requestedTerminalLayoutAvailabilityId.current === terminalLayoutRequest.requestId) return;
+      requestedTerminalLayoutAvailabilityId.current = terminalLayoutRequest.requestId;
+      const terminalIds = missingTabIds.map((tabId) =>
+        tabId === sourceTabId
+          ? terminalLayoutRequest.terminalId
+          : terminalLayoutRequest.targetTerminalId!,
+      );
+      const ensured = onEnsureTerminalTabs?.(terminalIds) ?? false;
+      if (ensured === true) return;
+      if (ensured === null) {
+        requestedTerminalLayoutAvailabilityId.current = null;
+        return;
+      }
+      appToast.warning("The terminal is no longer available in this thread.");
+      handledTerminalLayoutRequestId.current = terminalLayoutRequest.requestId;
+      return;
+    }
+    const ensured = onEnsureTerminalTabs?.([
+      terminalLayoutRequest.terminalId,
+      ...(terminalLayoutRequest.targetTerminalId === undefined
+        ? []
+        : [terminalLayoutRequest.targetTerminalId]),
+    ]);
+    if (ensured === null) return;
+    if (ensured === false) {
+      appToast.warning("The terminal is no longer available in this thread.");
+      handledTerminalLayoutRequestId.current = terminalLayoutRequest.requestId;
+      return;
+    }
+    commitState((current) =>
+      applyTerminalSidebarLayoutAction(
+        current,
+        sourceTabId,
+        terminalLayoutRequest.action,
+        nextSidebarSplitGroupId(current),
+        terminalLayoutRequest.side,
+        targetTabId,
+      ),
+      true,
+    );
+    handledTerminalLayoutRequestId.current = terminalLayoutRequest.requestId;
+  }, [availableTabIds, commitState, onEnsureTerminalTabs, terminalLayoutRequest]);
+
   const removeSplit = useCallback(
     (paneId: string) => {
       commitState((current) => removeSidebarSplit(current, paneId), true);
@@ -445,12 +528,12 @@ export function SidebarSplitContainer({
         if (sourceGroup === null) return current;
         if (sourceGroup.tabIds.length > 1) {
           if (countPanes(focused.layout.root) >= MAX_PANES) return focused;
-          const moved = moveSidebarTab(
+          const moved = applySidebarTabLayoutAction(
             focused,
             paneId,
             sourceGroup.activeTabId,
             { paneId, zone: side },
-            { groupId: nextSidebarSplitGroupId(focused) },
+            nextSidebarSplitGroupId(focused),
           );
           return isFullScreen
             ? setSidebarPaneMaximized(moved, moved.layout.focusedPaneId)
@@ -505,9 +588,13 @@ export function SidebarSplitContainer({
     (sourcePaneId: string, tabId: string, target: SplitDropTarget) => {
       const groupId = nextSidebarSplitGroupId(stateRef.current);
       commitState((current) => {
-        const moved = moveSidebarTab(current, sourcePaneId, tabId, target, {
+        const moved = applySidebarTabLayoutAction(
+          current,
+          sourcePaneId,
+          tabId,
+          target,
           groupId,
-        });
+        );
         return isFullScreen
           ? setSidebarPaneMaximized(moved, moved.layout.focusedPaneId)
           : moved;

@@ -492,6 +492,7 @@ type ExpectedTerminalsKey =
   | "experimental_attention"
   | "experimental_follow"
   | "experimental_focus"
+  | "experimental_layout"
   | "experimental_openBrowser"
   | "experimental_surfaces"
   | "get"

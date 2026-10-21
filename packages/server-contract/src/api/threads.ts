@@ -833,6 +833,22 @@ export type ThreadOpenTerminalAction = z.infer<
   typeof threadOpenTerminalActionSchema
 >;
 
+export const threadOpenTerminalLayoutActionSchema = z
+  .object({
+    action: z.enum(["split", "move"]),
+    side: z.enum(["right", "left", "up", "down"]).optional(),
+    targetTerminalId: z.string().min(1).optional(),
+    terminalId: z.string().min(1),
+  })
+  .refine((value) => value.action !== "split" || value.side !== undefined)
+  .refine((value) => value.action !== "move" || value.targetTerminalId !== undefined)
+  .refine((value) => value.action === "split" || value.side === undefined)
+  .refine((value) => value.action === "move" || value.targetTerminalId === undefined)
+  .strict();
+export type ThreadOpenTerminalLayoutAction = z.infer<
+  typeof threadOpenTerminalLayoutActionSchema
+>;
+
 export const threadOpenFileSchema = z
   .object({
     source: panelFileSourceSchema,
@@ -856,6 +872,7 @@ export const threadOpenSignalSchema = z
     split: threadOpenSplitSchema,
     file: threadOpenFileSchema.nullable(),
     terminalAction: threadOpenTerminalActionSchema.optional(),
+    terminalLayoutAction: threadOpenTerminalLayoutActionSchema.optional(),
   })
   .strict();
 export type ThreadOpenSignal = z.infer<typeof threadOpenSignalSchema>;
@@ -873,6 +890,14 @@ export const threadOpenSignalLenientSchema = z.object({
       url: z.string().optional(),
     })
     .optional(),
+  terminalLayoutAction: z
+    .object({
+      action: z.enum(["split", "move"]),
+      side: z.enum(["right", "left", "up", "down"]).optional(),
+      targetTerminalId: z.string().optional(),
+      terminalId: z.string(),
+    })
+    .optional(),
 });
 
 export const threadOpenRequestSchema = z
@@ -880,12 +905,19 @@ export const threadOpenRequestSchema = z
     split: threadOpenSplitSchema.optional(),
     file: threadOpenFileSchema.nullable(),
     terminalAction: threadOpenTerminalActionSchema.optional(),
+    terminalLayoutAction: threadOpenTerminalLayoutActionSchema.optional(),
   })
   .strict();
 export type ThreadOpenRequest = z.infer<typeof threadOpenRequestSchema>;
 
 export const threadOpenResponseSchema = z.object({
-  delivered: z.number().int().nonnegative(),
+  deliveredClients: z
+    .number()
+    .int()
+    .nonnegative()
+    .describe(
+      "Number of open app sockets the request was sent to; this does not confirm receipt or application.",
+    ),
 });
 export type ThreadOpenResponse = z.infer<typeof threadOpenResponseSchema>;
 
@@ -925,7 +957,13 @@ export const threadPaneActionSignalLenientSchema = z.object({
 });
 
 export const threadPaneActionResponseSchema = z.object({
-  delivered: z.number().int().nonnegative(),
+  delivered: z
+    .number()
+    .int()
+    .nonnegative()
+    .describe(
+      "Number of open app sockets the request was sent to; this does not confirm receipt or application.",
+    ),
 });
 export type ThreadPaneActionResponse = z.infer<
   typeof threadPaneActionResponseSchema
