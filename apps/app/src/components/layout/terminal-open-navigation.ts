@@ -6,9 +6,14 @@ export function navigateThreadWithTerminalAction(
   route: string,
   alreadyOpen: boolean,
   terminalAction: NonNullable<ThreadOpenSignal["terminalAction"]>,
+  terminalLayoutAction?: ThreadOpenSignal["terminalLayoutAction"],
 ): void {
+  const state = {
+    terminalAction,
+    ...(terminalLayoutAction === undefined ? {} : { terminalLayoutAction }),
+  };
   void navigate(route, {
     ...(alreadyOpen ? { replace: true } : {}),
-    state: { terminalAction },
+    state,
   });
 }

@@ -859,6 +859,7 @@ export function PersistentResponsiveDrawerShell({
           contentClassName,
         )}
         style={{
+          pointerEvents: open ? "auto" : "none",
           transform: open ? "translate3d(0, 0, 0)" : "translate3d(0, 100%, 0)",
           transition,
           willChange: open ? "transform" : undefined,

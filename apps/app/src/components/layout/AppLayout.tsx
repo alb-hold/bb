@@ -544,11 +544,18 @@ export function AppLayout({ children }: AppLayoutProps) {
                 route,
                 alreadyOpen,
                 terminalAction,
+                signal.terminalLayoutAction,
               ),
           );
           return;
         }
-        void navigate(route, alreadyOpen ? { replace: true } : undefined);
+        const navigationState = signal.terminalLayoutAction
+          ? { terminalLayoutAction: signal.terminalLayoutAction }
+          : undefined;
+        void navigate(route, {
+          ...(alreadyOpen ? { replace: true } : {}),
+          ...(navigationState === undefined ? {} : { state: navigationState }),
+        });
       }),
     [isCompactViewport, navigate, store],
   );
