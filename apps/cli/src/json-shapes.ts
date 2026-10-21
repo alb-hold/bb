@@ -28,6 +28,8 @@ export const JSON_SHAPE_BY_COMMAND_PATH: Readonly<Record<string, string>> = {
     "{id, name, projectId, hostId, path, branchName, baseBranch, status, lifecycle}",
   "terminal list":
     "{sessions: [{id, title, status, exitCode, closeReason, cols, rows}]}    (wrapped in .sessions)",
+  "terminal surfaces":
+    "{threadId, surfaces: [{threadId, terminalId, title, status, kind}]}    (thread-scoped terminal surfaces)",
   "terminal output":
     '{chunks: [{seq, dataBase64}], nextSeq, truncated, status, exitCode, closeReason}    (chunk data is base64; status is "exited" once the command has finished)',
   "terminal wait": "{terminalId, matched, nextSeq, exitCode}",

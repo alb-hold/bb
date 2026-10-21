@@ -138,6 +138,9 @@ This index lists every command path that the core CLI registers, including alias
 - `bb device copy`
 - `bb device open`
 - `bb terminal list`
+- `bb terminal surfaces`
+- `bb terminal focus`
+- `bb terminal open-link`
 - `bb terminal notify`
 - `bb terminal attention`
 - `bb terminal attention list`
