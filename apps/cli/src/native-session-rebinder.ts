@@ -37,7 +37,7 @@ function isTransportFailure(error: unknown): boolean {
   );
 }
 
-function permanentRefusal(error: unknown): string | null {
+export function permanentRefusal(error: unknown): string | null {
   if (!(error instanceof BbHttpError)) {
     return isTransportFailure(error) ? null : "unexpected_error";
   }

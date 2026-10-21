@@ -2309,6 +2309,44 @@ describe("native terminal activity evidence across a swap", () => {
     expect(threadStatus(fixture, thread.id)).toBe("idle");
   });
 
+  it("an idle report resent after an earlier failed delivery settles the thread to idle, and a duplicate idle is a no-op", async () => {
+    const fixture = await createFixture();
+    const started = await startNativeThread(fixture);
+    const { thread } = started;
+    applyLoggedThreadLifecycleEvent(fixture.harness.deps, {
+      event: { type: "run.started" },
+      threadId: thread.id,
+    });
+    expect(threadStatus(fixture, thread.id)).toBe("active");
+    const idle = () =>
+      postJson(
+        fixture,
+        `/threads/${thread.id}/native-terminal/activity`,
+        { state: "idle" },
+        `Bearer ${started.credential}`,
+      );
+    expect((await idle()).status).toBe(200);
+    expect(threadStatus(fixture, thread.id)).toBe("idle");
+    const notify = vi.spyOn(fixture.harness.hub, "notifyThread");
+    const pendingBefore = listPendingInteractionsByThread(fixture.harness.db, {
+      threadId: thread.id,
+    });
+    try {
+      expect((await idle()).status).toBe(200);
+      expect(threadStatus(fixture, thread.id)).toBe("idle");
+      expect(
+        notify.mock.calls.filter((call) => call[1].includes("status-changed")),
+      ).toHaveLength(0);
+    } finally {
+      notify.mockRestore();
+    }
+    expect(
+      listPendingInteractionsByThread(fixture.harness.db, {
+        threadId: thread.id,
+      }),
+    ).toEqual(pendingBefore);
+  });
+
   it("ends the rebind window when the reattach fails, so the binding can be stamped again", async () => {
     const fixture = await createFixture();
     const started = await startNativeThread(fixture);
