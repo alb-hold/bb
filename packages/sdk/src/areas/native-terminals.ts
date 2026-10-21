@@ -32,6 +32,7 @@ export interface NativeTerminalSwitchModeArgs extends NativeTerminalThreadArgs {
 }
 
 export interface NativeTerminalReportActivityArgs extends NativeTerminalThreadArgs {
+  authorization?: string;
   state: NativeTerminalActivityState;
   prompt?: string;
   questions?: NativeTerminalOpenQuestion[];
@@ -135,6 +136,13 @@ export function createNativeTerminalsArea(
       );
     },
     async reportActivity(input) {
+      const signalOptions = signalRequestArgs(input.signal)[0];
+      const init = {
+        ...signalOptions?.init,
+        ...(input.authorization === undefined
+          ? {}
+          : { headers: { authorization: input.authorization } }),
+      };
       return transport.readJson(
         route().activity.$post(
           {
@@ -147,7 +155,7 @@ export function createNativeTerminalsArea(
                 : { questions: input.questions }),
             },
           },
-          ...signalRequestArgs(input.signal),
+          ...(Object.keys(init).length === 0 ? [] : [{ init }]),
         ),
       );
     },

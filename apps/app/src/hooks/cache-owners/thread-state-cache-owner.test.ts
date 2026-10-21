@@ -684,3 +684,47 @@ it("preserves concurrent state when an older status event reaches detail and sid
       updatedAt: 30,
     });
 });
+
+it("patches receipt metadata when the thread updatedAt is unchanged", () => {
+  const { queryClient, original, seed, read } = seedConcurrentThreadCaches();
+  seed(
+    makeThreadListEntry({
+      ...original,
+      status: "active",
+      runtime: {
+        displayStatus: "active",
+        nativeActivity: {
+          lastEvidenceAt: 10,
+          freshForMs: 90_000,
+          confirmation: "confirmed",
+        },
+      },
+      updatedAt: 30,
+    }),
+  );
+  const receipt = {
+    status: "active" as const,
+    runtime: {
+      displayStatus: "active" as const,
+      nativeActivity: {
+        lastEvidenceAt: 20,
+        freshForMs: 90_000 as const,
+        confirmation: "confirmed" as const,
+      },
+    },
+    latestAttentionAt: original.latestAttentionAt,
+    activity: original.activity,
+    updatedAt: 30,
+  };
+
+  updateCachedThreadStatusState(queryClient, original.id, receipt);
+  updateCachedThreadListStatusState(queryClient, original.id, receipt);
+
+  for (const thread of read()) {
+    if (thread === undefined) {
+      throw new Error("Expected the thread in each cache");
+    }
+    expect(thread.updatedAt).toBe(30);
+    expect(thread.runtime.nativeActivity?.lastEvidenceAt).toBe(20);
+  }
+});

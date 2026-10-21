@@ -1,4 +1,4 @@
-{"hook_event_name":"UserPromptSubmit","prompt_id":"00000000-0000-4000-8000-000000000003","prompt":"x"}
-{"hook_event_name":"UserPromptSubmit","prompt_id":"00000000-0000-4000-8000-000000000003","prompt":"x"}
-{"hook_event_name":"UserPromptSubmit","prompt_id":"00000000-0000-4000-8000-000000000003","prompt":"x"}
-{"hook_event_name":"Stop","prompt_id":"00000000-0000-4000-8000-000000000003","stop_hook_active":false}
+{"hook_event_name":"UserPromptSubmit","session_id":"11111111-2222-4333-8444-555555555555","prompt_id":"00000000-0000-4000-8000-000000000003","prompt":"x"}
+{"hook_event_name":"UserPromptSubmit","session_id":"11111111-2222-4333-8444-555555555555","prompt_id":"00000000-0000-4000-8000-000000000003","prompt":"x"}
+{"hook_event_name":"UserPromptSubmit","session_id":"11111111-2222-4333-8444-555555555555","prompt_id":"00000000-0000-4000-8000-000000000003","prompt":"x"}
+{"hook_event_name":"Stop","session_id":"11111111-2222-4333-8444-555555555555","prompt_id":"00000000-0000-4000-8000-000000000003","stop_hook_active":false}
