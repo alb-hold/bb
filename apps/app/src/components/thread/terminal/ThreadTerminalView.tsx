@@ -80,7 +80,9 @@ import {
   createTerminalTouchViewportSaveScheduler,
   findTerminalOutputLineAnchor,
   readTerminalViewportAnchor,
+  registerTerminalOutputBoundaryHandler,
   resolveTerminalViewportRestore,
+  terminalOutputBoundaryPrefix,
   terminalViewportStorageKey,
 } from "./terminal-viewport";
 import type { TerminalOutputLineAnchor } from "./terminal-viewport";
@@ -519,6 +521,8 @@ interface TerminalOutputWriteArgs {
   frameId?: number;
   isReplay: boolean;
   terminalId?: string;
+  outputSequence?: number;
+  outputBoundaryToken?: string;
   onOutputParsed?: () => void;
   onParsed: () => void;
   replayWriteState: TerminalReplayWriteState;
@@ -576,6 +580,7 @@ interface HandleTerminalServerMessageArgs {
   replayNextSeq: number | null;
   replayWriteState: TerminalReplayWriteState;
   outputFrameId?: number;
+  outputBoundaryToken?: string;
   setReplayNextSeq: (nextSeq: number | null) => void;
   setReplayStartSequence?: (sequence: number) => void;
   terminal: XTermTerminal;
@@ -846,6 +851,8 @@ export function writeTerminalOutput({
   frameId,
   isReplay,
   terminalId = "",
+  outputSequence,
+  outputBoundaryToken,
   onOutputParsed,
   onParsed,
   replayWriteState,
@@ -853,11 +860,20 @@ export function writeTerminalOutput({
   pipeline,
   replayPipeline,
 }: TerminalOutputWriteArgs): void {
-  const bytes =
+  const sourceBytes =
     typeof data === "string" ? new TextEncoder().encode(data) : data;
+  let bytes = sourceBytes;
+  if (outputSequence !== undefined && outputBoundaryToken !== undefined) {
+    const prefix = new TextEncoder().encode(
+      terminalOutputBoundaryPrefix(outputBoundaryToken, outputSequence),
+    );
+    bytes = new Uint8Array(prefix.length + sourceBytes.length);
+    bytes.set(prefix);
+    bytes.set(sourceBytes, prefix.length);
+  }
   const write = (callback: () => void, applyMarkerGrids: boolean) => {
     if (pipeline) pipeline.push(bytes, callback, applyMarkerGrids);
-    else terminal.write(data, callback);
+    else terminal.write(bytes, callback);
   };
   if (!isReplay) {
     write(() => {
@@ -877,7 +893,7 @@ export function writeTerminalOutput({
       onParsed();
       return;
     }
-    replayPipeline.push(bytes, () => {
+    replayPipeline.push(sourceBytes, () => {
       replayWriteState.suppressedWriteCount -= 1;
       recordTerminalOutputParsed(terminalId, frameId, performance.now());
       onOutputParsed?.();
@@ -898,6 +914,7 @@ export function handleTerminalServerMessage({
   replayNextSeq,
   replayWriteState,
   outputFrameId,
+  outputBoundaryToken,
   setReplayNextSeq,
   setReplayStartSequence,
   terminal,
@@ -939,7 +956,7 @@ export function handleTerminalServerMessage({
         onOutputParsed: onOutputFrameParsed,
         onParsed: () => {
           onOutputParsed?.(message.chunk.seq);
-          onOutputStart?.(nextSeq);
+          if (outputBoundaryToken === undefined) onOutputStart?.(nextSeq);
           acknowledgeOutput(nextSeq);
           if (
             replayNextSeq !== null &&
@@ -954,6 +971,8 @@ export function handleTerminalServerMessage({
         terminal,
         pipeline,
         replayPipeline,
+        outputSequence: message.chunk.seq,
+        outputBoundaryToken,
       });
       return;
     }
@@ -1382,6 +1401,7 @@ export function ThreadTerminalView({
     let terminalInputForwarding: { dispose: () => void } | null = null;
     let shellOscDisposable: { dispose: () => void } | null = null;
     let osc52Disposable: { dispose: () => void } | null = null;
+    let outputBoundaryDisposable: { dispose: () => void } | null = null;
     let stopObservingFonts: (() => void) | null = null;
     let detachViewportListeners: (() => void) | null = null;
     let replayStartSequence = 0;
@@ -1671,6 +1691,12 @@ export function ThreadTerminalView({
       );
       terminal.open(containerElement);
       outputLineAnchorTracker.reset();
+      const outputBoundaryToken = crypto.randomUUID();
+      outputBoundaryDisposable = registerTerminalOutputBoundaryHandler(
+        terminal.parser,
+        outputBoundaryToken,
+        recordOutputStart,
+      );
       const restoreViewport = () => {
         const activeBuffer = terminal?.buffer.active;
         if (!terminal || !activeBuffer) {
@@ -2073,6 +2099,7 @@ export function ThreadTerminalView({
             terminal: activeTerminal,
             pipeline: outputPipeline ?? undefined,
             replayPipeline: replayPreview ?? undefined,
+            outputBoundaryToken,
             allowAttachedGrid: !markerGridActive,
           });
         },
@@ -2307,6 +2334,7 @@ export function ThreadTerminalView({
       terminalInputForwarding = null;
       shellOscDisposable?.dispose();
       osc52Disposable?.dispose();
+      outputBoundaryDisposable?.dispose();
       terminalInteractions?.dispose();
       terminalRenderSubscription?.dispose();
       terminalRenderSubscription = null;

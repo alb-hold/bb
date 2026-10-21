@@ -10,6 +10,43 @@ export interface TerminalOutputLineAnchor {
   expired: boolean;
 }
 
+export const TERMINAL_OUTPUT_BOUNDARY_OSC_IDENTIFIER = 7778;
+
+export function registerTerminalOutputBoundaryHandler(
+  parser: {
+    registerOscHandler(
+      identifier: number,
+      callback: (payload: string) => boolean | Promise<boolean>,
+    ): { dispose(): void };
+  },
+  token: string,
+  onOutputStart: (sequence: number) => void,
+): { dispose(): void } {
+  return parser.registerOscHandler(
+    TERMINAL_OUTPUT_BOUNDARY_OSC_IDENTIFIER,
+    (payload) => {
+      const [receivedToken, sequenceText] = payload.split(":");
+      const sequence = Number(sequenceText);
+      if (
+        receivedToken !== token ||
+        !Number.isSafeInteger(sequence) ||
+        sequence < 0
+      ) {
+        return false;
+      }
+      onOutputStart(sequence);
+      return true;
+    },
+  );
+}
+
+export function terminalOutputBoundaryPrefix(
+  token: string,
+  sequence: number,
+): string {
+  return `\u001b]${TERMINAL_OUTPUT_BOUNDARY_OSC_IDENTIFIER};${token}:${sequence}\u0007`;
+}
+
 export function createTerminalOutputLineAnchorTracker(args: {
   registerMarker: () => {
     line: number;

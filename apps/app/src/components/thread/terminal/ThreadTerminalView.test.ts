@@ -43,6 +43,7 @@ import {
   createTerminalViewportPersistence,
   createTerminalTouchViewportSaveScheduler,
   createTerminalOutputLineAnchorTracker,
+  registerTerminalOutputBoundaryHandler,
   readTerminalViewportAnchor,
   resolveTerminalViewportRestore,
   startTerminalOutputReplay,
@@ -527,6 +528,87 @@ describe("terminal viewport restore", () => {
         .getLine(terminal.buffer.active.viewportY)
         ?.translateToString(true),
     ).toBe("line 02921");
+    tracker.dispose();
+    terminal.dispose();
+  });
+
+  it("keeps replay output sequence markers at chunk starts while writes are queued", async () => {
+    const terminal = new Terminal({ cols: 80, rows: 51, scrollback: 10_000 });
+    const pipeline = createTerminalOutputPipeline(terminal);
+    const tracker = createTerminalOutputLineAnchorTracker({
+      registerMarker: () => terminal.registerMarker(),
+      getCurrentLine: () =>
+        terminal.buffer.active.baseY + terminal.buffer.active.cursorY,
+    });
+    const outputLineAnchors: NonNullable<
+      ReturnType<typeof tracker.recordOutputStart>
+    >[] = [];
+    const token = "replay-marker-test";
+    tracker.reset();
+    const markerHandler = registerTerminalOutputBoundaryHandler(
+      terminal.parser,
+      token,
+      (sequence) => {
+        const anchor = tracker.recordOutputStart(sequence);
+        if (anchor) outputLineAnchors.push(anchor);
+      },
+    );
+    const chunks = [
+      { seq: 0, first: 1, count: 300 },
+      { seq: 1, first: 301, count: 224 },
+      { seq: 2, first: 525, count: 2_476 },
+      ...Array.from({ length: 6 }, (_, index) => ({
+        seq: index + 3,
+        first: 0,
+        count: 0,
+      })),
+    ];
+    await Promise.all(
+      chunks.map(
+        ({ seq, first, count }) =>
+          new Promise<void>((resolve) => {
+            const data = Array.from(
+              { length: count },
+              (_, index) =>
+                `line ${String(first + index).padStart(5, "0")}\r\n`,
+            ).join("");
+            writeTerminalOutput({
+              data,
+              isReplay: false,
+              outputSequence: seq,
+              outputBoundaryToken: token,
+              onParsed: resolve,
+              replayWriteState: { suppressedWriteCount: 0 },
+              terminal,
+              pipeline,
+            });
+          }),
+      ),
+    );
+
+    const outputAnchor = outputLineAnchors.find(
+      ({ sequence }) => sequence === 2,
+    );
+    expect(outputAnchor?.line).toBe(524);
+    expect(terminal.buffer.active.baseY).toBe(2_950);
+    const restoreLine = resolveTerminalViewportRestore({
+      anchor: {
+        distanceFromTail: 30,
+        lineOffset: 2_396,
+        outputSequence: 2,
+      },
+      baseY: terminal.buffer.active.baseY,
+      outputLineAnchors,
+      replayStartSequence: 0,
+      replayNextSequence: 9,
+    });
+    terminal.scrollToLine(restoreLine);
+
+    expect(restoreLine).toBe(2_920);
+    expect(
+      terminal.buffer.active.getLine(terminal.buffer.active.viewportY)?.translateToString(true),
+    ).toBe("line 02921");
+    markerHandler.dispose();
     tracker.dispose();
     terminal.dispose();
   });
