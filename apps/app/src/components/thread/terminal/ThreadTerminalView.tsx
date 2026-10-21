@@ -112,6 +112,8 @@ export {
 export const TERMINAL_FONT_FAMILY =
   '"JetBrainsMono Nerd Font Mono", "MesloLGS NF", "Symbols Nerd Font Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace';
 const TERMINAL_FONT_CSS_VARIABLE = "--font-terminal";
+const CLIPBOARD_BLOCKED_MESSAGE =
+  "This connection can’t read the clipboard. Long-press a message box and choose Paste.";
 const TERMINAL_UNICODE_VERSION = "11";
 export const TERMINAL_ALLOW_PROPOSED_API = true;
 const TERMINAL_TOUCH_FOCUS_MAX_DURATION_MS = 700;
@@ -1090,9 +1092,7 @@ export function ThreadTerminalView({
         terminalRef.current === terminal &&
         sessionStatusRef.current === "running",
     }).catch(() => {
-      appToast.error(
-        "Unable to read clipboard. Use your keyboard’s Paste action.",
-      );
+      appToast.error(CLIPBOARD_BLOCKED_MESSAGE);
     });
   }, []);
 
