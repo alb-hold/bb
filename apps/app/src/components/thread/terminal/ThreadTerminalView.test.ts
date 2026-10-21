@@ -696,6 +696,60 @@ describe("terminal viewport restore", () => {
     terminal.dispose();
   });
 
+  it("keeps the saved top line when the phone fit shrinks the replay grid", async () => {
+    const terminal = new Terminal({ cols: 80, rows: 56, scrollback: 10_000 });
+    const pipeline = createTerminalOutputPipeline(terminal);
+    const tracker = createTerminalOutputLineAnchorTracker({
+      registerMarker: () => terminal.registerMarker(),
+      getCurrentLine: () => terminal.buffer.active.baseY + terminal.buffer.active.cursorY,
+    });
+    tracker.reset();
+    const anchor = tracker.recordOutputStart(1)!;
+    await writeTerminal(
+      terminal,
+      Array.from({ length: 3_000 }, (_, index) =>
+        `line ${String(index + 1).padStart(5, "0")}\r\n`,
+      ).join(""),
+    );
+    const savedAnchor = {
+      distanceFromTail: terminal.buffer.active.baseY - 1_100,
+      lineOffset: 1_100,
+      outputSequence: 1,
+    };
+    await new Promise<void>((resolve) => {
+      applyTerminalGridBeforeViewportRestore({
+        pipeline,
+        cols: 80,
+        rows: 56,
+        fitGrid: { cols: 80, rows: 33 },
+        onGridApplied: () => {},
+        restoreViewport: () => {
+          terminal.scrollToLine(
+            resolveTerminalViewportRestore({
+              anchor: savedAnchor,
+              baseY: terminal.buffer.active.baseY,
+              outputLineAnchors: [anchor],
+              replayStartSequence: 1,
+              replayNextSequence: 2,
+            }),
+          );
+        },
+        afterRestore: () => {
+          if (terminal.rows !== 33) terminal.resize(80, 33);
+          resolve();
+        },
+      });
+    });
+
+    expect(
+      terminal.buffer.active
+        .getLine(terminal.buffer.active.viewportY)
+        ?.translateToString(true),
+    ).toBe("line 01101");
+    tracker.dispose();
+    terminal.dispose();
+  });
+
   it("keeps a saved marker live when the output anchor cap is exceeded", async () => {
     const terminal = new Terminal({ cols: 80, rows: 52, scrollback: 10_000 });
     const tracker = createTerminalOutputLineAnchorTracker({
