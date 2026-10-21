@@ -1066,7 +1066,8 @@ binding with `sdk.nativeTerminals.recordSession({ replacesNativeSessionId })`,
 which the server accepts only for the current live credential and when the
 replaced id is still the stored one. A move the server cannot take yet (401,
 408, 429, 5xx, a terminal that is not live, a network failure) is retried on each
-heartbeat tick and credential refresh; any other refusal is permanent and stops
+heartbeat tick and credential refresh; any other refusal or unexpected failure
+(an unparsable response, an unexpected throw) is permanent and stops
 the wrapper from confirming activity, so the thread shows Activity not reported. The server moves
 the thread between idle and active and titles an untitled thread from the
 prompt. Validated at registration by

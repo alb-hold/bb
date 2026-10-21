@@ -1,4 +1,4 @@
-import { BbHttpError } from "@bb/sdk";
+import { BbHttpError, BbRequestTimeoutError } from "@bb/sdk";
 
 export interface NativeSessionMove {
   previousSessionId: string;
@@ -15,8 +15,14 @@ export interface NativeSessionRebinder {
 const RETRYABLE_CLIENT_STATUSES = new Set([401, 408, 429]);
 const RETRYABLE_CODES = new Set(["native_terminal_not_live"]);
 
+function isTransportFailure(error: unknown): boolean {
+  return error instanceof TypeError || error instanceof BbRequestTimeoutError;
+}
+
 function permanentRefusal(error: unknown): string | null {
-  if (!(error instanceof BbHttpError)) return null;
+  if (!(error instanceof BbHttpError)) {
+    return isTransportFailure(error) ? null : "unexpected_error";
+  }
   if (error.status < 400 || error.status >= 500) return null;
   if (RETRYABLE_CLIENT_STATUSES.has(error.status)) return null;
   if (error.code !== null && RETRYABLE_CODES.has(error.code)) return null;
