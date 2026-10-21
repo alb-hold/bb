@@ -89,6 +89,7 @@ import {
   onClientSocketOpen,
 } from "./ws/client-protocol.js";
 import {
+  createDaemonSocketMessageQueue,
   onDaemonSocketClose,
   onDaemonSocketMessage,
   onDaemonSocketOpen,
@@ -1061,23 +1062,42 @@ export function createApp(
         protocolHeader: context.req.header("sec-websocket-protocol"),
         sessionId: context.req.query("sessionId") ?? null,
       });
+      const daemonMessageQueue = createDaemonSocketMessageQueue<() => void>({
+        handle: (message) => message(),
+        onError: (error) => {
+          deps.logger.error({ err: error }, "Daemon socket message queue failed");
+        },
+      });
       return {
-        onOpen: (_event, socket) =>
-          onDaemonSocketOpen(deps, {
+        onOpen: (_event, socket) => {
+          const daemonOpen = onDaemonSocketOpen(deps, {
             ...websocketContext,
             socket,
-          }),
-        onMessage: (event, socket) =>
-          onDaemonSocketMessage(
-            deps,
-            {
-              hostId: websocketContext.hostId,
-              raw: event.data,
-              sessionId: websocketContext.sessionId,
-              socket,
+          });
+          return daemonOpen.then(
+            () => daemonMessageQueue.release(),
+            (error: unknown) => {
+              deps.logger.error(
+                { err: error, sessionId: websocketContext.sessionId },
+                "Daemon socket open reconciliation failed",
+              );
+              daemonMessageQueue.release();
             },
-            pluginService,
-            serverMove,
+          );
+        },
+        onMessage: (event, socket) =>
+          daemonMessageQueue.enqueue(() =>
+            onDaemonSocketMessage(
+              deps,
+              {
+                hostId: websocketContext.hostId,
+                raw: event.data,
+                sessionId: websocketContext.sessionId,
+                socket,
+              },
+              pluginService,
+              serverMove,
+            ),
           ),
         onClose: () => onDaemonSocketClose(deps, websocketContext.sessionId),
       };
