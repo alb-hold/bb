@@ -9,10 +9,12 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import {
   beginCopy,
+  fingerprintSource,
   inspectCreatedBy,
   recordCopy,
   removeVerifiedCopies,
   type CreatedBy,
+  type SourceFingerprint,
 } from "./created-by.js";
 import {
   WORKTREE_PRESERVED_CODE,
@@ -416,10 +418,14 @@ async function copyIncludedFiles(args: {
       ...(args.createdBy !== undefined
         ? {
             ledger: {
+              expect: fingerprintSource,
               begin: (relativePath: string) =>
                 beginCopy(args.createdBy!, relativePath),
-              record: (relativePath: string, file: string) =>
-                recordCopy(args.createdBy!, relativePath, file),
+              record: (
+                relativePath: string,
+                file: string,
+                expected: SourceFingerprint | null,
+              ) => recordCopy(args.createdBy!, relativePath, file, expected),
             },
           }
         : {}),

@@ -1,6 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import {
   appendFile,
   lstat,
@@ -19,6 +19,13 @@ import { promisify } from "node:util";
 import { experimental_createHostEntryHarness } from "@get-bb/plugin-sdk/testing/host";
 import { afterEach, describe, expect, it } from "vitest";
 import { createWorktreeHostEntry } from "./host.js";
+import {
+  beginCopy,
+  fingerprintSource,
+  recordCopy,
+  type CreatedBy,
+} from "./host/created-by.js";
+import { copyWorktreeIncludeFiles } from "./host/worktree-include.js";
 import { removeWorktree } from "./host/worktree.js";
 
 const execFileAsync = promisify(execFile);
@@ -1442,6 +1449,48 @@ setTimeout(() => {}, 300_000);`,
           expect(existsSync(join(worktree.path, "after-create.txt"))).toBe(
             true,
           );
+          expect(isPidAlive(worktree.lingering.pid ?? 0)).toBe(true);
+        } finally {
+          await worktree.harness.experimental_dispose();
+        }
+      });
+
+      it("never treats an edit made right after the copy as bb's own", async () => {
+        const worktree = await createManagedWorktree({ publish: false });
+        try {
+          await writeFile(
+            join(worktree.sourcePath, ".worktreeinclude"),
+            "inc/\n",
+          );
+          await mkdir(join(worktree.sourcePath, "inc"));
+          await writeFile(join(worktree.sourcePath, "inc", "a.env"), "A=1\n");
+          const createdBy: CreatedBy = {
+            head: (await git(worktree.path, "rev-parse", "HEAD")).trim(),
+            copies: new Map(),
+          };
+          const copied = join(worktree.path, "inc", "a.env");
+
+          await copyWorktreeIncludeFiles({
+            sourcePath: worktree.sourcePath,
+            targetPath: worktree.path,
+            ledger: {
+              expect: fingerprintSource,
+              begin: (relativePath) => {
+                beginCopy(createdBy, relativePath);
+                writeFileSync(copied, "A=2\n");
+              },
+              record: (relativePath, file, expected) =>
+                recordCopy(createdBy, relativePath, file, expected),
+            },
+          });
+          await expect(
+            removeWorktree({
+              path: worktree.path,
+              rootPath: join(worktree.dataDir, "worktrees"),
+              createdBy,
+            }),
+          ).rejects.toMatchObject({ code: "worktree_preserved" });
+          expect(await readFile(copied, "utf8")).toBe("A=2\n");
           expect(isPidAlive(worktree.lingering.pid ?? 0)).toBe(true);
         } finally {
           await worktree.harness.experimental_dispose();

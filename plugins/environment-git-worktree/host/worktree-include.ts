@@ -1,4 +1,5 @@
 import { runGit } from "bb-environment-provider-host/git";
+import type { SourceFingerprint } from "./created-by.js";
 import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -7,8 +8,13 @@ import { throwIfProvisionAborted } from "bb-environment-provider-host/transcript
 export const WORKTREE_INCLUDE_FILE_NAME = ".worktreeinclude";
 
 export interface CopyLedger {
+  expect(sourceFile: string): Promise<SourceFingerprint | null>;
   begin(relativePath: string): void;
-  record(relativePath: string, file: string): Promise<void>;
+  record(
+    relativePath: string,
+    file: string,
+    expected: SourceFingerprint | null,
+  ): Promise<void>;
 }
 
 interface CopyWorktreeIncludeFilesArgs {
@@ -149,10 +155,11 @@ export async function copyWorktreeIncludeFiles(
         skipped.push(`${relativePath}: destination escapes the worktree`);
         continue;
       }
+      const expected = (await args.ledger?.expect(sourceFile)) ?? null;
       await fs.copyFile(sourceFile, targetFile, fsConstants.COPYFILE_EXCL);
       args.ledger?.begin(relativePath);
       copied.push(relativePath);
-      await args.ledger?.record(relativePath, targetFile);
+      await args.ledger?.record(relativePath, targetFile, expected);
     } catch (error) {
       skipped.push(`${relativePath}: ${describeError(error)}`);
     }

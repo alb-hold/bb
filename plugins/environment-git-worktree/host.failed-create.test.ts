@@ -54,6 +54,7 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
 }
 
 async function createFixture(options: {
+  trackedFiles?: ReadonlyArray<{ name: string; content: string }>;
   hookLines: readonly string[];
   includedFiles: ReadonlyArray<{ name: string; content: string }>;
 }) {
@@ -67,6 +68,9 @@ async function createFixture(options: {
   await writeFile(join(sourcePath, "README.md"), "hello\n");
   await writeFile(join(sourcePath, ".gitignore"), "inc/\n");
   await writeFile(join(sourcePath, ".worktreeinclude"), "inc/\n");
+  for (const file of options.trackedFiles ?? []) {
+    await writeFile(join(sourcePath, file.name), file.content);
+  }
   await git(sourcePath, "add", ".");
   await git(sourcePath, "commit", "-m", "initial");
   await mkdir(join(sourcePath, "inc"));
@@ -155,10 +159,10 @@ describe("a failed create keeps recoverable work in the worktree it just made", 
     await fixture.harness.experimental_dispose();
   });
 
-  it("stops nothing and keeps everything when the worktree carries .keep-worktree", async () => {
+  it("stops nothing and keeps everything when the worktree carries a committed .keep-worktree", async () => {
     const fixture = await createFixture({
+      trackedFiles: [{ name: ".keep-worktree", content: "" }],
       hookLines: [
-        "touch .keep-worktree",
         "(sleep 300 > /dev/null 2>&1 & echo $! > ../hook-sleeper.pid)",
       ],
       includedFiles: [],

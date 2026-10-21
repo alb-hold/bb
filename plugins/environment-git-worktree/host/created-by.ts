@@ -42,14 +42,36 @@ async function fingerprint(
   return { sha256: hash.digest("hex"), size: after.size, mode: after.mode };
 }
 
+export interface SourceFingerprint {
+  sha256: string;
+  size: number;
+}
+
+export async function fingerprintSource(
+  file: string,
+): Promise<SourceFingerprint | null> {
+  try {
+    const print = await fingerprint(file);
+    return print === null ? null : { sha256: print.sha256, size: print.size };
+  } catch {
+    return null;
+  }
+}
+
 export async function recordCopy(
   createdBy: CreatedBy,
   relativePath: string,
   file: string,
+  expected: SourceFingerprint | null,
 ): Promise<void> {
+  if (expected === null) return;
   try {
     const print = await fingerprint(file);
-    if (print !== null) {
+    if (
+      print !== null &&
+      print.sha256 === expected.sha256 &&
+      print.size === expected.size
+    ) {
       createdBy.copies.set(relativePath, { state: "recorded", ...print });
     }
   } catch {
