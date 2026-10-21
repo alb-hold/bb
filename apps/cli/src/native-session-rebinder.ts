@@ -17,12 +17,14 @@ const RETRYABLE_CODES = new Set(["native_terminal_not_live"]);
 
 const UNDICI_TRANSPORT_MESSAGES = new Set(["fetch failed", "terminated"]);
 
+const SYSTEM_ERROR_CODE = /^(?:E(?!RR_)[A-Z0-9_]+|UND_ERR_[A-Z_]+)$/u;
+
 function hasSystemErrorCode(cause: unknown): boolean {
   return (
-    typeof cause === "object" &&
-    cause !== null &&
+    cause instanceof Error &&
     "code" in cause &&
-    typeof cause.code === "string"
+    typeof cause.code === "string" &&
+    SYSTEM_ERROR_CODE.test(cause.code)
   );
 }
 

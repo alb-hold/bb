@@ -1,4 +1,11 @@
-import { getNativeTerminalThread, getThread, updateThread } from "@bb/db";
+import { createHash } from "node:crypto";
+import {
+  getNativeTerminalThread,
+  getThread,
+  setNativeTerminalThreadTerminal,
+  setNativeTerminalToolCredential,
+  updateThread,
+} from "@bb/db";
 import { threadResponseSchema } from "@bb/server-contract";
 import { describe, expect, it, vi } from "vitest";
 import { registerFakeAiService } from "../helpers/ai-services.js";
@@ -77,11 +84,26 @@ async function withTitleFixture(
           return thread.id;
         },
         async activity(threadId, prompt) {
+          const credential = "synthetic-title-test-credential";
+          setNativeTerminalThreadTerminal(harness.db, {
+            terminalSessionId: "terminal-title-test",
+            threadId,
+          });
+          setNativeTerminalToolCredential(harness.db, {
+            credentialHash: createHash("sha256")
+              .update(credential)
+              .digest("hex"),
+            terminalSessionId: "terminal-title-test",
+            threadId,
+          });
           const response = await harness.app.request(
             `/api/v1/threads/${threadId}/native-terminal/activity`,
             {
               method: "POST",
-              headers: { "content-type": "application/json" },
+              headers: {
+                authorization: `Bearer ${credential}`,
+                "content-type": "application/json",
+              },
               body: JSON.stringify({ state: "working", prompt }),
             },
           );

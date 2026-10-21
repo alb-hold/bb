@@ -234,6 +234,7 @@ async function holdNativeHarness(
     recordSession: (args) =>
       sdk.nativeTerminals.recordSession({ ...args, threadId }),
     report,
+    retryReport: reporter.retry,
   });
   const readActivity = (): void => {
     for (const next of reader?.read() ?? []) report(next);
