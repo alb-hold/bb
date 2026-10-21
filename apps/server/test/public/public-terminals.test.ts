@@ -1757,7 +1757,7 @@ describe("public terminal routes", () => {
       },
     ]);
     const screenResponse = await fixture.harness.app.request(
-      `/api/v1/terminals/${session.id}/screen?threadId=${fixture.thread.id}&lines=2`,
+      `/api/v1/terminals/${session.id}/screen?lines=2`,
     );
     expect(screenResponse.status).toBe(200);
     expect(
@@ -1770,21 +1770,23 @@ describe("public terminal routes", () => {
     });
   });
 
-  it("returns 404 for an unknown terminal screen ID in the caller's scope", async () => {
+  it("returns 404 without rows for an unknown terminal screen ID", async () => {
     const fixture = await createTerminalRouteFixture();
     harnesses.push(fixture.harness);
 
     const response = await fixture.harness.app.request(
-      `/api/v1/terminals/unknown-terminal/screen?threadId=${fixture.thread.id}`,
+      "/api/v1/terminals/unknown-terminal/screen",
     );
 
     expect(response.status).toBe(404);
-    expect(apiErrorSchema.parse(await readJson(response)).code).toBe(
+    const body = await response.text();
+    expect(body).not.toContain("rows");
+    expect(apiErrorSchema.parse(JSON.parse(body)).code).toBe(
       "terminal_not_found",
     );
   });
 
-  it("denies a real terminal from another project without returning its screen", async () => {
+  it("reads a foreign-project terminal screen with the same access as output", async () => {
     const fixture = await createTerminalRouteFixture();
     harnesses.push(fixture.harness);
     const { project: foreignProject } = seedProjectWithSource(
@@ -1839,17 +1841,29 @@ describe("public terminal routes", () => {
       },
     });
 
-    const response = await fixture.harness.app.request(
-      `/api/v1/terminals/${foreignTerminal.id}/screen?threadId=${fixture.thread.id}`,
+    const screenResponse = await fixture.harness.app.request(
+      `/api/v1/terminals/${foreignTerminal.id}/screen`,
     );
-    const body = await response.text();
+    const screen = await screenResponse.json();
+    const outputResponse = await fixture.harness.app.request(
+      `/api/v1/terminals/${foreignTerminal.id}/output`,
+    );
 
-    expect(body).not.toContain(secretScreenRow);
-    expect(JSON.parse(body)).not.toHaveProperty("rows");
-    expect(response.status).toBe(404);
-    expect(apiErrorSchema.parse(JSON.parse(body)).code).toBe(
-      "terminal_not_found",
+    expect(screenResponse.status).toBe(200);
+    expect(screenResponse.status).toBe(outputResponse.status);
+    expect(terminalScreenResponseSchema.parse(screen).rows).toContain(
+      secretScreenRow,
     );
+    expect(
+      terminalOutputResponseSchema.parse(await outputResponse.json()).chunks,
+    ).toEqual([
+      {
+        seq: 0,
+        dataBase64: Buffer.from(`${secretScreenRow}\n`, "utf8").toString(
+          "base64",
+        ),
+      },
+    ]);
   });
 
   it("reads exited terminal output after reopening the database", async () => {
