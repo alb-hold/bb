@@ -858,6 +858,125 @@ describe("POST /threads/:id/send execution override recovery", () => {
         turnRequestEventDataSchema.parse(JSON.parse(compatibleRequest!.data))
           .execution.model,
       ).toBe("claude-sonnet-5-5");
+
+      const omittedSourcesChild = seedProviderThread(harness);
+      registerSendHostResponder(
+        harness,
+        omittedSourcesChild.host.id,
+        omittedSourcesChild.session.id,
+      );
+      const omittedSourcesParent = seedThread(harness.deps, {
+        projectId: omittedSourcesChild.thread.projectId,
+        environmentId: omittedSourcesChild.thread.environmentId,
+        providerId: "claude-code",
+      });
+      const omittedSourcesManagedChild = updateThread(
+        harness.db,
+        harness.hub,
+        omittedSourcesChild.thread.id,
+        { parentThreadId: omittedSourcesParent.id },
+      )!;
+      setThreadExecutionOverride(harness.db, {
+        threadId: omittedSourcesManagedChild.id,
+        modelOverride: "claude-opus-5-5",
+        reasoningLevelOverride: null,
+      });
+      const omittedSourcesResponse = await harness.app.request(
+        `/api/v1/threads/${omittedSourcesManagedChild.id}/send`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            input: [
+              {
+                type: "text",
+                text: "model with omitted sources",
+                mentions: [],
+              },
+            ],
+            mode: "auto",
+            model: "claude-sonnet-5-5",
+          }),
+        },
+      );
+      expect(
+        omittedSourcesResponse.status,
+        await omittedSourcesResponse.text(),
+      ).toBe(200);
+      expect(
+        getThreadExecutionOverride(harness.db, omittedSourcesManagedChild.id)
+          ?.modelOverride,
+      ).toBe("claude-sonnet-5-5");
+      const omittedSourcesRequest = listEvents(harness.db, {
+        threadId: omittedSourcesManagedChild.id,
+      })
+        .filter((event) => event.type === "client/turn/requested")
+        .at(-1);
+      expect(
+        turnRequestEventDataSchema.parse(
+          JSON.parse(omittedSourcesRequest!.data),
+        ).execution.model,
+      ).toBe("claude-sonnet-5-5");
+
+      const partialSourcesChild = seedProviderThread(harness);
+      registerSendHostResponder(
+        harness,
+        partialSourcesChild.host.id,
+        partialSourcesChild.session.id,
+      );
+      const partialSourcesParent = seedThread(harness.deps, {
+        projectId: partialSourcesChild.thread.projectId,
+        environmentId: partialSourcesChild.thread.environmentId,
+        providerId: "claude-code",
+      });
+      const partialSourcesManagedChild = updateThread(
+        harness.db,
+        harness.hub,
+        partialSourcesChild.thread.id,
+        { parentThreadId: partialSourcesParent.id },
+      )!;
+      setThreadExecutionOverride(harness.db, {
+        threadId: partialSourcesManagedChild.id,
+        modelOverride: "claude-opus-5-5",
+        reasoningLevelOverride: null,
+      });
+      const partialSourcesResponse = await harness.app.request(
+        `/api/v1/threads/${partialSourcesManagedChild.id}/send`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            input: [
+              {
+                type: "text",
+                text: "model with partial sources",
+                mentions: [],
+              },
+            ],
+            mode: "auto",
+            model: "claude-sonnet-5-5",
+            executionInputSources: { reasoningLevel: "explicit" },
+          }),
+        },
+      );
+      expect(
+        partialSourcesResponse.status,
+        await partialSourcesResponse.text(),
+      ).toBe(200);
+      expect(
+        getThreadExecutionOverride(harness.db, partialSourcesManagedChild.id)
+          ?.modelOverride,
+      ).toBe("claude-opus-5-5");
+      const partialSourcesRequest = listEvents(harness.db, {
+        threadId: partialSourcesManagedChild.id,
+      })
+        .filter((event) => event.type === "client/turn/requested")
+        .at(-1);
+      expect(
+        turnRequestEventDataSchema.parse(
+          JSON.parse(partialSourcesRequest!.data),
+        ).execution.model,
+      ).toBe("claude-sonnet-5-5");
     });
   });
 });

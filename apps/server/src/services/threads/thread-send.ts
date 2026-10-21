@@ -644,7 +644,9 @@ async function sendThreadMessageWithoutContextClear(
     await recoverThreadModelOverride(deps, {
       model: usesChildModelPolicy ? payload.model : execution.model,
       modelSource: usesChildModelPolicy
-        ? payload.executionInputSources?.model
+        ? payload.executionInputSources === undefined
+          ? "explicit"
+          : payload.executionInputSources.model
         : "explicit",
       reasoningLevel: execution.reasoningLevel,
       reasoningLevelSource:
