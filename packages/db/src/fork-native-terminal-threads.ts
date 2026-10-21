@@ -162,7 +162,10 @@ export function listNativeTerminalThreadIds(
 export function listNativeTerminalThreadsByIds(
   db: DbConnection,
   threadIds: readonly string[],
-): Pick<NativeTerminalThreadRecord, "threadId" | "providerId" | "lastEvidenceAt">[] {
+): Pick<
+  NativeTerminalThreadRecord,
+  "threadId" | "providerId" | "lastEvidenceAt"
+>[] {
   if (threadIds.length === 0) return [];
   const rows = db.$client
     .prepare(

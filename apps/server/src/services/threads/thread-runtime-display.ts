@@ -710,8 +710,7 @@ export function toThreadListEntryResponses(
         thread.environmentHostId === null
           ? null
           : (latestClosedSessionByHostId.get(thread.environmentHostId) ?? null),
-      nativeActivityThread:
-        nativeActivityThreadsById.get(thread.id) ?? null,
+      nativeActivityThread: nativeActivityThreadsById.get(thread.id) ?? null,
       now: args.now,
       rowState: getThreadRowState(deps.db, thread.id),
       thread,

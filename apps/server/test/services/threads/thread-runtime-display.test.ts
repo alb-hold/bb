@@ -315,7 +315,10 @@ describe("thread runtime display", () => {
       () =>
         toThreadListEntryResponses(
           { db, hub, providerRegistry },
-          { now: 190_000, threads: [nativeEntry, nativeTwoEntry, ordinaryEntry] },
+          {
+            now: 190_000,
+            threads: [nativeEntry, nativeTwoEntry, ordinaryEntry],
+          },
         ),
     );
 
