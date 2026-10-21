@@ -375,7 +375,7 @@ describe("ThreadTerminalView terminal focus boundary", () => {
 
     await waitFor(() => {
       expect(testState.toastError).toHaveBeenCalledWith(
-        "Unable to read clipboard. Use your keyboard’s Paste action.",
+        "This connection can’t read the clipboard. Long-press a message box and choose Paste.",
       );
     });
     expect(readText).toHaveBeenCalledOnce();
