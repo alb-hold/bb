@@ -554,7 +554,7 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
     if (payload.file !== null) {
       parseSafeRelativeRoutePath(payload.file.path);
     }
-    const delivered = deps.hub.notifyThreadOpen(
+    const deliveredClients = deps.hub.notifyThreadOpen(
       { projectId: publicThread.projectId, threadId: publicThread.id },
       {
         split: payload.split ?? "replace",
@@ -567,7 +567,7 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
           : { terminalLayoutAction: payload.terminalLayoutAction }),
       },
     );
-    return context.json({ delivered });
+    return context.json({ deliveredClients });
   });
 
   post(routes.paneAction, (context, payload) => {

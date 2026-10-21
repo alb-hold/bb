@@ -36,6 +36,40 @@ async function postPaneAction(
 }
 
 describe("public thread open", () => {
+  it("reports zero clients when no app is connected", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps, {
+        id: "host-thread-open-no-clients",
+      });
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+        path: "/tmp/thread-open-no-clients",
+      });
+      const thread = seedThread(harness.deps, { projectId: project.id });
+      const terminal = createTerminalSession(harness.db, {
+        cols: 80,
+        daemonSessionId: session.id,
+        environmentId: null,
+        hostId: host.id,
+        initialCwd: "/tmp",
+        rows: 24,
+        status: "running",
+        threadId: thread.id,
+        title: "Thread terminal",
+      });
+
+      const response = await postOpen(harness, thread.id, {
+        file: null,
+        terminalAction: { action: "focus", terminalId: terminal.id },
+      });
+
+      expect(response.status).toBe(200);
+      expect(threadOpenResponseSchema.parse(await readJson(response))).toEqual({
+        deliveredClients: 0,
+      });
+    });
+  });
+
   it("broadcasts an open-file signal to connected clients without persisting", async () => {
     await withTestHarness(async (harness) => {
       const { host } = seedHostSession(harness.deps, {
@@ -62,7 +96,7 @@ describe("public thread open", () => {
 
       expect(response.status).toBe(200);
       const body = threadOpenResponseSchema.parse(await readJson(response));
-      expect(body).toEqual({ delivered: 1 });
+      expect(body).toEqual({ deliveredClients: 1 });
 
       expect(socket.messages).toHaveLength(1);
       expect(JSON.parse(socket.messages[0])).toEqual({
@@ -236,6 +270,9 @@ describe("public thread open", () => {
         terminalAction: { action: "focus", terminalId: terminal.id },
       });
       expect(focus.status).toBe(200);
+      expect(threadOpenResponseSchema.parse(await readJson(focus))).toEqual({
+        deliveredClients: 1,
+      });
       expect(JSON.parse(socket.messages[0]!)).toMatchObject({
         type: "thread-open",
         threadId: thread.id,

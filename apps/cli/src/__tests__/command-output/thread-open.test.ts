@@ -14,7 +14,7 @@ import { registerThreadCommands } from "../../commands/thread/index.js";
 
 type OpenThreadHandler = (
   request: unknown,
-) => Promise<{ delivered: number }> | { delivered: number };
+) => Promise<{ deliveredClients: number }> | { deliveredClients: number };
 
 function stubThreadOpenApi(args: {
   environments?: Record<string, Environment>;
@@ -37,7 +37,7 @@ function stubThreadOpenApi(args: {
     }
     return environment;
   });
-  const openThread = vi.fn(args.open ?? (async () => ({ delivered: 0 })));
+  const openThread = vi.fn(args.open ?? (async () => ({ deliveredClients: 0 })));
   stubServerApi({
     "v1.threads.:id.$get": getThread,
     "v1.environments.:id.$get": getEnvironment,
@@ -55,7 +55,7 @@ describe("bb thread open command output", () => {
   it("uses BB_THREAD_ID and opens a thread-relative workspace path", async () => {
     vi.stubEnv("BB_THREAD_ID", "thread-current");
     const { openThread } = stubThreadOpenApi({
-      open: async () => ({ delivered: 2 }),
+      open: async () => ({ deliveredClients: 2 }),
     });
 
     await runCommand(["thread", "open", "reports/status.md"], register);
@@ -95,7 +95,7 @@ describe("bb thread open command output", () => {
     });
     const { getEnvironment, getThread, openThread } = stubThreadOpenApi({
       environments: { "env-workspace": environment },
-      open: async () => ({ delivered: 1 }),
+      open: async () => ({ deliveredClients: 1 }),
       threads: { "thread-workspace": thread },
     });
 
@@ -140,7 +140,7 @@ describe("bb thread open command output", () => {
     vi.stubEnv("BB_THREAD_ID", "thread-storage");
     vi.stubEnv("BB_THREAD_STORAGE", "/tmp/bb-thread-storage/thread-storage");
     const { getEnvironment, getThread, openThread } = stubThreadOpenApi({
-      open: async () => ({ delivered: 1 }),
+      open: async () => ({ deliveredClients: 1 }),
     });
 
     await runCommand(
@@ -183,7 +183,7 @@ describe("bb thread open command output", () => {
 
   it("returns the opened path as JSON", async () => {
     const { openThread } = stubThreadOpenApi({
-      open: async () => ({ delivered: 3 }),
+      open: async () => ({ deliveredClients: 3 }),
     });
 
     await runCommand(
@@ -219,7 +219,7 @@ describe("bb thread open command output", () => {
 
   it("opens a thread in a split without requiring a file path", async () => {
     const { openThread } = stubThreadOpenApi({
-      open: async () => ({ delivered: 2 }),
+      open: async () => ({ deliveredClients: 2 }),
     });
 
     await runCommand(

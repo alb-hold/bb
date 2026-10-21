@@ -9,12 +9,14 @@ and `bb terminal move <terminalId> --to-pane-of <otherTerminalId>`. The SDK expo
 `terminals.experimental_openBrowser({ terminalId, url })`,
 `terminals.experimental_layout.split({ terminalId, side })`, and
 `terminals.experimental_layout.move({ terminalId, targetTerminalId })`. The first lists
-server-known terminal surfaces; the latter two ask connected app clients to
-select and reveal the terminal tab or open the URL in the thread browser. A
-client without an in-app browser offers the URL through an Open action instead
-of creating an unavailable browser tab. Split and move are fire-and-forget:
-pane limits and compact layouts are client state, so the CLI cannot confirm
-whether a connected client applied the action.
+server-known terminal surfaces; terminal actions report how many open app
+clients received the request. A zero-client response exits non-zero with a
+message to open bb and retry; a positive response means the request was sent,
+not that it was applied. A client without an in-app browser offers the URL
+through an Open action instead of creating an unavailable browser tab. Pane
+limits and compact layouts are client state, so split and move can still be
+rejected by the app after delivery; the CLI cannot confirm whether the client
+applied them.
 
 `bb terminal output <id> --lines <n>` prints the latest lines, including from
 recently exited terminals. The server retains at most 64 KiB per terminal,

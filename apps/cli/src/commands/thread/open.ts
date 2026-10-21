@@ -93,7 +93,7 @@ export function registerOpenCommand(
               threadId: target.threadId,
               split,
               file,
-              delivered: result.delivered,
+              delivered: result.deliveredClients,
               inputPath: target.inputPath,
             })
           ) {
@@ -110,7 +110,7 @@ export function registerOpenCommand(
               console.log(`Line: ${file.lineNumber}`);
             }
           }
-          console.log(`Delivered: ${result.delivered}`);
+          console.log(`Delivered: ${result.deliveredClients}`);
         },
       ),
     );

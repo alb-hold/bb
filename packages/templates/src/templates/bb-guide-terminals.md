@@ -62,9 +62,10 @@ regular or native terminal. Archived threads and terminal IDs outside the
 requested thread fail closed.
 `sdk.terminals.experimental_layout.split({ terminalId, side })` and
 `sdk.terminals.experimental_layout.move({ terminalId, targetTerminalId })`
-arrange terminal tabs in persisted sidebar panes. These requests are
-fire-and-forget because connected clients enforce pane limits and compact
-layouts.
+arrange terminal tabs in persisted sidebar panes and return the number of app
+clients that received each request. A zero-client response means no action was
+sent. A positive response confirms delivery, not application; pane limits and
+compact layouts can still cause the client to reject a split or move.
 On clients without an in-app browser, `open-link` presents an Open action for
 the external browser instead of adding an unavailable browser tab.
 

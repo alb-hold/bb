@@ -92,7 +92,7 @@ describe("bb terminal command output", () => {
   });
 
   it("focuses a terminal through the app thread-open request", async () => {
-    const open = vi.fn(async () => ({ delivered: 1 }));
+    const open = vi.fn(async () => ({ deliveredClients: 1 }));
     stubServerApi({
       "v1.terminals.:terminalId.$get": async () => makeTerminalSession(),
       "v1.threads.:id.open.$post": open,
@@ -107,10 +107,27 @@ describe("bb terminal command output", () => {
         terminalAction: { action: "focus", terminalId: "term-1" },
       },
     });
+    expect(collectLogLines(vi.mocked(console.log))).toContain(
+      "Request sent to 1 open app client; delivery confirmed, application not confirmed.",
+    );
+  });
+
+  it("fails terminal focus when no app client received the request", async () => {
+    stubServerApi({
+      "v1.terminals.:terminalId.$get": async () => makeTerminalSession(),
+      "v1.threads.:id.open.$post": async () => ({ deliveredClients: 0 }),
+    });
+
+    await expect(
+      runCommand(["terminal", "focus", "term-1"], register),
+    ).rejects.toThrow("process.exit:1");
+    expect(collectLogLines(vi.mocked(console.error))).toContain(
+      "Error: No bb app is open to apply this; open bb and retry",
+    );
   });
 
   it("opens a URL through the app thread-open browser request", async () => {
-    const open = vi.fn(async () => ({ delivered: 1 }));
+    const open = vi.fn(async () => ({ deliveredClients: 1 }));
     stubServerApi({
       "v1.terminals.:terminalId.$get": async () => makeTerminalSession(),
       "v1.threads.:id.open.$post": open,
@@ -135,7 +152,7 @@ describe("bb terminal command output", () => {
   });
 
   it("splits a terminal to a requested sidebar side", async () => {
-    const open = vi.fn(async () => ({ delivered: 1 }));
+    const open = vi.fn(async () => ({ deliveredClients: 1 }));
     stubServerApi({
       "v1.terminals.:terminalId.$get": async () => makeTerminalSession(),
       "v1.threads.:id.open.$post": open,
@@ -161,7 +178,7 @@ describe("bb terminal command output", () => {
       .fn()
       .mockResolvedValueOnce(makeTerminalSession({ id: "term-1" }))
       .mockResolvedValueOnce(makeTerminalSession({ id: "term-2" }));
-    const open = vi.fn(async () => ({ delivered: 1 }));
+    const open = vi.fn(async () => ({ deliveredClients: 1 }));
     stubServerApi({
       "v1.terminals.:terminalId.$get": get,
       "v1.threads.:id.open.$post": open,

@@ -910,7 +910,7 @@ export const threadOpenRequestSchema = z
 export type ThreadOpenRequest = z.infer<typeof threadOpenRequestSchema>;
 
 export const threadOpenResponseSchema = z.object({
-  delivered: z.number().int().nonnegative(),
+  deliveredClients: z.number().int().nonnegative(),
 });
 export type ThreadOpenResponse = z.infer<typeof threadOpenResponseSchema>;
 
