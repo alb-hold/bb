@@ -79,6 +79,33 @@ describe("terminal pinch zoom", () => {
     expect(fitAndResize).toHaveBeenCalledOnce();
   });
 
+  it("scales every pinch frame from the gesture-start font size", () => {
+    let zoomLevel = 12;
+    const pinch = createTerminalPinchGesture({
+      getFontSize: () => zoomLevel,
+      setFontSize: (size) => {
+        zoomLevel = size;
+      },
+      fitAndResize: vi.fn(),
+    });
+    pinch.start([
+      { identifier: 1, x: 0, y: 0 },
+      { identifier: 2, x: 100, y: 0 },
+    ]);
+    pinch.move([
+      { identifier: 1, x: 0, y: 0 },
+      { identifier: 2, x: 120, y: 0 },
+    ]);
+    pinch.move([
+      { identifier: 1, x: 0, y: 0 },
+      { identifier: 2, x: 130, y: 0 },
+    ]);
+
+    expect(zoomLevel).toBeCloseTo(15.6);
+    pinch.end();
+    expect(zoomLevel).toBe(16);
+  });
+
   it("zooms out and clamps both ends of the supported font range", () => {
     let zoomLevel = 12;
     const apply = (startSize: number, scale: number) => {
@@ -178,7 +205,9 @@ describe("terminal pinch zoom", () => {
       { identifier: 1, x: 0, y: 0 },
       { identifier: 2, x: 100, y: 0 },
     ]);
-    for (const distance of [108.3, 119.6, 131.2, 143.9, 150, 139.1, 128.4, 117.8, 106.2, 100]) {
+    for (const distance of [
+      108.3, 119.6, 131.2, 143.9, 150, 139.1, 128.4, 117.8, 106.2, 100,
+    ]) {
       pinch.move([
         { identifier: 1, x: 0, y: 0 },
         { identifier: 2, x: distance, y: 0 },

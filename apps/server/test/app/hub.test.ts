@@ -334,6 +334,7 @@ describe("NotificationHub", () => {
         requestId: "rpc-1",
         command: {
           type: "provider.list_models",
+          contributedEnv: [],
           providerId: "codex",
           bridgeLaunch: TRANSPORT_TEST_BRIDGE_LAUNCH,
         },
@@ -346,6 +347,7 @@ describe("NotificationHub", () => {
         requestId: "rpc-1",
         command: {
           type: "provider.list_models",
+          contributedEnv: [],
           providerId: "codex",
           bridgeLaunch: TRANSPORT_TEST_BRIDGE_LAUNCH,
         },
@@ -387,6 +389,7 @@ describe("NotificationHub", () => {
         requestId: "rpc-1",
         command: {
           type: "provider.list_models",
+          contributedEnv: [],
           providerId: "codex",
           bridgeLaunch: TRANSPORT_TEST_BRIDGE_LAUNCH,
         },
@@ -431,6 +434,7 @@ describe("NotificationHub", () => {
         requestId: "rpc-1",
         command: {
           type: "provider.list_models",
+          contributedEnv: [],
           providerId: "codex",
           bridgeLaunch: TRANSPORT_TEST_BRIDGE_LAUNCH,
         },
@@ -465,6 +469,7 @@ describe("NotificationHub", () => {
           requestId: "rpc-1",
           command: {
             type: "provider.list_models",
+            contributedEnv: [],
             providerId: "codex",
             bridgeLaunch: TRANSPORT_TEST_BRIDGE_LAUNCH,
           },
@@ -487,6 +492,7 @@ describe("NotificationHub", () => {
         requestId: "rpc-1",
         command: {
           type: "provider.list_models",
+          contributedEnv: [],
           providerId: "codex",
           bridgeLaunch: TRANSPORT_TEST_BRIDGE_LAUNCH,
         },

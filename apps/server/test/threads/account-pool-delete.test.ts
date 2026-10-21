@@ -162,7 +162,11 @@ describe("Account Pooler after bb's real delete route", () => {
           deliveries.push(
             pool.harness.behavior.emitThreadEvent("thread.deleted", {
               thread: toThreadResponseFromThread(
-                { db: harness.db, hub: harness.deps.hub },
+                {
+                  db: harness.db,
+                  hub: harness.deps.hub,
+                  providerRegistry: harness.deps.providerRegistry,
+                },
                 { thread: deleted },
               ),
             }),

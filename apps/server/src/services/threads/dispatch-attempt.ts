@@ -56,7 +56,11 @@ import {
 import { applyLoggedThreadLifecycleEventInTransaction } from "./lifecycle-outcome.js";
 import { buildExecutionOptions } from "./thread-commands.js";
 import { childThreadModel } from "./child-thread-model.js";
-import { getActiveTurnId, isManualCompactionActive } from "./thread-events.js";
+import {
+  getActiveTurnId,
+  isActiveTurnMainRunIdle,
+  isManualCompactionActive,
+} from "./thread-events.js";
 import { requireThreadCommandEnvironment } from "./thread-command-environment.js";
 import { assertThreadHostAcceptsWork } from "./thread-host-admission.js";
 import {
@@ -255,6 +259,13 @@ async function runDispatchAttempt(
   let { payload } = args;
   ensureThreadIsWritable(thread, true);
   assertThreadHostAcceptsWork(deps.db, thread);
+  if (
+    payload.mode === "queue-if-active" &&
+    isActiveTurnMainRunIdle(deps, thread)
+  ) {
+    payload = { ...payload, mode: "steer-if-active" };
+    args = { ...args, payload };
+  }
   if (args.trigger === "user" && args.source.kind === "inline") {
     const input = await resolvePromptAttachmentReferences({
       db: deps.db,
