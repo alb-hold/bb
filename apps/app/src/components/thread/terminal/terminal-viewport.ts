@@ -409,7 +409,13 @@ export function resolveTerminalViewportRestore(args: {
   outputLineAnchors: readonly TerminalOutputLineAnchor[];
   replayNextSequence: number;
   replayStartSequence: number;
-}, onBranch?: (branch: "no-anchor" | "sequence-reset-tail" | "expired-to-top" | "retained-anchor") => void): number {
+}, onBranch?: (
+  branch:
+    | "no-anchor"
+    | "sequence-reset-tail"
+    | "expired-to-top"
+    | "retained-anchor",
+) => void): number {
   const { anchor, baseY, outputLineAnchors, replayNextSequence, replayStartSequence } =
     args;
   if (anchor === null) {

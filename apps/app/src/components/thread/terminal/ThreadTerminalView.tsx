@@ -1655,11 +1655,11 @@ export function ThreadTerminalView({
         terminal.scrollToLine(
           resolveTerminalViewportRestore(
             {
-            anchor: savedViewportAnchor,
-            baseY: activeBuffer.baseY,
-            outputLineAnchors: restoreOutputLineAnchors,
-            replayNextSequence,
-            replayStartSequence,
+              anchor: savedViewportAnchor,
+              baseY: activeBuffer.baseY,
+              outputLineAnchors: restoreOutputLineAnchors,
+              replayNextSequence,
+              replayStartSequence,
             },
             (branch) => {
               console.debug("Terminal viewport restore", {
