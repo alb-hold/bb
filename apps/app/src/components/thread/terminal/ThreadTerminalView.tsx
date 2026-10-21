@@ -48,7 +48,7 @@ import {
   watchTerminalLayoutSettled,
 } from "./terminal-layout-settle";
 import {
-  recordTerminalInputEnqueued,
+  recordTerminalInputAccepted,
   recordTerminalInputWebSocketSent,
   recordTerminalOutputReceived,
   recordTerminalOutputRendered,
@@ -1610,7 +1610,7 @@ export function ThreadTerminalView({
       const activeTransport = new TerminalWebSocketTransport({
         terminalId: session.id,
         now: () => performance.now(),
-        onInputEnqueued: recordTerminalInputEnqueued,
+        onInputAccepted: recordTerminalInputAccepted,
         onInputSent: recordTerminalInputWebSocketSent,
         onOutputFrameReceived: (terminalId, timestamp) => {
           outputFrameReceivedAt = timestamp;

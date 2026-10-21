@@ -70,7 +70,9 @@ interface RepaintNudgeInFlight {
 
 interface PendingTerminalInput {
   bytes: number;
-  enqueuedAt: number;
+  acceptedAt: number;
+  serializedAt: number;
+  tracksTiming: boolean;
   payload: string;
 }
 
@@ -84,14 +86,15 @@ export interface TerminalWebSocketTransportOptions {
   now?: () => number;
   onConnectionState?: (state: TerminalSocketConnectionState) => void;
   onInputOverflow?: (maxBytes: number) => void;
-  onInputEnqueued?: (
+  onInputAccepted?: (
     terminalId: string,
     timestamp: number,
     inputEventAt?: number,
+    serializedAt?: number,
   ) => void;
   onInputSent?: (
     terminalId: string,
-    enqueuedAt: number,
+    acceptedAt: number,
     sentAt: number,
   ) => void;
   onOutputFrameReceived?: (terminalId: string, timestamp: number) => void;
@@ -186,16 +189,20 @@ export class TerminalWebSocketTransport {
 
   sendInput(dataBase64: string, inputEventAt?: number): boolean {
     const tracksInputTiming =
-      this.options.onInputEnqueued !== undefined ||
+      this.options.onInputAccepted !== undefined ||
       this.options.onInputSent !== undefined;
-    const enqueuedAt = tracksInputTiming ? this.now() : 0;
+    const bytes = getTerminalBase64DecodedByteLength(dataBase64);
+    const payload = JSON.stringify({
+      type: "input",
+      dataBase64,
+    });
+    const serializedAt = tracksInputTiming ? this.now() : 0;
     const pending = {
-      bytes: getTerminalBase64DecodedByteLength(dataBase64),
-      enqueuedAt,
-      payload: JSON.stringify({
-        type: "input",
-        dataBase64,
-      }),
+      bytes,
+      acceptedAt: 0,
+      serializedAt,
+      tracksTiming: tracksInputTiming,
+      payload,
     };
     const socket = this.socket;
     if (
@@ -204,23 +211,29 @@ export class TerminalWebSocketTransport {
       socketBufferedAmount(socket) <= this.socketHighWaterBytes &&
       this.pendingInputs.length === 0
     ) {
-      this.options.onInputEnqueued?.(
-        this.options.terminalId ?? "",
-        enqueuedAt,
-        inputEventAt,
-      );
-      const onSent = this.options.onInputSent
-        ? (sentAt: number) =>
-            this.options.onInputSent?.(
-              this.options.terminalId ?? "",
-              enqueuedAt,
-              sentAt,
-            )
-        : undefined;
-      if (this.trySend(socket, pending.payload, onSent)) {
+      const onSent = (sentAt: number) => {
+        this.options.onInputAccepted?.(
+          this.options.terminalId ?? "",
+          sentAt,
+          inputEventAt,
+          serializedAt,
+        );
+        this.options.onInputSent?.(
+          this.options.terminalId ?? "",
+          sentAt,
+          sentAt,
+        );
+      };
+      if (
+        this.trySend(
+          socket,
+          pending.payload,
+          tracksInputTiming ? onSent : undefined,
+        )
+      ) {
         return true;
       }
-      return this.enqueueInput(pending, inputEventAt, true);
+      return this.enqueueInput(pending, inputEventAt);
     }
     return this.enqueueInput(pending, inputEventAt);
   }
@@ -646,7 +659,6 @@ export class TerminalWebSocketTransport {
   private enqueueInput(
     pending: PendingTerminalInput,
     inputEventAt?: number,
-    alreadyRecorded = false,
   ): boolean {
     if (this.pendingInputBytes + pending.bytes > this.inputQueueMaxBytes) {
       this.options.onInputOverflow?.(this.inputQueueMaxBytes);
@@ -654,13 +666,13 @@ export class TerminalWebSocketTransport {
     }
     this.pendingInputs.push(pending);
     this.pendingInputBytes += pending.bytes;
-    if (!alreadyRecorded) {
-      this.options.onInputEnqueued?.(
-        this.options.terminalId ?? "",
-        pending.enqueuedAt,
-        inputEventAt,
-      );
-    }
+    pending.acceptedAt = pending.tracksTiming ? this.now() : 0;
+    this.options.onInputAccepted?.(
+      this.options.terminalId ?? "",
+      pending.acceptedAt,
+      inputEventAt,
+      pending.serializedAt,
+    );
     this.scheduleDrain();
     return true;
   }
@@ -685,7 +697,7 @@ export class TerminalWebSocketTransport {
             ? (sentAt) =>
                 this.options.onInputSent?.(
                   this.options.terminalId ?? "",
-                  pending.enqueuedAt,
+                  pending.acceptedAt,
                   sentAt,
                 )
             : undefined,
@@ -710,9 +722,8 @@ export class TerminalWebSocketTransport {
       return false;
     }
     try {
-      const sentAt = onSent === undefined ? undefined : this.now();
       socket.send(payload);
-      if (onSent !== undefined && sentAt !== undefined) onSent(sentAt);
+      if (onSent !== undefined) onSent(this.now());
       return true;
     } catch {
       try {

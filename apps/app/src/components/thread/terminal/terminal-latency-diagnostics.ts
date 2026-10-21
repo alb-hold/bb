@@ -1,8 +1,9 @@
 const RING_SIZE = 256;
 
 type LatencyMetric =
-  | "inputEventToEnqueueMs"
-  | "inputEnqueueToWebSocketSendMs"
+  | "inputEventToSerializationMs"
+  | "inputSerializationToAcceptanceMs"
+  | "inputAcceptanceToWebSocketSendMs"
   | "inputWebSocketSendToFirstOutputReceivedMs"
   | "inputToFirstOutputReceivedMs"
   | "inputFirstOutputReceivedToRenderMs"
@@ -17,8 +18,9 @@ export interface TerminalLatencyMetricSnapshot {
 }
 
 export interface TerminalLatencySnapshot {
-  inputEventToEnqueueMs: TerminalLatencyMetricSnapshot;
-  inputEnqueueToWebSocketSendMs: TerminalLatencyMetricSnapshot;
+  inputEventToSerializationMs: TerminalLatencyMetricSnapshot;
+  inputSerializationToAcceptanceMs: TerminalLatencyMetricSnapshot;
+  inputAcceptanceToWebSocketSendMs: TerminalLatencyMetricSnapshot;
   inputWebSocketSendToFirstOutputReceivedMs: TerminalLatencyMetricSnapshot;
   inputToFirstOutputReceivedMs: TerminalLatencyMetricSnapshot;
   inputFirstOutputReceivedToRenderMs: TerminalLatencyMetricSnapshot;
@@ -74,8 +76,9 @@ const metrics: Record<
   Record<LatencyMetric, LatencyRing>
 > = {
   desktop: {
-    inputEventToEnqueueMs: new LatencyRing(),
-    inputEnqueueToWebSocketSendMs: new LatencyRing(),
+    inputEventToSerializationMs: new LatencyRing(),
+    inputSerializationToAcceptanceMs: new LatencyRing(),
+    inputAcceptanceToWebSocketSendMs: new LatencyRing(),
     inputWebSocketSendToFirstOutputReceivedMs: new LatencyRing(),
     inputToFirstOutputReceivedMs: new LatencyRing(),
     inputFirstOutputReceivedToRenderMs: new LatencyRing(),
@@ -83,8 +86,9 @@ const metrics: Record<
     outputRenderMs: new LatencyRing(),
   },
   phone: {
-    inputEventToEnqueueMs: new LatencyRing(),
-    inputEnqueueToWebSocketSendMs: new LatencyRing(),
+    inputEventToSerializationMs: new LatencyRing(),
+    inputSerializationToAcceptanceMs: new LatencyRing(),
+    inputAcceptanceToWebSocketSendMs: new LatencyRing(),
     inputWebSocketSendToFirstOutputReceivedMs: new LatencyRing(),
     inputToFirstOutputReceivedMs: new LatencyRing(),
     inputFirstOutputReceivedToRenderMs: new LatencyRing(),
@@ -116,35 +120,42 @@ function currentFormFactor(): FormFactor {
     : "desktop";
 }
 
-export function recordTerminalInputEnqueued(
+export function recordTerminalInputAccepted(
   terminalId: string,
-  timestamp: number,
+  acceptedAt: number,
   inputEventAt?: number,
+  serializedAt?: number,
 ): void {
-  if (!Number.isFinite(timestamp)) return;
+  if (!Number.isFinite(acceptedAt)) return;
+  const serializedTimestamp = serializedAt ?? acceptedAt;
   const formFactor = currentFormFactor();
   if (inputEventAt !== undefined) {
-    metrics[formFactor].inputEventToEnqueueMs.add(timestamp - inputEventAt);
+    metrics[formFactor].inputEventToSerializationMs.add(
+      serializedTimestamp - inputEventAt,
+    );
   }
+  metrics[formFactor].inputSerializationToAcceptanceMs.add(
+    acceptedAt - serializedTimestamp,
+  );
   if (pendingInputs.length === RING_SIZE) pendingInputs.shift();
-  pendingInputs.push({ formFactor, terminalId, timestamp });
+  pendingInputs.push({ formFactor, terminalId, timestamp: acceptedAt });
 }
 
 export function recordTerminalInputWebSocketSent(
   terminalId: string,
-  enqueuedAt: number,
+  acceptedAt: number,
   sentAt: number,
 ): void {
   const index = pendingInputs.findIndex(
     (pending) =>
-      pending.terminalId === terminalId && pending.timestamp === enqueuedAt,
+      pending.terminalId === terminalId && pending.timestamp === acceptedAt,
   );
   if (index < 0) return;
   const pending = pendingInputs[index];
   if (pending) {
     pending.sentAt = sentAt;
-    metrics[pending.formFactor].inputEnqueueToWebSocketSendMs.add(
-      sentAt - enqueuedAt,
+    metrics[pending.formFactor].inputAcceptanceToWebSocketSendMs.add(
+      sentAt - acceptedAt,
     );
   }
 }
@@ -219,9 +230,12 @@ export function recordTerminalOutputRendered(
 
 function snapshot(formFactor: "desktop" | "phone"): TerminalLatencySnapshot {
   return {
-    inputEventToEnqueueMs: metrics[formFactor].inputEventToEnqueueMs.snapshot(),
-    inputEnqueueToWebSocketSendMs:
-      metrics[formFactor].inputEnqueueToWebSocketSendMs.snapshot(),
+    inputEventToSerializationMs:
+      metrics[formFactor].inputEventToSerializationMs.snapshot(),
+    inputSerializationToAcceptanceMs:
+      metrics[formFactor].inputSerializationToAcceptanceMs.snapshot(),
+    inputAcceptanceToWebSocketSendMs:
+      metrics[formFactor].inputAcceptanceToWebSocketSendMs.snapshot(),
     inputWebSocketSendToFirstOutputReceivedMs:
       metrics[formFactor].inputWebSocketSendToFirstOutputReceivedMs.snapshot(),
     inputToFirstOutputReceivedMs:

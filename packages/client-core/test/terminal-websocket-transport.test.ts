@@ -121,31 +121,102 @@ afterEach(() => {
 });
 
 describe("TerminalWebSocketTransport", () => {
-  it("records enqueue and actual socket send times for queued and immediate input", () => {
+  it("timestamps queued acceptance at insertion and send after serialization", () => {
     let timestamp = 100;
-    const inputEnqueued = vi.fn();
+    const inputAccepted = vi.fn();
     const inputSent = vi.fn();
     const harness = createHarness({
       now: () => timestamp++,
-      onInputEnqueued: inputEnqueued,
+      onInputAccepted: inputAccepted,
       onInputSent: inputSent,
     });
     const queuedInput = Buffer.from("queued").toString("base64");
-    const immediateInput = Buffer.from("immediate").toString("base64");
-
     harness.transport.start();
     expect(harness.transport.sendInput(queuedInput, 95)).toBe(true);
     harness.sockets[0]?.open();
-    expect(harness.transport.sendInput(immediateInput, 104)).toBe(true);
 
-    expect(inputEnqueued.mock.calls).toEqual([
-      ["term_1", 100, 95],
-      ["term_1", 103, 104],
-    ]);
-    expect(inputSent.mock.calls).toEqual([
-      ["term_1", 100, 102],
-      ["term_1", 103, 104],
-    ]);
+    expect(inputAccepted.mock.calls).toEqual([["term_1", 101, 95, 100]]);
+    expect(inputSent.mock.calls).toEqual([["term_1", 101, 103]]);
+    harness.transport.dispose();
+  });
+
+  it("stamps immediate acceptance when socket.send returns", () => {
+    let timestamp = 200;
+    const inputAccepted = vi.fn();
+    const inputSent = vi.fn();
+    const harness = createHarness({
+      now: () => timestamp++,
+      onInputAccepted: inputAccepted,
+      onInputSent: inputSent,
+    });
+    harness.transport.start();
+    harness.sockets[0]?.open();
+    timestamp = 200;
+
+    expect(
+      harness.transport.sendInput(
+        Buffer.from("immediate").toString("base64"),
+        195,
+      ),
+    ).toBe(true);
+
+    expect(inputAccepted.mock.calls).toEqual([["term_1", 201, 195, 200]]);
+    expect(inputSent.mock.calls).toEqual([["term_1", 201, 201]]);
+    harness.transport.dispose();
+  });
+
+  it("records no timing or enqueue callback for rejected input", () => {
+    let timestamp = 300;
+    const inputAccepted = vi.fn();
+    const inputSent = vi.fn();
+    const harness = createHarness({
+      inputQueueMaxBytes: 1,
+      now: () => timestamp++,
+      onInputAccepted: inputAccepted,
+      onInputSent: inputSent,
+    });
+
+    harness.transport.start();
+    const socket = harness.sockets[0]!;
+    socket.open();
+    socket.throwOnSend = true;
+    expect(
+      harness.transport.sendInput(
+        Buffer.from("too large").toString("base64"),
+        295,
+      ),
+    ).toBe(false);
+
+    expect(inputAccepted).not.toHaveBeenCalled();
+    expect(inputSent).not.toHaveBeenCalled();
+    expect(harness.overflow).toHaveBeenCalledOnce();
+    harness.transport.dispose();
+  });
+
+  it("stamps input at queue insertion after an immediate send throws", () => {
+    let timestamp = 400;
+    const inputAccepted = vi.fn();
+    const inputSent = vi.fn();
+    const harness = createHarness({
+      now: () => timestamp++,
+      onInputAccepted: inputAccepted,
+      onInputSent: inputSent,
+    });
+    harness.transport.start();
+    const socket = harness.sockets[0]!;
+    socket.open();
+    timestamp = 400;
+    socket.throwOnSend = true;
+
+    expect(
+      harness.transport.sendInput(
+        Buffer.from("retry queued").toString("base64"),
+        395,
+      ),
+    ).toBe(true);
+
+    expect(inputAccepted.mock.calls).toEqual([["term_1", 401, 395, 400]]);
+    expect(inputSent).not.toHaveBeenCalled();
     harness.transport.dispose();
   });
 

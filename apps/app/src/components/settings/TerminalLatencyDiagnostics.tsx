@@ -36,25 +36,34 @@ export function TerminalLatencyDiagnostics() {
         <div key={formFactor}>
           <div className="font-medium capitalize">{formFactor}</div>
           <div>
-            Input event to transport enqueue:{" "}
+            Keystroke → JSON ready (serialized):{" "}
             {metricText(
-              snapshot[formFactor].inputEventToEnqueueMs.count,
-              snapshot[formFactor].inputEventToEnqueueMs.totalCount,
-              snapshot[formFactor].inputEventToEnqueueMs.p50Ms,
-              snapshot[formFactor].inputEventToEnqueueMs.p95Ms,
+              snapshot[formFactor].inputEventToSerializationMs.count,
+              snapshot[formFactor].inputEventToSerializationMs.totalCount,
+              snapshot[formFactor].inputEventToSerializationMs.p50Ms,
+              snapshot[formFactor].inputEventToSerializationMs.p95Ms,
             )}
           </div>
           <div>
-            Transport enqueue to WebSocket send:{" "}
+            JSON ready → accepted (queued or send returned):{" "}
             {metricText(
-              snapshot[formFactor].inputEnqueueToWebSocketSendMs.count,
-              snapshot[formFactor].inputEnqueueToWebSocketSendMs.totalCount,
-              snapshot[formFactor].inputEnqueueToWebSocketSendMs.p50Ms,
-              snapshot[formFactor].inputEnqueueToWebSocketSendMs.p95Ms,
+              snapshot[formFactor].inputSerializationToAcceptanceMs.count,
+              snapshot[formFactor].inputSerializationToAcceptanceMs.totalCount,
+              snapshot[formFactor].inputSerializationToAcceptanceMs.p50Ms,
+              snapshot[formFactor].inputSerializationToAcceptanceMs.p95Ms,
             )}
           </div>
           <div>
-            Key sent → first output:{" "}
+            Accepted → sent (queued flush; immediate same moment):{" "}
+            {metricText(
+              snapshot[formFactor].inputAcceptanceToWebSocketSendMs.count,
+              snapshot[formFactor].inputAcceptanceToWebSocketSendMs.totalCount,
+              snapshot[formFactor].inputAcceptanceToWebSocketSendMs.p50Ms,
+              snapshot[formFactor].inputAcceptanceToWebSocketSendMs.p95Ms,
+            )}
+          </div>
+          <div>
+            Sent → first output received (echo):{" "}
             {metricText(
               snapshot[formFactor].inputWebSocketSendToFirstOutputReceivedMs
                 .count,
@@ -67,7 +76,7 @@ export function TerminalLatencyDiagnostics() {
             )}
           </div>
           <div>
-            Transport enqueue → first output:{" "}
+            Accepted → first output received:{" "}
             {metricText(
               snapshot[formFactor].inputToFirstOutputReceivedMs.count,
               snapshot[formFactor].inputToFirstOutputReceivedMs.totalCount,
@@ -86,7 +95,7 @@ export function TerminalLatencyDiagnostics() {
             )}
           </div>
           <div>
-            Key → first output rendered:{" "}
+            Accepted → first output rendered:{" "}
             {metricText(
               snapshot[formFactor].inputToFirstOutputRenderMs.count,
               snapshot[formFactor].inputToFirstOutputRenderMs.totalCount,

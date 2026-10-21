@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   getTerminalLatencyDiagnostics,
-  recordTerminalInputEnqueued,
+  recordTerminalInputAccepted,
   recordTerminalInputWebSocketSent,
   recordTerminalOutputReceived,
   recordTerminalOutputRendered,
@@ -18,7 +18,7 @@ describe("terminal latency diagnostics", () => {
 
   it("keeps a fixed-size rolling sample and stores numeric measurements only", () => {
     for (let index = 0; index < 400; index += 1) {
-      recordTerminalInputEnqueued("term-a", index + 1, index);
+      recordTerminalInputAccepted("term-a", index + 1, index, index + 0.5);
       recordTerminalInputWebSocketSent("term-a", index + 1, index + 1.25);
       recordTerminalOutputReceived("term-a", index + 2);
       recordTerminalOutputRendered("term-a", index + 2, index + 3);
@@ -33,12 +33,19 @@ describe("terminal latency diagnostics", () => {
     expect(snapshot.desktop.inputFirstOutputReceivedToRenderMs.count).toBe(256);
     expect(snapshot.desktop.inputFirstOutputReceivedToRenderMs.p50Ms).toBe(1);
     expect(snapshot.desktop.inputToFirstOutputRenderMs.count).toBe(256);
-    expect(snapshot.desktop.inputEventToEnqueueMs.count).toBe(256);
-    expect(snapshot.desktop.inputEventToEnqueueMs.totalCount).toBe(400);
-    expect(snapshot.desktop.inputEventToEnqueueMs.p50Ms).toBe(1);
-    expect(snapshot.desktop.inputEnqueueToWebSocketSendMs.count).toBe(256);
-    expect(snapshot.desktop.inputEnqueueToWebSocketSendMs.totalCount).toBe(400);
-    expect(snapshot.desktop.inputEnqueueToWebSocketSendMs.p50Ms).toBe(0.25);
+    expect(snapshot.desktop.inputEventToSerializationMs.count).toBe(256);
+    expect(snapshot.desktop.inputEventToSerializationMs.totalCount).toBe(400);
+    expect(snapshot.desktop.inputEventToSerializationMs.p50Ms).toBe(0.5);
+    expect(snapshot.desktop.inputSerializationToAcceptanceMs.count).toBe(256);
+    expect(snapshot.desktop.inputSerializationToAcceptanceMs.totalCount).toBe(
+      400,
+    );
+    expect(snapshot.desktop.inputSerializationToAcceptanceMs.p50Ms).toBe(0.5);
+    expect(snapshot.desktop.inputAcceptanceToWebSocketSendMs.count).toBe(256);
+    expect(snapshot.desktop.inputAcceptanceToWebSocketSendMs.totalCount).toBe(
+      400,
+    );
+    expect(snapshot.desktop.inputAcceptanceToWebSocketSendMs.p50Ms).toBe(0.25);
     expect(
       snapshot.desktop.inputWebSocketSendToFirstOutputReceivedMs.count,
     ).toBe(256);
@@ -90,9 +97,9 @@ describe("terminal latency diagnostics", () => {
     vi.stubGlobal("window", { innerWidth: 390 });
     const keystroke = "private-keystroke-7f31";
     const output = "private-terminal-output-93ad";
-    recordTerminalInputEnqueued("term-a", 100);
-    recordTerminalInputEnqueued("term-a", 108);
-    recordTerminalInputEnqueued("term-a", 116);
+    recordTerminalInputAccepted("term-a", 100);
+    recordTerminalInputAccepted("term-a", 108);
+    recordTerminalInputAccepted("term-a", 116);
     recordTerminalInputWebSocketSent("term-a", 100, 101);
     recordTerminalInputWebSocketSent("term-a", 108, 109);
     recordTerminalInputWebSocketSent("term-a", 116, 117);
@@ -123,7 +130,7 @@ describe("terminal latency diagnostics", () => {
 
   it("pairs output only with input sent by its receive time and keeps unsent input", () => {
     const before = getTerminalLatencyDiagnostics().desktop;
-    recordTerminalInputEnqueued("term-before-send", 10_000);
+    recordTerminalInputAccepted("term-before-send", 10_000);
     recordTerminalOutputReceived("term-before-send", 10_005);
     recordTerminalOutputRendered("term-before-send", 10_005, 10_008);
 
@@ -144,7 +151,7 @@ describe("terminal latency diagnostics", () => {
     const before =
       getTerminalLatencyDiagnostics().desktop.inputToFirstOutputReceivedMs
         .totalCount;
-    recordTerminalInputEnqueued("term-cross-a", 20_000);
+    recordTerminalInputAccepted("term-cross-a", 20_000);
     recordTerminalInputWebSocketSent("term-cross-a", 20_000, 20_001);
 
     recordTerminalOutputReceived("term-cross-b", 20_005);
@@ -168,7 +175,7 @@ describe("terminal latency diagnostics", () => {
         .totalCount;
     for (let index = 0; index < 127; index += 1) {
       const enqueuedAt = 40_000 + index * 100;
-      recordTerminalInputEnqueued("term-coalesce-fill", enqueuedAt);
+      recordTerminalInputAccepted("term-coalesce-fill", enqueuedAt);
       recordTerminalInputWebSocketSent(
         "term-coalesce-fill",
         enqueuedAt,
@@ -178,7 +185,7 @@ describe("terminal latency diagnostics", () => {
     }
     for (let index = 0; index < 128; index += 1) {
       const enqueuedAt = 60_000 + index * 100;
-      recordTerminalInputEnqueued("term-coalesce-fill", enqueuedAt);
+      recordTerminalInputAccepted("term-coalesce-fill", enqueuedAt);
       recordTerminalInputWebSocketSent(
         "term-coalesce-fill",
         enqueuedAt,
@@ -186,8 +193,8 @@ describe("terminal latency diagnostics", () => {
       );
       recordTerminalOutputReceived("term-coalesce-fill", enqueuedAt + 20);
     }
-    recordTerminalInputEnqueued("term-coalesced", 30_000);
-    recordTerminalInputEnqueued("term-coalesced", 30_008);
+    recordTerminalInputAccepted("term-coalesced", 30_000);
+    recordTerminalInputAccepted("term-coalesced", 30_008);
     recordTerminalInputWebSocketSent("term-coalesced", 30_000, 30_001);
     recordTerminalInputWebSocketSent("term-coalesced", 30_008, 30_009);
 
