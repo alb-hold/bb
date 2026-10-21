@@ -362,6 +362,7 @@ function ThreadTrailingIndicator({
       className={cn(
         "inline-flex h-5 shrink-0 items-center gap-1.5 rounded-full px-1.5 font-medium text-xs",
         statusText !== null && "justify-end gap-1 whitespace-nowrap px-0",
+        statusText === null && "px-0",
         indicatorKind === "needs-input" && "text-destructive-text",
         indicatorKind === "working" && SIDEBAR_WORKING_STATUS_COLOR_CLASS,
         indicatorKind === "woke" && "text-warning",

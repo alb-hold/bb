@@ -844,6 +844,11 @@ describe("ThreadRow", () => {
       "[data-sidebar-native-activity-warning]",
     );
     expect(warning?.classList.contains("sr-only")).toBe(true);
+    const slot = container.querySelector(
+      "[data-sidebar-thread-trailing-indicator]",
+    );
+    expect(slot?.classList.contains("px-0")).toBe(true);
+    expect(slot?.classList.contains("px-1.5")).toBe(false);
     expect(
       container
         .querySelector("[data-sidebar-thread-trailing-indicator]")
