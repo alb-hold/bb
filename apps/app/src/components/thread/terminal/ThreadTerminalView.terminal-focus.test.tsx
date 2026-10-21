@@ -994,7 +994,7 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       replayStartSeq: 0,
       nextSeq: 0,
     });
-    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(REPAINT_RESTORE_DELAY_MS + 1);
     expect(resizeFrames().slice(-2)).toEqual([
       { type: "resize", cols: 50, rows: 47 },
       { type: "resize", cols: 51, rows: 47 },
