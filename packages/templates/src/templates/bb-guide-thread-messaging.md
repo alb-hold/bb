@@ -163,6 +163,8 @@ Queued messages:
   offset) or a duration from now (30s, 10m, 2h, 7d). A time that has already
   passed is rejected, as is a bare date, which has no time of day. Several
   queued rows on one thread are normal: two scheduled sends coexist. A
-  scheduled spawn creates a `pending` thread and does no environment work (no
+  native terminal thread cannot schedule messages; a send with --send-at is
+  rejected because native terminal scheduling is unsupported. A scheduled
+  spawn creates a `pending` thread and does no environment work (no
   worktree, no setup script) until it is due. The SDK takes `sendAt` in epoch
   milliseconds on `threads.spawn` and `threads.send`.
