@@ -33,8 +33,10 @@ import {
   clearNativeTerminalStateOnExit,
   interruptNativeTerminalQuestions,
   recordNativeTerminalActivity,
+  settleNativeTerminalTurn,
 } from "../../src/services/threads/native-terminal-activity.js";
 import { buildThreadStatusChangeMetadata } from "../../src/services/threads/thread-runtime-display.js";
+import * as titleGeneration from "../../src/services/threads/title-generation.js";
 import type { ProviderNativeTerminalActivity } from "@bb/domain";
 
 interface NativeActivitySignalForTest {
@@ -1925,5 +1927,130 @@ describe("native terminal activity evidence across a swap", () => {
       );
       expect(threadStatus(fixture, thread.id)).toBe("active");
     }
+  });
+
+  type LifecycleEffect = "run-started" | "idle-settle" | "questions" | "title";
+  type CredentialCase =
+    | "a: no credential after a confirmed binding"
+    | "b: invalid credential after a confirmed binding"
+    | "c: never-confirmed legacy holder, no Authorization"
+    | "d: never-confirmed holder with a stale once-captured credential"
+    | "e: no credential after the reattach reset"
+    | "f: current-credential heartbeat";
+
+  const LIFECYCLE_CASES: readonly [CredentialCase, boolean][] = [
+    ["a: no credential after a confirmed binding", false],
+    ["b: invalid credential after a confirmed binding", false],
+    ["c: never-confirmed legacy holder, no Authorization", true],
+    ["d: never-confirmed holder with a stale once-captured credential", true],
+    ["e: no credential after the reattach reset", true],
+    ["f: current-credential heartbeat", true],
+  ];
+  const LIFECYCLE_EFFECTS: readonly LifecycleEffect[] = [
+    "run-started",
+    "idle-settle",
+    "questions",
+    "title",
+  ];
+
+  async function lifecycleAuthorization(
+    fixture: Fixture,
+    credentialCase: CredentialCase,
+  ) {
+    const started = await startNativeThread(fixture);
+    const { thread } = started;
+    if (credentialCase.startsWith("c")) {
+      return { authorization: undefined, thread };
+    }
+    if (credentialCase.startsWith("d") || credentialCase.startsWith("e")) {
+      await report(fixture, thread.id, `Bearer ${started.credential}`);
+      expect(evidenceOf(fixture, thread.id)).not.toBeNull();
+      await reattachAfterDaemonDisconnect(fixture, thread.id, started.open);
+      expect(evidenceOf(fixture, thread.id)).toBeNull();
+      return {
+        authorization: credentialCase.startsWith("d")
+          ? `Bearer ${started.credential}`
+          : undefined,
+        thread,
+      };
+    }
+    await report(fixture, thread.id, `Bearer ${started.credential}`);
+    expect(evidenceOf(fixture, thread.id)).not.toBeNull();
+    if (credentialCase.startsWith("a")) {
+      return { authorization: undefined, thread };
+    }
+    if (credentialCase.startsWith("b")) {
+      return { authorization: "Bearer not-the-credential", thread };
+    }
+    return { authorization: `Bearer ${started.credential}`, thread };
+  }
+
+  describe("lifecycle effects of a report", () => {
+    it.each(
+      LIFECYCLE_CASES.flatMap(([credentialCase, applied]) =>
+        LIFECYCLE_EFFECTS.map(
+          (effect) => [credentialCase, effect, applied] as const,
+        ),
+      ),
+    )("%s: %s applied=%s", async (credentialCase, effect, applied) => {
+      const fixture = await createFixture();
+      const title = vi
+        .spyOn(titleGeneration, "generateAndApplyThreadTitle")
+        .mockResolvedValue(undefined as never);
+      try {
+        const { authorization, thread } = await lifecycleAuthorization(
+          fixture,
+          credentialCase,
+        );
+        const send = (body: unknown) =>
+          postJson(
+            fixture,
+            `/threads/${thread.id}/native-terminal/activity`,
+            body,
+            authorization,
+          );
+        if (effect === "run-started") {
+          settleNativeTerminalTurn(fixture.harness.deps, thread.id);
+          expect(threadStatus(fixture, thread.id)).toBe("idle");
+          expect((await send({ state: "working" })).status).toBe(200);
+          expect(threadStatus(fixture, thread.id)).toBe(
+            applied ? "active" : "idle",
+          );
+        } else if (effect === "idle-settle") {
+          applyLoggedThreadLifecycleEvent(fixture.harness.deps, {
+            event: { type: "run.started" },
+            threadId: thread.id,
+          });
+          expect(threadStatus(fixture, thread.id)).toBe("active");
+          expect((await send({ state: "idle" })).status).toBe(200);
+          expect(threadStatus(fixture, thread.id)).toBe(
+            applied ? "idle" : "active",
+          );
+        } else if (effect === "questions") {
+          expect(
+            (
+              await send({
+                state: "waiting",
+                questions: [{ id: "q1", prompt: "Which layout?" }],
+              })
+            ).status,
+          ).toBe(200);
+          expect(
+            listPendingInteractionsByThread(fixture.harness.db, {
+              threadId: thread.id,
+            }),
+          ).toHaveLength(applied ? 1 : 0);
+        } else {
+          expect(
+            (await send({ state: "working", prompt: "Name this thread" }))
+              .status,
+          ).toBe(200);
+          await vi.waitFor(() => undefined);
+          expect(title).toHaveBeenCalledTimes(applied ? 1 : 0);
+        }
+      } finally {
+        title.mockRestore();
+      }
+    });
   });
 });

@@ -62,15 +62,14 @@ export function registerNativeTerminalThreadRoutes(
   );
 
   post(routes.callAgentTool, async (context, payload) => {
-    const { environment, thread } = await requireNativeTerminalAgentToolCall(
-      deps,
-      {
+    const { environment, terminalSessionId, thread } =
+      await requireNativeTerminalAgentToolCall(deps, {
         authorization: context.req.header("authorization"),
         threadId: context.req.param("id"),
         tool: context.req.param("tool"),
-      },
-    );
+      });
     recordNativeTerminalToolCallEvidence(deps, {
+      terminalSessionId,
       threadId: context.req.param("id"),
     });
     return runAgentToolCall(deps, {
