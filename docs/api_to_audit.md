@@ -156,6 +156,14 @@ subject to review. Stabilization requires audit of cancellation, sequence gaps,
 polling load, output retention expiry, and behavior when a terminal or host
 disconnects during iteration.
 
+## `sdk.terminals.experimental_screen`
+
+Reads rendered plain-text rows, cursor position, grid dimensions, and a `complete` boolean by replaying bounded retained terminal output in disposable server-side headless terminals. `complete` is true when the retained output fully determines the visible screen. Without `lines`, it returns the visible grid; with `lines`, it returns up to the last 500 scrollback rows. Selection is client-local and is not included.
+
+Docs: `bb terminal screen` in the terminal guide.
+
+Stabilization requires auditing ANSI parser behavior, replay truncation boundaries, Unicode width parity, and the replay cap under representative output.
+
 ## `app.commands.register`
 
 Unprefixed by explicit request. Registers frontend commands

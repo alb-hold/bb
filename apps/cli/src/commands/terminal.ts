@@ -107,6 +107,10 @@ interface TerminalOutputOptions extends TerminalJsonOptions {
   tailBytes?: string;
 }
 
+interface TerminalScreenOptions extends TerminalJsonOptions {
+  lines?: string;
+}
+
 interface TerminalPipeOptions {
   command?: string;
   follow?: boolean;
@@ -550,6 +554,32 @@ export function registerTerminalCommands(
         console.log(
           `Resized terminal ${terminalId} to ${session.cols}x${session.rows}`,
         );
+      }),
+    );
+
+  terminal
+    .command("screen <terminalId>")
+    .description("Print the rendered terminal screen")
+    .option(
+      "--lines <n>",
+      "Print the latest N rendered rows, including scrollback",
+    )
+    .option(
+      "--json",
+      "Print machine-readable JSON including cursor and grid size",
+    )
+    .action(
+      action(async (terminalId: string, opts: TerminalScreenOptions) => {
+        const sdk = createCliBbSdk(getUrl());
+        const screen = await sdk.terminals.experimental_screen({
+          terminalId,
+          ...(opts.lines === undefined ? {} : { lines: Number(opts.lines) }),
+        });
+        if (outputJson(opts, screen)) return;
+        process.stdout.write(`${screen.rows.join("\n")}\n`);
+        if (!screen.complete) {
+          process.stdout.write("Screen may be incomplete because earlier terminal output was discarded.\n");
+        }
       }),
     );
 
