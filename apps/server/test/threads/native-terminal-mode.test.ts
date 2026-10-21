@@ -25,6 +25,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import * as interactiveRequests from "../../src/internal/interactive-requests.js";
 import { applyLoggedThreadLifecycleEvent } from "../../src/services/threads/lifecycle-outcome.js";
 import { stopThreadForCurrentState } from "../../src/services/threads/thread-lifecycle.js";
+import { NATIVE_TOOL_CREDENTIAL_ENV } from "../../src/services/threads/native-terminal-threads.js";
 import {
   interruptNativeTerminalQuestions,
   recordNativeTerminalActivity,
@@ -507,11 +508,145 @@ function reportActivity(
   );
 }
 
+function terminalCredential(open: DaemonMessage<"terminal.open">): string {
+  const entry = open.contributedEnv.find(
+    (candidate) => candidate.name === NATIVE_TOOL_CREDENTIAL_ENV,
+  );
+  if (typeof entry?.value !== "string") {
+    throw new Error("Expected terminal open to contribute its native credential");
+  }
+  return entry.value;
+}
+
 function threadStatus(fixture: Fixture, threadId: string) {
   return getThread(fixture.harness.db, threadId)?.status;
 }
 
 describe("native terminal activity", () => {
+  it("notifies the first receipt after a same-state terminal rebind", async () => {
+    const fixture = await createFixture();
+    const thread = seedChatThread(fixture, {
+      providerId: "claude-code",
+      providerThreadId: SESSION_ID,
+    });
+    const { open } = await enterTerminal(fixture, thread.id);
+    const originalCredential = terminalCredential(open);
+    const notify = vi.spyOn(fixture.harness.hub, "notifyThread");
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    const receiptMetadataAt = (timestamp: number) =>
+      notify.mock.calls
+        .map((call) => call[2])
+        .filter(
+          (metadata) =>
+            metadata?.statusChange?.runtime.nativeActivity?.lastEvidenceAt ===
+            timestamp,
+        );
+
+    try {
+      const initial = await postJson(
+        fixture,
+        `/threads/${thread.id}/native-terminal/activity`,
+        { state: "working" },
+        `Bearer ${originalCredential}`,
+      );
+      expect(initial.status).toBe(200);
+      expect(
+        getNativeTerminalThread(fixture.harness.db, thread.id)?.lastEvidenceAt,
+      ).toBe(1_000_000);
+      expect(receiptMetadataAt(1_000_000)).toHaveLength(1);
+
+      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.hostId,
+        sessionId: fixture.sessionId,
+        message: {
+          type: "terminal.exited",
+          terminalId: open.terminalId,
+          exitCode: 0,
+          closeReason: "process-exit",
+        },
+      });
+      const opens = countDaemonMessages(fixture, "terminal.open");
+      clock.mockReturnValue(1_000_500);
+      const reopening = postJson(
+        fixture,
+        `/threads/${thread.id}/native-terminal/open`,
+        {},
+      );
+      const reopened = await waitForDaemonMessage(fixture, "terminal.open", opens);
+      expect(reopened.terminalId).not.toBe(open.terminalId);
+      const reopenedCredential = terminalCredential(reopened);
+      expect(reopenedCredential).not.toBe(originalCredential);
+      acknowledgeOpen(fixture, reopened);
+      expect((await reopening).status).toBe(200);
+      expect(
+        getNativeTerminalThread(fixture.harness.db, thread.id),
+      ).toMatchObject({
+        terminalSessionId: reopened.terminalId,
+        lastEvidenceAt: null,
+      });
+
+      clock.mockReturnValue(1_000_750);
+      const obsolete = await postJson(
+        fixture,
+        `/threads/${thread.id}/native-terminal/activity`,
+        { state: "working" },
+        `Bearer ${originalCredential}`,
+      );
+      expect(obsolete.status).toBe(200);
+      expect(
+        getNativeTerminalThread(fixture.harness.db, thread.id)?.lastEvidenceAt,
+      ).toBeNull();
+
+      clock.mockReturnValue(1_001_000);
+      const firstReboundReceipt = await postJson(
+        fixture,
+        `/threads/${thread.id}/native-terminal/activity`,
+        { state: "working" },
+        `Bearer ${reopenedCredential}`,
+      );
+      expect(firstReboundReceipt.status).toBe(200);
+      expect(threadStatus(fixture, thread.id)).toBe("active");
+      expect(
+        getNativeTerminalThread(fixture.harness.db, thread.id)?.lastEvidenceAt,
+      ).toBe(1_001_000);
+      expect(receiptMetadataAt(1_001_000)).toHaveLength(1);
+
+      clock.mockReturnValue(1_016_000);
+      const throttledReceipt = await postJson(
+        fixture,
+        `/threads/${thread.id}/native-terminal/activity`,
+        { state: "working" },
+        `Bearer ${reopenedCredential}`,
+      );
+      expect(throttledReceipt.status).toBe(200);
+      expect(
+        getNativeTerminalThread(fixture.harness.db, thread.id)?.lastEvidenceAt,
+      ).toBe(1_016_000);
+      expect(receiptMetadataAt(1_016_000)).toHaveLength(0);
+
+      clock.mockReturnValue(1_031_000);
+      const heartbeat = await postJson(
+        fixture,
+        `/threads/${thread.id}/native-terminal/activity`,
+        { state: "working" },
+        `Bearer ${reopenedCredential}`,
+      );
+      expect(heartbeat.status).toBe(200);
+      expect(
+        getNativeTerminalThread(fixture.harness.db, thread.id)?.lastEvidenceAt,
+      ).toBe(1_031_000);
+      expect(receiptMetadataAt(1_031_000)).toHaveLength(1);
+      expect(
+        receiptMetadataAt(1_031_000)[0]?.statusChange?.runtime.nativeActivity
+          ?.lastEvidenceAt,
+      ).toBe(1_031_000);
+      expect(threadStatus(fixture, thread.id)).toBe("active");
+    } finally {
+      clock.mockRestore();
+      notify.mockRestore();
+    }
+  });
+
   it("stamps live receipts through silence and recovery", async () => {
     const fixture = await createFixture();
     const thread = seedChatThread(fixture, {

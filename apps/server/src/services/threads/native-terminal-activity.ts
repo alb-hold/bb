@@ -169,7 +169,8 @@ export function recordNativeTerminalActivity(
         previous === undefined ||
         now - previous.lastNotifiedAt >=
           NATIVE_TERMINAL_ACTIVITY_HEARTBEAT_INTERVAL_MS;
-      notifyReceipt = transition || heartbeatElapsed;
+      const firstReceiptForBinding = stamp.previousLastEvidenceAt === null;
+      notifyReceipt = firstReceiptForBinding || transition || heartbeatElapsed;
       if (previous === undefined || notifyReceipt) {
         states.set(args.threadId, { signature, lastNotifiedAt: now });
       } else {
