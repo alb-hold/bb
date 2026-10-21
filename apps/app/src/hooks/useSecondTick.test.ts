@@ -63,4 +63,32 @@ describe("useSecondTick", () => {
     second.unmount();
     expect(vi.getTimerCount()).toBe(0);
   });
+
+  it("does not subscribe without a native freshness consumer and cleans up when disabled", () => {
+    vi.useFakeTimers();
+    const { result, rerender, unmount } = renderHook(
+      ({ enabled }) => useSecondTick(enabled),
+      { initialProps: { enabled: false } },
+    );
+    const initial = result.current;
+
+    act(() => {
+      vi.advanceTimersByTime(2_000);
+    });
+    expect(result.current).toBe(initial);
+    expect(vi.getTimerCount()).toBe(0);
+
+    rerender({ enabled: true });
+    expect(vi.getTimerCount()).toBe(1);
+    const enabledAt = Date.now();
+    act(() => {
+      vi.advanceTimersByTime(1_000);
+    });
+    expect(result.current).toBe(enabledAt + 1_000);
+    expect(result.current).not.toBe(initial);
+
+    rerender({ enabled: false });
+    expect(vi.getTimerCount()).toBe(0);
+    unmount();
+  });
 });

@@ -54,6 +54,44 @@ routes share that server trust boundary.
 cross-client behavior of explicit clearing. The app shortcut uses Alt+Shift+N
 and remains active with terminal focus.
 
+## `sdk.terminals.experimental_surfaces`, `experimental_focus`, and `experimental_openBrowser`
+
+`experimental_surfaces.list({ threadId })` lists thread terminal surfaces with
+stable thread and terminal IDs, title, status, and kind. `experimental_focus({
+terminalId })` opens the owning thread and activates its terminal tab in
+connected app clients, revealing the terminal panel on compact layouts.
+`experimental_openBrowser({ terminalId, url })` uses the same thread-open signal
+and W4B browser panel placement used by terminal links. Clients without an
+in-app browser offer the URL through an Open action instead of creating an
+unavailable browser tab.
+The CLI surfaces are `bb terminal surfaces --thread`, `bb terminal focus`, and
+`bb terminal open-link`.
+
+Archived threads, unscoped terminals, unknown IDs, and terminals outside the
+target thread fail closed. The app client ignores unknown thread-open fields so
+older clients still navigate to the thread without attempting the new action.
+Audit cross-client broadcast behavior, split placement and compact drawer
+behavior, URL restrictions, and stale/foreign ID failures before stabilizing.
+
+## `sdk.terminals.experimental_surfaces`, `experimental_focus`, and `experimental_openBrowser`
+
+`experimental_surfaces.list({ threadId })` lists thread terminal surfaces with
+stable thread and terminal IDs, title, status, and kind. `experimental_focus({
+terminalId })` opens the owning thread and activates its terminal tab in
+connected app clients, revealing the terminal panel on compact layouts.
+`experimental_openBrowser({ terminalId, url })` uses the same thread-open signal
+and W4B browser panel placement used by terminal links. Clients without an
+in-app browser offer the URL through an Open action instead of creating an
+unavailable browser tab.
+The CLI surfaces are `bb terminal surfaces --thread`, `bb terminal focus`, and
+`bb terminal open-link`.
+
+Archived threads, unscoped terminals, unknown IDs, and terminals outside the
+target thread fail closed. The app client ignores unknown thread-open fields so
+older clients still navigate to the thread without attempting the new action.
+Audit cross-client broadcast behavior, split placement and compact drawer
+behavior, URL restrictions, and stale/foreign ID failures before stabilizing.
+
 Plugin Guide surface: `The bb SDK` in
 `plugins/plugin-api-docs/src/surfaces.ts`.
 
@@ -2545,10 +2583,27 @@ doc covers three September 2026 additions:
   query order, including those with no threads. Older hosts may omit it.
 - `openNewThread({ hostId })`, unprefixed by request, preselects a machine for
   a new environment. `environmentId` takes priority.
+- `PluginSidebarThread.experimental_nativeActivity` provides the optional
+  native receipt snapshot so sidebar consumers can suppress runtime-only busy
+  indicators. Freshness expires locally after 90 seconds without a newer
+  holder report. A receipt proves only that the bound holder reported activity;
+  it does not establish model or tool progress or task completion. Older holders
+  cannot confirm this receipt and may display activity as unconfirmed. Older
+  apps may still display Working, and new apps paired with older servers retain
+  their previous display because the diagnostic is absent.
 
 Docs: `frontend-registration.md`.
 
 **Audit before stabilizing.**
+
+For `experimental_nativeActivity`, stabilization requires verifying the
+receipt's current terminal binding, freshness and clock-skew behavior across
+server and client versions, then updating this audit and renaming the field
+project-wide. The core caller is the app's plugin-sidebar projection
+(`toPluginSidebarThread`), which supplies the same diagnostic to the built-in
+thread-list plugin and other sidebar plugins. Verify that runtime-only busy
+indicators expire while needs-input, workflow and background activity keep
+their independent priority.
 
 1. **DTO scope.** Confirm every field earns its place and that the copy stays
    worth its maintenance over `ThreadListEntry`. `hasUnsubmittedDraft` is
