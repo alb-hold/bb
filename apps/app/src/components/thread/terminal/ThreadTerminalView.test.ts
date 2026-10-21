@@ -11,6 +11,7 @@ import { registerTerminalGridOscHandler } from "./terminal-grid-osc";
 import { createTerminalOutputPipeline } from "./terminal-output-pipeline";
 import {
   buildTerminalThemeFromCssColors,
+  attachTerminalManualScrollIntentListeners,
   applyTerminalFontFamily,
   attachTerminalInputForwarding,
   captureTerminalContextMenuState,
@@ -342,6 +343,76 @@ describe("terminal viewport restore", () => {
       outputSequence: 70,
     });
   });
+
+  it.each(["wheel", "touchmove"] as const)(
+    "saves an anchor when an inner element stops %s propagation",
+    (eventType) => {
+      const storage = createStorage();
+      const key = terminalViewportStorageKey(`terminal-${eventType}`);
+      const persistence = createTerminalViewportPersistence({ storage, key });
+      const replaySaveGate = createTerminalViewportReplaySaveGate();
+      const listeners: Array<{
+        type: string;
+        listener: EventListenerOrEventListenerObject;
+        capture: boolean;
+      }> = [];
+      const parent = {
+        addEventListener: vi.fn((type, listener, options) => {
+          const capture =
+            typeof options === "boolean"
+              ? options
+              : (options?.capture ?? false);
+          listeners.push({ type, listener, capture });
+        }),
+        removeEventListener: vi.fn(),
+      } as unknown as HTMLElement;
+      let hasManualScrollIntent = false;
+      attachTerminalManualScrollIntentListeners(
+        parent,
+        () => (hasManualScrollIntent = true),
+      );
+      replaySaveGate.finishRestore();
+
+      let propagationStopped = false;
+      const event = {
+        type: eventType,
+        stopPropagation: () => {
+          propagationStopped = true;
+        },
+      } as unknown as Event;
+      for (const entry of listeners.filter(
+        (listener) => listener.type === eventType && listener.capture,
+      )) {
+        typeof entry.listener === "function"
+          ? entry.listener(event)
+          : entry.listener.handleEvent(event);
+      }
+      const stopPropagationAtInnerElement = (innerEvent: Event) =>
+        innerEvent.stopPropagation();
+      stopPropagationAtInnerElement(event);
+      if (!propagationStopped) {
+        for (const entry of listeners.filter(
+          (listener) => listener.type === eventType && !listener.capture,
+        )) {
+          typeof entry.listener === "function"
+            ? entry.listener(event)
+            : entry.listener.handleEvent(event);
+        }
+      }
+      if (replaySaveGate.canSave(hasManualScrollIntent)) {
+        persistence.schedule({ distanceFromTail: 12, outputSequence: 42 });
+      }
+      persistence.flush();
+
+      expect(
+        listeners.find(
+          (listener) => listener.type === eventType && listener.capture,
+        ),
+      ).toBeDefined();
+      expect(propagationStopped).toBe(true);
+      expect(storage.getItem(key)).not.toBeNull();
+    },
+  );
 
   it.each([
     ["truncated output", { distanceFromTail: 12, outputSequence: 8 }, 9, 80],

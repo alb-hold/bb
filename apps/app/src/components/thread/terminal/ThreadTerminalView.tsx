@@ -246,6 +246,29 @@ export function focusTerminalFromTouchRelease({
   return true;
 }
 
+export function attachTerminalManualScrollIntentListeners(
+  element: HTMLElement,
+  onManualScrollIntent: () => void,
+) {
+  const markManualScrollIntent = () => onManualScrollIntent();
+  const markManualScrollKeydownIntent = (event: KeyboardEvent) => {
+    if (["PageUp", "PageDown", "Home", "End"].includes(event.key)) {
+      onManualScrollIntent();
+    }
+  };
+  const options = { capture: true, passive: true } as const;
+  element.addEventListener("wheel", markManualScrollIntent, options);
+  element.addEventListener("touchmove", markManualScrollIntent, options);
+  element.addEventListener("pointerdown", markManualScrollIntent, options);
+  element.addEventListener("keydown", markManualScrollKeydownIntent, options);
+  return () => {
+    element.removeEventListener("wheel", markManualScrollIntent, true);
+    element.removeEventListener("touchmove", markManualScrollIntent, true);
+    element.removeEventListener("pointerdown", markManualScrollIntent, true);
+    element.removeEventListener("keydown", markManualScrollKeydownIntent, true);
+  };
+}
+
 type TerminalTouchListLike = ArrayLike<
   Pick<Touch, "clientX" | "clientY" | "identifier">
 >;
@@ -1514,18 +1537,13 @@ export function ThreadTerminalView({
         hasRestoredViewport = true;
         viewportReplaySaveGate.finishRestore();
       };
-      const markManualScrollIntent = () => noteManualScrollIntent();
-      const markManualScrollKeydownIntent = (event: KeyboardEvent) => {
-        if (["PageUp", "PageDown", "Home", "End"].includes(event.key)) {
-          noteManualScrollIntent();
-        }
-      };
       const flushViewportOnPageHide = () => viewportPersistence.flush();
       window.addEventListener("pagehide", flushViewportOnPageHide);
-      containerElement.addEventListener("wheel", markManualScrollIntent);
-      containerElement.addEventListener("touchmove", markManualScrollIntent);
-      containerElement.addEventListener("pointerdown", markManualScrollIntent);
-      containerElement.addEventListener("keydown", markManualScrollKeydownIntent);
+      const detachManualScrollIntentListeners =
+        attachTerminalManualScrollIntentListeners(
+          containerElement,
+          noteManualScrollIntent,
+        );
       const viewportScrollDisposable = terminal.onScroll(() => {
         if (
           !hasRestoredViewport ||
@@ -1556,10 +1574,7 @@ export function ThreadTerminalView({
       });
       detachViewportListeners = () => {
         viewportScrollDisposable.dispose();
-        containerElement.removeEventListener("wheel", markManualScrollIntent);
-        containerElement.removeEventListener("touchmove", markManualScrollIntent);
-        containerElement.removeEventListener("pointerdown", markManualScrollIntent);
-        containerElement.removeEventListener("keydown", markManualScrollKeydownIntent);
+        detachManualScrollIntentListeners();
         window.removeEventListener("pagehide", flushViewportOnPageHide);
         viewportPersistence.dispose();
         if (manualScrollTimeout !== null) {
