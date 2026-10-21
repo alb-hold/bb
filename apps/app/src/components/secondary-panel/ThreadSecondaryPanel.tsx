@@ -8,6 +8,7 @@ import {
   type TransitionEvent,
   useCallback,
   useContext,
+  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -48,6 +49,7 @@ import { SecondaryPanelHostLayoutContext } from "./SecondaryPanelHostLayoutConte
 import { MobilePanelTabPager } from "./MobilePanelTabPager";
 import { SecondaryPanelTabStrip } from "./SecondaryPanelTabStrip";
 import { ImageTabLightboxProvider } from "./ImageTabLightboxContext";
+import { appToast } from "@/components/ui/app-toast";
 import { FilePreviewScrollPositionContext } from "./filePreviewScrollPositionContext";
 import type {
   MarketplacePluginDetailPanelTab,
@@ -312,6 +314,8 @@ function ThreadSecondaryPanelContent({
   renderAsDrawer,
   isAtWindowTop = false,
 }: ThreadSecondaryPanelProps) {
+  const handledCompactTerminalLayoutRequestId = useRef<number | null>(null);
+  const requestedCompactTerminalLayoutAvailabilityId = useRef<number | null>(null);
   const resolvedGitDiffTabStatus =
     gitDiffTabStatus ?? (canUseGitUi ? "eligible" : "ineligible");
   const newTabShortcut = useAppCommandShortcut("panel.newTab");
@@ -1062,6 +1066,32 @@ function ThreadSecondaryPanelContent({
     renderAsDrawer,
     splitPanelStateId,
   );
+  useEffect(() => {
+    if (
+      !renderAsDrawer ||
+      terminalLayoutRequest == null ||
+      handledCompactTerminalLayoutRequestId.current === terminalLayoutRequest.requestId
+    ) return;
+    if (requestedCompactTerminalLayoutAvailabilityId.current === terminalLayoutRequest.requestId) return;
+    requestedCompactTerminalLayoutAvailabilityId.current = terminalLayoutRequest.requestId;
+    const terminalIds = [
+      ...(terminalLayoutRequest.targetTerminalId === undefined
+        ? []
+        : [terminalLayoutRequest.targetTerminalId]),
+      terminalLayoutRequest.terminalId,
+    ];
+    const ensured = onEnsureTerminalTabs?.(terminalIds) ?? false;
+    if (ensured === null) {
+      requestedCompactTerminalLayoutAvailabilityId.current = null;
+      return;
+    }
+    appToast.warning(
+      ensured
+        ? "Split panes aren't available at this window size."
+        : "The terminal is no longer available in this thread.",
+    );
+    handledCompactTerminalLayoutRequestId.current = terminalLayoutRequest.requestId;
+  }, [onEnsureTerminalTabs, renderAsDrawer, terminalLayoutRequest]);
   const splitTabs = shouldEnableSidebarSplits
     ? ([
         ...fixedTabs.map((fixedTab) => ({
