@@ -37,6 +37,13 @@ export async function acceptThreadSendRequest(
   args: AcceptThreadSendRequestArgs,
 ): Promise<SendMessageResponse> {
   if (isNativeTerminalThread(deps.db, args.thread.id)) {
+    if (args.payload.sendAt !== undefined) {
+      throw new ApiError(
+        400,
+        "invalid_request",
+        "sendAt is not supported for native terminal threads",
+      );
+    }
     const hostId =
       args.thread.environmentId === null
         ? null
