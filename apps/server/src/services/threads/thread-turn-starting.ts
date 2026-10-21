@@ -8,7 +8,10 @@ import {
 } from "./queue-waits.js";
 import { getActiveTurnId } from "./thread-events.js";
 
-type TurnStartingDeps = Pick<AppDeps, "db" | "hub" | "logger">;
+type TurnStartingDeps = Pick<
+  AppDeps,
+  "db" | "hub" | "logger" | "providerRegistry"
+>;
 
 export type QueueInputForStartingTurnResult =
   | { kind: "dispatched" }
@@ -47,7 +50,11 @@ export function queueInputForStartingTurn(
         return { kind: "retry", thread };
       }
       const entry = recordQueuedMessageWait(
-        { db: tx, hub: notifications },
+        {
+          db: tx,
+          hub: notifications,
+          providerRegistry: deps.providerRegistry,
+        },
         {
           thread,
           message: args.input,

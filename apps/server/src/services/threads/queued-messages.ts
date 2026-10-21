@@ -72,7 +72,11 @@ import {
   isManualCompactionActive,
   requireDispatchableProviderThreadId,
 } from "./thread-events.js";
-import { recoverThreadModelOverride } from "./thread-execution-override.js";
+import {
+  applyPreparedThreadModelOverrideRecovery,
+  prepareThreadModelOverrideRecovery,
+  recoverThreadModelOverride,
+} from "./thread-execution-override.js";
 import { requireReadyThreadEnvironment } from "./thread-turn-dispatch.js";
 import { resolvePermissionEscalation } from "./thread-runtime-config.js";
 import { hasMessageDispatchHooks } from "./dispatch-hooks.js";
@@ -271,10 +275,31 @@ export async function createQueuedMessageForThread(
   const execution = await buildExecutionOptions(deps, payload, {
     threadId: thread.id,
   });
+  await deps.providerRegistry.whenRegistrationsSettled();
+  const usesChildModelPolicy =
+    (thread.parentThreadId !== null ||
+      getThreadSpawner(deps.db, thread.id) !== null) &&
+    deps.providerRegistry.get(thread.providerId)?.childThreadModel != null;
   const senderThreadId = resolveMessageSenderThreadId(deps, {
     senderThreadId: payload.senderThreadId,
     targetThread: thread,
   });
+  const overrideRecovery =
+    usesChildModelPolicy && senderThreadId === null
+      ? await prepareThreadModelOverrideRecovery(deps, {
+          model: payload.model,
+          modelSource:
+            payload.executionInputSources === undefined
+              ? "explicit"
+              : payload.executionInputSources.model,
+          reasoningLevel: execution.reasoningLevel,
+          reasoningLevelSource:
+            payload.executionInputSources === undefined
+              ? "explicit"
+              : payload.executionInputSources.reasoningLevel,
+          thread,
+        })
+      : null;
   const { currentThread, hasProviderSession, queuedMessage } =
     deps.db.transaction(
       (tx) => {
@@ -299,6 +324,12 @@ export async function createQueuedMessageForThread(
             "Thread scope changed while this queued request was being prepared. Retry the request.",
           );
         }
+        applyPreparedThreadModelOverrideRecovery(
+          tx,
+          deps.providerRegistry,
+          currentThread,
+          overrideRecovery,
+        );
         const { hasProviderSession } = admitQueuedMessage(tx, currentThread);
         const queuedMessage = createQueuedThreadMessageInTransaction(tx, {
           threadId: thread.id,
@@ -548,7 +579,16 @@ async function sendClaimedQueuedMessageForIdleProviderThread(
   );
   const initiator: ThreadTurnInitiator =
     senderThreadId === null ? "user" : "agent";
-  if (initiator === "user" && queuedMessage.payload.kind !== "retry") {
+  await deps.providerRegistry.whenRegistrationsSettled();
+  const usesChildModelPolicy =
+    (thread.parentThreadId !== null ||
+      getThreadSpawner(deps.db, thread.id) !== null) &&
+    deps.providerRegistry.get(thread.providerId)?.childThreadModel != null;
+  if (
+    !usesChildModelPolicy &&
+    initiator === "user" &&
+    queuedMessage.payload.kind !== "retry"
+  ) {
     await recoverThreadModelOverride(deps, {
       model: payload.model,
       modelSource: "explicit",

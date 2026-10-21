@@ -57,6 +57,7 @@ import {
 } from "./queue-waits.js";
 import { applyLoggedThreadLifecycleEventInTransaction } from "./lifecycle-outcome.js";
 import { buildExecutionOptions } from "./thread-commands.js";
+import { prepareThreadModelOverrideRecovery } from "./thread-execution-override.js";
 import {
   getActiveTurnId,
   isActiveTurnMainRunIdle,
@@ -366,6 +367,15 @@ async function runDispatchAttempt(
     args = { ...args, payload };
   }
   let resolvedPayload = resolveExecutionIntoPayload(payload, execution);
+  const isExplicitInlineUserRequest =
+    args.source.kind === "inline" &&
+    args.trigger === "user" &&
+    args.retryOf === undefined &&
+    senderThreadId === null;
+  const hasChildModelPolicy =
+    (thread.parentThreadId !== null ||
+      getThreadSpawner(deps.db, thread.id) !== null) &&
+    deps.providerRegistry.get(thread.providerId)?.childThreadModel != null;
   const queuedMessage: QueuedDispatchMessage = {
     input: resolvedPayload.input,
     execution,
@@ -375,12 +385,35 @@ async function runDispatchAttempt(
     requestedBy: args.startedOnBehalfOf,
     payload: args.queuePayload,
     systemNotice: null,
+    requestedModel: payload.model,
+    executionInputSources: payload.executionInputSources,
   };
 
-  const waitOn = (
+  const prepareQueueOverrideRecovery = async (): Promise<void> => {
+    if ("overrideRecovery" in queuedMessage) return;
+    queuedMessage.overrideRecovery =
+      isExplicitInlineUserRequest && hasChildModelPolicy
+        ? await prepareThreadModelOverrideRecovery(deps, {
+            model: payload.model,
+            modelSource:
+              payload.executionInputSources === undefined
+                ? "explicit"
+                : payload.executionInputSources.model,
+            reasoningLevel: execution.reasoningLevel,
+            reasoningLevelSource:
+              payload.executionInputSources === undefined
+                ? "explicit"
+                : payload.executionInputSources.reasoningLevel,
+            thread,
+          })
+        : null;
+  };
+
+  const waitOn = async (
     waitingOn: QueuedMessageWaitingOn,
     sendAt: number | null,
-  ): DispatchAttemptOutcome => {
+  ): Promise<DispatchAttemptOutcome> => {
+    await prepareQueueOverrideRecovery();
     const entry = recordQueuedMessageWait(deps, {
       thread,
       message: queuedMessage,
@@ -410,12 +443,12 @@ async function runDispatchAttempt(
   const continueThroughCoreWaits = async (): Promise<void> => {
     const sendAt = payload.sendAt ?? null;
     if (!sendNow && sendAt !== null && sendAt > Date.now()) {
-      continued.outcome = waitOn({ kind: "time" }, sendAt);
+      continued.outcome = await waitOn({ kind: "time" }, sendAt);
       return;
     }
 
     if (thread.status === "stopping") {
-      continued.outcome = waitOn({ kind: "stopping" }, null);
+      continued.outcome = await waitOn({ kind: "stopping" }, null);
       return;
     }
 
@@ -448,7 +481,7 @@ async function runDispatchAttempt(
       isMachineWaitingForExecution(deps, dispatchHost.id)
     ) {
       cancelPreparingMachinePause(deps, dispatchHost.id);
-      continued.outcome = waitOn(
+      continued.outcome = await waitOn(
         { kind: "host-offline", hostName: dispatchHost.name },
         null,
       );
@@ -457,7 +490,7 @@ async function runDispatchAttempt(
     }
 
     if (thread.status === "active" && attempt === "start-turn") {
-      continued.outcome = waitOn({ kind: "thread-busy" }, null);
+      continued.outcome = await waitOn({ kind: "thread-busy" }, null);
       return;
     }
 
@@ -467,7 +500,7 @@ async function runDispatchAttempt(
       dispatchHost !== null &&
       !deps.hub.hasDaemonForHost(dispatchHost.id)
     ) {
-      continued.outcome = waitOn(
+      continued.outcome = await waitOn(
         { kind: "host-offline", hostName: dispatchHost.name },
         null,
       );
@@ -475,7 +508,7 @@ async function runDispatchAttempt(
     }
 
     if (payload.mode !== "start" && isManualCompactionActive(deps, thread)) {
-      continued.outcome = waitOn({ kind: "thread-busy" }, null);
+      continued.outcome = await waitOn({ kind: "thread-busy" }, null);
       return;
     }
     if (
@@ -483,6 +516,7 @@ async function runDispatchAttempt(
       resolveDispatchAttemptKind(currentThread, payload.mode) === "join-turn" &&
       getActiveTurnId(deps, thread.id) === null
     ) {
+      await prepareQueueOverrideRecovery();
       const outcome = queueInputForStartingTurn(deps, {
         claimed,
         input: queuedMessage,
@@ -500,14 +534,14 @@ async function runDispatchAttempt(
       }
     }
     if (!firstDispatch && isPreStartThreadStatus(thread.status)) {
-      continued.outcome = waitOn({ kind: "provisioning" }, null);
+      continued.outcome = await waitOn({ kind: "provisioning" }, null);
       return;
     }
     if (
       payload.mode !== "start" &&
       deps.pendingInteractions.hasTurnBoundPendingThreadInteraction(thread.id)
     ) {
-      continued.outcome = waitOn({ kind: "interaction" }, null);
+      continued.outcome = await waitOn({ kind: "interaction" }, null);
       return;
     }
 
@@ -604,7 +638,7 @@ async function runDispatchAttempt(
         if (claimed !== null) {
           noteDispatchRequeued(thread.id);
         }
-        return waitOn(
+        return await waitOn(
           {
             kind: "plugin",
             pluginId: outcome.waiter.pluginId,

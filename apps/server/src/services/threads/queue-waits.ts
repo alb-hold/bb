@@ -21,6 +21,12 @@ import type {
   ThreadCreateOrigin,
   ThreadQueuedMessage,
 } from "@bb/domain";
+import type { SendMessageRequest } from "@bb/server-contract";
+import type { ProviderRegistryService } from "../providers/provider-registry.js";
+import {
+  applyPreparedThreadModelOverrideRecovery,
+  type PreparedThreadModelOverrideRecovery,
+} from "./thread-execution-override.js";
 import { ApiError } from "../../errors.js";
 import {
   emitPluginMessageDispatched,
@@ -29,7 +35,11 @@ import {
 import { toThreadQueuedMessage } from "./thread-queued-messages.js";
 import { assertThreadHostAcceptsWork } from "./thread-host-admission.js";
 
-type QueueWaitDeps = { db: DbQueryConnection; hub: DbNotifier };
+type QueueWaitDeps = {
+  db: DbQueryConnection;
+  hub: DbNotifier;
+  providerRegistry?: ProviderRegistryService;
+};
 
 export const QUEUED_MESSAGE_CLAIM_LOST_CODE = "queued_message_claim_lost";
 export const QUEUED_MESSAGE_AUTO_SEND_PAUSED_CODE =
@@ -70,6 +80,9 @@ export interface QueuedDispatchMessage {
   requestedBy: StartedOnBehalfOf | null;
   payload: QueuedMessagePayload;
   systemNotice: QueuedMessageSystemNotice | null;
+  overrideRecovery?: PreparedThreadModelOverrideRecovery | null;
+  requestedModel?: string;
+  executionInputSources?: SendMessageRequest["executionInputSources"];
 }
 
 export interface RecordQueuedMessageWaitArgs {
@@ -98,6 +111,14 @@ export function recordQueuedMessageWait(
           currentThread.parentThreadId !== args.thread.parentThreadId
         ) {
           throw new ThreadQueueScopeChangedError();
+        }
+        if (deps.providerRegistry) {
+          applyPreparedThreadModelOverrideRecovery(
+            tx,
+            deps.providerRegistry,
+            currentThread,
+            args.message.overrideRecovery ?? null,
+          );
         }
         return createQueuedThreadMessageInTransaction(tx, {
           threadId: args.thread.id,

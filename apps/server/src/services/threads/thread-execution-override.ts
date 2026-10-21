@@ -1,4 +1,5 @@
 import {
+  type DbQueryConnection,
   getProjectExecutionDefaults,
   getThread,
   getThreadExecutionOverride,
@@ -49,6 +50,94 @@ interface RecoverThreadModelOverrideArgs {
   reasoningLevel: ReasoningLevel | undefined;
   reasoningLevelSource: CallerExecutionInputSource | undefined;
   thread: Thread;
+}
+
+export interface PreparedThreadModelOverrideRecovery {
+  model: string | undefined;
+  modelSource: CallerExecutionInputSource | undefined;
+  reasoningLevel: ReasoningLevel | undefined;
+  reasoningLevelSource: CallerExecutionInputSource | undefined;
+  models: readonly AvailableModel[];
+  fallbackModel: string | null;
+  spawnerThreadId: string | null;
+}
+
+export async function prepareThreadModelOverrideRecovery(
+  deps: LoggedWorkSessionDeps,
+  args: RecoverThreadModelOverrideArgs,
+): Promise<PreparedThreadModelOverrideRecovery | null> {
+  await deps.providerRegistry.whenRegistrationsSettled();
+  const existing = getThreadExecutionOverride(deps.db, args.thread.id);
+  if (
+    existing?.modelOverride == null &&
+    existing?.reasoningLevelOverride == null
+  ) {
+    return null;
+  }
+  if (
+    (args.model === undefined || args.modelSource !== "explicit") &&
+    (args.reasoningLevel === undefined ||
+      args.reasoningLevelSource !== "explicit")
+  ) {
+    return null;
+  }
+  const models = await loadThreadProviderModels(
+    deps,
+    args.thread,
+    args.modelSource === "explicit" ? (args.model ?? null) : null,
+  );
+  return {
+    ...args,
+    models,
+    fallbackModel: resolveFallbackModel(deps, args.thread),
+    spawnerThreadId: getThreadSpawner(deps.db, args.thread.id),
+  };
+}
+
+export function applyPreparedThreadModelOverrideRecovery(
+  db: DbQueryConnection,
+  registry: ProviderRegistryService,
+  thread: Thread,
+  prepared: PreparedThreadModelOverrideRecovery | null,
+): void {
+  if (prepared === null) return;
+  const existing = getThreadExecutionOverride(db, thread.id);
+  if (existing === null) return;
+  const requiredChildModel = childThreadModel({
+    parentThreadId: thread.parentThreadId ?? prepared.spawnerThreadId,
+    declaredChildModel: registry.get(thread.providerId)?.childThreadModel,
+  });
+  const patch: ThreadExecutionOverridePatch = {};
+  if (
+    prepared.model !== undefined &&
+    prepared.modelSource === "explicit" &&
+    (requiredChildModel === null || prepared.model === requiredChildModel) &&
+    existing.modelOverride != null &&
+    existing.modelOverride !== prepared.model
+  ) {
+    patch.model = prepared.model;
+  }
+  if (
+    prepared.reasoningLevel !== undefined &&
+    prepared.reasoningLevelSource === "explicit" &&
+    existing.reasoningLevelOverride != null &&
+    existing.reasoningLevelOverride !== prepared.reasoningLevel
+  ) {
+    patch.reasoningLevel = prepared.reasoningLevel;
+  }
+  if (patch.model === undefined && patch.reasoningLevel === undefined) return;
+  const next = resolveThreadExecutionOverrideUpdate(registry, {
+    existing,
+    patch,
+    models: prepared.models,
+    providerId: thread.providerId,
+    fallbackModel: prepared.fallbackModel,
+  });
+  setThreadExecutionOverride(db, {
+    threadId: thread.id,
+    modelOverride: next.modelOverride,
+    reasoningLevelOverride: next.reasoningLevelOverride,
+  });
 }
 
 export function resolveThreadExecutionOverrideUpdate(
@@ -240,7 +329,7 @@ export async function loadThreadProviderModels(
 }
 
 export function resolveFallbackModel(
-  deps: LoggedWorkSessionDeps,
+  deps: Pick<LoggedWorkSessionDeps, "db">,
   thread: Thread,
 ): string | null {
   const lastExecution = getLastExecutionOptions(deps, thread.id);

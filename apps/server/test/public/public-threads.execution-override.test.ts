@@ -522,6 +522,12 @@ describe("PATCH /threads/:id execution override", () => {
         parentThreadId: parent.id,
         status: "active",
       });
+      setThreadExecutionOverride(harness.db, {
+        threadId: child.id,
+        modelOverride: "claude-sonnet-5-5",
+        reasoningLevelOverride: null,
+      });
+      const eventCount = listEvents(harness.db, { threadId: child.id }).length;
 
       const response = await harness.app.request(
         `/api/v1/threads/${child.id}/queued-messages`,
@@ -539,6 +545,13 @@ describe("PATCH /threads/:id execution override", () => {
       expect(await readJson(response)).toMatchObject({
         code: "child_model_conflict",
       });
+      expect(getThreadExecutionOverride(harness.db, child.id)).toEqual({
+        modelOverride: "claude-sonnet-5-5",
+        reasoningLevelOverride: null,
+      });
+      expect(listEvents(harness.db, { threadId: child.id })).toHaveLength(
+        eventCount,
+      );
       expect(listQueuedThreadMessages(harness.db, child.id)).toEqual([]);
       expect(
         listQueuedThreadCommands(harness, "turn.submit", child.id),
@@ -733,7 +746,7 @@ describe("POST /threads/:id/send execution override recovery", () => {
       setThreadExecutionOverride(harness.db, {
         threadId: top.thread.id,
         modelOverride: "claude-sonnet-5-5",
-        reasoningLevelOverride: null,
+        reasoningLevelOverride: "high",
       });
       const topResponse = await harness.app.request(
         `/api/v1/threads/${top.thread.id}/send`,
@@ -746,7 +759,11 @@ describe("POST /threads/:id/send execution override recovery", () => {
             ],
             mode: "auto",
             model: "claude-opus-5-5",
-            executionInputSources: { model: "client-preference" },
+            reasoningLevel: "low",
+            executionInputSources: {
+              model: "client-preference",
+              reasoningLevel: "client-preference",
+            },
           }),
         },
       );
@@ -754,13 +771,17 @@ describe("POST /threads/:id/send execution override recovery", () => {
       expect(
         getThreadExecutionOverride(harness.db, top.thread.id)?.modelOverride,
       ).toBe("claude-opus-5-5");
+      expect(
+        getThreadExecutionOverride(harness.db, top.thread.id)
+          ?.reasoningLevelOverride,
+      ).toBe("low");
       const topRequest = listEvents(harness.db, { threadId: top.thread.id })
         .filter((event) => event.type === "client/turn/requested")
         .at(-1);
       expect(
-        turnRequestEventDataSchema.parse(JSON.parse(topRequest!.data)).execution
-          .model,
-      ).toBe("claude-opus-5-5");
+        turnRequestEventDataSchema.parse(JSON.parse(topRequest!.data))
+          .execution,
+      ).toMatchObject({ model: "claude-opus-5-5", reasoningLevel: "low" });
 
       const child = seedProviderThread(harness);
       registerSendHostResponder(harness, child.host.id, child.session.id);
