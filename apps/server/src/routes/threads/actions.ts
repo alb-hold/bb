@@ -11,6 +11,7 @@ import {
   reorderQueuedThreadMessage,
   setQueuedThreadMessageGroupBoundary,
   unarchiveThread,
+  isThreadEnvironmentRemovalRunning,
   unpinThread,
   updateQueuedThreadMessage,
   updateThread,
@@ -627,6 +628,12 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
     if (!unarchiveThread(deps.db, deps.hub, thread.id)) {
       if (getThread(deps.db, thread.id)?.archivedAt === null)
         return context.json({ ok: true });
+      if (isThreadEnvironmentRemovalRunning(deps.db, thread.id))
+        throw new ApiError(
+          409,
+          "workspace_busy",
+          "Workspace removal is in progress. Try again shortly.",
+        );
       throw new ApiError(
         409,
         "invalid_request",

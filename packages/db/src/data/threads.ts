@@ -2251,6 +2251,21 @@ export function archiveThread(
   return root?.deletedAt === null ? root : null;
 }
 
+export function isThreadEnvironmentRemovalRunning(
+  db: DbConnection | DbTransaction,
+  id: string,
+): boolean {
+  return (
+    db
+      .select({ id: environments.id })
+      .from(threads)
+      .innerJoin(environments, eq(environments.id, threads.environmentId))
+      .where(and(eq(threads.id, id), eq(environments.teardownStatus, "running")))
+      .limit(1)
+      .get() !== undefined
+  );
+}
+
 export function unarchiveThread(
   db: DbConnection,
   notifier: DbNotifier,
@@ -2260,6 +2275,7 @@ export function unarchiveThread(
     (tx) => {
       const current = getThread(tx, id);
       if (current?.deletedAt !== null) return null;
+      if (isThreadEnvironmentRemovalRunning(tx, id)) return null;
       if (current.lifecycleOwnerThreadId) {
         const owner = getThread(tx, current.lifecycleOwnerThreadId);
         if (!owner || owner.archivedAt !== null || owner.deletedAt !== null)

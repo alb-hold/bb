@@ -2651,6 +2651,7 @@ describe("worktree adoption cleanup", () => {
         const fake = createFakePluginHost({
           pluginId: "environment-git-worktree",
           experimental_callHostRpc: async ({ method }) => {
+            if (method === "inspect") return { status: "removable" };
             if (method !== "remove")
               throw new Error(`Unexpected host operation: ${method}`);
             return { status: "removed" };
@@ -2723,13 +2724,18 @@ describe("worktree adoption cleanup", () => {
           "removed",
         );
         expect(fake.harness.experimental_hostRpcCalls).toHaveLength(
-          owned ? 1 : 0,
+          owned ? 2 : 0,
         );
-        if (owned)
+        if (owned) {
           expect(fake.harness.experimental_hostRpcCalls[0]).toMatchObject({
+            method: "inspect",
+            input: { path: existing.path, pathKey: "original-key" },
+          });
+          expect(fake.harness.experimental_hostRpcCalls[1]).toMatchObject({
             method: "remove",
             input: { path: existing.path, pathKey: "original-key" },
           });
+        }
       }),
   );
 });

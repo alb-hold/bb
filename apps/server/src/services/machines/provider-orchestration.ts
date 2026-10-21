@@ -1,11 +1,21 @@
 import { withHostCleanup } from "../hosts/cleanup-context.js";
 import { readPrimaryHostIdFromDataDir } from "../hosts/primary-host.js";
 import { requestQueuedMachineReadiness } from "../threads/queued-message-dispatch.js";
-import { and, desc, eq } from "drizzle-orm";
+import {
+  and,
+  desc,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  or,
+  sql,
+} from "drizzle-orm";
 import {
   createHostId,
   hostDaemonSessions,
   hosts,
+  listLiveThreadsInEnvironment,
   environments as environmentRows,
 } from "@bb/db";
 import { handleHostRemoved } from "../../internal/session-owner-side-effects.js";
@@ -1126,7 +1136,13 @@ export async function retryMachineCleanup(
     .where(
       and(
         eq(environmentRows.hostId, hostId),
-        eq(environmentRows.teardownStatus, "failed"),
+        or(
+          eq(environmentRows.teardownStatus, "failed"),
+          and(
+            isNull(environmentRows.teardownStatus),
+            isNotNull(environmentRows.teardownMessage),
+          ),
+        ),
       ),
     )
     .returning({ id: environmentRows.id })
@@ -1361,22 +1377,30 @@ export async function sweepProviderMachine(
       if (current.length > 0) pendingEnvironment = true;
     }
     if (pendingEnvironment) {
-      const failed = deps.db
+      const blocking = deps.db
         .select()
         .from(environmentRows)
         .where(
           and(
             eq(environmentRows.hostId, hostId),
-            eq(environmentRows.teardownStatus, "failed"),
+            inArray(environmentRows.status, ["provisioning", "ready", "error"]),
           ),
         )
+        .orderBy(sql`${environmentRows.teardownStatus} is not 'failed'`)
         .limit(1)
         .get();
-      if (failed) {
+      if (blocking) {
+        const liveThreadIds = listLiveThreadsInEnvironment(deps.db, {
+          environmentId: blocking.id,
+        }).map((thread) => thread.id);
         updateHost(deps.db, deps.hub, hostId, {
           teardownStatus: "failed",
-          statusMessage: failed.teardownMessage ?? "Environment cleanup failed",
-          removeRetryAt: failed.retireAt ?? Date.now() + 60_000,
+          statusMessage:
+            blocking.teardownMessage ??
+            (liveThreadIds.length > 0
+              ? `${blocking.path ?? blocking.id} is in use by ${liveThreadIds.length === 1 ? "thread" : "threads"} ${liveThreadIds.join(", ")}; archive or stop ${liveThreadIds.length === 1 ? "it" : "them"} to finish removing this machine`
+              : "Environment cleanup failed"),
+          removeRetryAt: blocking.retireAt ?? Date.now() + 60_000,
         });
         deps.hub.notifyHost(hostId, ["host-disconnected"]);
       }

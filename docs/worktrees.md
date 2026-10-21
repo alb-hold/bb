@@ -130,9 +130,12 @@ worktree it made and removes the ones nothing is using:
 - An archived thread keeps running for 30 seconds so Undo can restore it;
   see `bb guide thread-lifecycle`.
 
-Removal runs `.bb-env-teardown.sh` inside the worktree first, then checks that
-nothing recoverable would be lost. bb keeps the worktree and retries later,
-with the reason in the environment's teardown message, when it:
+Before it runs `.bb-env-teardown.sh` or stops anything, bb inspects every
+worktree it is about to remove and checks that nothing recoverable would be
+lost. If any one of them is protected, bb changes nothing, keeps the whole
+environment as it was, shows the reason as the environment's kept message, and
+retries after ten minutes. A thread that starts using the worktree in the
+meantime cancels the removal. A worktree is protected when it:
 
 - contains a `.keep-worktree` file (create one to keep a worktree on purpose),
 - has modified tracked files or untracked files (ignored files such as
@@ -143,6 +146,13 @@ with the reason in the environment's teardown message, when it:
   pushed. A branch needs no upstream, only a pushed commit that contains HEAD,
 - is not a linked worktree of the expected repository inside bb's worktree
   directory, or is a symbolic link.
+
+Archiving a thread's last session on a worktree that is already being removed
+cannot be undone until the removal finishes: Unarchive answers that the
+workspace is busy. If something changes a worktree after the inspection and
+bb has already stopped its processes or removed a sibling, the environment is
+marked failed with the list of what was removed and what was kept, and it is
+never restored automatically.
 
 Otherwise bb stops every process whose working directory is inside the
 worktree — the agent's provider process, its background jobs (dev servers, MCP

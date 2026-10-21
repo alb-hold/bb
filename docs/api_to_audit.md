@@ -662,6 +662,41 @@ the current decision timeout is appropriate. Stabilize `experimental_claimPath`
 after auditing restart, cancellation, competing checkout, and
 path-reservation behavior.
 
+## Environment provider retention: `retained`, `experimental_preflightRemove` and `experimental_respectLiveOwnersOnMachineRemoval`
+
+`remove(context)` may return `{ status: "retained", message }` to say the
+resource was deliberately kept and nothing in this call changed it. Core then
+restores the environment's status from the one-attempt snapshot it took when
+the claim began, clears teardown, records the message as
+`lifecycle.message` while the environment is retiring, and retries after ten
+minutes. A thread that becomes live on the environment before the retry stops
+the retirement as usual. Core refuses `retained` and records a failure instead
+when the teardown script's durable operation row exists (the script may have
+changed the workspace), when no snapshot exists (a claim that predates the
+snapshot column), when a path-less attempt resumed after an interruption (no
+record shows which workspaces were already removed), or when the environment
+is still owned by a preparing thread that never reached `ready`. A provider that
+already changed anything must return `failed` with a message naming what was
+removed and what was kept.
+
+`experimental_preflightRemove(context)` is optional and runs after the claim and
+before the teardown script. It must not mutate. `{ status: "retained", message }`
+skips the script and the removal; a throw records a failure. The host answers
+the same question again inside `remove`.
+
+`policy.experimental_respectLiveOwnersOnMachineRemoval` (default false) keeps
+an environment that a live thread uses even while its machine is being removed.
+The machine then stays in `removing` with a status message naming the thread.
+
+Core's unarchive path refuses with `workspace_busy` while the thread's
+environment teardown is running, so a thread cannot start in a workspace that
+is being removed.
+
+Stabilization requires auditing the ten-minute retry, whether the snapshot
+belongs in a durable column or a provider-owned record, whether a retained
+environment should keep blocking replacement creation for owner rows, and the
+preflight/remove window in which the workspace can change.
+
 ## `app.slots.experimental_environmentProviderInputs`, `experimental_BranchPicker`, `experimental_useBranches` and `experimental_useCheckoutState` (`@get-bb/plugin-sdk/app`)
 
 The slot registers `{ environmentProviderId, component }`, the control the

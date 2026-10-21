@@ -15,6 +15,7 @@ import {
 } from "./host/paths.js";
 import {
   createWorktree,
+  inspectWorktreeRemoval,
   listAdoptableWorktrees,
   removeWorktree,
   resolveAdoptableWorktree,
@@ -23,6 +24,62 @@ import { isWorktreePreservedError } from "./host/worktree-preservation.js";
 
 function completionPathForWorktree(worktreePath: string): string {
   return `${worktreePath}.completed`;
+}
+
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+interface RemovalOutcome {
+  removed: string[];
+  kept: string[];
+  unknown: string[];
+  untouched: string[];
+}
+
+function describeRemovalOutcome(outcome: RemovalOutcome): string {
+  const lines = ["Worktree removal stopped part-way."];
+  if (outcome.removed.length > 0) {
+    lines.push(`Removed: ${outcome.removed.join(", ")}.`);
+  }
+  if (outcome.kept.length > 0) {
+    lines.push(...outcome.kept);
+  }
+  if (outcome.unknown.length > 0) {
+    lines.push(`Unknown state after an error: ${outcome.unknown.join("; ")}.`);
+  }
+  if (outcome.untouched.length > 0) {
+    lines.push(`Not attempted: ${outcome.untouched.join(", ")}.`);
+  }
+  return lines.join("\n");
+}
+
+async function removalTargets(
+  dataDir: string,
+  input: { pathKey: string; path: string | null },
+): Promise<string[]> {
+  return input.path === null
+    ? await worktreePathsForPathKey({ dataDir, pathKey: input.pathKey })
+    : [input.path];
+}
+
+async function findProtectedTargets(
+  targets: readonly string[],
+  attemptRoot: string,
+  signal: AbortSignal,
+): Promise<string[]> {
+  const refusals: string[] = [];
+  for (const target of targets) {
+    const inspection = await inspectWorktreeRemoval({
+      path: target,
+      rootPath: attemptRoot,
+      signal,
+    });
+    if (inspection.status === "protected") {
+      refusals.push(inspection.message);
+    }
+  }
+  return refusals;
 }
 
 async function worktreePathsForPathKey(args: {
@@ -123,48 +180,90 @@ export function createWorktreeHostEntry() {
         }
       },
 
-      async remove(input, context) {
+      async inspect(input, context) {
         try {
-          const attemptRoot = resolveWorktreeAttemptRoot({
-            dataDir: context.experimental_paths.dataDir,
-            pathKey: input.pathKey,
-          });
-          const paths =
-            input.path === null
-              ? await worktreePathsForPathKey({
-                  dataDir: context.experimental_paths.dataDir,
-                  pathKey: input.pathKey,
-                })
-              : [input.path];
-          const refusals: string[] = [];
-          for (const path of paths) {
-            try {
-              await removeWorktree({
-                path,
-                rootPath: attemptRoot,
-                completionPath: completionPathForWorktree(path),
-                onProgress: createHostProgress({
-                  operationId: input.operationId,
-                  emit: (payload) =>
-                    context.experimental_emitSignal("progress", payload),
-                }),
-                signal: context.signal,
-              });
-            } catch (error) {
-              if (!isWorktreePreservedError(error)) throw error;
-              refusals.push(error.message);
-            }
-          }
-          if (refusals.length > 0) {
-            return { status: "failed", message: refusals.join("\n") } as const;
-          }
-          return { status: "removed" } as const;
+          const targets = await removalTargets(
+            context.experimental_paths.dataDir,
+            input,
+          );
+          const refusals = await findProtectedTargets(
+            targets,
+            resolveWorktreeAttemptRoot({
+              dataDir: context.experimental_paths.dataDir,
+              pathKey: input.pathKey,
+            }),
+            context.signal,
+          );
+          return refusals.length === 0
+            ? ({ status: "removable" } as const)
+            : ({ status: "retained", message: refusals.join("\n") } as const);
         } catch (error) {
           if (context.signal.aborted) throw error;
+          return { status: "failed", message: describeError(error) } as const;
+        }
+      },
+
+      async remove(input, context) {
+        try {
+          const dataDir = context.experimental_paths.dataDir;
+          const attemptRoot = resolveWorktreeAttemptRoot({
+            dataDir,
+            pathKey: input.pathKey,
+          });
+          const targets = await removalTargets(dataDir, input);
+          const refusals = await findProtectedTargets(
+            targets,
+            attemptRoot,
+            context.signal,
+          );
+          if (refusals.length > 0) {
+            return {
+              status: "retained",
+              message: refusals.join("\n"),
+            } as const;
+          }
+          const outcome: RemovalOutcome = {
+            removed: [],
+            kept: [],
+            unknown: [],
+            untouched: [],
+          };
+          const onProgress = createHostProgress({
+            operationId: input.operationId,
+            emit: (payload) =>
+              context.experimental_emitSignal("progress", payload),
+          });
+          for (const [index, target] of targets.entries()) {
+            try {
+              await removeWorktree({
+                path: target,
+                rootPath: attemptRoot,
+                completionPath: completionPathForWorktree(target),
+                onProgress,
+                signal: context.signal,
+              });
+              outcome.removed.push(target);
+            } catch (error) {
+              if (context.signal.aborted) throw error;
+              if (isWorktreePreservedError(error)) {
+                outcome.kept.push(error.message);
+                continue;
+              }
+              outcome.unknown.push(`${target} (${describeError(error)})`);
+              outcome.untouched.push(...targets.slice(index + 1));
+              break;
+            }
+          }
+          if (outcome.kept.length === 0 && outcome.unknown.length === 0) {
+            return { status: "removed" } as const;
+          }
           return {
             status: "failed",
-            message: error instanceof Error ? error.message : String(error),
+            message: describeRemovalOutcome(outcome),
           } as const;
+        } catch (error) {
+          if (context.signal.aborted) throw error;
+          return { status: "failed", message: describeError(error) } as const;
         }
       },
     },

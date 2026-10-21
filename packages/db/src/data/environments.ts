@@ -669,6 +669,101 @@ export function environmentHasLiveThreads(db: EnvironmentWriteConnection, enviro
   return db.select({ id: threads.id }).from(threads).where(and(eq(threads.environmentId, environmentId), or(and(isNull(threads.archivedAt), isNull(threads.deletedAt)), eq(threads.status, "stopping"), eq(threads.status, "active")))).limit(1).get() !== undefined;
 }
 
+const liveThreadsPredicate = (environmentId: string) =>
+  sql`exists (select 1 from ${threads} where ${threads.environmentId} = ${environmentId} and ((${threads.archivedAt} is null and ${threads.deletedAt} is null) or ${threads.status} = 'stopping' or ${threads.status} = 'active'))`;
+
+export interface EnvironmentTeardownClaimInput {
+  row: EnvironmentRow;
+  attempt: number;
+  ignoreLiveThreads: boolean;
+}
+
+export function claimEnvironmentTeardown(db: EnvironmentWriteConnection, input: EnvironmentTeardownClaimInput): boolean {
+  const { row, attempt } = input;
+  const resumed = row.teardownStatus === "running" && row.teardownAttempt > 0 && attempt === row.teardownAttempt;
+  return (
+    db
+      .update(environments)
+      .set({
+        status: row.status === "destroyed" ? "destroyed" : "error",
+        teardownStatus: "running",
+        teardownAttempt: attempt,
+        teardownMessage: null,
+        ...(resumed ? {} : { teardownPriorStatus: row.status }),
+        updatedAt: Date.now(),
+      })
+      .where(
+        and(
+          eq(environments.id, row.id),
+          eq(environments.teardownAttempt, row.teardownAttempt),
+          row.teardownStatus === null ? isNull(environments.teardownStatus) : eq(environments.teardownStatus, row.teardownStatus),
+          eq(environments.status, row.status),
+          input.ignoreLiveThreads ? undefined : sql`not ${liveThreadsPredicate(row.id)}`,
+        ),
+      )
+      .run().changes > 0
+  );
+}
+
+export function releaseEnvironmentTeardownClaim(db: EnvironmentWriteConnection, row: EnvironmentRow): boolean {
+  return (
+    db
+      .update(environments)
+      .set({
+        teardownStatus: null,
+        retireAt: null,
+        status: sql`coalesce(${environments.teardownPriorStatus}, ${environments.status})`,
+        teardownPriorStatus: null,
+        updatedAt: Date.now(),
+      })
+      .where(and(eq(environments.id, row.id), eq(environments.teardownAttempt, row.teardownAttempt), eq(environments.teardownStatus, "running")))
+      .run().changes > 0
+  );
+}
+
+export function updateRunningEnvironmentTeardown(
+  db: EnvironmentWriteConnection,
+  input: { environmentId: string; attempt: number },
+  change: Partial<EnvironmentRow>,
+): boolean {
+  return (
+    db
+      .update(environments)
+      .set({ ...change, updatedAt: Date.now() })
+      .where(and(eq(environments.id, input.environmentId), eq(environments.teardownStatus, "running"), eq(environments.teardownAttempt, input.attempt)))
+      .run().changes > 0
+  );
+}
+
+export function retainRunningEnvironmentTeardown(
+  db: EnvironmentWriteConnection,
+  input: { environmentId: string; attempt: number; message: string; retireAt: number },
+): boolean {
+  return (
+    db
+      .update(environments)
+      .set({
+        status: sql`${environments.teardownPriorStatus}`,
+        teardownStatus: null,
+        teardownMessage: input.message,
+        teardownPriorStatus: null,
+        retireAt: input.retireAt,
+        ownerThreadId: sql`case when ${environments.ownerThreadId} is not null and ${environments.teardownPriorStatus} = 'ready' and ${environments.path} is not null then null else ${environments.ownerThreadId} end`,
+        claimPath: sql`case when ${environments.ownerThreadId} is not null and ${environments.teardownPriorStatus} = 'ready' and ${environments.path} is not null then null else ${environments.claimPath} end`,
+        updatedAt: Date.now(),
+      })
+      .where(
+        and(
+          eq(environments.id, input.environmentId),
+          eq(environments.teardownStatus, "running"),
+          eq(environments.teardownAttempt, input.attempt),
+          isNotNull(environments.teardownPriorStatus),
+        ),
+      )
+      .run().changes > 0
+  );
+}
+
 export function releaseFinishedEnvironmentPreparationOwners(db: EnvironmentWriteConnection): void {
   db.update(environments).set({ ownerThreadId: null }).where(and(isNotNull(environments.ownerThreadId), eq(environments.teardownStatus, "removed"), sql`not exists (select 1 from ${threads} where ${threads.id} = ${environments.ownerThreadId} and ${threads.deletedAt} is null)`)).run();
 }

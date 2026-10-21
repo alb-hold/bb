@@ -40,6 +40,7 @@ function makeRow(overrides: Partial<EnvironmentRow> = {}): EnvironmentRow {
     teardownAttempt: 0,
     teardownStatus: null,
     teardownMessage: null,
+    teardownPriorStatus: null,
     resource: null,
     ownerThreadId: null,
     attempt: 0,

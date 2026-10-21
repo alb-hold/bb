@@ -178,7 +178,10 @@ export default async function worktreePlugin(bb: BbPluginApi): Promise<void> {
     icon: "FolderGit",
     requires: { gitCheckout: true },
     inputs: worktreeInputsSchema,
-    policy: { pathKeys: "per-attempt" },
+    policy: {
+      pathKeys: "per-attempt",
+      experimental_respectLiveOwnersOnMachineRemoval: true,
+    },
     experimental_existingPath: (inputs) =>
       "kind" in inputs ? inputs.path : null,
     async create(context) {
@@ -208,6 +211,22 @@ export default async function worktreePlugin(bb: BbPluginApi): Promise<void> {
         baseBranch: context.inputs.branch,
         branchMode: "reuse-existing",
       });
+    },
+    async experimental_preflightRemove(context) {
+      if (isAdoptedResource(context.resource) || context.hostId === null) {
+        return { status: "removable" };
+      }
+      const result = await host.call(
+        "inspect",
+        { pathKey: context.pathKey, path: context.path },
+        {
+          hostId: context.hostId,
+          signal: context.signal,
+          timeoutMs: REMOVE_TIMEOUT_MS,
+        },
+      );
+      if (result.status === "failed") throw new Error(result.message);
+      return result;
     },
     async remove(context) {
       if (isAdoptedResource(context.resource)) {

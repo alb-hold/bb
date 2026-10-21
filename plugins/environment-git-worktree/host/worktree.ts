@@ -731,6 +731,34 @@ async function removeRegisteredWorktree(
   ]);
 }
 
+export async function inspectWorktreeRemoval(args: {
+  path: string;
+  rootPath: string;
+  signal?: AbortSignal | undefined;
+}): Promise<
+  { status: "removable" } | { status: "protected"; message: string }
+> {
+  const workspacePath = path.resolve(args.path);
+  const identified = await identifyWorktree({
+    path: workspacePath,
+    rootPath: args.rootPath,
+    signal: args.signal,
+  });
+  if (identified.status === "missing") {
+    return { status: "removable" };
+  }
+  const reasons =
+    identified.status === "preserve"
+      ? identified.reasons
+      : await findPreservationReasons(identified.identity, args.signal);
+  return reasons.length === 0
+    ? { status: "removable" }
+    : {
+        status: "protected",
+        message: worktreePreservedError(workspacePath, reasons).message,
+      };
+}
+
 export async function removeWorktree(args: RemoveWorktreeArgs): Promise<void> {
   throwIfProvisionAborted(args.signal);
   const workspacePath = path.resolve(args.path);

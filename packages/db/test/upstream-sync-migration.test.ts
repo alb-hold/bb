@@ -11,10 +11,16 @@ const liveSchemaPath = fileURLToPath(
 const oursForkMigrationWhens = [
   1792163858066, 1792183118231, 1792193667184, 1792200133276, 1792262861731,
 ];
-const latestForkMigration = {
-  createdAt: 1792470678777,
-  hash: "43e7562f9de43436a9ba4c2ab77246d0b550f47a8e5190e1c2956db123263658",
-};
+const forkMigrationsAfterLiveSchema = [
+  {
+    createdAt: 1792470678777,
+    hash: "43e7562f9de43436a9ba4c2ab77246d0b550f47a8e5190e1c2956db123263658",
+  },
+  {
+    createdAt: 1792593914272,
+    hash: "75bee0c481b8825198163625ba3de4f78134ef838bdfb7d59327db4c5d684034",
+  },
+];
 const ignoredIndexName = "fork_events_item_completion_lookup_idx";
 
 function schema(db: ReturnType<typeof createConnection>): string[] {
@@ -81,7 +87,7 @@ describe("upstream database migration reconciliation", () => {
         ).map((row) => row.name),
       );
 
-      expect(addedMigrationRows).toEqual([latestForkMigration]);
+      expect(addedMigrationRows).toEqual(forkMigrationsAfterLiveSchema);
       expect(
         live.$client
           .prepare(

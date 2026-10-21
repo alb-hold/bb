@@ -490,6 +490,8 @@ export function registerEnvironmentCommands(
           console.log(
             `  Retire at: ${new Date(env.lifecycle.retireAt).toISOString()}`,
           );
+        if (env.lifecycle.message !== undefined)
+          console.log(`  Kept: ${env.lifecycle.message}`);
         if (env.lifecycle.teardown !== null) {
           console.log(
             `  Teardown: ${env.lifecycle.teardown.status} (attempt ${env.lifecycle.teardown.attempt})`,

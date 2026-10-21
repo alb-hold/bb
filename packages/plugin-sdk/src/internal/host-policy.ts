@@ -2305,6 +2305,9 @@ export interface NormalizedPluginEnvironmentProvider {
   > | null;
   create: PluginEnvironmentProviderDeclaration["create"];
   restore: NonNullable<PluginEnvironmentProviderDeclaration["restore"]> | null;
+  experimental_preflightRemove: NonNullable<
+    PluginEnvironmentProviderDeclaration["experimental_preflightRemove"]
+  > | null;
   remove: PluginEnvironmentProviderDeclaration["remove"];
   policy: import("../environment-provider.js").PluginEnvironmentProviderPolicy;
 }
@@ -2461,6 +2464,12 @@ export function validatePluginEnvironmentProviderDeclaration(
     declaration.restore,
     "a restore",
   );
+  assertOptionalFunction(
+    "environment provider",
+    id,
+    declaration.experimental_preflightRemove,
+    "experimental_preflightRemove",
+  );
   return {
     id,
     displayName,
@@ -2474,6 +2483,8 @@ export function validatePluginEnvironmentProviderDeclaration(
     experimental_existingPath: declaration.experimental_existingPath ?? null,
     create: declaration.create,
     restore: declaration.restore ?? null,
+    experimental_preflightRemove:
+      declaration.experimental_preflightRemove ?? null,
     remove: declaration.remove,
     policy: environmentProviderPolicySchema.parse(declaration.policy ?? {}),
   };
@@ -2521,6 +2532,7 @@ const environmentProviderPolicySchema = z
   .object({
     retireGraceMs: z.number().int().nonnegative().nullable().default(300_000),
     pathKeys: z.enum(["per-thread", "per-attempt"]).default("per-thread"),
+    experimental_respectLiveOwnersOnMachineRemoval: z.boolean().default(false),
   })
   .strict();
 

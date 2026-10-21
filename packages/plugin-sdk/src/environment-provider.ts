@@ -106,7 +106,13 @@ export interface PluginEnvironmentProviderRemoveContext {
 
 export type PluginEnvironmentProviderRemoveResult =
   | { status: "removed" }
+  /** Experimental: nothing changed and the resource was kept on purpose. Core restores the environment's earlier state and retries after a backoff: see docs/api_to_audit.md. */
+  | { status: "retained"; message: string }
   | { status: "failed"; message: string };
+
+export type PluginEnvironmentProviderPreflightRemoveResult =
+  | { status: "removable" }
+  | { status: "retained"; message: string };
 
 /** Core normalizes omitted policy members once at registration. */
 export interface PluginEnvironmentProviderPolicy {
@@ -114,6 +120,8 @@ export interface PluginEnvironmentProviderPolicy {
   retireGraceMs: number | null;
   /** Default per-thread; replacement environments use a fresh key to avoid dead paths. */
   pathKeys: "per-thread" | "per-attempt";
+  /** Experimental, default false: keep an environment that a live thread still uses even when its machine is being removed: see docs/api_to_audit.md. */
+  experimental_respectLiveOwnersOnMachineRemoval: boolean;
 }
 
 /** Resource operations only. Core owns durable launches, retries and retirement. */
@@ -152,6 +160,12 @@ export interface PluginEnvironmentProviderDefinition<
   restore?(
     context: PluginEnvironmentProviderRestoreContext<R, S>,
   ): Promise<PluginEnvironmentProviderCreateResult>;
+  /** Experimental: inspect without mutating before core runs the teardown hook. A retained answer skips the hook and the removal: see docs/api_to_audit.md. */
+  experimental_preflightRemove?(
+    context: PluginEnvironmentProviderRemoveContext,
+  ):
+    | PluginEnvironmentProviderPreflightRemoveResult
+    | Promise<PluginEnvironmentProviderPreflightRemoveResult>;
   remove(
     context: PluginEnvironmentProviderRemoveContext,
   ): Promise<PluginEnvironmentProviderRemoveResult>;

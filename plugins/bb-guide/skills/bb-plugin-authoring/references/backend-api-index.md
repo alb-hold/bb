@@ -323,6 +323,7 @@ Read the installed declarations for exact current signatures.
 - `PluginEnvironmentProviderProgress`
 - `PluginEnvironmentProviderRemoveContext`
 - `PluginEnvironmentProviderRemoveResult`
+- `PluginEnvironmentProviderPreflightRemoveResult`
 
 ## `@get-bb/plugin-sdk/machine-provider`
 

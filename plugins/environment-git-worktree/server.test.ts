@@ -249,6 +249,88 @@ describe("worktree resource operations", () => {
   });
 });
 
+describe("removal outcomes", () => {
+  const removeContext = (fixture: Awaited<ReturnType<typeof setup>>) => ({
+    environment: null,
+    hostId: HOST_ID,
+    path: WORKTREE_PATH,
+    pathKey: THREAD_ID,
+    resource: null,
+    attempt: 1,
+    report: fixture.report,
+    signal: fixture.signal,
+  });
+
+  it("registers a preflight and keeps live owners when the machine is removed", async () => {
+    const fixture = await setup();
+    expect(fixture.provider.experimental_preflightRemove).not.toBeNull();
+    expect(
+      fixture.provider.policy.experimental_respectLiveOwnersOnMachineRemoval,
+    ).toBe(true);
+  });
+
+  it("passes a host retention through to core instead of reporting a failure", async () => {
+    const fixture = await setup((call) => {
+      if (call.method === "remove")
+        return { status: "retained", message: "Kept: dirty" };
+      throw new Error(`unexpected host method ${call.method}`);
+    });
+    expect(await fixture.provider.remove(removeContext(fixture))).toEqual({
+      status: "retained",
+      message: "Kept: dirty",
+    });
+  });
+
+  it("asks the host to inspect without removing, and relays what it says", async () => {
+    const answers = [
+      { status: "removable" },
+      { status: "retained", message: "Kept: dirty" },
+    ];
+    const fixture = await setup((call) => {
+      if (call.method === "inspect") return answers.shift();
+      throw new Error(`unexpected host method ${call.method}`);
+    });
+    const preflight = fixture.provider.experimental_preflightRemove;
+    if (preflight === null) throw new Error("Missing preflight");
+    expect(await preflight(removeContext(fixture))).toEqual({
+      status: "removable",
+    });
+    expect(await preflight(removeContext(fixture))).toEqual({
+      status: "retained",
+      message: "Kept: dirty",
+    });
+    expect(
+      fixture.harness.experimental_hostRpcCalls.map((call) => call.method),
+    ).toEqual(["inspect", "inspect"]);
+  });
+
+  it("raises a host inspection failure instead of claiming the worktree is retained", async () => {
+    const fixture = await setup((call) => {
+      if (call.method === "inspect")
+        return { status: "failed", message: "git unavailable" };
+      throw new Error(`unexpected host method ${call.method}`);
+    });
+    const preflight = fixture.provider.experimental_preflightRemove;
+    if (preflight === null) throw new Error("Missing preflight");
+    await expect(preflight(removeContext(fixture))).rejects.toThrow(
+      "git unavailable",
+    );
+  });
+
+  it("does not inspect an adopted worktree", async () => {
+    const fixture = await setup();
+    const preflight = fixture.provider.experimental_preflightRemove;
+    if (preflight === null) throw new Error("Missing preflight");
+    expect(
+      await preflight({
+        ...removeContext(fixture),
+        resource: { adopted: true },
+      }),
+    ).toEqual({ status: "removable" });
+    expect(fixture.harness.experimental_hostRpcCalls).toHaveLength(0);
+  });
+});
+
 describe("adopting an existing worktree", () => {
   const EXISTING_PATH = "/code/bb-feature";
 

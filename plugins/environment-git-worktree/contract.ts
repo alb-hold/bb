@@ -71,6 +71,23 @@ export const worktreeHostContract = defineRpcContract({
         .strict(),
     ]),
   },
+  inspect: {
+    input: z
+      .object({
+        pathKey: z.string().min(1),
+        path: z.string().min(1).nullable(),
+      })
+      .strict(),
+    output: z.discriminatedUnion("status", [
+      z.object({ status: z.literal("removable") }).strict(),
+      z
+        .object({ status: z.literal("retained"), message: z.string().min(1) })
+        .strict(),
+      z
+        .object({ status: z.literal("failed"), message: z.string().min(1) })
+        .strict(),
+    ]),
+  },
   remove: {
     input: z
       .object({
@@ -81,6 +98,9 @@ export const worktreeHostContract = defineRpcContract({
       .strict(),
     output: z.discriminatedUnion("status", [
       z.object({ status: z.literal("removed") }).strict(),
+      z
+        .object({ status: z.literal("retained"), message: z.string().min(1) })
+        .strict(),
       z
         .object({ status: z.literal("failed"), message: z.string().min(1) })
         .strict(),

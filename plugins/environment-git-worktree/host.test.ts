@@ -981,10 +981,10 @@ describe.skipIf(process.platform === "win32")(
           const verifySurvived = await prepare(worktree);
           const result = await removeFrom(worktree);
           expect(result).toMatchObject({
-            status: "failed",
+            status: "retained",
             message: expect.stringContaining(worktree.path),
           });
-          expect(result.status === "failed" ? result.message : "").toContain(
+          expect(result.status === "retained" ? result.message : "").toContain(
             reason,
           );
           await verifySurvived();
@@ -1062,7 +1062,7 @@ describe.skipIf(process.platform === "win32")(
           path: linkPath,
         });
         expect(result).toMatchObject({
-          status: "failed",
+          status: "retained",
           message: expect.stringContaining("symbolic link"),
         });
         expect((await lstat(linkPath)).isSymbolicLink()).toBe(true);
@@ -1087,7 +1087,7 @@ describe.skipIf(process.platform === "win32")(
         path: outside,
       });
       expect(result).toMatchObject({
-        status: "failed",
+        status: "retained",
         message: expect.stringContaining(
           "outside the managed worktree directory",
         ),
@@ -1112,12 +1112,11 @@ describe.skipIf(process.platform === "win32")(
         await writeFile(join(stray, "data.txt"), "keep\n");
         const result = await removeFrom(worktree, null);
         expect(result).toMatchObject({
-          status: "failed",
+          status: "retained",
           message: expect.stringContaining(stray),
         });
         expect(await readFile(join(stray, "data.txt"), "utf8")).toBe("keep\n");
-        expect(existsSync(worktree.path)).toBe(false);
-        expect(existsSync(worktree.completionPath)).toBe(false);
+        await expectWorktreeIntact(worktree);
       } finally {
         await worktree.harness.experimental_dispose();
       }
@@ -1133,7 +1132,7 @@ describe.skipIf(process.platform === "win32")(
         });
         const result = await removeFrom(worktree);
         expect(result).toMatchObject({
-          status: "failed",
+          status: "retained",
           message: expect.stringContaining(worktree.path),
         });
         expect(
@@ -1146,44 +1145,11 @@ describe.skipIf(process.platform === "win32")(
       }
     });
 
-    it("removes the eligible sibling and reports the preserved one", async () => {
-      const worktree = await createManagedWorktree();
-      try {
-        const sibling = join(
-          worktree.dataDir,
-          "worktrees",
-          worktree.pathKey,
-          "sibling",
-        );
-        await git(
-          worktree.sourcePath,
-          "worktree",
-          "add",
-          "--detach",
-          sibling,
-          "origin/main",
-        );
-        await writeFile(join(worktree.path, "notes.txt"), "draft\n");
-        const result = await removeFrom(worktree, null);
-        expect(result).toMatchObject({
-          status: "failed",
-          message: expect.stringContaining(worktree.path),
-        });
-        expect(existsSync(sibling)).toBe(false);
-        expect(await readFile(join(worktree.path, "notes.txt"), "utf8")).toBe(
-          "draft\n",
-        );
-        expect(existsSync(worktree.completionPath)).toBe(true);
-      } finally {
-        await worktree.harness.experimental_dispose();
-      }
-    });
-
     it("keeps the completion marker so a retried create resumes the preserved worktree", async () => {
       const worktree = await createManagedWorktree();
       try {
         await commitFile(worktree.path, "work.txt");
-        expect(await removeFrom(worktree)).toMatchObject({ status: "failed" });
+        expect(await removeFrom(worktree)).toMatchObject({ status: "retained" });
         expect(existsSync(worktree.completionPath)).toBe(true);
         const retried = await worktree.harness.experimental_call(
           "create",
@@ -1199,6 +1165,111 @@ describe.skipIf(process.platform === "win32")(
           path: worktree.path,
         });
         expect(existsSync(join(worktree.path, "work.txt"))).toBe(true);
+      } finally {
+        await worktree.harness.experimental_dispose();
+      }
+    });
+
+    async function addSiblingWorktree(
+      worktree: ManagedWorktree,
+      name: string,
+    ): Promise<{ path: string; completionPath: string }> {
+      const siblingPath = join(
+        worktree.dataDir,
+        "worktrees",
+        worktree.pathKey,
+        name,
+      );
+      await git(
+        worktree.sourcePath,
+        "worktree",
+        "add",
+        "--detach",
+        siblingPath,
+        "origin/main",
+      );
+      await writeFile(`${siblingPath}.completed`, `${name}\n`);
+      return { path: siblingPath, completionPath: `${siblingPath}.completed` };
+    }
+
+    it("retains every target untouched when any one of several is protected", async () => {
+      const worktree = await createManagedWorktree({ pathKey: "thr_two" });
+      try {
+        const sibling = await addSiblingWorktree(worktree, "protected");
+        await writeFile(join(sibling.path, "notes.txt"), "draft\n");
+        const result = await removeFrom(worktree, null);
+        expect(result).toMatchObject({
+          status: "retained",
+          message: expect.stringContaining(sibling.path),
+        });
+        await expectWorktreeIntact(worktree);
+        expect(existsSync(sibling.path)).toBe(true);
+        expect(existsSync(sibling.completionPath)).toBe(true);
+        expect(await readFile(join(sibling.path, "notes.txt"), "utf8")).toBe(
+          "draft\n",
+        );
+      } finally {
+        await worktree.harness.experimental_dispose();
+      }
+    });
+
+    it("fails, never retains, when a target turns protected after another was removed", async () => {
+      const worktree = await createManagedWorktree({ pathKey: "thr_race" });
+      try {
+        const sibling = await addSiblingWorktree(worktree, "late-writer");
+        const writer = spawn(
+          process.execPath,
+          [
+            "-e",
+            `const fs = require("node:fs");
+process.on("SIGTERM", () => {
+  fs.writeFileSync("late.txt", "written while stopping\\n");
+  process.exit(0);
+});
+setTimeout(() => {}, 300_000);`,
+          ],
+          { cwd: sibling.path, detached: true, stdio: "ignore" },
+        );
+        writer.unref();
+        lingeringProcesses.push(writer);
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        const result = await removeFrom(worktree, null);
+        expect(result.status).toBe("failed");
+        const message = result.status === "failed" ? result.message : "";
+        expect(message).toContain("Removed:");
+        expect(message).toContain(worktree.path);
+        expect(message).toContain(`Kept ${sibling.path}`);
+        expect(existsSync(worktree.path)).toBe(false);
+        expect(existsSync(worktree.completionPath)).toBe(false);
+        expect(await readFile(join(sibling.path, "late.txt"), "utf8")).toBe(
+          "written while stopping\n",
+        );
+        expect(existsSync(sibling.completionPath)).toBe(true);
+        expect(await registeredWorktrees(worktree.sourcePath)).toContain(
+          await realpath(sibling.path),
+        );
+      } finally {
+        await worktree.harness.experimental_dispose();
+      }
+    });
+
+    it("inspects without side effects", async () => {
+      const worktree = await createManagedWorktree({ pathKey: "thr_inspect" });
+      try {
+        const inspect = () =>
+          worktree.harness.experimental_call("inspect", {
+            pathKey: worktree.pathKey,
+            path: worktree.path,
+          });
+        expect(await inspect()).toEqual({ status: "removable" });
+        await expectWorktreeIntact(worktree);
+        await writeFile(join(worktree.path, "notes.txt"), "draft\n");
+        expect(await inspect()).toMatchObject({
+          status: "retained",
+          message: expect.stringContaining("uncommitted changes"),
+        });
+        await expectWorktreeIntact(worktree);
+        expect(existsSync(join(worktree.path, "notes.txt"))).toBe(true);
       } finally {
         await worktree.harness.experimental_dispose();
       }

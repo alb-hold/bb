@@ -65,6 +65,17 @@ export function dropThreadParentNotificationsColumn(db: DbConnection): void {
   }
 }
 
+export function dropEnvironmentTeardownPriorStatusColumn(
+  db: DbConnection,
+): void {
+  const columns = db.$client
+    .prepare<[], { name: string }>("PRAGMA table_info(environments)")
+    .all();
+  if (columns.some((column) => column.name === "teardown_prior_status")) {
+    db.$client.exec("ALTER TABLE environments DROP COLUMN teardown_prior_status");
+  }
+}
+
 export const QUEUED_MESSAGE_STATE_MIGRATION_WHEN = 1792010323040;
 
 interface QueuedTableColumn {

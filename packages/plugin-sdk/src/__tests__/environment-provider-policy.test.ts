@@ -34,11 +34,42 @@ it("keeps retirement and path-key defaults and overrides", () => {
   ).toEqual({
     retireGraceMs: 300_000,
     pathKeys: "per-thread",
+    experimental_respectLiveOwnersOnMachineRemoval: false,
   });
   expect(
     validatePluginEnvironmentProviderDeclaration({
       ...declaration,
       policy: { retireGraceMs: null, pathKeys: "per-attempt" },
     }).policy,
-  ).toEqual({ retireGraceMs: null, pathKeys: "per-attempt" });
+  ).toEqual({
+    retireGraceMs: null,
+    pathKeys: "per-attempt",
+    experimental_respectLiveOwnersOnMachineRemoval: false,
+  });
+  expect(
+    validatePluginEnvironmentProviderDeclaration({
+      ...declaration,
+      policy: { experimental_respectLiveOwnersOnMachineRemoval: true },
+    }).policy.experimental_respectLiveOwnersOnMachineRemoval,
+  ).toBe(true);
+});
+
+it("normalizes an optional remove preflight and rejects a non-function", () => {
+  expect(
+    validatePluginEnvironmentProviderDeclaration(declaration)
+      .experimental_preflightRemove,
+  ).toBeNull();
+  const preflight = () => ({ status: "removable" as const });
+  expect(
+    validatePluginEnvironmentProviderDeclaration({
+      ...declaration,
+      experimental_preflightRemove: preflight,
+    }).experimental_preflightRemove,
+  ).toBe(preflight);
+  expect(() =>
+    validatePluginEnvironmentProviderDeclaration({
+      ...declaration,
+      experimental_preflightRemove: "yes" as never,
+    }),
+  ).toThrow();
 });
