@@ -47,6 +47,19 @@ describe.sequential("fake provider environment-isolation multi-thread integratio
       withHarness(
         { builtinPlugins: ["environment-git-worktree"] },
         async (harness) => {
+          const teardownMarker = path.join(
+            path.dirname(harness.repoDir),
+            "teardown-ran-published.marker",
+          );
+          await createTestFile({
+            filePath: path.join(harness.repoDir, ".bb-env-teardown.sh"),
+            content: `#!/usr/bin/env bash\ntouch ${teardownMarker}\n`,
+          });
+          await runGit({ cwd: harness.repoDir, args: ["add", "."] });
+          await runGit({
+            cwd: harness.repoDir,
+            args: ["commit", "-m", "Add teardown hook"],
+          });
           await publishTestGitRepo({ repoDir: harness.repoDir });
           const project = await createProjectFixture(harness, {
             name: "Rebuild Managed Worktree",
@@ -86,6 +99,7 @@ describe.sequential("fake provider environment-isolation multi-thread integratio
             )
             .toBe("retiring");
           await fs.access(originalWorkspacePath);
+          await expect(fs.access(teardownMarker)).rejects.toThrow();
           harness.db
             .update(environments)
             .set({ retireAt: Date.now() - 1 })
@@ -106,6 +120,7 @@ describe.sequential("fake provider environment-isolation multi-thread integratio
             )
             .toBe("removed");
           await waitForPathRemoval(originalWorkspacePath, DEFAULT_TIMEOUT_MS);
+          await fs.access(teardownMarker);
           await deleteThread(harness.api, unrelatedThread.thread.id);
           await waitForEnvironmentStatus(
             harness.api,
@@ -239,7 +254,7 @@ describe.sequential("fake provider environment-isolation multi-thread integratio
                       harness.api,
                       worktreeThread.environment.id,
                     )
-                  ).lifecycle.message ?? null
+                  ).lifecycle.message ?? ""
                 );
               },
               { timeout: REBUILD_TIMEOUT_MS },
