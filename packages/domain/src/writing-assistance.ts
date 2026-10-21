@@ -566,6 +566,7 @@ function accidentalRepeatPairs(text: string): boolean[] {
     );
     return (
       previous[0].toLowerCase() === token &&
+      !/^\p{Lu}/u.test(match[0]) &&
       ACCIDENTAL_REPEATS.has(token) &&
       /^ +$/u.test(between)
     );

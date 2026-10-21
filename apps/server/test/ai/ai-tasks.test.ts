@@ -104,6 +104,48 @@ describe("AI task routing", () => {
     });
   });
 
+  it("falls back to the next voice service within the quick status wait when the first never answers its status check, which stays Checking", async () => {
+    await withTestHarness({}, async (harness) => {
+      const cloud = registerFakeAiService(harness.deps.aiServices, {
+        id: "bb",
+        pluginId: "bb-ai",
+        builtin: true,
+        status: () => new Promise(() => {}),
+        transcribe: async () => "cloud transcript",
+      });
+      const codex = registerFakeAiService(harness.deps.aiServices, {
+        id: "codex",
+        pluginId: "provider-codex",
+        builtin: true,
+        transcribe: async () => "codex transcript",
+      });
+
+      const startedAt = Date.now();
+      const outcome = await runAiTask(harness.deps, {
+        task: "voice",
+        label: "test",
+        call: (service, signal) => {
+          if (service.transcribe === null) throw new Error("no transcribe");
+          return service.transcribe(new File([new Uint8Array(4)], "a.webm"), {
+            signal,
+            hint: null,
+          });
+        },
+        accept: (raw) => (typeof raw === "string" ? raw : null),
+      });
+      const elapsed = Date.now() - startedAt;
+
+      expect(outcome).toMatchObject({ ok: true, value: "codex transcript" });
+      expect(elapsed).toBeGreaterThanOrEqual(1_900);
+      expect(elapsed).toBeLessThan(4_000);
+      expect(cloud.transcribeCalls).toEqual([]);
+      expect(codex.transcribeCalls).toHaveLength(1);
+      await expect(
+        harness.deps.aiServices.status({ pluginId: "bb-ai", serviceId: "bb" }),
+      ).resolves.toEqual({ ready: false, message: "Checking" });
+    });
+  });
+
   it("counts the status check against the task deadline, so a slow check leaves the call only the rest", async () => {
     await withTestHarness({}, async (harness) => {
       registerFakeAiService(harness.deps.aiServices, {

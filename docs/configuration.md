@@ -312,10 +312,14 @@ renew with, and not ready, asking for `claude auth login`, when the login is
 signed out, its renewal was rejected, or its access token expired with
 nothing to renew it.
 The CLI gets only an allowlisted environment (path, home, user, temp, locale,
-XDG, `CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_OAUTH_TOKEN`, and the Windows system
-variables), so `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`,
-`ANTHROPIC_AUTH_TOKEN`, `NODE_OPTIONS`, other `CLAUDE_CODE_*` settings, and
-the proxy and CA variables (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`,
+XDG, `DBUS_SESSION_BUS_ADDRESS`, `CLAUDE_CONFIG_DIR`,
+`CLAUDE_CODE_OAUTH_TOKEN`, and the Windows system variables).
+`DBUS_SESSION_BUS_ADDRESS` lets the CLI on a Linux desktop reach the user's
+session bus, where the keyring that can hold its login lives; anything else on
+that bus is reachable too, with the same rights as the user bb runs as.
+`ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
+`NODE_OPTIONS`, other `CLAUDE_CODE_*` settings, and the proxy and CA
+variables (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`,
 `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `SSL_CERT_DIR`) in bb's environment
 never reach it, and the prompt cannot be redirected or intercepted through
 them. On a network that only allows HTTPS through a proxy, this service

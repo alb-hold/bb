@@ -22,6 +22,8 @@ export const AI_TASK_TIMEOUT_MS: Record<AiTask, number> = {
   writing: 9_000,
 };
 
+export const AI_STATUS_FALLBACK_WAIT_MS = 2_000;
+
 export type AiTaskFailureReason =
   | "off"
   | "unavailable"
@@ -210,11 +212,15 @@ export async function runAiTask<T>(
     reason: "unavailable",
     message: "No AI service is ready",
   };
-  for (const service of services) {
+  for (const [index, service] of services.entries()) {
     const attemptDeadline = Date.now() + timeoutMs;
+    const statusWaitMs =
+      index < services.length - 1
+        ? Math.min(AI_STATUS_FALLBACK_WAIT_MS, timeoutMs)
+        : timeoutMs;
     const skipped = skipMessage(
       service,
-      await deps.aiServices.settledStatus(aiServiceKey(service), timeoutMs),
+      await deps.aiServices.settledStatus(aiServiceKey(service), statusWaitMs),
     );
     if (skipped !== null) {
       last = { reason: "unavailable", message: skipped };

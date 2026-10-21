@@ -194,6 +194,30 @@ describe("resolveWritingEdits", () => {
     },
   );
 
+  it("auto-applies removing a repeat whose second word is lowercase at a sentence start", () => {
+    const edits = resolveWritingEdits({
+      ...base,
+      target: "The the cache is stale.",
+      proposals: [proposal("The the cache", "The cache")],
+    });
+    expect(edits.map((edit) => edit.disposition)).toEqual(["apply"]);
+  });
+
+  it.each([
+    ["The The album is remastered.", "The The album", "The album"],
+    ["I saw The The live.", "The The live", "The live"],
+  ])(
+    "only suggests removing a repeat whose second word is capitalised, as in a name: %s",
+    (target, original, replacement) => {
+      const edits = resolveWritingEdits({
+        ...base,
+        target,
+        proposals: [proposal(original, replacement)],
+      });
+      expect(edits.map((edit) => edit.disposition)).toEqual(["suggest"]);
+    },
+  );
+
   it("only suggests removing a repeat that is not adjacent", () => {
     const distant = resolveWritingEdits({
       ...base,
