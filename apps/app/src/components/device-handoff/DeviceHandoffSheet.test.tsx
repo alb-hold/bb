@@ -692,35 +692,41 @@ describe("DeviceHandoffSheet", () => {
   });
 
   it("keeps the recipient expiry prompt if the local TTL fires before the server signal", async () => {
-    const now = Date.now();
-    render(<DeviceHandoffQueueHarness activeThreadId="thr_1" />);
-    const listener = registerDeviceHandoff.mock.lastCall?.[0] as
-      | ((signal: DeviceHandoffSignal | DeviceHandoffExpiredSignal) => void)
-      | undefined;
-    act(() =>
-      listener?.({
-        type: "device-handoff",
-        id: "recipient-expiry-race",
-        createdAt: now,
-        expiresAt: now + 5_000,
-        originLabel: "Thread terminal",
-        request: {
-          kind: "copy-text",
-          text: "short-lived code",
-          origin: { threadId: "thr_1" },
-        },
-      }),
-    );
-    expect(await screen.findByText("short-lived code")).toBeTruthy();
-    expect(
-      await screen.findByText("Handoff expired", {}, { timeout: 7_000 }),
-    ).toBeTruthy();
-    expect(
-      screen.getByText(
-        "A link or copied text from this terminal expired before you opened it. Run the command again.",
-      ),
-    ).toBeTruthy();
-    expect(screen.queryByText("short-lived code")).toBeNull();
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const now = Date.now();
+      render(<DeviceHandoffQueueHarness activeThreadId="thr_1" />);
+      const listener = registerDeviceHandoff.mock.lastCall?.[0] as
+        | ((signal: DeviceHandoffSignal | DeviceHandoffExpiredSignal) => void)
+        | undefined;
+      act(() =>
+        listener?.({
+          type: "device-handoff",
+          id: "recipient-expiry-race",
+          createdAt: now,
+          expiresAt: now + 5_000,
+          originLabel: "Thread terminal",
+          request: {
+            kind: "copy-text",
+            text: "short-lived code",
+            origin: { threadId: "thr_1" },
+          },
+        }),
+      );
+      expect(await screen.findByText("short-lived code")).toBeTruthy();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+      expect(screen.getByText("Handoff expired")).toBeTruthy();
+      expect(
+        screen.getByText(
+          "A link or copied text from this terminal expired before you opened it. Run the command again.",
+        ),
+      ).toBeTruthy();
+      expect(screen.queryByText("short-lived code")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("shows standalone terminal handoffs only while their terminal is active", async () => {
