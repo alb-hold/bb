@@ -24,9 +24,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   EMPTY_PLUGIN_UPDATE_STATE,
   type PluginListItem,
-  pluginListQueryOptions,
 } from "@/hooks/queries/plugin-settings-queries";
-import { searchPluginCatalog } from "@/hooks/queries/plugin-catalog-queries";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import { TooltipProvider } from "@bb/shared-ui/tooltip";
 import {
@@ -1296,10 +1294,8 @@ describe("BB Official plugin detail routing", () => {
         }),
       );
 
-      const {
-        queryClient,
-        wrapper: QueryClientWrapper,
-      } = createQueryClientTestHarness();
+      const { queryClient, wrapper: QueryClientWrapper } =
+        createQueryClientTestHarness();
       render(
         <MemoryRouter
           initialEntries={[installed ? "/plugins?view=installed" : "/plugins"]}
@@ -1316,28 +1312,16 @@ describe("BB Official plugin detail routing", () => {
       const cardQueryKey = installed
         ? pluginListQueryKey(true)
         : pluginCatalogSearchQueryKey("");
-      await act(async () => {
-        if (installed) {
-          await queryClient.ensureQueryData(
-            pluginListQueryOptions({ enabled: true }),
-          );
-        } else {
-          await queryClient.ensureQueryData({
-            queryKey: pluginCatalogSearchQueryKey(""),
-            queryFn: () => searchPluginCatalog(fetch, ""),
-          });
-        }
+      const card = await screen.findByRole("button", {
+        name: installed
+          ? `${pluginName} plugin details`
+          : "Open GitHub details",
       });
       expect(queryClient.getQueryState(cardQueryKey)?.data).toMatchObject(
         installed
           ? [{ id: "github" }]
           : { entries: [expect.objectContaining({ entryId: "github" })] },
       );
-      const card = await screen.findByRole("button", {
-        name: installed
-          ? `${pluginName} plugin details`
-          : "Open GitHub details",
-      });
       const panels = Array.from(document.querySelectorAll("[data-panel]"));
       expect(panels).toHaveLength(2);
       expect(panels[0]?.getAttribute("data-panel-size")).toBe("100.0");

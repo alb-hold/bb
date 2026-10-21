@@ -11,7 +11,10 @@ import {
 import { FitAddon } from "@xterm/addon-fit";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { TerminalWebSocketTransport } from "@bb/client-core";
+import {
+  REPAINT_RESTORE_DELAY_MS,
+  TerminalWebSocketTransport,
+} from "@bb/client-core";
 import { decodeBase64Bytes } from "@/lib/base64-bytes";
 import { makeTerminalSession } from "@/test/fixtures/terminal-sessions";
 import { wsManager } from "@/lib/ws";
@@ -158,6 +161,7 @@ function Handler() {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   cleanup();
   Reflect.set(wsManager, "deviceHandoffClientToken", null);
   vi.unstubAllGlobals();
@@ -878,6 +882,7 @@ describe("ThreadTerminalView terminal focus boundary", () => {
     await socketCreated;
     const socket = testState.sockets[0]!;
     await Promise.all([socket.opened, layoutSettled]);
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     await waitFor(
       () => {
         const resizes = testState.socketMessages
@@ -922,8 +927,7 @@ describe("ThreadTerminalView terminal focus boundary", () => {
         ).toEqual([{ type: "resize", cols: 51, rows: 47 }]),
       { timeout: 6_000 },
     );
-    await new Promise((resolve) => setTimeout(resolve, 400));
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await vi.advanceTimersByTimeAsync(REPAINT_RESTORE_DELAY_MS + 1);
     expect(
       testState.socketMessages
         .map(
