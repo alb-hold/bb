@@ -81,6 +81,61 @@ async function replayWithSentinel(cols: number, rows: number, data: string) {
 }
 
 describe("renderTerminalScreen", () => {
+  it("starts one reusable worker lazily without inheriting Node resource flags", () => {
+    const lifecycleUrl = new URL("./terminal-session-lifecycle.ts", import.meta.url).href;
+    const screenUrl = new URL("./terminal-screen.ts", import.meta.url).href;
+    const childScript = `
+      import workerThreads from "node:worker_threads";
+      import { syncBuiltinESMExports } from "node:module";
+      let created = 0;
+      const OriginalWorker = workerThreads.Worker;
+      workerThreads.Worker = class extends OriginalWorker {
+        constructor(...args) {
+          if (String(args[0]).includes("Terminal screen worker requires a parent port")) created += 1;
+          super(...args);
+        }
+      };
+      syncBuiltinESMExports();
+      await import(${JSON.stringify(screenUrl)});
+      await import(${JSON.stringify(lifecycleUrl)});
+      if (created !== 0) throw new Error("worker started during module import");
+      const { renderTerminalScreen } = await import(${JSON.stringify(screenUrl)});
+      const output = {
+        chunks: [{ seq: 0, dataBase64: Buffer.from("screen").toString("base64") }],
+        nextSeq: 1,
+        truncated: false,
+        status: "exited",
+        exitCode: 0,
+        closeReason: null,
+      };
+      const args = { cols: 20, rows: 2, lines: undefined, output };
+      const first = await renderTerminalScreen(args);
+      if (created !== 1 || first.rows[0] !== "screen") throw new Error("first screen read failed");
+      await renderTerminalScreen(args);
+      if (created !== 1) throw new Error("worker was not reused");
+      console.log("IMPORT_WORKERS=0 FIRST_READ_WORKERS=1 REUSE_WORKERS=1");
+      process.exit(0);
+    `;
+    const result = execFileSync(
+      process.execPath,
+      [
+        "--max-old-space-size=1024",
+        "--conditions=source",
+        "--import",
+        "tsx",
+        "--input-type=module",
+        "-e",
+        childScript,
+      ],
+      {
+        cwd: fileURLToPath(new URL("../../../../", import.meta.url)),
+        encoding: "utf8",
+        timeout: 30_000,
+      },
+    );
+    expect(result).toContain("IMPORT_WORKERS=0 FIRST_READ_WORKERS=1 REUSE_WORKERS=1");
+  });
+
   it("only calls a retained RIS complete when every retained rendering matches the full stream", async () => {
     const ris = "\u001bc";
     const cases = [

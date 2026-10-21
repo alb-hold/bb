@@ -66,13 +66,6 @@ let terminatingWorker: Worker | undefined;
 let pending: PendingRead | undefined;
 let nextId = 1;
 
-const workerExecArgv = process.execArgv.filter((arg, index, args) => {
-  if (index > 0 && ["--import", "--loader", "--experimental-loader", "--input-type"].includes(args[index - 1]!)) return false;
-  return !["--import", "--loader", "--experimental-loader", "--input-type"].some(
-    (option) => arg === option || arg.startsWith(`${option}=`),
-  );
-});
-
 function rejectPending(error: Error) {
   const active = pending;
   if (!active) return;
@@ -99,7 +92,7 @@ function getWorker() {
   if (terminatingWorker) throw new Error("Terminal screen worker is restarting");
   const current = new Worker(terminalScreenWorkerSource, {
     eval: true,
-    execArgv: workerExecArgv,
+    execArgv: [],
   });
   worker = current;
   current.unref();
@@ -137,8 +130,6 @@ function getWorker() {
   });
   return current;
 }
-
-void getWorker();
 
 export function renderTerminalScreen(args: {
   cols: number;
