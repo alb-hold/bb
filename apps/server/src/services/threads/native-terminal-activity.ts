@@ -2,10 +2,12 @@ import {
   getNativeTerminalThread,
   getThread,
   clearThreadRowState,
+  stampNativeTerminalThreadActivity,
   type TerminalSessionRow,
 } from "@bb/db";
 import {
   isNativeTerminalQuestion,
+  NATIVE_TERMINAL_ACTIVITY_HEARTBEAT_INTERVAL_MS,
   NATIVE_TERMINAL_QUESTION_REQUEST_PREFIX,
   type Thread,
 } from "@bb/domain";
@@ -24,17 +26,61 @@ import type {
 } from "../../types.js";
 import { requirePublicThread } from "../lib/entity-lookup.js";
 import { applyLoggedThreadLifecycleEvent } from "./lifecycle-outcome.js";
-import { readRecordTerminal } from "./native-terminal-threads.js";
+import {
+  readRecordTerminal,
+  requireLiveNativeTerminalToolThread,
+  requireNativeTerminalToolCredential,
+} from "./native-terminal-threads.js";
+import { buildThreadStatusChangeMetadata } from "./thread-runtime-display.js";
 import { generateAndApplyThreadTitle } from "./title-generation.js";
 
 type NativeTerminalActivityDeps = LoggedPendingInteractionWorkSessionDeps &
-  Pick<AppDeps, "db" | "hub" | "logger" | "terminalSessions">;
+  Pick<
+    AppDeps,
+    "db" | "hub" | "logger" | "providerRegistry" | "terminalSessions"
+  >;
 
 const activeNativeThreads = new WeakMap<AppDeps["hub"], Set<string>>();
 const rejectedNativeQuestions = new WeakMap<
   AppDeps["hub"],
   Map<string, Set<string>>
 >();
+const nativeActivityReports = new WeakMap<
+  AppDeps["hub"],
+  Map<string, { signature: string; lastNotifiedAt: number }>
+>();
+
+function reportStates(deps: Pick<AppDeps, "hub">) {
+  let states = nativeActivityReports.get(deps.hub);
+  if (states === undefined) {
+    states = new Map();
+    nativeActivityReports.set(deps.hub, states);
+  }
+  return states;
+}
+
+function hasCurrentLiveTerminalCredential(
+  deps: Pick<AppDeps, "db" | "terminalSessions">,
+  args: { authorization: string | undefined; threadId: string },
+): boolean {
+  if (args.authorization === undefined) return false;
+  try {
+    requireNativeTerminalToolCredential(deps, args);
+    requireLiveNativeTerminalToolThread(deps, args.threadId);
+    return true;
+  } catch (error) {
+    if (
+      error instanceof ApiError &&
+      (error.body.code === "native_terminal_credential_invalid" ||
+        error.body.code === "native_terminal_not_live" ||
+        error.body.code === "thread_environment_unavailable" ||
+        error.body.code === "environment_not_found")
+    ) {
+      return false;
+    }
+    throw error;
+  }
+}
 
 function rejectedQuestions(deps: Pick<AppDeps, "hub">, threadId: string) {
   let byThread = rejectedNativeQuestions.get(deps.hub);
@@ -80,9 +126,73 @@ const NATIVE_QUESTION_ANSWERED_REASON = "native-terminal-question-answered";
 
 export function recordNativeTerminalActivity(
   deps: NativeTerminalActivityDeps,
-  args: { threadId: string } & ReportNativeTerminalActivityRequest,
+  args: {
+    authorization?: string;
+    threadId: string;
+  } & ReportNativeTerminalActivityRequest,
 ): void {
   const active = activeThreads(deps);
+  const repeatedWorkingSignal =
+    args.state === "working" &&
+    args.prompt === undefined &&
+    active.has(args.threadId);
+  if (repeatedWorkingSignal && args.authorization === undefined) return;
+  const now = Date.now();
+  let notifyReceipt = false;
+  const currentTerminalIsLive = hasCurrentLiveTerminalCredential(deps, {
+    authorization: args.authorization,
+    threadId: args.threadId,
+  });
+  const currentNativeRecord = currentTerminalIsLive
+    ? getNativeTerminalThread(deps.db, args.threadId)
+    : null;
+  if (
+    currentNativeRecord !== null &&
+    currentNativeRecord.terminalSessionId !== null
+  ) {
+    const stamp = stampNativeTerminalThreadActivity(deps.db, {
+      at: now,
+      terminalSessionId: currentNativeRecord.terminalSessionId,
+      threadId: args.threadId,
+    });
+    if (stamp.updated) {
+      const states = reportStates(deps);
+      const signature = JSON.stringify({
+        prompt: args.prompt ?? null,
+        questions: args.questions ?? [],
+        state: args.state,
+      });
+      const previous = states.get(args.threadId);
+      const transition =
+        previous === undefined || previous.signature !== signature;
+      const heartbeatElapsed =
+        previous === undefined ||
+        now - previous.lastNotifiedAt >=
+          NATIVE_TERMINAL_ACTIVITY_HEARTBEAT_INTERVAL_MS;
+      const firstReceiptForBinding = stamp.previousLastEvidenceAt === null;
+      notifyReceipt = firstReceiptForBinding || transition || heartbeatElapsed;
+      if (previous === undefined || notifyReceipt) {
+        states.set(args.threadId, { signature, lastNotifiedAt: now });
+      } else {
+        states.set(args.threadId, { ...previous, signature });
+      }
+    }
+  }
+  if (repeatedWorkingSignal) {
+    if (notifyReceipt) {
+      const thread = requirePublicThread(deps.db, args.threadId);
+      const metadata = buildThreadStatusChangeMetadata(deps, thread);
+      deps.hub.notifyThread(args.threadId, ["status-changed"], metadata);
+    }
+    return;
+  }
+  active.delete(args.threadId);
+  const thread = requirePublicThread(deps.db, args.threadId);
+  const record = requireNativeRecord(deps, args.threadId);
+  if (notifyReceipt) {
+    const metadata = buildThreadStatusChangeMetadata(deps, thread);
+    deps.hub.notifyThread(args.threadId, ["status-changed"], metadata);
+  }
   if (
     args.state === "working" &&
     args.prompt === undefined &&
@@ -90,9 +200,6 @@ export function recordNativeTerminalActivity(
   ) {
     return;
   }
-  active.delete(args.threadId);
-  const thread = requirePublicThread(deps.db, args.threadId);
-  const record = requireNativeRecord(deps, args.threadId);
   let working = thread.status === "active";
   if (
     args.state !== "idle" &&

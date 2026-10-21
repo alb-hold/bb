@@ -19,6 +19,7 @@ import { threadOriginKindSchema } from "./thread-origin-kind.js";
 import { threadParentNotificationsSchema } from "./thread-parent-notifications.js";
 import { threadVisibilitySchema } from "./thread-visibility.js";
 import { threadRowStateSchema } from "./thread-row-state.js";
+import { NATIVE_TERMINAL_ACTIVITY_FRESH_FOR_MS } from "./native-terminal.js";
 export { threadStatusSchema, threadStatusValues } from "./thread-status.js";
 export type { ThreadStatus } from "./thread-status.js";
 export { threadOriginKindSchema } from "./thread-origin-kind.js";
@@ -46,8 +47,21 @@ export type ThreadRuntimeDisplayStatus = z.infer<
   typeof threadRuntimeDisplayStatusSchema
 >;
 
+export const nativeActivityConfirmationSchema = z.enum([
+  "confirmed",
+  "unconfirmed",
+]);
+export const nativeActivityDiagnosticSchema = z.object({
+  lastEvidenceAt: z.number().int().nullable(),
+  freshForMs: z.literal(NATIVE_TERMINAL_ACTIVITY_FRESH_FOR_MS),
+  confirmation: nativeActivityConfirmationSchema,
+});
+export type NativeActivityDiagnostic = z.infer<
+  typeof nativeActivityDiagnosticSchema
+>;
 export const threadRuntimeStateSchema = z.object({
   displayStatus: threadRuntimeDisplayStatusSchema,
+  nativeActivity: nativeActivityDiagnosticSchema.optional(),
 });
 export type ThreadRuntimeState = z.infer<typeof threadRuntimeStateSchema>;
 

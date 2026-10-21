@@ -1,6 +1,12 @@
 import type { ThreadListEntry } from "@bb/domain";
 import type { PluginSidebarThread } from "@get-bb/plugin-sdk";
-import { getThreadListIndicatorLabel, isThreadRead } from "@bb/client-core";
+import {
+  getThreadListIndicatorLabel,
+  isNativeActivityUnconfirmed,
+  isThreadRead,
+  resolveThreadListIndicator,
+  threadListIndicatorStateForThread,
+} from "@bb/client-core";
 import {
   EMPTY_TITLE_MENTION_RESOURCES,
   resolveThreadTitleDisplayText,
@@ -13,8 +19,20 @@ export function toPluginSidebarThread(
   entry: ThreadListEntry,
   hostNamesById: ReadonlyMap<string, string> = new Map(),
   titleResources: ThreadTitleMentionResources = EMPTY_TITLE_MENTION_RESOURCES,
+  now = Date.now(),
+  nativeActivityUnconfirmed = isNativeActivityUnconfirmed(entry.runtime, now),
 ): PluginSidebarThread {
-  const indicator = entry.listIndicator;
+  const indicatorState = threadListIndicatorStateForThread(
+    entry,
+    false,
+    now,
+    nativeActivityUnconfirmed,
+  );
+  const indicator = resolveThreadListIndicator({
+    ...indicatorState,
+    isAutomationWoken:
+      indicatorState.isAutomationWoken || entry.listIndicator === "woke",
+  });
 
   return {
     id: entry.id,
@@ -35,6 +53,16 @@ export function toPluginSidebarThread(
     status: entry.status,
     experimental_rowState: entry.rowState,
     runtimeStatus: entry.runtime.displayStatus,
+    ...(entry.runtime.nativeActivity === undefined
+      ? {}
+      : {
+          experimental_nativeActivity: {
+            ...entry.runtime.nativeActivity,
+            confirmation: nativeActivityUnconfirmed
+              ? "unconfirmed"
+              : "confirmed",
+          },
+        }),
     queuedWork: entry.queuedWork,
     hasPendingInteraction: entry.hasPendingInteraction,
     activity: {

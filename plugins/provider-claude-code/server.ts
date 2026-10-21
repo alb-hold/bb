@@ -93,6 +93,7 @@ export default function plugin(bb: BbPluginApi) {
           idle: [],
           pending: ["Stop"],
           promptField: "prompt",
+          sessionIdField: "session_id",
           permission: {
             open: ["PermissionRequest"],
             close: ["PostToolUse", "PostToolUseFailure", "PermissionDenied"],

@@ -20,6 +20,7 @@ import {
   threadListIndicatorStateForThread,
 } from "@bb/client-core";
 import { usePromptDraftHasInput } from "@/hooks/usePromptDraftStorage";
+import { useNativeActivityUnconfirmed } from "@/hooks/useNativeActivityUnconfirmed";
 import {
   highlightedText,
   ThreadTitle,
@@ -661,9 +662,17 @@ function ThreadSearchPaletteStatus({ row }: { row: PaletteThreadSearchRow }) {
     projectId: row.projectId,
     threadId: row.threadId,
   });
-  const indicator = resolveThreadListIndicator(
-    threadListIndicatorStateForThread(row.thread, hasUnsubmittedDraft),
+  const nativeActivityUnconfirmed = useNativeActivityUnconfirmed(
+    row.thread.runtime,
   );
+  const state = threadListIndicatorStateForThread(
+    row.thread,
+    hasUnsubmittedDraft,
+  );
+  const indicator = resolveThreadListIndicator({
+    ...state,
+    isRuntimeActive: state.isRuntimeActive && !nativeActivityUnconfirmed,
+  });
   const rowStatus = usePluginThreadRowStatus(row.threadId);
   const { accessibleLabel: label } = resolveThreadStatus(indicator, rowStatus);
   if (label === null) return null;

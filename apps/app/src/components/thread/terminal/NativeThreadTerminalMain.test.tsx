@@ -58,6 +58,7 @@ function renderMain() {
       threadId="thr_1"
       threadIsProvisioning={false}
       view={view}
+      runtime={{ displayStatus: "idle" }}
     />,
   );
 }
@@ -86,6 +87,7 @@ describe("NativeThreadTerminalMain focus", () => {
         threadId="thr_1"
         threadIsProvisioning={false}
         view={view}
+        runtime={{ displayStatus: "idle" }}
       />,
     );
     pane.isFocused = true;
@@ -95,6 +97,7 @@ describe("NativeThreadTerminalMain focus", () => {
         threadId="thr_1"
         threadIsProvisioning={false}
         view={view}
+        runtime={{ displayStatus: "idle" }}
       />,
     );
     expect(terminalAutoFocus()).toBe("true");
