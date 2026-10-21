@@ -15,8 +15,14 @@ export interface NativeSessionRebinder {
 const RETRYABLE_CLIENT_STATUSES = new Set([401, 408, 429]);
 const RETRYABLE_CODES = new Set(["native_terminal_not_live"]);
 
+const UNDICI_TRANSPORT_MESSAGES = new Set(["fetch failed", "terminated"]);
+
 function isTransportFailure(error: unknown): boolean {
-  return error instanceof TypeError || error instanceof BbRequestTimeoutError;
+  if (error instanceof BbRequestTimeoutError) return true;
+  return (
+    error instanceof TypeError &&
+    (UNDICI_TRANSPORT_MESSAGES.has(error.message) || error.cause !== undefined)
+  );
 }
 
 function permanentRefusal(error: unknown): string | null {

@@ -93,6 +93,13 @@ describe("native session rebinder", () => {
     ["a rate limit", refusal(429, "rate_limited")],
     ["a server error", refusal(503, "unavailable")],
     ["a network failure", new TypeError("fetch failed")],
+    ["a connection that was terminated", new TypeError("terminated")],
+    [
+      "a transport error that carries a cause",
+      new TypeError("other side closed", {
+        cause: new Error("connect ECONNREFUSED 127.0.0.1:1"),
+      }),
+    ],
     ["a client request timeout", new BbRequestTimeoutError(10_000)],
   ])("treats %s as retryable", async (_name, failure) => {
     const { rebinder, refused } = setup("c", (_attempt, index) =>
@@ -130,6 +137,7 @@ describe("native session rebinder", () => {
   it.each([
     ["a response that cannot be parsed", new SyntaxError("Unexpected token")],
     ["any other unexpected failure", new Error("boom")],
+    ["a programming error", new TypeError("x is not a function")],
   ])(
     "gives up for good on %s instead of retrying it silently",
     async (_name, failure) => {
