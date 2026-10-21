@@ -267,9 +267,6 @@ export function resolveTerminalViewportRestore(args: {
   ) {
     return Math.max(0, baseY - anchor.distanceFromTail);
   }
-  if (anchor.outputSequence < replayStartSequence) {
-    return 0;
-  }
   const outputAnchor = outputLineAnchors.find(
     ({ sequence }) => sequence === anchor.outputSequence,
   );

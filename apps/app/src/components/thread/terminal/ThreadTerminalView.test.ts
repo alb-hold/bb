@@ -297,6 +297,22 @@ describe("terminal viewport restore", () => {
     ).toBe(312);
   });
 
+  it("restores a retained client anchor after a server restart replay starts later", () => {
+    expect(
+      resolveTerminalViewportRestore({
+        anchor: {
+          distanceFromTail: 1200,
+          lineOffset: 8,
+          outputSequence: 10,
+        },
+        baseY: 3213,
+        outputLineAnchors: [{ sequence: 10, line: 132 }],
+        replayNextSequence: 5353,
+        replayStartSequence: 5274,
+      }),
+    ).toBe(140);
+  });
+
   it("restores the middle of one large output chunk at the same content line", () => {
     let currentLine = 0;
     const tracker = createTerminalOutputLineAnchorTracker({
