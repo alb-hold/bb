@@ -15,8 +15,11 @@ import {
   providerNativeTerminalActivitySchema,
   type ProviderNativeTerminal,
 } from "@bb/domain";
+import { BbHttpError, BbRequestTimeoutError } from "@bb/sdk";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { JsonlTail } from "../native-activity.js";
+import { createNativeActivityReporter } from "../native-activity-reporter.js";
+import { createNativeActivityWiring } from "../native-activity-wiring.js";
 import { EvictedRecordIndex } from "../native-activity-index.js";
 import {
   MAX_SESSION_ADOPTIONS,
@@ -2436,5 +2439,163 @@ describe("NativeActivityReader", () => {
     expect(reader.read()).toEqual([{ state: "idle", prompt: null }]);
     expect(reader.read()).toEqual([]);
     expect(reader.heartbeat()).toBeNull();
+  });
+});
+
+describe("idle delivery through the real reader, reporter and wiring", () => {
+  const HEARTBEAT_MS = 30_000;
+  const http = (status: number, code: string) =>
+    new BbHttpError({ body: null, code, message: code, status });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function holder(answers: { idle?: unknown[]; working?: unknown[] }) {
+    vi.useFakeTimers();
+    const fixture = claudeFixture();
+    const accepted: string[] = [];
+    const sent: string[] = [];
+    const scripts = {
+      idle: [...(answers.idle ?? [])],
+      working: [...(answers.working ?? [])],
+    };
+    const reporter = createNativeActivityReporter({
+      currentCredential: () => "current",
+      send: async (args) => {
+        sent.push(args.state);
+        const script = args.state === "idle" ? scripts.idle : scripts.working;
+        const next = script.shift();
+        if (next instanceof Error) throw next;
+        accepted.push(args.state);
+        return { ok: true };
+      },
+      threadId: "thr_1",
+    });
+    const wiring = createNativeActivityWiring({
+      currentCredential: () => "current",
+      log: () => undefined,
+      reader: () => fixture.reader,
+      recordSession: async () => ({}),
+      report: reporter.report,
+      retryReport: reporter.retry,
+    });
+    const timer = setInterval(wiring.onHeartbeatTick, HEARTBEAT_MS);
+    const forward = () => {
+      for (const next of fixture.reader.read()) reporter.report(next);
+    };
+    reporter.report({ state: "working", prompt: "first prompt" });
+    const stopTurn = () => {
+      fixture.hook([
+        {
+          hook_event_name: "Stop",
+          prompt_id: "turn-1",
+          stop_hook_active: false,
+        },
+      ]);
+      fixture.append([
+        {
+          type: "system",
+          subtype: "stop_hook_summary",
+          isSidechain: false,
+          hasOutput: false,
+          uuid: "end-1",
+          parentUuid: "answer-1",
+        },
+      ]);
+      forward();
+    };
+    const tick = async (times: number) => {
+      for (let index = 0; index < times; index += 1) {
+        await vi.advanceTimersByTimeAsync(HEARTBEAT_MS);
+        await reporter.settled();
+      }
+    };
+    return {
+      accepted,
+      fixture,
+      forward,
+      reporter,
+      sent,
+      stopTurn,
+      stop: () => clearInterval(timer),
+      tick,
+      wiring,
+    };
+  }
+
+  it("delivers an idle report exactly once after a 401 and then a network failure, by the second heartbeat tick", async () => {
+    const h = holder({
+      idle: [
+        http(401, "native_terminal_credential_invalid"),
+        new TypeError("fetch failed"),
+      ],
+    });
+    h.stopTurn();
+    await h.reporter.settled();
+    expect(h.accepted).toEqual(["working"]);
+    await h.tick(1);
+    expect(h.accepted).toEqual(["working"]);
+    await h.tick(1);
+    expect(h.accepted).toEqual(["working", "idle"]);
+    await h.tick(4);
+    expect(h.accepted).toEqual(["working", "idle"]);
+    expect(h.sent.filter((state) => state === "idle")).toHaveLength(3);
+    h.stop();
+  });
+
+  it("retries an idle report whose first send failed on the network, and delivers it once", async () => {
+    const h = holder({ idle: [new TypeError("fetch failed")] });
+    h.stopTurn();
+    await h.reporter.settled();
+    expect(h.accepted).toEqual(["working"]);
+    await h.tick(1);
+    expect(h.accepted).toEqual(["working", "idle"]);
+    await h.tick(3);
+    expect(h.sent.filter((state) => state === "idle")).toHaveLength(2);
+    h.stop();
+  });
+
+  it("sends an idle report exactly once after an ambiguous client timeout", async () => {
+    const h = holder({ idle: [new BbRequestTimeoutError(10_000)] });
+    h.stopTurn();
+    await h.reporter.settled();
+    await h.tick(1);
+    expect(h.accepted).toEqual(["working", "idle"]);
+    await h.tick(3);
+    expect(h.sent.filter((state) => state === "idle")).toHaveLength(2);
+    h.stop();
+  });
+
+  it("never retries a refusal that is not transient", async () => {
+    const h = holder({ idle: [http(403, "forbidden")] });
+    h.stopTurn();
+    await h.reporter.settled();
+    await h.tick(4);
+    expect(h.sent.filter((state) => state === "idle")).toHaveLength(1);
+    expect(h.accepted).toEqual(["working"]);
+    h.stop();
+  });
+
+  it("does not let the retained idle report overwrite a newer report", async () => {
+    const h = holder({
+      idle: [http(401, "native_terminal_credential_invalid")],
+    });
+    h.stopTurn();
+    await h.reporter.settled();
+    h.fixture.hook([
+      {
+        hook_event_name: "UserPromptSubmit",
+        prompt_id: "turn-2",
+        prompt: "second prompt",
+      },
+    ]);
+    h.forward();
+    await h.reporter.settled();
+    expect(h.accepted).toEqual(["working", "working"]);
+    await h.tick(3);
+    expect(h.sent.filter((state) => state === "idle")).toHaveLength(1);
+    expect(h.accepted).not.toContain("idle");
+    h.stop();
   });
 });

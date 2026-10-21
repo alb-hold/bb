@@ -1,5 +1,6 @@
-import { BbHttpError, type NativeTerminalReportActivityArgs } from "@bb/sdk";
+import type { NativeTerminalReportActivityArgs } from "@bb/sdk";
 import type { NativeActivityReport } from "./native-activity.js";
+import { permanentRefusal } from "./native-session-rebinder.js";
 
 export interface NativeActivityReporter {
   report(
@@ -13,10 +14,6 @@ export interface NativeActivityReporter {
 interface RetainedReport {
   report: NativeActivityReport;
   sequence: number;
-}
-
-function isCredentialRejection(error: unknown): boolean {
-  return error instanceof BbHttpError && error.status === 401;
 }
 
 export function createNativeActivityReporter(options: {
@@ -45,9 +42,9 @@ export function createNativeActivityReporter(options: {
       });
     } catch (error) {
       if (
-        isCredentialRejection(error) &&
         sequence !== null &&
-        sequence === latestSequence
+        sequence === latestSequence &&
+        permanentRefusal(error) === null
       ) {
         retained = { report: next, sequence };
       }
