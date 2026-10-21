@@ -70,6 +70,43 @@ describe("public thread open", () => {
     });
   });
 
+  it("does not count a non-UI realtime client as an app client", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps, {
+        id: "host-thread-open-non-ui-client",
+      });
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+        path: "/tmp/thread-open-non-ui-client",
+      });
+      const thread = seedThread(harness.deps, { projectId: project.id });
+      const terminal = createTerminalSession(harness.db, {
+        cols: 80,
+        daemonSessionId: session.id,
+        environmentId: null,
+        hostId: host.id,
+        initialCwd: "/tmp",
+        rows: 24,
+        status: "running",
+        threadId: thread.id,
+        title: "Thread terminal",
+      });
+      const socket = createMockHubSocket();
+      harness.deps.hub.registerClient(socket);
+
+      const response = await postOpen(harness, thread.id, {
+        file: null,
+        terminalAction: { action: "focus", terminalId: terminal.id },
+      });
+
+      expect(response.status).toBe(200);
+      expect(threadOpenResponseSchema.parse(await readJson(response))).toEqual({
+        deliveredClients: 0,
+      });
+      expect(socket.messages).toHaveLength(1);
+    });
+  });
+
   it("broadcasts an open-file signal to connected clients without persisting", async () => {
     await withTestHarness(async (harness) => {
       const { host } = seedHostSession(harness.deps, {
@@ -82,7 +119,7 @@ describe("public thread open", () => {
       const thread = seedThread(harness.deps, { projectId: project.id });
 
       const socket = createMockHubSocket();
-      harness.deps.hub.registerClient(socket);
+      harness.deps.hub.registerClient(socket, true);
 
       const before = getThread(harness.db, thread.id);
 
@@ -127,7 +164,7 @@ describe("public thread open", () => {
       const thread = seedThread(harness.deps, { projectId: project.id });
 
       const socket = createMockHubSocket();
-      harness.deps.hub.registerClient(socket);
+      harness.deps.hub.registerClient(socket, true);
 
       const response = await postOpen(harness, thread.id, {
         file: {
@@ -171,7 +208,7 @@ describe("public thread open", () => {
         visibility: "hidden",
       });
       const socket = createMockHubSocket();
-      harness.deps.hub.registerClient(socket);
+      harness.deps.hub.registerClient(socket, true);
 
       const response = await postOpen(harness, thread.id, { file: null });
       expect(response.status).toBe(200);
@@ -194,7 +231,7 @@ describe("public thread open", () => {
       });
       const thread = seedThread(harness.deps, { projectId: project.id });
       const socket = createMockHubSocket();
-      harness.deps.hub.registerClient(socket);
+      harness.deps.hub.registerClient(socket, true);
 
       const response = await postOpen(harness, thread.id, {
         split: "right",
@@ -263,7 +300,7 @@ describe("public thread open", () => {
         title: "Foreign terminal",
       });
       const socket = createMockHubSocket();
-      harness.deps.hub.registerClient(socket);
+      harness.deps.hub.registerClient(socket, true);
 
       const focus = await postOpen(harness, thread.id, {
         file: null,
@@ -383,7 +420,7 @@ describe("public thread open", () => {
         title: "Archived thread terminal",
       });
       const socket = createMockHubSocket();
-      harness.deps.hub.registerClient(socket);
+      harness.deps.hub.registerClient(socket, true);
       harness.db
         .update(threads)
         .set({ archivedAt: Date.now() })
@@ -411,7 +448,7 @@ describe("public thread open", () => {
       });
       const thread = seedThread(harness.deps, { projectId: project.id });
       const socket = createMockHubSocket();
-      harness.deps.hub.registerClient(socket);
+      harness.deps.hub.registerClient(socket, true);
 
       const response = await postPaneAction(harness, thread.id, {
         action: "spotlight",
