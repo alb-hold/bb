@@ -736,22 +736,34 @@ export async function writeRetainedTerminalOutput({
   session,
   terminal,
   pipeline,
+  onOutputStart,
+  onOutputParsed,
 }: {
-  chunks: readonly Uint8Array[];
+  chunks: readonly { seq: number; data: Uint8Array }[];
   lastNotice: TerminalSessionStatusNoticeRef;
   session: TerminalSession;
   terminal: XTermTerminal;
   pipeline?: ReturnType<typeof createTerminalOutputPipeline>;
+  onOutputStart?: (sequence: number) => void;
+  onOutputParsed?: (sequence: number) => void;
 }): Promise<void> {
-  await Promise.all(
-    chunks.map(
-      (chunk) =>
-        new Promise<void>((resolve) => {
-          if (pipeline) pipeline.push(chunk, resolve);
-          else terminal.write(chunk, resolve);
-        }),
-    ),
-  );
+  await new Promise<void>((resolve) => {
+    const writeChunk = (index: number) => {
+      const chunk = chunks[index];
+      if (!chunk) {
+        resolve();
+        return;
+      }
+      onOutputStart?.(chunk.seq);
+      const onParsed = () => {
+        onOutputParsed?.(chunk.seq);
+        writeChunk(index + 1);
+      };
+      if (pipeline) pipeline.push(chunk.data, onParsed);
+      else terminal.write(chunk.data, onParsed);
+    };
+    writeChunk(0);
+  });
   writeTerminalSessionStatusNotice({ lastNotice, session, terminal });
   await new Promise<void>((resolve) => terminal.write("", resolve));
 }
@@ -1948,16 +1960,27 @@ export function ThreadTerminalView({
         });
         if (!disposed) {
           await writeRetainedTerminalOutput({
-            chunks: output.chunks.map((chunk) =>
-              decodeBase64Bytes(chunk.dataBase64),
-            ),
+            chunks: output.chunks.map((chunk) => ({
+              seq: chunk.seq,
+              data: decodeBase64Bytes(chunk.dataBase64),
+            })),
             lastNotice: lastStatusNoticeRef,
             session: sessionRef.current,
             terminal: activeTerminal,
             pipeline: outputPipeline ?? undefined,
+            onOutputStart: recordOutputStart,
+            onOutputParsed: (sequence) => {
+              const outputAnchor = outputLineAnchors.find(
+                (candidate) => candidate.sequence === sequence,
+              );
+              if (sequence === savedViewportAnchor?.outputSequence) {
+                savedOutputLineAnchor = outputAnchor ?? null;
+              }
+            },
           });
           replayStartSequence = output.chunks[0]?.seq ?? output.nextSeq;
           latestOutputSequence = output.chunks.at(-1)?.seq ?? output.nextSeq;
+          replayNextSequence = output.nextSeq;
           restoreViewport();
         }
       } else {

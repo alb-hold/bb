@@ -1338,9 +1338,12 @@ describe("terminal output encoding", () => {
       updatedAt: 1,
       lastUserInputAt: null,
     } satisfies TerminalSession;
-    const chunks = Array.from({ length: 1_024 }, (_, index) =>
-      new TextEncoder().encode(index === 1_023 ? "xFINAL-RETAINED-CHUNK" : "x"),
-    );
+    const chunks = Array.from({ length: 1_024 }, (_, index) => ({
+      seq: index,
+      data: new TextEncoder().encode(
+        index === 1_023 ? "xFINAL-RETAINED-CHUNK" : "x",
+      ),
+    }));
 
     await writeRetainedTerminalOutput({
       chunks,
@@ -1385,8 +1388,8 @@ describe("terminal output encoding", () => {
 
     await writeRetainedTerminalOutput({
       chunks: [
-        new TextEncoder().encode("CW-1\nCW-2\n"),
-        new TextEncoder().encode("CW-3\nCW-4\n"),
+        { seq: 12, data: new TextEncoder().encode("CW-1\nCW-2\n") },
+        { seq: 13, data: new TextEncoder().encode("CW-3\nCW-4\n") },
       ],
       lastNotice: { current: null },
       session,
@@ -1404,6 +1407,79 @@ describe("terminal output encoding", () => {
     expect(renderedText.indexOf("CW-4")).toBeLessThan(
       renderedText.indexOf("Terminal exited with code 0"),
     );
+    terminal.dispose();
+  });
+
+  it("restores an exited daemon replay to a saved line in its first retained chunk", async () => {
+    const terminal = new Terminal({ cols: 80, rows: 24, scrollback: 10_000 });
+    const pipeline = createTerminalOutputPipeline(terminal);
+    const tracker = createTerminalOutputLineAnchorTracker({
+      registerMarker: () => terminal.registerMarker(),
+      getCurrentLine: () =>
+        terminal.buffer.active.baseY + terminal.buffer.active.cursorY,
+    });
+    const outputLineAnchors: NonNullable<
+      ReturnType<typeof tracker.recordOutputStart>
+    >[] = [];
+    const chunks = [
+      {
+        seq: 0,
+        data: new TextEncoder().encode(
+          `${Array.from({ length: 3_000 }, (_, index) =>
+            String(index + 1).padStart(5, "0"),
+          ).join("\r\n")}\r\n`,
+        ),
+      },
+      { seq: 1, data: new TextEncoder().encode("\r\n") },
+      { seq: 2, data: new TextEncoder().encode("\r\n") },
+      { seq: 3, data: new TextEncoder().encode("\r\n") },
+      { seq: 4, data: new TextEncoder().encode("\r\n") },
+    ];
+    const savedAnchor = {
+      distanceFromTail: 832,
+      lineOffset: 2_123,
+      outputSequence: 0,
+    };
+    await writeRetainedTerminalOutput({
+      chunks,
+      lastNotice: { current: null },
+      session: {
+        id: "term_daemon_replay",
+        threadId: "thr_1",
+        environmentId: "env_1",
+        hostId: "host_1",
+        title: "Terminal",
+        initialCwd: "/workspace",
+        cols: 80,
+        rows: 24,
+        status: "exited",
+        exitCode: null,
+        closeReason: "daemon-disconnect",
+        createdAt: 1,
+        updatedAt: 1,
+        lastUserInputAt: null,
+      } satisfies TerminalSession,
+      terminal,
+      pipeline,
+      onOutputStart: (sequence) => {
+        const anchor = tracker.recordOutputStart(sequence);
+        if (anchor) outputLineAnchors.push(anchor);
+      },
+    });
+
+    const restoredY = resolveTerminalViewportRestore({
+      anchor: savedAnchor,
+      baseY: terminal.buffer.active.baseY,
+      outputLineAnchors,
+      replayStartSequence: chunks[0]!.seq,
+      replayNextSequence: 5,
+    });
+
+    expect(outputLineAnchors.find(({ sequence }) => sequence === 0)).toBeDefined();
+    expect(terminal.buffer.active.getLine(restoredY)?.translateToString(true)).toBe(
+      "02124",
+    );
+    tracker.dispose();
     terminal.dispose();
   });
 
