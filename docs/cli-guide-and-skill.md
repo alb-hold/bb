@@ -1,9 +1,10 @@
 # CLI, Guide, And Skill
 
 Thread terminal actions are available through `bb terminal surfaces --thread
-<id> [--json]`, `bb terminal focus <terminalId>`, `bb terminal open-link
-<terminalId> <url>`, `bb terminal split <terminalId> --side right|left|up|down`,
-and `bb terminal move <terminalId> --to-pane-of <otherTerminalId>`. The SDK exposes these as
+<id> [--json]`, `bb terminal focus <terminalId> [--json]`, `bb terminal open-link
+<terminalId> <url> [--json]`, `bb terminal split <terminalId> --side right|left|up|down
+[--json]`, and `bb terminal move <terminalId> --to-pane-of <otherTerminalId>
+[--json]`. The SDK exposes these as
 `terminals.experimental_surfaces.list({ threadId })`,
 `terminals.experimental_focus({ terminalId })`, and
 `terminals.experimental_openBrowser({ terminalId, url })`,

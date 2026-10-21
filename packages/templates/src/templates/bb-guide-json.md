@@ -102,11 +102,17 @@ the most-parsed commands ends with the same shape.
   bb terminal surfaces --thread <id> --json
     {threadId, surfaces: [{threadId, terminalId, title, status, kind}]}    (thread-scoped terminal surfaces)
 
+  bb terminal focus <terminalId> --json
+    {terminalId, deliveredClients, error?: {code, message} when deliveredClients is 0}
+
+  bb terminal open-link <terminalId> <url> --json
+    {terminalId, url, deliveredClients, error?: {code, message} when deliveredClients is 0}
+
   bb terminal split <terminalId> --side <side> --json
-    {terminalId, side, deliveredClients}
+    {terminalId, side, deliveredClients, error?: {code, message} when deliveredClients is 0}
 
   bb terminal move <terminalId> --to-pane-of <terminalId> --json
-    {terminalId, targetTerminalId, deliveredClients}
+    {terminalId, targetTerminalId, deliveredClients, error?: {code, message} when deliveredClients is 0}
 
   bb thread open [id] [path] --json
     {threadId, split, file, deliveredClients, inputPath}

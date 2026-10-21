@@ -128,19 +128,56 @@ describe("bb terminal command output", () => {
 
   it.each([
     ["focus", ["terminal", "focus", "term-1", "--json"]],
-    ["open-link", ["terminal", "open-link", "term-1", "https://example.com", "--json"]],
+    [
+      "open-link",
+      ["terminal", "open-link", "term-1", "https://example.com", "--json"],
+    ],
   ] as const)("reports zero delivery in %s JSON", async (_name, args) => {
     stubServerApi({
       "v1.terminals.:terminalId.$get": async () => makeTerminalSession(),
       "v1.threads.:id.open.$post": async () => ({ deliveredClients: 0 }),
     });
 
-    await expect(runCommand([...args], register)).rejects.toThrow("process.exit:1");
-    expect(JSON.parse(collectLogPayloads(vi.mocked(console.log))[0]!)).toMatchObject({
+    await expect(runCommand([...args], register)).rejects.toThrow(
+      "process.exit:1",
+    );
+    expect(
+      JSON.parse(collectLogPayloads(vi.mocked(console.log))[0]!),
+    ).toMatchObject({
       deliveredClients: 0,
       error: { code: "no_app_clients" },
     });
   });
+
+  it.each([
+    [
+      "focus",
+      ["terminal", "focus", "term-1", "--json"],
+      { terminalId: "term-1" },
+    ],
+    [
+      "open-link",
+      ["terminal", "open-link", "term-1", "https://example.com", "--json"],
+      { terminalId: "term-1", url: "https://example.com" },
+    ],
+  ] as const)(
+    "reports one delivery in %s JSON",
+    async (_name, args, payload) => {
+      stubServerApi({
+        "v1.terminals.:terminalId.$get": async () => makeTerminalSession(),
+        "v1.threads.:id.open.$post": async () => ({ deliveredClients: 1 }),
+      });
+
+      await runCommand([...args], register);
+
+      expect(
+        JSON.parse(collectLogPayloads(vi.mocked(console.log))[0]!),
+      ).toEqual({
+        ...payload,
+        deliveredClients: 1,
+      });
+    },
+  );
 
   it("opens a URL through the app thread-open browser request", async () => {
     const open = vi.fn(async () => ({ deliveredClients: 1 }));
@@ -174,7 +211,10 @@ describe("bb terminal command output", () => {
       "v1.threads.:id.open.$post": open,
     });
 
-    await runCommand(["terminal", "split", "term-1", "--side", "down"], register);
+    await runCommand(
+      ["terminal", "split", "term-1", "--side", "down"],
+      register,
+    );
 
     expect(open).toHaveBeenCalledWith({
       param: { id: "thr-1" },
@@ -220,7 +260,10 @@ describe("bb terminal command output", () => {
 
   it.each([
     ["split", ["terminal", "split", "term-1", "--side", "right", "--json"]],
-    ["move", ["terminal", "move", "term-1", "--to-pane-of", "term-2", "--json"]],
+    [
+      "move",
+      ["terminal", "move", "term-1", "--to-pane-of", "term-2", "--json"],
+    ],
   ] as const)("reports %s JSON delivery outcomes", async (_name, args) => {
     for (const deliveredClients of [0, 1]) {
       vi.mocked(console.log).mockClear();
@@ -237,7 +280,9 @@ describe("bb terminal command output", () => {
       } else {
         await result;
       }
-      const payload = JSON.parse(collectLogPayloads(vi.mocked(console.log))[0]!) as {
+      const payload = JSON.parse(
+        collectLogPayloads(vi.mocked(console.log))[0]!,
+      ) as {
         deliveredClients: number;
         error?: { code: string; message: string };
       };
