@@ -446,8 +446,7 @@ function wavSeconds(bytes: Uint8Array): number | null {
       bytesPerSecond = (sampleRate * channels * bits) / 8;
     }
     if (type === "data" && size === 0 && riffChunkAt(bytes, body)) {
-      offset = body;
-      continue;
+      return null;
     }
     if (type === "data") {
       const present = bytes.length - body;

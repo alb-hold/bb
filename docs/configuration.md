@@ -349,14 +349,18 @@ timestamps describe, so a gap between timestamps counts as recorded time (for
 WAV, only the declared audio data counts, not metadata after it). Only that
 measured length counts against `dailyDictationMinutes`; the request carries no
 client-reported length. A clip it cannot measure (including an MP4 whose boxes
-nest more than 16 levels deep), an empty one, or one longer
+nest more than 16 levels deep, or a streamed WAV whose data chunk declares size 0
+and is followed by bytes that read as another chunk header), an empty one, or one longer
 than 120 seconds is refused before transcription. An upload over 25 MiB
 (26214400 bytes), whether it declares its length or is sent chunked, is
 refused with 413 while it streams in, before the form is parsed. A formatted phrase that
 adds words the speaker did not say, changes a number, or drops a protected
 term is discarded in favor of the plain transcript. Typing assistance sends
 only finished sentences that changed, with up to 500 characters of preceding
-text, after about a second of idle time.
+text, after about a second of idle time. A long draft or dictation is checked a
+few sentences at a time, up to 500 characters per request, with the next part
+sent about a second after each reply; a single sentence is sent alone up to
+2,000 characters, and a longer one is not checked.
 
 Settings (stored server-side; also `bb settings writing`):
 
@@ -423,7 +427,7 @@ that it replaces (one unbroken run of at most six words ending at the
 correction, no longer than what was said after it and starting with the same
 word (on monday no wait on tuesday), with nothing else near it left out; a phrase
 that replaces nothing, as in "no wait is required", is not a correction), spoken symbol names in literal-code
-mode when the reply writes that symbol ("run dash force" may become "run -force" but never "run force"), and the spoken numbers of a numbered list with the connectors (and, then, next, finally, e,
+mode when the reply writes that symbol where it was spoken ("run dash force" may become "run -force" but never "run force" or "run force-"), and for paren, bracket or brace only when every pair it opens is closed ("call foo paren" may become "call foo()" but never "call foo("), and the spoken numbers of a numbered list with the connectors (and, then, next, finally, e,
 depois, então) said just before an item number, as in "and then second"; a connector inside an item ("users and groups") always stays; leaving out any other word, a negation
 outside a self-correction phrase, or the minus sign of a number ("-5" never
 becomes "5", "-.5" never becomes ".5", and "-5 and 5" never becomes "5 and -5"), or adding, removing or moving a symbol next to a number, such as

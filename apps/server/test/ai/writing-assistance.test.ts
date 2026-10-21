@@ -1226,6 +1226,29 @@ describe("dictation segments", () => {
     });
   });
 
+  it("refuses a streamed WAV whose audio begins like a chunk header, without transcribing or reserving", async () => {
+    await withTestHarness({}, async (harness) => {
+      const service = registerFakeAiService(harness.deps.aiServices, {
+        transcribe: async () => "hello there",
+      });
+      const bytes = Buffer.from(await wav(2).arrayBuffer());
+      bytes.writeUInt32LE(0, 40);
+      bytes.write("LIST", 44, "ascii");
+      bytes.writeUInt32LE(16, 48);
+      bytes.write("data", 68, "ascii");
+      bytes.writeUInt32LE(100, 72);
+      const response = await postSegment(harness, {
+        file: new File([bytes], "dictation-1.wav", { type: "audio/wav" }),
+      });
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({
+        message: expect.stringContaining("Unsupported or unreadable audio"),
+      });
+      expect(service.transcribeCalls).toHaveLength(0);
+      expect(getWritingUsage(harness.deps.db, utcDay()).audioSeconds).toBe(0);
+    });
+  });
+
   it.each([0, 0xffffffff])(
     "measures a streamed WAV whose data size is %s by the audio present",
     async (declared) => {

@@ -1421,6 +1421,10 @@ describe("validateFormattedTranscript", () => {
     ["Open config dot json.", "open config.json"],
     ["use the snake underscore case name", "use the snake_case name"],
     ["call camelcase refresh token", "call refreshToken"],
+    ["alpha bracket beta bracket", "alpha [beta]"],
+    ["call foo paren paren", "call foo()"],
+    ["call foo paren", "call foo()"],
+    ["map brace brace", "map {}"],
   ])("accepts literal code %s written as %s", (raw, formatted) => {
     expect(
       validateFormattedTranscript(raw, formatted, [], { literalCode: true }),
@@ -1438,6 +1442,10 @@ describe("validateFormattedTranscript", () => {
     ["run dash force", "-Run force"],
     ["run dash dash force", "run -force-"],
     ["open config dot json", "open. config json"],
+    ["alpha bracket beta", "alpha [beta"],
+    ["call foo paren", "call foo("],
+    ["map brace key", "map {key"],
+    ["alpha bracket beta", "alpha ]beta["],
   ])(
     "rejects literal code %s written as %s, which drops a spoken symbol",
     (raw, formatted) => {

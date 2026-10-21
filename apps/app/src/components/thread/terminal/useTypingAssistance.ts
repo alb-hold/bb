@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type {
-  WritingCorrectionRequest,
-  WritingCorrectionResponse,
-  WritingEdit,
+import {
+  WRITING_TARGET_MAX_CHARS,
+  type WritingCorrectionRequest,
+  type WritingCorrectionResponse,
+  type WritingEdit,
 } from "@bb/domain";
 import {
   insideCodeFence,
@@ -109,6 +110,8 @@ export function useTypingAssistance(
   const trailingTimerRef = useRef<number | null>(null);
   const recentTimerRef = useRef<number | null>(null);
   const pausedUntilRef = useRef(0);
+  const queuedRef = useRef<TrackedRange[]>([]);
+  const continueRef = useRef<() => void>(() => {});
   const nextIdRef = useRef(1);
   const [suggestions, setSuggestions] = useState<TypingSuggestion[]>([]);
   const [recent, setRecent] = useState<RecentCorrections | null>(null);
@@ -323,6 +326,7 @@ export function useTypingAssistance(
             remember(key);
           }
           handleEdits(region, target, response.edits);
+          continueRef.current();
         })
         .catch(() => {
           if (!controller.signal.aborted) recordFailure(keys);
@@ -332,6 +336,9 @@ export function useTypingAssistance(
           if (inFlightRef.current?.controller === controller) {
             inFlightRef.current = null;
             setPending(false);
+          }
+          if (!controller.signal.aborted && queuedRef.current.length > 0) {
+            continueRef.current();
           }
         });
     },
@@ -370,13 +377,14 @@ export function useTypingAssistance(
       ) {
         break;
       }
-      if (range.end - range.start > MAX_TARGET_CHARS) {
+      if (range.end - range.start > WRITING_TARGET_MAX_CHARS) {
         remember(key);
         groupStart = -1;
         continue;
       }
       groupEnd = range.end;
       keys.push(key);
+      if (range.end - range.start > MAX_TARGET_CHARS) break;
     }
     if (groupStart >= 0 && groupEnd > groupStart) {
       send(groupStart, groupEnd, true, keys);
@@ -392,9 +400,50 @@ export function useTypingAssistance(
     if (insideCodeFence(text, last.start)) return;
     const key = text.slice(last.start, last.end);
     if (isSettledOrInFlight(key) || key.split(/\s+/u).length < 5) return;
-    if (last.end - last.start > MAX_TARGET_CHARS) return;
+    if (last.end - last.start > WRITING_TARGET_MAX_CHARS) return;
     send(last.start, last.end, false, [key]);
   }, [canRun, isSettledOrInFlight, send]);
+
+  const analyzeQueued = useCallback((): boolean => {
+    if (!canRun()) return false;
+    const text = optionsRef.current.getText();
+    while (queuedRef.current.length > 0) {
+      const range = queuedRef.current.shift()!;
+      untrack(range);
+      if (!range.alive) continue;
+      let start = Math.max(0, range.start);
+      const end = Math.min(text.length, range.end);
+      while (start < end && /\s/u.test(text[start]!)) start += 1;
+      if (end <= start) continue;
+      const sentences = sentenceRanges(text);
+      const stops = sentences
+        .map((sentence) => sentence.end)
+        .filter((stop) => stop > start && stop < end);
+      stops.push(end);
+      let chunkEnd = -1;
+      for (const stop of stops) {
+        if (stop - start <= MAX_TARGET_CHARS) {
+          chunkEnd = stop;
+          continue;
+        }
+        if (chunkEnd < 0 && stop - start <= WRITING_TARGET_MAX_CHARS) {
+          chunkEnd = stop;
+        }
+        break;
+      }
+      const sentEnd = chunkEnd < 0 ? stops[0]! : chunkEnd;
+      if (sentEnd < end) queuedRef.current.unshift(track(sentEnd, end));
+      if (chunkEnd < 0) continue;
+      const keys = sentences
+        .filter(
+          (sentence) => sentence.start >= start && sentence.end <= sentEnd,
+        )
+        .map((sentence) => text.slice(sentence.start, sentence.end));
+      send(start, sentEnd, true, keys);
+      return true;
+    }
+    return false;
+  }, [canRun, send, track, untrack]);
 
   const clearTimers = useCallback(() => {
     if (idleTimerRef.current !== null)
@@ -409,13 +458,21 @@ export function useTypingAssistance(
     clearTimers();
     idleTimerRef.current = window.setTimeout(() => {
       idleTimerRef.current = null;
-      analyzeCompleted();
+      if (!analyzeQueued()) analyzeCompleted();
     }, TYPING_IDLE_MS);
     trailingTimerRef.current = window.setTimeout(() => {
       trailingTimerRef.current = null;
       analyzeTrailing();
     }, TRAILING_IDLE_MS);
-  }, [analyzeCompleted, analyzeTrailing, clearTimers]);
+  }, [analyzeCompleted, analyzeQueued, analyzeTrailing, clearTimers]);
+
+  continueRef.current = () => {
+    if (idleTimerRef.current !== null) return;
+    idleTimerRef.current = window.setTimeout(() => {
+      idleTimerRef.current = null;
+      if (!analyzeQueued()) analyzeCompleted();
+    }, TYPING_IDLE_MS);
+  };
 
   const onTextChange = useCallback(
     (change: TextChange, programmatic: boolean) => {
@@ -504,21 +561,10 @@ export function useTypingAssistance(
   const analyzeRange = useCallback(
     (start: number, end: number) => {
       if (!canRun() || end <= start) return;
-      const text = optionsRef.current.getText();
-      const clampedStart = Math.max(0, start);
-      const clampedEnd = Math.min(
-        text.length,
-        end,
-        clampedStart + MAX_TARGET_CHARS,
-      );
-      const keys = sentenceRanges(text)
-        .filter(
-          (range) => range.start >= clampedStart && range.end <= clampedEnd,
-        )
-        .map((range) => text.slice(range.start, range.end));
-      send(clampedStart, clampedEnd, true, keys);
+      queuedRef.current.push(track(Math.max(0, start), end));
+      if (inFlightRef.current === null) analyzeQueued();
     },
-    [canRun, send],
+    [analyzeQueued, canRun, track],
   );
 
   useEffect(
@@ -539,8 +585,10 @@ export function useTypingAssistance(
     clearTimers();
     inFlightRef.current?.controller.abort();
     inFlightRef.current = null;
+    for (const range of queuedRef.current) untrack(range);
+    queuedRef.current = [];
     setPending(false);
-  }, [clearTimers, options.enabled, scheduleAnalysis]);
+  }, [clearTimers, options.enabled, scheduleAnalysis, untrack]);
 
   return {
     suggestions,

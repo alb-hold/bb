@@ -1085,6 +1085,40 @@ function spokenSymbolsPlaced(
   return true;
 }
 
+const SYMBOL_PAIRS: ReadonlySet<string> = new Set(["()", "[]", "{}"]);
+
+function pairDepth(
+  text: string,
+  pair: string,
+): { balance: number; lowest: number } {
+  let balance = 0;
+  let lowest = 0;
+  for (const character of text) {
+    if (character === pair[0]) balance += 1;
+    if (character === pair[1]) {
+      balance -= 1;
+      lowest = Math.min(lowest, balance);
+    }
+  }
+  return { balance, lowest };
+}
+
+function spokenPairsClosed(
+  raw: string,
+  text: string,
+  spokenSymbols: ReadonlyMap<number, string>,
+): boolean {
+  for (const symbols of new Set(spokenSymbols.values())) {
+    if (!SYMBOL_PAIRS.has(symbols)) continue;
+    const spoken = pairDepth(raw, symbols);
+    const written = pairDepth(text, symbols);
+    if (written.balance !== spoken.balance || written.lowest < spoken.lowest) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function splitJoinedToken(
   token: string,
   rawTokens: readonly string[],
@@ -1463,7 +1497,8 @@ export function validateFormattedTranscript(
       partSpans,
       positions,
       spokenSymbols,
-    )
+    ) ||
+    !spokenPairsClosed(raw, body, spokenSymbols)
   ) {
     return { ok: false, reason: "dropped-words" };
   }

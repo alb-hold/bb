@@ -857,6 +857,112 @@ describe(
       expect(correct).toHaveBeenCalledTimes(2);
     });
 
+    it("checks every sentence of a draft longer than one request, each once, and keeps the caret and Undo", async () => {
+      correct.mockImplementation(async (request: { target: string }) => {
+        const at = request.target.indexOf("The user are here.");
+        return {
+          status: "ok",
+          edits:
+            at < 0
+              ? []
+              : [
+                  edit({
+                    start: at + 9,
+                    end: at + 12,
+                    original: "are",
+                    replacement: "is",
+                  }),
+                ],
+        };
+      });
+      const { input } = await renderWithAssistance();
+      const sentences = Array.from(
+        { length: 15 },
+        (_, index) =>
+          `Item ${index + 1} of the long draft is checked once and only once here.`,
+      );
+      sentences.push("The user are here.");
+      const typed = `${sentences.join(" ")} `;
+      input.focus();
+      fireEvent.change(input, { target: { value: typed } });
+      input.setSelectionRange(typed.length, typed.length);
+      await waitFor(
+        () => expect(input.value).toBe(typed.replace("user are", "user is")),
+        { timeout: 12_000 },
+      );
+      expect(input.selectionStart).toBe(typed.length - 1);
+      await new Promise((resolve) => setTimeout(resolve, 1_600));
+      const targets: string[] = correct.mock.calls.map(
+        (call) => call[0].target,
+      );
+      expect(targets.length).toBeGreaterThan(1);
+      for (const target of targets)
+        expect(target.length).toBeLessThanOrEqual(500);
+      for (const sentence of sentences) {
+        expect(
+          targets.filter((target) => target.includes(sentence)),
+        ).toHaveLength(1);
+      }
+      fireEvent.click(screen.getByRole("button", { name: /Undo/ }));
+      expect(input.value).toBe(typed);
+      expect(input.selectionStart).toBe(typed.length);
+    });
+
+    it("sends one sentence longer than 500 characters on its own", async () => {
+      correct.mockResolvedValue({ status: "ok", edits: [] });
+      const { input } = await renderWithAssistance();
+      const long = `This sentence ${"keeps going and going ".repeat(30)}until it ends.`;
+      expect(long.length).toBeGreaterThan(500);
+      fireEvent.change(input, { target: { value: `${long} ` } });
+      await waitFor(() => expect(correct).toHaveBeenCalledTimes(1), {
+        timeout: 8_000,
+      });
+      expect(correct).toHaveBeenCalledWith(
+        expect.objectContaining({ target: long, complete: true }),
+      );
+    });
+
+    it("checks a dictation longer than one request in parts, each sentence once", async () => {
+      correct.mockResolvedValue({ status: "ok", edits: [] });
+      await renderWithAssistance();
+      const sentences = Array.from(
+        { length: 14 },
+        (_, index) =>
+          `Dictated sentence ${index + 1} must reach the writing check in some part.`,
+      );
+      sentences.push("and the last dictated words end without a full stop");
+      startDictation();
+      deliver(sentences.join(" "));
+      act(() => {
+        dictationHook.options?.onFinished?.();
+      });
+      await waitFor(
+        () => {
+          const targets: string[] = correct.mock.calls.map(
+            (call) => call[0].target,
+          );
+          expect(targets.join(" ")).toContain(sentences.at(-1));
+        },
+        { timeout: 12_000 },
+      );
+      await new Promise((resolve) => setTimeout(resolve, 1_600));
+      const targets: string[] = correct.mock.calls.map(
+        (call) => call[0].target,
+      );
+      expect(targets.length).toBeGreaterThan(1);
+      for (const target of targets)
+        expect(target.length).toBeLessThanOrEqual(500);
+      for (const sentence of sentences) {
+        expect(
+          targets.filter((target) => target.includes(sentence)),
+        ).toHaveLength(1);
+      }
+      expect(correct.mock.calls.at(-1)?.[0]).toMatchObject({
+        target: expect.stringContaining(sentences.at(-1)!),
+        complete: true,
+      });
+    });
+
     it("does not ask for corrections when typing correction is off", async () => {
       writingView.mockResolvedValue(view({ typingCorrection: "off" }));
       const { input } = renderBar();
