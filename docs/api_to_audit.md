@@ -934,7 +934,7 @@ the field naming the next session id) declares the provider's own record that a
 CLI session continues in another one (Claude's `continued-in` record after a
 compaction). The wrapper follows a hook from another session only when a record
 in the bound transcript's last 64 KiB matches and names exactly that id, the id
-was not left before, and its own transcript exists; it then moves the thread's
+was not left before, its own transcript exists, and fewer than 256 moves were followed; it then moves the thread's
 binding with `sdk.nativeTerminals.recordSession({ replacesNativeSessionId })`,
 which the server accepts only for the current live credential and when the
 replaced id is still the stored one. A move the server cannot take yet (401,
@@ -2613,7 +2613,7 @@ doc covers three September 2026 additions:
   indicators. Freshness expires locally after 90 seconds without a newer
   holder report. A receipt proves only that the bound holder reported activity;
   it does not establish model or tool progress or task completion. Older holders
-  cannot confirm this receipt and may display activity as unconfirmed. Older
+  cannot confirm this receipt and may show Activity not reported. Older
   apps may still display Working, and new apps paired with older servers retain
   their previous display because the diagnostic is absent. The diagnostic's
   `evidenceKind` separates a holder report (`holder-report`, the only kind that
