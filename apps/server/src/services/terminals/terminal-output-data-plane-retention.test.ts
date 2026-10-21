@@ -1,6 +1,7 @@
 import { Socket } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  appendRetainedTerminalOutputChunks,
   createTerminalSession,
   getRetainedTerminalOutput,
   getTerminalSession,
@@ -9,6 +10,7 @@ import {
 } from "@bb/db";
 import { createTerminalGridMarker } from "@bb/domain";
 import { createMigratedConnection } from "@bb/db/testing";
+import { takeEventLoopWorkWindowSnapshot } from "../system/event-loop-work.js";
 import {
   TerminalDataPlaneChild,
   type TerminalDataPlaneSocket,
@@ -180,6 +182,236 @@ async function setup(args: { holdOutputBatches?: boolean } = {}) {
 }
 
 describe("terminal output retained from the data plane", () => {
+  it("keeps data-plane output recorded during a replay yield without waiting for the flush timer", async () => {
+    const fixture = await setup();
+    fixture.terminalSessions.recordDirectTerminalOutputBatch({
+      daemonSessionId: fixture.session.id,
+      terminalId: fixture.terminal.id,
+      chunks: [
+        { seq: 0, dataBase64: Buffer.from("before replay").toString("base64") },
+      ],
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const chunks = Array.from({ length: 2_048 }, (_, index) => ({
+        seq: index + 1,
+        dataBase64: Buffer.from(`replay-${index}`).toString("base64"),
+      }));
+      const injectedSeqs: number[] = [];
+      let replayFinished = false;
+      let yields = 0;
+      const replay = fixture.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.host.id,
+        sessionId: fixture.session.id,
+        message: {
+          type: "terminal.replay",
+          requestId: "data-plane-during-replay",
+          terminalId: fixture.terminal.id,
+          replayStartSeq: 0,
+          nextSeq: chunks.length + 1,
+          chunks,
+        },
+      });
+      const recordDuringReplayYield = () => {
+        yields += 1;
+        if (yields >= 250) {
+          const seq = 100_000 + yields;
+          fixture.terminalSessions.recordDirectTerminalOutputBatch({
+            daemonSessionId: fixture.session.id,
+            terminalId: fixture.terminal.id,
+            chunks: [
+              {
+                seq,
+                dataBase64: Buffer.from(`arrived-${seq}`).toString("base64"),
+              },
+            ],
+          });
+          injectedSeqs.push(seq);
+        }
+        if (!replayFinished) setImmediate(recordDuringReplayYield);
+      };
+      setImmediate(recordDuringReplayYield);
+
+      await Promise.resolve(replay).finally(() => {
+        replayFinished = true;
+      });
+      const retained = getRetainedTerminalOutput(fixture.db, {
+        hostId: fixture.host.id,
+        terminalSessionId: fixture.terminal.id,
+        now: Date.now(),
+      });
+      expect(injectedSeqs.length).toBeGreaterThan(0);
+      expect(retained?.map(({ seq }) => seq)).toEqual(
+        expect.arrayContaining(injectedSeqs),
+      );
+    } finally {
+      vi.useRealTimers();
+      fixture.child.shutdown();
+    }
+  });
+
+  it("does not write retained output when replaying already-retained 1.5 MB scrollback", async () => {
+    const fixture = await setup();
+    const chunks = Array.from({ length: 32 }, (_, seq) => ({
+      seq,
+      dataBase64: Buffer.alloc(48 * 1024, seq).toString("base64"),
+    }));
+    appendRetainedTerminalOutputChunks(fixture.db, {
+      hostId: fixture.host.id,
+      terminalSessionId: fixture.terminal.id,
+      chunks,
+      clock: Date.now,
+    });
+    fixture.db.$client.exec(`
+      CREATE TABLE retained_replay_writes (n INTEGER NOT NULL);
+      INSERT INTO retained_replay_writes (n) VALUES (0);
+      CREATE TRIGGER retained_replay_updated AFTER UPDATE ON fork_terminal_output
+        BEGIN UPDATE retained_replay_writes SET n = n + 1; END;
+    `);
+
+    takeEventLoopWorkWindowSnapshot();
+    await fixture.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.host.id,
+      sessionId: fixture.session.id,
+      message: {
+        type: "terminal.replay",
+        requestId: "already-retained-large-replay",
+        terminalId: fixture.terminal.id,
+        replayStartSeq: 0,
+        nextSeq: chunks.length,
+        chunks,
+      },
+    });
+
+    const writes = fixture.db.$client
+      .prepare("SELECT n FROM retained_replay_writes")
+      .get() as { n: number };
+    expect(writes.n).toBe(0);
+    const replayWork = takeEventLoopWorkWindowSnapshot();
+    process.stdout.write(
+      `retained replay max synchronous slice ${replayWork.longestSynchronousWorkWallMs}ms\n`,
+    );
+    expect(replayWork.longestSynchronousWork).toMatch(
+      /^ws:daemon terminal\.replay /u,
+    );
+    expect(replayWork.longestSynchronousWorkWallMs).toBeLessThanOrEqual(100);
+    const retained = getRetainedTerminalOutput(fixture.db, {
+      hostId: fixture.host.id,
+      terminalSessionId: fixture.terminal.id,
+      now: Date.now(),
+    });
+    expect(retained?.map(({ seq }) => seq)).toEqual([31]);
+    expect(
+      Buffer.from(chunks[0]!.dataBase64, "base64").length * chunks.length,
+    ).toBe(1_572_864);
+    fixture.child.shutdown();
+  });
+
+  it("keeps a 1.5 MB pending replay flush below 100 ms per synchronous slice", async () => {
+    const fixture = await setup();
+    const chunks = Array.from({ length: 32 }, (_, seq) => ({
+      seq,
+      dataBase64: Buffer.alloc(48 * 1024, seq).toString("base64"),
+    }));
+    fixture.terminalSessions.recordDirectTerminalOutputBatch({
+      daemonSessionId: fixture.session.id,
+      terminalId: fixture.terminal.id,
+      chunks,
+    });
+
+    takeEventLoopWorkWindowSnapshot();
+    await fixture.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.host.id,
+      sessionId: fixture.session.id,
+      message: {
+        type: "terminal.replay",
+        requestId: "pending-large-replay",
+        terminalId: fixture.terminal.id,
+        replayStartSeq: 0,
+        nextSeq: chunks.length,
+        chunks,
+      },
+    });
+
+    const replayWork = takeEventLoopWorkWindowSnapshot();
+    process.stdout.write(
+      `pending replay max synchronous slice ${replayWork.longestSynchronousWork} ${replayWork.longestSynchronousWorkWallMs}ms\n`,
+    );
+    expect(replayWork.longestSynchronousWork).toMatch(
+      /^ws:daemon terminal\.replay /u,
+    );
+    expect(replayWork.longestSynchronousWorkWallMs).toBeLessThanOrEqual(100);
+    const retained = retainedAfterFlush(fixture.terminalSessions, fixture.db, {
+      hostId: fixture.host.id,
+      terminalSessionId: fixture.terminal.id,
+      now: Date.now(),
+    });
+    expect(retained?.at(-1)?.seq).toBe(31);
+    expect(
+      Buffer.from(chunks[0]!.dataBase64, "base64").length * chunks.length,
+    ).toBe(1_572_864);
+    fixture.child.shutdown();
+  });
+
+  it("yields between bounded replay chunks and retains their original order", async () => {
+    const fixture = await setup();
+    const chunks = Array.from({ length: 1_000 }, (_, seq) => ({
+      seq,
+      dataBase64: Buffer.from(
+        Array.from(
+          { length: 50 },
+          (_, line) => `line-${String(seq * 50 + line).padStart(5, "0")}\n`,
+        ).join(""),
+      ).toString("base64"),
+    }));
+    takeEventLoopWorkWindowSnapshot();
+    let monitoring = true;
+    let yieldSteps = 0;
+    const observeReplayYields = (): void => {
+      if (!monitoring) return;
+      yieldSteps += 1;
+      setImmediate(observeReplayYields);
+    };
+    setImmediate(observeReplayYields);
+
+    await fixture.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.host.id,
+      sessionId: fixture.session.id,
+      message: {
+        type: "terminal.replay",
+        requestId: "large-replay",
+        terminalId: fixture.terminal.id,
+        replayStartSeq: 0,
+        nextSeq: chunks.length,
+        chunks,
+      },
+    });
+    monitoring = false;
+
+    const output = retainedAfterFlush(fixture.terminalSessions, fixture.db, {
+      hostId: fixture.host.id,
+      terminalSessionId: fixture.terminal.id,
+      now: Date.now(),
+    });
+    const retainedBytes = Buffer.concat(
+      (output ?? []).map((chunk) => Buffer.from(chunk.dataBase64, "base64")),
+    );
+    const expectedBytes = Buffer.concat(
+      chunks.map((chunk) => Buffer.from(chunk.dataBase64, "base64")),
+    );
+    expect(retainedBytes).toEqual(
+      expectedBytes.subarray(expectedBytes.length - retainedBytes.length),
+    );
+    expect(retainedBytes.length).toBeGreaterThan(60_000);
+    expect(yieldSteps).toBeGreaterThan(1);
+    const work = takeEventLoopWorkWindowSnapshot();
+    expect(work.longestSynchronousWork).toMatch(
+      /^ws:daemon terminal\.replay /u,
+    );
+    expect(work.longestSynchronousWorkWallMs).toBeLessThanOrEqual(100);
+    fixture.child.shutdown();
+  }, 60_000);
+
   it("carries the latest trimmed grid marker to the retained replay window", async () => {
     const fixture = await setup();
     const chunks = [
