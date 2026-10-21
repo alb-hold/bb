@@ -1,4 +1,5 @@
 import { execFile, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import {
   appendFile,
@@ -1440,6 +1441,48 @@ setTimeout(() => {}, 300_000);`,
           ).rejects.toMatchObject({ code: "worktree_preserved" });
           expect(existsSync(join(worktree.path, "after-create.txt"))).toBe(
             true,
+          );
+          expect(isPidAlive(worktree.lingering.pid ?? 0)).toBe(true);
+        } finally {
+          await worktree.harness.experimental_dispose();
+        }
+      });
+
+      it("never deletes through a recorded copy whose folder now links outside the worktree", async () => {
+        const worktree = await createManagedWorktree({ publish: false });
+        try {
+          const createdHead = (
+            await git(worktree.path, "rev-parse", "HEAD")
+          ).trim();
+          const outside = join(worktree.root, "outside");
+          await mkdir(outside);
+          await writeFile(join(outside, "a.env"), "A=outside\n");
+          await symlink(outside, join(worktree.path, "inc"));
+          const print = createHash("sha256")
+            .update("A=outside\n")
+            .digest("hex");
+          await expect(
+            removeWorktree({
+              path: worktree.path,
+              rootPath: join(worktree.dataDir, "worktrees"),
+              createdBy: {
+                head: createdHead,
+                copies: new Map([
+                  [
+                    "inc/a.env",
+                    {
+                      state: "recorded",
+                      sha256: print,
+                      size: 10,
+                      mode: 0o100644,
+                    },
+                  ],
+                ]),
+              },
+            }),
+          ).rejects.toMatchObject({ code: "worktree_preserved" });
+          expect(await readFile(join(outside, "a.env"), "utf8")).toBe(
+            "A=outside\n",
           );
           expect(isPidAlive(worktree.lingering.pid ?? 0)).toBe(true);
         } finally {

@@ -4,7 +4,6 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { runGit } from "bb-environment-provider-host/git";
 import {
-  entryExists,
   findStructuralReasons,
   gitEnvironment,
   signalOptions,
@@ -60,6 +59,15 @@ export async function recordCopy(
 
 type VerifyOutcome = "unchanged" | "missing" | "changed";
 
+function isInsideWorktree(worktreePath: string, parentReal: string): boolean {
+  const relative = path.relative(worktreePath, parentReal);
+  return (
+    relative !== ".." &&
+    !relative.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relative)
+  );
+}
+
 async function verifyCopy(
   worktreePath: string,
   relativePath: string,
@@ -69,13 +77,7 @@ async function verifyCopy(
   const file = path.join(worktreePath, relativePath);
   try {
     const parentReal = await fs.realpath(path.dirname(file));
-    const relative = path.relative(worktreePath, parentReal);
-    if (
-      relative === ".." ||
-      relative.startsWith(`..${path.sep}`) ||
-      path.isAbsolute(relative)
-    )
-      return "changed";
+    if (!isInsideWorktree(worktreePath, parentReal)) return "changed";
     const print = await fingerprint(path.join(parentReal, path.basename(file)));
     if (print === null) return "changed";
     return print.sha256 === record.sha256 &&
@@ -89,6 +91,28 @@ async function verifyCopy(
       (error as NodeJS.ErrnoException).code === "ENOENT"
       ? "missing"
       : "changed";
+  }
+}
+
+export async function unlinkContainedCopy(
+  worktreePath: string,
+  relativePath: string,
+): Promise<"removed" | "missing" | "refused"> {
+  const file = path.join(worktreePath, relativePath);
+  try {
+    const parentReal = await fs.realpath(path.dirname(file));
+    if (!isInsideWorktree(worktreePath, parentReal)) return "refused";
+    const target = path.join(parentReal, path.basename(file));
+    const info = await fs.lstat(target);
+    if (!info.isFile()) return "refused";
+    await fs.unlink(target);
+    return "removed";
+  } catch (error) {
+    return error instanceof Error &&
+      "code" in error &&
+      (error as NodeJS.ErrnoException).code === "ENOENT"
+      ? "missing"
+      : "refused";
   }
 }
 
@@ -204,13 +228,9 @@ export async function removeVerifiedCopies(
       continue;
     }
     if (outcome === "missing") continue;
-    const file = path.join(identity.path, relativePath);
-    const parentReal = await fs.realpath(path.dirname(file));
-    const target = path.join(parentReal, path.basename(file));
-    if ((await entryExists(target)) !== true) continue;
-    try {
-      await fs.unlink(target);
-    } catch {
+    if (
+      (await unlinkContainedCopy(identity.path, relativePath)) === "refused"
+    ) {
       reasons.push("could not remove a copy it made");
     }
   }

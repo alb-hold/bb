@@ -1,12 +1,20 @@
 import { execFile } from "node:child_process";
 import { existsSync, statSync, utimesSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { experimental_createHostEntryHarness } from "@get-bb/plugin-sdk/testing/host";
 import { afterEach, describe, expect, it } from "vitest";
 import { createWorktreeHostEntry } from "./host.js";
+import { unlinkContainedCopy } from "./host/created-by.js";
 
 const execFileAsync = promisify(execFile);
 const temporaryRoots: string[] = [];
@@ -237,5 +245,33 @@ describe("a failed create keeps recoverable work in the worktree it just made", 
       expect(result.status).toBe("failed");
       await fixture.harness.experimental_dispose();
     }, 60_000);
+  });
+});
+
+describe("the last step before a copy is deleted", () => {
+  it("refuses to delete through a folder that now resolves outside the worktree", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bb-worktree-unlink-"));
+    temporaryRoots.push(root);
+    const worktree = join(root, "worktree");
+    const outside = join(root, "outside");
+    await mkdir(worktree, { recursive: true });
+    await mkdir(outside);
+    await writeFile(join(outside, "a.env"), "A=outside\n");
+    await symlink(outside, join(worktree, "inc"));
+
+    expect(await unlinkContainedCopy(worktree, "inc/a.env")).toBe("refused");
+    expect(await readFile(join(outside, "a.env"), "utf8")).toBe("A=outside\n");
+  });
+
+  it("deletes a plain file inside the worktree and reports a missing one", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bb-worktree-unlink-"));
+    temporaryRoots.push(root);
+    const worktree = join(root, "worktree");
+    await mkdir(join(worktree, "inc"), { recursive: true });
+    await writeFile(join(worktree, "inc", "a.env"), "A=1\n");
+
+    expect(await unlinkContainedCopy(worktree, "inc/a.env")).toBe("removed");
+    expect(existsSync(join(worktree, "inc", "a.env"))).toBe(false);
+    expect(await unlinkContainedCopy(worktree, "inc/a.env")).toBe("missing");
   });
 });
