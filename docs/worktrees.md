@@ -130,15 +130,29 @@ worktree it made and removes the ones nothing is using:
 - An archived thread keeps running for 30 seconds so Undo can restore it;
   see `bb guide thread-lifecycle`.
 
-Removal runs `.bb-env-teardown.sh` inside the worktree first, then stops
-every process whose working directory is inside the worktree — the agent's
-provider process, its background jobs (dev servers, MCP servers, `nohup`
-jobs), and any process you started there yourself, such as a shell you `cd`'d
-into the worktree or an editor terminal. Each process gets `SIGTERM`, then
-`SIGKILL` after a short grace period. Then `git worktree remove --force` runs
-and the directory is deleted. The branch is left behind, so work you committed
-to it survives the worktree. If you want to keep uncommitted work, commit and
-push (or open a PR) from inside the worktree before letting the thread go, and
+Removal runs `.bb-env-teardown.sh` inside the worktree first, then checks that
+nothing recoverable would be lost. bb keeps the worktree and retries later,
+with the reason in the environment's teardown message, when it:
+
+- contains a `.keep-worktree` file (create one to keep a worktree on purpose),
+- has modified tracked files or untracked files (ignored files such as
+  `node_modules` do not count),
+- is locked, or is in the middle of a merge, rebase, cherry-pick or revert,
+- has a HEAD that is not reachable from any remote-tracking branch, which
+  includes repositories with no remote and detached commits that were never
+  pushed. A branch needs no upstream, only a pushed commit that contains HEAD,
+- is not a linked worktree of the expected repository inside bb's worktree
+  directory, or is a symbolic link.
+
+Otherwise bb stops every process whose working directory is inside the
+worktree — the agent's provider process, its background jobs (dev servers, MCP
+servers, `nohup` jobs), and any process you started there yourself, such as a
+shell you `cd`'d into the worktree or an editor terminal. Each process gets
+`SIGTERM`, then `SIGKILL` after a short grace period. It checks again, then
+`git worktree remove` runs without `--force`. If Git declines, the worktree is
+kept. A worktree that a failed create just made is the one case removed with
+force. The branch is left behind, so work you committed to it survives the
+worktree. Push (or open a PR) from inside the worktree to let bb remove it, and
 move your own shells out of the worktree first if you want to keep them.
 
 ## Run teardown with `.bb-env-teardown.sh`

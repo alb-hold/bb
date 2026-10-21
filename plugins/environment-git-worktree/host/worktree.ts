@@ -8,6 +8,15 @@ import {
 import fs from "node:fs/promises";
 import path from "node:path";
 import { removeDirectoryTree } from "./remove-directory-tree.js";
+import {
+  WORKTREE_PRESERVED_CODE,
+  findCreatedHeadMismatch,
+  findPreservationReasons,
+  identifyWorktree,
+  isWorktreePreservedError,
+  worktreePreservedError,
+  type WorktreeIdentity,
+} from "./worktree-preservation.js";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   findWorktreeForBranch,
@@ -59,6 +68,9 @@ interface CreateWorktreeArgs {
 
 interface RemoveWorktreeArgs {
   path: string;
+  rootPath: string;
+  completionPath?: string | undefined;
+  createdHead?: string | undefined;
   onProgress?: ProgressCallback | undefined;
   signal?: AbortSignal | undefined;
 }
@@ -167,16 +179,6 @@ async function removeAbandonedAttemptWorktree(args: {
     return;
   }
   throwIfProvisionAborted(args.signal);
-  const status = await runGit(["status", "--porcelain"], {
-    cwd: holder,
-    ...(args.signal !== undefined ? { signal: args.signal } : {}),
-  });
-  if (status.stdout.trim() !== "") {
-    throw new WorkspaceError(
-      "abandoned_worktree_dirty",
-      `Branch ${args.branchName} is still checked out at ${holder} by an earlier attempt, and that worktree has uncommitted changes, so it was left alone. Remove it to retry.`,
-    );
-  }
   const startedAt = Date.now();
   emitStep({
     onProgress: args.onProgress,
@@ -185,10 +187,22 @@ async function removeAbandonedAttemptWorktree(args: {
     status: "started",
     startedAt,
   });
-  await removeWorktree({
-    path: holder,
-    ...(args.signal !== undefined ? { signal: args.signal } : {}),
-  });
+  try {
+    await removeWorktree({
+      path: holder,
+      rootPath: args.ownWorktreesRoot,
+      ...(args.signal !== undefined ? { signal: args.signal } : {}),
+    });
+  } catch (error) {
+    if (isWorktreePreservedError(error)) {
+      throw new WorkspaceError(
+        "abandoned_worktree_preserved",
+        `Branch ${args.branchName} is still checked out at ${holder} by an earlier attempt, so it was left alone. ${error.message}`,
+        { cause: error },
+      );
+    }
+    throw error;
+  }
   emitStep({
     onProgress: args.onProgress,
     key: "abandoned-worktree-completed",
@@ -468,12 +482,49 @@ async function finishWorktreeSetup(args: CreateWorktreeArgs): Promise<void> {
   await fs.writeFile(args.completionPath, `${args.branchName}\n`, "utf8");
 }
 
-async function removeCreateTarget(args: CreateWorktreeArgs): Promise<void> {
-  await fs.rm(args.completionPath, { force: true });
+async function readCreatedHead(
+  args: CreateWorktreeArgs,
+): Promise<string | undefined> {
+  const head = await runGit(["rev-parse", "HEAD"], {
+    cwd: args.targetPath,
+    allowFailure: true,
+    ...signalOptions(args.signal),
+  });
+  const sha = head.stdout.trim();
+  return head.exitCode === 0 && sha !== "" ? sha : undefined;
+}
+
+async function removeCreateTarget(
+  args: CreateWorktreeArgs,
+  createdHead?: string,
+): Promise<void> {
   await removeWorktree({
     path: args.targetPath,
+    rootPath: args.ownWorktreesRoot,
+    completionPath: args.completionPath,
+    createdHead,
     ...(args.signal !== undefined ? { signal: args.signal } : {}),
   });
+}
+
+async function removeCreateTargetAfterFailure(
+  args: CreateWorktreeArgs,
+  failure: unknown,
+  createdHead?: string,
+): Promise<never> {
+  try {
+    await removeCreateTarget(args, createdHead);
+  } catch (cleanupError) {
+    if (isWorktreePreservedError(cleanupError)) {
+      throw new WorkspaceError(
+        WORKTREE_PRESERVED_CODE,
+        `${failure instanceof Error ? failure.message : String(failure)}. ${cleanupError.message}`,
+        { cause: failure },
+      );
+    }
+    throw cleanupError;
+  }
+  throw failure;
 }
 
 export async function createWorktree(
@@ -493,8 +544,7 @@ export async function createWorktree(
       await finishWorktreeSetup(args);
       return { path: args.targetPath };
     } catch (error) {
-      await removeCreateTarget(args);
-      throw error;
+      return await removeCreateTargetAfterFailure(args, error);
     }
   }
 
@@ -574,6 +624,7 @@ export async function createWorktree(
     startedAt: worktreeStartedAt,
   });
   let worktreeCreated = false;
+  let createdHead: string | undefined;
   try {
     const result = await runGitWithWorktreeMetadataLock(gitArgs, {
       cwd: args.sourcePath,
@@ -589,6 +640,7 @@ export async function createWorktree(
       metadata: { durationMs: Date.now() - worktreeStartedAt },
     });
     worktreeCreated = true;
+    createdHead = await readCreatedHead(args);
     await finishWorktreeSetup(args);
     return { path: args.targetPath };
   } catch (error) {
@@ -602,8 +654,7 @@ export async function createWorktree(
         metadata: { durationMs: Date.now() - worktreeStartedAt },
       });
     }
-    await removeCreateTarget(args);
-    throw error;
+    return await removeCreateTargetAfterFailure(args, error, createdHead);
   }
 }
 
@@ -624,60 +675,101 @@ async function removeDirectoryIfEmpty(pathToRemove: string): Promise<void> {
   }
 }
 
+async function assertWorktreeRemovable(
+  identity: WorktreeIdentity,
+  args: RemoveWorktreeArgs,
+): Promise<void> {
+  const reasons =
+    args.createdHead !== undefined
+      ? await findCreatedHeadMismatch(identity, args.createdHead, args.signal)
+      : await findPreservationReasons(identity, args.signal);
+  if (reasons.length > 0) {
+    throw worktreePreservedError(identity.path, reasons);
+  }
+}
+
+async function removeRegisteredWorktree(
+  identity: WorktreeIdentity,
+  args: RemoveWorktreeArgs,
+): Promise<void> {
+  const force = args.createdHead !== undefined;
+  const parentPath = path.dirname(identity.path);
+  const removal = await withWorktreeMetadataLock(identity.commonDir, () =>
+    runGit(
+      [
+        "--git-dir",
+        identity.commonDir,
+        "worktree",
+        "remove",
+        ...(force ? ["--force"] : []),
+        identity.path,
+      ],
+      {
+        cwd: parentPath,
+        ...(args.signal !== undefined ? { signal: args.signal } : {}),
+        allowFailure: true,
+      },
+    ),
+  );
+  if (removal.exitCode !== 0) {
+    if (!force) {
+      throw worktreePreservedError(identity.path, [
+        `Git declined to remove it${removal.stderr.trim() ? ` (${removal.stderr.trim()})` : ""}`,
+      ]);
+    }
+    throwIfProvisionAborted(args.signal);
+    await removeDirectoryTree(identity.path);
+  }
+  await removeDirectoryIfEmpty(identity.path);
+  try {
+    await fs.lstat(identity.path);
+  } catch {
+    return;
+  }
+  throw worktreePreservedError(identity.path, [
+    "still has files after Git removed the worktree",
+  ]);
+}
+
 export async function removeWorktree(args: RemoveWorktreeArgs): Promise<void> {
   throwIfProvisionAborted(args.signal);
   const workspacePath = path.resolve(args.path);
   const parentPath = path.dirname(workspacePath);
-  try {
-    await fs.access(workspacePath);
-  } catch {
-    await removeDirectoryIfEmpty(parentPath);
-    return;
+  const identified = await identifyWorktree({
+    path: workspacePath,
+    rootPath: args.rootPath,
+    signal: args.signal,
+  });
+  if (identified.status === "preserve") {
+    throw worktreePreservedError(workspacePath, identified.reasons);
   }
-
-  await experimental_killProcessesWithCwdUnder({
-    directories: [workspacePath],
-  });
-  throwIfProvisionAborted(args.signal);
-
-  const commonDirResult = await runGit(["rev-parse", "--git-common-dir"], {
-    cwd: workspacePath,
-    ...(args.signal !== undefined ? { signal: args.signal } : {}),
-    allowFailure: true,
-  });
-
-  if (commonDirResult.exitCode === 0) {
-    const commonDir = path.resolve(
-      workspacePath,
-      commonDirResult.stdout.trim(),
-    );
-    await tryWithCheckoutMutationLock(
-      workspacePath,
-      () =>
-        withWorktreeMetadataLock(commonDir, () =>
-          runGit(
-            [
-              "--git-dir",
-              commonDir,
-              "worktree",
-              "remove",
-              workspacePath,
-              "--force",
-            ],
-            {
-              cwd: path.dirname(workspacePath),
-              ...(args.signal !== undefined ? { signal: args.signal } : {}),
-              allowFailure: true,
-            },
-          ),
-        ),
+  if (identified.status === "identified") {
+    const { identity } = identified;
+    const removed = await tryWithCheckoutMutationLock(
+      identity.path,
+      async () => {
+        await assertWorktreeRemovable(identity, args);
+        throwIfProvisionAborted(args.signal);
+        await experimental_killProcessesWithCwdUnder({
+          directories: [identity.path],
+        });
+        throwIfProvisionAborted(args.signal);
+        await assertWorktreeRemovable(identity, args);
+        await removeRegisteredWorktree(identity, args);
+        return true;
+      },
       args.signal,
       signalOptions(args.signal),
     );
+    if (removed === null) {
+      throw worktreePreservedError(workspacePath, [
+        "its checkout lock could not be resolved",
+      ]);
+    }
   }
-
-  throwIfProvisionAborted(args.signal);
-  await removeDirectoryTree(workspacePath);
+  if (args.completionPath !== undefined) {
+    await fs.rm(args.completionPath, { force: true });
+  }
   await removeDirectoryIfEmpty(parentPath);
 }
 

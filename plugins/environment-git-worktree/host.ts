@@ -1,5 +1,5 @@
 import { experimental_defineHostEntry } from "@get-bb/plugin-sdk/host";
-import { readdir, rm } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import { createHostProgress } from "bb-environment-provider-host/progress";
 import { worktreeHostContract, worktreeHostSignals } from "./contract.js";
 import { readDefaultBranchRefs } from "bb-environment-provider-host/git";
@@ -19,6 +19,7 @@ import {
   removeWorktree,
   resolveAdoptableWorktree,
 } from "./host/worktree.js";
+import { isWorktreePreservedError } from "./host/worktree-preservation.js";
 
 function completionPathForWorktree(worktreePath: string): string {
   return `${worktreePath}.completed`;
@@ -124,6 +125,10 @@ export function createWorktreeHostEntry() {
 
       async remove(input, context) {
         try {
+          const attemptRoot = resolveWorktreeAttemptRoot({
+            dataDir: context.experimental_paths.dataDir,
+            pathKey: input.pathKey,
+          });
           const paths =
             input.path === null
               ? await worktreePathsForPathKey({
@@ -131,17 +136,27 @@ export function createWorktreeHostEntry() {
                   pathKey: input.pathKey,
                 })
               : [input.path];
+          const refusals: string[] = [];
           for (const path of paths) {
-            await rm(completionPathForWorktree(path), { force: true });
-            await removeWorktree({
-              path,
-              onProgress: createHostProgress({
-                operationId: input.operationId,
-                emit: (payload) =>
-                  context.experimental_emitSignal("progress", payload),
-              }),
-              signal: context.signal,
-            });
+            try {
+              await removeWorktree({
+                path,
+                rootPath: attemptRoot,
+                completionPath: completionPathForWorktree(path),
+                onProgress: createHostProgress({
+                  operationId: input.operationId,
+                  emit: (payload) =>
+                    context.experimental_emitSignal("progress", payload),
+                }),
+                signal: context.signal,
+              });
+            } catch (error) {
+              if (!isWorktreePreservedError(error)) throw error;
+              refusals.push(error.message);
+            }
+          }
+          if (refusals.length > 0) {
+            return { status: "failed", message: refusals.join("\n") } as const;
           }
           return { status: "removed" } as const;
         } catch (error) {
