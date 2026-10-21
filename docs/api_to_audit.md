@@ -929,7 +929,17 @@ registers one pending interaction per open question (so the sidebar and
 favicon show needs-input exactly as for a chat thread, and the thread view
 shows a banner above the terminal), a later report clears the ones no longer
 open, and answering them through the bridge is refused with 409 because the
-answer belongs in the terminal. The server moves
+answer belongs in the terminal. `transcript.continuation` (a record match and
+the field naming the next session id) declares the provider's own record that a
+CLI session continues in another one (Claude's `continued-in` record after a
+compaction). The wrapper follows a hook from another session only when a record
+in the bound transcript's last 64 KiB matches and names exactly that id, the id
+was not left before, and its own transcript exists; it then moves the thread's
+binding with `sdk.nativeTerminals.recordSession({ replacesNativeSessionId })`,
+which the server accepts only for the current live credential and when the
+replaced id is still the stored one. A refused move is retried after the next
+credential refresh; a permanent refusal stops the wrapper from confirming
+activity, so the thread shows Activity not reported. The server moves
 the thread between idle and active and titles an untitled thread from the
 prompt. Validated at registration by
 `providerNativeTerminalSchema` in `@bb/domain`: bare executable name, at most
