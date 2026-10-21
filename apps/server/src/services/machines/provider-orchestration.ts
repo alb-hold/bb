@@ -15,7 +15,7 @@ import {
   createHostId,
   hostDaemonSessions,
   hosts,
-  listLiveThreadsInEnvironment,
+  listEnvironmentLiveThreadIds,
   environments as environmentRows,
 } from "@bb/db";
 import { handleHostRemoved } from "../../internal/session-owner-side-effects.js";
@@ -36,6 +36,7 @@ import {
   machineHasLiveThreadLaunch,
   machineHasStartingThreadLaunch,
   machineHasProvisioningEnvironment,
+  listMachineBlockingThreadIds,
   machineHasLiveThreads,
   machineHasPendingThreads,
   updateHost,
@@ -139,6 +140,12 @@ const machineSweepOperations = new WeakMap<
 >();
 
 const MACHINE_CREATE_FAILURE_CLEANUP_GRACE_MS = 30_000;
+const MACHINE_IN_USE_RETRY_MS = 60_000;
+
+function machineInUseMessage(subject: string, threadIds: string[]): string {
+  const plural = threadIds.length > 1;
+  return `${subject} is in use by ${plural ? "threads" : "thread"} ${threadIds.join(", ")}; archive ${plural ? "them" : "it"} (stop ${plural ? "them" : "it"} first if running) to finish removing this machine`;
+}
 
 function runTrackedOperation(args: {
   map: Map<string, ActiveOperation>;
@@ -1198,6 +1205,19 @@ async function removeMachine(deps: Deps, hostId: string): Promise<void> {
     row.teardownAttempt === 0 && row.teardownStatus === "failed"
       ? row.statusMessage
       : null;
+  if (row.type === "ephemeral" && creationFailureMessage === null) {
+    const owners = listMachineBlockingThreadIds(deps.db, hostId);
+    if (owners.length > 0) {
+      updateHost(deps.db, deps.hub, hostId, {
+        teardownAttempt: attempt,
+        teardownStatus: "failed",
+        statusMessage: machineInUseMessage(row.name, owners),
+        removeRetryAt: Date.now() + MACHINE_IN_USE_RETRY_MS,
+      });
+      deps.hub.notifyHost(hostId, ["host-disconnected"]);
+      return;
+    }
+  }
   updateHost(deps.db, deps.hub, hostId, {
     machineOperationId: operationId,
     teardownAttempt: attempt,
@@ -1390,15 +1410,17 @@ export async function sweepProviderMachine(
         .limit(1)
         .get();
       if (blocking) {
-        const liveThreadIds = listLiveThreadsInEnvironment(deps.db, {
-          environmentId: blocking.id,
-        }).map((thread) => thread.id);
+        const liveThreadIds = listEnvironmentLiveThreadIds(
+          deps.db,
+          blocking.id,
+        );
         updateHost(deps.db, deps.hub, hostId, {
+          teardownAttempt: row.teardownAttempt + 1,
           teardownStatus: "failed",
           statusMessage:
             blocking.teardownMessage ??
             (liveThreadIds.length > 0
-              ? `${blocking.path ?? blocking.id} is in use by ${liveThreadIds.length === 1 ? "thread" : "threads"} ${liveThreadIds.join(", ")}; archive or stop ${liveThreadIds.length === 1 ? "it" : "them"} to finish removing this machine`
+              ? machineInUseMessage(blocking.path ?? blocking.id, liveThreadIds)
               : "Environment cleanup failed"),
           removeRetryAt: blocking.retireAt ?? Date.now() + 60_000,
         });

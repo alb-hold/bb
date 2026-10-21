@@ -535,7 +535,6 @@ describe("retained environment removal", () => {
           row: queued,
           attempt: 1,
           resumed: false,
-          ignoreLiveThreads: false,
         }),
       ).toBe(false);
       expect(row(harness, environment.id)).toMatchObject({
@@ -543,12 +542,12 @@ describe("retained environment removal", () => {
         teardownStatus: "running",
         teardownAttempt: 0,
       });
+      archive(harness, thread.id);
       expect(
         claimEnvironmentTeardown(harness.db, {
           row: queued,
           attempt: 1,
           resumed: false,
-          ignoreLiveThreads: true,
         }),
       ).toBe(true);
       expect(row(harness, environment.id)).toMatchObject({
@@ -1299,49 +1298,96 @@ describe("removal while the machine is being removed", () => {
     });
   }
 
-  it("removes a live-owned environment of an ordinary provider, as before", async () =>
+  async function seedDisposableFile(): Promise<{
+    directory: string;
+    file: string;
+  }> {
+    const directory = await mkdtemp(join(tmpdir(), "retention-machine-"));
+    const file = join(directory, "work.txt");
+    await writeFile(file, "unsaved work");
+    return { directory, file };
+  }
+
+  async function exists(file: string): Promise<boolean> {
+    return stat(file).then(
+      () => true,
+      () => false,
+    );
+  }
+
+  it("keeps a live thread's workspace for every provider, names the thread, and finishes once the owner is released", async () =>
+    withTestHarness(async (harness) => {
+      const { directory, file } = await seedDisposableFile();
+      try {
+        const remove = vi.fn<PluginEnvironmentProviderDeclaration["remove"]>(
+          async ({ path }) => {
+            if (path !== null) await rm(path, { recursive: true });
+            return { status: "removed" };
+          },
+        );
+        installProvider({ remove });
+        installMachine();
+        const { environment, host, thread } = seedRetiring(harness, {
+          archivedThread: false,
+          providerOwnsPath: true,
+          path: directory,
+        });
+        markRemoving(harness, host.id);
+
+        await sweepProviderMachine(harness.deps, host.id);
+
+        expect(remove).not.toHaveBeenCalled();
+        expect(await exists(file)).toBe(true);
+        expect(row(harness, environment.id)).toMatchObject({
+          status: "ready",
+          teardownStatus: null,
+        });
+        expect(getThread(harness.db, thread.id)?.archivedAt).toBeNull();
+        expect(getHost(harness.db, host.id)).toMatchObject({
+          phase: "removing",
+          teardownStatus: "failed",
+          statusMessage: expect.stringContaining(thread.id),
+        });
+
+        archive(harness, thread.id);
+        markRemoving(harness, host.id);
+        await sweepProviderMachine(harness.deps, host.id);
+
+        expect(remove).toHaveBeenCalledTimes(1);
+        expect(await exists(file)).toBe(false);
+        expect(row(harness, environment.id)).toMatchObject({
+          status: "destroyed",
+          teardownStatus: "removed",
+        });
+        expect(getHost(harness.db, host.id)).toMatchObject({
+          phase: "destroyed",
+          statusMessage: null,
+        });
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    }));
+
+  it("keeps the workspace of an archived thread that is still running", async () =>
     withTestHarness(async (harness) => {
       const remove = vi.fn<PluginEnvironmentProviderDeclaration["remove"]>(
         async () => ({ status: "removed" }),
       );
       installProvider({ remove });
       installMachine();
-      const { environment, host } = seedRetiring(harness, {
-        archivedThread: false,
-      });
-      markRemoving(harness, host.id);
-
-      await sweepProviderMachine(harness.deps, host.id);
-
-      expect(remove).toHaveBeenCalledTimes(1);
-      expect(row(harness, environment.id).teardownStatus).toBe("removed");
-    }));
-
-  it("keeps a live-owned environment of a provider that respects its owners and names the thread", async () =>
-    withTestHarness(async (harness) => {
-      const remove = vi.fn<PluginEnvironmentProviderDeclaration["remove"]>(
-        async () => ({ status: "removed" }),
-      );
-      installProvider({
-        remove,
-        policy: { experimental_respectLiveOwnersOnMachineRemoval: true },
-      });
-      installMachine();
-      const { environment, host, thread } = seedRetiring(harness, {
-        archivedThread: false,
-      });
+      const { environment, host, thread } = seedRetiring(harness);
+      harness.db
+        .update(threads)
+        .set({ status: "active" })
+        .where(eq(threads.id, thread.id))
+        .run();
       markRemoving(harness, host.id);
 
       await sweepProviderMachine(harness.deps, host.id);
 
       expect(remove).not.toHaveBeenCalled();
-      expect(row(harness, environment.id)).toMatchObject({
-        status: "ready",
-        teardownStatus: null,
-      });
-      expect(getThread(harness.db, thread.id)?.archivedAt).toBeNull();
+      expect(row(harness, environment.id).teardownStatus).toBeNull();
       expect(getHost(harness.db, host.id)).toMatchObject({
-        phase: "removing",
         teardownStatus: "failed",
         statusMessage: expect.stringContaining(thread.id),
       });

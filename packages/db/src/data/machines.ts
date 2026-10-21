@@ -61,58 +61,77 @@ export function machineHasLiveThreadLaunch(
   return machineHasThreadLaunchWhere(db, hostId, liveThreadCondition);
 }
 
-export function machineHasPendingThreads(
-  db: Connection,
-  hostId: string,
-): boolean {
+function selectMachinePendingThreads(db: Connection, hostId: string) {
   const intent = sql`case json_extract(${threads.startupContext}, '$.kind')
     when 'pending' then json_extract(${threads.startupContext}, '$.environmentIntent')
     when 'provisioning' then json_extract(${threads.startupContext}, '$.request.environmentIntent')
   end`;
-  return (
-    db
-      .select({ id: threads.id })
-      .from(threads)
-      .leftJoin(
-        environments,
+  return db
+    .select({ id: threads.id })
+    .from(threads)
+    .leftJoin(
+      environments,
+      or(
+        and(
+          eq(environments.ownerThreadId, threads.id),
+          eq(threads.status, "starting"),
+        ),
+        and(
+          sql`json_extract(${intent}, '$.type') = 'reuse'`,
+          eq(environments.id, sql`json_extract(${intent}, '$.environmentId')`),
+        ),
+      ),
+    )
+    .where(
+      and(
+        inArray(threads.status, ["pending", "starting"]),
+        isNull(threads.archivedAt),
+        isNull(threads.deletedAt),
         or(
           and(
-            eq(environments.ownerThreadId, threads.id),
-            eq(threads.status, "starting"),
+            eq(environments.hostId, hostId),
+            inArray(environments.status, ["creating", "provisioning", "ready"]),
+            isNull(environments.teardownStatus),
           ),
-          and(
-            sql`json_extract(${intent}, '$.type') = 'reuse'`,
-            eq(
-              environments.id,
-              sql`json_extract(${intent}, '$.environmentId')`,
-            ),
-          ),
-        ),
-      )
-      .where(
-        and(
-          inArray(threads.status, ["pending", "starting"]),
-          isNull(threads.archivedAt),
-          isNull(threads.deletedAt),
-          or(
-            and(
-              eq(environments.hostId, hostId),
-              inArray(environments.status, [
-                "creating",
-                "provisioning",
-                "ready",
-              ]),
-              isNull(environments.teardownStatus),
-            ),
-            sql`json_extract(${intent}, '$.type') = 'provider'
+          sql`json_extract(${intent}, '$.type') = 'provider'
           and json_extract(${intent}, '$.machine.type') = 'existing'
           and json_extract(${intent}, '$.machine.hostId') = ${hostId}`,
-          ),
         ),
-      )
-      .limit(1)
-      .get() !== undefined
-  );
+      ),
+    );
+}
+
+export function machineHasPendingThreads(
+  db: Connection,
+  hostId: string,
+): boolean {
+  return selectMachinePendingThreads(db, hostId).limit(1).get() !== undefined;
+}
+
+export function listMachineBlockingThreadIds(
+  db: Connection,
+  hostId: string,
+): string[] {
+  const owning = db
+    .select({ id: threads.id })
+    .from(threads)
+    .innerJoin(environments, eq(threads.environmentId, environments.id))
+    .where(and(eq(environments.hostId, hostId), liveThreadCondition))
+    .all();
+  const launching = db
+    .select({ id: threads.id })
+    .from(hosts)
+    .innerJoin(threads, eq(hosts.launchKey, threads.id))
+    .where(
+      and(eq(hosts.id, hostId), isNull(hosts.destroyedAt), liveThreadCondition),
+    )
+    .all();
+  const pending = selectMachinePendingThreads(db, hostId).all();
+  return [
+    ...new Set(
+      [...owning, ...launching, ...pending].map((thread) => thread.id),
+    ),
+  ];
 }
 
 export function machineHasProvisioningEnvironment(

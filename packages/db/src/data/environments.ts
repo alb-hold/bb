@@ -1,5 +1,5 @@
 import { prepareCachedQuery } from "../connection.js";
-import { and, asc, count, eq, inArray, isNotNull, isNull, ne, or, placeholder, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, inArray, isNotNull, isNull, ne, or, placeholder, sql } from "drizzle-orm";
 import type {
   DiscoveredWorkspaceProperties,
   EnvironmentChangeKind,
@@ -665,8 +665,24 @@ export function listProviderLifecycleEnvironments(
     .all();
 }
 
+const liveThreadStates = or(
+  and(isNull(threads.archivedAt), isNull(threads.deletedAt)),
+  eq(threads.status, "stopping"),
+  eq(threads.status, "active"),
+);
+
 export function environmentHasLiveThreads(db: EnvironmentWriteConnection, environmentId: string): boolean {
-  return db.select({ id: threads.id }).from(threads).where(and(eq(threads.environmentId, environmentId), or(and(isNull(threads.archivedAt), isNull(threads.deletedAt)), eq(threads.status, "stopping"), eq(threads.status, "active")))).limit(1).get() !== undefined;
+  return db.select({ id: threads.id }).from(threads).where(and(eq(threads.environmentId, environmentId), liveThreadStates)).limit(1).get() !== undefined;
+}
+
+export function listEnvironmentLiveThreadIds(db: EnvironmentWriteConnection, environmentId: string): string[] {
+  return db
+    .select({ id: threads.id })
+    .from(threads)
+    .where(and(eq(threads.environmentId, environmentId), liveThreadStates))
+    .orderBy(desc(threads.createdAt))
+    .all()
+    .map((thread) => thread.id);
 }
 
 const liveThreadsPredicate = (environmentId: string) =>
@@ -676,7 +692,6 @@ export interface EnvironmentTeardownClaimInput {
   row: EnvironmentRow;
   attempt: number;
   resumed: boolean;
-  ignoreLiveThreads: boolean;
 }
 
 export function claimEnvironmentTeardown(db: EnvironmentWriteConnection, input: EnvironmentTeardownClaimInput): boolean {
@@ -698,7 +713,7 @@ export function claimEnvironmentTeardown(db: EnvironmentWriteConnection, input: 
           eq(environments.teardownAttempt, row.teardownAttempt),
           row.teardownStatus === null ? isNull(environments.teardownStatus) : eq(environments.teardownStatus, row.teardownStatus),
           eq(environments.status, row.status),
-          input.ignoreLiveThreads ? undefined : sql`not ${liveThreadsPredicate(row.id)}`,
+          sql`not ${liveThreadsPredicate(row.id)}`,
         ),
       )
       .run().changes > 0

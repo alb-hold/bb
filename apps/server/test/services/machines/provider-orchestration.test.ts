@@ -429,7 +429,7 @@ describe("machine retirement", () => {
       }),
   );
 
-  it("preserves explicit removal of a machine with an unattached pending start", async () =>
+  it("waits to remove a machine with an unattached pending start until the thread is archived", async () =>
     withTestHarness(async (harness) => {
       const remove = vi.fn(async () => ({ status: "removed" as const }));
       installMachineProvider({ ephemeral: true, remove });
@@ -458,6 +458,17 @@ describe("machine retirement", () => {
       });
       expect(requestAutomaticMachineRemoval(harness.deps, host.id)).toBe(false);
       expect(requestMachineRemoval(harness.deps, host.id)).toBe(true);
+      await sweepProviderMachine(harness.deps, host.id);
+      expect(remove).not.toHaveBeenCalled();
+      expect(getHost(harness.db, host.id)).toMatchObject({
+        phase: "removing",
+        teardownStatus: "failed",
+        statusMessage: expect.stringContaining(thread.id),
+      });
+      archiveThread(harness.db, harness.hub, thread.id);
+      updateHost(harness.db, harness.hub, host.id, {
+        removeRetryAt: Date.now() - 1,
+      });
       await sweepProviderMachine(harness.deps, host.id);
       expect(remove).toHaveBeenCalledOnce();
       expect(getHost(harness.db, host.id)?.phase).toBe("destroyed");

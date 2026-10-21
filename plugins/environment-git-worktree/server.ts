@@ -178,10 +178,7 @@ export default async function worktreePlugin(bb: BbPluginApi): Promise<void> {
     icon: "FolderGit",
     requires: { gitCheckout: true },
     inputs: worktreeInputsSchema,
-    policy: {
-      pathKeys: "per-attempt",
-      experimental_respectLiveOwnersOnMachineRemoval: true,
-    },
+    policy: { pathKeys: "per-attempt" },
     experimental_existingPath: (inputs) =>
       "kind" in inputs ? inputs.path : null,
     async create(context) {

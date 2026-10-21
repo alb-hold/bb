@@ -261,12 +261,9 @@ describe("removal outcomes", () => {
     signal: fixture.signal,
   });
 
-  it("registers a preflight and keeps live owners when the machine is removed", async () => {
+  it("registers a remove preflight", async () => {
     const fixture = await setup();
     expect(fixture.provider.experimental_preflightRemove).not.toBeNull();
-    expect(
-      fixture.provider.policy.experimental_respectLiveOwnersOnMachineRemoval,
-    ).toBe(true);
   });
 
   it("passes a host retention through to core instead of reporting a failure", async () => {

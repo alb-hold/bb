@@ -2532,7 +2532,6 @@ const environmentProviderPolicySchema = z
   .object({
     retireGraceMs: z.number().int().nonnegative().nullable().default(300_000),
     pathKeys: z.enum(["per-thread", "per-attempt"]).default("per-thread"),
-    experimental_respectLiveOwnersOnMachineRemoval: z.boolean().default(false),
   })
   .strict();
 

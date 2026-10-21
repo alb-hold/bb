@@ -12,6 +12,7 @@ import {
   setQueuedThreadMessageGroupBoundary,
   unarchiveThread,
   isThreadEnvironmentRemovalRunning,
+  isThreadMachineRemoving,
   unpinThread,
   updateQueuedThreadMessage,
   updateThread,
@@ -628,6 +629,12 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
     if (!unarchiveThread(deps.db, deps.hub, thread.id)) {
       if (getThread(deps.db, thread.id)?.archivedAt === null)
         return context.json({ ok: true });
+      if (isThreadMachineRemoving(deps.db, thread.id))
+        throw new ApiError(
+          409,
+          "machine_removing",
+          "Machine removal has begun; this thread cannot be unarchived.",
+        );
       if (isThreadEnvironmentRemovalRunning(deps.db, thread.id))
         throw new ApiError(
           409,

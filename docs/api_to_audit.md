@@ -662,7 +662,7 @@ the current decision timeout is appropriate. Stabilize `experimental_claimPath`
 after auditing restart, cancellation, competing checkout, and
 path-reservation behavior.
 
-## Environment provider retention: `retained`, `experimental_preflightRemove` and `experimental_respectLiveOwnersOnMachineRemoval`
+## Environment provider retention: `retained` and `experimental_preflightRemove`
 
 `remove(context)` may return `{ status: "retained", message }` to say the
 resource was deliberately kept and nothing in this call changed it. Core then
@@ -684,9 +684,14 @@ before the teardown script. It must not mutate. `{ status: "retained", message }
 skips the script and the removal; a throw records a failure. The host answers
 the same question again inside `remove`.
 
-`policy.experimental_respectLiveOwnersOnMachineRemoval` (default false) keeps
-an environment that a live thread uses even while its machine is being removed.
-The machine then stays in `removing` with a status message naming the thread.
+Core keeps an environment that a live thread uses for every provider, also
+while its persistent machine is being removed. A live thread is unarchived, or
+active or stopping. The machine then stays in `removing` with a status message
+naming the thread, and removal completes once the thread is archived and idle.
+An ephemeral machine is destroyed under the same rule: a delete still enters
+`removing` at once, and the destroy waits, retrying about every minute, until no
+live thread uses the machine. Core refuses to unarchive a thread whose machine
+is in `removing` with `machine_removing`. No provider opts in or out.
 
 Core's unarchive path refuses with `workspace_busy` while the thread's
 environment teardown is running, so a thread cannot start in a workspace that

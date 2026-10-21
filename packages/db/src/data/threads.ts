@@ -39,6 +39,7 @@ import type { DbQueryConnection } from "../connection.js";
 import type { DbNotifier } from "../notifier.js";
 import {
   environments,
+  hosts,
   pendingInteractions,
   projects,
   terminalSessions,
@@ -2267,6 +2268,22 @@ export function isThreadEnvironmentRemovalRunning(
   );
 }
 
+export function isThreadMachineRemoving(
+  db: DbConnection | DbTransaction,
+  id: string,
+): boolean {
+  return (
+    db
+      .select({ id: hosts.id })
+      .from(threads)
+      .innerJoin(environments, eq(environments.id, threads.environmentId))
+      .innerJoin(hosts, eq(hosts.id, environments.hostId))
+      .where(and(eq(threads.id, id), eq(hosts.phase, "removing")))
+      .limit(1)
+      .get() !== undefined
+  );
+}
+
 export function unarchiveThread(
   db: DbConnection,
   notifier: DbNotifier,
@@ -2276,6 +2293,7 @@ export function unarchiveThread(
     (tx) => {
       const current = getThread(tx, id);
       if (current?.deletedAt !== null) return null;
+      if (isThreadMachineRemoving(tx, id)) return null;
       if (isThreadEnvironmentRemovalRunning(tx, id)) return null;
       if (current.lifecycleOwnerThreadId) {
         const owner = getThread(tx, current.lifecycleOwnerThreadId);

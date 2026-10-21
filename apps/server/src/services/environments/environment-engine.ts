@@ -28,7 +28,6 @@ import {
   environmentHasLiveThreads,
   environments,
   getEnvironment,
-  getHost,
   getThread,
   findProjectEnvironmentByHostPath,
   getPreparingEnvironment,
@@ -664,34 +663,16 @@ export async function cancelProviderEnvironmentCreation(
     );
 }
 
-function machineRemovalBypassesLiveOwners(
-  db: DbConnection | DbTransaction,
-  row: EnvironmentRow,
-): boolean {
-  if (getHost(db, row.hostId)?.phase !== "removing") return false;
-  const record =
-    row.environmentProviderId === null
-      ? undefined
-      : getEnvironmentProvider(row.environmentProviderId);
-  return (
-    record?.provider.policy.experimental_respectLiveOwnersOnMachineRemoval !==
-    true
-  );
-}
-
 export function requestEnvironmentRemoval(
   deps: Deps,
   environmentId: string,
 ): boolean {
   const row = getEnvironment(deps.db, environmentId);
   if (row === null) return false;
-  const removingMachine = machineRemovalBypassesLiveOwners(deps.db, row);
-  if (!removingMachine && environmentHasLiveThreads(deps.db, environmentId))
-    return false;
+  if (environmentHasLiveThreads(deps.db, environmentId)) return false;
   if (row.ownerThreadId !== null && row.teardownStatus === null) {
     const owner = getThread(deps.db, row.ownerThreadId);
     if (
-      !removingMachine &&
       owner !== null &&
       owner.status === "starting" &&
       owner.archivedAt === null &&
@@ -884,10 +865,7 @@ async function runRemove(
         beforeRemove.teardownAttempt !== attempt
       )
         return;
-      if (
-        !machineRemovalBypassesLiveOwners(deps.db, beforeRemove) &&
-        environmentHasLiveThreads(deps.db, environmentId)
-      ) {
+      if (environmentHasLiveThreads(deps.db, environmentId)) {
         recordTeardownRetained(deps, target, {
           message:
             "A thread started using this workspace while it was being removed, so it was kept.",
@@ -1031,11 +1009,8 @@ async function sweepProviderEnvironmentInSlot(
   )
     return;
   const environmentProviderId = row.environmentProviderId;
-  const machineRemoving = machineRemovalBypassesLiveOwners(deps.db, row);
-  const shared =
-    !machineRemoving && environmentHasLiveThreads(deps.db, environmentId);
+  const shared = environmentHasLiveThreads(deps.db, environmentId);
   if (
-    !machineRemoving &&
     row.ownerThreadId !== null &&
     row.teardownStatus !== null &&
     (shared || (row.status === "ready" && row.path !== null))
@@ -1112,7 +1087,6 @@ async function sweepProviderEnvironmentInSlot(
     row,
     attempt,
     resumed: resumedInFlight,
-    ignoreLiveThreads: machineRemovalBypassesLiveOwners(deps.db, row),
   });
   if (!claimed) {
     settleUnclaimedEnvironmentTeardown(deps, row);

@@ -34,7 +34,6 @@ it("keeps retirement and path-key defaults and overrides", () => {
   ).toEqual({
     retireGraceMs: 300_000,
     pathKeys: "per-thread",
-    experimental_respectLiveOwnersOnMachineRemoval: false,
   });
   expect(
     validatePluginEnvironmentProviderDeclaration({
@@ -44,14 +43,7 @@ it("keeps retirement and path-key defaults and overrides", () => {
   ).toEqual({
     retireGraceMs: null,
     pathKeys: "per-attempt",
-    experimental_respectLiveOwnersOnMachineRemoval: false,
   });
-  expect(
-    validatePluginEnvironmentProviderDeclaration({
-      ...declaration,
-      policy: { experimental_respectLiveOwnersOnMachineRemoval: true },
-    }).policy.experimental_respectLiveOwnersOnMachineRemoval,
-  ).toBe(true);
 });
 
 it("normalizes an optional remove preflight and rejects a non-function", () => {

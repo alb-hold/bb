@@ -120,8 +120,6 @@ export interface PluginEnvironmentProviderPolicy {
   retireGraceMs: number | null;
   /** Default per-thread; replacement environments use a fresh key to avoid dead paths. */
   pathKeys: "per-thread" | "per-attempt";
-  /** Experimental, default false: keep an environment that a live thread still uses even when its machine is being removed: see docs/api_to_audit.md. */
-  experimental_respectLiveOwnersOnMachineRemoval: boolean;
 }
 
 /** Resource operations only. Core owns durable launches, retries and retirement. */
