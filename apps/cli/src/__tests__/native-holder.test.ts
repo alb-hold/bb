@@ -155,14 +155,43 @@ async function attach(socketPath: string): Promise<Client> {
 }
 
 const ECHO_LOOP: NativeHolderProcess = {
-  command: "/bin/sh",
+  command: process.execPath,
   args: [
-    "-c",
-    'echo "started:$$"; while IFS= read -r line; do echo "got:$line:$$"; done; exit 7',
+    "-e",
+    [
+      'let input = "";',
+      'process.stdin.setEncoding("utf8");',
+      'process.stdin.on("data", (chunk) => {',
+      "  input += chunk;",
+      "  for (;;) {",
+      '    const end = input.indexOf("\\n");',
+      "    if (end < 0) break;",
+      '    const line = input.slice(0, end).replace(/\\r$/u, "");',
+      "    input = input.slice(end + 1);",
+      '    process.stdout.write("got:" + line + ":" + process.pid + "\\n");',
+      "  }",
+      "});",
+      "process.stdin.on(\"end\", () => process.exit(7));",
+      'process.stdout.write("started:" + process.pid + "\\n");',
+    ].join(" "),
   ],
 };
 
 describe("native terminal holder", () => {
+  it(
+    "accepts input sent as soon as the holder reports its input reader is ready",
+    async () => {
+      const socketPath = socketIn();
+      const held = startHolder(socketPath, ECHO_LOOP);
+      const client = await attach(socketPath);
+      const pid = (await client.waitFor(/started:(\d+)/u))[1];
+      client.type("ready\r");
+      await client.waitFor(new RegExp(`got:ready:${pid}`, "u"));
+      client.type("\u0004");
+      await expect(held).resolves.toBe(7);
+    },
+  );
+
   it("keeps the log at the size cap when an oversized record reaches the boundary", () => {
     const socketPath = socketIn();
     const logPath = socketPath.replace(/\.sock$/u, ".log");
