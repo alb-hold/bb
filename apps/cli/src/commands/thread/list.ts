@@ -297,5 +297,8 @@ export function formatThreadListIndicator(
   }
   if (wokeThreadIds.has(thread.id)) return "Woke";
   if (thread.listIndicator === "done-unread") return "Done";
+  if (thread.listIndicator === "activity-unreported") {
+    return "Activity not reported";
+  }
   return "-";
 }

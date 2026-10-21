@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { isRunningThreadRuntimeDisplayStatus } from "@bb/client-core";
 import { Button } from "@bb/shared-ui/button";
 import { useMediaQuery } from "@bb/shared-ui/hooks/use-media-query";
 import type { NativeTerminalThread } from "@bb/server-contract";
@@ -51,7 +52,11 @@ export function NativeThreadTerminalMain({
     view,
     viewUpdatedAt: nativeQuery.dataUpdatedAt,
   });
-  const state = resolveNativeTerminalState({ session, threadIsProvisioning });
+  const state = resolveNativeTerminalState({
+    session,
+    threadIsProvisioning,
+    threadIsRunning: isRunningThreadRuntimeDisplayStatus(runtime.displayStatus),
+  });
   const providerLabel = view.displayName;
   const paneIsFocused = useOptionalPaneContext()?.isFocused ?? true;
   const isTouchDevice = useMediaQuery("(pointer: coarse)");
@@ -76,7 +81,8 @@ export function NativeThreadTerminalMain({
         />
         {activityUnconfirmed ? (
           <p className="px-3 py-1 text-xs text-muted-foreground" role="status">
-            Activity unconfirmed — No recent report from this native session
+            Activity not reported — This session is running, but it has not
+            reported recent activity
           </p>
         ) : null}
         <LazyThreadTerminalPanel
@@ -100,13 +106,15 @@ export function NativeThreadTerminalMain({
     );
   }
 
-  if (state.kind === "preparing") {
+  if (state.kind === "preparing" || state.kind === "reconnecting") {
     return (
       <div
         className="flex h-full items-center justify-center px-4 text-center text-sm text-muted-foreground"
         data-native-terminal-thread={view.providerId}
       >
-        Preparing the workspace for {providerLabel}…
+        {state.kind === "preparing"
+          ? `Preparing the workspace for ${providerLabel}…`
+          : `Reconnecting to ${providerLabel}…`}
       </div>
     );
   }

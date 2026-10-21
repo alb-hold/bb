@@ -86,6 +86,7 @@ function isBusyThread(
 
 export interface ThreadListIndicatorState {
   hasPendingInteraction: boolean;
+  isActivityUnreported: boolean;
   hasUnsubmittedDraft: boolean;
   hasUnreadError: boolean;
   hasUnreadSuccess: boolean;
@@ -126,6 +127,7 @@ const THREAD_LIST_INDICATOR_LABELS: Record<
   runtime: "Thread working",
   "queued-failed": "Queued message failed to send",
   "queued-waiting": "Thread has a message waiting to send",
+  "activity-unreported": "Activity not reported",
   draft: "Thread has unsubmitted draft",
   "unread-success": "Unread thread succeeded",
 };
@@ -156,8 +158,15 @@ export function threadListIndicatorStateForThread(
   nativeActivityUnconfirmed?: boolean,
 ): ThreadListIndicatorState {
   const unreadDone = isUnreadDoneThread(thread);
+  const activityUnconfirmed =
+    nativeActivityUnconfirmed ??
+    isNativeActivityUnconfirmed(thread.runtime, now);
   return {
     hasPendingInteraction: thread.hasPendingInteraction,
+    isActivityUnreported:
+      thread.runtime.nativeActivity !== undefined &&
+      activityUnconfirmed &&
+      isRunningThreadRuntimeDisplayStatus(thread.runtime.displayStatus),
     hasUnsubmittedDraft,
     hasUnreadError: unreadDone && thread.status === "error",
     hasUnreadSuccess: unreadDone && thread.status !== "error",
@@ -186,6 +195,7 @@ export function resolveThreadListIndicator(
   if (state.hasUnreadError || state.hasUnreadSuccess) return "done-unread";
   if (state.queuedWork === "failed") return "queued-failed";
   if (state.queuedWork === "waiting") return "queued-waiting";
+  if (state.isActivityUnreported) return "activity-unreported";
   if (state.hasUnsubmittedDraft) return "draft";
   return "none";
 }

@@ -364,6 +364,36 @@ describe("native terminal agent tools", () => {
     }
   });
 
+  it("stamps activity evidence only from an authenticated tool call on the current terminal", async () => {
+    const fixture = await createFixture();
+    const threadId = await createNativeThread(fixture);
+    const call = (headers: Record<string, string>) =>
+      fixture.harness.app.request(
+        `/api/v1/threads/${threadId}/native-terminal/agent-tools/echo_context/call`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json", ...headers },
+          body: JSON.stringify({ callId: "c", arguments: {} }),
+        },
+      );
+    const evidence = () =>
+      getNativeTerminalThread(fixture.harness.db, threadId)?.lastEvidenceAt;
+    expect(evidence()).toBeNull();
+
+    expect((await call({})).status).toBe(401);
+    expect(
+      (await call({ authorization: "Bearer not-the-credential" })).status,
+    ).toBe(401);
+    await fixture.harness.app.request(
+      `/api/v1/threads/${threadId}/native-terminal/agent-tools`,
+      { headers: authHeaders(fixture, threadId) },
+    );
+    expect(evidence()).toBeNull();
+
+    expect((await call(authHeaders(fixture, threadId))).status).toBe(200);
+    expect(evidence()).toBeGreaterThan(0);
+  });
+
   it("binds the routes to the terminal's credential", async () => {
     const fixture = await createFixture();
     const first = await createNativeThread(fixture);

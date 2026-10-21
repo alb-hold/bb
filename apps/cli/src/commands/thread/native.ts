@@ -19,10 +19,8 @@ import {
 } from "../../native-tool-credential.js";
 import { requireThreadIdOrSelf } from "../../context-env.js";
 import { fillNativeTerminalTemplate } from "@bb/domain";
-import {
-  nativeActivityHookSettings,
-  type NativeActivityReport,
-} from "../../native-activity.js";
+import { createNativeActivityReporter } from "../../native-activity-reporter.js";
+import { nativeActivityHookSettings } from "../../native-activity.js";
 import {
   measureResumedTranscript,
   NativeActivityReader,
@@ -219,27 +217,13 @@ async function holdNativeHarness(
   let reader: NativeActivityReader | null = null;
   let eventsFile: string | null = null;
   const activityTimers: NodeJS.Timeout[] = [];
-  let activityAuthorization: string | undefined;
-  let reporting: Promise<void> = Promise.resolve();
-  const report = (next: NativeActivityReport | null): void => {
-    if (next === null) return;
-    reporting = reporting.then(() =>
-      sdk.nativeTerminals
-        .reportActivity({
-          threadId,
-          ...(activityAuthorization === undefined
-            ? {}
-            : { authorization: activityAuthorization }),
-          state: next.state,
-          ...(next.prompt === null ? {} : { prompt: next.prompt }),
-          ...(next.state === "waiting" ? { questions: next.questions } : {}),
-        })
-        .then(
-          () => undefined,
-          () => undefined,
-        ),
-    );
-  };
+  let currentCredential: () => string | null = () => null;
+  const reporter = createNativeActivityReporter({
+    currentCredential: () => currentCredential(),
+    send: (args) => sdk.nativeTerminals.reportActivity(args),
+    threadId,
+  });
+  const report = reporter.report;
   const readActivity = (): void => {
     for (const next of reader?.read() ?? []) report(next);
   };
@@ -254,9 +238,15 @@ async function holdNativeHarness(
     holderSid: process.pid,
     cwd,
     env: process.env,
-    prepare: async ({ credential, credentialSocket }) => {
-      activityAuthorization =
-        credential === null ? undefined : `Bearer ${credential}`;
+    onCredentialChanged: () => {
+      report(reader?.heartbeat() ?? null);
+    },
+    prepare: async ({
+      credential,
+      credentialSocket,
+      currentCredential: readCredential,
+    }) => {
+      currentCredential = readCredential;
       const spec = await sdk.nativeTerminals.launch({
         imagesAsArgv: true,
         threadId,
@@ -377,7 +367,7 @@ async function holdNativeHarness(
   readActivity();
   finishActivity();
   await Promise.race([
-    reporting,
+    reporter.settled(),
     new Promise((resolve) => setTimeout(resolve, ACTIVITY_FLUSH_TIMEOUT_MS)),
   ]);
   if (eventsFile !== null) rmSync(eventsFile, { force: true });

@@ -1292,6 +1292,7 @@ export type PluginSidebarThreadIndicator =
   | "draft"
   | "unread-success"
   | "queued-waiting"
+  | "activity-unreported"
   | "none";
 
 /** Live work counts on a thread. All zero means nothing is running. */
