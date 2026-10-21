@@ -30,8 +30,8 @@ vi.mock("node:worker_threads", async (importOriginal) => {
           if (typeof source !== "string")
             throw new Error("Expected profiling worker source");
           const replaced = source.replace(
-            'if (command === "start") await start();',
-            'if (command === "start") throw "non-Error profile failure";',
+            'const stopping = command.command === "stop";',
+            'const stopping = command.command === "stop";\n        if (stopping) throw "non-Error profile failure";',
           );
           if (replaced === source)
             throw new Error("Expected profiling worker failure handler");
