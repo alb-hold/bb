@@ -185,6 +185,7 @@ describe("createRealtimeCacheEffects", () => {
           lastEvidenceAt: 1_000,
           freshForMs: 90_000,
           confirmation: "confirmed",
+          evidenceKind: "holder-report",
         },
       },
     });
@@ -216,6 +217,7 @@ describe("createRealtimeCacheEffects", () => {
               lastEvidenceAt: 31_000,
               freshForMs: 90_000,
               confirmation: "confirmed",
+              evidenceKind: "holder-report",
             },
           },
           status: "active",
@@ -3244,6 +3246,7 @@ describe("createRealtimeCacheEffects", () => {
             lastEvidenceAt: 1_000,
             freshForMs: 90_000,
             confirmation: "confirmed",
+            evidenceKind: "holder-report",
           },
         },
       });
@@ -3256,6 +3259,7 @@ describe("createRealtimeCacheEffects", () => {
             lastEvidenceAt: 1_000,
             freshForMs: 90_000,
             confirmation: "confirmed",
+            evidenceKind: "holder-report",
           },
         },
         status: "active",

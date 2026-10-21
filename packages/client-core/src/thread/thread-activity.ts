@@ -1,5 +1,6 @@
 import { assertNever } from "@bb/core-ui";
 import type {
+  NativeActivityEvidenceKind,
   Thread,
   ThreadListEntry,
   ThreadListIndicator,
@@ -39,11 +40,27 @@ export function isNativeActivityUnconfirmed(
   const activity = runtime.nativeActivity;
   if (activity === undefined) return false;
   return (
-    activity.confirmation === "unconfirmed" ||
+    activity.confirmation !== "confirmed" ||
     activity.lastEvidenceAt === null ||
     now < activity.lastEvidenceAt ||
     now - activity.lastEvidenceAt > activity.freshForMs
   );
+}
+
+export function nativeActivityEvidenceKind(
+  runtime: ThreadRuntimeShape["runtime"],
+  now = Date.now(),
+  unconfirmed = isNativeActivityUnconfirmed(runtime, now),
+): NativeActivityEvidenceKind {
+  const activity = runtime.nativeActivity;
+  if (activity === undefined) return "unknown";
+  if (!unconfirmed) return "holder-report";
+  const lastToolCallAt = activity.lastToolCallAt;
+  return lastToolCallAt !== undefined &&
+    now >= lastToolCallAt &&
+    now - lastToolCallAt <= activity.freshForMs
+    ? "tool-call"
+    : "unknown";
 }
 
 function hasActiveWorkflowActivity(thread: ThreadActivityStateShape): boolean {
@@ -87,6 +104,7 @@ function isBusyThread(
 export interface ThreadListIndicatorState {
   hasPendingInteraction: boolean;
   isActivityUnreported: boolean;
+  queuedFailedCount: number;
   hasUnsubmittedDraft: boolean;
   hasUnreadError: boolean;
   hasUnreadSuccess: boolean;
@@ -125,17 +143,28 @@ const THREAD_LIST_INDICATOR_LABELS: Record<
   "plan-mode": "Plan mode active",
   goal: "Goal active",
   runtime: "Thread working",
-  "queued-failed": "Queued message failed to send",
+  "queued-failed": "Queued messages not delivered",
   "queued-waiting": "Thread has a message waiting to send",
   "activity-unreported": "Activity not reported",
   draft: "Thread has unsubmitted draft",
   "unread-success": "Unread thread succeeded",
 };
 
+export function formatQueuedFailedLabel(queuedFailedCount: number): string {
+  return queuedFailedCount === 1
+    ? "1 queued message not delivered"
+    : `${queuedFailedCount} queued messages not delivered`;
+}
+
 export function getThreadListIndicatorLabel(
   kind: ThreadListIndicatorKind,
+  queuedFailedCount = 0,
 ): string | null {
-  return kind === "none" ? null : THREAD_LIST_INDICATOR_LABELS[kind];
+  if (kind === "none") return null;
+  if (kind === "queued-failed" && queuedFailedCount > 0) {
+    return formatQueuedFailedLabel(queuedFailedCount);
+  }
+  return THREAD_LIST_INDICATOR_LABELS[kind];
 }
 
 function hasThreadListWorkingActivity(
@@ -175,6 +204,7 @@ export function threadListIndicatorStateForThread(
     isBackgroundCommandActive: hasActiveBackgroundCommandActivity(thread),
     isGoalActive: hasActiveGoalActivity(thread),
     queuedWork: thread.queuedWork,
+    queuedFailedCount: thread.queuedFailedCount,
     isPlanModeActive: hasActivePlanModeActivity(thread),
     isRuntimeActive: isRuntimeBusyThread(
       thread,

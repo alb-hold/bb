@@ -760,6 +760,36 @@ describe("@bb/sdk", () => {
     ]);
   });
 
+  it("surfaces the native terminal guard message when a queued message is refused", async () => {
+    const sdk = createBbSdk({
+      transport: createHttpTransport({
+        baseUrl: "http://bb.test",
+        fetch: async () =>
+          jsonResponse({
+            body: {
+              code: "native_terminal_thread",
+              message:
+                "This thread runs its agent in a native terminal; send input through the terminal",
+            },
+            status: 409,
+          }),
+        runtime: "node",
+      }),
+    });
+
+    await expect(
+      sdk.threads.queuedMessages.create({
+        threadId: "thr_native",
+        input: [{ type: "text", text: "hello", mentions: [] }],
+      }),
+    ).rejects.toMatchObject({
+      code: "native_terminal_thread",
+      message:
+        "HTTP 409: This thread runs its agent in a native terminal; send input through the terminal",
+      status: 409,
+    });
+  });
+
   it("preserves project attachment error envelopes", async () => {
     const sdk = createBbSdk({
       transport: createHttpTransport({

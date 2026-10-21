@@ -257,6 +257,7 @@ function MobileRecentThreadRow({
         hasPendingInteraction:
           indicatorState.hasPendingInteraction || childActivity.pending,
         isActivityUnreported: indicatorState.isActivityUnreported,
+        queuedFailedCount: indicatorState.queuedFailedCount,
         hasUnsubmittedDraft:
           indicatorState.hasUnsubmittedDraft ||
           childActivity.hasUnsubmittedDraft,
@@ -283,7 +284,10 @@ function MobileRecentThreadRow({
       }
     : indicatorState;
   const indicatorKind = resolveThreadListIndicator(trailingIndicatorState);
-  const indicatorLabel = getThreadListIndicatorLabel(indicatorKind);
+  const indicatorLabel = getThreadListIndicatorLabel(
+    indicatorKind,
+    indicatorState.queuedFailedCount,
+  );
   const environmentProviderLookup = findEnvironmentDisplayProvider(
     environmentProviders,
     thread.environmentProviderId,
@@ -413,7 +417,12 @@ function MobileRecentThreadRow({
           </span>
           {indicatorKind !== "none" ? (
             <span className="flex size-6 shrink-0 items-center justify-center">
-              <ThreadStatusGlyph indicator={indicatorKind} />
+              <ThreadStatusGlyph
+                indicator={indicatorKind}
+                experimental_queuedFailedCount={
+                  indicatorState.queuedFailedCount
+                }
+              />
             </span>
           ) : null}
         </RouteAnchor>

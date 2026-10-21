@@ -4,6 +4,7 @@ import {
   getCollapsedChildActivity,
   isNativeActivityUnconfirmed,
   isUnreadDoneThread,
+  nativeActivityEvidenceKind,
   resolveThreadListIndicator,
   threadListIndicatorStateForThread,
   type ThreadListIndicatorState,
@@ -50,6 +51,7 @@ const unreadErrorChild = makeChild({
 const idleIndicatorState: ThreadListIndicatorState = {
   hasPendingInteraction: false,
   isActivityUnreported: false,
+  queuedFailedCount: 0,
   hasUnsubmittedDraft: false,
   hasUnreadError: false,
   hasUnreadSuccess: false,
@@ -71,6 +73,7 @@ describe("thread-activity", () => {
         lastEvidenceAt: 1_000_000,
         freshForMs: 90_000,
         confirmation: "confirmed" as const,
+        evidenceKind: "holder-report" as const,
       },
     };
     expect(isNativeActivityUnconfirmed(runtime, 1_090_000)).toBe(false);
@@ -401,6 +404,7 @@ describe("thread-activity", () => {
       expect(threadListIndicatorStateForThread(thread, false)).toEqual({
         hasPendingInteraction: true,
         isActivityUnreported: false,
+        queuedFailedCount: 0,
         hasUnsubmittedDraft: false,
         hasUnreadError: false,
         hasUnreadSuccess: false,
@@ -423,6 +427,7 @@ describe("thread-activity", () => {
         lastEvidenceAt: null,
         freshForMs: 90_000,
         confirmation: "unconfirmed" as const,
+        evidenceKind: "unknown" as const,
       },
     };
     const indicatorFor = (
@@ -434,6 +439,67 @@ describe("thread-activity", () => {
           false,
         ),
       );
+
+    it("reports fresh agent tool-call evidence as its own kind and never as working", () => {
+      const now = 5_000_000;
+      const toolCall = {
+        displayStatus: "active" as const,
+        nativeActivity: {
+          lastEvidenceAt: null,
+          lastToolCallAt: now - 1_000,
+          freshForMs: 90_000,
+          confirmation: "unconfirmed" as const,
+          evidenceKind: "tool-call" as const,
+        },
+      };
+      expect(isNativeActivityUnconfirmed(toolCall, now)).toBe(true);
+      expect(nativeActivityEvidenceKind(toolCall, now)).toBe("tool-call");
+      expect(
+        resolveThreadListIndicator(
+          threadListIndicatorStateForThread(
+            makeThreadListEntry({ status: "active", runtime: toolCall }),
+            false,
+            now,
+          ),
+        ),
+      ).toBe("activity-unreported");
+      expect(nativeActivityEvidenceKind(toolCall, now + 90_001)).toBe(
+        "unknown",
+      );
+      expect(
+        nativeActivityEvidenceKind(
+          {
+            ...toolCall,
+            nativeActivity: {
+              ...toolCall.nativeActivity,
+              lastToolCallAt: now + 1,
+            },
+          },
+          now,
+        ),
+      ).toBe("unknown");
+    });
+
+    it("lets only an explicit confirmed holder report enable working", () => {
+      const now = 5_000_000;
+      const runtimeWith = (confirmation: string, lastEvidenceAt: number) => ({
+        displayStatus: "active" as const,
+        nativeActivity: {
+          lastEvidenceAt,
+          freshForMs: 90_000,
+          confirmation: confirmation as "confirmed",
+          evidenceKind: "holder-report" as const,
+        },
+      });
+      expect(
+        isNativeActivityUnconfirmed(runtimeWith("confirmed", now), now),
+      ).toBe(false);
+      for (const confirmation of ["unconfirmed", "tool-call", "unknown", ""]) {
+        expect(
+          isNativeActivityUnconfirmed(runtimeWith(confirmation, now), now),
+        ).toBe(true);
+      }
+    });
 
     it("shows a neutral activity-not-reported state, never working", () => {
       expect(indicatorFor({ runtime: unconfirmedRuntime })).toBe(
@@ -447,6 +513,7 @@ describe("thread-activity", () => {
               lastEvidenceAt: Date.now(),
               freshForMs: 90_000,
               confirmation: "confirmed",
+              evidenceKind: "holder-report",
             },
           },
         }),
@@ -494,6 +561,7 @@ describe("thread-activity", () => {
             lastEvidenceAt: null,
             freshForMs: 90_000,
             confirmation: "unconfirmed",
+            evidenceKind: "unknown",
           },
         },
       });

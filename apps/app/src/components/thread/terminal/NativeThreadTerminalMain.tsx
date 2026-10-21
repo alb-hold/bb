@@ -14,7 +14,8 @@ import { useThreadPendingInteractions } from "@/hooks/queries/thread-queries";
 import { useThreadTerminals } from "@/hooks/queries/thread-terminal-queries";
 import { useOptionalPaneContext } from "@/views/thread-detail/PaneContext";
 import { NativeTerminalPromptBar } from "./NativeTerminalPromptBar";
-import { useNativeActivityUnconfirmed } from "@/hooks/useNativeActivityUnconfirmed";
+import { useNativeActivityNotice } from "@/hooks/useNativeActivityUnconfirmed";
+import { formatRelativeTime } from "@/lib/relative-time";
 import {
   NativeTerminalWaitingBanner,
   nativeTerminalWaitingPrompts,
@@ -41,7 +42,7 @@ export function NativeThreadTerminalMain({
   threadIsProvisioning,
   view,
 }: NativeThreadTerminalMainProps) {
-  const activityUnconfirmed = useNativeActivityUnconfirmed(runtime);
+  const activityNotice = useNativeActivityNotice(runtime);
   const terminalsQuery = useThreadTerminals(threadId);
   const interactionsQuery = useThreadPendingInteractions(threadId);
   const nativeQuery = useNativeTerminalThread(threadId);
@@ -79,10 +80,15 @@ export function NativeThreadTerminalMain({
           prompts={nativeTerminalWaitingPrompts(interactionsQuery.data ?? [])}
           providerLabel={providerLabel}
         />
-        {activityUnconfirmed ? (
+        {activityNotice.unconfirmed ? (
           <p className="px-3 py-1 text-xs text-muted-foreground" role="status">
-            Activity not reported — This session is running, but it has not
-            reported recent activity
+            {activityNotice.evidenceKind === "tool-call" &&
+            activityNotice.lastToolCallAt !== null
+              ? `Agent tool call seen ${formatRelativeTime({
+                  timestamp: activityNotice.lastToolCallAt,
+                  now: activityNotice.now,
+                })} — this session has not reported its state`
+              : "Activity not reported — This session is running, but it has not reported recent activity"}
           </p>
         ) : null}
         <LazyThreadTerminalPanel

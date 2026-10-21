@@ -772,6 +772,33 @@ describe("ThreadRow", () => {
     expect(actionSlot?.classList.contains("absolute")).toBe(false);
   });
 
+  it("keeps undelivered queued messages visible beside the native activity state", () => {
+    const { container } = renderThreadRow({
+      thread: createThread({
+        status: "active",
+        runtimeStatus: "active",
+        queuedWork: "failed",
+        experimental_queuedFailedCount: 4,
+        experimental_nativeActivity: {
+          lastEvidenceAt: null,
+          freshForMs: 90_000,
+          confirmation: "unconfirmed",
+          evidenceKind: "unknown",
+        },
+      }),
+    });
+
+    const queued = container.querySelector(
+      '[data-thread-status-glyph="queued-failed"]',
+    );
+    expect(queued?.getAttribute("data-queued-failed-count")).toBe("4");
+    expect(
+      container.querySelector("[data-sidebar-native-activity-warning]")
+        ?.textContent,
+    ).toBe("Activity not reported");
+    expect(container.querySelector('[aria-label="Working"]')).toBeNull();
+  });
+
   it("shows native activity uncertainty without a runtime Working label", () => {
     const { container } = renderThreadRow({
       thread: createThread({
@@ -781,12 +808,13 @@ describe("ThreadRow", () => {
           lastEvidenceAt: null,
           freshForMs: 90_000,
           confirmation: "unconfirmed",
+          evidenceKind: "unknown",
         },
       }),
     });
-    const warning = screen.getByRole("img", { name: "Activity unconfirmed" });
+    const warning = screen.getByRole("img", { name: "Activity not reported" });
 
-    expect(warning.textContent).toContain("Activity unconfirmed");
+    expect(warning.textContent).toContain("Activity not reported");
     expect(container.querySelector('[aria-label="Working"]')).toBeNull();
   });
 

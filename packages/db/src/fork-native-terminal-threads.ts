@@ -7,6 +7,8 @@ export interface NativeTerminalThreadRecord {
   nativeSessionId: string | null;
   terminalSessionId: string | null;
   lastEvidenceAt: number | null;
+  lastToolCallAt: number | null;
+  lastToolCallSessionId: string | null;
   initialPrompt: string | null;
   model: string | null;
   createdAt: number;
@@ -15,6 +17,7 @@ export interface NativeTerminalThreadRecord {
 
 const SELECT_COLUMNS = `thread_id AS threadId, provider_id AS providerId, native_session_id AS nativeSessionId,
   terminal_session_id AS terminalSessionId, last_evidence_at AS lastEvidenceAt,
+  last_tool_call_at AS lastToolCallAt, last_tool_call_session_id AS lastToolCallSessionId,
   initial_prompt AS initialPrompt, model,
   created_at AS createdAt, updated_at AS updatedAt`;
 
@@ -51,6 +54,16 @@ export function ensureNativeTerminalThreadsTable(db: DbConnection): void {
   if (!columns.some((column) => column.name === "last_evidence_at")) {
     db.$client.exec(
       `ALTER TABLE fork_native_terminal_threads ADD COLUMN last_evidence_at INTEGER`,
+    );
+  }
+  if (!columns.some((column) => column.name === "last_tool_call_at")) {
+    db.$client.exec(
+      `ALTER TABLE fork_native_terminal_threads ADD COLUMN last_tool_call_at INTEGER`,
+    );
+  }
+  if (!columns.some((column) => column.name === "last_tool_call_session_id")) {
+    db.$client.exec(
+      `ALTER TABLE fork_native_terminal_threads ADD COLUMN last_tool_call_session_id TEXT`,
     );
   }
 }
@@ -91,6 +104,8 @@ export function createNativeTerminalThread(
     nativeSessionId: args.nativeSessionId,
     terminalSessionId: null,
     lastEvidenceAt: null,
+    lastToolCallAt: null,
+    lastToolCallSessionId: null,
     initialPrompt: args.initialPrompt,
     model: args.model,
     createdAt: now,
@@ -164,19 +179,32 @@ export function listNativeTerminalThreadsByIds(
   threadIds: readonly string[],
 ): Pick<
   NativeTerminalThreadRecord,
-  "threadId" | "providerId" | "lastEvidenceAt"
+  | "threadId"
+  | "providerId"
+  | "lastEvidenceAt"
+  | "lastToolCallAt"
+  | "lastToolCallSessionId"
+  | "nativeSessionId"
 >[] {
   if (threadIds.length === 0) return [];
   const rows = db.$client
     .prepare(
       `SELECT thread_id AS threadId, provider_id AS providerId,
-         last_evidence_at AS lastEvidenceAt
+         native_session_id AS nativeSessionId,
+         last_evidence_at AS lastEvidenceAt,
+         last_tool_call_at AS lastToolCallAt,
+         last_tool_call_session_id AS lastToolCallSessionId
        FROM fork_native_terminal_threads
        WHERE thread_id IN (SELECT value FROM json_each(?))`,
     )
     .all(JSON.stringify(threadIds)) as Pick<
     NativeTerminalThreadRecord,
-    "threadId" | "providerId" | "lastEvidenceAt"
+    | "threadId"
+    | "providerId"
+    | "lastEvidenceAt"
+    | "lastToolCallAt"
+    | "lastToolCallSessionId"
+    | "nativeSessionId"
   >[];
   return rows;
 }
@@ -209,7 +237,7 @@ export function setNativeTerminalThreadTerminal(
 ): void {
   db.$client
     .prepare(
-      `UPDATE fork_native_terminal_threads SET terminal_session_id = ?, last_evidence_at = NULL, updated_at = ? WHERE thread_id = ?`,
+      `UPDATE fork_native_terminal_threads SET terminal_session_id = ?, last_evidence_at = NULL, last_tool_call_at = NULL, last_tool_call_session_id = NULL, updated_at = ? WHERE thread_id = ?`,
     )
     .run(args.terminalSessionId, Date.now(), args.threadId);
 }
@@ -242,6 +270,39 @@ export function stampNativeTerminalThreadActivity(
       .run(args.at, args.threadId, args.terminalSessionId);
     if (result.changes !== 1) return { updated: false };
     return { updated: true, previousLastEvidenceAt: record.lastEvidenceAt };
+  })();
+}
+
+export type StampNativeTerminalToolCallResult =
+  | { updated: false }
+  | { updated: true; previousLastToolCallAt: number | null };
+
+export function stampNativeTerminalThreadToolCall(
+  db: DbConnection,
+  args: { at: number; terminalSessionId: string; threadId: string },
+): StampNativeTerminalToolCallResult {
+  return db.$client.transaction((): StampNativeTerminalToolCallResult => {
+    const record = db.$client
+      .prepare(
+        `SELECT last_tool_call_at AS lastToolCallAt
+         FROM fork_native_terminal_threads
+         WHERE thread_id = ? AND terminal_session_id = ?
+           AND native_session_id IS NOT NULL`,
+      )
+      .get(args.threadId, args.terminalSessionId) as
+      | { lastToolCallAt: number | null }
+      | undefined;
+    if (record === undefined) return { updated: false };
+    const result = db.$client
+      .prepare(
+        `UPDATE fork_native_terminal_threads
+         SET last_tool_call_at = ?, last_tool_call_session_id = native_session_id
+         WHERE thread_id = ? AND terminal_session_id = ?
+           AND native_session_id IS NOT NULL`,
+      )
+      .run(args.at, args.threadId, args.terminalSessionId);
+    if (result.changes !== 1) return { updated: false };
+    return { updated: true, previousLastToolCallAt: record.lastToolCallAt };
   })();
 }
 

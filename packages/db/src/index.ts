@@ -68,6 +68,7 @@ export {
   listNativeTerminalThreadsWithDisconnectedTerminal,
   recordNativeTerminalThreadSessionId,
   stampNativeTerminalThreadActivity,
+  stampNativeTerminalThreadToolCall,
   setNativeTerminalThreadTerminal,
   type NativeTerminalThreadRecord,
   type RecordNativeSessionIdResult,

@@ -198,6 +198,7 @@ describe("useSidebarThreads", () => {
             lastEvidenceAt,
             freshForMs: 90_000,
             confirmation: "confirmed",
+            evidenceKind: "holder-report",
           },
         },
       });
@@ -259,8 +260,8 @@ describe("useSidebarThreads", () => {
     expect(thread().experimental_nativeActivity?.confirmation).toBe(
       "unconfirmed",
     );
-    expect(thread().indicator).toBe("none");
-    expect(thread().indicatorLabel).toBeNull();
+    expect(thread().indicator).toBe("activity-unreported");
+    expect(thread().indicatorLabel).toBe("Activity not reported");
     expect(queryClient.getQueryState(queryKey)?.isInvalidated).toBe(false);
 
     const recovered = withReceipt(Date.now());

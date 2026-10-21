@@ -49,6 +49,7 @@ import {
   startLiveHostCommand,
 } from "../hosts/live-command.js";
 import { isCommandTimeoutError } from "../lib/error-log-fields.js";
+import { assertNotNativeTerminalThread } from "./native-terminal-guard.js";
 import {
   parseStoredQueuedThreadMessageWaitingOn,
   storedQueuedThreadMessageRequestedBy,
@@ -246,6 +247,7 @@ export async function createQueuedMessageForThread(
 ): Promise<ThreadQueuedMessage> {
   const { payload, thread } = args;
   ensureThreadQueueIsWritable(thread);
+  assertNotNativeTerminalThread(deps.db, thread.id);
   const input = await resolvePromptAttachmentReferences({
     db: deps.db,
     dataDir: deps.config.dataDir,

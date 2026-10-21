@@ -51,10 +51,20 @@ export const nativeActivityConfirmationSchema = z.enum([
   "confirmed",
   "unconfirmed",
 ]);
+export const nativeActivityEvidenceKindSchema = z.enum([
+  "holder-report",
+  "tool-call",
+  "unknown",
+]);
+export type NativeActivityEvidenceKind = z.infer<
+  typeof nativeActivityEvidenceKindSchema
+>;
 export const nativeActivityDiagnosticSchema = z.object({
   lastEvidenceAt: z.number().int().nullable(),
+  lastToolCallAt: z.number().int().optional(),
   freshForMs: z.literal(NATIVE_TERMINAL_ACTIVITY_FRESH_FOR_MS),
   confirmation: nativeActivityConfirmationSchema,
+  evidenceKind: nativeActivityEvidenceKindSchema.default("unknown"),
 });
 export type NativeActivityDiagnostic = z.infer<
   typeof nativeActivityDiagnosticSchema
@@ -481,6 +491,7 @@ export type ThreadListIndicator = z.infer<typeof threadListIndicatorSchema>;
 export const threadListEntrySchema = threadWithRuntimeSchema.extend({
   activity: threadActivityStateSchema,
   queuedWork: threadQueuedWorkSchema,
+  queuedFailedCount: z.number().int().nonnegative().default(0),
   pinSortKey: z.string().nullable(),
   hasPendingInteraction: z.boolean(),
   listIndicator: threadListIndicatorSchema,
