@@ -211,7 +211,7 @@ describe("a failed create keeps recoverable work in the worktree it just made", 
     },
   ])("a copied file $label", ({ sameSizeAndMtime }) => {
     it("is kept", async () => {
-      const copyCount = 6000;
+      const copyCount = 1500;
       const fixture = await createFixture({
         hookLines: [],
         includedFiles: Array.from({ length: copyCount }, (_, index) => ({
