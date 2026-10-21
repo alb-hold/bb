@@ -94,6 +94,11 @@ async function replayIsComplete(
     "\u001b[4h",
     "\u001b(0",
   ];
+  const screenSentinel = `${sentinelGrid(cols, rows)}\u001b[1;1H`;
+  const initialScreens = [
+    screenSentinel,
+    `\u001b[?1049h${screenSentinel}`,
+  ];
   try {
     const sentinel = sentinelGrid(cols, rows);
     await writeTerminal(sentinelTerminal, sentinel);
@@ -102,6 +107,16 @@ async function replayIsComplete(
     await writeTerminal(sentinelTerminal, "\u001b[?1049l");
     await writeTerminal(sentinelTerminal, data);
     if (!sameVisibleScreen(blankTerminal, sentinelTerminal)) return false;
+    for (const initialScreen of initialScreens) {
+      const visibleStateTerminal = createTerminal(cols, rows);
+      try {
+        await writeTerminal(visibleStateTerminal, initialScreen);
+        await writeTerminal(visibleStateTerminal, data);
+        if (!sameVisibleScreen(blankTerminal, visibleStateTerminal)) return false;
+      } finally {
+        visibleStateTerminal.dispose();
+      }
+    }
     for (const modeSetup of modeSetups) {
       const perturbedTerminal = createTerminal(cols, rows);
       try {

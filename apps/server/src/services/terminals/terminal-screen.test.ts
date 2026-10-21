@@ -316,17 +316,30 @@ describe("renderTerminalScreen", () => {
     expect(screen.complete).toBe(true);
   });
 
-  it("recognizes the visible alternate screen after a truncated prefix", async () => {
+  it("keeps a partial alternate-screen update incomplete after truncation", async () => {
     const screen = await renderTerminalScreen({
       cols: 20,
       rows: 2,
       lines: undefined,
       output: output("partial\n\u001b[?1049hX", true),
     });
-    expect(screen.complete).toBe(true);
+    expect(screen.complete).toBe(false);
   });
 
-  it("renders a partial scroll-region update without dropping a row", async () => {
+  it("keeps a partial alternate-screen update incomplete when an earlier cell survives", async () => {
+    const retainedTail = "partial\n\u001b[?1049hX";
+    const full = await replay(20, 2, `\u001b[?1049h\u001b[2;10Hold${retainedTail}`);
+    const replayed = await renderTerminalScreen({
+      cols: 20,
+      rows: 2,
+      lines: undefined,
+      output: output(retainedTail, true),
+    });
+    expect(full.rows).not.toEqual(replayed.rows);
+    expect(replayed.complete).toBe(false);
+  });
+
+  it("keeps a partial scroll-region update incomplete", async () => {
     const firstRow = " ".repeat(20);
     const screen = await renderTerminalScreen({
       cols: 20,
@@ -337,7 +350,20 @@ describe("renderTerminalScreen", () => {
         true,
       ),
     });
-    expect(screen.complete).toBe(true);
+    expect(screen.complete).toBe(false);
+  });
+
+  it("keeps a partial scroll-region update incomplete when an earlier cell survives", async () => {
+    const retainedTail = `partial\n\u001b[1;2r\u001b[1;1H${" ".repeat(20)}\u001b[2;1HX`;
+    const full = await replay(20, 2, `\u001b[2;5HOLD\u001b[1;1H${retainedTail}`);
+    const replayed = await renderTerminalScreen({
+      cols: 20,
+      rows: 2,
+      lines: undefined,
+      output: output(retainedTail, true),
+    });
+    expect(full.rows).not.toEqual(replayed.rows);
+    expect(replayed.complete).toBe(false);
   });
 
   it("caps requested scrollback rows at 500", async () => {
