@@ -242,6 +242,17 @@ export function setNativeTerminalThreadTerminal(
     .run(args.terminalSessionId, Date.now(), args.threadId);
 }
 
+export function clearNativeTerminalThreadEvidence(
+  db: DbConnection,
+  threadId: string,
+): void {
+  db.$client
+    .prepare(
+      `UPDATE fork_native_terminal_threads SET last_evidence_at = NULL, last_tool_call_at = NULL, last_tool_call_session_id = NULL WHERE thread_id = ?`,
+    )
+    .run(threadId);
+}
+
 export type StampNativeTerminalActivityResult =
   | { updated: false }
   | { updated: true; previousLastEvidenceAt: number | null };

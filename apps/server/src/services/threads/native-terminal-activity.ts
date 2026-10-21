@@ -61,20 +61,36 @@ function reportStates(deps: Pick<AppDeps, "hub">) {
   return states;
 }
 
-function hasCurrentLiveTerminalCredential(
+function hasCurrentTerminalCredential(
   deps: Pick<AppDeps, "db" | "terminalSessions">,
   args: { authorization: string | undefined; threadId: string },
 ): boolean {
   if (args.authorization === undefined) return false;
   try {
     requireNativeTerminalToolCredential(deps, args);
-    requireLiveNativeTerminalToolThread(deps, args.threadId);
     return true;
   } catch (error) {
     if (
       error instanceof ApiError &&
-      (error.body.code === "native_terminal_credential_invalid" ||
-        error.body.code === "native_terminal_not_live" ||
+      error.body.code === "native_terminal_credential_invalid"
+    ) {
+      return false;
+    }
+    throw error;
+  }
+}
+
+function isCurrentTerminalLive(
+  deps: Pick<AppDeps, "db" | "terminalSessions">,
+  threadId: string,
+): boolean {
+  try {
+    requireLiveNativeTerminalToolThread(deps, threadId);
+    return true;
+  } catch (error) {
+    if (
+      error instanceof ApiError &&
+      (error.body.code === "native_terminal_not_live" ||
         error.body.code === "thread_environment_unavailable" ||
         error.body.code === "environment_not_found")
     ) {
@@ -141,14 +157,16 @@ export function recordNativeTerminalActivity(
   if (repeatedWorkingSignal && args.authorization === undefined) return;
   const now = Date.now();
   let notifyReceipt = false;
-  const currentTerminalIsLive = hasCurrentLiveTerminalCredential(deps, {
+  const credentialIsCurrent = hasCurrentTerminalCredential(deps, {
     authorization: args.authorization,
     threadId: args.threadId,
   });
+  const currentTerminalIsLive =
+    credentialIsCurrent && isCurrentTerminalLive(deps, args.threadId);
   const currentNativeRecord = currentTerminalIsLive
     ? getNativeTerminalThread(deps.db, args.threadId)
     : null;
-  if (!currentTerminalIsLive) {
+  if (!credentialIsCurrent) {
     const binding = getNativeTerminalThread(deps.db, args.threadId);
     if (binding !== null && binding.lastEvidenceAt !== null) return;
   }
