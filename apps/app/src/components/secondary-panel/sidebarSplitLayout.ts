@@ -555,6 +555,57 @@ export function moveSidebarTab(
   };
 }
 
+export function applySidebarTabLayoutAction(
+  state: SidebarSplitState,
+  sourcePaneId: string,
+  tabId: string,
+  target: SplitDropTarget,
+  groupId: string,
+): SidebarSplitState {
+  return moveSidebarTab(state, sourcePaneId, tabId, target, { groupId });
+}
+
+export function applyTerminalSidebarLayoutAction(
+  state: SidebarSplitState,
+  sourceTabId: string,
+  action: "split" | "move",
+  groupId: string,
+  side?: "right" | "left" | "up" | "down",
+  targetTabId?: string,
+): SidebarSplitState {
+  const source = listPanes(state.layout.root).find((pane) =>
+    getSidebarGroupForPane(state, pane.paneId)?.tabIds.includes(sourceTabId),
+  );
+  if (source === undefined) return state;
+  if (action === "split") {
+    if (side === undefined || countPanes(state.layout.root) >= MAX_PANES) {
+      return state;
+    }
+    return applySidebarTabLayoutAction(
+      state,
+      source.paneId,
+      sourceTabId,
+      {
+        paneId: source.paneId,
+        zone: side === "up" ? "top" : side === "down" ? "bottom" : side,
+      },
+      groupId,
+    );
+  }
+  if (targetTabId === undefined) return state;
+  const target = listPanes(state.layout.root).find((pane) =>
+    getSidebarGroupForPane(state, pane.paneId)?.tabIds.includes(targetTabId),
+  );
+  if (target === undefined) return state;
+  return applySidebarTabLayoutAction(
+    state,
+    source.paneId,
+    sourceTabId,
+    { paneId: target.paneId, zone: "center" },
+    groupId,
+  );
+}
+
 function removeEmptySidebarPane(
   state: SidebarSplitState,
   paneId: string,

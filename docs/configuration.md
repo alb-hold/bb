@@ -976,7 +976,8 @@ SDK request, plus pane presentation controls through
 `bb thread pane maximize|restore|toggle|spotlight|clear-spotlight [thread-id]` and
 `sdk.threads.paneAction({ threadId, action })`. Pane actions apply only when the
 target thread is already open in a multi-pane app window; the response reports
-how many connected clients received the broadcast. `spotlight` focuses the
+how many open app sockets the request was sent to, without confirming receipt
+or application. `spotlight` focuses the
 target pane and persistently dims the others; `clear-spotlight` focuses it and
 persistently restores undimmed splits.
 

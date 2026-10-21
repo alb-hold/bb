@@ -33,6 +33,36 @@ const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
 const TERMINAL_ATTACH_HEARTBEAT_MS = 15_000;
 const TERMINAL_WAIT_TIMEOUT_EXIT_CODE = 124;
+const NO_APP_CLIENT_MESSAGE = "No bb app is open to apply this; open bb and retry";
+
+function reportTerminalActionDelivery(deliveredClients: number): void {
+  if (deliveredClients === 0) {
+    throw new CliExitError(NO_APP_CLIENT_MESSAGE, 1, {
+      code: "no_app_clients",
+      hint: null,
+    });
+  }
+  console.log(
+    `Request sent to ${deliveredClients} open bb app client${deliveredClients === 1 ? "" : "s"}; receipt and application are not confirmed.`,
+  );
+}
+
+function reportTerminalActionResult(
+  opts: TerminalJsonOptions,
+  result: Record<string, unknown> & { deliveredClients: number },
+): void {
+  if (opts.json) {
+    outputJson(opts, {
+      ...result,
+      ...(result.deliveredClients === 0
+        ? { error: { code: "no_app_clients", message: NO_APP_CLIENT_MESSAGE } }
+        : {}),
+    });
+    if (result.deliveredClients === 0) reportTerminalActionDelivery(0);
+    return;
+  }
+  reportTerminalActionDelivery(result.deliveredClients);
+}
 
 interface TerminalJsonOptions {
   json?: boolean;
@@ -267,25 +297,75 @@ export function registerTerminalCommands(
   terminal
     .command("focus <terminalId>")
     .description("Focus a terminal tab in the app")
+    .option("--json", "Print machine-readable JSON output")
     .action(
-      action(async (terminalId: string) => {
-        await createCliBbSdk(getUrl()).terminals.experimental_focus({
-          terminalId,
-        });
-        console.log(`Focused terminal ${terminalId}`);
+      action(async (terminalId: string, opts: TerminalJsonOptions) => {
+        const result = await createCliBbSdk(
+          getUrl(),
+        ).terminals.experimental_focus({ terminalId });
+        reportTerminalActionResult(opts, { terminalId, deliveredClients: result.deliveredClients });
       }),
     );
 
   terminal
     .command("open-link <terminalId> <url>")
     .description("Open a URL in the terminal thread's browser")
+    .option("--json", "Print machine-readable JSON output")
     .action(
-      action(async (terminalId: string, url: string) => {
-        await createCliBbSdk(getUrl()).terminals.experimental_openBrowser({
+      action(async (terminalId: string, url: string, opts: TerminalJsonOptions) => {
+        const result = await createCliBbSdk(
+          getUrl(),
+        ).terminals.experimental_openBrowser({ terminalId, url });
+        reportTerminalActionResult(opts, { terminalId, url, deliveredClients: result.deliveredClients });
+      }),
+    );
+
+  terminal
+    .command("split <terminalId>")
+    .description("Place a terminal in a new side panel pane")
+    .requiredOption("--side <side>", "Pane side: right, left, up, or down")
+    .option("--json", "Print machine-readable JSON output")
+    .action(
+      action(async (terminalId: string, opts: { side: string; json?: boolean }) => {
+        if (!["right", "left", "up", "down"].includes(opts.side)) {
+          throw new CliUsageError({
+            code: "invalid_terminal_split_side",
+            hint: "Choose right, left, up, or down.",
+            message: "--side must be right, left, up, or down",
+          });
+        }
+        const result = await createCliBbSdk(
+          getUrl(),
+        ).terminals.experimental_layout.split({
           terminalId,
-          url,
+          side: opts.side as "right" | "left" | "up" | "down",
         });
-        console.log(`Opened ${url} in terminal ${terminalId}'s thread browser`);
+        reportTerminalActionResult(opts, {
+            terminalId,
+            side: opts.side,
+            deliveredClients: result.deliveredClients,
+          });
+      }),
+    );
+
+  terminal
+    .command("move <terminalId>")
+    .description("Move a terminal tab to the pane containing another terminal")
+    .requiredOption("--to-pane-of <terminalId>", "Terminal whose pane receives this tab")
+    .option("--json", "Print machine-readable JSON output")
+    .action(
+      action(async (terminalId: string, opts: { toPaneOf: string; json?: boolean }) => {
+        const result = await createCliBbSdk(
+          getUrl(),
+        ).terminals.experimental_layout.move({
+          terminalId,
+          targetTerminalId: opts.toPaneOf,
+        });
+        reportTerminalActionResult(opts, {
+            terminalId,
+            targetTerminalId: opts.toPaneOf,
+            deliveredClients: result.deliveredClients,
+          });
       }),
     );
 

@@ -47,6 +47,14 @@ import {
   observeLayoutSignals,
   watchTerminalLayoutSettled,
 } from "./terminal-layout-settle";
+import {
+  cancelTerminalOutputNextRenders,
+  recordTerminalInputAccepted,
+  recordTerminalInputWebSocketSent,
+  recordTerminalOutputNextRender,
+  recordTerminalOutputParsed,
+  recordTerminalOutputReceived,
+} from "./terminal-latency-diagnostics.js";
 import { TerminalLinkOpenDialog } from "./TerminalLinkOpenDialog";
 import { TerminalAttentionPane } from "./TerminalAttentionPane";
 import { TerminalMobileControls } from "./TerminalMobileControls";
@@ -55,7 +63,15 @@ import { TerminalSearch } from "./TerminalSearch";
 import type { TerminalSearchAddonInstance } from "./terminal-search-addon";
 import { loadOptionalTerminalSearchAddon } from "./terminal-search-addon";
 import { TerminalTextSelectSheet } from "./TerminalTextSelectSheet";
-import { terminalTextSnapshot } from "./terminal-text-snapshot";
+import {
+  terminalTextSnapshot,
+  terminalTextSnapshotLineIndex,
+} from "./terminal-text-snapshot";
+import {
+  createTerminalPinchGesture,
+  startTerminalLongPress,
+  type TerminalGestureTouch,
+} from "./terminal-mobile-gestures";
 import {
   createTerminalOutputLineAnchorTracker,
   createTerminalViewportReplaySaveGate,
@@ -500,7 +516,10 @@ interface WriteTerminalSessionStatusNoticeArgs {
 
 interface TerminalOutputWriteArgs {
   data: string | Uint8Array;
+  frameId?: number;
   isReplay: boolean;
+  terminalId?: string;
+  onOutputParsed?: () => void;
   onParsed: () => void;
   replayWriteState: TerminalReplayWriteState;
   terminal: XTermTerminal;
@@ -513,8 +532,9 @@ interface TerminalOutputWriteArgs {
 
 interface ForwardTerminalDataArgs {
   data: string;
+  inputEventAt?: number;
   isUserInput: boolean;
-  onInput: (dataBase64: string) => void;
+  onInput: (dataBase64: string, inputEventAt?: number) => void;
   onUserInput?: () => void;
   replayWriteState: TerminalReplayWriteState;
   sessionStatus: TerminalSession["status"];
@@ -547,12 +567,15 @@ type TerminalSessionStatusNoticeRef = {
 interface HandleTerminalServerMessageArgs {
   acknowledgeOutput: (nextSeq: number) => void;
   message: TerminalServerMessage;
+  terminalId?: string;
+  onOutputFrameParsed?: () => void;
   onOutputParsed?: (sequence: number) => void;
   onOutputStart?: (sequence: number) => void;
   onReplayComplete: () => void;
   onSessionChange?: (session: TerminalSession) => void;
   replayNextSeq: number | null;
   replayWriteState: TerminalReplayWriteState;
+  outputFrameId?: number;
   setReplayNextSeq: (nextSeq: number | null) => void;
   setReplayStartSequence?: (sequence: number) => void;
   terminal: XTermTerminal;
@@ -595,6 +618,7 @@ export function encodeTerminalInputChunks(value: string): string[] {
 
 export function forwardTerminalData({
   data,
+  inputEventAt,
   isUserInput,
   onInput,
   onUserInput,
@@ -613,7 +637,7 @@ export function forwardTerminalData({
   }
 
   for (const dataBase64 of encodeTerminalInputChunks(input)) {
-    onInput(dataBase64);
+    onInput(dataBase64, inputEventAt);
   }
   onUserInput?.();
 }
@@ -791,7 +815,10 @@ export function captureTerminalContextMenuState({
 
 export function writeTerminalOutput({
   data,
+  frameId,
   isReplay,
+  terminalId = "",
+  onOutputParsed,
   onParsed,
   replayWriteState,
   terminal,
@@ -805,7 +832,11 @@ export function writeTerminalOutput({
     else terminal.write(data, callback);
   };
   if (!isReplay) {
-    write(onParsed, true);
+    write(() => {
+      recordTerminalOutputParsed(terminalId, frameId, performance.now());
+      onOutputParsed?.();
+      onParsed();
+    }, true);
     return;
   }
 
@@ -813,11 +844,15 @@ export function writeTerminalOutput({
   write(() => {
     if (!replayPipeline) {
       replayWriteState.suppressedWriteCount -= 1;
+      recordTerminalOutputParsed(terminalId, frameId, performance.now());
+      onOutputParsed?.();
       onParsed();
       return;
     }
     replayPipeline.push(bytes, () => {
       replayWriteState.suppressedWriteCount -= 1;
+      recordTerminalOutputParsed(terminalId, frameId, performance.now());
+      onOutputParsed?.();
       onParsed();
     });
   }, false);
@@ -826,12 +861,15 @@ export function writeTerminalOutput({
 export function handleTerminalServerMessage({
   acknowledgeOutput,
   message,
-  onOutputStart,
+  terminalId = "",
+  onOutputFrameParsed,
   onOutputParsed,
+  onOutputStart,
   onReplayComplete,
   onSessionChange,
   replayNextSeq,
   replayWriteState,
+  outputFrameId,
   setReplayNextSeq,
   setReplayStartSequence,
   terminal,
@@ -867,7 +905,10 @@ export function handleTerminalServerMessage({
       const nextSeq = message.chunk.seq + 1;
       writeTerminalOutput({
         data: decodeBase64Bytes(message.chunk.dataBase64),
+        frameId: outputFrameId,
         isReplay: replayNextSeq !== null && message.chunk.seq < replayNextSeq,
+        terminalId,
+        onOutputParsed: onOutputFrameParsed,
         onParsed: () => {
           onOutputParsed?.(message.chunk.seq);
           onOutputStart?.(nextSeq);
@@ -956,6 +997,18 @@ export function ThreadTerminalView({
     useState<TerminalSearchAddonInstance | null>(null);
   const [terminalSearchOpen, setTerminalSearchOpen] = useState(false);
   const [textSnapshot, setTextSnapshot] = useState<string | null>(null);
+  const [textSnapshotInitialLine, setTextSnapshotInitialLine] = useState<
+    number | null
+  >(null);
+  const [terminalFontSize, setTerminalFontSize] = useState(12);
+  const terminalFontSizeRef = useRef(12);
+  const longPressGestureRef = useRef<{
+    cancel: () => void;
+    move: (touches: readonly TerminalGestureTouch[]) => void;
+  } | null>(null);
+  const pinchGestureRef = useRef<ReturnType<
+    typeof createTerminalPinchGesture
+  > | null>(null);
   const [activeSelection, setActiveSelection] =
     useState<MessageProseSelection | null>(null);
   const [pendingTerminalLink, setPendingTerminalLink] =
@@ -972,9 +1025,9 @@ export function ThreadTerminalView({
     typeof observeTerminalWebglVisibility
   > | null>(null);
   const terminalRef = useRef<XTermTerminal | null>(null);
-  const compositionInputGuardRef = useRef<
-    ReturnType<typeof suppressDuplicateTerminalCompositionInput> | null
-  >(null);
+  const compositionInputGuardRef = useRef<ReturnType<
+    typeof suppressDuplicateTerminalCompositionInput
+  > | null>(null);
   const promptLinesRef = useRef<number[]>([]);
   const hoveredTerminalLinkRef = useRef<TerminalLinkTarget | null>(null);
   const pointerStartPointRef = useRef<SelectionAnchorPoint | null>(null);
@@ -1296,6 +1349,7 @@ export function ThreadTerminalView({
     > | null = null;
     let resizeObserver: ResizeObserver | null = null;
     let selectionChangeDisposable: { dispose: () => void } | null = null;
+    let terminalRenderSubscription: { dispose: () => void } | null = null;
     let terminalKeyDisposable: { dispose: () => void } | null = null;
     let terminalInputForwarding: { dispose: () => void } | null = null;
     let shellOscDisposable: { dispose: () => void } | null = null;
@@ -1386,6 +1440,13 @@ export function ThreadTerminalView({
       containerElement: container,
     });
     const reportDocumentVisibility = () => {
+      if (
+        document.visibilityState !== "visible" ||
+        !containerHasSize ||
+        !isPanelOpenRef.current
+      ) {
+        cancelTerminalOutputNextRenders(session.id);
+      }
       transport?.setVisible(
         document.visibilityState === "visible" && containerHasSize,
       );
@@ -1480,6 +1541,15 @@ export function ThreadTerminalView({
         linkHandler: osc8LinkHandler,
         scrollback: 10_000,
         theme: buildTerminalTheme(),
+      });
+      terminalRenderSubscription = terminal.onRender(() => {
+        if (
+          document.visibilityState === "visible" &&
+          containerHasSize &&
+          isPanelOpenRef.current
+        ) {
+          recordTerminalOutputNextRender(session.id, performance.now());
+        }
       });
       setPromptTrackerState(EMPTY_TERMINAL_PROMPT_TRACKER);
       shellOscDisposable = attachTerminalPromptTracker({
@@ -1768,6 +1838,7 @@ export function ThreadTerminalView({
       let reconnecting = false;
       let repaintAfterReconnect = false;
       let reconnectingNoticeVisible = false;
+      let outputFrameId: number | null = null;
       const clearConnectionNoticeTimeout = () => {
         if (connectionNoticeTimeout !== null) {
           clearTimeout(connectionNoticeTimeout);
@@ -1775,6 +1846,13 @@ export function ThreadTerminalView({
         }
       };
       const activeTransport = new TerminalWebSocketTransport({
+        terminalId: session.id,
+        now: () => performance.now(),
+        onInputAccepted: recordTerminalInputAccepted,
+        onInputSent: recordTerminalInputWebSocketSent,
+        onOutputFrameReceived: (terminalId, timestamp) => {
+          outputFrameId = recordTerminalOutputReceived(terminalId, timestamp);
+        },
         onRepaintNudgeSizeReleased: (size) => {
           const nextSize = nextSharedTerminalSize(sharedSize, size, false);
           if (nextSize !== null) {
@@ -1841,6 +1919,9 @@ export function ThreadTerminalView({
               message.chunk.seq,
             );
           }
+          const currentOutputFrameId =
+            message.type === "output" ? outputFrameId : null;
+          if (message.type === "output") outputFrameId = null;
           if (
             message.type === "attached" ||
             message.type === "session-updated"
@@ -1871,6 +1952,16 @@ export function ThreadTerminalView({
             acknowledgeOutput: (nextSeq) =>
               activeTransport.acknowledgeOutput(nextSeq),
             message,
+            terminalId: session.id,
+            onOutputFrameParsed: () => {
+              if (
+                document.visibilityState !== "visible" ||
+                !containerHasSize ||
+                !isPanelOpenRef.current
+              ) {
+                cancelTerminalOutputNextRenders(session.id);
+              }
+            },
             onReplayComplete: () => {
               replayCompleted = true;
               restoreViewport();
@@ -1900,6 +1991,7 @@ export function ThreadTerminalView({
             },
             replayNextSeq,
             replayWriteState,
+            outputFrameId: currentOutputFrameId ?? undefined,
             onReplayStart: () => {
               viewportReplaySaveGate.beginReplay();
               replayPreview?.dispose();
@@ -2038,8 +2130,8 @@ export function ThreadTerminalView({
           }),
         requestFrame: (callback) => window.requestAnimationFrame(callback),
       });
-      const sendTerminalInput = (dataBase64: string) =>
-        activeTransport.sendInput(dataBase64);
+      const sendTerminalInput = (dataBase64: string, inputEventAt?: number) =>
+        activeTransport.sendInput(dataBase64, inputEventAt);
       handleFileDropRef.current = (files) => {
         const desktop = window.bbDesktop;
         handleTerminalFileDrop({
@@ -2087,6 +2179,7 @@ export function ThreadTerminalView({
       });
       terminalInputForwarding = attachTerminalInputForwarding({
         onData: (data, isUserInput) => {
+          const inputEventAt = isUserInput ? performance.now() : undefined;
           if (controlActiveRef.current) {
             data = applyTerminalControl(data);
             controlActiveRef.current = false;
@@ -2094,6 +2187,7 @@ export function ThreadTerminalView({
           }
           forwardTerminalData({
             data,
+            inputEventAt,
             isUserInput,
             onInput: sendTerminalInput,
             onUserInput: onUserInputRef.current,
@@ -2172,6 +2266,9 @@ export function ThreadTerminalView({
       shellOscDisposable?.dispose();
       osc52Disposable?.dispose();
       terminalInteractions?.dispose();
+      terminalRenderSubscription?.dispose();
+      terminalRenderSubscription = null;
+      cancelTerminalOutputNextRenders(session.id);
       handleFileDropRef.current = null;
       document.removeEventListener(
         "visibilitychange",
@@ -2217,6 +2314,9 @@ export function ThreadTerminalView({
   }, [isTouchDevice, terminalReady]);
 
   useEffect(() => {
+    if (!isPanelOpen) {
+      cancelTerminalOutputNextRenders(session.id);
+    }
     if (!isPanelOpen || !autoFocus) {
       return;
     }
@@ -2226,7 +2326,7 @@ export function ThreadTerminalView({
       onAutoFocusHandledRef.current?.();
     }
     scheduleFitRef.current?.();
-  }, [autoFocus, isPanelOpen]);
+  }, [autoFocus, isPanelOpen, session.id]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
@@ -2263,6 +2363,80 @@ export function ThreadTerminalView({
     webglVisibilityRef.current?.sync();
   }, [isPanelOpen]);
 
+  const gestureTouches = (
+    touches: ArrayLike<{
+      identifier: number;
+      clientX: number;
+      clientY: number;
+    }>,
+  ): TerminalGestureTouch[] =>
+    Array.from(touches, (touch) => ({
+      identifier: touch.identifier,
+      x: touch.clientX,
+      y: touch.clientY,
+    }));
+  const ensurePinchGesture = () => {
+    pinchGestureRef.current ??= createTerminalPinchGesture({
+      getFontSize: () => terminalFontSizeRef.current,
+      setFontSize: (size) => {
+        if (size === terminalFontSizeRef.current) return;
+        terminalFontSizeRef.current = size;
+        setTerminalFontSize(size);
+        const terminal = terminalRef.current;
+        if (terminal !== null) {
+          terminal.options.fontSize = size;
+          terminal.refresh(0, terminal.rows - 1);
+        }
+      },
+      fitAndResize: () => scheduleFitRef.current?.(),
+    });
+    return pinchGestureRef.current;
+  };
+  const beginTerminalLongPress = (
+    touches: ArrayLike<{
+      identifier: number;
+      clientX: number;
+      clientY: number;
+    }>,
+  ) => {
+    longPressGestureRef.current?.cancel();
+    const points = gestureTouches(touches);
+    longPressGestureRef.current = startTerminalLongPress(
+      points,
+      (point) => {
+        const terminal = terminalRef.current;
+        const screen =
+          terminal?.element?.querySelector<HTMLElement>(".xterm-screen");
+        if (
+          terminal === null ||
+          terminal === undefined ||
+          screen === null ||
+          screen === undefined
+        ) {
+          return 0;
+        }
+        const bounds = screen.getBoundingClientRect();
+        const rowHeight = bounds.height / Math.max(1, terminal.rows);
+        const row = Math.floor((point.y - bounds.top) / rowHeight);
+        return (
+          terminal.buffer.active.viewportY +
+          Math.max(0, Math.min(terminal.rows - 1, row))
+        );
+      },
+      (bufferLine) => {
+        const terminal = terminalRef.current;
+        if (terminal === null) return;
+        setTextSnapshotInitialLine(
+          terminalTextSnapshotLineIndex(terminal, bufferLine),
+        );
+        setTextSnapshot(terminalTextSnapshot(terminal));
+      },
+      (callback, delay) => {
+        const id = window.setTimeout(callback, delay);
+        return { cancel: () => window.clearTimeout(id) };
+      },
+    );
+  };
   const contextMenuLink = contextMenuState.link;
   const contextMenuSelectionText = contextMenuState.selectionText;
   return (
@@ -2277,21 +2451,30 @@ export function ThreadTerminalView({
         <ContextMenuTrigger asChild>
           <TerminalAttentionPane
             attention={session.attention}
-            className="group/terminal-pane relative min-h-0 w-full flex-1 overflow-hidden bg-sidebar p-2"
+            className={`group/terminal-pane relative min-h-0 w-full flex-1 overflow-hidden bg-sidebar p-2 ${isTouchDevice ? "touch-pan-y" : ""}`}
             onContextMenuCapture={captureTerminalContextMenu}
             onTouchStart={(event) => {
+              beginTerminalLongPress(event.touches);
+              ensurePinchGesture().start(gestureTouches(event.touches));
               touchHandlers().start(event);
               handleTerminalTouchStart(event);
             }}
             onTouchMove={(event) => {
+              const points = gestureTouches(event.touches);
+              longPressGestureRef.current?.move(points);
+              ensurePinchGesture().move(points);
               touchHandlers().move(event);
               handleTerminalTouchMove(event);
             }}
             onTouchEnd={(event) => {
+              longPressGestureRef.current?.cancel();
+              ensurePinchGesture().end();
               touchHandlers().end(event);
               handleTerminalTouchEnd(event);
             }}
             onTouchCancel={() => {
+              longPressGestureRef.current?.cancel();
+              ensurePinchGesture().cancel();
               touchHandlers().cancel();
               handleTerminalTouchCancel();
             }}
@@ -2300,6 +2483,7 @@ export function ThreadTerminalView({
               ref={containerRef}
               data-terminal-renderer="dom"
               data-terminal-context-loss-count="0"
+              data-terminal-font-size={terminalFontSize}
               className="box-border h-full min-h-0 w-full overflow-hidden pl-2"
             />
             <TerminalCommandGutter
@@ -2441,6 +2625,7 @@ export function ThreadTerminalView({
             const terminal = terminalRef.current;
             if (!terminal) return;
             terminal.blur();
+            setTextSnapshotInitialLine(null);
             setTextSnapshot(terminalTextSnapshot(terminal));
           }}
         />
@@ -2449,8 +2634,12 @@ export function ThreadTerminalView({
         <TerminalTextSelectSheet
           open={textSnapshot !== null}
           text={textSnapshot ?? ""}
+          initialLine={textSnapshotInitialLine}
           onOpenChange={(open) => {
-            if (!open) setTextSnapshot(null);
+            if (!open) {
+              setTextSnapshotInitialLine(null);
+              setTextSnapshot(null);
+            }
           }}
         />
       ) : null}
