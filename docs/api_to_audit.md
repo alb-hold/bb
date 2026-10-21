@@ -2583,10 +2583,27 @@ doc covers three September 2026 additions:
   query order, including those with no threads. Older hosts may omit it.
 - `openNewThread({ hostId })`, unprefixed by request, preselects a machine for
   a new environment. `environmentId` takes priority.
+- `PluginSidebarThread.experimental_nativeActivity` provides the optional
+  native receipt snapshot so sidebar consumers can suppress runtime-only busy
+  indicators. Freshness expires locally after 90 seconds without a newer
+  holder report. A receipt proves only that the bound holder reported activity;
+  it does not establish model or tool progress or task completion. Older holders
+  cannot confirm this receipt and may display activity as unconfirmed. Older
+  apps may still display Working, and new apps paired with older servers retain
+  their previous display because the diagnostic is absent.
 
 Docs: `frontend-registration.md`.
 
 **Audit before stabilizing.**
+
+For `experimental_nativeActivity`, stabilization requires verifying the
+receipt's current terminal binding, freshness and clock-skew behavior across
+server and client versions, then updating this audit and renaming the field
+project-wide. The core caller is the app's plugin-sidebar projection
+(`toPluginSidebarThread`), which supplies the same diagnostic to the built-in
+thread-list plugin and other sidebar plugins. Verify that runtime-only busy
+indicators expire while needs-input, workflow and background activity keep
+their independent priority.
 
 1. **DTO scope.** Confirm every field earns its place and that the copy stays
    worth its maintenance over `ThreadListEntry`. `hasUnsubmittedDraft` is

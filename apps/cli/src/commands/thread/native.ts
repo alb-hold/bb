@@ -219,6 +219,7 @@ async function holdNativeHarness(
   let reader: NativeActivityReader | null = null;
   let eventsFile: string | null = null;
   const activityTimers: NodeJS.Timeout[] = [];
+  let activityAuthorization: string | undefined;
   let reporting: Promise<void> = Promise.resolve();
   const report = (next: NativeActivityReport | null): void => {
     if (next === null) return;
@@ -226,6 +227,9 @@ async function holdNativeHarness(
       sdk.nativeTerminals
         .reportActivity({
           threadId,
+          ...(activityAuthorization === undefined
+            ? {}
+            : { authorization: activityAuthorization }),
           state: next.state,
           ...(next.prompt === null ? {} : { prompt: next.prompt }),
           ...(next.state === "waiting" ? { questions: next.questions } : {}),
@@ -251,6 +255,8 @@ async function holdNativeHarness(
     cwd,
     env: process.env,
     prepare: async ({ credential, credentialSocket }) => {
+      activityAuthorization =
+        credential === null ? undefined : `Bearer ${credential}`;
       const spec = await sdk.nativeTerminals.launch({
         imagesAsArgv: true,
         threadId,
@@ -320,6 +326,18 @@ async function holdNativeHarness(
             logNativeHolderEvent(socketPath, "activity-transcript-eviction", {
               count: total,
             });
+          }
+        },
+        (reason, total) => {
+          if (ownsSocket) {
+            logNativeHolderEvent(
+              socketPath,
+              "activity-hook-identity-unconfirmed",
+              {
+                reason,
+                count: total,
+              },
+            );
           }
         },
       );

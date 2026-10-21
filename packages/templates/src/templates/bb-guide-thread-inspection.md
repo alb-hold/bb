@@ -24,9 +24,12 @@ Listing:
 
   The table prints ID, Title, Project, Status, and Needs you. Needs you shows
   Needs input, Working, automation Woke, or unread Done when applicable. Woke
-  is omitted when the Automations plugin RPC is unavailable. JSON rows include
-  `listIndicator`. Title uses the thread
-  title, then the fallback title from the first prompt, then "-". Long
+  is omitted when the Automations plugin RPC is unavailable. An active native
+  thread with no recent authenticated terminal activity report shows
+  `activity unconfirmed` in Status and does not show runtime-only Working.
+  This reports holder activity, not model or tool progress. JSON rows include
+  `listIndicator` and optional runtime `nativeActivity` diagnostics. Title uses
+  the thread title, then the fallback title from the first prompt, then "-". Long
   titles are cut at 60 characters. Project shows the project name; the
   personal project shows "-". Use --json for the full thread records.
 
