@@ -11,6 +11,7 @@ import {
   setNativeTerminalToolCredential,
   threads,
 } from "@bb/db";
+import { applyLoggedThreadLifecycleEvent } from "../../src/services/threads/lifecycle-outcome.js";
 import { buildThreadStatusChangeMetadata } from "../../src/services/threads/thread-runtime-display.js";
 import * as runtimeConfig from "../../src/services/threads/thread-runtime-config.js";
 import {
@@ -398,15 +399,10 @@ describe("native terminal agent tools", () => {
     };
 
     async function markWorking(fixture: Fixture, threadId: string) {
-      const response = await fixture.harness.app.request(
-        `/api/v1/threads/${threadId}/native-terminal/activity`,
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ state: "working" }),
-        },
-      );
-      expect(response.status).toBe(200);
+      applyLoggedThreadLifecycleEvent(fixture.harness.deps, {
+        event: { type: "run.started" },
+        threadId,
+      });
     }
 
     const callTool = (

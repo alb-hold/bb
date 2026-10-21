@@ -12,6 +12,8 @@ function failure(status: number, code: string): BbHttpError {
 
 function setup(answers: unknown[]) {
   const attempts: string[] = [];
+  const order: string[] = [];
+  const transient: boolean[] = [];
   const reports: Array<NativeActivityReport | null> = [];
   const logged: Array<{ event: string; fields: unknown }> = [];
   let suspended = 0;
@@ -31,10 +33,19 @@ function setup(answers: unknown[]) {
       if (answer instanceof Error) throw answer;
       return answer ?? {};
     },
-    report: (next) => reports.push(next),
+    report: (next, options) => {
+      reports.push(next);
+      order.push("heartbeat");
+      transient.push(options?.transient === true);
+    },
+    retryReport: () => {
+      order.push("retry");
+    },
   });
   return {
     attempts,
+    order,
+    transient,
     logged,
     reports,
     setCredential: (next: string | null) => {
@@ -114,4 +125,19 @@ describe("native activity wiring", () => {
       expect(w.attempts).toHaveLength(1);
     },
   );
+
+  describe("retained report", () => {
+    it("is retried on each heartbeat tick and on each credential refresh, before the heartbeat is sent", () => {
+      const w = setup([]);
+      w.wiring.onHeartbeatTick();
+      w.wiring.onCredentialChanged();
+      expect(w.order).toEqual(["retry", "heartbeat", "retry", "heartbeat"]);
+    });
+
+    it("sends the heartbeat as a transient report", () => {
+      const w = setup([]);
+      w.wiring.onHeartbeatTick();
+      expect(w.transient).toEqual([true]);
+    });
+  });
 });

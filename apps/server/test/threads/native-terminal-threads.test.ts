@@ -45,6 +45,7 @@ import { queueParentSystemMessage } from "../../src/services/threads/parent-syst
 import { sendThreadMessage } from "../../src/services/threads/thread-send.js";
 import {
   NATIVE_TERMINAL_ENDED_MESSAGE,
+  NATIVE_TOOL_CREDENTIAL_ENV,
   nativeTerminalLaunchCommand,
   reopenNativeTerminalsAfterDaemonReconnect,
   resumeNativeTerminalAfterUnarchive,
@@ -3686,7 +3687,11 @@ describe("native terminal threads", () => {
               ?.terminalSessionId,
         )
         .toBe(reopen.terminalId);
+      const reopenedCredential = reopen.contributedEnv.find(
+        (entry) => entry.name === NATIVE_TOOL_CREDENTIAL_ENV,
+      )?.value;
       recordNativeTerminalActivity(fixture.harness.deps, {
+        authorization: `Bearer ${reopenedCredential}`,
         threadId: running.thread.id,
         state: "working",
       });

@@ -2,6 +2,12 @@ import { BbHttpError, BbRequestTimeoutError } from "@bb/sdk";
 import { describe, expect, it } from "vitest";
 import { createNativeSessionRebinder } from "../native-session-rebinder.js";
 
+function withCode(code: unknown): TypeError {
+  return new TypeError("x", {
+    cause: Object.assign(new Error("underlying"), { code }),
+  });
+}
+
 const A = "aaaaaaaa-1111-4222-8333-444455556666";
 const B = "bbbbbbbb-1111-4222-8333-444455556666";
 const C = "cccccccc-1111-4222-8333-444455556666";
@@ -94,6 +100,10 @@ describe("native session rebinder", () => {
     ["a server error", refusal(503, "unavailable")],
     ["a network failure", new TypeError("fetch failed")],
     ["a connection that was terminated", new TypeError("terminated")],
+    ["a reset connection", withCode("ECONNRESET")],
+    ["a refused connection", withCode("ECONNREFUSED")],
+    ["a transient DNS failure", withCode("EAI_AGAIN")],
+    ["an undici socket error", withCode("UND_ERR_SOCKET")],
     [
       "a transport error whose cause carries a system code",
       new TypeError("other side closed", {
@@ -143,6 +153,18 @@ describe("native session rebinder", () => {
     [
       "a wrapped programming error without a system code",
       new TypeError("x", { cause: new Error("y") }),
+    ],
+    [
+      "a wrapped error whose code is an arbitrary string",
+      withCode("not a system code"),
+    ],
+    ["a wrapped error whose code is lower case", withCode("econnrefused")],
+    ["a wrapped Node argument error", withCode("ERR_INVALID_ARG_TYPE")],
+    ["a wrapped error whose code is a bare E", withCode("E")],
+    ["a wrapped error whose code is numeric", withCode(1)],
+    [
+      "a wrapped plain object, not an Error, with a system code",
+      new TypeError("x", { cause: { code: "ECONNREFUSED" } }),
     ],
   ])(
     "gives up for good on %s instead of retrying it silently",

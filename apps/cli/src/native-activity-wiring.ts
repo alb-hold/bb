@@ -21,7 +21,11 @@ export function createNativeActivityWiring(options: {
     nativeSessionId: string;
     replacesNativeSessionId: string;
   }): Promise<unknown>;
-  report(next: NativeActivityReport | null): void;
+  report(
+    next: NativeActivityReport | null,
+    options?: { transient?: boolean },
+  ): void;
+  retryReport(): void;
 }): NativeActivityWiring {
   const rebinder = createNativeSessionRebinder({
     currentCredential: options.currentCredential,
@@ -46,14 +50,16 @@ export function createNativeActivityWiring(options: {
     },
   });
   const heartbeat = (): void => {
-    options.report(options.reader()?.heartbeat() ?? null);
+    options.report(options.reader()?.heartbeat() ?? null, { transient: true });
   };
   return {
     onCredentialChanged: () => {
+      options.retryReport();
       rebinder.retry();
       heartbeat();
     },
     onHeartbeatTick: () => {
+      options.retryReport();
       rebinder.retry();
       heartbeat();
     },

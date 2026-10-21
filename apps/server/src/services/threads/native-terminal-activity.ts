@@ -163,28 +163,34 @@ export function recordNativeTerminalActivity(
     threadId: string;
   } & ReportNativeTerminalActivityRequest,
 ): void {
+  requireNativeRecord(deps, args.threadId);
+  const credentialIsCurrent = hasCurrentTerminalCredential(deps, {
+    authorization: args.authorization,
+    threadId: args.threadId,
+  });
+  if (!credentialIsCurrent) {
+    deps.logger.warn(
+      { threadId: args.threadId },
+      "A native terminal activity report without the current holder credential was rejected",
+    );
+    throw new ApiError(
+      401,
+      "native_terminal_credential_invalid",
+      "A valid credential for this thread's running native terminal is required",
+    );
+  }
   const active = activeThreads(deps);
   const repeatedWorkingSignal =
     args.state === "working" &&
     args.prompt === undefined &&
     active.has(args.threadId);
-  if (repeatedWorkingSignal && args.authorization === undefined) return;
   const now = Date.now();
   let notifyReceipt = false;
-  const credentialIsCurrent = hasCurrentTerminalCredential(deps, {
-    authorization: args.authorization,
-    threadId: args.threadId,
-  });
-  const currentTerminalIsLive =
-    credentialIsCurrent && isCurrentTerminalLive(deps, args.threadId);
+  const currentTerminalIsLive = isCurrentTerminalLive(deps, args.threadId);
   const currentNativeRecord =
     currentTerminalIsLive && !isNativeTerminalRebindInFlight(args.threadId)
       ? getNativeTerminalThread(deps.db, args.threadId)
       : null;
-  if (!credentialIsCurrent) {
-    const binding = getNativeTerminalThread(deps.db, args.threadId);
-    if (binding !== null && binding.lastEvidenceAt !== null) return;
-  }
   if (
     currentNativeRecord !== null &&
     currentNativeRecord.terminalSessionId !== null
