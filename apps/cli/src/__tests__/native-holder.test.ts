@@ -495,11 +495,15 @@ try {
   it("keeps a detached CLI for twenty reap windows while bb waits for the host daemon, and reaps it once bb stops waiting", async () => {
     const socketPath = socketIn();
     let state: NativeTerminalCheck = "awaiting-daemon";
-    const held = startHolder(socketPath, ECHO_LOOP, 100, async () => state);
+    let awaitingChecks = 0;
+    const held = startHolder(socketPath, ECHO_LOOP, 100, async () => {
+      awaitingChecks += 1;
+      return state;
+    });
     const first = await attach(socketPath);
     const pid = (await first.waitFor(/started:(\d+)/u))[1];
     first.socket.destroy();
-    await new Promise((resolve) => setTimeout(resolve, 2_000));
+    await expect.poll(() => awaitingChecks).toBeGreaterThanOrEqual(20);
     const second = await attach(socketPath);
     second.type("daemon back\r");
     await second.waitFor(new RegExp(`got:daemon back:${pid}`, "u"));
@@ -1044,6 +1048,7 @@ describe("checking whether bb closed a native terminal for good", () => {
 
   it("keeps a detached CLI past the reap window while bb answers that its terminal awaits the host daemon", async () => {
     let waiting = true;
+    let awaitingChecks = 0;
     const baseUrl = await bb((response) => {
       response.writeHead(200, { "content-type": "application/json" });
       response.end(
@@ -1056,11 +1061,15 @@ describe("checking whether bb closed a native terminal for good", () => {
       );
     });
     const socketPath = socketIn();
-    const held = startHolder(socketPath, ECHO_LOOP, 300, () => check(baseUrl));
+    const held = startHolder(socketPath, ECHO_LOOP, 300, async () => {
+      const state = await check(baseUrl);
+      if (state === "awaiting-daemon") awaitingChecks += 1;
+      return state;
+    });
     const first = await attach(socketPath);
     const pid = (await first.waitFor(/started:(\d+)/u))[1];
     first.socket.destroy();
-    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    await expect.poll(() => awaitingChecks).toBeGreaterThanOrEqual(20);
     const second = await attach(socketPath);
     second.type("survived\r");
     await second.waitFor(new RegExp(`got:survived:${pid}`, "u"));
