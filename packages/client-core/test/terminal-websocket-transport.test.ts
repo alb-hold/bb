@@ -68,6 +68,7 @@ function createHarness(
   const overflow = vi.fn<(maxBytes: number) => void>();
   const urls: string[] = [];
   const transport = new TerminalWebSocketTransport({
+    terminalId: "term_1",
     createSocket: (url) => {
       urls.push(url);
       const socket = new FakeTerminalBrowserSocket();
@@ -120,6 +121,105 @@ afterEach(() => {
 });
 
 describe("TerminalWebSocketTransport", () => {
+  it("timestamps queued acceptance at insertion and send after serialization", () => {
+    let timestamp = 100;
+    const inputAccepted = vi.fn();
+    const inputSent = vi.fn();
+    const harness = createHarness({
+      now: () => timestamp++,
+      onInputAccepted: inputAccepted,
+      onInputSent: inputSent,
+    });
+    const queuedInput = Buffer.from("queued").toString("base64");
+    harness.transport.start();
+    expect(harness.transport.sendInput(queuedInput, 95)).toBe(true);
+    harness.sockets[0]?.open();
+
+    expect(inputAccepted.mock.calls).toEqual([["term_1", 101, 95, 100]]);
+    expect(inputSent.mock.calls).toEqual([["term_1", 101, 103]]);
+    harness.transport.dispose();
+  });
+
+  it("stamps immediate acceptance when socket.send returns", () => {
+    let timestamp = 200;
+    const inputAccepted = vi.fn();
+    const inputSent = vi.fn();
+    const harness = createHarness({
+      now: () => timestamp++,
+      onInputAccepted: inputAccepted,
+      onInputSent: inputSent,
+    });
+    harness.transport.start();
+    harness.sockets[0]?.open();
+    timestamp = 200;
+
+    expect(
+      harness.transport.sendInput(
+        Buffer.from("immediate").toString("base64"),
+        195,
+      ),
+    ).toBe(true);
+
+    expect(inputAccepted.mock.calls).toEqual([["term_1", 201, 195, 200]]);
+    expect(inputSent.mock.calls).toEqual([["term_1", 201, 201]]);
+    harness.transport.dispose();
+  });
+
+  it("records no timing or enqueue callback for rejected input", () => {
+    let timestamp = 300;
+    const inputAccepted = vi.fn();
+    const inputSent = vi.fn();
+    const harness = createHarness({
+      inputQueueMaxBytes: 1,
+      now: () => timestamp++,
+      onInputAccepted: inputAccepted,
+      onInputSent: inputSent,
+    });
+
+    harness.transport.start();
+    const socket = harness.sockets[0]!;
+    socket.open();
+    socket.throwOnSend = true;
+    expect(
+      harness.transport.sendInput(
+        Buffer.from("too large").toString("base64"),
+        295,
+      ),
+    ).toBe(false);
+
+    expect(inputAccepted).not.toHaveBeenCalled();
+    expect(inputSent).not.toHaveBeenCalled();
+    expect(harness.overflow).toHaveBeenCalledOnce();
+    harness.transport.dispose();
+  });
+
+  it("stamps input at queue insertion after an immediate send throws", () => {
+    let timestamp = 400;
+    const inputAccepted = vi.fn();
+    const inputSent = vi.fn();
+    const harness = createHarness({
+      now: () => timestamp++,
+      onInputAccepted: inputAccepted,
+      onInputSent: inputSent,
+    });
+    harness.transport.start();
+    const socket = harness.sockets[0]!;
+    socket.open();
+    timestamp = 400;
+    socket.throwOnSend = true;
+
+    expect(
+      harness.transport.sendInput(
+        Buffer.from("retry queued").toString("base64"),
+        395,
+      ),
+    ).toBe(true);
+
+    expect(inputAccepted.mock.calls).toEqual([["term_1", 401, 395, 400]]);
+    expect(inputSent).not.toHaveBeenCalled();
+    harness.transport.dispose();
+  });
+
   it("reports visible state when a socket opens", () => {
     const harness = createHarness();
 
@@ -210,6 +310,23 @@ describe("TerminalWebSocketTransport", () => {
       "ws://example.test/ws/terminals/term-1?sinceSeq=0&outputAcks=1&resizeAcks=1",
       "ws://example.test/ws/terminals/term-1?sinceSeq=1&outputAcks=1&resizeAcks=1",
     ]);
+    harness.transport.dispose();
+  });
+
+  it("includes the terminal ID in output frame timing callbacks", () => {
+    const outputReceived = vi.fn();
+    const harness = createHarness({
+      now: () => 42,
+      onOutputFrameReceived: outputReceived,
+    });
+    harness.transport.start();
+    harness.sockets[0]?.open();
+    harness.sockets[0]?.receive({
+      type: "output",
+      chunk: { seq: 0, dataBase64: Buffer.from("frame").toString("base64") },
+    });
+
+    expect(outputReceived).toHaveBeenCalledWith("term_1", 42);
     harness.transport.dispose();
   });
 
