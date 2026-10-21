@@ -29,8 +29,10 @@ async function replay(cols: number, rows: number, data: string) {
   await new Promise<void>((resolve) => terminal.write(data, resolve));
   const buffer = terminal.buffer.active;
   const screen = {
-    rows: Array.from({ length: rows }, (_, row) =>
-      buffer.getLine(buffer.baseY + row)?.translateToString(true) ?? "",
+    rows: Array.from(
+      { length: rows },
+      (_, row) =>
+        buffer.getLine(buffer.baseY + row)?.translateToString(true) ?? "",
     ),
     cursor: { col: buffer.cursorX, row: buffer.cursorY },
   };
@@ -65,8 +67,10 @@ async function replayWithSentinel(cols: number, rows: number, data: string) {
   await new Promise<void>((resolve) => terminal.write(data, resolve));
   const buffer = terminal.buffer.active;
   const screen = {
-    rows: Array.from({ length: rows }, (_, row) =>
-      buffer.getLine(buffer.baseY + row)?.translateToString(true) ?? "",
+    rows: Array.from(
+      { length: rows },
+      (_, row) =>
+        buffer.getLine(buffer.baseY + row)?.translateToString(true) ?? "",
     ),
     cursor: { col: buffer.cursorX, row: buffer.cursorY },
   };
@@ -191,7 +195,7 @@ describe("renderTerminalScreen", () => {
   });
 
   it("rejects a mode-dependent redraw that fooled the blank and sentinel starts", async () => {
-    const prefix = `\u001b[2;4r\u001b[?6h${" ".repeat(65_550)}\n`;
+    const prefix = `\u001b[2;4r\u001b[?6h\u001b[?7l\u001b[4h\u001b(0${" ".repeat(65_550)}\n`;
     const redraw = `\u001b[1;1H\u001b[2J${Array.from(
       { length: 5 },
       (_, row) => `\u001b[${row + 1};1H${String(row).repeat(10)}\u001b[K`,
@@ -211,8 +215,8 @@ describe("renderTerminalScreen", () => {
     expect(screen.complete).toBe(false);
   });
 
-  it("recognizes long color-only output as linear", async () => {
-    const stream = "\u001b[31mred\u001b[0m\n".repeat(6_000);
+  it("recognizes truncated output that reestablishes terminal modes", async () => {
+    const stream = "\u001bc\u001b[31mred\u001b[0m\r\n".repeat(6_000);
     const screen = await renderTerminalScreen({
       cols: 20,
       rows: 2,
@@ -222,14 +226,14 @@ describe("renderTerminalScreen", () => {
     expect(screen.complete).toBe(true);
   });
 
-  it("recognizes a retained tail that scrolls earlier rows off screen", async () => {
+  it("keeps completeness false when scrolling depends on inherited modes", async () => {
     const screen = await renderTerminalScreen({
       cols: 20,
       rows: 2,
       lines: undefined,
       output: output("partial\nline one\nline two\n\u001b[1;1Hupdate", true),
     });
-    expect(screen.complete).toBe(true);
+    expect(screen.complete).toBe(false);
   });
 
   it("recognizes an alternate-screen switch after earlier rows scroll off", async () => {
@@ -248,7 +252,7 @@ describe("renderTerminalScreen", () => {
       rows: 2,
       lines: undefined,
       output: output(
-        "partial\n\u001b[?1049h\u001b[Hfirst row\u001b[K\r\nsecond row\u001b[K",
+        "partial\n\u001b[?1049h\u001b[r\u001b[?6l\u001b[?7h\u001b[4l\u001b(B\u001b[Hfirst row\u001b[K\r\nsecond row\u001b[K",
         true,
       ),
     });
