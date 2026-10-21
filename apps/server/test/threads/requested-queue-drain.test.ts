@@ -329,15 +329,27 @@ describe("the requested queue drain", () => {
   });
 
   it.each([
-    { errorCode: "other_catalog_error", errorStatus: 503, name: "other code" },
+    {
+      errorCode: "other_catalog_error",
+      errorStatus: 503,
+      errorType: "api",
+      name: "other code",
+    },
     {
       errorCode: "model_catalog_unavailable",
       errorStatus: 500,
+      errorType: "api",
       name: "other status",
+    },
+    {
+      errorCode: "model_catalog_unavailable",
+      errorStatus: 503,
+      errorType: "plain",
+      name: "structurally matching non-ApiError",
     },
   ] as const)(
     "propagates $name from queued preparation without writes on both entry paths",
-    async ({ errorCode, errorStatus }) => {
+    async ({ errorCode, errorStatus, errorType }) => {
       for (const path of ["queue", "send"] as const) {
         await withTestHarness(async (harness) => {
           const { thread } = seedRunnableThread(harness, {
@@ -355,45 +367,59 @@ describe("the requested queue drain", () => {
           const eventCount = listEvents(harness.db, {
             threadId: thread.id,
           }).length;
+          const error =
+            errorType === "api"
+              ? new ApiError(
+                  errorStatus,
+                  errorCode,
+                  "Injected model preparation failure",
+                )
+              : Object.assign(new Error("Injected model preparation failure"), {
+                  body: { code: errorCode },
+                  status: errorStatus,
+                });
+          if (errorType === "plain") {
+            expect(error).not.toBeInstanceOf(ApiError);
+          }
           const preparation = vi
             .spyOn(
               threadExecutionOverride,
               "prepareThreadModelOverrideRecovery",
             )
-            .mockRejectedValue(
-              new ApiError(
-                errorStatus,
-                errorCode,
-                "Injected model preparation failure",
-              ),
+            .mockRejectedValue(error);
+          try {
+            const response = await harness.app.request(
+              path === "queue"
+                ? `/api/v1/threads/${thread.id}/queued-messages`
+                : `/api/v1/threads/${thread.id}/send`,
+              {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({
+                  input: [{ type: "text", text: `failure on ${path}` }],
+                  model: "claude-sonnet-5-5",
+                  ...(path === "send" ? { mode: "queue-if-active" } : {}),
+                }),
+              },
             );
 
-          const response = await harness.app.request(
-            path === "queue"
-              ? `/api/v1/threads/${thread.id}/queued-messages`
-              : `/api/v1/threads/${thread.id}/send`,
-            {
-              method: "POST",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({
-                input: [{ type: "text", text: `failure on ${path}` }],
-                model: "claude-sonnet-5-5",
-                ...(path === "send" ? { mode: "queue-if-active" } : {}),
-              }),
-            },
-          );
-
-          expect(preparation).toHaveBeenCalledOnce();
-          expect(response.status).toBe(errorStatus);
-          expect(await response.json()).toMatchObject({ code: errorCode });
-          expect(
-            getThreadExecutionOverride(harness.db, thread.id)?.modelOverride,
-          ).toBe("claude-opus-5-5");
-          expect(listQueuedThreadMessages(harness.db, thread.id)).toEqual([]);
-          expect(listEvents(harness.db, { threadId: thread.id })).toHaveLength(
-            eventCount,
-          );
-          preparation.mockRestore();
+            expect(preparation).toHaveBeenCalledOnce();
+            expect(response.status).toBe(
+              errorType === "api" ? errorStatus : 500,
+            );
+            expect(await response.json()).toMatchObject({
+              code: errorType === "api" ? errorCode : "internal_error",
+            });
+            expect(
+              getThreadExecutionOverride(harness.db, thread.id)?.modelOverride,
+            ).toBe("claude-opus-5-5");
+            expect(listQueuedThreadMessages(harness.db, thread.id)).toEqual([]);
+            expect(
+              listEvents(harness.db, { threadId: thread.id }),
+            ).toHaveLength(eventCount);
+          } finally {
+            preparation.mockRestore();
+          }
         });
       }
     },
