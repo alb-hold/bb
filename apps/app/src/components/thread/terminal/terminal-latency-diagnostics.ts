@@ -9,9 +9,9 @@ type LatencyMetric =
   | "inputFirstOutputReceivedToParseMs"
   | "inputToFirstOutputParseMs"
   | "outputParseMs"
-  | "inputFirstOutputReceivedToPaintMs"
-  | "inputToFirstOutputPaintMs"
-  | "outputPaintMs";
+  | "inputFirstOutputReceivedToNextRenderMs"
+  | "inputToFirstOutputNextRenderMs"
+  | "outputNextRenderMs";
 
 export interface TerminalLatencyMetricSnapshot {
   count: number;
@@ -29,9 +29,9 @@ export interface TerminalLatencySnapshot {
   inputFirstOutputReceivedToParseMs: TerminalLatencyMetricSnapshot;
   inputToFirstOutputParseMs: TerminalLatencyMetricSnapshot;
   outputParseMs: TerminalLatencyMetricSnapshot;
-  inputFirstOutputReceivedToPaintMs: TerminalLatencyMetricSnapshot;
-  inputToFirstOutputPaintMs: TerminalLatencyMetricSnapshot;
-  outputPaintMs: TerminalLatencyMetricSnapshot;
+  inputFirstOutputReceivedToNextRenderMs: TerminalLatencyMetricSnapshot;
+  inputToFirstOutputNextRenderMs: TerminalLatencyMetricSnapshot;
+  outputNextRenderMs: TerminalLatencyMetricSnapshot;
 }
 
 export interface TerminalLatencyDiagnosticsSnapshot {
@@ -90,9 +90,9 @@ const metrics: Record<
     inputFirstOutputReceivedToParseMs: new LatencyRing(),
     inputToFirstOutputParseMs: new LatencyRing(),
     outputParseMs: new LatencyRing(),
-    inputFirstOutputReceivedToPaintMs: new LatencyRing(),
-    inputToFirstOutputPaintMs: new LatencyRing(),
-    outputPaintMs: new LatencyRing(),
+    inputFirstOutputReceivedToNextRenderMs: new LatencyRing(),
+    inputToFirstOutputNextRenderMs: new LatencyRing(),
+    outputNextRenderMs: new LatencyRing(),
   },
   phone: {
     inputEventToSerializationMs: new LatencyRing(),
@@ -103,9 +103,9 @@ const metrics: Record<
     inputFirstOutputReceivedToParseMs: new LatencyRing(),
     inputToFirstOutputParseMs: new LatencyRing(),
     outputParseMs: new LatencyRing(),
-    inputFirstOutputReceivedToPaintMs: new LatencyRing(),
-    inputToFirstOutputPaintMs: new LatencyRing(),
-    outputPaintMs: new LatencyRing(),
+    inputFirstOutputReceivedToNextRenderMs: new LatencyRing(),
+    inputToFirstOutputNextRenderMs: new LatencyRing(),
+    outputNextRenderMs: new LatencyRing(),
   },
 };
 type FormFactor = "desktop" | "phone";
@@ -128,7 +128,7 @@ type PendingTerminalOutputFrame = {
   inputEventAt: number | null;
   receivedAt: number;
   parsedAt?: number;
-  paintCancelled?: boolean;
+  nextRenderCancelled?: boolean;
 };
 
 const pendingOutputFrames: Array<PendingTerminalOutputFrame | undefined> =
@@ -263,41 +263,43 @@ export function recordTerminalOutputParsed(
   }
 }
 
-export function recordTerminalOutputPainted(
+export function recordTerminalOutputNextRender(
   terminalId: string,
-  paintedAt: number,
+  nextRenderAt: number,
 ): void {
-  if (!Number.isFinite(paintedAt)) return;
+  if (!Number.isFinite(nextRenderAt)) return;
   for (let index = 0; index < pendingOutputFrames.length; index += 1) {
     const pending = pendingOutputFrames[index];
     if (
       pending?.terminalId !== terminalId ||
       pending.parsedAt === undefined ||
-      pending.paintCancelled === true ||
-      pending.parsedAt > paintedAt
+      pending.nextRenderCancelled === true ||
+      pending.parsedAt > nextRenderAt
     ) {
       continue;
     }
     pendingOutputFrames[index] = undefined;
     const formFactor = pending.formFactor;
-    metrics[formFactor].outputPaintMs.add(paintedAt - pending.receivedAt);
+    metrics[formFactor].outputNextRenderMs.add(
+      nextRenderAt - pending.receivedAt,
+    );
     if (pending.inputAcceptedAt !== null) {
-      metrics[formFactor].inputFirstOutputReceivedToPaintMs.add(
-        paintedAt - pending.receivedAt,
+      metrics[formFactor].inputFirstOutputReceivedToNextRenderMs.add(
+        nextRenderAt - pending.receivedAt,
       );
     }
     if (pending.inputEventAt !== null) {
-      metrics[formFactor].inputToFirstOutputPaintMs.add(
-        paintedAt - pending.inputEventAt,
+      metrics[formFactor].inputToFirstOutputNextRenderMs.add(
+        nextRenderAt - pending.inputEventAt,
       );
     }
   }
 }
 
-export function cancelTerminalOutputPaints(terminalId: string): void {
+export function cancelTerminalOutputNextRenders(terminalId: string): void {
   for (const pending of pendingOutputFrames) {
     if (pending?.terminalId === terminalId) {
-      pending.paintCancelled = true;
+      pending.nextRenderCancelled = true;
     }
   }
 }
@@ -319,11 +321,11 @@ function snapshot(formFactor: "desktop" | "phone"): TerminalLatencySnapshot {
     inputToFirstOutputParseMs:
       metrics[formFactor].inputToFirstOutputParseMs.snapshot(),
     outputParseMs: metrics[formFactor].outputParseMs.snapshot(),
-    inputFirstOutputReceivedToPaintMs:
-      metrics[formFactor].inputFirstOutputReceivedToPaintMs.snapshot(),
-    inputToFirstOutputPaintMs:
-      metrics[formFactor].inputToFirstOutputPaintMs.snapshot(),
-    outputPaintMs: metrics[formFactor].outputPaintMs.snapshot(),
+    inputFirstOutputReceivedToNextRenderMs:
+      metrics[formFactor].inputFirstOutputReceivedToNextRenderMs.snapshot(),
+    inputToFirstOutputNextRenderMs:
+      metrics[formFactor].inputToFirstOutputNextRenderMs.snapshot(),
+    outputNextRenderMs: metrics[formFactor].outputNextRenderMs.snapshot(),
   };
 }
 

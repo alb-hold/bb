@@ -112,30 +112,31 @@ export function TerminalLatencyDiagnostics() {
             )}
           </div>
           <div>
-            First output → painted:{" "}
+            First output → next render:{" "}
             {metricText(
-              snapshot[formFactor].inputFirstOutputReceivedToPaintMs.count,
-              snapshot[formFactor].inputFirstOutputReceivedToPaintMs.totalCount,
-              snapshot[formFactor].inputFirstOutputReceivedToPaintMs.p50Ms,
-              snapshot[formFactor].inputFirstOutputReceivedToPaintMs.p95Ms,
+              snapshot[formFactor].inputFirstOutputReceivedToNextRenderMs.count,
+              snapshot[formFactor].inputFirstOutputReceivedToNextRenderMs
+                .totalCount,
+              snapshot[formFactor].inputFirstOutputReceivedToNextRenderMs.p50Ms,
+              snapshot[formFactor].inputFirstOutputReceivedToNextRenderMs.p95Ms,
             )}
           </div>
           <div>
-            Keystroke → first output painted:{" "}
+            Keystroke → first output next render:{" "}
             {metricText(
-              snapshot[formFactor].inputToFirstOutputPaintMs.count,
-              snapshot[formFactor].inputToFirstOutputPaintMs.totalCount,
-              snapshot[formFactor].inputToFirstOutputPaintMs.p50Ms,
-              snapshot[formFactor].inputToFirstOutputPaintMs.p95Ms,
+              snapshot[formFactor].inputToFirstOutputNextRenderMs.count,
+              snapshot[formFactor].inputToFirstOutputNextRenderMs.totalCount,
+              snapshot[formFactor].inputToFirstOutputNextRenderMs.p50Ms,
+              snapshot[formFactor].inputToFirstOutputNextRenderMs.p95Ms,
             )}
           </div>
           <div>
-            Output receive → painted:{" "}
+            Output receive → next render:{" "}
             {metricText(
-              snapshot[formFactor].outputPaintMs.count,
-              snapshot[formFactor].outputPaintMs.totalCount,
-              snapshot[formFactor].outputPaintMs.p50Ms,
-              snapshot[formFactor].outputPaintMs.p95Ms,
+              snapshot[formFactor].outputNextRenderMs.count,
+              snapshot[formFactor].outputNextRenderMs.totalCount,
+              snapshot[formFactor].outputNextRenderMs.p50Ms,
+              snapshot[formFactor].outputNextRenderMs.p95Ms,
             )}
           </div>
         </div>

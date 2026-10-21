@@ -48,10 +48,10 @@ import {
   watchTerminalLayoutSettled,
 } from "./terminal-layout-settle";
 import {
-  cancelTerminalOutputPaints,
+  cancelTerminalOutputNextRenders,
   recordTerminalInputAccepted,
   recordTerminalInputWebSocketSent,
-  recordTerminalOutputPainted,
+  recordTerminalOutputNextRender,
   recordTerminalOutputParsed,
   recordTerminalOutputReceived,
 } from "./terminal-latency-diagnostics.js";
@@ -1308,7 +1308,7 @@ export function ThreadTerminalView({
         !containerHasSize ||
         !isPanelOpenRef.current
       ) {
-        cancelTerminalOutputPaints(session.id);
+        cancelTerminalOutputNextRenders(session.id);
       }
       transport?.setVisible(
         document.visibilityState === "visible" && containerHasSize,
@@ -1411,7 +1411,7 @@ export function ThreadTerminalView({
           containerHasSize &&
           isPanelOpenRef.current
         ) {
-          recordTerminalOutputPainted(session.id, performance.now());
+          recordTerminalOutputNextRender(session.id, performance.now());
         }
       });
       setPromptTrackerState(EMPTY_TERMINAL_PROMPT_TRACKER);
@@ -1729,7 +1729,7 @@ export function ThreadTerminalView({
                 !containerHasSize ||
                 !isPanelOpenRef.current
               ) {
-                cancelTerminalOutputPaints(session.id);
+                cancelTerminalOutputNextRenders(session.id);
               }
             },
             onReplayComplete: () => {
@@ -1997,7 +1997,7 @@ export function ThreadTerminalView({
       terminalInteractions?.dispose();
       terminalRenderSubscription?.dispose();
       terminalRenderSubscription = null;
-      cancelTerminalOutputPaints(session.id);
+      cancelTerminalOutputNextRenders(session.id);
       handleFileDropRef.current = null;
       document.removeEventListener(
         "visibilitychange",
@@ -2045,7 +2045,7 @@ export function ThreadTerminalView({
 
   useEffect(() => {
     if (!isPanelOpen) {
-      cancelTerminalOutputPaints(session.id);
+      cancelTerminalOutputNextRenders(session.id);
     }
     if (!isPanelOpen || !autoFocus) {
       return;
