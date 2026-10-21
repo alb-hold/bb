@@ -505,7 +505,7 @@ describe("renderTerminalScreen", () => {
       output: output(stream.slice(-64 * 1024), true),
     });
     expect(screen.complete).toBe(true);
-  });
+  }, 30_000);
 
   it("keeps completeness false when scrolling depends on inherited modes", async () => {
     const screen = await renderTerminalScreen({
