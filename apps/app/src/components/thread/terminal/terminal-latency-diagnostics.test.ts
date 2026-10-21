@@ -20,8 +20,8 @@ describe("terminal latency diagnostics", () => {
     for (let index = 0; index < 400; index += 1) {
       recordTerminalInputAccepted("term-a", index + 1, index, index + 0.5);
       recordTerminalInputWebSocketSent("term-a", index + 1, index + 1.25);
-      recordTerminalOutputReceived("term-a", index + 2);
-      recordTerminalOutputRendered("term-a", index + 2, index + 3);
+      const frameId = recordTerminalOutputReceived("term-a", index + 2);
+      recordTerminalOutputRendered("term-a", frameId ?? undefined, index + 3);
     }
 
     const snapshot = getTerminalLatencyDiagnostics();
@@ -86,8 +86,8 @@ describe("terminal latency diagnostics", () => {
 
   it("keeps phone and desktop timing samples separate", () => {
     vi.stubGlobal("window", { innerWidth: 390 });
-    recordTerminalOutputReceived("term-a", 5);
-    recordTerminalOutputRendered("term-a", 5, 11);
+    const frameId = recordTerminalOutputReceived("term-a", 5);
+    recordTerminalOutputRendered("term-a", frameId ?? undefined, 11);
 
     const snapshot = getTerminalLatencyDiagnostics();
     expect(snapshot.phone.outputRenderMs.p50Ms).toBe(6);
@@ -104,8 +104,8 @@ describe("terminal latency diagnostics", () => {
     recordTerminalInputWebSocketSent("term-a", 100, 101);
     recordTerminalInputWebSocketSent("term-a", 108, 109);
     recordTerminalInputWebSocketSent("term-a", 116, 117);
-    recordTerminalOutputReceived("term-a", 130);
-    recordTerminalOutputRendered("term-a", 130, 140);
+    const frameId = recordTerminalOutputReceived("term-a", 130);
+    recordTerminalOutputRendered("term-a", frameId ?? undefined, 140);
 
     const serialized = JSON.stringify(getTerminalLatencyDiagnostics());
     expect(serialized).not.toContain(keystroke);
@@ -132,8 +132,15 @@ describe("terminal latency diagnostics", () => {
   it("pairs output only with input sent by its receive time and keeps unsent input", () => {
     const before = getTerminalLatencyDiagnostics().desktop;
     recordTerminalInputAccepted("term-before-send", 10_000);
-    recordTerminalOutputReceived("term-before-send", 10_005);
-    recordTerminalOutputRendered("term-before-send", 10_005, 10_008);
+    const beforeSendFrame = recordTerminalOutputReceived(
+      "term-before-send",
+      10_005,
+    );
+    recordTerminalOutputRendered(
+      "term-before-send",
+      beforeSendFrame ?? undefined,
+      10_008,
+    );
 
     expect(
       getTerminalLatencyDiagnostics().desktop.inputToFirstOutputReceivedMs
@@ -155,15 +162,19 @@ describe("terminal latency diagnostics", () => {
     recordTerminalInputAccepted("term-cross-a", 20_000);
     recordTerminalInputWebSocketSent("term-cross-a", 20_000, 20_001);
 
-    recordTerminalOutputReceived("term-cross-b", 20_005);
-    recordTerminalOutputRendered("term-cross-b", 20_005, 20_008);
+    const otherFrame = recordTerminalOutputReceived("term-cross-b", 20_005);
+    recordTerminalOutputRendered(
+      "term-cross-b",
+      otherFrame ?? undefined,
+      20_008,
+    );
     expect(
       getTerminalLatencyDiagnostics().desktop.inputToFirstOutputReceivedMs
         .totalCount,
     ).toBe(before);
 
-    recordTerminalOutputReceived("term-cross-a", 20_010);
-    recordTerminalOutputRendered("term-cross-a", 20_010, 20_013);
+    const ownFrame = recordTerminalOutputReceived("term-cross-a", 20_010);
+    recordTerminalOutputRendered("term-cross-a", ownFrame ?? undefined, 20_013);
     expect(
       getTerminalLatencyDiagnostics().desktop.inputToFirstOutputReceivedMs
         .totalCount,
@@ -233,10 +244,10 @@ describe("terminal latency diagnostics", () => {
         inputEventAt + 5,
       );
       recordTerminalInputWebSocketSent(terminalId, acceptedAt, sentAt);
-      recordTerminalOutputReceived(terminalId, receivedAt);
+      const frameId = recordTerminalOutputReceived(terminalId, receivedAt);
       recordTerminalOutputRendered(
         terminalId,
-        receivedAt,
+        frameId ?? undefined,
         inputEventAt + 5_000,
       );
     }
@@ -245,5 +256,68 @@ describe("terminal latency diagnostics", () => {
       getTerminalLatencyDiagnostics().desktop.inputToFirstOutputRenderMs;
     expect(metric.totalCount).toBe(before + 32);
     expect(metric.p95Ms).toBe(5_000);
+  });
+
+  it("pairs delayed render callbacks with their own frame and input across ring eviction", () => {
+    const before = getTerminalLatencyDiagnostics().desktop;
+    const terminalId = "term-render-ring-pairing";
+    const frames: Array<{
+      frameId: number | null;
+      receivedAt: number;
+      index: number;
+    }> = [];
+
+    for (let index = 0; index < 300; index += 1) {
+      const receivedAt = 100_000 + index * 100;
+      const inputEventAt = receivedAt - (1_000 + index);
+      const acceptedAt = inputEventAt + 100;
+      recordTerminalInputAccepted(
+        terminalId,
+        acceptedAt,
+        inputEventAt,
+        inputEventAt + 50,
+      );
+      recordTerminalInputWebSocketSent(
+        terminalId,
+        acceptedAt,
+        inputEventAt + 200,
+      );
+      frames.push({
+        frameId: recordTerminalOutputReceived(terminalId, receivedAt),
+        receivedAt,
+        index,
+      });
+    }
+
+    for (const frame of frames.slice(0, 150)) {
+      recordTerminalOutputRendered(
+        terminalId,
+        frame.frameId ?? undefined,
+        frame.receivedAt + frame.index + 1,
+      );
+    }
+    for (const frame of frames.slice(150).reverse()) {
+      recordTerminalOutputRendered(
+        terminalId,
+        frame.frameId ?? undefined,
+        frame.receivedAt + frame.index + 1,
+      );
+    }
+
+    const after = getTerminalLatencyDiagnostics().desktop;
+    expect(after.outputRenderMs.totalCount).toBe(
+      before.outputRenderMs.totalCount + 256,
+    );
+    expect(after.outputRenderMs.count).toBe(256);
+    expect(after.outputRenderMs.p50Ms).toBe(172);
+    expect(after.outputRenderMs.p95Ms).toBe(288);
+    expect(after.inputToFirstOutputReceivedMs.totalCount).toBe(
+      before.inputToFirstOutputReceivedMs.totalCount + 300,
+    );
+    expect(after.inputToFirstOutputRenderMs.totalCount).toBe(
+      before.inputToFirstOutputRenderMs.totalCount + 256,
+    );
+    expect(after.inputToFirstOutputRenderMs.p50Ms).toBe(1_343);
+    expect(after.inputToFirstOutputRenderMs.p95Ms).toBe(1_575);
   });
 });

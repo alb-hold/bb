@@ -108,13 +108,19 @@ type PendingTerminalInput = {
 type SentTerminalInput = PendingTerminalInput & { sentAt: number };
 
 const pendingInputs: PendingTerminalInput[] = [];
-const pendingRenders: Array<{
+type PendingTerminalRender = {
+  frameId: number;
   formFactor: FormFactor;
   terminalId: string;
   inputAcceptedAt: number | null;
   inputEventAt: number | null;
   receivedAt: number;
-}> = [];
+};
+
+const pendingRenders: Array<PendingTerminalRender | undefined> = Array.from({
+  length: RING_SIZE,
+});
+let nextOutputFrameId = 1;
 
 function currentFormFactor(): FormFactor {
   return typeof window !== "undefined" && window.innerWidth < 768
@@ -170,8 +176,8 @@ export function recordTerminalInputWebSocketSent(
 export function recordTerminalOutputReceived(
   terminalId: string,
   timestamp: number,
-): void {
-  if (!Number.isFinite(timestamp)) return;
+): number | null {
+  if (!Number.isFinite(timestamp)) return null;
   const firstInput: SentTerminalInput | null =
     pendingInputs.find((pending): pending is SentTerminalInput => {
       const sentAt = pending.sentAt;
@@ -200,35 +206,36 @@ export function recordTerminalOutputReceived(
       }
     }
   }
-  if (pendingRenders.length === RING_SIZE) pendingRenders.shift();
-  pendingRenders.push({
+  const frameId = nextOutputFrameId++;
+  pendingRenders[frameId % RING_SIZE] = {
+    frameId,
     formFactor: firstInput?.formFactor ?? currentFormFactor(),
     terminalId,
     inputAcceptedAt: firstInput?.timestamp ?? null,
     inputEventAt: firstInput?.inputEventAt ?? null,
     receivedAt: timestamp,
-  });
+  };
+  return frameId;
 }
 
 export function recordTerminalOutputRendered(
   terminalId: string,
-  receivedAt: number,
+  frameId: number | undefined,
   renderedAt: number,
 ): void {
-  const pendingIndex = pendingRenders.findIndex(
-    (item) => item.terminalId === terminalId,
-  );
-  const pending =
-    pendingIndex < 0 ? undefined : pendingRenders.splice(pendingIndex, 1)[0];
+  if (frameId === undefined || !Number.isSafeInteger(frameId)) return;
+  const index = frameId % RING_SIZE;
+  const pending = pendingRenders[index];
+  if (pending?.frameId !== frameId || pending.terminalId !== terminalId) return;
+  pendingRenders[index] = undefined;
   const formFactor = pending?.formFactor ?? currentFormFactor();
-  const frameReceivedAt = pending?.receivedAt ?? receivedAt;
-  metrics[formFactor].outputRenderMs.add(renderedAt - frameReceivedAt);
+  metrics[formFactor].outputRenderMs.add(renderedAt - pending.receivedAt);
   if (
     pending?.inputAcceptedAt !== null &&
     pending?.inputAcceptedAt !== undefined
   ) {
     metrics[formFactor].inputFirstOutputReceivedToRenderMs.add(
-      renderedAt - frameReceivedAt,
+      renderedAt - pending.receivedAt,
     );
   }
   if (pending?.inputEventAt !== null && pending?.inputEventAt !== undefined) {

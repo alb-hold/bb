@@ -471,9 +471,9 @@ interface WriteTerminalSessionStatusNoticeArgs {
 
 interface TerminalOutputWriteArgs {
   data: string | Uint8Array;
+  frameId?: number;
   isReplay: boolean;
   terminalId?: string;
-  receivedAt?: number;
   onParsed: () => void;
   replayWriteState: TerminalReplayWriteState;
   terminal: XTermTerminal;
@@ -526,7 +526,7 @@ interface HandleTerminalServerMessageArgs {
   onSessionChange?: (session: TerminalSession) => void;
   replayNextSeq: number | null;
   replayWriteState: TerminalReplayWriteState;
-  outputReceivedAt?: number;
+  outputFrameId?: number;
   setReplayNextSeq: (nextSeq: number | null) => void;
   terminal: XTermTerminal;
   pipeline?: ReturnType<typeof createTerminalOutputPipeline>;
@@ -753,16 +753,15 @@ export function captureTerminalContextMenuState({
 
 export function writeTerminalOutput({
   data,
+  frameId,
   isReplay,
   terminalId = "",
-  receivedAt,
   onParsed,
   replayWriteState,
   terminal,
   pipeline,
   replayPipeline,
 }: TerminalOutputWriteArgs): void {
-  const frameReceivedAt = receivedAt ?? performance.now();
   const bytes =
     typeof data === "string" ? new TextEncoder().encode(data) : data;
   const write = (callback: () => void, applyMarkerGrids: boolean) => {
@@ -771,11 +770,7 @@ export function writeTerminalOutput({
   };
   if (!isReplay) {
     write(() => {
-      recordTerminalOutputRendered(
-        terminalId,
-        frameReceivedAt,
-        performance.now(),
-      );
+      recordTerminalOutputRendered(terminalId, frameId, performance.now());
       onParsed();
     }, true);
     return;
@@ -785,21 +780,13 @@ export function writeTerminalOutput({
   write(() => {
     if (!replayPipeline) {
       replayWriteState.suppressedWriteCount -= 1;
-      recordTerminalOutputRendered(
-        terminalId,
-        frameReceivedAt,
-        performance.now(),
-      );
+      recordTerminalOutputRendered(terminalId, frameId, performance.now());
       onParsed();
       return;
     }
     replayPipeline.push(bytes, () => {
       replayWriteState.suppressedWriteCount -= 1;
-      recordTerminalOutputRendered(
-        terminalId,
-        frameReceivedAt,
-        performance.now(),
-      );
+      recordTerminalOutputRendered(terminalId, frameId, performance.now());
       onParsed();
     });
   }, false);
@@ -813,7 +800,7 @@ export function handleTerminalServerMessage({
   onSessionChange,
   replayNextSeq,
   replayWriteState,
-  outputReceivedAt,
+  outputFrameId,
   setReplayNextSeq,
   terminal,
   pipeline,
@@ -847,9 +834,9 @@ export function handleTerminalServerMessage({
       const nextSeq = message.chunk.seq + 1;
       writeTerminalOutput({
         data: decodeBase64Bytes(message.chunk.dataBase64),
+        frameId: outputFrameId,
         isReplay: replayNextSeq !== null && message.chunk.seq < replayNextSeq,
         terminalId,
-        receivedAt: outputReceivedAt,
         onParsed: () => {
           acknowledgeOutput(nextSeq);
           if (
@@ -1600,7 +1587,7 @@ export function ThreadTerminalView({
       let reconnecting = false;
       let repaintAfterReconnect = false;
       let reconnectingNoticeVisible = false;
-      let outputFrameReceivedAt = 0;
+      let outputFrameId: number | null = null;
       const clearConnectionNoticeTimeout = () => {
         if (connectionNoticeTimeout !== null) {
           clearTimeout(connectionNoticeTimeout);
@@ -1613,8 +1600,7 @@ export function ThreadTerminalView({
         onInputAccepted: recordTerminalInputAccepted,
         onInputSent: recordTerminalInputWebSocketSent,
         onOutputFrameReceived: (terminalId, timestamp) => {
-          outputFrameReceivedAt = timestamp;
-          recordTerminalOutputReceived(terminalId, timestamp);
+          outputFrameId = recordTerminalOutputReceived(terminalId, timestamp);
         },
         onRepaintNudgeSizeReleased: (size) => {
           const nextSize = nextSharedTerminalSize(sharedSize, size, false);
@@ -1676,6 +1662,9 @@ export function ThreadTerminalView({
           });
         },
         onMessage: (message) => {
+          const currentOutputFrameId =
+            message.type === "output" ? outputFrameId : null;
+          if (message.type === "output") outputFrameId = null;
           if (
             message.type === "attached" ||
             message.type === "session-updated"
@@ -1726,7 +1715,7 @@ export function ThreadTerminalView({
             onSessionChange: onSessionChangeRef.current,
             replayNextSeq,
             replayWriteState,
-            outputReceivedAt: outputFrameReceivedAt,
+            outputFrameId: currentOutputFrameId ?? undefined,
             onReplayStart: () => {
               replayPreview?.dispose();
               replayCompleted = false;
