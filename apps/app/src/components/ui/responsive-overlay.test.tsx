@@ -504,7 +504,12 @@ describe("PersistentResponsiveDrawerShell", () => {
       </main>,
     );
 
+    const closedControl = content.querySelector<HTMLButtonElement>("button");
+    if (closedControl === null) {
+      throw new Error("closed drawer control should remain mounted");
+    }
     expect(content.style.pointerEvents).toBe("none");
+    expect(getComputedStyle(closedControl).pointerEvents).toBe("none");
     expect(content.hasAttribute("inert")).toBe(true);
     expect(content.getAttribute("aria-hidden")).toBe("true");
   });
