@@ -227,6 +227,46 @@ describe("SidebarSplitContainer", () => {
     expect(window.localStorage.getItem(sidebarSplitStorageKey(PANEL_STATE_ID))).toBeNull();
   });
 
+  it("rejects an exited terminal whose tab is already available without changing layout", async () => {
+    const terminalId = "term-exited-present";
+    const terminalTab = createTerminalFixedPanelTab({ terminalId });
+    const tabs = [
+      { id: terminalTab.id, label: "Exited", restoresPlacementAfterRemoval: true },
+      { id: "tab-b", label: "Other", restoresPlacementAfterRemoval: true },
+    ];
+    const initial = createSidebarSplitState(tabs.map((tab) => tab.id), terminalTab.id);
+    const split = moveSidebarTab(
+      initial,
+      initial.layout.focusedPaneId,
+      "tab-b",
+      { paneId: initial.layout.focusedPaneId, zone: "right" },
+      { groupId: "group-exited" },
+    );
+    persistState(split);
+    const storageKey = sidebarSplitStorageKey(PANEL_STATE_ID);
+    const savedState = window.localStorage.getItem(storageKey);
+    const onEnsureTerminalTabs = vi.fn(() => false);
+    renderContainer({
+      activeTabId: terminalTab.id,
+      tabs,
+      terminalLayoutRequest: {
+        action: "split",
+        requestId: 43,
+        side: "right",
+        terminalId,
+      },
+      onEnsureTerminalTabs,
+      renderPane: ({ group }) => <div>{group.tabIds.join(",")}</div>,
+    });
+
+    await waitFor(() =>
+      expect(toastWarning).toHaveBeenCalledWith("The terminal is no longer available in this thread."),
+    );
+    expect(onEnsureTerminalTabs).toHaveBeenCalledWith([terminalId]);
+    expect(window.localStorage.getItem(storageKey)).toBe(savedState);
+    expect(listPaneIds()).toHaveLength(2);
+  });
+
   it("applies a terminal layout request through the persisted sidebar split state", async () => {
     const terminalId = "term-layout-source";
     const otherTerminalId = "term-layout-other";

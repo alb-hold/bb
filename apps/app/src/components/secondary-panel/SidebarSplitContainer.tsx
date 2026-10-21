@@ -479,6 +479,18 @@ export function SidebarSplitContainer({
       handledTerminalLayoutRequestId.current = terminalLayoutRequest.requestId;
       return;
     }
+    const ensured = onEnsureTerminalTabs?.([
+      terminalLayoutRequest.terminalId,
+      ...(terminalLayoutRequest.targetTerminalId === undefined
+        ? []
+        : [terminalLayoutRequest.targetTerminalId]),
+    ]);
+    if (ensured === null) return;
+    if (ensured === false) {
+      appToast.warning("The terminal is no longer available in this thread.");
+      handledTerminalLayoutRequestId.current = terminalLayoutRequest.requestId;
+      return;
+    }
     if (
       terminalLayoutRequest.action === "split" &&
       countPanes(stateRef.current.layout.root) >= MAX_PANES
