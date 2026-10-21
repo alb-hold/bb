@@ -1247,11 +1247,16 @@ describe("checking whether bb closed a native terminal for good", () => {
     return url;
   }
 
-  const check = (baseUrl: string, timeoutMs = 5_000) =>
+  const check = (
+    baseUrl: string,
+    timeoutMs = 5_000,
+    fetch?: typeof globalThis.fetch,
+  ) =>
     checkNativeTerminal({
       baseUrl,
       threadId: "thr_x",
       timeoutMs,
+      fetch,
     });
 
   it("treats a missing thread as closed for good", async () => {
@@ -1277,9 +1282,27 @@ describe("checking whether bb closed a native terminal for good", () => {
   });
 
   it("counts a response whose body stalls past the timeout as bb answering", async () => {
-    await expect(check(await stallingAfterHeaders(), 50)).resolves.toBe(
-      "detached",
-    );
+    const fetch: typeof globalThis.fetch = async (_input, init) => {
+      const signal = init?.signal;
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("{"));
+            if (signal?.aborted) {
+              controller.error(signal.reason);
+              return;
+            }
+            signal?.addEventListener(
+              "abort",
+              () => controller.error(signal.reason),
+              { once: true },
+            );
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    };
+    await expect(check("http://127.0.0.1", 50, fetch)).resolves.toBe("detached");
   });
 
   it.each([
