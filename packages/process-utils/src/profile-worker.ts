@@ -189,8 +189,12 @@ async function runProfileWorker(): Promise<void> {
       await session.post("Profiler.disable").catch(() => {});
       session.disconnect();
       await rm(pendingPath, { force: true }).catch(() => {});
-      const failure =
-        error instanceof Error ? error : new Error(String(error));
+      let failure: Error;
+      try {
+        failure = error instanceof Error ? error : new Error(String(error));
+      } catch {
+        failure = new Error("Non-Error profile failure");
+      }
       await new Promise<void>((resolve) => {
         acknowledgeFailure = resolve;
         port.postMessage({ failure });

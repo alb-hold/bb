@@ -18,7 +18,10 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { WorkerOptions } from "node:worker_threads";
 import { startPerformanceDiagnostics } from "../src/performance-diagnostics.js";
 
-const workerOverrides = vi.hoisted(() => ({ nonErrorFailure: false }));
+const workerOverrides = vi.hoisted(() => ({
+  nonErrorFailure: false,
+  uncoercibleFailure: false,
+}));
 
 vi.mock("node:worker_threads", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:worker_threads")>();
@@ -37,6 +40,18 @@ vi.mock("node:worker_threads", async (importOriginal) => {
             throw new Error("Expected profiling worker failure handler");
           source = replaced;
         }
+        if (workerOverrides.uncoercibleFailure) {
+          if (typeof source !== "string")
+            throw new Error("Expected profiling worker source");
+          const replaced = source.replace(
+            'const stopping = command.command === "stop";',
+            'const stopping = command.command === "stop";' +
+              "\n        if (stopping) throw Object.create(null);",
+          );
+          if (replaced === source)
+            throw new Error("Expected profiling worker failure handler");
+          source = replaced;
+        }
         super(source, options);
       }
     },
@@ -46,6 +61,7 @@ vi.mock("node:worker_threads", async (importOriginal) => {
 describe("performance diagnostics", () => {
   afterEach(() => {
     workerOverrides.nonErrorFailure = false;
+    workerOverrides.uncoercibleFailure = false;
     inspectorConsole.profileEnd("unrelated-user-capture");
   });
 
@@ -345,6 +361,44 @@ describe("performance diagnostics", () => {
     } finally {
       await monitor.stop();
       workerOverrides.nonErrorFailure = false;
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("settles a worker failure whose value cannot be stringified", async () => {
+    const dataDir = await mkdtemp(
+      join(tmpdir(), "bb-perf-uncoercible-failure-"),
+    );
+    const warnings: { error: unknown; message: string }[] = [];
+    workerOverrides.uncoercibleFailure = true;
+    const monitor = await startPerformanceDiagnostics({
+      dataDir,
+      logger: {
+        info: () => {},
+        warn: (fields, message) => {
+          warnings.push({
+            error:
+              typeof fields === "object" && fields !== null && "err" in fields
+                ? fields.err
+                : undefined,
+            message,
+          });
+        },
+      },
+    });
+    try {
+      await monitor.stop();
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]?.message).toBe(
+        "CPU profiling stopped; performance summaries remain enabled",
+      );
+      const error = warnings[0]?.error;
+      expect(error).toBeInstanceOf(Error);
+      if (!(error instanceof Error)) throw new Error("Expected profiler error");
+      expect(error.message).toBe("Non-Error profile failure");
+    } finally {
+      await monitor.stop();
+      workerOverrides.uncoercibleFailure = false;
       await rm(dataDir, { recursive: true, force: true });
     }
   });
