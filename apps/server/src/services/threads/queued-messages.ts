@@ -585,6 +585,13 @@ async function sendClaimedQueuedMessageForIdleProviderThread(
       ) {
         throw createQueuedMessageAutoSendPausedError();
       }
+      const currentThread = getThread(tx, thread.id);
+      if (
+        !currentThread ||
+        currentThread.parentThreadId !== thread.parentThreadId
+      ) {
+        throw createQueuedMessageClaimLostError();
+      }
       if (deferredFirstTurnContext) {
         requireDeferredFirstTurnContextCurrent(tx, {
           requestSequence: deferredFirstTurnContext.requestSequence,

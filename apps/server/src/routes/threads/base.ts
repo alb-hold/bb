@@ -1,4 +1,5 @@
 import { countUnarchivedThreadDescendants } from "../../services/threads/thread-archive.js";
+import { eq } from "drizzle-orm";
 import { cancelAbandonedProviderCreations } from "../../services/threads/thread-environment-providers.js";
 import {
   THREAD_SEARCH_LIMIT_PER_GROUP_DEFAULT,
@@ -23,7 +24,7 @@ import {
   markThreadDeleted,
   listLifecycleThreadTree,
   listPluginThreadMetadata,
-  listQueuedThreadMessages,
+  queuedThreadMessages,
   listThreadAncestors,
   listThreadDescendants,
   searchThreadsWithPendingInteractionState,
@@ -757,6 +758,15 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
               "Thread scope changed while this update was being prepared. Retry the update.",
             );
           }
+          if (typeof payload.parentThreadId === "string") {
+            assertValidParentThread(
+              { db: tx },
+              {
+                childThreadId: current.id,
+                parentThreadId: payload.parentThreadId,
+              },
+            );
+          }
           const existing = getThreadExecutionOverride(tx, thread.id) ?? {
             modelOverride: null,
             reasoningLevelOverride: null,
@@ -801,12 +811,18 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
             );
           }
           if (afterPolicy !== null && afterPolicy !== beforePolicy) {
-            const conflictingQueuedMessageIds = listQueuedThreadMessages(
-              tx,
-              current.id,
-            )
-              .filter((row) => row.model !== afterPolicy)
-              .map((row) => row.id);
+            const conflictingQueuedRows = tx
+              .select({
+                id: queuedThreadMessages.id,
+                model: queuedThreadMessages.model,
+              })
+              .from(queuedThreadMessages)
+              .where(eq(queuedThreadMessages.threadId, current.id))
+              .all()
+              .filter((row) => row.model !== afterPolicy);
+            const conflictingQueuedMessageIds = conflictingQueuedRows.map(
+              (row) => row.id,
+            );
             if (conflictingQueuedMessageIds.length > 0) {
               throw new ApiError(
                 400,
@@ -815,7 +831,7 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
                 {
                   details: {
                     providerId: current.providerId,
-                    requestedModel: conflictingQueuedMessageIds,
+                    requestedModel: conflictingQueuedRows[0]!.model,
                     childThreadModel: afterPolicy,
                     reason: "parent",
                     queuedMessageIds: conflictingQueuedMessageIds,

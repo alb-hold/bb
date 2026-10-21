@@ -14,6 +14,68 @@ import { withTestHarness } from "../../helpers/test-app.js";
 
 describe("stale model recovery", () => {
   const savedModels = ["claude-mythos-5", "claude-opus-4-8[1m]"];
+  it("keeps a top-level client-preference model in the sticky override", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps, {
+        id: "host-client-preference-model-recovery",
+      });
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+        path: "/tmp/client-preference-model-recovery",
+      });
+      const environment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        projectId: project.id,
+        path: "/tmp/client-preference-model-recovery",
+        status: "ready",
+      });
+      const thread = seedThread(harness.deps, {
+        environmentId: environment.id,
+        projectId: project.id,
+        providerId: "claude-code",
+        status: "idle",
+      });
+      setThreadExecutionOverride(harness.db, {
+        threadId: thread.id,
+        modelOverride: "claude-opus-5-5",
+        reasoningLevelOverride: null,
+      });
+      registerProviderHostRpcResponder(harness, {
+        hostId: host.id,
+        sessionId: session.id,
+        modelsByProviderId: {
+          "claude-code": {
+            models: [availableModelFixture({ model: "claude-sonnet-5-5" })],
+            selectedOnlyModels: [],
+          },
+        },
+      });
+
+      const execution = await buildExecutionOptions(
+        harness.deps,
+        {
+          model: "claude-sonnet-5-5",
+          executionInputSources: { model: "client-preference" },
+        },
+        { threadId: thread.id },
+      );
+      await recoverThreadModelOverride(harness.deps, {
+        model: execution.model,
+        modelSource: "explicit",
+        reasoningLevel: execution.reasoningLevel,
+        reasoningLevelSource: "explicit",
+        thread,
+      });
+
+      expect(getThreadExecutionOverride(harness.db, thread.id)).toMatchObject({
+        modelOverride: "claude-sonnet-5-5",
+      });
+      await expect(
+        buildExecutionOptions(harness.deps, {}, { threadId: thread.id }),
+      ).resolves.toMatchObject({ model: "claude-sonnet-5-5" });
+    });
+  });
+
   it.each(savedModels)("recovers %s", async (savedModel) => {
     await withTestHarness(async (harness) => {
       const { host, session } = seedHostSession(harness.deps, {

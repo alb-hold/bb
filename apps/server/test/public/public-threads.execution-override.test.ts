@@ -413,7 +413,11 @@ describe("PATCH /threads/:id execution override", () => {
       expect(response.status).toBe(400);
       expect(await readJson(response)).toMatchObject({
         code: "child_model_conflict",
-        details: { reason: "parent", queuedMessageIds: [queued.id] },
+        details: {
+          reason: "parent",
+          requestedModel: "claude-opus-5-5",
+          queuedMessageIds: [queued.id],
+        },
       });
       expect(getThread(harness.db, thread.id)?.parentThreadId).toBeNull();
       expect(listQueuedThreadMessages(harness.db, thread.id)).toMatchObject([
@@ -444,7 +448,7 @@ describe("PATCH /threads/:id execution override", () => {
       const queued = seedQueuedMessage(harness.deps, {
         threadId: child.id,
         content: [{ type: "text", text: "accepted child work", mentions: [] }],
-        model: "claude-sonnet-5-5",
+        model: "claude-opus-5-5",
         waitingOn: { kind: "time" },
         sendAt: Date.now() + 60_000,
       });
@@ -458,7 +462,7 @@ describe("PATCH /threads/:id execution override", () => {
         secondParent.id,
       );
       expect(listQueuedThreadMessages(harness.db, child.id)).toMatchObject([
-        { id: queued.id, model: "claude-sonnet-5-5" },
+        { id: queued.id, model: "claude-opus-5-5" },
       ]);
     });
   });

@@ -1,7 +1,6 @@
 import {
   getEnvironment,
   getThread,
-  getThreadSpawner,
   requireThreadLifecycleEventApplied,
 } from "@bb/db";
 import { assertNotNativeTerminalThread } from "./native-terminal-guard.js";
@@ -25,7 +24,6 @@ import type {
   LoggedPendingInteractionWorkSessionDeps,
 } from "../../types.js";
 import { ApiError } from "../../errors.js";
-import { assertRequestedModelAllowedForCurrentScope } from "./child-thread-model.js";
 import {
   addRequestIdToTurnSubmitCommandPayload,
   buildExecutionOptions,
@@ -527,16 +525,6 @@ export async function sendThreadMessage(
           throw new ApiError(404, "thread_not_found", "Thread not found");
         }
         if (current.parentThreadId !== args.thread.parentThreadId) {
-          assertRequestedModelAllowedForCurrentScope(
-            { db: tx, providerRegistry: deps.providerRegistry },
-            {
-              threadId: current.id,
-              model: args.payload.model,
-              providerId: current.providerId,
-              sources: args.payload.executionInputSources,
-              spawnerThreadId: getThreadSpawner(deps.db, current.id),
-            },
-          );
           throw new ApiError(
             409,
             "thread_scope_changed",
@@ -649,24 +637,18 @@ async function sendThreadMessageWithoutContextClear(
     mode === "auto" || mode === "steer"
       ? getActiveTurnId(deps, thread.id)
       : null;
-  if (senderThreadId === null && args.retryOf === undefined) {
-    await recoverThreadModelOverride(deps, {
-      model: payload.model,
-      modelSource:
-        payload.executionInputSources === undefined
-          ? "explicit"
-          : payload.executionInputSources.model,
-      reasoningLevel: payload.reasoningLevel,
-      reasoningLevelSource:
-        payload.executionInputSources === undefined
-          ? "explicit"
-          : payload.executionInputSources.reasoningLevel,
-      thread,
-    });
-  }
   const execution = await buildExecutionOptions(deps, payload, {
     threadId: thread.id,
   });
+  if (senderThreadId === null && args.retryOf === undefined) {
+    await recoverThreadModelOverride(deps, {
+      model: execution.model,
+      modelSource: "explicit",
+      reasoningLevel: execution.reasoningLevel,
+      reasoningLevelSource: "explicit",
+      thread,
+    });
+  }
   const permissionEscalation = resolvePermissionEscalation({
     initiator,
   });

@@ -265,12 +265,18 @@ async function runDispatchAttempt(
   assertThreadHostAcceptsWork(deps.db, thread);
   const initialCurrentThread = getThread(deps.db, thread.id);
   if (initialCurrentThread?.parentThreadId !== thread.parentThreadId) {
-    assertRequestedModelAllowedForCurrentScope(deps, {
-      threadId: thread.id,
-      model: payload.model,
-      providerId: thread.providerId,
-      sources: payload.executionInputSources,
-    });
+    if (
+      args.source.kind === "inline" &&
+      args.trigger === "user" &&
+      args.retryOf === undefined
+    ) {
+      assertRequestedModelAllowedForCurrentScope(deps, {
+        threadId: thread.id,
+        model: payload.model,
+        providerId: thread.providerId,
+        sources: payload.executionInputSources,
+      });
+    }
     return reattemptDispatchForThreadChange(
       deps,
       args,
@@ -602,7 +608,12 @@ async function runDispatchAttempt(
       await continueThroughCoreWaits();
     }
   } catch (error) {
-    if (!(error instanceof ThreadQueueScopeChangedError)) throw error;
+    if (
+      !(error instanceof ThreadQueueScopeChangedError) &&
+      !(error instanceof DispatchThreadScopeChangedError)
+    ) {
+      throw error;
+    }
     continued.reattemptThread = getThread(deps.db, thread.id);
   }
 
@@ -628,6 +639,7 @@ async function runDispatchAttempt(
           args,
           current,
           reattempted,
+          false,
         );
       }
       args.onTurnRequestCreated?.(admission.turnRequestId);
@@ -650,14 +662,20 @@ async function runDispatchAttempt(
           throw new DispatchThreadStatusChangedError();
         }
         if (current.parentThreadId !== thread.parentThreadId) {
-          assertRequestedModelAllowedForCurrentScope(deps, {
-            threadId: thread.id,
-            model: payload.model,
-            providerId: thread.providerId,
-            sources: payload.executionInputSources,
-            spawnerThreadId: getThreadSpawner(deps.db, thread.id),
-          });
-          throw new DispatchThreadStatusChangedError();
+          if (
+            args.source.kind === "inline" &&
+            args.trigger === "user" &&
+            args.retryOf === undefined
+          ) {
+            assertRequestedModelAllowedForCurrentScope(deps, {
+              threadId: thread.id,
+              model: payload.model,
+              providerId: thread.providerId,
+              sources: payload.executionInputSources,
+              spawnerThreadId: getThreadSpawner(deps.db, thread.id),
+            });
+          }
+          throw new DispatchThreadScopeChangedError();
         }
         if (claimed !== null) {
           consumeClaimedRows(
@@ -680,12 +698,16 @@ async function runDispatchAttempt(
     };
   } catch (error) {
     releaseWorkspaceForThread(deps, thread);
-    if (error instanceof DispatchThreadStatusChangedError) {
+    if (
+      error instanceof DispatchThreadStatusChangedError ||
+      error instanceof DispatchThreadScopeChangedError
+    ) {
       return reattemptDispatchForThreadChange(
         deps,
         args,
         getThread(deps.db, thread.id),
         reattempted,
+        error instanceof DispatchThreadScopeChangedError,
       );
     }
     throw error;
@@ -693,12 +715,14 @@ async function runDispatchAttempt(
 }
 
 class DispatchThreadStatusChangedError extends Error {}
+class DispatchThreadScopeChangedError extends Error {}
 
 function reattemptDispatchForThreadChange(
   deps: LoggedPendingInteractionWorkSessionDeps,
   args: DispatchAttemptArgs,
   thread: Thread | null,
   reattempted: boolean,
+  scopeChanged = true,
 ): Promise<DispatchAttemptOutcome> {
   if (thread === null) {
     throw new ApiError(404, "thread_not_found", "Thread not found");
@@ -706,8 +730,10 @@ function reattemptDispatchForThreadChange(
   if (reattempted) {
     throw new ApiError(
       409,
-      "thread_scope_changed",
-      "Thread scope changed repeatedly while this request was being prepared. Retry the request.",
+      scopeChanged ? "thread_scope_changed" : "thread_changed",
+      scopeChanged
+        ? "Thread scope changed repeatedly while this request was being prepared. Retry the request."
+        : "Thread state changed repeatedly while this request was being prepared. Retry the request.",
     );
   }
   return runDispatchAttempt(deps, { ...args, thread }, true);
@@ -747,7 +773,7 @@ interface PendingThreadAdmission {
 }
 
 class PendingThreadAdmissionLost extends Error {
-  constructor() {
+  constructor(readonly scopeChanged = false) {
     super("The thread left pending under the attempt");
     this.name = "PendingThreadAdmissionLost";
   }
@@ -785,7 +811,7 @@ async function admitPendingThread(
             sources: args.payload.executionInputSources,
             spawnerThreadId: getThreadSpawner(deps.db, args.thread.id),
           });
-          throw new PendingThreadAdmissionLost();
+          throw new PendingThreadAdmissionLost(true);
         }
         if (args.claimed !== null && args.claimed.length > 0) {
           consumeClaimedRows(
@@ -830,6 +856,9 @@ async function admitPendingThread(
       { threadId: args.thread.id, status: args.thread.status },
       "A cleared first dispatch could not move its thread out of pending",
     );
+    if (error.scopeChanged) {
+      throw new DispatchThreadScopeChangedError();
+    }
     return null;
   }
   const { startingThread, turnRequestId } = admission;
