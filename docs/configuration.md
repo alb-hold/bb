@@ -225,6 +225,18 @@ for the command surface.
 | `earlyAdopter`                                                             | `false`                             | Settings → Experiments → Become an early adopter. Turns on experiments marked Early adopter unless you set them yourself; see [Experiments](#experiments).                                                                                                                                                                                                                                                                                                                                                                                     |
 | `machineServerUrl`, `defaultMachineAccess`, `machineGitCredentialsEnabled` | See [Multi-machine](#multi-machine) | Machine access and credential forwarding.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 
+**Terminal clipboard.** Settings → General → Terminals → Copy on select
+(`terminalCopyOnSelect`, default `true`) copies completed terminal selections
+exactly and shows a "Selection copied" notification. Selections in messages,
+files, and prompt editors are unchanged. Disable it with
+`bb settings general terminalCopyOnSelect off` or SDK
+`system.updateGeneralSettings`, preserving the other general settings.
+The server persists it across windows and restarts; older clients that omit it
+preserve the saved value. Explicit Copy/Paste remain available when it is off.
+On Linux browsers with native primary-selection support, middle-click focuses
+the terminal and pastes the primary selection independently of this setting.
+Unsupported browsers never substitute unrelated regular clipboard contents.
+
 Older clients that omit `showGitChanges`, `keepHistoryAfterContextClear`,
 `summarizeShellCommands`, or `earlyAdopter` preserve the saved value. For older SDK callers, the
 general-settings API still accepts and returns `showUnhandledProviderEvents` as
@@ -403,7 +415,7 @@ Control-arrow editing. `pane.focus.previous` / `pane.focus.next` and
 | Window    | Find in window                               | `Mod+F`                     | Desktop                  |
 | Window    | Settings                                     | `Mod+,`                     | All clients              |
 | Window    | Open data directory                          | Unassigned                  | Desktop                  |
-| Window    | Open server and daemon logs                  | Unassigned                  | macOS desktop            |
+| Window    | Open local logs                              | Unassigned                  | Desktop                  |
 | Window    | Show all notifications                       | Unassigned                  | All clients              |
 | Plugins   | Turn plugin safe mode on / off               | Unassigned                  | All clients              |
 | Panel     | New tab / close tab / toggle                 | `Mod+T` / `Mod+W` / `Mod+J` | All clients              |
@@ -541,12 +553,9 @@ code execution and only works with a co-located daemon. The `customAcpAgents`
 key in `config.json` is no longer read. Known agents, OpenCode launch settings,
 and OpenCode Go usage are covered by the `acp-provider` skill.
 
-The rebuilt adapter ships as the builtin plugin "ACP providers [New adapter]"
-(`bb--provider-acp-next`), off by default. It registers the same provider ids,
-and only one ACP plugin runs at a time: enabling it disables "ACP providers",
-disabling it re-enables that plugin, and `customAgents` follows the switch. It
-adds the official ACP registry (`bb acp registry`, `bb acp add <agent-id>`,
-`bb acp remove <agent-id>`); an added agent is a `customAgents` entry running
+Agents from the official ACP registry can be added in the same settings
+section or with `bb acp registry`, `bb acp add <agent-id>`, and
+`bb acp remove <agent-id>`. An added agent is a `customAgents` entry running
 the registry's `npx` or `uvx` package on the thread's host.
 
 ## Custom Models

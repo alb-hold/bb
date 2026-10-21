@@ -4,8 +4,6 @@ import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import {
   isStandaloneBuiltinCompactCommand,
-  approvalInteractionOutcomeSchema,
-  userQuestionInteractionOutcomeSchema,
   type DynamicTool,
   type PromptInput,
   type ThreadDelta,
@@ -18,6 +16,7 @@ import {
   THREAD_DELTA_GRAMMAR_V3,
   THREAD_DELTA_NOTIFICATION_METHOD,
   initializeParamsSchema,
+  userQuestionInteractionOutcomeSchema,
   modelListParamsSchema,
   providerInstallationRunParamsSchema,
   providerInstallationStatusParamsSchema,
@@ -47,7 +46,6 @@ import {
   type PreparedProviderCommandDispatch,
   type ProviderRuntimeEvent,
   experimental_defineProviderBridge,
-  experimental_runMcpElicitation,
   type ProviderRecoveryHint,
 } from "@get-bb/plugin-sdk/provider-bridge";
 import { z } from "zod";
@@ -61,8 +59,8 @@ import {
   summarizeCodexMacOsPermissions,
 } from "../extension-kinds.js";
 import {
-  buildCodexInteractiveResponse,
   buildCodexUserInputResponse,
+  buildCodexInteractiveResult,
   codexUserInputQuestionIds,
   decodeCodexInteractiveRequest,
   extractCodexMacOsPermissionRequest,
@@ -77,6 +75,7 @@ import {
   type CodexCyberProgram,
   type CodexModelCatalog,
 } from "../models.js";
+import { resolveCodexMcpElicitationAppIcon } from "../mcp-elicitation-host.js";
 import { macOsPermissionPresentation } from "../presentation.js";
 import {
   codexTurnSchema,
@@ -490,8 +489,14 @@ interface CodexBridgeSession {
 
 const sessionsByBbThreadId = new Map<string, CodexBridgeSession>();
 const maintenanceConnections = new Set<CodexAppServerConnection>();
-let modelListConnection: CodexAppServerConnection | null = null;
-let modelListConnectionPromise: Promise<CodexAppServerConnection> | null = null;
+let modelListConnection: {
+  launchKey: string;
+  connection: CodexAppServerConnection;
+} | null = null;
+let modelListConnectionPromise: {
+  launchKey: string;
+  promise: Promise<CodexAppServerConnection>;
+} | null = null;
 let sessionSerialCounter = 0;
 let configuredSkillExtraRoots: string[] | null = null;
 
@@ -844,11 +849,6 @@ function handleChildRequest(
     return;
   }
 
-  if (method === CODEX_MCP_ELICITATION_METHOD) {
-    handleCodexMcpElicitation(session, params, responder);
-    return;
-  }
-
   const macOsPermission = extractCodexMacOsPermissionRequest({
     id: 0,
     method,
@@ -875,98 +875,36 @@ function handleChildRequest(
     );
     return;
   }
-  const request = decoded;
-
-  void sendRuntimeRequest(BRIDGE_INBOUND_REQUEST_METHODS.interactionRequest, {
-    providerThreadId: session.codexThreadId ?? request.providerThreadId,
-    threadId: session.bbThreadId,
-    turnId: request.turnId,
-    payload: request.payload,
-    providerNativeIds: true,
-  })
-    .then((result) => {
+  void resolveCodexMcpElicitationAppIcon(decoded)
+    .then(async (request) => {
+      if (currentSession(bbThreadId, serial) !== session) {
+        throw new Error("codex session is no longer current");
+      }
+      const [runtimeResult] = await Promise.allSettled([
+        sendRuntimeRequest(BRIDGE_INBOUND_REQUEST_METHODS.interactionRequest, {
+          providerThreadId: session.codexThreadId ?? request.providerThreadId,
+          threadId: session.bbThreadId,
+          turnId: request.turnId,
+          payload: request.payload,
+          providerNativeIds: true,
+        }),
+      ]);
       if (request.payload.kind === "user_question") {
+        if (runtimeResult.status === "rejected") {
+          throw runtimeResult.reason;
+        }
         responder.result(
           buildCodexUserInputResponse({
             outcome: userQuestionInteractionOutcomeSchema.parse({
               payload: request.payload,
-              resolution: result,
+              resolution: runtimeResult.value,
             }),
             codexQuestionIds: codexUserInputQuestionIds(params),
           }),
         );
         return;
       }
-      const outcome = approvalInteractionOutcomeSchema.parse({
-        payload: request.payload,
-        resolution: result,
-      });
-      responder.result(buildCodexInteractiveResponse(outcome));
-    })
-    .catch((error: unknown) => {
-      responder.error(
-        BRIDGE_JSON_RPC_ERRORS.BRIDGE_ERROR,
-        error instanceof Error ? error.message : String(error),
-      );
-    });
-}
-
-const CODEX_MCP_ELICITATION_METHOD = "mcpServer/elicitation/request";
-
-const codexMcpElicitationParamsSchema = z
-  .object({
-    threadId: z.string(),
-    turnId: z.string().min(1).nullable().optional(),
-    serverName: z.string(),
-    mode: z.string(),
-    message: z.string().optional(),
-    requestedSchema: z.unknown().optional(),
-  })
-  .passthrough();
-
-function handleCodexMcpElicitation(
-  session: CodexBridgeSession,
-  params: unknown,
-  responder: CodexAppServerRequestResponder,
-): void {
-  const parsed = codexMcpElicitationParamsSchema.safeParse(params);
-  if (!parsed.success) {
-    responder.error(
-      BRIDGE_JSON_RPC_ERRORS.INVALID_PARAMS,
-      `Invalid codex MCP elicitation params: ${parsed.error.message}`,
-    );
-    return;
-  }
-  const request = parsed.data;
-  void experimental_runMcpElicitation({
-    request: {
-      serverName: request.serverName,
-      message: request.message ?? "",
-      mode: request.mode,
-      requestedSchema: request.requestedSchema,
-    },
-    ask: (payload) =>
-      sendRuntimeRequest(BRIDGE_INBOUND_REQUEST_METHODS.interactionRequest, {
-        providerThreadId: session.codexThreadId ?? request.threadId,
-        threadId: session.bbThreadId,
-        turnId: request.turnId ?? null,
-        payload,
-        providerNativeIds: true,
-      }),
-  })
-    .then((result) => {
-      if (result.action === "accept") {
-        responder.result({
-          action: "accept",
-          content: result.content,
-          _meta: null,
-        });
-        return;
-      }
-      process.stderr.write(
-        `codex MCP elicitation from ${request.serverName} ended with ${result.action}: ${result.reason}\n`,
-      );
-      responder.result({ action: result.action, content: null, _meta: null });
+      responder.result(buildCodexInteractiveResult(request.payload, runtimeResult));
     })
     .catch((error: unknown) => {
       responder.error(
@@ -1616,47 +1554,75 @@ async function withMaintenanceChild<T>(
   }
 }
 
-async function getModelListConnection(): Promise<CodexAppServerConnection> {
-  if (modelListConnection !== null && !modelListConnection.exited) {
-    return modelListConnection;
+function poolRouteLaunchKey(
+  envVars: Readonly<Record<string, string>> | undefined,
+): string {
+  return JSON.stringify([
+    envVars?.[CODEX_POOL_BASE_URL_ENV] ?? null,
+    envVars?.[CODEX_POOL_AUTH_TOKEN_ENV] ?? null,
+  ]);
+}
+
+async function getModelListConnection(
+  envVars: Readonly<Record<string, string>> | undefined,
+): Promise<CodexAppServerConnection> {
+  const launchKey = poolRouteLaunchKey(envVars);
+  if (modelListConnection !== null) {
+    if (
+      modelListConnection.launchKey === launchKey &&
+      !modelListConnection.connection.exited
+    ) {
+      return modelListConnection.connection;
+    }
+    retireModelListConnection(modelListConnection.connection);
   }
-  if (modelListConnectionPromise !== null) {
-    return modelListConnectionPromise;
+  if (modelListConnectionPromise?.launchKey === launchKey) {
+    return modelListConnectionPromise.promise;
   }
 
-  const connectionPromise = (async () => {
-    const connection = spawnChildConnection({
-      recordThreadId: null,
-      onNotification: () => {},
-      onRequest: (_method, _params, responder) => {
-        responder.error(
-          BRIDGE_JSON_RPC_ERRORS.METHOD_NOT_FOUND,
-          "model-list codex app-server does not serve requests",
-        );
-      },
-      onExit: () => {
+  const pending = {
+    launchKey,
+    promise: (async () => {
+      const connection = spawnChildConnection({
+        envVars,
+        recordThreadId: null,
+        onNotification: () => {},
+        onRequest: (_method, _params, responder) => {
+          responder.error(
+            BRIDGE_JSON_RPC_ERRORS.METHOD_NOT_FOUND,
+            "model-list codex app-server does not serve requests",
+          );
+        },
+        onExit: () => {
+          maintenanceConnections.delete(connection);
+          if (modelListConnection?.connection === connection) {
+            modelListConnection = null;
+          }
+        },
+      });
+      maintenanceConnections.add(connection);
+      try {
+        await initializeChild(connection);
+      } catch (error) {
         maintenanceConnections.delete(connection);
-        if (modelListConnection === connection) {
-          modelListConnection = null;
-        }
-      },
-    });
-    maintenanceConnections.add(connection);
-    try {
-      await initializeChild(connection);
-      modelListConnection = connection;
+        await connection.kill();
+        throw error;
+      }
+      if (modelListConnectionPromise?.launchKey !== launchKey) {
+        retireModelListConnection(connection);
+        throw new Error(
+          "The Codex model list route changed while the app-server started.",
+        );
+      }
+      modelListConnection = { launchKey, connection };
       return connection;
-    } catch (error) {
-      maintenanceConnections.delete(connection);
-      await connection.kill();
-      throw error;
-    }
-  })();
-  modelListConnectionPromise = connectionPromise;
+    })(),
+  };
+  modelListConnectionPromise = pending;
   try {
-    return await connectionPromise;
+    return await pending.promise;
   } finally {
-    if (modelListConnectionPromise === connectionPromise) {
+    if (modelListConnectionPromise === pending) {
       modelListConnectionPromise = null;
     }
   }
@@ -1664,7 +1630,7 @@ async function getModelListConnection(): Promise<CodexAppServerConnection> {
 
 function retireModelListConnection(connection: CodexAppServerConnection): void {
   maintenanceConnections.delete(connection);
-  if (modelListConnection === connection) {
+  if (modelListConnection?.connection === connection) {
     modelListConnection = null;
   }
   connection.kill();
@@ -1704,15 +1670,19 @@ function handleInitialize(id: string | number): void {
       grammarVersions: [THREAD_DELTA_GRAMMAR_V3, THREAD_DELTA_GRAMMAR_V3],
       steerMode: "inject",
       skills: { configure: true },
+      commands: { list: false },
     },
   };
   sendResult(id, result);
 }
 
-async function handleModelList(id: string | number): Promise<void> {
+async function handleModelList(
+  id: string | number,
+  params: z.infer<typeof modelListParamsSchema>,
+): Promise<void> {
   let connection: CodexAppServerConnection | null = null;
   try {
-    connection = await getModelListConnection();
+    connection = await getModelListConnection(params.envVars);
     const result = await connection.request({
       method: "model/list",
       params: {},
@@ -2573,7 +2543,7 @@ async function handleRequest(
       handleInitialize(request.id);
       break;
     case "model/list":
-      await handleModelList(request.id);
+      await handleModelList(request.id, request.params);
       break;
     case "provider/health":
       sendResult(request.id, await getCodexProviderHealth());
