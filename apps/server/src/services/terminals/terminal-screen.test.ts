@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
+import { Worker } from "node:worker_threads";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { terminalScreenQuerySchema } from "@bb/server-contract";
 import { renderTerminalScreen } from "./terminal-screen.js";
+import { renderTerminalScreenInline } from "./terminal-screen-render.js";
 import { Terminal } from "@xterm/headless";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 
@@ -152,21 +154,47 @@ describe("renderTerminalScreen", () => {
     }
   });
 
-  it("yields between chunks while proving a truncated 64 KiB screen", async () => {
+  it("keeps the main event loop responsive while proving a truncated 64 KiB screen", async () => {
     const data = "\u001b[H#".repeat(16_384);
     expect(Buffer.byteLength(data)).toBe(64 * 1024);
-    let timerRan = false;
+    let readResolved = false;
+    let timerRanWhileReadWasPending = false;
+    const postMessageSpy = vi.spyOn(Worker.prototype, "postMessage");
     setTimeout(() => {
-      timerRan = true;
+      timerRanWhileReadWasPending = !readResolved;
     }, 0);
-    const screen = await renderTerminalScreen({
-      cols: 80,
-      rows: 24,
+    try {
+      const read = renderTerminalScreen({
+        cols: 80,
+        rows: 24,
+        lines: undefined,
+        output: output(data, true),
+      });
+      const screen = await read;
+      readResolved = true;
+      expect(screen.complete).toBe(false);
+      expect(timerRanWhileReadWasPending).toBe(true);
+      expect(postMessageSpy).toHaveBeenCalled();
+    } finally {
+      postMessageSpy.mockRestore();
+    }
+  });
+
+  it("rejects concurrent reads instead of queueing them", async () => {
+    const first = renderTerminalScreen({
+      cols: 20,
+      rows: 2,
       lines: undefined,
-      output: output(data, true),
+      output: output("first read"),
     });
-    expect(screen.complete).toBe(false);
-    expect(timerRan).toBe(true);
+    const second = renderTerminalScreen({
+      cols: 20,
+      rows: 2,
+      lines: undefined,
+      output: output("second read"),
+    });
+    await expect(second).rejects.toThrow("Terminal screen renderer is busy");
+    await expect(first).resolves.toMatchObject({ rows: ["first read", ""] });
   });
 
   it("renders ANSI colors as plain text", async () => {
@@ -592,7 +620,7 @@ describe("renderTerminalScreen", () => {
   it("skips mode probes when blank and sentinel starts already differ", async () => {
     const writeSpy = vi.spyOn(Terminal.prototype, "write");
     try {
-      const screen = await renderTerminalScreen({
+      const screen = await renderTerminalScreenInline({
         cols: 20,
         rows: 2,
         lines: undefined,

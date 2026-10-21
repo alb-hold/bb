@@ -1830,6 +1830,7 @@ export class TerminalSessionLifecycle {
       lines: args.query.lines,
       output,
       rows: session.rows,
+      logger: this.options.logger,
     });
   }
 

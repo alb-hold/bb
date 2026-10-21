@@ -1,340 +1,167 @@
-import { Buffer } from "node:buffer";
-import { createRequire } from "node:module";
+import { Worker } from "node:worker_threads";
 import type {
   TerminalOutputResponse,
   TerminalScreenResponse,
 } from "@bb/server-contract";
+import { terminalScreenWorkerSource } from "../../generated/terminal-screen-worker.js";
+import type { ServerLogger } from "../../types.js";
+import type { renderTerminalScreenInline } from "./terminal-screen-render.js";
+export { TERMINAL_SCREEN_MAX_LINES, TERMINAL_SCREEN_REPLAY_BYTES } from "./terminal-screen-render.js";
+const TERMINAL_SCREEN_WORKER_TIMEOUT_MS = 30_000;
+type RenderArgs = Parameters<typeof renderTerminalScreenInline>[0];
+type WorkerResult = {
+  id: number;
+  result?: TerminalScreenResponse;
+  error?: string;
+};
+type PendingRead = {
+  id: number;
+  resolve: (value: TerminalScreenResponse) => void;
+  reject: (error: Error) => void;
+  timeout: NodeJS.Timeout;
+  logger?: ServerLogger;
+};
 
-const require = createRequire(import.meta.url);
-const { Unicode11Addon } =
-  require("@xterm/addon-unicode11") as typeof import("@xterm/addon-unicode11");
-const { Terminal } =
-  require("@xterm/headless") as typeof import("@xterm/headless");
-
-export const TERMINAL_SCREEN_MAX_LINES = 500;
-export const TERMINAL_SCREEN_REPLAY_BYTES = 64 * 1024;
-const TERMINAL_SCREEN_WRITE_CHUNK_BYTES = 2 * 1024;
-const TERMINAL_SCREEN_YIELD_BYTES = 8 * 1024;
-
-type HeadlessTerminal = InstanceType<typeof Terminal>;
-
-function safeTailStart(data: Buffer) {
-  const first = data[0];
-  if (first === undefined) return 0;
-  if ((first & 0xc0) === 0x80) {
-    let index = 0;
-    while (index < data.length && (data[index]! & 0xc0) === 0x80) index += 1;
-    return index;
-  }
-  if (first !== 0x5b) return 0;
-  for (let index = 1; index < data.length; index += 1) {
-    const byte = data[index]!;
-    if (byte >= 0x40 && byte <= 0x7e) return index + 1;
-    if (byte < 0x20 || byte > 0x3f) return 0;
-  }
-  return 0;
-}
-
-function createTerminal(cols: number, rows: number): HeadlessTerminal {
-  const terminal = new Terminal({
-    allowProposedApi: true,
-    cols,
-    rows,
-    scrollback: TERMINAL_SCREEN_MAX_LINES,
-  });
-  terminal.loadAddon(new Unicode11Addon());
-  terminal.unicode.activeVersion = "11";
-  return terminal;
-}
-
-function yieldToEventLoop() {
-  return new Promise<void>((resolve) => setImmediate(resolve));
-}
-
-async function writeTerminal(
-  terminal: HeadlessTerminal,
-  data: string | Buffer,
-) {
-  if (typeof data === "string") {
-    await new Promise<void>((resolve) => terminal.write(data, resolve));
-    return;
-  }
-  let groupStart = 0;
-  for (
-    let offset = 0;
-    offset < data.length;
-    offset += TERMINAL_SCREEN_WRITE_CHUNK_BYTES
-  ) {
-    const end = Math.min(
-      offset + TERMINAL_SCREEN_WRITE_CHUNK_BYTES,
-      data.length,
-    );
-    const groupEnd =
-      end === data.length || end - groupStart >= TERMINAL_SCREEN_YIELD_BYTES;
-    if (groupEnd) {
-      await new Promise<void>((resolve) =>
-        terminal.write(data.subarray(offset, end), resolve),
-      );
-      groupStart = end;
-    } else {
-      terminal.write(data.subarray(offset, end));
-    }
-  }
-}
-
-function readVisibleScreen(terminal: HeadlessTerminal) {
-  const buffer = terminal.buffer.active;
-  return {
-    rows: Array.from(
-      { length: terminal.rows },
-      (_, row) =>
-        buffer.getLine(buffer.baseY + row)?.translateToString(true) ?? "",
-    ),
-    cursor: { col: buffer.cursorX, row: buffer.cursorY },
-  };
-}
-
-function sameVisibleScreen(left: HeadlessTerminal, right: HeadlessTerminal) {
-  const leftScreen = readVisibleScreen(left);
-  const rightScreen = readVisibleScreen(right);
+function isTerminalScreenResponse(value: unknown): value is TerminalScreenResponse {
   return (
-    leftScreen.cursor.col === rightScreen.cursor.col &&
-    leftScreen.cursor.row === rightScreen.cursor.row &&
-    leftScreen.rows.every((row, index) => row === rightScreen.rows[index])
+    typeof value === "object" &&
+    value !== null &&
+    "rows" in value &&
+    Array.isArray(value.rows) &&
+    value.rows.every((row) => typeof row === "string") &&
+    "cursor" in value &&
+    typeof value.cursor === "object" &&
+    value.cursor !== null &&
+    "col" in value.cursor &&
+    typeof value.cursor.col === "number" &&
+    "row" in value.cursor &&
+    typeof value.cursor.row === "number" &&
+    "cols" in value &&
+    typeof value.cols === "number" &&
+    "gridRows" in value &&
+    typeof value.gridRows === "number" &&
+    "truncated" in value &&
+    typeof value.truncated === "boolean" &&
+    "complete" in value &&
+    typeof value.complete === "boolean"
   );
 }
 
-function sentinelGrid(cols: number, rows: number) {
-  const line = "░".repeat(cols);
-  return `${Array.from(
-    { length: rows },
-    (_, row) => `\u001b[${row + 1};1H${line}`,
-  ).join("")}\u001b[${rows};1H`;
-}
-
-const parserSetups = [
-  "\u001b[",
-  "\u001b]0;",
-  "\u001bP1;1q",
-  "\u001bX",
-  "\u001b^",
-  "\u001b_",
-  "\u001b",
-];
-
-async function resetIsParserIndependent(
-  data: Buffer,
-  cols: number,
-  rows: number,
-  blankTerminal: HeadlessTerminal,
-) {
-  for (const parserSetup of parserSetups) {
-    await yieldToEventLoop();
-    const parserStateTerminal = createTerminal(cols, rows);
-    try {
-      await writeTerminal(parserStateTerminal, sentinelGrid(cols, rows));
-      await writeTerminal(parserStateTerminal, parserSetup);
-      await writeTerminal(parserStateTerminal, data);
-      if (!sameVisibleScreen(blankTerminal, parserStateTerminal)) return false;
-    } finally {
-      parserStateTerminal.dispose();
-    }
-  }
-  return true;
-}
-
-async function replayIsComplete(
-  data: Buffer,
-  cols: number,
-  rows: number,
-  blankTerminal: HeadlessTerminal,
-) {
-  const sentinelTerminal = createTerminal(cols, rows);
-  const dataText = data.toString("latin1");
-  const hasAlternateScreenSwitch = [
-    "\u001b[?47",
-    "\u001b[?1047",
-    "\u001b[?1049",
-  ].some((mode) => dataText.includes(mode));
-  const modeSetups = [
-    `\u001b[2;${Math.max(2, rows - 1)}r\u001b[?6h`,
-    "\u001b[?7l",
-    "\u001b[4h",
-    "\u001b(0",
-    "\u001b[?45h",
-    "\u001b[20h",
-  ];
-  const charsetFlags = [
-    "0",
-    "A",
-    "4",
-    "C",
-    "R",
-    "Q",
-    "K",
-    "Y",
-    "E",
-    "Z",
-    "H",
-    "=",
-  ];
-  const charsetSlots = ["(", ")", "*", "+"];
-  const charsetSetups = charsetSlots.flatMap((slot) =>
-    charsetFlags.map((charset) => {
-      const glShift =
-        slot === "("
-          ? "\u000f"
-          : slot === ")"
-            ? "\u000e"
-            : slot === "*"
-              ? "\u001bn"
-              : "\u001bo";
-      return `\u001b${slot}${charset}${glShift}`;
-    }),
+function isWorkerResult(value: unknown): value is WorkerResult {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "id" in value &&
+    typeof value.id === "number" &&
+    (("error" in value && typeof value.error === "string") ||
+      ("result" in value && isTerminalScreenResponse(value.result)))
   );
-  const savedCursorSetup = "\u001b(A\u001b[31m\u001b[2;5H\u001b7";
-  const tabStopSetup = "\u001b[3g\u001b[1;5H\u001bH\u001b[1;1H";
-  const protectedCellSetup = "\u001b[1\"qP";
-  const screenSentinel = `${sentinelGrid(cols, rows)}\u001b[1;1H`;
-  const initialScreens = [screenSentinel];
-  if (hasAlternateScreenSwitch) {
-    initialScreens.push(`\u001b[?1049h${screenSentinel}`);
-  }
-  try {
-    const sentinel = sentinelGrid(cols, rows);
-    await writeTerminal(sentinelTerminal, sentinel);
-    if (hasAlternateScreenSwitch) {
-      await writeTerminal(sentinelTerminal, "\u001b[?1049h");
-      await writeTerminal(sentinelTerminal, sentinel);
-      await writeTerminal(sentinelTerminal, "\u001b[?1049l");
-    }
-    await writeTerminal(sentinelTerminal, data);
-    if (!sameVisibleScreen(blankTerminal, sentinelTerminal)) return false;
-    for (const initialScreen of initialScreens) {
-      await yieldToEventLoop();
-      const visibleStateTerminal = createTerminal(cols, rows);
-      try {
-        await writeTerminal(visibleStateTerminal, initialScreen);
-        await writeTerminal(visibleStateTerminal, data);
-        if (!sameVisibleScreen(blankTerminal, visibleStateTerminal))
-          return false;
-      } finally {
-        visibleStateTerminal.dispose();
-      }
-    }
-    for (const modeSetup of modeSetups) {
-      await yieldToEventLoop();
-      const perturbedTerminal = createTerminal(cols, rows);
-      try {
-        await writeTerminal(perturbedTerminal, modeSetup);
-        await writeTerminal(perturbedTerminal, data);
-        if (!sameVisibleScreen(blankTerminal, perturbedTerminal)) return false;
-      } finally {
-        perturbedTerminal.dispose();
-      }
-    }
-    for (const charsetSetup of charsetSetups) {
-      await yieldToEventLoop();
-      const perturbedTerminal = createTerminal(cols, rows);
-      try {
-        await writeTerminal(perturbedTerminal, charsetSetup);
-        await writeTerminal(perturbedTerminal, data);
-        if (!sameVisibleScreen(blankTerminal, perturbedTerminal)) return false;
-      } finally {
-        perturbedTerminal.dispose();
-      }
-    }
-    for (const stateSetup of [
-      savedCursorSetup,
-      tabStopSetup,
-      protectedCellSetup,
-    ]) {
-      await yieldToEventLoop();
-      const perturbedTerminal = createTerminal(cols, rows);
-      try {
-        await writeTerminal(perturbedTerminal, stateSetup);
-        await writeTerminal(perturbedTerminal, data);
-        if (!sameVisibleScreen(blankTerminal, perturbedTerminal)) return false;
-      } finally {
-        perturbedTerminal.dispose();
-      }
-    }
-    for (const parserSetup of parserSetups) {
-      await yieldToEventLoop();
-      const perturbedTerminal = createTerminal(cols, rows);
-      try {
-        await writeTerminal(perturbedTerminal, parserSetup);
-        await writeTerminal(perturbedTerminal, data);
-        if (!sameVisibleScreen(blankTerminal, perturbedTerminal)) return false;
-      } finally {
-        perturbedTerminal.dispose();
-      }
-    }
-    return true;
-  } finally {
-    sentinelTerminal.dispose();
-  }
 }
 
-export async function renderTerminalScreen(args: {
+let worker: Worker | undefined;
+let terminatingWorker: Worker | undefined;
+let pending: PendingRead | undefined;
+let nextId = 1;
+
+function rejectPending(error: Error) {
+  const active = pending;
+  if (!active) return;
+  pending = undefined;
+  clearTimeout(active.timeout);
+  active.reject(error);
+}
+
+function terminateWorker(current: Worker, error: Error) {
+  if (worker === current) worker = undefined;
+  terminatingWorker = current;
+  rejectPending(error);
+  void current.terminate();
+}
+
+function logWorkerFailure(error: Error) {
+  const logger = pending?.logger;
+  if (logger) logger.error({ err: error }, "Terminal screen worker failed");
+  else console.error("Terminal screen worker failed", error);
+}
+
+function getWorker() {
+  if (worker) return worker;
+  if (terminatingWorker) throw new Error("Terminal screen worker is restarting");
+  const current = new Worker(terminalScreenWorkerSource, { eval: true });
+  worker = current;
+  current.unref();
+  current.on("message", (value: unknown) => {
+    if (!isWorkerResult(value)) {
+      const error = new Error("Terminal screen worker returned an invalid response");
+      logWorkerFailure(error);
+      terminateWorker(current, error);
+      return;
+    }
+    const message = value;
+    const active = pending;
+    if (!active || message.id !== active.id) return;
+    pending = undefined;
+    clearTimeout(active.timeout);
+    current.unref();
+    if (message.error !== undefined) active.reject(new Error(message.error));
+    else if (message.result) active.resolve(message.result);
+    else active.reject(new Error("Terminal screen worker returned no result"));
+  });
+  let failureReported = false;
+  current.on("error", (error) => {
+    failureReported = true;
+    logWorkerFailure(error);
+    terminateWorker(current, error);
+  });
+  current.on("exit", (code) => {
+    if (worker === current) worker = undefined;
+    if (terminatingWorker === current) terminatingWorker = undefined;
+    if (pending) {
+      const error = new Error(`Terminal screen worker exited (${code})`);
+      if (!failureReported) logWorkerFailure(error);
+      rejectPending(error);
+    }
+  });
+  return current;
+}
+
+void getWorker();
+
+export function renderTerminalScreen(args: {
   cols: number;
   lines: number | undefined;
   output: TerminalOutputResponse;
   rows: number;
+  logger?: ServerLogger;
 }): Promise<TerminalScreenResponse> {
-  const terminal = createTerminal(args.cols, args.rows);
-  let sawFullReset = false;
-  const fullResetHandler = args.output.truncated
-    ? terminal.parser.registerEscHandler({ final: "c" }, () => {
-        sawFullReset = true;
-        return false;
-      })
-    : undefined;
+  if (pending) return Promise.reject(new Error("Terminal screen renderer is busy"));
+  let current: Worker;
   try {
-    let data = Buffer.concat(
-      args.output.chunks.map((chunk) =>
-        Buffer.from(chunk.dataBase64, "base64"),
-      ),
-    );
-    if (args.output.truncated) {
-      data = data.subarray(safeTailStart(data));
-    }
-    await writeTerminal(terminal, data);
-    const complete = !args.output.truncated
-      ? true
-      : sawFullReset
-        ? await resetIsParserIndependent(data, args.cols, args.rows, terminal)
-        : await replayIsComplete(data, args.cols, args.rows, terminal);
-    const buffer = terminal.buffer.active;
-    let end = buffer.baseY + terminal.rows;
-    if (args.lines !== undefined) {
-      while (
-        end > 0 &&
-        buffer.getLine(end - 1)?.translateToString(true) === ""
-      ) {
-        end -= 1;
-      }
-    }
-    const requestedLines = Math.min(
-      args.lines ?? args.rows,
-      TERMINAL_SCREEN_MAX_LINES,
-    );
-    const start = Math.max(0, end - requestedLines);
-    const rows: string[] = [];
-    for (let index = start; index < end; index += 1) {
-      const line = buffer.getLine(index);
-      rows.push(line?.translateToString(true) ?? "");
-    }
-    return {
-      rows,
-      cursor: { col: buffer.cursorX, row: buffer.cursorY },
-      cols: args.cols,
-      gridRows: args.rows,
-      truncated: args.output.truncated,
-      complete,
-    };
-  } finally {
-    fullResetHandler?.dispose();
-    terminal.dispose();
+    current = getWorker();
+  } catch (error) {
+    return Promise.reject(error instanceof Error ? error : new Error(String(error)));
   }
+  const { logger, ...renderArgs } = args;
+  const id = nextId++;
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      if (worker === current) worker = undefined;
+      terminatingWorker = current;
+      pending = undefined;
+      const error = new Error("Terminal screen render timed out");
+      logger?.error({ err: error }, "Terminal screen render timed out");
+      reject(error);
+      void current.terminate();
+    }, TERMINAL_SCREEN_WORKER_TIMEOUT_MS);
+    pending = { id, resolve, reject, timeout, logger };
+    current.ref();
+    try {
+      current.postMessage({ id, args: renderArgs satisfies RenderArgs });
+    } catch (error) {
+      pending = undefined;
+      clearTimeout(timeout);
+      reject(error instanceof Error ? error : new Error(String(error)));
+      terminateWorker(current, error instanceof Error ? error : new Error(String(error)));
+    }
+  });
 }

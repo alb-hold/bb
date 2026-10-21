@@ -11,7 +11,8 @@
     "generate:bb-official-marketplace": "node --conditions=source --import tsx scripts/generate-bb-official-marketplace.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --config vitest.config.ts",
-    "test:provider-corpus": "vitest run --config vitest.config.ts test/provider-corpus"
+    "test:provider-corpus": "vitest run --config vitest.config.ts test/provider-corpus",
+    "generate:terminal-screen-worker": "node scripts/generate-terminal-screen-worker.mjs"
   },
   "dependencies": {
     "@bb/config": "workspace:*",
