@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { terminalScreenQuerySchema } from "@bb/server-contract";
@@ -234,6 +234,22 @@ describe("renderTerminalScreen", () => {
       output: output("partial\nline one\nline two\n\u001b[1;1Hupdate", true),
     });
     expect(screen.complete).toBe(false);
+  });
+
+  it("skips mode probes when blank and sentinel starts already differ", async () => {
+    const writeSpy = vi.spyOn(Terminal.prototype, "write");
+    try {
+      const screen = await renderTerminalScreen({
+        cols: 20,
+        rows: 2,
+        lines: undefined,
+        output: output("partial\n", true),
+      });
+      expect(screen.complete).toBe(false);
+      expect(writeSpy).toHaveBeenCalledTimes(6);
+    } finally {
+      writeSpy.mockRestore();
+    }
   });
 
   it("recognizes an alternate-screen switch after earlier rows scroll off", async () => {
