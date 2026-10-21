@@ -452,6 +452,33 @@ describe("responsive Dialog", () => {
 });
 
 describe("PersistentResponsiveDrawerShell", () => {
+  it("keeps open drawer content pointer-interactive above its backdrop", () => {
+    mockPointerCoarse(true);
+    render(
+      <PersistentResponsiveDrawerShell
+        open={true}
+        onOpenChange={() => {}}
+        srLabel="Details"
+      >
+        <button type="button">Done</button>
+      </PersistentResponsiveDrawerShell>,
+    );
+
+    const content = document.querySelector<HTMLElement>(
+      "[data-persistent-drawer-content]",
+    );
+    const backdrop = document.querySelector<HTMLElement>(
+      "[data-persistent-drawer-backdrop]",
+    );
+    if (content === null || backdrop === null) {
+      throw new Error("open drawer content and backdrop should be mounted");
+    }
+    expect(content.style.pointerEvents).toBe("auto");
+    expect(
+      backdrop.compareDocumentPosition(content) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
   it("opens without applying modal state to the app tree", () => {
     mockPointerCoarse(true);
     const onContentAnimationEnd = vi.fn();
