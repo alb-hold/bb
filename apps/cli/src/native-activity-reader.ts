@@ -5,8 +5,8 @@ import {
   fileSize,
   JsonlTail,
   NativeActivityTracker,
-  readLastJsonlRecord,
   readRecordField,
+  readTailJsonlRecords,
   recordMatches,
   type JsonlRecordLocation,
   type NativeActivityReport,
@@ -21,7 +21,7 @@ import {
 const MAX_RETAINED_RECORDS = 4096;
 const MAX_RETAINED_TURNS = 128;
 const MAX_RECENT_EVICTED_IDS = 4096;
-const MAX_SESSION_ADOPTIONS = 16;
+export const MAX_SESSION_ADOPTIONS = 256;
 const SESSION_ID_PATTERN = /^[0-9a-f-]{8,64}$/iu;
 const ADOPTION_RETRY_AFTER_MS = 2_000;
 const MAX_ADOPTION_ATTEMPTS_TRACKED = 64;
@@ -272,11 +272,10 @@ export class NativeActivityReader {
   private continuationNames(sessionId: string): boolean {
     const rule = this.cli.activity?.transcript?.continuation;
     if (rule === undefined || this.transcriptFile === null) return false;
-    const last = readLastJsonlRecord(this.transcriptFile);
-    return (
-      last !== null &&
-      recordMatches(rule.match, last) &&
-      readRecordField(last, rule.nextSessionId) === sessionId
+    return readTailJsonlRecords(this.transcriptFile).some(
+      (record) =>
+        recordMatches(rule.match, record) &&
+        readRecordField(record, rule.nextSessionId) === sessionId,
     );
   }
 
