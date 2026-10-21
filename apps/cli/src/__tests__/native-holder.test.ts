@@ -554,10 +554,10 @@ try {
   it("checks holder liveness without replacing its terminal client", async () => {
     const socketPath = socketIn();
     const held = startHolder(socketPath, {
-      command: "/bin/sh",
+      command: process.execPath,
       args: [
-        "-c",
-        'echo "started:$$"; IFS= read -r line; echo "got:$line:$$"; exit 7',
+        "-e",
+        'process.stdin.setEncoding("utf8"); process.stdin.on("data", (data) => { process.stdout.write(`got:${data.trim()}:${process.pid}\\n`, () => process.exit(7)); }); process.stdout.write(`started:${process.pid}\\n`);',
       ],
     });
     const client = await attach(socketPath);
