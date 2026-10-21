@@ -154,6 +154,26 @@ export function createTerminalOutputLineAnchorTracker(args: {
   return tracker;
 }
 
+export function startTerminalOutputReplay(args: {
+  outputLineAnchors: TerminalOutputLineAnchor[];
+  sequence: number;
+  tracker: Pick<
+    ReturnType<typeof createTerminalOutputLineAnchorTracker>,
+    "forget" | "recordOutputStart" | "reset"
+  >;
+}): void {
+  const outputAnchor = args.tracker.recordOutputStart(args.sequence);
+  if (!outputAnchor) return;
+  args.outputLineAnchors.push(outputAnchor);
+  if (args.outputLineAnchors.length > 4096) {
+    const removed = args.outputLineAnchors.splice(
+      0,
+      args.outputLineAnchors.length - 4096,
+    );
+    args.tracker.forget(removed);
+  }
+}
+
 export function findTerminalOutputLineAnchor(
   anchors: readonly TerminalOutputLineAnchor[],
   visibleLine: number,

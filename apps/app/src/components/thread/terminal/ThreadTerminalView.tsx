@@ -60,6 +60,7 @@ import {
   createTerminalOutputLineAnchorTracker,
   createTerminalViewportReplaySaveGate,
   createTerminalViewportPersistence,
+  startTerminalOutputReplay,
   createTerminalTouchViewportSaveScheduler,
   findTerminalOutputLineAnchor,
   readTerminalViewportAnchor,
@@ -1901,7 +1902,6 @@ export function ThreadTerminalView({
             replayWriteState,
             onReplayStart: () => {
               viewportReplaySaveGate.beginReplay();
-              outputLineAnchors.length = 0;
               replayPreview?.dispose();
               replayCompleted = false;
               const replayGrid = latestPtyGrid;
@@ -1930,8 +1930,11 @@ export function ThreadTerminalView({
             setReplayStartSequence: (sequence) => {
               replayStartSequence = sequence;
               latestOutputSequence = Math.max(latestOutputSequence, sequence);
-              outputLineAnchorTracker.reset();
-              recordOutputStart(sequence);
+              startTerminalOutputReplay({
+                outputLineAnchors,
+                sequence,
+                tracker: outputLineAnchorTracker,
+              });
             },
             terminal: activeTerminal,
             pipeline: outputPipeline ?? undefined,

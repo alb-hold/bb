@@ -44,6 +44,7 @@ import {
   createTerminalOutputLineAnchorTracker,
   readTerminalViewportAnchor,
   resolveTerminalViewportRestore,
+  startTerminalOutputReplay,
   terminalViewportStorageKey,
   writeTerminalViewportAnchor,
 } from "./terminal-viewport";
@@ -387,6 +388,53 @@ describe("terminal viewport restore", () => {
     expect(terminal.buffer.active.getLine(restoreLine)?.translateToString(true)).toBe(
       "line 01474",
     );
+    tracker.dispose();
+    terminal.dispose();
+  });
+
+  it("keeps a retained viewport marker when a reconnect replay starts later", async () => {
+    const terminal = new Terminal({ cols: 80, rows: 52, scrollback: 10_000 });
+    const tracker = createTerminalOutputLineAnchorTracker({
+      registerMarker: () => terminal.registerMarker(),
+      getCurrentLine: () =>
+        terminal.buffer.active.baseY + terminal.buffer.active.cursorY,
+    });
+    const outputLineAnchors: NonNullable<
+      ReturnType<typeof tracker.recordOutputStart>
+    >[] = [];
+    tracker.reset();
+    const initialAnchor = tracker.recordOutputStart(0);
+    if (initialAnchor) outputLineAnchors.push(initialAnchor);
+    await writeTerminal(
+      terminal,
+      Array.from({ length: 3_000 }, (_, index) =>
+        `line ${String(index + 1).padStart(5, "0")}\r\n`,
+      ).join(""),
+    );
+    startTerminalOutputReplay({
+      outputLineAnchors,
+      sequence: 10,
+      tracker,
+    });
+    await writeTerminal(terminal, "later replay data\r\n");
+    const restoreLine = resolveTerminalViewportRestore({
+      anchor: {
+        distanceFromTail: 1_477,
+        lineOffset: 1_473,
+        outputSequence: 0,
+      },
+      baseY: terminal.buffer.active.baseY,
+      outputLineAnchors,
+      replayNextSequence: 17,
+      replayStartSequence: 10,
+    });
+    terminal.scrollToLine(restoreLine);
+
+    expect(
+      terminal.buffer.active
+        .getLine(terminal.buffer.active.viewportY)
+        ?.translateToString(true),
+    ).toBe("line 01474");
     tracker.dispose();
     terminal.dispose();
   });
