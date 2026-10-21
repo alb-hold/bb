@@ -37,6 +37,7 @@ import {
   requestTerminalLinkOpen,
 } from "./terminal-links";
 import {
+  createTerminalViewportReplaySaveGate,
   createTerminalViewportPersistence,
   readTerminalViewportAnchor,
   resolveTerminalViewportRestore,
@@ -288,6 +289,59 @@ describe("terminal viewport restore", () => {
       ).toBe(82);
     },
   );
+
+  it("restores the saved viewport after a reconnect replay", () => {
+    const storage = createStorage();
+    const key = terminalViewportStorageKey("terminal-a");
+    const anchor = { distanceFromTail: 18, outputSequence: 64 };
+    writeTerminalViewportAnchor(storage, key, anchor);
+    const replaySaveGate = createTerminalViewportReplaySaveGate();
+
+    replaySaveGate.finishRestore();
+    replaySaveGate.beginReplay();
+    expect(replaySaveGate.canSave(true)).toBe(false);
+    const restoreLine = resolveTerminalViewportRestore({
+      anchor: readTerminalViewportAnchor(storage, key),
+      baseY: 100,
+      replayStartSequence: 0,
+    });
+    replaySaveGate.finishRestore();
+
+    expect(restoreLine).toBe(82);
+    expect(replaySaveGate.canSave(false)).toBe(false);
+    expect(replaySaveGate.canSave(true)).toBe(true);
+  });
+
+  it("does not replace a saved anchor with replay scroll events", () => {
+    const storage = createStorage();
+    const key = terminalViewportStorageKey("terminal-a");
+    const anchor = { distanceFromTail: 18, outputSequence: 64 };
+    writeTerminalViewportAnchor(storage, key, anchor);
+    const persistence = createTerminalViewportPersistence({ storage, key });
+    const replaySaveGate = createTerminalViewportReplaySaveGate();
+
+    replaySaveGate.beginReplay();
+    if (replaySaveGate.canSave(true)) {
+      persistence.schedule({ distanceFromTail: 0, outputSequence: 0 });
+    }
+    persistence.flush();
+
+    expect(readTerminalViewportAnchor(storage, key)).toEqual(anchor);
+    replaySaveGate.finishRestore();
+    if (replaySaveGate.canSave(false)) {
+      persistence.schedule({ distanceFromTail: 0, outputSequence: 0 });
+    }
+    expect(readTerminalViewportAnchor(storage, key)).toEqual(anchor);
+    if (replaySaveGate.canSave(true)) {
+      persistence.schedule({ distanceFromTail: 15, outputSequence: 70 });
+    }
+    persistence.flush();
+
+    expect(readTerminalViewportAnchor(storage, key)).toEqual({
+      distanceFromTail: 15,
+      outputSequence: 70,
+    });
+  });
 
   it.each([
     ["truncated output", { distanceFromTail: 12, outputSequence: 8 }, 9, 80],

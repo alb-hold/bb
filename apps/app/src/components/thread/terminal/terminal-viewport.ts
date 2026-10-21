@@ -157,6 +157,24 @@ export function createTerminalViewportPersistence(args: {
   };
 }
 
+export function createTerminalViewportReplaySaveGate(): {
+  beginReplay: () => void;
+  finishRestore: () => void;
+  canSave: (hasManualScrollIntent: boolean) => boolean;
+} {
+  let restorePending = true;
+  return {
+    beginReplay: () => {
+      restorePending = true;
+    },
+    finishRestore: () => {
+      restorePending = false;
+    },
+    canSave: (hasManualScrollIntent) =>
+      !restorePending && hasManualScrollIntent,
+  };
+}
+
 export function resolveTerminalViewportRestore(args: {
   anchor: TerminalViewportAnchor | null;
   baseY: number;

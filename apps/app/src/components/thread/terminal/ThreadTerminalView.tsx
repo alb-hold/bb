@@ -57,6 +57,7 @@ import { loadOptionalTerminalSearchAddon } from "./terminal-search-addon";
 import { TerminalTextSelectSheet } from "./TerminalTextSelectSheet";
 import { terminalTextSnapshot } from "./terminal-text-snapshot";
 import {
+  createTerminalViewportReplaySaveGate,
   createTerminalViewportPersistence,
   readTerminalViewportAnchor,
   resolveTerminalViewportRestore,
@@ -1275,6 +1276,7 @@ export function ThreadTerminalView({
       key: viewportStorageKey,
       storage: window.localStorage,
     });
+    const viewportReplaySaveGate = createTerminalViewportReplaySaveGate();
     anchoredOutputSequence = savedViewportAnchor?.outputSequence ?? 0;
     const noteManualScrollIntent = () => {
       hasManualScrollIntent = true;
@@ -1510,6 +1512,7 @@ export function ThreadTerminalView({
           }),
         );
         hasRestoredViewport = true;
+        viewportReplaySaveGate.finishRestore();
       };
       const markManualScrollIntent = () => noteManualScrollIntent();
       const markManualScrollKeydownIntent = (event: KeyboardEvent) => {
@@ -1524,7 +1527,11 @@ export function ThreadTerminalView({
       containerElement.addEventListener("pointerdown", markManualScrollIntent);
       containerElement.addEventListener("keydown", markManualScrollKeydownIntent);
       const viewportScrollDisposable = terminal.onScroll(() => {
-        if (!hasRestoredViewport || terminal === null) {
+        if (
+          !hasRestoredViewport ||
+          !viewportReplaySaveGate.canSave(hasManualScrollIntent) ||
+          terminal === null
+        ) {
           return;
         }
         const activeBuffer = terminal.buffer.active;
@@ -1803,6 +1810,7 @@ export function ThreadTerminalView({
             replayNextSeq,
             replayWriteState,
             onReplayStart: () => {
+              viewportReplaySaveGate.beginReplay();
               outputLineAnchors.length = 0;
               replayPreview?.dispose();
               replayCompleted = false;
