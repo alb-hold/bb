@@ -11,6 +11,10 @@ import {
 import { FitAddon } from "@xterm/addon-fit";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  REPAINT_RESTORE_DELAY_MS,
+  TerminalWebSocketTransport,
+} from "@bb/client-core";
 import { decodeBase64Bytes } from "@/lib/base64-bytes";
 import { makeTerminalSession } from "@/test/fixtures/terminal-sessions";
 import { wsManager } from "@/lib/ws";
@@ -27,6 +31,7 @@ const testState = vi.hoisted(() => ({
   touchEnabled: false,
   toastError: vi.fn(),
   sockets: [] as TestTerminalSocket[],
+  socketCreated: null as (() => void) | null,
   socketMessages: [] as string[],
   socketUrls: [] as string[],
 }));
@@ -41,13 +46,21 @@ class TestTerminalSocket {
   onmessage: ((event: MessageEvent) => void) | null = null;
   onopen: ((event: Event) => void) | null = null;
   readyState = TestTerminalSocket.CONNECTING;
+  readonly opened: Promise<void>;
+  private resolveOpened!: () => void;
 
   constructor(url: string) {
     testState.socketUrls.push(url);
     testState.sockets.push(this);
+    testState.socketCreated?.();
+    testState.socketCreated = null;
+    this.opened = new Promise((resolve) => {
+      this.resolveOpened = resolve;
+    });
     queueMicrotask(() => {
       this.readyState = TestTerminalSocket.OPEN;
       this.onopen?.(new Event("open"));
+      this.resolveOpened();
     });
   }
 
@@ -148,6 +161,7 @@ function Handler() {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   cleanup();
   Reflect.set(wsManager, "deviceHandoffClientToken", null);
   vi.unstubAllGlobals();
@@ -159,6 +173,7 @@ afterEach(() => {
   }
   testState.calls.length = 0;
   testState.sockets.length = 0;
+  testState.socketCreated = null;
   testState.socketMessages.length = 0;
   testState.socketUrls.length = 0;
   testState.clearAttention.mockReset();
@@ -167,10 +182,36 @@ afterEach(() => {
   testState.mediaQueryListeners.clear();
 });
 
+function waitForReadiness<T>(
+  promise: Promise<T>,
+  failureMessage: string,
+): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<T>((_, reject) => {
+    timeout = setTimeout(() => reject(new Error(failureMessage)), 5_000);
+  });
+  return Promise.race([promise, deadline]).finally(() => {
+    if (timeout !== undefined) clearTimeout(timeout);
+  });
+}
+
+async function waitForReadinessCondition<T>(
+  callback: () => T,
+  failureMessage: string,
+): Promise<T> {
+  try {
+    return await waitFor(callback, { timeout: 5_000 });
+  } catch {
+    throw new Error(failureMessage);
+  }
+}
+
 const originalClipboardDescriptor = Object.getOwnPropertyDescriptor(
   navigator,
   "clipboard",
 );
+
+vi.setConfig({ testTimeout: 30_000 });
 
 function prepareMobileTerminal(): void {
   testState.touchEnabled = true;
@@ -250,7 +291,10 @@ describe("ThreadTerminalView terminal focus boundary", () => {
     testState.touchEnabled = false;
     const session = renderMobileTerminal();
 
-    await waitFor(() => expect(testState.sockets).toHaveLength(1));
+    await waitForReadinessCondition(
+      () => expect(testState.sockets).toHaveLength(1),
+      "terminal socket was not created within 5000 ms",
+    );
     const socket = testState.sockets[0];
     if (!socket) throw new Error("terminal socket was not created");
     socket.receive({
@@ -267,11 +311,14 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       type: "output",
       chunk: { seq: 0, dataBase64: btoa(output) },
     });
-    await waitFor(() => {
-      expect(document.querySelector(".xterm-rows")?.textContent).toContain(
-        "retained-48",
-      );
-    });
+    await waitForReadinessCondition(
+      () => {
+        expect(document.querySelector(".xterm-rows")?.textContent).toContain(
+          "retained-48",
+        );
+      },
+      "terminal scrollback did not render retained-48 within 5000 ms",
+    );
     const xterm = document.querySelector(".xterm");
     expect(xterm).not.toBeNull();
 
@@ -280,21 +327,27 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       for (const notify of [...testState.mediaQueryListeners]) notify();
     });
 
-    await screen.findByRole("button", { name: "More terminal keys" });
-    await waitFor(() => expect(testState.sockets).toHaveLength(1));
+    await waitForReadinessCondition(
+      () => screen.getByRole("button", { name: "More terminal keys" }),
+      "mobile terminal controls were not rendered within 5000 ms",
+    );
+    await waitForReadinessCondition(
+      () => expect(testState.sockets).toHaveLength(1),
+      "terminal socket was not retained after pointer mode changed within 5000 ms",
+    );
     expect(document.querySelector(".xterm")).toBe(xterm);
     fireEvent.click(screen.getByRole("button", { name: "More terminal keys" }));
     fireEvent.click(
       screen.getByRole("button", { name: "Select terminal text" }),
     );
-    await waitFor(() => {
+    await waitForReadinessCondition(() => {
       const snapshot = screen.getByRole("textbox", {
         name: "Terminal text snapshot",
       }) as HTMLTextAreaElement;
       expect(snapshot.value).toContain("retained-01");
       expect(snapshot.value).toContain("retained-48");
-    });
-  });
+    }, "terminal text snapshot did not retain the visible output within 5000 ms");
+  }, 30_000);
 
   it("sends clipboard text once through xterm paste input", async () => {
     prepareMobileTerminal();
@@ -305,8 +358,11 @@ describe("ThreadTerminalView terminal focus boundary", () => {
     });
     const session = renderMobileTerminal();
 
-    await screen.findByRole("button", { name: "More terminal keys" });
-    await waitFor(() => {
+    await waitForReadinessCondition(
+      () => screen.getByRole("button", { name: "More terminal keys" }),
+      "mobile terminal controls were not rendered within 5000 ms",
+    );
+    await waitForReadinessCondition(() => {
       expect(
         (
           screen.getByRole("button", {
@@ -314,7 +370,7 @@ describe("ThreadTerminalView terminal focus boundary", () => {
           }) as HTMLButtonElement
         ).disabled,
       ).toBe(false);
-    });
+    }, "mobile terminal controls did not become enabled within 5000 ms");
     const socket = testState.sockets[0];
     if (!socket) throw new Error("terminal socket was not created");
     socket.receive({
@@ -330,7 +386,7 @@ describe("ThreadTerminalView terminal focus boundary", () => {
     fireEvent.click(screen.getByRole("button", { name: "More terminal keys" }));
     fireEvent.click(screen.getByRole("button", { name: "Paste" }));
 
-    await waitFor(() => {
+    await waitForReadinessCondition(() => {
       const inputMessages = testState.socketMessages
         .map(
           (message) =>
@@ -346,7 +402,7 @@ describe("ThreadTerminalView terminal focus boundary", () => {
           decodeBase64Bytes(inputMessages[0]!.dataBase64),
         ),
       ).toBe("paste-once");
-    });
+    }, "clipboard text was not sent through terminal input within 5000 ms");
     expect(readText).toHaveBeenCalledOnce();
     expect(testState.toastError).not.toHaveBeenCalled();
   });
@@ -360,8 +416,11 @@ describe("ThreadTerminalView terminal focus boundary", () => {
     });
     renderMobileTerminal();
 
-    await screen.findByRole("button", { name: "More terminal keys" });
-    await waitFor(() => {
+    await waitForReadinessCondition(
+      () => screen.getByRole("button", { name: "More terminal keys" }),
+      "mobile terminal controls were not rendered within 5000 ms",
+    );
+    await waitForReadinessCondition(() => {
       expect(
         (
           screen.getByRole("button", {
@@ -369,15 +428,15 @@ describe("ThreadTerminalView terminal focus boundary", () => {
           }) as HTMLButtonElement
         ).disabled,
       ).toBe(false);
-    });
+    }, "mobile terminal controls did not become enabled within 5000 ms");
     fireEvent.click(screen.getByRole("button", { name: "More terminal keys" }));
     fireEvent.click(screen.getByRole("button", { name: "Paste" }));
 
-    await waitFor(() => {
+    await waitForReadinessCondition(() => {
       expect(testState.toastError).toHaveBeenCalledWith(
         "This connection can’t read the clipboard. Long-press a message box and choose Paste.",
       );
-    });
+    }, "clipboard denial fallback was not shown within 5000 ms");
     expect(readText).toHaveBeenCalledOnce();
     expect(
       testState.socketMessages
@@ -430,7 +489,10 @@ describe("ThreadTerminalView terminal focus boundary", () => {
         </AppCommandProvider>
       </MemoryRouter>,
     );
-    await waitFor(() => expect(testState.socketUrls).toHaveLength(1));
+    await waitForReadinessCondition(
+      () => expect(testState.socketUrls).toHaveLength(1),
+      "initial terminal socket URL was not created within 5000 ms",
+    );
     const initialToken = new URL(
       testState.socketUrls[0] ?? "ws://localhost",
     ).searchParams.get("handoffOwnerToken");
@@ -446,7 +508,10 @@ describe("ThreadTerminalView terminal focus boundary", () => {
     expect(testState.socketUrls).toHaveLength(1);
 
     testState.sockets[0]?.disconnect();
-    await waitFor(() => expect(testState.socketUrls).toHaveLength(2));
+    await waitForReadinessCondition(
+      () => expect(testState.socketUrls).toHaveLength(2),
+      "terminal socket did not reconnect within 5000 ms",
+    );
     expect(
       new URL(testState.socketUrls[1] ?? "ws://localhost").searchParams.get(
         "handoffOwnerToken",
@@ -540,13 +605,16 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       </MemoryRouter>,
     );
 
-    await waitFor(() => expect(testState.socketUrls).toHaveLength(1));
+    await waitForReadinessCondition(
+      () => expect(testState.socketUrls).toHaveLength(1),
+      "terminal socket URL was not created within 5000 ms",
+    );
     const url = new URL(testState.socketUrls[0] ?? "ws://localhost");
     expect(url.pathname).toBe(
       `/ws/terminals/term-${view.path.replaceAll(" ", "-")}`,
     );
     expect(url.searchParams.get("handoffOwnerToken")).toBe(token);
-    await waitFor(() => {
+    await waitForReadinessCondition(() => {
       expect(
         testState.socketMessages
           .map((message) => JSON.parse(message))
@@ -555,7 +623,7 @@ describe("ThreadTerminalView terminal focus boundary", () => {
               message.type === "visibility" && message.visible === true,
           ),
       ).toBe(true);
-    });
+    }, "terminal visibility was not reported within 5000 ms");
   });
 
   it("clears attention when its terminal panel becomes visible", async () => {
@@ -596,12 +664,12 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       </MemoryRouter>,
     );
 
-    await waitFor(() => {
+    await waitForReadinessCondition(() => {
       expect(testState.clearAttention).toHaveBeenCalledWith({
         terminalId: session.id,
       });
       expect(onSessionChange).toHaveBeenCalledWith(updatedSession);
-    });
+    }, "terminal attention was not cleared within 5000 ms");
   });
 
   it("waits for fit dimensions before settling the initial main-pane layout", async () => {
@@ -658,11 +726,21 @@ describe("ThreadTerminalView terminal focus boundary", () => {
     );
     const originalProposeDimensions = FitAddon.prototype.proposeDimensions;
     let fitDimensionsAvailable = false;
+    let unavailableFitMeasurements = 0;
+    let resolveUnavailableFitMeasurements!: () => void;
+    const unavailableFitMeasurementsReady = new Promise<void>((resolve) => {
+      resolveUnavailableFitMeasurements = resolve;
+    });
     vi.spyOn(FitAddon.prototype, "proposeDimensions").mockImplementation(
       function proposeDimensions(this: FitAddon) {
-        return fitDimensionsAvailable
-          ? originalProposeDimensions.call(this)
-          : undefined;
+        if (fitDimensionsAvailable) {
+          return originalProposeDimensions.call(this);
+        }
+        unavailableFitMeasurements += 1;
+        if (unavailableFitMeasurements === 2) {
+          resolveUnavailableFitMeasurements();
+        }
+        return undefined;
       },
     );
 
@@ -683,12 +761,18 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       </MemoryRouter>,
     );
 
-    await waitFor(() => {
-      expect(
-        testState.socketMessages.map((message) => JSON.parse(message)),
-      ).toContainEqual({ type: "visibility", visible: true });
-    });
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    await waitForReadinessCondition(
+      () => {
+        expect(
+          testState.socketMessages.map((message) => JSON.parse(message)),
+        ).toContainEqual({ type: "visibility", visible: true });
+      },
+      "terminal visibility was not reported within 5000 ms",
+    );
+    await waitForReadiness(
+      unavailableFitMeasurementsReady,
+      "initial fit dimensions were not measured while unavailable within 5000 ms",
+    );
     expect(
       testState.socketMessages
         .map((message) => JSON.parse(message) as { type?: string })
@@ -696,15 +780,19 @@ describe("ThreadTerminalView terminal focus boundary", () => {
     ).toBe(false);
     fitDimensionsAvailable = true;
 
-    await waitFor(() => {
-      const resize = testState.socketMessages
-        .map(
-          (message) => JSON.parse(message) as { cols?: number; type?: string },
-        )
-        .find((message) => message.type === "resize");
-      expect(resize).toBeDefined();
-      expect(resize?.cols).toBeLessThan(120);
-    });
+    await waitForReadinessCondition(
+      () => {
+        const resize = testState.socketMessages
+          .map(
+            (message) =>
+              JSON.parse(message) as { cols?: number; type?: string },
+          )
+          .find((message) => message.type === "resize");
+        expect(resize).toBeDefined();
+        expect(resize?.cols).toBeLessThan(120);
+      },
+      "initial fitted resize was not sent within 5000 ms",
+    );
 
     const resizeFrames = () =>
       testState.socketMessages
@@ -724,16 +812,16 @@ describe("ThreadTerminalView terminal focus boundary", () => {
     const visibilityState = vi.spyOn(document, "visibilityState", "get");
     visibilityState.mockReturnValue("hidden");
     document.dispatchEvent(new Event("visibilitychange"));
-    await waitFor(() => {
+    await waitForReadinessCondition(() => {
       expect(
         testState.socketMessages.map((message) => JSON.parse(message)),
       ).toContainEqual({ type: "visibility", visible: false });
-    });
+    }, "terminal hidden visibility was not reported within 5000 ms");
 
     visibilityState.mockReturnValue("visible");
     document.dispatchEvent(new Event("visibilitychange"));
     window.dispatchEvent(new Event("focus"));
-    await waitFor(() => {
+    await waitForReadinessCondition(() => {
       const messages = testState.socketMessages.map(
         (message) =>
           JSON.parse(message) as {
@@ -768,7 +856,7 @@ describe("ThreadTerminalView terminal focus boundary", () => {
         cols: fittedSize.cols,
         rows: fittedSize.rows,
       });
-    });
+    }, "terminal visible visibility was not restored after focus within 5000 ms");
   });
 
   it("does not repaint-nudge the initial terminal replay", async () => {
@@ -828,6 +916,24 @@ describe("ThreadTerminalView terminal focus boundary", () => {
         return { cols: 51, rows: 47 };
       },
     );
+    const markLayoutSettled =
+      TerminalWebSocketTransport.prototype.markLayoutSettled;
+    let resolveLayoutSettled!: () => void;
+    const layoutSettled = new Promise<void>((resolve) => {
+      resolveLayoutSettled = resolve;
+    });
+    vi.spyOn(
+      TerminalWebSocketTransport.prototype,
+      "markLayoutSettled",
+    ).mockImplementation(function (this: TerminalWebSocketTransport) {
+      markLayoutSettled.call(this);
+      resolveLayoutSettled();
+    });
+    let resolveSocketCreated!: () => void;
+    const socketCreated = new Promise<void>((resolve) => {
+      resolveSocketCreated = resolve;
+    });
+    testState.socketCreated = resolveSocketCreated;
 
     render(
       <MemoryRouter>
@@ -846,22 +952,34 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       </MemoryRouter>,
     );
 
-    await waitFor(
-      () => {
-        const resizes = testState.socketMessages
-          .map(
-            (message) =>
-              JSON.parse(message) as {
-                cols?: number;
-                rows?: number;
-                type?: string;
-              },
-          )
-          .filter((message) => message.type === "resize");
-        expect(resizes).toEqual([{ type: "resize", cols: 51, rows: 47 }]);
-      },
-      { timeout: 6_000 },
+    await waitForReadiness(
+      socketCreated,
+      "socket was not created within 5000 ms",
     );
+    const socket = testState.sockets[0]!;
+    await Promise.all([
+      waitForReadiness(
+        socket.opened,
+        "socket did not open within 5000 ms",
+      ),
+      waitForReadiness(
+        layoutSettled,
+        "layout did not settle within 5000 ms",
+      ),
+    ]);
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const resizeFrames = () =>
+      testState.socketMessages
+        .map(
+          (message) =>
+            JSON.parse(message) as {
+              cols?: number;
+              rows?: number;
+              type?: string;
+            },
+        )
+        .filter((message) => message.type === "resize");
+    expect(resizeFrames()).toEqual([{ type: "resize", cols: 51, rows: 47 }]);
     const session = makeTerminalSession({
       id: "term_first_attach_font_metrics",
       status: "running",
@@ -874,7 +992,8 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       replayStartSeq: 0,
       nextSeq: 0,
     });
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(resizeFrames()).toEqual([{ type: "resize", cols: 51, rows: 47 }]);
+    await vi.advanceTimersByTimeAsync(REPAINT_RESTORE_DELAY_MS + 1);
     expect(
       testState.socketMessages
         .map(
@@ -889,33 +1008,31 @@ describe("ThreadTerminalView terminal focus boundary", () => {
     ).toEqual([{ type: "resize", cols: 51, rows: 47 }]);
 
     testState.sockets[0]?.disconnect();
-    await waitFor(() => expect(testState.sockets).toHaveLength(2));
-    testState.sockets[1]?.receive({
+    await vi.advanceTimersByTimeAsync(100);
+    const reconnectedSocket = testState.sockets[1];
+    if (!reconnectedSocket) {
+      throw new Error("terminal socket was not recreated after disconnect");
+    }
+    await waitForReadiness(
+      reconnectedSocket.opened,
+      "reconnected socket did not open within 5000 ms",
+    );
+    reconnectedSocket.receive({
       type: "attached",
       session,
       replayStartSeq: 0,
       nextSeq: 0,
     });
-    await waitFor(
-      () => {
-        const resizes = testState.socketMessages
-          .map(
-            (message) =>
-              JSON.parse(message) as {
-                cols?: number;
-                rows?: number;
-                type?: string;
-              },
-          )
-          .filter((message) => message.type === "resize");
-        expect(resizes.slice(-2)).toEqual([
+    await vi.advanceTimersByTimeAsync(REPAINT_RESTORE_DELAY_MS + 1);
+    await waitForReadinessCondition(
+      () =>
+        expect(resizeFrames().slice(-2)).toEqual([
           { type: "resize", cols: 50, rows: 47 },
           { type: "resize", cols: 51, rows: 47 },
-        ]);
-      },
-      { timeout: 6_000 },
+        ]),
+      "reconnected terminal resize was not restored within 5000 ms",
     );
-  }, 15_000);
+  }, 30_000);
 
   it("suppresses terminal-scoped shortcuts from the real xterm input", async () => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
@@ -956,13 +1073,13 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       </MemoryRouter>,
     );
 
-    const terminalInput = await waitFor(() => {
+    const terminalInput = await waitForReadinessCondition(() => {
       const textarea = document.querySelector<HTMLTextAreaElement>(
         ".xterm-helper-textarea",
       );
       if (textarea === null) throw new Error("xterm input is not mounted");
       return textarea;
-    });
+    }, "xterm input was not mounted within 5000 ms");
     const outside = screen.getByLabelText("Outside terminal");
     const dispatchSearch = (target: Element) => {
       const event = new KeyboardEvent("keydown", {
