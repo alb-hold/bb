@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "026da89a-d869-44d7-98f5-02c438f3ce46",
+  "id": "0b693b4a-2da0-4502-adb6-1c5ca3db5ed7",
   "prevId": "d4b02fa4-a3e0-473f-bbc2-0cee3c0d4606",
   "tables": {
     "app_settings": {
@@ -1178,60 +1178,6 @@
           "value": "(\n        (\"events\".\"scope_kind\" = 'turn' AND \"events\".\"turn_id\" IS NOT NULL)\n        OR\n        (\"events\".\"scope_kind\" = 'thread' AND \"events\".\"turn_id\" IS NULL)\n      )"
         }
       }
-    },
-    "fork_thread_row_states": {
-      "name": "fork_thread_row_states",
-      "columns": {
-        "thread_id": {
-          "name": "thread_id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "statuses_json": {
-          "name": "statuses_json",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "'{}'"
-        },
-        "progress_json": {
-          "name": "progress_json",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": 0
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "fork_thread_row_states_thread_id_threads_id_fk": {
-          "name": "fork_thread_row_states_thread_id_threads_id_fk",
-          "tableFrom": "fork_thread_row_states",
-          "tableTo": "threads",
-          "columnsFrom": [
-            "thread_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {}
     },
     "host_daemon_sessions": {
       "name": "host_daemon_sessions",
@@ -4913,6 +4859,14 @@
           "notNull": true,
           "autoincrement": false,
           "default": "'visible'"
+        },
+        "parent_notifications": {
+          "name": "parent_notifications",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'auto'"
         },
         "archived_at": {
           "name": "archived_at",

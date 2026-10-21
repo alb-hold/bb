@@ -1,8 +1,8 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "e46ebca0-c0cd-475b-81d8-8c5998ef0e25",
-  "prevId": "401b01d3-5ec4-4c35-82e1-7f7ab850f1f4",
+  "id": "12939974-3ed3-4749-a073-178d9e77f318",
+  "prevId": "35f1f628-fc77-4e47-9ae7-6fb1b8c2655c",
   "tables": {
     "app_settings": {
       "name": "app_settings",
@@ -1179,6 +1179,44 @@
         }
       }
     },
+    "fork_device_handoff_attention": {
+      "name": "fork_device_handoff_attention",
+      "columns": {
+        "terminal_session_id": {
+          "name": "terminal_session_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "attention_seq": {
+          "name": "attention_seq",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "fork_device_handoff_attention_terminal_session_id_terminal_sessions_id_fk": {
+          "name": "fork_device_handoff_attention_terminal_session_id_terminal_sessions_id_fk",
+          "tableFrom": "fork_device_handoff_attention",
+          "tableTo": "terminal_sessions",
+          "columnsFrom": [
+            "terminal_session_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
     "fork_terminal_output": {
       "name": "fork_terminal_output",
       "columns": {
@@ -1252,6 +1290,80 @@
         "fork_terminal_output_host_id_hosts_id_fk": {
           "name": "fork_terminal_output_host_id_hosts_id_fk",
           "tableFrom": "fork_terminal_output",
+          "tableTo": "hosts",
+          "columnsFrom": [
+            "host_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "fork_terminal_tab_dismissals": {
+      "name": "fork_terminal_tab_dismissals",
+      "columns": {
+        "terminal_session_id": {
+          "name": "terminal_session_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "host_id": {
+          "name": "host_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "dismissed_at": {
+          "name": "dismissed_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "fork_terminal_tab_dismissals_host_expiry_idx": {
+          "name": "fork_terminal_tab_dismissals_host_expiry_idx",
+          "columns": [
+            "host_id",
+            "expires_at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "fork_terminal_tab_dismissals_terminal_session_id_terminal_sessions_id_fk": {
+          "name": "fork_terminal_tab_dismissals_terminal_session_id_terminal_sessions_id_fk",
+          "tableFrom": "fork_terminal_tab_dismissals",
+          "tableTo": "terminal_sessions",
+          "columnsFrom": [
+            "terminal_session_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "fork_terminal_tab_dismissals_host_id_hosts_id_fk": {
+          "name": "fork_terminal_tab_dismissals_host_id_hosts_id_fk",
+          "tableFrom": "fork_terminal_tab_dismissals",
           "tableTo": "hosts",
           "columnsFrom": [
             "host_id"
@@ -4181,6 +4293,14 @@
           "columns": [
             "environment_id",
             "status"
+          ],
+          "isUnique": false
+        },
+        "terminal_sessions_status_thread_idx": {
+          "name": "terminal_sessions_status_thread_idx",
+          "columns": [
+            "status",
+            "thread_id"
           ],
           "isUnique": false
         },

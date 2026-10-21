@@ -212,6 +212,15 @@ const requestLogPath = script?.requestLogPath ?? null;
 const resumeRecordedModel = script?.resumeRecordedModel ?? null;
 const responseLogPath = script?.responseLogPath ?? null;
 const modelListFailOnceMarkerPath = script?.modelListFailOnceMarkerPath ?? null;
+if (script?.launchLogPath) {
+  appendFileSync(
+    script.launchLogPath,
+    `${JSON.stringify({
+      args: process.argv.slice(2),
+      poolToken: process.env.CODEX_POOL_AUTH_TOKEN ?? null,
+    })}\n`,
+  );
+}
 
 const archiveStatePath = script?.archiveStatePath ?? null;
 

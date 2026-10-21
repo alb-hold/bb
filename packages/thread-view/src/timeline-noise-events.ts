@@ -7,4 +7,5 @@ export const THREAD_TIMELINE_EXCLUDED_EVENT_TYPES = [
   "thread/tokenUsage/updated",
   "thread/execution/reported",
   "turn/diff/updated",
+  "turn/mainRun/updated",
 ] as const satisfies readonly ThreadEventType[];

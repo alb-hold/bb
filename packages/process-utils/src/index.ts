@@ -14,3 +14,4 @@ export * from "./process-info.js";
 
 export * from "./tcp-server-sockets.js";
 export * from "./performance-diagnostics.js";
+export * from "./vcs-process-scheduler.js";
