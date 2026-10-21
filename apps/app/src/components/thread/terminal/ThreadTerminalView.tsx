@@ -58,6 +58,7 @@ import { TerminalTextSelectSheet } from "./TerminalTextSelectSheet";
 import { terminalTextSnapshot } from "./terminal-text-snapshot";
 import {
   createTerminalOutputLineAnchorTracker,
+  disposeTerminalOutputLineAnchors,
   createTerminalViewportReplaySaveGate,
   createTerminalViewportPersistence,
   createTerminalTouchViewportSaveScheduler,
@@ -66,6 +67,7 @@ import {
   resolveTerminalViewportRestore,
   terminalViewportStorageKey,
 } from "./terminal-viewport";
+import type { TerminalOutputLineAnchor } from "./terminal-viewport";
 import {
   createTerminalClipboardKeyHandler,
   pasteTerminalClipboard,
@@ -499,6 +501,7 @@ interface WriteTerminalSessionStatusNoticeArgs {
 interface TerminalOutputWriteArgs {
   data: string | Uint8Array;
   isReplay: boolean;
+  onStart?: () => void;
   onParsed: () => void;
   replayWriteState: TerminalReplayWriteState;
   terminal: XTermTerminal;
@@ -546,6 +549,7 @@ interface HandleTerminalServerMessageArgs {
   acknowledgeOutput: (nextSeq: number) => void;
   message: TerminalServerMessage;
   onOutputParsed?: (sequence: number) => void;
+  onOutputStart?: (sequence: number) => void;
   onReplayComplete: () => void;
   onSessionChange?: (session: TerminalSession) => void;
   replayNextSeq: number | null;
@@ -777,6 +781,7 @@ export function captureTerminalContextMenuState({
 export function writeTerminalOutput({
   data,
   isReplay,
+  onStart,
   onParsed,
   replayWriteState,
   terminal,
@@ -786,8 +791,11 @@ export function writeTerminalOutput({
   const bytes =
     typeof data === "string" ? new TextEncoder().encode(data) : data;
   const write = (callback: () => void, applyMarkerGrids: boolean) => {
-    if (pipeline) pipeline.push(bytes, callback, applyMarkerGrids);
-    else terminal.write(data, callback);
+    if (pipeline) pipeline.push(bytes, callback, applyMarkerGrids, onStart);
+    else {
+      onStart?.();
+      terminal.write(data, callback);
+    }
   };
   if (!isReplay) {
     write(onParsed, true);
@@ -811,6 +819,7 @@ export function writeTerminalOutput({
 export function handleTerminalServerMessage({
   acknowledgeOutput,
   message,
+  onOutputStart,
   onOutputParsed,
   onReplayComplete,
   onSessionChange,
@@ -852,6 +861,7 @@ export function handleTerminalServerMessage({
       writeTerminalOutput({
         data: decodeBase64Bytes(message.chunk.dataBase64),
         isReplay: replayNextSeq !== null && message.chunk.seq < replayNextSeq,
+        onStart: () => onOutputStart?.(message.chunk.seq),
         onParsed: () => {
           onOutputParsed?.(message.chunk.seq);
           acknowledgeOutput(nextSeq);
@@ -1288,14 +1298,11 @@ export function ThreadTerminalView({
     let replayStartSequence = 0;
     let latestOutputSequence = 0;
     let anchoredOutputSequence = 0;
-    const outputLineAnchors: { sequence: number; line: number }[] = [];
+    const outputLineAnchors: TerminalOutputLineAnchor[] = [];
     const outputLineAnchorTracker = createTerminalOutputLineAnchorTracker({
-      getCurrentLine: () => {
-        const buffer = terminal?.buffer.active;
-        return buffer ? buffer.baseY + buffer.cursorY : 0;
-      },
+      registerMarker: () => terminal?.registerMarker(),
     });
-    let savedOutputLineAnchor: { sequence: number; line: number } | null = null;
+    let savedOutputLineAnchor: TerminalOutputLineAnchor | null = null;
     let hasRestoredViewport = false;
     let hasManualScrollIntent = false;
     let manualScrollTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -1578,7 +1585,7 @@ export function ThreadTerminalView({
           );
           savedOutputLineAnchor = mappedOutput ?? null;
           lineOffset = mappedOutput
-            ? Math.max(0, visibleLine - mappedOutput.line)
+            ? Math.max(0, visibleLine - mappedOutput.marker.line)
             : 0;
           anchoredOutputSequence =
             mappedOutput?.sequence ??
@@ -1849,23 +1856,39 @@ export function ThreadTerminalView({
               }
             },
             onSessionChange: onSessionChangeRef.current,
-            onOutputParsed: (sequence) => {
+            onOutputStart: (sequence) => {
               const outputAnchor =
-                outputLineAnchorTracker.recordParsedOutput(sequence);
+                outputLineAnchorTracker.recordOutputStart(sequence);
+              if (!outputAnchor) return;
               outputLineAnchors.push(outputAnchor);
-              if (sequence === savedViewportAnchor?.outputSequence) {
-                savedOutputLineAnchor = outputAnchor;
-              }
               if (outputLineAnchors.length > 4096) {
-                outputLineAnchors.splice(0, outputLineAnchors.length - 4096);
+                const removed = outputLineAnchors.splice(
+                  0,
+                  outputLineAnchors.length - 4096,
+                );
+                disposeTerminalOutputLineAnchors(removed);
+              }
+            },
+            onOutputParsed: (sequence) => {
+              const outputAnchor = outputLineAnchors.find(
+                (candidate) => candidate.sequence === sequence,
+              );
+              if (sequence === savedViewportAnchor?.outputSequence) {
+                if (savedOutputLineAnchor !== outputAnchor) {
+                  savedOutputLineAnchor?.marker.dispose();
+                }
+                savedOutputLineAnchor = outputAnchor ?? null;
               }
             },
             replayNextSeq,
             replayWriteState,
             onReplayStart: () => {
               viewportReplaySaveGate.beginReplay();
+              disposeTerminalOutputLineAnchors(
+                outputLineAnchors,
+                savedOutputLineAnchor,
+              );
               outputLineAnchors.length = 0;
-              savedOutputLineAnchor = null;
               replayPreview?.dispose();
               replayCompleted = false;
               const replayGrid = latestPtyGrid;
@@ -1894,7 +1917,6 @@ export function ThreadTerminalView({
             setReplayStartSequence: (sequence) => {
               replayStartSequence = sequence;
               latestOutputSequence = Math.max(latestOutputSequence, sequence);
-              outputLineAnchorTracker.reset();
             },
             terminal: activeTerminal,
             pipeline: outputPipeline ?? undefined,
@@ -1903,9 +1925,11 @@ export function ThreadTerminalView({
           });
         },
         onSequenceGap: () => {
+          disposeTerminalOutputLineAnchors(outputLineAnchors, savedOutputLineAnchor);
           outputLineAnchors.length = 0;
+          savedOutputLineAnchor?.marker.dispose();
+          savedOutputLineAnchor = null;
           activeTerminal.reset();
-          outputLineAnchorTracker.reset();
           writeTerminalStatus({
             terminal: activeTerminal,
             text: "Some terminal output was unavailable after reconnect",
@@ -2088,6 +2112,10 @@ export function ThreadTerminalView({
 
     return () => {
       disposed = true;
+      disposeTerminalOutputLineAnchors([
+        ...outputLineAnchors,
+        ...(savedOutputLineAnchor ? [savedOutputLineAnchor] : []),
+      ]);
       controlActiveRef.current = false;
       setControlActive(false);
       setTerminalReady(false);

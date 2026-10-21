@@ -1,3 +1,5 @@
+import type { IMarker } from "@xterm/xterm";
+
 export interface TerminalViewportAnchor {
   distanceFromTail: number;
   lineOffset?: number;
@@ -6,25 +8,31 @@ export interface TerminalViewportAnchor {
 
 export interface TerminalOutputLineAnchor {
   sequence: number;
-  line: number;
+  marker: IMarker;
+}
+
+export function disposeTerminalOutputLineAnchors(
+  anchors: readonly TerminalOutputLineAnchor[],
+  except?: TerminalOutputLineAnchor | null,
+): void {
+  const disposed = new Set<IMarker>();
+  for (const anchor of anchors) {
+    if (anchor === except || disposed.has(anchor.marker)) continue;
+    disposed.add(anchor.marker);
+    anchor.marker.dispose();
+  }
 }
 
 export function createTerminalOutputLineAnchorTracker(args: {
-  getCurrentLine: () => number;
+  registerMarker: () => IMarker | undefined;
 }): {
-  reset: () => void;
-  recordParsedOutput: (sequence: number) => TerminalOutputLineAnchor;
+  recordOutputStart: (sequence: number) => TerminalOutputLineAnchor | undefined;
 } {
-  const { getCurrentLine } = args;
-  let nextOutputStartLine = getCurrentLine();
+  const { registerMarker } = args;
   return {
-    reset: () => {
-      nextOutputStartLine = getCurrentLine();
-    },
-    recordParsedOutput: (sequence) => {
-      const anchor = { sequence, line: nextOutputStartLine };
-      nextOutputStartLine = getCurrentLine();
-      return anchor;
+    recordOutputStart: (sequence) => {
+      const marker = registerMarker();
+      return marker ? { sequence, marker } : undefined;
     },
   };
 }
@@ -35,9 +43,18 @@ export function findTerminalOutputLineAnchor(
 ): TerminalOutputLineAnchor | undefined {
   let visibleAnchor: TerminalOutputLineAnchor | undefined;
   for (const anchor of anchors) {
-    if (anchor.line <= visibleLine) visibleAnchor = anchor;
+    if (
+      !anchor.marker.isDisposed &&
+      anchor.marker.line >= 0 &&
+      anchor.marker.line <= visibleLine
+    ) {
+      visibleAnchor = anchor;
+    }
   }
-  return visibleAnchor ?? anchors[0];
+  return (
+    visibleAnchor ??
+    anchors.find((anchor) => !anchor.marker.isDisposed && anchor.marker.line >= 0)
+  );
 }
 
 export interface TerminalViewportStorage
@@ -252,7 +269,7 @@ export function createTerminalTouchViewportSaveScheduler(args: {
 export function resolveTerminalViewportRestore(args: {
   anchor: TerminalViewportAnchor | null;
   baseY: number;
-  outputLineAnchors: readonly { sequence: number; line: number }[];
+  outputLineAnchors: readonly TerminalOutputLineAnchor[];
   replayNextSequence: number;
   replayStartSequence: number;
 }): number {
@@ -270,11 +287,18 @@ export function resolveTerminalViewportRestore(args: {
   const outputAnchor = outputLineAnchors.find(
     ({ sequence }) => sequence === anchor.outputSequence,
   );
-  if (outputAnchor === undefined) {
+  if (
+    outputAnchor === undefined ||
+    outputAnchor.marker.isDisposed ||
+    outputAnchor.marker.line < 0
+  ) {
     return 0;
   }
   return Math.max(
     0,
-    Math.min(baseY, outputAnchor.line + Math.max(0, anchor.lineOffset ?? 0)),
+    Math.min(
+      baseY,
+      outputAnchor.marker.line + Math.max(0, anchor.lineOffset ?? 0),
+    ),
   );
 }

@@ -5,6 +5,7 @@ import type {
 } from "@bb/server-contract";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { Terminal } from "@xterm/xterm";
+import type { IMarker } from "@xterm/xterm";
 import { describe, expect, it, vi } from "vitest";
 import { decodeBase64Bytes } from "@/lib/base64-bytes";
 import { registerTerminalGridOscHandler } from "./terminal-grid-osc";
@@ -42,12 +43,27 @@ import {
   createTerminalViewportPersistence,
   createTerminalTouchViewportSaveScheduler,
   createTerminalOutputLineAnchorTracker,
-  findTerminalOutputLineAnchor,
+  disposeTerminalOutputLineAnchors,
   readTerminalViewportAnchor,
   resolveTerminalViewportRestore,
   terminalViewportStorageKey,
   writeTerminalViewportAnchor,
 } from "./terminal-viewport";
+
+function outputAnchor(sequence: number, line: number, disposed = false) {
+  const marker = {
+    id: sequence,
+    isDisposed: disposed,
+    line: disposed ? -1 : line,
+    onDispose: () => ({ dispose: () => undefined }),
+    dispose: vi.fn(),
+  } as unknown as IMarker;
+  return { sequence, marker };
+}
+
+function writeTerminal(terminal: Terminal, data: string): Promise<void> {
+  return new Promise((resolve) => terminal.write(data, resolve));
+}
 import {
   createEmptyFixedPanelTabsState,
   createTerminalFixedPanelTab,
@@ -274,7 +290,7 @@ describe("terminal viewport restore", () => {
       resolveTerminalViewportRestore({
         anchor,
         baseY: 80,
-        outputLineAnchors: [{ sequence: 42, line: 51 }],
+        outputLineAnchors: [outputAnchor(42, 51)],
         replayNextSequence: 50,
         replayStartSequence: 20,
       }),
@@ -290,7 +306,7 @@ describe("terminal viewport restore", () => {
           outputSequence: 64,
         },
         baseY: 600,
-        outputLineAnchors: [{ sequence: 64, line: 310 }],
+        outputLineAnchors: [outputAnchor(64, 310)],
         replayNextSequence: 565,
         replayStartSequence: 50,
       }),
@@ -306,82 +322,96 @@ describe("terminal viewport restore", () => {
           outputSequence: 10,
         },
         baseY: 3213,
-        outputLineAnchors: [{ sequence: 10, line: 132 }],
+        outputLineAnchors: [outputAnchor(10, 132)],
         replayNextSequence: 5353,
         replayStartSequence: 5274,
       }),
     ).toBe(140);
   });
 
-  it("restores the middle of one large output chunk at the same content line", () => {
-    let currentLine = 0;
-    const tracker = createTerminalOutputLineAnchorTracker({
-      getCurrentLine: () => currentLine,
-    });
-    currentLine = 3213;
-    const originalAnchor = tracker.recordParsedOutput(0);
-    const visibleLine = 1596;
-    const visibleOutput = findTerminalOutputLineAnchor(
-      [originalAnchor],
-      visibleLine,
+  it("restores to the oldest retained line when the saved marker is trimmed", async () => {
+    const terminal = new Terminal({ cols: 40, rows: 3, scrollback: 10 });
+    await writeTerminal(
+      terminal,
+      `${Array.from({ length: 12 }, (_, index) => `line ${String(index).padStart(5, "0")}\r\n`).join("")}line 00012`,
     );
-    const saved = {
-      distanceFromTail: 1617,
-      lineOffset: Math.max(0, visibleLine - (visibleOutput?.line ?? 0)),
-      outputSequence: visibleOutput?.sequence ?? 0,
-    };
+    const marker = terminal.registerMarker();
+    expect(marker).toBeDefined();
+    await writeTerminal(
+      terminal,
+      `\r\n${Array.from({ length: 30 }, (_, index) => `line ${String(index + 13).padStart(5, "0")}\r\n`).join("")}`,
+    );
+    const anchors = [{ sequence: 10, marker: marker! }];
+    const line = resolveTerminalViewportRestore({
+      anchor: { distanceFromTail: 20, lineOffset: 8, outputSequence: 10 },
+      baseY: terminal.buffer.active.baseY,
+      outputLineAnchors: anchors,
+      replayNextSequence: 11,
+      replayStartSequence: 0,
+    });
 
-    currentLine = 0;
-    tracker.reset();
-    currentLine = 3213;
-    const replayAnchor = tracker.recordParsedOutput(0);
-
-    expect(originalAnchor).toEqual({ sequence: 0, line: 0 });
-    expect(saved.lineOffset).toBe(1596);
-    expect(
-      resolveTerminalViewportRestore({
-        anchor: saved,
-        baseY: 3213,
-        outputLineAnchors: [replayAnchor],
-        replayNextSequence: 1,
-        replayStartSequence: 0,
-      }),
-    ).toBe(visibleLine);
+    expect(marker?.isDisposed).toBe(true);
+    expect(line).toBe(0);
+    terminal.scrollToLine(line);
+    expect(terminal.buffer.active.getLine(terminal.buffer.active.viewportY)?.translateToString(true)).not.toBe("line 00012");
+    terminal.dispose();
   });
 
-  it("restores a content line inside its middle output chunk", () => {
-    let currentLine = 0;
-    const tracker = createTerminalOutputLineAnchorTracker({
-      getCurrentLine: () => currentLine,
+  it("restores a retained marker to the same content after scrollback trimming", async () => {
+    const terminal = new Terminal({ cols: 40, rows: 3, scrollback: 1250 });
+    await writeTerminal(
+      terminal,
+      `${Array.from({ length: 1234 }, (_, index) => `line ${String(index).padStart(5, "0")}\r\n`).join("")}line 01234`,
+    );
+    const marker = terminal.registerMarker();
+    expect(marker).toBeDefined();
+    await writeTerminal(
+      terminal,
+      `\r\n${Array.from({ length: 40 }, (_, index) => `line ${String(index + 1235).padStart(5, "0")}\r\n`).join("")}`,
+    );
+    const anchors = [{ sequence: 11, marker: marker! }];
+    const line = resolveTerminalViewportRestore({
+      anchor: { distanceFromTail: 40, lineOffset: 0, outputSequence: 11 },
+      baseY: terminal.buffer.active.baseY,
+      outputLineAnchors: anchors,
+      replayNextSequence: 12,
+      replayStartSequence: 0,
     });
-    const originalAnchors: ReturnType<typeof tracker.recordParsedOutput>[] = [];
-    for (const [sequence, endLine] of [[10, 10], [11, 20], [12, 30]] as const) {
-      currentLine = endLine;
-      originalAnchors.push(tracker.recordParsedOutput(sequence));
-    }
-    const visibleOutput = findTerminalOutputLineAnchor(originalAnchors, 15);
-    const saved = {
-      distanceFromTail: 5,
-      lineOffset: Math.max(0, 15 - (visibleOutput?.line ?? 0)),
-      outputSequence: visibleOutput?.sequence ?? 0,
-    };
-    tracker.reset();
-    const replayAnchors: ReturnType<typeof tracker.recordParsedOutput>[] = [];
-    for (const [sequence, endLine] of [[10, 10], [11, 20], [12, 30]] as const) {
-      currentLine = endLine;
-      replayAnchors.push(tracker.recordParsedOutput(sequence));
-    }
+    terminal.scrollToLine(line);
 
-    expect(visibleOutput).toEqual({ sequence: 11, line: 10 });
-    expect(
-      resolveTerminalViewportRestore({
-        anchor: saved,
-        baseY: 30,
-        outputLineAnchors: replayAnchors,
-        replayNextSequence: 13,
-        replayStartSequence: 10,
-      }),
-    ).toBe(15);
+    expect(marker?.isDisposed).toBe(false);
+    expect(terminal.buffer.active.getLine(terminal.buffer.active.viewportY)?.translateToString(true)).toBe("line 01234");
+    terminal.dispose();
+  });
+
+  it("restores the saved marker after a server restart with later replay sequences", async () => {
+    const terminal = new Terminal({ cols: 40, rows: 3, scrollback: 1000 });
+    await writeTerminal(
+      terminal,
+      `${Array.from({ length: 132 }, (_, index) => `line ${String(index).padStart(5, "0")}\r\n`).join("")}line 00132`,
+    );
+    const tracker = createTerminalOutputLineAnchorTracker({
+      registerMarker: () => terminal.registerMarker(),
+    });
+    const markerAnchor = tracker.recordOutputStart(10);
+    expect(markerAnchor).toBeDefined();
+    await writeTerminal(
+      terminal,
+      `\r\n${Array.from({ length: 20 }, (_, index) => `line ${String(index + 133).padStart(5, "0")}\r\n`).join("")}`,
+    );
+    const lineOffset = 0;
+    const restoreLine = resolveTerminalViewportRestore({
+      anchor: { distanceFromTail: 100, lineOffset, outputSequence: 10 },
+      baseY: terminal.buffer.active.baseY,
+      outputLineAnchors: [markerAnchor!],
+      replayNextSequence: 5353,
+      replayStartSequence: 5274,
+    });
+    terminal.scrollToLine(restoreLine);
+
+    expect(terminal.buffer.active.getLine(terminal.buffer.active.viewportY)?.translateToString(true)).toBe("line 00132");
+    disposeTerminalOutputLineAnchors([markerAnchor!]);
+    terminal.dispose();
   });
 
   it("restores an old negative line offset to the chunk start", () => {
@@ -393,7 +423,7 @@ describe("terminal viewport restore", () => {
           outputSequence: 64,
         },
         baseY: 600,
-        outputLineAnchors: [{ sequence: 64, line: 310 }],
+        outputLineAnchors: [outputAnchor(64, 310)],
         replayNextSequence: 565,
         replayStartSequence: 50,
       }),
@@ -409,7 +439,7 @@ describe("terminal viewport restore", () => {
           outputSequence: 16,
         },
         baseY: 100,
-        outputLineAnchors: [{ sequence: 17, line: 8 }],
+        outputLineAnchors: [outputAnchor(17, 8)],
         replayNextSequence: 30,
         replayStartSequence: 17,
       }),
@@ -425,7 +455,7 @@ describe("terminal viewport restore", () => {
           outputSequence: 42,
         },
         baseY: 80,
-        outputLineAnchors: [{ sequence: 3, line: 5 }],
+        outputLineAnchors: [outputAnchor(3, 5)],
         replayNextSequence: 8,
         replayStartSequence: 0,
       }),
@@ -445,7 +475,7 @@ describe("terminal viewport restore", () => {
     const restoreLine = resolveTerminalViewportRestore({
       anchor: readTerminalViewportAnchor(storage, key),
       baseY: 100,
-      outputLineAnchors: [{ sequence: 64, line: 84 }],
+      outputLineAnchors: [outputAnchor(64, 84)],
       replayNextSequence: 80,
       replayStartSequence: 0,
     });
@@ -705,7 +735,7 @@ describe("terminal viewport restore", () => {
       resolveTerminalViewportRestore({
         anchor: readTerminalViewportAnchor(storage, viewportKey),
         baseY: 90,
-        outputLineAnchors: [{ sequence: 24, line: 80 }],
+        outputLineAnchors: [outputAnchor(24, 80)],
         replayNextSequence: 40,
         replayStartSequence: 20,
       }),
@@ -1143,6 +1173,29 @@ describe("terminal output encoding", () => {
     expect(writeCalls).toBe(32);
     await settled;
     expect(callbacks).toBe(32);
+    terminal.dispose();
+  });
+
+  it("registers each output marker after the preceding xterm write parses", async () => {
+    const terminal = new Terminal({ cols: 40, rows: 3, scrollback: 20 });
+    const pipeline = createTerminalOutputPipeline(terminal);
+    let marker: IMarker | undefined;
+    const complete = new Promise<void>((resolve) => {
+      pipeline.push(new TextEncoder().encode("before\r\n"), () => undefined);
+      pipeline.push(
+        new TextEncoder().encode("target"),
+        resolve,
+        true,
+        () => {
+          marker = terminal.registerMarker();
+        },
+      );
+    });
+    await complete;
+
+    expect(marker?.line).toBe(1);
+    expect(terminal.buffer.active.getLine(marker!.line)?.translateToString(true)).toBe("target");
+    marker?.dispose();
     terminal.dispose();
   });
 
