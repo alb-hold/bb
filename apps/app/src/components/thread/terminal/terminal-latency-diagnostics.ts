@@ -4,13 +4,13 @@ type LatencyMetric =
   | "inputEventToSerializationMs"
   | "inputSerializationToAcceptanceMs"
   | "inputAcceptanceToWebSocketSendMs"
-  | "inputWebSocketSendToFirstOutputReceivedMs"
-  | "inputToFirstOutputReceivedMs"
-  | "inputFirstOutputReceivedToParseMs"
-  | "inputToFirstOutputParseMs"
+  | "inputSendToFirstOutputAfterSendMs"
+  | "inputAcceptedToFirstOutputAfterSendMs"
+  | "firstOutputAfterSendToParseMs"
+  | "inputEventToFirstOutputAfterSendParseMs"
   | "outputParseMs"
-  | "inputFirstOutputReceivedToNextRenderMs"
-  | "inputToFirstOutputNextRenderMs"
+  | "firstOutputAfterSendToNextRenderMs"
+  | "inputEventToFirstOutputAfterSendNextRenderMs"
   | "outputNextRenderMs";
 
 export interface TerminalLatencyMetricSnapshot {
@@ -24,13 +24,13 @@ export interface TerminalLatencySnapshot {
   inputEventToSerializationMs: TerminalLatencyMetricSnapshot;
   inputSerializationToAcceptanceMs: TerminalLatencyMetricSnapshot;
   inputAcceptanceToWebSocketSendMs: TerminalLatencyMetricSnapshot;
-  inputWebSocketSendToFirstOutputReceivedMs: TerminalLatencyMetricSnapshot;
-  inputToFirstOutputReceivedMs: TerminalLatencyMetricSnapshot;
-  inputFirstOutputReceivedToParseMs: TerminalLatencyMetricSnapshot;
-  inputToFirstOutputParseMs: TerminalLatencyMetricSnapshot;
+  inputSendToFirstOutputAfterSendMs: TerminalLatencyMetricSnapshot;
+  inputAcceptedToFirstOutputAfterSendMs: TerminalLatencyMetricSnapshot;
+  firstOutputAfterSendToParseMs: TerminalLatencyMetricSnapshot;
+  inputEventToFirstOutputAfterSendParseMs: TerminalLatencyMetricSnapshot;
   outputParseMs: TerminalLatencyMetricSnapshot;
-  inputFirstOutputReceivedToNextRenderMs: TerminalLatencyMetricSnapshot;
-  inputToFirstOutputNextRenderMs: TerminalLatencyMetricSnapshot;
+  firstOutputAfterSendToNextRenderMs: TerminalLatencyMetricSnapshot;
+  inputEventToFirstOutputAfterSendNextRenderMs: TerminalLatencyMetricSnapshot;
   outputNextRenderMs: TerminalLatencyMetricSnapshot;
 }
 
@@ -85,26 +85,26 @@ const metrics: Record<
     inputEventToSerializationMs: new LatencyRing(),
     inputSerializationToAcceptanceMs: new LatencyRing(),
     inputAcceptanceToWebSocketSendMs: new LatencyRing(),
-    inputWebSocketSendToFirstOutputReceivedMs: new LatencyRing(),
-    inputToFirstOutputReceivedMs: new LatencyRing(),
-    inputFirstOutputReceivedToParseMs: new LatencyRing(),
-    inputToFirstOutputParseMs: new LatencyRing(),
+    inputSendToFirstOutputAfterSendMs: new LatencyRing(),
+    inputAcceptedToFirstOutputAfterSendMs: new LatencyRing(),
+    firstOutputAfterSendToParseMs: new LatencyRing(),
+    inputEventToFirstOutputAfterSendParseMs: new LatencyRing(),
     outputParseMs: new LatencyRing(),
-    inputFirstOutputReceivedToNextRenderMs: new LatencyRing(),
-    inputToFirstOutputNextRenderMs: new LatencyRing(),
+    firstOutputAfterSendToNextRenderMs: new LatencyRing(),
+    inputEventToFirstOutputAfterSendNextRenderMs: new LatencyRing(),
     outputNextRenderMs: new LatencyRing(),
   },
   phone: {
     inputEventToSerializationMs: new LatencyRing(),
     inputSerializationToAcceptanceMs: new LatencyRing(),
     inputAcceptanceToWebSocketSendMs: new LatencyRing(),
-    inputWebSocketSendToFirstOutputReceivedMs: new LatencyRing(),
-    inputToFirstOutputReceivedMs: new LatencyRing(),
-    inputFirstOutputReceivedToParseMs: new LatencyRing(),
-    inputToFirstOutputParseMs: new LatencyRing(),
+    inputSendToFirstOutputAfterSendMs: new LatencyRing(),
+    inputAcceptedToFirstOutputAfterSendMs: new LatencyRing(),
+    firstOutputAfterSendToParseMs: new LatencyRing(),
+    inputEventToFirstOutputAfterSendParseMs: new LatencyRing(),
     outputParseMs: new LatencyRing(),
-    inputFirstOutputReceivedToNextRenderMs: new LatencyRing(),
-    inputToFirstOutputNextRenderMs: new LatencyRing(),
+    firstOutputAfterSendToNextRenderMs: new LatencyRing(),
+    inputEventToFirstOutputAfterSendNextRenderMs: new LatencyRing(),
     outputNextRenderMs: new LatencyRing(),
   },
 };
@@ -193,7 +193,7 @@ export function recordTerminalOutputReceived(
   timestamp: number,
 ): number | null {
   if (!Number.isFinite(timestamp)) return null;
-  const firstInput: SentTerminalInput | null =
+  const firstSentInput: SentTerminalInput | null =
     pendingInputs.find((pending): pending is SentTerminalInput => {
       const sentAt = pending.sentAt;
       return (
@@ -202,14 +202,16 @@ export function recordTerminalOutputReceived(
         sentAt <= timestamp
       );
     }) ?? null;
-  if (firstInput !== null) {
-    const firstSentAt = firstInput.sentAt;
-    metrics[firstInput.formFactor].inputToFirstOutputReceivedMs.add(
-      timestamp - firstInput.timestamp,
-    );
+  if (firstSentInput !== null) {
+    const firstSentAt = firstSentInput.sentAt;
     metrics[
-      firstInput.formFactor
-    ].inputWebSocketSendToFirstOutputReceivedMs.add(timestamp - firstSentAt);
+      firstSentInput.formFactor
+    ].inputAcceptedToFirstOutputAfterSendMs.add(
+      timestamp - firstSentInput.timestamp,
+    );
+    metrics[firstSentInput.formFactor].inputSendToFirstOutputAfterSendMs.add(
+      timestamp - firstSentAt,
+    );
     for (let index = pendingInputs.length - 1; index >= 0; index -= 1) {
       const pending = pendingInputs[index];
       if (
@@ -224,10 +226,10 @@ export function recordTerminalOutputReceived(
   const frameId = nextOutputFrameId++;
   pendingOutputFrames[frameId % RING_SIZE] = {
     frameId,
-    formFactor: firstInput?.formFactor ?? currentFormFactor(),
+    formFactor: firstSentInput?.formFactor ?? currentFormFactor(),
     terminalId,
-    inputAcceptedAt: firstInput?.timestamp ?? null,
-    inputEventAt: firstInput?.inputEventAt ?? null,
+    inputAcceptedAt: firstSentInput?.timestamp ?? null,
+    inputEventAt: firstSentInput?.inputEventAt ?? null,
     receivedAt: timestamp,
   };
   return frameId;
@@ -252,12 +254,12 @@ export function recordTerminalOutputParsed(
   const formFactor = pending.formFactor;
   metrics[formFactor].outputParseMs.add(parsedAt - pending.receivedAt);
   if (pending.inputAcceptedAt !== null) {
-    metrics[formFactor].inputFirstOutputReceivedToParseMs.add(
+    metrics[formFactor].firstOutputAfterSendToParseMs.add(
       parsedAt - pending.receivedAt,
     );
   }
   if (pending.inputEventAt !== null) {
-    metrics[formFactor].inputToFirstOutputParseMs.add(
+    metrics[formFactor].inputEventToFirstOutputAfterSendParseMs.add(
       parsedAt - pending.inputEventAt,
     );
   }
@@ -284,12 +286,12 @@ export function recordTerminalOutputNextRender(
       nextRenderAt - pending.receivedAt,
     );
     if (pending.inputAcceptedAt !== null) {
-      metrics[formFactor].inputFirstOutputReceivedToNextRenderMs.add(
+      metrics[formFactor].firstOutputAfterSendToNextRenderMs.add(
         nextRenderAt - pending.receivedAt,
       );
     }
     if (pending.inputEventAt !== null) {
-      metrics[formFactor].inputToFirstOutputNextRenderMs.add(
+      metrics[formFactor].inputEventToFirstOutputAfterSendNextRenderMs.add(
         nextRenderAt - pending.inputEventAt,
       );
     }
@@ -312,19 +314,21 @@ function snapshot(formFactor: "desktop" | "phone"): TerminalLatencySnapshot {
       metrics[formFactor].inputSerializationToAcceptanceMs.snapshot(),
     inputAcceptanceToWebSocketSendMs:
       metrics[formFactor].inputAcceptanceToWebSocketSendMs.snapshot(),
-    inputWebSocketSendToFirstOutputReceivedMs:
-      metrics[formFactor].inputWebSocketSendToFirstOutputReceivedMs.snapshot(),
-    inputToFirstOutputReceivedMs:
-      metrics[formFactor].inputToFirstOutputReceivedMs.snapshot(),
-    inputFirstOutputReceivedToParseMs:
-      metrics[formFactor].inputFirstOutputReceivedToParseMs.snapshot(),
-    inputToFirstOutputParseMs:
-      metrics[formFactor].inputToFirstOutputParseMs.snapshot(),
+    inputSendToFirstOutputAfterSendMs:
+      metrics[formFactor].inputSendToFirstOutputAfterSendMs.snapshot(),
+    inputAcceptedToFirstOutputAfterSendMs:
+      metrics[formFactor].inputAcceptedToFirstOutputAfterSendMs.snapshot(),
+    firstOutputAfterSendToParseMs:
+      metrics[formFactor].firstOutputAfterSendToParseMs.snapshot(),
+    inputEventToFirstOutputAfterSendParseMs:
+      metrics[formFactor].inputEventToFirstOutputAfterSendParseMs.snapshot(),
     outputParseMs: metrics[formFactor].outputParseMs.snapshot(),
-    inputFirstOutputReceivedToNextRenderMs:
-      metrics[formFactor].inputFirstOutputReceivedToNextRenderMs.snapshot(),
-    inputToFirstOutputNextRenderMs:
-      metrics[formFactor].inputToFirstOutputNextRenderMs.snapshot(),
+    firstOutputAfterSendToNextRenderMs:
+      metrics[formFactor].firstOutputAfterSendToNextRenderMs.snapshot(),
+    inputEventToFirstOutputAfterSendNextRenderMs:
+      metrics[
+        formFactor
+      ].inputEventToFirstOutputAfterSendNextRenderMs.snapshot(),
     outputNextRenderMs: metrics[formFactor].outputNextRenderMs.snapshot(),
   };
 }

@@ -63,43 +63,44 @@ export function TerminalLatencyDiagnostics() {
             )}
           </div>
           <div>
-            Sent → first output received (echo):{" "}
+            Sent → first output after send:{" "}
             {metricText(
-              snapshot[formFactor].inputWebSocketSendToFirstOutputReceivedMs
-                .count,
-              snapshot[formFactor].inputWebSocketSendToFirstOutputReceivedMs
+              snapshot[formFactor].inputSendToFirstOutputAfterSendMs.count,
+              snapshot[formFactor].inputSendToFirstOutputAfterSendMs.totalCount,
+              snapshot[formFactor].inputSendToFirstOutputAfterSendMs.p50Ms,
+              snapshot[formFactor].inputSendToFirstOutputAfterSendMs.p95Ms,
+            )}
+          </div>
+          <div>
+            Accepted → first output after send:{" "}
+            {metricText(
+              snapshot[formFactor].inputAcceptedToFirstOutputAfterSendMs.count,
+              snapshot[formFactor].inputAcceptedToFirstOutputAfterSendMs
                 .totalCount,
-              snapshot[formFactor].inputWebSocketSendToFirstOutputReceivedMs
+              snapshot[formFactor].inputAcceptedToFirstOutputAfterSendMs.p50Ms,
+              snapshot[formFactor].inputAcceptedToFirstOutputAfterSendMs.p95Ms,
+            )}
+          </div>
+          <div>
+            First output after send → parsed:{" "}
+            {metricText(
+              snapshot[formFactor].firstOutputAfterSendToParseMs.count,
+              snapshot[formFactor].firstOutputAfterSendToParseMs.totalCount,
+              snapshot[formFactor].firstOutputAfterSendToParseMs.p50Ms,
+              snapshot[formFactor].firstOutputAfterSendToParseMs.p95Ms,
+            )}
+          </div>
+          <div>
+            Keystroke → parse of first output after send:{" "}
+            {metricText(
+              snapshot[formFactor].inputEventToFirstOutputAfterSendParseMs
+                .count,
+              snapshot[formFactor].inputEventToFirstOutputAfterSendParseMs
+                .totalCount,
+              snapshot[formFactor].inputEventToFirstOutputAfterSendParseMs
                 .p50Ms,
-              snapshot[formFactor].inputWebSocketSendToFirstOutputReceivedMs
+              snapshot[formFactor].inputEventToFirstOutputAfterSendParseMs
                 .p95Ms,
-            )}
-          </div>
-          <div>
-            Accepted → first output received:{" "}
-            {metricText(
-              snapshot[formFactor].inputToFirstOutputReceivedMs.count,
-              snapshot[formFactor].inputToFirstOutputReceivedMs.totalCount,
-              snapshot[formFactor].inputToFirstOutputReceivedMs.p50Ms,
-              snapshot[formFactor].inputToFirstOutputReceivedMs.p95Ms,
-            )}
-          </div>
-          <div>
-            First output → parsed:{" "}
-            {metricText(
-              snapshot[formFactor].inputFirstOutputReceivedToParseMs.count,
-              snapshot[formFactor].inputFirstOutputReceivedToParseMs.totalCount,
-              snapshot[formFactor].inputFirstOutputReceivedToParseMs.p50Ms,
-              snapshot[formFactor].inputFirstOutputReceivedToParseMs.p95Ms,
-            )}
-          </div>
-          <div>
-            Keystroke → first output parsed:{" "}
-            {metricText(
-              snapshot[formFactor].inputToFirstOutputParseMs.count,
-              snapshot[formFactor].inputToFirstOutputParseMs.totalCount,
-              snapshot[formFactor].inputToFirstOutputParseMs.p50Ms,
-              snapshot[formFactor].inputToFirstOutputParseMs.p95Ms,
             )}
           </div>
           <div>
@@ -112,22 +113,26 @@ export function TerminalLatencyDiagnostics() {
             )}
           </div>
           <div>
-            First output → next render:{" "}
+            First output after send → next render:{" "}
             {metricText(
-              snapshot[formFactor].inputFirstOutputReceivedToNextRenderMs.count,
-              snapshot[formFactor].inputFirstOutputReceivedToNextRenderMs
+              snapshot[formFactor].firstOutputAfterSendToNextRenderMs.count,
+              snapshot[formFactor].firstOutputAfterSendToNextRenderMs
                 .totalCount,
-              snapshot[formFactor].inputFirstOutputReceivedToNextRenderMs.p50Ms,
-              snapshot[formFactor].inputFirstOutputReceivedToNextRenderMs.p95Ms,
+              snapshot[formFactor].firstOutputAfterSendToNextRenderMs.p50Ms,
+              snapshot[formFactor].firstOutputAfterSendToNextRenderMs.p95Ms,
             )}
           </div>
           <div>
-            Keystroke → first output next render:{" "}
+            Keystroke → next render after first output after send:{" "}
             {metricText(
-              snapshot[formFactor].inputToFirstOutputNextRenderMs.count,
-              snapshot[formFactor].inputToFirstOutputNextRenderMs.totalCount,
-              snapshot[formFactor].inputToFirstOutputNextRenderMs.p50Ms,
-              snapshot[formFactor].inputToFirstOutputNextRenderMs.p95Ms,
+              snapshot[formFactor].inputEventToFirstOutputAfterSendNextRenderMs
+                .count,
+              snapshot[formFactor].inputEventToFirstOutputAfterSendNextRenderMs
+                .totalCount,
+              snapshot[formFactor].inputEventToFirstOutputAfterSendNextRenderMs
+                .p50Ms,
+              snapshot[formFactor].inputEventToFirstOutputAfterSendNextRenderMs
+                .p95Ms,
             )}
           </div>
           <div>
@@ -143,7 +148,8 @@ export function TerminalLatencyDiagnostics() {
       ))}
       <p className="text-muted-foreground">
         Timings are sampled in memory. Terminal input and output contents are
-        not recorded.
+        not recorded. The first-output-after-send sample is the first output on
+        that terminal after the key was sent; it may be unrelated to that key.
       </p>
     </div>
   );
