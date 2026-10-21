@@ -234,6 +234,12 @@ export function findTerminalOutputLineAnchor(
 export interface TerminalViewportStorage
   extends Pick<Storage, "getItem" | "setItem" | "removeItem" | "key" | "length"> {}
 
+export function terminalViewportStorageForClient(
+  clientWindow: Pick<Window, "sessionStorage">,
+): TerminalViewportStorage {
+  return clientWindow.sessionStorage;
+}
+
 export function terminalViewportStorageKey(terminalId: string): string {
   return `bb:terminal-viewport:${terminalId}`;
 }

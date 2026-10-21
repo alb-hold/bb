@@ -84,6 +84,7 @@ import {
   resolveTerminalViewportRestore,
   terminalOutputBoundaryPrefix,
   terminalViewportStorageKey,
+  terminalViewportStorageForClient,
 } from "./terminal-viewport";
 import type { TerminalOutputLineAnchor } from "./terminal-viewport";
 import {
@@ -1443,13 +1444,14 @@ export function ThreadTerminalView({
     const viewportStorageKey = terminalViewportStorageKey(
       session.id,
     );
+    const viewportStorage = terminalViewportStorageForClient(window);
     let savedViewportAnchor = readTerminalViewportAnchor(
-      window.localStorage,
+      viewportStorage,
       viewportStorageKey,
     );
     const viewportPersistence = createTerminalViewportPersistence({
       key: viewportStorageKey,
-      storage: window.localStorage,
+      storage: viewportStorage,
     });
     const viewportReplaySaveGate = createTerminalViewportReplaySaveGate();
     anchoredOutputSequence = savedViewportAnchor?.outputSequence ?? 0;
