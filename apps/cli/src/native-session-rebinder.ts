@@ -12,22 +12,15 @@ export interface NativeSessionRebinder {
   settled(): Promise<void>;
 }
 
-const PERMANENT_REFUSALS = new Set([
-  "native_session_claimed",
-  "native_session_rebind_stale",
-  "native_session_already_bound",
-]);
+const RETRYABLE_CLIENT_STATUSES = new Set([401, 408, 429]);
+const RETRYABLE_CODES = new Set(["native_terminal_not_live"]);
 
 function permanentRefusal(error: unknown): string | null {
-  if (
-    error instanceof BbHttpError &&
-    error.status === 409 &&
-    error.code !== null &&
-    PERMANENT_REFUSALS.has(error.code)
-  ) {
-    return error.code;
-  }
-  return null;
+  if (!(error instanceof BbHttpError)) return null;
+  if (error.status < 400 || error.status >= 500) return null;
+  if (RETRYABLE_CLIENT_STATUSES.has(error.status)) return null;
+  if (error.code !== null && RETRYABLE_CODES.has(error.code)) return null;
+  return error.code ?? `http_${error.status}`;
 }
 
 export function createNativeSessionRebinder(options: {

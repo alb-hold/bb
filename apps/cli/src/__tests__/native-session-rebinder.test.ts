@@ -83,24 +83,63 @@ describe("native session rebinder", () => {
     expect(refused).toEqual([]);
   });
 
-  it("treats an invalid credential, a server error and a network failure as retryable", async () => {
-    const failures = [
+  it.each([
+    [
+      "an invalid credential",
       refusal(401, "native_terminal_credential_invalid"),
-      refusal(503, "unavailable"),
-      new TypeError("fetch failed"),
-    ];
-    for (const failure of failures) {
-      const { rebinder, refused } = setup("c", (_attempt, index) =>
-        index === 0 ? failure : {},
+    ],
+    ["a terminal that is not live", refusal(409, "native_terminal_not_live")],
+    ["a request timeout", refusal(408, "request_timeout")],
+    ["a rate limit", refusal(429, "rate_limited")],
+    ["a server error", refusal(503, "unavailable")],
+    ["a network failure", new TypeError("fetch failed")],
+  ])("treats %s as retryable", async (_name, failure) => {
+    const { rebinder, refused } = setup("c", (_attempt, index) =>
+      index === 0 ? failure : {},
+    );
+    rebinder.enqueue({ previousSessionId: A, sessionId: B });
+    await rebinder.settled();
+    expect(rebinder.pending()).toBe(1);
+    rebinder.retry();
+    await rebinder.settled();
+    expect(rebinder.pending()).toBe(0);
+    expect(refused).toEqual([]);
+  });
+
+  it.each([
+    [400, "invalid_request"],
+    [403, "forbidden"],
+    [404, "not_found"],
+    [422, "unprocessable"],
+  ])(
+    "gives up for good on an unexpected %s answer instead of retrying it silently",
+    async (status, code) => {
+      const { attempts, rebinder, refused } = setup("c", () =>
+        refusal(status, code),
       );
       rebinder.enqueue({ previousSessionId: A, sessionId: B });
       await rebinder.settled();
-      expect(rebinder.pending()).toBe(1);
+      expect(refused).toEqual([{ code, sessionId: B }]);
       rebinder.retry();
       await rebinder.settled();
-      expect(rebinder.pending()).toBe(0);
-      expect(refused).toEqual([]);
-    }
+      expect(attempts).toHaveLength(1);
+    },
+  );
+
+  it("names an unexpected answer without a code by its status", async () => {
+    const { rebinder, refused } = setup(
+      "c",
+      () =>
+        new BbHttpError({
+          body: null,
+          code: null,
+          message: "bad",
+          status: 400,
+        }),
+    );
+    rebinder.enqueue({ previousSessionId: A, sessionId: B });
+    await rebinder.settled();
+    expect(refused).toEqual([{ code: "http_400", sessionId: B }]);
   });
 
   it("does not try while it holds no credential", async () => {
