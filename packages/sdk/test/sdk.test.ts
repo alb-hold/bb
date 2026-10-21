@@ -294,7 +294,12 @@ describe("@bb/sdk", () => {
 
     const foreignQueue = createFetchQueue([
       { body: makeTerminalSession({ id: "term_move" }) },
-      { body: makeTerminalSession({ id: "term_foreign", threadId: "thr_other" }) },
+      {
+        body: makeTerminalSession({
+          id: "term_foreign",
+          threadId: "thr_other",
+        }),
+      },
     ]);
     const foreignSdk = createBbSdk({
       transport: createHttpTransport({
@@ -335,6 +340,44 @@ describe("@bb/sdk", () => {
         bodyText: JSON.stringify({ state: "working" }),
         method: "POST",
         url: "http://bb.test/api/v1/threads/thr_test/native-terminal/activity",
+      },
+    ]);
+  });
+
+  it("passes an optional credential when recording a native session", async () => {
+    const queue = createFetchQueue([
+      {
+        body: {
+          threadId: "thr_test",
+          providerId: "claude-code",
+          displayName: "Claude Code",
+          nativeSessionId: "11111111-2222-3333-4444-555555555555",
+          canReturnToChat: true,
+          terminal: null,
+        },
+      },
+    ]);
+    const sdk = createBbSdk({
+      transport: createHttpTransport({
+        baseUrl: "http://bb.test",
+        fetch: queue.fetch,
+        runtime: "node",
+      }),
+    });
+
+    await sdk.nativeTerminals.recordSession({
+      threadId: "thr_test",
+      nativeSessionId: "11111111-2222-3333-4444-555555555555",
+      authorization: "Bearer synthetic-sdk-test-credential",
+    });
+    expect(queue.requests).toEqual([
+      {
+        authorization: "Bearer synthetic-sdk-test-credential",
+        bodyText: JSON.stringify({
+          nativeSessionId: "11111111-2222-3333-4444-555555555555",
+        }),
+        method: "POST",
+        url: "http://bb.test/api/v1/threads/thr_test/native-terminal/session",
       },
     ]);
   });

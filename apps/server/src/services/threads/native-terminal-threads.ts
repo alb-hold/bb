@@ -10,6 +10,7 @@ import {
   getThread,
   listNativeTerminalThreadsWithDisconnectedTerminal,
   recordNativeTerminalThreadSessionId,
+  rebindNativeTerminalThreadSessionId,
   clearNativeTerminalThreadEvidence,
   setNativeTerminalThreadTerminal,
   type NativeTerminalThreadRecord,
@@ -1112,9 +1113,28 @@ export async function requireNativeTerminalAgentToolCall(
   return { environment, terminalSessionId, thread };
 }
 
+function holderHoldsCurrentLiveCredential(
+  deps: NativeTerminalViewDeps,
+  args: { authorization: string | undefined; threadId: string },
+): boolean {
+  if (args.authorization === undefined) return false;
+  try {
+    requireNativeTerminalToolCredential(deps, args);
+    requireLiveNativeTerminalToolThread(deps, args.threadId);
+    return true;
+  } catch (error) {
+    if (error instanceof ApiError) return false;
+    throw error;
+  }
+}
+
 export function recordNativeTerminalSession(
   deps: NativeTerminalViewDeps,
-  args: { threadId: string; nativeSessionId: string },
+  args: {
+    authorization?: string;
+    threadId: string;
+    nativeSessionId: string;
+  },
 ): NativeTerminalThread {
   requireNativeTerminalThreadRecord(deps, args.threadId);
   const result = recordNativeTerminalThreadSessionId(deps.db, args);
@@ -1122,12 +1142,29 @@ export function recordNativeTerminalSession(
     case "recorded":
     case "unchanged":
       break;
-    case "already-bound":
-      throw new ApiError(
-        409,
-        "native_session_already_bound",
-        `Thread is already bound to native session ${result.nativeSessionId}`,
-      );
+    case "already-bound": {
+      if (
+        !holderHoldsCurrentLiveCredential(deps, {
+          authorization: args.authorization,
+          threadId: args.threadId,
+        })
+      ) {
+        throw new ApiError(
+          409,
+          "native_session_already_bound",
+          `Thread is already bound to native session ${result.nativeSessionId}`,
+        );
+      }
+      const rebound = rebindNativeTerminalThreadSessionId(deps.db, args);
+      if (rebound.kind === "claimed-by-other-thread") {
+        throw new ApiError(
+          409,
+          "native_session_claimed",
+          `Native session belongs to thread ${rebound.threadId}`,
+        );
+      }
+      break;
+    }
     case "claimed-by-other-thread":
       throw new ApiError(
         409,

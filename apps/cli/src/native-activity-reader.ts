@@ -10,6 +10,7 @@ import {
   type NativeActivityReport,
   type NativeActivitySignal,
 } from "./native-activity.js";
+import { statSync } from "node:fs";
 import { EvictedRecordIndex } from "./native-activity-index.js";
 import {
   findNativeSessionFile,
@@ -19,6 +20,11 @@ import {
 const MAX_RETAINED_RECORDS = 4096;
 const MAX_RETAINED_TURNS = 128;
 const MAX_RECENT_EVICTED_IDS = 4096;
+const MAX_SESSION_ADOPTIONS = 16;
+const SESSION_ID_PATTERN = /^[0-9a-f-]{8,64}$/iu;
+const ADOPTION_CLOCK_SKEW_MS = 5_000;
+const ADOPTION_RETRY_AFTER_MS = 2_000;
+const MAX_ADOPTION_ATTEMPTS_TRACKED = 64;
 export type NativeActivityStart =
   | { kind: "discover" }
   | { kind: "start"; id: string }
@@ -65,7 +71,9 @@ export async function measureResumedTranscript(
 export class NativeActivityReader {
   private readonly tracker = new NativeActivityTracker();
   private readonly hookTail = new JsonlTail(0);
-  private readonly transcriptTail: JsonlTail;
+  private transcriptTail: JsonlTail;
+  private adoptedSessions = 0;
+  private readonly adoptionAttempts = new Map<string, number>();
   private transcriptFile: string | null;
   private sessionId: string | null;
   private currentTurn: string | null = null;
@@ -95,6 +103,8 @@ export class NativeActivityReader {
       reason: "missing-session" | "foreign-session" | "unbound",
       total: number,
     ) => void,
+    private readonly onSessionAdopted?: (sessionId: string) => void,
+    private readonly launchedAtMs: number = Date.now(),
   ) {
     if (start.kind === "resume") {
       this.sessionId = start.id;
@@ -130,7 +140,7 @@ export class NativeActivityReader {
       for (const record of this.hookTail.readRecords(this.eventsFile)) {
         if (hooks.sessionIdField !== undefined) {
           const hookSession = this.stringField(record, hooks.sessionIdField);
-          const reason =
+          let reason: "missing-session" | "foreign-session" | "unbound" | null =
             this.sessionId === null
               ? "unbound"
               : hookSession === null
@@ -138,6 +148,13 @@ export class NativeActivityReader {
                 : hookSession !== this.sessionId
                   ? "foreign-session"
                   : null;
+          if (
+            reason === "foreign-session" &&
+            hookSession !== null &&
+            this.adoptSession(hookSession)
+          ) {
+            reason = null;
+          }
           if (reason !== null) {
             if (
               this.hookIdentityConfirmed ||
@@ -241,6 +258,52 @@ export class NativeActivityReader {
     const file = this.transcriptFile ?? this.findTranscript();
     if (file === null) return Number.POSITIVE_INFINITY;
     return fileSize(file) ?? Number.POSITIVE_INFINITY;
+  }
+
+  private adoptSession(sessionId: string): boolean {
+    if (
+      this.adoptedSessions >= MAX_SESSION_ADOPTIONS ||
+      !SESSION_ID_PATTERN.test(sessionId)
+    ) {
+      return false;
+    }
+    const now = Date.now();
+    const previousAttempt = this.adoptionAttempts.get(sessionId);
+    if (
+      previousAttempt !== undefined &&
+      now - previousAttempt < ADOPTION_RETRY_AFTER_MS
+    ) {
+      return false;
+    }
+    this.adoptionAttempts.set(sessionId, now);
+    if (this.adoptionAttempts.size > MAX_ADOPTION_ATTEMPTS_TRACKED) {
+      const oldest = this.adoptionAttempts.keys().next().value;
+      if (oldest !== undefined) this.adoptionAttempts.delete(oldest);
+    }
+    let file: string | null;
+    try {
+      file = findNativeSessionFile(this.cli, this.env, sessionId);
+    } catch {
+      return false;
+    }
+    if (file === null) return false;
+    let modifiedAtMs: number;
+    try {
+      modifiedAtMs = statSync(file).mtimeMs;
+    } catch {
+      return false;
+    }
+    if (modifiedAtMs < this.launchedAtMs - ADOPTION_CLOCK_SKEW_MS) return false;
+    this.adoptedSessions += 1;
+    this.sessionId = sessionId;
+    this.transcriptFile = file;
+    this.transcriptTail = new JsonlTail(fileSize(file) ?? 0);
+    this.unconfirmedTranscriptOffset = null;
+    this.unconfirmedHookBoundaryEstablished = false;
+    this.currentTurn = null;
+    this.workingRecord = null;
+    this.onSessionAdopted?.(sessionId);
+    return true;
   }
 
   private confirmHookIdentity(): void {

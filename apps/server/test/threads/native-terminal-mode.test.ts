@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import {
   createConnection,
+  createNativeTerminalThread,
   deleteThread,
   getNativeTerminalThread,
   getPendingInteractionByProviderRequest,
@@ -2139,6 +2140,116 @@ describe("native terminal activity evidence across a swap", () => {
     } finally {
       create.mockRestore();
     }
+  });
+
+  describe("rebinding the thread to the session the CLI rotated to", () => {
+    const ROTATED = "5c0ffee0-1111-4222-8333-444455556666";
+    const recordSession = (
+      fixture: Fixture,
+      threadId: string,
+      nativeSessionId: string,
+      authorization?: string,
+    ) =>
+      postJson(
+        fixture,
+        `/threads/${threadId}/native-terminal/session`,
+        { nativeSessionId },
+        authorization,
+      );
+    const boundSession = (fixture: Fixture, threadId: string) =>
+      getNativeTerminalThread(fixture.harness.db, threadId)?.nativeSessionId;
+
+    it("lets the holder with the current credential move the binding", async () => {
+      const fixture = await createFixture();
+      const started = await startNativeThread(fixture);
+      const { thread } = started;
+      expect(boundSession(fixture, thread.id)).toBe(SESSION_ID);
+      const response = await recordSession(
+        fixture,
+        thread.id,
+        ROTATED,
+        `Bearer ${started.credential}`,
+      );
+      expect(response.status).toBe(200);
+      expect(boundSession(fixture, thread.id)).toBe(ROTATED);
+    });
+
+    it("refuses a caller without the current live credential", async () => {
+      const fixture = await createFixture();
+      const started = await startNativeThread(fixture);
+      const { thread } = started;
+      const { credential: current } = await reattachAfterDaemonDisconnect(
+        fixture,
+        thread.id,
+        started.open,
+      );
+      for (const authorization of [
+        undefined,
+        "Bearer not-the-credential",
+        `Bearer ${started.credential}`,
+      ]) {
+        const response = await recordSession(
+          fixture,
+          thread.id,
+          ROTATED,
+          authorization,
+        );
+        expect(response.status).toBe(409);
+        expect(await readApiErrorCode(response)).toBe(
+          "native_session_already_bound",
+        );
+        expect(boundSession(fixture, thread.id)).toBe(SESSION_ID);
+      }
+      expect(
+        (await recordSession(fixture, thread.id, ROTATED, `Bearer ${current}`))
+          .status,
+      ).toBe(200);
+    });
+
+    it("refuses once the terminal is no longer live, and never takes another thread's session", async () => {
+      const fixture = await createFixture();
+      const started = await startNativeThread(fixture);
+      const { thread } = started;
+      const other = seedChatThread(fixture, {
+        providerId: "claude-code",
+        providerThreadId: null,
+      });
+      createNativeTerminalThread(fixture.harness.db, {
+        threadId: other.id,
+        providerId: "claude-code",
+        nativeSessionId: ROTATED,
+        initialPrompt: null,
+        initialImages: [],
+        model: null,
+      });
+      const claimed = await recordSession(
+        fixture,
+        thread.id,
+        ROTATED,
+        `Bearer ${started.credential}`,
+      );
+      expect(claimed.status).toBe(409);
+      expect(await readApiErrorCode(claimed)).toBe("native_session_claimed");
+
+      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.hostId,
+        sessionId: fixture.sessionId,
+        message: {
+          type: "terminal.exited",
+          terminalId: started.open.terminalId,
+          exitCode: 0,
+          closeReason: "process-exit",
+        },
+      });
+      const exited = await recordSession(
+        fixture,
+        thread.id,
+        "7d0ffee0-1111-4222-8333-444455556666",
+        `Bearer ${started.credential}`,
+      );
+      expect(exited.status).toBe(409);
+      expect(boundSession(fixture, thread.id)).toBe(SESSION_ID);
+    });
   });
 
   describe("lifecycle effects of a report", () => {
