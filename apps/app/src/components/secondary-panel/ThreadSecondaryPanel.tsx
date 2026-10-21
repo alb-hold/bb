@@ -1068,7 +1068,7 @@ function ThreadSecondaryPanelContent({
   );
   useEffect(() => {
     if (
-      !renderAsDrawer ||
+      shouldEnableSidebarSplits ||
       terminalLayoutRequest == null ||
       handledCompactTerminalLayoutRequestId.current === terminalLayoutRequest.requestId
     ) return;
@@ -1091,7 +1091,7 @@ function ThreadSecondaryPanelContent({
         : "The terminal is no longer available in this thread.",
     );
     handledCompactTerminalLayoutRequestId.current = terminalLayoutRequest.requestId;
-  }, [onEnsureTerminalTabs, renderAsDrawer, terminalLayoutRequest]);
+  }, [onEnsureTerminalTabs, shouldEnableSidebarSplits, terminalLayoutRequest]);
   const splitTabs = shouldEnableSidebarSplits
     ? ([
         ...fixedTabs.map((fixedTab) => ({

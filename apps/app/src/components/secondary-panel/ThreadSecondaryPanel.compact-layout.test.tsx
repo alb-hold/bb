@@ -28,6 +28,62 @@ afterEach(() => {
 });
 
 describe("compact terminal layout requests", () => {
+  it("selects the requested terminal on a non-drawer host without split state", async () => {
+    const terminalId = "term-no-split-state";
+    const terminalTab = createTerminalFixedPanelTab({ terminalId });
+    const terminalDescriptor: SecondaryPanelRenderableTab = {
+      label: "Requested terminal",
+      leadingVisual: null,
+      onClose: noop,
+      onSelect: noop,
+      renderContent: () => <div>Requested terminal content</div>,
+      statusLabel: null,
+      tab: terminalTab,
+    };
+    function Harness() {
+      const [activeTab, setActiveTab] = useState<SecondaryFixedPanelTab>(
+        createThreadInfoFixedPanelTab(),
+      );
+      return (
+        <PanelGroup direction="horizontal">
+          <ThreadSecondaryPanel
+            activeTab={activeTab}
+            canUseGitUi={false}
+            fixedTabs={[]}
+            tabs={[terminalDescriptor]}
+            isConversationCollapsed={false}
+            isOpen
+            metadataContent={null}
+            onClose={noop}
+            onCollapse={noop}
+            onEnsureTerminalTabs={(terminalIds) => {
+              expect(terminalIds).toEqual([terminalId]);
+              setActiveTab(terminalTab);
+              return true;
+            }}
+            onTabReorder={noop}
+            onOpenNewTab={noop}
+            onPanelFocus={noop}
+            onToggleConversationCollapse={noop}
+            renderAsDrawer={false}
+            terminalLayoutRequest={{
+              action: "split",
+              requestId: 54,
+              terminalId,
+              side: "right",
+            }}
+          />
+        </PanelGroup>
+      );
+    }
+
+    const { wrapper: Wrapper } = createQueryClientTestHarness();
+    render(<Wrapper><TooltipProvider><Harness /></TooltipProvider></Wrapper>);
+
+    await waitFor(() => expect(screen.getByText("Requested terminal content")).toBeTruthy());
+    expect(toastWarning).toHaveBeenCalledWith("Split panes aren't available at this window size.");
+  });
+
   it.each(["split", "move"] as const)(
     "%s selects the requested terminal, shows a notice, and preserves persisted split state",
     async (action) => {
