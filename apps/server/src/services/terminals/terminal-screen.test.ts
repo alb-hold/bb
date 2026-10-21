@@ -245,8 +245,8 @@ describe("renderTerminalScreen", () => {
         lines: undefined,
         output: output("partial\n", true),
       });
-      expect(screen.complete).toBe(false);
       expect(writeSpy).toHaveBeenCalledTimes(6);
+      expect(screen.complete).toBe(false);
     } finally {
       writeSpy.mockRestore();
     }
