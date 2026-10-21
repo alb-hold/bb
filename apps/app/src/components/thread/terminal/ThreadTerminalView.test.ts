@@ -272,6 +272,69 @@ describe("terminal touch focus", () => {
 });
 
 describe("terminal output encoding", () => {
+  it("matches visible output after replaying output received while hidden", async () => {
+    const visibleTerminal = new Terminal({ cols: 30, rows: 6 });
+    const hiddenTerminal = new Terminal({ cols: 30, rows: 6 });
+    const visiblePipeline = createTerminalOutputPipeline(visibleTerminal);
+    const hiddenPipeline = createTerminalOutputPipeline(hiddenTerminal);
+    const chunks = ["before ", "\u001b[3", "1mhidden\u001b[0m after"];
+    const write = async (
+      terminal: Terminal,
+      pipeline: ReturnType<typeof createTerminalOutputPipeline>,
+      seq: number,
+      bytes: string,
+      visible: boolean,
+    ) => {
+      let parsed!: () => void;
+      const completion = new Promise<void>((resolve) => {
+        parsed = resolve;
+      });
+      handleTerminalServerMessage({
+        acknowledgeOutput: parsed,
+        message: {
+          type: "output",
+          chunk: { seq, dataBase64: Buffer.from(bytes).toString("base64") },
+        },
+        onReplayComplete: vi.fn(),
+        replayNextSeq: null,
+        replayWriteState: { suppressedWriteCount: 0 },
+        setReplayNextSeq: vi.fn(),
+        shouldProcessOutput: () => visible,
+        terminal,
+        pipeline,
+      });
+      if (visible) await completion;
+    };
+
+    for (const [seq, chunk] of chunks.entries()) {
+      await write(visibleTerminal, visiblePipeline, seq, chunk, true);
+      await write(hiddenTerminal, hiddenPipeline, seq, chunk, false);
+    }
+    expect(
+      hiddenTerminal.buffer.active.getLine(0)?.translateToString().trimEnd(),
+    ).toBe("");
+    for (const [seq, chunk] of chunks.entries()) {
+      await write(hiddenTerminal, hiddenPipeline, seq, chunk, true);
+    }
+
+    const visibleLines = Array.from(
+      { length: visibleTerminal.buffer.active.length },
+      (_, index) =>
+        visibleTerminal.buffer.active.getLine(index)?.translateToString(),
+    );
+    const replayedLines = Array.from(
+      { length: hiddenTerminal.buffer.active.length },
+      (_, index) =>
+        hiddenTerminal.buffer.active.getLine(index)?.translateToString(),
+    );
+    expect(replayedLines).toEqual(visibleLines);
+    expect(hiddenTerminal.buffer.active.getLine(0)?.getCell(7)?.getFgColor()).toBe(
+      1,
+    );
+    visibleTerminal.dispose();
+    hiddenTerminal.dispose();
+  });
+
   it("replays a hidden output chunk before parsing a split escape sequence on show", async () => {
     const terminal = new Terminal({ cols: 30, rows: 6 });
     const pipeline = createTerminalOutputPipeline(terminal);
