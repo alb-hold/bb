@@ -6,7 +6,7 @@ import { renderTerminalScreen } from "./terminal-screen.js";
 import { Terminal } from "@xterm/headless";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 
-function output(data: string, truncated = false) {
+function output(data: string | Buffer, truncated = false) {
   return {
     chunks: [{ seq: 0, dataBase64: Buffer.from(data).toString("base64") }],
     nextSeq: 1,
@@ -111,15 +111,39 @@ describe("renderTerminalScreen", () => {
     expect(screen.rows).toEqual(["a界", "b"]);
   });
 
-  it("drops a partial first line when retained output starts mid-sequence", async () => {
+  it("skips a partial CSI at the retained tail start and keeps later updates", async () => {
     const screen = await renderTerminalScreen({
       cols: 20,
       rows: 2,
       lines: undefined,
-      output: output("31mcorrupt\nclean\n", true),
+      output: output("[6;1Hpartial row\u001b[1;1Hclean", true),
     });
-    expect(screen.rows).toEqual(["clean", ""]);
+    expect(screen.rows[0]).toBe("cleanal row");
     expect(screen.truncated).toBe(true);
+    expect(screen.complete).toBe(false);
+  });
+
+  it("skips only the partial UTF-8 sequence at the retained tail start", async () => {
+    const screen = await renderTerminalScreen({
+      cols: 20,
+      rows: 2,
+      lines: undefined,
+      output: output(
+        Buffer.concat([Buffer.from([0x82, 0xac]), Buffer.from("€ok")]),
+        true,
+      ),
+    });
+    expect(screen.rows[0]).toBe("€ok");
+  });
+
+  it("renders a truncated tail without a line feed", async () => {
+    const screen = await renderTerminalScreen({
+      cols: 20,
+      rows: 2,
+      lines: undefined,
+      output: output("visible cells", true),
+    });
+    expect(screen.rows[0]).toBe("visible cells");
     expect(screen.complete).toBe(false);
   });
 
@@ -194,6 +218,22 @@ describe("renderTerminalScreen", () => {
     expect(retainedScreen.complete).toBe(false);
   });
 
+  it("keeps top-like rows after the retained tail cuts through a row update", async () => {
+    const stream =
+      "header\r\n" +
+      "\u001b[2;1H" +
+      "x".repeat(65_500) +
+      "\u001b[3;1Hrow three\u001b[K";
+    const screen = await renderTerminalScreen({
+      cols: 80,
+      rows: 4,
+      lines: undefined,
+      output: output(stream.slice(-64 * 1024), true),
+    });
+    expect(screen.rows[2]).toContain("row three");
+    expect(screen.complete).toBe(false);
+  });
+
   it("rejects a mode-dependent redraw that fooled the blank and sentinel starts", async () => {
     const prefix = `\u001b[2;4r\u001b[?6h\u001b[?7l\u001b[4h\u001b(0${" ".repeat(65_550)}\n`;
     const redraw = `\u001b[1;1H\u001b[2J${Array.from(
@@ -252,14 +292,14 @@ describe("renderTerminalScreen", () => {
     }
   });
 
-  it("recognizes an alternate-screen switch after earlier rows scroll off", async () => {
+  it("keeps a truncated alternate-screen switch incomplete when earlier rows are uncertain", async () => {
     const screen = await renderTerminalScreen({
       cols: 20,
       rows: 2,
       lines: undefined,
       output: output("partial\nline one\nline two\n\u001b[?1049h", true),
     });
-    expect(screen.complete).toBe(true);
+    expect(screen.complete).toBe(false);
   });
 
   it("recognizes a fully drawn alternate screen after truncation", async () => {
@@ -276,17 +316,17 @@ describe("renderTerminalScreen", () => {
     expect(screen.complete).toBe(true);
   });
 
-  it("marks a partial alternate-screen draw incomplete after truncation", async () => {
+  it("recognizes the visible alternate screen after a truncated prefix", async () => {
     const screen = await renderTerminalScreen({
       cols: 20,
       rows: 2,
       lines: undefined,
       output: output("partial\n\u001b[?1049hX", true),
     });
-    expect(screen.complete).toBe(false);
+    expect(screen.complete).toBe(true);
   });
 
-  it("marks a partial scroll-region update incomplete after truncation", async () => {
+  it("renders a partial scroll-region update without dropping a row", async () => {
     const firstRow = " ".repeat(20);
     const screen = await renderTerminalScreen({
       cols: 20,
@@ -297,7 +337,7 @@ describe("renderTerminalScreen", () => {
         true,
       ),
     });
-    expect(screen.complete).toBe(false);
+    expect(screen.complete).toBe(true);
   });
 
   it("caps requested scrollback rows at 500", async () => {

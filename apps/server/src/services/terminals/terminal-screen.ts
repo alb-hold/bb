@@ -16,6 +16,23 @@ export const TERMINAL_SCREEN_REPLAY_BYTES = 64 * 1024;
 
 type HeadlessTerminal = InstanceType<typeof Terminal>;
 
+function safeTailStart(data: Buffer) {
+  const first = data[0];
+  if (first === undefined) return 0;
+  if ((first & 0xc0) === 0x80) {
+    let index = 0;
+    while (index < data.length && (data[index]! & 0xc0) === 0x80) index += 1;
+    return index;
+  }
+  if (first !== 0x5b) return 0;
+  for (let index = 1; index < data.length; index += 1) {
+    const byte = data[index]!;
+    if (byte >= 0x40 && byte <= 0x7e) return index + 1;
+    if (byte < 0x20 || byte > 0x3f) return 0;
+  }
+  return 0;
+}
+
 function createTerminal(cols: number, rows: number): HeadlessTerminal {
   const terminal = new Terminal({
     allowProposedApi: true,
@@ -115,11 +132,7 @@ export async function renderTerminalScreen(args: {
       ),
     );
     if (args.output.truncated) {
-      const firstLineBreak = data.indexOf(0x0a);
-      data =
-        firstLineBreak < 0
-          ? Buffer.alloc(0)
-          : data.subarray(firstLineBreak + 1);
+      data = data.subarray(safeTailStart(data));
     }
     await writeTerminal(terminal, data);
     const complete =
