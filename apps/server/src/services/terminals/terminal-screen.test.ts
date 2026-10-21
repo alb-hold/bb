@@ -287,16 +287,129 @@ describe("renderTerminalScreen", () => {
       releaseTermination?.();
       releaseTermination = undefined;
 
-      await expect(first).rejects.toThrow("simulated worker crash");
+      await expect(first).resolves.toMatchObject({
+        rows: ["worker interrupted", ""],
+      });
       await expect(duringRestart).resolves.toMatchObject({
         rows: ["read after restart", ""],
       });
-      expect(postMessageSpy.mock.contexts).toHaveLength(2);
+      expect(postMessageSpy.mock.contexts).toHaveLength(3);
     } finally {
       releaseTermination?.();
       terminateSpy.mockRestore();
       postMessageSpy.mockRestore();
       consoleErrorSpy.mockRestore();
+    }
+  });
+
+  it("retries an active read once when its worker crashes", async () => {
+    const postMessageSpy = vi.spyOn(Worker.prototype, "postMessage");
+    const consoleErrorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    try {
+      const read = renderTerminalScreen({
+        cols: 30,
+        rows: 2,
+        lines: undefined,
+        output: output("recovered after crash"),
+      });
+      const crashedWorker = postMessageSpy.mock.contexts[0] as Worker;
+      crashedWorker.emit("error", new Error("simulated worker crash"));
+
+      await expect(read).resolves.toMatchObject({
+        rows: ["recovered after crash", ""],
+      });
+      expect(postMessageSpy.mock.contexts).toHaveLength(2);
+    } finally {
+      postMessageSpy.mockRestore();
+      consoleErrorSpy.mockRestore();
+    }
+  });
+
+  it("reports when both the worker and its replacement crash", async () => {
+    const postMessageSpy = vi
+      .spyOn(Worker.prototype, "postMessage")
+      .mockImplementation(() => undefined);
+    const consoleErrorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    try {
+      const read = renderTerminalScreen({
+        cols: 30,
+        rows: 2,
+        lines: undefined,
+        output: output("both workers fail"),
+      });
+      const firstWorker = postMessageSpy.mock.contexts[0] as Worker;
+      firstWorker.emit("error", new Error("first worker crash"));
+      await vi.waitFor(() => expect(postMessageSpy).toHaveBeenCalledTimes(2));
+      const replacementWorker = postMessageSpy.mock.contexts[1] as Worker;
+      const replacementExit = new Promise<void>((resolve) => {
+        replacementWorker.once("exit", () => resolve());
+      });
+      replacementWorker.emit("error", new Error("replacement worker crash"));
+
+      await expect(read).rejects.toThrow(
+        "Terminal screen renderer crashed twice: replacement worker crash",
+      );
+      await replacementExit;
+    } finally {
+      postMessageSpy.mockRestore();
+      consoleErrorSpy.mockRestore();
+    }
+  });
+
+  it("does not dispatch a queued read after its deadline expires", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const originalSetTimeout = globalThis.setTimeout;
+    const timeoutCallbacks: Array<() => void> = [];
+    const setTimeoutSpy = vi
+      .spyOn(globalThis, "setTimeout")
+      .mockImplementation((handler, delay, ...args) => {
+        if (delay === 30_000 && typeof handler === "function") {
+          timeoutCallbacks.push(handler as () => void);
+        }
+        return originalSetTimeout(handler, delay, ...args);
+      });
+    const postMessageSpy = vi
+      .spyOn(Worker.prototype, "postMessage")
+      .mockImplementation(() => undefined);
+    const consoleErrorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    try {
+      const active = renderTerminalScreen({
+        cols: 20,
+        rows: 2,
+        lines: undefined,
+        output: output("crashed active read"),
+      });
+      const queuedRead = renderTerminalScreen({
+        cols: 20,
+        rows: 2,
+        lines: undefined,
+        output: output("must expire before dispatch"),
+      });
+
+      const queuedExpectation = expect(queuedRead).rejects.toThrow(
+        "Terminal screen read timed out after 30 seconds",
+      );
+      expect(timeoutCallbacks).toHaveLength(2);
+      timeoutCallbacks[1]?.();
+      await queuedExpectation;
+      const activeExpectation = expect(active).rejects.toThrow(
+        "Terminal screen read timed out after 30 seconds",
+      );
+      timeoutCallbacks[0]?.();
+      await activeExpectation;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(postMessageSpy.mock.contexts).toHaveLength(1);
+    } finally {
+      setTimeoutSpy.mockRestore();
+      postMessageSpy.mockRestore();
+      consoleErrorSpy.mockRestore();
+      vi.useRealTimers();
     }
   });
 

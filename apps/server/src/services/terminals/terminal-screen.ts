@@ -33,6 +33,7 @@ type PendingRead = {
   deadline: number;
   logger?: ServerLogger;
   worker?: Worker;
+  workerFailures: number;
 };
 
 function isTerminalScreenResponse(
@@ -91,11 +92,32 @@ function rejectRead(read: PendingRead, error: Error) {
   read.reject(error);
 }
 
+function retryOrRejectWorkerRead(read: PendingRead, error: Error) {
+  if (Date.now() >= read.deadline) {
+    rejectRead(
+      read,
+      new Error("Terminal screen read timed out after 30 seconds"),
+    );
+    return;
+  }
+  if (read.workerFailures >= 1) {
+    rejectRead(
+      read,
+      new Error(`Terminal screen renderer crashed twice: ${error.message}`),
+    );
+    return;
+  }
+  read.workerFailures += 1;
+  read.worker = undefined;
+  if (pending === read) pending = undefined;
+  queued.unshift(read);
+}
+
 function terminateWorker(current: Worker, error: Error) {
   if (worker === current) worker = undefined;
   terminatingWorker = current;
   const active = pending;
-  if (active?.worker === current) rejectRead(active, error);
+  if (active?.worker === current) retryOrRejectWorkerRead(active, error);
   void current.terminate();
 }
 
@@ -147,7 +169,7 @@ function getWorker() {
     if (active?.worker === current) {
       const error = new Error(`Terminal screen worker exited (${code})`);
       if (!failureReported) logWorkerFailure(error);
-      rejectRead(active, error);
+      retryOrRejectWorkerRead(active, error);
     }
     dispatchNext();
   });
@@ -247,6 +269,7 @@ export function renderTerminalScreen(args: {
       ),
       deadline: Date.now() + TERMINAL_SCREEN_WORKER_TIMEOUT_MS,
       ...(logger === undefined ? {} : { logger }),
+      workerFailures: 0,
     } satisfies PendingRead;
     queued.push(read);
     dispatchNext();
