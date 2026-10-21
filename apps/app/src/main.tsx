@@ -17,8 +17,10 @@ import {
   applyAppFrameGeometry,
   getBbDesktopInfo,
 } from "./lib/bb-desktop";
+import { installStaleChunkRecovery } from "./lib/stale-chunk-recovery";
 import "./app.css";
 
+installStaleChunkRecovery();
 installForeignDomMutationGuard();
 
 Error.stackTraceLimit = 50;

@@ -54,6 +54,10 @@ import {
 } from "../environments/environment-response.js";
 import { canThreadSpawnChild } from "./thread-parent.js";
 import { canRestoreThreadEnvironment } from "./thread-environment-restore.js";
+import {
+  canThreadEditMessages,
+  type ThreadMessageEditPolicyDeps,
+} from "./thread-message-edit-policy.js";
 import { toThreadEventWithMeta } from "./timeline.js";
 import { intendedThreadHostId } from "./dispatch-attempt.js";
 
@@ -71,9 +75,12 @@ interface NativeActivityDisplayDeps extends ThreadRuntimeDisplayDeps {
   providerRegistry: ProviderRegistryService;
 }
 
-interface ThreadResponseDisplayDeps extends ThreadRuntimeDisplayDeps {
+interface PluginThreadResponseDisplayDeps extends ThreadRuntimeDisplayDeps {
   providerRegistry?: ProviderRegistryService;
 }
+
+type ThreadResponseDisplayDeps = NativeActivityDisplayDeps &
+  ThreadMessageEditPolicyDeps;
 
 type ThreadPromptBannerDeps = NativeActivityDisplayDeps;
 type NativeActivityThreadRecord = Pick<
@@ -409,7 +416,7 @@ function toThreadStatusChangeMetadata(
 }
 
 function toThreadResponseWithHost(
-  deps: ThreadResponseDisplayDeps,
+  deps: PluginThreadResponseDisplayDeps,
   args: ToThreadResponseWithHostArgs,
 ): ThreadWithRuntime {
   const thread = toPublicThread(args.thread);
@@ -442,6 +449,20 @@ export function toThreadResponseFromThread(
   deps: ThreadResponseDisplayDeps,
   args: ToThreadResponseFromThreadArgs,
 ): ThreadResponse {
+  return buildThreadResponseFromThread(deps, args);
+}
+
+export function toPluginThreadDtoFromThread(
+  deps: PluginThreadResponseDisplayDeps,
+  args: ToThreadResponseFromThreadArgs,
+): ThreadResponse {
+  return buildThreadResponseFromThread(deps, args);
+}
+
+function buildThreadResponseFromThread(
+  deps: PluginThreadResponseDisplayDeps,
+  args: ToThreadResponseFromThreadArgs,
+): ThreadResponse {
   const threadWithRuntime = toThreadResponseWithHost(deps, {
     ...args,
     environmentHostId: resolveThreadEnvironmentHostId(deps, args.thread),
@@ -455,6 +476,12 @@ export function toThreadResponseFromThread(
     canRestoreEnvironment: canRestoreThreadEnvironment(deps, {
       thread: args.thread,
     }),
+    canEditMessages:
+      deps.providerRegistry !== undefined &&
+      canThreadEditMessages(
+        { providerRegistry: deps.providerRegistry },
+        args.thread,
+      ),
     canSpawnChild: canThreadSpawnChild(deps, { thread: args.thread }),
     queuedMessageCount:
       listQueuedThreadMessageCountsByThreadIds(deps.db, {

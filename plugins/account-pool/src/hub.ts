@@ -217,6 +217,10 @@ export class AccountPoolHub {
       token,
       provider,
     );
+    const catalogHostId =
+      authenticated === null
+        ? await this.options.threadTokens.authenticateCatalog(token, provider)
+        : null;
     const threadRoute =
       authenticated === null ||
       !this.options.threadTokens.isProcessCredential(token) ||
@@ -233,6 +237,7 @@ export class AccountPoolHub {
     const hostId =
       threadRoute?.hostId ??
       (await this.options.threadTokens.authenticateNested(token))?.hostId ??
+      catalogHostId ??
       null;
     return { threadRoute, hostId };
   }

@@ -44,7 +44,7 @@ import {
   upsertPluginSchedule,
   type InstalledPluginRow,
 } from "@bb/db";
-import { toThreadResponseFromThread } from "../threads/thread-runtime-display.js";
+import { toPluginThreadDtoFromThread } from "../threads/thread-runtime-display.js";
 import {
   brandingAssetHash,
   loadPluginAppBundle,
@@ -936,7 +936,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
   }
 
   function buildThreadDto(thread: Thread) {
-    return toThreadResponseFromThread(
+    return toPluginThreadDtoFromThread(
       {
         db: deps.db,
         hub: deps.hub,

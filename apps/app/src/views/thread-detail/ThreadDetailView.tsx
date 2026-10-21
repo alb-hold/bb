@@ -233,6 +233,7 @@ import { getFileExtension } from "@/lib/plugin-slot-resolvers";
 import { Icon } from "@bb/shared-ui/icon";
 import { getBbDesktopInfo, isDesktopBrowserAvailable } from "@/lib/bb-desktop";
 import { UrlOpenRoutingProvider } from "@/lib/url-open-routing";
+import { isTerminalLinkForThreadBrowser } from "@/components/thread/terminal/terminal-link-routing";
 import {
   AppNavigationHostProvider,
   type AppFixedTabOpenIntent,
@@ -671,6 +672,11 @@ function ThreadDetailViewInternal(
     () => setShouldAutoFocusNewTab(false),
     [],
   );
+  const [splitTabToRightRequest, setSplitTabToRightRequest] = useState<{
+    requestId: number;
+    tabId: string;
+  } | null>(null);
+  const splitTabToRightRequestIdRef = useRef(0);
   const shouldLoadThreadStorageFiles = shouldLoadThreadStorageFileList({
     hasThread: thread !== undefined,
     isSecondaryPanelOpen,
@@ -1039,18 +1045,13 @@ function ThreadDetailViewInternal(
       : null;
   const canEditSentMessages =
     thread !== undefined &&
-    (threadProviderInfo?.capabilities.supportsSessionRewind ?? false) &&
-    thread.archivedAt === null &&
-    thread.deletedAt === null &&
+    thread.canEditMessages &&
     !hasPendingInteraction &&
     sentMessageEditSession === null &&
     !sendMessage.isPending &&
     !createQueuedMessage.isPending &&
     !editMessage.isPending &&
-    !(timelineLoading && timelineRows.length === 0) &&
-    activeWorkflows.length === 0 &&
-    thread.activeBackgroundAgentCount === 0 &&
-    activeBackgroundCommands.length === 0;
+    !(timelineLoading && timelineRows.length === 0);
   const sentMessageEditEntryRef = useRef({ canEditSentMessages, thread });
   sentMessageEditEntryRef.current = { canEditSentMessages, thread };
   const handleEditSentMessage = useCallback<ThreadTimelineEditMessageHandler>(
@@ -2154,6 +2155,40 @@ function ThreadDetailViewInternal(
     ({ href }) => openBrowserUrl(href),
     [openBrowserUrl],
   );
+  const handleOpenTerminalLink = useCallback<ThreadTimelineLinkHandler>(
+    ({ href }) => {
+      if (
+        !isTerminalLinkForThreadBrowser(
+          href,
+          resolvedThreadEnvironmentHost === null
+            ? []
+            : [resolvedThreadEnvironmentHost.name],
+          isDesktopBrowserAvailable(),
+        )
+      ) {
+        return handleOpenTimelineLink({ href });
+      }
+      const tab = openTab({ kind: "browser", url: href });
+      if (tab?.kind !== "browser") return false;
+      if (renderSecondaryPanelAsDrawer) {
+        secondaryPanelDrawerVisibility.openDrawer();
+      } else {
+        splitTabToRightRequestIdRef.current += 1;
+        setSplitTabToRightRequest({
+          requestId: splitTabToRightRequestIdRef.current,
+          tabId: tab.id,
+        });
+      }
+      return true;
+    },
+    [
+      handleOpenTimelineLink,
+      openTab,
+      renderSecondaryPanelAsDrawer,
+      resolvedThreadEnvironmentHost,
+      secondaryPanelDrawerVisibility,
+    ],
+  );
   const handleTimelineTitleAction = useCallback<TimelineTitleActionResolver>(
     (action) => {
       switch (action.kind) {
@@ -2580,7 +2615,6 @@ function ThreadDetailViewInternal(
   );
   const composerFooter = (
     <ThreadDetailPromptArea
-      activeBackgroundAgentCount={thread.activeBackgroundAgentCount}
       canUseGitUi={canUseGitUi}
       contextWindowUsage={contextWindowUsage}
       environmentCheckout={threadCheckoutDisplay}
@@ -2671,7 +2705,7 @@ function ThreadDetailViewInternal(
             isPanelOpen={isSecondaryPanelOpen}
             isPanelPersistedOpen={isPersistedSecondaryPanelOpen}
             onAutoFocusHandled={terminals.handleAutoFocusHandled}
-            onOpenLink={handleOpenTimelineLink}
+            onOpenLink={handleOpenTerminalLink}
             onSelectionAddToChat={handleSelectionAddToChat}
             target={{ kind: "thread", threadId: thread.id }}
             terminalId={tab.terminalId}
@@ -3035,6 +3069,7 @@ function ThreadDetailViewInternal(
               tabs: panelTabs,
               fixedTabs: secondaryPanelFixedTabs,
               splitPanelStateId: thread.id,
+              splitTabToRightRequest,
               onCreateTerminalInNewPane: canCreateTerminal
                 ? startTerminalSession
                 : undefined,
