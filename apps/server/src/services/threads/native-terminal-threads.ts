@@ -1113,21 +1113,6 @@ export async function requireNativeTerminalAgentToolCall(
   return { environment, terminalSessionId, thread };
 }
 
-function holderHoldsCurrentLiveCredential(
-  deps: NativeTerminalViewDeps,
-  args: { authorization: string | undefined; threadId: string },
-): boolean {
-  if (args.authorization === undefined) return false;
-  try {
-    requireNativeTerminalToolCredential(deps, args);
-    requireLiveNativeTerminalToolThread(deps, args.threadId);
-    return true;
-  } catch (error) {
-    if (error instanceof ApiError) return false;
-    throw error;
-  }
-}
-
 export function recordNativeTerminalSession(
   deps: NativeTerminalViewDeps,
   args: {
@@ -1144,19 +1129,18 @@ export function recordNativeTerminalSession(
     case "unchanged":
       break;
     case "already-bound": {
-      if (
-        args.replacesNativeSessionId === undefined ||
-        !holderHoldsCurrentLiveCredential(deps, {
-          authorization: args.authorization,
-          threadId: args.threadId,
-        })
-      ) {
+      if (args.replacesNativeSessionId === undefined) {
         throw new ApiError(
           409,
           "native_session_already_bound",
           `Thread is already bound to native session ${result.nativeSessionId}`,
         );
       }
+      requireNativeTerminalToolCredential(deps, {
+        authorization: args.authorization,
+        threadId: args.threadId,
+      });
+      requireLiveNativeTerminalToolThread(deps, args.threadId);
       const rebound = rebindNativeTerminalThreadSessionId(deps.db, {
         nativeSessionId: args.nativeSessionId,
         replacesNativeSessionId: args.replacesNativeSessionId,
@@ -1172,7 +1156,7 @@ export function recordNativeTerminalSession(
       if (rebound.kind === "stale") {
         throw new ApiError(
           409,
-          "native_session_already_bound",
+          "native_session_rebind_stale",
           "The thread's native session changed since this move was requested",
         );
       }
