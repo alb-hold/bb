@@ -922,7 +922,7 @@ describe("native terminal agent tools", () => {
         expect(await readJson(post)).toEqual({
           code: "native_terminal_credential_invalid",
           message:
-            "A valid credential for this thread's running native terminal is required",
+            "A valid credential for this thread's current native terminal is required",
         });
       }
     }

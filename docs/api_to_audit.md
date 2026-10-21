@@ -2867,7 +2867,7 @@ doc covers three September 2026 additions:
   confirms activity) from an authenticated agent tool call bound to the
   thread's current terminal and provider session (`tool-call`, carried with
   `lastToolCallAt`) and from `unknown`. A tool call proves the credential holder
-  acted; it never enables a Working indicator. Activity reports always require the current credential of the thread's running native terminal; a missing, stale or other-thread credential gets 401 and changes nothing. Holders that predate this report without a credential and show Activity not reported until the thread is reopened. A holder keeps its last non-heartbeat report that was rejected for its credential and resends it on the next credential refresh or heartbeat tick.
+  acted; it never enables a Working indicator. Activity reports always require the current credential of the native terminal the thread is bound to; that terminal need not still be running (a current-credential report from an exited or disconnected terminal before reattach still has its lifecycle effect), and only a live terminal's report is stamped as confirmation; a missing, stale or other-thread credential gets 401 and changes nothing. Holders that predate this report without a credential and show Activity not reported until the thread is reopened. A holder keeps its last non-heartbeat report that was rejected for its credential and resends it on the next credential refresh or heartbeat tick.
 - `PluginSidebarThread.experimental_queuedFailedCount` and
   `PluginThreadStatusGlyphProps.experimental_queuedFailedCount` carry how many
   queued messages failed to send, so the `queued-failed` indicator reads "N

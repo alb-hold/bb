@@ -176,7 +176,7 @@ export function recordNativeTerminalActivity(
     throw new ApiError(
       401,
       "native_terminal_credential_invalid",
-      "A valid credential for this thread's running native terminal is required",
+      "A valid credential for this thread's current native terminal is required",
     );
   }
   const active = activeThreads(deps);

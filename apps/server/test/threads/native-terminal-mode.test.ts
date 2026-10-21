@@ -2098,6 +2098,7 @@ describe("native terminal activity evidence across a swap", () => {
     | "e: no credential after the reattach reset"
     | "f: current-credential heartbeat"
     | "g: current credential, terminal exited by daemon disconnect before reattach"
+    | "g2: current credential, terminal disconnected before reattach"
     | "h: new credential before its hash is stored, old terminal exited"
     | "h2: new credential before its hash is stored, old terminal disconnected";
 
@@ -2112,6 +2113,7 @@ describe("native terminal activity evidence across a swap", () => {
       "g: current credential, terminal exited by daemon disconnect before reattach",
       true,
     ],
+    ["g2: current credential, terminal disconnected before reattach", true],
     ["h: new credential before its hash is stored, old terminal exited", false],
     [
       "h2: new credential before its hash is stored, old terminal disconnected",
@@ -2213,6 +2215,18 @@ describe("native terminal activity evidence across a swap", () => {
     }
     await report(fixture, thread.id, `Bearer ${started.credential}`);
     expect(evidenceOf(fixture, thread.id)).not.toBeNull();
+    if (credentialCase.startsWith("g2")) {
+      fixture.harness.deps.terminalSessions.handleDaemonSessionClosed({
+        sessionId: fixture.sessionId,
+      });
+      expect(
+        getTerminalSession(fixture.harness.db, {
+          kind: "terminal",
+          terminalId: started.open.terminalId,
+        })?.status,
+      ).toBe("disconnected");
+      return { authorization: `Bearer ${started.credential}`, thread };
+    }
     if (credentialCase.startsWith("g")) {
       fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
         hostId: fixture.hostId,
@@ -2538,10 +2552,15 @@ describe("native terminal activity evidence across a swap", () => {
       const title = vi
         .spyOn(titleGeneration, "generateAndApplyThreadTitle")
         .mockResolvedValue(undefined as never);
+      const stampChecked = credentialCase.startsWith("g");
+      const clock = stampChecked
+        ? vi.spyOn(Date, "now").mockReturnValue(7_000_000)
+        : null;
       try {
         const { authorization, complete, thread } =
           await lifecycleAuthorization(fixture, credentialCase);
         completeRebind = complete;
+        clock?.mockReturnValue(7_001_000);
         const send = (body: unknown) =>
           postJson(
             fixture,
@@ -2592,7 +2611,13 @@ describe("native terminal activity evidence across a swap", () => {
           await vi.waitFor(() => undefined);
           expect(title).toHaveBeenCalledTimes(applied ? 1 : 0);
         }
+        if (stampChecked) {
+          expect(evidenceOf(fixture, thread.id)).toBe(
+            credentialCase.startsWith("g2") ? 7_001_000 : 7_000_000,
+          );
+        }
       } finally {
+        clock?.mockRestore();
         title.mockRestore();
         await completeRebind?.();
       }
