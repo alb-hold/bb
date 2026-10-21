@@ -195,6 +195,17 @@ function waitForReadiness<T>(
   });
 }
 
+async function waitForReadinessCondition(
+  callback: () => void,
+  failureMessage: string,
+): Promise<void> {
+  try {
+    await waitFor(callback, { timeout: 5_000 });
+  } catch {
+    throw new Error(failureMessage);
+  }
+}
+
 const originalClipboardDescriptor = Object.getOwnPropertyDescriptor(
   navigator,
   "clipboard",
@@ -686,11 +697,21 @@ describe("ThreadTerminalView terminal focus boundary", () => {
     );
     const originalProposeDimensions = FitAddon.prototype.proposeDimensions;
     let fitDimensionsAvailable = false;
+    let unavailableFitMeasurements = 0;
+    let resolveUnavailableFitMeasurements!: () => void;
+    const unavailableFitMeasurementsReady = new Promise<void>((resolve) => {
+      resolveUnavailableFitMeasurements = resolve;
+    });
     vi.spyOn(FitAddon.prototype, "proposeDimensions").mockImplementation(
       function proposeDimensions(this: FitAddon) {
-        return fitDimensionsAvailable
-          ? originalProposeDimensions.call(this)
-          : undefined;
+        if (fitDimensionsAvailable) {
+          return originalProposeDimensions.call(this);
+        }
+        unavailableFitMeasurements += 1;
+        if (unavailableFitMeasurements === 2) {
+          resolveUnavailableFitMeasurements();
+        }
+        return undefined;
       },
     );
 
@@ -711,12 +732,18 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       </MemoryRouter>,
     );
 
-    await waitFor(() => {
-      expect(
-        testState.socketMessages.map((message) => JSON.parse(message)),
-      ).toContainEqual({ type: "visibility", visible: true });
-    });
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    await waitForReadinessCondition(
+      () => {
+        expect(
+          testState.socketMessages.map((message) => JSON.parse(message)),
+        ).toContainEqual({ type: "visibility", visible: true });
+      },
+      "terminal visibility was not reported within 5000 ms",
+    );
+    await waitForReadiness(
+      unavailableFitMeasurementsReady,
+      "initial fit dimensions were not measured while unavailable within 5000 ms",
+    );
     expect(
       testState.socketMessages
         .map((message) => JSON.parse(message) as { type?: string })
@@ -724,15 +751,19 @@ describe("ThreadTerminalView terminal focus boundary", () => {
     ).toBe(false);
     fitDimensionsAvailable = true;
 
-    await waitFor(() => {
-      const resize = testState.socketMessages
-        .map(
-          (message) => JSON.parse(message) as { cols?: number; type?: string },
-        )
-        .find((message) => message.type === "resize");
-      expect(resize).toBeDefined();
-      expect(resize?.cols).toBeLessThan(120);
-    });
+    await waitForReadinessCondition(
+      () => {
+        const resize = testState.socketMessages
+          .map(
+            (message) =>
+              JSON.parse(message) as { cols?: number; type?: string },
+          )
+          .find((message) => message.type === "resize");
+        expect(resize).toBeDefined();
+        expect(resize?.cols).toBeLessThan(120);
+      },
+      "initial fitted resize was not sent within 5000 ms",
+    );
 
     const resizeFrames = () =>
       testState.socketMessages
