@@ -12,6 +12,7 @@ import { Command } from "commander";
 import type { NativeTerminalThread } from "@bb/server-contract";
 import { action, CliExitError } from "../../action.js";
 import { cliFetch, createCliBbSdk } from "../../client.js";
+import { BbHttpError } from "@bb/sdk";
 import { createNodeBbSdk } from "@bb/sdk/node";
 import {
   takeNativeToolCredentialFromEnv,
@@ -236,8 +237,20 @@ async function holdNativeHarness(
         });
       }
     },
-    recordSession: (args) =>
-      sdk.nativeTerminals.recordSession({ ...args, threadId }),
+    recordSession: async (args) => {
+      try {
+        return await sdk.nativeTerminals.recordSession({ ...args, threadId });
+      } catch (error) {
+        if (ownsSocket) {
+          logNativeHolderEvent(socketPath, "activity-session-rebind-deferred", {
+            code: error instanceof BbHttpError ? error.code : null,
+            sessionId: args.nativeSessionId,
+            status: error instanceof BbHttpError ? error.status : null,
+          });
+        }
+        throw error;
+      }
+    },
   });
   const readActivity = (): void => {
     for (const next of reader?.read() ?? []) report(next);
