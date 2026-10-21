@@ -51,7 +51,7 @@ function Key({
         onPress();
       }}
       className={cn(
-        "flex h-11 min-w-0 flex-1 touch-manipulation items-center justify-center rounded-md font-mono text-xs font-medium text-muted-foreground transition-colors hover:bg-state-hover hover:text-foreground active:bg-state-active active:text-foreground focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-40",
+        "flex h-11 min-w-8 flex-none touch-manipulation items-center justify-center rounded-md px-1 font-mono text-xs font-medium text-muted-foreground transition-colors hover:bg-state-hover hover:text-foreground active:bg-state-active active:text-foreground focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-40",
         active && "bg-state-active text-foreground",
         className,
       )}
@@ -88,7 +88,7 @@ export function TerminalMobileControls({
       className="shrink-0 border-t border-border/50 bg-sidebar px-2 py-1"
     >
       {expanded ? (
-        <div className="mb-1 flex gap-1">
+        <div className="mb-1 flex flex-wrap gap-1">
           {onPreviousPrompt ? (
             <Key
               {...readOnlyKeyProps}
@@ -140,7 +140,7 @@ export function TerminalMobileControls({
           </Key>
         </div>
       ) : readOnlyExited && (onPreviousPrompt || onNextPrompt) ? (
-        <div className="mb-1 flex gap-1">
+        <div className="mb-1 flex flex-wrap gap-1">
           {onPreviousPrompt ? (
             <Key
               {...readOnlyKeyProps}
@@ -162,7 +162,7 @@ export function TerminalMobileControls({
         </div>
       ) : null}
       {expanded ? (
-        <div className="mb-1 flex gap-1">
+        <div className="mb-1 flex flex-wrap gap-1">
           <Key {...keyProps} label="Home" onPress={() => onInput("\x1b[H")}>
             Home
           </Key>
@@ -198,7 +198,7 @@ export function TerminalMobileControls({
           </Key>
         </div>
       ) : null}
-      <div className="flex gap-1">
+      <div className="flex flex-wrap gap-1">
         <Key {...keyProps} label="Escape" onPress={() => onInput("\x1b")}>
           Esc
         </Key>
@@ -223,7 +223,7 @@ export function TerminalMobileControls({
         >
           Ctrl
         </Key>
-        <div className="flex min-w-0 flex-[4] gap-1">
+        <div className="flex flex-none gap-1">
           <Key {...keyProps} label="Arrow left" onPress={() => onArrow("left")}>
             <Icon name="ArrowLeft" className="size-4" />
           </Key>

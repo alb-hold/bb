@@ -892,14 +892,25 @@ export class TerminalManager {
           : null;
       let pty: TerminalPtyProcess;
       try {
+        const shellArgs =
+          integration?.args ?? terminalShellArgs({ shell, start: message.start });
+        const bbCli = integration?.env.BB_CLI ?? baseEnv.BB_CLI;
+        const holderArgs =
+          message.start.mode === "shell" && bbCli !== undefined
+            ? [
+                "terminal",
+                "holder-shell-client",
+                message.terminalId,
+                shell,
+                Buffer.from(JSON.stringify(shellArgs)).toString("base64"),
+              ]
+            : null;
         pty = this.ptyAdapter.spawn({
-          args:
-            integration?.args ??
-            terminalShellArgs({ shell, start: message.start }),
+          args: holderArgs ?? shellArgs,
           cols: message.cols,
           cwd: target.cwd,
           env: integration?.env ?? baseEnv,
-          file: shell,
+          file: holderArgs === null ? shell : (bbCli ?? shell),
           logger: this.options.logger,
           rows: message.rows,
         });

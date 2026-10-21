@@ -810,6 +810,38 @@ describe("ServerConnection", () => {
     }
   });
 
+  it("closes the socket when an unknown host RPC command arrives", async () => {
+    const { connection, logger, webSocket } = createConnectionFixture();
+    try {
+      await connection.start();
+      const socket = webSocket.sockets[0];
+      if (!socket) throw new Error("Expected test socket");
+
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: "host-rpc.request",
+          requestId: "unknown-holder-sessions",
+          command: {
+            type: "terminal.holder-sessions",
+            terminalIds: ["term-1"],
+          },
+        }),
+      });
+
+      expect(socket.close).toHaveBeenCalled();
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({
+          payloadPreview: expect.stringContaining(
+            '"type":"terminal.holder-sessions"',
+          ),
+        }),
+        "Invalid server websocket message; closing connection",
+      );
+    } finally {
+      await connection.shutdown();
+    }
+  });
+
   it("deduplicates inactive-session invalidation and reconnects only the current session", async () => {
     const { connection, logger, setSession, webSocket } =
       createConnectionFixture({

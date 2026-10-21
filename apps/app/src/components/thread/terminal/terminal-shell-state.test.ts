@@ -1,7 +1,13 @@
+import { Terminal } from "@xterm/xterm";
 import { describe, expect, it, vi } from "vitest";
 import {
-  parseTerminalShellOsc,
+  flushHolderMarkerChunks,
+  stripHolderMarkerChunks,
+  type HolderMarkerStripState,
+} from "../../../../../server/src/services/terminals/holder-marker.js";
+import {
   clearTerminalCurrentCwd,
+  parseTerminalShellOsc,
   getTerminalCurrentCwd,
   terminalPromptLine,
   terminalCwdTitle,
@@ -9,10 +15,133 @@ import {
   terminalSpawnCwd,
   setTerminalCurrentCwd,
   parseTerminalOsc52Copy,
+  registerTerminalShellOscHandlers,
   registerTerminalOsc52Handler,
 } from "./terminal-shell-state";
 
+function holderRestartOutput(splitAt: number): Buffer {
+  const marker = Buffer.from("\u001b]7717;bb-holder;term_a\u0007");
+  const state: HolderMarkerStripState = {
+    chunks: [],
+    data: [],
+    releasedPrefix: null,
+  };
+  const chunks = [
+    ...stripHolderMarkerChunks(
+      {
+        seq: 0,
+        dataBase64: Buffer.from("BEFORE\r\n").toString("base64"),
+      },
+      state,
+    ),
+    ...stripHolderMarkerChunks(
+      {
+        seq: 1,
+        dataBase64: Buffer.concat([
+          Buffer.from("\u001b]7791;bb-grid;80;24\u0007"),
+          marker.subarray(0, splitAt),
+        ]).toString("base64"),
+      },
+      state,
+    ),
+    ...flushHolderMarkerChunks(state),
+    ...stripHolderMarkerChunks(
+      {
+        seq: 2,
+        dataBase64: Buffer.concat([
+          marker.subarray(splitAt),
+          Buffer.from("AFTER\r\n"),
+        ]).toString("base64"),
+      },
+      state,
+    ),
+  ];
+  return Buffer.concat(
+    chunks.map((chunk) => Buffer.from(chunk.dataBase64, "base64")),
+  );
+}
+
+function writeTerminal(terminal: Terminal, data: Buffer): Promise<void> {
+  return new Promise((resolve) => terminal.write(data, resolve));
+}
+
+function terminalSnapshot(terminal: Terminal) {
+  return {
+    lines: Array.from({ length: terminal.buffer.active.length }, (_, index) =>
+      terminal.buffer.active.getLine(index)?.translateToString(true),
+    ),
+    cursorX: terminal.buffer.active.cursorX,
+    cursorY: terminal.buffer.active.cursorY,
+  };
+}
+
 describe("terminal shell OSC state", () => {
+  it.each([1, 2, 3])(
+    "keeps late holder-marker continuations from corrupting xterm at prefix offset %i",
+    async (splitAt) => {
+      const control = new Terminal({ cols: 80, rows: 8 });
+      const terminals = [
+        {
+          id: `holder-prefix-client-${splitAt}`,
+          bytes: holderRestartOutput(splitAt),
+        },
+        {
+          id: `holder-prefix-retained-${splitAt}`,
+          bytes: holderRestartOutput(splitAt),
+        },
+      ];
+      const disposables: Array<{
+        terminal: Terminal;
+        shellOsc: { dispose(): void };
+        id: string;
+      }> = [];
+      try {
+        await writeTerminal(control, Buffer.from("BEFORE\r\nAFTER\r\n"));
+        const controlSnapshot = terminalSnapshot(control);
+        for (const { id, bytes } of terminals) {
+          const terminal = new Terminal({ cols: 80, rows: 8 });
+          setTerminalCurrentCwd(id, "/before");
+          const shellEvents: unknown[] = [];
+          const shellOsc = registerTerminalShellOscHandlers(
+            terminal.parser,
+            (event) => {
+              shellEvents.push(event);
+              if (event.type === "cwd") {
+                setTerminalCurrentCwd(id, event.cwd);
+              }
+            },
+          );
+          disposables.push({ terminal, shellOsc, id });
+          await writeTerminal(terminal, bytes);
+          const snapshot = terminalSnapshot(terminal);
+          const rendered = snapshot.lines.join("\n");
+          expect(rendered.match(/BEFORE/gu) ?? []).toHaveLength(1);
+          expect(rendered.match(/AFTER/gu) ?? []).toHaveLength(1);
+          expect(rendered.indexOf("BEFORE")).toBeLessThan(
+            rendered.indexOf("AFTER"),
+          );
+          expect(rendered).not.toContain("7717");
+          expect({
+            cursorX: snapshot.cursorX,
+            cursorY: snapshot.cursorY,
+          }).toEqual({
+            cursorX: controlSnapshot.cursorX,
+            cursorY: controlSnapshot.cursorY,
+          });
+          expect(getTerminalCurrentCwd(id)).toBe("/before");
+          expect(shellEvents).toEqual([]);
+        }
+      } finally {
+        for (const { terminal, shellOsc, id } of disposables) {
+          shellOsc.dispose();
+          terminal.dispose();
+          clearTerminalCurrentCwd(id);
+        }
+        control.dispose();
+      }
+    },
+  );
+
   it("offers OSC 52 copy payloads and ignores queries and retained replays", () => {
     expect(parseTerminalOsc52Copy("c;b2s=")).toBe("ok");
     expect(parseTerminalOsc52Copy("c;?")).toBeNull();
