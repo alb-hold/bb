@@ -99,6 +99,9 @@ the most-parsed commands ends with the same shape.
   bb terminal list --thread <id> --json
     {sessions: [{id, title, status, exitCode, closeReason, cols, rows}]}    (wrapped in .sessions)
 
+  bb terminal surfaces --thread <id> --json
+    {threadId, surfaces: [{threadId, terminalId, title, status, kind}]}    (thread-scoped terminal surfaces)
+
   bb terminal output <terminalId> --json
     {chunks: [{seq, dataBase64}], nextSeq, truncated, status, exitCode, closeReason}    (chunk data is base64; status is "exited" once the command has finished)
 

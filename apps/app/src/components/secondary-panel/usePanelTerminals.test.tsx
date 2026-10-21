@@ -117,6 +117,7 @@ function renderSurface(
   surface: SurfaceCase,
   isFocused = true,
   getSpawnCwd?: () => string | undefined,
+  reveal = () => undefined,
 ) {
   const { wrapper } = createQueryClientTestHarness();
   return renderHook(
@@ -129,7 +130,7 @@ function renderSurface(
         isFocused,
         acceptsSession: surface.acceptsSession,
         tabsCarryTarget: surface.tabsCarryTarget,
-        reveal: () => undefined,
+        reveal,
       }),
       state: useFixedPanelTabsState(PANEL_STATE_ID, null),
       updateState: useUpdateFixedPanelTabsState(PANEL_STATE_ID, null),
@@ -164,6 +165,22 @@ afterEach(() => {
 });
 
 describe.each(SURFACES)("panel terminals on the $name", (surface) => {
+  it("selects the requested terminal and reveals its panel", () => {
+    const reveal = vi.fn();
+    const { result } = renderSurface(surface, true, undefined, reveal);
+
+    act(() =>
+      result.current.terminals.select(surface.own.id, {
+        kind: "thread",
+        threadId: "thr_1",
+      }),
+    );
+
+    expect(activeTerminalId(result.current.state)).toBe(surface.own.id);
+    expect(result.current.terminals.autoFocusTerminalId).toBe(surface.own.id);
+    expect(reveal).toHaveBeenCalledOnce();
+  });
+
   it("opens one tab per terminal and keeps the latest one selected", async () => {
     const { result } = renderSurface(surface);
 

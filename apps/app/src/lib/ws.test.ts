@@ -447,6 +447,61 @@ describe("WebSocketManager thread-open signals", () => {
     expect(threadOpen).not.toHaveBeenCalled();
   });
 
+  it("ignores unknown fields on thread-open signals", () => {
+    const { manager } = createConnectedManager();
+    const threadOpen = vi.fn();
+    manager.onThreadOpen(threadOpen);
+
+    dispatchRaw({
+      type: "thread-open",
+      projectId: "proj_1",
+      threadId: "thr_1",
+      split: "replace",
+      file: null,
+      futureAction: { value: "ignored" },
+    });
+
+    expect(threadOpen).toHaveBeenCalledWith({
+      type: "thread-open",
+      projectId: "proj_1",
+      threadId: "thr_1",
+      split: "replace",
+      file: null,
+    });
+  });
+
+  it("delivers typed terminal actions on thread-open signals", () => {
+    const { manager } = createConnectedManager();
+    const threadOpen = vi.fn();
+    manager.onThreadOpen(threadOpen);
+
+    dispatchRaw({
+      type: "thread-open",
+      projectId: "proj_1",
+      threadId: "thr_1",
+      split: "replace",
+      file: null,
+      terminalAction: {
+        action: "openBrowser",
+        terminalId: "term_1",
+        url: "http://localhost:3000",
+      },
+    });
+
+    expect(threadOpen).toHaveBeenCalledWith({
+      type: "thread-open",
+      projectId: "proj_1",
+      threadId: "thr_1",
+      split: "replace",
+      file: null,
+      terminalAction: {
+        action: "openBrowser",
+        terminalId: "term_1",
+        url: "http://localhost:3000",
+      },
+    });
+  });
+
   it("routes typed thread-pane actions separately", () => {
     const { manager } = createConnectedManager();
     const paneAction = vi.fn();

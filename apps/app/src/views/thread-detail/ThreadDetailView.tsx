@@ -232,8 +232,12 @@ import { usePluginSlots } from "@/lib/plugin-slots";
 import { getFileExtension } from "@/lib/plugin-slot-resolvers";
 import { Icon } from "@bb/shared-ui/icon";
 import { getBbDesktopInfo, isDesktopBrowserAvailable } from "@/lib/bb-desktop";
-import { UrlOpenRoutingProvider } from "@/lib/url-open-routing";
+import {
+  openUrlInExternalBrowser,
+  UrlOpenRoutingProvider,
+} from "@/lib/url-open-routing";
 import { isTerminalLinkForThreadBrowser } from "@/components/thread/terminal/terminal-link-routing";
+import { threadOpenTerminalActionSchema } from "@bb/server-contract";
 import {
   AppNavigationHostProvider,
   type AppFixedTabOpenIntent,
@@ -677,6 +681,7 @@ function ThreadDetailViewInternal(
     tabId: string;
   } | null>(null);
   const splitTabToRightRequestIdRef = useRef(0);
+  const consumedTerminalActionLocationRef = useRef<string | null>(null);
   const shouldLoadThreadStorageFiles = shouldLoadThreadStorageFileList({
     hasThread: thread !== undefined,
     isSecondaryPanelOpen,
@@ -2189,6 +2194,76 @@ function ThreadDetailViewInternal(
       secondaryPanelDrawerVisibility,
     ],
   );
+  useEffect(() => {
+    const locationState = location.state;
+    if (
+      location.key === consumedTerminalActionLocationRef.current ||
+      locationState === null ||
+      typeof locationState !== "object" ||
+      !("terminalAction" in locationState)
+    ) {
+      return;
+    }
+    const parsedAction = threadOpenTerminalActionSchema.safeParse(
+      locationState.terminalAction,
+    );
+    if (!parsedAction.success) return;
+    consumedTerminalActionLocationRef.current = location.key;
+    navigate(location.pathname, { replace: true, state: null });
+    selectTerminal(parsedAction.data.terminalId, {
+      kind: "thread",
+      threadId,
+    });
+    if (parsedAction.data.action === "openBrowser" && parsedAction.data.url) {
+      const url = parsedAction.data.url;
+      const canOpenInAppBrowser = isDesktopBrowserAvailable();
+      if (!canOpenInAppBrowser) {
+        appToast.message("Open this link in your browser?", {
+          action: {
+            label: "Open",
+            onClick: () => openUrlInExternalBrowser(url),
+          },
+          description: url,
+          duration: 10_000,
+        });
+      } else if (
+        isTerminalLinkForThreadBrowser(
+          url,
+          resolvedThreadEnvironmentHost === null
+            ? []
+            : [resolvedThreadEnvironmentHost.name],
+          true,
+        )
+      ) {
+        const tab = openTab({ kind: "browser", url });
+        if (tab?.kind === "browser") {
+          if (renderSecondaryPanelAsDrawer) {
+            secondaryPanelDrawerVisibility.openDrawer();
+          } else {
+            splitTabToRightRequestIdRef.current += 1;
+            setSplitTabToRightRequest({
+              requestId: splitTabToRightRequestIdRef.current,
+              tabId: tab.id,
+            });
+          }
+        }
+      } else {
+        openBrowserUrl(url);
+      }
+    }
+  }, [
+    location.key,
+    location.pathname,
+    location.state,
+    navigate,
+    selectTerminal,
+    threadId,
+    resolvedThreadEnvironmentHost,
+    renderSecondaryPanelAsDrawer,
+    secondaryPanelDrawerVisibility,
+    openTab,
+    openBrowserUrl,
+  ]);
   const handleTimelineTitleAction = useCallback<TimelineTitleActionResolver>(
     (action) => {
       switch (action.kind) {

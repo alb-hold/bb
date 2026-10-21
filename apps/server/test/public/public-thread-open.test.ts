@@ -1,4 +1,5 @@
-import { getThread } from "@bb/db";
+import { eq } from "drizzle-orm";
+import { createTerminalSession, getThread, threads } from "@bb/db";
 import { threadOpenResponseSchema } from "@bb/server-contract";
 import { describe, expect, it } from "vitest";
 import { readJson } from "../helpers/json.js";
@@ -180,6 +181,121 @@ describe("public thread open", () => {
       });
       expect(invalid.status).toBe(400);
       expect(socket.messages).toHaveLength(1);
+    });
+  });
+
+  it("broadcasts terminal focus and browser actions only for that thread's terminal", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps, {
+        id: "host-thread-terminal-action",
+      });
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+        path: "/tmp/thread-terminal-action-source",
+      });
+      const thread = seedThread(harness.deps, { projectId: project.id });
+      const otherThread = seedThread(harness.deps, { projectId: project.id });
+      const terminal = createTerminalSession(harness.db, {
+        cols: 80,
+        daemonSessionId: session.id,
+        environmentId: null,
+        hostId: host.id,
+        initialCwd: "/tmp",
+        rows: 24,
+        status: "running",
+        threadId: thread.id,
+        title: "Thread terminal",
+      });
+      const socket = createMockHubSocket();
+      harness.deps.hub.registerClient(socket);
+
+      const focus = await postOpen(harness, thread.id, {
+        file: null,
+        terminalAction: { action: "focus", terminalId: terminal.id },
+      });
+      expect(focus.status).toBe(200);
+      expect(JSON.parse(socket.messages[0]!)).toMatchObject({
+        type: "thread-open",
+        threadId: thread.id,
+        terminalAction: { action: "focus", terminalId: terminal.id },
+      });
+
+      const browser = await postOpen(harness, thread.id, {
+        file: null,
+        terminalAction: {
+          action: "openBrowser",
+          terminalId: terminal.id,
+          url: "http://localhost:3000",
+        },
+      });
+      expect(browser.status).toBe(200);
+      expect(JSON.parse(socket.messages[1]!)).toMatchObject({
+        terminalAction: {
+          action: "openBrowser",
+          terminalId: terminal.id,
+          url: "http://localhost:3000",
+        },
+      });
+
+      const foreign = await postOpen(harness, otherThread.id, {
+        file: null,
+        terminalAction: { action: "focus", terminalId: terminal.id },
+      });
+      const unknown = await postOpen(harness, thread.id, {
+        file: null,
+        terminalAction: { action: "focus", terminalId: "term_missing" },
+      });
+      const invalidUrl = await postOpen(harness, thread.id, {
+        file: null,
+        terminalAction: {
+          action: "openBrowser",
+          terminalId: terminal.id,
+          url: "javascript:alert(1)",
+        },
+      });
+      expect(foreign.status).toBe(404);
+      expect(unknown.status).toBe(404);
+      expect(invalidUrl.status).toBe(400);
+      expect(socket.messages).toHaveLength(2);
+    });
+  });
+
+  it("rejects terminal actions for archived threads without broadcasting", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps, {
+        id: "host-thread-terminal-archived",
+      });
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+        path: "/tmp/thread-terminal-archived-source",
+      });
+      const thread = seedThread(harness.deps, { projectId: project.id });
+      const terminal = createTerminalSession(harness.db, {
+        cols: 80,
+        daemonSessionId: session.id,
+        environmentId: null,
+        hostId: host.id,
+        initialCwd: "/tmp",
+        rows: 24,
+        status: "running",
+        threadId: thread.id,
+        title: "Archived thread terminal",
+      });
+      const socket = createMockHubSocket();
+      harness.deps.hub.registerClient(socket);
+      harness.db
+        .update(threads)
+        .set({ archivedAt: Date.now() })
+        .where(eq(threads.id, thread.id))
+        .run();
+
+      const response = await postOpen(harness, thread.id, {
+        file: null,
+        terminalAction: { action: "focus", terminalId: terminal.id },
+      });
+
+      expect(response.status).toBe(404);
+      expect(socket.messages).toHaveLength(0);
     });
   });
 
