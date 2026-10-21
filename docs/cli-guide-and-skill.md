@@ -8,13 +8,14 @@ restarts. Use
 `bb terminal pipe <id> --follow [--command <cmd>]` to stream output to stdout or
 a local command until the terminal exits or Ctrl-C.
 
-`bb terminal screen <id> [--lines <n>] [--json]` prints rendered terminal rows,
+`bb terminal screen <id> (--thread <id> | --environment <id> | --machine <id-or-name>) [--cwd <path>] [--lines <n>] [--json]` prints rendered terminal rows,
 cursor position, and grid size. Without `--lines`, it prints the visible grid;
 `--lines` includes up to 500 latest scrollback rows. JSON includes `complete`;
 true when the retained output fully determines the visible screen. When false,
-the retained output does not prove the screen is complete.
+the retained output does not prove the screen is complete. The selected scope
+must own the terminal; a terminal outside it is reported as not found.
 The SDK equivalent is
-`sdk.terminals.experimental_screen({ terminalId, lines? })`.
+`sdk.terminals.experimental_screen({ terminalId, scope, lines? })`.
 
 Keep the discoverable surfaces in sync whenever you add or change a `bb` CLI command, flag, or a user-facing configuration knob (env var, `.bb/` workspace file, settings field):
 
