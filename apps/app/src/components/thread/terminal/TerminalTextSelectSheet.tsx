@@ -91,8 +91,8 @@ export function TerminalTextSelectSheet({
     >
       {isContentRealized ? (
         <div className="flex min-h-0 flex-1 flex-col gap-2 px-3 pb-3">
-          <div className="flex shrink-0 items-center gap-2">
-            <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
+            <span className="w-full truncate text-xs text-muted-foreground">
               Touch and hold to select, then Copy selection
             </span>
             <Button

@@ -82,6 +82,19 @@ describe("TerminalTextSelectSheet", () => {
     ).not.toBeNull();
   });
 
+  it("closes from Done", async () => {
+    const onOpenChange = vi.fn();
+    render(
+      <TerminalTextSelectSheet
+        open
+        text="alpha beta"
+        onOpenChange={onOpenChange}
+      />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Done" }));
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
   it("copies exactly the selected snapshot substring", async () => {
     render(
       <TerminalTextSelectSheet
