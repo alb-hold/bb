@@ -114,7 +114,9 @@ prints the target because it has no app window. The SDK exposes
   `Terminal <id> exited with code N` on stderr. Once the scrollback is gone,
   output fails with `terminal_output_unavailable` and says why.
 
-  bb terminal screen <terminal-id>
+  bb terminal screen <terminal-id> --thread <id>
+  bb terminal screen <terminal-id> --environment <id>
+  bb terminal screen <terminal-id> --machine <id-or-name>
     --lines <n>                          Print latest rendered rows, up to 500
     --json                                Include cursor position, grid size, and completeness
 
@@ -123,7 +125,9 @@ prints the target because it has no app window. The SDK exposes
   output. The default returns the visible grid. JSON includes `complete`, true
   when the live mirror has observed the session from its start or a full terminal
   reset, or when replay fully determines the visible screen. A false value means
-  neither source proves the screen is complete.
+  neither source proves the screen is complete. Select the terminal's thread,
+  environment, or machine scope; a terminal outside that scope is reported as
+  not found.
   Selection
   is client-local and is not available through this command.
 

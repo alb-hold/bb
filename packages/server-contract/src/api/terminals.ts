@@ -207,11 +207,34 @@ export const terminalOutputQuerySchema = z
   .strict();
 export type TerminalOutputQuery = z.infer<typeof terminalOutputQuerySchema>;
 
-export const terminalScreenQuerySchema = z
-  .object({
-    lines: z.coerce.number().int().positive().max(500).optional(),
-  })
-  .strict();
+const terminalScreenLinesSchema = z.coerce
+  .number()
+  .int()
+  .positive()
+  .max(500)
+  .optional();
+
+export const terminalScreenQuerySchema = z.union([
+  z
+    .object({
+      lines: terminalScreenLinesSchema,
+      threadId: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      environmentId: z.string().min(1),
+      lines: terminalScreenLinesSchema,
+    })
+    .strict(),
+  z
+    .object({
+      cwd: z.string().trim().min(1).optional(),
+      hostId: z.string().min(1),
+      lines: terminalScreenLinesSchema,
+    })
+    .strict(),
+]);
 export type TerminalScreenQuery = z.infer<typeof terminalScreenQuerySchema>;
 
 export const terminalScreenResponseSchema = z

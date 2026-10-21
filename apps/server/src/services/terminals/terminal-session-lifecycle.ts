@@ -1815,7 +1815,7 @@ export class TerminalSessionLifecycle {
     terminalId: string;
     query: TerminalScreenQuery;
   }): Promise<TerminalScreenResponse> {
-    const session = getTerminalById(this.options.db, args.terminalId);
+    const session = this.getScopedTerminalForScreen(args);
     if (!session) {
       throw new ApiError(
         404,
@@ -1850,6 +1850,42 @@ export class TerminalSessionLifecycle {
       lines: args.query.lines,
       output,
       rows: session.rows,
+    });
+  }
+
+  private getScopedTerminalForScreen(args: {
+    terminalId: string;
+    query: TerminalScreenQuery;
+  }): TerminalSessionRow | null {
+    if ("threadId" in args.query) {
+      requirePublicThread(this.options.db, args.query.threadId);
+      return getTerminalSession(this.options.db, {
+        kind: "thread-terminal",
+        terminalId: args.terminalId,
+        threadId: args.query.threadId,
+      });
+    }
+    if ("environmentId" in args.query) {
+      requireEnvironment(this.options.db, args.query.environmentId);
+      return getTerminalSession(this.options.db, {
+        kind: "environment-terminal",
+        environmentId: args.query.environmentId,
+        terminalId: args.terminalId,
+      });
+    }
+    assertUsableHostId(
+      {
+        config: this.options.config,
+        db: this.options.db,
+        hub: this.options.hub,
+      },
+      { hostId: args.query.hostId },
+    );
+    return getTerminalSession(this.options.db, {
+      kind: "host-path-terminal",
+      hostId: args.query.hostId,
+      terminalId: args.terminalId,
+      ...(args.query.cwd === undefined ? {} : { cwd: args.query.cwd }),
     });
   }
 

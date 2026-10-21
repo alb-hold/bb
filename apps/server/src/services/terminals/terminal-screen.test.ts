@@ -201,12 +201,14 @@ describe("renderTerminalScreen", () => {
   });
 
   it("caps requested scrollback rows at 500", async () => {
-    expect(terminalScreenQuerySchema.safeParse({ lines: 500 }).success).toBe(
-      true,
-    );
-    expect(terminalScreenQuerySchema.safeParse({ lines: 501 }).success).toBe(
-      false,
-    );
+    expect(
+      terminalScreenQuerySchema.safeParse({ threadId: "thr_1", lines: 500 })
+        .success,
+    ).toBe(true);
+    expect(
+      terminalScreenQuerySchema.safeParse({ threadId: "thr_1", lines: 501 })
+        .success,
+    ).toBe(false);
     const screen = await renderTerminalScreen({
       cols: 8,
       rows: 2,

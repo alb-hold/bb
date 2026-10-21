@@ -1757,7 +1757,7 @@ describe("public terminal routes", () => {
       },
     ]);
     const screenResponse = await fixture.harness.app.request(
-      `/api/v1/terminals/${session.id}/screen?lines=2`,
+      `/api/v1/terminals/${session.id}/screen?threadId=${fixture.thread.id}&lines=2`,
     );
     expect(screenResponse.status).toBe(200);
     expect(
@@ -1770,18 +1770,86 @@ describe("public terminal routes", () => {
     });
   });
 
-  it("fails closed for unknown and foreign terminal screen IDs", async () => {
+  it("returns 404 for an unknown terminal screen ID in the caller's scope", async () => {
     const fixture = await createTerminalRouteFixture();
     harnesses.push(fixture.harness);
-    for (const terminalId of ["unknown-terminal", "foreign-server-terminal"]) {
-      const response = await fixture.harness.app.request(
-        `/api/v1/terminals/${terminalId}/screen`,
-      );
-      expect(response.status).toBe(404);
-      expect(apiErrorSchema.parse(await readJson(response)).code).toBe(
-        "terminal_not_found",
-      );
-    }
+
+    const response = await fixture.harness.app.request(
+      `/api/v1/terminals/unknown-terminal/screen?threadId=${fixture.thread.id}`,
+    );
+
+    expect(response.status).toBe(404);
+    expect(apiErrorSchema.parse(await readJson(response)).code).toBe(
+      "terminal_not_found",
+    );
+  });
+
+  it("denies a real terminal from another project without returning its screen", async () => {
+    const fixture = await createTerminalRouteFixture();
+    harnesses.push(fixture.harness);
+    const { project: foreignProject } = seedProjectWithSource(
+      fixture.harness.deps,
+      {
+        hostId: fixture.host.id,
+        path: "/tmp/foreign-terminal-project",
+      },
+    );
+    const foreignEnvironment = seedEnvironment(fixture.harness.deps, {
+      hostId: fixture.host.id,
+      path: "/tmp/foreign-terminal-workspace",
+      projectId: foreignProject.id,
+    });
+    const foreignThread = seedThread(fixture.harness.deps, {
+      environmentId: foreignEnvironment.id,
+      projectId: foreignProject.id,
+      status: "idle",
+    });
+    const secretScreenRow = "foreign-project-terminal-secret";
+    const foreignTerminal = createTerminalSession(fixture.harness.db, {
+      cols: 120,
+      daemonSessionId: fixture.session.id,
+      environmentId: foreignEnvironment.id,
+      hostId: fixture.host.id,
+      initialCwd: foreignEnvironment.path ?? "/tmp/foreign-terminal-workspace",
+      rows: 32,
+      status: "running",
+      threadId: foreignThread.id,
+      title: "Foreign project terminal",
+    });
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.host.id,
+      sessionId: fixture.session.id,
+      message: {
+        type: "terminal.output",
+        terminalId: foreignTerminal.id,
+        chunk: {
+          seq: 0,
+          dataBase64: Buffer.from(`${secretScreenRow}\n`).toString("base64"),
+        },
+      },
+    });
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.host.id,
+      sessionId: fixture.session.id,
+      message: {
+        type: "terminal.exited",
+        terminalId: foreignTerminal.id,
+        exitCode: 0,
+        closeReason: "process-exit",
+      },
+    });
+
+    const response = await fixture.harness.app.request(
+      `/api/v1/terminals/${foreignTerminal.id}/screen?threadId=${fixture.thread.id}`,
+    );
+    const body = await response.text();
+
+    expect(body).not.toContain(secretScreenRow);
+    expect(JSON.parse(body)).not.toHaveProperty("rows");
+    expect(response.status).toBe(404);
+    expect(apiErrorSchema.parse(JSON.parse(body)).code).toBe(
+      "terminal_not_found",
+    );
   });
 
   it("reads exited terminal output after reopening the database", async () => {
