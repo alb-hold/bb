@@ -88,7 +88,12 @@ async function replayIsComplete(
   blankTerminal: HeadlessTerminal,
 ) {
   const sentinelTerminal = createTerminal(cols, rows);
-  const modeSetups = [`\u001b[2;${Math.max(2, rows - 1)}r\u001b[?6h`];
+  const modeSetups = [
+    `\u001b[2;${Math.max(2, rows - 1)}r\u001b[?6h`,
+    "\u001b[?7l",
+    "\u001b[4h",
+    "\u001b(0",
+  ];
   const perturbedTerminals: HeadlessTerminal[] = [];
   try {
     const sentinel = sentinelGrid(cols, rows);
