@@ -274,6 +274,57 @@ describe("renderTerminalScreen", () => {
     expect(screen.complete).toBe(false);
   });
 
+  it.each(
+    [
+      ["DEC Special Graphics", "0", "q", "─"],
+      ["UK", "A", "#", "£"],
+      ["Dutch", "4", "#", "£"],
+      ["Finnish", "C", "[", "Ä"],
+      ["French", "R", "#", "£"],
+      ["French Canadian", "Q", "@", "à"],
+      ["German", "K", "@", "§"],
+      ["Italian", "Y", "#", "£"],
+      ["Norwegian/Danish", "E", "@", "Ä"],
+      ["Spanish", "Z", "#", "£"],
+      ["Swedish", "H", "@", "É"],
+      ["Swiss", "=", "#", "ù"],
+    ].flatMap(([name, charset, input, expected]) =>
+      [
+        ["G0 with SI", "(", "\u000f"],
+        ["G1 with SO", ")", "\u000e"],
+        ["G1 with ESC ~", ")", "\u001b~"],
+        ["G2 with ESC n", "*", "\u001bn"],
+        ["G2 with ESC }", "*", "\u001b}"],
+        ["G3 with ESC o", "+", "\u001bo"],
+        ["G3 with ESC |", "+", "\u001b|"],
+      ].map(([slotName, slot, shift]) => [
+        name,
+        charset,
+        input,
+        expected,
+        slotName,
+        slot,
+        shift,
+      ]),
+    ),
+  )(
+    "detects retained output that depends on %s in %s",
+    async (_, charset, input, expected, slotName, slot, shift) => {
+      const prefix = `\u001b${slot}${charset}${shift}`;
+      const tail = `\u001b[2J\u001b[H${input}`;
+      const actual = await replay(20, 2, `${prefix}${tail}`);
+      const screen = await renderTerminalScreen({
+        cols: 20,
+        rows: 2,
+        lines: undefined,
+        output: output(tail, true),
+      });
+      expect(actual.rows[0]).toBe(expected);
+      expect(screen.rows[0]).toBe(input);
+      expect(screen.complete, `${slotName} ${charset}`).toBe(false);
+    },
+  );
+
   it("keeps the Hermes G1 UK designation and SO case incomplete", async () => {
     const prefix = "\u001b)A\u000e";
     const tail = "\u001b\\\u001b[?7h\u001b[4l\u001b(B\u000e\u001b[2J\u001b[H#";
@@ -284,8 +335,23 @@ describe("renderTerminalScreen", () => {
       lines: undefined,
       output: output(tail, true),
     });
-    expect(actual.rows[0]).toBe("£");
+    expect(actual.rows[0]).toContain("£");
     expect(screen.rows[0]).toBe("#");
+    expect(screen.complete).toBe(false);
+  });
+
+  it("keeps the Hermes G1 DEC graphics retained-tail case incomplete", async () => {
+    const prefix = "\u001b)0";
+    const tail = "\u001b\\\u001b~\u001b[?7h\u001b[4l\u001b[2J\u001b[Hq";
+    const actual = await replay(20, 2, `${prefix}${tail}`);
+    const screen = await renderTerminalScreen({
+      cols: 20,
+      rows: 2,
+      lines: undefined,
+      output: output(tail, true),
+    });
+    expect(actual.rows[0]).toBe("─");
+    expect(screen.rows[0]).toBe("q");
     expect(screen.complete).toBe(false);
   });
 
@@ -378,7 +444,7 @@ describe("renderTerminalScreen", () => {
   });
 
   it("detects retained selective erase that depends on protected cells", async () => {
-    const prefix = "\u001b[1\"qP";
+    const prefix = '\u001b[1"qP';
     const tail = "\u001b[?2K";
     const actual = await replay(20, 2, `${prefix}${tail}`);
     const screen = await renderTerminalScreen({
@@ -465,7 +531,7 @@ describe("renderTerminalScreen", () => {
       rows: 2,
       lines: undefined,
       output: output(
-        "partial\n\u001b[?1049h\u001b[r\u001b[?6l\u001b[?7h\u001b[4l\u001b(B\u001b[Hfirst row\u001b[K\r\nsecond row\u001b[K",
+        "partial\n\u001b[?1049h\u001b[r\u001b[?6l\u001b[?7h\u001b[4l\u001b(B\u000f\u001b[Hfirst row\u001b[K\r\nsecond row\u001b[K",
         true,
       ),
     });

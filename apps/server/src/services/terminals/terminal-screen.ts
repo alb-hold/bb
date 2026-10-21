@@ -102,12 +102,34 @@ async function replayIsComplete(
     "\u001b[?45h",
     "\u001b[20h",
   ];
-  const charsetSetups = [
-    "\u001b(A\u000f",
-    "\u001b)A\u000e",
-    "\u001b*A\u001bn",
-    "\u001b+A\u001bo",
+  const charsetFlags = [
+    "0",
+    "A",
+    "4",
+    "C",
+    "R",
+    "Q",
+    "K",
+    "Y",
+    "E",
+    "Z",
+    "H",
+    "=",
   ];
+  const charsetSlots = ["(", ")", "*", "+"];
+  const charsetSetups = charsetSlots.flatMap((slot) =>
+    charsetFlags.map((charset) => {
+      const glShift =
+        slot === "("
+          ? "\u000f"
+          : slot === ")"
+            ? "\u000e"
+            : slot === "*"
+              ? "\u001bn"
+              : "\u001bo";
+      return `\u001b${slot}${charset}${glShift}`;
+    }),
+  );
   const savedCursorSetup = "\u001b(A\u001b[31m\u001b[2;5H\u001b7";
   const tabStopSetup = "\u001b[3g\u001b[1;5H\u001bH\u001b[1;1H";
   const protectedCellSetup = "\u001b[1\"qP";
@@ -140,7 +162,8 @@ async function replayIsComplete(
       try {
         await writeTerminal(visibleStateTerminal, initialScreen);
         await writeTerminal(visibleStateTerminal, data);
-        if (!sameVisibleScreen(blankTerminal, visibleStateTerminal)) return false;
+        if (!sameVisibleScreen(blankTerminal, visibleStateTerminal))
+          return false;
       } finally {
         visibleStateTerminal.dispose();
       }
