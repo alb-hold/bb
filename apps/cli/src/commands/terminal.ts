@@ -450,6 +450,9 @@ export function registerTerminalCommands(
         });
         if (outputJson(opts, screen)) return;
         process.stdout.write(`${screen.rows.join("\n")}\n`);
+        if (!screen.complete) {
+          process.stdout.write("Screen may be incomplete because earlier terminal output was discarded.\n");
+        }
       }),
     );
 

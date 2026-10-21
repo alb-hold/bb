@@ -10,7 +10,9 @@ a local command until the terminal exits or Ctrl-C.
 
 `bb terminal screen <id> [--lines <n>] [--json]` prints rendered terminal rows,
 cursor position, and grid size. Without `--lines`, it prints the visible grid;
-`--lines` includes up to 500 latest scrollback rows. The SDK equivalent is
+`--lines` includes up to 500 latest scrollback rows. JSON includes `complete`;
+when false, the server cannot reconstruct the full screen from retained output.
+The SDK equivalent is
 `sdk.terminals.experimental_screen({ terminalId, lines? })`.
 
 Keep the discoverable surfaces in sync whenever you add or change a `bb` CLI command, flag, or a user-facing configuration knob (env var, `.bb/` workspace file, settings field):

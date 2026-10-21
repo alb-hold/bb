@@ -64,12 +64,14 @@ export async function renderTerminalScreen(args: {
       const line = buffer.getLine(index);
       rows.push(line?.translateToString(true) ?? "");
     }
+    const complete = !args.output.truncated || /\x1b\[2J/.test(data.toString("utf8"));
     return {
       rows,
       cursor: { col: buffer.cursorX, row: buffer.cursorY },
       cols: args.cols,
       gridRows: args.rows,
       truncated: args.output.truncated,
+      complete,
     };
   } finally {
     terminal.dispose();

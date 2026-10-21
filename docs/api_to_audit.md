@@ -107,7 +107,7 @@ disconnects during iteration.
 
 ## `sdk.terminals.experimental_screen`
 
-Reads rendered plain-text rows, cursor position, and grid dimensions by replaying bounded retained terminal output in a disposable server-side headless terminal. Without `lines`, it returns the visible grid; with `lines`, it returns up to the last 500 scrollback rows. Selection is client-local and is not included.
+Reads rendered plain-text rows, cursor position, grid dimensions, and a `complete` boolean by replaying bounded retained terminal output in a disposable server-side headless terminal. `complete` is false when output was truncated and no full-screen redraw is retained. Without `lines`, it returns the visible grid; with `lines`, it returns up to the last 500 scrollback rows. Selection is client-local and is not included.
 
 Docs: `bb terminal screen` in the terminal guide.
 

@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { terminalScreenQuerySchema } from "@bb/server-contract";
 import { renderTerminalScreen } from "./terminal-screen.js";
 
@@ -22,6 +24,7 @@ describe("renderTerminalScreen", () => {
       output: output("\u001b[31mred\u001b[0m\n"),
     });
     expect(screen.rows[0]).toBe("red");
+    expect(screen.complete).toBe(true);
   });
 
   it("applies cursor movement and line clearing", async () => {
@@ -54,6 +57,24 @@ describe("renderTerminalScreen", () => {
     });
     expect(screen.rows).toEqual(["clean", ""]);
     expect(screen.truncated).toBe(true);
+    expect(screen.complete).toBe(false);
+  });
+
+  it("reports an incomplete screen after the initial redraw falls out of retention", async () => {
+    const stream = execFileSync(
+      process.execPath,
+      [fileURLToPath(new URL("../../../test/fixtures/terminal-screen-stress.mjs", import.meta.url))],
+      { encoding: "utf8" },
+    );
+    expect(Buffer.byteLength(stream)).toBeGreaterThan(128 * 1024);
+    const screen = await renderTerminalScreen({
+      cols: 80,
+      rows: 24,
+      lines: undefined,
+      output: output(stream.slice(-64 * 1024), true),
+    });
+    expect(screen.rows[0]).not.toContain("ROW00");
+    expect(screen.complete).toBe(false);
   });
 
   it("caps requested scrollback rows at 500", async () => {

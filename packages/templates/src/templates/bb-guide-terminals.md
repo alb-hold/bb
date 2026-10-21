@@ -116,10 +116,12 @@ prints the target because it has no app window. The SDK exposes
 
   bb terminal screen <terminal-id>
     --lines <n>                          Print latest rendered rows, up to 500
-    --json                                Include cursor position and grid size
+    --json                                Include cursor position, grid size, and completeness
 
   Screen reads replay at most 64 KiB of retained output into a disposable
-  server-side terminal renderer. The default returns the visible grid. Selection
+  server-side terminal renderer. The default returns the visible grid. JSON
+  includes `complete`; false means earlier output was discarded and no full
+  screen redraw was retained. Selection
   is client-local and is not available through this command.
 
   bb terminal wait <terminal-id>

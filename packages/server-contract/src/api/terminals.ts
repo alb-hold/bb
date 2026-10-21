@@ -226,6 +226,7 @@ export const terminalScreenResponseSchema = z
     cols: terminalColsSchema,
     gridRows: terminalRowsSchema,
     truncated: z.boolean(),
+    complete: z.boolean(),
   })
   .strict();
 export type TerminalScreenResponse = z.infer<
