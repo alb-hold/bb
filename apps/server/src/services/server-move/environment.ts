@@ -84,10 +84,14 @@ export function resumeServerMoveDeferredWork(
   for (const hostId of deps.hub.listConnectedHostIds()) {
     const daemonSessionId = deps.hub.getDaemonSessionIdForHost(hostId);
     if (daemonSessionId !== null) {
-      deps.terminalSessions.reconcileDisconnectedHostTerminals({
-        daemonSessionId,
-        hostId,
-      });
+      void deps.terminalSessions
+        .reconcileDisconnectedHostTerminals({ daemonSessionId, hostId })
+        .catch((error: unknown) => {
+          deps.logger.warn(
+            { err: error, hostId },
+            "Failed to reconcile terminals after the daemon reconnected",
+          );
+        });
     }
     requestQueuedMessageDispatch(deps, { hostId, kind: "host-connected" });
     void resumeEnvironmentProvisioningForHost(deps, { hostId }).catch(

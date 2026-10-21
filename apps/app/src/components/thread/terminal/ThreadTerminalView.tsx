@@ -53,6 +53,7 @@ import { terminalTextSnapshot } from "./terminal-text-snapshot";
 import {
   applyTerminalControl,
   encodeTerminalArrow,
+  suppressDuplicateTerminalCompositionInput,
 } from "./terminal-mobile-input";
 import {
   createTerminalOsc8LinkHandler,
@@ -908,6 +909,9 @@ export function ThreadTerminalView({
     typeof observeTerminalWebglVisibility
   > | null>(null);
   const terminalRef = useRef<XTermTerminal | null>(null);
+  const compositionInputGuardRef = useRef<
+    ReturnType<typeof suppressDuplicateTerminalCompositionInput> | null
+  >(null);
   const promptLinesRef = useRef<number[]>([]);
   const hoveredTerminalLinkRef = useRef<TerminalLinkTarget | null>(null);
   const pointerStartPointRef = useRef<SelectionAnchorPoint | null>(null);
@@ -1823,6 +1827,20 @@ export function ThreadTerminalView({
   ]);
 
   useEffect(() => {
+    const terminal = terminalRef.current;
+    if (!isTouchDevice || terminal?.element == null) return;
+    const compositionInputGuard = suppressDuplicateTerminalCompositionInput(
+      terminal.element.parentElement ?? terminal.element,
+      (data) => terminal.input(data),
+    );
+    compositionInputGuardRef.current = compositionInputGuard;
+    return () => {
+      compositionInputGuard.dispose();
+      compositionInputGuardRef.current = null;
+    };
+  }, [isTouchDevice, terminalReady]);
+
+  useEffect(() => {
     if (!isPanelOpen || !autoFocus) {
       return;
     }
@@ -1994,6 +2012,7 @@ export function ThreadTerminalView({
             const terminal = terminalRef.current;
             if (!terminal) return;
             changeControlActive(false);
+            compositionInputGuardRef.current?.flushPendingInput();
             terminal.input(
               encodeTerminalArrow(
                 key,
@@ -2003,6 +2022,7 @@ export function ThreadTerminalView({
           }}
           onInput={(data) => {
             changeControlActive(false);
+            compositionInputGuardRef.current?.flushPendingInput();
             terminalRef.current?.input(data);
           }}
           onKeyboardToggle={() => {

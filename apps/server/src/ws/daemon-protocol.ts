@@ -101,11 +101,11 @@ export const SERVER_MOVE_FENCED_DAEMON_MESSAGE_TYPES: ReadonlySet<
   "terminal.exited",
 ]);
 
-export function onDaemonSocketOpen(
+export async function onDaemonSocketOpen(
   deps: LoggedPendingInteractionWorkSessionDeps &
     Pick<AppDeps, "hub" | "logger" | "sharedPorts" | "terminalSessions">,
   args: { hostId: string; sessionId: string; socket: DaemonSocket },
-): void {
+): Promise<void> {
   deps.logger.info(
     { sessionId: args.sessionId, hostId: args.hostId },
     "Daemon WebSocket opened",
@@ -119,7 +119,7 @@ export function onDaemonSocketOpen(
       deps,
       args.hostId,
     );
-    deps.terminalSessions.reconcileDisconnectedHostTerminals({
+    await deps.terminalSessions.reconcileDisconnectedHostTerminals({
       daemonSessionId: args.sessionId,
       hostId: args.hostId,
     });
@@ -367,6 +367,42 @@ export function onDaemonSocketMessage(
     );
     args.socket.close(1008, "inactive-session");
   }
+}
+
+export function createDaemonSocketMessageQueue<T>(args: {
+  handle: (message: T) => void;
+  onError: (error: unknown) => void;
+}): { enqueue: (message: T) => void; release: () => void } {
+  let released = false;
+  let draining = false;
+  const queued: { value: T }[] = [];
+  const deliver = (message: T): void => {
+    try {
+      args.handle(message);
+    } catch (error) {
+      args.onError(error);
+    }
+  };
+  const release = (): void => {
+    if (released || draining) return;
+    draining = true;
+    let index = 0;
+    while (index < queued.length) deliver(queued[index++]!.value);
+    queued.length = 0;
+    draining = false;
+    released = true;
+  };
+  return {
+    enqueue: (message) => {
+      if (released || draining) {
+        if (draining) queued.push({ value: message });
+        else deliver(message);
+        return;
+      }
+      queued.push({ value: message });
+    },
+    release,
+  };
 }
 
 const DAEMON_LIVENESS_CHECK_INTERVAL_MS = HEARTBEAT_INTERVAL_MS;
