@@ -643,9 +643,15 @@ async function sendThreadMessageWithoutContextClear(
   if (senderThreadId === null && args.retryOf === undefined) {
     await recoverThreadModelOverride(deps, {
       model: execution.model,
-      modelSource: "explicit",
+      modelSource:
+        payload.executionInputSources === undefined
+          ? "explicit"
+          : payload.executionInputSources.model,
       reasoningLevel: execution.reasoningLevel,
-      reasoningLevelSource: "explicit",
+      reasoningLevelSource:
+        payload.executionInputSources === undefined
+          ? "explicit"
+          : payload.executionInputSources.reasoningLevel,
       thread,
     });
   }

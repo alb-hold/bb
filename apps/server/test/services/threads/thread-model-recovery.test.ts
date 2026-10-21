@@ -14,7 +14,7 @@ import { withTestHarness } from "../../helpers/test-app.js";
 
 describe("stale model recovery", () => {
   const savedModels = ["claude-mythos-5", "claude-opus-4-8[1m]"];
-  it("keeps a top-level client-preference model in the sticky override", async () => {
+  it("preserves the top-level sticky override for client-preference sends", async () => {
     await withTestHarness(async (harness) => {
       const { host, session } = seedHostSession(harness.deps, {
         id: "host-client-preference-model-recovery",
@@ -61,18 +61,18 @@ describe("stale model recovery", () => {
       );
       await recoverThreadModelOverride(harness.deps, {
         model: execution.model,
-        modelSource: "explicit",
+        modelSource: "client-preference",
         reasoningLevel: execution.reasoningLevel,
-        reasoningLevelSource: "explicit",
+        reasoningLevelSource: "client-preference",
         thread,
       });
 
       expect(getThreadExecutionOverride(harness.db, thread.id)).toMatchObject({
-        modelOverride: "claude-sonnet-5-5",
+        modelOverride: "claude-opus-5-5",
       });
       await expect(
         buildExecutionOptions(harness.deps, {}, { threadId: thread.id }),
-      ).resolves.toMatchObject({ model: "claude-sonnet-5-5" });
+      ).resolves.toMatchObject({ model: "claude-opus-5-5" });
     });
   });
 
