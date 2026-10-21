@@ -31,6 +31,21 @@ function renderControls() {
 }
 
 describe("TerminalMobileControls", () => {
+  it("keeps touch targets wide enough to press on a narrow phone", () => {
+    renderControls();
+
+    const controls = screen.getByRole("group", {
+      name: "Terminal keyboard controls",
+    });
+    const buttons = Array.from(controls.querySelectorAll("button"));
+
+    expect(buttons.length).toBeGreaterThan(0);
+    for (const button of buttons) {
+      expect(button.className.split(/\s+/u)).toContain("min-w-8");
+      expect(button.className.split(/\s+/u)).toContain("flex-none");
+    }
+  });
+
   it("hides the extra keys until the user expands them", () => {
     renderControls();
     expect(screen.queryByRole("button", { name: "Shift Tab" })).toBeNull();

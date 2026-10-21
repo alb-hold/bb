@@ -7,6 +7,7 @@ const args: DataPlaneAttachArgs = {
   daemonSessionId: "session_1",
   outputAcks: false,
   resizeAcks: false,
+  sequenceBase: 0,
   request: { url: "/ws/terminals/term_1", headers: [], headBase64: "" },
   sinceSeq: 0,
   socket: {} as Socket,

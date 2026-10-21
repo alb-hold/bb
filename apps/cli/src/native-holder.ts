@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import {
   chmodSync,
   closeSync,
+  existsSync,
   fchmodSync,
   fstatSync,
   ftruncateSync,
@@ -23,6 +24,14 @@ const NATIVE_HOLDER_FIRST_CLIENT_TIMEOUT_MS = 20_000;
 const NATIVE_HOLDER_REAP_CHECK_MS = 30_000;
 const UNIX_SOCKET_PATH_MAX_BYTES = 100;
 const NATIVE_HOLDER_LOG_MAX_BYTES = 256 * 1024;
+const NATIVE_HOLDER_OUTPUT_MAX_BYTES = 4 * 1024 * 1024;
+
+export function writeNativeHolderAttachMarker(
+  output: { write(chunk: string): unknown },
+  terminalId: string,
+): void {
+  output.write(`\u001b]7717;bb-holder;${terminalId}\u0007`);
+}
 
 export function logNativeHolderEvent(
   socketPath: string,
@@ -171,6 +180,38 @@ export function defaultNativeHolderSocketPath(
     home: os.homedir(),
     threadId,
     tmpDir: os.tmpdir(),
+  });
+}
+
+export function nativeHolderStatusSocketPath(socketPath: string): string {
+  return socketPath.endsWith(".sock")
+    ? socketPath.replace(/\.sock$/u, ".p")
+    : `${socketPath}.p`;
+}
+
+export async function nativeHolderIsAlive(
+  socketPath: string,
+  timeoutMs = 1_000,
+): Promise<boolean> {
+  const statusPath = nativeHolderStatusSocketPath(socketPath);
+  return new Promise<boolean>((resolve) => {
+    const socket = net.createConnection(statusPath);
+    let settled = false;
+    let response = "";
+    const finish = (alive: boolean): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(alive);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    socket.on("data", (chunk: Buffer) => {
+      response += chunk.toString("utf8");
+      if (response.length >= 1) finish(response[0] === "1");
+    });
+    socket.on("end", () => finish(response === "1"));
+    socket.on("error", () => finish(false));
   });
 }
 
@@ -335,10 +376,14 @@ export async function runNativeHolder(
   let pty: NativeHolderPty | null = null;
   let pendingSize: TerminalSize | null = null;
   let pendingInput = "";
+  let pendingOutput: Buffer[] = [];
+  let pendingOutputBytes = 0;
   let redrawOnResize = false;
   let credential: string | null = null;
   let starting = false;
   let finished = false;
+  let mainSocketIdentity: { dev: number; ino: number } | null = null;
+  let statusSocketIdentity: { dev: number; ino: number } | null = null;
   let resolveExit: (code: number) => void = () => undefined;
   const exited = new Promise<number>((resolve) => {
     resolveExit = resolve;
@@ -346,6 +391,11 @@ export async function runNativeHolder(
   const timers: NodeJS.Timeout[] = [];
 
   const server = net.createServer();
+  const statusSocketPath = nativeHolderStatusSocketPath(options.socketPath);
+  const statusServer = net.createServer((socket) => {
+    socket.on("error", () => undefined);
+    socket.end(pty !== null && !finished ? "1" : "0");
+  });
   const credentialDir = mkdtempSync(
     path.join(options.credentialRoot ?? os.tmpdir(), "bb-nc-"),
   );
@@ -369,7 +419,13 @@ export async function runNativeHolder(
     );
     client?.end();
     server.close();
-    removeSocketFile(options.socketPath);
+    if (mainSocketIdentity !== null) {
+      removeSocketFile(options.socketPath, mainSocketIdentity);
+    }
+    statusServer.close();
+    if (statusSocketIdentity !== null) {
+      removeSocketFile(statusSocketPath, statusSocketIdentity);
+    }
     credential = null;
     credentialServer.close();
     rmSync(credentialDir, { recursive: true, force: true });
@@ -388,6 +444,30 @@ export async function runNativeHolder(
     pty.resize(next.cols, next.rows);
   };
 
+  const sendOutput = (data: Buffer): void => {
+    if (client !== null) {
+      writeFrame(client, NativeHolderFrame.output, data);
+      return;
+    }
+    pendingOutput.push(data);
+    pendingOutputBytes += data.byteLength;
+    while (
+      pendingOutputBytes > NATIVE_HOLDER_OUTPUT_MAX_BYTES &&
+      pendingOutput.length > 0
+    ) {
+      const first = pendingOutput[0];
+      if (first === undefined) break;
+      const excess = pendingOutputBytes - NATIVE_HOLDER_OUTPUT_MAX_BYTES;
+      if (first.byteLength <= excess) {
+        pendingOutput.shift();
+        pendingOutputBytes -= first.byteLength;
+      } else {
+        pendingOutput[0] = first.subarray(excess);
+        pendingOutputBytes -= excess;
+      }
+    }
+  };
+
   const start = async (): Promise<void> => {
     if (starting) return;
     starting = true;
@@ -399,11 +479,7 @@ export async function runNativeHolder(
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      writeFrame(
-        client,
-        NativeHolderFrame.output,
-        Buffer.from(`${message}\r\n`),
-      );
+      sendOutput(Buffer.from(`${message}\r\n`));
       finish(1);
       return;
     }
@@ -417,11 +493,7 @@ export async function runNativeHolder(
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      writeFrame(
-        client,
-        NativeHolderFrame.output,
-        Buffer.from(`${message}\r\n`),
-      );
+      sendOutput(Buffer.from(`${message}\r\n`));
       finish(1);
       return;
     }
@@ -437,7 +509,7 @@ export async function runNativeHolder(
       pendingInput = "";
     }
     pty.onData((data) => {
-      writeFrame(client, NativeHolderFrame.output, Buffer.from(data, "utf8"));
+      sendOutput(Buffer.from(data, "utf8"));
     });
     pty.onExit(({ exitCode, signal }) => {
       logNativeHolderEvent(options.socketPath, "pty-child-exit", {
@@ -460,6 +532,11 @@ export async function runNativeHolder(
     }
     client?.destroy();
     client = socket;
+    for (const chunk of pendingOutput) {
+      writeFrame(client, NativeHolderFrame.output, chunk);
+    }
+    pendingOutput = [];
+    pendingOutputBytes = 0;
     redrawOnResize = pty !== null;
     const decoder = new NativeHolderFrameDecoder();
     const text = new StringDecoder("utf8");
@@ -491,15 +568,6 @@ export async function runNativeHolder(
 
   try {
     await new Promise<void>((resolve, reject) => {
-      credentialServer.once("error", reject);
-      credentialServer.once("listening", () => {
-        credentialServer.off("error", reject);
-        resolve();
-      });
-      listenPrivately(credentialServer, credentialSocketPath);
-    });
-    chmodSync(credentialSocketPath, 0o600);
-    await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
       server.once("listening", () => {
         server.off("error", reject);
@@ -508,8 +576,47 @@ export async function runNativeHolder(
       listenPrivately(server, options.socketPath);
     });
     chmodSync(options.socketPath, 0o600);
+    const mainSocketStat = lstatSync(options.socketPath);
+    mainSocketIdentity = { dev: mainSocketStat.dev, ino: mainSocketStat.ino };
+    await new Promise<void>((resolve, reject) => {
+      credentialServer.once("error", reject);
+      credentialServer.once("listening", () => {
+        credentialServer.off("error", reject);
+        resolve();
+      });
+      listenPrivately(credentialServer, credentialSocketPath);
+    });
+    chmodSync(credentialSocketPath, 0o600);
+    if (
+      existsSync(statusSocketPath) &&
+      !(await nativeHolderIsAlive(options.socketPath))
+    ) {
+      removeSocketFile(statusSocketPath);
+    }
+    await new Promise<void>((resolve, reject) => {
+      statusServer.once("error", reject);
+      statusServer.once("listening", () => {
+        statusServer.off("error", reject);
+        resolve();
+      });
+      listenPrivately(statusServer, statusSocketPath);
+    });
+    chmodSync(statusSocketPath, 0o600);
+    const statusSocketStat = lstatSync(statusSocketPath);
+    statusSocketIdentity = {
+      dev: statusSocketStat.dev,
+      ino: statusSocketStat.ino,
+    };
     options.onSocketReady?.();
   } catch (error) {
+    server.close();
+    if (mainSocketIdentity !== null) {
+      removeSocketFile(options.socketPath, mainSocketIdentity);
+    }
+    statusServer.close();
+    if (statusSocketIdentity !== null) {
+      removeSocketFile(statusSocketPath, statusSocketIdentity);
+    }
     credentialServer.close();
     rmSync(credentialDir, { recursive: true, force: true });
     throw error;

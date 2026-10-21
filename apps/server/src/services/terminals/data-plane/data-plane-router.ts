@@ -47,6 +47,10 @@ export interface DataPlaneLifecyclePort {
     terminalId: string;
   }): void;
   recordInputActivity(terminalId: string): void;
+  stripHolderMarkersFromDataPlaneOutput(
+    terminalId: string,
+    chunk: TerminalOutputChunk,
+  ): TerminalOutputChunk[];
   recordOutputBatch(args: {
     chunks: TerminalOutputChunk[];
     daemonSessionId: string;
@@ -63,10 +67,12 @@ interface PendingAttach {
 
 export interface DataPlaneAttachArgs {
   daemonSessionId: string;
+  holderMarkerPending?: boolean;
   handoffOwnerToken?: string;
   outputAcks: boolean;
   resizeAcks: boolean;
   request: TerminalDataPlaneHandoffRequest;
+  sequenceBase: number;
   sinceSeq: number;
   socket: Socket;
   terminalId: string;
@@ -117,6 +123,7 @@ export class TerminalDataPlaneRouter implements ChildTerminalSocketSink {
         terminalId: args.terminalId,
         daemonSessionId: args.daemonSessionId,
         outputAcks: args.outputAcks,
+        sequenceBase: args.sequenceBase,
         sinceSeq: args.sinceSeq,
         request: args.request,
       },
@@ -132,6 +139,7 @@ export class TerminalDataPlaneRouter implements ChildTerminalSocketSink {
 
   routeTerminal(args: {
     daemonSessionId: string;
+    holderMarkerPending?: boolean;
     mode: TerminalDataPlaneRouteMode;
     terminalId: string;
   }): void {
@@ -140,6 +148,7 @@ export class TerminalDataPlaneRouter implements ChildTerminalSocketSink {
       type: "terminal.route",
       terminalId: args.terminalId,
       daemonSessionId: args.daemonSessionId,
+      holderMarkerPending: args.holderMarkerPending,
       mode: args.mode,
     });
   }
@@ -284,7 +293,10 @@ export class TerminalDataPlaneRouter implements ChildTerminalSocketSink {
     frame: ChildTerminalReplayFrame,
     trailing: ChildTerminalBroadcastMessage[],
   ): void {
-    const bytes = frame.chunks.reduce(
+    const chunks = frame.chunks.flatMap((chunk) =>
+      this.lifecycle.stripHolderMarkersFromDataPlaneOutput(socket.terminalId, chunk),
+    );
+    const bytes = chunks.reduce(
       (total, chunk) => total + chunk.dataBase64.length,
       0,
     );
@@ -296,7 +308,7 @@ export class TerminalDataPlaneRouter implements ChildTerminalSocketSink {
         terminalId: socket.terminalId,
         session: frame.session,
         replayStartSeq: frame.replayStartSeq,
-        chunks: frame.chunks,
+        chunks,
         nextSeq: frame.nextSeq,
       },
       { bytes },
@@ -341,12 +353,18 @@ export class TerminalDataPlaneRouter implements ChildTerminalSocketSink {
   }
 
   relayOutput(terminalId: string, chunk: TerminalOutputChunk): void {
-    const relayed = this.relayedSeqByTerminalId.get(terminalId) ?? -1;
-    if (chunk.seq <= relayed) {
-      return;
+    const sanitizedChunks = this.lifecycle.stripHolderMarkersFromDataPlaneOutput(
+      terminalId,
+      chunk,
+    );
+    for (const sanitized of sanitizedChunks) {
+      const relayed = this.relayedSeqByTerminalId.get(terminalId) ?? -1;
+      if (sanitized.seq <= relayed) {
+        continue;
+      }
+      this.relayedSeqByTerminalId.set(terminalId, sanitized.seq);
+      this.relayDaemonOutput(terminalId, sanitized);
     }
-    this.relayedSeqByTerminalId.set(terminalId, chunk.seq);
-    this.relayDaemonOutput(terminalId, chunk);
   }
 
   close(attachId: string, code: number, reason: string): void {

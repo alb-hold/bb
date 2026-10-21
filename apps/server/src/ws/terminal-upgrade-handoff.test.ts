@@ -47,7 +47,9 @@ async function createFixture(
     handleDataSocketUpgrade: () => false,
     isAvailable: () => true,
     resolveTerminal: (terminalId) =>
-      terminalId === "term_1" ? { terminalId, daemonSessionId: "ds_1" } : null,
+      terminalId === "term_1"
+        ? { terminalId, daemonSessionId: "ds_1", sequenceBase: 0 }
+        : null,
     ...overrides,
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
