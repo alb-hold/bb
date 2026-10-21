@@ -272,6 +272,57 @@ describe("terminal touch focus", () => {
 });
 
 describe("terminal output encoding", () => {
+  it("replays a hidden output chunk before parsing a split escape sequence on show", async () => {
+    const terminal = new Terminal({ cols: 30, rows: 6 });
+    const pipeline = createTerminalOutputPipeline(terminal);
+    const acknowledged: number[] = [];
+    const replayWriteState = { suppressedWriteCount: 0 };
+    let visible = false;
+    const sendOutput = async (seq: number, bytes: string) => {
+      let parsed!: () => void;
+      const completion = new Promise<void>((resolve) => {
+        parsed = resolve;
+      });
+      handleTerminalServerMessage({
+        acknowledgeOutput: (nextSeq) => {
+          acknowledged.push(nextSeq);
+          parsed();
+        },
+        message: {
+          type: "output",
+          chunk: { seq, dataBase64: Buffer.from(bytes).toString("base64") },
+        },
+        onReplayComplete: vi.fn(),
+        replayNextSeq: null,
+        replayWriteState,
+        setReplayNextSeq: vi.fn(),
+        shouldProcessOutput: () => visible,
+        terminal,
+        pipeline,
+      });
+      if (visible) await completion;
+    };
+
+    await sendOutput(0, "\u001b[3");
+    expect(acknowledged).toEqual([]);
+    expect(
+      terminal.buffer.active.getLine(0)?.translateToString().trimEnd(),
+    ).toBe("");
+
+    visible = true;
+    await sendOutput(0, "\u001b[3");
+    await sendOutput(1, "1mOK");
+
+    expect(terminal.buffer.active.getLine(0)?.translateToString()).toContain(
+      "OK",
+    );
+    expect(terminal.buffer.active.getLine(0)?.getCell(0)?.getFgColor()).toBe(
+      1,
+    );
+    expect(acknowledged).toEqual([1, 2]);
+    terminal.dispose();
+  });
+
   it("sizes the xterm to the attached PTY before writing legacy output", async () => {
     const terminal = new Terminal({ cols: 120, rows: 36 });
     const pipeline = createTerminalOutputPipeline(terminal);

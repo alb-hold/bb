@@ -241,6 +241,37 @@ describe("TerminalWebSocketTransport", () => {
     harness.transport.dispose();
   });
 
+  it("replays output from the last parsed sequence when a hidden terminal returns", () => {
+    const harness = createHarness();
+    harness.transport.start();
+    harness.sockets[0]?.open();
+    harness.sockets[0]?.receive({
+      type: "output",
+      chunk: { seq: 0, dataBase64: Buffer.from("first").toString("base64") },
+    });
+    harness.sockets[0]?.receive({
+      type: "output",
+      chunk: { seq: 1, dataBase64: Buffer.from("hidden").toString("base64") },
+    });
+
+    harness.transport.replayOutputFrom(1);
+
+    expect(harness.sockets[0]?.closeCalls).toHaveLength(1);
+    expect(harness.urls[1]).toContain("sinceSeq=1");
+    harness.sockets[1]?.open();
+    harness.sockets[1]?.receive({
+      type: "output",
+      chunk: { seq: 1, dataBase64: Buffer.from("hidden").toString("base64") },
+    });
+
+    expect(
+      harness.messages
+        .filter((message) => message.type === "output")
+        .map((message) => message.chunk.seq),
+    ).toEqual([0, 1, 1]);
+    harness.transport.dispose();
+  });
+
   it("sends one acknowledgement for the furthest output parsed in a task", async () => {
     const harness = createHarness();
     harness.transport.start();

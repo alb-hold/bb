@@ -521,6 +521,7 @@ interface HandleTerminalServerMessageArgs {
   >;
   allowAttachedGrid?: boolean;
   onReplayStart?: (session: TerminalSession) => void;
+  shouldProcessOutput?: () => boolean;
 }
 
 function encodeBytesBase64(bytes: Uint8Array): string {
@@ -791,7 +792,11 @@ export function handleTerminalServerMessage({
   replayPipeline,
   allowAttachedGrid = true,
   onReplayStart,
+  shouldProcessOutput,
 }: HandleTerminalServerMessageArgs): void {
+  if (message.type === "output" && shouldProcessOutput?.() === false) {
+    return;
+  }
   switch (message.type) {
     case "attached":
       if (message.replayStartSeq < message.nextSeq) {
@@ -1162,10 +1167,18 @@ export function ThreadTerminalView({
     let containerHasSize = hasVisibleTerminalSize({
       containerElement: container,
     });
+    let terminalVisible =
+      document.visibilityState === "visible" && containerHasSize;
+    let lastParsedOutputNextSeq = 0;
     const reportDocumentVisibility = () => {
-      transport?.setVisible(
-        document.visibilityState === "visible" && containerHasSize,
-      );
+      const nextVisible =
+        document.visibilityState === "visible" && containerHasSize;
+      if (terminalVisible === nextVisible) return;
+      terminalVisible = nextVisible;
+      transport?.setVisible(nextVisible);
+      if (nextVisible) {
+        transport?.replayOutputFrom(lastParsedOutputNextSeq);
+      }
     };
 
     async function mountTerminal(
@@ -1539,6 +1552,9 @@ export function ThreadTerminalView({
             message.type === "attached" ||
             message.type === "session-updated"
           ) {
+            if (message.type === "attached") {
+              lastParsedOutputNextSeq = message.replayStartSeq;
+            }
             const { cols, rows } = message.session;
             const isOwnNudgeEcho =
               message.type === "session-updated" &&
@@ -1563,7 +1579,13 @@ export function ThreadTerminalView({
           }
           handleTerminalServerMessage({
             acknowledgeOutput: (nextSeq) =>
-              activeTransport.acknowledgeOutput(nextSeq),
+              {
+                lastParsedOutputNextSeq = Math.max(
+                  lastParsedOutputNextSeq,
+                  nextSeq,
+                );
+                activeTransport.acknowledgeOutput(nextSeq);
+              },
             message,
             onReplayComplete: () => {
               replayCompleted = true;
@@ -1614,6 +1636,7 @@ export function ThreadTerminalView({
             pipeline: outputPipeline ?? undefined,
             replayPipeline: replayPreview ?? undefined,
             allowAttachedGrid: !markerGridActive,
+            shouldProcessOutput: () => terminalVisible,
           });
         },
         onSequenceGap: () => {
