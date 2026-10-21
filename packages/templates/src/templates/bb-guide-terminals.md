@@ -44,6 +44,23 @@ All other operations need only the terminal ID. They also accept the scope
 flags above and ignore them, so a command built for `list` or `create` still
 runs:
 
+Thread terminal surfaces can also be listed and controlled from the CLI. Focus
+and browser requests open the terminal's thread in connected bb app clients.
+The browser action uses the same thread panel placement as terminal links.
+
+  bb terminal surfaces --thread <thread-id> [--json]
+  bb terminal focus <terminal-id>
+  bb terminal open-link <terminal-id> <http-or-https-url>
+
+The SDK exposes `sdk.terminals.experimental_surfaces.list({ threadId })`,
+`sdk.terminals.experimental_focus({ terminalId })`, and
+`sdk.terminals.experimental_openBrowser({ terminalId, url })`. A surface
+includes its thread and terminal IDs, title, status, and whether it is a
+regular or native terminal. Archived threads and terminal IDs outside the
+requested thread fail closed.
+On clients without an in-app browser, `open-link` presents an Open action for
+the external browser instead of adding an unavailable browser tab.
+
 From inside a bb terminal, `bb terminal notify --title "Build" --body "Finished"`
 raises attention on its terminal. The SDK exposes the same operation as
 `sdk.terminals.notify({ terminalId, title, body })`.

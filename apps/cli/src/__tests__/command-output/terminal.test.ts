@@ -77,6 +77,63 @@ describe("bb terminal command output", () => {
     );
   });
 
+  it("lists terminal surfaces for an explicit thread", async () => {
+    stubServerApi({
+      "v1.threads.:id.$get": async () => ({ archivedAt: null }),
+      "v1.terminals.$get": async () => ({ sessions: [makeTerminalSession()] }),
+      "v1.threads.:id.native-terminal.$get": async () => ({ terminal: null }),
+    });
+
+    await runCommand(["terminal", "surfaces", "--thread", "thr-1"], register);
+
+    expect(collectLogLines(vi.mocked(console.log))).toEqual([
+      "term-1\tTerminal 1\trunning\tterminal",
+    ]);
+  });
+
+  it("focuses a terminal through the app thread-open request", async () => {
+    const open = vi.fn(async () => ({ delivered: 1 }));
+    stubServerApi({
+      "v1.terminals.:terminalId.$get": async () => makeTerminalSession(),
+      "v1.threads.:id.open.$post": open,
+    });
+
+    await runCommand(["terminal", "focus", "term-1"], register);
+
+    expect(open).toHaveBeenCalledWith({
+      param: { id: "thr-1" },
+      json: {
+        file: null,
+        terminalAction: { action: "focus", terminalId: "term-1" },
+      },
+    });
+  });
+
+  it("opens a URL through the app thread-open browser request", async () => {
+    const open = vi.fn(async () => ({ delivered: 1 }));
+    stubServerApi({
+      "v1.terminals.:terminalId.$get": async () => makeTerminalSession(),
+      "v1.threads.:id.open.$post": open,
+    });
+
+    await runCommand(
+      ["terminal", "open-link", "term-1", "http://localhost:3000"],
+      register,
+    );
+
+    expect(open).toHaveBeenCalledWith({
+      param: { id: "thr-1" },
+      json: {
+        file: null,
+        terminalAction: {
+          action: "openBrowser",
+          terminalId: "term-1",
+          url: "http://localhost:3000",
+        },
+      },
+    });
+  });
+
   it("raises attention for the terminal identity injected into its shell", async () => {
     const notify = vi.fn(async () => makeTerminalSession());
     stubServerApi({ "v1.terminals.:terminalId.notify.$post": notify });
