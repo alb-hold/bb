@@ -59,6 +59,7 @@ import { terminalTextSnapshot } from "./terminal-text-snapshot";
 import {
   createTerminalViewportReplaySaveGate,
   createTerminalViewportPersistence,
+  createTerminalTouchViewportSaveScheduler,
   readTerminalViewportAnchor,
   resolveTerminalViewportRestore,
   terminalViewportStorageKey,
@@ -248,12 +249,12 @@ export function focusTerminalFromTouchRelease({
 
 export function attachTerminalManualScrollIntentListeners(
   element: HTMLElement,
-  onManualScrollIntent: () => void,
+  onManualScrollIntent: (event: Event) => void,
 ) {
-  const markManualScrollIntent = () => onManualScrollIntent();
+  const markManualScrollIntent = (event: Event) => onManualScrollIntent(event);
   const markManualScrollKeydownIntent = (event: KeyboardEvent) => {
     if (["PageUp", "PageDown", "Home", "End"].includes(event.key)) {
-      onManualScrollIntent();
+      onManualScrollIntent(event);
     }
   };
   const options = { capture: true, passive: true } as const;
@@ -1539,12 +1540,7 @@ export function ThreadTerminalView({
       };
       const flushViewportOnPageHide = () => viewportPersistence.flush();
       window.addEventListener("pagehide", flushViewportOnPageHide);
-      const detachManualScrollIntentListeners =
-        attachTerminalManualScrollIntentListeners(
-          containerElement,
-          noteManualScrollIntent,
-        );
-      const viewportScrollDisposable = terminal.onScroll(() => {
+      const saveViewportAnchor = () => {
         if (
           !hasRestoredViewport ||
           !viewportReplaySaveGate.canSave(hasManualScrollIntent) ||
@@ -1571,9 +1567,23 @@ export function ThreadTerminalView({
           distanceFromTail,
           outputSequence: anchoredOutputSequence,
         });
-      });
+      };
+      const touchViewportSaveScheduler =
+        createTerminalTouchViewportSaveScheduler({
+          getViewportY: () => terminal?.buffer.active.viewportY ?? 0,
+          requestFrame: (callback) => window.requestAnimationFrame(callback),
+          cancelFrame: (handle) => window.cancelAnimationFrame(handle),
+          save: saveViewportAnchor,
+        });
+      const detachManualScrollIntentListeners =
+        attachTerminalManualScrollIntentListeners(containerElement, (event) => {
+          noteManualScrollIntent();
+          if (event.type === "touchmove") touchViewportSaveScheduler.schedule();
+        });
+      const viewportScrollDisposable = terminal.onScroll(saveViewportAnchor);
       detachViewportListeners = () => {
         viewportScrollDisposable.dispose();
+        touchViewportSaveScheduler.dispose();
         detachManualScrollIntentListeners();
         window.removeEventListener("pagehide", flushViewportOnPageHide);
         viewportPersistence.dispose();

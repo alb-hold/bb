@@ -175,17 +175,50 @@ export function createTerminalViewportReplaySaveGate(): {
   };
 }
 
+export function createTerminalTouchViewportSaveScheduler(args: {
+  getViewportY: () => number;
+  requestFrame: (callback: () => void) => number;
+  cancelFrame: (handle: number) => void;
+  save: () => void;
+}): {
+  schedule: () => void;
+  dispose: () => void;
+} {
+  const { getViewportY, requestFrame, cancelFrame, save } = args;
+  let previousViewportY: number | null = null;
+  let frame: number | null = null;
+  let disposed = false;
+  return {
+    schedule: () => {
+      if (disposed) return;
+      if (previousViewportY === null) previousViewportY = getViewportY();
+      if (frame !== null) cancelFrame(frame);
+      frame = requestFrame(() => {
+        frame = null;
+        if (disposed) return;
+        const viewportY = getViewportY();
+        if (viewportY !== previousViewportY) save();
+        previousViewportY = viewportY;
+      });
+    },
+    dispose: () => {
+      disposed = true;
+      if (frame !== null) cancelFrame(frame);
+      frame = null;
+    },
+  };
+}
+
 export function resolveTerminalViewportRestore(args: {
   anchor: TerminalViewportAnchor | null;
   baseY: number;
   replayStartSequence: number;
 }): number {
-  const { anchor, baseY, replayStartSequence } = args;
+  const { anchor, baseY } = args;
   if (
     anchor === null ||
     anchor.distanceFromTail === 0 ||
-    anchor.distanceFromTail > baseY ||
-    anchor.outputSequence < replayStartSequence
+    anchor.distanceFromTail > baseY
   ) {
     return baseY;
   }

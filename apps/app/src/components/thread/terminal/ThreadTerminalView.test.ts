@@ -40,6 +40,7 @@ import {
 import {
   createTerminalViewportReplaySaveGate,
   createTerminalViewportPersistence,
+  createTerminalTouchViewportSaveScheduler,
   readTerminalViewportAnchor,
   resolveTerminalViewportRestore,
   terminalViewportStorageKey,
@@ -414,16 +415,71 @@ describe("terminal viewport restore", () => {
     },
   );
 
+  it("restores from tail distance after reconnect advances the output sequence", () => {
+    expect(
+      resolveTerminalViewportRestore({
+        anchor: { distanceFromTail: 12, outputSequence: 8 },
+        baseY: 80,
+        replayStartSequence: 17,
+      }),
+    ).toBe(68);
+  });
+
+  it("saves a touch scroll after xterm updates its viewport", () => {
+    let viewportY = 100;
+    const frames = new Map<number, () => void>();
+    let nextFrame = 0;
+    const save = vi.fn();
+    const scheduler = createTerminalTouchViewportSaveScheduler({
+      getViewportY: () => viewportY,
+      requestFrame: (callback) => {
+        const handle = ++nextFrame;
+        frames.set(handle, callback);
+        return handle;
+      },
+      cancelFrame: (handle) => frames.delete(handle),
+      save,
+    });
+
+    scheduler.schedule();
+    viewportY = 84;
+    [...frames.values()].forEach((callback) => callback());
+
+    expect(save).toHaveBeenCalledOnce();
+    scheduler.dispose();
+  });
+
+  it("does not save a touch gesture that leaves the viewport unchanged", () => {
+    const frames = new Map<number, () => void>();
+    let nextFrame = 0;
+    const save = vi.fn();
+    const scheduler = createTerminalTouchViewportSaveScheduler({
+      getViewportY: () => 100,
+      requestFrame: (callback) => {
+        const handle = ++nextFrame;
+        frames.set(handle, callback);
+        return handle;
+      },
+      cancelFrame: (handle) => frames.delete(handle),
+      save,
+    });
+
+    scheduler.schedule();
+    [...frames.values()].forEach((callback) => callback());
+
+    expect(save).not.toHaveBeenCalled();
+    scheduler.dispose();
+  });
+
   it.each([
-    ["truncated output", { distanceFromTail: 12, outputSequence: 8 }, 9, 80],
-    ["expired scrollback", { distanceFromTail: 90, outputSequence: 42 }, 20, 80],
-    ["tail anchor", { distanceFromTail: 0, outputSequence: 42 }, 20, 80],
-  ])("falls back to the tail when %s", (_reason, anchor, replayStartSequence, baseY) => {
+    ["expired scrollback", { distanceFromTail: 90, outputSequence: 42 }, 80],
+    ["tail anchor", { distanceFromTail: 0, outputSequence: 42 }, 80],
+  ])("falls back to the tail when %s", (_reason, anchor, baseY) => {
     expect(
       resolveTerminalViewportRestore({
         anchor,
         baseY,
-        replayStartSequence,
+        replayStartSequence: 0,
       }),
     ).toBe(baseY);
   });
