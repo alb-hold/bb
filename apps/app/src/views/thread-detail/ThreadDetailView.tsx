@@ -236,12 +236,8 @@ import {
   openUrlInExternalBrowser,
   UrlOpenRoutingProvider,
 } from "@/lib/url-open-routing";
-import {
-  isTerminalLinkForThreadBrowser,
-  openTerminalBrowserAction,
-  openTerminalLinkInThreadBrowser,
-  terminalBrowserExternalOpenToastOptions,
-} from "@/components/thread/terminal/terminal-link-routing";
+import { isTerminalLinkForThreadBrowser } from "@/components/thread/terminal/terminal-link-routing";
+import { threadOpenTerminalActionSchema } from "@bb/server-contract";
 import {
   AppNavigationHostProvider,
   type AppFixedTabOpenIntent,
@@ -2180,19 +2176,18 @@ function ThreadDetailViewInternal(
       ) {
         return handleOpenTimelineLink({ href });
       }
-      return openTerminalLinkInThreadBrowser({
-        isCompact: renderSecondaryPanelAsDrawer,
-        openDrawer: secondaryPanelDrawerVisibility.openDrawer,
-        openTab,
-        requestSplit: (tabId) => {
-          splitTabToRightRequestIdRef.current += 1;
-          setSplitTabToRightRequest({
-            requestId: splitTabToRightRequestIdRef.current,
-            tabId,
-          });
-        },
-        url: href,
-      });
+      const tab = openTab({ kind: "browser", url: href });
+      if (tab?.kind !== "browser") return false;
+      if (renderSecondaryPanelAsDrawer) {
+        secondaryPanelDrawerVisibility.openDrawer();
+      } else {
+        splitTabToRightRequestIdRef.current += 1;
+        setSplitTabToRightRequest({
+          requestId: splitTabToRightRequestIdRef.current,
+          tabId: tab.id,
+        });
+      }
+      return true;
     },
     [
       handleOpenTimelineLink,
@@ -2223,43 +2218,54 @@ function ThreadDetailViewInternal(
       threadId,
     });
     if (parsedAction.data.action === "openBrowser" && parsedAction.data.url) {
-      openTerminalBrowserAction({
-        canOpenInAppBrowser: isDesktopBrowserAvailable(),
-        openInAppBrowser: (url) =>
-          openTerminalLinkInThreadBrowser({
-            isCompact: renderSecondaryPanelAsDrawer,
-            openDrawer: secondaryPanelDrawerVisibility.openDrawer,
-            openTab,
-            requestSplit: (tabId) => {
-              splitTabToRightRequestIdRef.current += 1;
-              setSplitTabToRightRequest({
-                requestId: splitTabToRightRequestIdRef.current,
-                tabId,
-              });
-            },
-            url,
-          }),
-        showExternalOpenAction: (url) =>
-          appToast.message(
-            "Open this link in your browser?",
-            terminalBrowserExternalOpenToastOptions(
-              url,
-              openUrlInExternalBrowser,
-            ),
-          ),
-        url: parsedAction.data.url,
-      });
+      const url = parsedAction.data.url;
+      const canOpenInAppBrowser = isDesktopBrowserAvailable();
+      if (!canOpenInAppBrowser) {
+        appToast.message("Open this link in your browser?", {
+          action: {
+            label: "Open",
+            onClick: () => openUrlInExternalBrowser(url),
+          },
+          description: url,
+          duration: 10_000,
+        });
+      } else if (
+        isTerminalLinkForThreadBrowser(
+          url,
+          resolvedThreadEnvironmentHost === null
+            ? []
+            : [resolvedThreadEnvironmentHost.name],
+          true,
+        )
+      ) {
+        const tab = openTab({ kind: "browser", url });
+        if (tab?.kind === "browser") {
+          if (renderSecondaryPanelAsDrawer) {
+            secondaryPanelDrawerVisibility.openDrawer();
+          } else {
+            splitTabToRightRequestIdRef.current += 1;
+            setSplitTabToRightRequest({
+              requestId: splitTabToRightRequestIdRef.current,
+              tabId: tab.id,
+            });
+          }
+        }
+      } else {
+        openBrowserUrl(url);
+      }
     }
   }, [
     location.key,
     location.pathname,
     location.state,
     navigate,
-    openTab,
     selectTerminal,
-    renderSecondaryPanelAsDrawer,
-    secondaryPanelDrawerVisibility.openDrawer,
     threadId,
+    resolvedThreadEnvironmentHost,
+    renderSecondaryPanelAsDrawer,
+    secondaryPanelDrawerVisibility,
+    openTab,
+    openBrowserUrl,
   ]);
   useEffect(() => {
     const locationState = location.state;
