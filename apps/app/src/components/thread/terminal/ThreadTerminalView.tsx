@@ -63,7 +63,15 @@ import { TerminalSearch } from "./TerminalSearch";
 import type { TerminalSearchAddonInstance } from "./terminal-search-addon";
 import { loadOptionalTerminalSearchAddon } from "./terminal-search-addon";
 import { TerminalTextSelectSheet } from "./TerminalTextSelectSheet";
-import { terminalTextSnapshot } from "./terminal-text-snapshot";
+import {
+  terminalTextSnapshot,
+  terminalTextSnapshotLineIndex,
+} from "./terminal-text-snapshot";
+import {
+  createTerminalPinchGesture,
+  startTerminalLongPress,
+  type TerminalGestureTouch,
+} from "./terminal-mobile-gestures";
 import {
   createTerminalClipboardKeyHandler,
   pasteTerminalClipboard,
@@ -933,6 +941,18 @@ export function ThreadTerminalView({
     useState<TerminalSearchAddonInstance | null>(null);
   const [terminalSearchOpen, setTerminalSearchOpen] = useState(false);
   const [textSnapshot, setTextSnapshot] = useState<string | null>(null);
+  const [textSnapshotInitialLine, setTextSnapshotInitialLine] = useState<
+    number | null
+  >(null);
+  const [terminalFontSize, setTerminalFontSize] = useState(12);
+  const terminalFontSizeRef = useRef(12);
+  const longPressGestureRef = useRef<{
+    cancel: () => void;
+    move: (touches: readonly TerminalGestureTouch[]) => void;
+  } | null>(null);
+  const pinchGestureRef = useRef<ReturnType<
+    typeof createTerminalPinchGesture
+  > | null>(null);
   const [activeSelection, setActiveSelection] =
     useState<MessageProseSelection | null>(null);
   const [pendingTerminalLink, setPendingTerminalLink] =
@@ -2093,6 +2113,80 @@ export function ThreadTerminalView({
     webglVisibilityRef.current?.sync();
   }, [isPanelOpen]);
 
+  const gestureTouches = (
+    touches: ArrayLike<{
+      identifier: number;
+      clientX: number;
+      clientY: number;
+    }>,
+  ): TerminalGestureTouch[] =>
+    Array.from(touches, (touch) => ({
+      identifier: touch.identifier,
+      x: touch.clientX,
+      y: touch.clientY,
+    }));
+  const ensurePinchGesture = () => {
+    pinchGestureRef.current ??= createTerminalPinchGesture({
+      getFontSize: () => terminalFontSizeRef.current,
+      setFontSize: (size) => {
+        if (size === terminalFontSizeRef.current) return;
+        terminalFontSizeRef.current = size;
+        setTerminalFontSize(size);
+        const terminal = terminalRef.current;
+        if (terminal !== null) {
+          terminal.options.fontSize = size;
+          terminal.refresh(0, terminal.rows - 1);
+        }
+      },
+      fitAndResize: () => scheduleFitRef.current?.(),
+    });
+    return pinchGestureRef.current;
+  };
+  const beginTerminalLongPress = (
+    touches: ArrayLike<{
+      identifier: number;
+      clientX: number;
+      clientY: number;
+    }>,
+  ) => {
+    longPressGestureRef.current?.cancel();
+    const points = gestureTouches(touches);
+    longPressGestureRef.current = startTerminalLongPress(
+      points,
+      (point) => {
+        const terminal = terminalRef.current;
+        const screen =
+          terminal?.element?.querySelector<HTMLElement>(".xterm-screen");
+        if (
+          terminal === null ||
+          terminal === undefined ||
+          screen === null ||
+          screen === undefined
+        ) {
+          return 0;
+        }
+        const bounds = screen.getBoundingClientRect();
+        const rowHeight = bounds.height / Math.max(1, terminal.rows);
+        const row = Math.floor((point.y - bounds.top) / rowHeight);
+        return (
+          terminal.buffer.active.viewportY +
+          Math.max(0, Math.min(terminal.rows - 1, row))
+        );
+      },
+      (bufferLine) => {
+        const terminal = terminalRef.current;
+        if (terminal === null) return;
+        setTextSnapshotInitialLine(
+          terminalTextSnapshotLineIndex(terminal, bufferLine),
+        );
+        setTextSnapshot(terminalTextSnapshot(terminal));
+      },
+      (callback, delay) => {
+        const id = window.setTimeout(callback, delay);
+        return { cancel: () => window.clearTimeout(id) };
+      },
+    );
+  };
   const contextMenuLink = contextMenuState.link;
   const contextMenuSelectionText = contextMenuState.selectionText;
   return (
@@ -2107,21 +2201,30 @@ export function ThreadTerminalView({
         <ContextMenuTrigger asChild>
           <TerminalAttentionPane
             attention={session.attention}
-            className="group/terminal-pane relative min-h-0 w-full flex-1 overflow-hidden bg-sidebar p-2"
+            className={`group/terminal-pane relative min-h-0 w-full flex-1 overflow-hidden bg-sidebar p-2 ${isTouchDevice ? "touch-pan-y" : ""}`}
             onContextMenuCapture={captureTerminalContextMenu}
             onTouchStart={(event) => {
+              beginTerminalLongPress(event.touches);
+              ensurePinchGesture().start(gestureTouches(event.touches));
               touchHandlers().start(event);
               handleTerminalTouchStart(event);
             }}
             onTouchMove={(event) => {
+              const points = gestureTouches(event.touches);
+              longPressGestureRef.current?.move(points);
+              ensurePinchGesture().move(points);
               touchHandlers().move(event);
               handleTerminalTouchMove(event);
             }}
             onTouchEnd={(event) => {
+              longPressGestureRef.current?.cancel();
+              ensurePinchGesture().end();
               touchHandlers().end(event);
               handleTerminalTouchEnd(event);
             }}
             onTouchCancel={() => {
+              longPressGestureRef.current?.cancel();
+              ensurePinchGesture().cancel();
               touchHandlers().cancel();
               handleTerminalTouchCancel();
             }}
@@ -2130,6 +2233,7 @@ export function ThreadTerminalView({
               ref={containerRef}
               data-terminal-renderer="dom"
               data-terminal-context-loss-count="0"
+              data-terminal-font-size={terminalFontSize}
               className="box-border h-full min-h-0 w-full overflow-hidden pl-2"
             />
             <TerminalCommandGutter
@@ -2271,6 +2375,7 @@ export function ThreadTerminalView({
             const terminal = terminalRef.current;
             if (!terminal) return;
             terminal.blur();
+            setTextSnapshotInitialLine(null);
             setTextSnapshot(terminalTextSnapshot(terminal));
           }}
         />
@@ -2279,8 +2384,12 @@ export function ThreadTerminalView({
         <TerminalTextSelectSheet
           open={textSnapshot !== null}
           text={textSnapshot ?? ""}
+          initialLine={textSnapshotInitialLine}
           onOpenChange={(open) => {
-            if (!open) setTextSnapshot(null);
+            if (!open) {
+              setTextSnapshotInitialLine(null);
+              setTextSnapshot(null);
+            }
           }}
         />
       ) : null}
