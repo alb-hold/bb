@@ -1,10 +1,21 @@
-import { getLatestThreadSequence } from "@bb/db";
+import {
+  createNativeTerminalThread,
+  createTerminalSession,
+  getLatestThreadSequence,
+  setNativeTerminalThreadTerminal,
+  stampNativeTerminalThreadActivity,
+} from "@bb/db";
+import { createMigratedConnection } from "@bb/db/testing";
+import { createAiServiceRegistry } from "../../../src/services/ai/ai-service-registry.js";
+import { createPluginService } from "../../../src/services/plugins/plugin-service.js";
+import { createNoopTelemetryService } from "../../../src/services/system/telemetry.js";
+import { NotificationHub } from "../../../src/ws/hub.js";
 import { emitPluginThreadEvents } from "../../../src/services/plugins/plugin-thread-events.js";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { threadScope, turnScope } from "@bb/domain";
+import { threadScope, turnScope, type Thread } from "@bb/domain";
 import { applyLoggedThreadLifecycleEvent } from "../../../src/services/threads/lifecycle-outcome.js";
 import { beginProjectDeletion } from "../../../src/services/projects/project-deletion.js";
 import { createThreadRecord } from "../../../src/services/threads/thread-create-helpers.js";
@@ -25,9 +36,17 @@ import {
 
 interface RecordedThreadPayload {
   thread: {
+    canEditMessages?: boolean;
     deletedAt?: number | null;
     id: string;
     projectId?: string;
+    runtime?: {
+      nativeActivity?: {
+        confirmation: "confirmed" | "unconfirmed";
+        freshForMs: number;
+        lastEvidenceAt: number | null;
+      };
+    };
     status: string;
     visibility?: "hidden" | "visible";
   };
@@ -80,6 +99,100 @@ async function setUpPluginHarness(serverSource: string): Promise<{
   };
 }
 
+async function setUpPluginRuntime(serverSource: string): Promise<{
+  db: ReturnType<typeof createMigratedConnection>;
+  hub: NotificationHub;
+  service: ReturnType<typeof createPluginService>;
+  cleanup(): Promise<void>;
+}> {
+  const db = createMigratedConnection();
+  const hub = new NotificationHub();
+  const workDir = await mkdtemp(join(tmpdir(), "bb-plugin-runtime-events-"));
+  const service = createPluginService({
+    aiServices: createAiServiceRegistry(),
+    telemetry: createNoopTelemetryService(),
+    db,
+    hub,
+    logger: testLogger,
+    dataDir: join(workDir, "data"),
+    appVersion: "0.9.0",
+    bundledPlugins: [],
+    loadTimeoutMs: 2000,
+  });
+  const rootDir = join(workDir, "bb-plugin-observer");
+  await mkdir(rootDir, { recursive: true });
+  await writeFile(
+    join(rootDir, "package.json"),
+    JSON.stringify({
+      name: "bb-plugin-observer",
+      version: "0.1.0",
+      bb: {
+        name: "Observer fixture",
+        description: "Thread events plugin fixture.",
+        branding: { icon: "Zap" },
+        server: "./server.ts",
+      },
+    }),
+  );
+  await writeFile(join(rootDir, "server.ts"), serverSource);
+  const entry = await service.installPath(rootDir);
+  expect(entry.status).toBe("running");
+  return {
+    db,
+    hub,
+    service,
+    async cleanup() {
+      await service.stop();
+      db.$client.close();
+      await rm(workDir, { recursive: true, force: true });
+    },
+  };
+}
+
+function recordNativeReceipt(
+  db: ReturnType<typeof createMigratedConnection>,
+  args: {
+    environmentId: string;
+    hostId: string;
+    thread: Thread;
+  },
+): number {
+  const { environmentId, hostId, thread } = args;
+  const now = Date.now();
+  createNativeTerminalThread(db, {
+    threadId: thread.id,
+    providerId: thread.providerId,
+    nativeSessionId: `native-session-${thread.id}`,
+    initialPrompt: null,
+    initialImages: [],
+    model: null,
+  });
+  const terminal = createTerminalSession(db, {
+    threadId: thread.id,
+    environmentId,
+    hostId,
+    daemonSessionId: null,
+    title: "Claude Code",
+    initialCwd: "/tmp",
+    cols: 120,
+    rows: 36,
+    status: "running",
+    now,
+  });
+  setNativeTerminalThreadTerminal(db, {
+    threadId: thread.id,
+    terminalSessionId: terminal.id,
+  });
+  expect(
+    stampNativeTerminalThreadActivity(db, {
+      at: now,
+      terminalSessionId: terminal.id,
+      threadId: thread.id,
+    }),
+  ).toMatchObject({ updated: true });
+  return now;
+}
+
 function lifecycleDeps(harness: TestAppHarness) {
   return {
     db: harness.db,
@@ -90,7 +203,49 @@ function lifecycleDeps(harness: TestAppHarness) {
 }
 
 describe("plugin thread lifecycle events", () => {
-  it("delivers thread.active once when run.started enters active", async () => {
+  it("delivers a native thread DTO when the runtime has no provider registry", async () => {
+    const recorded: RecordedThreadPayload[] = [];
+    globals.__nativeRegistrylessEvents = recorded;
+    const { db, hub, service, cleanup } = await setUpPluginRuntime(`
+      export default function plugin(bb: any) {
+        bb.events.on("thread.active", (payload: any) => {
+          (globalThis as any).__nativeRegistrylessEvents.push(payload);
+        });
+      }
+    `);
+    try {
+      const { environment, host, thread } = seedThreadFixture(
+        { deps: { db, hub } },
+        { thread: { providerId: "claude-code", status: "active" } },
+      );
+      recordNativeReceipt(db, {
+        environmentId: environment.id,
+        hostId: host.id,
+        thread,
+      });
+
+      service.events.emitThreadActive(thread);
+
+      await vi.waitFor(() => expect(recorded).toHaveLength(1));
+      expect(recorded[0]?.thread).toMatchObject({
+        id: thread.id,
+        status: "active",
+        canEditMessages: false,
+      });
+      expect(recorded[0]?.thread.runtime?.nativeActivity).toBeUndefined();
+      await vi.waitFor(() =>
+        expect(
+          service.list().find((plugin) => plugin.id === "observer")
+            ?.handlerStats,
+        ).toMatchObject({ count: 1, errorCount: 0 }),
+      );
+    } finally {
+      delete globals.__nativeRegistrylessEvents;
+      await cleanup();
+    }
+  });
+
+  it("delivers native thread.active DTO once with freshness and edit policy", async () => {
     const recorded: RecordedThreadPayload[] = [];
     globals.__activeEvents = recorded;
     const { harness, cleanup } = await setUpPluginHarness(`
@@ -101,8 +256,13 @@ describe("plugin thread lifecycle events", () => {
       }
     `);
     try {
-      const { thread } = seedThreadFixture(harness, {
-        thread: { status: "starting" },
+      const { environment, host, thread } = seedThreadFixture(harness, {
+        thread: { providerId: "claude-code", status: "starting" },
+      });
+      const lastEvidenceAt = recordNativeReceipt(harness.db, {
+        environmentId: environment.id,
+        hostId: host.id,
+        thread,
       });
 
       const started = applyLoggedThreadLifecycleEvent(lifecycleDeps(harness), {
@@ -121,8 +281,21 @@ describe("plugin thread lifecycle events", () => {
       expect(duplicate.applied).toBe(false);
 
       await vi.waitFor(() => expect(recorded).toHaveLength(1));
-      expect(recorded[0]?.thread.id).toBe(thread.id);
-      expect(recorded[0]?.thread.status).toBe("active");
+      expect(
+        harness.deps.providerRegistry.supportsSessionRewind("claude-code"),
+      ).toBe(true);
+      expect(recorded[0]?.thread).toMatchObject({
+        id: thread.id,
+        status: "active",
+        canEditMessages: true,
+        runtime: {
+          nativeActivity: {
+            confirmation: "confirmed",
+            freshForMs: 90_000,
+            lastEvidenceAt,
+          },
+        },
+      });
     } finally {
       delete globals.__activeEvents;
       await cleanup();

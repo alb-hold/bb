@@ -10,7 +10,10 @@ import {
   defaultExperiments,
 } from "@bb/domain";
 import type { QueryClient } from "@tanstack/react-query";
-import { makeEnvironment } from "@bb/test-helpers/domain-fixtures";
+import {
+  makeEnvironment,
+  makeThreadListEntry,
+} from "@bb/test-helpers/domain-fixtures";
 import { createAppQueryClient } from "@/lib/query-client";
 import { makeSystemConfig } from "@/test/fixtures/system-config";
 import { hasThreadTimelineUnseenEvents } from "./cache-owners/thread-timeline-unseen-events";
@@ -169,6 +172,74 @@ function createRealtimeEffectsTestContext(
 }
 
 describe("createRealtimeCacheEffects", () => {
+  it("patches native receipts into list and search caches without broad invalidation", () => {
+    const { effects, queryClient } = createRealtimeEffectsTestContext();
+    const thread = makeThreadListEntry({
+      id: "thr_native_receipt_cache",
+      projectId: "project-1",
+      status: "active",
+      updatedAt: 1,
+      runtime: {
+        displayStatus: "active",
+        nativeActivity: {
+          lastEvidenceAt: 1_000,
+          freshForMs: 90_000,
+          confirmation: "confirmed",
+        },
+      },
+    });
+    const listKey = threadListQueryKey({
+      archived: false,
+      projectId: "project-1",
+    });
+    const searchKey = threadSearchQueryKey({
+      limitPerGroup: 20,
+      query: "native receipt",
+    });
+    queryClient.setQueryData(listKey, [thread]);
+    queryClient.setQueryData(searchKey, {
+      active: { total: 1, results: [{ thread, matches: [] }] },
+      archived: { total: 0, results: [] },
+    });
+
+    effects.handleChanged({
+      type: "changed",
+      entity: "thread",
+      id: thread.id,
+      metadata: {
+        statusChange: {
+          activity: NO_THREAD_ACTIVITY,
+          latestAttentionAt: thread.latestAttentionAt,
+          runtime: {
+            displayStatus: "active",
+            nativeActivity: {
+              lastEvidenceAt: 31_000,
+              freshForMs: 90_000,
+              confirmation: "confirmed",
+            },
+          },
+          status: "active",
+          updatedAt: thread.updatedAt,
+        },
+      },
+      changes: ["status-changed"],
+    });
+
+    expect(
+      queryClient.getQueryData<Array<typeof thread>>(listKey)?.[0]?.runtime
+        .nativeActivity?.lastEvidenceAt,
+    ).toBe(31_000);
+    expect(
+      queryClient.getQueryData<{
+        active: { results: { thread: typeof thread }[] };
+      }>(searchKey)?.active.results[0]?.thread.runtime.nativeActivity
+        ?.lastEvidenceAt,
+    ).toBe(31_000);
+    expect(queryClient.getQueryState(listKey)?.isInvalidated).toBe(false);
+    expect(queryClient.getQueryState(searchKey)?.isInvalidated).toBe(false);
+    effects.dispose();
+  });
+
   it.each(
     [
       threadStorageFilesQueryKey("thread-1"),
@@ -852,11 +923,35 @@ describe("createRealtimeCacheEffects", () => {
       query: "needle",
     });
     const idleResponse = {
-      active: { results: [{ id: "thr_1", status: "idle" }], total: 1 },
+      active: {
+        results: [
+          {
+            thread: makeThreadListEntry({
+              id: "thr_1",
+              status: "idle",
+              updatedAt: 100,
+            }),
+            matches: [],
+          },
+        ],
+        total: 1,
+      },
       archived: { results: [], total: 0 },
     };
     const activeResponse = {
-      active: { results: [{ id: "thr_1", status: "active" }], total: 1 },
+      active: {
+        results: [
+          {
+            thread: makeThreadListEntry({
+              id: "thr_1",
+              status: "active",
+              updatedAt: 200,
+            }),
+            matches: [],
+          },
+        ],
+        total: 1,
+      },
       archived: { results: [], total: 0 },
     };
     queryClient.setQueryData(threadSearchKey, idleResponse);
@@ -3128,6 +3223,96 @@ describe("createRealtimeCacheEffects", () => {
   });
 
   describe("while the document is hidden", () => {
+    it("preserves lifecycle invalidations when a later receipt is coalesced", () => {
+      vi.useFakeTimers();
+      const visibility = createFakeVisibility();
+      const { effects, queryClient } =
+        createRealtimeEffectsTestContext(visibility);
+      const threadId = "thr_native_coalesced_transition";
+      const threadKey = threadQueryKey(threadId);
+      const searchKey = threadSearchQueryKey({
+        limitPerGroup: 20,
+        query: "coalesced receipt",
+      });
+      const idleEntry = makeThreadListEntry({
+        id: threadId,
+        status: "idle",
+        updatedAt: 100,
+        runtime: {
+          displayStatus: "idle",
+          nativeActivity: {
+            lastEvidenceAt: 1_000,
+            freshForMs: 90_000,
+            confirmation: "confirmed",
+          },
+        },
+      });
+      const activeReceiptChange = {
+        activity: NO_THREAD_ACTIVITY,
+        latestAttentionAt: 100,
+        runtime: {
+          displayStatus: "active",
+          nativeActivity: {
+            lastEvidenceAt: 1_000,
+            freshForMs: 90_000,
+            confirmation: "confirmed",
+          },
+        },
+        status: "active",
+        updatedAt: 200,
+      } as const;
+      queryClient.setQueryData(threadKey, {
+        ...idleEntry,
+        status: "idle",
+      });
+      queryClient.setQueryData(searchKey, {
+        active: {
+          results: [{ thread: idleEntry, matches: [] }],
+          total: 1,
+        },
+        archived: { results: [], total: 0 },
+      });
+
+      visibility.setVisible(false);
+      effects.handleChanged({
+        type: "changed",
+        entity: "thread",
+        id: threadId,
+        metadata: {
+          projectId: "project-1",
+          statusChange: activeReceiptChange,
+        },
+        changes: ["status-changed"],
+      });
+      effects.handleChanged({
+        type: "changed",
+        entity: "thread",
+        id: threadId,
+        metadata: {
+          projectId: "project-1",
+          statusChange: {
+            ...activeReceiptChange,
+            runtime: {
+              ...activeReceiptChange.runtime,
+              nativeActivity: {
+                ...activeReceiptChange.runtime.nativeActivity,
+                lastEvidenceAt: 31_000,
+              },
+            },
+          },
+        },
+        changes: ["status-changed"],
+      });
+
+      expect(queryClient.getQueryState(threadKey)?.isInvalidated).toBe(false);
+      expect(queryClient.getQueryState(searchKey)?.isInvalidated).toBe(false);
+      visibility.setVisible(true);
+
+      expect(queryClient.getQueryState(threadKey)?.isInvalidated).toBe(true);
+      expect(queryClient.getQueryState(searchKey)?.isInvalidated).toBe(true);
+      effects.dispose();
+    });
+
     it("merges thread changes and flushes them once on visible", () => {
       vi.useFakeTimers();
       const visibility = createFakeVisibility();
