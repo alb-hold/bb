@@ -34,6 +34,7 @@ import {
 
 afterEach(() => {
   cleanup();
+  document.body.style.pointerEvents = "";
   vi.restoreAllMocks();
   vi.useRealTimers();
 });
@@ -452,6 +453,62 @@ describe("responsive Dialog", () => {
 });
 
 describe("PersistentResponsiveDrawerShell", () => {
+  it("routes pointer taps to open drawer controls above a pointer-disabled app tree", () => {
+    mockPointerCoarse(true);
+    const onOpenChange = vi.fn();
+    const onAction = vi.fn();
+    document.body.style.pointerEvents = "none";
+
+    const view = render(
+      <main style={{ pointerEvents: "none" }}>
+        <PersistentResponsiveDrawerShell
+          open={true}
+          onOpenChange={onOpenChange}
+          srLabel="Details"
+        >
+          <button type="button" onClick={onAction}>
+            Apply details
+          </button>
+        </PersistentResponsiveDrawerShell>
+      </main>,
+    );
+
+    const content = document.querySelector<HTMLElement>(
+      "[data-persistent-drawer-content]",
+    );
+    const backdrop = document.querySelector<HTMLElement>(
+      "[data-persistent-drawer-backdrop]",
+    );
+    if (content === null || backdrop === null) {
+      throw new Error("open drawer content and backdrop should be mounted");
+    }
+
+    expect(content.style.pointerEvents).toBe("auto");
+    fireEvent.click(screen.getByRole("button", { name: "Apply details" }));
+    expect(onAction).toHaveBeenCalledOnce();
+    fireEvent.pointerDown(backdrop, { pointerId: 1 });
+    fireEvent.click(backdrop);
+    expect(onOpenChange).toHaveBeenLastCalledWith(false);
+
+    view.rerender(
+      <main style={{ pointerEvents: "none" }}>
+        <PersistentResponsiveDrawerShell
+          open={false}
+          onOpenChange={onOpenChange}
+          srLabel="Details"
+        >
+          <button type="button" onClick={onAction}>
+            Apply details
+          </button>
+        </PersistentResponsiveDrawerShell>
+      </main>,
+    );
+
+    expect(content.style.pointerEvents).toBe("none");
+    expect(content.hasAttribute("inert")).toBe(true);
+    expect(content.getAttribute("aria-hidden")).toBe("true");
+  });
+
   it("keeps open drawer content pointer-interactive above its backdrop", () => {
     mockPointerCoarse(true);
     render(
@@ -475,7 +532,8 @@ describe("PersistentResponsiveDrawerShell", () => {
     }
     expect(content.style.pointerEvents).toBe("auto");
     expect(
-      backdrop.compareDocumentPosition(content) & Node.DOCUMENT_POSITION_FOLLOWING,
+      backdrop.compareDocumentPosition(content) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
   });
 
