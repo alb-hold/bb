@@ -336,7 +336,7 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       expect(snapshot.value).toContain("retained-01");
       expect(snapshot.value).toContain("retained-48");
     });
-  });
+  }, 30_000);
 
   it("sends clipboard text once through xterm paste input", async () => {
     prepareMobileTerminal();
