@@ -528,12 +528,38 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
 
   post(routes.open, (context, payload) => {
     const publicThread = requirePublicThread(deps.db, context.req.param("id"));
+    if (payload.terminalAction !== undefined) {
+      const terminal = deps.terminalSessions.getTerminal({
+        terminalId: payload.terminalAction.terminalId,
+      });
+      if (terminal.threadId !== publicThread.id || publicThread.archivedAt !== null) {
+        throw new ApiError(404, "terminal_not_found", "Terminal session not found");
+      }
+      if (
+        payload.terminalAction.action === "openBrowser" &&
+        payload.terminalAction.url === undefined
+      ) {
+        throw new ApiError(400, "invalid_request", "A URL is required to open a browser tab");
+      }
+      if (
+        payload.terminalAction.action === "focus" &&
+        payload.terminalAction.url !== undefined
+      ) {
+        throw new ApiError(400, "invalid_request", "A URL is only valid for the openBrowser action");
+      }
+    }
     if (payload.file !== null) {
       parseSafeRelativeRoutePath(payload.file.path);
     }
     const delivered = deps.hub.notifyThreadOpen(
       { projectId: publicThread.projectId, threadId: publicThread.id },
-      { split: payload.split ?? "replace", file: payload.file },
+      {
+        split: payload.split ?? "replace",
+        file: payload.file,
+        ...(payload.terminalAction === undefined
+          ? {}
+          : { terminalAction: payload.terminalAction }),
+      },
     );
     return context.json({ delivered });
   });
