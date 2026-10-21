@@ -7,7 +7,9 @@ import type {
 import { terminalScreenWorkerSource } from "../../generated/terminal-screen-worker.js";
 import type { ServerLogger } from "../../types.js";
 import type { renderTerminalScreenInline } from "./terminal-screen-render.js";
-export { TERMINAL_SCREEN_MAX_LINES, TERMINAL_SCREEN_REPLAY_BYTES } from "./terminal-screen-render.js";
+
+export const TERMINAL_SCREEN_MAX_LINES = 500;
+export const TERMINAL_SCREEN_REPLAY_BYTES = 64 * 1024;
 const TERMINAL_SCREEN_WORKER_TIMEOUT_MS = 30_000;
 type RenderArgs = Parameters<typeof renderTerminalScreenInline>[0];
 type WorkerResult = {
@@ -64,6 +66,13 @@ let terminatingWorker: Worker | undefined;
 let pending: PendingRead | undefined;
 let nextId = 1;
 
+const workerExecArgv = process.execArgv.filter((arg, index, args) => {
+  if (index > 0 && ["--import", "--loader", "--experimental-loader", "--input-type"].includes(args[index - 1]!)) return false;
+  return !["--import", "--loader", "--experimental-loader", "--input-type"].some(
+    (option) => arg === option || arg.startsWith(`${option}=`),
+  );
+});
+
 function rejectPending(error: Error) {
   const active = pending;
   if (!active) return;
@@ -88,7 +97,10 @@ function logWorkerFailure(error: Error) {
 function getWorker() {
   if (worker) return worker;
   if (terminatingWorker) throw new Error("Terminal screen worker is restarting");
-  const current = new Worker(terminalScreenWorkerSource, { eval: true });
+  const current = new Worker(terminalScreenWorkerSource, {
+    eval: true,
+    execArgv: workerExecArgv,
+  });
   worker = current;
   current.unref();
   current.on("message", (value: unknown) => {
