@@ -1005,46 +1005,80 @@ function droppedTokens(
   return dropped;
 }
 
-const SPOKEN_SYMBOLS: ReadonlySet<string> = new Set([
-  "dash",
-  "hyphen",
-  "dot",
-  "comma",
-  "colon",
-  "semicolon",
-  "slash",
-  "backslash",
-  "underscore",
-  "equals",
-  "paren",
-  "parens",
-  "parenthesis",
-  "bracket",
-  "brace",
-  "quote",
-  "backtick",
-  "asterisk",
-  "ampersand",
-  "tilde",
-  "newline",
-  "camelcase",
-  "ponto",
-  "vírgula",
-  "virgula",
-  "barra",
-  "traço",
-  "traco",
-  "hífen",
-  "hifen",
-  "parênteses",
-  "parenteses",
-  "colchete",
-  "aspas",
-  "sublinhado",
-  "underline",
-  "arroba",
-  "cerquilha",
+const SPOKEN_SYMBOLS: ReadonlyMap<string, string> = new Map([
+  ["dash", "-"],
+  ["hyphen", "-"],
+  ["dot", "."],
+  ["comma", ","],
+  ["colon", ":"],
+  ["semicolon", ";"],
+  ["slash", "/"],
+  ["backslash", "\\"],
+  ["underscore", "_"],
+  ["equals", "="],
+  ["paren", "()"],
+  ["parens", "()"],
+  ["parenthesis", "()"],
+  ["bracket", "[]"],
+  ["brace", "{}"],
+  ["quote", "\"'"],
+  ["backtick", "`"],
+  ["asterisk", "*"],
+  ["ampersand", "&"],
+  ["tilde", "~"],
+  ["newline", "\n"],
+  ["camelcase", ""],
+  ["ponto", "."],
+  ["vírgula", ","],
+  ["virgula", ","],
+  ["barra", "/"],
+  ["traço", "-"],
+  ["traco", "-"],
+  ["hífen", "-"],
+  ["hifen", "-"],
+  ["parênteses", "()"],
+  ["parenteses", "()"],
+  ["colchete", "[]"],
+  ["aspas", "\"'"],
+  ["sublinhado", "_"],
+  ["underline", "_"],
+  ["arroba", "@"],
+  ["cerquilha", "#"],
 ]);
+
+const SENTENCE_SYMBOLS = ".,:;";
+
+function symbolCount(
+  text: string,
+  symbols: string,
+  insideLineOnly: boolean,
+): number {
+  let count = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    if (!symbols.includes(text[index]!)) continue;
+    if (insideLineOnly && /^[ \t]*(?:\n|$)/u.test(text.slice(index + 1))) {
+      continue;
+    }
+    count += 1;
+  }
+  return count;
+}
+
+function spokenSymbolsWritten(
+  raw: string,
+  formatted: string,
+  spokenSymbols: ReadonlyMap<string, number>,
+): boolean {
+  for (const [symbols, dropped] of spokenSymbols) {
+    const sentence = [...symbols].every((symbol) =>
+      SENTENCE_SYMBOLS.includes(symbol),
+    );
+    const before = symbolCount(raw, symbols, sentence);
+    const after = symbolCount(formatted, symbols, sentence);
+    if (after < before + dropped) return false;
+  }
+  return true;
+}
 
 function splitJoinedToken(
   token: string,
@@ -1387,11 +1421,18 @@ export function validateFormattedTranscript(
   );
   if (lostNegation) return { ok: false, reason: "negation" };
   if (allowed === null) return { ok: false, reason: "dropped-words" };
+  const spokenSymbols = new Map<string, number>();
   for (let index = 0; index < rawTokens.length; index += 1) {
     if (!dropped[index]) continue;
     const token = rawTokens[index]!;
     if (allowed[index]) continue;
-    if (options.literalCode && SPOKEN_SYMBOLS.has(token)) continue;
+    const symbols = options.literalCode ? SPOKEN_SYMBOLS.get(token) : undefined;
+    if (symbols !== undefined) {
+      if (symbols.length > 0) {
+        spokenSymbols.set(symbols, (spokenSymbols.get(symbols) ?? 0) + 1);
+      }
+      continue;
+    }
     const enumerator = ENUMERATOR_VALUES.get(token);
     if (
       enumerator !== undefined &&
@@ -1407,6 +1448,9 @@ export function validateFormattedTranscript(
     ) {
       continue;
     }
+    return { ok: false, reason: "dropped-words" };
+  }
+  if (!spokenSymbolsWritten(raw, body, spokenSymbols)) {
     return { ok: false, reason: "dropped-words" };
   }
   return { ok: true };

@@ -1416,6 +1416,34 @@ describe("validateFormattedTranscript", () => {
   });
 
   it.each([
+    ["run dash force", "Run -force"],
+    ["run dash dash force", "run --force"],
+    ["Open config dot json.", "open config.json"],
+    ["use the snake underscore case name", "use the snake_case name"],
+    ["call camelcase refresh token", "call refreshToken"],
+  ])("accepts literal code %s written as %s", (raw, formatted) => {
+    expect(
+      validateFormattedTranscript(raw, formatted, [], { literalCode: true }),
+    ).toEqual({ ok: true });
+  });
+
+  it.each([
+    ["run dash force", "Run force"],
+    ["run dash dash force", "run -force"],
+    ["open config dot json", "open config json"],
+    ["Open config dot json.", "open config json."],
+    ["use a-b dash c", "use a-b c"],
+    ["use the snake underscore case name", "use the snake case name"],
+  ])(
+    "rejects literal code %s written as %s, which drops a spoken symbol",
+    (raw, formatted) => {
+      expect(
+        validateFormattedTranscript(raw, formatted, [], { literalCode: true }),
+      ).toEqual({ ok: false, reason: "dropped-words" });
+    },
+  );
+
+  it.each([
     [
       "first add users and groups second remove keys and secrets",
       "1. Add users groups.\n2. Remove keys secrets.",
