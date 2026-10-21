@@ -165,7 +165,8 @@ process.exit(code);`;
   });
   await waitForOutput(/holder-ready/u);
   const client = await connectNativeHolder(socket);
-  if (client === null) throw new Error(`holder did not accept connection: ${output}`);
+  if (client === null)
+    throw new Error(`holder did not accept connection: ${output}`);
   cleanups.push(() => client.destroy());
   client.write(
     encodeNativeHolderFrame(NativeHolderFrame.credential, Buffer.from(SECRET)),
