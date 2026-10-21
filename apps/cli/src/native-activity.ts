@@ -174,26 +174,31 @@ export interface JsonlRecordLocation {
   length: number;
 }
 
-const LAST_RECORD_WINDOW_BYTES = 64 * 1024;
+const TAIL_WINDOW_BYTES = 64 * 1024;
 
-export function readLastJsonlRecord(filePath: string): unknown {
+export function readTailJsonlRecords(filePath: string): unknown[] {
   let descriptor: number | null = null;
   try {
     descriptor = openSync(filePath, "r");
     const size = statSync(filePath).size;
-    const length = Math.min(size, LAST_RECORD_WINDOW_BYTES);
-    if (length === 0) return null;
+    const length = Math.min(size, TAIL_WINDOW_BYTES);
+    if (length === 0) return [];
     const buffer = Buffer.alloc(length);
     const read = readSync(descriptor, buffer, 0, length, size - length);
-    const lines = buffer
-      .subarray(0, read)
-      .toString("utf8")
-      .split("\n")
-      .filter((line) => line.trim().length > 0);
-    const last = lines.at(-1);
-    return last === undefined ? null : JSON.parse(last);
+    const lines = buffer.subarray(0, read).toString("utf8").split("\n");
+    if (size > length) lines.shift();
+    const records: unknown[] = [];
+    for (const line of lines) {
+      if (line.trim().length === 0) continue;
+      try {
+        records.push(JSON.parse(line));
+      } catch {
+        continue;
+      }
+    }
+    return records;
   } catch {
-    return null;
+    return [];
   } finally {
     if (descriptor !== null) closeSync(descriptor);
   }

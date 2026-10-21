@@ -19,6 +19,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { JsonlTail } from "../native-activity.js";
 import { EvictedRecordIndex } from "../native-activity-index.js";
 import {
+  MAX_SESSION_ADOPTIONS,
   measureResumedTranscript,
   NativeActivityReader,
 } from "../native-activity-reader.js";
@@ -357,7 +358,7 @@ describe("NativeActivityReader session rotation", () => {
   const rotatedPrompt = (sessionId = ROTATED) => ({
     hook_event_name: "UserPromptSubmit",
     session_id: sessionId,
-    prompt_id: "turn-2",
+    prompt_id: `turn-${sessionId}`,
     prompt: "second prompt",
   });
 
@@ -391,7 +392,7 @@ describe("NativeActivityReader session rotation", () => {
           isSidechain: false,
           uuid: "ask-1",
           parentUuid: null,
-          promptId: "turn-2",
+          promptId: `turn-${ROTATED}`,
           timestamp: new Date().toISOString(),
           message: {
             content: [
@@ -465,24 +466,6 @@ describe("NativeActivityReader session rotation", () => {
     expect(adopted).toEqual([]);
   });
 
-  it("negative control: a continuation that is not the last record of the bound transcript does not count", () => {
-    const adopted: Array<[string, string]> = [];
-    const fixture = claudeFixture(
-      false,
-      undefined,
-      undefined,
-      adoptions(adopted),
-    );
-    startRotation(fixture);
-    appendFileSync(
-      fixture.transcript,
-      jsonl([{ type: "system", subtype: "turn_duration", isSidechain: false }]),
-    );
-    fixture.hook([rotatedPrompt()]);
-    expect(fixture.reader.read()).toEqual([]);
-    expect(adopted).toEqual([]);
-  });
-
   it("negative control: a replay of the session already left is never adopted again", () => {
     const adopted: Array<[string, string]> = [];
     const fixture = claudeFixture(
@@ -546,7 +529,7 @@ describe("NativeActivityReader session rotation", () => {
     expect(adopted).toEqual([]);
   });
 
-  it("stops adopting after a bounded number of rotations", () => {
+  it("adopts when other records were written after the continuation record", () => {
     const adopted: Array<[string, string]> = [];
     const fixture = claudeFixture(
       false,
@@ -554,10 +537,53 @@ describe("NativeActivityReader session rotation", () => {
       undefined,
       adoptions(adopted),
     );
+    startRotation(fixture);
+    appendFileSync(
+      fixture.transcript,
+      jsonl([
+        { type: "system", subtype: "turn_duration", isSidechain: false },
+        { type: "last-prompt", lastPrompt: "x" },
+      ]),
+    );
+    fixture.hook([rotatedPrompt()]);
+    expect(fixture.reader.read()).toEqual([
+      { state: "working", prompt: "second prompt" },
+    ]);
+    expect(adopted).toEqual([[ROTATED, SESSION_ID]]);
+  });
+
+  it("negative control: a continuation older than the tail window does not count", () => {
+    const adopted: Array<[string, string]> = [];
+    const fixture = claudeFixture(
+      false,
+      undefined,
+      undefined,
+      adoptions(adopted),
+    );
+    startRotation(fixture);
+    const filler = { type: "system", subtype: "filler", text: "x".repeat(900) };
+    appendFileSync(
+      fixture.transcript,
+      jsonl(Array.from({ length: 120 }, () => filler)),
+    );
+    fixture.hook([rotatedPrompt()]);
+    expect(fixture.reader.read()).toEqual([]);
+    expect(adopted).toEqual([]);
+  });
+
+  it("makes the cap visible: past it the thread stops confirming and the drop is reported", () => {
+    const adopted: Array<[string, string]> = [];
+    const drops: Array<{ reason: string; total: number }> = [];
+    const fixture = claudeFixture(
+      false,
+      undefined,
+      (reason, total) => drops.push({ reason, total }),
+      adoptions(adopted),
+    );
     let current = fixture.transcript;
     let clock = Date.now();
     vi.spyOn(Date, "now").mockImplementation(() => clock);
-    for (let index = 0; index < 20; index += 1) {
+    const rotate = (index: number) => {
       const sessionId = `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`;
       const next = path.join(fixture.dir, `${sessionId}.jsonl`);
       writeFileSync(next, "");
@@ -565,9 +591,19 @@ describe("NativeActivityReader session rotation", () => {
       current = next;
       clock += 3_000;
       fixture.hook([rotatedPrompt(sessionId)]);
-      fixture.reader.read();
+      return fixture.reader.read();
+    };
+    for (let index = 0; index < MAX_SESSION_ADOPTIONS; index += 1) {
+      rotate(index);
     }
-    expect(adopted).toHaveLength(16);
+    expect(adopted).toHaveLength(MAX_SESSION_ADOPTIONS);
+    expect(fixture.reader.heartbeat()).not.toBeNull();
+    expect(drops).toEqual([]);
+
+    expect(rotate(MAX_SESSION_ADOPTIONS)).toEqual([]);
+    expect(adopted).toHaveLength(MAX_SESSION_ADOPTIONS);
+    expect(fixture.reader.heartbeat()).toBeNull();
+    expect(drops.at(-1)?.reason).toBe("foreign-session");
   });
 
   it("reports each identity drop with its reason and no event content", () => {
