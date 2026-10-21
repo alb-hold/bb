@@ -46,10 +46,19 @@ describe("a plugin answer that arrives after its tool call ended", () => {
         model: null,
       });
 
-      handleUnclaimedPluginAnswer(harness.deps, {
-        interaction: { threadId: native.id, payload } as never,
-        value: { answers: { q0: ["q0o0"] } },
-      });
+      const queue = vi
+        .spyOn(queuedMessages, "createQueuedMessageForThread")
+        .mockRejectedValue(new Error("queue refused"));
+      try {
+        handleUnclaimedPluginAnswer(harness.deps, {
+          interaction: { threadId: native.id, payload } as never,
+          value: { answers: { q0: ["q0o0"] } },
+        });
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(queue).not.toHaveBeenCalled();
+      } finally {
+        queue.mockRestore();
+      }
 
       expect(
         getThreadRowState(harness.db, native.id).statuses[

@@ -1936,7 +1936,8 @@ describe("native terminal activity evidence across a swap", () => {
     | "c: never-confirmed legacy holder, no Authorization"
     | "d: never-confirmed holder with a stale once-captured credential"
     | "e: no credential after the reattach reset"
-    | "f: current-credential heartbeat";
+    | "f: current-credential heartbeat"
+    | "g: current credential, terminal exited by daemon disconnect before reattach";
 
   const LIFECYCLE_CASES: readonly [CredentialCase, boolean][] = [
     ["a: no credential after a confirmed binding", false],
@@ -1945,6 +1946,10 @@ describe("native terminal activity evidence across a swap", () => {
     ["d: never-confirmed holder with a stale once-captured credential", true],
     ["e: no credential after the reattach reset", true],
     ["f: current-credential heartbeat", true],
+    [
+      "g: current credential, terminal exited by daemon disconnect before reattach",
+      true,
+    ],
   ];
   const LIFECYCLE_EFFECTS: readonly LifecycleEffect[] = [
     "run-started",
@@ -1976,6 +1981,19 @@ describe("native terminal activity evidence across a swap", () => {
     }
     await report(fixture, thread.id, `Bearer ${started.credential}`);
     expect(evidenceOf(fixture, thread.id)).not.toBeNull();
+    if (credentialCase.startsWith("g")) {
+      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.hostId,
+        sessionId: fixture.sessionId,
+        message: {
+          type: "terminal.exited",
+          terminalId: started.open.terminalId,
+          exitCode: null,
+          closeReason: "daemon-disconnect",
+        },
+      });
+      return { authorization: `Bearer ${started.credential}`, thread };
+    }
     if (credentialCase.startsWith("a")) {
       return { authorization: undefined, thread };
     }
@@ -1984,6 +2002,51 @@ describe("native terminal activity evidence across a swap", () => {
     }
     return { authorization: `Bearer ${started.credential}`, thread };
   }
+
+  it("h: a new credential that reports before the server has stored its hash still drives lifecycle", async () => {
+    const fixture = await createFixture();
+    const started = await startNativeThread(fixture);
+    const { thread } = started;
+    await report(fixture, thread.id, `Bearer ${started.credential}`);
+    expect(evidenceOf(fixture, thread.id)).not.toBeNull();
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.hostId,
+      sessionId: fixture.sessionId,
+      message: {
+        type: "terminal.exited",
+        terminalId: started.open.terminalId,
+        exitCode: null,
+        closeReason: "daemon-disconnect",
+      },
+    });
+    const opens = countDaemonMessages(fixture, "terminal.open");
+    const reopening = postJson(
+      fixture,
+      `/threads/${thread.id}/native-terminal/open`,
+      {},
+    );
+    const reopened = await waitForDaemonMessage(
+      fixture,
+      "terminal.open",
+      opens,
+    );
+    const newCredential = terminalCredential(reopened);
+    expect(newCredential).not.toBe(started.credential);
+    expect(threadStatus(fixture, thread.id)).toBe("active");
+
+    const idle = await postJson(
+      fixture,
+      `/threads/${thread.id}/native-terminal/activity`,
+      { state: "idle" },
+      `Bearer ${newCredential}`,
+    );
+    expect(idle.status).toBe(200);
+    expect(threadStatus(fixture, thread.id)).toBe("idle");
+    expect(evidenceOf(fixture, thread.id)).toBeNull();
+
+    acknowledgeOpen(fixture, reopened);
+    expect((await reopening).status).toBe(200);
+  });
 
   describe("lifecycle effects of a report", () => {
     it.each(

@@ -10,6 +10,7 @@ import {
   getThread,
   listNativeTerminalThreadsWithDisconnectedTerminal,
   recordNativeTerminalThreadSessionId,
+  clearNativeTerminalThreadEvidence,
   setNativeTerminalThreadTerminal,
   type NativeTerminalThreadRecord,
 } from "@bb/db";
@@ -438,6 +439,7 @@ async function openNativeTerminalOnce(
     }
   }
   const credential = issueNativeTerminalToolCredential(record.providerId);
+  clearNativeTerminalThreadEvidence(deps.db, thread.id);
   const terminal = await deps.terminalSessions.createTerminal({
     ...(args.repaintOnAttach
       ? {

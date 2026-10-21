@@ -619,6 +619,7 @@ describe("native terminal agent tools", () => {
         release();
 
         expect((await inFlight).status).toBe(200);
+        expect(spy).toHaveBeenCalledTimes(1);
         expect(record(fixture, threadId)).toMatchObject({
           terminalSessionId: reattached.id,
           lastToolCallAt: null,
