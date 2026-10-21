@@ -77,4 +77,40 @@ describe("useCompactTerminalLayoutRequest", () => {
     await waitFor(() => expect(onResolved).toHaveBeenCalledWith(false));
     expect(ensureUnavailable).toHaveBeenCalledWith(["term-target", "term-source"]);
   });
+
+  it("selects a terminal after the compact request refreshes a stale terminal list", async () => {
+    const request: CompactTerminalLayoutRequest = {
+      action: "split",
+      requestId: 73,
+      side: "right",
+      terminalId: "term-created-by-cli",
+    };
+    const ensureBeforeRefresh = vi.fn<(terminalIds: readonly string[]) => boolean | null>(
+      () => null,
+    );
+    const ensureAfterRefresh = vi.fn<(terminalIds: readonly string[]) => boolean | null>(
+      () => true,
+    );
+    const onHandled = vi.fn();
+    const onResolved = vi.fn();
+    const { rerender } = renderHook(
+      ({ ensureTerminalTabs }) =>
+        useCompactTerminalLayoutRequest({
+          enabled: true,
+          ensureTerminalTabs,
+          onHandled,
+          onResolved,
+          request,
+        }),
+      { initialProps: { ensureTerminalTabs: ensureBeforeRefresh } },
+    );
+
+    expect(ensureBeforeRefresh).toHaveBeenCalledWith([request.terminalId]);
+    expect(onHandled).not.toHaveBeenCalled();
+
+    rerender({ ensureTerminalTabs: ensureAfterRefresh });
+
+    await waitFor(() => expect(onHandled).toHaveBeenCalledWith(request.requestId));
+    expect(onResolved).toHaveBeenCalledWith(true);
+  });
 });

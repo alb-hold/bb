@@ -694,6 +694,7 @@ function ThreadDetailViewInternal(
     terminalId: string;
   } | null>(null);
   const terminalLayoutRequestIdRef = useRef(0);
+  const terminalLayoutRequestRefreshRef = useRef<number | null>(null);
   const consumedTerminalActionLocationRef = useRef<string | null>(null);
   const shouldLoadThreadStorageFiles = shouldLoadThreadStorageFileList({
     hasThread: thread !== undefined,
@@ -717,6 +718,7 @@ function ThreadDetailViewInternal(
   const terminalsListQuery = useThreadTerminals(threadId, {
     enabled: isSecondaryPanelOpen || terminalLayoutRequest !== null,
   });
+  const refetchTerminalList = terminalsListQuery.refetch;
   const nativeTerminalThreadQuery = useNativeTerminalThread(threadId);
   const nativeTerminalThread = nativeTerminalThreadQuery.data ?? null;
   const nativeTerminalId = nativeTerminalThread?.terminal?.id ?? null;
@@ -1658,13 +1660,35 @@ function ThreadDetailViewInternal(
         terminalIds,
         threadId,
       );
-      if (selectedSessions === null) return false;
+      if (selectedSessions === null) {
+        if (
+          terminalLayoutRequest !== null &&
+          terminalLayoutRequestRefreshRef.current !== terminalLayoutRequest.requestId
+        ) {
+          terminalLayoutRequestRefreshRef.current = terminalLayoutRequest.requestId;
+          void refetchTerminalList();
+          return null;
+        }
+        return false;
+      }
+      if (renderSecondaryPanelAsDrawer && !isSecondaryPanelOpen) {
+        appToast.warning("Split panes aren't available at this window size.");
+      }
       for (const session of selectedSessions) {
         selectTerminal(session.id, { kind: "thread", threadId });
       }
       return true;
     },
-    [selectTerminal, terminalsListQuery.data, terminalsListQuery.isPending, threadId],
+    [
+      selectTerminal,
+      terminalLayoutRequest,
+      terminalsListQuery.data,
+      terminalsListQuery.isPending,
+      refetchTerminalList,
+      renderSecondaryPanelAsDrawer,
+      isSecondaryPanelOpen,
+      threadId,
+    ],
   );
   const handleCompactTerminalLayoutRequestHandled = useCallback(
     (requestId: number) => {
@@ -1676,11 +1700,9 @@ function ThreadDetailViewInternal(
   );
   const handleCompactTerminalLayoutRequestResolved = useCallback(
     (terminalAvailable: boolean) => {
-      appToast.warning(
-        terminalAvailable
-          ? "Split panes aren't available at this window size."
-          : "The terminal is no longer available in this thread.",
-      );
+      if (!terminalAvailable) {
+        appToast.warning("The terminal is no longer available in this thread.");
+      }
     },
     [],
   );
