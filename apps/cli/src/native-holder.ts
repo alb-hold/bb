@@ -537,12 +537,11 @@ export async function runNativeHolder(
         exitCode,
         signal: signal ?? null,
       });
-      finish(
+      const code =
         Number.isInteger(exitCode) && exitCode >= 0
           ? exitCode
-          : 128 + (signal ?? 0),
-        finishReason,
-      );
+          : 128 + (signal ?? 0);
+      setImmediate(() => finish(code, finishReason));
     });
   };
 

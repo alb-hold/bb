@@ -916,6 +916,58 @@ try {
     expect(shown).toContain("got:hi");
   });
 
+  it("delivers PTY output queued before exit before resolving the exit code", async () => {
+    const socketPath = socketIn();
+    let emitData: ((data: string) => void) | undefined;
+    let emitExit:
+      | ((event: { exitCode: number; signal?: number }) => void)
+      | undefined;
+    let readyForEvents!: () => void;
+    const eventsReady = new Promise<void>((resolve) => {
+      readyForEvents = resolve;
+    });
+    const held = runNativeHolder({
+      socketPath,
+      cwd: os.tmpdir(),
+      env: process.env,
+      prepare: async () => ({ command: "fake", args: [] }),
+      spawnPty: () => ({
+        pid: 1,
+        onData: (listener) => {
+          emitData = listener;
+        },
+        onExit: (listener) => {
+          emitExit = listener;
+          readyForEvents();
+        },
+        write: () => undefined,
+        resize: () => undefined,
+        kill: () => undefined,
+      }),
+    });
+    const socket = await waitForNativeHolder(socketPath, 5_000);
+    if (socket === null) throw new Error("holder did not listen");
+    const input = new PassThrough();
+    const output = Object.assign(new PassThrough(), { columns: 90, rows: 30 });
+    let shown = "";
+    output.on("data", (chunk: Buffer) => {
+      shown += chunk.toString("utf8");
+    });
+    const piped = pipeNativeHolderClient(socket, {
+      input,
+      output,
+      fallbackSize: { cols: 120, rows: 40 },
+    });
+
+    await eventsReady;
+    queueMicrotask(() => emitData?.("hi\r\ngot:hi\r\n"));
+    emitExit?.({ exitCode: 3 });
+
+    await expect(piped).resolves.toBe(3);
+    await expect(held).resolves.toBe(3);
+    expect(shown).toContain("got:hi");
+  });
+
   it("checks holder liveness without replacing its terminal client", async () => {
     const socketPath = socketIn();
     const held = startHolder(socketPath, {
