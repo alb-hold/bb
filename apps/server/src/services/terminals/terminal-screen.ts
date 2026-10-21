@@ -64,6 +64,23 @@ function sentinelGrid(cols: number, rows: number) {
   ).join("")}\u001b[${rows};1H`;
 }
 
+async function replayWithPerturbedModes(
+  data: Buffer,
+  cols: number,
+  rows: number,
+  modeSetup: string,
+) {
+  const terminal = createTerminal(cols, rows);
+  try {
+    await writeTerminal(terminal, modeSetup);
+    await writeTerminal(terminal, data);
+    return terminal;
+  } catch (error) {
+    terminal.dispose();
+    throw error;
+  }
+}
+
 async function replayIsComplete(
   data: Buffer,
   cols: number,
@@ -71,6 +88,8 @@ async function replayIsComplete(
   blankTerminal: HeadlessTerminal,
 ) {
   const sentinelTerminal = createTerminal(cols, rows);
+  const modeSetups = [`\u001b[2;${Math.max(2, rows - 1)}r\u001b[?6h`];
+  const perturbedTerminals: HeadlessTerminal[] = [];
   try {
     const sentinel = sentinelGrid(cols, rows);
     await writeTerminal(sentinelTerminal, sentinel);
@@ -78,9 +97,17 @@ async function replayIsComplete(
     await writeTerminal(sentinelTerminal, sentinel);
     await writeTerminal(sentinelTerminal, "\u001b[?1049l");
     await writeTerminal(sentinelTerminal, data);
-    return sameVisibleScreen(blankTerminal, sentinelTerminal);
+    for (const modeSetup of modeSetups) {
+      perturbedTerminals.push(
+        await replayWithPerturbedModes(data, cols, rows, modeSetup),
+      );
+    }
+    return [blankTerminal, sentinelTerminal, ...perturbedTerminals].every(
+      (terminal) => sameVisibleScreen(blankTerminal, terminal),
+    );
   } finally {
     sentinelTerminal.dispose();
+    for (const terminal of perturbedTerminals) terminal.dispose();
   }
 }
 
