@@ -147,8 +147,8 @@ function registerQueueModelCatalog(
   harness: TestAppHarness,
   hostId: string,
   sessionId: string,
-): void {
-  registerHostRpcResponder(harness, {
+) {
+  return registerHostRpcResponder(harness, {
     hostId,
     sessionId,
     handle: ({ command }) => {
@@ -901,7 +901,11 @@ describe("the requested queue drain", () => {
         providerId: "claude-code",
         status: "active",
       });
-      registerQueueModelCatalog(harness, host.id, session.id);
+      const queueResponder = registerQueueModelCatalog(
+        harness,
+        host.id,
+        session.id,
+      );
       setThreadExecutionOverride(harness.db, {
         threadId: thread.id,
         modelOverride: "claude-opus-5-5",
@@ -940,6 +944,26 @@ describe("the requested queue drain", () => {
         JSON.parse(turnRequests(harness, thread.id).at(-1)!.data),
       );
       expect(dispatched.execution.model).toBe("claude-sonnet-5-5");
+      expect(dispatched.input).toEqual([
+        expect.objectContaining({
+          text: "ordinary queued tell",
+          type: "text",
+        }),
+      ]);
+      const queuedTurnSubmit = queueResponder.requests.find(
+        ({ command }) =>
+          command.type === "turn.submit" && command.threadId === thread.id,
+      );
+      expect(queuedTurnSubmit?.command).toMatchObject({
+        type: "turn.submit",
+        options: { model: "claude-sonnet-5-5" },
+        input: [
+          expect.objectContaining({
+            text: "ordinary queued tell",
+            type: "text",
+          }),
+        ],
+      });
       expect(
         getThreadExecutionOverride(harness.db, thread.id)?.modelOverride,
       ).toBe("claude-opus-5-5");

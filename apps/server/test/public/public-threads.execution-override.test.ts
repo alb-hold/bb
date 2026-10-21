@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { turnRequestEventDataSchema } from "@bb/domain";
 import {
   createNativeTerminalThread,
@@ -784,7 +784,11 @@ describe("POST /threads/:id/send execution override recovery", () => {
       ).toMatchObject({ model: "claude-opus-5-5", reasoningLevel: "low" });
 
       const child = seedProviderThread(harness);
-      registerSendHostResponder(harness, child.host.id, child.session.id);
+      const childResponder = registerSendHostResponder(
+        harness,
+        child.host.id,
+        child.session.id,
+      );
       const parent = seedThread(harness.deps, {
         projectId: child.thread.projectId,
         environmentId: child.thread.environmentId,
@@ -825,6 +829,33 @@ describe("POST /threads/:id/send execution override recovery", () => {
         turnRequestEventDataSchema.parse(JSON.parse(tellRequest!.data))
           .execution.model,
       ).toBe("claude-sonnet-5-5");
+      await vi.waitFor(() => {
+        expect(
+          childResponder.requests.some(
+            ({ command }) =>
+              command.type === "thread.start" &&
+              command.threadId === managedChild.id,
+          ),
+        ).toBe(true);
+      });
+      const tellCommand = childResponder.requests.find(
+        ({ command }) =>
+          command.type === "thread.start" &&
+          command.threadId === managedChild.id,
+      );
+      expect(tellCommand?.command).toMatchObject({
+        type: "thread.start",
+        options: { model: "claude-sonnet-5-5" },
+        input: expect.arrayContaining([
+          expect.objectContaining({
+            text: "ordinary tell",
+            type: "text",
+          }),
+        ]),
+      });
+      expect(
+        getThreadExecutionOverride(harness.db, managedChild.id)?.modelOverride,
+      ).toBe("claude-opus-5-5");
 
       const explicitChild = seedProviderThread(harness);
       registerSendHostResponder(
