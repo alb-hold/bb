@@ -253,6 +253,114 @@ describe("writing assistance corrections", () => {
     });
   });
 
+  describe("with the Claude service selected", () => {
+    function claudeLike(
+      harness: TestAppHarness,
+      attempts: readonly ("rate_limited" | "ok")[],
+    ) {
+      const models: string[] = [];
+      const service = registerFakeAiService(harness.deps.aiServices, {
+        id: "claude",
+        displayName: "Claude",
+        pluginId: "provider-claude-code",
+        transcribe: null,
+        complete: async () => {
+          for (const [index, attempt] of attempts.entries()) {
+            models.push(index === 0 ? "claude-haiku-5-5" : "claude-sonnet-5-5");
+            if (attempt === "ok") return editsReply([]);
+          }
+          throw new Error("Claude is rate limited");
+        },
+      });
+      setAiServiceSelection(harness.deps.db, "writing", {
+        mode: "service",
+        pluginId: "provider-claude-code",
+        serviceId: "claude",
+      });
+      return { service, models };
+    }
+
+    it("counts a Haiku failure and Sonnet retry as one request at the limit boundary, then blocks the next before calling Claude", async () => {
+      await withTestHarness({}, async (harness) => {
+        const { service, models } = claudeLike(harness, ["rate_limited", "ok"]);
+        updateWritingAssistanceSettings(harness.deps.db, {
+          dailyCorrectionLimit: 2,
+        });
+        addWritingUsage(harness.deps.db, utcDay(), { corrections: 1 });
+        const last = await (
+          await postCorrection(harness, { target: "One." })
+        ).json();
+        expect(last).toMatchObject({ status: "ok" });
+        expect(service.completeCalls).toHaveLength(1);
+        expect(models).toEqual(["claude-haiku-5-5", "claude-sonnet-5-5"]);
+        const afterRetry = getWritingUsage(harness.deps.db, utcDay());
+        expect(afterRetry.corrections).toBe(2);
+        expect(afterRetry.inputChars).toBe(
+          service.completeCalls[0]!.prompt.length,
+        );
+        expect(afterRetry.outputChars).toBe(editsReply([]).length);
+        const over = await (
+          await postCorrection(harness, { target: "Two." })
+        ).json();
+        expect(over).toMatchObject({ status: "skipped", reason: "budget" });
+        expect(service.completeCalls).toHaveLength(1);
+        expect(models).toHaveLength(2);
+        expect(getWritingUsage(harness.deps.db, utcDay())).toEqual(afterRetry);
+      });
+    });
+
+    it("returns the reserved request when both Claude attempts fail, and still never exceeds the limit", async () => {
+      await withTestHarness({}, async (harness) => {
+        const { service, models } = claudeLike(harness, [
+          "rate_limited",
+          "rate_limited",
+        ]);
+        updateWritingAssistanceSettings(harness.deps.db, {
+          dailyCorrectionLimit: 1,
+        });
+        const failed = await (
+          await postCorrection(harness, { target: "One." })
+        ).json();
+        expect(failed).toMatchObject({ status: "skipped", reason: "failed" });
+        expect(models).toEqual(["claude-haiku-5-5", "claude-sonnet-5-5"]);
+        expect(getWritingUsage(harness.deps.db, utcDay()).corrections).toBe(0);
+        addWritingUsage(harness.deps.db, utcDay(), { corrections: 1 });
+        const over = await (
+          await postCorrection(harness, { target: "Two." })
+        ).json();
+        expect(over).toMatchObject({ status: "skipped", reason: "budget" });
+        expect(service.completeCalls).toHaveLength(1);
+        expect(getWritingUsage(harness.deps.db, utcDay()).corrections).toBe(1);
+      });
+    });
+
+    it("shares the limit between corrections and dictation formatting, so formatting at the limit returns the raw transcript without calling Claude", async () => {
+      await withTestHarness({}, async (harness) => {
+        const { service } = claudeLike(harness, ["ok"]);
+        registerFakeAiService(harness.deps.aiServices, {
+          transcribe: async () => "check the build",
+        });
+        updateWritingAssistanceSettings(harness.deps.db, {
+          dailyCorrectionLimit: 1,
+        });
+        expect(
+          (await (await postCorrection(harness, { target: "One." })).json())
+            .status,
+        ).toBe("ok");
+        const segment = await postSegment(harness);
+        expect(segment.status).toBe(200);
+        await expect(segment.json()).resolves.toEqual({
+          raw: "check the build",
+          text: "check the build",
+          formatted: false,
+        });
+        expect(service.completeCalls).toHaveLength(1);
+        const usage = getWritingUsage(harness.deps.db, utcDay());
+        expect(usage.corrections + usage.formattings).toBe(1);
+      });
+    });
+  });
+
   it("holds the last request for a correction still in flight", async () => {
     await withTestHarness({}, async (harness) => {
       let release = (_reply: string) => {};
@@ -1082,6 +1190,45 @@ describe("dictation segments", () => {
       expect(getWritingUsage(harness.deps.db, utcDay()).audioSeconds).toBe(2);
     });
   });
+
+  it("refuses a WAV whose data chunk is empty and followed by metadata, without transcribing or reserving", async () => {
+    await withTestHarness({}, async (harness) => {
+      const service = registerFakeAiService(harness.deps.aiServices, {
+        transcribe: async () => "hello there",
+      });
+      const response = await postSegment(harness, {
+        file: wav(0, 1_000, 1_000),
+      });
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({
+        message: expect.stringContaining("Unsupported or unreadable audio"),
+      });
+      expect(service.transcribeCalls).toHaveLength(0);
+      expect(getWritingUsage(harness.deps.db, utcDay()).audioSeconds).toBe(0);
+    });
+  });
+
+  it.each([0, 0xffffffff])(
+    "measures a streamed WAV whose data size is %s by the audio present",
+    async (declared) => {
+      await withTestHarness({}, async (harness) => {
+        const service = registerFakeAiService(harness.deps.aiServices, {
+          transcribe: async () => "hello there",
+        });
+        updateWritingAssistanceSettings(harness.deps.db, {
+          dictationFormatting: false,
+        });
+        const bytes = Buffer.from(await wav(2).arrayBuffer());
+        bytes.writeUInt32LE(declared, 40);
+        const response = await postSegment(harness, {
+          file: new File([bytes], "dictation-1.wav", { type: "audio/wav" }),
+        });
+        expect(response.status).toBe(200);
+        expect(service.transcribeCalls).toHaveLength(1);
+        expect(getWritingUsage(harness.deps.db, utcDay()).audioSeconds).toBe(2);
+      });
+    },
+  );
 
   it("refuses audio longer than a segment, empty, or that it cannot measure, without reserving", async () => {
     await withTestHarness({}, async (harness) => {

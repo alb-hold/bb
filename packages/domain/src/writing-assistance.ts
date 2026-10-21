@@ -1046,36 +1046,41 @@ const SPOKEN_SYMBOLS: ReadonlyMap<string, string> = new Map([
   ["cerquilha", "#"],
 ]);
 
-const SENTENCE_SYMBOLS = ".,:;";
-
-function symbolCount(
-  text: string,
-  symbols: string,
-  insideLineOnly: boolean,
-): number {
-  let count = 0;
-  for (let index = 0; index < text.length; index += 1) {
-    if (!symbols.includes(text[index]!)) continue;
-    if (insideLineOnly && /^[ \t]*(?:\n|$)/u.test(text.slice(index + 1))) {
-      continue;
-    }
-    count += 1;
-  }
-  return count;
+interface TextSpan {
+  start: number;
+  end: number;
 }
 
-function spokenSymbolsWritten(
-  raw: string,
-  formatted: string,
-  spokenSymbols: ReadonlyMap<string, number>,
+function wordSpans(text: string): TextSpan[] {
+  return [...text.toLowerCase().matchAll(/[\p{L}\p{N}'’]+/gu)].map((match) => ({
+    start: match.index,
+    end: match.index + match[0].length,
+  }));
+}
+
+function spokenSymbolsPlaced(
+  text: string,
+  partSpans: readonly TextSpan[],
+  positions: readonly number[],
+  spokenSymbols: ReadonlyMap<number, string>,
 ): boolean {
-  for (const [symbols, dropped] of spokenSymbols) {
-    const sentence = [...symbols].every((symbol) =>
-      SENTENCE_SYMBOLS.includes(symbol),
-    );
-    const before = symbolCount(raw, symbols, sentence);
-    const after = symbolCount(formatted, symbols, sentence);
-    if (after < before + dropped) return false;
+  const gaps = new Map<string, TextSpan & { symbols: string; count: number }>();
+  for (const [rawIndex, symbols] of spokenSymbols) {
+    const after = positions.findIndex((position) => position > rawIndex);
+    const before = (after === -1 ? positions.length : after) - 1;
+    const start = before === -1 ? 0 : partSpans[before]!.end;
+    const end = after === -1 ? text.length : partSpans[after]!.start;
+    const key = `${start}:${end}:${symbols}`;
+    const gap = gaps.get(key) ?? { start, end, symbols, count: 0 };
+    gap.count += 1;
+    gaps.set(key, gap);
+  }
+  for (const gap of gaps.values()) {
+    const between = gap.start < gap.end ? text.slice(gap.start, gap.end) : "";
+    const written = [...between].filter((character) =>
+      gap.symbols.includes(character),
+    ).length;
+    if (written < gap.count) return false;
   }
   return true;
 }
@@ -1421,16 +1426,14 @@ export function validateFormattedTranscript(
   );
   if (lostNegation) return { ok: false, reason: "negation" };
   if (allowed === null) return { ok: false, reason: "dropped-words" };
-  const spokenSymbols = new Map<string, number>();
+  const spokenSymbols = new Map<number, string>();
   for (let index = 0; index < rawTokens.length; index += 1) {
     if (!dropped[index]) continue;
     const token = rawTokens[index]!;
     if (allowed[index]) continue;
     const symbols = options.literalCode ? SPOKEN_SYMBOLS.get(token) : undefined;
     if (symbols !== undefined) {
-      if (symbols.length > 0) {
-        spokenSymbols.set(symbols, (spokenSymbols.get(symbols) ?? 0) + 1);
-      }
+      if (symbols.length > 0) spokenSymbols.set(index, symbols);
       continue;
     }
     const enumerator = ENUMERATOR_VALUES.get(token);
@@ -1450,7 +1453,18 @@ export function validateFormattedTranscript(
     }
     return { ok: false, reason: "dropped-words" };
   }
-  if (!spokenSymbolsWritten(raw, body, spokenSymbols)) {
+  const bodySpans = wordSpans(body);
+  const partSpans = pieces.flatMap((piece, index) =>
+    piece.parts.map(() => bodySpans[index]!),
+  );
+  if (
+    !spokenSymbolsPlaced(
+      body.toLowerCase(),
+      partSpans,
+      positions,
+      spokenSymbols,
+    )
+  ) {
     return { ok: false, reason: "dropped-words" };
   }
   return { ok: true };

@@ -1434,6 +1434,10 @@ describe("validateFormattedTranscript", () => {
     ["Open config dot json.", "open config json."],
     ["use a-b dash c", "use a-b c"],
     ["use the snake underscore case name", "use the snake case name"],
+    ["run dash force", "Run force-."],
+    ["run dash force", "-Run force"],
+    ["run dash dash force", "run -force-"],
+    ["open config dot json", "open. config json"],
   ])(
     "rejects literal code %s written as %s, which drops a spoken symbol",
     (raw, formatted) => {

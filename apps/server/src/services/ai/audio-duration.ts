@@ -401,29 +401,53 @@ function mp4Seconds(bytes: Uint8Array): number | null {
   return Math.max((found.samples * 1024) / found.sampleRate, movie, media);
 }
 
+const RIFF_CHUNK_IDS: ReadonlySet<string> = new Set([
+  "LIST",
+  "JUNK",
+  "PAD ",
+  "bext",
+  "cue ",
+  "smpl",
+  "fact",
+  "iXML",
+  "axml",
+  "id3 ",
+  "ID3 ",
+  "inst",
+  "acid",
+  "cart",
+  "umid",
+  "plst",
+  "fmt ",
+  "data",
+]);
+
+function riffChunkAt(bytes: Uint8Array, offset: number): boolean {
+  if (offset + 8 > bytes.length) return false;
+  if (!RIFF_CHUNK_IDS.has(ascii(bytes, offset, 4))) return false;
+  const size = readUint32LE(bytes, offset + 4);
+  return offset + 8 + size <= bytes.length;
+}
+
 function wavSeconds(bytes: Uint8Array): number | null {
   let offset = 12;
   let bytesPerSecond = 0;
   while (offset + 8 <= bytes.length) {
     const type = ascii(bytes, offset, 4);
-    const size =
-      bytes[offset + 4]! |
-      (bytes[offset + 5]! << 8) |
-      (bytes[offset + 6]! << 16) |
-      (bytes[offset + 7]! * 0x1000000);
+    const size = readUint32LE(bytes, offset + 4);
     const body = offset + 8;
     if (type === "fmt ") {
       if (body + 16 > bytes.length) return null;
       const format = bytes[body]! | (bytes[body + 1]! << 8);
       if (format !== 1 && format !== 3 && format !== 0xfffe) return null;
       const channels = bytes[body + 2]! | (bytes[body + 3]! << 8);
-      const sampleRate =
-        bytes[body + 4]! |
-        (bytes[body + 5]! << 8) |
-        (bytes[body + 6]! << 16) |
-        (bytes[body + 7]! * 0x1000000);
+      const sampleRate = readUint32LE(bytes, body + 4);
       const bits = bytes[body + 14]! | (bytes[body + 15]! << 8);
       bytesPerSecond = (sampleRate * channels * bits) / 8;
+    }
+    if (type === "data" && size === 0 && riffChunkAt(bytes, body)) {
+      offset = body;
+      continue;
     }
     if (type === "data") {
       const present = bytes.length - body;
