@@ -12,7 +12,6 @@ const GLOBAL_MEMBER = String.raw`(?:\.[A-Za-z_$][\w$]*|\[[^\]]+\])`;
 const ISOLATION_REQUIRING_API = new RegExp(
   [
     String.raw`\bvi\.(mock|doMock|unmock|doUnmock|resetModules|stubGlobal|stubEnv|useFakeTimers|setSystemTime)\(`,
-    String.raw`\binspectorConsole\.(profile|profileEnd)\(`,
     String.raw`\bprocess\.chdir\(`,
     String.raw`\bprocess\.env(?:${GLOBAL_MEMBER})?\s*=[^=]`,
     String.raw`\bdelete\s+process\.env\b`,
