@@ -252,45 +252,80 @@ describe("terminal viewport restore", () => {
     };
   }
 
-  it("persists a per-terminal anchor and restores it after replay", () => {
+  it("persists a per-terminal content anchor and restores its exact line", () => {
     const storage = createStorage();
     const key = terminalViewportStorageKey("terminal-a");
 
     writeTerminalViewportAnchor(storage, key, {
       distanceFromTail: 12,
+      lineOffset: -3,
       outputSequence: 42,
     });
 
     const anchor = readTerminalViewportAnchor(storage, key);
-    expect(anchor).toEqual({ distanceFromTail: 12, outputSequence: 42 });
+    expect(anchor).toEqual({
+      distanceFromTail: 12,
+      lineOffset: -3,
+      outputSequence: 42,
+    });
     expect(
       resolveTerminalViewportRestore({
         anchor,
         baseY: 80,
+        outputLineAnchors: [{ sequence: 42, line: 51 }],
+        replayNextSequence: 50,
         replayStartSequence: 20,
+      }),
+    ).toBe(48);
+  });
+
+  it("restores the same content line when 500 newer lines replay", () => {
+    expect(
+      resolveTerminalViewportRestore({
+        anchor: {
+          distanceFromTail: 18,
+          lineOffset: -2,
+          outputSequence: 64,
+        },
+        baseY: 600,
+        outputLineAnchors: [{ sequence: 64, line: 310 }],
+        replayNextSequence: 565,
+        replayStartSequence: 50,
+      }),
+    ).toBe(308);
+  });
+
+  it("restores to the top of replay when the anchored chunk expired", () => {
+    expect(
+      resolveTerminalViewportRestore({
+        anchor: {
+          distanceFromTail: 18,
+          lineOffset: -2,
+          outputSequence: 16,
+        },
+        baseY: 100,
+        outputLineAnchors: [{ sequence: 17, line: 8 }],
+        replayNextSequence: 30,
+        replayStartSequence: 17,
+      }),
+    ).toBe(0);
+  });
+
+  it("uses tail distance only when sequence numbering reset", () => {
+    expect(
+      resolveTerminalViewportRestore({
+        anchor: {
+          distanceFromTail: 12,
+          lineOffset: -1,
+          outputSequence: 42,
+        },
+        baseY: 80,
+        outputLineAnchors: [{ sequence: 3, line: 5 }],
+        replayNextSequence: 8,
+        replayStartSequence: 0,
       }),
     ).toBe(68);
   });
-
-  it.each(["app reload", "server restart", "daemon reconnect"])(
-    "restores the same retained viewport after %s",
-    () => {
-      const storage = createStorage();
-      const key = terminalViewportStorageKey("terminal-a");
-      writeTerminalViewportAnchor(storage, key, {
-        distanceFromTail: 18,
-        outputSequence: 64,
-      });
-
-      expect(
-        resolveTerminalViewportRestore({
-          anchor: readTerminalViewportAnchor(storage, key),
-          baseY: 100,
-          replayStartSequence: 50,
-        }),
-      ).toBe(82);
-    },
-  );
 
   it("restores the saved viewport after a reconnect replay", () => {
     const storage = createStorage();
@@ -305,11 +340,13 @@ describe("terminal viewport restore", () => {
     const restoreLine = resolveTerminalViewportRestore({
       anchor: readTerminalViewportAnchor(storage, key),
       baseY: 100,
+      outputLineAnchors: [{ sequence: 64, line: 84 }],
+      replayNextSequence: 80,
       replayStartSequence: 0,
     });
     replaySaveGate.finishRestore();
 
-    expect(restoreLine).toBe(82);
+    expect(restoreLine).toBe(84);
     expect(replaySaveGate.canSave(false)).toBe(false);
     expect(replaySaveGate.canSave(true)).toBe(true);
   });
@@ -415,16 +452,6 @@ describe("terminal viewport restore", () => {
     },
   );
 
-  it("restores from tail distance after reconnect advances the output sequence", () => {
-    expect(
-      resolveTerminalViewportRestore({
-        anchor: { distanceFromTail: 12, outputSequence: 8 },
-        baseY: 80,
-        replayStartSequence: 17,
-      }),
-    ).toBe(68);
-  });
-
   it("saves a touch scroll after xterm updates its viewport", () => {
     let viewportY = 100;
     const frames = new Map<number, () => void>();
@@ -469,19 +496,6 @@ describe("terminal viewport restore", () => {
 
     expect(save).not.toHaveBeenCalled();
     scheduler.dispose();
-  });
-
-  it.each([
-    ["expired scrollback", { distanceFromTail: 90, outputSequence: 42 }, 80],
-    ["tail anchor", { distanceFromTail: 0, outputSequence: 42 }, 80],
-  ])("falls back to the tail when %s", (_reason, anchor, baseY) => {
-    expect(
-      resolveTerminalViewportRestore({
-        anchor,
-        baseY,
-        replayStartSequence: 0,
-      }),
-    ).toBe(baseY);
   });
 
   it("keeps anchors isolated by terminal session", () => {
@@ -586,6 +600,8 @@ describe("terminal viewport restore", () => {
       resolveTerminalViewportRestore({
         anchor: readTerminalViewportAnchor(storage, viewportKey),
         baseY: 90,
+        outputLineAnchors: [{ sequence: 24, line: 80 }],
+        replayNextSequence: 40,
         replayStartSequence: 20,
       }),
     ).toBe(75);

@@ -1,5 +1,6 @@
 export interface TerminalViewportAnchor {
   distanceFromTail: number;
+  lineOffset?: number;
   outputSequence: number;
 }
 
@@ -22,6 +23,8 @@ function isTerminalViewportAnchor(value: unknown): value is TerminalViewportAnch
     Number.isInteger(value.distanceFromTail) &&
     typeof value.distanceFromTail === "number" &&
     value.distanceFromTail >= 0 &&
+    (!("lineOffset" in value) ||
+      (typeof value.lineOffset === "number" && Number.isInteger(value.lineOffset))) &&
     "outputSequence" in value &&
     Number.isInteger(value.outputSequence) &&
     typeof value.outputSequence === "number" &&
@@ -38,6 +41,7 @@ function sameAnchor(
     (first !== null &&
       second !== null &&
       first.distanceFromTail === second.distanceFromTail &&
+      first.lineOffset === second.lineOffset &&
       first.outputSequence === second.outputSequence)
   );
 }
@@ -212,15 +216,32 @@ export function createTerminalTouchViewportSaveScheduler(args: {
 export function resolveTerminalViewportRestore(args: {
   anchor: TerminalViewportAnchor | null;
   baseY: number;
+  outputLineAnchors: readonly { sequence: number; line: number }[];
+  replayNextSequence: number;
   replayStartSequence: number;
 }): number {
-  const { anchor, baseY } = args;
-  if (
-    anchor === null ||
-    anchor.distanceFromTail === 0 ||
-    anchor.distanceFromTail > baseY
-  ) {
+  const { anchor, baseY, outputLineAnchors, replayNextSequence, replayStartSequence } =
+    args;
+  if (anchor === null) {
     return baseY;
   }
-  return baseY - anchor.distanceFromTail;
+  if (
+    replayStartSequence < anchor.outputSequence &&
+    replayNextSequence < anchor.outputSequence
+  ) {
+    return Math.max(0, baseY - anchor.distanceFromTail);
+  }
+  if (anchor.outputSequence < replayStartSequence) {
+    return 0;
+  }
+  const outputAnchor = outputLineAnchors.find(
+    ({ sequence }) => sequence === anchor.outputSequence,
+  );
+  if (outputAnchor === undefined) {
+    return 0;
+  }
+  return Math.max(
+    0,
+    Math.min(baseY, outputAnchor.line + (anchor.lineOffset ?? 0)),
+  );
 }

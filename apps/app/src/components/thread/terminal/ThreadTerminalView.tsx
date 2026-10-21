@@ -1266,6 +1266,7 @@ export function ThreadTerminalView({
       null;
     let fitAddon: FitAddon | null = null;
     let replayNextSeq: number | null = null;
+    let replayNextSequence = 0;
     const replayWriteState: TerminalReplayWriteState = {
       suppressedWriteCount: 0,
     };
@@ -1286,13 +1287,14 @@ export function ThreadTerminalView({
     let latestOutputSequence = 0;
     let anchoredOutputSequence = 0;
     const outputLineAnchors: { sequence: number; line: number }[] = [];
+    let savedOutputLineAnchor: { sequence: number; line: number } | null = null;
     let hasRestoredViewport = false;
     let hasManualScrollIntent = false;
     let manualScrollTimeout: ReturnType<typeof setTimeout> | null = null;
     const viewportStorageKey = terminalViewportStorageKey(
       session.id,
     );
-    const savedViewportAnchor = readTerminalViewportAnchor(
+    let savedViewportAnchor = readTerminalViewportAnchor(
       window.localStorage,
       viewportStorageKey,
     );
@@ -1528,10 +1530,16 @@ export function ThreadTerminalView({
         if (!terminal || !activeBuffer) {
           return;
         }
+        const restoreOutputLineAnchors =
+          savedOutputLineAnchor === null
+            ? outputLineAnchors
+            : [...outputLineAnchors, savedOutputLineAnchor];
         terminal.scrollToLine(
           resolveTerminalViewportRestore({
             anchor: savedViewportAnchor,
             baseY: activeBuffer.baseY,
+            outputLineAnchors: restoreOutputLineAnchors,
+            replayNextSequence,
             replayStartSequence,
           }),
         );
@@ -1553,20 +1561,29 @@ export function ThreadTerminalView({
           0,
           activeBuffer.baseY - activeBuffer.viewportY,
         );
+        let lineOffset = savedViewportAnchor?.lineOffset ?? 0;
         if (hasManualScrollIntent) {
           const visibleLine = activeBuffer.viewportY;
           const visibleOutput = outputLineAnchors.find(
             (anchor) => anchor.line >= visibleLine,
           );
+          const mappedOutput = visibleOutput ?? outputLineAnchors.at(-1);
+          savedOutputLineAnchor = mappedOutput ?? null;
+          lineOffset = visibleOutput ? visibleLine - visibleOutput.line : 0;
           anchoredOutputSequence =
-            visibleOutput?.sequence ??
-            outputLineAnchors.at(-1)?.sequence ??
+            mappedOutput?.sequence ??
             latestOutputSequence;
         }
         viewportPersistence.schedule({
           distanceFromTail,
+          lineOffset,
           outputSequence: anchoredOutputSequence,
         });
+        savedViewportAnchor = {
+          distanceFromTail,
+          lineOffset,
+          outputSequence: anchoredOutputSequence,
+        };
       };
       const touchViewportSaveScheduler =
         createTerminalTouchViewportSaveScheduler({
@@ -1824,10 +1841,14 @@ export function ThreadTerminalView({
             onSessionChange: onSessionChangeRef.current,
             onOutputParsed: (sequence) => {
               const buffer = activeTerminal.buffer.active;
-              outputLineAnchors.push({
+              const outputAnchor = {
                 sequence,
                 line: buffer.baseY + buffer.cursorY,
-              });
+              };
+              outputLineAnchors.push(outputAnchor);
+              if (sequence === savedViewportAnchor?.outputSequence) {
+                savedOutputLineAnchor = outputAnchor;
+              }
               if (outputLineAnchors.length > 4096) {
                 outputLineAnchors.splice(0, outputLineAnchors.length - 4096);
               }
@@ -1837,6 +1858,7 @@ export function ThreadTerminalView({
             onReplayStart: () => {
               viewportReplaySaveGate.beginReplay();
               outputLineAnchors.length = 0;
+              savedOutputLineAnchor = null;
               replayPreview?.dispose();
               replayCompleted = false;
               const replayGrid = latestPtyGrid;
@@ -1860,6 +1882,7 @@ export function ThreadTerminalView({
             },
             setReplayNextSeq: (nextSeq) => {
               replayNextSeq = nextSeq;
+              if (nextSeq !== null) replayNextSequence = nextSeq;
             },
             setReplayStartSequence: (sequence) => {
               replayStartSequence = sequence;
