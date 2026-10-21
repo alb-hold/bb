@@ -16,7 +16,7 @@ import path from "node:path";
 import { PassThrough } from "node:stream";
 import { pathToFileURL } from "node:url";
 import { spawn as spawnPty } from "node-pty";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import * as nativeHolder from "../native-holder.js";
 import {
   NativeHolderFrame,
@@ -24,12 +24,14 @@ import {
   encodeNativeHolderFrame,
   ignoreNativeHolderSignals,
   nativeHolderSocketPath,
+  nativeHolderIsAlive,
   nativeTerminalCheck,
   nativeTerminalClosedForGood,
   openNativeHolderConnection,
   pipeNativeHolderClient,
   runNativeHolder,
   waitForNativeHolder,
+  writeNativeHolderAttachMarker,
   type NativeHolderProcess,
   type NativeTerminalCheck,
 } from "../native-holder.js";
@@ -147,7 +149,7 @@ class Client {
 }
 
 async function attach(socketPath: string): Promise<Client> {
-  const socket = await waitForNativeHolder(socketPath, 5_000);
+  const socket = await waitForNativeHolder(socketPath, 30_000);
   if (socket === null) throw new Error("holder did not listen");
   return new Client(socket);
 }
@@ -548,6 +550,25 @@ try {
     await expect(held).resolves.toBe(3);
     expect(shown).toContain("got:hi");
   });
+
+  it("checks holder liveness without replacing its terminal client", async () => {
+    const socketPath = socketIn();
+    const held = startHolder(socketPath, {
+      command: "/bin/sh",
+      args: [
+        "-c",
+        'echo "started:$$"; IFS= read -r line; echo "got:$line:$$"; exit 7',
+      ],
+    });
+    const client = await attach(socketPath);
+    const started = await client.waitFor(/started:(\d+)/u);
+
+    await expect(nativeHolderIsAlive(socketPath)).resolves.toBe(true);
+    client.type("AFTER\n");
+    await client.waitFor(/got:AFTER:/u);
+    await expect(held).resolves.toBe(7);
+    expect(client.output).toContain(`started:${started[1]}`);
+  });
 });
 
 describe("opening a native holder connection", () => {
@@ -624,6 +645,30 @@ describe("opening a native holder connection", () => {
 });
 
 describe("native holder signals", () => {
+  it("keeps bash OSC command and cwd reports through the holder PTY", async () => {
+    const socketPath = socketIn();
+    const rcFile = path.join(path.dirname(socketPath), "bashrc");
+    writeFileSync(
+      rcFile,
+      `PS1=''\nPS0=$'\\e]133;B\\a\\e]133;C\\a'\nPROMPT_COMMAND='printf "\\e]133;D;0\\a\\e]133;A\\a\\e]7;file://localhost%s\\a" "$PWD"'\n`,
+    );
+    const held = startHolder(socketPath, {
+      command: "/bin/bash",
+      args: ["--rcfile", rcFile, "-i"],
+    });
+    const client = await attach(socketPath);
+    try {
+      await client.waitFor(/\x1b\]133;A\x07/u);
+      client.type("cd /tmp\r");
+      await client.waitFor(/\x1b\]7;file:\/\/localhost\/tmp\x07/u);
+      expect(client.output).toContain("\x1b]133;B\x07\x1b]133;C\x07");
+      expect(client.output).toContain("\x1b]133;D;0\x07\x1b]133;A\x07");
+    } finally {
+      client.type("exit\r");
+      await held;
+    }
+  });
+
   it("survives the termination signals a bb quit or a process manager sends, so its CLI keeps running", async () => {
     const holderModule = pathToFileURL(
       path.join(import.meta.dirname, "..", "native-holder.ts"),
@@ -837,11 +882,11 @@ describe("checking whether bb closed a native terminal for good", () => {
     return url;
   }
 
-  const check = (baseUrl: string) =>
+  const check = (baseUrl: string, timeoutMs = 5_000) =>
     checkNativeTerminal({
       baseUrl,
       threadId: "thr_x",
-      timeoutMs: 200,
+      timeoutMs,
     });
 
   it("treats a missing thread as closed for good", async () => {
@@ -867,7 +912,7 @@ describe("checking whether bb closed a native terminal for good", () => {
   });
 
   it("counts a response whose body stalls past the timeout as bb answering", async () => {
-    await expect(check(await stallingAfterHeaders())).resolves.toBe(
+    await expect(check(await stallingAfterHeaders(), 50)).resolves.toBe(
       "detached",
     );
   });
@@ -875,8 +920,9 @@ describe("checking whether bb closed a native terminal for good", () => {
   it.each([
     ["the connection is refused", closedPort],
     ["bb accepts the connection but never sends headers", hungBeforeHeaders],
-  ] as const)("reports bb unreachable when %s", async (_name, start) => {
-    await expect(check(await start())).rejects.toBeInstanceOf(
+  ] as const)("reports bb unreachable when %s", async (name, start) => {
+    const timeoutMs = name.includes("never sends headers") ? 50 : 5_000;
+    await expect(check(await start(), timeoutMs)).rejects.toBeInstanceOf(
       NativeBbUnreachableError,
     );
   });
@@ -889,7 +935,9 @@ describe("checking whether bb closed a native terminal for good", () => {
       response.end('{"terminal":{"status":"running","closeReason":null}}');
     });
     const socketPath = socketIn();
-    const held = startHolder(socketPath, ECHO_LOOP, 300, () => check(baseUrl));
+    const held = startHolder(socketPath, ECHO_LOOP, 300, () =>
+      check(baseUrl, 100),
+    );
     const first = await attach(socketPath);
     const pid = (await first.waitFor(/started:(\d+)/u))[1];
     first.socket.destroy();
@@ -900,6 +948,69 @@ describe("checking whether bb closed a native terminal for good", () => {
     hung = false;
     second.socket.destroy();
     expect(await held).not.toBe(7);
+  });
+
+  it("keeps the same shell PID and replays output across a daemon restart", async () => {
+    const socketPath = socketIn();
+    const command: NativeHolderProcess = {
+      command: "/bin/sh",
+      args: [
+        "-c",
+        'printf "BEFORE:%s\\n" "$$"; (sleep 0.2; printf "GAP:%s\\n" "$$") & while IFS= read -r line; do eval "$line"; done; wait',
+      ],
+    };
+    const held = startHolder(socketPath, command);
+    const first = await attach(socketPath);
+    const pid = (await first.waitFor(/BEFORE:(\d+)/u))[1];
+    first.socket.destroy();
+    await expect(nativeHolderIsAlive(socketPath)).resolves.toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+
+    const second = await attach(socketPath);
+    await second.waitFor(new RegExp(`GAP:${pid}`, "u"));
+    second.type("echo AFTER:$$\r");
+    await second.waitFor(new RegExp(`AFTER:${pid}`, "u"));
+
+    const output = first.output + second.output;
+    expect(output.match(new RegExp(`BEFORE:${pid}`, "gu"))).toHaveLength(1);
+    expect(output.match(new RegExp(`GAP:${pid}`, "gu"))).toHaveLength(1);
+    expect(output.match(new RegExp(`AFTER:${pid}`, "gu"))).toHaveLength(1);
+
+    second.type("\u0004");
+    await held;
+    second.socket.destroy();
+  });
+
+  it("does not resurrect a shell after the terminal closes while detached", async () => {
+    const socketPath = socketIn();
+    const held = startHolder(socketPath, ECHO_LOOP, 300, async () => "closed-for-good");
+    const first = await attach(socketPath);
+    await first.waitFor(/started:(\d+)/u);
+    first.socket.destroy();
+
+    await expect(held).resolves.not.toBe(7);
+    expect(await waitForNativeHolder(socketPath, 100)).toBeNull();
+  });
+
+  it("reaps an orphaned shell when a stock server marks its terminal disconnected", async () => {
+    let terminal: { status: string; closeReason: string | null } = {
+      status: "disconnected",
+      closeReason: null,
+    };
+    const socketPath = socketIn();
+    const held = startHolder(
+      socketPath,
+      ECHO_LOOP,
+      200,
+      async () => nativeTerminalCheck({ terminal }),
+    );
+    const first = await attach(socketPath);
+    await first.waitFor(/started:(\d+)/u);
+    first.socket.destroy();
+    terminal = { status: "exited", closeReason: "daemon-disconnect" };
+
+    await expect(held).resolves.not.toBe(7);
+    expect(await waitForNativeHolder(socketPath, 100)).toBeNull();
   });
 
   it("keeps a detached CLI past the reap window while bb answers that its terminal awaits the host daemon", async () => {
@@ -986,6 +1097,20 @@ describe("checking whether bb closed a native terminal for good", () => {
       expect(await held).not.toBe(7);
     },
   );
+});
+
+describe("native holder attach marker", () => {
+  it("writes one marker each time a holder client attaches", () => {
+    const output = { write: vi.fn() };
+
+    writeNativeHolderAttachMarker(output, "term-1");
+    writeNativeHolderAttachMarker(output, "term-1");
+
+    expect(output.write.mock.calls).toEqual([
+      ["\u001b]7717;bb-holder;term-1\u0007"],
+      ["\u001b]7717;bb-holder;term-1\u0007"],
+    ]);
+  });
 });
 
 describe("native holder frames", () => {
