@@ -411,6 +411,44 @@ export function recordNativeTerminalThreadSessionId(
   })();
 }
 
+export type RebindNativeSessionIdResult =
+  | { kind: "rebound"; previousNativeSessionId: string | null }
+  | { kind: "claimed-by-other-thread"; threadId: string };
+
+export function rebindNativeTerminalThreadSessionId(
+  db: DbConnection,
+  args: { nativeSessionId: string; threadId: string },
+): RebindNativeSessionIdResult {
+  return db.$client.transaction((): RebindNativeSessionIdResult => {
+    const current = getNativeTerminalThread(db, args.threadId);
+    if (current === null) {
+      throw new Error(
+        `Thread ${args.threadId} is not a native terminal thread`,
+      );
+    }
+    const owner = db.$client
+      .prepare(
+        `SELECT thread_id AS threadId FROM fork_native_terminal_threads
+         WHERE provider_id = ? AND native_session_id = ? AND thread_id != ?`,
+      )
+      .get(current.providerId, args.nativeSessionId, args.threadId) as
+      | { threadId: string }
+      | undefined;
+    if (owner !== undefined) {
+      return { kind: "claimed-by-other-thread", threadId: owner.threadId };
+    }
+    db.$client
+      .prepare(
+        `UPDATE fork_native_terminal_threads SET native_session_id = ?, updated_at = ? WHERE thread_id = ?`,
+      )
+      .run(args.nativeSessionId, Date.now(), args.threadId);
+    return {
+      kind: "rebound",
+      previousNativeSessionId: current.nativeSessionId,
+    };
+  })();
+}
+
 export interface NativeTerminalToolCredentialRecord {
   threadId: string;
   terminalSessionId: string;

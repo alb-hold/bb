@@ -70,6 +70,7 @@ export {
   listNativeTerminalThreadsWithDisconnectedTerminal,
   recordNativeTerminalThreadSessionId,
   clearNativeTerminalThreadEvidence,
+  rebindNativeTerminalThreadSessionId,
   stampNativeTerminalThreadActivity,
   stampNativeTerminalThreadToolCall,
   setNativeTerminalThreadTerminal,

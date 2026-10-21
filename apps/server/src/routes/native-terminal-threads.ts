@@ -104,6 +104,7 @@ export function registerNativeTerminalThreadRoutes(
   post(routes.recordSession, (context, payload) =>
     context.json(
       recordNativeTerminalSession(deps, {
+        authorization: context.req.header("authorization"),
         threadId: context.req.param("id"),
         nativeSessionId: payload.nativeSessionId,
       }),

@@ -330,6 +330,34 @@ async function holdNativeHarness(
             );
           }
         },
+        (adoptedSessionId) => {
+          if (ownsSocket) {
+            logNativeHolderEvent(socketPath, "activity-session-adopted", {
+              sessionId: adoptedSessionId,
+            });
+          }
+          const credential = currentCredential();
+          if (credential === null) return;
+          void sdk.nativeTerminals
+            .recordSession({
+              authorization: `Bearer ${credential}`,
+              nativeSessionId: adoptedSessionId,
+              threadId,
+            })
+            .then(
+              () => undefined,
+              () => {
+                if (ownsSocket) {
+                  logNativeHolderEvent(
+                    socketPath,
+                    "activity-session-rebind-refused",
+                    { sessionId: adoptedSessionId },
+                  );
+                }
+              },
+            );
+        },
+        Date.now(),
       );
       if (activity !== undefined) {
         activityTimers.push(

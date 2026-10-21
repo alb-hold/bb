@@ -24,6 +24,7 @@ export interface NativeTerminalOpenArgs extends NativeTerminalThreadArgs {
 }
 
 export interface NativeTerminalRecordSessionArgs extends NativeTerminalThreadArgs {
+  authorization?: string;
   nativeSessionId: string;
 }
 
@@ -160,13 +161,20 @@ export function createNativeTerminalsArea(
       );
     },
     async recordSession(input) {
+      const signalOptions = signalRequestArgs(input.signal)[0];
+      const init = {
+        ...signalOptions?.init,
+        ...(input.authorization === undefined
+          ? {}
+          : { headers: { authorization: input.authorization } }),
+      };
       return transport.readJson(
         route().session.$post(
           {
             param: { id: input.threadId },
             json: { nativeSessionId: input.nativeSessionId },
           },
-          ...signalRequestArgs(input.signal),
+          ...(Object.keys(init).length === 0 ? [] : [{ init }]),
         ),
       );
     },
