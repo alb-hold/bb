@@ -6,6 +6,7 @@ import {
   listQueuedThreadMessages,
   setQueuedThreadMessageFailureReason,
   setQueuedThreadMessageGroupBoundary,
+  setThreadStartupContext,
   setThreadExecutionOverride,
 } from "@bb/db";
 import { turnRequestEventDataSchema } from "@bb/domain";
@@ -81,7 +82,7 @@ function seedRunnableThread(
     hostId: string;
     model?: string;
     providerId?: string;
-    status: "idle" | "active";
+    status: "idle" | "active" | "pending";
   },
 ) {
   const { host } = seedHostSession(harness.deps, { id: args.hostId });
@@ -253,6 +254,89 @@ describe("the requested queue drain", () => {
       expect(dispatched.execution.model).toBe("claude-sonnet-5-5");
       expect(
         getThreadExecutionOverride(harness.db, thread.id)?.modelOverride,
+      ).toBe("claude-sonnet-5-5");
+    });
+  });
+
+  it("admits a scheduled pending legacy start after a same-policy reparent", async () => {
+    await withTestHarness(async (harness) => {
+      const { environment, thread } = seedRunnableThread(harness, {
+        child: true,
+        hostId: "host-pending-legacy-child-reparent",
+        providerId: "claude-code",
+        status: "pending",
+      });
+      expect(thread.parentThreadId).toBeTruthy();
+      const nextParent = seedThread(harness.deps, {
+        environmentId: environment.id,
+        projectId: thread.projectId,
+        providerId: "claude-code",
+      });
+      const pending = thread;
+      setThreadStartupContext(harness.db, {
+        threadId: pending.id,
+        startupContext: JSON.stringify({
+          kind: "pending",
+          environmentIntent: { type: "reuse", environmentId: environment.id },
+          fork: null,
+          startedOnBehalfOf: null,
+          titleProvided: false,
+        }),
+      });
+      seedQueuedMessage(harness.deps, {
+        content: textInput("scheduled legacy first start"),
+        model: "claude-opus-5-5",
+        threadId: pending.id,
+        waitingOn: { kind: "time" },
+        sendAt: Date.now() - 1_000,
+      });
+      let markEntered!: () => void;
+      const entered = new Promise<void>((resolve) => {
+        markEntered = resolve;
+      });
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      installHooks({
+        "experimental_thread.configure": [],
+        "message.dispatch": [
+          {
+            pluginId: "admission-race",
+            handler: async () => {
+              markEntered();
+              await gate;
+              return { action: "proceed" };
+            },
+          },
+        ],
+      });
+
+      const drain = runTimeWake(harness, Date.now());
+      try {
+        await entered;
+        const parentPatch = await harness.app.request(
+          `/api/v1/threads/${pending.id}`,
+          {
+            method: "PATCH",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ parentThreadId: nextParent.id }),
+          },
+        );
+        expect(parentPatch.status, await parentPatch.text()).toBe(200);
+      } finally {
+        release();
+      }
+      await expect(drain).resolves.toBeUndefined();
+      expect(
+        getThreadExecutionOverride(harness.db, pending.id)?.modelOverride,
+      ).toBeNull();
+      expect(listQueuedThreadMessages(harness.db, pending.id)).toEqual([]);
+      const requested = turnRequests(harness, pending.id).at(-1);
+      expect(requested).toBeDefined();
+      expect(
+        turnRequestEventDataSchema.parse(JSON.parse(requested!.data)).execution
+          .model,
       ).toBe("claude-sonnet-5-5");
     });
   });

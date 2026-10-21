@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { turnRequestEventDataSchema } from "@bb/domain";
 import {
   createNativeTerminalThread,
   getThread,
@@ -6,9 +7,11 @@ import {
   listEvents,
   listQueuedThreadMessages,
   setThreadExecutionOverride,
+  updateThread,
 } from "@bb/db";
 import { seedQueuedMessage } from "../helpers/seed.js";
 import {
+  EMPTY_WORKSPACE_AGENT_CONTEXT,
   registerHostRpcResponder,
   registerProviderHostRpcResponder,
   type HostRpcHandlerResult,
@@ -56,6 +59,43 @@ function stubProviderCatalog(
         ],
         selectedOnlyModels: [],
       },
+    },
+  });
+}
+
+function registerSendHostResponder(
+  harness: TestAppHarness,
+  hostId: string,
+  sessionId: string,
+) {
+  return registerHostRpcResponder(harness, {
+    hostId,
+    sessionId,
+    handle: ({ command }): HostRpcHandlerResult => {
+      switch (command.type) {
+        case "host.read_workspace_agent_context":
+          return { ok: true, result: EMPTY_WORKSPACE_AGENT_CONTEXT };
+        case "provider.list_models":
+          return {
+            ok: true,
+            result: {
+              models: [
+                availableModelFixture({ model: "claude-opus-5-5" }),
+                availableModelFixture({ model: "claude-sonnet-5-5" }),
+              ],
+              selectedOnlyModels: [],
+            },
+          };
+        case "thread.start":
+          return {
+            ok: true,
+            result: { providerThreadId: `provider-${command.threadId}` },
+          };
+        case "turn.submit":
+          return { ok: true, result: { trace: { spans: [] } } };
+        default:
+          throw new Error(`Unexpected command ${command.type}`);
+      }
     },
   });
 }
@@ -681,6 +721,143 @@ describe("PATCH /threads/:id execution override", () => {
         overrides: { model: "claude-opus-5-5" },
         nextTurn: { model: "claude-sonnet-5-5" },
       });
+    });
+  });
+});
+
+describe("POST /threads/:id/send execution override recovery", () => {
+  it("preserves caller intent for managed children and base recovery for top-level sends", async () => {
+    await withTestHarness(async (harness) => {
+      const top = seedProviderThread(harness);
+      registerSendHostResponder(harness, top.host.id, top.session.id);
+      setThreadExecutionOverride(harness.db, {
+        threadId: top.thread.id,
+        modelOverride: "claude-sonnet-5-5",
+        reasoningLevelOverride: null,
+      });
+      const topResponse = await harness.app.request(
+        `/api/v1/threads/${top.thread.id}/send`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            input: [
+              { type: "text", text: "top-level preference", mentions: [] },
+            ],
+            mode: "auto",
+            model: "claude-opus-5-5",
+            executionInputSources: { model: "client-preference" },
+          }),
+        },
+      );
+      expect(topResponse.status, await topResponse.text()).toBe(200);
+      expect(
+        getThreadExecutionOverride(harness.db, top.thread.id)?.modelOverride,
+      ).toBe("claude-opus-5-5");
+      const topRequest = listEvents(harness.db, { threadId: top.thread.id })
+        .filter((event) => event.type === "client/turn/requested")
+        .at(-1);
+      expect(
+        turnRequestEventDataSchema.parse(JSON.parse(topRequest!.data)).execution
+          .model,
+      ).toBe("claude-opus-5-5");
+
+      const child = seedProviderThread(harness);
+      registerSendHostResponder(harness, child.host.id, child.session.id);
+      const parent = seedThread(harness.deps, {
+        projectId: child.thread.projectId,
+        environmentId: child.thread.environmentId,
+        providerId: "claude-code",
+      });
+      const managedChild = updateThread(
+        harness.db,
+        harness.hub,
+        child.thread.id,
+        {
+          parentThreadId: parent.id,
+        },
+      )!;
+      setThreadExecutionOverride(harness.db, {
+        threadId: managedChild.id,
+        modelOverride: "claude-opus-5-5",
+        reasoningLevelOverride: null,
+      });
+      const tellResponse = await harness.app.request(
+        `/api/v1/threads/${managedChild.id}/send`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            input: [{ type: "text", text: "ordinary tell", mentions: [] }],
+            mode: "auto",
+          }),
+        },
+      );
+      expect(tellResponse.status, await tellResponse.text()).toBe(200);
+      expect(
+        getThreadExecutionOverride(harness.db, managedChild.id)?.modelOverride,
+      ).toBe("claude-opus-5-5");
+      const tellRequest = listEvents(harness.db, { threadId: managedChild.id })
+        .filter((event) => event.type === "client/turn/requested")
+        .at(-1);
+      expect(
+        turnRequestEventDataSchema.parse(JSON.parse(tellRequest!.data))
+          .execution.model,
+      ).toBe("claude-sonnet-5-5");
+
+      const explicitChild = seedProviderThread(harness);
+      registerSendHostResponder(
+        harness,
+        explicitChild.host.id,
+        explicitChild.session.id,
+      );
+      const explicitParent = seedThread(harness.deps, {
+        projectId: explicitChild.thread.projectId,
+        environmentId: explicitChild.thread.environmentId,
+        providerId: "claude-code",
+      });
+      const explicitManagedChild = updateThread(
+        harness.db,
+        harness.hub,
+        explicitChild.thread.id,
+        { parentThreadId: explicitParent.id },
+      )!;
+      setThreadExecutionOverride(harness.db, {
+        threadId: explicitManagedChild.id,
+        modelOverride: "claude-opus-5-5",
+        reasoningLevelOverride: null,
+      });
+      const compatibleResponse = await harness.app.request(
+        `/api/v1/threads/${explicitManagedChild.id}/send`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            input: [
+              { type: "text", text: "explicit child model", mentions: [] },
+            ],
+            mode: "auto",
+            model: "claude-sonnet-5-5",
+            executionInputSources: { model: "explicit" },
+          }),
+        },
+      );
+      expect(compatibleResponse.status, await compatibleResponse.text()).toBe(
+        200,
+      );
+      expect(
+        getThreadExecutionOverride(harness.db, explicitManagedChild.id)
+          ?.modelOverride,
+      ).toBe("claude-sonnet-5-5");
+      const compatibleRequest = listEvents(harness.db, {
+        threadId: explicitManagedChild.id,
+      })
+        .filter((event) => event.type === "client/turn/requested")
+        .at(-1);
+      expect(
+        turnRequestEventDataSchema.parse(JSON.parse(compatibleRequest!.data))
+          .execution.model,
+      ).toBe("claude-sonnet-5-5");
     });
   });
 });

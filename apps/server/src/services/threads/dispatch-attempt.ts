@@ -15,6 +15,7 @@ import {
 } from "@bb/db";
 import {
   createStandaloneBuiltinCompactCommandInput,
+  isStandaloneBuiltinClearCommand,
   promptInputSchema,
   type PromptInput,
   type QueuedMessagePayload,
@@ -399,9 +400,11 @@ async function runDispatchAttempt(
   const continued: {
     outcome: DispatchAttemptOutcome | null;
     reattemptThread: Thread | null;
+    scopeChanged: boolean;
   } = {
     outcome: null,
     reattemptThread: null,
+    scopeChanged: false,
   };
 
   const continueThroughCoreWaits = async (): Promise<void> => {
@@ -426,6 +429,7 @@ async function runDispatchAttempt(
       currentThread.deletedAt !== thread.deletedAt
     ) {
       continued.reattemptThread = currentThread;
+      continued.scopeChanged = false;
       return;
     }
 
@@ -491,6 +495,7 @@ async function runDispatchAttempt(
       }
       if (outcome.kind === "retry") {
         continued.reattemptThread = outcome.thread;
+        continued.scopeChanged = false;
         return;
       }
     }
@@ -545,6 +550,10 @@ async function runDispatchAttempt(
     if (firstDispatch) {
       admitted.value = await admitPendingThread(deps, {
         claimed,
+        assertExplicitModel:
+          args.source.kind === "inline" &&
+          args.trigger === "user" &&
+          args.retryOf === undefined,
         execution,
         payload: resolvedPayload,
         respectManualStopPause,
@@ -615,6 +624,7 @@ async function runDispatchAttempt(
       throw error;
     }
     continued.reattemptThread = getThread(deps.db, thread.id);
+    continued.scopeChanged = true;
   }
 
   if (continued.outcome !== null) {
@@ -626,6 +636,7 @@ async function runDispatchAttempt(
       args,
       continued.reattemptThread,
       reattempted,
+      continued.scopeChanged,
     );
   }
 
@@ -661,7 +672,10 @@ async function runDispatchAttempt(
         if (current === null || current.status !== thread.status) {
           throw new DispatchThreadStatusChangedError();
         }
-        if (current.parentThreadId !== thread.parentThreadId) {
+        if (
+          current.parentThreadId !== thread.parentThreadId &&
+          !isStandaloneBuiltinClearCommand(resolvedPayload.input)
+        ) {
           if (
             args.source.kind === "inline" &&
             args.trigger === "user" &&
@@ -717,7 +731,7 @@ async function runDispatchAttempt(
 class DispatchThreadStatusChangedError extends Error {}
 class DispatchThreadScopeChangedError extends Error {}
 
-function reattemptDispatchForThreadChange(
+export function reattemptDispatchForThreadChange(
   deps: LoggedPendingInteractionWorkSessionDeps,
   args: DispatchAttemptArgs,
   thread: Thread | null,
@@ -759,6 +773,7 @@ function consumeClaimedRows(
 
 interface AdmitPendingThreadArgs {
   claimed: ClaimedQueuedThreadMessageRow[] | null;
+  assertExplicitModel: boolean;
   execution: ResolvedThreadExecutionOptions;
   payload: SendMessageRequest & { inputGroups?: PromptInput[][] };
   respectManualStopPause: boolean;
@@ -804,13 +819,15 @@ async function admitPendingThread(
         const currentThread = getThread(tx, args.thread.id);
         if (!currentThread) throw new PendingThreadAdmissionLost();
         if (currentThread.parentThreadId !== args.thread.parentThreadId) {
-          assertRequestedModelAllowedForCurrentScope(deps, {
-            threadId: args.thread.id,
-            model: args.payload.model,
-            providerId: args.thread.providerId,
-            sources: args.payload.executionInputSources,
-            spawnerThreadId: getThreadSpawner(deps.db, args.thread.id),
-          });
+          if (args.assertExplicitModel) {
+            assertRequestedModelAllowedForCurrentScope(deps, {
+              threadId: args.thread.id,
+              model: args.payload.model,
+              providerId: args.thread.providerId,
+              sources: args.payload.executionInputSources,
+              spawnerThreadId: getThreadSpawner(deps.db, args.thread.id),
+            });
+          }
           throw new PendingThreadAdmissionLost(true);
         }
         if (args.claimed !== null && args.claimed.length > 0) {

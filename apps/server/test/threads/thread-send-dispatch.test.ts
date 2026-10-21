@@ -30,7 +30,6 @@ import * as queuedDispatch from "../../src/services/threads/queued-message-dispa
 import * as threadEvents from "../../src/services/threads/thread-events.js";
 import * as dispatchHooks from "../../src/services/threads/dispatch-hooks.js";
 import * as hostLifecycle from "../../src/services/hosts/host-lifecycle.js";
-import * as threadLifecycle from "../../src/services/threads/thread-lifecycle.js";
 import { runQueuedMessageDispatch } from "../../src/services/threads/queued-message-dispatch.js";
 import {
   createAutomaticQueuedMessageGroupEligibility,
@@ -40,6 +39,7 @@ import {
 } from "../../src/services/threads/queued-messages.js";
 import { queueParentSystemMessage } from "../../src/services/threads/parent-system-messages.js";
 import { acceptThreadSendRequest } from "../../src/services/threads/thread-send-request.js";
+import { reattemptDispatchForThreadChange } from "../../src/services/threads/dispatch-attempt.js";
 import { handleUpdateEnvironmentDirectoryToolCall } from "../../src/services/threads/thread-environment-directory.js";
 import { applyLoggedThreadLifecycleEvent } from "../../src/services/threads/lifecycle-outcome.js";
 import { buildExecutionOptions } from "../../src/services/threads/thread-commands.js";
@@ -51,6 +51,10 @@ import {
   reportQueuedCommandError,
   waitForQueuedCommand,
 } from "../helpers/commands.js";
+import {
+  registerHostRpcResponder,
+  type HostRpcHandlerResult,
+} from "../helpers/host-rpc.js";
 import { createMockHubSocket } from "../helpers/mock-hub-socket.js";
 import { textInput } from "../helpers/prompt-input.js";
 import {
@@ -83,7 +87,9 @@ interface SeedProviderThreadFixtureArgs extends SeedIdleThreadFixtureArgs {
   providerId?: string;
 }
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 function seedProviderThreadFixture(
   args: SeedProviderThreadFixtureArgs,
@@ -1771,12 +1777,39 @@ describe("service tier execution lifecycle", () => {
 });
 
 describe("concurrent idle dispatch regression", () => {
-  it("keeps /clear scope races as scope errors after the stop phase", async () => {
+  it("preserves the cause in repeated dispatch reattempt errors", async () => {
     await withTestHarness(async (harness) => {
-      const { environment, thread } = seedProviderThreadFixture({
+      const { thread } = seedProviderThreadFixture({ harness, value: 3722 });
+      for (const [scopeChanged, expectedCode] of [
+        [false, "thread_changed"],
+        [true, "thread_scope_changed"],
+      ] as const) {
+        try {
+          reattemptDispatchForThreadChange(
+            harness.deps,
+            {} as never,
+            thread,
+            true,
+            scopeChanged,
+          );
+          expect.fail("expected repeated reattempt to throw");
+        } catch (error) {
+          expect(error).toMatchObject({
+            status: 409,
+            body: { code: expectedCode },
+          });
+        }
+      }
+    });
+  });
+
+  it("clears after a real stop when the parent changes during the stop", async () => {
+    await withTestHarness(async (harness) => {
+      const { session, thread } = seedProviderThreadFixture({
         harness,
         value: 3721,
         providerId: "claude-code",
+        status: "idle",
       });
       const firstParent = seedThread(harness.deps, {
         projectId: thread.projectId,
@@ -1813,34 +1846,38 @@ describe("concurrent idle dispatch regression", () => {
         },
       ];
       expect(isStandaloneBuiltinClearCommand(clearInput)).toBe(true);
-      vi.spyOn(threadLifecycle, "stopThreadForCurrentState").mockImplementation(
-        async () => {
-          updateThread(harness.db, harness.hub, child.id, {
-            parentThreadId: nextParent.id,
-          });
+      const responder = registerHostRpcResponder(harness, {
+        hostId: "host-send-dispatch-3721",
+        sessionId: session.id,
+        handle: async ({ command }): Promise<HostRpcHandlerResult> => {
+          if (command.type === "thread.stop") {
+            updateThread(harness.db, harness.hub, child.id, {
+              parentThreadId: nextParent.id,
+            });
+            return { ok: true, result: { providerCheckpointId: null } };
+          }
+          throw new Error(`Unexpected command ${command.type}`);
+        },
+      });
+      const response = await harness.app.request(
+        `/api/v1/threads/${child.id}/send`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ input: clearInput, mode: "auto" }),
         },
       );
-
-      await expect(
-        sendThreadMessage(harness.deps, {
-          environment,
-          thread: child,
-          trigger: "user",
-          payload: {
-            input: clearInput,
-            mode: "start",
-            model: "claude-opus-5-5",
-          },
-        }),
-      ).rejects.toMatchObject({
-        body: { code: "thread_scope_changed" },
-      });
+      expect(response.status, await response.text()).toBe(200);
       expect(getThread(harness.db, child.id)?.parentThreadId).toBe(
         nextParent.id,
       );
-      expect(
-        listQueuedThreadCommands(harness, "thread.stop", child.id),
-      ).toEqual([]);
+      expect(responder.requests).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            command: expect.objectContaining({ type: "thread.stop" }),
+          }),
+        ]),
+      );
     });
   });
 

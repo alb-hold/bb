@@ -1,6 +1,7 @@
 import {
   getEnvironment,
   getThread,
+  getThreadSpawner,
   requireThreadLifecycleEventApplied,
 } from "@bb/db";
 import { assertNotNativeTerminalThread } from "./native-terminal-guard.js";
@@ -524,13 +525,6 @@ export async function sendThreadMessage(
         if (!current) {
           throw new ApiError(404, "thread_not_found", "Thread not found");
         }
-        if (current.parentThreadId !== args.thread.parentThreadId) {
-          throw new ApiError(
-            409,
-            "thread_scope_changed",
-            "Thread scope changed while this request was being prepared. Retry the request.",
-          );
-        }
         args.beforeAppendInTransaction?.({ tx });
       },
     });
@@ -641,12 +635,17 @@ async function sendThreadMessageWithoutContextClear(
     threadId: thread.id,
   });
   if (senderThreadId === null && args.retryOf === undefined) {
+    const isManagedChild =
+      thread.parentThreadId !== null ||
+      getThreadSpawner(deps.db, thread.id) !== null;
+    const usesChildModelPolicy =
+      isManagedChild &&
+      deps.providerRegistry.get(thread.providerId)?.childThreadModel != null;
     await recoverThreadModelOverride(deps, {
-      model: execution.model,
-      modelSource:
-        payload.executionInputSources === undefined
-          ? "explicit"
-          : payload.executionInputSources.model,
+      model: usesChildModelPolicy ? payload.model : execution.model,
+      modelSource: usesChildModelPolicy
+        ? payload.executionInputSources?.model
+        : "explicit",
       reasoningLevel: execution.reasoningLevel,
       reasoningLevelSource:
         payload.executionInputSources === undefined
