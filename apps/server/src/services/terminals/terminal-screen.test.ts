@@ -235,7 +235,7 @@ describe("renderTerminalScreen", () => {
     }
   });
 
-  it("rejects concurrent reads instead of queueing them", async () => {
+  it("queues concurrent reads and returns each requested screen", async () => {
     const first = renderTerminalScreen({
       cols: 20,
       rows: 2,
@@ -248,8 +248,81 @@ describe("renderTerminalScreen", () => {
       lines: undefined,
       output: output("second read"),
     });
-    await expect(second).rejects.toThrow("Terminal screen renderer is busy");
-    await expect(first).resolves.toMatchObject({ rows: ["first read", ""] });
+    const [firstScreen, secondScreen] = await Promise.all([first, second]);
+    expect(firstScreen.rows).toEqual(["first read", ""]);
+    expect(secondScreen.rows).toEqual(["second read", ""]);
+  });
+
+  it("runs a queued read after the worker restarts", async () => {
+    const originalTerminate = Worker.prototype.terminate;
+    let releaseTermination: (() => void) | undefined;
+    const terminateSpy = vi
+      .spyOn(Worker.prototype, "terminate")
+      .mockImplementation(function (this: Worker) {
+        return new Promise<number>((resolve, reject) => {
+          releaseTermination = () => {
+            void originalTerminate.call(this).then(resolve, reject);
+          };
+        });
+      });
+    const postMessageSpy = vi.spyOn(Worker.prototype, "postMessage");
+    const consoleErrorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    try {
+      const first = renderTerminalScreen({
+        cols: 20,
+        rows: 2,
+        lines: undefined,
+        output: output("worker interrupted"),
+      });
+      const crashedWorker = postMessageSpy.mock.contexts[0] as Worker;
+      crashedWorker.emit("error", new Error("simulated worker crash"));
+      const duringRestart = renderTerminalScreen({
+        cols: 20,
+        rows: 2,
+        lines: undefined,
+        output: output("read after restart"),
+      });
+      releaseTermination?.();
+      releaseTermination = undefined;
+
+      await expect(first).rejects.toThrow("simulated worker crash");
+      await expect(duringRestart).resolves.toMatchObject({
+        rows: ["read after restart", ""],
+      });
+      expect(postMessageSpy.mock.contexts).toHaveLength(2);
+    } finally {
+      releaseTermination?.();
+      terminateSpy.mockRestore();
+      postMessageSpy.mockRestore();
+      consoleErrorSpy.mockRestore();
+    }
+  });
+
+  it("rejects reads beyond the bounded queue with a clear error", async () => {
+    const reads = Array.from({ length: 32 }, (_, index) =>
+      renderTerminalScreen({
+        cols: 20,
+        rows: 2,
+        lines: undefined,
+        output: output(`queued read ${index}`),
+      }),
+    );
+    const overflow = renderTerminalScreen({
+      cols: 20,
+      rows: 2,
+      lines: undefined,
+      output: output("overflow"),
+    });
+
+    await expect(overflow).rejects.toThrow(
+      "Terminal screen read queue is full (maximum 32 in flight)",
+    );
+    const screens = await Promise.all(reads);
+    expect(screens.map((screen) => screen.rows[0])).toEqual(
+      Array.from({ length: 32 }, (_, index) => `queued read ${index}`),
+    );
   });
 
   it("renders ANSI colors as plain text", async () => {
