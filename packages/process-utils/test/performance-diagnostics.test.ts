@@ -12,12 +12,16 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { console as inspectorConsole } from "node:inspector";
 import { setTimeout as delay } from "node:timers/promises";
 import { startPerformanceDiagnostics } from "../src/performance-diagnostics.js";
 
 describe("performance diagnostics", () => {
+  afterEach(() => {
+    inspectorConsole.profileEnd("unrelated-user-capture");
+  });
+
   it("saves an actual CPU profile on shutdown and stops idempotently", async () => {
     const dataDir = await mkdtemp(join(tmpdir(), "bb-perf-test-"));
     const warnings: unknown[] = [];
