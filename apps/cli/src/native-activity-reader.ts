@@ -86,6 +86,7 @@ export class NativeActivityReader {
   private sessionId: string | null;
   private currentTurn: string | null = null;
   private hookIdentityConfirmed = false;
+  private suspended = false;
   private unconfirmedTranscriptOffset: number | null = null;
   private unconfirmedHookBoundaryEstablished = false;
   private unconfirmedHookCount = 0;
@@ -136,9 +137,14 @@ export class NativeActivityReader {
     }
   }
 
+  suspend(): void {
+    this.suspended = true;
+    this.hookIdentityConfirmed = false;
+  }
+
   read(): NativeActivityReport[] {
     const activity = this.cli.activity;
-    if (activity === undefined) return [];
+    if (activity === undefined || this.suspended) return [];
     const reports: NativeActivityReport[] = [];
     const push = (report: NativeActivityReport | null): void => {
       if (report !== null) reports.push(report);
@@ -241,6 +247,7 @@ export class NativeActivityReader {
   }
 
   heartbeat(): NativeActivityReport | null {
+    if (this.suspended) return null;
     if (
       this.cli.activity?.hooks?.sessionIdField !== undefined &&
       !this.hookIdentityConfirmed

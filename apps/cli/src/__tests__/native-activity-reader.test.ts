@@ -606,6 +606,26 @@ describe("NativeActivityReader session rotation", () => {
     expect(drops.at(-1)?.reason).toBe("foreign-session");
   });
 
+  it("stops reporting and confirming once suspended, so the thread shows Activity not reported", () => {
+    const fixture = claudeFixture();
+    startRotation(fixture);
+    fixture.hook([rotatedPrompt()]);
+    expect(fixture.reader.read()).toHaveLength(1);
+    expect(fixture.reader.heartbeat()).not.toBeNull();
+
+    fixture.reader.suspend();
+    fixture.hook([
+      {
+        hook_event_name: "UserPromptSubmit",
+        session_id: ROTATED,
+        prompt_id: "after-suspend",
+        prompt: "ignored",
+      },
+    ]);
+    expect(fixture.reader.read()).toEqual([]);
+    expect(fixture.reader.heartbeat()).toBeNull();
+  });
+
   it("reports each identity drop with its reason and no event content", () => {
     const drops: Array<{ reason: string; total: number }> = [];
     const fixture = claudeFixture(false, undefined, (reason, total) =>

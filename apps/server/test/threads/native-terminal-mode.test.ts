@@ -2185,7 +2185,10 @@ describe("native terminal activity evidence across a swap", () => {
       const started = await startNativeThread(fixture);
       const { thread } = started;
       const authorization = `Bearer ${started.credential}`;
-      for (const replaces of [null, "0a0ffee0-1111-4222-8333-444455556666"]) {
+      for (const [replaces, code] of [
+        [null, "native_session_already_bound"],
+        ["0a0ffee0-1111-4222-8333-444455556666", "native_session_rebind_stale"],
+      ] as const) {
         const response = await recordSession(
           fixture,
           thread.id,
@@ -2194,6 +2197,7 @@ describe("native terminal activity evidence across a swap", () => {
           replaces,
         );
         expect(response.status).toBe(409);
+        expect(await readApiErrorCode(response)).toBe(code);
         expect(boundSession(fixture, thread.id)).toBe(SESSION_ID);
       }
       expect(
@@ -2231,9 +2235,9 @@ describe("native terminal activity evidence across a swap", () => {
           ROTATED,
           authorization,
         );
-        expect(response.status).toBe(409);
+        expect(response.status).toBe(401);
         expect(await readApiErrorCode(response)).toBe(
-          "native_session_already_bound",
+          "native_terminal_credential_invalid",
         );
         expect(boundSession(fixture, thread.id)).toBe(SESSION_ID);
       }
@@ -2241,6 +2245,52 @@ describe("native terminal activity evidence across a swap", () => {
         (await recordSession(fixture, thread.id, ROTATED, `Bearer ${current}`))
           .status,
       ).toBe(200);
+    });
+
+    it("accepts the same move after the terminal was exited and reattached, with the refreshed credential", async () => {
+      const fixture = await createFixture();
+      const started = await startNativeThread(fixture);
+      const { thread } = started;
+      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.hostId,
+        sessionId: fixture.sessionId,
+        message: {
+          type: "terminal.exited",
+          terminalId: started.open.terminalId,
+          exitCode: null,
+          closeReason: "daemon-disconnect",
+        },
+      });
+      const early = await recordSession(
+        fixture,
+        thread.id,
+        ROTATED,
+        `Bearer ${started.credential}`,
+      );
+      expect(early.status).toBe(409);
+      expect(await readApiErrorCode(early)).toBe("native_terminal_not_live");
+      expect(boundSession(fixture, thread.id)).toBe(SESSION_ID);
+
+      const { credential: refreshed } = await reattachAfterDaemonDisconnect(
+        fixture,
+        thread.id,
+        started.open,
+      );
+      const stale = await recordSession(
+        fixture,
+        thread.id,
+        ROTATED,
+        `Bearer ${started.credential}`,
+      );
+      expect(stale.status).toBe(401);
+      const retried = await recordSession(
+        fixture,
+        thread.id,
+        ROTATED,
+        `Bearer ${refreshed}`,
+      );
+      expect(retried.status).toBe(200);
+      expect(boundSession(fixture, thread.id)).toBe(ROTATED);
     });
 
     it("refuses once the terminal is no longer live, and never takes another thread's session", async () => {
@@ -2285,6 +2335,7 @@ describe("native terminal activity evidence across a swap", () => {
         `Bearer ${started.credential}`,
       );
       expect(exited.status).toBe(409);
+      expect(await readApiErrorCode(exited)).toBe("native_terminal_not_live");
       expect(boundSession(fixture, thread.id)).toBe(SESSION_ID);
     });
   });
