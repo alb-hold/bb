@@ -451,6 +451,14 @@ export function SidebarSplitContainer({
       terminalLayoutRequest === null ||
       handledTerminalLayoutRequestId.current === terminalLayoutRequest.requestId
     ) return;
+    if (
+      terminalLayoutRequest.action === "split" &&
+      countPanes(stateRef.current.layout.root) >= MAX_PANES
+    ) {
+      notifyPaneLimit("at-pane-limit");
+      handledTerminalLayoutRequestId.current = terminalLayoutRequest.requestId;
+      return;
+    }
     const sourceTabId = createTerminalFixedPanelTab({
       terminalId: terminalLayoutRequest.terminalId,
     }).id;
@@ -488,14 +496,6 @@ export function SidebarSplitContainer({
     if (ensured === null) return;
     if (ensured === false) {
       appToast.warning("The terminal is no longer available in this thread.");
-      handledTerminalLayoutRequestId.current = terminalLayoutRequest.requestId;
-      return;
-    }
-    if (
-      terminalLayoutRequest.action === "split" &&
-      countPanes(stateRef.current.layout.root) >= MAX_PANES
-    ) {
-      notifyPaneLimit("at-pane-limit");
       handledTerminalLayoutRequestId.current = terminalLayoutRequest.requestId;
       return;
     }
