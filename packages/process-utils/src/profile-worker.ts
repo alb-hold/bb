@@ -184,20 +184,7 @@ async function runProfileWorker(): Promise<void> {
       await session.post("Profiler.disable").catch(() => {});
       session.disconnect();
       await rm(pendingPath, { force: true }).catch(() => {});
-      if (
-        typeof command === "object" &&
-        command !== null &&
-        "command" in command &&
-        command.command === "stop"
-      ) {
-        respond(
-          { err: error instanceof Error ? error.message : String(error) },
-          "CPU profiling stopped; performance summaries remain enabled",
-          "warn",
-        );
-      } else {
-        port.close();
-      }
+      throw error;
     }
   });
 }

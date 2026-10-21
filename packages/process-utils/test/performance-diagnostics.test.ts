@@ -246,13 +246,19 @@ describe("performance diagnostics", () => {
 
   it("stops cleanly when saving a capture fails", async () => {
     const dataDir = await mkdtemp(join(tmpdir(), "bb-perf-save-failure-"));
-    const warnings: unknown[] = [];
+    const warnings: { error: unknown; message: string }[] = [];
     const monitor = await startPerformanceDiagnostics({
       dataDir,
       logger: {
         info: () => {},
-        warn: (fields) => {
-          warnings.push(fields);
+        warn: (fields, message) => {
+          warnings.push({
+            error:
+              typeof fields === "object" && fields !== null && "err" in fields
+                ? fields.err
+                : undefined,
+            message,
+          });
         },
       },
     });
@@ -263,6 +269,13 @@ describe("performance diagnostics", () => {
       });
       await Promise.all([monitor.stop(), monitor.stop()]);
       expect(warnings).toHaveLength(1);
+      expect(warnings[0]?.message).toBe(
+        "CPU profiling stopped; performance summaries remain enabled",
+      );
+      const error = warnings[0]?.error;
+      expect(error).toBeInstanceOf(Error);
+      if (!(error instanceof Error)) throw new Error("Expected profiler error");
+      expect(error.message).toContain("ENOENT");
     } finally {
       await monitor.stop();
       await rm(dataDir, { recursive: true, force: true });
