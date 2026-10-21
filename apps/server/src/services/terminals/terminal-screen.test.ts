@@ -77,6 +77,56 @@ describe("renderTerminalScreen", () => {
     expect(screen.complete).toBe(false);
   });
 
+  it("recognizes a truncated linear output tail and preserves the visible rows", async () => {
+    const stream = Array.from(
+      { length: 10_000 },
+      (_, index) => `line ${String(index).padStart(5, "0")}\r\n`,
+    ).join("");
+    expect(Buffer.byteLength(stream)).toBeGreaterThan(64 * 1024);
+    const screenArgs = { cols: 40, rows: 4, lines: undefined };
+    const fullScreen = await renderTerminalScreen({
+      ...screenArgs,
+      output: output(stream),
+    });
+    const retainedScreen = await renderTerminalScreen({
+      ...screenArgs,
+      output: output(stream.slice(-64 * 1024), true),
+    });
+    expect(retainedScreen.rows).toEqual(fullScreen.rows);
+    expect(retainedScreen.complete).toBe(true);
+  });
+
+  it("recognizes long color-only output as linear", async () => {
+    const stream = "\u001b[31mred\u001b[0m\n".repeat(6_000);
+    const screen = await renderTerminalScreen({
+      cols: 20,
+      rows: 2,
+      lines: undefined,
+      output: output(stream.slice(-64 * 1024), true),
+    });
+    expect(screen.complete).toBe(true);
+  });
+
+  it("marks a retained tail with a cursor move incomplete", async () => {
+    const screen = await renderTerminalScreen({
+      cols: 20,
+      rows: 2,
+      lines: undefined,
+      output: output("partial\nline one\nline two\n\u001b[1;1Hupdate", true),
+    });
+    expect(screen.complete).toBe(false);
+  });
+
+  it("marks an alternate-screen tail incomplete", async () => {
+    const screen = await renderTerminalScreen({
+      cols: 20,
+      rows: 2,
+      lines: undefined,
+      output: output("partial\nline one\nline two\n\u001b[?1049h", true),
+    });
+    expect(screen.complete).toBe(false);
+  });
+
   it("caps requested scrollback rows at 500", async () => {
     expect(terminalScreenQuerySchema.safeParse({ lines: 500 }).success).toBe(
       true,

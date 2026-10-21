@@ -14,6 +14,15 @@ const { Terminal } =
 export const TERMINAL_SCREEN_MAX_LINES = 500;
 export const TERMINAL_SCREEN_REPLAY_BYTES = 64 * 1024;
 
+function isLinearTerminalOutput(data: Buffer, rows: number): boolean {
+  const text = data.toString("utf8");
+  const switchesAlternateScreen = /\x1b\[\?(?:1049|47|1047)[hl]/.test(text);
+  const controlsScreenState =
+    /\x1b\[[0-?]*[ -/]*[HfdABCDGJKrST]/.test(text);
+  const lineFeeds = text.match(/\n/g)?.length ?? 0;
+  return !switchesAlternateScreen && !controlsScreenState && lineFeeds >= rows;
+}
+
 export async function renderTerminalScreen(args: {
   cols: number;
   lines: number | undefined;
@@ -64,7 +73,10 @@ export async function renderTerminalScreen(args: {
       const line = buffer.getLine(index);
       rows.push(line?.translateToString(true) ?? "");
     }
-    const complete = !args.output.truncated || /\x1b\[2J/.test(data.toString("utf8"));
+    const complete =
+      !args.output.truncated ||
+      /\x1b\[2J/.test(data.toString("utf8")) ||
+      isLinearTerminalOutput(data, args.rows);
     return {
       rows,
       cursor: { col: buffer.cursorX, row: buffer.cursorY },

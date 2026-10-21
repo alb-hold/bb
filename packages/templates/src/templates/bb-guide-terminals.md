@@ -120,8 +120,9 @@ prints the target because it has no app window. The SDK exposes
 
   Screen reads replay at most 64 KiB of retained output into a disposable
   server-side terminal renderer. The default returns the visible grid. JSON
-  includes `complete`; false means earlier output was discarded and no full
-  screen redraw was retained. Selection
+  includes `complete`; false means the retained output does not prove the screen
+  is complete. Sequential output can still be complete when enough lines remain.
+  Selection
   is client-local and is not available through this command.
 
   bb terminal wait <terminal-id>
