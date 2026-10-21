@@ -79,6 +79,24 @@ async function replayWithSentinel(cols: number, rows: number, data: string) {
 }
 
 describe("renderTerminalScreen", () => {
+  it("uses a retained full reset as proof that earlier modes cannot affect the screen", async () => {
+    const data = `${"x".repeat(65_500)}\u001bc\u001b[H#`;
+    const yieldSpy = vi.spyOn(globalThis, "setImmediate");
+    try {
+      const screen = await renderTerminalScreen({
+        cols: 80,
+        rows: 24,
+        lines: undefined,
+        output: output(data, true),
+      });
+      expect(screen.complete).toBe(true);
+      expect(screen.rows[0]).toBe("#");
+      expect(yieldSpy.mock.calls.length).toBeLessThan(20);
+    } finally {
+      yieldSpy.mockRestore();
+    }
+  });
+
   it("yields between chunks while proving a truncated 64 KiB screen", async () => {
     const data = "\u001b[H#".repeat(16_384);
     expect(Buffer.byteLength(data)).toBe(64 * 1024);
@@ -91,7 +109,7 @@ describe("renderTerminalScreen", () => {
         output: output(data, true),
       });
       expect(screen.complete).toBe(false);
-      expect(yieldSpy.mock.calls.length).toBeGreaterThan(30);
+      expect(yieldSpy.mock.calls.length).toBeGreaterThan(6);
     } finally {
       yieldSpy.mockRestore();
     }

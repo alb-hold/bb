@@ -14,6 +14,7 @@ const { Terminal } =
 export const TERMINAL_SCREEN_MAX_LINES = 500;
 export const TERMINAL_SCREEN_REPLAY_BYTES = 64 * 1024;
 const TERMINAL_SCREEN_WRITE_CHUNK_BYTES = 2 * 1024;
+const TERMINAL_SCREEN_YIELD_BYTES = 8 * 1024;
 
 type HeadlessTerminal = InstanceType<typeof Terminal>;
 
@@ -61,6 +62,7 @@ async function writeTerminal(
     await new Promise<void>((resolve) => terminal.write(data, resolve));
     return;
   }
+  let groupStart = 0;
   for (
     let offset = 0;
     offset < data.length;
@@ -70,10 +72,21 @@ async function writeTerminal(
       offset + TERMINAL_SCREEN_WRITE_CHUNK_BYTES,
       data.length,
     );
-    await new Promise<void>((resolve) =>
-      terminal.write(data.subarray(offset, end), resolve),
-    );
-    if (end < data.length) await yieldToEventLoop();
+    const groupEnd =
+      end === data.length || end - groupStart >= TERMINAL_SCREEN_YIELD_BYTES;
+    if (groupEnd) {
+      await new Promise<void>((resolve) =>
+        terminal.write(data.subarray(offset, end), resolve),
+      );
+    } else {
+      terminal.write(data.subarray(offset, end));
+    }
+    if (groupEnd) {
+      groupStart = end;
+    }
+    if (groupEnd && end < data.length) {
+      await yieldToEventLoop();
+    }
   }
 }
 
@@ -256,6 +269,13 @@ export async function renderTerminalScreen(args: {
   rows: number;
 }): Promise<TerminalScreenResponse> {
   const terminal = createTerminal(args.cols, args.rows);
+  let sawFullReset = false;
+  const fullResetHandler = args.output.truncated
+    ? terminal.parser.registerEscHandler({ final: "c" }, () => {
+        sawFullReset = true;
+        return false;
+      })
+    : undefined;
   try {
     let data = Buffer.concat(
       args.output.chunks.map((chunk) =>
@@ -268,6 +288,7 @@ export async function renderTerminalScreen(args: {
     await writeTerminal(terminal, data);
     const complete =
       !args.output.truncated ||
+      sawFullReset ||
       (await replayIsComplete(data, args.cols, args.rows, terminal));
     const buffer = terminal.buffer.active;
     let end = buffer.baseY + terminal.rows;
@@ -298,6 +319,7 @@ export async function renderTerminalScreen(args: {
       complete,
     };
   } finally {
+    fullResetHandler?.dispose();
     terminal.dispose();
   }
 }
