@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
 import { Terminal } from "@xterm/xterm";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { startTerminalLongPress } from "./terminal-mobile-gestures";
 import { createTerminalTouchHandlers } from "./ThreadTerminalView";
 
 const CELL_WIDTH_PX = 8;
@@ -25,10 +24,23 @@ interface Opened {
 }
 
 const disposers: (() => void)[] = [];
+const maxTouchPointsDescriptor = Object.getOwnPropertyDescriptor(
+  navigator,
+  "maxTouchPoints",
+);
 
 afterEach(() => {
   while (disposers.length > 0) {
     disposers.pop()?.();
+  }
+  if (maxTouchPointsDescriptor === undefined) {
+    Reflect.deleteProperty(navigator, "maxTouchPoints");
+  } else {
+    Object.defineProperty(
+      navigator,
+      "maxTouchPoints",
+      maxTouchPointsDescriptor,
+    );
   }
   vi.restoreAllMocks();
 });
@@ -54,6 +66,10 @@ function stubMeasurements(): void {
 }
 
 function openTerminal(withTouchHandlers: boolean): Opened {
+  Object.defineProperty(navigator, "maxTouchPoints", {
+    configurable: true,
+    value: 1,
+  });
   const wrapper = document.createElement("div");
   const host = document.createElement("div");
   wrapper.append(host);
@@ -202,112 +218,51 @@ describe("terminal touch flow with mouse tracking off", () => {
     const lines = Array.from({ length: 200 }, (_, index) => `line ${index}`);
     const withHandlers = openTerminal(true);
     await write(withHandlers.terminal, lines.join("\r\n"));
-    swipe(withHandlers.wrapper, { x: 40, y: 200 }, -150);
+    withHandlers.terminal.scrollToLine(
+      withHandlers.terminal.buffer.active.baseY - 20,
+    );
+    const startViewportY = withHandlers.terminal.buffer.active.viewportY;
+    swipe(withHandlers.screen, { x: 40, y: 200 }, -150);
     expect(withHandlers.sent).toEqual([]);
-    expect(withHandlers.terminal.buffer.active.viewportY).toBeLessThan(
-      withHandlers.terminal.buffer.active.baseY,
+    expect(withHandlers.terminal.buffer.active.viewportY).toBeGreaterThan(
+      startViewportY,
     );
   });
 
-  it("moves the viewport during the drag on the next animation frame", async () => {
+  it("keeps the eight-move drag on xterm native scrolling", async () => {
     stubMeasurements();
     const { screen, terminal } = openTerminal(true);
     await write(
       terminal,
       Array.from({ length: 200 }, (_, index) => `line ${index}`).join("\r\n"),
     );
+    terminal.scrollToLine(terminal.buffer.active.baseY - 100);
+    const scrollToLine = vi.spyOn(terminal, "scrollToLine");
     const startViewportY = terminal.buffer.active.viewportY;
-    const rowHeight = CELL_HEIGHT_PX;
-    const rows = 3;
-    const frames: FrameRequestCallback[] = [];
-    const requestFrame = vi
-      .spyOn(window, "requestAnimationFrame")
-      .mockImplementation((callback) => {
-        frames.push(callback);
-        return frames.length;
-      });
-    const cancelFrame = vi
-      .spyOn(window, "cancelAnimationFrame")
-      .mockImplementation(() => {});
-
-    try {
-      dispatchTouch(screen, "touchstart", { x: 40, y: 200 }, 2_000);
+    let nativeMoves = 0;
+    screen.addEventListener("-xterm-gesturechange", () => {
+      nativeMoves += 1;
+    });
+    let now = 2_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    dispatchTouch(screen, "touchstart", { x: 40, y: 350 }, 2_000);
+    for (let step = 1; step <= 8; step += 1) {
+      now += 40;
       dispatchTouch(
         screen,
         "touchmove",
-        { x: 40, y: 200 - rowHeight * 2 },
-        2_016,
+        { x: 40, y: 350 - (300 * step) / 8 },
+        2_000 + step * 40,
       );
-      dispatchTouch(
-        screen,
-        "touchmove",
-        { x: 40, y: 200 - rowHeight * rows },
-        2_032,
-      );
-
-      expect(terminal.buffer.active.viewportY).toBe(startViewportY);
-      expect(frames).toHaveLength(1);
-      frames.shift()?.(2_048);
-      expect(terminal.buffer.active.viewportY).toBe(startViewportY - rows);
-
-      dispatchTouch(
-        screen,
-        "touchmove",
-        { x: 40, y: 200 - rowHeight * 4 },
-        2_056,
-      );
-      dispatchTouch(
-        screen,
-        "touchend",
-        { x: 40, y: 200 - rowHeight * 5 },
-        2_064,
-      );
-      expect(terminal.buffer.active.viewportY).toBe(startViewportY - 5);
-    } finally {
-      requestFrame.mockRestore();
-      cancelFrame.mockRestore();
-      await new Promise((resolve) => setTimeout(resolve, 50));
     }
-  });
 
-  it("scrolls touchmove distance before the long-press selection delay", async () => {
-    stubMeasurements();
-    const { wrapper, terminal } = openTerminal(true);
-    await write(
-      terminal,
-      Array.from({ length: 200 }, (_, index) => `line ${index}`).join("\r\n"),
-    );
-    const startY = terminal.buffer.active.viewportY;
-    const sheetOpened = vi.fn();
-    let fireLongPress = () => {};
-    const longPress = startTerminalLongPress(
-      [{ identifier: 1, x: 40, y: 200 }],
-      () => 0,
-      sheetOpened,
-      (callback) => {
-        fireLongPress = callback;
-        return { cancel: vi.fn() };
-      },
-    );
-    dispatchTouch(wrapper, "touchstart", { x: 40, y: 200 }, 2_000);
-    for (let step = 1; step <= 6; step += 1) {
-      const point = { x: 40, y: 200 - (150 * step) / 6 };
-      dispatchTouch(wrapper, "touchmove", point, 2_000 + step * 50);
-      longPress.move([{ identifier: 1, ...point }]);
-    }
-    fireLongPress();
-    dispatchTouch(wrapper, "touchend", { x: 40, y: 50 }, 2_400);
-
-    const screen =
-      terminal.element?.querySelector<HTMLElement>(".xterm-screen");
-    if (screen === null || screen === undefined) {
-      throw new Error("xterm screen element missing");
-    }
-    const rowHeight = screen.getBoundingClientRect().height / terminal.rows;
-    const expectedRows = Math.round(150 / rowHeight);
-    const rowsMoved = startY - terminal.buffer.active.viewportY;
-
+    const rowsMoved = terminal.buffer.active.viewportY - startViewportY;
+    const expectedRows = Math.round(300 / CELL_HEIGHT_PX);
+    expect(nativeMoves).toBe(8);
     expect(Math.abs(rowsMoved - expectedRows)).toBeLessThanOrEqual(1);
-    expect(sheetOpened).not.toHaveBeenCalled();
+    now += 40;
+    dispatchTouch(screen, "touchend", { x: 40, y: 50 }, 2_360);
+    expect(scrollToLine).not.toHaveBeenCalled();
+    await new Promise((resolve) => setTimeout(resolve, 350));
   });
 });

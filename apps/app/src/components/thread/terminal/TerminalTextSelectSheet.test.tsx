@@ -11,6 +11,7 @@ import { Terminal } from "@xterm/xterm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TerminalMobileControls } from "./TerminalMobileControls";
 import { TerminalTextSelectSheet } from "./TerminalTextSelectSheet";
+import { startTerminalLongPress } from "./terminal-mobile-gestures";
 import { terminalTextSnapshot } from "./terminal-text-snapshot";
 
 const copied = vi.hoisted(() => [] as string[]);
@@ -113,7 +114,22 @@ describe("TerminalTextSelectSheet", () => {
     expect(copied).toEqual(["beta"]);
   });
 
-  it("enables exact selection copy after touch selection", async () => {
+  it("keeps text selection available after long-press opens the sheet", async () => {
+    let openLine = -1;
+    let fireLongPress = () => {};
+    const longPress = startTerminalLongPress(
+      [{ identifier: 1, x: 40, y: 20 }],
+      () => 1,
+      (line) => {
+        openLine = line;
+      },
+      (callback) => {
+        fireLongPress = callback;
+        return { cancel: vi.fn() };
+      },
+    );
+    fireLongPress();
+    longPress.cancel();
     render(
       <TerminalTextSelectSheet
         open
@@ -126,12 +142,15 @@ describe("TerminalTextSelectSheet", () => {
     const copySelection = screen.getByRole("button", {
       name: "Copy selection",
     });
+    expect(openLine).toBe(1);
+    fireEvent.touchStart(textarea);
     Object.defineProperties(textarea, {
       selectionStart: { configurable: true, value: 6 },
       selectionEnd: { configurable: true, value: 10 },
     });
     expect(copySelection).toHaveProperty("disabled", true);
 
+    fireEvent.touchMove(textarea);
     fireEvent.touchEnd(textarea);
 
     expect(copySelection).toHaveProperty("disabled", false);
