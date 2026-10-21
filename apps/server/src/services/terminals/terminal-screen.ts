@@ -13,6 +13,7 @@ const { Terminal } =
 
 export const TERMINAL_SCREEN_MAX_LINES = 500;
 export const TERMINAL_SCREEN_REPLAY_BYTES = 64 * 1024;
+const TERMINAL_SCREEN_WRITE_CHUNK_BYTES = 2 * 1024;
 
 type HeadlessTerminal = InstanceType<typeof Terminal>;
 
@@ -45,10 +46,35 @@ function createTerminal(cols: number, rows: number): HeadlessTerminal {
   return terminal;
 }
 
-function writeTerminal(terminal: HeadlessTerminal, data: string | Buffer) {
-  return new Promise<void>((resolve) => {
-    terminal.write(data, resolve);
-  });
+function yieldToEventLoop() {
+  return new Promise<void>((resolve) => setImmediate(resolve));
+}
+
+async function writeTerminal(
+  terminal: HeadlessTerminal,
+  data: string | Buffer,
+) {
+  if (
+    typeof data === "string" ||
+    data.length <= TERMINAL_SCREEN_WRITE_CHUNK_BYTES
+  ) {
+    await new Promise<void>((resolve) => terminal.write(data, resolve));
+    return;
+  }
+  for (
+    let offset = 0;
+    offset < data.length;
+    offset += TERMINAL_SCREEN_WRITE_CHUNK_BYTES
+  ) {
+    const end = Math.min(
+      offset + TERMINAL_SCREEN_WRITE_CHUNK_BYTES,
+      data.length,
+    );
+    await new Promise<void>((resolve) =>
+      terminal.write(data.subarray(offset, end), resolve),
+    );
+    if (end < data.length) await yieldToEventLoop();
+  }
 }
 
 function readVisibleScreen(terminal: HeadlessTerminal) {
@@ -158,6 +184,7 @@ async function replayIsComplete(
     await writeTerminal(sentinelTerminal, data);
     if (!sameVisibleScreen(blankTerminal, sentinelTerminal)) return false;
     for (const initialScreen of initialScreens) {
+      await yieldToEventLoop();
       const visibleStateTerminal = createTerminal(cols, rows);
       try {
         await writeTerminal(visibleStateTerminal, initialScreen);
@@ -169,6 +196,7 @@ async function replayIsComplete(
       }
     }
     for (const modeSetup of modeSetups) {
+      await yieldToEventLoop();
       const perturbedTerminal = createTerminal(cols, rows);
       try {
         await writeTerminal(perturbedTerminal, modeSetup);
@@ -179,6 +207,7 @@ async function replayIsComplete(
       }
     }
     for (const charsetSetup of charsetSetups) {
+      await yieldToEventLoop();
       const perturbedTerminal = createTerminal(cols, rows);
       try {
         await writeTerminal(perturbedTerminal, charsetSetup);
@@ -193,6 +222,7 @@ async function replayIsComplete(
       tabStopSetup,
       protectedCellSetup,
     ]) {
+      await yieldToEventLoop();
       const perturbedTerminal = createTerminal(cols, rows);
       try {
         await writeTerminal(perturbedTerminal, stateSetup);
@@ -203,6 +233,7 @@ async function replayIsComplete(
       }
     }
     for (const parserSetup of parserSetups) {
+      await yieldToEventLoop();
       const perturbedTerminal = createTerminal(cols, rows);
       try {
         await writeTerminal(perturbedTerminal, parserSetup);
