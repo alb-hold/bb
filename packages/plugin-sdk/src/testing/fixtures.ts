@@ -108,6 +108,7 @@ export function makeThreadResponse(
     runtime: { displayStatus: "idle" },
     activeBackgroundAgentCount: 0,
     canRestoreEnvironment: false,
+    canEditMessages: true,
     canSpawnChild: true,
     queuedMessageCount: 0,
     workspaceSharing: null,

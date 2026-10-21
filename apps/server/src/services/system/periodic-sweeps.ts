@@ -689,7 +689,9 @@ const PERIODIC_SWEEP_JOBS: PeriodicSweepJob[] = [
 export async function runStartupRecoverySweep(
   deps: LoggedPendingInteractionWorkSessionDeps,
 ): Promise<void> {
-  const releasedClaims = releaseOrphanedQueuedMessageDispatchClaims(deps);
+  const releasedClaims = releaseOrphanedQueuedMessageDispatchClaims(
+    deps,
+  );
   if (releasedClaims > 0) {
     deps.logger.info(
       { releasedClaims },

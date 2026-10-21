@@ -9,6 +9,7 @@ import { ensureItemCompletionLookupIndex } from "./fork-item-completion-index.js
 import { ensureThreadSpawnersTable } from "./fork-thread-spawners.js";
 import { ensureNativeTerminalThreadsTable } from "./fork-native-terminal-threads.js";
 import { ensureTerminalAttentionTable } from "./fork-terminal-attention.js";
+import { ensureTerminalHolderSessionsTable } from "./fork-terminal-holder-sessions.js";
 import { restoreNativeThreadDraftsToDraftsQueue } from "./fork-restore-native-drafts.js";
 import {
   compatibleMigrationHashes,
@@ -414,6 +415,19 @@ function tableExists(db: DbConnection, tableName: string): boolean {
   );
 }
 
+function dropEmptyLegacyDeferredMessages(db: DbConnection): void {
+  if (!tableExists(db, "deferred_thread_messages_legacy")) {
+    return;
+  }
+
+  const row = db.$client
+    .prepare("SELECT 1 FROM deferred_thread_messages_legacy LIMIT 1")
+    .get();
+  if (row === undefined) {
+    db.$client.exec("DROP TABLE deferred_thread_messages_legacy");
+  }
+}
+
 function columnExists(
   db: DbConnection,
   tableName: string,
@@ -629,7 +643,10 @@ function hasCompatibleMigrationHash(
       compatibleMigration.when === expectedMigration.createdAt &&
       appliedMigrations.some(
         (appliedMigration) =>
-          appliedMigration.createdAt === expectedMigration.createdAt &&
+          appliedMigration.createdAt ===
+            (("appliedWhen" in compatibleMigration
+              ? compatibleMigration.appliedWhen
+              : undefined) ?? expectedMigration.createdAt) &&
           appliedMigration.hash === compatibleMigration.hash,
       ),
   );
@@ -1628,6 +1645,7 @@ export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
     }
     applyReorderedCleanupMigrations(db, migrationsFolder);
     seedKeepAwakePluginConfiguration(db);
+    dropEmptyLegacyDeferredMessages(db);
   } finally {
     sqlite.pragma("foreign_keys = ON");
     bumpThreadEventOwnershipEpoch();
@@ -1640,4 +1658,5 @@ export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
   ensureThreadSpawnersTable(db);
   ensureNativeTerminalThreadsTable(db);
   ensureTerminalAttentionTable(db);
+  ensureTerminalHolderSessionsTable(db);
 }

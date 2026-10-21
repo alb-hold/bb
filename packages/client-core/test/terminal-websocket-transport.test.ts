@@ -68,6 +68,7 @@ function createHarness(
   const overflow = vi.fn<(maxBytes: number) => void>();
   const urls: string[] = [];
   const transport = new TerminalWebSocketTransport({
+    terminalId: "term_1",
     createSocket: (url) => {
       urls.push(url);
       const socket = new FakeTerminalBrowserSocket();
@@ -138,12 +139,12 @@ describe("TerminalWebSocketTransport", () => {
     expect(harness.transport.sendInput(immediateInput, 104)).toBe(true);
 
     expect(inputEnqueued.mock.calls).toEqual([
-      [100, 95],
-      [103, 104],
+      ["term_1", 100, 95],
+      ["term_1", 103, 104],
     ]);
     expect(inputSent.mock.calls).toEqual([
-      [100, 102],
-      [103, 104],
+      ["term_1", 100, 102],
+      ["term_1", 103, 104],
     ]);
     harness.transport.dispose();
   });
@@ -269,6 +270,23 @@ describe("TerminalWebSocketTransport", () => {
         .filter((message) => message.type === "output")
         .map((message) => message.chunk.seq),
     ).toEqual([0, 1, 1]);
+    harness.transport.dispose();
+  });
+
+  it("includes the terminal ID in output frame timing callbacks", () => {
+    const outputReceived = vi.fn();
+    const harness = createHarness({
+      now: () => 42,
+      onOutputFrameReceived: outputReceived,
+    });
+    harness.transport.start();
+    harness.sockets[0]?.open();
+    harness.sockets[0]?.receive({
+      type: "output",
+      chunk: { seq: 0, dataBase64: Buffer.from("frame").toString("base64") },
+    });
+
+    expect(outputReceived).toHaveBeenCalledWith("term_1", 42);
     harness.transport.dispose();
   });
 

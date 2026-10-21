@@ -5,7 +5,7 @@ type LatencyMetric =
   | "inputEnqueueToWebSocketSendMs"
   | "inputWebSocketSendToFirstOutputReceivedMs"
   | "inputToFirstOutputReceivedMs"
-  | "inputEchoReceivedToRenderMs"
+  | "inputFirstOutputReceivedToRenderMs"
   | "inputToFirstOutputRenderMs"
   | "outputRenderMs";
 
@@ -21,7 +21,7 @@ export interface TerminalLatencySnapshot {
   inputEnqueueToWebSocketSendMs: TerminalLatencyMetricSnapshot;
   inputWebSocketSendToFirstOutputReceivedMs: TerminalLatencyMetricSnapshot;
   inputToFirstOutputReceivedMs: TerminalLatencyMetricSnapshot;
-  inputEchoReceivedToRenderMs: TerminalLatencyMetricSnapshot;
+  inputFirstOutputReceivedToRenderMs: TerminalLatencyMetricSnapshot;
   inputToFirstOutputRenderMs: TerminalLatencyMetricSnapshot;
   outputRenderMs: TerminalLatencyMetricSnapshot;
 }
@@ -78,7 +78,7 @@ const metrics: Record<
     inputEnqueueToWebSocketSendMs: new LatencyRing(),
     inputWebSocketSendToFirstOutputReceivedMs: new LatencyRing(),
     inputToFirstOutputReceivedMs: new LatencyRing(),
-    inputEchoReceivedToRenderMs: new LatencyRing(),
+    inputFirstOutputReceivedToRenderMs: new LatencyRing(),
     inputToFirstOutputRenderMs: new LatencyRing(),
     outputRenderMs: new LatencyRing(),
   },
@@ -87,20 +87,25 @@ const metrics: Record<
     inputEnqueueToWebSocketSendMs: new LatencyRing(),
     inputWebSocketSendToFirstOutputReceivedMs: new LatencyRing(),
     inputToFirstOutputReceivedMs: new LatencyRing(),
-    inputEchoReceivedToRenderMs: new LatencyRing(),
+    inputFirstOutputReceivedToRenderMs: new LatencyRing(),
     inputToFirstOutputRenderMs: new LatencyRing(),
     outputRenderMs: new LatencyRing(),
   },
 };
 type FormFactor = "desktop" | "phone";
 
-const pendingInputs: Array<{
+type PendingTerminalInput = {
   formFactor: FormFactor;
+  terminalId: string;
   sentAt?: number;
   timestamp: number;
-}> = [];
+};
+type SentTerminalInput = PendingTerminalInput & { sentAt: number };
+
+const pendingInputs: PendingTerminalInput[] = [];
 const pendingRenders: Array<{
   formFactor: FormFactor;
+  terminalId: string;
   inputTimestamp: number | null;
   receivedAt: number;
 }> = [];
@@ -112,6 +117,7 @@ function currentFormFactor(): FormFactor {
 }
 
 export function recordTerminalInputEnqueued(
+  terminalId: string,
   timestamp: number,
   inputEventAt?: number,
 ): void {
@@ -121,15 +127,17 @@ export function recordTerminalInputEnqueued(
     metrics[formFactor].inputEventToEnqueueMs.add(timestamp - inputEventAt);
   }
   if (pendingInputs.length === RING_SIZE) pendingInputs.shift();
-  pendingInputs.push({ formFactor, timestamp });
+  pendingInputs.push({ formFactor, terminalId, timestamp });
 }
 
 export function recordTerminalInputWebSocketSent(
+  terminalId: string,
   enqueuedAt: number,
   sentAt: number,
 ): void {
   const index = pendingInputs.findIndex(
-    (pending) => pending.timestamp === enqueuedAt,
+    (pending) =>
+      pending.terminalId === terminalId && pending.timestamp === enqueuedAt,
   );
   if (index < 0) return;
   const pending = pendingInputs[index];
@@ -141,35 +149,58 @@ export function recordTerminalInputWebSocketSent(
   }
 }
 
-export function recordTerminalOutputReceived(timestamp: number): void {
+export function recordTerminalOutputReceived(
+  terminalId: string,
+  timestamp: number,
+): void {
   if (!Number.isFinite(timestamp)) return;
-  const firstInput = pendingInputs.shift() ?? null;
+  const firstInput: SentTerminalInput | null =
+    pendingInputs.find((pending): pending is SentTerminalInput => {
+      const sentAt = pending.sentAt;
+      return (
+        pending.terminalId === terminalId &&
+        sentAt !== undefined &&
+        sentAt <= timestamp
+      );
+    }) ?? null;
   if (firstInput !== null) {
+    const firstSentAt = firstInput.sentAt;
     metrics[firstInput.formFactor].inputToFirstOutputReceivedMs.add(
       timestamp - firstInput.timestamp,
     );
-    if (firstInput.sentAt !== undefined) {
-      metrics[
-        firstInput.formFactor
-      ].inputWebSocketSendToFirstOutputReceivedMs.add(
-        timestamp - firstInput.sentAt,
-      );
+    metrics[
+      firstInput.formFactor
+    ].inputWebSocketSendToFirstOutputReceivedMs.add(timestamp - firstSentAt);
+    for (let index = pendingInputs.length - 1; index >= 0; index -= 1) {
+      const pending = pendingInputs[index];
+      if (
+        pending?.terminalId === terminalId &&
+        pending.sentAt !== undefined &&
+        pending.sentAt <= timestamp
+      ) {
+        pendingInputs.splice(index, 1);
+      }
     }
-    pendingInputs.length = 0;
   }
   if (pendingRenders.length === RING_SIZE) pendingRenders.shift();
   pendingRenders.push({
     formFactor: firstInput?.formFactor ?? currentFormFactor(),
+    terminalId,
     inputTimestamp: firstInput?.timestamp ?? null,
     receivedAt: timestamp,
   });
 }
 
 export function recordTerminalOutputRendered(
+  terminalId: string,
   receivedAt: number,
   renderedAt: number,
 ): void {
-  const pending = pendingRenders.shift();
+  const pendingIndex = pendingRenders.findIndex(
+    (item) => item.terminalId === terminalId,
+  );
+  const pending =
+    pendingIndex < 0 ? undefined : pendingRenders.splice(pendingIndex, 1)[0];
   const formFactor = pending?.formFactor ?? currentFormFactor();
   const frameReceivedAt = pending?.receivedAt ?? receivedAt;
   metrics[formFactor].outputRenderMs.add(renderedAt - frameReceivedAt);
@@ -177,7 +208,7 @@ export function recordTerminalOutputRendered(
     pending?.inputTimestamp !== null &&
     pending?.inputTimestamp !== undefined
   ) {
-    metrics[formFactor].inputEchoReceivedToRenderMs.add(
+    metrics[formFactor].inputFirstOutputReceivedToRenderMs.add(
       renderedAt - frameReceivedAt,
     );
     metrics[formFactor].inputToFirstOutputRenderMs.add(
@@ -195,8 +226,8 @@ function snapshot(formFactor: "desktop" | "phone"): TerminalLatencySnapshot {
       metrics[formFactor].inputWebSocketSendToFirstOutputReceivedMs.snapshot(),
     inputToFirstOutputReceivedMs:
       metrics[formFactor].inputToFirstOutputReceivedMs.snapshot(),
-    inputEchoReceivedToRenderMs:
-      metrics[formFactor].inputEchoReceivedToRenderMs.snapshot(),
+    inputFirstOutputReceivedToRenderMs:
+      metrics[formFactor].inputFirstOutputReceivedToRenderMs.snapshot(),
     inputToFirstOutputRenderMs:
       metrics[formFactor].inputToFirstOutputRenderMs.snapshot(),
     outputRenderMs: metrics[formFactor].outputRenderMs.snapshot(),

@@ -18,10 +18,10 @@ describe("terminal latency diagnostics", () => {
 
   it("keeps a fixed-size rolling sample and stores numeric measurements only", () => {
     for (let index = 0; index < 400; index += 1) {
-      recordTerminalInputEnqueued(index + 1, index);
-      recordTerminalInputWebSocketSent(index + 1, index + 1.25);
-      recordTerminalOutputReceived(index + 2);
-      recordTerminalOutputRendered(index + 2, index + 3);
+      recordTerminalInputEnqueued("term-a", index + 1, index);
+      recordTerminalInputWebSocketSent("term-a", index + 1, index + 1.25);
+      recordTerminalOutputReceived("term-a", index + 2);
+      recordTerminalOutputRendered("term-a", index + 2, index + 3);
     }
 
     const snapshot = getTerminalLatencyDiagnostics();
@@ -30,8 +30,8 @@ describe("terminal latency diagnostics", () => {
     expect(snapshot.desktop.outputRenderMs.p50Ms).toBe(1);
     expect(snapshot.desktop.outputRenderMs.p95Ms).toBe(1);
     expect(snapshot.desktop.inputToFirstOutputReceivedMs.count).toBe(256);
-    expect(snapshot.desktop.inputEchoReceivedToRenderMs.count).toBe(256);
-    expect(snapshot.desktop.inputEchoReceivedToRenderMs.p50Ms).toBe(1);
+    expect(snapshot.desktop.inputFirstOutputReceivedToRenderMs.count).toBe(256);
+    expect(snapshot.desktop.inputFirstOutputReceivedToRenderMs.p50Ms).toBe(1);
     expect(snapshot.desktop.inputToFirstOutputRenderMs.count).toBe(256);
     expect(snapshot.desktop.inputEventToEnqueueMs.count).toBe(256);
     expect(snapshot.desktop.inputEventToEnqueueMs.totalCount).toBe(400);
@@ -78,26 +78,26 @@ describe("terminal latency diagnostics", () => {
 
   it("keeps phone and desktop timing samples separate", () => {
     vi.stubGlobal("window", { innerWidth: 390 });
-    recordTerminalOutputReceived(5);
-    recordTerminalOutputRendered(5, 11);
+    recordTerminalOutputReceived("term-a", 5);
+    recordTerminalOutputRendered("term-a", 5, 11);
 
     const snapshot = getTerminalLatencyDiagnostics();
     expect(snapshot.phone.outputRenderMs.p50Ms).toBe(6);
     expect(snapshot.desktop.outputRenderMs.p50Ms).toBe(1);
   });
 
-  it("attributes a coalesced echo to the first key and stores no terminal text", () => {
+  it("attributes a coalesced first output to the first key and stores no terminal text", () => {
     vi.stubGlobal("window", { innerWidth: 390 });
     const keystroke = "private-keystroke-7f31";
     const output = "private-terminal-output-93ad";
-    recordTerminalInputEnqueued(100);
-    recordTerminalInputEnqueued(108);
-    recordTerminalInputEnqueued(116);
-    recordTerminalInputWebSocketSent(100, 101);
-    recordTerminalInputWebSocketSent(108, 109);
-    recordTerminalInputWebSocketSent(116, 117);
-    recordTerminalOutputReceived(130);
-    recordTerminalOutputRendered(130, 140);
+    recordTerminalInputEnqueued("term-a", 100);
+    recordTerminalInputEnqueued("term-a", 108);
+    recordTerminalInputEnqueued("term-a", 116);
+    recordTerminalInputWebSocketSent("term-a", 100, 101);
+    recordTerminalInputWebSocketSent("term-a", 108, 109);
+    recordTerminalInputWebSocketSent("term-a", 116, 117);
+    recordTerminalOutputReceived("term-a", 130);
+    recordTerminalOutputRendered("term-a", 130, 140);
 
     const serialized = JSON.stringify(getTerminalLatencyDiagnostics());
     expect(serialized).not.toContain(keystroke);
@@ -113,10 +113,98 @@ describe("terminal latency diagnostics", () => {
       getTerminalLatencyDiagnostics().phone.inputToFirstOutputRenderMs.p50Ms,
     ).toBe(40);
     expect(
-      getTerminalLatencyDiagnostics().phone.inputEchoReceivedToRenderMs.p50Ms,
+      getTerminalLatencyDiagnostics().phone.inputFirstOutputReceivedToRenderMs
+        .p50Ms,
     ).toBe(10);
     expect(
       getTerminalLatencyDiagnostics().phone.inputToFirstOutputReceivedMs.count,
     ).toBe(1);
+  });
+
+  it("pairs output only with input sent by its receive time and keeps unsent input", () => {
+    const before = getTerminalLatencyDiagnostics().desktop;
+    recordTerminalInputEnqueued("term-before-send", 10_000);
+    recordTerminalOutputReceived("term-before-send", 10_005);
+    recordTerminalOutputRendered("term-before-send", 10_005, 10_008);
+
+    expect(
+      getTerminalLatencyDiagnostics().desktop.inputToFirstOutputReceivedMs
+        .totalCount,
+    ).toBe(before.inputToFirstOutputReceivedMs.totalCount);
+    recordTerminalInputWebSocketSent("term-before-send", 10_000, 10_020);
+    recordTerminalOutputReceived("term-before-send", 10_025);
+
+    expect(
+      getTerminalLatencyDiagnostics().desktop.inputToFirstOutputReceivedMs
+        .totalCount,
+    ).toBe(before.inputToFirstOutputReceivedMs.totalCount + 1);
+  });
+
+  it("does not pair output from another terminal with pending input", () => {
+    const before =
+      getTerminalLatencyDiagnostics().desktop.inputToFirstOutputReceivedMs
+        .totalCount;
+    recordTerminalInputEnqueued("term-cross-a", 20_000);
+    recordTerminalInputWebSocketSent("term-cross-a", 20_000, 20_001);
+
+    recordTerminalOutputReceived("term-cross-b", 20_005);
+    recordTerminalOutputRendered("term-cross-b", 20_005, 20_008);
+    expect(
+      getTerminalLatencyDiagnostics().desktop.inputToFirstOutputReceivedMs
+        .totalCount,
+    ).toBe(before);
+
+    recordTerminalOutputReceived("term-cross-a", 20_010);
+    recordTerminalOutputRendered("term-cross-a", 20_010, 20_013);
+    expect(
+      getTerminalLatencyDiagnostics().desktop.inputToFirstOutputReceivedMs
+        .totalCount,
+    ).toBe(before + 1);
+  });
+
+  it("consumes every sent input coalesced into the first output frame", () => {
+    const before =
+      getTerminalLatencyDiagnostics().desktop.inputToFirstOutputReceivedMs
+        .totalCount;
+    for (let index = 0; index < 127; index += 1) {
+      const enqueuedAt = 40_000 + index * 100;
+      recordTerminalInputEnqueued("term-coalesce-fill", enqueuedAt);
+      recordTerminalInputWebSocketSent(
+        "term-coalesce-fill",
+        enqueuedAt,
+        enqueuedAt + 1,
+      );
+      recordTerminalOutputReceived("term-coalesce-fill", enqueuedAt + 12);
+    }
+    for (let index = 0; index < 128; index += 1) {
+      const enqueuedAt = 60_000 + index * 100;
+      recordTerminalInputEnqueued("term-coalesce-fill", enqueuedAt);
+      recordTerminalInputWebSocketSent(
+        "term-coalesce-fill",
+        enqueuedAt,
+        enqueuedAt + 1,
+      );
+      recordTerminalOutputReceived("term-coalesce-fill", enqueuedAt + 20);
+    }
+    recordTerminalInputEnqueued("term-coalesced", 30_000);
+    recordTerminalInputEnqueued("term-coalesced", 30_008);
+    recordTerminalInputWebSocketSent("term-coalesced", 30_000, 30_001);
+    recordTerminalInputWebSocketSent("term-coalesced", 30_008, 30_009);
+
+    recordTerminalOutputReceived("term-coalesced", 30_020);
+    expect(
+      getTerminalLatencyDiagnostics().desktop.inputToFirstOutputReceivedMs
+        .totalCount,
+    ).toBe(before + 256);
+    expect(
+      getTerminalLatencyDiagnostics().desktop.inputToFirstOutputReceivedMs
+        .p50Ms,
+    ).toBe(20);
+
+    recordTerminalOutputReceived("term-coalesced", 30_030);
+    expect(
+      getTerminalLatencyDiagnostics().desktop.inputToFirstOutputReceivedMs
+        .totalCount,
+    ).toBe(before + 256);
   });
 });
