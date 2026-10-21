@@ -1,5 +1,9 @@
 import { sql } from "drizzle-orm";
-import { listEvents, listQueuedThreadMessages, markThreadDeleted } from "@bb/db";
+import {
+  listEvents,
+  listQueuedThreadMessages,
+  markThreadDeleted,
+} from "@bb/db";
 import { describe, expect, it } from "vitest";
 import { deliverLegacyDeferredThreadMessages } from "../../src/services/threads/legacy-deferred-messages.js";
 import { toThreadQueuedMessage } from "../../src/services/threads/thread-queued-messages.js";
@@ -73,14 +77,11 @@ function seedIdleThread(harness: TestAppHarness, hostId: string) {
 }
 
 describe("deliverLegacyDeferredThreadMessages", () => {
-  it("drops the empty renamed table and is a no-op ever after", async () => {
+  it("does not retain an empty renamed table from migrations", async () => {
     await withTestHarness(async (harness) => {
-      // A fresh database's migrations rename the (empty) old table into
-      // place; the first startup clears it away and later ones find nothing.
-      expect(legacyTableExists(harness)).toBe(true);
-      await deliverLegacyDeferredThreadMessages(harness.deps);
       expect(legacyTableExists(harness)).toBe(false);
       await deliverLegacyDeferredThreadMessages(harness.deps);
+      expect(legacyTableExists(harness)).toBe(false);
     });
   });
 
@@ -95,9 +96,7 @@ describe("deliverLegacyDeferredThreadMessages", () => {
         payload: {
           kind: "send",
           request: {
-            input: [
-              { type: "text", text: "The held follow-up", mentions: [] },
-            ],
+            input: [{ type: "text", text: "The held follow-up", mentions: [] }],
             // A mode value today's schema does not know: the message must
             // survive it, since the words are what the migration protects.
             mode: "defer-legacy",

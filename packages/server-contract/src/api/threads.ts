@@ -524,6 +524,7 @@ export const threadResponseSchema = threadWithRuntimeSchema.extend({
    * the call.
    */
   canRestoreEnvironment: z.boolean(),
+  canEditMessages: z.boolean(),
   canSpawnChild: z.boolean(),
   queuedMessageCount: z.number().int().nonnegative(),
   workspaceSharing: z
